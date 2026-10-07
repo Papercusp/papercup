@@ -175,7 +175,7 @@ vi.mock('../presence-fleet', () => ({
 // P-008 last leg / D-084: `basedOn` is DERIVED off the invocation log at send
 // time. Mocked here so the WIRING is asserted without a PG round-trip — the
 // derivation itself is covered by based-on.test.ts + based-on.integration.test.ts.
-vi.mock('../based-on', () => ({ deriveBasedOn: vi.fn(async () => []) }));
+vi.mock('../based-on', () => ({ BASED_ON_MAX_ENTRIES: 8, deriveBasedOn: vi.fn(async () => []) }));
 // P-011 / WI-6731: the premise RESOLVER is stubbed so the WIRING is asserted
 // without a PG round-trip (the resolver + its production probes are covered by
 // premise-resolve.test.ts / premise-probes.test.ts).
@@ -187,6 +187,11 @@ vi.mock('../based-on', () => ({ deriveBasedOn: vi.fn(async () => []) }));
 vi.mock('../premise-resolve', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../premise-resolve')>()),
   resolvePremiseStamps: vi.fn(async () => []),
+}));
+
+vi.mock('../coupling-divergence-stamp', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../coupling-divergence-stamp')>()),
+  resolveCouplingDivergenceStamps: vi.fn(async () => []),
 }));
 
 // state-plane-adoption-2026-08-02 P-011 (acceptance C5): the stale-quote RESOLVER
@@ -232,6 +237,7 @@ import { lookupEndedSessions } from '../dead-session-recipient-guidance';
 import { getFlag } from '@papercusp/flags/server';
 import { deriveBasedOn } from '../based-on';
 import { resolvePremiseStamps } from '../premise-resolve';
+import { resolveCouplingDivergenceStamps } from '../coupling-divergence-stamp';
 import { resolveRelayProvenance } from '../relay-provenance-resolve';
 import { resolveStaleQuoteStamps, STALE_QUOTE_FIELD } from '../stale-quote-stamp';
 import type { MessageSection } from '../message-fields';
@@ -239,6 +245,7 @@ import { COORD_SEND_MAX_CHUNK_PARTS, DEFAULT_INBOX_BODY_CAP } from './inbox-cont
 import { reassembleChunkedBodies } from './send-chunking';
 const staleQuoteM = vi.mocked(resolveStaleQuoteStamps);
 const premiseM = vi.mocked(resolvePremiseStamps);
+const couplingDivergenceM = vi.mocked(resolveCouplingDivergenceStamps);
 const basedOnM = vi.mocked(deriveBasedOn);
 const sendM = vi.mocked(sendMessage);
 const getByIdM = vi.mocked(getMessageById);
@@ -261,7 +268,35 @@ const lookupEndedSessionsM = vi.mocked(lookupEndedSessions);
 const flagM = vi.mocked(getFlag);
 const sendModule = await import('./send');
 const tool = sendModule.default;
-const { COORD_SEND_IDLE_REPORT_TIMEOUT_MS, COORD_SEND_DB_DEADLINE_MS } = sendModule;
+describe('coord:send abort-completion wiring', () => {
+  it('resolves an aborted call from the completed send result', () => {
+    expect(tool.abortCompletionReceipt?.({}, {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          ok: true,
+          results: [{
+            ok: true,
+            to: ['peer-1'],
+            msg_id: 'm-landed',
+            phaseTimingsMs: { prePersistMs: 8, persistMs: 12, postPersistMs: 5 },
+          }],
+        }),
+      }],
+    }, { callId: 'call-send-1', toolName: 'coord:send' })).toEqual({
+      status: 'recorded',
+      effectRef: 'coord:send:m-landed',
+      diagnostics: {
+        coordSendPhaseTimingsMs: [{ itemIndex: 0, prePersistMs: 8, persistMs: 12, postPersistMs: 5 }],
+      },
+    });
+  });
+});
+const {
+  COORD_SEND_IDLE_REPORT_TIMEOUT_MS,
+  COORD_SEND_PREPERSIST_ENRICHMENT_TIMEOUT_MS,
+  COORD_SEND_DB_DEADLINE_MS,
+} = sendModule;
 
 /**
  * A COMPLETE `CoordEnvelope` fixture, derived from `getMessageById`'s OWN return type so a
@@ -345,6 +380,11 @@ describe('coord:send handler (bulk keyed-array)', () => {
     const b = await body({ to: ['bee-1'], summary: 'hi' });
     expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
     expect(b.results[0]).toMatchObject({ ok: true, to: ['bee-1'], msg_id: 'm1' });
+    expect(b.results[0].phaseTimingsMs).toEqual({
+      prePersistMs: expect.any(Number),
+      persistMs: expect.any(Number),
+      postPersistMs: expect.any(Number),
+    });
     expect(sendM).toHaveBeenCalledTimes(1);
   });
 
@@ -3169,7 +3209,7 @@ describe('REPORT-REFERENCE-ADMISSION-P002: actual coord:send handler', () => {
     const sent = JSON.parse((sendResult as { content: Array<{ text: string }> }).content[0].text);
     expect(sent.results[0]).toMatchObject({ ok: true, goalOwnerReport: { status: 'stamped', goalId: snapshot.goalId } });
     expect(sendM).toHaveBeenCalledTimes(1);
-    expect(sendM.mock.calls[0]![1].body.length).toBeLessThanOrEqual(DEFAULT_INBOX_BODY_CAP);
+    expect(sendM.mock.calls[0]![1].body?.length).toBeLessThanOrEqual(DEFAULT_INBOX_BODY_CAP);
     for (const wall of snapshot.ownerWalls) expect(reportText).toContain(wall.exactAction);
   });
 
@@ -3411,6 +3451,37 @@ describe('basedOn — the sender’s read trace, derived (never authored)', () =
       expect.objectContaining({ ref: 'work-item:EI-25161673334137018' }),
     ]));
   });
+
+  it('does not mark pending owner asks complete because wake readiness was verified', async () => {
+    mockResolvedTyped(basedOnM, Array.from({ length: 8 }, (_, i) => ({
+      ref: 'work-item:WI-' + (9000 + i), via: 'work_items:get', readAt: '2026-10-07T06:26:31.992Z',
+    })));
+    await body({
+      to: ['bee-1'], summary: 'Goal owner-wall report', expects: 'none',
+      body: [
+        { text: 'MOVED: loop armed; custody kept.' },
+        { text: 'OWNER-WALLED: WI-10004856 register GitHub App; WI-10004875 approve deployment; WI-10005042 approve paid run cap.' },
+        { text: 'NEXT WAKE: 60s warm work loop; guarantee verified.' },
+      ],
+    });
+    const opts = sendM.mock.calls[0]![1] as { extra?: Record<string, unknown> };
+    expect(opts.extra).not.toHaveProperty('completionClaimMismatch');
+    expect(basedOnM).toHaveBeenCalledWith(expect.objectContaining({ includeRefs: [] }));
+  });
+
+  it('uses a named older read for completion checks while keeping the displayed provenance bounded', async () => {
+    const recent = Array.from({ length: 8 }, (_, i) => ({
+      ref: 'work-item:WI-' + (9000 + i), via: 'work_items:get', readAt: '2026-10-07T06:26:31.992Z',
+    }));
+    mockResolvedTyped(basedOnM, [...recent, {
+      ref: 'work-item:WI-10004856', via: 'work_items:get', readAt: '2026-10-07T06:21:25.887Z',
+    }]);
+    await body({ to: ['bee-1'], summary: 'Completed WI-10004856', expects: 'none' });
+    const opts = sendM.mock.calls[0]![1] as { extra?: Record<string, unknown> };
+    expect(opts.extra?.basedOn).toEqual(recent);
+    expect(opts.extra).not.toHaveProperty('completionClaimMismatch');
+    expect(basedOnM).toHaveBeenCalledWith(expect.objectContaining({ includeRefs: ['work-item:WI-10004856'] }));
+  });
 });
 
 /**
@@ -3472,11 +3543,54 @@ describe('premiseStamps — the resolved half of `premises`, stamped at send', (
   });
 
   it('never fails a send when the resolver blows up — a stamp must not eat a message', async () => {
-    premiseM.mockRejectedValue(new Error('pg is down') as never);
-    const b = await body({ to: ['bee-1'], summary: 'hi', expects: 'action', body: withPremises });
-    expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
-    const opts = sendM.mock.calls[0]![1] as { extra?: Record<string, unknown> };
-    expect(opts.extra).not.toHaveProperty('premiseStamps');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      premiseM.mockRejectedValue(new Error('pg is down') as never);
+      const b = await body({ to: ['bee-1'], summary: 'hi', expects: 'action', body: withPremises });
+      expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
+      const opts = sendM.mock.calls[0]![1] as { extra?: Record<string, unknown> };
+      expect(opts.extra).not.toHaveProperty('premiseStamps');
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('[bounded-timeout] coord:send:premise-stamps failed: pg is down'));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('persists when premise and coupling enrichment both never settle', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.useFakeTimers();
+    premiseM.mockImplementationOnce(() => new Promise(() => {}));
+    couplingDivergenceM.mockImplementationOnce(() => new Promise(() => {}));
+
+    try {
+      const pending = body({
+        to: ['bee-1'],
+        summary: 'persist despite stalled optional enrichment',
+        expects: 'action',
+        body: [{
+          text: 'the send has optional evidence',
+          premises: ['WI-6502#completion'],
+          forYouBecause: { relation: 'is-blocked-on', ref: 'EI-25286067435235845' },
+        }],
+      });
+      await vi.waitFor(() => {
+        expect(premiseM).toHaveBeenCalledTimes(1);
+        expect(couplingDivergenceM).toHaveBeenCalledTimes(1);
+      }, { timeout: 5_000, interval: 10 });
+      await vi.advanceTimersByTimeAsync(COORD_SEND_PREPERSIST_ENRICHMENT_TIMEOUT_MS);
+
+      const b = await pending;
+      expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
+      expect(sendM).toHaveBeenCalledTimes(1);
+      const opts = sendM.mock.calls[0]![1] as { extra?: Record<string, unknown> };
+      expect(opts.extra).not.toHaveProperty('premiseStamps');
+      expect(opts.extra).not.toHaveProperty('couplingDivergence');
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('coord:send:premise-stamps'));
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('coord:send:coupling-divergence'));
+    } finally {
+      vi.useRealTimers();
+      warn.mockRestore();
+    }
   });
 });
 
@@ -3524,11 +3638,17 @@ describe('staleValueQuotes — the P-011 stamp, wired at the coord:send chokepoi
   });
 
   it('never fails a send when the resolver blows up — a stamp must not eat a message', async () => {
-    staleQuoteM.mockRejectedValue(new Error('pg is down'));
-    const b = await body({ to: ['bee-1'], summary: 'hi', expects: 'action', body: sections });
-    expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
-    const opts = sendM.mock.calls[0]![1] as { extra?: Record<string, unknown> };
-    expect(opts.extra).not.toHaveProperty(STALE_QUOTE_FIELD);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      staleQuoteM.mockRejectedValue(new Error('pg is down'));
+      const b = await body({ to: ['bee-1'], summary: 'hi', expects: 'action', body: sections });
+      expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
+      const opts = sendM.mock.calls[0]![1] as { extra?: Record<string, unknown> };
+      expect(opts.extra).not.toHaveProperty(STALE_QUOTE_FIELD);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('[bounded-timeout] coord:send:stale-quote-stamps failed: pg is down'));
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 

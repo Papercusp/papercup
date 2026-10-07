@@ -1628,6 +1628,11 @@ export async function main(argv = process.argv.slice(2)) {
     }
     if (result.supported) {
       if (result.status !== 0) return result.status;
+      // Lock-only resolution applies manifests without reifying or repairing
+      // node_modules. Publishing here would bind the new lock to the old
+      // installed tree and can fail a healthy metadata operation on copy
+      // headroom. Actual reify/repair paths still publish below.
+      if (installPlan.packageLockOnly) return 0;
       return publishDependencyGeneration({ repoRoot });
     }
     console.error(

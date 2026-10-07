@@ -64,6 +64,8 @@ function runFixture(
    * the --release-version asked for, or none). clouds: the --clouds list (default gcp).
    */
   options: {
+    /** A refused supply-chain scan must prevent disk rendering. */
+    supplyChainRefused?: boolean;
     imageRelease?: string;
     clouds?: string;
     /**
@@ -380,6 +382,7 @@ ${SECRET_SCAN_AUDITOR_LINE}
 if [ -f "$AUDITOR" ]; then state=found; else state=missing; fi
 printf '%s %s\\n' "$state" "$AUDITOR" > "$BAKE_TEST_SUPPLY_CHAIN_MARKER"
 printf '%s\\n' "$@" > "$BAKE_TEST_SUPPLY_CHAIN_MARKER.args"
+exit ${options.supplyChainRefused ? 3 : 0}
 `, { mode: 0o755 });
   chmodSync(join(ctx, 'release-supply-chain.sh'), 0o755);
   writeFileSync(liveContainerfile, 'FROM scratch\n# original fixture Containerfile\n');
@@ -592,6 +595,24 @@ describe('bake-cloud-images.sh startup snapshot (EI-22355025813361885)', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it('refreshes the vendor package layer for each bake and enforces the vulnerability gate', () => {
+    const first = runFixture(SOURCE);
+    const second = runFixture(SOURCE);
+    const refresh = (args: string[]) => args.find((arg) => arg.startsWith('PAPERCUSP_VENDOR_REFRESH='));
+    expect(refresh(first.buildArgs)).toMatch(/^PAPERCUSP_VENDOR_REFRESH=\d+$/);
+    expect(refresh(second.buildArgs)).not.toBe(refresh(first.buildArgs));
+    expect(first.supplyChainArgs).toContain('--fail-on-vulns');
+    expect(CONTAINERFILE_SOURCE).toContain('test -n "$PAPERCUSP_VENDOR_REFRESH"');
+  });
+
+  it('does not render a disk or report PASS when the vulnerability scan refuses', () => {
+    const result = runFixture(SOURCE, 'raw', undefined, undefined, false, 'pass', { supplyChainRefused: true });
+    expect(result.status).toBe(3);
+    expect(result.output).toContain('BAKE_RESULT=REFUSED supply chain exited 3');
+    expect(result.output).not.toContain('BAKE_RESULT=PASS');
+    expect(result.outFiles).not.toContain('gcp/image/disk.raw');
   });
 
   it('keeps a live bake on the startup bytes after the source is rewritten', () => {

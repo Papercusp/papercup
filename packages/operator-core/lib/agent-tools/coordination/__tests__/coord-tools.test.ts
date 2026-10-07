@@ -91,7 +91,7 @@ import whoamiTool from '../tools/whoami';
 import inboxTool, { boundInboxEntries } from '../tools/inbox';
 import feedTool from '../tools/feed';
 import ackTool from '../tools/ack';
-import threadTool from '../tools/thread';
+import threadTool, { THREAD_RESPONSE_BUDGET_CHARS } from '../tools/thread';
 import watermarkTool from '../tools/watermark';
 import escalateTool from '../tools/escalate';
 import escalationsTool from '../tools/escalations';
@@ -276,8 +276,10 @@ describe('coord:thread', () => {
 
     const body = parse(await run(threadTool, { root_msg_id: root.msg_id }));
     expect(body.entries_total).toBe(25);
-    expect(body.entries_shown).toBe(20);
+    expect(body.entries_shown).toBeLessThan(20);
+    expect(body.entries_shown).toBe(body.entries.length);
     expect(body.entries_truncated).toBe(true);
+    expect(JSON.stringify(body).length).toBeLessThanOrEqual(THREAD_RESPONSE_BUDGET_CHARS);
     expect(body.entries[0].msg_id).toBe(root.msg_id);
     expect(body.entries.at(-1).summary).toContain('reply-23');
     expect(body.entries.at(-1).summary_truncated).toBe(true);
@@ -310,6 +312,76 @@ describe('coord:thread', () => {
     expect(serialized).not.toContain('x'.repeat(1_000));
     expect(serialized).not.toContain('y'.repeat(1_000));
     expect(serialized.length).toBeLessThan(10_000);
+  });
+
+  it('fits authored thread metadata under the result budget while keeping the root and newest entry', async () => {
+    const basedOn = (count: number) =>
+      Array.from({ length: count }, (_, i) => ({
+        ref: `work-item:WI-${6000 + i}#completion`,
+        via: 'work_items:get',
+        readAt: '2026-10-07T08:30:00.000Z',
+        versionAtSend: `open@${'v'.repeat(72)}`,
+      }));
+
+    const root = await sendMessage(id('alice'), {
+      to: ['*'],
+      summary: 'thread root',
+      body: 'root body',
+      extra: { basedOn: basedOn(3) },
+    });
+    await sendMessage(id('bob'), {
+      to: ['alice'],
+      related_msg_id: root.msg_id,
+      summary: 'middle entry',
+      body: 'middle body',
+      extra: { basedOn: basedOn(30) },
+    });
+    const newest = await sendMessage(id('bob'), {
+      to: ['alice'],
+      related_msg_id: root.msg_id,
+      summary: 'newest entry',
+      body: 'newest body',
+      extra: { basedOn: basedOn(3) },
+    });
+
+    const body = parse(await run(threadTool, { root_msg_id: root.msg_id }));
+
+    expect(JSON.stringify(body).length).toBeLessThanOrEqual(THREAD_RESPONSE_BUDGET_CHARS);
+    expect(body.entries_total).toBe(3);
+    expect(body.entries_truncated).toBe(true);
+    expect(body.entries_shown).toBe(body.entries.length);
+    expect(body.entries[0].msg_id).toBe(root.msg_id);
+    expect(body.entries.at(-1).msg_id).toBe(newest.msg_id);
+    expect(body.entries[0].authored.basedOn).toHaveLength(3);
+  });
+
+  it('reduces one oversized root entry to core details within the result budget', async () => {
+    const root = await sendMessage(id('alice'), {
+      to: ['*'],
+      summary: 'large authored root',
+      body: 'root body',
+      extra: {
+        basedOn: Array.from({ length: 80 }, (_, i) => ({
+          ref: `work-item:WI-${7000 + i}#completion`,
+          via: 'work_items:get',
+          readAt: '2026-10-07T08:30:00.000Z',
+          versionAtSend: `open@${'x'.repeat(120)}`,
+        })),
+      },
+    });
+
+    const body = parse(await run(threadTool, { root_msg_id: root.msg_id }));
+
+    expect(JSON.stringify(body).length).toBeLessThanOrEqual(THREAD_RESPONSE_BUDGET_CHARS);
+    expect(body.entries_total).toBe(1);
+    expect(body.entries_shown).toBe(1);
+    expect(body.content_truncated).toBe(true);
+    expect(body.entries[0]).toMatchObject({
+      msg_id: root.msg_id,
+      from: 'alice',
+      thread_entry_truncated: true,
+    });
+    expect(body.entries[0].authored).toBeUndefined();
   });
 });
 

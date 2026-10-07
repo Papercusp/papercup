@@ -116,7 +116,11 @@ ARG AMAZON_SSM_AGENT_VERSION=3.3.5390.0
 ARG AMAZON_SSM_AGENT_RPM_SHA256=85369679511b67f8f01824043ae17a679b6f21edd78229ccd1d5acd6c347f82f
 COPY papercusp-amazon-ssm-agent-ec2-only.conf /usr/lib/systemd/system/amazon-ssm-agent.service.d/papercusp-ec2-only.conf
 COPY papercusp-amazon-ssm-agent.tmpfiles.conf /usr/lib/tmpfiles.d/papercusp-amazon-ssm-agent.conf
+# Repository metadata changes independently of this source. Each bake supplies a
+# fresh key so an old cached dnf upgrade cannot stand in for today's vendor fixes.
+ARG PAPERCUSP_VENDOR_REFRESH
 RUN set -eux; \
+    test -n "$PAPERCUSP_VENDOR_REFRESH"; \
     printf '%s\n' \
       '[google-compute-engine]' \
       'name=Google Compute Engine' \

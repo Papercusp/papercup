@@ -50,6 +50,7 @@ import {
 function createManifestResolutionFixture({
   staleDuringResolve = false,
   expectFallback = false,
+  publisherStatus,
 } = {}) {
   const tempRoot = mkdtempSync(join(tmpdir(), "npm-install-safe-resolution-"));
   const repoRoot = join(tempRoot, "repo");
@@ -65,6 +66,16 @@ function createManifestResolutionFixture({
 
   mkdirSync(workspaceRoot, { recursive: true });
   mkdirSync(binDir, { recursive: true });
+  if (publisherStatus !== undefined) {
+    const fakeBash = join(binDir, 'bash');
+    writeFileSync(fakeBash, [
+      '#!/usr/bin/env node',
+      'const fs = require("node:fs");',
+      'fs.appendFileSync(process.env.NPM_INSTALL_SAFE_TEST_TRACE, "publish\\n");',
+      `process.exit(${publisherStatus});`,
+    ].join('\n') + '\n');
+    chmodSync(fakeBash, 0o755);
+  }
   const localPackageRoot = join(tempRoot, "fixture-pkg");
   mkdirSync(localPackageRoot, { recursive: true });
   writeFileSync(
@@ -198,7 +209,7 @@ function createManifestResolutionFixture({
       PATH: binDir + delimiter + (process.env.PATH ?? ""),
       PAPERCUSP_FS_MUTEX_LOCK_DIR: lockDir,
       PAPERCUSP_FS_MUTEX_TIMEOUT_MS: "10000",
-      PAPERCUSP_SKIP_DEP_GENERATION: "1",
+      PAPERCUSP_SKIP_DEP_GENERATION: publisherStatus === undefined ? "1" : "0",
       NPM_INSTALL_SAFE_TEST_ROOT: repoRoot,
       NPM_INSTALL_SAFE_TEST_TRACE: tracePath,
       NPM_INSTALL_SAFE_TEST_LOCK_NAME: repoLockName(repoRoot),
@@ -214,6 +225,42 @@ function createManifestResolutionFixture({
     },
   };
 }
+
+test("lock-only resolution does not publish unchanged installed dependencies", {
+  skip: process.platform === "win32",
+}, () => {
+  for (const viaConfig of [false, true]) {
+    const fixture = createManifestResolutionFixture({ publisherStatus: 77 });
+    try {
+      if (viaConfig) fixture.env.npm_config_package_lock_only = 'true';
+      else fixture.args.push('--package-lock-only');
+      const result = spawnSync(process.execPath, [fixture.cli, ...fixture.args], {
+        encoding: "utf8", timeout: 15_000, env: fixture.env,
+      });
+      assert.ifError(result.error);
+      assert.equal(result.status, 0, result.stderr + result.stdout);
+      assert.deepEqual(readFileSync(fixture.tracePath, 'utf8').trim().split('\n'), ['cache-verify', 'resolve']);
+      assert.equal(existsSync(join(fixture.repoRoot, 'node_modules')), false);
+      const lock = JSON.parse(readFileSync(join(fixture.repoRoot, 'package-lock.json'), 'utf8'));
+      assert.equal(lock.packages['node_modules/fixture-pkg'].version, '1.2.3');
+    } finally { rmSync(fixture.tempRoot, { recursive: true, force: true }); }
+  }
+});
+
+test("reify and repair still publish and propagate generation failure", {
+  skip: process.platform === "win32",
+}, () => {
+  const fixture = createManifestResolutionFixture({ publisherStatus: 77 });
+  try {
+    const result = spawnSync(process.execPath, [fixture.cli, ...fixture.args], {
+      encoding: "utf8", timeout: 15_000, env: fixture.env,
+    });
+    assert.ifError(result.error);
+    assert.equal(result.status, 77, result.stderr + result.stdout);
+    assert.deepEqual(readFileSync(fixture.tracePath, 'utf8').trim().split('\n'), ['cache-verify', 'resolve', 'reify', 'repair', 'publish']);
+    assert.match(result.stderr, /immutable dependency generation publish exited 77/);
+  } finally { rmSync(fixture.tempRoot, { recursive: true, force: true }); }
+});
 
 test("repo writers can proceed during resolution but stay blocked during reify and repair", {
   skip: process.platform === "win32",

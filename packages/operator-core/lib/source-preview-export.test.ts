@@ -12,7 +12,7 @@
  * shared checkout.
  */
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative, sep } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -23,6 +23,9 @@ import {
   exportSnapshot,
   loadReleaseHost,
   materializeCommit,
+  prepareVerifierSource,
+  runCli,
+  verifyVerifierSource,
   releasesPageUrl,
   sourceYear,
 } from '../../../scripts/source-preview.mjs';
@@ -101,6 +104,72 @@ describe('source-preview export — R-1 selection parity with the installer cut'
     for (const path of Object.keys(INTERNAL_DOC_CONTENTS)) expect(installer, path).toContain(path);
     expect(installer).not.toContain('libs/papercusp/plugins/gitnexus-bridge/index.ts');
     expect(installer).toContain('libs/papercusp/plugins/markdown-preview/papercusp.json');
+  });
+});
+
+describe('EI-25303741091409100 — pinned verifier source identity', () => {
+  it('round-trips the verifier CLI with an external caller receipt and refuses tampering', async () => {
+    const fixture = makeSuperproject(join(tmp, 'verifier-cli-fixture'));
+    const dest = join(tmp, 'verifier-cli-export');
+    const receipt = join(tmp, 'verifier-cli-receipt.json');
+    const input = SHIPPED.find((p) => p.startsWith('apps/'))!;
+    expect(await runCli(['verifier-prepare', '--repo', fixture.repo, '--ref', fixture.commit,
+      '--out', dest, '--inputs', input, '--receipt', receipt])).toBe(0);
+    expect(statSync(receipt).mode & 0o777).toBe(0o600);
+    expect(JSON.parse(readFileSync(receipt, 'utf8')).sourceCommit).toBe(fixture.commit);
+    expect(await runCli(['verifier-verify', '--out', dest, '--receipt', receipt])).toBe(0);
+    writeFileSync(join(dest, input), 'changed after preparation');
+    await expect(runCli(['verifier-verify', '--out', dest, '--receipt', receipt]))
+      .rejects.toThrow('tampered verification source archive');
+  });
+
+  it('exports exact gitlinks despite unrelated dirty donor bytes and detects archive tampering', async () => {
+    const fixture = makeSuperproject(join(tmp, 'verifier-fixture'));
+    const dest = join(tmp, 'verifier-export');
+    const input = SHIPPED.find((p) => p.startsWith('apps/'))!;
+    write(fixture.repo, 'unrelated-untracked.ts', 'peer edit');
+    const receipt = await prepareVerifierSource({ repo: fixture.repo, ref: fixture.commit, dest, inputs: [input] });
+    expect(receipt.sourceCommit).toBe(fixture.commit);
+    expect(receipt.submodules.length).toBeGreaterThan(0);
+    expect(existsSync(join(dest, 'unrelated-untracked.ts'))).toBe(false);
+    await expect(verifyVerifierSource(dest, receipt)).resolves.toEqual(receipt);
+    writeFileSync(join(dest, input), 'tampered');
+    await expect(verifyVerifierSource(dest, receipt)).rejects.toThrow('tampered verification source archive');
+  });
+
+  it('refuses an older committed tested input and cleans the incomplete export', async () => {
+    const fixture = makeSuperproject(join(tmp, 'verifier-dirty-fixture'));
+    const dest = join(tmp, 'verifier-dirty-export');
+    const input = SHIPPED.find((p) => p.startsWith('apps/'))!;
+    writeFileSync(join(fixture.repo, input), 'uncommitted acceptance change');
+    await expect(prepareVerifierSource({ repo: fixture.repo, ref: fixture.commit, dest, inputs: [input] }))
+      .rejects.toThrow('dirty tested-input mismatch');
+    expect(existsSync(dest)).toBe(false);
+  });
+
+  it('refuses missing, altered provenance and extra archive files', async () => {
+    const fixture = makeSuperproject(join(tmp, 'verifier-provenance-fixture'));
+    const dest = join(tmp, 'verifier-provenance-export');
+    const input = SHIPPED.find((p) => p.startsWith('apps/'))!;
+    const receipt = await prepareVerifierSource({ repo: fixture.repo, ref: fixture.commit, dest, inputs: [input] });
+    await expect(verifyVerifierSource(dest, undefined as never)).rejects.toThrow('missing verification source provenance');
+    writeFileSync(join(dest, '.verifier-source.json'), '{}');
+    await expect(verifyVerifierSource(dest, receipt)).rejects.toThrow('tampered verification source provenance');
+    writeFileSync(join(dest, '.verifier-source.json'), JSON.stringify(receipt));
+    writeFileSync(join(dest, 'extra.ts'), 'unexpected');
+    await expect(verifyVerifierSource(dest, receipt)).rejects.toThrow('tampered verification source archive');
+  });
+
+  it('refuses tracked source symlinks that read outside the immutable export', async () => {
+    const fixture = makeSuperproject(join(tmp, 'verifier-link-fixture'));
+    symlinkSync('/tmp/live-peer-source.ts', join(fixture.repo, 'outside-source'));
+    git(fixture.repo, ['add', 'outside-source']);
+    git(fixture.repo, ['commit', '-qm', 'outside source fixture']);
+    const dest = join(tmp, 'verifier-link-export');
+    const input = SHIPPED.find((p) => p.startsWith('apps/'))!;
+    await expect(prepareVerifierSource({ repo: fixture.repo, ref: 'HEAD', dest, inputs: [input] }))
+      .rejects.toThrow('archive symlink escapes source root');
+    expect(existsSync(dest)).toBe(false);
   });
 });
 

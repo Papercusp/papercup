@@ -582,6 +582,7 @@ elif [ "$DRY_RUN" -eq 1 ]; then
 else
   echo "### 1/4 build (one image, all clouds)"
   build_args=(
+    --build-arg "PAPERCUSP_VENDOR_REFRESH=$(date -u +%s%N)" \
     --build-arg "RELEASE_REGISTRY_NAMESPACE=$REGISTRY" \
     --build-arg "RELEASE_STORAGE_DRIVER=$STORAGE_DRIVER" \
     --build-arg "RELEASE_SIGNING_PUBKEY_B64=$PUBKEY_B64" \
@@ -634,7 +635,7 @@ if [ "$DRY_RUN" -eq 1 ]; then
   echo "DRY_RUN: would run release-supply-chain.sh --image $PINNED"
 else
   echo "### 3/4 supply chain (sign, attest, SBOM, scan, verify-back)"
-  sc_args=(--image "$PINNED" --key "$KEY" --pubkey "$PUBKEY" --out "$OUT/supply-chain")
+  sc_args=(--image "$PINNED" --key "$KEY" --pubkey "$PUBKEY" --out "$OUT/supply-chain" --fail-on-vulns)
   [ "$INSECURE" -eq 1 ] && sc_args+=(--insecure-registry)
   # The supply chain runs from the build-context SNAPSHOT ($HERE), which is not a git checkout,
   # so it cannot read the commit itself; hand it the commit the snapshot was verified equal to.

@@ -12,6 +12,7 @@ import scorecardsEmit from './scorecards/emit';
 import workItemsCreate from './work_items/create';
 import codeRun from './code/run';
 import docsAuthor from './docs/author';
+import coordSend from './coordination/tools/send';
 
 /**
  * WI-10005670 recurrence guard — the commit-unknown window.
@@ -47,6 +48,8 @@ const LATE_RETURN_MUTATORS = {
   'docs:author': docsAuthor,
   // WI-10005718: the INSERT precedes the response; a late return lost the id + downgrade notice.
   'work_items:create': workItemsCreate,
+  // EI-25288245178425318: a delivered coord:send must expose its persisted message id after a late return.
+  'coord:send': coordSend,
 } as const;
 
 /** The population check, factored so the calibration control below can run the same code. */

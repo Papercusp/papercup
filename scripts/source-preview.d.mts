@@ -90,6 +90,45 @@ export function materializeCommit({ repo, sha, dest, allow, prefix }: {
     path: string;
     sha: string;
 }[];
+/** Internal verification export: no public selection, scrub, publish or working-tree overlay.
+ * The caller retains this receipt outside the export, then verifies it before execution.
+ * @param {{repo: string, ref: string, dest: string, inputs: string[]}} options
+ */
+export function prepareVerifierSource({ repo, ref, dest, inputs }: {
+    repo: string;
+    ref: string;
+    dest: string;
+    inputs: string[];
+}): Promise<{
+    schemaVersion: string;
+    sourceCommit: string;
+    submodules: {
+        path: string;
+        sha: string;
+    }[];
+    testedInputs: {
+        path: string;
+        sha256: string;
+    }[];
+    files: any[];
+}>;
+/** Fail closed on absent/changed provenance or any modified/extra/missing source byte.
+ * @param {string} dest
+ * @param {Awaited<ReturnType<typeof prepareVerifierSource>>} expected
+ */
+export function verifyVerifierSource(dest: string, expected: Awaited<ReturnType<typeof prepareVerifierSource>>): Promise<{
+    schemaVersion: string;
+    sourceCommit: string;
+    submodules: {
+        path: string;
+        sha: string;
+    }[];
+    testedInputs: {
+        path: string;
+        sha256: string;
+    }[];
+    files: any[];
+}>;
 export function noticeText(manifest: any): string;
 /**
  * The releases page README.md links to: `${PAPERCUSP_UPDATE_BASE_URL}/index.html`.

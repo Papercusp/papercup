@@ -409,10 +409,10 @@ export async function runPerformanceBlocks(manifestFile: string, expectedSha: st
 /** A queued/running snapshot is never a prerequisite for another model matrix.
  * Re-read terminal state and bind the saved summary to every immutable raw
  * receipt before permitting the next launch. This performs no inference. */
-export async function verifyCompletedPerformanceRun(manifestFile: string, expectedSha: string) {
+export async function verifyCompletedPerformanceRun(manifestFile: string, expectedSha: string, expectedRecordedOwner = measurementOwner()) {
   if ((await fingerprintFile(manifestFile)).sha256 !== expectedSha) throw new Error('predecessor manifest fingerprint mismatch');
   const manifest = validateMeasurementManifest(JSON.parse(fs.readFileSync(manifestFile, 'utf8')));
-  if (manifest.ownerId !== measurementOwner()) throw new Error('predecessor owner mismatch');
+  if (!expectedRecordedOwner || manifest.ownerId !== expectedRecordedOwner) throw new Error('predecessor owner mismatch');
   const first = manifest.cells.find((cell) => cell.bar === 'performance');
   if (!first) throw new Error('predecessor has no performance cells');
   const input = loadPerformanceInput({ manifest, cell: first } as PreparedMeasurement);

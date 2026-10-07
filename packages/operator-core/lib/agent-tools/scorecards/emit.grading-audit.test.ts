@@ -287,6 +287,60 @@ const targetReplay = (
   ],
 });
 
+const historicalTargetReplay = (
+  rating: 'pass' | 'fail',
+  evaluatorBuild = RERUN_RECIPE.evaluatorBuild,
+) => ({
+  ...targetReplay(rating, evaluatorBuild),
+  historicalAuditOnly: {
+    provenance: 'historical-audit-only',
+    asOf: GRADED_CARD.createdAt,
+    freshness: 'historical-snapshot',
+    bindings: [{
+      id: 19999,
+      evidenceKind: 'test',
+      evidenceRef: 'surface:reconnect',
+      createdAt: '2026-10-01T23:00:00.000Z',
+      withdrawal: { at: '2026-10-02T01:00:00.000Z', reason: 'superseded by binding 21019' },
+    }],
+  },
+});
+
+const exactReplayConsistencyGradedCard = () => {
+  const card = replayConsistencyGradedCard();
+  const current = [{
+    planSlug: 'reconnect-plan',
+    specId: 'SPEC-003-01',
+    specRevision: 1,
+    specFingerprint: 'sha256:spec-v1',
+    evidenceKind: 'test',
+    evidenceRef: 'surface:reconnect',
+    sourceFingerprint: 'git:graded',
+    testFingerprint: 'sha256:test-graded',
+  }];
+  return {
+    ...card,
+    payload: {
+      observation: {
+        ...card.payload.observation,
+        rerunRecipe: {
+          ...RERUN_RECIPE,
+          args: {
+            ...RERUN_RECIPE.args,
+            evidenceRefs: ['surface:reconnect'],
+            bindingIds: [19999],
+            specRevision: 1,
+            specFingerprint: 'sha256:spec-v1',
+            replaySnapshot: true,
+          },
+          selection: { ...RERUN_RECIPE.selection, bindingIds: [19999] },
+          current: { supplied: true, fingerprints: current },
+        },
+      },
+    },
+  };
+};
+
 beforeEach(() => {
   closeSourceAuditConsults.mockReset().mockResolvedValue(undefined);
   getRubric.mockReset().mockResolvedValue(mkRubric('goal-mode-e2e', 'standard'));
@@ -303,7 +357,7 @@ beforeEach(() => {
   gateEnabled.mockReset().mockResolvedValue(true);
   dispatchPendingGradingAudits.mockReset().mockResolvedValue({ requestedTargetIds: [], receipts: [] });
   readRunningGeneration.mockReset().mockResolvedValue(null);
-  replaySpecTestAdequacyForHistoricalAudit.mockReset();
+  replaySpecTestAdequacyForHistoricalAudit.mockReset().mockResolvedValue(historicalTargetReplay('pass'));
 });
 
 describe('scorecards:emit audit-pending stamp (P-013)', () => {
@@ -833,7 +887,7 @@ describe('scorecards:emit grading audit path (P-013)', () => {
     expect(recordGradingAudit).not.toHaveBeenCalled();
   });
 
-  it('refuses a degenerate-distribution failure when the exact server replay reproduces every target rating', async () => {
+  it('refuses a degenerate-distribution failure when the historical replay reproduces every target rating', async () => {
     getRubric.mockResolvedValue(replayConsistencyAuditRubric());
     getIssue.mockResolvedValue(replayConsistencyGradedCard());
     const dispatchTool = vi.fn().mockResolvedValue(targetReplay('pass'));
@@ -846,17 +900,40 @@ describe('scorecards:emit grading audit path (P-013)', () => {
 
     expect(res).toMatchObject({ ok: false, code: 'grading_audit_replay_consistent' });
     expect((res as { error?: string }).error).toContain('reproduced every applicable rating');
-    expect(dispatchTool).toHaveBeenCalledWith(
-      'plans:evaluate-spec-test-adequacy',
-      expect.objectContaining({
-        slug: 'reconnect-plan',
-        detail: 'summary',
-        includeDraft: true,
-        payloadTier: 'full',
-      }),
-    );
+    expect(dispatchTool).not.toHaveBeenCalled();
+    expect(replaySpecTestAdequacyForHistoricalAudit).toHaveBeenCalledOnce();
     expect(captureImprovement).not.toHaveBeenCalled();
     expect(recordGradingAudit).not.toHaveBeenCalled();
+  });
+
+  it('passes exact binding ids and the graded fingerprint tuple to the historical replay', async () => {
+    getRubric.mockResolvedValue(replayConsistencyAuditRubric());
+    getIssue.mockResolvedValue(exactReplayConsistencyGradedCard());
+    const dispatchTool = vi.fn();
+
+    const res = await emitScorecard(
+      { ...auditArgs, ratings: REPLAY_SPLIT_RATINGS },
+      { createdBy: 'su-auditor', ctxHarness: 'papercusp' },
+      { dispatchTool },
+    );
+
+    expect(res).toMatchObject({ ok: false, code: 'grading_audit_replay_consistent' });
+    expect(dispatchTool).not.toHaveBeenCalled();
+    expect(replaySpecTestAdequacyForHistoricalAudit).toHaveBeenCalledWith(expect.objectContaining({
+      args: expect.objectContaining({
+        replaySnapshot: true,
+        specRevision: 1,
+        specFingerprint: 'sha256:spec-v1',
+        evidenceRefs: ['surface:reconnect'],
+        bindingIds: [19999],
+        current: [expect.objectContaining({
+          sourceFingerprint: 'git:graded',
+          testFingerprint: 'sha256:test-graded',
+        })],
+      }),
+      selection: expect.objectContaining({ bindingIds: [19999] }),
+      auditAsOf: new Date(GRADED_CARD.createdAt),
+    }));
   });
 
   it('refuses a replay-consistent audit challenge without a structured evidence citation', async () => {
@@ -912,11 +989,12 @@ describe('scorecards:emit grading audit path (P-013)', () => {
     expect(recordGradingAudit).toHaveBeenCalledWith('EI-CARD', expect.objectContaining({ verdict: 'failed' }));
   });
 
-  it('allows the same audit split when the exact server replay really contradicts a target rating', async () => {
+  it('allows the same audit split when the historical replay contradicts a target rating', async () => {
     getRubric.mockResolvedValue(replayConsistencyAuditRubric());
     getIssue.mockResolvedValue(replayConsistencyGradedCard());
     readRunningGeneration.mockResolvedValue(runningGeneration('a'.repeat(40)));
-    const dispatchTool = vi.fn().mockResolvedValue(targetReplay('fail'));
+    replaySpecTestAdequacyForHistoricalAudit.mockResolvedValue(historicalTargetReplay('fail'));
+    const dispatchTool = vi.fn();
 
     const res = await emitScorecard(
       { ...auditArgs, ratings: REPLAY_SPLIT_RATINGS },
@@ -929,7 +1007,7 @@ describe('scorecards:emit grading audit path (P-013)', () => {
     expect(recordGradingAudit).toHaveBeenCalledWith('EI-CARD', expect.objectContaining({ verdict: 'failed' }));
   });
 
-  it('falls back to a marked historical replay only when a legacy current read is selection_empty', async () => {
+  it('replays a legacy card from its historical snapshot even when live bindings are unavailable', async () => {
     getRubric.mockResolvedValue(replayConsistencyAuditRubric());
     getIssue.mockResolvedValue(legacyReplayConsistencyGradedCard());
     const dispatchTool = vi.fn().mockResolvedValue({ ok: false, error: 'selection_empty', count: 0 });
@@ -940,7 +1018,7 @@ describe('scorecards:emit grading audit path (P-013)', () => {
       historicalAuditOnly: {
         provenance: 'historical-audit-only',
         asOf: GRADED_CARD.createdAt,
-        freshness: 'audit-only',
+        freshness: 'historical-snapshot',
         bindings: [
           {
             id: 19999,
@@ -959,15 +1037,7 @@ describe('scorecards:emit grading audit path (P-013)', () => {
     );
 
     expect(res).toMatchObject({ ok: false, code: 'grading_audit_replay_consistent' });
-    expect(dispatchTool).toHaveBeenCalledOnce();
-    expect(dispatchTool).toHaveBeenCalledWith(
-      'plans:evaluate-spec-test-adequacy',
-      expect.objectContaining({
-        evidenceRefs: ['surface:reconnect'],
-        specRevision: 1,
-        specFingerprint: 'sha256:spec-v1',
-      }),
-    );
+    expect(dispatchTool).not.toHaveBeenCalled();
     expect(replaySpecTestAdequacyForHistoricalAudit).toHaveBeenCalledWith(
       expect.objectContaining({
         workspaceId: expect.any(String),
@@ -991,8 +1061,8 @@ describe('scorecards:emit grading audit path (P-013)', () => {
     );
 
     expect(res).toMatchObject({ ok: false, code: 'grading_audit_replay_uncorroborated' });
-    expect((res as { error?: string }).error).toContain('graded card creation time or workspace scope is unavailable');
-    expect(dispatchTool).toHaveBeenCalledOnce();
+    expect((res as { error?: string }).error).toContain('creation time or workspace scope is unavailable');
+    expect(dispatchTool).not.toHaveBeenCalled();
     expect(replaySpecTestAdequacyForHistoricalAudit).not.toHaveBeenCalled();
     expect(recordGradingAudit).not.toHaveBeenCalled();
   });
@@ -1001,10 +1071,11 @@ describe('scorecards:emit grading audit path (P-013)', () => {
     getRubric.mockResolvedValue(replayConsistencyAuditRubric());
     getIssue.mockResolvedValue(replayConsistencyGradedCard());
     const liveEvaluatorBuild = { sha: 'current-evaluator-sha', version: '1.2.3' };
-    const dispatchTool = vi.fn().mockResolvedValue({
-      ...targetReplay('fail', liveEvaluatorBuild),
+    replaySpecTestAdequacyForHistoricalAudit.mockResolvedValue({
+      ...historicalTargetReplay('fail', liveEvaluatorBuild),
       evaluatorBuildDrift: { recorded: RERUN_RECIPE.evaluatorBuild, live: liveEvaluatorBuild },
     });
+    const dispatchTool = vi.fn();
 
     const res = await emitScorecard(
       { ...auditArgs, ratings: REPLAY_SPLIT_RATINGS },
@@ -1014,16 +1085,7 @@ describe('scorecards:emit grading audit path (P-013)', () => {
 
     expect(res).toMatchObject({ ok: false, code: 'grading_audit_evaluator_changed' });
     expect((res as { error?: string }).error).toContain('evaluator-build-drift');
-    expect(dispatchTool).toHaveBeenCalledWith(
-      'plans:evaluate-spec-test-adequacy',
-      expect.objectContaining({
-        slug: 'reconnect-plan',
-        evaluatorBuild: RERUN_RECIPE.evaluatorBuild,
-        detail: 'summary',
-        includeDraft: true,
-        payloadTier: 'full',
-      }),
-    );
+    expect(dispatchTool).not.toHaveBeenCalled();
     expect(captureImprovement).not.toHaveBeenCalled();
     expect(recordGradingAudit).not.toHaveBeenCalled();
   });
@@ -1032,7 +1094,8 @@ describe('scorecards:emit grading audit path (P-013)', () => {
     getRubric.mockResolvedValue(replayConsistencyAuditRubric());
     getIssue.mockResolvedValue(replayConsistencyGradedCard());
     const liveEvaluatorBuild = { sha: 'current-evaluator-sha', version: '1.2.3' };
-    const dispatchTool = vi.fn().mockResolvedValue(targetReplay('fail', liveEvaluatorBuild));
+    replaySpecTestAdequacyForHistoricalAudit.mockResolvedValue(historicalTargetReplay('fail', liveEvaluatorBuild));
+    const dispatchTool = vi.fn();
 
     const res = await emitScorecard(
       { ...auditArgs, ratings: REPLAY_SPLIT_RATINGS },
@@ -1072,8 +1135,8 @@ describe('scorecards:emit grading audit path (P-013)', () => {
       },
     });
     const exactReplay = targetReplay('pass');
-    const dispatchTool = vi.fn().mockResolvedValue({
-      ...exactReplay,
+    replaySpecTestAdequacyForHistoricalAudit.mockResolvedValue({
+      ...historicalTargetReplay('pass'),
       rows: [
         {
           ...exactReplay.rows[0],
@@ -1085,6 +1148,7 @@ describe('scorecards:emit grading audit path (P-013)', () => {
         },
       ],
     });
+    const dispatchTool = vi.fn();
 
     const res = await emitScorecard(
       { ...auditArgs, gradingAuditReservation: reservation, ratings: REPLAY_SPLIT_RATINGS },

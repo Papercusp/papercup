@@ -136,6 +136,117 @@ Caused by:
 `;
 
 describe('Cargo measured passing cases and layers (P-002)', () => {
+  it('records real virtual-workspace target paths and excludes a real inherited child harness', () => {
+    const root = mkdtempSync(join(tmpdir(), 'cargo-workspace-reporter-'));
+    const receiptFile = join(root, 'receipts.ndjson');
+    try {
+      writeFileSync(join(root, 'Cargo.toml'), '[workspace]\nmembers = ["a", "b"]\nresolver = "2"\n');
+      for (const name of ['a', 'b']) {
+        mkdirSync(join(root, name, 'src'), { recursive: true });
+        writeFileSync(join(root, name, 'Cargo.toml'), `[package]\nname = "reporter-fixture-${name}"\nversion = "0.0.0"\nedition = "2021"\n`);
+        writeFileSync(join(root, name, 'src/lib.rs'), `
+          #[cfg(test)] mod tests {
+            #[test] fn same() {}
+            ${name === 'a' ? `#[test] fn reentrant() {
+              if std::env::var_os("REPORTER_FIXTURE_CHILD").is_none() {
+                let status = std::process::Command::new(std::env::current_exe().unwrap())
+                  .env("REPORTER_FIXTURE_CHILD", "1")
+                  .args(["--exact", "tests::reentrant"]).status().unwrap();
+                assert!(status.success());
+              }
+            }` : ''}
+          }
+        `);
+      }
+      const result = spawnSync(process.execPath, [
+        '--import', 'tsx', resolve(TEST_DIR, '../../../../scripts/report-cargo-tests.mjs'),
+        '--manifest-path', join(root, 'Cargo.toml'),
+      ], {
+        encoding: 'utf8', timeout: 90_000,
+        env: { ...process.env, CARGO_TARGET_DIR: join(root, 'target'), CARGO_BUILD_JOBS: '1',
+          HARNESS_ADMIN_DATABASE_URL: 'postgres://fixture:fixture@127.0.0.1:1/fixture',
+          PAPERCUSP_TEST_RUN_RECEIPT_FILE: receiptFile },
+      });
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toContain('parsed 3 test results;');
+      const receipts = readFileSync(receiptFile, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+      expect(receipts.map(r => r.filePath).sort()).toEqual([
+        '. (cargo aggregate)', 'a/src/lib.rs::tests::reentrant',
+        'a/src/lib.rs::tests::same', 'b/src/lib.rs::tests::same',
+      ]);
+      expect(receipts.every(r => r.status === 'pass')).toBe(true);
+      // The DB is intentionally unreachable: failed recording must not fail Cargo.
+      expect(receipts.every(r => r.outcome === 'failed')).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 100_000);
+
+  it('uses unique metadata for llvm-cov headers and refuses ambiguous package attribution', () => {
+    const output = [
+      '     Running tests/shared.rs (/target/debug/deps/shared-123abc)',
+      'running 1 test', 'test contract ... ok', 'test result: ok. 1 passed',
+    ].join('\n');
+    const targets = [{ name: 'shared', src_path: '/mobile/a/tests/shared.rs' }];
+    expect(parseCargoMeasuredTestResults(output, { root: '/mobile', targets })[0])
+      .toMatchObject({ testFilePath: 'a/tests/shared.rs', testLayer: 'integration' });
+    expect(parseCargoMeasuredTestResults(output, { root: '/mobile', targets: [
+      ...targets, { name: 'shared', src_path: '/mobile/b/tests/shared.rs' },
+    ] })[0]).not.toHaveProperty('testFilePath');
+  });
+
+  it('counts the outer libtest run, excluding inherited reentrant child output', () => {
+    const rows = parseCargoMeasuredTestResults([
+      '     Running unittests src/lib.rs (target/debug/deps/bindings-123)',
+      'running 2 tests',
+      'test independent ... ok',
+      'running 1 test',
+      'test reentrant ... FAILED',
+      'test result: FAILED. 0 passed; 1 failed',
+      'test reentrant ... ok',
+      'test result: ok. 2 passed; 0 failed',
+    ].join('\n'));
+    expect(rows).toEqual([
+      { name: 'independent', outcome: 'ok', testLayer: 'unit' },
+      { name: 'reentrant', outcome: 'ok', testLayer: 'unit' },
+    ]);
+  });
+
+  it('attributes identical workspace case names to their exact compiler targets', () => {
+    const artifact = (pkg: string, executable: string) => JSON.stringify({
+      reason: 'compiler-artifact', executable,
+      target: { src_path: `/mobile/crates/${pkg}/src/lib.rs` },
+    });
+    const rows = parseCargoMeasuredTestResults([
+      artifact('a', '/target/debug/deps/shared-111'),
+      artifact('b', '/target/debug/deps/shared-222'),
+      '     Running unittests src/lib.rs (/target/debug/deps/shared-111)',
+      'running 1 test', 'test tests::same ... ok',
+      'test result: ok. 1 passed; 0 failed',
+      '     Running unittests src/lib.rs (/target/debug/deps/shared-222)',
+      'running 1 test', 'test tests::same ... FAILED',
+      'test result: FAILED. 0 passed; 1 failed',
+    ].join('\n'), { root: '/mobile' });
+    expect(rows).toEqual([
+      { name: 'tests::same', outcome: 'ok', testLayer: 'unit', testFilePath: 'crates/a/src/lib.rs' },
+      { name: 'tests::same', outcome: 'FAILED', testLayer: 'unit', testFilePath: 'crates/b/src/lib.rs' },
+    ]);
+  });
+
+  it('keeps partial outer failures without treating captured stdout as executed cases', () => {
+    expect(parseCargoMeasuredTestResults([
+      '     Running tests/contract.rs (target/debug/deps/contract-123)',
+      'running 2 tests', 'test broken ... FAILED',
+      '---- broken stdout ----', 'test invented ... ok',
+      'test result: FAILED. 0 passed; 1 failed',
+      '     Running tests/crashed.rs (target/debug/deps/crashed-123)',
+      'running 2 tests', 'test before_crash ... ok',
+    ].join('\n'))).toEqual([
+      { name: 'broken', outcome: 'FAILED', testLayer: 'integration' },
+      { name: 'before_crash', outcome: 'ok', testLayer: 'integration' },
+    ]);
+  });
+
   it('records ignored tests with their libtest reason without inventing passing results', () => {
     const output = [
       '     Running tests/live_smoke.rs (target/debug/deps/live_smoke-123)',
@@ -192,7 +303,7 @@ describe('Cargo measured passing cases and layers (P-002)', () => {
       passed: 1, collectionFailed: true, passedCaseTitles: ['unexecuted'], env: {} });
     expect(crash).not.toHaveProperty('passedCaseTitles');
     expect(crash).not.toHaveProperty('testLayer');
-    expect(REPORTER_SOURCE).toContain('parseCargoMeasuredTestResults(combinedOutput ?? combined)');
+    expect(REPORTER_SOURCE).toContain('parseCargoMeasuredTestResults(combinedOutput ?? combined, { root: REPO_ROOT, targets })');
     expect(REPORTER_SOURCE).toContain('passedCaseTitles: r.outcome');
     expect(REPORTER_SOURCE).toContain('testRunReporter?.setRunRoot?.(REPO_ROOT)');
   });
@@ -417,7 +528,7 @@ describe('cargo test result parsing', () => {
       'native_console::tests::ignored_case',
     ]);
     expect(results.map(({ outcome }) => outcome)).toEqual(['ok', 'ok', 'ignored']);
-    expect(REPORTER_SOURCE).toContain('const results = parseCargoTestResultLines(combined);');
+    expect(REPORTER_SOURCE).toContain('const results = measuredResults;');
   });
 });
 
@@ -469,7 +580,7 @@ describe('cargo coverage output placement (P-010, design-to-code-coverage-seam-2
     // work unchanged. If this ever became a separate runner, the per-test rows
     // would silently stop being recorded.
     expect(REPORTER_SOURCE).toContain("'llvm-cov',");
-    expect(REPORTER_SOURCE).toContain('const results = parseCargoTestResultLines(combined);');
+    expect(REPORTER_SOURCE).toContain('const results = measuredResults;');
   });
 });
 

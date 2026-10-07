@@ -92,16 +92,19 @@ cmd_prune() {
 
   local protect_sec=$(( PROTECT_MIN * 60 ))
   local removed_tags=0 refused_tags=0 kept_tags=0 removed_volumes=0 refused_volumes=0
-  local listing line tag created age recent=0
+  local listing line image_repo tag created age recent=0
 
   # Newest first. `{{.Created}}` here is a human string ("2 hours ago"), so the epoch comes from
   # inspect, which renders the time.Time field.
-  if ! listing="$("${PODMAN[@]}" images --filter "reference=$repo" --noheading --format '{{.Tag}}' 2>&1)"; then
+  # Podman's reference filter selects images, then lists ALL their aliases,
+  # including tags in another repository. Inspect only our actual aliases.
+  if ! listing="$("${PODMAN[@]}" images --filter "reference=$repo" --noheading --format '{{.Repository}} {{.Tag}}' 2>&1)"; then
     warn "could not list $repo images: $listing"
     listing=""
   fi
   local rows=()
-  while IFS= read -r tag; do
+  while IFS=' ' read -r image_repo tag; do
+    [ "$image_repo" = "$repo" ] || continue
     [ -z "$tag" ] || [ "$tag" = "<none>" ] && continue
     created="$("${PODMAN[@]}" image inspect --format '{{.Created.Unix}}' "$repo:$tag" 2>/dev/null)"
     case "$created" in ''|*[!0-9]*) warn "could not read the creation time of $repo:$tag (kept)"; kept_tags=$((kept_tags + 1)); continue;; esac

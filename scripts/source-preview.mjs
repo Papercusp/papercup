@@ -385,6 +385,91 @@ export function materializeCommit({ repo, sha, dest, allow, prefix = '' }) {
   return subs;
 }
 
+/** Internal verification export: no public selection, scrub, publish or working-tree overlay.
+ * The caller retains this receipt outside the export, then verifies it before execution.
+ * @param {{repo: string, ref: string, dest: string, inputs: string[]}} options
+ */
+export async function prepareVerifierSource({ repo, ref, dest, inputs }) {
+  if (!inputs.length) throw new PreviewError('verification export needs explicit tested inputs', 2);
+  if (existsSync(dest)) throw new PreviewError('verification export destination already exists', 2);
+  const sha = resolveCommit(repo, ref);
+  await fs.mkdir(dest, { recursive: true });
+  try {
+    // Unlike the public export, verification includes desktop/helper gitlinks too.
+    const allow = new Set(git(repo, ['ls-tree', '--name-only', sha]).trim().split('\n'));
+    const submodules = materializeCommit({ repo, sha, dest, allow });
+    const testedInputs = [];
+    for (const path of [...new Set(inputs)].sort()) {
+      if (!path || isAbsolute(path) || path.split('/').some((p) => p === '..' || p === '.' || !p)) {
+        throw new PreviewError(`invalid tested input: ${path}`, 2);
+      }
+      const archived = join(dest, path);
+      const live = join(repo, path);
+      if (!(await fs.lstat(archived)).isFile() || !(await fs.lstat(live)).isFile()) {
+        throw new PreviewError(`tested input is not a regular file: ${path}`, 2);
+      }
+      const digest = createHash('sha256').update(await fs.readFile(archived)).digest('hex');
+      if (digest !== createHash('sha256').update(await fs.readFile(live)).digest('hex')) {
+        throw new PreviewError(`dirty tested-input mismatch: ${path}`, 2);
+      }
+      testedInputs.push({ path, sha256: digest });
+    }
+    const manifest = { schemaVersion: 'verifier-source-v1', sourceCommit: sha, submodules,
+      testedInputs, files: await verifierSourceFiles(dest) };
+    await fs.writeFile(join(dest, '.verifier-source.json'), `${JSON.stringify(manifest)}\n`, { flag: 'wx' });
+    return manifest;
+  } catch (error) {
+    await fs.rm(dest, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+/** File/link identity before dependency materialization; never follow archive symlinks.
+ * @param {string} root
+ */
+async function verifierSourceFiles(root) {
+  const rows = [];
+  async function walk(dir) {
+    for (const entry of (await fs.readdir(dir, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name))) {
+      const path = join(dir, entry.name);
+      const rel = relative(root, path).split(sep).join('/');
+      if (rel === '.verifier-source.json') continue;
+      if (entry.isDirectory()) await walk(path);
+      else {
+        const stat = await fs.lstat(path);
+        if (!stat.isFile() && !stat.isSymbolicLink()) throw new PreviewError(`unsupported archive entry: ${rel}`, 2);
+        const bytes = stat.isSymbolicLink() ? await fs.readlink(path) : await fs.readFile(path);
+        if (stat.isSymbolicLink()) {
+          const target = resolve(dirname(path), String(bytes));
+          if (isAbsolute(String(bytes)) || target !== root && !target.startsWith(`${resolve(root)}${sep}`)) {
+            throw new PreviewError(`archive symlink escapes source root: ${rel}`, 2);
+          }
+        }
+        rows.push({ path: rel, kind: stat.isSymbolicLink() ? 'symlink' : 'file',
+          executable: Boolean(stat.mode & 0o111), sha256: createHash('sha256').update(bytes).digest('hex') });
+      }
+    }
+  }
+  await walk(root);
+  return rows;
+}
+
+/** Fail closed on absent/changed provenance or any modified/extra/missing source byte.
+ * @param {string} dest
+ * @param {Awaited<ReturnType<typeof prepareVerifierSource>>} expected
+ */
+export async function verifyVerifierSource(dest, expected) {
+  if (expected?.schemaVersion !== 'verifier-source-v1' || !expected.testedInputs?.length) {
+    throw new PreviewError('missing verification source provenance', 2);
+  }
+  const recorded = JSON.parse(await fs.readFile(join(dest, '.verifier-source.json'), 'utf8'));
+  if (JSON.stringify(recorded) !== JSON.stringify(expected)) throw new PreviewError('tampered verification source provenance', 2);
+  if (JSON.stringify(await verifierSourceFiles(dest)) !== JSON.stringify(expected.files)) {
+    throw new PreviewError('tampered verification source archive', 2);
+  }
+  return expected;
+}
+
 async function listFiles(dir) {
   const out = [];
   async function walk(d) {
@@ -1260,7 +1345,7 @@ function parseArgs(argv) {
     const a = rest[i];
     if (a === '--confirm') opts.confirm = true;
     else if (a === '--co-author') opts.coAuthors.push(rest[++i]);
-    else if (a === '--ref' || a === '--out' || a === '--remote' || a === '--json' || a === '--target') opts[a.slice(2)] = rest[++i];
+    else if (['--ref', '--out', '--remote', '--json', '--target', '--repo', '--inputs', '--receipt'].includes(a)) opts[a.slice(2)] = rest[++i];
     else if (a.startsWith('--')) throw new PreviewError(`unknown flag ${a}`, 2);
     else opts._.push(a);
   }
@@ -1277,6 +1362,17 @@ function printGate(verdict) {
 async function main(argv) {
   const { cmd, opts } = parseArgs(argv);
   const log = (m) => console.error(`==> ${m}`);
+  if (cmd === 'verifier-prepare' || cmd === 'verifier-verify') {
+    if (!opts.out || !opts.receipt) throw new PreviewError('verifier source requires --out and --receipt', 2);
+    if (cmd === 'verifier-prepare') {
+      if (!opts.repo || !opts.ref || !opts.inputs) throw new PreviewError('verifier preparation requires explicit --repo, --ref and --inputs', 2);
+      const receipt = await prepareVerifierSource({ repo: opts.repo, ref: opts.ref, dest: opts.out,
+        inputs: opts.inputs.split(',').filter(Boolean) });
+      await fs.writeFile(opts.receipt, `${JSON.stringify(receipt)}\n`, { flag: 'wx', mode: 0o600 });
+    }
+    await verifyVerifierSource(opts.out, JSON.parse(await fs.readFile(opts.receipt, 'utf8')));
+    return 0;
+  }
   if (cmd === 'licenses') {
     const census = await auditPublicRepositoryLicenses({ log });
     if (opts.json) await fs.writeFile(opts.json, `${JSON.stringify(census, null, 2)}\n`);

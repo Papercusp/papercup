@@ -167,6 +167,69 @@ describe('goal spend numerator — isolated ledger arithmetic', () => {
       costUsd: 0.4, samples: 2, pricedSamples: 1, unpricedSamples: 1,
     });
   });
+
+  // Feed the real arithmetic a deliberately wrong ledger population, then use
+  // the identical literal oracle on the correctly scoped population. These
+  // controls distinguish missing attribution from priced zero and demonstrate
+  // that diagnostic or pot-only populations cannot satisfy the contract.
+  const arithmeticContracts: Array<{
+    scenario: string;
+    repaired: [string | null, string, string, number, number];
+    contaminated: [string | null, string, string, number, number];
+    expected: { spentCents: number | null; unmeasuredReason: string | null };
+  }> = [
+    { scenario: 'attributed-authoritative', repaired: ['1.50', '0.55', '1.05', 3, 0],
+      contaminated: ['1.50', '0.55', '2.05', 4, 0],
+      expected: { spentCents: 105, unmeasuredReason: null } },
+    { scenario: 'diagnostic-excluded', repaired: ['0.50', '0.75', '0', 0, 0],
+      contaminated: ['0.50', '0.75', '1.25', 2, 0],
+      expected: { spentCents: null, unmeasuredReason: 'no-lineage-samples' } },
+    { scenario: 'potless-attributed', repaired: [null, '1.40', '1.40', 1, 0],
+      contaminated: [null, '1.40', '0', 0, 0],
+      expected: { spentCents: 140, unmeasuredReason: null } },
+    { scenario: 'no-samples-null', repaired: ['1.50', '0.55', '0', 0, 0],
+      contaminated: ['1.50', '0.55', '0', 1, 0],
+      expected: { spentCents: null, unmeasuredReason: 'no-lineage-samples' } },
+    { scenario: 'priced-zero-measured', repaired: [null, '0', '0', 1, 0],
+      contaminated: [null, '0', '0', 0, 0],
+      expected: { spentCents: 0, unmeasuredReason: null } },
+    { scenario: 'unpriced-null', repaired: [null, '0', '0.40', 2, 1],
+      contaminated: [null, '0', '0.40', 2, 0],
+      expected: { spentCents: null, unmeasuredReason: 'unpriced-lineage-samples' } },
+  ];
+  for (const contract of arithmeticContracts) {
+    it.each(['repaired', 'outer control'])(`spend arithmetic causal contract: ${contract.scenario}: %s`, async mode => {
+      const [pot, session, lineage, samples, unpriced] = mode === 'outer control'
+        ? contract.contaminated : contract.repaired;
+      const result = await computeGoalSpendRollup(ledgerSql(pot, session, lineage, samples, undefined, unpriced), opts);
+      const assertContract = () => expect(result).toMatchObject(contract.expected);
+      if (mode === 'outer control') expect(assertContract).toThrow();
+      else assertContract();
+    });
+  }
+
+  for (const scenario of ['declared-window', 'lifetime-fallback']) {
+    it.each(['repaired', 'outer control'])(`spend clock causal contract: ${scenario}: %s`, async mode => {
+      const observed: Array<{ leg: string; numericParameters: unknown[] }> = [];
+      const declared = scenario === 'declared-window';
+      // The bad input adapter drops a declared window or invents one for a
+      // lifetime goal. The actual reader still computes the lower bound.
+      const windowSec = (mode === 'outer control' ? !declared : declared) ? 3_600 : null;
+      const result = await computeGoalSpendRollup(ledgerSql('1.50', '0.55', '1.05', 3, observed), {
+        ...opts, windowSec, nowMs: 10_000_000,
+      });
+      const assertContract = () => {
+        expect(result.windowSec).toBe(declared ? 3_600 : null);
+        expect(observed.sort((a, b) => a.leg.localeCompare(b.leg))).toEqual([
+          { leg: 'lineage', numericParameters: [declared ? 6_400_000 : 0] },
+          { leg: 'pot', numericParameters: [declared ? 6_400_000 : 0] },
+          { leg: 'session', numericParameters: [declared ? 6_400_000 : 0] },
+        ]);
+      };
+      if (mode === 'outer control') expect(assertContract).toThrow();
+      else assertContract();
+    });
+  }
 });
 
 describe('goal spend breach decision — lifecycle guard', () => {
@@ -178,6 +241,45 @@ describe('goal spend breach decision — lifecycle guard', () => {
       reason: 'current fixture watermark',
     } satisfies InteractiveUsageFreshness,
   };
+
+  for (const scenario of ['below-window-survives', 'breach-paused-needs-human']) {
+    it.each(['repaired', 'outer control'])(`spend breach causal contract: ${scenario}: %s`, async mode => {
+      const below = scenario === 'below-window-survives';
+      const rollup = await computeGoalSpendRollup((async (strings: TemplateStringsArray) => {
+        const statement = strings.join('?');
+        if (statement.includes('AS inside_pot_cost')) return [{
+          cost: below ? '0.50' : '2.00', samples: '1', priced_samples: '1',
+          unpriced_samples: '0', sessions: '1', inside_pot_cost: '0',
+        }];
+        if (statement.includes('WITH goal_owners AS')) return [{
+          cost: '0', samples: '0', priced_samples: '0', unpriced_samples: '0', sessions: '0',
+        }];
+        return below ? [{ harness_slug: 'old-diagnostic-pot', cost: '5.00', samples: '1',
+          priced_samples: '1', unpriced_samples: '0', sessions: '1' }] : [];
+      }) as unknown as Sql, opts);
+      // Wrong adapters substitute diagnostic lifetime spend or shift the
+      // inclusive ceiling by one cent. Both use the real breach classifier.
+      const judged = mode === 'outer control' && below
+        ? { ...rollup, spentCents: rollup.totalCents } : rollup;
+      const decision = goalSpendBreachDecision(judged, [], mode === 'outer control' && !below ? 201 : 200);
+      const assertContract = () => {
+        if (below) expect(decision).toBeNull();
+        else expect(decision).toMatchObject({ judgedCents: 200, budgetBreached: true,
+          reasons: ['measured goal-attributed spend 200c reached budget 200c per 3600s window'] });
+      };
+      if (mode === 'outer control') expect(assertContract).toThrow();
+      else assertContract();
+    });
+  }
+
+  it.each(['repaired', 'outer control'])('spend breach causal contract: paused-preserved: %s', mode => {
+    const normalized = SOURCE.replace(/\s+/g, ' ');
+    const guarded = mode === 'outer control'
+      ? normalized.replace("AND status = 'active' RETURNING id", 'RETURNING id') : normalized;
+    const assertContract = () => expect(guarded).toContain("AND status = 'active' RETURNING id");
+    if (mode === 'outer control') expect(assertContract).toThrow();
+    else assertContract();
+  });
 
   it('below-window-survives: diagnostic lifetime spend cannot pause a goal below its window ceiling', async () => {
     const rollup = await computeGoalSpendRollup((async (strings: TemplateStringsArray) => {

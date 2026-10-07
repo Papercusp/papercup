@@ -34,7 +34,7 @@ printf '%s\\n' "$*" >> "$FAKE_CALLS"
 case "$1" in
   images)
     if [ "\${FAKE_IMAGES_FAIL:-0}" = 1 ]; then echo 'Error: storage is locked' >&2; exit 125; fi
-    cut -d' ' -f1 "$FAKE_IMAGES"
+    awk -v repo='${REPO}' '{ print ($3 == "" ? repo : $3), $1 }' "$FAKE_IMAGES"
     ;;
   image)
     case "$2" in
@@ -157,6 +157,15 @@ const VOL_A = 'a'.repeat(64);
 const VOL_B = '0123456789abcdef'.repeat(4);
 
 describe('bake-storage-hygiene.sh prune (WI-10005960)', () => {
+  it('ignores foreign aliases returned for a matching image', () => {
+    const r = run(['prune', '--repo', REPO], {
+      images: [`old ${ago(40)}`, `608f229a006e ${ago(40)} localhost/control`],
+      env: { BAKE_KEEP_RECENT: '0' },
+    });
+    expect(r.removedTags).toEqual(['old']);
+    expect(r.calls.some((call) => call.includes(`${REPO}:608f229a006e`))).toBe(false);
+    expect(r.stdout).not.toContain('could not read the creation time');
+  });
   it('removes only superseded tags: keeps every --keep-tag, the newest N and anything young', () => {
     const r = run(['prune', '--repo', REPO, '--keep-tag', 'this-bake', '--keep-tag', 'reused-source'], {
       images: [

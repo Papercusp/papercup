@@ -7,10 +7,14 @@
  * written with fs.promises and awaited before the result is returned, so the cursor is
  * still valid when the client sees it, but the event loop is free while the disk is slow.
  */
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, truncateSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return { ...actual, mkdirSync: vi.fn(actual.mkdirSync), writeFileSync: vi.fn(actual.writeFileSync) };
+});
 import { CHARS_PER_TOKEN_ESTIMATE } from './context-doors';
 import {
   applyResultDoor,
@@ -18,7 +22,7 @@ import {
   resetResultDoorAggregatesForTests,
   RESULT_DOOR_TOKENS,
 } from './result-door';
-import { _resetScratchUsageForTests } from './scratch-gc';
+import { _resetScratchUsageForTests, refreshScratchUsage, WORKSPACE_QUOTA_BYTES } from './scratch-gc';
 import { parseScratchReference, writeScratchReference } from './scratch-reference';
 
 const BUDGET_CHARS = RESULT_DOOR_TOKENS * CHARS_PER_TOKEN_ESTIMATE;
@@ -111,7 +115,11 @@ describe('result-door deferred spill (WI-10004533)', () => {
     const onUnhandled = (reason: unknown) => unhandled.push(reason);
     process.on('unhandledRejection', onUnhandled);
     try {
+      vi.mocked(mkdirSync).mockClear();
+      vi.mocked(writeFileSync).mockClear();
       const out = await applyResultDoorAsync(oversized(), OPTS);
+      expect(vi.mocked(mkdirSync)).not.toHaveBeenCalled();
+      expect(vi.mocked(writeFileSync)).not.toHaveBeenCalled();
       // Still bounded (the cap applies even when the spill cannot be written, WI-36047)...
       expect(JSON.stringify(out).length).toBeLessThan(JSON.stringify(oversized()).length);
       // ...and it carries the honest spill-failure shape: no cursor/path, flagged failed.
@@ -129,7 +137,45 @@ describe('result-door deferred spill (WI-10004533)', () => {
     }
   });
 
-  it('writeScratchReference with deferredWrites reserves synchronously but writes asynchronously', async () => {
+  it('recovers quota pressure before returning a readable asynchronous spill cursor', async () => {
+    const old = join(process.env.PAPERCUSP_SCRATCH_ROOT!, 'ws-1', 'history', 'old');
+    mkdirSync(old, { recursive: true });
+    writeFileSync(join(old, 'data'), '');
+    truncateSync(join(old, 'data'), WORKSPACE_QUOTA_BYTES);
+    const past = (Date.now() - 10_000) / 1000;
+    utimesSync(old, past, past);
+    await refreshScratchUsage('ws-1');
+    const out = await applyResultDoorAsync(oversized(), OPTS);
+    expect(existsSync(old)).toBe(false);
+    const files = spillFiles();
+    expect(files).toHaveLength(1);
+    expect(JSON.stringify(out)).toContain(files[0]);
+    expect(parseScratchReference(readFileSync(join(spillDir(), files[0])))!.payload.toString()).toContain('line 0');
+  });
+
+  it('reports the quota cause without a dangling cursor when no FIFO run can be reclaimed', async () => {
+    const root = join(process.env.PAPERCUSP_SCRATCH_ROOT!, 'ws-1');
+    mkdirSync(root, { recursive: true });
+    writeFileSync(join(root, 'unmanaged'), '');
+    truncateSync(join(root, 'unmanaged'), WORKSPACE_QUOTA_BYTES);
+    await refreshScratchUsage('ws-1');
+    const out = await applyResultDoorAsync(oversized(), OPTS);
+    const meta = (out as { _meta?: { resultDoor?: { spillFailed?: boolean; spillErrorCode?: string; spillPath?: string } } })._meta?.resultDoor;
+    expect(meta?.spillFailed).toBe(true);
+    expect(meta?.spillErrorCode).toBe('SCRATCH_QUOTA_EXCEEDED');
+    expect(meta?.spillPath ?? null).toBeNull();
+    expect(JSON.stringify(out.content)).toContain('SCRATCH_QUOTA_EXCEEDED');
+    expect(spillFiles()).toHaveLength(0);
+
+    // Non-text overflow uses the hard-envelope branch; its error must retain the same cause.
+    const hard = await applyResultDoorAsync({ content: [{ type: 'image' as const,
+      mimeType: 'image/png', data: 'A'.repeat(BUDGET_CHARS * 3) }] }, OPTS);
+    expect(JSON.stringify(hard.content)).toContain('SCRATCH_QUOTA_EXCEEDED');
+    expect(JSON.stringify(hard.content)).toContain('output_spill_failed');
+    expect(spillFiles()).toHaveLength(0);
+  });
+
+  it('writeScratchReference with deferredWrites reserves and writes through the asynchronous path', async () => {
     const filePath = join(process.env.PAPERCUSP_SCRATCH_ROOT!, 'ws-1', 'x:y', RUN_ID, 'ref.spill');
     const deferred: Promise<void>[] = [];
     const manifest = writeScratchReference({

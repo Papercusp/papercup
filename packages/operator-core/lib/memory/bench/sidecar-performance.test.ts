@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
-import { latencySummary, performanceSchedule, performanceInputSchema, loadPerformanceInput, type PerformanceInput } from './sidecar-performance';
+import { latencySummary, performanceSchedule, performanceInputSchema, loadPerformanceInput, verifyCompletedPerformanceRun, type PerformanceInput } from './sidecar-performance';
 import { measurementManifestFixture } from './fixtures/measurement-manifest';
 import type { PreparedMeasurement } from './measurement-manifest';
 
@@ -11,6 +11,20 @@ const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true }); });
 
 describe('matching-route performance contracts', () => {
+  it('verifies predecessor identity explicitly without rebinding the executing session', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'performance-predecessor-')); dirs.push(dir);
+    const manifest = measurementManifestFixture(dir);
+    manifest.ownerId = 'frozen-predecessor';
+    const file = path.join(dir, 'manifest.json');
+    const bytes = JSON.stringify(manifest); fs.writeFileSync(file, bytes);
+    const fingerprint = crypto.createHash('sha256').update(bytes).digest('hex');
+    const identity = process.env.PAPERCUSP_SID;
+    await expect(verifyCompletedPerformanceRun(file, fingerprint)).rejects.toThrow('predecessor owner mismatch');
+    await expect(verifyCompletedPerformanceRun(file, fingerprint, 'frozen-predecessor')).rejects.not.toThrow('predecessor owner mismatch');
+    await expect(verifyCompletedPerformanceRun(file, fingerprint, 'wrong-predecessor')).rejects.toThrow('predecessor owner mismatch');
+    await expect(verifyCompletedPerformanceRun(file, '0'.repeat(64), 'frozen-predecessor')).rejects.toThrow('predecessor manifest fingerprint mismatch');
+    expect(process.env.PAPERCUSP_SID).toBe(identity);
+  });
   it('freezes a reproducible five-block permutation with every arm exactly once per block', () => {
     const rows = performanceSchedule('measurement-WI10004539-v1', 5, ['mdenseon', 'gemma', 'harrier']);
     expect(rows).toEqual(performanceSchedule('measurement-WI10004539-v1', 5, ['harrier', 'gemma', 'mdenseon']));

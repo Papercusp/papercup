@@ -26,10 +26,15 @@
  * Cargo flags such as --all-targets are not supported.
  * Example: node scripts/report-cargo-tests.mjs --manifest-path papercusp-desktop/src-tauri/Cargo.toml -- --nocapture
  *
- * Granularity note: stable `cargo test` gives no per-test source-file or duration
+ * Granularity note: stable `cargo test` gives no per-test function source-file or duration
  * — only a qualified test path (e.g. `app_role::tests::role_from_env_defaults_to_gui`)
  * and pass/fail/ignored. Each test's `file_path` row is therefore
- * `<crate-dir>::<qualified::test::path>` (not a real filesystem path) so it stays
+ * `<target-source>::<qualified::test::path>` (not a real filesystem path) so it stays
+ * unique across workspace packages and targets. Cargo's stable compiler-artifact
+ * records identify the target source; llvm-cov uses unique metadata matches.
+ * Unmeasured targets retain `<crate-dir>::<qualified::test::path>` without claiming
+ * source attribution. Inherited child harnesses do not add outer test cases.
+ * Each identity stays
  * unique + greppable; duration_ms is null per-row (unknown), and the WHOLE
  * binary's wall-clock elapsed is recorded as one extra aggregate row
  * (`<crate-dir> (cargo aggregate)`) so the Tests tab still has a duration signal.
@@ -52,7 +57,6 @@ import {
   diskProbePathFor,
   formatCargoDiskRefusal,
   formatCargoResultLine,
-  parseCargoTestResultLines,
   parseCargoMeasuredTestResults,
   pruneStaleBuildScriptOutputs,
   reclaimInactiveCargoArtifacts,
@@ -315,7 +319,7 @@ function runCargoTest(manifestAbs, extraArgs, coverage = null) {
           '--output-path', coverage.outputPath,
           '--', '--test-threads=4', ...extraArgs,
         ]
-      : ['test', '--manifest-path', manifestAbs, '--no-fail-fast', '--', '--test-threads=4', ...extraArgs];
+      : ['test', '--manifest-path', manifestAbs, '--no-fail-fast', '--message-format=json-render-diagnostics', '--', '--test-threads=4', ...extraArgs];
     if (coverage) {
       try {
         mkdirSync(dirname(coverage.outputPath), { recursive: true });
@@ -335,9 +339,21 @@ function runCargoTest(manifestAbs, extraArgs, coverage = null) {
     let stdout = '';
     let stderr = '';
     let combinedOutput = '';
-    child.stdout.on('data', (d) => { stdout += d.toString(); combinedOutput += d.toString(); });
-    child.stderr.on('data', (d) => { stderr += d.toString(); combinedOutput += d.toString(); });
+    // Keep complete lines in arrival order. Joining raw chunks across pipes can
+    // splice a stderr target header into the middle of a stdout JSON artifact.
+    const pending = { stdout: '', stderr: '' };
+    const collect = (stream, data) => {
+      pending[stream] += data;
+      let newline;
+      while ((newline = pending[stream].indexOf('\n')) >= 0) {
+        combinedOutput += pending[stream].slice(0, newline + 1);
+        pending[stream] = pending[stream].slice(newline + 1);
+      }
+    };
+    child.stdout.on('data', (d) => { const text = d.toString(); stdout += text; collect('stdout', text); });
+    child.stderr.on('data', (d) => { const text = d.toString(); stderr += text; collect('stderr', text); });
     child.on('close', (code) => {
+      combinedOutput += pending.stdout + pending.stderr;
       resolvePromise({ code, stdout, stderr, combinedOutput, startedAt, finishedAt: new Date(), diskAdmission });
     });
     child.on('error', (err) => {
@@ -433,7 +449,19 @@ async function main() {
   } catch {
     REPO_ROOT = dirname(manifestAbs);
   }
-  const crateDir = relative(REPO_ROOT, dirname(manifestAbs)).split(sep).join('/');
+  const crateDir = relative(REPO_ROOT, dirname(manifestAbs)).split(sep).join('/') || '.';
+  // llvm-cov does not expose Cargo's build-message format. Its target headers
+  // may still be attributed when metadata supplies exactly one matching source.
+  // A metadata fault or an ambiguous target never fabricates package identity.
+  let targets = [];
+  try {
+    const metadata = JSON.parse(execFileSync(resolveCargoBin(), [
+      'metadata', '--format-version', '1', '--no-deps', '--manifest-path', manifestAbs,
+    ], { encoding: 'utf8', timeout: 15_000, maxBuffer: 16 * 1024 * 1024 }));
+    targets = (metadata.packages ?? []).flatMap(pkg => pkg.targets ?? []);
+  } catch {
+    console.error('[report-cargo-tests] target metadata unavailable; only exact compiler-artifact attribution is used.');
+  }
   const coverage = coverageRequested
     ? { outputPath: coverageOutput ? resolve(REPO_ROOT, coverageOutput) : cargoCoverageOutputPath(manifestAbs) }
     : null;
@@ -458,7 +486,8 @@ async function main() {
   process.stdout.write(stdout);
   if (stderr) process.stderr.write(stderr.endsWith('\n') ? stderr : `${stderr}\n`);
 
-  const results = parseCargoTestResultLines(combined);
+  const measuredResults = parseCargoMeasuredTestResults(combinedOutput ?? combined, { root: REPO_ROOT, targets });
+  const results = measuredResults;
   const failureDetails = parseFailureDetails(combined);
   // WI-10006828: same source contract as the vitest reporter, so a mutation probe's rows are
   // recorded as source='mutation-probe' (with their phase) instead of an ordinary local failure.
@@ -472,9 +501,8 @@ async function main() {
       }
     : classifyCargoRun({ code, output: combined, resultCount: results.length });
 
-  const measuredResults = parseCargoMeasuredTestResults(combinedOutput ?? combined);
   const rows = measuredResults.map((r) => ({
-    filePath: `${crateDir}::${r.name}`,
+    filePath: `${r.testFilePath ?? crateDir}::${r.name}`,
     status: r.outcome === 'ok' ? 'pass' : r.outcome === 'ignored' ? 'skip' : 'fail',
     durationMs: null,
     startedAt,

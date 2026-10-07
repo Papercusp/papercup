@@ -103,6 +103,7 @@ import { resolveWorkspaceHiveScope, resolveSharedHiveDisambiguation } from '../f
 import { COORD_REPLY_ROLES } from '../roles';
 import { forceEndTurn } from '../../turn/interrupt';
 import { runBulk, bulkContent, type BulkEnvelope, type BulkItemResult } from '../../_bulk';
+import { coordSendAbortCompletionReceipt } from './send-abort-completion';
 import { cellTranscriptionHintResolvingCommits } from '../../../git-commit-resolver';
 import {
   messageBodyArg,
@@ -118,12 +119,13 @@ import {
   type MessageSection,
   type MessageWhy,
 } from '../message-fields';
-import { deriveBasedOn } from '../based-on';
+import { BASED_ON_MAX_ENTRIES, deriveBasedOn } from '../based-on';
 import { deriveAwaiting, AWAITING_DERIVED_PROVENANCE } from '../derive-awaiting';
 import { deriveDraftSuspension } from '../derive-draft-suspension';
 import { DRAFT_SUSPENSION_FIELD, DRAFT_SUSPENSION_DERIVED_PROVENANCE } from '../draft-suspension';
 import {
   completionClaimMismatch,
+  completionClaimRefs,
   COMPLETION_CLAIM_MISMATCH_FIELD,
 } from '../completion-claim-mismatch';
 import { getFlag } from '@papercusp/flags/server';
@@ -181,6 +183,43 @@ export const COORD_SEND_IDLE_REPORT_TIMEOUT_MS = 1_500;
 /** Keep the post-send work-item routing advisory from coupling send latency to
  * a slow work-item store. The message is already durable when this runs. */
 export const COORD_SEND_DISPATCH_ADVISORY_TIMEOUT_MS = 1_500;
+
+export const COORD_SEND_PREPERSIST_ENRICHMENT_TIMEOUT_MS = 1_500;
+
+interface CoordSendPhaseTimer {
+  startedAt: number;
+  persistStartedAt?: number;
+  persistFinishedAt?: number;
+}
+
+function coordSendPhaseTimingsMs(timer: CoordSendPhaseTimer, finishedAt = performance.now()) {
+  const persistStartedAt = timer.persistStartedAt;
+  const persistFinishedAt = timer.persistFinishedAt;
+  return {
+    prePersistMs: Math.max(0, Math.round((persistStartedAt ?? finishedAt) - timer.startedAt)),
+    persistMs:
+      persistStartedAt === undefined || persistFinishedAt === undefined
+        ? null
+        : Math.max(0, Math.round(persistFinishedAt - persistStartedAt)),
+    postPersistMs:
+      persistFinishedAt === undefined ? null : Math.max(0, Math.round(finishedAt - persistFinishedAt)),
+  };
+}
+
+async function withOptionalSendEnrichment<T>(
+  stage: string,
+  read: () => Promise<T>,
+  fallback: T,
+  requestSignal?: AbortSignal,
+): Promise<T> {
+  const { value } = await withBoundedTimeout(read, {
+    fallback,
+    timeoutMs: COORD_SEND_PREPERSIST_ENRICHMENT_TIMEOUT_MS,
+    label: 'coord:send:' + stage,
+    signal: requestSignal,
+  });
+  return value;
+}
 
 /**
  * EI-21860312102671987: `sendMessage()` (the actual coord_event_log persist)
@@ -1091,6 +1130,7 @@ async function sendOne(
    * unchunked message, which is judged here as before.
    */
   goalReportPreVerdict?: GoalOwnerReportVerdict,
+  phaseTimer: CoordSendPhaseTimer = { startedAt: performance.now() },
   /** The dispatcher aborts this signal when the caller stops waiting. */
   requestSignal?: AbortSignal,
 ): Promise<BulkItemResult> {
@@ -1416,14 +1456,15 @@ async function sendOne(
   if (relayStamp) extra[RELAY_PROVENANCE_FIELD] = relayStamp;
   // P-006: verify + stamp announced-gate refs at send (fail-soft — a store
   // hiccup stamps 'unknown', never blocks; the EXACT key always travels).
-  if (msg.gateRefs?.length) {
-    try {
-      const gateStamps = await resolveGateRefStamps(msg.gateRefs);
-      if (gateStamps.length) extra[GATE_REFS_FIELD] = gateStamps;
-    } catch {
-      /* fail-soft: gate stamping never blocks a send */
-    }
-  }
+  const gateRefs = msg.gateRefs;
+  const gateRefStampsPromise = gateRefs?.length
+    ? withOptionalSendEnrichment(
+        'gate-ref-stamps',
+        () => resolveGateRefStamps(gateRefs),
+        [],
+        requestSignal,
+      )
+    : Promise.resolve([]);
   // P-008: the sender's body-auto-ref opt-out rides the envelope so DELIVERY
   // (the receiver's inbox seam + renderer) honors it — no receiver-side config.
   if (msg.noBodyRefs) extra[BODY_REFS_OPT_OUT_FIELD] = true;
@@ -1492,11 +1533,26 @@ async function sendOne(
   // to prevent on the completion gate. A send with no provenance is fine; a
   // provenance failure that eats a message is not. (Caught live by the wiring
   // test below, which the first cut of this failed.)
-  const basedOn = await deriveBasedOn({
-    ownerId: identity.ownerId,
-    workspaceId: identity.workspaceId ?? '',
-    harness: harnessSlug,
-  }).catch(() => []);
+  const completionRefs = completionClaimRefs({ summary: msg.summary, body: msg.body, planSlug: msg.plan_slug });
+  const [readTrace, gateRefStamps] = await Promise.all([
+    withOptionalSendEnrichment(
+      'based-on',
+      () =>
+        deriveBasedOn({
+          ownerId: identity.ownerId,
+          workspaceId: identity.workspaceId ?? '',
+          harness: harnessSlug,
+          // Rubric reads are persisted under their plan identity. Reuse the
+          // same bounded read scan; do not infer unread from its display cap.
+          includeRefs: completionRefs.map((ref) => ref.replace(/^rubric:/, 'plan:')),
+        }).catch(() => []),
+      [],
+      requestSignal,
+    ),
+    gateRefStampsPromise,
+  ]);
+  const basedOn = readTrace.slice(0, BASED_ON_MAX_ENTRIES);
+  if (gateRefStamps.length) extra[GATE_REFS_FIELD] = gateRefStamps;
   const fieldStamp = stampMessageFields({
     body: msg.body,
     why: msg.why,
@@ -1525,59 +1581,65 @@ async function sendOne(
   // before any IO. NO extra cost gate: measured 30h load is ~13 probes total
   // (WI-6731), so a second gate would guard a load that does not exist.
   const classifiedPremises = fieldStamp.premisesClassified;
-  if (classifiedPremises?.some((s) => s.length > 0)) {
-    try {
-      const stamps = await resolvePremiseStamps(
-        classifiedPremises.flat().map((c) => c.ref),
-        premiseProbes({ harnessSlug, workspaceId: identity.workspaceId }),
-      );
-      // ALL stamps ride, not just the failures. `failingPremises()` is the
-      // READER's filter and stays exported for that; baking it in here would
-      // discard the denominator, and "2 broken" cannot be read without "out of
-      // how many" — the aggregate read D-090 R3 mandates needs both.
-      if (stamps.length) extra[PREMISE_STAMPS_FIELD] = stamps;
-    } catch {
-      /* fail-soft: premise stamping never blocks a send */
-    }
-  }
+  const premiseStampsPromise = classifiedPremises?.some((s) => s.length > 0)
+    ? withOptionalSendEnrichment(
+        'premise-stamps',
+        () =>
+          resolvePremiseStamps(
+            classifiedPremises.flat().map((c) => c.ref),
+            premiseProbes({ harnessSlug, workspaceId: identity.workspaceId }),
+          ),
+        [],
+        requestSignal,
+      )
+    : Promise.resolve([]);
   // D-089 / WI-6685: score each `forYouBecause` against the coupling graph AS IT
   // STANDS NOW. This is the only moment the comparison is meaningful — the graph
   // is live state (locks release, awaits fire), so a later pass over the message
   // log could only ever answer 'not-comparable'. Gated on the divergence rule
   // table before any IO, so a message whose relations are all `owns`/`other`
   // (the majority) costs nothing; fail-soft, like every other stamp here.
-  if (fieldStamp.sections) {
-    const divergence = await resolveCouplingDivergenceStamps({
-      selfOwnerId: identity.ownerId,
-      to: toSend,
-      sections: fieldStamp.sections,
-      workspaceId: identity.workspaceId,
-      harnessSlug,
-      // P-009: the census rides the derivation that ALREADY happens here — no
-      // extra IO, no second coupling path.
-      //
-      // ⚠ THIS SAMPLES ~1.5% OF SENDS — it is NOT a census OF sends, and the
-      // earlier claim here that it is "the only coupling read that runs at
-      // volume" was wrong in the way that matters. `observe` is reached only
-      // PAST resolveCouplingDivergenceStamps' cost gate, which returns before
-      // any IO unless the message carries a COMPARABLE `forYouBecause` (never
-      // `owns`/`other`) addressed to a NON-SELF peer. Measured 2026-08-10 over
-      // 7d of coord_event_log (13,633 messages): 628 carry forYouBecause at all
-      // (4.6%), and of 737 asserted relations 525 (71%) are owns/other —
-      // leaving ~212, i.e. ~1.5% of sends, that can ever reach this sink.
-      //
-      // That is still ~30 FULL censuses/day (each observation covers all four
-      // legs, whichever relation opened the gate), which is enough to answer
-      // "has this leg EVER fired in production". But the sample is deliberately
-      // biased toward senders who assert checkable relations, so: never read a
-      // census count as a send count, and never read leg silence HERE as proof
-      // that leg is dead fleet-wide — absence in a 1.5% biased sample is not
-      // absence. Verified the hard way: a probe send with no forYouBecause,
-      // addressed to self, produced a tool_invocations row with no census and
-      // looked exactly like a broken sink.
-      ...(observeCensus ? { observe: observeCensus } : {}),
-    });
-    if (divergence.length) extra[COUPLING_DIVERGENCE_FIELD] = divergence;
+  let couplingDivergencePromise = Promise.resolve(
+    [] as Awaited<ReturnType<typeof resolveCouplingDivergenceStamps>>,
+  );
+  const senderSections = fieldStamp.sections;
+  if (senderSections) {
+    couplingDivergencePromise = withOptionalSendEnrichment(
+      'coupling-divergence',
+      () =>
+        resolveCouplingDivergenceStamps({
+          selfOwnerId: identity.ownerId,
+          to: toSend,
+          sections: senderSections,
+          workspaceId: identity.workspaceId,
+          harnessSlug,
+          // P-009: the census rides the derivation that ALREADY happens here — no
+          // extra IO, no second coupling path.
+          //
+          // ⚠ THIS SAMPLES ~1.5% OF SENDS — it is NOT a census OF sends, and the
+          // earlier claim here that it is "the only coupling read that runs at
+          // volume" was wrong in the way that matters. `observe` is reached only
+          // PAST resolveCouplingDivergenceStamps' cost gate, which returns before
+          // any IO unless the message carries a COMPARABLE `forYouBecause` (never
+          // `owns`/`other`) addressed to a NON-SELF peer. Measured 2026-08-10 over
+          // 7d of coord_event_log (13,633 messages): 628 carry forYouBecause at all
+          // (4.6%), and of 737 asserted relations 525 (71%) are owns/other —
+          // leaving ~212, i.e. ~1.5% of sends, that can ever reach this sink.
+          //
+          // That is still ~30 FULL censuses/day (each observation covers all four
+          // legs, whichever relation opened the gate), which is enough to answer
+          // "has this leg EVER fired in production". But the sample is deliberately
+          // biased toward senders who assert checkable relations, so: never read a
+          // census count as a send count, and never read leg silence HERE as proof
+          // that leg is dead fleet-wide — absence in a 1.5% biased sample is not
+          // absence. Verified the hard way: a probe send with no forYouBecause,
+          // addressed to self, produced a tool_invocations row with no census and
+          // looked exactly like a broken sink.
+          ...(observeCensus ? { observe: observeCensus } : {}),
+        }),
+      [],
+      requestSignal,
+    );
   }
   // P-011 (state-plane-adoption-2026-08-02): stamp stale-value QUOTING — a
   // section that cites a registered cell's identity while the sender's
@@ -1592,18 +1654,27 @@ async function sendOne(
   // gating the scan on fieldStamp.sections silently exempted it (caught by
   // the send.test.ts wiring pin, state-plane-adoption-2026-08-02 C5).
   const staleQuoteSections = fieldStamp.sections ?? (Array.isArray(msg.body) ? msg.body : undefined);
-  if (staleQuoteSections) {
-    try {
-      const staleQuoteStamps = await resolveStaleQuoteStamps({
-        selfOwnerId: identity.ownerId,
-        sections: staleQuoteSections,
-        workspaceId: identity.workspaceId,
-      });
-      if (staleQuoteStamps.length) extra[STALE_QUOTE_FIELD] = staleQuoteStamps;
-    } catch {
-      /* fail-soft: stale-quote stamping never blocks a send */
-    }
-  }
+  const staleQuoteStampsPromise = staleQuoteSections
+    ? withOptionalSendEnrichment(
+        'stale-quote-stamps',
+        () =>
+          resolveStaleQuoteStamps({
+            selfOwnerId: identity.ownerId,
+            sections: staleQuoteSections,
+            workspaceId: identity.workspaceId,
+          }),
+        [],
+        requestSignal,
+      )
+    : Promise.resolve([]);
+  const [premiseStamps, divergence, staleQuoteStamps] = await Promise.all([
+    premiseStampsPromise,
+    couplingDivergencePromise,
+    staleQuoteStampsPromise,
+  ]);
+  if (premiseStamps.length) extra[PREMISE_STAMPS_FIELD] = premiseStamps;
+  if (divergence.length) extra[COUPLING_DIVERGENCE_FIELD] = divergence;
+  if (staleQuoteStamps.length) extra[STALE_QUOTE_FIELD] = staleQuoteStamps;
   if (fieldStamp.why) extra.why = fieldStamp.why;
   if (fieldStamp.blocking !== undefined) extra.blocking = fieldStamp.blocking;
   if (fieldStamp.basedOn) extra.basedOn = fieldStamp.basedOn;
@@ -1616,10 +1687,28 @@ async function sendOne(
   // is: a decorative stamp must never fail the delivery it decorates). Named
   // `awaiting`, NOT blockedOn: the authored per-section field is the sender's
   // claim about a statement; this is a machine observation about the session.
-  const awaiting = await deriveAwaiting({
-    ownerId: identity.ownerId,
-    workspaceId: identity.workspaceId ?? '',
-  }).catch(() => []);
+  const [awaiting, draftSuspension] = await Promise.all([
+    withOptionalSendEnrichment(
+      'awaiting',
+      () =>
+        deriveAwaiting({
+          ownerId: identity.ownerId,
+          workspaceId: identity.workspaceId ?? '',
+        }).catch(() => []),
+      [],
+      requestSignal,
+    ),
+    withOptionalSendEnrichment(
+      'draft-suspension',
+      () =>
+        deriveDraftSuspension({
+          ownerId: identity.ownerId,
+          workspaceId: identity.workspaceId ?? '',
+        }).catch(() => null),
+      null,
+      requestSignal,
+    ),
+  ]);
   if (awaiting.length) extra.awaiting = awaiting;
   // EI-19395608899173941: a wake-pump can interleave a turn between the moment a claim
   // was measured and the moment it is sent — the filed case measured `git status`
@@ -1629,10 +1718,6 @@ async function sendOne(
   // old). Stamped like `awaiting`: a machine OBSERVATION about the session, envelope
   // level, fail-soft. It reports a measured gap and never guesses which sentence is
   // stale — an inference about the prose is the EI-10949 hazard `cellHint` avoids.
-  const draftSuspension = await deriveDraftSuspension({
-    ownerId: identity.ownerId,
-    workspaceId: identity.workspaceId ?? '',
-  }).catch(() => null);
   if (draftSuspension) extra[DRAFT_SUSPENSION_FIELD] = draftSuspension;
   // Completion claims are additive evidence, never a refusal. If the message
   // names a plan/work-item/rubric as completed but the sender's recent read
@@ -1643,7 +1728,7 @@ async function sendOne(
     summary: msg.summary,
     body: msg.body,
     planSlug: msg.plan_slug,
-    basedOn,
+    basedOn: readTrace,
   });
   if (completionMismatch) extra[COMPLETION_CLAIM_MISMATCH_FIELD] = completionMismatch;
   // P-033: ride the envelope so a reader (and the D-070 adoption measurement)
@@ -1711,6 +1796,7 @@ async function sendOne(
     };
   }
   let env: Awaited<ReturnType<typeof sendMessage>>;
+  phaseTimer.persistStartedAt = performance.now();
   try {
     env = await withDbCallDeadline(
     sendMessage(identity, {
@@ -1749,6 +1835,8 @@ async function sendOne(
         oracle: failure.oracle ?? 'delivery-transaction', message: failure.message };
     }
     throw error;
+  } finally {
+    phaseTimer.persistFinishedAt = performance.now();
   }
 
   // EI-6874 (zero-recipient audience send is a refusal-class event, not a silent
@@ -2716,6 +2804,7 @@ export default defineTool({
   // roster, federation, and wake delivery work runs; under fleet concurrency
   // that pins every app-pool slot until the 45s acquisition deadline expires.
   skipWorkspaceTx: true,
+  abortCompletionReceipt: coordSendAbortCompletionReceipt,
   // EI-7838: this cross-field "need {to,summary} (or items)" check used to live in
   // a trailing `.refine()` on the object below. Zod only RUNS a `.refine()` /
   // `.superRefine()` after the base object schema parses EVERY field successfully —
@@ -3251,8 +3340,9 @@ export default defineTool({
 
     const env = await runBulk(
       expanded,
-      async ({ msg, refusal, goalReportPreVerdict }, itemIndex) => {
+      async ({ msg, refusal, goalReportPreVerdict }, itemIndex): Promise<BulkItemResult> => {
         if (refusal) return { ok: false, to: msg.to, ...refusal };
+        const phaseTimer: CoordSendPhaseTimer = { startedAt: performance.now() };
         // Capture the ORIGINAL broadcast intent BEFORE scopeBroadcastAudience
         // rewrites `*` → @fleet:<slug>: only a broadcast is stamped (P-003).
         const wasBroadcast = msg.to.includes('*');
@@ -3312,8 +3402,10 @@ export default defineTool({
           msg.to,
           msg.hive,
         );
-        if ('error' in scoped) return scoped.error;
-        return sendOne(
+        if ('error' in scoped) {
+          return { ...scoped.error, phaseTimingsMs: coordSendPhaseTimingsMs(phaseTimer) };
+        }
+        const result = await sendOne(
           msg,
           identity,
           scoped.harnessSlug,
@@ -3323,8 +3415,10 @@ export default defineTool({
           idempotencyKey,
           itemIndex,
           goalReportPreVerdict,
+          phaseTimer,
           ctx.signal,
         );
+        return { ...result, phaseTimingsMs: coordSendPhaseTimingsMs(phaseTimer) };
       },
       {
         keyOf: ({ msg }) => ({ to: msg.to }),
@@ -3339,7 +3433,7 @@ export default defineTool({
       if (!chunk) return;
       (result as Record<string, unknown>).chunk = chunk;
       const entry = chunkedMessages.get(chunk.group) ?? { group: chunk.group, of: chunk.of, msgIds: [] };
-      entry.msgIds[chunk.part - 1] = typeof result.msg_id === 'string' ? result.msg_id : null;
+      entry.msgIds[chunk.part - 1] = 'msg_id' in result && typeof result.msg_id === 'string' ? result.msg_id : null;
       chunkedMessages.set(chunk.group, entry);
     });
     const chunked = chunkedMessages.size
