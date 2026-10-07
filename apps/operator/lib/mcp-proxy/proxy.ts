@@ -50,6 +50,7 @@ import {
   MCP_DATA_PLANE_DEGRADED_AT_HEADER,
   MCP_REQUEST_TRACE_HEADER,
   MAX_MCP_REQUEST_TRACE_ID_CHARS,
+  logMcpRequestTrace,
 } from "@papercusp/operator-core/lib/mcp-request-trace";
 import {
   isCheapRepeatingBeat,
@@ -5118,6 +5119,23 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                 } catch {
                   // Telemetry setup is best-effort; the original response pipe owns delivery.
                 }
+              }
+              // This is the proxy's flush boundary, not proof the remote client consumed the body.
+              if (fwd.rpcMethods.includes("tools/call")) {
+                res.once("finish", () => {
+                  const httpStatus = res.statusCode;
+                  logMcpRequestTrace({
+                    traceId,
+                    toolName: "tools/call",
+                    stage: "proxy_response_finished",
+                    elapsedMs: boundedMcpProxyStageMs(Date.now() - receivedAt),
+                    outcome:
+                      httpStatus >= 200 && httpStatus < 300
+                        ? "success"
+                        : "rejected",
+                    httpStatus,
+                  });
+                });
               }
               res.writeHead(status, ures.headers);
               // WI-35737: an MCP response is an SSE stream that stays open long after headers

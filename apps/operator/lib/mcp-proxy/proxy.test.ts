@@ -4,7 +4,7 @@
  * reached :3070, so a non-idempotent tools/call is never double-applied) plus the
  * passthrough + refused-then-recovers behavior against in-process stub upstreams.
  */
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import http from "node:http";
 import net from "node:net";
 import { createTextCollector } from "@papercusp/operator-core/lib/child-output";
@@ -3188,6 +3188,65 @@ describe("WI-6740: upstream silence — bounded + replayed for the handshake, ne
       if (previous === undefined)
         delete process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG;
       else process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG = previous;
+    }
+  });
+
+  it("logs proxy response finish for tools/call without recording request data", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    const result = JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      result: { content: [{ type: "text", text: "ok" }] },
+    });
+    let upstreamTraceId = "";
+    try {
+      const upstream = track(
+        http.createServer((req, res) => {
+          upstreamTraceId = String(req.headers[MCP_PROXY_TRACE_HEADER] ?? "");
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(result);
+        }),
+      );
+      await listen(upstream);
+      const proxyPort = await freePort();
+      const proxy = track(
+        createMcpProxy({
+          listenPort: proxyPort,
+          targetHost: "127.0.0.1",
+          targetPort: port(upstream),
+          retryWindowMs: 5_000,
+          log: () => {},
+        }),
+      );
+      await listen(proxy, proxyPort);
+
+      const response = await request(
+        proxyPort,
+        '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"coord:feed","arguments":{"q":"private-query"}}}',
+      );
+      expect(response.status).toBe(200);
+      expect(response.body).toBe(result);
+
+      const eventLine = info.mock.calls
+        .map(([line]) => String(line))
+        .find((line) => line.includes('"stage":"proxy_response_finished"'));
+      expect(eventLine).toBeDefined();
+      if (!eventLine) throw new Error("proxy response-finish trace was not emitted");
+      const event = JSON.parse(
+        eventLine.slice("[mcp-request-trace] ".length),
+      ) as Record<string, unknown>;
+      expect(event).toMatchObject({
+        traceId: upstreamTraceId,
+        toolName: "tools/call",
+        stage: "proxy_response_finished",
+        outcome: "success",
+        httpStatus: 200,
+      });
+      expect(event.elapsedMs).toEqual(expect.any(Number));
+      expect(eventLine).not.toContain("coord:feed");
+      expect(eventLine).not.toContain("private-query");
+    } finally {
+      info.mockRestore();
     }
   });
 

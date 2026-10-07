@@ -18,6 +18,7 @@ export type McpRequestTraceStage =
   | 'inner_dispatch_settled'
   | 'deadline'
   | 'tools_list_completed'
+  | 'proxy_response_finished'
   | 'stale_contract_rejected';
 
 export type McpSessionBaselineObservation = 'recorded' | 'unavailable' | 'missing' | 'current' | 'stale';
@@ -30,6 +31,8 @@ export interface McpRequestTraceEvent {
   deadlineMs?: number;
   phase?: 'pre_dispatch' | 'inner_dispatch';
   outcome?: 'success' | 'tool_error' | 'rejected';
+  /** HTTP status when the proxy has finished flushing the response; not client receipt. */
+  httpStatus?: number;
   afterDeadline?: boolean;
   /** Hashes only; never persist the protocol/native session identifiers themselves. */
   mcpSessionKeyFingerprint?: string | null;
