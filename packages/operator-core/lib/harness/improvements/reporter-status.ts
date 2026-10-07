@@ -2,6 +2,8 @@
 import { deriveWorkItemPresentationStage, type WorkItemPresentationInput } from './agent-review-policy';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
+import { randomUUID } from 'node:crypto';
+import { redactSensitiveText } from '../../sensitive-text';
 
 export type ReporterStatus = 'received' | 'being-verified' | 'awaiting-fix' | 'being-fixed' | 'awaiting-release' | 'fixed' | 'closed';
 export interface ReporterReleaseReceipt {
@@ -86,6 +88,8 @@ export async function readReporterStatus(input: { id: string; harness: string; w
      WHERE workspace_id = ${workspaceId} AND harness_slug = ${input.harness} AND feature_id = ${input.id}`;
   const source = sources[0];
   if (!source || record(record(source.payload).reporter).kind !== 'end-user') return null;
+  const promotedFrom = record(record(source.payload).intakeSource);
+  if (promotedFrom.mode === 'distinct' && promotedFrom.id !== input.id) return null;
   const targets = await sql<Array<{
     feature_id: string; item_kind: string; status: string; payload: unknown; title: string; summary: string;
     taken_by: string | null; authority: string | null; terminal_completion_ref: string | null; admission: string | null;
@@ -117,3 +121,28 @@ export async function readReporterStatus(input: { id: string; harness: string; w
     followUp: readReporterFollowUp(target.payload, source.payload),
   };
 }
+
+/** Purpose-shaped case on work_items:update: only the current fixer asks once. */
+export async function askReporterQuestion(input: { id: string; harness?: string; actor: string; text: string }) {
+  const [{ getWorkItem, mergeWorkItemPayload }, { defaultIntakePromotionDeps }] = await Promise.all([
+    import('../../work-items'), import('../../attention/intake-promotion'),
+  ]);
+  const text = redactSensitiveText(input.text.trim());
+  if (!text || text.length > 4000) return { ok: false as const, id: input.id, error: 'question-must-be-1-to-4000-characters' };
+  return defaultIntakePromotionDeps().withLocks([input.id], async () => {
+    const item = await getWorkItem(input.id, input.harness);
+    if (!item || item.origin !== 'local' || item.assignee !== input.actor || objectReporterKind(item.payload) !== 'end-user') {
+      return { ok: false as const, id: input.id, error: 'only-current-fixer-may-ask-reporter' };
+    }
+    const existing = record(record(item.payload).reporterQuestion);
+    if (typeof existing.id === 'string') {
+      return existing.text === text && existing.askedBy === input.actor
+        ? { ok: true as const, id: input.id, item }
+        : { ok: false as const, id: input.id, error: 'report-already-has-follow-up-question' };
+    }
+    const merged = await mergeWorkItemPayload(input.id, { reporterQuestion: { id: randomUUID(), text, askedBy: input.actor, askedAt: new Date().toISOString() } }, { harness: input.harness });
+    return merged ? { ok: true as const, id: input.id, item: merged } : { ok: false as const, id: input.id, error: 'report-no-longer-writable' };
+  });
+}
+
+function objectReporterKind(payload: unknown): unknown { return record(record(payload).reporter).kind; }

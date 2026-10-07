@@ -20,6 +20,7 @@ import {
 import { computeReleaseCompleteness } from './release-completeness';
 import { incompleteDesktopScopeRefusal } from './release-owner-approval';
 import { partialScopeApprovalDirectiveId } from './release-partial-scope';
+import { defaultReporterReleaseDeps, publishReporterRelease } from './reporter-release';
 
 export interface HeadProbeResult {
   status: number;
@@ -197,7 +198,7 @@ export async function verifyReleasePublication(
 export async function finalizeReleasePublication(
   opts: FinalizeReleaseOptions,
   deps: { head?: HeadProbe; sql?: Sql } = {},
-): Promise<{ publishedAt: Date; proof: PublicationProof }> {
+): Promise<{ publishedAt: Date; proof: PublicationProof; reporterNotifications: { notified: string[]; unconfirmed: string[] } }> {
   const sql = deps.sql ?? postgres(getHarnessAdminUrl(), { max: 1 });
   const ownsSql = !deps.sql;
   try {
@@ -218,7 +219,8 @@ export async function finalizeReleasePublication(
       opts.channel,
       opts.version,
     );
-    return { publishedAt, proof };
+    const reporterNotifications = await publishReporterRelease({ ...row, publishedAt }, defaultReporterReleaseDeps(sql, opts.workspaceId, row));
+    return { publishedAt, proof, reporterNotifications };
   } finally {
     if (ownsSql) await sql.end({ timeout: 5 });
   }
