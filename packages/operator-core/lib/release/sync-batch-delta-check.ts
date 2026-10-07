@@ -628,12 +628,14 @@ export function idlePriorityArgv(cmd: string, args: readonly string[]): { cmd: s
 
 // ── coverage (P-001 / R-2) ───────────────────────────────────────────────────
 
-/** One tick's coverage record. */
+/** One scheduled coverage opportunity. */
+export type CoverageTickStatus = SyncBatchDeltaStatus | 'missed-opportunity';
+
 export interface CoverageTick {
   atMs: number;
-  /** true = the tick judged its window (or confirmed there was nothing to judge). */
+  /** true = the scheduled opportunity judged its window (or confirmed nothing to judge). */
   evaluated: boolean;
-  status: SyncBatchDeltaStatus;
+  status: CoverageTickStatus;
 }
 
 export interface SyncDeltaCoverage {
@@ -645,9 +647,12 @@ export interface SyncDeltaCoverage {
 /** Coverage history kept on the cursor: 24h, bounded so the row cannot grow. */
 export const COVERAGE_RETENTION_MS = 24 * 60 * 60_000;
 export const COVERAGE_MAX_TICKS = 400;
-/** The alarm window, threshold and the minimum ticks needed to judge it. At the
- *  5-minute cadence 2h is 24 ticks; 12 tolerates a slow or partly-starved engine
- *  without judging from a handful of samples. */
+/** The durable sync-delta routine fires every five minutes. Coverage fills
+ *  opportunities that passed while an earlier invocation was still running. */
+export const COVERAGE_EXPECTED_INTERVAL_MS = 5 * 60_000;
+/** The alarm window, threshold and the minimum opportunities needed to judge it.
+ *  At the five-minute cadence 2h is 24 opportunities; 12 avoids judging before
+ *  the window has enough history while still counting slots missed by long fires. */
 export const COVERAGE_ALARM_WINDOW_MS = 2 * 60 * 60_000;
 export const COVERAGE_ALARM_THRESHOLD = 0.8;
 export const COVERAGE_ALARM_MIN_TICKS = 12;
@@ -673,6 +678,59 @@ export function recordCoverageTick(
   const cutoff = tick.atMs - COVERAGE_RETENTION_MS;
   const ticks = [...(prior?.ticks ?? []).filter((t) => t.atMs >= cutoff), tick].slice(-COVERAGE_MAX_TICKS);
   return { ...(prior?.alarmOpenSinceMs !== undefined ? { alarmOpenSinceMs: prior.alarmOpenSinceMs } : {}), ticks };
+}
+
+/** Record a completed invocation plus schedule opportunities that passed while
+ *  there was no completed invocation to judge them. `tick.atMs` is captured at
+ *  action start; `observedUntilMs` is captured after it finishes. Routine-fire
+ *  deduplication suppresses cron starts while a previous action is still running,
+ *  so counting completions alone makes a long action erase those missed slots
+ *  from this detector's denominator.
+ */
+export function recordCoverageOpportunities(
+  prior: SyncDeltaCoverage | undefined,
+  tick: CoverageTick,
+  observedUntilMs: number,
+  intervalMs: number = COVERAGE_EXPECTED_INTERVAL_MS,
+): SyncDeltaCoverage {
+  const priorTicks = prior?.ticks ?? [];
+  const lastAtMs = priorTicks.at(-1)?.atMs;
+  if (
+    lastAtMs === undefined ||
+    !Number.isFinite(tick.atMs) ||
+    !Number.isFinite(observedUntilMs) ||
+    !Number.isFinite(intervalMs) ||
+    intervalMs <= 0 ||
+    tick.atMs <= lastAtMs ||
+    observedUntilMs < tick.atMs
+  ) {
+    return recordCoverageTick(prior, tick);
+  }
+
+  const cutoff = observedUntilMs - COVERAGE_RETENTION_MS;
+  const missedBetweenInvocations = Math.max(0, Math.round((tick.atMs - lastAtMs) / intervalMs) - 1);
+  const missedDuringInvocation = Math.max(0, Math.ceil((observedUntilMs - tick.atMs) / intervalMs) - 1);
+  const missed: CoverageTick[] = [];
+  const appendMissed = (originMs: number, count: number): void => {
+    const firstIndex = Math.max(
+      1,
+      count - COVERAGE_MAX_TICKS + 1,
+      Math.ceil((cutoff - originMs) / intervalMs),
+    );
+    for (let index = firstIndex; index <= count; index += 1) {
+      const atMs = originMs + index * intervalMs;
+      if (atMs >= cutoff && atMs < observedUntilMs) {
+        missed.push({ atMs, evaluated: false, status: 'missed-opportunity' });
+      }
+    }
+  };
+  appendMissed(lastAtMs, missedBetweenInvocations);
+  appendMissed(tick.atMs, missedDuringInvocation);
+
+  const base = prior ?? { ticks: [] };
+  return [...missed, tick]
+    .sort((a, b) => a.atMs - b.atMs)
+    .reduce((coverage, next) => recordCoverageTick(coverage, next), base);
 }
 
 export interface CoverageVerdict {
@@ -718,10 +776,11 @@ export function buildCoverageAlarm(verdict: CoverageVerdict, coverage: SyncDelta
       `below the ${Math.round(COVERAGE_ALARM_THRESHOLD * 100)}% floor. Breakage committed to staging in that window`,
       'is NOT being caught at commit time; it will surface at the hourly gate instead.',
       '',
-      `Non-evaluated ticks by status: ${breakdown}.`,
+      `Non-evaluated opportunities by status: ${breakdown}.`,
       'Read the routine row: routines:list { name: "sync-batch-delta-check" } -> metadata.sync_delta',
       '(lastSkipReason, coverage.ticks). A run of `skipped` with a hard-ceiling reason means the box is',
       'saturated; `radius-too-wide` means batches exceed the radius caps.',
+      '`missed-opportunity` means a five-minute schedule slot passed without a completed check.',
       '',
       `Filed by \`system:sync-batch-delta-check\` (conditionKey \`${COVERAGE_ALARM_CONDITION_KEY}\`).`,
     ].join('\n'),
@@ -1085,9 +1144,10 @@ export async function runSyncBatchDeltaCheck(
   } catch {
     priorCoverage = undefined;
   }
+  const startedAtMs = deps.now();
   const result = await runSyncBatchDeltaTick(deps, opts);
   try {
-    await recordCoverage(deps, priorCoverage, result);
+    await recordCoverage(deps, priorCoverage, result, startedAtMs);
   } catch {
     // Coverage is an instrument, never a reason to fail the tick.
   }
@@ -1101,11 +1161,16 @@ async function recordCoverage(
   deps: SyncBatchDeltaDeps,
   prior: SyncDeltaCoverage | undefined,
   result: SyncBatchDeltaResult,
+  startedAtMs: number,
 ): Promise<void> {
   const cursor = await deps.readCursor();
   if (!cursor?.sha) return; // nothing to annotate before the first bootstrap
   const now = deps.now();
-  let coverage = recordCoverageTick(prior, { atMs: now, evaluated: isEvaluatedStatus(result.status), status: result.status });
+  let coverage = recordCoverageOpportunities(
+    prior,
+    { atMs: startedAtMs, evaluated: isEvaluatedStatus(result.status), status: result.status },
+    now,
+  );
   const verdict = evaluateCoverage(coverage, now);
   if (verdict.low && coverage.alarmOpenSinceMs === undefined) {
     const res = await deps.fileRed(buildCoverageAlarm(verdict, coverage));

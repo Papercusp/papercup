@@ -45,6 +45,7 @@ import {
   fileRoutedRed,
   idlePriorityArgv,
   pickRedAuthor,
+  recordCoverageOpportunities,
   recordCoverageTick,
   runSyncBatchDeltaCheck,
   type CoverageTick,
@@ -150,7 +151,11 @@ describe('runSyncBatchDeltaCheck under load (R-1)', () => {
       { workspace: 'foo', file: 'packages/foo/src/b.test.ts' },
     ];
     const { deps, state } = fakeDeps(
-      { hostLoad: () => ({ load1: 200, cores: 128 }), runAffected: async () => ({ ok: false, failing }) },
+      {
+        hostLoad: () => ({ load1: 200, cores: 128 }),
+        listBatches: async () => [batch({ sha: SHA_B })],
+        runAffected: async () => ({ ok: false, failing }),
+      },
       { sha: SHA_A, updatedAtMs: 1 },
     );
     const res = await runSyncBatchDeltaCheck(deps);
@@ -201,6 +206,36 @@ describe('coverage record + alarm (R-2)', () => {
   it('too few samples is NOT an alarm (ratio null), never a false low', () => {
     const v = evaluateCoverage({ ticks: ticks(COVERAGE_ALARM_MIN_TICKS - 1, false) }, NOW);
     expect(v).toMatchObject({ ratio: null, low: false });
+  });
+
+  it('counts missed five-minute opportunities around a long action and raises the coverage alarm', async () => {
+    const startedAt = NOW;
+    const completedAt = NOW + 30 * 60_000;
+    const priorTick: CoverageTick = {
+      atMs: NOW - 30 * 60_000,
+      evaluated: true,
+      status: 'green',
+    };
+    const { deps, state } = fakeDeps(
+      {
+        hostLoad: () => null,
+        now: (() => {
+          const times = [startedAt, completedAt, completedAt];
+          let index = 0;
+          return () => times[Math.min(index++, times.length - 1)]!;
+        })(),
+      },
+      { sha: SHA_A, updatedAtMs: 1, coverage: { ticks: [priorTick] } },
+    );
+
+    await runSyncBatchDeltaCheck(deps);
+
+    const coverage = state.cursor?.coverage;
+    expect(coverage?.ticks.filter((tick) => tick.status === 'missed-opportunity')).toHaveLength(10);
+    expect(coverage?.ticks.filter((tick) => tick.evaluated)).toHaveLength(1);
+    expect(evaluateCoverage(coverage, completedAt)).toMatchObject({ low: true, evaluated: 1, total: 12 });
+    expect(state.filed).toHaveLength(1);
+    expect(state.filed[0]?.conditionKey).toBe(COVERAGE_ALARM_CONDITION_KEY);
   });
 
   it('files ONE condition-keyed alarm when coverage drops, dedups the next tick, clears on recovery', async () => {
