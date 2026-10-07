@@ -445,6 +445,41 @@ missing `vi` import; its corrected run passes. Logs are
 candidate or customer-runtime claim. Customer candidate adoption, the cheap
 attention preflight, and the subsequent native journey remain open.
 
+### Committed attention candidate and sealed preflight — 2026-10-07 17:27Z
+
+The strict applicability fix and its tests are committed in superproject
+`f0f67adb154dee54ad59a79c5ae6f7704fa2da62`. All seven changed source/test blobs
+match the locally verified cohort; the complete SHA256 table is retained on
+`EI-25338280978263840`. The maintained isolated runner passes all 168 tests
+with zero skips against this exact commit:
+
+```sh
+PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run lint:as-committed -- test:file --any --ref=f0f67adb154dee54ad59a79c5ae6f7704fa2da62 -- packages/operator-core/lib/git-pipeline-stats.test.ts packages/operator-core/lib/device-monitoring.test.ts packages/operator-core/lib/endpoint-route/routes/device/attention.test.ts packages/operator-core/lib/endpoint-route/__tests__/device-revival-routes.test.ts packages/operator-core/lib/agent-tools/plans/attention.cache.test.ts
+```
+
+Proof log: `/tmp/android-p015-attention-committed-corrected.log`, exit 0,
+`requested=5 executed=5 matched=5`, clean stamped provenance. The preceding
+attempt refused a mistyped test path before executing; it produced no test result.
+
+The existing mobile `crates/papercup-core/tests/live_smoke.rs` now includes
+`live_sealed_attention_preflight`. It consumes a fresh private QR file, requires
+HTTPS and a valid machine pin, pairs through Noise, checks attention and workspace
+scope, reconnects with the same identity, and revokes the test pairing even when
+an assertion fails. Error output retains stage/status without response bodies.
+Its committed blob at mobile source
+`3f2cffa5f095a54b909efe57a2a6ae841d632dbb` has SHA256
+`10827d512a75577030cf9f4f9efce7095250d8a73b59bf47b0fcb7dc8acaa33b`.
+Local verification passes nine preflight/cleanup guards and six sealed JS
+interoperability tests. Both explicitly live smoke cases remain ignored in that
+local run; they are not customer-runtime evidence. Logs:
+`/tmp/android-p015-sealed-preflight-guards.log` and
+`/tmp/android-p015-sealed-preflight-guards-final.log`.
+
+The leader reports the r69 build started from the exact operator source; publication
+and customer adoption remain unverified. Customer checkpoint absence, the live sealed
+attention probe, the subsequent native journey, camera and full-operation acceptance,
+and genuine BYOC acceptance remain open. No public cloud support claim is made.
+
 ## Historical discovery — 2026-10-06
 
 The following sections preserve the initial analysis and agreement context. Their gap states,
