@@ -12,7 +12,9 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
-import { parseGoalOwnerReportSnapshot } from '@papercusp/chat-protocol';
+import { lookupByMcpName } from '@papercusp/tooldef';
+import { parseGoalOwnerReportSnapshot, serializeGoalOwnerReportSnapshot } from '@papercusp/chat-protocol';
+import { renderGoalPortfolioBrief } from '../../../goal-launch-settings';
 import { goalOwnerReportFixture } from '../../../../test/fixtures/goal-owner-report';
 import {
   deriveGoalReportNotification, stampGoalReportReference, validateGoalReportReferenceSnapshot,
@@ -44,6 +46,20 @@ const { getModeSubjectMock, readGoalOwnerReportTruthMock } = vi.hoisted(() => ({
 }));
 
 const referenceMocks = vi.hoisted(() => ({ resolve: vi.fn(), reads: vi.fn(), persist: vi.fn() }));
+const goalRecovery = vi.hoisted(() => ({ portfolio: vi.fn(), rows: [] as unknown[][] }));
+vi.mock('drizzle-orm/postgres-js', () => ({
+  drizzle: () => ({ select: () => {
+    const rows = goalRecovery.rows.shift() ?? [];
+    const builder = { from: () => builder, where: () => builder, limit: () => builder,
+      then: (resolve: (rows: unknown[]) => unknown) => Promise.resolve(rows).then(resolve) };
+    return builder;
+  } }),
+}));
+vi.mock('../../../goal-launch-settings', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../goal-launch-settings')>()),
+  readGoalPortfolioBrief: goalRecovery.portfolio,
+}));
+vi.mock('../../../prior-attempt-context', () => ({ readGoalHistoryContext: async () => undefined }));
 vi.mock('../../../goal-owner-report-reference', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../../goal-owner-report-reference')>()),
   resolveGoalReportReference: referenceMocks.resolve,
@@ -3118,6 +3134,44 @@ describe('REPORT-REFERENCE-ADMISSION-P002: actual coord:send handler', () => {
     referenceMocks.persist.mockReset();
   });
   afterEach(() => { getModeSubjectMock.mockResolvedValue(null); });
+
+  it('executes the rendered post-action full read and sends an oversized report through its pinned reference', async () => {
+    await import('../../../../../agent-mcp/src/tools/goals/get');
+    const reportText = serializeGoalOwnerReportSnapshot(snapshot);
+    const canonical = {
+      schemaVersion: 1, assembledAt: snapshot.observedAt,
+      goal: { id: snapshot.goalId, status: 'active' }, worklist: [], pots: [], priorities: [],
+      drainFleet: {}, queue: {}, launch: { headcount: { total: 1 }, ceilings: {} },
+      budget: { spentCents: snapshot.cost.spentCents, budgetCents: snapshot.cost.budgetCents },
+      operatingInputs: { status: 'ready', spendCoverage: 'measured', canExecute: true, issues: [] },
+      tripwires: [], pending: { blenderIdeas: 0 }, continuity: { checkpoint: null }, degradedReasons: [],
+      reporting: { cadence: null, draft: { text: reportText, unreadArtifacts: [] }, movementTruncated: false, killedTruncated: false },
+    };
+    const instruction = renderGoalPortfolioBrief(canonical as never);
+    const readArgs = /fetch goals:get \{ id: "([^"]+)", detail: "([^"]+)" \} again/.exec(instruction)!;
+    expect(readArgs).not.toBeNull();
+    expect(instruction).toContain('reports:publish goal_owner_report snapshot');
+    expect(instruction).toContain('Do not truncate owner asks to fit');
+    goalRecovery.rows = [[{ id: snapshot.goalId, title: 'Report recovery', workspaceId: 'ws1', status: 'active' }], []];
+    goalRecovery.portfolio.mockResolvedValue(canonical);
+    const ctx = { principal: { slug: 'op', workspaceId: 'ws1' }, workspaceId: 'ws1',
+      tx: (() => Promise.resolve([])), log: vi.fn(), transport: 'http', runId: 'report-recovery',
+      signal: new AbortController().signal, emit: vi.fn(), progress: vi.fn() };
+    const readResult = await lookupByMcpName('goals:get')!.fn({ id: readArgs[1], detail: readArgs[2] }, ctx as never);
+    const refreshed = JSON.parse((readResult as { content: Array<{ text: string }> }).content[0].text);
+    expect(refreshed.assembledAt).toBe(snapshot.observedAt);
+    expect(refreshed.reporting.draft.text).toBe(reportText);
+    expect(reportText.length).toBeGreaterThan(DEFAULT_INBOX_BODY_CAP);
+    const overCap = await body({ to: ['human'], summary: 'Complete report', expects: 'none', body: [{ text: refreshed.reporting.draft.text }] });
+    expect(overCap.results[0]).toMatchObject({ ok: false, error: 'goal-owner-report-over-cap' });
+    expect(sendM).not.toHaveBeenCalled();
+    const sendResult = await lookupByMcpName('coord:send')!.fn(args(), ctx as never);
+    const sent = JSON.parse((sendResult as { content: Array<{ text: string }> }).content[0].text);
+    expect(sent.results[0]).toMatchObject({ ok: true, goalOwnerReport: { status: 'stamped', goalId: snapshot.goalId } });
+    expect(sendM).toHaveBeenCalledTimes(1);
+    expect(sendM.mock.calls[0]![1].body.length).toBeLessThanOrEqual(DEFAULT_INBOX_BODY_CAP);
+    for (const wall of snapshot.ownerWalls) expect(reportText).toContain(wall.exactAction);
+  });
 
   it('persists one valid pinned reference using canonical prose and the transaction callback', async () => {
     const result = await body(args());

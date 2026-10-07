@@ -89,6 +89,7 @@ import {
   type GoalOwnerReportDraft,
   type GoalOwnerReportDraftInput,
 } from './goal-owner-report';
+import { DEFAULT_INBOX_BODY_CAP } from './agent-tools/coordination/tools/inbox-content-bounds';
 import { openOwnerWallPredicateSql, ownerWallActionSql } from './goal-owner-report-truth';
 import type { GoalOwnerReportObligation } from './system-health/goal-owner-report-watchdog';
 import { claimSpecFilterAdmitsTarget, claimSpecFilterPositivelyTargets, validateClaimSpec } from './scheduler/claim-spec';
@@ -1627,7 +1628,8 @@ export function renderGoalPortfolioBrief(brief: GoalPortfolioBrief): string {
     'CURRENT ACTION PRIORITIES',
     priorities,
     'POST-ACTION OWNER REPORT — REQUIRED AFTER THE PASS ACTIONS',
-    `After all selected actions have returned, fetch goals:get again for exact goal id "${brief.goal.id}". Send the report from that post-action response’s reporting.draft and use its assembledAt as the portfolio read time.`,
+    `After all selected actions have returned, fetch goals:get { id: "${brief.goal.id}", detail: "full" } again. Send the report from that post-action response’s reporting.draft and use its assembledAt as the portfolio read time.`,
+    `An inline report must fit the ${DEFAULT_INBOX_BODY_CAP}-character coord:send body cap. If the complete report exceeds it, preserve every owner action and cost provenance in the existing reports:publish goal_owner_report snapshot, then re-read its exact reports:get id and send coord:send { to: ["human"], summary: report.title, expects: "none", report: { plans: [], goalReport: { schemaVersion: 1, goalId: "${brief.goal.id}", reportId: report.report_id, bodySha256: report.body_sha256 } } }. Do not truncate owner asks to fit; the canonical reference derives the bounded notification.`,
     'MOVED must include only actions with a successful result already returned, plus every goal-scoped work item that reached a terminal state after the previous report watermark. Do not report planned, queued, admission-pending, refused, or not-yet-run actions as moved.',
     'Read every named terminal artifact after its recorded update. If movement or killed evidence is truncated, degraded, or still unread, finish the missing reads or state the exact coverage gap.',
     'COST comes from the refreshed canonical spend evidence: preserve its figure, coverage, source, measured-at timestamp, and assembled/read-at timestamp. When refreshed evidence says coverage=measured, do not describe spend as unmeasured; when it is unknown or unmeasured, preserve that uncertainty and never infer zero.',

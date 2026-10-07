@@ -1745,7 +1745,7 @@ describe('P-012 authoritative GOAL portfolio brief', () => {
     const actionPrioritiesMarker = rendered.indexOf('CURRENT ACTION PRIORITIES');
     const postActionReportMarker = rendered.indexOf('POST-ACTION OWNER REPORT — REQUIRED AFTER THE PASS ACTIONS');
     const ownerReportRefreshInstruction = rendered.indexOf(
-      'After all selected actions have returned, fetch goals:get again for exact goal id "goal-1". Send the report from that post-action response’s reporting.draft and use its assembledAt as the portfolio read time.',
+      'After all selected actions have returned, fetch goals:get { id: "goal-1", detail: "full" } again. Send the report from that post-action response’s reporting.draft and use its assembledAt as the portfolio read time.',
     );
     const mandatoryPlacementMarker = rendered.indexOf('MANDATORY NEXT PLAN PLACEMENT');
     expect(kickoffEvidenceMarker).toBeGreaterThanOrEqual(0);
@@ -1754,6 +1754,9 @@ describe('P-012 authoritative GOAL portfolio brief', () => {
     expect(actionPrioritiesMarker).toBeGreaterThan(mandatoryPlacementMarker);
     expect(postActionReportMarker).toBeGreaterThan(actionPrioritiesMarker);
     expect(ownerReportRefreshInstruction).toBeGreaterThan(postActionReportMarker);
+    expect(rendered).toContain('reports:publish goal_owner_report snapshot');
+    expect(rendered).toContain('report: { plans: [], goalReport:');
+    expect(rendered).toContain('Do not truncate owner asks to fit');
     expect(rendered).toContain(
       `Only after that final refresh, send ${GOAL_OWNER_REPORT_HEADING_LIST} to ["human"] with coord:send or use coord:escalate, naming exact goal id "goal-1".`,
     );
