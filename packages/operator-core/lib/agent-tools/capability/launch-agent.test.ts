@@ -15,6 +15,7 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dispatchProjectedTool, listMcpProjections, type ProjectedTool, type ToolResult, type UnifiedToolContext } from '@papercusp/tooldef';
 import type { KickoffProofResult, SpawnChildExit, SpawnConsoleResult } from '../../console-spawn';
 import { PSU_LAUNCH_LOG_TAIL_CHARS } from '../../psu-launch-log.mjs';
+import { AGENT_LAUNCH_HANDLER_TIMEOUT_SEC, EARLY_EXIT_PROBE_MS, HEADLESS_BOOT_RECEIPT_MS, KICKOFF_PROOF_WINDOW_MS, RESUME_VERIFY_TIMEOUT_MS } from '../../agent-kickoff/launch-budgets.mjs';
 
 const assembleRolePromptMock = vi.hoisted(() => vi.fn());
 vi.mock('@papercusp/orchestrator/role-prompt', async (orig) => ({
@@ -728,6 +729,13 @@ describe('published launch args schema', () => {
         expect.arrayContaining([expect.objectContaining({ path: ['carry'] })]),
       );
     }
+  });
+
+  it('keeps the declared launch deadline outside sequential child proof windows', () => {
+    expect(launchAgent.timeoutSec).toBe(AGENT_LAUNCH_HANDLER_TIMEOUT_SEC);
+    expect(launchAgent.timeoutSec! * 1000).toBeGreaterThan(
+      EARLY_EXIT_PROBE_MS + HEADLESS_BOOT_RECEIPT_MS + KICKOFF_PROOF_WINDOW_MS + RESUME_VERIFY_TIMEOUT_MS,
+    );
   });
 
   it('documents ordinary resume defaults separately from successor runtime overrides', () => {

@@ -41,6 +41,7 @@ import { assembleRolePrompt } from '@papercusp/orchestrator/role-prompt';
 import { parseBindingRef } from '@papercusp/orchestrator/blueprint';
 import { buildConsoleEnvelope } from '../../console-launcher';
 import { spawnConsole, spawnHeadless, type SpawnChildExit } from '../../console-spawn';
+import { AGENT_LAUNCH_HANDLER_TIMEOUT_SEC, RESUME_VERIFY_TIMEOUT_MS } from '../../agent-kickoff/launch-budgets.mjs';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { papercuspPathForWorkspace } from '../../papercusp-root';
 import {
@@ -119,7 +120,6 @@ import {
  *  returning an honest UNCONFIRMED verdict. Most healthy resumes register within
  *  a few seconds, but EI-21476169071856015 measured a healthy exact Codex resume
  *  landing more than seven minutes later, so expiry is never itself a failure. */
-const RESUME_VERIFY_TIMEOUT_MS = 30_000;
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -466,13 +466,10 @@ export default defineTool({
   capability: 'capability:terminal',
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],
-  // EI-22780156976598155: a fresh headless launch can legitimately spend
-  // 6s in boot checks, 30s awaiting its detached kickoff proof, and 25s in
-  // fresh-launch verification. The default 60s dispatcher budget races the
-  // ~55s MCP transport and returns an unknown outcome while the launch is
-  // still progressing. Keep this handler budget above that bounded path; the
-  // transport derives a matching deadline from the declaration.
-  timeoutSec: 90,
+  // The kickoff-proof window is longer than the old 90s parent declaration.
+  // Derive the parent from the actual sequential proof windows so a slow
+  // launch returns its structured receipt before the transport abandons it.
+  timeoutSec: AGENT_LAUNCH_HANDLER_TIMEOUT_SEC,
   // Launches are deliberately non-idempotent. A completed handler can still prove
   // that this attempt's launch summary is durably queryable by its idempotency key.
   abortCompletionReceipt: agentLaunchAbortCompletionReceipt,
