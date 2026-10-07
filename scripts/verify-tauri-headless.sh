@@ -238,6 +238,10 @@
 #                                dock disabled so ordinary UI verifiers remain
 #                                isolated from terminal processes/windows.
 #   PAPERCUSP_REPO_DIR          repo root (default: derived from this script)
+#   VERIFY_TAURI_SOURCE_REF     explicit committed source ref; uses immutable Git
+#                              export with canonical tree as dependency donor
+#   VERIFY_TAURI_SOURCE_INPUTS  comma-separated tested repo-relative acceptance
+#                              inputs; every input must match the selected ref
 #   VERIFY_TAURI_DISPLAY_NUM    Xvfb display number (default: auto-picked, >=90)
 #   VERIFY_TAURI_WINDOW         window size the desktop BOOTS at, <width>x<height>
 #                                (e.g. 1800x1000). Default unset = the real
@@ -411,6 +415,7 @@ Usage:
   $0 -- <assertion-command...>
   $0 --boot-only
   $0 --boot-only-i-accept-task-lifetime
+  $0 --prepare-only
 
 Boot an isolated headless Tauri verifier, run an assertion command, and tear
 the verifier down. The --boot-only form prints a sourceable environment and
@@ -432,8 +437,13 @@ ASSERTION_MODE=0
 ASSERTION_ARGS=()
 ASSERTION_CWD="$PWD"
 BOOT_ONLY_ACCEPT_TASK_LIFETIME=0
+PREPARE_ONLY=0
 CAPABILITY_BASH_BACKGROUND_TASK_ID="${PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID:-}"
 case "${1:-}" in
+  --prepare-only)
+    [ "$#" -eq 1 ] || { echo 'FATAL: --prepare-only accepts no assertion arguments' >&2; exit 2; }
+    PREPARE_ONLY=1
+    ;;
   --)
     [ "$#" -ge 2 ] || {
       echo "FATAL: no assertion command given. Usage: $0 -- <command...> (or --boot-only)" >&2
@@ -825,7 +835,7 @@ if [ -f "$VH_SH" ]; then
   vh_bracket_trap   # finalizes an exit before `trap teardown EXIT`; teardown calls vh_exit itself
 else
   echo "VH_DISABLED harness=verify-tauri-headless reason=vh.sh-missing:$VH_SH" >&2
-  vh_begin() { :; }; vh_step() { :; }; vh_skip_rest() { :; }; vh_exit() { :; }
+  vh_begin() { :; }; vh_step() { :; }; vh_end() { :; }; vh_skip_rest() { :; }; vh_exit() { :; }
 fi
 
 TIMEOUT="${VERIFY_TAURI_TIMEOUT:-180}"
@@ -1212,6 +1222,10 @@ snapshot_operator_source() {
   local source_bytes
   local pinned_deps_lib="$DESKTOP_DIR/bin/lib/pinned-deps.sh"
   local pinned_deps_copy="$WORK/pinned-deps.sh"
+  if [ -n "${VERIFY_TAURI_SOURCE_REF:-}" ]; then
+    snapshot_committed_operator_source
+    return $?
+  fi
   verify_operator_source_lock_census "before copy" || return 1
   command -v rsync >/dev/null 2>&1 || {
     echo "FATAL: rsync is required to snapshot the isolated verifier operator source" >&2
@@ -1281,6 +1295,37 @@ snapshot_operator_source() {
   }
   OPERATOR_SOURCE_ROOT="$(cd "$snapshot_root" && pwd -P)" || return 1
   log "operator source/dependency snapshot frozen at $OPERATOR_SOURCE_ROOT — IMMUTABLE for this run"
+}
+snapshot_committed_operator_source() {
+  # REPO_DIR remains the canonical coordination/fence/dependency donor domain.
+  # Only runtime source and desktop execution move to the verified archive.
+  local snapshot_root receipt pinned_deps_copy="$WORK/pinned-deps.sh"
+  local inputs="package.json,package-lock.json,papercusp-desktop/package.json,papercusp-desktop/package-lock.json,scripts/npm-install-safe.mjs,scripts/verify-tauri-headless.sh,scripts/source-preview.mjs,scripts/lib/committed-source-loader.mjs,scripts/restricted-hold-tree-gate.mjs,scripts/lib/spa-require-built.sh,papercusp-desktop/bin/lib/federation-asserts.sh,papercusp-desktop/bin/lib/disk-preflight.sh,papercusp-desktop/bin/lib/pinned-deps.sh,${VERIFY_TAURI_SOURCE_INPUTS:-}"
+  [ -n "${VERIFY_TAURI_SOURCE_INPUTS:-}" ] || {
+    echo 'FATAL: pinned source requires explicit VERIFY_TAURI_SOURCE_INPUTS tested acceptance paths' >&2
+    return 1
+  }
+  OPERATOR_SOURCE_WORK="$(mktemp -d "$OPERATOR_SNAPSHOT_PARENT/verify-tauri-headless.XXXXXX")" || return 1
+  snapshot_root="$OPERATOR_SOURCE_WORK/operator-source"
+  receipt="$WORK/verifier-source-receipt.json"
+  OPERATOR_SOURCE_ROOT="$snapshot_root"
+  write_run_marker "$$" || return 1
+  reserve_verifier_disk 0 || return $?
+  node "$REPO_DIR/scripts/source-preview.mjs" verifier-prepare \
+    --repo "$REPO_DIR" --ref "$VERIFY_TAURI_SOURCE_REF" --out "$snapshot_root" \
+    --inputs "$inputs" --receipt "$receipt" || return 1
+  # Caller receipt is outside the archive; verify before loading any exported helper.
+  node "$REPO_DIR/scripts/source-preview.mjs" verifier-verify \
+    --out "$snapshot_root" --receipt "$receipt" || return 1
+  if [ -n "${VH_PHASE_DIR:-}" ]; then
+    cp -- "$receipt" "$VH_PHASE_DIR/verifier-source-receipt.json" || return 1
+  fi
+  cp -- "$snapshot_root/papercusp-desktop/bin/lib/pinned-deps.sh" "$pinned_deps_copy" || return 1
+  . "$pinned_deps_copy" || return 1
+  papercusp_pinned_deps_snapshot_locked "$REPO_DIR" "$snapshot_root" || return 1
+  DESKTOP_DIR="$snapshot_root/papercusp-desktop"
+  export VERIFY_TAURI_SOURCE_RECEIPT="$receipt"
+  log "committed verifier source verified; provenance: $receipt; dependency donor: $REPO_DIR"
 }
 snapshot_operator_source || { cleanup_operator_source_snapshot; exit 1; }
 
@@ -1352,6 +1397,14 @@ smoke_verifier_operator_host() {
 }
 build_verifier_operator_host || { cleanup_operator_source_snapshot; exit 1; }
 smoke_verifier_operator_host || { cleanup_operator_source_snapshot; exit 1; }
+if [ "$PREPARE_ONLY" -eq 1 ]; then
+  log "PREPARE_ONLY_OK source snapshot and host import smoke; no native acceptance"
+  vh_end
+  vh_skip_rest "prepare-only: native boot not requested"
+  cleanup_operator_source_snapshot
+  rm -rf -- "$WORK"
+  exit 0
+fi
 
 ASSERTION_INPUT_MANIFEST=""
 ASSERTION_INPUT_COUNT=0

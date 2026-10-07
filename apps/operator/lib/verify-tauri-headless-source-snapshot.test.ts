@@ -46,6 +46,42 @@ const operatorSnapshotSource = src.slice(
 );
 
 describe("EI-25270951515189161 — verifier snapshots avoid active source edits", () => {
+  it("keeps committed preparation independent of live census and verifies before donor mutation", () => {
+    const start = src.indexOf('snapshot_committed_operator_source() {');
+    const end = src.indexOf('snapshot_operator_source || {', start);
+    const committed = src.slice(start, end);
+    const fixture = mkdtempSync(resolve(tmpdir(), 'verifier-committed-contract-'));
+    try {
+      const result = spawnSync('bash', ['-c', [
+        'set -euo pipefail',
+        'REPO_DIR=/canonical; WORK="$TEST_ROOT"; OPERATOR_SNAPSHOT_PARENT="$TEST_ROOT"',
+        'VERIFY_TAURI_SOURCE_REF=commit; VERIFY_TAURI_SOURCE_INPUTS=apps/operator/ui.ts',
+        'write_run_marker() { :; }; reserve_verifier_disk() { :; }; log() { :; }',
+        'node() { printf "%s\\n" "$*" >> "$WORK/order"; if [[ "$*" == *verifier-verify* ]] && [ "$TEST_TAMPER" = 1 ]; then return 2; fi; }',
+        'cp() { printf \'%s\\n\' \'papercusp_pinned_deps_snapshot_locked() { echo "deps:$1:$2" >> "$WORK/order"; }\' > "$WORK/pinned-deps.sh"; }',
+        committed,
+        'snapshot_committed_operator_source',
+        'printf "desktop:%s\\n" "$DESKTOP_DIR" >> "$WORK/order"',
+      ].join('\n')], { encoding: 'utf8', env: { ...process.env, TEST_ROOT: fixture, TEST_TAMPER: '0' } });
+      expect(result.status, result.stderr).toBe(0);
+      const order = readFileSync(resolve(fixture, 'order'), 'utf8');
+      expect(order.indexOf('verifier-verify')).toBeGreaterThan(order.indexOf('verifier-prepare'));
+      expect(order.indexOf('deps:/canonical:')).toBeGreaterThan(order.indexOf('verifier-verify'));
+      expect(order).toMatch(/desktop:.*operator-source\/papercusp-desktop/);
+      const refused = spawnSync('bash', ['-c', [
+        'set -euo pipefail',
+        'REPO_DIR=/canonical; WORK="$TEST_ROOT"; OPERATOR_SNAPSHOT_PARENT="$TEST_ROOT"',
+        'VERIFY_TAURI_SOURCE_REF=commit; VERIFY_TAURI_SOURCE_INPUTS=apps/operator/ui.ts',
+        'write_run_marker() { :; }; reserve_verifier_disk() { :; }; log() { :; }',
+        'node() { [[ "$*" != *verifier-verify* ]]; }',
+        'cp() { echo mutation-after-refusal >&2; return 99; }',
+        committed, 'snapshot_committed_operator_source',
+      ].join('\n')], { encoding: 'utf8', env: { ...process.env, TEST_ROOT: fixture } });
+      expect(refused.status).toBe(1);
+      expect(refused.stderr).not.toContain('mutation-after-refusal');
+    } finally { rmSync(fixture, { recursive: true, force: true }); }
+  });
+
   function queryLocks(
     response: string,
     failPtool = false,
