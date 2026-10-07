@@ -1546,8 +1546,10 @@ const FETCH_FAILURE_REASON_MAX_CHARS = 300;
 /**
  * WI-10004103: the one line of a failed fetch's stderr worth putting in a status message.
  * A disk-headroom refusal from `withGitFetchHeadroom` wins, because it is the actionable
- * cause and git's own output around it is noise; otherwise the last non-empty line
- * (git prints its fatal error last). Whitespace is collapsed and the result capped.
+ * cause and git's own output around it is noise. SSH failures can append a generic
+ * "make sure ... repository exists" footer after the actual auth/transport error, so
+ * skip that boilerplate and keep the last concrete line. Whitespace is collapsed and
+ * the result capped.
  */
 export function summarizeFetchFailure(stderr: string | null | undefined): string {
   const lines = String(stderr ?? '')
@@ -1555,7 +1557,16 @@ export function summarizeFetchFailure(stderr: string | null | undefined): string
     .map((line) => line.replace(/\s+/g, ' ').trim())
     .filter(Boolean);
   if (lines.length === 0) return '';
-  const chosen = lines.find((line) => /disk headroom/i.test(line)) ?? lines[lines.length - 1]!;
+  const isGenericRepositoryAccessLine = (line: string) =>
+    /^(?:fatal:\s*could not read from remote repository\.?|please make sure you have the correct access rights(?: and the repository exists)?\.?|and the repository exists\.?)$/i.test(line);
+  const finalLine = lines[lines.length - 1]!;
+  const hasRepositoryExistsFooter = /the repository exists\.?$/i.test(finalLine);
+  const genericFatal = lines.find((line) => /^fatal:\s*could not read from remote repository\.?$/i.test(line));
+  const chosen =
+    lines.find((line) => /disk headroom/i.test(line)) ??
+    (hasRepositoryExistsFooter
+      ? [...lines].reverse().find((line) => !isGenericRepositoryAccessLine(line)) ?? genericFatal ?? finalLine
+      : finalLine);
   return chosen.length > FETCH_FAILURE_REASON_MAX_CHARS
     ? `${chosen.slice(0, FETCH_FAILURE_REASON_MAX_CHARS - 1)}…`
     : chosen;
