@@ -43,6 +43,7 @@ import type { OrgSql } from '../work-items';
 // different clients for two concurrent executors (one per first-use import), so their
 // advisory locks never contended. One module record ⇒ one client.
 import { getOrgPg } from '@papercusp/db-org';
+import { readOccurrenceReporters } from '../harness/improvements/corroboration';
 
 import {
   intakeReproductionRefusal,
@@ -181,6 +182,8 @@ export interface IntakePromotionDeps {
   closeAsDuplicate(id: string, targetId: string, by: string, reason: string): Promise<void>;
   /** Highest `work_item_occurrences.occurrence_id` for the item (null when none). */
   latestOccurrenceId(id: string): Promise<number | null>;
+  /** Real occurrence reporters, including inherited source filings. Read errors fail closed. */
+  occurrenceReporters?(id: string): Promise<string[]>;
   now(): Date;
 }
 
@@ -516,11 +519,15 @@ async function executePromotion(input: IntakeExecutionInput, deps: IntakePromoti
     // only the filer the seal checks: any reporter (auto-filer, submitter, reproduction
     // filer) or implementer (whoever closed it). Same refusal code as the seal's own
     // filer check, since both are the same failure: the reviewer lacks authority.
-    const parties = verificationParties({
+    const storedParties = verificationParties({
       createdBy: source.createdBy,
       terminalOwner: source.terminalOwner ?? null,
       payload: source.payload,
     });
+    const parties: VerificationParties = {
+      ...storedParties,
+      reporters: [...new Set([...storedParties.reporters, ...await deps.occurrenceReporters?.(source.id) ?? []])],
+    };
     const reviewerConflict = verificationConflict(parties, decision.decidedBy);
     if (reviewerConflict && decision.decidedBy.trim() !== submittedBy) {
       return {
@@ -1068,6 +1075,13 @@ export function defaultIntakePromotionDeps(): IntakePromotionDeps {
          WHERE canonical_work_item_id = ${id}`;
       const latest = rows[0]?.latest;
       return latest == null ? null : Number(latest);
+    },
+    async occurrenceReporters(id) {
+      const sql = orgSql();
+      const rows = await sql<{ workspace_id: string; harness_slug: string }[]>`
+        SELECT workspace_id, harness_slug FROM harness_shared.work_items WHERE feature_id = ${id}`;
+      if (rows.length !== 1) throw new Error(`cannot resolve occurrence scope for ${id}`);
+      return readOccurrenceReporters(sql as unknown as OrgSql, { workspaceId: rows[0].workspace_id, harness: rows[0].harness_slug, id });
     },
     now: () => new Date(),
   };
