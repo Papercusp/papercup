@@ -1,4 +1,7 @@
 import { defineConfig, devices, type ReporterDescription } from '@playwright/test';
+import { preparePlaywrightTempDirectory } from '../../scripts/lib/playwright-temp-directory.cjs';
+
+preparePlaywrightTempDirectory();
 
 const PORT = Number(process.env.OPERATOR_E2E_PORT ?? 3055);
 const BASE_URL = process.env.OPERATOR_E2E_BASE_URL ?? `http://localhost:${PORT}`;

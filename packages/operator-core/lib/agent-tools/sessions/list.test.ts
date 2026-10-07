@@ -372,6 +372,30 @@ describe('sessions:list historical bounded census', () => {
     expect(sessionLookupSelect).not.toMatch(/,\s*harness_slug\s*,/);
   });
 
+  it('uses disjoint indexed lookups for known sessions and owner-only events', async () => {
+    const { queries } = await run(
+      {
+        mode: 'historical',
+        since: '2026-07-13T13:30:00Z',
+        until: '2026-07-13T14:30:00Z',
+      },
+      [[]],
+    );
+    const sql = queries[0];
+    const start = sql.indexOf('session_map AS MATERIALIZED');
+    const lookup = sql.slice(start, sql.indexOf('mapped_key_events AS', start));
+
+    // The nullable OR and CASE order caused a repeated lookup/sort for every
+    // grouped key. Each disjoint branch must retain its own earliest-row limit.
+    expect(lookup).toContain('k.session_id IS NOT NULL AND session_id = k.session_id');
+    expect(lookup).toContain('coord_owner_id = k.owner_id AND k.session_id IS NULL');
+    expect(lookup).toContain('UNION ALL');
+    expect(lookup.match(/LIMIT 1/g)).toHaveLength(2);
+    expect(lookup.match(/first_seen_at ASC NULLS LAST,\s*id ASC/g)).toHaveLength(2);
+    expect(lookup).not.toMatch(/k\.session_id IS NULL OR session_id/);
+    expect(lookup).not.toContain('ORDER BY CASE');
+  });
+
   it('supports the historical compatibility alias while retaining the same bounds', async () => {
     const { parsed } = await run(
       {

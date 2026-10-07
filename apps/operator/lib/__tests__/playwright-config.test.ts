@@ -1,6 +1,8 @@
 import { readFileSync, readdirSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { join, resolve } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { preparePlaywrightTempDirectory } from '../../../../scripts/ensure-playwright-browsers.mjs';
 
 const OPERATOR_DIR = resolve(__dirname, '../..');
 const E2E_DIR = join(OPERATOR_DIR, 'e2e');
@@ -19,9 +21,68 @@ function restoreEnv(name: string, value: string | undefined): void {
   else process.env[name] = value;
 }
 
+describe('Playwright temporary allocation admission (EI-25339618434256268)', () => {
+  const healthy = { type: 1, bsize: 4096, blocks: 1048576, bfree: 1048576, bavail: 1048576, files: 10000, ffree: 9000 };
+
+  it('redirects parent profile and Chromium allocations from a full temp volume to a healthy cache', () => {
+    const env: NodeJS.ProcessEnv = { TMPDIR: '/full', XDG_CACHE_HOME: '/healthy' };
+    const result = preparePlaywrightTempDirectory({
+      env, mkdir: vi.fn(), access: vi.fn(),
+      statfs: vi.fn(path => path === '/full' ? { ...healthy, bavail: 12 } : healthy) as typeof import('node:fs').statfsSync,
+    });
+    expect(result.path).toBe('/healthy/papercusp/playwright-tmp');
+    expect(result.usedFallback).toBe(true);
+    expect([env.TMPDIR, env.TMP, env.TEMP]).toEqual([result.path, result.path, result.path]);
+  });
+
+  it('admits a healthy explicit directory without touching the fallback', () => {
+    const mkdir = vi.fn();
+    const result = preparePlaywrightTempDirectory({
+      env: { TMPDIR: '/explicit' }, mkdir, access: vi.fn(),
+      statfs: vi.fn(() => healthy) as typeof import('node:fs').statfsSync,
+    });
+    expect(result.path).toBe('/explicit');
+    expect(mkdir).not.toHaveBeenCalled();
+  });
+
+  it('refuses unmeasured, inode-exhausted and unwritable volumes before browser launch', () => {
+    for (const failure of ['capacity', 'inodes', 'permission', 'measurement']) {
+      const env = { TMPDIR: '/bad', XDG_CACHE_HOME: '/also-bad' };
+      expect(() => preparePlaywrightTempDirectory({
+        env, mkdir: vi.fn(),
+        access: () => { if (failure === 'permission') throw new Error('EACCES'); },
+        statfs: vi.fn(() => {
+          if (failure === 'measurement') throw new Error('EIO');
+          return { ...healthy, bavail: failure === 'capacity' ? 0 : healthy.bavail, ffree: failure === 'inodes' ? 0 : healthy.ffree };
+        }) as typeof import('node:fs').statfsSync,
+      })).toThrow(/No writable Playwright temporary directory/);
+      expect(env).toEqual({ TMPDIR: '/bad', XDG_CACHE_HOME: '/also-bad' });
+    }
+  });
+});
+
 describe('Playwright isolated webServer contract', () => {
   afterEach(() => {
     vi.resetModules();
+  });
+
+  it('preflights browser temp headroom before the default and inherited hosted profiles load', () => {
+    for (const name of ['playwright.config.ts', 'playwright.hosted-http1.config.ts']) {
+      const source = readFileSync(join(OPERATOR_DIR, name), 'utf8');
+      expect(source).toContain("from '../../scripts/lib/playwright-temp-directory.cjs'");
+      expect(source.indexOf('preparePlaywrightTempDirectory();')).toBeGreaterThan(0);
+      expect(source.indexOf('preparePlaywrightTempDirectory();')).toBeLessThan(source.indexOf('defineConfig({'));
+    }
+    expect(readFileSync(join(OPERATOR_DIR, 'playwright.hosted-workspace.config.ts'), 'utf8'))
+      .toContain('...transportProfile');
+  });
+
+  it('loads the preflight through Playwright native config transformation before collecting specs', () => {
+    const listing = execFileSync(process.execPath, [
+      require.resolve('@playwright/test/cli'), 'test', '--list', 'e2e/plan-audit.spec.ts', '--reporter=list',
+    ], { cwd: OPERATOR_DIR, encoding: 'utf8', timeout: 30000 });
+    expect(listing).toContain('sidebar audit opens report, navigates evidence, and reopens history');
+    expect(listing).toMatch(/Total: 1 test in 1 file/);
   });
 
   it('passes the selected port strictly and preserves Vite startup diagnostics', async () => {
