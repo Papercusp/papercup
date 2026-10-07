@@ -57,6 +57,7 @@ const {
   listActiveAwaitsForKey,
   fireAwaitsForKey,
   listParkedAwaitsForSubscribers,
+  hasPendingDeliberateWakeDelivery,
   listVerifiedWaitTakeoversForSubscribers,
   countActiveAwaitsByPrefixes,
   countActiveAwaitsByKeyShapes,
@@ -1849,6 +1850,35 @@ describe('await-event store (PG)', () => {
     // empty / all-blank input short-circuits to []
     expect(await listParkedAwaitsForSubscribers([])).toEqual([]);
     expect(await listParkedAwaitsForSubscribers([''])).toEqual([]);
+  });
+
+  it('recognizes an outstanding delivery from a fired deliberate await, but excludes platform interests', async () => {
+    const subscriberId = 'loop-end-fired-wake-delivery';
+    const deliberate = await registerAwait({ subscriberId, eventKey: 'release:green:loop-end' });
+    const fired = await fireAwaitsForKey({ eventKey: 'release:green:loop-end' });
+    expect(fired.map((row) => row.id)).toContain(deliberate.id);
+    await insertDeliveries({ awaits: fired, summary: 'event fired during the active turn' });
+    await rootSql`
+      UPDATE harness_shared.event_wake_deliveries
+         SET status = 'parked'
+       WHERE subscriber_id = ${subscriberId}
+         AND await_id = ${deliberate.id}
+    `;
+
+    expect(await hasPendingDeliberateWakeDelivery(subscriberId)).toBe(true);
+    expect(await hasPendingDeliberateWakeDelivery('loop-end-no-delivery')).toBe(false);
+    expect(await hasPendingDeliberateWakeDelivery('')).toBe(false);
+
+    const platformSubscriber = 'loop-end-platform-wake-delivery';
+    await registerAwait({
+      subscriberId: platformSubscriber,
+      eventKey: 'claim:released:WI-loop-end',
+      boundTo: { kind: 'work-item-claim', ref: 'WI-loop-end' },
+    });
+    const platformFired = await fireAwaitsForKey({ eventKey: 'claim:released:WI-loop-end' });
+    await insertDeliveries({ awaits: platformFired, summary: 'platform claim interest fired' });
+
+    expect(await hasPendingDeliberateWakeDelivery(platformSubscriber)).toBe(false);
   });
 
   it('excludes platform-armed claim and obligation reminders but keeps genuine lifecycle waits', async () => {

@@ -58,6 +58,7 @@ vi.mock('../../carry-note', () => ({ getLoopCarryNote: vi.fn(async () => null) }
 vi.mock('../../events/await/store', () => ({
   listActiveAwaits: vi.fn(async () => []),
   listParkedAwaitsForSubscribers: vi.fn(async () => []),
+  hasPendingDeliberateWakeDelivery: vi.fn(async () => false),
   INBOX_WAKE_KEY_PREFIX: 'coord:inbox-wake:',
 }));
 vi.mock('../../events/await/compose-store', () => ({
@@ -102,7 +103,11 @@ vi.mock('../../goals/wind-down-disposition', async (importOriginal) => {
 
 import { deactivateLoop, getLoopStatus } from '../../harness/routines/loop';
 import { getLoopCarryNote } from '../../carry-note';
-import { listActiveAwaits, listParkedAwaitsForSubscribers } from '../../events/await/store';
+import {
+  listActiveAwaits,
+  listParkedAwaitsForSubscribers,
+  hasPendingDeliberateWakeDelivery,
+} from '../../events/await/store';
 import { listActiveComposedRoots } from '../../events/await/compose-store';
 import { getModes } from '../../modes/store';
 import { checkOpenDirectivesGuard } from '../orders/open-directives-guard';
@@ -127,6 +132,7 @@ const acceptanceGateMock = evaluateGoalAcceptanceGate as unknown as ReturnType<t
 const listActiveAwaitsMock = listActiveAwaits as unknown as ReturnType<typeof vi.fn>;
 const listActiveComposedRootsMock = listActiveComposedRoots as unknown as ReturnType<typeof vi.fn>;
 const listParkedAwaitsMock = listParkedAwaitsForSubscribers as unknown as ReturnType<typeof vi.fn>;
+const pendingDeliberateWakeMock = hasPendingDeliberateWakeDelivery as unknown as ReturnType<typeof vi.fn>;
 const getModesMock = getModes as unknown as ReturnType<typeof vi.fn>;
 const checkOpenDirectivesGuardMock = checkOpenDirectivesGuard as unknown as ReturnType<typeof vi.fn>;
 
@@ -175,6 +181,8 @@ beforeEach(() => {
   listActiveComposedRootsMock.mockResolvedValue([]);
   listParkedAwaitsMock.mockReset();
   listParkedAwaitsMock.mockResolvedValue([]);
+  pendingDeliberateWakeMock.mockReset();
+  pendingDeliberateWakeMock.mockResolvedValue(false);
   getModesMock.mockReset();
   getModesMock.mockResolvedValue([]);
   readFleetWindDownLoopEndAuthorizationMock.mockReset();
@@ -268,6 +276,17 @@ describe('the P-012 wake-less autonomy guard', () => {
 
     expect(got.isError).toBe(false);
     expect(got.ended).toBe(true);
+    expect(deactivateLoopMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('allows a fired deliberate await whose wake delivery is still outstanding', async () => {
+    getModesMock.mockResolvedValue([mode('auto')]);
+    pendingDeliberateWakeMock.mockResolvedValue(true);
+
+    const got = await run({ reason: 'event fired while this turn was still running' });
+
+    expect(got).toMatchObject({ isError: false, ok: true, ended: true });
+    expect(pendingDeliberateWakeMock).toHaveBeenCalledWith('su-caller-own-id');
     expect(deactivateLoopMock).toHaveBeenCalledTimes(1);
   });
 

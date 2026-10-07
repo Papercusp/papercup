@@ -32,7 +32,12 @@ import {
 } from '../../goals/wind-down-disposition';
 import { evaluateGoalWindDownOutputs } from '../../goals/goal-io-validation';
 import { getLoopCarryNote } from '../../carry-note';
-import { listActiveAwaits, listParkedAwaitsForSubscribers, INBOX_WAKE_KEY_PREFIX } from '../../events/await/store';
+import {
+  listActiveAwaits,
+  listParkedAwaitsForSubscribers,
+  hasPendingDeliberateWakeDelivery,
+  INBOX_WAKE_KEY_PREFIX,
+} from '../../events/await/store';
 import { listActiveComposedRoots } from '../../events/await/compose-store';
 import { getModes } from '../../modes/store';
 import { modeImpliesAutonomy } from '../../modes/registry';
@@ -339,10 +344,13 @@ export default defineTool({
     // Both classifications come from their existing authorities:
     //   - modeImpliesAutonomy covers autonomy-axis modes AND overlays whose
     //     registry declaration implies one (goal/drain today, future modes free);
-    //   - listParkedAwaitsForSubscribers is the deliberate-park read. It excludes
-    //     inbox liveness plumbing, platform-armed claim/fleet interests,
-    //     announcements, and expired rows, none of which means the agent chose an
-    //     event as its next wake source. Its inbox-prefix exception includes only
+    //   - listParkedAwaitsForSubscribers is the deliberate-park read, and
+    //     hasPendingDeliberateWakeDelivery catches a deliberate one-shot that
+    //     already fired but whose delivery has not settled at the turn boundary.
+    //     Both exclude inbox liveness plumbing, platform-armed claim/fleet
+    //     interests, and announcements. The parked-await read also excludes
+    //     expired rows; an already-fired timeout wake still counts while its
+    //     delivery is outstanding. The inbox-prefix exception includes only
     //     bounded wake-on-timeout awaits; the unbounded expiring keepalive remains
     //     liveness plumbing.
     //
@@ -351,19 +359,23 @@ export default defineTool({
     // deactivateLoop; the explicit acknowledgement is the escape hatch. Keep
     // this after the existing goal/output gates so their error precedence and
     // ordinary no-op paths remain unchanged.
-    let deliberateParkedAwait: boolean | null = null;
+    let hasIndependentWakeSource: boolean | null = null;
     const wakeLessAutonomy =
       workspaceId && statusBefore?.active === true
-        ? await Promise.all([getModes(workspaceId, ownerId), listParkedAwaitsForSubscribers([ownerId])])
-            .then(([modes, parkedAwaits]) => {
-              deliberateParkedAwait = parkedAwaits.length > 0;
+        ? await Promise.all([
+            getModes(workspaceId, ownerId),
+            listParkedAwaitsForSubscribers([ownerId]),
+            hasPendingDeliberateWakeDelivery(ownerId),
+          ])
+            .then(([modes, parkedAwaits, hasPendingDelivery]) => {
+              hasIndependentWakeSource = parkedAwaits.length > 0 || hasPendingDelivery;
               const autonomyModes = modes.map((row) => row.mode).filter((mode) => modeImpliesAutonomy(mode));
-              return autonomyModes.length > 0 && parkedAwaits.length === 0 ? { autonomyModes } : null;
+              return autonomyModes.length > 0 && !hasIndependentWakeSource ? { autonomyModes } : null;
             })
             .catch(() => null)
         : null;
     const fleetMemberWindDown =
-      deliberateParkedAwait === false &&
+      hasIndependentWakeSource === false &&
       !args.acknowledgeWakeLessAutonomy &&
       workspaceId &&
       statusBefore?.active === true

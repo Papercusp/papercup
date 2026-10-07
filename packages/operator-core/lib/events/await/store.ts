@@ -1336,6 +1336,48 @@ export async function listParkedAwaitsForSubscribers(
 }
 
 /**
+ * A deliberate one-shot wake can fire while its subscriber is still in a turn.
+ * The await is no longer parked after `fired_at` is set, but its delivery may
+ * still be pending, parked, or in flight until the turn boundary. That queued
+ * delivery remains an independent wake source for loop:end.
+ *
+ * Keep the deliberateness filters aligned with listParkedAwaitsForSubscribers:
+ * platform-armed interests, announcements, the inbox keepalive, and cancelled
+ * source awaits do not authorize a loop stop.
+ */
+export async function hasPendingDeliberateWakeDelivery(subscriberId: string): Promise<boolean> {
+  if (!subscriberId) return false;
+  const { sql } = getOrgPg();
+  const ws = eventsWs();
+  const rows = await sql<Array<{ has_wake: boolean }>>`
+    SELECT EXISTS (
+      SELECT 1
+        FROM harness_shared.event_wake_deliveries AS d
+        JOIN harness_shared.event_awaits AS a
+          ON a.workspace_id = d.workspace_id AND a.id = d.await_id
+       WHERE d.workspace_id = ${ws}
+         AND d.subscriber_id = ${subscriberId}
+         AND a.subscriber_id = ${subscriberId}
+         AND d.status IN ('pending', 'parked', 'delivering')
+         AND a.policy = 'wake'
+         AND a.fired_at IS NOT NULL
+         AND a.cancelled_at IS NULL
+         AND (
+           a.event_key NOT LIKE ${INBOX_WAKE_KEY_PREFIX + '%'}
+           OR a.note LIKE ${EXPLICIT_PARK_NOTE_MARKER + '%'}
+           OR (
+             a.event_key LIKE ${INBOX_WAKE_KEY_PREFIX + '%'}
+             AND a.expires_ts IS NOT NULL
+             AND a.timeout_behavior = 'wake'
+           )
+         )
+         AND COALESCE(a.bound_to->>'kind', '') NOT IN ('work-item-claim', 'fleet-leadership', 'agent-obligation')
+    ) AS has_wake
+  `;
+  return rows[0]?.has_wake === true;
+}
+
+/**
  * A verified wait that reached an authoritative stalled/absent verdict needs to
  * remain leader-legible after the one-shot await has fired.  The wake payload is
  * transient; this read projects the durable verdict stored on event_awaits.
