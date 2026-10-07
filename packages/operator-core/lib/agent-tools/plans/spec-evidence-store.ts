@@ -2305,11 +2305,14 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
         : {
             testRunExecution: parsedTestRunExecution
               ? {
-                  ...(typeof row.test_run_status === 'string' ? { status: row.test_run_status } : {}),
+                  status: typeof row.test_run_status === 'string' ? row.test_run_status : null,
                   passed: parsedTestRunExecution.passed,
                   failed: parsedTestRunExecution.failed,
                   skipped: parsedTestRunExecution.skipped,
                   collectionFailed: parsedTestRunExecution.collectionFailed,
+                  ...(parsedTestRunExecution.passedCaseTitles !== undefined
+                    ? { passedCaseTitles: [...parsedTestRunExecution.passedCaseTitles] }
+                    : {}),
                   ...(parsedTestRunExecution.testLayer !== undefined
                     ? { testLayer: parsedTestRunExecution.testLayer }
                     : {}),

@@ -13,7 +13,11 @@ import type {
   SpecTestAdequacyCurrentFingerprint,
   SpecTestAdequacyRerunRecipe,
 } from '../../harness/improvements/observation-types';
-import { isRecordedTestLayer } from '@papercusp/test-config/execution-details';
+import {
+  isRecordedCaseTitle,
+  isRecordedTestLayer,
+  MAX_RECORDED_PASSED_CASES,
+} from '@papercusp/test-config/execution-details';
 
 export const SPEC_TEST_ADEQUACY_RUBRIC_REF = 'spec-test-adequacy';
 
@@ -126,10 +130,12 @@ export interface SpecEvidenceForAdequacy {
   } | null;
   /** Server-parsed counters for the bound test_runs row; null means its details were absent or invalid. */
   testRunExecution?: {
+    status?: string | null;
     passed: number;
     failed: number;
     skipped: number;
     collectionFailed: boolean;
+    passedCaseTitles?: string[];
   } | null;
   details: Record<string, unknown>;
   observedAt?: string;
@@ -312,7 +318,7 @@ export function activeSpecEvidence<T extends SpecEvidenceForAdequacy>(rows: read
     bucket.push(row);
     byReference.set(key, bucket);
   }
-  // Scenario and causal-pair ids are set-valued coverage metadata. When a re-bind
+  // Scenario, causal-pair, and test-case ids are set-valued coverage metadata. When a re-bind
   // changes only that metadata, the newest immutable row must retain the union from
   // earlier rows for the same proof; otherwise latestLogicalEvidence silently hides
   // coverage the unchanged run already established. A new run or changed fingerprint
@@ -329,7 +335,7 @@ export function activeSpecEvidence<T extends SpecEvidenceForAdequacy>(rows: read
       .filter((candidate) => proofIdentity(candidate) === proofIdentity(row));
     const mergedAdequacy = { ...adequacy };
     let changed = false;
-    for (const key of ['scenarioIds', 'causalPairIds'] as const) {
+    for (const key of ['scenarioIds', 'causalPairIds', 'testCases'] as const) {
       if (ownDetails.contractMetadataIssues?.includes(`${key}:invalid`)) continue;
       const values = [...new Set(sameProofRows.flatMap((candidate) => {
         const details = detailsOf(candidate);
@@ -665,10 +671,19 @@ function detailsOf(evidence: SpecEvidenceForAdequacy): AdequacyDetails {
   };
   const scenarioIds = idList('scenarioIds');
   const causalPairIds = idList('causalPairIds');
-  const testCases =
-    Array.isArray(raw.testCases) && raw.testCases.every((value) => typeof value === 'string' && value.length > 0)
-      ? raw.testCases as string[]
-      : undefined;
+  let testCases: string[] | undefined;
+  if (raw.testCases !== undefined) {
+    if (
+      Array.isArray(raw.testCases) &&
+      raw.testCases.length <= MAX_RECORDED_PASSED_CASES &&
+      raw.testCases.every(isRecordedCaseTitle) &&
+      new Set(raw.testCases).size === raw.testCases.length
+    ) {
+      testCases = [...raw.testCases];
+    } else {
+      contractMetadataIssues.push('testCases:invalid');
+    }
+  }
   const targeted =
     typeof raw.targeted === 'boolean'
       ? raw.targeted
