@@ -408,7 +408,7 @@ export default defineTool({
     seeAlso: [
       'work_items:complete (terminal state WITH a structured completion record)',
       'work_items:set_blocker { id, kind, ref, summary } (typed external event/gate/runtime/human blocker)',
-      'work_items:link { source, target, rel:"blocks" } (internal work-item dependency)',
+      'work_items:link { id, rel:"blocks", target_id } (internal work-item dependency)',
       'plans:set-status { item, status:"blocked" } (the source-of-truth park for plan-linked feature items)',
       'work_items:release (drop a claim without changing state; claimHold:true parks an issue-family item out of claim_next self-select — WI-2797)',
       'work_items:set_priority (steer backlog order, not lifecycle state)',
@@ -493,7 +493,7 @@ export default defineTool({
                   'For an external event, gate, runtime condition, or human capability, use ' +
                   'work_items:set_blocker { id, kind, capability, ref, summary, nextVerb } — it records the ' +
                   'machine-readable reason and parks the lifecycle. For another work-item dependency, use ' +
-                  'work_items:link { source: "<blocker-id>", target: "' + it.id + '", rel: "blocks" } instead; ' +
+                  'work_items:link { id: "<blocker-id>", target_id: "' + it.id + '", rel: "blocks" } instead; ' +
                   'do not write blocked state separately for a linked work dependency. ' +
                   // EI-21655300007082004: naming the verb is not the same as delivering it. On a
                   // trimmed client surface work_items:set_blocker does not resolve through a

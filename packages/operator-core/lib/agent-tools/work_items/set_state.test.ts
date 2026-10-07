@@ -180,6 +180,10 @@ describe('work_items:set_state handler (keyed-array)', () => {
     expect(String(b.results[0].error)).toMatch(/no active typed blocker/);
     expect(String(b.results[0].error)).toMatch(/work_items:set_blocker/);
     expect(String(b.results[0].error)).toMatch(/work_items:link/);
+    expect(String(b.results[0].error)).toContain(
+      'work_items:link { id: "<blocker-id>", target_id: "WI-standalone", rel: "blocks" }',
+    );
+    expect(String(b.results[0].error)).not.toContain('work_items:link { source:');
     expect(setM).not.toHaveBeenCalled();
     expect(armM).not.toHaveBeenCalled();
   });
@@ -263,6 +267,7 @@ describe('work_items:set_state — typed blocker guidance (WI-39529)', () => {
 
     expect(text).toContain('work_items:set_blocker');
     expect(text).toContain('work_items:link');
+    expect(text).toContain('work_items:link { id, rel:"blocks", target_id }');
     expect(text).toContain('active typed external blocker');
     expect(text).toContain('rel:"blocks"');
   });
