@@ -309,7 +309,7 @@ describe('scorecards:emit final dedup read-to-write mutex, real PG', () => {
         connection: { search_path: 'harness_shared, public' },
       });
       console.info('[grading-audit concurrency fixture] observer client created');
-      let activity: unknown[] = [];
+      let activity: readonly unknown[] = [];
       let diagnosticError: string | undefined;
       try {
         activity = await observer`

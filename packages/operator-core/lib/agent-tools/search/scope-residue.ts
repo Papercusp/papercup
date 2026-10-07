@@ -57,6 +57,8 @@ export const SOURCE_CORPUS: Readonly<Record<string, string | undefined>> = {
     'AGENT SESSION TRANSCRIPTS (session_turns) — what a claude/omp/codex session actually said, ' +
     "owner turns included. NOT the operator chat: that is 'turns'",
   coord_message: 'coord:* inter-agent traffic (coord_event_log)',
+  report:
+    'published reports visible to the caller (latest non-retired edition per lineage), including titles, summaries, and body text',
 };
 
 export interface ScopeResidue {

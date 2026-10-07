@@ -267,7 +267,7 @@ describe('admission lifecycle (P-003)', () => {
     const before = await item(wi);
     const update = applyExternalBlockerUpdate(
       before.payload,
-      { kind: 'event', capability: 'live-dependency', ref: 'trial-plan', summary: 'Which billing plan should the trial use?' },
+      { kind: 'event', capability: 'live-dependency', ref: 'trial-plan', summary: 'Which billing plan should the trial use?', nextVerb: 'events:await' },
       HOLDER,
       { autoAuthority: false },
     );
@@ -277,7 +277,7 @@ describe('admission lifecycle (P-003)', () => {
     await sync(source);
     expect(callsFor('T-2').filter(([cap]) => cap === 'ticket.comment')).toEqual([
       ['ticket.comment', `Picked up in Papercusp as ${wi}; ${HOLDER} is working on it.`],
-      ['ticket.comment', `Papercusp is waiting on this (${wi}): Which billing plan should the trial use?`],
+      ['ticket.comment', `Papercusp is waiting on this (${wi}): Which billing plan should the trial use? Next: events:await`],
     ]);
   });
 
