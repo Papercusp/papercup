@@ -5,9 +5,9 @@
   "accountableOwner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
   "population": {
     "failedFiles": 124,
-    "repairedFocused": 15,
+    "repairedFocused": 16,
     "repairedPeerFocused": 12,
-    "openUnknown": 97
+    "openUnknown": 96
   },
   "classes": {
     "assertion": 62,
@@ -15,7 +15,8 @@
     "missing-schema": 16,
     "blueprint-fixture": 1,
     "console-guard": 10,
-    "unclassified": 10,
+    "unclassified": 9,
+    "gym-run-identity-schema": 1,
     "local-perf-compaction-census": 1,
     "peer-dial-process-isolation": 1,
     "legacy-rubric-replay": 1,
@@ -1102,12 +1103,41 @@
     },
     {
       "path": "packages/operator-core/lib/gym/__tests__/loop-control-plane.integration.test.ts",
-      "class": "unclassified",
-      "state": "open-unknown",
-      "item": "WI-10006170",
+      "class": "gym-run-identity-schema",
+      "state": "repaired-focused",
+      "item": "WI-10007128",
       "lines": [
         15102
-      ]
+      ],
+      "diagnosis": "The gym schema still constrained variant/task/cycle/repeat across independent loops, rejecting distinct per-loop baseline run IDs. Additive gym migration002 drops only that obsolete key; run_id PK and evidence FKs remain intact.",
+      "beforeTestRun": 20894612,
+      "afterTestRun": 20894625,
+      "guardTestRun": 20894624,
+      "passed": 3,
+      "guardPassed": 3,
+      "skipped": 0,
+      "testSha256": "3f872f37a8b4594f13945aa3aba65bf7ebc89c041423256e597989d606ccc1b4",
+      "sourceFingerprints": {
+        "migration002Sha256": "9cb0167170e71bfb7bad9462ac9763346be881f2a89b3cb5095a6dce06fc6196",
+        "storeIntegrationSha256": "7a29f39bfe0999d341cb15ddeedcec9a79498d2cf6469fcc23cbd6d03813a731",
+        "loopDepsSha256": "a5e40f4a7dd43de0ffdea912c76cb446761da93bd2c65fc30b00d5355bb56905",
+        "storeWriterSha256": "505bce414e2c992e36828b99bb93b2becf6b087407086df99443538171bb02e4",
+        "migration001Sha256": "1e0af7156f8fad2c79b37a369faf8b575adcb64354b74870b9a3c00d9b0fe28c"
+      },
+      "latestLocalReceipt": {
+        "id": 20894625,
+        "status": "pass",
+        "commitSha": "8f7048ce7dd1abd70ba1bf2391c4f4e52282ea6d",
+        "worktreeDirty": true,
+        "isScratchConfig": false,
+        "runGroupId": null
+      },
+      "settlementManifestEvidenceHash": "ead5da99c7ecc7bc1e91e77585f310ad8385a8bce2094dbdac127648d4170413",
+      "latestReceiptMeaning": "Verified local causal repair and conventional upgrade/history/idempotency guard; terminal authority is proposed and source content settlement pending. No complete import/environment, final D006 or shipment claim.",
+      "nativePassLog": {
+        "path": "/tmp/wi-10007128-after.log",
+        "sha256": "b070be8123a0cc8c53522c7db971390db9794cadd607c454b86d74817eb89b52"
+      }
     },
     {
       "path": "packages/operator-core/lib/agent-tools/plan-items/plan-items-tools.integration.test.ts",
@@ -2050,7 +2080,7 @@
     },
     {
       "class": "unclassified",
-      "count": 10,
+      "count": 9,
       "status": "open-unknown",
       "item": "WI-10006170",
       "owner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
@@ -2291,6 +2321,17 @@
       ],
       "next": "Retain committed focused repair evidence; no unchanged completion replay or finalD006/readiness claim.",
       "commit": "ef934009deecb47896924f1eccc4beb4afaafe6c"
+    },
+    {
+      "class": "gym-run-identity-schema",
+      "count": 1,
+      "status": "repaired-focused",
+      "item": "WI-10007128",
+      "owner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
+      "scope": "gym-owned-schema-and-real-store-integration",
+      "rootCause": "Legacy evaluation tuple uniqueness excludes the per-loop run token. Distinct baseline run IDs still collided in the same gym database; additive migration002 removes only the obsolete constraint.",
+      "testRunIds": [20894612, 20894624, 20894625],
+      "next": "Retain the measured local repair and proposed terminal manifest. Do not replay terminal completion or monitor source settlement; full import/environment and final D006 remain unverified."
     }
   ],
   "prerequisites": [
