@@ -165,9 +165,9 @@ export default class AdminTestRunsPlaywrightReporter implements Reporter {
   private runRoot = resolveAgentWorkspaceRoot({});
   private worktreeBefore: WorktreeGitSnapshot | null = null;
 
-  async onBegin(config?: Pick<FullConfig, 'rootDir'>): Promise<void> {
+  onBegin(config?: Pick<FullConfig, 'rootDir'>): void {
     this.runRoot = resolveReporterSourceRoot(config?.rootDir);
-    this.worktreeBefore = await captureTestSourceSnapshot(this.runRoot);
+    this.worktreeBefore = captureTestSourceSnapshot(this.runRoot);
   }
 
   onTestEnd(test: TestCase, result: TestResult): void {
@@ -222,7 +222,7 @@ export default class AdminTestRunsPlaywrightReporter implements Reporter {
 
   async onEnd(): Promise<void> {
     try {
-      const worktreeAfter = await captureTestSourceSnapshot(this.runRoot);
+      const worktreeAfter = captureTestSourceSnapshot(this.runRoot);
       const worktreeDirty = computeWorktreeDirty(this.worktreeBefore ?? { commit: null, porcelain: null }, worktreeAfter);
       const dirtReason = [
         describeWorktreeDirt(this.worktreeBefore ?? { commit: null, porcelain: null }, worktreeAfter),

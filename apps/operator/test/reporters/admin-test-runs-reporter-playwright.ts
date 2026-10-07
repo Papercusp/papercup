@@ -227,9 +227,9 @@ export default class AdminTestRunsPlaywrightReporter implements Reporter {
   private worktreeBefore: WorktreeGitSnapshot | null = null;
   private runRoot = resolveAgentWorkspaceRoot({});
 
-  async onBegin(config?: Pick<FullConfig, 'rootDir'>): Promise<void> {
+  onBegin(config?: Pick<FullConfig, 'rootDir'>): void {
     this.runRoot = resolveReporterSourceRoot(config?.rootDir);
-    this.worktreeBefore = await captureTestSourceSnapshot(this.runRoot);
+    this.worktreeBefore = captureTestSourceSnapshot(this.runRoot);
   }
 
   onTestEnd(test: TestCase, result: TestResult): void {
@@ -296,7 +296,7 @@ export default class AdminTestRunsPlaywrightReporter implements Reporter {
     try {
       let worktreeAfter: WorktreeGitSnapshot = { commit: null, porcelain: null };
       try {
-        worktreeAfter = await captureTestSourceSnapshot(this.runRoot);
+        worktreeAfter = captureTestSourceSnapshot(this.runRoot);
       } catch {
         // D-007: missing proof of stability is dirty, never a false clean.
       }
