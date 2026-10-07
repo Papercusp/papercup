@@ -77,6 +77,25 @@ describe('logs:read — payload-tier shapers are WIRED (EI-20203342112661815)', 
   });
 });
 
+describe('logs:read — nested result fields are published to callers', () => {
+  it('declares collapsed-row timestamps and shaper markers in the result schema', () => {
+    const result = (logsReadTool as unknown as {
+      result: { toJSONSchema: () => { properties?: Record<string, unknown> } };
+    }).result.toJSONSchema();
+
+    expect(result.properties?.entries).toMatchObject({
+      type: 'array',
+      items: {
+        properties: {
+          lastTs: { type: 'string' },
+          clipped: { const: true },
+          _truncated: { const: true },
+        },
+      },
+    });
+  });
+});
+
 describe('logs:read — dispatch transaction boundary', () => {
   it('does not retain an ambient workspace transaction during journalctl host I/O', () => {
     expect((logsReadTool as unknown as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
