@@ -380,6 +380,41 @@ capture and recheck its own candidate because shared output can advance. Actual 
 native verification remains pending; these protocol and harness checks do not close public
 hosted or genuine BYOC Android acceptance.
 
+### Public Android pairing verified; attention blocked — 2026-10-07 16:20Z
+
+The maintained public `cloud-native` journey on owned emulator 5584 (API 36,
+16 KB pages) used a fresh owner-authenticated QR without changing its public
+HTTPS base. Immutable evidence is retained in
+`/tmp/android-p015-public-hosted-native-20261007-1620/result.json` and its
+`instrumentation.log`. The captured APK SHA-256 is
+`0c66d96ce3a205965e1bd32ef675362d6c17d44c7fd214046a0271725425db2c`;
+the installed APK matches. The test APK SHA-256 is
+`f5896c1b124b873d7b4c4b16e5c45311efa54ef19aebe74dab33c57bbcc20fa3`.
+Source base is `612461f42beef3bb99877656076d2e5090c08e68` with a dirty tree;
+the result records the individual source fingerprints. This is execution proof,
+not a clean committed-source or signed-release claim.
+
+The real Android JNI received the pairing response, saved credentials, and
+restored the encrypted seed and pin after activity recreation. A fresh client
+completed device, workspace and harness reads. The next call, `attention()`,
+failed with `503 attention_unavailable` at smoke-test line 148. The test records
+one executed JUnit test and one failure. Its safe failure proof retained
+`failedStage=fresh-client-reconnect-and-scope` and `failureClass=Server`.
+Cleanup revoked the newly created device and cleared local credentials. This
+verifies the readiness-frame Decode fix (`EI-25336668159113928`); full hosted
+acceptance remains open under `WI-10006956`. The attention failure is owned in
+`EI-25338280978263840`, with its root cause still unconfirmed. The earlier run's
+possible orphan remains a separate host-administration check.
+
+Harness item `EI-25336728975892198` is closed with scoped canonical regression
+evidence. `tools/tests/run-android-checks-test.sh cloud` now executes the actual
+runner `main()` failure/finally path for both an instrumentation assertion and
+a timeout. Both retain safe stage/class proof, exclude raw private log text,
+remove only owned input, and target only emulator 5584. The suite passes in
+`/tmp/android-p015-cloud-finally-guards.log`. These deterministic controls do not
+claim successful native operation coverage. Camera scanning, remaining public
+operations and genuine BYOC acceptance remain open.
+
 ## Historical discovery — 2026-10-06
 
 The following sections preserve the initial analysis and agreement context. Their gap states,
