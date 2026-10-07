@@ -3,9 +3,16 @@
  *
  * The refine mirrors set_claim_spec's exactly-one-of cupId|fleet gate.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import type { ZodTypeAny } from 'zod';
 import getClaimSpecTool from './get_claim_spec';
+
+const getClaimSpecRecord = vi.hoisted(() => vi.fn());
+
+vi.mock('../../scheduler/claim-spec-store', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../scheduler/claim-spec-store')>()),
+  getClaimSpecRecord: (...args: unknown[]) => getClaimSpecRecord(...args),
+}));
 
 const args = (getClaimSpecTool as { args: ZodTypeAny }).args;
 
@@ -16,6 +23,41 @@ describe('scheduler:get_claim_spec — args', () => {
 
   it('accepts cupId alone', () => {
     expect(args.safeParse({ cupId: 'su-bee-1' }).success).toBe(true);
+  });
+
+  it('rejects the literal self sentinel with an actionable handler error before reading a row', async () => {
+    getClaimSpecRecord.mockClear();
+    const ctx = { uiClientId: 'su-caller', isSuperuser: true, workspaceId: 'ws-1' };
+    const tool = getClaimSpecTool as unknown as {
+      handler: (input: unknown, context: unknown) => Promise<unknown>;
+    };
+
+    await expect(tool.handler({ cupId: 'self' }, ctx)).rejects.toMatchObject({
+      code: 'invalid_claim_spec_selector',
+      message: expect.stringContaining("{ cupId: 'su-caller' }"),
+    });
+    expect(getClaimSpecRecord).not.toHaveBeenCalled();
+  });
+
+  it('reads the exact caller owner id and preserves its fleet-inherited result', async () => {
+    getClaimSpecRecord.mockResolvedValueOnce({
+      source: 'fleet',
+      spec: { specId: 'fleet-lane' },
+      revision: 12,
+      updatedBy: 'fleet-leader',
+      updatedAt: '2026-10-07T00:00:00.000Z',
+      harnessSlug: 'papercusp',
+      fleetSlug: 'fleet-a',
+    });
+    const ctx = { uiClientId: 'su-caller', isSuperuser: true, workspaceId: 'ws-1' };
+    const tool = getClaimSpecTool as unknown as {
+      handler: (input: unknown, context: unknown) => Promise<{ data: Record<string, unknown> }>;
+    };
+
+    const result = await tool.handler({ cupId: 'su-caller' }, ctx);
+
+    expect(getClaimSpecRecord).toHaveBeenCalledWith({ cupId: 'su-caller', workspaceId: 'ws-1' });
+    expect(result.data).toMatchObject({ source: 'fleet', revision: 12, fleetSlug: 'fleet-a' });
   });
 
   it('accepts fleet alone', () => {
