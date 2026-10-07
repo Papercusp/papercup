@@ -3468,7 +3468,9 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
       );
       await expect(
         real.setupTree(candidate, { preparedSource: true }),
-      ).rejects.toThrow(/invalid publication token|replaced after validation/i);
+      ).rejects.toThrow(
+        /invalid publication token|replaced (?:before its selection lease could be acquired|after validation)/i,
+      );
     } finally {
       if (priorAfterCopyHook === undefined)
         delete process.env.DEPENDENCY_GENERATION_AFTER_COPY_HOOK;
