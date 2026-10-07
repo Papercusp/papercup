@@ -352,6 +352,28 @@ describe('openAcceptanceBarAmendmentReview (P-006)', () => {
     expect(brief).not.toContain('coord:send');
   });
 
+  it('front-loads spill recovery for a long review brief', () => {
+    const changes = [
+      { barKey: 'R-1', kinds: ['bar-meaning'], fields: ['model'] },
+      { barKey: 'R-2', kinds: ['bar-meaning'], fields: ['model'] },
+    ];
+    const patch = {
+      criteria: [
+        { key: 'r-1', barKey: 'R-1', model: 'R-1 changed contract '.repeat(180) },
+        { key: 'r-2', barKey: 'R-2', model: 'R-2 changed contract '.repeat(180) },
+      ],
+    };
+    const brief = buildAmendmentReviewBrief({
+      ...baseInput,
+      preview: { ...baseInput.preview, changes },
+      patch,
+    });
+
+    expect(brief.length).toBeGreaterThan(5000);
+    expect(brief.indexOf('capability:read')).toBeLessThan(800);
+    expect(brief.slice(0, 800)).toContain('eof:true');
+  });
+
   it('preserves changed criteria after a large unchanged prefix', () => {
     const unchanged = Array.from({ length: 12 }, (_, index) => ({ key: `R-${index + 2}`, model: 'unchanged '.repeat(35) }));
     const changed = { key: 'R-1', model: 'complete changed falsifier after the prefix' };

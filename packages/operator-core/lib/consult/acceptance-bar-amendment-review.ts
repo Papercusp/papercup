@@ -242,8 +242,9 @@ export interface FreshReviewerAnswerTarget {
 
 /**
  * What the routed reviewer reads. It carries the approval JSON and the patch
- * itself because no tool reads a thread post by id, and it names the one-line
- * answer the apply guard accepts (`approve thread-post:<id>`).
+ * itself so the reviewer can assess the exact request from the consult without
+ * relying on a separate thread-post lookup. It names the one-line answer the
+ * apply guard accepts (`approve thread-post:<id>`).
  *
  * With `answerOn` it is the FRESH reviewer's brief (WI-10003299): same content,
  * but the reviewer was launched rather than routed, runs as a judge (no
@@ -261,6 +262,7 @@ export function buildAmendmentReviewBrief(
     ? `work_items:comment { id:'${answerOn.workItemId}'${answerOn.harness ? `, harness:'${answerOn.harness}'` : ''} }`
     : '';
   return [
+    'Before judging, read the complete brief. If conversations:get shows `_projection.truncated`, use `capability:read` with its returned scratch cursor through `eof:true`; do not decide from the excerpt.',
     answerOn
       ? `Outside-lineage review of a started acceptance-BAR amendment to ${input.rubricRef}. The relevance router found no eligible reviewer, so ${ACCEPTANCE_BAR_AMENDMENT_REVIEW_ACTOR} launched you fresh: you are outside the implementer's lineage, and the apply guard re-checks that from your post.`
       : `Outside-lineage review of a started acceptance-BAR amendment to ${input.rubricRef}. The relevance router picked you and screened you with rubrics:check-approver: you are outside the implementer's lineage.`,
