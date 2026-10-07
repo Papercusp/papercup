@@ -19,6 +19,7 @@ import {
   type CoordKind,
   type InboxOptions,
 } from '@papercusp/coordination/core';
+import { parseBody } from '@papercusp/coordination/event-log';
 import { coordLog, coordWorkspaceId, coordSql, coordHasPgFastPath } from './log';
 import { getLineEnvelopeById } from './line-event-by-id';
 import { expandAudienceDetailed, hasAudienceSelector, type UnreachableAudience } from './audience';
@@ -672,8 +673,8 @@ export async function readInbox(
     const sinceBound = opts.since_ts
       ? new Date(new Date(opts.since_ts).getTime() - INBOX_SINCE_TS_SKEW_PAD_MS).toISOString()
       : null;
-    const rows = await sql<{ body: unknown }[]>`
-      SELECT body
+    const rows = await sql<{ body: unknown; ts: unknown; msg_id: string }[]>`
+      SELECT body, ts, msg_id
         FROM harness_shared.coord_event_log
        WHERE workspace_id = ${coordWorkspaceId()}
          AND surface = 'messages'
@@ -694,7 +695,7 @@ export async function readInbox(
           'returned; a caller doing a genuine full-history backfill should page via since_ts.',
       );
     }
-    const lines = rows.map((r) => (typeof r.body === 'string' ? JSON.parse(r.body) : r.body) as CoordEnvelope);
+    const lines = rows.map((r) => parseBody(r.body, r));
     return suppressRetracted(filterInbox(lines, ownerId, opts), collectRetractedIds(lines));
   }
   const lines = await coordLog.readLines('messages');
@@ -725,8 +726,8 @@ export async function readDirectedInbox(
     const sinceBound = opts.since_ts
       ? new Date(new Date(opts.since_ts).getTime() - INBOX_SINCE_TS_SKEW_PAD_MS).toISOString()
       : null;
-    const rows = await sql<{ body: unknown }[]>`
-      SELECT body
+    const rows = await sql<{ body: unknown; ts: unknown; msg_id: string }[]>`
+      SELECT body, ts, msg_id
         FROM harness_shared.coord_event_log
        WHERE workspace_id = ${coordWorkspaceId()}
          AND surface = 'messages'
@@ -736,7 +737,7 @@ export async function readDirectedInbox(
        ORDER BY id DESC
        LIMIT ${DIRECTED_INBOX_ROW_CAP}
     `;
-    const lines = rows.map((r) => (typeof r.body === 'string' ? JSON.parse(r.body) : r.body) as CoordEnvelope);
+    const lines = rows.map((r) => parseBody(r.body, r));
     return directed(suppressRetracted(filterInbox(lines, ownerId, opts), collectRetractedIds(lines)));
   }
   const lines = await coordLog.readLines('messages');
@@ -835,10 +836,10 @@ async function pageCoordEventLogDesc(params: {
   while (pages < INBOX_MAX_PAGES) {
     // Explicit annotation: `beforeId` is assigned FROM `rows` and then read back
     // into the next iteration's query, which TS otherwise flags as circular (TS7022).
-    const rows: { id: string | number; body: unknown }[] = await sql<
-      { id: string | number; body: unknown }[]
+    const rows: { id: string | number; body: unknown; ts: unknown; msg_id: string }[] = await sql<
+      { id: string | number; body: unknown; ts: unknown; msg_id: string }[]
     >`
-      SELECT id, body
+      SELECT id, body, ts, msg_id
         FROM harness_shared.coord_event_log
        WHERE workspace_id = ${coordWorkspaceId()}
          AND surface = 'messages'
@@ -850,7 +851,7 @@ async function pageCoordEventLogDesc(params: {
     `;
     pages += 1;
     for (const r of rows) {
-      raw.push((typeof r.body === 'string' ? JSON.parse(r.body) : r.body) as CoordEnvelope);
+      raw.push(parseBody(r.body, r));
     }
     // A short page means we reached the end of this owner's matching history.
     if (rows.length < INBOX_PAGE_ROWS) {
@@ -1223,8 +1224,8 @@ export async function readOutbox(
         ? new Date(sinceMs - INBOX_SINCE_TS_SKEW_PAD_MS).toISOString()
         : null;
 
-    const rows = await sql<{ body: unknown }[]>`
-      SELECT body
+    const rows = await sql<{ body: unknown; ts: unknown; msg_id: string }[]>`
+      SELECT body, ts, msg_id
         FROM harness_shared.coord_event_log
        WHERE workspace_id = ${coordWorkspaceId()}
          AND surface = 'messages'
@@ -1240,9 +1241,7 @@ export async function readOutbox(
           'returned; a caller doing a genuine full-history backfill should page via since_ts.',
       );
     }
-    const lines = rows.map(
-      (r) => (typeof r.body === 'string' ? JSON.parse(r.body) : r.body) as CoordEnvelope,
-    );
+    const lines = rows.map((r) => parseBody(r.body, r));
     return filterOutbox(lines, ownerId, sinceMs);
   }
   const lines = await coordLog.readLines('messages');
@@ -1370,8 +1369,8 @@ export async function readInvolvingOwner(
 ): Promise<CoordEnvelope[]> {
   if (coordHasPgFastPath()) {
     const sql = coordSql();
-    const rows = await sql<{ body: unknown }[]>`
-      SELECT body
+    const rows = await sql<{ body: unknown; ts: unknown; msg_id: string }[]>`
+      SELECT body, ts, msg_id
         FROM harness_shared.coord_event_log
        WHERE workspace_id = ${coordWorkspaceId()}
          AND surface = 'messages'
@@ -1391,9 +1390,7 @@ export async function readInvolvingOwner(
           'OLDEST matching rows beyond the cap were NOT returned.',
       );
     }
-    return rows.map(
-      (r) => (typeof r.body === 'string' ? JSON.parse(r.body) : r.body) as CoordEnvelope,
-    );
+    return rows.map((r) => parseBody(r.body, r));
   }
   return coordLog.readLines('messages');
 }
@@ -1883,23 +1880,10 @@ export async function readThread(rootMsgId: string): Promise<CoordEnvelope[]> {
        ORDER BY e.id ASC
     `;
     const all = rows.map((row) => {
-      const parsed = (typeof row.body === 'string' ? JSON.parse(row.body) : row.body) as
-        | Record<string, unknown>
-        | null;
-      const envelope: Record<string, unknown> =
-        parsed && typeof parsed === 'object' ? { ...parsed } : {};
-      // Match PgCoordLog's read boundary: remote/federated rows can have a
-      // malformed body, so the NOT-NULL columns backstop the fold's required
-      // identity/order fields. The normalized scope column is authoritative.
-      if ((typeof envelope.ts !== 'string' || !envelope.ts) && row.ts != null) {
-        envelope.ts = row.ts instanceof Date ? row.ts.toISOString() : String(row.ts);
-      }
-      if ((typeof envelope.msg_id !== 'string' || !envelope.msg_id) && row.msg_id) {
-        envelope.msg_id = row.msg_id;
-      }
+      const envelope = parseBody(row.body, row);
       if (row.harness_slug == null) delete envelope.harness_slug;
       else envelope.harness_slug = row.harness_slug;
-      return envelope as CoordEnvelope;
+      return envelope;
     });
     return foldThread(all, rootMsgId);
   }

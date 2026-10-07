@@ -81,15 +81,18 @@ export interface PgCoordLogOptions {
  * (`prepare: false`), so parse a string defensively — same posture as
  * PgPresenceStore's `parseFiles`.
  *
- * WI-3912: also BACKSTOPS `ts`/`msg_id` from the row's own NOT-NULL columns
- * when `body` itself is missing/blank them. Every LOCAL write path
+ * WI-3912: also BACKSTOPS a missing/blank `ts` from the row's own NOT-NULL
+ * column and canonicalizes `msg_id` from its indexed column. Every LOCAL write
+ * path
  * (appendLine/putEvent/putEvents) stamps the columns FROM the envelope, so
  * body and column agree by construction for local rows — but a FEDERATED
  * remote row folds whatever the peer sent as `body` verbatim (fold-apply
  * does not re-validate CoordEnvelope shape), so a malformed/incomplete
  * remote envelope (observed live: coord_event_log id 458510, a deliberate
  * `origin=remote` test probe body with no `ts`/`msg_id` at all) can land in
- * the log with a body that violates the CoordEnvelope contract. Every
+ * the log with a body that violates the CoordEnvelope contract. Older rows can
+ * also contain a non-empty body.msg_id that differs from the indexed row id;
+ * the column identity must win so feed and by-id reads agree. Every
  * reader downstream (feed.ts's `compareByTsThenId`, which calls
  * `.localeCompare` on `a.ts`/`a.msg_id` unconditionally) assumed that
  * contract always holds — ONE such row made `coord:feed` throw a
@@ -100,13 +103,14 @@ export interface PgCoordLogOptions {
  * future malformed row, local or remote) in one place instead of hardening
  * every consumer's sort/compare call individually.
  */
-function parseBody(v: unknown, fallback?: { ts?: unknown; msg_id?: unknown }): CoordEnvelope {
+export function parseBody(v: unknown, fallback?: { ts?: unknown; msg_id?: unknown }): CoordEnvelope {
   const parsed = (typeof v === 'string' ? JSON.parse(v) : v) as Record<string, unknown>;
   if ((typeof parsed.ts !== 'string' || !parsed.ts) && fallback?.ts != null) {
     parsed.ts = fallback.ts instanceof Date ? fallback.ts.toISOString() : String(fallback.ts);
   }
-  if ((typeof parsed.msg_id !== 'string' || !parsed.msg_id) && fallback?.msg_id != null) {
-    parsed.msg_id = String(fallback.msg_id);
+  if (fallback?.msg_id != null) {
+    const rowMsgId = String(fallback.msg_id);
+    if (parsed.msg_id !== rowMsgId) parsed.msg_id = rowMsgId;
   }
   return parsed as CoordEnvelope;
 }

@@ -109,6 +109,21 @@ describe('readThread — PG graph pushdown', () => {
     expect(entry?.ts).toBe('2026-08-28T00:00:01.000Z');
   });
 
+  it('uses the indexed row id when a legacy body carries a conflicting id', async () => {
+    sqlMock.mockResolvedValue([
+      {
+        body: env({ msg_id: 'legacy-stale-body-id' }),
+        ts: '2026-08-28T00:00:01.000Z',
+        msg_id: 'row-canonical-id',
+        harness_slug: null,
+      },
+    ]);
+
+    const [entry] = await readThread('row-canonical-id');
+
+    expect(entry?.msg_id).toBe('row-canonical-id');
+  });
+
   it('a query error propagates and never loads the whole surface (host-memory-reduction-2026-09-27 D-011)', async () => {
     sqlMock.mockRejectedValue(new Error('connection terminated'));
 
