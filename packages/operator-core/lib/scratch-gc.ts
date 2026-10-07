@@ -424,16 +424,23 @@ function scheduleDeferredUsageRefresh(workspaceId: string, entry: ScratchUsageEn
 }
 
 /** The same FIFO phase serves the daily sweep and request-time async quota recovery. */
-async function evictWorkspaceQuota(workspaceId: string, targetBytes: () => number): Promise<{
+async function evictWorkspaceQuota(workspaceId: string, targetBytes: () => number, reconcileReservations = false): Promise<{
   used: number; evictions: number; bytes: number;
 }> {
   const wsRoot = scratchRootForWorkspace(workspaceId);
   const entry = usageEntry(workspaceId);
   const writeGeneration = entry.writeGeneration;
   const hadActiveWrites = [...entry.writes.values()].some((write) => write.reserved);
-  let used = await sizeOfDirAsync(wsRoot);
+  // Request-time recovery blocks new reservations until this walk finishes. Keep references
+  // to existing writers even if they complete during the walk, and account only for bytes
+  // the walk did not see. Retaining the old cache here would retain other hosts' deleted runs
+  // and falsely refuse every spill while a writer is active.
+  const writers = reconcileReservations ? [...entry.writes.values()].filter((write) => write.reserved) : [];
+  const observedWriterBytes = new Map(writers.map((write) => [write.filePath, 0]));
+  let used = await sizeOfDirAsync(wsRoot, observedWriterBytes);
   let evictions = 0;
   let bytes = 0;
+  const evictedRuns: string[] = [];
   if (used > targetBytes()) {
     const runs = await runDirsOf(wsRoot);
     runs.sort((a, b) => a.mtimeMs - b.mtimeMs);
@@ -444,12 +451,22 @@ async function evictWorkspaceQuota(workspaceId: string, targetBytes: () => numbe
       if ([...entry.writes.values()].some((write) => write.filePath.startsWith(run.dir + sep))) continue;
       await rmAsync(run.dir, { recursive: true, force: true });
       used -= runBytes;
+      evictedRuns.push(run.dir);
       evictions += 1;
       bytes += runBytes;
       evictedBytesTotal += runBytes;
     }
   }
-  if (hadActiveWrites || entry.writeGeneration !== writeGeneration) {
+  const overlappingWrites = hadActiveWrites || entry.writeGeneration !== writeGeneration;
+  if (reconcileReservations) {
+    entry.bytes = used + writers.reduce((sum, write) => {
+      // A failed writer drops its reservation; a completed writer's run may have been evicted.
+      if (!write.reserved || evictedRuns.some((run) => write.filePath.startsWith(run + sep))) return sum;
+      return sum + Math.max(0, write.bytes - (observedWriterBytes.get(write.filePath) ?? 0));
+    }, 0);
+    entry.measuredAt = Date.now();
+    entry.refreshDeferred = overlappingWrites;
+  } else if (overlappingWrites) {
     // The size walk may have included only part of an in-flight write. Adjust the prior
     // reservation-based total by exactly the bytes evicted, then re-measure once writers settle.
     entry.bytes = Math.max(0, entry.bytes - bytes);
@@ -468,7 +485,7 @@ async function evictWorkspaceQuota(workspaceId: string, targetBytes: () => numbe
  * time): it never blocks the event loop, and it occupies at most one libuv threadpool thread,
  * so a slow disk can't starve the pool other async I/O shares.
  */
-async function sizeOfDirAsync(dir: string): Promise<number> {
+async function sizeOfDirAsync(dir: string, observedFileBytes?: Map<string, number>): Promise<number> {
   let entries;
   try {
     entries = await readdirAsync(dir, { withFileTypes: true });
@@ -479,10 +496,12 @@ async function sizeOfDirAsync(dir: string): Promise<number> {
   for (const entry of entries) {
     const child = join(dir, entry.name);
     if (entry.isDirectory()) {
-      total += await sizeOfDirAsync(child);
+      total += await sizeOfDirAsync(child, observedFileBytes);
     } else {
       try {
-        total += (await statAsync(child)).size;
+        const bytes = (await statAsync(child)).size;
+        total += bytes;
+        if (observedFileBytes?.has(child)) observedFileBytes.set(child, bytes);
       } catch {
         /* vanished mid-walk (GC) — skip */
       }
@@ -642,7 +661,7 @@ export async function writeWithScratchQuota(
         entry.recovering = (async () => {
           if (entry.refreshing) await entry.refreshing;
           await evictWorkspaceQuota(opts.workspaceId, () => Math.max(0, WORKSPACE_QUOTA_BYTES -
-            [...entry.writes.values()].reduce((sum, request) => sum + request.bytes, 0)));
+            [...entry.writes.values()].reduce((sum, request) => sum + request.bytes, 0)), true);
         })().finally(() => { entry.recovering = null; });
       }
       await entry.recovering;
@@ -654,7 +673,10 @@ export async function writeWithScratchQuota(
   } finally {
     entry.writes.delete(token);
     entry.writeGeneration += 1;
-    if (pending.reserved && !succeeded) entry.bytes = Math.max(0, entry.bytes - opts.bytes);
+    if (pending.reserved && !succeeded) {
+      entry.bytes = Math.max(0, entry.bytes - opts.bytes);
+      pending.reserved = false;
+    }
     scheduleDeferredUsageRefresh(opts.workspaceId, entry);
   }
 }
