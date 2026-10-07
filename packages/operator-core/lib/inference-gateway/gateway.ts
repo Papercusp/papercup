@@ -8508,7 +8508,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
     const onResClose = () => abortRequest('codex downstream response closed');
     req.once('aborted', onReqAborted);
     res.once('close', onResClose);
-    res.setTimeout(downstreamIdleMs, () => res.destroy());
+    // Auth and bounded quota-prefix inspection withhold bytes intentionally.
+    // Kernel TTFB/request-ceiling guards own this phase; socket idle starts at relay.
+    res.setTimeout(0, () => res.destroy());
 
     // Per-attempt bookkeeping the kernel deliberately does NOT own.
     let attemptsSeen = 0;
@@ -8959,6 +8961,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
                 pendingAcceptedHead = { status, headers: outHeaders };
                 res.setTimeout(0);
               } else {
+                res.setTimeout(downstreamIdleMs);
                 res.writeHead(status, outHeaders);
               }
             },

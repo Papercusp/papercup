@@ -853,6 +853,72 @@ describe('Codex OAuth quota errors inside successful HTTP streams', () => {
     ? { type: kind, error: quota }
     : { type: kind, response: { id: 'failed-a', error: quota } };
 
+  it('calibrates quota and non-quota fixtures against native Codex response.failed classifications', async () => {
+    // Pinned native protocol controls, rather than assuming every error means quota:
+    // https://github.com/openai/codex/blob/rust-v0.160.1/codex-rs/codex-api/src/sse/responses.rs
+    // Native quota_exceeded_error_is_fatal and context_window_error_is_fatal use this envelope.
+    for (const code of ['insufficient_quota', 'context_length_exceeded']) {
+      const accounts = [cli('chatgpt-a'), cli('chatgpt-b')];
+      const pool = makePool([{ accountId: 'chatgpt-b' }]);
+      const errorWire = frame({ type: 'response.failed', response: {
+        id: 'native-protocol-control', status: 'failed', error: { code, message: code },
+      } });
+      const h = harness(async (_url, init) => upstream(200, { 'content-type': 'text/event-stream' },
+        sseBody(init.diagnosticAccountId === 'chatgpt-a' ? errorWire : 'healthy-account-success')),
+      { accounts, pool });
+      await executeGatewayRequestKernel(h.options);
+      expect(h.prepared.map((p) => p.accountId)).toEqual(code === 'insufficient_quota'
+        ? ['chatgpt-a', 'chatgpt-b'] : ['chatgpt-a']);
+      expect(h.written.join('')).toBe(code === 'insufficient_quota' ? 'healthy-account-success' : errorWire);
+      expect(pool.exhaustedCalls.map((p) => p.id)).toEqual(code === 'insufficient_quota' ? ['chatgpt-a'] : []);
+    }
+  });
+
+  it('preserves sibling-IP recovery for a transient rate_limit_exceeded SSE response', async () => {
+    const accounts = [cli('chatgpt-a'), cli('chatgpt-b')];
+    const pool = makePool([{ accountId: 'chatgpt-b' }]);
+    let calls = 0;
+    const h = harness(async () => ++calls === 1
+      ? upstream(200, { 'content-type': 'text/event-stream', 'retry-after': '1' }, sseBody(frame({
+          type: 'response.failed', response: { error: { code: 'rate_limit_exceeded', message: 'retry in 1 second' } },
+        })))
+      : upstream(200, {}, sseBody('same-account-success')), {
+      accounts, pool, siblingEgressAvailable: () => true,
+      rateReset: () => ({ resetAt: Date.now() + 1000, retryAfterMs: 1000, transient: true }),
+    });
+    await executeGatewayRequestKernel(h.options);
+    expect(h.prepared.map((p) => p.accountId)).toEqual(['chatgpt-a', 'chatgpt-a']);
+    expect(h.written.join('')).toBe('same-account-success');
+    expect(pool.exhaustedCalls).toEqual([]);
+    expect(h.cooled).toHaveLength(1);
+  });
+
+  it('looks past harmless response preludes before quota exhaustion without relaying the failed response', async () => {
+    const accounts = [cli('chatgpt-a'), cli('chatgpt-b')];
+    const pool = makePool([{ accountId: 'chatgpt-b' }]);
+    const h = harness(async (_url, init) => init.diagnosticAccountId === 'chatgpt-a'
+      ? upstream(200, { 'content-type': 'Text/Event-Stream' }, sseBody(
+          frame({ type: 'response.created' }), frame({ type: 'response.in_progress' }), frame(failed('response.failed'))))
+      : upstream(200, {}, sseBody('healthy-account-success')), { accounts, pool });
+    await executeGatewayRequestKernel(h.options);
+    expect(h.prepared.map((p) => p.accountId)).toEqual(['chatgpt-a', 'chatgpt-b']);
+    expect(h.written.join('')).toBe('healthy-account-success');
+  });
+
+  it('replays a pending read exactly once when the prelude lookahead expires', async () => {
+    const prelude = frame({ type: 'response.created' });
+    const output = frame({ type: 'response.output_text.delta', delta: 'slow first token' });
+    const body = { async *[Symbol.asyncIterator]() {
+      yield Buffer.from(prelude);
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      yield Buffer.from(output);
+    } };
+    const h = harness(async () => upstream(200, { 'content-type': 'text/event-stream' }, body));
+    await executeGatewayRequestKernel(h.options);
+    expect(h.prepared).toHaveLength(1);
+    expect(h.written.join('')).toBe(prelude + output);
+  });
+
   it.each(['error', 'response.failed'] as const)('fails over a %s quota event before committing any failed response', async (kind) => {
     const accounts = [cli('chatgpt-a'), cli('chatgpt-b')];
     const pool = makePool([{ accountId: 'chatgpt-b' }]);
@@ -876,6 +942,24 @@ describe('Codex OAuth quota errors inside successful HTTP streams', () => {
     expect(h.prepared.map((p) => p.accountId)).toEqual(['chatgpt-a']);
     expect(h.started[0]!.status).toBe(429);
     expect(pool.exhaustedCalls).toEqual([]);
+  });
+
+  it('cools only the egress for a late transient throttle without replaying output or retiring the account', async () => {
+    const accounts = [cli('chatgpt-a'), cli('chatgpt-b')];
+    const pool = makePool([{ accountId: 'chatgpt-b' }]);
+    const output = frame({ type: 'response.output_text.delta', delta: 'already visible' });
+    const throttle = frame({ type: 'response.failed', response: {
+      error: { code: 'rate_limit_exceeded', message: 'retry in 1 second' },
+    } });
+    const h = harness(async () => upstream(200, { 'content-type': 'text/event-stream' }, sseBody(output, throttle)), {
+      accounts, pool,
+      rateReset: () => ({ resetAt: Date.now() + 1000, retryAfterMs: 1000, transient: true }),
+    });
+    await executeGatewayRequestKernel(h.options);
+    expect(h.prepared.map((p) => p.accountId)).toEqual(['chatgpt-a']);
+    expect(h.written.join('')).toBe(output + throttle);
+    expect(pool.exhaustedCalls).toEqual([]);
+    expect(h.cooled).toEqual([{ key: 'chatgpt-a:default', ms: 1000 }]);
   });
 
   it('preserves non-quota errors and never replays already-visible output', async () => {

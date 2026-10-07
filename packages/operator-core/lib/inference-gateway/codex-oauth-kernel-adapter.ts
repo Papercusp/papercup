@@ -278,30 +278,37 @@ function egressView(account: CodexCliAccount, token: () => Promise<string>): Act
   };
 }
 
-type StreamQuota = { error: Record<string, unknown>; resetAt: number | null };
+type StreamQuota = { error: Record<string, unknown>; resetAt: number | null; accountWide: boolean };
+type QuotaFrame = StreamQuota | 'prelude' | null;
 const QUOTA_FRAME_MAX_BYTES = 64 * 1024;
+const QUOTA_PRELUDE_PEEK_MS = 200;
 const CODEX_QUOTA_CODES = new Set(['usage_limit_reached', 'usage_limit_exceeded', 'rate_limit_exceeded', 'insufficient_quota']);
 
 /** Inspect protocol error events, never model output containing quota-looking prose. */
-function quotaFrame(frame: string): StreamQuota | null {
+function quotaFrame(frame: string): QuotaFrame {
   const data = frame.split(/\r?\n/).filter((line) => line.startsWith('data:'))
     .map((line) => line.slice(5).trimStart()).join('\n');
   let event: { type?: string; error?: Record<string, unknown>; response?: { error?: Record<string, unknown> } };
   try { event = JSON.parse(data); } catch { return null; }
   if (!event || typeof event !== 'object') return null;
+  if (event.type === 'response.created' || event.type === 'response.in_progress') return 'prelude';
   const error = event.type === 'error' ? event.error : event.type === 'response.failed' ? event.response?.error : null;
   if (!error || typeof error !== 'object' || !CODEX_QUOTA_CODES.has(String(error.code ?? error.type))) return null;
   const reset = error.resets_at;
-  return { error, resetAt: typeof reset === 'number' && Number.isFinite(reset) && reset > 0 ? reset * 1000 : null };
+  return {
+    error,
+    resetAt: typeof reset === 'number' && Number.isFinite(reset) && reset > 0 ? reset * 1000 : null,
+    accountWide: String(error.code ?? error.type) !== 'rate_limit_exceeded',
+  };
 }
 
 function quotaDecoder() {
   const decoder = new StringDecoder('utf8');
   let carry = '';
   let oversized = false;
-  return (chunk: Uint8Array): Array<StreamQuota | null> => {
+  return (chunk: Uint8Array): QuotaFrame[] => {
     carry += decoder.write(Buffer.from(chunk));
-    const frames: Array<StreamQuota | null> = [];
+    const frames: QuotaFrame[] = [];
     const boundary = /\r?\n\r?\n/g;
     let match: RegExpExecArray | null;
     let start = 0;
@@ -321,7 +328,8 @@ function quotaDecoder() {
   };
 }
 
-/** Read only the opening SSE frame before the response is committed. Later quota errors
+/** Inspect the opening SSE frames before the response is committed. Harmless response
+ * preludes get a short bounded lookahead, never a wait for a long model generation. Later quota errors
  * cannot safely replay emitted tool/output events, but must retire the account for the
  * next request in this same session. This extends the existing kernel retry/park path. */
 async function inspectQuotaStream(
@@ -335,27 +343,47 @@ async function inspectQuotaStream(
   let size = 0;
   let ended = false;
   let cancelled = false;
+  let pending: ReturnType<typeof iterator.next> | null = null;
+  let preludeDeadline = 0;
+  const peekExpired = Symbol('quota-prelude-peek-expired');
   const cancel = async () => {
     if (cancelled) return;
     cancelled = true;
+    // Unblock an outstanding read before returning its iterator.
+    await body.cancel?.();
     if (iterator.return) await iterator.return();
-    else await body.cancel?.();
   };
   try {
     while (size < QUOTA_FRAME_MAX_BYTES) {
-      const next = await iterator.next();
+      pending ??= iterator.next();
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const next = preludeDeadline
+        ? await Promise.race([pending, new Promise<typeof peekExpired>((resolve) => {
+            timer = setTimeout(() => resolve(peekExpired), Math.max(0, preludeDeadline - Date.now()));
+          })]).finally(() => clearTimeout(timer))
+        : await pending;
+      if (next === peekExpired) break;
+      pending = null;
       if (next.done) { ended = true; break; }
       prefix.push(next.value);
       size += next.value.length;
       const frames = decode(next.value);
       if (frames.length) {
-        if (frames[0]) {
-          await cancel();
-          const bytes = Buffer.from(JSON.stringify({ error: frames[0].error }));
-          return { quota: frames[0], body: { async *[Symbol.asyncIterator]() { yield bytes; }, cancel() {} } };
+        let commit = false;
+        for (const frame of frames) {
+          if (frame === 'prelude' && !commit) continue;
+          if (frame && frame !== 'prelude') {
+            if (!commit) {
+              await cancel();
+              const bytes = Buffer.from(JSON.stringify({ error: frame.error }));
+              return { quota: frame, body: { async *[Symbol.asyncIterator]() { yield bytes; }, cancel() {} } };
+            }
+            late.push(frame);
+          }
+          commit = true;
         }
-        late.push(...frames.filter((quota): quota is StreamQuota => quota !== null));
-        break;
+        if (commit) break;
+        preludeDeadline ||= Date.now() + QUOTA_PRELUDE_PEEK_MS;
       }
     }
   } catch (error) {
@@ -367,9 +395,10 @@ async function inspectQuotaStream(
       for (const quota of late) onLateQuota(quota);
       for (const chunk of prefix) yield chunk;
       while (!ended && !cancelled) {
-        const next = await iterator.next();
+        const next = await (pending ?? iterator.next());
+        pending = null;
         if (next.done) { ended = true; break; }
-        for (const quota of decode(next.value)) if (quota) onLateQuota(quota);
+        for (const quota of decode(next.value)) if (quota && quota !== 'prelude') onLateQuota(quota);
         yield next.value;
       }
     },
@@ -682,15 +711,20 @@ export function createCodexOAuthKernelAdapter(opts: CodexOAuthAdapterOptions): C
       // WI-10003306: classify a public-model 4xx as a MODEL refusal. Only the non-auth,
       // non-rate-limit 4xx range is read (a few hundred bytes); 2xx streams are never touched.
       let body = upstream.body;
-      if (body && status >= 200 && status < 300 && headers['content-type']?.includes('text/event-stream')) {
+      if (body && status >= 200 && status < 300 && headers['content-type']?.toLowerCase().includes('text/event-stream')) {
         const inspected = await inspectQuotaStream(body, (quota) => {
-          if (!hardPinned) opts.pool?.onExhausted(account.accountId,
-            quota.resetAt && quota.resetAt > now() ? quota.resetAt : now() + opts.failoverBackoffMs);
+          const reset = opts.rateReset(headers);
+          if (quota.accountWide || reset.transient === false) {
+            if (!hardPinned) opts.pool?.onExhausted(account.accountId,
+              quota.resetAt && quota.resetAt > now() ? quota.resetAt : now() + opts.failoverBackoffMs);
+          } else {
+            opts.coolIp(egress.key, Math.min(reset.retryAfterMs ?? opts.failoverBackoffMs, opts.ipCooldownMaxMs));
+          }
         });
         body = inspected.body;
         if (inspected.quota) {
           status = 429;
-          quotaExhausted = true;
+          quotaExhausted = inspected.quota.accountWide || opts.rateReset(headers).transient === false;
           headers['content-type'] = 'application/json';
           delete headers['content-length'];
           if (inspected.quota.resetAt && inspected.quota.resetAt > now()) {
