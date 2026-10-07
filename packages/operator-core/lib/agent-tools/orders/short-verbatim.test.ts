@@ -34,7 +34,13 @@ const ctx = { workspaceId: 'ws-1' } as never;
 describe('owner directive verbatim argument schemas', () => {
   beforeEach(() => {
     mocks.recordOwnerDirective.mockReset();
-    mocks.recordOwnerDirective.mockResolvedValue({ id: 71 });
+    mocks.recordOwnerDirective.mockResolvedValue({
+      id: 71,
+      verbatimText: 'yes',
+      sourceTurnRef: 'session:turn-1',
+      capturedByHook: true,
+      dispositionStatus: null,
+    });
     mocks.findCapturedTwin.mockReset();
     mocks.findCapturedTwin.mockResolvedValue(null);
   });
