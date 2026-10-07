@@ -186,12 +186,12 @@ const recordedHostFetch: HostFetch = async ({ request }) => {
     const issue = gh.issues.find((row) => row.number === number);
     return issue ? json(200, issue) : json(404, { message: 'Not Found' });
   }
-  if (page > 1) return json(200, []);
   if (phase === 'collaborators') {
     return gh.collaboratorStatus
       ? json(gh.collaboratorStatus, { message: 'Not Found' })
-      : json(200, gh.collaborators);
+      : json(200, gh.collaborators.slice((page - 1) * 100, page * 100));
   }
+  if (page > 1) return json(200, []);
   if (phase === 'issues') return json(200, fresh(gh.issues));
   if (phase === 'comments') return json(200, fresh(gh.comments));
   return json(200, gh.events);
@@ -682,6 +682,22 @@ describe('GitHub issues syncs through the shared connector driver (R-14)', () =>
     await due(sourceId);
     await syncOne(sourceId);
     expect(await search()).toMatchObject({ allowed: true, results: [] });
+  });
+
+  it('commits paginated membership only when enumeration is complete, including after interruption', async () => {
+    const sourceId = await createSource('organization');
+    await syncOne(sourceId);
+    const listId = (await docs(sourceId))[0]!.permission_list_id;
+    gh.collaborators = Array.from({ length: 101 }, (_, id) => ({ id: id + 1000 }));
+    await due(sourceId);
+    const interrupted = await syncOne(sourceId, { maxPagesPerSource: 4 });
+    expect(interrupted).toMatchObject({ outcome: 'synced', hasMore: true });
+    expect((await cursorOf(sourceId)).raw).toMatchObject({ phase: 'collaborators', page: 2 });
+    expect(await sql`SELECT provider_user_id FROM harness_shared.document_permission_members
+      WHERE list_id = ${listId}::uuid`).toEqual([{ provider_user_id: '42' }]);
+    await due(sourceId);
+    expect(await syncOne(sourceId)).toMatchObject({ outcome: 'synced', hasMore: false, membership: { members: 101 } });
+    expect(await sql`SELECT 1 FROM harness_shared.document_permission_members WHERE list_id = ${listId}::uuid`).toHaveLength(101);
   });
 
   it.each([403, 404])('clears prior membership when collaborator enumeration returns %s', async (status) => {
