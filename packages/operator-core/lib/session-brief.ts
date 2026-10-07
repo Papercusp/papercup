@@ -531,21 +531,21 @@ export async function getSessionBriefLifecycle(ownerId: string): Promise<Session
 }
 
 /**
- * Mark one live fleet member as released before its typed wind-down cue is
- * sent. The upsert also covers a member whose brief has not been written yet.
- * Existing control-anchor fields are preserved; a marker change advances the
- * anchor generation and clears its transition so the next consumer performs a
- * full resync from the authoritative row.
+ * Record the owner's positively accepted managed shutdown in the existing
+ * lifecycle envelope. Preserve control fields and sibling lifecycle markers,
+ * including when the brief exists but has no lifecycle object yet.
  */
 export async function markSessionBriefShutdown(
   ownerId: string,
   workspaceId: string,
   marker: SessionBriefShutdownMarker,
+  options: Pick<PendingCarryRespawnSqlOptions, 'sql'> = {},
 ): Promise<boolean> {
   try {
     if (!ownerId || !workspaceId || marker.by !== ownerId || !Number.isFinite(Date.parse(marker.at))) return false;
     const markerJson = JSON.stringify({ at: marker.at, by: marker.by });
-    const rows = await getOrgPg().sql<Array<{ control_state: unknown }>>`
+    const sql = options.sql ?? getOrgPg().sql;
+    const rows = await sql<Array<{ control_state: unknown }>>`
       INSERT INTO harness_shared.session_briefs
         (owner_id, workspace_id, control_state, control_generation, control_updated_at)
       VALUES (
@@ -558,11 +558,28 @@ export async function markSessionBriefShutdown(
           COALESCE(harness_shared.session_briefs.control_state, '{}'::jsonb),
           '{lifecycle}',
           COALESCE(harness_shared.session_briefs.control_state->'lifecycle', '{}'::jsonb)
-            || EXCLUDED.control_state->'lifecycle',
+            || (EXCLUDED.control_state->'lifecycle'),
           true
         ),
-        control_generation = harness_shared.session_briefs.control_generation + 1,
-        control_updated_at = now(), control_transition = NULL, updated_at = now()
+        control_generation = CASE
+          WHEN harness_shared.session_briefs.control_state #> '{lifecycle,shutdown}'
+               IS DISTINCT FROM EXCLUDED.control_state #> '{lifecycle,shutdown}'
+            THEN harness_shared.session_briefs.control_generation + 1
+          ELSE harness_shared.session_briefs.control_generation
+        END,
+        control_updated_at = CASE
+          WHEN harness_shared.session_briefs.control_state #> '{lifecycle,shutdown}'
+               IS DISTINCT FROM EXCLUDED.control_state #> '{lifecycle,shutdown}'
+            THEN now()
+          ELSE harness_shared.session_briefs.control_updated_at
+        END,
+        control_transition = CASE
+          WHEN harness_shared.session_briefs.control_state #> '{lifecycle,shutdown}'
+               IS DISTINCT FROM EXCLUDED.control_state #> '{lifecycle,shutdown}'
+            THEN NULL
+          ELSE harness_shared.session_briefs.control_transition
+        END,
+        updated_at = now()
       RETURNING control_state
     `;
     // Reuse the existing lifecycle consumer attestation: a successful SQL
@@ -570,11 +587,13 @@ export async function markSessionBriefShutdown(
     return lifecycleWriteReadByConsumer(
       'shutdown', ownerId, attestLifecycleConsumerView('shutdown', marker, rows[0]?.control_state),
     );
-  } catch {
+  } catch (error) {
+    console.warn(`[session-brief] shutdown cutoff persistence failed for ${ownerId}: ${error instanceof Error ? error.message : String(error)}`);
     return false;
   }
 }
 
+/** Mark a fleet release before wind-down, preserving existing control fields. */
 export async function markSessionBriefReleased(
   ownerId: string,
   workspaceId: string,

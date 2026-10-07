@@ -250,8 +250,9 @@ describe('getSessionBrief (fail-soft read)', () => {
     // Setting the parent creates lifecycle even on an existing empty brief;
     // JSONB merge keeps release/poison/control metadata rather than replacing it.
     expect(rec.statements[0]).toContain("'{lifecycle}'");
-    expect(rec.statements[0]).toContain("|| EXCLUDED.control_state->'lifecycle'");
-    expect(rec.statements[0]).toContain('control_transition = NULL');
+    expect(rec.statements[0]).toContain("|| (EXCLUDED.control_state->'lifecycle')");
+    expect(rec.statements[0]).toContain('control_transition = CASE');
+    expect(rec.statements[0]).toContain('IS DISTINCT FROM');
   });
 
   it('refuses a foreign shutdown writer and flags an unreadable consumer result', async () => {
@@ -263,6 +264,15 @@ describe('getSessionBrief (fail-soft read)', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     await expect(markSessionBriefShutdown(identity.ownerId, 'ws-1', shutdown)).resolves.toBe(false);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('shutdown marker write'));
+  });
+
+  it('reports persistence exceptions instead of hiding their cause behind a false receipt', async () => {
+    fakeSql = () => { throw new Error('fixture SQL failure'); };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await expect(markSessionBriefShutdown(identity.ownerId, 'ws-1', {
+      at: '2026-10-06T22:07:55.842Z', by: identity.ownerId,
+    })).resolves.toBe(false);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('fixture SQL failure'));
   });
 
   it('reads release and poison markers from the shared lifecycle envelope', async () => {

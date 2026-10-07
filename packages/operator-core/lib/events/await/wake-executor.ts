@@ -3605,6 +3605,22 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     const shutdownAtMs = lifecycle?.shutdown ? Date.parse(lifecycle.shutdown.at) : Number.NaN;
     const managedShutdown = Number.isFinite(shutdownAtMs);
     if (managedShutdown) {
+      // A fresh headline can hide the same old retry as a folded sibling.
+      // Reuse the canonical union rebuilder so the old payload/summary cannot
+      // leak into the new turn while the new component remains actionable.
+      if (isRecord(d.payload) && d.payload.coalesced === true && Array.isArray(d.payload.events)) {
+        const events = d.payload.events;
+        if (events.some((event) => !isRecord(event) || typeof event.createdAt !== 'string' || !Number.isFinite(Date.parse(event.createdAt)))) {
+          return { kind: 'park', reason: 'managed shutdown wake union has unknown component timestamps; replay order is unverified' };
+        }
+        const remaining = (events as CoalescedDeliveryEvent[]).filter(
+          (event) => Date.parse(event.createdAt as string) > shutdownAtMs,
+        );
+        if (remaining.length === 0) {
+          return { kind: 'drop', reason: `wake #${d.id} contains only pre-managed shutdown events; queued replay suppressed` };
+        }
+        if (remaining.length < events.length) d = rebuildCoalescedDelivery(d, remaining);
+      }
       const createdAtMs = Date.parse(d.createdAt);
       if (Number.isFinite(createdAtMs) && createdAtMs <= shutdownAtMs) {
         return {

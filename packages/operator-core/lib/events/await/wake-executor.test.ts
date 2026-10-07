@@ -577,7 +577,7 @@ describe('executeWake — managed shutdown replay fence (EI-25270078901082313)',
       findPsuHost: vi.fn(() => stopped ? null : { sock: '/tmp/managed-shutdown.sock' }) as never,
       injectPsuHost: undefined,
       injectPsuHostWithConfirmation: vi.fn(async () => ({ ok: true, confirmation: 'acked', reason: 'accepted' })) as never,
-      recoverToolReferenceDeath: vi.fn(async () => 'not-dead'),
+      recoverToolReferenceDeath: vi.fn(async () => 'not-dead' as const),
       onResumeTurnExit,
     });
     expect(await executeWake(replay(), d)).toMatchObject({ kind: 'park', hostCommitPending: true });
@@ -600,7 +600,7 @@ describe('executeWake — managed shutdown replay fence (EI-25270078901082313)',
       getSession: vi.fn(async () => endedSession()) as never,
       getSessionLifecycle: vi.fn(async () => ({ shutdown })) as never,
       alive: vi.fn(() => false),
-      recoverToolReferenceDeath: vi.fn(async () => 'not-dead'),
+      recoverToolReferenceDeath: vi.fn(async () => 'not-dead' as const),
     });
     expect(await executeWake(replay({ attempts: 2, lastError }), d)).toMatchObject({ kind: 'drop' });
     expect(d.spawnDetached).not.toHaveBeenCalled();
@@ -614,7 +614,7 @@ describe('executeWake — managed shutdown replay fence (EI-25270078901082313)',
       getSessionLifecycle: vi.fn(async () => ({ shutdown })) as never,
       findPsuHost: vi.fn(() => hostAvailable ? { sock: '/tmp/restored-managed-host.sock' } : null) as never,
       alive: vi.fn(() => false),
-      recoverToolReferenceDeath: vi.fn(async () => 'not-dead'),
+      recoverToolReferenceDeath: vi.fn(async () => 'not-dead' as const),
     });
     const freshWake = replay({ id: 460480, createdAt: '2026-10-06T22:08:07.000Z', attempts: 1 });
     expect(await executeWake(freshWake, d)).toMatchObject({
@@ -640,6 +640,38 @@ describe('executeWake — managed shutdown replay fence (EI-25270078901082313)',
     expect(d.findPsuHost).not.toHaveBeenCalled();
     expect(d.injectPsuHost).not.toHaveBeenCalled();
     expect(d.resumePlanRun).not.toHaveBeenCalled();
+  });
+
+  it('does not spawn headlessly if the restored host disappears during injection', async () => {
+    const d = deps({
+      getSession: vi.fn(async () => endedSession()) as never,
+      getSessionLifecycle: vi.fn(async () => ({ shutdown })) as never,
+      findPsuHost: vi.fn().mockReturnValueOnce({ sock: '/tmp/disappearing-host.sock' }).mockReturnValue(null),
+      injectPsuHost: vi.fn(async () => false),
+      alive: vi.fn(() => false),
+      recoverToolReferenceDeath: vi.fn(async () => 'not-dead' as const),
+    });
+    const outcome = await executeWake(replay({ id: 460480, createdAt: '2026-10-06T22:08:07.000Z' }), d);
+    expect(outcome).toMatchObject({ kind: 'park' });
+    expect(d.spawnDetached).not.toHaveBeenCalled();
+    expect(d.claimResume).not.toHaveBeenCalled();
+  });
+
+  it('removes a pre-shutdown replay folded behind a genuinely newer headline', async () => {
+    const d = deps({
+      getSessionLifecycle: vi.fn(async () => ({ shutdown })) as never,
+      findPsuHost: vi.fn(() => ({ sock: '/tmp/reattached-host.sock' })) as never,
+    });
+    const fresh = replay({ id: 460480, wakeHandle: null, createdAt: '2026-10-06T22:08:07.000Z', summary: 'NEW-MANAGED-WORK' });
+    const events = [replay({ summary: 'OLD-HANDLED-WORK' }), fresh].map((event) => ({
+      event: event.eventKey, summary: event.summary, payload: event.payload, delivery_id: event.id, createdAt: event.createdAt,
+    }));
+    const outcome = await executeWake({ ...fresh, payload: { coalesced: true, events, latest: events[1] } }, d);
+    expect(outcome).toEqual({ kind: 'delivered', channel: 'psu-socket-inject' });
+    const text = vi.mocked(d.injectPsuHost!).mock.calls[0][1].data;
+    expect(text).toContain('NEW-MANAGED-WORK');
+    expect(text).not.toContain('OLD-HANDLED-WORK');
+    expect(text).not.toContain('460479');
   });
 });
 

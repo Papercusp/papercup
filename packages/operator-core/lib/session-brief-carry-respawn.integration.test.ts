@@ -8,6 +8,8 @@ import {
   PENDING_CARRY_RESPAWN_TTL_MS,
   restorePendingCarryRespawn,
   savePendingCarryRespawn,
+  markSessionBriefShutdown,
+  attestLifecycleConsumerView,
 } from './session-brief';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -31,11 +33,44 @@ let db: FreshPgDb;
 beforeAll(async () => {
   db = await createFreshPgDb('session-brief-carry-respawn');
   await applyMigrationForTest(db.sql, sessionBriefMigration);
+  await applyMigrationForTest(db.sql, resolve(here, '../../../libs/papercusp/libs/db/sql/595-agent-control-anchor.sql'));
+  await applyMigrationForTest(db.sql, resolve(here, '../../../libs/papercusp/libs/db/sql/596-agent-control-transitions.sql'));
 }, 90_000);
 
 afterAll(async () => db?.cleanup());
 
 describe('pending carry-respawn on real Postgres', () => {
+  it.each([null, {}, { modes: ['auto'], lifecycle: { released: { fleet: 'test', at: '2026-10-06T22:00:00Z', by: 'su-leader' } } }])
+    ('persists a consumer-readable managed-shutdown cutoff on a brief with control_state %j', async (controlState) => {
+      const ownerId = `${OWNER}-shutdown-${Math.random().toString(36).slice(2)}`;
+      const shutdown = { at: '2026-10-06T22:07:55.842Z', by: ownerId };
+      await db.sql`
+        INSERT INTO harness_shared.session_briefs
+          (owner_id, workspace_id, control_state, control_generation, control_transition)
+        VALUES (${ownerId}, ${WORKSPACE}, ${controlState === null ? null : JSON.stringify(controlState)}::text::jsonb, 7, '{"pending":true}'::jsonb)
+      `;
+      // postgres-js encodes a string parameter already typed jsonb AGAIN.
+      // Assert the seed precondition before judging the production writer;
+      // otherwise a JSON scalar looks like a failure to update an object.
+      const [seed] = await db.sql`
+        SELECT control_state, jsonb_typeof(control_state) AS kind
+          FROM harness_shared.session_briefs WHERE owner_id = ${ownerId}
+      `;
+      expect(seed.control_state).toEqual(controlState);
+      expect(seed.kind).toBe(controlState === null ? null : 'object');
+      expect(await markSessionBriefShutdown(ownerId, WORKSPACE, shutdown, { sql: db.sql })).toBe(true);
+      const [row] = await db.sql`
+        SELECT control_state, control_generation, control_transition FROM harness_shared.session_briefs WHERE owner_id = ${ownerId}
+      `;
+      expect(attestLifecycleConsumerView('shutdown', shutdown, row.control_state).divergedFromWrite).toBe(false);
+      expect(row.control_state).toMatchObject({ ...(controlState ?? {}), lifecycle: { ...(controlState?.lifecycle ?? {}), shutdown } });
+      expect(Number(row.control_generation)).toBe(8);
+      expect(row.control_transition).toBeNull();
+      expect(await markSessionBriefShutdown(ownerId, WORKSPACE, shutdown, { sql: db.sql })).toBe(true);
+      const [replayed] = await db.sql`SELECT control_generation FROM harness_shared.session_briefs WHERE owner_id = ${ownerId}`;
+      expect(Number(replayed.control_generation)).toBe(8);
+    });
+
   it('proves the migration requirement and one-shot consume safety across concurrent bootstrap, restore and clear', async () => {
     const nowMs = Date.now();
     const payload = {
