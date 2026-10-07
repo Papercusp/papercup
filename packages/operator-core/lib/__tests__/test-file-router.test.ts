@@ -1200,7 +1200,7 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
   it('remains importable by CommonJS-transformed consumers while settling its async exit code', () => {
     const source = readFileSync(new URL('../../../../scripts/test-files.mjs', import.meta.url), 'utf8');
     expect(() => transformSync(source, { format: 'cjs', loader: 'js', platform: 'node' })).not.toThrow();
-    expect(source).toContain('void main().then(');
+    expect(source).toContain('void runTestFilesCli().then(');
   });
 });
 
