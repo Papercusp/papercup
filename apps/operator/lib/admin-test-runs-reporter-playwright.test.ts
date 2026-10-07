@@ -28,7 +28,6 @@ vi.mock('@papercusp/operator-core/lib/testing-worktree', () => ({
   captureWorktreeSnapshot: mocks.captureWorktreeSnapshot,
   computeWorktreeDirty: mocks.computeWorktreeDirty,
   captureTestSourceSnapshot: mocks.captureTestSourceSnapshot,
-  captureTestSourceSnapshotAsync: mocks.captureTestSourceSnapshot,
   resolveReporterSourceRoot: mocks.resolveReporterSourceRoot,
 }));
 vi.mock('@papercusp/operator-core/lib/agent-tools/capability/base-dir', () => ({

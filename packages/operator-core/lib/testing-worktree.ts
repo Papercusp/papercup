@@ -8,11 +8,12 @@
 
 import { execFileSync } from 'node:child_process';
 import { existsSync, realpathSync, readFileSync } from 'node:fs';
-import { dirname, join, relative, resolve, sep } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { resolveAgentWorkspaceRoot } from './agent-tools/capability/base-dir';
 import {
-  captureWorktreeSnapshot as captureProbeWorktreeSnapshot,
+  exemptProbeSubject,
   isMutationProbeRun,
+  resolveProbeSubjectExemptionSync,
 } from '@papercusp/test-config/admin-test-runs-reporter';
 import { verifyVerifierSourceSync } from './verifier-source';
 
@@ -70,16 +71,6 @@ export function captureTestSourceSnapshot(root: string): WorktreeGitSnapshot {
   }
 }
 
-/** Awaited reporters share the maintained probe origin/subject exemptions.
- * Synchronous archive consumers retain captureTestSourceSnapshot's contract.
- */
-export async function captureTestSourceSnapshotAsync(root: string): Promise<WorktreeGitSnapshot> {
-  if (!existsSync(join(root, '.verifier-source.json')) && !process.env.VERIFY_TAURI_SOURCE_RECEIPT && isMutationProbeRun()) {
-    return captureProbeWorktreeSnapshot();
-  }
-  return captureTestSourceSnapshot(root);
-}
-
 export function computeWorktreeDirty(before: WorktreeGitSnapshot, after: WorktreeGitSnapshot): boolean {
   if (!before.commit || !after.commit) return true;
   if (before.commit !== after.commit) return true;
@@ -99,6 +90,8 @@ export function computeWorktreeDirty(before: WorktreeGitSnapshot, after: Worktre
  */
 export function captureWorktreeSnapshot(cwd?: string): WorktreeGitSnapshot {
   let root = cwd;
+  const origin = process.env.PAPERCUSP_MUTATION_PROBE_ORIGIN_ROOT?.trim();
+  if (isMutationProbeRun() && origin && isAbsolute(origin)) root = origin;
   if (!root) {
     try {
       root = resolveAgentWorkspaceRoot({});
@@ -107,12 +100,12 @@ export function captureWorktreeSnapshot(cwd?: string): WorktreeGitSnapshot {
     }
   }
 
-  const readGit = (args: string[]): string | null => {
+  const readGit = (args: string[], gitRoot = root, timeoutMs = 2_000): string | null => {
     try {
       const output = execFileSync('git', args, {
-        cwd: root,
+        cwd: gitRoot,
         encoding: 'utf8',
-        timeout: 2_000,
+        timeout: timeoutMs,
         // These snapshots only observe the shared tree. Prevent Git's optional
         // index refresh from competing with git-sync's index writer.
         env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
@@ -125,10 +118,17 @@ export function captureWorktreeSnapshot(cwd?: string): WorktreeGitSnapshot {
     }
   };
 
-  return {
-    commit: readGit(['rev-parse', 'HEAD']) || null,
-    porcelain: readGit(['status', '--porcelain', '--untracked-files=all']),
-  };
+  const commit = readGit(['rev-parse', 'HEAD']) || null;
+  const porcelain = readGit(['status', '--porcelain', '--untracked-files=all']);
+  if (!porcelain || !isMutationProbeRun()) return { commit, porcelain };
+  const exemption = resolveProbeSubjectExemptionSync(root, (cmd, gitRoot, budget) => {
+    if (cmd === 'git rev-parse --show-toplevel') return readGit(['rev-parse', '--show-toplevel'], gitRoot, budget);
+    if (cmd === 'git rev-parse HEAD') return readGit(['rev-parse', 'HEAD'], gitRoot, budget);
+    if (cmd === 'git status --porcelain --untracked-files=all') return readGit(['status', '--porcelain', '--untracked-files=all'], gitRoot, budget);
+    const pinned = cmd.match(/^git rev-parse '(HEAD:[^']+)'$/);
+    return pinned ? readGit(['rev-parse', pinned[1]], gitRoot, budget) : null;
+  });
+  return { commit, porcelain: exemption ? exemptProbeSubject(porcelain, exemption) : porcelain };
 }
 
 /** Native async producers can await the shared sidecar Git runner rather than
