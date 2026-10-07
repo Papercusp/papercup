@@ -886,8 +886,13 @@ export { withInlinedSchemaRefs };
  * full descriptions remain in the search corpus; this projection is what a
  * caller needs to form a valid next call without overflowing the result door.
  */
-export function compactSchemaForResult(inputSchema: unknown): string | null {
+export function compactSchemaForResult(
+  inputSchema: unknown,
+  options: { maxChars?: number; includeNestedDescriptions?: boolean } = {},
+): string | null {
   if (!inputSchema || typeof inputSchema !== 'object') return null;
+  const maxChars = options.maxChars ?? DISCOVERY_SCHEMA_MAX_CHARS;
+  const includeNestedDescriptions = options.includeNestedDescriptions ?? true;
   const root = inputSchema as JsonSchemaNode;
   const projection = topLevelSchemaProjection(root);
   if (!projection) return null;
@@ -897,7 +902,7 @@ export function compactSchemaForResult(inputSchema: unknown): string | null {
     // contract is one such schema). Keep their projection structural so a
     // late top-level contract field such as `assumptions` cannot be clipped
     // behind a nested prose description before the result budget is reached.
-    const shape = schemaShape(node, 0, !projection.unionHint);
+    const shape = schemaShape(node, 0, includeNestedDescriptions && !projection.unionHint);
     return {
       index,
       base: `${name}${projection.required.has(name) ? '' : '?'}${shape ? `:${shape}` : ''}`,
@@ -915,7 +920,7 @@ export function compactSchemaForResult(inputSchema: unknown): string | null {
       .join('; ')}`;
 
   let text = render(withDescriptions);
-  if (text.length > DISCOVERY_SCHEMA_MAX_CHARS && withDescriptions.size > 0) {
+  if (text.length > maxChars && withDescriptions.size > 0) {
     // Remove low-value prose first, preserving explicit contract restrictions
     // such as "Completion phase only" for as long as the size budget allows.
     const removable = [...parts]
@@ -924,10 +929,10 @@ export function compactSchemaForResult(inputSchema: unknown): string | null {
     for (const part of removable) {
       withDescriptions.delete(part.index);
       text = render(withDescriptions);
-      if (text.length <= DISCOVERY_SCHEMA_MAX_CHARS) break;
+      if (text.length <= maxChars) break;
     }
   }
-  return text.length <= DISCOVERY_SCHEMA_MAX_CHARS ? text : `${text.slice(0, DISCOVERY_SCHEMA_MAX_CHARS - 1)}…`;
+  return text.length <= maxChars ? text : `${text.slice(0, maxChars - 1)}…`;
 }
 
 /** Project a registered RESULT schema, including array/scalar-rooted shapes. */
@@ -949,6 +954,34 @@ function boundedText(value: string | null, maxChars: number): string | null {
   return `${value.slice(0, maxChars - 1)}…`;
 }
 
+/** Keep only complete top-level compact-schema clauses when the result door is tight. */
+function compactSchemaPrefixes(value: string): string[] {
+  const prefixes: string[] = [];
+  let parentheses = 0;
+  let braces = 0;
+  let brackets = 0;
+
+  for (let index = 0; index < value.length - 1; index += 1) {
+    const character = value[index]!;
+    if (character === '(') parentheses += 1;
+    else if (character === ')') parentheses = Math.max(0, parentheses - 1);
+    else if (character === '{') braces += 1;
+    else if (character === '}') braces = Math.max(0, braces - 1);
+    else if (character === '[') brackets += 1;
+    else if (character === ']') brackets = Math.max(0, brackets - 1);
+
+    if (
+      character === ';' &&
+      value[index + 1] === ' ' &&
+      parentheses === 0 && braces === 0 && brackets === 0 &&
+      /^[A-Za-z_$][\w$-]*\??:/.test(value.slice(index + 2))
+    ) {
+      prefixes.push(`${value.slice(0, index)}; …`);
+    }
+  }
+  return prefixes;
+}
+
 export interface DiscoveryResultHit {
   tool: string;
   description: string | null;
@@ -964,19 +997,58 @@ export function boundDiscoveryHits(
   hits: DiscoveryResultHit[],
 ): { hits: DiscoveryResultHit[]; truncated: boolean } {
   const kept: DiscoveryResultHit[] = [];
+  let fieldsTruncated = hits.some((hit) => hit.argSchema?.endsWith('…') ?? false);
+  const fits = (hit: DiscoveryResultHit): boolean => Buffer.byteLength(JSON.stringify({
+    ...base,
+    count: 1,
+    totalMatches: hits.length,
+    truncated: true,
+    hits: [hit],
+  }), 'utf8') <= DISCOVERY_RESULT_MAX_BYTES;
+
   for (const hit of hits) {
     const candidate = [...kept, hit];
     const projected = {
       ...base,
       count: candidate.length,
       totalMatches: hits.length,
-      truncated: candidate.length < hits.length,
+      truncated: fieldsTruncated || candidate.length < hits.length,
       hits: candidate,
     };
-    if (Buffer.byteLength(JSON.stringify(projected), 'utf8') > DISCOVERY_RESULT_MAX_BYTES && kept.length > 0) break;
-    kept.push(hit);
+    if (Buffer.byteLength(JSON.stringify(projected), 'utf8') <= DISCOVERY_RESULT_MAX_BYTES) {
+      kept.push(hit);
+      continue;
+    }
+    if (kept.length > 0) break;
+
+    // The first hit must not bypass the result limit. Preserve its identity and
+    // as much complete argument-schema structure as fits; shed optional fields
+    // first, then stop at a top-level schema clause rather than return a broken
+    // fragment. Unstructured oversized schemas become an explicit no-fit.
+    const compactedHit: DiscoveryResultHit = {
+      ...hit,
+      description: boundedText(hit.description, 80),
+      returns: null,
+      returnsSource: null,
+    };
+    let fittedHit = fits(compactedHit) ? compactedHit : null;
+    if (!fittedHit) {
+      const withoutDescription = { ...compactedHit, description: null };
+      if (fits(withoutDescription)) fittedHit = withoutDescription;
+
+      if (!fittedHit && typeof hit.argSchema === 'string') {
+        for (const schemaPrefix of compactSchemaPrefixes(hit.argSchema)) {
+          const candidateHit = { ...withoutDescription, argSchema: schemaPrefix };
+          if (!fits(candidateHit)) break;
+          fittedHit = candidateHit;
+        }
+      }
+    }
+    if (!fittedHit) break;
+    kept.push(fittedHit);
+    fieldsTruncated = true;
   }
-  return { hits: kept, truncated: kept.length < hits.length };
+  return { hits: kept, truncated: fieldsTruncated || kept.length < hits.length };
 }
 
 /**
@@ -1387,53 +1459,58 @@ export default defineTool({
     //   lexical-only — no embedder configured/available → graceful degrade.
     const semantic: 'on' | 'warming' | 'lexical-only' =
       activeEmbeddings != null && activeEmbeddings.size > 0 ? 'on' : embedder ? 'warming' : 'lexical-only';
-    const projectedHits = hits.map((h) => ({
+    const projectHit = (h: typeof hits[number], includeFullArgSchema: boolean): DiscoveryResultHit => ({
       tool: h.tool,
       description: boundedText(h.description, DISCOVERY_DESCRIPTION_MAX_CHARS),
-      argSchema: fullArgSchemaRequested
+      argSchema: includeFullArgSchema
         ? JSON.stringify(schemaByTool.get(h.tool)) ?? h.argSchema
-        : compactSchemaForResult(schemaByTool.get(h.tool)) ?? boundedText(h.argSchema, DISCOVERY_SCHEMA_MAX_CHARS),
+        : compactSchemaForResult(schemaByTool.get(h.tool), { includeNestedDescriptions: false }) ??
+          boundedText(h.argSchema, DISCOVERY_SCHEMA_MAX_CHARS),
       returns: returnsByTool.get(h.tool) ?? null,
       returnsSource: returnSourcesByTool.get(h.tool) ?? null,
       via: h.via,
-    }));
+    });
+    let projectedHits = hits.map((h) => projectHit(h, fullArgSchemaRequested));
 
     const hasToolsInvokeHit = projectedHits.some((hit) => hit.tool === 'tools:invoke');
     const activatedHowToCall =
-      'activated:true means the SERVER surface grew and requested a client tool-list refresh; ' +
-      'it does NOT guarantee your client has materialized a direct-call wrapper in this same turn. ' +
       (hasToolsInvokeHit
-        ? 'The tools:invoke hit is the dispatcher itself; do NOT pass name:"tools:invoke" through it. ' +
-          'Call tools:invoke directly with the name + args of a different target tool. '
-        : 'Call tools:invoke {name:"<exact tool name from hits>", args:{...}} now — it works immediately ' +
-          'on every client via server-side dispatch. ') +
-      'After the client refreshes (often next turn), the direct wrapper may also be available.';
+        ? 'Server requested a tool-list refresh. Use tools:invoke directly for a different target; do not route tools:invoke through itself.'
+        : 'Server requested a tool-list refresh. Use tools:invoke {name:"<exact tool name from hits>", args:{...}} now; direct wrappers may appear next turn.');
     const inactiveHowToCall = hasToolsInvokeHit
-      ? 'activated:false — direct calls to other hits may fail with unknown/not-found. The ' +
-        'tools:invoke hit is the dispatcher itself; do NOT pass name:"tools:invoke" through it. ' +
-        'Call tools:invoke directly with the name + args of a different target tool. ' +
-        'Do NOT try ToolSearch on the colon name — it only resolves the client-mangled id.'
-      : 'activated:false — these tools are NOT on your live tool surface, so a direct call will ' +
-        'fail with unknown/not-found. Call them with ' +
-        'tools:invoke {name:"<exact tool name from hits>", args:{...}} — server-side dispatch under ' +
-        "the tool's real (colon-form) name; works on every client, needs no load step. " +
-        'Do NOT try ToolSearch on the colon name — it only resolves the client-mangled id.';
+      ? 'Use tools:invoke directly for a different target; do not route tools:invoke through itself.'
+      : 'activated:false: direct wrappers may be unavailable. Use tools:invoke {name:"<exact tool name from hits>", args:{...}}.';
 
     // Bound the candidate names before activating them. Otherwise a large schema
     // can cause the response to omit a matched tool while still adding that
     // invisible tool to the session surface (the activation contract is about
     // the hits the caller can actually see and invoke).
-    const activationCandidate = boundDiscoveryHits(
-      {
-        query: args.query,
-        semantic,
-        registry,
-        activated: true,
-        howToCall: activatedHowToCall,
-        totalMatches: hits.length,
-      },
-      projectedHits,
-    );
+    const activationBase = {
+      query: args.query,
+      semantic,
+      registry,
+      activated: true,
+      howToCall: activatedHowToCall,
+      totalMatches: hits.length,
+    };
+    let activationCandidate = boundDiscoveryHits(activationBase, projectedHits);
+    let fullSchemaFallback = false;
+    const fullSchemaWasTrimmed = fullArgSchemaRequested && activationCandidate.hits.some((candidate) => {
+      const requestedSchema = JSON.stringify(schemaByTool.get(candidate.tool));
+      return typeof requestedSchema === 'string' && candidate.argSchema !== requestedSchema;
+    });
+    if (
+      fullArgSchemaRequested &&
+      hits.length > 0 &&
+      (activationCandidate.hits.length === 0 || fullSchemaWasTrimmed)
+    ) {
+      // A full schema for even the top hit can exceed the entire result door.
+      // Keep the match useful by retrying with the same bounded schema shown by
+      // the ordinary discovery path; the response marks this downgrade below.
+      projectedHits = hits.map((h) => projectHit(h, false));
+      fullSchemaFallback = true;
+      activationCandidate = boundDiscoveryHits(activationBase, projectedHits);
+    }
 
     // Dynamic expansion (dynamic-tool-surface-2026-07-01): activate the matched
     // tools for THIS session so a seeded (small-surface) client can call them.
@@ -1454,6 +1531,13 @@ export default defineTool({
       { query: args.query, semantic, registry, activated, howToCall, totalMatches: hits.length },
       projectedHits,
     );
+    const noHitFits = hits.length > 0 && bounded.hits.length === 0;
+    const budgetNote = noHitFits
+      ? ' No matching schema fit the response budget; retry with a narrower query.'
+      : fullSchemaFallback
+        ? ' Full argument schemas exceeded the response budget; compact schemas are returned.'
+        : '';
+    const finalHowToCall = howToCall + budgetNote;
     return {
       content: [
         {
@@ -1462,7 +1546,7 @@ export default defineTool({
             query: args.query,
             count: bounded.hits.length,
             totalMatches: hits.length,
-            truncated: bounded.truncated,
+            truncated: bounded.truncated || fullSchemaFallback || noHitFits,
             semantic,
             registry,
             // true ⇒ the server-side session allowlist grew and emitted the
@@ -1475,7 +1559,7 @@ export default defineTool({
             // surface — and relegated the path that always works to a fallback after
             // a failure. An agent that follows the instruction in order pays a
             // guaranteed wasted call. Lead with the working path instead.
-            howToCall,
+            howToCall: finalHowToCall,
           }),
         },
       ],
