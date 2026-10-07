@@ -146,16 +146,20 @@ const DEFAULT_DEPS: RecordOperationalRunDeps = {
        WHERE id = ${id} AND workspace_id = ${scope.workspaceId} AND harness_slug = ${scope.harnessSlug}`;
     return (rows[0] as unknown as ArchivedMutationRun | undefined) ?? null;
   },
-  async verifyOriginalEvidence(original, evidence, root) {
-    if (!original.commit_sha || !/^[a-f0-9]{40}$/.test(original.commit_sha)) return false;
-    try {
-      const bytes = await gitOutput(root, ['show', `${original.commit_sha}:${evidence.filePath}`]);
-      return createHash('sha256').update(bytes).digest('hex') === evidence.sha256;
-    } catch {
-      return false;
-    }
-  },
+  verifyOriginalEvidence: verifyOriginalOperationalEvidence,
 };
+
+export async function verifyOriginalOperationalEvidence(
+  original: ArchivedMutationRun, evidence: CommittedOperationalEvidence, root: string,
+): Promise<boolean> {
+  if (!original.commit_sha || !/^[a-f0-9]{40}$/.test(original.commit_sha)) return false;
+  try {
+    const bytes = await gitOutput(root, ['show', `${original.commit_sha}:${evidence.filePath}`]);
+    return createHash('sha256').update(bytes).digest('hex') === evidence.sha256;
+  } catch {
+    return false;
+  }
+}
 
 function insideRoot(root: string, candidate: string): boolean {
   const rel = relative(root, candidate);
@@ -536,9 +540,23 @@ export async function recordOperationalRun(
     recordedCommit = original.commit_sha;
     runGroupId = `operational-recovery:${recoveredFromTestRunId}:${evidence.sha256.slice(0, 40)}`;
     const recovered = await deps.findIds({ ...identity, runGroupId });
-    if (recovered.length > 0) return { ok: true, alreadyRecorded: true, runGroupId, testRunIds: recovered,
-      recoveredFromTestRunId, evidence: { filePath: evidence.filePath, sha256: evidence.sha256, commit: recordedCommit },
-      status: derivedVerdict(evidence.artifact) };
+    if (recovered.length > 0) {
+      const receipt = recovered.length === 1
+        ? await deps.readArchivedRun?.(recovered[0]!, { workspaceId, harnessSlug }) : null;
+      const execution = parseTestRunExecutionDetails(receipt?.execution_details);
+      const expected = operationalExecution(evidence.artifact);
+      if (!receipt || receipt.status !== derivedVerdict(evidence.artifact)
+        || receipt.commit_sha !== recordedCommit || receipt.file_path !== evidence.filePath
+        || receipt.workspace_id !== workspaceId || receipt.harness_slug !== harnessSlug
+        || !execution || execution.runGroupId !== runGroupId
+        || execution.passed !== expected.passed || execution.failed !== expected.failed
+        || execution.skipped !== expected.skipped || execution.collectionFailed !== expected.collectionFailed) {
+        return { ok: false, error: 'evidence_operational_recovery_invalid' as const };
+      }
+      return { ok: true, alreadyRecorded: true, runGroupId, testRunIds: recovered,
+        recoveredFromTestRunId, evidence: { filePath: evidence.filePath, sha256: evidence.sha256, commit: recordedCommit },
+        status: derivedVerdict(evidence.artifact) };
+    }
   }
 
   const startedAt = new Date(evidence.artifact.startedAt);

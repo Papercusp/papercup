@@ -16,6 +16,7 @@ import {
   parseOperationalEvidenceArtifact,
   recordOperationalRun,
   recoverArchivedMutationFailures,
+  verifyOriginalOperationalEvidence,
   type ArchivedMutationRun,
   type CommittedOperationalEvidence,
   type RecordOperationalRunDeps,
@@ -394,13 +395,56 @@ describe('testing:record-run', () => {
 
   it('reuses the recovered receipt on repeat calls', async () => {
     const d = deps({ findIds: vi.fn().mockResolvedValueOnce([41]).mockResolvedValueOnce([77]),
-      readArchivedRun: vi.fn(async () => operationalReceipt()) });
+      readArchivedRun: vi.fn().mockResolvedValueOnce(operationalReceipt()).mockResolvedValueOnce(
+        operationalReceipt({ id: 77, execution_details: {
+          schemaVersion: 1, root: '/immutable', filePath: EVIDENCE.filePath,
+          runGroupId: `operational-recovery:41:${EVIDENCE.sha256.slice(0, 40)}`,
+          workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp', testNamePattern: null,
+          mutationPhase: null, commitSha: EVIDENCE.commit, worktreeDirty: false,
+          ...operationalExecution(ARTIFACT),
+        } }),
+      ) });
     const result = await recordOperationalRun(
       { evidenceFile: EVIDENCE.filePath, expectedSha256: EVIDENCE.sha256, harness: 'papercusp' },
       { workspaceId: 'papercusp-workspace', projectDir: process.cwd() }, d,
     );
     expect(result).toMatchObject({ ok: true, alreadyRecorded: true, recoveredFromTestRunId: 41, testRunIds: [77] });
     expect(d.persist).not.toHaveBeenCalled();
+  });
+
+  it('fails closed if the recovery row itself lacks execution details', async () => {
+    const d = deps({ findIds: vi.fn().mockResolvedValueOnce([41]).mockResolvedValueOnce([77]),
+      readArchivedRun: vi.fn(async () => operationalReceipt()) });
+    const result = await recordOperationalRun(
+      { evidenceFile: EVIDENCE.filePath, expectedSha256: EVIDENCE.sha256, harness: 'papercusp' },
+      { workspaceId: 'papercusp-workspace', projectDir: process.cwd() }, d,
+    );
+    expect(result).toMatchObject({ ok: false, error: 'evidence_operational_recovery_invalid' });
+    expect(d.persist).not.toHaveBeenCalled();
+  });
+
+  it('checks the actual historical committed bytes, including when HEAD has different evidence', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'record-run-operational-recovery-'));
+    try {
+      git(root, ['init', '-q']);
+      git(root, ['config', 'user.email', 'record-run-test@example.invalid']);
+      git(root, ['config', 'user.name', 'record-run-test']);
+      mkdirSync(join(root, 'docs/evidence'), { recursive: true });
+      const bytes = JSON.stringify(ARTIFACT);
+      writeFileSync(join(root, EVIDENCE.filePath), bytes);
+      git(root, ['add', '.']);
+      git(root, ['commit', '-qm', 'original evidence']);
+      const original = operationalReceipt({ commit_sha: git(root, ['rev-parse', 'HEAD']) });
+      const evidence = { ...EVIDENCE, sha256: createHash('sha256').update(bytes).digest('hex') };
+      writeFileSync(join(root, EVIDENCE.filePath), JSON.stringify({ ...ARTIFACT, exitCode: 1 }));
+      git(root, ['add', '.']);
+      git(root, ['commit', '-qm', 'different evidence']);
+      expect(await verifyOriginalOperationalEvidence(original, evidence, root)).toBe(true);
+      expect(await verifyOriginalOperationalEvidence({ ...original, commit_sha: git(root, ['rev-parse', 'HEAD']) }, evidence, root)).toBe(false);
+      expect(await verifyOriginalOperationalEvidence({ ...original, commit_sha: null }, evidence, root)).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it.each([
