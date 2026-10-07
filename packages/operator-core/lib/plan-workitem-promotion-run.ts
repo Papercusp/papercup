@@ -66,6 +66,7 @@ import {
   evaluatePlanSpecQualityGate,
   type PlanSpecQualityGateVerdict,
 } from './agent-tools/plans/plan-spec-quality-gate';
+import { specQualityPlanItemIds } from './agent-tools/plans/spec-quality';
 import type { AgenticPlanExecutionTarget } from './agentic-plan-execution-target';
 import {
   validatePlanCandidateDependencies,
@@ -542,7 +543,9 @@ export async function promotePlanItems(opts: PromotePlanItemsOptions): Promise<P
   const specQuality = await evaluatePlanSpecQualityGate({
     harnessSlug: opts.harnessSlug,
     planSlug: opts.planSlug,
-    planItemIds: rawItems.map((item) => item.id),
+    planItemIds: specQualityPlanItemIds(rawItems.map((item) => ({
+      id: item.id, storedStatus: item.status,
+    }))),
   });
   if (!specQuality.satisfied) {
     return {

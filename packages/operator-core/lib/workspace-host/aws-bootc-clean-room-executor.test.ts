@@ -216,7 +216,7 @@ describe('SdkAwsAmiReleaseAdapter clean-room staging', () => {
     };
     const commands: AwsAmiCommandRunner = { run: async () => ({ exitCode: 0, stdout: `Uploaded snapshot ${SNAP}\n`, stderr: '' }) };
     return new SdkAwsAmiReleaseAdapter(
-      { ec2: () => ec2, ssm: () => ec2, childCredentials: async () => ({}), commands, sleep: async () => {} },
+      { ec2: () => ec2, ssm: () => ec2, kms: () => ec2, childCredentials: async () => ({}), commands, sleep: async () => {} },
       {},
     );
   }

@@ -60,6 +60,7 @@ const h = vi.hoisted(() => {
     invocations: [] as unknown[],
     resultDoorDelayMs: 0,
     resultDoorCalls: 0,
+    scratchWriteTimings: [] as Array<{ quotaWaitMs: number; refreshWaitMs: number; quotaRecoveryMs: number; writeMs: number; totalMs: number }>,
     handlers: new Map<string, (req: unknown, extra: unknown) => Promise<unknown>>(),
     verifySpawnParams: vi.fn(
       async (_u: unknown): Promise<{ ok: boolean; reason?: string }> => ({ ok: true }),
@@ -145,6 +146,8 @@ vi.mock('../../result-door', async (importOriginal) => {
       if (h.resultDoorDelayMs > 0) {
         await new Promise<void>((resolve) => setTimeout(resolve, h.resultDoorDelayMs));
       }
+      const opts = args[1] as { onScratchWriteTiming?: (timings: typeof h.scratchWriteTimings[number]) => void };
+      for (const timing of h.scratchWriteTimings) opts.onScratchWriteTiming?.(timing);
       return applyResultDoorAsync(...args);
     },
   };
@@ -305,6 +308,7 @@ beforeEach(() => {
   h.storedReplay = null;
   h.invocations.length = 0;
   h.resultDoorDelayMs = 0;
+  h.scratchWriteTimings = [];
   h.resultDoorCalls = 0;
   delete process.env.PAPERCUSP_REQUIRE_SPAWN_SIG;
   _resetVerifiedSpawns();
@@ -348,6 +352,10 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
     const traceId = 'e57ef6b3-46ef-4cc5-8214-fec83f2a463e';
     const resultDoorDelayMs = 45;
     h.resultDoorDelayMs = resultDoorDelayMs;
+    h.scratchWriteTimings = [
+      { quotaWaitMs: 25, refreshWaitMs: 0, quotaRecoveryMs: 0, writeMs: 4, totalMs: 29 },
+      { quotaWaitMs: 0, refreshWaitMs: 3, quotaRecoveryMs: 10, writeMs: 2, totalMs: 15 },
+    ];
     try {
       const res = await callTool(
         'deadlinetest:slow',
@@ -391,6 +399,7 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
             resultDoor: expect.any(Number),
             advisory: expect.any(Number),
             advisoryFlagReads: expect.any(Number),
+            scratchWrites: { count: 2, quotaWaitMs: 25, refreshWaitMs: 3, quotaRecoveryMs: 10, writeMs: 6, totalMs: 44 },
           }),
         }),
       );

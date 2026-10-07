@@ -60,6 +60,7 @@ import {
   WORKSPACE_SCRATCH_MARKER,
   DEAD_WORKSPACE_QUIET_MS,
   writeWithScratchQuota,
+  type ScratchWriteTimings,
 } from './scratch-gc';
 import type { OpenWriterScan } from './native-bg-task-ledger';
 import { parseScratchReference, writeScratchReference } from './scratch-reference';
@@ -595,13 +596,18 @@ describe('deferred scratch quota recovery', () => {
     }) as typeof readdirAsync);
     const measurement = refreshScratchUsage('ws-Q');
     const scansAtWrite: number[] = [];
+    const phaseRows: ScratchWriteTimings[] = [];
+    const doorPhases: ScratchWriteTimings[] = [];
+    let clock = 0;
+    const now = vi.spyOn(performance, 'now').mockImplementation(() => clock);
     let writers: Promise<void>[] = [];
     let door: ReturnType<typeof applyResultDoorAsync> | undefined;
     try {
       await atRoot;
       writers = Array.from({ length: 3 }, (_, i) => {
         const filePath = join(runDir, `write-${i}`);
-        return writeWithScratchQuota({ workspaceId: 'ws-Q', filePath, bytes: 512 }, async () => {
+        return writeWithScratchQuota({ workspaceId: 'ws-Q', filePath, bytes: 512,
+          onTiming: (row) => { phaseRows[i] = row; } }, async () => {
           scansAtWrite.push(rootReads);
           await writeFile(filePath, Buffer.alloc(512));
         });
@@ -609,9 +615,12 @@ describe('deferred scratch quota recovery', () => {
       const checkpoint = 'late checkpoint content '.repeat(RESULT_DOOR_TOKENS);
       door = applyResultDoorAsync({ content: [{ type: 'text', text: checkpoint }] }, {
         toolName: 'work_items:get', workspaceId: 'ws-Q', runId: UUID(2),
+        onScratchWriteTiming: (row) => { doorPhases.push(row); },
       });
       // A waiting writer has neither reserved bytes nor changed the measured filesystem.
       expect(scansAtWrite).toEqual([]);
+      expect(phaseRows).toEqual([]);
+      clock = 25;
       releaseRead();
       await measurement;
       await Promise.all(writers);
@@ -623,6 +632,9 @@ describe('deferred scratch quota recovery', () => {
       expect(JSON.stringify(result.content)).toContain(spillPath);
       expect(scansAtWrite).toEqual([1, 1, 1]);
       expect(rootReads).toBe(1);
+      expect(phaseRows[0]).toEqual({ quotaWaitMs: 0, refreshWaitMs: 25, quotaRecoveryMs: 0, writeMs: 0, totalMs: 25 });
+      expect(phaseRows.slice(1)).toEqual(Array(2).fill({ quotaWaitMs: 25, refreshWaitMs: 0, quotaRecoveryMs: 0, writeMs: 0, totalMs: 25 }));
+      expect(doorPhases).toEqual([{ quotaWaitMs: 25, refreshWaitMs: 0, quotaRecoveryMs: 0, writeMs: 0, totalMs: 25 }]);
       expect(scratchUsageBytes('ws-Q')).toBe(100 + markerBytes('ws-Q') + 3 * 512 + spill.length);
     } finally {
       releaseRead();
@@ -630,7 +642,63 @@ describe('deferred scratch quota recovery', () => {
       // Drain any follow-up refresh before restoring the test's scratch root.
       await refreshScratchUsage('ws-Q');
       readdirMock.mockImplementation(originalRead);
+      now.mockRestore();
     }
+  });
+
+  it('attributes a gated FIFO scan to its initiator and the shared wait to its follower', async () => {
+    makeSparseRun('ws-Q', UUID(1), WORKSPACE_QUOTA_BYTES + 1024);
+    _setScratchUsageForTests('ws-Q', WORKSPACE_QUOTA_BYTES + 1024);
+    const readdirMock = vi.mocked(readdirAsync);
+    const originalRead = readdirMock.getMockImplementation()!;
+    const read = originalRead as unknown as (path: unknown, options?: unknown) => Promise<unknown>;
+    let release!: () => void;
+    let reached!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const atRoot = new Promise<void>((resolve) => { reached = resolve; });
+    let gated = false;
+    readdirMock.mockImplementation((async (path: unknown, options: unknown) => {
+      const entries = await read(path, options);
+      if (!gated && String(path) === scratchRootForWorkspace('ws-Q')) {
+        gated = true; reached(); await gate;
+      }
+      return entries as never;
+    }) as typeof readdirAsync);
+    let clock = 0;
+    const now = vi.spyOn(performance, 'now').mockImplementation(() => clock);
+    const phases: ScratchWriteTimings[] = [];
+    const writes: Promise<void>[] = [];
+    try {
+      writes.push(writeWithScratchQuota({ workspaceId: 'ws-Q', filePath: join(scratchRootForWorkspace('ws-Q'), 'first'), bytes: 16,
+        onTiming: (row) => { phases[0] = row; } }, async () => {}));
+      await atRoot;
+      writes.push(writeWithScratchQuota({ workspaceId: 'ws-Q', filePath: join(scratchRootForWorkspace('ws-Q'), 'second'), bytes: 16,
+        onTiming: (row) => { phases[1] = row; } }, async () => {}));
+      clock = 40; release(); await Promise.all(writes);
+      expect(phases).toEqual([
+        { quotaWaitMs: 0, refreshWaitMs: 0, quotaRecoveryMs: 40, writeMs: 0, totalMs: 40 },
+        { quotaWaitMs: 40, refreshWaitMs: 0, quotaRecoveryMs: 0, writeMs: 0, totalMs: 40 },
+      ]);
+    } finally {
+      release(); await Promise.allSettled(writes);
+      readdirMock.mockImplementation(originalRead); now.mockRestore();
+    }
+  });
+
+  it('reports a failed filesystem write without letting its diagnostic observer replace the error', async () => {
+    _setScratchUsageForTests('ws-Q', 0);
+    let clock = 0;
+    const now = vi.spyOn(performance, 'now').mockImplementation(() => clock);
+    const phases: ScratchWriteTimings[] = [];
+    const failure = new Error('controlled filesystem failure');
+    try {
+      await expect(writeWithScratchQuota({ workspaceId: 'ws-Q', filePath: join(scratchRootForWorkspace('ws-Q'), 'failed'), bytes: 16,
+        onTiming: (row) => { phases.push(row); throw new Error('observer failure'); } }, async () => {
+        clock = 70; throw failure;
+      })).rejects.toBe(failure);
+      expect(phases).toEqual([{ quotaWaitMs: 0, refreshWaitMs: 0, quotaRecoveryMs: 0, writeMs: 70, totalMs: 70 }]);
+      expect(scratchUsageBytes('ws-Q')).toBe(0);
+    } finally { now.mockRestore(); }
   });
 
   it.each([false, true])('replaces stale over-quota usage with an active reservation (already written: %s)', async (alreadyWritten) => {

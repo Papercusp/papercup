@@ -47,6 +47,24 @@ describe('account product guide entry', () => {
     expect(screen.getByRole('button', { name: 'Resume product guide' })).toBeTruthy();
     expect(fetcher).toHaveBeenCalledTimes(1);
   });
+  it('lets a modal destination place a single Help and resume control inside its interaction boundary', async () => {
+    const fetcher = vi.fn().mockResolvedValueOnce(response(record({ currentLessonId: 'account', disposition: 'paused' })))
+      .mockResolvedValueOnce(response(record({ revision: 1, currentLessonId: 'account' })));
+    vi.stubGlobal('fetch', fetcher);
+    render(<AccountProductTutorial account={account}>{controls => <section role="dialog" aria-label="Account">{controls}<p>Account destination</p></section>}</AccountProductTutorial>);
+    const help = await screen.findByText('Help with Manage your account and preferences');
+    const dialog = screen.getByRole('dialog', { name: 'Account' });
+    expect(dialog.contains(help)).toBe(true);
+    const resume = screen.getByRole('button', { name: 'Resume product guide' });
+    expect(dialog.contains(resume)).toBe(true);
+    expect(screen.getAllByRole('button', { name: 'Resume product guide' })).toHaveLength(1);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    fireEvent.click(resume);
+    const heading = await screen.findByRole('heading', { name: 'Manage your account and preferences' });
+    await waitFor(() => expect(document.activeElement).toBe(heading));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(fetcher.mock.calls.every(([url]) => String(url).includes('tutorial-progress'))).toBe(true);
+  });
   it.each([null, 'preassigned'])('shows the enrolled guide before workspace first-run/Home with workspace=%s', async workspaceId => {
     const fetcher = vi.fn().mockResolvedValue(response(record())); vi.stubGlobal('fetch', fetcher);
     let mountedDestination = false;
