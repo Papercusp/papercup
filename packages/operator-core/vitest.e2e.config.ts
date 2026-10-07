@@ -2,6 +2,7 @@ import { defineVitestConfig } from '@papercusp/test-config/vitest-config';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readFileSync } from 'node:fs';
+import { tsImport } from 'tsx/esm/api';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -22,7 +23,12 @@ export default defineVitestConfig({
       if (!Array.isArray(units) || units.length === 0 || units.length > 32
         || units.some(unit => typeof unit !== 'string' || !unit.trim() || unit.length > 120)
         || new Set(units).size !== units.length) return null;
-      const { listRuntimeVintage, measureRuntimeVintageEnvironment } = await import('./lib/runtime-vintage');
+      // Keep operator/PG modules out of Vite's config bundle. When selected,
+      // load their TypeScript graph with the same resolver used by our hosts,
+      // rather than Node's native loader (which rejects directory imports).
+      const { listRuntimeVintage, measureRuntimeVintageEnvironment } = await tsImport(
+        './lib/runtime-vintage.ts', import.meta.url,
+      );
       const fingerprint = measureRuntimeVintageEnvironment(await listRuntimeVintage(), units);
       return fingerprint ? { schemaVersion: 1 as const, units, fingerprint, observedAt: new Date().toISOString() } : null;
     },
