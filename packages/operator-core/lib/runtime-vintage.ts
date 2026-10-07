@@ -313,7 +313,12 @@ export function measureRuntimeVintageEnvironment(
         || deps.identity(row.pid!) !== pinned) return null;
       codeIdentity = `node-entry-sha256:${entry}`;
     } else if (!codeIdentity || !/^[a-f0-9]{7,64}$/.test(codeIdentity)) return null;
-    pins.push([unit, row.host, codeIdentity!, row.buildTime, row.pid!, pinned]);
+    // Shared and caller-owned PG clients can decode timestamptz as either
+    // PostgreSQL text or ISO text. Hash the instant, not the driver's encoding.
+    const buildTimeMs = row.buildTime === null ? null : Date.parse(row.buildTime);
+    if (buildTimeMs !== null && !Number.isFinite(buildTimeMs)) return null;
+    const buildTime = buildTimeMs === null ? null : new Date(buildTimeMs).toISOString();
+    pins.push([unit, row.host, codeIdentity!, buildTime, row.pid!, pinned]);
   }
   return createHash('sha256').update(JSON.stringify(pins)).digest('hex');
 }

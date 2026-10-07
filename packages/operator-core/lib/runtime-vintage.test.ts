@@ -138,6 +138,19 @@ describe('runtime-vintage — self-report ledger (P-008)', () => {
       ['desktop', 'bg-host'], deps)).not.toBe(original);
   });
 
+  it('hashes equivalent PG boot timestamps identically while retaining actual boot changes', () => {
+    const deps = { host: 'local', identity: () => 'boot:start' };
+    const fingerprint = (buildTime: string | null) => measureRuntimeVintageEnvironment(
+      [{ ...pinnedRow(), buildTime }], ['bg-host'], deps);
+    const iso = fingerprint('2026-10-07T15:41:11.125Z');
+    expect(iso).toMatch(/^[a-f0-9]{64}$/);
+    expect(fingerprint('2026-10-07 11:41:11.125-04')).toBe(iso);
+    expect(fingerprint('2026-10-07T11:41:11.125-04:00')).toBe(iso);
+    expect(fingerprint('2026-10-07T15:41:11.126Z')).not.toBe(iso);
+    expect(fingerprint('invalid')).toBeNull();
+    expect(fingerprint(null)).not.toBe(iso);
+  });
+
   it('independently pins the loaded executable without inventing a Git revision', async () => {
     if (process.platform !== 'linux') return;
     const digest = createHash('sha256').update(readFileSync(`/proc/${process.pid}/exe`)).digest('hex');
