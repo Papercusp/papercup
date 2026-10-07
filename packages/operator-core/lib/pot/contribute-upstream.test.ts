@@ -39,7 +39,7 @@ describe('report contribution consent and shared intake (P-015)', () => {
   });
 
   it('requires canonical membership rather than treating an arbitrary local Pot as upstream', async () => {
-    const intake = vi.fn();
+    const intake = vi.fn().mockResolvedValue(receipt);
     const result = await contributeUpstream({ kind: 'report', confirm: true, report: { text: 'Export crashes' }, hasCanonicalReportMembership: async () => false, intakeReport: intake });
     expect(result).toMatchObject({ prepared: true, needs: ['canonical-Pot membership'] });
     expect(intake).not.toHaveBeenCalled();

@@ -7,7 +7,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { buildProblemReport, previewDigest, type ProblemReportPayload } from '../../../harness/improvements/problem-report';
 import type { EndUserReportInput, EndUserReportResult } from '../../../harness/improvements/end-user-intake';
 import type { PutReportAttachmentInput } from '../../../harness/improvements/report-attachments';
-import { REPORT_PROBLEM_DOOR, handleReportProblem, type ReportProblemDeps } from './report-problem';
+import { REPORT_PROBLEM_DOOR, defaultReportProblemDeps, handleReportProblem, type ReportProblemDeps } from './report-problem';
+import * as contribution from '../../../pot/contribute-upstream';
 
 function payload(overrides: Partial<Parameters<typeof buildProblemReport>[0]> = {}): ProblemReportPayload {
   return buildProblemReport({
@@ -48,6 +49,20 @@ async function send(p: ProblemReportPayload, extra: Record<string, unknown> = {}
 }
 
 describe('handleReportProblem', () => {
+  it('production dependencies route Send through the existing contribution core with explicit consent', async () => {
+    const result: EndUserReportResult = { routed: 'work-item', classification: { kind: 'bug', basis: 'defect-cue' }, capture: { ok: true, issue: { id: 'EI-report' } } as never };
+    const spy = vi.spyOn(contribution, 'contributeUpstream').mockResolvedValue({ ok: true, kind: 'report', queued: true, result, summary: 'queued' });
+    try {
+      const production = defaultReportProblemDeps();
+      expect(production.contribute).toBeTypeOf('function');
+      await production.contribute!({ text: 'Export crashes', workspaceId: 'install-ws', reporterId: 'not-forwarded' });
+      expect(spy).toHaveBeenCalledWith({ kind: 'report', confirm: true, workspaceId: 'install-ws',
+        report: { text: 'Export crashes', title: undefined, reportContext: undefined } });
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it('uses contribution once after preview validation and exposes only queued delivery (P-015)', async () => {
     const { d } = deps();
     const result: EndUserReportResult = { routed: 'work-item', classification: { kind: 'bug', basis: 'defect-cue' }, capture: { issue: { id: 'EI-upstream' } } as never };

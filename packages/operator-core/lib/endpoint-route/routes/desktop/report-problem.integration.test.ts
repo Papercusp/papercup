@@ -26,19 +26,23 @@ const { buildProblemReport, previewDigest } = await import('../../../harness/imp
 const { handleReportProblem } = await import('./report-problem');
 const { contributeUpstream } = await import('../../../pot/contribute-upstream');
 const { buildEngineerIssuesProjection } = await import('../../../sync/hyperbee/projections/engineer-issues');
+const { errorSignatureOf } = await import('../../../harness/improvements/error-signature');
 type EngineerIssueRow = import('../../../sync/hyperbee/projections/engineer-issues').EngineerIssueRow;
 type ReportProblemDeps = import('./report-problem').ReportProblemDeps;
 
 const WORKSPACE = 'papercusp-workspace';
 let db: OrgTestDb;
+let upstreamDb: OrgTestDb;
 
 beforeAll(async () => {
   db = await createOrgTestDb();
+  upstreamDb = await createOrgTestDb();
   h.sql = db.adminSql;
 }, 180_000);
 
 afterAll(async () => {
   await db?.cleanup();
+  await upstreamDb?.cleanup();
   if (!process.env.KEEP_TEST_PG) await teardownTestPg();
 });
 
@@ -66,12 +70,24 @@ async function rowsMentioning(marker: string) {
 describe('desktop Report a problem door, end to end', () => {
   it('P-015: contribution captures once and the existing issue CDC projects report context upstream', async () => {
     const s = suffix();
-    const upstreamWorkspace = `p015-upstream-${s}`;
+    // A peer is a separate database, not a second workspace in the SAME DB:
+    // work_items' physical primary key is (harness_slug, feature_id).
+    const upstreamWorkspace = WORKSPACE;
+    const [sourceDatabase] = await db.adminSql<{ name: string }[]>`SELECT current_database() AS name`;
+    const [targetDatabase] = await upstreamDb.adminSql<{ name: string }[]>`SELECT current_database() AS name`;
+    expect(targetDatabase!.name).not.toBe(sourceDatabase!.name);
     const intake = vi.fn(deps.intake);
     const localFallback = vi.fn(deps.intake);
+    const errorMessage = `TypeError: CSV export rows are missing for p015${s}`;
+    const agentMessage = `Uncaught ${errorMessage}`;
+    // Preflight the instrument: short/generic errors intentionally do not get
+    // a dedup key. Never let random suffix length decide fixture eligibility.
+    const signature = errorSignatureOf({ source: 'window.error', message: errorMessage });
+    expect(signature).not.toBeNull();
+    expect(errorSignatureOf({ source: 'renderer', message: agentMessage })?.key).toBe(signature?.key);
     const payload = buildProblemReport({ text: `Export crashes p015-${s}`, appVersion: '0.9.4',
       route: '/harness/papercusp/board', search: '?view=kanban',
-      recentErrors: [{ source: 'window.error', message: `TypeError: p015${s} is undefined` }] });
+      recentErrors: [{ source: 'window.error', message: errorMessage }] });
     const out = await handleReportProblem({ payload, previewDigest: await previewDigest(payload) }, {
       ...deps, intake: localFallback,
       contribute: (input) => contributeUpstream({ kind: 'report', confirm: true, workspaceId: WORKSPACE,
@@ -90,15 +106,38 @@ describe('desktop Report a problem door, end to end', () => {
        WHERE workspace_id = ${WORKSPACE} AND table_name = 'engineer_issues'
          AND row->>'issue_id' = ${id} ORDER BY id DESC LIMIT 1`;
     expect(op, 'installed report must enter the existing issue federation outbox').toBeDefined();
-    const projection = buildEngineerIssuesProjection({ workspaceId: upstreamWorkspace, harnessSlug: 'papercusp', sql: db.adminSql });
+    expect(op!.row.harness_slug, JSON.stringify({ harness: op!.row.harness_slug, scope: op!.row.scope, storage: op!.row.storage_harness_slug })).toBe('papercusp');
+    const projection = buildEngineerIssuesProjection({ workspaceId: upstreamWorkspace, harnessSlug: 'papercusp', sql: upstreamDb.adminSql });
     await projection.writeToPg(op!.row, { ts: Number(op!.ts), origin: 'remote', authorPubkey: 'p015-admitted-install' });
-    const [upstream] = await db.adminSql<{ origin: string; payload: Record<string, unknown> }[]>`
+    const [upstream] = await upstreamDb.adminSql<{ origin: string; payload: Record<string, unknown> }[]>`
       SELECT origin, payload FROM harness_shared.work_items
        WHERE workspace_id = ${upstreamWorkspace} AND feature_id = ${id}`;
     expect(upstream?.origin).toBe('remote');
     expect(upstream?.payload.reporter).toMatchObject({ kind: 'end-user' });
+    expect(upstream?.payload.watchdogKey).toBe(signature!.key);
     expect(JSON.stringify(upstream?.payload.reportContext)).toContain('0.9.4');
     expect(JSON.stringify(upstream?.payload.reportContext)).toContain('kanban');
+    const [source] = await db.adminSql<{ origin: string }[]>`
+      SELECT origin FROM harness_shared.work_items WHERE workspace_id = ${WORKSPACE} AND feature_id = ${id}`;
+    expect(source?.origin).toBe('local');
+    // The upstream agent uses the SAME capture intake; no second report type.
+    h.sql = upstreamDb.adminSql;
+    try {
+      const agent = await capture({ title: `Agent export failure p015-${s}`, kind: 'bug',
+        scope: 'harness:papercusp', workspaceId: upstreamWorkspace, createdBy: 'su-upstream-reviewer',
+        reportContext: { recentErrors: [{ source: 'renderer', message: agentMessage }] } });
+      const keys = await upstreamDb.adminSql`
+        SELECT feature_id, workspace_id, harness_slug, payload->>'watchdogKey' AS watchdog_key,
+               payload->'errorSignature' AS signature, payload->'_ei'->>'signal_origin' AS signal_origin
+          FROM harness_shared.work_items WHERE feature_id = ${id} OR payload->>'watchdogKey' = ${signature!.key}`;
+      expect(agent.created, `source/agent signature preflight passed; upstream identities: ${JSON.stringify(keys)}`).toBe(false);
+      expect(agent.issue?.id ?? agent.coalescedOnto?.id).toBe(id);
+      const [folded] = await upstreamDb.adminSql<{ payload: Record<string, unknown> }[]>`
+        SELECT payload FROM harness_shared.work_items WHERE workspace_id = ${upstreamWorkspace} AND feature_id = ${id}`;
+      expect(folded?.payload.reporterKinds).toEqual(expect.arrayContaining(['agent', 'end-user']));
+    } finally {
+      h.sql = db.adminSql;
+    }
     // Scope: real PG CDC -> real PG projection. No live swarm delivery claim.
   });
 

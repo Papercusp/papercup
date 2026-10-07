@@ -68,6 +68,23 @@ describe('platform:contribute guards + delegation', () => {
       kind: 'pr', confirm: true, featureBranch: 'fix/x', prTitle: 'Fix x',
     });
   });
+
+  it('passes a report through the same contribution core and retains queued status', async () => {
+    const report = { text: 'Export crashes', reportContext: { appVersion: '0.0.1' } };
+    contribM.mockResolvedValue({ ok: true, kind: 'report', queued: true } as never);
+    const result = body(await call({ kind: 'report', confirm: true, report }));
+    expect(result).toMatchObject({ queued: true });
+    expect(result).not.toHaveProperty('sent');
+    expect(contribM.mock.calls[0]![0]).toMatchObject({ kind: 'report', confirm: true, workspaceId: 'ws-1', report });
+    expect(auditM).not.toHaveBeenCalled();
+  });
+
+  it('keeps reports root-only too, without invoking the contribution core', async () => {
+    ident.mockReturnValue({ source: 'fleet-spawn' } as never);
+    expect(body(await call({ kind: 'report', confirm: true, report: { text: 'Export crashes' } })))
+      .toMatchObject({ error: 'platform_contribute_root_only' });
+    expect(contribM).not.toHaveBeenCalled();
+  });
 });
 
 describe('platform:contribute audit-only-when-sent', () => {
