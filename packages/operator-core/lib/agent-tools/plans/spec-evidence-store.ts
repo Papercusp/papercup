@@ -51,6 +51,7 @@ export type SpecEvidenceKind = (typeof SPEC_EVIDENCE_KINDS)[number];
 
 const MAX_REPO_MEASUREMENT_SOURCE_GLOBS = 16;
 const MAX_REPO_MEASUREMENT_GLOB_MATCHES = 128;
+const MAX_REPO_MEASUREMENT_FIXTURE_GLOB_MATCHES = 4096;
 const MAX_REPO_MEASUREMENT_GLOB_DEPTH = 16;
 
 const evidenceFingerprintSchema = z.string().trim().min(1).max(256);
@@ -87,16 +88,19 @@ export const repoFilesEvidenceMeasurementSchema = z
     testPaths: z.array(repoMeasurementPathSchema).min(1).max(32).optional(),
     /** Files a fixture was calibrated against; tracked independently from the test and product source. */
     fixturePaths: z.array(repoMeasurementPathSchema).min(1).max(32).optional(),
+    /** Bounded calibration corpus; membership and bytes participate in the fixture digest. */
+    fixtureGlobs: z.array(repoMeasurementGlobSchema).min(1).max(MAX_REPO_MEASUREMENT_SOURCE_GLOBS)
+      .refine((patterns) => new Set(patterns).size === patterns.length, 'measurement globs must be unique').optional(),
     /** Optional registered harness root for fixturePaths when calibration sources live elsewhere. */
     fixtureRootHarnessSlug: z.string().trim().min(1).max(120).optional(),
   })
   .strict()
   .superRefine((measurement, ctx) => {
-    if (measurement.fixtureRootHarnessSlug && !measurement.fixturePaths) {
+    if (measurement.fixtureRootHarnessSlug && !hasRepoFixturePaths(measurement)) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['fixtureRootHarnessSlug'],
-        message: 'fixtureRootHarnessSlug requires fixturePaths',
+        message: 'fixtureRootHarnessSlug requires fixturePaths or fixtureGlobs',
       });
     }
   });
@@ -195,7 +199,7 @@ async function fingerprintRepoFileSet(
   return { fingerprint: repoFileSetFingerprint(entries), files };
 }
 
-async function expandRepoMeasurementGlobsAtRoot(root: string, globs: readonly string[]): Promise<string[]> {
+async function expandRepoMeasurementGlobsAtRoot(root: string, globs: readonly string[], maxMatches = MAX_REPO_MEASUREMENT_GLOB_MATCHES): Promise<string[]> {
   if (globs.length === 0) return [];
   const matches = new Set<string>();
   const stream = fastGlob.stream([...globs], {
@@ -210,11 +214,20 @@ async function expandRepoMeasurementGlobsAtRoot(root: string, globs: readonly st
   for await (const matched of stream as AsyncIterable<string>) {
     const path = matched.split(sep).join('/');
     matches.add(path);
-    if (matches.size > MAX_REPO_MEASUREMENT_GLOB_MATCHES) {
-      throw new Error(`repo_measurement_too_many_glob_files:${matches.size}>${MAX_REPO_MEASUREMENT_GLOB_MATCHES}`);
+    if (matches.size > maxMatches) {
+      throw new Error(`repo_measurement_too_many_glob_files:${matches.size}>${maxMatches}`);
     }
   }
   return [...matches].sort();
+}
+
+function hasRepoFixturePaths(recipe: RepoFilesEvidenceMeasurement): boolean {
+  return Boolean(recipe.fixturePaths || recipe.fixtureGlobs);
+}
+
+async function expandedRepoFixturePathsAtRoot(root: string, recipe: RepoFilesEvidenceMeasurement): Promise<string[]> {
+  const matches = await expandRepoMeasurementGlobsAtRoot(root, recipe.fixtureGlobs ?? [], MAX_REPO_MEASUREMENT_FIXTURE_GLOB_MATCHES);
+  return [...new Set([...(recipe.fixturePaths ?? []), ...matches])].sort();
 }
 
 async function expandedRepoSourcePathsAtRoot(
@@ -366,17 +379,19 @@ async function readRepoFilesProbeSnapshots(
       if (!recipe || recipe.kind === 'work-items') return;
       const primaryRoot = await rootFor(recipe, 'source').catch(() => null);
       if (!primaryRoot) return;
-      const fixtureRoot = recipe.fixturePaths
+      const fixtureRoot = hasRepoFixturePaths(recipe)
         ? await rootFor(recipe, 'fixture').catch(() => null)
         : primaryRoot;
+      const fixturePaths = fixtureRoot ? await expandedRepoFixturePathsAtRoot(fixtureRoot, recipe).catch(() => null) : [];
+      if (!fixturePaths) return;
       const primaryPaths = await repoFilesPrimaryPathsAtRoot(primaryRoot, recipe).catch(() => null);
       if (!primaryPaths) return;
       const groups: Array<[string, string[]]> = [[
         primaryRoot,
-        [...primaryPaths, ...(fixtureRoot === primaryRoot ? (recipe.fixturePaths ?? []) : [])],
+        [...primaryPaths, ...(fixtureRoot === primaryRoot ? fixturePaths : [])],
       ]];
-      if (fixtureRoot && fixtureRoot !== primaryRoot && recipe.fixturePaths) {
-        groups.push([fixtureRoot, [...recipe.fixturePaths]]);
+      if (fixtureRoot && fixtureRoot !== primaryRoot && hasRepoFixturePaths(recipe)) {
+        groups.push([fixtureRoot, fixturePaths]);
       }
       for (const [root, paths] of groups) {
         if (paths.length === 0) continue;
@@ -411,14 +426,15 @@ export async function measureRepoFilesEvidenceDetailedAtRoot(
     throw new Error('repo_measurement_fixture_root_identity_required');
   }
   const sourcePaths = await expandedRepoSourcePathsAtRoot(root, parsed);
+  const fixturePaths = await expandedRepoFixturePathsAtRoot(fixtureRoot, parsed);
   const measuredPaths = [
     ...sourcePaths,
     ...(parsed.testPaths ?? []),
-    ...(fixtureRoot === root ? (parsed.fixturePaths ?? []) : []),
+    ...(fixtureRoot === root ? fixturePaths : []),
   ];
   await refuseMutationProbePaths(root, measuredPaths);
-  if (fixtureRoot !== root && parsed.fixturePaths) {
-    await refuseMutationProbePaths(fixtureRoot, parsed.fixturePaths);
+  if (fixtureRoot !== root && hasRepoFixturePaths(parsed)) {
+    await refuseMutationProbePaths(fixtureRoot, fixturePaths);
   }
   const detailed = await fingerprintRepoFilesMeasurement(
     root,
@@ -426,10 +442,11 @@ export async function measureRepoFilesEvidenceDetailedAtRoot(
     sourcePaths,
     fixtureRoot,
     fixtureRootHarnessSlug,
+    fixturePaths,
   );
   await refuseMutationProbePaths(root, measuredPaths);
-  if (fixtureRoot !== root && parsed.fixturePaths) {
-    await refuseMutationProbePaths(fixtureRoot, parsed.fixturePaths);
+  if (fixtureRoot !== root && hasRepoFixturePaths(parsed)) {
+    await refuseMutationProbePaths(fixtureRoot, fixturePaths);
   }
   return detailed;
 }
@@ -497,13 +514,22 @@ export async function measureRepoFilesEvidenceDetailedAtCommit(
     )
   ).map(fromRepo);
   const sourcePaths = [...new Set([...parsed.sourcePaths, ...globPaths])].sort();
-  const fixturePaths = parsed.fixturePaths ?? [];
+  const fixtureGlobPaths = fixtureCommit
+    ? (await listCommittedGlobMatches(
+        fixtureRoot === root ? repoDir : fixtureRoot,
+        fixtureCommit,
+        (parsed.fixtureGlobs ?? []).map((path) => fixtureRoot === root ? inRepo(path) : path),
+        { maxMatches: MAX_REPO_MEASUREMENT_FIXTURE_GLOB_MATCHES, maxDepth: MAX_REPO_MEASUREMENT_GLOB_DEPTH },
+        deps,
+      )).map((path) => fixtureRoot === root ? fromRepo(path) : path)
+    : await expandRepoMeasurementGlobsAtRoot(fixtureRoot, parsed.fixtureGlobs ?? [], MAX_REPO_MEASUREMENT_FIXTURE_GLOB_MATCHES);
+  const fixturePaths = [...new Set([...(parsed.fixturePaths ?? []), ...fixtureGlobPaths])].sort();
   const fixtureIsWorkingTree = Boolean(fixturePaths.length && !fixtureCommit);
   if (fixtureIsWorkingTree) await refuseMutationProbePaths(fixtureRoot, fixturePaths);
   const [source, test, fixture] = await Promise.all([
     fileSetAt(root, sourcePaths, commit, true),
     parsed.testPaths ? fileSetAt(root, parsed.testPaths, commit, true) : Promise.resolve(null),
-    parsed.fixturePaths
+    hasRepoFixturePaths(parsed)
       ? fixtureCommit
         ? fileSetAt(fixtureRoot, fixturePaths, fixtureCommit, fixtureRoot === root)
         : fingerprintRepoFileSet(fixtureRoot, fixturePaths)
@@ -534,12 +560,14 @@ async function fingerprintRepoFilesMeasurement(
   expandedSourcePaths?: readonly string[],
   fixtureRoot: string = root,
   fixtureRootHarnessSlug?: string,
+  expandedFixturePaths?: readonly string[],
 ): Promise<DetailedRepoEvidenceMeasurement> {
   const sourcePaths = expandedSourcePaths ?? (await expandedRepoSourcePathsAtRoot(root, parsed));
+  const fixturePaths = expandedFixturePaths ?? (await expandedRepoFixturePathsAtRoot(fixtureRoot, parsed));
   const [source, test, fixture] = await Promise.all([
     fingerprintRepoFileSet(root, sourcePaths),
     parsed.testPaths ? fingerprintRepoFileSet(root, parsed.testPaths) : Promise.resolve(null),
-    parsed.fixturePaths ? fingerprintRepoFileSet(fixtureRoot, parsed.fixturePaths) : Promise.resolve(null),
+    hasRepoFixturePaths(parsed) ? fingerprintRepoFileSet(fixtureRoot, fixturePaths) : Promise.resolve(null),
   ]);
   const fixtureIdentity = fixtureRootHarnessSlug ? { rootHarnessSlug: fixtureRootHarnessSlug } : {};
   return {
@@ -615,18 +643,18 @@ export async function measureAndPinRepoFilesEvidenceAtCommitForScope(
 ): Promise<MeasuredRepoEvidenceFingerprints & { pin: MeasurementPin }> {
   const root = await realpath(await resolveMeasurementRoot(workspaceId, harnessSlug, measurement));
   const fixtureRootHarnessSlug = measurement.fixtureRootHarnessSlug;
-  const fixtureRoot = measurement.fixturePaths
+  const fixtureRoot = hasRepoFixturePaths(measurement)
     ? await realpath(await resolveMeasurementRoot(workspaceId, harnessSlug, measurement, 'fixture'))
     : root;
   const fixtureCommit = fixtureRoot === root ? at.commitSha : await resolveMeasurementCommit(fixtureRoot);
   const detailed = await measureRepoFilesEvidenceDetailedAtCommit(root, measurement, at.commitSha, {
     repoPrefix: at.repoPrefix,
-    ...(measurement.fixturePaths ? { fixtureRoot, fixtureCommit, fixtureRootHarnessSlug } : {}),
+    ...(hasRepoFixturePaths(measurement) ? { fixtureRoot, fixtureCommit, fixtureRootHarnessSlug } : {}),
     ...(options.git ? { deps: { git: options.git } } : {}),
   });
   const pin = await buildMeasurementPin(root, detailed.files, {
     ...(options.git ? { git: options.git } : {}),
-    ...(measurement.fixturePaths && fixtureRootHarnessSlug ? { roots: { [fixtureRootHarnessSlug]: fixtureRoot } } : {}),
+    ...(hasRepoFixturePaths(measurement) && fixtureRootHarnessSlug ? { roots: { [fixtureRootHarnessSlug]: fixtureRoot } } : {}),
   });
   return {
     sourceFingerprint: detailed.sourceFingerprint,
@@ -659,12 +687,12 @@ export async function measureRepoFilesEvidence(
   measurement: RepoFilesEvidenceMeasurement,
 ): Promise<MeasuredRepoEvidenceFingerprints> {
   const root = await resolveMeasurementRoot(workspaceId, harnessSlug, measurement);
-  const fixtureRoot = measurement.fixturePaths
+  const fixtureRoot = hasRepoFixturePaths(measurement)
     ? await resolveMeasurementRoot(workspaceId, harnessSlug, measurement, 'fixture')
     : root;
   const fixtureRootHarnessSlug = measurement.fixtureRootHarnessSlug;
   return measureRepoFilesEvidenceAtRoot(root, measurement, {
-    ...(measurement.fixturePaths ? { fixtureRoot, fixtureRootHarnessSlug } : {}),
+    ...(hasRepoFixturePaths(measurement) ? { fixtureRoot, fixtureRootHarnessSlug } : {}),
   });
 }
 
@@ -676,13 +704,13 @@ export async function measureAndPinRepoFilesEvidence(
   options: { git?: GitRunner } = {},
 ): Promise<MeasuredRepoEvidenceFingerprints & { pin: MeasurementPin }> {
   const root = await resolveMeasurementRoot(workspaceId, harnessSlug, measurement);
-  const fixtureRoot = measurement.fixturePaths
+  const fixtureRoot = hasRepoFixturePaths(measurement)
     ? await resolveMeasurementRoot(workspaceId, harnessSlug, measurement, 'fixture')
     : root;
   const fixtureRootHarnessSlug = measurement.fixtureRootHarnessSlug ?? measurement.rootHarnessSlug ?? harnessSlug;
   return measureAndPinRepoFilesEvidenceAtRoot(root, measurement, {
     ...options,
-    ...(measurement.fixturePaths ? { fixtureRoot, fixtureRootHarnessSlug } : {}),
+    ...(hasRepoFixturePaths(measurement) ? { fixtureRoot, fixtureRootHarnessSlug } : {}),
   });
 }
 
@@ -1395,6 +1423,10 @@ export function classifySpecEvidenceCurrentness(
     adequacy !== null && typeof adequacy === 'object' && !Array.isArray(adequacy) &&
     (adequacy as Record<string, unknown>).fixtureCalibrated === true;
   const fixtureExpected = row.evidence_kind === 'fixture' || fixtureCalibrationAttested;
+  const evidencePlane = row.details?.evidencePlane ?? row.details?.evidence_plane ?? row.details?.plane;
+  const liveEnvironmentRequired =
+    typeof evidencePlane === 'string' && ['live', 'deployed'].includes(evidencePlane.trim().toLowerCase());
+  const environmentFingerprintMissing = liveEnvironmentRequired && row.environment_fingerprint === null;
   const dimensions: EvidenceCurrentness['dimensions'] = {
     spec: row.spec_is_current ? 'current' : 'stale',
     source: compareFingerprint(row.source_fingerprint, current?.sourceFingerprint) as 'current' | 'stale' | 'unknown',
@@ -1404,7 +1436,11 @@ export function classifySpecEvidenceCurrentness(
         ? 'unknown'
         : compareFingerprint(row.fixture_fingerprint, current?.fixtureFingerprint),
     rubric: compareFingerprint(row.rubric_fingerprint, current?.rubricFingerprint),
-    environment: compareFingerprint(row.environment_fingerprint, current?.environmentFingerprint),
+    // A live/deployed proof depends on the runtime it exercised. Missing that identity
+    // is unknown, not proof that the environment dimension does not apply.
+    environment: environmentFingerprintMissing
+      ? 'unknown'
+      : compareFingerprint(row.environment_fingerprint, current?.environmentFingerprint),
     coverageEvidence:
       row.coverage_evidence_ref === null ? 'not-applicable' : row.coverage_evidence_present ? 'current' : 'stale',
     // A durable testRunId proves that a ledger row exists; it does not prove that a
@@ -1430,7 +1466,9 @@ export function classifySpecEvidenceCurrentness(
         ? row.test_run_worktree_dirty === true
           ? 'test-run-worktree-not-clean'
           : 'test-run-worktree-cleanliness-unproven'
-        : `${dimension}-current-fingerprint-not-supplied`,
+        : dimension === 'environment' && environmentFingerprintMissing
+          ? 'environment-evidence-fingerprint-not-recorded'
+          : `${dimension}-current-fingerprint-not-supplied`,
     );
   const attestedDimensions = [...new Set(options.attestedDimensions ?? [])].sort();
   const provenance: EvidenceCurrentnessProvenance =
@@ -1533,6 +1571,8 @@ interface EvidenceRow extends CurrentnessRow {
   test_run_commit_sha: string | null;
   test_run_worktree_dirty: boolean | null;
   test_run_status?: string | null;
+  test_run_framework?: string | null;
+  test_run_source?: string | null;
   test_run_execution_details?: unknown;
   /** Ledger output tail of a FAILED mutation-probe run bound as mutation evidence; else NULL. */
   mutation_failure_tail: string | null;
@@ -1540,6 +1580,18 @@ interface EvidenceRow extends CurrentnessRow {
   mutation_execution_details?: unknown;
   provisionalProofBase?: boolean;
   provisionalScorecard?: ProvisionalScorecardProof;
+}
+
+/** The verified recording adapter's layer, never an inferred historical runtime layer. */
+export function canonicalOperationalAdapterLayer(run: {
+  framework?: string | null; source?: string | null; filePath?: string | null;
+  runGroupId?: string | null; commitSha?: string | null; worktreeDirty?: boolean | null;
+}): 'operational' | undefined {
+  return run.framework === 'operational' && run.source === 'local' &&
+    run.worktreeDirty === false && Boolean(run.commitSha) &&
+    /^docs\/evidence\/[^\n]+\.json$/.test(run.filePath ?? '') &&
+    /^operational(?:-recovery:\d+)?:[a-f0-9]{40}$/.test(run.runGroupId ?? '')
+    ? 'operational' : undefined;
 }
 
 function scorecardIssueIdFromEvidenceRef(evidenceRef: string): string | null {
@@ -2116,6 +2168,8 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
            tr.commit_sha AS test_run_commit_sha,
            tr.worktree_dirty AS test_run_worktree_dirty,
            tr.status AS test_run_status,
+           tr.framework AS test_run_framework,
+           tr.source AS test_run_source,
            tr.execution_details AS test_run_execution_details,
            -- WI-10006745: unconditional, so no adequacy reader (the ship-gate snapshot included)
            -- can forget to ask for it. Bounded by the ledger's own 4000-char tail.
@@ -2246,19 +2300,19 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
       const root = await measurementRootFor(recipe, 'source').catch(() => null);
       if (!root) return recipe;
       const sourceCommit = await measurementCommitFor(root);
-      const fixtureRoot = recipe.fixturePaths
+      const fixtureRoot = hasRepoFixturePaths(recipe)
         ? await measurementRootFor(recipe, 'fixture').catch(() => null)
         : root;
-      const fixtureCommit = recipe.fixturePaths && fixtureRoot
+      const fixtureCommit = hasRepoFixturePaths(recipe) && fixtureRoot
         ? fixtureRoot === root ? sourceCommit : await measurementCommitFor(fixtureRoot)
         : null;
       const sourceNeedsWorkingTree = !sourceCommit;
-      const fixtureNeedsWorkingTree = Boolean(recipe.fixturePaths && !fixtureCommit);
+      const fixtureNeedsWorkingTree = Boolean(hasRepoFixturePaths(recipe) && !fixtureCommit);
       if (!sourceNeedsWorkingTree && !fixtureNeedsWorkingTree) return null;
       return {
         ...recipe,
         ...(sourceNeedsWorkingTree ? {} : { sourcePaths: [], sourceGlobs: undefined, testPaths: undefined }),
-        ...(fixtureNeedsWorkingTree ? {} : { fixturePaths: undefined, fixtureRootHarnessSlug: undefined }),
+        ...(fixtureNeedsWorkingTree ? {} : { fixturePaths: undefined, fixtureGlobs: undefined, fixtureRootHarnessSlug: undefined }),
       };
     }),
   );
@@ -2300,14 +2354,14 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
           measured = await measureWorkItemsEvidenceForScope(scope.workspaceId, scope.harnessSlug, recipe);
         } else {
           const measurementRoot = await measurementRootFor(recipe, 'source');
-          const fixtureRoot = recipe.fixturePaths
+          const fixtureRoot = hasRepoFixturePaths(recipe)
             ? await measurementRootFor(recipe, 'fixture')
             : measurementRoot;
           const fixtureRootHarnessSlug = recipe.fixtureRootHarnessSlug;
           measuredAtCommit = await measurementCommitFor(measurementRoot);
           const fixtureCommit = fixtureRoot === measurementRoot
             ? measuredAtCommit
-            : recipe.fixturePaths
+            : hasRepoFixturePaths(recipe)
               ? await measurementCommitFor(fixtureRoot)
               : null;
           // Same single read as before; the per-file hashes it now also returns are what
@@ -2318,23 +2372,24 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
           let detailed: DetailedRepoEvidenceMeasurement;
           if (measuredAtCommit) {
             detailed = await measureRepoFilesEvidenceDetailedAtCommit(measurementRoot, recipe, measuredAtCommit, {
-              ...(recipe.fixturePaths ? { fixtureRoot, fixtureCommit, fixtureRootHarnessSlug } : {}),
+              ...(hasRepoFixturePaths(recipe) ? { fixtureRoot, fixtureCommit, fixtureRootHarnessSlug } : {}),
             });
-          } else if (snapshot && (fixtureRoot === measurementRoot || !recipe.fixturePaths || fixtureSnapshot)) {
+          } else if (snapshot && (fixtureRoot === measurementRoot || !hasRepoFixturePaths(recipe) || fixtureSnapshot)) {
             const sourcePaths = await expandedRepoSourcePathsAtRoot(measurementRoot, recipe);
+            const fixturePaths = await expandedRepoFixturePathsAtRoot(fixtureRoot, recipe);
             const measuredPaths = [
               ...sourcePaths,
               ...(recipe.testPaths ?? []),
-              ...(fixtureRoot === measurementRoot ? (recipe.fixturePaths ?? []) : []),
+              ...(fixtureRoot === measurementRoot ? fixturePaths : []),
             ];
             const refusal = mutationProbeRefusal(snapshot.resolved, snapshot.probes, measuredPaths);
             if (refusal) throw new Error(refusal);
-            if (fixtureRoot !== measurementRoot && recipe.fixturePaths && fixtureSnapshot) {
-              const fixtureRefusal = mutationProbeRefusal(fixtureSnapshot.resolved, fixtureSnapshot.probes, recipe.fixturePaths);
+            if (fixtureRoot !== measurementRoot && hasRepoFixturePaths(recipe) && fixtureSnapshot) {
+              const fixtureRefusal = mutationProbeRefusal(fixtureSnapshot.resolved, fixtureSnapshot.probes, fixturePaths);
               if (fixtureRefusal) throw new Error(fixtureRefusal);
             }
-            if (fixtureRoot !== measurementRoot && recipe.fixturePaths) {
-              const primaryRecipe = { ...recipe, fixturePaths: undefined, fixtureRootHarnessSlug: undefined };
+            if (fixtureRoot !== measurementRoot && hasRepoFixturePaths(recipe)) {
+              const primaryRecipe = { ...recipe, fixturePaths: undefined, fixtureGlobs: undefined, fixtureRootHarnessSlug: undefined };
               const primary = await fingerprintRepoFilesMeasurement(
                 measurementRoot,
                 primaryRecipe,
@@ -2344,15 +2399,16 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
               let fixtureFingerprint: string;
               let fixtureFiles: Array<{ path: string; sha256: string; gitBlob: string }>;
               if (fixtureCommit) {
-                const fixture = await measureRepoFilesEvidenceDetailedAtCommit(fixtureRoot, {
-                  schemaVersion: 1,
-                  kind: 'repo-files',
-                  sourcePaths: recipe.fixturePaths,
-                }, fixtureCommit);
-                fixtureFingerprint = fixture.sourceFingerprint;
+                const committedFixturePaths = [...new Set([
+                  ...(recipe.fixturePaths ?? []),
+                  ...await listCommittedGlobMatches(fixtureRoot, fixtureCommit, recipe.fixtureGlobs ?? [],
+                    { maxMatches: MAX_REPO_MEASUREMENT_FIXTURE_GLOB_MATCHES, maxDepth: MAX_REPO_MEASUREMENT_GLOB_DEPTH }),
+                ])].sort();
+                const fixture = await fingerprintRepoFileSetAtCommit(fixtureRoot, fixtureCommit, committedFixturePaths);
+                fixtureFingerprint = fixture.fingerprint;
                 fixtureFiles = fixture.files;
               } else {
-                const fixture = await fingerprintRepoFileSet(fixtureRoot, recipe.fixturePaths);
+                const fixture = await fingerprintRepoFileSet(fixtureRoot, fixturePaths);
                 fixtureFingerprint = fixture.fingerprint;
                 fixtureFiles = fixture.files;
               }
@@ -2375,12 +2431,12 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
                 recipe,
                 sourcePaths,
                 fixtureRoot,
-                recipe.fixturePaths ? fixtureRootHarnessSlug : undefined,
+                hasRepoFixturePaths(recipe) ? fixtureRootHarnessSlug : undefined,
               );
             }
           } else {
             detailed = await measureRepoFilesEvidenceDetailedAtRoot(measurementRoot, recipe, {
-              ...(recipe.fixturePaths ? { fixtureRoot, fixtureRootHarnessSlug } : {}),
+              ...(hasRepoFixturePaths(recipe) ? { fixtureRoot, fixtureRootHarnessSlug } : {}),
             });
           }
           measured = {
@@ -2423,15 +2479,15 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
         const recipe = recipes[index];
         if (!recipe || recipe.kind === 'work-items' || serverMeasurements[index]?.status !== 'measured') return;
         const sourceRoot = await measurementRootFor(recipe, 'source');
-        const fixtureRoot = recipe.fixturePaths
+        const fixtureRoot = hasRepoFixturePaths(recipe)
           ? await measurementRootFor(recipe, 'fixture')
           : sourceRoot;
         let paths: string[];
         if (sourceRoot === root) {
           paths = await repoFilesPrimaryPathsAtRoot(root, recipe);
-          if (fixtureRoot === root) paths.push(...(recipe.fixturePaths ?? []));
-        } else if (fixtureRoot === root && recipe.fixturePaths) {
-          paths = [...recipe.fixturePaths];
+          if (fixtureRoot === root) paths.push(...await expandedRepoFixturePathsAtRoot(fixtureRoot, recipe));
+        } else if (fixtureRoot === root && hasRepoFixturePaths(recipe)) {
+          paths = await expandedRepoFixturePathsAtRoot(fixtureRoot, recipe);
         } else {
           return;
         }
@@ -2546,8 +2602,12 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
                   ...(parsedTestRunExecution.passedCaseTitles !== undefined
                     ? { passedCaseTitles: [...parsedTestRunExecution.passedCaseTitles] }
                     : {}),
-                  ...(parsedTestRunExecution.testLayer !== undefined
-                    ? { testLayer: parsedTestRunExecution.testLayer }
+                  ...(parsedTestRunExecution.testLayer !== undefined || canonicalOperationalAdapterLayer({
+                    framework: row.test_run_framework, source: row.test_run_source,
+                    filePath: row.test_run_file_path, runGroupId: parsedTestRunExecution.runGroupId,
+                    commitSha: row.test_run_commit_sha, worktreeDirty: row.test_run_worktree_dirty,
+                  }) !== undefined
+                    ? { testLayer: parsedTestRunExecution.testLayer ?? 'operational' }
                     : {}),
                 }
               : null,

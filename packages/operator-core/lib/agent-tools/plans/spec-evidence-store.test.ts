@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, writeFile, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -53,6 +53,7 @@ vi.mock('../../harness-registry', async (importOriginal) => {
 });
 
 import {
+  canonicalOperationalAdapterLayer,
   classifySpecEvidenceCurrentness,
   evidenceMeasurementSchema,
   listSpecEvidence,
@@ -168,6 +169,61 @@ describe('repo-backed server measurement', () => {
     const removed = await measureRepoFilesEvidenceAtRoot(measurementRoot, recipe);
     expect(removed.sourceFingerprint).not.toBe(added.sourceFingerprint);
     expect(removed.testFingerprint).toBe(initial.testFingerprint);
+  });
+
+  it('measures a SQL fixture corpus independently and detects changed, added, and removed inputs', async () => {
+    const dir = join(measurementRoot, 'sql-corpus');
+    await mkdir(dir, { recursive: true });
+    // More than the source glob bound: fixture corpora have their own admission bound.
+    await Promise.all(Array.from({ length: 129 }, (_, i) => writeFile(join(dir, `${i}.sql`), 'SELECT 1;\n')));
+    const recipe = {
+      schemaVersion: 1 as const, kind: 'repo-files' as const,
+      sourcePaths: ['src/feature.ts'], testPaths: ['test/feature.test.ts'],
+      fixtureGlobs: ['sql-corpus/*.sql'],
+    };
+    const first = await measureAndPinRepoFilesEvidenceAtRoot(measurementRoot, recipe);
+    expect(first.pin.files.filter((file) => file.dimension === 'fixture')).toHaveLength(129);
+    await writeFile(join(dir, '0.sql'), 'SELECT 2;\n');
+    const changed = await measureRepoFilesEvidenceAtRoot(measurementRoot, recipe);
+    expect(changed.fixtureFingerprint).not.toBe(first.fixtureFingerprint);
+    await writeFile(join(dir, 'added.sql'), 'SELECT 3;\n');
+    const added = await measureRepoFilesEvidenceAtRoot(measurementRoot, recipe);
+    expect(added.fixtureFingerprint).not.toBe(changed.fixtureFingerprint);
+    await rm(join(dir, 'added.sql'));
+    const removed = await measureRepoFilesEvidenceAtRoot(measurementRoot, recipe);
+    expect(removed.fixtureFingerprint).toBe(changed.fixtureFingerprint);
+    expect(removed.sourceFingerprint).toBe(first.sourceFingerprint);
+    expect(removed.testFingerprint).toBe(first.testFingerprint);
+  });
+
+  it('resolves glob-only fixtures at their declared second root and retains traversal and byte guards', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'fixture-corpus-root-'));
+    try {
+      await writeFile(join(root, 'input.sql'), 'SELECT 1;\n');
+      const recipe = { schemaVersion: 1 as const, kind: 'repo-files' as const,
+        sourcePaths: ['src/feature.ts'], fixtureGlobs: ['*.sql'], fixtureRootHarnessSlug: 'fixtures' };
+      const measured = await measureRepoFilesEvidenceDetailedAtRoot(measurementRoot, recipe, { fixtureRoot: root });
+      expect(measured.files).toContainEqual(expect.objectContaining({ path: 'input.sql', dimension: 'fixture', rootHarnessSlug: 'fixtures' }));
+      await expect(measureRepoFilesEvidenceAtRoot(measurementRoot, { ...recipe, fixtureGlobs: ['../*.sql'] }, { fixtureRoot: root }))
+        .rejects.toThrow(/normalized repo-relative POSIX/);
+      await symlink(join(root, 'input.sql'), join(measurementRoot, 'escape.sql'));
+      await expect(measureRepoFilesEvidenceAtRoot(measurementRoot, {
+        ...recipe, fixtureRootHarnessSlug: undefined, fixturePaths: ['escape.sql'], fixtureGlobs: undefined,
+      })).rejects.toThrow(/symlink_outside_root/);
+      await writeFile(join(root, 'input.sql'), Buffer.alloc(8 * 1024 * 1024 + 1));
+      await expect(measureRepoFilesEvidenceAtRoot(measurementRoot, recipe, { fixtureRoot: root })).rejects.toThrow(/repo_measurement_too_large/);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('refuses a fixture corpus beyond its file count bound', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'fixture-corpus-bound-'));
+    try {
+      await Promise.all(Array.from({ length: 4097 }, (_, i) => writeFile(join(root, `${i}.sql`), '')));
+      await expect(measureRepoFilesEvidenceAtRoot(measurementRoot, {
+        schemaVersion: 1, kind: 'repo-files', sourcePaths: ['src/feature.ts'],
+        fixtureGlobs: ['*.sql'], fixtureRootHarnessSlug: 'fixtures',
+      }, { fixtureRoot: root })).rejects.toThrow(/repo_measurement_too_many_glob_files:4097>4096/);
+    } finally { await rm(root, { recursive: true, force: true }); }
   });
 
   it('bounds the number of files expanded from source globs', async () => {
@@ -388,6 +444,108 @@ describe('classifySpecEvidenceCurrentness exact current comparisons', () => {
       comparisonSupplied: true,
     });
   });
+
+  it.each([
+    { plane: 'live', expectedEnvironment: 'unknown', expectedOverall: 'unknown' },
+    { plane: 'deployed', expectedEnvironment: 'unknown', expectedOverall: 'unknown' },
+    { plane: 'local', expectedEnvironment: 'not-applicable', expectedOverall: 'current' },
+    { plane: undefined, expectedEnvironment: 'not-applicable', expectedOverall: 'current' },
+  ])(
+    'requires a recorded environment fingerprint for $plane evidence and preserves other planes',
+    ({ plane, expectedEnvironment, expectedOverall }) => {
+      const currentness = classifySpecEvidenceCurrentness(
+        {
+          spec_is_current: true,
+          source_fingerprint: 'git:one',
+          test_fingerprint: 'sha256:test',
+          fixture_fingerprint: null,
+          rubric_fingerprint: null,
+          environment_fingerprint: null,
+          coverage_evidence_ref: null,
+          coverage_evidence_present: false,
+          test_run_id: null,
+          test_run_present: false,
+          evidence_kind: 'test',
+          details: {
+            ...(plane === undefined ? {} : { evidencePlane: plane }),
+            adequacy: { testLayer: 'e2e' },
+          },
+        },
+        {
+          evidenceKind: 'test',
+          evidenceRef: 'packages/operator-core/lib/desktop/personal-desktop.live.e2e.test.ts',
+          sourceFingerprint: 'git:one',
+          testFingerprint: 'sha256:test',
+          environmentFingerprint: 'runtime:0.0.21-pcd006b',
+        },
+        { provenance: 'server-measured' },
+      );
+
+      expect(currentness.dimensions.environment).toBe(expectedEnvironment);
+      expect(currentness.overall).toBe(expectedOverall);
+      if (expectedEnvironment === 'unknown') {
+        expect(currentness.unknownReasons).toContain('environment-evidence-fingerprint-not-recorded');
+      }
+    },
+  );
+
+  it('compares recorded runtime fingerprints for live evidence', () => {
+    const row = {
+      spec_is_current: true,
+      source_fingerprint: 'git:one',
+      test_fingerprint: 'sha256:test',
+      fixture_fingerprint: null,
+      rubric_fingerprint: null,
+      environment_fingerprint: 'runtime:0.0.21-pcd006b',
+      coverage_evidence_ref: null,
+      coverage_evidence_present: false,
+      test_run_id: null,
+      test_run_present: false,
+      evidence_kind: 'test' as const,
+      details: { evidencePlane: 'live' },
+    };
+    const current = {
+      evidenceKind: 'test' as const,
+      evidenceRef: 'packages/operator-core/lib/desktop/personal-desktop.live.e2e.test.ts',
+      sourceFingerprint: 'git:one',
+      testFingerprint: 'sha256:test',
+      environmentFingerprint: 'runtime:0.0.21-pcd006b',
+    };
+
+    expect(classifySpecEvidenceCurrentness(row, current, { provenance: 'server-measured' })).toMatchObject({
+      overall: 'current',
+      dimensions: { environment: 'current' },
+    });
+    expect(classifySpecEvidenceCurrentness(
+      row,
+      { ...current, environmentFingerprint: 'runtime:0.0.22' },
+      { provenance: 'server-measured' },
+    )).toMatchObject({
+      overall: 'stale',
+      dimensions: { environment: 'stale' },
+      staleReasons: ['environment-stale'],
+    });
+  });
+});
+
+describe('canonical operational recording adapter layer', () => {
+  const run = { framework: 'operational', source: 'local', filePath: 'docs/evidence/check.json',
+    runGroupId: `operational:${'a'.repeat(40)}`, commitSha: 'abc', worktreeDirty: false };
+
+  it('recognizes committed operational recordings and append-only recoveries', () => {
+    expect(canonicalOperationalAdapterLayer(run)).toBe('operational');
+    expect(canonicalOperationalAdapterLayer({ ...run,
+      runGroupId: `operational-recovery:20826187:${'a'.repeat(40)}` })).toBe('operational');
+  });
+
+  it.each([
+    { framework: 'vitest' }, { framework: 'node' }, { source: 'mutation-probe' },
+    { worktreeDirty: true }, { worktreeDirty: null }, { commitSha: null },
+    { filePath: 'test/check.test.ts' }, { runGroupId: 'caller-claimed-operational' },
+    { runGroupId: null },
+  ])('refuses unverified or unrelated provenance %j', patch => {
+    expect(canonicalOperationalAdapterLayer({ ...run, ...patch })).toBeUndefined();
+  });
 });
 
 describe('listSpecEvidence timestamp normalization', () => {
@@ -478,6 +636,32 @@ describe('listSpecEvidence timestamp normalization', () => {
     const query = h.queries.find(entry => entry.sql.includes('SELECT b.id'))?.sql ?? '';
     expect(query).toContain('tr.status AS test_run_status');
     expect(query).toContain('tr.execution_details AS test_run_execution_details');
+    expect(query).toContain('tr.framework AS test_run_framework');
+    expect(query).toContain('tr.source AS test_run_source');
+
+    // The operational adapter is measured from canonical recording provenance;
+    // changing a binder's layer alone cannot create it or relabel it as e2e.
+    const original = h.rows[0];
+    const { testLayer: _layer, ...execution } = original.test_run_execution_details as Record<string, unknown>;
+    h.rows = [{ ...original, test_run_framework: 'operational', test_run_source: 'local',
+      test_run_file_path: 'docs/evidence/check.json',
+      test_run_execution_details: { ...execution, filePath: 'docs/evidence/check.json',
+        runGroupId: `operational-recovery:41:${'a'.repeat(40)}` },
+      details: { adequacy: { testLayer: 'e2e' } },
+    }];
+    const [operational] = await listSpecEvidence({ harnessSlug: 'papercusp', planSlugs: ['plan-one'] });
+    expect(operational.testRunExecution).toMatchObject({ testLayer: 'operational',
+      passedCaseTitles: ['suite > exactly passed case', 'suite > another passed case'] });
+    expect(h.rows[0].test_run_execution_details).not.toHaveProperty('testLayer');
+
+    h.rows[0].test_run_framework = 'node';
+    const [unverified] = await listSpecEvidence({ harnessSlug: 'papercusp', planSlugs: ['plan-one'] });
+    expect(unverified.testRunExecution).not.toHaveProperty('testLayer');
+
+    h.rows[0].test_run_framework = 'operational';
+    h.rows[0].test_run_execution_details = { ...(h.rows[0].test_run_execution_details as object), testLayer: 'integration' };
+    const [explicit] = await listSpecEvidence({ harnessSlug: 'papercusp', planSlugs: ['plan-one'] });
+    expect(explicit.testRunExecution?.testLayer).toBe('integration');
   });
 
   it('accepts PostgreSQL timestamp strings instead of assuming Date instances', async () => {

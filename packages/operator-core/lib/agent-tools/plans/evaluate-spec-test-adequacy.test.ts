@@ -224,7 +224,7 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
       specId: 'SPEC-001',
       specRevision: 1,
       specFingerprint: 'sha256:spec-001',
-      evidenceKind: 'test',
+      evidenceKind: 'test' as const,
       evidenceRef: 'test-run 20455199',
       sourceFingerprint: 'sha256:source-at-grade',
       testFingerprint: 'sha256:test-at-grade',
