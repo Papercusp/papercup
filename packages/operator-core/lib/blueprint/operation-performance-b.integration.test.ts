@@ -16,7 +16,7 @@ import { hashPlanContent } from '@papercusp/plan-parser/content-hash';
 import { BlueprintSchema, compileAgentSpecification } from '@papercusp/orchestrator/blueprint';
 import { startDedicatedNativePg, startDedicatedTestPg, type DedicatedNativePg } from '@papercusp/test-config/pg';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
-import { installDeterministicEmbedder, type InstalledDeterministicEmbedder } from '../../test/_deterministic-embedder';
+import { assertNoLocalModelLoaded, installDeterministicEmbedder, type InstalledDeterministicEmbedder } from '../../test/_deterministic-embedder';
 import { runPairedBenchmark, type BenchmarkArm } from '../../test/_paired-operation-benchmark';
 import { createTextCollector } from '../child-output';
 import { projectBlueprintToPg } from './project-to-pg';
@@ -144,7 +144,12 @@ beforeAll(async () => {
     });
     process.env.PAPERCUSP_TEST_PG_ADMIN_URL = dedicatedPg.getConnectionUri();
   }
-  if (process.env.P013_FIXTURE_EMBEDDER === '1') fixtureEmbedder = await installDeterministicEmbedder();
+  // The default admission smoke checks the fork/join contract, so isolate it
+  // from local model construction and device fallback. Matrix runs retain their
+  // explicit provider choice; the existing helper replaces all embed cascades.
+  if (process.env.P013_MATRIX !== '1' || process.env.P013_FIXTURE_EMBEDDER === '1') {
+    fixtureEmbedder = await installDeterministicEmbedder();
+  }
   db = await createOrgTestDb({ adminPoolMax: P013_ORG_POOL_MAX });
   fixture.sql = db.adminSql;
   const sql = db.adminSql;
@@ -190,6 +195,9 @@ afterAll(async () => {
 
 describe('P-013 workload B fixture', () => {
   it('runs matching 3-item fork/join plan runs through run-now and the blueprint plan-target operation', async () => {
+    if (process.env.P013_MATRIX !== '1') {
+      expect(fixtureEmbedder, 'the default admission smoke must install its deterministic embedder').toBeDefined();
+    }
     // plans:set-status emits a diagnostic console.warn when one status write crosses its 10 s
     // slow-path threshold. Under matrix load that is an expected observation, not a fixture
     // defect, and vitest-fail-on-console failed a 64-min matrix rep on it (WI-10002948, plan D-038).
@@ -266,6 +274,17 @@ describe('P-013 workload B fixture', () => {
       for (const arm of ['control', 'candidate'] as const) samples.push(await runArm(arm, sequence++));
       console.info('P-013 workload B admission/invariant smoke; no grade', JSON.stringify(
         samples.map(({ arm, runId, phasesMs }) => ({ arm, runId, ms: phasesMs.map((ms) => +ms.toFixed(2)) }))));
+    }
+    if (fixtureEmbedder) {
+      // Cold-only matrix runs embed in their children; this process's counter
+      // proves actual use only for the default in-process admission smoke.
+      if (process.env.P013_MATRIX !== '1') {
+        expect(fixtureEmbedder.calls(), 'the workload must exercise the deterministic embedder').toBeGreaterThan(0);
+      }
+      console.info('P-013 workload B local-model evidence', JSON.stringify({
+        embedderCalls: fixtureEmbedder.calls(),
+        ...assertNoLocalModelLoaded('P-013 B parent after the workload'),
+      }));
     }
     // Behavioral invariants (both arms): exactly one plan_runs row and one instance
     // per sample, three items per run, every item done exactly once.
