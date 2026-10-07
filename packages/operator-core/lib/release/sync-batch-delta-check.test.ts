@@ -30,7 +30,7 @@ const SHA_B = 'b'.repeat(40);
 const SHA_C = 'c'.repeat(40);
 
 function makeBatch(overrides: Partial<SyncBatch> = {}): SyncBatch {
-  return { sha: SHA_C, committedAtMs: 1_700_000_000_000, agent: 'su-test', paths: ['packages/foo/src/a.ts'], ...overrides };
+  return { sha: SHA_B, committedAtMs: 1_700_000_000_000, agent: 'su-test', paths: ['packages/foo/src/a.ts'], ...overrides };
 }
 
 interface FakeState {
@@ -179,7 +179,7 @@ describe('runSyncBatchDeltaCheck — cursor discipline', () => {
     expect(state.cursor?.sha).toBe(SHA_A); // re-judged next tick
   });
 
-  it('a too-wide radius is refused but the cursor ADVANCES (a parked cursor would re-refuse forever)', async () => {
+  it('a single commit wider than the workspace cap is explicitly skipped without evaluating it', async () => {
     const { deps, state } = makeDeps(
       {
         probeRadius: async () => ({
@@ -192,7 +192,114 @@ describe('runSyncBatchDeltaCheck — cursor discipline', () => {
     const res = await runSyncBatchDeltaCheck(deps);
     expect(res.status).toBe('radius-too-wide');
     expect(state.cursor?.sha).toBe(SHA_B);
-    expect(state.cursor?.lastSkipReason).toBe('radius-too-wide');
+    expect(state.cursor?.lastSkipReason).toContain('single commit');
+    expect(state.cursor?.lastSkipReason).toContain('maxWorkspaces=10');
+    expect(state.cursor?.coverage?.ticks.at(-1)?.evaluated).toBe(false);
+  });
+
+  it('judges the oldest path-bounded prefix and leaves the newer backlog behind the cursor', async () => {
+    let testedPaths: string[] = [];
+    const oldest = makeBatch({ sha: SHA_A, paths: ['oldest.ts'] });
+    const middle = makeBatch({ sha: SHA_B, paths: ['middle.ts'] });
+    const newest = makeBatch({ sha: SHA_C, paths: ['newest.ts'] });
+    const { deps, state } = makeDeps(
+      {
+        headSha: async () => SHA_C,
+        listBatches: async () => [newest, middle, oldest], // source order is newest first
+        runAffected: async (paths) => {
+          testedPaths = [...paths];
+          return { ok: true, failing: [] };
+        },
+      },
+      { sha: 'd'.repeat(40), updatedAtMs: 1 },
+    );
+
+    const res = await runSyncBatchDeltaCheck(deps, { caps: { maxWorkspaces: 10, maxPaths: 2, maxCommits: 10 } });
+
+    expect(res.status).toBe('green');
+    expect(res.batchCount).toBe(2);
+    expect(new Set(testedPaths)).toEqual(new Set(['oldest.ts', 'middle.ts']));
+    expect(state.cursor?.sha).toBe(SHA_B);
+    expect(state.cursor?.lastBatchCommits).toBe(2);
+  });
+
+  it('keeps the commit cap on the oldest side of a newer backlog', async () => {
+    const oldest = makeBatch({ sha: SHA_A, paths: ['same.ts'] });
+    const middle = makeBatch({ sha: SHA_B, paths: ['same.ts'] });
+    const newest = makeBatch({ sha: SHA_C, paths: ['same.ts'] });
+    const { deps, state } = makeDeps(
+      {
+        headSha: async () => SHA_C,
+        listBatches: async () => [newest, middle, oldest],
+      },
+      { sha: 'd'.repeat(40), updatedAtMs: 1 },
+    );
+
+    const res = await runSyncBatchDeltaCheck(deps, { caps: { maxWorkspaces: 10, maxPaths: 10, maxCommits: 2 } });
+
+    expect(res.status).toBe('green');
+    expect(res.batchCount).toBe(2);
+    expect(state.cursor?.sha).toBe(SHA_B);
+  });
+
+  it('shrinks a workspace-wide prefix until the oldest bounded prefix fits', async () => {
+    const probed: string[][] = [];
+    let testedPaths: string[] = [];
+    const oldest = makeBatch({ sha: SHA_A, paths: ['oldest.ts'] });
+    const middle = makeBatch({ sha: SHA_B, paths: ['middle.ts'] });
+    const newest = makeBatch({ sha: SHA_C, paths: ['newest.ts'] });
+    const { deps, state } = makeDeps(
+      {
+        headSha: async () => SHA_C,
+        listBatches: async () => [newest, middle, oldest],
+        probeRadius: async (paths) => {
+          probed.push([...paths]);
+          return paths.length > 1
+            ? { workspaces: ['ws-a', 'ws-b'], guards: [] }
+            : { workspaces: ['ws-a'], guards: [] };
+        },
+        runAffected: async (paths) => {
+          testedPaths = [...paths];
+          return { ok: true, failing: [] };
+        },
+      },
+      { sha: 'd'.repeat(40), updatedAtMs: 1 },
+    );
+
+    const res = await runSyncBatchDeltaCheck(deps, { caps: { maxWorkspaces: 1, maxPaths: 10, maxCommits: 10 } });
+
+    expect(res.status).toBe('green');
+    expect(probed).toHaveLength(2);
+    expect(probed[1]).toEqual(['oldest.ts']);
+    expect(testedPaths).toEqual(['oldest.ts']);
+    expect(state.cursor?.sha).toBe(SHA_A);
+  });
+
+  it('advances past only a path-oversized oldest commit with an explicit non-evaluated reason', async () => {
+    let probes = 0;
+    const oversized = makeBatch({ sha: SHA_A, paths: Array.from({ length: 81 }, (_, i) => `path-${i}.ts`) });
+    const newer = makeBatch({ sha: SHA_B, paths: ['newer.ts'] });
+    const { deps, state } = makeDeps(
+      {
+        headSha: async () => SHA_B,
+        listBatches: async () => [newer, oversized],
+        probeRadius: async () => {
+          probes += 1;
+          return { workspaces: ['foo'], guards: [] };
+        },
+      },
+      { sha: 'd'.repeat(40), updatedAtMs: 1 },
+    );
+
+    const res = await runSyncBatchDeltaCheck(deps, { caps: { maxWorkspaces: 10, maxPaths: 80, maxCommits: 40 } });
+
+    expect(res.status).toBe('radius-too-wide');
+    expect(res.pathCount).toBe(81);
+    expect(res.reason).toContain(SHA_A.slice(0, 12));
+    expect(res.reason).toContain('maxPaths=80');
+    expect(state.cursor?.sha).toBe(SHA_A);
+    expect(state.cursor?.coverage?.ticks.at(-1)?.evaluated).toBe(false);
+    expect(probes).toBe(0);
   });
 });
 

@@ -96,7 +96,8 @@
  * Every leg is capped, and every cap fails toward doing LESS work:
  *   · host load over `cores * LOAD_SKIP_FACTOR`  ⇒ skip, record why, touch nothing;
  *   · green-checkpoint suite running             ⇒ skip (never fight the gate);
- *   · affected radius wider than the caps        ⇒ record `radius-too-wide`, run NOTHING;
+ *   · affected radius wider than the caps        ⇒ shrink to an older prefix; an
+ *     individually oversized commit is recorded as non-evaluated and skipped alone;
  *   · red confirmation                           ⇒ at most MAX_CONFIRM_RUNS single-file runs;
  *   · batch attribution                          ⇒ at most MAX_ATTRIBUTION_PROBES radius probes.
  *
@@ -128,8 +129,9 @@ export const REDUCED_BUDGET = { maxConfirmRuns: 1, maxAttributionProbes: 3 } as 
  *  checkpoint freezes a candidate on top of the break. */
 export const SYNC_DELTA_SLA_MINUTES = 60;
 
-/** Radius caps. A batch wider than any of these is recorded and NOT executed —
- *  a 71-workspace run is exactly the "burning the box" outcome this exists to avoid
+/** Radius caps. A prefix wider than any of these is narrowed to an older prefix.
+ *  An individually oversized commit is explicitly skipped without running it, so
+ *  a 71-workspace run can never become the "burning the box" outcome this avoids
  *  (the measured cost of an unscoped `test:affected`, EI-20812741760514969). */
 export interface RadiusCaps {
   /** Affected WORKSPACES the probe may select before the batch is refused. */
@@ -1035,7 +1037,7 @@ export interface SyncBatchDeltaResult {
   status: SyncBatchDeltaStatus;
   /** Why, when the status alone does not say it. */
   reason?: string;
-  /** Commits in the window this run judged. */
+  /** Commits consumed by this bounded prefix, including an explicit single-commit refusal. */
   batchCount: number;
   /** Unioned changed paths this run judged. */
   pathCount: number;
@@ -1067,9 +1069,9 @@ const emptyResult = (status: SyncBatchDeltaStatus, reason?: string): SyncBatchDe
  * NEVER advances the cursor past a window it could not measure: every "I could not
  * tell" path returns `skipped` with the cursor untouched, so the next run judges
  * that window instead of it being silently skipped forever. The cursor advances
- * only after a leg actually ran — or after the window was deliberately refused as
- * too wide, because leaving it parked there would re-refuse the same (still-growing)
- * window forever and wedge the check permanently.
+ * only after a leg actually ran — or after one individually oversized commit was
+ * explicitly refused, because leaving it parked there would re-refuse the same
+ * (still-growing) window forever and wedge the check permanently.
  */
 export async function runSyncBatchDeltaCheck(
   deps: SyncBatchDeltaDeps,
@@ -1114,6 +1116,81 @@ async function recordCoverage(
     coverage = rest;
   }
   await deps.writeCursor({ ...cursor, coverage });
+}
+
+interface OldestPrefixSelection {
+  /** Selected in chronological order, beginning immediately after the cursor. */
+  commits: SyncBatch[];
+  /** Set only when the very oldest commit cannot fit the path cap by itself. */
+  oversizedCommit?: { batch: SyncBatch; pathCount: number };
+}
+
+/** Select the oldest contiguous prefix within the cheap path and commit caps.
+ * `listBatches` returns newest first; the cursor must stop at the last commit in
+ * this chronological prefix so any newer backlog remains available next tick. */
+function selectOldestBoundedPrefix(
+  batchesNewestFirst: readonly SyncBatch[],
+  caps: RadiusCaps,
+): OldestPrefixSelection {
+  const commits: SyncBatch[] = [];
+  const paths = new Set<string>();
+  for (let index = batchesNewestFirst.length - 1; index >= 0; index -= 1) {
+    const batch = batchesNewestFirst[index]!;
+    if (commits.length >= caps.maxCommits) break;
+    const newPaths = new Set<string>();
+    for (const changedPath of batch.paths) {
+      if (changedPath && !paths.has(changedPath)) newPaths.add(changedPath);
+    }
+    const nextPathCount = paths.size + newPaths.size;
+    if (nextPathCount > caps.maxPaths) {
+      if (commits.length === 0) {
+        return {
+          commits: [batch],
+          oversizedCommit: { batch, pathCount: unionBatchPaths([batch], caps.maxPaths).totalPaths },
+        };
+      }
+      break;
+    }
+    commits.push(batch);
+    for (const changedPath of newPaths) paths.add(changedPath);
+  }
+  return { commits };
+}
+
+/** A single commit that cannot fit the path or workspace radius is a bounded,
+ * non-evaluated disposition. Advance only over that commit and preserve the rest
+ * of the backlog for the next tick. */
+async function recordOversizedCommit(
+  deps: SyncBatchDeltaDeps,
+  cursor: SyncDeltaCursor,
+  batch: SyncBatch,
+  detail: string,
+  pathCount: number,
+  workspaces: string[],
+  stillOpen: OpenRed[],
+  filed: SyncBatchDeltaFiling[],
+): Promise<SyncBatchDeltaResult> {
+  const now = deps.now();
+  const reason = `commit ${batch.sha.slice(0, 12)} explicitly skipped without evaluation: ${detail}; remaining backlog retained`;
+  const next: SyncDeltaCursor = {
+    ...cursor,
+    sha: batch.sha,
+    updatedAtMs: now,
+    lastSkipReason: `radius-too-wide: ${reason}`,
+    lastSkipMs: now,
+    lastBatchCommits: 1,
+    openReds: stillOpen,
+  };
+  await deps.writeCursor(next);
+  deps.log(`[sync-batch-delta] radius-too-wide: ${reason}`);
+  return {
+    ...emptyResult('radius-too-wide', reason),
+    batchCount: 1,
+    pathCount,
+    workspaces,
+    filed,
+    cursor: next,
+  };
 }
 
 async function runSyncBatchDeltaTick(
@@ -1205,37 +1282,83 @@ async function runSyncBatchDeltaTick(
     return { ...emptyResult('up-to-date'), filed, cursor: next };
   }
 
-  const union = unionBatchPaths(batches, caps.maxPaths);
+  let prefix = selectOldestBoundedPrefix(batches, caps);
+  if (prefix.oversizedCommit) {
+    const { batch, pathCount } = prefix.oversizedCommit;
+    return recordOversizedCommit(
+      deps,
+      cursor,
+      batch,
+      `${pathCount} changed paths in this single commit exceeds maxPaths=${caps.maxPaths}`,
+      pathCount,
+      [],
+      stillOpen,
+      filed,
+    );
+  }
+  if (prefix.commits.length === 0) return emptyResult('skipped', 'radius-prefix-empty');
+
+  let selectedBatches = [...prefix.commits].reverse(); // newest first for attribution helpers
+  let union = unionBatchPaths(selectedBatches, caps.maxPaths);
   if (union.paths.length === 0) {
     const next: SyncDeltaCursor = {
       ...cursor,
-      sha: head,
+      sha: prefix.commits[prefix.commits.length - 1]!.sha,
       updatedAtMs: deps.now(),
-      lastBatchCommits: batches.length,
+      lastBatchCommits: selectedBatches.length,
       openReds: stillOpen,
     };
     await deps.writeCursor(next);
     return {
       ...emptyResult('nothing-selected', 'no changed paths'),
-      batchCount: batches.length,
+      batchCount: selectedBatches.length,
       filed,
       cursor: next,
     };
   }
 
   // ── 5. radius probe + the cap ──────────────────────────────────────────────
-  const probe = await deps.probeRadius(union.paths);
-  if (!probe) return emptyResult('skipped', 'radius-probe-failed');
-
-  const verdict = evaluateRadius({ probe, union, batchCount: batches.length, caps });
+  let probe: RadiusProbe = { workspaces: [], guards: [] };
+  let verdict: RadiusVerdict;
+  for (;;) {
+    if (union.paths.length === 0) {
+      probe = { workspaces: [], guards: [] };
+      verdict = { run: false, reason: 'nothing-selected', detail: 'oldest prefix has no changed paths' };
+      break;
+    }
+    const measured = await deps.probeRadius(union.paths);
+    if (!measured) return emptyResult('skipped', 'radius-probe-failed');
+    probe = measured;
+    verdict = evaluateRadius({ probe, union, batchCount: selectedBatches.length, caps });
+    if (verdict.run || verdict.reason !== 'radius-too-wide') break;
+    if (prefix.commits.length === 1) {
+      const batch = prefix.commits[0]!;
+      return recordOversizedCommit(
+        deps,
+        cursor,
+        batch,
+        `this single commit selects ${probe.workspaces.length} affected workspaces; ${verdict.detail}`,
+        union.paths.length,
+        probe.workspaces,
+        stillOpen,
+        filed,
+      );
+    }
+    // Halving the chronological prefix bounds extra enumeration probes to
+    // floor(log2(maxCommits)) + 1 (six with the production cap of 40). The
+    // oldest commit stays at the front; newer work remains behind the cursor.
+    prefix = { commits: prefix.commits.slice(0, Math.max(1, Math.floor(prefix.commits.length / 2))) };
+    selectedBatches = [...prefix.commits].reverse();
+    union = unionBatchPaths(selectedBatches, caps.maxPaths);
+  }
   if (!verdict.run) {
     const next: SyncDeltaCursor = {
       ...cursor,
-      sha: head,
+      sha: prefix.commits[prefix.commits.length - 1]!.sha,
       updatedAtMs: deps.now(),
       lastSkipReason: verdict.reason,
       lastSkipMs: deps.now(),
-      lastBatchCommits: batches.length,
+      lastBatchCommits: selectedBatches.length,
       openReds: stillOpen,
     };
     await deps.writeCursor(next);
@@ -1243,7 +1366,7 @@ async function runSyncBatchDeltaTick(
     return {
       status: verdict.reason,
       reason: verdict.detail,
-      batchCount: batches.length,
+      batchCount: selectedBatches.length,
       pathCount: union.paths.length,
       workspaces: probe.workspaces,
       filed,
@@ -1267,7 +1390,7 @@ async function runSyncBatchDeltaTick(
       deps.log('[sync-batch-delta] affected run red but named no files — undetermined, cursor held');
       return {
         ...emptyResult('skipped', 'affected-run-undetermined'),
-        batchCount: batches.length,
+        batchCount: selectedBatches.length,
         pathCount: union.paths.length,
         workspaces: probe.workspaces,
         filed,
@@ -1300,7 +1423,7 @@ async function runSyncBatchDeltaTick(
     }
 
     const attribution = await attributeIntroducingBatch({
-      batches,
+      batches: selectedBatches,
       failing: cand.failing,
       probeBatch: async (paths) => {
         if (probeBudget <= 0) return null;
@@ -1311,7 +1434,7 @@ async function runSyncBatchDeltaTick(
     });
     // P-002: route to the editing agent. Ledger rows are looked up from the oldest
     // batch in the window (minus a margin: the edit precedes its sweep commit).
-    const oldestMs = batches.reduce<number | null>(
+    const oldestMs = selectedBatches.reduce<number | null>(
       (m, b) => (b.committedAtMs === null ? m : m === null ? b.committedAtMs : Math.min(m, b.committedAtMs)),
       null,
     );
@@ -1325,7 +1448,13 @@ async function runSyncBatchDeltaTick(
       }
     }
     const author = pickRedAuthor({ failingFile: cand.failing.file, batch: attribution.batch, editors });
-    const finding = buildRedFinding({ failing: cand.failing, attribution, batches, leg: cand.leg, author });
+    const finding = buildRedFinding({
+      failing: cand.failing,
+      attribution,
+      batches: selectedBatches,
+      leg: cand.leg,
+      author,
+    });
     const res = await fileRoutedRed(deps, finding);
     filed.push({
       file: cand.failing.file,
@@ -1346,21 +1475,21 @@ async function runSyncBatchDeltaTick(
   }
 
   const next: SyncDeltaCursor = {
-    sha: head,
+    sha: prefix.commits[prefix.commits.length - 1]!.sha,
     updatedAtMs: deps.now(),
-    lastBatchCommits: batches.length,
+    lastBatchCommits: selectedBatches.length,
     openReds: stillOpen,
   };
   await deps.writeCursor(next);
 
   const red = filed.length > 0;
   deps.log(
-    `[sync-batch-delta] ${batches.length} commit(s), ${union.paths.length} path(s), ` +
+    `[sync-batch-delta] ${selectedBatches.length} commit(s), ${union.paths.length} path(s), ` +
       `${probe.workspaces.length} workspace(s) -> ${red ? `${filed.length} red filed/refreshed` : 'green'}`,
   );
   return {
     status: red ? 'red' : 'green',
-    batchCount: batches.length,
+    batchCount: selectedBatches.length,
     pathCount: union.paths.length,
     workspaces: probe.workspaces,
     filed,
