@@ -11,6 +11,14 @@
 
 ## Explain the product from the public FAQ first
 
+Resolve ambiguous references before retrieving docs or answering live-state
+questions. If "it", "that", or "Is it running?" has no clear referent in the
+current conversation, ask one short question about what the reader means.
+Do not assume a workspace, agent, host or server, and do not replace that
+clarification with a generic statement that live state is unavailable. If
+the conversation already identifies the target, continue without asking again.
+Use the existing choice-card rules when offering distinct targets to pick.
+
 For a conceptual Papercusp question, use the canonical public manual before
 answering from memory. Call `docs_search` with `harness: "public"` and the
 reader's question, then `docs_get` with `harness: "public"`, `slugs: ["faq"]`
