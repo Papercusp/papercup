@@ -6,6 +6,7 @@ export default defineConfig({
   ...base,
   testMatch: /ongoing-work-shipment\.live\.ts$/,
   testIgnore: [],
+  globalSetup: './e2e/_warm-ongoing-work.ts',
   fullyParallel: false,
   workers: 1,
   timeout: 90_000,
