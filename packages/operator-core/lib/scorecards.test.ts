@@ -1159,6 +1159,7 @@ describe('numeric 0–10 read-time projection (rubrics-tab-scorecard-ui P-004 / 
   it('ratingScore10 maps both shared vocabularies; unknown/custom → null', () => {
     expect(ratingScore10('pass')).toBe(10);
     expect(ratingScore10('Partial')).toBe(5); // case-insensitive
+    expect(ratingScore10('weak')).toBe(5);
     expect(ratingScore10('fail')).toBe(0);
     expect(ratingScore10('healthy')).toBe(10);
     expect(ratingScore10('degraded')).toBe(5);
@@ -1181,6 +1182,18 @@ describe('numeric 0–10 read-time projection (rubrics-tab-scorecard-ui P-004 / 
       d: { rating: 'unknown' }, // excluded
     });
     expect(score).toBe(5); // (10+5+0)/3, NOT /4
+  });
+
+  it('counts weak-rated criteria at the midpoint instead of excluding them from the mean', () => {
+    const score = scorecardScore10({
+      pass1: { rating: 'pass' },
+      pass2: { rating: 'pass' },
+      pass3: { rating: 'pass' },
+      pass4: { rating: 'pass' },
+      weak1: { rating: 'weak' },
+      weak2: { rating: 'weak' },
+    });
+    expect(score).toBe(8.3); // (4×10 + 2×5) / 6
   });
 
   it('scorecardScore10 rounds to 1 decimal and is null for an all-unknown scorecard', () => {

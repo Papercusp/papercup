@@ -2412,6 +2412,7 @@ export const DEFAULT_RATING_SCORE10: Record<string, number> = {
   yes: 10,
   green: 10,
   partial: 5,
+  weak: 5,
   degraded: 5,
   mixed: 5,
   warn: 5,
