@@ -7,7 +7,7 @@
  * HARNESS_ADMIN_DATABASE_URL to a throwaway database, then run the command after `--`.
  * The stub playwright records the env and argv it was given and exits with a chosen code.
  */
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -28,6 +28,7 @@ function fixture(playwrightExit: number) {
   const dir = mkdtempSync(join(tmpdir(), 'e2e-isolated-runner-'));
   dirs.push(dir);
   const record = join(dir, 'record.json');
+  const viteCwd = join(dir, 'vite-cwd.txt');
   const rig = join(dir, 'rig.sh');
   writeFileSync(
     rig,
@@ -40,6 +41,7 @@ function fixture(playwrightExit: number) {
       // The real rig also rebinds the workspace identity for the app under test.
       `export PAPERCUSP_WORKSPACE_ID='${ISOLATED_WS}' PAPERCUSP_WORKSPACE='${ISOLATED_WS}'`,
       'export VERIFY_TAURI_DEV_URL=http://127.0.0.1:1420',
+      'if [ -n "${E2E_FIXTURE_SOURCE_ROOT:-}" ]; then export OPERATOR_SOURCE_ROOT="$E2E_FIXTURE_SOURCE_ROOT"; fi',
       '"$@"',
     ].join('\n'),
   );
@@ -50,6 +52,7 @@ function fixture(playwrightExit: number) {
     [
       '#!/usr/bin/env bash',
       'set -eu',
+      'pwd > "$E2E_FIXTURE_VITE_CWD"',
       '[ "$1" = "run" ] && [ "$2" = "dev" ] || exit 73',
       '[ "${PORT+x}" != "x" ] && [ "${OPERATOR_E2E_PORT+x}" != "x" ] || { echo "vite stub received a stale port env" >&2; exit 77; }',
       'case " $* " in *" --host 127.0.0.1 "*) ;; *) echo "vite stub expected loopback host: $*" >&2; exit 74;; esac',
@@ -70,7 +73,7 @@ function fixture(playwrightExit: number) {
   chmodSync(rig, 0o755);
   chmodSync(npm, 0o755);
   chmodSync(pw, 0o755);
-  return { dir, rig, pw, npm, record };
+  return { dir, rig, pw, npm, record, viteCwd };
 }
 
 function run(f: ReturnType<typeof fixture>, args: string[], env: Record<string, string> = {}) {
@@ -84,6 +87,7 @@ function run(f: ReturnType<typeof fixture>, args: string[], env: Record<string, 
     'PAPERCUSP_WORKSPACE',
     'HARNESS_SLUG',
     'PAPERCUSP_HARNESS_SLUG',
+    'OPERATOR_SOURCE_ROOT',
   ]) delete base[k];
   const res = spawnSync('bash', [RUNNER, ...args], {
     env: {
@@ -91,6 +95,7 @@ function run(f: ReturnType<typeof fixture>, args: string[], env: Record<string, 
       HARNESS_ADMIN_DATABASE_URL: SHARED,
       OPERATOR_E2E_RIG: f.rig,
       OPERATOR_E2E_PLAYWRIGHT: f.pw,
+      E2E_FIXTURE_VITE_CWD: f.viteCwd,
       PATH: `${f.dir}:${base.PATH ?? ''}`,
       ...env,
     },
@@ -98,7 +103,8 @@ function run(f: ReturnType<typeof fixture>, args: string[], env: Record<string, 
     timeout: 30_000,
   });
   const recorded = existsSync(f.record) ? JSON.parse(readFileSync(f.record, 'utf8')) : null;
-  return { status: res.status, out: `${res.stdout}\n${res.stderr}`, recorded };
+  const viteCwd = existsSync(f.viteCwd) ? readFileSync(f.viteCwd, 'utf8').trim() : null;
+  return { status: res.status, out: `${res.stdout}\n${res.stderr}`, recorded, viteCwd };
 }
 
 describe('run-operator-e2e-isolated.sh', () => {
@@ -136,6 +142,51 @@ describe('run-operator-e2e-isolated.sh', () => {
     expect(r.out).toContain(`vite-port=${r.recorded.env.port}`);
     expect(r.recorded.env.reuse).toBe('1');
     expect(r.recorded.viteStatus).toBe(200);
+  });
+
+  it('runs Vite and Playwright from the verifier snapshot rather than the shared checkout', () => {
+    const f = fixture(0);
+    const sourceRoot = join(f.dir, 'committed snapshot');
+    const operator = join(sourceRoot, 'apps/operator');
+    mkdirSync(operator, { recursive: true });
+    const r = run(f, ['cloud-tutorial', '--workers', '1'], { E2E_FIXTURE_SOURCE_ROOT: sourceRoot });
+    expect(r.status, r.out).toBe(0);
+    expect(r.viteCwd).toBe(operator);
+    expect(r.recorded.cwd).toBe(operator);
+    expect(r.recorded.argv).toEqual(['cloud-tutorial', '--workers', '1']);
+    expect(r.recorded.viteStatus).toBe(200);
+  });
+
+  it('exports the frozen source root through the real verifier assertion boundary', () => {
+    const verifier = readFileSync(join(REPO_ROOT, 'scripts/verify-tauri-headless.sh'), 'utf8');
+    const boundary = verifier.slice(verifier.lastIndexOf('\nverify_assertion_input_integrity || exit $?'));
+    expect(boundary).toContain('log "running assertion command: $*"');
+    const sourceRoot = join(fixture(0).dir, 'frozen source');
+    const res = spawnSync('bash', ['-c', [
+      'set -eu',
+      'verify_assertion_input_integrity() { return 0; }',
+      'vh_begin() { :; }',
+      'log() { :; }',
+      'ISOLATED_DB=0',
+      'OPERATOR_SOURCE_ROOT="$1"',
+      'shift',
+      boundary,
+    ].join('\n'), 'assertion-boundary', sourceRoot, process.execPath, '-e',
+      'process.stdout.write(process.env.OPERATOR_SOURCE_ROOT ?? "missing")'], {
+      env: { ...process.env, OPERATOR_SOURCE_ROOT: undefined },
+      encoding: 'utf8',
+      timeout: 5_000,
+    });
+    expect(res.status, res.stderr).toBe(0);
+    expect(res.stdout).toBe(sourceRoot);
+  });
+
+  it('refuses a missing snapshot operator instead of falling back to shared source', () => {
+    const f = fixture(0);
+    const r = run(f, [], { E2E_FIXTURE_SOURCE_ROOT: join(f.dir, 'missing snapshot') });
+    expect(r.status, r.out).toBe(97);
+    expect(r.viteCwd).toBeNull();
+    expect(r.recorded).toBeNull();
   });
 
   it('stamps one run group on the whole invocation and honours a caller-supplied one', () => {

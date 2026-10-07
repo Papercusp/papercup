@@ -27,6 +27,9 @@
 #                               operator-e2e-isolated-<utc>-<pid>.
 #   OPERATOR_E2E_RIG            rig command (default scripts/verify-tauri-headless.sh).
 #   OPERATOR_E2E_PLAYWRIGHT     playwright command (default "npx playwright test").
+#   The rig exports OPERATOR_SOURCE_ROOT at its assertion boundary; Vite and
+#   Playwright both execute from that frozen source. Legacy/test rigs without
+#   a source snapshot keep the caller checkout.
 #   The last two are test seams (apps/operator/lib/__tests__/e2e-isolated-runner.test.ts).
 set -uo pipefail
 
@@ -74,7 +77,7 @@ echo "OPERATOR_E2E_ISOLATED group=$PAPERCUSP_TEST_RUN_GROUP ledger=${PAPERCUSP_T
 # shellcheck disable=SC2016 # expanded by the inner shell, inside the rig
 VERIFY_TAURI_ISOLATED_DB=1 "$RIG" -- bash -c '
   set -u
-  cd "$1/apps/operator" || exit 97
+  cd "${OPERATOR_SOURCE_ROOT:-$1}/apps/operator" || exit 97
   shift
   vite_log=$(mktemp "${TMPDIR:-/tmp}/operator-e2e-vite.XXXXXX") || exit 98
   env -u PORT -u OPERATOR_E2E_PORT \
