@@ -610,19 +610,28 @@ export async function measureCitationBlobsAtHead(
 ): Promise<CitationMeasurement> {
   const measurement: CitationMeasurement = { blobs: new Map(), commits: new Map() };
   if (!deps.locate) return measurement;
+  // Climb submodule gitlinks to the top-level repository: M is that repository's HEAD,
+  // and committed-tree-reader descends gitlinks at the commits M pins. Memoized per Git
+  // root and asynchronous: on the live shared tree the parent index moves constantly, so
+  // the warm-snapshot shortcut misses and a synchronous climb forked one `git ls-files`
+  // per CITATION on the request thread (measured: 66 spawns for 66 citations, P-005).
+  const topOf = new Map<string, Promise<string>>();
+  const climb = (root: string): Promise<string> => {
+    let pending = topOf.get(root);
+    if (!pending) {
+      pending = gitlinkParentForRepoAsync(root).then((parent) => (parent ? climb(parent.superprojectRoot) : root));
+      topOf.set(root, pending);
+    }
+    return pending;
+  };
   const relsByTop = new Map<string, Map<string, string>>();
   for (const citation of citations) {
     const rel = isVerifyingCitation(citation) ? citation.path?.trim() : undefined;
     if (!rel || measurement.blobs.has(rel)) continue;
     const abs = deps.locate(rel);
-    let repo = abs ? gitRootForFile(abs) : null;
+    const repo = abs ? gitRootForFile(abs) : null;
     if (!abs || !repo) continue;
-    // Climb submodule gitlinks to the top-level repository: M is that repository's
-    // HEAD, and committed-tree-reader descends gitlinks at the commits M pins.
-    let top = repo.root;
-    for (let parent = gitlinkParentForRepo(top); parent; parent = gitlinkParentForRepo(top)) {
-      top = parent.superprojectRoot;
-    }
+    const top = await climb(repo.root);
     const fromTop = path.relative(top, abs).split(path.sep).join('/');
     if (!fromTop || fromTop.startsWith('../')) continue;
     const rels = relsByTop.get(top) ?? new Map<string, string>();
@@ -1093,6 +1102,22 @@ function gitlinkParentForRepo(
   } catch {
     return null;
   }
+  return { superprojectRoot: parent.root, gitlinkRel };
+}
+
+/** `gitlinkParentForRepo` without a synchronous child: a cold or moved parent index is
+ *  read with one async `git ls-files --stage`. Used by measureCitationBlobsAtHead. */
+async function gitlinkParentForRepoAsync(
+  repoRoot: string,
+): Promise<{ superprojectRoot: string; gitlinkRel: string } | null> {
+  const parent = gitRootForFile(repoRoot);
+  if (!parent || parent.root === repoRoot) return null;
+  const gitlinkRel = path.relative(parent.root, repoRoot).split(path.sep).join('/');
+  if (!gitlinkRel || gitlinkRel.startsWith('../') || path.isAbsolute(gitlinkRel)) return null;
+  const warm = currentTrackedSnapshot(parent.root, parent.gitDir);
+  if (warm) return warm.gitlinks.has(gitlinkRel) ? { superprojectRoot: parent.root, gitlinkRel } : null;
+  const indexEntry = await readGitOutputAsync(parent.root, ['ls-files', '--stage', '--', gitlinkRel]);
+  if (indexEntry === null || !indexEntry.split('\n').some((line) => line.startsWith('160000 '))) return null;
   return { superprojectRoot: parent.root, gitlinkRel };
 }
 
