@@ -1775,7 +1775,7 @@ describe('applyResultDoor', () => {
 
       const output = JSON.parse((doored.content[0] as { text: string }).text) as {
         results: Array<Record<string, unknown>>;
-        _projection: { kind: string; truncated: boolean; cursor: Record<string, unknown> };
+        _projection: { kind: string; truncated: boolean; cursor: Record<string, unknown>; next: string };
       };
       expect(output.results).toMatchObject([{
         msg_id: 'persisted-message',
@@ -1788,12 +1788,37 @@ describe('applyResultDoor', () => {
         truncated: true,
         cursor: { kind: 'unavailable', reason: 'spill-write-failed' },
       });
+      expect(output._projection.next).toContain('Do not repeat coord:send');
       expect((doored._meta as { resultDoor?: Record<string, unknown> }).resultDoor).toMatchObject({
         spillFailed: true,
         spillPath: null,
         spillUri: null,
       });
       expect((doored.content[0] as { text: string }).text.length).toBeLessThan(JSON.stringify(receipt).length);
+    });
+
+    it('marks a nested coord:send hard-spill failure non-retryable when no receipt can be recovered', () => {
+      const failure = Object.assign(new Error('scratch filesystem full'), { code: 'ENOSPC' });
+      const doored = applyResultDoor(
+        {
+          content: [{ type: 'text' as const, text: 'x'.repeat(BUDGET_CHARS * 2) }],
+          _meta: { explicitFullRequest: true },
+        },
+        {
+          toolName: 'tools:invoke',
+          nestedTargetToolName: 'coord:send',
+          workspaceId: 'ws-1',
+          runId: RUN_ID,
+          scratchWriteFailure: { error: failure },
+        },
+      );
+      const envelope = JSON.parse((doored.content[0] as { type: 'text'; text: string }).text) as {
+        error?: { code?: string; message?: string; retryable?: boolean };
+      };
+
+      expect(envelope.error).toMatchObject({ code: 'output_spill_failed', retryable: false });
+      expect(envelope.error?.message).toContain('delivery outcome is unknown');
+      expect(envelope.error?.message).toContain('do not repeat the send');
     });
 
     it('uses one budget across explicit fan-out and spills the result that crosses it', () => {
