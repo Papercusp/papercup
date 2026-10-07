@@ -583,8 +583,8 @@ describe('deferred scratch quota recovery', () => {
     }));
     expect(existsSync(old)).toBe(false);
     expect(vi.mocked(rmAsync)).toHaveBeenCalledTimes(1);
-    // One size walk plus one run-directory listing for this workspace, shared by all writers.
-    expect(vi.mocked(readdirAsync).mock.calls.filter(([path]) => path === scratchRootForWorkspace('ws-Q'))).toHaveLength(2);
+    // Recovery is shared by all writers, then one clean measurement runs after they settle.
+    expect(vi.mocked(readdirAsync).mock.calls.filter(([path]) => path === scratchRootForWorkspace('ws-Q'))).toHaveLength(3);
     expect(vi.mocked(readdirSync)).not.toHaveBeenCalled();
     expect(vi.mocked(statSync)).not.toHaveBeenCalled();
     await refreshScratchUsage('ws-Q');
@@ -646,6 +646,54 @@ describe('deferred scratch quota recovery', () => {
       throw new Error('write failed');
     })).rejects.toThrow('write failed');
     expect(scratchUsageBytes('ws-Q')).toBe(0);
+  });
+
+  it('does not double-count a successful write already included in a usage refresh', async () => {
+    _setScratchUsageForTests('ws-Q', 0);
+    const runDir = join(scratchRootForWorkspace('ws-Q'), 'tool', UUID(1));
+    mkdirSync(runDir, { recursive: true });
+    const filePath = join(runDir, 'next');
+    await writeWithScratchQuota({ workspaceId: 'ws-Q', filePath, bytes: 1024 }, async () => {
+      await writeFile(filePath, Buffer.alloc(1024));
+      await refreshScratchUsage('ws-Q');
+    });
+    expect(scratchUsageBytes('ws-Q')).toBe(1024);
+  });
+
+  it('does not lose a write that completes while a usage refresh is walking the tree', async () => {
+    _setScratchUsageForTests('ws-Q', 0);
+    const runDir = join(scratchRootForWorkspace('ws-Q'), 'tool', UUID(2));
+    mkdirSync(runDir, { recursive: true });
+    const filePath = join(runDir, 'next');
+    const readdirMock = vi.mocked(readdirAsync);
+    const originalRead = readdirMock.getMockImplementation();
+    if (!originalRead) throw new Error('readdir mock has no original implementation');
+    const read = originalRead as unknown as (path: unknown, options?: unknown) => Promise<unknown>;
+    let releaseRead!: () => void;
+    let reachedRunDir!: () => void;
+    const readGate = new Promise<void>((resolve) => { releaseRead = resolve; });
+    const atRunDir = new Promise<void>((resolve) => { reachedRunDir = resolve; });
+    readdirMock.mockImplementation((async (path: unknown, options: unknown) => {
+      const entries = await read(path, options);
+      if (String(path) === runDir) {
+        reachedRunDir();
+        await readGate;
+      }
+      return entries as never;
+    }) as typeof readdirAsync);
+
+    const measurement = refreshScratchUsage('ws-Q');
+    try {
+      await atRunDir;
+      await writeWithScratchQuota({ workspaceId: 'ws-Q', filePath, bytes: 1024 }, async () => {
+        await writeFile(filePath, Buffer.alloc(1024));
+      });
+    } finally {
+      releaseRead();
+      readdirMock.mockImplementation(originalRead);
+    }
+    await measurement;
+    expect(scratchUsageBytes('ws-Q')).toBe(1024);
   });
 });
 

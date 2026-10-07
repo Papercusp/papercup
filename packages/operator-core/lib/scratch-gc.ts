@@ -387,6 +387,10 @@ interface ScratchUsageEntry {
   /** One shared pressure recovery; subsequent writers await it before touching disk. */
   recovering: Promise<void> | null;
   writes: Map<symbol, { filePath: string; bytes: number; reserved: boolean }>;
+  /** Changes on every deferred write start/finish so a tree walk can reject mixed snapshots. */
+  writeGeneration: number;
+  /** A mixed write/measurement snapshot needs one clean re-measurement after writers settle. */
+  refreshDeferred: boolean;
 }
 
 /** Per-process cached usage per workspace (WI-10004513). Pinned so a split module record can't
@@ -398,14 +402,25 @@ const usageState = pinModuleState('@papercusp/operator-core.scratch-gc.usage', (
 function usageEntry(workspaceId: string): ScratchUsageEntry {
   let entry = usageState.byWorkspace.get(workspaceId);
   if (!entry) {
-    entry = { bytes: 0, measuredAt: 0, refreshing: null, recovering: null, writes: new Map() };
+    entry = {
+      bytes: 0, measuredAt: 0, refreshing: null, recovering: null, writes: new Map(),
+      writeGeneration: 0, refreshDeferred: false,
+    };
     usageState.byWorkspace.set(workspaceId, entry);
+  } else {
+    // The cache is module-pinned across HMR. Initialize fields added by newer module versions.
+    entry.recovering ??= null;
+    entry.writes ??= new Map();
+    entry.writeGeneration ??= 0;
+    entry.refreshDeferred ??= false;
   }
   return entry;
 }
 
-function reservedWriteBytes(entry: ScratchUsageEntry): number {
-  return [...entry.writes.values()].reduce((sum, write) => sum + (write.reserved ? write.bytes : 0), 0);
+function scheduleDeferredUsageRefresh(workspaceId: string, entry: ScratchUsageEntry): void {
+  if (!entry.refreshDeferred || entry.writes.size > 0 || entry.refreshing) return;
+  entry.refreshDeferred = false;
+  void refreshScratchUsage(workspaceId).catch(() => {});
 }
 
 /** The same FIFO phase serves the daily sweep and request-time async quota recovery. */
@@ -414,6 +429,8 @@ async function evictWorkspaceQuota(workspaceId: string, targetBytes: () => numbe
 }> {
   const wsRoot = scratchRootForWorkspace(workspaceId);
   const entry = usageEntry(workspaceId);
+  const writeGeneration = entry.writeGeneration;
+  const hadActiveWrites = [...entry.writes.values()].some((write) => write.reserved);
   let used = await sizeOfDirAsync(wsRoot);
   let evictions = 0;
   let bytes = 0;
@@ -432,8 +449,17 @@ async function evictWorkspaceQuota(workspaceId: string, targetBytes: () => numbe
       evictedBytesTotal += runBytes;
     }
   }
-  entry.bytes = used + reservedWriteBytes(entry);
-  entry.measuredAt = Date.now();
+  if (hadActiveWrites || entry.writeGeneration !== writeGeneration) {
+    // The size walk may have included only part of an in-flight write. Adjust the prior
+    // reservation-based total by exactly the bytes evicted, then re-measure once writers settle.
+    entry.bytes = Math.max(0, entry.bytes - bytes);
+    entry.refreshDeferred = true;
+  } else {
+    entry.bytes = used;
+    entry.measuredAt = Date.now();
+    entry.refreshDeferred = false;
+  }
+  scheduleDeferredUsageRefresh(workspaceId, entry);
   return { used, evictions, bytes };
 }
 
@@ -506,14 +532,22 @@ async function treeStatsAsync(dir: string): Promise<{ bytes: number; newestMtime
 export function refreshScratchUsage(workspaceId: string, now: () => number = Date.now): Promise<void> {
   const entry = usageEntry(workspaceId);
   if (entry.refreshing) return entry.refreshing;
+  const writeGeneration = entry.writeGeneration;
   const run = (async () => {
     try {
       const measured = await sizeOfDirAsync(scratchRootForWorkspace(workspaceId));
-      // A measurement can race a deferred write; conservatively retain its reservation.
-      entry.bytes = measured + reservedWriteBytes(entry);
-      entry.measuredAt = now();
+      if (entry.writeGeneration !== writeGeneration || entry.writes.size > 0) {
+        // The walk is not a consistent snapshot if a deferred write overlapped it. Keep the
+        // reservation-based count and take one clean measurement after the writers settle.
+        entry.refreshDeferred = true;
+      } else {
+        entry.bytes = measured;
+        entry.measuredAt = now();
+        entry.refreshDeferred = false;
+      }
     } finally {
       entry.refreshing = null;
+      scheduleDeferredUsageRefresh(workspaceId, entry);
     }
   })();
   entry.refreshing = run;
@@ -567,7 +601,7 @@ export function reserveScratchSpace(opts: {
     );
   }
   const entry = usageEntry(opts.workspaceId);
-  if (!entry.refreshing && Date.now() - entry.measuredAt >= USAGE_REFRESH_MS) {
+  if (!entry.refreshing && !entry.refreshDeferred && Date.now() - entry.measuredAt >= USAGE_REFRESH_MS) {
     // Fire-and-forget: the caller never waits on the disk. A failed measure keeps the old total.
     void refreshScratchUsage(opts.workspaceId).catch(() => {});
   }
@@ -596,6 +630,7 @@ export async function writeWithScratchQuota(
   const token = Symbol();
   const pending = { filePath: opts.filePath, bytes: opts.bytes, reserved: false };
   entry.writes.set(token, pending);
+  entry.writeGeneration += 1;
   let succeeded = false;
   try {
     if (entry.recovering) await entry.recovering;
@@ -618,7 +653,9 @@ export async function writeWithScratchQuota(
     succeeded = true;
   } finally {
     entry.writes.delete(token);
+    entry.writeGeneration += 1;
     if (pending.reserved && !succeeded) entry.bytes = Math.max(0, entry.bytes - opts.bytes);
+    scheduleDeferredUsageRefresh(opts.workspaceId, entry);
   }
 }
 
