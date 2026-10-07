@@ -125,7 +125,9 @@ const {
   makeHeadlessCodexModelChoiceStateMachine,
   headlessClaudeOnboardingEnabled,
   headlessClaudeOnboardingStartupMs,
+  headlessClaudeKickoffOnboardingStartupMs,
   HEADLESS_CLAUDE_KICKOFF_READY_TIMEOUT_MS,
+  HEADLESS_CLAUDE_KICKOFF_PROMPT_RESERVE_MS,
   headlessClaudeKickoffReadiness,
   makeHeadlessClaudeOnboardingStateMachine,
   startupOutputReady,
@@ -1436,7 +1438,7 @@ describe('fresh headless Claude kickoff composer gate', () => {
     expect(HEADLESS_CLAUDE_KICKOFF_READY_TIMEOUT_MS).toBe(20_000);
   });
 
-  it('falls back to the ordinary gate once onboarding expired without ever seeing the composer (WI-10005472)', () => {
+  it('expires unseen-composer onboarding inside the kickoff budget and reserves time for one ordinary-gate delivery (WI-10007000)', async () => {
     // Captured 2026-10-02 (su-9ec5d030 carry-respawn, normalized PTY log): after
     // the respawn the new child's whole startup output was this status-line
     // fragment; no banner and no composer row ever reached the host, yet the
@@ -1446,18 +1448,41 @@ describe('fresh headless Claude kickoff composer gate', () => {
       '                                                           ◉ xhigh · /effort\n\nB\n';
     const promptReady = freshChildPromptReady('claude', observedStartup);
     expect(promptReady).toBe(false);
-    const onboarding = makeHeadlessClaudeOnboardingStateMachine({ startupMs: 30_000, now: () => 0 });
+    const kickoffBudgetMs = HEADLESS_CLAUDE_KICKOFF_READY_TIMEOUT_MS;
+    const onboardingStartupMs = headlessClaudeKickoffOnboardingStartupMs({
+      PAPERCUSP_PSU_HEADLESS_ONBOARDING_STARTUP_MS: '30000',
+    }, kickoffBudgetMs);
+    expect(onboardingStartupMs).toBe(15_000);
+    expect(kickoffBudgetMs - onboardingStartupMs).toBe(HEADLESS_CLAUDE_KICKOFF_PROMPT_RESERVE_MS);
+    // The host allows 30s for native persistence after a write; the detached
+    // parent receipt waits up to 120s, so that proof remains inside its window.
+    expect(kickoffBudgetMs + 30_000).toBeLessThan(KICKOFF_PROOF_WINDOW_MS);
+
+    const onboarding = makeHeadlessClaudeOnboardingStateMachine({ startupMs: onboardingStartupMs, now: () => 0 });
     expect(onboarding.observe(observedStartup, 1_000)).toMatchObject({ action: 'none', active: true });
     // Still inside the onboarding window: keep waiting for positive proof.
     expect(headlessClaudeKickoffReadiness({
       enabled: true, requireInitialOutput: true, promptReady,
       onboardingExpired: onboarding.status().expired,
     })).toBe('wait-for-composer');
-    expect(onboarding.expire(30_000)).toMatchObject({ action: 'expired', expired: true });
+    expect(onboarding.expire(onboardingStartupMs)).toMatchObject({
+      action: 'expired', expired: true, promptSeen: false,
+    });
     expect(headlessClaudeKickoffReadiness({
       enabled: true, requireInitialOutput: true, promptReady,
       onboardingExpired: onboarding.status().expired,
+      onboardingPromptSeen: onboarding.status().promptSeen,
     })).toBe('composer-unseen-ordinary-gate');
+    const writeKickoff = vi.fn();
+    const atPrompt = await makeAgentBusyGate({
+      lastOutputAt: () => 0,
+      now: () => onboardingStartupMs,
+      quietMs: 1_500,
+      capMs: kickoffBudgetMs - onboardingStartupMs,
+    }).waitAtPrompt(kickoffBudgetMs - onboardingStartupMs);
+    if (!atPrompt.deferred) writeKickoff();
+    expect(atPrompt).toMatchObject({ deferred: false });
+    expect(writeKickoff).toHaveBeenCalledTimes(1);
     // Positive composer proof still wins, and the fallback never applies to
     // non-headless or non-startup injects.
     expect(headlessClaudeKickoffReadiness({
@@ -1471,15 +1496,81 @@ describe('fresh headless Claude kickoff composer gate', () => {
     })).toBe('ordinary-gate');
   });
 
+  it('keeps the ordinary-gate fallback closed after a recognized onboarding or resume menu', () => {
+    const onboardingStartupMs = headlessClaudeKickoffOnboardingStartupMs({
+      PAPERCUSP_PSU_HEADLESS_ONBOARDING_STARTUP_MS: '30000',
+    }, HEADLESS_CLAUDE_KICKOFF_READY_TIMEOUT_MS);
+    const onboarding = makeHeadlessClaudeOnboardingStateMachine({ startupMs: onboardingStartupMs, now: () => 0 });
+    expect(onboarding.observe('Choose a theme: Dark mode', 0)).toMatchObject({
+      action: 'submit', prompt: 'theme', promptSeen: true,
+    });
+    onboarding.expire(onboardingStartupMs);
+    expect(headlessClaudeKickoffReadiness({
+      enabled: true,
+      requireInitialOutput: true,
+      promptReady: false,
+      onboardingExpired: true,
+      onboardingPromptSeen: onboarding.status().promptSeen,
+    })).toBe('wait-for-composer');
+
+    const lateMenu = makeHeadlessClaudeOnboardingStateMachine({ startupMs: onboardingStartupMs, now: () => 0 });
+    lateMenu.expire(onboardingStartupMs);
+    expect(headlessClaudeKickoffReadiness({
+      enabled: true,
+      requireInitialOutput: true,
+      promptReady: false,
+      onboardingExpired: true,
+      onboardingPromptSeen: lateMenu.status().promptSeen,
+    })).toBe('composer-unseen-ordinary-gate');
+    // A menu can paint while the ordinary quiet gate is settling. The expired
+    // watcher still records it, and the host rechecks before its first write.
+    expect(lateMenu.observe('Choose a theme: Dark mode', onboardingStartupMs + 1)).toMatchObject({
+      action: 'none', promptSeen: true,
+    });
+    const readinessAfterLateMenu = headlessClaudeKickoffReadiness({
+      enabled: true,
+      requireInitialOutput: true,
+      promptReady: false,
+      onboardingExpired: true,
+      onboardingPromptSeen: lateMenu.status().promptSeen,
+    });
+    expect(readinessAfterLateMenu).toBe('wait-for-composer');
+    const writeKickoff = vi.fn();
+    if (readinessAfterLateMenu !== 'wait-for-composer') writeKickoff();
+    expect(writeKickoff).not.toHaveBeenCalled();
+
+    const resume = makeClaudeResumeCompactionRecoveryStateMachine({
+      startupMs: onboardingStartupMs,
+      now: () => 0,
+    });
+    const menu = [
+      'Autocompact is thrashing',
+      '1. Resume from summary (recommended)',
+      '2. Resume full session as-is',
+      "3. Don't ask again",
+    ].join('\n');
+    expect(resume.observe(menu, 0)).toMatchObject({
+      phase: 'awaiting-prompt', awaitingPrompt: true, ready: false,
+    });
+    expect(resume.isAwaitingPrompt()).toBe(true);
+  });
+
   it('wires the onboarding expiry into the startup kickoff gate (WI-10005472)', () => {
     // The pure decision above only helps if the inject loop feeds it the CURRENT
     // child's onboarding state and treats the fallback as "ask the busy gate".
     const src = readFileSync(new URL('../scripts/psu-pty-host.mjs', import.meta.url), 'utf8');
     expect(src).toMatch(/activeHeadlessClaudeOnboarding = headlessClaudeOnboarding;/);
+    expect(src).toMatch(/headlessClaudeKickoffOnboardingStartupMs\(env, launchKickoffAttemptBudgetMs\)/);
     expect(src).toMatch(/onboardingExpired: activeHeadlessClaudeOnboarding\?\.status\(\)\.expired === true/);
+    expect(src).toMatch(/onboardingPromptSeen: activeHeadlessClaudeOnboarding\?\.status\(\)\.promptSeen === true/);
     expect(src).toMatch(/appendHostEvent\(ownerId, 'headless-claude-composer-unseen-ordinary-gate'/);
+    expect(src).toMatch(/waitForClaudeResumeCompaction\(deadline\)[\s\S]*?const claudeKickoffReadiness =/);
+    expect(src).toMatch(/const claudeKickoffReadinessAtWrite = headlessClaudeKickoffReadiness\([\s\S]*?if \(claudeKickoffReadinessAtWrite === 'wait-for-composer'\)[\s\S]*?dropReason = 'headless-claude-composer-not-ready'/);
+    expect(src.indexOf('if (prepareBeforeWrite)')).toBeLessThan(src.indexOf('const claudeKickoffReadinessAtWrite ='));
+    expect(src.indexOf('const claudeKickoffReadinessAtWrite =')).toBeLessThan(src.indexOf('const turnWriteStartedAt ='));
     // Only 'wait-for-composer' defers; every other readiness value reaches a write or the busy gate.
-    expect(src).toMatch(/claudeKickoffReadiness === 'wait-for-composer'\s*\?\s*\{ deferred: true, reason: 'headless-claude-composer-not-ready' \}\s*:\s*await agentBusyGate\.waitAtPrompt\(\)/);
+    expect(src).toMatch(/claudeKickoffReadiness === 'wait-for-composer'\s*\?\s*\{ deferred: true, reason: 'headless-claude-composer-not-ready' \}\s*:\s*await agentBusyGate\.waitAtPrompt\(/);
+    expect(src).toMatch(/claudeKickoffReadiness === 'composer-unseen-ordinary-gate'\s*\?\s*Math\.max\(0, deadline - Date\.now\(\)\)\s*:\s*undefined/);
   });
 });
 
@@ -3864,7 +3955,7 @@ describe('launch kickoff superseded by a same-host respawn (EI-24818010361425604
 
   it('is consulted before the terminal not-submitted receipt, behind the inject mutex', () => {
     const src = readFileSync(new URL('../scripts/psu-pty-host.mjs', import.meta.url), 'utf8');
-    const closureStart = src.indexOf('const injectLaunchKickoff = () => injectTurnAtPrompt({');
+    const closureStart = src.indexOf('const injectLaunchKickoff = () => {');
     expect(closureStart).toBeGreaterThan(0);
     const closure = src.slice(closureStart);
     const redeliver = closure.indexOf('shouldRedeliverLaunchKickoffAfterRespawn({');

@@ -18,7 +18,7 @@
     ".papercusp/scratch/pcd/p006-live.mts"
   ],
   "exitCode": 0,
-  "summary": "All five live assertions passed on one run against a real GCP KasmVNC workspace host with the desktop pack installed. Tickets were minted by the production HostedWorkspaceConnectorGateway and sockets went through the real broker relay to hosted-session-host on the VM; VM-side readings were taken over the controller IAP SSH as the customer account. R-6 personal-desktop-uid, R-17 personal-desktop-home, R-18 personal-desktop-takeover-input, R-19 personal-desktop-reconnect, R-20 personal-desktop-non-owner-refused. The driver and its SSH helper are local scratch files pinned below by SHA-256; every VM command and relay message they issued is in transcript[].",
+  "summary": "All five live assertions passed on the historical run timestamped below against a real GCP KasmVNC workspace host with the desktop pack installed. Tickets were minted by the production HostedWorkspaceConnectorGateway and sockets went through the real broker relay to hosted-session-host on the VM; VM-side readings were taken over the controller IAP SSH as the customer account. R-6 personal-desktop-uid, R-17 personal-desktop-home, R-18 personal-desktop-takeover-input, R-19 personal-desktop-reconnect, R-20 personal-desktop-non-owner-refused. The driver and its SSH helper are local scratch files pinned below by SHA-256; every VM command and relay message they issued is in transcript[]. Provenance correction: desktopSessionIdAfter was assigned the starting id, not independently re-read. R-19 identity continuity is supported by rosterStillLists and successful reopen-by-id desktop.ready; Xvnc pid continuity was independently re-read. Recording this corrected committed artifact does not constitute a new live run.",
   "driver": {
     "script": ".papercusp/scratch/pcd/p006-live.mts",
     "scriptSha256": "5d6bf2ffba31cdf2e6e3b77b02378abbcf0d67058837f59acb26a5e2bc076ade",
@@ -83,7 +83,7 @@
     {
       "id": "personal-desktop-reconnect",
       "passed": true,
-      "evidence": "R-19: after closing the viewer and reopening it, desktopSessionId stayed 0eae995a-5ddb-4b08-a3a0-4742bd9da756 and the Xvnc pid stayed 9880; the roster still listed the desktop and it reopened in takeover with inputAllowed=true and RFB 003.008. Full readings: observations.personal-desktop-reconnect."
+      "evidence": "R-19: after closing the viewer, the roster still listed desktop 0eae995a-5ddb-4b08-a3a0-4742bd9da756 and reopening that id returned desktop.ready in takeover with inputAllowed=true and RFB 003.008. The independently re-read Xvnc pid stayed 9880. Limitation: desktopSessionIdAfter was assigned the starting id, not independently re-read; it is not an additional identity measurement. Full readings: observations.personal-desktop-reconnect."
     },
     {
       "id": "personal-desktop-non-owner-refused",

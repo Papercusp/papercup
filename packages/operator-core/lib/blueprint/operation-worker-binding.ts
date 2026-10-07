@@ -46,7 +46,7 @@ const MODEL_EFFORT_SUFFIX = /:(low|medium|high|xhigh|max|ultra)$/i;
  * even when the caller supplied a compatible alias. The caller's selector
  * can choose within an allowed/preferred list but cannot widen that list. */
 export function selectAcceptedOperationWorkerModel(
-  binding: AcceptedOperationWorkerBinding | null,
+  binding: Pick<AcceptedOperationWorkerBinding, 'modelPolicy'> | null,
   requestedModel: string | null,
   backend: 'claude' | 'omp' | 'codex',
 ): AcceptedOperationWorkerBinding['modelSelection'] | null {

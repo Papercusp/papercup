@@ -24,6 +24,7 @@
  */
 import type { Sql } from 'postgres';
 import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
+import type { AcceptedOperationWorkerBinding } from './operation-worker-binding';
 
 export const AGENT_PLACEMENT_LOCK_KEY = 'blueprint-agent-operation-placement';
 
@@ -58,6 +59,8 @@ export interface AgentOperationPlacement {
   ownerId: string;
   /** 1-based attempt number this claim consumed. */
   attempt: number;
+  /** Model authority from the same immutable operation snapshot, never caller launch args. */
+  modelPolicy?: AcceptedOperationWorkerBinding['modelPolicy'];
 }
 
 function resolveOptions(opts: AgentPlacementOptions): Required<AgentPlacementOptions> {
@@ -128,6 +131,7 @@ export async function claimAgentOperationPlacements(
       receipt_id: string; workspace_id: string; harness_slug: string; operation_id: string;
       specification_revision: string; work_item_id: string; role: string;
       owner_id: string; attempt: number;
+      model_policy: AcceptedOperationWorkerBinding['modelPolicy'] | null;
     }>>`
       WITH live AS (
         SELECT i.workspace_id, count(*)::int AS n
@@ -144,6 +148,7 @@ export async function claimAgentOperationPlacements(
          GROUP BY i.workspace_id
       ), eligible AS (
         SELECT i.id, wi.feature_id AS work_item_id, op->'execution'->>'role' AS role,
+               op->'policy'->'model' AS model_policy,
                row_number() OVER (PARTITION BY i.workspace_id ORDER BY i.id) AS rank,
                i.workspace_id
           FROM harness_shared.blueprint_operation_invocations i
@@ -181,7 +186,7 @@ export async function claimAgentOperationPlacements(
            AND op->'target'->>'kind' = 'work-item'
            AND jsonb_typeof(op->'execution'->'role') = 'string'
       ), picked AS (
-        SELECT e.id, e.work_item_id, e.role
+        SELECT e.id, e.work_item_id, e.role, e.model_policy
           FROM eligible e
           LEFT JOIN live l ON l.workspace_id = e.workspace_id
          WHERE e.rank + COALESCE(l.n, 0) <= ${o.perWorkspaceLive}
@@ -195,7 +200,7 @@ export async function claimAgentOperationPlacements(
         FROM picked p
        WHERE i.id = p.id
       RETURNING i.id::text AS receipt_id, i.workspace_id, i.harness_slug, i.operation_id,
-                i.specification_revision, p.work_item_id, p.role,
+                i.specification_revision, p.work_item_id, p.role, p.model_policy,
                 i.agent_launch_owner_id AS owner_id, i.agent_launch_attempts AS attempt
     `;
   });
@@ -216,6 +221,9 @@ export async function claimAgentOperationPlacements(
       role: row.role.trim(),
       ownerId: row.owner_id,
       attempt: Number(row.attempt),
+      ...(row.model_policy ? {
+        modelPolicy: row.model_policy as AcceptedOperationWorkerBinding['modelPolicy'],
+      } : {}),
     };
   }).sort((a, b) => a.receiptId - b.receiptId);
 }
@@ -280,6 +288,28 @@ export async function placeAcceptedAgentOperations(
  * spawnHeadless), with the operation's role and target item as the
  * `--role/--feature` pair bootstrap-role binds. */
 export const launchAgentOperationWorker: AgentPlacementLauncher = async (p) => {
+  let agent: 'claude' | 'codex' = 'claude';
+  let model: string | undefined;
+  if (p.modelPolicy) {
+    const { selectAcceptedOperationWorkerModel } = await import('./operation-worker-binding');
+    const errors: string[] = [];
+    // Validate the SAME first pinned model on its native backend. This never
+    // substitutes another model, including under an allowed/preferred policy,
+    // and does not turn an unavailable-account policy into implicit failover.
+    for (const backend of ['codex', 'claude'] as const) {
+      try {
+        const selected = selectAcceptedOperationWorkerModel({ modelPolicy: p.modelPolicy }, null, backend);
+        if (selected) {
+          agent = backend;
+          model = selected.model;
+          break;
+        }
+      } catch (error) {
+        errors.push(error instanceof Error ? error.message : String(error));
+      }
+    }
+    if (!model) throw new Error(`accepted operation model has no supported native backend: ${errors.join('; ')}`);
+  }
   const [{ buildConsoleEnvelope }, { spawnHeadless }, { resolveSpawnHostOperatorBaseUrl },
     { buildAgentLaunchCommand, injectLaunchedByArg }, { papercuspPathForWorkspace }, { join }] =
     await Promise.all([
@@ -298,7 +328,9 @@ export const launchAgentOperationWorker: AgentPlacementLauncher = async (p) => {
   });
   let command = buildAgentLaunchCommand({
     mode: 'fresh',
-    agent: 'claude',
+    agent,
+    ...(model ? { model } : {}),
+    account: 'auto',
     harness: p.harnessSlug,
     workspace: p.workspaceId,
     ownerId: p.ownerId,
@@ -310,7 +342,11 @@ export const launchAgentOperationWorker: AgentPlacementLauncher = async (p) => {
   const spawned = await spawnHeadless({
     envelope: {
       ...base,
-      env: { ...base.env, PAPERCUSP_KICKOFF_PROMPT: buildAgentPlacementKickoff(p) },
+      env: {
+        ...base.env,
+        PAPERCUSP_ACCOUNT_ROUTING_MODE: 'auto',
+        PAPERCUSP_KICKOFF_PROMPT: buildAgentPlacementKickoff(p),
+      },
       greetingCmd: command,
       cwd: base.cwd,
     },

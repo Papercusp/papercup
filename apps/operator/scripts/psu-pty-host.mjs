@@ -5967,10 +5967,16 @@ export function makeHeadlessCodexModelChoiceStateMachine({
  * window.
  */
 export const HEADLESS_CLAUDE_ONBOARDING_STARTUP_MS = 30_000;
-// A fresh headless Claude kickoff must either reach the real composer or fail
-// inside the detached launcher's 30s receipt window. Reserve the remaining
-// time for native-transcript proof; never type into a quiet welcome/menu screen.
+// A fresh headless Claude kickoff must either reach the real composer or take
+// the bounded unseen-composer fallback inside its readiness budget. Native
+// transcript proof runs after submission under its own timeout; never type into
+// a quiet welcome/menu screen.
 export const HEADLESS_CLAUDE_KICKOFF_READY_TIMEOUT_MS = 20_000;
+// Keep time inside the kickoff readiness budget for the ordinary prompt gate
+// after an unseen composer expires. Native transcript proof has its own window
+// after submission; this reserve prevents the readiness fallback from being
+// discovered only after the kickoff attempt has already timed out.
+export const HEADLESS_CLAUDE_KICKOFF_PROMPT_RESERVE_MS = 5_000;
 const HEADLESS_CLAUDE_ONBOARDING_BUFFER_CHARS = 32_768;
 const HEADLESS_CLAUDE_THEME_PROMPT_RE =
   /(?:\b(?:choose|select|pick)\b[\s\S]{0,160}\btheme\b|\btheme\b[\s\S]{0,160}\b(?:dark|light|system)\b)/i;
@@ -5992,6 +5998,23 @@ export function headlessClaudeOnboardingStartupMs(env = process.env) {
     env?.PAPERCUSP_PSU_HEADLESS_ONBOARDING_STARTUP_MS,
     HEADLESS_CLAUDE_ONBOARDING_STARTUP_MS,
   );
+}
+
+/** Bound the onboarding observation window for an initial kickoff so its
+ * unseen-composer fallback has time to pass through the ordinary prompt gate. */
+export function headlessClaudeKickoffOnboardingStartupMs(
+  env = process.env,
+  kickoffBudgetMs = HEADLESS_CLAUDE_KICKOFF_READY_TIMEOUT_MS,
+) {
+  const budgetMs = Math.max(1, Math.floor(positiveNumber(
+    kickoffBudgetMs,
+    HEADLESS_CLAUDE_KICKOFF_READY_TIMEOUT_MS,
+  )));
+  const promptReserveMs = Math.min(HEADLESS_CLAUDE_KICKOFF_PROMPT_RESERVE_MS, budgetMs - 1);
+  return Math.max(1, Math.min(
+    headlessClaudeOnboardingStartupMs(env),
+    budgetMs - promptReserveMs,
+  ));
 }
 
 /**
@@ -6016,11 +6039,13 @@ export function makeHeadlessClaudeOnboardingStateMachine({
   const startedAt = clock();
   let phase = enabled ? 'theme' : 'disabled';
   let observed = '';
+  let promptSeen = false;
 
   const snapshot = (action = 'none', prompt = null) => ({
     action,
     prompt,
     phase,
+    promptSeen,
     active: phase === 'theme' || phase === 'security',
     complete: phase === 'complete',
     expired: phase === 'expired',
@@ -6034,8 +6059,8 @@ export function makeHeadlessClaudeOnboardingStateMachine({
   };
 
   const observe = (chunk, at = clock()) => {
-    if (phase === 'disabled' || phase === 'complete' || phase === 'expired') return snapshot();
-    if (at - startedAt >= windowMs) return expire(at);
+    if (phase === 'disabled' || phase === 'complete') return snapshot();
+    if (phase !== 'expired' && at - startedAt >= windowMs) return expire(at);
 
     observed = `${observed}${String(chunk ?? '')}`;
     if (observed.length > HEADLESS_CLAUDE_ONBOARDING_BUFFER_CHARS) {
@@ -6043,12 +6068,26 @@ export function makeHeadlessClaudeOnboardingStateMachine({
     }
     const visible = stripAnsi(observed);
 
+    if (phase === 'expired') {
+      // The launch may reach the fallback gate just before a delayed menu paint.
+      // Keep observing only to fail closed if a recognized onboarding prompt
+      // appears before the ordinary gate authorizes the first write.
+      if (HEADLESS_CLAUDE_THEME_PROMPT_RE.test(visible) ||
+          HEADLESS_CLAUDE_SECURITY_PROMPT_RE.test(visible)) {
+        promptSeen = true;
+        observed = '';
+      }
+      return snapshot();
+    }
+
     if (phase === 'theme' && HEADLESS_CLAUDE_THEME_PROMPT_RE.test(visible)) {
+      promptSeen = true;
       phase = 'security';
       observed = '';
       return snapshot('submit', 'theme');
     }
     if (phase === 'security' && HEADLESS_CLAUDE_SECURITY_PROMPT_RE.test(visible)) {
+      promptSeen = true;
       phase = 'complete';
       observed = '';
       return snapshot('submit', 'security');
@@ -6074,6 +6113,7 @@ export function makeHeadlessClaudeOnboardingStateMachine({
       active: phase === 'theme' || phase === 'security',
       complete: phase === 'complete',
       expired: phase === 'expired',
+      promptSeen,
       startedAt,
       expiresAt: startedAt + windowMs,
       bufferedChars: observed.length,
@@ -6663,6 +6703,7 @@ export function headlessClaudeKickoffReadiness({
   requireInitialOutput = false,
   promptReady = false,
   onboardingExpired = false,
+  onboardingPromptSeen = false,
 } = {}) {
   if (!enabled || !requireInitialOutput) return 'ordinary-gate';
   if (promptReady) return 'composer-ready';
@@ -6674,7 +6715,9 @@ export function headlessClaudeKickoffReadiness({
   // defer to the ordinary busy gate, exactly as the next wake inject would.
   // Measured 2026-10-01/02: 24 of 24 headless-claude-composer-not-ready carry
   // drops had onboarding expired; 0 of 1775 delivered carries did.
-  return onboardingExpired ? 'composer-unseen-ordinary-gate' : 'wait-for-composer';
+  return onboardingExpired && !onboardingPromptSeen
+    ? 'composer-unseen-ordinary-gate'
+    : 'wait-for-composer';
 }
 
 /** @param {*} agent @param {*} output
@@ -8936,6 +8979,8 @@ export function hostThroughPty(o) {
   // WI-10005472: the current child's onboarding watcher, so the kickoff gate can
   // tell "composer not seen YET" from "composer never seen in the whole window".
   let activeHeadlessClaudeOnboarding = null;
+  let launchKickoffAttemptStartedAtMs = 0;
+  let launchKickoffAttemptBudgetMs = 0;
   let childStartupFirstOutputAt = 0;
   // EI-24141825238362808: the child's own bracketed-paste mode, tracked over ALL
   // output (not only startup) so turn text is framed only while the TUI has it on.
@@ -9755,6 +9800,7 @@ export function hostThroughPty(o) {
           requireInitialOutput,
           promptReady: childPromptReady,
           onboardingExpired: activeHeadlessClaudeOnboarding?.status().expired === true,
+          onboardingPromptSeen: activeHeadlessClaudeOnboarding?.status().promptSeen === true,
         });
         if (claudeKickoffReadiness === 'composer-unseen-ordinary-gate' && !composerUnseenFallbackRecorded) {
           composerUnseenFallbackRecorded = true;
@@ -9780,9 +9826,13 @@ export function hostThroughPty(o) {
           ? { deferred: false }
           : claudeKickoffReadiness === 'composer-ready'
             ? { deferred: false }
-            : claudeKickoffReadiness === 'wait-for-composer'
+          : claudeKickoffReadiness === 'wait-for-composer'
               ? { deferred: true, reason: 'headless-claude-composer-not-ready' }
-              : await agentBusyGate.waitAtPrompt();
+              : await agentBusyGate.waitAtPrompt(
+                claudeKickoffReadiness === 'composer-unseen-ordinary-gate'
+                  ? Math.max(0, deadline - Date.now())
+                  : undefined,
+              );
         if (claudeKickoffReadiness === 'wait-for-composer') {
           dropReason = 'headless-claude-composer-not-ready';
         }
@@ -9824,6 +9874,26 @@ export function hostThroughPty(o) {
             }
             if (child !== injectChild) return { delivered: false, reason: 'superseded', attempts };
             if (freshChildWasInterrupted()) return { delivered: false, reason: 'fresh-child-owner-input', attempts };
+          }
+          // Preparation can itself wait (for example, a role MCP reconnect).
+          // Recheck both menu machines and the composer at the actual write
+          // boundary so a menu painted during that wait cannot receive text.
+          const recoveryAtWrite = await waitForClaudeResumeCompaction(deadline);
+          if (!recoveryAtWrite.ready) {
+            dropReason = recoveryAtWrite.reason;
+            break;
+          }
+          if (child !== injectChild) return { delivered: false, reason: 'superseded', attempts };
+          const claudeKickoffReadinessAtWrite = headlessClaudeKickoffReadiness({
+            enabled: headlessClaudeOnboardingEnabled(env),
+            requireInitialOutput,
+            promptReady: childPromptReady,
+            onboardingExpired: activeHeadlessClaudeOnboarding?.status().expired === true,
+            onboardingPromptSeen: activeHeadlessClaudeOnboarding?.status().promptSeen === true,
+          });
+          if (claudeKickoffReadinessAtWrite === 'wait-for-composer') {
+            dropReason = 'headless-claude-composer-not-ready';
+            break;
           }
           // The text is the first step; later steps are delayed submit CRs, so
           // readiness is captured now, not after them.
@@ -10165,61 +10235,65 @@ export function hostThroughPty(o) {
         maxRetries: codexLaunchStartingRetryMax(env.PAPERCUSP_PSU_PTY_CODEX_LAUNCH_STARTING_RETRIES),
       };
       let freshChildRetries = 0;
-      const injectLaunchKickoff = () => injectTurnAtPrompt({
-        text: launchKickoff,
-        label,
-        budgetMs: kickoffBudgetMs,
-        requireInitialOutput: true,
-        verifyKickoffMarkerEcho,
-        ...launchKickoffCodexStartingOptions({
-          ...freshChildRetry,
-          retryCount: freshChildRetries,
-          stuckMs: positiveNumber(
-            env.PAPERCUSP_PSU_PTY_CODEX_CARRY_STARTING_STUCK_MS,
-            CODEX_CARRY_STARTING_STUCK_MS,
-          ),
-          // WI-10004943 (d): hold, don't drop, while the Codex footer reads Starting.
-          holdCeilingMs: positiveNumber(
-            env.PAPERCUSP_PSU_PTY_CODEX_STARTING_HOLD_CEILING_MS,
-            CODEX_STARTING_KICKOFF_HOLD_CEILING_MS,
-          ),
-        }),
-        prepareBeforeWrite: async ({ deadline }) => {
-          if (adoptedCarryRespawn && (adoptedCarryRespawn.nativeId || resolveRespawnNativeId)) {
-            const binding = await prepareCarryBinding(adoptedCarryRespawn.nativeId, deadline);
-            if (!binding.ok) return binding;
-            adoptedCarryRespawn.nativeId = binding.nativeId;
-          }
-          if (!requireRoleMcp) return { ok: true };
-          const tap = makeOutputTap();
-          try {
-            const result = await verifyHeadlessRoleMcp(() => runMcpReconnectMacro({
-              serverName: 'papercusp',
-              write: (bytes) => child.write(bytes),
-              readTap: tap.read,
-              resetTap: tap.reset,
-              maxArrows: HEADLESS_ROLE_MCP_MAX_ARROWS,
-            }), HEADLESS_ROLE_MCP_VERIFY_ATTEMPTS);
-            appendHostEvent(ownerId, result.ok ? 'launch-role-mcp-ready' : 'launch-role-mcp-unavailable', {
-              step: result.step,
-              attempts: result.attempts,
-              detail: result.detail,
-            });
-            return { ok: result.ok, reason: 'role-mcp-unavailable' };
-          } finally {
-            tap.close();
-          }
-        },
-        // Read per attempt, so a replacement child is judged against the owner
-        // input generation current at its own kickoff.
-        freshChildOwnerInputGeneration: env.PAPERCUSP_AGENT === 'codex' && !isResumeLaunch
-          ? ownerInputGeneration
-          : null,
-        // The managed kickoff's native transcript proof owns its failure
-        // timeout and child kill. Do not let the generic submit verifier tear
-        // down the host before that proof can observe a late marker.
-        terminateOnSubmitVerifyExhaustion: !managedKickoff,
-      });
+      const injectLaunchKickoff = () => {
+        launchKickoffAttemptStartedAtMs = Date.now();
+        launchKickoffAttemptBudgetMs = kickoffBudgetMs;
+        return injectTurnAtPrompt({
+          text: launchKickoff,
+          label,
+          budgetMs: kickoffBudgetMs,
+          requireInitialOutput: true,
+          verifyKickoffMarkerEcho,
+          ...launchKickoffCodexStartingOptions({
+            ...freshChildRetry,
+            retryCount: freshChildRetries,
+            stuckMs: positiveNumber(
+              env.PAPERCUSP_PSU_PTY_CODEX_CARRY_STARTING_STUCK_MS,
+              CODEX_CARRY_STARTING_STUCK_MS,
+            ),
+            // WI-10004943 (d): hold, don't drop, while the Codex footer reads Starting.
+            holdCeilingMs: positiveNumber(
+              env.PAPERCUSP_PSU_PTY_CODEX_STARTING_HOLD_CEILING_MS,
+              CODEX_STARTING_KICKOFF_HOLD_CEILING_MS,
+            ),
+          }),
+          prepareBeforeWrite: async ({ deadline }) => {
+            if (adoptedCarryRespawn && (adoptedCarryRespawn.nativeId || resolveRespawnNativeId)) {
+              const binding = await prepareCarryBinding(adoptedCarryRespawn.nativeId, deadline);
+              if (!binding.ok) return binding;
+              adoptedCarryRespawn.nativeId = binding.nativeId;
+            }
+            if (!requireRoleMcp) return { ok: true };
+            const tap = makeOutputTap();
+            try {
+              const result = await verifyHeadlessRoleMcp(() => runMcpReconnectMacro({
+                serverName: 'papercusp',
+                write: (bytes) => child.write(bytes),
+                readTap: tap.read,
+                resetTap: tap.reset,
+                maxArrows: HEADLESS_ROLE_MCP_MAX_ARROWS,
+              }), HEADLESS_ROLE_MCP_VERIFY_ATTEMPTS);
+              appendHostEvent(ownerId, result.ok ? 'launch-role-mcp-ready' : 'launch-role-mcp-unavailable', {
+                step: result.step,
+                attempts: result.attempts,
+                detail: result.detail,
+              });
+              return { ok: result.ok, reason: 'role-mcp-unavailable' };
+            } finally {
+              tap.close();
+            }
+          },
+          // Read per attempt, so a replacement child is judged against the owner
+          // input generation current at its own kickoff.
+          freshChildOwnerInputGeneration: env.PAPERCUSP_AGENT === 'codex' && !isResumeLaunch
+            ? ownerInputGeneration
+            : null,
+          // The managed kickoff's native transcript proof owns its failure
+          // timeout and child kill. Do not let the generic submit verifier tear
+          // down the host before that proof can observe a late marker.
+          terminateOnSubmitVerifyExhaustion: !managedKickoff,
+        });
+      };
       let r = await injectLaunchKickoff();
       while (
         !r.delivered &&
@@ -10257,6 +10331,8 @@ export function hostThroughPty(o) {
         }
         r = await injectLaunchKickoff();
       }
+      launchKickoffAttemptStartedAtMs = 0;
+      launchKickoffAttemptBudgetMs = 0;
       // EI-24818010361425604: a same-host respawn replaced the child while this
       // kickoff was in flight, so the owner now lives in the successor. Wait on
       // the inject mutex (a gated respawn holds it through kill + spawn + carry
@@ -12380,9 +12456,18 @@ export function hostThroughPty(o) {
       clearTimeout(headlessClaudeOnboardingExpiryTimer);
       headlessClaudeOnboardingExpiryTimer = null;
     }
+    const kickoffOnboardingWindowActive = Boolean(launchKickoff) &&
+      headlessClaudeOnboardingEnabled(env) &&
+      launchKickoffAttemptStartedAtMs > 0;
+    const configuredOnboardingStartupMs = kickoffOnboardingWindowActive
+      ? headlessClaudeKickoffOnboardingStartupMs(env, launchKickoffAttemptBudgetMs)
+      : headlessClaudeOnboardingStartupMs(env);
+    const onboardingStartupMs = kickoffOnboardingWindowActive
+      ? Math.max(1, configuredOnboardingStartupMs - Math.max(0, Date.now() - launchKickoffAttemptStartedAtMs))
+      : configuredOnboardingStartupMs;
     const headlessClaudeOnboarding = makeHeadlessClaudeOnboardingStateMachine({
       enabled: headlessClaudeOnboardingEnabled(env),
-      startupMs: headlessClaudeOnboardingStartupMs(env),
+      startupMs: onboardingStartupMs,
     });
     activeHeadlessClaudeOnboarding = headlessClaudeOnboarding;
     const headlessCodexModelChoice = makeHeadlessCodexModelChoiceStateMachine({
@@ -12407,10 +12492,11 @@ export function hostThroughPty(o) {
         if (result.action === 'expired') {
           appendHostEvent(ownerId, 'headless-claude-onboarding-expired', {
             phase: result.phase,
-            startupMs: headlessClaudeOnboardingStartupMs(env),
+            startupMs: onboardingStartupMs,
+            promptSeen: result.promptSeen,
           });
         }
-      }, headlessClaudeOnboardingStartupMs(env));
+      }, onboardingStartupMs);
       if (typeof headlessClaudeOnboardingExpiryTimer.unref === 'function') {
         headlessClaudeOnboardingExpiryTimer.unref();
       }

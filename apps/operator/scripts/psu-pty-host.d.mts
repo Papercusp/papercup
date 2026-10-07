@@ -2283,6 +2283,9 @@ export function makeHeadlessCodexModelChoiceStateMachine({ enabled, startupMs, n
 export function headlessClaudeOnboardingEnabled(env?: NodeJS.ProcessEnv): boolean;
 /** Read the bounded startup window from the launch environment. */
 export function headlessClaudeOnboardingStartupMs(env?: NodeJS.ProcessEnv): any;
+/** Bound the onboarding observation window for an initial kickoff so its
+ * unseen-composer fallback has time to pass through the ordinary prompt gate. */
+export function headlessClaudeKickoffOnboardingStartupMs(env?: NodeJS.ProcessEnv, kickoffBudgetMs?: number): number;
 /**
  * Decide whether one startup output chunk warrants the next onboarding Enter.
  *
@@ -2304,6 +2307,7 @@ export function makeHeadlessClaudeOnboardingStateMachine({ enabled, startupMs, n
         action: string;
         prompt: null;
         phase: string;
+        promptSeen: boolean;
         active: boolean;
         complete: boolean;
         expired: boolean;
@@ -2312,6 +2316,7 @@ export function makeHeadlessClaudeOnboardingStateMachine({ enabled, startupMs, n
         action: string;
         prompt: null;
         phase: string;
+        promptSeen: boolean;
         active: boolean;
         complete: boolean;
         expired: boolean;
@@ -2320,6 +2325,7 @@ export function makeHeadlessClaudeOnboardingStateMachine({ enabled, startupMs, n
         action: string;
         prompt: null;
         phase: string;
+        promptSeen: boolean;
         active: boolean;
         complete: boolean;
         expired: boolean;
@@ -2331,6 +2337,7 @@ export function makeHeadlessClaudeOnboardingStateMachine({ enabled, startupMs, n
         active: boolean;
         complete: boolean;
         expired: boolean;
+        promptSeen: boolean;
         startedAt: number;
         expiresAt: any;
         bufferedChars: number;
@@ -2451,11 +2458,12 @@ export function codexStartingFooterEvidence(output: any, { maxMatches, tailChars
     visibleChars: number;
     rawTail: string;
 } | null;
-export function headlessClaudeKickoffReadiness({ enabled, requireInitialOutput, promptReady, onboardingExpired, }?: {
+export function headlessClaudeKickoffReadiness({ enabled, requireInitialOutput, promptReady, onboardingExpired, onboardingPromptSeen, }?: {
     enabled?: boolean | undefined;
     requireInitialOutput?: boolean | undefined;
     promptReady?: boolean | undefined;
     onboardingExpired?: boolean | undefined;
+    onboardingPromptSeen?: boolean | undefined;
 }): "ordinary-gate" | "composer-ready" | "composer-unseen-ordinary-gate" | "wait-for-composer";
 /** @param {*} agent @param {*} output
  *  @param {{ rows?: number, cols?: number }} [dims] the child's PTY size (WI-10005178) */
@@ -3504,6 +3512,7 @@ export const HEADLESS_CODEX_MODEL_CHOICE_STARTUP_MS: 600000;
  */
 export const HEADLESS_CLAUDE_ONBOARDING_STARTUP_MS: 30000;
 export const HEADLESS_CLAUDE_KICKOFF_READY_TIMEOUT_MS: 20000;
+export const HEADLESS_CLAUDE_KICKOFF_PROMPT_RESERVE_MS: 5000;
 /**
  * Scripted Claude resumes can open an interactive recovery choice instead of
  * the composer when the saved transcript is too large for the current context:

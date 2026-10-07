@@ -25933,7 +25933,7 @@
           "POST"
         ]
       },
-      "description": "Send a local improvement UPSTREAM from a platform-mode install. kind:'knowledge-pack' exports the self-hive's organic learnings + lists them on the Comb (lands PENDING — operator-moderated); kind:'pr' pushes the change to the USER'S FORK and opens a human-reviewed PR fork→canonical Papercusp (never a direct push). Root-only, reason-audited. By default it PREPARES but does not send: the live push/PR/publish fires ONLY with confirm:true AND credentials/remote present, else returns {ok, prepared:true, needs:[...]}.",
+      "description": "Contribute upstream through existing platform surfaces: knowledge-pack publishes a moderated Comb listing, pr opens a fork→canonical PR, report files anonymously through the canonical joined-Pot shared intake and existing issue federation. Reports return queued, never an unverified upstream receipt. Root-only; confirm:true is required to submit. Without consent or prerequisites, returns prepared:true with needs.",
       "capabilities": [
         "harness:write"
       ],
@@ -25959,7 +25959,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "The user explicitly wants to contribute a platform-mode improvement UPSTREAM to Papercusp — publish a knowledge-pack to the Comb, or open a fork→canonical PR. Requires platform:enable first (the self-hive must be standing).",
+        "when": "The user explicitly wants to contribute a knowledge-pack or fork PR (requires platform:enable), or submit an installed-app problem report (requires canonical-Pot membership and confirm:true consent). A report returns queued for existing federation, not an upstream delivery receipt.",
         "notWhen": "Enabling platform mode / standing up the self-hive — platform:enable. Publishing a pack for an ARBITRARY (non-platform) hive — knowledge_packs:export + knowledge_packs:publish. Opening a PR for a normal harness feature — the orchestrator fork-PR hook.",
         "chaining": "platform:enable (stand up the self-hive) → set the self-hive member's fork_remote (for kind:'pr') → platform:contribute (prepared) → review the plan/needs → platform:contribute { confirm:true } to send."
       }
@@ -32661,7 +32661,7 @@
           "POST"
         ]
       },
-      "description": "Find tools by INTENT across the full ~550-tool catalog (hybrid lexical + semantic). ACTIVATION IS CONDITIONAL: on a seeded (small-surface) session the matches are added to your live tool list (activated:true) and are directly callable; on a full-catalog session there is nothing to expand (activated:false) — call them via tools:invoke. High-confidence runtime symptoms (slow/queued, connection-refused, no-window, change-live?, value-stale?) route their decisive diagnostic to hit #1.",
+      "description": "Find tools by INTENT across the full ~550-tool catalog (hybrid lexical + semantic). ACTIVATION IS CONDITIONAL: on a seeded (small-surface) session the matches are added to the server tool surface (activated:true); the client may need a tool-list refresh before direct-call wrappers appear, so follow `howToCall` and use tools:invoke when a wrapper is absent. On a full-catalog session there is nothing to expand (activated:false) — call tools:invoke. High-confidence runtime symptoms (slow/queued, connection-refused, no-window, change-live?, value-stale?) route their decisive diagnostic to hit #1.",
       "capabilities": [
         "agent_tools:read"
       ],

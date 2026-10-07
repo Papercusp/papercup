@@ -125,6 +125,21 @@ async function age(receiptId: number) {
 }
 
 describe('accepted agent operation placement (WI-10006859)', () => {
+  it('carries model policy from the accepted snapshot through placement, not a mutable launch default', async () => {
+    const modelPolicy = { mode: 'exact' as const, models: ['gpt-6.1'], effort: 'high', onUnavailable: 'fail' as const };
+    const pinned = compileAgentSpecification({ source: {
+      ...specification.configuration,
+      operations: specification.configuration.operations!.map((operation) => operation.id === 'leaf'
+        ? { ...operation, policy: { ...operation.policy, model: modelPolicy } }
+        : operation),
+    } });
+    const ws = await workspace('placement-model-policy', pinned);
+    const leaf = await accept(ws, 'leaf', 'model-policy');
+    const picked = (await claimAgentOperationPlacements(sql)).find((p) => p.receiptId === leaf.receiptId);
+    expect(picked?.modelPolicy).toEqual(modelPolicy);
+    expect(picked?.specificationRevision).toBe(pinned.specificationRevision);
+  }, 90_000);
+
   it('claims an accepted agent operation once, with the role and target item bootstrap binds', async () => {
     const ws = await workspace('placement-basic');
     const leaf = await accept(ws, 'leaf', 'basic');
