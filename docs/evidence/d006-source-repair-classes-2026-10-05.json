@@ -2,12 +2,12 @@
   "schemaVersion": 1,
   "kind": "d006-source-repair-class-disposition",
   "run": "1307302-b9c3dd76",
-  "accountableOwner": "su-a20d4635-81b0-4323-b33e-6e838a21d8fe",
+  "accountableOwner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
   "population": {
     "failedFiles": 124,
-    "repairedFocused": 11,
+    "repairedFocused": 14,
     "repairedPeerFocused": 10,
-    "openUnknown": 103
+    "openUnknown": 100
   },
   "classes": {
     "assertion": 62,
@@ -15,8 +15,11 @@
     "missing-schema": 16,
     "blueprint-fixture": 1,
     "console-guard": 10,
-    "unclassified": 16,
+    "unclassified": 13,
+    "legacy-rubric-replay": 1,
+    "goal-budget-fixture": 1,
     "peer-db-schema-notify": 4,
+    "owner-loop-fixture": 1,
     "compat-view-insert": 1,
     "peer-feed-fixture": 3,
     "hook-mutex-cleanup": 4,
@@ -430,12 +433,23 @@
     },
     {
       "path": "packages/operator-core/lib/agent-tools/plans/coordination-metadata-preflight.integration.test.ts",
-      "class": "unclassified",
-      "state": "open-unknown",
-      "item": "WI-10006170",
+      "class": "legacy-rubric-replay",
+      "state": "repaired-focused",
+      "item": "WI-10007122",
       "lines": [
         14938
-      ]
+      ],
+      "registeredRepairItem": "WI-10007122",
+      "repairStage": "verified-focused-content-settlement-pending",
+      "rootCause": "Historical1004 replay updates status then builds an index in one batch against migrated1279 deferred status triggers. The fixture now replays under transaction-local immediate constraint checking; production migrations and deferred trigger stay intact, and retired duplicate preservation still passes.",
+      "beforeTestRun": 20893427,
+      "afterTestRun": 20893439,
+      "passed": 12,
+      "skipped": 0,
+      "testSha256": "313d4745e60f294b28c9c82b0aef5406b3e02657318e6e39bd6871fa48568a84",
+      "testedHead": "5363ccca831a67b0aea485f35f70410c2639ff18",
+      "worktreeDirty": true,
+      "focusedLimit": "Causal named-file local execution only; no complete import/environment or finalD006 assurance. Content authority settles automatically after exact blobs commit."
     },
     {
       "path": "packages/operator-core/lib/workspace-host/lifecycle-runner.restore.integration.test.ts",
@@ -691,7 +705,12 @@
       "lines": [
         12381,
         12394
-      ]
+      ],
+      "relatedDefects": [
+        "EI-24890385770678975",
+        "EI-24153986934343683"
+      ],
+      "diagnosis": "Archived empty native hook payload matches existing recurrent defect records; causal root repair remains unproved, so this disposition stays UNKNOWN."
     },
     {
       "path": "packages/operator-core/lib/work-item-claim-lease-issue-cleanup.integration.test.ts",
@@ -787,13 +806,24 @@
     },
     {
       "path": "packages/operator-core/lib/goals/package-goal-e2e.integration.test.ts",
-      "class": "unclassified",
-      "state": "open-unknown",
-      "item": "WI-10006170",
+      "class": "goal-budget-fixture",
+      "state": "repaired-focused",
+      "item": "WI-10007123",
       "lines": [
         13710,
         13725
-      ]
+      ],
+      "registeredRepairItem": "WI-10007123",
+      "repairStage": "verified-focused-content-settlement-pending",
+      "rootCause": "Fresh isolated fixture had no priced goal-attributed usage, so the real budget resolver correctly refused unmeasured spend before launch. Fixture reuses the maintained interactive priced-sample pattern; a new empty-stream control still refuses with no launch and no sample.",
+      "beforeTestRun": 20893438,
+      "afterTestRun": 20893449,
+      "passed": 5,
+      "skipped": 0,
+      "testSha256": "ca2362e6cf92e525790da0434c37596fe59ce7040d91a4487350f75955d90526",
+      "testedHead": "5363ccca831a67b0aea485f35f70410c2639ff18",
+      "worktreeDirty": true,
+      "focusedLimit": "Causal named-file local execution only; no complete import/environment or finalD006 assurance. Content authority settles automatically after exact blobs commit."
     },
     {
       "path": "packages/operator-core/lib/harness/join-hive-from-repo-incremental-federation.integration.test.ts",
@@ -922,12 +952,23 @@
     },
     {
       "path": "packages/operator-core/lib/harness/routines/gc-dead-loops.integration.test.ts",
-      "class": "unclassified",
-      "state": "open-unknown",
-      "item": "WI-10006170",
+      "class": "owner-loop-fixture",
+      "state": "repaired-focused",
+      "item": "WI-10007121",
       "lines": [
         15204
-      ]
+      ],
+      "registeredRepairItem": "WI-10007121",
+      "repairStage": "verified-focused-content-settlement-pending",
+      "rootCause": "Fixture seeded simultaneous wildcard and prior-slug rows for one owner-loop role, forbidden by migration939. Independent cases now prove real GC cleanup at each valid historical location while retaining active-loop and workspace controls.",
+      "beforeTestRun": 20893426,
+      "afterTestRun": 20893437,
+      "passed": 15,
+      "skipped": 0,
+      "testSha256": "2add4c19359544ba076fb8f72fe3cb5c6665a073e56d0ce700d7a47cc728d7fd",
+      "testedHead": "5363ccca831a67b0aea485f35f70410c2639ff18",
+      "worktreeDirty": true,
+      "focusedLimit": "Causal named-file local execution only; no complete import/environment or finalD006 assurance. Content authority settles automatically after exact blobs commit."
     },
     {
       "path": "packages/operator-core/lib/deployment/p2p-perf-tier3/p2p-perf-tier3.integration.test.ts",
@@ -1754,7 +1795,7 @@
       "count": 62,
       "status": "open-unknown",
       "item": "WI-10006170",
-      "owner": "su-a20d4635-81b0-4323-b33e-6e838a21d8fe",
+      "owner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
       "scope": "diagnosis-and-placement",
       "rootCause": "unproved",
       "next": "Inspect exact saved error/source, deduplicate accepted defect and focused guard before source edits."
@@ -1772,7 +1813,7 @@
       "count": 16,
       "status": "open-unknown",
       "item": "WI-10006170",
-      "owner": "su-a20d4635-81b0-4323-b33e-6e838a21d8fe",
+      "owner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
       "scope": "diagnosis-and-placement",
       "rootCause": "unproved",
       "next": "Inspect exact saved error/source, deduplicate accepted defect and focused guard before source edits."
@@ -1790,7 +1831,7 @@
       "count": 10,
       "status": "open-unknown",
       "item": "WI-10006170",
-      "owner": "su-a20d4635-81b0-4323-b33e-6e838a21d8fe",
+      "owner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
       "scope": "diagnosis-and-placement",
       "rootCause": "unproved",
       "next": "Resolve the ten archived diagnostic entries below against scoped repairs and current causal verification; preserve open-unknown until each file's complete failure population is accounted for.",
@@ -1801,62 +1842,106 @@
         "entries": [
           {
             "path": "packages/operator-core/lib/sync/hyperbee/__tests__/federation-security-drops-sidecar.repro.integration.test.ts",
-            "diagnosticLines": [16096, 16101],
+            "diagnosticLines": [
+              16096,
+              16101
+            ],
             "observed": "console.warn rejects pg-merge-cursor-store pool rebound",
             "relatedRepair": "EI-24099631804056975"
           },
           {
             "path": "packages/operator-core/lib/sync/hyperbee/__tests__/federation-concurrent-writes-sidecar.repro.integration.test.ts",
-            "diagnosticLines": [16096, 16101, 16131],
+            "diagnosticLines": [
+              16096,
+              16101,
+              16131
+            ],
             "observed": "pool-rebind console.warn and an independent forced-HLC-tie assertion: (ms,count) prefixes differ",
             "relatedRepair": "EI-24099631804056975"
           },
           {
             "path": "packages/operator-core/lib/sync/hyperbee/__tests__/sidecar-joiner-owner-bootstrap-admit.repro.integration.test.ts",
-            "diagnosticLines": [16234, 16239],
+            "diagnosticLines": [
+              16234,
+              16239
+            ],
             "observed": "console.warn rejects pg-merge-cursor-store pool rebound",
             "relatedRepair": "EI-24099631804056975"
           },
           {
             "path": "packages/operator-core/lib/sync/hyperbee/__tests__/federation-multimember-sidecar.repro.integration.test.ts",
-            "diagnosticLines": [16096, 16101],
+            "diagnosticLines": [
+              16096,
+              16101
+            ],
             "observed": "console.warn rejects pg-merge-cursor-store pool rebound",
             "relatedRepair": "EI-24099631804056975"
           },
           {
             "path": "packages/operator-core/lib/blueprint/operation-performance-b.integration.test.ts",
-            "diagnosticLines": [13150, 13155],
+            "diagnosticLines": [
+              13150,
+              13155
+            ],
             "observed": "console.warn rejects embed-device CUDA construction failure and CPU fallback; ONNX allocator reports a failed 12582912-byte buffer allocation",
-            "candidateRepair": "EI-24688584300743328"
+            "candidateRepair": "EI-24688584300743328",
+            "candidateEvidence": "Committed completion covers the deterministic embedder override and P013 A smoke with P013_FIXTURE_EMBEDDER=1. Current B fixture installs the override only when that flag is 1; this is not closure evidence for the archived B console failure or its default route."
           },
           {
             "path": "packages/operator-core/lib/delegated-tasks.integration.test.ts",
-            "diagnosticLines": [12447, 12452, 12562, 12653, 12770, 12775],
+            "diagnosticLines": [
+              12447,
+              12452,
+              12562,
+              12653,
+              12770,
+              12775
+            ],
             "observed": "console.warn from missing harness_shared.event_awaits and adv_sessions.ended_by; separate assertions return an extra delegated task and a non-null resolved task",
             "candidateRepair": "EI-11558"
           },
           {
             "path": "packages/operator-core/lib/harness/join-hive-from-repo-incremental-federation.integration.test.ts",
-            "diagnosticLines": [13741, 13760, 13765],
+            "diagnosticLines": [
+              13741,
+              13760,
+              13765
+            ],
             "observed": "res.ok=false and degraded-join console.error because hive_pubkey exists while owner_device_pubkey is missing",
             "candidateRepair": "EI-24329108585573844",
             "candidateEvidence": "Committed completion reports a typed synthetic owner identity fixture and clean focused receipt20795770 at d152edfe0371ce04abb94d19eee265c7d6829809. This pointer alone does not establish current import/environment assurance or alter the historical census."
           },
           {
             "path": "packages/operator-core/lib/sync/hyperbee/__tests__/ei117-replay-revert-guard.integration.test.ts",
-            "diagnosticLines": [16020, 16025, 16056, 16061],
+            "diagnosticLines": [
+              16020,
+              16025,
+              16056,
+              16061
+            ],
             "observed": "acceptance-bar receiver reseed console.warn: acceptance_bar_epoch column does not exist",
-            "candidateRepair": "EI-20433418865457805"
+            "candidateRepair": "EI-20433418865457805",
+            "candidateEvidence": "Committed completion repaired input_schema, output_schema, property_schema, properties and forced_past in the inline stub. Its passing6-case receipt addressed missing input_schema, whereas this archive reports missing acceptance_bar_epoch; closure of this distinct column symptom remains unproved."
           },
           {
             "path": "packages/operator-core/lib/fleet/sidecar-exec-lifetime.integration.test.ts",
-            "diagnosticLines": [13519, 13524, 13560, 13603, 13608, 13644],
+            "diagnosticLines": [
+              13519,
+              13524,
+              13560,
+              13603,
+              13608,
+              13644
+            ],
             "observed": "console.warn rejects spawner-ipc-client-fault peer-eof diagnostics in both separate-IPC-server-death cases",
             "candidateRepair": "WI-10004743"
           },
           {
             "path": "packages/operator-core/lib/dock-layouts.integration.test.ts",
-            "diagnosticLines": [12798, 12803],
+            "diagnosticLines": [
+              12798,
+              12803
+            ],
             "observed": "console.error refuses WRONG STORE: pinned throwaway org database on localhost32769 but observed papercusp on localhost5432",
             "placement": "No candidate returned by the bounded exact-filename work-item search; this is not evidence of absence. Parent retains diagnosis/placement custody."
           }
@@ -1867,7 +1952,11 @@
         "path": "packages/operator-core/lib/sync/hyperbee/__tests__/federation-security-drops-sidecar.repro.integration.test.ts",
         "archiveVerifiedSha256": "43cf66489baf7cf665a9746d097375cffc7cdc6262014929c3cc398155b579f4",
         "archiveRunStartHead": "d2a53e115436fe5b2a72c261abbc66f337642672",
-        "archiveLines": [16095, 16098, 16108],
+        "archiveLines": [
+          16095,
+          16098,
+          16108
+        ],
         "observedFailure": "vitest-fail-on-console rejects console.warn from connection.endStalePool for pg-merge-cursor-store; stack continues through getLongLivedAdminPool, cursor load, read-merge seed and mergeOnePass.",
         "testRunId": 20815767,
         "testRunStatus": "fail",
@@ -1889,10 +1978,10 @@
     },
     {
       "class": "unclassified",
-      "count": 16,
+      "count": 13,
       "status": "open-unknown",
       "item": "WI-10006170",
-      "owner": "su-a20d4635-81b0-4323-b33e-6e838a21d8fe",
+      "owner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
       "scope": "diagnosis-and-placement",
       "rootCause": "unproved",
       "next": "Inspect exact saved error/source, deduplicate accepted defect and focused guard before source edits."
@@ -1913,7 +2002,11 @@
       "scope": "topic-feed-fixture-only",
       "rootCause": "Legacy operator-scope fixture inserted through the issue compatibility view; pot membership rehomed the stored row while view711 readback retained operator:default. Canonical fixture insertion resolves workspace_platform_pot before writing, matching the production writer's scope normalization.",
       "commit": "1729db25623631fe2e6708c34f213e7f3711a16a",
-      "testRunIds": [20843640, 20843701, 20892004],
+      "testRunIds": [
+        20843640,
+        20843701,
+        20892004
+      ],
       "next": "Retain historical failure and independent final D006 custody; this focused repair does not establish parent readiness."
     },
     {
@@ -1928,15 +2021,22 @@
       "count": 4,
       "status": "open-unknown",
       "item": "WI-10006170",
-      "owner": "su-a20d4635-81b0-4323-b33e-6e838a21d8fe",
+      "owner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
       "scope": "diagnosis-and-placement",
       "rootCause": "unproved",
-      "next": "Admit specific presence cleanup repair WI-10007112; retain all four historical mutex/setup dispositions as UNKNOWN until causal repair evidence is established.",
+      "next": "Settle the admitted secondary presence cleanup repair WI-10007112 and its tested children; retain all four historical mutex/setup dispositions as UNKNOWN until the primary failure has causal repair evidence.",
       "focusedEvidence": {
         "investigator": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
         "archiveVerifiedSha256": "43cf66489baf7cf665a9746d097375cffc7cdc6262014929c3cc398155b579f4",
         "archiveRunStartHead": "d2a53e115436fe5b2a72c261abbc66f337642672",
-        "archiveLines": [12067, 12090, 12292, 12305, 12317, 12330],
+        "archiveLines": [
+          12067,
+          12090,
+          12292,
+          12305,
+          12317,
+          12330
+        ],
         "scope": "Exact local PASS ledger rows and current named test-file byte equality only; no full current dependency/import/environment or concurrent final-sweep assurance.",
         "candidates": [
           {
@@ -1971,7 +2071,10 @@
             "currentTestFileMatchesCommit": true,
             "testSha256": "244cdfe71af2d3078e74d383b0406edadd58fb7af12bfb1b88aff5723cfe97a9",
             "relatedCommittedRepair": "WI-10006188",
-            "repairTestRunIds": [20790203, 20790204],
+            "repairTestRunIds": [
+              20790203,
+              20790204
+            ],
             "repairCommitSha": "1e663ddad7e090b035622afa52c46c75b56a6713",
             "limit": "WI-10006188 verifies fixture isolation for extra default/global claim assertions and explicitly makes no historical-timeout claim."
           },
@@ -1985,10 +2088,37 @@
             "currentTestFileMatchesCommit": true,
             "testSha256": "dd539c3725a4a0c6ad983a59fab0ca7f02e6fd0d8720bfc787a090619b70062e",
             "ownedSecondaryRepair": "WI-10007112",
-            "limit": "Current test blob af5def25f5facd239fcc91feead921bc9cf5492e equals run-start blob. Unguarded afterAll still calls uninitialized admin after failed setup; normal-path PASS does not exercise it."
+            "limit": "Before WI-10007112, test blob af5def25f5facd239fcc91feead921bc9cf5492e equaled run-start blob and unguarded afterAll called uninitialized admin after failed setup. This historical normal-path PASS does not exercise that failure; the later secondary repair is recorded separately below."
           }
         ],
-        "disposition": "No census state or population count changed. Historical mutex/setup root cause remains unproved; the measured secondary presence cleanup defect has a separate self-owned repair."
+        "disposition": "No census state or population count changed. Historical mutex/setup root cause remains unproved; the secondary presence cleanup defect has a causal focused repair with separate content settlement.",
+        "secondaryRepair": {
+          "item": "WI-10007112",
+          "children": [
+            "WI-10007115",
+            "WI-10007116"
+          ],
+          "admissionRef": "coord-send-5a38528f3edd19d65fcef5103967eb5d56e14838eb86cf8a69bcc0e333a603cf",
+          "status": "verified-focused-content-settlement-pending",
+          "rootCause": "Presence afterAll evaluated an uninitialized admin after beforeAll failed; that secondary exception also bypassed fixture disposal. The existing fixture now owns guarded cleanup with disposal in finally, including nested wakeability cleanup.",
+          "recurrenceGuard": "packages/operator-core/lib/_baseline-coord-fixture-cleanup.test.ts",
+          "localPassTestRunIds": [
+            20893347,
+            20893348,
+            20893356
+          ],
+          "mutationProbeTestRunId": 20893343,
+          "mutationMeaning": "Removing the failed-setup guard in a copy-out overlay caused the conventional regression to fail; baseline and unmutated copy passed and canonical source integrity was checked.",
+          "testedHead": "5363ccca831a67b0aea485f35f70410c2639ff18",
+          "worktreeDirty": true,
+          "sourceSha256": {
+            "packages/operator-core/lib/_baseline-coord-fixture.ts": "e331f7f5596594488fb2608153cb2c28656a3b8bc3e2e011e711cd83164ab731",
+            "packages/operator-core/lib/_baseline-coord-fixture-cleanup.test.ts": "fec117e4fd4653282230ddbbfb7953be3f1beb80cd41fe388bff6a9083d7634f",
+            "packages/operator-core/lib/agent-tools/coordination/presence.integration.test.ts": "28eff91d0f052d5e987f04682f89fafbdb507930917d0d8769eb1c855e5ab0a2",
+            "packages/operator-core/lib/goal-placement-turn-receipts.integration.test.ts": "33c5558c044dd13dcb483c098e64720f87ed9ecdcd1f8e640b94dcd2efba9831"
+          },
+          "scope": "Failed-setup teardown, transaction-stable GC floor regression and optional mock-argument guard only. Primary archived mutex cause, full D006 sweep, import/environment readiness and shipment remain unverified."
+        }
       }
     },
     {
@@ -2012,6 +2142,48 @@
       "status": "repaired-peer-focused",
       "item": "WI-10006187",
       "rootCause": "Stored normal committed closure: required1312 missing and inherited dark behavior precondition; realPG privacy/LWW/OFF guards preserved."
+    },
+    {
+      "class": "owner-loop-fixture",
+      "count": 1,
+      "status": "repaired-focused",
+      "item": "WI-10007121",
+      "owner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
+      "scope": "named-test-fixture-only",
+      "rootCause": "Fixture seeded simultaneous wildcard and prior-slug rows for one owner-loop role, forbidden by migration939. Independent cases now prove real GC cleanup at each valid historical location while retaining active-loop and workspace controls.",
+      "testRunIds": [
+        20893426,
+        20893437
+      ],
+      "next": "Automatic exact-content settlement; no unchanged completion replay or finalD006/readiness claim."
+    },
+    {
+      "class": "legacy-rubric-replay",
+      "count": 1,
+      "status": "repaired-focused",
+      "item": "WI-10007122",
+      "owner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
+      "scope": "named-test-fixture-only",
+      "rootCause": "Historical1004 replay updates status then builds an index in one batch against migrated1279 deferred status triggers. The fixture now replays under transaction-local immediate constraint checking; production migrations and deferred trigger stay intact, and retired duplicate preservation still passes.",
+      "testRunIds": [
+        20893427,
+        20893439
+      ],
+      "next": "Automatic exact-content settlement; no unchanged completion replay or finalD006/readiness claim."
+    },
+    {
+      "class": "goal-budget-fixture",
+      "count": 1,
+      "status": "repaired-focused",
+      "item": "WI-10007123",
+      "owner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
+      "scope": "named-test-fixture-only",
+      "rootCause": "Fresh isolated fixture had no priced goal-attributed usage, so the real budget resolver correctly refused unmeasured spend before launch. Fixture reuses the maintained interactive priced-sample pattern; a new empty-stream control still refuses with no launch and no sample.",
+      "testRunIds": [
+        20893438,
+        20893449
+      ],
+      "next": "Automatic exact-content settlement; no unchanged completion replay or finalD006/readiness claim."
     }
   ],
   "prerequisites": [
