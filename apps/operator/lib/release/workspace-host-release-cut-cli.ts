@@ -22,7 +22,7 @@
  *   manifest  `runPublicationManifestCli`, exactly once per operation: a regenerated manifest
  *             carries a new timestamp, which the publisher reads as a changed stage input.
  *   publish   The journaled publisher, handed the SAME task + operation.
- *   prune     After a real (not --publish-plan-only) publish, the rebuildable intermediates — the pinned
+ *   prune     After a verified build-only cut or real (not --publish-plan-only) publish, the rebuildable intermediates — the pinned
  *             source worktree, the sidecar tree and the extracted audit copy, ~89% of a ~18 GB work
  *             dir — are removed (WI-10003700). Everything resume, R-4 and audit read stays:
  *             publication/, build-result.json, release-cut.json, logs/, sidecar-trust/, the tauri
@@ -852,7 +852,7 @@ export interface WorkspaceHostReleaseCutOptions {
   publish: boolean;
   /** Passed through to the publisher (`--base`, `--token`, and publisher `--plan-only`). */
   publisherArgs: readonly string[];
-  /** Keep source/, sidecar/ and extracted/ after a real publish (default: prune them). */
+  /** Keep source/, sidecar/ and extracted/ after a verified cut (default: prune them). */
   keepIntermediates?: boolean;
 }
 
@@ -1105,14 +1105,14 @@ export async function runWorkspaceHostReleaseCut(
       operationId: state.operationId,
       args: options.publisherArgs,
     });
-    // Only a REAL publish frees the intermediates: a --plan-only run uploaded nothing, so the cut
-    // may still need them. Re-measure the kept bytes first, so nothing is deleted beside a
-    // publication directory that no longer matches the committed build.
-    if (!options.keepIntermediates && !options.publisherArgs.includes('--plan-only')) {
-      await deps.verifyBuild(result, options.workDir);
-      pruned = await deps.pruneIntermediates({ repoRoot: options.repoRoot, workDir: options.workDir });
-      deps.log(pruned.length > 0 ? `pruned intermediates: ${pruned.join(', ')}` : 'no intermediates left to prune');
-    }
+  }
+  // Build-only cuts already hold the signed bundle and audit evidence in publication/;
+  // bootc baking and later publication read those retained bytes, not source/ or sidecar/.
+  // Keep an explicit publisher preview intact, and verify the retained build before cleanup.
+  if (!options.keepIntermediates && (!options.publish || !options.publisherArgs.includes('--plan-only'))) {
+    await deps.verifyBuild(result, options.workDir);
+    pruned = await deps.pruneIntermediates({ repoRoot: options.repoRoot, workDir: options.workDir });
+    deps.log(pruned.length > 0 ? `pruned intermediates: ${pruned.join(', ')}` : 'no intermediates left to prune');
   }
   return {
     taskId: state.taskId,

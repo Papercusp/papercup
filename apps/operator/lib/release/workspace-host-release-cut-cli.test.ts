@@ -354,8 +354,8 @@ describe('post-publish intermediate prune (WI-10003700)', () => {
 
   it.each([
     ['a plan-only publish', () => options()],
-    ['an unpublished cut', () => ({ ...realPublish(), publish: false })],
     ['--keep-intermediates', () => ({ ...realPublish(), keepIntermediates: true })],
+    ['a retained build-only cut', () => ({ ...realPublish(), publish: false, keepIntermediates: true })],
   ])('keeps everything for %s', async (_label, opts) => {
     const h = harness();
     const result = await runWorkspaceHostReleaseCut(opts(), h.deps);
@@ -367,6 +367,25 @@ describe('post-publish intermediate prune (WI-10003700)', () => {
     const base = ['--source-sha', SHA, '--version', VERSION, '--work-dir', '/tmp/x'];
     expect(parseWorkspaceHostReleaseCutArgs(base, {}).keepIntermediates).toBe(false);
     expect(parseWorkspaceHostReleaseCutArgs([...base, '--keep-intermediates'], {}).keepIntermediates).toBe(true);
+  });
+
+  it('prunes a verified build-only cut and resumes from its retained publication', async () => {
+    const h = harness();
+    const buildOnly = { ...realPublish(), publish: false };
+    const first = await runWorkspaceHostReleaseCut(buildOnly, h.deps);
+    expect(first.published).toBe(false);
+    expect(first.pruned).toEqual([join(workDir, 'source'), join(workDir, 'sidecar')]);
+    expect(h.calls.publishes).toHaveLength(0);
+    const again = await runWorkspaceHostReleaseCut(buildOnly, h.deps);
+    expect(again.build).toBe('reused');
+    expect(h.calls.prunes).toHaveLength(2);
+  });
+
+  it('keeps build-only intermediates when the retained publication fails verification', async () => {
+    const h = harness({ verifyBuild: async () => { throw new Error('bundle digest mismatch'); } });
+    await expect(runWorkspaceHostReleaseCut({ ...realPublish(), publish: false }, h.deps))
+      .rejects.toThrow('bundle digest mismatch');
+    expect(h.calls.prunes).toEqual([]);
   });
 
   it('deletes nothing when the publication directory no longer matches the committed build', async () => {
