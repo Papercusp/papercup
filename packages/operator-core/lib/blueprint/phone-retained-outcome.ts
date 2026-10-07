@@ -58,6 +58,7 @@ export function phoneRetainedOutcomeReader(host: PhoneRetainedOutcomeHost,
         source.callId !== binding.callId || source.callKey !== binding.callKey ||
         source.voiceRuntime.runId !== binding.runId || source.voiceRuntime.jobId !== binding.jobId ||
         configurationSha256 !== binding.configurationSha256 ||
+        source.sessionStartedAt !== binding.registeredAt ||
         !Number.isFinite(Date.parse(source.sessionStartedAt)) ||
         !Number.isFinite(Date.parse(source.sessionEndedAt)) ||
         Date.parse(source.sessionEndedAt) < Date.parse(source.sessionStartedAt)) {

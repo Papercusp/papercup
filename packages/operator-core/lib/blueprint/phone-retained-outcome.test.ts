@@ -34,6 +34,11 @@ describe('Phone retained completion read', () => {
     f.exported.content.segments.push({ seq: 3, speaker: 'agent', text: 'late' });
     expect((await f.read()).retainedSegmentCount).toBe(2);
   });
+  it('rejects a replaced session start even when call, runtime and transcript match', async () => {
+    const f = fixture();
+    f.exported.reviewSource.sessionStartedAt = '2026-10-07T13:00:30Z';
+    await expect(f.read()).rejects.toThrow('runtime_mismatch');
+  });
   it.each(['runId', 'ownerId', 'callKey', 'workItemId'] as const)('rejects rebound registration %s before export', async (field) => {
     const f = fixture(); f.registration.binding[field] = 'foreign';
     await expect(f.read()).rejects.toThrow('registration_changed');
