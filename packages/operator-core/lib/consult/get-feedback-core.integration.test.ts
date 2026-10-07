@@ -2011,6 +2011,39 @@ describe('getFeedbackCore — archive-first retrieval (P-006)', () => {
     expect(reached).toHaveLength(1);
   });
 
+  it('does not reuse a high-similarity archive across different untyped dated rubric subjects', async () => {
+    const ws = 'ws-arch-untyped-dated-rubric-subject-fence';
+    const archivedQuestion =
+      'Vet acceptance-work-on-everything-stewardship-remediation-2026-08-30 rev2/hash7603e472917dfb0b90c2eb79d96c09a5a88e57c67ef2293611d1159ebc3bd101 against meta-acceptance-rubric: do its six legacy-backfilled outcome bars preserve existing R001..007/Acceptance1..6 and D011/12/13?';
+    const currentQuestion =
+      'Vet current acceptance-goal-brief-to-claimed-plan-work-2026-09-23 rev7 after additive R2 D032/D035/D039 coverage amendment. Does it now cover those known inverse semantic gaps without weakening organic live pickup or D042/D043? Read immutable6/7 and exact bound assertions, not title grep. Identify remaining meta-acceptance-rubric findings with rerunnable evidence; do not infer shipment from construction tests.';
+    await seedClosedConsult({
+      ws,
+      conv: 'arch-wrong-untyped-rubric-subject',
+      vec: vecAt(0),
+      question: archivedQuestion,
+      outcome: { answer: 'RATIFIED a different rubric revision', confidence: 'high' },
+    });
+    const { deps, reached } = makeDeps(
+      routeOf([cand('cand-live')], { queryVec: qv }),
+    );
+    const r = asOk(
+      await getFeedbackCore(
+        {
+          ...baseReq,
+          workspaceId: ws,
+          question: currentQuestion,
+          policy: 'rubric-vetting',
+        },
+        deps,
+      ),
+    );
+
+    expect(r.verdict).toBe('routed');
+    expect(r.archive).toBeUndefined();
+    expect(reached).toHaveLength(1);
+  });
+
   it('reuses a high-similarity archive answer when all named subjects match exactly', async () => {
     const ws = 'ws-arch-subject-match';
     await seedClosedConsult({
@@ -2119,11 +2152,12 @@ describe('readVettingConsultCritique — the vetting gate reads CRITIQUE, not ex
     state: string,
     posts: [author: string | null, kind: string][],
     question = 'critique this rubric',
+    routing: unknown = {},
   ) {
     await rootSql`
       INSERT INTO harness_shared.consult_state
-        (workspace_id, conversation_id, requester_id, state, question)
-      VALUES (${WSV}, ${conv}, ${REQUESTER}, ${state}, ${question})
+        (workspace_id, conversation_id, requester_id, state, question, routing)
+      VALUES (${WSV}, ${conv}, ${REQUESTER}, ${state}, ${question}, ${rootSql.json(routing as never)})
     `;
     let postId = Math.floor(Math.random() * 1_000_000) * 100;
     for (const [author, kind] of posts) {
@@ -2210,6 +2244,80 @@ describe('readVettingConsultCritique — the vetting gate reads CRITIQUE, not ex
     const other = await readVettingConsultCritique(rootSql, WSV, 'conv-emitter-posts', REQUESTER);
     expect(other.critiquePosts).toBe(1);
     expect(other.critics).toEqual(['su-emitter']);
+  });
+
+  it('counts the stamped rubric-vetting answerer only when that identity authored a non-decline critique', async () => {
+    const routing = {
+      policy: 'rubric-vetting',
+      selection: {
+        selected: [{ ownerId: 'su-source-reviewer', answeringOwnerId: 'su-routed-reviewer' }],
+      },
+    };
+    await seedConsult(
+      'conv-routed-vetter',
+      'active',
+      [
+        ['su-routed-reviewer', 'answer'],
+        ['su-routed-reviewer', 'new_fact'],
+      ],
+      'Critique acceptance-rubric-alpha against the meta rubric',
+      routing,
+    );
+    const routed = await readVettingConsultCritique(rootSql, WSV, 'conv-routed-vetter', 'su-routed-reviewer');
+    expect(routed).toMatchObject({
+      critiquePosts: 2,
+      critics: ['su-routed-reviewer'],
+      routedVettingCritic: 'su-routed-reviewer',
+    });
+
+    await seedConsult(
+      'conv-unselected-vetter',
+      'active',
+      [['su-unselected-reviewer', 'answer']],
+      'Critique acceptance-rubric-alpha against the meta rubric',
+      routing,
+    );
+    const unselected = await readVettingConsultCritique(
+      rootSql,
+      WSV,
+      'conv-unselected-vetter',
+      'su-unselected-reviewer',
+    );
+    expect(unselected.critiquePosts).toBe(0);
+    expect(unselected.critics).toEqual([]);
+    expect(unselected).not.toHaveProperty('routedVettingCritic');
+
+    await seedConsult(
+      'conv-routed-vetter-decline',
+      'active',
+      [['su-routed-reviewer', 'decline']],
+      'Critique acceptance-rubric-alpha against the meta rubric',
+      routing,
+    );
+    const declined = await readVettingConsultCritique(
+      rootSql,
+      WSV,
+      'conv-routed-vetter-decline',
+      'su-routed-reviewer',
+    );
+    expect(declined).toMatchObject({ critiquePosts: 0, declinePosts: 1, critics: [] });
+    expect(declined).not.toHaveProperty('routedVettingCritic');
+
+    await seedConsult(
+      'conv-other-policy-vetter',
+      'active',
+      [['su-routed-reviewer', 'answer']],
+      'Critique acceptance-rubric-alpha against the meta rubric',
+      { ...routing, policy: 'consult-default' },
+    );
+    const otherPolicy = await readVettingConsultCritique(
+      rootSql,
+      WSV,
+      'conv-other-policy-vetter',
+      'su-routed-reviewer',
+    );
+    expect(otherPolicy.critiquePosts).toBe(0);
+    expect(otherPolicy).not.toHaveProperty('routedVettingCritic');
   });
 
   it('a DECLINE is not critique — counted separately so the refusal can say "re-route", not "wait"', async () => {
