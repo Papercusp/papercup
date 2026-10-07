@@ -11,9 +11,16 @@ if (resume?.checkpoint?.status !== "available" || resume?.nextAction?.status !==
   throw new Error("Current checkpoint boundary unavailable; no log scan performed");
 }
 const next = String(resume.nextAction.text || "");
-const boundaries = [...new Set([...next.matchAll(/\b(?:from|since|start(?:ing)?(?:\s+at)?)\s+(@\d+(?:\.\d+)?)/gi)].map(match => match[1]))];
-if (boundaries.length !== 1) throw new Error("Checkpoint next action needs exactly one explicit from/since/start @epoch boundary");
-const since = boundaries[0];
+const currentMarkers = [...next.matchAll(/\bNext\s+scan\s+starts\s+at\s+(@\d+(?:\.\d+)?)/gi)].map(match => match[1]);
+if (currentMarkers.length > 1) throw new Error("Checkpoint next action needs exactly one current next-scan marker");
+let since;
+if (currentMarkers.length === 1) {
+  since = currentMarkers[0];
+} else {
+  const boundaries = [...new Set([...next.matchAll(/\b(?:from|since|start(?:ing)?(?:\s+at)?)\s+(@\d+(?:\.\d+)?)/gi)].map(match => match[1]))];
+  if (boundaries.length !== 1) throw new Error("Checkpoint next action needs exactly one explicit from/since/start @epoch boundary");
+  since = boundaries[0];
+}
 if (inputs.since !== undefined && inputs.since !== since) throw new Error("Requested since does not match the current checkpoint boundary");
 const nowSeconds = Math.floor(Date.now() / 1000);
 const until = inputs.until === undefined ? "@" + nowSeconds : inputs.until;
