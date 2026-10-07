@@ -152,6 +152,18 @@
       "bar": "R-19",
       "desktopSessionIdBefore": "0eae995a-5ddb-4b08-a3a0-4742bd9da756",
       "desktopSessionIdAfter": "0eae995a-5ddb-4b08-a3a0-4742bd9da756",
+      "desktopSessionIdAfterProvenance": {
+        "source": "starting-id-variable",
+        "independentlyMeasured": false,
+        "note": "desktopSessionIdAfter:id reused the initial id; the post-reconnect roster and reopen-by-id ready response are the independent continuity observations."
+      },
+      "desktopSessionIdAfterObserved": "0eae995a-5ddb-4b08-a3a0-4742bd9da756",
+      "desktopSessionIdAfterObservedProvenance": {
+        "source": "owner-session desktop.roster.result",
+        "requestId": "pcd-roster-owner",
+        "observedAt": "2026-10-06T21:09:41.338Z",
+        "independentlyMeasured": true
+      },
       "rosterStillLists": true,
       "xvncPidBefore": "9880",
       "xvncPidAfter": "9880",
