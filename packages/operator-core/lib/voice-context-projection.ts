@@ -163,6 +163,7 @@ function metadataText(metadata: Record<string, unknown>, key: string): string | 
 
 export function personalResultCapability(result: Pick<PersonalSearchResult, 'source'>): VoiceContextDataCapability {
   switch (result.source.trim().toLowerCase()) {
+    case 'mail':
     case 'gmail':
       return 'email';
     case 'calendar':
@@ -201,7 +202,7 @@ function ownerVaultScopes(capabilities: VoiceCapabilityEnvelope): string[] {
   // still mapped and filtered against the capability set below.
   if (reads.has('personal-memory')) return [];
   const scopes: string[] = [];
-  if (reads.has('email')) scopes.push(personalScope('gmail'));
+  if (reads.has('email')) scopes.push(personalScope('mail'));
   if (reads.has('calendar')) scopes.push(personalScope('calendar'));
   return scopes;
 }
