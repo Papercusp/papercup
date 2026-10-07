@@ -2167,10 +2167,14 @@ dependency_generation_copy_independent() {
 # last report: a copy that stops writing stays silent, so it still reads as wedged.
 dependency_generation_copy_with_progress() {
   local src="$1" dest="$2" reflink="${3:-}" pid rc=0 interval started now next
-  local written='' reported='' nap=0.05
+  local written='' reported='' read_bytes='' read_reported=0 nap=0.05
   interval="${DEPENDENCY_GENERATION_COPY_PROGRESS_SEC:-60}"
   case "$interval" in ''|*[!0-9]*|0) interval=60 ;; esac
-  if [ -n "$reflink" ]; then
+  if [ "$reflink" = --rsync-checksum ]; then
+    # Pinned independent snapshots keep their staging tree across interruption.
+    # Checksums, rather than size/mtime, authorize reuse of a completed file.
+    rsync -aH --checksum --delete --partial --stats "$src/" "$dest/" &
+  elif [ -n "$reflink" ]; then
     cp -a "$reflink" "$src" "$dest" 2>/dev/null &
   else
     cp -a "$src" "$dest" &
@@ -2190,10 +2194,20 @@ dependency_generation_copy_with_progress() {
     written="$(awk '/^(wchar|write_bytes):/ { if ($2 > m) m = $2 } END { if (NR) print m + 0 }' \
       "/proc/$pid/io" 2>/dev/null || true)"
     case "$written" in ''|*[!0-9]*) continue ;; esac
-    if [ "$written" -gt "${reported:-0}" ]; then
+    read_bytes=0
+    if [ "$reflink" = --rsync-checksum ]; then
+      read_bytes="$(awk '/^(rchar|read_bytes):/ { if ($2 > m) m = $2 } END { if (NR) print m + 0 }' \
+        "/proc/$pid/io" 2>/dev/null || true)"
+      case "$read_bytes" in ''|*[!0-9]*) read_bytes=0 ;; esac
+    fi
+    if [ "$written" -gt "${reported:-0}" ] || [ "$read_bytes" -gt "$read_reported" ]; then
       reported="$written"
+      read_reported="$read_bytes"
       dependency_generation_log \
         "copy progress: ${dest##*/tree/} written=$((written / 1048576))MiB elapsed=$((now - started))s"
+      if [ "$reflink" = --rsync-checksum ]; then
+        dependency_generation_log "checksum read progress: ${dest##*/tree/} read=$((read_bytes / 1048576))MiB"
+      fi
     fi
   done
   wait "$pid" || rc=$?
