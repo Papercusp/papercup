@@ -1049,10 +1049,18 @@ describe('scheduler:get_next bounds the claim path against a silent hang (EI-181
   it('distinguishes a candidate stall from setup and freezes the phase before late progress', async () => {
     vi.useFakeTimers();
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    let reportStep: ((step: string) => void) | undefined;
-    getNextM.mockImplementation((args: { onClaimStep?: (step: string) => void }) => {
+    let reportStep: ((
+      step: string,
+      event?: { phase: 'start'; startedAtMs: number } | { phase: 'end'; elapsedMs: number },
+    ) => void) | undefined;
+    getNextM.mockImplementation((args: {
+      onClaimStep?: (
+        step: string,
+        event?: { phase: 'start'; startedAtMs: number } | { phase: 'end'; elapsedMs: number },
+      ) => void;
+    }) => {
       reportStep = args.onClaimStep;
-      reportStep?.('candidate-resolution');
+      reportStep?.('candidate-priority-issue-preclaim', { phase: 'start', startedAtMs: performance.now() });
       return new Promise(() => {});
     });
     readClaimConcurrencyM.mockImplementation(async () => {
@@ -1065,13 +1073,17 @@ describe('scheduler:get_next bounds the claim path against a silent hang (EI-181
     const out = (await pending) as { content: Array<{ text: string }> };
     expect(JSON.parse(out.content[0]!.text)).toMatchObject({
       error: 'timeout',
-      lastClaimStep: 'candidate-resolution',
+      lastClaimStep: 'candidate-priority-issue-preclaim',
       possiblyClaimed: true,
     });
+    const timeoutResult = JSON.parse(out.content[0]!.text);
+    expect(timeoutResult.lastClaimStepElapsedMs).toEqual(expect.any(Number));
+    expect(timeoutResult.lastClaimStepElapsedMs).toBeGreaterThanOrEqual(GET_NEXT_BUDGET_MS);
     expect(metadata).toHaveBeenCalledWith({
       schedulerTimeout: {
         phase: 'claim',
-        lastClaimStep: 'candidate-resolution',
+        lastClaimStep: 'candidate-priority-issue-preclaim',
+        lastClaimStepElapsedMs: timeoutResult.lastClaimStepElapsedMs,
       },
     });
     warnSpy.mockRestore();

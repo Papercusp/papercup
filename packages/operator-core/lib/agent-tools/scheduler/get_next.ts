@@ -231,6 +231,7 @@ export function getNextTimeoutResult(
   budgetMs = GET_NEXT_BUDGET_MS,
   reconciliation: ClaimTimeoutReconciliation = { status: 'unknown', heldIds: [] },
   lastClaimStep?: string,
+  lastClaimStepElapsedMs?: number,
 ): {
   ok: false;
   error: 'timeout';
@@ -240,6 +241,7 @@ export function getNextTimeoutResult(
   heldIds: string[];
   claimReconciliation: ClaimTimeoutReconciliationStatus;
   lastClaimStep?: string;
+  lastClaimStepElapsedMs?: number;
   message: string;
 } {
   const reconciliationNote =
@@ -258,9 +260,13 @@ export function getNextTimeoutResult(
     heldIds: reconciliation.heldIds,
     claimReconciliation: reconciliation.status,
     ...(lastClaimStep ? { lastClaimStep } : {}),
+    ...(lastClaimStepElapsedMs !== undefined ? { lastClaimStepElapsedMs } : {}),
     message:
       `scheduler:get_next exceeded its ${budgetMs}ms internal budget` +
-      (lastClaimStep ? ` at claim step "${lastClaimStep}"` : '') +
+      (lastClaimStep
+        ? ` at claim step "${lastClaimStep}"` +
+          (lastClaimStepElapsedMs !== undefined ? ` after ${lastClaimStepElapsedMs.toFixed(1)}ms in that phase` : '')
+        : '') +
       ` and returned a fast error instead of hanging until the MCP client's 300s ` +
       `idle-timeout abort (EI-18167154191955470). The claim promise may still commit after this ` +
       `response, so possiblyClaimed is true. ${reconciliationNote} Reconcile the held ids before ` +
@@ -1766,8 +1772,19 @@ export default defineTool({
     };
     const claimBudgetMs = remainingBudgetMs();
     let lastClaimStep = 'claim-start';
-    const onClaimStep = (step: string): void => {
+    let lastClaimStepStartedAtMs = performance.now();
+    let lastClaimStepElapsedMs: number | undefined;
+    const onClaimStep = (
+      step: string,
+      event?: { phase: 'start'; startedAtMs: number } | { phase: 'end'; elapsedMs: number },
+    ): void => {
+      if (event?.phase === 'end') {
+        if (step === lastClaimStep) lastClaimStepElapsedMs = event.elapsedMs;
+        return;
+      }
       lastClaimStep = step;
+      lastClaimStepStartedAtMs = event?.startedAtMs ?? performance.now();
+      lastClaimStepElapsedMs = undefined;
     };
     const claim = await withBoundedTimeout(
       (signal) =>
@@ -1807,7 +1824,8 @@ export default defineTool({
     // not become a generic `handler_error` that strands the fleet pull loop (EI-20224136729541724).
     if (claim.degraded && claim.reason === 'error') {
       if (claim.error instanceof OrgTxnTimeoutError) {
-        ctx.metadata?.({ schedulerTimeout: { phase: 'claim', lastClaimStep } });
+        const elapsedMs = lastClaimStepElapsedMs ?? Math.max(0, performance.now() - lastClaimStepStartedAtMs);
+        ctx.metadata?.({ schedulerTimeout: { phase: 'claim', lastClaimStep, lastClaimStepElapsedMs: elapsedMs } });
         return {
           content: [
             {
@@ -1815,6 +1833,7 @@ export default defineTool({
               text: JSON.stringify({
                 ...getNextContentionResult(claim.error, lastClaimStep),
                 lastClaimStep,
+                lastClaimStepElapsedMs: elapsedMs,
               }),
             },
           ],
@@ -1827,7 +1846,15 @@ export default defineTool({
       // Snapshot before reconciliation: its reads are a separate phase and an abandoned
       // resolver may make late progress while they run. Preserve the timeout's own evidence.
       const timedOutClaimStep = lastClaimStep;
-      ctx.metadata?.({ schedulerTimeout: { phase: 'claim', lastClaimStep: timedOutClaimStep } });
+      const timedOutClaimStepElapsedMs =
+        lastClaimStepElapsedMs ?? Math.max(0, performance.now() - lastClaimStepStartedAtMs);
+      ctx.metadata?.({
+        schedulerTimeout: {
+          phase: 'claim',
+          lastClaimStep: timedOutClaimStep,
+          lastClaimStepElapsedMs: timedOutClaimStepElapsedMs,
+        },
+      });
       // EI-22737570207805341: withBoundedTimeout is a Promise.race and does not cancel the
       // abandoned claim. The resolver can therefore commit after this watchdog fires. Read the
       // caller's held rows before responding, but preserve UNKNOWN when that read fails or also
@@ -1855,7 +1882,9 @@ export default defineTool({
         content: [
           {
             type: 'text' as const,
-            text: JSON.stringify(getNextTimeoutResult(claimBudgetMs, timeoutReconciliation, timedOutClaimStep)),
+            text: JSON.stringify(
+              getNextTimeoutResult(claimBudgetMs, timeoutReconciliation, timedOutClaimStep, timedOutClaimStepElapsedMs),
+            ),
           },
         ],
       };

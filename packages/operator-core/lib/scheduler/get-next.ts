@@ -133,6 +133,10 @@ export interface BeeContext {
   currentPlan?: string;
 }
 
+export type ResolutionStepEvent =
+  | { phase: 'start'; startedAtMs: number }
+  | { phase: 'end'; elapsedMs: number };
+
 export interface GetNextOpts {
   harness: string;
   /**
@@ -174,8 +178,8 @@ export interface GetNextOpts {
   rigAvailable?: boolean;
   /** Abort the active claim transaction when the scheduler caller's bounded deadline fires. */
   signal?: AbortSignal;
-  /** Diagnostic only: the last entered candidate subphase survives a caller timeout. */
-  onResolutionStep?: (step: string) => void;
+  /** Diagnostic only: candidate phase entry and elapsed duration survive a caller timeout. */
+  onResolutionStep?: (step: string, event: ResolutionStepEvent) => void;
 }
 
 export interface GetNextResult {
@@ -2823,9 +2827,21 @@ export async function getNextWorkItem(
   // getNextForBee -> here -> tier 3's claimNextIssueWorkItem), several awaits deep. Falls back
   // to the legacy activeWorkspaceId() when omitted (unchanged behavior for other callers).
   const ws = opts.workspaceId ?? activeWorkspaceId();
-  const resolutionStep = (step: string): void => {
+  const resolutionStep = (step: string): number => {
+    const startedAtMs = performance.now();
     try {
-      opts.onResolutionStep?.(step);
+      opts.onResolutionStep?.(step, { phase: 'start', startedAtMs });
+    } catch {
+      // Observability must not change claim admission or strand a committed row.
+    }
+    return startedAtMs;
+  };
+  const resolutionStepFinished = (step: string, startedAtMs: number): void => {
+    try {
+      opts.onResolutionStep?.(step, {
+        phase: 'end',
+        elapsedMs: Math.max(0, performance.now() - startedAtMs),
+      });
     } catch {
       // Observability must not change claim admission or strand a committed row.
     }
@@ -3029,8 +3045,12 @@ export async function getNextWorkItem(
   // feature tiers. Equal/worse priorities return null here and preserve feature-first.
   let claimed: WorkItem | null = null;
   if (hasPriorityRank && (await issueClaimsEnabled())) {
-    resolutionStep('candidate-priority-issue-preclaim');
-    claimed = await claimIssue(true);
+    const startedAtMs = resolutionStep('candidate-priority-issue-preclaim');
+    try {
+      claimed = await claimIssue(true);
+    } finally {
+      resolutionStepFinished('candidate-priority-issue-preclaim', startedAtMs);
+    }
   }
 
   // Tier 1: the spec's view exactly as authored.

@@ -785,6 +785,7 @@ describe('get_next — fallback ladder (WI-1407): widenPastKind (tier 2) + issue
     setFlagOverridesForTest({ [FLAGS.SCHEDULER_ISSUES_CLAIMABLE]: true });
     await seedFeature('F-cross-family-feature', { featureOrder: 10, createdTs: 10 });
     await seedIssue('EI-cross-family-better', { featureOrder: 1, createdTs: 100 });
+    const phaseDurations: number[] = [];
     const s = spec({
       specVersion: '1.0',
       specId: 'cross-family-priority',
@@ -793,7 +794,20 @@ describe('get_next — fallback ladder (WI-1407): widenPastKind (tier 2) + issue
       rank: { mode: 'lexicographic', terms: [{ expr: 'priority', dir: 'desc' }] },
     });
 
-    expect((await getNextWorkItem(s, BEE, { harness: H }))?.workItem.id).toBe('EI-cross-family-better');
+    expect((await getNextWorkItem(s, BEE, {
+      harness: H,
+      onResolutionStep: (step, event) => {
+        if (step === 'candidate-priority-issue-preclaim' && event.phase === 'end') {
+          phaseDurations.push(event.elapsedMs);
+        }
+      },
+    }))?.workItem.id).toBe('EI-cross-family-better');
+    expect(phaseDurations).toHaveLength(1);
+    expect(phaseDurations[0]).toEqual(expect.any(Number));
+    expect(phaseDurations[0]).toBeGreaterThanOrEqual(0);
+    if (process.env.SCHEDULER_PHASE_TIMING === '1') {
+      console.log(`SCHEDULER_PHASE_TIMING candidate-priority-issue-preclaim=${phaseDurations[0]!.toFixed(2)}ms`);
+    }
   });
 
   it.each([

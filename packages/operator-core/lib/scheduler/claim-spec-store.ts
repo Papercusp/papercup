@@ -16,7 +16,7 @@ import { DbCallDeadlineError, getOrgPg, poolIdleTimeoutSec } from '@papercusp/db
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { DEFAULT_CLAIM_SPEC, validateClaimSpec, isIdOnlySelector, type ClaimSpec } from './claim-spec';
 import { buildP2pLaneFence } from './p2p-lane-fence';
-import { getNextWorkItem, type GetNextResult } from './get-next';
+import { getNextWorkItem, type GetNextResult, type ResolutionStepEvent } from './get-next';
 import { releaseWorkItem, type OrgSql, type WorkItem } from '../work-items';
 import { planItemLaneBlockReason, type PlanItemLaneBlock } from './plan-item-lane-guard';
 import { acceptanceReadinessHold } from './acceptance-readiness-hold';
@@ -617,8 +617,8 @@ export async function getNextForBee(args: {
    * path, so it is called defensively.
    */
   onPlanLaneBlocked?: (block: PlanItemLaneBlock & { workItemId: string }) => void;
-  /** Exact last entered claim phase, for timeout attribution. Observability only. */
-  onClaimStep?: (step: string) => void;
+  /** Claim phase entry and duration for timeout attribution. Observability only. */
+  onClaimStep?: (step: string, event?: ResolutionStepEvent) => void;
 }): Promise<
   | (GetNextResult & {
       specSource: ClaimSpecRecord['source'];
@@ -627,9 +627,9 @@ export async function getNextForBee(args: {
     })
   | null
 > {
-  const claimStep = (step: string): void => {
+  const claimStep = (step: string, event?: ResolutionStepEvent): void => {
     try {
-      args.onClaimStep?.(step);
+      args.onClaimStep?.(step, event);
     } catch {
       // A diagnostic observer must not affect admission or an already committed claim.
     }
