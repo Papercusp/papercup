@@ -49,9 +49,15 @@ before authorizing changes. See [Workspaces and agents](/docs/workspaces-and-age
 
 ## 3. Start with a small task
 
-Open the portal's agent chat/session surface for the intended workspace. Give
-the agent a concrete task, enough context to find the project, and an
-observable result. For example:
+Use **Ask Papercup…** in the portal's assistant conversation. Name the intended
+connected workspace and project, and ask Papercup to confirm the target before
+editing. Read the chat's access notice: actions in this public conversation
+can run without another confirmation.
+
+Papercup can answer or hand off implementation. Follow the returned work-item
+or session reference to review the implementing agent's plan and result. A
+handoff alone does not mean the work is finished. Give a concrete task, enough
+context to find the project, and an observable result. For example:
 
 > In the selected project, inspect the sign-in screen and propose a clearer
 > error message. Show me the plan before editing. Keep the existing
@@ -69,8 +75,9 @@ credential or connection setup when a task needs access to another service.
 A plan should say what will change, what will not change, which work depends on
 which, and what evidence will demonstrate success.
 
-An agent may ask for your approval and execution route before substantive work.
-Approve only the intended scope. If you explicitly enable **AUTO**, the agent
+The implementing agent may ask for your approval and execution route before
+substantive work. Approve only the intended scope in that conversation. If you
+explicitly enable **AUTO**, the agent
 may proceed within that scope without asking at each step. AUTO is not a
 promise that every tool is available, and it does not remove permissions,
 security boundaries or verification requirements.
