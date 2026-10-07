@@ -103,6 +103,22 @@ describe('pruneOperatorE2eLogs', () => {
     expect(readdirSync(dir).sort()).toEqual(['2026-10-03T04-30-00-000Z-t.log', '2026-10-04T04-30-00-000Z-t.log', 'notes.txt']);
   });
 
+  it('does not prune manual verifier logs or let them consume routine retention slots', () => {
+    dir = mkdtempSync(path.join(tmpdir(), 'op-e2e-logs-'));
+    const manual = ['p004-admitted-20261007T0830Z.log', ...Array.from({ length: 20 }, (_, i) => `voicefix-${i}.log`)];
+    for (const name of manual) writeFileSync(path.join(dir, name), 'manual evidence');
+    for (const day of ['01', '02', '03']) writeFileSync(path.join(dir, `2026-10-${day}T04-30-00-000Z-t.log`), '');
+    // Calibration: the former all-*.log sorter selects the exact missing P-004
+    // filename for deletion, even though it belongs to a different live writer.
+    const legacyCandidates = readdirSync(dir).filter((name) => name.endsWith('.log')).sort();
+    expect(legacyCandidates.slice(0, legacyCandidates.length - 2)).toContain(manual[0]);
+    pruneOperatorE2eLogs(dir, 2);
+    for (const name of manual) expect(readFileSync(path.join(dir, name), 'utf8')).toBe('manual evidence');
+    expect(existsSync(path.join(dir, '2026-10-01T04-30-00-000Z-t.log'))).toBe(false);
+    expect(existsSync(path.join(dir, '2026-10-02T04-30-00-000Z-t.log'))).toBe(true);
+    expect(existsSync(path.join(dir, '2026-10-03T04-30-00-000Z-t.log'))).toBe(true);
+  });
+
   it('is fail-soft on a missing directory', () => {
     expect(() => pruneOperatorE2eLogs(path.join(tmpdir(), 'does-not-exist-op-e2e'), 2)).not.toThrow();
   });

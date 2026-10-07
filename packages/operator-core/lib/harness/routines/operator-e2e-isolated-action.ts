@@ -129,12 +129,13 @@ export function buildOperatorE2eInvocation(
   return { command: 'bash', args, cwd: root, env, runGroup };
 }
 
-/** Keep the newest `keep` `*.log` files in `dir`. File names start with an ISO stamp, so a
- *  lexical sort is chronological. Fail-soft: a prune error must never block a run. */
+/** Keep the newest `keep` routine-owned logs. The directory also contains manual
+ * verifier logs (including live writers); their names are not chronological and
+ * this routine must never delete them (WI-10007105). Fail-soft on prune errors. */
 export function pruneOperatorE2eLogs(dir: string, keep: number): void {
   try {
     const logs = readdirSync(dir)
-      .filter((name) => name.endsWith('.log'))
+      .filter((name) => /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z-[A-Za-z0-9_-]+\.log$/.test(name))
       .sort();
     for (const name of logs.slice(0, Math.max(0, logs.length - keep))) unlinkSync(path.join(dir, name));
   } catch {
