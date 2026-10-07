@@ -53,6 +53,21 @@ const scriptPath = resolve(here, '../../../scripts/lint-as-committed.mjs');
 const repoRoot = resolve(here, '../../..');
 
 const mod = await import(scriptPath);
+describe('committed workspace selection', () => {
+  const manifestPath = (workspace?: string) => mod.workspaceManifestPath(workspace);
+  it('selects a workspace manifest without changing root defaults', () => {
+    expect(manifestPath()).toBe('package.json');
+    expect(manifestPath('apps/sidecar')).toBe('apps/sidecar/package.json');
+    expect(mod.parseArgs(['test', '--any', '--workspace=apps/sidecar'])).toMatchObject({
+      scripts: ['test'], any: true, workspace: 'apps/sidecar', unknown: [],
+    });
+    expect(mod.parseArgs(['lint:probe'])).not.toHaveProperty('workspace');
+  });
+  it.each(['', '../sidecar', '/tmp/sidecar', 'apps/../sidecar', 'apps//sidecar', 'C:/sidecar'])
+    ('refuses a selector outside the pinned directory contract: %s', (workspace) => {
+      expect(() => manifestPath(workspace)).toThrow('repository-relative directory');
+    });
+});
 const {
   parseArgs,
   detectorPathsFromCommand,
@@ -1128,6 +1143,31 @@ console.log('CLONE_PREREQUISITES_OK');
       expect(readFileSync(join(f.root, 'libs/runtime/dist/index.cjs'), 'utf8')).toContain('shared-stale-dist');
     } finally { rmSync(f.root, { recursive: true, force: true }); }
   }, 40_000);
+
+  it('runs the pinned workspace script and refuses an absent workspace-relative operand', () => {
+    const f = fixture('node build.cjs');
+    try {
+      snapshot(f.root, {
+        'package.json': JSON.stringify({ private: true, workspaces: ['apps/*'], scripts: {} }),
+        'apps/sidecar/package.json': JSON.stringify({ name: '@fixture/sidecar', private: true,
+          scripts: { 'lint:probe': 'node probe.cjs' } }),
+        'apps/sidecar/probe.cjs': 'console.log("PINNED_WORKSPACE_OK");\n',
+      }, gitFixture(f.root, ['rev-parse', 'HEAD']));
+      writeFileSync(join(f.root, 'apps/sidecar/probe.cjs'), 'throw new Error("dirty workspace must not run");\n');
+      const invoke = (operand: string) => spawnSync(process.execPath,
+        [scriptPath, 'lint:probe', '--workspace=apps/sidecar', '--', operand],
+        { cwd: f.root, encoding: 'utf8', timeout: 30_000 });
+      const pass = invoke('probe.cjs');
+      expect(pass.status, pass.stdout + pass.stderr).toBe(0);
+      expect(pass.stdout).toContain('PINNED_WORKSPACE_OK');
+      const missing = invoke('absent.cjs');
+      expect(missing.status).not.toBe(0);
+      expect(missing.stdout).toContain('apps/sidecar/absent.cjs');
+      expect(missing.stdout).not.toContain('PINNED_WORKSPACE_OK');
+    } finally {
+      rmSync(f.root, { recursive: true, force: true });
+    }
+  });
 
   it('does not fabricate main when the source repository has no main branch', () => {
     const f = fixture('node build.cjs', false);
