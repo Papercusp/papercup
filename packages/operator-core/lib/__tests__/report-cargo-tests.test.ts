@@ -41,6 +41,7 @@ import {
   formatCargoResultLine,
   diskProbePathFor,
   parseCargoTestResultLines,
+  parseCargoMeasuredTestResults,
   pruneStaleBuildScriptOutputs,
   reclaimInactiveCargoArtifacts,
   resolveCargoBin,
@@ -66,12 +67,136 @@ const AFFECTED_TESTS_SOURCE = readFileSync(resolve(TEST_DIR, '../../../../script
 const VERIFY_SOURCE = readFileSync(resolve(TEST_DIR, '../../../../scripts/verify-tauri-headless.sh'), 'utf8');
 const RIG_SOURCE = readFileSync(resolve(TEST_DIR, '../../../../papercusp-desktop/bin/lib/deb-hetzner-rig.sh'), 'utf8');
 
+describe('Cargo reporter CLI usage (EI-25299812440954833)', () => {
+  it('explains libtest forwarding and rejects a missing manifest before running Cargo', () => {
+    const reporterPath = resolve(TEST_DIR, '../../../../scripts/report-cargo-tests.mjs');
+    for (const args of [[], ['--coverage']]) {
+      const result = spawnSync(process.execPath, [reporterPath, ...args], {
+        encoding: 'utf8', timeout: 10_000,
+      });
+      expect(result.error).toBeUndefined();
+      expect(result.status).toBe(2);
+      expect(result.stderr).toContain('[-- <libtest args>]');
+      expect(result.stderr).toContain('Arguments after -- go to the libtest test binary');
+      expect(result.stderr).toContain('Cargo flags such as --all-targets are not supported');
+      expect(result.stderr).not.toContain('<cargo test args>');
+      expect(result.stdout).toBe('');
+    }
+    expect(REPORTER_SOURCE).toContain('[-- <libtest args>]');
+    expect(REPORTER_SOURCE).toContain('Cargo.toml -- --nocapture');
+    expect(REPORTER_SOURCE).not.toContain('<cargo test args>');
+  });
+
+  it('forwards supported libtest arguments after Cargo -- in normal and coverage runs', () => {
+    const root = mkdtempSync(join(tmpdir(), 'cargo-cli-args-'));
+    const manifest = join(root, 'Cargo.toml');
+    const argvFile = join(root, 'argv.json');
+    const reporterPath = resolve(TEST_DIR, '../../../../scripts/report-cargo-tests.mjs');
+    try {
+      writeFileSync(manifest, '[package]\nname="cli-fixture"\nversion="0.0.0"\n');
+      writeFileSync(join(root, 'cargo'), [
+        '#!/usr/bin/env node',
+        "require('node:fs').writeFileSync(process.env.CARGO_CLI_ARGV_FILE, JSON.stringify(process.argv.slice(2)));",
+        "console.log('test fixture ... ok');",
+      ].join('\n'), { mode: 0o755 });
+      for (const coverage of [false, true]) {
+        const result = spawnSync(process.execPath, [
+          reporterPath, '--manifest-path', manifest,
+          ...(coverage ? ['--coverage', '--coverage-output', join(root, 'coverage.lcov')] : []),
+          '--', '--nocapture', '--exact', 'fixture',
+        ], {
+          encoding: 'utf8', timeout: 10_000,
+          env: {
+            ...process.env, PATH: `${root}:${process.env.PATH ?? ''}`,
+            CARGO_TARGET_DIR: join(root, 'target'), CARGO_CLI_ARGV_FILE: argvFile,
+            // Keep this fake-Cargo invocation away from the live test ledger.
+            HARNESS_ADMIN_DATABASE_URL: 'postgres://fixture:fixture@127.0.0.1:1/fixture',
+          },
+        });
+        expect(result.error).toBeUndefined();
+        expect(result.status, result.stderr).toBe(0);
+        const args = JSON.parse(readFileSync(argvFile, 'utf8')) as string[];
+        expect(args[0]).toBe(coverage ? 'llvm-cov' : 'test');
+        expect(args.slice(args.indexOf('--') + 1)).toEqual([
+          '--test-threads=4', '--nocapture', '--exact', 'fixture',
+        ]);
+        expect(args.slice(0, args.indexOf('--'))).toContain('--manifest-path');
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 25_000);
+});
+
 const SIGTERM_CARGO_OUTPUT = `
 error: could not compile \`papercusp-desktop\` (bin "papercusp-desktop" test)
 
 Caused by:
   process didn't exit successfully: \`/usr/bin/rustc --crate-name papercusp_desktop\` (signal: 15, SIGTERM: termination signal)
 `;
+
+describe('Cargo measured passing cases and layers (P-002)', () => {
+  it('records ignored tests with their libtest reason without inventing passing results', () => {
+    const output = [
+      '     Running tests/live_smoke.rs (target/debug/deps/live_smoke-123)',
+      'test live_p0_contract_smoke ... ignored, needs a live operator, two workspaces and one-time pair token',
+      'test malformed_pass ... ok, unrelated text',
+      'test malformed_failure ... FAILED, unrelated text',
+      'test real_pass ... ok',
+    ].join('\n');
+    expect(parseCargoTestResultLines(output)).toEqual([
+      { name: 'live_p0_contract_smoke', outcome: 'ignored' },
+      { name: 'real_pass', outcome: 'ok' },
+    ]);
+    expect(parseCargoMeasuredTestResults(output)).toEqual([
+      { name: 'live_p0_contract_smoke', outcome: 'ignored', testLayer: 'integration' },
+      { name: 'real_pass', outcome: 'ok', testLayer: 'integration' },
+    ]);
+  });
+
+  it('distinguishes unit, integration and unannounced results from target headers', () => {
+    const rows = parseCargoMeasuredTestResults([
+      'test unannounced ... ok',
+      '     Running unittests src/lib.rs (target/debug/deps/core-123)',
+      'test tests::unit ... ok',
+      'test tests::ignored ... ignored',
+      'test result: ok. 1 passed; 0 failed; 1 ignored',
+      '     Running tests/client_test.rs (target/debug/deps/client_test-123)',
+      'test null_status ... ok',
+      'test rejected ... FAILED',
+      'test result: FAILED. 1 passed; 1 failed',
+      '   Doc-tests core',
+      'test src/lib.rs - example (line 2) ... ok',
+      'test trailing ... ok',
+    ].join('\n'));
+    expect(rows).toEqual([
+      { name: 'unannounced', outcome: 'ok' },
+      { name: 'tests::unit', outcome: 'ok', testLayer: 'unit' },
+      { name: 'tests::ignored', outcome: 'ignored', testLayer: 'unit' },
+      { name: 'null_status', outcome: 'ok', testLayer: 'integration' },
+      { name: 'rejected', outcome: 'FAILED', testLayer: 'integration' },
+      { name: 'trailing', outcome: 'ok' },
+    ]);
+  });
+
+  it('persists passing case identity and measured layer in the strict ledger contract', () => {
+    const detail = buildCargoExecutionDetails({
+      root: '/mobile', filePath: 'core::null_status', passed: 1,
+      passedCaseTitles: ['null_status', 'null_status', 'bad\ntitle', 'extra'],
+      testLayer: 'integration', env: {},
+    });
+    expect(parseTestRunExecutionDetails(detail)).toMatchObject({
+      passedCaseTitles: ['null_status'], testLayer: 'integration',
+    });
+    const crash = buildCargoExecutionDetails({ root: '/mobile', filePath: 'aggregate',
+      passed: 1, collectionFailed: true, passedCaseTitles: ['unexecuted'], env: {} });
+    expect(crash).not.toHaveProperty('passedCaseTitles');
+    expect(crash).not.toHaveProperty('testLayer');
+    expect(REPORTER_SOURCE).toContain('parseCargoMeasuredTestResults(combinedOutput ?? combined)');
+    expect(REPORTER_SOURCE).toContain('passedCaseTitles: r.outcome');
+    expect(REPORTER_SOURCE).toContain('testRunReporter?.setRunRoot?.(REPO_ROOT)');
+  });
+});
 
 const SIGKILL_CARGO_OUTPUT = `
 error: could not compile \`papercusp-desktop\` (bin "papercusp-desktop" test)
