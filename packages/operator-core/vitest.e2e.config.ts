@@ -11,30 +11,35 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // testLayer 'e2e' from this config's runtime `provide` — acceptance BAR clauses whose
 // requiredTestLayers name 'e2e' bind only to such a row. The unit config still collects
 // these files too, so the gate's unit run keeps covering them.
-export default defineVitestConfig({
-  layer: 'e2e',
-  // Optional selectors only. Fingerprints come from the running process ledger
-  // and the kernel, never from the fixture or a caller-provided fingerprint.
-  ...(process.env.PAPERCUSP_APP_OPERATION_LIVE_PROFILE ? {
-    readRuntimeEnvironment: async () => {
-      const profile = JSON.parse(readFileSync(resolve(__dirname, '../..',
-        process.env.PAPERCUSP_APP_OPERATION_LIVE_PROFILE!), 'utf8'));
-      const units: unknown = profile.runtimeUnits;
-      if (!Array.isArray(units) || units.length === 0 || units.length > 32
-        || units.some(unit => typeof unit !== 'string' || !unit.trim() || unit.length > 120)
-        || new Set(units).size !== units.length) return null;
-      // Keep operator/PG modules out of Vite's config bundle. When selected,
-      // load their TypeScript graph with the same resolver used by our hosts,
-      // rather than Node's native loader (which rejects directory imports).
-      const { listRuntimeVintage, measureRuntimeVintageEnvironment } = await tsImport(
-        './lib/runtime-vintage.ts', import.meta.url,
-      );
-      const fingerprint = measureRuntimeVintageEnvironment(await listRuntimeVintage(), units);
-      return fingerprint ? { schemaVersion: 1 as const, units, fingerprint, observedAt: new Date().toISOString() } : null;
-    },
-  } : {}),
-  setupFiles: [
-    resolve(__dirname, 'lib/coverage-census/attribution/setup-vitest.ts'),
-    resolve(__dirname, 'lib/detached-imports/setup-vitest.ts'),
-  ],
-});
+export async function prepareRuntimeReader(
+  loadRuntime = () => tsImport('./lib/runtime-vintage.ts', import.meta.url),
+) {
+  if (!process.env.PAPERCUSP_APP_OPERATION_LIVE_PROFILE) return undefined;
+  // Module loading belongs to configuration preparation, outside the reporter's
+  // bounded observation window. tsImport starts a fresh loader on each call.
+  const { listRuntimeVintage, measureRuntimeVintageEnvironment } = await loadRuntime();
+  return async () => {
+    const profile = JSON.parse(readFileSync(resolve(__dirname, '../..',
+      process.env.PAPERCUSP_APP_OPERATION_LIVE_PROFILE!), 'utf8'));
+    const units: unknown = profile.runtimeUnits;
+    if (!Array.isArray(units) || units.length === 0 || units.length > 32
+      || units.some(unit => typeof unit !== 'string' || !unit.trim() || unit.length > 120)
+      || new Set(units).size !== units.length) return null;
+    const fingerprint = measureRuntimeVintageEnvironment(await listRuntimeVintage(), units);
+    return fingerprint ? { schemaVersion: 1 as const, units, fingerprint, observedAt: new Date().toISOString() } : null;
+  };
+}
+
+export default async () => {
+  const readRuntimeEnvironment = await prepareRuntimeReader();
+  return defineVitestConfig({
+    layer: 'e2e',
+    // Optional selectors only. Fingerprints come from the running process ledger
+    // and the kernel, never from the fixture or a caller-provided fingerprint.
+    ...(readRuntimeEnvironment ? { readRuntimeEnvironment } : {}),
+    setupFiles: [
+      resolve(__dirname, 'lib/coverage-census/attribution/setup-vitest.ts'),
+      resolve(__dirname, 'lib/detached-imports/setup-vitest.ts'),
+    ],
+  });
+};
