@@ -86,7 +86,7 @@ describe('runtime-vintage — self-report ledger (P-008)', () => {
   });
 
   it('pins its own process from the kernel and strips caller-authored pins', async () => {
-    await reportRuntimeVintage({ unit: 'self', pid: process.pid, treeSha: 'sha', workspaceId: 'default',
+    await reportRuntimeVintage({ unit: 'self', pid: process.pid, treeSha: 'a'.repeat(40), workspaceId: 'default',
       extra: { kernelProcessIdentity: 'invented' } });
     const rows = await listRuntimeVintage('default');
     const identity = readProcessIdentity(process.pid);
@@ -104,7 +104,7 @@ describe('runtime-vintage — self-report ledger (P-008)', () => {
   });
 
   const pinnedRow = (unit = 'bg-host'): RuntimeVintageRow => ({
-    workspaceId: 'default', unit, host: 'local', treeSha: 'sha', buildTime: '2026-10-07T00:00:00Z',
+    workspaceId: 'default', unit, host: 'local', treeSha: 'a'.repeat(40), buildTime: '2026-10-07T00:00:00Z',
     bundleVersion: null, pid: 42, extra: { kernelProcessIdentity: 'boot:start' }, reportedAt: 'now',
   });
 
@@ -113,7 +113,7 @@ describe('runtime-vintage — self-report ledger (P-008)', () => {
     const row = pinnedRow();
     expect(measureRuntimeVintageEnvironment([row], ['bg-host'], deps)).toMatch(/^[a-f0-9]{64}$/);
     for (const rows of [[], [{ ...row, host: 'remote' }], [{ ...row, extra: {} }],
-      [{ ...row, treeSha: null }], [row, row]]) {
+      [{ ...row, treeSha: null }], [{ ...row, treeSha: 'unknown' }], [row, row]]) {
       expect(measureRuntimeVintageEnvironment(rows, ['bg-host'], deps)).toBeNull();
     }
     expect(measureRuntimeVintageEnvironment([row], ['bg-host'], { ...deps, identity: () => null })).toBeNull();
@@ -128,7 +128,7 @@ describe('runtime-vintage — self-report ledger (P-008)', () => {
     const original = measureRuntimeVintageEnvironment(rows, ['desktop', 'bg-host'], deps);
     expect(measureRuntimeVintageEnvironment([...rows].reverse().map(row => ({ ...row, reportedAt: 'later' })),
       ['bg-host', 'desktop'], deps)).toBe(original);
-    expect(measureRuntimeVintageEnvironment([{ ...rows[0], treeSha: 'new' }, rows[1]],
+    expect(measureRuntimeVintageEnvironment([{ ...rows[0], treeSha: 'b'.repeat(40) }, rows[1]],
       ['desktop', 'bg-host'], deps)).not.toBe(original);
   });
 });

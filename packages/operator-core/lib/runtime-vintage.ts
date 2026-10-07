@@ -220,7 +220,8 @@ export function measureRuntimeVintageEnvironment(
     const matches = rows.filter(row => row.unit === unit && row.host === deps.host);
     if (matches.length !== 1) return null;
     const row = matches[0];
-    if (!row.treeSha || !Number.isSafeInteger(row.pid) || row.pid! <= 0) return null;
+    if (!row.treeSha || !/^[a-f0-9]{7,64}$/.test(row.treeSha)
+      || !Number.isSafeInteger(row.pid) || row.pid! <= 0) return null;
     const pinned = row.extra.kernelProcessIdentity;
     if (typeof pinned !== 'string' || !pinned || deps.identity(row.pid!) !== pinned) return null;
     pins.push([unit, row.host, row.treeSha, row.buildTime, row.pid!, pinned]);
