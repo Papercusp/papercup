@@ -268,10 +268,12 @@ function isOwnerAttributionReportedAgentMention(line: string): boolean {
  * EI-22787623747935751: OWNER_ATTRIBUTION_RE can begin at the `owner` suffix of
  * a peer-owned domain role — "Gate owner asked for ..." — and misclassify that
  * role's report as an attribution to the interactive human owner. Keep this
- * exclusion explicit and narrow: these are the role prefixes used for agent-owned
- * coordination artifacts, while an unqualified "the owner asked ..." remains loud.
+ * exclusion explicit and narrow: gate/fleet/plan/peer/work-item mark agent-owned
+ * coordination roles, while root/storage mark technical owner roles. None means the
+ * interactive human owner whose authority this lint is meant to verify. An unqualified
+ * "the owner asked ..." remains loud.
  */
-const PEER_ROLE_OWNER_PREFIX_RE = /\b(?:gate|fleet|plan|peer|work[-\s]?item)\s*$/i;
+const PEER_ROLE_OWNER_PREFIX_RE = /\b(?:gate|fleet|plan|peer|root|storage|work[-\s]?item)\s*$/i;
 
 function isPeerRoleOwnerAttribution(line: string, match: RegExpExecArray): boolean {
   return match.index !== undefined && PEER_ROLE_OWNER_PREFIX_RE.test(line.slice(0, match.index));
