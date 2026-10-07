@@ -50,6 +50,7 @@ import { projectChatFailureTranscript } from '../chat-model-failure';
 // Flat-row sync reads carry page metadata (e.g. the true total) on row[0]._meta;
 // attachListMeta is the one place that convention lives. See ./list-meta.
 import { attachListMeta } from './list-meta';
+import { reportsListArgs, reportsLineageArgs } from './reports';
 // WI-6382: degraded-snapshot provenance. A `learning.*` catch must never return
 // a bare empty — that made a broken substrate byte-identical to an idle healthy
 // one and left every panel's error branch unreachable for the data-layer class.
@@ -1536,16 +1537,34 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       ),
     ],
   },
+  'reports.list': {
+    backingTables: ['harness_shared.report_library'],
+    argsSchema: reportsListArgs,
+    resolve: async (args) => (await import('./reports')).resolveReportsList(args as never),
+  },
+  // Compatibility with the original publish producer's query name.
+  'reports.library': {
+    backingTables: ['harness_shared.report_library'],
+    argsSchema: reportsListArgs,
+    resolve: async (args) => (await import('./reports')).resolveReportsList(args as never),
+  },
+  'reports.lineage': {
+    backingTables: ['harness_shared.report_library'],
+    argsSchema: reportsLineageArgs,
+    resolve: async (args) => (await import('./reports')).resolveReportsLineage(args as never),
+  },
   // The human-facing sync adapter for reports:get: reuse its exact-ID store
   // lookup and full wire projection. Never resolve a pin through its lineage.
   'reports.get': {
     backingTables: ['harness_shared.report_library'],
     argsSchema: z.object({ reportId: z.string().min(1).max(400) }).strict(),
     resolve: async (args) => {
-      const [{ getOrgPg }, { activeWorkspaceId }, { getReport }, { toReportFull }] = await Promise.all([
+      const [{ getOrgPg }, { activeWorkspaceId }, { getReport }, { toReportFull, reportsLibraryDisabled }] = await Promise.all([
         import('@papercusp/db-org'), import('../workspace-registry'),
         import('../report-library'), import('../agent-tools/reports/_shared'),
       ]);
+      const disabled = await reportsLibraryDisabled();
+      if (disabled) throw new Error(disabled.message);
       // Sync routes are operator UI reads; the workspace comes from the bound
       // server context, while owner visibility belongs to the human UI viewer.
       const report = await getReport(getOrgPg().sql, activeWorkspaceId(),

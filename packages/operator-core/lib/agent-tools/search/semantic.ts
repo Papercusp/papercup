@@ -25,6 +25,8 @@ import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { runHybridSearch } from '@papercusp/search';
 import { describeSearchLegs } from './describe-leg';
 import { SEARCH_SOURCES } from './sources';
+import { createReportSearchSource } from './report-source';
+import { resolveViewer } from '../reports/_shared';
 import { scopeResidue } from './scope-residue';
 import { buildQueryEmbedderResolved, interactiveEmbedAcquireBudgetMs } from './embedder';
 import {
@@ -85,7 +87,8 @@ export default defineTool({
         : !args.scope?.length
           ? DEFAULT_SCOPE
           : args.scope;
-    const sources = SEARCH_SOURCES.filter((s) => scope.includes(s.name));
+    const sources = SEARCH_SOURCES.filter((s) => scope.includes(s.name))
+      .map(s => s.name === 'report' ? createReportSearchSource(resolveViewer(ctx)) : s);
 
     // P-002 filter bag: resolve 'self'/fleet sugars server-side (session:'self'
     // also live-tails the caller's own transcript — compaction recovery).

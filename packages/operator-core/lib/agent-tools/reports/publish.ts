@@ -18,6 +18,7 @@ import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { publishReport } from '../../report-library';
 import { emitAwaitedEvent } from '../../events/await/engine';
+import { trackDetached } from '../../detached-imports';
 import {
   invalidateReportsSync,
   reportUiPath,
@@ -156,6 +157,9 @@ export default defineTool({
       ctx.log(`report:published emit failed for ${report.reportId}: ${e instanceof Error ? e.message : e}`);
     }
     invalidateReportsSync((m) => ctx.log(m));
+    trackDetached(import('../../search/report-index')
+      .then(({ indexReport }) => indexReport(sql, report))
+      .catch(error => ctx.log(`Report ${report.reportId} indexing pending sweep recovery: ${String(error)}`)));
 
     // One shared wire projection, so publish and list name every field identically.
     return { data: { ok: true as const, ...toReportWire(report), event_emitted: eventEmitted } };

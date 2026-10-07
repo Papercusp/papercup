@@ -12,6 +12,7 @@ export const reportsListArgs = z.object({
   subject: z.object({ kind: zReportSubjectKind, ref: z.string().min(1).optional() }).strict().optional(),
   originHarnessSlug: z.string().min(1).optional(),
   visibility: zReportVisibility.optional(),
+  query: z.string().max(500).optional(),
   tags: z.array(z.string().min(1)).max(20).optional(),
   since: z.iso.datetime({ offset: true }).optional(),
   cursor: z.object({ publishedAt: z.iso.datetime({ offset: true }), reportId: z.string().min(1) }).strict().optional(),

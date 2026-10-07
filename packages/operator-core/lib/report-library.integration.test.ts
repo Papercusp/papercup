@@ -80,6 +80,13 @@ const AGENT_1: ReportOrigin = {
 };
 
 describe('report_library store (real PG)', () => {
+  it('P008 full-text filter searches the latest edition rather than resurrecting a matching ancestor', async () => {
+    const workspaceId = nextWs();
+    const old = await publishReport(db.adminSql, { workspaceId, title: 'Earlier', bodyMd: 'zephyrquartz', visibility: 'workspace' }, AGENT_1);
+    const latest = await publishReport(db.adminSql, { workspaceId, title: 'Latest', bodyMd: 'violetledger', supersedes: old.reportId, visibility: 'workspace' }, AGENT_1);
+    expect(await listReports(db.adminSql, { workspaceId, viewer: { isOwner: true }, query: 'zephyrquartz' })).toEqual([]);
+    expect((await listReports(db.adminSql, { workspaceId, viewer: { isOwner: true }, query: 'violetledger' })).map(r => r.reportId)).toEqual([latest.reportId]);
+  });
   it('P006 cursor stays after lineage collapse and filters visibility/date without bypassing the viewer', async () => {
     const workspaceId = nextWs();
     const original = await publishReport(db.adminSql, { workspaceId, title: 'Old edition', visibility: 'workspace' }, AGENT_1);

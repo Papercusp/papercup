@@ -104,6 +104,11 @@ interface GitPipelineSnapshot {
   // release-pipeline-resilience-2026-06-09 P-004/P-009: green-checkpoint gate health.
   gate: {
     consecutiveReds: number;
+    consecutiveNoVerdict?: number;
+    recordedVerdict?: 'green' | 'not-green' | null;
+    fireHistory?: { windowHours: number; fires: number; verdictRecords: number; noVerdictAborts: number; skippedStarts: number } | null;
+    inconclusive?: { status: string; detail: string | null } | null;
+    qualification?: { blockers: { code: string; detail?: string }[]; safeNextAction: { reason: string } };
     lastGreenAtMs: number | null;
     firstRedAtMs: number | null;
     stalled: boolean;
@@ -652,7 +657,9 @@ export default function GitClient() {
                   green-checkpoint gate{' '}
                   {st.gate.stalled ? (
                     <StatusPill tone="bad" label="STALLED" />
-                  ) : st.gate.consecutiveReds > 0 ? (
+                  ) : (st.gate.consecutiveNoVerdict ?? 0) > 0 || st.gate.inconclusive ? (
+                    <StatusPill tone="warn" label="no verdict" />
+                  ) : st.gate.consecutiveReds > 0 || st.gate.recordedVerdict === 'not-green' ? (
                     <StatusPill tone="warn" label="held" />
                   ) : (
                     <StatusPill tone="good" label="green" />
@@ -669,6 +676,31 @@ export default function GitClient() {
                   </span>
                   <span className="pc-git__k">last green</span>
                   <span className="pc-git__v">{fmtRel(st.gate.lastGreenAtMs)}</span>
+                  <span className="pc-git__k">promotion hold</span>
+                  <span className="pc-git__v" data-testid="gate-hold-duration">
+                    {(st.gate.consecutiveReds > 0 || st.gate.stalled || (st.gate.consecutiveNoVerdict ?? 0) > 0) && st.gate.firstRedAtMs != null
+                      ? fmtRel(st.gate.firstRedAtMs).replace(/ ago$/, '')
+                      : 'not measured'}
+                  </span>
+                  <span className="pc-git__k">verdict production · 24h</span>
+                  <span className="pc-git__v" data-testid="gate-fire-history">
+                    {st.gate.fireHistory
+                      ? `${st.gate.fireHistory.fires} activation requests · ${st.gate.fireHistory.verdictRecords} verdict records · ${st.gate.fireHistory.noVerdictAborts} no-verdict aborts · ${st.gate.fireHistory.skippedStarts} skipped starts`
+                      : 'not measured'}
+                  </span>
+                  <span className="pc-git__k">no-verdict streak</span>
+                  <span className="pc-git__v" data-testid="gate-no-verdict-streak">
+                    {st.gate.consecutiveNoVerdict == null ? 'not measured' : `${st.gate.consecutiveNoVerdict} consecutive abort(s)`}
+                  </span>
+                  {(st.gate.inconclusive || st.gate.qualification?.blockers.length) ? (
+                    <>
+                      <span className="pc-git__k">current blocker</span>
+                      <span className="pc-git__v" data-testid="gate-current-blocker">
+                        {st.gate.inconclusive?.detail || st.gate.inconclusive?.status.replace(/-/g, ' ') ||
+                          st.gate.qualification?.blockers.map((b) => b.detail || b.code.replace(/-/g, ' ')).join('; ')}
+                      </span>
+                    </>
+                  ) : null}
                   <span className="pc-git__k">release-fixer</span>
                   <span className="pc-git__v">
                     {st.gate.lastFixerStatus ? (

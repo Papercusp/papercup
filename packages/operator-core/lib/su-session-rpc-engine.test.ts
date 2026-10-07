@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   link: vi.fn(async () => 'linked'), persist: vi.fn(async () => true),
   writeOmp: vi.fn((_id: number, _options: Record<string, unknown>) => '.papercusp/su-omp-homes/session-71'),
   receipts: vi.fn(async (_identity: unknown): Promise<Array<{ turnId: string; content: string }>> => []),
+  persona: vi.fn(),
 }));
 vi.mock('./su-session-commands', async (orig) => ({
   ...(await orig<typeof import('./su-session-commands')>()),
@@ -29,7 +30,7 @@ vi.mock('./mcp-base-url', () => ({ resolveSpawnHostOperatorBaseUrl: () => 'http:
 vi.mock('./su-session-stdio-peer', () => ({ startSuStdioPeer: vi.fn() }));
 vi.mock('../../../apps/operator/scripts/psu-launcher.mjs', async (original) => ({
   resolveOmpSessionModel: (await original<typeof import('../../../apps/operator/scripts/psu-launcher.mjs')>()).resolveOmpSessionModel,
-  assertLaunchPersona: vi.fn(), sanitizeInheritedEnv: () => ({}), applyGithubTokenEnv: vi.fn(),
+  assertLaunchPersona: mocks.persona, sanitizeInheritedEnv: () => ({}), applyGithubTokenEnv: vi.fn(),
   modelArgsFor: (backend: string, model: string) => backend === 'codex' ? ['-m', model] : ['--model', model],
   ompCoreToolNames: () => ['tools:invoke'], ompResponsesCompatibilityEnv: () => ({}), recordSessionOwner: vi.fn(),
   resolveOmpInjectHookPath: () => '/configured/inject.ts', writeOmpSessionConfigDir: mocks.writeOmp,
@@ -45,6 +46,7 @@ afterEach(async () => {
   for (const engine of engines.splice(0)) { await engine.close(); engine.adapter.dispose(); }
   for (const dir of nativeDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
   vi.clearAllMocks();
+  mocks.persona.mockReset();
   mocks.persist.mockResolvedValue(true);
   mocks.receipts.mockResolvedValue([]);
 });
@@ -266,6 +268,7 @@ describe.each(['codex', 'omp'] as const)('%s structured SU engine', (backend) =>
   // pui-chat-first-ux P-016: outside every registered checkout the chat runs
   // the backend's own identity, so there is no SU server to wait for.
   it('starts a coding-assistant session without the SU server, playbook or hooks', async () => {
+    mocks.persona.mockImplementation(() => { throw new Error('SU persona artifact is absent'); });
     const home = mkdtempSync(join(tmpdir(), `pui-${backend}-assistant-`));
     nativeDirs.push(home);
     const codexHome = join(home, 'session-codex');
@@ -282,6 +285,7 @@ describe.each(['codex', 'omp'] as const)('%s structured SU engine', (backend) =>
     const f = fixture(backend, { tools: false, identity: 'coding-assistant', env: { CODEX_HOME: codexHome, HOME: home } });
     await f.engine.ready;
 
+    expect(mocks.persona).not.toHaveBeenCalled();
     expect(f.sent.some((frame) => frame.method === 'mcpServerStatus/list')).toBe(false);
     if (backend === 'codex') {
       const config = readFileSync(join(codexHome, 'config.toml'), 'utf8');

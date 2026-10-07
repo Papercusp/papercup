@@ -72,6 +72,36 @@ import GitClient from './GitClient';
 afterEach(() => cleanup());
 
 describe('GitClient', () => {
+  it('shows verdict starvation separately from a small historical red streak', () => {
+    mockResult = { data: [{ ...snapshot, gate: {
+      ...snapshot.gate, consecutiveNoVerdict: 7,
+      fireHistory: { windowHours: 24, fires: 74, verdictRecords: 0, noVerdictAborts: 7, skippedStarts: 46 },
+      inconclusive: { status: 'dependency-prewarm-missing', detail: 'Waiting for the candidate dependency generation' },
+    } }], loading: false, fetching: false, error: null, invalidate: vi.fn(), transport: 'POLL' };
+    render(<GitClient />);
+    expect(screen.getByText('2 checkpoint(s)')).toBeTruthy();
+    expect(screen.getByText('no verdict')).toBeTruthy();
+    expect(screen.getByTestId('gate-fire-history').textContent).toContain('74 activation requests · 0 verdict records');
+    expect(screen.getByTestId('gate-no-verdict-streak').textContent).toBe('7 consecutive abort(s)');
+    expect(screen.getByTestId('gate-hold-duration').textContent).toBe('2h');
+    expect(screen.getByTestId('gate-current-blocker').textContent).toBe('Waiting for the candidate dependency generation');
+  });
+
+  it('keeps missing measurements explicit for an older snapshot', () => {
+    mockResult = { data: [snapshot], loading: false, fetching: false, error: null, invalidate: vi.fn(), transport: 'POLL' };
+    render(<GitClient />);
+    expect(screen.getByTestId('gate-fire-history').textContent).toBe('not measured');
+    expect(screen.getByTestId('gate-no-verdict-streak').textContent).toBe('not measured');
+  });
+
+  it('does not label a recorded red verdict green when its historical streak was reset', () => {
+    mockResult = { data: [{ ...snapshot, gate: {
+      ...snapshot.gate, consecutiveReds: 0, consecutiveNoVerdict: 0, recordedVerdict: 'not-green',
+    } }], loading: false, fetching: false, error: null, invalidate: vi.fn(), transport: 'POLL' };
+    render(<GitClient />);
+    expect(screen.getByText('held')).toBeTruthy();
+  });
+
   it('renders pipeline stats, routines, the conflict banner, and the timeline', () => {
     mockResult = { data: [snapshot], loading: false, fetching: false, error: null, invalidate: vi.fn(), transport: 'POLL' };
     render(<GitClient />);

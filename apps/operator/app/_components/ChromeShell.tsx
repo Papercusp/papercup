@@ -155,6 +155,7 @@ export default function ChromeShell({ chatFaces }: { chatFaces?: readonly OpChat
   const opsIsCurrent = onAdv && !searchParams.has(PLAN_DASHBOARD_PARAM);
   const onRes = isChromeShellNavActive(pathname, '/res');
   const testingFlag = useFlag(FLAGS.TESTING);
+  const reportsLibraryFlag = useFlag(FLAGS.REPORTS_LIBRARY);
   const resFlag = useFlag(FLAGS.RES_ALLOCATION);
   const operatorChatSidebarFlag = useFlag(FLAGS.OPERATOR_CHAT_SIDEBAR);
   const t = useLexicon();
@@ -369,6 +370,7 @@ export default function ChromeShell({ chatFaces }: { chatFaces?: readonly OpChat
               ask 2026-07-10): the navbar link pointed at /rubrics, a route the
               live Vite operator never registered, so it errored. Rubrics &
               scorecards now live in Learning → Verify → Rubrics (AdvShell). */}
+          {reportsLibraryFlag && <RouteLink href="/reports" {...navLinkProps('/reports')}>Reports</RouteLink>}
           <RouteLink href="/support" {...navLinkProps('/support')}>Support</RouteLink>
           <RouteLink href="/settings/operator" {...navLinkProps('/settings/operator')}>Settings</RouteLink>
           {/* Admin link intentionally NOT rendered — reachable only by URL /admin */}

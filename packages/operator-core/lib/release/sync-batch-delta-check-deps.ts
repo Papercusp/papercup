@@ -48,6 +48,7 @@ import {
   type SyncBatch,
   type SyncBatchDeltaDeps,
   type SyncDeltaCursor,
+  type SubprocessDiagnostic,
 } from './sync-batch-delta-check';
 
 /** The `harness_shared.routines.name` whose metadata row carries the durable cursor
@@ -90,6 +91,8 @@ export interface RunResult {
   status: number | null;
   stdout: string;
   stderr: string;
+  durationMs?: number;
+  failureKind?: 'timeout' | 'output-buffer-limit' | 'spawn-error';
 }
 
 // Lazy + memoized, NOT promisified at module scope (EI-10161): under a narrow
@@ -113,6 +116,7 @@ async function run(
   args: string[],
   opts: { cwd: string; timeoutMs: number },
 ): Promise<RunResult | null> {
+  const startedAtMs = Date.now();
   try {
     const { stdout, stderr } = await execFileAsync(cmd, args, {
       cwd: opts.cwd,
@@ -121,11 +125,27 @@ async function run(
       timeout: opts.timeoutMs,
       killSignal: 'SIGTERM',
     });
-    return { status: 0, stdout: stdout ?? '', stderr: stderr ?? '' };
+    return { status: 0, stdout: stdout ?? '', stderr: stderr ?? '', durationMs: Math.max(0, Date.now() - startedAtMs) };
   } catch (err) {
-    const e = err as { code?: number | string; killed?: boolean; stdout?: string; stderr?: string };
+    const e = err as { code?: number | string; killed?: boolean; signal?: string; stdout?: string; stderr?: string };
+    const durationMs = Math.max(0, Date.now() - startedAtMs);
     if (typeof e.code === 'number' && e.killed !== true) {
-      return { status: e.code, stdout: e.stdout ?? '', stderr: e.stderr ?? '' };
+      return { status: e.code, stdout: e.stdout ?? '', stderr: e.stderr ?? '', durationMs };
+    }
+    const failureKind =
+      e.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER'
+        ? 'output-buffer-limit'
+        : e.code === 'ETIMEDOUT' || (e.killed === true && durationMs >= opts.timeoutMs - 1000)
+          ? 'timeout'
+          : null;
+    if (failureKind) {
+      return {
+        status: null,
+        stdout: e.stdout ?? '',
+        stderr: e.stderr ?? '',
+        durationMs,
+        failureKind,
+      };
     }
     return null;
   }
@@ -260,27 +280,88 @@ export function buildSyncBatchDeltaDeps(cfg: SyncBatchDeltaDepsConfig): SyncBatc
 
     async runAffected(
       paths: readonly string[],
-    ): Promise<{ ok: boolean; failing: ReturnType<typeof parseFailingFilesLine> }> {
+    ): Promise<{
+      ok: boolean;
+      failing: ReturnType<typeof parseFailingFilesLine>;
+      diagnostic?: SubprocessDiagnostic;
+    }> {
       const r = await heavy('node', [script('scripts/affected-tests.mjs'), '--changed-paths', paths.join(',')], {
         cwd: cfg.root,
         timeoutMs: SYNC_DELTA_TIMEOUTS_MS.affected,
       });
       // Unmeasurable spawn ⇒ red-with-no-break-set: the runner treats that as
       // UNDETERMINED and holds the cursor, which is the failure direction we want.
-      if (!r) return { ok: false, failing: null };
-      if (r.status === 0) return { ok: true, failing: [] };
-      return { ok: false, failing: parseFailingFilesLine(`${r.stdout}\n${r.stderr}`) };
+      if (!r) {
+        return {
+          ok: false,
+          failing: null,
+          diagnostic: { outcome: 'spawn-error', durationMs: null, exitCode: null },
+        };
+      }
+      if (r.failureKind || r.status === null) {
+        return {
+          ok: false,
+          failing: null,
+          diagnostic: {
+            outcome: r.failureKind ?? 'spawn-error',
+            durationMs: r.durationMs ?? null,
+            exitCode: r.status,
+          },
+        };
+      }
+      if (r.status === 0) {
+        return {
+          ok: true,
+          failing: [],
+          diagnostic: { outcome: 'completed', durationMs: r.durationMs ?? null, exitCode: 0 },
+        };
+      }
+      return {
+        ok: false,
+        failing: parseFailingFilesLine(`${r.stdout}\n${r.stderr}`),
+        diagnostic: { outcome: 'nonzero-exit', durationMs: r.durationMs ?? null, exitCode: r.status },
+      };
     },
 
-    async runTsc(files: readonly string[]): Promise<{ ok: boolean; failing: string[] }> {
+    async runTsc(files: readonly string[]): Promise<{
+      ok: boolean;
+      failing: string[];
+      diagnostic?: SubprocessDiagnostic;
+    }> {
       const r = await heavy('node', [script('scripts/lint-tsc.mjs'), `--files=${files.join(',')}`], {
         cwd: cfg.root,
         timeoutMs: SYNC_DELTA_TIMEOUTS_MS.tsc,
       });
-      // Unmeasurable ⇒ ok:false with zero named files: files nothing, reds nothing.
-      if (!r) return { ok: false, failing: [] };
-      if (r.status === 0) return { ok: true, failing: [] };
-      return { ok: false, failing: parseTscFailingFiles(`${r.stdout}\n${r.stderr}`) };
+      if (!r) {
+        return {
+          ok: false,
+          failing: [],
+          diagnostic: { outcome: 'spawn-error', durationMs: null, exitCode: null },
+        };
+      }
+      if (r.failureKind || r.status === null) {
+        return {
+          ok: false,
+          failing: [],
+          diagnostic: {
+            outcome: r.failureKind ?? 'spawn-error',
+            durationMs: r.durationMs ?? null,
+            exitCode: r.status,
+          },
+        };
+      }
+      if (r.status === 0) {
+        return {
+          ok: true,
+          failing: [],
+          diagnostic: { outcome: 'completed', durationMs: r.durationMs ?? null, exitCode: 0 },
+        };
+      }
+      return {
+        ok: false,
+        failing: parseTscFailingFiles(`${r.stdout}\n${r.stderr}`),
+        diagnostic: { outcome: 'nonzero-exit', durationMs: r.durationMs ?? null, exitCode: r.status },
+      };
     },
 
     async confirmOne(file: string): Promise<ConfirmVerdict> {

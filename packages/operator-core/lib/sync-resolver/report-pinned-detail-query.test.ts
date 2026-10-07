@@ -4,6 +4,7 @@ import { goalOwnerReportFixture } from '../../test/fixtures/goal-owner-report';
 
 const { getReport } = vi.hoisted(() => ({ getReport: vi.fn() }));
 vi.mock('../workspace-registry', () => ({ activeWorkspaceId: () => 'workspace-card' }));
+vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn(async () => true) }));
 vi.mock('../report-library', async (actual) => ({
   ...await actual<typeof import('../report-library')>(), getReport,
 }));

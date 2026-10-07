@@ -119,8 +119,8 @@ export function startSuRpcEngine(
     throw new Error('Structured engine bootstrap does not match the durable SU identity');
   }
   if (options.nativeSession && options.nativeSession.backend !== backend) throw new Error('Resume handle has a different backend');
-  assertLaunchPersona(boot.promptFile);
   const su = (options.identity ?? 'su') === 'su';
+  if (su) assertLaunchPersona(boot.promptFile);
   const env = { ...sanitizeInheritedEnv(process.env), ...boot.envelopeEnv };
   delete env.PAPERCUSP_TTY;
   env.PAPERCUSP_OPERATOR_URL = resolveSpawnHostOperatorBaseUrl();

@@ -390,6 +390,7 @@ export interface ListReportsOptions {
   /** Include soft-retired rows (default false). */
   visibility?: ReportVisibility;
   since?: string;
+  query?: string;
   /** Keyset cursor, applied AFTER lineage collapse so older revisions never reappear. */
   cursor?: { publishedAt: string; reportId: string };
   includeRetired?: boolean;
@@ -419,6 +420,11 @@ export async function listReports(
   const cursor = opts.cursor
     ? sql`AND (published_at, report_id) < (${opts.cursor.publishedAt}::timestamptz, ${opts.cursor.reportId})`
     : sql``;
+  // Search the selected edition, never resurrect a matching superseded body.
+  const query = opts.query?.trim()
+    ? sql`AND report_id IN (SELECT report_id FROM harness_shared.report_library
+        WHERE workspace_id = ${opts.workspaceId} AND search_tsv @@ websearch_to_tsquery('english', ${opts.query}))`
+    : sql``;
 
   // DISTINCT ON needs its own ORDER BY (lineage first), so the caller-facing
   // recency order is applied by the outer select.
@@ -427,7 +433,7 @@ export async function listReports(
       ? await sql<DbRow[]>`
           SELECT ${sql.unsafe(SELECT_COLS)}
             FROM harness_shared.report_library
-           WHERE workspace_id = ${opts.workspaceId} AND ${gate} ${filters} ${cursor}
+           WHERE workspace_id = ${opts.workspaceId} AND ${gate} ${filters} ${cursor} ${query}
            ORDER BY published_at DESC, report_id DESC
            LIMIT ${clampLimit(opts.limit)}`
       : await sql<DbRow[]>`
@@ -436,7 +442,7 @@ export async function listReports(
               FROM harness_shared.report_library
              WHERE workspace_id = ${opts.workspaceId} AND ${gate} ${filters}
              ORDER BY lineage_id, published_at DESC, report_id DESC
-          ) latest WHERE TRUE ${cursor}
+          ) latest WHERE TRUE ${cursor} ${query}
            ORDER BY published_at DESC, report_id DESC
            LIMIT ${clampLimit(opts.limit)}`;
   return rows.map(mapRow);
