@@ -43,6 +43,13 @@ export interface McpRequestTraceEvent {
   servingGeneration?: string;
   previousGeneration?: string;
   declaredGeneration?: string;
+  /** Bounded durations carried by `inner_dispatch_settled` to locate post-dispatch waits. */
+  phaseTimingsMs?: {
+    postDispatchToSettlement: number | null;
+    resultDoor: number | null;
+    advisory: number | null;
+    advisoryFlagReads: number;
+  };
 }
 
 type McpSessionSurfaceTraceInput = Pick<

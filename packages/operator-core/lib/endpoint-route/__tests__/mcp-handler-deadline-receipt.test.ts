@@ -58,6 +58,8 @@ const h = vi.hoisted(() => {
     replayStores: [] as Array<{ idempotencyKey: string; result: unknown }>,
     storedReplay: null as { content: Array<Record<string, unknown>>; _meta?: Record<string, unknown> } | null,
     invocations: [] as unknown[],
+    resultDoorDelayMs: 0,
+    resultDoorCalls: 0,
     handlers: new Map<string, (req: unknown, extra: unknown) => Promise<unknown>>(),
     verifySpawnParams: vi.fn(
       async (_u: unknown): Promise<{ ok: boolean; reason?: string }> => ({ ok: true }),
@@ -130,6 +132,20 @@ vi.mock('../routes/transport/_mcp-result-replay', async (importOriginal) => {
     storeMcpResult: async (a: { idempotencyKey: string; result: unknown }): Promise<void> => {
       h.txEvents.push('store');
       h.replayStores.push({ idempotencyKey: a.idempotencyKey, result: a.result });
+    },
+  };
+});
+vi.mock('../../result-door', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  const applyResultDoorAsync = actual.applyResultDoorAsync as (...args: unknown[]) => Promise<unknown>;
+  return {
+    ...actual,
+    applyResultDoorAsync: async (...args: unknown[]): Promise<unknown> => {
+      h.resultDoorCalls += 1;
+      if (h.resultDoorDelayMs > 0) {
+        await new Promise<void>((resolve) => setTimeout(resolve, h.resultDoorDelayMs));
+      }
+      return applyResultDoorAsync(...args);
     },
   };
 });
@@ -288,6 +304,8 @@ beforeEach(() => {
   h.replayStores.length = 0;
   h.storedReplay = null;
   h.invocations.length = 0;
+  h.resultDoorDelayMs = 0;
+  h.resultDoorCalls = 0;
   delete process.env.PAPERCUSP_REQUIRE_SPAWN_SIG;
   _resetVerifiedSpawns();
 });
@@ -328,6 +346,8 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
   it('correlates the forwarded trace id across request start, deadline, and late handler settlement', async () => {
     const info = vi.spyOn(console, 'info').mockImplementation(() => {});
     const traceId = 'e57ef6b3-46ef-4cc5-8214-fec83f2a463e';
+    const resultDoorDelayMs = 45;
+    h.resultDoorDelayMs = resultDoorDelayMs;
     try {
       const res = await callTool(
         'deadlinetest:slow',
@@ -352,16 +372,25 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
       );
       expect(beforeSettlement.some((event) => event.stage === 'inner_dispatch_settled')).toBe(false);
 
-      await sleep(SLOW_TOOL_MS + 20);
-      expect(traceEvents(info.mock.calls)).toContainEqual(
+      await sleep(SLOW_TOOL_MS + resultDoorDelayMs + 100);
+      const settled = traceEvents(info.mock.calls).find((event) => event.stage === 'inner_dispatch_settled');
+      expect(settled).toEqual(
         expect.objectContaining({
           traceId,
           toolName: 'deadlinetest:slow',
-          stage: 'inner_dispatch_settled',
           outcome: 'success',
           afterDeadline: true,
+          phaseTimingsMs: expect.objectContaining({
+            postDispatchToSettlement: expect.any(Number),
+            resultDoor: expect.any(Number),
+            advisory: expect.any(Number),
+            advisoryFlagReads: expect.any(Number),
+          }),
         }),
       );
+      expect(h.resultDoorCalls).toBeGreaterThan(0);
+      expect((settled?.phaseTimingsMs as { resultDoor?: number } | undefined)?.resultDoor)
+        .toBeGreaterThanOrEqual(resultDoorDelayMs);
     } finally {
       info.mockRestore();
     }

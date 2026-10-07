@@ -4546,16 +4546,47 @@ export function registerMcpHost(server: McpServer): void {
            * on a P2-5 deadline those differ, and persisting the raced timeout
            * envelope would make every retry replay the timeout instead of the real
            * outcome.
-           */
+          */
           toolOutcome: Promise<McpCallResult> | null;
           /**
            * Set when the deadline branch wins the race — the caller has already been
            * answered, so the receipt must be persisted in the BACKGROUND rather than
            * blocking the response on a tool that is still running server-side.
-           */
+          */
           deadlineFired: boolean;
           innerDispatchStarted: boolean;
-        } = { toolOutcome: null, deadlineFired: false, innerDispatchStarted: false };
+          postDispatchStartedAtMs: number | null;
+          phaseTimingsMs: {
+            resultDoor: number | null;
+            advisory: number | null;
+            advisoryFlagReads: number;
+          };
+        } = {
+          toolOutcome: null,
+          deadlineFired: false,
+          innerDispatchStarted: false,
+          postDispatchStartedAtMs: null,
+          phaseTimingsMs: { resultDoor: null, advisory: null, advisoryFlagReads: 0 },
+        };
+        const settlementPhaseTimings = () => ({
+          phaseTimingsMs: {
+            postDispatchToSettlement:
+              raced.postDispatchStartedAtMs === null
+                ? null
+                : Math.max(0, Date.now() - raced.postDispatchStartedAtMs),
+            resultDoor: raced.phaseTimingsMs.resultDoor,
+            advisory: raced.phaseTimingsMs.advisory,
+            advisoryFlagReads: raced.phaseTimingsMs.advisoryFlagReads,
+          },
+        });
+        const readAdvisoryFlag = async (flag: Parameters<typeof getFlag>[0]): Promise<boolean> => {
+          const startedAtMs = Date.now();
+          try {
+            return await getFlag(flag, 'system');
+          } finally {
+            raced.phaseTimingsMs.advisoryFlagReads += Math.max(0, Date.now() - startedAtMs);
+          }
+        };
         // P2-5 must cover workspace/principal synthesis as well as the tool
         // handler. Keep one deadline result and one deadline origin for both
         // races so a slow pre-dispatch acquisition cannot start a handler
@@ -4660,6 +4691,9 @@ export function registerMcpHost(server: McpServer): void {
                     PROJECTED_DEPS,
                   )) as McpCallResult;
                 },
+              }).then((result) => {
+                raced.postDispatchStartedAtMs = Date.now();
+                return result;
               }),
               projectionSpec,
               { toolName, effect: projected?.effect },
@@ -4691,9 +4725,12 @@ export function registerMcpHost(server: McpServer): void {
               projectionSpec || namedView
                 ? undefined
                 : (projected.skipResultDoor ?? nestedResultDoorSkipReason(doorInput));
-            const doored = resultDoorSkipReason
-              ? doorInput
-              : await applyResultDoorAsync(doorInput, {
+            const resultDoorStartedAtMs = Date.now();
+            let doored: typeof doorInput;
+            try {
+              doored = resultDoorSkipReason
+                ? doorInput
+                : await applyResultDoorAsync(doorInput, {
                   toolName,
                   nestedTargetToolName,
                   workspaceId: dispatchSpawnCtx.workspaceId,
@@ -4719,7 +4756,10 @@ export function registerMcpHost(server: McpServer): void {
                   })(),
                   aggregateScope,
                   ...(preservePaths ? { preservePaths } : {}),
-                });
+                  });
+            } finally {
+              raced.phaseTimingsMs.resultDoor = Math.max(0, Date.now() - resultDoorStartedAtMs);
+            }
             // EI-19415249247575123: a `not_found` returned while this process is KNOWN to
             // have talked to a DIFFERENT Postgres cluster is a confidently wrong answer —
             // the most expensive shape available here, because an agent that trusts it
@@ -4838,6 +4878,7 @@ export function registerMcpHost(server: McpServer): void {
             // (cheap); getFlag is consulted ONLY when a hint actually fires (rare), so the hot
             // path stays a single in-memory increment. Best-effort — never affect the tool result.
             // Attached AFTER idempotent persistence so a replay serves the raw stored result.
+            const advisoryStartedAtMs = Date.now();
             if (!result.isError) {
               // A delta-protocol result (`result._meta.delta` set — e.g. a delta-proxy
               // RECONSTRUCTED full body, mcp-handler-gating-matrix delta-proxy:845) carries a
@@ -4894,7 +4935,7 @@ export function registerMcpHost(server: McpServer): void {
                 if (hint && canAttachAdvisory) {
                   const nudgeFlag =
                     hint.kind === 'same-tool' ? FLAGS.CODE_RUN_BATCH_NUDGE : FLAGS.CODE_RUN_FANOUT_NUDGE;
-                  if (await getFlag(nudgeFlag, 'system')) {
+                  if (await readAdvisoryFlag(nudgeFlag)) {
                     result.content = [
                       ...result.content,
                       { type: 'text' as const, text: `\n[batch-hint] ${hint.text}` },
@@ -4968,7 +5009,7 @@ export function registerMcpHost(server: McpServer): void {
                     return JSON.parse(first.text) as unknown;
                   },
                 });
-                if (preempt && canAttachAdvisory && (await getFlag(FLAGS.CODE_RUN_FANOUT_PREEMPT, 'system'))) {
+                if (preempt && canAttachAdvisory && (await readAdvisoryFlag(FLAGS.CODE_RUN_FANOUT_PREEMPT))) {
                   result.content = [
                     ...result.content,
                     { type: 'text' as const, text: `\n[batch-hint] ${preempt.text}` },
@@ -5000,7 +5041,7 @@ export function registerMcpHost(server: McpServer): void {
                   sessionKey: nudgeSessionKey,
                   toolName,
                 });
-                if (orientHint && canAttachAdvisory && (await getFlag(FLAGS.ORIENT_DEDUP_NUDGE, 'system'))) {
+                if (orientHint && canAttachAdvisory && (await readAdvisoryFlag(FLAGS.ORIENT_DEDUP_NUDGE))) {
                   result.content = [...result.content, { type: 'text' as const, text: `\n[nudge] ${orientHint}` }];
                 }
               } catch {
@@ -5018,13 +5059,14 @@ export function registerMcpHost(server: McpServer): void {
                   sessionKey: nudgeSessionKey,
                   toolName,
                 });
-                if (planeHint && canAttachAdvisory && (await getFlag(FLAGS.STATE_PLANE_NUDGE, 'system'))) {
+                if (planeHint && canAttachAdvisory && (await readAdvisoryFlag(FLAGS.STATE_PLANE_NUDGE))) {
                   result.content = [...result.content, { type: 'text' as const, text: `\n[nudge] ${planeHint}` }];
                 }
               } catch {
                 // advisory only; a failure must never change the tool outcome.
               }
             }
+            raced.phaseTimingsMs.advisory = Math.max(0, Date.now() - advisoryStartedAtMs);
             return result;
           };
           // P2-5 deadline: a tool exceeding its effective deadline returns a clean
@@ -5043,11 +5085,13 @@ export function registerMcpHost(server: McpServer): void {
                   trace('inner_dispatch_settled', {
                     outcome: result.isError ? 'tool_error' : 'success',
                     afterDeadline: raced.deadlineFired,
+                    ...settlementPhaseTimings(),
                   }),
                 () =>
                   trace('inner_dispatch_settled', {
                     outcome: 'rejected',
                     afterDeadline: raced.deadlineFired,
+                    ...settlementPhaseTimings(),
                   }),
               );
               return outcome;
