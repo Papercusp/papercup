@@ -69,11 +69,13 @@ function evaluatorBuildDiff(recorded: BuildInfo, live: BuildInfo): boolean {
   return recorded.sha !== live.sha || recorded.version !== live.version;
 }
 
+type EvaluatorClassSource = 'active-acceptance-rubric' | 'retired-acceptance-rubric';
+
 type EvaluatorClassResolution =
   | {
       ok: true;
       classRef: PlanClassRubricRef;
-      source: 'active-acceptance-rubric' | 'retired-acceptance-rubric';
+      source: EvaluatorClassSource;
     }
   | { ok: false; code: string; message: string; wouldBlock: string[] };
 
@@ -93,8 +95,7 @@ async function resolveEvaluatorClassRef(planSlug: string, harnessSlug: string): 
     };
   }
 
-  let source: EvaluatorClassResolution extends { ok: true; source: infer S } ? S : never =
-    'active-acceptance-rubric';
+  let source: EvaluatorClassSource = 'active-acceptance-rubric';
   if (rubrics.length === 0) {
     source = 'retired-acceptance-rubric';
     try {
