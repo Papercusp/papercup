@@ -5,9 +5,9 @@
   "accountableOwner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
   "population": {
     "failedFiles": 124,
-    "repairedFocused": 25,
+    "repairedFocused": 26,
     "repairedPeerFocused": 16,
-    "openUnknown": 83
+    "openUnknown": 82
   },
   "classes": {
     "assertion": 55,
@@ -21,7 +21,7 @@
     "migration-stage": 1,
     "missing-schema": 14,
     "blueprint-fixture": 1,
-    "console-guard": 9,
+    "console-guard": 8,
     "unclassified": 6,
     "plan-pot-fixture": 1,
     "plan-observation-fixture": 1,
@@ -40,7 +40,8 @@
     "peer-memory-fixture": 1,
     "peer-edit-attribution-migration": 1,
     "plan-receiver-schema-fixture": 1,
-    "peer-plan-cutover-schema": 1
+    "peer-plan-cutover-schema": 1,
+    "sidecar-pool-lifecycle-fixture": 1
   },
   "files": [
     {
@@ -620,14 +621,39 @@
     },
     {
       "path": "packages/operator-core/lib/sync/hyperbee/__tests__/sidecar-joiner-owner-bootstrap-admit.repro.integration.test.ts",
-      "class": "console-guard",
-      "state": "open-unknown",
-      "item": "WI-10006170",
+      "class": "sidecar-pool-lifecycle-fixture",
+      "state": "repaired-focused",
+      "item": "WI-10007161",
       "lines": [
         16231,
         16232,
         16233
-      ]
+      ],
+      "historicalSymptomClass": "console-guard",
+      "relatedOpenInventory": "EI-24099631804056975",
+      "diagnosis": "The fixture rotates isolated OrgTestDb targets and resets db-org pools/resolvers, but retains the independent long-lived-admin-pool registry. Its next merge-cursor access correctly rebinds and warns, failing strict console validation. Reused the existing registry/identity reset helpers and federation-restart-durability fixture pattern at per-case teardown. Real PG control observes old bound URL, successful database rotation with the exact production warning, and fresh correct-database access without a warning after reset. Each control build waits for its independent asynchronous identity pin before rotating; original four owner-admission/roster/content cases remain intact.",
+      "beforeTestRun": 20901570,
+      "controlAuditTestRun": 20902079,
+      "afterTestRun": 20902157,
+      "passed": 5,
+      "skipped": 0,
+      "receiptCommit": "e0b3b2475a17b501891b137f66c3f72c049c2e20",
+      "receiptWorkspace": "papercusp-workspace",
+      "receiptHarness": "papercusp",
+      "receiptSource": "local",
+      "receiptRunGroup": null,
+      "worktreeDirty": true,
+      "isScratchConfig": false,
+      "testSha256": "0722026f99b2b964cbae3d921ec077cccf5369cb71417ecb50d4620996f90b0f",
+      "testedTestBlob": "be98f0065878990bf664dfd8861618fb0c4b6c37",
+      "beforeLog": "/tmp/wi-10006170-sidecar-before.log",
+      "beforeLogSha256": "53b4fd639f5a287bff9bcd2c7f8dd761a0e97a76ba1ea0ad21b16241e73dc5b7",
+      "focusedLog": "/tmp/wi-10007161-verified.log",
+      "focusedLogSha256": "63159bc42e417c9a9f1824c695c3a5f040e5763bef280c8e5ee718e5bde6f4fa",
+      "scopedTypecheck": { "checkedFiles": 1, "errors": 0, "exitCode": 0, "engine": "tsc-service" },
+      "recurrenceGuard": "Conventional real-PG lifecycle control distinguishes retained-registry rotation from fresh-fixture startup; exact rebind warning remains asserted, and the original strict-console four-scenario sidecar population passes.",
+      "completeImportGraphCurrentness": "unknown",
+      "currentEvidenceScope": "Whole named file PASS5/0skip/exit0, local repository-dirty staging receipt. Exact named bytes and logs retained; full import/environment, final D006 and shipment remain unverified."
     },
     {
       "path": "packages/operator-core/lib/sync/hyperbee/__tests__/federation-multimember-sidecar.repro.integration.test.ts",
@@ -2241,13 +2267,13 @@
     },
     {
       "class": "console-guard",
-      "count": 9,
+      "count": 8,
       "status": "open-unknown",
       "item": "WI-10006170",
       "owner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
       "scope": "diagnosis-and-placement",
       "rootCause": "unproved",
-      "next": "Resolve the nine archived diagnostic entries below against scoped repairs and current causal verification; preserve open-unknown until each file's complete failure population is accounted for.",
+      "next": "Resolve the eight remaining console-guard files against scoped repairs and current causal verification; preserve their open-unknown state. The original nine-entry diagnostic inventory remains historical; its fresh-joiner entry is now accounted for by WI-10007161.",
       "archivedDiagnosticInventory": {
         "archiveSha256": "43cf66489baf7cf665a9746d097375cffc7cdc6262014929c3cc398155b579f4",
         "scope": "Exact ANSI-stripped error groups from the immutable D006 archive, indexed by the existing FAIL-header line identities. These are historical symptoms, not current test verdicts or proved source causes. Candidate terminal records require completion and source-assurance review.",
@@ -2814,6 +2840,18 @@
       "testRunIds": [20901028],
       "archiveLines": [16200, 16201, 16202, 16203, 16204, 16205, 16206, 16207, 16208, 16209, 16210, 16211, 16212, 16213],
       "next": "Retain current focused PASS23/0skip with named-byte equality and repository-dirty limits. Preserve finalP004 custody; full import/environment and finalD006 assurance remain unverified."
+    },
+    {
+      "class": "sidecar-pool-lifecycle-fixture",
+      "count": 1,
+      "status": "repaired-focused",
+      "item": "WI-10007161",
+      "owner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
+      "scope": "named-fresh-sidecar-joiner-fixture-only",
+      "rootCause": "Per-case DSN isolation leaves the separate long-lived pool registry bound to the previous fixture. Reset registry and process identity at teardown, retaining production rebinding. The real PG control must also await each fire-and-forget identity probe before its next reset/rotation; the failed intermediate control20902079 identified that harness precondition and is not a passing receipt.",
+      "testRunIds": [20901570, 20902079, 20902157],
+      "archiveLines": [16231, 16232, 16233, 16234, 16239],
+      "next": "Retain focused PASS5/0skip and scoped typecheck1/errors0. Related multi-file EI-24099631804056975 remains open; other console fixtures, complete imports/environment, final D006 and shipment remain unverified."
     }
   ],
   "prerequisites": [
