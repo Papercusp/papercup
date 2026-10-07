@@ -26,10 +26,11 @@ export const RELEASE_IDENTITY_AUDIT_SCRIPT = 'papercusp-desktop/bin/audit-releas
 
 export type ScrubCommandRunner = (command: string, args: readonly string[]) => Promise<void>;
 
-const execFileAsync = promisify(execFile);
+// An injected runner must not require execFile from a narrow importer mock.
+let execFileAsync: typeof execFile.__promisify__ | null = null;
 
 const defaultRunner: ScrubCommandRunner = async (command, args) => {
-  await execFileAsync(command, [...args], { maxBuffer: 16 * 1024 * 1024 });
+  await (execFileAsync ??= promisify(execFile))(command, [...args], { maxBuffer: 16 * 1024 * 1024 });
 };
 
 /**

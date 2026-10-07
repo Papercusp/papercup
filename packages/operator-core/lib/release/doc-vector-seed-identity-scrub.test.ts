@@ -8,7 +8,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   DOC_VECTOR_SEED_FORMAT,
   DOC_VECTOR_SEED_VERSION,
@@ -65,6 +65,24 @@ afterEach(async () => {
 });
 
 describe('scrubDocVectorSeedIdentity', () => {
+  it('supports an injected runner when the importer mocks only synchronous subprocesses', async () => {
+    const synchronousRunner = vi.fn();
+    vi.resetModules();
+    vi.doMock('node:child_process', () => ({ execFileSync: synchronousRunner }));
+    try {
+      const { scrubDocVectorSeedIdentity: scrub } = await import('./doc-vector-seed-identity-scrub');
+      const dir = await tempSeedDir();
+      await writeDocVectorSeed(dir, seedWithAnchor('overview-2'));
+      const run = vi.fn(async () => {});
+      expect(await scrub(dir, REPO_ROOT, run)).toEqual({ rows: 2 });
+      expect(run).toHaveBeenCalledWith('python3', [join(REPO_ROOT, RELEASE_IDENTITY_AUDIT_SCRIPT), '--scrub-text', dir]);
+      expect(synchronousRunner).not.toHaveBeenCalled();
+    } finally {
+      vi.doUnmock('node:child_process');
+      vi.resetModules();
+    }
+  });
+
   it('redacts an audited identity from a heading-slug anchor and keeps every row aligned with its vector', async () => {
     const literal = auditedIdentityLiteral();
     const dir = await tempSeedDir();
