@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { PRODUCT_TUTORIAL_LESSONS, PRODUCT_TUTORIAL_TARGETS, productTutorialLessonIds, productTutorialTargetAvailability } from '@papercusp/operator-core/lib/onboarding/product-tutorial-lesson';
 import type { AccountTutorialProgressRecord } from '@papercusp/operator-core/lib/onboarding/cloud-tutorial-progress';
 
@@ -36,6 +36,16 @@ export function AccountProductTutorial({ account, sessionSignal = 'valid', child
   const heading = useRef<HTMLHeadingElement>(null);
   const resume = useRef<HTMLButtonElement>(null);
   const requestedFocus = useRef<'heading' | 'resume' | null>(null);
+  // A destination provider may replace its startup wrapper after this guide's
+  // effect has run. Transfer the focus intent only when it replaces our focused
+  // control; an ordinary destination update must not steal the user's focus.
+  const attachResume = useCallback((node: HTMLButtonElement | null) => {
+    if (!node && requestedFocus.current !== 'heading' && resume.current === document.activeElement) requestedFocus.current = 'resume';
+    resume.current = node;
+    if (node && !node.disabled && requestedFocus.current === 'resume') {
+      node.focus(); requestedFocus.current = null;
+    }
+  }, []);
   const operation = useRef<AbortController | null>(null);
   const mounted = useRef(false);
   const pending = useRef<{ body: string; patch: Pick<AccountTutorialProgressRecord, 'disposition' | 'currentLessonId' | 'reviewedLessonIds'>; href?: string } | null>(null);
@@ -105,7 +115,7 @@ export function AccountProductTutorial({ account, sessionSignal = 'valid', child
     // inside its existing dialog, rather than behind its blocking backdrop.
     const guideControls = record && <aside className="product-guide-return" aria-label="Product guide">
     <style>{PRODUCT_GUIDE_CSS}</style>
-    <button ref={resume} disabled={busy} onClick={() => save({ ...record, disposition: 'active' })}>{record.disposition === 'closed' ? 'Review product guide' : 'Resume product guide'}</button>
+    <button ref={attachResume} disabled={busy} onClick={() => save({ ...record, disposition: 'active' })}>{record.disposition === 'closed' ? 'Review product guide' : 'Resume product guide'}</button>
     {currentLesson && <details><summary>Help with {currentLesson.title}</summary><p>{currentLesson.help}</p><a href="/docs">Read public Docs</a></details>}
     {error && <p role="alert">{error}</p>}</aside>;
     return typeof children === 'function' ? children(guideControls) : <>{guideControls}{children}</>;
