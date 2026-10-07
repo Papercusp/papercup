@@ -1383,8 +1383,10 @@ function mcpUrlWithClient(mcpUrl: string, sid: string): string {
  * The per-session client identity is baked into the url because codex cannot
  * env-expand config.toml, and the superuser bearer rides as an http_headers
  * Authorization (D-006 — the env-var form doesn't deliver on codex 0.135).
- * `env_http_headers` resolves CODEX_SESSION_ID at request time, independently
- * proving which native Codex incarnation is using the inherited coord owner.
+ * `env_http_headers` supplies a legacy process-environment native-session claim.
+ * The MCP host prefers Codex's per-call _meta.threadId, since the process can
+ * inherit a parent's CODEX_SESSION_ID while shell tools receive the current id.
+ * Both carriers are checked against the owner's registered native incarnation.
  */
 export function suCodexConfigToml(opts: SuCodexConfigInput): string {
   const url = mcpUrlWithClient(opts.mcpUrl, opts.sid);
