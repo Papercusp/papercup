@@ -30,7 +30,7 @@ const endSeconds = Number(until.slice(1));
 if (!Number.isFinite(startSeconds) || !Number.isFinite(endSeconds) || startSeconds >= endSeconds || endSeconds > nowSeconds) {
   throw new Error("Scan window must be finite, increasing, and no later than the current clock");
 }
-const tags = ["spawner-socket-error", "spawner-socket-peer-eof", "spawner-ipc-client-fault", "spawner-process-exec-fault", "spawner-server-error"];
+const tags = ["spawner-socket-error", "spawner-socket-peer-eof", "spawner-ipc-client-fault", "spawner-process-exec-fault", "spawner-process-drain"];
 const pattern = "\\[(?:" + tags.join("|") + ")\\]";
 const r = await tools.logs.read({ unit: "papercusp-bg-host.service", since, until, grep: pattern, limit: 1000, scope: "user" });
 const entriesValue = r.entries ?? null;
