@@ -55,6 +55,8 @@ import {
 } from './types';
 
 export interface ManagedSpawnOptions {
+  /** Optional launch tracer; observes the existing spawn path without secrets. */
+  stage?: (name: string) => void;
   /** Anything `child_process.spawn` takes. `detached` is honoured — a detached
    *  child still cannot leave its cgroup, which is the point. */
   spawnOptions?: SpawnOptions;
@@ -287,7 +289,9 @@ export async function managedSpawn(
   // no exit wiring. Byte-identical to what this seam's callers did before the
   // task manager existed, which is what makes the flag an honest kill-switch
   // rather than a dashboard blanker.
+  opts.stage?.('spawn-read-flag');
   if (!(await isTaskManagerEnabled('task-manager:spawn'))) {
+    opts.stage?.('spawn-fork');
     const child = spawnFn(command, args as string[], opts.spawnOptions ?? {});
     return {
       taskId,
@@ -308,6 +312,7 @@ export async function managedSpawn(
       scopeOk = opts.scopeAvailable;
       if (!scopeOk) skippedReason = 'confinement disabled by caller';
     } else {
+      opts.stage?.('spawn-scope-probe');
       const probe = await probeScopeSupport(spawnFn);
       scopeOk = probe.ok;
       skippedReason = probe.reason;
@@ -338,6 +343,7 @@ export async function managedSpawn(
     reserveScope: scopeOk,
   };
   try {
+    opts.stage?.('spawn-register-task');
     row = await registerTask(argvSpec, registerOptions);
   } catch (e) {
     ledgered = false;
@@ -364,6 +370,7 @@ export async function managedSpawn(
   const environmentStdio =
     scopeOk && payloadEnv !== undefined ? normalizeSpawnStdio(opts.spawnOptions?.stdio) : null;
   const environmentFdIndex = environmentStdio ? Math.max(3, environmentStdio.length) : undefined;
+  opts.stage?.('spawn-environment-transport');
   const builtLaunch = scopeOk
     ? buildTaskScopeArgvWithTransport([command, ...args], {
         unit: scopeUnit!,
@@ -411,6 +418,7 @@ export async function managedSpawn(
 
   let child: ChildProcess;
   try {
+    opts.stage?.('spawn-fork');
     child = spawnFn(launchArgv[0]!, launchArgv.slice(1), launchSpawnOptions);
   } catch (e) {
     environmentTransport?.release();
@@ -463,6 +471,7 @@ export async function managedSpawn(
   // The child is ALREADY RUNNING by here, so a throw out of `markSpawned` would
   // be the worst of both worlds: the caller sees a failed spawn and abandons a
   // live process nobody is holding. Record what we can, degrade to unaccounted.
+  opts.stage?.('spawn-process-identity');
   const spawnedFacts = {
     pid,
     processIdentity: pid ? readProcessIdentity(pid) : null,
@@ -568,7 +577,10 @@ export async function managedSpawn(
     await attemptRegistrationRecovery();
   };
 
-  if (ledgered) await markSpawnedRow();
+  if (ledgered) {
+    opts.stage?.('spawn-mark-running');
+    await markSpawnedRow();
+  }
   else scheduleRegistrationRetry();
 
   wireExit(child, taskId, scopeOk, scopeUnit, scopeCgroupPath, fs, persistCloseWhenRegistered);

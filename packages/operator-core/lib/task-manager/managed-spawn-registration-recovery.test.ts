@@ -104,12 +104,13 @@ function scannedProcess(taskId: string): ScannedProcess {
   };
 }
 
-async function launch(taskId: string, procs: number[] | null) {
+async function launch(taskId: string, procs: number[] | null, stage?: (name: string) => void) {
   const emitter = new EventEmitter();
   Object.assign(emitter, { pid: PID, kill: () => true });
   const spawnFn = (() => emitter as unknown as ChildProcess) as unknown as typeof nodeSpawn;
   const result = await managedSpawn('node', ['local-whisper-service.js'], SPEC, {
     taskId,
+    stage,
     scopeAvailable: true,
     spawnFn,
     fs: makeFs(taskId, procs),
@@ -143,6 +144,23 @@ afterEach(() => {
 });
 
 describe('managedSpawn ledger registration recovery', () => {
+  it('identifies a pending ledger registration before the native fork', async () => {
+    const stages: string[] = [];
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    M.registerTask.mockImplementation(async () => {
+      await pending;
+      return makeTaskRow('traceregister1', SPEC);
+    });
+    const result = launch('traceregister1', null, (name) => stages.push(name));
+    await flushMicrotasks();
+    expect(stages.at(-1)).toBe('spawn-register-task');
+    expect(stages).not.toContain('spawn-fork');
+    release();
+    await result;
+    expect(stages).toContain('spawn-fork');
+    expect(stages.at(-1)).toBe('spawn-mark-running');
+  });
   it('retries the same task id and scope, then reconciliation matches the recovered row', async () => {
     const taskId = 'recover1234';
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
