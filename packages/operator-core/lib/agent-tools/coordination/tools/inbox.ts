@@ -997,6 +997,9 @@ export default defineTool({
     // P-001: hoisted above the derive because it participates in the windowing
     // decision below, not just the post-read filtering.
     const directedOnly = args.directed === true;
+    // Opt-in full tracing lets the isolated background-runtime probe inspect a
+    // natural default read without adding metadata work to ordinary inbox calls.
+    const traceAllInboxPhases = process.env.PAPERCUSP_COORD_INBOX_TRACE_PHASES === "1";
     // Selective inbox reads have produced request_timeout failures, but the
     // existing cache telemetry measures only the readInbox factory. Preserve a
     // cumulative phase trace in invocation metadata for these less-common paths.
@@ -1009,7 +1012,7 @@ export default defineTool({
     const traceSelectivePhases = Boolean(args.from || directedOnly || unansweredOnly);
     let tracePresenceRebootstrap = false;
     const shouldTraceInboxPhase = (name?: string): boolean =>
-      traceSelectivePhases || (
+      traceAllInboxPhases || traceSelectivePhases || (
         tracePresenceRebootstrap && (
           name === undefined ||
           name === "consume-presence-rebootstrap" ||
@@ -1102,13 +1105,25 @@ export default defineTool({
     // matches the member's full actorUserKey ladder (resolveActorIdentity adds the
     // async gh id; cached). Best-effort — a drain hiccup must never break the read;
     // a fully-online member with no parked mail is a single cheap no-op UPDATE.
-    await measureInboxPhase("resolve-actor-and-drain-mailbox", () =>
-      resolveActorIdentity(ctx)
-        .then((actor) =>
+    await measureInboxPhase("resolve-actor-and-drain-mailbox", () => {
+      // Keep the ordinary path identical; the opt-in/selective trace additionally
+      // separates identity resolution from the mailbox write/read work.
+      if (!shouldTraceInboxPhase("resolve-actor-identity")) {
+        return resolveActorIdentity(ctx)
+          .then((actor) =>
+            drainAndDeliverUserMailbox(actorMailboxKeys(actor), actor.ownerId),
+          )
+          .catch(() => {});
+      }
+      return (async () => {
+        const actor = await measureInboxPhase("resolve-actor-identity", () =>
+          resolveActorIdentity(ctx),
+        );
+        await measureInboxPhase("drain-user-mailbox", () =>
           drainAndDeliverUserMailbox(actorMailboxKeys(actor), actor.ownerId),
-        )
-        .catch(() => {}),
-    );
+        );
+      })().catch(() => {});
+    });
     // Piggyback liveness: reading your inbox IS a heartbeat. Keeps a fresh
     // coord:presence row for every active agent (the read hook runs every
     // tool call) without clobbering a declared intent. Best-effort, and run

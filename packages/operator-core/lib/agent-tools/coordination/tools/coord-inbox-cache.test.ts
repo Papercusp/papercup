@@ -148,6 +148,33 @@ afterEach(async () => {
 });
 
 describe("coord:inbox — cache the derive, keep side effects", () => {
+  it("records every phase for a default read when diagnostic tracing is enabled", async () => {
+    const previousTraceFlag = process.env.PAPERCUSP_COORD_INBOX_TRACE_PHASES;
+    process.env.PAPERCUSP_COORD_INBOX_TRACE_PHASES = "1";
+    try {
+      const metadata = vi.fn();
+      await inbox("owner-a", {}, metadata);
+
+      const traces = metadata.mock.calls
+        .map(([value]) => (value as { coordInboxRead?: {
+          request: { hasFrom: boolean; directed: boolean; unansweredOnly: boolean };
+          phases: Array<{ name: string; status: string; elapsedMs: number | null }>;
+      } }).coordInboxRead)
+        .filter((trace): trace is NonNullable<typeof trace> => trace !== undefined);
+      const settled = traces.at(-1);
+      expect(settled?.request).toEqual({ hasFrom: false, directed: false, unansweredOnly: false });
+      expect(settled?.phases.find(({ name }) => name === "readInbox-derive")?.status).toBe("fulfilled");
+      expect(settled?.phases.map(({ name }) => name)).toEqual(expect.arrayContaining([
+        "resolve-actor-identity",
+        "drain-user-mailbox",
+      ]));
+      expect(settled?.phases.every(({ status }) => status !== "running")).toBe(true);
+    } finally {
+      if (previousTraceFlag === undefined) delete process.env.PAPERCUSP_COORD_INBOX_TRACE_PHASES;
+      else process.env.PAPERCUSP_COORD_INBOX_TRACE_PHASES = previousTraceFlag;
+    }
+  });
+
   it("records inner presence snapshot timings on a pending rebootstrap, even for a full inbox read", async () => {
     M.readWatermark.mockImplementationOnce(async () => ({
       messages_shown_ts: "9999-01-01T00:00:00Z",
