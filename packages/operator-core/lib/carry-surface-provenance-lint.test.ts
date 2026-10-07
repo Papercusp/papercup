@@ -46,6 +46,8 @@ describe('lintCarrySurfaceProvenance', () => {
       'peer owner asked for a handoff update.',
       'work-item owner requires the claim to stay open.',
       'fleet owner directed the member to retry.',
+      'the root owner asked for an exact recovery update.',
+      'the storage owner asked for the exact artifact source.',
     ])('does not flag %s', (line) => {
       expect(lintCarrySurfaceProvenance(line)).toEqual({ flagged: false, matches: [] });
     });

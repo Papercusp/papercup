@@ -1,5 +1,12 @@
 {
   "tauriPID": 1835173,
+  "runtimeUnits": [
+    "hono-host:3170",
+    "p010-email-sidecar-20261007",
+    "p010-calendar-sidecar-20261007",
+    "p010-phone-sidecar-20261007",
+    "p010-tauri-shell-20261007"
+  ],
   "email": {
     "origin": "http://127.0.0.1:20267",
     "messageId": "p010-email-ui-preflight-20261007",

@@ -64,6 +64,16 @@ describe('report-runtime-vintage', () => {
       extra: { identitySource: 'kernel-loaded-executable', uncommittedTrackedPaths: null } });
   });
 
+  it('keeps a Node entry digest distinct from the interpreter executable and source HEAD', () => {
+    expect(() => parseArgs(['--unit', 'bundle', '--node-entry'], {})).toThrow(/requires a positive/);
+    expect(() => parseArgs(['--unit', 'bundle', '--node-entry', '--executable', '--pid', '7'], {}))
+      .toThrow(/Choose/);
+    const report = buildVintageReport({ unit: 'bundle', workspace: 'ws', pid: 7,
+      dir: '/old-checkout', treeSha: 'a'.repeat(40), dirty: null, nodeEntryDigest: 'b'.repeat(64) });
+    expect(report).toMatchObject({ treeSha: null, bundleVersion: `node-entry-sha256:${'b'.repeat(64)}`,
+      extra: { identitySource: 'kernel-selected-node-entry' } });
+  });
+
   it('builds exactly the body the loopback sink accepts, with the checkout sha and dirtiness', () => {
     const report = buildVintageReport({ unit: 'papercusp-phone-worker.service', workspace: 'ws',
       pid: 7, dir: '/x/worker', treeSha: 'a'.repeat(40), dirty: 2, now: new Date('2026-10-06T17:00:00Z') });
