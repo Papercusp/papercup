@@ -94,6 +94,76 @@ describe('current-build execution route contract', () => {
     expect(existsSync(home as string)).toBe(false);
   }, 125_000);
 
+  it('captures a default coord inbox phase trace from current source in an isolated background runtime', () => {
+    const wrapper = resolve(root, 'scripts/with-test-pg.mjs');
+    const probe = `
+      import { monitorEventLoopDelay, performance } from 'node:perf_hooks';
+      import tool from './packages/operator-core/lib/agent-tools/coordination/tools/inbox.ts';
+      process.env.PAPERCUSP_COORD_INBOX_TRACE_PHASES = '1';
+      const metadata = [];
+      const e = process.env;
+      const lag = monitorEventLoopDelay({ resolution: 10 });
+      const ctx = {
+        uiClientId: 'current-build-inbox-probe',
+        isSuperuser: true,
+        workspaceId: e.PAPERCUSP_WORKSPACE_ID,
+        metadata: (value) => metadata.push(value),
+        log: () => {},
+        progress: () => {},
+      };
+      lag.enable();
+      const startedAt = performance.now();
+      const result = await tool.handler({}, ctx);
+      const elapsedMs = Math.round(performance.now() - startedAt);
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      lag.disable();
+      const trace = metadata
+        .map((value) => value?.coordInboxRead)
+        .filter(Boolean)
+        .at(-1) ?? null;
+      console.log('INBOX_PHASE_PROBE ' + JSON.stringify({
+        defaultArgs: {},
+        background: e.PAPERCUSP_BACKGROUND_WORKERS === '1',
+        workspaceScoped: e.PAPERCUSP_WORKSPACE === e.PAPERCUSP_WORKSPACE_ID,
+        returned: Array.isArray(result?.content),
+        elapsedMs,
+        eventLoopMaxMs: Number.isFinite(lag.max) && lag.max > 0 ? Math.round(lag.max / 1e6) : null,
+        eventLoopP99Ms: Number.isFinite(lag.percentile(99)) ? Math.round(lag.percentile(99) / 1e6) : null,
+        trace,
+        home: e.HOME,
+      }));
+    `;
+    const result = spawnSync(process.execPath, [wrapper, '--isolated-runtime', '--', process.execPath,
+      '--import', 'tsx', '--input-type=module', '-e', probe], {
+      cwd: root,
+      encoding: 'utf8',
+      timeout: 120_000,
+    });
+    expect(result.status, `${result.stdout.slice(-2000)}\n${result.stderr.slice(-3000)}`).toBe(0);
+    const payload = result.stdout.match(/^INBOX_PHASE_PROBE (.+)$/m)?.[1];
+    expect(payload).toBeTruthy();
+    const probeResult = JSON.parse(payload!);
+    process.stdout.write(`INBOX_PHASE_OBSERVATION ${JSON.stringify({
+      elapsedMs: probeResult.elapsedMs,
+      eventLoopMaxMs: probeResult.eventLoopMaxMs,
+      eventLoopP99Ms: probeResult.eventLoopP99Ms,
+      phases: probeResult.trace?.phases,
+    })}\n`);
+    expect(probeResult.defaultArgs).toEqual({});
+    expect(probeResult.background).toBe(true);
+    expect(probeResult.workspaceScoped).toBe(true);
+    expect(probeResult.returned).toBe(true);
+    expect(probeResult.trace.request).toEqual({ hasFrom: false, directed: false, unansweredOnly: false });
+    expect(probeResult.trace.phases).toContainEqual(expect.objectContaining({
+      name: 'readInbox-derive', status: 'fulfilled', elapsedMs: expect.any(Number),
+    }));
+    expect(probeResult.trace.phases.map(({ name }) => name)).toEqual(expect.arrayContaining([
+      'resolve-actor-identity',
+      'drain-user-mailbox',
+    ]));
+    expect(existsSync(probeResult.home)).toBe(false);
+  }, 125_000);
+
   it('mints a distinct device keychain identity for each isolated child', () => {
     const wrapper = resolve(root, 'scripts/with-test-pg.mjs');
     const keychainId = `current-build-isolation-${randomUUID()}`;
