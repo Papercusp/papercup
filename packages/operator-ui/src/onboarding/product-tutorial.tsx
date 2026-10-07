@@ -26,7 +26,7 @@ export function validProductTutorialRecord(value: unknown, account: ProductTutor
 
 /** Account entry wraps the host's existing first-run/shell choice. It never
  * mounts that workspace UI while an enrolled guide is active. */
-export function AccountProductTutorial({ account, sessionSignal = 'valid', children }: { account: ProductTutorialAccount; sessionSignal?: string; children: ReactNode }) {
+export function AccountProductTutorial({ account, sessionSignal = 'valid', children }: { account: ProductTutorialAccount; sessionSignal?: string; children: ReactNode | ((guideControls: ReactNode) => ReactNode) }) {
   const [record, setRecord] = useState<AccountTutorialProgressRecord | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -100,10 +100,16 @@ export function AccountProductTutorial({ account, sessionSignal = 'valid', child
   if (loading) return <main className="welcome-state" aria-busy="true"><p role="status">Loading your product guide…</p></main>;
   if (error && !record && !continueUnavailable) return <main className="welcome-state"><h1>Product guide unavailable</h1><p role="alert">{error}</p>
     <button onClick={() => setReload(value => value + 1)}>Try again</button>{' '}<button onClick={() => setContinueUnavailable(true)}>Continue to Papercusp</button>{' '}<a href="/docs">Public Docs</a></main>;
-  if (!record || record.disposition !== 'active') return <>{record && <aside className="product-guide-return" aria-label="Product guide">
+  if (!record || record.disposition !== 'active') {
+    // The destination owns placement: a modal host must place these controls
+    // inside its existing dialog, rather than behind its blocking backdrop.
+    const guideControls = record && <aside className="product-guide-return" aria-label="Product guide">
+    <style>{PRODUCT_GUIDE_CSS}</style>
     <button ref={resume} disabled={busy} onClick={() => save({ ...record, disposition: 'active' })}>{record.disposition === 'closed' ? 'Review product guide' : 'Resume product guide'}</button>
     {currentLesson && <details><summary>Help with {currentLesson.title}</summary><p>{currentLesson.help}</p><a href="/docs">Read public Docs</a></details>}
-    {error && <p role="alert">{error}</p>}</aside>}{children}</>;
+    {error && <p role="alert">{error}</p>}</aside>;
+    return typeof children === 'function' ? children(guideControls) : <>{guideControls}{children}</>;
+  }
   const position = PRODUCT_TUTORIAL_LESSONS.findIndex(lesson => lesson.id === record.currentLessonId);
   const lesson = PRODUCT_TUTORIAL_LESSONS[position];
   const targets = PRODUCT_TUTORIAL_TARGETS.filter(target => target.module === lesson.id);
