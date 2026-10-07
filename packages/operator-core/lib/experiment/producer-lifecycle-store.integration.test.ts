@@ -53,7 +53,10 @@ afterAll(async () => { await db?.cleanup(); });
 async function observation(producer: Parameters<typeof readProducerObservations>[1]['producer']) {
   const rows = await readProducerObservations(db.adminSql, { producer, workspaceId: WS });
   expect(rows).toHaveLength(1);
-  expect(rows[0]).toMatchObject({ stage: 'observation', contract: null, promotionAllowed: false, sourceCurrent: true });
+  expect(rows[0]).toMatchObject({ contract: null, promotionAllowed: false, sourceCurrent: true });
+  expect(rows[0]!.stage).toBe(rows[0]!.lifecycle.stage);
+  expect(rows[0]!.lifecycle.sourceRef).toBe(rows[0]!.sourceRef);
+  expect(rows[0]!.lifecycle.sourceHash).toBe(rows[0]!.sourceHash);
   return rows[0]!;
 }
 
@@ -62,6 +65,9 @@ describe('six actual producer boundaries', () => {
     await recordRoutedIdea({ workspaceId: WS, ideaId: 'scout-output', harnessSlug: 'papercusp', sourceHive: 'papercusp', lens: 'analogical', rail: 'improvement', routedRef: 'wi:EI-test', modelSpec: 'resolved-model', modelConfig: { temperature: 0.2 } });
     const row = await observation('scout');
     expect(row.source).toMatchObject({ idea_id: 'scout-output', routed_ref: 'wi:EI-test', model_spec: 'resolved-model', origin: 'scout' });
+    expect(row.lifecycle).toMatchObject({ stage: 'candidate', producer: 'scout',
+      candidate: { status: 'partial', values: [{ id: 'scout-output', potScope: { workspaceId: WS, potId: null } }] },
+      experiment: { status: 'not-applicable' }, decision: { status: 'not-applicable' } });
     await recordRoutedIdea({ workspaceId: WS, ideaId: 'su-output', harnessSlug: 'papercusp', sourceHive: 'papercusp', lens: 'su-ideate', rail: 'improvement', routedRef: 'wi:EI-su', origin: 'su-ideate' });
     await recordRoutedIdea({ workspaceId: WS, ideaId: 'su-output', harnessSlug: 'papercusp', sourceHive: 'papercusp', lens: 'analogical', rail: 'improvement', routedRef: 'wi:EI-su', preserveExisting: true });
     expect((await readProducerObservations(db.adminSql, { producer: 'scout', workspaceId: WS })).map((r) => r.sourceRef)).toEqual(['scout:scout-output']);
@@ -74,6 +80,11 @@ describe('six actual producer boundaries', () => {
     expect(decision).toMatchObject({ ok: true, promoted: true });
     const row = await observation('gym');
     expect(row.source).toMatchObject({ status: 'accepted', candidate_verdict: { candidateId: 'gym-output', verdict: 'accept' } });
+    expect(row.lifecycle).toMatchObject({ stage: 'activation',
+      evidence: { values: expect.arrayContaining([expect.objectContaining({ id: expect.stringContaining('real-anchor-no-regress'), status: 'pass' })]) },
+      decision: { status: 'partial', value: { verdict: 'accepted', authority: null } },
+      spend: { status: 'unknown', value: null }, activation: { status: 'partial' } });
+    expect(row.promotionAllowed).toBe(false);
     await recordProposal(db.adminSql, { workspaceId: WS, harnessSlug: 'papercusp', id, cycle: 2, role: 'worker', proposedMd: 'must not resurrect' });
     expect((await observation('gym')).source.proposed_md).toBe('candidate prompt');
     expect((await decideProposal(db.adminSql, { workspaceId: WS, harnessSlug: 'papercusp', id, decision: 'rejected' })).ok).toBe(false);
@@ -126,7 +137,11 @@ describe('six actual producer boundaries', () => {
     expect(await insertPrediction(db.adminSql, input)).toEqual({ created: false, id: null });
     expect((await observation('calibration')).source.outcome).toBeNull();
     expect(await resolvePrediction(db.adminSql, { id: first.id!, outcome: false, nowIso: '2026-10-03T01:00:00Z' })).toBe(true);
-    expect((await observation('calibration')).source).toMatchObject({ outcome: false, probability: 0.8, pot_slug: null });
+    const scored = await observation('calibration');
+    expect(scored.source).toMatchObject({ outcome: false, probability: 0.8, pot_slug: null });
+    expect(scored.lifecycle).toMatchObject({ stage: 'outcome', candidate: { status: 'not-applicable' },
+      evidence: { values: [{ kind: 'objective', status: 'fail', coverage: { required: 1, measured: 1 } }] },
+      outcomes: { values: [{ status: 'matured', value: 0 }] } });
     const other = await insertPrediction(db.adminSql, { ...input, subjectId: 'EI-void' });
     expect(await voidPrediction(db.adminSql, { id: other.id!, note: 'undetermined', nowIso: '2026-10-03T01:00:00Z' })).toBe(true);
     const rows = await readProducerObservations(db.adminSql, { producer: 'calibration', workspaceId: WS });
@@ -145,19 +160,29 @@ describe('six actual producer boundaries', () => {
   });
 
   it('captures regret replay/report output from persisted rows, including paid-for carry-forward on re-mine', async () => {
-    const finding = { workspaceId: WS, runId: 'regret-output', harnessSlug: 'papercusp', role: 'worker', badnessScore: 0.7, badnessReasons: ['timeout'], divergenceTurn: 2, divergenceKind: 'error-loop', divergenceEvidence: null, candidateChanges: [], replayStatus: 'pending' as const, replayScores: null, reportImprovementId: null, minedAt: '2026-10-03T00:00:00Z' };
+    const finding = { workspaceId: WS, runId: 'regret-output', harnessSlug: 'papercusp', role: 'worker', badnessScore: 0.7, badnessReasons: ['timeout'], divergenceTurn: 2, divergenceKind: 'error-loop', divergenceEvidence: null,
+      candidateChanges: [{ id: 'stop-retry', title: 'Stop retrying', promptDelta: 'stop after two failures', rationale: 'avoid repeated failures', fromTurn: 2 }],
+      replayStatus: 'pending' as const, replayScores: null, reportImprovementId: null, minedAt: '2026-10-03T00:00:00Z' };
     await upsertFinding(db.adminSql, finding);
-    await recordReplayScores(db.adminSql, WS, finding.runId, []);
+    await recordReplayScores(db.adminSql, WS, finding.runId, [{ candidateId: 'stop-retry', improvementScore: 0.2, summary: 'fewer retries', costUsd: 0.01 }]);
     await markReportFiled(db.adminSql, WS, finding.runId, 'EI-report');
     await upsertFinding(db.adminSql, { ...finding, badnessScore: 0.8 });
-    expect((await observation('regret')).source).toMatchObject({ replay_status: 'replayed', replay_scores: [], report_improvement_id: 'EI-report', badness_score: 0.8 });
+    const row = await observation('regret');
+    expect(row.source).toMatchObject({ replay_status: 'replayed', replay_scores: [{ candidateId: 'stop-retry' }], report_improvement_id: 'EI-report', badness_score: 0.8 });
+    expect(row.lifecycle).toMatchObject({ stage: 'outcome', candidate: { values: [{ id: 'stop-retry' }] },
+      evidence: { values: [{ kind: 'objective', status: 'pass' }] },
+      outcomes: { values: [{ status: 'matured', value: 0.2 }] }, spend: { status: 'unknown', value: null } });
   });
 
   it('retains Red Queen planted and resolved drill provenance without claiming a production experiment', async () => {
     const { drillId } = await insertDrillRow(db.adminSql, { workspaceId: WS, drillClass: 'class-output', collectorFamily: 'test', expectedWatchdogKey: 'test:drill', expectedKind: 'bug', expectedSeverity: 'major', artifacts: { ref: 'drill:planted' } });
     expect((await observation('red-queen')).source).toMatchObject({ status: 'planted', planted_artifacts: { ref: 'drill:planted' } });
-    await updateDrillResolved(db.adminSql, drillId, { resolvedAt: '2026-10-03T01:00:00Z', resolvedWithEvidence: false, mttsh: {}, leakCheck: { passed: true, organicReadClean: true, liveCollectorClean: true, capturedOriginIsDrill: true } });
-    expect((await observation('red-queen')).source).toMatchObject({ status: 'resolved', resolved_with_evidence: false, leak_check_passed: true });
+    await updateDrillResolved(db.adminSql, drillId, { resolvedAt: '2026-10-03T01:00:00Z', resolvedWithEvidence: false, mttsh: { totalMs: 100 }, leakCheck: { passed: true, organicReadClean: true, liveCollectorClean: true, capturedOriginIsDrill: true } });
+    const row = await observation('red-queen');
+    expect(row.source).toMatchObject({ status: 'resolved', resolved_with_evidence: false, leak_check_passed: true });
+    expect(row.lifecycle).toMatchObject({ stage: 'outcome', candidate: { status: 'not-applicable' },
+      evidence: { values: expect.arrayContaining([expect.objectContaining({ kind: 'regression', status: 'pass' })]) },
+      outcomes: { values: [{ status: 'matured', value: 100 }] }, decision: { status: 'not-applicable' } });
   });
 });
 

@@ -144,7 +144,7 @@ describe('P-011 common candidate/evidence/decision lifecycle', () => {
         spend: { status: 'unknown', value: null }, decision: { status: 'not-applicable', value: null },
       } });
     expect(result.missing).toContain('experiment.modelHash');
-    expect(result.missing).toContain('spend.governor reservation and settlement');
+    expect(result.missing.some((field) => field.startsWith('spend.governor reservation and settlement'))).toBe(true);
   });
 
   it('hashes the actual source consistently and excludes the previous receipt', () => {
