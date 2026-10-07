@@ -622,6 +622,37 @@ describe('writeSuCodexHome', () => {
     );
   });
 
+  it('applies the per-session compaction ceiling to fresh and repaired SU homes without changing the 1M model window', async () => {
+    installStaleExtendedWindowRecord('gpt-5.6-sol');
+    const { writeSuCodexHome, ensureSuCodexHomeConfig } = await import('./role-codex-home');
+    const opts = {
+      sessionKey: 'per-session-compaction-limit',
+      mcpUrl: 'http://x/api/mcp?superuser=1',
+      promptText: 'P',
+      sid: 'su-per-session-compaction-limit',
+      model: 'gpt-5.6-sol',
+      compactionLimit: 250_000,
+    };
+
+    const fresh = writeSuCodexHome(opts);
+    const freshToml = readFileSync(fresh.configPath, 'utf8');
+    expect(freshToml).toMatch(
+      /^model_context_window = 1000000\nmodel_auto_compact_token_limit = 250000\n/,
+    );
+    expect(freshToml).not.toContain('model_auto_compact_token_limit = 900000');
+
+    writeFileSync(
+      fresh.configPath,
+      freshToml.replace('model_auto_compact_token_limit = 250000', 'model_auto_compact_token_limit = 900000'),
+    );
+    const repaired = ensureSuCodexHomeConfig(opts);
+    const repairedToml = readFileSync(repaired.configPath, 'utf8');
+    expect(repaired.repaired).toBe(true);
+    expect(repairedToml).toMatch(
+      /^model_context_window = 1000000\nmodel_auto_compact_token_limit = 250000\n/,
+    );
+  });
+
   it('rejects Spark at role and SU CODEX_HOME boundaries while preserving an allowed-model control', async () => {
     const { writeRoleCodexHome, writeSuCodexHome } = await import('./role-codex-home');
 

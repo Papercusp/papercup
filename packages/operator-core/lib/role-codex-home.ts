@@ -1319,6 +1319,8 @@ export interface SuCodexConfigInput {
   /** Launch model. Omit/null resolves the managed Sol xhigh default, which keeps
    *  repair and model-less resume paths aligned with a fresh launch. */
   model?: string | null;
+  /** Per-session soft compaction ceiling recovered from the recorded psu argv. */
+  compactionLimit?: number | null;
   /** Direct per-session CODEX_HOME whose model registry should seed context roots. */
   codexHome?: string | null;
   /** Fast session companion for Codex's high-write SQLite state. */
@@ -1401,6 +1403,7 @@ export function suCodexConfigToml(opts: SuCodexConfigInput): string {
   const modelConfig = codexModelConfigToml(resolvedModel);
   const contextConfig = codexContextConfigToml(resolvedModel, {
     codexHome: opts.codexHome ?? undefined,
+    compactionLimit: opts.compactionLimit,
   }).trimEnd();
   return [
     ...(contextConfig ? contextConfig.split('\n') : []),
@@ -1478,7 +1481,10 @@ export function ensureSuCodexHomeConfig(opts: SuCodexConfigInput & {
   mkdirSync(logDir, { recursive: true });
   const resolvedModel = resolveCodexModel(opts.model);
   const expectedModelConfig = codexModelConfigToml(resolvedModel).join('\n');
-  const expectedContextConfig = codexContextConfigToml(resolvedModel, { codexHome });
+  const expectedContextConfig = codexContextConfigToml(resolvedModel, {
+    codexHome,
+    compactionLimit: opts.compactionLimit,
+  });
   const expectedLogDir = `log_dir = "${tomlEscape(logDir)}"`;
   const expectedSqliteHome = `sqlite_home = "${tomlEscape(sqliteHome)}"`;
   const expectedClient = `client=${encodeURIComponent(opts.sid)}`;
@@ -1576,6 +1582,8 @@ export function writeSuCodexHome(opts: {
   /** Launch model. Extended-window models bake their canonical root keys into
    *  config.toml so model-less resumes retain the launch window. */
   model?: string | null;
+  /** Per-session soft compaction ceiling recovered from the recorded psu argv. */
+  compactionLimit?: number | null;
   /** Superuser bearer token, baked as an http_headers Authorization (D-006).
    *  Omit only when no token is installed → a degraded non-superuser home. */
   token?: string | null;
