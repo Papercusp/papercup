@@ -257,6 +257,24 @@ journey. Native `WI-10006994` checkpoint `08a8b11f5ab4` at 12:28Z still keeps ke
 P-002. P-015 remains open for the exact APK/runtime pair, real credential-store behavior,
 large native upload, the complete hosted journey and a genuine BYOC no-LAN journey.
 
+### Native prerequisite closed; consumer integration underway — 2026-10-07 14:11Z
+
+The timeout of native completion await `240234` did not signal native completion. A current
+canonical read shows `WI-10004768` (P-002) is now `done`. Native `WI-10006994` remains open;
+checkpoint `3ded628ac0aa` supersedes the earlier after-P-002 waiting frontier. Its owner records
+an additive `OperatorClient::pair_with_noise(PairBody, &[u8; 32])` implementation, canonical
+public-key/no-bearer wire coverage, authenticated follow-up token preservation, and legacy,
+auth and offline tests. The focused `cargo test -p papercup-core --test client_test pair`
+passed 12 tests, with 62 filtered, zero failures and zero ignored tests; saved producer log is
+`/tmp/android-noise-pair-focused-1409.log`. This parent consumed the checkpoint, not a new run.
+
+QR machine-key pinning, persisted phone seed, sealed response streaming, D-020 upload chunks,
+additive UniFFI and Android wiring, and cross-language/application verification remain open.
+The delivered fleet-leader reply assigns genuine BYOC setup to the leader and says
+owner-authenticated setup remains open with no live provisioning lane claimed. This parent
+does not duplicate that setup or infer a provisioned BYOC target. P-015 still requires the
+exact APK/runtime pair and both complete no-LAN phone journeys.
+
 ## Historical discovery — 2026-10-06
 
 The following sections preserve the initial analysis and agreement context. Their gap states,
