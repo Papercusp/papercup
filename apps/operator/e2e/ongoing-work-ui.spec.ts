@@ -13,6 +13,16 @@ const packageRow = {
   instances: [{ goalId: current.id, status: 'active', adoptableStub: false }],
 };
 
+// These header reads share the finite-request scheduler with the goal queries.
+// Letting them reach the shared backend makes a fixture's goal admission depend
+// on a live process scan and hive registry. Model those two shell contracts here;
+// the separate shipment profile still exercises real goal data without stubs.
+function headerRows(name: string): readonly unknown[] | undefined {
+  if (name === 'taskManager.inventory') return [{ enabled: false }];
+  if (name === 'hive.controlState') return [];
+  return undefined;
+}
+
 async function scopeFixture(page: Page) {
   const projects = [{ slug: 'papercusp', name: 'papercusp', path: '/tmp/ongoing-ui-fixture',
     hasState: true, hasSpec: true, parent_slug: null, harness_kind: 'project', is_shared: false }];
@@ -35,7 +45,7 @@ test('ongoing work stays visible across tabs, keeps ordinary goals, and opens th
       waitingOnYouTotal: 31, waitingOnYou: [{ id: 'WI-approval', title: 'Choose release scope' }],
       activity: [{ id: 'WI-outcome', title: 'Search repair verified', status: 'done', closedAt: '2026-10-06T12:00:00Z' }],
       plans: [{ planSlug: 'search', harnessSlug: 'papercusp', title: 'Search plan', stamped: true, openItems: 2 }] }];
-    return undefined;
+    return headerRows(name);
   });
   await page.goto('/adv?tab=hud&scope=all&hudtab=goals&welcome=0');
   await sync.waitForServed(['goals.list', 'goals.detail']);
@@ -89,7 +99,7 @@ test('mobile strip preserves truthful status after a refused pause', async ({ pa
     if (name === 'advRoster.list') return [{ active: [], pending: [] }];
     if (name === 'goals.list') return [{ goals: [current], totalGoals: 1, goalPackages: [packageRow] }];
     if (name === 'goals.detail') return [{ goal: current, holderLiveness: 'held', effectiveStatus: 'active' }];
-    return undefined;
+    return headerRows(name);
   });
   await page.route('**/api/admin/goals/update', (route) => route.fulfill({ status: 409,
     contentType: 'application/json', body: JSON.stringify({ error: { message: 'Pause refused for test' } }) }));
