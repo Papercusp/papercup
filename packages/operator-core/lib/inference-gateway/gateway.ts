@@ -24,7 +24,7 @@ import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import { processMonotonicClock } from '../process-monotonic-clock';
 import { normalizeModelId } from '@papercusp/model-pricing';
 import { resolveCodexModel } from '../model-context-budget.mjs';
-import { readFileSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { ActiveOperationAttestationContext, ActiveOperationModelPolicyRead } from '../blueprint/operation-worker-binding';
 import type { DirectOperationModelAttestation } from '../blueprint/operation-service';
@@ -1342,7 +1342,7 @@ export interface GatewayDeps {
   codexCliRun?: (opts: CodexCliRunOpts) => Promise<CodexCliRunResult>;
   /** Read a configured CLI account's native models cache. The default reads
    *  `<CODEX_HOME>/models_cache.json`; injected in tests to keep fixtures local. */
-  codexModelsCacheRead?: (home: string) => unknown;
+  codexModelsCacheRead?: (home: string) => Promise<unknown>;
   /** Fresh account-catalog cache lifetime. Zero disables freshness reuse while retaining
    *  in-flight coalescing + the last-known-good failure fallback (test seam). */
   codexModelsCatalogTtlMs?: number;
@@ -2714,7 +2714,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
   const codexCliPool = deps.codexCliPool;
   const codexCliRun = deps.codexCliRun ?? runCodexCliCompletion;
   const codexModelsCacheRead =
-    deps.codexModelsCacheRead ?? ((home: string) => readFileSync(join(home, 'models_cache.json'), 'utf8'));
+    deps.codexModelsCacheRead ?? ((home: string) => readFile(join(home, 'models_cache.json'), 'utf8'));
   const codexModelsCatalogTtlMs = Math.max(
     0,
     Math.floor(deps.codexModelsCatalogTtlMs ?? DEFAULT_CODEX_MODELS_CATALOG_TTL_MS),
@@ -5271,7 +5271,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     return task;
   }
 
-  function codexModelsResponse(cliHome?: string, liveCatalog?: CodexModelsCatalog | null) {
+  async function codexModelsResponse(cliHome?: string, liveCatalog?: CodexModelsCatalog | null) {
     const reasoningDescriptions = {
       low: 'Fast responses with lighter reasoning',
       medium: 'Balances speed and reasoning depth for everyday tasks',
@@ -5396,7 +5396,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     let localCatalog: unknown = null;
     if (cliHome) {
       try {
-        localCatalog = codexModelsCacheRead(cliHome);
+        localCatalog = await codexModelsCacheRead(cliHome);
       } catch {
         /* live/static fallback below */
       }
@@ -9485,7 +9485,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       const routedAccount = cli ? cli.accountId : active.accountId;
       const pinYieldedFrom = cli ? cliInitialPinYieldedFrom : bearerInitialPinYieldedFrom;
       const liveCatalog = cli ? await liveCodexModelsCatalog(cli, url) : null;
-      sendJson(res, 200, codexModelsResponse(cli?.home, liveCatalog), {
+      sendJson(res, 200, await codexModelsResponse(cli?.home, liveCatalog), {
         [ROUTED_ACCOUNT_HEADER]: routedAccount,
         ...(pinYieldedFrom ? { [PIN_YIELDED_HEADER]: `${pinYieldedFrom}->${routedAccount}` } : {}),
       });
