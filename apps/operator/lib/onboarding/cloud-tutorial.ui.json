@@ -1,6 +1,6 @@
 {
   "irVersion": "0.1",
-  "surface": "cloud-first-agent-tutorial",
+  "surface": "account-first-full-product-and-cloud-tutorial",
   "ecosystem": "react-tailwind",
   "a11y": {
     "landmark": "region",
@@ -15,6 +15,71 @@
       "retain-keyboard-focus-during-loading-waiting-and-background-state-updates"
     ],
     "children": [
+      {
+        "kind": "card",
+        "ref": "account-first-guide",
+        "a11y": {
+          "role": "region",
+          "ariaLabel": {
+            "default": "Papercusp product guide",
+            "key": "productTutorial.title"
+          }
+        },
+        "children": [
+          {
+            "kind": "heading",
+            "copy": {
+              "default": "Welcome to Papercusp",
+              "key": "productTutorial.welcome"
+            }
+          },
+          {
+            "kind": "text",
+            "binding": {
+              "slot": "accountLesson",
+              "shape": "account-org-progress-v3|no-workspace|active|paused|skipped|closed|unavailable"
+            }
+          },
+          {
+            "kind": "text",
+            "binding": {
+              "slot": "productCatalogue",
+              "shape": "all-registered-rail-and-shell-lessons|permission-aware-read-only-targets|unavailable-help"
+            }
+          },
+          {
+            "kind": "text",
+            "binding": {
+              "slot": "billingExplanation",
+              "shape": "current-authenticated-plan-and-receipts|provider-responsibility|unconfigured-and-unavailable"
+            }
+          },
+          {
+            "kind": "component",
+            "ref": "pause"
+          },
+          {
+            "kind": "component",
+            "ref": "skip"
+          },
+          {
+            "kind": "component",
+            "ref": "resume"
+          },
+          {
+            "kind": "component",
+            "ref": "contextual-help"
+          }
+        ],
+        "interactions": [
+          "account-guide-precedes-home-cloud-and-workspace-first-run",
+          "no-domain-actions-on-load-or-navigation",
+          "persist-reviewed-explanations-separately-from-task-completion",
+          "focus-heading-after-explicit-lesson-navigation",
+          "leave-and-resume-without-payment-credentials-or-microphone",
+          "spoken-questions-only-after-explicit-consent"
+        ]
+      },
       {
         "kind": "card",
         "ref": "prepared-workspace-entry",
