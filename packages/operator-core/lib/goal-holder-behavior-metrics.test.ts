@@ -181,16 +181,20 @@ describe('owner-report COST is judged against measured spend, never by wording (
       cost: 'Goal-lineage unmeasured 19:53Z; last 392612c 19:48Z, no ceiling.',
       truthCost: null,
     };
+    // The same goal's read 10 min later was UNMEASURED (00:48:42Z): post-dated reads flip, so
+    // before the fix one report scored three different ways depending on the grading minute.
     expect(ownerReportCostVerdict(report, LATER_SPEND)).toBe('unverified');
-    expect(ownerReportCostVerdict(report, { ...LATER_SPEND, measured: false, spentCents: null })).toBe('unverified');
-    // Same report, spend measured BEFORE the send: still judged, and still a failure.
-    expect(ownerReportCostVerdict(report, { ...LATER_SPEND, measuredAt: '2026-10-06T19:59:00Z' })).toBe('measured-spend-not-cited');
-    expect(ownerReportCostVerdict({ ...report, cost: 'goal spend 401384c' }, { ...LATER_SPEND, measuredAt: '2026-10-06T19:59:00Z' })).toBe('cited-measured');
+    expect(ownerReportCostVerdict(report, { ...LATER_SPEND, measured: false, spentCents: null, measuredAt: '2026-10-07T00:48:42.943Z' })).toBe('unverified');
+    // A spend outside the 3% tolerance of the report's 392612c, measured BEFORE the send: still
+    // judged, and still a failure (the fix only refuses post-dated reads).
+    const FAR = { ...LATER_SPEND, spentCents: 420000 };
+    expect(ownerReportCostVerdict(report, { ...FAR, measuredAt: '2026-10-06T19:59:00Z' })).toBe('measured-spend-not-cited');
+    expect(ownerReportCostVerdict({ ...report, cost: 'goal spend 420000c' }, { ...FAR, measuredAt: '2026-10-06T19:59:00Z' })).toBe('cited-measured');
     // A send-time truth stamp still wins over any spend read.
-    expect(ownerReportCostVerdict({ ...report, truthCost: 'goal-spend-unmeasured' }, LATER_SPEND)).toBe('goal-spend-unmeasured');
+    expect(ownerReportCostVerdict({ ...report, truthCost: 'goal-spend-unmeasured' }, FAR)).toBe('goal-spend-unmeasured');
     // No timestamp on either side: no evidence of post-dating, so the legacy comparison holds.
-    expect(ownerReportCostVerdict({ cost: report.cost, truthCost: null }, LATER_SPEND)).toBe('measured-spend-not-cited');
-    expect(ownerReportCostVerdict(report, { ...LATER_SPEND, measuredAt: null })).toBe('measured-spend-not-cited');
+    expect(ownerReportCostVerdict({ cost: report.cost, truthCost: null }, FAR)).toBe('measured-spend-not-cited');
+    expect(ownerReportCostVerdict(report, { ...FAR, measuredAt: null })).toBe('measured-spend-not-cited');
 
     // Rating over the E26 shape: 4 stamped truthful reports + this one is a pass, not a fail.
     const stamped = (ts: string, truthCost: 'cited-measured' | 'goal-spend-unmeasured') => ({
