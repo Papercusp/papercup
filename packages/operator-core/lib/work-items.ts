@@ -3734,6 +3734,10 @@ export async function setWorkItemState(
     externalRuntimeCompletion = await verifyExternalRuntimeCompletionAttempt({
       attempt: opts.externalRuntimeAttempt, workspaceId: activeWorkspaceId(), by: opts.by ?? '', item: wi,
     });
+    if (derivedTerminalCompletionAuthority({ isTerminal: true, by: opts.by,
+      evidence: opts.completionEvidence }) === null) {
+      throw new Error('external runtime producer cannot use a legacy or system completion identity');
+    }
     opts = { ...opts, completionEvidence: { ...opts.completionEvidence,
       externalRuntimeVerification: { binding: externalRuntimeCompletion.binding,
         transcript: externalRuntimeCompletion.transcript } } };

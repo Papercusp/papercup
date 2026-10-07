@@ -77,14 +77,13 @@ afterAll(async () => db?.cleanup(), 120_000);
 
 describe.each(['feature', 'change'] as const)('external voice canonical %s settlement (D037)', (kind) => {
   let sequence = 0;
-  async function producer() {
+  async function producer(owner = 'voice-runtime-owner') {
     const completionEvidence = CompletionVerificationEvidenceSchema.parse({
       filesChanged: [], filesDeleted: [], verifiedHow: 'trusted-phone-retained-records',
       testsRun: 'Binding and retained transcript digest checks',
       testResult: 'Stored completion and independently read transcript agree',
     });
     const id = `WI-external-voice-${kind}-${++sequence}`;
-    const owner = 'voice-runtime-owner';
     const binding: ExternalRuntimeProducerBinding = {
       kind: 'external-runtime-producer', workspaceId, harnessSlug, storageHarnessSlug: harnessSlug,
       workItemId: id, executionOwnerId: owner, ownerId: 'phone-customer',
@@ -133,6 +132,12 @@ describe.each(['feature', 'change'] as const)('external voice canonical %s settl
     p.stored.endReason = 'worker-lost';
     await expect(runWithWorkspace(workspaceId, () => setWorkItemState(p.id, 'done', p.opts)))
       .rejects.toThrow('no verified complete');
+    expect((await runWithWorkspace(workspaceId, () => getWorkItem(p.id, p.item.harness!)))?.terminalOwner).toBeNull();
+  }, 90_000);
+  it('does not manufacture a legacy null-authority completion for a system identity', async () => {
+    const p = await producer('system:voice-runtime');
+    await expect(runWithWorkspace(workspaceId, () => setWorkItemState(p.id, 'done', p.opts)))
+      .rejects.toThrow('legacy or system');
     expect((await runWithWorkspace(workspaceId, () => getWorkItem(p.id, p.item.harness!)))?.terminalOwner).toBeNull();
   }, 90_000);
   it.each(['holder', 'epoch', 'binding', 'cancelled'] as const)('fences a %s change between trusted verification and the terminal write', async (change) => {

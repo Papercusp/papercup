@@ -3574,6 +3574,10 @@ export async function setIssueState(
   if (opts.externalRuntimeCompletion) {
     if (!operationClaims) throw new Error('external runtime producer cannot skip the completion gate');
     operationClaims.assertVerifiedExternalRuntimeCompletion(opts.externalRuntimeCompletion);
+    if (derivedTerminalCompletionAuthority({ isTerminal: true, by,
+      evidence: opts.completionEvidence }) === null) {
+      throw new Error('external runtime producer cannot use a legacy or system completion identity');
+    }
     opts = { ...opts, completionEvidence: { ...opts.completionEvidence,
       externalRuntimeVerification: { binding: opts.externalRuntimeCompletion.binding,
         transcript: opts.externalRuntimeCompletion.transcript } } };
