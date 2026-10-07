@@ -4494,6 +4494,19 @@ export function registerMcpHost(server: McpServer): void {
               phase: raced.innerDispatchStarted ? 'inner_dispatch' : 'pre_dispatch',
             });
           }
+          // EI-25270415606873353: read-only calls skip replay lookup and persistence,
+          // so do not promise that retrying their key will replay this attempt's result.
+          if (skipReplayForReadOnly) {
+            return {
+              isError: true,
+              content: [
+                {
+                  type: 'text' as const,
+                  text: formatMcpReadOnlyDeadlineMessage(toolName, deadlineMs),
+                },
+              ],
+            };
+          }
           return {
             isError: true,
             content: [
@@ -4532,9 +4545,10 @@ export function registerMcpHost(server: McpServer): void {
         };
         const runDispatch = async (ctx: UnifiedToolContext): Promise<McpCallResult> => {
           // The tool execution as ONE promise, so the P2-5 deadline can return a
-          // clean client error WITHOUT cancelling it: it completes server-side and
-          // its outcome is still persisted (P-046/EI-68), so a retry with the same
-          // idempotencyKey replays the outcome instead of re-running.
+          // clean client error WITHOUT cancelling it: keyed writes persist their
+          // outcome (P-046/EI-68), so a retry with the same idempotencyKey replays it.
+          // Read-only results are intentionally not persisted because rerunning a read
+          // cannot double-apply a mutation.
           const execute = async (): Promise<McpCallResult> => {
             // P-006 leg C: cap this model-facing result at the resultEach door
             // (spill-to-scratch + pointer). AFTER the delta proxy — a delta
@@ -5395,13 +5409,17 @@ export function effectiveMcpDeadlineMs(
   return Math.max(baseDeadlineMs, toolTimeoutSec * 1000 + MCP_DEADLINE_TOOL_BUFFER_MS);
 }
 
+/** Read-only MCP results are not stored for idempotent replay. */
+export function formatMcpReadOnlyDeadlineMessage(toolName: string, deadlineMs: number): string {
+  return `request_timeout: read-only tool "${toolName}" exceeded ${deadlineMs}ms (the operation may still be running server-side; this request was not canceled. Read-only results are not stored for idempotent replay, so retrying will execute a fresh read instead of replaying this attempt's result).`;
+}
+
 /**
  * Race a tool dispatch against a deadline (P2-5). On expiry, resolve to `onTimeout()`
  * — a clean error result — so the client gets a definitive response, not a silent
- * drop. The `run()` promise is deliberately NOT cancelled: the tool finishes
- * server-side and (via runDispatch) persists its result, so a retry with the same
- * `_meta.idempotencyKey` replays the completed outcome rather than re-executing or
- * leaving a half-applied mutating write. `deadlineMs<=0` ⇒ no race (await run).
+ * drop. The `run()` promise is deliberately NOT cancelled: it may finish server-side.
+ * Keyed writes persist their outcome and replay it on retry; read-only calls skip result
+ * storage and a retry executes a fresh read. `deadlineMs<=0` ⇒ no race (await run).
  */
 export async function raceDeadline<T>(deadlineMs: number, run: () => Promise<T>, onTimeout: () => T): Promise<T> {
   const p = run();
