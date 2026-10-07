@@ -165,6 +165,26 @@ describe('tools:invoke handler', () => {
     expect(dispatchTool).toHaveBeenCalledWith('plans:get', { slug: 'example', payloadTier: 'full' });
   });
 
+  it('preserves nested result-door metadata on a successful re-dispatch', async () => {
+    const nested = {
+      content: [{ type: 'text' as const, text: '{"_projection":{"cursor":{"reason":"spill-write-failed"}}}' }],
+      _meta: {
+        resultDoor: {
+          truncated: true,
+          spillFailed: true,
+          spillErrorCode: 'unknown error',
+          spillError: 'private filesystem detail',
+        },
+      },
+    };
+    const res = await def.handler(
+      { name: 'work_items:get', args: { id: 'WI-123' } },
+      { dispatchTool: async () => nested },
+    );
+
+    expect((res as typeof nested)._meta).toEqual(nested._meta);
+  });
+
   it('preserves an explicit target payloadTier in in-script re-dispatches', async () => {
     const dispatchTool = vi.fn(async () => ({ content: [{ type: 'text', text: 'ok' }] }));
     await def.handler(

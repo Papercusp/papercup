@@ -138,6 +138,27 @@ describe('result-door deferred spill (WI-10004533)', () => {
     }
   });
 
+  it('keeps a no-code spill failure diagnosable in the model-facing cursor without exposing the scratch path', () => {
+    const scratchRunDir = spillDir();
+    const failure = new Error(`writer rejected directory '${scratchRunDir}'`);
+    failure.name = 'ScratchWriteError';
+    const out = applyResultDoor(oversized(), {
+      ...OPTS,
+      scratchWriteFailure: { error: failure },
+    });
+    const text = (out.content.find((item) => item.type === 'text') as { text: string }).text;
+    const body = JSON.parse(text) as { _projection?: { cursor?: Record<string, unknown>; next?: string } };
+
+    expect(body._projection?.cursor).toMatchObject({
+      kind: 'unavailable',
+      reason: 'spill-write-failed',
+      errorDetail: 'ScratchWriteError: writer rejected directory \'<scratch path>\'',
+    });
+    expect(body._projection?.next).toContain('ScratchWriteError: writer rejected directory');
+    expect(body._projection?.next).not.toContain(scratchRunDir);
+    expect(text).not.toContain(scratchRunDir);
+  });
+
   it('recovers quota pressure before returning a readable asynchronous spill cursor', async () => {
     const old = join(process.env.PAPERCUSP_SCRATCH_ROOT!, 'ws-1', 'history', 'old');
     mkdirSync(old, { recursive: true });

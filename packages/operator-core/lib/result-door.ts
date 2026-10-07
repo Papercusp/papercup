@@ -42,6 +42,7 @@
  */
 
 import { createHash, randomUUID } from 'node:crypto';
+import { dirname } from 'node:path';
 import { projectBoundedPayload, type BulkEnvelopeProjectionOpts } from '@papercusp/tooldef';
 import { CHARS_PER_TOKEN_ESTIMATE, computeTurnDoors } from './context-doors';
 import { getDoorConstantsSync } from './context-doors-config';
@@ -1413,16 +1414,29 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
     let fsPath: string | null = null;
     let uri: string | null = null;
     let spillError: string | null = null;
-    // The FOOTER is model-facing prose and gets the terse errno only. A raw fs
-    // error message embeds the full failing path (`ENOTDIR: not a directory,
-    // mkdir '/…/scratch/ws-1/plans:get/…'`), which would put a filesystem path
-    // back into a footer whose entire job here is to name NO path — and a reader
-    // that sees one will try to page it. The full message stays on `_meta`.
+    // The unavailable cursor is model-facing: it carries the terse errno and a
+    // bounded, path-redacted error summary. A raw fs error embeds the full path
+    // (`ENOTDIR: not a directory, mkdir '/…/scratch/ws-1/plans:get/…'`), so keep
+    // that unredacted message private in `_meta` while preserving the cause for
+    // diagnosis in `errorDetail` and the recovery text.
     let spillErrorCode: string | null = null;
+    let spillErrorSummary: string | null = null;
     let spillManifest: ScratchReferenceManifest | null = null;
     const noteSpillFailure = (err: unknown): void => {
       spillError = err instanceof Error ? err.message : String(err);
       spillErrorCode = (err as NodeJS.ErrnoException | undefined)?.code ?? 'unknown error';
+      if (err instanceof Error) {
+        let message = err.message.replace(/[\r\n\t]+/g, ' ').trim();
+        // The complete message remains on private `_meta`; model-facing recovery
+        // text may include the useful reason, but never the scratch filesystem path.
+        const scratchPaths = fsPath ? [fsPath, dirname(fsPath)] : [];
+        for (const path of scratchPaths.sort((a, b) => b.length - a.length)) {
+          if (path) message = message.replaceAll(path, '<scratch path>');
+        }
+        spillErrorSummary = `${err.name || 'Error'}${message ? `: ${message}` : ''}`.slice(0, 240);
+      } else {
+        spillErrorSummary = err == null ? 'empty rejection' : `${typeof err} rejection`;
+      }
       spillManifest = null;
       fsPath = null;
       uri = null;
@@ -1705,10 +1719,13 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
               tool: opts.toolName,
               args: {},
               reason: 'spill-write-failed',
+              ...(spillErrorCode && spillErrorCode !== 'unknown error' ? { errorCode: spillErrorCode } : {}),
+              ...(spillErrorSummary ? { errorDetail: spillErrorSummary } : {}),
             },
             next:
               `The result was structurally bounded, but its spill write failed ` +
-              `(${spillErrorCode ?? 'unknown error'}), so the omitted bytes are NOT recoverable and no ` +
+              `(${spillErrorCode && spillErrorCode !== 'unknown error' ? spillErrorCode : spillErrorSummary ?? 'unknown error'}), ` +
+              `so the omitted bytes are NOT recoverable and no ` +
               `spill path exists. Re-call ${opts.toolName} with narrower arguments or a projection.` +
               (upstreamProjection
                 ? ` It was ALSO tier-projected upstream (omittedCount=${upstreamProjection.omittedCount}), ` +
