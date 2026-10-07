@@ -36,9 +36,12 @@
  *   - non-text content items (images, resource links) — passed through intact.
  *
  * Kill-switch: PAPERCUSP_RESULT_DOOR_OFF=1 bypasses entirely (operational
- * rollback, mirrors PAPERCUSP_INJECTION_DOOR_OFF). Fail-soft: any error while
- * capping/spilling returns the ORIGINAL result untouched — the door must never
- * turn a good result into a failure.
+ * rollback, mirrors PAPERCUSP_INJECTION_DOOR_OFF). Unexpected errors while
+ * capping/spilling remain fail-soft and return the ORIGINAL result untouched.
+ * A recognized spill-write failure instead returns a bounded
+ * `output_spill_failed` error, or the existing receipt-preserving projection
+ * for `scheduler:get_next` and `coord:send`; it never re-exposes an over-budget
+ * result.
  */
 
 import { createHash, randomUUID } from 'node:crypto';
