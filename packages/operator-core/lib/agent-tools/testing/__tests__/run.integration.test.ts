@@ -55,6 +55,7 @@ import runTool, {
   runTestFilesCore,
   settleConfinedTestOnHostShutdown,
   runWithTestProcessDeadline,
+  waitForTestProcessClose,
   resolveAdminTestRunsReporterPath,
   resolveRegisteredTestFileRoot,
   selectTestFileRoot,
@@ -63,6 +64,7 @@ import runTool, {
   type TestingRunPhaseTimings,
   TEST_RUN_ID_READBACK_TIMEOUT_MS,
 } from '../run';
+import { FOREGROUND_TERMINATION_GRACE_MS } from '../../capability/foreground-transport-cap';
 import { cancelRun, getRun, type HarnessTestRunEvidence } from '../../../testing-run-store';
 
 /**
@@ -656,6 +658,84 @@ describe('governed test-process admission (P-003)', () => {
       kind: 'release',
       actualDemand: { memoryBytes: 7 },
     });
+  });
+});
+
+describe('bounded foreground process termination', () => {
+  it('waits no longer than the foreground termination grace and accepts a late close', async () => {
+    vi.useFakeTimers();
+    try {
+      let close!: () => void;
+      const childClosed = new Promise<void>((resolve) => {
+        close = resolve;
+      });
+      const confirmation = waitForTestProcessClose(childClosed);
+
+      await vi.advanceTimersByTimeAsync(FOREGROUND_TERMINATION_GRACE_MS);
+      await expect(confirmation).resolves.toBe(false);
+      close();
+      await expect(childClosed).resolves.toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not start a mixed-root recovery while a timed-out foreground process may still be writing', async () => {
+    const roots = [
+      await makeScratchTestCheckout('papercusp-testing-run-unconfirmed-a-'),
+      await makeScratchTestCheckout('papercusp-testing-run-unconfirmed-b-'),
+    ];
+    for (const root of roots) {
+      await mkdir(join(root, 'scripts'), { recursive: true });
+      await writeFile(join(root, 'scripts', 'test-files.mjs'), 'process.exit(0);\n');
+    }
+    let close!: () => void;
+    const childClosed = new Promise<void>((resolve) => {
+      close = resolve;
+    });
+    let reportDir = '';
+    const runRouterFn = vi.fn(async (args: string[]) => {
+      const report = args.find((arg) => arg.startsWith('--outputFile='));
+      expect(report).toBeDefined();
+      reportDir = dirname(report!.slice('--outputFile='.length));
+      return {
+        code: null,
+        signal: null,
+        timedOut: true,
+        aborted: false,
+        output: '',
+        taskId: 'test-task-late-close',
+        terminationUnconfirmed: true,
+        childClosed,
+      };
+    });
+
+    try {
+      const out = await runTestFilesCore(
+        {
+          root: roots[0]!,
+          files: ['packages/x/real.test.ts', join(roots[1]!, 'packages/x/real.test.ts')],
+          timeoutMs: 10_000,
+        },
+        { runRouterFn },
+      );
+
+      expect(out).toMatchObject({
+        ok: false,
+        error: 'timeout',
+        roots,
+        taskId: 'test-task-late-close',
+        terminationUnconfirmed: true,
+      });
+      expect(out).not.toHaveProperty('detachedRunId');
+      expect(runRouterFn).toHaveBeenCalledTimes(1);
+      expect(existsSync(reportDir)).toBe(true);
+
+      close();
+      await vi.waitFor(() => expect(existsSync(reportDir)).toBe(false));
+    } finally {
+      if (reportDir) await rm(reportDir, { recursive: true, force: true });
+    }
   });
 });
 

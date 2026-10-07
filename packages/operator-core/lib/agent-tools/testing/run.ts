@@ -1383,6 +1383,10 @@ export type TestFilesCoreResult =
       detachedRunId?: string;
       /** Whether the detached run's durable snapshot landed before we advertised its id. */
       detachedDurable?: boolean;
+      /** Managed task that did not confirm exit within the foreground termination grace. */
+      taskId?: string;
+      /** The foreground process may still be writing its report; do not retry it concurrently. */
+      terminationUnconfirmed?: boolean;
       /**
        * Bounded results from checkout groups that completed before another group
        * timed out or refused. The timeout/refusal is still the overall verdict;
@@ -1817,7 +1821,7 @@ async function recoverCompletedRunAfterBudget(opts: {
   ) as TestFilesCoreResult;
 }
 
-interface RouterOutcome extends TestProcessOutcome {
+export interface RouterOutcome extends TestProcessOutcome {
   code: number | null;
   signal: NodeJS.Signals | null;
   timedOut: boolean;
@@ -1825,6 +1829,26 @@ interface RouterOutcome extends TestProcessOutcome {
   spawnError?: string;
   output: string;
   actualDemand?: ResourceDemand;
+  /** Managed task identity, surfaced when termination cannot be confirmed in time. */
+  taskId?: string;
+  /** True when the process did not emit `close` within its termination grace. */
+  terminationUnconfirmed?: boolean;
+  /** Resolves on a late `close`, so report artifacts stay available until then. */
+  childClosed?: Promise<void>;
+}
+
+/** Wait at most the shared foreground termination grace for the child `close` event. */
+export function waitForTestProcessClose(
+  childClosed: Promise<void>,
+  timeoutMs = FOREGROUND_TERMINATION_GRACE_MS,
+): Promise<boolean> {
+  let timer: NodeJS.Timeout | undefined;
+  const expired = new Promise<boolean>((resolve) => {
+    timer = setTimeout(() => resolve(false), timeoutMs);
+  });
+  return Promise.race([childClosed.then(() => true, () => false), expired]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
 }
 
 const ROUTER_OUTPUT_TAIL_CHARS = 8_192;
@@ -2319,6 +2343,11 @@ function runTestProcess(
             let aborted = false;
             let spawnError: string | undefined;
             let settled = false;
+            let resolveChildClosed!: () => void;
+            const childClosed = new Promise<void>((resolve) => {
+              resolveChildClosed = resolve;
+            });
+            let terminationConfirmationStarted = false;
             let outputLoaded = false;
             const loadOutput = (): void => {
               if (outputLoaded) return;
@@ -2359,7 +2388,7 @@ function runTestProcess(
               // handoff may leave one bounded directory in the namespaced
               // system temp root; that is safer than deleting a live reporter's
               // output path and converting a completed run into no evidence.
-              if (!outcome.hostShutdownDetached) loadOutput();
+              if (!outcome.hostShutdownDetached && !outcome.terminationUnconfirmed) loadOutput();
               if (timer !== null) {
                 clearTimeout(timer);
                 timer = null;
@@ -2383,6 +2412,29 @@ function runTestProcess(
                   : 'caller aborted while managed test-process launch was still pending',
               });
             };
+            const terminateAndConfirm = (): void => {
+              if (settled || terminationConfirmationStarted) return;
+              const terminating = running;
+              if (!terminating) {
+                settleBeforeLaunchHandoff();
+                return;
+              }
+              terminationConfirmationStarted = true;
+              terminating.terminate();
+              void waitForTestProcessClose(childClosed).then((closed) => {
+                if (closed || settled) return;
+                finish({
+                  code: null,
+                  signal: null,
+                  timedOut,
+                  aborted,
+                  terminationUnconfirmed: true,
+                  taskId: terminating.taskId,
+                  childClosed,
+                  output: outputCapture.finish(),
+                });
+              });
+            };
             onAbort = () => {
               if (settled) return;
               if (settleConfinedTestOnHostShutdown(isShuttingDown(), running, finish)) {
@@ -2390,14 +2442,14 @@ function runTestProcess(
                 return;
               }
               aborted = true;
-              if (running) running.terminate();
+              if (running) terminateAndConfirm();
               else settleBeforeLaunchHandoff();
             };
             if (childSignal.aborted) onAbort();
             else childSignal.addEventListener('abort', onAbort, { once: true });
             timer = setTimeout(() => {
               timedOut = true;
-              if (running) running.terminate();
+              if (running) terminateAndConfirm();
               else settleBeforeLaunchHandoff();
             }, launchTimeoutMs);
             void launchManagedTestProcess({
@@ -2432,7 +2484,7 @@ function runTestProcess(
                 // The deadline starts before managedSpawn's async probe/ledger
                 // admission. If it elapsed (or the caller aborted) while that
                 // boundary was resolving, terminate immediately on handoff.
-                if (timedOut || aborted || childSignal.aborted) launched.terminate();
+                if (timedOut || aborted || childSignal.aborted) terminateAndConfirm();
                 // Cap retained diagnostics — the router's own output is a fallback for the
                 // error paths, never the success path's payload.
                 const append = (channel: 'stdout' | 'stderr') => (b: Buffer) => {
@@ -2442,6 +2494,8 @@ function runTestProcess(
                 child.on('error', (e) => {
                   spawnError = e.message;
                   outputCapture.append('stderr', `\n[spawn-error] ${e.message}\n`);
+                  if (terminationConfirmationStarted) return;
+                  resolveChildClosed();
                   finish({
                     code: null,
                     signal: null,
@@ -2454,6 +2508,7 @@ function runTestProcess(
                 child.on(
                   'close',
                   (code, closeSignal) => (
+                    resolveChildClosed(),
                     loadOutput(),
                     finish({
                       code,
@@ -2468,6 +2523,7 @@ function runTestProcess(
               (error) => {
                 spawnError = error instanceof Error ? error.message : String(error);
                 outputCapture.append('stderr', `\n[spawn-error] ${spawnError}\n`);
+                resolveChildClosed();
                 finish({
                   code: null,
                   signal: null,
@@ -3053,7 +3109,7 @@ export async function runTestFilesCore(opts: {
   allowSiblingCheckoutFallback?: boolean;
   /** Optional handler-owned timing accumulator; omitted by internal callers. */
   phaseTimings?: TestingRunPhaseTimings;
-}): Promise<TestFilesCoreResult> {
+}, deps: { runRouterFn?: typeof runRouter } = {}): Promise<TestFilesCoreResult> {
   // Normalize once before selecting the checkout.  A workspace-relative sibling
   // spelling (for example `portal/tests/foo.test.ts`) becomes an absolute path in
   // normalizeTestFilePaths; selecting from that result lets the router switch to
@@ -3080,12 +3136,24 @@ export async function runTestFilesCore(opts: {
           runId,
           timeoutMs: Math.max(1000, deadline - Date.now()),
           allowDetachedRecovery: false,
-        });
+        }, deps);
         if (result.error !== undefined) errors.push(result);
         else completed.push({ group, result });
+        if ('terminationUnconfirmed' in result && result.terminationUnconfirmed) break;
       }
       const timeout = errors.find((result) => result.error === 'timeout');
       if (timeout) {
+        if (timeout.terminationUnconfirmed) {
+          return {
+            ...timeout,
+            runId,
+            root: resolve(opts.root),
+            roots,
+            timeoutMs,
+            routerOutput: errors.map((result) => result.routerOutput ?? result.hint ?? result.error).join('\n'),
+            ...summarizePartialCompletedGroups(completed),
+          };
+        }
         const detachedStart = await startRunDurable(
           buildDetachedMixedTestRunRequest({
             groups,
@@ -3240,7 +3308,7 @@ export async function runTestFilesCore(opts: {
     let directReportPaths: string[] | null = null;
     let outcome: RouterOutcome;
     if (hasRouter) {
-      outcome = await runRouter(
+      outcome = await (deps.runRouterFn ?? runRouter)(
         [...pathResolution.files, '--', ...vitestArgs],
         root,
         // The reporter inside the child reads this and stamps run_group_id, so
@@ -3307,6 +3375,32 @@ export async function runTestFilesCore(opts: {
     }
 
     preserveRunArtifacts = outcome.hostShutdownDetached === true;
+
+    if (outcome.terminationUnconfirmed) {
+      preserveRunArtifacts = true;
+      if (outcome.childClosed) {
+        void outcome.childClosed.then(() =>
+          rm(dir, { recursive: true, force: true }).catch(() => {
+            /* best-effort cleanup after the late close confirms the writer is gone */
+          }),
+        );
+      }
+      const error = outcome.aborted ? 'aborted' : 'timeout';
+      return {
+        ok: false,
+        runId,
+        root,
+        error,
+        ...(error === 'timeout' ? { timeoutMs } : {}),
+        ...(outcome.taskId ? { taskId: outcome.taskId } : {}),
+        terminationUnconfirmed: true,
+        hint:
+          `termination was requested, but the foreground process did not confirm close within ` +
+          `${FOREGROUND_TERMINATION_GRACE_MS}ms. No duplicate recovery was started; task ${outcome.taskId ?? 'unknown'} ` +
+          'remains tracked, and its report artifacts will be removed after the late close.',
+        routerOutput: outcome.output.slice(-2000),
+      };
+    }
 
     if (outcome.aborted) {
       return {
@@ -3553,7 +3647,7 @@ export async function runTestFilesCore(opts: {
 export default defineTool({
   name: 'testing:run',
   description:
-    'Run exact Vitest files through the Papercusp router or a discovered external npm-workspace Vitest checkout and return distilled counts plus bounded failures. Files may be repo-root-relative, absolute, or relative to exactly one declared npm workspace; ambiguous workspace-relative paths refuse before execution. `root` reports the checkout actually tested. Zero/partial matches and invalid checkouts refuse instead of passing vacuously. `work_item_id` explicitly attributes a run and its slow-attempt gate to a held work-item, overriding a stale session goal stamp. `failed` is the true total; when `failuresTruncated` is set, read `failuresOmitted`. A Papercusp-router timeout starts a pollable detached recovery, returns `detachedRunId`, and tells you to call `testing:run-status { runId }` for its snapshot. Stamps PAPERCUSP_TEST_RUN_GROUP for ledger correlation.',
+    'Run exact Vitest files through the Papercusp router or a discovered external npm-workspace Vitest checkout and return distilled counts plus bounded failures. Files may be repo-root-relative, absolute, or relative to exactly one declared npm workspace; ambiguous workspace-relative paths refuse before execution. `root` reports the checkout actually tested. Zero/partial matches and invalid checkouts refuse instead of passing vacuously. `work_item_id` explicitly attributes a run and its slow-attempt gate to a held work-item, overriding a stale session goal stamp. `failed` is the true total; when `failuresTruncated` is set, read `failuresOmitted`. A Papercusp-router timeout starts a pollable detached recovery after the foreground process closes; if termination remains unconfirmed, `taskId` is returned and no concurrent recovery starts. Stamps PAPERCUSP_TEST_RUN_GROUP for ledger correlation.',
   guidance: {
     when: 'You edited code and want to know whether specific test files pass, and which tests failed and why. The default way to run named test files.',
     notWhen:
@@ -4017,7 +4111,16 @@ export default defineTool({
       ...(prepared
         ? {
             evidenceBundle: result.error === 'timeout'
-              ? deferredTestEvidenceRecoveryBundle(evidenceRequest!, runId, evidenceRunId, evidenceScope!.harnessSlug)
+              ? {
+                  ...deferredTestEvidenceRecoveryBundle(evidenceRequest!, runId, evidenceRunId, evidenceScope!.harnessSlug),
+                  ...(result.terminationUnconfirmed
+                    ? {
+                        message:
+                          `The foreground process for task ${result.taskId ?? 'unknown'} has not confirmed exit. ` +
+                          'No duplicate test run was started; evidence remains pending until that task closes and its ledger rows can be reconciled.',
+                      }
+                    : {}),
+                }
               : result.error !== undefined && PRE_LAUNCH_REFUSALS.has(result.error)
                 ? await retractRefusedTestEvidence(prepared, runId, evidenceScope!, result.error).catch((error) => ({
                     status: 'retirement-incomplete' as const, reason: result.error, message: String(error),
@@ -4084,14 +4187,15 @@ export default defineTool({
             testingRunTimeoutClampDisclosure(requestedTimeoutMs, timeoutMs) +
             // EI-24207525450988644: an evidence run recovers in ONE call — recoverEvidence
             // waits for the detached run itself — so steer away from a run-status loop.
-            (prepared && result.detachedRunId
+            (result.terminationUnconfirmed
+              ? `The foreground process is not confirmed stopped; do not start a duplicate run. Tracked task: ${result.taskId ?? 'unknown'}. `
+              : prepared && result.detachedRunId
               ? 'To bind this evidence, call evidenceBundle.recovery (testing:run { recoverEvidence }) now: it waits up to ' +
                 `${Math.round(RECOVERY_WAIT_DEFAULT_MS / 1000)}s for the detached run and binds in the same call; skip testing:run-status polling. `
               : detachedRecoveryHint({
                   runId: result.detachedRunId,
                   durable: result.detachedDurable === true,
-                })) +
-            detachedTestTimeoutHint(files),
+                }) + detachedTestTimeoutHint(files)),
         },
       };
     }
