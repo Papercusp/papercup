@@ -423,15 +423,25 @@ export function parseSse(raw, requestId = 1) {
 }
 
 /**
- * Where the superuser bearer lives — the SAME precedence as the operator's own
- * reader (packages/operator-core/lib/superuser-token.ts): `$PAPERCUSP_HOME/
- * superuser-token`, else `~/.papercusp/superuser-token`. Hard-coding the home
- * fallback made this helper present the REAL user's bearer to an isolated
- * verify-tauri-headless sidecar (which mints its own token under PAPERCUSP_HOME),
- * so every call was refused `superuser_invalid_bearer` (WI-10006600).
+ * Resolve implicit bearer files in the same order as ptool. An explicit
+ * PAPERCUSP_MCP_TOKEN_FILE is authoritative; otherwise an isolated
+ * PAPERCUSP_HOME token precedes the shared per-home token.
  */
+export function superuserTokenPaths(env = process.env, home = homedir()) {
+  const explicit = typeof env?.PAPERCUSP_MCP_TOKEN_FILE === 'string'
+    ? env.PAPERCUSP_MCP_TOKEN_FILE.trim()
+    : '';
+  if (explicit) return [explicit];
+
+  const isolatedHome = typeof env?.PAPERCUSP_HOME === 'string' ? env.PAPERCUSP_HOME.trim() : '';
+  const isolated = isolatedHome ? join(isolatedHome, 'superuser-token') : null;
+  const shared = join(home, '.papercusp', 'superuser-token');
+  return isolated && isolated !== shared ? [isolated, shared] : [shared];
+}
+
+/** The first candidate is used in diagnostics and for legacy callers. */
 export function superuserTokenPath(env = process.env, home = homedir()) {
-  return join(env.PAPERCUSP_HOME || join(home, '.papercusp'), 'superuser-token');
+  return superuserTokenPaths(env, home)[0];
 }
 
 /** Resolve the local operator port from the configured bare base URL. */
@@ -493,10 +503,20 @@ export function resolveCandidatePorts(flags = {}, env = process.env) {
   };
 }
 
-export function buildSuperuserBearerDiagnostic({ tokenPath, port }) {
+export function buildSuperuserBearerDiagnostic({ tokenPath, port, tokenFallbackAttempted = false }) {
   return 'mcp-call: the operator on port ' + port + ' rejected the bearer read from ' + tokenPath +
     ' (superuser_invalid_bearer). Set PAPERCUSP_OPERATOR_URL or PAPERCUSP_HONO_PORT to the ' +
-    'matching local operator; mcp-call did not substitute another token.';
+    'matching local operator; ' + (tokenFallbackAttempted
+      ? 'mcp-call exhausted its ordered implicit token candidates.'
+      : 'mcp-call did not substitute another token.');
+}
+
+/** Match ptool's exact pre-dispatch auth refusal; other tool errors are terminal. */
+export function isInvalidSuperuserBearerResult(result) {
+  return result?.isError === true &&
+    Array.isArray(result.content) &&
+    result.content.some((block) =>
+      block?.type === 'text' && block.text === 'request_rejected: superuser_invalid_bearer');
 }
 
 /**
@@ -697,11 +717,17 @@ async function main() {
     console.error('usage: node scripts/mcp-call.mjs <ns:verb> [jsonArgs] [--json -|--json-file <path>] [--client <id>|--client=<id>] [--workspace <ws>|--workspace=<ws>] [--all-workspaces] [--harness <h>|--harness=<h>] [--port <n>|--port=<n>] [--idempotency-key <key>|--idempotency-key=<key>] [--raw] [--allow-partial]');
     process.exit(flags.help ? 0 : 2);
   }
-  let tok;
-  try {
-    tok = readFileSync(superuserTokenPath(), 'utf8').trim();
-  } catch {
-    console.error(`mcp-call: no superuser token at ${superuserTokenPath()} — run on a host that has it.`);
+  const tokenPaths = superuserTokenPaths();
+  const tokenCandidates = tokenPaths.flatMap((tokenPath) => {
+    try {
+      const token = readFileSync(tokenPath, 'utf8').trim();
+      return token ? [{ path: tokenPath, token }] : [];
+    } catch {
+      return [];
+    }
+  });
+  if (tokenCandidates.length === 0) {
+    console.error('mcp-call: no superuser token at ' + tokenPaths.join(' or ') + ' — run on a host that has it.');
     process.exit(3);
   }
   let args;
@@ -748,7 +774,6 @@ async function main() {
     headers: {
       'content-type': 'application/json',
       accept: 'application/json, text/event-stream',
-      authorization: `Bearer ${tok}`,
     },
     body: JSON.stringify({
       jsonrpc: '2.0',
@@ -763,51 +788,89 @@ async function main() {
       }),
     }),
   };
+  const initForToken = (token) => ({
+    ...init,
+    headers: { ...init.headers, authorization: 'Bearer ' + token },
+  });
 
   let res;
   let raw;
   let responsePort = null;
+  let responseTokenPath = tokenCandidates[0].path;
+  let tokenFallbackAttempted = false;
   let authorityFallback = false;
   let configuredPortError = null;
   const attempts = [];
+  let tokenIndex = 0;
+  let stopEndpointSearch = false;
   for (let index = 0; index < candidatePorts.length; index += 1) {
     const port = candidatePorts[index];
-    try {
-      stampRequestSent();
-      const candidateRes = await fetchWithConnectionRecovery(`http://localhost:${port}/api/mcp?${qs}`, init, {
-        // An explicit pin means the caller deliberately chose this operator
-        // and must not be silently routed to another port while it restarts.
-        retryWindowMs: pinned ? MCP_CALL_CONNECTION_RETRY_WINDOW_MS : 0,
-        onRetry: ({ attempt, delayMs, remainingMs }) => {
-          // Keep a long retry loop quiet without hiding that retries are active.
-          if (attempt === 1 || attempt % 10 === 0) {
-            console.error(buildConnectionRetryDiagnostic({ port, attempt, delayMs, remainingMs }));
-          }
-        },
-      });
-      const candidateRaw = await candidateRes.text();
-      const hasFallback = index < candidatePorts.length - 1;
-      if (!pinned && hasFallback && isRecoverableAuthorityDenial(candidateRaw)) {
-        authorityFallback = true;
-        continue;
+    const hasEndpointFallback = !pinned && index < candidatePorts.length - 1;
+    let tryNextEndpoint = false;
+    for (; tokenIndex < tokenCandidates.length; tokenIndex += 1) {
+      const tokenCandidate = tokenCandidates[tokenIndex];
+      responseTokenPath = tokenCandidate.path;
+      try {
+        stampRequestSent();
+        const candidateRes = await fetchWithConnectionRecovery(
+          'http://localhost:' + port + '/api/mcp?' + qs,
+          initForToken(tokenCandidate.token),
+          {
+            // An explicit pin means the caller deliberately chose this operator
+            // and must not be silently routed to another port while it restarts.
+            retryWindowMs: pinned ? MCP_CALL_CONNECTION_RETRY_WINDOW_MS : 0,
+            onRetry: ({ attempt, delayMs, remainingMs }) => {
+              // Keep a long retry loop quiet without hiding that retries are active.
+              if (attempt === 1 || attempt % 10 === 0) {
+                console.error(buildConnectionRetryDiagnostic({ port, attempt, delayMs, remainingMs }));
+              }
+            },
+          },
+        );
+        const candidateRaw = await candidateRes.text();
+        if (hasEndpointFallback && isRecoverableAuthorityDenial(candidateRaw)) {
+          authorityFallback = true;
+          tryNextEndpoint = true;
+          break;
+        }
+        const candidateOut = parseSse(candidateRaw, REQUEST_ID);
+        if (
+          isInvalidSuperuserBearerResult(candidateOut.error) &&
+          tokenIndex + 1 < tokenCandidates.length
+        ) {
+          tokenFallbackAttempted = true;
+          continue;
+        }
+        res = candidateRes;
+        raw = candidateRaw;
+        responsePort = port;
+        if (!pinned && port !== String(configuredPort)) {
+          console.error(buildFallbackWarning({
+            configuredPort,
+            port,
+            proxyPort,
+            configuredPortError,
+            authorityFallback,
+          }));
+        }
+        break;
+      } catch (err) {
+        if (index === 0) configuredPortError = err;
+        attempts.push({ port, error: err });
+        // ECONNREFUSED proves no MCP handler could have received this request.
+        // Other transport errors leave a mutation outcome unknown: stop without
+        // trying another endpoint or bearer.
+        if (hasEndpointFallback && isConnectionRefusedError(err)) {
+          tryNextEndpoint = true;
+        } else {
+          stopEndpointSearch = true;
+        }
+        break;
       }
-      res = candidateRes;
-      raw = candidateRaw;
-      responsePort = port;
-      if (!pinned && port !== String(configuredPort)) {
-        console.error(buildFallbackWarning({
-          configuredPort,
-          port,
-          proxyPort,
-          configuredPortError,
-          authorityFallback,
-        }));
-      }
-      break;
-    } catch (err) {
-      if (index === 0) configuredPortError = err;
-      attempts.push({ port, error: err });
     }
+    if (res) break;
+    if (tryNextEndpoint) continue;
+    if (stopEndpointSearch) break;
   }
 
   if (!res) {
@@ -822,10 +885,11 @@ async function main() {
       ? out.result
       : null
   );
-  if (failedPayload && JSON.stringify(failedPayload).includes('superuser_invalid_bearer')) {
+  if (isInvalidSuperuserBearerResult(failedPayload)) {
     console.error(buildSuperuserBearerDiagnostic({
-      tokenPath: superuserTokenPath(),
+      tokenPath: responseTokenPath,
       port: responsePort ?? configuredPort,
+      tokenFallbackAttempted,
     }));
   }
   if (out.error) {
