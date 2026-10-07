@@ -1,11 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
-import { admitAuthenticatedPhoneProducer, admitPhoneProducer, createHttpsPhoneProducerAdmissionHost, type PhoneProducerAdmission } from './phone-producer-admission';
+import { admitAuthenticatedPhoneProducer, admitPhoneProducer, configuredPhoneProducerCompletionAttempt, createHttpsPhoneProducerAdmissionHost, type PhoneProducerAdmission } from './phone-producer-admission';
+import { readFile } from 'node:fs/promises';
 import type { Principal } from '@papercusp/agent-mcp';
 import type { ExternalRuntimeProducerBinding } from './operation-worker-binding';
 import type { AppScopeRow } from '../connected-apps/scope-policy';
 import { resolveWorkItemPot } from '../pot-membership';
 
 vi.mock('../pot-membership', () => ({ resolveWorkItemPot: vi.fn(async () => 'home') }));
+vi.mock('node:fs/promises', () => ({ readFile: vi.fn(async () => 'credential') }));
 
 function fixture() {
   const snapshot: PhoneProducerAdmission = { workspaceId: 'workspace', harnessSlug: 'phone-app', storageHarnessSlug: 'home',
@@ -30,6 +32,41 @@ function fixture() {
   return { snapshot, host, store, read: () => admitPhoneProducer(host, 'room-a', store),
     get registration() { return registration; }, get row() { return row; } };
 }
+
+describe('Phone producer configured completion', () => {
+  const principal = (): Principal => ({ kind: 'service', trust: 'verified', authMethod: 'bearer-token',
+    workspaceId: 'workspace', slug: 'voice-run-a', capabilities: new Set<string>() });
+  const env = { PHONE_PRODUCER_ADMISSION_ENDPOINT: 'https://phone.test/admission', PHONE_PRODUCER_TOKEN_FILE: '/injected/token' };
+  async function item() {
+    const f = fixture(); await f.read();
+    return { ...f.row!, updatedAt: '2026-10-07T13:01:00Z' };
+  }
+  it('constructs a detached host-read attempt with the current row epoch', async () => {
+    const row = await item();
+    const attempt = await configuredPhoneProducerCompletionAttempt(principal(), row, env);
+    expect(readFile).toHaveBeenCalledWith('/injected/token', 'utf8');
+    expect(attempt.updatedTs).toBe(Date.parse(row.updatedAt));
+    expect(attempt.binding).toEqual((row.payload as any).externalRuntimeProducer);
+    expect(attempt.binding).not.toBe((row.payload as any).externalRuntimeProducer);
+    expect(typeof attempt.readStoredOutcome).toBe('function');
+  });
+  it.each(['slug', 'workspaceId', 'kind', 'trust', 'authMethod'] as const)
+    ('refuses a different or unauthenticated principal %s before reading credentials', async (field) => {
+      const row = await item(); vi.mocked(readFile).mockClear();
+      await expect(configuredPhoneProducerCompletionAttempt({ ...principal(), [field]: 'foreign' } as Principal, row, env))
+        .rejects.toThrow();
+      expect(readFile).not.toHaveBeenCalled();
+    });
+  it.each(['assignee', 'id', 'harness'] as const)('refuses changed row %s', async (field) => {
+    const row = await item();
+    await expect(configuredPhoneProducerCompletionAttempt(principal(), { ...row, [field]: 'foreign' }, env))
+      .rejects.toThrow('scope_mismatch');
+  });
+  it('requires explicit injected host configuration', async () => {
+    await expect(configuredPhoneProducerCompletionAttempt(principal(), await item(), {}))
+      .rejects.toThrow('not_configured');
+  });
+});
 
 describe('Phone producer HTTPS bridge', () => {
   it('uses the same authenticated authority for owner-scoped retained registration and export', async () => {

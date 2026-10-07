@@ -12,7 +12,8 @@ import { evaluateAppScope, type AppScopeRow } from '../connected-apps/scope-poli
 import { loadAppScopeRow, loadAccessTokenScopeRow } from '../connected-apps/store';
 import { resolveWorkItemPot } from '../pot-membership';
 import { gateWorkScope } from '../work-scope-policy';
-import type { PhoneRetainedOutcomeHost } from './phone-retained-outcome';
+import { phoneRetainedOutcomeReader, type PhoneRetainedOutcomeHost } from './phone-retained-outcome';
+import type { ExternalRuntimeCompletionAttempt } from './operation-worker-binding';
 
 const text = z.string().min(1).refine((value) => value.trim() === value && !/[\u0000-\u001f\u007f]/.test(value));
 const admissionSchema = z.object({
@@ -117,6 +118,31 @@ export async function admitConfiguredPhoneProducer(principal: PhoneProducerPrinc
       return snapshot;
     },
   }, roomName);
+}
+
+/** Completion uses the same host authority as admission. Neither the endpoint,
+ * credential nor retained-record callback is accepted in public tool input. */
+export async function configuredPhoneProducerCompletionAttempt(
+  principal: PhoneProducerPrincipal | null | undefined,
+  item: Pick<WorkItem, 'id' | 'harness' | 'assignee' | 'payload' | 'updatedAt'>,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<ExternalRuntimeCompletionAttempt> {
+  const payload = item.payload && typeof item.payload === 'object' && !Array.isArray(item.payload)
+    ? item.payload as Record<string, unknown> : {};
+  const binding = payload.externalRuntimeProducer as ExternalRuntimeProducerBinding | undefined;
+  if (principal?.kind !== 'service' || principal.trust !== 'verified' ||
+      principal.authMethod !== 'bearer-token' || !principal.slug || !principal.workspaceId ||
+      isTransportOnlyIdentity(principal.slug)) throw new Error('phone_producer_authenticated_service_required');
+  if (!binding || binding.kind !== 'external-runtime-producer' ||
+      binding.executionOwnerId !== principal.slug || binding.workspaceId !== principal.workspaceId ||
+      binding.workItemId !== item.id || binding.storageHarnessSlug !== item.harness ||
+      item.assignee !== principal.slug) throw new Error('phone_producer_authenticated_scope_mismatch');
+  const endpoint = env.PHONE_PRODUCER_ADMISSION_ENDPOINT?.trim();
+  const tokenFile = env.PHONE_PRODUCER_TOKEN_FILE?.trim();
+  if (!endpoint || !tokenFile) throw new Error('phone_producer_bridge_not_configured');
+  const host = createHttpsPhoneProducerAdmissionHost({ endpoint, token: await readFile(tokenFile, 'utf8') });
+  return { binding: { ...binding }, updatedTs: Date.parse(item.updatedAt),
+    readStoredOutcome: phoneRetainedOutcomeReader(host.retainedOutcomeHost, binding) };
 }
 
 type ProducerRow = Pick<WorkItem, 'id' | 'harness' | 'assignee' | 'payload'>;
