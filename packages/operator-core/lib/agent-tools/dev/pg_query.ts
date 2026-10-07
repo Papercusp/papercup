@@ -13,6 +13,7 @@
  * statement is SELECT/WITH…SELECT, so planner diagnostics remain read-only.
  */
 
+import { Buffer } from 'node:buffer';
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import {
@@ -88,7 +89,192 @@ export const PG_QUERY_MODE = {
 export type PgQueryMode = (typeof PG_QUERY_MODE)[keyof typeof PG_QUERY_MODE];
 
 /** A successful JSON payload in the MCP content shape. */
+export const PG_QUERY_MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
+
+const PG_QUERY_MAX_JSON_DEPTH = 256;
+
+type JsonSizeEstimate =
+  | { fits: true; bytes: number }
+  | { fits: false; reason: 'too_large' | 'unsafe_to_estimate' };
+
+/** Count JSON string UTF-8 bytes without allocating an escaped copy of the string. */
+function jsonStringBytesWithin(value: string, budget: number): number | null {
+  let bytes = 2; // opening + closing quote
+  if (bytes > budget) return null;
+
+  for (let index = 0; index < value.length; index++) {
+    const code = value.charCodeAt(index);
+    if (code === 0x22 || code === 0x5c) {
+      bytes += 2;
+    } else if (code < 0x20) {
+      bytes += code === 0x08 || code === 0x09 || code === 0x0a || code === 0x0c || code === 0x0d ? 2 : 6;
+    } else if (code <= 0x7f) {
+      bytes += 1;
+    } else if (code <= 0x7ff) {
+      bytes += 2;
+    } else if (code >= 0xd800 && code <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        bytes += 4;
+        index++;
+      } else {
+        // Well-formed JSON.stringify escapes unpaired UTF-16 surrogates.
+        bytes += 6;
+      }
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      bytes += 6;
+    } else {
+      bytes += 3;
+    }
+
+    if (bytes > budget) return null;
+  }
+
+  return bytes;
+}
+
+/**
+ * Estimate the exact JSON UTF-8 size for the plain values returned by pg.
+ * This deliberately stops once the response budget is crossed, before making
+ * the large string that JSON.stringify would allocate. Date and Buffer are
+ * modeled after their built-in JSON representations; unknown custom objects
+ * are rejected because a user-defined toJSON method cannot be bounded safely.
+ */
+function estimateJsonBytes(value: unknown, maxBytes: number): JsonSizeEstimate {
+  let total = 0;
+  let failure: 'too_large' | 'unsafe_to_estimate' = 'unsafe_to_estimate';
+  const active = new WeakSet<object>();
+
+  const consume = (bytes: number): boolean => {
+    if (bytes > maxBytes - total) {
+      total = maxBytes + 1;
+      failure = 'too_large';
+      return false;
+    }
+    total += bytes;
+    return true;
+  };
+
+  const consumeString = (text: string): boolean => {
+    const bytes = jsonStringBytesWithin(text, maxBytes - total);
+    if (bytes === null) {
+      total = maxBytes + 1;
+      failure = 'too_large';
+      return false;
+    }
+    return consume(bytes);
+  };
+
+  const consumeBuffer = (buffer: Buffer): boolean => {
+    // Buffer#toJSON returns { type: 'Buffer', data: [byte, ...] }.
+    if (
+      !consume(1) ||
+      !consumeString('type') ||
+      !consume(1) ||
+      !consumeString('Buffer') ||
+      !consume(1) ||
+      !consumeString('data') ||
+      !consume(2)
+    ) {
+      return false;
+    }
+    for (let index = 0; index < buffer.length; index++) {
+      if (index > 0 && !consume(1)) return false;
+      const byte = buffer[index];
+      if (!consume(byte >= 100 ? 3 : byte >= 10 ? 2 : 1)) return false;
+    }
+    return consume(2); // closing array + object
+  };
+
+  const visit = (current: unknown, depth: number, arraySlot = false): boolean => {
+    if (depth > PG_QUERY_MAX_JSON_DEPTH) return false;
+    if (current === null) return consume(4);
+
+    switch (typeof current) {
+      case 'string':
+        return consumeString(current);
+      case 'number':
+        return consume(Number.isFinite(current) ? String(current).length : 4);
+      case 'boolean':
+        return consume(current ? 4 : 5);
+      case 'undefined':
+      case 'function':
+      case 'symbol':
+        return arraySlot ? consume(4) : true;
+      case 'bigint':
+        return false;
+      case 'object':
+        break;
+      default:
+        return false;
+    }
+
+    if (Buffer.isBuffer(current)) return consumeBuffer(current);
+    if (current instanceof Date) {
+      const serializedDate = current.toJSON();
+      return serializedDate === null ? consume(4) : consumeString(serializedDate);
+    }
+    if (depth === PG_QUERY_MAX_JSON_DEPTH) return false;
+
+    const object = current as Record<string, unknown>;
+    if (typeof object.toJSON === 'function' || active.has(object)) return false;
+
+    if (Array.isArray(current)) {
+      if (!consume(1)) return false;
+      for (let index = 0; index < current.length; index++) {
+        if (index > 0 && !consume(1)) return false;
+        if (!visit(current[index], depth + 1, true)) return false;
+      }
+      return consume(1);
+    }
+
+    const prototype = Object.getPrototypeOf(object);
+    if (prototype !== Object.prototype && prototype !== null) return false;
+
+    active.add(object);
+    try {
+      if (!consume(1)) return false;
+      let hasEntry = false;
+      for (const key in object) {
+        if (!Object.prototype.hasOwnProperty.call(object, key)) continue;
+        const entry = object[key];
+        if (entry === undefined || typeof entry === 'function' || typeof entry === 'symbol') continue;
+        if ((hasEntry && !consume(1)) || !consumeString(key) || !consume(1) || !visit(entry, depth + 1)) {
+          return false;
+        }
+        hasEntry = true;
+      }
+      return consume(1);
+    } finally {
+      active.delete(object);
+    }
+  };
+
+  if (!visit(value, 0)) return { fits: false, reason: failure };
+  return { fits: true, bytes: total };
+}
+
+/** A successful JSON payload in the MCP content shape, with a pre-serialization byte cap. */
 function jsonResult(payload: unknown) {
+  const estimate = estimateJsonBytes(payload, PG_QUERY_MAX_RESPONSE_BYTES);
+  if (!estimate.fits) {
+    if (estimate.reason === 'too_large') {
+      return jsonError(
+        'result_too_large',
+        'Query result exceeds the 4 MiB serialized response limit and was not serialized. Select fewer columns or rows, or aggregate large JSON values in PostgreSQL.',
+        {
+          limitBytes: PG_QUERY_MAX_RESPONSE_BYTES,
+          estimatedBytesAtLeast: PG_QUERY_MAX_RESPONSE_BYTES + 1,
+        },
+      );
+    }
+    return jsonError(
+      'result_size_unavailable',
+      'Query result could not be safely size-estimated and was not serialized. Return plain JSON-compatible values or use a smaller projection.',
+      { limitBytes: PG_QUERY_MAX_RESPONSE_BYTES },
+    );
+  }
+
   return { content: [{ type: 'text' as const, text: JSON.stringify(payload) }] };
 }
 
@@ -462,8 +648,8 @@ export default defineTool({
   skipWorkspaceTx: true,
   // EI-20244135937023756: ptool consumes this response as JSON. The generic
   // result door appends a truncation footer to oversized relation descriptions,
-  // which makes the machine-readable JSON invalid instead of returning a
-  // parseable result that the caller can inspect or project.
+  // which makes the machine-readable JSON invalid. SQL results instead enforce
+  // an explicit byte cap before their hand-written JSON serialization below.
   skipResultDoor: 'programmatic-caller',
   // Acceptance judges need the rubric method's ad-hoc, read-only evidence
   // query surface; this does not widen any write-capable role set.
@@ -477,7 +663,7 @@ export default defineTool({
       sql: z
         .string()
         .min(1)
-        .describe('A single read-only SELECT, WITH…SELECT, or EXPLAIN whose explained statement is SELECT/WITH…SELECT. No `;`-separated statements.'),
+        .describe('A single read-only SELECT, WITH…SELECT, or EXPLAIN whose explained statement is SELECT/WITH…SELECT. No `;`-separated statements. Serialized SQL results are capped at 4 MiB; select fewer columns/rows or aggregate large JSON values.'),
       describe: z.never().optional().describe('Only valid for relation-description calls; omit it when passing `sql`.'),
       maxRows: z
         .number()
@@ -955,24 +1141,17 @@ export default defineTool({
         ...advisoryFireScope,
         fires: firesForDelivery(labelDeliveredAdvisories(deliveredAdvisories), 'success'),
       });
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify({
-              ...(advisory ? { advisory } : {}),
-              mode: PG_QUERY_MODE.query,
-              rowCount: result.rowCount,
-              truncated: result.truncated,
-              fields: result.fields,
-              elapsedMs: result.elapsedMs,
-              rows: result.rows,
-              ...(positiveControl ? { positiveControl } : {}),
-              ...(absence ? { absence } : {}),
-            }),
-          },
-        ],
-      };
+      return jsonResult({
+        ...(advisory ? { advisory } : {}),
+        mode: PG_QUERY_MODE.query,
+        rowCount: result.rowCount,
+        truncated: result.truncated,
+        fields: result.fields,
+        elapsedMs: result.elapsedMs,
+        rows: result.rows,
+        ...(positiveControl ? { positiveControl } : {}),
+        ...(absence ? { absence } : {}),
+      });
     } catch (err) {
       // EI-19415142351884573: a whole-call timeout (connect/acquire, or PG
       // itself never finishing) is a DIFFERENT failure from a real PG error —

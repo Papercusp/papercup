@@ -34,7 +34,7 @@ vi.mock('../../pg-read-query', async (importOriginal) => ({
   listRelations: listRelationsMock,
 }));
 
-import pgQueryTool, { PG_QUERY_MODE } from './pg_query';
+import pgQueryTool, { PG_QUERY_MAX_RESPONSE_BYTES, PG_QUERY_MODE } from './pg_query';
 import { PgReadQueryTimeoutError } from '../../pg-read-query';
 // EI-21596258009994255: the refusal text a caller actually reads is RENDERED by
 // formatIssues, which resolves an `invalid_union` down to the closest branch's own
@@ -235,6 +235,39 @@ describe('dev:pg_query — P-005 guard wiring', () => {
     );
     expect(payloadOf(res as never)).toMatchObject({ advisory: '⚠ tenant scope: …', rowCount: 1 });
     expect(pgReadQueryMock).toHaveBeenCalledOnce();
+  });
+
+  it('refuses oversized SQL results before serializing the response', async () => {
+    pgReadQueryMock.mockResolvedValueOnce({
+      ...OK_RESULT,
+      rows: [{ payload: 'x'.repeat(PG_QUERY_MAX_RESPONSE_BYTES) }],
+    });
+
+    const res = await pgQueryTool.handler(
+      { sql: 'SELECT payload', allowUnscoped: true } as never,
+      {} as never,
+    );
+
+    expect((res as { isError?: boolean }).isError).toBe(true);
+    expect(payloadOf(res as never)).toMatchObject({
+      reason: 'result_too_large',
+      limitBytes: PG_QUERY_MAX_RESPONSE_BYTES,
+      estimatedBytesAtLeast: PG_QUERY_MAX_RESPONSE_BYTES + 1,
+    });
+    expect(String(payloadOf(res as never).error)).toContain('aggregate large JSON values');
+  });
+
+  it('preserves normal UTF-8 SQL results below the response byte cap', async () => {
+    const row = { value: 'café 😀\n"quoted"' };
+    pgReadQueryMock.mockResolvedValueOnce({ ...OK_RESULT, rows: [row] });
+
+    const res = await pgQueryTool.handler(
+      { sql: 'SELECT value', allowUnscoped: true } as never,
+      {} as never,
+    );
+
+    expect(payloadOf(res as never)).toMatchObject({ mode: PG_QUERY_MODE.query, rows: [row] });
+    expect((res as { isError?: boolean }).isError).not.toBe(true);
   });
 
   // EI-20261038811991822. The builder itself is unit-tested in
