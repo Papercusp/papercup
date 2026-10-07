@@ -37,6 +37,8 @@ import {
   WORKSPACE_HOST_BOOTSTRAP_STATUS_GUEST_ATTRIBUTE_NAMESPACE,
   WORKSPACE_HOST_CREDENTIAL_DELIVERY_CONDUIT,
   WORKSPACE_HOST_REMOTE_INITIALIZER_CONDUIT,
+  WORKSPACE_HOST_EC2_CONSOLE_HOST_KEYS_BEGIN,
+  WORKSPACE_HOST_EC2_CONSOLE_HOST_KEYS_END,
   parseEc2ConsoleBootstrapStatus,
   parseWorkspaceHostBootstrapReportedStatus,
   type WorkspaceHostDeliveryCapabilities,
@@ -589,11 +591,14 @@ export function enrollGcpIapHostKeys(
   });
 }
 
-const EC2_CONSOLE_HOST_KEYS_BEGIN = '-----BEGIN SSH HOST KEY KEYS-----';
-const EC2_CONSOLE_HOST_KEYS_END = '-----END SSH HOST KEY KEYS-----';
+// Shared with the emitter: on a host without cloud-init (the bootc AMI), the bootstrap prints this
+// block itself on the `ec2-console-output` channel (WI-10007009).
+const EC2_CONSOLE_HOST_KEYS_BEGIN = WORKSPACE_HOST_EC2_CONSOLE_HOST_KEYS_BEGIN;
+const EC2_CONSOLE_HOST_KEYS_END = WORKSPACE_HOST_EC2_CONSOLE_HOST_KEYS_END;
 
 /**
- * Parse the SSH host keys cloud-init writes to the EC2 serial console (P-005).
+ * Parse the SSH host keys cloud-init (or, without it, the bootstrap) writes to the EC2 serial
+ * console (P-005).
  *
  * The console is written only by the instance's own boot and read only through the EC2 API with
  * the connection's credentials, so it is the AWS analogue of GCP's `hostkeys/` guest attributes:

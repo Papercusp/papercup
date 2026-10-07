@@ -343,7 +343,9 @@ describe('ec2-console-output console hygiene and host-key publication (WI-100070
     expect(first.filter((call) => call.startsWith('restorecon')).sort()).toEqual(
       [`restorecon ${etc}/rsyslog.conf`, `restorecon ${etc}/rsyslog.d/90-google.conf`].sort(),
     );
-    expect(first.filter((call) => call.includes('rsyslog'))).toEqual(['systemctl try-restart rsyslog.service']);
+    expect(first.filter((call) => call.startsWith('systemctl') && call.includes('rsyslog'))).toEqual([
+      'systemctl try-restart rsyslog.service',
+    ]);
     for (const unit of WORKSPACE_HOST_EC2_GCP_GUEST_UNITS) {
       expect(first).toContain(`systemctl disable --now --no-block ${unit}`);
       expect(first).toContain(`systemctl mask ${unit}`);
