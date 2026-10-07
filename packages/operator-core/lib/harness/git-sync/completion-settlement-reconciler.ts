@@ -405,8 +405,28 @@ export function normalizeStoredSettlementManifest(raw: unknown): unknown {
   if (!raw || typeof raw !== 'object') return raw;
   const manifest = raw as { contentIdentity?: unknown };
   if (!Array.isArray(manifest.contentIdentity)) return raw;
+  const identityPaths = manifest.contentIdentity.map((entry) =>
+    entry && typeof entry === 'object' && !Array.isArray(entry) &&
+      typeof (entry as Record<string, unknown>).path === 'string'
+      ? (entry as Record<string, unknown>).path as string
+      : undefined,
+  );
+  const normalizedPaths = (manifest as { normalizedPaths?: unknown }).normalizedPaths;
+  const deduplicatedIdentityPaths = identityPaths.every((path): path is string => typeof path === 'string')
+    ? [...new Set(identityPaths)]
+    : undefined;
+  // Before WI-10006693, a Set collapsed equal relative paths owned by sibling
+  // checkouts. Repair only that exact legacy projection; other path mismatches
+  // remain invalid and fail the settlement floor closed.
+  const restoreLegacyDuplicatePaths =
+    deduplicatedIdentityPaths !== undefined &&
+    identityPaths.length > deduplicatedIdentityPaths.length &&
+    Array.isArray(normalizedPaths) &&
+    normalizedPaths.length === deduplicatedIdentityPaths.length &&
+    normalizedPaths.every((path, index) => path === deduplicatedIdentityPaths[index]);
   return {
     ...manifest,
+    ...(restoreLegacyDuplicatePaths ? { normalizedPaths: identityPaths } : {}),
     contentIdentity: manifest.contentIdentity.map((entry) =>
       entry && typeof entry === 'object' && !Array.isArray(entry)
         ? { workingTreeBlobSha: null, headBlobSha: null, ...(entry as Record<string, unknown>) }

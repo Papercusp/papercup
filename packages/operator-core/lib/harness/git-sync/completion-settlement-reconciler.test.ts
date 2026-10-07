@@ -1600,6 +1600,35 @@ describe('normalizeStoredSettlementManifest — WI-1409142 stripped-null toleran
     });
   });
 
+  it('restores duplicate paths only when a legacy Set collapsed sibling-checkout identities', () => {
+    const identities = [
+      { path: 'src/shared.ts', repositoryRoot: '/repo-a', workingTreeBlobSha: 'a'.repeat(40) },
+      { path: 'src/shared.ts', repositoryRoot: '/repo-b', workingTreeBlobSha: 'b'.repeat(40) },
+      { path: 'src/only-a.ts', repositoryRoot: '/repo-a', workingTreeBlobSha: 'c'.repeat(40) },
+    ];
+    const repaired = normalizeStoredSettlementManifest({
+      normalizedPaths: ['src/shared.ts', 'src/only-a.ts'],
+      contentIdentity: identities,
+    }) as { normalizedPaths: string[]; contentIdentity: Record<string, unknown>[] };
+
+    expect(repaired.normalizedPaths).toEqual(['src/shared.ts', 'src/shared.ts', 'src/only-a.ts']);
+    expect(CompletionSettlementManifestSchema.safeParse({
+      version: 1,
+      generation: 1,
+      evidenceHash: 'd'.repeat(64),
+      repositoryRoot: '/repo-a',
+      headSha: 'e'.repeat(40),
+      ...repaired,
+      residualPaths: [],
+    }).success).toBe(true);
+
+    const unrelatedMismatch = normalizeStoredSettlementManifest({
+      normalizedPaths: ['src/shared.ts', 'unrelated.ts'],
+      contentIdentity: identities,
+    }) as { normalizedPaths: string[] };
+    expect(unrelatedMismatch.normalizedPaths).toEqual(['src/shared.ts', 'unrelated.ts']);
+  });
+
   it('leaves a value that is not a manifest untouched', () => {
     expect(normalizeStoredSettlementManifest(null)).toBeNull();
     expect(normalizeStoredSettlementManifest('nope')).toBe('nope');
