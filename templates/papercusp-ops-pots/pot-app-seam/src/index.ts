@@ -222,12 +222,16 @@ export interface BlueprintOperationHost {
 }
 
 export interface PotAppSeamHost extends BlueprintOperationHost {
+  /** Optional on older apps; grading-capable apps inject the canonical adapter. */
+  readonly scorecards?: AppScorecardHost;
   readBootstrapMarker(marker: string): Promise<string | null> | string | null;
   writeBootstrapMarker(marker: string, fingerprint: string): Promise<void> | void;
   ensurePot(spec: PotSpec): Promise<BootstrapPotResult> | BootstrapPotResult;
 }
 
 export interface PotAppSeam {
+  emitScorecard(draft: AppScorecardDraft): Promise<AppScorecardReceipt>;
+  readScorecard<T>(issueId: string, parse: OperationOutputParser<T>): Promise<T>;
   bootstrapPots(input: BootstrapPotsInput): Promise<BootstrapPotsResult>;
   submitOperations(
     operations: readonly BlueprintOperationDraft[],
@@ -366,6 +370,126 @@ export function operationDraftFromPlanRun<TInput extends JsonObject>(
 /** Calls one public tool by name. Must THROW on a refusal (an MCP isError / non-200). */
 export type BlueprintToolInvoke = (toolName: string, args: Record<string, unknown>) => Promise<unknown>;
 
+/** Reviewed instrument and producing-task identity, pinned before filing. */
+export interface AppScorecardDraft {
+  readonly rubricRef: string;
+  readonly rubricRevision: number;
+  readonly criteriaHash: string;
+  readonly subject: { readonly kind: 'work-item'; readonly ref: string };
+  readonly ratings: JsonObject;
+  readonly sourceHive?: string;
+  readonly body?: string;
+}
+
+export interface AppScorecardReceipt {
+  readonly issueId: string;
+  readonly created: boolean;
+  readonly evidenceFingerprint: string;
+}
+
+export interface AppScorecardHost {
+  emitScorecard(draft: AppScorecardDraft): Promise<AppScorecardReceipt>;
+  readScorecard(issueId: string): Promise<unknown>;
+}
+
+/** Assemble the canonical evidence pages; an index is never an accepted grade. */
+async function readCompleteScorecard(invoke: BlueprintToolInvoke, issueId: string): Promise<unknown> {
+  let calls = 0;
+  let identity: string | undefined;
+  const read = async (args: Record<string, unknown>) => {
+    if (++calls > 1024) throw new Error('scorecard evidence page limit exceeded');
+    const out = requireFields(await invoke('scorecards:get', { issueId, ...args }),
+      'scorecards:get', ['ok', 'scorecard', 'evidenceRead']);
+    if (out.ok !== true) throw new Error('scorecards:get refused evidence read');
+    const card = requireFields(out.scorecard, 'scorecard', ['issueId', 'rubricRef', 'rubricRevision', 'criteriaHash', 'evidenceFingerprint', 'criteria']);
+    if (card.issueId !== issueId) throw new Error('scorecards:get returned a different scorecard');
+    const current = JSON.stringify([card.issueId, card.rubricRef, card.rubricRevision, card.criteriaHash, card.evidenceFingerprint]);
+    if (identity !== undefined && identity !== current) throw new Error('scorecard identity changed during evidence read');
+    identity = current;
+    return { card, page: asRecord(out.evidenceRead, 'scorecard evidenceRead') };
+  };
+  let { card, page } = await read({});
+  if (page.complete === true && page.scope === undefined) return card;
+  const metadata = card;
+  const index: { key: string; rating: string; evidenceChars: number }[] = [];
+  let total: number | undefined;
+  for (;;) {
+    if (page.scope !== 'criterion-index' || page.complete !== false || page.offset !== index.length ||
+        !Number.isInteger(page.totalCriteria) || (page.totalCriteria as number) < 1 || (page.totalCriteria as number) > 100) {
+      throw new Error('scorecards:get returned incomplete or invalid criterion index');
+    }
+    if (total !== undefined && total !== page.totalCriteria) throw new Error('scorecard index population changed');
+    total = page.totalCriteria as number;
+    if (!Array.isArray(page.criteria) || page.criteria.length === 0) throw new Error('scorecard index made no progress');
+    for (const raw of page.criteria) {
+      const entry = asRecord(raw, 'scorecard index entry');
+      if (typeof entry.key !== 'string' || typeof entry.rating !== 'string' ||
+          !Number.isInteger(entry.evidenceChars) || (entry.evidenceChars as number) < 0 ||
+          (entry.evidenceChars as number) > 4_000_000 || index.some((prior) => prior.key === entry.key)) {
+        throw new Error('scorecard index entry is invalid');
+      }
+      index.push(entry as { key: string; rating: string; evidenceChars: number });
+    }
+    if (index.length > total) throw new Error('scorecard index exceeds declared population');
+    if (page.next === undefined) {
+      if (index.length !== total) throw new Error('scorecard index is incomplete');
+      break;
+    }
+    if (index.length === total) throw new Error('scorecard index has an unexpected continuation');
+    ({ card, page } = await read({ indexOffset: index.length }));
+  }
+  const criteria: Record<string, unknown>[] = [];
+  for (const entry of index) {
+    let evidence = '';
+    let criterion: Record<string, unknown> | undefined;
+    for (;;) {
+      const { card: part, page: chunk } = await read({ criterionKey: entry.key, evidenceOffset: evidence.length });
+      const rows = part.criteria;
+      if (!Array.isArray(rows) || rows.length !== 1 || chunk.scope !== 'selected-criterion' ||
+          chunk.offset !== evidence.length || chunk.totalChars !== entry.evidenceChars) {
+        throw new Error('scorecard criterion evidence page is invalid');
+      }
+      const row = asRecord(rows[0], 'scorecard criterion');
+      if (row.key !== entry.key || row.rating !== entry.rating || typeof row.evidence !== 'string') {
+        throw new Error('scorecard criterion identity changed');
+      }
+      const { evidence: ignoredEvidence, ...attributes } = row;
+      if (criterion && stableJson(attributes as JsonObject) !== stableJson(criterion as JsonObject)) {
+        throw new Error('scorecard criterion attributes changed during read');
+      }
+      criterion = attributes;
+      evidence += row.evidence;
+      if (evidence.length > entry.evidenceChars) throw new Error('scorecard evidence exceeded declared length');
+      if (chunk.complete === true) {
+        if (evidence.length !== entry.evidenceChars || chunk.next !== undefined) throw new Error('scorecard evidence is incomplete');
+        break;
+      }
+      if (row.evidence.length === 0 || chunk.next === undefined) throw new Error('scorecard evidence made no progress');
+    }
+    criteria.push({ ...criterion, evidence });
+  }
+  return { ...metadata, criteria };
+}
+
+/** Canonical adapter: deduplication and independence stay in the ledger writer. */
+export function scorecardHostFromInvoker(invoke: BlueprintToolInvoke): AppScorecardHost {
+  return {
+    async emitScorecard(draft) {
+      const out = requireFields(await invoke('scorecards:emit', { ...draft, terminal: true }),
+        'scorecards:emit', ['ok', 'issueId', 'created', 'evidenceFingerprint']);
+      if (out.ok !== true || typeof out.issueId !== 'string' || !out.issueId.trim() ||
+          typeof out.created !== 'boolean' || typeof out.evidenceFingerprint !== 'string') {
+        throw new Error('scorecards:emit did not return a canonical receipt');
+      }
+      return { issueId: out.issueId, created: out.created, evidenceFingerprint: out.evidenceFingerprint };
+    },
+    async readScorecard(issueId) {
+      assertNonEmpty(issueId, 'scorecard issueId');
+      return readCompleteScorecard(invoke, issueId);
+    },
+  };
+}
+
 function asRecord(value: unknown, what: string): Record<string, unknown> {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error(`${what} returned a non-object result`);
@@ -449,6 +573,14 @@ export function createPotAppSeam(host: PotAppSeamHost): PotAppSeam {
       return { marker, fingerprint, skipped: false, pots };
     },
 
+    async emitScorecard(draft) {
+      if (!host.scorecards) throw new Error('canonical scorecard host is not connected');
+      return host.scorecards.emitScorecard(draft);
+    },
+    async readScorecard(issueId, parse) {
+      if (!host.scorecards) throw new Error('canonical scorecard host is not connected');
+      return parse(await host.scorecards.readScorecard(issueId));
+    },
     async submitOperations(operations) {
       const out: BlueprintOperationHandle[] = [];
       for (const operation of operations) {
