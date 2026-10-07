@@ -10,6 +10,7 @@ const h = vi.hoisted(() => ({
   workspaceScopes: [] as string[],
   planScopeOptions: [] as Array<{ harnessSlug?: string; workspaceId?: string }>,
   measurementRoot: '',
+  fixtureMeasurementRoot: '',
 }));
 
 vi.mock('@papercusp/db-org', async (importOriginal) => {
@@ -48,7 +49,8 @@ vi.mock('../../harness-registry', async (importOriginal) => {
   return {
     ...actual,
     loadHarnessRegistry: async () => ({}) as never,
-    resolveHarnessContentPath: () => h.measurementRoot,
+    resolveHarnessContentPath: (_registry, slug: string) =>
+      slug === 'papercusp' && h.fixtureMeasurementRoot ? h.fixtureMeasurementRoot : h.measurementRoot,
   };
 });
 
@@ -57,11 +59,14 @@ import {
   classifySpecEvidenceCurrentness,
   evidenceMeasurementSchema,
   listSpecEvidence,
+  measureAndPinEvidenceForScope,
   measureAndPinRepoFilesEvidenceAtRoot,
   measureRepoFilesEvidenceDetailedAtRoot,
   measureRepoFilesEvidenceAtRoot,
   measureWorkItemsEvidenceForScope,
 } from './spec-evidence-store';
+import { configureRuntimeVintageStore, resetRuntimeVintageStore, InMemoryRuntimeVintageStore,
+  reportRuntimeVintage, listRuntimeVintage, measureRuntimeVintageEnvironment } from '../../runtime-vintage';
 
 let measurementRoot = '';
 
@@ -83,6 +88,37 @@ afterAll(async () => {
 });
 
 describe('repo-backed server measurement', () => {
+  it('independently remeasures runtime identity, ignores matching caller testimony and detects drift', async () => {
+    configureRuntimeVintageStore(new InMemoryRuntimeVintageStore());
+    try {
+      await reportRuntimeVintage({ unit: 'test-live', pid: process.pid, treeSha: 'a'.repeat(40), workspaceId: 'workspace-test' });
+      const fingerprint = measureRuntimeVintageEnvironment(await listRuntimeVintage('workspace-test'), ['test-live']);
+      expect(fingerprint).toMatch(/^[a-f0-9]{64}$/);
+      const recipe = { schemaVersion: 1 as const, kind: 'repo-files' as const,
+        sourcePaths: ['src/feature.ts'], testPaths: ['test/feature.test.ts'], runtimeUnits: ['test-live'] };
+      const measured = await measureRepoFilesEvidenceAtRoot(measurementRoot, recipe);
+      h.rows = [{ id: 91, work_item_id: 'WI-runtime', plan_slug: 'plan-one', spec_id: 'SPEC-runtime',
+        source_val_id: null, spec_revision: 1, current_revision: 1, spec_fingerprint: 'sha256:spec',
+        evidence_kind: 'manual', evidence_ref: 'runtime:observed', source_fingerprint: measured.sourceFingerprint,
+        test_fingerprint: measured.testFingerprint, fixture_fingerprint: null, rubric_fingerprint: null,
+        environment_fingerprint: fingerprint, coverage_evidence_ref: null, coverage_evidence_present: false,
+        test_run_id: null, test_run_present: false, details: { currentMeasurement: recipe, evidencePlane: 'live' },
+        observed_at: '2026-10-07T00:00:00Z', created_at: '2026-10-07T00:00:00Z', created_by: 'su-test',
+        binding_fingerprint: 'binding', spec_is_current: true }];
+      const options = { harnessSlug: 'papercusp', planSlugs: ['plan-one'], current: [{ evidenceKind: 'manual' as const,
+        evidenceRef: 'runtime:observed', sourceFingerprint: measured.sourceFingerprint,
+        testFingerprint: measured.testFingerprint, environmentFingerprint: fingerprint }] };
+      const [current] = await listSpecEvidence(options);
+      expect(current.currentness).toMatchObject({ overall: 'current', provenance: 'server-measured',
+        dimensions: { environment: 'current' } });
+      await reportRuntimeVintage({ unit: 'test-live', pid: process.pid, treeSha: 'b'.repeat(40), workspaceId: 'workspace-test' });
+      const [drift] = await listSpecEvidence(options);
+      expect(drift.currentness.dimensions.environment).toBe('stale');
+      h.rows[0].environment_fingerprint = null;
+      const [historical] = await listSpecEvidence(options);
+      expect(historical.currentness.dimensions.environment).toBe('unknown');
+    } finally { resetRuntimeVintageStore(); }
+  });
   it('hashes normalized source/test file sets deterministically and detects a source change', async () => {
     const recipe = {
       schemaVersion: 1 as const,
@@ -125,6 +161,44 @@ describe('repo-backed server measurement', () => {
     expect(changed.fixtureFingerprint).not.toBe(first.fixtureFingerprint);
     expect(changed.sourceFingerprint).toBe(first.sourceFingerprint);
     expect(changed.testFingerprint).toBe(first.testFingerprint);
+  });
+
+  it('preserves the fixture root through scope-level measurement and pinning', async () => {
+    const fixtureRoot = await mkdtemp(join(tmpdir(), 'spec-evidence-fixture-root-'));
+    h.fixtureMeasurementRoot = fixtureRoot;
+    const fixturePath = 'calibration/server-envelope.ts';
+    try {
+      await mkdir(join(fixtureRoot, 'calibration'), { recursive: true });
+      await writeFile(join(fixtureRoot, fixturePath), 'export const serverPort = 8080;\n');
+      const recipe = {
+        schemaVersion: 1 as const,
+        kind: 'repo-files' as const,
+        rootHarnessSlug: 'papercup-rust-mobile',
+        sourcePaths: ['src/feature.ts'],
+        testPaths: ['test/feature.test.ts'],
+        fixturePaths: [fixturePath],
+        fixtureRootHarnessSlug: 'papercusp',
+      };
+
+      const first = await measureAndPinEvidenceForScope('workspace-test', 'papercusp', recipe);
+      expect(first.fixtureFingerprint).toMatch(/^sha256-file-set-v1:[0-9a-f]{64}$/);
+      expect(first.pin?.files).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          path: fixturePath,
+          dimension: 'fixture',
+          rootHarnessSlug: 'papercusp',
+        }),
+      ]));
+
+      await writeFile(join(fixtureRoot, fixturePath), 'export const serverPort = 8081;\n');
+      const changed = await measureAndPinEvidenceForScope('workspace-test', 'papercusp', recipe);
+      expect(changed.fixtureFingerprint).not.toBe(first.fixtureFingerprint);
+      expect(changed.sourceFingerprint).toBe(first.sourceFingerprint);
+      expect(changed.testFingerprint).toBe(first.testFingerprint);
+    } finally {
+      h.fixtureMeasurementRoot = '';
+      await rm(fixtureRoot, { recursive: true, force: true });
+    }
   });
 
   it('includes globbed source changes, additions, and removals in the source fingerprint', async () => {

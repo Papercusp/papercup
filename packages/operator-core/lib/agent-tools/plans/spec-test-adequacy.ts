@@ -1,6 +1,6 @@
 /** Per-clause spec-test-adequacy evaluator (P-006 / D-004..D-006, D-009). */
 import { getBuildInfo } from '../../build-info';
-import { repoFilesEvidenceMeasurementSchema } from './spec-evidence-store';
+import { repoFilesEvidenceMeasurementSchema, SPEC_EVIDENCE_KINDS } from './spec-evidence-store';
 import { SPEC_PROOF_OBLIGATION_ID_RE, type SpecBehaviorClass, type SpecClauseRevision } from './spec-clauses-store';
 import type {
   EvidenceCurrentInput,
@@ -942,6 +942,15 @@ function hasCounterexampleCaseProvenance(row: SpecEvidenceForAdequacy): boolean 
   );
 }
 
+/** Unselected skips cannot invalidate a ledger-corroborated, explicitly bounded case scope. */
+function hasMeasuredCaseScope(row: SpecEvidenceForAdequacy, failedCases?: string[]): boolean {
+  const declared = detailsOf(row).testCases ?? [];
+  if (declared.length === 0) return false;
+  const executed = new Set([...(row.testRunExecution?.passedCaseTitles ?? []), ...(failedCases ?? [])]);
+  return declared.every((title) => executed.has(title)) &&
+    (failedCases === undefined || declared.some((title) => failedCases.includes(title)));
+}
+
 /** Run-backed proof takes its execution verdict from test_runs, never copied binder booleans. */
 function measuredExecutionVerdict(row: SpecEvidenceForAdequacy): MeasuredExecutionVerdict {
   if (row.testRunId === null) return 'unknown';
@@ -952,7 +961,8 @@ function measuredExecutionVerdict(row: SpecEvidenceForAdequacy): MeasuredExecuti
 
   if (row.evidenceKind === 'mutation') {
     if (status === 'pass') return 'fail';
-    if (status !== 'fail' || run.collectionFailed || run.failed < 1 || run.skipped > 0) return 'unknown';
+    if (status !== 'fail' || run.collectionFailed || run.failed < 1) return 'unknown';
+    if (run.skipped > 0 && !hasMeasuredCaseScope(row, row.testRunProvenance?.mutationFailedCaseTitles ?? [])) return 'unknown';
     // The evidence reader exposes these lines only for a failed mutation-probe row;
     // the paired test binding must also match this canonical file.
     return row.testRunProvenance?.mutationFailureLines?.length ? 'pass' : 'unknown';
@@ -967,7 +977,8 @@ function measuredExecutionVerdict(row: SpecEvidenceForAdequacy): MeasuredExecuti
     const rawMutant = testRunRecord?.source === 'mutation-probe' && testRunRecord.mutationPhase === 'mutant';
     if (rawMutant) {
       if (status === 'pass') return 'fail';
-      if (status !== 'fail' || run.collectionFailed || run.failed < 1 || run.skipped > 0) return 'unknown';
+      if (status !== 'fail' || run.collectionFailed || run.failed < 1) return 'unknown';
+      if (run.skipped > 0 && !hasMeasuredCaseScope(row, row.testRunProvenance?.mutationFailedCaseTitles ?? [])) return 'unknown';
       return row.testRunProvenance?.mutationFailureLines?.length || row.testRunProvenance?.mutationFailedCaseTitles?.length
         ? 'pass'
         : 'unknown';
@@ -979,7 +990,8 @@ function measuredExecutionVerdict(row: SpecEvidenceForAdequacy): MeasuredExecuti
 
   if (status === 'fail') return 'fail';
   if (status !== 'pass') return 'unknown';
-  return run.collectionFailed || run.skipped > 0 || run.failed > 0 || run.passed < 1 ? 'fail' : 'pass';
+  return run.collectionFailed || run.failed > 0 || run.passed < 1 ||
+    (run.skipped > 0 && !hasMeasuredCaseScope(row)) ? 'fail' : 'pass';
 }
 
 function isSuccessfulExecutableEvidence(row: SpecEvidenceForAdequacy): boolean {
@@ -2137,6 +2149,28 @@ export function evaluateSpecTestAdequacy(input: {
               ),
             };
   }
+  // Required evidence strings are generally descriptive, but exact canonical evidence-kind
+  // tokens are executable requirements. Check them against the active rows for this pinned
+  // revision so a declared kind cannot disappear behind unrelated passing evidence.
+  // `fixture` has its own fixture-calibration path below and is intentionally excluded here.
+  const requiredEvidenceKinds = [...new Set(clause.requiredEvidence
+    .map((entry) => entry.trim().toLowerCase())
+    .filter((entry): entry is SpecEvidenceKind =>
+      entry !== 'fixture' && SPEC_EVIDENCE_KINDS.includes(entry as SpecEvidenceKind),
+    ))];
+  const boundEvidenceKinds = new Set(exactEvidence.map((row) => row.evidenceKind));
+  const missingEvidenceKinds = requiredEvidenceKinds.filter((kind) => !boundEvidenceKinds.has(kind));
+  const evidenceKindRating: AdequacyRatingEntry | null = requiredEvidenceKinds.length === 0 ? null
+    : missingEvidenceKinds.length > 0
+      ? {
+          rating: 'fail',
+          evidence: `Required evidence kind(s) are absent from active bindings for ${clauseIdentity(clause)} at revision ${clause.revision}: ${missingEvidenceKinds.join(', ')}.`,
+          suggestion: 'Bind active evidence of each required evidence kind to this exact clause revision.',
+        }
+      : {
+          rating: 'pass',
+          evidence: `Active bindings at revision ${clause.revision} cover the required evidence kind(s) for ${clauseIdentity(clause)}: ${requiredEvidenceKinds.join(', ')}.`,
+        };
   // A standalone clause can require a live or deployed observation without a source BAR.
   // The BAR ship gate checks its own evidence plane, but cannot cover such a clause.
   // Inspect only current-cohort bindings and use the same explicit plane metadata as
@@ -2159,7 +2193,8 @@ export function evaluateSpecTestAdequacy(input: {
         rating: 'pass',
         evidence: `Current bindings cover the required evidence plane(s) for ${clauseIdentity(clause)}: ${requiredPlanes.join(', ')}.`,
       };
-  const parts = [layerRating, scenarioRating, planeRating].filter((part): part is AdequacyRatingEntry => part !== null);
+  const parts = [layerRating, scenarioRating, evidenceKindRating, planeRating]
+    .filter((part): part is AdequacyRatingEntry => part !== null);
   const combinedRating: AdequacyRating = parts.some((part) => part.rating === 'fail')
     ? 'fail'
     : parts.some((part) => part.rating === 'unknown')

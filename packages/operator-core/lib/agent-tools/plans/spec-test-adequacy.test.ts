@@ -799,6 +799,56 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(result.verdict).toBe('unknown');
   });
 
+  it('accepts unrelated skips only when every explicitly claimed test case passed in the ledger', () => {
+    const selected = successfulTestBinding('selected.integration.test.ts', { testCases: ['suite > selected'] });
+    selected.testRunExecution!.skipped = 71;
+    const evaluate = () => evaluateSpecTestAdequacy({ clause: clause(), evidence: [selected], classRef: 'plan-class-feature-ship' });
+    expect(evaluate().ratings['execution-integrity'].rating).toBe('pass');
+
+    // Neither an absent selected case nor a prefix of a real title is proof.
+    selected.details.adequacy = { ...(selected.details.adequacy as object), testCases: ['suite > selected', 'suite > skipped'] };
+    expect(evaluate().ratings['execution-integrity'].rating).toBe('fail');
+    selected.details.adequacy = { ...(selected.details.adequacy as object), testCases: ['suite'] };
+    expect(evaluate().ratings['execution-integrity'].rating).toBe('fail');
+  });
+
+  it('retains collection and failure rejection even when all selected case titles passed', () => {
+    for (const execution of [
+      { collectionFailed: true },
+      { failed: 1 },
+      { status: 'fail' },
+    ]) {
+      const selected = successfulTestBinding('selected.integration.test.ts', { testCases: ['suite > selected'] });
+      Object.assign(selected.testRunExecution!, { skipped: 71 }, execution);
+      const result = evaluateSpecTestAdequacy({ clause: clause(), evidence: [selected], classRef: 'plan-class-feature-ship' });
+      expect(result.ratings['execution-integrity'].rating).not.toBe('pass');
+    }
+  });
+
+  it('requires an exact selected mutant failure and execution of every claimed case when other cases skipped', () => {
+    const selected = evidence({
+      evidenceKind: 'mutation',
+      testRunExecution: { status: 'fail', passed: 0, failed: 1, skipped: 88, collectionFailed: false },
+      testRunProvenance: {
+        filePath: 'selected.integration.test.ts', commitSha: 'abc123', worktreeDirty: false,
+        mutationFailedCaseTitles: [DEFAULT_MUTATION_TEST_CASE],
+      },
+    });
+    const evaluate = () => evaluateSpecTestAdequacy({ clause: clause(), evidence: [selected], classRef: 'plan-class-feature-ship' });
+    expect(evaluate().ratings['execution-integrity'].rating).toBe('pass');
+    selected.testRunProvenance!.mutationFailedCaseTitles = ['different failure'];
+    expect(evaluate().ratings['execution-integrity'].rating).not.toBe('pass');
+    selected.testRunProvenance!.mutationFailedCaseTitles = [DEFAULT_MUTATION_TEST_CASE];
+    selected.details.adequacy = { ...(selected.details.adequacy as object), testCases: [DEFAULT_MUTATION_TEST_CASE, 'skipped selected case'] };
+    expect(evaluate().ratings['execution-integrity'].rating).not.toBe('pass');
+    // Legacy failure lines must not grant a scoped exception without measured titles.
+    selected.testRunProvenance!.mutationFailedCaseTitles = undefined;
+    expect(evaluate().ratings['execution-integrity'].rating).not.toBe('pass');
+    selected.details.adequacy = { ...(selected.details.adequacy as object), testCases: [DEFAULT_MUTATION_TEST_CASE] };
+    selected.testRunExecution!.passedCaseTitles = [DEFAULT_MUTATION_TEST_CASE];
+    expect(evaluate().ratings['execution-integrity'].rating).not.toBe('pass');
+  });
+
   it('uses test-run ledger skip counts instead of an unskipped binding attestation', () => {
     const result = evaluateSpecTestAdequacy({
       clause: clause(),
@@ -1516,6 +1566,32 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     });
     expect(covered.ratings['correct-layer'].rating).toBe('pass');
     expect(covered.ratings['correct-layer'].evidence).toContain('Current bindings cover the required evidence plane(s)');
+  });
+
+  it('requires each canonical evidence kind declared by the exact clause revision', () => {
+    const operationalClause = clause({ requiredEvidence: ['operational'], requiredTestLayers: [] });
+    const wrongRevision = evidence({
+      evidenceKind: 'operational',
+      specRevision: 2,
+      specFingerprint: 'sha256:other-spec',
+    });
+    const missing = evaluateSpecTestAdequacy({
+      clause: operationalClause,
+      evidence: [evidence({ evidenceKind: 'test' }), wrongRevision],
+      classRef: 'plan-class-feature-ship',
+    });
+    expect(missing.ratings['correct-layer'].rating).toBe('fail');
+    expect(missing.ratings['correct-layer'].evidence).toContain('Required evidence kind(s) are absent');
+    expect(missing.ratings['correct-layer'].evidence).toContain('operational');
+    expect(missing.wouldBlock).toContain('correct-layer');
+
+    const covered = evaluateSpecTestAdequacy({
+      clause: operationalClause,
+      evidence: [evidence({ evidenceKind: 'operational' })],
+      classRef: 'plan-class-feature-ship',
+    });
+    expect(covered.ratings['correct-layer'].rating).toBe('pass');
+    expect(covered.ratings['correct-layer'].evidence).toContain('cover the required evidence kind(s)');
   });
 
   it('accepts stronger targeted L4 counterexample proof for an L3 floor', () => {

@@ -115,6 +115,7 @@ function row(
       failed: executionFailed ? 1 : 0,
       skipped: 0,
       collectionFailed: false,
+      passedCaseTitles: executionFailed ? [] : ['dragging binding control'],
     },
     details: {
       adequacy: {
@@ -131,6 +132,7 @@ function row(
         outcome: 'passed',
         targeted: DRAG_SCENARIO,
         scenarioIds: [DRAG_SCENARIO],
+        testCases: ['dragging binding control'],
         coverageRungs: { l3: true },
         ...adequacy,
       },
@@ -146,6 +148,16 @@ const counterexample = (id: number) =>
   row(id, { evidenceKind: 'counterexample', evidenceRef: `counterexample:${id}`, adequacy: { outcome: 'pass' } });
 
 describe('any-drags adequacy names the dragging binding (P-019)', () => {
+  it('keeps a green counterexample unknown when its declared case is absent from the measured run', () => {
+    const negative = counterexample(3);
+    negative.testRunExecution = { ...negative.testRunExecution!, passedCaseTitles: ['unrelated case'] };
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(), evidence: [row(2), negative], classRef: 'plan-class-feature-ship',
+    });
+    expect(result.ratings['execution-integrity'].rating).toBe('unknown');
+    expect(result.verdict).not.toBe('pass');
+  });
+
   it('names an older failing attempt as the row dragging execution-integrity, and the clause passes once it is withdrawn', () => {
     const olderFailing = row(1, { adequacy: { outcome: 'failed' } });
     const fresh = row(2);

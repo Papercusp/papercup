@@ -3616,6 +3616,24 @@ export async function captureImprovement(
           compatibleToolFailureClassIdentity(candidate, incomingProbation),
       );
       if (!winner) {
+        // The database key is broader than the tool-failure class (contract,
+        // field and runtime). Retain a different class as evidence on the
+        // same identity partition without adopting its probation payload or
+        // counting its reporter toward the incumbent class's promotion.
+        const related = incomingProbation && raced.find((candidate) =>
+          isWatchdogNonTerminal(candidate) &&
+          sameWatchdogIdentity(candidate, input, origin) &&
+          !compatibleToolFailureClassIdentity(candidate, incomingProbation),
+        );
+        if (related && await appendCaptureOccurrence(
+          deps, input, identity, 'coalesced', related.id, possibleDuplicates,
+          dedupCoverage, harnessFromScope(related.scope), queueAdmission,
+        )) {
+          return {
+            ok: true, created: false, reason: 'coalesced', issue: related,
+            possibleDuplicates, dedupCoverage,
+          };
+        }
         const relatedIds = raced
           .filter((candidate) => {
             const payload = (candidate.payload as Record<string, unknown> | null) ?? {};

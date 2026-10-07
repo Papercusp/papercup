@@ -105,6 +105,22 @@ describe('subject files are the first ring of relative runtime imports', () => {
 });
 
 describe('deriveBindingFromTestRun', () => {
+  it('derives runtime selectors only from matching execution-time ledger witnesses', () => {
+    const witness = { schemaVersion: 1, units: ['bg-host'], fingerprint: 'a'.repeat(64),
+      observedAt: '2026-09-23T14:59:00Z' };
+    const execution = { schemaVersion: 1, root, filePath: TEST, runGroupId: null, workspaceId: 'ws-1',
+      harnessSlug: 'web', testNamePattern: null, passed: 1, failed: 0, skipped: 0, collectionFailed: false,
+      mutationPhase: null, commitSha: 'abc', worktreeDirty: false, runtimeEnvironmentBefore: witness,
+      runtimeEnvironmentAfter: { ...witness, observedAt: '2026-09-23T15:00:00Z' } };
+    const derived = deriveBindingFromTestRun(input(), run({ execution_details: execution }), root, 'run');
+    expect(derived).toMatchObject({ ok: true, binding: { measurement: { runtimeUnits: ['bg-host'] } } });
+    const drift = deriveBindingFromTestRun(input(), run({ execution_details: { ...execution,
+      runtimeEnvironmentAfter: { ...execution.runtimeEnvironmentAfter, fingerprint: 'b'.repeat(64) } } }), root, 'run');
+    expect(drift.ok && drift.binding.measurement).not.toHaveProperty('runtimeUnits');
+    const attested = deriveBindingFromTestRun(input({ details: { runtimeEnvironmentBefore: witness,
+      runtimeEnvironmentAfter: execution.runtimeEnvironmentAfter } }), run(), root, 'run');
+    expect(attested.ok && attested.binding.measurement).not.toHaveProperty('runtimeUnits');
+  });
   it('rejects integration testimony for an observed unit run, including JSON-string ledger details', () => {
     const row = run({ execution_details: JSON.stringify({ schemaVersion: 1, testLayer: 'unit' }) });
     expect(deriveBindingFromTestRun(input({ details: { adequacy: { testLayer: 'integration' } } }), row, root, 'run'))

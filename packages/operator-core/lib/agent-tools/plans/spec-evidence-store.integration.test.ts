@@ -635,6 +635,41 @@ describe('ad-hoc work-items carry spec evidence with no plan (P-022 / D-018)', (
 });
 
 describe('exact spec evidence bindings', () => {
+  it('pins only matching execution-time ledger witnesses and never a binding-time caller runtime', async () => {
+    await specs.setSpecClause(clause({ mutationRequired: false }));
+    const { testRunId } = await seedExternalEvidence('test/reconnect.test.ts');
+    const witness = { schemaVersion: 1, units: ['bg-host'], fingerprint: 'a'.repeat(64),
+      observedAt: '2026-10-07T00:00:00Z' };
+    const execution = { schemaVersion: 1, root: h.repoRoot, filePath: 'test/reconnect.test.ts',
+      runGroupId: null, workspaceId: WORKSPACE, harnessSlug: HARNESS, testNamePattern: null,
+      passed: 1, failed: 0, skipped: 0, collectionFailed: false, mutationPhase: null,
+      commitSha: null, worktreeDirty: true, runtimeEnvironmentBefore: witness,
+      runtimeEnvironmentAfter: { ...witness, observedAt: '2026-10-07T00:01:00Z' } };
+    await db.sql`UPDATE harness_shared.test_runs SET execution_details = ${JSON.stringify(execution)}::jsonb
+      WHERE id = ${testRunId}`;
+    const input = { workItemId: 'WI-101', specId: 'SPEC-003-01', harnessSlug: HARNESS,
+      planSlug: 'reconnect-plan', actorId: 'su-test', evidenceKind: 'test' as const,
+      evidenceRef: 'test/reconnect.test.ts', testRunId, sourceFingerprint: 'source',
+      environmentFingerprint: 'caller-current-runtime', details: { evidencePlane: 'live', currentMeasurement: {
+        schemaVersion: 1, kind: 'repo-files', sourcePaths: ['src/reconnect.ts'], runtimeUnits: ['bg-host'] } } };
+    const first = await evidenceStore.bindSpecEvidence(input);
+    expect(first).toMatchObject({ status: 'created' });
+    const [pinned] = await db.sql`SELECT environment_fingerprint FROM harness_shared.spec_evidence_bindings`;
+    expect(pinned.environment_fingerprint).toBe(witness.fingerprint);
+    execution.runtimeEnvironmentAfter.fingerprint = 'b'.repeat(64);
+    await db.sql`UPDATE harness_shared.test_runs SET execution_details = ${JSON.stringify(execution)}::jsonb
+      WHERE id = ${testRunId}`;
+    const drift = await evidenceStore.bindSpecEvidence({ ...input, evidenceRef: 'test/reconnect.test.ts#drift' });
+    expect(drift).toMatchObject({ status: 'created' });
+    const [unproven] = await db.sql`SELECT environment_fingerprint FROM harness_shared.spec_evidence_bindings
+      WHERE evidence_ref = 'test/reconnect.test.ts#drift'`;
+    expect(unproven.environment_fingerprint).toBeNull();
+    await db.sql`UPDATE harness_shared.test_runs SET execution_details = NULL WHERE id = ${testRunId}`;
+    await evidenceStore.bindSpecEvidence({ ...input, evidenceRef: 'test/reconnect.test.ts#historical' });
+    const [historical] = await db.sql`SELECT environment_fingerprint FROM harness_shared.spec_evidence_bindings
+      WHERE evidence_ref = 'test/reconnect.test.ts#historical'`;
+    expect(historical.environment_fingerprint).toBeNull();
+  });
   it('keeps one shared proof reference for distinct spec clauses', async () => {
     await specs.setSpecClause(clause());
     await specs.setSpecClause(

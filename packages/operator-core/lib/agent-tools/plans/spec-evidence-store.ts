@@ -7,7 +7,8 @@ import fastGlob from 'fast-glob';
 import { z } from 'zod';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { withWorkspace } from '@papercusp/db-org';
-import { parseTestRunExecutionDetails } from '@papercusp/test-config/execution-details';
+import { parseTestRunExecutionDetails, stableRecordedRuntimeEnvironment } from '@papercusp/test-config/execution-details';
+import { listRuntimeVintage, measureRuntimeVintageEnvironment } from '../../runtime-vintage';
 import { pgTimestampToIso } from '../../pg-timestamp';
 import { planItemRef } from '../../issue-blocks-merge';
 import { loadHarnessRegistry, resolveHarnessContentPath } from '../../harness-registry';
@@ -93,6 +94,9 @@ export const repoFilesEvidenceMeasurementSchema = z
       .refine((patterns) => new Set(patterns).size === patterns.length, 'measurement globs must be unique').optional(),
     /** Optional registered harness root for fixturePaths when calibration sources live elsewhere. */
     fixtureRootHarnessSlug: z.string().trim().min(1).max(120).optional(),
+    /** Local runtime units observed around execution; evidence reads independently remeasure them. */
+    runtimeUnits: z.array(z.string().trim().min(1).max(120)).min(1).max(32)
+      .refine(units => new Set(units).size === units.length, 'runtime units must be unique').optional(),
   })
   .strict()
   .superRefine((measurement, ctx) => {
@@ -158,6 +162,7 @@ export interface MeasuredRepoEvidenceFingerprints {
   sourceFingerprint: string;
   testFingerprint: string | null;
   fixtureFingerprint?: string | null;
+  environmentFingerprint?: string | null;
 }
 
 const MAX_REPO_MEASUREMENT_BYTES = 8 * 1024 * 1024;
@@ -769,7 +774,7 @@ export async function measureAndPinEvidenceForScope(
   if (measurement.kind === 'work-items') {
     return { ...(await measureWorkItemsEvidenceForScope(workspaceId, harnessSlug, measurement)), pin: null };
   }
-  return measureAndPinRepoFilesEvidenceAtRoot(await resolveMeasurementRoot(workspaceId, harnessSlug, measurement), measurement);
+  return measureAndPinRepoFilesEvidence(workspaceId, harnessSlug, measurement);
 }
 
 const MAX_OPERATIONAL_ARTIFACT_BYTES = 8 * 1024 * 1024;
@@ -1115,9 +1120,12 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
         return { status: 'coverage_evidence_not_found', coverageEvidenceRef: input.coverageEvidenceRef };
       }
     }
+    let executionRuntimeFingerprint: string | null = null;
+    const runtimeRecipe = measurementFromDetails(input.details ?? {});
+    const runtimeUnits = runtimeRecipe?.kind === 'repo-files' ? runtimeRecipe.runtimeUnits : undefined;
     if (input.testRunId != null) {
-      const rows = await tx<{ id: number }[]>`
-        SELECT id FROM harness_shared.test_runs
+      const rows = await tx<{ id: number; execution_details?: unknown }[]>`
+        SELECT id, execution_details FROM harness_shared.test_runs
          WHERE id = ${input.testRunId}
            AND workspace_id = ${scope.workspaceId}
            AND harness_slug = ${scope.harnessSlug}`;
@@ -1147,6 +1155,14 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
           },
         };
       }
+      if (runtimeUnits) {
+        const execution = parseTestRunExecutionDetails(rows[0].execution_details);
+        const witness = stableRecordedRuntimeEnvironment(
+          execution?.runtimeEnvironmentBefore, execution?.runtimeEnvironmentAfter);
+        if (witness && JSON.stringify([...witness.units].sort()) === JSON.stringify([...runtimeUnits].sort())) {
+          executionRuntimeFingerprint = witness.fingerprint;
+        }
+      }
     }
 
     const evidenceRef = input.evidenceRef.trim();
@@ -1154,7 +1170,9 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
     const testFingerprint = nullableTrimmed(input.testFingerprint);
     const fixtureFingerprint = nullableTrimmed(input.fixtureFingerprint);
     const rubricFingerprint = nullableTrimmed(input.rubricFingerprint);
-    const environmentFingerprint = nullableTrimmed(input.environmentFingerprint);
+    // A binding-time observation must never replace the runtime the execution measured.
+    const environmentFingerprint = runtimeUnits
+      ? executionRuntimeFingerprint : nullableTrimmed(input.environmentFingerprint);
     // A replay that omits details is a partial update of an existing logical
     // binding, not a request to replace executable proof metadata with `{}`.
     // Explicit details (including `{}`) remain authoritative and retain the
@@ -2317,6 +2335,7 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
     }),
   );
   const probeSnapshots = await readRepoFilesProbeSnapshots(workingTreeRecipes, measurementRootFor);
+  let runtimeRows: ReturnType<typeof listRuntimeVintage> | undefined;
   const serverMeasurements = await Promise.all(
     rows.map(async (row, index) => {
       // A REPLAY RE-MEASURES UNLESS THE CALLER HANDS US SERVER-MEASURED PROOF.
@@ -2443,6 +2462,8 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
             sourceFingerprint: detailed.sourceFingerprint,
             testFingerprint: detailed.testFingerprint,
             ...(detailed.fixtureFingerprint !== undefined ? { fixtureFingerprint: detailed.fixtureFingerprint } : {}),
+            ...(recipe.runtimeUnits ? { environmentFingerprint: measureRuntimeVintageEnvironment(
+              await (runtimeRows ??= listRuntimeVintage(scope.workspaceId)), recipe.runtimeUnits) } : {}),
           };
           files = detailed.files;
         }
@@ -2537,6 +2558,7 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
               ? (['rubric'] as const)
               : []),
             ...(row.environment_fingerprint !== null && callerCurrent?.environmentFingerprint != null
+              && measured.current.environmentFingerprint == null
               ? (['environment'] as const)
               : []),
           ]
@@ -2652,6 +2674,7 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
                       'source',
                       ...(measured.current.testFingerprint === null ? [] : ['test']),
                       ...(measured.current.fixtureFingerprint == null ? [] : ['fixture']),
+                      ...(measured.current.environmentFingerprint == null ? [] : ['environment']),
                     ],
                     ...(attestedDimensions.length > 0 ? { attestedDimensions } : {}),
                     // D-001: the commit whose objects were measured; absent for a

@@ -42,7 +42,8 @@ import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { readFileSync } from 'node:fs';
 import { realpath, stat } from 'node:fs/promises';
 import { z } from 'zod';
-import { recordedTestLayer, type RecordedTestLayer } from '@papercusp/test-config/execution-details';
+import { recordedTestLayer, parseTestRunExecutionDetails, stableRecordedRuntimeEnvironment,
+  type RecordedTestLayer } from '@papercusp/test-config/execution-details';
 import { withWorkspace } from '@papercusp/db-org';
 import { loadHarnessRegistry, resolveHarnessContentPath } from '../../harness-registry';
 import { resolveRelative, runtimeSpecifiers, stripComments } from '../../search/import-graph';
@@ -260,6 +261,7 @@ export interface DerivedTestRunBinding {
     sourcePaths: string[];
     sourceGlobs?: string[];
     testPaths: string[];
+    runtimeUnits?: string[];
   };
   details: Record<string, unknown>;
   observedAt?: string;
@@ -693,6 +695,9 @@ export function deriveBindingFromTestRun(
         `${row.status} ${testPath} @${commitSha ? commitSha.slice(0, 12) : 'unknown-commit'}${worktreeDirty ? '+dirty' : ''}`;
 
   const { adequacy: _declared, ...otherDetails } = input.details ?? {};
+  const recordedExecution = parseTestRunExecutionDetails(row.execution_details);
+  const runtimeWitness = stableRecordedRuntimeEnvironment(
+    recordedExecution?.runtimeEnvironmentBefore, recordedExecution?.runtimeEnvironmentAfter);
   const binding: DerivedTestRunBinding = {
     workItemId: input.workItemId,
     ...(input.specId ? { specId: input.specId } : {}),
@@ -707,6 +712,7 @@ export function deriveBindingFromTestRun(
       sourcePaths,
       ...(input.sourceGlobs ? { sourceGlobs: input.sourceGlobs } : {}),
       testPaths: [testPath],
+      ...(runtimeWitness ? { runtimeUnits: [...runtimeWitness.units] } : {}),
     },
     details: {
       ...otherDetails,

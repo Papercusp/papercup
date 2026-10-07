@@ -3531,6 +3531,50 @@ describe('captureImprovement — NON-observation coalescing by watchdogKey (WI-3
     });
   });
 
+  it.each([true, false])('retains a conflicting tool-failure class only after a durable occurrence append (%s)', async (retained) => {
+    const report: SuspectedToolFailure = {
+      toolName: 'tools:invoke', errorCode: 'invalid_args', fieldPath: 'args',
+      message: 'args: Invalid input: expected record, received string',
+    };
+    const incoming = normalizeSuspectedToolFailure(report);
+    const priorReport = { ...report, fieldPath: undefined, runtimeVersion: '80b4797100' };
+    const prior = normalizeSuspectedToolFailure(priorReport);
+    const winner = existing({
+      id: 'EI-OTHER-CLASS', title: 'prior failure', scope: 'harness:papercusp',
+      payload: { watchdogKey: incoming.watchdogKey, lane: 'observation',
+        toolFailureProbation: { ...prior, state: 'probation', report: priorReport, reporters: ['su-prior'] } },
+    });
+    const record = vi.fn(async () => retained ? { id: 1 } : null);
+    const merge = vi.fn(async () => { throw new Error('must preserve the incumbent class'); });
+    const d = deps();
+    d.findIssuesByToolFailureClassKeys = async () => [];
+    d.findIssuesByWatchdogKeys = async () => [winner];
+    d.createIssue = async () => { throw { code: '23505', constraint_name: 'work_items_watchdog_identity_uq' }; };
+    d.mergeIssuePayload = merge;
+    d.recordIssueOccurrence = record as CaptureDeps['recordIssueOccurrence'];
+    const input = {
+      title: 'incoming failure from another class', kind: 'observation' as const,
+      lane: 'observation' as const, scope: 'harness:papercusp',
+      watchdogKey: incoming.watchdogKey, createdBy: 'su-incoming',
+      payloadExtra: { toolFailureProbation: { ...incoming, state: 'probation', report, reporters: ['su-incoming'] } },
+    };
+    if (retained) {
+      await expect(captureImprovement(input, d)).resolves.toMatchObject({
+        ok: true, created: false, reason: 'coalesced', issue: { id: winner.id },
+      });
+    } else {
+      await expect(captureImprovement(input, d)).rejects.toMatchObject({
+        code: 'watchdog_identity_conflict', reason: 'no_compatible_winner',
+      });
+    }
+    expect(record).toHaveBeenCalledWith(expect.objectContaining({
+      canonicalId: winner.id, reporter: 'su-incoming',
+      evidence: expect.objectContaining({ payloadExtra: input.payloadExtra }),
+    }));
+    expect(merge).not.toHaveBeenCalled();
+    expect((winner.payload?.toolFailureProbation as { classKey: string }).classKey).toBe(prior.classKey);
+  });
+
   it('does not swallow a different unique violation as a watchdog race', async () => {
     const d = deps();
     d.createIssue = async () => {
