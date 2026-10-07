@@ -27,6 +27,13 @@ import { posix } from 'node:path';
 import { minimatch } from 'minimatch';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { createTextCollector } from '../../child-output';
+import {
+  gitSidecarEnabled,
+  isSidecarInfrastructureFault,
+  noteSidecarFallback,
+  runGitStdinViaSpawnerSidecar,
+  type GitStdinRunResult,
+} from '../../fleet/git-via-sidecar';
 import { defaultGitRunner, gitBlobId, owningRepo, type GitRunner } from './evidence-measurement-pin';
 
 /** One file as committed: the digest inputs plus the git blob id the bytes came from. */
@@ -89,8 +96,36 @@ export async function resolveMeasurementCommit(root: string, git: GitRunner = de
 }
 
 /** Binary-safe `git cat-file --batch`: one process for every id. */
-export const defaultBlobBatchReader: BlobBatchReader = (repoDir, blobIds) =>
-  new Promise((resolvePromise, reject) => {
+export const defaultBlobBatchReader: BlobBatchReader = async (repoDir, blobIds) => {
+  const stdin = `${blobIds.join('\n')}\n`;
+  if (gitSidecarEnabled('PAPERCUSP_PLAN_AUDIT_SPAWN_SIDECAR')) {
+    let sidecarResult: GitStdinRunResult | null = null;
+    try {
+      sidecarResult = await runGitStdinViaSpawnerSidecar(
+        ['cat-file', '--batch'],
+        repoDir,
+        stdin,
+        BLOB_BATCH_TIMEOUT_MS,
+        process.env,
+      );
+    } catch (error) {
+      noteSidecarFallback('committed-tree-reader', error);
+    }
+    if (sidecarResult && isSidecarInfrastructureFault(sidecarResult)) {
+      noteSidecarFallback('committed-tree-reader', new Error(sidecarResult.stderr));
+      sidecarResult = null;
+    }
+    if (sidecarResult) {
+      if (sidecarResult.code !== 0) {
+        throw new Error(
+          `Command failed (exit ${sidecarResult.code}): git -C ${repoDir} cat-file --batch\n${sidecarResult.stderr}`,
+        );
+      }
+      return parseCatFileBatch(sidecarResult.stdout);
+    }
+  }
+
+  return new Promise((resolvePromise, reject) => {
     const child = spawn('git', ['-C', repoDir, 'cat-file', '--batch'], { stdio: ['pipe', 'pipe', 'pipe'] });
     const chunks: Buffer[] = [];
     const stderr = createTextCollector(child.stderr);
@@ -112,8 +147,9 @@ export const defaultBlobBatchReader: BlobBatchReader = (repoDir, blobIds) =>
         reject(error);
       }
     });
-    child.stdin.end(`${blobIds.join('\n')}\n`);
+    child.stdin.end(stdin);
   });
+};
 
 /** Parse `cat-file --batch` output: `<oid> <type> <size>\n<bytes>\n` or `<oid> missing\n`. */
 export function parseCatFileBatch(output: Buffer): Map<string, Buffer> {
