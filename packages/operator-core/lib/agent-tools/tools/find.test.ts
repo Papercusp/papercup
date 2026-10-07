@@ -1403,6 +1403,15 @@ describe('handler — graceful degrade + result shape', () => {
     );
   });
 
+  it('publishes canonicalTestPath source limits for plans:bind-spec-evidence', async () => {
+    const out = await callHandler({ query: 'plans:bind-spec-evidence', limit: 1 });
+    const description = out.hits.find((hit) => hit.tool === 'plans:bind-spec-evidence')?.description ?? '';
+
+    expect(description).toContain('omit canonicalTestPath for local/Playwright rows');
+    expect(description).toContain('only for a cargo test');
+    expect(description).toContain('or a mutation-probe copy-out run');
+  });
+
   it('publishes all loop:arm monitor-authority branch requirements in discovery', async () => {
     expect(loopArm.name).toBe('loop:arm');
     const out = await callHandler({ query: 'loop:arm', limit: 1 });

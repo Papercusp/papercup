@@ -45,7 +45,7 @@
 // Exit: 0 ok / in sync · 1 finding / drift / refused · 2 usage or cannot check.
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { promises as fs, existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs';
+import { promises as fs, existsSync, readdirSync, readFileSync, realpathSync, lstatSync, readlinkSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
@@ -439,10 +439,10 @@ export async function prepareVerifierSource({ repo, ref, dest, inputs = [], inpu
  * @param {string} root
  * @param {{ runtimeArtifacts?: boolean, recordedPaths?: string[] }} [options]
  */
-async function verifierSourceFiles(root, { runtimeArtifacts = false, recordedPaths = [] } = {}) {
+function verifierSourceFiles(root, { runtimeArtifacts = false, recordedPaths = [] } = {}) {
   const rows = [];
-  async function walk(dir) {
-    for (const entry of (await fs.readdir(dir, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name))) {
+  function walk(dir) {
+    for (const entry of readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
       const path = join(dir, entry.name);
       const rel = relative(root, path).split(sep).join('/');
       if (rel === '.verifier-source.json') continue;
@@ -458,11 +458,11 @@ async function verifierSourceFiles(root, { runtimeArtifacts = false, recordedPat
         if (!entry.isDirectory()) throw new PreviewError(`runtime artifact is not an independent directory: ${rel}`, 2);
         continue;
       }
-      if (entry.isDirectory()) await walk(path);
+      if (entry.isDirectory()) walk(path);
       else {
-        const stat = await fs.lstat(path);
+        const stat = lstatSync(path);
         if (!stat.isFile() && !stat.isSymbolicLink()) throw new PreviewError(`unsupported archive entry: ${rel}`, 2);
-        const bytes = stat.isSymbolicLink() ? await fs.readlink(path) : await fs.readFile(path);
+        const bytes = stat.isSymbolicLink() ? readlinkSync(path) : readFileSync(path);
         if (stat.isSymbolicLink()) {
           const target = resolve(dirname(path), String(bytes));
           if (isAbsolute(String(bytes)) || target !== root && !target.startsWith(`${resolve(root)}${sep}`)) {
@@ -474,7 +474,7 @@ async function verifierSourceFiles(root, { runtimeArtifacts = false, recordedPat
       }
     }
   }
-  await walk(root);
+  walk(root);
   return rows;
 }
 
@@ -485,15 +485,25 @@ async function verifierSourceFiles(root, { runtimeArtifacts = false, recordedPat
  * named untracked build outputs and materialized dependency directories, not source edits.
  */
 export async function verifyVerifierSource(dest, expected, options = {}) {
+  return verifyVerifierSourceSync(dest, expected, options);
+}
+
+/** Synchronous boundary for hooks such as Playwright onBegin, whose return
+ * value is not awaited. Uses the same source population and receipt checks.
+ * @param {string} dest
+ * @param {Awaited<ReturnType<typeof prepareVerifierSource>>} expected
+ * @param {{ runtimeArtifacts?: boolean }} [options]
+ */
+export function verifyVerifierSourceSync(dest, expected, options = {}) {
   if (expected?.schemaVersion !== 'verifier-source-v1' || !expected.testedInputs?.length) {
     throw new PreviewError('missing verification source provenance', 2);
   }
-  const recorded = JSON.parse(await fs.readFile(join(dest, '.verifier-source.json'), 'utf8'));
+  const recorded = JSON.parse(readFileSync(join(dest, '.verifier-source.json'), 'utf8'));
   if (JSON.stringify(recorded) !== JSON.stringify(expected)) throw new PreviewError('tampered verification source provenance', 2);
   if (!/^[0-9a-f]{40}$/.test(expected.sourceCommit) || !Array.isArray(expected.files) || !expected.files.length) {
     throw new PreviewError('invalid verification source provenance', 2);
   }
-  if (JSON.stringify(await verifierSourceFiles(dest, { ...options, recordedPaths: expected.files.map((file) => file.path) })) !== JSON.stringify(expected.files)) {
+  if (JSON.stringify(verifierSourceFiles(dest, { ...options, recordedPaths: expected.files.map((file) => file.path) })) !== JSON.stringify(expected.files)) {
     throw new PreviewError('tampered verification source archive', 2);
   }
   return expected;

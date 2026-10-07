@@ -4875,6 +4875,20 @@ async function completeOne(
       "path — or honestly set verifiedHow to 'unit'/'manual'/'integration' and re-send.";
   } else if (effectiveState) {
     try {
+      const runtimePayload = existing.payload && typeof existing.payload === 'object' && !Array.isArray(existing.payload)
+        ? existing.payload as Record<string, unknown> : {};
+      const externalProducerClose = Object.prototype.hasOwnProperty.call(runtimePayload, 'externalRuntimeProducer') &&
+        TERMINAL_WORK_ITEM_STATES.has(effectiveState.toLowerCase());
+      // Preserve this tool's full evidence verdict, then let the canonical writer
+      // independently grade and fence the authenticated retained runtime attempt.
+      // Supplying an authority override would bypass that writer's contract.
+      if (externalProducerClose && completionAuthority !== 'committed') {
+        throw new Error('external runtime producer completion evidence is not committed');
+      }
+      const externalRuntimeAttempt = externalProducerClose
+        ? await (await import('../../blueprint/phone-producer-admission'))
+          .configuredPhoneProducerCompletionAttempt(ctx.principal, existing)
+        : undefined;
       // EI-22726666602239861: bounded state writes map transient PG 55P03/57014
       // contention to a typed error. Retry the whole idempotent lifecycle write so a
       // brief lock-timeout dip does not record completion evidence while leaving the
@@ -4894,7 +4908,7 @@ async function completeOne(
           // P-008 (d): the resolved declaration, persisted under
           // TERMINAL_ASSUMPTIONS_KEY beside the evidence it rests on.
           assumptions: resolvedAssumptions,
-          completionAuthority,
+          ...(externalRuntimeAttempt ? { externalRuntimeAttempt } : { completionAuthority }),
           onTerminalConflict: (info) => {
             terminalConflict = info;
           },

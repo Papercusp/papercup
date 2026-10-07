@@ -229,6 +229,27 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     await expect(verifyVerifierSource(dest, receipt)).rejects.toThrow('tampered verification source archive');
   });
 
+  it('never excludes recorded files under runtime directories from the source verdict', async () => {
+    const fixture = makeSuperproject(join(tmp, 'verifier-runtime-recorded-fixture'));
+    const dest = join(tmp, 'verifier-runtime-recorded-export');
+    const input = SHIPPED.find(p => p.startsWith('apps/'))!;
+    const receipt = await prepareVerifierSource({ repo: fixture.repo, ref: fixture.commit, dest, inputs: [input] });
+    const recorded = receipt.files.find(file => file.path.startsWith('node_modules/'))!;
+    expect(recorded).toBeDefined();
+    await expect(verifyVerifierSource(dest, receipt, { runtimeArtifacts: true })).resolves.toEqual(receipt);
+    writeFileSync(join(dest, recorded.path), 'changed recorded dependency source');
+    await expect(verifyVerifierSource(dest, receipt, { runtimeArtifacts: true })).rejects.toThrow('tampered verification source archive');
+  });
+
+  it('rejects a symlink posing as an independent runtime directory', async () => {
+    const fixture = makeSuperproject(join(tmp, 'verifier-runtime-link-fixture'));
+    const dest = join(tmp, 'verifier-runtime-link-export');
+    const input = SHIPPED.find(p => p.startsWith('apps/'))!;
+    const receipt = await prepareVerifierSource({ repo: fixture.repo, ref: fixture.commit, dest, inputs: [input] });
+    symlinkSync(join(dest, 'apps/operator/src'), join(dest, 'apps/operator/dist-verify'));
+    await expect(verifyVerifierSource(dest, receipt, { runtimeArtifacts: true })).rejects.toThrow('runtime artifact is not an independent directory');
+  });
+
   it('refuses tracked source symlinks that read outside the immutable export', async () => {
     const fixture = makeSuperproject(join(tmp, 'verifier-link-fixture'));
     symlinkSync('/tmp/live-peer-source.ts', join(fixture.repo, 'outside-source'));

@@ -1106,6 +1106,55 @@
       "class": "console-guard",
       "state": "open-unknown",
       "item": "WI-10006170",
+      "focusedDiagnosis": {
+        "scope": "Historical warning inventory and inherited fixture repair identified; causal controls and complete current import/environment assurance remain unverified. No class reclassification or final readiness claim.",
+        "archiveSha256": "43cf66489baf7cf665a9746d097375cffc7cdc6262014929c3cc398155b579f4",
+        "observed": "Archived warnings name missing event_awaits and adv_sessions.ended_by. Archive/resolve assertions also leave delegated tasks open; whether they share the schema cause has not been measured.",
+        "legacyCandidate": {
+          "item": "EI-11558",
+          "state": "resolved",
+          "completionAuthority": null,
+          "rawRef": "EI-11558#comment:51812",
+          "disposition": "Watchdog auto-resolved after six absent-signal ticks on 2026-07-14; the note explicitly says no fix was dispatched. It covers an older shared-thread append/select symptom and supplies no repair proof for this D006 source."
+        },
+        "inheritedFixtureCommit": "c6aa3f758519329d5f54f52ec79035cbb26e967f",
+        "inheritedChange": "The existing fixture applies maintained applyClaimPathReadDeps and applyDisclosureLedgerForTest before its local schema. The claim helper supplies event_awaits and adv_sessions.ended_by; the privacy helper supplies the disclosure ledger. No production edit is required by the current passing observation.",
+        "testSha256": "2f62ff60c03dc52062a1d42216898c08d4a73acc7ce176df88dd50f381f4f7fa",
+        "testBlob": "25c0c24613840b043b31f5f66df8727717ec9adb",
+        "inheritedReceipt": {
+          "id": 20828727,
+          "status": "pass",
+          "commitSha": "c6aa3f758519329d5f54f52ec79035cbb26e967f",
+          "source": "local",
+          "worktreeDirty": false,
+          "isScratchConfig": false,
+          "root": "/tmp/papercusp-lint-as-committed-c6aa3f7585-7HYy2G",
+          "namedTestBytesEqualCurrent": true,
+          "limit": "The current _work-items-schema.ts and _pg-helpers.ts bytes differ from that receipt's commit. This receipt is inherited named-test assurance, not a current complete source/import/environment verdict."
+        },
+        "currentObservation": {
+          "id": 20903519,
+          "command": "npm run test:file -- packages/operator-core/lib/delegated-tasks.integration.test.ts",
+          "status": "pass",
+          "casesPassed": 6,
+          "casesSkipped": 0,
+          "exitCode": 0,
+          "commitSha": "60fa66b4d096d0ecb68574f2915626ba854e1044",
+          "source": "local",
+          "branch": "staging",
+          "workspace": "papercusp-workspace",
+          "harness": "papercusp",
+          "worktreeDirty": true,
+          "isScratchConfig": false,
+          "log": "/tmp/d006-delegated-baseline.log",
+          "logSha256": "63d6746392ffe1bdb82ba267cd3a6cac6c6e0ca5377dcbe807781dd455d9f592",
+          "wrapperHeadBefore": "a313fada5b",
+          "wrapperHeadAfter": "60fa66b4d0",
+          "wrapperProvenance": "unknown",
+          "limit": "Named test paths stayed clean and unchanged, but HEAD moved during the run. The runner explicitly marks provenance UNKNOWN because imported source/change radius was not measured. No clean current-source assurance or final D006 claim."
+        },
+        "next": "Measure real-PG missing/restored lifecycle-schema and session-column controls against the inherited fixture; isolate archive/resolve assertions from warning failures before deciding whether a new source repair is needed. Preserve P004/D006 final custody."
+      },
       "lines": [
         12445,
         12446,
@@ -2499,7 +2548,8 @@
               12775
             ],
             "observed": "console.warn from missing harness_shared.event_awaits and adv_sessions.ended_by; separate assertions return an extra delegated task and a non-null resolved task",
-            "candidateRepair": "EI-11558"
+            "candidateRepair": "EI-11558",
+            "candidateEvidence": "EI-11558#comment:51812 is watchdog absent-signal auto-resolution with no dispatched fix and no completion authority. Existing fixture commit c6aa3f7585 has clean focused receipt20828727 and exact current named-test bytes, while its two schema helpers differ from current. Current whole file20903519 PASS6/0skip/exit0 has explicit HEAD-moved UNKNOWN import provenance. Causal controls remain unrun; file stays open-unknown under parent WI-10006170."
           },
           {
             "path": "packages/operator-core/lib/harness/join-hive-from-repo-incremental-federation.integration.test.ts",

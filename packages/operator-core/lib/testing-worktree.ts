@@ -7,10 +7,10 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { existsSync, realpathSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
+import { existsSync, realpathSync, readFileSync } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { resolveAgentWorkspaceRoot } from './agent-tools/capability/base-dir';
+import { verifyVerifierSourceSync } from '../../../scripts/source-preview.mjs';
 
 export interface WorktreeGitSnapshot {
   /** `git rev-parse HEAD`, or null if it couldn't be read. */
@@ -45,7 +45,7 @@ export function resolveReporterSourceRoot(projectDir?: string): string {
  * Verify the entire archived source population at both boundaries; a supplied
  * SHA alone never attests clean source. Runtime/dependency acceptance is separate.
  */
-export async function captureTestSourceSnapshot(root: string): Promise<WorktreeGitSnapshot> {
+export function captureTestSourceSnapshot(root: string): WorktreeGitSnapshot {
   if (!existsSync(join(root, '.verifier-source.json')) && !process.env.VERIFY_TAURI_SOURCE_RECEIPT) {
     return captureWorktreeSnapshot(root);
   }
@@ -57,9 +57,8 @@ export async function captureTestSourceSnapshot(root: string): Promise<WorktreeG
     if (receiptRel !== '..' && !receiptRel.startsWith(`..${sep}`)) {
       throw new Error('verifier source receipt must be outside the archive');
     }
-    const receipt = JSON.parse(await readFile(receiptPath, 'utf8'));
-    const { verifyVerifierSource } = await import('../../../scripts/source-preview.mjs');
-    await verifyVerifierSource(canonicalRoot, receipt, { runtimeArtifacts: true });
+    const receipt = JSON.parse(readFileSync(receiptPath, 'utf8'));
+    verifyVerifierSourceSync(canonicalRoot, receipt, { runtimeArtifacts: true });
     return { commit: receipt.sourceCommit, porcelain: '' };
   } catch (error) {
     return { commit: null, porcelain: null,

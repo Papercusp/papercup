@@ -29,6 +29,9 @@ import {
   rmSync,
   symlinkSync,
   statSync,
+  chmodSync,
+  linkSync,
+  utimesSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -75,9 +78,10 @@ function codeOnly(src: string): string {
  * the pure lane shares one fork across thousands of files — an unbounded hang here wedges
  * all of them until the batch watchdog fires.
  */
-function runLib(args: string[]): { code: number; out: string; err: string } {
+function runLib(args: string[], env?: NodeJS.ProcessEnv): { code: number; out: string; err: string } {
   const r = spawnSync('bash', [HELPER_PATH, ...args], {
     encoding: 'utf8',
+    env: env ? { ...process.env, ...env } : process.env,
     timeout: 60_000,
     killSignal: 'SIGKILL',
   });
@@ -221,6 +225,107 @@ describe('EI-21832562420831737 — a pinned cut owns its dependencies', () => {
       expect(readFileSync(join(t, 'snap', '.papercusp-pinned-deps'), 'utf8')).toContain('mode=copy');
     });
 
+    it('retains an interrupted copy, invalidates the old stamp and reuses verified completed files', () => {
+      const t = fixture();
+      const donor = join(t, 'donor');
+      const snap = join(t, 'snap');
+      write(join(donor, 'node_modules/p/kept.js'), 'completed file');
+      write(join(donor, 'node_modules/p/large.js'), 'complete new file');
+      expect(runLib(['snapshot', donor, snap, 'copy']).code).toBe(0);
+      writeFileSync(join(donor, 'node_modules/p/large.js'), 'changed new file');
+      const shim = join(t, 'shim');
+      // Fault injection at the storage boundary: one completed independent file
+      // and one incomplete file, followed by rsync's partial-transfer failure.
+      write(join(shim, 'rsync'), [
+        '#!/usr/bin/env bash',
+        'case " $* " in *" --dry-run "*) printf changed; exit 0 ;; esac',
+        'mkdir -p "$SNAP/node_modules.pinned-deps-tmp/p"',
+        'cp -a "$DONOR/node_modules/p/kept.js" "$SNAP/node_modules.pinned-deps-tmp/p/kept.js"',
+        'printf partial > "$SNAP/node_modules.pinned-deps-tmp/p/large.js"',
+        'exit 23',
+      ].join('\n'));
+      chmodSync(join(shim, 'rsync'), 0o755);
+      const failed = runLib(['snapshot', donor, snap, 'copy'], {
+        PATH: `${shim}:${process.env.PATH}`, DONOR: donor, SNAP: snap,
+      });
+      expect(failed.code).not.toBe(0);
+      expect(failed.err).toContain('retained resumable staging tree');
+      expect(existsSync(join(snap, '.papercusp-pinned-deps'))).toBe(false);
+      expect(readFileSync(join(snap, 'node_modules/p/large.js'), 'utf8')).toBe('complete new file');
+      const completedInode = statSync(join(snap, 'node_modules.pinned-deps-tmp/p/kept.js')).ino;
+      expect(runLib(['snapshot', donor, snap, 'copy']).code).toBe(0);
+      expect(statSync(join(snap, 'node_modules/p/kept.js')).ino).toBe(completedInode);
+      expect(readFileSync(join(snap, 'node_modules/p/large.js'), 'utf8')).toBe('changed new file');
+      expect(existsSync(join(snap, 'node_modules.pinned-deps-tmp'))).toBe(false);
+      expect(readFileSync(join(snap, '.papercusp-pinned-deps'), 'utf8')).toContain('trees=1');
+      const completedSnapshotInode = statSync(join(snap, 'node_modules/p/kept.js')).ino;
+      const repeated = runLib(['snapshot', donor, snap, 'copy']);
+      expect(repeated.code).toBe(0);
+      expect(repeated.out).toContain('reused verified completed snapshot node_modules');
+      expect(statSync(join(snap, 'node_modules/p/kept.js')).ino).toBe(completedSnapshotInode);
+    });
+
+    it('checksum-verifies legacy partials despite equal size/mtime and removes stale paths and links', () => {
+      const t = fixture();
+      const donor = join(t, 'donor');
+      const snap = join(t, 'snap');
+      const sourceFile = join(donor, 'node_modules/p/index.js');
+      const legacy = join(snap, 'node_modules.pinned-deps-tmp.12345');
+      write(sourceFile, 'NEW BYTES');
+      write(join(legacy, 'p/index.js'), 'OLD BYTES');
+      const sourceStat = statSync(sourceFile);
+      utimesSync(join(legacy, 'p/index.js'), sourceStat.atime, sourceStat.mtime);
+      write(join(legacy, 'p/removed.js'), 'stale');
+      symlinkSync('wrong.js', join(legacy, 'p/link.js'));
+      symlinkSync('index.js', join(donor, 'node_modules/p/link.js'));
+      expect(runLib(['snapshot', donor, snap, 'copy']).code).toBe(0);
+      expect(readFileSync(join(snap, 'node_modules/p/index.js'), 'utf8')).toBe('NEW BYTES');
+      expect(readFileSync(join(snap, 'node_modules/p/link.js'), 'utf8')).toBe('NEW BYTES');
+      expect(existsSync(join(snap, 'node_modules/p/removed.js'))).toBe(false);
+      expect(existsSync(legacy)).toBe(false);
+    });
+
+    it('breaks retained donor hardlinks before applying metadata and preserves independent hardlink groups', () => {
+      const t = fixture();
+      const donor = join(t, 'donor');
+      const snap = join(t, 'snap');
+      const sourceFile = join(donor, 'node_modules/p/index.js');
+      write(sourceFile, 'independent');
+      linkSync(sourceFile, join(donor, 'node_modules/p/twin.js'));
+      const retained = join(snap, 'node_modules.pinned-deps-tmp/p/index.js');
+      mkdirSync(dirname(retained), { recursive: true });
+      linkSync(sourceFile, retained);
+      expect(runLib(['snapshot', donor, snap, 'copy']).code).toBe(0);
+      const copied = join(snap, 'node_modules/p/index.js');
+      expect(statSync(copied).ino).not.toBe(statSync(sourceFile).ino);
+      expect(statSync(copied).ino).toBe(statSync(join(snap, 'node_modules/p/twin.js')).ino);
+      writeFileSync(copied, 'changed');
+      expect(readFileSync(sourceFile, 'utf8')).toBe('independent');
+    });
+
+    it('refuses ambiguous or symlinked staging without deleting retained progress or stamping success', () => {
+      for (const unsafe of ['ambiguous', 'symlink']) {
+        const t = fixture();
+        write(join(t, 'donor/node_modules/p/index.js'), 'source');
+        const snap = join(t, 'snap');
+        mkdirSync(snap);
+        if (unsafe === 'ambiguous') {
+          write(join(snap, 'node_modules.pinned-deps-tmp.1/p/index.js'), 'first');
+          write(join(snap, 'node_modules.pinned-deps-tmp.2/p/index.js'), 'second');
+        } else {
+          symlinkSync(join(t, 'donor/node_modules'), join(snap, 'node_modules.pinned-deps-tmp'));
+        }
+        const result = runLib(['snapshot', join(t, 'donor'), snap, 'copy']);
+        expect(result.code).not.toBe(0);
+        expect(result.err).toMatch(/REFUSING (ambiguous|unsafe)/);
+        expect(existsSync(join(snap, '.papercusp-pinned-deps'))).toBe(false);
+        if (unsafe === 'ambiguous') {
+          expect(readFileSync(join(snap, 'node_modules.pinned-deps-tmp.1/p/index.js'), 'utf8')).toBe('first');
+          expect(readFileSync(join(snap, 'node_modules.pinned-deps-tmp.2/p/index.js'), 'utf8')).toBe('second');
+        }
+      }
+    });
+
     it('refuses an unknown snapshot mode before producing a dependency stamp', () => {
       const t = fixture();
       write(join(t, 'donor', 'node_modules', 'p', 'i.js'), 'original');
@@ -269,6 +374,8 @@ describe('EI-21832562420831737 — a pinned cut owns its dependencies', () => {
         return String(result.stdout).trim().split('\n').at(-1);
       };
       expect(existsSync(join(snapshot, '.papercusp-pinned-deps'))).toBe(true);
+      expect(capture()).toBe('false');
+      write(join(snapshot, 'node_modules.pinned-deps-tmp.123/p/partial.js'), 'partial output');
       expect(capture()).toBe('false');
       write(join(snapshot, 'untracked-source.ts'), 'export const pending = true;');
       expect(capture()).toBe('true');

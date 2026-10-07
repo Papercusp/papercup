@@ -6,9 +6,10 @@
  * A cached resolveGitContext() commit is display metadata, not provenance.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { prepareVerifierSource } from '../../../scripts/source-preview.mjs';
 import { makeSuperproject, write } from '../../../packages/operator-core/lib/source-preview.fixture';
 
@@ -17,7 +18,7 @@ const mocks = vi.hoisted(() => ({
   computeWorktreeDirty: vi.fn(),
   captureTestSourceSnapshot: vi.fn(),
   resolveReporterSourceRoot: vi.fn(),
-  resolveAgentWorkspaceRoot: vi.fn(() => '/repo'),
+  resolveAgentWorkspaceRoot: vi.fn<(ctx?: { projectDir?: string }) => string>(() => '/repo'),
   resolveGitContext: vi.fn(async () => ({ branch: 'staging', commit: 'stale-cached-sha' })),
   resolveTestRunSource: vi.fn(() => 'admin-ui'),
   sql: vi.fn(async () => []),
@@ -218,7 +219,7 @@ describe('WI-10007182 committed archive reporter provenance', () => {
     vi.stubEnv('VERIFY_TAURI_SOURCE_RECEIPT', receiptPath);
     const actual = await vi.importActual<typeof import('../../../packages/operator-core/lib/testing-worktree')>('@papercusp/operator-core/lib/testing-worktree');
     const base = await vi.importActual<typeof import('../../../packages/operator-core/lib/agent-tools/capability/base-dir')>('@papercusp/operator-core/lib/agent-tools/capability/base-dir');
-    mocks.resolveAgentWorkspaceRoot.mockImplementation(base.resolveAgentWorkspaceRoot);
+    mocks.resolveAgentWorkspaceRoot.mockImplementation(ctx => base.resolveAgentWorkspaceRoot(ctx ?? {}));
     mocks.captureWorktreeSnapshot.mockImplementation(actual.captureWorktreeSnapshot);
     mocks.computeWorktreeDirty.mockImplementation(actual.computeWorktreeDirty);
     mocks.resolveReporterSourceRoot.mockImplementation(actual.resolveReporterSourceRoot);
@@ -270,6 +271,38 @@ describe('WI-10007182 committed archive reporter provenance', () => {
     });
     expect(values.at(-2)).toBe(true);
     expect(values[5]).toContain('[worktree provenance]');
+  });
+
+  it.each(['missing', 'inside'])('fails closed on an invalid %s receipt before execution', async kind => {
+    if (kind === 'missing') vi.stubEnv('VERIFY_TAURI_SOURCE_RECEIPT', undefined);
+    else {
+      const inside = join(root, 'receipt.json');
+      writeFileSync(inside, readFileSync(receiptPath));
+      vi.stubEnv('VERIFY_TAURI_SOURCE_RECEIPT', inside);
+    }
+    const values = await record();
+    expect(values.at(-2)).toBe(true);
+    expect(values[9]).toBeNull();
+    expect(values[5]).toContain(kind === 'missing'
+      ? 'missing independent verifier source receipt' : 'receipt must be outside the archive');
+  });
+
+  it.each(['apps/operator', 'packages/operator-core'])('seals the archive before tests through the native %s Playwright loader', owner => {
+    const repo = resolve(import.meta.dirname, '../../..');
+    const child = spawnSync(process.execPath, ['-e', `
+      const { dirname, join } = require('node:path');
+      const transform = require(join(dirname(require.resolve('playwright/package.json')), 'lib/transform/transform.js'));
+      transform.setSingleTSConfig(join(process.argv[1], 'apps/operator/tsconfig.json'));
+      (async () => {
+        const { default: Reporter } = await transform.requireOrImport(join(process.argv[1], process.argv[3], 'test/reporters/admin-test-runs-reporter-playwright.ts'));
+        const reporter = new Reporter();
+        const returned = reporter.onBegin({ rootDir: join(process.argv[2], 'apps/operator/e2e') });
+        process.stdout.write(JSON.stringify({ before: reporter.worktreeBefore, async: !!returned?.then }));
+      })().catch(error => { console.error(error); process.exitCode = 1; });
+    `, repo, root, owner], { cwd: repo, env: { ...process.env, VERIFY_TAURI_SOURCE_RECEIPT: receiptPath },
+      encoding: 'utf8', timeout: 20_000 });
+    expect(child.status, child.stderr).toBe(0);
+    expect(JSON.parse(child.stdout)).toEqual({ before: { commit, porcelain: '' }, async: false });
   });
 });
 

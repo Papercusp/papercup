@@ -214,6 +214,11 @@ import {
   hasEnumeratedVerificationCoverage,
 } from '../../coord-lifecycle/records';
 
+vi.mock('../../blueprint/phone-producer-admission', () => ({
+  configuredPhoneProducerCompletionAttempt: vi.fn(async () => ({ binding: { kind: 'external-runtime-producer' },
+    updatedTs: 1, readStoredOutcome: async () => ({}) })),
+}));
+
 const ctx = { uiClientId: 'su-tester', isSuperuser: true, workspaceId: 'default' } as never;
 
 describe('work_items:complete — ambient workspace transaction safety (EI-20194230704550984)', () => {
@@ -6803,6 +6808,23 @@ describe('work_items:complete input coercion (EI-7031)', () => {
 
     /** The opts object complete.ts handed the state writer. */
     const stateOpts = () => setWorkItemStateWithAliasInfo.mock.calls[0]?.[2] as Record<string, unknown>;
+
+    it('routes an external producer close through the host attempt without overriding writer authority', async () => {
+      getWorkItem.mockResolvedValue({ ...item, id: 'WI-1', state: 'open', family: 'issue',
+        payload: { externalRuntimeProducer: { kind: 'external-runtime-producer' } } });
+      await one({ id: 'WI-1', state: 'resolved', completion: { summary: 'Retained runtime checked',
+        verifiedHow: 'integration', testsRun: 'retained transcript probe', testResult: 'matched' } });
+      expect(stateOpts().externalRuntimeAttempt).toEqual(expect.objectContaining({ updatedTs: 1 }));
+      expect(stateOpts()).not.toHaveProperty('completionAuthority');
+    });
+
+    it('refuses an external producer close whose evidence verdict is only proposed', async () => {
+      getWorkItem.mockResolvedValue({ ...item, id: 'WI-1', state: 'open', family: 'issue',
+        payload: { externalRuntimeProducer: { kind: 'external-runtime-producer' } } });
+      const result = await one({ id: 'WI-1', state: 'resolved', completion: { summary: 'finished' } });
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+      expect(result.stateError).toContain('completion evidence is not committed');
+    });
 
     it('a summary-only completion lands `proposed` and does NOT count toward burn-down', async () => {
       const r = await one({ id: 'WI-1', state: 'resolved', completion: { summary: 'fixed it' } });

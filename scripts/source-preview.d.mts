@@ -134,6 +134,27 @@ export function verifyVerifierSource(dest: string, expected: Awaited<ReturnType<
     }[];
     files: any[];
 }>;
+/** Synchronous boundary for hooks such as Playwright onBegin, whose return
+ * value is not awaited. Uses the same source population and receipt checks.
+ * @param {string} dest
+ * @param {Awaited<ReturnType<typeof prepareVerifierSource>>} expected
+ * @param {{ runtimeArtifacts?: boolean }} [options]
+ */
+export function verifyVerifierSourceSync(dest: string, expected: Awaited<ReturnType<typeof prepareVerifierSource>>, options?: {
+    runtimeArtifacts?: boolean;
+}): {
+    schemaVersion: string;
+    sourceCommit: string;
+    submodules: {
+        path: string;
+        sha: string;
+    }[];
+    testedInputs: {
+        path: string;
+        sha256: string;
+    }[];
+    files: any[];
+};
 export function noticeText(manifest: any): string;
 /**
  * The releases page README.md links to: `${PAPERCUSP_UPDATE_BASE_URL}/index.html`.

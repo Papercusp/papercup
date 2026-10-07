@@ -208,16 +208,26 @@ async function readHistoricalCensus(
              a.cwd AS adv_cwd
         FROM raw_event_groups k
         LEFT JOIN LATERAL (
-          SELECT session_id, agent, first_seen_at, launch_spec,
+          -- Disjoint branches preserve the earliest-row rule while allowing
+          -- the owner/first-seen index to supply the lookup order directly.
+          (SELECT session_id, agent, first_seen_at, launch_spec,
                  launch_spec->>'harnessSlug' AS harness_slug,
                  cwd
             FROM harness_shared.adv_sessions
            WHERE coord_owner_id = k.owner_id
-             AND (k.session_id IS NULL OR session_id = k.session_id)
-           ORDER BY CASE WHEN k.session_id IS NOT NULL AND session_id = k.session_id THEN 0 ELSE 1 END,
-                    first_seen_at ASC NULLS LAST,
+             AND k.session_id IS NOT NULL AND session_id = k.session_id
+           ORDER BY first_seen_at ASC NULLS LAST,
                     id ASC
-           LIMIT 1
+           LIMIT 1)
+          UNION ALL
+          (SELECT session_id, agent, first_seen_at, launch_spec,
+                  launch_spec->>'harnessSlug' AS harness_slug,
+                  cwd
+             FROM harness_shared.adv_sessions
+            WHERE coord_owner_id = k.owner_id AND k.session_id IS NULL
+            ORDER BY first_seen_at ASC NULLS LAST,
+                     id ASC
+            LIMIT 1)
         ) a ON true
     ),
     -- Split null-session keys from ordinary keys to avoid a null-safe residual
