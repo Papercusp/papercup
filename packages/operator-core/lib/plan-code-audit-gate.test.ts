@@ -342,6 +342,20 @@ describe('evaluatePlanAcceptanceGate — per-item code audit freshness', () => {
     expect(verdict.message).toContain('P-001: src/p_001.ts changed since audit #1');
   });
 
+  it('refuses a resolved citation without its audit-time fingerprint and names the audit sequence', async () => {
+    const p1 = effective({ itemId: 'P-001', itemText: 'first requirement', auditSeq: 7 });
+    mockEffectiveAudits.mockResolvedValue([p1]);
+    mockPlanItems.mockResolvedValue([{ itemId: 'P-001', status: 'done', itemText: 'first requirement' }]);
+
+    expect(await evaluatePlanAcceptanceGate(PLAN)).toMatchObject({ satisfied: true });
+
+    delete p1.entry.citations[0].blobSha;
+    const verdict = await evaluatePlanAcceptanceGate(PLAN);
+
+    expect(verdict).toMatchObject({ satisfied: false, code: 'audit_coverage_stale' });
+    expect(verdict.message).toContain('P-001: src/p_001.ts has no audit-time blob fingerprint (audit #7)');
+  });
+
   // proof-freshness-pinned-candidate-2026-10-06 P-019 (D-001): with a real repository the
   // gate measures cited blobs at the committed HEAD (M), so a peer's uncommitted edit no
   // longer stales a shipped audit, while committing that edit does.
