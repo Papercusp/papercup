@@ -12,7 +12,7 @@
  * labelled row and preserves the original execution; it does not run a new test.
  */
 
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync, realpathSync, statSync } from 'node:fs';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { z } from 'zod';
@@ -23,7 +23,11 @@ import {
   isRecordedCaseTitle,
   MAX_RECORDED_FAILED_CASES,
   MAX_RECORDED_PASSED_CASES,
+  type RecordedRuntimeEnvironment,
+  stableRecordedRuntimeEnvironment,
 } from '@papercusp/test-config/execution-details';
+import { listRuntimeVintage, measureRuntimeVintageEnvironment } from '../../runtime-vintage';
+import { captureWorktreeSnapshot, computeWorktreeDirty, type WorktreeGitSnapshot } from '../../testing-worktree';
 import { runGit } from '../../harness/docs/git-runner';
 import {
   findHarnessTestRunIds,
@@ -443,6 +447,103 @@ export function operationalExecution(artifact: OperationalEvidenceArtifact) {
 
 function derivedVerdict(artifact: OperationalEvidenceArtifact): 'pass' | 'fail' {
   return artifact.exitCode === 0 && artifact.assertions.every((assertion) => assertion.passed) ? 'pass' : 'fail';
+}
+
+/**
+ * Native operational producers execute here rather than importing fingerprints
+ * from an artifact. Reuse the recorder's assertion contract and canonical ledger;
+ * timing, source snapshots and runtime observations belong to this executor.
+ * Missing or changing runtime witnesses remain unproven in the normal binder.
+ * This function does not recover or restamp an already executed check.
+ */
+export async function executeOperationalRun(
+  definition: {
+    filePath: string;
+    name: string;
+    command: string[];
+    framework: OperationalEvidenceArtifact['framework'];
+    runtimeUnits: string[];
+    run: () => Promise<Pick<OperationalEvidenceArtifact, 'exitCode' | 'summary' | 'assertions'>>;
+  },
+  ctx: RecordContext,
+  deps: {
+    snapshot: (root: string) => WorktreeGitSnapshot;
+    readRuntime: (units: string[], workspaceId: string) => Promise<string | null>;
+    persist: RecordOperationalRunDeps['persist'];
+  } = {
+    snapshot: captureWorktreeSnapshot,
+    readRuntime: async (units, workspaceId) =>
+      measureRuntimeVintageEnvironment(await listRuntimeVintage(workspaceId), units),
+    persist: persistHarnessTestRunsWithIds,
+  },
+) {
+  const workspaceId = ctx.workspaceId?.trim();
+  if (!workspaceId || workspaceId === '*') return { ok: false, error: 'workspace_required' as const };
+  const harnessSlug = resolveConcreteHarnessSlug(undefined, ctx);
+  if (!harnessSlug) return { ok: false, error: 'harness_required' as const };
+  const units = [...definition.runtimeUnits];
+  if (!units.length || units.length > 32 || new Set(units).size !== units.length
+    || units.some(unit => !unit || unit.trim() !== unit || unit.length > 120)) {
+    return { ok: false, error: 'invalid_runtime_units' as const };
+  }
+  const root = resolveAgentWorkspaceRoot(ctx);
+  const path = relative(root, resolve(root, definition.filePath));
+  if (!path || path === '..' || path.startsWith(`..${sep}`) || isAbsolute(path)) {
+    return { ok: false, error: 'invalid_check_path' as const };
+  }
+  const observe = async (): Promise<RecordedRuntimeEnvironment | undefined> => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const fingerprint = await Promise.race([
+        Promise.resolve().then(() => deps.readRuntime([...units], workspaceId)),
+        new Promise<null>(resolve => { timer = setTimeout(() => resolve(null), 1_000); }),
+      ]);
+      return typeof fingerprint === 'string' && /^[a-f0-9]{64}$/.test(fingerprint)
+        ? { schemaVersion: 1, units: [...units], fingerprint, observedAt: new Date().toISOString() }
+        : undefined;
+    } catch { return undefined; }
+    finally { if (timer) clearTimeout(timer); }
+  };
+  const before = deps.snapshot(root);
+  const runtimeEnvironmentBefore = await observe();
+  const startedAt = new Date();
+  let result: Pick<OperationalEvidenceArtifact, 'exitCode' | 'summary' | 'assertions'>;
+  try { result = await definition.run(); }
+  catch (error) {
+    result = { exitCode: 1, summary: 'Native operational check threw.', assertions: [{
+      id: 'native-check-exception', passed: false,
+      evidence: String(error instanceof Error ? error.message : error).slice(0, 2000) || 'Unknown exception',
+    }] };
+  }
+  const finishedAt = new Date();
+  const runtimeEnvironmentAfter = await observe();
+  const after = deps.snapshot(root);
+  // Explicit fields prevent a callback from smuggling timestamps, layer or pins.
+  const artifact = operationalEvidenceArtifactSchema.parse({
+    schemaVersion: 1, kind: 'operational-test-evidence', name: definition.name,
+    framework: definition.framework, command: definition.command,
+    startedAt: startedAt.toISOString(), finishedAt: finishedAt.toISOString(),
+    exitCode: result.exitCode, summary: result.summary, assertions: result.assertions,
+  });
+  const runGroupId = `operational-native:${randomUUID()}`;
+  const execution = {
+    ...operationalExecution(artifact),
+    ...(runtimeEnvironmentBefore ? { runtimeEnvironmentBefore } : {}),
+    ...(runtimeEnvironmentAfter ? { runtimeEnvironmentAfter } : {}),
+  };
+  const persisted = await deps.persist({
+    workspaceId, harnessSlug, root, runGroupId, source: 'local',
+    commit: after.commit, worktreeDirty: computeWorktreeDirty(before, after),
+    rows: [{ filePath: path.split(sep).join('/'), framework: artifact.framework,
+      status: derivedVerdict(artifact), startedAt, finishedAt,
+      durationMs: finishedAt.getTime() - startedAt.getTime(),
+      outputTail: artifact.summary, execution }],
+  });
+  if (persisted.written !== 1 || persisted.ids.length !== 1) {
+    return { ok: false, error: 'ledger_write_failed' as const, runGroupId };
+  }
+  return { ok: true, runGroupId, testRunIds: persisted.ids, status: derivedVerdict(artifact),
+    runtimeEnvironmentMeasured: Boolean(stableRecordedRuntimeEnvironment(runtimeEnvironmentBefore, runtimeEnvironmentAfter)) };
 }
 
 function outputTail(evidence: CommittedOperationalEvidence): string {

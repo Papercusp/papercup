@@ -2,9 +2,13 @@
 import { readFileSync } from 'node:fs';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { bridgeEval } from '../../../../libs/generic/tauri-verify/src/bridge-client';
+import { executeOperationalRun } from '../agent-tools/testing/record-run';
+import { activeWorkspaceId } from '../workspace-registry';
+import { fileURLToPath } from 'node:url';
 
 type Profile = {
   tauriPID: number;
+  runtimeUnits?: string[];
   email: { origin: string; messageId: string; receiptId: number; targetId: string; nativeUrl: string; body: string };
   calendar: { origin: string; eventId: string; requestKey: string; trigger: unknown; nativeUrl: string; body: string };
   phone: { origin: string; bookingId: string; receiptId: number; booking: { requestKey: string }; nativeUrl: string; body: string };
@@ -105,4 +109,40 @@ describe.skipIf(!profilePath)('accepted app operations on an explicitly selected
       expect(await response.json()).toEqual({ ok: false, error });
     }
   }, 30000);
+
+  it('records a fresh native operational probe of the actual app results and Tauri runtime cohort', async () => {
+    // Selectors are required, but no fingerprint is accepted from this fixture.
+    // This is a NEW stable result/display probe, never a restamp of the manual
+    // mid-task restart artifact or an invented test layer for that artifact.
+    expect(profile.runtimeUnits, 'Select the actual app/operator/Tauri runtime cohort').toBeDefined();
+    const root = fileURLToPath(new URL('../../../../', import.meta.url));
+    const result = await executeOperationalRun({
+      filePath: 'packages/operator-core/lib/blueprint/app-operation-results.live.e2e.test.ts',
+      name: 'P010 fresh native operational result/display probe', framework: 'operational',
+      command: ['npm', 'run', 'test:file', '--',
+        'packages/operator-core/lib/blueprint/app-operation-results.live.e2e.test.ts'],
+      runtimeUnits: profile.runtimeUnits!,
+      run: async () => {
+        const email = await json(`${profile.email.origin}/api/messages/${encodeURIComponent(profile.email.messageId)}/draft-reply`);
+        expect(email.draftReply.status).toMatchObject({ phase: 'terminal', outcome: 'succeeded' });
+        expect(email.draftReply.result.output.proposals.some((p: { text: string }) => p.text.includes(profile.email.body))).toBe(true);
+        const calendar = await json(`${profile.calendar.origin}/api/meeting-prep/status?eventId=${encodeURIComponent(profile.calendar.eventId)}`);
+        expect(calendar.status).toMatchObject({ phase: 'ready', current: true, requestKey: profile.calendar.requestKey });
+        const phone = await json(`${profile.phone.origin}/api/scheduled`);
+        const booking = phone.scheduled.find((b: { id: string }) => b.id === profile.phone.bookingId);
+        expect(booking.callUnit.brief.status).toBe('succeeded');
+        expect(booking.callUnit.brief.result).toContain(profile.phone.body);
+        expect(booking.callUnit.dialClaimedAt).toBeNull();
+        expect(booking.callUnit.sessionStartedAt).toBeNull();
+        expect(booking.callUnit.callId).toBeNull();
+        for (const app of [profile.email, profile.calendar, profile.phone]) await nativeBody(app.nativeUrl, app.body);
+        return { exitCode: 0, summary: 'Fresh API result and native display assertions passed for Email, Calendar and Phone.',
+          assertions: ['email-result-native-display', 'calendar-result-native-display', 'phone-result-native-display']
+            .map(id => ({ id, passed: true, evidence: 'Actual local app result and Tauri body asserted during this execution.' })) };
+      },
+    }, { workspaceId: activeWorkspaceId(), harnessSlug: 'papercusp', projectDir: root });
+    expect(result).toMatchObject({ ok: true, status: 'pass', runtimeEnvironmentMeasured: true });
+    expect(result.testRunIds).toHaveLength(1);
+    console.info('P010_NATIVE_OPERATIONAL_RUN', JSON.stringify(result));
+  }, 60000);
 });

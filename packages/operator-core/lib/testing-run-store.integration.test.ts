@@ -1,6 +1,10 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { OrgTestDb } from '../test/_org-test-db';
-import { getRunAsync, TestingRunSnapshotUnavailableError } from './testing-run-store';
+import { getRunAsync, TestingRunSnapshotUnavailableError, persistHarnessTestRunsWithIds } from './testing-run-store';
+import { executeOperationalRun } from './agent-tools/testing/record-run';
+import { parseTestRunExecutionDetails, stableRecordedRuntimeEnvironment } from '@papercusp/test-config/execution-details';
+import { configureRuntimeVintageStore, resetRuntimeVintageStore, InMemoryRuntimeVintageStore,
+  reportRuntimeVintage, listRuntimeVintage, measureRuntimeVintageEnvironment } from './runtime-vintage';
 
 const { createOrgTestDb } = await import('../test/_org-test-db');
 
@@ -67,5 +71,47 @@ describe('foreground evidence recovery (real PG)', () => {
   it('does not turn an ended foreground task into a passing test', async () => {
     await insertTask({ state: 'ended_unobserved' });
     await expect(getRunAsync(runId, storeSql(), scope)).resolves.toBeNull();
+  });
+});
+
+describe('native operational execution provenance (real PG and kernel)', () => {
+  let db: OrgTestDb;
+  const workspaceId = 'operational-workspace';
+  beforeAll(async () => { db = await createOrgTestDb(); }, 120_000);
+  afterAll(async () => { await db?.cleanup(); });
+  beforeEach(() => configureRuntimeVintageStore(new InMemoryRuntimeVintageStore()));
+  afterEach(() => resetRuntimeVintageStore());
+
+  it.each([false, true])('persists actual runtime observations; source drift=%s remains distinguishable', async drift => {
+    await reportRuntimeVintage({ workspaceId, unit: 'native-check-runtime',
+      treeSha: 'a'.repeat(40), pid: process.pid });
+    const result = await executeOperationalRun({
+      filePath: 'lib/testing-run-store.integration.test.ts', name: 'measured operational check',
+      command: ['native', 'actual-kernel-observation'], framework: 'operational',
+      runtimeUnits: ['native-check-runtime'],
+      run: async () => {
+        if (drift) await reportRuntimeVintage({ workspaceId, unit: 'native-check-runtime',
+          treeSha: 'b'.repeat(40), pid: process.pid });
+        return { exitCode: 0, summary: 'Measured actual runtime.',
+          assertions: [{ id: 'kernel-runtime-observed', passed: true, evidence: 'Current test process observed.' }] };
+      },
+    }, { workspaceId, harnessSlug: 'operational-harness', projectDir: process.cwd() }, {
+      snapshot: () => ({ commit: 'a'.repeat(40), porcelain: '' }),
+      readRuntime: async (units, workspace) => measureRuntimeVintageEnvironment(await listRuntimeVintage(workspace), units),
+      persist: params => persistHarnessTestRunsWithIds({ ...params,
+        sql: db.adminSql as unknown as NonNullable<Parameters<typeof persistHarnessTestRunsWithIds>[0]['sql']> }),
+    });
+    expect(result.ok).toBe(true);
+    const [row] = await db.adminSql`SELECT workspace_id, harness_slug, execution_details
+      FROM harness_shared.test_runs WHERE id = ${result.testRunIds![0]}`;
+    expect(row.workspace_id).toBe(workspaceId);
+    expect(row.harness_slug).toBe('operational-harness');
+    const execution = parseTestRunExecutionDetails(row.execution_details);
+    expect(execution).toMatchObject({ passed: 1, failed: 0, worktreeDirty: false });
+    expect(execution?.runtimeEnvironmentBefore).toBeDefined();
+    expect(execution?.runtimeEnvironmentAfter).toBeDefined();
+    expect(Boolean(stableRecordedRuntimeEnvironment(execution?.runtimeEnvironmentBefore,
+      execution?.runtimeEnvironmentAfter))).toBe(!drift);
+    expect(execution).not.toHaveProperty('testLayer');
   });
 });

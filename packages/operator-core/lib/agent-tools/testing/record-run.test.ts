@@ -15,6 +15,7 @@ import {
   operationalExecution,
   parseOperationalEvidenceArtifact,
   recordOperationalRun,
+  executeOperationalRun,
   recoverArchivedMutationFailures,
   verifyOriginalOperationalEvidence,
   type ArchivedMutationRun,
@@ -44,6 +45,83 @@ const EVIDENCE: CommittedOperationalEvidence = {
   sha256: 'a'.repeat(64),
   commit: 'b'.repeat(40),
 };
+
+describe('native operational execution witnesses', () => {
+  function fixture() {
+    const fingerprint = 'c'.repeat(64);
+    const deps = {
+      snapshot: vi.fn(() => ({ commit: 'b'.repeat(40), porcelain: '' })),
+      readRuntime: vi.fn(async () => fingerprint),
+      persist: vi.fn(async (_params: Parameters<RecordOperationalRunDeps['persist']>[0]) =>
+        ({ written: 1, ids: [123] })),
+    };
+    const run = vi.fn(async () => ({ exitCode: 0, summary: 'Actual assertions passed.',
+      assertions: [{ id: 'actual-result', passed: true, evidence: 'Observed result' }],
+      runtimeEnvironmentBefore: { fingerprint: 'forged' }, testLayer: 'e2e',
+      startedAt: '2000-01-01T00:00:00Z' }));
+    const definition = { filePath: 'scripts/check.ts', name: 'native check',
+      command: ['node', 'scripts/check.ts'], framework: 'node' as const,
+      runtimeUnits: ['staging-api'], run };
+    const ctx = { workspaceId: 'workspace-test', harnessSlug: 'papercusp', projectDir: process.cwd() };
+    return { fingerprint, deps, definition, ctx };
+  }
+
+  it('brackets the actual execution and writes independent witnesses, never callback pins or layers', async () => {
+    const f = fixture();
+    const order: string[] = [];
+    f.deps.readRuntime.mockImplementation(async () => { order.push('observe'); return f.fingerprint; });
+    f.definition.run.mockImplementation(async () => {
+      order.push('execute');
+      return { exitCode: 0, summary: 'Actual assertions passed.',
+        assertions: [{ id: 'actual-result', passed: true, evidence: 'Observed result' }],
+        runtimeEnvironmentBefore: { fingerprint: 'forged' }, testLayer: 'e2e', startedAt: '2000-01-01T00:00:00Z' };
+    });
+    const result = await executeOperationalRun(f.definition, f.ctx, f.deps);
+    expect(result).toMatchObject({ ok: true, testRunIds: [123], status: 'pass', runtimeEnvironmentMeasured: true });
+    expect(order).toEqual(['observe', 'execute', 'observe']);
+    const recorded = f.deps.persist.mock.calls[0][0];
+    const execution = recorded.rows[0].execution as Record<string, any>;
+    expect(execution.runtimeEnvironmentBefore.fingerprint).toBe(f.fingerprint);
+    expect(execution.runtimeEnvironmentAfter.fingerprint).toBe(f.fingerprint);
+    expect(Date.parse(execution.runtimeEnvironmentBefore.observedAt)).toBeLessThanOrEqual(recorded.rows[0].startedAt.getTime());
+    expect(Date.parse(execution.runtimeEnvironmentAfter.observedAt)).toBeGreaterThanOrEqual(recorded.rows[0].finishedAt.getTime());
+    expect(execution).not.toHaveProperty('testLayer');
+    expect(execution.runStartedAt).not.toBe('2000-01-01T00:00:00Z');
+    expect(recorded.worktreeDirty).toBe(false);
+    expect(f.deps.readRuntime).toHaveBeenCalledWith(['staging-api'], 'workspace-test');
+  });
+
+  it('keeps failed measurements absent and persists the actual thrown-check failure', async () => {
+    const f = fixture();
+    f.deps.readRuntime.mockRejectedValue(new Error('ledger unavailable'));
+    f.definition.run.mockRejectedValue(new Error('native assertion failed'));
+    expect(await executeOperationalRun(f.definition, f.ctx, f.deps)).toMatchObject({ ok: true, status: 'fail', runtimeEnvironmentMeasured: false });
+    const execution = f.deps.persist.mock.calls[0][0].rows[0].execution;
+    expect(execution).toMatchObject({ passed: 0, failed: 1, failedCaseTitles: ['native-check-exception'] });
+    expect(execution).not.toHaveProperty('runtimeEnvironmentBefore');
+    expect(execution).not.toHaveProperty('runtimeEnvironmentAfter');
+  });
+
+  it('retains source/runtime changes rather than laundering them into stable proof', async () => {
+    const f = fixture();
+    f.deps.snapshot.mockReturnValueOnce({ commit: 'a'.repeat(40), porcelain: '' });
+    f.deps.readRuntime.mockResolvedValueOnce('d'.repeat(64));
+    expect(await executeOperationalRun(f.definition, f.ctx, f.deps)).toMatchObject({ runtimeEnvironmentMeasured: false });
+    const recorded = f.deps.persist.mock.calls[0][0];
+    const execution = recorded.rows[0].execution as Record<string, any>;
+    expect(recorded.worktreeDirty).toBe(true);
+    expect(execution.runtimeEnvironmentBefore.fingerprint).not.toBe(execution.runtimeEnvironmentAfter.fingerprint);
+  });
+
+  it('refuses invalid selectors before executing and reports failed ledger writes', async () => {
+    const f = fixture();
+    expect(await executeOperationalRun({ ...f.definition, runtimeUnits: ['duplicate', 'duplicate'] }, f.ctx, f.deps))
+      .toMatchObject({ ok: false, error: 'invalid_runtime_units' });
+    expect(f.definition.run).not.toHaveBeenCalled();
+    f.deps.persist.mockResolvedValue({ written: 0, ids: [] });
+    expect(await executeOperationalRun(f.definition, f.ctx, f.deps)).toMatchObject({ ok: false, error: 'ledger_write_failed' });
+  });
+});
 
 const MUTATION_PROBE = {
   schemaVersion: 1 as const,
