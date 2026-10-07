@@ -8624,7 +8624,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
           // — it rejoined rotation still walled and re-burned an upstream 429 on nearly every
           // request. The codex parser reads the real dialect (exhausted-window resets + retry-after).
           const parsed = parseCodexRateReset(headers);
-          return { resetAt: parsed.resetAt, retryAfterMs: parsed.retryAfterMs };
+          return { resetAt: parsed.resetAt, retryAfterMs: parsed.retryAfterMs, transient: parsed.transient };
         },
         onEgressAttempt: (id) => egressAttemptsByAccount.set(id, (egressAttemptsByAccount.get(id) ?? 0) + 1),
         onEgressFailure: (id) => egressFailsByAccount.set(id, (egressFailsByAccount.get(id) ?? 0) + 1),
