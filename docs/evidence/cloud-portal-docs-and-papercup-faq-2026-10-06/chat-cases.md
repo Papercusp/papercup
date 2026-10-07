@@ -49,6 +49,22 @@ reference, tool calls and the target's already-redacted tool results before
 assertions run. It excludes the bearer and raw provider tape. These records
 retain both passing and failing answers; an emitted record alone is not a pass.
 
+## Focused clarification repair
+
+The unresolved-reference rule now applies before retrieval or live-state
+answers in both canonical fast and deep policies. Actual prompt-assembly
+checks passed 11 tests (ledger `20912116`). The affected real-model case then
+passed alone (ledger `20912783`): for “Is it running?” Papercup asked “What are
+you checking?” without assuming a target or claiming current state. The five
+other cases were excluded by the filter; their earlier evidence is unchanged.
+
+The exact answer and measured utility build `1ebe8008c2` are retained in
+[chat-case-records-clarification-20261007.json](./chat-case-records-clarification-20261007.json).
+This run used the same docs-only public principal and disposable registry
+fixture. The temporary host was stopped afterward. The earlier failing matrix
+remains above as the counterexample; this focused pass does not establish
+portal, deep-model, novice or released-artifact acceptance.
+
 ## Outstanding acceptance
 
 The following remain unobserved here: the actual portal browser journey and
