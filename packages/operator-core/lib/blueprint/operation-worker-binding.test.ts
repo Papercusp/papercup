@@ -22,10 +22,61 @@ vi.mock('../pot-membership', async (importOriginal) => ({
   workItemStorageSlug: async (slug: string) => slug,
 }));
 
-import { describeOperationReceiptReadFault, matchOperationWorkerClaim, readActiveOperationModelPolicy, resolveAcceptedOperationWorkerBinding, selectAcceptedOperationWorkerModel } from './operation-worker-binding';
+import { assertExternalRuntimeProducerOutcome, describeOperationReceiptReadFault, matchOperationWorkerClaim, readActiveOperationModelPolicy, resolveAcceptedOperationWorkerBinding, selectAcceptedOperationWorkerModel, type ExternalRuntimeProducerBinding, type ExternalRuntimeStoredOutcome } from './operation-worker-binding';
 
 const HASH = 'a'.repeat(64);
 const REVISION = 'b'.repeat(64);
+describe('external voice producer retained outcome validation (D037)', () => {
+  const binding: ExternalRuntimeProducerBinding = {
+    kind: 'external-runtime-producer', workspaceId: 'ws-a', harnessSlug: 'phone',
+    workItemId: 'WI-voice', executionOwnerId: 'voice-executor', ownerId: 'customer-a',
+    callKey: 'inbound:room-a', callId: 'call-a', runId: 'run-a', jobId: 'job-a',
+    configurationSha256: HASH, registeredAt: '2026-10-07T13:00:00Z',
+  };
+  function fixture() {
+    const stored: ExternalRuntimeStoredOutcome = {
+      binding: { ...binding }, endReason: 'completed', endedAt: '2026-10-07T13:01:00Z',
+      transcriptSegmentCount: 2, transcriptSha256: REVISION,
+      retainedSegmentCount: 2, retainedSha256: REVISION, contentDeleted: false,
+    };
+    return { workspaceId: 'ws-a', by: 'voice-executor', stored,
+      item: { id: 'WI-voice', harness: 'phone', assignee: 'voice-executor',
+        payload: { externalRuntimeProducer: { ...binding } } } };
+  }
+  it('accepts a retained completed call without claiming source files or a CLI receipt', () => {
+    expect(assertExternalRuntimeProducerOutcome(fixture())).toEqual(binding);
+  });
+  it.each(['ownerId', 'callKey', 'callId', 'runId', 'jobId', 'configurationSha256', 'workItemId', 'harnessSlug', 'workspaceId', 'executionOwnerId'] as const)(
+    'refuses a foreign or rebound %s', (key) => {
+      const input = fixture();
+      input.stored.binding[key] = key === 'configurationSha256' ? 'c'.repeat(64) : 'foreign';
+      expect(() => assertExternalRuntimeProducerOutcome(input)).toThrow(/binding|registration/);
+    });
+  it('refuses a changed current claim even when the registration is unchanged', () => {
+    const input = fixture();
+    input.item.assignee = 'replacement-worker';
+    expect(() => assertExternalRuntimeProducerOutcome(input)).toThrow('current holder changed');
+  });
+  it.each(['worker-lost', 'failed', 'cancelled'] as const)('never promotes %s partial content to success', (reason) => {
+    const input = fixture();
+    input.stored.endReason = reason;
+    expect(() => assertExternalRuntimeProducerOutcome(input)).toThrow('no verified complete');
+  });
+  it.each(['retainedSegmentCount', 'retainedSha256', 'endedAt', 'contentDeleted'] as const)(
+    'refuses absent or contradictory retained evidence: %s', (key) => {
+      const input = fixture();
+      if (key === 'retainedSegmentCount') input.stored[key] = 1;
+      if (key === 'retainedSha256') input.stored[key] = HASH;
+      if (key === 'endedAt') input.stored[key] = null;
+      if (key === 'contentDeleted') input.stored[key] = true;
+      expect(() => assertExternalRuntimeProducerOutcome(input)).toThrow('no verified complete');
+    });
+  it('refuses an end predating the admitted runtime', () => {
+    const input = fixture();
+    input.stored.endedAt = '2026-10-07T12:59:00Z';
+    expect(() => assertExternalRuntimeProducerOutcome(input)).toThrow('no verified complete');
+  });
+});
 const args = {
   sql: {} as never,
   workspaceId: 'ws-a',

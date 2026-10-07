@@ -386,6 +386,78 @@ export function programRootEffectWhereSql(
   )`;
 }
 
+/** D-036/D-037: an external voice executor is not an applied CLI worker or a
+ * program operation. This registration belongs on the producing item's payload.
+ * Only the authenticated host adapter may construct it from admitted records. */
+export interface ExternalRuntimeProducerBinding {
+  kind: 'external-runtime-producer';
+  workspaceId: string;
+  harnessSlug: string;
+  workItemId: string;
+  executionOwnerId: string;
+  ownerId: string;
+  callKey: string;
+  callId: string;
+  runId: string;
+  jobId: string;
+  configurationSha256: string;
+  registeredAt: string;
+}
+
+/** Read from the host's retained call records, never an end-report payload.
+ * A lost worker's partial digest is deliberately insufficient for success. */
+export interface ExternalRuntimeStoredOutcome {
+  binding: ExternalRuntimeProducerBinding;
+  endReason: 'completed' | 'worker-lost' | 'failed' | 'cancelled';
+  endedAt: string | null;
+  transcriptSegmentCount: number;
+  transcriptSha256: string;
+  /** Independently recomputed from the retained transcript at verification. */
+  retainedSegmentCount: number;
+  retainedSha256: string;
+  contentDeleted: boolean;
+}
+
+/** Shared precondition for both canonical work-item families. This is only
+ * binding/evidence validation, not completion authority: callers still use the
+ * normal evidence grader and must repeat binding/holder/epoch in the UPDATE. */
+export function assertExternalRuntimeProducerOutcome(input: {
+  workspaceId: string;
+  by: string;
+  item: Pick<WorkItem, 'id' | 'harness' | 'assignee' | 'payload'>;
+  stored: ExternalRuntimeStoredOutcome;
+}): ExternalRuntimeProducerBinding {
+  const { item, stored, by, workspaceId } = input;
+  const binding = stored.binding;
+  const fields: (keyof ExternalRuntimeProducerBinding)[] = [
+    'workspaceId', 'harnessSlug', 'workItemId', 'executionOwnerId', 'ownerId',
+    'callKey', 'callId', 'runId', 'jobId', 'configurationSha256', 'registeredAt',
+  ];
+  if (binding.kind !== 'external-runtime-producer' ||
+      fields.some((key) => typeof binding[key] !== 'string' || !binding[key].trim()) ||
+      !/^[a-f0-9]{64}$/.test(binding.configurationSha256) ||
+      !Number.isFinite(Date.parse(binding.registeredAt))) {
+    throw new Error('external runtime producer registration is malformed');
+  }
+  const payload = item.payload && typeof item.payload === 'object' && !Array.isArray(item.payload)
+    ? item.payload as Record<string, unknown> : {};
+  if (binding.workspaceId !== workspaceId || binding.workItemId !== item.id ||
+      binding.harnessSlug !== item.harness || binding.executionOwnerId !== by ||
+      item.assignee !== by || !isDeepStrictEqual(payload.externalRuntimeProducer, binding)) {
+    throw new Error('external runtime producer binding or current holder changed');
+  }
+  if (stored.endReason !== 'completed' || !stored.endedAt ||
+      !Number.isFinite(Date.parse(stored.endedAt)) ||
+      Date.parse(stored.endedAt) < Date.parse(binding.registeredAt) || stored.contentDeleted ||
+      !Number.isSafeInteger(stored.transcriptSegmentCount) || stored.transcriptSegmentCount < 0 ||
+      !/^[a-f0-9]{64}$/.test(stored.transcriptSha256) ||
+      stored.retainedSegmentCount !== stored.transcriptSegmentCount ||
+      stored.retainedSha256 !== stored.transcriptSha256) {
+    throw new Error('external runtime producer has no verified complete retained transcript');
+  }
+  return binding;
+}
+
 const RECEIPT_READ_FAULT = 'active operation worker receipt could not be read';
 
 /** EI-24400810686776632: the receipt read fails CLOSED on any error, which is right, but a
