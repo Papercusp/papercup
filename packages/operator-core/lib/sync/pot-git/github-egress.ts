@@ -48,6 +48,7 @@ import {
   defaultRunGit,
   defaultRunGitStdin,
 } from './storage';
+import { classifyGitError } from '../../harness/clone-github';
 import { createTimeSlice } from '../../event-loop-lag-monitor';
 import { type SecretFinding, scanForSecrets } from './secrets-guard';
 import { loadSecretsGuardPathExemptions, partitionExemptFindings } from './secrets-guard-exemptions';
@@ -204,7 +205,11 @@ async function lsRemote(
   runGit: RunGit,
 ): Promise<{ sha: string | null } | { error: string; transient: boolean }> {
   const r = await runGit(['ls-remote', remoteUrl, ref], repoPath);
-  if (r.code !== 0) return { error: r.stderr.trim() || `ls-remote exited ${r.code}`, transient: r.code === -1 };
+  if (r.code !== 0)
+    return {
+      error: r.stderr.trim() || `ls-remote exited ${r.code}`,
+      transient: r.code === -1 || classifyGitError(r.stderr) === 'network_timeout',
+    };
   const line = r.stdout.split('\n').find((l) => l.trim());
   if (!line) return { sha: null };
   const sha = line.trim().split(/\s+/)[0];
@@ -511,14 +516,19 @@ export async function egressCanonicalRefs(input: EgressInput): Promise<EgressRes
           input.repoPath,
           { timeoutMs: NETWORK_RUN_GIT_TIMEOUT_MS },
         );
-        if (f.code !== 0 || !(await haveObject(input.repoPath, remoteSha, runGit))) {
-          if (f.code !== 0) {
-            res.remoteErrors.push({
-              message: `fetch ${spec.remoteRef}: ${f.stderr.trim() || `exited ${f.code}`}`,
-              transient: f.code === -1,
-            });
-          }
-          // Can't establish ancestry → fail CLOSED as a non-FF (never push blind).
+        if (f.code !== 0) {
+          const message = `fetch ${spec.remoteRef}: ${f.stderr.trim() || `exited ${f.code}`}`;
+          res.ok = false;
+          res.remoteErrors.push({
+            message,
+            transient: f.code === -1 || classifyGitError(f.stderr) === 'network_timeout',
+          });
+          res.errors.push(message);
+          continue;
+        }
+        if (!(await haveObject(input.repoPath, remoteSha, runGit))) {
+          // A successful fetch without the requested object leaves ancestry
+          // unverifiable, so fail closed and report the non-FF residue.
           res.rejectedNonFF.push({
             remoteRef: spec.remoteRef,
             remoteSha,
@@ -557,7 +567,10 @@ export async function egressCanonicalRefs(input: EgressInput): Promise<EgressRes
       const message =
         `push preflight ${spec.remoteRef}: ` +
         (preflight.stderr.trim() || `exited ${preflight.code}`);
-      res.remoteErrors.push({ message, transient: preflight.code === -1 });
+      res.remoteErrors.push({
+        message,
+        transient: preflight.code === -1 || classifyGitError(preflight.stderr) === 'network_timeout',
+      });
       res.errors.push(message);
       continue;
     }
@@ -652,7 +665,10 @@ export async function egressCanonicalRefs(input: EgressInput): Promise<EgressRes
     } else {
       res.ok = false;
       const message = `push ${spec.remoteRef}: ${push.stderr.trim() || `exited ${push.code}`}`;
-      res.remoteErrors.push({ message, transient: push.code === -1 });
+      res.remoteErrors.push({
+        message,
+        transient: push.code === -1 || classifyGitError(push.stderr) === 'network_timeout',
+      });
       res.errors.push(message);
     }
     }
@@ -688,7 +704,10 @@ export async function egressCanonicalRefs(input: EgressInput): Promise<EgressRes
     else {
       const message = `push ${tagRef}: ${push.stderr.trim() || `exited ${push.code}`}`;
       res.tagsRejected.push({ name: tag.name, reason: message.split('\n')[0] ?? message });
-      res.remoteErrors.push({ message, transient: push.code === -1 });
+      res.remoteErrors.push({
+        message,
+        transient: push.code === -1 || classifyGitError(push.stderr) === 'network_timeout',
+      });
     }
   }
 
