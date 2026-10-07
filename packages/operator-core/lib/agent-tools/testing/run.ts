@@ -3079,14 +3079,20 @@ export function groupDirectVitestRoutes(
   root: string,
   workspaceDirs: string[] = declaredWorkspaceDirs(root),
 ): DirectVitestRouteGroup[] {
+  // Root selection can preserve a registered symlink alias while file checkout
+  // discovery returns the physical path. Compare and route both at filesystem
+  // identity so an absolute file inside a workspace is not treated as external.
+  const routeRoot = realOrResolved(root);
   const groups = new Map<string, DirectVitestRouteGroup>();
-  const workspaceRoots = workspaceDirs.map((dir) => resolve(root, dir)).sort((a, b) => b.length - a.length);
+  const workspaceRoots = workspaceDirs
+    .map((dir) => realOrResolved(resolve(routeRoot, dir)))
+    .sort((a, b) => b.length - a.length);
 
   for (const file of files) {
-    const absolute = isAbsolute(file) ? resolve(file) : resolve(root, file);
-    const cwd = workspaceRoots.find((candidate) => isInsideRoot(candidate, absolute)) ?? root;
+    const absolute = realOrResolved(isAbsolute(file) ? resolve(file) : resolve(routeRoot, file));
+    const cwd = workspaceRoots.find((candidate) => isInsideRoot(candidate, absolute)) ?? routeRoot;
     const requested = relative(cwd, absolute).split(sep).join('/');
-    const config = directVitestLayerConfig(requested, cwd, root);
+    const config = directVitestLayerConfig(requested, cwd, routeRoot);
     const key = `${cwd}\0${config ?? ''}`;
     const group = groups.get(key) ?? { cwd, ...(config ? { config } : {}), files: [] };
     group.files.push(requested);

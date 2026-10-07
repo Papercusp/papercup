@@ -24,7 +24,7 @@ import { afterAll, beforeAll, describe, it, expect, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
 import type { ChildProcess } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
-import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
@@ -770,6 +770,30 @@ describe('groupDirectVitestRoutes (EI-21414388102126733)', () => {
         cwd: join(root, 'packages/db'),
         config: 'vitest.integration.config.ts',
         files: ['src/db.integration.test.ts'],
+      },
+    ]);
+  });
+
+  it('finds the owning workspace for a real path reached through a symlinked checkout root', async () => {
+    const realRoot = await mkdtemp(join(tmpdir(), 'papercusp-testing-run-direct-symlink-real-'));
+    const aliasParent = await mkdtemp(join(tmpdir(), 'papercusp-testing-run-direct-symlink-alias-'));
+    selectorRoots.push(realRoot, aliasParent);
+    const aliasRoot = join(aliasParent, 'checkout');
+    await symlink(realRoot, aliasRoot, 'dir');
+    await mkdir(join(realRoot, '.git'));
+    await mkdir(join(realRoot, 'apps/sidecar/src'), { recursive: true });
+    await writeFile(join(realRoot, 'package.json'), JSON.stringify({ private: true, workspaces: ['apps/*'] }));
+    await writeFile(join(realRoot, 'apps/sidecar/package.json'), JSON.stringify({ name: '@example/sidecar' }));
+    await writeFile(join(realRoot, 'apps/sidecar/vitest.config.ts'), 'export default {};\n');
+    await writeFile(join(realRoot, 'apps/sidecar/src/durable-call.integration.test.ts'), 'export {};\n');
+
+    expect(groupDirectVitestRoutes(
+      [join(realRoot, 'apps/sidecar/src/durable-call.integration.test.ts')],
+      aliasRoot,
+    )).toEqual([
+      {
+        cwd: join(realRoot, 'apps/sidecar'),
+        files: ['src/durable-call.integration.test.ts'],
       },
     ]);
   });
