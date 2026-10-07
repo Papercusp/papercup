@@ -1297,6 +1297,26 @@ describe('shared base notes reach the LIVE blueprint base (recurrence guard)', (
     }
   });
 
+  it.each(['claude', 'codex', 'omp'] as const)(
+    '%s renders self-owned gate responsibility before the peer stand-down rule in both tiers',
+    async (agent) => {
+      const renders = await Promise.all([
+        renderSuPlaybook({ agent, baseSource: fileURLToPath(blueprintBase) }),
+        renderSuPlaybook({ agent, baseSource: fileURLToPath(blueprintBase), tier: 'fleet' }),
+      ]);
+
+      for (const { text } of renders) {
+        // Assert booleans so a regression does not dump the entire assembled persona.
+        expect(text.includes('Compare `gate.ownership.takenBy` with your own verified owner identity')).toBe(true);
+        expect(text.includes('Held by YOU ⇒ continue `LIVE_GATE_OPS`')).toBe(true);
+        expect(text.includes('Held by ANOTHER live agent ⇒ you are DONE')).toBe(true);
+        expect(text.includes('Never stand down merely because your own claim is held-live')).toBe(true);
+        expect(text.indexOf('Held by YOU')).toBeLessThan(text.indexOf('Held by ANOTHER'));
+        expect(/Held by a live agent ⇒ you are DONE/.test(text)).toBe(false);
+      }
+    },
+  );
+
   /**
    * THE CONTROL. Without it this suite passes even if `injectSharedBaseNotes` were changed to
    * append unconditionally — which would push the notes into minimal/test bases that are

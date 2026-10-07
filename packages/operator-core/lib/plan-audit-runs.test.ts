@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
 const h = vi.hoisted(() => ({ save: vi.fn(), engine: vi.fn(), publish: vi.fn(), sql: vi.fn() }));
 vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: h.sql }) }));
 vi.mock('./text-artifacts', () => ({ saveTextArtifact: h.save }));
@@ -35,6 +36,21 @@ describe('read-only audit run lifecycle', () => {
     h.engine.mockResolvedValue({ manifest: { rows: [{}], generatedAt: 'now' }, artifacts: { json: 'json-path' } });
     await executePlanAudit({ ...run, scope: 'workspace', planSlugs: undefined });
     expect(h.engine).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: 'test-workspace', planSlugs: undefined, includeHistorical: true }));
+  });
+  it('audit run never mutates plan lifecycle, blockers, claims or assignment', async () => {
+    h.engine.mockResolvedValueOnce({ manifest: { rows: [{}], generatedAt: 'now' }, artifacts: { json: 'json-path' } });
+    await executePlanAudit(run);
+    expect(h.publish).toHaveBeenCalledTimes(1);
+    expect(h.sql).not.toHaveBeenCalled();
+    h.engine.mockRejectedValueOnce(new Error('Unavailable evidence'));
+    await executePlanAudit({ ...run, id: 'abcdefab-abcd-4abc-8abc-abcdefabcdef' });
+    expect(h.sql).not.toHaveBeenCalled();
+    expect(h.publish).toHaveBeenCalledTimes(1);
+    expect(h.save).toHaveBeenCalledTimes(2);
+    const source = readFileSync(new URL('./plan-audit-runs.ts', import.meta.url), 'utf8');
+    expect(source.match(/saveTextArtifact\(/g)).toHaveLength(1);
+    expect(source).not.toMatch(/\b(?:INSERT\s+INTO|UPDATE\s+harness_shared|DELETE\s+FROM|MERGE\s+INTO)\b/i);
+    expect(source).not.toMatch(/registerRoutine|setPlanStatus|setPlanItemStatus|setWorkItemState|armSchedule|setSchedule/);
   });
   it('terminalizes a persisted interrupted run and refuses mismatched workspace identity', async () => {
     h.sql.mockResolvedValueOnce([{ content: JSON.stringify({ ...run, startedAt: '2020-01-01T00:00:00Z' }) }]);

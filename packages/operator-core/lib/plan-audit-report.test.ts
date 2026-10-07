@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from 'vitest';
+import legacySnapshot from './__fixtures__/plan-audit-legacy-snapshot.json';
 import { renderPlanAuditReport, type PlanAuditDocument } from './plan-audit-report';
 
 describe('shared audit report workspace', () => {
@@ -54,5 +55,24 @@ describe('shared audit report workspace', () => {
     expect((d.window as unknown as { compromised?: boolean }).compromised).toBeUndefined();
     expect(d.window.document.querySelector('#detail img')).toBeNull();
     expect(d.window.document.getElementById('detail')!.textContent).toContain(evil);
+  });
+
+  it('preserves every row and evidence value in the original localhost:39303 legacy snapshot', () => {
+    // Frozen October 5 parity manifest: every original row id, citation and
+    // saved evidence id. Private owner narratives stay in the original artifact;
+    // they are unnecessary for an identity-parity fixture in shipped source.
+    // This fixture does not query or rerun the audit.
+    const legacy = legacySnapshot as PlanAuditDocument;
+    expect(legacy.sourceSnapshotSha256).toBe('4171a584464199cb08a5b26ce9ab698f929d79b4fe2144e74a5d6d01ec56c39b');
+    expect(legacy.rows).toHaveLength(1351);
+    expect(legacy.rows.some(row => Array.isArray(row.citations) && row.citations.length > 0)).toBe(true);
+    expect(legacy.rows.some(row => Array.isArray(row.savedWorkEvidence) && row.savedWorkEvidence.length > 0)).toBe(true);
+    const html = renderPlanAuditReport(legacy);
+    const embedded = JSON.parse(html.match(/<script type="application\/json" id="audit">([^<]*)<\/script>/)![1]);
+    expect(embedded).toEqual(legacy); // all original row/citation/evidence identities
+    const representative = legacy.rows.find(row => Array.isArray(row.citations) && row.citations.length > 0)!;
+    const d = dom(legacy, '#plan=' + encodeURIComponent(String(representative.slug)));
+    expect(d.window.document.getElementById('detail')!.textContent).toContain(String(representative.slug));
+    expect(d.window.document.getElementById('detail')!.textContent).toContain(String((representative.citations as { path: string }[])[0].path));
   });
 });
