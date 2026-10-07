@@ -42,8 +42,38 @@ describe('saved spawner fault scan recipe', () => {
     expect(second.logs.mock.calls[0]?.[0]).toMatchObject({ since: '@1791349990', until: '@1791350000' });
   });
 
+  it('prefers the current next-scan boundary over historical scan-window epochs', async () => {
+    const read = checkpoint();
+    read.results[0]!.resume.nextAction.text =
+      'Previous scan from @1791200000 to @1791300000; another scan from @1791300000 to @1791343281. Next scan starts at @1791343281.';
+    const scan = run({}, read);
+    await expect(scan.result).resolves.toMatchObject({ checkpointBoundary: '@1791343281' });
+    expect(scan.logs.mock.calls[0]?.[0]).toMatchObject({ since: '@1791343281', until: '@1791350000' });
+  });
+
+  it('rejects multiple current next-scan markers before scanning', async () => {
+    const read = checkpoint();
+    read.results[0]!.resume.nextAction.text =
+      'Next scan starts at @1791343281. Next scan starts at @1791349990.';
+    const scan = run({}, read);
+    await expect(scan.result).rejects.toThrow('exactly one current next-scan marker');
+    expect(scan.logs).not.toHaveBeenCalled();
+  });
+
   it('remains runnable under the saved recipe authority rules', async () => {
     expect(await deriveRecipeAuthority(script)).toMatchObject({ unresolved: false, bound: false });
+  });
+
+  it('uses exactly the five current spawner fault markers', () => {
+    const tagList = script.match(/^const tags = (\[[^\n]+\]);$/m);
+    expect(tagList?.[1]).toBeDefined();
+    expect(JSON.parse(tagList?.[1] ?? '[]')).toEqual([
+      'spawner-socket-error',
+      'spawner-socket-peer-eof',
+      'spawner-ipc-client-fault',
+      'spawner-process-exec-fault',
+      'spawner-process-drain',
+    ]);
   });
 
   it('passes saved-recipe preflight against the registered log reader schema', async () => {
@@ -103,8 +133,9 @@ describe('saved spawner fault scan recipe', () => {
     expect(result.tagCounts).toMatchObject({ 'spawner-socket-error': 3, 'spawner-socket-peer-eof': 2 });
     expect(result.peerExec).toHaveLength(1);
     const pattern = scan.logs.mock.calls[0]?.[0] as { grep: string };
-    expect(new RegExp(pattern.grep).test('[spawner-server-error]')).toBe(true);
-    expect(new RegExp(pattern.grep).test('spawner-server-error')).toBe(false);
+    expect(new RegExp(pattern.grep).test('[spawner-process-drain]')).toBe(true);
+    expect(new RegExp(pattern.grep).test('spawner-process-drain')).toBe(false);
+    expect(new RegExp(pattern.grep).test('[spawner-server-error]')).toBe(false);
   });
 
   it.each([
