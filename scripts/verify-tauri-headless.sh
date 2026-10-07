@@ -4213,6 +4213,10 @@ fi
 
 verify_assertion_input_integrity || exit $?
 
+# Assertions that start additional runtimes must use the same frozen source as
+# the operator host, rather than loading a second version from the shared tree.
+export OPERATOR_SOURCE_ROOT
+
 # EI-22622028658305763: assertion commands are part of the isolated verifier
 # boundary too. The generated Tauri launcher already receives this exact
 # disposable identity, but the parent shell previously retained its ambient
