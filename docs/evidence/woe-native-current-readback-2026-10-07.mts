@@ -11,12 +11,17 @@ import { listRuntimeVintage, measureRuntimeVintageEnvironment } from '../../pack
 import { persistHarnessTestRunsWithIds } from '../../packages/operator-core/lib/testing-run-store';
 
 const exec = promisify(execFile);
+const runtimePort = process.env.PAPERCUSP_WOE_READBACK_PORT ?? '3170';
+if (runtimePort !== '3070' && runtimePort !== '3170') {
+  throw new Error('PAPERCUSP_WOE_READBACK_PORT must name release 3070 or staging 3170');
+}
+const runtimeUnit = `hono-host:${runtimePort}`;
 const cardId = 'EI-24713330305263301';
 const rubricRef = 'work-on-everything-stewardship-health';
 const keys = ['plan-fleet-materialization', 'steering-through-claim-rails', 'frontier-scope-sovereignty'];
 const sourceObservations: WorktreeGitSnapshot[] = [];
 async function read(tool: string, args: object) {
-  const { stdout } = await exec('ptool', ['--url=http://127.0.0.1:3170', tool, '--json', JSON.stringify(args)],
+  const { stdout } = await exec('ptool', [`--url=http://127.0.0.1:${runtimePort}`, tool, '--json', JSON.stringify(args)],
     { timeout: 45_000, maxBuffer: 256 * 1024 });
   const value = JSON.parse(stdout);
   if (value.ok === false || value._projection?.truncated) throw new Error(`${tool}: incomplete read`);
@@ -26,8 +31,8 @@ async function read(tool: string, args: object) {
 const result = await executeOperationalRun({
   filePath: 'docs/evidence/woe-native-current-readback-2026-10-07.mts',
   name: 'WOE current real-card readback with native operational runtime witnesses',
-  command: ['npx', 'tsx', 'docs/evidence/woe-native-current-readback-2026-10-07.mts'],
-  framework: 'operational', runtimeUnits: ['hono-host:3170'],
+  command: ['env', `PAPERCUSP_WOE_READBACK_PORT=${runtimePort}`, 'npx', 'tsx', 'docs/evidence/woe-native-current-readback-2026-10-07.mts'],
+  framework: 'operational', runtimeUnits: [runtimeUnit],
   run: async () => {
     const rubricResponse = await read('rubrics:get', { rubricRef, detail: 'summary' });
     const rubric = rubricResponse.results?.[0]?.rubric;
