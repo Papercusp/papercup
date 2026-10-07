@@ -1,6 +1,7 @@
 /** @vitest-environment jsdom */
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { useEffect, useState, type ReactNode } from 'react';
 import { AccountProductTutorial, productTutorialDestination, validProductTutorialRecord, type ProductTutorialAccount } from './product-tutorial';
 
 const account: ProductTutorialAccount = { tenantId: 'org', userId: 'user', sessionId: 'session', workspaceId: null };
@@ -36,6 +37,23 @@ describe('account product guide entry', () => {
     expect(productTutorialDestination('/billing', null)).toBe('/billing');
     expect(productTutorialDestination('/?panel=account', 'selected')).toBe('/?panel=account');
     expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+  it('keeps Resume focused when the destination replaces its startup wrapper after guide exit', async () => {
+    const fetcher = vi.fn().mockResolvedValueOnce(response(record()))
+      .mockResolvedValueOnce(response(record({ revision: 1, disposition: 'skipped' })));
+    vi.stubGlobal('fetch', fetcher);
+    function Destination({ controls }: { controls: ReactNode }) {
+      const [mounted, setMounted] = useState(false);
+      useEffect(() => setMounted(true), []);
+      return <section key={String(mounted)} data-mounted={mounted}>{controls}</section>;
+    }
+    render(<AccountProductTutorial account={account}>{controls => <Destination controls={controls} />}</AccountProductTutorial>);
+    await screen.findByRole('heading', { name: 'Welcome to Papercusp' });
+    fireEvent.click(screen.getByRole('button', { name: 'Skip guide' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Resume product guide' }).closest('section')?.dataset.mounted).toBe('true'));
+    const resume = screen.getByRole('button', { name: 'Resume product guide' });
+    await waitFor(() => expect(document.activeElement).toBe(resume));
+    expect(fetcher).toHaveBeenCalledTimes(2);
   });
   it('keeps the paused lesson Help available beside the real product destination without a mutation', async () => {
     const fetcher = vi.fn().mockResolvedValue(response(record({ currentLessonId: 'billing', disposition: 'paused' })));

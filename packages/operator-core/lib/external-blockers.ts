@@ -2,6 +2,7 @@ import {
   readEventConditionReachability,
   type ExternalConditionReachability,
 } from './external-condition-reachability';
+import { assertHoldRegistered } from './hold-registry';
 
 export type ExternalBlockerKind = 'event' | 'gate' | 'runtime' | 'human';
 
@@ -122,6 +123,10 @@ export interface ExternalBlockerRecord {
   updatedAt: string;
   evidence?: string;
   nextVerb?: string;
+  /** Next condition check, independent of an owner's decideBy/default contract. */
+  recheckAt?: string;
+  recheckedAt?: string;
+  recheckDisposition?: 'cleared' | 'escalated';
   /** Owner-attention ledger (EI-23783029010995961): what the system WILL do if the
    *  owner never answers this human ask — the load-bearing disclosure that turns
    *  "waiting forever, silently" into "proceeding as X unless you say otherwise".
@@ -248,6 +253,7 @@ export function updateExternalBlockerHistory(
     summary?: string;
     evidence?: string;
     nextVerb?: string;
+    recheckAt?: string;
     defaultIfUnanswered?: string;
     decideBy?: string;
     /** WI-10005010: typed executable default; see {@link OWNER_ASK_DEFAULT_ACTIONS}. */
@@ -277,6 +283,21 @@ export function updateExternalBlockerHistory(
     return { blockers, changed: true };
   }
 
+  const current = index === undefined ? undefined : blockers[index];
+  const capability = input.capability ?? current?.capability ?? inferExternalBlockerCapability(input.kind);
+  const hold = assertHoldRegistered('blocker', capability);
+  const nextVerb = input.nextVerb?.trim() || current?.nextVerb?.trim() ||
+    `${externalBlockerCapabilityPolicy(capability).recommendedAction} Condition: ${input.ref}.`;
+  const requestedRecheck = input.recheckAt?.trim();
+  if (requestedRecheck && !Number.isFinite(Date.parse(requestedRecheck))) {
+    throw new Error('recheckAt must be a parseable timestamp');
+  }
+  const recheckAt = requestedRecheck
+    ? new Date(requestedRecheck).toISOString()
+    : current?.recheckAt && Number.isFinite(Date.parse(current.recheckAt))
+      ? current.recheckAt
+      : new Date(Date.parse(now) + hold.recheckSec * 1000).toISOString();
+
   if (index !== undefined) {
     const current = blockers[index]!;
     // A re-declared deadline or typed action is a NEW contract: drop the applied
@@ -292,7 +313,8 @@ export function updateExternalBlockerHistory(
       summary: input.summary?.trim() || current.summary,
       updatedAt: now,
       ...(input.evidence ? { evidence: input.evidence } : {}),
-      ...(input.nextVerb ? { nextVerb: input.nextVerb } : {}),
+      nextVerb,
+      recheckAt,
       ...(input.defaultIfUnanswered?.trim() ? { defaultIfUnanswered: input.defaultIfUnanswered.trim() } : {}),
       ...(input.decideBy?.trim() ? { decideBy: input.decideBy.trim() } : {}),
     };
@@ -310,7 +332,8 @@ export function updateExternalBlockerHistory(
     createdBy: actor,
     updatedAt: now,
     ...(input.evidence ? { evidence: input.evidence } : {}),
-    ...(input.nextVerb ? { nextVerb: input.nextVerb } : {}),
+    nextVerb,
+    recheckAt,
     ...(input.defaultIfUnanswered?.trim() ? { defaultIfUnanswered: input.defaultIfUnanswered.trim() } : {}),
     ...(input.decideBy?.trim() ? { decideBy: input.decideBy.trim() } : {}),
     ...(input.defaultAction ? { defaultAction: input.defaultAction } : {}),

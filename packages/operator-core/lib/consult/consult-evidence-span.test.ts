@@ -37,6 +37,7 @@ function depsFor(input: { ranks: AllowedExpertModel[]; resolved?: string[] }) {
   const resolved: unknown[] = [];
   let minted = 0;
   const deps: Partial<ConsultDispatchDeps> = {
+    isConsultOpen: async () => true,
     resolveResumeTarget: vi.fn(async (ref: { agentId?: string | null; sessionId?: string | null }) => {
       resolved.push(ref);
       const sessionId = ref.sessionId ?? input.resolved?.[0] ?? 'latest-session';

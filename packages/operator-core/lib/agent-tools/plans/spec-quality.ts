@@ -209,9 +209,11 @@ export function specQualitySubjectRef(planSlug: string, classRef: PlanClassRubri
  * the list through this one function so the rule cannot drift between them.
  */
 export function specQualityPlanItemIds(
-  items: ReadonlyArray<{ id: string; storedStatus?: string | null }>,
+  items: ReadonlyArray<{ id: string; storedStatus?: string | null; status?: string | null }>,
 ): string[] {
-  return items.filter((item) => item.storedStatus !== 'dropped').map((item) => item.id);
+  // The canonical derived index stores `status`; the Markdown parser exposes
+  // `storedStatus`. Preflight, locked approval and promotion must agree on both.
+  return items.filter((item) => (item.storedStatus ?? item.status) !== 'dropped').map((item) => item.id);
 }
 
 /**

@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import type { SpecClauseRevision } from './spec-clauses-store';
 import { specBehaviorNonAtomicReason } from './spec-clause-compiler';
-import { evaluatePlanSpecQuality } from './spec-quality';
+import { evaluatePlanSpecQuality, specQualityPlanItemIds } from './spec-quality';
+import { deriveIndexFromContent } from './derive-index';
+import { parsePlan } from './parser';
 import evaluateSpecQualityTool from './evaluate-spec-quality';
 import startPlanTool from './start';
 
@@ -33,6 +35,27 @@ function clause(over: Partial<SpecClauseRevision> = {}): SpecClauseRevision {
 }
 
 describe('evaluatePlanSpecQuality', () => {
+  it('uses the same quality evidence for the stored index and locked Markdown with dropped items', () => {
+    const markdown = [
+      '---', 'title: Quality plan', 'status: ready', '---', '## Items',
+      '- **P-001** `todo` Accept an event',
+      '- **P-002** `done` Reject an invalid event',
+      '- **P-003** `dropped` Abandoned editorial work',
+    ].join('\n');
+    const clauses = [
+      clause(),
+      clause({ specId: 'SPEC-002-01', sourceValId: 'VAL-002-01', planItemId: 'P-002', behavior: 'POST /events returns 400 for an invalid request' }),
+    ];
+    const input = { planSlug: 'quality-plan', harnessSlug: 'papercusp', classRef: 'plan-class-feature-ship' as const, clauses };
+    const fromIndex = evaluatePlanSpecQuality({ ...input, planItemIds: specQualityPlanItemIds(deriveIndexFromContent(markdown).items) });
+    const fromMarkdown = evaluatePlanSpecQuality({ ...input, planItemIds: specQualityPlanItemIds(parsePlan(markdown).items) });
+
+    expect(fromIndex.planItemCount).toBe(2);
+    expect(fromIndex.verdict).toBe('pass');
+    expect(fromIndex.ratings).toEqual(fromMarkdown.ratings);
+    expect(fromIndex.scorecardDraft.subject).toEqual(fromMarkdown.scorecardDraft.subject);
+  });
+
   it('passes a fully covered feature plan and pins an exact specSetHash subject', () => {
     const result = evaluatePlanSpecQuality({
       planSlug: 'quality-plan',
@@ -176,7 +199,7 @@ describe('evaluatePlanSpecQuality', () => {
       // WI-10006862: the rating states the population it covers, so a grader can tell the
       // excluded projections were not judged atomic.
       expect(atomicity.evidence).toContain(
-        'Coverage: 3 of 6 behavioral clause(s) evaluated; 3 sourceBar-pinned BAR projection(s) excluded',
+        'Coverage: 3 of 6 active behavioral clause(s) evaluated; 3 active sourceBar-pinned BAR projection(s) excluded',
       );
       expect(atomicity.evidence).toContain(
         'new or meaning-changed canonical BAR projections are checked on rubric writes; unchanged legacy BARs are not re-certified here',
@@ -278,7 +301,7 @@ describe('evaluatePlanSpecQuality', () => {
 
     const atomicity = result.ratings['atomic-observable-behavior'];
     expect(atomicity.rating).toBe('not-applicable');
-    expect(atomicity.evidence).toContain('Only AUTO-BAR projections are present');
+    expect(atomicity.evidence).toContain('Only sourceBar-pinned projections are present');
     expect(atomicity.evidence).toContain('not independent item contracts');
     expect(result.ratings['item-contract-coverage'].rating).toBe('fail');
     expect(result.details.uncoveredPlanItemIds).toEqual(['P-001']);
@@ -591,7 +614,7 @@ describe('evaluatePlanSpecQuality', () => {
     expect(result.ratings['atomic-observable-behavior'].rating).toBe('not-applicable');
     expect(result.ratings.falsifiability.rating).toBe('not-applicable');
     expect(result.ratings['implementation-independence'].rating).toBe('not-applicable');
-    expect(result.ratings['atomic-observable-behavior'].evidence).toContain('0 behavioral clause(s)');
+    expect(result.ratings['atomic-observable-behavior'].evidence).toContain('0 active behavioral clause(s)');
     expect(result.ratings.falsifiability.evidence).toContain('0 behavioral clause(s)');
     expect(result.ratings['implementation-independence'].evidence).toContain('0 behavioral clause(s)');
     expect(result.wouldBlock).toEqual(expect.arrayContaining(['item-contract-coverage', 'plan-class-specialization']));

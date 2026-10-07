@@ -65,6 +65,7 @@ type BlockerInput = {
   summary?: string;
   evidence?: string;
   nextVerb?: string;
+  recheckAt?: string;
   defaultIfUnanswered?: string;
   decideBy?: string;
   defaultAction?: OwnerAskDefaultAction;
@@ -112,6 +113,8 @@ const fields = {
   summary: z.string().max(1000).optional(),
   evidence: z.string().max(4000).optional(),
   nextVerb: z.string().max(300).optional(),
+  recheckAt: z.string().datetime({ offset: true }).optional()
+    .describe('Next condition re-check. Omit to use the existing hold registry cadence; this does not authorize clearing on expiry.'),
   defaultIfUnanswered: z.string().max(500).optional(),
   decideBy: z.string().max(40).optional(),
   defaultAction: z
@@ -314,6 +317,7 @@ export default defineTool({
       summary: z.string().max(1000).optional(),
       evidence: z.string().max(4000).optional(),
       nextVerb: z.string().max(300).optional(),
+      recheckAt: fields.recheckAt,
       defaultIfUnanswered: z.string().max(500).optional(),
       decideBy: z.string().max(40).optional(),
       defaultAction: fields.defaultAction,
@@ -394,6 +398,7 @@ export default defineTool({
             summary: args.summary,
             evidence: args.evidence,
             nextVerb: args.nextVerb,
+            recheckAt: args.recheckAt,
             defaultIfUnanswered: args.defaultIfUnanswered,
             decideBy: args.decideBy,
             defaultAction: args.defaultAction,
@@ -647,6 +652,7 @@ export default defineTool({
             summary: input.summary,
             evidence: input.evidence,
             nextVerb: input.nextVerb,
+            recheckAt: input.recheckAt,
             defaultIfUnanswered: input.defaultIfUnanswered,
             decideBy: input.decideBy,
             defaultAction: input.defaultAction,

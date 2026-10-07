@@ -683,13 +683,26 @@ export function listToolsWithLocalRetry(client: any, params?: {}, { timeoutMs, m
  * @param {string} operatorUrl
  * @param {{workspace?: string, harness?: string, client?: string, contextTier?: string, env?: EnvironmentMap}} [options]
  */
-export function buildMcpUrl(operatorUrl: string, { workspace, harness, client, contextTier, env, }?: {
+export function buildMcpUrl(operatorUrl: string, { workspace, harness, client, contextTier, nativeSessionOverride, env, }?: {
     workspace?: string;
     harness?: string;
     client?: string;
     contextTier?: string;
     env?: EnvironmentMap;
 }): URL;
+/** A foreign native-session refusal is emitted before the tool dispatcher runs. */
+export function isForeignNativeSessionRejection(result: any): any;
+/** Retry only an inherited Codex claim; an explicit launcher binding stays authoritative. */
+export function shouldRetryWithoutNativeSession(result: any, { client, explicitNativeSession, env, }?: {
+    explicitNativeSession?: boolean | undefined;
+    env?: NodeJS.ProcessEnv | undefined;
+}): any;
+/** Retry read-only catalog discovery when an inherited native-session claim is foreign. */
+export function listToolsWithNativeSessionFallback(initialClient: any, { discoverTools, reconnectWithoutNativeSession, client, explicitNativeSession, env, closeClient, }?: {
+    explicitNativeSession?: boolean | undefined;
+    env?: NodeJS.ProcessEnv | undefined;
+    closeClient?: typeof closeClientQuietly | undefined;
+}): Promise<any>;
 /**
  * EI-21860372620642128 — install:safe reifies shared node_modules in place
  * while holding a repo-keyed fs mutex. A ptool import can race that rewrite;
@@ -918,4 +931,5 @@ export type ToolCatalogEntry = {
  */
 declare function readSpilledPayload(path: any): Promise<any>;
 import { existsSync } from 'node:fs';
+declare function closeClientQuietly(client: any): Promise<void>;
 export {};

@@ -118,6 +118,60 @@ function fakeDeps(payloads: Record<string, unknown>) {
 }
 
 describe('sweepWorkItemBlockerDefaults', () => {
+  it('clears only a proved fired event at its re-check date and preserves history', async () => {
+    const event = blocker({ kind: 'event', capability: 'live-dependency', ref: 'event:ready',
+      decideBy: undefined, defaultAction: undefined, recheckAt: PAST });
+    const { deps, writes, restores } = fakeDeps({ 'WI-event': { externalBlockers: [event] } });
+    deps.resolveCondition = async () => ({ verdict: 'reachable', basis: 'fired', authoritative: true,
+      evidence: 'current generation fired', checkedAt: NOW.toISOString() });
+    deps.escalate = vi.fn(async () => undefined);
+    const out = await sweepWorkItemBlockerDefaults({ now: NOW, deps });
+    expect(out.rechecked).toEqual({ cleared: 1, escalated: 0 });
+    expect(writes[0]?.blockers[0]).toMatchObject({ status: 'cleared', recheckDisposition: 'cleared',
+      recheckedAt: NOW.toISOString(), evidence: 'current generation fired' });
+    expect(restores).toHaveLength(1);
+    expect(deps.escalate).not.toHaveBeenCalled();
+  });
+
+  it.each(['event', 'runtime', 'human'] as const)('escalates a due %s condition without treating expiry as clearance', async (kind) => {
+    const due = blocker({ kind, decideBy: undefined, defaultAction: undefined, recheckAt: PAST });
+    const { deps, writes, restores } = fakeDeps({ 'WI-due': { externalBlockers: [due] } });
+    deps.resolveCondition = async () => ({ verdict: 'reachable', basis: kind === 'event' ? 'live-resolver' : 'fired',
+      authoritative: true, evidence: 'still requires named action', checkedAt: NOW.toISOString() });
+    deps.escalate = vi.fn(async () => undefined);
+    const out = await sweepWorkItemBlockerDefaults({ now: NOW, deps });
+    expect(out.rechecked).toEqual({ cleared: 0, escalated: 1 });
+    expect(writes[0]?.blockers[0]).toMatchObject({ status: 'active', recheckDisposition: 'escalated', recheckAt: '2026-10-03T12:00:00.000Z' });
+    expect(restores).toHaveLength(0);
+    expect(deps.escalate).toHaveBeenCalledOnce();
+  });
+
+  it('does not escalate or restore when a concurrent blocker writer wins the history fence', async () => {
+    const { deps } = fakeDeps({ 'WI-race': { externalBlockers: [blocker({ decideBy: undefined, recheckAt: PAST })] } });
+    deps.writeBlockers = vi.fn(async () => false);
+    deps.escalate = vi.fn(async () => undefined);
+    deps.restoreLifecycle = vi.fn(async () => undefined);
+    const out = await sweepWorkItemBlockerDefaults({ now: NOW, deps });
+    expect(out.skipped['lost-race']).toBe(1);
+    expect(deps.escalate).not.toHaveBeenCalled();
+    expect(deps.restoreLifecycle).not.toHaveBeenCalled();
+  });
+
+  it('keeps a failed escalation due until delivery succeeds', async () => {
+    const { deps } = fakeDeps({ 'WI-retry': { externalBlockers: [blocker({ decideBy: undefined, recheckAt: PAST })] } });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    deps.escalate = vi.fn().mockRejectedValueOnce(new Error('delivery unavailable')).mockResolvedValue(undefined);
+    const first = await sweepWorkItemBlockerDefaults({ now: NOW, deps });
+    expect(first.skipped['read-failed']).toBe(1);
+    const pending = readExternalBlockers((await deps.readPayload('WI-retry', 'h'))?.payload)[0];
+    expect(pending?.recheckAt).toBe(PAST);
+    expect(pending?.recheckDisposition).toBeUndefined();
+    const second = await sweepWorkItemBlockerDefaults({ now: NOW, deps });
+    expect(second.rechecked.escalated).toBe(1);
+    expect(readExternalBlockers((await deps.readPayload('WI-retry', 'h'))?.payload)[0]?.recheckAt).toBe(FUTURE);
+    warn.mockRestore();
+  });
+
   it('applies a past-deadline typed default exactly once across repeated sweeps and restores the lifecycle', async () => {
     const { deps, writes, restores } = fakeDeps({ 'WI-1': { externalBlockers: [blocker()] } });
     const first = await sweepWorkItemBlockerDefaults({ now: NOW, deps });

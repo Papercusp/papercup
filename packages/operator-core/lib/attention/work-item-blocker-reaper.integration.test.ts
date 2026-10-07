@@ -114,6 +114,39 @@ beforeEach(async () => {
 afterEach(() => setFlagOverridesForTest({}));
 
 describe('sweepWorkItemBlockerDefaults against the real work-items store', () => {
+  it('atomically refuses stale blocker history without losing unrelated payload fields', async () => {
+    const original = ask({ defaultAction: undefined, decideBy: undefined, recheckAt: PAST });
+    await seedParkedIssue('EI-recheck-cas', [original]);
+    await wi.mergeWorkItemPayload('EI-recheck-cas', { sibling: 'retained' }, { harness: H });
+    const first = await rowOf('EI-recheck-cas');
+    const added = ask({ ref: 'ask-2', defaultAction: undefined, decideBy: undefined });
+    await wi.mergeWorkItemPayload('EI-recheck-cas', { externalBlockers: [original, added] }, { harness: H });
+    expect(await defaultBlockerReapDeps.writeBlockers('EI-recheck-cas', H, [], first.blockers)).toBe(false);
+    const fresh = await rowOf('EI-recheck-cas');
+    expect(fresh.blockers).toHaveLength(2);
+    expect(await defaultBlockerReapDeps.writeBlockers('EI-recheck-cas', H, fresh.blockers, fresh.blockers)).toBe(true);
+    expect((await rowOf('EI-recheck-cas')).payload.sibling).toBe('retained');
+  });
+
+  it('finds a due external event and restores its issue only after fired-condition proof', async () => {
+    const event = ask({ kind: 'event', capability: 'live-dependency', ref: 'event:ready',
+      decideBy: undefined, defaultAction: undefined, recheckAt: PAST });
+    await db.sql`INSERT INTO harness_shared.work_items
+      (harness_slug, feature_id, item_kind, title, status, workspace_id, created_ts, updated_ts, payload)
+      VALUES (${H}, 'EI-recheck-event', 'bug', 'event wait', 'blocked', ${WS}, 100, 0,
+        ${JSON.stringify({ externalBlockers: [event], sibling: 'retained' })}::text::jsonb)`;
+    expect((await defaultBlockerReapDeps.listCandidates(20)).map((r) => r.id)).toContain('EI-recheck-event');
+    const result = await sweepWorkItemBlockerDefaults({ deps: { ...defaultBlockerReapDeps,
+      resolveCondition: async () => ({ verdict: 'reachable', basis: 'fired', authoritative: true,
+        evidence: 'current event generation fired', checkedAt: new Date().toISOString() }) } });
+    expect(result.rechecked.cleared).toBe(1);
+    const after = await rowOf('EI-recheck-event');
+    expect(after.status).toBe('open');
+    expect(after.payload.sibling).toBe('retained');
+    expect(after.blockers[0]).toMatchObject({ status: 'cleared', recheckDisposition: 'cleared' });
+    expect((await sweepWorkItemBlockerDefaults()).rechecked.cleared).toBe(0);
+  });
+
   it('does not select settled legacy features even when they retain a due owner blocker', async () => {
     // ExternalBlockerRecord is an interface (no index signature), so it is not structurally a
     // postgres JSONValue; the cast mirrors the repo-wide sql.json idiom for typed records.

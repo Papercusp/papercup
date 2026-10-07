@@ -79,6 +79,7 @@ registerSystemAction('gate-watcher-tick', async (ctx: SystemActionCtx) => {
       console.log(
         `[blocker-default-reaper] examined ${reaped.examined} item(s) → ${reaped.applied.stay_parked} stay_parked, ` +
           `${reaped.applied.release_to_agents} release_to_agents; skipped ${JSON.stringify(reaped.skipped)}` +
+          `; re-checks ${reaped.rechecked.cleared} cleared / ${reaped.rechecked.escalated} escalated` +
           (reaped.truncatedByLimit ? ' — TRUNCATED BY LIMIT, more remain' : ''),
       );
     }

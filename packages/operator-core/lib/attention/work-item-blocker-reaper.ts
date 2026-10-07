@@ -27,6 +27,7 @@ import {
   applyBlockerDefaultToHistory,
   decideBlockerDefault,
   readExternalBlockers,
+  updateExternalBlockerHistory,
   type BlockerDefaultSkipReason,
   type ExternalBlockerRecord,
   type OwnerAskDefaultAction,
@@ -37,8 +38,11 @@ import {
   setWorkItemClaimHold,
   setWorkItemStateWithAliasInfo,
 } from '../work-items';
-import { hasActiveStrictHumanAsk } from '../hold-registry';
+import { assertHoldRegistered, hasActiveStrictHumanAsk } from '../hold-registry';
 import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
+import { readEventConditionReachability, type ExternalConditionReachability } from '../external-condition-reachability';
+import { openEscalation } from '../agent-tools/coordination/escalations';
+import { activeWorkspaceId } from '../workspace-registry';
 
 export const BLOCKER_DEFAULT_REAPER_ACTOR = 'system:blocker-default-reaper';
 
@@ -52,7 +56,9 @@ export interface BlockerReapDeps {
   listCandidates(limit: number): Promise<BlockerReapCandidate[]>;
   /** Fresh read so the apply is compare-and-set against CURRENT blocker history. */
   readPayload(id: string, harness: string): Promise<{ payload: unknown; family?: string; state?: string } | null>;
-  writeBlockers(id: string, harness: string, blockers: ExternalBlockerRecord[]): Promise<boolean>;
+  writeBlockers(id: string, harness: string, blockers: ExternalBlockerRecord[], expected?: unknown): Promise<boolean>;
+  resolveCondition?(blocker: ExternalBlockerRecord): Promise<ExternalConditionReachability>;
+  escalate?(id: string, harness: string, blocker: ExternalBlockerRecord): Promise<void>;
   /** Return the item to the claimable pool (or the right parked state) after a release. */
   restoreLifecycle(args: {
     id: string;
@@ -66,6 +72,7 @@ export interface BlockerReapDeps {
 export interface BlockerSweepResult {
   examined: number;
   applied: Record<OwnerAskDefaultAction, number>;
+  rechecked: { cleared: number; escalated: number };
   skipped: Partial<Record<BlockerDefaultSkipReason | 'lost-race' | 'read-failed', number>>;
   truncatedByLimit: boolean;
 }
@@ -84,9 +91,10 @@ export const defaultBlockerReapDeps: BlockerReapDeps = {
          AND jsonb_typeof(w.payload->'externalBlockers') = 'array'
          AND EXISTS (
                SELECT 1 FROM jsonb_array_elements(w.payload->'externalBlockers') b
-                WHERE b->>'kind' = 'human' AND b->>'status' = 'active'
-                  AND b->>'decideBy' IS NOT NULL AND b->>'defaultAction' IS NOT NULL
-                  AND b->>'defaultAppliedAt' IS NULL)
+                WHERE b->>'status' = 'active' AND (
+                  (b->>'kind' = 'human' AND b->>'decideBy' IS NOT NULL
+                    AND b->>'defaultAction' IS NOT NULL AND b->>'defaultAppliedAt' IS NULL)
+                  OR b->>'recheckAt' <= ${new Date().toISOString()}))
        ORDER BY w.feature_id
        LIMIT ${limit}
     `;
@@ -96,8 +104,38 @@ export const defaultBlockerReapDeps: BlockerReapDeps = {
     const wi = await getWorkItem(id, harness);
     return wi ? { payload: wi.payload, family: wi.family, state: wi.state } : null;
   },
-  async writeBlockers(id, harness, blockers) {
-    return (await mergeWorkItemPayload(id, { externalBlockers: blockers }, { harness })) !== null;
+  async writeBlockers(id, harness, blockers, expected) {
+    if (expected === undefined) {
+      return (await mergeWorkItemPayload(id, { externalBlockers: blockers }, { harness })) !== null;
+    }
+    // Compare the RAW history, preserving unknown/legacy fields in the fence.
+    // A fresh read alone does not stop a concurrent set/clear from being overwritten.
+    const { sql } = getOrgPg();
+    const rows = await sql`
+      UPDATE harness_shared.work_items
+         SET payload = jsonb_set(COALESCE(payload, '{}'::jsonb), '{externalBlockers}', ${JSON.stringify(blockers)}::text::jsonb),
+             updated_ts = ${Date.now()}
+       WHERE workspace_id = ${activeWorkspaceId()} AND harness_slug = ${harness} AND feature_id = ${id}
+         AND NOT (status = ANY(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[]))
+         AND COALESCE(payload->'externalBlockers', '[]'::jsonb) = ${JSON.stringify(expected)}::text::jsonb
+      RETURNING feature_id`;
+    return rows.length > 0;
+  },
+  async resolveCondition(blocker) {
+    if (blocker.kind === 'event' || blocker.kind === 'gate') return readEventConditionReachability(blocker.ref);
+    return { verdict: 'unknown', basis: 'unmeasured', authoritative: false,
+      evidence: 'Runtime and owner capabilities require the named next action.', checkedAt: new Date().toISOString() };
+  },
+  async escalate(id, harness, blocker) {
+    await openEscalation({ ownerId: BLOCKER_DEFAULT_REAPER_ACTOR, ownerLabel: 'system · blocker reaper',
+      source: 'principal', workspaceId: activeWorkspaceId(), userId: null }, {
+      severity: 'advisory', summary: `${id}: blocker ${blocker.ref} reached its re-check date and remains active.`,
+      body: `Condition: ${blocker.kind}:${blocker.ref}. Next action: ${blocker.nextVerb}. ` +
+        `Re-check was due ${blocker.recheckAt}; ${blocker.reachability?.evidence ?? 'no condition completion was proved'}. ` +
+        'Expiry does not grant authority or prove that the condition cleared.',
+      harness_slug: harness,
+      meta: { subjectSignature: `blocker-recheck:${harness}:${id}:${blocker.kind}:${blocker.ref}` },
+    });
   },
   // Mirrors work_items:set_blocker's lifecycle restore branch-for-branch: lifecycle
   // follows the blockers that REMAIN, never the shape of this request.
@@ -148,6 +186,7 @@ export async function sweepWorkItemBlockerDefaults(opts?: {
   const result: BlockerSweepResult = {
     examined: batch.length,
     applied: { stay_parked: 0, release_to_agents: 0 },
+    rechecked: { cleared: 0, escalated: 0 },
     skipped: {},
     truncatedByLimit,
   };
@@ -156,6 +195,57 @@ export async function sweepWorkItemBlockerDefaults(opts?: {
     for (const blocker of readExternalBlockers(row.payload)) {
       const decision = decideBlockerDefault(blocker, now);
       if (!decision.apply) {
+        const dueAt = blocker.recheckAt ? Date.parse(blocker.recheckAt) : NaN;
+        if (blocker.status === 'active' && Number.isFinite(dueAt) && dueAt <= now.getTime()) {
+          try {
+            const fresh = await deps.readPayload(row.id, row.harness);
+            if (!fresh) { bump(result, 'read-failed'); continue; }
+            const current = readExternalBlockers(fresh.payload).find((b) => b.kind === blocker.kind &&
+              b.ref === blocker.ref && b.status === 'active' && b.recheckAt === blocker.recheckAt);
+            if (!current) { bump(result, 'lost-race'); continue; }
+            const reachability = await deps.resolveCondition?.(current);
+            const cleared = (current.kind === 'event' || current.kind === 'gate') &&
+              reachability?.authoritative === true && reachability.basis === 'fired';
+            if (opts?.dryRun) { result.rechecked[cleared ? 'cleared' : 'escalated'] += 1; continue; }
+            if (!cleared && !deps.escalate) { bump(result, 'read-failed'); continue; }
+            const history = updateExternalBlockerHistory(fresh.payload, {
+              kind: current.kind, ref: current.ref, clear: cleared,
+              // Keep an unresolved condition DUE until its escalation is delivered.
+              // A crash or delivery failure must not silently defer it for another day.
+              recheckAt: current.recheckAt,
+              ...(cleared ? { evidence: reachability.evidence } : {}),
+            }, BLOCKER_DEFAULT_REAPER_ACTOR, now.toISOString());
+            const next = history.blockers.find((b) => b.kind === current.kind && b.ref === current.ref &&
+              b.status === (cleared ? 'cleared' : 'active'))!;
+            if (cleared) {
+              next.recheckedAt = now.toISOString();
+              next.recheckDisposition = 'cleared';
+            }
+            if (reachability) next.reachability = reachability;
+            const expected = (fresh.payload as { externalBlockers?: unknown } | null)?.externalBlockers ?? [];
+            if (!(await deps.writeBlockers(row.id, row.harness, history.blockers, expected))) {
+              bump(result, 'lost-race'); continue;
+            }
+            if (cleared) {
+              await deps.restoreLifecycle({ id: row.id, harness: row.harness, family: fresh.family,
+                state: fresh.state, remaining: history.blockers.filter((b) => b.status === 'active') });
+            } else {
+              await deps.escalate!(row.id, row.harness, { ...current, ...(reachability ? { reachability } : {}) });
+              const deliveredHistory = JSON.parse(JSON.stringify(history.blockers)) as ExternalBlockerRecord[];
+              next.recheckAt = new Date(now.getTime() + assertHoldRegistered('blocker', current.capability).recheckSec * 1000).toISOString();
+              next.recheckedAt = now.toISOString();
+              next.recheckDisposition = 'escalated';
+              if (!(await deps.writeBlockers(row.id, row.harness, history.blockers, deliveredHistory))) {
+                bump(result, 'lost-race');
+              }
+            }
+            result.rechecked[cleared ? 'cleared' : 'escalated'] += 1;
+          } catch (err) {
+            console.warn(`[blocker-recheck] ! ${row.id} ${blocker.ref}: ${err instanceof Error ? err.message : String(err)}`);
+            bump(result, 'read-failed');
+          }
+          continue;
+        }
         // not-human / not-active / no-decide-by are the NORMAL shape of most rows on a
         // multi-blocker item; counting them would drown the signal, so only report the
         // two that mean "an owner-visible deadline is not being honoured".
@@ -183,8 +273,9 @@ export async function sweepWorkItemBlockerDefaults(opts?: {
           bump(result, 'lost-race');
           continue;
         }
-        if (!(await deps.writeBlockers(row.id, row.harness, history.blockers))) {
-          bump(result, 'read-failed');
+        const expected = (fresh.payload as { externalBlockers?: unknown } | null)?.externalBlockers ?? [];
+        if (!(await deps.writeBlockers(row.id, row.harness, history.blockers, expected))) {
+          bump(result, 'lost-race');
           continue;
         }
         if (decision.action === 'release_to_agents') {
