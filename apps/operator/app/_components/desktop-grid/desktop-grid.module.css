@@ -104,7 +104,8 @@
   place-items: center;
   aspect-ratio: 4 / 3;
   overflow: hidden;
-  background: var(--bg-2);
+  /* An opaque surface keeps the placeholder's contrast independent of hover layers. */
+  background: var(--bg-raised);
   color: var(--fg-mute);
 }
 
