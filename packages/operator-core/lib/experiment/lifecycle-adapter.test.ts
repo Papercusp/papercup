@@ -112,11 +112,39 @@ describe('P-011 common candidate/evidence/decision lifecycle', () => {
         source: { status: 'accepted', model_spec: null, budget_spent_usd: null, signal_origin: 'drill' },
       });
       expect(result).toMatchObject({
-        producer: LEARNING_PRODUCERS[index], stage: 'observation', contract: null, promotionAllowed: false,
+        producer: LEARNING_PRODUCERS[index], contract: null, promotionAllowed: false,
         source: { status: 'accepted', model_spec: null, budget_spent_usd: null, signal_origin: 'drill' },
-        missing: ['candidate', 'experiment', 'evidence', 'spend', 'decision'],
       });
+      expect(result.stage).toBe(result.lifecycle.stage);
+      expect(result.lifecycle).toMatchObject({ schemaVersion: '1', producer: LEARNING_PRODUCERS[index],
+        sourceRef: `${LEARNING_PRODUCERS[index]}:source-1`, sourceHash: result.sourceHash });
+      expect(result.missing.length).toBeGreaterThan(0);
     }
+  });
+
+  it('keeps unknown producer pins and settlement explicit in a source-linked partial lifecycle', () => {
+    const result = adaptGymOutput({
+      stage: 'observation', workspaceId: 'ws-1', sourceRef: 'gym:proposal-1',
+      recordedAt: '2026-10-03T00:00:00.000Z',
+      source: { id: 'proposal-1', workspace_id: 'ws-1', status: 'pending', role: 'worker',
+        original_md: 'parent prompt', proposed_md: 'candidate prompt', created_at: '2026-10-03T00:00:00Z',
+        candidate_verdict: { candidateId: 'candidate-1', parentId: 'parent-1',
+          hashes: { variantHash: 'variant-sha', parentHash: 'parent-sha', rubricHash: 'rubric-sha',
+            taskHash: 'task-sha', codeHash: 'code-sha' },
+          gateResults: [{ gate: 'cost', status: 'pass', pass: true }] } },
+    });
+
+    expect(result).toMatchObject({ stage: 'evidence', contract: null, promotionAllowed: false,
+      lifecycle: {
+        sourceRef: 'gym:proposal-1', candidate: { status: 'partial', values: [{ id: 'candidate-1',
+          variantHash: 'variant-sha', potScope: { workspaceId: 'ws-1', potId: null } }] },
+        experiment: { status: 'partial', value: { baselineId: 'parent-1', challengerId: 'candidate-1',
+          modelHash: null, promptHash: null, taskHash: 'task-sha' } },
+        evidence: { values: [{ id: 'gym:proposal-1:cost', kind: 'cost', status: 'pass' }] },
+        spend: { status: 'unknown', value: null }, decision: { status: 'not-applicable', value: null },
+      } });
+    expect(result.missing).toContain('experiment.modelHash');
+    expect(result.missing).toContain('spend.governor reservation and settlement');
   });
 
   it('hashes the actual source consistently and excludes the previous receipt', () => {
