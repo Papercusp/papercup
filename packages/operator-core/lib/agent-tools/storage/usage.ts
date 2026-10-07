@@ -11,7 +11,7 @@ export default defineTool({
   name: 'storage:usage',
   profile: 'engineer',
   description:
-    'Live storage usage by category (PG tables grouped by federation class + on-disk stores), each with total size, an age distribution, and whether it is safe to trim. Read-only.',
+    'Live storage usage by category (PG tables grouped by federation class + on-disk stores), each with total size, an age distribution, and whether it is safe to trim. A size or aggregate is null when the bounded read could not measure every included category. Read-only.',
   capability: 'storage:read',
   guidance: {
     when: 'Inspecting what is consuming local storage, or before a trim, to see per-category size + the age distribution and which categories are federated (read-only).',
@@ -25,9 +25,9 @@ export default defineTool({
   agentRoles: ['operator'],
   args: z.object({}).optional(),
   async handler() {
-    const { computeStorageUsage } = await import('../../storage/usage');
+    const { computeStorageUsage, sumStorageUsageTotalBytes } = await import('../../storage/usage');
     const categories = await computeStorageUsage();
-    const totalBytes = categories.reduce((a, c) => a + c.totalBytes, 0);
+    const totalBytes = sumStorageUsageTotalBytes(categories);
     return { data: { ok: true, totalBytes, categories } };
   },
 });

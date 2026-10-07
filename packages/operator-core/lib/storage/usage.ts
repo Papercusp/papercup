@@ -99,16 +99,29 @@ export interface StorageUsageRow {
   trimmable: boolean;
   /** logical delete needs a VACUUM FULL to return disk (substrate_outbox). */
   bloats: boolean;
-  totalBytes: number;
+  /** null when the size could not be measured completely; zero is a real size. */
+  totalBytes: number | null;
   /** pg row estimate / disk top-level entry count. null when unknown. */
   totalRows: number | null;
   /** cumulative older-than distribution (incl. a null=total bucket). Empty for
-   *  federated categories or when the count timed out. */
+   *  federated categories or when the measurement is incomplete. */
   ageBuckets: StorageAgeBucket[];
   ageColumnType?: AgeColumnType;
   minOlderThanDays?: number;
   description: string;
   note?: string;
+}
+
+/** Sum only complete category sizes; an unknown row makes the aggregate unknown. */
+export function sumStorageUsageTotalBytes(
+  rows: readonly Pick<StorageUsageRow, 'totalBytes'>[],
+): number | null {
+  let total = 0;
+  for (const row of rows) {
+    if (row.totalBytes === null) return null;
+    total += row.totalBytes;
+  }
+  return total;
 }
 
 const IDENT = /^[a-z_][a-z0-9_]*$/;
@@ -188,7 +201,7 @@ async function computePgUsage(
     federation: cat.federation,
     trimmable: isTrimmable(cat),
     bloats: Boolean(cat.bloats),
-    totalBytes: 0,
+    totalBytes: null,
     totalRows: null,
     ageBuckets: [],
     ageColumnType: cat.ageColumnType,
@@ -245,16 +258,19 @@ async function computeDiskUsage(
   const entries = await listDiskEntriesAsync(cat, budget);
   const now = Date.now();
   const totalBytes = entries.reduce((a, e) => a + e.sizeBytes, 0);
-  const buckets: StorageAgeBucket[] = TRIM_THRESHOLD_DAYS.map((d) => {
-    const cutoff = now - d * 86400000;
-    const older = entries.filter((e) => e.mtimeMs < cutoff);
-    return {
-      olderThanDays: d,
-      rows: older.length,
-      bytes: older.reduce((a, e) => a + e.sizeBytes, 0),
-    };
-  });
-  buckets.push({ olderThanDays: null, rows: entries.length, bytes: totalBytes });
+  const complete = !budget?.truncated;
+  const buckets: StorageAgeBucket[] = complete
+    ? TRIM_THRESHOLD_DAYS.map((d) => {
+        const cutoff = now - d * 86400000;
+        const older = entries.filter((e) => e.mtimeMs < cutoff);
+        return {
+          olderThanDays: d,
+          rows: older.length,
+          bytes: older.reduce((a, e) => a + e.sizeBytes, 0),
+        };
+      })
+    : [];
+  if (complete) buckets.push({ olderThanDays: null, rows: entries.length, bytes: totalBytes });
   return {
     id: cat.id,
     label: cat.label,
@@ -262,24 +278,24 @@ async function computeDiskUsage(
     federation: cat.federation,
     trimmable: true,
     bloats: false,
-    totalBytes,
-    totalRows: entries.length,
+    totalBytes: complete ? totalBytes : null,
+    totalRows: complete ? entries.length : null,
     ageBuckets: buckets,
     minOlderThanDays: cat.minOlderThanDays,
     description: cat.description,
-    // Sizes are partial when the shared disk-walk budget was exhausted (EI-6045).
+    // The traversal may have partial entries, but an incomplete total is null.
     note: budget?.truncated ? `disk sizes are partial (sizing budget exceeded on a large store)` : undefined,
   };
 }
 
 /** Compute usage for every category. Sequential (gentle on the DB); a failing
- *  category degrades to size-only with a note rather than failing the page. */
+ *  category yields an explicit unknown size and note rather than failing the page. */
 export async function computeStorageUsage(
   opts: { sizesOnly?: boolean; offReadPath?: boolean; deadlineMs?: number } = {},
 ): Promise<StorageUsageRow[]> {
   const { getOrgPg } = await import('@papercusp/db-org');
   const sql = getOrgPg().sql as unknown as Sql;
-  const out: StorageUsageRow[] = [];
+  const out = new Map<string, StorageUsageRow>();
   // One shared wall-clock budget spans catalog sizing, age distributions, and
   // disk sizing. Previously the per-query PG caps and disk cap were independent,
   // so seven sequential age scans could consume the entire code:run foreground
@@ -287,20 +303,27 @@ export async function computeStorageUsage(
   // remain in the response with an explicit note.
   const budgetMs = opts.offReadPath ? STORAGE_PRECOMPUTE_BUDGET_MS : STORAGE_READ_BUDGET_MS;
   const diskBudget: DiskWalkBudget = { deadlineMs: opts.deadlineMs ?? Date.now() + budgetMs };
-  for (const cat of STORAGE_CATEGORIES) {
+  // Scratch is the direct read's most time-sensitive local pressure signal.
+  // Earlier sequential PG catalog/age queries could consume the shared budget
+  // before this category was reached. Size it first, then preserve the declared
+  // category order in the returned rows.
+  const priority = (cat: StorageCategory): number =>
+    cat.id === 'scratch' ? 0 : cat.kind === 'disk' ? 1 : 2;
+  const executionOrder = [...STORAGE_CATEGORIES].sort((a, b) => priority(a) - priority(b));
+  for (const cat of executionOrder) {
     if (cat.kind === 'pg') {
-      out.push(await computePgUsage(sql, cat, { sizesOnly: opts.sizesOnly, budget: diskBudget }));
+      out.set(cat.id, await computePgUsage(sql, cat, { sizesOnly: opts.sizesOnly, budget: diskBudget }));
     } else {
       if (diskBudget.deadlineMs <= Date.now()) {
         diskBudget.truncated = true;
-        out.push({
+        out.set(cat.id, {
           id: cat.id,
           label: cat.label,
           kind: 'disk',
           federation: cat.federation,
           trimmable: true,
           bloats: false,
-          totalBytes: 0,
+          totalBytes: null,
           totalRows: null,
           ageBuckets: [],
           minOlderThanDays: cat.minOlderThanDays,
@@ -310,16 +333,16 @@ export async function computeStorageUsage(
         continue;
       }
       try {
-        out.push(await computeDiskUsage(cat, diskBudget));
+        out.set(cat.id, await computeDiskUsage(cat, diskBudget));
       } catch (err) {
-        out.push({
+        out.set(cat.id, {
           id: cat.id,
           label: cat.label,
           kind: 'disk',
           federation: cat.federation,
           trimmable: true,
           bloats: false,
-          totalBytes: 0,
+          totalBytes: null,
           totalRows: null,
           ageBuckets: [],
           minOlderThanDays: cat.minOlderThanDays,
@@ -329,5 +352,5 @@ export async function computeStorageUsage(
       }
     }
   }
-  return out;
+  return STORAGE_CATEGORIES.map((cat) => out.get(cat.id)!);
 }

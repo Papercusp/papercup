@@ -39,7 +39,7 @@ vi.mock('./disk', () => ({
   listDiskEntriesAsync: () => Promise.resolve(h.diskEntries),
 }));
 
-import { computeStorageUsage, TRIM_THRESHOLD_DAYS } from './usage';
+import { computeStorageUsage, sumStorageUsageTotalBytes, TRIM_THRESHOLD_DAYS } from './usage';
 import { STORAGE_CATEGORIES } from './categories';
 
 beforeEach(() => {
@@ -90,12 +90,31 @@ describe('computeStorageUsage', () => {
     expect(b365.bytes).toBe(700);
   });
 
+  it('prioritizes scratch before PG reads can exhaust the shared deadline and preserves output order', async () => {
+    const clock = vi.spyOn(Date, 'now');
+    clock.mockReturnValueOnce(0).mockReturnValueOnce(1).mockReturnValue(100);
+    try {
+      const rows = await computeStorageUsage({ deadlineMs: 50 });
+      expect(rows.find((r) => r.id === 'scratch')?.totalBytes).toBe(1000);
+      expect(rows.find((r) => r.kind === 'pg')?.totalBytes).toBeNull();
+      expect(rows.map((r) => r.id)).toEqual(STORAGE_CATEGORIES.map((r) => r.id));
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
   it('uses one aggregate deadline and preserves partial rows when it is already exhausted', async () => {
     const rows = await computeStorageUsage({ deadlineMs: Date.now() - 1 });
 
     expect(rows).toHaveLength(STORAGE_CATEGORIES.length);
     expect(rows.every((row) => row.note?.includes('storage usage read deadline exhausted'))).toBe(true);
+    expect(rows.every((row) => row.totalBytes === null)).toBe(true);
     expect(h.catalogCalls).toBe(0);
     expect(h.ageCalls).toBe(0);
+  });
+
+  it('does not report a numeric aggregate when one category size is unknown', () => {
+    expect(sumStorageUsageTotalBytes([{ totalBytes: 100 }, { totalBytes: null }])).toBeNull();
+    expect(sumStorageUsageTotalBytes([{ totalBytes: 100 }, { totalBytes: 25 }])).toBe(125);
   });
 });
