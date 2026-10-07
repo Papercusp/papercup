@@ -306,16 +306,20 @@ describe('interaction participant backfill (P-003, D-017 point 2)', () => {
     expect(regrant).toEqual([{ sourceId: big.id, outcome: 'backfilled', documents: TOTAL, participants: TOTAL }]);
   });
 
-  it('repeated participants across multiple pages retain one identity on replay (WI-10007028)', async () => {
+  it.each(['repeated', 'distinct'] as const)('%s participants across multiple pages retain their identities on replay (WI-10007028)', async (population) => {
     const total = 240;
     const repeated = await connect('gmail', { 'email-message': ['document', 'event'], person: ['record'] });
-    const addresses = ['repeat-a@profile.example', 'repeat-b@profile.example'];
+    const addresses = [`${population}-a@profile.example`, `${population}-b@profile.example`];
+    const participantsAt = (i: number) => population === 'repeated'
+      ? addresses
+      : [`distinct-${i}@profile.example`, addresses[1]!];
+    const expectedAddresses = [...new Set(Array.from({ length: total }, (_, i) => participantsAt(i)).flat())];
     await upsertPersonalDocuments(sql, WS, userId, Array.from({ length: total }, (_, i) => ({
       source: 'gmail', sourceId: repeated.id, providerAccountId: repeated.account,
       kind: 'email', externalId: `profile-${i}-${randomUUID()}`,
-      occurredAt: '2026-10-06T12:00:00Z', participants: addresses,
+      occurredAt: '2026-10-06T12:00:00Z', participants: participantsAt(i),
       title: `Fixture ${i}`, text: 'fixture body stays in the Vault',
-      metadata: { from: addresses[0], to: [addresses[1]] },
+      metadata: { from: participantsAt(i)[0], to: [participantsAt(i)[1]] },
     })));
     const idsBefore = await personIds();
     for (const phase of ['first', 'replay']) {
@@ -325,7 +329,7 @@ describe('interaction participant backfill (P-003, D-017 point 2)', () => {
         workspaceId: WS, userId, ctx: CTX, sourceIds: [repeated.id], batchSize: 5, timings,
       });
       console.info('PARTICIPANT_BACKFILL_REPEATED_TIMINGS', JSON.stringify({
-        phase, documents: total, totalMs: performance.now() - start, stages: timings,
+        population, phase, documents: total, totalMs: performance.now() - start, stages: timings,
       }));
       expect(result.ok, JSON.stringify(result)).toBe(true);
       if (!result.ok) throw new Error(result.reason);
@@ -338,8 +342,8 @@ describe('interaction participant backfill (P-003, D-017 point 2)', () => {
       expect(timings['resolver-load-component']?.calls).toBe(total * addresses.length);
       expect(timings['resolver-merge']?.calls).toBeGreaterThanOrEqual(total * addresses.length);
       expect(Object.values(timings).every(({ ms }) => Number.isFinite(ms) && ms >= 0)).toBe(true);
-      expect(await personIds()).toHaveLength(idsBefore.length + addresses.length);
-      for (const address of addresses) {
+      expect(await personIds()).toHaveLength(idsBefore.length + expectedAddresses.length);
+      for (const address of expectedAddresses) {
         expect((await searchPeople(sql, WS, { emails: [address] })).map((p) => p.emails)).toEqual([[address]]);
       }
     }
