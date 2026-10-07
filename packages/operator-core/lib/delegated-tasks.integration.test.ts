@@ -240,6 +240,50 @@ describe('delegated-task fixture — real schema failure controls', () => {
     const roster = await adv.listRecordedLiveSessions({ workspaceId: 'default', ownerIds: ['fixture-roster-owner'] });
     expect(roster).toEqual([expect.objectContaining({ coordOwnerId: 'fixture-roster-owner', sessionId: 'fixture-roster-session', endedBy: null })]);
   }, 60_000);
+
+  it('keeps completion fail-closed on a missing receipt column and resumes both adapters after restoration', async () => {
+    const claims = await import('./blueprint/operation-worker-binding');
+    const archived = await dt.createDelegatedTask({ title: 'receipt archive', agentSessionId: 'receipt-archive', origin: 'voice', backend: 'omp' });
+    const resolved = await dt.createDelegatedTask({ title: 'receipt resolve', agentSessionId: 'receipt-resolve', origin: 'voice', backend: 'omp' });
+    const [eventSchema] = await db.sql<{ relation: string | null }[]>`
+      SELECT to_regclass('harness_shared.event_awaits')::text AS relation`;
+    expect(eventSchema?.relation).toBe('harness_shared.event_awaits');
+
+    // Isolate the pre-write receipt guard from the separate event warning:
+    // the lifecycle schema stays present, and no SQL/read path is mocked.
+    await db.sql`ALTER TABLE harness_shared.adv_sessions RENAME COLUMN ended_by TO ended_by_unavailable`;
+    try {
+      const read = await claims.readActiveOperationWorkerClaimBinding('default', dt.delegateAuthorId('receipt-resolve'));
+      expect(read).toEqual({ status: 'unavailable', reason: expect.stringMatching(/ended_by.*SQLSTATE 42703/) });
+      await expect(claims.readActiveOperationWorkerClaimBinding('default', dt.delegateAuthorId('receipt-resolve'), {
+        sql: db.sql, throwOnError: true,
+      })).rejects.toMatchObject({ code: '42703', message: expect.stringContaining('ended_by') });
+
+      await expect(wi.setWorkItemState(resolved.id, 'resolved', {
+        by: dt.delegateAuthorId('receipt-resolve'), completionRef: 'receipt-column negative control',
+      })).rejects.toThrow(/ended_by.*SQLSTATE 42703/);
+      await expect(wi.setWorkItemState(archived.id, 'closed', {
+        by: dt.OPERATOR_COORD_OWNER, completionRef: 'receipt-column negative control',
+      })).rejects.toThrow(/ended_by.*SQLSTATE 42703/);
+
+      // The best-effort adapters hide the refusal; their rows must remain open.
+      await dt.archiveDelegatedSession(archived.id);
+      await dt.resolveDelegatedTask(resolved.id, 'receipt-resolve');
+      expect((await wi.getWorkItem(archived.id))?.state).toBe('open');
+      expect((await dt.findOpenDelegatedTask('receipt-resolve'))?.id).toBe(resolved.id);
+      expect((await wi.getWorkItem(resolved.id))?.state).toBe('open');
+    } finally {
+      await db.sql`ALTER TABLE harness_shared.adv_sessions RENAME COLUMN ended_by_unavailable TO ended_by`;
+    }
+
+    expect(await claims.readActiveOperationWorkerClaimBinding('default', dt.OPERATOR_COORD_OWNER)).toEqual({ status: 'none' });
+    expect(await claims.readActiveOperationWorkerClaimBinding('default', dt.delegateAuthorId('receipt-resolve'))).toEqual({ status: 'none' });
+    await dt.archiveDelegatedSession(archived.id);
+    await dt.resolveDelegatedTask(resolved.id, 'receipt-resolve');
+    expect((await wi.getWorkItem(archived.id))?.state).toBe('dropped');
+    expect((await wi.getWorkItem(resolved.id))?.state).toBe('done');
+    expect(await dt.findOpenDelegatedTask('receipt-resolve')).toBeNull();
+  }, 60_000);
 });
 
 describe('subscribe→inject — a recorded turn pushes the completion to the operator (D-003)', () => {
