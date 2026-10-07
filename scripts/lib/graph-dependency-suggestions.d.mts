@@ -42,11 +42,36 @@ export function relativeCandidates(importer: any, specifier: any): Set<string>;
  * @returns {Set<string>}
  */
 export function baseCandidates(base: string): Set<string>;
-/** Does `source` (the importer's current text) actually import `imported`? */
-export function sourceCorroborates(source: any, importer: any, imported: any): boolean;
-/** Verify ONE snapshot edge against the current tree. */
-export function verifyEdge(edge: any, { readSource }: {
-    readSource: any;
+/**
+ * Memoized `dir -> package name`, read from `<dir>/package.json` through `readSource`; null
+ * when that manifest is absent, unparseable or nameless. One reader per walk shares the cache.
+ * @param {(rel: string) => string | null} readSource
+ * @returns {(dir: string) => string | null}
+ */
+export function packageNameReader(readSource: (rel: string) => string | null): (dir: string) => string | null;
+/**
+ * Does `source` (the importer's current text) actually import `imported`? Relative specifiers
+ * by resolution; non-relative ones by path tail, or — when `packageNameAt` is supplied — by
+ * re-resolving a workspace-package specifier against the enclosing package's manifest.
+ * @param {string} source
+ * @param {string} importer
+ * @param {string} imported
+ * @param {((dir: string) => string | null) | null} [packageNameAt]
+ * @returns {boolean}
+ */
+export function sourceCorroborates(source: string, importer: string, imported: string, packageNameAt?: ((dir: string) => string | null) | null): boolean;
+/**
+ * Verify ONE snapshot edge against the current tree.
+ * @param {{ importer: string, imported: string, importerSha256: string }} edge
+ * @param {{ readSource: (rel: string) => string | null, packageNameAt?: (dir: string) => string | null }} deps
+ */
+export function verifyEdge(edge: {
+    importer: string;
+    imported: string;
+    importerSha256: string;
+}, { readSource, packageNameAt }: {
+    readSource: (rel: string) => string | null;
+    packageNameAt?: (dir: string) => string | null;
 }): {
     ok: boolean;
     reason: string;

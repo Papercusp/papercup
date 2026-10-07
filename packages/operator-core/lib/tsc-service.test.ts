@@ -5,9 +5,13 @@
  * existing parser reads service output unchanged.
  */
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
+const nativeDir = dirname(createRequire(import.meta.url).resolve('@typescript/native/package.json'));
+const { API } = await import(pathToFileURL(join(nativeDir, 'dist/api/async/api.js')).href);
 // eslint-disable-next-line import/no-relative-packages
 import {
   TSC_SERVICE_ENV,
@@ -271,6 +275,50 @@ describe('refreshProjectRootFiles', () => {
     expect(result).toBe(currentSnapshot);
     expect(disposed).toBe(false);
     expect(updated).toBe(false);
+  });
+});
+
+describe('refreshProjectRootFiles with the native TypeScript API', () => {
+  it('removes deleted roots and includes recreated roots in the loaded program', async () => {
+    const testDir = mkdtempSync(join(tmpdir(), 'tsc-service-root-refresh-'));
+    const config = join(testDir, 'tsconfig.json');
+    const keptFile = join(testDir, 'kept.ts');
+    const changedFile = join(testDir, 'changed.ts');
+    writeFileSync(config, JSON.stringify({ compilerOptions: { noEmit: true }, include: ['*.ts'] }));
+    writeFileSync(keptFile, 'export const kept = true;\n');
+    writeFileSync(changedFile, 'export const removed = true;\n');
+
+    const api = new API({ cwd: testDir });
+    let snapshot: any;
+    try {
+      snapshot = await api.updateSnapshot({ openProjects: [config] });
+      expect(snapshot.getProject(config)?.rootFiles).toContain(changedFile);
+
+      rmSync(changedFile);
+      snapshot = await api.updateSnapshot({ fileChanges: { invalidateAll: true } });
+      // Invalidation refreshes contents but leaves the old include-root set loaded.
+      expect(snapshot.getProject(config)?.rootFiles).toContain(changedFile);
+      const staleDiagnostics = await snapshot.getProject(config)?.program.getProgramDiagnostics();
+      expect(staleDiagnostics?.some((diagnostic: any) => diagnostic.code === 6053)).toBe(true);
+
+      snapshot = await refreshProjectRootFiles({ api, snapshot, projects: [config] });
+      expect(snapshot.getProject(config)?.rootFiles).not.toContain(changedFile);
+      const deletionDiagnostics = await snapshot.getProject(config)?.program.getProgramDiagnostics();
+      expect(deletionDiagnostics?.some((diagnostic: any) => diagnostic.code === 6053)).toBe(false);
+
+      writeFileSync(changedFile, 'export const recreated: number = \"wrong\";\n');
+      snapshot = await api.updateSnapshot({ fileChanges: { invalidateAll: true } });
+      expect(snapshot.getProject(config)?.rootFiles).not.toContain(changedFile);
+
+      snapshot = await refreshProjectRootFiles({ api, snapshot, projects: [config] });
+      expect(snapshot.getProject(config)?.rootFiles).toContain(changedFile);
+      const recreationDiagnostics = await snapshot.getProject(config)?.program.getSemanticDiagnostics(changedFile);
+      expect(recreationDiagnostics?.some((diagnostic: any) => diagnostic.code === 2322)).toBe(true);
+    } finally {
+      snapshot?.dispose();
+      await api.close();
+      rmSync(testDir, { recursive: true, force: true });
+    }
   });
 });
 

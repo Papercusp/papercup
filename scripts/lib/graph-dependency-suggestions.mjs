@@ -149,12 +149,12 @@ function stripExt(p) {
   return i > p.lastIndexOf("/") ? p.slice(0, i) : p;
 }
 
-/** A non-relative (alias / package) specifier can only be corroborated by path tail: its
- * trailing segments must equal the imported path's trailing segments (>= 2, or the whole
- * path when shorter). Deliberately conservative — a miss only drops a suggestion. */
-function aliasTailMatches(specifier, imported) {
-  const impSegs = stripExt(imported).split("/");
-  const specSegs = specifier.replace(/^[@~]\/?/, "").split("/");
+/** A specifier's own explicit module extension (`./x.ts`, `@/lib/y.js`) — only the ones the
+ * resolver expands, so a dotted package name (`@scope/a.b`) keeps its last segment intact. */
+const SPEC_EXT_RE = /\.(?:tsx?|mts|cts|jsx?|mjs|cjs|json)$/;
+
+function tailMatches(specSegs, path) {
+  const impSegs = path.split("/");
   const want = Math.min(2, impSegs.length);
   if (specSegs.length < want) return false;
   for (let i = 1; i <= want; i += 1) {
@@ -163,24 +163,109 @@ function aliasTailMatches(specifier, imported) {
   return true;
 }
 
-/** Does `source` (the importer's current text) actually import `imported`? */
-export function sourceCorroborates(source, importer, imported) {
+/** A non-relative (alias / package) specifier corroborated by path tail: its trailing
+ * segments must equal the imported path's trailing segments (>= 2, or the whole path when
+ * shorter), compared extension-free on BOTH sides. A directory specifier resolves to that
+ * directory's `index` file (`baseCandidates`' own expansion), so the imported path is also
+ * compared with a trailing `index` segment dropped (WI-10007001). Deliberately conservative —
+ * a miss only drops a suggestion. */
+function aliasTailMatches(specifier, imported) {
+  const specSegs = specifier.replace(/^[@~]\/?/, "").replace(SPEC_EXT_RE, "").split("/");
+  const stem = stripExt(imported);
+  if (tailMatches(specSegs, stem)) return true;
+  return stem.endsWith("/index") && tailMatches(specSegs, stem.slice(0, -"/index".length));
+}
+
+/**
+ * Memoized `dir -> package name`, read from `<dir>/package.json` through `readSource`; null
+ * when that manifest is absent, unparseable or nameless. One reader per walk shares the cache.
+ * @param {(rel: string) => string | null} readSource
+ * @returns {(dir: string) => string | null}
+ */
+export function packageNameReader(readSource) {
+  const cache = new Map();
+  return (dir) => {
+    if (!cache.has(dir)) {
+      let name = null;
+      try {
+        const parsed = JSON.parse(readSource(`${dir}/package.json`) ?? "null");
+        if (parsed && typeof parsed.name === "string" && parsed.name.length > 0) name = parsed.name;
+      } catch {
+        name = null;
+      }
+      cache.set(dir, name);
+    }
+    return cache.get(dir);
+  };
+}
+
+/** `[pkgDir, name]` for every ANCESTOR directory of `imported` holding a named
+ * `package.json` (nearest first; the repo root is never a workspace package). */
+function enclosingPackages(imported, packageNameAt) {
+  const segs = imported.split("/");
+  const out = [];
+  for (let i = segs.length - 1; i >= 1; i -= 1) {
+    const dir = segs.slice(0, i).join("/");
+    const name = packageNameAt(dir);
+    if (name !== null) out.push([dir, name]);
+  }
+  return out;
+}
+
+/** A workspace-package specifier corroborated by re-deriving it the way the first-party
+ * producer resolves one (`deriveFirstPartyEdges` in gen-graph-dependency-snapshot.mjs): an
+ * enclosing package's OWN manifest must name the specifier's package (boundary `name` or
+ * `name/`, so `@s/a` never claims `@s/a-b`), and `imported` must be one of the files
+ * `<pkgDir>/<sub>` or `<pkgDir>/src/<sub>` expands to (`index` when there is no subpath).
+ * Exact, from the manifest — never a tail guess (WI-10007001). */
+function packageSpecifierResolves(spec, imported, packages) {
+  for (const [pkgDir, name] of packages) {
+    if (spec !== name && !spec.startsWith(`${name}/`)) continue;
+    const sub = spec.slice(name.length).replace(/^\//, "");
+    const bases =
+      sub === ""
+        ? [`${pkgDir}/index`, `${pkgDir}/src/index`]
+        : [posix.normalize(`${pkgDir}/${sub}`), posix.normalize(`${pkgDir}/src/${sub}`)];
+    if (bases.some((b) => baseCandidates(b).has(imported))) return true;
+  }
+  return false;
+}
+
+/**
+ * Does `source` (the importer's current text) actually import `imported`? Relative specifiers
+ * by resolution; non-relative ones by path tail, or — when `packageNameAt` is supplied — by
+ * re-resolving a workspace-package specifier against the enclosing package's manifest.
+ * @param {string} source
+ * @param {string} importer
+ * @param {string} imported
+ * @param {((dir: string) => string | null) | null} [packageNameAt]
+ * @returns {boolean}
+ */
+export function sourceCorroborates(source, importer, imported, packageNameAt = null) {
+  let packages = null;
   for (const spec of extractSpecifiers(source)) {
     if (spec.startsWith("./") || spec.startsWith("../")) {
       if (relativeCandidates(importer, spec).has(imported)) return true;
     } else if (aliasTailMatches(spec, imported)) {
       return true;
+    } else if (packageNameAt !== null) {
+      packages ??= enclosingPackages(imported, packageNameAt);
+      if (packageSpecifierResolves(spec, imported, packages)) return true;
     }
   }
   return false;
 }
 
-/** Verify ONE snapshot edge against the current tree. */
-export function verifyEdge(edge, { readSource }) {
+/**
+ * Verify ONE snapshot edge against the current tree.
+ * @param {{ importer: string, imported: string, importerSha256: string }} edge
+ * @param {{ readSource: (rel: string) => string | null, packageNameAt?: (dir: string) => string | null }} deps
+ */
+export function verifyEdge(edge, { readSource, packageNameAt = packageNameReader(readSource) }) {
   const source = readSource(edge.importer);
   if (typeof source !== "string") return { ok: false, reason: "importer-missing" };
   if (sha256Hex(source) !== edge.importerSha256) return { ok: false, reason: "stale-importer" };
-  if (!sourceCorroborates(source, edge.importer, edge.imported)) {
+  if (!sourceCorroborates(source, edge.importer, edge.imported, packageNameAt)) {
     return { ok: false, reason: "uncorroborated" };
   }
   return { ok: true };
