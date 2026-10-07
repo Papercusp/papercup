@@ -244,6 +244,21 @@ describe('classifyToolError — real-corpus regression (P-011)', () => {
     expect(classifyToolError('handler_error', 'error', 'superuser_invalid_bearer')).toBe('structural');
   });
 
+  it('classifies missing UI-client context as caller input, not a structural UI defect', () => {
+    const missingRow = 'client_not_found: no ui_clients row for client_id="su-cli-owner". The tab may have closed or never registered.';
+    const missingId = 'client_id_required: no client_id passed and ctx.uiClientId is unset.';
+    expect(classifyToolError('client_not_found', 'error', missingRow)).toBe('caller');
+    expect(classifyToolError('handler_error', 'error', missingRow)).toBe('caller');
+    expect(classifyToolError('client_id_required', 'error', missingId)).toBe('caller');
+    expect(classifyToolError('handler_error', 'error', missingId)).toBe('caller');
+    expect(normalizeSuspectedToolFailure({
+      toolName: 'ui:get_state',
+      errorCode: 'client_not_found',
+      status: 'error',
+      message: missingRow,
+    })).toMatchObject({ class: 'caller', direct: false });
+  });
+
   it.each([
     [
       'context_mismatch',

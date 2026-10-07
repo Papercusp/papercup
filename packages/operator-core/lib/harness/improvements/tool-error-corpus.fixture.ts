@@ -20,6 +20,8 @@
  * `loop_pressure_critical` response captured in EI-24856174754316507.
  * The claim-spec self-selector row was added 2026-10-07 from EI-25300889812728741;
  * it is an expected caller refusal and must not enter the structural bug lane.
+ * The missing-UI-client rows were added 2026-10-07 from EI-24710297442793828;
+ * they are expected caller context refusals, not structural UI defects.
  *
  * This fixture is the corpus for BOTH:
  *   - tool-error-classifier.test.ts (pure: classifyToolError must agree per row), and
@@ -137,6 +139,18 @@ export const TOOL_ERROR_CORPUS: readonly ToolErrorCorpusRow[] = [
     message: 'cupId must be a concrete session/owner ID, not the literal "self". To read your own claim spec, use { cupId: \'su-owner-id\' } for this session.',
     expectedClass: 'caller',
     note: 'scheduler:get_claim_spec intentionally rejects the `self` alias and tells the caller to use a concrete owner id; do not file this expected selector refusal as a structural tool bug (EI-25300889812728741)',
+  },
+  {
+    n: 1, errorCode: 'handler_error', status: 'error',
+    message: 'client_not_found: no ui_clients row for client_id="su-cli-owner". The tab may have closed or never registered.',
+    expectedClass: 'caller',
+    note: 'ui:get_state was called from a CLI context without a registered browser client; this is an expected caller-context refusal (EI-24710297442793828)',
+  },
+  {
+    n: 1, errorCode: 'handler_error', status: 'error',
+    message: 'client_id_required: no client_id passed and ctx.uiClientId is unset (the agent was not spawned from a browser tab). Call ui:list_clients to pick a tab.',
+    expectedClass: 'caller',
+    note: 'ui:get_state requires an explicit registered client when the caller was not spawned from a browser tab',
   },
   {
     n: 1, errorCode: 'invalid_args', status: 'invalid_input',
