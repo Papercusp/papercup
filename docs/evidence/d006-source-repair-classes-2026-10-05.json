@@ -5,9 +5,9 @@
   "accountableOwner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
   "population": {
     "failedFiles": 124,
-    "repairedFocused": 14,
+    "repairedFocused": 15,
     "repairedPeerFocused": 11,
-    "openUnknown": 99
+    "openUnknown": 98
   },
   "classes": {
     "assertion": 62,
@@ -15,7 +15,8 @@
     "missing-schema": 16,
     "blueprint-fixture": 1,
     "console-guard": 10,
-    "unclassified": 12,
+    "unclassified": 11,
+    "local-perf-compaction-census": 1,
     "peer-dial-process-isolation": 1,
     "legacy-rubric-replay": 1,
     "goal-budget-fixture": 1,
@@ -583,8 +584,11 @@
       "completeImportGraphCurrentness": "unknown",
       "currentReproduction": {
         "runId": "31a00f98-87e1-4abe-b109-57d0bf4e06a4",
-        "status": "running",
-        "scope": "Fresh focused peer-dial and substrate-compaction pair; original foreground attempt reached its 25-second cap and automatically launched this durable recovery. This pending run is not a passing receipt."
+        "status": "pass",
+        "testRunId": 20893504,
+        "commitSha": "ef934009deecb47896924f1eccc4beb4afaafe6c",
+        "worktreeDirty": true,
+        "scope": "Peer-dial file passed in the recovered focused pair. The pair exited 1 because substrate-compaction failed independently (20893505). Local receipt only; no complete import/environment or final D006 assurance."
       }
     },
     {
@@ -1139,12 +1143,34 @@
     },
     {
       "path": "packages/operator-core/lib/sync/hyperbee/substrate-compaction.integration.test.ts",
-      "class": "unclassified",
-      "state": "open-unknown",
-      "item": "WI-10006170",
+      "class": "local-perf-compaction-census",
+      "state": "repaired-focused",
+      "item": "WI-10007125",
       "lines": [
         15456
-      ]
+      ],
+      "historicalSymptomClass": "unclassified",
+      "diagnosis": "Local perf peers deliberately stub PostgreSQL, but the newer own-compaction receipt census reached getOrgPg without a fixture override. The canonical guard reproduced that exact error. Local corpus peers now provide the maintained empty receipt-census override; production and hive-bound census behavior remains unchanged. Snapshot barriers report producer/scan errors directly.",
+      "beforeTestRun": 20893505,
+      "causalGuardBeforeTestRun": 20893584,
+      "causalGuardAfterTestRun": 20893585,
+      "afterTestRun": 20893591,
+      "passed": 1,
+      "skipped": 1,
+      "skippedScope": "Real Hetzner multi-machine case requires credentials; no evidence from that case.",
+      "testedHead": "5d8d08de5978d888a344003e33950d1e51f22e46",
+      "worktreeDirty": true,
+      "isScratchConfig": false,
+      "testSha256": "63ca81cb04e98963a07b24b0e827534c05ce68fa0544634dbec5f3774d6a8795",
+      "peerChildSha256": "d2b83e555d49340085fd060702c915d51acd466d260859cf783a2c14d3b405ec",
+      "guardSha256": "53e55978238dd2351265d600689ea1a31a91b98cfb60b9d2735ee50a6f01cfbf",
+      "diagnosisLog": "/tmp/wi-10007125-diagnosis.log",
+      "diagnosisLogSha256": "ce39c4bf48a81a817ecd054d385b96075d22a243afb5a4df693f6a522d3fbe49",
+      "verificationLog": "/tmp/wi-10007125-after.log",
+      "verificationLogSha256": "66515734c51ba6a872cc3274a00a18ca6010fe140f985d79cee45e71ae8f4cb4",
+      "recurrenceGuard": "Conventional child-driver.test.ts auto-compaction guard: 1200 real local corpus ops, strict no-PG loader, real fold worker, positive snapshot index, and no recorded producer failure. The full child-driver file passed 7 with no skips.",
+      "completeImportGraphCurrentness": "unknown",
+      "contentSettlement": "pending-background-git-sync"
     },
     {
       "path": "packages/operator-core/lib/personal-vault/git-sync-hold.integration.test.ts",
@@ -2001,7 +2027,7 @@
     },
     {
       "class": "unclassified",
-      "count": 12,
+      "count": 11,
       "status": "open-unknown",
       "item": "WI-10006170",
       "owner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
@@ -2174,7 +2200,18 @@
       "rootCause": "Two simulated boxes shared one process-global signer registry. Box B now uses a separate module graph; the stored signer trace and isolation mutation distinguish this cause from frame loss or timing.",
       "commit": "781edde2d8c6d34695f6750e0cc89debad7d9ed7",
       "testRunIds": [20854195],
-      "next": "Retain committed focused repair evidence and dirty-receipt limit; consume the separately pending current reproduction. Full import/environment readiness and final D006 remain unverified."
+      "next": "Retain committed focused repair evidence and recovered local pass20893504. Full import/environment readiness and final D006 remain unverified."
+    },
+    {
+      "class": "local-perf-compaction-census",
+      "count": 1,
+      "status": "repaired-focused",
+      "item": "WI-10007125",
+      "owner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
+      "scope": "local-perf-fixture-and-diagnostics",
+      "rootCause": "Local no-PG fixture omitted the new governor-receipt census override. Exact guard failure reached getOrgPg; adding only the empty local-corpus census changed it to pass with the actual worker intact.",
+      "testRunIds": [20893505, 20893584, 20893585, 20893591],
+      "next": "Retain focused local evidence and explicit credential skip; content settlement and full import/environment/final D006 assurance remain unverified."
     },
     {
       "class": "owner-loop-fixture",
