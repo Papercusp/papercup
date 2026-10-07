@@ -84,12 +84,14 @@ describe('realGitCommit', () => {
 
 function gymSql(initialStatus = 'pending') {
   let status = initialStatus;
-  const receipts: Record<string, unknown>[] = [];
+  let learningLifecycle: Record<string, unknown> | null = null;
+  const receiptWrites: Record<string, unknown>[] = [];
   const unsafe = vi.fn(async (query: string, params?: unknown[]) => {
     if (query.includes('SELECT * FROM harness_shared.gym_proposals')) {
       return [{
         id: 'proposal-1', workspace_id: 'ws-1', status, created_at: 1, decided_at: 2,
         original_md: 'old prompt', proposed_md: 'new prompt',
+        learning_lifecycle: learningLifecycle,
         candidate_verdict: {
           candidateId: 'candidate-1', parentId: 'parent-1', recordedAt: '2026-10-01T00:00:00.000Z',
           hashes: { variantHash: 'variant-hash', parentHash: 'parent-hash', taskHash: 'task-hash' },
@@ -99,7 +101,10 @@ function gymSql(initialStatus = 'pending') {
     }
     if (query.includes('SET learning_lifecycle = receipt.payload::jsonb')) {
       const payloads = params?.[2] as string[];
-      receipts.push(...payloads.map((payload) => JSON.parse(payload) as Record<string, unknown>));
+      for (const payload of payloads) {
+        learningLifecycle = JSON.parse(payload) as Record<string, unknown>;
+        receiptWrites.push(learningLifecycle);
+      }
       return [];
     }
     throw new Error(`unexpected unsafe query: ${query}`);
@@ -120,21 +125,26 @@ function gymSql(initialStatus = 'pending') {
     unsafe,
     begin: async (callback: (tx: unknown) => unknown) => callback(sql),
   }) as unknown as Sql;
-  return { sql, receipts, unsafe, get status() { return status; } };
+  return { sql, receiptWrites, unsafe, get status() { return status; }, get learningLifecycle() { return learningLifecycle; } };
 }
 
 describe('acceptProposalViaCommit lifecycle receipt', () => {
-  it('writes an accepted Gym snapshot atomically without granting common promotion authority', async () => {
+  it('writes and refreshes the accepted Gym snapshot without granting common promotion authority', async () => {
     const db = gymSql();
     const result = await acceptProposalViaCommit(db.sql, {
       workspaceId: 'ws-1', harnessSlug: 'alpha', harnessDir: dir,
       proposalId: 'proposal-1', role: 'worker', proposedMd: 'new prompt', now: 3,
     });
+    const replay = await acceptProposalViaCommit(db.sql, {
+      workspaceId: 'ws-1', harnessSlug: 'alpha', harnessDir: dir,
+      proposalId: 'proposal-1', role: 'worker', proposedMd: 'new prompt', now: 4,
+    });
 
     expect(result).toMatchObject({ ok: true, proposalMarked: true });
+    expect(replay).toMatchObject({ ok: true, proposalMarked: false });
     expect(db.status).toBe('accepted');
-    expect(db.receipts).toHaveLength(1);
-    expect(db.receipts[0]).toMatchObject({
+    expect(db.receiptWrites).toHaveLength(2);
+    expect(db.learningLifecycle).toMatchObject({
       producer: 'gym', sourceRef: 'gym:proposal-1', contract: null, promotionAllowed: false,
       lifecycle: {
         stage: 'activation',
@@ -144,7 +154,7 @@ describe('acceptProposalViaCommit lifecycle receipt', () => {
     });
   });
 
-  it('refreshes the receipt on accepted replay without duplicating the native decision', async () => {
+  it('repairs a missing receipt for a previously accepted proposal', async () => {
     const db = gymSql('accepted');
     const result = await acceptProposalViaCommit(db.sql, {
       workspaceId: 'ws-1', harnessSlug: 'alpha', harnessDir: dir,
@@ -152,8 +162,8 @@ describe('acceptProposalViaCommit lifecycle receipt', () => {
     });
 
     expect(result).toMatchObject({ ok: true, proposalMarked: false });
-    expect(db.receipts).toHaveLength(1);
-    expect(db.receipts[0]).toMatchObject({ contract: null, promotionAllowed: false, lifecycle: { stage: 'activation' } });
+    expect(db.receiptWrites).toHaveLength(1);
+    expect(db.learningLifecycle).toMatchObject({ contract: null, promotionAllowed: false, lifecycle: { stage: 'activation' } });
   });
 
   it('does not write a receipt when commit or reprojection fails', async () => {
@@ -169,7 +179,8 @@ describe('acceptProposalViaCommit lifecycle receipt', () => {
 
     expect(result).toMatchObject({ ok: false, proposalMarked: false });
     expect(db.status).toBe('pending');
-    expect(db.receipts).toHaveLength(0);
+    expect(db.receiptWrites).toHaveLength(0);
+    expect(db.learningLifecycle).toBeNull();
     expect(db.unsafe).not.toHaveBeenCalled();
   });
 });
