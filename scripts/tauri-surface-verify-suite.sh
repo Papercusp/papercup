@@ -57,6 +57,7 @@ LEGS=(
   "settings:0:scripts/tauri-surface-verify-p007-settings.sh"
   "embed-device:1:scripts/tauri-surface-verify-embed-device.sh"
   "goal-report:1:scripts/tauri-surface-verify-goal-report.mts"
+  "reports-library:1:scripts/tauri-surface-verify-reports.mts"
   "reporter-status:1:scripts/tauri-surface-verify-reporter-status.mts"
   "signup:0:scripts/tauri-surface-verify-p007-signup.sh"
   # Added post-P-007-expansion (gui-e2e-tauri-surface-verification-2026-08-27
@@ -113,6 +114,12 @@ for entry in "${LEGS[@]}"; do
       VERIFY_TAURI_ISOLATED_DB=1 VERIFY_TAURI_ISOLATED_SEED=ready \
       VERIFY_TAURI_REQUIRE_BUILT='apps/operator/app/_components/ReportProblemDialog.tsx apps/operator/app/adv/harnesses/DetailPanel.tsx' \
       "$VERIFIER" -- node --import tsx "$script" >>"$log_file" 2>&1
+  elif [ "$leg" = "reports-library" ]; then
+    VERIFY_TAURI_ISOLATED_DB=1 \
+      VERIFY_TAURI_ISOLATED_SEED=ready \
+      VERIFY_TAURI_REQUIRE_BUILT='apps/operator-vite/src/components/reports/ReportsRoute.tsx apps/operator-vite/src/routes/reports.tsx' \
+      VERIFY_TAURI_ASSERT_SNAPSHOT_CONTAINS='Reports native verification' \
+      "$VERIFIER" -- node --import tsx "$script" >"$log_file" 2>&1
   elif [ "$leg" = "goal-report" ]; then
     VERIFY_TAURI_ISOLATED_DB=1 \
       VERIFY_TAURI_ISOLATED_SEED=ready \
