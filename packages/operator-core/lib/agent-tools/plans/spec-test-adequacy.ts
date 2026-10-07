@@ -1485,8 +1485,9 @@ function appendRatingRerunProbes(
  *   7 — a null fixture fingerprint no longer proves fixture-free evidence; executable bindings must
  *       explicitly attest fixtureFree=true before fixture calibration is not-applicable.
  *   8 — pair Cargo case receipts by canonical source and measurement root, preserving exact case checks.
+ *   9 — recognize canonical operational adapter layers without extending recorded runner layers.
  */
-export const SPEC_TEST_ADEQUACY_EVALUATOR_REVISION = 8;
+export const SPEC_TEST_ADEQUACY_EVALUATOR_REVISION = 9;
 
 type MutationTargetClause = Pick<SpecClauseRevision, 'specId' | 'falsifier'>;
 
@@ -2018,7 +2019,10 @@ export function evaluateSpecTestAdequacy(input: {
         row.testRunExecution?.status?.toLowerCase() !== 'pass' ||
         row.testRunExecution.failed !== 0 ||
         row.testRunExecution.collectionFailed !== false ||
-        !isRecordedTestLayer(measuredLayer) ||
+        // Operational is derived by the canonical evidence adapter, not a
+        // Vitest/Playwright recorded runner layer. Keep those vocabularies
+        // separate while accepting the adapter's measured case provenance.
+        (!isRecordedTestLayer(measuredLayer) && measuredLayer !== 'operational') ||
         measuredCases.length === 0
       ) {
         // Preserve an author claim as unresolved so an unmeasured positive cannot

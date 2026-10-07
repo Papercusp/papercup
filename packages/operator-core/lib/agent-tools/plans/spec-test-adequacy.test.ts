@@ -520,6 +520,22 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(result.verdict).toBe('pass');
   });
 
+  it.each([
+    { measured: 'operational', claimed: 'operational', expected: 'pass' },
+    { measured: undefined, claimed: 'operational', expected: 'unknown' },
+    { measured: 'unsupported-adapter', claimed: undefined, expected: 'fail' },
+    { measured: 'integration', claimed: 'operational', expected: 'fail' },
+  ])('recognizes the canonical operational adapter without accepting caller-only layer claims: $measured/$claimed', ({ measured, claimed, expected }) => {
+    const row = evidence({ evidenceKind: 'test' });
+    row.testRunExecution = { ...row.testRunExecution!, testLayer: measured };
+    row.details = { adequacy: { ...(row.details.adequacy as Record<string, unknown>), testLayer: claimed } };
+    const result = evaluateSpecTestAdequacy({
+      clause: clause({ requiredEvidence: [], requiredTestLayers: ['operational'] }),
+      evidence: [row], classRef: 'plan-class-feature-ship',
+    });
+    expect(result.ratings['correct-layer'].rating).toBe(expected);
+  });
+
   it('produces a complete scorecards:emit draft for a current L3 feature proof', () => {
     const result = evaluateSpecTestAdequacy({
       clause: caseScopedClause(),
