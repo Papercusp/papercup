@@ -192,6 +192,13 @@ const h = vi.hoisted(() => {
       allow: false,
       calls: [] as Array<Record<string, string>>,
     },
+    /** WI-10007010: isolate the accepted-operation tools/list candidate path. */
+    identityListingTest: false,
+    identityOperationRecord: null as unknown,
+    identityAdmittedToolNames: new Set<string>(),
+    identityListingRoleCaps: [] as readonly string[],
+    identityObservedRoleCaps: [] as string[],
+    identityListedCandidateNames: [] as string[],
   };
 });
 
@@ -311,6 +318,40 @@ vi.mock('../../projected-tool-deps', async (importOriginal) => {
       recordInvocation: async (input: (typeof h.invocations)[number]): Promise<void> => {
         h.invocations.push(input);
       },
+    },
+  };
+});
+vi.mock('../../capability-envelope/blueprint-envelopes', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../capability-envelope/blueprint-envelopes')>();
+  return {
+    ...actual,
+    blueprintWorkerRoleCapabilities: (stateDir: string, role: string) =>
+      h.identityListingTest && role === 'calendar-prep-worker'
+        ? h.identityListingRoleCaps
+        : actual.blueprintWorkerRoleCapabilities(stateDir, role),
+  };
+});
+vi.mock('../../capability-envelope/identity-tool-surface', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../capability-envelope/identity-tool-surface')>();
+  return {
+    ...actual,
+    resolveIdentityToolSurface: async (...args: Parameters<typeof actual.resolveIdentityToolSurface>) => {
+      if (!h.identityListingTest) return actual.resolveIdentityToolSurface(...args);
+      const [ctx, candidates, , expandCandidates] = args;
+      const receiptCandidates = expandCandidates?.(h.identityOperationRecord) ?? [];
+      h.identityObservedRoleCaps = [...(ctx.principal?.capabilities ?? [])];
+      const admitted = new Set(
+        [...candidates, ...receiptCandidates]
+          .filter((candidate) => h.identityAdmittedToolNames.has(candidate.name))
+          .map((candidate) => candidate.name),
+      );
+      return { kind: 'governed', key: 'gating-matrix-operation', admitted };
+    },
+    rememberListedIdentitySurface: (...args: Parameters<typeof actual.rememberListedIdentitySurface>) => {
+      if (h.identityListingTest) {
+        h.identityListedCandidateNames = args[1].candidates.map((candidate) => candidate.name);
+      }
+      return actual.rememberListedIdentitySurface(...args);
     },
   };
 });
@@ -470,7 +511,7 @@ delete process.env.PAPERCUSP_REQUIRE_SPAWN_SIG;
 
 const { __buildMcpToolContext_forTests, mcpHandler, resolveMcpTargetAfterPluginHostWarm } =
   await import('../routes/transport/_mcp-handler');
-const { registerProjectedTool, unregisterProjectedToolsForPlugin, lookupByMcpName, getCatalog, defineTool, subscribeWorkspace, resolveCardResponse } =
+const { registerProjectedTool, unregisterProjectedToolsForPlugin, lookupByMcpName, listMcpProjections, getCatalog, defineTool, subscribeWorkspace, resolveCardResponse } =
   await import('@papercusp/agent-mcp');
 const { currentRequestWorkspaceId } = await import('../../workspace-als');
 const { registerMcpHost, mcpHostServerOptions, MCP_SERVER_CAPABILITIES, tryBuildSpawnContext, pinVerifiedMcpRequest } =
@@ -2028,6 +2069,12 @@ beforeEach(() => {
   // the suite.
   setEntityEnum('pot', async () => []);
   setEntityEnum('harness', async () => []);
+  h.identityListingTest = false;
+  h.identityOperationRecord = null;
+  h.identityAdmittedToolNames = new Set();
+  h.identityListingRoleCaps = [];
+  h.identityObservedRoleCaps = [];
+  h.identityListedCandidateNames = [];
 });
 
 /* ─── caller-specified result projection (P-020 / D-041) ────────────────── */
@@ -4153,6 +4200,40 @@ describe('tools/list — strict-mode listing matrix', () => {
   it('a different role does NOT see the scoper-only tool', async () => {
     const res = await listTools(extraFor(signedUrl({ role: 'worker' })));
     expect(res.tools.map((t) => t.name)).not.toContain('gatingtest:scoped');
+  });
+
+  it('adds only receipt-listed tools admitted by the identity surface for a custom app worker', async () => {
+    h.identityListingTest = true;
+    h.identityOperationRecord = {
+      acceptedOperation: {
+        kind: 'blueprint-operation-worker',
+        requiredTools: ['work_items:claim', 'work_items:checkpoint', 'plans:set-status'],
+      },
+    };
+    h.identityAdmittedToolNames = new Set(['work_items:claim']);
+    h.identityListingRoleCaps = ['work_items:read', 'work_items:write'];
+    h.potHomeSlugForHarness.mockResolvedValueOnce('calendar');
+
+    const role = 'calendar-prep-worker';
+    expect(listMcpProjections(role as never, 'engineer').some((tool) => tool.name === 'work_items:claim')).toBe(false);
+    expect(lookupByMcpName('work_items:claim')?.capabilities).toContain('work_items:write');
+    expect(lookupByMcpName('plans:set-status')?.capabilities).toContain('plans:write');
+
+    const res = await listTools({
+      ...extraFor(signedUrl({ harness: 'calendar', role })) as object,
+      sessionId: 'mcp-accepted-operation-listing',
+    });
+    const names = res.tools.map((tool) => tool.name);
+
+    expect(h.identityListedCandidateNames).toContain('work_items:claim');
+    expect(h.identityListedCandidateNames).toContain('work_items:checkpoint');
+    expect(h.identityListedCandidateNames).toContain('plans:set-status');
+    expect(names).toContain('work_items:claim');
+    expect(names).not.toContain('work_items:checkpoint'); // receipt-required, but the identity surface did not admit it
+    expect(names).not.toContain('plans:set-status'); // receipt-required, but not admitted by the identity surface
+    expect(names).not.toContain('gatingtest:engineer'); // absent from the receipt
+    expect(h.identityObservedRoleCaps).toContain('work_items:write');
+    expect(h.identityObservedRoleCaps).not.toContain('plans:write');
   });
 
   it('?tools= allowlist narrows the listing to exactly the named set', async () => {

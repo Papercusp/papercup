@@ -3109,19 +3109,31 @@ async function resolveVisibleToolListings(extra: unknown): Promise<
   const profile = rawProfile === 'generic' ? 'engineer' : rawProfile;
   const bypass = urlFromExtra(extra)?.searchParams.get('manifestBypass') === '1';
   let result = applyToolManifest(listMcpProjections(role, profile), { bypass });
+  let requiredToolPrincipalAndAppFilter = (_name: string) => true;
+  let requiredToolListings: Map<string, ReturnType<typeof listMcpProjections>[number]> | null = null;
+  const requiredToolListing = (name: string): ReturnType<typeof listMcpProjections>[number] | undefined => {
+    requiredToolListings ??= new Map(
+      applyToolManifest(listMcpProjections(undefined, profile), { bypass })
+        .map((listing) => [listing.name, listing]),
+    );
+    return requiredToolListings.get(name);
+  };
   const principal = spawnRes.kind === 'ok' ? spawnRes.ctx.authenticatedPrincipal : undefined;
   if (spawnRes.kind === 'ok' && principal) {
     // Bind the narrowed principal to a const: property narrowing on
     // spawnRes.ctx.authenticatedPrincipal does not survive into the filter callback (TS18048).
     const caps = principal.capabilities;
     const allowedTools = principal.allowedTools;
-    result = result.filter((listing) => {
-      const name = (listing as { name?: unknown }).name;
-      if (typeof name !== 'string') return false;
+    const principalAllows = (name: string): boolean => {
       const projected = lookupByMcpName(name);
       return projected !== undefined &&
         (allowedTools === undefined || allowedTools.has(name)) &&
         projected.capabilities.every((capability) => caps.has(capability));
+    };
+    requiredToolPrincipalAndAppFilter = principalAllows;
+    result = result.filter((listing) => {
+      const name = (listing as { name?: unknown }).name;
+      return typeof name === 'string' && principalAllows(name);
     });
     // external-app-access P-003: an app key sees only the tools its scopes let it call —
     // the same policy the dispatch kernel seat enforces (connected-apps/enforce.ts).
@@ -3130,6 +3142,8 @@ async function resolveVisibleToolListings(extra: unknown): Promise<
       spawnRes.ctx.workspaceId,
     );
     if (appFilter) {
+      const principalAndAppAllows = requiredToolPrincipalAndAppFilter;
+      requiredToolPrincipalAndAppFilter = (name) => principalAndAppAllows(name) && appFilter(name);
       result = result.filter((listing) => {
         const name = (listing as { name?: unknown }).name;
         return typeof name === 'string' && appFilter(name);
@@ -3142,7 +3156,10 @@ async function resolveVisibleToolListings(extra: unknown): Promise<
   // tools:invoke are themselves outside its grants) and show tools every call
   // will refuse. Ungoverned and unresolved sessions come back null: unchanged.
   const identityListings = spawnRes.kind === 'ok'
-    ? await identityAdmittedListings(spawnRes.ctx, result, extra)
+    ? await identityAdmittedListings(spawnRes.ctx, result, extra, {
+      requiredToolListing,
+      requiredToolAllowed: requiredToolPrincipalAndAppFilter,
+    })
     : null;
   if (identityListings) result = identityListings;
   // `?tools=` is the SEED, not a hard cap (dynamic-tool-surface-2026-07-01): a
@@ -3227,20 +3244,58 @@ async function identityAdmittedListings(
   spawn: BuiltSpawnContext,
   listings: ReturnType<typeof listMcpProjections>,
   extra: unknown,
+  operationOptions?: {
+    requiredToolListing: (name: string) => ReturnType<typeof listMcpProjections>[number] | undefined;
+    requiredToolAllowed: (name: string) => boolean;
+  },
 ): Promise<ReturnType<typeof listMcpProjections> | null> {
   const nameOf = (listing: unknown) => (listing as { name?: unknown }).name;
   const candidates = listings.flatMap((listing) => {
     const name = nameOf(listing);
     return typeof name === 'string' ? [{ name, capabilities: lookupByMcpName(name)?.capabilities ?? [] }] : [];
   });
+  const surfaceCandidates = [...candidates];
+  const acceptedOperationListings = new Map<string, ReturnType<typeof listMcpProjections>[number]>();
   try {
     const surfaceModule = await import('../../../capability-envelope/identity-tool-surface');
     const ctx = identitySurfaceContext(spawn);
-    const surface = await surfaceModule.resolveIdentityToolSurface(ctx, candidates);
+    const surface = await surfaceModule.resolveIdentityToolSurface(ctx, candidates, undefined, (record) => {
+      if (!operationOptions || !record || typeof record !== 'object' || Array.isArray(record)) return [];
+      const acceptedOperation = (record as Record<string, unknown>).acceptedOperation;
+      if (!acceptedOperation || typeof acceptedOperation !== 'object' || Array.isArray(acceptedOperation)) return [];
+      const operation = acceptedOperation as Record<string, unknown>;
+      const requiredTools = operation.requiredTools;
+      if (operation.kind !== 'blueprint-operation-worker' ||
+          !Array.isArray(requiredTools) ||
+          !requiredTools.every((name) => typeof name === 'string' && name.length > 0)) return [];
+
+      const additional: Array<{ name: string; capabilities: readonly string[] }> = [];
+      for (const name of new Set(requiredTools as string[])) {
+        if (!operationOptions.requiredToolAllowed(name)) continue;
+        const listing = operationOptions.requiredToolListing(name);
+        const projected = lookupByMcpName(name);
+        if (!listing || !projected) continue;
+        acceptedOperationListings.set(name, listing);
+        additional.push({ name, capabilities: projected.capabilities });
+      }
+      const known = new Set(surfaceCandidates.map((candidate) => candidate.name));
+      for (const candidate of additional) {
+        if (!known.has(candidate.name)) {
+          surfaceCandidates.push(candidate);
+          known.add(candidate.name);
+        }
+      }
+      return additional;
+    });
     const sessionKey = mcpSessionKey(extra);
-    if (sessionKey) surfaceModule.rememberListedIdentitySurface(sessionKey, { ctx, candidates, surface });
+    if (sessionKey) surfaceModule.rememberListedIdentitySurface(sessionKey, { ctx, candidates: surfaceCandidates, surface });
     if (surface.kind !== 'governed') return null;
-    return listings.filter((listing) => {
+    const allListings = [...listings];
+    const existingNames = new Set(allListings.map((listing) => nameOf(listing)).filter((name): name is string => typeof name === 'string'));
+    for (const [name, listing] of acceptedOperationListings) {
+      if (!existingNames.has(name)) allListings.push(listing);
+    }
+    return allListings.filter((listing) => {
       const name = nameOf(listing);
       return typeof name === 'string' && surface.admitted.has(name);
     });
