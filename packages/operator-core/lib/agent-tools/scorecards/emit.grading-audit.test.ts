@@ -379,7 +379,7 @@ describe('CRM canonical producer independence (P-012)', () => {
     output: { interactionGrade: { gradedWorkItemRef: 'WI-42', rubricRef: args.rubricRef,
       rubricRevision: args.rubricRevision, criteriaHash: args.criteriaHash,
       ratings: [{ key: 'c1', ...args.ratings.c1 }] } }, evidenceRef: 'operation-output:43',
-    input: { reviewContext: { gradedWorkItemRef: 'WI-42', rubricRef: args.rubricRef,
+    input: { reviewBinding: { gradedWorkItemRef: 'WI-42', rubricRef: args.rubricRef,
       rubricRevision: args.rubricRevision, criteriaHash: args.criteriaHash } } }));
 
   beforeEach(() => getRubric.mockResolvedValue({ ...mkRubric('crm-interaction-quality', 'standard'), criteriaHash: 'a'.repeat(64) }));
@@ -469,6 +469,35 @@ describe('CRM canonical producer independence (P-012)', () => {
     expect(captureImprovement.mock.calls[0][0].payloadExtra.observation.interactionReviewer.ownerId).toBe('su-independent');
   });
 
+  it('verifies the retained binding after private source cleanup without requiring a public source packet', async () => {
+    const proof = await reviewer('su-independent')();
+    expect(proof.input).not.toHaveProperty('reviewContext');
+    expect(proof.input.reviewBinding).not.toHaveProperty('sourceContent');
+    expect((await emitScorecard(args, { ...input, createdBy: 'app:crm' }, {
+      readInteractionProducer: reader(), readInteractionReviewer: async () => proof,
+      lineageRelated: async () => false,
+    })).ok).toBe(true);
+  });
+
+  it.each([{ gradedWorkItemRef: 'WI-99' }, { rubricRef: 'other' }, { rubricRevision: 2 },
+    { criteriaHash: 'c'.repeat(64) }])('refuses a changed retained review binding %j', async (patch) => {
+    const proof = await reviewer()();
+    proof.input.reviewBinding = { ...proof.input.reviewBinding, ...patch };
+    expect(await emitScorecard(args, input, { readInteractionProducer: reader(),
+      readInteractionReviewer: async () => proof, lineageRelated: async () => false,
+    })).toMatchObject({ ok: false, code: 'interaction_reviewer_mismatch' });
+    expect(captureImprovement).not.toHaveBeenCalled();
+  });
+
+  it('refuses an unbound public source packet as a replacement for retained review identity', async () => {
+    const proof = await reviewer()();
+    expect(await emitScorecard(args, input, { readInteractionProducer: reader(),
+      readInteractionReviewer: async () => ({ ...proof, input: { reviewContext: proof.input.reviewBinding } }),
+      lineageRelated: async () => false,
+    })).toMatchObject({ ok: false, code: 'interaction_reviewer_mismatch' });
+    expect(captureImprovement).not.toHaveBeenCalled();
+  });
+
   it.each([{ workspaceId: 'other' }, { harnessSlug: 'other' }, { operationId: 'send-email' },
     { target: { kind: 'work-item' as const, id: 'WI-42' } }])('refuses an out-of-scope reviewer handle %j', async (patch) => {
     const readReview = reviewer();
@@ -483,7 +512,7 @@ describe('CRM canonical producer independence (P-012)', () => {
     expect(await emitScorecard(args, input, { readInteractionProducer: reader(),
       readInteractionReviewer: async () => ({ ownerId: 'reviewer', completionRef: 'completion:43',
         output: null, evidenceRef: 'operation-output:43',
-        input: { reviewContext: { gradedWorkItemRef: 'WI-99' } } }) }))
+        input: { reviewBinding: { gradedWorkItemRef: 'WI-99' } } }) }))
       .toMatchObject({ code: 'interaction_reviewer_mismatch' });
     expect(captureImprovement).not.toHaveBeenCalled();
   });

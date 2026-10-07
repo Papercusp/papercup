@@ -1529,7 +1529,9 @@ export async function emitScorecard(
       const reviewer = deps.readInteractionReviewer
         ? await deps.readInteractionReviewer(handle, input.createdBy)
         : await getBlueprintOperationTerminalWorker(getOrgPg().sql, handle, input.createdBy);
-      const context = reviewer.input.reviewContext as Record<string, unknown> | undefined;
+      // Private source expires at completion. Its trusted non-content identity
+      // remains in the accepted input pin for canonical scorecard validation.
+      const context = reviewer.input.reviewBinding as Record<string, unknown> | undefined;
       if (!reviewer.ownerId || !reviewer.completionRef || context?.gradedWorkItemRef !== args.subject.ref ||
           context.rubricRef !== args.rubricRef || context.rubricRevision !== args.rubricRevision ||
           context.criteriaHash !== args.criteriaHash) {
