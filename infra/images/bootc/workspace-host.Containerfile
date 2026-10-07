@@ -155,6 +155,9 @@ RUN set -eux; \
          `# git (offline-content-bundle-install-io.ts gitCloneShallow). Stock Ubuntu ships git,` \
          `# so the apt contract never had to name it; Stream 9 bootc does not (WI-10005779).` \
          git-core \
+         `# Keep the OS Login RPM scriptlets enabled: %post also enables its cache timer,` \
+         `# refreshes the linker cache and labels OS Login paths. Its semodule install` \
+         `# is retried against the booted host policy store by papercusp-host-prepare.` \
          google-compute-engine-oslogin \
          google-guest-agent \
          jq \

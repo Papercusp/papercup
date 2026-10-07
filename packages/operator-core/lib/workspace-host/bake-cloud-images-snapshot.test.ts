@@ -321,7 +321,7 @@ else
 fi
 chmod 0600 "$deployment_root/etc/sysconfig/nftables.conf"
 printf '%s\\n' 'table inet papercusp_workspace_host {' '}' > "$deployment_root/etc/nftables/papercusp-workspace-host.nft"
-printf '%s\\n' '[Unit]' 'Requires=local-fs.target nftables.service' 'After=local-fs.target nftables.service' \
+printf '%s\\n' '[Unit]' 'Requires=local-fs.target systemd-tmpfiles-setup.service nftables.service' 'After=local-fs.target systemd-tmpfiles-setup.service nftables.service' \
   > "$deployment_root/usr/lib/systemd/system/papercusp-host-prepare.service"
 printf '%s\\n' '[Unit]' > "$deployment_root/usr/lib/systemd/system/nftables.service"
 ln -s /usr/lib/systemd/system/nftables.service \
@@ -996,8 +996,12 @@ describe('bake-cloud-images.sh startup snapshot (EI-22355025813361885)', () => {
     expect(write).toBeGreaterThan(-1);
     expect(replace).toBeGreaterThan(write);
     expect(CONTAINERFILE_SOURCE).not.toContain('> /etc/sysconfig/nftables.conf');
-    expect(HOST_PREPARE_UNIT_SOURCE).toContain('Requires=local-fs.target nftables.service');
-    expect(HOST_PREPARE_UNIT_SOURCE).toContain('After=local-fs.target nftables.service');
+    expect(HOST_PREPARE_UNIT_SOURCE).toContain(
+      'Requires=local-fs.target systemd-tmpfiles-setup.service nftables.service',
+    );
+    expect(HOST_PREPARE_UNIT_SOURCE).toContain(
+      'After=local-fs.target systemd-tmpfiles-setup.service nftables.service',
+    );
     expect(IMAGE_BUILD_PROBE_SOURCE).toContain('committed nftables config loads the Papercusp ruleset');
     expect(IMAGE_BUILD_PROBE_SOURCE).toContain('host-prepare requires and follows nftables');
   });
@@ -1013,6 +1017,47 @@ describe('bake-cloud-images.sh startup snapshot (EI-22355025813361885)', () => {
       'systemd-tmpfiles --create /usr/lib/tmpfiles.d/papercusp-google-oslogin.conf',
     );
     expect(IMAGE_BUILD_PROBE_SOURCE).toContain('expected 755:0:0');
+  });
+
+  it('installs OS Login policy on the booted host before sshd and reapplies RPM labels (WI-10005926)', () => {
+    const hostPrepareCode = HOST_PREPARE_SOURCE.replace(/^\s*#.*$/gm, '');
+    const policyInstall = hostPrepareCode.indexOf('semodule -i "$OSLOGIN_POLICY"');
+    const policyVerify = hostPrepareCode.indexOf('semodule -lfull | awk');
+    const labelDirectories = hostPrepareCode.indexOf('for path in /var/google-sudoers.d /var/google-users.d; do');
+    const labelFiles = hostPrepareCode.indexOf('for path in /etc/oslogin_passwd.cache.bin /etc/oslogin_group.cache; do');
+    const complete = hostPrepareCode.indexOf('say "complete"');
+
+    expect(policyInstall, 'host prepare must install the shipped OS Login policy').toBeGreaterThan(-1);
+    expect(policyVerify, 'host prepare must verify that semodule loaded OS Login').toBeGreaterThan(policyInstall);
+    expect(labelDirectories).toBeGreaterThan(policyVerify);
+    expect(labelFiles).toBeGreaterThan(labelDirectories);
+    expect(hostPrepareCode.indexOf('restorecon -r "$path"', labelDirectories)).toBeGreaterThan(labelDirectories);
+    expect(hostPrepareCode.indexOf('restorecon "$path"', labelFiles)).toBeGreaterThan(labelFiles);
+    expect(complete).toBeGreaterThan(labelFiles);
+    expect(HOST_PREPARE_UNIT_SOURCE).toMatch(/^After=.*systemd-tmpfiles-setup\.service/m);
+    expect(HOST_PREPARE_UNIT_SOURCE).toMatch(/^Requires=.*systemd-tmpfiles-setup\.service/m);
+    expect(HOST_PREPARE_UNIT_SOURCE).toMatch(/^Before=sshd\.service$/m);
+    expect(IMAGE_BUILD_PROBE_SOURCE).toContain('/usr/share/selinux/packages/oslogin.pp');
+    expect(IMAGE_BUILD_PROBE_SOURCE).toContain("rpm -q --scripts google-compute-engine-oslogin");
+    expect(IMAGE_BUILD_PROBE_SOURCE).toContain(
+      "grep -Fx 'Requires=local-fs.target systemd-tmpfiles-setup.service nftables.service'",
+    );
+    expect(IMAGE_BUILD_PROBE_SOURCE).toContain(
+      "grep -Fx 'After=local-fs.target systemd-tmpfiles-setup.service nftables.service'",
+    );
+    expect(SOURCE).toContain("grep -Fx 'Requires=local-fs.target systemd-tmpfiles-setup.service nftables.service'");
+    expect(SOURCE).toContain("grep -Fx 'After=local-fs.target systemd-tmpfiles-setup.service nftables.service'");
+    for (const sideEffect of [
+      'systemctl enable google-oslogin-cache.timer',
+      '/sbin/ldconfig',
+      'semodule -i /usr/share/selinux/packages/oslogin.pp',
+      'restorecon -r /var/google-sudoers.d',
+      'restorecon -r /var/google-users.d',
+      'restorecon /etc/oslogin_passwd.cache.bin',
+      'restorecon /etc/oslogin_group.cache',
+    ]) {
+      expect(IMAGE_BUILD_PROBE_SOURCE).toContain(sideEffect);
+    }
   });
 });
 

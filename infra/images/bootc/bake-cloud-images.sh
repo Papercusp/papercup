@@ -485,10 +485,10 @@ verify_release_disk_metadata() (
     "$deployment_root/etc/nftables/papercusp-workspace-host.nft" >/dev/null \
     || disk_fail 'nftables-ruleset-table-missing'
 
-  host_prepare_unit="$deployment_root/usr/lib/systemd/system/papercusp-host-prepare.service"
-  "${privilege[@]}" grep -Fx 'Requires=local-fs.target nftables.service' "$host_prepare_unit" >/dev/null \
+ host_prepare_unit="$deployment_root/usr/lib/systemd/system/papercusp-host-prepare.service"
+  "${privilege[@]}" grep -Fx 'Requires=local-fs.target systemd-tmpfiles-setup.service nftables.service' "$host_prepare_unit" >/dev/null \
     || disk_fail 'host-prepare-nftables-requires-missing'
-  "${privilege[@]}" grep -Fx 'After=local-fs.target nftables.service' "$host_prepare_unit" >/dev/null \
+  "${privilege[@]}" grep -Fx 'After=local-fs.target systemd-tmpfiles-setup.service nftables.service' "$host_prepare_unit" >/dev/null \
     || disk_fail 'host-prepare-nftables-order-missing'
   [ "$("${privilege[@]}" readlink -- "$deployment_root/etc/systemd/system/multi-user.target.wants/nftables.service")" \
       = '/usr/lib/systemd/system/nftables.service' ] \
