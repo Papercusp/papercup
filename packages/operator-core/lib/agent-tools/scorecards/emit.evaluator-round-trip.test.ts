@@ -126,7 +126,7 @@ vi.mock('../../scorecard-emitted-events', () => ({ emitScorecardEmitted: async (
 
 import evaluatorTool, { argsSchema as evaluatorArgsSchema } from '../plans/evaluate-spec-test-adequacy';
 import { listSpecClauses } from '../plans/spec-clauses-store';
-import { measureRepoFilesEvidenceAtRoot } from '../plans/spec-evidence-store';
+import { measureAndPinRepoFilesEvidenceAtRoot } from '../plans/spec-evidence-store';
 import { ADEQUACY_CRITERIA, SPEC_TEST_ADEQUACY_EVALUATOR_REVISION } from '../plans/spec-test-adequacy';
 import { resolveLocalRubric } from '../../cupboard/rubric-store';
 import { emitScorecard, scorecardEmitArgs } from './emit';
@@ -137,11 +137,13 @@ const listClauses = vi.mocked(listSpecClauses);
 const PLAN = 'reconnect-plan';
 const SPEC = 'SPEC-003-01';
 const SPEC_FINGERPRINT = 'sha256:spec-v1';
+const MEASURED_PASSED_CASE_TITLE = 'reconnect after acknowledgement';
 const MEASUREMENT = {
   schemaVersion: 1 as const,
   kind: 'repo-files' as const,
   sourcePaths: ['src/reconnect.ts'],
   testPaths: ['test/reconnect.test.ts'],
+  fixturePaths: ['fixtures/reconnect.fixture.ts'],
 };
 
 const ADEQUACY = {
@@ -171,13 +173,14 @@ function bindingRow(
     testRunOutputTail?: string | null;
     testCases?: string[];
   },
-  fingerprints: { sourceFingerprint: string; testFingerprint: string | null },
+  fingerprints: Awaited<ReturnType<typeof measureAndPinRepoFilesEvidenceAtRoot>>,
 ): Record<string, unknown> {
+  const testRunStatus = over.testRunStatus ?? (over.evidenceKind === 'mutation' ? 'fail' : 'pass');
   // Mirrors the store's SQL (WI-10006745): a failed mutation-probe run's raw ledger tail.
   const mutationFailureTail =
     over.evidenceKind === 'mutation' &&
     over.testRunSource === 'mutation-probe' &&
-    over.testRunStatus === 'fail'
+    testRunStatus === 'fail'
       ? over.testRunOutputTail ?? null
       : null;
   const mutationFailedCaseTitle =
@@ -194,6 +197,8 @@ function bindingRow(
     failed: mutationFailureTail === null ? 0 : 1,
     skipped: 0,
     collectionFailed: false,
+    testLayer: 'integration',
+    passedCaseTitles: mutationFailureTail === null ? [MEASURED_PASSED_CASE_TITLE] : [],
     mutationPhase: mutationFailureTail === null ? null : 'mutant',
     ...(mutationFailureTail === null ? {} : { failedCaseTitles: [mutationFailedCaseTitle] }),
     commitSha: 'fixture-clean-commit',
@@ -212,9 +217,8 @@ function bindingRow(
     evidence_ref: over.evidenceRef,
     source_fingerprint: fingerprints.sourceFingerprint,
     test_fingerprint: fingerprints.testFingerprint,
-    // Non-repository dimensions stay null: a caller-supplied value for any of them is
-    // attested, not measured, and would legitimately cap freshness below pass.
-    fixture_fingerprint: null,
+    // Source, test, and fixture dimensions are all measured from this same temporary root.
+    fixture_fingerprint: fingerprints.fixtureFingerprint ?? null,
     rubric_fingerprint: null,
     environment_fingerprint: null,
     coverage_evidence_ref: 42,
@@ -226,6 +230,7 @@ function bindingRow(
     test_run_file_path: 'test/reconnect.test.ts',
     test_run_commit_sha: 'fixture-clean-commit',
     test_run_worktree_dirty: false,
+    test_run_status: testRunStatus,
     test_run_execution_details: executionDetails,
     mutation_failure_tail: mutationFailureTail,
     ...(mutationFailureTail === null ? {} : { mutation_execution_details: executionDetails }),
@@ -236,6 +241,7 @@ function bindingRow(
         ...(over.testCases ? { testCases: over.testCases } : {}),
       },
       currentMeasurement: MEASUREMENT,
+      measurementPin: fingerprints.pin,
     },
     observed_at: '2026-09-20 17:10:00-04',
     binding_fingerprint: `sha256:binding-${over.id}`,
@@ -300,12 +306,17 @@ let root = '';
 async function writeSubject(sourceBody: string): Promise<void> {
   await writeFile(join(root, 'src', 'reconnect.ts'), sourceBody);
   await writeFile(join(root, 'test', 'reconnect.test.ts'), 'expect(replayed).toEqual([]);\n');
+  await writeFile(join(root, 'fixtures', 'reconnect.fixture.ts'), 'export const reconnectFixture = true;\n');
 }
 
 beforeAll(async () => {
   root = await mkdtemp(join(tmpdir(), 'emit-evaluator-round-trip-'));
   h.measurementRoot = root;
-  await Promise.all([mkdir(join(root, 'src'), { recursive: true }), mkdir(join(root, 'test'), { recursive: true })]);
+  await Promise.all([
+    mkdir(join(root, 'src'), { recursive: true }),
+    mkdir(join(root, 'test'), { recursive: true }),
+    mkdir(join(root, 'fixtures'), { recursive: true }),
+  ]);
 });
 
 afterAll(async () => {
@@ -318,7 +329,7 @@ beforeEach(async () => {
   await writeSubject('export const ackedEventsReplayed = false;\n');
   // Stored fingerprints are what binding MEASURED: derive them from the fixture checkout
   // at run time, so 'current' can only mean the server re-derived them.
-  const bound = await measureRepoFilesEvidenceAtRoot(root, MEASUREMENT);
+  const bound = await measureAndPinRepoFilesEvidenceAtRoot(root, MEASUREMENT);
   h.rows = [
     bindingRow({ id: 1, evidenceKind: 'coverage-census', evidenceRef: 'surface:reconnect', outcome: 'passed' }, bound),
     bindingRow({ id: 2, evidenceKind: 'counterexample', evidenceRef: 'counterexample:reconnect', outcome: 'pass' }, bound),
@@ -329,7 +340,7 @@ beforeEach(async () => {
       evidenceKind: 'test',
       evidenceRef: 'test:reconnect',
       outcome: 'passed',
-      testCases: ['reconnect after acknowledgement'],
+      testCases: [MEASURED_PASSED_CASE_TITLE],
     }, bound),
     // The clause requires an 'integration fixture'. Only fixture-scoped proof (an
     // evidenceKind='fixture' binding or a non-null fixture fingerprint) may attest
@@ -401,7 +412,7 @@ describe('spec-test-adequacy evaluator → scorecards:emit round trip', () => {
       // The ledger reporter's real format: `<case full name>: <message>` (the em dash is part
       // of the describe title, exactly as in live rows — WI-10006745).
       testRunOutputTail: "code-search.callers-lookup — measurement and promotion state > keeps the lane honest: expected 'needs-widening' to be 'equivalent'",
-    }, await measureRepoFilesEvidenceAtRoot(root, MEASUREMENT)));
+    }, await measureAndPinRepoFilesEvidenceAtRoot(root, MEASUREMENT)));
 
     const result = await runEvaluator({
       harness: 'papercusp',

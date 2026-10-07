@@ -871,6 +871,26 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(coverageOnly.ratings['execution-integrity'].rating).toBe('unknown');
   });
 
+  it('explains a canonical failed counterexample despite successful binder attestations', () => {
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [evidence({
+        evidenceKind: 'counterexample',
+        coverageEvidenceRef: null,
+        testRunExecution: {
+          status: 'fail', passed: 13, failed: 1, skipped: 0, collectionFailed: false,
+        },
+        details: { adequacy: { collected: true, skipped: false, executed: true, outcome: 'caught', falsifiable: true } },
+      })],
+      classRef: 'plan-class-feature-ship',
+    });
+    expect(result.ratings['execution-integrity'].rating).toBe('fail');
+    expect(result.ratings.falsifiability.evidence).toContain(
+      'canonical execution=fail for counterexample: status=fail, passed=13, failed=1, skipped=0, collectionFailed=false',
+    );
+    expect(result.ratings.falsifiability.evidence).not.toContain('no unmet conjunct identified');
+  });
+
   it('does not let a ledger-backed sibling hide an unbacked executable binding', () => {
     const result = evaluateSpecTestAdequacy({
       clause: clause(),
@@ -1193,9 +1213,17 @@ describe('spec-test-adequacy per-clause evaluator', () => {
   });
 
   it('does not credit a sibling-case mutation failure to this clause', () => {
+    const testPath = 'test/promotion-readable.integration.test.ts';
+    const failedCaseTitle = 'refused-transition-preserved';
     const mutation = evidence({
       evidenceKind: 'mutation',
       evidenceRef: 'mutation-probe:refused-transition:caught',
+      testRunProvenance: {
+        filePath: testPath,
+        commitSha: 'abc123',
+        worktreeDirty: false,
+        mutationFailureLines: [`${failedCaseTitle}: expected true to be false`],
+      },
       details: {
         adequacy: {
           falsifiable: true,
@@ -1217,7 +1245,7 @@ describe('spec-test-adequacy per-clause evaluator', () => {
           requiredScenarios: ['promotion-readable'],
         },
       }),
-      evidence: [evidence(), mutation],
+      evidence: [evidence(), successfulTestBinding(testPath, { testCases: [failedCaseTitle] }), mutation],
       classRef: 'plan-class-feature-ship',
     });
 
@@ -1702,7 +1730,8 @@ describe('spec-test-adequacy per-clause evaluator', () => {
       classRef: 'plan-class-feature-ship',
     });
     expect(uncorroborated.ratings['correct-layer'].rating).toBe('unknown');
-    expect(uncorroborated.ratings['correct-layer'].evidence).toContain('exact passedCaseTitles');
+    expect(uncorroborated.ratings['correct-layer'].evidence).toContain('different passing case');
+    expect(uncorroborated.ratings['correct-layer'].suggestion).toContain('exact passedCaseTitles');
 
     const contradictoryLayer = successfulTestBinding('test/reconnect.unit.test.ts', {
       layer: 'unit',
