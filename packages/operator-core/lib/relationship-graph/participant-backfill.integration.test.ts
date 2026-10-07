@@ -148,7 +148,16 @@ describe('interaction participant backfill (P-003, D-017 point 2)', () => {
   });
 
   it('projects participants of stored interactions from a granted source only, and a replay adds no person', async () => {
-    const result = await backfillInteractionParticipants(sql, { workspaceId: WS, userId, ctx: CTX });
+    // Measure the real sink boundaries rather than inferring delivery latency from a lookup query.
+    const timings: Record<string, { calls: number; ms: number }> = {};
+    const start = performance.now();
+    const result = await backfillInteractionParticipants(sql, { workspaceId: WS, userId, ctx: CTX, timings });
+    console.info('PARTICIPANT_BACKFILL_STAGE_TIMINGS', JSON.stringify({ totalMs: performance.now() - start, sinks: timings }));
+    expect(timings['data-source-record']?.calls).toBe(2);
+    expect(timings['relationship-graph-resolve']?.calls).toBe(2);
+    expect(timings['team-metadata']?.calls).toBe(1);
+    expect(timings['document-page']?.calls).toBeGreaterThanOrEqual(1);
+    expect(Object.values(timings).every((timing) => timing.ms >= 0)).toBe(true);
     expect(result.ok, JSON.stringify(result)).toBe(true);
     const bySource = Object.fromEntries(result.sources.map((s) => [s.sourceId, s]));
     expect(bySource[mailSource]).toEqual({ sourceId: mailSource, datatype: 'email-message', granted: true, documents: 1, participants: 2 });
