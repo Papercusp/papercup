@@ -18443,7 +18443,7 @@
       "profile": "engineer",
       "guidance": {
         "when": "Use for an su/interactive session that should keep advancing a goal on a recurring cadence. Arm it last before ending your turn. Pass ownerId only to arm an already-running, wake-reachable session other than your own.",
-        "notWhen": "Not for wall-clock schedules (plans:set-schedule) or autonomous queen/bee/scout loops (pot:declare-wake). Do not use Claude /loop instead. Not the PRIMARY watcher when the thing you watch already emits — park on it with events:await and keep the loop as the slow backstop.",
+        "notWhen": "Not for wall-clock schedules (plans:set-schedule) or autonomous queen/bee/scout loops (pot:declare-wake). Do not use Claude /loop instead. For an event-driven one-shot wake, prefer events:await, but do not stack it with a mode:\"monitor\" loop for the same normalized predicate: events:await refuses duplicate monitoring. Keep the monitor loop, or end it before registering the exact await.",
         "chaining": "loop:arm { intervalSec, goal } → end turn → re-wakes each iteration → loop:status to inspect → loop:end to stop."
       }
     },

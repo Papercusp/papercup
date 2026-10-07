@@ -70,6 +70,7 @@ import {
   admitMonitorArm,
   monitorPredicateDedupRefusal,
   monitorArmConfigSchema,
+  normalizeMonitorPredicateKey,
   prepareMonitorConfig,
   type PersistedMonitorConfig,
 } from '../../harness/routines/monitor-policy';
@@ -503,7 +504,7 @@ export default defineTool({
   guidance: {
     when: 'Use for an su/interactive session that should keep advancing a goal on a recurring cadence. Arm it last before ending your turn. Pass ownerId only to arm an already-running, wake-reachable session other than your own.',
     notWhen:
-      'Not for wall-clock schedules (plans:set-schedule) or autonomous queen/bee/scout loops (pot:declare-wake). Do not use Claude /loop instead. Not the PRIMARY watcher when the thing you watch already emits — park on it with events:await and keep the loop as the slow backstop.',
+      'Not for wall-clock schedules (plans:set-schedule) or autonomous queen/bee/scout loops (pot:declare-wake). Do not use Claude /loop instead. For an event-driven one-shot wake, prefer events:await, but do not stack it with a mode:"monitor" loop for the same normalized predicate: events:await refuses duplicate monitoring. Keep the monitor loop, or end it before registering the exact await.',
     chaining:
       'loop:arm { intervalSec, goal } → end turn → re-wakes each iteration → loop:status to inspect → loop:end to stop.',
     seeAlso: [
@@ -560,7 +561,7 @@ export default defineTool({
           .max(200)
           .optional()
           .describe(
-            "The events:catalog key that fires when this blocker CLEARS. The key is checked against event authority at arm time: only a proven reachable key bypasses the 15min cap; unknown or impossible keys remain capped with evidence in the result. Naming it does not register the await — actually park on it with events:await { event, timeout_sec, on_timeout:'wake' }. Omit it and the interval is CAPPED to 15min.",
+            "The events:catalog key that fires when this blocker CLEARS. The key is checked against event authority at arm time: only a proven reachable key bypasses the 15min cap; unknown or impossible keys remain capped with evidence in the result. Naming it does not register the await — actually park on it with events:await { event, timeout_sec, on_timeout:'wake' }. If the active monitor loop already uses the same normalized predicate, events:await refuses the duplicate; keep the monitor loop or end it before registering the exact await. Omit this key and the interval is CAPPED to 15min.",
           ),
         // EI-21526226279199560 — the same `kind`/`ref` vocabulary coord's blockedOn uses
         // (D-003), deliberately NOT a second spelling of one concept. Prose cannot be
@@ -1643,7 +1644,23 @@ export default defineTool({
     // but says something the agent CANNOT infer from the echoed interval alone: whether it
     // was capped, and (when an event was named) that naming it is not the same as parking
     // on it. A silently-capped interval would be worse than no cap at all.
-    const backoffNote = backoff.note ? ` ${backoff.note}` : '';
+    const monitorPredicateKey =
+      resolvedMode === 'monitor' && admittedMonitorConfig
+        ? normalizeMonitorPredicateKey(admittedMonitorConfig.predicateKey)
+        : null;
+    const blockedEventPredicateKey = args.blockedOn?.event
+      ? normalizeMonitorPredicateKey(args.blockedOn.event)
+      : null;
+    const blockedOnEventConflictsWithMonitor = Boolean(
+      monitorPredicateKey && blockedEventPredicateKey && monitorPredicateKey === blockedEventPredicateKey,
+    );
+    const backoffNote = blockedOnEventConflictsWithMonitor && args.blockedOn?.event
+      ? ` ⚠ Backoff recorded: blocked on "${args.blockedOn.reason}". Interval ${intervalSec}s${backoff.clamped ? ` (requested ${intervalSecArg}s; capped)` : ''}. ` +
+        `${eventReachabilityEvidence(args.blockedOn.event, backoff.eventReachability ?? unmeasuredEventReachability())} ` +
+        `This key is already the active monitor's predicate. events:await on the same normalized key is refused as monitor_exact_await_duplicate. Keep this loop as the sole monitor, or end it before registering the one-shot await; do not stack both.`
+      : backoff.note
+        ? ` ${backoff.note}`
+        : '';
 
     // EI-21526226279199560 — the caller NAMED an agent in prose but passed no `ref`, so
     // the per-wake liveness check cannot resolve a subject and stays silent. Offered here
@@ -1683,10 +1700,12 @@ export default defineTool({
     // prompt weight, fires only for monitor loops, and arrives with the keys
     // already spelled out — static guidance is read before the decision, this
     // is read during it. The clock loop stays armed either way; this argues
-    // for demoting it to a backstop, never refuses it.
+    // for demoting it to a backstop, never refuses it. Exact duplicate monitoring is
+    // intentionally refused by monitor-policy, so the runtime note must make the
+    // mutually-exclusive choice clear instead of telling callers to stack both.
     const monitorPushNote =
       resolvedMode === 'monitor'
-        ? ' 📡 Monitor loop armed — but prefer PUSH wherever the thing you are watching already emits. A fleet leader can park on fleet:member-dead · fleet:claim-released · fleet:item-completed · fleet:context-critical via events:await { event, timeout_sec, on_timeout:"wake" }, which wakes you ON the transition instead of N times between transitions. Keep THIS loop as the slow backstop (a longer intervalSec) rather than the primary watcher. events:catalog lists the full set.'
+        ? ' 📡 Monitor loop armed. A separate exact event await can provide a one-shot wake for a different predicate, but an await on this monitor’s same normalized predicate is refused as monitor_exact_await_duplicate. For the same predicate, choose one: keep this loop, or end it before registering events:await; do not stack both. events:catalog lists the full set.'
         : '';
     const note =
       baseNote +

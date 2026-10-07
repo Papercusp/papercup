@@ -2400,6 +2400,22 @@ describe('loop:arm — EI-19395290807657827: the self-sealing backoff', () => {
       });
       expect(materializeM).toHaveBeenCalledWith(expect.objectContaining({ intervalSec: 7200 }));
     });
+
+    it('does not tell a monitor caller to register an exact await for its same predicate', async () => {
+      const b = body(await call({
+        intervalSec: 7200,
+        mode: 'monitor',
+        monitor: monitorConfig(),
+        blockedOn: { reason: 'gate red', event: 'RELEASE:GREEN:PAPERCUSP' },
+      }));
+
+      expect(b.ok).toBe(true);
+      expect(b.loop.monitor).toMatchObject({ predicateKey: 'release:green:papercusp' });
+      expect(b.note).toContain('monitor_exact_await_duplicate');
+      expect(b.note).toContain('do not stack both');
+      expect(b.note).not.toContain('NOW ACTUALLY PARK ON IT');
+      expect(b.note).not.toContain("events:await { event: 'RELEASE:GREEN:PAPERCUSP'");
+    });
   });
 });
 describe('loop:arm — carry-only retune inherits interval/goal (EI-21476896242465605)', () => {
