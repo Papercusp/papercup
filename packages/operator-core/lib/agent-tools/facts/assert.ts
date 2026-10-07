@@ -35,6 +35,7 @@ import {
   GUARD_RAIL_KEY_PREFIX,
   FACT_VOLATILE_MAX_TTL_SEC,
   validateFactLifetime,
+  validateConventionEnforcement,
   type AgentFact,
   type FactDependency,
   type FactSourceProvenance,
@@ -813,6 +814,7 @@ export default defineTool({
           kind?: unknown;
           settledBy?: unknown;
           shareable?: unknown;
+          enforcement?: Parameters<typeof validateConventionEnforcement>[1];
           scope?: unknown;
           scopeRef?: unknown;
           harness?: unknown;
@@ -839,6 +841,23 @@ export default defineTool({
               `facts:assert — settledBy is only valid with kind:'undecidable'; on a settled claim it has no referent` +
               `${v.kind === undefined ? ' (you declared no kind, which is treated as settled)' : ` (you declared kind:'${String(v.kind)}')`}. ` +
               "Either remove settledBy, or set kind:'undecidable' if this really is not determinable from the available evidence.",
+          });
+        }
+
+        // P-018 / D-016: the fields are structurally optional because the
+        // structural tier takes neither, but gate/detector require both. Keep
+        // this conditional contract in the input schema as well as assertFact:
+        // otherwise the tool schema accepts an input the write later refuses,
+        // and dryRun can forecast a write that cannot succeed.
+        const enforcementError = validateConventionEnforcement(
+          v.kind as 'conclusion' | 'assumption' | 'convention' | 'undecidable' | undefined,
+          v.enforcement,
+        );
+        if (enforcementError) {
+          ctx.addIssue({
+            code: 'custom',
+            path: ['enforcement'],
+            message: `facts:assert — ${enforcementError}`,
           });
         }
 

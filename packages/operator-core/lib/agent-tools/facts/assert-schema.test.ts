@@ -127,6 +127,38 @@ describe('facts:assert shareable federation contract', () => {
   });
 });
 
+describe('facts:assert convention enforcement contract (EI-25333926594437978)', () => {
+  it('rejects conditionally invalid tiers at the input schema', () => {
+    const invalid = [
+      { ...base, kind: 'convention', enforcement: { tier: 'detector' } },
+      { ...base, kind: 'convention', enforcement: { tier: 'gate', reviewBy: '2026-12-01' } },
+      { ...base, kind: 'convention', enforcement: { tier: 'detector', floor: 0.6 } },
+      { ...base, kind: 'conclusion', enforcement: { tier: 'detector', floor: 0.6, reviewBy: '2026-12-01' } },
+    ];
+
+    for (const input of invalid) {
+      const parsed = assertTool.args.safeParse(input);
+      expect(parsed.success).toBe(false);
+      if (parsed.success) continue;
+      expect(parsed.error.issues).toHaveLength(1);
+      expect(parsed.error.issues[0]?.path).toEqual(['enforcement']);
+    }
+  });
+
+  it('accepts the structural tier without measured fields and a complete detector tier', () => {
+    expect(
+      assertTool.args.safeParse({ ...base, kind: 'convention', enforcement: { tier: 'structural' } }).success,
+    ).toBe(true);
+    expect(
+      assertTool.args.safeParse({
+        ...base,
+        kind: 'convention',
+        enforcement: { tier: 'detector', floor: 0.6, reviewBy: '2026-12-01' },
+      }).success,
+    ).toBe(true);
+  });
+});
+
 describe('facts:assert measurement input compatibility', () => {
   it('accepts the persisted/read measurement object alongside a conclusion', () => {
     expect(
