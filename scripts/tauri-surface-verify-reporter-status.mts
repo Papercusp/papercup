@@ -65,11 +65,26 @@ const result = await runHarness({
       clickText('Review');
       wait("!!document.querySelector('[data-testid=report-problem-dialog] pre')");
       capture('preview');
+      ctx.markStep('preview-and-consent-screenshot');
+      clickText('Capture screenshot');
+      wait("(()=>{const img=document.querySelector('[data-testid=report-problem-screenshot-preview] img');return img?.complete&&img.naturalWidth>100&&img.naturalHeight>100})()");
+      assert.equal(ev("document.querySelector('[data-testid=report-problem-attach-screenshot]').getAttribute('aria-checked')").trim().replace(/^"|"$/g, ''), 'false');
+      const [beforeConsent] = await sql`SELECT count(*)::int AS count FROM harness_shared.work_items
+        WHERE workspace_id = ${ws} AND title LIKE ${`%${marker}%`}`;
+      assert.equal(beforeConsent?.count, 0, 'capture sent the report before consent');
+      capture('screenshot-preview');
+      ev("document.querySelector('[data-testid=report-problem-attach-screenshot]').click()");
       clickText('Send');
       wait("document.querySelector('[data-testid=report-problem-dialog]')?.innerText.includes('your report was filed')");
       const [source] = await sql<{ feature_id: string; title: string; summary: string; payload: Record<string, unknown> }[]>`
         SELECT feature_id, title, summary, payload FROM harness_shared.work_items WHERE workspace_id = ${ws} AND title LIKE ${`%${marker}%`}`;
       assert.ok(source, 'real report missing');
+      const [image] = await sql<{ content: Buffer; redaction: string }[]>`SELECT content, redaction
+        FROM harness_shared.report_attachments WHERE workspace_id = ${ws}
+        AND work_item_id = ${source.feature_id} AND kind = 'screenshot'`;
+      assert.equal(image?.redaction, 'not-redactable');
+      assert.ok(image.content.byteLength > 8);
+      assert.deepEqual([...image.content.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);
       clickText('Close');
       const acceptance = sealImplementationAcceptance({ source: { kind: 'bug', title: source.title, summary: source.summary },
         proposal: { problem: source.summary, evidence: ['isolated export failure'], outcome: 'Export works', scope: 'Export only', completionCheck: 'Export reproduction passes' },
