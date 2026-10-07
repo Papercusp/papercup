@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { fileURLToPath } from 'node:url';
 import { loadBlueprintFromFile } from '@papercusp/orchestrator/blueprint';
 import { checkAgainstJsonSchema } from '../json-schema-validation';
+import { selectAcceptedOperationWorkerModel } from './operation-worker-binding';
 
 // Exercise the schemas through the same validator used at operation submission
 // and completion, with the actual inherited blueprint rather than a copy.
@@ -22,6 +23,19 @@ const output = {
 };
 
 describe('morning AI operation admission and completion contracts', () => {
+  it('selects the pinned Codex model and refuses an incompatible backend', () => {
+    const binding = { modelPolicy: operation.policy.model };
+    expect(selectAcceptedOperationWorkerModel(binding, null, 'codex')).toMatchObject({
+      model: 'gpt-6.1-sol:medium', backend: 'codex', source: 'operation-policy',
+    });
+    expect(() => selectAcceptedOperationWorkerModel(binding, null, 'claude'))
+      .toThrow('not supported by the Claude backend');
+    expect(() => selectAcceptedOperationWorkerModel(binding, 'gpt-6-astra', 'codex'))
+      .toThrow('outside the accepted exact model policy');
+    expect(() => selectAcceptedOperationWorkerModel(binding, 'gpt-6.1-sol:high', 'codex'))
+      .toThrow('reasoning effort differs');
+  });
+
   it('loads the research spine and admits the explicit approved input', () => {
     expect(blueprint.knobs.requiresRepo).toBe(false);
     expect(blueprint.spine.decider).toBe('research-director');
