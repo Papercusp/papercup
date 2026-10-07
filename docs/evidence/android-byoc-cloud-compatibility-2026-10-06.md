@@ -318,6 +318,35 @@ its new measured hash is `7ee90600abf3d4f135023c3371ca8ef4c5e7cab1afb01313d36f7b
 The interop hash above remains historical proof. Shared build output can advance again;
 parent acceptance must capture and verify its exact current APK before installation.
 
+### Maintained public Android runner prepared — 2026-10-07 15:39Z
+
+Parent `WI-10006956` extends mobile `tools/run-android-checks.sh` with
+`cloud-native EVIDENCE_DIR PRIVATE_QR_FILE`, backed by `tools/cloud-native-check.py`
+and an opt-in branch of maintained `PapercupAppSmokeTest.launcherActivityStarts`.
+Explicit `ANDROID_SERIAL` and `PAPERCUP_CLOUD_BASE` preserve the public HTTPS QR
+payload, select the owned emulator among connected peers and bind captured APK
+bytes to the installed digest. The native branch covers manual QR-payload entry,
+encrypted seed/pin restore, activity recreation, fresh-client reconnect, scoped
+reads, navigation and owned-device revocation. Failed remote cleanup retains
+encrypted recovery credentials.
+
+The maintained `run-android-checks-test.sh cloud` suite passes its public candidate
+control and 31 unsafe-input/candidate-race/incomplete-proof refusal controls. SDK
+dispatch now receives shared defaults before early native modes; six Rust
+toolchain controls pass. Android test Kotlin compilation and test APK assembly
+pass, with logs `/tmp/android-p015-cloud-compile.log` and
+`/tmp/android-p015-cloud-testapk.log`. These local preparation checks establish
+neither a cloud run nor committed-source release proof. Actual hosted execution,
+camera scanning, full operation coverage and genuine BYOC acceptance remain open.
+
+Leader replies `coord-send-3bf0ea7cd8337e31a0ed8ea569ca06cfcf218163f70ad8621fb54fef978aa0c1`
+and `coord-send-efa17c5ede857607f892c6e0a19c8f2c098d5bfdbb33e594467cf9dbba497dd5`
+identify maintained owner-authenticated mint
+`POST /api/device/desktop/mint-pair-token {workspaceId}` through hosted operator-http.
+The leader explicitly did not mint a fresh payload or measure the current portal
+bundle; both remain parent acceptance work. Previous runtime/QR observations
+remain dated evidence. No APK/cloud support pair is accepted by this preparation.
+
 ## Historical discovery — 2026-10-06
 
 The following sections preserve the initial analysis and agreement context. Their gap states,
