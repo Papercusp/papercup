@@ -185,6 +185,75 @@ describe('sealed device-http channel binding (D-013 #6)', () => {
   });
 });
 
+describe('sealed pair redeem registers the handshake-proven Noise key (D-013 #6)', () => {
+  const PROVEN = Buffer.alloc(32, 7).toString('base64');
+  const OTHER = Buffer.alloc(32, 9).toString('base64');
+
+  function pairHarness(boundDevice?: DeviceChannelBinding) {
+    const bodies: Array<Record<string, unknown> | null> = [];
+    const sent: Array<Record<string, unknown>> = [];
+    const channel = createDeviceHttpChannel({
+      send: (payload) => sent.push(payload),
+      audit: () => {},
+      origin: 'http://127.0.0.1:1',
+      fetch: async (_url, init) => {
+        bodies.push(init.body ? JSON.parse(Buffer.from(init.body as Uint8Array).toString('utf8')) : null);
+        return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
+      },
+      ...(boundDevice ? { boundDevice } : {}),
+    });
+    const pair = (requestId: string, body: unknown) =>
+      channel.accept('http.request', {
+        requestId,
+        method: 'POST',
+        path: '/api/device/pair',
+        headers: { 'content-type': 'application/json' },
+        ...(body === undefined ? {} : { body: Buffer.from(typeof body === 'string' ? body : JSON.stringify(body)).toString('base64') }),
+      });
+    return { bodies, sent, pair };
+  }
+
+  it('forwards a pair whose body key is the key the handshake proved', async () => {
+    const h = pairHarness({ deviceId: null, noisePublicKey: PROVEN });
+    await h.pair('r1', { pairToken: 'tok', noisePublicKey: PROVEN });
+    expect(h.bodies).toEqual([{ pairToken: 'tok', noisePublicKey: PROVEN }]);
+  });
+
+  it('fills in the proven key when the phone omits it', async () => {
+    const h = pairHarness({ deviceId: null, noisePublicKey: PROVEN });
+    await h.pair('r1', { pairToken: 'tok' });
+    expect(h.bodies).toEqual([{ pairToken: 'tok', noisePublicKey: PROVEN }]);
+  });
+
+  it('refuses a pair naming a key other than the proven one, before the one-time token reaches the machine', async () => {
+    const h = pairHarness({ deviceId: null, noisePublicKey: PROVEN });
+    await h.pair('r1', { pairToken: 'tok', noisePublicKey: OTHER });
+    await h.pair('r2', { pairToken: 'tok', noisePublicKey: 'not-base64-key' });
+    expect(h.bodies).toEqual([]);
+    expect(h.sent).toEqual([
+      { type: 'http.error', requestId: 'r1', code: 'noise_key_mismatch', status: 403 },
+      { type: 'http.error', requestId: 'r2', code: 'noise_key_mismatch', status: 403 },
+    ]);
+  });
+
+  it('refuses a pair on a sealed channel with no proven key, or whose body is not a JSON object', async () => {
+    const unproven = pairHarness({ deviceId: null });
+    await unproven.pair('r1', { pairToken: 'tok', noisePublicKey: PROVEN });
+    expect(unproven.sent).toEqual([{ type: 'http.error', requestId: 'r1', code: 'noise_key_unproven', status: 403 }]);
+    const malformed = pairHarness({ deviceId: null, noisePublicKey: PROVEN });
+    await malformed.pair('r1', 'not json');
+    await malformed.pair('r2', undefined);
+    expect(malformed.bodies).toEqual([]);
+    expect(malformed.sent.map((m) => m.code)).toEqual(['invalid_body', 'invalid_body']);
+  });
+
+  it('leaves an unsealed pair body untouched (the operator route validates it)', async () => {
+    const h = pairHarness();
+    await h.pair('r1', { pairToken: 'tok', noisePublicKey: OTHER });
+    expect(h.bodies).toEqual([{ pairToken: 'tok', noisePublicKey: OTHER }]);
+  });
+});
+
 describe('handleHostedDeviceRelay', () => {
   it('relays a JWT-bearing call over a device-http channel and streams the answer back', async () => {
     const h = harness();

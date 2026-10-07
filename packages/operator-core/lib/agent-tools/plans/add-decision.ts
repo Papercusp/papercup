@@ -577,8 +577,12 @@ async function addDecisionOne(rawIt: NewDecision, ctx: UnifiedToolContext): Prom
     );
   }
 
+  const cascadeActivationAudit = barReadiness?.activationAudit;
+  if (barReadiness) delete barReadiness.activationAudit;
+
   return {
     ...result.value,
+    ...(cascadeActivationAudit ? { activationAudit: cascadeActivationAudit } : {}),
     // The citable form. `decisionId` alone is allocated per-plan and so is not a
     // reference — cite `ref`. See planDecisionRef for the measured ambiguity.
     ref: planDecisionRef(it.slug, decisionId),

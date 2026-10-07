@@ -45,11 +45,13 @@ import {
   decideRelayRoute,
   localOperatorOrigin,
   type OperatorHttpAudit,
+  type OperatorHttpBodyDecision,
   type OperatorHttpFetch,
   type OperatorHttpRoute,
   type OperatorHttpRouteDecision,
   type OperatorHttpSend,
 } from './hosted-operator-http';
+import { canonicalNoisePublicKey } from './hosted-machine-noise-key';
 
 // ─── Machine side ───────────────────────────────────────────────────────────
 
@@ -223,6 +225,40 @@ export function deviceHttpRequestHeaders(input: unknown): Record<string, string>
  */
 export interface DeviceChannelBinding {
   deviceId: string | null;
+  /**
+   * The phone's static key (canonical base64) that the handshake PROVED: the phone holds its
+   * secret. A pair redeemed on this channel registers exactly this key. Unset means no handshake
+   * has completed, so a pair is refused.
+   */
+  noisePublicKey?: string | null;
+}
+
+/**
+ * Body policy for a sealed channel: a `POST /api/device/pair` registers the handshake-proven key.
+ * A body naming any other key is refused here, before the one-time pair token reaches the machine,
+ * so a phone can never register a key it did not prove it holds. A body with no key gets the proven
+ * one filled in. Every other request passes unchanged.
+ */
+export function bindPairBodyToProvenKey(
+  route: { method: string; path: string },
+  body: Buffer | undefined,
+  binding: DeviceChannelBinding,
+): OperatorHttpBodyDecision {
+  if (route.method !== 'POST' || route.path.split('?')[0] !== PHONE_DEVICE_PAIR_PATH) return { ok: true, body };
+  const proven = binding.noisePublicKey ? canonicalNoisePublicKey(binding.noisePublicKey) : null;
+  if (!proven) return { ok: false, code: 'noise_key_unproven', status: 403 };
+  let parsed: unknown;
+  try {
+    parsed = body ? JSON.parse(body.toString('utf8')) : undefined;
+  } catch {
+    parsed = undefined;
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return { ok: false, code: 'invalid_body', status: 400 };
+  const fields = parsed as Record<string, unknown>;
+  if (fields.noisePublicKey !== undefined && canonicalNoisePublicKey(fields.noisePublicKey) !== proven) {
+    return { ok: false, code: 'noise_key_mismatch', status: 403 };
+  }
+  return { ok: true, body: Buffer.from(JSON.stringify({ ...fields, noisePublicKey: proven })) };
 }
 
 export interface DeviceHttpChannelOptions extends AppHttpChannelOptions {
@@ -274,6 +310,7 @@ export function createDeviceHttpChannel(options: DeviceHttpChannelOptions): Oper
     decideRoute: decideDeviceHttpRoute,
     requestHeaders: binding ? (input) => boundDeviceHttpRequestHeaders(input, binding) : deviceHttpRequestHeaders,
     responseHeaders: DEVICE_HTTP_RESPONSE_HEADERS,
+    ...(binding ? { requestBody: (route, body) => bindPairBodyToProvenKey(route, body, binding) } : {}),
   });
 }
 

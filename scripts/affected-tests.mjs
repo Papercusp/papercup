@@ -69,7 +69,7 @@ import {
   RELATED_FILTER_LIST_ENV,
   selectRelatedTests,
   playwrightOwnedTest,
-  tsconfigAliasesFor,
+  tsconfigPathEntriesFor,
   unitExcludedVitestTest,
   writeRelatedFilterList,
 } from "./lib/related-tests.mjs";
@@ -5194,8 +5194,9 @@ for (const guard of REPO_WIDE_INVARIANT_GUARDS) {
   });
 }
 
-// tsconfigAliasesFor(wsRoot) lives in ./lib/related-tests.mjs (moved there by WI-10006650
-// so the e2e fixture-spec guard resolves `@/` with the same parser as related selection).
+// tsconfigPathEntriesFor(wsRoot) lives in ./lib/related-tests.mjs (moved there by WI-10006650
+// so the e2e fixture-spec guard resolves `@/` with the same parser as related selection; the
+// flattened prefix map it replaced was removed by WI-10007002).
 
 // --related: narrow each workspace's `test` task to the test files the change can
 // actually reach. Everything else about the task list is untouched — in particular
@@ -5305,7 +5306,7 @@ if (relatedOnly) {
         result = selectRelatedTests({
           rootDir: wsRoot,
           changedPaths: changedAbs,
-          aliases: tsconfigAliasesFor(wsRoot),
+          aliases: tsconfigPathEntriesFor(wsRoot),
           executedMap: executedMap.map,
           judgedSha: executedMapContext.judgedSha,
           changedBetween: executedMapContext.changedBetween,

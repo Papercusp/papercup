@@ -446,6 +446,10 @@ describe('listScorecards (P-013) — real PG', () => {
         issueId: roundtripScorecardId,
         rubricRevision: 17,
         criteriaHash: 'criteria-hash-roundtrip',
+        rubricCurrentness: expect.objectContaining({
+          state: 'stale', reason: 'criteria-hash-mismatch',
+          recordedCriteriaHash: 'criteria-hash-roundtrip',
+        }),
         evidenceFingerprint: 'evidence-fingerprint-roundtrip',
         rollup: { verdict: 'fail' },
         criteria: expect.arrayContaining([expect.objectContaining({
@@ -453,6 +457,9 @@ describe('listScorecards (P-013) — real PG', () => {
         })]),
       },
     });
+
+    const [listed] = await listScorecards({ issueIds: [roundtripScorecardId], includeSuperseded: true });
+    expect(listed?.rubricCurrentness).toMatchObject({ state: 'stale', reason: 'criteria-hash-mismatch' });
   });
 
   it('filters by sourceHive — same rubric, different hive is a separate result', async () => {
@@ -998,6 +1005,9 @@ describe('readScorecardEvidence audit-target status (EI-24583166035391772) — r
     // A plain card answers EXPLICITLY — every key present, not absent-means-current.
     expect((await read('EI-audit-target-plain')).auditTarget).toEqual({
       current: true, superseded: false, supersededBy: null, retracted: false, subjectRubricCurrentness: null,
+    });
+    expect((await read('EI-audit-target-plain')).rubricCurrentness).toMatchObject({
+      state: 'unknown', reason: 'recorded-identity-missing',
     });
 
     const old = await read('EI-audit-target-old');

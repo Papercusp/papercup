@@ -158,7 +158,7 @@ describe('WI-10002881 — the with-plan-lock revision-spine guard', () => {
       { state: 'blocked', codes: ['bar_snapshot_proof_missing'], nextRepair: { code: 'bar_snapshot_proof_missing', barKey: 'R-1', action: 'Bind evidence.' } },
       'decision-added',
     );
-    expect(restamped).toBe(true);
+    expect(restamped).toMatchObject({ stamped: true });
 
     const after = await revisions(slug);
     expect(after).toHaveLength(2);

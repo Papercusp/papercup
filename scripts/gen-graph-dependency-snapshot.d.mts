@@ -108,17 +108,6 @@ export function nearestTsconfigAliases({ root, hasTsconfig, entriesFor }: {
     }>;
 }): (importer: string) => Array<[string, string, boolean]>;
 /**
- * Resolve `spec` against tsconfig `paths` entries the way TypeScript does: an EXACT key matches
- * by equality only and wins outright; otherwise the LONGEST matching wildcard prefix wins
- * (independent of declaration order). Returns the repo-relative base path, or null when no key
- * matches. A first-match prefix scan here is the bug WI-10006809 measured: the exact key
- * `@papercusp/operator-core` captured `@papercusp/operator-core/lib/x` ahead of its wildcard.
- * @param {Array<[string, string, boolean]>} entries
- * @param {string} spec
- * @returns {string | null}
- */
-export function matchTsconfigPath(entries: Array<[string, string, boolean]>, spec: string): string | null;
-/**
  * FIRST-PARTY edges (WI-10006809; plan gitnexus-deterministic-integration-2026-10-05, D-026):
  * import edges derived straight from tracked source — no graph backend, no server, no index on
  * disk. Each importer's specifiers are read with the selector's OWN extractor and resolved with

@@ -23,7 +23,7 @@
  */
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
-import { staticImportClosure, tsconfigAliasesFor } from "./related-tests.mjs";
+import { staticImportClosure, tsconfigPathEntriesFor } from "./related-tests.mjs";
 
 export const E2E_DIR = "apps/operator/e2e";
 export const E2E_WORKSPACE_DIR = "apps/operator";
@@ -68,13 +68,13 @@ export function discoverFixtureSpecs({ rootDir, e2eDir = E2E_DIR, io = defaultIo
  * The repo-relative files each fixture spec reaches: spec + fixtures + their static imports
  * (relative and tsconfig-alias edges).
  *
- * @param {{ rootDir: string, specs?: { spec: string, fixtures: string[] }[], aliases?: Record<string,string>, fs?: object }} o
+ * @param {{ rootDir: string, specs?: { spec: string, fixtures: string[] }[], aliases?: Array<{ prefix: string, target: string, wildcard: boolean }>, fs?: object }} o
  * @returns {{ spec: string, fixtures: string[], files: Set<string>, ok: boolean, unresolved: string[] }[]}
  */
 export function fixtureSpecClosures({ rootDir, specs, aliases, fs }) {
   const root = path.resolve(rootDir);
   const found = specs ?? discoverFixtureSpecs({ rootDir: root });
-  const resolvedAliases = aliases ?? tsconfigAliasesFor(path.join(root, E2E_WORKSPACE_DIR));
+  const resolvedAliases = aliases ?? tsconfigPathEntriesFor(path.join(root, E2E_WORKSPACE_DIR));
   return found.map(({ spec, fixtures }) => {
     const closure = staticImportClosure({
       rootDir: root,

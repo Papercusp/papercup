@@ -20,6 +20,7 @@ import {
   stampBarReadinessNowBlock,
   stampMootCarrierNowBlock,
   type BarReadinessDeps,
+  type BarReadinessRestampResult,
   type CarrierCandidate,
   type PlanScopeCascadeDeps,
 } from './plan-scope-cascade';
@@ -164,7 +165,12 @@ export function defaultBarReadinessDeps(ctx: unknown, actor: string): BarReadine
             : { newBody: bumpUpdatedDate(stamped), value: true };
         },
       );
-      return result.kind === 'applied' && result.value === true;
+      const stamped = result.kind === 'applied' && result.value === true;
+      const restamp: BarReadinessRestampResult = { stamped };
+      if (stamped && result.kind === 'applied' && result.activationAudit) {
+        restamp.activationAudit = result.activationAudit;
+      }
+      return restamp;
     },
   };
 }

@@ -23,6 +23,8 @@ import { describe, expect, it } from "vitest";
 
 const SCRIPT = resolve(__dirname, "../../../scripts/verify-tauri-headless.sh");
 const src = readFileSync(SCRIPT, "utf8");
+const HOST_ENTRY = resolve(__dirname, "../bin/hono-host.ts");
+const hostEntrySrc = readFileSync(HOST_ENTRY, "utf8");
 
 const snapshotGuardIdx = src.indexOf("VERIFY_TAURI_SOURCE_SNAPSHOT_PATH=");
 const argumentParserIdx = src.indexOf('if [ "${1:-}" = "--help" ]');
@@ -36,10 +38,205 @@ const sourceReexecIdx = src.indexOf(
 const assertionExecIdx = src.lastIndexOf('log "running assertion command: $*"');
 const operatorSnapshotIdx = src.indexOf("snapshot_operator_source() {");
 const operatorSnapshotCallIdx = src.indexOf("snapshot_operator_source || {");
+const lockCensusStartIdx = src.indexOf("verify_operator_source_lock_census() {");
+const lockCensusSource = src.slice(lockCensusStartIdx, operatorSnapshotIdx);
 const operatorSnapshotSource = src.slice(
   operatorSnapshotIdx,
   operatorSnapshotCallIdx,
 );
+
+describe("EI-25270951515189161 — verifier snapshots avoid active source edits", () => {
+  function queryLocks(response: string, failPtool = false) {
+    const fixture = mkdtempSync(resolve(tmpdir(), "verifier-source-lock-census-"));
+    const repo = resolve(fixture, "repo");
+    const queryPath = resolve(fixture, "query.json");
+    const argsPath = resolve(fixture, "ptool-args.txt");
+    mkdirSync(repo, { recursive: true });
+    try {
+      const result = spawnSync(
+        "bash",
+        [
+          "-c",
+          [
+            "set -uo pipefail",
+            "ptool() {",
+            '  printf "%s\\n" "$*" > "$TEST_PTOOL_ARGS_PATH"',
+            '  cat > "$TEST_PTOOL_QUERY_PATH"',
+            '  [ "$TEST_PTOOL_FAIL" != 1 ] || return 7',
+            '  printf "%s" "$TEST_PTOOL_RESPONSE"',
+            "}",
+            'log() { printf "%s\\n" "$*" >&2; }',
+            lockCensusSource,
+            'verify_operator_source_lock_census "fixture"',
+          ].join("\n"),
+        ],
+        {
+          encoding: "utf8",
+          timeout: 10_000,
+          env: {
+            ...process.env,
+            REPO_DIR: repo,
+            PAPERCUSP_WORKSPACE: "fixture-workspace",
+            TEST_PTOOL_RESPONSE: response,
+            TEST_PTOOL_FAIL: failPtool ? "1" : "0",
+            TEST_PTOOL_QUERY_PATH: queryPath,
+            TEST_PTOOL_ARGS_PATH: argsPath,
+          },
+        },
+      );
+      return {
+        ...result,
+        query: existsSync(queryPath) ? JSON.parse(readFileSync(queryPath, "utf8")) : null,
+        ptoolArgs: existsSync(argsPath) ? readFileSync(argsPath, "utf8") : "",
+        coordinationDomain: repo,
+      };
+    } finally {
+      rmSync(fixture, { recursive: true, force: true });
+    }
+  }
+
+  it("queries a complete lock census for the repo's runtime source roots", () => {
+    expect(lockCensusStartIdx).toBeGreaterThan(-1);
+    const result = queryLocks(JSON.stringify({ active_locks: [] }));
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.query.coordination_domain).toBe(result.coordinationDomain);
+    expect(result.query.paths).toEqual(
+      expect.arrayContaining(["apps/operator", "packages", "libs", "scripts"]),
+    );
+    expect(result.ptoolArgs).toContain("--workspace=fixture-workspace");
+    expect(result.ptoolArgs).toContain("locks:queue");
+    expect(result.stderr).toContain("verified no active source-file locks");
+  });
+
+  it("refuses an active runtime-source edit and reports its holder", () => {
+    const result = queryLocks(JSON.stringify({
+      active_locks: [{
+        path: "packages/operator-core/lib/dbos/routines-workflow.ts",
+        owner: "su-peer",
+        intent: "mid-edit regression fixture",
+        lock_id: "lock-fixture",
+      }],
+    }));
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("active source-file locks");
+    expect(result.stderr).toContain("packages/operator-core/lib/dbos/routines-workflow.ts");
+    expect(result.stderr).toContain("owner=su-peer");
+    expect(result.stderr).toContain("lock_id=lock-fixture");
+  });
+
+  it("ignores a test-only lock outside the host bundle's runtime graph", () => {
+    const result = queryLocks(JSON.stringify({
+      active_locks: [{
+        path: "packages/operator-core/lib/verify-tauri-headless-source-snapshot.test.ts",
+        owner: "su-peer",
+        intent: "test edit",
+        lock_id: "test-lock",
+      }],
+    }));
+    expect(result.status, result.stderr).toBe(0);
+  });
+
+  it("fails closed when the live lock census cannot be read", () => {
+    const result = queryLocks("{}", true);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("could not read the live verifier source lock census");
+  });
+
+  it("checks locks both before and after the shared-tree rsync copy", () => {
+    expect(operatorSnapshotSource).toContain('verify_operator_source_lock_census "before copy"');
+    const beforeCopy = operatorSnapshotSource.indexOf('verify_operator_source_lock_census "before copy"');
+    const rsyncCopy = operatorSnapshotSource.indexOf('rsync -a --delete "${source_filters[@]}"');
+    const afterCopy = operatorSnapshotSource.indexOf('verify_operator_source_lock_census "after copy"');
+    expect(beforeCopy).toBeGreaterThan(-1);
+    expect(rsyncCopy).toBeGreaterThan(beforeCopy);
+    expect(afterCopy).toBeGreaterThan(rsyncCopy);
+  });
+});
+
+describe("EI-25270951515189161 — frozen host bundle import smoke runs before Tauri", () => {
+  const smokeStartIdx = src.indexOf("smoke_verifier_operator_host() {");
+  const smokeEndIdx = src.indexOf("build_verifier_operator_host || {", smokeStartIdx);
+  const smokeSource = src.slice(smokeStartIdx, smokeEndIdx);
+
+  function runSmoke(bundleSource: string, timeoutSec = 3) {
+    const fixture = mkdtempSync(resolve(tmpdir(), "verifier-host-import-smoke-"));
+    const bundle = resolve(fixture, "hono-host.mjs");
+    writeFileSync(bundle, bundleSource);
+    try {
+      const result = spawnSync(
+        "bash",
+        [
+          "-c",
+          [
+            "set -uo pipefail",
+            'log() { printf "%s\\n" "$*" >&2; }',
+            smokeSource,
+            'smoke_verifier_operator_host "$TEST_TIMEOUT_SEC"',
+          ].join("\n"),
+        ],
+        {
+          encoding: "utf8",
+          timeout: 8_000,
+          env: {
+            ...process.env,
+            OPERATOR_HOST_BUNDLE: bundle,
+            TEST_TIMEOUT_SEC: String(timeoutSec),
+          },
+        },
+      );
+      return result;
+    } finally {
+      rmSync(fixture, { recursive: true, force: true });
+    }
+  }
+
+  it("imports the bundle with the smoke-only argument and accepts its marker", () => {
+    const result = runSmoke(
+      "if (!process.argv.includes('--papercusp-import-smoke')) throw new Error('missing smoke flag');\n" +
+        "console.log('PAPERCUSP_HOST_IMPORT_SMOKE_OK');\n",
+    );
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stderr).toContain("import smoke passed");
+  });
+
+  it("surfaces a module-init ReferenceError before the Tauri launch", () => {
+    const result = runSmoke("throw new ReferenceError('pinModuleState is not defined');\n");
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("failed before Tauri startup");
+    expect(result.stderr).toContain("pinModuleState is not defined");
+  });
+
+  it("terminates an import smoke that exceeds its deadline", () => {
+    const result = runSmoke("setInterval(() => {}, 1000);\n", 1);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("failed before Tauri startup (exit 124)");
+  });
+
+  it("places the smoke-only exit after module imports and before host side effects", () => {
+    const smokeGuard = hostEntrySrc.indexOf(
+      "if (process.argv.includes('--papercusp-import-smoke')) {",
+    );
+    const finalImport = hostEntrySrc.indexOf(
+      "import { notifySystemdReady } from '@papercusp/operator-core/lib/systemd-readiness';",
+    );
+    const firstHostSideEffect = hostEntrySrc.indexOf("installStdioPeerGuard();");
+    expect(finalImport).toBeGreaterThan(-1);
+    expect(smokeGuard).toBeGreaterThan(finalImport);
+    expect(firstHostSideEffect).toBeGreaterThan(smokeGuard);
+    expect(hostEntrySrc).toContain("PAPERCUSP_HOST_IMPORT_SMOKE_OK");
+  });
+
+  it("runs the import smoke after the bundle build and before configuring Tauri", () => {
+    const bundleCall = src.indexOf("build_verifier_operator_host || {");
+    const smokeCall = src.indexOf("smoke_verifier_operator_host || {");
+    const tauriConfig = src.indexOf("TAURI_CONFIG=");
+    expect(bundleCall).toBeGreaterThan(-1);
+    expect(smokeCall).toBeGreaterThan(bundleCall);
+    expect(tauriConfig).toBeGreaterThan(smokeCall);
+    expect(smokeSource).toContain('timeout --signal=TERM --kill-after=1s');
+    expect(smokeSource).toContain('node "$OPERATOR_HOST_BUNDLE" --papercusp-import-smoke');
+  });
+});
 
 describe("EI-21590235587564636 — verifier source is immutable for the run", () => {
   it.each([true, false])("checks the original-repository SPA helper before allocating resources (present=%s)", (present) => {
@@ -474,6 +671,7 @@ describe("P-008 J1G — a file vanishing from the live tree does not fail the sn
     const script = [
       "set -uo pipefail",
       "source_filters=(); REPO_DIR=/nonexistent; snapshot_root=/nonexistent",
+      "verify_operator_source_lock_census() { return 0; }",
       // The production copy now goes through the shared heavy-admission seam.
       // This fixture tests rsync disposition, so forward its actual command
       // through that seam without acquiring a real host-wide build slot.

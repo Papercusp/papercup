@@ -1245,6 +1245,7 @@ describe('sealed device-http channel (D-013 #6)', () => {
     const sent: HostedHostOutboundEnvelope[] = [];
     const forwarded: Array<Record<string, string>> = [];
     const clientErrors: Error[] = [];
+    const frames: Array<Record<string, unknown>> = [];
     const audit = vi.fn();
     let phone!: ByocSealedChannel;
     const adapter = new HostedWorkspaceHostSessionAdapter({
@@ -1277,7 +1278,7 @@ describe('sealed device-http channel (D-013 #6)', () => {
       localKeyPair: phoneKey,
       expectedRemotePublicKey: hostKey.publicKey,
       sendPacket: (packet) => { void adapter.accept({ type: 'relay', channelId: 'dev-ch', payload: packet }); },
-      onFrame: () => {},
+      onFrame: (frame) => { frames.push(frame as Record<string, unknown>); },
       onError: (error) => clientErrors.push(error),
     });
     const open = () => adapter.accept({ type: 'relay.open', channelId: 'dev-ch', kind: 'device-http', audience: 'device', sealed: true });
@@ -1287,7 +1288,7 @@ describe('sealed device-http channel (D-013 #6)', () => {
       await settle(() => forwarded.length > before);
       return forwarded[before];
     };
-    return { adapter, sent, forwarded, audit, clientErrors, phone, open, request };
+    return { adapter, sent, forwarded, frames, audit, clientErrors, phone, open, request };
   }
 
   it("forwards the JWT of the device the handshake key resolves to, and drops another device's", async () => {
@@ -1311,6 +1312,23 @@ describe('sealed device-http channel (D-013 #6)', () => {
     const headers = await h.request('r1', jwtFor('dev-a'));
     expect(headers).toBeDefined();
     expect(headers.authorization).toBeUndefined();
+  });
+
+  it('a pair redeemed over the sealed channel registers the handshake key, and a different body key is refused', async () => {
+    const h = sealedDeviceHarness(async () => null);
+    const frames = h.frames;
+    await h.open();
+    await h.phone.opened;
+    const pair = (requestId: string, body: Record<string, unknown>) =>
+      h.phone.send({ type: 'http.request', requestId, method: 'POST', path: '/api/device/pair', headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify(body)).toString('base64') });
+    const other = Buffer.alloc(32, 5).toString('base64');
+    await pair('p1', { pairToken: 'tok', noisePublicKey: other });
+    await settle(() => frames.some((f) => f.requestId === 'p1'));
+    expect(frames.find((f) => f.requestId === 'p1')).toMatchObject({ type: 'http.error', code: 'noise_key_mismatch', status: 403 });
+    expect(h.forwarded).toEqual([]);
+    await pair('p2', { pairToken: 'tok' });
+    await settle(() => h.forwarded.length > 0);
+    expect(h.forwarded).toHaveLength(1);
   });
 
   it('refuses a sealed device channel when the host has no device-key resolver', async () => {

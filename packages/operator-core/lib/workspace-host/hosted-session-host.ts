@@ -1373,6 +1373,9 @@ export class HostedWorkspaceHostSessionAdapter {
         ? resolve
           ? {
             verifyRemotePublicKey: async (remotePublicKey: Buffer) => {
+              // The handshake proved the phone holds this key's secret; a pair redeemed on this
+              // channel registers exactly this key (bindPairBodyToProvenKey).
+              deviceBinding.noisePublicKey = remotePublicKey.toString('base64');
               try {
                 deviceBinding.deviceId = await resolve(remotePublicKey.toString('base64'));
                 return true;

@@ -33,6 +33,7 @@
 
 import { parsePlan } from './parser';
 import { replaceNowBlock } from './set-now';
+import type { ActivationAuditEditNotice } from '../../plan-audits';
 
 /** Sentinel for the carrier-plan Now stamp. Keyed per subject so a re-run is a no-op. */
 export const MOOT_CARRIER_NOW_MARK = '⚠ MOOT CARRIER PARKED';
@@ -428,7 +429,13 @@ export interface BarReadinessDeps {
     scope: { workspaceId: string; harnessSlug: string | null },
     reading: BarReadinessReading,
     cause: BarReadinessWriteCause,
-  ): Promise<boolean>;
+  ): Promise<boolean | BarReadinessRestampResult>;
+}
+
+/** Receipt from the follow-up plan write, which may advance the plan version again. */
+export interface BarReadinessRestampResult {
+  stamped: boolean;
+  activationAudit?: ActivationAuditEditNotice;
 }
 
 export interface BarReadinessResult {
@@ -439,6 +446,8 @@ export interface BarReadinessResult {
   nextRepair: BarReadinessReading['nextRepair'];
   /** The plan's `## Now` banner was written (stamped, replaced or cleared) by this call. */
   nowStamped: boolean;
+  /** Current audit notice from the follow-up write, when it advanced the plan version. */
+  activationAudit?: ActivationAuditEditNotice;
   error?: string;
 }
 
@@ -468,12 +477,18 @@ export async function reevaluateBarReadinessOnScopeWrite(
   };
   if (reading.state === null) return result;
   try {
-    result.nowStamped = await deps.restampNow(
+    const restamp = await deps.restampNow(
       input.planSlug,
       { workspaceId: input.workspaceId, harnessSlug: input.harnessSlug },
       reading,
       input.cause,
     );
+    if (typeof restamp === 'boolean') {
+      result.nowStamped = restamp;
+    } else {
+      result.nowStamped = restamp.stamped;
+      if (restamp.activationAudit) result.activationAudit = restamp.activationAudit;
+    }
   } catch (err) {
     result.error = `Now stamp failed: ${errText(err)}`;
   }

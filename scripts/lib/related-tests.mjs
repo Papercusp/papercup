@@ -292,44 +292,37 @@ function candidatesFor(base) {
 }
 
 /**
- * Path aliases for a workspace, read from its tsconfig `compilerOptions.paths`.
+ * One tsconfig `compilerOptions.paths` entry, as `tsconfigPathEntriesFor` returns it and as the
+ * `aliases` option of `staticImportClosure` / `buildIndex` / `selectRelatedTests` takes it.
  *
- * Only intra-package aliases matter here (`@/…`); a bare package specifier is out of
- * graph by design. Returning {} on any problem is SAFE, not lossy: an alias we cannot
- * resolve makes the importing file "unresolved", and every caller of this module treats
- * an unresolved file as reaching everything (or the closure as not-ok) — so a missing
- * mapping widens the run rather than silently dropping edges from the graph.
- * Moved here from affected-tests.mjs (WI-10006650) so the e2e fixture-spec selector
- * resolves `@/` exactly as related-test selection does — one parser, not two.
- *
- * This prefix view FLATTENS every `paths` key into a prefix, including an EXACT key such as
- * `"@papercusp/operator-core": ["…/lib/index.ts"]` (no `*`), whose target is a FILE that this
- * view then gives a trailing slash. That is harmless for this module's own resolvers, which
- * only consult aliases for `@/`, `~/` and `#` specifiers (see `classifySpecifier`); a caller
- * resolving every specifier must use `tsconfigPathEntriesFor` below, which keeps the
- * distinction (WI-10006809: the flattened view captured `@papercusp/operator-core/lib/x` under
- * the exact key and resolved it to `…/lib/index.ts/lib/x`, dropping 692 edges).
- *
- * @param {string} wsRoot absolute workspace root holding tsconfig.json
- * @returns {Record<string, string>} prefix → absolute dir (trailing slash)
+ * @typedef {object} TsconfigPathEntry
+ * @property {string}  prefix   the key with any trailing `*` removed
+ * @property {string}  target   absolute target: a dir for a wildcard key, the file itself for an exact key
+ * @property {boolean} wildcard true for a `*` key (matched by prefix), false for an exact key (equality only)
  */
-export function tsconfigAliasesFor(wsRoot) {
-  const out = {};
-  for (const { prefix, target } of tsconfigPathEntriesFor(wsRoot)) {
-    out[prefix] = target.endsWith("/") ? target : target + "/";
-  }
-  return out;
-}
 
 /**
- * The same tsconfig `compilerOptions.paths`, parsed ONCE, as ordered entries that keep what
- * the prefix view above discards: whether the key is a WILDCARD (`"@/*"`, matched by prefix)
- * or EXACT (`"pkg"`, matched by equality only, target is the file itself). TypeScript tries an
- * exact key before any wildcard, and among wildcards the LONGEST matching prefix wins.
- * Returns [] on any problem (same fail-safe as above).
+ * Path aliases for a workspace, read from its tsconfig `compilerOptions.paths` as ordered
+ * entries that keep whether each key is a WILDCARD (`"@/*"`, matched by prefix) or EXACT
+ * (`"pkg"`, matched by equality only; its target is the file itself). Resolve a specifier
+ * against them with `matchTsconfigPath` below — never a first-match prefix scan.
+ *
+ * Only intra-package aliases matter to this module's own resolvers (`@/`, `~/`, `#`; see
+ * `classifySpecifier`); a bare package specifier is out of graph by design. Returning [] on any
+ * problem is SAFE, not lossy: an alias we cannot resolve makes the importing file "unresolved",
+ * and every caller of this module treats an unresolved file as reaching everything (or the
+ * closure as not-ok) — so a missing mapping widens the run rather than silently dropping edges.
+ * Moved here from affected-tests.mjs (WI-10006650) so the e2e fixture-spec selector resolves
+ * `@/` exactly as related-test selection does — one parser, not two.
+ *
+ * There is deliberately no flattened `prefix → dir` map any more (WI-10007002). It gave an EXACT
+ * key's FILE target a trailing slash, and the first-match scans that consumed it then let that
+ * key capture longer specifiers by prefix: `@papercusp/operator-core` captured
+ * `@papercusp/operator-core/lib/x` and resolved it to `…/lib/index.ts/lib/x` (WI-10006809
+ * measured 692 dropped edges in the snapshot producer that shared the map).
  *
  * @param {string} wsRoot absolute workspace root holding tsconfig.json
- * @returns {Array<{ prefix: string, target: string, wildcard: boolean }>} target is absolute
+ * @returns {TsconfigPathEntry[]}
  */
 export function tsconfigPathEntriesFor(wsRoot) {
   try {
@@ -372,6 +365,47 @@ export function tsconfigPathEntriesFor(wsRoot) {
 }
 
 /**
+ * Resolve `spec` against tsconfig `paths` entries the way TypeScript does: an EXACT key matches
+ * by equality only and wins outright; otherwise the LONGEST matching wildcard prefix wins
+ * (independent of declaration order). Returns the base path — repo-relative or absolute,
+ * whichever the entries hold — or null when no key matches. A first-match prefix scan here is the
+ * bug WI-10006809 measured and WI-10007002 removed from this module's own resolvers: the exact key
+ * `@papercusp/operator-core` captured `@papercusp/operator-core/lib/x` ahead of its wildcard.
+ * The ONE matcher: gen-graph-dependency-snapshot.mjs imports it from here.
+ *
+ * @param {Array<[string, string, boolean]>} entries `[prefix, target, wildcard]`
+ * @param {string} spec
+ * @returns {string | null}
+ */
+export function matchTsconfigPath(entries, spec) {
+  const exact = entries.find(([prefix, , wildcard]) => !wildcard && spec === prefix);
+  if (exact !== undefined) return exact[1];
+  let best;
+  for (const entry of entries) {
+    if (entry[2] && spec.startsWith(entry[0]) && (best === undefined || entry[0].length > best[0].length)) best = entry;
+  }
+  return best === undefined ? null : path.posix.normalize(`${best[1]}${spec.slice(best[0].length)}`);
+}
+
+/**
+ * `aliases` → the tuple shape `matchTsconfigPath` takes, once per call. A non-array (the retired
+ * flattened `prefix → dir` map) THROWS: treating it as "no aliases" would leave every aliased
+ * import unresolved and widen the whole workspace invisibly, and affected-tests already turns a
+ * selection crash into a loud full run.
+ *
+ * @param {TsconfigPathEntry[]} aliases
+ * @returns {Array<[string, string, boolean]>}
+ */
+function aliasTuples(aliases) {
+  if (!Array.isArray(aliases)) {
+    throw new TypeError(
+      "related-tests: `aliases` must be tsconfigPathEntriesFor() entries ({ prefix, target, wildcard }[]), not a prefix → dir map (WI-10007002)",
+    );
+  }
+  return aliases.map(({ prefix, target, wildcard }) => [prefix, target, wildcard === true]);
+}
+
+/**
  * Walk the transitive static module graph from a small set of entry files.
  *
  * This is the entry-oriented sibling of `buildIndex`: it reuses the same specifier parser and
@@ -391,18 +425,19 @@ export function tsconfigPathEntriesFor(wsRoot) {
  * @param {object} [o]
  * @param {string} o.rootDir absolute repository root
  * @param {string[]} o.entryFiles absolute entry files to walk
- * @param {Record<string, string>} [o.aliases] tsconfig-style prefix → absolute dir map (same
- *   shape and first-match rule as `buildIndex`). An alias specifier with no matching prefix
- *   stays unresolved, so the default `{}` keeps every existing caller's fail-closed behaviour.
+ * @param {TsconfigPathEntry[]} [o.aliases] `tsconfigPathEntriesFor` entries, resolved with
+ *   `matchTsconfigPath` (same rule as `buildIndex`). An alias specifier no key matches stays
+ *   unresolved, so the default `[]` keeps every existing caller's fail-closed behaviour.
  * @param {RelatedFs} [o.fs] filesystem seam (injected in tests)
  * @returns {{ ok: boolean, files: string[], unresolved: string[] }}
  */
 export function staticImportClosure({
   rootDir,
   entryFiles,
-  aliases = {},
+  aliases = [],
   fs = defaultFs(),
 } = {}) {
+  const aliasEntries = aliasTuples(aliases);
   const root = path.resolve(rootDir ?? ".");
   const pending = [...(entryFiles ?? [])].map((file) => path.resolve(file));
   const visited = new Set();
@@ -441,12 +476,12 @@ export function staticImportClosure({
       if (kind === "bare") continue;
       let base;
       if (kind === "alias") {
-        const prefix = Object.keys(aliases).find((p) => spec === p || spec.startsWith(p));
-        if (prefix === undefined) {
+        const aliasBase = matchTsconfigPath(aliasEntries, spec);
+        if (aliasBase === null) {
           unresolved.add(`${file}:${spec}`);
           continue;
         }
-        base = path.resolve(aliases[prefix], spec.slice(prefix.length));
+        base = path.resolve(aliasBase);
       } else {
         base = path.resolve(path.dirname(file), spec);
       }
@@ -516,11 +551,12 @@ export function staticImportClosure({
  *
  * @param {object}                  [o]
  * @param {string}                  o.rootDir   absolute dir to index (a workspace's source root)
- * @param {Record<string, string>}  [o.aliases] tsconfig `paths` prefix -> absolute dir
+ * @param {TsconfigPathEntry[]}     [o.aliases] `tsconfigPathEntriesFor` entries (resolved with `matchTsconfigPath`)
  * @param {RelatedFs}               [o.fs]      filesystem seam (injected in tests)
  * @returns {RelatedIndex}
  */
-export function buildIndex({ rootDir, aliases = {}, fs = defaultFs() } = {}) {
+export function buildIndex({ rootDir, aliases = [], fs = defaultFs() } = {}) {
+  const aliasEntries = aliasTuples(aliases);
   const files = fs.list(rootDir);
   const fileSet = new Set(files);
   const deps = new Map();
@@ -533,15 +569,10 @@ export function buildIndex({ rootDir, aliases = {}, fs = defaultFs() } = {}) {
     if (kind === "relative") {
       base = path.resolve(path.dirname(fromFile), spec);
     } else {
-      // Alias: try each configured prefix mapping.
-      base = null;
-      for (const [prefix, dir] of Object.entries(aliases)) {
-        if (spec === prefix || spec.startsWith(prefix)) {
-          base = path.resolve(dir, spec.slice(prefix.length));
-          break;
-        }
-      }
-      if (base === null) return { kind, target: null, unresolvable: true };
+      // Alias: exact key first, else the longest wildcard prefix (TypeScript's rule).
+      const aliasBase = matchTsconfigPath(aliasEntries, spec);
+      if (aliasBase === null) return { kind, target: null, unresolvable: true };
+      base = path.resolve(aliasBase);
     }
     for (const cand of candidatesFor(base)) {
       if (fileSet.has(cand) || fs.exists(cand)) return { kind, target: cand };
@@ -685,7 +716,7 @@ export function transitiveDeps(index) {
  * @param {object}                 [o]
  * @param {string}                 o.rootDir        absolute dir to index (a workspace's source root)
  * @param {string[]}               o.changedPaths   absolute paths that changed
- * @param {Record<string, string>} [o.aliases]      tsconfig `paths` prefix -> absolute dir
+ * @param {TsconfigPathEntry[]}    [o.aliases]      `tsconfigPathEntriesFor` entries
  * @param {number}                 [o.threshold]    share of the suite at/above which the selection is
  *                                                  widened to the whole suite (default: the
  *                                                  `AFFECTED_RELATED_THRESHOLD` env, else
@@ -703,7 +734,7 @@ export function transitiveDeps(index) {
 export function selectRelatedTests({
   rootDir,
   changedPaths,
-  aliases = {},
+  aliases = [],
   threshold = resolveRelatedWidenThreshold().threshold,
   fs = defaultFs(),
   index = null,

@@ -22,7 +22,7 @@ export function discoverFixtureSpecs({ rootDir, e2eDir, io }: {
  * The repo-relative files each fixture spec reaches: spec + fixtures + their static imports
  * (relative and tsconfig-alias edges).
  *
- * @param {{ rootDir: string, specs?: { spec: string, fixtures: string[] }[], aliases?: Record<string,string>, fs?: object }} o
+ * @param {{ rootDir: string, specs?: { spec: string, fixtures: string[] }[], aliases?: Array<{ prefix: string, target: string, wildcard: boolean }>, fs?: object }} o
  * @returns {{ spec: string, fixtures: string[], files: Set<string>, ok: boolean, unresolved: string[] }[]}
  */
 export function fixtureSpecClosures({ rootDir, specs, aliases, fs }: {
@@ -31,7 +31,11 @@ export function fixtureSpecClosures({ rootDir, specs, aliases, fs }: {
         spec: string;
         fixtures: string[];
     }[];
-    aliases?: Record<string, string>;
+    aliases?: Array<{
+        prefix: string;
+        target: string;
+        wildcard: boolean;
+    }>;
     fs?: object;
 }): {
     spec: string;

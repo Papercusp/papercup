@@ -24,6 +24,8 @@ const handlerMocks = vi.hoisted(() => ({
   withPlanLock: vi.fn(),
   planRevisionCapture: vi.fn(),
   emitPlanEventForCaller: vi.fn(async () => {}),
+  reevaluateBarReadinessOnScopeWrite: vi.fn(async (): Promise<any> => ({})),
+  defaultBarReadinessDeps: vi.fn(() => ({})),
   emitDecisionAdded: vi.fn(),
   readFrozenRepairMarker: vi.fn(),
   // WI-42142: the provenance stamp does transcript IO. Mocked so these tests pin
@@ -52,6 +54,14 @@ vi.mock('./with-plan-lock', () => ({
 }));
 vi.mock('./revisions', () => ({
   planRevisionCapture: handlerMocks.planRevisionCapture,
+}));
+vi.mock('./plan-scope-cascade', async (orig) => ({
+  ...(await orig<typeof import('./plan-scope-cascade')>()),
+  reevaluateBarReadinessOnScopeWrite: handlerMocks.reevaluateBarReadinessOnScopeWrite,
+}));
+vi.mock('./plan-scope-cascade-deps', async (orig) => ({
+  ...(await orig<typeof import('./plan-scope-cascade-deps')>()),
+  defaultBarReadinessDeps: handlerMocks.defaultBarReadinessDeps,
 }));
 vi.mock('../coordination/plan-events', () => ({
   emitPlanEventForCaller: handlerMocks.emitPlanEventForCaller,
@@ -1082,5 +1092,57 @@ describe('plans:add-decision — stale-base refusal (WI-10004529)', () => {
       body: decisionPlan(['D-001']),
     })) as { counts: { ok: number; failed: number } };
     expect(result.counts).toMatchObject({ ok: 1, failed: 0 });
+  });
+});
+
+describe('plans:add-decision — post-write activation-audit receipt', () => {
+  it('returns the audit notice from the BAR restamp write instead of the earlier version', async () => {
+    vi.clearAllMocks();
+    handlerMocks.readFrozenRepairMarker.mockReturnValue(null);
+    handlerMocks.carryProvenanceFields.mockResolvedValue({});
+    handlerMocks.planRevisionCapture.mockReturnValue({
+      afterWrite: undefined,
+      recorded: { current: { id: 13, seq: 13, contentHash: 'before-restamp' } },
+    });
+    handlerMocks.harnessScopedCtx.mockImplementation((harness: unknown, ctx: Record<string, unknown>) => ({
+      ...ctx,
+      harnessSlug: typeof harness === 'string' ? harness : 'session-harness',
+    }));
+    const earlierAudit = { currentPlanRevision: { planVersion: 13 } };
+    const latestAudit = { currentPlanRevision: { planVersion: 14 } };
+    handlerMocks.defaultBarReadinessDeps.mockReturnValue({});
+    handlerMocks.reevaluateBarReadinessOnScopeWrite.mockResolvedValueOnce({
+      slug: 'handler-plan',
+      cause: 'decision-added',
+      state: 'blocked',
+      codes: ['bar_snapshot_mapping_dropped_only'],
+      nextRepair: null,
+      nowStamped: true,
+      activationAudit: latestAudit,
+    });
+    handlerMocks.withPlanLock.mockImplementationOnce(async (_ctx, _opts, mutate) => {
+      const mutation = await (mutate as (body: string, meta: unknown) => Promise<{ value: Record<string, unknown> }>)(
+        HANDLER_PLAN,
+        { version: 13 },
+      );
+      return {
+        kind: 'ok',
+        value: { ...mutation.value, activationAudit: earlierAudit },
+        filePath: 'handler-plan.md',
+        version: 13,
+        scope: { workspaceId: 'ws-add-decision', harnessSlug: 'explicit-harness' },
+      } as never;
+    });
+
+    const out = await handlerBody(
+      { harness: 'explicit-harness', slug: 'handler-plan', title: 'New ruling', body: 'A fresh decision.' },
+      handlerContext(),
+    );
+
+    expect(out.results[0]).toMatchObject({
+      activationAudit: latestAudit,
+      barReadiness: { nowStamped: true },
+    });
+    expect(out.results[0]!.barReadiness).not.toHaveProperty('activationAudit');
   });
 });

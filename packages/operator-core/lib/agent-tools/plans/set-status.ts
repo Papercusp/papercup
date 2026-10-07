@@ -2144,9 +2144,13 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
     console.warn(`[plans:set-status] slow ${it.slug}#${it.itemId} ${JSON.stringify(slowPathTiming)}`);
   }
 
+  const cascadeActivationAudit = barReadiness?.activationAudit;
+  if (barReadiness) delete barReadiness.activationAudit;
+
   return {
     slug: it.slug,
     ...result.value,
+    ...(cascadeActivationAudit ? { activationAudit: cascadeActivationAudit } : {}),
     filePath: result.filePath,
     revision: rev.recorded.current ? { seq: rev.recorded.current.seq } : null,
     ...(claim ? { claim } : {}),
