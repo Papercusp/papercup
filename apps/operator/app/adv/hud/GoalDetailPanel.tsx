@@ -539,8 +539,11 @@ export default function GoalDetailPanel({
      user-meaningful goes in the URL where `ui:get_state`/`ui:dispatch` can see
      it. Defaulted OPEN — the rail is the answer to "what is under this goal",
      which is the question the popup exists to answer. */
-  const [railOpen, setRailOpen] = useQueryState('hudgoalrail', parseAsBoolean.withDefault(true));
+  const [railPreference, setRailOpen] = useQueryState('hudgoalrail', parseAsBoolean);
   const isRailNarrow = useIsNarrowViewport(RAIL_NARROW_MEDIA_QUERY);
+  // A default right drawer covers the left brief on phones. Standing goals
+  // lead with that brief's ongoing overview; an explicit URL choice still wins.
+  const railOpen = railPreference ?? !(goal?.standing && isRailNarrow);
   /* P-022: the brief's own open-state, in the URL like every other
      user-meaningful toggle here (`hudgoalrail` set the precedent). */
   const [briefOpen, setBriefOpen] = useQueryState('hudgoalbrief', parseAsBoolean.withDefault(true));

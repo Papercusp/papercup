@@ -101,6 +101,7 @@ test('mobile strip preserves truthful status after a refused pause', async ({ pa
   const overview = page.locator('.hud-ongoing--detail');
   await expect(overview.getByText('Where work is moving')).toBeVisible();
   expect(await overview.evaluate((el) => el.scrollWidth > el.clientWidth)).toBe(false);
+  await expect(page.getByTestId('goal-work-rail')).toHaveCount(0);
   await page.screenshot({ path: test.info().outputPath('ongoing-mobile-detail.png') });
   sync.assertServed('goals.list');
   sync.assertServed('goals.detail');

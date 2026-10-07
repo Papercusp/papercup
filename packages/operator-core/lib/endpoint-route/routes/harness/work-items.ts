@@ -35,6 +35,7 @@ import { activeWorkspaceId } from '../../../workspace-registry';
 import { humanAssignee, publicHumanMarketOffer, readHumanMarketJob } from '../../../work-items-human-market';
 import { actOnHumanMarketItem, getHumanMarketItem, reviewHumanMarketItem, type HumanMarketItem } from '../../../work-items-human-market-store';
 import { requireAllowedOriginOr403 } from '../../cors';
+import { readReporterStatus } from '../../../harness/improvements/reporter-status';
 
 export interface WorkItemDimensions {
   /** Source plan this feature was imported from (hfc.source_plan_slug); null for issues / unplanned. */
@@ -46,7 +47,7 @@ export interface WorkItemDimensions {
   /** That spawn's status (running|done|failed|cancelled|reaped). */
   spineStatus: string | null;
 }
-export type EnrichedWorkItem = WorkItem & WorkItemDimensions;
+export type EnrichedWorkItem = WorkItem & WorkItemDimensions & { reporterStatus?: Awaited<ReturnType<typeof readReporterStatus>> };
 
 /**
  * Pure merge: overlay the plan-link + spine-position maps onto the items by id.
@@ -173,7 +174,13 @@ export async function getEnrichedWorkItem(harness: string, id: string): Promise<
   const { planMap, spineMap } = await fetchDimensionMaps([harness], featureIds);
   // NO slimListRow: the detail view is exactly the on-demand consumer of the full
   // summary + payload + completion refs the list strips.
-  return mergeWorkItemDimensions([wi], planMap, spineMap)[0] ?? null;
+  const enriched = mergeWorkItemDimensions([wi], planMap, spineMap)[0];
+  if (!enriched) return null;
+  const reporter = wi.payload && typeof wi.payload === 'object' ? (wi.payload as Record<string, unknown>).reporter : null;
+  if (reporter && typeof reporter === 'object' && (reporter as Record<string, unknown>).kind === 'end-user') {
+    enriched.reporterStatus = await readReporterStatus({ id, harness });
+  }
+  return enriched;
 }
 
 const getWorkItems = defineTool({

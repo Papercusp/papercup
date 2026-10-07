@@ -258,6 +258,27 @@ describe('GoalDetailPanel', () => {
     expect(screen.queryByTestId('ongoing-work-overview')).toBeNull();
     expect(screen.getByText('This goal ends when')).toBeTruthy();
   });
+
+  it('opens a standing mobile goal with the overview unobscured and keeps the Work drawer selectable', () => {
+    vi.stubGlobal('matchMedia', vi.fn((query: string) => ({ matches: true, media: query,
+      addEventListener: vi.fn(), removeEventListener: vi.fn() })));
+    try {
+      const base = detail();
+      renderPanel({ ...base, goal: { ...base.goal!, standing: true } });
+      expect(screen.getByTestId('ongoing-work-overview')).toBeTruthy();
+      expect(screen.queryByTestId('goal-work-rail')).toBeNull();
+      const menu = openPanelsMenu();
+      fireEvent.click(within(menu).getByRole('checkbox', { name: 'Work' }));
+      expect(screen.getByTestId('goal-work-rail')).toBeTruthy();
+      cleanup();
+      // Control: the change does not alter an ordinary mobile goal's default.
+      renderPanel(detail());
+      expect(screen.getByTestId('goal-work-rail')).toBeTruthy();
+    } finally {
+      cleanup();
+      vi.unstubAllGlobals();
+    }
+  });
   it('renders nothing and fires no query while closed', () => {
     render(<GoalDetailPanel goalId={null} workspaceId="ws-real" nowMs={NOW} onClose={() => {}} />);
     expect(document.body.textContent).not.toContain('This goal ends when');

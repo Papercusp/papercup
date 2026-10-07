@@ -234,7 +234,7 @@ describe('POST /cupboard/publish-template', () => {
       title: 'Official Web App',
       description: 'desc',
     });
-    expect(status).toBe(200);
+    expect(status, JSON.stringify(body)).toBe(200);
     expect(body).toEqual({ ok: true, listing: { id: 'new-listing' } });
     expect(h.publishListingToCupboard).toHaveBeenCalledTimes(1);
     expect(h.publishListingToCupboard.mock.calls[0][0]).toMatchObject({
@@ -257,7 +257,7 @@ describe('POST /cupboard/publish-template', () => {
       detail: { bucket: 'hour' },
     });
     const { status, body } = await callPublish({ ref: 'papercusp-data-sync', github_url: REPO });
-    expect(status).toBe(429);
+    expect(status, JSON.stringify(body)).toBe(429);
     expect(body?.error).toBe('rate_limited');
     expect(h.publishListingToCupboard.mock.calls[0][0]).toMatchObject({ listing_ref: 'papercusp-data-sync' });
   });

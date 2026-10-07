@@ -791,6 +791,69 @@ describe('coord:orient args', () => {
     expect(acknowledgeControlTransitionMock).toHaveBeenCalledWith(ownerId, 'ws-test', 5);
   });
 
+  it('keeps Judge assignment reads self-scoped afterCompaction even when a fleet route is recovered', async () => {
+    const ownerId = 'judge-orient-handler-scope-test';
+    const nestedCalls: Array<{ name: string; args: Record<string, unknown> }> = [];
+    const recovery = {
+      selfRecall: "sessions:search { session: 'self' }",
+      control: { state: { route: { kind: 'fleet', fleet: 'orch-unify', role: 'member' } } },
+      coverage: { selfSession: true, control: true, heldItems: true, staleness: null },
+    };
+
+    inProcessCallMock.mockReturnValue(async (name: string, args: Record<string, unknown>) => {
+      nestedCalls.push({ name, args });
+      if (name === 'fleet:assignments') {
+        return {
+          ok: true,
+          summary: { agents: 1 },
+          agents: [{ agentId: ownerId, isSelf: true, declaredPlanSlug: null, claims: 0 }],
+        };
+      }
+      if (name === 'coord:whoami') return { fleetSlug: null };
+      throw new Error('unexpected sub-call: ' + name);
+    });
+    getModesMock.mockResolvedValue(null);
+    readOwnerPresenceMock.mockResolvedValue({ present: false, lastSeenAgoMs: null, activeSessions: 0 });
+    getFlagMock.mockResolvedValue(false);
+    resolvePresenceFleetMock.mockResolvedValue({ fleetSlug: null, fleetRole: null });
+    fetchOrientPipelineMock.mockResolvedValue(null);
+    buildCompactionRecoveryMock.mockResolvedValue(recovery);
+    readGovernorStateSnapshotMock.mockResolvedValue(null);
+
+    const result = (await orientTool.handler(
+      {
+        afterCompaction: true,
+        claimableLimit: 0,
+        inboxLimit: 0,
+        includePlanEvents: false,
+        includeFleetCatchUp: false,
+        includeFleetHealth: false,
+        includeRecipes: false,
+        includePeersKnow: false,
+      } as never,
+      {
+        uiClientId: ownerId,
+        isSuperuser: true,
+        workspaceId: 'ws-test',
+        role: 'judge',
+        metadata: vi.fn(),
+        log: vi.fn(),
+        progress: vi.fn(),
+        activateTools: vi.fn(() => false),
+      } as never,
+    )) as { data: Record<string, unknown> };
+
+    const assignmentCall = nestedCalls.find((entry) => entry.name === 'fleet:assignments');
+    expect(assignmentCall?.args).toEqual({ agent: 'self' });
+    expect(result.data).toMatchObject({
+      recoveredFleetScope: {
+        fleet: 'orch-unify',
+        role: 'member',
+        note: expect.stringContaining('role-specific scope'),
+      },
+    });
+  });
+
   it('applies caller-specific tool-surface activation in the real handler', async () => {
     const ownerId = 'su-orient-handler-activation-test';
 

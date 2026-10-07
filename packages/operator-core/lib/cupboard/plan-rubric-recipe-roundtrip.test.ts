@@ -241,7 +241,7 @@ describe('rubric Cupboard round trip', () => {
       github_url: GITHUB_URL,
     });
 
-    expect(result).toMatchObject({ ok: true, listing: { id: 'listing-1' } });
+    expect(result, JSON.stringify(result)).toMatchObject({ ok: true, listing: { id: 'listing-1' } });
     expect(external.publishListingToCupboard).toHaveBeenCalledWith(
       expect.objectContaining({
         listing_kind: 'rubric',
@@ -314,7 +314,7 @@ describe('plan Cupboard round trip', () => {
       async () => ({ content: livePlanMarkdown(), title: 'Publish plan source' }),
     );
 
-    expect(result).toMatchObject({ ok: true, exportedOnly: false, listing: { id: 'listing-1' } });
+    expect(result, JSON.stringify(result)).toMatchObject({ ok: true, exportedOnly: false, listing: { id: 'listing-1' } });
     expect(external.publishListingToCupboard).toHaveBeenCalledWith(
       expect.objectContaining({
         listing_kind: 'plan',
@@ -363,7 +363,7 @@ describe('recipe Cupboard round trip', () => {
       async () => ({ row: RECIPE_ROW, authority: PORTABLE_AUTHORITY }),
     );
 
-    expect(result).toMatchObject({ ok: true, exportedOnly: false, listing: { id: 'listing-1' } });
+    expect(result, JSON.stringify(result)).toMatchObject({ ok: true, exportedOnly: false, listing: { id: 'listing-1' } });
     // A recipe's tool surface is CONSUMPTION, not provision: installing a recipe registers
     // none of these tools, so it rides as `uses_tools`. The public Worker refuses
     // `provides_tools` on kind='recipe' (plugin|pack only), which is why sending it there

@@ -42,11 +42,12 @@ describe('COORD_ROLES', () => {
   });
 
   test('acceptance judge can consume coordination reads without becoming a general coordinator', async () => {
-    const [{ default: inbox }, { default: read }, { default: orient }, { default: cupMail }] = await Promise.all([
+    const [{ default: inbox }, { default: read }, { default: orient }, { default: cupMail }, { default: assignments }] = await Promise.all([
       import('./tools/inbox.js'),
       import('./tools/read.js'),
       import('./tools/orient.js'),
       import('../fleet/cup_mail.js'),
+      import('../fleet/assignments.js'),
     ]);
 
     for (const [name, tool] of [
@@ -54,6 +55,7 @@ describe('COORD_ROLES', () => {
       ['coord:read', read],
       ['coord:orient', orient],
       ['fleet:cup_mail', cupMail],
+      ['fleet:assignments', assignments],
     ] as const) {
       expect(tool.agentRoles, `${name} must admit judge`).toContain('judge');
     }
