@@ -88,6 +88,26 @@ export function leadingDedupSkips(ticksNewestFirst: readonly GenerationPreflight
   return n;
 }
 
+/** Ticks scanned for the preflight: covers the skip streak plus the probe window. */
+const PREFLIGHT_TICK_SCAN_LIMIT = 60;
+
+/**
+ * Production tick reader for {@link ScoutCycleDeps.generationPreflightTicks}
+ * (newest first, this install). Wired identically by both Scout entrypoints
+ * (scout-cycle-action.ts and blueprint-steps/ops/scout-cycle.ts).
+ */
+export async function readGenerationPreflightTicks(scope: {
+  workspaceId: string;
+  installSlug: string;
+}): Promise<readonly GenerationPreflightTick[]> {
+  const { readScoutTicks } = await import('./tick-ledger');
+  return readScoutTicks({
+    workspaceId: scope.workspaceId,
+    installSlug: scope.installSlug,
+    limit: PREFLIGHT_TICK_SCAN_LIMIT,
+  });
+}
+
 export function assessGenerationPreflight(input: {
   admissionPressure?: Pick<WorkItemAdmissionProducerPressure, 'level' | 'pending' | 'p95Ms' | 'reasons'> | null;
   recentTicksNewestFirst?: readonly GenerationPreflightTick[] | null;
