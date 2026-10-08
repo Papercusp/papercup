@@ -90,7 +90,11 @@ export async function collectStateCensus(input: {
   roots: readonly CensusRoot[];
   declarations: readonly CensusDeclaration[];
   readCatalogs: () => Promise<readonly CensusEntry[]>;
+  /** Refuse oversized inventories rather than returning a truncated success. */
+  maxEntries?: number;
 }) {
+  const maxEntries = input.maxEntries ?? 100_000;
+  if (!Number.isSafeInteger(maxEntries) || maxEntries < 1) throw new Error('Invalid census entry bound');
   for (const declaration of input.declarations) {
     if (declaration.prune && (declaration.kind !== 'path' ||
       declaration.descendants !== true ||
@@ -106,6 +110,7 @@ export async function collectStateCensus(input: {
     for (const child of children) {
       const name = parent ? `${parent}/${child.name}` : child.name;
       entries.push({ kind: 'path', root: root.id, name });
+      if (entries.length > maxEntries) throw new Error(`Census entry bound exceeded: ${maxEntries}`);
       const owners = input.declarations.filter(declaration =>
         matches({ kind: 'path', root: root.id, name }, declaration));
       // A conflicting producer must not hide its descendants from drift checks.
@@ -116,6 +121,7 @@ export async function collectStateCensus(input: {
   }
   for (const root of input.roots) await walk(root, '');
   entries.push(...await input.readCatalogs());
+  if (entries.length > maxEntries) throw new Error(`Census entry bound exceeded: ${maxEntries}`);
   return generateStateCensus(entries, input.declarations);
 }
 

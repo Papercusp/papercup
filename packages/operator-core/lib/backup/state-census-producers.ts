@@ -10,6 +10,27 @@ import { superuserTokenPath } from '../superuser-token';
 import { workspacesRoot, readRegistry } from '../workspace-registry';
 import { scratchRoot } from '../scratch-uri';
 
+/** Compose independent writers without traversing the same physical root twice. */
+export function installedRootCensusProducers() {
+  const producers = [workspaceRegistryCensusProducer(), secretCensusProducers(), scratchCensusProducer()];
+  const roots: CensusRoot[] = [];
+  const declarations: CensusDeclaration[] = [];
+  for (const producer of producers) {
+    const aliases = new Map<string, string>();
+    for (const source of producer.roots) {
+      let root = roots.find(candidate => candidate.path === source.path);
+      if (!root) { root = { ...source, id: `install-root-${roots.length}` }; roots.push(root); }
+      aliases.set(source.id, root.id);
+    }
+    for (const declaration of producer.declarations) {
+      const root = aliases.get(declaration.root);
+      if (!root) throw new Error('Census declaration has no producer root');
+      declarations.push({ ...declaration, root });
+    }
+  }
+  return { roots, declarations };
+}
+
 /** Result spills are rebuildable, using the actual relocated scratch writer root. */
 export function scratchCensusProducer() {
   const path = scratchRoot();

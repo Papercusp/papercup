@@ -6,7 +6,7 @@ vi.mock('../workspace-registry', () => ({
   readRegistry: () => ({ workspaces: [{ id: 'registered-project' }] }),
 }));
 vi.mock('../scratch-uri', () => ({ scratchRoot: () => '/relocated/cache/spills' }));
-import { databaseCensusEntries, secretCensusProducers, unitCensusEntries, unitCensusDeclarations, verifyHostStateCensus, workspaceRegistryCensusProducer, scratchCensusProducer } from './state-census-producers';
+import { databaseCensusEntries, secretCensusProducers, unitCensusEntries, unitCensusDeclarations, verifyHostStateCensus, workspaceRegistryCensusProducer, scratchCensusProducer, installedRootCensusProducers } from './state-census-producers';
 import { mkdtemp, writeFile, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -15,6 +15,12 @@ import type { Sql } from 'postgres';
 
 afterEach(() => vi.clearAllMocks());
 describe('secret census producer adapters', () => {
+  it('composes writer roots and rewrites declaration identities consistently', () => {
+    const result = installedRootCensusProducers();
+    expect(new Set(result.roots.map(root => root.path)).size).toBe(result.roots.length);
+    expect(result.declarations.every(entry => result.roots.some(root => root.id === entry.root))).toBe(true);
+    expect(result.declarations.some(entry => entry.name === 'db-key' && entry.classification === 'secret')).toBe(true);
+  });
   it('derives scratch cache ownership from the relocated writer root', () => {
     const result = scratchCensusProducer();
     expect(result.roots[0].path).toBe('/relocated/cache');

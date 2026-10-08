@@ -10,6 +10,15 @@ const declaration: CensusDeclaration = {
 };
 
 describe('producer-derived state census', () => {
+  it('fails closed on entry limits rather than certifying a truncated inventory', async () => {
+    const entries = [declaration, { ...declaration, name: 'other' }];
+    await expect(collectStateCensus({ roots: [], declarations: [],
+      readCatalogs: async () => entries, maxEntries: 1,
+    })).rejects.toThrow('entry bound exceeded');
+    await expect(collectStateCensus({ roots: [], declarations: [],
+      readCatalogs: async () => [], maxEntries: 0,
+    })).rejects.toThrow('Invalid census entry bound');
+  });
   it('derives rebuildable caches but never backup-repository or recovery-debris classification from ignores', () => {
     const declarations = backupCacheCensusDeclarations('home');
     const census = generateStateCensus(['node_modules/pkg', 'backups', '.broken-old'].map(name =>
