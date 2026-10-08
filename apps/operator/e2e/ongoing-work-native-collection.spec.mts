@@ -9,7 +9,16 @@ async function loadNativeCollectionWriter() {
   const { default: postgres } = await import('postgres');
   const { applyGoalPropertyWrite } = await import('../../../packages/operator-core/lib/typed-properties-db');
   const { ensureOrderedSelectionPolicyDatatype, ensurePlanRefListDatatype } = await import('../../../packages/operator-core/lib/goals/package-property-datatypes');
-  return { postgres, applyGoalPropertyWrite, ensureOrderedSelectionPolicyDatatype, ensurePlanRefListDatatype };
+  const { claimNextWorkItem, releaseWorkItem } = await import('../../../packages/operator-core/lib/work-items');
+  const { readGoalPortfolioBrief } = await import('../../../packages/operator-core/lib/goal-launch-settings');
+  const { FLAGS } = await import('@papercusp/flags');
+  const { setFlagOverridesForTest } = await import('@papercusp/flags/test');
+  // These overrides belong only to this isolated fixture process. They mirror
+  // the canonical claim-boundary integration suite's raw-row test route.
+  const schedulerFixtureFlags = (enabled: boolean) => setFlagOverridesForTest(enabled
+    ? { [FLAGS.SCHEDULER_MAINTAINED_READY]: false } : {});
+  return { postgres, applyGoalPropertyWrite, ensureOrderedSelectionPolicyDatatype, ensurePlanRefListDatatype,
+    claimNextWorkItem, releaseWorkItem, readGoalPortfolioBrief, schedulerFixtureFlags };
 }
 
 // This uses the same Node loader and complete graph as the native fixture, but
@@ -129,7 +138,8 @@ test('native declared collections persist controls and reject a barrier-controll
   expect(workspaceId).toMatch(/^verify-tauri-isolated-/);
   expect(adminUrl).toBeTruthy();
   expect(adminUrl).not.toBe(process.env.PAPERCUSP_TEST_RUNS_DB_URL);
-  const { postgres, applyGoalPropertyWrite, ensureOrderedSelectionPolicyDatatype, ensurePlanRefListDatatype } = await loadNativeCollectionWriter();
+  const { postgres, applyGoalPropertyWrite, ensureOrderedSelectionPolicyDatatype, ensurePlanRefListDatatype,
+    claimNextWorkItem, releaseWorkItem, readGoalPortfolioBrief, schedulerFixtureFlags } = await loadNativeCollectionWriter();
   const sql = postgres(adminUrl, { max: 1, connect_timeout: 5 });
   const run = promisify(execFile);
   const bridge = process.env.VERIFY_TAURI_AGENT_TOOLS_BIN!;
@@ -184,6 +194,7 @@ test('native declared collections persist controls and reject a barrier-controll
     expect(receipt.response.ok).toBe(true);
   }
   try {
+    schedulerFixtureFlags(true);
     await ensureOrderedSelectionPolicyDatatype(sql, workspaceId);
     await ensurePlanRefListDatatype(sql, workspaceId);
     for (const kind of ['plans', 'tea'] as const) {
@@ -204,8 +215,9 @@ test('native declared collections persist controls and reject a barrier-controll
       await insertNativeCollectionGoal(sql, { workspaceId, goalId, title: `Native ${kind} collection`, schema });
       if (kind === 'plans') {
         for (const [index, slug] of ['alpha', 'beta', 'blocked'].entries()) {
-          await sql`INSERT INTO harness_shared.harness_plans (workspace_id,harness_slug,plan_slug,title,status,op_status)
-            VALUES (${workspaceId},${harness},${slug},${labels[index]},${slug === 'blocked' ? 'draft' : 'active'},NULL)`;
+          await sql`INSERT INTO harness_shared.harness_plans (workspace_id,harness_slug,plan_slug,title,status,op_status,items)
+            VALUES (${workspaceId},${harness},${slug},${labels[index]},${slug === 'blocked' ? 'draft' : 'active'},NULL,
+              ${JSON.stringify([{ id: 'P-001', status: 'todo', text: `Native ${slug} work`, blockedBy: [] }])}::text::jsonb)`;
         }
         await sql`INSERT INTO harness_shared.harness_plans (workspace_id,harness_slug,plan_slug,title,status,op_status)
           VALUES (${workspaceId},'native-unrelated','preserved','Unrelated preserved plan','active',NULL)`;
@@ -252,6 +264,29 @@ test('native declared collections persist controls and reject a barrier-controll
       await reload();
       await ready(`document.querySelector(${JSON.stringify(`${editor} li`)})?.textContent.includes(${JSON.stringify(labels[1])}) === true`);
       expect((await readback()).rows.map((row: { id: string }) => row.id)).toEqual(reorderedIds);
+      if (kind === 'plans') {
+        // Pick real goal-stamped rows after the ACTUAL native owner write. A
+        // display-only reorder cannot change this canonical claim result.
+        for (const [index, slug] of ['alpha', 'beta'].entries()) {
+          await sql`INSERT INTO harness_shared.work_items
+            (workspace_id,harness_slug,feature_id,item_kind,title,status,admission,goal_id,source_plan_slug,created_ts,updated_ts,payload)
+            VALUES (${workspaceId},${harness},${`WI-native-${slug}`},'feature',${`Native ${slug}`},'open','admitted',
+              ${goalId},${slug},${index + 1},0,'{}'::jsonb)`;
+        }
+        const picked = await claimNextWorkItem({ harness, assignee: 'native-policy-picker' });
+        expect(picked?.id).toBe('WI-native-beta');
+        evidence.push({ canonicalPickAfterNativeReorder: picked?.id });
+        await releaseWorkItem('WI-native-beta', { harness });
+        const portfolio = await readGoalPortfolioBrief({ workspaceId, goalId, claimability: 'skip' });
+        expect(portfolio).not.toBeNull();
+        expect(portfolio!.worklist.find(plan => plan.slug === 'blocked')?.placement.reconciliation.toolCall).toBeNull();
+        expect(portfolio!.worklist.find(plan => plan.slug === 'blocked')?.placement.reconciliation.reason).toMatch(/draft.*cannot launch/i);
+        expect(portfolio!.worklist.find(plan => plan.placement.reconciliation.toolCall !== null)?.slug).toBe('beta');
+        evidence.push({ admissionAfterNativeReorder: portfolio!.worklist.map(plan => ({
+          slug: plan.slug, state: plan.placement.state, reason: plan.placement.reconciliation.reason,
+          nextCall: plan.placement.reconciliation.toolCall,
+        })) });
+      }
       await clickAndSave(checkbox(labels[1]), 1);
       await expect.poll(async () => (await policy())?.version).toBe(2);
       expect((await policy())?.value.excluded).toEqual([dormant, ids[1]]);
@@ -259,6 +294,31 @@ test('native declared collections persist controls and reject a barrier-controll
       await ready(`document.querySelector(${JSON.stringify(checkbox(labels[1]))})?.getAttribute('aria-checked') === 'false' && document.querySelector(${JSON.stringify(`${editor} li`)})?.textContent.includes('Excluded') === true`);
       expect((await readback()).rows.filter((row: { selected: boolean }) => row.selected).map((row: { id: string }) => row.id))
         .toEqual(initialIds.filter((id) => id !== ids[1]));
+      if (kind === 'plans') {
+        const picked = await claimNextWorkItem({ harness, assignee: 'native-policy-picker' });
+        expect(picked?.id).toBe('WI-native-alpha');
+        await releaseWorkItem('WI-native-alpha', { harness });
+        // Remove beta from both source legs, then rediscover it. The stored
+        // owner overlay must survive every reload and source reconciliation.
+        await sql`UPDATE harness_shared.harness_plans SET archived=true,status='done'
+          WHERE workspace_id=${workspaceId} AND harness_slug=${harness} AND plan_slug='beta'`;
+        const sourceWrite = await sql.begin(tx => applyGoalPropertyWrite(tx as unknown as typeof sql, {
+          workspaceId, goalId, property, value: [ids[0], ids[2]], expectedVersion: 0,
+          provenance: 'agent-edit', actorId: 'native-fixture-agent',
+        }));
+        expect(sourceWrite.ok).toBe(true);
+        await reload();
+        expect((await readback()).rows.map((row: { id: string }) => row.id)).not.toContain(ids[1]);
+        expect((await policy())?.value.excluded).toEqual([dormant, ids[1]]);
+        await sql`UPDATE harness_shared.harness_plans SET archived=false,status='active',op_status=NULL
+          WHERE workspace_id=${workspaceId} AND harness_slug=${harness} AND plan_slug='beta'`;
+        await reload();
+        await ready(`document.querySelector(${JSON.stringify(checkbox(labels[1]))})?.getAttribute('aria-checked') === 'false'`);
+        expect((await readback()).rows.map((row: { id: string }) => row.id)).toEqual(reorderedIds);
+        expect((await policy())?.version).toBe(2);
+        expect((await policy())?.value.order).toEqual([...reorderedIds, dormant]);
+        evidence.push({ archiveReactivateAndAgentRefresh: true, ownerPolicy: await policy() });
+      }
       await clickAndSave(checkbox(labels[1]), 2);
       await expect.poll(async () => (await policy())?.version).toBe(3);
       await reload();
@@ -297,6 +357,7 @@ test('native declared collections persist controls and reject a barrier-controll
       await info.attach('native-collection-final', { path: screenshot, contentType: 'image/png' });
     } catch (error) { evidence.push({ screenshotError: String(error) }); }
     await info.attach('native-collection-readbacks', { body: JSON.stringify(evidence), contentType: 'application/json' });
+    schedulerFixtureFlags(false);
     await sql.end({ timeout: 5 });
   }
 });
