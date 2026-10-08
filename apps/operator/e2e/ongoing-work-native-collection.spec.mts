@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test';
 import type { OrderedSelectionPolicy } from '../../../packages/operator-core/lib/typed-properties';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { insertNativeCollectionGoal } from './_ongoing-work-native-fixture';
+import { insertNativeCollectionGoal, insertNativeCollectionPlan } from './_ongoing-work-native-fixture';
 
 // An explicit ESM entry keeps the backend writer graph on Playwright's ESM loader.
 async function loadNativeCollectionWriter() {
@@ -215,12 +215,18 @@ test('native declared collections persist controls and reject a barrier-controll
       await insertNativeCollectionGoal(sql, { workspaceId, goalId, title: `Native ${kind} collection`, schema });
       if (kind === 'plans') {
         for (const [index, slug] of ['alpha', 'beta', 'blocked'].entries()) {
-          await sql`INSERT INTO harness_shared.harness_plans (workspace_id,harness_slug,plan_slug,title,status,op_status,items)
-            VALUES (${workspaceId},${harness},${slug},${labels[index]},${slug === 'blocked' ? 'draft' : 'active'},NULL,
-              ${JSON.stringify([{ id: 'P-001', status: 'todo', text: `Native ${slug} work`, blockedBy: [] }])}::text::jsonb)`;
+          await insertNativeCollectionPlan(sql, { workspaceId, harness, slug, title: labels[index],
+            status: slug === 'blocked' ? 'draft' : 'active' });
         }
         await sql`INSERT INTO harness_shared.harness_plans (workspace_id,harness_slug,plan_slug,title,status,op_status)
           VALUES (${workspaceId},'native-unrelated','preserved','Unrelated preserved plan','active',NULL)`;
+        // Validate admission premises before native navigation or owner writes.
+        // A metadata-only seed has no canonical actionable item.
+        const seeded = await readGoalPortfolioBrief({ workspaceId, goalId, sql, claimability: 'skip' });
+        evidence.push({ seededAdmission: seeded?.worklist.map(plan => ({ slug: plan.slug, next: plan.next,
+          state: plan.placement.state, reason: plan.placement.reconciliation.reason })) });
+        expect(seeded?.worklist.find(plan => plan.slug === 'alpha')?.next?.id).toBe('P-001');
+        expect(seeded?.worklist.find(plan => plan.slug === 'beta')?.next?.id).toBe('P-001');
       }
       const url = `${process.env.VERIFY_TAURI_DEV_URL}/adv?tab=hud&scope=all&hudtab=goals&welcome=0&hudgoal=${goalId}`;
       const policy = async () => {
@@ -292,15 +298,15 @@ test('native declared collections persist controls and reject a barrier-controll
         evidence.push({ peerClaimRefusedAfterNativeReorder: refused, retainedHolders: heldRows });
         await releaseWorkItem('WI-native-alpha', { harness });
         await releaseWorkItem('WI-native-beta', { harness });
-        const portfolio = await readGoalPortfolioBrief({ workspaceId, goalId, claimability: 'skip' });
+        const portfolio = await readGoalPortfolioBrief({ workspaceId, goalId, sql, claimability: 'skip' });
+        evidence.push({ admissionAfterNativeReorder: portfolio?.worklist.map(plan => ({
+          slug: plan.slug, state: plan.placement.state, reason: plan.placement.reconciliation.reason,
+          nextCall: plan.placement.reconciliation.toolCall,
+        })) });
         expect(portfolio).not.toBeNull();
         expect(portfolio!.worklist.find(plan => plan.slug === 'blocked')?.placement.reconciliation.toolCall).toBeNull();
         expect(portfolio!.worklist.find(plan => plan.slug === 'blocked')?.placement.reconciliation.reason).toMatch(/draft.*cannot launch/i);
         expect(portfolio!.worklist.find(plan => plan.placement.reconciliation.toolCall !== null)?.slug).toBe('beta');
-        evidence.push({ admissionAfterNativeReorder: portfolio!.worklist.map(plan => ({
-          slug: plan.slug, state: plan.placement.state, reason: plan.placement.reconciliation.reason,
-          nextCall: plan.placement.reconciliation.toolCall,
-        })) });
       }
       await clickAndSave(checkbox(labels[1]), 1);
       await expect.poll(async () => (await policy())?.version).toBe(2);
