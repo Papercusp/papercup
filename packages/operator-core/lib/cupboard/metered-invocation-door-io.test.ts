@@ -8,7 +8,7 @@ import { signPaymentTestBytes, paymentTestVerifier } from '../p2p/_payment-vouch
  * That is the property under test — the door refuses independently — and a
  * mock that simply returned 201 would assert the opposite of it.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { generateKeyPairSync, sign } from 'node:crypto';
 import {
   acceptMeteredVoucher,
@@ -33,6 +33,7 @@ import {
   readHostedToolEntitlements,
   readHostedToolEntitlement,
   readHostedToolChannel,
+  readPrincipalUsagePage,
   type HostedPerUseOffer,
   type UsageReceiptWire,
 } from './metered-invocation-door-io';
@@ -50,6 +51,83 @@ const SELLER = 'gh:2002';
 const RELEASE = 'release/agent-pack@1.2.3';
 const CHANNEL = 'ch_test';
 const NOW = 1_700_000_000_000;
+
+describe('P-018 authenticated statement page transport', () => {
+  const page = () => ({ receipts: [], identityStatement: { basis: 'hosted-settled-usage', currency: 'USD',
+    chainFinality: 'not-measured', allocationBasis: 'per-receipt-quote', lines: [], markupMicros: '0',
+    reservedReceipts: 0, complete: true, issues: [], costPerAcceptedOutcomeMicros: null, outcomeEvidence: 'unavailable' },
+    nextCursor: null, coverage: { scope: 'authenticated-principal', population: 'live-page', totals: 'page', hasMore: false } });
+  const transport = (payload: unknown, status = 200) => {
+    const fetchImpl = vi.fn(async () => Response.json(payload, { status }));
+    return { fetchImpl, authToken: 'private-token', baseUrl: 'https://cupboard.test/' };
+  };
+  it('uses the existing authenticated path and encodes the exact cursor without a principal override', async () => {
+    const deps = transport(page());
+    const cursor = JSON.stringify(['channel/&?', 'nonce/"x']);
+    expect(await readPrincipalUsagePage({ limit: 7, cursor }, deps)).toEqual({ ok: true, page: page() });
+    const [url, init] = deps.fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    expect(new URL(url).pathname).toBe('/commerce/metered-invocations');
+    expect(new URL(url).searchParams.get('cursor')).toBe(cursor);
+    expect([...new URL(url).searchParams.keys()]).toEqual(['limit', 'cursor']);
+    expect(init).toMatchObject({ method: 'GET', headers: { Authorization: 'Bearer private-token' } });
+  });
+  it.each([0, 201, 1.5, NaN, Infinity])('refuses invalid limit %s before sending a request', async limit => {
+    const deps = transport(page());
+    expect(await readPrincipalUsagePage({ limit }, deps)).toMatchObject({ ok: false, code: 'invalid_request', status: 0 });
+    expect(deps.fetchImpl).not.toHaveBeenCalled();
+  });
+  it.each(['', '{}', '["one"]', '["", "two"]', '[" padded", "two"]'])('refuses malformed cursor %s locally', async cursor => {
+    const deps = transport(page());
+    expect(await readPrincipalUsagePage({ cursor }, deps)).toMatchObject({ ok: false, code: 'invalid_request' });
+    expect(deps.fetchImpl).not.toHaveBeenCalled();
+  });
+  it.each([null, {}, { ...page(), receipts: null },
+    { ...page(), identityStatement: { ...page().identityStatement, markupMicros: 0 } },
+    { ...page(), identityStatement: { ...page().identityStatement, markupMicros: '1' } },
+    { ...page(), identityStatement: { ...page().identityStatement, complete: false } },
+    { ...page(), coverage: { ...page().coverage, hasMore: true } },
+    { ...page(), coverage: { ...page().coverage, totals: 'account' } },
+  ])('does not turn unreadable or misleading responses into an empty account (%j)', async payload => {
+    expect(await readPrincipalUsagePage({}, transport(payload))).toMatchObject({ ok: false, code: 'invalid_usage_page' });
+  });
+  it('propagates hosted authorization failure and preserves transport errors', async () => {
+    expect(await readPrincipalUsagePage({}, transport({ error: 'forbidden', detail: 'not permitted' }, 403)))
+      .toMatchObject({ ok: false, code: 'forbidden', status: 403, refusedBy: 'hosted-door' });
+    expect(await readPrincipalUsagePage({}, { authToken: 'x', fetchImpl: (async () => { throw new Error('offline'); }) as typeof fetch }))
+      .toMatchObject({ ok: false, code: 'transport_error', status: 0 });
+  });
+  it('refuses a non-advancing continuation cursor', async () => {
+    const cursor = JSON.stringify(['a', 'b']);
+    expect(await readPrincipalUsagePage({ cursor }, transport({ ...page(), nextCursor: cursor,
+      coverage: { ...page().coverage, hasMore: true } }))).toMatchObject({ ok: false, code: 'invalid_usage_page' });
+  });
+  it('preserves micros beyond Number precision and refuses lines detached from their receipt or split', async () => {
+    const amount = '9007199254740993';
+    const receipt: UsageReceiptWire = { channelId: CHANNEL, usageNonce: 'huge', offerId: 'offer', payer: PAYER,
+      seller: SELLER, releaseRef: 'identity-release:exact@1', meterUnit: 'inference-call', meterQuantity: '1',
+      unitPriceMicros: '1', priceVersion: 'v1', splitManifestHash: TERMS.splitManifestHash, reservedMicros: amount,
+      amountMicros: amount, cumulativeClaimMicros: amount, expiresAtMs: NOW + 1000, voucherDigest: 'digest',
+      voucherSignature: 'voucher', receiptSignature: 'receipt', state: 'settled', reservedAtMs: NOW, settledAtMs: NOW + 1,
+      identityInference: { ceilingMicros: amount, billedInferenceMicros: amount, priorRemainderNumerator: '0', remainderNumerator: '0' } };
+    const line = { channelId: CHANNEL, usageNonce: 'huge', offerId: 'offer', payer: PAYER, seller: SELLER,
+      releaseRef: receipt.releaseRef, priceVersion: 'v1', splitManifestHash: TERMS.splitManifestHash,
+      billedInferenceMicros: amount, markupMicros: amount,
+      allocationQuote: { creatorMicros: '9007199254740991', daoMicros: '1', componentMicros: '1',
+        componentAuthorsMicros: { author: '1' } } };
+    const populated = { ...page(), receipts: [receipt], identityStatement: { ...page().identityStatement,
+      lines: [line], markupMicros: amount } };
+    expect(await readPrincipalUsagePage({}, transport(populated))).toEqual({ ok: true, page: populated });
+    for (const changed of [{ ...line, seller: 'foreign' }, { ...line, billedInferenceMicros: '0' },
+      { ...line, allocationQuote: { ...line.allocationQuote, daoMicros: '2' } },
+      { ...line, allocationQuote: { ...line.allocationQuote, componentAuthorsMicros: { author: '2' } } }]) {
+      expect(await readPrincipalUsagePage({}, transport({ ...populated,
+        identityStatement: { ...populated.identityStatement, lines: [changed] } })))
+        .toMatchObject({ ok: false, code: 'invalid_usage_page' });
+    }
+    expect(await readPrincipalUsagePage({}, transport({ ...populated, receipts: [] })))
+      .toMatchObject({ ok: false, code: 'invalid_usage_page' });
+  });
+});
 
 describe('P-007 exact hosted paid-tool binding', () => {
   const wireOffer = { offerId: 'offer-exact', productId: 'product-exact', skuRef: RELEASE, creatorId: SELLER,
