@@ -675,7 +675,8 @@ describe("EI-21175363643337524: real disk-headroom admission", () => {
     expect(result?.summary).toContain("/tmp 200.0 GiB free");
     expect(result?.summary).toContain("/mnt/data 80.0 GiB free");
     expect(sampleCount).toBe(1);
-    expect(calls).toEqual([]);
+    // WI-10007424: the only subprocess is the dependency-copy headroom probe.
+    expect(calls.map((c) => c.args.at(-1))).toEqual(["--check-headroom"]);
   });
 
   it("runs bounded GC once, re-samples once, and rejects a persistent critical breach", async () => {
@@ -750,7 +751,11 @@ describe("EI-21175363643337524: real disk-headroom admission", () => {
     expect(result?.summary).not.toContain("floor is 2.0 GiB");
     expect(sampleCount).toBe(2);
     expect(gcCount).toBe(1);
-    expect(calls).toEqual([]);
+    // WI-10007424: the dependency-copy probe runs beside each of the two samples.
+    expect(calls.map((c) => c.args.at(-1))).toEqual([
+      "--check-headroom",
+      "--check-headroom",
+    ]);
   });
 
   it("continues when one bounded GC pass restores measured headroom", async () => {
@@ -963,6 +968,189 @@ describe("EI-21175363643337524: real disk-headroom admission", () => {
     expect(fleetGcCount).toBe(1);
     expect(cargoGcCount).toBe(1);
     expect(samples).toHaveLength(0);
+  });
+});
+
+describe("WI-10007424: dependency-copy headroom joins disk admission", () => {
+  const gib = 1024 ** 3;
+  // 45 GiB free on a 1000 GiB filesystem clears the alarm's critical-write reserve
+  // (2% = 20 GiB), so in every case below the critical floor alone would admit the run.
+  const roomy = [
+    {
+      path: "/tmp",
+      totalBytes: 1_000 * gib,
+      freeBytes: 45 * gib,
+      freePct: 0.045,
+      totalInodes: 1_000_000,
+      freeInodes: 500_000,
+      freeInodesPct: 0.5,
+    },
+  ];
+  const insufficient =
+    "[dependency-generation] DEPENDENCY_GENERATION_HEADROOM_INSUFFICIENT need=0 avail=48318382080 " +
+    "reserve=38413868236 reserve_scope=protected-fs margin=10737418240 required=49151286476 " +
+    "size=unknown path=/fixture/.dependency-generation-headroom-check";
+  const sufficient =
+    "[dependency-generation] DEPENDENCY_GENERATION_HEADROOM_OK need=0 avail=59055800320 " +
+    "reserve=38413868236 reserve_scope=protected-fs margin=10737418240 required=49151286476 " +
+    "size=unknown path=/fixture/.dependency-generation-headroom-check";
+  // Scripts the probe's exit codes in order. The script logs to stderr, so that is
+  // where the verdict line is placed; every other subprocess succeeds silently.
+  const probeExec = (codes: number[]) => {
+    const probes: string[][] = [];
+    const exec: CheckpointExec = async (cmd, args) => {
+      if (!args.includes("--check-headroom"))
+        return { code: 0, stdout: "", stderr: "" };
+      probes.push([cmd, ...args]);
+      const code = codes.shift() ?? 0;
+      const stderr =
+        code === 77
+          ? insufficient
+          : code === 0
+            ? sufficient
+            : "[dependency-generation] --check-headroom cannot be combined with another mode";
+      return { code, stdout: "", stderr };
+    };
+    return { exec, probes };
+  };
+  const gcResult = (bytesFreed = 0) => ({
+    dryRun: false,
+    dirs: [
+      {
+        dir: "/tmp/fleet-logs",
+        scanned: 1,
+        removedByAge: bytesFreed > 0 ? 1 : 0,
+        removedByCeiling: 0,
+        bytesFreed,
+        bytesRemaining: 0,
+        errors: [],
+      },
+    ],
+  });
+
+  it("refuses a run the critical floor admits when the dependency copy cannot start, after one bounded GC", async () => {
+    const { exec, probes } = probeExec([77, 77]);
+    let gcCount = 0;
+    const deps = realCheckpointDeps(
+      cfg,
+      exec,
+      "dependency-copy-headroom-refused-run",
+      undefined,
+      undefined,
+      async () => roomy,
+      undefined,
+      undefined,
+      async () => {
+        gcCount++;
+        return gcResult(0);
+      },
+    );
+
+    const result = await deps.checkDiskHeadroom?.();
+
+    expect(result?.ok).toBe(false);
+    expect(result?.summary).toContain(
+      "dependency copy cannot start: DEPENDENCY_GENERATION_HEADROOM_INSUFFICIENT",
+    );
+    expect(result?.summary).toContain("required=49151286476");
+    // The log prefix is the script's, not part of the reason a responder reads.
+    expect(result?.summary).not.toContain("[dependency-generation]");
+    // The critical floor did NOT trip, so its breach text must not be invented.
+    expect(result?.summary).not.toContain("free space belongs to the FILESYSTEM");
+    expect(result?.summary).toContain("bounded disk GC: fleet logs scanned 1 file(s)");
+    expect(gcCount).toBe(1);
+    expect(probes).toHaveLength(2);
+    expect(probes[0]).toEqual([
+      "bash",
+      expect.stringMatching(
+        /apps\/operator\/bin\/release\/dependency-generation\.sh$/,
+      ),
+      "--integration",
+      cfg.integrationRoot,
+      "--check-headroom",
+    ]);
+  });
+
+  it("admits when the bounded GC restores dependency-copy headroom", async () => {
+    const { exec, probes } = probeExec([77, 0]);
+    let gcCount = 0;
+    const deps = realCheckpointDeps(
+      cfg,
+      exec,
+      "dependency-copy-headroom-recovered-run",
+      undefined,
+      undefined,
+      async () => roomy,
+      undefined,
+      undefined,
+      async () => {
+        gcCount++;
+        return gcResult(11 * gib);
+      },
+    );
+
+    const result = await deps.checkDiskHeadroom?.();
+
+    expect(result?.ok).toBe(true);
+    expect(result?.summary).toContain("automatic headroom recovery succeeded");
+    expect(result?.summary).toContain("DEPENDENCY_GENERATION_HEADROOM_OK");
+    expect(gcCount).toBe(1);
+    expect(probes).toHaveLength(2);
+  });
+
+  it("admits without cleanup when both floors pass", async () => {
+    const { exec, probes } = probeExec([0]);
+    let gcCount = 0;
+    const deps = realCheckpointDeps(
+      cfg,
+      exec,
+      "dependency-copy-headroom-ok-run",
+      undefined,
+      undefined,
+      async () => roomy,
+      undefined,
+      undefined,
+      async () => {
+        gcCount++;
+        return gcResult(0);
+      },
+    );
+
+    const result = await deps.checkDiskHeadroom?.();
+
+    expect(result?.ok).toBe(true);
+    expect(result?.summary).toContain("/tmp 45.0 GiB free");
+    expect(result?.summary).toContain("DEPENDENCY_GENERATION_HEADROOM_OK");
+    expect(gcCount).toBe(0);
+    expect(probes).toHaveLength(1);
+  });
+
+  it("treats a probe failure other than exit 77 as unmeasured and leaves the critical floor as the only check", async () => {
+    const { exec, probes } = probeExec([2]);
+    let gcCount = 0;
+    const deps = realCheckpointDeps(
+      cfg,
+      exec,
+      "dependency-copy-headroom-probe-broken-run",
+      undefined,
+      undefined,
+      async () => roomy,
+      undefined,
+      undefined,
+      async () => {
+        gcCount++;
+        return gcResult(0);
+      },
+    );
+
+    const result = await deps.checkDiskHeadroom?.();
+
+    expect(result?.ok).toBe(true);
+    expect(result?.summary).toContain(
+      "dependency-copy headroom probe exited 2; the critical-write floor is the only admission check",
+    );
+    expect(gcCount).toBe(0);
+    expect(probes).toHaveLength(1);
   });
 });
 
