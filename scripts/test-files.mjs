@@ -2155,7 +2155,7 @@ export const TEST_FILE_RUN_TIMEOUT_MS = testFileRunTimeoutMs();
 export const TEST_FILE_PROGRESS_INTERVAL_MS = 10_000;
 export const TEST_FILE_WATCHDOG_STALL_WINDOW_MS = 5 * 60_000;
 export const TEST_FILE_WATCHDOG_EXTENSION_MS = 5 * 60_000;
-const TEST_FILE_KILL_GRACE_MS = 2_000;
+export const TEST_FILE_KILL_GRACE_MS = 2_000;
 const TEST_FILE_MAX_CAPTURE_BYTES = 256 * 1024 * 1024;
 const SYSTEMD_RUN_PATH = process.platform === 'linux'
   ? ['/usr/bin/systemd-run', '/bin/systemd-run'].find((candidate) => existsSync(candidate)) ?? null
@@ -2170,7 +2170,7 @@ const SETSID_PATH = process.platform === 'linux'
  * of the two — a pc-heavy freeze can stall the router's timers while systemd's clock keeps going.
  */
 const TEST_FILE_SCOPE_RUNTIME_SLACK_MS = 30 * 60_000;
-const TEST_FILE_SCOPE_STOP_TIMEOUT_SEC = 10;
+export const TEST_FILE_SCOPE_STOP_TIMEOUT_SEC = 10;
 let testScopeSequence = 0;
 
 /**
