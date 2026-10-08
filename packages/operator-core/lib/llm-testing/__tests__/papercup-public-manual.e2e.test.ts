@@ -39,6 +39,7 @@ import { withWorkspace } from '@papercusp/db-org';
 import { parseEnvFile } from '../../../../../apps/operator/scripts/systemd/portal-hosted-launcher';
 import { exactOriginOr403 } from '../../endpoint-route/hosted-browser-context';
 import { PAPERCUSP_TMPDIR_CANDIDATES, tmpdirIsInsideRepo } from '../../../../../libs/test-config/src/tmpdir-guard';
+import { findBoxIdentityPaths, serializeIdentitySafeJson } from '../../../../../scripts/lib/identity-leak-patterns.mjs';
 
 let baseUrl = process.env.OPERATOR_BASE_URL;
 const enabled = Boolean(baseUrl) && process.env.PAPERCUSP_TEST_PUBLIC_CHAT === '1';
@@ -286,11 +287,13 @@ function serializePortalEvidence(record: Record<string, unknown>, failure?: unkn
   const error = failure instanceof Error
     ? { name: failure.name, message: failure.message, stack: failure.stack }
     : failure === undefined ? undefined : { message: String(failure) };
-  let serialized = JSON.stringify({ ...record, error }, null, 2);
-  for (const credential of typeof credentials === 'string' ? [credentials] : credentials ?? []) {
-    if (credential) serialized = serialized.split(credential).join('[REDACTED]');
-  }
-  return serialized;
+  const privateValues = typeof credentials === 'string' ? [credentials] : credentials ?? [];
+  // Remove credentials from values before JSON escaping or identity redaction
+  // changes their spelling. Publish through the distribution guard's serializer.
+  const credentialSafe = JSON.stringify({ ...record, error }, (_key, value) => typeof value === 'string'
+    ? privateValues.reduce((text, credential) => credential ? text.split(credential).join('[REDACTED]') : text, value)
+    : value);
+  return serializeIdentitySafeJson(JSON.parse(credentialSafe));
 }
 
 function safeHostedErrorCode(body: unknown): string | null {
@@ -440,6 +443,36 @@ describe('public manual Portal failure evidence', () => {
     expect(JSON.parse(evidence)).toMatchObject({ stage: 'browser-launch', stream: '[REDACTED]',
       error: { name: 'Error', message: 'Browser failed with [REDACTED]' } });
     expect(JSON.parse(evidence).error.stack).toContain('Browser failed with [REDACTED]');
+  });
+
+  it('retains portable Portal evidence without changing results, hashes or unknown provenance', () => {
+    const sourceRoot = ['', 'home', 'somedev', 'project', 'portal'].join('/');
+    const credential = `private\"token:${sourceRoot}/secret`;
+    const record = {
+      command: `PORTAL_SOURCE_ROOT=${sourceRoot} npm run test:file`,
+      candidateRoot: `${sourceRoot}/releases/fixture-build`,
+      servedRelease: { sourceRoot, sourceRootDigest: 'a'.repeat(64) },
+      sourceProvenance: { status: 'unknown', reason: 'Imported source was not measured' },
+      result: { exitCode: 0, passed: 1, filterExcluded: 36 },
+      rawCase: { sha256: 'b'.repeat(64) },
+      frames: [{ event: 'delta', data: { text: 'Public fixture answer' } }],
+      secret: credential,
+    };
+    const before = JSON.stringify(record);
+    const evidence = serializePortalEvidence(record, new Error(`Failed at ${sourceRoot} with ${credential}`), credential);
+    const parsed = JSON.parse(evidence);
+    expect(findBoxIdentityPaths(evidence)).toEqual([]);
+    expect(evidence).not.toContain(sourceRoot);
+    expect(evidence).not.toContain('private');
+    expect(parsed).toMatchObject({
+      command: 'PORTAL_SOURCE_ROOT=/home/builduser/project/portal npm run test:file',
+      candidateRoot: '/home/builduser/project/portal/releases/fixture-build',
+      servedRelease: { sourceRoot: '/home/builduser/project/portal', sourceRootDigest: record.servedRelease.sourceRootDigest },
+      sourceProvenance: record.sourceProvenance, result: record.result, rawCase: record.rawCase,
+      frames: record.frames, secret: '[REDACTED]',
+      error: { message: 'Failed at /home/builduser/project/portal with [REDACTED]' },
+    });
+    expect(JSON.stringify(record)).toBe(before);
   });
 
   it.runIf(process.env.PAPERCUSP_TEST_PUBLIC_PORTAL === '1')('retains browser presentation failures before cleanup without input values or credential queries', async () => {
