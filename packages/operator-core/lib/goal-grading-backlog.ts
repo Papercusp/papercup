@@ -15,6 +15,8 @@
  */
 import type { Sql } from 'postgres';
 
+import { GOAL_COMPUTED_CARD_AUTHOR } from './goal-computed-tenure-card';
+
 export const GOAL_GRADING_RUBRIC_REF = 'goal-mode-e2e';
 /** Ungraded active holder hours before the backlog alerts. */
 export const GOAL_GRADING_BACKLOG_MAX_UNGRADED_HOURS = 6;
@@ -141,6 +143,10 @@ export async function readGoalGradingBacklogInput(
            AND lane = 'observation'
            AND payload->'observation'->>'rubricRef' = ${GOAL_GRADING_RUBRIC_REF}
            AND payload->'observation'->'subject'->>'ref' = ANY(${owners})
+           -- P-004: computed tenure cards are the platform's, not a grader's. They
+           -- never cover (they are provisional) and must not read as grader activity
+           -- or make the system the grader this sweep wakes.
+           AND (payload->'_ei'->>'created_by') IS DISTINCT FROM ${GOAL_COMPUTED_CARD_AUTHOR}
            AND created_ts >= ${since.getTime()}`
     : [];
   const newest = cards.reduce<(typeof cards)[number] | null>(

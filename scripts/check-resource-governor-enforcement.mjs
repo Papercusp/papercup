@@ -466,7 +466,9 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
       return resourceStartCallCount(source) === 3 &&
         [...code.matchAll(/\bexecFileSync\s*\(/g)].length === 3 &&
         source.includes("execFileSync('npm', ['run', 'lint:as-committed', '--', 'test:file', '--any',") &&
-        source.includes("assert.equal(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED, '1'") &&
+        // One isolation assert per phase: the native-operation phase that launches the
+        // committed test run, and the Reports fixture phase. Dropping either re-flags.
+        source.split("assert.equal(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED, '1'").length - 1 === 2 &&
         source.includes("assert.ok(pid && workspace && process.env.VERIFY_TAURI_POLL") &&
         source.includes("timeout: 60_000") &&
         source.includes("timeout: 90_000") &&
@@ -2105,18 +2107,22 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
       source.includes("runPhase(ctx)"),
   },
   {
-    path: "packages/operator-core/lib/agent-tools/per-use-chokepoint.ts",
+    path: "scripts/pg-url.mjs",
     code: "resource-start-outside-admission",
-    disposition: "semantic",
+    disposition: "bypass",
     reason:
-      "P-016 reviewed semantic disposition for packages/operator-core/lib/agent-tools/per-use-chokepoint.ts (WI-10007542; owner lane WI-10004291): the detector's `.admit(` arm fires on funded per-use tool-turn admission (SuCodexTurnLifecycle['admit'] and the installed-plugin funding host), which reserves a buyer's money for one paid tool invocation before the tools:invoke dispatch runs. It starts no child process, worker or resident queue, and holds no machine capacity of its own; the tool handler it guards is dispatched by the existing tools:invoke path, whose own process starts are scanned at their own sites. A monetary entitlement decision is policy state, not a resource start for Governor.admit to meter.",
+      "P-016 reviewed bypass disposition for scripts/pg-url.mjs (reviewed under WI-10007542 after its `--exec` mode landed 2026-10-08): this is a directly invoked DSN resolver CLI, not a runtime lane. Its one start is `--exec -- COMMAND`, an env-binding wrapper in the shape of `env VAR=… cmd`: it spawns exactly the caller-named child with shell:false and inherited stdio, sets only HARNESS_ADMIN_DATABASE_URL, awaits the child's exit and returns its code. It refuses to start anything unless an explicit env or isolated-PG pin selected the database. The child's cost belongs to the door that invoked pg-url (a capability:bash task, or pc-heavy when the caller wraps it), which already confines and accounts for the whole subtree, so a second receipt here would double-count the same work.",
     matchesSource: (source) => {
       const code = stripCommentsAndStrings(source);
-      return resourceStartCallCount(source) === 0 &&
-        !hasCalledResourceStartAlias(code) &&
-        !/\bnew\s+(?:Worker|Piscina)\s*\(|\bdetached\b/.test(code) &&
-        !/\bfrom\s+['"]node:child_process['"]|\brequire\s*\(\s*['"](?:node:)?child_process['"]/.test(source) &&
-        source.includes("type NativeAdmissionContext = Parameters<SuCodexTurnLifecycle['admit']>[0];");
+      return resourceStartCallCount(source) === 1 &&
+        source.includes("const child = spawn(executable, commandArgs, {") &&
+        source.includes("shell: false,") &&
+        source.includes("stdio: 'inherit',") &&
+        source.includes("child.once('exit', (code) => resolve(code ?? 1));") &&
+        source.includes("if (args.mode === 'exec' && !['env', 'isolated-pg-port'].includes(resolution.source))") &&
+        !/\bdetached\b/.test(code) &&
+        !/\bnew\s+(?:Worker|Piscina)\s*\(/.test(code) &&
+        !hasCalledResourceStartAlias(code);
     },
   },
 ]);
@@ -2129,6 +2135,22 @@ export const P016_DISPOSITION_REGISTRY = new Map(
 
 export const BYPASS_REGISTRY = new Map([
   ...P016_DISPOSITION_REGISTRY,
+  [
+    "packages/operator-core/lib/agent-tools/per-use-chokepoint.ts::resource-start-outside-admission",
+    {
+      disposition: "semantic",
+      reason:
+        "Reviewed semantic disposition for per-use-chokepoint.ts (WI-10007542; owner lane WI-10004291): the detector's `.admit(` arm fires on funded per-use tool-turn admission (SuCodexTurnLifecycle['admit'] and the installed-plugin funding host), which reserves a buyer's money for one paid tool invocation before the tools:invoke dispatch runs. It starts no child process, worker or resident queue and holds no machine capacity of its own; the tool handler it guards is dispatched by the existing tools:invoke path, whose own process starts are scanned at their own sites. A monetary entitlement decision is policy state, not a resource start for Governor.admit to meter.",
+      matchesSource: (source) => {
+        const code = stripCommentsAndStrings(source);
+        return resourceStartCallCount(source) === 0 &&
+          !hasCalledResourceStartAlias(code) &&
+          !/\bnew\s+(?:Worker|Piscina)\s*\(|\bdetached\b/.test(code) &&
+          !/\bfrom\s+['"]node:child_process['"]|\brequire\s*\(\s*['"](?:node:)?child_process['"]/.test(source) &&
+          source.includes("type NativeAdmissionContext = Parameters<SuCodexTurnLifecycle['admit']>[0];");
+      },
+    },
+  ],
   [
     "packages/operator-core/lib/agent-tools/plans/committed-tree-reader.ts::resource-start-outside-admission",
     {

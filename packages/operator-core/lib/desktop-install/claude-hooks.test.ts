@@ -170,6 +170,7 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
       `${DEST}/posttooluse-frozen-candidate-edit-nudge.mjs`,
       `${DEST}/posttooluse-registry-census-drift-nudge.mjs`,
       `${DEST}/posttooluse-cli-entry-nudge.mjs`,
+      `${DEST}/posttooluse-resource-governor-nudge.mjs`,
       `${DEST}/posttooluse-tsc-verdict-stale-nudge.mjs`,
       `${DEST}/posttooluse-proof-stale-nudge.mjs`,
       `${DEST}/artifact-url-delivery-guard.mjs`,
@@ -213,6 +214,7 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
     expect(postMatcherOf('posttooluse-css-design-primitives-nudge.mjs')).toBe('Edit|Write|MultiEdit');
     expect(postMatcherOf('posttooluse-registry-census-drift-nudge.mjs')).toBe('Edit|Write|MultiEdit');
     expect(postMatcherOf('posttooluse-cli-entry-nudge.mjs')).toBe('Edit|Write|MultiEdit');
+    expect(postMatcherOf('posttooluse-resource-governor-nudge.mjs')).toBe('Edit|Write|MultiEdit');
     // EI-21844056581395228: the ledger half of the artifact-URL delivery guard. It is
     // scoped to the Artifact tool because it only harvests ids from that tool's own
     // responses; the blocking half is matcher-less on Stop (assistant prose is not a

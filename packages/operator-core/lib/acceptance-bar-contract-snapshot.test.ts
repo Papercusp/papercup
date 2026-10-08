@@ -308,7 +308,7 @@ function provedFixture(n = 2): AcceptanceBarContractSnapshotInput {
     // them by testRunProvenance.filePath). The counterexamples below spread this row, so each
     // pairs with its own positive proof, as a real binding would (WI-10006871).
     evidence.testRunProvenance = { filePath: 'packages/operator-core/lib/bar-proof-fixture.integration.test.ts',
-      commitSha: 'abc123', worktreeDirty: false };
+      framework: 'vitest', commitSha: 'abc123', worktreeDirty: false };
   }
   // Falsifiability is demonstrated by an executed negative control, not by the
   // positive row's `falsifiable: true` self-attestation. Keep the logical

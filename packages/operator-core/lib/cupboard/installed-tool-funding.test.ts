@@ -6,6 +6,8 @@ import type { InstalledPluginProvenance } from './types';
 import type { AttachedInstalledToolFunding } from '../agent-tools/per-use-chokepoint';
 import { INSTALLED_TOOL_FUNDING_CONFIG, productionInstalledToolFunding } from './installed-tool-funding';
 import type { HostedPerUseOffer } from './metered-invocation-door-io';
+import type { FundedToolTurnBinding } from './funded-tool-turn-store';
+import { sellerReceiptAuthoritySigningBytes } from '../p2p/metered-invocation';
 
 const digest = (value: unknown) => createHash('sha256').update(canonicalJson(value)).digest('hex');
 function fixture() {
@@ -17,7 +19,10 @@ function fixture() {
     contentFingerprint: 'sha256:' + 'a'.repeat(64), contentSource: 'r2', hadListing: true } as InstalledPluginProvenance;
   const offer: HostedPerUseOffer = { offerId: 'offer', productId: 'product', skuRef: provenance.listing.skuRef!,
     creatorId: 'gh:9', active: true, productActive: true, terms: { meterUnit: 'tool-call', unitPriceMicros: 250,
-      priceVersion: 'price-v1', splitManifestHash: 'sha256:' + 'b'.repeat(64) } };
+      priceVersion: 'price-v1', splitManifestHash: 'sha256:' + 'b'.repeat(64) },
+    receiptAuthority: { pubkeyBase64: pubkey('seller'), proof: sign(null, sellerReceiptAuthoritySigningBytes({
+      seller: 'gh:9', offerId: 'offer', productId: 'product', skuRef: provenance.listing.skuRef!,
+      pubkeyBase64: pubkey('seller') }), pairs.seller.privateKey).toString('base64') } };
   const grant = { ...session, skuRef: offer.skuRef, offerId: offer.offerId, productId: offer.productId,
     provenanceHash: digest(provenance), termsHash: digest(offer.terms),
     payer: { principal: 'gh:7', credentialRef: 'buyer-token', hiveSlug: 'payer', pubkeyBase64: pubkey('payer') },
@@ -25,11 +30,11 @@ function fixture() {
     quantityPerTurn: 4, maxMicrosPerTurn: '1000', expiresAtMs: 5000 };
   const keys: Record<string, string> = { 'buyer-token': 'buyer-secret-fixture', 'seller-token': 'seller-secret-fixture' };
   const requests: Array<{ path: string; token: string }> = [];
-  let channelKey = grant.payer.pubkeyBase64, channelOwner = 'gh:7', channelState = 'open', escrow = 1500;
+  let channelKey = grant.payer.pubkeyBase64, channelOwner = 'gh:7', channelState = 'open', escrow = 1500, entitled = true, nowMs = 1000;
   const host: AttachedInstalledToolFunding['host'] = { admit: vi.fn(), localTurn: vi.fn(), complete: vi.fn() };
   const createHost = vi.fn((_deps: ConstructorParameters<typeof import('./funded-turn-host').FundedToolTurnHost>[0]) => host);
-  const deps = { workspaceId: () => 'ws', nowMs: () => 1000, sql: async () => ({} as Sql),
-    readKey: vi.fn(async (key: string) => key === INSTALLED_TOOL_FUNDING_CONFIG
+  const deps = { workspaceId: () => 'ws', nowMs: () => nowMs, sql: async () => ({} as Sql),
+    readKey: vi.fn(async (key: string): Promise<string | undefined> => key === INSTALLED_TOOL_FUNDING_CONFIG
       ? JSON.stringify({ schema: 'papercusp.installed-tool-funding/v1', grants: [grant] }) : keys[key]),
     readFunding: vi.fn(async () => new Map([[offer.skuRef, { skuRef: offer.skuRef, channelId: 'channel',
       pricingState: null, pricingOfferId: null, pricingUnitMicros: null, pricingCheckedAtMs: null }]])),
@@ -41,7 +46,12 @@ function fixture() {
   const fetchImpl = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
     const path = new URL(String(url)).pathname, token = new Headers(init?.headers).get('authorization')!.slice(7);
     requests.push({ path, token });
-    if (path === '/commerce/entitlements') return Response.json({ buyer: token === keys['buyer-token'] ? 'gh:7' : 'gh:9', entitlements: [] });
+    if (path === '/commerce/entitlements') {
+      const buyer = token === keys['buyer-token'] ? 'gh:7' : 'gh:9';
+      return Response.json({ buyer, entitlements: entitled && buyer === 'gh:7'
+        ? [{ buyer_id: buyer, product_id: offer.productId, state: 'active', revoked_at_ms: null }] : [] });
+    }
+    if (path === '/commerce/offers') return Response.json({ offers: [{ ...offer, pricingModel: 'per-use', perUse: offer.terms }] });
     return Response.json({ channel: { channelId: 'channel', principalId: channelOwner, state: channelState,
       payerPubkeyBase64: channelKey, escrowMicros: escrow, committedMicros: 0 } });
   });
@@ -59,7 +69,12 @@ function fixture() {
     const capability = await funding.resolveInstallation(input);
     return { funding, capability };
   };
-  return { session, pairs, grant, keys, offer, input, deps, requests, createHost, run, resolve,
+  const binding: FundedToolTurnBinding = { kind: 'tool', ...session, executionId: 'native', admissionId: 'turn',
+    payer: grant.payer.principal, seller: grant.seller.principal, channelId: 'channel',
+    provenanceHash: grant.provenanceHash, offer: structuredClone(offer), quantityCeiling: 4n, expiresAtMs: grant.expiresAtMs };
+  return { session, pairs, grant, keys, offer, input, binding, deps, requests, createHost, run, resolve,
+    revokeEntitlement: () => { entitled = false; },
+    changeClock: (value: number) => { nowMs = value; },
     changeChannel: (change: { key?: string; owner?: string; state?: string; escrow?: number }) => {
       channelKey = change.key ?? channelKey; channelOwner = change.owner ?? channelOwner;
       channelState = change.state ?? channelState; escrow = change.escrow ?? escrow;
@@ -67,6 +82,68 @@ function fixture() {
 }
 
 describe('production installed funding with independent seller credentials', () => {
+  it('uses the exact remote seller capability without reading seller secrets or local seller keys', async () => {
+    const f = fixture();
+    const remote = { grantId: 'seller-grant', devicePubkey: f.grant.seller.pubkeyBase64, harnessSlug: 'papercusp' };
+    const configured = { ...f.grant, seller: { ...f.grant.seller, remote } };
+    const originalRead = f.deps.readKey.getMockImplementation()!;
+    f.deps.readKey.mockImplementation(async key => key === INSTALLED_TOOL_FUNDING_CONFIG
+      ? JSON.stringify({ schema: 'papercusp.installed-tool-funding/v1', grants: [configured] }) : originalRead(key));
+    const capability = { verify: vi.fn(async () => {}), signReceipt: vi.fn(async () => 'remote-signature'), settle: vi.fn(async () => {}) };
+    const remoteSeller = vi.fn(() => capability);
+    await f.run(async () => {
+      const funding = await productionInstalledToolFunding(f.session, { ...f.deps, remoteSeller });
+      const installation = await funding!.resolveInstallation(f.input);
+      await installation.resolveFunding(f.offer);
+      await installation.verifyCurrentAuthority!(f.binding);
+      expect(remoteSeller).toHaveBeenCalledWith(remote, f.grant.seller.pubkeyBase64, 'channel');
+      expect(capability.verify).toHaveBeenCalledTimes(2);
+      expect(f.deps.readKey.mock.calls.some(([key]) => key === 'seller-token')).toBe(false);
+      expect(f.deps.readKeyStatus.mock.calls.every(([, hive]) => hive === 'payer')).toBe(true);
+      expect(f.createHost.mock.calls[0]![0].signReceipt).toBe(capability.signReceipt);
+      expect(f.createHost.mock.calls[0]![0].settleRemote).toBe(capability.settle);
+      expect(f.requests.every(row => row.token === 'buyer-secret-fixture')).toBe(true);
+      capability.verify.mockRejectedValueOnce(new Error('seller-rpc-revoked'));
+      await expect(installation.verifyCurrentAuthority!(f.binding)).rejects.toThrow('seller-rpc-revoked');
+    });
+  });
+
+  it('refreshes the original grant and hosted authority without reserving another hold', async () => {
+    const f = fixture();
+    await f.run(async () => {
+      const { capability } = await f.resolve();
+      await capability.resolveFunding(f.offer);
+      await expect(capability.verifyCurrentAuthority!(f.binding)).resolves.toBeUndefined();
+      expect(f.createHost).toHaveBeenCalledOnce();
+      expect(f.requests.slice(-4).map(row => row.token)).toEqual([
+        'buyer-secret-fixture', 'seller-secret-fixture', 'buyer-secret-fixture', 'buyer-secret-fixture']);
+    });
+  });
+
+  it.each(['grant', 'grant-changed', 'expiry', 'credential', 'key', 'entitlement', 'seller-login', 'offer', 'channel', 'unavailable'] as const)(
+    'refuses current %s revocation after original funding was accepted', async scenario => {
+      const f = fixture();
+      await f.run(async () => {
+        const { capability } = await f.resolve(); await capability.resolveFunding(f.offer);
+        if (scenario === 'grant') f.deps.readKey.mockResolvedValue(undefined);
+        if (scenario === 'grant-changed') f.grant.maxMicrosPerTurn = '999';
+        if (scenario === 'expiry') f.changeClock(5000);
+        if (scenario === 'credential') f.keys['seller-token'] = 'rotated-secret';
+        if (scenario === 'key') f.deps.readKeyStatus.mockResolvedValue({ kind: 'ok', pubkeyBase64: f.grant.payer.pubkeyBase64 });
+        if (scenario === 'entitlement') f.revokeEntitlement();
+        if (scenario === 'seller-login') {
+          const original = globalThis.fetch;
+          globalThis.fetch = (async (url, init) => new Headers(init?.headers).get('authorization') === 'Bearer seller-secret-fixture'
+            ? Response.json({ buyer: 'gh:99', entitlements: [] }) : original(url, init)) as typeof fetch;
+        }
+        if (scenario === 'offer') Object.assign(f.offer, { active: false });
+        if (scenario === 'channel') f.changeChannel({ state: 'closing' });
+        if (scenario === 'unavailable') globalThis.fetch = vi.fn(async () => { throw new Error('network unavailable'); });
+        await expect(capability.verifyCurrentAuthority!(f.binding)).rejects.toThrow();
+        expect(f.createHost).toHaveBeenCalledOnce();
+      });
+    });
+
   it('provisions distinct hosted principals, signing keys and an exact budgeted channel route', async () => {
     const f = fixture();
     await f.run(async () => {
@@ -134,6 +211,31 @@ describe('production installed funding with independent seller credentials', () 
     });
     expect(f.deps.readFunding).not.toHaveBeenCalled();
   });
+
+  it.each(['missing', 'another-key', 'forged-proof', 'another-offer'] as const)(
+    'refuses %s seller receipt authority before reading the funding route or creating a host', async scenario => {
+      const f = fixture();
+      let receiptAuthority = f.offer.receiptAuthority;
+      if (scenario === 'missing') receiptAuthority = undefined;
+      if (scenario === 'another-key') {
+        const pair = generateKeyPairSync('ed25519');
+        const pubkeyBase64 = pair.publicKey.export({ format: 'der', type: 'spki' }).subarray(-32).toString('base64');
+        receiptAuthority = { pubkeyBase64, proof: sign(null, sellerReceiptAuthoritySigningBytes({
+          seller: f.offer.creatorId, offerId: f.offer.offerId, productId: f.offer.productId,
+          skuRef: f.offer.skuRef, pubkeyBase64 }), pair.privateKey).toString('base64') };
+      }
+      if (scenario === 'forged-proof') receiptAuthority = { ...receiptAuthority!, proof: 'nonempty' };
+      if (scenario === 'another-offer') receiptAuthority = { ...receiptAuthority!, proof: sign(null,
+        sellerReceiptAuthoritySigningBytes({ seller: f.offer.creatorId, offerId: 'other',
+          productId: f.offer.productId, skuRef: f.offer.skuRef, pubkeyBase64: receiptAuthority!.pubkeyBase64 }),
+        f.pairs.seller.privateKey).toString('base64') };
+      await f.run(async () => {
+        const { capability } = await f.resolve();
+        await expect(capability.resolveFunding({ ...f.offer, receiptAuthority })).rejects.toThrow('offer-grant-mismatch');
+      });
+      expect(f.deps.readFunding).not.toHaveBeenCalled();
+      expect(f.createHost).not.toHaveBeenCalled();
+    });
 
   it('does not turn a stored channel or expired grant into spend authority', async () => {
     const f = fixture(); f.grant.maxMicrosPerTurn = '999';

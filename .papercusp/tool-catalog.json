@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 956,
+  "count": 957,
   "tools": [
     {
       "name": "ablation:report",
@@ -23265,6 +23265,36 @@
         "when": "Reading a template-instance plan's structured data (e.g. a rubric instance's fields) to consume it programmatically — never scrape it out of the markdown.",
         "notWhen": "You need the whole plan (Now / items / decisions / prose) — plans:get. Writing the data — plans:set-template-data. Listing plans of a template type — plans:list { template }.",
         "chaining": "plans:get-template-data { slug } → plans:set-template-data { slug, data } to update it."
+      }
+    },
+    {
+      "name": "plans:governance-event",
+      "http": {
+        "path": "/api/agent-tools/plans/governance-event",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Append a signed immutable governance event for the current plan revision, or inspect its authenticated finalization and admission verdict. Trust comes from stored owner policy. No chain submission.",
+      "capabilities": [
+        "plans:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator"
+      ],
+      "guidance": {
+        "when": "Ratifying the current plan revision with signed events, or inspecting its admission certificate.",
+        "notWhen": "Authoring policy or moving funds.",
+        "chaining": "Append round-open, ballots and finalization; inspect before starting."
       }
     },
     {

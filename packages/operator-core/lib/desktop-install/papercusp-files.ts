@@ -1213,6 +1213,16 @@ export const CC_HOOK_FILES = [
   // its allowance — i.e. exactly when the gate would fail. Nearly free on unrelated edits: the
   // detector's own `import.meta.url` substring short-circuit runs before any git work.
   'posttooluse-cli-entry-nudge.mjs',
+  // WI-10007553: PostToolUse (matcher "Edit|Write|MultiEdit") ADVISORY nudge when an edit
+  // makes scripts/check-resource-governor-enforcement.mjs fail: an unreviewed resource start
+  // (spawn/execFile/fork/new Worker outside Governor.admit), a reviewed row whose
+  // matchesSource pin no longer accepts the source, or a row left stale by removing its
+  // finding. That guard is an AFFECTED_GUARD, so each such edit reds the gate for EVERY lane;
+  // measured 2026-10-08 (WI-10007542), four unrelated files broke it within ~12h, each first
+  // seen by the fleet gate rather than the author. Imports the guard's OWN scanInventory and
+  // BYPASS_REGISTRY and scans only the edited file, so it cannot drift from the gate's
+  // verdict; files outside every enforced lane exit before any git or scan work.
+  'posttooluse-resource-governor-nudge.mjs',
   // frozen-candidate-compliance-enforcement-2026-08-30 P-004/P-005: PostToolUse (matcher
   // "Edit|Write|MultiEdit") ADVISORY nudge when the edited path is one the FROZEN gate
   // candidate is failing on. Under freeze-and-converge (D-007) every run RESUMES one frozen
@@ -3125,6 +3135,16 @@ export function mergeClaudeHookSettings(
     hooks.PostToolUse = replaceOurHookEntries(ev('PostToolUse'), ours('posttooluse-cli-entry-nudge.mjs'), {
       matcher: 'Edit|Write|MultiEdit',
       hooks: cmd('posttooluse-cli-entry-nudge.mjs'),
+    });
+  // merge_resource_governor_nudge_hook — PostToolUse, matcher 'Edit|Write|MultiEdit'
+  // (WI-10007553). Advisory only, and it MUST stay advisory: PostToolUse cannot block, and
+  // check-resource-governor-enforcement.mjs remains the authority. This only moves the
+  // SIGNAL from the fleet gate to the edit that caused it. Fires only for a finding the HEAD
+  // version did not already have, so an unrelated edit to an already-red file is silent.
+  if (has('posttooluse-resource-governor-nudge.mjs'))
+    hooks.PostToolUse = replaceOurHookEntries(ev('PostToolUse'), ours('posttooluse-resource-governor-nudge.mjs'), {
+      matcher: 'Edit|Write|MultiEdit',
+      hooks: cmd('posttooluse-resource-governor-nudge.mjs'),
     });
   // merge_tsc_verdict_stale_nudge_hook — PostToolUse, matcher 'Edit|Write|MultiEdit'.
   // Advisory only: an Edit/Write landing AFTER the session's last `lint:tsc` run invalidates

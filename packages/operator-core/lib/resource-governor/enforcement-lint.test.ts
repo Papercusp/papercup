@@ -249,6 +249,28 @@ describe('resource governor enforcement lint', () => {
       source + "\nspawn('resident-worker', [], { detached: true });",
       source + "\nconst launch = spawn; launch('resident-worker', []);",
       source + "\nnew Worker('resident-worker');",
+      // WI-10007542: the third start is only the committed test:file run (governed by
+      // runGovernedTestProcess); retargeting it, or dropping either phase's isolation
+      // assert, must re-flag the file.
+      source.replace("'lint:as-committed', '--', 'test:file'", "'test:affected', '--'"),
+      source.replace(/assert\.equal\(process\.env\.PAPERCUSP_VERIFY_TAURI_ISOLATED, '1', 'Fixture publication/, "assert.ok(true, 'Fixture publication"),
+    ]) expect(scanInventory([[path, unsafe]])).toContain(finding);
+  });
+
+  it('bounds the per-use chokepoint disposition to funding admission with no process start', () => {
+    const path = 'packages/operator-core/lib/agent-tools/per-use-chokepoint.ts';
+    const source = readFileSync(ROOT + path, 'utf8');
+    const finding = `${path}:resource-start-outside-admission`;
+    // The detector's `.admit(` arm does fire here; the reviewed row is what clears it.
+    expect(inspectGovernorSource(source)).toContain('resource-start-outside-admission');
+    expect(scanInventory([[path, source]])).not.toContain(finding);
+    expect(BYPASS_REGISTRY.get(`${path}::resource-start-outside-admission`)?.reason).toContain('WI-10007542');
+    for (const unsafe of [
+      source + "\nspawn('resident-worker', []);",
+      source + "\nconst launch = execFile; launch('git', []);",
+      source + "\nnew Worker('resident-worker');",
+      `import { execFileSync } from 'node:child_process';\n${source}`,
+      source.replace("type NativeAdmissionContext = Parameters<SuCodexTurnLifecycle['admit']>[0];", 'type NativeAdmissionContext = unknown;'),
     ]) expect(scanInventory([[path, unsafe]])).toContain(finding);
   });
 

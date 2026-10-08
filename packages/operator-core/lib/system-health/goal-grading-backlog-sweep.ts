@@ -130,7 +130,10 @@ async function defaultEscalate(alert: GoalGradingBacklogAlert): Promise<{ coales
       `Alerts: ${v.alerts.join(', ')}.\n\n` +
       `${describeGrader(alert)}\n\n` +
       `Remedy: the grader files ${GOAL_GRADING_RUBRIC_REF} cards (scorecards:emit) whose subject ` +
-      `windows cover the ungraded holder hours. If no live grader exists, dispatch one. ` +
+      `windows cover the ungraded holder hours. Each holder tenure already has a provisional ` +
+      `computed card (author goal-grading-computed): supersede it with terminal:true and rate only ` +
+      `the residual criteria — emit adopts the computed pass/idle/not-exercised ratings you omit. ` +
+      `If no live grader exists, dispatch one. ` +
       `This escalation resolves itself once grading catches up.`,
     meta: {
       // A stable conditionKey: one backlog, one row, however many ticks see it.
