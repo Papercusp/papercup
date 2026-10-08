@@ -1464,7 +1464,8 @@ const brainGet = defineTool({
  *                                    [{ id, name }], harnesses: [{ slug, path, status }] }
  *   - ?workspace=<id>            → harnesses for that workspace
  *   - ?workspace=<id>&harness=<slug> → { plans: [{ slug }] } (non-archived)
- * `workspace` defaults to the active workspace when omitted.
+ * `workspace` defaults to the active workspace when omitted. `include` selects
+ * comma-separated sections; omitted retains the full response for older clients.
  */
 const optionsGet = defineTool({
   method: 'GET',
@@ -1554,20 +1555,34 @@ const optionsGet = defineTool({
       }
     }
 
-    const { listHarnessesFor } = await import('../../../device-harnesses');
-    const harnesses = (await listHarnessesFor(workspace)).map((h) => ({
-      slug: h.slug,
-      path: h.path,
-      status: h.status,
-    }));
-    const workspaces = readRegistry().workspaces.map((w) => ({ id: w.id, name: w.name }));
+    // Each terminal menu used to re-read ALL sections, serially, including an
+    // OMP subprocess and account/fleet stores it did not need. Keep the existing
+    // endpoint and full-response default, but allow independent picker reads.
+    const include = url.searchParams.get('include');
+    const sections = include === null ? null : new Set(include.split(',').map((s) => s.trim()));
+    const supported = ['workspaces', 'harnesses', 'roles', 'accounts', 'ompCatalog', 'fleets'];
+    if (sections && [...sections].some((section) => !supported.includes(section)))
+      return jsonRes({ status: 'error', error: 'unknown launch-options section' }, 400);
+    const want = (section: string) => sections === null || sections.has(section);
+    let harnesses;
+    if (want('harnesses')) {
+      const { listHarnessesFor } = await import('../../../device-harnesses');
+      harnesses = (await listHarnessesFor(workspace)).map((h) => ({
+        slug: h.slug, path: h.path, status: h.status,
+      }));
+    }
+    const workspaces = want('workspaces')
+      ? readRegistry().workspaces.map((w) => ({ id: w.id, name: w.name })) : undefined;
     // Roles + their consumes (feature/plan needs) for the psu --role picker.
-    const { getKnownRoles } = await import('../../../known-roles');
-    const { roleConsumes } = await import('../../../role-registry');
-    const roles = getKnownRoles().map((id) => ({ id, consumes: roleConsumes(id, harness ?? '') }));
+    let roles;
+    if (want('roles')) {
+      const { getKnownRoles } = await import('../../../known-roles');
+      const { roleConsumes } = await import('../../../role-registry');
+      roles = getKnownRoles().map((id) => ({ id, consumes: roleConsumes(id, harness ?? '') }));
+    }
     // psu-account-chooser P-005: pool accounts the interactive picker offers (empty +
     // hidden unless the gateway is on — see resolveAccountChoices).
-    const accounts = await resolveAccountChoices(workspace, accountAgent);
+    const accounts = want('accounts') ? await resolveAccountChoices(workspace, accountAgent) : undefined;
     // D-001: OMP remains the source of truth. A catalog read failure must not
     // take down the rest of the launch picker, but it must remain observable —
     // an empty successful catalog and an unavailable catalog are different.
@@ -1588,8 +1603,9 @@ const optionsGet = defineTool({
           upstream: 'unchecked';
           models: [];
           error: string;
-        };
-    try {
+        }
+      | undefined;
+    if (want('ompCatalog')) try {
       const { models } = await readOmpModelCatalog();
       ompCatalog = {
         status: 'available',
@@ -1623,7 +1639,7 @@ const optionsGet = defineTool({
     // The full curated catalog (name + colours) so the psu picker can offer a
     // scheme SELECTOR with per-row swatches when creating a new fleet.
     let schemes: SchemeColor[] = [];
-    try {
+    if (want('fleets')) try {
       const { listFleets, resolveFleetScheme } = await import('../../../agent-fleets-store');
       const { COLOR_SCHEMES, allocateNextSchemeName, schemeByName } = await import('../../../console-color-schemes');
       schemes = COLOR_SCHEMES.map((s) => ({ name: s.name, bg: s.bg, fg: s.fg, cursor: s.cursor }));
@@ -1645,14 +1661,12 @@ const optionsGet = defineTool({
       status: 'ok',
       activeWorkspace: activeWorkspaceId(),
       workspace,
-      workspaces,
-      harnesses,
-      roles,
-      accounts,
-      ompCatalog,
-      fleets,
-      nextScheme,
-      schemes,
+      ...(want('workspaces') ? { workspaces } : {}),
+      ...(want('harnesses') ? { harnesses } : {}),
+      ...(want('roles') ? { roles } : {}),
+      ...(want('accounts') ? { accounts } : {}),
+      ...(want('ompCatalog') ? { ompCatalog } : {}),
+      ...(want('fleets') ? { fleets, nextScheme, schemes } : {}),
     });
   },
 });
