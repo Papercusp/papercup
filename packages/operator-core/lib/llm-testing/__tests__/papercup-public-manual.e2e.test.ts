@@ -117,14 +117,53 @@ function publicManualHostedCookie(origin: string, value: string) {
     path: '/', secure: true, httpOnly: true, sameSite: 'Lax' as const };
 }
 
-function serializePortalEvidence(record: Record<string, unknown>, failure?: unknown, bearer?: string) {
+function serializePortalEvidence(record: Record<string, unknown>, failure?: unknown, credentials?: string | string[]) {
   // Preserve the original error before a reporter attempts source-map parsing.
   // Credential custody applies to failure messages and stacks too.
   const error = failure instanceof Error
     ? { name: failure.name, message: failure.message, stack: failure.stack }
     : failure === undefined ? undefined : { message: String(failure) };
-  const serialized = JSON.stringify({ ...record, error }, null, 2);
-  return bearer ? serialized.split(bearer).join('[REDACTED]') : serialized;
+  let serialized = JSON.stringify({ ...record, error }, null, 2);
+  for (const credential of typeof credentials === 'string' ? [credentials] : credentials ?? []) {
+    if (credential) serialized = serialized.split(credential).join('[REDACTED]');
+  }
+  return serialized;
+}
+
+function observePortalBrowser(page: import('playwright').Page) {
+  // Capture presentation failures before closing Chromium. Keep no request
+  // headers, response bodies or URL queries (which can contain credentials).
+  const events: Array<Record<string, unknown>> = [];
+  const retain = (event: Record<string, unknown>) => {
+    events.push(event);
+    if (events.length > 60) events.shift();
+  };
+  const path = (url: string) => {
+    const parsed = new URL(url);
+    return `${parsed.origin}${parsed.pathname}`;
+  };
+  page.on('pageerror', (error) => retain({ kind: 'pageerror', message: error.message.slice(0, 2000) }));
+  page.on('console', (message) => {
+    if (['error', 'warning'].includes(message.type())) {
+      retain({ kind: 'console', type: message.type(), message: message.text().slice(0, 2000) });
+    }
+  });
+  page.on('response', (response) => {
+    if (response.status() >= 400) retain({ kind: 'response', path: path(response.url()), status: response.status() });
+  });
+  page.on('requestfailed', (request) => retain({ kind: 'requestfailed', path: path(request.url()),
+    error: request.failure()?.errorText }));
+  return async () => {
+    const browserText = await page.locator('body').innerText({ timeout: 2000 });
+    const dom = await page.evaluate(() => ({
+      title: document.title, readyState: document.readyState,
+      textboxes: Array.from(document.querySelectorAll('input, textarea, [role="textbox"]')).map((element) => ({
+        tag: element.tagName, label: element.getAttribute('aria-label'),
+        placeholder: element.getAttribute('placeholder'), visible: element.getClientRects().length > 0,
+      })),
+    }));
+    return { browserText, dom, events, pagePath: path(page.url()) };
+  };
 }
 
 describe('public manual Portal failure evidence', () => {
@@ -137,6 +176,30 @@ describe('public manual Portal failure evidence', () => {
       error: { name: 'Error', message: 'Browser failed with [REDACTED]' } });
     expect(JSON.parse(evidence).error.stack).toContain('Browser failed with [REDACTED]');
   });
+
+  it.runIf(process.env.PAPERCUSP_TEST_PUBLIC_PORTAL === '1')('retains browser presentation failures before cleanup without input values or credential queries', async () => {
+    const { chromium } = await import('playwright');
+    const browser = await chromium.launch({ headless: true });
+    try {
+      const page = await browser.newPage();
+      const capture = observePortalBrowser(page);
+      await page.route('http://portal.test/**', (route) => route.fulfill({ status: 200,
+        contentType: 'text/html', body: '<title>Collapsed chat</title><p>Home</p><textarea aria-label="Message Papercup" style="display:none">private draft</textarea><script>console.error("fixture render failure"); throw new Error("fixture hydration failure")</script>' }));
+      await page.goto('http://portal.test/?token=private-query');
+      const state = await capture();
+      expect(state.browserText).toBe('Home');
+      expect(state.dom.textboxes).toEqual([{ tag: 'TEXTAREA', label: 'Message Papercup', placeholder: null, visible: false }]);
+      expect(state.events).toEqual(expect.arrayContaining([
+        expect.objectContaining({ kind: 'console', message: 'fixture render failure' }),
+        expect.objectContaining({ kind: 'pageerror', message: 'fixture hydration failure' }),
+      ]));
+      const evidence = serializePortalEvidence({ state, secret: 'fixture-cookie', bearer: 'fixture-bearer' },
+        new Error('fixture-cookie'), ['fixture-cookie', 'fixture-bearer']);
+      for (const privateValue of ['private draft', 'private-query', 'fixture-cookie', 'fixture-bearer']) {
+        expect(evidence.includes(privateValue)).toBe(false);
+      }
+    } finally { await browser.close(); }
+  }, 30_000);
 });
 
 async function verifyPortalRuntimePreconditions(candidateRoot: string) {
@@ -674,6 +737,9 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
     let stream = '';
     let history: { turns?: Array<{ role: string; text: string; source?: string }> } | undefined;
     let browserText = '';
+    let captureBrowser: ReturnType<typeof observePortalBrowser> | undefined;
+    let browserState: Awaited<ReturnType<ReturnType<typeof observePortalBrowser>>> | undefined;
+    const evidenceCredentials = [principalBearer!];
     let caseFailure: unknown;
     const question = 'How do I check the orchard workspace? Search the public manual, read the FAQ section, give its recovery marker, and cite the section. Do not perform a recovery.';
     try {
@@ -698,6 +764,7 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
       hostedSessionId = selected!.id;
       const hostedConfig = parseEnvFile(readFileSync(hostedFile!, 'utf8'));
       const secret = await resolveHostedSecretRef(hostedConfig.PAPERCUSP_HOSTED_SESSION_COOKIE_SECRET_REF);
+      evidenceCredentials.push(secret);
       const port = await freeLoopbackPort();
       const origin = `http://127.0.0.1:${port}`;
       const overrides = { ...hostedConfig, PORTAL_OPERATOR_ORIGIN: baseUrl!, PAPERCUSP_WORKSPACE_ID: workspaceId,
@@ -723,17 +790,33 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
       const { chromium } = await import('playwright');
       browser = await chromium.launch({ headless: true });
       const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
-      await context.addCookies([publicManualHostedCookie(origin,
-        new HostedSessionCookieCodec(secret).encode(hostedSessionId!))]);
+      const cookieValue = new HostedSessionCookieCodec(secret).encode(hostedSessionId!);
+      evidenceCredentials.push(cookieValue);
+      await context.addCookies([publicManualHostedCookie(origin, cookieValue)]);
       const page = await context.newPage();
+      captureBrowser = observePortalBrowser(page);
       stage = 'authenticated-navigation';
       const journeyStartedAt = new Date();
-      const firstPage = await page.goto(`${origin}/?app=papercup`);
+      // Papercup is the shell's persistent sidebar, not a rail app. Both
+      // sidebars start collapsed; use its maintained URL open-state.
+      const firstPage = await page.goto(`${origin}/?app=home&chatPane=true`);
       expect(firstPage?.ok()).toBe(true);
       const html = await firstPage!.text();
       stage = 'serving-identity';
       servedRelease = resolveServedRelease({ html, releasesDir: dirname(candidateRoot!), journeyStartedAt });
       expect(servedRelease!.buildId).toBe(metadata.buildId);
+      stage = 'account-guide';
+      // New hosted accounts enter the account-first guide before the shell.
+      // Use its public control on this disposable account; this acceptance
+      // case exercises Docs and chat, while tutorial acceptance has its owner.
+      const skipGuide = page.getByRole('button', { name: 'Skip guide', exact: true });
+      await skipGuide.waitFor({ state: 'visible', timeout: 15_000 });
+      const guideSaved = page.waitForResponse((response) => response.request().method() === 'POST'
+        && new URL(response.url()).pathname === '/api/hosted/browser/onboarding/tutorial-progress');
+      await skipGuide.click();
+      const guideResponse = await guideSaved;
+      expect(guideResponse.ok()).toBe(true);
+      expect(await guideResponse.json()).toMatchObject({ record: { disposition: 'skipped' } });
       stage = 'typed-browser';
       const composer = page.getByRole('textbox', { name: 'Message Papercup', exact: true });
       await composer.waitFor({ state: 'visible', timeout: 30_000 });
@@ -782,13 +865,23 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
       stage = 'passed';
     } catch (error) {
       caseFailure = error;
+      if (captureBrowser) {
+        try {
+          browserState = await captureBrowser();
+          browserText = browserState.browserText;
+        } catch (captureError) {
+          // Diagnostics must never replace the original journey failure.
+          browserState = { browserText: '', dom: { title: '', readyState: 'unknown', textboxes: [] },
+            events: [{ kind: 'capture-error', message: String(captureError) }], pagePath: '' };
+        }
+      }
       throw error;
     } finally {
       // Only the public projected stream/history is retained. Failure stage and
       // runtime log let a continuation diagnose without replaying a paid turn.
       const safeEvidence = serializePortalEvidence({ id: 'actual-portal-typed', stage,
         question, runtimeBuild, candidateRoot, servedRelease, workspaceId, recordedAt: new Date().toISOString(),
-        frames: publicPortalFrames(stream), history, browserText }, caseFailure, principalBearer);
+        frames: publicPortalFrames(stream), history, browserText, browserState }, caseFailure, evidenceCredentials);
       writeFileSync(join(evidenceDir, 'case.json'), safeEvidence, { mode: 0o600 });
       try {
       try { await browser?.close(); }
