@@ -18,17 +18,24 @@ export interface CensusDeclaration extends CensusEntry {
   descendants?: boolean;
   /** Rebuildable subtree represented by its root, never silently omitted. */
   prune?: boolean;
+  /** Policy-owned directory names can occur inside any producer subtree. */
+  anyDepth?: boolean;
 }
 
 /** Semantic cache ownership derived from the existing backup policy, not all ignores. */
 export function backupCacheCensusDeclarations(root: string): CensusDeclaration[] {
   return REBUILDABLE_DIRECTORY_PATTERNS.map(name => ({
     kind: 'path', root, name, classification: 'cache', producer: 'backup-policy',
-    descendants: true, prune: true,
+    descendants: true, prune: true, anyDepth: true,
   }));
 }
 
 function matches(entry: CensusEntry, declaration: CensusDeclaration): boolean {
+  if (entry.kind === 'path' && declaration.kind === 'path' && entry.root === declaration.root &&
+    declaration.anyDepth === true) {
+    const name = `/${entry.name}/`;
+    return name.includes(`/${declaration.name}/`);
+  }
   return entry.kind === declaration.kind && entry.root === declaration.root &&
     (entry.name === declaration.name ||
       (entry.kind === 'path' && declaration.descendants === true &&
