@@ -85,6 +85,18 @@ describe('DAO launch checklist workspace', () => {
     await waitFor(() => expect(screen.getAllByRole('alert').length).toBeGreaterThan(0));
     expect(fetchMock).not.toHaveBeenCalled();
   });
+  it('lets users discard an edit and reopen the saved configuration', () => {
+    sync.data = [draft()]; const fetchMock = vi.fn(); vi.stubGlobal('fetch', fetchMock);
+    render(<DaoLaunchWorkspace />);
+    fireEvent.click(screen.getByRole('button', { name: /Open governance setup/ }));
+    expect(screen.getByRole('heading', { name: 'Governance rules' })).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('Quorum (%)'), { target: { value: '75' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: /Open governance setup/ }));
+    expect((screen.getByLabelText('Quorum (%)') as HTMLInputElement).value).toBe('50');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
   it('provides retry instead of presenting a failed read as an empty workspace', () => {
     sync.error = new Error('Connection unavailable'); render(<DaoLaunchWorkspace />);
     expect(screen.getByRole('alert').textContent).toContain('Connection unavailable');

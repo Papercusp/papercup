@@ -3,7 +3,7 @@ import { useState, type ReactNode } from 'react';
 import { useFieldArray } from 'react-hook-form';
 import { useQueryStates, parseAsString, parseAsStringEnum, parseAsBoolean } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
-import { ArrowRight, ArrowUpRight, Users, Landmark, Wallet, FileText, ShieldCheck, ListChecks, LayoutGrid, Check, Plus, LockKeyhole } from 'lucide-react';
+import { ArrowRight, ArrowUpRight, Users, Landmark, Wallet, FileText, ShieldCheck, ListChecks, LayoutGrid, Check, Plus, LockKeyhole, X } from 'lucide-react';
 import {
   createDaoLaunchSchema, updateDaoLaunchSchema, daoFundingExample, DAO_LAUNCH_STEPS,
   type DaoLaunchProjection, type DaoLaunchStep,
@@ -63,7 +63,7 @@ export function DaoLaunchWorkspace() {
   function open(editor: Editor | 'review') { setNotice(''); void setState({ daoEdit: editor }); }
   const next = selected?.steps.find(step => step.state === 'next') || selected?.steps.find(step => step.state !== 'prepared');
 
-  return <main className="dao-workspace" data-testid="dao-launch-workspace">
+  return <div className="dao-workspace-container"><main className="dao-workspace" data-testid="dao-launch-workspace">
     <aside className="dao-sidebar">
       <div className="dao-brand"><span className="dao-brandmark">p</span><strong>papercusp</strong></div>
       <div className="dao-org-select"><Select ariaLabel="Organization" value={selectedId || '__none__'} onChange={value => { setNotice(''); void setState({ daoOrg: value, daoEdit: '' }); }}
@@ -115,13 +115,19 @@ export function DaoLaunchWorkspace() {
       </>}
     </section>
     <Modal open={state.daoNew} onOpenChange={value => { void setState({ daoNew: value }); }} title="Create an organization" description="Start with a saved draft. Legal formation and financial activation are separate." contentClassName="dao-modal" contentStyle={{ width: 580 }}>
+      <EditorHeading title="Create an organization" onClose={() => { void setState({ daoNew: false }); }} />
       <CreateOrganization onSaved={saved} />
     </Modal>
     <Modal open={!!state.daoEdit && !!selected} onOpenChange={value => { if (!value) void setState({ daoEdit: '' }); }} title={state.daoEdit ? titles[state.daoEdit] : 'Organization setup'} contentClassName="dao-modal" contentStyle={{ width: 690 }}>
+      <EditorHeading title={state.daoEdit ? titles[state.daoEdit] : 'Organization setup'} onClose={() => { void setState({ daoEdit: '' }); }} />
       {selected && state.daoEdit && (state.daoEdit === 'review' ? <ReviewPreparation key={selected.id + ':' + selected.revision} record={selected} onSaved={saved} />
         : <DraftEditor key={selected.id + ':' + state.daoEdit} record={selected} editor={state.daoEdit} onSaved={saved} />)}
     </Modal>
-  </main>;
+  </main></div>;
+}
+
+function EditorHeading({ title, onClose }: { title: string; onClose: () => void }) {
+  return <div className="dao-editor-heading"><h2>{title}</h2><button type="button" aria-label="Close" onClick={onClose}><X size={18} /></button></div>;
 }
 
 function Status({ state }: { state: DaoLaunchProjection['steps'][number]['state'] }) {
