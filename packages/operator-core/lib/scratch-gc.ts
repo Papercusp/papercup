@@ -390,6 +390,8 @@ interface ScratchUsageEntry {
   measuredAt: number;
   /** In-flight background measurement, if any (at most one per workspace). */
   refreshing: Promise<void> | null;
+  /** Live scan counters, exposed to writers waiting for this refresh. */
+  refreshDiagnostics: ScratchQuotaRecoveryDiagnostics | null;
   /** One shared pressure recovery; subsequent writers await it before touching disk. */
   recovering: Promise<void> | null;
   writes: Map<symbol, { filePath: string; bytes: number; reserved: boolean }>;
@@ -409,12 +411,14 @@ function usageEntry(workspaceId: string): ScratchUsageEntry {
   let entry = usageState.byWorkspace.get(workspaceId);
   if (!entry) {
     entry = {
-      bytes: 0, measuredAt: 0, refreshing: null, recovering: null, writes: new Map(),
+      bytes: 0, measuredAt: 0, refreshing: null, refreshDiagnostics: null,
+      recovering: null, writes: new Map(),
       writeGeneration: 0, refreshDeferred: false,
     };
     usageState.byWorkspace.set(workspaceId, entry);
   } else {
     // The cache is module-pinned across HMR. Initialize fields added by newer module versions.
+    entry.refreshDiagnostics ??= null;
     entry.recovering ??= null;
     entry.writes ??= new Map();
     entry.writeGeneration ??= 0;
@@ -644,16 +648,19 @@ async function treeStatsAsync(dir: string): Promise<{ bytes: number; newestMtime
 export function refreshScratchUsage(workspaceId: string, now: () => number = Date.now): Promise<void> {
   const entry = usageEntry(workspaceId);
   if (entry.refreshing) return entry.refreshing;
+  const diagnostics = newScratchQuotaRecoveryDiagnostics();
+  entry.refreshDiagnostics = diagnostics;
   const run = (async () => {
     try {
       await evictWorkspaceQuota(
         workspaceId,
         () => WORKSPACE_QUOTA_BYTES - SCRATCH_QUOTA_RECOVERY_HEADROOM_BYTES,
         false,
-        undefined,
+        diagnostics,
         now,
       );
     } finally {
+      entry.refreshDiagnostics = null;
       entry.refreshing = null;
       scheduleDeferredUsageRefresh(workspaceId, entry);
     }
@@ -790,6 +797,7 @@ export interface ScratchWriteProgress {
   recoveryActive: boolean;
   refreshActive: boolean;
   quotaRecoveryDiagnostics?: ScratchQuotaRecoveryDiagnostics;
+  usageRefreshDiagnostics?: ScratchQuotaRecoveryDiagnostics;
 }
 
 const SCRATCH_WRITE_PROGRESS_AFTER_MS = 5_000;
@@ -838,6 +846,9 @@ export async function writeWithScratchQuota(
                 refreshActive: Boolean(entry.refreshing),
                 ...(phase === 'quotaRecoveryMs' && activeRecoveryDiagnostics
                   ? { quotaRecoveryDiagnostics: { ...activeRecoveryDiagnostics } }
+                  : {}),
+                ...(phase === 'refreshWaitMs' && entry.refreshDiagnostics
+                  ? { usageRefreshDiagnostics: { ...entry.refreshDiagnostics } }
                   : {}),
               },
             });
