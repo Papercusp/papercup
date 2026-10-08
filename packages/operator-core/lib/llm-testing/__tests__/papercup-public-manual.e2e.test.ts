@@ -109,6 +109,14 @@ function publicManualPortalUser() {
     firstName: 'Public', lastName: 'Manual', displayName: 'Public manual browser acceptance' };
 }
 
+function publicManualHostedCookie(origin: string, value: string) {
+  // Playwright's `url` shorthand derives Secure from the scheme and overwrites
+  // secure:true for HTTP loopback. Explicit host/path retains the production
+  // __Host cookie constraints; Chromium permits Secure cookies on loopback.
+  return { name: HOSTED_SESSION_COOKIE, value, domain: new URL(origin).hostname,
+    path: '/', secure: true, httpOnly: true, sameSite: 'Lax' as const };
+}
+
 function serializePortalEvidence(record: Record<string, unknown>, failure?: unknown, bearer?: string) {
   // Preserve the original error before a reporter attempts source-map parsing.
   // Credential custody applies to failure messages and stacks too.
@@ -152,6 +160,13 @@ describe('public manual Portal fixture preparation', () => {
       const evidenceDir = join(llmBatteryEvidenceRoot(), 'public-manual-browser-preflight');
       mkdirSync(evidenceDir, { recursive: true });
       let browser: import('@playwright/test').Browser | undefined;
+      const { createServer: createHttpServer } = await import('node:http');
+      let receivedCookie = false;
+      const cookieValue = 'disposable-hosted-cookie-preflight';
+      const server = createHttpServer((request, response) => {
+        receivedCookie = request.headers.cookie?.includes(`${HOSTED_SESSION_COOKIE}=${cookieValue}`) ?? false;
+        response.end('Public manual cookie preflight');
+      });
       try {
         // The maintained hosted kit imports its own checkout's Playwright test
         // runner. Exercise that same ordering here; this Vitest case needs the
@@ -162,10 +177,34 @@ describe('public manual Portal fixture preparation', () => {
         const { chromium } = await import('playwright');
         browser = await chromium.launch({ headless: true });
         expect(browser.isConnected()).toBe(true);
+        await new Promise<void>((resolve, reject) => {
+          server.once('error', reject);
+          server.listen(0, '127.0.0.1', resolve);
+        });
+        const address = server.address();
+        expect(address && typeof address === 'object').toBe(true);
+        const origin = `http://127.0.0.1:${(address as { port: number }).port}`;
+        const context = await browser.newContext();
+        await context.addCookies([publicManualHostedCookie(origin, cookieValue)]);
+        // The cookie API filters Secure cookies out of HTTP URL queries even
+        // when Chromium permits their transport on trustworthy loopback.
+        expect(await context.cookies()).toEqual([expect.objectContaining({
+          name: HOSTED_SESSION_COOKIE, domain: '127.0.0.1', path: '/', secure: true, httpOnly: true,
+        })]);
+        const page = await context.newPage();
+        expect((await page.goto(origin))?.ok()).toBe(true);
+        expect(receivedCookie, 'The production Secure hosted cookie must reach the loopback Portal').toBe(true);
+        expect(await page.evaluate(() => document.cookie)).toBe('');
       } catch (error) {
         writeFileSync(join(evidenceDir, 'case.json'), serializePortalEvidence({ stage: 'browser-launch' }, error), { mode: 0o600 });
         throw error;
-      } finally { await browser?.close(); }
+      } finally {
+        try { await browser?.close(); }
+        finally {
+          server.closeAllConnections();
+          await new Promise<void>((resolve) => server.close(() => resolve()));
+        }
+      }
     }, 30_000);
   it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
     'loads the maintained Portal acceptance sources before live fixture creation', async () => {
@@ -684,9 +723,8 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
       const { chromium } = await import('playwright');
       browser = await chromium.launch({ headless: true });
       const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
-      await context.addCookies([{ name: HOSTED_SESSION_COOKIE,
-        value: new HostedSessionCookieCodec(secret).encode(hostedSessionId!), url: origin,
-        secure: true, httpOnly: true, sameSite: 'Lax' }]);
+      await context.addCookies([publicManualHostedCookie(origin,
+        new HostedSessionCookieCodec(secret).encode(hostedSessionId!))]);
       const page = await context.newPage();
       stage = 'authenticated-navigation';
       const journeyStartedAt = new Date();
