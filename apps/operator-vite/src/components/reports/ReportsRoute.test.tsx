@@ -14,13 +14,8 @@ vi.mock('@papercusp/sync', () => ({ useSyncQuery: (opts: { queryName: string; ar
 } }));
 vi.mock('@/app/_components/MarkdownEditor', () => ({ MarkdownPreview: ({ value }: { value: string }) => <div data-testid="markdown-preview">{value}</div> }));
 import ReportsRoute from './ReportsRoute';
+import { reportFullFixture as report, reportSummaryFixture } from './reports-test-fixture';
 
-const report = { report_id: 'edition-2', lineage_id: 'edition-1', title: 'Private audit', summary: 'A saved audit',
-  kind: 'audit', subject: { kind: 'plan', ref: 'example-plan', label: 'Example plan' },
-  origin: { harness_slug: 'pot-a', author_owner_id: 'writer', author_session_ref: 'session-1' },
-  visibility: 'owner', source: 'native', tags: ['operations'], published_at: '2026-10-01T12:00:00Z',
-  updated_at: '2026-10-01T12:00:00Z', retired_at: null, supersedes_report_id: 'edition-1',
-  body_md: '# Findings\n\n```mermaid\ngraph TD; A-->B\n```' };
 beforeEach(() => { fixture.enabled = true; fixture.queries = []; fixture.list = []; fixture.detail = []; fixture.history = []; fixture.error = null; });
 afterEach(cleanup);
 const mount = (searchParams = '', onUrlUpdate = vi.fn()) => {
@@ -47,7 +42,7 @@ describe('Reports route', () => {
     expect(screen.getByText('writer')).toBeTruthy();
   });
   it('writes selection to the URL and preserves filters', async () => {
-    fixture.list = [report];
+    fixture.list = [reportSummaryFixture];
     const update = mount('?q=findings');
     fireEvent.click(screen.getByRole('button', { name: /Private audit/ }));
     await waitFor(() => expect(update).toHaveBeenCalled());
@@ -57,7 +52,7 @@ describe('Reports route', () => {
   });
   it('hides a cached reader snapshot when the selection is cleared', () => {
     fixture.detail = [report];
-    fixture.history = [report];
+    fixture.history = [reportSummaryFixture];
     mount('?q=findings&hist=true');
     expect(screen.getByText('Select a report to read it.')).toBeTruthy();
     expect(screen.queryByTestId('markdown-preview')).toBeNull();

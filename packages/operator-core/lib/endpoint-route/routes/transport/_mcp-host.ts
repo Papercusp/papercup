@@ -63,6 +63,7 @@ import {
   dispatchWithConveyedDelta,
   parsePayloadTier,
   type PayloadTier,
+  type ProjectedTool,
   type UnifiedToolContext,
   type Principal,
   type RequestOriginMetadata,
@@ -95,7 +96,7 @@ import {
   mcpTraceIdFromExtra,
 } from '../../../mcp-request-trace';
 import type { ScratchWriteTimings } from '../../../scratch-gc';
-import { DbCallDeadlineError, getOrgPg, retryOnRetryableDbDeadline, withWorkspace } from '@papercusp/db-org';
+import { acquireSnapshot, DbCallDeadlineError, getOrgPg, retryOnRetryableDbDeadline, withWorkspace } from '@papercusp/db-org';
 import { applyResultDoorAsync, beginResultDoorAggregate, measureResultContextBytes } from '../../../result-door';
 import { annotateStoreIdentitySuspectResult, mayAnnotateResultText } from './store-identity-suspect';
 import {
@@ -109,6 +110,7 @@ import {
 } from '../../../result-projection';
 import type { ProjectionSpec, ViewResolution } from '../../../result-projection';
 import { resolveAgentIdentity } from '../../../agent-tools/coordination/identity';
+import { registerSuNativeToolDispatcher, runOnSuNativeToolOwner, SuNativeToolOwnerError, type SuNativeToolAddress } from '../../../su-session-owner-routing';
 import { SCRATCH_SCHEME } from '../../../scratch-uri';
 import { canonicalCoordRole } from '../../../agent-tools/coordination/roles';
 import {
@@ -1552,6 +1554,15 @@ type NativeSessionAuthFailureMetadata = {
       deadlineMs: number;
       elapsedMs: number;
       retryable: boolean;
+      pressure?: {
+        pid: number;
+        pool: string;
+        waiting: number;
+        held: number;
+        max: number | null;
+        lastAcquiredAgoMs: number | null;
+        totalAcquired: number;
+      };
     };
   };
 };
@@ -1583,14 +1594,32 @@ function describeNativeSessionVerifierFailure(
   // The clipped human message can omit the pool and timing at the exact seam
   // that failed. Preserve those existing measurements independently; an error
   // with a matching name or arbitrary fields is not a measured deadline.
-  const acquisition = error instanceof DbCallDeadlineError &&
+  const deadlineFailure = error instanceof DbCallDeadlineError &&
     Number.isFinite(error.deadlineMs) && Number.isFinite(error.elapsedMs)
+    ? error
+    : undefined;
+  const pressureSnapshot = deadlineFailure?.pool ? acquireSnapshot(deadlineFailure.pool) : undefined;
+  const pressure = pressureSnapshot &&
+    (pressureSnapshot.max !== null || pressureSnapshot.totalAcquired > 0 ||
+      pressureSnapshot.waiting > 0 || pressureSnapshot.held > 0)
     ? {
-      label: redact(error.label, 120),
-      pool: error.pool === null ? null : redact(error.pool, 80),
-      deadlineMs: error.deadlineMs,
-      elapsedMs: error.elapsedMs,
-      retryable: error.retryable,
+      pid: process.pid,
+      pool: redact(pressureSnapshot.pool, 80),
+      waiting: pressureSnapshot.waiting,
+      held: pressureSnapshot.held,
+      max: pressureSnapshot.max,
+      lastAcquiredAgoMs: pressureSnapshot.lastAcquiredAgoMs,
+      totalAcquired: pressureSnapshot.totalAcquired,
+    }
+    : undefined;
+  const acquisition = deadlineFailure
+    ? {
+      label: redact(deadlineFailure.label, 120),
+      pool: deadlineFailure.pool === null ? null : redact(deadlineFailure.pool, 80),
+      deadlineMs: deadlineFailure.deadlineMs,
+      elapsedMs: deadlineFailure.elapsedMs,
+      retryable: deadlineFailure.retryable,
+      ...(pressure ? { pressure } : {}),
     }
     : undefined;
   return {
@@ -2665,6 +2694,8 @@ async function buildMcpToolContext(
   // side effects can derive stable per-request identifiers across retries.
   idempotencyKey?: string,
   signal?: AbortSignal,
+  /** Host-only marker: nested targets of a relayed wrapper stay on this owner. */
+  nativeOwnerAddress?: SuNativeToolAddress,
 ): Promise<UnifiedToolContext> {
   // Unscoped context: workspaceId/harnessSlug may be '*' — the superuser door,
   // or a WORKSPACE-LEVEL signed role session (operator/planner launched without
@@ -2890,7 +2921,7 @@ async function buildMcpToolContext(
         : { ...ctxRef.current!, workspaceId: effectiveWs, harnessSlug: clampResult.effectiveHarnessSlug }),
       indirectDispatch: true,
     };
-    const dispatched = await dispatchNestedWithMcpDeadline(canonicalName, target.timeoutSec, async () =>
+    const runLocalTarget = async () =>
       (await dispatchWithSynthesizedTx(target, spawnCtx, baseCtx, (ctx) => {
         const materializationCtx = projectionMaterializationContext(
           ctx,
@@ -2899,7 +2930,15 @@ async function buildMcpToolContext(
           projectionSpec,
         );
         return dispatchProjectedToolToMcp(target, canonicalName, dispatchToolArgs, materializationCtx, PROJECTED_DEPS);
-      })) as McpCallResult,
+      })) as McpCallResult;
+    const dispatched = await dispatchNestedWithMcpDeadline(canonicalName, target.timeoutSec, () =>
+      nativeOwnerAddress ? runLocalTarget() : runNativeMcpTargetOnOwner({
+        toolName: canonicalName, args: dispatchToolArgs, spawn: spawnCtx,
+        requestedFormat: baseCtx.requestedFormat, requestedStructured: baseCtx.requestedStructured,
+        requestedDelta: baseCtx.requestedDelta, idempotencyKey: baseCtx.idempotencyKey,
+        fullSource: projectionNeedsFullSource, structuredSource: projectionSpec?.pick !== undefined,
+        sourceProjection: projectionSpec, indirect: true,
+      }, runLocalTarget, effectiveMcpDeadlineMs(target.timeoutSec)),
     );
     const freeFormProjected = projectionSpec
       ? applyResultProjection(dispatched, projectionSpec, { toolName: canonicalName, effect: target.effect })
@@ -3558,6 +3597,119 @@ export function mcpHostServerOptions() {
 }
 
 /** Register the complete operator protocol on a transport-independent SDK server. */
+/** Only data from the authenticated transport crosses the existing owner RPC.
+ * Owner-local context functions, transactions and paid admission never do. */
+interface NativeMcpTargetRequest {
+  toolName: string;
+  args: Record<string, unknown> | undefined;
+  spawn: BuiltSpawnContext;
+  requestedFormat?: string;
+  requestedStructured?: boolean;
+  requestedDelta?: string;
+  idempotencyKey?: string;
+  fullSource: boolean;
+  structuredSource: boolean;
+  sourceProjection?: ProjectionSpec | null;
+  indirect: boolean;
+}
+
+function nativeMcpToolAddress(spawn: BuiltSpawnContext): SuNativeToolAddress | null {
+  const native = spawn.requestOrigin?.nativeSession;
+  if (native?.carrier !== 'meta:threadId' || native.binding !== 'bound' || !native.callIdFingerprint) return null;
+  if (spawn.workspaceId === '*' || spawn.advSessionId !== native.candidateAdvSessionId ||
+      !Number.isSafeInteger(spawn.advSessionId) || spawn.advSessionId! <= 0 ||
+      !/^[a-f0-9]{64}$/.test(native.callIdFingerprint) ||
+      !/^[a-f0-9]{64}$/.test(native.valueFingerprint)) throw new Error('native_tool_owner_invalid_lineage');
+  // Never substitute spawnId: it identifies this HTTP call, not the attached agent.
+  if (!spawn.uiClientId) throw new Error('native_tool_owner_missing_identity');
+  return { workspaceId: spawn.workspaceId, advSessionId: spawn.advSessionId!,
+    ownerId: resolveAgentIdentity(spawn).ownerId, nativeSessionIdFingerprint: native.valueFingerprint };
+}
+
+async function runNativeMcpTargetOnOwner(
+  request: NativeMcpTargetRequest,
+  local: () => Promise<McpCallResult>,
+  timeoutMs: number,
+): Promise<McpCallResult> {
+  const address = nativeMcpToolAddress(request.spawn);
+  if (!address) return local();
+  // A PI principal carries a Set of grants; recovery authority is a sealed
+  // host capability. Neither has a serializable native transport contract.
+  if (request.spawn.authenticatedPrincipal || request.spawn.admissionRecoveryAuthority)
+    throw new Error('native_tool_owner_unsupported_capability');
+  return runOnSuNativeToolOwner(address, request, local, timeoutMs);
+}
+
+async function recordMcpPreflightFailure(
+  target: ProjectedTool,
+  toolName: string,
+  ctx: UnifiedToolContext,
+  args: Record<string, unknown> | undefined,
+  startedAt: number,
+  error: unknown,
+): Promise<void> {
+  try {
+    const roleQuota = ctx.role ? target.rolesQuota?.[ctx.role] : undefined;
+    await PROJECTED_DEPS.recordInvocation?.({
+      toolName, pluginName: target.pluginName, ctx,
+      windowKey: PROJECTED_DEPS.computeQuotaWindow?.(ctx, roleQuota, toolName).key ?? '',
+      durationMs: Date.now() - startedAt, status: 'error',
+      errorMessage: error instanceof Error ? error.message : String(error), args,
+    });
+  } catch (telemetryError) {
+    console.warn(`[mcp-handler] pre-dispatch telemetry failed for ${toolName}: ` +
+      (telemetryError instanceof Error ? telemetryError.message : String(telemetryError)));
+  }
+}
+
+/** OWNER side: re-resolve the canonical loaded plugin and synthesize its own
+ * context/transaction. Nested targets cannot re-enter the worker relay. */
+export async function dispatchNativeMcpTargetOnOwner(
+  body: unknown,
+  address: SuNativeToolAddress,
+): Promise<McpCallResult> {
+  const request = body as NativeMcpTargetRequest | null;
+  if (!request || typeof request.toolName !== 'string' || !request.spawn ||
+      request.spawn.authenticatedPrincipal || request.spawn.admissionRecoveryAuthority ||
+      typeof request.fullSource !== 'boolean' || typeof request.structuredSource !== 'boolean' ||
+      typeof request.indirect !== 'boolean' ||
+      (request.args !== undefined && (!request.args || typeof request.args !== 'object' || Array.isArray(request.args))) ||
+      (request.requestedFormat !== undefined && typeof request.requestedFormat !== 'string') ||
+      (request.requestedDelta !== undefined && typeof request.requestedDelta !== 'string') ||
+      (request.requestedStructured !== undefined && typeof request.requestedStructured !== 'boolean') ||
+      (request.idempotencyKey !== undefined && validIdempotencyKey(request.idempotencyKey) !== request.idempotencyKey))
+    throw new Error('native_tool_owner_invalid_request');
+  const derived = nativeMcpToolAddress(request.spawn);
+  if (!derived || derived.workspaceId !== address.workspaceId || derived.advSessionId !== address.advSessionId ||
+      derived.ownerId !== address.ownerId || derived.nativeSessionIdFingerprint !== address.nativeSessionIdFingerprint)
+    throw new Error('native_tool_owner_request_address_mismatch');
+  const projection = request.sourceProjection ? parseProjection(request.sourceProjection) : null;
+  if (projection && !projection.ok) throw new Error('native_tool_owner_invalid_projection');
+  const target = isPluginNamespacedToolName(request.toolName)
+    ? await resolveMcpTargetAfterPluginHostWarm(request.toolName) : resolveMcpName(request.toolName);
+  if (!target?.expose?.mcp || target.expose.mcp.name !== request.toolName)
+    throw new Error('native_tool_owner_target_unavailable');
+  const base = await buildMcpToolContext(request.spawn, undefined, undefined, target.pluginName,
+    request.requestedFormat, request.requestedStructured, request.requestedDelta, request.idempotencyKey,
+    undefined, address);
+  const startedAt = Date.now();
+  let dispatchStarted = false;
+  try {
+    return await dispatchWithSynthesizedTx(target, request.spawn, base, ctx => {
+      dispatchStarted = true;
+      return dispatchProjectedToolToMcp(target, request.toolName, request.args,
+        { ...projectionMaterializationContext(ctx, request.fullSource, request.structuredSource,
+          projection?.ok ? projection.spec : undefined), ...(request.indirect ? { indirectDispatch: true } : {}) },
+        PROJECTED_DEPS) as Promise<McpCallResult>;
+    });
+  } catch (error) {
+    if (!dispatchStarted) await recordMcpPreflightFailure(target, request.toolName, base, request.args, startedAt, error);
+    throw error;
+  }
+}
+
+registerSuNativeToolDispatcher(dispatchNativeMcpTargetOnOwner);
+
 export function registerMcpHost(server: McpServer): void {
   server.server.setRequestHandler(sdk.ListToolsRequestSchema, async (_req: unknown, extra: unknown) => {
     const listStartedAt = Date.now();
@@ -4778,13 +4930,32 @@ export function registerMcpHost(server: McpServer): void {
                     projectionSpec?.pick !== undefined,
                     projectionSpec,
                   );
-                  return (await dispatchProjectedToolToMcp(
+                  const runLocalTarget = () => dispatchProjectedToolToMcp(
                     projected,
                     toolName,
                     dispatchArgs,
                     materializationCtx,
                     PROJECTED_DEPS,
-                  )) as McpCallResult;
+                  ) as Promise<McpCallResult>;
+                  // Native admission lives in the attached engine's worker.
+                  // This hop precedes generic gates and monetary reservation.
+                  if (nativeMcpToolAddress(dispatchSpawnCtx)) {
+                    return runNativeMcpTargetOnOwner({
+                      toolName: projected.expose.mcp!.name, args: dispatchArgs, spawn: dispatchSpawnCtx, requestedFormat,
+                      requestedStructured, requestedDelta: materializationCtx.requestedDelta,
+                      idempotencyKey: idempotencyKey ?? undefined, fullSource: projectionNeedsFullSource,
+                      structuredSource: projectionSpec?.pick !== undefined, sourceProjection: projectionSpec,
+                      indirect: false,
+                    }, () => dispatchWithSynthesizedTx(projected, dispatchSpawnCtx, materializationCtx, async localCtx => {
+                      if (raced.deadlineFired || (deadlineAt !== null && Date.now() >= deadlineAt))
+                        throw new Error(`MCP dispatch deadline expired before tool "${toolName}" started`);
+                      dispatchStarted = true;
+                      raced.innerDispatchStarted = true;
+                      trace('inner_dispatch_started', { deadlineMs });
+                      return dispatchProjectedToolToMcp(projected, toolName, dispatchArgs, localCtx, PROJECTED_DEPS) as Promise<McpCallResult>;
+                    }), deadlineMs);
+                  }
+                  return runLocalTarget();
                 },
               }).then((result) => {
                 raced.postDispatchStartedAtMs = Date.now();
@@ -5311,6 +5482,9 @@ export function registerMcpHost(server: McpServer): void {
         let dispatchStarted = false;
         const dispatchPreflight = async (): Promise<McpCallResult> => {
           try {
+            // Result projection/door remain on the receiving transport, but
+            // the whole wrapper/handler and its transaction run on the owner.
+            if (nativeMcpToolAddress(dispatchSpawnCtx)) return await runDispatch(baseCtx);
             return await dispatchWithSynthesizedTx(projected, dispatchSpawnCtx, baseCtx, async (ctx) => {
               // The outer race may have answered while acquisition or
               // principal synthesis was still in flight. Do not enter the
@@ -5329,25 +5503,11 @@ export function registerMcpHost(server: McpServer): void {
               return runDispatch(ctx);
             });
           } catch (error) {
-            if (!dispatchStarted) {
-              try {
-                const roleQuota = baseCtx.role ? projected.rolesQuota?.[baseCtx.role] : undefined;
-                await PROJECTED_DEPS.recordInvocation?.({
-                  toolName,
-                  pluginName: projected.pluginName,
-                  ctx: baseCtx,
-                  windowKey: PROJECTED_DEPS.computeQuotaWindow?.(baseCtx, roleQuota, toolName).key ?? '',
-                  durationMs: Date.now() - callStartedAt,
-                  status: 'error',
-                  errorMessage: error instanceof Error ? error.message : String(error),
-                  args: dispatchArgs,
-                });
-              } catch (telemetryError) {
-                console.warn(
-                  `[mcp-handler] pre-dispatch telemetry failed for ${toolName}: ` +
-                    (telemetryError instanceof Error ? telemetryError.message : String(telemetryError)),
-                );
-              }
+            // An uncertain remote attempt can already own the invocation row.
+            // Its owning dispatcher also records synthesis failures; recording
+            // here would manufacture a second call on the receiving worker.
+            if (!dispatchStarted && !(error instanceof SuNativeToolOwnerError && error.outcomeUnknown)) {
+              await recordMcpPreflightFailure(projected, toolName, baseCtx, dispatchArgs, callStartedAt, error);
             }
             throw error;
           }

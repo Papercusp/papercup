@@ -165,6 +165,40 @@ describe('su-session owner routing across cluster workers (WI-10003879)', () => 
     expect(out.text).toContain(marker);
   }, 30_000);
 
+  it('native paid calls use only the owner observation/meter, consume once and retain failed holds', async () => {
+    const nativeOwner = (await op(a, { op: 'open-native-engine' })).owner;
+    await op(b, { op: 'set-owner-record', owner: nativeOwner });
+    // An authenticated native transport alone grants no unit.
+    expect(await op(b, { op: 'native-route', request: { callId: 'unobserved' } })).toMatchObject({ isError: true });
+    expect(await op(a, { op: 'native-meter' })).toMatchObject({ nativeInvocations: 0, units: {}, reservedMicros: '0' });
+
+    await op(a, { op: 'native-observe', callId: 'native-call' });
+    const call = { op: 'native-route', request: { callId: 'native-call' } };
+    expect(await op(b, call)).toMatchObject({ content: [{ text: `paid-owner:${a.pid}` }] });
+    expect(await op(b, call)).toMatchObject({ isError: true });
+    let meter = await op(a, { op: 'native-meter' });
+    expect(meter).toMatchObject({ nativeInvocations: 1, channelSpentMicros: '250', reservedMicros: '0' });
+    expect(Object.values(meter.units)).toHaveLength(1);
+
+    // A wrapper's original observation authorizes one indirect target.
+    await op(a, { op: 'native-observe', callId: 'wrapper-call', indirect: true });
+    const wrapper = { op: 'native-route', request: { callId: 'wrapper-call', indirect: true } };
+    expect(await op(b, wrapper)).toMatchObject({ content: [{ text: `paid-owner:${a.pid}` }] });
+    expect(await op(b, wrapper)).toMatchObject({ isError: true });
+
+    await op(a, { op: 'native-observe', callId: 'failed-call' });
+    const failed = { op: 'native-route', request: { callId: 'failed-call', fail: true } };
+    expect(await op(b, failed)).toMatchObject({ isError: true });
+    expect(await op(b, failed)).toMatchObject({ isError: true });
+    await op(a, { op: 'native-stop' });
+    meter = await op(a, { op: 'native-meter' });
+    expect(meter).toMatchObject({ nativeInvocations: 3, channelSpentMicros: '500', reservedMicros: '250', admissionClosed: true });
+    expect(Object.values(meter.units)).toHaveLength(3);
+    expect(await op(b, { op: 'native-meter' })).toMatchObject({ nativeLocalCalls: 0, nativeInvocations: 0, units: {} });
+    // Restore the original host's record for the remaining service-routing test.
+    await op(b, { op: 'set-owner-record', owner });
+  }, 30_000);
+
   it('falls back to local service once the owner worker is gone', async () => {
     a.child.kill('SIGKILL');
     await once(a.child, 'exit');

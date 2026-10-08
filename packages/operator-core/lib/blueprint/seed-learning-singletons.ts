@@ -88,6 +88,10 @@ export const LEARNING_SINGLETONS: LearningSingleton[] = [
   // EI-10047: memory recall canary (always-on, flag-gated). Like memory-precision, no
   // legacy bespoke routine ever existed — the retire-legacy pass is a clean no-op.
   { blueprintId: 'memory-live-recall-canary', legacyRoutine: 'memory-live-recall-canary' },
+  // scout-su-ideate-pipeline-gaps-2026-10-08 P-007 (D-005): the hourly su-ideate pass
+  // scheduler (always-on; budgeted launch door). No legacy bespoke routine ever existed,
+  // so the retire-legacy pass is a clean no-op; this loop is born as a @singleton row.
+  { blueprintId: 'su-ideate', legacyRoutine: 'su-ideate-schedule' },
 ];
 
 export interface LegacyRowState {

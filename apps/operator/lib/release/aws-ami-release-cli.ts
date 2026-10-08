@@ -21,6 +21,7 @@ import {
   type AwsAmiCredentialProbe,
   type AwsAmiExecutableProbe,
   type AwsAmiReleaseCompositionOptions,
+  type AwsAmiCandidateContainmentReceipt,
 } from "@papercusp/operator-core/lib/workspace-host/aws-ami-production";
 import type {
   AwsAmiReleaseRequest,
@@ -42,6 +43,7 @@ export interface AwsAmiReleaseCliArgs {
   requestFile: string;
   /** Recover an exact private encrypted candidate instead of uploading the same disk again. */
   resumeCandidateImageId?: string;
+  containedCandidateReceiptFile?: string;
   repositoryRoot?: string;
   guestToolVersionsFile?: string;
   /** SSM parameter path prefix for the version manifest and per-region pins. */
@@ -96,6 +98,7 @@ export function parseAwsAmiReleaseCliArgs(
     "guest-tool-versions-file",
     "parameter-prefix",
     "resume-candidate-ami",
+    "contained-candidate-receipt-file",
   ]);
   const booleanFlags = new Set(["json"]);
   for (let index = 0; index < argv.length; index += 1) {
@@ -125,9 +128,12 @@ export function parseAwsAmiReleaseCliArgs(
   const resumeCandidateImageId = values["resume-candidate-ami"];
   if (typeof resumeCandidateImageId === "string" && !/^ami-[a-f0-9]+$/.test(resumeCandidateImageId))
     throw new Error("--resume-candidate-ami must be an AMI id");
+  const containedCandidateReceiptFile = values["contained-candidate-receipt-file"];
+  if (resumeCandidateImageId && containedCandidateReceiptFile) throw new Error("private and contained candidate recovery are mutually exclusive");
   return {
     requestFile: requiredString(values["request-file"], "--request-file"),
     ...(typeof resumeCandidateImageId === "string" ? { resumeCandidateImageId } : {}),
+    ...(typeof containedCandidateReceiptFile === "string" ? { containedCandidateReceiptFile } : {}),
     ...(typeof values["repo-root"] === "string"
       ? { repositoryRoot: values["repo-root"] }
       : {}),
@@ -168,8 +174,11 @@ export function awsAmiReleaseCompositionOptions(
   args: AwsAmiReleaseCliArgs,
   guestToolVersions?: Readonly<Record<string, string>>,
   env: NodeJS.ProcessEnv = process.env,
+  containedCandidateRecovery?: AwsAmiCandidateContainmentReceipt,
 ): AwsAmiReleaseCompositionOptions {
+  if (args.containedCandidateReceiptFile && !containedCandidateRecovery) throw new Error("contained candidate receipt must be read before composition");
   return {
+    ...(containedCandidateRecovery ? { containedCandidateRecovery } : {}),
     ...(args.resumeCandidateImageId ? { resumeCandidateImageId: args.resumeCandidateImageId } : {}),
     ...(args.repositoryRoot ? { repositoryRoot: args.repositoryRoot } : {}),
     ...(guestToolVersions ? { guestToolVersions } : {}),
@@ -228,7 +237,10 @@ async function main(): Promise<void> {
     : undefined;
   const outcome = await runAwsAmiReleaseCli(
     input,
-    awsAmiReleaseCompositionOptions(args, guestToolVersions),
+    awsAmiReleaseCompositionOptions(args, guestToolVersions, process.env,
+      args.containedCandidateReceiptFile
+        ? await readJsonInput(args.containedCandidateReceiptFile, read) as AwsAmiCandidateContainmentReceipt
+        : undefined),
   );
   if (!outcome.ok) {
     process.stderr.write(`${JSON.stringify(outcome, null, 2)}\n`);

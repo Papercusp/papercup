@@ -14,10 +14,13 @@ import { workspacesRoot, readRegistry } from '../workspace-registry';
 import { scratchRoot } from '../scratch-uri';
 import { googleOAuthClientPath } from '../oauth/providers';
 import { parseUnitEnvironment } from '../provisioner/unit-drift';
+import ts from 'typescript';
+import { identityDir } from '../identity/keychain';
+import { anchorKeyFilePath } from '../cupboard/ledger-anchor-eas';
 
 /** Compose independent writers without traversing the same physical root twice. */
 export function installedRootCensusProducers() {
-  const producers = [workspaceRegistryCensusProducer(), secretCensusProducers(), hostedConfigurationCensusProducers(), scratchCensusProducer(), stripRangeCacheCensusProducer()];
+  const producers = [workspaceRegistryCensusProducer(), secretCensusProducers(), identityKeychainCensusProducer(), anchorSecretCensusProducer(), hostedConfigurationCensusProducers(), scratchCensusProducer(), stripRangeCacheCensusProducer()];
   const roots: CensusRoot[] = [];
   const declarations: CensusDeclaration[] = [];
   for (const producer of producers) {
@@ -132,6 +135,23 @@ export function hostedConfigurationCensusProducers() {
   return { roots, declarations };
 }
 
+/** The keychain directory is sensitive retained material, never rebuildable. */
+export function identityKeychainCensusProducer() {
+  const path = identityDir();
+  return { roots: [{ id: 'identity-keychain-parent', path: dirname(path) }], declarations: [{
+    kind: 'path' as const, root: 'identity-keychain-parent', name: basename(path),
+    classification: 'secret' as const, producer: 'identity-keychain', descendants: true,
+  }] };
+}
+
+export function anchorSecretCensusProducer() {
+  const path = anchorKeyFilePath();
+  return { roots: [{ id: 'anchor-key-parent', path: dirname(path) }], declarations: [{
+    kind: 'path' as const, root: 'anchor-key-parent', name: basename(path),
+    classification: 'secret' as const, producer: 'ledger-anchor-key',
+  }] };
+}
+
 /** Operator database selection is configuration evidence, not name matching. */
 export function configuredOperatorDatabaseCensusDeclarations(clusterIdentity: string, operatorUrl: string): CensusDeclaration[] {
   if (!/^postgres-cluster:\d+$/.test(clusterIdentity)) throw new Error('Missing physical operator cluster identity');
@@ -141,10 +161,10 @@ export function configuredOperatorDatabaseCensusDeclarations(clusterIdentity: st
     { kind: 'database', root: clusterIdentity, name: 'papercusp_su', classification: 'state', producer: 'su-lock-store' }];
 }
 
-/** Resolve inline service database configuration, without emitting credentials.
- * EnvironmentFile and externally hosted databases remain unclassified here.
+/** Resolve service database configuration, without emitting credentials.
+ * Unsupported specifiers and externally hosted databases remain unclassified.
  */
-export async function unitDatabaseCensusDeclarations(units: readonly CensusDeclaration[], databases: readonly CensusEntry[], operatorUrl: string): Promise<CensusDeclaration[]> {
+export async function unitDatabaseCensusDeclarations(units: readonly CensusDeclaration[], databases: readonly CensusEntry[], operatorUrl: string, environmentRoots?: readonly string[]): Promise<CensusDeclaration[]> {
   const operator = new URL(operatorUrl);
   const host = (value: string) => ['localhost', '127.0.0.1', '[::1]'].includes(value) ? 'loopback' : value;
   const result: CensusDeclaration[] = [];
@@ -159,6 +179,29 @@ export async function unitDatabaseCensusDeclarations(units: readonly CensusDecla
       text = await handle.readFile('utf8');
     } finally { await handle.close(); }
     const environment = parseUnitEnvironment(text);
+    for (const line of text.split('\n')) {
+      const match = line.trim().match(/^EnvironmentFile=(-?)(.*)$/);
+      if (!match) continue;
+      const file = match[2].trim().replace(/^["']|["']$/g, '').replace(/%h/g, homedir());
+      if (!isAbsolute(file) || file.includes('%')) continue;
+      // Platform census scope does not authorize inspecting arbitrary OS service
+      // credentials. Out-of-scope environment files provide no ownership proof.
+      const allowed = environmentRoots ?? [dirname(path)];
+      if (!allowed.some(root => {
+        const suffix = relative(root, file);
+        return suffix && suffix !== '..' && !suffix.startsWith(`..${sep}`) && !isAbsolute(suffix);
+      })) continue;
+      let fileHandle;
+      try { fileHandle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW); }
+      catch (error) { if (match[1] === '-' && (error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error; }
+      try {
+        const stat = await fileHandle.stat();
+        if (!stat.isFile() || stat.size > 65_536) throw new Error('Service environment file bound exceeded');
+        const contents = await fileHandle.readFile('utf8');
+        Object.assign(environment, parseUnitEnvironment(contents.split('\n').filter(row =>
+          /^[A-Za-z_][A-Za-z0-9_]*=/.test(row.trim())).map(row => `Environment=${row.trim()}`).join('\n')));
+      } finally { await fileHandle.close(); }
+    }
     for (const [key, value] of Object.entries(environment)) {
       if (!(key === 'DATABASE_URL' || key.endsWith('_DATABASE_URL'))) continue;
       let url;
@@ -216,6 +259,40 @@ export async function templateDatabaseCensusDeclarations(sql: Sql, clusterIdenti
 }
 
 const execFileAsync = promisify(execFile);
+/** Read literal migration arrays without importing or executing application code. */
+export function migrationProducerTables(source: string): string[] {
+  const file = ts.createSourceFile('migrations.ts', source, ts.ScriptTarget.Latest, true);
+  const tables = new Set<string>();
+  for (const statement of file.statements) {
+    if (!ts.isVariableStatement(statement) || !statement.modifiers?.some(modifier => modifier.kind === ts.SyntaxKind.ExportKeyword)) continue;
+    for (const declaration of statement.declarationList.declarations) {
+      let initializer = declaration.initializer;
+      while (initializer && (ts.isAsExpression(initializer) || ts.isSatisfiesExpression(initializer) || ts.isParenthesizedExpression(initializer))) initializer = initializer.expression;
+      if (!ts.isIdentifier(declaration.name) || !declaration.name.text.endsWith('_MIGRATIONS') ||
+        !initializer || !ts.isArrayLiteralExpression(initializer)) continue;
+      for (const element of initializer.elements) {
+        if (!ts.isStringLiteral(element) && !ts.isNoSubstitutionTemplateLiteral(element)) continue;
+        const match = element.text.match(/^\s*CREATE TABLE(?: IF NOT EXISTS)? ([a-z_][a-z0-9_]*)\s*\(/i);
+        if (match) tables.add(`public.${match[1].toLowerCase()}`);
+      }
+    }
+  }
+  return [...tables];
+}
+
+/** A producer's consecutive migration-table prefix establishes retained state.
+ * Older schemas stay exportable without claiming the latest migrations applied.
+ * This identifies schema provenance, not live application identity or contents.
+ */
+export function migrationDatabaseCensusDeclarations(entry: CensusEntry, observedTables: readonly string[], sources: readonly { producer: string; tables: readonly string[] }[]): CensusDeclaration[] {
+  if (entry.kind !== 'database' || !/^postgres-cluster:\d+$/.test(entry.root)) throw new Error('Missing physical migration database identity');
+  return sources.flatMap(source => {
+    let prefix = 0;
+    while (prefix < source.tables.length && observedTables.includes(source.tables[prefix])) prefix++;
+    return prefix < 2 ? [] : [{ ...entry, classification: 'state' as const,
+      producer: prefix === source.tables.length ? source.producer : `${source.producer}:migration-prefix:${prefix}/${source.tables.length}` }];
+  });
+}
 /** Python/uv's environment marker and generated interpreter/package layout.
  * The directory name alone never establishes rebuildable ownership.
  */

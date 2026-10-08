@@ -56,6 +56,7 @@ import { AssumeRoleCommand, GetCallerIdentityCommand, STSClient } from '@aws-sdk
 
 import {
   AWS_AMI_CANARY_TOOL,
+  CANARY_BUDGETS,
   CANARY_RUN_TAG,
   buildAwsAmiCanaryProof,
   canaryRoleArn,
@@ -198,7 +199,7 @@ function sdkDeps(input, runId) {
           InstanceIds: [instanceId],
           DocumentName: 'AWS-RunShellScript',
           Parameters: { commands: [...commands], executionTimeout: [String(executionTimeoutSec)] },
-          TimeoutSeconds: 600,
+          TimeoutSeconds: Math.ceil(CANARY_BUDGETS.ssmDeliveryMs / 1000),
           Comment: `papercusp ami canary ${runId}`,
         }),
       );
@@ -211,6 +212,8 @@ function sdkDeps(input, runId) {
         const out = await ssm.send(new GetCommandInvocationCommand({ CommandId: commandId, InstanceId: instanceId }));
         return {
           status: out.Status ?? 'Pending',
+          statusDetails: out.StatusDetails ?? null,
+          executionStartedAt: out.ExecutionStartDateTime ?? null,
           stdout: out.StandardOutputContent ?? '',
           stderr: out.StandardErrorContent ?? '',
           responseCode: out.ResponseCode,

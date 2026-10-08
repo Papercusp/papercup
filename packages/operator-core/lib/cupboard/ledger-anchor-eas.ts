@@ -78,6 +78,10 @@ export const ANCHOR_CHAINS: Readonly<Record<number, { readonly chain: Chain; rea
 export const DEFAULT_ANCHOR_RPC_URL = 'https://sepolia.base.org';
 export const DEFAULT_ANCHOR_CHAIN_ID = baseSepolia.id;
 export const DEFAULT_ANCHOR_KEY_FILE = path.join(homedir(), '.papercusp', 'secrets', 'base-sepolia-anchor-key');
+/** Locate secret material without reading it or constructing an anchor backend. */
+export function anchorKeyFilePath(env: Readonly<Record<string, string | undefined>> = process.env): string {
+  return env.PAPERCUSP_LEDGER_ANCHOR_KEY_FILE?.trim() || DEFAULT_ANCHOR_KEY_FILE;
+}
 
 const HEX64 = /^[0-9a-f]{64}$/;
 
@@ -299,7 +303,7 @@ export function resolveAnchorBackend(
     backend: env.PAPERCUSP_LEDGER_ANCHOR_BACKEND === 'none' ? 'none' : 'eas',
     rpcUrl: env.PAPERCUSP_LEDGER_ANCHOR_RPC_URL?.trim() || DEFAULT_ANCHOR_RPC_URL,
     chainId: Number(env.PAPERCUSP_LEDGER_ANCHOR_CHAIN_ID?.trim() || DEFAULT_ANCHOR_CHAIN_ID),
-    keyFile: env.PAPERCUSP_LEDGER_ANCHOR_KEY_FILE?.trim() || DEFAULT_ANCHOR_KEY_FILE,
+    keyFile: anchorKeyFilePath(env),
   };
   const spec = ANCHOR_CHAINS[config.chainId];
   if (!spec) {

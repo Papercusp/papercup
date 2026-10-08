@@ -39,6 +39,9 @@ import { DescribeImagesCommand, EC2Client } from '@aws-sdk/client-ec2';
 
 import {
   AWS_AMI_SCAN_TOOL,
+  AWS_AMI_SCAN_BUDGETS,
+  AWS_AMI_SCAN_WORK_TIMEOUT_MS,
+  boundAwsAmiScanCommandTimeoutMs,
   assertAwsAmiProvenance,
   buildAwsAmiScanEvidence,
   measureAwsAmiScan,
@@ -56,8 +59,8 @@ const TOOL_ENV = {
 const WORK_ROOT = process.env.PAPERCUSP_AWS_AMI_SCAN_WORKDIR?.trim() || tmpdir();
 const EVIDENCE_ROOT =
   process.env.PAPERCUSP_AWS_AMI_SCAN_EVIDENCE_DIR?.trim() || join(homedir(), '.papercusp', 'evidence', 'aws-ami-scan');
-const DOWNLOAD_TIMEOUT_MS = 60 * 60 * 1000;
-const SCAN_TIMEOUT_MS = 45 * 60 * 1000;
+const DOWNLOAD_TIMEOUT_MS = AWS_AMI_SCAN_BUDGETS.downloadMs;
+const SCAN_TIMEOUT_MS = AWS_AMI_SCAN_BUDGETS.scanMs;
 const GIB = 1024 ** 3;
 /** Filesystems that hold no scannable userland; attempted mounts of these are not failures. */
 const NON_MOUNTABLE = new Set(['swap', 'LVM2_member', 'crypto_LUKS', 'linux_raid_member']);
@@ -84,14 +87,10 @@ async function resolveTool(role) {
   fail(`${role} executable '${wanted}' is not on PATH (override with ${TOOL_ENV[role]})`);
 }
 
-async function toolVersion(path, args) {
-  const result = await run(path, args, { timeoutMs: 60_000 }).catch(() => null);
+async function toolVersion(path, args, runCommand) {
+  const result = await runCommand(path, args, { timeoutMs: 60_000 }).catch(() => null);
   const line = `${result?.stdout ?? ''}\n${result?.stderr ?? ''}`.split('\n').map((text) => text.trim()).find(Boolean);
   return line ?? 'unknown';
-}
-
-function sudo(args, options = {}) {
-  return runOrThrow('sudo', ['-n', ...args], { timeoutMs: 5 * 60 * 1000, ...options });
 }
 
 function mountOptions(fstype) {
@@ -139,23 +138,33 @@ async function scan(rawInput) {
   let loop = null;
   let outcome;
   let scanError;
+  // Bound the entire work phase, including device loops. Always reserve a separate teardown
+  // phase so the parent cannot cut off a legitimate download or kill mounted-disk cleanup.
+  let phaseDeadlineAtMs = Date.now() + AWS_AMI_SCAN_WORK_TIMEOUT_MS;
+  const boundedOptions = (options = {}) => ({
+    ...options,
+    timeoutMs: boundAwsAmiScanCommandTimeoutMs(phaseDeadlineAtMs, options.timeoutMs ?? 10 * 60_000),
+  });
+  const runCommand = async (command, args, options) => run(command, args, boundedOptions(options));
+  const runCommandOrThrow = async (command, args, options) => runOrThrow(command, args, boundedOptions(options));
+  const sudo = (args, options = {}) => runCommandOrThrow('sudo', ['-n', ...args], { timeoutMs: 5 * 60_000, ...options });
   try {
     // 2. The candidate's own bytes, through the EBS direct APIs.
-    await runOrThrow(tools.coldsnap, ['download', provenance.snapshotId, disk], { timeoutMs: DOWNLOAD_TIMEOUT_MS });
+    await runCommandOrThrow(tools.coldsnap, ['download', provenance.snapshotId, disk], { timeoutMs: DOWNLOAD_TIMEOUT_MS });
 
     // 3. Read-only loop device and read-only mounts.
     loop = (await sudo(['losetup', '--find', '--show', '--read-only', '--partscan', disk])).trim();
     if (!/^\/dev\/loop\d+$/.test(loop)) fail(`losetup returned an unexpected device '${loop}'`);
-    await run('sudo', ['-n', 'udevadm', 'settle', '--timeout=30'], { timeoutMs: 60_000 }).catch(() => null);
-    const tree = parseJsonObject(await runOrThrow('lsblk', ['-J', '-p', '-o', 'NAME', loop]), 'lsblk');
+    await runCommand('sudo', ['-n', 'udevadm', 'settle', '--timeout=30'], { timeoutMs: 60_000 }).catch(() => null);
+    const tree = parseJsonObject(await runCommandOrThrow('lsblk', ['-J', '-p', '-o', 'NAME', loop]), 'lsblk');
     await mkdir(mountRoot, { recursive: true });
     for (const device of flattenDevices(tree.blockdevices)) {
-      const probe = await run('sudo', ['-n', 'blkid', '-p', '-o', 'value', '-s', 'TYPE', device], { timeoutMs: 60_000 });
+      const probe = await runCommand('sudo', ['-n', 'blkid', '-p', '-o', 'value', '-s', 'TYPE', device], { timeoutMs: 60_000 });
       const fstype = probe.exitCode === 0 ? probe.stdout.trim() : '';
       if (!fstype || NON_MOUNTABLE.has(fstype)) continue;
       const target = join(mountRoot, device.split('/').pop());
       await mkdir(target, { recursive: true });
-      const result = await run('sudo', ['-n', 'mount', '-t', fstype, '-o', mountOptions(fstype), device, target], { timeoutMs: 120_000 });
+      const result = await runCommand('sudo', ['-n', 'mount', '-t', fstype, '-o', mountOptions(fstype), device, target], { timeoutMs: 120_000 });
       if (result.exitCode === 0) mounted.push(target);
     }
     if (mounted.length === 0) fail('no-filesystem-mounted: the candidate snapshot carries no mountable filesystem');
@@ -184,7 +193,7 @@ async function scan(rawInput) {
       { timeoutMs: SCAN_TIMEOUT_MS },
     );
     await sudo(['chown', String(process.getuid()), sbomPath]);
-    const vuln = await runOrThrow(tools.grype, [`sbom:${sbomPath}`, '-q', '-o', 'json'], { timeoutMs: SCAN_TIMEOUT_MS });
+    const vuln = await runCommandOrThrow(tools.grype, [`sbom:${sbomPath}`, '-q', '-o', 'json'], { timeoutMs: SCAN_TIMEOUT_MS });
     await writeFile(vulnPath, vuln, 'utf8');
     await sudo(
       [tools.gitleaks, 'dir', mountRoot, '--config', gitleaksConfig, '--report-format', 'json', '--report-path', secretsPath,
@@ -203,10 +212,10 @@ async function scan(rawInput) {
       npmManifestsPresent: npmProbe.trim().length > 0,
     });
     const versions = {
-      coldsnap: await toolVersion(tools.coldsnap, ['--version']),
-      syft: await toolVersion(tools.syft, ['version']),
-      grype: await toolVersion(tools.grype, ['version']),
-      gitleaks: await toolVersion(tools.gitleaks, ['version']),
+      coldsnap: await toolVersion(tools.coldsnap, ['--version'], runCommand),
+      syft: await toolVersion(tools.syft, ['version'], runCommand),
+      grype: await toolVersion(tools.grype, ['version'], runCommand),
+      gitleaks: await toolVersion(tools.gitleaks, ['version'], runCommand),
     };
     outcome = buildAwsAmiScanEvidence(request, provenance, measurement, versions);
 
@@ -223,13 +232,14 @@ async function scan(rawInput) {
   }
 
   // 5. Teardown is part of the result: a scan that leaves the candidate mounted is not done.
+  phaseDeadlineAtMs = Date.now() + AWS_AMI_SCAN_BUDGETS.teardownMs;
   const residue = [];
   for (const target of [...mounted].reverse()) {
-    const result = await run('sudo', ['-n', 'umount', target], { timeoutMs: 120_000 }).catch(() => ({ exitCode: -1 }));
+    const result = await runCommand('sudo', ['-n', 'umount', target], { timeoutMs: 120_000 }).catch(() => ({ exitCode: -1 }));
     if (result.exitCode !== 0) residue.push(`mount:${target}`);
   }
   if (loop) {
-    const result = await run('sudo', ['-n', 'losetup', '-d', loop], { timeoutMs: 60_000 }).catch(() => ({ exitCode: -1 }));
+    const result = await runCommand('sudo', ['-n', 'losetup', '-d', loop], { timeoutMs: 60_000 }).catch(() => ({ exitCode: -1 }));
     if (result.exitCode !== 0) residue.push(`loop:${loop}`);
   }
   if (residue.length === 0) await rm(work, { recursive: true, force: true }).catch(() => residue.push(`dir:${work}`));

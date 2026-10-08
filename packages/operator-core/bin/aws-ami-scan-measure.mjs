@@ -17,6 +17,26 @@ import { fail, requireText } from './gcp-ephemeral.mjs';
 
 export const AWS_AMI_SCAN_TOOL = 'papercusp-aws-ami-scan';
 
+/** Shared with the parent adapter: download, three serial scans, host work and teardown. */
+export const AWS_AMI_SCAN_BUDGETS = Object.freeze({
+  downloadMs: 60 * 60_000,
+  scanMs: 45 * 60_000,
+  hostWorkMs: 20 * 60_000,
+  teardownMs: 10 * 60_000,
+  runnerMarginMs: 5 * 60_000,
+});
+export const AWS_AMI_SCAN_WORK_TIMEOUT_MS =
+  AWS_AMI_SCAN_BUDGETS.downloadMs + 3 * AWS_AMI_SCAN_BUDGETS.scanMs + AWS_AMI_SCAN_BUDGETS.hostWorkMs;
+export const AWS_AMI_SCAN_RUNNER_TIMEOUT_MS =
+  AWS_AMI_SCAN_WORK_TIMEOUT_MS + AWS_AMI_SCAN_BUDGETS.teardownMs + AWS_AMI_SCAN_BUDGETS.runnerMarginMs;
+
+/** An absolute phase deadline never restarts at a command boundary. */
+export function boundAwsAmiScanCommandTimeoutMs(deadlineAtMs, requestedMs, nowMs = Date.now()) {
+  const remainingMs = deadlineAtMs - nowMs;
+  if (remainingMs <= 0) fail('AMI scan phase execution budget exhausted');
+  return Math.min(requestedMs, remainingMs);
+}
+
 /** Same shapes the release contract enforces (aws-ami-release.ts / aws-ami-production.ts). */
 const AMI_ID = /^ami-[a-f0-9]+$/;
 const SNAPSHOT_ID = /^snap-[a-f0-9]+$/;

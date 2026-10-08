@@ -5314,10 +5314,17 @@ describe('su identity precedence (EI-7066: explicit SID before Mcp-Session-Id)',
     expect(JSON.stringify(h.invocations[0]?.metadataJson)).not.toContain('su-owner');
   });
 
-  it('retains typed acquisition deadline diagnostics when native verification fails closed', async () => {
-    const { DbCallDeadlineError } = await import('@papercusp/db-org');
+  it.each(['acquire', 'begin', 'setup-read-only', 'setup-timeouts'])(
+    'retains typed %s deadline diagnostics when native verification fails closed', async (phase) => {
+    const { DbCallDeadlineError, beginAcquire, recordPoolMax, resetAcquireRegistryForTest } = await import('@papercusp/db-org');
+    resetAcquireRegistryForTest();
+    recordPoolMax('org-admin', 19);
+    const waitingTicket = beginAcquire('org-admin');
+    const heldTicket = beginAcquire('org-admin');
+    heldTicket.acquired();
     const nativeThread = 'native-deadline-session';
-    const deadline = new DbCallDeadlineError('boundedOrgTxn:acquire(admin)', 1_000, 1_771, 'org-admin');
+    const label = `boundedOrgTxn:${phase}(admin)`;
+    const deadline = new DbCallDeadlineError(label, 1_000, 1_771, 'org-admin');
     h.nativeSessionVerifierFailure = { sessionId: nativeThread, error: deadline };
     const meta = { threadId: nativeThread };
     const extra = {
@@ -5327,24 +5334,39 @@ describe('su identity precedence (EI-7066: explicit SID before Mcp-Session-Id)',
       _meta: meta,
     };
 
-    const res = await callTool('gatingtest:scoped', {}, extra, meta);
+    try {
+      const res = await callTool('gatingtest:scoped', {}, extra, meta);
 
-    expect(res.isError).toBe(true);
-    expect(textOf(res)).toContain('superuser_native_session_verifier_unavailable');
-    expect(seen).toHaveLength(0);
-    expect(h.invocations[0]).toMatchObject({
-      metadataJson: { mcpAuthFailure: { nativeSession: { verifierFailure: {
-        name: 'DbCallDeadlineError',
-        acquisition: {
-          label: 'boundedOrgTxn:acquire(admin)',
-          pool: 'org-admin',
-          deadlineMs: 1_000,
-          elapsedMs: 1_771,
-          retryable: deadline.retryable,
-        },
-      } } } },
-    });
-    expect(JSON.stringify(h.invocations[0]?.metadataJson)).not.toContain(nativeThread);
+      expect(res.isError).toBe(true);
+      expect(textOf(res)).toContain('superuser_native_session_verifier_unavailable');
+      expect(seen).toHaveLength(0);
+      expect(h.invocations[0]).toMatchObject({
+        metadataJson: { mcpAuthFailure: { nativeSession: { verifierFailure: {
+          name: 'DbCallDeadlineError',
+          acquisition: {
+            label,
+            pool: 'org-admin',
+            deadlineMs: 1_000,
+            elapsedMs: 1_771,
+            retryable: deadline.retryable,
+            pressure: {
+              pid: process.pid,
+              pool: 'org-admin',
+              waiting: 1,
+              held: 1,
+              max: 19,
+              lastAcquiredAgoMs: expect.any(Number),
+              totalAcquired: 1,
+            },
+          },
+        } } } },
+      });
+      expect(JSON.stringify(h.invocations[0]?.metadataJson)).not.toContain(nativeThread);
+    } finally {
+      waitingTicket.release();
+      heldTicket.release();
+      resetAcquireRegistryForTest();
+    }
   });
 
   it('does not accept deadline-shaped fields on an ordinary verifier error as acquisition measurements', async () => {

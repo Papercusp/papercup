@@ -61,6 +61,8 @@ const BOOT_CAUSE_PATTERN = /\b(XFS|EXT4-fs|BTRFS)\b.*\b(error|failed|inconsisten
 const BOOT_FAILURE_LINES_MAX = 6;
 const BOOT_FAILURE_LINE_MAX_CHARS = 200;
 export const CANARY_BUDGETS = Object.freeze({
+  // Run Command total timeout is delivery allowance + document execution timeout.
+  ssmDeliveryMs: 10 * 60_000,
   runningMs: 10 * 60_000,
   ssmOnlineMs: 15 * 60_000,
   bootstrapMs: 25 * 60_000,
@@ -245,7 +247,7 @@ export function ssmScriptPlan(fixture, chunkChars = SSM_CHUNK_CHARS) {
  */
 async function readBootstrapDiagnostics(deps, instanceId, commands, budgets) {
   try {
-    const result = await runSsm(deps, instanceId, commands, budgets.shortCommandMs, budgets.pollMs, 'bootstrap diagnostics');
+    const result = await runSsm(deps, instanceId, commands, budgets.shortCommandMs, budgets.pollMs, 'bootstrap diagnostics', budgets.ssmDeliveryMs);
     const text = String(result.stdout ?? '').slice(-(DIAGNOSTICS_MAX_CHARS + 2_000));
     return result.status === 'Success' ? text : `diagnostics read ended ${result.status}: ${text}`;
   } catch (error) {
@@ -318,16 +320,25 @@ async function waitFor(deps, budgetMs, pollMs, label, probe, done) {
   }
 }
 
-async function runSsm(deps, instanceId, commands, budgetMs, pollMs, label) {
+async function runSsm(deps, instanceId, commands, budgetMs, pollMs, label, deliveryMs = CANARY_BUDGETS.ssmDeliveryMs) {
   const commandId = await deps.sendCommand({ instanceId, commands, executionTimeoutSec: Math.ceil(budgetMs / 1000) });
-  const result = await waitFor(
-    deps,
-    budgetMs + 2 * pollMs,
-    pollMs,
-    `SSM ${label}`,
-    () => deps.getInvocation({ commandId, instanceId }),
-    (invocation) => Boolean(invocation && SSM_TERMINAL.has(invocation.status)),
-  );
+  let result;
+  try {
+    result = await waitFor(
+      deps,
+      deliveryMs + budgetMs + 2 * pollMs,
+      pollMs,
+      `SSM ${label}`,
+      () => deps.getInvocation({ commandId, instanceId }),
+      (invocation) => Boolean(invocation && SSM_TERMINAL.has(invocation.status)),
+    );
+  } catch (error) {
+    // Preserve the exact delivery identity before the finally-block deletes the instance.
+    if (error instanceof ToolError) {
+      error.details = { ...(error.details ?? {}), commandId, phase: label, deliveryBudgetMs: deliveryMs, executionBudgetMs: budgetMs };
+    }
+    throw error;
+  }
   return { commandId, ...result };
 }
 
@@ -440,11 +451,11 @@ export async function runAwsAmiCleanAccountCanary(input, deps, env = {}, budgets
 
     plan = ssmScriptPlan(input.fixture);
     for (const [index, commands] of plan.uploads.entries()) {
-      requireSsmSuccess(await runSsm(deps, instanceId, commands, budgets.shortCommandMs, budgets.pollMs, `upload ${index + 1}/${plan.uploads.length}`), 'script upload');
+      requireSsmSuccess(await runSsm(deps, instanceId, commands, budgets.shortCommandMs, budgets.pollMs, `upload ${index + 1}/${plan.uploads.length}`, budgets.ssmDeliveryMs), 'script upload');
     }
     let bootstrap;
     try {
-      bootstrap = await runSsm(deps, instanceId, plan.run, budgets.bootstrapMs, budgets.pollMs, 'bootstrap');
+      bootstrap = await runSsm(deps, instanceId, plan.run, budgets.bootstrapMs, budgets.pollMs, 'bootstrap', budgets.ssmDeliveryMs);
     } catch (error) {
       // A nonterminal GetCommandInvocation wait throws before the usual terminal-failure
       // branch below. The guest log still has useful partial evidence, so read it before the
@@ -456,9 +467,9 @@ export async function runAwsAmiCleanAccountCanary(input, deps, env = {}, budgets
       bootstrapDiagnostics = await readBootstrapDiagnostics(deps, instanceId, plan.readDiagnostics, budgets);
     }
     requireSsmSuccess(bootstrap, 'bootstrap');
-    const marker = requireSsmSuccess(await runSsm(deps, instanceId, plan.readAttestation, budgets.shortCommandMs, budgets.pollMs, 'attestation read'), 'attestation read');
+    const marker = requireSsmSuccess(await runSsm(deps, instanceId, plan.readAttestation, budgets.shortCommandMs, budgets.pollMs, 'attestation read', budgets.ssmDeliveryMs), 'attestation read');
     observed.attestation = extractAttestation(marker.stdout);
-    const service = await runSsm(deps, instanceId, plan.serviceCheck, budgets.shortCommandMs, budgets.pollMs, 'service check');
+    const service = await runSsm(deps, instanceId, plan.serviceCheck, budgets.shortCommandMs, budgets.pollMs, 'service check', budgets.ssmDeliveryMs);
     observed.serviceHealthy = service.status === 'Success' && String(service.stdout ?? '').trim() === 'active';
   } catch (error) {
     failure = error;

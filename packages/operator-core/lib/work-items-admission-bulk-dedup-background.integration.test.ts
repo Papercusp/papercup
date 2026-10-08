@@ -5,16 +5,24 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { expect, it } from 'vitest';
+import { recordIsolatedIntegrationProof } from '../test/isolated-integration-proof';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 
-it.each([false, true])('recovers a guarded partial stage and removes its private runtime (failing exit: %s)', async (failingExit) => {
+it.each([false, true])('recovers a guarded partial stage and removes its private runtime (failing exit: %s)', async (failingExit, context) => {
+  const runId = await recordIsolatedIntegrationProof({ root,
+    filePath: 'packages/operator-core/lib/work-items-admission-bulk-dedup-background.integration.test.ts',
+    sourcePaths: ['packages/operator-core/lib/work-items-admission-bulk-dedup.ts',
+      'packages/operator-core/test/_bulk-dedup-background-child.ts', 'packages/operator-core/test/isolated-integration-proof.ts',
+      'packages/operator-core/lib/process-identity.ts', 'scripts/with-test-pg.mjs'],
+    execute: async observe => {
   const source = resolve(root, 'packages/operator-core/lib/work-items-admission-bulk-dedup.ts');
   const sourceHash = createHash('sha256').update(readFileSync(source)).digest('hex');
   const child = spawn(process.execPath, [
     resolve(root, 'scripts/with-test-pg.mjs'), '--isolated-runtime', '--',
     process.execPath, '--import', 'tsx', resolve(root, 'packages/operator-core/test/_bulk-dedup-background-child.ts'),
-  ], { cwd: root, env: { ...process.env, BULK_BG_EXPECTED_SOURCE_SHA: sourceHash, BULK_BG_INJECT_FAILURE: failingExit ? '1' : '0' }, stdio: ['ignore', 'pipe', 'pipe'] });
+  ], { cwd: root, env: { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', BULK_BG_EXPECTED_SOURCE_SHA: sourceHash, BULK_BG_INJECT_FAILURE: failingExit ? '1' : '0' }, stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
+  observe(child);
   let output = '';
   let errors = '';
   child.stdout.on('data', (chunk) => {
@@ -59,4 +67,6 @@ it.each([false, true])('recovers a guarded partial stage and removes its private
   } finally {
     if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
   }
+  } });
+  Object.assign(context.task.meta, { papercuspIsolatedRuntimeRunId: runId });
 }, 420_000);

@@ -21,12 +21,22 @@ import { SuSessionHost, registerSuSessionHost } from '../su-session-host.ts';
 import { _resetSuClientLeaseForTest } from '../su-session-client-lease.ts';
 import type { SuSessionCommandStore } from '../su-session-commands.ts';
 import type { SuSessionHostOwner } from '../su-session-persistence.ts';
+import { createHash } from 'node:crypto';
+import { runDispatchStack, type ProjectedTool, type UnifiedToolContext } from '@papercusp/tooldef';
+import { NativeInstalledPerUseTurns, createInstalledPerUseChokepoint, type AdmittedPerUseToolTurn } from '../agent-tools/per-use-chokepoint.ts';
+import { canonicalJson } from '../authority/authority-rpc-envelope.ts';
+import { declareMeter, LocalMeteredTurn } from '../p2p/metered-invocation.ts';
+import { createMicrochargeChannel } from '../p2p/microcharge.ts';
+import { signPaymentTestBytes } from '../p2p/_payment-voucher-fixture.ts';
+import type { InstalledPluginProvenance } from '../cupboard/types.ts';
 import {
   _configureSuSessionRoutingForTest,
   createForwardedSuSessionEventResponse,
   localSuSessionHostOwner,
   resolveSuSessionRoute,
   runRoutedSuSessionOp,
+  registerSuNativeToolDispatcher,
+  runOnSuNativeToolOwner,
 } from '../su-session-owner-routing.ts';
 
 const supported = { state: 'supported', implementation: 'native' } as const;
@@ -85,10 +95,105 @@ _resetSuClientLeaseForTest({ grant: async () => undefined, renew: async () => un
 let host: SuSessionHost<'claude'> | null = null;
 const executed: string[] = [];
 
+// D-063 reuses this real worker/IPC fixture. Only the host's authenticated
+// funding/provenance inputs and persistence are fixture-owned. Observation
+// lookup, dispatch, reservations, vouchers and failed-unit retention are real.
+const fp = (value: string) => createHash('sha256').update(value).digest('hex');
+const nativeAddress = { workspaceId: ADDRESS.workspaceId, advSessionId: 78,
+  ownerId: 'su-native-fixture', nativeSessionIdFingerprint: fp('native-paid-78') };
+const nativeRegistry = new NativeInstalledPerUseTurns();
+const nativeProvenance: InstalledPluginProvenance = {
+  schema: 'papercusp.plugin-installation/v1', name: 'owner-paid', version: '1.0.0',
+  contentFingerprint: 'b'.repeat(64), hadListing: true, contentSource: 'r2',
+  listing: { listingId: 'listing-native-paid', githubUrl: 'https://github.com/seller/tool', ref: '.',
+    publisherId: 'gh:4242', skuRef: 'native-paid-sku', releaseVersion: '1.0.0',
+    priceModel: 'per-use', releaseContentHash: 'c'.repeat(64) },
+};
+const nativeTerms = { unitPriceMicros: 250, meterUnit: 'tool-call', priceVersion: 'v1',
+  splitManifestHash: `sha256:${'a'.repeat(64)}` };
+let nativeMeter: LocalMeteredTurn | null = null;
+let nativeHooks: ReturnType<NativeInstalledPerUseTurns['register']> | null = null;
+let nativeLocalCalls = 0;
+let nativeInvocations = 0;
+const nativeAroundInvoke = createInstalledPerUseChokepoint({ readProvenance: async () => nativeProvenance,
+  resolveAdmittedTurn: request => nativeRegistry.resolve(request) });
+
+async function dispatchNative(body: unknown) {
+  const request = body as { callId: string; fail?: boolean; indirect?: boolean };
+  const ctx = { log: () => {}, signal: new AbortController().signal, progress: () => {}, emit: () => {},
+    workspaceId: nativeAddress.workspaceId, role: 'worker', advSessionId: nativeAddress.advSessionId,
+    uiClientId: nativeAddress.ownerId, indirectDispatch: request.indirect === true,
+    principal: { slug: 'native-agent', workspaceId: nativeAddress.workspaceId, trust: 'verified', capabilities: new Set() },
+    requestOrigin: { transport: 'mcp', nativeSession: { carrier: 'meta:threadId', binding: 'bound',
+      candidateAdvSessionId: nativeAddress.advSessionId, valueFingerprint: nativeAddress.nativeSessionIdFingerprint,
+      callIdFingerprint: fp(request.callId) } },
+  } as UnifiedToolContext;
+  const target = { pluginName: nativeProvenance.name,
+    pluginInstallation: { version: '1.0.0', path: '/fixture/owner-paid', source: 'project' },
+    expose: { mcp: { name: 'owner-paid:run' } },
+    fn: async () => {
+      nativeInvocations++;
+      if (request.fail) throw new Error('native fixture handler failed after reservation');
+      return { content: [{ type: 'text', text: `paid-owner:${process.pid}` }] };
+    },
+  } as ProjectedTool;
+  return (await runDispatchStack(target, 'owner-paid:run', {}, ctx, { aroundInvoke: nativeAroundInvoke })).result;
+}
+
+registerSuNativeToolDispatcher(dispatchNative);
+
 startWorkerOwnerRpc();
 
 async function handle(message: any): Promise<unknown> {
   switch (message.op) {
+    case 'open-native-engine': {
+      const base = descriptor();
+      const nativeDescriptor: SuSessionDescriptor<'codex'> = { ...base,
+        identity: { ...base.identity, agentChatId: 'native-paid-chat', advSessionId: 78, backend: 'codex',
+          nativeSessionId: 'native-paid-78', ownerId: nativeAddress.ownerId },
+        lifecycle: 'ready', model: 'codex-fixture', backendExtension: { backend: 'codex', codexHome: null } };
+      registerSuSessionHost(new SuSessionHost({ descriptor: nativeDescriptor,
+        executeCommand: async () => ({ status: 'completed' }) }));
+      const declared = declareMeter(nativeTerms);
+      if (!declared.ok) throw new Error(declared.detail);
+      nativeMeter = new LocalMeteredTurn({ state: { turnId: 'native-funded-turn', payer: 'authenticated-buyer',
+        seller: 'gh:4242', releaseRef: 'native-paid-sku', meter: declared.meter, ceilingMicros: 1_000n,
+        expiresAtMs: 10_000, reservedMicros: 0n, channel: createMicrochargeChannel('native-channel', 2_000n), units: {} },
+        nowMs: () => 1_000, signVoucher: signPaymentTestBytes, signReceipt: () => 'seller-signature',
+        persist: async () => {} });
+      const admission: AdmittedPerUseToolTurn = { kind: 'per-use', workspaceId: ADDRESS.workspaceId,
+        principalId: 'native-agent', payer: 'authenticated-buyer', provenance: nativeProvenance, entitled: true,
+        offer: { offerId: 'native-offer', productId: 'native-product', skuRef: 'native-paid-sku', creatorId: 'gh:4242',
+          active: true, productActive: true, terms: nativeTerms }, turn: nativeMeter };
+      nativeHooks = nativeRegistry.register({ workspaceId: ADDRESS.workspaceId, ownerId: nativeAddress.ownerId,
+        principalId: 'native-agent', nativeSessionId: 'native-paid-78', ownerTurnId: 'native-owner-turn', advSessionId: 78,
+        mcpServer: 'papercusp-su', nativeTools: { paid_run: 'owner-paid:run', tools_invoke: 'tools:invoke' },
+        admissions: [{ ok: true, admission, turnId: 'native-funded-turn', binding: { kind: 'tool',
+          workspaceId: ADDRESS.workspaceId, ownerId: nativeAddress.ownerId, principalId: 'native-agent',
+          executionId: 'native-paid-78', admissionId: 'native-owner-turn', provenanceHash: fp(canonicalJson(nativeProvenance)),
+          payer: admission.payer, seller: 'gh:4242', channelId: 'native-channel', offer: admission.offer,
+          quantityCeiling: 4n, expiresAtMs: 10_000 } }] });
+      await nativeHooks.bindNativeTurn('native-turn');
+      return { owner: localSuSessionHostOwner() };
+    }
+    case 'native-observe':
+      await nativeHooks!.observeToolCall!({ nativeTurnId: 'native-turn', callId: message.callId,
+        server: 'papercusp-su', tool: message.indirect ? 'tools_invoke' : 'paid_run' });
+      return { ok: true };
+    case 'native-route':
+      return runOnSuNativeToolOwner(nativeAddress, message.request, async () => {
+        nativeLocalCalls++;
+        return dispatchNative(message.request);
+      }, message.timeoutMs);
+    case 'native-stop':
+      await nativeHooks!.withdraw();
+      return { ok: true };
+    case 'native-meter': {
+      const state = nativeMeter?.snapshot();
+      return { nativeLocalCalls, nativeInvocations, units: state?.units ?? {},
+        reservedMicros: String(state?.reservedMicros ?? 0n), channelSpentMicros: String(state?.channel.spentMicros ?? 0n),
+        admissionClosed: state?.admissionClosed ?? false };
+    }
     case 'open-engine': {
       // What a launch does on the worker that served it: attach an engine and
       // record itself as the owner.

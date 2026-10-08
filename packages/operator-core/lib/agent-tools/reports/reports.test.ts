@@ -95,6 +95,20 @@ const getTool = (await import('./get')).default;
 const listTool = (await import('./list')).default;
 const searchTool = (await import('./search')).default;
 const retireTool = (await import('./retire')).default;
+const { toReportFull, toReportSummary, zReportWire } = await import('./_shared');
+const { reportRecordFixture, reportFullFixture, reportSummaryFixture } =
+  await import('../../../../../apps/operator-vite/src/components/reports/reports-test-fixture');
+
+describe('Reports component fixture calibration', () => {
+  it('calibrates the exact mocked reader row against the canonical full wire producer', () => {
+    expect(reportFullFixture).toEqual(toReportFull(reportRecordFixture));
+    expect(zReportWire.parse(reportFullFixture)).toEqual(reportSummaryFixture);
+  });
+  it('calibrates mocked list and lineage rows against the canonical summary producer', () => {
+    expect(reportSummaryFixture).toEqual(toReportSummary(reportRecordFixture));
+    expect(reportSummaryFixture).not.toHaveProperty('body_md');
+  });
+});
 
 describe('Reports delivery guidance', () => {
   it('requires readback and content verification before citation for new reports and corrections', () => {

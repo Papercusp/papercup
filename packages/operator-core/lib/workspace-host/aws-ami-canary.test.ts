@@ -17,6 +17,7 @@ import {
   BOOT_CONSOLE_POLL_EVERY,
   CANARY_RUN_DIR,
   CANARY_RUN_TAG,
+  CANARY_BUDGETS,
   DIAGNOSTICS_MAX_CHARS,
   buildAwsAmiCanaryProof,
   canaryRoleArn,
@@ -57,6 +58,8 @@ function rawInput(overrides: Record<string, unknown> = {}, fixtureOverrides: Rec
 }
 
 interface FakeOptions {
+  servicePendingPolls?: number;
+  serviceNeverTerminal?: boolean;
   account?: string;
   publicIp?: boolean;
   ssmNeverOnline?: boolean;
@@ -155,6 +158,10 @@ function fakeDeps(options: FakeOptions = {}) {
         };
       }
       if (joined.includes('systemctl is-active')) {
+        if (options.serviceNeverTerminal || (options.servicePendingPolls ?? 0) > 0) {
+          if (options.servicePendingPolls) options.servicePendingPolls -= 1;
+          return { status: 'Pending', statusDetails: 'Pending', responseCode: -1, executionStartedAt: null };
+        }
         return options.serviceInactive ? { status: 'Failed', stdout: 'inactive\n' } : { status: 'Success', stdout: 'active\n' };
       }
       return { status: 'Success', stdout: '' };
@@ -366,6 +373,29 @@ describe('runAwsAmiCleanAccountCanary', () => {
     const { deps, calls } = fakeDeps({ account: '413781344298' });
     await expect(runAwsAmiCleanAccountCanary(input, deps)).rejects.toThrow('not the clean account');
     expect(calls).toEqual([]);
+  });
+
+  it('accepts service-command delivery after the old execution-only wait but within AWS total timeout', async () => {
+    const oldWaitMs = CANARY_BUDGETS.shortCommandMs + 2 * CANARY_BUDGETS.pollMs;
+    const pendingPolls = Math.ceil(oldWaitMs / CANARY_BUDGETS.pollMs) + 2;
+    const { deps, calls } = fakeDeps({ servicePendingPolls: pendingPolls });
+    const observed = await runAwsAmiCleanAccountCanary(input, deps);
+    expect(observed.serviceHealthy).toBe(true);
+    expect(observed.terminated).toBe(true);
+    expect(calls.slice(-2)).toEqual(['terminate', 'census:run0001']);
+  });
+
+  it('keeps the exact command identity and delivery state when total wait expires, then tears down', async () => {
+    const { deps, calls, sent } = fakeDeps({ serviceNeverTerminal: true });
+    const error = await runAwsAmiCleanAccountCanary(input, deps).catch((e: unknown) => e) as Error & { details: Record<string, unknown> };
+    expect(error.message).toContain('SSM service check did not happen within 800s');
+    expect(error.details).toMatchObject({
+      commandId: `cmd-${sent.length}`, phase: 'service check',
+      deliveryBudgetMs: CANARY_BUDGETS.ssmDeliveryMs, executionBudgetMs: CANARY_BUDGETS.shortCommandMs,
+      last: { status: 'Pending', responseCode: -1, executionStartedAt: null },
+      terminated: true, residualResourceIds: [],
+    });
+    expect(calls.slice(-2)).toEqual(['terminate', 'census:run0001']);
   });
 
   it.each([

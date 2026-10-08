@@ -719,6 +719,27 @@ export async function countObservationFilingsSince(
 }
 
 /**
+ * The same observation-filing count, scoped to ONE harness instead of one author —
+ * the per-harness D-015 signal the hourly su-ideate schedule reads
+ * (scout/su-ideate-schedule.ts; plan scout-su-ideate-pipeline-gaps-2026-10-08 D-005).
+ * Identical lane + organic-only predicates as {@link countObservationFilingsSince};
+ * only the population selector differs (the issue `scope` column, `harness:<slug>`).
+ */
+export async function countHarnessObservationFilingsSince(
+  harnessSlug: string,
+  sinceIso: string | null,
+  deps: CountObservationDeps = defaultCountDeps,
+): Promise<number> {
+  if (!harnessSlug) return 0;
+  return deps.countIssues({
+    lane: OBSERVATION_LANE,
+    signalOrigins: ORGANIC_ONLY,
+    scope: `harness:${harnessSlug}`,
+    ...(sinceIso ? { createdAfter: sinceIso } : {}),
+  });
+}
+
+/**
  * Shared body for the candidate readers (improvement + observation).
  *
  * The population is chosen by a SELECTOR, not always a topic: improvements are still
