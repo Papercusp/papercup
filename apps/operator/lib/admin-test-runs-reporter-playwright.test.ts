@@ -59,6 +59,22 @@ describe('AdminTestRunsPlaywrightReporter worktree provenance', () => {
     delete process.env.PAPERCUSP_WORKSPACE_ID;
   });
 
+  it('persists synchronous Git failure diagnostics with the fail-closed dirty verdict', async () => {
+    mocks.captureWorktreeSnapshot.mockReturnValueOnce({ commit: 'sha', porcelain: null,
+      provenanceError: 'git status failed after 2001ms (budget=2000ms, code=ETIMEDOUT, signal=SIGTERM)' })
+      .mockReturnValueOnce({ commit: 'sha', porcelain: '' });
+    mocks.computeWorktreeDirty.mockReturnValue(true);
+    const reporter = new AdminTestRunsPlaywrightReporter();
+    reporter.onBegin();
+    reporter.onTestEnd({ location: { file: '/repo/specs/example.spec.ts' } } as never,
+      { startTime: new Date(), duration: 1, status: 'passed', errors: [] } as never);
+    await reporter.onEnd();
+    await reporter.onExit();
+    const values = mocks.sql.mock.calls[0]!.slice(1);
+    expect(values.at(-2)).toBe(true);
+    expect(values).toContainEqual(expect.stringContaining('code=ETIMEDOUT'));
+  });
+
   it('uses the post-run commit and persists a dirty verdict from the before/after snapshots', async () => {
     const before = { commit: 'before-sha', porcelain: '' };
     const after = { commit: 'after-sha', porcelain: ' M peer-edit.ts' };

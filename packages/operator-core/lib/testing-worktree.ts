@@ -100,7 +100,9 @@ export function captureWorktreeSnapshot(cwd?: string): WorktreeGitSnapshot {
     }
   }
 
+  const failures: string[] = [];
   const readGit = (args: string[], gitRoot = root, timeoutMs = 2_000): string | null => {
+    const started = Date.now();
     try {
       const output = execFileSync('git', args, {
         cwd: gitRoot,
@@ -113,14 +115,25 @@ export function captureWorktreeSnapshot(cwd?: string): WorktreeGitSnapshot {
       });
       if (output == null) return null;
       return output.trim();
-    } catch {
+    } catch (error) {
+      const failure = error as { code?: unknown; status?: unknown; signal?: unknown; stderr?: unknown } | null;
+      const stderr = typeof failure?.stderr === 'string' || Buffer.isBuffer(failure?.stderr)
+        ? String(failure.stderr).replace(/\s+/g, ' ').trim().slice(0, 160) : '';
+      failures.push(`git ${args.join(' ')} failed after ${Date.now() - started}ms `
+        + `(budget=${timeoutMs}ms, code=${String(failure?.code ?? 'unknown')}, `
+        + `status=${String(failure?.status ?? 'unknown')}, signal=${String(failure?.signal ?? 'none')})`
+        + (stderr ? `: ${stderr}` : ''));
       return null;
     }
   };
 
+  const snapshot = (commit: string | null, porcelain: string | null): WorktreeGitSnapshot => ({
+    commit, porcelain,
+    ...(failures.length ? { provenanceError: failures.slice(0, 2).join('; ').slice(0, 500) } : {}),
+  });
   const commit = readGit(['rev-parse', 'HEAD']) || null;
   const porcelain = readGit(['status', '--porcelain', '--untracked-files=all']);
-  if (!porcelain || !isMutationProbeRun()) return { commit, porcelain };
+  if (!porcelain || !isMutationProbeRun()) return snapshot(commit, porcelain);
   const exemption = resolveProbeSubjectExemptionSync(root, (cmd, gitRoot, budget) => {
     if (cmd === 'git rev-parse --show-toplevel') return readGit(['rev-parse', '--show-toplevel'], gitRoot, budget);
     if (cmd === 'git rev-parse HEAD') return readGit(['rev-parse', 'HEAD'], gitRoot, budget);
@@ -128,7 +141,7 @@ export function captureWorktreeSnapshot(cwd?: string): WorktreeGitSnapshot {
     const pinned = cmd.match(/^git rev-parse '(HEAD:[^']+)'$/);
     return pinned ? readGit(['rev-parse', pinned[1]], gitRoot, budget) : null;
   });
-  return { commit, porcelain: exemption ? exemptProbeSubject(porcelain, exemption) : porcelain };
+  return snapshot(commit, exemption ? exemptProbeSubject(porcelain, exemption) : porcelain);
 }
 
 /** Native async producers can await the shared sidecar Git runner rather than
