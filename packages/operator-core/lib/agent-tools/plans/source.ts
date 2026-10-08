@@ -22,6 +22,7 @@ import * as path from 'node:path';
 import { parsePlan, type ParsedPlan, type PlanItem } from './parser';
 import type { PlanIndexItem, PlanIndexDecision } from './derive-index';
 import { hashPlanContent } from './content-hash';
+import { VALID_PLAN_SLUG } from './run-instance-slug';
 import { summarizeForcedPast, type ForcedPastSummary } from './forced-past-stamp';
 import type { ParsePromoteResult } from './promote-policy';
 import type { Sql } from 'postgres';
@@ -730,7 +731,7 @@ export async function resolveHarnessPlansDir(
  * `<template>@run-<decimal token>` and must be addressable by the same
  * read/write surfaces as authored plans.
  */
-export const VALID_PLAN_SLUG = /^(?:[A-Za-z0-9._-]+|[A-Za-z0-9._-]+@run-\d+)$/;
+export { VALID_PLAN_SLUG };
 
 export interface ListEntry {
   slug: string;
