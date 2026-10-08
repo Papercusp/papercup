@@ -1,6 +1,7 @@
 {
   "schemaVersion": 1,
   "kind": "operational-test-evidence",
+  "name": "Committed full-product tutorial catalogue contracts and mounted browser acceptance",
   "framework": "playwright",
   "command": ["npm test -- tests/contracts.test.ts", "npm run test:e2e:browser -- e2e/portal-product-tutorial.spec.ts --reporter=line"],
   "startedAt": "2026-10-08T07:28:28.496Z",
