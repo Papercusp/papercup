@@ -13,6 +13,7 @@ isolatedIntegrationCases('recovers a guarded partial stage and removes its priva
   const runId = await recordIsolatedIntegrationProof({ root,
     filePath: 'packages/operator-core/lib/work-items-admission-bulk-dedup-background.integration.test.ts',
     sourcePaths: ['packages/operator-core/lib/work-items-admission-bulk-dedup.ts',
+      'packages/operator-core/lib/work-items-admission-promoter.ts',
       'packages/operator-core/test/_bulk-dedup-background-child.ts', 'packages/operator-core/test/isolated-integration-proof.ts',
       'packages/operator-core/lib/process-identity.ts', 'scripts/with-test-pg.mjs'],
     execute: async observe => {
