@@ -188,8 +188,12 @@ export async function readEventConditionReachability(
         evidence: `trigger "${eventKey}" may wake a consumer but cannot establish the specific release condition; subject-bound evidence is required`,
       };
     }
+    // Expiry stamps firedAt too, but it is not a successful condition fire.
+    // Only the event emitter's explicit reason is authoritative here.
     const firedAt = currentAnnouncement
-      ? currentAnnouncement.firedAt
+      ? currentAnnouncement.firedReason === 'event'
+        ? currentAnnouncement.firedAt
+        : null
       : snapshot.fireLatch?.lastFiredAt ?? null;
     const composedRootReachable = await hasActiveComposedRootAnchor(
       eventKey,
