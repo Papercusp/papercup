@@ -2,18 +2,44 @@
 # DAO launch regression leg in the maintained native surface suite.
 # Run through verify-tauri-headless with an isolated DB, ready seed and fresh DAO SPA.
 set -euo pipefail
+SYNTAX_ONLY=0
+if [ "${1:-}" = --check-syntax ]; then
+  SYNTAX_ONLY=1
+  VERIFY_TAURI_PID=syntax-only
+  VERIFY_TAURI_POLL=dao_syntax_poll
+  VERIFY_TAURI_LIVENESS_CHECK=:
+  VERIFY_TAURI_ISOLATED_DB=1
+fi
+check_js() { node -e 'new (require("node:vm").Script)(process.argv[1])' "$1"; }
+dao_syntax_poll() {
+  while [ "$#" -gt 0 ]; do
+    if [ "$1" = --eval ]; then check_js "$2"; shift 2; else shift; fi
+  done
+}
 : "${VERIFY_TAURI_PID:?run through verify-tauri-headless.sh}"
 : "${VERIFY_TAURI_POLL:?missing native DOM poll helper}"
 : "${VERIFY_TAURI_LIVENESS_CHECK:?missing owned-process liveness helper}"
 [ "${VERIFY_TAURI_ISOLATED_DB:-0}" = 1 ] || { echo 'DAO verification requires an isolated DB' >&2; exit 2; }
-OUT_DIR="${TAURI_SURFACE_VERIFY_DAO_LAUNCH_OUT:-/tmp/pcv-dao-launch-$(date -u +%Y%m%dT%H%M%SZ)}"
+if [ "$SYNTAX_ONLY" = 1 ]; then
+  OUT_DIR="$(mktemp -d)"
+else
+  OUT_DIR="${TAURI_SURFACE_VERIFY_DAO_LAUNCH_OUT:-/tmp/pcv-dao-launch-$(date -u +%Y%m%dT%H%M%SZ)}"
+fi
 mkdir -p "$OUT_DIR"
 cp "$0" "$OUT_DIR/assertions.sh"
 if [ -n "${VERIFY_TAURI_SPA_DIST:-}" ] && [ -f "$VERIFY_TAURI_SPA_DIST/../verifier-source-receipt.json" ]; then
   cp "$VERIFY_TAURI_SPA_DIST/../verifier-source-receipt.json" "$OUT_DIR/backend-source-receipt.json"
 fi
-trap 'status=$?; if [ "$status" -ne 0 ]; then echo "P009_TAURI_SURFACE_VERIFY_FAIL leg=dao-launch output=$OUT_DIR" >&2; fi' EXIT
-native() { bash "$VERIFY_TAURI_LIVENESS_CHECK" >/dev/null; tauri-agent-tools "$@" --pid "$VERIFY_TAURI_PID"; }
+trap 'status=$?; if [ "$SYNTAX_ONLY" = 1 ]; then rm -rf -- "$OUT_DIR"; elif [ "$status" -ne 0 ]; then echo "P009_TAURI_SURFACE_VERIFY_FAIL leg=dao-launch output=$OUT_DIR" >&2; fi' EXIT
+native() {
+  if [ "$1" = eval ]; then check_js "$2"; fi
+  if [ "$SYNTAX_ONLY" = 1 ]; then
+    [ "$1" != check ] # The missing-selector control is a runtime check only.
+    return
+  fi
+  bash "$VERIFY_TAURI_LIVENESS_CHECK" >/dev/null
+  tauri-agent-tools "$@" --pid "$VERIFY_TAURI_PID"
+}
 native eval 'window.__TSR_ROUTER__.navigate({to:"/dao"})' >/dev/null
 "$VERIFY_TAURI_POLL" --selector '[data-testid="dao-launch-workspace"]'
 # Native prototype setters preserve React input tracking. The CLI type command
@@ -70,22 +96,27 @@ done
 native eval 'document.querySelectorAll(".dao-sidebar nav button")[4].click()' >/dev/null
 "$VERIFY_TAURI_POLL" --selector '.dao-section-overview' --text 'legal entity'
 for route in new existing; do
+  if [ "$route" = new ]; then
+    legal_country=CA; legal_option='Prepare a new entity with an advisor'; legal_title='Prepare a new'
+  else
+    legal_country=US; legal_option='Use an existing legal entity'; legal_title='Connect an existing'
+  fi
   native click '.dao-section-overview .dao-button.primary' >/dev/null
   "$VERIFY_TAURI_POLL" --selector 'input[aria-label="Country / jurisdiction"]'
   native click '[role="combobox"][aria-label="Legal route"]' >/dev/null
   "$VERIFY_TAURI_POLL" --selector '[role="option"]'
-  native eval "const label=$([ "$route" = new ] && echo '\"Prepare a new entity with an advisor\"' || echo '\"Use an existing legal entity\"');const option=[...document.querySelectorAll('[role=option]')].find(e=>e.textContent.includes(label));if(!option)throw Error('Missing legal route option');option.setAttribute('data-native-dao-route','selected');" >/dev/null
+  native eval "const option=[...document.querySelectorAll('[role=option]')].find(e=>e.textContent.includes('$legal_option'));if(!option)throw Error('Missing legal route option');option.setAttribute('data-native-dao-route','selected');" >/dev/null
   native click '[data-native-dao-route="selected"]' >/dev/null
   define_type_helper
-  native eval "__daoSurfaceType('Country / jurisdiction','$([ "$route" = new ] && echo CA || echo US)');__daoSurfaceType('Legal entity name','Native $route entity');" >/dev/null
+  native eval "__daoSurfaceType('Country / jurisdiction','$legal_country');__daoSurfaceType('Legal entity name','Native $route entity');" >/dev/null
   native click '.dao-form-footer .dao-button.primary' >/dev/null
   "$VERIFY_TAURI_POLL" --selector '.dao-notice' --text 'Draft saved.'
   native eval 'location.reload()' >/dev/null
   "$VERIFY_TAURI_POLL" --selector '.dao-section-overview' --text "Native $route entity"
-  "$VERIFY_TAURI_POLL" --selector '.dao-section-overview' --eval "document.querySelector('.dao-section-overview').textContent.includes('$([ "$route" = new ] && echo CA || echo US)') && document.querySelector('.dao-section-overview h2').textContent.includes('$([ "$route" = new ] && echo 'Prepare a new' || echo 'Connect an existing')')"
+  "$VERIFY_TAURI_POLL" --selector '.dao-section-overview' --eval "document.querySelector('.dao-section-overview').textContent.includes('$legal_country') && document.querySelector('.dao-section-overview h2').textContent.includes('$legal_title')"
   native screenshot --selector '[data-testid="dao-launch-workspace"]' --output "$OUT_DIR/legal-$route-panel.png" >/dev/null
   native click '.dao-section-overview .dao-button.primary' >/dev/null
-  "$VERIFY_TAURI_POLL" --selector 'input[aria-label="Country / jurisdiction"]' --eval "document.querySelector('input[aria-label=\"Country / jurisdiction\"]').value==='$([ "$route" = new ] && echo CA || echo US)' && document.querySelector('[role=combobox][aria-label=\"Legal route\"]').textContent.includes('$([ "$route" = new ] && echo 'Prepare a new' || echo 'Use an existing')')"
+  "$VERIFY_TAURI_POLL" --selector 'input[aria-label="Country / jurisdiction"]' --eval "document.querySelector('input[aria-label=\"Country / jurisdiction\"]').value==='$legal_country' && document.querySelector('[role=combobox][aria-label=\"Legal route\"]').textContent.includes('$legal_option')"
   native eval 'JSON.stringify({url:location.href,country:document.querySelector("input[aria-label=\"Country / jurisdiction\"]").value,route:document.querySelector("[role=combobox][aria-label=\"Legal route\"]").textContent,entity:document.querySelector("input[aria-label=\"Legal entity name\"]").value,panel:document.querySelector(".dao-section-overview").textContent})' >"$OUT_DIR/legal-$route.json"
   native eval 'document.querySelector("[role=dialog] button[aria-label=Close]").click()' >/dev/null
   "$VERIFY_TAURI_POLL" --selector '.dao-section-overview' --eval '!document.querySelector(".dao-modal")'
@@ -93,4 +124,8 @@ done
 if native check --selector '.dao-task-intentionally-missing' --json >"$OUT_DIR/negative-control.json" 2>&1; then
   echo 'Missing-selector negative control unexpectedly passed' >&2; exit 1
 fi
-echo "P009_TAURI_SURFACE_VERIFY_OK leg=dao-launch output=$OUT_DIR"
+if [ "$SYNTAX_ONLY" = 1 ]; then
+  echo 'DAO_SURFACE_SYNTAX_ONLY parsed all branches; no native verification performed'
+else
+  echo "P009_TAURI_SURFACE_VERIFY_OK leg=dao-launch output=$OUT_DIR"
+fi
