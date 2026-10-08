@@ -11,7 +11,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { applyMigrationForTest, createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 import { PRICE_TABLE_VERSION } from '@papercusp/model-pricing';
-import { readShadowCostBasis, readShadowStatement, readShadowUsageAggregates, shadowMonthBounds } from './shadow-metering-reader';
+import { readIdentityTurnBilledCost, readShadowCostBasis, readShadowStatement, readShadowUsageAggregates, shadowMonthBounds } from './shadow-metering-reader';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const sqlDir = resolve(here, '../../../../libs/papercusp/libs/db/sql');
@@ -85,7 +85,8 @@ beforeAll(async () => {
   for (const file of MIGRATIONS) await applyMigrationForTest(db.sql, resolve(sqlDir, file));
   // Read by readShadowCostBasis (D-018 point 4). Added AFTER the migrations: an earlier one builds
   // the view from u.*, and 1275 replaces it with an explicit list, which cannot drop view columns.
-  await db.sql`ALTER TABLE harness_shared.agent_usage_samples ADD COLUMN usage_provenance jsonb, ADD COLUMN price_table_version text`;
+  await db.sql`ALTER TABLE harness_shared.agent_usage_samples ADD COLUMN usage_provenance jsonb, ADD COLUMN price_table_version text,
+    ADD COLUMN usage_event_key text`;
 
   const specA = launchSpec(SPEC_A, 'codex', [
     layer('base'),
@@ -290,5 +291,63 @@ describe('readShadowStatement (P-003)', () => {
     expect(st).toMatchObject({ workspaceId: WS, month: '2026-06', lines: [], totals: { wouldHaveChargedMicros: 0 } });
     expect(st.zeroPriced.toolCalls).toEqual({ attributed: 0, unattributed: 0 });
     expect(st.cleanliness).toMatchObject({ verdict: 'not-bill-grade', reasons: ['no-usage'] });
+  });
+
+  it('binds exact provider cost through carry correlation and refuses partial, switched or estimated evidence', async () => {
+    const usageEventKey = 'c'.repeat(64);
+    const ownerId = 'su-p017-reader-carry';
+    const binding = { workspaceId: WS, ownerId, principalId: 'principal-shadow',
+      nativeSessionId: 'p017-carry-native', nativeTurnId: 'p017-native-turn', specificationRevision: SPEC_A,
+      stateRevision: 'state-1', usageEventKeys: [usageEventKey] };
+    await db.sql`INSERT INTO harness_shared.adv_sessions VALUES
+      (201,${WS},${ownerId},'p017-parent-native','2026-08-01T00:00:00Z',NULL,NULL,NULL)`;
+    await db.sql`INSERT INTO harness_shared.session_identity_activation_events
+      (workspace_id,owner_id,actor_id,principal_id,session_id,adv_session_id,native_session_id,
+       transition_id,control_generation,phase,source,specification_revision,state_revision,stack_refs,recorded_at)
+      VALUES (${WS},${ownerId},${ownerId},'principal-shadow','p017-logical-session',201,'p017-parent-native',
+        'p017-initial',1,'applied','control',${SPEC_A},'state-1','[]'::jsonb,'2026-08-01T00:01:00Z')`;
+    await db.sql`INSERT INTO harness_shared.session_turns VALUES (${WS},'codex',${binding.nativeSessionId},${ownerId})`;
+    await db.sql`INSERT INTO harness_shared.agent_usage_samples
+      (id,workspace_id,session_id,ts,cost_usd,cost_source,usage_provenance,usage_event_key)
+      VALUES (201,${WS},${binding.nativeSessionId},${ms('2026-08-20T00:00:00Z')},0.000999,'provider',
+        ${JSON.stringify({ turnId: binding.nativeTurnId, costBound: null })}::text::jsonb,${usageEventKey})`;
+    try {
+      const initial = await readIdentityTurnBilledCost(db.sql, binding);
+      expect(initial.ok, initial.ok ? 'verified' : `${initial.code}: ${initial.detail}`).toBe(true);
+      expect(initial).toMatchObject({ ok: true, billedInferenceMicros: 999n,
+        samples: [{ usageEventKey, sampleId: '201', activationEventId: expect.any(String) }] });
+      expect(await readIdentityTurnBilledCost(db.sql, { ...binding, principalId: 'other' }))
+        .toMatchObject({ ok: false, code: 'identity-usage-binding-mismatch' });
+      expect(await readIdentityTurnBilledCost(db.sql, { ...binding, specificationRevision: SPEC_NEWER }))
+        .toMatchObject({ ok: false, code: 'identity-usage-binding-mismatch' });
+      expect(await readIdentityTurnBilledCost(db.sql, { ...binding, nativeTurnId: 'later-turn' }))
+        .toMatchObject({ ok: false, code: 'identity-usage-binding-mismatch' });
+      expect(await readIdentityTurnBilledCost(db.sql, { ...binding, usageEventKeys: [usageEventKey, 'd'.repeat(64)] }))
+        .toMatchObject({ ok: false, code: 'identity-usage-incomplete' });
+      expect(await readIdentityTurnBilledCost(db.sql, { ...binding, workspaceId: OTHER_WS }))
+        .toMatchObject({ ok: false, code: 'identity-usage-incomplete' });
+      await db.sql`UPDATE harness_shared.agent_usage_samples SET cost_source = 'estimated' WHERE id = 201`;
+      expect(await readIdentityTurnBilledCost(db.sql, binding)).toMatchObject({ ok: false, code: 'identity-usage-not-bill-grade' });
+      await db.sql`UPDATE harness_shared.agent_usage_samples SET cost_source = 'provider',cost_usd = 0.0000001 WHERE id = 201`;
+      expect(await readIdentityTurnBilledCost(db.sql, binding)).toMatchObject({ ok: false, code: 'identity-usage-not-bill-grade' });
+      await db.sql`UPDATE harness_shared.agent_usage_samples SET cost_usd = 0.000999 WHERE id = 201`;
+      await db.sql`INSERT INTO harness_shared.session_identity_activation_events
+        (workspace_id,owner_id,actor_id,principal_id,session_id,adv_session_id,native_session_id,
+         transition_id,control_generation,phase,source,specification_revision,state_revision,stack_refs,recorded_at)
+        VALUES (${WS},${ownerId},${ownerId},'principal-shadow','p017-logical-session',201,${binding.nativeSessionId},
+          'p017-switch',2,'applied','control',${SPEC_NEWER},'state-2','[]'::jsonb,'2026-08-19T00:00:00Z')`;
+      expect(await readIdentityTurnBilledCost(db.sql, binding)).toMatchObject({ ok: false, code: 'identity-usage-binding-mismatch' });
+      expect(await readIdentityTurnBilledCost(db.sql, { ...binding, specificationRevision: SPEC_NEWER, stateRevision: 'state-2' }))
+        .toMatchObject({ ok: true, billedInferenceMicros: 999n });
+      // Return to owner-only carry correlation; a conflicting native owner vetoes it.
+      await db.sql`DELETE FROM harness_shared.session_identity_activation_events WHERE owner_id = ${ownerId} AND transition_id = 'p017-switch'`;
+      await db.sql`INSERT INTO harness_shared.session_turns VALUES (${WS},'codex',${binding.nativeSessionId},'different-owner')`;
+      expect(await readIdentityTurnBilledCost(db.sql, binding)).toMatchObject({ ok: false, code: 'identity-usage-binding-mismatch' });
+    } finally {
+      await db.sql`DELETE FROM harness_shared.agent_usage_samples WHERE id = 201`;
+      await db.sql`DELETE FROM harness_shared.session_turns WHERE session_id = ${binding.nativeSessionId}`;
+      await db.sql`DELETE FROM harness_shared.session_identity_activation_events WHERE owner_id = ${ownerId}`;
+      await db.sql`DELETE FROM harness_shared.adv_sessions WHERE id = 201`;
+    }
   });
 });

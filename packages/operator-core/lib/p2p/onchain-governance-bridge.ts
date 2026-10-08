@@ -49,9 +49,8 @@ export type BridgeAction =
 export interface MirrorRequest {
   readonly certificate: FinalizationCertificate;
   /**
-   * The certificate hash the action was authorized under. Must equal
-   * `certificate.certificateHash`; this is what stops an action ratified in one
-   * round from being replayed under a different round's certificate.
+   * The certificate hash the action was authorized under. Both this identity
+   * and the exact approvedActionHash inside the certificate must match.
    */
   readonly authorizedByCertificateHash: string;
   readonly action: BridgeAction;
@@ -95,6 +94,18 @@ function mirrorId(certificateHash: string, kind: MirrorableActionKind, body: Rea
 }
 
 /**
+ * Commitment to the complete typed action, including chain, adapter/config,
+ * recipient/asset/amount and receipt/voucher bindings. Bigint amounts use their
+ * exact decimal representation. Ratifiers pin this on GovernanceRound BEFORE
+ * signing; attaching a digest only at execution cannot authorize an action.
+ */
+export function governanceActionHash(action: BridgeAction): string {
+  const body: unknown = JSON.parse(JSON.stringify(action, (_key, value: unknown) =>
+    typeof value === 'bigint' ? value.toString() : value));
+  return createHash('sha256').update(canonicalJson({ domain: 'papercusp:governance-action:v1', action: body })).digest('hex');
+}
+
+/**
  * Build the on-chain mirror for a finalized decision, or refuse. Pure: it never
  * submits anything — submission is the injected edge (`executeOnChainMirror`).
  */
@@ -108,6 +119,11 @@ export function planOnChainMirror(input: MirrorRequest): BridgeResult {
   }
   if (!certificate.admitted) {
     return { ok: false, code: 'certificate-not-admitted', detail: `round ${certificate.roundId} was not admitted: ${certificate.reason}` };
+  }
+  if (isMirrorableActionKind(action.kind) &&
+      (typeof certificate.approvedActionHash !== 'string' ||
+       certificate.approvedActionHash !== governanceActionHash(action))) {
+    return { ok: false, code: 'action-not-bound-to-certificate', detail: 'exact action bytes do not match the commitment ratified in the governance round' };
   }
   // Narrow on the action itself, not via a predicate over `action.kind`: a type
   // predicate on a property does not narrow the parent union, and the settlement

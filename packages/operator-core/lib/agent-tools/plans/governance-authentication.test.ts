@@ -105,11 +105,40 @@ describe('eligible governance keys and signed domains', () => {
     }
   });
 
+  it('requires delegations to active voters at their exact signing epoch', () => {
+    const f = fixture();
+    const delegated = { ...f.authority, delegations: [{ from: 'a', to: 'b', epoch: 1 }] };
+    expect(validGovernanceSigningAuthority(delegated)).toBe(true);
+    expect(validGovernanceSigningAuthority({ ...delegated, delegations: [{ from: 'a', to: 'b', epoch: 2 }] })).toBe(false);
+    expect(validGovernanceSigningAuthority({ ...delegated, members: [f.authority.members[0]!,
+      { ...f.authority.members[1]!, revoked: true }] })).toBe(false);
+    expect(validGovernanceSigningAuthority({ ...delegated, members: [f.authority.members[0]!,
+      { ...f.authority.members[1]!, roles: ['pause'] }] })).toBe(false);
+    expect(validGovernanceSigningAuthority({ ...f.authority, members: [
+      { ...f.authority.members[0]!, weight: Number.MAX_SAFE_INTEGER }, f.authority.members[1]!] })).toBe(false);
+  });
+
   it('rejects duplicate signer identities or a key reused as several voters', () => {
     const f = fixture();
     expect(validGovernanceSigningAuthority({ ...f.authority, members: [f.authority.members[0]!, f.authority.members[0]!] })).toBe(false);
     expect(validGovernanceSigningAuthority({ ...f.authority, members: [f.authority.members[0]!, { ...f.authority.members[1]!, publicKey: f.a.pubkeyBase64 }] })).toBe(false);
     expect(validGovernanceSigningAuthority({ ...f.authority, members: [{ ...f.authority.members[0]!, keyEpoch: NaN }] })).toBe(false);
+  });
+
+  it('authenticates a committed action and refuses moving its ballot to another action', () => {
+    const f = fixture();
+    const round = { ...f.round, approvedActionHash: 'a'.repeat(64) };
+    const { signature: _signature, ...unsigned } = f.vote;
+    void _signature;
+    const vote = { ...unsigned, signature: signWithPrivateKeyDer(f.a.privateKeyDer,
+      governanceVoteSigningBytes(f.authority, round, unsigned)).toString('base64') };
+    const event = f.sign({ kind: 'vote', vote });
+    expect(f.verify(event, f.authority, round)).toEqual({ ok: true });
+    // Even a permitted governor re-signing the envelope cannot replace the
+    // independently signed voter's action commitment.
+    expect(f.verify(f.sign({ kind: 'vote', vote }), f.authority,
+      { ...round, approvedActionHash: 'b'.repeat(64) }))
+      .toMatchObject({ ok: false, code: 'unverified-ballot' });
   });
 
   it('normalizes roster order and commits changed role, weight or policy semantics', () => {

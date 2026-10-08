@@ -2,7 +2,7 @@
 import { createHash } from 'node:crypto';
 import { canonicalJson } from '../../authority/authority-rpc-envelope';
 import type { RefusalContract } from '../../capability-envelope/refusal-contract-types';
-import { evaluatePlanAdmission, type PlanAdmissionPolicy, type PlanVote } from './plan-admission-policy';
+import { evaluatePlanAdmission, validatePlanAdmissionPolicy, type PlanAdmissionPolicy, type PlanVote } from './plan-admission-policy';
 import { reduceGovernanceVotes, type Delegation, type VotingMember, type VotingTally } from './governance-voting';
 
 export interface GovernanceRound {
@@ -32,6 +32,8 @@ export interface FinalizationCertificate {
   readonly roundId: string;
   readonly planRevisionHash: string;
   readonly policyVersion: number;
+  /** Copied from the ratified round and covered by certificateHash. */
+  readonly approvedActionHash?: string;
   readonly admitted: boolean;
   readonly reason: string;
   readonly voteEventIds: readonly string[];
@@ -53,13 +55,14 @@ export type RoundResult<T> = { ok: true; value: T } | { ok: false; code: Governa
 export function createGovernanceRound(input: Omit<GovernanceRound, 'createdAtMs'> & { createdAtMs: number }): RoundResult<GovernanceRound> {
   if (!input.roundId.trim() || !input.planRevisionHash.trim() || !Number.isSafeInteger(input.policyVersion) || input.policyVersion < 1 || !Number.isFinite(input.createdAtMs)) return { ok: false, code: 'invalid-round', detail: 'round id, plan revision, policy epoch, and timestamp are required' };
   if (input.eligibleMemberIds.length === 0 || new Set(input.eligibleMemberIds).size !== input.eligibleMemberIds.length || input.eligibleMemberIds.some((id) => !id.trim())) return { ok: false, code: 'duplicate-member', detail: 'eligible member snapshot must contain unique non-empty ids' };
+  if (input.approvedActionHash !== undefined && !/^[0-9a-f]{64}$/.test(input.approvedActionHash)) return { ok: false, code: 'invalid-round', detail: 'approved action commitment must be a canonical SHA-256 digest' };
   return { ok: true, value: Object.freeze({ ...input, eligibleMemberIds: [...input.eligibleMemberIds] }) };
 }
 
 export function appendGovernanceVote(round: GovernanceRound, events: readonly GovernanceVoteEvent[], event: GovernanceVoteEvent): RoundResult<GovernanceVoteEvent[]> {
   if (event.roundId !== round.roundId || !round.eligibleMemberIds.includes(event.memberId)) return { ok: false, code: 'unknown-member', detail: 'vote round or member does not match the immutable eligibility snapshot' };
-  if (!Number.isSafeInteger(event.sequence) || event.sequence < 0 || !event.signature.trim()) return { ok: false, code: 'invalid-sequence', detail: 'vote sequence and signature are required' };
-  if (events.some((e) => e.eventId === event.eventId || e.memberId === event.memberId)) return { ok: false, code: 'duplicate-event', detail: 'event id and member vote must be unique within a round' };
+  if (!event.eventId.trim() || !Number.isSafeInteger(event.sequence) || event.sequence < 0 || !event.signature.trim()) return { ok: false, code: 'invalid-sequence', detail: 'vote id, sequence and signature are required' };
+  if (events.some((e) => e.eventId === event.eventId || (e.memberId === event.memberId && e.sequence >= event.sequence))) return { ok: false, code: 'duplicate-event', detail: 'event ids are immutable and a replacement must advance the member sequence' };
   return { ok: true, value: [...events, event].sort((a, b) => a.sequence - b.sequence || a.eventId.localeCompare(b.eventId)) };
 }
 
@@ -69,22 +72,25 @@ function certificateHash(cert: Omit<FinalizationCertificate, 'certificateHash'>)
 
 /**
  * Finalize a round. The weighted reducer is CONSULTED FIRST and is load-bearing
- * twice over: its refusals (revoked member, stale key epoch, delegation cycle or
- * expiry, non-advancing sequence, invalid weight) abort finalization, and its
- * weighted tally can veto an admission the unweighted policy count would have
- * granted. `members`/`delegations` describe the voting roster; omitted, every id
+ * through its refusals and the policy's weighted quorum/approval thresholds.
+ * `members`/`delegations` describe the voting roster; omitted, every id
  * in the round's own eligibility snapshot votes unrevoked at weight 1.
  */
 export function finalizeGovernanceRound(input: { round: GovernanceRound; events: readonly GovernanceVoteEvent[]; policy: PlanAdmissionPolicy; nowMs: number; members?: readonly VotingMember[]; delegations?: readonly Delegation[] }): RoundResult<FinalizationCertificate> {
+  if (!createGovernanceRound(input.round).ok || !validatePlanAdmissionPolicy(input.policy).ok ||
+      !Number.isSafeInteger(input.nowMs) || input.nowMs < input.round.createdAtMs)
+    return { ok: false, code: 'invalid-round', detail: 'a valid round, policy and finalization time are required' };
+  const rebuilt = rebuildGovernanceRound(input.round, input.events);
+  if (!rebuilt.ok) return rebuilt;
   const members: readonly VotingMember[] = input.members ?? input.round.eligibleMemberIds.map((memberId) => ({ memberId }));
   const rosterIds = new Set(members.map((m) => m.memberId));
   if (rosterIds.size !== members.length) return { ok: false, code: 'duplicate-member', detail: 'voting roster contains duplicate member ids' };
   const absent = input.round.eligibleMemberIds.find((id) => !rosterIds.has(id));
-  if (absent != null) return { ok: false, code: 'unknown-member', detail: `eligible member '${absent}' is absent from the voting roster` };
+  if (absent != null || rosterIds.size !== input.round.eligibleMemberIds.length) return { ok: false, code: 'unknown-member', detail: 'the voting roster must equal the immutable round electorate' };
 
   const reduced = reduceGovernanceVotes({
     members,
-    events: input.events.map((e) => ({ memberId: e.memberId, choice: e.choice, sequence: e.sequence, keyEpoch: e.keyEpoch ?? 0 })),
+    events: rebuilt.value.map((e) => ({ memberId: e.memberId, choice: e.choice, sequence: e.sequence, keyEpoch: e.keyEpoch ?? 0 })),
     delegations: input.delegations,
     nowMs: input.nowMs,
   });
@@ -102,18 +108,23 @@ export function finalizeGovernanceRound(input: { round: GovernanceRound; events:
   }
   const tally = reduced.value;
 
-  const votes: PlanVote[] = input.events.map((e) => ({ memberId: e.memberId, choice: e.choice }));
+  const latest = new Map<string, PlanVote>();
+  for (const e of rebuilt.value) latest.set(e.memberId, { memberId: e.memberId, choice: e.choice });
+  const votes = [...latest.values()];
   const verdict = evaluatePlanAdmission(input.policy, { planRevisionHash: input.round.planRevisionHash, policyVersion: input.round.policyVersion, eligibleMemberIds: [...input.round.eligibleMemberIds], votes, ratifiedAtMs: input.round.createdAtMs }, input.nowMs);
-  // The policy count is unweighted. Where weights or delegations make the
-  // weighted outcome disagree, the reducer wins: admitting a plan the weighted
-  // electorate did not approve is the correctness gap the reducer closes.
-  const weightedApproval = tally.approveWeight > tally.rejectWeight;
-  const admitted = verdict.admitted && weightedApproval;
-  const reason = verdict.admitted && !weightedApproval
-    ? `weighted-tally-rejected: approve ${tally.approveWeight} did not exceed reject ${tally.rejectWeight}`
-    : verdict.reason;
+  // Reuse policy epoch/window checks, then apply BOTH thresholds to the same
+  // weighted electorate. Integer cross-products avoid rounding at a BPS boundary.
+  const bindingValid = ['approved', 'quorum-not-met', 'approval-not-met'].includes(verdict.reason);
+  const quorum = tally.totalEligibleWeight > 0 && BigInt(tally.participatingWeight) * 10_000n >= BigInt(tally.totalEligibleWeight) * BigInt(input.policy.quorumBps);
+  const cast = tally.approveWeight + tally.rejectWeight;
+  const approval = cast > 0 && tally.approveWeight > tally.rejectWeight &&
+    BigInt(tally.approveWeight) * 10_000n >= BigInt(cast) * BigInt(input.policy.approvalBps);
+  const admitted = bindingValid && quorum && approval;
+  const reason = !bindingValid ? verdict.reason : !quorum ? 'weighted-quorum-not-met' : !approval ? 'weighted-approval-not-met' : 'approved';
 
-  const base: Omit<FinalizationCertificate, 'certificateHash'> = { roundId: input.round.roundId, planRevisionHash: input.round.planRevisionHash, policyVersion: input.round.policyVersion, admitted, reason, voteEventIds: input.events.map((e) => e.eventId).sort(), finalizedAtMs: input.nowMs, tally };
+  const base: Omit<FinalizationCertificate, 'certificateHash'> = { roundId: input.round.roundId, planRevisionHash: input.round.planRevisionHash, policyVersion: input.round.policyVersion,
+    ...(input.round.approvedActionHash !== undefined ? { approvedActionHash: input.round.approvedActionHash } : {}),
+    admitted, reason, voteEventIds: rebuilt.value.map((e) => e.eventId).sort(), finalizedAtMs: input.nowMs, tally };
   return { ok: true, value: { ...base, certificateHash: certificateHash(base) } };
 }
 

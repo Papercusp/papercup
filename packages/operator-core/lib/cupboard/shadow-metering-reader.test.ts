@@ -19,7 +19,7 @@
  */
 import type { Sql } from 'postgres';
 import { describe, expect, it } from 'vitest';
-import { readShadowStatement, shadowMonthBounds } from './shadow-metering-reader';
+import { readIdentityTurnBilledCost, readShadowStatement, shadowMonthBounds, type IdentityTurnUsageBinding } from './shadow-metering-reader';
 
 /** A write verb or side-effecting function anywhere in the statement. */
 const WRITE_RE =
@@ -36,6 +36,75 @@ interface Recorded {
   text: string;
   values: unknown[];
 }
+
+describe('exact turn billed-cost evidence', () => {
+  const key = 'a'.repeat(64);
+  const binding: IdentityTurnUsageBinding = { workspaceId: 'workspace', ownerId: 'owner', principalId: 'payer',
+    nativeSessionId: 'native-session', nativeTurnId: 'turn', specificationRevision: 'spec', stateRevision: 'state',
+    usageEventKeys: [key] };
+  const row = { usage_event_key: key, sample_id: '101', activation_event_id: '7', session_id: 'native-session',
+    turn_id: 'turn', owner_id: 'owner', principal_id: 'payer', specification_revision: 'spec', state_revision: 'state',
+    cost_source: 'provider', cost_bound: null, cost_micros: '999.000000' };
+  const read = (rows: unknown[], input = binding) => readIdentityTurnBilledCost(recordingSql(() => rows).sql, input);
+
+  it('reads an exact expected population, keeps integer cost and retained evidence identities', async () => {
+    const { sql, calls } = recordingSql(() => [row]);
+    expect(await readIdentityTurnBilledCost(sql, binding)).toEqual({ ok: true, billedInferenceMicros: 999n,
+      samples: [{ usageEventKey: key, sampleId: '101', activationEventId: '7' }] });
+    expect(calls[0]!.text).toContain('agent_usage_samples_identity_attribution');
+    expect(calls[0]!.values).toEqual(['workspace', [key]]);
+    expect(isReadOnlyStatement(calls[0]!.text)).toBe(true);
+  });
+
+  it('refuses each changed identity, principal and native-turn binding', async () => {
+    for (const field of ['activation_event_id', 'session_id', 'turn_id', 'owner_id', 'principal_id',
+      'specification_revision', 'state_revision']) {
+      expect(await read([{ ...row, [field]: null }])).toMatchObject({ ok: false, code: 'identity-usage-binding-mismatch' });
+      if (field !== 'activation_event_id') {
+        expect(await read([{ ...row, [field]: 'other' }])).toMatchObject({ ok: false, code: 'identity-usage-binding-mismatch' });
+      }
+    }
+  });
+
+  it('refuses estimates, missing money, negative, fractional and nonfinite costs', async () => {
+    for (const bad of [{ cost_source: 'estimated' }, { cost_source: null }, { cost_bound: 'lower' },
+      ...[null, '-1', '0.1', 'NaN', 'Infinity'].map((cost_micros) => ({ cost_micros }))]) {
+      expect(await read([{ ...row, ...bad }])).toMatchObject({ ok: false, code: 'identity-usage-not-bill-grade' });
+    }
+    expect(await read([{ ...row, cost_micros: '0' }])).toMatchObject({ ok: true, billedInferenceMicros: 0n });
+    expect(await read([{ ...row, cost_micros: '9007199254740993' }]))
+      .toMatchObject({ ok: true, billedInferenceMicros: 9007199254740993n });
+  });
+
+  it('refuses missing, repeated and unexpected usage events instead of treating them as zero', async () => {
+    expect(await read([])).toMatchObject({ ok: false, code: 'identity-usage-incomplete' });
+    const secondKey = 'b'.repeat(64);
+    expect(await read([row, row], { ...binding, usageEventKeys: [key, secondKey] }))
+      .toMatchObject({ ok: false, code: 'identity-usage-incomplete' });
+    expect(await read([{ ...row, usage_event_key: secondKey }]))
+      .toMatchObject({ ok: false, code: 'identity-usage-incomplete' });
+  });
+
+  it('refuses an empty, duplicate or malformed expected population before reading', async () => {
+    const { sql, calls } = recordingSql(() => [row]);
+    for (const usageEventKeys of [[], [key, key], ['invalid'], Array(1001).fill(key)]) {
+      expect(await readIdentityTurnBilledCost(sql, { ...binding, usageEventKeys }))
+        .toMatchObject({ ok: false, code: 'identity-usage-invalid-binding' });
+    }
+    expect(await readIdentityTurnBilledCost(sql, { ...binding, principalId: '' }))
+      .toMatchObject({ ok: false, code: 'identity-usage-invalid-binding' });
+    expect(calls).toHaveLength(0);
+  });
+
+  it('pins the expected binding across async IO and refuses an unavailable authority', async () => {
+    const input = { ...binding, usageEventKeys: [key] };
+    const { sql } = recordingSql(() => { input.principalId = 'other'; input.usageEventKeys[0] = 'b'.repeat(64); return [row]; });
+    expect(await readIdentityTurnBilledCost(sql, input)).toMatchObject({ ok: true, billedInferenceMicros: 999n });
+    const failing = (() => Promise.reject(new Error('unavailable'))) as unknown as Sql;
+    expect(await readIdentityTurnBilledCost(failing, binding))
+      .toMatchObject({ ok: false, code: 'identity-usage-unavailable' });
+  });
+});
 
 /** A `sql` stand-in that records every tagged-template call and refuses any other method. */
 function recordingSql(answer: (text: string) => unknown[]): { sql: Sql; calls: Recorded[] } {

@@ -53,10 +53,16 @@ export function validGovernanceSigningAuthority(authority: GovernanceSigningAuth
   const sources = new Set<string>();
   if (authority.delegations !== undefined && !Array.isArray(authority.delegations)) return false;
   for (const d of authority.delegations ?? []) {
+    const from = authority.members.find(m => m.memberId === d?.from);
+    const to = authority.members.find(m => m.memberId === d?.to);
     if (!d || !ids.has(d.from) || !ids.has(d.to) || sources.has(d.from) || !epoch(d.epoch) ||
+        !from || !to || from.revoked || to.revoked || !from.roles.includes('vote') || !to.roles.includes('vote') || d.epoch !== from.keyEpoch ||
         (d.expiresAtMs !== undefined && (!Number.isSafeInteger(d.expiresAtMs) || d.expiresAtMs < 0))) return false;
     sources.add(d.from);
   }
+  const totalWeight = authority.members.filter(m => !m.revoked && m.roles.includes('vote'))
+    .reduce((total, m) => total + (m.weight ?? 1), 0);
+  if (!Number.isSafeInteger(totalWeight)) return false;
   return true;
 }
 

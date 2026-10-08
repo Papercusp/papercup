@@ -77,6 +77,9 @@ export type IdentityOfferRefusalCode =
   | 'invalid-identity-release'
   | 'invalid-markup'
   | 'invalid-split'
+  | 'invalid-inference-cost'
+  | 'inference-ceiling-exceeded'
+  | 'invalid-markup-remainder'
   | 'not-an-identity-offer'
   | 'identity-offer-mismatch';
 
@@ -263,4 +266,54 @@ export function verifyIdentityPerUseOffer(offer: IdentityPerUseOfferTerms): Iden
     }
   }
   return derived;
+}
+
+/**
+ * Quote one turn from authoritative billed microUSD, without quantizing the
+ * actual cost into the offer's 1,000-microUSD reservation blocks (D-041).
+ *
+ * The host must persist the remainder with the exact payer/offer binding and
+ * supply it on the next turn. It is a numerator over 10,000, not money yet.
+ * This pure calculation does not verify billing evidence or authorize serving.
+ */
+export function quoteIdentityInferenceTurn(input: {
+  readonly offer: IdentityPerUseOfferTerms;
+  readonly billedInferenceMicros: bigint;
+  readonly inferenceCeilingMicros: bigint;
+  readonly priorRemainderNumerator?: bigint;
+}): {
+  readonly ok: true;
+  readonly reservationQuantity: bigint;
+  readonly reservedMarkupMicros: bigint;
+  readonly amountMicros: bigint;
+  readonly remainderNumerator: bigint;
+} | ReturnType<typeof refuse> {
+  const verified = verifyIdentityPerUseOffer(input.offer);
+  if (!verified.ok) return verified;
+  const { billedInferenceMicros, inferenceCeilingMicros } = input;
+  if (typeof billedInferenceMicros !== 'bigint' || typeof inferenceCeilingMicros !== 'bigint' ||
+      billedInferenceMicros < 0n || inferenceCeilingMicros <= 0n) {
+    return refuse('invalid-inference-cost', 'billed cost must be non-negative bigint micros and the ceiling must be positive');
+  }
+  if (billedInferenceMicros > inferenceCeilingMicros) {
+    return refuse('inference-ceiling-exceeded', 'actual billed cost exceeds the admitted inference ceiling');
+  }
+  const prior = input.priorRemainderNumerator ?? 0n;
+  if (typeof prior !== 'bigint' || prior < 0n || prior >= 10_000n) {
+    return refuse('invalid-markup-remainder', 'the retained markup numerator must be in [0, 10000)');
+  }
+  const block = BigInt(IDENTITY_INFERENCE_BLOCK_MICROS);
+  const reservationQuantity = (inferenceCeilingMicros + block - 1n) / block;
+  // The existing voucher/usage ledger represents quantities as safe integers.
+  if (reservationQuantity > BigInt(Number.MAX_SAFE_INTEGER)) {
+    return refuse('invalid-inference-cost', 'the inference ceiling exceeds the metering ledger quantity range');
+  }
+  const numerator = billedInferenceMicros * BigInt(verified.markup.markupBps) + prior;
+  return {
+    ok: true,
+    reservationQuantity,
+    reservedMarkupMicros: reservationQuantity * BigInt(input.offer.unitPriceMicros),
+    amountMicros: numerator / 10_000n,
+    remainderNumerator: numerator % 10_000n,
+  };
 }

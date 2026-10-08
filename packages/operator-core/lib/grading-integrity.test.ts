@@ -891,6 +891,53 @@ describe('dispatchPendingGradingAudits', () => {
     });
   });
 
+  it('retires a live auditor after its consult answerer has been superseded, then routes the current responder', async () => {
+    const d = deps();
+    const prior = { key: 'grading-audit:EI-stale-responder', reservedAt: '2026-10-08T07:00:00.000Z' };
+    d.reserve.mockResolvedValue({
+      status: 'claimed',
+      reservation: { key: prior.key, reservedAt: '2026-10-08T07:20:00.000Z' },
+      prior,
+    });
+    d.listScorecards.mockResolvedValue([card('EI-stale-responder')]);
+    d.listTasks.mockResolvedValue([{
+      taskId: 'task-stale-responder',
+      state: 'running',
+      detail: { label: prior.key, coordOwnerId: 'su-stale-answerer' },
+      logPath: '/tmp/stale-responder.log',
+    } as unknown as TaskRow]);
+    const isCurrentSourceAuditResponder = vi.fn(async () => false);
+    const killTask = vi.fn(async (taskId: string) => ({ ok: true as const, taskId, action: 'kill' }));
+    d.route.mockResolvedValue({ state: 'routed', conversationId: 'current-answerer-consult' });
+
+    const result = await dispatchPendingGradingAudits({ targetIds: ['EI-stale-responder'], ctx }, {
+      ...d,
+      killTask,
+      isCurrentSourceAuditResponder,
+      readLogTail: async () => 'Working through grading-integrity evidence',
+      readLogMtimeMs: () => Date.parse('2026-10-08T07:19:30.000Z'),
+    });
+
+    expect(isCurrentSourceAuditResponder).toHaveBeenCalledWith('EI-stale-responder', prior, 'su-stale-answerer');
+    expect(killTask).toHaveBeenCalledWith('task-stale-responder', {
+      includeSubtree: true,
+      escalateAfterMs: 5_000,
+    });
+    expect(d.route).toHaveBeenCalledWith(expect.objectContaining({
+      reservationKey: prior.key,
+      reservationReservedAt: '2026-10-08T07:20:00.000Z',
+    }), expect.anything());
+    expect(result.receipts[0]).toMatchObject({
+      state: 'routed',
+      conversationId: 'current-answerer-consult',
+      terminalRecovery: {
+        retiredTaskIds: ['task-stale-responder'],
+        codes: ['superseded_source_audit_responder'],
+      },
+    });
+    expect(d.notifyRetainedAuditor).not.toHaveBeenCalled();
+  });
+
   it('hands the live auditor its own expired lease back instead of deleting it (WI-10005273)', async () => {
     // The reproduced deadlock: a sweep after the 15-minute TTL re-claims the auditor's lease,
     // finds the auditor still live, and used to DELETE the reservation. The auditor's

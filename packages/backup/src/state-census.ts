@@ -1,5 +1,6 @@
 import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
+import { REBUILDABLE_DIRECTORY_PATTERNS } from './policy';
 
 /** Producer declarations, not a second hand-maintained list of install paths. */
 export type StateClass = 'state' | 'config' | 'secret' | 'cache' | 'dev-only';
@@ -17,6 +18,14 @@ export interface CensusDeclaration extends CensusEntry {
   descendants?: boolean;
   /** Rebuildable subtree represented by its root, never silently omitted. */
   prune?: boolean;
+}
+
+/** Semantic cache ownership derived from the existing backup policy, not all ignores. */
+export function backupCacheCensusDeclarations(root: string): CensusDeclaration[] {
+  return REBUILDABLE_DIRECTORY_PATTERNS.map(name => ({
+    kind: 'path', root, name, classification: 'cache', producer: 'backup-policy',
+    descendants: true, prune: true,
+  }));
 }
 
 function matches(entry: CensusEntry, declaration: CensusDeclaration): boolean {

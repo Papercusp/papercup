@@ -23,6 +23,8 @@ const { captureImprovement } = await import('./capture-core');
 const { createIssue } = await import('../../issues-engineer');
 const { createImplementationReadiness } = await import('./agent-review-policy');
 const { readIssueClaimability } = await import('../../scheduler/get-next');
+const { stampFiledBugReproduction } = await import('../../attention/bug-reproduction');
+const { defaultReproductionLedgerDeps } = await import('../../attention/intake-promotion');
 
 let db: OrgTestDb;
 
@@ -300,26 +302,56 @@ describe('tool-failure probation promotion → scheduler admission', () => {
     expect(review).toMatchObject({ claimed: true, workItem: { id } });
   });
 
-  it('treats a promotion carrying a verified failing-call receipt as born verified (D-011/D-024)', async () => {
+  // P-029: resolve the actual ledger before driving persisted promotion and
+  // scheduler admission. A caller-authored "verified" fixture misses this seam.
+  it.each([
+    { name: 'failed invocation', table: 'tool_invocations', status: 'error', build: 'abcdef1234567', dirty: false, ineligible: null, expected: 'verified' },
+    { name: 'wrong-build invocation', table: 'tool_invocations', status: 'error', build: '7654321fedcba', dirty: false, ineligible: null, expected: 'refuted' },
+    { name: 'successful invocation', table: 'tool_invocations', status: 'ok', build: 'abcdef1234567', dirty: false, ineligible: null, expected: 'refuted' },
+    { name: 'clean failed test', table: 'test_runs', status: 'fail', build: 'abcdef1234567', dirty: false, ineligible: null, expected: 'verified' },
+    { name: 'passing test', table: 'test_runs', status: 'pass', build: 'abcdef1234567', dirty: false, ineligible: null, expected: 'refuted' },
+    { name: 'dirty failed test', table: 'test_runs', status: 'fail', build: 'abcdef1234567', dirty: true, ineligible: null, expected: 'refuted' },
+    { name: 'caller-ineligible receipt', table: 'tool_invocations', status: 'error', build: 'abcdef1234567', dirty: false, ineligible: 'caller-classified tool failure', expected: 'not-eligible' },
+    { name: 'human-ineligible receipt', table: 'tool_invocations', status: 'error', build: 'abcdef1234567', dirty: false, ineligible: 'human-filed report', expected: 'not-eligible' },
+  ])('admits only an eligible ledger-backed encounter: $name', async (scenario) => {
     const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    const reproduction = {
-      schemaVersion: 'bug-reproduction-v1',
-      receipt: { kind: 'encounter', ref: 'tool_invocations:4242', buildSha: 'abcdef1234567' },
-      filedBy: 'su-peer',
-      verification: { status: 'verified', detail: 'tool_invocations:4242 failed (error) on abcdef1234567', checkedAt: new Date().toISOString() },
-    };
-    const { id, stored } = await promoteBug(suffix, { reproduction });
-    expect(stored.payload).toMatchObject({
-      implementationReadiness: { status: 'ready', reason: 'born-verified-tool-failure-promotion' },
-      reproduction: { receipt: { ref: 'tool_invocations:4242' }, verification: { status: 'verified' } },
-    });
-    expect(stored.payload).not.toHaveProperty('agentReview');
+    const [ledger] = scenario.table === 'test_runs'
+      ? await db.adminSql<{ id: string }[]>`
+          INSERT INTO harness_shared.test_runs (file_path, framework, status, commit_sha, worktree_dirty)
+          VALUES (${`p029/${suffix}.test.ts`}, 'vitest', ${scenario.status}, ${scenario.build}, ${scenario.dirty})
+          RETURNING id`
+      : await db.adminSql<{ id: string }[]>`
+          INSERT INTO harness_shared.tool_invocations
+            (workspace_id, harness_slug, plugin_name, role, spawn_id, window_key, tool_name, status, serving_build_sha)
+          VALUES ('default', 'papercusp', 'papercusp', 'su', 'p029-test', 'p029-test',
+                  'work_items:get', ${scenario.status}, ${scenario.build})
+          RETURNING id`;
+    const ref = `${scenario.table}:${ledger!.id}`;
+    const stamp = await stampFiledBugReproduction(
+      { kind: 'encounter', ref, buildSha: 'abcdef1234567', verification: { status: 'verified' } },
+      { filedBy: 'su-peer', ineligibleReason: scenario.ineligible },
+      defaultReproductionLedgerDeps(),
+    );
+    expect(stamp.ok).toBe(true);
+    if (!stamp.ok) throw new Error(stamp.error);
+    expect(stamp.stored.verification.status).toBe(scenario.expected);
+    const { id, stored } = await promoteBug(suffix, { reproduction: stamp.stored });
+    expect(stored.payload).toMatchObject({ reproduction: { receipt: { ref }, verification: { status: scenario.expected } } });
+    if (scenario.expected === 'verified') {
+      expect(stored.payload).toMatchObject({ implementationReadiness: { status: 'ready', reason: 'born-verified-tool-failure-promotion' } });
+      expect(stored.payload).not.toHaveProperty('agentReview');
+    } else {
+      expect(stored.payload).toMatchObject({
+        implementationReadiness: { status: 'unknown', reason: 'awaiting-agent-review' },
+        agentReview: { status: 'pending', submittedBy: 'su-peer' },
+      });
+    }
     const claimability = await readIssueClaimability(
       { field: 'id', op: 'in', value: [id] },
       { harness: 'papercusp', workspaceId: stored.workspace_id, states: ['open'], assignee: 'su-test', client: db.adminSql },
       { limit: 10 },
     );
-    expect(claimability.rows.map((row) => row.id)).toEqual([id]);
+    expect(claimability.rows.map((row) => row.id)).toEqual(scenario.expected === 'verified' ? [id] : []);
   });
 
   it('keeps a row with no readiness key on the explicit legacy path', async () => {

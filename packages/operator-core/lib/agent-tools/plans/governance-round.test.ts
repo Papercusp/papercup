@@ -25,7 +25,9 @@ describe('governance round records', () => {
     const rebuilt = rebuildGovernanceRound(round.value, [vote('b', 2), vote('a', 1)]);
     expect(rebuilt).toMatchObject({ ok: true, value: [{ memberId: 'a' }, { memberId: 'b' }] });
     if (!rebuilt.ok) return;
-    expect(appendGovernanceVote(round.value, rebuilt.value, vote('a', 3, 'e-duplicate'))).toMatchObject({ ok: false, code: 'duplicate-event' });
+    expect(appendGovernanceVote(round.value, rebuilt.value, vote('a', 3, 'e-replacement'))).toMatchObject({ ok: true });
+    expect(appendGovernanceVote(round.value, rebuilt.value, vote('a', 3, 'e-a'))).toMatchObject({ ok: false, code: 'duplicate-event' });
+    expect(appendGovernanceVote(round.value, rebuilt.value, vote('a', 1, 'e-replay'))).toMatchObject({ ok: false, code: 'duplicate-event' });
     expect(appendGovernanceVote(round.value, rebuilt.value, vote('mallory', 3, 'e-m'))).toMatchObject({ ok: false, code: 'unknown-member' });
   });
 });
@@ -55,7 +57,7 @@ describe('finalization consults the weighted vote reducer', () => {
     expect(skewed.ok).toBe(true);
     if (!skewed.ok) return;
     expect(skewed.value.admitted).toBe(false);
-    expect(skewed.value.reason).toContain('weighted-tally-rejected');
+    expect(skewed.value.reason).toBe('weighted-approval-not-met');
     expect(skewed.value.tally).toMatchObject({ approveWeight: 3, rejectWeight: 10 });
   });
 
@@ -88,5 +90,52 @@ describe('finalization consults the weighted vote reducer', () => {
     if (!cert.ok) return;
     expect(verifyFinalizationCertificate(cert.value)).toBe(true);
     expect(verifyFinalizationCertificate({ ...cert.value, tally: { ...cert.value.tally, approveWeight: 99 } })).toBe(false);
+  });
+
+  it('enforces the policy approval BPS above a simple weighted majority', () => {
+    if (!weighted.ok) throw new Error('invalid fixture');
+    // Both headcount (75%) and a weighted majority pass, but weight 3:2
+    // is only 60%, below the signed 66.67% policy.
+    const result = finalizeGovernanceRound({ round: weighted.value, events,
+      policy: DEFAULT_PLAN_ADMISSION_POLICY, nowMs: 2_000,
+      members: [{ memberId: 'a' }, { memberId: 'b' }, { memberId: 'c' }, { memberId: 'd', weight: 2 }] });
+    expect(result).toMatchObject({ ok: true, value: { admitted: false, reason: 'weighted-approval-not-met' } });
+  });
+
+  it('uses delegated weight for quorum and the exact BPS boundary for approval', () => {
+    if (!weighted.ok) throw new Error('invalid fixture');
+    const members = ['a', 'b', 'c', 'd'].map(memberId => ({ memberId }));
+    const delegated = finalizeGovernanceRound({ round: weighted.value, events: [ballot('a', 'approve', 1)],
+      policy: DEFAULT_PLAN_ADMISSION_POLICY, nowMs: 2_000, members,
+      delegations: ['b', 'c', 'd'].map(from => ({ from, to: 'a', epoch: 1 })) });
+    expect(delegated).toMatchObject({ ok: true, value: { admitted: true,
+      tally: { approveWeight: 4, participatingWeight: 4, totalEligibleWeight: 4 } } });
+    const underQuorum = finalizeGovernanceRound({ round: weighted.value,
+      events: [ballot('a', 'approve', 1), ballot('b', 'approve', 2)],
+      policy: DEFAULT_PLAN_ADMISSION_POLICY, nowMs: 2_000,
+      members: [{ memberId: 'a' }, { memberId: 'b' }, { memberId: 'c', weight: 5 }, { memberId: 'd', weight: 5 }] });
+    expect(underQuorum).toMatchObject({ ok: true, value: { admitted: false, reason: 'weighted-quorum-not-met' } });
+    for (const [approvalBps, admitted] of [[7_500, true], [7_501, false]] as const) {
+      expect(finalizeGovernanceRound({ round: weighted.value, events,
+        policy: { ...DEFAULT_PLAN_ADMISSION_POLICY, approvalBps }, nowMs: 2_000 }))
+        .toMatchObject({ ok: true, value: { admitted } });
+    }
+  });
+
+  it('finalizes advancing replacements deterministically and refuses replay/conflict or extra roster weight', () => {
+    if (!weighted.ok) throw new Error('invalid fixture');
+    const replacement = { ...ballot('d', 'approve', 5), eventId: 'replacement-d' };
+    const input = { round: weighted.value, policy: DEFAULT_PLAN_ADMISSION_POLICY, nowMs: 2_000 };
+    const revised = finalizeGovernanceRound({ ...input, events: [...events, replacement] });
+    expect(revised).toMatchObject({ ok: true, value: { admitted: true, tally: { approveWeight: 4, replacements: 1 } } });
+    expect(finalizeGovernanceRound({ ...input, events: [replacement, ...events].reverse() })).toEqual(revised);
+    expect(finalizeGovernanceRound({ ...input, events: [...events, { ...replacement, sequence: 4 }] }))
+      .toMatchObject({ ok: false, code: 'duplicate-event' });
+    expect(finalizeGovernanceRound({ ...input, events: [...events, { ...replacement, eventId: 'e-d' }] }))
+      .toMatchObject({ ok: false, code: 'duplicate-event' });
+    expect(finalizeGovernanceRound({ ...input, events: [{ ...events[0]!, roundId: 'foreign' }] }))
+      .toMatchObject({ ok: false, code: 'unknown-member' });
+    expect(finalizeGovernanceRound({ ...input, events, members: ['a', 'b', 'c', 'd', 'extra'].map(memberId => ({ memberId })) }))
+      .toMatchObject({ ok: false, code: 'unknown-member' });
   });
 });

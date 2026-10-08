@@ -42,11 +42,16 @@ export const SELF_EXCLUSION_RULES = [
   '.zz-recover-*', '.half-restored-*', '.audit-wipe-*',
 ];
 
-export const IGNORE_PATTERNS = [
+/** Rebuildable build/package artifacts; unlike self-exclusions these are caches. */
+export const REBUILDABLE_DIRECTORY_PATTERNS = [
   'node_modules', '.next', 'out', 'target', 'dist', 'build', '.turbo', '.cache',
   '.svelte-kit', '.nuxt', '.angular', '.vite', '.parcel-cache',
   '.yarn/cache', '.pnpm-store', '.bun',
   'coverage', '.nyc_output',
+];
+
+export const IGNORE_PATTERNS = [
+  ...REBUILDABLE_DIRECTORY_PATTERNS,
   '__pycache__', '*.pyc', '.venv', 'venv', '.pytest_cache', '.mypy_cache', '.ruff_cache',
   '.gradle', '.terraform',
   // Transactional writers use a `.tmp` suffix until an artifact is complete.

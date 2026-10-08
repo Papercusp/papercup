@@ -10,10 +10,76 @@ import {
   identityReleaseSkuRef,
   parseIdentityMarkupPriceVersion,
   parseIdentityReleaseSkuRef,
+  quoteIdentityInferenceTurn,
   verifyIdentityPerUseOffer,
 } from './identity-per-use-offer';
 
 const ENGINEER = { id: 'papercusp-engineer', version: '1.2.0' };
+
+describe('exact billed inference markup', () => {
+  const offered = identityPerUseOfferTerms({ identity: ENGINEER, markupBps: 2500 });
+  if (!offered.ok) throw new Error(offered.detail);
+  const offer = offered.terms;
+
+  it('reserves ceiling blocks upward but charges the exact billed base', () => {
+    expect(quoteIdentityInferenceTurn({ offer, inferenceCeilingMicros: 1001n, billedInferenceMicros: 999n }))
+      .toEqual({ ok: true, reservationQuantity: 2n, reservedMarkupMicros: 500n,
+        amountMicros: 249n, remainderNumerator: 7500n });
+    expect(quoteIdentityInferenceTurn({ offer, inferenceCeilingMicros: 1000n, billedInferenceMicros: 1000n }))
+      .toMatchObject({ reservationQuantity: 1n, amountMicros: 250n, remainderNumerator: 0n });
+  });
+
+  it('retains fractional micros across turns instead of rounding each sample away', () => {
+    let remainder = 0n;
+    let charged = 0n;
+    for (const billedInferenceMicros of [1n, 1n, 0n, 1n, 1n, 999n]) {
+      const quote = quoteIdentityInferenceTurn({ offer, inferenceCeilingMicros: 1000n,
+        billedInferenceMicros, priorRemainderNumerator: remainder });
+      if (!quote.ok) throw new Error(quote.detail);
+      charged += quote.amountMicros;
+      remainder = quote.remainderNumerator;
+    }
+    const aggregate = quoteIdentityInferenceTurn({ offer, inferenceCeilingMicros: 1003n, billedInferenceMicros: 1003n });
+    if (!aggregate.ok) throw new Error(aggregate.detail);
+    expect({ charged, remainder }).toEqual({ charged: aggregate.amountMicros, remainder: aggregate.remainderNumerator });
+    expect(charged).toBe(250n);
+  });
+
+  it('keeps a zero billed turn free and preserves its carried remainder', () => {
+    expect(quoteIdentityInferenceTurn({ offer, inferenceCeilingMicros: 1n,
+      billedInferenceMicros: 0n, priorRemainderNumerator: 9999n }))
+      .toMatchObject({ amountMicros: 0n, remainderNumerator: 9999n });
+  });
+
+  it('uses bigint arithmetic for cost and markup beyond the JSON safe-integer range', () => {
+    const billed = 9_007_199_254_740_993n;
+    expect(quoteIdentityInferenceTurn({ offer, inferenceCeilingMicros: billed, billedInferenceMicros: billed }))
+      .toMatchObject({ ok: true, amountMicros: 2_251_799_813_685_248n, remainderNumerator: 2500n });
+  });
+
+  it('refuses overspend, invalid money, out-of-range remainders and an unrepresentable reservation', () => {
+    const quote = (overrides: Partial<Parameters<typeof quoteIdentityInferenceTurn>[0]>) =>
+      quoteIdentityInferenceTurn({ offer, inferenceCeilingMicros: 1000n, billedInferenceMicros: 1n, ...overrides });
+    expect(quote({ billedInferenceMicros: 1001n })).toMatchObject({ ok: false, code: 'inference-ceiling-exceeded' });
+    for (const overrides of [{ billedInferenceMicros: -1n }, { inferenceCeilingMicros: 0n },
+      { billedInferenceMicros: 1 as unknown as bigint },
+      { inferenceCeilingMicros: BigInt(Number.MAX_SAFE_INTEGER) * 1000n + 1n }]) {
+      expect(quote(overrides)).toMatchObject({ ok: false, code: 'invalid-inference-cost' });
+    }
+    for (const priorRemainderNumerator of [-1n, 10000n, 1 as unknown as bigint]) {
+      expect(quote({ priorRemainderNumerator })).toMatchObject({ ok: false, code: 'invalid-markup-remainder' });
+    }
+  });
+
+  it('refuses forged offer price, meter and split before quoting', () => {
+    for (const bad of [{ unitPriceMicros: offer.unitPriceMicros + 1 }, { meterUnit: 'tool-call' },
+      { splitManifestHash: `sha256:${'a'.repeat(64)}` }]) {
+      expect(quoteIdentityInferenceTurn({ offer: { ...offer, ...bad },
+        inferenceCeilingMicros: 1000n, billedInferenceMicros: 1n }))
+        .toMatchObject({ ok: false, code: 'identity-offer-mismatch' });
+    }
+  });
+});
 
 describe('identity release skuRef', () => {
   it('round-trips, including a namespaced id', () => {

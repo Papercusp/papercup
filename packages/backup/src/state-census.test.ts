@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { mkdtemp, mkdir, writeFile, symlink, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { assertStateCensusComplete, collectStateCensus, generateStateCensus, type CensusDeclaration } from './state-census';
+import { assertStateCensusComplete, collectStateCensus, generateStateCensus, backupCacheCensusDeclarations, type CensusDeclaration } from './state-census';
 
 const declaration: CensusDeclaration = {
   kind: 'path', root: 'app-home', name: 'hives', classification: 'state',
@@ -10,6 +10,13 @@ const declaration: CensusDeclaration = {
 };
 
 describe('producer-derived state census', () => {
+  it('derives rebuildable caches but never backup-repository or recovery-debris classification from ignores', () => {
+    const declarations = backupCacheCensusDeclarations('home');
+    const census = generateStateCensus(['node_modules/pkg', 'backups', '.broken-old'].map(name =>
+      ({ kind: 'path' as const, root: 'home', name })), declarations);
+    expect(census.inventory.find(entry => entry.name === 'node_modules/pkg')?.classification).toBe('cache');
+    expect(census.residue.map(entry => entry.name).sort()).toEqual(['.broken-old', 'backups']);
+  });
   it('rejects non-canonical paths and empty producer identities', () => {
     for (const name of ['/outside', '../outside', 'hives/../outside', 'hives//project', 'hives\\project']) {
       expect(() => generateStateCensus([{ ...declaration, name }], [declaration]))

@@ -14,6 +14,7 @@ import type { EvmSettlementConfig } from './evm-settlement';
 import {
   createInMemoryMirrorLedger,
   executeOnChainMirror,
+  governanceActionHash,
   isMirrorableActionKind,
   planOnChainMirror,
   P2P_ONLY_DECISION_KINDS,
@@ -48,7 +49,7 @@ const evm: EvmSettlementConfig = {
   maxBatchSize: 10,
 };
 
-function certificate(choices: readonly GovernanceVoteEvent['choice'][]): FinalizationCertificate {
+function certificate(choices: readonly GovernanceVoteEvent['choice'][], action: BridgeAction | null = transfer): FinalizationCertificate {
   const memberIds = choices.map((_, i) => `member-${i}`);
   const round = createGovernanceRound({
     roundId: 'round-1',
@@ -56,6 +57,7 @@ function certificate(choices: readonly GovernanceVoteEvent['choice'][]): Finaliz
     policyVersion: DEFAULT_PLAN_ADMISSION_POLICY.policyVersion,
     eligibleMemberIds: memberIds,
     createdAtMs: CREATED_AT_MS,
+    ...(action ? { approvedActionHash: governanceActionHash(action) } : {}),
   });
   if (!round.ok) throw new Error(round.detail);
   let events: GovernanceVoteEvent[] = [];
@@ -76,7 +78,7 @@ function certificate(choices: readonly GovernanceVoteEvent['choice'][]): Finaliz
   return finalized.value;
 }
 
-const admitted = () => certificate(['approve', 'approve', 'approve']);
+const admitted = (action: BridgeAction = transfer) => certificate(['approve', 'approve', 'approve'], action);
 const rejected = () => certificate(['approve', 'reject', 'reject']);
 
 const transfer: BridgeAction = {
@@ -93,7 +95,7 @@ const settlementBatch: BridgeAction = {
   voucherDigests: ['digest-a', 'digest-b'],
 };
 
-function mirror(action: BridgeAction, cert: FinalizationCertificate = admitted()) {
+function mirror(action: BridgeAction, cert: FinalizationCertificate = admitted(action)) {
   return planOnChainMirror({ certificate: cert, authorizedByCertificateHash: cert.certificateHash, action });
 }
 
@@ -152,6 +154,46 @@ describe('on-chain governance bridge — what may reach a chain', () => {
     const cert = admitted();
     const result = planOnChainMirror({ certificate: cert, authorizedByCertificateHash: 'some-other-round-hash', action: transfer });
     expect(result).toMatchObject({ ok: false, code: 'action-not-bound-to-certificate' });
+  });
+
+  it('refuses legacy certificates without an action commitment', () => {
+    const cert = certificate(['approve', 'approve', 'approve'], null);
+    expect(verifyFinalizationCertificate(cert)).toBe(true);
+    expect(mirror(transfer, cert)).toMatchObject({ ok: false, code: 'action-not-bound-to-certificate' });
+  });
+
+  it('refuses substitutions under the same admitted certificate even within role limits', () => {
+    if (transfer.kind !== 'treasury-transfer') throw new Error('treasury fixture required');
+    const cert = admitted(transfer);
+    expect(cert.approvedActionHash).toBe(governanceActionHash(transfer));
+    const changes: BridgeAction[] = [
+      { ...transfer, request: { ...transfer.request, amountMicros: 749n } },
+      { ...transfer, request: { ...transfer.request, recipient: treasury.safeAddress } },
+      { ...transfer, request: { ...transfer.request, token: evm.stablecoin } },
+      { ...transfer, request: { ...transfer.request, role: 'emergency-pause' } },
+      { ...transfer, request: { ...transfer.request, settlementReceiptHash: 'other-receipt' } },
+      { ...transfer, treasury: { ...treasury, chainId: 8453 } },
+      { ...transfer, treasury: { ...treasury, safeAddress: recipient } },
+      settlementBatch,
+    ];
+    for (const changed of changes) expect(mirror(changed, cert)).toMatchObject({ ok: false, code: 'action-not-bound-to-certificate' });
+    expect(verifyFinalizationCertificate({ ...cert, approvedActionHash: governanceActionHash(changes[0]!) })).toBe(false);
+    expect(mirror(transfer, cert)).toMatchObject({ ok: true });
+  });
+
+  it('binds settlement amount, channel, chain, contract, stablecoin and exact vouchers', () => {
+    if (settlementBatch.kind !== 'settlement-batch') throw new Error('settlement fixture required');
+    const cert = admitted(settlementBatch);
+    const changes: BridgeAction[] = [
+      { ...settlementBatch, amountMicros: 901n },
+      { ...settlementBatch, channel: { ...settlementBatch.channel, channelId: 'other-channel' } },
+      { ...settlementBatch, evm: { ...evm, chainId: 42161 } },
+      { ...settlementBatch, evm: { ...evm, settlementContract: token } },
+      { ...settlementBatch, evm: { ...evm, stablecoin: token } },
+      { ...settlementBatch, voucherDigests: ['digest-c'] },
+    ];
+    for (const changed of changes) expect(mirror(changed, cert)).toMatchObject({ ok: false, code: 'action-not-bound-to-certificate' });
+    expect(mirror(settlementBatch, cert)).toMatchObject({ ok: true });
   });
 
   it('never mirrors a P2P-authoritative decision kind, even when ratified', () => {

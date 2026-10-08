@@ -1605,6 +1605,7 @@ import './cupboard/payment-receipt';
 import './cupboard/statement-attestation';
 import './cupboard/reconciliation';
 import './cupboard/bind-wallet';
+import './pot/equity';
 import './cupboard/bind-identity-funding';
 // P-031 — the per-unit half of the same commerce surface. A per-use offer has no
 // single purchase to authorize, so checkout only opens the channel and EVERY

@@ -333,6 +333,32 @@ describe('production plan-admission certificate source', () => {
     opts: { workspaceId: WORKSPACE_ID, harnessSlug: HARNESS_SLUG },
   });
 
+  it('reconstructs real signed replacements and rejects a same-sequence replay', async () => {
+    const ratified = ratifiedRound();
+    const original = ratified.votes[0]!;
+    const signedVote = (sequence: number, choice: GovernanceVoteEvent['choice']) => {
+      const { signature: _signature, ...unsigned } = original;
+      const body = { ...unsigned, sequence, choice, eventId: `replacement-${sequence}` };
+      return { ...body, signature: signWithPrivateKeyDer(KEYS[0]!.privateKeyDer,
+        governanceVoteSigningBytes(AUTHORITY, ratified.round, body)).toString('base64') };
+    };
+    const reject = signedVote(4, 'reject');
+    const approve = signedVote(5, 'approve');
+    const ballots = [...ratified.votes, reject, approve];
+    const finalized = finalizeGovernanceRound({ round: ratified.round, events: ballots,
+      policy: POLICY, members: AUTHORITY.members, nowMs: NOW });
+    if (!finalized.ok) throw new Error(finalized.detail);
+    expect(finalized.value.tally.replacements).toBe(2);
+    const events = [...ratified.events.filter(e => e.body.kind !== 'finalize'),
+      federated('replacement-reject', ratified.round.roundId, { kind: 'vote', vote: reject }, NOW - 2),
+      federated('replacement-approve', ratified.round.roundId, { kind: 'vote', vote: approve }, NOW - 1),
+      federated('revised-finalization', ratified.round.roundId, { kind: 'finalize', certificate: finalized.value }, NOW)];
+    expect((await resolve(sourceFor(await snapshotFrom(events)))).certificate).toMatchObject({ admitted: true });
+    const replay = signedVote(5, 'reject');
+    const replayed = [...events, federated('sequence-replay', ratified.round.roundId, { kind: 'vote', vote: replay }, NOW)];
+    expect((await resolve(sourceFor(await snapshotFrom(replayed)))).certificate).toBeNull();
+  });
+
   it('refuses forged stored ballot and control signatures even when a custom snapshot claims integrity', async () => {
     const ratified = ratifiedRound();
     for (const kind of ['vote', 'finalize'] as const) {

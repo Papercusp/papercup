@@ -1971,6 +1971,51 @@ describe('supersedeAtRevision withdraws same-kind siblings at the clause revisio
     expect(stamp?.retracted_by).toBeTruthy();
   });
 
+  it('supersedes an earlier mutation using measured failed identities from the real ledger', async () => {
+    await specs.setSpecClause(clause());
+    const [oldRun, freshRun] = [
+      await seedExternalEvidence(REPLAY_TEST),
+      await seedExternalEvidence(REPLAY_TEST),
+    ];
+    const failedCase = 'owner selection > rejects the forbidden assignment';
+    const execution = {
+      schemaVersion: 1, root: h.repoRoot, filePath: REPLAY_TEST,
+      runGroupId: null, workspaceId: WORKSPACE, harnessSlug: HARNESS,
+      testNamePattern: null, passed: 23, failed: 1, skipped: 0,
+      collectionFailed: false, mutationPhase: 'mutant',
+      commitSha: 'c0ffee1234567890', worktreeDirty: false,
+      testLayer: 'integration', failedCaseTitles: [failedCase],
+    };
+    await db.sql`UPDATE harness_shared.test_runs
+      SET source = 'mutation-probe', status = 'fail', finished_at = now(),
+          output_tail = NULL, execution_details = ${db.sql.json(execution)}
+      WHERE id = ${freshRun.testRunId}`;
+    const adequacy = { ...PASSED, outcome: 'killed', targeted: 'spec-003-01', testCases: [failedCase] };
+    const old = await bindViaTool({
+      evidenceKind: 'mutation', evidenceRef: 'mutation-probe:old-attempt',
+      testRunId: oldRun.testRunId, details: { adequacy },
+    });
+    const freshBinding = {
+      evidenceKind: 'mutation', evidenceRef: 'mutation-probe:fresh-attempt',
+      testRunId: freshRun.testRunId, details: { adequacy },
+    };
+    const fresh = await bindViaTool(freshBinding);
+    // A normal bind preserves both rows; only verified supersession may withdraw old proof.
+    expect(await liveIds()).toEqual(expect.arrayContaining([old.id, fresh.id]));
+    const superseded = await bindViaTool(freshBinding, true);
+    expect(superseded.supersession).toEqual([{
+      bindingId: fresh.id, status: 'superseded', clause: 'SPEC-003-01@1', evidenceKind: 'mutation',
+      retracted: [{ bindingId: old.id, workItemId: 'WI-101', evidenceRef: 'mutation-probe:old-attempt' }],
+      kept: [],
+    }]);
+    const [measured] = await evidenceStore.listSpecEvidence({
+      harnessSlug: HARNESS, planSlugs: ['reconnect-plan'], bindingIds: [fresh.id],
+    });
+    expect(measured?.testRunProvenance?.mutationFailedCaseTitles).toEqual([failedCase]);
+    expect(await liveIds()).toContain(fresh.id);
+    expect(await liveIds()).not.toContain(old.id);
+  });
+
   it('binds a row that is not sufficient on its own but supersedes nothing, and says why', async () => {
     await specs.setSpecClause(clause());
     const oldRun = await seedExternalEvidence();

@@ -211,3 +211,96 @@ export async function readShadowStatement(
 function stringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string') : [];
 }
+
+/** A closed turn's exact usage population, supplied by the authenticated host. */
+export interface IdentityTurnUsageBinding {
+  readonly workspaceId: string;
+  readonly ownerId: string;
+  readonly principalId: string;
+  readonly nativeSessionId: string;
+  readonly nativeTurnId: string;
+  readonly specificationRevision: string;
+  readonly stateRevision: string;
+  readonly usageEventKeys: readonly string[];
+}
+
+export type IdentityTurnBilledCost = {
+  readonly ok: true;
+  readonly billedInferenceMicros: bigint;
+  readonly samples: readonly { usageEventKey: string; sampleId: string; activationEventId: string }[];
+} | {
+  readonly ok: false;
+  readonly code: 'identity-usage-invalid-binding' | 'identity-usage-incomplete' |
+    'identity-usage-not-bill-grade' | 'identity-usage-binding-mismatch' | 'identity-usage-unavailable';
+  readonly detail: string;
+};
+
+/**
+ * Read bill-grade evidence for ONE completed turn (P-017/D-042), including a
+ * carried native session through the canonical attribution view. Never infer
+ * completion from whatever rows happen to have arrived: the host supplies the
+ * complete expected event population. An empty population cannot prove zero cost.
+ * Estimates, unknown costs and a changed identity binding refuse settlement.
+ * This reader issues no voucher and grants no admission authority.
+ */
+export async function readIdentityTurnBilledCost(sql: Sql, input: IdentityTurnUsageBinding): Promise<IdentityTurnBilledCost> {
+  const fail = (code: Exclude<IdentityTurnBilledCost, { ok: true }>['code'], detail: string): IdentityTurnBilledCost =>
+    ({ ok: false, code, detail });
+  if ([input.workspaceId, input.ownerId, input.principalId, input.nativeSessionId, input.nativeTurnId,
+    input.specificationRevision, input.stateRevision].some((v) => typeof v !== 'string' || !v.trim()) ||
+      !Array.isArray(input.usageEventKeys) || input.usageEventKeys.length === 0 || input.usageEventKeys.length > 1000 ||
+      input.usageEventKeys.some((key) => typeof key !== 'string' || !/^[0-9a-f]{64}$/.test(key)) ||
+      new Set(input.usageEventKeys).size !== input.usageEventKeys.length) {
+    return fail('identity-usage-invalid-binding', 'a closed authenticated turn needs a nonempty exact usage-event population');
+  }
+  // Copy before awaiting IO: the closed-turn population and identity cannot
+  // be changed while the read is in flight.
+  const binding = { ...input, usageEventKeys: [...input.usageEventKeys] };
+  let rows: {
+    usage_event_key: string; sample_id: string; activation_event_id: string | null;
+    session_id: string | null; turn_id: string | null; owner_id: string | null; principal_id: string | null;
+    specification_revision: string | null; state_revision: string | null;
+    cost_source: string | null; cost_bound: string | null; cost_micros: string | null;
+  }[];
+  try {
+    rows = await sql<typeof rows>`
+      SELECT u.usage_event_key, u.id::text AS sample_id,
+             a.identity_activation_event_id::text AS activation_event_id,
+             a.session_id, u.usage_provenance->>'turnId' AS turn_id,
+             a.identity_owner_id AS owner_id, a.identity_principal_id AS principal_id,
+             a.identity_specification_revision AS specification_revision,
+             a.identity_state_revision AS state_revision,
+             a.cost_source, u.usage_provenance->>'costBound' AS cost_bound,
+             (a.cost_usd::numeric * 1000000)::text AS cost_micros
+        FROM harness_shared.agent_usage_samples u
+        JOIN harness_shared.agent_usage_samples_identity_attribution a
+          ON a.workspace_id = u.workspace_id AND a.id = u.id
+       WHERE u.workspace_id = ${binding.workspaceId}
+         AND u.usage_event_key = ANY(${binding.usageEventKeys}::text[])`;
+  } catch {
+    return fail('identity-usage-unavailable', 'the canonical billed usage read could not be verified');
+  }
+  const expected = new Set(binding.usageEventKeys);
+  const seen = new Set<string>();
+  if (rows.length !== expected.size) return fail('identity-usage-incomplete', 'the closed turn usage population is not fully available');
+  let billedInferenceMicros = 0n;
+  const samples: Extract<IdentityTurnBilledCost, { ok: true }>['samples'][number][] = [];
+  for (const row of rows) {
+    if (!expected.has(row.usage_event_key) || seen.has(row.usage_event_key)) {
+      return fail('identity-usage-incomplete', 'usage-event identities are missing, repeated or outside the closed turn');
+    }
+    seen.add(row.usage_event_key);
+    if (!row.activation_event_id || row.session_id !== binding.nativeSessionId || row.turn_id !== binding.nativeTurnId ||
+        row.owner_id !== binding.ownerId || row.principal_id !== binding.principalId ||
+        row.specification_revision !== binding.specificationRevision || row.state_revision !== binding.stateRevision) {
+      return fail('identity-usage-binding-mismatch', 'usage does not match the admitted payer, native turn and exact worn identity');
+    }
+    const money = typeof row.cost_micros === 'string' ? /^(\d+)(?:\.0+)?$/.exec(row.cost_micros) : null;
+    if (row.cost_source !== 'provider' || row.cost_bound !== null || !money) {
+      return fail('identity-usage-not-bill-grade', 'every usage event needs provider-reported nonnegative integer microUSD cost');
+    }
+    billedInferenceMicros += BigInt(money[1]!);
+    samples.push({ usageEventKey: row.usage_event_key, sampleId: row.sample_id, activationEventId: row.activation_event_id });
+  }
+  return { ok: true, billedInferenceMicros, samples };
+}

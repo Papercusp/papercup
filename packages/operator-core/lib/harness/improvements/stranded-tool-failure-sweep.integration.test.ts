@@ -184,14 +184,18 @@ describe('stranded tool-failure sweep (P-003 / D-022)', () => {
     });
     expect(String(retired.payload.decidedReason)).toContain('D-012/D-022');
 
-    // (3) a failure after the change keeps the row: it enters agent review instead.
+    // (3) a failure after the change keeps the row. P-026 preserves the original
+    // filer when repairing review enrolment; the sweep is the operation owner.
     const recurring = byId.get(ids.recurring)!;
     expect(recurring.status).toBe('open');
     expect(recurring.payload).toMatchObject({
-      agentReview: { status: 'pending', submittedBy: STRANDED_SWEEP_OWNER },
+      agentReview: { status: 'pending', submittedBy: 'su-test' },
       strandedToolFailureSweep: { outcome: 'review', reason: 'failure-after-last-change' },
     });
     const { claimAgentReview } = await import('./agent-review');
+    expect(await claimAgentReview({ id: ids.recurring, reviewer: 'su-test', harnessSlug: 'papercusp' })).toMatchObject({
+      claimed: false,
+    });
     expect(await claimAgentReview({ id: ids.recurring, reviewer: 'su-reviewer', harnessSlug: 'papercusp' })).toMatchObject({
       claimed: true,
     });

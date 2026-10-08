@@ -19,7 +19,7 @@
  */
 
 export {
-  generateStateCensus, collectStateCensus, verifyStateCensus, assertStateCensusComplete,
+  generateStateCensus, collectStateCensus, verifyStateCensus, assertStateCensusComplete, backupCacheCensusDeclarations,
   type StateClass, type CensusKind, type CensusEntry, type CensusDeclaration, type CensusRoot,
 } from './state-census';
 
