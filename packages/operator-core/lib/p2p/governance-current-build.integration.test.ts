@@ -21,6 +21,9 @@ const sources = [
   'packages/operator-core/lib/sync/hyperbee/boot.ts',
   'packages/operator-core/lib/sync/hyperbee/read-merge.ts',
   'packages/operator-core/lib/sync/hyperbee/projection.ts',
+  'packages/operator-core/lib/sync/hyperbee/projections/hive-settings.ts',
+  'packages/operator-core/lib/hive-membership-store.ts',
+  'packages/operator-core/lib/sync/hyperbee/pending-membership-content.ts',
 ];
 
 function sourceFingerprint() {
@@ -41,7 +44,7 @@ describe('isolated current-build governance and P2P journeys', () => {
     let output = '';
     // The outer canonical runner already owns these barriers. A nested
     // runner must not republish or remove its live parent's marker.
-    const environment = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0' };
+    const environment: Record<string, string | undefined> = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0' };
     delete environment.PC_HEAVY_PREEMPT_READY_FILE;
     delete environment.PC_HEAVY_PSI_FINALIZATION_FILE;
     expect(environment.PC_HEAVY_PREEMPT_READY_FILE).toBeUndefined();
@@ -69,7 +72,7 @@ describe('isolated current-build governance and P2P journeys', () => {
     const cleanOutput = output.replace(/\u001b\[[0-9;]*m/g, '');
     expect(result, cleanOutput.slice(-12_000)).toEqual({ code: 0, signal: null });
     expect(cleanOutput).toMatch(/Test Files\s+2 passed\s+\(2\)/);
-    expect(cleanOutput).toMatch(/Tests\s+13 passed\s+\(13\)/);
+    expect(cleanOutput).toMatch(/Tests\s+22 passed\s+\(22\)/);
     const start = messages.find(message => message.kind === 'isolated-runtime-start');
     const end = messages.find(message => message.kind === 'isolated-runtime-end');
     expect(start).toBeDefined();
