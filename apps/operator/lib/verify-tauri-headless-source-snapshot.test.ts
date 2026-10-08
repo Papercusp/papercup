@@ -275,7 +275,7 @@ describe("EI-25270951515189161 — frozen host bundle import smoke runs before T
   const smokeEndIdx = src.indexOf("build_verifier_operator_host || {", smokeStartIdx);
   const smokeSource = src.slice(smokeStartIdx, smokeEndIdx);
 
-  function runSmoke(bundleSource: string, timeoutSec = 3) {
+  function runSmoke(bundleSource: string, timeoutSec = 3, arenaCap?: string) {
     const fixture = mkdtempSync(resolve(tmpdir(), "verifier-host-import-smoke-"));
     const bundle = resolve(fixture, "hono-host.mjs");
     writeFileSync(bundle, bundleSource);
@@ -296,6 +296,7 @@ describe("EI-25270951515189161 — frozen host bundle import smoke runs before T
           timeout: 8_000,
           env: {
             ...process.env,
+            MALLOC_ARENA_MAX: arenaCap,
             OPERATOR_HOST_BUNDLE: bundle,
             VH_PHASE_DIR: resolve(fixture, "phase"),
             TEST_TIMEOUT_SEC: String(timeoutSec),
@@ -328,6 +329,18 @@ describe("EI-25270951515189161 — frozen host bundle import smoke runs before T
     expect(result.smokeEvidence).toMatchObject({ exitCode: 0, outcome: "passed" });
     expect(result.smokeOutput).toContain("PAPERCUSP_HOST_IMPORT_SMOKE_START");
     expect(result.retainedBundle).toBeNull();
+  });
+
+  it.each([undefined, "4"])("sets the arena cap before import and preserves a configured cap (%s)", arenaCap => {
+    const result = runSmoke(
+      `if (process.env.MALLOC_ARENA_MAX !== ${JSON.stringify(arenaCap ?? "2")}) throw new Error('launcher would re-exec');\n` +
+        "console.log('PAPERCUSP_HOST_IMPORT_SMOKE_OK');\n",
+      3,
+      arenaCap,
+    );
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.smokeEvidence).toMatchObject({ exitCode: 0, outcome: "passed" });
+    expect(result.smokeOutput).not.toContain("launcher would re-exec");
   });
 
   it("surfaces a module-init ReferenceError before the Tauri launch", () => {

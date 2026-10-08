@@ -1396,7 +1396,11 @@ smoke_verifier_operator_host() {
   # The preload runs before Node parses/evaluates the large entry bundle. Stream
   # it to durable phase evidence: a deadline kill must not erase the last stage
   # or the exact bytes that failed when source-snapshot cleanup runs below.
-  timeout --signal=TERM --kill-after=1s "${timeout_sec}s" \
+  # Set the maintained allocator cap before exec. Otherwise boot-malloc-arena
+  # re-executes after loading the graph, paying the import cost twice inside
+  # this same deadline. Preserve an explicitly configured cap.
+  MALLOC_ARENA_MAX="${MALLOC_ARENA_MAX:-2}" \
+    timeout --signal=TERM --kill-after=1s "${timeout_sec}s" \
     node --import='data:text/javascript,import{writeSync}from"node:fs";writeSync(2,"PAPERCUSP_HOST_IMPORT_SMOKE_START\n")' \
     "$OPERATOR_HOST_BUNDLE" --papercusp-import-smoke \
     >"$evidence_dir/output.log" 2>&1 || smoke_rc=$?
