@@ -40,7 +40,7 @@ function incomplete(
   };
 }
 
-function phaseTimingDiagnostics(rows: readonly unknown[]): Record<string, unknown> | undefined {
+export function coordSendPhaseTimingDiagnostics(rows: readonly unknown[]): Record<string, unknown> | undefined {
   const phaseTimings = rows.flatMap((value, itemIndex) => {
     const row = asRecord(value);
     const timing = asRecord(row?.phaseTimingsMs);
@@ -73,7 +73,7 @@ export function coordSendAbortCompletionReceipt(
   const recordedIds: string[] = [];
   const unresolvedRows: number[] = [];
   const rows = payload.results as unknown[];
-  const diagnostics = phaseTimingDiagnostics(rows);
+  const diagnostics = coordSendPhaseTimingDiagnostics(rows);
   rows.forEach((value, index) => {
     const row = asRecord(value);
     if (!row) {

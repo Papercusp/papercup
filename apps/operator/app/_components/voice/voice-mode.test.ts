@@ -79,15 +79,16 @@ beforeEach(() => {
 });
 
 describe('output-only original reading', () => {
-  async function fixture(run: (mod: typeof import('./voice-mode'), audio: Array<{ currentTime: number; play: ReturnType<typeof vi.fn>; pause: ReturnType<typeof vi.fn>; onended: (() => void) | null }>, setFetch: (impl: () => Promise<Response>) => void) => Promise<void>) {
+  async function fixture(run: (mod: typeof import('./voice-mode'), audio: Array<{ currentTime: number; playbackRate: number; play: ReturnType<typeof vi.fn>; pause: ReturnType<typeof vi.fn>; onended: (() => void) | null }>, setFetch: (impl: () => Promise<Response>) => void) => Promise<void>) {
     const mod = await import('./voice-mode');
     const prefs = await import('./voice-prefs-client');
     const leader = await import('./voice-leader');
     const leaderSpy = vi.spyOn(leader, 'getVoiceLeaderState').mockReturnValue({ ...leader.getVoiceLeaderState(), available: true, isLeader: true });
     const previous = prefs.loadVoicePrefsClient();
+    const configBefore = mod.getVoiceConfig();
     prefs.setVoicePrefsClient({ ...previous, ttsEngine: 'kokoro' });
     mod.stopReading(); mod.setVoiceOutputMuted(false);
-    const audios: Array<{ currentTime: number; play: ReturnType<typeof vi.fn>; pause: ReturnType<typeof vi.fn>; onended: (() => void) | null }> = [];
+    const audios: Array<{ currentTime: number; playbackRate: number; play: ReturnType<typeof vi.fn>; pause: ReturnType<typeof vi.fn>; onended: (() => void) | null }> = [];
     const originalFetch = globalThis.fetch;
     const originalAudio = globalThis.Audio;
     const create = URL.createObjectURL; const revoke = URL.revokeObjectURL;
@@ -104,19 +105,25 @@ describe('output-only original reading', () => {
     ];
     globalThis.fetch = vi.fn(async () => new Response(records.map(record => JSON.stringify(record)).join('\n') + '\n'));
     try { await run(mod, audios, impl => { globalThis.fetch = vi.fn(impl); }); }
-    finally { mod.stopReading(); leaderSpy.mockRestore(); prefs.setVoicePrefsClient(previous); globalThis.fetch = originalFetch; globalThis.Audio = originalAudio; URL.createObjectURL = create; URL.revokeObjectURL = revoke; }
+    finally { mod.stopReading(); mod.updateVoiceConfig(configBefore); leaderSpy.mockRestore(); prefs.setVoicePrefsClient(previous); globalThis.fetch = originalFetch; globalThis.Audio = originalAudio; URL.createObjectURL = create; URL.revokeObjectURL = revoke; }
   }
 
   it('pauses/resumes the same audio position, then plays the tail once with voice mode off', async () => {
     await fixture(async (mod, audio) => {
       const before = mod.getVoiceState().mode;
+      mod.updateVoiceConfig({ rate: 1.35 });
       const started = mod.startReading('FIRSTTAIL');
       await vi.waitFor(() => expect(audio).toHaveLength(1));
+      expect(audio[0].playbackRate).toBe(1.35);
       audio[0].currentTime = 3;
       mod.controlReading(started.readingId!, 'pause');
       expect(mod.getReadingState().status).toBe('paused');
       expect(audio[0].pause).toHaveBeenCalledTimes(1);
       expect(audio).toHaveLength(1);
+      // Subscription cleanup can run when React disconnects a hidden bridge.
+      mod.cancelAllSpeech({ preserveReading: true });
+      expect(mod.getReadingState().status).toBe('paused');
+      expect(audio[0].pause).toHaveBeenCalledTimes(1);
       mod.controlReading(started.readingId!, 'resume');
       expect(audio[0].currentTime).toBe(3);
       expect(audio[0].play).toHaveBeenCalledTimes(2);

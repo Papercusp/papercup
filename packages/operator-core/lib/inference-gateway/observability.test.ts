@@ -73,6 +73,7 @@ test('projectHeadroom — maps the unified window + queue into the read-model', 
   assert.equal(h.resetInSec, 3600);
   assert.equal(h.paused, false);
   assert.equal(h.queueDepth, 5);
+  assert.equal(h.admissionWindow, 24);
   assert.equal(h.healthyAccounts, 1);
   assert.deepEqual(h.byPriority, [{ priority: 100, count: 1 }, { priority: 0, count: 4 }]);
 });
@@ -101,6 +102,7 @@ test('projectHeadroom — Codex scope uses Codex admission and health, not Claud
   assert.equal(h.healthyAccounts, 1);
   assert.equal(h.inFlight, 1);
   assert.equal(h.queueDepth, 2);
+  assert.equal(h.admissionWindow, 4, 'the Codex live window must not inherit Claude concurrency');
   assert.deepEqual(h.byPriority, [{ priority: 0, count: 2 }]);
   assert.deepEqual(h.priorityTiers, {
     healthyAccounts: 1,

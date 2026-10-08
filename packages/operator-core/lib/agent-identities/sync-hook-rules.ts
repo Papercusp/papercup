@@ -427,6 +427,8 @@ export async function readAppliedWornRules(ownerId: string, workspaceId: string)
 /** What the wearer's APPLIED artifact pins, read once per revision pair. */
 export interface AppliedIdentityRules {
   readonly applied: { readonly specificationRevision: string; readonly stateRevision: string };
+  /** Exact package identities from this receipt, never current files. */
+  readonly packagePins: readonly Pick<PackageInput, 'packageKind' | 'ref' | 'revision' | 'contentHash'>[];
   readonly pins: WornRulePins;
   readonly sync: WornSyncRules;
   /**
@@ -480,6 +482,8 @@ export async function appliedIdentityRulesAt(
   const grants = artifact.configuration?.grants;
   const rules: AppliedIdentityRules = {
     applied: revision,
+    packagePins: artifact.inputs.filter((entry): entry is PackageInput => entry.kind === 'package')
+      .map(({ packageKind, ref, revision, contentHash }) => ({ packageKind, ref, revision, contentHash })),
     pins,
     sync: syncView(pins),
     declaredClassNeeds: grants ? [...new Set([...(grants.requires ?? []), ...(grants.optional ?? [])])].sort() : null,

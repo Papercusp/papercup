@@ -22,6 +22,28 @@ function restoreEnv(name: string, value: string | undefined): void {
 }
 
 describe('Playwright temporary allocation admission (EI-25339618434256268)', () => {
+  it('collects the ESM native collection entry and includes it in typechecking', () => {
+    const listing = execFileSync(process.execPath, [
+      require.resolve('@playwright/test/cli'), 'test', '--list',
+      'e2e/ongoing-work-native-collection.spec.mts', '--reporter=list',
+    ], { cwd: OPERATOR_DIR, encoding: 'utf8', timeout: 30000 });
+    expect(listing).toContain('native collection fixture writer graph loads');
+    expect(listing).toContain('native declared collections persist controls');
+    expect(listing).toMatch(/Total: 2 tests in 1 file/);
+    const tsconfig = readFileSync(join(OPERATOR_DIR, 'tsconfig.json'), 'utf8');
+    expect(tsconfig).toContain('"**/*.mts"');
+    const reporterPackage = JSON.parse(readFileSync(join(OPERATOR_DIR, 'test/reporters/package.json'), 'utf8'));
+    expect(reporterPackage.type).toBe('module');
+    const run = execFileSync(process.execPath, [
+      require.resolve('@playwright/test/cli'), 'test',
+      'e2e/ongoing-work-native-collection.spec.mts', '--workers=1',
+      '--grep', 'native collection fixture writer graph loads',
+    ], { cwd: OPERATOR_DIR, encoding: 'utf8', timeout: 30000,
+      env: { ...process.env, OPERATOR_E2E_REUSE_SERVER: '1', OPERATOR_E2E_SKIP_WARMUP: '1',
+        PAPERCUSP_DISABLE_TEST_RUNS_REPORTER: '0' } });
+    expect(run).toMatch(/1 passed/);
+  });
+
   const healthy = { type: 1, bsize: 4096, blocks: 1048576, bfree: 1048576, bavail: 1048576, files: 10000, ffree: 9000 };
 
   it('redirects parent profile and Chromium allocations from a full temp volume to a healthy cache', () => {

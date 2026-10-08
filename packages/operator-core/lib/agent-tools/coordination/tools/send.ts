@@ -104,7 +104,7 @@ import { resolveWorkspaceHiveScope, resolveSharedHiveDisambiguation } from '../f
 import { COORD_REPLY_ROLES } from '../roles';
 import { forceEndTurn } from '../../turn/interrupt';
 import { runBulk, bulkContent, type BulkEnvelope, type BulkItemResult } from '../../_bulk';
-import { coordSendAbortCompletionReceipt } from './send-abort-completion';
+import { coordSendAbortCompletionReceipt, coordSendPhaseTimingDiagnostics } from './send-abort-completion';
 import { cellTranscriptionHintResolvingCommits } from '../../../git-commit-resolver';
 import {
   messageBodyArg,
@@ -3445,6 +3445,16 @@ export default defineTool({
         },
       },
     );
+    // EI-25380637492003672: result replay expires and a caller can lose the
+    // response. Retain the same sanitized timings on the invocation ledger,
+    // including runBulk's ambiguous thrown-write rows. These are measurements,
+    // never evidence that a write landed; a broken observer must not fail a send.
+    try {
+      const diagnostics = coordSendPhaseTimingDiagnostics(env.results);
+      if (diagnostics) ctx.metadata?.(diagnostics);
+    } catch {
+      /* telemetry is independent of delivery */
+    }
     // RSR-P-008-B: stamp each delivered part with its place in the chunked message,
     // and summarise every chunked message on the envelope, so the sender can see
     // that one logical message became N rows (and which msg_id carries the ask).

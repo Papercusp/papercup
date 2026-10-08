@@ -378,6 +378,55 @@ afterEach(() => {
 });
 
 describe('coord:send handler (bulk keyed-array)', () => {
+  it('retains measured send phase timings in invocation metadata after the caller loses its result', async () => {
+    const metadata = vi.fn();
+    let now = 0;
+    vi.spyOn(performance, 'now').mockImplementation(() => now);
+    basedOnM.mockImplementationOnce(async () => { now += 17; return []; });
+    const append = sendM.getMockImplementation()!;
+    sendM.mockImplementationOnce(async (...args) => {
+      now += 23;
+      return append(...args);
+    });
+    idleM.mockImplementationOnce(async () => { now += 31; return { idle: [] }; });
+
+    const b = await bodyWithCtx({ to: ['bee-1'], summary: 'hi' }, { metadata });
+
+    expect(b.results[0].phaseTimingsMs).toEqual({ prePersistMs: 17, persistMs: 23, postPersistMs: 31 });
+    expect(metadata).toHaveBeenCalledWith({
+      coordSendPhaseTimingsMs: [{ itemIndex: 0, prePersistMs: 17, persistMs: 23, postPersistMs: 31 }],
+    });
+    expect(sendM).toHaveBeenCalledTimes(1);
+  });
+
+  it('retains failed and delivered item timings together without claiming an ambiguous write landed', async () => {
+    const metadata = vi.fn();
+    sendM.mockRejectedValueOnce(new Error('persist outcome unknown'));
+
+    const b = await bodyWithCtx({ items: [
+      { to: ['bee-1'], summary: 'first fails' },
+      { to: ['bee-2'], summary: 'second lands' },
+    ] }, { metadata });
+
+    expect(b.ok).toBe(false);
+    expect(metadata).toHaveBeenCalledWith({ coordSendPhaseTimingsMs: b.results.map(
+      (row: { phaseTimingsMs: unknown }, itemIndex: number) => ({ itemIndex, ...row.phaseTimingsMs as object }),
+    ) });
+    expect(tool.abortCompletionReceipt?.({}, {
+      content: [{ type: 'text', text: JSON.stringify(b) }],
+    }, { callId: 'call-metadata-mixed', toolName: 'coord:send' })?.status).toBe('recovery-incomplete');
+  });
+
+  it('a failed metadata sink never changes a persisted send result', async () => {
+    const metadata = vi.fn(() => { throw new Error('telemetry unavailable'); });
+
+    const b = await bodyWithCtx({ to: ['bee-1'], summary: 'hi' }, { metadata });
+
+    expect(b).toMatchObject({ ok: true, results: [{ ok: true, msg_id: 'm1' }] });
+    expect(metadata).toHaveBeenCalledWith({ coordSendPhaseTimingsMs: expect.any(Array) });
+    expect(sendM).toHaveBeenCalledTimes(1);
+  });
+
   it('single { to, summary } → one result self-describing its `to` + msg_id', async () => {
     const b = await body({ to: ['bee-1'], summary: 'hi' });
     expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });

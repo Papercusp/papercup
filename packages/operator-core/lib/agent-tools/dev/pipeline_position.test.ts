@@ -102,6 +102,30 @@ describe('dev:pipeline_position current-build test route selection', () => {
     });
   });
 
+  it('returns the maintained AWS candidate route while the current build is absent from main', async () => {
+    vi.mocked(gitPipelinePosition).mockResolvedValue(running);
+    const out = await tool.handler({
+      path: 'packages/operator-core/lib/workspace-host/aws-ami-production.ts',
+      testClass: 'aws-ami-candidate',
+    } as never, {} as never) as {
+      data: { currentBuildTestRoute?: {
+        readiness: string; runtime: string | null; route: string; routeFile: string;
+        prerequisites: string[]; isolation: string; verification: string;
+      } };
+    };
+    const route = out.data.currentBuildTestRoute;
+    expect(route).toMatchObject({ readiness: 'requires-prerequisites', runtime: null });
+    expect(route?.routeFile).toBe('apps/operator/lib/release/aws-ami-release-cli.ts');
+    expect(route?.route).toContain('workspace-host-clean-room-acceptance-cli.ts --input-file');
+    expect(route?.route).toContain('aws-ami-release-cli.ts --request-file');
+    expect(route?.prerequisites.join(' ')).toMatch(/persisted AWS publisher connection/i);
+    expect(route?.prerequisites.join(' ')).toMatch(/distinct clean-account role/i);
+    expect(route?.prerequisites.join(' ')).toMatch(/private SSM parameter prefix/i);
+    expect(route?.isolation).toMatch(/unique owned fixture/i);
+    expect(route?.verification).toMatch(/termination with zero residual resources/i);
+    expect(route?.verification).toMatch(/preflight alone is not cloud acceptance/i);
+  });
+
   it('rejects unknown classes rather than defaulting them to the release route', async () => {
     const out = await tool.handler({ path: PATH, testClass: 'anything' } as never, {} as never) as {
       data: { error: string; supportedClasses: string[] };

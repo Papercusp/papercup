@@ -4476,8 +4476,11 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // own slug (today's fallback, preserved for the non-hive-peered case).
       const policyScopeSlug = hiveHomeProjectionSlug ?? resolvedPotHomeSlug ?? opts.harnessSlug;
       markMergeStage('hive-policy');
+      // Policy-read failure must leave the pass unapplied and retryable. The
+      // outer merge_error handler records it; the next pass reads the policy
+      // again before any cursor advances. Only a successful null is permissive.
       const ownerPolicy: HivePolicy | null =
-        (await getHivePolicyCached(opts.workspaceId, policyScopeSlug).catch(() => null))?.policy ?? null;
+        (await getHivePolicyCached(opts.workspaceId, policyScopeSlug))?.policy ?? null;
       // Compose the single enforcement decorator EXACTLY as policy-admission.ts documents:
       // EN-2 rate (inner) wrapped by EN-4 ban → allowlist → takedown → content (outer),
       // over the CURRENT scopedApply (which `rekey` may have rebound). With no policy this
@@ -5810,6 +5813,22 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   ): Promise<AdmissionResult> {
     const decision = await onAnnounce(frame);
     if (decision.admit && ctx && scopeFederation) {
+      const identity = admittedIdentities.get(frame.log_core_key);
+      if (!identity?.channel2Verified) {
+        // A rostered DEVICE may replicate its base log without live GitHub
+        // I/O. That does not authenticate the USER it names in the announce.
+        // Private scope authority requires the receiver's uncached binding.
+        const hiveHome = hiveHomeProjectionSlug ?? resolvedPotHomeSlug;
+        const { resolveGithubUserIdForDevicePubkey } = await loadHiveMemberIdentitySetModule();
+        const receiverUserId = hiveHome
+          ? await resolveGithubUserIdForDevicePubkey(opts.workspaceId, hiveHome, frame.device_pubkey)
+            .catch(() => null)
+          : null;
+        if (receiverUserId == null || receiverUserId !== frame.github_user_id) {
+          recordBootEvent(opts.workspaceId, opts.harnessSlug, 'announce_rejected', 'scoped-user-binding-unverified');
+          return decision;
+        }
+      }
       void scopeFederation.onPeerAnnounce(frame, ctx).catch(() => {});
     }
     return decision;

@@ -330,7 +330,7 @@ export function VoiceAppBridge(): null {
     return () => {
       unsubState();
       unsubUtterance();
-      cancelAllSpeech();
+      cancelAllSpeech({ preserveReading: true });
     };
   }, []);
 

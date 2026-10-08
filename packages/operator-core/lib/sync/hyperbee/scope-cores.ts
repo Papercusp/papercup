@@ -16,8 +16,9 @@
  *   - The ONLY fail-closed serve primitive on public APIs: an EXPLICIT
  *     per-core×connection attach — `session.replicate(muxer)` (a Protomux
  *     instance routes to `_attachToMuxer` → `core.replicator.attachTo(mux)` and
- *     registers NO ondiscoverykey) — and `session.replicator.detachFrom(mux)`
- *     to stop serving NOW. With no lazy path registered for the scoped store,
+ *     registers NO ondiscoverykey). Revocation unpairs the replicator AND closes
+ *     its live per-core channels: detachFrom alone leaves open peers serving.
+ *     With no lazy path registered for the scoped store,
  *     an unattached (or detached) scoped core is structurally UNSERVABLE on
  *     that connection, no matter who knows its key. That IS the §5.3 gate.
  *
@@ -48,8 +49,8 @@ export function ownScopeLogName(scope: ScopeId): string {
 /**
  * Minimal structural view of a corestore SESSION (hypercore) — the bits the
  * registry touches. `replicate(mux)` with a Protomux instance attaches the core
- * to that muxer (hypercore index.js `_attachToMuxer`); `replicator.detachFrom`
- * stops serving it there. Narrowed at the boundary (peer-log.ts convention) so
+ * to that muxer (hypercore index.js `_attachToMuxer`); revocation also closes
+ * matching live peers. Narrowed at the boundary (peer-log.ts convention) so
  * unit tests run on fakes.
  */
 export interface ScopedSessionLike {
@@ -58,6 +59,8 @@ export interface ScopedSessionLike {
   replicate(mux: object): unknown;
   readonly key: Buffer;
   readonly writable: boolean;
+  /** Hypercore's live peers. Unpairing alone does not close their channels. */
+  readonly peers?: ReadonlyArray<{ protomux: object; channel: { close(): void } }>;
   /** hypercore session replicator accessor — used for detach + attached(). */
   readonly replicator?: {
     attached(mux: object): boolean;
@@ -270,11 +273,16 @@ export class ScopeCoreRegistry {
 
   private detachSafely(session: ScopedSessionLike, mux: object): void {
     try {
-      if (session.replicator && session.replicator.attached(mux)) {
-        session.replicator.detachFrom(mux);
+      // detachFrom removes future pairing; it does not close an existing
+      // hypercore/alpha channel. Close only this core's peers on this mux,
+      // preserving every unrelated public/scope channel on the connection.
+      session.replicator?.detachFrom(mux);
+      for (const peer of [...(session.peers ?? [])]) {
+        if (peer.protomux === mux) peer.channel.close();
       }
     } catch {
-      // best-effort — a dead muxer/core can't block the revocation sweep
+      // A failed channel cut must not leave private serving alive.
+      (mux as { stream?: { destroy(): void } }).stream?.destroy();
     }
   }
 }

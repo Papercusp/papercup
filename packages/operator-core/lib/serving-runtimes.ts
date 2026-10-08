@@ -246,6 +246,23 @@ export const CURRENT_BUILD_TEST_CLASSES = [
     readiness: 'requires-prerequisites',
   },
   {
+    id: 'aws-ami-candidate',
+    source: 'canonical staging CLI with a digest-bound bootc candidate and trusted release evidence',
+    runtime: null,
+    route: 'npx tsx apps/operator/lib/release/workspace-host-clean-room-acceptance-cli.ts --input-file <clean-room-input.json>, then npx tsx apps/operator/lib/release/aws-ami-release-cli.ts --request-file <release-request.json> --json',
+    routeFile: 'apps/operator/lib/release/aws-ami-release-cli.ts',
+    isolation: 'Unique owned fixture and AWS resources in publisher/clean accounts; disposable boot instances and snapshots require teardown. Neither :3170 nor the desktop shell executes this candidate.',
+    prerequisites: [
+      'Exact candidate disk/hash, build manifest, supply-chain evidence and trusted release request',
+      'Persisted AWS publisher connection and distinct clean-account role with scoped EC2/SSM/KMS permissions',
+      'Pinned coldsnap plus maintained AWS AMI scan and clean-account canary executables',
+      'Unique fixture/resource ownership, retained diagnostics and explicit teardown assertion',
+      'Private SSM parameter prefix for test publication, or authorization to update the intended release pins',
+    ],
+    verification: 'Passed exact clean-room report and fresh trusted image scan; encrypted/sharing inspection; distinct-account boot, healthy bootstrap and service, termination with zero residual resources; exact manifest identity and intended pins. Local preflight alone is not cloud acceptance.',
+    readiness: 'requires-prerequisites',
+  },
+  {
     id: 'candidate-install-upgrade',
     source: 'packaged current-build candidate, not the :3170 service',
     runtime: 'desktop-shell',

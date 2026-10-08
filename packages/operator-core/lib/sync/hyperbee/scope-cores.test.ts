@@ -1,6 +1,7 @@
 /**
  * scope-cores.test.ts — P-108 / P-006 §5.1+§5.3: the scoped-core registry and
- * the serve-side roster gate, over fake store/muxer seams (no network, no PG).
+ * the serve-side roster gate. Unit cases use fake store/muxer seams; the
+ * transport case uses real Corestores and encrypted replication streams.
  *
  * The load-bearing properties under test (design FS-D1/FS-D6, D-017):
  *   - serving is EXPLICIT per-core×connection attach, gated by a
@@ -17,6 +18,10 @@
  */
 import { describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
+import Corestore from 'corestore';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   ScopeCoreRegistry,
   ownScopeLogName,
@@ -28,6 +33,66 @@ import type { ScopedLogDisclosure } from './scope-disclosure';
 
 const SCOPE_A: ScopeId = { kind: 'fleet', ownerGithubUserId: 42, slug: 'widgets' };
 const SCOPE_B: ScopeId = { kind: 'fleet', ownerGithubUserId: 77, slug: 'gadgets' };
+
+describe('private scoped-core transport isolation', () => {
+  it('a known key cannot read a non-member scope or new blocks after revocation on a working connection', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'scope-read-isolation-'));
+    const main = new Corestore(join(dir, 'main'));
+    const scoped = new Corestore(join(dir, 'scoped'));
+    const peer = new Corestore(join(dir, 'peer'));
+    type Core = {
+      ready(): Promise<void>; key: Buffer;
+      append(value: unknown): Promise<void>;
+      get(index: number, opts: { timeout: number }): Promise<unknown>;
+    };
+    type Stream = {
+      noiseStream: { userData: object };
+      pipe(other: Stream): Stream;
+      destroy(): void;
+    };
+    let serving: Stream | undefined;
+    let fetching: Stream | undefined;
+    try {
+      await Promise.all([main.ready(), scoped.ready(), peer.ready()]);
+      const registry = new ScopeCoreRegistry(scoped as unknown as ScopedStoreLike);
+      const { keyHex } = await registry.ensureOwnScopeCore(SCOPE_A);
+      const secret = scoped.get({ name: ownScopeLogName(SCOPE_A), valueEncoding: 'json' }) as Core;
+      const publicCore = main.get({ name: 'public-control', valueEncoding: 'json' }) as Core;
+      await Promise.all([secret.ready(), publicCore.ready()]);
+      await secret.append({ private: 'before-revocation' });
+      await publicCore.append({ public: 1 });
+      const secretReplica = peer.get({ key: Buffer.from(keyHex, 'hex'), valueEncoding: 'json' }) as Core;
+      const publicReplica = peer.get({ key: publicCore.key, valueEncoding: 'json' }) as Core;
+      await Promise.all([secretReplica.ready(), publicReplica.ready()]);
+      // Only the MAIN store gets automatic discovery-key serving. The private
+      // store is reached solely through the registry's per-core attach gate.
+      serving = main.replicate(true) as Stream;
+      fetching = peer.replicate(false) as Stream;
+      serving.pipe(fetching).pipe(serving);
+      const mux = serving.noiseStream.userData;
+      let member = false;
+      const isMember = () => member;
+      expect(await publicReplica.get(0, { timeout: 5000 })).toEqual({ public: 1 });
+      expect(await registry.serveScopeOnConnection(mux, SCOPE_A, 777, isMember)).toMatchObject({ ok: false, attached: 0 });
+      await expect(secretReplica.get(0, { timeout: 500 })).rejects.toMatchObject({ code: 'REQUEST_TIMEOUT' });
+
+      member = true;
+      expect(await registry.serveScopeOnConnection(mux, SCOPE_A, 777, isMember)).toMatchObject({ ok: true, attached: 1 });
+      expect(await secretReplica.get(0, { timeout: 5000 })).toEqual({ private: 'before-revocation' });
+
+      member = false;
+      expect(await registry.serveScopeOnConnection(mux, SCOPE_A, 777, isMember)).toMatchObject({ ok: false, attached: 0 });
+      await secret.append({ private: 'after-revocation' });
+      await expect(secretReplica.get(1, { timeout: 500 })).rejects.toMatchObject({ code: 'REQUEST_TIMEOUT' });
+      await publicCore.append({ public: 2 });
+      expect(await publicReplica.get(1, { timeout: 5000 })).toEqual({ public: 2 });
+    } finally {
+      serving?.destroy(); fetching?.destroy();
+      await Promise.all([main.close(), scoped.close(), peer.close()]);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
 
 class FakeSession implements ScopedSessionLike {
   readonly key: Buffer;

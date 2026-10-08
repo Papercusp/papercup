@@ -43,6 +43,7 @@ import {
   PG_URL_ENV_VARS,
 } from '../../../scripts/lib/pg-url.mjs';
 import { formatExportLines, parseArgs, shellSingleQuote } from '../../../scripts/pg-url.mjs';
+import { _resetHarnessAdminUrlCacheForTests } from './embedded-pg-discovery';
 
 const REPO_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 const SCRIPTS_DIR = join(REPO_ROOT, 'scripts');
@@ -134,6 +135,27 @@ describe('applyEnvLocal', () => {
 });
 
 describe('resolveScriptPgUrl', () => {
+  it('uses the supplied operator environment root rather than the ambient desktop database', () => {
+    // EI-25408245982858894: maintenance must name the managed operator's root.
+    // The repository-root file may have no pin while a desktop discovery file
+    // points at a different, healthy cluster. Resolve through the real chain.
+    const root = mkdtempSync(join(tmpdir(), 'pg-url-operator-root-'));
+    const operatorUrl = 'postgresql://operator:fixture@127.0.0.1:22223/operator-store';
+    writeFileSync(join(root, '.env.local'), `DATABASE_URL=${operatorUrl}\n`);
+    for (const name of [...PG_URL_ENV_VARS, ...PG_ISOLATION_ENV_VARS]) vi.stubEnv(name, undefined);
+    _resetHarnessAdminUrlCacheForTests();
+    try {
+      const resolved = resolveScriptPgUrl({ root });
+      expect(resolved.url).toBe(operatorUrl);
+      expect(resolved.source).toBe('env');
+      expect(resolved.via).toBe('DATABASE_URL');
+      expect(resolved.envLocal.applied).toEqual(['DATABASE_URL']);
+    } finally {
+      vi.unstubAllEnvs();
+      _resetHarnessAdminUrlCacheForTests();
+    }
+  });
+
   it('resolves PAPERCUSP_PG_PORT to that port instead of falling through to 5432', () => {
     // The divergence from getHarnessAdminUrl() documented on the helper: its native
     // fallback hardcodes 5432, so falling through would send an isolated run at the

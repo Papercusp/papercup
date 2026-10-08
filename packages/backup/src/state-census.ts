@@ -21,6 +21,8 @@ export interface CensusDeclaration extends CensusEntry {
   prune?: boolean;
   /** Policy-owned directory names can occur inside any producer subtree. */
   anyDepth?: boolean;
+  /** Preserve the whole owned DB storage root; this never marks it disposable. */
+  databaseStorage?: { systemIdentifier: string; evidenceRef: string };
 }
 
 /** Snapshot coverage is separate evidence, never a substitute for state ownership. */
@@ -120,6 +122,13 @@ export async function collectStateCensus(input: {
   const maxEntries = input.maxEntries ?? 100_000;
   if (!Number.isSafeInteger(maxEntries) || maxEntries < 1) throw new Error('Invalid census entry bound');
   for (const declaration of input.declarations) {
+    if (declaration.databaseStorage && (declaration.kind !== 'path' ||
+      declaration.classification !== 'state' || declaration.descendants !== true ||
+      declaration.anyDepth || declaration.prune ||
+      !/^\d+$/.test(declaration.databaseStorage.systemIdentifier) ||
+      !declaration.databaseStorage.evidenceRef.trim())) {
+      throw new Error('Database storage requires exact state ownership and measured identity evidence');
+    }
     if (declaration.prune && (declaration.kind !== 'path' ||
       declaration.descendants !== true ||
       !['cache', 'dev-only'].includes(declaration.classification))) {
@@ -129,6 +138,7 @@ export async function collectStateCensus(input: {
   const ids = input.roots.map(root => root.id);
   if (new Set(ids).size !== ids.length) throw new Error('Duplicate census root identity');
   const entries: CensusEntry[] = [];
+  const representedStorage: Array<CensusEntry & { systemIdentifier: string; evidenceRef: string; disposition: 'preserve-state-subtree' }> = [];
   async function walk(root: CensusRoot, parent: string): Promise<void> {
     const children = await readdir(join(root.path, parent), { withFileTypes: true });
     for (const child of children) {
@@ -140,13 +150,22 @@ export async function collectStateCensus(input: {
       // A conflicting producer must not hide its descendants from drift checks.
       const prune = owners.length > 0 && owners.every(owner => owner.prune === true) &&
         new Set(owners.map(owner => owner.classification)).size === 1;
-      if (child.isDirectory() && !prune) await walk(root, name);
+      const storage = owners.find(owner => owner.name === name && owner.databaseStorage);
+      const nestedOverride = input.declarations.some(declaration => declaration.root === root.id &&
+        declaration.name.startsWith(`${name}/`));
+      const represented = child.isDirectory() && storage?.databaseStorage && !nestedOverride &&
+        owners.every(owner => owner.classification === 'state');
+      if (represented && storage?.databaseStorage) {
+        representedStorage.push({ kind: 'path', root: root.id, name, ...storage.databaseStorage,
+          disposition: 'preserve-state-subtree' });
+      }
+      if (child.isDirectory() && !prune && !represented) await walk(root, name);
     }
   }
   for (const root of input.roots) await walk(root, '');
   entries.push(...await input.readCatalogs());
   if (entries.length > maxEntries) throw new Error(`Census entry bound exceeded: ${maxEntries}`);
-  return generateStateCensus(entries, input.declarations);
+  return { ...generateStateCensus(entries, input.declarations), representedStorage };
 }
 
 /** Collect and validate in one call; consumers cannot accidentally ignore residue. */

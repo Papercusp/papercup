@@ -10,6 +10,20 @@ const declaration: CensusDeclaration = {
 };
 
 describe('producer-derived state census', () => {
+  it('represents measured database storage as preserved state, not a disposable cache', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'pg-census-'));
+    try {
+      await mkdir(join(root, 'pg'));
+      await writeFile(join(root, 'pg', 'binary-storage'), 'fixture');
+      const census = await collectStateCensus({ roots: [{ id: 'home', path: root }],
+        declarations: [{ kind: 'path', root: 'home', name: 'pg', classification: 'state', producer: 'postgres',
+          descendants: true, databaseStorage: { systemIdentifier: '123', evidenceRef: 'fixture:pg-control' } }],
+        maxEntries: 1, readCatalogs: async () => [],
+      });
+      expect(census.ok).toBe(true);
+      expect(census.representedStorage[0]).toMatchObject({ name: 'pg', disposition: 'preserve-state-subtree' });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
   it('keeps snapshot evidence fail-closed and separate from ownership classification', () => {
     const entries = [{ kind: 'database' as const, root: 'postgres-cluster:123', name: 'app' }];
     const report = databaseCensusSnapshotCoverage({ entries, systemIdentifier: '123', status: null, nowEpoch: 1000 });

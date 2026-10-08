@@ -76,7 +76,7 @@ describe('runtime selection', () => {
   it('keeps pre-release route gaps explicit instead of claiming :3170 covers every class', () => {
     expect(CURRENT_BUILD_TEST_CLASSES.map(({ id }) => id)).toEqual([
       'unit-integration', 'operator-api', 'background-federation', 'migration',
-      'desktop-native', 'multi-machine-p2p-git', 'candidate-install-upgrade', 'final-release',
+      'desktop-native', 'multi-machine-p2p-git', 'aws-ami-candidate', 'candidate-install-upgrade', 'final-release',
     ]);
     expect(CURRENT_BUILD_TEST_CLASSES.filter(({ readiness }) => readiness === 'gap').map(({ id }) => id))
       .toEqual(['candidate-install-upgrade']);

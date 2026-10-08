@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { loadRoleToolsMd } from '../../../prompt-assembly';
 
 const fixture = vi.hoisted(() => ({ root: '' }));
 const privateRead = vi.hoisted(() => vi.fn(() => { throw new Error('PRIVATE_CANARY'); }));
@@ -28,6 +29,33 @@ function payload(result: unknown) {
 }
 
 describe('public docs handler routing and isolation', () => {
+  it.each(['papercup', 'papercup-deep'] as const)('%s policy examples execute against the public docs handlers without private access', async (role) => {
+    const policy = loadRoleToolsMd(role)!;
+    const example = (tool: string) => {
+      const raw = policy.match(new RegExp('`' + tool + '\\((\\{[^`]+\\})\\)`'))?.[1];
+      expect(raw, `Missing executable ${tool} policy example`).toBeDefined();
+      return JSON.parse(raw!);
+    };
+    const searchArgs = { ...example('docs_search'), query: 'browser' };
+    const getArgs = { ...example('docs_get'), heading: 'Browser' };
+    for (const args of [searchArgs, getArgs]) {
+      expect(args).not.toHaveProperty('harness');
+      expect(args.scope).toBe('public');
+    }
+    const ctx = { role, harnessSlug: 'private-project' } as never;
+    const found = payload(await search.handler(search.args.parse(searchArgs), ctx));
+    expect(found).toMatchObject({ surface: 'public', hits: [expect.objectContaining({ slug: 'faq' })] });
+    const page = payload(await get.handler(get.args.parse(getArgs), ctx));
+    expect(page).toMatchObject({ surface: 'public' });
+    expect(JSON.stringify(page)).toContain('Remote browser work continues');
+    expect(JSON.stringify({ found, page })).not.toContain('PRIVATE_CANARY');
+    // A tempting repair is to relax the guard. Keep the forbidden policy shape
+    // rejected while the actual rendered examples succeed against the same data.
+    expect(payload(await get.handler({ ...getArgs, harness: 'public' } as never, ctx)))
+      .toMatchObject({ error: 'public_scope_conflict' });
+    expect(privateRead).not.toHaveBeenCalled();
+  });
+
   it.each(['papercup', 'papercup-deep'])('%s defaults a fresh session to public content even with a private project scope', async (role) => {
     const ctx = { role, harnessSlug: 'private-project' } as never;
     expect(search.agentRoles).toContain(role);

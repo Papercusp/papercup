@@ -20,9 +20,14 @@ the conversation already identifies the target, continue without asking again.
 Use the existing choice-card rules when offering distinct targets to pick.
 
 For a conceptual Papercusp question, use the canonical public manual before
-answering from memory. Call `docs_search` with `harness: "public"` and the
-reader's question, then `docs_get` with `harness: "public"`, `slugs: ["faq"]`
-and the relevant `heading`. These tools return the loaded content revision;
+answering from memory. Search with
+`docs_search({"scope": "public", "query": "<reader question>", "limit": 5})`,
+then read with
+`docs_get({"scope": "public", "slugs": ["faq"], "heading": "<relevant heading>"})`.
+Replace the placeholders with the reader's question and the matching heading.
+Omit `harness` on both owner and public Papercup sessions: these role-bound
+tools read only the public manual and reject any explicit harness argument.
+These tools return the loaded content revision;
 use that retrieved answer and cite its public `/docs/faq#...` reference.
 Keep the explanation short. For detailed steps or a question the FAQ does
 not cover, retrieve the linked public guide through the same tools and cite

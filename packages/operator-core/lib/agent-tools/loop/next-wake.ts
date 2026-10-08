@@ -66,6 +66,9 @@ export type LoopNextWakeInput =
           LoopStatus,
           | 'lastWakeStatus'
           | 'lastWakeError'
+          | 'lastWakeChannel'
+          | 'lastWakeAt'
+          | 'lastLoopTurnAt'
           | 'lastDeliveryOutcome'
           | 'lastFiredAt'
           | 'lastFailedFireLoopTurnCompletedAt'
@@ -146,6 +149,25 @@ export function classifyLoopNextWake(
   // P-013 / EI-24023838400909760: the last fire parked undelivered — the next one on the
   // same delivery path is expected to park too, so this loop does not guarantee a wake.
   if (lastLoopFireParked(loop)) return { guaranteed: false, reason: 'last-fire-parked' };
+
+  // EI-25407823334233635: inbox-watermark suppression never runs a loop iteration.
+  // A manual routine fire can replace the reconciler's failure with `queued` before
+  // that suppressed delivery becomes a turn. Read the durable delivery clock too,
+  // so enqueue/arm metadata cannot erase the failure. Only a later authored loop
+  // turn proves recovery; owner activity and a malformed/missing clock do not.
+  if (loop.lastWakeStatus === 'delivered' && loop.lastWakeChannel === 'suppressed-redundant') {
+    const wakeAtMs = loop.lastWakeAt == null ? Number.NaN : Date.parse(loop.lastWakeAt);
+    const firedAtMs = loop.lastFiredAt == null ? Number.NaN : Date.parse(loop.lastFiredAt);
+    const completedAtMs = loop.lastLoopTurnAt == null ? Number.NaN : Date.parse(loop.lastLoopTurnAt);
+    if (
+      !Number.isFinite(wakeAtMs) ||
+      !Number.isFinite(firedAtMs) ||
+      !Number.isFinite(completedAtMs) ||
+      completedAtMs <= Math.max(wakeAtMs, firedAtMs)
+    ) {
+      return { guaranteed: false, reason: 'last-fire-no-loop-turn' };
+    }
+  }
 
   // EI-24609463764219558: a delivered wake can still fail to produce a model turn. The
   // reconciler records this exact outcome only after its bounded grace found no

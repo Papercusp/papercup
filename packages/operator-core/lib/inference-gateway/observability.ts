@@ -38,6 +38,9 @@ export interface GatewayHeadroom {
   /** Queue: how many bee requests are forwarding now vs waiting for a slot. */
   inFlight?: number;
   queueDepth?: number;
+  /** The provider queue's live adaptive concurrency window, from admission.maxConcurrent.
+   * Tier minShare values reserve service; they do not cap spare provider capacity. */
+  admissionWindow?: number;
   /** Per-priority queue breakdown (queen/interactive vs batch). */
   byPriority?: { priority: number; count: number }[];
   /** Pool-wide count of accounts that can serve a request RIGHT NOW (the `GatewayStats.healthyAccounts`
@@ -116,6 +119,7 @@ export function projectHeadroom(
     paused: provider === 'claude' ? stats.pausedUntil > now : undefined,
     inFlight: admission?.running,
     queueDepth: admission?.queued,
+    admissionWindow: admission?.maxConcurrent,
     healthyAccounts: Number.isFinite(healthyAccounts) ? healthyAccounts : undefined,
     byPriority: admission?.byPriority,
     priorityTiers,
