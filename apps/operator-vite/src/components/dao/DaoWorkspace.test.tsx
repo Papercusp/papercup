@@ -18,7 +18,10 @@ vi.mock('nuqs', () => ({
 vi.mock('@/app/_components/RouteLink', () => ({ default: ({ href, children }: { href: string; children: React.ReactNode }) => <a href={href}>{children}</a> }));
 const community: DaoDirectoryEntry = { potId: 'builders', title: 'Builders DAO', description: 'Build public infrastructure', owner: 'Founder', visibility: 'public', memberLinks: ['papercusp://harness?topic=project'], memberTopics: ['project'], memberCount: 1 };
 
-beforeEach(() => { data = [community]; initialDao = ''; initialSection = 'directory'; queryError = null; invalidate.mockReset(); });
+beforeEach(() => {
+  data = [community]; initialDao = ''; initialSection = 'directory'; queryError = null; invalidate.mockReset();
+  vi.stubGlobal('fetch', vi.fn().mockImplementation(async (url: string) => ({ ok: true, json: async () => ({ workspace: { directoryId: new URL(url, 'http://local').searchParams.get('potId'), localHomeSlug: null, status: 'not-joined' } }) })));
+});
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 describe('DAO Workbench journeys', () => {
@@ -53,9 +56,9 @@ describe('DAO Workbench journeys', () => {
     expect((screen.getByRole('button', { name: 'Join organization' }) as HTMLButtonElement).disabled).toBe(true);
     fireEvent.click(screen.getByRole('checkbox'));
     fireEvent.click(screen.getByRole('button', { name: 'Join organization' }));
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
-    expect(fetchMock.mock.calls[0][0]).toBe('/api/discovery/join-pot');
-    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ potId: 'builders', title: 'Builders DAO', memberLinks: community.memberLinks });
+    await waitFor(() => expect(fetchMock.mock.calls.filter(call => call[0] === '/api/discovery/join-pot')).toHaveLength(1));
+    const joinCall = fetchMock.mock.calls.find(call => call[0] === '/api/discovery/join-pot')!;
+    expect(JSON.parse(joinCall[1].body)).toEqual({ potId: 'builders', title: 'Builders DAO', memberLinks: community.memberLinks });
     await waitFor(() => expect(screen.getByRole('status').textContent).toContain('Joined builders'));
   });
   it('keeps publisher entries without links ineligible for joining', () => {
@@ -71,5 +74,22 @@ describe('DAO Workbench journeys', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Join organization' }));
     await waitFor(() => expect(screen.getByRole('status').textContent).toContain('Admission rejected'));
     expect((screen.getByRole('button', { name: 'Join organization' }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('shows a verified membership roster through the bound organization reader', async () => {
+    initialDao = community.potId; initialSection = 'members';
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ workspace: { directoryId: community.potId, localHomeSlug: 'renamed-home', status: 'connected', members: { status: 'ready', value: [{ id: 1, username: 'person', displayName: 'Contributor', bindingStatus: 'bound', devices: 2 }] } } }) }));
+    render(<DaoWorkspace />);
+    expect(await screen.findByRole('row', { name: /Contributor.*person.*bound.*2/ })).toBeTruthy();
+    expect(screen.getByRole('table').textContent).toContain('bound');
+    expect(screen.getByRole('link', { name: 'Open contributor work' }).getAttribute('href')).toContain('slug=renamed-home');
+  });
+
+  it('refuses a response for a different DAO instead of leaking its records', async () => {
+    initialDao = community.potId; initialSection = 'members';
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ workspace: { directoryId: 'other', localHomeSlug: 'other-home', status: 'connected' } }) }));
+    render(<DaoWorkspace />);
+    expect((await screen.findByRole('alert')).textContent).toContain('Unable to read this organization');
+    expect(screen.queryByText('Admitted contributors')).toBeNull();
   });
 });

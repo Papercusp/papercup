@@ -30,6 +30,20 @@
 .dao-overview-grid { display:grid; grid-template-columns:2fr 1fr 1fr; gap:16px; }
 .dao-stat { display:block; font-size:36px; margin:16px 0; }
 .dao-meta { color:var(--fg-mute); font-size:11px; }
+.dao-actions { display:flex; flex-wrap:wrap; gap:8px; }
+.dao-table-wrap { overflow-x:auto; }
+.dao-table-wrap table { width:100%; border-collapse:collapse; font-size:12px; text-align:left; }
+.dao-table-wrap th,.dao-table-wrap td { padding:12px; border-bottom:1px solid var(--border); }
+.dao-table-wrap th { color:var(--fg-mute); font-weight:500; }
+.dao-table-wrap small,.dao-plan-list small { display:block; color:var(--fg-mute); margin-top:5px; }
+.dao-plan-list { list-style:none; padding:0; font-size:12px; }
+.dao-plan-list li { padding:12px 0; border-bottom:1px solid var(--border); }
+.dao-plan-list a { color:var(--accent); }
+.dao-decision-list article { border-top:1px solid var(--border); padding:16px 0; }
+.dao-decision-list h3 { font-size:14px; overflow-wrap:anywhere; }
+.dao-workspace details { margin:16px 0; font-size:12px; }
+.dao-workspace pre { white-space:pre-wrap; overflow-wrap:anywhere; font-size:11px; }
+.dao-workspace code { overflow-wrap:anywhere; }
 .dao-check { display:flex; align-items:flex-start; gap:8px; margin:20px 0; font-size:13px; }
 .dao-evidence { margin-top:25px; border-top:1px solid var(--border); padding-top:18px; max-width:720px; }
 .dao-evidence h2 { font-size:12px; margin:0; }

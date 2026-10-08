@@ -1,8 +1,10 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import type { DaoWorkspaceView } from '@papercusp/operator-core/lib/dao-workspace-types';
 import { parseAsString, useQueryState } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
 import RouteLink from '@/app/_components/RouteLink';
 import { DAO_SECTIONS, daoSection, filterDaos, type DaoDirectoryEntry } from './dao-navigation';
+import DaoWorkspaceDetails from './DaoWorkspaceDetails';
 import './dao-workspace.css';
 
 export default function DaoWorkspace() {
@@ -17,7 +19,33 @@ export default function DaoWorkspace() {
   const [joining, setJoining] = useState(false);
   const [notice, setNotice] = useState('');
   const [acceptedTerms, setAcceptedTerms] = useState(false);
+  const [refreshVersion, setRefreshVersion] = useState(0);
+  const [workspace, setWorkspace] = useState<DaoWorkspaceView | null>(null);
+  const [workspaceLoading, setWorkspaceLoading] = useState(false);
+  const [workspaceError, setWorkspaceError] = useState('');
   const filtered = useMemo(() => filterDaos(rows, query), [rows, query]);
+
+  useEffect(() => {
+    setWorkspace(null); setWorkspaceError('');
+    if (!selectedDao) { setWorkspaceLoading(false); return; }
+    const controller = new AbortController();
+    setWorkspaceLoading(true);
+    void (async () => {
+      try {
+        const response = await fetch('/api/discovery/pots?potId=' + encodeURIComponent(selectedDao), { signal: controller.signal });
+        const result = await response.json();
+        if (!response.ok || !result.workspace || result.workspace.directoryId !== selectedDao) throw new Error('Unable to read this organization’s records. Refresh to retry.');
+        if (!controller.signal.aborted) setWorkspace(result.workspace);
+      } catch (cause) {
+        if (!controller.signal.aborted) setWorkspaceError(cause instanceof Error ? cause.message : 'Organization records are unavailable.');
+      } finally {
+        if (!controller.signal.aborted) setWorkspaceLoading(false);
+      }
+    })();
+    return () => controller.abort();
+  }, [selectedDao, refreshVersion]);
+
+  function refresh() { invalidate(); setRefreshVersion(value => value + 1); }
 
   async function choose(row: DaoDirectoryEntry) {
     setNotice('');
@@ -39,6 +67,7 @@ export default function DaoWorkspace() {
       if (!response.ok || !result.ok) throw new Error(result.error ?? 'Membership request failed.');
       setNotice('Joined ' + (result.potSlug ?? selected.title) + '. Review membership permissions before submitting decisions.');
       invalidate();
+      setRefreshVersion(value => value + 1);
     } catch (cause) {
       setNotice(cause instanceof Error ? cause.message : 'Unable to join. Try again.');
     } finally { setJoining(false); }
@@ -70,7 +99,7 @@ export default function DaoWorkspace() {
       <main className="dao-main">
         <header className="dao-page-header"><div><p className="dao-eyebrow">{selected?.title ?? 'DAO network'} / {section.group}</p>
           <h1>{section.label}</h1><p>{section.description}</p></div>
-          <button type="button" className="dao-action" onClick={() => invalidate()}>Refresh</button>
+          <div className="dao-actions"><RouteLink href="/dao" className="dao-action">Launch a DAO</RouteLink><button type="button" className="dao-action" onClick={refresh}>Refresh</button></div>
         </header>
         {notice && <div role="status" className="dao-notice">{notice}</div>}
         {error ? <div role="alert" className="dao-notice">Unable to load the DAO directory. <button type="button" onClick={() => invalidate()}>Try again</button></div> : null}
@@ -95,9 +124,7 @@ export default function DaoWorkspace() {
             <label className="dao-check"><input type="checkbox" checked={acceptedTerms} onChange={event => setAcceptedTerms(event.target.checked)} /> I want to connect to this organization’s published projects.</label>
             {!selected.memberLinks.length ? <p>This publisher has not provided the project links required to join.</p> : null}
             <button type="button" className="dao-action" disabled={!acceptedTerms || joining || !selected.memberLinks.length} onClick={() => { void join(); }}>{joining ? 'Joining…' : 'Join organization'}</button>
-          </section> : <section className="dao-card dao-purpose" data-testid="dao-section-content"><h2>{section.label} for {selected.title}</h2><p>{section.description}</p><p>Organization-specific records and governed actions are being connected to this workspace.</p>
-            <RouteLink href={'/adv?slug=' + encodeURIComponent(selected.potId) + '&tab=' + (({ work: 'plans', proposals: 'plans', vote: 'plans', records: 'docs', inbox: 'overview', jobs: 'harnesses', settings: 'settings' } as Record<string, string>)[sectionId] ?? 'overview')}>Open the existing operations workspace</RouteLink>
-          </section>}
+          </section> : <DaoWorkspaceDetails section={sectionId} view={workspace} loading={workspaceLoading} error={workspaceError} />}
           <aside className="dao-evidence"><h2>Decision boundaries</h2><p>Member plan votes authorize plan admission. Treasury transactions require their signer approvals. Ownership votes use the equity governance contract.</p><p>Directory entries describe discovered organizations; they do not establish legal formation or financial assets.</p></aside>
         </>}
       </main>
