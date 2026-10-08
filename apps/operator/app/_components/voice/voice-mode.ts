@@ -92,12 +92,16 @@ export function controlReading(readingId: string, action: 'pause' | 'resume' | '
     playoutLedger.close();
     updateReading({ status: 'paused' });
   } else if (action === 'resume' && readingRuntime && readingState.status === 'paused') {
+    const runtime = readingRuntime;
     updateReading({ status: 'playing' });
     playoutLedger.open();
-    if (readingRuntime.browser && typeof window !== 'undefined') window.speechSynthesis?.resume?.();
-    void readingRuntime.audio?.play().catch(error => { stopReading(); updateReading({ status: 'error', error: String(error) }); });
-    readingRuntime.resume?.();
-    readingRuntime.resume = undefined;
+    if (runtime.browser && typeof window !== 'undefined') window.speechSynthesis?.resume?.();
+    void runtime.audio?.play().catch(error => {
+      if (readingRuntime !== runtime || runtime.abort.signal.aborted) return;
+      stopReading(); updateReading({ status: 'error', error: String(error) });
+    });
+    runtime.resume?.();
+    runtime.resume = undefined;
   }
   return getReadingState();
 }
@@ -121,10 +125,10 @@ export function startReading(text: string, options: { allowCloud?: boolean; form
     if (readingState.status === 'paused' && !runtime.abort.signal.aborted) await new Promise<void>(resolve => { runtime.resume = resolve; });
   };
   const play = async (audio: HTMLAudioElement) => {
-    runtime.audio = audio;
     audio.playbackRate = rate;
     await waitForResume();
     if (runtime.abort.signal.aborted) return;
+    runtime.audio = audio;
     updateReading({ status: 'playing' });
     playoutLedger.open();
     await new Promise<void>((resolve, reject) => {
