@@ -199,7 +199,31 @@
       "item": "WI-10006170",
       "lines": [
         13034
-      ]
+      ],
+      "originalDiagnostic": "Original affected-tests.log lines13034-13042, platform.log lines14382-14390 and receipt20765864: NULL fed_ts sibling case retains F-RH10, expected released to contain it; 80 passed, 1 failed, 0 skipped.",
+      "diagnosticRef": "WI-10006170#comment1164484",
+      "causalHypothesis": "The committed run-start sign-of-life predicate falls back from NULL fed_ts to recent bookkeeping updated_ts. Current work-item and issue predicates remove that fallback. The exact original failed case is unchanged; original dirty loaded source and repair attribution remain unknown.",
+      "rootCauseVerified": false,
+      "originalTestRun": 20765864,
+      "testSha256": "e29573e732252bbfb4d76479818559923426d66611d62fba1eeebc48eb63bebc",
+      "laterLocalTestRuns": [
+        20898066,
+        20898156
+      ],
+      "laterLocalReceiptMeaning": "Both stored local dirty non-scratch whole-file receipts report82PASS/0FAIL/0skip. The 64-entry passedCaseTitles lists omit the two NULL-clock cases. These receipts are historical pass observations, not loaded-source or causal-guard proof.",
+      "sourceFingerprints": {
+        "committedRunStart": "d2a53e115436fe5b2a72c261abbc66f337642672",
+        "runStartTestSha256": "ae0bafa9cd2584a4b389911bda6877ac2e46287f77467e2eadb5786495f09664",
+        "runStartSourceSha256": "12d3aa5c529a2f661a1236d5c0e14b36e56ece0ccf08d2c21ae7d9ee4617c776",
+        "currentSourceSha256": "7b7eb800b73c8839f0e57ca431c86e1bdbca3ddfce3da484f637f0865fb401b0",
+        "exactFailedCaseSha256": "d9ed6bf6345acfedf027ebc498ac682b0c89f3cd2dfb8663231ade89c7782834",
+        "exactFailedCaseMatchesRunStart": true,
+        "laterPass20898156Commit": "c56531c784c3b5b29aae0db662c4c7ff1a557bd9",
+        "currentTestAndSourceMatch20898156Commit": true,
+        "currentTestAndSourceMatch20898066Commit": false,
+        "originalLoadedSourceCurrentness": "unknown"
+      },
+      "assuranceLimits": "Read-only diagnostic recovery. Existing terminal WI-10005935 pass20678719 predates the original failure. No matching later repair attribution or maintained old/new-predicate causal guard recovered in bounded searches. Retain UNKNOWN pending actual loaded-byte assurance and both-family real-PG NULL-clock discrimination. No new tests, source repair, final D006 readiness or shipment claim."
     },
     {
       "path": "packages/operator-core/lib/issues-engineer.integration.test.ts",
@@ -219,7 +243,55 @@
         "root": "<repo-root>",
         "startedAt": "2026-10-05T23:12:48.417Z"
       },
-      "latestReceiptMeaning": "Observed focused result only; causal repair attribution and complete current source/import/environment assurance remain unknown."
+      "latestReceiptMeaning": "Historical local PASS receipt consistent with the existing retired-route fixture repair; complete current loaded source/import/environment assurance remains unknown.",
+      "historicalQualification": {
+        "observedAt": "2026-10-08T09:08:00Z",
+        "archiveSha256": "43cf66489baf7cf665a9746d097375cffc7cdc6262014929c3cc398155b579f4",
+        "failureLines": [
+          12834,
+          12835,
+          12844,
+          12845,
+          12848,
+          12853
+        ],
+        "failure": "The watchdogCloseRoutes census expected five rows and returned three; only dupA and dupB were absent.",
+        "repairItem": "EI-25163543534512606",
+        "repairItemState": "done",
+        "repairCompletionAuthority": "committed",
+        "governingItem": "WI-10005125",
+        "governingItemState": "done",
+        "sourceRouteRemovalCommit": "5f643a7b99100878b7df16fd33f2c06532b0e4e1",
+        "fixtureRepairCommit": "3db4fb67f5ef0d433c74ec03affd498bc21b77a6",
+        "mechanism": "WI-10005125 deliberately removed watchdogKey-only duplicate closing and the matching SQL census route. The integration fixture retained the obsolete five-row expectation. The existing repair preserves the three supported source/repair rows, explicitly excludes both same-key rows without closing evidence, and checks count/list parity at three.",
+        "originalLoadedBytes": "UNKNOWN: the run-start commit is an archival comparison baseline, not a complete loaded-source fingerprint.",
+        "runStartCommit": "d2a53e115436fe5b2a72c261abbc66f337642672",
+        "runStartTestSha256": "75c4d8299281b3810e28c8864ffc39433d340d43caca16c7afe5ae6185928d59",
+        "runStartSourceSha256": "c0046ff1115458a2b420b19d3c83b667f3f89a71843c7c1251474f2b718c5b58",
+        "repairCommitTestSha256": "53b13fbaf9c499fe667fc718d98b021c70b5c7adeed8e1faae7104810e178889",
+        "repairCommitSourceSha256": "c0046ff1115458a2b420b19d3c83b667f3f89a71843c7c1251474f2b718c5b58",
+        "currentTestSha256": "c0d0451846d4b6f87435c9cb585f3a79d3e4f757a112693292e82d454efb661c",
+        "currentSourceSha256": "010b7009c2dbc4d07d47c9216a022a115568c6bf7399c1569de4c6de441ff75a",
+        "currentAndRepairCensusBlockSha256": "05a760484bcc710daae7237e37a3d5b534631df8d4041b008861fe93bac6ab3c",
+        "blockHashScope": "Exact text from the watchdogCloseRoutes describe block through the following WI-10006010 comment; equal in the fixture repair, receipt20919859 commit, and current named file. This does not establish loaded imports or environment.",
+        "historicalControls": {
+          "reproductionLog": "/tmp/c308-census-repro.log",
+          "reproductionLogSha256": "5389a66862a19afd91b88b8df03706178200b4b48d1278dbc24f6c870533c013",
+          "reproduction": "Stored focused real-PG run at6b3964760b reproduced the exact expected-five/actual-three case: one failed,61 skipped. Diagnostic only.",
+          "passingLog": "/tmp/c308-census-fixed.log",
+          "passingLogSha256": "31e4fbd84943ae34e7a9f1de16ab777bdb320022e9cf8bf3959b35749c77979a",
+          "passing": "Stored full named-file run at694f4df59f passed62 with0 skipped,executed1/matched1; named file dirty. Ledger20775649 independently records local PASS/staging/non-scratch. Exact full import/environment fingerprint is absent."
+        },
+        "laterObservedReceipt": {
+          "id": 20919859,
+          "status": "pass",
+          "startedAt": "2026-10-08T01:15:09.922Z",
+          "commitSha": "352570503a5ab253da8d9b737bb2847a4fb84458",
+          "worktreeDirty": true,
+          "meaning": "Whole named commit blob differs from current bytes; no current-source qualification follows from this receipt."
+        },
+        "assurance": "UNKNOWN: terminal completion freshness is stale for the changed whole named file; original/current loaded source, transitive imports, config, main/subprocess/native environment, final D006/P004 acceptance and shipment remain unverified. No terminal repair replay or new source/test work performed."
+      }
     },
     {
       "path": "packages/operator-core/lib/consult/consult-verbs-core.integration.test.ts",
@@ -2772,7 +2844,33 @@
       "item": "WI-10006170",
       "lines": [
         17878
-      ]
+      ],
+      "originalDiagnostic": "Original receipt20767238 and immutable platform.log fail at the pre-timeout sanity assertion on line89: advisory-lock count2 versus expected1. The timeout-release assertion was not reached.",
+      "diagnosticRef": "WI-10006170#comment1164451",
+      "causalHypothesis": "The fixture counts every advisory lock in the cluster, while createFreshTestDb isolates only a database on a reused cluster. An unrelated live advisory lock can contaminate the assertion. The original extra lock/backend/database was not captured; attribution remains inferred.",
+      "rootCauseVerified": false,
+      "originalTestRun": 20767238,
+      "testSha256": "4c7d0bdebee7a2d62ba42965729d9d156e8684d6700bdbd5471e05b6e6a4d268",
+      "laterCleanTestRuns": [
+        20818344,
+        20838330
+      ],
+      "laterCleanNamedBlobsMatchCurrent": true,
+      "laterCleanReceiptMeaning": "Both clean local non-scratch passes postdate the failure but retain the identical unscoped named test. They do not prove a causal repair.",
+      "sourceFingerprints": {
+        "committedRunStartPapercuspSubmodule": "47831b039e47a2f5f83cfe94b6c0018631c03383",
+        "committedRunStartTestConfigSubmodule": "0d407398ce474c05c4c184172317b98ee2591c03",
+        "namedTestMatchesCommittedRunStart": true,
+        "integrationConfigSha256": "e02e7bf2ae9b7822645c735a312586c6d310a6ce73ad1e70e8ebeece46595ba2",
+        "integrationSetupSha256": "40b948e718e95ad649f5cc5905ba1229708f3705b9d735e142b0841f5b1b50ee",
+        "pgBarrelSha256": "d15bb4bfc08d286e8551acdc304f50dc6b7771617d90cc7e2bb9609223202d3b",
+        "pgContainerSha256": "4e9b5a70979f4c887c65ae6977587d19b8125bbcc2deeed1f12a6d5fff28a792",
+        "fourSupportBlobsMatchCommittedRunStart": true,
+        "connectionMatchesCommittedRunStart": false,
+        "pgMigrateMatchesCommittedRunStart": false,
+        "originalLoadedSourceCurrentness": "unknown"
+      },
+      "assuranceLimits": "Read-only diagnostic recovery. The isolation assumption is invalid, but no original extra-lock identity or distinguishing real-PG control was recovered. Keep UNKNOWN pending an admitted fixture repair with exact database/backend/key/granted accounting and timeout ON/OFF proof. No new test, source repair, final D006 readiness or shipment claim."
     },
     {
       "path": "libs/papercusp/libs/db/src/worked-by-history.integration.test.ts",
