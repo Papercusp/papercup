@@ -1,10 +1,10 @@
-import { dirname, basename, relative, resolve, sep } from 'node:path';
+import { dirname, basename, relative, resolve, sep, join } from 'node:path';
 import type { CensusDeclaration, CensusRoot, CensusEntry } from '@papercusp/backup';
 import { collectStateCensus, assertStateCensusComplete } from '@papercusp/backup';
 import type { Sql } from 'postgres';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { readdir } from 'node:fs/promises';
+import { readdir, readFile } from 'node:fs/promises';
 import { dbEncryptionKeyFilePath } from '../db-encryption';
 import { superuserTokenPath } from '../superuser-token';
 import { workspacesRoot, readRegistry } from '../workspace-registry';
@@ -122,7 +122,30 @@ export async function physicalDatabaseCensusEntries(sql: Sql) {
   return databaseCensusEntries(sql, `postgres-cluster:${identity}`);
 }
 
+/** Only the exact integration-baseline identity shape emitted by its producer. */
+export function integrationBaselineCensusDeclarations(entries: readonly CensusEntry[]): CensusDeclaration[] {
+  return entries.filter(entry => entry.kind === 'database' &&
+    /^papercusp_it_baseline_[0-9a-f]{12}$/.test(entry.name)).map(entry => ({
+      ...entry, classification: 'dev-only', producer: 'baseline-schema-global-setup',
+    }));
+}
+
 const execFileAsync = promisify(execFile);
+/** Recognized PG storage is retained state with a measured control-file identity. */
+export async function postgresStorageDeclaration(root: CensusRoot, name: string): Promise<CensusDeclaration> {
+  if (name.startsWith('/') || name.split('/').some(segment => segment === '..')) throw new Error('Invalid PG storage path');
+  const path = join(root.path, name);
+  const version = (await readFile(join(path, 'PG_VERSION'), 'utf8')).trim();
+  if (!/^\d+$/.test(version)) throw new Error('Invalid PG storage version');
+  const binary = `/usr/lib/postgresql/${version}/bin/pg_controldata`;
+  const { stdout } = await execFileAsync(binary, [path], {
+    timeout: 5000, maxBuffer: 64 * 1024, env: { ...process.env, LC_ALL: 'C' },
+  });
+  const identity = stdout.match(/^Database system identifier:\s+(\d+)$/m)?.[1];
+  if (!identity) throw new Error('PG storage control identity unavailable');
+  return { kind: 'path', root: root.id, name, classification: 'state', producer: 'postgres-control',
+    descendants: true, databaseStorage: { systemIdentifier: identity, evidenceRef: `pg-control:${root.id}:${name}` } };
+}
 /** Unit definitions supplied by an installer source, independent of live inventory. */
 export async function unitCensusDeclarations(
   sourceDirectory: string, scope: 'user' | 'system',
