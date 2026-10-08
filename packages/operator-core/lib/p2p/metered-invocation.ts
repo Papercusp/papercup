@@ -382,3 +382,182 @@ export function closeMeteredInvocation(input: CloseMeteredInvocationInput): Clos
     contributionCredited,
   };
 }
+
+/** Local state of ONE host-authorized funded turn, including its settlement outbox. */
+export interface LocalMeteredTurnState {
+  readonly turnId: string;
+  readonly payer: string;
+  readonly seller: string;
+  readonly releaseRef: string;
+  readonly meter: MeterDeclaration;
+  readonly ceilingMicros: bigint;
+  readonly expiresAtMs: number;
+  readonly reservedMicros: bigint;
+  readonly channel: MicrochargeChannel;
+  readonly units: Readonly<Record<string, {
+    readonly voucher: CumulativePaymentVoucher;
+    readonly completedAtMs: number | null;
+    readonly receipt: SignedUsageReceipt | null;
+  }>>;
+}
+
+export class LocalMeteredTurnRefusedError extends Error {
+  constructor(readonly code: string, detail: string) {
+    super(detail);
+    this.name = 'LocalMeteredTurnRefusedError';
+  }
+}
+
+/**
+ * Charges local tool calls inside an already funded turn (D-010/D-037).
+ * The host supplies the authenticated channel, exact installed offer, and
+ * ceiling AFTER reserving funding once per turn. This class does no hosted IO
+ * and does not itself prove funding or entitlement. `persist` must write to the
+ * local durable store; signers and state never come from tool arguments.
+ *
+ * Only state transitions are serialized. Handlers run concurrently, while
+ * async signers cannot race two reservations against the same channel snapshot.
+ * Every entered handler is one served invocation, including a thrown handler.
+ */
+export class LocalMeteredTurn {
+  private state: LocalMeteredTurnState;
+  private tail: Promise<void> = Promise.resolve();
+  private persistenceFailed = false;
+
+  constructor(private readonly deps: {
+    state: LocalMeteredTurnState;
+    nowMs: () => number;
+    signVoucher: (bytes: Buffer) => Promise<string> | string;
+    signReceipt: (bytes: Buffer) => Promise<string> | string;
+    persist: (state: LocalMeteredTurnState) => Promise<void>;
+  }) {
+    this.state = structuredClone(deps.state);
+    const s = this.state;
+    const declared = declareMeter(s.meter);
+    if (!s.turnId.trim() || !s.payer.trim() || !s.seller.trim() || !s.releaseRef.trim() ||
+        !declared.ok || !Number.isFinite(s.expiresAtMs) || s.ceilingMicros <= 0n ||
+        s.reservedMicros < 0n || s.reservedMicros > s.ceilingMicros ||
+        s.channel.escrowMicros < 0n || s.channel.committedMicros < 0n || s.channel.lastCumulativeMicros < 0n ||
+        Object.values(s.channel.reservations).some((amount) => amount < 0n) ||
+        s.channel.committedMicros + Object.values(s.channel.reservations).reduce((sum, amount) => sum + amount, 0n) >
+          s.channel.escrowMicros) {
+      throw new LocalMeteredTurnRefusedError('invalid-turn', 'a local meter needs a bound funded turn and valid ceiling');
+    }
+    let reserved = 0n;
+    for (const [nonce, entry] of Object.entries(s.units)) {
+      const v = entry.voucher;
+      const amount = quoteMicros(s.meter, v.meterQuantity);
+      if (v.usageNonce !== nonce || v.channelId !== s.channel.channelId || v.payer !== s.payer ||
+          v.seller !== s.seller || v.releaseRef !== s.releaseRef || v.priceVersion !== s.meter.priceVersion ||
+          v.splitManifestHash !== s.meter.splitManifestHash || v.pricePerUnitMicros !== s.meter.unitPriceMicros ||
+          v.meterQuantity <= 0n || !v.signature.trim() ||
+          (entry.completedAtMs !== null && !Number.isFinite(entry.completedAtMs)) ||
+          (entry.receipt
+            ? !(nonce in s.channel.receipts) || entry.receipt.usageNonce !== nonce ||
+              entry.receipt.channelId !== v.channelId || entry.receipt.amountMicros !== amount ||
+              entry.receipt.voucherDigest !== paymentVoucherDigest(unsignedVoucher(v)) ||
+              !entry.receipt.signature.trim() || entry.completedAtMs === null
+            : s.channel.reservations[nonce] !== amount)) {
+        throw new LocalMeteredTurnRefusedError('invalid-turn', 'local turn snapshot disagrees with its bound vouchers/channel');
+      }
+      reserved += amount;
+    }
+    if (reserved !== s.reservedMicros) {
+      throw new LocalMeteredTurnRefusedError('invalid-turn', 'local turn reservation total disagrees with its units');
+    }
+  }
+
+  snapshot(): LocalMeteredTurnState { return structuredClone(this.state); }
+
+  private serialize<T>(operation: () => Promise<T>): Promise<T> {
+    const next = this.tail.then(() => {
+      if (this.persistenceFailed) {
+        throw new LocalMeteredTurnRefusedError('storage-unavailable', 'read authoritative local state before resuming this turn');
+      }
+      return operation();
+    });
+    this.tail = next.then(() => undefined, () => undefined);
+    return next;
+  }
+
+  private async persist(): Promise<void> {
+    try { await this.deps.persist(this.snapshot()); }
+    catch (error) {
+      // The write outcome may be unknown. Keep the reservation, stop admission,
+      // and require a durable read instead of retrying a possibly committed write.
+      this.persistenceFailed = true;
+      throw error;
+    }
+  }
+
+  async invoke<T>(unit: Pick<BillableUnit, 'payer' | 'releaseRef' | 'usageNonce' | 'quantity'>,
+    execute: () => Promise<T> | T): Promise<T> {
+    await this.serialize(async () => {
+      const s = this.state;
+      if (unit.payer !== s.payer || unit.releaseRef !== s.releaseRef) {
+        throw new LocalMeteredTurnRefusedError('binding-mismatch', 'target payer and installed release must match the funded turn');
+      }
+      const nowMs = this.deps.nowMs();
+      if (!Number.isFinite(nowMs) || nowMs > s.expiresAtMs) {
+        throw new LocalMeteredTurnRefusedError('expired', 'the funded turn has expired');
+      }
+      if (s.reservedMicros + quoteMicros(s.meter, unit.quantity) > s.ceilingMicros) {
+        throw new LocalMeteredTurnRefusedError('cap-exhausted', 'this invocation exceeds the funded per-turn ceiling');
+      }
+      const bound: BillableUnit = { ...unit, seller: s.seller, expiresAtMs: s.expiresAtMs };
+      // Capture canonical signing bytes with the pure core before async signing.
+      let bytes: Buffer | undefined;
+      const probe = openMeteredInvocation({ channel: s.channel, meter: s.meter, unit: bound, nowMs,
+        signVoucher: (value) => { bytes = value; return 'signing-probe'; } });
+      if (!probe.ok) throw new LocalMeteredTurnRefusedError(probe.code, probe.detail);
+      const signature = await this.deps.signVoucher(bytes!);
+      const signedAtMs = this.deps.nowMs();
+      const opened = openMeteredInvocation({ channel: s.channel, meter: s.meter, unit: bound, nowMs: signedAtMs,
+        signVoucher: () => signature });
+      if (!opened.ok) throw new LocalMeteredTurnRefusedError(opened.code, opened.detail);
+      this.state = { ...s, channel: opened.channel, reservedMicros: s.reservedMicros + opened.reservedMicros,
+        units: { ...s.units, [unit.usageNonce]: { voucher: opened.voucher, completedAtMs: null, receipt: null } } };
+      await this.persist();
+    });
+    try { return await execute(); }
+    finally {
+      await this.serialize(async () => {
+        const entry = this.state.units[unit.usageNonce]!;
+        const completedAtMs = this.deps.nowMs();
+        if (!Number.isFinite(completedAtMs)) {
+          throw new LocalMeteredTurnRefusedError('invalid-unit', 'completion time must be finite');
+        }
+        this.state = { ...this.state, units: { ...this.state.units,
+          [unit.usageNonce]: { ...entry, completedAtMs } } };
+        await this.persist();
+        await this.settle(unit.usageNonce);
+      });
+    }
+  }
+
+  /** Recover a completed call's settlement; never re-enter its handler. */
+  retrySettlement(usageNonce: string): Promise<SignedUsageReceipt> {
+    return this.serialize(() => this.settle(usageNonce));
+  }
+
+  private async settle(usageNonce: string): Promise<SignedUsageReceipt> {
+    const s = this.state;
+    const entry = s.units[usageNonce];
+    if (!entry || entry.completedAtMs === null) {
+      throw new LocalMeteredTurnRefusedError('unknown-reservation', 'only a recorded completed invocation may settle');
+    }
+    if (entry.receipt) return structuredClone(entry.receipt);
+    let bytes: Buffer | undefined;
+    const probe = closeMeteredInvocation({ channel: s.channel, voucher: entry.voucher,
+      occurredAtMs: entry.completedAtMs, signReceipt: (value) => { bytes = value; return 'signing-probe'; } });
+    if (!probe.ok) throw new LocalMeteredTurnRefusedError(probe.code, probe.detail);
+    const signature = await this.deps.signReceipt(bytes!);
+    const closed = closeMeteredInvocation({ channel: s.channel, voucher: entry.voucher,
+      occurredAtMs: entry.completedAtMs, signReceipt: () => signature });
+    if (!closed.ok) throw new LocalMeteredTurnRefusedError(closed.code, closed.detail);
+    this.state = { ...s, channel: closed.channel,
+      units: { ...s.units, [usageNonce]: { ...entry, receipt: closed.receipt } } };
+    await this.persist();
+    return structuredClone(closed.receipt);
+  }
+}
