@@ -44,9 +44,9 @@ export function validGovernanceSigningAuthority(authority: GovernanceSigningAuth
         (m.weight !== undefined && (!Number.isSafeInteger(m.weight) || m.weight <= 0)) ||
         (m.revoked !== undefined && typeof m.revoked !== 'boolean') ||
         (m.expiresAtMs !== undefined && (!Number.isSafeInteger(m.expiresAtMs) || m.expiresAtMs < 0)) ||
-        !Array.isArray(m.roles) || m.roles.length === 0 || m.roles.some(r => !kinds.has(r)) ||
+        !Array.isArray(m.roles) || m.roles.length === 0 || m.roles.some((r: string) => !kinds.has(r)) ||
         new Set(m.roles).size !== m.roles.length || !Array.isArray(m.originPeerIds) ||
-        m.originPeerIds.length === 0 || m.originPeerIds.some(p => !nonempty(p))) return false;
+        m.originPeerIds.length === 0 || m.originPeerIds.some((p: string) => !nonempty(p))) return false;
     ids.add(m.memberId);
     keys.add(m.publicKey);
   }
