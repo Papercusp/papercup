@@ -304,6 +304,19 @@ Verify the live unit resolves to this repo source and that its effective
 
 # Cloud Portal backend — installation (EI-21983147886595945)
 
+The canonical hosted launcher owns HTTP readiness and watchdog supervision.
+It extends the shared `systemd-readiness.ts` transport with one persistent
+`python3`/`libsystemd` sender in the service cgroup, instead of spawning a
+short-lived `systemd-notify --no-block` for every ping. The Linux host therefore
+needs Python 3 and `libsystemd` (both present on the supported systemd host).
+The Portal child receives no `NOTIFY_SOCKET` or `WATCHDOG_*` ownership variables;
+this avoids competing heartbeat senders without modifying its separate checkout.
+Readiness still requires HTTP success, watchdog pings still require a successful
+health probe, and unhealthy HTTP still withdraws the service. Neither the
+watchdog limit nor those health gates are disabled. The real-systemd integration
+suite checks manager-credited timestamps, blackhole withdrawal, and a negative
+control whose successful-looking attempts deliver no heartbeats.
+
 `papercusp-cloud-portal.service` supervises the Portal's built Next.js
 standalone production artifact on `127.0.0.1:3801`. Run `npm run build` in the
 Portal checkout first; the build uses a unique private `distDir`, moves the

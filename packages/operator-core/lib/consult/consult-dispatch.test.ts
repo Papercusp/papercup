@@ -898,6 +898,22 @@ describe('dispatchConsultResponder — the walk', () => {
       expect(result).toMatchObject({ dispatched: true, operation: 'convert', agent: 'codex' });
     });
 
+    it('stops a first-turn billing rejection and reaches the next backend without poisoning the source', async () => {
+      const { deps, calls } = makeFakes({
+        analyzeClaudeTranscript: (path: string) => path === '/native/answer.jsonl' ? {
+          trailingMissingToolReferenceTurns: 0, lastMissingToolReferenceName: null,
+          assistantTurnsSinceLastPrompt: 1, trailingAccountWallTurns: 1,
+          lastAccountWallEvidence: 'Credit balance is too low',
+        } : null,
+      });
+      const result = await dispatchConsultResponder(OPTS, CTX, deps);
+      expect(result.attempts[0]).toMatchObject({ operation: 'fork', outcome: 'failed', reason: 'account-walled' });
+      expect(result.attempts[0].detail).toContain('provider account rejection (Credit balance is too low)');
+      expect(calls.stopped).toEqual(['task-1']);
+      expect(result.attempts.some(attempt => attempt.reason === 'source-transcript-poisoned')).toBe(false);
+      expect(result).toMatchObject({ dispatched: true, operation: 'convert', agent: 'codex' });
+    });
+
     it('CONTROL: a fork whose first reply has not been rejected stays dispatched', async () => {
       const { deps, calls } = makeFakes({
         analyzeClaudeTranscript: () => ({

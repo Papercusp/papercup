@@ -1014,10 +1014,14 @@ export async function executeCutReclaim(
     const done = (r: Omit<ReclaimExecResult, 'path' | 'ms'>) => results.push({ path: v.path, ms: now() - started, ...r });
     const real = v.realPath ?? v.path;
     const offloaded = real !== v.path;
+    // realpath can differ because a PARENT is symlinked. Only a symlink at
+    // the worktree itself needs unlinking after the real directory is moved.
+    let leafSymlink = false;
     // Safety rails independent of the plan: a linked worktree only (a `.git` FILE), whose
     // admin dir sits under this repo's worktrees/, never the canonical tree or an ancestor.
     let adminDir: string | null = null;
     try {
+      leafSymlink = fs.lstatSync(v.path).isSymbolicLink();
       if (!fs.lstatSync(path.join(real, '.git')).isFile()) throw new Error('.git is not a file');
       adminDir = worktreeAdminDir(real);
     } catch (e) {
@@ -1062,7 +1066,7 @@ export async function executeCutReclaim(
     }
     const rmrf = deps.rmrf ?? ((p: string) => fs.promises.rm(p, { recursive: true, force: true }));
     try {
-      if (offloaded) (deps.unlink ?? fs.unlinkSync)(v.path);
+      if (leafSymlink) (deps.unlink ?? fs.unlinkSync)(v.path);
       await rmrf(adminDir);
       await rmrf(trash);
     } catch (e) {

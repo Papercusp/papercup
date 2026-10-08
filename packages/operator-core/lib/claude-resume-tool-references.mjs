@@ -16,6 +16,7 @@ const MISSING_TOOL_REFERENCE_RE =
   /^\s*API Error(?::\s*400|\s+400\b)[^\r\n]{0,300}\bTool reference\s+['"][^'"]+['"]\s+not found in available tools\b/im;
 const CONTEXT_LIMIT_RE =
   /^\s*(?:Prompt is too long|Context limit reached(?:\s*·\s*\/clear to continue)?)\s*$/i;
+const ACCOUNT_WALL_RE = /\b(?:credit balance is too low|insufficient credits)\b/i;
 
 export const CLAUDE_TOOL_REFERENCE_POISON_TURNS = 3;
 /**
@@ -137,6 +138,8 @@ export function analyzeClaudeResumeTranscript(jsonl, options = {}) {
   let lastMissingToolReferenceName = null;
   let trailingContextLimitTurns = 0;
   let lastContextLimitEvidence = null;
+  let trailingAccountWallTurns = 0;
+  let lastAccountWallEvidence = null;
   let assistantTurnsSinceLastPrompt = 0;
 
   for (const line of String(jsonl ?? '').split(/\r?\n/)) {
@@ -158,6 +161,10 @@ export function analyzeClaudeResumeTranscript(jsonl, options = {}) {
     }
     if (isSubmittedPrompt(record)) {
       assistantTurnsSinceLastPrompt = 0;
+      // Account rejection belongs to that launch, not the copied source
+      // history: a new prompt can use a different funded account/backend.
+      trailingAccountWallTurns = 0;
+      lastAccountWallEvidence = null;
       continue;
     }
     const text = assistantText(record);
@@ -174,6 +181,10 @@ export function analyzeClaudeResumeTranscript(jsonl, options = {}) {
     const contextEvidence = synthetic && CONTEXT_LIMIT_RE.test(text) ? text.trim().slice(0, 200) : null;
     trailingContextLimitTurns = contextEvidence ? trailingContextLimitTurns + 1 : 0;
     lastContextLimitEvidence = contextEvidence;
+    const accountEvidence = synthetic && (record.error === 'billing_error' || ACCOUNT_WALL_RE.test(text))
+      ? text.trim().slice(0, 200) : null;
+    trailingAccountWallTurns = accountEvidence ? trailingAccountWallTurns + 1 : 0;
+    lastAccountWallEvidence = accountEvidence;
   }
 
   const toolReferences = maxReferences === 0
@@ -186,6 +197,8 @@ export function analyzeClaudeResumeTranscript(jsonl, options = {}) {
     lastMissingToolReferenceName,
     trailingContextLimitTurns,
     lastContextLimitEvidence,
+    trailingAccountWallTurns,
+    lastAccountWallEvidence,
     assistantTurnsSinceLastPrompt,
     needsFreshContext: trailingMissingToolReferenceTurns >= CLAUDE_TOOL_REFERENCE_RECOVERY_TURNS,
     poisoned: trailingMissingToolReferenceTurns >= CLAUDE_TOOL_REFERENCE_POISON_TURNS,

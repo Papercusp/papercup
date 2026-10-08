@@ -11,6 +11,9 @@ export interface ClaudeResumeTranscriptAnalysis {
   /** Provider context rejections still present after the latest compaction; absent in older cached diagnostics. */
   trailingContextLimitTurns?: number;
   lastContextLimitEvidence?: string | null;
+  /** Synthetic provider billing rejection after the current submitted prompt. */
+  trailingAccountWallTurns?: number;
+  lastAccountWallEvidence?: string | null;
   /**
    * Assistant records (model output or the provider's synthetic error) written
    * after the most recent submitted prompt. A fork's file carries the source's

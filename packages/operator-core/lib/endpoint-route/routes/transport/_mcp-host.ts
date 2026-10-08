@@ -187,7 +187,12 @@ import {
   rememberSessionToolRegistryRevision,
   sessionToolRegistryRevisionState,
 } from './tool-allowlist';
-import { validIdempotencyKey, lookupStoredMcpResult, storeMcpResult, type StoredMcpResult } from './_mcp-result-replay';
+import {
+  validIdempotencyKey,
+  lookupStoredMcpResult,
+  storeMcpResult,
+  type StoredMcpResult,
+} from './_mcp-result-replay';
 import {
   takeStoredInitializeHandler,
   wrapInitializeWithInstructions,
@@ -4992,6 +4997,23 @@ export function registerMcpHost(server: McpServer): void {
                 ? undefined
                 : (projected.skipResultDoor ?? nestedResultDoorSkipReason(doorInput));
             const resultDoorStartedAtMs = Date.now();
+            const resultDoorOwnerId = (() => {
+              try {
+                // Resource reads synthesize a principal whose slug is this
+                // signed session's client id. Use the same identity source as
+                // the scratch manifest and the replay owner key.
+                return resolveAgentIdentity(
+                  dispatchSpawnCtx.sigVerifiedSpawn &&
+                  !dispatchSpawnCtx.authenticatedPrincipal &&
+                  !dispatchSpawnCtx.isSuperuser &&
+                  !dispatchSpawnCtx.isPowerUser
+                    ? dispatchSpawnCtx
+                    : ctx,
+                ).ownerId;
+              } catch {
+                return null;
+              }
+            })();
             let doored: typeof doorInput;
             try {
               doored = resultDoorSkipReason
@@ -5095,23 +5117,7 @@ export function registerMcpHost(server: McpServer): void {
                   runId: dispatchSpawnCtx.runId ?? null,
                   // P-023: key the per-session door override on the SAME identity
                   // config:doors-set-session stamps (resolveAgentIdentity, never runId).
-                  ownerId: (() => {
-                    try {
-                      // Resource reads synthesize a principal whose slug is
-                      // this signed session's client id. Match that identity
-                      // when writing the owner-only spill manifest.
-                      return resolveAgentIdentity(
-                        dispatchSpawnCtx.sigVerifiedSpawn &&
-                        !dispatchSpawnCtx.authenticatedPrincipal &&
-                        !dispatchSpawnCtx.isSuperuser &&
-                        !dispatchSpawnCtx.isPowerUser
-                          ? dispatchSpawnCtx
-                          : ctx,
-                      ).ownerId;
-                    } catch {
-                      return null;
-                    }
-                  })(),
+                  ownerId: resultDoorOwnerId,
                   aggregateScope,
                   ...(preservePaths ? { preservePaths } : {}),
                   });

@@ -8,6 +8,12 @@ const h = vi.hoisted(() => {
   return {
     routingSettings,
     getFeedbackCore: vi.fn(async (_request: unknown, _deps: unknown) => ({})),
+    acceptFeedbackRequestCore: vi.fn(async (_request: unknown, _deps: unknown) => ({
+      ok: true as const, verdict: 'accepted' as const, state: 'routing', pending: true,
+      conversation_id: 'accepted-conv', thread_id: 'thr-accepted-conv', request_key: 'retry-key',
+      latency_contract: 'proceed' as const, park_key: null, hint: 'pending',
+    })),
+    continueFeedbackRequestCore: vi.fn(async (_workspace: string, _conversation: string, _deps: unknown) => false),
     getOrgPg: vi.fn(() => ({ sql: {} })),
     buildQueryEmbedderResolved: vi.fn(async () => null),
     interactiveEmbedAcquireBudgetMs: vi.fn(() => 10),
@@ -25,7 +31,8 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/db-org')>()),
   getOrgPg: h.getOrgPg,
 }));
-vi.mock('./get-feedback-core', () => ({ getFeedbackCore: h.getFeedbackCore }));
+vi.mock('./get-feedback-core', () => ({ getFeedbackCore: h.getFeedbackCore,
+  acceptFeedbackRequestCore: h.acceptFeedbackRequestCore, continueFeedbackRequestCore: h.continueFeedbackRequestCore }));
 vi.mock('./relevance-router', () => ({ routeConsult: h.routeConsult }));
 vi.mock('../agent-tools/search/embedder', () => ({
   buildQueryEmbedderResolved: h.buildQueryEmbedderResolved,
@@ -41,10 +48,26 @@ vi.mock('./expert-routing-settings', async (importOriginal) => {
   return { ...actual, readConsultExpertRoutingSettings: h.readConsultExpertRoutingSettings };
 });
 
-import { getFeedbackProd } from './get-feedback-prod';
+import { acceptFeedbackRequestProd, getFeedbackProd } from './get-feedback-prod';
 
 describe('getFeedbackProd expert-routing settings', () => {
   beforeEach(() => vi.clearAllMocks());
+
+  it('persists and returns acceptance before embedder/settings acquisition, then resumes the same identity', async () => {
+    const result = await acceptFeedbackRequestProd({ workspaceId: 'workspace-1', requesterId: 'requester',
+      question: 'slow routing', requestKey: 'retry-key' }, { ownerId: 'requester' } as never,
+      { harnessSlug: 'papercusp', allowDispatch: false });
+    expect(result).toMatchObject({ verdict: 'accepted', conversation_id: 'accepted-conv', pending: true });
+    expect(h.acceptFeedbackRequestCore.mock.calls[0]?.[0]).toMatchObject({
+      requestKey: 'retry-key', harnessSlug: 'papercusp', allowDispatch: false,
+    });
+    expect(h.readConsultExpertRoutingSettings).not.toHaveBeenCalled();
+    expect(h.buildQueryEmbedderResolved).not.toHaveBeenCalled();
+    expect(h.getFeedbackCore).not.toHaveBeenCalled();
+    expect(h.makeConsultReachDispatcher).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(h.continueFeedbackRequestCore).toHaveBeenCalledWith(
+      'workspace-1', 'accepted-conv', expect.objectContaining({ execute: expect.any(Function) })));
+  });
 
   it.each([true, false])('passes actual dispatch permission %s to creation without launching when disabled', async (allowDispatch) => {
     await getFeedbackProd(

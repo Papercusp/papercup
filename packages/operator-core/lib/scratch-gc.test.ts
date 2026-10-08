@@ -47,6 +47,7 @@ import {
   ensureScratchRunDir,
   ScratchQuotaError,
   RETENTION_MS,
+  SCRATCH_QUOTA_RECOVERY_HEADROOM_BYTES,
   _resetScratchGcCountersForTests,
   scratchEvictionBytes,
   refreshScratchUsage,
@@ -646,7 +647,6 @@ describe('runScratchGc — quota eviction', () => {
   it('FIFO-evicts oldest run-dirs when over quota', async () => {
     const oldest = makeSparseRun('ws-Q', UUID(10), 4 * 1024 ** 3, 10_000);
     const newest = makeSparseRun('ws-Q', UUID(11), 2 * 1024 ** 3);
-    await refreshScratchUsage('ws-Q');
     const result = await runScratchGc({ workspaceRegistry: ['ws-Q'] });
     expect(result.quotaEvictions).toBe(1);
     expect(result.quotaEvictedBytes).toBe(4 * 1024 ** 3);
@@ -659,6 +659,33 @@ describe('runScratchGc — quota eviction', () => {
 });
 
 describe('deferred scratch quota recovery', () => {
+  it('the background usage refresh restores quota headroom before a writer needs recovery', async () => {
+    const oldest = makeSparseRun('ws-Q', UUID(1), 512 * 1024 ** 2, 10_000);
+    const newest = makeSparseRun('ws-Q', UUID(2), 4 * 1024 ** 3 + 410 * 1024 ** 2);
+    const phaseRows: ScratchWriteTimings[] = [];
+
+    vi.mocked(rmAsync).mockClear();
+    await refreshScratchUsage('ws-Q');
+
+    expect(existsSync(oldest)).toBe(false);
+    expect(existsSync(newest)).toBe(true);
+    expect(scratchUsageBytes('ws-Q')).toBeLessThanOrEqual(
+      WORKSPACE_QUOTA_BYTES - SCRATCH_QUOTA_RECOVERY_HEADROOM_BYTES,
+    );
+
+    const filePath = join(newest, 'after-refresh');
+    await writeWithScratchQuota({
+      workspaceId: 'ws-Q',
+      filePath,
+      bytes: 512,
+      onTiming: (row) => { phaseRows.push(row); },
+    }, async () => { await writeFile(filePath, Buffer.alloc(512)); });
+
+    expect(phaseRows).toHaveLength(1);
+    expect(phaseRows[0]).toMatchObject({ quotaRecoveryMs: 0, refreshWaitMs: 0 });
+    expect(vi.mocked(rmAsync)).toHaveBeenCalledTimes(1);
+  });
+
   it('reuses an in-flight usage measurement when quota waiters have not written yet', async () => {
     const runDir = makeRunDir('ws-Q', 'quota', UUID(1), 100);
     const wsRoot = scratchRootForWorkspace('ws-Q');
@@ -849,6 +876,72 @@ describe('deferred scratch quota recovery', () => {
     }
   });
 
+  it('includes background scan counters in progress while a writer waits for usage refresh', async () => {
+    const wsRoot = scratchRootForWorkspace('ws-Q');
+    makeSparseRun('ws-Q', UUID(1), 128);
+    _setScratchUsageForTests('ws-Q', WORKSPACE_QUOTA_BYTES + 1024);
+
+    const readdirMock = vi.mocked(readdirAsync);
+    const originalRead = readdirMock.getMockImplementation()!;
+    const read = originalRead as unknown as (path: unknown, options?: unknown) => Promise<unknown>;
+    let releaseScan!: () => void;
+    let reachedRoot!: () => void;
+    const scanGate = new Promise<void>((resolve) => { releaseScan = resolve; });
+    const atRoot = new Promise<void>((resolve) => { reachedRoot = resolve; });
+    let rootReads = 0;
+    readdirMock.mockImplementation((async (path: unknown, options: unknown) => {
+      const entries = await read(path, options);
+      if (String(path) === wsRoot && ++rootReads === 1) {
+        reachedRoot();
+        await scanGate;
+      }
+      return entries as never;
+    }) as typeof readdirAsync);
+
+    const timings: ScratchWriteTimings[] = [];
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const measurement = refreshScratchUsage('ws-Q');
+    let write: Promise<void> | undefined;
+    try {
+      await atRoot;
+      const filePath = join(wsRoot, 'quota', UUID(2), 'refresh-wait.bin');
+      write = writeWithScratchQuota({
+        workspaceId: 'ws-Q',
+        filePath,
+        bytes: 16,
+        onTiming: (row) => timings.push(row),
+      }, async () => {});
+
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(timings).toHaveLength(1);
+      expect(timings[0].progress).toMatchObject({
+        phase: 'usage-refresh-wait',
+        pendingWrites: 1,
+        recoveryActive: true,
+        refreshActive: true,
+        usageRefreshDiagnostics: {
+          sizeWalkDirectories: 1,
+          sizeWalkEntries: 0,
+          sizeWalkFiles: 0,
+        },
+      });
+
+      releaseScan();
+      await measurement;
+      await write;
+      expect(rootReads).toBe(1);
+      expect(timings.find((row) => !row.progress)).toMatchObject({
+        quotaRecoveryMs: 0,
+        writeMs: expect.any(Number),
+      });
+    } finally {
+      releaseScan();
+      readdirMock.mockImplementation(originalRead);
+      vi.useRealTimers();
+      await Promise.allSettled([measurement, ...(write ? [write] : [])]);
+    }
+  });
+
   it('reports a failed filesystem write without letting its diagnostic observer replace the error', async () => {
     _setScratchUsageForTests('ws-Q', 0);
     let clock = 0;
@@ -912,7 +1005,7 @@ describe('deferred scratch quota recovery', () => {
     const old = makeSparseRun('ws-Q', UUID(1), 4 * 1024 ** 3, 10_000);
     const fresh = makeSparseRun('ws-Q', UUID(2), 1024 ** 3);
     const oldDataPath = join(old, 'data.bin');
-    await refreshScratchUsage('ws-Q');
+    _setScratchUsageForTests('ws-Q', WORKSPACE_QUOTA_BYTES + markerBytes('ws-Q'));
     vi.mocked(readdirAsync).mockClear();
     vi.mocked(rmAsync).mockClear();
     vi.mocked(statAsync).mockClear();

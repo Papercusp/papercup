@@ -5,10 +5,8 @@ import { recordExpertiseRoutingInvocation } from '../endpoint-route/telemetry';
 import { CONSULT_DEFAULT_POLICY } from './selection-policies';
 import type { GetFeedbackDeps, GetFeedbackRequest } from './get-feedback-core';
 
-export async function getFeedbackProd(
-  request: GetFeedbackRequest,
-  identity: AgentIdentity,
-  options: {
+export interface GetFeedbackProdOptions {
+    acceptedRequest?: GetFeedbackDeps['acceptedRequest'];
     harnessSlug?: string | null;
     filterRoute?: (route: Awaited<ReturnType<GetFeedbackDeps['route']>>) => Promise<Awaited<ReturnType<GetFeedbackDeps['route']>>>;
     /**
@@ -21,7 +19,33 @@ export async function getFeedbackProd(
      * question it answers — "may this consult start a process?" — is unchanged.)
      */
     allowDispatch?: boolean;
-  } = {},
+}
+
+export async function acceptFeedbackRequestProd(
+  request: GetFeedbackRequest, identity: AgentIdentity,
+  options: Pick<GetFeedbackProdOptions, 'harnessSlug' | 'allowDispatch'> = {},
+) {
+    const [{ getOrgPg }, { acceptFeedbackRequestCore }, conversations] = await Promise.all([
+      import('@papercusp/db-org'), import('./get-feedback-core'), import('../agent-tools/coordination/conversations'),
+    ]);
+    const payload = { ...request, harnessSlug: request.harnessSlug || options.harnessSlug || undefined,
+      allowDispatch: options.allowDispatch !== false };
+    const accepted = await acceptFeedbackRequestCore(payload, {
+      getSql: () => getOrgPg().sql,
+      open: async (input) => {
+        const result = await conversations.openConversation(identity, { ...input, producer: 'consult:get_feedback' });
+        return { conversation_id: result.conversation.id, thread_id: result.thread_id, delivered: result.delivered };
+      },
+    });
+    if (!('error' in accepted) && accepted.state === 'routing') {
+      // The durable row, not this promise, owns recovery after process death.
+      void continueFeedbackRequestProd(request.workspaceId, accepted.conversation_id).catch(() => {});
+    }
+    return accepted;
+}
+
+export async function getFeedbackProd(
+  request: GetFeedbackRequest, identity: AgentIdentity, options: GetFeedbackProdOptions = {},
 ) {
   const [
     { getOrgPg }, { getFeedbackCore }, { routeConsult }, { buildQueryEmbedderResolved, interactiveEmbedAcquireBudgetMs },
@@ -55,6 +79,7 @@ export async function getFeedbackProd(
     ? resolveProseProfileSelection(resolved.mode, resolved.profile)
     : null;
   return getFeedbackCore({ ...request, allowDispatch: !dispatchDisabled }, {
+    ...(options.acceptedRequest ? { acceptedRequest: options.acceptedRequest } : {}),
     getSql: () => getOrgPg().sql,
     route: async (params) => {
       const routed = await routeConsult({
@@ -110,5 +135,19 @@ export async function getFeedbackProd(
           // is stored, which lets resolveExpertModelAllowlist fall back to the
           // owner-stated seed on its own terms.
         }, { loadRanks: expertRouting.loadRanks }),
+  });
+}
+
+/** Existing sweep calls this under the row's saved requester/workspace, with
+ * no tool recursion and no new launch mechanism. */
+export async function continueFeedbackRequestProd(workspaceId: string, conversationId: string): Promise<boolean> {
+  const [{ getOrgPg }, { continueFeedbackRequestCore }] = await Promise.all([
+    import('@papercusp/db-org'), import('./get-feedback-core'),
+  ]);
+  return continueFeedbackRequestCore(workspaceId, conversationId, {
+    getSql: () => getOrgPg().sql,
+    execute: async (request, acceptedRequest) => getFeedbackProd(request,
+      { ownerId: request.requesterId, workspaceId } as AgentIdentity,
+      { acceptedRequest, harnessSlug: request.harnessSlug, allowDispatch: request.allowDispatch }),
   });
 }

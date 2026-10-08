@@ -89,7 +89,7 @@ async function main() {
   const bundle = join(evidenceDir, 'hono-host.mjs');
   console.log('GOVERNANCE_HTTP_PHASE bundle-start');
   try {
-    const out = execFileSync('bash', [join(root, 'apps/operator/bin/bundle-host.sh'), 'bin/hono-host.ts', bundle],
+    const out = execFileSync('bash', [join(root, 'apps/operator/bin/bundle-host.sh'), join(root, 'apps/operator/bin/hono-host.ts'), bundle],
       { cwd: root, env: e, encoding: 'utf8', timeout: 240_000, maxBuffer: 4 * 1024 * 1024 });
     writeFileSync(join(evidenceDir, 'build.log'), out);
   } catch (error: any) {

@@ -18,7 +18,10 @@ native eval 'window.__TSR_ROUTER__.navigate({to:"/dao"})' >/dev/null
 "$VERIFY_TAURI_POLL" --selector '[data-testid="dao-launch-workspace"]'
 # Native prototype setters preserve React input tracking. The CLI type command
 # currently assigns el.value directly (EI-25430344575489294).
-native eval 'window.__daoSurfaceType=(label,value)=>{const e=[...document.querySelectorAll(".dao-form input,.dao-form textarea")].find(x=>x.getAttribute("aria-label")===label);if(!e)throw Error("Missing field "+label);e.focus();const setter=Object.getOwnPropertyDescriptor(e.tagName==="TEXTAREA"?HTMLTextAreaElement.prototype:HTMLInputElement.prototype,"value").set;setter.call(e,"");e.dispatchEvent(new Event("input",{bubbles:true}));setter.call(e,value);e.dispatchEvent(new Event("input",{bubbles:true}));e.dispatchEvent(new Event("change",{bubbles:true}));e.blur();};' >/dev/null
+define_type_helper() {
+  native eval 'window.__daoSurfaceType=(label,value)=>{const e=[...document.querySelectorAll(".dao-form input,.dao-form textarea")].find(x=>x.getAttribute("aria-label")===label);if(!e)throw Error("Missing field "+label);e.focus();const setter=Object.getOwnPropertyDescriptor(e.tagName==="TEXTAREA"?HTMLTextAreaElement.prototype:HTMLInputElement.prototype,"value").set;setter.call(e,"");e.dispatchEvent(new Event("input",{bubbles:true}));setter.call(e,value);e.dispatchEvent(new Event("input",{bubbles:true}));e.dispatchEvent(new Event("change",{bubbles:true}));e.blur();};' >/dev/null
+}
+define_type_helper
 native click '.dao-sidebar-create' >/dev/null
 "$VERIFY_TAURI_POLL" --selector 'input[aria-label="Organization name"]'
 native eval '__daoSurfaceType("Organization name","Native DAO regression");__daoSurfaceType("Shared purpose","Prepare a shared organization with transparent governance.")' >/dev/null
@@ -61,6 +64,31 @@ for theme in portal-light portal-dark; do
   "$VERIFY_TAURI_POLL" --selector '[data-testid="dao-launch-workspace"]'
   define_layout_guard
   "$VERIFY_TAURI_POLL" --require '.dao-task' --require-min 5 --eval "document.documentElement.dataset.theme===\"$theme\" && document.querySelector(\".dao-org-select\").textContent.includes(\"Native DAO regression\") && __daoLayoutFits()"
+done
+# Keep legal routing evidence separate from source receipts. Both branches
+# must render the saved jurisdiction after reload and reopen with that value.
+native eval 'document.querySelectorAll(".dao-sidebar nav button")[4].click()' >/dev/null
+"$VERIFY_TAURI_POLL" --selector '.dao-section-overview' --text 'legal entity'
+for route in new existing; do
+  native click '.dao-section-overview .dao-button.primary' >/dev/null
+  "$VERIFY_TAURI_POLL" --selector 'input[aria-label="Country / jurisdiction"]'
+  native click '[role="combobox"][aria-label="Legal route"]' >/dev/null
+  "$VERIFY_TAURI_POLL" --selector '[role="option"]'
+  native eval "const label=$([ "$route" = new ] && echo '\"Prepare a new entity with an advisor\"' || echo '\"Use an existing legal entity\"');const option=[...document.querySelectorAll('[role=option]')].find(e=>e.textContent.includes(label));if(!option)throw Error('Missing legal route option');option.setAttribute('data-native-dao-route','selected');" >/dev/null
+  native click '[data-native-dao-route="selected"]' >/dev/null
+  define_type_helper
+  native eval "__daoSurfaceType('Country / jurisdiction','$([ "$route" = new ] && echo CA || echo US)');__daoSurfaceType('Legal entity name','Native $route entity');" >/dev/null
+  native click '.dao-form-footer .dao-button.primary' >/dev/null
+  "$VERIFY_TAURI_POLL" --selector '.dao-notice' --text 'Draft saved.'
+  native eval 'location.reload()' >/dev/null
+  "$VERIFY_TAURI_POLL" --selector '.dao-section-overview' --text "Native $route entity"
+  "$VERIFY_TAURI_POLL" --selector '.dao-section-overview' --eval "document.querySelector('.dao-section-overview').textContent.includes('$([ "$route" = new ] && echo CA || echo US)') && document.querySelector('.dao-section-overview h2').textContent.includes('$([ "$route" = new ] && echo 'Prepare a new' || echo 'Connect an existing')')"
+  native screenshot --selector '[data-testid="dao-launch-workspace"]' --output "$OUT_DIR/legal-$route-panel.png" >/dev/null
+  native click '.dao-section-overview .dao-button.primary' >/dev/null
+  "$VERIFY_TAURI_POLL" --selector 'input[aria-label="Country / jurisdiction"]' --eval "document.querySelector('input[aria-label=\"Country / jurisdiction\"]').value==='$([ "$route" = new ] && echo CA || echo US)' && document.querySelector('[role=combobox][aria-label=\"Legal route\"]').textContent.includes('$([ "$route" = new ] && echo 'Prepare a new' || echo 'Use an existing')')"
+  native eval 'JSON.stringify({url:location.href,country:document.querySelector("input[aria-label=\"Country / jurisdiction\"]").value,route:document.querySelector("[role=combobox][aria-label=\"Legal route\"]").textContent,entity:document.querySelector("input[aria-label=\"Legal entity name\"]").value,panel:document.querySelector(".dao-section-overview").textContent})' >"$OUT_DIR/legal-$route.json"
+  native eval 'document.querySelector("[role=dialog] button[aria-label=Close]").click()' >/dev/null
+  "$VERIFY_TAURI_POLL" --selector '.dao-section-overview' --eval '!document.querySelector(".dao-modal")'
 done
 if native check --selector '.dao-task-intentionally-missing' --json >"$OUT_DIR/negative-control.json" 2>&1; then
   echo 'Missing-selector negative control unexpectedly passed' >&2; exit 1

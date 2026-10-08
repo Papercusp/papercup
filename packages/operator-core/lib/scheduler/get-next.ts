@@ -2352,6 +2352,25 @@ export interface ClaimSpecDeltaSide {
  * to a zeroed delta, because "measured no change" is the answer that would wave a starving
  * spec through.
  */
+/**
+ * The filter bounding which rows enter the delta snapshot: the UNION of both sides.
+ *
+ * An absent filter matches EVERY row, so if either side is unfiltered the union is
+ * unfiltered too. WI-10007576: this used to fall back to the OTHER side's filter
+ * (`current ?? proposed`), so the default unfiltered lane previewed against a
+ * `kind = bug` proposal materialized only bug rows. `currentClaimable` then equalled
+ * `proposedClaimable` and every narrowing re-steer read `newlyExcluded: 0` (measured
+ * 423/423 and 403/403 on the live papercusp lane). The mirror case — a filtered lane
+ * widened to unfiltered — hid every newly admitted row the same way.
+ */
+export function claimSpecDeltaCandidateFilter(
+  current: FilterNode | undefined,
+  proposed: FilterNode | undefined,
+): FilterNode | undefined {
+  if (!current || !proposed) return undefined;
+  return { any: [current, proposed] };
+}
+
 export async function readClaimSpecDelta(
   current: ClaimSpecDeltaSide,
   proposed: ClaimSpecDeltaSide,
@@ -2398,10 +2417,7 @@ export async function readClaimSpecDelta(
     // alongside an existing plan/property filter: proposed-only rows never reach the
     // `proposed_match` projection, so the preview reports 0 newly admitted even though
     // scheduler:set_claim_spec's whole-pool preview sees and admits them (EI-20414245235902773).
-    const candidateFilter: FilterNode | undefined =
-      current.filter && proposed.filter
-        ? { any: [current.filter, proposed.filter] }
-        : (current.filter ?? proposed.filter);
+    const candidateFilter = claimSpecDeltaCandidateFilter(current.filter, proposed.filter);
     const currentMatch = compileFilter(client, current.filter);
     const candidateMatch = compileFilter(client, candidateFilter);
     const sub = issueClaimCandidateSubquery(client, {

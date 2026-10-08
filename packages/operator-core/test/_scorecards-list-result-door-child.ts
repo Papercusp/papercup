@@ -45,8 +45,8 @@ const sql = postgres(dsn, { max: 4, prepare: false, onnotice: () => {} });
 const rubricRef = 'scorecards-list-result-door-isolated';
 const sourceHive = 'scorecards-list-result-door-isolated';
 const rowCount = 100;
-const evidenceChars = 106_000;
-const args = { rubricRef, sourceHive, limit: rowCount };
+const evidenceChars = 2_000;
+const args = { rubricRef, sourceHive, limit: rowCount, payloadTier: 'full' as const };
 const targetRunId = randomUUID();
 const outerRunId = randomUUID();
 const context = {
@@ -68,6 +68,12 @@ const context = {
   tx: {},
 };
 
+// This scenario must reach the result door with >100 KB of raw text. The
+// explicit full override bypasses tooldef's separate 30k hard ceiling; the
+// per-session opt-out alone does not bypass that ceiling.
+assert.equal(args.payloadTier, 'full');
+assert.ok(Buffer.byteLength('e'.repeat(evidenceChars), 'utf8') * rowCount > 100_000);
+
 async function run() {
   try {
     const [server] = await sql`SELECT inet_server_port() AS port, current_database() AS database`;
@@ -85,12 +91,12 @@ async function run() {
              'scorecards result-door fixture ' || n,
              '',
              'minor',
-             'test',
-             'done',
-             jsonb_build_object('observation', jsonb_build_object(
-               'rubricRef', ${rubricRef},
-               'sourceHive', ${sourceHive},
-               'subject', jsonb_build_object('kind', 'agent-run', 'ref', ${sourceHive}),
+            'test',
+            'done',
+            jsonb_build_object('observation', jsonb_build_object(
+              'rubricRef', ${rubricRef}::text,
+              'sourceHive', ${sourceHive}::text,
+              'subject', jsonb_build_object('kind', 'agent-run', 'ref', ${sourceHive}::text),
                'ratings', jsonb_build_object('history-integrity', jsonb_build_object(
                  'rating', 'healthy', 'evidence', repeat('e', ${evidenceChars})
                ))
@@ -126,8 +132,8 @@ async function run() {
     assert.equal(targetBody?.count, rowCount);
     assert.equal(targetBody?.hasMore, false);
     assert.equal(targetBody?.scorecards.length, rowCount);
-    assert.equal(targetBody?.scorecards[0]?.issueId, 'EI-sclrd-0100');
-    assert.equal(targetBody?.scorecards.at(-1)?.issueId, 'EI-sclrd-0001');
+    assert.equal(targetBody?.scorecards[0]?.issueId, 'EI-sclrd-0001');
+    assert.equal(targetBody?.scorecards.at(-1)?.issueId, 'EI-sclrd-0100');
 
     const invokeTool = (await import('../lib/agent-tools/tools/invoke')).default;
     let nestedDispatches = 0;
@@ -149,7 +155,7 @@ async function run() {
     };
     const invokeElapsedMs = performance.now() - invokeStartedAt;
     assert.equal(nestedDispatches, 1);
-    assert.equal(invoke.content[0]?.text, targetText!.text);
+    assert.equal(invoked.content[0]?.text, targetText!.text);
 
     let lateSettlement: unknown;
     let resolveLateSettlement!: (value: unknown) => void;
@@ -192,16 +198,23 @@ async function run() {
     const parsed = parseScratchReference(spillFile);
     assert.ok(parsed);
     assert.equal(parsed.manifest.workspaceId, workspaceId);
-    assert.equal(parsed.manifest.mediaType, 'text/plain');
+    assert.equal(parsed.manifest.mediaType, 'application/json');
     assert.equal(parsed.payload.length, parsed.manifest.byteCount);
     const bodyOffset = parsed.manifest.bodyOffsetInPayload;
     assert.ok(Number.isSafeInteger(bodyOffset));
     const recoveredText = parsed.payload.subarray(bodyOffset!).toString('utf8');
-    const recovered = JSON.parse(recoveredText) as typeof targetBody;
+    const recoveredEnvelope = JSON.parse(recoveredText) as {
+      content: Array<{ type?: string; text?: string }>;
+    };
+    assert.ok(Array.isArray(recoveredEnvelope.content));
+    const recoveredContent = recoveredEnvelope.content.find((item) => item.type === 'text');
+    assert.ok(recoveredContent?.text);
+    assert.equal(recoveredContent.text, targetText!.text);
+    const recovered = JSON.parse(recoveredContent.text) as typeof targetBody;
     assert.equal(recovered.count, rowCount);
     assert.equal(recovered.scorecards.length, rowCount);
-    assert.equal(recovered.scorecards[0]?.issueId, 'EI-sclrd-0100');
-    assert.equal(recovered.scorecards.at(-1)?.issueId, 'EI-sclrd-0001');
+    assert.equal(recovered.scorecards[0]?.issueId, 'EI-sclrd-0001');
+    assert.equal(recovered.scorecards.at(-1)?.issueId, 'EI-sclrd-0100');
     const payloadSha256 = createHash('sha256').update(parsed.payload).digest('hex');
     assert.equal(payloadSha256, parsed.manifest.sha256);
 
@@ -221,7 +234,7 @@ async function run() {
         credentialsStripped: true,
       },
       list: { args, rowCount: targetBody.scorecards.length, outputBytes: targetBytes, elapsedMs: listElapsedMs },
-      invoke: { nestedDispatches, outputBytes: Buffer.byteLength(invoke.content[0]?.text ?? '', 'utf8'), elapsedMs: invokeElapsedMs },
+      invoke: { nestedDispatches, outputBytes: Buffer.byteLength(invoked.content[0]?.text ?? '', 'utf8'), elapsedMs: invokeElapsedMs },
       resultDoor: {
         elapsedMs: doorElapsedMs,
         truncated: doorMeta.truncated,

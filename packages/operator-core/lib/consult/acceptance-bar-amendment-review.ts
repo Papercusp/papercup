@@ -40,6 +40,7 @@ import type { RouteResult } from './relevance-router';
 import type { ConsultReviewerModel } from './get-feedback-core';
 import { resolveExpertModelAllowlist, type AllowedExpertModel } from './expert-model-allowlist';
 import { ACCEPTANCE_BAR_AMENDMENT_REVIEW_POLICY } from './selection-policies';
+import { analyzeClaudeResumeTranscriptFile } from '../claude-resume-tool-references.mjs';
 
 /** One candidate's verdict from the check-approver screen. */
 export type AmendmentReviewerScreen = (
@@ -309,6 +310,22 @@ export type FreshAmendmentReviewerResult =
       /** True when this preview already had a fresh reviewer: nothing new was launched. */
       deduped: boolean;
       answerOn: FreshReviewerAnswerTarget;
+      ownerId?: string;
+      nativeRef?: string;
+      firstReply?: 'observed' | 'pending' | 'unreadable';
+    }
+  | {
+      state: 'blocked';
+      launcherId: string;
+      taskId: string | null;
+      label: string;
+      idempotencyKey: string;
+      deduped: boolean;
+      answerOn: FreshReviewerAnswerTarget;
+      ownerId?: string;
+      nativeRef: string;
+      reason: 'account-walled' | 'first-turn-rejected';
+      evidence: string;
     }
   | { state: 'not-launched'; reason: string };
 
@@ -428,6 +445,9 @@ export async function launchFreshAmendmentReviewer(
     launch?: LaunchHandler;
     assertAllowed?: typeof assertReviewerModelAllowed;
     resolveSteeredModel?: typeof resolveFreshReviewerModelForAccountSteer;
+    analyzeTranscript?: typeof analyzeClaudeResumeTranscriptFile;
+    nowMs?: () => number;
+    sleepMs?: (ms: number) => Promise<void>;
   } = {},
 ): Promise<FreshAmendmentReviewerResult> {
   const previewPostRef = input.previewPostRef.trim();
@@ -486,22 +506,63 @@ export async function launchFreshAmendmentReviewer(
   )) as {
     isError?: boolean;
     content?: Array<{ text?: string }>;
-    data?: { deduped?: boolean; launch?: { tasks?: Array<{ taskId?: unknown }> } };
+    data?: { deduped?: boolean; launch?: { tasks?: Array<{
+      taskId?: unknown;
+      ownerId?: unknown;
+      kickoffProof?: { nativeRef?: unknown };
+    }> } };
   };
   if (result?.isError) {
     const text = (result.content ?? []).map((c) => c.text ?? '').join(' ').trim();
     return { state: 'not-launched', reason: `launch refused: ${clip(text || 'no detail', 400)}` };
   }
-  const taskId = result?.data?.launch?.tasks?.[0]?.taskId;
-  return {
-    state: 'launched',
+  const task = result?.data?.launch?.tasks?.[0];
+  const taskId = task?.taskId;
+  const ownerId = typeof task?.ownerId === 'string' ? task.ownerId : undefined;
+  const nativeRef = typeof task?.kickoffProof?.nativeRef === 'string' ? task.kickoffProof.nativeRef : undefined;
+  const retained = {
     launcherId: ACCEPTANCE_BAR_AMENDMENT_REVIEW_ACTOR,
     taskId: typeof taskId === 'string' ? taskId : null,
     label,
     idempotencyKey,
     deduped: result?.data?.deduped === true,
     answerOn,
+    ...(ownerId ? { ownerId } : {}),
+    ...(nativeRef ? { nativeRef } : {}),
   };
+  // A submitted kickoff is not a successful provider reply. Reuse the consult
+  // transcript analyzer: synthetic billing/context/tool errors count, quoted
+  // error prose and copied history do not. Re-check deduped launches too, so a
+  // delayed rejection cannot remain "launched" forever on repeated dry runs.
+  if (nativeRef?.endsWith('.jsonl')) {
+    const analyze = deps.analyzeTranscript ?? analyzeClaudeResumeTranscriptFile;
+    const now = deps.nowMs ?? Date.now;
+    const sleep = deps.sleepMs ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+    const deadline = now() + 20_000;
+    for (let poll = 0; ; poll += 1) {
+      let analysis: ReturnType<typeof analyzeClaudeResumeTranscriptFile> = null;
+      try { analysis = analyze(nativeRef); } catch { /* unreadable is not a rejection */ }
+      if (!analysis) return { state: 'launched', ...retained, firstReply: 'unreadable' };
+      if (analysis.assistantTurnsSinceLastPrompt > 0) {
+        const accountWall = (analysis.trailingAccountWallTurns ?? 0) > 0;
+        const evidence = accountWall ? analysis.lastAccountWallEvidence
+          : (analysis.trailingContextLimitTurns ?? 0) > 0 ? analysis.lastContextLimitEvidence
+          : analysis.trailingMissingToolReferenceTurns > 0 ? analysis.lastMissingToolReferenceEvidence : null;
+        if (accountWall || evidence) {
+          return { state: 'blocked', ...retained, nativeRef,
+            reason: accountWall ? 'account-walled' : 'first-turn-rejected',
+            evidence: evidence ?? 'provider billing rejection' };
+        }
+        return { state: 'launched', ...retained, firstReply: 'observed' };
+      }
+      const remainingMs = deadline - now();
+      // Independent clock and read-count bounds; no reply is pending, never
+      // proof of death. Keep its task/identity for exact-session recovery.
+      if (poll >= 40 || remainingMs <= 0) return { state: 'launched', ...retained, firstReply: 'pending' };
+      await sleep(Math.min(500, remainingMs));
+    }
+  }
+  return { state: 'launched', ...retained };
 }
 
 /**
@@ -619,6 +680,13 @@ export async function openAcceptanceBarAmendmentReview(
         `(label ${freshReviewer.label}${freshReviewer.taskId ? `, task ${freshReviewer.taskId}` : ''}). It answers with one work_items:comment on ${freshReviewer.answerOn.workItemId}: ` +
         `\`approve ${previewPostRef}\` or an objection. Read it with work_items:get { id:'${freshReviewer.answerOn.workItemId}', threadLimit:5 }, then apply with the same patch plus approvalRef:'thread-post:<that post id>'. ` +
         'Re-running this dry run reuses the same reviewer; if it ended without posting, post the preview again and pass the new post to launch another.'
-      : `No eligible outside-lineage reviewer could be routed, and no fresh reviewer was launched: ${freshReviewer.reason}. The reason and screenedOut say why routing failed.`;
+      : freshReviewer.state === 'blocked'
+        ? `The retained outside-lineage reviewer is blocked (${freshReviewer.reason}): ${freshReviewer.evidence}. ` +
+          `Task ${freshReviewer.taskId ?? 'unknown'}, transcript ${freshReviewer.nativeRef}. ` +
+          (freshReviewer.ownerId
+            ? `Recover the same identity with capability:launch-agent { resume:{agentId:'${freshReviewer.ownerId}'}, headless:true, independent:true, account:'auto', brief:'Resume the retained BAR amendment review of ${previewPostRef} on ${freshReviewer.answerOn.workItemId}; post an independent approval or objection.' }. `
+            : 'Resolve the retained task owner before recovery. ') +
+          'No decision was obtained. Do not wait for an approval from this rejected turn, countersign it, or post another preview to duplicate the reviewer.'
+        : `No eligible outside-lineage reviewer could be routed, and no fresh reviewer was launched: ${freshReviewer.reason}. The reason and screenedOut say why routing failed.`;
   return { ...routed, previewPostRef, next, freshReviewer };
 }

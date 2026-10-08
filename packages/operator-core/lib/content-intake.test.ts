@@ -99,6 +99,28 @@ describe('shared authorized content intake', () => {
     expect(result.text).toBe('FIRST PAGE\n\nFINAL PAGE TAIL');
     expect(result.coverage).toEqual({ complete: true, warnings: [], pages: { total: 2, read: 2, unreadable: [] } });
   });
+  it('retains each supported source reference and untrusted provenance through bounded extraction', async () => {
+    const inputs = [
+      { kind: 'text' as const, ref: 'doc:plain', text: 'FIRST TAIL' },
+      { kind: 'selection' as const, ref: 'doc:selected', text: 'FIRST TAIL' },
+      { kind: 'html' as const, ref: 'https://example.test/source', html: '<article><p>FIRST TAIL</p></article>' },
+      { kind: 'pdf' as const, ref: 'file:source.pdf', bytes: pdfFixture(['FIRST TAIL']) },
+    ];
+    for (const input of inputs) {
+      const result = await readContent(input, context, allowed, { maxChars: 5 });
+      expect(result.text).toBe('FIRST');
+      expect(result.format).toBe(input.kind);
+      expect(result.sourceRefs).toEqual([input.ref]);
+      expect(result.access).toEqual(context);
+      expect(result.provenance.trust).toBe('untrusted');
+      expect(result.coverage).toMatchObject({ complete: false, warnings: ['character-limit'] });
+    }
+    const collection = await readContent({ kind: 'collection', ref: 'collection:provided', sources: inputs }, context, allowed);
+    expect(collection.sourceRefs).toEqual(['collection:provided', ...inputs.map(input => input.ref)]);
+    expect(collection.text).toBe('FIRST TAIL\n\nFIRST TAIL\n\nFIRST TAIL\n\nFIRST TAIL');
+    expect(collection.provenance.trust).toBe('untrusted');
+    expect(collection.access).toEqual(context);
+  });
   it('discloses unreadable image/blank pages and the page cap', async () => {
     const mixed = await readContent({ kind: 'pdf', bytes: pdfFixture(['readable', null]) }, context, allowed);
     expect(mixed.coverage).toMatchObject({ complete: false, pages: { total: 2, read: 2, unreadable: [2] } });

@@ -303,7 +303,8 @@ export interface ConsultDispatchDeps extends ExpertModelAllowlistDeps {
   ) => Pick<
     ClaudeResumeTranscriptAnalysis,
     'trailingMissingToolReferenceTurns' | 'lastMissingToolReferenceName' | 'assistantTurnsSinceLastPrompt' |
-    'trailingContextLimitTurns' | 'lastContextLimitEvidence'
+    'trailingContextLimitTurns' | 'lastContextLimitEvidence' |
+    'trailingAccountWallTurns' | 'lastAccountWallEvidence'
   > | null;
   /** Wait seam for the first-turn poll (WI-10004645); tests resolve it at once. */
   sleepMs: (ms: number) => Promise<void>;
@@ -1598,7 +1599,7 @@ async function launchAnsweringSession(
     firstTurnUncheckedReason = 'the kickoff proof named no native transcript';
   }
   if (rank.agent === 'claude' && typeof answeringTranscript === 'string' && answeringTranscript.endsWith('.jsonl')) {
-    let rejection: { turns: number; tool: string | null; contextEvidence?: string } | null = null;
+    let rejection: { turns: number; tool: string | null; contextEvidence?: string; accountEvidence?: string } | null = null;
     const deadline = kickoffSeenAtMs + FIRST_TURN_WAIT_MS;
     // The read-count bound is independent of the clock, so a stalled clock
     // cannot turn this into an unbounded loop.
@@ -1619,7 +1620,12 @@ async function launchAnsweringSession(
       }
       if (analysis.assistantTurnsSinceLastPrompt > 0) {
         replied = true;
-        if ((analysis.trailingContextLimitTurns ?? 0) > 0) {
+        if ((analysis.trailingAccountWallTurns ?? 0) > 0) {
+          rejection = {
+            turns: analysis.trailingAccountWallTurns!, tool: null,
+            accountEvidence: analysis.lastAccountWallEvidence ?? 'provider billing rejection',
+          };
+        } else if ((analysis.trailingContextLimitTurns ?? 0) > 0) {
           rejection = {
             turns: analysis.trailingContextLimitTurns!,
             tool: null,
@@ -1645,10 +1651,14 @@ async function launchAnsweringSession(
         record: {
           ...base,
           outcome: 'failed',
-          reason: 'first-turn-rejected',
+          // Billing cannot poison the expert's transcript or other ranks.
+          // Reuse the existing account-wall disposition, then walk onward.
+          reason: rejection.accountEvidence ? 'account-walled' : 'first-turn-rejected',
           detail:
             `${operation} of ${opts.sourceOwnerId} → ${rank.agent}/${rank.model} as ${answeringOwnerId}: ` +
-            (rejection.contextEvidence
+            (rejection.accountEvidence
+              ? `its first reply was a provider account rejection (${rejection.accountEvidence})`
+              : rejection.contextEvidence
               ? `its first reply was a provider context-limit rejection (${rejection.contextEvidence})`
               : `its first reply was a provider "Tool reference not found" rejection`) +
             (rejection.tool ? ` ('${rejection.tool}')` : '') +

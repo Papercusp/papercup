@@ -91,8 +91,8 @@ it('spills and reads back a real 100-row scorecards:list result in a private iso
           payloadBytes: receipt.resultDoor.manifest.byteCount,
           payloadSha256: receipt.resultDoor.manifest.sha256,
           scorecardRows: 100,
-          firstIssueId: 'EI-sclrd-0100',
-          lastIssueId: 'EI-sclrd-0001',
+          firstIssueId: 'EI-sclrd-0001',
+          lastIssueId: 'EI-sclrd-0100',
         });
 
         const runtimeRoot = receipt.runtime.runtimeRoot as string;

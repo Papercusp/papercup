@@ -19,6 +19,7 @@ import {
   type AmendmentReviewerScreen,
 } from './acceptance-bar-amendment-review';
 import { ACCEPTANCE_BAR_AMENDMENT_REVIEW_POLICY } from './selection-policies';
+import { analyzeClaudeResumeTranscript } from '../claude-resume-tool-references.mjs';
 
 // Directed lineage edges: rebind predecessor -> implementer -> spawned child;
 // a common parent launched both the implementer and a sibling.
@@ -321,6 +322,20 @@ describe('openAcceptanceBarAmendmentReview (P-006)', () => {
     expect('freshReviewer' in result).toBe(false);
   });
 
+  it('reports a blocked retained reviewer with exact recovery guidance instead of waiting for approval', async () => {
+    const route = vi.fn().mockResolvedValue({ state: 'no-eligible-reviewer', conversationId: null, reason: 'no_available_responder', screenedOut: [] });
+    const launchFresh = vi.fn().mockResolvedValue({ state: 'blocked', reason: 'account-walled',
+      evidence: 'Credit balance is too low', ownerId: 'judge-1', nativeRef: '/retained/review.jsonl',
+      taskId: 'task-1', answerOn: { workItemId: 'WI-7', harness: 'papercusp' } });
+    const result = await openAcceptanceBarAmendmentReview(baseInput, { verifyPreviewPost: vi.fn(), route, launchFresh });
+    expect(result.freshReviewer).toMatchObject({ state: 'blocked', ownerId: 'judge-1' });
+    expect(result.next).toContain('Credit balance is too low');
+    expect(result.next).toContain("resume:{agentId:'judge-1'}");
+    expect(result.next).toContain('Do not wait for an approval');
+    expect(result.next).not.toContain("approvalRef:'thread-post:<that post id>'");
+    expect(launchFresh).toHaveBeenCalledTimes(1);
+  });
+
   it('reports a failed fresh launch instead of throwing away the routing result', async () => {
     const route = vi.fn().mockResolvedValue({ state: 'no-eligible-reviewer', conversationId: 'conv-3', reason: 'x', screenedOut: [] });
     const launchFresh = vi.fn().mockRejectedValue(new Error('rubric unreadable'));
@@ -559,6 +574,68 @@ describe('launchFreshAmendmentReviewer (WI-10003299)', () => {
       state: 'not-launched',
       reason: 'launch refused: quota walled',
     });
+  });
+
+  function transcriptReply(text: string, synthetic = false) {
+    return analyzeClaudeResumeTranscript([
+      JSON.stringify({ type: 'user', message: { role: 'user', content: 'Review the amendment' } }),
+      JSON.stringify({ type: 'assistant', ...(synthetic ? { isApiErrorMessage: true } : {}),
+        message: { role: 'assistant', content: text } }),
+    ].join('\n'));
+  }
+
+  function retainedLaunch(deduped = false) {
+    return { data: { deduped, launch: { tasks: [{ taskId: 'task-1', ownerId: 'judge-1',
+      kickoffProof: { nativeRef: '/retained/review.jsonl' } }] } } };
+  }
+
+  it.each([false, true])('reports a provider credit wall on a retained review (deduped=%s)', async (deduped) => {
+    const d = deps({ launch: vi.fn().mockResolvedValue(retainedLaunch(deduped)),
+      analyzeTranscript: vi.fn(() => transcriptReply('Credit balance is too low', true)) });
+    expect(await launchFreshAmendmentReviewer(input, d as never)).toMatchObject({
+      state: 'blocked', reason: 'account-walled', evidence: 'Credit balance is too low',
+      taskId: 'task-1', ownerId: 'judge-1', nativeRef: '/retained/review.jsonl', deduped,
+    });
+    expect(d.launch).toHaveBeenCalledTimes(1);
+  });
+
+  it('waits for the new reply, rather than treating copied history as a successful review', async () => {
+    let clock = 0;
+    const copied = analyzeClaudeResumeTranscript([
+      JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: 'Old answer' } }),
+      JSON.stringify({ type: 'user', message: { role: 'user', content: 'New review' } }),
+    ].join('\n'));
+    const d = deps({ launch: vi.fn().mockResolvedValue(retainedLaunch()),
+      analyzeTranscript: vi.fn().mockReturnValueOnce(copied).mockReturnValue(transcriptReply('Credit balance is too low', true)),
+      nowMs: () => clock, sleepMs: vi.fn(async (ms: number) => { clock += ms; }) });
+    expect(await launchFreshAmendmentReviewer(input, d as never)).toMatchObject({ state: 'blocked', reason: 'account-walled' });
+    expect(d.sleepMs).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not reject a real reviewer quoting a provider error', async () => {
+    const d = deps({ launch: vi.fn().mockResolvedValue(retainedLaunch()),
+      analyzeTranscript: vi.fn(() => transcriptReply('The earlier turn said Credit balance is too low; I am reviewing now.')) });
+    expect(await launchFreshAmendmentReviewer(input, d as never)).toMatchObject({ state: 'launched', firstReply: 'observed' });
+  });
+
+  it.each(['Prompt is too long', "API Error: 400 Tool reference 'mcp__papercusp_su__old' not found in available tools"])(
+    'reports the existing transcript rejection class: %s', async (text) => {
+      const d = deps({ launch: vi.fn().mockResolvedValue(retainedLaunch()),
+        analyzeTranscript: vi.fn(() => transcriptReply(text, true)) });
+      expect(await launchFreshAmendmentReviewer(input, d as never)).toMatchObject({ state: 'blocked', reason: 'first-turn-rejected', evidence: text });
+    });
+
+  it('keeps an unreadable transcript as uncertainty', async () => {
+    const d = deps({ launch: vi.fn().mockResolvedValue(retainedLaunch()), analyzeTranscript: vi.fn(() => null) });
+    expect(await launchFreshAmendmentReviewer(input, d as never)).toMatchObject({ state: 'launched', firstReply: 'unreadable' });
+  });
+
+  it('bounds a pending first reply even if the clock stalls', async () => {
+    const pending = analyzeClaudeResumeTranscript(JSON.stringify({ type: 'user', message: { role: 'user', content: 'Review' } }));
+    const d = deps({ launch: vi.fn().mockResolvedValue(retainedLaunch()), analyzeTranscript: vi.fn(() => pending),
+      nowMs: () => 0, sleepMs: vi.fn(async () => {}) });
+    expect(await launchFreshAmendmentReviewer(input, d as never)).toMatchObject({ state: 'launched', firstReply: 'pending' });
+    expect(d.sleepMs).toHaveBeenCalledTimes(40);
   });
 
   it('the fresh brief asks for one work_items:comment on the preview work-item, not a consult answer', () => {

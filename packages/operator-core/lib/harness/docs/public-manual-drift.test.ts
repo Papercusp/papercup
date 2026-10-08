@@ -7,9 +7,12 @@ import { classifyDrift } from './freshness-sweep';
 
 describe('public manual reuses the ordinary manual-doc drift contract', () => {
   it.each([
+    'packages/operator-core/lib/auth/hosted/self-signup.ts',
     'packages/operator-core/lib/auth/hosted/billing/entitlement-seam.ts',
+    'packages/operator-core/lib/agent-tools/mode/set.ts',
     'packages/operator-core/lib/workspace-host/hosted-provider-delegation.ts',
     'packages/operator-core/lib/agent-tools/access/create.ts',
+    'packages/operator-core/lib/agent-tools/backup/snapshot_create.ts',
     'packages/operator-core/lib/agent-tools/backup/restore.ts',
   ])('the canonical FAQ requests sensitive review when %s changes', async (changed) => {
     const root = resolve(import.meta.dirname, '../../../../../');

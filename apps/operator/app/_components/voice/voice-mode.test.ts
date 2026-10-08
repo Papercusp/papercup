@@ -212,6 +212,37 @@ describe('output-only original reading', () => {
     });
   });
 
+  it('global speech cancellation aborts a pending reading and rejects its late provider response', async () => {
+    await fixture(async (mod, audio, setFetch) => {
+      let resolve!: (response: Response) => void;
+      setFetch(() => new Promise<Response>(done => { resolve = done; }));
+      const started = mod.startReading('FIRSTTAIL');
+      const request = vi.mocked(globalThis.fetch).mock.calls[0]!;
+      const signal = request[1]!.signal as AbortSignal;
+      mod.cancelAllSpeech();
+      expect(signal.aborted).toBe(true);
+      expect(mod.getReadingState()).toMatchObject({ readingId: started.readingId, status: 'stopped', position: 0 });
+      resolve(new Response(JSON.stringify({ ok: true, type: 'chunk', text: 'FIRST', start: 0, end: 5, audioBase64: 'AQ==', contentType: 'audio/wav' }) + '\n'));
+      await new Promise(done => setTimeout(done, 0));
+      expect(audio).toHaveLength(0);
+      expect(mod.getReadingState()).toMatchObject({ status: 'stopped', position: 0 });
+    });
+  });
+
+  it('global speech cancellation pauses current reading audio and prevents its queued tail', async () => {
+    await fixture(async (mod, audio) => {
+      mod.startReading('FIRSTTAIL');
+      await vi.waitFor(() => expect(audio).toHaveLength(1));
+      const finishFirst = audio[0].onended!;
+      mod.cancelAllSpeech();
+      expect(audio[0].pause).toHaveBeenCalled();
+      finishFirst();
+      await new Promise(done => setTimeout(done, 0));
+      expect(audio).toHaveLength(1);
+      expect(mod.getReadingState()).toMatchObject({ status: 'stopped', position: 0, total: 9 });
+    });
+  });
+
   it('output mute stops an active reading and rejects a new reading', async () => {
     await fixture(async (mod, audio) => {
       mod.startReading('FIRSTTAIL');

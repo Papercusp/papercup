@@ -42,7 +42,7 @@ const ok = (payload: Record<string, unknown>) => ({ data: payload });
 export default defineTool({
   name: 'consult:get_feedback',
   description:
-    'Request a consult (request/creation verb), not a reader for an existing conversation; use conversations:get { id }. The closed-consult archive serves matches first; otherwise transcript expertise routes to an isolated answer session and does not wake the expert’s live session. Below-floor outcomes are reported honestly.',
+    'Accept a recoverable consult request and return its conversation identity before routing/launch completes. Read conversations:get { id } for current routing and replies. Reuse request_key and the same payload after a timeout; a new key asks for a fresh consult. Transcript expertise routes to an isolated answer session and does not wake the expert’s live session.',
   guidance: {
     when:
       'After a first-pass check of local code, docs, or search, Ask once with a concrete question before long re-derivation; include what you tried, observed, and the decision it informs.',
@@ -51,7 +51,7 @@ export default defineTool({
     chaining:
       "This tool does not read an existing conversation; use conversations:get { id }. The dispatcher already walks allowed model ranks; do not retry. Set latency_contract:'hard-blocked' only if blocked on the answer; declines/expiries advance the cascade. After advice arrives, read the reply and apply relevant findings to your project decision. Receipt or silence does not prove usefulness. With allow_dispatch:false, retrieval-only returns candidates but no answer session.",
     returns:
-      '{ verdict, conversation_id, thread_id, responder, responder_via, remaining_candidates, latency_contract, expires_at, archive?, hint }',
+      "{ verdict:'accepted', conversation_id, thread_id, request_key, state, pending, latency_contract, park_key, hint }; conversations:get reads routing and replies",
   },
   capability: 'coord:write',
   requirePrincipal: false,
@@ -61,6 +61,7 @@ export default defineTool({
   abortCompletionReceipt: consultFeedbackAbortCompletionReceipt,
   agentRoles: [...COORD_ROLES],
   args: z.object({
+    request_key: z.string().trim().min(1).max(200).optional().describe('Stable retry identity scoped to your workspace and requester. Reuse with the same question/options after a timeout. A different payload under the same key refuses; use a new key for a fresh consult. Omitted keys deduplicate identical requests.'),
     question: hardText(LIMITS.ANNOTATION).describe('The new question to route. This tool opens a new consult; to read an existing conversation, use conversations:get { id }. Name concrete files/symbols where relevant — authorship of the code in question is a routing signal.'),
     tried: hardText(LIMITS.ANNOTATION).optional().describe('What you already tried (grounds the responder; avoids re-suggesting it).'),
     observed: hardText(LIMITS.ANNOTATION).optional().describe('What you observed (evidence, not interpretation).'),
@@ -145,16 +146,17 @@ export default defineTool({
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
 
-    const [{ getFeedbackProd }, conversations] = await Promise.all([
+    const [{ acceptFeedbackRequestProd }, conversations] = await Promise.all([
       import('../../consult/get-feedback-prod'),
       import('../coordination/conversations'),
     ]);
     const workspaceId = conversations.withConversationsIdentityScope(identity, undefined, () =>
       conversations.conversationsScopeWorkspace(),
     );
-    const result = await getFeedbackProd({
+    const result = await acceptFeedbackRequestProd({
       workspaceId,
       requesterId: identity.ownerId,
+      requestKey: args.request_key,
       question: args.question,
       tried: args.tried,
       observed: args.observed,
@@ -176,7 +178,7 @@ export default defineTool({
     let interestWatch;
     if (
       'verdict' in result &&
-      result.verdict === 'routed' &&
+      result.verdict === 'accepted' &&
       result.latency_contract === 'hard-blocked' &&
       result.park_key
     ) {

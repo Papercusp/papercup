@@ -4,6 +4,8 @@ import { AGENT_LAUNCH_HANDLER_TIMEOUT_SEC } from '../../agent-kickoff/launch-bud
 
 const h = vi.hoisted(() => ({
   getFeedbackCore: vi.fn(),
+  acceptFeedbackRequestCore: vi.fn(),
+  continueFeedbackRequestCore: vi.fn(),
   reconcileInterestEventAwaits: vi.fn(),
   buildQueryEmbedderResolved: vi.fn(async () => null),
   interactiveEmbedAcquireBudgetMs: vi.fn(() => 4000),
@@ -23,7 +25,11 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   return { ...actual, getOrgPg: () => ({ sql: vi.fn(async () => []) }) };
 });
-vi.mock('../../consult/get-feedback-core', () => ({ getFeedbackCore: h.getFeedbackCore }));
+vi.mock('../../consult/get-feedback-core', () => ({
+  getFeedbackCore: h.getFeedbackCore,
+  acceptFeedbackRequestCore: h.acceptFeedbackRequestCore,
+  continueFeedbackRequestCore: h.continueFeedbackRequestCore,
+}));
 vi.mock('../../consult/relevance-router', () => ({
   DEFAULT_RECENCY_HALF_LIFE_DAYS: 7,
   routeConsult: h.routeConsult,
@@ -78,6 +84,18 @@ const call = async (latencyContract: 'proceed' | 'hard-blocked', extra: Record<s
 
 beforeEach(() => {
   h.getFeedbackCore.mockReset();
+  h.acceptFeedbackRequestCore.mockReset().mockImplementation(async (request) => ({
+    ok: true, verdict: 'accepted', state: 'routing', pending: true,
+    conversation_id: 'consult-1', thread_id: 'thread-1', request_key: request.requestKey ?? 'auto-key',
+    latency_contract: request.latencyContract,
+    park_key: request.latencyContract === 'hard-blocked' ? 'consult:reply:consult-1' : null,
+  }));
+  h.continueFeedbackRequestCore.mockReset().mockImplementation(async (_workspace, _id, deps) => {
+    await deps.execute(h.acceptFeedbackRequestCore.mock.calls.at(-1)![0], {
+      conversation_id: 'consult-1', thread_id: 'thread-1', leaseToken: 'fixture-lease',
+    });
+    return true;
+  });
   h.routeConsult.mockReset();
   h.resolveSessionStates.mockReset();
   h.reconcileInterestEventAwaits.mockReset().mockResolvedValue(handle);
@@ -87,10 +105,11 @@ beforeEach(() => {
 });
 
 describe('consult:get_feedback requester interest handle (P-024)', () => {
-  it('arms and returns a cancel handle only for a routed hard-blocked park key', async () => {
+  it('arms and returns a cancel handle for a durably accepted hard-blocked park key', async () => {
     h.getFeedbackCore.mockResolvedValue(routed('hard-blocked'));
     const out = await call('hard-blocked');
-    expect(h.interactiveEmbedAcquireBudgetMs).toHaveBeenCalledTimes(1);
+    expect(out).toMatchObject({ verdict: 'accepted', state: 'routing', pending: true });
+    await vi.waitFor(() => expect(h.interactiveEmbedAcquireBudgetMs).toHaveBeenCalledTimes(1));
     expect(h.buildQueryEmbedderResolved).toHaveBeenCalledWith({ acquireBudgetMs: 4000 });
     expect(h.reconcileInterestEventAwaits).toHaveBeenCalledWith({
       ownerId: 'requester-1',
@@ -114,6 +133,7 @@ describe('consult:get_feedback requester interest handle (P-024)', () => {
       return routed('proceed');
     });
     await call('proceed');
+    await vi.waitFor(() => expect(h.getFeedbackCore).toHaveBeenCalledTimes(1));
     expect(h.makeConsultReachDispatcher).toHaveBeenCalledTimes(1);
 
     h.getFeedbackCore.mockReset();
@@ -128,6 +148,7 @@ describe('consult:get_feedback requester interest handle (P-024)', () => {
       },
     );
     await call('proceed', { allow_dispatch: false });
+    await vi.waitFor(() => expect(h.getFeedbackCore).toHaveBeenCalledTimes(1));
     expect(h.makeConsultReachDispatcher).not.toHaveBeenCalled();
     expect(h.notifyAgents).not.toHaveBeenCalled();
   });
@@ -162,11 +183,10 @@ describe('consult:get_feedback requester interest handle (P-024)', () => {
     );
 
     await call('proceed');
-
-    expect(h.resolveSessionStates).toHaveBeenCalledWith(
+    await vi.waitFor(() => expect(h.resolveSessionStates).toHaveBeenCalledWith(
       [{ ownerId: 'peer-host-live' }],
       { hydrateBatch: true, psuHostPositiveAuthority: true },
-    );
+    ));
   });
 });
 
@@ -194,9 +214,10 @@ describe('consult:get_feedback requester guidance', () => {
   });
 
   it('clearly distinguishes opening a consult from reading an existing conversation', () => {
-    expect((tool as any).description).toContain('request/creation verb');
-    expect((tool as any).description).toContain('not a reader for an existing conversation');
+    expect((tool as any).description).toContain('Accept a recoverable consult request');
+    expect((tool as any).description).toContain('before routing/launch completes');
     expect((tool as any).description).toContain('conversations:get { id }');
+    expect((tool as any).description).toContain('Reuse request_key and the same payload after a timeout');
     expect((tool as any).guidance.notWhen).toContain('Reading an existing conversation');
     expect((tool as any).guidance.chaining).toContain('does not read an existing conversation');
   });

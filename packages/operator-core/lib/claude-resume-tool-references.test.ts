@@ -35,6 +35,22 @@ afterEach(() => {
 });
 
 describe('Claude resume tool-reference recovery', () => {
+  it.each(['Credit balance is too low', '402 Insufficient credits. This account never purchased credits.'])
+    ('detects a synthetic billing rejection after the current kickoff: %s', (text) => {
+      expect(analyzeClaudeResumeTranscript(apiError(text))).toMatchObject({
+        trailingAccountWallTurns: 1, lastAccountWallEvidence: text,
+        assistantTurnsSinceLastPrompt: 1,
+      });
+    });
+
+  it('keeps copied billing errors and ordinary model discussion out of current account-wall evidence', () => {
+    const kickoff = JSON.stringify({ type: 'user', message: { role: 'user', content: 'Answer the current consult.' } });
+    for (const recovery of [kickoff, assistant('Credit balance is too low')]) {
+      expect(analyzeClaudeResumeTranscript([apiError('Credit balance is too low'), recovery].join('\n')))
+        .toMatchObject({ trailingAccountWallTurns: 0, lastAccountWallEvidence: null });
+    }
+  });
+
   it('detects the persisted provider context wall across a new fork kickoff', () => {
     const transcript = [
       assistant('Working.'),

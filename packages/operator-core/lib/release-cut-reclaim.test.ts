@@ -537,6 +537,35 @@ describe('gather + execute against a real temporary repo', () => {
     expect(() => fs.lstatSync(tree)).toThrow();
   });
 
+  it('removes an offloaded tree beneath a symlinked parent without unlinking the missing leaf', async () => {
+    const parent = path.join(tmp, 'producer');
+    const tree = path.join(parent, 'source');
+    const offload = path.join(tmp, 'offloaded-producer');
+    fs.mkdirSync(parent);
+    fs.writeFileSync(path.join(parent, 'evidence.txt'), 'retained producer evidence');
+    g(repo, 'worktree', 'add', '-q', '--detach', tree);
+    fs.renameSync(parent, offload);
+    fs.symlinkSync(offload, parent);
+    const plan = await gather();
+    const adminDir = plan.verdicts.find((v) => v.path === tree)?.realPath;
+    expect(adminDir).toBe(path.join(offload, 'source'));
+    const unlink = vi.fn(fs.unlinkSync);
+    const res = await executeCutReclaim(plan, [tree], {
+      scanHolders: () => ({ verified: true, holders: new Map() }),
+      archiveDir: path.join(ret, 'archive'),
+      appendAudit: () => {},
+      unlink,
+    });
+    expect(res).toMatchObject({ ok: true, results: [{ path: tree, removed: true }] });
+    expect(unlink).not.toHaveBeenCalled();
+    expect(fs.lstatSync(parent).isSymbolicLink()).toBe(true);
+    expect(fs.readFileSync(path.join(parent, 'evidence.txt'), 'utf8')).toBe('retained producer evidence');
+    expect(fs.existsSync(path.join(offload, 'source'))).toBe(false);
+    expect(fs.readdirSync(offload).filter((n) => n.startsWith('.reclaim-trash-'))).toEqual([]);
+    expect(g(repo, 'worktree', 'list', '--porcelain')).not.toContain(tree);
+    expect(fs.readdirSync(path.join(repo, '.git', 'worktrees'))).toEqual([]);
+  });
+
   // WI-10006139: the planner offered `.papercusp/worktrees/desktop-release-0.0.19` (a linked
   // worktree NESTED in the canonical tree) as named-only, and the executor then refused it as
   // "overlaps the canonical tree" — a descendant is not the canonical tree or an ancestor.

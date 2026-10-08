@@ -1,0 +1,61 @@
+{
+  "schemaVersion": 1,
+  "plan": "cloud-portal-docs-and-papercup-faq-2026-10-06",
+  "workItem": "WI-10006921",
+  "specId": "DOCS-DRIFT-REVIEW",
+  "specRevision": 1,
+  "scope": "Maintained unit classifier guard for all seven canonical FAQ anchors; provisional evidence, not certification or shipment",
+  "successfulControl": {
+    "testRunId": 20938355,
+    "commitSha": "1f3d704126dabb13d47a50b9e49a6c8ce1cc5ea3",
+    "worktreeDirty": true,
+    "passed": 9,
+    "failed": 0,
+    "skipped": 0
+  },
+  "mutation": {
+    "testRunId": 20938368,
+    "passed": 1,
+    "failed": 8,
+    "skipped": 0,
+    "change": "Manual changed-content classification review becomes fresh",
+    "failedCases": "All seven canonical FAQ anchor changes and the real quickstart signup anchor change",
+    "passedCase": "The unchanged same-anchor positive control remains fresh"
+  },
+  "probeControls": {
+    "currentBaselineTestRunId": 20938358,
+    "unmutatedOverlayTestRunId": 20938361,
+    "passedEach": 9,
+    "sharedSourceIntegrity": "Verified byte-identical by the sanctioned overlay runner"
+  },
+  "sourceAndTestSha256": {
+    "packages/operator-core/lib/harness/docs/public-manual-drift.test.ts": "07f1de7130daeb43492c501609e9f5b821b53a701f3e4ac4e7327fc27adcdb5a",
+    "packages/operator-core/lib/harness/docs/subject-ref.ts": "e2cd2f51173b552f653b430ea16b055c0bb47d9cae4e07c4a193acd715fba2fc",
+    "packages/operator-core/lib/harness/docs/drift.ts": "db8c223d4f927e18987a287c6e434842c409803178bf098589377944670cac2a",
+    "packages/operator-core/lib/harness/docs/freshness-sweep.ts": "0dcc3415c12d4ed630a7795055ef74044bdc1057bd6e55a841f8a41c75d6e79c",
+    "apps/papercusp-docs/src/content/docs/faq.mdx": "908687ae99d490db965919cb6f1297d409754453666e733027d505b7cbd2205a",
+    "apps/papercusp-docs/src/content/docs/quickstart.mdx": "a0d5ebcd5aef3414660f142d9b9d4578c9a64c88abce936797686d6d2234d5bc"
+  },
+  "bindings": {
+    "successfulTest": 31796,
+    "actualMutation": 31797,
+    "fixtureCalibration": 31802
+  },
+  "currentEvaluator": {
+    "certified": false,
+    "verdict": "fail",
+    "requiredProofFloor": "l3",
+    "wouldBlock": ["fixture-calibration", "falsifiability", "correct-layer", "freshness", "plan-class-risk-floor"],
+    "observedCurrentness": "New test/mutation bindings have test-stale and test-run-worktree-not-clean. New fixture binding additionally has fixture-stale. Exact provenance repair remains open.",
+    "nextProof": "Use clean committed tests and current-build binding metadata, measured fixtures, exact passed case titles, and independent coverage census. Retain dirty-run observations as provisional history."
+  },
+  "rawEvidencePaths": [
+    "/tmp/su73-r7-seven-anchor-2114.log",
+    "/tmp/su73-r7-seven-anchor-mutation-2116.log"
+  ],
+  "limitations": [
+    "Controlled GitRunner inputs establish unit review classification only.",
+    "No real background sweep dispatch, semantic approval, full R7 cache/retriever proof, novice study, independent final acceptance or shipment is established.",
+    "Original drift-mutation.json and historical certification are retained; they are not renewed by these provisional bindings."
+  ]
+}
