@@ -30,7 +30,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { codexHomesRoot } from '@papercusp/orchestrator/session-launch-dirs';
 import type { ParsedChunk, TranscriptDelta, TranscriptParserState, TranscriptUsageEvent } from './ingest-claude-transcripts';
-import { parseTranscriptChunk, transcriptEventTime } from './ingest-claude-transcripts';
+import { parseTranscriptChunk, transcriptEventTime, transcriptUsageEventKey } from './ingest-claude-transcripts';
 
 const emptyDelta = (): TranscriptDelta => ({
   turns: 0,
@@ -39,6 +39,97 @@ const emptyDelta = (): TranscriptDelta => ({
   cacheReadTokens: 0,
   cacheCreationTokens: 0,
 });
+
+export type ClosedCodexTurnPopulation = {
+  readonly ok: true;
+  readonly usageEventKeys: readonly string[];
+  /** Atomic ingest must cover this byte, including the native closure record. */
+  readonly closedByteOffset: number;
+} | { readonly ok: false; readonly detail: string };
+
+/** Independent native population proof for funded turns. The ordinary ingester
+ * tolerates partial/malformed logs; a monetary closure cannot. Read from byte
+ * zero, use the SAME parser/key writer, and require native correlation rather
+ * than treating the currently ingested SQL subset as a complete population.
+ * This proves event identity/completeness, never provider-reported dollar cost. */
+export function closedCodexTurnPopulation(input: {
+  transcript: string; file: string; fileGeneration: number; nativeSessionId: string; nativeTurnId: string;
+}): ClosedCodexTurnPopulation {
+  const fail = (detail: string): ClosedCodexTurnPopulation => ({ ok: false, detail });
+  if (!input.file || !input.nativeSessionId || !input.nativeTurnId ||
+      !Number.isSafeInteger(input.fileGeneration) || input.fileGeneration < 0 ||
+      !input.transcript.endsWith('\n') || Buffer.byteLength(input.transcript) > 16 * 1024 * 1024) {
+    return fail('a bounded complete native source and exact file generation are required');
+  }
+  const records: { type: string; payload: Record<string, unknown>; end: number }[] = [];
+  let end = 0;
+  for (const line of input.transcript.slice(0, -1).split('\n')) {
+    end += Buffer.byteLength(line + '\n');
+    if (!line.trim()) return fail('a blank native source record cannot prove completeness');
+    let record: unknown;
+    try { record = JSON.parse(line); } catch { return fail('the native source contains an unreadable record'); }
+    if (!record || typeof record !== 'object' || Array.isArray(record)) return fail('the native source contains an invalid record');
+    const r = record as Record<string, unknown>;
+    if (typeof r.type !== 'string' || !r.payload || typeof r.payload !== 'object' || Array.isArray(r.payload)) {
+      return fail('native source records need a type and payload');
+    }
+    records.push({ type: r.type, payload: r.payload as Record<string, unknown>, end });
+  }
+  if (records[0]?.type !== 'session_meta' || records[0].payload.id !== input.nativeSessionId ||
+      records.slice(1).some((r) => r.type === 'session_meta')) return fail('the native source must start at the exact session header');
+  let currentTurn: string | null = null, entered = false, closedByteOffset: number | null = null;
+  for (const r of records) {
+    if (r.type === 'turn_context') {
+      const id = r.payload.turn_id;
+      if (typeof id !== 'string' || !id) return fail('turn context must identify the exact native turn');
+      if (currentTurn === input.nativeTurnId && !closedByteOffset && id !== currentTurn) {
+        return fail('the native turn switched before its correlated closure');
+      }
+      currentTurn = id;
+      if (id === input.nativeTurnId) {
+        if (closedByteOffset) return fail('a closed native turn cannot reopen');
+        entered = true;
+        if (typeof r.payload.model !== 'string' || !r.payload.model) return fail('the native turn needs an explicit source model');
+      }
+    }
+    if (r.type !== 'event_msg') continue;
+    if (r.payload.type === 'task_complete' || r.payload.type === 'turn_completed') {
+      if (r.payload.turn_id !== input.nativeTurnId) continue;
+      if (!entered || currentTurn !== input.nativeTurnId || closedByteOffset) return fail('native closure must correlate once with its explicit turn context');
+      closedByteOffset = r.end;
+    }
+    if (r.payload.type === 'token_count' && currentTurn === input.nativeTurnId) {
+      const info = r.payload.info;
+      if (info === null) continue; // native rate-limit-only notification
+      if (!info || typeof info !== 'object' || Array.isArray(info)) return fail('native usage is unreadable');
+      const usage = info as Record<string, unknown>;
+      if (usage.last_token_usage == null) continue;
+      if (closedByteOffset) return fail('native usage followed the turn closure');
+      const cumulative = usage.total_token_usage;
+      if (!cumulative || typeof cumulative !== 'object' || Array.isArray(cumulative)) return fail('native usage needs a stable cumulative request identity');
+      const fields = ['input_tokens', 'cached_input_tokens', 'cache_write_input_tokens', 'output_tokens', 'reasoning_output_tokens', 'total_tokens'];
+      const values = fields.map((key) => (cumulative as Record<string, unknown>)[key]).filter((v) => v !== undefined);
+      if (!values.length || values.some((v) => typeof v !== 'number' || !Number.isSafeInteger(v) || v < 0) ||
+          !values.some((v) => typeof v === 'number' && v > 0)) return fail('native request identity is invalid');
+      const last = usage.last_token_usage;
+      if (!last || typeof last !== 'object' || Array.isArray(last)) return fail('native request usage is invalid');
+      const counts = last as Record<string, unknown>;
+      if (['input_tokens', 'output_tokens'].some((key) => typeof counts[key] !== 'number' ||
+          !Number.isSafeInteger(counts[key]) || (counts[key] as number) < 0)) return fail('native request usage is incomplete');
+    }
+  }
+  if (!closedByteOffset) return fail('the native turn has no correlated completion record');
+  const parsed = parseCodexChunk(input.transcript);
+  const events = (parsed.events ?? []).filter((event) => event.turnId === input.nativeTurnId);
+  if (events.length === 0 || events.length > 1000 || events.some((event) =>
+      !event.sourceId.startsWith('cumulative:') || event.model === UNKNOWN_CODEX_MODEL || event.relativeOffset >= closedByteOffset!)) {
+    return fail('a closed monetary turn needs a nonempty exact native request population');
+  }
+  const keys = events.map((event) => transcriptUsageEventKey({ file: input.file, fileGeneration: input.fileGeneration,
+    model: event.model, sourceId: event.sourceId }));
+  if (new Set(keys).size !== keys.length) return fail('native request identities are ambiguous');
+  return { ok: true, usageEventKeys: keys.sort(), closedByteOffset };
+}
 
 /** Consume complete lines only; return [consumedText, consumedBytes]. */
 function completeLines(chunk: string): { text: string; bytes: number } {

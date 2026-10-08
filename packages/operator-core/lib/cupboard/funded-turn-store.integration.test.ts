@@ -26,6 +26,8 @@ const terms = offered.terms;
 beforeAll(async () => {
   db = await createFreshPgDb('funded-identity-turns');
   await applyMigrationForTest(db.sql, migrationFile());
+  const nativeMigration = resolve('..', '..', 'libs/papercusp/libs/db/sql/1424-funded-turn-native-binding.sql');
+  await applyMigrationForTest(db.sql, existsSync(nativeMigration) ? nativeMigration : nativeMigration + '.DRAFT');
   // Two independent database clients, not an in-memory mutex shared by stores.
   peerSql = postgres(db.url, { prepare: false });
   store = new FundedIdentityTurnStore(db.sql);
@@ -89,6 +91,64 @@ function ack(t: FundedIdentityTurn): UsageReceiptWire {
 }
 
 describe('funded native turn SQL history', () => {
+  it('reserves before a native ID exists, then retains the same funding nonce across binding and restart', async () => {
+    const b = binding({ admissionId: 'host-owner-turn-1', nativeTurnId: null });
+    const f = await funded(b);
+    const running = accepted(await store.enter(b.workspaceId, f.turnId, f.revision, b, 2));
+    expect(await peer.close(b.workspaceId, running.turnId, running.revision, [usageKey], 3))
+      .toMatchObject({ ok: false, code: 'native-turn-unbound' });
+    const bound = accepted(await peer.bindNativeTurn(b.workspaceId, running.turnId, running.revision, 'actual-native-turn'));
+    expect(bound.turnId).toBe(f.turnId);
+    expect(fundedIdentityTurnId(bound.binding)).toBe(f.turnId);
+    expect(bound.fundingReceipt).toEqual(f.fundingReceipt);
+    expect(bound.binding).toEqual({ ...b, nativeTurnId: 'actual-native-turn' });
+    expect(await new FundedIdentityTurnStore(db.sql).read(b.workspaceId, f.turnId)).toEqual(bound);
+    expect(accepted(await store.bindNativeTurn(b.workspaceId, bound.turnId, bound.revision, 'actual-native-turn'))).toEqual(bound);
+    expect(await store.bindNativeTurn(b.workspaceId, bound.turnId, bound.revision, 'different-native-turn'))
+      .toMatchObject({ ok: false, code: 'native-turn-binding-changed' });
+    const c = accepted(await store.close(b.workspaceId, bound.turnId, bound.revision, [usageKey], 3));
+    const readUsage = vi.fn(usage(1n));
+    accepted(await store.stageSettlement(b.workspaceId, c.turnId, c.revision, { signReceipt: sign, readUsage }));
+    expect(readUsage).toHaveBeenCalledWith(db.sql, expect.objectContaining({ nativeTurnId: 'actual-native-turn', usageEventKeys: [usageKey] }));
+  });
+
+  it('elects one immutable binding across independent clients', async () => {
+    const b = binding({ admissionId: 'host-racing-turn', nativeTurnId: null });
+    const f = await funded(b), r = accepted(await store.enter(b.workspaceId, f.turnId, f.revision, b, 2));
+    const verdicts = await Promise.all([store.bindNativeTurn(b.workspaceId, r.turnId, r.revision, 'native-a'),
+      peer.bindNativeTurn(b.workspaceId, r.turnId, r.revision, 'native-b')]);
+    expect(verdicts.filter((v) => v.ok)).toHaveLength(1);
+    expect(verdicts.filter((v) => !v.ok)).toEqual([expect.objectContaining({ code: 'stale-turn' })]);
+    expect((await store.read(b.workspaceId, r.turnId))!.revision).toBe(r.revision + 1);
+  });
+
+  it('refuses a second admission for the same native session/turn/offer and retains its uncertainty', async () => {
+    const b = binding({ admissionId: 'first-admission', nativeTurnId: null });
+    const f = await funded(b), r = accepted(await store.enter(b.workspaceId, f.turnId, f.revision, b, 2));
+    accepted(await store.bindNativeTurn(b.workspaceId, r.turnId, r.revision, 'shared-native'));
+    const other = { ...b, admissionId: 'second-admission', payer: 'gh:another' };
+    const f2 = await funded(other), r2 = accepted(await peer.enter(other.workspaceId, f2.turnId, f2.revision, other, 2));
+    expect(await peer.bindNativeTurn(b.workspaceId, r2.turnId, r2.revision, 'shared-native'))
+      .toMatchObject({ ok: false, code: 'native-turn-already-bound' });
+    expect(await store.read(b.workspaceId, r2.turnId)).toEqual(r2);
+    expect(await peer.prepare({ ...other, admissionId: 'third-admission' }))
+      .toMatchObject({ ok: false, code: 'account-turn-pending' });
+  });
+
+  it('requires explicit admission identity and refuses unfunded or unentered native binding', async () => {
+    expect(await store.prepare(binding({ nativeTurnId: null }))).toMatchObject({ ok: false, code: 'invalid-turn-binding' });
+    expect(await store.prepare(binding({ nativeTurnId: null, admissionId: '' }))).toMatchObject({ ok: false, code: 'invalid-turn-binding' });
+    const b = binding({ admissionId: 'unentered-admission', nativeTurnId: null });
+    const p = accepted(await store.prepare(b));
+    expect(await store.bindNativeTurn(b.workspaceId, p.turnId, p.revision, 'native-turn'))
+      .toMatchObject({ ok: false, code: 'invalid-turn-state' });
+    const f = await funded(b);
+    expect(await store.bindNativeTurn(b.workspaceId, f.turnId, f.revision, 'native-turn'))
+      .toMatchObject({ ok: false, code: 'invalid-turn-state' });
+    expect(await store.bindNativeTurn(b.workspaceId, f.turnId, f.revision, ''))
+      .toMatchObject({ ok: false, code: 'invalid-native-turn' });
+  });
+
   it('requires an exact authenticated offer origin and seeds a nonzero hosted remainder', async () => {
     const b = binding(), t = accepted(await store.prepare(b));
     for (const bad of [undefined, { ...origin(b), payer: 'gh:else' }, { ...origin(b), remainderNumerator: '10000' },
@@ -265,7 +325,7 @@ describe('funded native turn SQL history', () => {
   it('snapshots evidence before an asynchronous signer can mutate it', async () => {
     const b = binding();
     const c = await closed(b);
-    const evidence = await usage(999n)(db.sql, { ...b, usageEventKeys: [usageKey] });
+    const evidence = await usage(999n)(db.sql, { ...b, nativeTurnId: b.nativeTurnId!, usageEventKeys: [usageKey] });
     if (!evidence.ok) throw new Error('fixture');
     const pending = accepted(await store.stageSettlement(b.workspaceId, c.turnId, c.revision, {
       readUsage: async () => evidence,

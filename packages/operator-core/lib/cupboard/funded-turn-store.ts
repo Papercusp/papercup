@@ -15,7 +15,10 @@ import type { UsageReceiptWire, IdentityMarkupOriginWire } from './metered-invoc
 import { readIdentityTurnBilledCost, type IdentityTurnUsageBinding,
   type IdentityTurnBilledCost } from './shadow-metering-reader';
 
-export interface FundedIdentityTurnBinding extends Omit<IdentityTurnUsageBinding, 'usageEventKeys'> {
+export interface FundedIdentityTurnBinding extends Omit<IdentityTurnUsageBinding, 'usageEventKeys' | 'nativeTurnId'> {
+  /** Host admission nonce, distinct from the backend's eventual usage identity. */
+  readonly admissionId?: string;
+  readonly nativeTurnId: string | null;
   readonly payer: string;
   readonly seller: string;
   readonly offerId: string;
@@ -65,14 +68,20 @@ const accountId = (b: FundedIdentityTurnBinding): string => hash([b.payer, b.off
 const accountHash = (b: FundedIdentityTurnBinding): string => hash([b.payer, b.seller, b.offerId, b.offer]);
 // A changed owner/payer/revision must collide with the original native turn.
 export const fundedIdentityTurnId = (b: FundedIdentityTurnBinding): string =>
-  hash([b.workspaceId, b.nativeSessionId, b.nativeTurnId, b.offerId]);
+  b.admissionId === undefined ? hash([b.workspaceId, b.nativeSessionId, b.nativeTurnId, b.offerId])
+    : hash(['native-admission-v1', b.workspaceId, b.nativeSessionId, b.admissionId, b.offerId]);
 
 function validateBinding(b: FundedIdentityTurnBinding): Refused | null {
-  if ([b.workspaceId, b.ownerId, b.principalId, b.nativeSessionId, b.nativeTurnId,
+  if ([b.workspaceId, b.ownerId, b.principalId, b.nativeSessionId,
     b.specificationRevision, b.stateRevision, b.payer, b.seller, b.offerId, b.channelId]
     .some((v) => typeof v !== 'string' || !v.trim() || v.length > 2000) ||
     !Number.isSafeInteger(b.expiresAtMs) || b.expiresAtMs < 0) {
     return fail('invalid-turn-binding', 'an authenticated native turn and immutable commerce binding are required');
+  }
+  const id = (v: unknown): v is string => typeof v === 'string' && !!v.trim() && v.length <= 2000;
+  if ((b.admissionId !== undefined && !id(b.admissionId)) ||
+      (b.nativeTurnId === null ? !id(b.admissionId) : !id(b.nativeTurnId))) {
+    return fail('invalid-turn-binding', 'a native turn or explicit host admission identity is required');
   }
   const q = quoteIdentityInferenceTurn({ offer: b.offer, billedInferenceMicros: 0n,
     inferenceCeilingMicros: b.inferenceCeilingMicros });
@@ -174,6 +183,8 @@ export class FundedIdentityTurnStore {
   private async write(tx: Sql, turn: FundedIdentityTurn): Promise<Result> {
     const [row] = await tx<TurnRow[]>`UPDATE harness_shared.cupboard_funded_turns
       SET revision = revision + 1, state = ${turn.state},
+        binding = ${tx.json(jsonValue(storedBinding(turn.binding)))},
+        binding_hash = ${hash(storedBinding(turn.binding))},
         funding_receipt = ${turn.fundingReceipt ? tx.json(jsonValue(turn.fundingReceipt)) : null},
         usage_event_keys = ${turn.usageEventKeys ? tx.json([...turn.usageEventKeys]) : null},
         closed_at_ms = ${turn.closedAtMs}, settlement_outbox = ${turn.settlementOutbox ? tx.json(jsonValue(turn.settlementOutbox)) : null},
@@ -217,6 +228,32 @@ export class FundedIdentityTurnStore {
     });
   }
 
+  /** Bind only the native ID returned by the authenticated delivery. The
+   * admission nonce stays stable; no process may rebind historical usage. */
+  async bindNativeTurn(workspaceId: string, turnId: string, revision: number, nativeTurnId: string): Promise<Result> {
+    if (typeof nativeTurnId !== 'string' || !nativeTurnId.trim() || nativeTurnId.length > 2000) {
+      return fail('invalid-native-turn', 'the correlated backend response must identify its native turn');
+    }
+    try {
+      return await this.transition(workspaceId, turnId, revision, async (tx, turn) => {
+        if (turn.state !== 'running' || !turn.binding.admissionId) {
+          return fail('invalid-turn-state', 'only an entered host admission may bind its native turn');
+        }
+        if (turn.binding.nativeTurnId !== null) {
+          return turn.binding.nativeTurnId === nativeTurnId ? { ok: true, turn }
+            : fail('native-turn-binding-changed', 'the admission already retains a different native usage identity');
+        }
+        return this.write(tx, { ...turn, binding: { ...turn.binding, nativeTurnId } });
+      });
+    } catch (error) {
+      if (error && typeof error === 'object' && 'code' in error && error.code === '23505' &&
+          'constraint_name' in error && error.constraint_name === 'cupboard_funded_turns_native_identity') {
+        return fail('native-turn-already-bound', 'another admission already retains this native session/turn/offer');
+      }
+      throw error;
+    }
+  }
+
   /** The host supplies the COMPLETE native-turn event population. */
   close(workspaceId: string, turnId: string, revision: number, usageEventKeys: readonly string[], closedAtMs: number): Promise<Result> {
     const keys = [...usageEventKeys].sort();
@@ -226,6 +263,7 @@ export class FundedIdentityTurnStore {
     }
     return this.transition(workspaceId, turnId, revision, async (tx, turn) => {
       if (turn.state !== 'running') return fail('invalid-turn-state', 'only an entered turn can close');
+      if (!turn.binding.nativeTurnId) return fail('native-turn-unbound', 'native usage identity must be durably bound before closure');
       return this.write(tx, { ...turn, state: 'closed', usageEventKeys: keys, closedAtMs });
     });
   }
@@ -238,8 +276,9 @@ export class FundedIdentityTurnStore {
     if (!turn) return fail('unknown-turn', 'no prepared native turn exists');
     if (turn.revision !== revision) return fail('stale-turn', 'read authoritative turn state before settlement');
     if (turn.state !== 'closed') return fail('invalid-turn-state', 'only a closed complete turn may quote actual inference');
+    if (!turn.binding.nativeTurnId) return fail('native-turn-unbound', 'native usage identity is required for bill-grade settlement');
     const usage = await (deps.readUsage ?? readIdentityTurnBilledCost)(this.sql,
-      structuredClone({ ...turn.binding, usageEventKeys: turn.usageEventKeys! }));
+      structuredClone({ ...turn.binding, nativeTurnId: turn.binding.nativeTurnId, usageEventKeys: turn.usageEventKeys! }));
     if (!usage.ok) return usage;
     const samples = structuredClone(usage.samples);
     const billedInferenceMicros = usage.billedInferenceMicros;

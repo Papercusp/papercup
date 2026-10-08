@@ -7,11 +7,15 @@
  * record no longer carries the revision the span applied, and that tool calls are counted.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { dirname, resolve } from 'node:path';
+import { dirname, resolve, join } from 'node:path';
+import { promises as fs } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { applyMigrationForTest, createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 import { PRICE_TABLE_VERSION } from '@papercusp/model-pricing';
 import { readIdentityTurnBilledCost, readShadowCostBasis, readShadowStatement, readShadowUsageAggregates, shadowMonthBounds } from './shadow-metering-reader';
+import { readClosedCodexTurnBilledCost } from '../session-transcript-resolvers';
+import { closedCodexTurnPopulation } from '../interactive-usage/ingest-adapters';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const sqlDir = resolve(here, '../../../../libs/papercusp/libs/db/sql');
@@ -80,6 +84,10 @@ beforeAll(async () => {
     CREATE TABLE harness_shared.session_archives (adv_session_id bigint, session_id text NOT NULL);
     CREATE TABLE harness_shared.session_turns (
       workspace_id text NOT NULL, source_kind text NOT NULL, session_id text NOT NULL, owner text
+    );
+    CREATE TABLE harness_shared.interactive_usage_files (
+      workspace_id text NOT NULL, file_path text NOT NULL, byte_offset bigint NOT NULL, parser_state jsonb,
+      PRIMARY KEY (workspace_id, file_path)
     );
   `);
   for (const file of MIGRATIONS) await applyMigrationForTest(db.sql, resolve(sqlDir, file));
@@ -291,6 +299,69 @@ describe('readShadowStatement (P-003)', () => {
     expect(st).toMatchObject({ workspaceId: WS, month: '2026-06', lines: [], totals: { wouldHaveChargedMicros: 0 } });
     expect(st.zeroPriced.toolCalls).toEqual({ attributed: 0, unattributed: 0 });
     expect(st.cleanliness).toMatchObject({ verdict: 'not-bill-grade', reasons: ['no-usage'] });
+  });
+
+  it('requires full native closure and an atomic frontier before pricing the exact complete request set', async () => {
+    const codexHome = await fs.mkdtemp(join(tmpdir(), 'p017-native-proof-'));
+    const nativeSessionId = '1a111111-1111-4111-8111-111111111111';
+    const ownerId = 'su-p017-full-source';
+    const b = { workspaceId: WS, ownerId, principalId: 'principal-shadow', nativeSessionId,
+      nativeTurnId: 'full-source-turn', specificationRevision: SPEC_A, stateRevision: 'state-1', codexHome };
+    const dir = join(codexHome, 'sessions', '2026', '08', '20');
+    await fs.mkdir(dir, { recursive: true });
+    const file = join(dir, 'rollout-2026-08-20T00-00-00-' + nativeSessionId + '.jsonl');
+    const line = (record: unknown) => JSON.stringify(record) + '\n';
+    const usage = (n: number) => line({ type: 'event_msg', payload: { type: 'token_count', info: {
+      total_token_usage: { input_tokens: n, output_tokens: 10 },
+      last_token_usage: { input_tokens: 100, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 10 },
+    } } });
+    const transcript = line({ type: 'session_meta', payload: { id: nativeSessionId } }) +
+      line({ type: 'turn_context', payload: { turn_id: b.nativeTurnId, model: 'gpt-6' } }) + usage(100) + usage(200) +
+      line({ type: 'event_msg', payload: { type: 'task_complete', turn_id: b.nativeTurnId } });
+    await fs.writeFile(file, transcript);
+    const population = closedCodexTurnPopulation({ transcript, file, fileGeneration: 0, nativeSessionId, nativeTurnId: b.nativeTurnId });
+    if (!population.ok) throw new Error(population.detail);
+    await db.sql`INSERT INTO harness_shared.adv_sessions VALUES
+      (202,${WS},${ownerId},'full-source-parent','2026-08-01T00:00:00Z',NULL,NULL,NULL)`;
+    await db.sql`INSERT INTO harness_shared.session_identity_activation_events
+      (workspace_id,owner_id,actor_id,principal_id,session_id,adv_session_id,native_session_id,
+       transition_id,control_generation,phase,source,specification_revision,state_revision,stack_refs,recorded_at)
+      VALUES (${WS},${ownerId},${ownerId},'principal-shadow','full-source-logical',202,'full-source-parent',
+        'full-source-initial',1,'applied','control',${SPEC_A},'state-1','[]'::jsonb,'2026-08-01T00:01:00Z')`;
+    await db.sql`INSERT INTO harness_shared.session_turns VALUES (${WS},'codex',${nativeSessionId},${ownerId})`;
+    await db.sql`INSERT INTO harness_shared.interactive_usage_files VALUES
+      (${WS},${file},0,'{"initialized":true,"fileGeneration":0}'::jsonb)`;
+    const sample = (id: number, key: string) => db.sql`INSERT INTO harness_shared.agent_usage_samples
+      (id,workspace_id,session_id,ts,cost_usd,cost_source,usage_provenance,usage_event_key)
+      VALUES (${id},${WS},${nativeSessionId},${ms('2026-08-20T00:00:00Z')},0.000999,'provider',
+        ${JSON.stringify({ turnId: b.nativeTurnId, costBound: null })}::text::jsonb,${key})`;
+    try {
+      await sample(202, population.usageEventKeys[0]!);
+      expect(await readClosedCodexTurnBilledCost(db.sql, b)).toMatchObject({ ok: false, code: 'identity-usage-incomplete' });
+      await db.sql`UPDATE harness_shared.interactive_usage_files SET byte_offset = ${population.closedByteOffset - 1}
+        WHERE file_path = ${file}`;
+      expect(await readClosedCodexTurnBilledCost(db.sql, b)).toMatchObject({ ok: false, code: 'identity-usage-incomplete' });
+      await db.sql`UPDATE harness_shared.interactive_usage_files SET byte_offset = ${population.closedByteOffset}
+        WHERE file_path = ${file}`;
+      // One bill-grade row is still an incomplete native population.
+      expect(await readClosedCodexTurnBilledCost(db.sql, b)).toMatchObject({ ok: false, code: 'identity-usage-incomplete' });
+      await sample(203, population.usageEventKeys[1]!);
+      expect(await readClosedCodexTurnBilledCost(db.sql, b)).toMatchObject({ ok: true,
+        billedInferenceMicros: 1998n, usageEventKeys: population.usageEventKeys });
+      expect(await readClosedCodexTurnBilledCost(db.sql, { ...b, principalId: 'different' }))
+        .toMatchObject({ ok: false, code: 'identity-usage-binding-mismatch' });
+      await db.sql`UPDATE harness_shared.agent_usage_samples SET cost_source = 'estimated' WHERE id = 203`;
+      expect(await readClosedCodexTurnBilledCost(db.sql, b)).toMatchObject({ ok: false, code: 'identity-usage-not-bill-grade' });
+      await fs.writeFile(file, transcript.trimEnd());
+      expect(await readClosedCodexTurnBilledCost(db.sql, b)).toMatchObject({ ok: false, code: 'identity-usage-incomplete' });
+    } finally {
+      await fs.rm(codexHome, { recursive: true, force: true });
+      await db.sql`DELETE FROM harness_shared.agent_usage_samples WHERE id IN (202,203)`;
+      await db.sql`DELETE FROM harness_shared.interactive_usage_files WHERE file_path = ${file}`;
+      await db.sql`DELETE FROM harness_shared.session_turns WHERE session_id = ${nativeSessionId}`;
+      await db.sql`DELETE FROM harness_shared.session_identity_activation_events WHERE owner_id = ${ownerId}`;
+      await db.sql`DELETE FROM harness_shared.adv_sessions WHERE id = 202`;
+    }
   });
 
   it('binds exact provider cost through carry correlation and refuses partial, switched or estimated evidence', async () => {

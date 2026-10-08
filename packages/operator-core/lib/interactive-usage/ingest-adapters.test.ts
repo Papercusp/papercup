@@ -6,6 +6,7 @@ import {
   advSessionIdFromCodexHome,
   codexSessionIdForFile,
   codexSessionRoots,
+  closedCodexTurnPopulation,
   defaultAdapters,
   parseCodexChunk,
   parseOmpChunk,
@@ -14,6 +15,57 @@ import {
 } from './ingest-adapters';
 
 const codexLine = (o: unknown) => JSON.stringify(o) + '\n';
+
+describe('closed Codex monetary population', () => {
+  const header = codexLine({ type: 'session_meta', payload: { id: 'native-1' } });
+  const context = (id = 'turn-1') => codexLine({ type: 'turn_context', payload: { turn_id: id, model: 'gpt-6' } });
+  const usage = (n = 100) => codexLine({ type: 'event_msg', payload: { type: 'token_count', info: {
+    total_token_usage: { input_tokens: n, output_tokens: 10 },
+    last_token_usage: { input_tokens: 100, output_tokens: 10, cached_input_tokens: 0, cache_write_input_tokens: 0 },
+  } } });
+  const close = (id = 'turn-1') => codexLine({ type: 'event_msg', payload: { type: 'task_complete', turn_id: id } });
+  const read = (transcript: string, fileGeneration = 0) => closedCodexTurnPopulation({ transcript,
+    file: '/host/sessions/rollout-native-1.jsonl', fileGeneration, nativeSessionId: 'native-1', nativeTurnId: 'turn-1' });
+
+  it('derives the full distinct population independently of ingested rows and excludes later turns', () => {
+    const prefix = header + context() + usage() + usage() + usage(200) + close();
+    const result = read(prefix + context('turn-2') + usage(300) + close('turn-2'));
+    expect(result).toMatchObject({ ok: true, closedByteOffset: Buffer.byteLength(prefix) });
+    if (!result.ok) throw new Error(result.detail);
+    expect(result.usageEventKeys).toHaveLength(2);
+    expect(new Set(result.usageEventKeys).size).toBe(2);
+    expect(read(prefix, 1)).not.toEqual(read(prefix));
+  });
+
+  it.each([
+    ['partial tail', header + context() + usage() + close().trimEnd()],
+    ['missing prefix', context() + usage() + close()],
+    ['different session', header.replace('native-1', 'foreign') + context() + usage() + close()],
+    ['unreadable record', header + context() + '{bad-json}\n' + usage() + close()],
+    ['missing turn context', header + usage() + close()],
+    ['uncorrelated close', header + context() + usage() + close('other')],
+    ['empty turn', header + context() + close()],
+    ['premature switch', header + context() + usage() + context('other') + close()],
+    ['reopened turn', header + context() + usage() + close() + context() + usage(200)],
+    ['usage after closure', header + context() + usage() + close() + usage(200)],
+    ['duplicate closure', header + context() + usage() + close() + close()],
+    ['duplicate header', header + header + context() + usage() + close()],
+    ['missing model', header + context().replace(',"model":"gpt-6"', '') + usage() + close()],
+    ['no cumulative identity', header + context() + codexLine({ type: 'event_msg', payload: { type: 'token_count',
+      info: { last_token_usage: { input_tokens: 100, output_tokens: 10 } } } }) + close()],
+    ['fractional identity', header + context() + usage(0.1) + close()],
+  ])('refuses %s rather than inventing complete billing evidence', (_label, transcript) => {
+    expect(read(transcript)).toMatchObject({ ok: false });
+  });
+
+  it('counts interrupted native turns with reported usage and ignores rate-limit-only notifications', () => {
+    const rateLimit = codexLine({ type: 'event_msg', payload: { type: 'token_count', info: null } });
+    expect(read(header + context() + rateLimit + usage() + close().replace('task_complete', 'turn_completed')))
+      .toMatchObject({ ok: true, usageEventKeys: [expect.stringMatching(/^[a-f0-9]{64}$/)] });
+    expect(read(header + context() + rateLimit + close())).toMatchObject({ ok: false });
+    expect(read(header + context() + usage() + close(), -1)).toMatchObject({ ok: false });
+  });
+});
 
 describe('parseCodexChunk (P-015)', () => {
   const turnCtx = codexLine({

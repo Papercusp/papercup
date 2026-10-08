@@ -22,6 +22,73 @@ import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { codexHomeForSessionKey } from '@papercusp/orchestrator/session-launch-dirs';
+import type { Sql } from 'postgres';
+import type { IdentityTurnUsageBinding, IdentityTurnBilledCost } from './cupboard/shadow-metering-reader';
+
+/** Trusted Codex host resolver. The native home is a runtime capability owned
+ * by the authenticated engine, never a command argument. Full source defines
+ * the expected set; SQL supplies only its atomic frontier and billed evidence. */
+export async function readClosedCodexTurnBilledCost(sql: Sql,
+  input: Omit<IdentityTurnUsageBinding, 'usageEventKeys'> & { readonly codexHome: string },
+): Promise<(Extract<IdentityTurnBilledCost, { ok: true }> & { readonly usageEventKeys: readonly string[] }) | Exclude<IdentityTurnBilledCost, { ok: true }>> {
+  const binding = { ...input };
+  const fail = (code: Exclude<IdentityTurnBilledCost, { ok: true }>['code'], detail: string): Exclude<IdentityTurnBilledCost, { ok: true }> =>
+    ({ ok: false, code, detail });
+  if ([binding.workspaceId, binding.ownerId, binding.principalId, binding.nativeSessionId, binding.nativeTurnId,
+      binding.specificationRevision, binding.stateRevision, binding.codexHome].some((v) => typeof v !== 'string' || !v.trim())) {
+    return fail('identity-usage-invalid-binding', 'a closed host turn needs its exact native runtime and identity');
+  }
+  try {
+    const [{ promises: fs, constants }, path, { readIdentityTurnBilledCost }, { closedCodexTurnPopulation }] = await Promise.all([
+      import('node:fs'), import('node:path'), import('./cupboard/shadow-metering-reader'), import('./interactive-usage/ingest-adapters'),
+    ]);
+    const file = await findCodexRolloutPathByUuid(binding.nativeSessionId, { homeOverride: binding.codexHome });
+    if (!file) return fail('identity-usage-incomplete', 'the host native transcript is unavailable');
+    const root = await fs.realpath(path.join(binding.codexHome, 'sessions'));
+    const realFile = await fs.realpath(file), relative = path.relative(root, realFile);
+    if (realFile !== file || !relative || relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative)) {
+      return fail('identity-usage-binding-mismatch', 'the native transcript must belong to this exact runtime home');
+    }
+    const handle = await fs.open(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+    let transcript: string;
+    try {
+      const before = await handle.stat();
+      if (!before.isFile() || before.size <= 0 || before.size > 16 * 1024 * 1024) {
+        return fail('identity-usage-incomplete', 'the complete native transcript exceeds the bounded proof reader');
+      }
+      const bytes = Buffer.alloc(before.size);
+      let offset = 0;
+      while (offset < bytes.length) {
+        const read = await handle.read(bytes, offset, bytes.length - offset, offset);
+        if (read.bytesRead === 0) return fail('identity-usage-incomplete', 'the native transcript changed during proof');
+        offset += read.bytesRead;
+      }
+      const after = await handle.stat();
+      if (before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs) {
+        return fail('identity-usage-incomplete', 'the native transcript changed during proof');
+      }
+      transcript = bytes.toString('utf8');
+      if (!Buffer.from(transcript, 'utf8').equals(bytes)) return fail('identity-usage-incomplete', 'the native source is not complete UTF-8');
+    } finally { await handle.close(); }
+    const [frontier] = await sql<{ byte_offset: string; parser_state: { fileGeneration?: number; initialized?: boolean; bootstrapOffset?: number } }[]>`
+      SELECT byte_offset::text, parser_state FROM harness_shared.interactive_usage_files
+      WHERE workspace_id = ${binding.workspaceId} AND file_path = ${file}`;
+    if (!frontier || frontier.parser_state?.initialized !== true || frontier.parser_state.bootstrapOffset !== undefined) {
+      return fail('identity-usage-incomplete', 'the native source has no complete canonical ingest frontier');
+    }
+    const population = closedCodexTurnPopulation({ transcript, file, fileGeneration: frontier.parser_state.fileGeneration ?? 0,
+      nativeSessionId: binding.nativeSessionId, nativeTurnId: binding.nativeTurnId });
+    if (!population.ok) return fail('identity-usage-incomplete', population.detail);
+    const byteOffset = Number(frontier.byte_offset);
+    if (!Number.isSafeInteger(byteOffset) || byteOffset < population.closedByteOffset || byteOffset > Buffer.byteLength(transcript)) {
+      return fail('identity-usage-incomplete', 'the atomic ingest frontier does not cover the full native turn closure');
+    }
+    const cost = await readIdentityTurnBilledCost(sql, { ...binding, usageEventKeys: population.usageEventKeys });
+    return cost.ok ? { ...cost, usageEventKeys: population.usageEventKeys } : cost;
+  } catch {
+    return fail('identity-usage-unavailable', 'the complete native source and canonical billed proof could not be verified');
+  }
+}
 
 /**
  * OMP transcript root. Tracked psu sessions isolate PI_CODING_AGENT_DIR under

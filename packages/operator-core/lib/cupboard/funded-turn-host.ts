@@ -3,6 +3,7 @@
  * a COMPLETE usage population. Tool arguments cannot supply these capabilities.
  */
 import { canonicalJson } from '../authority/authority-rpc-envelope';
+import type { SuCodexTurnAdmission, SuCodexTurnLifecycle } from '../su-session-usage';
 import { usageReceiptSigningBytes } from '../p2p/metered-invocation';
 import { FundedIdentityTurnStore, type FundedIdentityTurn, type FundedIdentityTurnBinding } from './funded-turn-store';
 import { quoteIdentityInferenceTurn } from './identity-per-use-offer';
@@ -28,6 +29,55 @@ export interface FundedIdentityTurnHostDeps {
 
 export class FundedIdentityTurnHost {
   constructor(private readonly deps: FundedIdentityTurnHostDeps) {}
+
+  /** Compose only at the authenticated native host. Resolvers must read the
+   * current worn identity/funding and the COMPLETE native billed population;
+   * neither may come from command arguments or an ingested-subset query. */
+  nativeLifecycle(deps: {
+    resolveAdmission: (context: Parameters<SuCodexTurnLifecycle['admit']>[0]) => Promise<
+      { kind: 'unpriced' } | { kind: 'funded'; binding: FundedIdentityTurnBinding }>;
+    resolveClosedPopulation: (input: { binding: FundedIdentityTurnBinding;
+      status: string; completedAtMs: number }) => Promise<readonly string[]>;
+    recordFailure: (input: { turnId: string; workspaceId: string } & Parameters<SuCodexTurnAdmission['reconcile']>[0]) => Promise<void>;
+  }): SuCodexTurnLifecycle {
+    return { admit: async (context) => {
+      const resolved = await deps.resolveAdmission({ ...context });
+      if (resolved.kind === 'unpriced') return { ok: true, bindNativeTurn: async () => {},
+        complete: async () => {}, reconcile: async () => {} };
+      const b = structuredClone(resolved.binding);
+      if (b.workspaceId !== context.workspaceId || b.ownerId !== context.ownerId ||
+          b.nativeSessionId !== context.nativeSessionId || b.admissionId !== context.ownerTurnId || b.nativeTurnId !== null) {
+        return { ok: false, code: 'native-admission-binding-mismatch',
+          message: 'The trusted funding binding does not match this exact host admission', retryable: false };
+      }
+      const admitted = await this.admit(b);
+      if (!admitted.ok) return { ok: false, code: admitted.code, message: admitted.detail, retryable: false };
+      const turnId = admitted.turn.turnId;
+      return { ok: true,
+        bindNativeTurn: async (nativeTurnId) => {
+          const turn = await this.deps.store.read(b.workspaceId, turnId);
+          if (!turn) throw new Error('The admitted monetary turn is unavailable');
+          const bound = await this.deps.store.bindNativeTurn(b.workspaceId, turnId, turn.revision, nativeTurnId);
+          if (!bound.ok) throw new Error(bound.code + ': ' + bound.detail);
+        },
+        complete: async ({ nativeTurnId, status, completedAtMs }) => {
+          const turn = await this.deps.store.read(b.workspaceId, turnId);
+          if (!turn || turn.binding.nativeTurnId !== nativeTurnId ||
+              bindingBytes({ ...turn.binding, nativeTurnId: null }) !== bindingBytes(b)) {
+            throw new Error('Native completion does not match the immutable monetary admission');
+          }
+          const original = structuredClone(turn.binding);
+          const keys = await deps.resolveClosedPopulation({ binding: structuredClone(original), status, completedAtMs });
+          const settled = await this.complete({ binding: original, turnId, usageEventKeys: keys, closedAtMs: completedAtMs });
+          if (!settled.ok) throw new Error(settled.code + ': ' + settled.detail);
+        },
+        // The running/closed/outbox row already retains the monetary hold.
+        // Record the failure through the host's durable recovery surface; no
+        // failed native acknowledgement is evidence of zero billable usage.
+        reconcile: async (failure) => deps.recordFailure({ turnId, workspaceId: b.workspaceId, ...failure }),
+      };
+    } };
+  }
 
   /** An uncertain reserve never authorizes inference. A hosted read can resolve it. */
   async admit(input: FundedIdentityTurnBinding): Promise<Result> {
