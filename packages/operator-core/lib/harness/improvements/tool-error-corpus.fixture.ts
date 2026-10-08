@@ -20,6 +20,8 @@
  * `loop_pressure_critical` response captured in EI-24856174754316507.
  * The claim-spec self-selector row was added 2026-10-07 from EI-25300889812728741;
  * it is an expected caller refusal and must not enter the structural bug lane.
+ * The caller-authored pg_query undefined-column row was added 2026-10-08 from
+ * EI-25389944836048866; tools:invoke preserves the 42703 payload for correction.
  * The missing-UI-client rows were added 2026-10-07 from EI-24710297442793828;
  * they are expected caller context refusals, not structural UI defects.
  *
@@ -365,6 +367,17 @@ export const TOOL_ERROR_CORPUS: readonly ToolErrorCorpusRow[] = [
     message: 'compile_error: Invalid regular expression flags while compiling the submitted code:run script',
     expectedClass: 'caller',
     note: 'the compiler correctly rejected malformed caller JavaScript before dispatch; the reporter confirmed the regex was over-escaped and did not reproduce with valid input (EI-24101166314859289)',
+  },
+  {
+    n: 1, errorCode: 'handler_error', status: 'error',
+    message: 'column "passed" does not exist: ' + JSON.stringify({
+      error: 'column "passed" does not exist',
+      code: '42703',
+      knownColumns: { 'harness_shared.test_runs': ['execution_details: jsonb'] },
+      jsonbPath: '⚠ `passed` is NOT a column on harness_shared.test_runs',
+    }),
+    expectedClass: 'caller',
+    note: 'tools:invoke wraps dev:pg_query’s caller-authored SQL undefined-column refusal; the knownColumns guidance identifies the invalid SQL field, not a broken invoke wrapper (EI-25389944836048866)',
   },
 
   // ── structural: genuine bugs/misconfig (the low-bar auto-implement lane) ────

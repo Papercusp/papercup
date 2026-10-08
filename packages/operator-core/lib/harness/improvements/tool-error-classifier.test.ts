@@ -200,6 +200,19 @@ describe('classifyToolError — real-corpus regression (P-011)', () => {
     expect(classifyToolError('handler_error', 'error', 'Cannot read properties of undefined')).toBe('structural');
   });
 
+  it('keeps a caller-authored pg_query 42703 refusal out of the structural wrapper lane', () => {
+    const wrappedPgQueryRefusal = 'column "passed" does not exist: ' + JSON.stringify({
+      error: 'column "passed" does not exist',
+      code: '42703',
+      knownColumns: { 'harness_shared.test_runs': ['execution_details: jsonb'] },
+      jsonbPath: '⚠ `passed` is NOT a column',
+    });
+    expect(classifyToolError('handler_error', 'error', wrappedPgQueryRefusal)).toBe('caller');
+    // A plain missing-column handler failure has no pg_query correction envelope
+    // and must continue to reach the structural repair lane.
+    expect(classifyToolError('handler_error', 'error', 'column "initiative" does not exist')).toBe('structural');
+  });
+
   it('does not mistake the timeoutSec argument name for a runtime timeout', () => {
     expect(
       classifyToolError(

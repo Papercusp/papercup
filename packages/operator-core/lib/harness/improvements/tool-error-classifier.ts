@@ -101,6 +101,15 @@ export const TIMEOUT_MESSAGE_PATTERN =
 export const CALLER_MESSAGE_PATTERN =
   '^missing_capability:|^invalid_input: *invalid_args:|^invalid_args:|^role_not_allowed:|^reviewer_model_not_allowed:|(^|[^a-zA-Z])(client_id_required|client_not_found):|scratch_line_window_too_large|"reason":"(evidence_class_not_found|tenant_scope_required|positive_control_tenant_scope_required)"|checkpoint_replace_would_drop_rows|"error":"flush-required"|No harness specified|not registered in (any workspace|harness_shared)|resolvePlanScope:.*is not a Hive home|no sandbox desktop is leased|acceptance BAR contract is not ready for vetting|predicate_shape_mismatch:|structured_result_shape.*typed root|^cupId must be a concrete session/owner ID, not the literal "self"';
 
+/** `dev:pg_query` returns caller-authored SQL's undefined-column refusal with
+ *  its PostgreSQL 42703 code and a known-column correction payload. When
+ *  tools:invoke wraps that `isError` result, invocation-friction sees the
+ *  wrapper's `handler_error`; retain the PG refusal as caller input instead of
+ *  filing the wrapper as a structural tool bug. Bare application missing-column
+ *  errors remain structural. */
+export const PG_QUERY_UNDEFINED_COLUMN_CALLER_PATTERN =
+  '^column "[^"]+" does not exist: .*"code":"42703".*"knownColumns"';
+
 /** An EXTERNAL provider rate-limit / quota (OpenAI embedding TPM 429,
  *  "Rate limit reached", surfaced as `openai_embed_failed_429`). CAPACITY, not a
  *  code bug — must not fall through to `structural` (P-002). */
@@ -166,6 +175,11 @@ export const TOOL_ERROR_RULES: readonly ToolErrorRule[] = [
     statuses: ['role-not-allowed'],
     messagePattern: CALLER_MESSAGE_PATTERN,
     why: 'the caller sent bad input (including code:run JavaScript that fails to parse before dispatch), chose a reviewer outside the expert allowlist, attempted an import in the import-free code:run sandbox, lacked a role, was rejected at the MCP auth gate, named no (or an unregistered) harness, selected a missing UI client, hit an explicit flush or scratch-reference window-size precondition, or read code:run typed output as an MCP content envelope despite its structured_result_shape typed-root diagnostic — not a tool bug',
+  },
+  {
+    class: 'caller',
+    messagePattern: PG_QUERY_UNDEFINED_COLUMN_CALLER_PATTERN,
+    why: 'dev:pg_query wraps a caller-authored SQL 42703 undefined-column refusal with knownColumns guidance; tools:invoke must not turn that target refusal into a structural wrapper bug',
   },
   {
     class: 'caller',
