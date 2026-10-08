@@ -17,6 +17,7 @@ vi.mock('../../journal-read', async (importOriginal) => ({
 }));
 
 import logsReadTool from './read';
+import { JOURNAL_READ_MAX_LIMIT } from '../../journal-read';
 
 const CLEAN = {
   entries: [],
@@ -187,6 +188,13 @@ describe('logs:read — journal/file boundary', () => {
 });
 
 describe('logs:read — arguments reach journalctl unchanged', () => {
+  it('publishes the same maximum row count enforced by the argument schema', () => {
+    const shape = (logsReadTool as unknown as {
+      args: { shape: { limit: { description?: string } } };
+    }).args.shape;
+    expect(shape.limit.description).toContain(`up to ${JOURNAL_READ_MAX_LIMIT}`);
+  });
+
   it('forwards grep, level, window, limit and scope verbatim', async () => {
     await call({
       unit: 'papercup-bg-host',
