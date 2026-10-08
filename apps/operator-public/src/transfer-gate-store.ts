@@ -170,7 +170,7 @@ export async function readReconciliationInputs(db: D1Database, nowMs: number): P
     .prepare(
       `SELECT transfer_id, chain_id, transaction_hash, amount_micros, created_at_ms
          FROM treasury_transfers
-        WHERE share = 'dao'
+        WHERE share = 'dao' AND submission_state = 'submitted'
         ORDER BY created_at_ms ASC, transfer_id ASC`,
     )
     .all<{ transfer_id: string; chain_id: number; transaction_hash: string; amount_micros: number; created_at_ms: number }>();

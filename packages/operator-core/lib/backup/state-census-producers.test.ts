@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 vi.mock('../db-encryption', () => ({ dbEncryptionKeyFilePath: () => '/mounted/secrets/db-key' }));
 vi.mock('../superuser-token', () => ({ superuserTokenPath: () => '/scoped/home/superuser-token' }));
-import { databaseCensusEntries, secretCensusProducers, unitCensusEntries, verifyHostStateCensus } from './state-census-producers';
+vi.mock('../workspace-registry', () => ({ workspacesRoot: () => '/relocated/workspaces' }));
+import { databaseCensusEntries, secretCensusProducers, unitCensusEntries, verifyHostStateCensus, workspaceRegistryCensusProducer } from './state-census-producers';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -10,6 +11,14 @@ import type { Sql } from 'postgres';
 
 afterEach(() => vi.clearAllMocks());
 describe('secret census producer adapters', () => {
+  it('uses the registry writer root without blanket-classifying sibling workspaces', () => {
+    const producer = workspaceRegistryCensusProducer();
+    expect(producer.roots).toEqual([{ id: 'workspace-registry', path: '/relocated/workspaces' }]);
+    expect(producer.declarations).toEqual([{
+      kind: 'path', root: 'workspace-registry', name: 'registry.json',
+      classification: 'config', producer: 'workspace-registry',
+    }]);
+  });
   it('verifies filesystem and all catalogs together and fails on a new host entry', async () => {
     const path = await mkdtemp(join(tmpdir(), 'host-census-'));
     try {

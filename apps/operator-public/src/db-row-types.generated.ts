@@ -2,12 +2,12 @@
  * GENERATED FILE — do not edit by hand.
  *
  * Source: apps/operator-public/migrations/*.sql applied in filename order
- * Migration digest: 1f109d1564f4c946f8ab897af0f5ab5c44f1aabb1697a0b731f04ea1cca3673a
+ * Migration digest: a641d7f50af904a304f947eb909ffecd2798a3656c07faf0ff7beda391fbfc6e
  * Regenerate with: npm run db:types:generate --workspace @papercusp/cupboard-worker
  */
 
 export const GENERATED_MIGRATION_DIGEST =
-  "1f109d1564f4c946f8ab897af0f5ab5c44f1aabb1697a0b731f04ea1cca3673a";
+  "a641d7f50af904a304f947eb909ffecd2798a3656c07faf0ff7beda391fbfc6e";
 export const GENERATED_TABLES = [
   "audit",
   "banned_publisher_pubkeys",
@@ -495,6 +495,8 @@ export interface TreasuryTransfersRow {
   block_number: string;
   proof_event_id: string | null;
   created_at_ms: number;
+  payee_id: string;
+  submission_state: string;
 }
 
 export interface UsageReceiptsRow {

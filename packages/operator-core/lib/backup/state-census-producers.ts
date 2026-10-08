@@ -6,6 +6,17 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { dbEncryptionKeyFilePath } from '../db-encryption';
 import { superuserTokenPath } from '../superuser-token';
+import { workspacesRoot } from '../workspace-registry';
+
+/** Registry producer's real relocated root, not the operator's remapped HOME. */
+export function workspaceRegistryCensusProducer() {
+  const root: CensusRoot = { id: 'workspace-registry', path: workspacesRoot() };
+  const declaration: CensusDeclaration = {
+    kind: 'path', root: root.id, name: 'registry.json',
+    classification: 'config', producer: 'workspace-registry',
+  };
+  return { roots: [root], declarations: [declaration] };
+}
 
 /** Derive secret locations from their writers, including relocated mounted keys. */
 export function secretCensusProducers() {
