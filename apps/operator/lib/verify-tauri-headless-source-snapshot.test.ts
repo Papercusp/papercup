@@ -297,11 +297,22 @@ describe("EI-25270951515189161 — frozen host bundle import smoke runs before T
           env: {
             ...process.env,
             OPERATOR_HOST_BUNDLE: bundle,
+            VH_PHASE_DIR: resolve(fixture, "phase"),
             TEST_TIMEOUT_SEC: String(timeoutSec),
           },
         },
       );
-      return result;
+      const evidenceDir = resolve(fixture, "phase/host-import-smoke");
+      return {
+        ...result,
+        smokeEvidence: existsSync(resolve(evidenceDir, "result.json"))
+          ? JSON.parse(readFileSync(resolve(evidenceDir, "result.json"), "utf8"))
+          : null,
+        smokeOutput: existsSync(resolve(evidenceDir, "output.log"))
+          ? readFileSync(resolve(evidenceDir, "output.log"), "utf8") : null,
+        retainedBundle: existsSync(resolve(evidenceDir, "hono-host.mjs"))
+          ? readFileSync(resolve(evidenceDir, "hono-host.mjs"), "utf8") : null,
+      };
     } finally {
       rmSync(fixture, { recursive: true, force: true });
     }
@@ -314,6 +325,9 @@ describe("EI-25270951515189161 — frozen host bundle import smoke runs before T
     );
     expect(result.status, result.stderr).toBe(0);
     expect(result.stderr).toContain("import smoke passed");
+    expect(result.smokeEvidence).toMatchObject({ exitCode: 0, outcome: "passed" });
+    expect(result.smokeOutput).toContain("PAPERCUSP_HOST_IMPORT_SMOKE_START");
+    expect(result.retainedBundle).toBeNull();
   });
 
   it("surfaces a module-init ReferenceError before the Tauri launch", () => {
@@ -321,12 +335,35 @@ describe("EI-25270951515189161 — frozen host bundle import smoke runs before T
     expect(result.status).toBe(1);
     expect(result.stderr).toContain("failed before Tauri startup");
     expect(result.stderr).toContain("pinModuleState is not defined");
+    expect(result.smokeEvidence).toMatchObject({ exitCode: 1, outcome: "process-failed" });
+    expect(result.retainedBundle).toContain("pinModuleState is not defined");
+  });
+
+  it("records entry into Node before an entry-bundle parse error", () => {
+    const result = runSmoke("const = invalid;\n");
+    expect(result.status).toBe(1);
+    expect(result.smokeOutput).toContain("PAPERCUSP_HOST_IMPORT_SMOKE_START\n");
+    expect(result.smokeOutput).toContain("SyntaxError");
+    expect(result.retainedBundle).toBe("const = invalid;\n");
   });
 
   it("terminates an import smoke that exceeds its deadline", () => {
     const result = runSmoke("setInterval(() => {}, 1000);\n", 1);
     expect(result.status).toBe(1);
     expect(result.stderr).toContain("failed before Tauri startup (exit 124)");
+    expect(result.smokeOutput).toContain("PAPERCUSP_HOST_IMPORT_SMOKE_START");
+    expect(result.smokeEvidence).toMatchObject({ exitCode: 124, timeoutSec: 1, outcome: "process-failed" });
+    expect(result.smokeEvidence.elapsedMs).toBeGreaterThanOrEqual(900);
+    expect(result.smokeEvidence.bundleSha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(result.retainedBundle).toBe("setInterval(() => {}, 1000);\n");
+  });
+
+  it("retains a zero-exit bundle that did not reach the success marker", () => {
+    const result = runSmoke("console.log('early exit');\n");
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("returned without its success marker");
+    expect(result.smokeEvidence).toMatchObject({ exitCode: 0, outcome: "missing-marker" });
+    expect(result.retainedBundle).toBe("console.log('early exit');\n");
   });
 
   it("places the smoke-only exit after module imports and before host side effects", () => {
@@ -351,7 +388,7 @@ describe("EI-25270951515189161 — frozen host bundle import smoke runs before T
     expect(smokeCall).toBeGreaterThan(bundleCall);
     expect(tauriConfig).toBeGreaterThan(smokeCall);
     expect(smokeSource).toContain('timeout --signal=TERM --kill-after=1s');
-    expect(smokeSource).toContain('node "$OPERATOR_HOST_BUNDLE" --papercusp-import-smoke');
+    expect(smokeSource).toContain('"$OPERATOR_HOST_BUNDLE" --papercusp-import-smoke');
   });
 });
 
