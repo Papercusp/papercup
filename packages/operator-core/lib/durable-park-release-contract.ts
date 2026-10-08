@@ -11,6 +11,16 @@
 import { readEventConditionReachability } from './external-condition-reachability';
 import type { DurableParkReleaseContract } from './work-items-durable-park-audit';
 
+/** WI-10007568: completing the task that carries out a pause is not a resume.
+ * Keep this legacy contradiction narrow: other terminal dependencies remain valid,
+ * and an explicit owner disposition can still repair/clear the malformed contract. */
+export function pauseCompletionResumeContradiction(condition: string, trigger: string): string | null {
+  if (!/^work-item:done:[^\s]+$/.test(trigger.trim())) return null;
+  const normalized = condition.normalize('NFKC').toLowerCase().replace(/[‐‑‒–—]/g, '-');
+  if (!/\b(?:ending|ends?|lifting|lifts?)\s+(?:this|the)\s+system[ -]wide\s+pause\b/.test(normalized)) return null;
+  return 'completion of a pause task does not verify an explicit owner resume; repair the release condition and supply resume authority';
+}
+
 /** Reject incomplete durable parks at the shared write boundary, including internal producers. */
 export function assertDurableParkReleaseContract(value: unknown): void {
   const contract = value && typeof value === 'object' && !Array.isArray(value)
@@ -33,6 +43,13 @@ export async function buildDurableParkReleaseContract(
   input: { condition: string; trigger: string; owner?: string },
   defaultOwner: string,
 ): Promise<DurableParkReleaseContract> {
+  const contradiction = pauseCompletionResumeContradiction(input.condition, input.trigger);
+  if (contradiction) {
+    return {
+      condition: input.condition.trim(), owner: input.owner?.trim() || defaultOwner,
+      trigger: input.trigger.trim(), reachability: 'blocked', evidence: contradiction,
+    };
+  }
   const reachability = await readEventConditionReachability(input.trigger, { requireSpecificCondition: true });
   return {
     condition: input.condition.trim(),

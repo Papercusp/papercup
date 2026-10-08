@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { buildDurableParkReleaseContract } from './durable-park-release-contract';
 import {
   buildDurableParkEvidenceMatrix,
   buildDurableParkAuditReport,
@@ -195,6 +196,22 @@ describe('durable park audit classification', () => {
     expect(liveness.findings).toContain('reachability-unverified');
   });
 
+  it('reports a completed pause task as unverified resume authority even with a fired latch', async () => {
+    const legacy = {
+      condition: 'WI-10003058 reaches terminal done, ending this system-wide pause.',
+      owner: 'pause-driver', trigger: 'work-item:done:WI-10003058',
+      reachability: 'satisfied', evidence: 'the pause task is DONE/committed',
+    };
+    expect(classifyDurableParkReleaseLiveness({ claim_hold_release: legacy }, 'owner pause')).toMatchObject({
+      status: 'unverified', reachability: 'blocked', findings: ['condition-ambiguous', 'reachability-unverified'],
+      evidence: expect.stringContaining('explicit owner resume'),
+    });
+    expect(await buildDurableParkReleaseContract(legacy, 'parker')).toMatchObject({
+      condition: legacy.condition, owner: 'pause-driver', trigger: legacy.trigger,
+      reachability: 'blocked', evidence: expect.stringContaining('explicit owner resume'),
+    });
+  });
+
   it('requires reachable typed ownership and re-evaluation evidence for a healthy retained park', () => {
     expect(
       classifyDurableParkReleaseLiveness(
@@ -363,6 +380,23 @@ describe('durable park evidence matrix and reconciliation CAS', () => {
       planDurableParkClear({ id: 'WI-park', state: 'open', takenBy: null, payload: { keepMe: true } }, decision)
         .outcome,
     ).toBe('already-cleared');
+  });
+
+  it('retains a pause on its task-completion evidence but permits an explicit audited owner disposition', () => {
+    const payload = { ...parkedPayload, claim_hold_release: {
+      condition: 'WI-10003058 reaches terminal done, ending this system-wide pause.',
+      owner: 'pause-driver', trigger: 'work-item:done:WI-10003058',
+      reachability: 'satisfied', evidence: 'the pause task completed',
+    } };
+    const current = { id: 'WI-pause', state: 'open', takenBy: null, payload };
+    const decision = { id: current.id, expectedParkFingerprint: durableParkFingerprint(current),
+      reasonCode: 'condition-satisfied' as const, evidence: 'the pause task completed' };
+    expect(planDurableParkClear(current, decision)).toMatchObject({ outcome: 'unverified-condition', nextPayload: null });
+    expect(current.payload).toEqual(payload);
+    expect(planDurableParkClear(current, { ...decision, reasonCode: 'operator-directed',
+      evidence: 'verified owner resume for this exact pause, recorded separately' })).toMatchObject({
+      outcome: 'cleared', nextPayload: { keepMe: { nested: true } },
+    });
   });
 
   it.each(['condition', 'owner', 'trigger'])('refuses stale clearing after the release contract %s changes', (field) => {

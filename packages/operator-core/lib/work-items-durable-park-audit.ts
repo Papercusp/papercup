@@ -16,7 +16,7 @@ import { saveTextArtifact } from './text-artifacts';
 import { ANY_FAMILY_TERMINAL_STATES } from './work-item-dispatch-states';
 import type { AdmissionRunOutcome } from './work-items-admission-promoter';
 import { readWorkItemClaimHoldProvenance, type OrgSql } from './work-items';
-import { buildDurableParkReleaseContract } from './durable-park-release-contract';
+import { buildDurableParkReleaseContract, pauseCompletionResumeContradiction } from './durable-park-release-contract';
 import { eventHasSpecificCondition } from './external-condition-reachability';
 
 export const WORK_ITEM_DURABLE_PARK_AUDIT = 'work-item-durable-park-audit';
@@ -201,6 +201,7 @@ export type DurableParkReconcileOutcome =
   | 'assigned'
   | 'missing'
   | 'not-durable-park'
+  | 'unverified-condition'
   | 'stale-fingerprint';
 
 export interface DurableParkReconcileRowResult {
@@ -315,15 +316,17 @@ export function classifyDurableParkReleaseLiveness(
   const owner = textOrNull(rawContract.owner);
   const trigger = textOrNull(rawContract.trigger);
   const reachabilityText = textOrNull(rawContract.reachability);
-  const reachability = reachabilityText && RELEASE_REACHABILITY.has(reachabilityText as DurableParkReleaseReachability)
+  const contradiction = condition && trigger ? pauseCompletionResumeContradiction(condition, trigger) : null;
+  const reachability = contradiction ? 'blocked' : reachabilityText && RELEASE_REACHABILITY.has(reachabilityText as DurableParkReleaseReachability)
     ? (reachabilityText as DurableParkReleaseReachability)
     : null;
-  const evidence = textOrNull(rawContract.evidence);
+  const evidence = contradiction ?? textOrNull(rawContract.evidence);
   const findings: DurableParkReleaseLivenessFinding[] = [];
 
   if (!condition) {
     findings.push(proseCondition.status === 'missing' ? 'condition-missing' : 'condition-ambiguous');
   }
+  if (contradiction) findings.push('condition-ambiguous');
   if (!owner) findings.push('owner-missing');
   if (!trigger) findings.push('trigger-missing');
   if (!reachability || reachability === 'blocked') findings.push('reachability-unverified');
@@ -477,6 +480,12 @@ export function planDurableParkClear(
   if (textOrNull(row.takenBy)) return result('assigned', !!provenance.heldOpen);
   if (decision.expectedParkFingerprint !== observedParkFingerprint) {
     return result('stale-fingerprint', !!provenance.heldOpen);
+  }
+  const release = record(payload.claim_hold_release);
+  if (decision.reasonCode === 'condition-satisfied' && pauseCompletionResumeContradiction(
+    textOrNull(release.condition) ?? '', textOrNull(release.trigger) ?? '',
+  )) {
+    return result('unverified-condition', !!provenance.heldOpen);
   }
 
   const nextPayload = { ...payload };

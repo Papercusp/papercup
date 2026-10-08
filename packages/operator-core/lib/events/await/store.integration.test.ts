@@ -1028,6 +1028,62 @@ describe('await-event store (PG)', () => {
     });
   });
 
+  it('a pause completion event retains the owner pause while releasing an ordinary dependency', async () => {
+    const eventKey = 'work-item:done:WI-pause-task';
+    await registerAnnouncement({ subscriberId: 'pause-driver', eventKey, scopeKind: 'global' });
+    const pausePayload = {
+      _claimHold: true, claim_hold_by: 'pause-driver', claim_hold_reason: 'owner-directed pause',
+      claim_hold_at: '2026-09-24T23:34:00.000Z',
+      claim_hold_release: {
+        condition: 'WI-pause-task reaches terminal done, ending this system-wide pause.',
+        owner: 'pause-driver', trigger: eventKey, reachability: 'satisfied', evidence: 'pause task completed',
+      },
+      keepMe: { ownerDecision: 'retain until explicit resume' },
+    };
+    const dependencyPayload = { ...pausePayload, claim_hold_reason: 'wait for the pause notification task',
+      claim_hold_release: { ...pausePayload.claim_hold_release, condition: 'the notification task completes' } };
+    await rootSql`
+      INSERT INTO harness_shared.work_items (feature_id, status, item_kind, payload)
+      VALUES ('EI-pause-contract', 'open', 'bug', ${JSON.stringify(pausePayload)}::text::jsonb),
+             ('EI-pause-dependency-control', 'open', 'bug', ${JSON.stringify(dependencyPayload)}::text::jsonb)`;
+    await expect(stampAnnouncementsFired(eventKey, { firedBy: 'pause-driver' })).resolves.toBe(1);
+    const rows = await rootSql<{ feature_id: string; status: string; payload: Record<string, unknown> }[]>`
+      SELECT feature_id, status, payload FROM harness_shared.work_items ORDER BY feature_id`;
+    const pause = rows.find(row => row.feature_id === 'EI-pause-contract')!;
+    expect(pause.status).toBe('open');
+    expect(pause.payload).toEqual(pausePayload);
+    const control = rows.find(row => row.feature_id === 'EI-pause-dependency-control')!;
+    expect(control.payload).toEqual({ keepMe: pausePayload.keepMe });
+    const receipts = await rootSql<{ subject: string }[]>`
+      SELECT subject FROM harness_shared.audit_log WHERE action = 'work_items:durable_park:clear' ORDER BY subject`;
+    expect(receipts.map(row => row.subject)).toEqual(['EI-pause-dependency-control']);
+
+    // Repairing the contract retains the park. Only this episode's explicit
+    // resume event may subsequently release it; repeating the pause event cannot.
+    const resumeKey = 'owner-resume:pause-episode:WI-pause-task';
+    await registerAnnouncement({ subscriberId: 'resume-authority-driver', eventKey: resumeKey, scopeKind: 'global' });
+    const repairedPayload = { ...pausePayload, claim_hold_release: {
+      condition: 'Verified explicit owner resume for pause episode WI-pause-task is recorded.',
+      owner: 'resume-authority-driver', trigger: resumeKey,
+      reachability: 'reachable', evidence: 'episode-specific resume declaration, not yet fired',
+    } };
+    await rootSql`
+      UPDATE harness_shared.work_items SET payload = ${JSON.stringify(repairedPayload)}::text::jsonb
+      WHERE feature_id = 'EI-pause-contract'`;
+    await stampAnnouncementsFired(eventKey, { firedBy: 'pause-driver' });
+    const retained = await rootSql<{ payload: Record<string, unknown> }[]>`
+      SELECT payload FROM harness_shared.work_items WHERE feature_id = 'EI-pause-contract'`;
+    expect(retained[0].payload).toEqual(repairedPayload);
+    await expect(stampAnnouncementsFired(resumeKey, { firedBy: 'resume-authority-driver' })).resolves.toBe(1);
+    const resumed = await rootSql<{ status: string; payload: Record<string, unknown> }[]>`
+      SELECT status, payload FROM harness_shared.work_items WHERE feature_id = 'EI-pause-contract'`;
+    expect(resumed[0]).toEqual({ status: 'open', payload: { keepMe: pausePayload.keepMe } });
+    const resumeReceipts = await rootSql<{ subject: string; trigger: string }[]>`
+      SELECT subject, details->>'trigger' AS trigger FROM harness_shared.audit_log
+      WHERE action = 'work_items:durable_park:clear' AND subject = 'EI-pause-contract'`;
+    expect(resumeReceipts).toEqual([{ subject: 'EI-pause-contract', trigger: resumeKey }]);
+  });
+
   it('firing clears only matching typed durable parks and preserves a coexisting lease', async () => {
     const eventKey = 'gate:announcement-fire-releases-durable-park';
     const otherKey = 'gate:announcement-fire-releases-durable-park-control';
