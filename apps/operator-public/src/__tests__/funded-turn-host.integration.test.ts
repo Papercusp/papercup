@@ -193,6 +193,35 @@ describe('trusted funded turn host with real PG CAS and migrated hosted D1', () 
     expect((await h.host(restarted).admit(h.binding)).ok).toBe(true);
     expect(h.signVoucher).toHaveBeenCalledTimes(1);
   });
+  it('recovers uncertain funding through hosted GET only and leaves inference unentered', async () => {
+    const h = harness(); h.loseReserve(true);
+    expect(await h.host().admit(h.binding)).toMatchObject({ ok: false, code: 'transport_error' });
+    const store = new FundedIdentityTurnStore(peerSql), turnId = fundedIdentityTurnId(h.binding);
+    const count = h.requests.length;
+    h.recover();
+    expect(await h.host(store).reconcileFunding(h.binding.workspaceId, turnId))
+      .toMatchObject({ ok: true, turn: { state: 'funded' } });
+    expect(h.requests.slice(count)).toHaveLength(1);
+    expect(h.requests.slice(count)[0]!.body).toBeNull();
+    expect((await store.read(h.binding.workspaceId, turnId))!.state).toBe('funded');
+    expect(h.signVoucher).toHaveBeenCalledTimes(1);
+    expect(h.signReceipt).not.toHaveBeenCalled();
+    expect((await h.host(store).admit(h.binding)).ok).toBe(true);
+    expect(await h.host(store).reconcileFunding(h.binding.workspaceId, turnId))
+      .toMatchObject({ ok: false, code: 'invalid-turn-state' });
+  });
+  it('retains an unconfirmed admission and blocks its successor after an empty funding read', async () => {
+    const h = harness(), store = new FundedIdentityTurnStore(peerSql);
+    const prepared = await store.prepare(h.binding);
+    if (!prepared.ok) throw new Error(prepared.detail);
+    expect(await h.host(store).reconcileFunding(h.binding.workspaceId, prepared.turn.turnId))
+      .toMatchObject({ ok: false, code: 'funding-not-confirmed' });
+    expect((await store.read(h.binding.workspaceId, prepared.turn.turnId))!.state).toBe('prepared');
+    expect(await store.prepare({ ...h.binding, nativeTurnId: 'successor' }))
+      .toMatchObject({ ok: false, code: 'account-turn-pending' });
+    expect(h.signVoucher).not.toHaveBeenCalled();
+    expect(h.signReceipt).not.toHaveBeenCalled();
+  });
   it('refuses a changed hosted origin before inference entry and can reconcile the exact origin', async () => {
     const h = harness(); h.changedOrigin();
     expect(await h.host().admit(h.binding)).toMatchObject({ code: 'funding-origin-mismatch' });
@@ -211,9 +240,12 @@ describe('trusted funded turn host with real PG CAS and migrated hosted D1', () 
     expect(await h.host().complete(input)).toMatchObject({ ok: false, code: 'transport_error' });
     expect((await new FundedIdentityTurnStore(peerSql).read(h.binding.workspaceId, input.turnId))!.state).toBe('settlement-pending');
     h.recover();
-    expect((await h.host(new FundedIdentityTurnStore(peerSql)).complete(input)).ok).toBe(true);
+    expect((await h.host(new FundedIdentityTurnStore(peerSql)).reconcileCompletion(h.binding.workspaceId, input.turnId)).ok).toBe(true);
     expect(h.signReceipt).toHaveBeenCalledTimes(1);
     expect(h.raw.prepare('SELECT committed_micros FROM payment_channels WHERE channel_id=?').get('c1')).toMatchObject({ committed_micros: 249 });
+    const requestCount = h.requests.length;
+    expect(await h.host().reconcileCompletion(h.binding.workspaceId, input.turnId)).toMatchObject({ ok: true, turn: { state: 'settled' } });
+    expect(h.requests).toHaveLength(requestCount);
     expect(await h.host().complete({ ...input, closedAtMs: input.closedAtMs + 1 })).toMatchObject({ code: 'turn-closure-changed' });
   });
   it('resends identical persisted signed bytes and fixed time when settlement never reached the hosted ledger', async () => {
@@ -221,10 +253,116 @@ describe('trusted funded turn host with real PG CAS and migrated hosted D1', () 
     const input = { binding: h.binding, turnId: fundedIdentityTurnId(h.binding), usageEventKeys: [eventKey], closedAtMs: Date.now() };
     expect(await h.host().complete(input)).toMatchObject({ code: 'transport_error' });
     expect(h.raw.prepare('SELECT committed_micros FROM payment_channels WHERE channel_id=?').get('c1')).toMatchObject({ committed_micros: 0 });
-    h.recover(); expect((await h.host(new FundedIdentityTurnStore(peerSql)).complete(input)).ok).toBe(true);
+    h.recover(); expect((await h.host(new FundedIdentityTurnStore(peerSql)).reconcileCompletion(h.binding.workspaceId, input.turnId)).ok).toBe(true);
     const attempts = h.requests.filter((r) => r.path.endsWith('/settle'));
     expect(attempts).toHaveLength(2); expect(attempts[1]!.body).toEqual(attempts[0]!.body);
     expect(h.signReceipt).toHaveBeenCalledTimes(1);
+  });
+  it.each(['prepared', 'funded', 'running'] as const)('retains %s uncertainty without funding, signing or inference during completion recovery', async (state) => {
+    const h = harness(), store = new FundedIdentityTurnStore(db.sql), turnId = fundedIdentityTurnId(h.binding);
+    if (state === 'running') {
+      expect((await h.host(store).admit(h.binding)).ok).toBe(true);
+    } else {
+      expect((await store.prepare(h.binding)).ok).toBe(true);
+      if (state === 'funded') {
+        h.loseReserve(true);
+        expect(await h.host(store).admit(h.binding)).toMatchObject({ ok: false, code: 'transport_error' });
+        h.recover();
+        expect(await h.host(store).reconcileFunding(h.binding.workspaceId, turnId)).toMatchObject({ ok: true, turn: { state: 'funded' } });
+      }
+    }
+    const requestCount = h.requests.length, signatures = h.signVoucher.mock.calls.length;
+    expect(await h.host(new FundedIdentityTurnStore(peerSql)).reconcileCompletion(h.binding.workspaceId, turnId))
+      .toMatchObject({ ok: false, code: 'native-completion-unconfirmed' });
+    expect(await store.read(h.binding.workspaceId, turnId)).toMatchObject({ state });
+    expect(h.requests).toHaveLength(requestCount); expect(h.signVoucher).toHaveBeenCalledTimes(signatures);
+    expect(h.signReceipt).not.toHaveBeenCalled();
+  });
+
+  it('recovers original closed keys/time after a bill-grade refusal, and never substitutes a caller closure', async () => {
+    const h = harness(), store = new FundedIdentityTurnStore(db.sql), turnId = fundedIdentityTurnId(h.binding);
+    expect((await h.host(store).admit(h.binding)).ok).toBe(true);
+    const running = (await store.read(h.binding.workspaceId, turnId))!, closedAtMs = Date.now();
+    expect((await store.close(h.binding.workspaceId, turnId, running.revision, [eventKey], closedAtMs)).ok).toBe(true);
+    h.setCost(1001n);
+    expect(await h.host().reconcileCompletion(h.binding.workspaceId, turnId)).toMatchObject({ ok: false, code: 'inference-ceiling-exceeded' });
+    expect(await store.read(h.binding.workspaceId, turnId)).toMatchObject({ state: 'closed', usageEventKeys: [eventKey], closedAtMs });
+    expect(h.signReceipt).not.toHaveBeenCalled();
+    h.setCost(999n);
+    expect(await h.host(new FundedIdentityTurnStore(peerSql)).reconcileCompletion(h.binding.workspaceId, turnId))
+      .toMatchObject({ ok: true, turn: { state: 'settled', usageEventKeys: [eventKey], closedAtMs,
+        settlementOutbox: { receipt: { occurredAtMs: closedAtMs } } } });
+    expect(h.signReceipt).toHaveBeenCalledTimes(1);
+    expect(await h.host().reconcileCompletion(h.binding.workspaceId, 'unknown-turn')).toMatchObject({ ok: false, code: 'unknown-turn' });
+  });
+  it.each(['lost-ack', 'never-delivered'] as const)('drives %s completion recovery from the next native admission', async (failure) => {
+    const h = harness(), store = new FundedIdentityTurnStore(db.sql), turnId = fundedIdentityTurnId(h.binding);
+    expect((await h.host(store).admit(h.binding)).ok).toBe(true);
+    if (failure === 'lost-ack') h.loseSettlement(true); else h.rejectSettlement();
+    const closedAtMs = Date.now();
+    expect(await h.host(store).complete({ binding: h.binding, turnId, usageEventKeys: [eventKey], closedAtMs }))
+      .toMatchObject({ ok: false, code: 'transport_error' });
+    const signed = (await store.read(h.binding.workspaceId, turnId))!.settlementOutbox!;
+    h.recover();
+    const next = { ...h.binding, nativeSessionId: 'resumed-native-session', nativeTurnId: 'turn-2',
+      stateRevision: 'state-2', channelId: 'c2' };
+    expect(await h.host(new FundedIdentityTurnStore(peerSql)).admit(next)).toMatchObject({ ok: true, turn: { state: 'running' } });
+    expect(await store.read(h.binding.workspaceId, turnId)).toMatchObject({ state: 'settled',
+      binding: h.binding, usageEventKeys: [eventKey], closedAtMs, settlementOutbox: signed });
+    expect(h.signReceipt).toHaveBeenCalledTimes(1);
+    expect(h.signVoucher).toHaveBeenCalledTimes(2);
+    expect(h.raw.prepare('SELECT committed_micros FROM payment_channels WHERE channel_id=?').get('c1'))
+      .toMatchObject({ committed_micros: 249 });
+    const settlements = h.requests.filter((r) => r.path.endsWith('/settle'));
+    expect(settlements).toHaveLength(failure === 'lost-ack' ? 1 : 2);
+    if (failure === 'never-delivered') expect(settlements[1]!.body).toEqual(settlements[0]!.body);
+    expect(h.requests.map((r) => r.path.endsWith('/settle')).lastIndexOf(true))
+      .toBeLessThan(h.requests.map((r) => r.path.endsWith('/metered-invocations')).lastIndexOf(true));
+  });
+  it('retains a closed hold when billing or immutable account terms refuse the next admission', async () => {
+    const h = harness(), store = new FundedIdentityTurnStore(db.sql), turnId = fundedIdentityTurnId(h.binding);
+    await h.host(store).admit(h.binding);
+    const running = (await store.read(h.binding.workspaceId, turnId))!, closedAtMs = Date.now();
+    await store.close(h.binding.workspaceId, turnId, running.revision, [eventKey], closedAtMs);
+    const next = { ...h.binding, nativeTurnId: 'turn-2' }, requestCount = h.requests.length;
+    const changed = identityPerUseOfferTerms({ identity: { id: 'analyst', version: '1.0.0' }, markupBps: 5000 });
+    if (!changed.ok) throw new Error(changed.detail);
+    for (const change of [{ seller: 'gh:other' }, { offer: changed.terms }]) {
+      expect(await h.host(new FundedIdentityTurnStore(peerSql)).admit({ ...next, ...change }))
+        .toMatchObject({ ok: false, code: 'offer-binding-changed' });
+    }
+    expect(await h.host().admit({ ...next, offer: { ...h.binding.offer, priceVersion: 'changed' } }))
+      .toMatchObject({ ok: false, code: 'identity-offer-mismatch' });
+    h.setCost(1001n);
+    expect(await h.host().admit(next)).toMatchObject({ ok: false, code: 'inference-ceiling-exceeded' });
+    expect(h.requests).toHaveLength(requestCount);
+    expect(h.signReceipt).not.toHaveBeenCalled(); expect(h.signVoucher).toHaveBeenCalledTimes(1);
+    expect(await store.read(h.binding.workspaceId, turnId)).toMatchObject({ state: 'closed', usageEventKeys: [eventKey], closedAtMs });
+    expect(await store.read(h.binding.workspaceId, fundedIdentityTurnId(next))).toBeNull();
+  });
+  it.each(['prepared', 'funded'] as const)('retains an unentered %s hold when a different admission arrives', async (state) => {
+    const h = harness(), store = new FundedIdentityTurnStore(db.sql), turnId = fundedIdentityTurnId(h.binding);
+    h.loseReserve(true); await h.host(store).admit(h.binding); h.recover();
+    if (state === 'funded') expect((await h.host(store).reconcileFunding(h.binding.workspaceId, turnId)).ok).toBe(true);
+    const requestCount = h.requests.length;
+    expect(await h.host(new FundedIdentityTurnStore(peerSql)).admit({ ...h.binding, nativeTurnId: 'different-turn' }))
+      .toMatchObject({ ok: false, code: 'account-turn-pending' });
+    expect(h.requests).toHaveLength(requestCount); expect(h.signVoucher).toHaveBeenCalledTimes(1);
+    expect(h.signReceipt).not.toHaveBeenCalled(); expect(await store.read(h.binding.workspaceId, turnId)).toMatchObject({ state });
+  });
+  it('keeps unknown native execution held and refuses the same completed admission without re-entry', async () => {
+    const h = harness(), turnId = fundedIdentityTurnId(h.binding);
+    await h.host().admit(h.binding);
+    const next = { ...h.binding, nativeTurnId: 'turn-2' }, requestCount = h.requests.length;
+    expect(await h.host(new FundedIdentityTurnStore(peerSql)).admit(next)).toMatchObject({ ok: false, code: 'account-turn-pending' });
+    expect(h.requests).toHaveLength(requestCount); expect(h.signReceipt).not.toHaveBeenCalled();
+    h.loseSettlement(true);
+    await h.host().complete({ binding: h.binding, turnId, usageEventKeys: [eventKey], closedAtMs: Date.now() });
+    h.recover();
+    expect(await h.host(new FundedIdentityTurnStore(peerSql)).admit(h.binding))
+      .toMatchObject({ ok: false, code: 'turn-already-entered' });
+    expect(h.signVoucher).toHaveBeenCalledTimes(1); expect(h.signReceipt).toHaveBeenCalledTimes(1);
+    expect(await new FundedIdentityTurnStore(peerSql).read(h.binding.workspaceId, turnId)).toMatchObject({ state: 'settled' });
   });
   it('seeds the global hosted remainder after a channel AND workspace change', async () => {
     const h = harness(); await h.host().admit(h.binding);
