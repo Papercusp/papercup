@@ -230,7 +230,28 @@ HOST_EXTERNALS+=(
 # SHA is different: it describes the bytes in THIS generated artifact, so it
 # must be captured before esbuild runs rather than read from git by the running
 # bundle (EI-21647996938145436).
-SOURCE_SHA="$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || true)"
+# A verifier export has no .git directory and may live inside another checkout.
+# Reuse its source receipt and archive validator; never borrow a parent's HEAD.
+if [[ -f "$REPO_ROOT/.verifier-source.json" ]]; then
+  SOURCE_SHA="$("${COMMITTED_NODE[@]}" --input-type=module - "$REPO_ROOT" <<'NODE'
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+const root = process.argv[2];
+const { verifyVerifierSourceSync } = await import(pathToFileURL(join(root, 'packages/operator-core/lib/verifier-source.ts')));
+const receipt = JSON.parse(readFileSync(process.env.VERIFY_TAURI_SOURCE_RECEIPT || join(root, '.verifier-source.json'), 'utf8'));
+verifyVerifierSourceSync(root, receipt, { runtimeArtifacts: true });
+process.stdout.write(receipt.sourceCommit.slice(0, 12));
+NODE
+  )"
+elif [[ -n "${VERIFY_TAURI_SOURCE_RECEIPT:-}" ]]; then
+  echo 'bundle-host.sh: pinned source receipt requires its archive marker' >&2
+  exit 78
+elif [[ "$(git -C "$REPO_ROOT" rev-parse --show-toplevel 2>/dev/null || true)" == "$REPO_ROOT" ]]; then
+  SOURCE_SHA="$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || true)"
+else
+  SOURCE_SHA=""
+fi
 BUNDLED_SOURCE_SHA_DEFINE=()
 if [[ -n "$SOURCE_SHA" ]]; then
   BUNDLED_SOURCE_SHA_DEFINE=(

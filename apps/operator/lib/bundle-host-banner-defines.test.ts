@@ -21,6 +21,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
+import { verifierSourceFiles } from '../../../packages/operator-core/lib/verifier-source';
 
 const TEST_FILE = fileURLToPath(import.meta.url);
 // Resolve from this module, not process.cwd(): root-level and package-scoped Vitest runs differ.
@@ -49,6 +50,86 @@ interface SharedBanner {
   banner: string;
   defines: Record<string, string>;
 }
+
+describe('WI-10007604 — frozen host source identity', () => {
+  const source = readFileSync(join(REPO_ROOT, 'apps/operator/bin/bundle-host.sh'), 'utf8');
+  const block = source.slice(source.indexOf('if [[ -f "$REPO_ROOT/.verifier-source.json" ]]'), source.indexOf('# EI-9413:'));
+  const select = (root: string, receipt = '') => spawnSync('bash', ['-c', 'set -euo pipefail; REPO_ROOT="$1"; COMMITTED_NODE=(node);\n' + block + '\nprintf "%s" "$SOURCE_SHA"', '_', root],
+    { encoding: 'utf8', env: { ...process.env, VERIFY_TAURI_SOURCE_RECEIPT: receipt } });
+  function snapshot() {
+    // Nested under a real checkout: Git demonstrably discovers the wrong parent.
+    const root = mkdtempSync(join(REPO_ROOT, '.papercusp/host-source-identity-'));
+    const helper = 'packages/operator-core/lib/verifier-source.ts';
+    mkdirSync(dirname(join(root, helper)), { recursive: true });
+    writeFileSync(join(root, helper), readFileSync(join(REPO_ROOT, helper)));
+    writeFileSync(join(root, 'entry.ts'), 'console.log(__PAPERCUSP_BUNDLED_SOURCE_SHA__);\n');
+    const receipt = { schemaVersion: 'verifier-source-v1', sourceCommit: 'a'.repeat(40),
+      testedInputs: [{ path: 'entry.ts', sha256: 'fixture' }], files: verifierSourceFiles(root) };
+    writeFileSync(join(root, '.verifier-source.json'), JSON.stringify(receipt));
+    return root;
+  }
+  it('bakes the validated archive commit instead of the enclosing checkout HEAD', () => {
+    const root = snapshot();
+    try {
+      expect(spawnSync('git', ['-C', root, 'rev-parse', '--show-toplevel'], { encoding: 'utf8' }).stdout.trim()).toBe(REPO_ROOT);
+      const selected = select(root);
+      expect(selected.status, selected.stderr).toBe(0);
+      expect(selected.stdout).toBe('a'.repeat(12));
+      const outfile = join(root, 'bundle.mjs');
+      const compile = spawnSync(join(REPO_ROOT, 'node_modules/esbuild/bin/esbuild'), [join(root, 'entry.ts'), '--outfile=' + outfile,
+        '--define:__PAPERCUSP_BUNDLED_SOURCE_SHA__=' + JSON.stringify(selected.stdout)], { encoding: 'utf8' });
+      expect(compile.status, compile.stderr).toBe(0);
+      expect(spawnSync(process.execPath, [outfile], { encoding: 'utf8' }).stdout.trim()).toBe('a'.repeat(12));
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+  it('refuses changed source bytes before stamping an archive commit', () => {
+    const root = snapshot();
+    try {
+      writeFileSync(join(root, 'entry.ts'), 'changed source');
+      const selected = select(root);
+      expect(selected.status).not.toBe(0);
+      expect(selected.stderr).toContain('tampered verification source archive');
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+  it('refuses malformed archive provenance', () => {
+    const root = snapshot();
+    try {
+      writeFileSync(join(root, '.verifier-source.json'), '{}');
+      expect(select(root).status).not.toBe(0);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+  it('refuses an external receipt that disagrees with the archived identity', () => {
+    const root = snapshot(), external = root + '.receipt.json';
+    try {
+      const receipt = JSON.parse(readFileSync(join(root, '.verifier-source.json'), 'utf8'));
+      writeFileSync(external, JSON.stringify({ ...receipt, sourceCommit: 'b'.repeat(40) }));
+      const selected = select(root, external);
+      expect(selected.status).not.toBe(0);
+      expect(selected.stderr).toContain('tampered verification source provenance');
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(external, { force: true }); }
+  });
+  it('refuses a pinned receipt without its archive marker before Git fallback', () => {
+    const root = mkdtempSync(join(REPO_ROOT, '.papercusp/host-source-identity-'));
+    try {
+      const selected = select(root, join(root, 'missing-receipt.json'));
+      expect(selected.status).toBe(78);
+      expect(selected.stderr).toContain('pinned source receipt requires its archive marker');
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+  it('leaves an unrecorded gitless export unknown instead of borrowing its parent', () => {
+    const root = mkdtempSync(join(REPO_ROOT, '.papercusp/host-source-identity-'));
+    try {
+      const selected = select(root);
+      expect(selected.status, selected.stderr).toBe(0);
+      expect(selected.stdout).toBe('');
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+  it('retains the ordinary checkout source identity', () => {
+    const selected = select(REPO_ROOT);
+    expect(selected.status, selected.stderr).toBe(0);
+    expect(selected.stdout).toBe(spawnSync('git', ['-C', REPO_ROOT, 'rev-parse', '--short', 'HEAD'], { encoding: 'utf8' }).stdout.trim());
+  });
+});
 
 describe('EI-25446866026477971 — host build paths across the package-cache reader', () => {
   it.each([
