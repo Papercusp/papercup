@@ -2883,6 +2883,62 @@ describe('executeWake — the liveness ladder', () => {
     );
   });
 
+  it('sends the exact handled-message cancellation to the pending PTY delivery and waits for host confirmation', async () => {
+    const ownerId = 'su-inbox-cancel';
+    const sock = '/tmp/inbox-cancel.sock';
+    const injectPsuHostWithConfirmation = vi.fn(async () => ({
+      ok: true,
+      confirmation: 'acked' as const,
+      reason: 'cancel-requested',
+    }));
+    const delivery = work({
+      id: 903,
+      subscriberId: ownerId,
+      eventKey: `coord:inbox-wake:${ownerId}`,
+      wakeHandle: null,
+      hostCancellation: { deliveryIds: ['901', '902'], handledMsgIds: ['m-a', 'm-b'] },
+    });
+
+    await expect(executeWake(delivery, deps({
+      findPsuHost: vi.fn(() => ({ sock, ownerId })) as never,
+      injectPsuHostWithConfirmation: injectPsuHostWithConfirmation as never,
+    }))).resolves.toMatchObject({
+      kind: 'park',
+      hostCommitPending: true,
+      reason: expect.stringContaining('cancellation request'),
+    });
+    expect(injectPsuHostWithConfirmation).toHaveBeenCalledTimes(1);
+    expect(injectPsuHostWithConfirmation).toHaveBeenCalledWith(sock, expect.objectContaining({
+      mode: 'turn',
+      ownerId,
+      deliveryId: '901',
+      cancelDeliveryIds: ['901', '902'],
+      handledMsgIds: ['m-a', 'm-b'],
+    }));
+  });
+
+  it('settles a handled inbox wake only after the host confirms cancellation before any write', async () => {
+    const ownerId = 'su-inbox-cancel';
+    const injectPsuHostWithConfirmation = vi.fn(async () => ({
+      ok: true,
+      confirmation: 'acked' as const,
+      reason: 'cancelled-before-write',
+    }));
+    const delivery = work({
+      id: 904,
+      subscriberId: ownerId,
+      eventKey: `coord:inbox-wake:${ownerId}`,
+      wakeHandle: null,
+      hostCancellation: { deliveryIds: ['904'], handledMsgIds: ['m-fyi'] },
+    });
+
+    await expect(executeWake(delivery, deps({
+      findPsuHost: vi.fn(() => ({ sock: '/tmp/inbox-cancel.sock', ownerId })) as never,
+      injectPsuHostWithConfirmation: injectPsuHostWithConfirmation as never,
+    }))).resolves.toEqual({ kind: 'delivered', channel: 'suppressed-redundant' });
+    expect(injectPsuHostWithConfirmation).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps an accepted host delivery nonterminal while pending, then recognizes its late completion', async () => {
     const results = [
       { ok: true, confirmation: 'acked' as const, reason: 'accepted' },
