@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { compileEquityContracts, EQUITY_BUILD, EQUITY_CONTRACT_NAMES } from './compile';
 
 describe('equity contract build', () => {
@@ -19,4 +20,11 @@ describe('equity contract build', () => {
       expect(built.contracts[name].deployedBytecode.length / 2 - 1).toBeLessThanOrEqual(24_576);
     }
   }, 120_000);
+
+  it('refuses a mismatched compiler before producing artifacts', () => {
+    const solc = createRequire(import.meta.url)('solc') as { version(): string };
+    const version = vi.spyOn(solc, 'version').mockReturnValue('0.8.0+wrong-compiler');
+    try { expect(() => compileEquityContracts()).toThrow('Equity compiler dependency mismatch'); }
+    finally { version.mockRestore(); }
+  });
 });
