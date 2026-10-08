@@ -4146,6 +4146,7 @@ export function detectBackendBin(agent: any, opts?: {}): {
     path: string;
     onPath: boolean;
 } | null;
+export function codexManagedDaemonArgs(bin: any, args: any): any;
 /**
  * Ensure the chosen backend CLI is installed before we launch it. Returns true when
  * it's usable (already present, or installed here + made resolvable), false when the
