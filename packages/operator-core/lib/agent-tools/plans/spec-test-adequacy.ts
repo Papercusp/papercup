@@ -618,12 +618,22 @@ const EXPLICIT_COVERAGE_LIMITATION_PATTERNS = [
   /\b(?:only|just|partially)\b[^.;]{0,100}\b(?:cover(?:s|ed|age)?|test(?:s|ed|ing)?|exercise(?:s|d)?|verify|validate|address(?:es|ed)?|include(?:s|d)?|coverage)\b/i,
   /\b(?:does not|doesn't|did not|didn't|has not|hasn't|is not|isn't|are not|aren't)\b[^.;]{0,60}\b(?:cover|test|exercise|verify|validate|address|include)\b/i,
   /\b(?:outside|out of)\s+(?:the\s+)?(?:scope|coverage)\b|\bnot\s+(?:covered|tested|exercised|verified|validated|addressed)\b/i,
+  /\b(?:remains?|is|are)\s+(?:a\s+)?separate\s+(?:requirement|integration|validation|work|proof)\b/i,
   /\b(?:remaining|other|rest|cutover)\b[^.;]{0,100}\b(?:mapped|assigned|tracked|covered|handled|addressed)\b[^.;]{0,60}\b(?:P-\d{3,}|[A-Z][A-Z0-9-]*-\d+)\b/i,
 ];
 
 /** Only observations with explicit coverage-boundary language count as disclosures. */
 function explicitCoverageLimitations(value: unknown): string[] {
-  const raw = typeof value === 'string' ? [value] : Array.isArray(value) ? value : [];
+  const raw = typeof value === 'string'
+    ? [value]
+    : Array.isArray(value)
+      ? value
+      : value && typeof value === 'object'
+        ? ['scope', 'proofScope', 'notes'].flatMap((key) => {
+            const entry = (value as Record<string, unknown>)[key];
+            return typeof entry === 'string' || Array.isArray(entry) ? (Array.isArray(entry) ? entry : [entry]) : [];
+          })
+        : [];
   return [
     ...new Set(
       raw
@@ -1002,34 +1012,36 @@ function hasPassingRequiredLayerCase(row: SpecEvidenceForAdequacy, caseTitle: st
 
 type MeasuredExecutionVerdict = 'pass' | 'fail' | 'unknown';
 
-/** A passing counterexample needs a measured case identity, not just a second label on a green run. */
+/** A normal passing test run is not a negative control merely because it is rebound as one. */
 function hasCounterexampleCaseProvenance(row: SpecEvidenceForAdequacy): boolean {
-  const details = detailsOf(row);
-  const hasStructuredCaseId = (details.scenarioIds?.length ?? 0) > 0 || (details.causalPairIds?.length ?? 0) > 0;
-  const declaredCases = details.testCases ?? [];
-  const measuredCases = new Set(row.testRunExecution?.passedCaseTitles ?? []);
-  if (
-    hasStructuredCaseId &&
-    declaredCases.length > 0 &&
-    declaredCases.every((caseTitle) => measuredCases.has(caseTitle))
-  ) {
-    return true;
-  }
-
-  // Prepared test attempts can pin one counterexample case by test name and expected message.
-  // Require the persisted attempt reference too; a free-form details object is not provenance.
   const asRecord = (value: unknown): Record<string, unknown> | null =>
     value !== null && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
   const execution = asRecord(row.details.testExecution);
   const binding = asRecord(execution?.binding);
   const counterexample = asRecord(binding?.counterexample);
-  return (
+  const hasPreparedCounterexample =
     hasTestAttemptReference(row) &&
     typeof counterexample?.test === 'string' &&
     counterexample.test.trim().length > 0 &&
     typeof counterexample.messageIncludes === 'string' &&
-    counterexample.messageIncludes.trim().length > 0
-  );
+    counterexample.messageIncludes.trim().length > 0;
+  if (hasPreparedCounterexample) return true;
+
+  const testRun = asRecord(row.details.testRun);
+  if (testRun) {
+    // A canonical ordinary run proves the case passed on this build; it says nothing about
+    // whether the same check fails under the counterexample. Raw mutant runs are handled by
+    // measuredExecutionVerdict above using their measured failure status and failure lines.
+    return false;
+  }
+
+  // Legacy rows without canonical run descriptors can still establish an exact, measured
+  // case identity. Do not let a canonical passing run use caller-authored names as this path.
+  const details = detailsOf(row);
+  const hasStructuredCaseId = (details.scenarioIds?.length ?? 0) > 0 || (details.causalPairIds?.length ?? 0) > 0;
+  const declaredCases = details.testCases ?? [];
+  const measuredCases = new Set(row.testRunExecution?.passedCaseTitles ?? []);
+  return hasStructuredCaseId && declaredCases.length > 0 && declaredCases.every((caseTitle) => measuredCases.has(caseTitle));
 }
 
 /** Unselected skips cannot invalidate a ledger-corroborated, explicitly bounded case scope. */
@@ -1288,14 +1300,20 @@ function riskFloorRating(
   const detailRows = evidence.map((row) => ({ row, details: detailsOf(row) }));
   const isMutation = (row: SpecEvidenceForAdequacy) =>
     row.evidenceKind === 'mutation' || row.evidenceKind === 'counterexample';
+  const isCoverageCensusProof = (row: SpecEvidenceForAdequacy) =>
+    row.evidenceKind === 'coverage-census' && row.coverageEvidenceRef !== null;
+  const hasCoverageRung = (
+    { row, details }: (typeof detailRows)[number],
+    rung: 'l3' | 'l4',
+  ): boolean => isCoverageCensusProof(row) && details.coverageRungs?.[rung] === true;
   const hasClauseBoundMutationProof = (row: SpecEvidenceForAdequacy) =>
     isClauseBoundMutationProof(clause, row, evidence);
   const isL4Proof = ({ row, details }: (typeof detailRows)[number]): boolean =>
-    isMutation(row) ? hasClauseBoundMutationProof(row) : details.coverageRungs?.l4 === true;
+    isMutation(row) ? hasClauseBoundMutationProof(row) : hasCoverageRung({ row, details }, 'l4');
   const meetsL4 = detailRows.some(isL4Proof);
   const isL3Proof = ({ row, details }: (typeof detailRows)[number]): boolean =>
     isL4Proof({ row, details }) ||
-    (details.coverageRungs?.l3 === true && (!isMutation(row) || hasClauseBoundMutationProof(row)));
+    hasCoverageRung({ row, details }, 'l3');
   const meetsL3 = detailRows.some(isL3Proof);
   const meetsL3Rows = detailRows.filter(isL3Proof);
   const proofBindings = (rows: typeof detailRows) =>
@@ -1328,7 +1346,9 @@ function riskFloorRating(
         },
       };
     }
-    const hasExplicitL4Miss = detailRows.some(({ details }) => details.coverageRungs?.l4 === false);
+    const hasExplicitL4Miss = detailRows.some(
+      ({ row, details }) => isCoverageCensusProof(row) && details.coverageRungs?.l4 === false,
+    );
     return {
       floor,
       rating: {
@@ -1336,7 +1356,9 @@ function riskFloorRating(
         evidence: hasExplicitL4Miss
           ? evidenceWithBindings(
               `Bound coverage explicitly reports L4=false for ${clauseIdentity(clause)} and no current approved waiver exists.`,
-              detailRows.filter(({ details }) => details.coverageRungs?.l4 === false).map(({ row }) => row),
+              detailRows
+                .filter(({ row, details }) => isCoverageCensusProof(row) && details.coverageRungs?.l4 === false)
+                .map(({ row }) => row),
             )
           : `${evidenceWithBindings(
               `No targeted L4 coverage/mutation/counterexample result or current approved waiver is bound for ${clauseIdentity(clause)}.`,
@@ -1346,7 +1368,9 @@ function riskFloorRating(
       },
     };
   }
-  const hasExplicitL3Miss = detailRows.some(({ details }) => details.coverageRungs?.l3 === false);
+  const hasExplicitL3Miss = detailRows.some(
+    ({ row, details }) => isCoverageCensusProof(row) && details.coverageRungs?.l3 === false,
+  );
   return {
     floor,
     rating: meetsL3
@@ -1362,7 +1386,9 @@ function riskFloorRating(
           evidence: hasExplicitL3Miss
             ? evidenceWithBindings(
                 `Bound coverage explicitly reports L3=false for ${clauseIdentity(clause)}.`,
-                detailRows.filter(({ details }) => details.coverageRungs?.l3 === false).map(({ row }) => row),
+                detailRows
+                  .filter(({ row, details }) => isCoverageCensusProof(row) && details.coverageRungs?.l3 === false)
+                  .map(({ row }) => row),
               )
             : `${evidenceWithBindings(
                 `No explicit meets_l3 result is bound for ${clauseIdentity(clause)}; depth or a generic passing test is not a rung verdict.`,
@@ -1582,8 +1608,11 @@ function appendRatingRerunProbes(
  *  10 — map legacy behavioral requirements only to passing canonical operational case evidence.
  *  11 — require each executable binding to attest fixture-free status or carry fingerprinted calibration.
  *  12 — corroborate live LLM reachability with exact canonical scenario, framework and executed-file receipts.
+ *  13 — an ordinary passing test run rebound as a counterexample no longer establishes falsifiability.
+ *  14 — risk-floor rung metadata is accepted only from a current clause-bound coverage census or clause-bound mutation proof.
+ *  15 — structured observations.scope/proofScope/notes disclosures are extracted and block a machine PASS.
  */
-export const SPEC_TEST_ADEQUACY_EVALUATOR_REVISION = 12;
+export const SPEC_TEST_ADEQUACY_EVALUATOR_REVISION = 15;
 
 type MutationTargetClause = Pick<SpecClauseRevision, 'specId' | 'falsifier'>;
 
