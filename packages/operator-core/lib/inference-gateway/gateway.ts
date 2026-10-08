@@ -1561,8 +1561,8 @@ export interface GatewayDeps {
   /** LOCAL inference-backend pool (local-concurrent-inference-2026-07-02 P-004, D-002): when present,
    *  a POST to `/v1/chat/completions` or `/v1/completions` whose `model` matches a registered local
    *  backend (llama-server | vllm | ollama) is proxied DIRECTLY to that backend — least-loaded routing,
-   *  no account/credential/governor involvement (local backends need none). Absent ⇒ those two routes
-   *  fall through to the normal 404 (byte-identical to today). */
+   *  no cloud account/credential involvement (local backends need none). Absent ⇒ those two routes
+   *  return a local-pool 404 without cloud forwarding. */
   localBackends?: LocalBackendPool;
   /** Per-attempt timeout for a local-backend proxy request. Default DEFAULT_LOCAL_BACKEND_TIMEOUT_MS (5m). */
   localBackendTimeoutMs?: number;
@@ -4941,6 +4941,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
     // the canonical durable gateway governor, so no local per-client cap/circuit may shed work before
     // a receipt exists.
     const ownerId = (req.headers[OWNER_HEADER] as string | undefined)?.trim();
+    const clientAbort = new AbortController();
+    const onClientAbort = () => clientAbort.abort(new Error('local downstream disconnected'));
+    req.once('aborted', onClientAbort);
+    res.once('close', onClientAbort);
+    if (req.aborted || res.destroyed) onClientAbort();
     try {
       stageSpan?.beginStage('bodyRead');
       let bodyBuf: Buffer;
@@ -5017,6 +5022,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
         await executeGatewayRequestKernel<LocalRouteValue, LocalRouteValue, LocalChunk, LocalResponseMetadata>({
           request: {
             lane: gatewayLaneRegistry.localOpenAiChat,
+            signal: clientAbort.signal,
             body: (async function* () {
               yield bodyBuf;
             })(),
@@ -5054,6 +5060,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
           // real improvement and belongs in its own change (D-003).
           inFlight: { register: () => ({ unregister: () => undefined }) },
           downstream: {
+            signal: clientAbort.signal,
             start: ({ status, metadata }) => {
               res.writeHead(status, { 'content-type': metadata.contentType });
             },
@@ -5161,6 +5168,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
           /* already torn down */
         }
       }
+    } finally {
+      req.off('aborted', onClientAbort);
+      res.off('close', onClientAbort);
     }
   }
 
@@ -11220,11 +11230,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
     }
     // LOCAL backend pool (D-002): llama-server/vllm/ollama's OpenAI-compatible surface is
     // `/v1/chat/completions` + `/v1/completions` — DISTINCT from `/v1/messages` (Anthropic) and
-    // `/v1/responses` (Codex), so this never shadows the existing routes. Only intercepted when a
-    // local-backend pool is actually wired; otherwise falls through unchanged (byte-identical to today).
+    // `/v1/responses` (Codex), so this never shadows the existing routes. These paths always
+    // belong to the local lane: a missing pool must refuse, never forward source to a cloud account.
     if (
       req.method === 'POST' &&
-      deps.localBackends &&
       (url.startsWith('/v1/chat/completions') || url.startsWith('/v1/completions'))
     ) {
       const span = beginRequestTelemetry(req, res, 'local', 'openai-chat', 'local-http');
