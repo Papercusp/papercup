@@ -579,6 +579,11 @@ function isWorkItemsCompleteCall(input: { toolName: string; nestedTargetToolName
     (input.toolName === 'tools:invoke' && input.nestedTargetToolName === 'work_items:complete');
 }
 
+function isWorkItemsGetCall(input: { toolName: string; nestedTargetToolName?: string }): boolean {
+  return input.toolName === 'work_items:get' ||
+    (input.toolName === 'tools:invoke' && input.nestedTargetToolName === 'work_items:get');
+}
+
 const WORK_ITEMS_COMPLETE_SPILL_RECOVERY =
   'The work_items:complete write may already have committed before its response spill failed. Do NOT repeat this call. ' +
   'Read each preserved results[].id with work_items:get and inspect the current item state and completionAuthority ' +
@@ -2238,11 +2243,27 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
       // independent projection. Row ids/stub markers stay selectable too, so a
       // caller can reconcile inline rows or follow the spill cursor for rows
       // this door could not render.
-      ...(opts.toolName === 'work_items:get'
+      ...(isWorkItemsGetCall(opts)
         ? [
             'results[].id',
             'results[].ok',
             'results[].availability',
+            // A bounded comment window is an explicitly requested continuation
+            // surface. Keep its read bounds and post content ahead of the bulky
+            // checkpoint projection below: otherwise one large checkpoint can
+            // consume the result budget before a selected objection reaches the
+            // model. These same paths are needed when the outer MCP tool is
+            // `tools:invoke`; its depth-limited door must retain the nested
+            // target's contract instead of reducing each post to `{id}`.
+            'results[].threadWindow.total',
+            'results[].threadWindow.shown',
+            'results[].threadWindow.posts[].id',
+            'results[].threadWindow.posts[].thread_id',
+            'results[].threadWindow.posts[].author_id',
+            'results[].threadWindow.posts[].body',
+            'results[].threadWindow.posts[].created_ts',
+            'results[].threadWindow.topics',
+            'results[].threadWindow.createdAt',
             // A spill-write failure removes the recovery path for the omitted
             // bytes. Keep the checkpoint itself ahead of diagnostic bulk so a
             // continuation read still carries useful state inline; the normal
@@ -2301,7 +2322,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
       // of the checkpoint to resume safely. The same transport target still
       // caps the whole response; the standard string ceiling only reallocates
       // that bounded space to the explicitly preserved checkpoint path.
-      tier: opts.toolName === 'work_items:get' ? 'standard' : 'trimmed',
+      tier: isWorkItemsGetCall(opts) ? 'standard' : 'trimmed',
       forced: true,
       originalChars: totalChars,
       targetChars: structuralTargetChars,
