@@ -553,14 +553,28 @@ export interface CodexProviderCompletionEvidence {
  * the cli-exec bridge's synthetic response. One frame is bounded independently
  * of the stream length, so long agent turns need no whole-stream buffer. */
 export function createCodexProviderCompletionDecoder(contentType: string) {
-  const sse = contentType.toLowerCase().includes('text/event-stream');
-  if (!sse && !contentType.toLowerCase().includes('application/json')) {
-    throw new Error('accepted Codex response has an unsupported content type');
+  const declaredType = contentType.trim().toLowerCase();
+  let responseKind: 'sse' | 'json' | 'unknown' = declaredType.includes('text/event-stream')
+    ? 'sse' : declaredType.includes('application/json') ? 'json' : 'unknown';
+  if (responseKind === 'unknown' && declaredType) {
+    throw new Error(`accepted Codex response has an unsupported content type: ${JSON.stringify(declaredType.slice(0, 128))}`);
   }
   const decoder = new StringDecoder('utf8');
   let carry = '';
   let completed: CodexProviderCompletionEvidence | null = null;
-  const maxBytes = sse ? 1_048_576 : 8_388_608;
+  const frameLimit = () => responseKind === 'sse' ? 1_048_576 : 8_388_608;
+  const detectHeaderlessFormat = () => {
+    if (responseKind !== 'unknown') return;
+    // Match the existing non-stream aggregator's headerless ChatGPT support.
+    // Keep split opening bytes in carry, then decode the entire prefix exactly
+    // once. An absent header never relaxes completion/model/usage validation.
+    const prefix = carry.slice(0, 256).trimStart();
+    if (/^(?:event|data):/.test(prefix) || prefix.startsWith(':')) responseKind = 'sse';
+    else if (prefix.startsWith('{') || prefix.startsWith('[')) responseKind = 'json';
+    else if (carry.length >= 256) {
+      throw new Error('accepted Codex headerless response has an unrecognized format');
+    }
+  };
   const count = (value: unknown): number | null =>
     typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
   const readResponse = (value: unknown): CodexProviderCompletionEvidence => {
@@ -607,8 +621,9 @@ export function createCodexProviderCompletionDecoder(contentType: string) {
   };
   const push = (chunk: Uint8Array): CodexProviderCompletionEvidence | null => {
     carry += decoder.write(Buffer.from(chunk));
-    if (!sse) {
-      if (carry.length > maxBytes) throw new Error('accepted Codex response evidence frame exceeds its bound');
+    detectHeaderlessFormat();
+    if (responseKind !== 'sse') {
+      if (carry.length > frameLimit()) throw new Error('accepted Codex response evidence frame exceeds its bound');
       return null;
     }
     const boundaries = /\r?\n\r?\n/g;
@@ -618,7 +633,7 @@ export function createCodexProviderCompletionDecoder(contentType: string) {
     while ((boundary = boundaries.exec(carry))) {
       const frame = carry.slice(frameStart, boundary.index);
       frameStart = boundaries.lastIndex;
-      if (frame.length > maxBytes) throw new Error('accepted Codex response evidence frame exceeds its bound');
+      if (frame.length > frameLimit()) throw new Error('accepted Codex response evidence frame exceeds its bound');
       const evidence = readFrame(frame);
       if (evidence) {
         if (completed) throw new Error('accepted Codex response has duplicate completions');
@@ -627,13 +642,15 @@ export function createCodexProviderCompletionDecoder(contentType: string) {
       }
     }
     carry = carry.slice(frameStart);
-    if (carry.length > maxBytes) throw new Error('accepted Codex response evidence frame exceeds its bound');
+    if (carry.length > frameLimit()) throw new Error('accepted Codex response evidence frame exceeds its bound');
     return newlyCompleted;
   };
   const finish = (): CodexProviderCompletionEvidence => {
     carry += decoder.end();
-    if (carry.length > maxBytes) throw new Error('accepted Codex response evidence frame exceeds its bound');
-    if (sse) {
+    detectHeaderlessFormat();
+    if (responseKind === 'unknown') throw new Error('accepted Codex headerless response has an unrecognized format');
+    if (carry.length > frameLimit()) throw new Error('accepted Codex response evidence frame exceeds its bound');
+    if (responseKind === 'sse') {
       const tail = carry.trim();
       if (tail) {
         const evidence = readFrame(tail);
@@ -650,7 +667,7 @@ export function createCodexProviderCompletionDecoder(contentType: string) {
     if (!completed) throw new Error('accepted Codex response ended without provider completion');
     return completed;
   };
-  return { push, finish };
+  return { push, finish, contentType: () => responseKind === 'sse' ? 'text/event-stream' : 'application/json' };
 }
 
 /** Build the upstream request headers: start from the codex CLI's incoming headers

@@ -85,6 +85,29 @@ describe('accepted Codex provider completion evidence', () => {
     }
   });
 
+  it.each(['sse', 'json'])('reads headerless %s provider evidence across split opening bytes', (format) => {
+    const wire = format === 'sse'
+      ? `event: response.completed\ndata: ${JSON.stringify({ type: 'response.completed', response })}\n\n`
+      : JSON.stringify(response);
+    const decoder = createCodexProviderCompletionDecoder('');
+    const bytes = Buffer.from(wire);
+    for (let at = 0; at < bytes.length; at += 3) decoder.push(bytes.subarray(at, at + 3));
+    expect(decoder.finish()).toMatchObject({ responseId: response.id, model: response.model,
+      usage: { inputTokens: 120, outputTokens: 17 } });
+  });
+
+  it('refuses unsupported declared media and headerless bodies without provider evidence', () => {
+    expect(() => createCodexProviderCompletionDecoder('text/html')).toThrow('unsupported content type');
+    for (const wire of ['<html>not a provider response</html>',
+      'data: {"type":"response.created"}\n\n', JSON.stringify({ ...response, usage: null })]) {
+      expect(() => {
+        const decoder = createCodexProviderCompletionDecoder('');
+        decoder.push(Buffer.from(wire));
+        decoder.finish();
+      }).toThrow();
+    }
+  });
+
   it('keeps an absent provider effort distinct from forwarded request effort', () => {
     const decoder = createCodexProviderCompletionDecoder('application/json');
     const { reasoning: _reasoning, ...withoutReasoning } = response;
