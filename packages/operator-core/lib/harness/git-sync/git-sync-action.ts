@@ -244,6 +244,7 @@ import { checkDirtyMigrationReservations } from '../../migration-reservation';
 import {
   runGitSync,
   runGitBounded,
+  type GitSyncYieldError,
   DEFAULT_MAX_BLOB_BYTES,
   DEFAULT_MAX_COMMIT_TOTAL_BYTES,
   gitTimeoutMsFor,
@@ -854,6 +855,40 @@ function configFromTrigger(triggerConfig: Record<string, unknown>): ActionTrigge
  *  parallel while making the restart's exclusive acquire atomic with the
  *  post-preflight window (WI-229179). */
 const GIT_SYNC_RESTART_BARRIER_RESOURCE = 'git-sync';
+
+/**
+ * WI-10007606: the cooperative-yield predicate for an in-flight pass. A live
+ * EXCLUSIVE holder in `draining` on the restart barrier is dev:restart waiting for the
+ * shared git-sync holders to leave. That same row already refuses NEW shared acquires,
+ * so yielding to it adds no starvation the barrier did not already impose; it only
+ * stops one long pass (minutes under load) from out-waiting the bounded drain, which
+ * left bg-host un-restartable for hours on 2026-10-08. Returns the yield reason, or
+ * null when nobody is waiting.
+ */
+export function gitSyncRestartYieldReason(
+  holders: ReadonlyArray<{ mode: string; status: string; owner: string; owner_label?: string | null }>,
+): string | null {
+  const waiter = holders.find(
+    (h) =>
+      h.mode === 'exclusive' &&
+      h.status === 'draining' &&
+      h.owner !== GIT_SYNC_OWNER &&
+      !h.owner.startsWith(`${GIT_SYNC_OWNER}:`),
+  );
+  return waiter
+    ? `exclusive ${GIT_SYNC_RESTART_BARRIER_RESOURCE} drain requested by ${waiter.owner_label ?? waiter.owner}`
+    : null;
+}
+
+/**
+ * Structural guard for {@link GitSyncYieldError}. Deliberately NOT `instanceof`: a
+ * class identity check fails silently when the module is loaded twice (a bundled copy
+ * beside source, a factory mock), and here that would turn a benign yield into an
+ * error tick with an escalation streak.
+ */
+function isGitSyncYieldError(error: unknown): error is GitSyncYieldError {
+  return error instanceof Error && error.name === 'GitSyncYieldError';
+}
 
 /** The per-harness lock resource this slug's tick holds (P-006). */
 const gitSyncResourceName = (slug: string): string => `git-sync:${slug}`;
@@ -3967,6 +4002,19 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
       return mergedAttributionRosterForTick;
     };
 
+    // WI-10007606: cooperative yield. Only meaningful while THIS fire holds the shared
+    // restart barrier — an unlocked best-effort fire blocks no drain, so it never yields.
+    const holdsRestartBarrier = acquired.some((r) => r.resource === GIT_SYNC_RESTART_BARRIER_RESOURCE);
+    const shouldYield = holdsRestartBarrier
+      ? async (): Promise<string | null> => {
+          const { holders } = await readResourceQueue(getOrgPg().sql, {
+            coordinationDomain: cd,
+            resource: GIT_SYNC_RESTART_BARRIER_RESOURCE,
+          });
+          return gitSyncRestartYieldReason(holders);
+        }
+      : undefined;
+
     // 'acquired' (locked) or 'error' (unlocked best-effort) → run.
     outcome = await guarded('run-git-sync', () =>
       runGitSync(slug, {
@@ -4047,6 +4095,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
         // WI-1416: checkpoint each pipeline phase (submodules → pointer-bump → push) as
         // a DBOS sub-step; a passthrough outside a workflow (fireGitSyncNow, tests).
         step: runCheckpointedStep,
+        shouldYield,
         onProgress: () => {
           liveness.touch();
           enqueueActivityHeartbeat(liveness, 'local-sync', null);
@@ -4080,6 +4129,34 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
     // and regress the durable phase back to local-sync.
     await guarded('flush-activity-heartbeat', () => activityHeartbeatWrite);
   } catch (error) {
+    if (isGitSyncYieldError(error)) {
+      // WI-10007606: a cooperative yield is a SKIP, not a failure — no error streak,
+      // no escalation, no counters touched (the pass measured nothing to the end).
+      // Release the barrier FIRST: the waiting drain is the reason we stopped.
+      await cleanupLocks();
+      activityTerminal = true;
+      await activityHeartbeatWrite.catch(() => {});
+      const yieldedAt = Date.now();
+      await writeActivity({
+        active: false,
+        phase: 'complete',
+        started_at: activityStartedAt,
+        updated_at: yieldedAt,
+        completed_at: yieldedAt,
+        outcome_status: null,
+      }).catch(() => {});
+      await patchRoutineMetadata(slug, workspaceId, {
+        last_yield: {
+          at: yieldedAt,
+          reason: error.reason,
+          boundary: error.boundary,
+          submodules_synced: error.submodulesSynced,
+          submodules_total: error.submodulesTotal,
+        },
+      }).catch(() => {});
+      console.log(`[git-sync] ${slug}: ${error.message} — barrier released; the next tick redoes the pass`);
+      return { status: 'skipped', reason: 'yielded-to-restart', blockedOn: error.reason };
+    }
     if (error instanceof GitSyncActionTimeoutError) {
       // The timer callback normally starts this write in the same turn as the
       // abort. Calling it here as well closes the tiny ordering window where

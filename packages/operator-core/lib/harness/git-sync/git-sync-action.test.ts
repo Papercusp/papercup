@@ -330,6 +330,16 @@ const runGitSyncMock = vi.fn(
   }),
 );
 const runGitBoundedMock = vi.fn(async (..._args: unknown[]) => ({ code: 0, stdout: '', stderr: '' }));
+/** WI-10007606: a yield-shaped error. The action detects it by `name`, so this fake
+ *  needs no class identity shared with the real run-git-sync module. */
+const yieldError = (reason: string, boundary: string, synced: number, total: number): Error =>
+  Object.assign(new Error(`git-sync yielded at ${boundary}: ${reason}`), {
+    name: 'GitSyncYieldError',
+    reason,
+    boundary,
+    submodulesSynced: synced,
+    submodulesTotal: total,
+  });
 // The stash-check sweep (checkForNewStashes) also imports discoverSubmodulesRecursive
 // from this module — without it on the mock, its best-effort catch console.warns and
 // vitest-fail-on-console reds every test whose tick reaches the sweep (EI-14928 class:
@@ -4191,7 +4201,9 @@ describe('clean sync outcome', () => {
     const bridgeOverrideFinishedPromise = new Promise<void>((resolve) => {
       bridgeOverrideFinished = resolve;
     });
-    let releaseBridgeGit: ((result: { code: number; stdout: string; stderr: string }) => void) | null = null;
+    // Initialised via `as` so control-flow analysis does not narrow it to `null`: it is
+    // assigned inside the mocked git callback, which CFA cannot see (TS2349 otherwise).
+    let releaseBridgeGit = null as ((result: { code: number; stdout: string; stderr: string }) => void) | null;
     let bridgeProgress = (): void => {};
     let bridgeSignal: AbortSignal | undefined;
     defaultRunGitMock.mockImplementation(async (...args: unknown[]) => {
@@ -5152,7 +5164,7 @@ describe('EI-20402093158205519 stranded-submodule census (git-sync-strand)', () 
   });
 
   it('does not retire the migration attribution alarm on an error without a skipped-path census', async () => {
-    runGitSyncMock.mockResolvedValue({ ...syncedOutcome, status: 'error', skippedPaths: undefined });
+    runGitSyncMock.mockResolvedValue({ ...syncedOutcome, status: 'error', errors: [], skippedPaths: undefined });
     await action(ctx);
     expect(unsafeCalls.some((row) => row.text.includes('SET escalation = NULL') &&
       row.params[2] === 'git-sync-migration-attribution')).toBe(false);
@@ -5578,5 +5590,79 @@ describe('WI-10005972: sidecar Git entrypoint attribution', () => {
     expect(scenarioCalls.every((call) =>
       JSON.stringify(call.args[0]).includes('credential.https://github.com.helper'),
     )).toBe(true);
+  });
+});
+
+describe('WI-10007606: cooperative yield to a draining dev:restart barrier', () => {
+  it('hands runGitSync a probe that reports ONLY a draining exclusive on the shared git-sync barrier', async () => {
+    let probe: (() => Promise<string | null>) | undefined;
+    runGitSyncMock.mockImplementationOnce(async (_slug, opts) => {
+      probe = opts.shouldYield as typeof probe;
+      return { status: 'nothing', dirtyPathCount: 0, committedCount: 0, oversized: [], contentErrors: [], strandedSubmodules: [] };
+    });
+    await action(ctx);
+    expect(typeof probe).toBe('function');
+
+    // Other shared git-sync fires are not a reason to stop.
+    readResourceQueueMock.mockResolvedValueOnce({
+      holders: [{ resource: 'git-sync', mode: 'shared', status: 'held', owner: 'system:git-sync:other' }],
+      draining: false,
+      queue: [],
+    });
+    expect(await probe!()).toBeNull();
+    // A held (not draining) exclusive is someone else's completed acquire, not a waiter.
+    readResourceQueueMock.mockResolvedValueOnce({
+      holders: [{ resource: 'git-sync', mode: 'exclusive', status: 'held', owner: 'system:dev-restart:x' }],
+      draining: false,
+      queue: [],
+    });
+    expect(await probe!()).toBeNull();
+    // dev:restart's drain is the waiter we yield to.
+    readResourceQueueMock.mockResolvedValueOnce({
+      holders: [
+        {
+          resource: 'git-sync',
+          mode: 'exclusive',
+          status: 'draining',
+          owner: 'system:dev-restart:git-sync-barrier:1:u',
+          owner_label: 'su · su-test',
+        },
+      ],
+      draining: true,
+      queue: [],
+    });
+    expect(await probe!()).toBe('exclusive git-sync drain requested by su · su-test');
+    const lastQuery = readResourceQueueMock.mock.calls.at(-1)?.[1];
+    expect(lastQuery).toMatchObject({ resource: 'git-sync' });
+  });
+
+  it('a yield is a SKIP: locks released, last_yield recorded, no outcome, no error streak, no escalation', async () => {
+    runGitSyncMock.mockRejectedValueOnce(yieldError('exclusive git-sync drain requested by su-test', 'submodule-batch', 8, 41));
+    counterRows = [{ et: 2, lo: [] }]; // two prior error ticks — a yield must not become the third
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    const result = await action(ctx);
+
+    expect(result).toBeUndefined();
+    const patches = routinePatches();
+    expect(patches).toEqual([
+      {
+        last_yield: {
+          at: expect.any(Number),
+          reason: 'exclusive git-sync drain requested by su-test',
+          boundary: 'submodule-batch',
+          submodules_synced: 8,
+          submodules_total: 41,
+        },
+      },
+    ]);
+    expect(patches.some((p) => 'consecutive_error_ticks' in p || 'last_status' in p)).toBe(false);
+    expect(appendPipelineEventMock).not.toHaveBeenCalled();
+    expect(escalationUpserts()).toEqual([]);
+    expect(sendMessageMock).not.toHaveBeenCalled();
+    expect(releaseTrace.some((r) => r.resource === 'git-sync')).toBe(true);
+    expect(gitSyncActivityPatches().at(-1)).toMatchObject({ active: false, phase: 'complete', outcome_status: null });
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('barrier released; the next tick redoes the pass'));
+    log.mockRestore();
   });
 });
