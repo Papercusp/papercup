@@ -49,4 +49,32 @@ describe('Playwright source snapshots inside a mutation probe', () => {
     expect(observed.porcelain).toBe('M src/subject.ts');
     expect(mocks.git).toHaveBeenCalledWith('git', expect.any(Array), expect.objectContaining({ cwd: '/committed-proof' }));
   });
+
+  it.each([
+    { code: 'ETIMEDOUT', status: null, signal: 'SIGTERM', stderr: '', expected: 'code=ETIMEDOUT' },
+    { code: undefined, status: 128, signal: null, stderr: Buffer.from('fatal: invalid repository\n'), expected: 'status=128' },
+  ])('preserves the actual Git failure mechanism while keeping missing status dirty: $expected', (failure) => {
+    mocks.git.mockImplementation((_bin, args) => {
+      if (args[0] === 'rev-parse') return 'snapshot-sha';
+      throw Object.assign(new Error('Git failed'), failure);
+    });
+    const observed = captureTestSourceSnapshot('/committed-proof');
+    expect(observed.commit).toBe('snapshot-sha');
+    expect(observed.porcelain).toBeNull();
+    expect(observed.provenanceError).toContain('git status --porcelain --untracked-files=all failed after');
+    expect(observed.provenanceError).toContain('budget=2000ms');
+    expect(observed.provenanceError).toContain(failure.expected);
+    if (failure.stderr.length) expect(observed.provenanceError).toContain('fatal: invalid repository');
+    expect(computeWorktreeDirty({ commit: 'snapshot-sha', porcelain: '' }, observed)).toBe(true);
+  });
+
+  it('bounds failure diagnostics without mistaking an unreadable snapshot for clean', () => {
+    mocks.git.mockImplementation(() => { throw Object.assign(new Error('Git failed'), {
+      status: 128, stderr: 'x'.repeat(5_000),
+    }); });
+    const observed = captureTestSourceSnapshot('/committed-proof');
+    expect(observed.provenanceError!.length).toBeLessThanOrEqual(500);
+    expect(observed.commit).toBeNull();
+    expect(observed.porcelain).toBeNull();
+  });
 });
