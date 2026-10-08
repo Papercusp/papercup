@@ -565,6 +565,11 @@ export function startClaudeSuEngine(
           // ANY frame is progress. The watchdog measures SILENCE, not the absence
           // of a reply — a long tool call streams frames and is not a stall.
           lastFrameAt = Date.now();
+          // A terminal result closes the native turn before account-route
+          // provenance is refreshed below. That reader can await the gateway
+          // for up to 1.5s; it must not leave the silence watchdog armed during
+          // that post-turn bookkeeping window.
+          if (event.type === 'result') disarmStallWatch();
           if ('session_id' in event && event.session_id && event.session_id !== nativeId) {
             throw new Error('Claude stream identity differs from the bootstrapped session');
           }
