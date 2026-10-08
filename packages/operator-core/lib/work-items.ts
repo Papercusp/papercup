@@ -8268,6 +8268,8 @@ export interface ClaimFloorAttribution {
   admissible: boolean;
   /** The FIRST floor that refuses it, in the order the claim path applies them. */
   refusedBy: string | null;
+  /** Simultaneous failures from the same claim predicates, when includeAllFloors is requested. */
+  failedFloors?: string[];
   /** Operator-facing explanation of that floor. */
   detail: string | null;
   /**
@@ -8475,6 +8477,8 @@ export async function explainIssueClaimFloors(
     claimantFleetSlug?: string;
     claimSpecReferencesFleet?: boolean;
     claimSpecReferencesGoal?: boolean;
+    /** Read-only consumers with their own precedence need failures beyond the first refusal. */
+    includeAllFloors?: boolean;
     /**
      * Scope-authoring preview ONLY: evaluate the remaining shared floors for rows
      * already held by these verified target-fleet members. Never used by a claim
@@ -8544,52 +8548,36 @@ export async function explainIssueClaimFloors(
     : ({ stalled: false } as const);
   return ids.map((id) => {
     const r = byId.get(id);
-    const refusedBy = !r
-      ? 'not-found'
-      : // Order MATTERS: report the floor a human would act on first.
-        !r.ok_status
-        ? 'not-claimable-status'
-        : !r.ok_untaken && !(r.taken_by && opts.scopeHeldBy?.includes(r.taken_by))
-          ? 'already-taken'
-          : !r.ok_origin
-            ? 'origin'
-            : !r.ok_admission
-              ? 'admission-pending'
-              : !r.ok_live_gate_ops
-                ? 'live-gate-ops'
-                : !r.ok_observation
-                  ? 'observation-lane'
-                  : !r.ok_needs_owner_action
-                    ? 'needs-owner-action'
-                    : !r.ok_agent_review
-                      ? 'agent-review'
-                      : !r.ok_external_blocker
-                        ? 'external-blocker'
-                        : !r.ok_claim_hold
-                          ? 'claim-hold'
-                          : !r.ok_plan_lane
-                            ? 'plan-lane-reserved'
-                            : !r.ok_federation
-                              ? 'federation-detector'
-                              : !r.ok_loop_noise
-                                ? 'loop-noise'
-                                : !r.ok_completed
-                                  ? 'already-completed'
-                                  : !r.ok_watchdog_recovery
-                                    ? 'watchdog-recovery-window'
-                                    : !r.ok_rig
-                                      ? 'cross-machine-rig'
-                                      : !r.ok_no_blocker
-                                        ? 'blocked-dep'
-                                        : !r.ok_cooldown
-                                          ? 'cooldown'
-                                          : !r.ok_stop_line
-                                            ? 'stop-line'
-                                            : null;
+    // Preserve the claim path's first-refusal order while allowing reports to
+    // see independent floors hidden behind it. One inventory drives both views.
+    const floorChecks: readonly (readonly [string, boolean])[] = r ? [
+      ['not-claimable-status', r.ok_status],
+      ['already-taken', r.ok_untaken || !!(r.taken_by && opts.scopeHeldBy?.includes(r.taken_by))],
+      ['origin', r.ok_origin],
+      ['admission-pending', r.ok_admission],
+      ['live-gate-ops', r.ok_live_gate_ops],
+      ['observation-lane', r.ok_observation],
+      ['needs-owner-action', r.ok_needs_owner_action],
+      ['agent-review', r.ok_agent_review],
+      ['external-blocker', r.ok_external_blocker],
+      ['claim-hold', r.ok_claim_hold],
+      ['plan-lane-reserved', r.ok_plan_lane],
+      ['federation-detector', r.ok_federation],
+      ['loop-noise', r.ok_loop_noise],
+      ['already-completed', r.ok_completed],
+      ['watchdog-recovery-window', r.ok_watchdog_recovery],
+      ['cross-machine-rig', r.ok_rig],
+      ['blocked-dep', r.ok_no_blocker],
+      ['cooldown', r.ok_cooldown],
+      ['stop-line', r.ok_stop_line],
+    ] : [['not-found', false]];
+    const failedFloors = floorChecks.filter(([, passed]) => !passed).map(([label]) => label);
+    const refusedBy = failedFloors[0] ?? null;
     return {
       id,
       admissible: refusedBy === null,
       refusedBy,
+      ...(opts.includeAllFloors ? { failedFloors } : {}),
       detail: refusedBy ? (ISSUE_FLOOR_EXPLANATIONS[refusedBy] ?? null) : null,
       // Only the already-taken floor has a holder to name (P-027). Every other
       // refusal is a property of the ROW, so `heldBy` stays absent rather than
