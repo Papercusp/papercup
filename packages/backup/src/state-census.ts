@@ -26,11 +26,23 @@ function matches(entry: CensusEntry, declaration: CensusDeclaration): boolean {
         entry.name.startsWith(`${declaration.name}/`)));
 }
 
+function validateEntry(entry: CensusEntry): void {
+  if (!entry.root.trim() || !entry.name.trim()) throw new Error('Empty census identity');
+  if (entry.kind === 'path' && (entry.name.startsWith('/') || entry.name.includes('\\') ||
+    entry.name.split('/').some(segment => !segment || segment === '.' || segment === '..'))) {
+    throw new Error(`Non-canonical census path: ${entry.name}`);
+  }
+}
+
 /** Unknown or conflicting ownership is residue, never silently exportable state. */
 export function generateStateCensus(
   entries: readonly CensusEntry[],
   declarations: readonly CensusDeclaration[],
 ) {
+  for (const entry of [...entries, ...declarations]) validateEntry(entry);
+  for (const declaration of declarations) {
+    if (!declaration.producer.trim()) throw new Error('Missing census producer');
+  }
   const inventory = entries.map(entry => {
     const owners = declarations.filter(declaration => matches(entry, declaration));
     const classes = new Set(owners.map(owner => owner.classification));
@@ -96,4 +108,11 @@ export async function collectStateCensus(input: {
   for (const root of input.roots) await walk(root, '');
   entries.push(...await input.readCatalogs());
   return generateStateCensus(entries, input.declarations);
+}
+
+/** Collect and validate in one call; consumers cannot accidentally ignore residue. */
+export async function verifyStateCensus(input: Parameters<typeof collectStateCensus>[0]) {
+  const census = await collectStateCensus(input);
+  assertStateCensusComplete(census);
+  return census;
 }

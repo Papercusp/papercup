@@ -10,6 +10,14 @@ const declaration: CensusDeclaration = {
 };
 
 describe('producer-derived state census', () => {
+  it('rejects non-canonical paths and empty producer identities', () => {
+    for (const name of ['/outside', '../outside', 'hives/../outside', 'hives//project', 'hives\\project']) {
+      expect(() => generateStateCensus([{ ...declaration, name }], [declaration]))
+        .toThrow('Non-canonical census path');
+    }
+    expect(() => generateStateCensus([declaration], [{ ...declaration, producer: ' ' }]))
+      .toThrow('Missing census producer');
+  });
   it('keeps an explicit cache root in inventory while pruning its rebuildable contents', async () => {
     const root = await mkdtemp(join(tmpdir(), 'backup-census-'));
     try {
