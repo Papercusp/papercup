@@ -4,14 +4,17 @@
  * Uses the maintained HTTP/SSE target and the production PI provisioning seam.
  * Run explicitly on a verified current-build operator with OPERATOR_BASE_URL
  * and PAPERCUSP_TEST_PUBLIC_CHAT=1. Ordinary CI runs the transport/policy units.
- * This exercises the upstream public brain; Portal browser/install acceptance,
- * novice outcomes and exact released-artifact checks remain separate.
+ * The optional PAPERCUSP_TEST_PUBLIC_PORTAL=1 case also exercises typed input
+ * on an isolated, immutable Portal candidate. Novice and final shipment
+ * acceptance remain separate.
  */
 import { randomUUID } from 'node:crypto';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, sep } from 'node:path';
+import { dirname, join, resolve, sep } from 'node:path';
+import { createServer } from 'node:net';
+import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -25,6 +28,10 @@ import { OperatorTarget } from '../targets/operator';
 import { llmBatteryEvidenceRoot } from '../battery-harness';
 import { buildConverseMcpMount, PUBLIC_MANUAL_TOOLS } from '../../agent-tools/operator/converse-toolset';
 import { createPublicManualSource, getPublicManual } from '../../agent-tools/docs/_public-manual';
+import { upsertWorkspaceHost, upsertWorkspaceHostConnection } from '../../workspace-host/observability-store';
+import { HostedSessionCookieCodec, HOSTED_SESSION_COOKIE, resolveHostedSession, revokeHostedSession, rotateHostedSession } from '../../auth/hosted-session';
+import { resolveHostedSecretRef } from '../../auth/hosted/secret-ref';
+import { withWorkspace } from '@papercusp/db-org';
 
 const baseUrl = process.env.OPERATOR_BASE_URL;
 const enabled = Boolean(baseUrl) && process.env.PAPERCUSP_TEST_PUBLIC_CHAT === '1';
@@ -171,6 +178,27 @@ function successful(result: TurnResult) {
   expect(Boolean(result.assistantText.trim()) || result.cards.length > 0).toBe(true);
 }
 
+async function freeLoopbackPort(): Promise<number> {
+  const server = createServer();
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('portal_fixture_port_missing');
+  await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  return address.port;
+}
+
+function publicPortalFrames(stream: string): Array<{ event: string; data: Record<string, unknown> }> {
+  return stream.replaceAll('\r\n', '\n').split('\n\n').filter(Boolean).map((frame) => {
+    const lines = frame.split('\n');
+    const event = lines.find((line) => line.startsWith('event:'))?.slice(6).trim() ?? 'message';
+    const data = lines.filter((line) => line.startsWith('data:')).map((line) => line.slice(5).trim()).join('\n');
+    return { event, data: data ? JSON.parse(data) : {} };
+  });
+}
+
 async function recordedCase(id: string, question: string) {
   const result = await chat!.send({
     messages: [{ role: 'user', content: question }], trigger: 'user_message',
@@ -263,6 +291,185 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
     const revision = await verifyFixtureBundle();
     expect(revision.revision).toMatch(/^[a-f0-9]{64}$/);
   }, 30_000);
+
+  it.runIf(process.env.PAPERCUSP_TEST_PUBLIC_PORTAL === '1')('answers typed input on the actual hosted Portal with docs-only tools and persisted history', async () => {
+    // Explicit roots prevent this acceptance case from silently testing a mutable
+    // development server or a different installed app. It never promotes a build.
+    const portalRoot = process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT;
+    const candidateRoot = process.env.PAPERCUSP_TEST_PORTAL_CANDIDATE_ROOT;
+    const hostedFile = process.env.PAPERCUSP_PORTAL_HOSTED_ENV_FILE;
+    expect(portalRoot, 'Select the maintained Portal checkout').toBeTruthy();
+    expect(candidateRoot, 'Select an immutable, unpromoted Portal release').toBeTruthy();
+    expect(hostedFile, 'Select the hosted control-plane secret references').toBeTruthy();
+    expect(manualFixtureDir, 'Use the verified disposable public/private canary bundle').toBeTruthy();
+    expect(principalBearer).toBeTruthy();
+    expect(['127.0.0.1', 'localhost']).toContain(new URL(baseUrl!).hostname);
+    const metadata = JSON.parse(readFileSync(join(candidateRoot!, '.papercusp-release.json'), 'utf8'));
+    const repoRoot = resolve(import.meta.dirname, '../../../../..');
+    const { tsImport } = await import('tsx/esm/api');
+    const sourceImport = async (path: string) => {
+      const loaded = await tsImport(pathToFileURL(path).href, import.meta.url);
+      return { ...loaded.default, ...loaded };
+    };
+    const { loadHostedTestUserKit } = await sourceImport(join(portalRoot!, 'e2e/hosted-test-user.ts'));
+    const { resolveServedRelease } = await sourceImport(join(portalRoot!, 'e2e/served-artifact.ts'));
+    const { parseEnvFile } = await sourceImport(join(repoRoot, 'apps/operator/scripts/systemd/portal-hosted-launcher.ts'));
+    const kit = await loadHostedTestUserKit(portalRoot!);
+    const user = await kit.create({ email: `manual-${randomUUID()}@example.com`, attemptId: randomUUID(),
+      firstName: 'Public', lastName: 'Manual', displayName: 'Public manual browser acceptance' });
+    const controlWorkspace = process.env.PAPERCUSP_WORKSPACE || 'papercusp-workspace';
+    const connectionId = `manual-connection-${randomUUID()}`;
+    const hostId = `manual-host-${randomUUID()}`;
+    const evidenceDir = join(llmBatteryEvidenceRoot(), `public-manual-portal-${randomUUID()}`);
+    mkdirSync(evidenceDir, { recursive: true });
+    const temporaryHome = mkdtempSync(join(tmpdir(), 'public-manual-portal-'));
+    const logFile = join(evidenceDir, 'portal.log');
+    const { openSync, closeSync } = await import('node:fs');
+    const logFd = openSync(logFile, 'a', 0o600);
+    let hostedSessionId: string | undefined;
+    let child: ReturnType<typeof spawn> | undefined;
+    let browser: import('@playwright/test').Browser | undefined;
+    let stage = 'hosted-fixture';
+    let servedRelease: Record<string, unknown> | undefined;
+    let stream = '';
+    let history: { turns?: Array<{ role: string; text: string; source?: string }> } | undefined;
+    let browserText = '';
+    const question = 'How do I check the orchard workspace? Search the public manual, read the FAQ section, give its recovery marker, and cite the section. Do not perform a recovery.';
+    try {
+      const admitted = await resolveHostedSession(user.sessionId);
+      expect(admitted).not.toBeNull();
+      expect(admitted!.organizationId).toBe(user.organizationId);
+      await upsertWorkspaceHostConnection({ workspaceId: controlWorkspace, id: connectionId, target: 'gcp',
+        label: 'Disposable manual browser fixture', credentialRef: 'fixture://public-manual-no-provider', status: 'connected' });
+      // Directory identity only: no VM or provisioner operation is created.
+      await upsertWorkspaceHost({ workspaceId: controlWorkspace, id: hostId, connectionId, target: 'gcp',
+        name: 'Disposable manual browser fixture', scopeLabel: 'fixture', region: 'fixture', size: 'fixture',
+        image: 'fixture', diskGiB: 1, network: 'fixture', desiredState: 'running', observedState: 'stopped' });
+      await withWorkspace(controlWorkspace, (sql) => sql`
+        INSERT INTO harness_shared.customer_workspaces
+          (workspace_id, id, organization_id, workspace_host_id, display_name, state, created_by_principal_kind, created_by_principal_id)
+        VALUES (${controlWorkspace}, ${workspaceId}, ${user.organizationId}, ${hostId},
+          'Disposable public manual browser fixture', 'active', 'user', ${admitted!.userId})
+      `);
+      const selected = await rotateHostedSession(user.sessionId, { workspaceId });
+      expect(selected?.workspaceId).toBe(workspaceId);
+      hostedSessionId = selected!.id;
+      const hostedConfig = parseEnvFile(readFileSync(hostedFile!, 'utf8'));
+      const secret = await resolveHostedSecretRef(hostedConfig.PAPERCUSP_HOSTED_SESSION_COOKIE_SECRET_REF);
+      const port = await freeLoopbackPort();
+      const origin = `http://127.0.0.1:${port}`;
+      const overrides = { ...hostedConfig, PORTAL_OPERATOR_ORIGIN: baseUrl!, PAPERCUSP_WORKSPACE_ID: workspaceId,
+        PAPERCUSP_SHARED_OPERATOR: '0', PORTAL_HOME: temporaryHome, PORT: String(port), HOSTNAME: '127.0.0.1' };
+      const envFile = join(temporaryHome, 'hosted.env');
+      writeFileSync(envFile, Object.entries(overrides).map(([key, value]) => `${key}=${value}`).join('\n'), { mode: 0o600 });
+      child = spawn(process.execPath, ['--import', 'tsx', join(repoRoot, 'apps/operator/scripts/systemd/portal-hosted-launcher.ts')], {
+        cwd: repoRoot,
+        env: { ...process.env, PAPERCUSP_PORTAL_ROOT: candidateRoot!,
+          PAPERCUSP_PORTAL_START_WEB: join(candidateRoot!, 'standalone-entry.cjs'),
+          PAPERCUSP_PORTAL_HOSTED_ENV_FILE: envFile, PAPERCUSP_INTEGRATION_ROOT: repoRoot,
+          PAPERCUSP_PORTAL_OPERATOR_ENV_FILE: join(repoRoot, 'apps/operator/.env.local'),
+          // Credential custody: server environment only; never an env file or browser argument.
+          PORTAL_PAPERCUP_PRINCIPAL_TOKEN: principalBearer },
+        stdio: ['ignore', logFd, logFd],
+      });
+      stage = 'portal-startup';
+      await expect.poll(async () => {
+        if (child!.exitCode !== null) throw new Error(`portal_fixture_exited:${child!.exitCode}; see ${logFile}`);
+        try { return (await fetch(origin, { signal: AbortSignal.timeout(2000) })).ok; } catch { return false; }
+      }, { timeout: 45_000, interval: 500 }).toBe(true);
+      stage = 'typed-browser';
+      const { chromium } = await import('@playwright/test');
+      browser = await chromium.launch({ headless: true });
+      const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+      await context.addCookies([{ name: HOSTED_SESSION_COOKIE,
+        value: new HostedSessionCookieCodec(secret).encode(hostedSessionId!), url: origin,
+        secure: true, httpOnly: true, sameSite: 'Lax' }]);
+      const page = await context.newPage();
+      const journeyStartedAt = new Date();
+      const firstPage = await page.goto(`${origin}/?app=papercup`);
+      expect(firstPage?.ok()).toBe(true);
+      const html = await firstPage!.text();
+      servedRelease = resolveServedRelease({ html, releasesDir: dirname(candidateRoot!), journeyStartedAt });
+      expect(servedRelease!.buildId).toBe(metadata.buildId);
+      const composer = page.getByRole('textbox', { name: 'Message Papercup', exact: true });
+      await composer.waitFor({ state: 'visible', timeout: 30_000 });
+      await verifyFixtureBundle();
+      writeFileSync(join(manualFixtureDir!, 'faq.mdx'), fixtureFaq(publicCanary));
+      expect(JSON.stringify(await verifyFixtureBundle())).toContain(publicCanary);
+      const streamedResponse = page.waitForResponse((response) => response.request().method() === 'POST'
+        && /\/api\/papercup-chat\/conversations\/[^/]+\/turns$/.test(new URL(response.url()).pathname), { timeout: 150_000 });
+      await composer.fill(question);
+      await page.getByRole('button', { name: 'Send', exact: true }).click();
+      const response = await streamedResponse;
+      expect(response.ok()).toBe(true);
+      expect(response.headers()['content-type']).toContain('text/event-stream');
+      stream = await response.text();
+      const frames = publicPortalFrames(stream);
+      expect(frames.some((frame) => frame.event === 'error')).toBe(false);
+      const calls = frames.filter((frame) => frame.event === 'tool_call' && String(frame.data.name).startsWith('docs:'));
+      expect(calls[0]?.data.name).toBe('docs:search');
+      expect(calls.some((frame) => frame.data.name === 'docs:get')).toBe(true);
+      for (const call of calls) {
+        expect(call.data.callId).toBeTruthy();
+        expect(frames.some((frame) => frame.event === 'tool_result' && frame.data.name === call.data.name
+          && frame.data.callId === call.data.callId && frame.data.ok === true)).toBe(true);
+      }
+      const chatId = new URL(response.url()).pathname.split('/').at(-2)!;
+      const historyPath = `/api/papercup-chat/conversations/${chatId}/turns`;
+      stage = 'persisted-history';
+      await expect.poll(async () => {
+        const saved = await context.request.get(`${origin}${historyPath}`);
+        expect(saved.ok()).toBe(true);
+        history = await saved.json();
+        return history!.turns?.some((turn) => turn.role === 'assistant' && turn.text.includes(publicCanary)) ?? false;
+      }, { timeout: 15_000, interval: 250 }).toBe(true);
+      expect(history!.turns?.find((turn) => turn.role === 'user')).toMatchObject({ text: question, source: 'text_typed' });
+      const answer = history!.turns?.find((turn) => turn.role === 'assistant')!;
+      expect(answer.source).toBe('text_typed');
+      expect(answer.text).toContain(publicCanary);
+      expect(answer.text).toMatch(/\/docs\/faq/);
+      await page.getByText(publicCanary, { exact: false }).first().waitFor({ state: 'visible', timeout: 15_000 });
+      browserText = await page.locator('body').innerText();
+      const visibleData = JSON.stringify({ stream, history, browserText, html });
+      // Boolean assertions keep the credential out of Vitest failure diffs.
+      expect(visibleData.includes(principalBearer!)).toBe(false);
+      expect(visibleData.includes(privateCanary)).toBe(false);
+      await page.screenshot({ path: join(evidenceDir, 'typed-answer.png'), fullPage: true });
+      stage = 'passed';
+    } finally {
+      // Only the public projected stream/history is retained. Failure stage and
+      // runtime log let a continuation diagnose without replaying a paid turn.
+      const serializedEvidence = JSON.stringify({ id: 'actual-portal-typed', stage,
+        question, runtimeBuild, candidateRoot, servedRelease, workspaceId, recordedAt: new Date().toISOString(),
+        frames: publicPortalFrames(stream), history, browserText }, null, 2);
+      // A custody assertion can fail: failure evidence must still never retain
+      // the server-only principal credential that triggered that failure.
+      const safeEvidence = principalBearer
+        ? serializedEvidence.split(principalBearer).join('[REDACTED]') : serializedEvidence;
+      writeFileSync(join(evidenceDir, 'case.json'), safeEvidence, { mode: 0o600 });
+      try { await browser?.close(); }
+      finally {
+        if (child && child.exitCode === null) {
+          const exited = new Promise<void>((resolve) => child!.once('exit', () => resolve()));
+          child.kill('SIGTERM');
+          await Promise.race([exited, new Promise<void>((resolve) => setTimeout(resolve, 5000))]);
+          if (child.exitCode === null) child.kill('SIGKILL');
+        }
+        closeSync(logFd);
+        try {
+          if (hostedSessionId) await revokeHostedSession(hostedSessionId, 'public manual browser fixture cleanup');
+          await user.cleanup('public manual browser fixture cleanup');
+        } finally {
+          await withWorkspace(controlWorkspace, async (sql) => {
+            await sql`DELETE FROM harness_shared.customer_workspaces WHERE workspace_id=${controlWorkspace} AND id=${workspaceId}`;
+            await sql`DELETE FROM harness_shared.workspace_hosts WHERE workspace_id=${controlWorkspace} AND id=${hostId}`;
+            await sql`DELETE FROM harness_shared.workspace_host_connections WHERE workspace_id=${controlWorkspace} AND id=${connectionId}`;
+          });
+          rmSync(temporaryHome, { recursive: true, force: true });
+        }
+      }
+    }
+  }, 240_000);
 
   it('retrieves the canonical FAQ for a natural question with a misspelling', async () => {
     const result = await recordedCase('conceptual-misspelling',
