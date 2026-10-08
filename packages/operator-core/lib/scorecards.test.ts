@@ -934,6 +934,8 @@ const critIdle = (criterion: string, idleCount: number, ...ratings: string[]): C
     count: ratings.length,
     distribution,
     idleCount,
+    notAssessedCount: 0,
+    unknownReasons: {},
     first: { rating: ratings[0] ?? 'unknown', at: '2026-06-20T00:00:00.000Z' },
     latest: { rating: ratings[ratings.length - 1] ?? 'unknown', at: '2026-06-20T01:00:00.000Z' },
     direction: 'unknown',

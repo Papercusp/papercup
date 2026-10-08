@@ -40,7 +40,10 @@ export const scorecardRatingEntrySchema = z
     absenceClaim: z.boolean().optional(),
     // One vocabulary (observation-types): a second hand-copied literal list here is
     // how `not-assessed` could exist on the read path but be refused on emit.
-    unknownReason: z.enum(OBSERVATION_UNKNOWN_REASONS).optional(),
+    unknownReason: z
+      .enum(OBSERVATION_UNKNOWN_REASONS)
+      .optional()
+      .describe("not-assessed = you have not graded it yet; instrument-unavailable = a measurement failed"),
     attribution: z.enum(['subject', 'system', 'instrument', 'environment', 'ambiguous']).optional(),
     nextEvidenceAction: z.string().min(1).max(1000).optional(),
     suggestion: z.string().min(1).max(2000).optional(),
