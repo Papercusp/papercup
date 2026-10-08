@@ -275,7 +275,7 @@ describe("EI-25270951515189161 — frozen host bundle import smoke runs before T
   const smokeEndIdx = src.indexOf("build_verifier_operator_host || {", smokeStartIdx);
   const smokeSource = src.slice(smokeStartIdx, smokeEndIdx);
 
-  function runSmoke(bundleSource: string, timeoutSec = 3, arenaCap?: string) {
+  function runSmoke(bundleSource: string, timeoutSec: number | string | null = 3, arenaCap?: string, configuredBudget?: string) {
     const fixture = mkdtempSync(resolve(tmpdir(), "verifier-host-import-smoke-"));
     const bundle = resolve(fixture, "hono-host.mjs");
     writeFileSync(bundle, bundleSource);
@@ -288,7 +288,7 @@ describe("EI-25270951515189161 — frozen host bundle import smoke runs before T
             "set -uo pipefail",
             'log() { printf "%s\\n" "$*" >&2; }',
             smokeSource,
-            'smoke_verifier_operator_host "$TEST_TIMEOUT_SEC"',
+            timeoutSec === null ? 'smoke_verifier_operator_host' : 'smoke_verifier_operator_host "$TEST_TIMEOUT_SEC"',
           ].join("\n"),
         ],
         {
@@ -297,6 +297,8 @@ describe("EI-25270951515189161 — frozen host bundle import smoke runs before T
           env: {
             ...process.env,
             MALLOC_ARENA_MAX: arenaCap,
+            HOST_IMPORT_TIMEOUT: undefined,
+            VERIFY_TAURI_HOST_IMPORT_TIMEOUT: configuredBudget,
             OPERATOR_HOST_BUNDLE: bundle,
             VH_PHASE_DIR: resolve(fixture, "phase"),
             TEST_TIMEOUT_SEC: String(timeoutSec),
@@ -329,6 +331,29 @@ describe("EI-25270951515189161 — frozen host bundle import smoke runs before T
     expect(result.smokeEvidence).toMatchObject({ exitCode: 0, outcome: "passed" });
     expect(result.smokeOutput).toContain("PAPERCUSP_HOST_IMPORT_SMOKE_START");
     expect(result.retainedBundle).toBeNull();
+  });
+
+  it.each([[undefined, 60], ["90", 90]])("uses the bounded cold-import phase budget (%s)", (configuredBudget, expected) => {
+    const result = runSmoke("console.log('PAPERCUSP_HOST_IMPORT_SMOKE_OK');\n", null, undefined, configuredBudget);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.smokeEvidence).toMatchObject({ timeoutSec: expected, outcome: "passed" });
+  });
+
+  it.each(["0", "301", "infinity"])("refuses an invalid cold-import budget before starting Node (%s)", configuredBudget => {
+    const result = runSmoke("console.log('PAPERCUSP_HOST_IMPORT_SMOKE_OK');\n", null, undefined, configuredBudget);
+    expect(result.status).toBe(1);
+    expect(result.smokeEvidence).toBeNull();
+    expect(result.smokeOutput).toBeNull();
+  });
+
+  it("accepts a measured delayed import with its own phase budget and still rejects an insufficient budget", () => {
+    const delayed = "await new Promise(resolve => setTimeout(resolve, 1500));\nconsole.log('PAPERCUSP_HOST_IMPORT_SMOKE_OK');\n";
+    const sufficient = runSmoke(delayed, 3);
+    expect(sufficient.status, sufficient.stderr).toBe(0);
+    expect(sufficient.smokeEvidence.elapsedMs).toBeGreaterThanOrEqual(1500);
+    const insufficient = runSmoke(delayed, 1);
+    expect(insufficient.status).toBe(1);
+    expect(insufficient.smokeEvidence).toMatchObject({ exitCode: 124, outcome: "process-failed" });
   });
 
   it.each([undefined, "4"])("sets the arena cap before import and preserves a configured cap (%s)", arenaCap => {
