@@ -3617,7 +3617,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               requests: waitingCriticalContinuationRequests,
             },
             improvementsCapture: improvementsCaptureInFlight,
-            improvementsCaptureMax: 1,
+            improvementsCaptureMax: improvementsCaptureConcurrencyCeiling,
             improvementsCaptureRequests: activeImprovementsCaptureRequests,
             improvementsCaptureQueue: {
               waiting: improvementsCaptureQueueLength(),
@@ -3869,8 +3869,9 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           return;
         }
         // EI-22728723476698098 — pure improvements:capture incident records get a dedicated
-        // one-socket lane. A long checkpoint/completion on criticalContinuationAgent must not
-        // consume the capture's entire client deadline; mixed batches remain on the shared lane.
+        // lane bounded by the reserved control-plane budget. A slow checkpoint/completion on
+        // criticalContinuationAgent must not consume the capture's entire client deadline;
+        // mixed batches remain on the shared lane.
         if (improvementsCapture && !canGrantImprovementsCapture()) {
           pumpImprovementsCaptureQueue();
           if (

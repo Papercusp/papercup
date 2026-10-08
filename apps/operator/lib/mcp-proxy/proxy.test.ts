@@ -7477,6 +7477,10 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
       // FIFO and could not reach the upstream until the first completed.
       await waitFor(() => hits.includes("parallel-capture"));
       expect(hits).toEqual(["held-capture", "parallel-capture"]);
+      const health = JSON.parse(
+        (await get(port(proxy), MCP_PROXY_LOCAL_HEALTH_PATH)).body,
+      ) as { inFlight?: { improvementsCaptureMax?: number } };
+      expect(health.inFlight?.improvementsCaptureMax).toBe(2);
 
       releaseFirst();
       expect((await first).status).toBe(200);
