@@ -6,6 +6,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { hostname } from 'node:os';
 import fastGlob from 'fast-glob';
 import { z } from 'zod';
+import ts from 'typescript';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { withWorkspace } from '@papercusp/db-org';
 import { parseTestRunExecutionDetails, stableRecordedRuntimeEnvironment } from '@papercusp/test-config/execution-details';
@@ -19,6 +20,7 @@ import type { SpecClauseSql } from './spec-clauses-store';
 import { resolvePlanScope } from './source';
 import { ensureBootstrap, getTxPool, readQueue } from '../locks/su-lock-store';
 import {
+  defaultBlobBatchReader,
   fingerprintRepoFileSetAtCommit,
   listCommittedGlobMatches,
   repoFileSetFingerprint,
@@ -105,6 +107,9 @@ export const repoFilesEvidenceMeasurementSchema = z
       verifierRunId: z.string().regex(/^\d{8}T\d{6}Z-\d+(?:\.\d+)?$/),
       journeyHarness: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).max(120),
       journeyRunId: z.string().regex(/^\d{8}T\d{6}Z-\d+(?:\.\d+)?$/),
+      /** Static model-facing metadata may differ; the full raw file still participates in currentness. */
+      guidanceOnlySourcePaths: z.array(repoMeasurementPathSchema).min(1).max(8)
+        .refine(paths => new Set(paths).size === paths.length, 'guidance paths must be unique').optional(),
     }).strict(), z.object({ kind: z.literal('llm-in-process') }).strict()]).optional(),
   })
   .strict()
@@ -112,6 +117,11 @@ export const repoFilesEvidenceMeasurementSchema = z
     if (measurement.completedRuntime && !measurement.runtimeUnits) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['completedRuntime'],
         message: 'completedRuntime requires original execution runtimeUnits' });
+    }
+    if (measurement.completedRuntime?.kind === 'verification-harness'
+      && measurement.completedRuntime.guidanceOnlySourcePaths?.some(path => !measurement.sourcePaths.includes(path))) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['completedRuntime', 'guidanceOnlySourcePaths'],
+        message: 'guidance classification requires an explicit measured source path' });
     }
     if (measurement.fixtureRootHarnessSlug && !hasRepoFixturePaths(measurement)) {
       ctx.addIssue({
@@ -1374,6 +1384,15 @@ interface CurrentnessClassificationOptions {
   provenance?: 'server-measured' | 'partially-server-measured' | 'replayed-snapshot' | 'historical-snapshot';
   /** Applicable non-repository dimensions supplied by the caller beside server measurements. */
   attestedDimensions?: OpaqueFingerprintDimension[];
+  /** Internal independent certification only; never admitted through current-input schemas. */
+  sourceEquivalence?: StaticGuidanceSourceEquivalence;
+}
+
+interface StaticGuidanceSourceEquivalence {
+  kind: 'static-agent-tool-guidance';
+  paths: string[];
+  storedFingerprint: string;
+  measuredFingerprint: string;
 }
 
 /**
@@ -1388,6 +1407,8 @@ export interface ProvisionalScorecardProof {
 }
 
 export interface EvidenceCurrentness {
+  /** Raw fingerprints differ only at the listed independently certified inert metadata spans. */
+  sourceEquivalence?: StaticGuidanceSourceEquivalence;
   overall: Exclude<FingerprintState, 'not-applicable'>;
   dimensions: {
     spec: Exclude<FingerprintState, 'unknown' | 'not-applicable'>;
@@ -1487,6 +1508,11 @@ export function classifySpecEvidenceCurrentness(
             ? 'current'
             : 'unknown',
   };
+  const sourceEquivalence = options.provenance === 'server-measured' && options.sourceEquivalence
+    && options.sourceEquivalence.storedFingerprint === row.source_fingerprint
+    && options.sourceEquivalence.measuredFingerprint === current?.sourceFingerprint
+    && options.sourceEquivalence.paths.length > 0 ? options.sourceEquivalence : undefined;
+  if (sourceEquivalence && dimensions.source === 'stale') dimensions.source = 'current';
   const staleReasons = Object.entries(dimensions)
     .filter(([, state]) => state === 'stale')
     .map(([dimension]) => `${dimension}-stale`);
@@ -1534,6 +1560,7 @@ export function classifySpecEvidenceCurrentness(
     unknownReasons: guardedUnknownReasons,
     comparisonSupplied: current != null,
     provenance,
+    ...(sourceEquivalence ? { sourceEquivalence } : {}),
   };
 }
 
@@ -2107,6 +2134,71 @@ export async function supersedeSpecEvidenceAtRevision(
 }
 
 /**
+ * Strip only inert description/guidance properties of a direct imported defineTool.
+ * Everything outside those spans remains byte-identical. Dynamic metadata, root
+ * spreads, duplicate properties and parse errors fail closed. This classifies a
+ * completed native journey; it never changes the measured raw source fingerprint.
+ */
+export function agentToolRuntimeSourceWithoutStaticGuidance(source: string): string | null {
+  const file = ts.createSourceFile('tool.ts', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  if ((file as ts.SourceFile & { parseDiagnostics: readonly unknown[] }).parseDiagnostics.length) return null;
+  const importsDefineTool = file.statements.some(statement => ts.isImportDeclaration(statement)
+    && ts.isStringLiteral(statement.moduleSpecifier) && statement.moduleSpecifier.text === '@papercusp/agent-mcp'
+    && statement.importClause?.namedBindings && ts.isNamedImports(statement.importClause.namedBindings)
+    && statement.importClause.namedBindings.elements.some(element => element.name.text === 'defineTool'
+      && (!element.propertyName || element.propertyName.text === 'defineTool')));
+  const exports = file.statements.filter(ts.isExportAssignment);
+  if (!importsDefineTool || exports.length !== 1 || exports[0].isExportEquals) return null;
+  const expression = exports[0].expression;
+  if (!ts.isCallExpression(expression) || !ts.isIdentifier(expression.expression)
+    || expression.expression.text !== 'defineTool' || expression.arguments.length !== 1
+    || !ts.isObjectLiteralExpression(expression.arguments[0])) return null;
+  const object = expression.arguments[0];
+  const key = (node: ts.PropertyName | undefined): string | null => node
+    && (ts.isIdentifier(node) || ts.isStringLiteral(node)) ? node.text : null;
+  const keys = object.properties.map(property => ts.isSpreadAssignment(property) ? null : key(property.name));
+  if (keys.includes(null) || new Set(keys).size !== keys.length) return null;
+  const staticString = (node: ts.Expression): boolean => ts.isStringLiteral(node)
+    || ts.isNoSubstitutionTemplateLiteral(node)
+    || ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken
+      && staticString(node.left) && staticString(node.right);
+  const staticValue = (node: ts.Expression): boolean => staticString(node)
+    || ts.isArrayLiteralExpression(node) && node.elements.every(element => staticString(element));
+  const metadata = object.properties.filter(property => !ts.isSpreadAssignment(property)
+    && ['description', 'guidance'].includes(key(property.name) ?? ''));
+  if (metadata.length !== 2) return null;
+  for (const property of metadata) {
+    if (!ts.isPropertyAssignment(property)) return null;
+    if (key(property.name) === 'description') {
+      if (!staticString(property.initializer)) return null;
+    } else {
+      if (!ts.isObjectLiteralExpression(property.initializer)) return null;
+      const guidanceKeys = property.initializer.properties.map(entry => ts.isSpreadAssignment(entry) ? null : key(entry.name));
+      if (new Set(guidanceKeys).size !== guidanceKeys.length
+        || !property.initializer.properties.every(entry => ts.isPropertyAssignment(entry)
+          && ['when', 'notWhen', 'chaining', 'returns', 'seeAlso'].includes(key(entry.name) ?? '')
+          && staticValue(entry.initializer))) return null;
+    }
+  }
+  let stripped = source;
+  for (const property of [...metadata].sort((a, b) => b.pos - a.pos)) {
+    const end = source[property.end] === ',' ? property.end + 1 : property.end;
+    stripped = stripped.slice(0, property.getFullStart()) + stripped.slice(end);
+  }
+  return stripped;
+}
+
+async function onlyStaticToolGuidanceChanged(root: string, original: MeasuredRepoFile, current: MeasuredRepoFile): Promise<boolean> {
+  if (!original.gitBlob || !current.gitBlob) return false;
+  const blobs = await defaultBlobBatchReader(root, [original.gitBlob, current.gitBlob]);
+  const before = blobs.get(original.gitBlob), after = blobs.get(current.gitBlob);
+  if (!before || !after || createHash('sha256').update(before).digest('hex') !== original.sha256
+    || createHash('sha256').update(after).digest('hex') !== current.sha256) return false;
+  const beforeRuntime = agentToolRuntimeSourceWithoutStaticGuidance(before.toString('utf8'));
+  return beforeRuntime !== null && beforeRuntime === agentToolRuntimeSourceWithoutStaticGuidance(after.toString('utf8'));
+}
+
+/**
  * A disposed verifier cannot be re-probed through /proc. Certify its completed
  * execution from the retained harness lifecycle and independently rehashed source
  * instead. This opt-in applies only to clean native/LLM test receipts on the live
@@ -2118,6 +2210,7 @@ export async function measureCompletedTestRuntime(
   currentFiles: readonly MeasuredRepoFile[],
   scope: { workspaceId: string; harnessSlug: string },
   root: string,
+  options: { onStaticGuidanceEquivalence?: (value: StaticGuidanceSourceEquivalence) => void } = {},
 ): Promise<string | null> {
   const selector = recipe.completedRuntime;
   const execution = parseTestRunExecutionDetails(row.test_run_execution_details);
@@ -2214,14 +2307,26 @@ export async function measureCompletedTestRuntime(
     // A retained JSON receipt alone is not code identity. Read the immutable Git
     // objects too, then compare each current source/test/fixture byte measurement.
     const recorded = await measureRepoFilesEvidenceDetailedAtCommit(root, recipe, execution.commitSha);
-    const recordedFiles = new Map(recorded.files.map(file => [`${file.dimension}:${file.path}`, file.sha256]));
+    const recordedFiles = new Map(recorded.files.map(file => [`${file.dimension}:${file.path}`, file]));
     const receiptFiles = new Map(receipt.files.map((file: any) => [file.path, file.sha256]));
     const journeyFiles = new Map(manifest.sourceFingerprints.map((file: any) => [file.path, file.sha256]));
-    if (currentFiles.length === 0 || currentFiles.length !== recorded.files.length
-      || currentFiles.some(file => recordedFiles.get(`${file.dimension}:${file.path}`) !== file.sha256
-        || receiptFiles.get(file.path) !== file.sha256
+    const guidanceChanged: string[] = [];
+    if (currentFiles.length === 0 || currentFiles.length !== recorded.files.length) return null;
+    for (const file of currentFiles) {
+      const original = recordedFiles.get(`${file.dimension}:${file.path}`);
+      if (!original || receiptFiles.get(file.path) !== original.sha256
         || (file.dimension === 'source' && !file.path.startsWith('scripts/')
-          && journeyFiles.get(file.path) !== file.sha256))) return null;
+          && journeyFiles.get(file.path) !== original.sha256)) return null;
+      if (file.sha256 !== original.sha256 && !(file.dimension === 'source'
+        && selector.guidanceOnlySourcePaths?.includes(file.path)
+        && await onlyStaticToolGuidanceChanged(root, original, file))) return null;
+      if (file.sha256 !== original.sha256) guidanceChanged.push(file.path);
+    }
+    if (guidanceChanged.length && recorded.sourceFingerprint === row.source_fingerprint) {
+      options.onStaticGuidanceEquivalence?.({ kind: 'static-agent-tool-guidance', paths: guidanceChanged.sort(),
+        storedFingerprint: recorded.sourceFingerprint,
+        measuredFingerprint: repoFileSetFingerprint(currentFiles.filter(file => file.dimension === 'source')) });
+    }
     return witness.fingerprint;
   } catch { return null; }
 }
@@ -2511,6 +2616,7 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
         let measured: MeasuredRepoEvidenceFingerprints;
         let files: MeasuredRepoFile[] | null = null;
         let measuredAtCommit: string | null = null;
+        let sourceEquivalence: StaticGuidanceSourceEquivalence | undefined;
         if (recipe.kind === 'work-items') {
           // Ledger state has no checkout to resolve: the digest is recomputed from the rows.
           measured = await measureWorkItemsEvidenceForScope(scope.workspaceId, scope.harnessSlug, recipe);
@@ -2606,7 +2712,8 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
             testFingerprint: detailed.testFingerprint,
             ...(detailed.fixtureFingerprint !== undefined ? { fixtureFingerprint: detailed.fixtureFingerprint } : {}),
             ...(recipe.runtimeUnits ? { environmentFingerprint: recipe.completedRuntime
-              ? await measureCompletedTestRuntime(row, recipe, detailed.files, scope, measurementRoot)
+              ? await measureCompletedTestRuntime(row, recipe, detailed.files, scope, measurementRoot,
+                { onStaticGuidanceEquivalence: value => { sourceEquivalence = value; } })
               : measureRuntimeVintageEnvironment(
                 await (runtimeRows ??= listRuntimeVintage(scope.workspaceId)), recipe.runtimeUnits) } : {}),
           };
@@ -2616,6 +2723,7 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
           status: 'measured' as const,
           files,
           measuredAtCommit,
+          sourceEquivalence,
           current: {
             planSlug: row.plan_slug,
             specId: row.spec_id,
@@ -2720,7 +2828,7 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
       row,
       current,
       measured?.status === 'measured'
-        ? { provenance: 'server-measured', attestedDimensions }
+        ? { provenance: 'server-measured', attestedDimensions, sourceEquivalence: measured.sourceEquivalence }
         : replayProvenance,
     );
     if (measured?.status === 'unavailable' && currentness.overall === 'unknown') {

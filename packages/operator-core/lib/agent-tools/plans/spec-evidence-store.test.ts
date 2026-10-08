@@ -52,7 +52,7 @@ vi.mock('../../harness-registry', async (importOriginal) => {
   return {
     ...actual,
     loadHarnessRegistry: async () => ({}) as never,
-    resolveHarnessContentPath: (_registry, slug: string) =>
+    resolveHarnessContentPath: (_registry: unknown, slug: string) =>
       slug === 'papercusp' && h.fixtureMeasurementRoot ? h.fixtureMeasurementRoot : h.measurementRoot,
   };
 });
@@ -66,6 +66,7 @@ import {
   measureAndPinRepoFilesEvidenceAtRoot,
   measureRepoFilesEvidenceDetailedAtRoot,
   measureCompletedTestRuntime,
+  agentToolRuntimeSourceWithoutStaticGuidance,
   measureRepoFilesEvidenceAtRoot,
   measureWorkItemsEvidenceForScope,
 } from './spec-evidence-store';
@@ -73,6 +74,43 @@ import { configureRuntimeVintageStore, resetRuntimeVintageStore, InMemoryRuntime
   reportRuntimeVintage, listRuntimeVintage, measureRuntimeVintageEnvironment } from '../../runtime-vintage';
 
 let measurementRoot = '';
+const nativeToolSource = `import { defineTool } from '@papercusp/agent-mcp';
+export default defineTool({ name: 'reports:publish', description: 'Original ' + 'description',
+  guidance: { when: 'publish', chaining: 'publish then read', seeAlso: ['reports:get'] },
+  capability: 'reports:write', agentRoles: ['su'], requirePrincipal: false,
+  args: z.object({ title: z.string() }), result: z.object({ ok: z.boolean() }),
+  async handler(args, ctx) { return { data: { ok: true } }; },
+});`;
+
+describe('completed native static tool guidance classification', () => {
+  const source = nativeToolSource;
+  it('removes only static metadata while retaining every executable byte', () => {
+    const before = agentToolRuntimeSourceWithoutStaticGuidance(source);
+    expect(before).not.toBeNull();
+    expect(before).toContain("capability: 'reports:write'");
+    expect(agentToolRuntimeSourceWithoutStaticGuidance(source.replace('Original ', 'New ').replace('publish then read', 'publish then verify read'))).toBe(before);
+    for (const [old, replacement] of [["'reports:write'", "'reports:admin'"], ["['su']", "['worker']"],
+      ['requirePrincipal: false', 'requirePrincipal: true'], ['z.string()', 'z.number()'],
+      ['z.boolean()', 'z.literal(true)'], ['ok: true', 'ok: false'],
+      ["'reports:publish'", "'reports:retire'"], ["'@papercusp/agent-mcp'", "'other'"],
+      ['return { data', 'ctx.log(args); return { data']]) {
+      expect(agentToolRuntimeSourceWithoutStaticGuidance(source.replace(old, replacement))).not.toBe(before);
+    }
+  });
+  it('fails closed for metadata with side effects, spreads, duplicates or parse errors', () => {
+    for (const changed of [source.replace("'Original ' + 'description'", 'computeDescription()'),
+      source.replace("'publish then read'", '`${performAction()}`'),
+      source.replace("seeAlso: ['reports:get']", "seeAlso: [getTool()]"),
+      source.replace("when: 'publish'", "get when() { return 'publish'; }"),
+      source.replace("when: 'publish'", "...otherGuidance, when: 'publish'"),
+      source.replace("when: 'publish'", "when: 'publish', when: 'again'"),
+      source.replace("name: 'reports:publish'", "...otherTool, name: 'reports:publish'"),
+      source.replace("name: 'reports:publish'", "name: 'reports:publish', description: 'duplicate'"),
+      source.replace('description:', "['description']:"), source.replace('defineTool({', 'defineTool(({' )]) {
+      expect(agentToolRuntimeSourceWithoutStaticGuidance(changed)).toBeNull();
+    }
+  });
+});
 
 describe('completed isolated runtime certification', () => {
   let root = '', artifacts = '', commit = '';
@@ -87,7 +125,7 @@ describe('completed isolated runtime certification', () => {
     root = await mkdtemp(join(tmpdir(), 'completed-runtime-source-'));
     artifacts = await mkdtemp(join(tmpdir(), 'completed-runtime-artifacts-'));
     await mkdir(join(root, 'src')); await mkdir(join(root, 'test'));
-    await writeFile(join(root, 'src/feature.ts'), 'export const value = 1;\n');
+    await writeFile(join(root, 'src/feature.ts'), nativeToolSource);
     await writeFile(join(root, 'test/feature.e2e.test.ts'), 'expect(value).toBe(1);\n');
     // A private fixture repository supplies genuine immutable Git objects.
     execFileSync('git', ['init', '-q', root]);
@@ -104,7 +142,7 @@ describe('completed isolated runtime certification', () => {
     h.measurementRoot = root;
     vi.stubEnv('VH_EVIDENCE_ROOT_BASE', artifacts);
     configureRuntimeVintageStore(new InMemoryRuntimeVintageStore()); // The owned verifier has exited.
-    await writeFile(join(root, 'src/feature.ts'), 'export const value = 1;\n');
+    await writeFile(join(root, 'src/feature.ts'), nativeToolSource);
     const measured = await measureRepoFilesEvidenceDetailedAtRoot(root, recipe);
     const verifier = { schemaVersion: 1, harness: 'verify-tauri-headless', runId: verifierRunId,
       verdict: 'pass', reuseFromRunId: null, phases: [
@@ -156,6 +194,45 @@ describe('completed isolated runtime certification', () => {
     expect(evidence.currentness).toMatchObject({ overall: 'current', provenance: 'server-measured',
       dimensions: { source: 'current', test: 'current', environment: 'current', testRun: 'current' } });
   });
+  it('independently qualifies only static guidance drift while retaining both raw source fingerprints', async () => {
+    const state = await setup();
+    const commitSource = async (source: string) => {
+      await writeFile(join(root, 'src/feature.ts'), source);
+      execFileSync('git', ['-C', root, 'add', 'src/feature.ts']);
+      execFileSync('git', ['-C', root, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+        'commit', '--allow-empty', '-qm', 'guidance classification fixture']);
+    };
+    try {
+      await commitSource(nativeToolSource.replace('Original ', 'Current ').replace('publish then read', 'publish then verify read'));
+      expect((await read()).currentness.dimensions.source).toBe('stale');
+      Object.assign(state.row.details.currentMeasurement.completedRuntime, { guidanceOnlySourcePaths: ['src/feature.ts'] });
+      const evidence = await read();
+      expect(evidence.currentness.overall).toBe('current');
+      expect(evidence.fingerprints.sourceFingerprint).toBe(state.row.source_fingerprint);
+      expect(evidence.currentness.sourceEquivalence).toMatchObject({ kind: 'static-agent-tool-guidance',
+        paths: ['src/feature.ts'], storedFingerprint: state.row.source_fingerprint });
+      expect(evidence.currentness.sourceEquivalence?.measuredFingerprint).not.toBe(state.row.source_fingerprint);
+      // Replacing a retained ORIGINAL raw hash with today's hash is not allowed.
+      state.manifest.sourceFingerprints[0].sha256 = '0'.repeat(64);
+      await state.save();
+      expect((await read()).currentness.overall).not.toBe('current');
+      state.manifest.sourceFingerprints[0].sha256 = state.receipt.files.find(file => file.dimension === 'source')!.sha256;
+      await state.save();
+      await commitSource(nativeToolSource.replace('ok: true', 'ok: false'));
+      const codeChanged = await read();
+      expect(codeChanged.currentness.dimensions.source).toBe('stale');
+      expect(codeChanged.currentness.dimensions.environment).toBe('unknown');
+      expect(codeChanged.currentness.sourceEquivalence).toBeUndefined();
+    } finally { await commitSource(nativeToolSource); }
+  });
+
+  it('rejects guidance classification outside explicit source paths or on completed LLM selectors', () => {
+    expect(evidenceMeasurementSchema.safeParse({ ...recipe, completedRuntime: {
+      ...recipe.completedRuntime, guidanceOnlySourcePaths: ['test/feature.e2e.test.ts'] } }).success).toBe(false);
+    expect(evidenceMeasurementSchema.safeParse({ ...recipe, completedRuntime: {
+      kind: 'llm-in-process', guidanceOnlySourcePaths: ['src/feature.ts'] } }).success).toBe(false);
+  });
+
   async function setupLlm() {
     const state = await setup();
     const store = new InMemoryRuntimeVintageStore();
