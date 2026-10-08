@@ -191,6 +191,63 @@ describe('consult:get_feedback requester interest handle (P-024)', () => {
 });
 
 describe('consult:get_feedback requester guidance', () => {
+  it('accepts bounded retry identities in the registered public schema and rejects empty or oversized keys', () => {
+    const args = tool.args.parse({ question: 'Retry the persisted request', request_key: '  stable-key  ' });
+    expect(args.request_key).toBe('stable-key');
+    expect(tool.args.safeParse({ question: 'Retry the persisted request' }).success).toBe(true);
+    expect(tool.args.safeParse({ question: 'Retry the persisted request', request_key: 'x'.repeat(200) }).success).toBe(true);
+    for (const request_key of ['', '   ', 'x'.repeat(201)]) {
+      expect(tool.args.safeParse({ question: 'Retry the persisted request', request_key }).success).toBe(false);
+    }
+  });
+
+  it('passes the retry key and payload through the public handler to durable acceptance', async () => {
+    const out = await call('proceed', {
+      request_key: 'stable-key', tried: 'Read the implementation', observed: 'Transport timed out',
+      decision_at_stake: 'Resume the existing consult', origin_task_ref: 'WI-1',
+      allow_dispatch: false, harness: 'papercusp', min_agents: 0, max_agents: 2,
+    });
+    expect(h.acceptFeedbackRequestCore).toHaveBeenCalledWith(expect.objectContaining({
+      workspaceId: 'ws-test', requesterId: 'requester-1', requestKey: 'stable-key',
+      question: 'What already failed here?', tried: 'Read the implementation', observed: 'Transport timed out',
+      decisionAtStake: 'Resume the existing consult', originTaskRef: 'WI-1',
+      allowDispatch: false, harnessSlug: 'papercusp', minResponders: 0, maxResponders: 2,
+    }), expect.any(Object));
+    expect(out).toMatchObject({ verdict: 'accepted', conversation_id: 'consult-1', request_key: 'stable-key' });
+    await vi.waitFor(() => expect(h.continueFeedbackRequestCore).toHaveBeenCalledWith(
+      'ws-test', 'consult-1', expect.objectContaining({ execute: expect.any(Function) }),
+    ));
+  });
+
+  it('returns durable acceptance while routing continuation has not completed', async () => {
+    let finish!: (value: boolean) => void;
+    h.continueFeedbackRequestCore.mockImplementation(() => new Promise<boolean>((resolve) => { finish = resolve; }));
+    try {
+      const out = await call('proceed', { request_key: 'pending-key' });
+      expect(out).toMatchObject({ verdict: 'accepted', pending: true, request_key: 'pending-key' });
+      await vi.waitFor(() => expect(h.continueFeedbackRequestCore).toHaveBeenCalledTimes(1));
+      expect(h.getFeedbackCore).not.toHaveBeenCalled();
+      expect(h.buildQueryEmbedderResolved).not.toHaveBeenCalled();
+      expect(h.makeConsultReachDispatcher).not.toHaveBeenCalled();
+    } finally {
+      finish?.(false);
+    }
+  });
+
+  it('returns key reuse refusal without scheduling routing or arming a requester watch', async () => {
+    const refusal = {
+      error: 'request_key_conflict', conversation_id: 'consult-1',
+      hint: 'Reuse its original payload for recovery, or use a new key for a fresh consult.',
+    };
+    h.acceptFeedbackRequestCore.mockResolvedValue(refusal);
+    const out = await call('hard-blocked', { request_key: 'conflicting-key' });
+    expect(out).toEqual(refusal);
+    expect(h.continueFeedbackRequestCore).not.toHaveBeenCalled();
+    expect(h.reconcileInterestEventAwaits).not.toHaveBeenCalled();
+    expect(h.buildQueryEmbedderResolved).not.toHaveBeenCalled();
+    expect(h.makeConsultReachDispatcher).not.toHaveBeenCalled();
+  });
+
   it('uses the shared handler timeout budget for synchronous consult dispatch', () => {
     const projected = lookupByMcpName('consult:get_feedback');
     expect(projected).toBeDefined();
