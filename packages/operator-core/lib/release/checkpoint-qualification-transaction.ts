@@ -1658,8 +1658,10 @@ export function assessTerminalRepairQueueReconciliation(
   // not have), and no unexpired dispatch reservation may be held (a launch is in flight). An
   // expired reservation is abandoned: `decideFrozenCandidateRepairQueue` already treats it as
   // dispatchable, so refusing on it here would recreate the same deadlock one field over.
+  // Fail closed without a clock: an unmeasurable expiry counts as a live reservation.
   const reservationLive =
-    queue.dispatchReservation != null && queue.dispatchReservation.expiresAtMs > successor.nowMs;
+    queue.dispatchReservation != null &&
+    !(typeof successor.nowMs === 'number' && queue.dispatchReservation.expiresAtMs <= successor.nowMs);
   if (
     (originMatchesTerminal || originMatchesImmediatePredecessor) &&
     queue.phase === 'awaiting-fixer' &&

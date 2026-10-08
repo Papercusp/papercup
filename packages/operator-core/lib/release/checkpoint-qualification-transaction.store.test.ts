@@ -17,6 +17,7 @@ import {
   createFrozenCandidateQueue,
   markFrozenCandidateVerificationRed,
   markFrozenRepairAdmitted,
+  markFrozenRepairFixerDispatched,
 } from './frozen-candidate-repair-queue';
 
 type QueryResult = Record<string, unknown>[];
@@ -135,13 +136,15 @@ describe('beginStoredQualification terminal repair-queue reconciliation', () => 
 
   it('leaves mismatched or started queues untouched and refuses the successor', async () => {
     const current = terminalQualification();
-    for (const queue of [
-      { ...safeQueue(), qualificationAttemptId: 'different-attempt' },
-      markFrozenCandidateVerificationRed(safeQueue(), {
-        failingTests: ['broken.test.ts'],
-        nowMs: 150,
-      }),
-    ]) {
+    const red = markFrozenCandidateVerificationRed(safeQueue(), {
+      failingTests: ['broken.test.ts'],
+      nowMs: 150,
+    });
+    for (const [queue, reason] of [
+      [{ ...safeQueue(), qualificationAttemptId: 'different-attempt' }, 'queue-origin-mismatch'],
+      // STARTED: a fixer was dispatched and owns the queue — it advances it by admission.
+      [markFrozenRepairFixerDispatched(red, { spawnId: 's-fixer-1', nowMs: 160 }), 'queue-not-safe-unstarted'],
+    ] as const) {
       const { statements } = transactionHarness({
         qualificationTransaction: current,
         repair_queue: queue,
@@ -149,9 +152,40 @@ describe('beginStoredQualification terminal repair-queue reconciliation', () => 
       const result = await beginStoredQualification(target, successor, {
         reconcileTerminalRepairQueueForSuccessor: true,
       });
-      expect(result).toMatchObject({ status: 'conflict' });
+      expect(result).toMatchObject({ status: 'conflict', repairQueueReconciliation: { status: 'blocked', reason } });
       expect(statements.some((statement) => statement.text.includes('UPDATE harness_shared.routines'))).toBe(false);
     }
+  });
+
+  // WI-10007398: an UNASSIGNED awaiting-fixer queue is not started — no fixer owns it, and only
+  // the successor run's dispatch-fixer decision can launch one. Refusing it deadlocked the gate
+  // (13 consecutive hourly refusals measured 2026-10-07/08). It is handed off, never retired.
+  it('hands an unassigned awaiting-fixer queue to the successor in the same exact-row CAS', async () => {
+    const current = terminalQualification();
+    const queue = markFrozenCandidateVerificationRed(safeQueue(), {
+      failingTests: ['broken.test.ts'],
+      nowMs: 150,
+    });
+    expect(queue.phase).toBe('awaiting-fixer');
+    expect(queue.fixerSpawnId).toBeNull();
+    const { statements } = transactionHarness({
+      qualificationTransaction: current,
+      repair_queue: queue,
+    });
+
+    const result = await beginStoredQualification(target, successor, {
+      reconcileTerminalRepairQueueForSuccessor: true,
+    });
+
+    expect(result).toMatchObject({
+      status: 'updated',
+      transaction: { attemptId: 'attempt-2', previousAttemptId: 'attempt-1' },
+      repairQueueReconciliation: { status: 'preserved', reason: 'awaiting-unassigned-fixer' },
+    });
+    const update = statements.find((statement) => statement.text.includes('UPDATE harness_shared.routines'))!;
+    expect(update.text).not.toContain("- 'repair_queue'");
+    expect(update.text).toContain("metadata->'repair_queue' =");
+    expect(update.text).toContain("'{repair_queue,qualificationAttemptId}'");
   });
 
   it('installs the successor without deleting a matching untested repair head', async () => {
