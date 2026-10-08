@@ -19,6 +19,7 @@ vi.mock('./context-doors-config', () => ({ getDoorConstantsSync: doorConstantsMo
 import type { DoorableResult } from './result-door';
 import {
   applyResultDoor,
+  applyResultDoorAsync,
   beginResultDoorAggregate,
   buildProjectionHint,
   measureResultContextBytes,
@@ -1979,6 +1980,104 @@ describe('applyResultDoor', () => {
       expect((doored.content[0] as { text: string }).text.length).toBeLessThan(original.length);
     });
 
+    it.each([
+      { label: 'direct', toolName: 'scorecards:emit' },
+      { label: 'nested', toolName: 'tools:invoke', nestedTargetToolName: 'scorecards:emit' },
+    ])('preserves a committed scorecard receipt after $label aggregate spill failure', async ({ toolName, nestedTargetToolName }) => {
+      const scope = () => beginResultDoorAggregate({ sessionKey: 'scorecard-emit-hard-failure', outputGroupId: 'turn-1' });
+      applyResultDoor(medium(), { toolName: 'tools:invoke', workspaceId: 'ws-1', runId: RUN_ID, aggregateScope: scope() });
+      applyResultDoor(medium(), { toolName: 'tools:invoke', workspaceId: 'ws-1', runId: RUN_ID, aggregateScope: scope() });
+      writeFileSync(join(sandbox, 'scratch'), 'not a directory');
+
+      const noise = Object.fromEntries(
+        Array.from({ length: 18 }, (_, index) => [`detail${index}`, 'n'.repeat(900)]),
+      );
+      const receipt = {
+        ok: true,
+        completionReceipt: { status: 'recorded', effectRef: 'scorecard-emit-hard-1' },
+        canonicalRatings: { 'degenerate-distribution': { rating: 'preserved-rating' } },
+        created: true,
+        issueId: 'scorecard-emit-hard-1',
+        ...noise,
+      };
+      const original = JSON.stringify(receipt);
+      const doored = await applyResultDoorAsync(
+        { content: [{ type: 'text' as const, text: original }], structuredContent: receipt },
+        {
+          toolName,
+          ...(nestedTargetToolName ? { nestedTargetToolName } : {}),
+          workspaceId: 'ws-1',
+          runId: RUN_ID,
+          aggregateScope: scope(),
+        },
+      );
+      const output = JSON.parse((doored.content[0] as { text: string }).text) as {
+        committed?: boolean;
+        completionReceipt?: Record<string, unknown>;
+        canonicalRatings?: Record<string, { rating: unknown }>;
+        created?: boolean;
+        issueId?: string;
+        _projection?: { cursor?: Record<string, unknown>; next?: string };
+        error?: Record<string, unknown>;
+      };
+
+      expect(output).toMatchObject({
+        ok: true,
+        committed: true,
+        completionReceipt: { status: 'recorded', effectRef: 'scorecard-emit-hard-1' },
+        canonicalRatings: { 'degenerate-distribution': { rating: 'preserved-rating' } },
+        created: true,
+        issueId: 'scorecard-emit-hard-1',
+      });
+      expect(output.error).toBeUndefined();
+      expect(output._projection?.cursor).toMatchObject({ kind: 'unavailable', reason: 'spill-write-failed' });
+      expect(output._projection?.next).toContain('Do NOT repeat this non-idempotent emit');
+      expect(doored.structuredContent).toEqual(receipt);
+      expect((doored._meta as { resultDoor?: Record<string, unknown> }).resultDoor).toMatchObject({
+        spillFailed: true,
+        spillPath: null,
+        spillUri: null,
+        reason: 'aggregate-output-budget-exceeded',
+      });
+      expect((doored.content[0] as { text: string }).text.length).toBeLessThan(original.length);
+    });
+
+    it.each([
+      { label: 'direct', toolName: 'scorecards:emit' },
+      { label: 'nested', toolName: 'tools:invoke', nestedTargetToolName: 'scorecards:emit' },
+    ])('marks a $label scorecard hard-spill failure non-retryable when no receipt is available', ({ toolName, nestedTargetToolName }) => {
+      const scope = () => beginResultDoorAggregate({ sessionKey: 'scorecard-emit-no-receipt', outputGroupId: 'turn-1' });
+      applyResultDoor(medium(), { toolName: 'tools:invoke', workspaceId: 'ws-1', runId: RUN_ID, aggregateScope: scope() });
+      applyResultDoor(medium(), { toolName: 'tools:invoke', workspaceId: 'ws-1', runId: RUN_ID, aggregateScope: scope() });
+      writeFileSync(join(sandbox, 'scratch'), 'not a directory');
+
+      const receipt = {
+        ok: true,
+        ...Object.fromEntries(Array.from({ length: 18 }, (_, index) => [`detail${index}`, 'n'.repeat(900)])),
+      };
+      const doored = applyResultDoor(
+        { content: [{ type: 'text' as const, text: JSON.stringify(receipt) }] },
+        {
+          toolName,
+          ...(nestedTargetToolName ? { nestedTargetToolName } : {}),
+          workspaceId: 'ws-1',
+          runId: RUN_ID,
+          aggregateScope: scope(),
+        },
+      );
+      const output = JSON.parse((doored.content[0] as { text: string }).text) as {
+        state?: string;
+        error?: { code?: string; message?: string; retryable?: boolean };
+      };
+
+      expect(output).toMatchObject({
+        state: 'error',
+        error: { code: 'output_spill_failed', retryable: false },
+      });
+      expect(output.error?.message).toContain('scorecards:emit write outcome is unknown');
+      expect(output.error?.message).toContain('Do NOT repeat this non-idempotent emit');
+    });
+
     it('retains a nested coord:send receipt when the aggregate hard-spill write fails', () => {
       // Two ordinary results consume 10KB of the 12KB cohort. The third result
       // must take the hard whole-result spill route; making scratch unavailable
@@ -2027,6 +2126,7 @@ describe('applyResultDoor', () => {
         cursor: { kind: 'unavailable', reason: 'spill-write-failed' },
       });
       expect(output._projection.next).toContain('Do not repeat coord:send');
+      expect(output._projection.next).toContain('coord:read');
       expect((doored._meta as { resultDoor?: Record<string, unknown> }).resultDoor).toMatchObject({
         spillFailed: true,
         spillPath: null,
@@ -2232,7 +2332,9 @@ describe('applyResultDoor', () => {
 
       expect(envelope.error).toMatchObject({ code: 'output_spill_failed', retryable: false });
       expect(envelope.error?.message).toContain('delivery outcome is unknown');
-      expect(envelope.error?.message).toContain('do not repeat the send');
+      expect(envelope.error?.message).toContain('do NOT repeat the send');
+      expect(envelope.error?.message).toContain('coord:feed');
+      expect(envelope.error?.message).toContain('coord:inbox');
     });
 
     it('uses one budget across explicit fan-out and spills the result that crosses it', () => {
