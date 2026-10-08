@@ -38,8 +38,21 @@ const workspace = {
 };
 const ANSWER = 'Available tools: read files and search code.';
 
-async function setupJourney(page: Page, existing: boolean, speech = false) {
-  let rows: unknown[] = existing ? [connection, workspace] : [];
+async function setupJourney(page: Page, existing: boolean, speech = false, target: 'gcp' | 'aws' = 'gcp') {
+  const journeyConnection = target === 'gcp' ? connection : {
+    ...connection, id: 'tutorial-aws', target: 'aws', label: 'My AWS', credentialRef: 'resolver://aws/e2e',
+    provider: { vpcId: 'vpc-e2e', securityGroupIds: ['sg-e2e'], launchTemplateId: 'lt-e2e' },
+    scopes: [{ id: '123456789012', label: 'AWS account 123456789012' }],
+    regions: [{ id: 'us-east-1', label: 'Virginia', zones: ['us-east-1a'] }],
+    sizes: [{ id: 'm6i.xlarge', label: 'm6i.xlarge', vcpu: 4, memoryGiB: 16, hourlyUsd: 0.19 }],
+    images: [{ id: 'ami-e2e', label: 'Workspace image' }], networks: [{ id: 'subnet-e2e', label: 'Private subnet' }],
+  };
+  const journeyWorkspace = { ...workspace, connectionId: journeyConnection.id, target,
+    ...(target === 'aws' ? { scopeLabel: '123456789012', region: 'us-east-1', size: 'm6i.xlarge', image: 'ami-e2e', network: 'subnet-e2e' } : {}),
+    capabilities: { ...workspace.capabilities, start: false, restore: true }, resources: [] as unknown[],
+  };
+  let rows: any[] = existing ? [journeyConnection, journeyWorkspace] : [];
+  let actionStatus = 200;
   const progressByVersion = new Map<number, { revision: number; disposition: string; inspectedResult?: unknown; inspectedRevision?: unknown; inspectedPractice?: unknown }>();
   let progressStatus = 200;
   let helpStatus = 200;
@@ -111,18 +124,47 @@ async function setupJourney(page: Page, existing: boolean, speech = false) {
         ...(progress.inspectedRevision ? { inspectedRevision: progress.inspectedRevision } : {}), ...(progress.inspectedPractice ? { inspectedPractice: progress.inspectedPractice } : {}) } } });
     }
     if (path.endsWith('/workspace-hosts/connection')) {
-      writes.push({ path, body: request.postDataJSON() }); rows = [connection];
+      writes.push({ path, body: request.postDataJSON() }); rows = [journeyConnection];
       return json({ ok: true, message: 'Connection validated' });
     }
     if (path.endsWith('/workspace-hosts/provision')) {
       const body = request.postDataJSON(); writes.push({ path, body });
-      rows = [connection, { ...workspace, id: body.desired.hostId, name: body.name }];
+      rows = [journeyConnection, { ...journeyWorkspace, id: body.desired.hostId, name: body.name }];
       return json({ ok: true, operationId: 'tutorial-provision' });
+    }
+    if (path.endsWith('/workspace-hosts/action')) {
+      const body = request.postDataJSON(); writes.push({ path, body });
+      if (actionStatus !== 200) return json({ ok: false, message: 'Provider temporarily unavailable' }, actionStatus);
+      const index = rows.findIndex(row => row.kind === 'workspace' && row.id === body.workspaceId);
+      if (index < 0) return json({ ok: false, error: 'workspace_not_found' }, 404);
+      const host = rows[index];
+      if (body.action === 'stop' || body.action === 'start' || body.action === 'repair') {
+        const stopped = body.action === 'stop';
+        rows[index] = { ...host, desiredState: stopped ? 'stopped' : 'running', observedState: stopped ? 'stopped' : 'running',
+          capabilities: { ...host.capabilities, start: stopped, stop: !stopped } };
+      } else if (body.action === 'snapshot') {
+        const providerId = `snapshot-${host.id}`;
+        rows[index] = { ...host, recoverability: { kind: 'snapshot', label: providerId },
+          resources: [...host.resources, { logicalKey: 'snapshot', kind: 'snapshot', state: 'applied', providerId, attempts: 1 }] };
+      } else if (body.action === 'restore') {
+        expect(body.snapshot.target).toBe(target);
+        expect(body.snapshot.providerId).toBe(`snapshot-${host.id}`);
+        expect(body.desired.hostId).not.toBe(host.id);
+        rows.push({ ...host, id: body.desired.hostId, name: body.name,
+          recoverability: { kind: 'none', label: 'No backup' }, resources: [] });
+      } else if (body.action === 'destroy') {
+        expect(body.disposition).toBe('discard');
+        expect(body.confirmation.expectedHostId).toBe(host.id);
+        expect(body.confirmation.confirmedBy).toBe('operator:cloud-workspaces-ui');
+        rows.splice(index, 1);
+      } else return json({ ok: false, error: 'unmodelled_lifecycle_action' }, 501);
+      return json({ ok: true, operationId: `tutorial-${body.action}` });
     }
     if (path === '/api/hosted/auth/session') return json({ ok: true, session: { workspaceId: scope.workspaceId } });
     if (path.endsWith('/connectors/session-ticket')) {
       const body = request.postDataJSON();
-      expect(body.hostId).toBe((rows[1] as typeof workspace).id);
+      expect(rows.some(row => row.kind === 'workspace' && row.id === body.hostId)).toBe(true);
+      expect(body.hostId).toBe(new URL(page.url()).searchParams.get('host'));
       expect(body.routeLabel).toBe('tutorial-connector');
       return json({ ok: true, ticket: `ht_${'a'.repeat(43)}` });
     }
@@ -164,7 +206,105 @@ async function setupJourney(page: Page, existing: boolean, speech = false) {
   return { writes, socketMessages, apiHits, browserErrors, assistance, sync,
     setProgressStatus: (status: number) => { progressStatus = status; },
     setHelpStatus: (status: number) => { helpStatus = status; },
+    setActionStatus: (status: number) => { actionStatus = status; },
+    get hosts() { return rows.filter(row => row.kind === 'workspace'); },
     get prompt() { return sentPrompt; } };
+}
+
+// Real components, routing, dialogs and request bodies run in Chromium. The
+// provider response boundary is synthetic; real provider receipts are separate.
+for (const target of ['gcp', 'aws'] as const) {
+  test(`${target} lifecycle preserves host identity through restart, snapshot, restore and confirmed teardown`, async ({ page }) => {
+    const fixture = await setupJourney(page, true, false, target);
+    await page.goto('/cloud-workspaces?step=operate&tutorial=advanced', { waitUntil: 'domcontentloaded' });
+    await fixture.sync.waitForServed(['workspaceHosts.control']);
+    const pause = page.getByRole('button', { name: 'Pause guide', exact: true });
+    if (await pause.isVisible()) await pause.click();
+    const hosts = page.getByRole('list', { name: 'Managed workspace hosts' });
+    await hosts.getByRole('button', { name: 'Stop machine', exact: true }).click();
+    await expect(hosts.getByRole('button', { name: 'Start machine', exact: true })).toBeVisible();
+    await hosts.getByRole('button', { name: 'Start machine', exact: true }).click();
+    await expect(hosts.getByRole('button', { name: 'Stop machine', exact: true })).toBeVisible();
+    const action = async (name: string, hostName = 'My workspace') => {
+      await hosts.getByRole('button', { name: `More actions for ${hostName}`, exact: true }).click();
+      await page.getByRole('menuitem', { name, exact: true }).click();
+    };
+    await action('Repair');
+    await expect.poll(() => fixture.writes.filter(write => write.body.action === 'repair').length).toBe(1);
+    await action('Snapshot');
+    await expect.poll(() => fixture.hosts[0]?.recoverability.kind).toBe('snapshot');
+    await action('Restore snapshot');
+    const restore = page.getByRole('dialog', { name: 'Restore My workspace' });
+    // The controller guards the derived host ID, not the display name. This
+    // name regenerates the fixture's original `host-tutorial` identity.
+    await restore.getByRole('textbox', { name: 'Restored workspace name' }).fill('tutorial');
+    await expect(restore.getByRole('button', { name: 'Restore workspace', exact: true })).toBeDisabled();
+    await restore.getByRole('textbox', { name: 'Restored workspace name' }).fill('Restored cloud E2E');
+    await restore.getByRole('button', { name: 'Restore workspace', exact: true }).click();
+    await expect(restore).toHaveCount(0);
+    await expect.poll(() => fixture.hosts.length).toBe(2);
+    await expect(hosts).toContainText('Restored cloud E2E');
+    await page.goto('/cloud-workspaces?step=operate', { waitUntil: 'domcontentloaded' });
+    await expect(hosts).toContainText('Restored cloud E2E');
+    // Agent launch follows the real prepared-workspace admission path. Opening
+    // a row alone does not complete the lesson's configuration prerequisites.
+    await page.getByRole('button', { name: 'Use prepared workspace Restored cloud E2E', exact: true }).click();
+    expect(new URL(page.url()).searchParams.get('host')).toBe('host-restored-cloud-e2e');
+    await page.getByRole('button', { name: "I've reviewed the configuration and cost", exact: true }).click();
+    const restoredSession = page.getByRole('region', { name: 'Browser workspace session for Restored cloud E2E' });
+    await restoredSession.getByRole('button', { name: 'Connect', exact: true }).click();
+    await expect(restoredSession.locator('.xterm')).toBeVisible();
+    const restoredGuide = page.getByRole('region', { name: 'First agent guide' });
+    await expect(restoredGuide.getByRole('heading', { name: 'Launch your first agent' })).toBeVisible();
+    await page.getByRole('button', { name: '+ New session', exact: true }).click();
+    await expect.poll(() => fixture.writes.filter(write => write.path.endsWith('/launch-su')).length).toBe(1);
+    expect(fixture.writes.find(write => write.path.endsWith('/launch-su'))?.body.mode).toBeNull();
+    await page.getByRole('button', { name: 'Send action-plan task', exact: true }).click();
+    await expect.poll(() => fixture.prompt).toContain('community book swap');
+    await expect(page.locator('[data-tutorial-target="cloud-result"]')).toContainText('Date and budget are unknown');
+    expect(fixture.writes.filter(write => write.path.endsWith('/coord/send'))).toHaveLength(1);
+    await restoredGuide.getByRole('button', { name: 'Pause', exact: true }).click();
+    for (const name of ['My workspace', 'Restored cloud E2E']) {
+      await action('Destroy', name);
+      const destroy = page.getByRole('dialog', { name: `Destroy ${name}` });
+      await destroy.getByRole('radio', { name: /Discard recoverability/ }).check();
+      const confirm = destroy.getByRole('button', { name: 'Confirm destroy' });
+      await expect(confirm).toBeDisabled();
+      await destroy.getByRole('textbox', { name: `Type ${name} to confirm discard` }).fill('wrong host');
+      await expect(confirm).toBeDisabled();
+      await destroy.getByRole('textbox', { name: `Type ${name} to confirm discard` }).fill(name);
+      await confirm.click();
+      await expect(destroy).toHaveCount(0);
+    }
+    await expect.poll(() => fixture.hosts.length).toBe(0);
+    const lifecycleWrites = fixture.writes.filter(write => write.path.endsWith('/workspace-hosts/action'));
+    expect(lifecycleWrites.map(write => write.body.action)).toEqual(['stop', 'start', 'repair', 'snapshot', 'restore', 'destroy', 'destroy']);
+    expect(lifecycleWrites.slice(0, 5).every(write => write.body.workspaceId === 'host-tutorial')).toBe(true);
+    expect(fixture.browserErrors).toEqual([]);
+  });
+
+  test(`${target} provider refusal retains the host and retries the same stop operation`, async ({ page }) => {
+    const fixture = await setupJourney(page, true, false, target);
+    fixture.setActionStatus(503);
+    await page.goto('/cloud-workspaces?step=operate&tutorial=advanced', { waitUntil: 'domcontentloaded' });
+    await fixture.sync.waitForServed(['workspaceHosts.control']);
+    const pause = page.getByRole('button', { name: 'Pause guide', exact: true });
+    if (await pause.isVisible()) await pause.click();
+    const stop = page.getByRole('list', { name: 'Managed workspace hosts' }).getByRole('button', { name: 'Stop machine', exact: true });
+    await stop.click();
+    await expect(page.getByText('Provider temporarily unavailable', { exact: true })).toBeVisible();
+    await expect(stop).toBeEnabled();
+    expect(fixture.hosts).toHaveLength(1);
+    expect(fixture.hosts[0].observedState).toBe('running');
+    fixture.setActionStatus(200);
+    await stop.click();
+    await expect(page.getByRole('button', { name: 'Start machine', exact: true })).toBeVisible();
+    expect(fixture.writes.map(write => write.body)).toEqual([
+      { action: 'stop', workspaceId: 'host-tutorial' }, { action: 'stop', workspaceId: 'host-tutorial' },
+    ]);
+    expect(fixture.hosts).toHaveLength(1);
+    expect(fixture.browserErrors).toEqual([]);
+  });
 }
 
 test('beginner entry selects a prepared workspace by keyboard with no provisioning or credentials and passes axe', async ({ page }) => {
