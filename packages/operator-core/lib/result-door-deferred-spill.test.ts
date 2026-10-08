@@ -335,6 +335,35 @@ describe('result-door deferred spill (WI-10004533)', () => {
     expect(text).not.toContain(scratchRunDir);
   });
 
+  it('keeps a full loop:checkpoint read diagnosable when its asynchronous spill rejects without an error code', async () => {
+    const scratchRoot = process.env.PAPERCUSP_SCRATCH_ROOT!;
+    const failure = new Error(`writer rejected directory '${scratchRoot}'`);
+    failure.name = 'ScratchWriteError';
+    const writer = vi.spyOn(scratchGc, 'writeWithScratchQuota').mockRejectedValue(failure);
+    try {
+      const out = await applyResultDoorAsync({
+        ...oversized(),
+        _meta: { explicitFullRequest: true },
+      }, { ...OPTS, toolName: 'loop:checkpoint' });
+      const text = (out.content[0] as { text: string }).text;
+      const envelope = JSON.parse(text) as { state: string; content: unknown[]; error: { code: string; message: string } };
+
+      expect(writer).toHaveBeenCalledTimes(1);
+      expect(envelope).toMatchObject({ state: 'error', content: [], error: { code: 'output_spill_failed' } });
+      expect(envelope.error.message).toContain("ScratchWriteError: writer rejected directory '<scratch path>'");
+      expect(text).not.toContain(scratchRoot);
+      expect(out._meta?.resultDoor).toMatchObject({
+        spillFailed: true,
+        spillPath: null,
+        spillUri: null,
+        reason: 'explicit-full-request-overflow',
+      });
+      expect(spillFiles()).toHaveLength(0);
+    } finally {
+      writer.mockRestore();
+    }
+  });
+
   it('recovers quota pressure before returning a readable asynchronous spill cursor', async () => {
     const old = join(process.env.PAPERCUSP_SCRATCH_ROOT!, 'ws-1', 'history', 'old');
     mkdirSync(old, { recursive: true });
