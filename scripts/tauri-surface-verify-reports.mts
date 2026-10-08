@@ -2,9 +2,52 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { defaultEvidenceRoot, parseSelectionArgs, runHarness } from '@papercusp/verification-harness';
+import { bridgeEval } from '../libs/generic/tauri-verify/src/bridge-client';
+import { isCliEntry } from '../packages/operator-core/lib/util/cli-entry';
+
+/** Run with --e2e inside verify-tauri-headless, before Vitest relocates TMPDIR. */
+export async function runNativeE2e() {
+  assert.equal(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED, '1', 'Use the isolated native verifier');
+  assert.ok(process.env.PAPERCUSP_TEST_RUNS_DB_URL, 'Keep native results in the shared test ledger');
+  const receipt = JSON.parse(readFileSync(process.env.VERIFY_TAURI_SOURCE_RECEIPT!, 'utf8'));
+  assert.equal(receipt.schemaVersion, 'verifier-source-v1');
+  assert.equal(receipt.sourceCommit, process.env.VERIFY_TAURI_SOURCE_REF);
+  const tauriPID = Number(process.env.VERIFY_TAURI_PID);
+  assert.ok(Number.isSafeInteger(tauriPID) && tauriPID > 0, 'Owned native PID required');
+  const nativeTmpDir = tmpdir();
+  const token = JSON.parse(readFileSync(join(nativeTmpDir, `tauri-dev-bridge-${tauriPID}.token`), 'utf8'));
+  assert.equal(token.pid, tauriPID);
+  const authenticated = await bridgeEval({ tauriPID, bridgePort: token.port, bridgeToken: token.token }, 'true');
+  assert.equal(authenticated.ok, true, authenticated.ok ? undefined : authenticated.error);
+
+  // Reuse the kernel-measured runtime ledger. The recorder captures this
+  // executable's identity before and after the entire native test execution.
+  const { reportRuntimeVintage, listRuntimeVintage, measureRuntimeVintageEnvironment } =
+    await import('../packages/operator-core/lib/runtime-vintage');
+  const { getOrgPg } = await import('@papercusp/db-org');
+  const runtimeUnits = ['reports-library-native-desktop'];
+  try {
+    const digest = createHash('sha256').update(readFileSync(`/proc/${tauriPID}/exe`)).digest('hex');
+    await reportRuntimeVintage({ unit: runtimeUnits[0], pid: tauriPID,
+      treeSha: receipt.sourceCommit, bundleVersion: `executable-sha256:${digest}` });
+    assert.ok(measureRuntimeVintageEnvironment(await listRuntimeVintage(), runtimeUnits),
+      'Native executable must have a current kernel-verified runtime identity');
+  } finally { await getOrgPg().sql.end({ timeout: 5 }); }
+
+  const profileDir = mkdtempSync(join(nativeTmpDir, 'reports-native-profile-'));
+  const profilePath = join(profileDir, 'profile.json');
+  writeFileSync(profilePath, JSON.stringify({ runtimeUnits, tauriPID, nativeTmpDir }), { mode: 0o600 });
+  try {
+    // Both the test and its dependencies come from the source receipt's commit.
+    execFileSync('npm', ['run', 'lint:as-committed', '--', 'test:file', '--any',
+      `--ref=${receipt.sourceCommit}`, '--', 'packages/operator-core/lib/reports-library-native.e2e.test.ts'],
+    { stdio: 'inherit', env: { ...process.env, PAPERCUSP_APP_OPERATION_LIVE_PROFILE: profilePath } });
+  } finally { rmSync(profileDir, { recursive: true, force: true }); }
+}
 
 async function verifyReports(evidenceDir: string) {
   assert.equal(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED, '1', 'Fixture publication requires isolated verifier state');
@@ -188,11 +231,15 @@ async function verifyReports(evidenceDir: string) {
   }
 }
 
-const selection = parseSelectionArgs(process.argv.slice(2));
-const result = await runHarness({ contract: { name: 'reports-library-tauri',
+if (isCliEntry(import.meta.url) && process.argv.includes('--e2e')) {
+  await runNativeE2e();
+} else if (isCliEntry(import.meta.url)) {
+  const selection = parseSelectionArgs(process.argv.slice(2));
+  const result = await runHarness({ contract: { name: 'reports-library-tauri',
   phases: [{ id: 'native', description: 'Real Reports publication, SSE and native reader' }] },
   evidenceRoot: defaultEvidenceRoot('reports-library-tauri'), selection, reuseFrom: selection.reuse,
   async runPhase(ctx) { ctx.markStep('isolated-native-Reports'); await verifyReports(ctx.evidenceDir); return { ok: true }; },
 });
-console.log(`REPORTS_LIBRARY_TAURI_${result.verdict.toUpperCase()} evidence=${result.evidenceDir}`);
-process.exitCode = result.verdict === 'pass' ? 0 : 1;
+  console.log(`REPORTS_LIBRARY_TAURI_${result.verdict.toUpperCase()} evidence=${result.evidenceDir}`);
+  process.exitCode = result.verdict === 'pass' ? 0 : 1;
+}
