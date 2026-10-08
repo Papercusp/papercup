@@ -609,7 +609,41 @@
       "lines": [
         14204,
         14223
-      ]
+      ],
+      "historicalQualification": {
+        "observedAt": "2026-10-08T09:44:00Z",
+        "archiveSha256": "43cf66489baf7cf665a9746d097375cffc7cdc6262014929c3cc398155b579f4",
+        "failure": "The broad exclusion fixture expected matchedByFilter=10 and received8; the taken-row fixture expected1 and received0. Stored reproduction20877224 reports the same two assertions.",
+        "repairItem": "WI-10007061",
+        "repairItemState": "done",
+        "repairCompletionAuthority": "committed",
+        "governingDecision": "enterprise-data-sources-2026-10-01#D-022",
+        "fixtureRepairCommit": "e0d3aa23822572e45275bc031fba6efe91419164",
+        "completionAttestedCommit": "151b93b014b069dfbecde7b1380c5ed4a2516019",
+        "mechanism": "issueClaimCandidateSubquery applies the canonical agent-work predicate before aggregate floors. Observation and owner-action rows are outside that population. The old broad fixture included both; the old taken fixture also carried needsOwnerAction=true. The existing repair expects eight eligible rows with three claimable controls and replaces the taken fixture's owner-action classification with an external blocker, preserving strict taken=1 and other-buckets=0 assertions. This repairs test population assumptions without widening the production predicate.",
+        "originalLoadedBytes": "UNKNOWN: the run-start commit supplies an archival comparison baseline, not a complete loaded-source fingerprint.",
+        "runStartCommit": "d2a53e115436fe5b2a72c261abbc66f337642672",
+        "runStartTestSha256": "fa214c58eb115217f7cfbd3ce937d0fd0814ae4ea6aee4b075a38915f8658d18",
+        "runStartSourceSha256": "7a16456d7c146c9cfe1d2e7b73d44fc34e16130b433c9b49dc2afe3c538eb93d",
+        "repairCommitTestSha256": "ec9f2bdaad67d7022fab670e6233327d8e7a200352b4b87c52b4e844989a67b7",
+        "repairCommitSourceSha256": "ab5cd81c30ef957238e62dac6b45b96a8980769af073bcd15e0e6a8f75b8b91a",
+        "receiptCommit": "5dfc6bffb1e3e5a474704d0639b6490c8c227231",
+        "receiptCommitSourceSha256": "9bb2a01b8d18f89c083eb69c34a20eb536c7ad8fb907b5fcd8d86b3300f27075",
+        "currentTestSha256": "ec9f2bdaad67d7022fab670e6233327d8e7a200352b4b87c52b4e844989a67b7",
+        "currentSourceSha256": "e2f4af4b46e5d04e0931fac4e6b298e25c3f1793c38e38ff5af2f41f320c93ac",
+        "currentAndReceiptCommitPredicateSha256": "665902702f564339161dcf0eb8f95034f6cb17bda8c34583bdc973676b9f2b3f",
+        "historicalControls": {
+          "reproductionReceipt": 20877224,
+          "reproductionRun": "55ce89a3-7040-40fa-aeb2-900d7595077a",
+          "reproduction": "Ledger independently records FAIL and both exact count failures. Terminal completion reports0 passed/2 failed/24 skipped, diagnostic only.",
+          "passingReceipt": 20877271,
+          "passingRun": "eab263e1-8ded-4b8a-87b2-e453b3115fb2",
+          "passing": "Ledger independently records local PASS in canonical staging, workspace papercusp-workspace/harness papercusp, repository dirty and non-scratch. Terminal completion reports the whole named file26 passed/0 failed/0 skipped and a clean final scoped typecheck. The ledger status alone does not supply assertion counts or a full loaded-source fingerprint.",
+          "distinguishingControl": "The stored repair replaced the owner-action taken row with eligible taken/claim-held/externally-blocked work. Its recorded one-taken/zero-other-buckets result distinguishes stale fixture classification from losing eligible taken rows. Original and current transitive loaded-byte assurance remains unknown."
+        },
+        "declaredPathFreshness": "Terminal completion is fresh only over its declared named test path. Current named test equals the attested and fixture-repair commit blobs; the whole production get-next.ts differs from both the PASS receipt commit and repair commit.",
+        "assurance": "UNKNOWN retained: archived failure attribution and existing scoped repair evidence recovered. Original/current actually loaded source, transitive imports, config, main/subprocess/native environment, final D006/P004 acceptance and shipment remain unverified. No terminal repair replay or new source/test work performed."
+      }
     },
     {
       "path": "packages/operator-core/lib/sync/hyperbee/__tests__/federation-restart-durability-sidecar.repro.integration.test.ts",
