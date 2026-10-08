@@ -236,6 +236,18 @@ describe('P-023: prepareTypedPropertyMutation', () => {
     expect(second.priorValue).toEqual(['docs sweeps']);
     expect(second.entry.provenance).toBe('agent-edit');
   });
+  it('persists the owner reason with the CAS value and allows the next edit', () => {
+    const first = prepareTypedPropertyMutation(base({ reason: '  Friday demo  ' }));
+    if (!first.ok) throw new Error('first edit refused');
+    expect(first.entry.reason).toBe('Friday demo');
+    const stale = prepareTypedPropertyMutation(base({ properties: first.properties, reason: 'stale change' }));
+    expect(stale.ok).toBe(false);
+    if (!stale.ok) expect(stale.code).toBe('stale');
+    expect(first.properties.worklist.reason).toBe('Friday demo');
+    const next = prepareTypedPropertyMutation(base({ properties: first.properties, expectedVersion: 1 }));
+    expect(next.ok).toBe(true);
+    if (next.ok) expect(next.entry.reason).toBeUndefined();
+  });
 });
 
 describe('P-023: renderPropertyDelta', () => {
