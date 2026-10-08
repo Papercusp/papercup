@@ -1,12 +1,11 @@
+import { isDaoWorkspacePath } from '@papercusp/operator-core/lib/chromeless-routes';
+export { isDaoWorkspacePath };
+
 export function isChromeShellNavActive(pathname: string, href: string): boolean {
   return pathname === href || pathname.startsWith(`${href}/`);
 }
 
 export type ProductWorkspace = 'operations' | 'dao';
-
-export function isDaoWorkspacePath(pathname: string): boolean {
-  return isChromeShellNavActive(pathname, '/daos') || isChromeShellNavActive(pathname, '/dao');
-}
 
 /** Only restore this workspace's own local route, never an external URL. */
 export function productWorkspaceHref(value: string | null, workspace: ProductWorkspace): string {

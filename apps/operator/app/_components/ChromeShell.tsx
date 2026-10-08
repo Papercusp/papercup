@@ -432,7 +432,7 @@ export default function ChromeShell({ chatFaces }: { chatFaces?: readonly OpChat
           prefixes) skip ChromeShell entirely so the sidebar is absent
           there too — desired, those routes are embedded inside other
           pages that already host the sidebar. */}
-      {operatorChatSidebarFlag && <OperatorChatSidebar faces={chatFaces} />}
+      {operatorChatSidebarFlag && !onDao && <OperatorChatSidebar faces={chatFaces} />}
       {!pathname.startsWith('/settings') && <DeferredDocks />}
     </>
   );
