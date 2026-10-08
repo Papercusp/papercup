@@ -75,6 +75,37 @@ describe('capability:git-evidence', () => {
     expect(result).toMatchObject({ ok: true, op: 'readFileAtCommit', content: 'pinned contents\n' });
   });
 
+  it('keeps interrupted or ambiguous repository probes out of the not-repository verdict', async () => {
+    const args = {
+      op: 'readFileAtCommit' as const,
+      commitSha: 'a'.repeat(40),
+      path: 'evidence.txt',
+    };
+    const aborted = new AbortController();
+    const interrupted = await runJudgeGitEvidence(args, {
+      repositoryDir: '/repo',
+      signal: aborted.signal,
+      runner: async () => {
+        aborted.abort();
+        return { code: null, output: '' };
+      },
+    });
+    const ambiguous = await runJudgeGitEvidence(args, {
+      repositoryDir: '/repo',
+      signal: never,
+      runner: async () => ({ code: 128, output: '' }),
+    });
+    const confirmedNotRepository = await runJudgeGitEvidence(args, {
+      repositoryDir: '/not-a-repository',
+      signal: never,
+      runner: async () => ({ code: 128, output: 'fatal: not a git repository (or any of the parent directories): .git' }),
+    });
+
+    expect(interrupted).toMatchObject({ ok: false, reason: 'git_command_interrupted' });
+    expect(ambiguous).toMatchObject({ ok: false, reason: 'repository_probe_failed' });
+    expect(confirmedNotRepository).toMatchObject({ ok: false, reason: 'not_git_repository' });
+  });
+
   it('bounds pinned-file reads and refuses oversized blobs before returning content', async () => {
     const root = repository();
     writeFileSync(join(root, 'large.txt'), 'x'.repeat(MAX_GIT_EVIDENCE_FILE_BYTES + 1));

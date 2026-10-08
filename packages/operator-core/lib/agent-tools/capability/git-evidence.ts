@@ -76,7 +76,31 @@ export async function runJudgeGitEvidence(
   );
 
   const top = await invoke(['rev-parse', '--show-toplevel']);
-  if (top.code !== 0) return { ok: false, reason: 'not_git_repository', message: top.output.slice(0, 300) };
+  if (top.code !== 0) {
+    const message = top.output.slice(0, 300);
+    if (options.signal.aborted) {
+      return {
+        ok: false,
+        reason: 'git_command_interrupted',
+        message: message || 'git rev-parse was aborted before returning a result',
+      };
+    }
+    if (top.code === null) {
+      return {
+        ok: false,
+        reason: 'git_command_failed',
+        message: message || 'git rev-parse did not exit cleanly',
+      };
+    }
+    if (/not a git repository/i.test(message)) {
+      return { ok: false, reason: 'not_git_repository', message };
+    }
+    return {
+      ok: false,
+      reason: 'repository_probe_failed',
+      message: message || `git rev-parse exited with code ${top.code}`,
+    };
+  }
   const repositoryRoot = top.output.trim();
   if (!isAbsolute(repositoryRoot)) return { ok: false, reason: 'invalid_repository_root' };
 
