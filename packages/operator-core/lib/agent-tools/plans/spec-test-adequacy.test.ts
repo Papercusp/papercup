@@ -2115,6 +2115,73 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(conflict.ratings['correct-layer'].evidence).toContain('testLayer-claim-mismatch:integration!=unit');
   });
 
+  describe('canonical LLM scenario reachability (EI-25409108464228474)', () => {
+    const scenarioId = 'su-S38-reports-capture';
+    const filePath = 'packages/operator-core/lib/llm-testing/scenarios/su/S38-reports-capture.ts';
+
+    function scenarioBinding(): SpecEvidenceForAdequacy {
+      const row = successfulTestBinding(filePath, { layer: 'llm', testCases: [scenarioId] });
+      row.testRunProvenance = { filePath, framework: 'llm-test', commitSha: 'abc123', worktreeDirty: false };
+      row.testRunExecution = {
+        status: 'pass', passed: 1, failed: 0, skipped: 0, collectionFailed: false,
+        testLayer: 'llm', scenarioId, filePath,
+      };
+      return row;
+    }
+
+    function grade(row: SpecEvidenceForAdequacy) {
+      return evaluateSpecTestAdequacy({
+        clause: clause({ requiredTestLayers: ['llm'] }), evidence: [row], classRef: 'plan-class-feature-ship',
+      }).ratings['correct-layer'];
+    }
+
+    it('corroborates the exact executed LLM scenario without inventing conventional passed titles', () => {
+      const row = scenarioBinding();
+      const before = JSON.stringify(row);
+      const result = grade(row);
+      expect(result.rating).toBe('pass');
+      expect(result.evidence).toContain('"scenarioId":"su-S38-reports-capture"');
+      expect(result.evidence).toContain('"passed":["su-S38-reports-capture"]');
+      expect(result.evidence).toContain('"passedCaseTitleCount":0');
+      expect(JSON.stringify(row)).toBe(before);
+    });
+
+    it.each([
+      ['missing identity', (row: SpecEvidenceForAdequacy) => { delete row.testRunExecution!.scenarioId; }],
+      ['different scenario', (row: SpecEvidenceForAdequacy) => { row.testRunExecution!.scenarioId = 'su-S37-other'; }],
+      ['case-folded claim', (row: SpecEvidenceForAdequacy) => {
+        (row.details.adequacy as Record<string, unknown>).testCases = [scenarioId.toLowerCase()];
+      }],
+      ['absent declared case', (row: SpecEvidenceForAdequacy) => {
+        delete (row.details.adequacy as Record<string, unknown>).testCases;
+      }],
+      ['replayed unit framework', (row: SpecEvidenceForAdequacy) => { row.testRunProvenance!.framework = 'vitest'; }],
+      ['missing framework', (row: SpecEvidenceForAdequacy) => { delete row.testRunProvenance!.framework; }],
+      ['different executed file', (row: SpecEvidenceForAdequacy) => { row.testRunExecution!.filePath = 'test/other.ts'; }],
+      ['absent executed file', (row: SpecEvidenceForAdequacy) => { delete row.testRunExecution!.filePath; }],
+      ['dirty source', (row: SpecEvidenceForAdequacy) => { row.testRunProvenance!.worktreeDirty = true; }],
+      ['no passed run', (row: SpecEvidenceForAdequacy) => { row.testRunExecution!.passed = 0; }],
+      ['failed run', (row: SpecEvidenceForAdequacy) => { row.testRunExecution!.failed = 1; }],
+      ['skipped run', (row: SpecEvidenceForAdequacy) => { row.testRunExecution!.skipped = 1; }],
+      ['collection failure', (row: SpecEvidenceForAdequacy) => { row.testRunExecution!.collectionFailed = true; }],
+      ['wrong recorded status', (row: SpecEvidenceForAdequacy) => { row.testRunExecution!.status = 'fail'; }],
+    ])('refuses %s as LLM reachability proof', (_label, mutate) => {
+      const row = scenarioBinding();
+      mutate(row);
+      expect(grade(row).rating).not.toBe('pass');
+    });
+
+    it('does not use an LLM identity to corroborate a conventional unit case', () => {
+      const row = scenarioBinding();
+      row.testRunExecution!.testLayer = 'unit';
+      (row.details.adequacy as Record<string, unknown>).testLayer = 'unit';
+      const result = evaluateSpecTestAdequacy({
+        clause: clause({ requiredTestLayers: ['unit'] }), evidence: [row], classRef: 'plan-class-feature-ship',
+      });
+      expect(result.ratings['correct-layer'].rating).not.toBe('pass');
+    });
+  });
+
   it('grades only the exact current cohort when historical stale or unknown bindings coexist', () => {
     const staleHistorical = evidence({
       evidenceRef: 'surface:historical-stale',
@@ -2220,8 +2287,8 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(result.verdict).toBe('unknown');
   });
 
-  it('pins the evaluator revision for canonical operational adapter layer recognition', () => {
-    expect(SPEC_TEST_ADEQUACY_EVALUATOR_REVISION).toBe(11);
+  it('pins the evaluator revision for canonical LLM scenario reachability', () => {
+    expect(SPEC_TEST_ADEQUACY_EVALUATOR_REVISION).toBe(12);
   });
 
   it('requires an explicit fixture-free attestation for executable proof with a null fixture fingerprint', () => {

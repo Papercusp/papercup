@@ -116,6 +116,8 @@ export interface SpecEvidenceForAdequacy {
   /** Canonical ledger attributes, independent of author-written evidenceRef prose. */
   testRunProvenance?: {
     filePath: string;
+    /** Canonical runner framework; an LLM scenario is never inferred from binder metadata. */
+    framework?: string | null;
     commitSha: string | null;
     worktreeDirty: boolean | null;
     /**
@@ -142,6 +144,9 @@ export interface SpecEvidenceForAdequacy {
     collectionFailed: boolean;
     testLayer?: string;
     passedCaseTitles?: string[];
+    /** Retained from the canonical LLM recorder, not converted into Vitest titles. */
+    scenarioId?: string;
+    filePath?: string;
   } | null;
   details: Record<string, unknown>;
   observedAt?: string;
@@ -778,8 +783,11 @@ function renderedTestRunExecution(row: SpecEvidenceForAdequacy, details: Pick<Ad
   const declaredCases = Array.isArray(details.testCases)
     ? [...new Set(details.testCases.filter((value): value is string => typeof value === 'string' && value.trim().length > 0))]
     : [];
-  const passedDeclaredCases = declaredCases.filter((caseTitle) => passedCaseTitles.includes(caseTitle));
-  const missingDeclaredCases = declaredCases.filter((caseTitle) => !passedCaseTitles.includes(caseTitle));
+  const corroborates = (caseTitle: string) => execution.testLayer === 'llm'
+    ? hasPassingLlmScenarioCase(row, caseTitle)
+    : passedCaseTitles.includes(caseTitle);
+  const passedDeclaredCases = declaredCases.filter(corroborates);
+  const missingDeclaredCases = declaredCases.filter((caseTitle) => !corroborates(caseTitle));
   const adequacyTestCases = declaredCases.length === 0
     ? undefined
     : declaredCases.length <= MAX_RENDERED_ADEQUACY_CASES
@@ -806,6 +814,7 @@ function renderedTestRunExecution(row: SpecEvidenceForAdequacy, details: Pick<Ad
     collectionFailed: execution.collectionFailed,
     testLayer: execution.testLayer ?? null,
     passedCaseTitleCount: passedCaseTitles.length,
+    ...(execution.scenarioId !== undefined ? { scenarioId: execution.scenarioId } : {}),
     ...(adequacyTestCases ? { adequacyTestCases } : {}),
   };
 }
@@ -967,8 +976,24 @@ function hasPassingTestBaselineCase(row: SpecEvidenceForAdequacy, caseTitle: str
   return row.evidenceKind === 'test' && hasPassingLedgerCase(row, caseTitle);
 }
 
-/** Operational clauses use the separately measured operational adapter, never a runner layer. */
+/** A live LLM case is identified by its exact recorded scenario, framework and executed file. */
+function hasPassingLlmScenarioCase(row: SpecEvidenceForAdequacy, scenarioId: string): boolean {
+  const run = row.testRunExecution;
+  const provenance = row.testRunProvenance;
+  return row.evidenceKind === 'test' && row.testRunId !== null &&
+    run != null && run.testLayer === 'llm' &&
+    run.status?.toLowerCase() === 'pass' && run.passed > 0 &&
+    run.failed === 0 && run.skipped === 0 && run.collectionFailed === false &&
+    typeof run.scenarioId === 'string' && run.scenarioId.length > 0 &&
+    run.scenarioId === scenarioId &&
+    provenance?.framework === 'llm-test' && provenance.worktreeDirty === false &&
+    typeof run.filePath === 'string' && run.filePath.length > 0 &&
+    run.filePath === provenance.filePath;
+}
+
+/** LLM scenarios and operational adapters retain their own canonical execution identities. */
 function hasPassingRequiredLayerCase(row: SpecEvidenceForAdequacy, caseTitle: string): boolean {
+  if (row.testRunExecution?.testLayer === 'llm') return hasPassingLlmScenarioCase(row, caseTitle);
   return hasPassingTestBaselineCase(row, caseTitle) ||
     (row.evidenceKind === 'operational' &&
       row.testRunExecution?.testLayer === 'operational' &&
@@ -1554,8 +1579,9 @@ function appendRatingRerunProbes(
  *   9 — recognize canonical operational adapter layers without extending recorded runner layers.
  *  10 — map legacy behavioral requirements only to passing canonical operational case evidence.
  *  11 — require each executable binding to attest fixture-free status or carry fingerprinted calibration.
+ *  12 — corroborate live LLM reachability with exact canonical scenario, framework and executed-file receipts.
  */
-export const SPEC_TEST_ADEQUACY_EVALUATOR_REVISION = 11;
+export const SPEC_TEST_ADEQUACY_EVALUATOR_REVISION = 12;
 
 type MutationTargetClause = Pick<SpecClauseRevision, 'specId' | 'falsifier'>;
 
@@ -2143,7 +2169,7 @@ export function evaluateSpecTestAdequacy(input: {
               ].join(', ')}.`,
               [...new Set([...contradictoryLayerRows, ...evidence])],
             )} ${clauseDeclarationProbe(clause, input.harness)}`,
-            suggestion: 'Bind passing measured evidence for every requiredTestLayer; its canonical layer and exact passing case must match the binding, with path reachability attested.',
+            suggestion: 'Bind passing measured evidence for every requiredTestLayer; its canonical layer and exact passing case or LLM scenario must match the binding, with path reachability attested.',
           }
         : unresolved.length
           ? {
@@ -2164,7 +2190,7 @@ export function evaluateSpecTestAdequacy(input: {
               // row) never satisfies it, and testing:run / re-measure bindings carry no attestation.
               suggestion:
                 `Rebind passing measured evidence whose server-measured testLayer is one of the required layers (${unresolved.map(displayLayer).join(', ')}), ` +
-                'whose exact passedCaseTitles corroborate adequacy.testCases, and whose adequacy.testLayer claim matches the measured layer; binder-only layer/path claims remain unknown.',
+                'whose exact passedCaseTitles (or canonical llm-test scenarioId and executed file) corroborate adequacy.testCases, and whose adequacy.testLayer claim matches the measured layer; binder-only layer/path claims remain unknown.',
             }
           : {
               rating: 'pass',
