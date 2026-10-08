@@ -9,6 +9,9 @@ import { runWorkItemAdmissionDailyDigest } from '../lib/work-items-admission-dai
 import { readAdmissionMergeSnapshots } from '../lib/work-items-admission-promoter';
 import { lexicalHardEdges } from '../lib/work-items-admission-census';
 import { ADMISSION_MERGE_QUALITY_GOLD_CORPUS, admissionMergeQualityGoldJudgements } from '../lib/work-items-admission-merge-quality';
+import { enqueueBulkDedupRun } from '../lib/work-items-admission-bulk-dedup-enqueue';
+import { getWorkItem, setWorkItemState, unlinkWorkItem } from '../lib/work-items';
+import { runWithWorkspace } from '../lib/workspace-als';
 
 const home = process.env.HOME!;
 const ws = process.env.PAPERCUSP_WORKSPACE_ID!;
@@ -60,12 +63,14 @@ try {
         (workspace_id, harness_slug, feature_id, title, summary, status, payload,
          item_kind, nature, created_ts, updated_ts, embedding, embedding_mode, admission, admitted_at, admitted_by)
       VALUES (${ws}, ${harness}, ${id}, ${title}, ${`Evidence ${id}`}, 'open',
-              '{}'::jsonb, 'change', 'work', ${i + 1}, ${i + 1}, ${vector(i < 2 ? 0 : 1)}::vector,
+              jsonb_build_object('gradeHistory', jsonb_build_array(${`Original evidence ${id}`}::text)),
+              'change', 'work', ${i + 1}, ${i + 1}, ${vector(i < 2 ? 0 : 1)}::vector,
               'gemma', 'admitted', now(), 'test')`;
   }
   let changed = false;
   let interrupted = false;
   let calls = 0;
+  let pinnedRecompute: { sourceCensusRunId: string; before: number; after: number; retiredByStage: number } | undefined;
   const candidatePairs = new Set<string>();
   const opts: Parameters<typeof runWorkItemAdmissionBulkDedup>[0] = {
     workspaceId: ws, harnessSlug: harness, runId: root, sql,
@@ -102,7 +107,29 @@ try {
       return { text: '', json: { judgements: keys.map((pairKey) => ({ pairKey, verdict: 'r-finding-merge', reason: 'same failure and remedy' })) }, inputTokens: 100, outputTokens: 20 };
     },
     beforePostStageCensus: async () => {
-      if (!interrupted) { interrupted = true; throw new Error('background acceptance post-commit interruption'); }
+      if (!interrupted) {
+        interrupted = true;
+        const sourceCensusRunId = `${root}-census-0`;
+        // Freeze this read BEFORE the fresh recount overwrites mutable edges.
+        // Count the initial pinned edges independently of the stage summary,
+        // then retire only judgments committed by this stage.
+        const [counts] = await sql`SELECT count(*)::int AS before,
+          count(*) FILTER (WHERE d.a IS NULL)::int AS after,
+          count(*) FILTER (WHERE d.run_id = ${`${root}-stage-1`})::int AS retired
+          FROM harness_shared.dedup_edges e
+          LEFT JOIN harness_shared.dedup_adjudications d
+            ON d.workspace_id = e.workspace_id AND d.harness_slug = e.harness_slug
+           AND d.a = e.a AND d.b = e.b
+          WHERE e.workspace_id = ${ws} AND e.harness_slug = ${harness}
+            AND e.run_id = ${sourceCensusRunId} AND e.cos >= 0.9
+            AND EXISTS (SELECT 1 FROM harness_shared.dedup_shard_map m
+              WHERE m.run_id = ${sourceCensusRunId} AND m.item_id = e.a AND m.role = 'member')
+            AND EXISTS (SELECT 1 FROM harness_shared.dedup_shard_map m
+              WHERE m.run_id = ${sourceCensusRunId} AND m.item_id = e.b AND m.role = 'member')`;
+        assert.deepEqual(counts, { before: 2, after: 1, retired: 1 });
+        pinnedRecompute = { sourceCensusRunId, before: counts!.before, after: counts!.after, retiredByStage: counts!.retired };
+        throw new Error('background acceptance post-commit interruption');
+      }
     },
   };
   await assert.rejects(runWorkItemAdmissionBulkDedup(opts), /background acceptance post-commit interruption/);
@@ -122,6 +149,8 @@ try {
   assert.equal(recovered.converged, false);
   assert.equal(recovered.convergenceReason, 'stage-budget');
   assert.equal(stage.pairs, 2);
+  assert.ok(pinnedRecompute);
+  assert.equal(stage.censusAfter, pinnedRecompute.after);
   assert.equal(recovered.stages[0]!.merged, 1);
   assert.deepEqual(recovered.stages[0]!.guardRefusals?.map((row) => [row.itemId, row.reason]), [['b', 'snapshot-drift']]);
   assert.deepEqual(rows.map((row) => [row.feature_id, row.status]), [['a', 'open'], ['b', 'open'], ['c', 'open'], ['d', 'dropped']]);
@@ -144,10 +173,93 @@ try {
   assert.equal(ledger!.outcome.successful, 1);
   assert.equal(ledger!.outcome.unchanged, 1);
   assert.deepEqual(ledger!.refusals, ledger!.receipt_refusals);
+
+  // Rehearse the public lifecycle/link writers against the actual merged pair.
+  // All state is in this disposable migrated DB; no live row is reopened.
+  const [loserBefore] = await sql`SELECT payload, summary FROM harness_shared.work_items
+    WHERE workspace_id = ${ws} AND harness_slug = ${harness} AND feature_id = 'd'`;
+  assert.equal(loserBefore!.payload.admissionMerge.canonicalId, 'c');
+  const [adjudicationBefore] = await sql`SELECT verdict, evidence->>'reason' AS reason, judged_by AS model
+    FROM harness_shared.dedup_adjudications
+    WHERE workspace_id = ${ws} AND harness_slug = ${harness}
+      AND run_id = ${`${root}-stage-1`} AND a = 'c' AND b = 'd'`;
+  assert.equal(adjudicationBefore!.verdict, 'r-finding-merge');
+  assert.ok(adjudicationBefore!.reason);
+  assert.ok(adjudicationBefore!.model);
+  const duplicateLinksBefore = await sql`SELECT id FROM harness_shared.coord_links
+    WHERE workspace_id = ${ws} AND src_ref = 'd' AND dst_ref = 'c' AND rel = 'duplicates'`;
+  assert.equal(duplicateLinksBefore.length, 1, 'reversal must remove a real canonical duplicate link');
+  const reversal = await runWithWorkspace(ws, async () => {
+    const loser = await getWorkItem('d', harness);
+    const survivor = await getWorkItem('c', harness);
+    assert.ok(loser && survivor, 'canonical endpoint readers must resolve both synthetic rows');
+    const reopened = await setWorkItemState('d', 'open', {
+      harness, by: 'system:bulk-grade-reversal-rehearsal', force: true,
+    });
+    assert.ok(reopened);
+    assert.equal(reopened.state, 'open');
+    assert.deepEqual(await unlinkWorkItem('d', {
+      kind: survivor.family === 'issue' ? 'issue' : 'feature', ref: 'c',
+    }, 'duplicates', { harness }), { ok: true });
+    const restored = await getWorkItem('d', harness);
+    assert.equal(restored?.state, 'open');
+    return { family: loser.family, state: restored!.state };
+  });
+  const [loserAfter] = await sql`SELECT payload, summary, taken_by FROM harness_shared.work_items
+    WHERE workspace_id = ${ws} AND harness_slug = ${harness} AND feature_id = 'd'`;
+  assert.equal(loserAfter!.summary, loserBefore!.summary);
+  assert.deepEqual(loserAfter!.payload.gradeHistory, loserBefore!.payload.gradeHistory);
+  assert.equal(loserAfter!.taken_by, null);
+  const duplicateLinks = await sql`SELECT id FROM harness_shared.coord_links
+    WHERE workspace_id = ${ws} AND src_ref = 'd' AND dst_ref = 'c' AND rel = 'duplicates'`;
+  assert.equal(duplicateLinks.length, 0);
+  const [adjudicationAfter] = await sql`SELECT verdict, evidence->>'reason' AS reason, judged_by AS model
+    FROM harness_shared.dedup_adjudications
+    WHERE workspace_id = ${ws} AND harness_slug = ${harness}
+      AND run_id = ${`${root}-stage-1`} AND a = 'c' AND b = 'd'`;
+  assert.deepEqual(adjudicationAfter, adjudicationBefore, 'reversal must preserve the immutable judgment trail');
+
+  // A synthetic DBOS live-fire row exercises the real PG guard and routine
+  // writer. This proves enqueue/rearm refusal, not a running DBOS worker.
+  await sql.unsafe(`CREATE SCHEMA IF NOT EXISTS dbos;
+    CREATE TABLE IF NOT EXISTS dbos.workflow_status (
+      workflow_uuid text PRIMARY KEY, status text NOT NULL,
+      deduplication_id text, created_at bigint NOT NULL DEFAULT 0
+    )`);
+  const fireRunId = 'bulk-grade-live-fire-rehearsal';
+  const firstEnqueue = await enqueueBulkDedupRun(sql, {
+    workspaceId: ws, harnessSlug: harness, runId: fireRunId, controls: { maxStages: 1, shardConcurrency: 1 },
+  });
+  assert.equal(firstEnqueue.ok, true);
+  assert.equal(firstEnqueue.enqueued, true);
+  const routineId = firstEnqueue.routineId;
+  const [originalRoutine] = await sql`SELECT payload_template FROM harness_shared.routines WHERE id = ${routineId}`;
+  await sql`INSERT INTO dbos.workflow_status (workflow_uuid, status, deduplication_id, created_at)
+    VALUES ('bulk-grade-live-workflow', 'PENDING', ${`routine:${routineId}`}, 1)`;
+  const secondEnqueue = await enqueueBulkDedupRun(sql, {
+    workspaceId: ws, harnessSlug: harness, runId: fireRunId, controls: { maxStages: 1, shardConcurrency: 1 },
+  });
+  const rearm = await enqueueBulkDedupRun(sql, {
+    workspaceId: ws, harnessSlug: harness, runId: fireRunId, controls: { maxStages: 4, shardConcurrency: 3 },
+  });
+  for (const refusal of [secondEnqueue, rearm]) {
+    assert.equal(refusal.ok, false);
+    assert.equal(refusal.enqueued, false);
+    assert.equal(refusal.alreadyRunning, true);
+    assert.equal(refusal.reason, 'already_running');
+    assert.equal(refusal.workflowUuid, 'bulk-grade-live-workflow');
+  }
+  const [retainedRoutine] = await sql`SELECT payload_template FROM harness_shared.routines WHERE id = ${routineId}`;
+  assert.deepEqual(retainedRoutine!.payload_template, originalRoutine!.payload_template);
+  await sql`UPDATE dbos.workflow_status SET status = 'CANCELLED' WHERE workflow_uuid = 'bulk-grade-live-workflow'`;
+  await sql`UPDATE harness_shared.routines SET active = false, next_fire_at = NULL WHERE id = ${routineId}`;
   process.stdout.write('BULK_BACKGROUND_RECEIPT ' + JSON.stringify({
     sourceHash, workspace: ws, home, runtimeRoot: dirname(home), pgPort: server!.port,
     runId: root, candidatePairs: [...candidatePairs].sort(), merged: recovered.stages[0]!.merged, driftRefusals: ledger!.refusals,
     convergenceReason: recovered.convergenceReason, digest: { status: digest.status, sourceCensusRunId: digest.sourceCensusRunId, coverage: digest.coverage },
+    reversal: { ...reversal, historyPreserved: true, duplicateLinks: duplicateLinks.length, adjudicationPreserved: true },
+    liveFire: { syntheticWorkflow: true, secondEnqueue: secondEnqueue.reason, rearm: rearm.reason, controlsPreserved: true, cancelled: true },
+    pinnedRecompute,
   }) + '\n');
 } finally {
   await sql.end({ timeout: 5 });

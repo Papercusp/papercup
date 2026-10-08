@@ -36,6 +36,10 @@ it.each([false, true])('recovers a guarded partial stage and removes its private
     expect(receipt.merged).toBe(1);
     expect(receipt.driftRefusals).toEqual([expect.objectContaining({ itemId: 'b', reason: 'snapshot-drift' })]);
     expect(receipt.digest).toMatchObject({ status: 'complete', coverage: { live: 3, covered: 3, uncovered: 0 } });
+    expect(receipt.convergenceReason).toBe('stage-budget');
+    expect(receipt.reversal).toMatchObject({ state: 'open', historyPreserved: true, duplicateLinks: 0, adjudicationPreserved: true });
+    expect(receipt.liveFire).toEqual({ syntheticWorkflow: true, secondEnqueue: 'already_running', rearm: 'already_running', controlsPreserved: true, cancelled: true });
+    expect(receipt.pinnedRecompute).toEqual({ sourceCensusRunId: 'bulk-background-acceptance-census-0', before: 2, after: 1, retiredByStage: 1 });
     expect(existsSync(receipt.runtimeRoot)).toBe(false);
     const dataDir = output.match(/datadir ([^)\n]+)/)?.[1];
     expect(dataDir).toBeTruthy();
