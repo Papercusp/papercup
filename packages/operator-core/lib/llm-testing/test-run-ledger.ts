@@ -16,7 +16,7 @@
  */
 
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
-import { join, posix, relative } from 'node:path';
+import { dirname, join, posix, relative } from 'node:path';
 
 import type { RunReport } from '@papercusp/testing-shell/llm';
 import { resolveTestRunHarnessSlug, resolveTestRunWorkspaceId } from '@papercusp/test-config/admin-test-runs-reporter';
@@ -179,9 +179,10 @@ export function scenarioLedgerPath(absPath: string | undefined, root: string): s
 }
 
 /** Snapshot taken BEFORE the scenario runs, so the row can prove the tree was stable. */
-export function beginLlmScenarioLedger(): WorktreeGitSnapshot | null {
+export function beginLlmScenarioLedger(scenarioFilePath?: string): WorktreeGitSnapshot | null {
   try {
-    return captureWorktreeSnapshot();
+    const root = resolveAgentWorkspaceRoot(scenarioFilePath ? { projectDir: dirname(scenarioFilePath) } : {});
+    return captureWorktreeSnapshot(root);
   } catch {
     return null;
   }
@@ -197,11 +198,16 @@ export async function recordLlmScenarioTestRun(
   before: WorktreeGitSnapshot | null,
 ): Promise<number | null> {
   try {
-    const root = resolveAgentWorkspaceRoot({});
+    // The scenario's executed source owns this receipt. An inherited integration
+    // root may point at the shared tree while lint:as-committed runs a private clone.
+    const root = resolveAgentWorkspaceRoot(scenarioFilePath ? { projectDir: dirname(scenarioFilePath) } : {});
     const filePath = scenarioLedgerPath(scenarioFilePath, root);
-    if (!filePath) return null;
+    if (!filePath) {
+      console.warn('[llm-test] test-run ledger source unavailable', { scenarioFilePath, root });
+      return null;
+    }
 
-    const after = captureWorktreeSnapshot();
+    const after = captureWorktreeSnapshot(root);
     const worktreeDirty = before ? computeWorktreeDirty(before, after) : true;
     const { branch } = await resolveGitContext().catch(() => ({ branch: null as string | null }));
     const runGroupId = process.env.PAPERCUSP_TEST_RUN_GROUP ?? report.matrixGroupId ?? null;
@@ -228,7 +234,8 @@ export async function recordLlmScenarioTestRun(
     `) as unknown as Array<{ id: string | number }>;
     const id = inserted[0]?.id;
     return id === undefined ? null : Number(id);
-  } catch {
+  } catch (error) {
+    console.warn('[llm-test] test-run ledger write failed', error instanceof Error ? error.message : String(error));
     return null;
   }
 }

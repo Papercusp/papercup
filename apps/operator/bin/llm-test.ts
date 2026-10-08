@@ -406,7 +406,7 @@ async function main(): Promise<void> {
     const scenarioFilePath = resolveScenarioFilePath(scenario);
     process.stdout.write(`\n▶ ${scenario.id}  [${scenario.target}]\n`);
     let report;
-    const ledgerBefore = args.noPersist ? null : beginLlmScenarioLedger();
+    const ledgerBefore = args.noPersist ? null : beginLlmScenarioLedger(scenarioFilePath);
     try {
       report = await runScenario(scenario, {
         forceRepeat: args.noMatrix ? 1 : undefined,

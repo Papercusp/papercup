@@ -11,14 +11,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { parseTestRunExecutionDetails, recordedTestLayer } from '@papercusp/test-config/execution-details';
 
 import { SCENARIOS } from './scenarios';
-import { llmScenarioLedgerRow, recordLlmScenarioTestRun, resolveScenarioSourceFile, scenarioLedgerPath } from './test-run-ledger';
+import { beginLlmScenarioLedger, llmScenarioLedgerRow, recordLlmScenarioTestRun, resolveScenarioSourceFile, scenarioLedgerPath } from './test-run-ledger';
+import { captureWorktreeSnapshot } from '../testing-worktree';
 
 const ledger = vi.hoisted(() => ({ sql: vi.fn(), root: '' }));
 vi.mock('../long-lived-admin-pool', () => ({ getLongLivedAdminPool: () => ledger.sql }));
-vi.mock('../agent-tools/capability/base-dir', () => ({ resolveAgentWorkspaceRoot: () => ledger.root }));
+vi.mock('../agent-tools/capability/base-dir', () => ({
+  resolveAgentWorkspaceRoot: (ctx: { projectDir?: string }) => ctx.projectDir ?? ledger.root,
+}));
 vi.mock('../testing-branch-resolve', () => ({ resolveGitContext: async () => ({ branch: 'staging' }) }));
 vi.mock('../testing-worktree', () => ({
-  captureWorktreeSnapshot: () => ({ commit: 'abc123' }), computeWorktreeDirty: () => false,
+  captureWorktreeSnapshot: vi.fn(() => ({ commit: 'abc123' })), computeWorktreeDirty: () => false,
 }));
 
 const SCENARIOS_ROOT = join(__dirname, 'scenarios');
@@ -27,6 +30,7 @@ describe('recordLlmScenarioTestRun scope attribution', () => {
   let dir: string;
   let file: string;
   beforeEach(() => {
+    vi.mocked(captureWorktreeSnapshot).mockClear();
     dir = mkdtempSync(join(tmpdir(), 'llm-ledger-scope-'));
     file = join(dir, 'scenario.ts');
     writeFileSync(file, '');
@@ -64,6 +68,24 @@ describe('recordLlmScenarioTestRun scope attribution', () => {
   it('keeps absent scope and a wildcard harness unattributed', async () => {
     vi.stubEnv('PAPERCUSP_TEST_RUN_HARNESS', '*');
     expect(await recordedScope()).toEqual({ harness: null, workspace: null });
+  });
+  it('records a committed-clone scenario even when the inherited workspace points elsewhere', async () => {
+    ledger.root = join(dir, 'different-inherited-tree');
+    const before = beginLlmScenarioLedger(file);
+    expect(before).toEqual({ commit: 'abc123' });
+    expect(await recordLlmScenarioTestRun(report([run('passed', '2026-10-08T00:00:00Z',
+      '2026-10-08T00:00:01Z')]), file, before)).toBe(123);
+    expect(ledger.sql.mock.calls[0]![1]).toBe('scenario.ts');
+    expect(vi.mocked(captureWorktreeSnapshot).mock.calls).toEqual([[dir], [dir]]);
+  });
+  it('reports a database failure while preserving the completed scenario outcome', async () => {
+    ledger.sql.mockRejectedValueOnce(new Error('ledger unavailable'));
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(await recordLlmScenarioTestRun(report([run('passed', '2026-10-08T00:00:00Z',
+        '2026-10-08T00:00:01Z')]), file, null)).toBeNull();
+      expect(warning).toHaveBeenCalledWith('[llm-test] test-run ledger write failed', 'ledger unavailable');
+    } finally { warning.mockRestore(); }
   });
 });
 
