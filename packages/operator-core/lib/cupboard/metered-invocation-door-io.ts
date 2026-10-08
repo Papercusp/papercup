@@ -24,6 +24,7 @@
  * is committed in between, and the fixed `nowMs`/`occurredAtMs` keeps the two
  * passes byte-identical.
  */
+import { z } from 'zod';
 import {
   closeMeteredInvocation,
   declareMeter,
@@ -126,6 +127,82 @@ export interface ChannelUsageWire {
   /** Requested explicitly; the hosted payer/offer history spans every channel. */
   readonly identityMarkupOrigin?: IdentityMarkupOriginWire;
 }
+
+/** One authenticated live page; totals never describe a whole-account snapshot. */
+export interface PrincipalUsagePage {
+  readonly receipts: readonly UsageReceiptWire[];
+  readonly identityStatement: IdentityUsageStatement;
+  readonly nextCursor: string | null;
+  readonly coverage: {
+    readonly scope: 'authenticated-principal';
+    readonly population: 'live-page';
+    readonly totals: 'page';
+    readonly hasMore: boolean;
+  };
+}
+
+const decimalMicros = z.string().regex(/^(0|[1-9][0-9]*)$/);
+const wireId = z.string().min(1);
+const usageCursor = z.string().max(2000).refine((value) => {
+  try {
+    const tuple: unknown = JSON.parse(value);
+    return Array.isArray(tuple) && tuple.length === 2 && tuple.every(part =>
+      typeof part === 'string' && part.length > 0 && part.length <= 300 && part.trim() === part);
+  } catch { return false; }
+});
+
+const principalUsagePageSchema = z.object({
+  receipts: z.array(z.object({
+    channelId: wireId, usageNonce: wireId, offerId: wireId, payer: wireId, seller: wireId,
+    releaseRef: wireId, meterUnit: wireId, meterQuantity: decimalMicros, unitPriceMicros: decimalMicros,
+    priceVersion: wireId, splitManifestHash: wireId, reservedMicros: decimalMicros,
+    amountMicros: decimalMicros.nullable(), cumulativeClaimMicros: decimalMicros,
+    expiresAtMs: z.number().int().nonnegative().safe(), voucherDigest: wireId, voucherSignature: wireId,
+    receiptSignature: z.string().nullable(), state: z.enum(['reserved', 'settled']),
+    reservedAtMs: z.number().int().nonnegative().safe(), settledAtMs: z.number().int().nonnegative().safe().nullable(),
+    identityInference: z.object({ ceilingMicros: decimalMicros, billedInferenceMicros: decimalMicros.nullable(),
+      priorRemainderNumerator: decimalMicros.nullable(), remainderNumerator: decimalMicros.nullable() }).optional(),
+  })).max(200),
+  identityStatement: z.object({
+    basis: z.literal('hosted-settled-usage'), currency: z.literal('USD'), chainFinality: z.literal('not-measured'),
+    allocationBasis: z.literal('per-receipt-quote'),
+    lines: z.array(z.object({ channelId: wireId, usageNonce: wireId, offerId: wireId, releaseRef: wireId,
+      payer: wireId, seller: wireId, priceVersion: wireId, splitManifestHash: wireId,
+      billedInferenceMicros: decimalMicros, markupMicros: decimalMicros,
+      allocationQuote: z.object({ creatorMicros: decimalMicros, daoMicros: decimalMicros, componentMicros: decimalMicros,
+        componentAuthorsMicros: z.record(z.string(), decimalMicros).nullable() }),
+    })).max(200),
+    markupMicros: decimalMicros, reservedReceipts: z.number().int().min(0).max(200), complete: z.boolean(),
+    issues: z.array(z.object({ channelId: wireId, usageNonce: wireId, reason: wireId })).max(200),
+    costPerAcceptedOutcomeMicros: z.null(), outcomeEvidence: z.literal('unavailable'),
+  }),
+  nextCursor: usageCursor.nullable(),
+  coverage: z.object({ scope: z.literal('authenticated-principal'), population: z.literal('live-page'),
+    totals: z.literal('page'), hasMore: z.boolean() }),
+}).superRefine((page, ctx) => {
+  const statement = page.identityStatement;
+  if (page.coverage.hasMore !== (page.nextCursor !== null) ||
+      statement.complete !== (statement.issues.length === 0) ||
+      statement.lines.reduce((sum, line) => sum + BigInt(line.markupMicros), 0n) !== BigInt(statement.markupMicros)) {
+    ctx.addIssue({ code: 'custom', message: 'inconsistent statement page coverage or totals' });
+  }
+  const receipts = new Map(page.receipts.map(receipt => [JSON.stringify([receipt.channelId, receipt.usageNonce]), receipt]));
+  const seen = new Set<string>();
+  for (const line of statement.lines) {
+    const key = JSON.stringify([line.channelId, line.usageNonce]);
+    const receipt = receipts.get(key), quote = line.allocationQuote;
+    if (seen.has(key) || !receipt || receipt.state !== 'settled' || receipt.amountMicros !== line.markupMicros ||
+        receipt.identityInference?.billedInferenceMicros !== line.billedInferenceMicros ||
+        !(['offerId', 'releaseRef', 'payer', 'seller', 'priceVersion', 'splitManifestHash'] as const)
+          .every(field => receipt[field] === line[field]) ||
+        BigInt(quote.creatorMicros) + BigInt(quote.daoMicros) + BigInt(quote.componentMicros) !== BigInt(line.markupMicros) ||
+        (quote.componentAuthorsMicros !== null && Object.values(quote.componentAuthorsMicros)
+          .reduce((sum, amount) => sum + BigInt(amount), 0n) !== BigInt(quote.componentMicros))) {
+      ctx.addIssue({ code: 'custom', message: 'statement line does not conserve its recorded receipt' });
+    }
+    seen.add(key);
+  }
+});
 
 export interface IdentityMarkupOriginWire {
   readonly offerId: string;
@@ -363,6 +440,27 @@ export async function readChannelUsage(
   if (!('usage' in called) && called.ok !== true) return called as MeteredDoorFailure;
   const payload = (called as { payload: Record<string, unknown> }).payload;
   return { ok: true, usage: payload as unknown as ChannelUsageWire };
+}
+
+/** No principal argument: the hosted door derives visibility from the bearer. */
+export async function readPrincipalUsagePage(
+  input: { readonly limit?: number; readonly cursor?: string } = {},
+  deps: MeteredTransportDeps = {},
+): Promise<{ ok: true; page: PrincipalUsagePage } | MeteredDoorFailure> {
+  const limit = input.limit ?? 100;
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 200 ||
+      (input.cursor !== undefined && !usageCursor.safeParse(input.cursor).success)) {
+    return fail('invalid_request', 'usage requires limit 1..200 and an exact page cursor', 0, 'local-interception');
+  }
+  const query = new URLSearchParams({ limit: String(limit) });
+  if (input.cursor !== undefined) query.set('cursor', input.cursor);
+  const called = await callHostedDoor({ path: `${METERED_INVOCATIONS_PATH}?${query}`, method: 'GET', expect: [200] }, deps);
+  if (!called.ok) return called;
+  const parsed = principalUsagePageSchema.safeParse(called.payload);
+  if (!parsed.success || parsed.data.receipts.length > limit || parsed.data.nextCursor === input.cursor) {
+    return fail('invalid_usage_page', 'hosted usage page is malformed or inconsistent', 200, 'hosted-door');
+  }
+  return { ok: true, page: parsed.data };
 }
 
 /** Amounts cross the JSON boundary as decimal STRINGS: micros can exceed 2^53. */
