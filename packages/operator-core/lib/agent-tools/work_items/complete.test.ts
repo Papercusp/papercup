@@ -28,6 +28,10 @@ const contentionMocks = vi.hoisted(() => ({
 const hiveMocks = vi.hoisted(() => ({
   potHomeSlugForHarness: vi.fn(),
 }));
+const parkReachability = vi.hoisted(() => ({ read: vi.fn() }));
+vi.mock('../../external-condition-reachability', () => ({
+  readEventConditionReachability: (...args: unknown[]) => parkReachability.read(...args),
+}));
 vi.mock('../locks/contention-retry', () => ({
   acquireWithContentionRetry: (...args: unknown[]) => contentionMocks.acquireWithContentionRetry(...args),
 }));
@@ -341,6 +345,9 @@ function okState(workItem: Record<string, unknown>) {
 }
 
 beforeEach(() => {
+  parkReachability.read.mockResolvedValue({
+    verdict: 'reachable', basis: 'catalogued', evidence: 'catalogued unblocked producer is live',
+  });
   resolveAdoptedName.mockReset();
   resolveAdoptedName.mockResolvedValue(null);
   dbMocks.planItemStatusRows.mockReset();
@@ -1327,13 +1334,36 @@ describe('work_items:complete (keyed-array)', () => {
           harness: 'papercup',
           parkedBy: expect.any(String),
           parkedReason: 'terminal completion refused by the linked plan-item gate',
+          releaseContract: {
+            condition: 'the linked plan-item gate for WI-1 is no longer effectively blocked',
+            trigger: 'work-item:unblocked:WI-1',
+            owner: expect.any(String),
+            reachability: 'reachable',
+            evidence: 'catalogued unblocked producer is live',
+          },
         }),
       );
+      expect(parkReachability.read).toHaveBeenCalledWith('work-item:unblocked:WI-1');
       expect(r.planGateParkWarning).toMatch(/DURABLY PARKED out of scheduler:get_next/);
       expect(r.stateWarning).toMatch(/durably parked out of scheduler:get_next/);
       expect(r.stateWarning).not.toMatch(/stays claimable/);
       expect(r.error).toMatch(/DID NOT CLOSE/);
       expect(r.completion).toMatchObject({ summary: 'fixed it' });
+    });
+
+    it('does not create an untracked park when the release-condition read fails', async () => {
+      getWorkItem.mockResolvedValue(issue);
+      setWorkItemStateWithAliasInfo.mockRejectedValue(
+        new Error("linked plan-item a-plan#P-002 is STILL effectively 'blocked'"),
+      );
+      parkReachability.read.mockRejectedValueOnce(new Error('event ledger unavailable'));
+
+      const r = await one({ id: 'WI-1', state: 'resolved', completion: { summary: 'fixed it', tests: '5 green' } });
+
+      expect(r.ok).toBe(false);
+      expect(setWorkItemClaimHold).not.toHaveBeenCalled();
+      expect(r.planGateParkWarning).toContain('event ledger unavailable');
+      expect(r.planGateParkWarning).toContain('it remains claimable');
     });
 
     it('does not claim a plan-gated close was parked when the claim hold write fails', async () => {

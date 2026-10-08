@@ -14,6 +14,8 @@ const {
   parseAdmissionCensusResume,
   ADMISSION_CENSUS_RESUME_MAX_AGE_MS,
   ADMISSION_CENSUS_RESUME_SCHEMA,
+  ADMISSION_CENSUS_STATEMENT_TIMEOUT_MS,
+  readPinnedUnadjudicatedCensus,
 } = await import('./work-items-admission-census');
 
 const WS = 'default';
@@ -122,6 +124,68 @@ beforeEach(async () => {
   await db.sql`TRUNCATE harness_shared.work_items, harness_shared.scout_routed_ideas,
     harness_shared.dedup_edges, harness_shared.dedup_adjudications,
     harness_shared.admission_runs, harness_shared.dedup_shard_map`;
+});
+
+it('counts pinned edges without Cartesian member probes and restores session settings', async () => {
+  // Model a newly completed map absent from the planner's last statistics sample.
+  await db.sql`INSERT INTO harness_shared.dedup_shard_map
+    SELECT 'old', ${WS}, ${HARNESS}, 0, 'old-' || n, 'member' FROM generate_series(1, 3000) n`;
+  await db.sql`ANALYZE harness_shared.dedup_shard_map`;
+  await db.sql`INSERT INTO harness_shared.dedup_shard_map
+    SELECT r, ${WS}, ${HARNESS}, 0, 'item-' || n, 'member'
+      FROM unnest(ARRAY['before', 'after']) r CROSS JOIN generate_series(1, 64) n`;
+  await db.sql`INSERT INTO harness_shared.dedup_shard_map VALUES
+    ('after', ${WS}, ${HARNESS}, 0, 'inflow', 'member'),
+    ('before', ${WS}, ${HARNESS}, 0, 'ghost', 'ghost'),
+    ('after', ${WS}, ${HARNESS}, 0, 'ghost', 'ghost')`;
+  await db.sql`INSERT INTO harness_shared.dedup_edges
+    (workspace_id, harness_slug, a, b, cos, run_id) VALUES
+    (${WS}, ${HARNESS}, 'item-1', 'item-2', 0.95, 'edges'),
+    (${WS}, ${HARNESS}, 'item-3', 'item-4', 0.95, 'edges'),
+    (${WS}, ${HARNESS}, 'item-5', 'item-6', 0.89, 'edges'),
+    (${WS}, ${HARNESS}, 'inflow', 'item-1', 0.99, 'edges'),
+    (${WS}, ${HARNESS}, 'ghost', 'item-1', 0.99, 'edges'),
+    (${WS}, 'other-harness', 'item-1', 'item-2', 0.99, 'edges'),
+    ('other-workspace', ${HARNESS}, 'item-1', 'item-2', 0.99, 'edges')`;
+  await db.sql`INSERT INTO harness_shared.dedup_adjudications
+    (workspace_id, harness_slug, a, b, verdict, judged_by, run_id) VALUES
+    (${WS}, ${HARNESS}, 'item-3', 'item-4', 'r-related', 'judge', 'prior')`;
+
+  type Plan = { 'Node Type': string; Plans?: Plan[] };
+  const nodes = (plan: Plan): string[] => [plan['Node Type'], ...(plan.Plans ?? []).flatMap(nodes)];
+  let during: { nestloop: string; timeout_ms: number } | undefined;
+  let queryPlan: string[] = [];
+  const observe = (sql: postgres.Sql | postgres.TransactionSql): typeof sql => new Proxy(sql, {
+    apply(target, receiver, args) {
+      const [strings, ...values] = args as [TemplateStringsArray, ...unknown[]];
+      if (!strings.join('').includes('WITH pinned AS MATERIALIZED')) return Reflect.apply(target, receiver, args);
+      return (async () => {
+        [during] = await target<{ nestloop: string; timeout_ms: number }[]>`
+          SELECT current_setting('enable_nestloop') AS nestloop, setting::integer AS timeout_ms
+            FROM pg_settings WHERE name = 'statement_timeout' AND unit = 'ms'`;
+        const text = strings.reduce((out, part, i) => out + (i ? `$${i}` : '') + part, '');
+        const explained = await target.unsafe('EXPLAIN (FORMAT JSON) ' + text, values as never[]);
+        queryPlan = nodes(explained[0]['QUERY PLAN'][0].Plan as Plan);
+        return Reflect.apply(target, receiver, args);
+      })();
+    },
+    get(target, key, receiver) {
+      if (key === 'begin') return (body: (tx: postgres.TransactionSql) => Promise<unknown>) =>
+        db.sql.begin(tx => body(observe(tx) as postgres.TransactionSql));
+      return Reflect.get(target, key, receiver);
+    },
+  });
+  const [before] = await db.sql`SELECT current_setting('enable_nestloop') AS nestloop,
+    current_setting('statement_timeout') AS timeout`;
+  expect(await readPinnedUnadjudicatedCensus(
+    observe(db.sql) as unknown as Parameters<typeof readPinnedUnadjudicatedCensus>[0],
+    { workspaceId: WS, harnessSlug: HARNESS }, { pinnedRunId: 'before', currentRunId: 'after' },
+  )).toBe(1);
+  expect(during).toEqual({ nestloop: 'off', timeout_ms: ADMISSION_CENSUS_STATEMENT_TIMEOUT_MS });
+  expect(queryPlan).not.toContain('Nested Loop');
+  const [after] = await db.sql`SELECT current_setting('enable_nestloop') AS nestloop,
+    current_setting('statement_timeout') AS timeout`;
+  expect(after).toEqual(before);
 });
 
 async function seed(): Promise<void> {

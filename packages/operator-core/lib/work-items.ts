@@ -7546,6 +7546,10 @@ export async function setWorkItemClaimHold(
     expectedLeaseHolder?: string;
   } = {},
 ): Promise<{ id: string; harness: string | null; hold: boolean; applicable: boolean } | null> {
+  if (hold && (opts.parkedBy !== undefined || opts.parkedReason !== undefined || opts.releaseContract !== undefined)) {
+    const { assertDurableParkReleaseContract } = await import('./durable-park-release-contract');
+    assertDurableParkReleaseContract(opts.releaseContract);
+  }
   const { sql } = getOrgPg();
   // EI-15345: resolve the item's ACTUAL workspace by id, AMBIENT-INDEPENDENT. The old path
   // derived the write scope from a bare `activeWorkspaceId()` / `issuesScopeWorkspace()` and a

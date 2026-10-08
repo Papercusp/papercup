@@ -355,6 +355,7 @@ describe('convert-at-pickup (D-015): one call = lease + mint + claim + back-link
       harness: HARNESS,
       parkedBy: 'sess-A',
       parkedReason: 'DO NOT RESUME — waiting for an explicit owner decision',
+      releaseContract: { condition: 'owner decision arrives', owner: 'sess-A', trigger: 'work-item:unblocked:WI-held', reachability: 'blocked', evidence: 'fixture decision pending' },
     });
     expect(parked).toMatchObject({ id: first.workItem.id, hold: true, applicable: true });
 
@@ -384,6 +385,7 @@ describe('convert-at-pickup (D-015): one call = lease + mint + claim + back-link
       harness: HARNESS,
       parkedBy: 'sess-A',
       parkedReason: 'waiting for an explicit owner decision',
+      releaseContract: { condition: 'owner decision arrives', owner: 'sess-A', trigger: 'work-item:unblocked:WI-held', reachability: 'blocked', evidence: 'fixture decision pending' },
     });
     expect(parked).toMatchObject({ id: first.workItem.id, hold: true, applicable: true });
 

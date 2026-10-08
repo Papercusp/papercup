@@ -1121,6 +1121,13 @@ export async function createOneWorkItem(
       'auto-attributed at create (EI-18698328828208444): payload._claimHold was set directly ' +
         'in work_items:create\'s payload arg with no claim_hold_by/held_open_by — stamped to the creator.',
     );
+    // Raw create payloads bypass setWorkItemClaimHold. Apply the same contract guard
+    // before creating a new durable park; a lease-only payload retains its own semantics.
+    if (payloadFinal && String(payloadFinal._claimHold) === 'true' &&
+        (payloadFinal.claim_hold_by || !payloadFinal.held_open_by)) {
+      const { assertDurableParkReleaseContract } = await import('../../durable-park-release-contract');
+      assertDurableParkReleaseContract(payloadFinal.claim_hold_release);
+    }
     // EI-19390496242545842: `targetPlanItem` (the `plan_item:{slug,item}` create arg) used
     // to write ONLY the coord_links coverage edge below — but work_items:complete's
     // plan-item auto-flip (synchronizeFinishWork → finishPlanStamp) reads a SEPARATE

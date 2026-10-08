@@ -61,6 +61,7 @@ import { lookupRemoteAuthorEndedAt } from '../../work-items-orphan-author';
 // wholesale — the guard would be `undefined` exactly here.
 import { decideTerminalOwnerOriginHeal } from '../../work-items-terminal-owner-origin-heal';
 import { activeExternalBlockers, externalBlockerCapabilityPolicy } from '../../external-blockers';
+import { buildDurableParkReleaseContract } from '../../durable-park-release-contract';
 import {
   getWorkItem,
   getWorkItemsByIds,
@@ -4924,6 +4925,13 @@ async function completeOne(
       stateError = e instanceof Error ? e.message : String(e);
       if (closeIntentRequested && isPlanGateRejection(stateError)) {
         try {
+          const releaseContract = await buildDurableParkReleaseContract(
+            {
+              condition: `the linked plan-item gate for ${it.id} is no longer effectively blocked`,
+              trigger: `work-item:unblocked:${it.id}`,
+            },
+            ident.ownerId,
+          );
           const parked = await setWorkItemClaimHold(it.id, true, {
             // The inline shorthand commonly omits `harness`; the fetched work-item is
             // still the authoritative scope for this durable hold (as it is for
@@ -4931,6 +4939,7 @@ async function completeOne(
             harness: it.harness ?? existing.harness ?? undefined,
             parkedBy: ident.ownerId,
             parkedReason: 'terminal completion refused by the linked plan-item gate',
+            releaseContract,
           });
           if (parked?.applicable) {
             planGateParked = true;

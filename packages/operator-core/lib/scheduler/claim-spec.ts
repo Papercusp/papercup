@@ -160,6 +160,13 @@ export const ITEM_FIELDS = [
   // NOT rankable — a triage decision is a category, not an order; excluded from
   // `RANKABLE_ITEM_FIELDS` alongside `fleet`/`risk_tier`.
   'triage_gate',
+  // `item_class` — plan scout-su-ideate-pipeline-gaps-2026-10-08 P-005 (R-10/R-11),
+  // EI-18697923246606437. 'ideation' for a Scout/su-ideate idea, 'work' for everything else;
+  // never NULL. Lets a lane EXCLUDE ideas (`{ field:'item_class', op:'=', value:'work' }`) that a
+  // keyword title glob would otherwise pull in, or TARGET them (`value:'ideation'`). The one
+  // definition lives in scout/ideation-origin.ts; FIELD_MAP.item_class and the JS subject both
+  // read it. Filter-only — excluded from RANKABLE_ITEM_FIELDS.
+  'item_class',
 ] as const;
 export type ItemField = (typeof ITEM_FIELDS)[number];
 
@@ -305,7 +312,9 @@ export const RANKABLE_ITEM_FIELDS = FILTERABLE_ITEM_FIELDS.filter(
     f !== 'risk_tier' &&
     f !== 'goal' &&
     f !== 'fleet' &&
-    f !== 'triage_gate',
+    f !== 'triage_gate' &&
+    // P-005: a two-valued partition ('ideation'|'work'), not an ordering — filter-only.
+    f !== 'item_class',
 );
 
 export const CURRENT_SPEC_VERSION = '1.0' as const;

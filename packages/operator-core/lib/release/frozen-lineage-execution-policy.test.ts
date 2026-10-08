@@ -435,6 +435,93 @@ describe('frozen lineage shell-command policy', () => {
     expect(readCheckoutHead).not.toHaveBeenCalled();
   });
 
+  // P-015 (plan green-main-cycle-time-2026-10-08): `cd X || exit 1` is the idiom
+  // CLAUDE.md prescribes, and its fallback never continues — so every later atom
+  // runs in X. The tracker used to fall back to the session cwd after `||`, which
+  // governed a SIBLING checkout's `npm test` as a papercusp root test.
+  it.each([
+    'cd /tmp/crm || exit 1; npm test',
+    'cd /tmp/crm || exit 1\nnpm run test:affected',
+    'cd /tmp/crm || return 2; npm test',
+    'cd /tmp/crm || { echo "no checkout"; exit 1; }; npm test',
+    'cd /tmp/crm || { exit 1; }; npm test',
+  ])('resolves a terminating cd fallback to the cd target: %s', async (command) => {
+    const readMarker = vi.fn(() => marker());
+    const readCheckoutHead = vi.fn(async () => CANDIDATE);
+    const classification = classifyFrozenLineageShellCommand({ command, cwd: ROOT });
+
+    expect(classification).toMatchObject({ kind: 'canonical-root-test', checkoutCwd: '/tmp/crm' });
+    await expect(
+      evaluateFrozenLineageShellCommand(classification, ROOT, { readMarker, readCheckoutHead }),
+    ).resolves.toMatchObject({ allowed: true, reason: 'operation-not-governed' });
+    expect(readMarker).not.toHaveBeenCalled();
+    expect(readCheckoutHead).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    // The governed root itself, reached through the same idiom, stays governed.
+    [`cd ${ROOT} || exit 1; npm test`, ROOT],
+    // A fallback that CONTINUES leaves later atoms where the failed cd left them.
+    ['cd /tmp/crm || echo failed; npm test', ROOT],
+    // `( exit 1 )` only ends a subshell, so it is not a terminating fallback.
+    ['cd /tmp/crm || (exit 1); npm test', ROOT],
+  ])('keeps a root test governed when the cd fallback does not prove the move: %s', async (command, cwd) => {
+    const classification = classifyFrozenLineageShellCommand({ command, cwd: ROOT });
+    expect(classification).toMatchObject({ kind: 'canonical-root-test', checkoutCwd: cwd });
+    await expect(
+      evaluateFrozenLineageShellCommand(classification, ROOT, {
+        marker: marker(),
+        readCheckoutHead: async () => CANDIDATE,
+      }),
+    ).resolves.toMatchObject({ allowed: false, reason: 'checkout-head-mismatch' });
+  });
+
+  // P-015: a literal assignment earlier in the same command makes "$R" knowable.
+  // Treating every `$` as unresolvable failed closed on a sibling repo's worktree cut.
+  it.each([
+    ['R=/tmp/pilot; git -C "$R" worktree add --detach /tmp/w staging', '/tmp/pilot'],
+    ['export R=/tmp/pilot && git -C "${R}" worktree add /tmp/w staging', '/tmp/pilot'],
+    ['R=/tmp/pilot; B="$R/sub"; git -C $B worktree add /tmp/w staging', '/tmp/pilot/sub'],
+  ])('resolves a known literal variable in a worktree-cut -C target: %s', async (command, cwd) => {
+    const readMarker = vi.fn(() => marker());
+    const classification = classifyFrozenLineageShellCommand({ command, cwd: ROOT });
+
+    expect(classification).toMatchObject({ kind: 'candidate-worktree-cut', checkoutCwd: cwd });
+    await expect(evaluateFrozenLineageShellCommand(classification, ROOT, { readMarker })).resolves.toMatchObject({
+      allowed: true,
+      reason: 'operation-not-governed',
+    });
+    expect(readMarker).not.toHaveBeenCalled();
+  });
+
+  it('resolves a known literal variable in a cd target, governing the root when it names the root', () => {
+    expect(
+      classifyFrozenLineageShellCommand({ command: 'D=/tmp/crm; cd "$D" || exit 1; npm test', cwd: ROOT }),
+    ).toMatchObject({ checkoutCwd: '/tmp/crm' });
+    expect(
+      classifyFrozenLineageShellCommand({ command: `D=${ROOT}; cd "$D" || exit 1; npm test`, cwd: ROOT }),
+    ).toMatchObject({ checkoutCwd: ROOT });
+  });
+
+  it.each([
+    // Single quotes suppress expansion.
+    "R=/tmp/pilot; git -C '$R' worktree add /tmp/w staging",
+    // Reassigned to something unknowable: the stale literal must be forgotten.
+    'R=/tmp/pilot; R=$(pwd); git -C "$R" worktree add /tmp/w staging',
+    'R=/tmp/pilot; unset R; git -C "$R" worktree add /tmp/w staging',
+    'R=/tmp/pilot; read R; git -C "$R" worktree add /tmp/w staging',
+    // An env-prefix assignment does not set the shell variable used for expansion.
+    'R=/tmp/pilot git -C "$R" worktree add /tmp/w staging',
+    // Never assigned in this command at all.
+    'git -C "$UNKNOWN" worktree add /tmp/w staging',
+  ])('fails closed when a variable target is not provably known: %s', async (command) => {
+    const classification = classifyFrozenLineageShellCommand({ command, cwd: ROOT });
+    expect(classification).toMatchObject({ kind: 'candidate-worktree-cut', checkoutCwd: null });
+    await expect(
+      evaluateFrozenLineageShellCommand(classification, ROOT, { marker: marker() }),
+    ).resolves.toMatchObject({ allowed: false });
+  });
+
   it('refuses a staging worktree cut without paying for a Git HEAD probe', async () => {
     const classification = classifyFrozenLineageShellCommand({
       command: 'git worktree add --detach /tmp/candidate staging',

@@ -366,6 +366,7 @@ const base: ClaimSpecSubject = {
   planItem: ['P-016'],
   fleet: null,
   triageGate: null,
+  itemClass: 'work',
   age: 1_000,
   riskTier: 'moderate',
   redundancy: 1,

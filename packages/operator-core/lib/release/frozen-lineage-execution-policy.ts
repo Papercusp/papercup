@@ -316,7 +316,32 @@ export interface FrozenLineageShellCommandVerdict {
   policy: FrozenLineagePolicyVerdict | null;
 }
 
-function shellWords(atom: string): string[] | null {
+/**
+ * Shell variables assigned to a statically-known literal earlier in the same
+ * command (`R=/abs/path; git -C "$R" …`). Only names whose value is provably
+ * known are present; anything reassigned to something unknowable is removed, so
+ * a reference to it stays an unexpanded `$NAME` and fails closed downstream.
+ */
+type KnownShellVars = ReadonlyMap<string, string>;
+
+const SHELL_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/**
+ * Expand one `$NAME` / `${NAME}` reference starting at `atom[index]` (the `$`).
+ * Returns the replacement and how many characters it consumed, or null when the
+ * reference is not a plain known variable — the caller then keeps the `$`
+ * literally, which `literalPath` refuses, preserving fail-closed behaviour.
+ */
+function expandVariable(atom: string, index: number, vars: KnownShellVars): { value: string; length: number } | null {
+  const braced = /^\$\{([A-Za-z_][A-Za-z0-9_]*)\}/.exec(atom.slice(index));
+  const bare = braced ? null : /^\$([A-Za-z_][A-Za-z0-9_]*)/.exec(atom.slice(index));
+  const match = braced ?? bare;
+  if (!match) return null;
+  const value = vars.get(match[1]!);
+  return value === undefined ? null : { value, length: match[0].length };
+}
+
+function shellWords(atom: string, vars: KnownShellVars = new Map()): string[] | null {
   const words: string[] = [];
   let word = '';
   let quote: "'" | '"' | null = null;
@@ -330,7 +355,8 @@ function shellWords(atom: string): string[] | null {
     started = false;
   };
 
-  for (const ch of atom) {
+  for (let index = 0; index < atom.length; index += 1) {
+    const ch = atom[index]!;
     if (escaped) {
       word += ch;
       started = true;
@@ -341,6 +367,16 @@ function shellWords(atom: string): string[] | null {
       escaped = true;
       started = true;
       continue;
+    }
+    // Single quotes suppress expansion; double quotes and bare words do not.
+    if (ch === '$' && quote !== "'") {
+      const expansion = expandVariable(atom, index, vars);
+      if (expansion) {
+        word += expansion.value;
+        started = true;
+        index += expansion.length - 1;
+        continue;
+      }
     }
     if (quote) {
       if (ch === quote) quote = null;
@@ -375,12 +411,53 @@ function commandName(token: string | undefined): string {
   return basename((token ?? '').replace(/^[({]+/, ''));
 }
 
-function cdTarget(atom: string, cwd: string | null): string | null | undefined {
-  const words = shellWords(atom);
+function cdTarget(atom: string, cwd: string | null, vars: KnownShellVars): string | null | undefined {
+  const words = shellWords(atom, vars);
   if (!words || commandName(words[0]) !== 'cd') return undefined;
   const operands = words.slice(1).filter((word) => word !== '--');
   if (operands.length !== 1) return null;
   return literalPath(operands[0], cwd);
+}
+
+/**
+ * `exit` / `return` — possibly opening a `{ …; }` group — ends the script, so a
+ * `cd X || exit 1` fallback never continues and every later atom runs in X.
+ * A `( exit 1 )` subshell only ends the subshell, so it deliberately does not count.
+ */
+function isTerminatingAtom(raw: string): boolean {
+  const words = shellWords(raw);
+  if (!words) return false;
+  const head = words[0] === '{' ? words[1] : words[0];
+  return head === 'exit' || head === 'return';
+}
+
+/** Leading `export`/`readonly`/`local` keyword of an assignment-only atom. */
+const ASSIGNMENT_KEYWORDS = new Set(['export', 'readonly', 'local']);
+
+/**
+ * Apply one atom's effect on the known-variable map. A standalone literal
+ * assignment (`R=/abs`, `export R=/abs`) records its value; any other mention of
+ * a known name outside an expansion (`R=$(pwd)`, `read R`, `for R in …`,
+ * `unset R`) forgets it, so a stale value can never resolve a later `$R`.
+ */
+function updateKnownShellVars(raw: string, vars: Map<string, string>): void {
+  const words = shellWords(raw, vars);
+  const body = words && ASSIGNMENT_KEYWORDS.has(words[0] ?? '') ? words.slice(1) : words;
+  const assignments = body && body.length > 0 ? body.map((word) => /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/s.exec(word)) : [];
+  const unexpandedRaw = /`|\$\(/.test(raw);
+  if (!unexpandedRaw && assignments.length > 0 && assignments.every((match) => match !== null)) {
+    for (const match of assignments) {
+      const [, name, value] = match!;
+      // An unresolved `$X`, a glob, or whitespace (word-split when unquoted) is not a known literal.
+      if (/[$`*?[\]{}()\s]/.test(value!) || value === '') vars.delete(name!);
+      else vars.set(name!, value!);
+    }
+    return;
+  }
+  for (const name of [...vars.keys()]) {
+    if (!SHELL_NAME.test(name)) continue;
+    if (new RegExp(`(^|[^$\\w{])${name}(?![\\w])`).test(raw)) vars.delete(name);
+  }
 }
 
 function peelHeavyWrapper(words: string[]): string[] {
@@ -391,8 +468,8 @@ function peelHeavyWrapper(words: string[]): string[] {
   return out;
 }
 
-function canonicalRootTestCwd(atom: string, cwd: string | null): string | null | undefined {
-  const parsed = shellWords(atom);
+function canonicalRootTestCwd(atom: string, cwd: string | null, vars: KnownShellVars): string | null | undefined {
+  const parsed = shellWords(atom, vars);
   // Tri-state contract (same as cdTarget above): undefined = NOT a canonical-root-test,
   // null = confirmed one whose cwd could not be resolved, string = one at that cwd.
   // An atom shellWords cannot tokenise (unbalanced quote / trailing escape) cannot be
@@ -457,8 +534,8 @@ function canonicalRootTestCwd(atom: string, cwd: string | null): string | null |
   return canonicalScripts.has(script) ? effectiveCwd : undefined;
 }
 
-function gitWorktreeAdd(atom: string, cwd: string | null): { cwd: string | null; ref: string } | null {
-  const parsed = shellWords(atom);
+function gitWorktreeAdd(atom: string, cwd: string | null, vars: KnownShellVars): { cwd: string | null; ref: string } | null {
+  const parsed = shellWords(atom, vars);
   if (!parsed) return null;
   const words = peelHeavyWrapper(parsed);
   if (commandName(words[0]) !== 'git') return null;
@@ -516,22 +593,43 @@ export function classifyFrozenLineageShellCommand(
   const parts = atomizePipeline(input.command);
   let effectiveCwd: string | null = resolve(input.cwd);
   let pendingCd: { before: string | null; target: string | null } | null = null;
+  // Inside a `cd X || { …; exit 1; }` fallback group: atoms run where the failed
+  // cd left them, and once the group's exit is reached every LATER atom can only
+  // be running because the cd succeeded, i.e. in X. (The closing `}` is dropped
+  // by the atomizer as shell syntax, so the group's exit is the observable end.)
+  let fallbackGroupTarget: { target: string | null } | null = null;
+  const vars = new Map<string, string>();
 
   for (const part of parts) {
     if (pendingCd) {
       if (part.sepBefore === '&&') effectiveCwd = pendingCd.target;
-      else if (part.sepBefore === '||' || part.sepBefore === '|') effectiveCwd = pendingCd.before;
+      else if (part.sepBefore === '||' && isTerminatingAtom(part.raw)) {
+        // `cd X || exit 1` — the idiom CLAUDE.md prescribes. The fallback never
+        // continues, so everything after it runs in X. Without this, a sibling
+        // checkout's `npm test` was governed as a papercusp root test (P-015).
+        effectiveCwd = pendingCd.target;
+        pendingCd = null;
+        continue;
+      } else if (part.sepBefore === '||' && part.raw.startsWith('{')) {
+        fallbackGroupTarget = { target: pendingCd.target };
+        effectiveCwd = pendingCd.before;
+      } else if (part.sepBefore === '||' || part.sepBefore === '|') effectiveCwd = pendingCd.before;
       else effectiveCwd = pendingCd.before === pendingCd.target ? pendingCd.before : null;
       pendingCd = null;
     }
+    if (fallbackGroupTarget && isTerminatingAtom(part.raw)) {
+      effectiveCwd = fallbackGroupTarget.target;
+      fallbackGroupTarget = null;
+      continue;
+    }
 
-    const target = cdTarget(part.atom, effectiveCwd);
+    const target = cdTarget(part.atom, effectiveCwd, vars);
     if (target !== undefined) {
       pendingCd = { before: effectiveCwd, target };
       continue;
     }
 
-    const cut = gitWorktreeAdd(part.atom, effectiveCwd);
+    const cut = gitWorktreeAdd(part.atom, effectiveCwd, vars);
     if (cut) {
       return {
         kind: 'candidate-worktree-cut',
@@ -542,7 +640,7 @@ export function classifyFrozenLineageShellCommand(
       };
     }
 
-    const testCwd = canonicalRootTestCwd(part.atom, effectiveCwd);
+    const testCwd = canonicalRootTestCwd(part.atom, effectiveCwd, vars);
     if (testCwd !== undefined) {
       return {
         kind: 'canonical-root-test',
@@ -551,6 +649,7 @@ export function classifyFrozenLineageShellCommand(
         checkoutCwd: testCwd,
       };
     }
+    updateKnownShellVars(part.raw, vars);
   }
   return null;
 }

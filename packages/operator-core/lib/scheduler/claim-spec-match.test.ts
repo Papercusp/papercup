@@ -177,6 +177,7 @@ describe('WI-5272 hardened p2p/federation/rig fence — false-positive vs real-l
       planItem: [],
       fleet: null,
       triageGate: null,
+      itemClass: 'work' as const,
       age: 0,
       riskTier: null,
       redundancy: null,

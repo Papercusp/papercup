@@ -8,6 +8,7 @@
  * issue-family fallback one shared decision instead of four approximations.
  */
 import type { WorkItem } from '../work-items';
+import { itemClassOfPayload, type ItemClass } from '../scout/ideation-origin';
 import type { ClaimSpec, FilterLeaf, FilterNode } from './claim-spec';
 
 export interface ClaimSpecSubject {
@@ -29,6 +30,11 @@ export interface ClaimSpecSubject {
    * HUMAN gate: a design draft or an owner is required before implementation.
    */
   triageGate: string | null;
+  /**
+   * P-005 (R-10/R-11): 'ideation' for a Scout/su-ideate idea, else 'work' — never null. Mirrors
+   * FIELD_MAP.item_class; see scout/ideation-origin.ts for the single definition.
+   */
+  itemClass: ItemClass;
   age: number | null;
   riskTier: string | null;
   redundancy: number | null;
@@ -162,6 +168,7 @@ export function claimSpecSubjectFromWorkItem(item: WorkItem, topicTags: string[]
     // EI-16052: mirrors FIELD_MAP.triage_gate — see triageGateOfPayload for why the null
     // semantics have to match the SQL leg exactly.
     triageGate: triageGateOfPayload(payload),
+    itemClass: itemClassOfPayload(payload),
     age: Number.isFinite(createdMs) ? createdMs : null,
     riskTier: typeof payload.risk_tier === 'string' ? payload.risk_tier : null,
     // WI-38326: `COALESCE(redundancy, 1)`. The default is the whole fix for this field, not a
@@ -224,6 +231,7 @@ function valueFor(subject: ClaimSpecSubject, field: FilterLeaf['field']): string
     case 'plan_item': return subject.planItem;
     case 'fleet': return subject.fleet;
     case 'triage_gate': return subject.triageGate;
+    case 'item_class': return subject.itemClass;
     case 'age': return subject.age;
     case 'risk_tier': return subject.riskTier;
     case 'redundancy': return subject.redundancy;

@@ -357,6 +357,7 @@ describe('blocked auto-gate lease cleanup (EI-20490353465054928)', () => {
     await seedIssue('EI-audit-json-park');
     await wi.setWorkItemClaimHold('EI-audit-json-park', true, {
       harness: H, parkedBy: 'park-owner', parkedReason: 'Wait for a decision',
+      releaseContract: { condition: 'owner decision arrives', owner: 'park-owner', trigger: 'work-item:unblocked:EI-audit-json-park', reachability: 'blocked', evidence: 'fixture decision pending' },
     });
     await wi.recordBulkHoldClearAudit(db.sql, [{ id: 'EI-audit-json-park', workspaceId: WS, formerHolder: 'park-owner' }], {
       actor: 'reconciler', sweepName: 'test-sweep',
@@ -405,6 +406,7 @@ describe('blocked auto-gate lease cleanup (EI-20490353465054928)', () => {
       harness: H,
       parkedBy: 'park-owner',
       parkedReason: 'deliberate retry hold',
+      releaseContract: { condition: 'retry authorized', owner: 'park-owner', trigger: 'work-item:unblocked:EI-blocked-lease-durable-park', reachability: 'blocked', evidence: 'fixture retry not authorized' },
     });
 
     const reopened = await wi.setWorkItemStateWithAliasInfo('EI-blocked-lease-durable-park', 'open', {

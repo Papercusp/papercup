@@ -13,6 +13,7 @@ import { superuserTokenPath } from '../superuser-token';
 import { workspacesRoot, readRegistry } from '../workspace-registry';
 import { scratchRoot } from '../scratch-uri';
 import { googleOAuthClientPath } from '../oauth/providers';
+import { parseUnitEnvironment } from '../provisioner/unit-drift';
 
 /** Compose independent writers without traversing the same physical root twice. */
 export function installedRootCensusProducers() {
@@ -138,6 +139,38 @@ export function configuredOperatorDatabaseCensusDeclarations(clusterIdentity: st
   if (!database || database.includes('/')) throw new Error('Missing operator database identity');
   return [{ kind: 'database', root: clusterIdentity, name: database, classification: 'state', producer: 'embedded-pg-discovery-operator' },
     { kind: 'database', root: clusterIdentity, name: 'papercusp_su', classification: 'state', producer: 'su-lock-store' }];
+}
+
+/** Resolve inline service database configuration, without emitting credentials.
+ * EnvironmentFile and externally hosted databases remain unclassified here.
+ */
+export async function unitDatabaseCensusDeclarations(units: readonly CensusDeclaration[], databases: readonly CensusEntry[], operatorUrl: string): Promise<CensusDeclaration[]> {
+  const operator = new URL(operatorUrl);
+  const host = (value: string) => ['localhost', '127.0.0.1', '[::1]'].includes(value) ? 'loopback' : value;
+  const result: CensusDeclaration[] = [];
+  for (const unit of units) {
+    if (unit.kind !== 'unit' || !unit.name.endsWith('.service') || unit.name.includes('/') || !unit.producer.startsWith('unit-definition:')) continue;
+    const path = join(unit.producer.slice('unit-definition:'.length), unit.name);
+    if (!(await lstat(path)).isFile()) continue;
+    const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    let text: string;
+    try {
+      if ((await handle.stat()).size > 65_536) throw new Error('Service database config bound exceeded');
+      text = await handle.readFile('utf8');
+    } finally { await handle.close(); }
+    const environment = parseUnitEnvironment(text);
+    for (const [key, value] of Object.entries(environment)) {
+      if (!(key === 'DATABASE_URL' || key.endsWith('_DATABASE_URL'))) continue;
+      let url;
+      try { url = new URL(value); } catch { continue; }
+      if (!['postgres:', 'postgresql:'].includes(url.protocol) || host(url.hostname) !== host(operator.hostname) ||
+        (url.port || '5432') !== (operator.port || '5432')) continue;
+      const name = decodeURIComponent(url.pathname.slice(1));
+      const entry = databases.find(database => database.kind === 'database' && database.name === name);
+      if (entry) result.push({ ...entry, classification: 'state', producer: `unit-database-config:${unit.root}:${unit.name}:${key}` });
+    }
+  }
+  return result;
 }
 
 /**

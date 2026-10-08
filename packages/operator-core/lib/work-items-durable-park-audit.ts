@@ -16,6 +16,7 @@ import { saveTextArtifact } from './text-artifacts';
 import { ANY_FAMILY_TERMINAL_STATES } from './work-item-dispatch-states';
 import type { AdmissionRunOutcome } from './work-items-admission-promoter';
 import { readWorkItemClaimHoldProvenance, type OrgSql } from './work-items';
+import { buildDurableParkReleaseContract } from './durable-park-release-contract';
 
 export const WORK_ITEM_DURABLE_PARK_AUDIT = 'work-item-durable-park-audit';
 /**
@@ -324,7 +325,7 @@ export function classifyDurableParkReleaseLiveness(
   }
   if (!owner) findings.push('owner-missing');
   if (!trigger) findings.push('trigger-missing');
-  if (!reachability) findings.push('reachability-unverified');
+  if (!reachability || reachability === 'blocked') findings.push('reachability-unverified');
   if (!evidence) findings.push('evidence-missing');
   if (reachability === 'unreachable') findings.push('condition-unreachable');
   if (reachability === 'satisfied') findings.push('condition-satisfied-still-parked');
@@ -888,9 +889,31 @@ export async function runWorkItemDurableParkAudit(opts: {
       payload: row.payload,
       reviewRoutedAtMs: numberOrNull(row.review_routed_at_ms),
     }));
+    // The stored contract is a write-time observation, not a current liveness verdict.
+    // Refresh only the report snapshot; the original payload still supplies CAS evidence.
+    const reportRows: DurableParkAuditSourceRow[] = [];
+    const currentContracts = new Map<string, Promise<Awaited<ReturnType<typeof buildDurableParkReleaseContract>>>>();
+    for (const row of sourceRows) {
+      const payload = record(row.payload);
+      const contract = record(payload.claim_hold_release);
+      const condition = textOrNull(contract.condition);
+      const owner = textOrNull(contract.owner);
+      const trigger = textOrNull(contract.trigger);
+      if (!readWorkItemClaimHoldProvenance(payload).parked || !condition || !owner || !trigger) {
+        reportRows.push(row);
+        continue;
+      }
+      const key = JSON.stringify([condition, owner, trigger]);
+      let current = currentContracts.get(key);
+      if (!current) {
+        current = buildDurableParkReleaseContract({ condition, owner, trigger }, owner);
+        currentContracts.set(key, current);
+      }
+      reportRows.push({ ...row, payload: { ...payload, claim_hold_release: await current } });
+    }
     const completedAtMs = now();
     const report = buildDurableParkAuditReport({
-      rows: sourceRows,
+      rows: reportRows,
       runId,
       workspaceId: opts.workspaceId,
       harnessSlug: opts.harnessSlug,

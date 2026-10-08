@@ -129,6 +129,9 @@ const ROWS: SeedRow[] = [
       // catch. With it, F-agree exercises the 'gate' value and F-absent (no payload at all)
       // exercises the null/negation polarity, on both engines, for every op.
       ideaLifecycle: { triageDecision: 'gate' },
+      // P-005: `item_class` reads payload.sourceRole — stamp it so F-agree is 'ideation' and
+      // F-absent is 'work', exercising both values on both engines (non-vacuous parity).
+      sourceRole: 'Scout',
     },
   },
   {

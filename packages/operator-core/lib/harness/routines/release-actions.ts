@@ -1955,6 +1955,23 @@ export async function publishSignedGateVerdicts(
   }
 }
 
+/**
+ * WI-10007497: the qualification attempt a verdict event belongs to. The env-transported id wins
+ * (the launcher bound this run to it); otherwise only a settlement that actually BOUND this
+ * verdict (`updated` / `idempotent`) names it. A `conflict` or already-`terminal` transaction is
+ * some other attempt's row, so citing it would mis-join verdicts to attempts.
+ */
+export function verdictQualificationAttemptId(
+  transportedAttemptId: string | undefined,
+  settlement: { status: string; transaction?: { attemptId?: string } } | null | undefined,
+): string | undefined {
+  if (transportedAttemptId) return transportedAttemptId;
+  if (settlement && (settlement.status === 'updated' || settlement.status === 'idempotent')) {
+    return settlement.transaction?.attemptId || undefined;
+  }
+  return undefined;
+}
+
 /** The pipeline-event `detail` blob for a checkpoint verdict. Shared by BOTH recorders (the CLI's
  *  producer-side write and the routine's fallback) so a manual run's history row is identical to a
  *  routine run's — the /admin/git timeline must not be able to tell who launched the suite. */
@@ -2366,12 +2383,13 @@ export async function recordCheckpointVerdict(target: GateVerdictTarget, verdict
   // result and pipeline event committed together, so do not append or count it twice.
   if (transportedAttemptId && qualificationSettlement?.status === 'terminal') return true;
   if (!atomicTerminalEvent) {
+    const attemptId = verdictQualificationAttemptId(transportedAttemptId, qualificationSettlement);
     await appendPipelineEvent({
       workspaceId: target.workspaceId,
       installSlug: target.installSlug,
       kind: 'green_checkpoint',
       status: verdict.reason,
-      detail: buildCheckpointDetail(verdict),
+      detail: { ...buildCheckpointDetail(verdict), ...(attemptId ? { attemptId } : {}) },
     });
   }
   // A pinned candidate is retained as diagnostic pipeline evidence, but it must not become
@@ -2453,12 +2471,13 @@ export async function recordPendingCheckpointVerdict(
   verdict: CheckpointVerdict,
 ): Promise<boolean> {
   if (!verdict.promotionPending || !isRecordableVerdict(verdict.reason)) return false;
+  const attemptId = process.env[CHECKPOINT_QUALIFICATION_ATTEMPT_ENV]?.trim() || undefined;
   await appendPipelineEvent({
     workspaceId: target.workspaceId,
     installSlug: target.installSlug,
     kind: 'green_checkpoint',
     status: 'decision-pending',
-    detail: buildCheckpointDetail(verdict),
+    detail: { ...buildCheckpointDetail(verdict), ...(attemptId ? { attemptId } : {}) },
   });
   // Keep the pending diagnostic row for history, but never mutate gate health or dispatch a
   // fixer for a candidate that was explicitly pinned for investigation.
@@ -2986,15 +3005,20 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
     console.log(`${orchestratorStdoutTag()} '${status}' — recorded by the run that produced it (WI-4494)`);
   } else if (!reconciliationRefused && fallbackQualification?.status !== 'conflict' &&
              fallbackQualification?.status !== 'unreadable') {
+    // WI-10007497: the routine bound this run to its attempt; name it on the fallback event too.
+    const attemptId = verdictQualificationAttemptId(qualificationAttemptId ?? undefined, fallbackQualification);
     await appendPipelineEvent({
       workspaceId: ctx.workspaceId,
       installSlug: ctx.installSlug,
       kind: 'green_checkpoint',
       status,
-      detail: parsed?.reason
-        ? buildCheckpointDetail(parsed, gateFireId)
-        : // No parseable result marker (crash before print / non-zero exit) → 'error'.
-          withGateFireId({ code: r.code, stderr: (r.stderr || r.stdout).slice(-300) }),
+      detail: {
+        ...(parsed?.reason
+          ? buildCheckpointDetail(parsed, gateFireId)
+          : // No parseable result marker (crash before print / non-zero exit) → 'error'.
+            withGateFireId({ code: r.code, stderr: (r.stderr || r.stdout).slice(-300) })),
+        ...(attemptId ? { attemptId } : {}),
+      },
     });
   }
   // The old CLI can produce a real red without its own awaitable wake. The exact logical

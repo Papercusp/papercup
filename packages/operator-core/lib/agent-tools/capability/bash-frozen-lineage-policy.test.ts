@@ -186,6 +186,9 @@ describe('capability:bash frozen-lineage guard', () => {
   it.each([
     'npm run test:file -- packages/operator-core/lib/release/frozen-lineage-execution-policy.test.ts',
     'ptool release:repair-queue --json - <<\'JSON\'\n{"op":"admit","paths":["a.ts"]}\nJSON',
+    // P-015: a sibling checkout's suite and worktree cut are not papercusp lineage operations.
+    'cd /tmp/p015-sibling-checkout || exit 1; npm test',
+    'R=/tmp/p015-sibling-checkout; git -C "$R" worktree add --detach /tmp/p015-w staging',
   ])('preserves focused tests and explicit repair admission without marker/Git probes: %s', async (command) => {
     const result = await bash.handler({ command, cwd: ROOT }, ctx());
     expect(result.isError).not.toBe(true);

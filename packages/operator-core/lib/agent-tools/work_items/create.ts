@@ -23,6 +23,7 @@
  * remains the immediate-bypass (requestUrgentHiveWake) for fire-now cases.
  */
 import { z } from 'zod';
+import { itemClassOfPayload } from '../../scout/ideation-origin';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity, resolveSelfLiteral } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
@@ -195,6 +196,8 @@ function createAdmissionSubject(spec: CreateOneWorkItemArgs): ClaimSpecSubject {
     planItem: spec.targetPlanItem ? [spec.targetPlanItem.itemId] : [],
     fleet: null,
     triageGate: null,
+    // P-005: a Scout-authored create (payload.sourceRole 'Scout') is ideation at birth too.
+    itemClass: itemClassOfPayload(payload),
     age: Date.now(),
     riskTier: typeof payload.risk_tier === 'string' ? payload.risk_tier : null,
     redundancy: numberOrNull(payload.redundancy),

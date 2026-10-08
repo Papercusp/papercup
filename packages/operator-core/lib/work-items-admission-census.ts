@@ -689,7 +689,14 @@ export async function readPinnedUnadjudicatedCensus(
   opts: Pick<AdmissionCensusRunOptions, 'workspaceId' | 'harnessSlug'>,
   runs: { pinnedRunId: string; currentRunId: string },
 ): Promise<number> {
-  const rows = await sql<Array<{ n: number }>>`
+  // A just-written run is absent from the last statistics sample. PostgreSQL
+  // can estimate one pinned member, then probe the edge PK for the Cartesian
+  // product of both member sets (thousands squared in a real run). Keep this
+  // census read bounded and prefer hash/merge membership joins independently
+  // of that estimate. Both settings belong only to this read transaction.
+  return withCensusStatementTimeout(sql, opts, async (tx) => {
+    await tx.unsafe('SET LOCAL enable_nestloop = off');
+    const rows = await tx<Array<{ n: number }>>`
     WITH pinned AS MATERIALIZED (
       SELECT p.item_id
         FROM harness_shared.dedup_shard_map p
@@ -716,7 +723,8 @@ export async function readPinnedUnadjudicatedCensus(
        AND d.a IS NULL
        AND e.a IN (SELECT item_id FROM pinned)
        AND e.b IN (SELECT item_id FROM pinned)`;
-  return Number(rows[0]?.n ?? 0);
+    return Number(rows[0]?.n ?? 0);
+  });
 }
 
 /**

@@ -95,7 +95,7 @@ import {
   mcpTraceIdFromExtra,
 } from '../../../mcp-request-trace';
 import type { ScratchWriteTimings } from '../../../scratch-gc';
-import { getOrgPg, retryOnRetryableDbDeadline, withWorkspace } from '@papercusp/db-org';
+import { DbCallDeadlineError, getOrgPg, retryOnRetryableDbDeadline, withWorkspace } from '@papercusp/db-org';
 import { applyResultDoorAsync, beginResultDoorAggregate, measureResultContextBytes } from '../../../result-door';
 import { annotateStoreIdentitySuspectResult, mayAnnotateResultText } from './store-identity-suspect';
 import {
@@ -1546,6 +1546,13 @@ type NativeSessionAuthFailureMetadata = {
     code?: string;
     message: string;
     durationMs: number;
+    acquisition?: {
+      label: string;
+      pool: string | null;
+      deadlineMs: number;
+      elapsedMs: number;
+      retryable: boolean;
+    };
   };
 };
 
@@ -1560,22 +1567,38 @@ function describeNativeSessionVerifierFailure(
   const name = typeof rawName === 'string' && /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/.test(rawName) ? rawName : 'Error';
   const rawCode = failure?.pgCode ?? failure?.code;
   const code = typeof rawCode === 'string' && /^[A-Za-z0-9_.-]{1,32}$/.test(rawCode) ? rawCode : undefined;
-  let message = typeof failure?.message === 'string' ? failure.message : 'Native-session verifier failed';
-  for (const sensitive of [ownerId, sessionId]) {
-    if (sensitive) message = message.split(sensitive).join('[redacted]');
-  }
-  message = message
-    .replace(/\b[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\b/gi, '[redacted-id]')
-    .replace(/\bpostgres(?:ql)?:\/\/\S+/gi, '[redacted-connection]')
-    .replace(/[\u0000-\u001f\u007f]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 240);
+  const redact = (text: string, maxChars: number): string => {
+    for (const sensitive of [ownerId, sessionId]) {
+      if (sensitive) text = text.split(sensitive).join('[redacted]');
+    }
+    return text
+      .replace(/\b[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\b/gi, '[redacted-id]')
+      .replace(/\bpostgres(?:ql)?:\/\/\S+/gi, '[redacted-connection]')
+      .replace(/[\u0000-\u001f\u007f]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, maxChars);
+  };
+  const message = redact(typeof failure?.message === 'string' ? failure.message : 'Native-session verifier failed', 240);
+  // The clipped human message can omit the pool and timing at the exact seam
+  // that failed. Preserve those existing measurements independently; an error
+  // with a matching name or arbitrary fields is not a measured deadline.
+  const acquisition = error instanceof DbCallDeadlineError &&
+    Number.isFinite(error.deadlineMs) && Number.isFinite(error.elapsedMs)
+    ? {
+      label: redact(error.label, 120),
+      pool: error.pool === null ? null : redact(error.pool, 80),
+      deadlineMs: error.deadlineMs,
+      elapsedMs: error.elapsedMs,
+      retryable: error.retryable,
+    }
+    : undefined;
   return {
     name,
     ...(code ? { code } : {}),
     message: message || 'Native-session verifier failed',
     durationMs: Math.max(0, Math.round(durationMs)),
+    ...(acquisition ? { acquisition } : {}),
   };
 }
 

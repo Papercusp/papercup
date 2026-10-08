@@ -34,7 +34,9 @@ async function waitForHud(ready: Locator) {
 }
 
 async function openHud(page: Page, path: string, ready: Locator = page.getByRole('tablist', { name: 'HUD board' })) {
-  await page.goto(path);
+  // The caller's visible landmark is the acceptance boundary; unrelated
+  // framed surfaces do not have to finish their whole-page load lifecycle.
+  await page.goto(path, { waitUntil: 'domcontentloaded' });
   await waitForHud(ready);
 }
 
@@ -157,7 +159,7 @@ for (const kind of ['plans', 'tea'] as const) {
           entry.queryKey[1] === 'goals.detail' && entry.queryKey[2]?.goalId === goalId);
         return query?.state?.data?.rows?.[0]?.goalData?.collections?.[property]?.selection;
       }, { goalId: goal.id, property })).toMatchObject({ policyVersion: version, policy });
-      await page.reload();
+      await page.reload({ waitUntil: 'domcontentloaded' });
       await waitForHud(editor);
     }
     await expect(editor.getByText('Waiting for dependency')).toBeVisible();

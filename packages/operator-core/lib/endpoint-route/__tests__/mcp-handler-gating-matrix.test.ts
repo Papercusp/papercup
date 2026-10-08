@@ -5314,6 +5314,99 @@ describe('su identity precedence (EI-7066: explicit SID before Mcp-Session-Id)',
     expect(JSON.stringify(h.invocations[0]?.metadataJson)).not.toContain('su-owner');
   });
 
+  it('retains typed acquisition deadline diagnostics when native verification fails closed', async () => {
+    const { DbCallDeadlineError } = await import('@papercusp/db-org');
+    const nativeThread = 'native-deadline-session';
+    const deadline = new DbCallDeadlineError('boundedOrgTxn:acquire(admin)', 1_000, 1_771, 'org-admin');
+    h.nativeSessionVerifierFailure = { sessionId: nativeThread, error: deadline };
+    const meta = { threadId: nativeThread };
+    const extra = {
+      ...(superuserExtra('&workspace=ws-test&client=su-owner', {
+        'x-papercusp-native-session': 'native-inherited-session',
+      }) as Record<string, unknown>),
+      _meta: meta,
+    };
+
+    const res = await callTool('gatingtest:scoped', {}, extra, meta);
+
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('superuser_native_session_verifier_unavailable');
+    expect(seen).toHaveLength(0);
+    expect(h.invocations[0]).toMatchObject({
+      metadataJson: { mcpAuthFailure: { nativeSession: { verifierFailure: {
+        name: 'DbCallDeadlineError',
+        acquisition: {
+          label: 'boundedOrgTxn:acquire(admin)',
+          pool: 'org-admin',
+          deadlineMs: 1_000,
+          elapsedMs: 1_771,
+          retryable: deadline.retryable,
+        },
+      } } } },
+    });
+    expect(JSON.stringify(h.invocations[0]?.metadataJson)).not.toContain(nativeThread);
+  });
+
+  it('does not accept deadline-shaped fields on an ordinary verifier error as acquisition measurements', async () => {
+    const nativeThread = 'native-shaped-error-session';
+    h.nativeSessionVerifierFailure = {
+      sessionId: nativeThread,
+      error: Object.assign(new Error('verification unavailable'), {
+        name: 'DbCallDeadlineError',
+        label: 'unmeasured-label',
+        pool: 'org-admin',
+        deadlineMs: 1_000,
+        elapsedMs: 1_771,
+        retryable: true,
+      }),
+    };
+    const meta = { threadId: nativeThread };
+    const extra = {
+      ...(superuserExtra('&workspace=ws-test&client=su-owner') as Record<string, unknown>),
+      _meta: meta,
+    };
+    const res = await callTool('gatingtest:scoped', {}, extra, meta);
+
+    expect(res.isError).toBe(true);
+    expect(seen).toHaveLength(0);
+    const metadata = h.invocations[0]?.metadataJson as {
+      mcpAuthFailure?: { nativeSession?: { verifierFailure?: Record<string, unknown> } };
+    };
+    expect(metadata.mcpAuthFailure?.nativeSession?.verifierFailure).not.toHaveProperty('acquisition');
+  });
+
+  it('redacts identifiers and connection URLs in typed native verifier deadline fields', async () => {
+    const { DbCallDeadlineError } = await import('@papercusp/db-org');
+    const nativeThread = 'native-redacted-deadline-session';
+    const connection = 'postgresql://secret:credential@localhost/database';
+    const deadline = new DbCallDeadlineError(`${nativeThread} su-owner ${connection}`, 1_000, 1_771, nativeThread);
+    h.nativeSessionVerifierFailure = { sessionId: nativeThread, error: deadline };
+    const meta = { threadId: nativeThread };
+    const extra = {
+      ...(superuserExtra('&workspace=ws-test&client=su-owner') as Record<string, unknown>),
+      _meta: meta,
+    };
+
+    const res = await callTool('gatingtest:scoped', {}, extra, meta);
+
+    expect(res.isError).toBe(true);
+    expect(seen).toHaveLength(0);
+    expect(h.invocations[0]).toMatchObject({
+      metadataJson: { mcpAuthFailure: { nativeSession: { verifierFailure: {
+        acquisition: {
+          label: '[redacted] [redacted] [redacted-connection]',
+          pool: '[redacted]',
+          deadlineMs: 1_000,
+          elapsedMs: 1_771,
+        },
+      } } } },
+    });
+    const recorded = JSON.stringify(h.invocations[0]?.metadataJson);
+    for (const sensitive of [nativeThread, 'su-owner', connection, 'secret', 'credential']) {
+      expect(recorded).not.toContain(sensitive);
+    }
+  });
+
   it('rejects an inherited owner SID when the native CLI session is bound elsewhere', async () => {
     h.nativeSessionBinding = 'foreign';
     const res = await callTool(

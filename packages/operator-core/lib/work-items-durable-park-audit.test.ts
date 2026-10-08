@@ -186,6 +186,15 @@ describe('durable park audit classification', () => {
     });
   });
 
+  it('keeps an unmeasured or unregistered condition actionable even when metadata is complete', () => {
+    const liveness = classifyDurableParkReleaseLiveness({ claim_hold_release: {
+      condition: 'producer finishes', owner: 'park-owner', trigger: 'ubp:unregistered-condition',
+      reachability: 'blocked', evidence: 'no producer registration or catalogued resolver was found',
+    } }, 'resume when producer finishes');
+    expect(liveness.status).toBe('unverified');
+    expect(liveness.findings).toContain('reachability-unverified');
+  });
+
   it('requires reachable typed ownership and re-evaluation evidence for a healthy retained park', () => {
     expect(
       classifyDurableParkReleaseLiveness(

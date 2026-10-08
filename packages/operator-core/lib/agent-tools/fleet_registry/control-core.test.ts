@@ -416,6 +416,7 @@ describe('applyFleetControl', () => {
       byOwnerId: callerRef.ownerId,
       leaderOwnerId: callerRef.ownerId,
       reason: 'release cut',
+      resumeGate: 'fleet:backend:resume',
     });
     expect(clearPauseHoldsM).not.toHaveBeenCalled();
   });

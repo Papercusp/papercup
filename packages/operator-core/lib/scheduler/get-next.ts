@@ -44,6 +44,7 @@
  * remain unreachable).
  */
 import type postgres from 'postgres';
+import { ITEM_CLASS_SQL_TEXT } from '../scout/ideation-origin';
 import {
   type ClaimSpec,
   type FilterNode,
@@ -368,6 +369,10 @@ const FIELD_MAP: Record<string, FieldMap> = {
   // and the other NONE). The nested `->'ideaLifecycle'->>'triageDecision'` reach is the whole
   // reason this needed a FIELD_MAP entry rather than a plain column.
   triage_gate: { col: (sql) => sql`payload->'ideaLifecycle'->>'triageDecision'`, kind: 'scalar-text' },
+  // P-005 (R-10/R-11): 'ideation' | 'work', never NULL. The CASE text is single-sourced in
+  // scout/ideation-origin.ts beside its JS twin itemClassOfPayload (claim-spec-match.ts's
+  // `itemClass` subject field) — literal SQL with no bound values, so sql.unsafe is safe here.
+  item_class: { col: (sql) => sql`${sql.unsafe(ITEM_CLASS_SQL_TEXT)}`, kind: 'scalar-text' },
   // Not first-class columns — projected out of payload jsonb (no schema change).
   // `risk_tier` is FILTER-ONLY (EI-19286311763526137): `payload->>'risk_tier'` is TEXT
   // however numeric the authored value looks, so a bare `risk_tier` rank sorts lexically

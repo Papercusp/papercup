@@ -38,6 +38,7 @@ import {
   isCapacityError,
   type CapacityFallbackEvent,
 } from './capacity-errors';
+import { transportRetriesFrom, type TransportRetryEvent } from './inference-transport-retry';
 // Type-only: `@papercusp/coordination/core` is the pure envelope contract, so this
 // import is erased at compile time and keeps this module's core free of the
 // coord/PG runtime edge that readRevisionRequests lazy-imports (cf. operator-hindsight.ts).
@@ -48,6 +49,7 @@ import type { CreativeLens } from './types';
 import type { RoutedRail } from './outcome-feedback';
 import type { ScoutCyclePhase } from './cycle';
 import { currentScoutCodeHash } from './scout-code-identity';
+import { getServingHostIdentity } from '../serving-host-identity';
 import { countRejectCauses } from './critique-core';
 
 /** The provenance the scheduler persists per routed idea (subset of RecordRoutedIdeaInput). */
@@ -144,6 +146,13 @@ export interface ScoutCycleLike {
    * attaches the same array to the thrown error instead (see capacityFallbacksFrom).
    */
   capacityFallbacks?: readonly CapacityFallbackEvent[];
+  /**
+   * P-006 (WI-10007504): same-model retries the runner made after inference TRANSPORT deaths
+   * (inference-transport-retry.ts). Persisted so a transport death that was neither retried nor
+   * recovered is visible from the tick ledger. A THROWING cycle carries it on the error instead
+   * (see transportRetriesFrom).
+   */
+  transportRetries?: readonly TransportRetryEvent[];
   /**
    * P-007 dedup-burn guard (WI-39479): present when the runner's pre-cycle ledger
    * read found consecutive saturated cycles and re-shaped this cycle (widened
@@ -553,6 +562,10 @@ export async function runScoutTick(deps: ScoutTickDeps, opts: ScoutTickOptions =
         ...(cycle.capacityFallbacks && cycle.capacityFallbacks.length > 0
           ? { capacityFallbacks: cycle.capacityFallbacks }
           : {}),
+        // P-006 transport-retry trail — see ScoutCycleLike.transportRetries.
+        ...(cycle.transportRetries && cycle.transportRetries.length > 0
+          ? { transportRetries: cycle.transportRetries }
+          : {}),
         // P-007 dedup-burn guard activation — see ScoutCycleLike.dedupBurn.
         ...(cycle.dedupBurn ? { dedupBurn: cycle.dedupBurn } : {}),
         // WI-5436: the pool baseline for a SUCCESSFUL cycle — without it a gated tick's
@@ -599,6 +612,9 @@ export async function runScoutTick(deps: ScoutTickDeps, opts: ScoutTickOptions =
     // WI-5391 item 3: a throwing cycle can't return its fallback trail, so the runner
     // attaches it to the thrown error — persist it on whichever tick this becomes.
     const capacityFallbacks: CapacityFallbackEvent[] | undefined = capacityFallbacksFrom(e);
+    // P-006: the transport-retry trail rides the error the same way.
+    const transportRetries: TransportRetryEvent[] | undefined = transportRetriesFrom(e);
+    const retryDetail = transportRetries ? { transportRetries } : {};
     if (isCapacityError(e)) {
       // WI-5391 Part B record-time discrimination: a gateway-attested denial
       // (via:'http-429') is cross-checked against the gateway's OWN pool stats before
@@ -636,6 +652,7 @@ export async function runScoutTick(deps: ScoutTickDeps, opts: ScoutTickOptions =
             // healthyAccounts is observable for a governor-attested denial.
             ...(poolSnapshotAtFire ? { poolSnapshotAtFire } : {}),
             ...(capacityFallbacks ? { capacityFallbacks } : {}),
+            ...retryDetail,
             ...timeoutDetail,
           },
         });
@@ -652,6 +669,7 @@ export async function runScoutTick(deps: ScoutTickDeps, opts: ScoutTickOptions =
           ...(poolSnapshot ? { poolSnapshot } : {}),
           ...(poolSnapshotAtFire ? { poolSnapshotAtFire } : {}),
           ...(capacityFallbacks ? { capacityFallbacks } : {}),
+          ...retryDetail,
           ...timeoutDetail,
         },
       });
@@ -666,6 +684,7 @@ export async function runScoutTick(deps: ScoutTickDeps, opts: ScoutTickOptions =
         ...(admissionDenial ? { admissionDenial } : {}),
         ...(poolSnapshotAtFire ? { poolSnapshotAtFire } : {}),
         ...(capacityFallbacks ? { capacityFallbacks } : {}),
+        ...retryDetail,
         ...timeoutDetail,
       },
     });
@@ -1065,13 +1084,21 @@ export function buildScoutTickDeps(opts: BuildScoutTickDepsOptions): ScoutTickDe
       // hash (unreadable source, e.g. a bundled build) omits the key rather than
       // stamping a misleading null — an absent key never matches a hash-scoped read.
       const scoutCodeHash = currentScoutCodeHash();
+      // P-006 stale-host guard (EI-18700942267136001): stamp the build the RUNNING host
+      // loaded (the same serving-host identity tool_invocations records). bg-host only picks
+      // up tree changes on restart, so a tick whose hostBuildSha predates a fix was produced
+      // by the OLD code — readable from the ledger instead of inferred from restart times.
+      // Null (unproven loaded bytes) omits the key rather than stamping a misleading value.
+      const hostBuildSha = getServingHostIdentity().buildSha;
+      const stamps = {
+        ...(scoutCodeHash ? { scoutCodeHash } : {}),
+        ...(hostBuildSha ? { hostBuildSha } : {}),
+      };
       await recordScoutTick({
         ...rec,
         installSlug,
         ...(opts.workspaceId ? { workspaceId: opts.workspaceId } : {}),
-        ...(scoutCodeHash
-          ? { detail: { ...(rec.detail ?? {}), scoutCodeHash } }
-          : {}),
+        ...(Object.keys(stamps).length > 0 ? { detail: { ...(rec.detail ?? {}), ...stamps } } : {}),
       });
     },
   };

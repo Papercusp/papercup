@@ -268,6 +268,7 @@ import {
   trackGateStall,
   TRANSIENT_ABORT_REQUEUE_MINS,
   buildCheckpointDetail,
+  verdictQualificationAttemptId,
   buildReleaseFixerKickoff,
   buildScheduledCheckpointShell,
   checkpointRunLogPaths,
@@ -2661,6 +2662,11 @@ describe('green-checkpoint scope isolation (2026-07-01 bg-host OOM blast-radius)
     expect(args.at(-1)).toContain('attempt-transported');
     expect(args.at(-1)).toContain('ws-42');
     expect(args.at(-1)).toContain('my-harness');
+    // WI-10007497: the routine's non-atomic fallback verdict names the attempt it bound the run to.
+    expect(appendPipelineEvent).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'green_checkpoint', status: 'up-to-date',
+      detail: expect.objectContaining({ attemptId: 'attempt-transported' }),
+    }));
   });
 
   it('joins one live qualification runner without spawning another gate suite', async () => {
@@ -3100,6 +3106,50 @@ describe('WI-4494: recordCheckpointVerdict — the producer records', () => {
     } finally {
       delete process.env[CHECKPOINT_QUALIFICATION_ATTEMPT_ENV];
     }
+  });
+
+  // WI-10007497: a verdict event that does not name its logical attempt cannot be joined to the
+  // attempt's begin/join rows, so attempt-to-verdict latency is unmeasurable by construction.
+  it('WI-10007497: the non-atomic append names the attempt the settlement bound (scheduled path, no env)', async () => {
+    const target = { workspaceId: 'ws-42', installSlug: 'my-harness' };
+    recordStoredQualificationVerdict.mockResolvedValueOnce({ status: 'updated', transaction: { attemptId: 'attempt-global' } });
+    expect(await recordCheckpointVerdict(target, { reason: 'not-green', green: false, candidate: 'abc123def456789' })).toBe(true);
+    expect(appendPipelineEvent).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'green_checkpoint', status: 'not-green',
+      detail: expect.objectContaining({ attemptId: 'attempt-global' }),
+    }));
+  });
+
+  it('WI-10007497: a conflicting settlement is another attempt\'s row, so its id is never cited', async () => {
+    const target = { workspaceId: 'ws-42', installSlug: 'my-harness' };
+    recordStoredQualificationVerdict.mockResolvedValueOnce({ status: 'conflict', transaction: { attemptId: 'attempt-other' } });
+    expect(await recordCheckpointVerdict(target, { reason: 'not-green', green: false, candidate: 'abc123def456789' })).toBe(true);
+    const detail = (appendPipelineEvent.mock.calls[0]?.[0] as { detail: Record<string, unknown> }).detail;
+    expect(detail).not.toHaveProperty('attemptId');
+  });
+
+  it('WI-10007497: decision-pending carries the transported attempt id', async () => {
+    process.env[CHECKPOINT_QUALIFICATION_ATTEMPT_ENV] = 'attempt-pending';
+    try {
+      expect(await recordPendingCheckpointVerdict(
+        { workspaceId: 'ws-42', installSlug: 'my-harness' },
+        { reason: 'not-green', green: false, candidate: 'abc123def456789', promotionPending: true, runId: 'run-p' },
+      )).toBe(true);
+      expect(appendPipelineEvent).toHaveBeenCalledWith(expect.objectContaining({
+        status: 'decision-pending', detail: expect.objectContaining({ attemptId: 'attempt-pending' }),
+      }));
+    } finally {
+      delete process.env[CHECKPOINT_QUALIFICATION_ATTEMPT_ENV];
+    }
+  });
+
+  it('WI-10007497: verdictQualificationAttemptId — env wins; only a binding settlement names an attempt', () => {
+    expect(verdictQualificationAttemptId('attempt-env', { status: 'conflict', transaction: { attemptId: 'x' } })).toBe('attempt-env');
+    expect(verdictQualificationAttemptId(undefined, { status: 'updated', transaction: { attemptId: 'a' } })).toBe('a');
+    expect(verdictQualificationAttemptId(undefined, { status: 'idempotent', transaction: { attemptId: 'b' } })).toBe('b');
+    expect(verdictQualificationAttemptId(undefined, { status: 'terminal', transaction: { attemptId: 'c' } })).toBeUndefined();
+    expect(verdictQualificationAttemptId(undefined, { status: 'missing' })).toBeUndefined();
+    expect(verdictQualificationAttemptId(undefined, null)).toBeUndefined();
   });
 
   it('⭐ a RED from ANY runner lands in gate_health + the pipeline history', async () => {

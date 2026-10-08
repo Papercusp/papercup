@@ -11,6 +11,22 @@
 import { readEventConditionReachability } from './external-condition-reachability';
 import type { DurableParkReleaseContract } from './work-items-durable-park-audit';
 
+/** Reject incomplete durable parks at the shared write boundary, including internal producers. */
+export function assertDurableParkReleaseContract(value: unknown): void {
+  const contract = value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+  const missing = ['condition', 'owner', 'trigger', 'evidence'].filter(
+    (key) => typeof contract[key] !== 'string' || !(contract[key] as string).trim(),
+  );
+  if (!['reachable', 'blocked', 'unreachable', 'satisfied'].includes(String(contract.reachability))) {
+    missing.push('reachability');
+  }
+  if (missing.length) {
+    throw new Error(`durable park requires a complete release contract: ${missing.join(', ')}`);
+  }
+}
+
 /** Resolve, rather than trust, the release condition. A fired latch is already satisfied;
  * an unregistered/unmeasured key is blocked, never guessed unreachable from age or prose. */
 export async function buildDurableParkReleaseContract(

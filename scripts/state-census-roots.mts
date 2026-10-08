@@ -11,7 +11,7 @@ import postgres from 'postgres';
 import { getHarnessAdminUrl } from '../packages/operator-core/lib/embedded-pg-discovery';
 import { physicalDatabaseCensusEntries, integrationBaselineCensusDeclarations, templateDatabaseCensusDeclarations, unitCensusEntries, installedUnitCensusDeclarations } from '../packages/operator-core/lib/backup/state-census-producers';
 import type { CensusEntry } from '../packages/backup/src/state-census';
-import { configuredOperatorDatabaseCensusDeclarations } from '../packages/operator-core/lib/backup/state-census-producers';
+import { configuredOperatorDatabaseCensusDeclarations, unitDatabaseCensusDeclarations } from '../packages/operator-core/lib/backup/state-census-producers';
 
 const installed = installedRootCensusProducers();
 const checkpointLogDir = releaseConfig().checkpointLogDir;
@@ -37,10 +37,12 @@ if (process.argv.includes('--restore-events') || hostCatalogs) {
       declarations.push(...integrationBaselineCensusDeclarations(databases));
       if (databases.length) declarations.push(...await templateDatabaseCensusDeclarations(sql, databases[0].root));
       if (databases.length) declarations.push(...configuredOperatorDatabaseCensusDeclarations(databases[0].root, getHarnessAdminUrl()));
+      const unitDeclarations = [];
       for (const scope of ['user', 'system'] as const) {
         catalogEntries.push(...await unitCensusEntries(scope));
-        declarations.push(...await installedUnitCensusDeclarations(scope));
+        unitDeclarations.push(...await installedUnitCensusDeclarations(scope));
       }
+      declarations.push(...unitDeclarations, ...await unitDatabaseCensusDeclarations(unitDeclarations, databases, getHarnessAdminUrl()));
       // Catalog only declared secret paths that exist; never read their values.
       // Unknown secret locations still appear as filesystem residue.
       const secretPaths = installed.declarations.filter(entry => entry.classification === 'secret');
