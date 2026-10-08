@@ -557,6 +557,12 @@ export default defineTool({
     // The callable surface mirrors the listed (`?tools=`) surface exactly —
     // listed == callable by construction; no mount ⇒ no callable tools.
     const allowedTools: readonly string[] = mcpConfig ? operatorTools : [];
+    // A supplied preview catalog cannot establish the actual request's surface.
+    const publicToolContext = hostTrust === 'public' ? {
+      toolNames: allowedTools.map(canonicalToolName),
+      authorization: principalOk ? 'granted' as const : 'unavailable' as const,
+      promptHash: hashSystemPrompt(systemPromptText),
+    } : undefined;
 
     let totalCost = 0;
     let assembled = '';
@@ -589,6 +595,7 @@ export default defineTool({
         type: 'provenance',
         engine: brainEngine,
         model: brainModel,
+        ...(publicToolContext ? { toolContext: publicToolContext } : {}),
       });
       // WI-10003188: the backend's own reason for a failed attempt, so a turn that ends
       // with no output can say WHY instead of a fixed "agent backend failure".
@@ -762,7 +769,8 @@ export default defineTool({
             brainBackend = failover.backend;
             brainEngine = resolveBackend({ promptText: '', backend: brainBackend });
             // Re-announce what actually runs now; the chat reducer keeps the latest frame.
-            emitChatEvent(ctx, { type: 'provenance', engine: brainEngine, model: brainModel });
+            emitChatEvent(ctx, { type: 'provenance', engine: brainEngine, model: brainModel,
+              ...(publicToolContext ? { toolContext: publicToolContext } : {}) });
           } else {
             console.error(
               `[operator:converse] brain produced no output on attempt ${attempt} — retrying.`,

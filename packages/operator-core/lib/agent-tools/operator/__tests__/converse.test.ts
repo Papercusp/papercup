@@ -52,6 +52,8 @@ vi.mock('@papercusp/agent-mcp', async (importOriginal) => {
         ? ['chat:write']
         : name === 'voice:delegate_deep'
           ? ['operator:read']
+          : name === 'docs:search' || name === 'docs:get'
+            ? ['docs:read']
           : ['not-granted'],
       inputSchema: { type: 'object', properties: {} },
     }),
@@ -136,7 +138,7 @@ vi.mock('../../../agent-config', () => ({
 vi.mock('../../../operator-mcp-tools', () => ({
   ALL_AGENT_MCP_TOOLS: ['tasks:read', 'mcp__agentmcp__chat:ask_choice'],
   INTERACTIVE_CHAT_TOOLS: ['mcp__agentmcp__chat:ask_choice'],
-  canonicalToolName: (n: string) => n,
+  canonicalToolName: (n: string) => n.replace(/^mcp__agentmcp__/, ''),
 }));
 // P-005: the public-trust door list comes from the projected-tool registry;
 // stub it so the handler test never loads the catalog.
@@ -303,7 +305,7 @@ describe('operator:converse — mcpUrl / state-channel shape', () => {
     expect(customerPiMocks.start).toHaveBeenCalledWith(expect.objectContaining({
       workspaceId: 'ws-real',
       allowedTools: ['capability:read', 'tasks:ops', 'chat:ask_choice', 'voice:delegate_deep', 'docs:search', 'docs:get'],
-      capabilities: ['chat:write', 'not-granted', 'operator:read'],
+      capabilities: ['chat:write', 'docs:read', 'not-granted', 'operator:read'],
       expiresAt: expect.any(Date),
     }));
     const sessionId = customerPiMocks.start.mock.calls[0]?.[0]?.sessionId;
@@ -402,6 +404,26 @@ describe('operator:converse — mcpUrl / state-channel shape', () => {
 });
 
 describe('operator:converse — loop behaviors (P-019)', () => {
+  it.each(['authorized', 'wrong-workspace', 'absent'] as const)(
+    'public provenance records its selected catalog without credentials: %s', async (kind) => {
+      if (kind !== 'absent') principalMocks.resolveBearer.mockResolvedValueOnce({
+        kind: 'pi', slug: 'pi:private-fixture', workspaceId: kind === 'authorized' ? 'ws-real' : 'other-workspace',
+        capabilities: new Set(['docs:read']), authMethod: 'bearer-token', trust: 'trusted',
+      });
+      const ctx = makeCtx();
+      await handler({ messages: [], trigger: 'user_message', role: 'papercup', hostTrust: 'public',
+        ...(kind !== 'absent' ? { principalToken: 'secret-public-fixture' } : {}) }, ctx);
+      const invocation = vi.mocked(runAgentChat).mock.calls[0][0];
+      const provenance = ctx.emit.mock.calls.find(([event]) => event === 'provenance')![1];
+      const names = kind === 'authorized' ? ['docs:search', 'docs:get'] : [];
+      expect(provenance.toolContext).toEqual({ toolNames: names,
+        authorization: kind === 'authorized' ? 'granted' : 'unavailable',
+        promptHash: expect.stringMatching(/^[a-f0-9]{32}$/) });
+      expect(invocation.allowedTools).toEqual(names.map((name) => `mcp__agentmcp__${name}`));
+      expect(vi.mocked(buildOperatorPrompt).mock.calls.at(-1)![0].toolNames).toEqual(invocation.allowedTools);
+      expect(JSON.stringify(provenance)).not.toMatch(/secret-public-fixture|private-fixture|other-workspace/);
+    });
+
   it('budget exceeded → throws + never invokes the model', async () => {
     vi.mocked(checkBudget).mockResolvedValue({
       state: { capUsd: 5 },
