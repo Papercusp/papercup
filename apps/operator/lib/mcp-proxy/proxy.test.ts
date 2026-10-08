@@ -7412,6 +7412,81 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     ]);
   });
 
+  it("keeps independent improvements:capture forwards concurrent within the reserved control-plane budget", async () => {
+    let releaseFirst: () => void = () => {};
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let noteFirstStarted: () => void = () => {};
+    const firstStarted = new Promise<void>((resolve) => {
+      noteFirstStarted = resolve;
+    });
+    const hits: string[] = [];
+    const upstream = track(
+      http.createServer((req, res) => {
+        const client =
+          new URL(req.url ?? "/", "http://127.0.0.1").searchParams.get(
+            "client",
+          ) ?? "";
+        hits.push(client);
+        if (client === "held-capture") {
+          noteFirstStarted();
+          void firstGate.then(() => res.end('{"result":{"held":true}}'));
+          return;
+        }
+        res.end('{"result":{"captured":true}}');
+      }),
+    );
+    await listen(upstream);
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0,
+        targetHost: "127.0.0.1",
+        targetPort: port(upstream),
+        retryWindowMs: 1_000,
+        maxInFlight: 10,
+        controlPlaneReserve: 2,
+        maxCriticalContinuationQueue: 1,
+        maxImprovementsCaptureQueue: 1,
+        improvementsCaptureQueueWaitMs: 100,
+      }),
+    );
+    await listen(proxy);
+
+    const body = (id: number) =>
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id,
+        method: "tools/call",
+        params: { name: "improvements:capture", arguments: {} },
+      });
+    const first = request(
+      port(proxy),
+      body(1),
+      "/api/mcp?client=held-capture",
+    );
+    try {
+      await firstStarted;
+      const second = request(
+        port(proxy),
+        body(2),
+        "/api/mcp?client=parallel-capture",
+      );
+
+      // With the former hard-coded one-socket cap, the second capture waited in the
+      // FIFO and could not reach the upstream until the first completed.
+      await waitFor(() => hits.includes("parallel-capture"));
+      expect(hits).toEqual(["held-capture", "parallel-capture"]);
+
+      releaseFirst();
+      expect((await first).status).toBe(200);
+      expect((await second).status).toBe(200);
+    } finally {
+      releaseFirst();
+      await first.catch(() => undefined);
+    }
+  });
+
   it("WI-950869: gives the dedicated improvements:capture queue a finite default dwell", async () => {
     expect(DEFAULT_CRITICAL_CONTINUATION_QUEUE_WAIT_MS).toBe(0);
     expect(DEFAULT_IMPROVEMENTS_CAPTURE_QUEUE_WAIT_MS).toBe(20_000);

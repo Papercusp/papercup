@@ -2798,14 +2798,19 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
     });
   const ownsImprovementsCaptureAgent =
     opts.improvementsCaptureAgent === undefined;
-  // EI-22728723476698098 — incident captures get one independent socket. A capture is safe to
-  // retry after the proxy explicitly says it was not forwarded, but it must not sit behind a
-  // long completion/checkpoint on the shared durability socket and lose the client's deadline.
+  // EI-22728723476698098 — incident captures get an independent pool bounded by the existing
+  // reserved-control-plane concurrency budget. A single socket made one slow capture block all
+  // independent reports until the 20s queue dwell shed them; sharing the existing reserve lets
+  // parallel captures progress without creating a separate, unbounded capacity allowance.
+  const improvementsCaptureConcurrencyCeiling = Math.max(
+    1,
+    reservedControlPlaneGuaranteedFloor,
+  );
   const improvementsCaptureAgent =
     opts.improvementsCaptureAgent ??
     new http.Agent({
       keepAlive: false,
-      maxSockets: 1,
+      maxSockets: improvementsCaptureConcurrencyCeiling,
     });
   const maxHandshakeInFlight =
     opts.maxHandshakeInFlight ?? DEFAULT_MAX_HANDSHAKES_IN_FLIGHT;
@@ -3260,7 +3265,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
   const canGrantImprovementsCapture = (): boolean =>
     !shouldShedForInFlight(
       improvementsCaptureInFlight + improvementsCaptureGrantReservations,
-      1,
+      improvementsCaptureConcurrencyCeiling,
     );
 
   const cancelQueuedImprovementsCapture = (
