@@ -132,10 +132,19 @@ export async function stubSyncQueries(
   return {
     async invalidate(name, args) {
       if (!options.push) throw new Error('stubSyncQueries.invalidate requires push:true');
-      await page.waitForFunction(() => {
-        const sources = (window as unknown as { __syncQueryFixtureSources?: Set<EventSource> }).__syncQueryFixtureSources;
-        return [...(sources ?? [])].some((source) => source.readyState !== EventSource.CLOSED);
-      });
+      try {
+        await page.waitForFunction(() => {
+          const sources = (window as unknown as { __syncQueryFixtureSources?: Set<EventSource> }).__syncQueryFixtureSources;
+          return [...(sources ?? [])].some((source) => source.readyState !== EventSource.CLOSED);
+        });
+      } catch (error) {
+        const diagnostic = await page.evaluate(() => ({
+          visibility: document.visibilityState,
+          sources: [...((window as unknown as { __syncQueryFixtureSources?: Set<EventSource> }).__syncQueryFixtureSources ?? [])]
+            .map((source) => ({ url: source.url, readyState: source.readyState })),
+        })).catch((failure) => ({ unavailable: String(failure) }));
+        throw new Error(`SYNC_FIXTURE_PUSH_UNAVAILABLE query=${name} ${JSON.stringify(diagnostic)}`, { cause: error });
+      }
       await page.evaluate(({ name, args }) => {
         const sources = (window as unknown as { __syncQueryFixtureSources: Set<EventSource> }).__syncQueryFixtureSources;
         for (const source of sources) {
