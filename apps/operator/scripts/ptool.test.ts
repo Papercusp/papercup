@@ -712,6 +712,14 @@ describe('ptool call deadlines', () => {
     })).toBe(PTOOL_BACKUP_RESTORE_TIMEOUT_MS);
     expect(timeoutForTool('templates:new-app')).toBe(PTOOL_TEMPLATES_NEW_APP_TIMEOUT_MS);
     expect(timeoutForTool('scorecards:emit')).toBe(PTOOL_SCORECARD_EMIT_TIMEOUT_MS);
+    // EI-25378335241705149: clause certification emits passing scorecards using
+    // the same 900s server budget; cover the direct and deferred paths so the
+    // ordinary 30s client deadline cannot hide its durable result.
+    expect(timeoutForTool('plans:certify-spec-clauses')).toBe(PTOOL_SCORECARD_EMIT_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', {
+      name: 'plans:certify-spec-clauses',
+      args: { planSlug: 'timeout-mapping-regression' },
+    })).toBe(PTOOL_SCORECARD_EMIT_TIMEOUT_MS);
     // EI-22780156976598155: headless boot/kickoff/fresh-launch verification
     // follows the shared launch budget. Keep direct and deferred routes outside
     // its handler timeout plus the 5s MCP settlement window.
