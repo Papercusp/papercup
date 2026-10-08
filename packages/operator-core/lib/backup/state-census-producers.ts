@@ -112,6 +112,16 @@ export async function databaseCensusEntries(sql: Sql, clusterIdentity: string): 
   return rows.map(row => ({ kind: 'database', root: clusterIdentity, name: row.datname }));
 }
 
+/** Resolve the same physical cluster identity used by backup receipt coverage. */
+export async function physicalDatabaseCensusEntries(sql: Sql) {
+  const rows = await sql<{ system_identifier: string }[]>`
+    SELECT system_identifier::text FROM pg_control_system()
+  `;
+  const identity = rows[0]?.system_identifier;
+  if (!identity || !/^\d+$/.test(identity)) throw new Error('Unavailable physical database cluster identity');
+  return databaseCensusEntries(sql, `postgres-cluster:${identity}`);
+}
+
 const execFileAsync = promisify(execFile);
 /** Unit definitions supplied by an installer source, independent of live inventory. */
 export async function unitCensusDeclarations(
