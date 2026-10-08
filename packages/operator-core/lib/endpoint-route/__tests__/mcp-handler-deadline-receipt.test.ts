@@ -41,7 +41,7 @@ import { join } from 'node:path';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { _resetVerifiedSpawns } from '../../spawn-signing';
 import { MCP_REQUEST_TRACE_HEADER } from '../../mcp-request-trace';
-import { _resetScratchUsageForTests, type ScratchWriteTimings } from '../../scratch-gc';
+import { _resetScratchUsageForTests, _setScratchUsageForTests, WORKSPACE_QUOTA_BYTES, type ScratchWriteTimings } from '../../scratch-gc';
 import { parseScratchReference } from '../../scratch-reference';
 import type { McpCallResult } from '../routes/transport/mcp-diagnostic-warnings';
 
@@ -610,6 +610,78 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
     } finally {
       releaseWrite();
       await sleep(SLOW_TOOL_MS + 100);
+      info.mockRestore();
+      _resetScratchUsageForTests();
+      if (previousRoot === undefined) delete process.env.PAPERCUSP_SCRATCH_ROOT;
+      else process.env.PAPERCUSP_SCRATCH_ROOT = previousRoot;
+      if (previousKillSwitch === undefined) delete process.env.PAPERCUSP_RESULT_DOOR_OFF;
+      else process.env.PAPERCUSP_RESULT_DOOR_OFF = previousKillSwitch;
+      rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+
+  it('traces scratch-write settlement after the result-door bounded wait returns', async () => {
+    const sandbox = mkdtempSync(join(tmpdir(), 'papercusp-mcp-late-spill-'));
+    const previousRoot = process.env.PAPERCUSP_SCRATCH_ROOT;
+    const previousKillSwitch = process.env.PAPERCUSP_RESULT_DOOR_OFF;
+    process.env.PAPERCUSP_SCRATCH_ROOT = join(sandbox, 'scratch');
+    delete process.env.PAPERCUSP_RESULT_DOOR_OFF;
+    _resetScratchUsageForTests();
+    _setScratchUsageForTests('ws-test', WORKSPACE_QUOTA_BYTES + 1);
+    h.captureScratchWriteTimings = true;
+    let releaseWrite!: () => void;
+    h.spillWriteGate = new Promise<void>((resolve) => { releaseWrite = resolve; });
+    const enteredWrite = new Promise<void>((resolve) => { h.spillWriteEntered = resolve; });
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    const traceId = '879b64d8-741b-4e8a-a111-39dd7b35c05f';
+    let responsePromise: Promise<McpCallResult> | undefined;
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      responsePromise = callTool('deadlinetest:spill', {},
+        superuserExtra('&workspace=ws-test', { [MCP_REQUEST_TRACE_HEADER]: traceId }),
+        { idempotencyKey: 'idem-late-scratch-settlement' });
+      await enteredWrite;
+      // Keep the real scratch write blocked until applyResultDoorAsync's 30s bounded wait expires.
+      await vi.advanceTimersByTimeAsync(30_001);
+      const response = await responsePromise;
+      expect(response.isError).toBe(true);
+      expect(textOf(response)).toContain('request_timeout');
+      const beforeLateWrite = traceEvents(info.mock.calls);
+      expect(beforeLateWrite.some((event) =>
+        event.traceId === traceId && event.stage === 'inner_dispatch_settled')).toBe(true);
+      expect(beforeLateWrite.some((event) =>
+        event.traceId === traceId && event.stage === 'scratch_write_settled')).toBe(false);
+
+      vi.useRealTimers();
+      releaseWrite();
+      await vi.waitFor(() => expect(traceEvents(info.mock.calls).some((event) =>
+        event.traceId === traceId && event.stage === 'scratch_write_settled')).toBe(true));
+      const settled = traceEvents(info.mock.calls).find((event) =>
+        event.traceId === traceId && event.stage === 'scratch_write_settled');
+      expect(settled).toMatchObject({
+        traceId,
+        toolName: 'deadlinetest:spill',
+        stage: 'scratch_write_settled',
+        afterDeadline: true,
+        scratchWriteTimings: {
+          quotaWaitMs: 0,
+          refreshWaitMs: 0,
+          quotaRecoveryMs: expect.any(Number),
+          writeMs: expect.any(Number),
+          totalMs: expect.any(Number),
+          quotaRecoveryDiagnostics: expect.objectContaining({
+            sizeWalkDirectories: expect.any(Number),
+          }),
+        },
+      });
+      expect((settled?.scratchWriteTimings as ScratchWriteTimings).quotaRecoveryDiagnostics?.sizeWalkDirectories)
+        .toBeGreaterThan(0);
+    } finally {
+      vi.useRealTimers();
+      releaseWrite();
+      if (responsePromise) await responsePromise.catch(() => undefined);
+      await vi.waitFor(() => expect(traceEvents(info.mock.calls).some((event) =>
+        event.traceId === traceId && event.stage === 'inner_dispatch_settled')).toBe(true), { timeout: 3_000 });
       info.mockRestore();
       _resetScratchUsageForTests();
       if (previousRoot === undefined) delete process.env.PAPERCUSP_SCRATCH_ROOT;
