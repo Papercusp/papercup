@@ -131,6 +131,19 @@ export function integrationBaselineCensusDeclarations(entries: readonly CensusEn
 }
 
 const execFileAsync = promisify(execFile);
+/** Preserve metadata only after Git confirms this exact directory owns it. */
+export async function gitStorageDeclaration(root: CensusRoot, repositoryName: string): Promise<CensusDeclaration> {
+  if (repositoryName.startsWith('/') || repositoryName.split('/').some(segment => segment === '..')) throw new Error('Invalid repository path');
+  const repository = join(root.path, repositoryName);
+  const options = { timeout: 5000, maxBuffer: 64 * 1024, env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' } };
+  const { stdout: gitDirectory } = await execFileAsync('git', ['-C', repository, 'rev-parse', '--absolute-git-dir'], options);
+  if (resolve(gitDirectory.trim()) !== resolve(repository, '.git')) throw new Error('Repository metadata outside declared directory');
+  const { stdout } = await execFileAsync('git', ['-C', repository, 'rev-parse', '--verify', 'HEAD'], options);
+  const head = stdout.trim();
+  if (!/^[0-9a-f]{40,64}$/.test(head)) throw new Error('Repository HEAD unavailable');
+  return { kind: 'path', root: root.id, name: `${repositoryName}/.git`, classification: 'state',
+    producer: 'git-control', descendants: true, gitStorage: { head, evidenceRef: `git-head:${root.id}:${repositoryName}` } };
+}
 /** Recognized PG storage is retained state with a measured control-file identity. */
 export async function postgresStorageDeclaration(root: CensusRoot, name: string): Promise<CensusDeclaration> {
   if (name.startsWith('/') || name.split('/').some(segment => segment === '..')) throw new Error('Invalid PG storage path');
