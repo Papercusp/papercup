@@ -1510,8 +1510,9 @@ function appendRatingRerunProbes(
  *   8 — pair Cargo case receipts by canonical source and measurement root, preserving exact case checks.
  *   9 — recognize canonical operational adapter layers without extending recorded runner layers.
  *  10 — map legacy behavioral requirements only to passing canonical operational case evidence.
+ *  11 — require each executable binding to attest fixture-free status or carry fingerprinted calibration.
  */
-export const SPEC_TEST_ADEQUACY_EVALUATOR_REVISION = 10;
+export const SPEC_TEST_ADEQUACY_EVALUATOR_REVISION = 11;
 
 type MutationTargetClause = Pick<SpecClauseRevision, 'specId' | 'falsifier'>;
 
@@ -1830,13 +1831,11 @@ export function evaluateSpecTestAdequacy(input: {
     (row) => EXECUTABLE_EVIDENCE_KINDS.has(row.evidenceKind) && detailsOf(row).fixtureFree === true,
   );
   const fixtureUseAttested = exactEvidence.some((row) => detailsOf(row).fixtureFree === false);
-  const unclassifiedFixtureProof = exactEvidence.filter(
+  const unresolvedFixtureProof = exactEvidence.filter(
     (row) =>
-      fixtureBindings.length === 0 &&
-      !fixtureUseRequired &&
       EXECUTABLE_EVIDENCE_KINDS.has(row.evidenceKind) &&
       row.fingerprints.fixtureFingerprint === null &&
-      detailsOf(row).fixtureFree === undefined,
+      detailsOf(row).fixtureFree !== true,
   );
   const fixtureFreeConflicts = exactEvidence.filter(
     (row) =>
@@ -1847,7 +1846,7 @@ export function evaluateSpecTestAdequacy(input: {
     fixtureUseRequired ||
     fixtureBindings.length > 0 ||
     fixtureUseAttested ||
-    unclassifiedFixtureProof.length > 0;
+    unresolvedFixtureProof.length > 0;
   const fixtureProofEvidence = evidence.filter(
     (row) => row.evidenceKind === 'fixture' || row.fingerprints.fixtureFingerprint !== null,
   );
@@ -1860,13 +1859,15 @@ export function evaluateSpecTestAdequacy(input: {
         ),
         suggestion: 'Remove the contradictory fixture-free attestation or bind the fixture evidence under a separate row.',
       }
-    : unclassifiedFixtureProof.length > 0
+    : unresolvedFixtureProof.length > 0
       ? {
           rating: 'unknown',
           evidence: evidenceWithBindings(
-            'A null fixtureFingerprint does not establish fixture-free proof; executable binding(s) have no fixture-free classification for ' +
+            (fixtureUseRequired || fixtureBindings.length > 0 || fixtureUseAttested
+              ? 'A fixture is required or used; an executable binding has no fixture fingerprint and does not explicitly attest adequacy.fixtureFree=true for '
+              : 'A null fixtureFingerprint does not establish fixture-free proof; an executable binding has no fixture fingerprint and does not explicitly attest adequacy.fixtureFree=true for ') +
               clauseIdentity(clause) + '.',
-            unclassifiedFixtureProof,
+            unresolvedFixtureProof,
           ),
           suggestion:
             'For each executable binding, bind a measured fixture fingerprint and calibration proof or explicitly attest adequacy.fixtureFree=true; a missing fingerprint alone is insufficient.',
@@ -2635,7 +2636,7 @@ export function evaluateSpecTestAdequacy(input: {
         const details = detailsOf(row);
         return details.fixtureCalibrated === false || details.fixtureFree === false;
       }),
-      ...unclassifiedFixtureProof,
+      ...unresolvedFixtureProof,
     ],
     falsifiability: [
       ...evidence.filter((row) => detailsOf(row).falsifiable === false),

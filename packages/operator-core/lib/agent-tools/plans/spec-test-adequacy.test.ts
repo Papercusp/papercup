@@ -2136,7 +2136,7 @@ describe('spec-test-adequacy per-clause evaluator', () => {
   });
 
   it('pins the evaluator revision for canonical operational adapter layer recognition', () => {
-    expect(SPEC_TEST_ADEQUACY_EVALUATOR_REVISION).toBe(10);
+    expect(SPEC_TEST_ADEQUACY_EVALUATOR_REVISION).toBe(11);
   });
 
   it('requires an explicit fixture-free attestation for executable proof with a null fixture fingerprint', () => {
@@ -2198,7 +2198,47 @@ describe('spec-test-adequacy per-clause evaluator', () => {
 
     expect(result.ratings['fixture-calibration'].rating).toBe('unknown');
     expect(result.ratings['fixture-calibration'].evidence).toContain(
-      'no fixture-free classification',
+      'does not explicitly attest adequacy.fixtureFree=true',
+    );
+  });
+
+  it('does not let one calibrated fixture binding cover an executable sibling without a fixture fingerprint', () => {
+    const base = evidence();
+    const calibratedFixture = evidence({
+      evidenceKind: 'fixture',
+      evidenceRef: 'fixture:calibrated-sibling',
+      details: {
+        adequacy: {
+          ...((base.details.adequacy ?? {}) as Record<string, unknown>),
+          fixtureCalibrated: true,
+        },
+      },
+    });
+    const uncalibratedSibling = evidence({
+      evidenceKind: 'test',
+      evidenceRef: 'test:fixture-use-without-calibration',
+      fingerprints: { ...base.fingerprints, fixtureFingerprint: null },
+      details: {
+        adequacy: {
+          ...((base.details.adequacy ?? {}) as Record<string, unknown>),
+          fixtureCalibrated: undefined,
+          fixtureFree: false,
+        },
+      },
+    });
+
+    const result = evaluateSpecTestAdequacy({
+      clause: clause({ requiredEvidence: ['integration test'] }),
+      evidence: [calibratedFixture, uncalibratedSibling],
+      classRef: 'plan-class-bugfix',
+    });
+
+    expect(result.ratings['fixture-calibration'].rating).toBe('unknown');
+    expect(result.ratings['fixture-calibration'].evidence).toContain(
+      'does not explicitly attest adequacy.fixtureFree=true',
+    );
+    expect(result.ratings['fixture-calibration'].evidence).toContain(
+      'test:fixture-use-without-calibration',
     );
   });
 
