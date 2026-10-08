@@ -40,8 +40,8 @@ export default defineTool({
     'to the Reports library. Returns a stable `report_id` and UI path. `body_md` is Markdown (Mermaid ' +
     'allowed), max 512KB; oversized bodies are refused with the exact overage, never truncated. The server ' +
     'stamps author, pot, and session. Use `supersedes` to publish a correction in the same lineage; the ' +
-    'old body remains resolvable. After publishing, call `reports:get { id: report_id }` and verify body + ' +
-    'visibility before citing the path or claiming delivery.',
+    'old body remains resolvable. After publishing, call `reports:get { id: report_id }` and ' +
+    'verify the complete body and visibility before citing the path or claiming delivery.',
   guidance: {
     when:
       'When finished owner-facing writing should remain discoverable: audits, reviews, postmortems, ' +
@@ -51,9 +51,10 @@ export default defineTool({
       '`plans:add-decision` for cross-lane rulings, and `coord:send` for agent messages. Do not republish ' +
       'a just-published typo unless it warrants a new lineage entry.',
     chaining:
-      'After publishing, call `reports:get { id: report_id }`; verify body and visibility before citing the ' +
-      'path or claiming delivery. To correct one, read the original, publish with `supersedes: id`, then ' +
-      'read and verify the new `report_id`. `reports:list` shows editions and lineage.',
+      'reports:publish → reports:get { id: report_id } → verify the complete body and visibility → cite. ' +
+      'Claim saved or delivered only after readback succeeds. Corrections: read the original → publish ' +
+      'with `supersedes: id` → reports:get with the new report_id → verify the correction → cite it. ' +
+      '`reports:list` shows editions and lineage.',
     returns:
       '{ ok:true, report_id, workspace_id, title, summary, kind, subject, origin, visibility, ' +
       'supersedes_report_id, lineage_id, source, tags, published_at, updated_at, retired_at, path, ' +
