@@ -139,6 +139,34 @@ describe('backfillResultDoorOutputRef (EI-19389431406847252)', () => {
       's-test',
       'x:one',
       'run-abc',
+      null,
+    ]);
+  });
+
+  it('backfills a late spill settlement by its exact reserved URI after the ordinary recency window', async () => {
+    const uri = 'papercusp://scratch/papercusp-workspace/x:late/result-door-1.md';
+    await backfillResultDoorOutputRef({
+      workspaceId: 'ws-test',
+      spawnId: 's-test',
+      toolName: 'x:late',
+      runId: 'run-late',
+      outputRef: uri,
+      outputSize: 4200,
+      matchOutputRef: uri,
+      metadataJson: { spillPending: false, spillFailed: false, spillSettlementStatus: 'persisted' },
+    });
+
+    expect(unsafeCalls[1].sql).toContain('output_ref = $8');
+    expect(unsafeCalls[1].sql).toContain("invoked_at >= now() - interval '30 seconds' OR ($8::text IS NOT NULL AND output_ref = $8)");
+    expect(unsafeCalls[1].params).toEqual([
+      uri,
+      4200,
+      JSON.stringify({ spillPending: false, spillFailed: false, spillSettlementStatus: 'persisted' }),
+      'ws-test',
+      's-test',
+      'x:late',
+      'run-late',
+      uri,
     ]);
   });
 
@@ -290,6 +318,13 @@ describe('WI-40720 gap 3 — the post-door backfill call site is door-general, n
     expect(handlerSource).toContain('spillFailed: doorMeta.spillFailed === true');
     // The negative half of the guard: a conditional stamp is the specific regression.
     expect(handlerSource).not.toContain('...(doorMeta.spillFailed === true ? { spillFailed:');
+  });
+
+  it('wires late spill settlement to the output-ref backfill', () => {
+    expect(handlerSource).toContain('onLateScratchWriteSettled: (settlement) =>');
+    expect(handlerSource).toContain('matchOutputRef: settlement.spillUri');
+    expect(handlerSource).toContain('spillSettlementStatus: settlement.status');
+    expect(handlerSource).toContain('spillPending: false');
   });
 
   it('backfills failed spills without a URI and preserves their descriptive error metadata', () => {

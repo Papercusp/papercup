@@ -1374,7 +1374,9 @@ export async function flushPendingTelemetry(): Promise<void> {
  * nonce carried into `metadata_json` (adding one is a bigger, separate change).
  * It matches (workspace_id, spawn_id, tool_name, output_ref IS NULL, most
  * recent invoked_at) inside a short recency window, plus run_id when the
- * caller has one. For loopback SU/power-user sessions `runId` is minted FRESH
+ * caller has one. A late spill settlement may instead match the exact
+ * reserved output_ref URI, so it can update the original row beyond that
+ * window without selecting a neighboring invocation. For loopback SU/power-user sessions `runId` is minted FRESH
  * per MCP request (see ctx construction in _mcp-handler.ts — "Per-request
  * UUID, not the 'standalone' sentinel"), so that additional predicate makes
  * the match effectively exact for that traffic; for signed role-scoped/bee
@@ -1397,6 +1399,9 @@ export async function backfillResultDoorOutputRef(input: {
   runId?: string | null;
   outputRef?: string | null;
   outputSize?: number | null;
+  /** Exact URI already reserved on a pending row; allows a late settlement update
+   *  to match that row after the ordinary 30-second backfill window. */
+  matchOutputRef?: string | null;
   /** Door-only facts unavailable when the dispatcher snapshots the row. Shallow
    * merged so handler-authored run metadata is preserved. */
   metadataJson?: Record<string, unknown>;
@@ -1424,8 +1429,8 @@ export async function backfillResultDoorOutputRef(input: {
           WHERE id = (
             SELECT id FROM harness_shared.tool_invocations
              WHERE workspace_id = $4 AND spawn_id = $5 AND tool_name = $6
-               AND ($1::text IS NULL OR output_ref IS NULL)
-               AND invoked_at >= now() - interval '30 seconds'
+               AND ($1::text IS NULL OR output_ref IS NULL OR ($8::text IS NOT NULL AND output_ref = $8))
+               AND (invoked_at >= now() - interval '30 seconds' OR ($8::text IS NOT NULL AND output_ref = $8))
                AND ($7::text IS NULL OR run_id = $7)
              ORDER BY invoked_at DESC
              LIMIT 1
@@ -1438,6 +1443,7 @@ export async function backfillResultDoorOutputRef(input: {
           spawnId,
           toolName,
           runId,
+          input.matchOutputRef ?? null,
         ],
       );
     });
