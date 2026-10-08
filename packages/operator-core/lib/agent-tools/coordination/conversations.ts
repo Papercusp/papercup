@@ -535,6 +535,9 @@ export function getThreadPost(postId: number, identity?: AgentIdentity) {
 export interface ConsultLifecycleState {
   conversation_id: string;
   state: string;
+  /** Existing recoverable-request result JSON. Missing means unrecorded, not
+   * measured absence; state remains the independent conversation lifecycle. */
+  request_result?: Record<string, unknown> | null;
   latency_contract: string | null;
   responder_id: string | null;
   expires_at: string | null;
@@ -640,7 +643,8 @@ export function getConsultStates(
       const { sql } = getOrgPg();
       const rows = await sql<ConsultLifecycleBaseRow[]>`
         SELECT conversation_id, state, latency_contract, responder_id,
-               expires_at, closed_at, wakes_used
+               expires_at, closed_at, wakes_used,
+               routing #> '{request,result}' AS request_result
           FROM harness_shared.consult_state
          WHERE workspace_id = ${conversationsScopeWorkspace()}
            AND conversation_id = ANY(${conversationIds as string[]}::text[])
@@ -725,6 +729,7 @@ export function getConsultStates(
         out.set(r.conversation_id, {
           conversation_id: r.conversation_id,
           state: r.state,
+          request_result: r.request_result ?? null,
           latency_contract: r.latency_contract ?? null,
           responder_id: r.responder_id ?? null,
           expires_at: r.expires_at ?? null,
