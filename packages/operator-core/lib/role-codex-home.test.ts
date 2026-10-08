@@ -1607,6 +1607,42 @@ describe('writeSuCodexHome', () => {
     expect(readFileSync(join(home.codexHome, 'AGENTS.md'), 'utf8')).toContain('PRESERVE');
   });
 
+  it.each(['missing', 'wrong-client'] as const)('repairs %s prompt provenance in a same-owner home once while preserving native history', async (damage) => {
+    await installFakeHooks();
+    const { ensureSuCodexHomeConfig, writeSuCodexHome } = await loadMod();
+    const opts = { sessionKey: 'provenance-upgrade', mcpUrl: 'http://x/api/mcp?superuser=1', sid: 'su-provenance-upgrade' };
+    const home = writeSuCodexHome({ ...opts, promptText: 'PRESERVE OWNER INSTRUCTIONS' });
+    const hooksPath = join(home.codexHome, 'hooks.json');
+    const nativeDir = join(home.codexHome, 'sessions');
+    mkdirSync(nativeDir, { recursive: true });
+    const nativePath = join(nativeDir, 'rollout-original.jsonl');
+    const nativeBytes = '{"type":"response_item","payload":{"role":"user","content":"original owner turn"}}\n';
+    writeFileSync(nativePath, nativeBytes);
+    const agentsPath = join(home.codexHome, 'AGENTS.md');
+    const agentsBytes = readFileSync(agentsPath, 'utf8');
+    const oldHooks = JSON.parse(readFileSync(hooksPath, 'utf8'));
+    if (damage === 'missing') {
+      oldHooks.hooks.UserPromptSubmit = oldHooks.hooks.UserPromptSubmit.filter((group: any) =>
+        !group.hooks.some((hook: any) => hook.command.includes('userpromptsubmit-provenance.sh')));
+    } else {
+      for (const group of oldHooks.hooks.UserPromptSubmit) for (const hook of group.hooks) {
+        if (hook.command.includes('userpromptsubmit-provenance.sh')) hook.command = hook.command.replace('PAPERCUSP_AGENT=codex', 'PAPERCUSP_AGENT=claude');
+      }
+    }
+    writeFileSync(hooksPath, JSON.stringify(oldHooks));
+    expect(ensureSuCodexHomeConfig(opts)).toMatchObject({ repaired: true, identityRepaired: true });
+    const repairedBytes = readFileSync(hooksPath, 'utf8');
+    const repaired = JSON.parse(repairedBytes);
+    const commands = repaired.hooks.UserPromptSubmit.flatMap((group: any) => group.hooks.map((hook: any) => hook.command));
+    expect(commands).toContainEqual(expect.stringContaining('userpromptsubmit-provenance.sh'));
+    expect(commands.find((command: string) => command.includes('userpromptsubmit-provenance.sh')))
+      .toContain('PAPERCUSP_AGENT=codex');
+    expect(readFileSync(nativePath, 'utf8')).toBe(nativeBytes);
+    expect(readFileSync(agentsPath, 'utf8')).toBe(agentsBytes);
+    expect(ensureSuCodexHomeConfig(opts)).toMatchObject({ repaired: false, identityRepaired: false });
+    expect(readFileSync(hooksPath, 'utf8')).toBe(repairedBytes);
+  });
+
   it('no coord/activity hooks when only the lock scripts are installed', async () => {
     const { mkdirSync } = await import('node:fs');
     const dir = join(fakeHome, '.papercusp', 'hooks', 'cc');
