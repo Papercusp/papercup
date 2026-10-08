@@ -27,6 +27,7 @@ import {
 import { getRubric } from './rubrics';
 import {
   acquireGradingAuditSubjectMutex,
+  isCurrentSourceAuditResponder,
   listScorecards,
   parseGradedGeneration,
   type ScorecardGradingAuditCurrentness,
@@ -260,7 +261,10 @@ export interface PendingGradingAuditDispatchReceipt {
   };
 }
 
-type GradingAuditRecoveryCode = AcceptanceGraderTerminalFailureCode | 'task_receipt_not_live';
+type GradingAuditRecoveryCode =
+  | AcceptanceGraderTerminalFailureCode
+  | 'task_receipt_not_live'
+  | 'superseded_source_audit_responder';
 
 export interface PendingGradingAuditDispatchResult {
   requestedTargetIds: string[];
@@ -291,6 +295,8 @@ export interface DispatchPendingGradingAuditsDeps {
   release?: typeof releasePendingGradingAudit;
   /** Check for a still-live task from an earlier reservation epoch. */
   listTasks?: typeof listTasks;
+  /** A live task is viable only while it remains the active consult answerer for its lease. */
+  isCurrentSourceAuditResponder?: typeof isCurrentSourceAuditResponder;
   getTask?: typeof getTask;
   notifyRetainedAuditor?: typeof notifyRetainedGradingAuditor;
   readLogTail?: (path: string) => string | Promise<string>;
@@ -1489,6 +1495,32 @@ export async function dispatchPendingGradingAudits(
               }
             } catch {
               // Missing/unreadable evidence is unknown, never permission to kill.
+            }
+          }
+        }
+        if (!terminalFailure) {
+          const taskOwnerId = typeof task.detail?.coordOwnerId === 'string'
+            ? task.detail.coordOwnerId.trim()
+            : '';
+          if (taskOwnerId) {
+            const taskReservation = priorReservation ?? {
+              key: idempotencyKey,
+              reservedAt: reservationReservedAt,
+            };
+            try {
+              const stillCurrentResponder = await (
+                deps.isCurrentSourceAuditResponder ?? isCurrentSourceAuditResponder
+              )(issueId, taskReservation, taskOwnerId);
+              if (!stillCurrentResponder) {
+                terminalFailure = {
+                  code: 'superseded_source_audit_responder',
+                  evidence:
+                    `active source-audit consult responder no longer matches retained task owner ` +
+                    `'${taskOwnerId}' for reservation '${taskReservation.key}' at '${taskReservation.reservedAt}'`,
+                };
+              }
+            } catch {
+              // An unavailable responder lookup is unknown, never proof that a live auditor is stale.
             }
           }
         }
