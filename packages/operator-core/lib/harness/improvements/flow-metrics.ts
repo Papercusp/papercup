@@ -100,6 +100,40 @@ export interface AgentReviewServiceScope {
   verificationSpecs: readonly { specId: string; revision: number }[];
 }
 
+/** Current stock waits, never creation age substituted for a stage-entry clock. */
+export function computeQueueWaitingTimes(rows: readonly { payload: unknown; createdAt: string | null }[], nowMs: number) {
+  const aggregate = (values: readonly (number | null)[]) => {
+    const known = values.filter((value): value is number => value !== null);
+    const oldestKnownMs = known.length ? known.reduce((oldest, value) => Math.max(oldest, value), 0) : null;
+    return { population: values.length, known: known.length, unknown: values.length - known.length,
+      oldestKnownMs, oldestMs: known.length === values.length ? oldestKnownMs : null };
+  };
+  const reports: (number | null)[] = [], reviews: (number | null)[] = [], revisions: (number | null)[] = [];
+  const admissions: (number | null)[] = [], admissionDelays: (number | null)[] = [];
+  for (const row of rows) {
+    const timing = computeAgentReviewTiming({ ...row, reviewRoutedAtMs: null, nowMs });
+    reports.push(timing.reportAgeMs);
+    const review = readAgentReviewState(row.payload);
+    if (review?.status === 'pending') reviews.push(timing.reviewWaitMs);
+    if (review?.status === 'revision-requested') revisions.push(timing.revisionAgeMs);
+    const payload = row.payload && typeof row.payload === 'object' ? row.payload as Record<string, unknown> : {};
+    const admission = payload.admissionReview && typeof payload.admissionReview === 'object'
+      ? payload.admissionReview as Record<string, unknown> : {};
+    if (admission.state === 'pending') {
+      const entered = typeof admission.enteredAt === 'string' ? Date.parse(admission.enteredAt) : NaN;
+      admissions.push(Number.isFinite(entered) && entered >= 0 && entered <= nowMs ? nowMs - entered : null);
+    }
+    if (admission.state === 'terminal') admissionDelays.push(timing.admissionDelayMs);
+  }
+  return { unit: 'milliseconds' as const,
+    reportAge: aggregate(reports), reviewWait: aggregate(reviews), revisionAge: aggregate(revisions),
+    admissionWait: aggregate(admissions), admissionDelay: aggregate(admissionDelays),
+    writers: { reportAge: 'work_items.created_ts', reviewWait: 'agentReview.timing.enteredAt (matching round)',
+      revisionAge: 'agentReview.timing.decidedAt (matching round)',
+      admissionWait: 'admissionReview.enteredAt (recorded pending reviews only)',
+      admissionDelay: 'admissionReview.enteredAt -> terminalAt (recorded terminal reviews only)' } };
+}
+
 export interface AgentReviewServiceRow {
   id: string;
   workspaceId: string;
