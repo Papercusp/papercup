@@ -204,6 +204,43 @@ describe('rubrics:amend complete acceptance criteria input', () => {
     })).rejects.toThrow('unexpected apply failure');
   });
 
+  it('returns proposeRubric validation failures as structured invalid_args refusals', async () => {
+    const error = new Error(
+      "invalid_args: proposeRubric: rubric 'acceptance-example' contains off-scale rating instructions — " +
+      "criterion 'r-1' method explicitly instructs rating 'unverified', but its effective ratingScale is " +
+      '[healthy | degraded | broken | unknown]. Use a value from the effective ratingScale or revise the procedure prose.',
+    );
+    rubricsMocks.previewAcceptanceBarAmendment.mockRejectedValueOnce(error);
+
+    const dryRunResult = await body({
+      rubricRef: 'acceptance-example',
+      dryRun: true,
+      criteria: [criterion],
+    });
+
+    expect(dryRunResult).toMatchObject({
+      ok: false,
+      dryRun: true,
+      code: 'invalid_args',
+      error: error.message,
+      next: expect.stringContaining('effective ratingScale'),
+    });
+
+    rubricsMocks.amendRubric.mockRejectedValueOnce(error);
+    const applyResult = await body({
+      rubricRef: 'acceptance-example',
+      idempotencyKey: 'off-scale-apply',
+      criteria: [criterion],
+    });
+
+    expect(applyResult).toMatchObject({
+      ok: false,
+      code: 'invalid_args',
+      error: error.message,
+      next: expect.stringContaining('effective ratingScale'),
+    });
+  });
+
   it('returns missing outside-lineage approval as a structured refusal instead of a tool error', async () => {
     const error = new Error(
       'acceptance_bar_approval_required: use thread-post:<id> from an authenticated reviewer post containing the preview approval JSON',

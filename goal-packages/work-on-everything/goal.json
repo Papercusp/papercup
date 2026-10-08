@@ -8,7 +8,19 @@
     "worklist": {
       "datatype": "plan-ref-list",
       "default": [],
-      "editable_by": "both"
+      "editable_by": "both",
+      "collection": {
+        "source": "active-workspace-plans",
+        "policy": "worklist_policy",
+        "order": "priority",
+        "selectable": true,
+        "defaultSelected": true
+      }
+    },
+    "worklist_policy": {
+      "datatype": "ordered-selection-policy",
+      "default": { "order": [], "excluded": [] },
+      "editable_by": "owner"
     }
   }
 }

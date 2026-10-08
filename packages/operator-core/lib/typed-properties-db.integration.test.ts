@@ -20,6 +20,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { OrgTestDb } from '../test/_org-test-db';
 import { getDatatype, upsertDatatype } from './datatype-registry-store';
 import { canonicalWorklistDeclaration } from './goals/package-property-datatypes';
+import { ADMIN_COORD_UI_OWNER } from './agent-tools/coordination/identity';
 import setGoalProperty from './agent-tools/goals/set-property';
 import { readGoalPortfolioBrief } from './goal-launch-settings';
 import {
@@ -560,5 +561,111 @@ describe('typed-properties-db (real PG, migration 923)', () => {
       properties: {},
     });
     expect(surface.effective).toEqual({ a: 42, b: undefined });
+  });
+
+  const teaSchema = {
+    tea_choices: { datatype: 'string-list', default: ['mint', 'chamomile', 'rooibos'], editable_by: 'both',
+      collection: { source: 'manual', policy: 'tea_policy', order: 'display', selectable: true, defaultSelected: true } },
+    tea_policy: { datatype: 'ordered-selection-policy', default: { order: [], excluded: [] }, editable_by: 'owner' },
+  };
+
+  it('declares and persists a non-plan collection through the same registry and goal CAS writer', async () => {
+    const declaration = await validatePropertySchemaDeclaration(db.adminSql, WS, teaSchema);
+    expect(declaration).toEqual({ ok: true, declared: ['tea_choices', 'tea_policy'] });
+    const datatype = await getDatatype(db.adminSql, WS, 'ordered-selection-policy');
+    expect(datatype).toMatchObject({ nature: 'record', payloadSchema: {
+      required: ['order', 'excluded'], additionalProperties: false,
+      properties: { order: { uniqueItems: true }, excluded: { uniqueItems: true } },
+    } });
+    await db.adminSql`INSERT INTO harness_shared.goals
+      (id, install_slug, workspace_id, title, status, property_schema)
+      VALUES ('g-tp-tea', ${HARNESS}, ${WS}, 'Private tea tasting', 'active',
+        ${JSON.stringify(teaSchema)}::text::jsonb)`;
+    const write = (property: string, value: unknown, expectedVersion: number, provenance: 'owner-edit' | 'agent-edit') =>
+      db.adminSql.begin((tx) => applyGoalPropertyWrite(tx as unknown as typeof db.adminSql, {
+        workspaceId: WS, goalId: 'g-tp-tea', property, value, expectedVersion, provenance,
+        actorId: provenance === 'owner-edit' ? 'owner' : 'source-agent',
+      }));
+    const preferences = { order: ['rooibos', 'mint'], excluded: ['chamomile'] };
+    expect(await write('tea_policy', preferences, 0, 'owner-edit'))
+      .toMatchObject({ ok: true, entry: { version: 1, provenance: 'owner-edit' } });
+    expect(await write('tea_choices', ['mint', 'chamomile', 'rooibos', 'hibiscus'], 0, 'agent-edit'))
+      .toMatchObject({ ok: true });
+    expect(await write('tea_policy', { order: [], excluded: [] }, 1, 'agent-edit'))
+      .toMatchObject({ ok: false, code: 'forbidden' });
+    expect(await write('tea_policy', { order: ['mint', 'mint'], excluded: [] }, 1, 'owner-edit'))
+      .toMatchObject({ ok: false, code: 'invalid_value' });
+    const [row] = await db.adminSql<Array<{ property_schema: unknown; properties: unknown }>>`
+      SELECT property_schema, properties FROM harness_shared.goals
+       WHERE id = 'g-tp-tea' AND workspace_id = ${WS}`;
+    const reloaded = derivePropertySurface(row!);
+    expect(reloaded.propertySchema).toEqual(teaSchema);
+    expect(reloaded.effective.tea_policy).toEqual(preferences);
+    expect(reloaded.effective.tea_choices).toEqual(['mint', 'chamomile', 'rooibos', 'hibiscus']);
+    expect(reloaded.properties.tea_policy).toMatchObject({ version: 1, edited_by: 'owner', provenance: 'owner-edit' });
+    expect(await applyGoalPropertyWrite(db.adminSql, { workspaceId: 'other-workspace', goalId: 'g-tp-tea',
+      property: 'tea_policy', value: preferences, expectedVersion: 1, provenance: 'owner-edit', actorId: 'owner' }))
+      .toEqual({ ok: false, code: 'not_found' });
+  });
+
+  it('serializes concurrent owner policy replacements instead of losing either save silently', async () => {
+    await validatePropertySchemaDeclaration(db.adminSql, WS, teaSchema);
+    await db.adminSql`INSERT INTO harness_shared.goals
+      (id, install_slug, workspace_id, title, status, property_schema)
+      VALUES ('g-tp-tea-race', ${HARNESS}, ${WS}, 'Private tea CAS race', 'active',
+        ${JSON.stringify(teaSchema)}::text::jsonb)`;
+    const options = [{ order: ['mint'], excluded: ['rooibos'] }, { order: ['rooibos'], excluded: ['mint'] }];
+    const results = await Promise.all(options.map((value, index) => db.adminSql.begin((tx) =>
+      applyGoalPropertyWrite(tx as unknown as typeof db.adminSql, { workspaceId: WS,
+        goalId: 'g-tp-tea-race', property: 'tea_policy', value, expectedVersion: 0,
+        provenance: 'owner-edit', actorId: `owner-${index}` }))));
+    expect(results.filter((r) => r.ok)).toHaveLength(1);
+    expect(results.find((r) => !r.ok)).toMatchObject({ code: 'stale', actualVersion: 1 });
+    const winner = results.find((r) => r.ok)!;
+    if (!winner.ok) throw new Error('no CAS winner');
+    const [row] = await db.adminSql<Array<{ property_schema: unknown; properties: unknown }>>`
+      SELECT property_schema, properties FROM harness_shared.goals
+       WHERE id = 'g-tp-tea-race' AND workspace_id = ${WS}`;
+    expect(derivePropertySurface(row!).properties.tea_policy).toEqual(winner.entry);
+  });
+
+  it('the authenticated door protects owner policy and never attributes discovered worklist candidates', async () => {
+    const planRef = 'plan:tp-harness/tp-discovered';
+    const schema = {
+      worklist: { datatype: 'plan-ref-list', default: [], editable_by: 'both',
+        collection: { source: 'active-workspace-plans', policy: 'worklist_policy', order: 'priority', selectable: true, defaultSelected: true } },
+      worklist_policy: teaSchema.tea_policy,
+    };
+    await db.adminSql`INSERT INTO harness_shared.goals
+      (id, install_slug, workspace_id, title, status, property_schema)
+      VALUES ('g-tp-discovered', ${HARNESS}, ${WS}, 'Private discovered work', 'active',
+        ${JSON.stringify(schema)}::text::jsonb)`;
+    await db.adminSql`INSERT INTO harness_shared.harness_plans (workspace_id, harness_slug, plan_slug, title, status)
+      VALUES (${WS}, ${HARNESS}, 'tp-discovered', 'Private discoverable plan', 'active')`;
+    await db.adminSql`INSERT INTO harness_shared.work_items
+      (feature_id, workspace_id, harness_slug, nature, source_plan_slug, origin)
+      VALUES ('WI-tp-discovered', ${WS}, ${HARNESS}, 'issue', 'tp-discovered', 'local')`;
+    const call = async (property: string, value: unknown, ownerId: string) => {
+      const r = await db.adminSql.begin((tx) => setGoalProperty.handler({
+        goalId: 'g-tp-discovered', property, value, expectedVersion: 0,
+      } as never, { workspaceId: WS, isSuperuser: true, uiClientId: ownerId, tx } as never)) as unknown as
+        { isError?: boolean; content: Array<{ text: string }> };
+      return JSON.parse(r.content[0]!.text);
+    };
+    expect(await call('worklist_policy', { order: [planRef], excluded: [] }, 'su-source-agent'))
+      .toMatchObject({ error: 'forbidden' });
+    expect(await call('worklist_policy', { order: ['plan:ambiguous'], excluded: [] }, ADMIN_COORD_UI_OWNER))
+      .toMatchObject({ error: 'invalid_value' });
+    expect(await call('worklist_policy', { order: [planRef], excluded: ['plan:other/dormant'] }, ADMIN_COORD_UI_OWNER))
+      .toMatchObject({ ok: true, version: 1, provenance: 'owner-edit' });
+    const updated = await call('worklist', [planRef], 'su-source-agent');
+    expect(updated).toMatchObject({ ok: true, version: 1 });
+    expect(updated).not.toHaveProperty('attributionBackfill');
+    const [plan] = await db.adminSql<Array<{ goal_id: string | null }>>`SELECT goal_id FROM harness_shared.harness_plans
+      WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = 'tp-discovered'`;
+    const [item] = await db.adminSql<Array<{ goal_id: string | null }>>`SELECT goal_id FROM harness_shared.work_items
+      WHERE workspace_id = ${WS} AND feature_id = 'WI-tp-discovered'`;
+    expect(plan!.goal_id).toBeNull();
+    expect(item!.goal_id).toBeNull();
   });
 });

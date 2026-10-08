@@ -101,6 +101,7 @@ import type { GoalHolderFirstTurnAttestation } from './goals/holder-attestation'
 // Type-only: erased at runtime, so it cannot close the cycle REFUSAL_SCOPES
 // documents. The value is reached through a dynamic import at launch time.
 import type { GoalSpendRollup } from './goals/spend-rollup';
+import { readTypedPropertyCollection } from './typed-properties';
 
 function pg(sql?: Sql): Sql {
   return sql ?? getOrgPg().sql;
@@ -886,7 +887,11 @@ export interface GoalPortfolioBrief {
     counts: { todo: number; wip: number; blocked: number; needsHuman: number; done: number };
     ambiguousMatches: number;
     placement: GoalPlanPlacement;
+    /** Present only for an opted-in collection; omitted preserves legacy consumers. */
+    selected?: boolean;
   }>;
+  collection?: { source: 'manual' | 'active-workspace-plans'; policyVersion: number;
+    available: boolean; reason?: string };
   pots: Array<{
     harness: string;
     role: 'owner' | 'contributing';
@@ -1068,6 +1073,7 @@ type GoalPortfolioSourceRow = {
   parent_id?: unknown;
   tripwires?: unknown;
   properties?: unknown;
+  property_schema?: unknown;
   metadata?: unknown;
   pots?: unknown;
   plans?: unknown;
@@ -1895,8 +1901,25 @@ async function assembleGoalPortfolioBrief(args: {
         SELECT * FROM harness_shared.goals
          WHERE workspace_id = ${args.workspaceId} AND id = ${args.goalId}
          LIMIT 1
+      ), explicit_refs AS (
+        SELECT wr.ref, wr.ordinality
+          FROM goal_row g,
+               jsonb_array_elements_text(COALESCE(g.properties->'worklist'->'value', '[]'::jsonb))
+               WITH ORDINALITY AS wr(ref, ordinality)
+      ), worklist_refs AS (
+        SELECT ref, ordinality FROM explicit_refs
+        UNION ALL
+        SELECT 'plan:' || hp.harness_slug || '/' || hp.plan_slug,
+               COALESCE((SELECT max(ordinality) FROM explicit_refs), 0) +
+                 row_number() OVER (ORDER BY hp.created_at, hp.harness_slug, hp.plan_slug)
+          FROM goal_row g
+          JOIN harness_shared.harness_plans hp ON hp.workspace_id = g.workspace_id
+         WHERE g.property_schema->'worklist'->'collection'->>'source' = 'active-workspace-plans'
+           AND COALESCE(hp.op_status, hp.status) = 'active'
+           AND NOT EXISTS (SELECT 1 FROM explicit_refs er
+             WHERE er.ref = 'plan:' || hp.harness_slug || '/' || hp.plan_slug)
       )
-      SELECT g.status, g.parent_id, g.tripwires, g.properties, g.metadata,
+      SELECT g.status, g.parent_id, g.tripwires, g.property_schema, g.properties, g.metadata,
              (SELECT COALESCE(jsonb_agg(jsonb_build_object(
                        'id', gp.id, 'harness', gp.harness_slug, 'role', gp.role,
                        'note', gp.note, 'killCriterion', gp.kill_criterion
@@ -1915,6 +1938,8 @@ async function assembleGoalPortfolioBrief(args: {
                              SELECT count(*) FROM harness_shared.harness_plans matches
                               WHERE matches.workspace_id = g.workspace_id
                                 AND matches.plan_slug = regexp_replace(wr.ref, '^plan:(?:[^/]+/)?', '')
+                                AND (position('/' in regexp_replace(wr.ref, '^plan:', '')) = 0
+                                  OR matches.harness_slug = split_part(regexp_replace(wr.ref, '^plan:', ''), '/', 1))
                            ),
                            'items', COALESCE((
                              SELECT jsonb_agg(jsonb_build_object(
@@ -2007,8 +2032,7 @@ async function assembleGoalPortfolioBrief(args: {
                              )
                            )
                          ) AS plan_row
-                    FROM jsonb_array_elements_text(COALESCE(g.properties->'worklist'->'value', '[]'::jsonb))
-                         WITH ORDINALITY AS wr(ref, ordinality)
+                    FROM worklist_refs wr
                     LEFT JOIN LATERAL (
                       SELECT hp.* FROM harness_shared.harness_plans hp
                        WHERE hp.workspace_id = g.workspace_id
@@ -2180,7 +2204,59 @@ async function assembleGoalPortfolioBrief(args: {
       degradedReasons,
       { workspaceId: args.workspaceId, sql, now: args.now },
     );
-    const worklist = closures.size > 0 ? parsePortfolioWorklist(row.plans, assembledAt, closures) : firstPass;
+    let worklist = closures.size > 0 ? parsePortfolioWorklist(row.plans, assembledAt, closures) : firstPass;
+    const propertySchema = portfolioJsonObject(row.property_schema) ?? {};
+    const properties = portfolioJsonObject(row.properties) ?? {};
+    // Canonicalize resolved legacy refs for policy matching without rewriting
+    // their saved bytes. Unresolvable legacy refs remain visibly blocked.
+    const canonical = (plan: GoalPortfolioBrief['worklist'][number]) => plan.harness
+      ? `plan:${plan.harness}/${plan.slug}` : plan.ref;
+    const resolvable = worklist.filter((plan) => plan.harness !== null || plan.ref.includes('/'));
+    const unresolved = worklist.filter((plan) => plan.harness === null && !plan.ref.includes('/'));
+    const selection = readTypedPropertyCollection({ propertySchema, properties, property: 'worklist',
+      source: { ok: true, items: resolvable.map(canonical) } });
+    const collectionDefinition = portfolioObject(portfolioObject(propertySchema.worklist)?.collection);
+    const configured = collectionDefinition?.source === 'manual' || collectionDefinition?.source === 'active-workspace-plans';
+    let collection: GoalPortfolioBrief['collection'];
+    if (configured) {
+      if (selection.ok && selection.configured) {
+        collection = { source: selection.collection.source, policyVersion: selection.policyVersion, available: true };
+        const byRef = new Map<string, GoalPortfolioBrief['worklist'][number]>();
+        for (const plan of resolvable) {
+          const ref = canonical(plan);
+          // An exact discovered ref can resolve an old ambiguous shorthand;
+          // its position still comes from the unchanged legacy source order.
+          if (!byRef.has(ref) || plan.ref === ref) byRef.set(ref, { ...plan, ref });
+        }
+        worklist = selection.items.map((item, index) => ({ ...byRef.get(item.id)!,
+          ordinal: index + 1, selected: item.selected }));
+        const resolvedCount = worklist.length;
+        worklist.push(...unresolved.map((plan, index) => ({ ...plan,
+          ordinal: resolvedCount + index + 1, selected: true })));
+      } else {
+        const reason = selection.ok ? 'collection declaration is unavailable' : selection.reason;
+        collection = { source: collectionDefinition.source as 'manual' | 'active-workspace-plans',
+          policyVersion: 0, available: false, reason };
+        degradedReasons.push(`worklist selection unavailable: ${reason}`);
+        worklist = worklist.map((plan) => ({ ...plan, selected: false }));
+      }
+      const goalByRef = new Map(portfolioArray(row.plans).flatMap((value) => {
+        const plan = portfolioObject(value);
+        const harness = portfolioString(plan?.harness);
+        const slug = portfolioString(plan?.slug);
+        return harness && slug ? [[`plan:${harness}/${slug}`, portfolioString(plan?.goalId)] as const] : [];
+      }));
+      worklist = worklist.map((plan) => {
+        const otherGoal = goalByRef.get(canonical(plan));
+        const reason = plan.selected === false
+          ? collection?.available ? 'The owner excluded this plan from future work.' : collection?.reason
+          : otherGoal && otherGoal !== args.goalId ? `This plan belongs to another goal (${otherGoal}).` : null;
+        if (!reason) return plan;
+        return { ...plan, placement: { ...plan.placement,
+          state: plan.placement.state === 'working' ? 'working' as const : 'blocked' as const,
+          reconciliation: { consistent: true, action: 'none' as const, reason, toolCall: null } } };
+      });
+    }
     for (const plan of worklist) {
       if (!plan.title) degradedReasons.push(`worklist ref ${plan.ref} does not resolve`);
       if (plan.ambiguousMatches > 1 && !plan.ref.slice('plan:'.length).includes('/')) {
@@ -2294,6 +2370,7 @@ async function assembleGoalPortfolioBrief(args: {
         const plan = portfolioObject(value);
         const ref = portfolioString(plan?.ref);
         if (!plan || !ref) return [];
+        if (configured && portfolioString(plan.goalId) !== args.goalId) return [];
         return [{ ref, harness: portfolioString(plan.harness),
           goalId: portfolioString(plan.goalId), exists: Boolean(portfolioString(plan.title)) }];
       }),
@@ -2301,6 +2378,7 @@ async function assembleGoalPortfolioBrief(args: {
         const item = portfolioObject(value);
         const id = portfolioString(item?.id);
         if (!item || !id) return [];
+        if (configured && portfolioString(item.goalId) !== args.goalId) return [];
         return [{ id, harness: portfolioString(item.harness),
           planSlug: portfolioString(item.planSlug), goalId: portfolioString(item.goalId),
           origin: portfolioString(item.origin) }];
@@ -2347,6 +2425,7 @@ async function assembleGoalPortfolioBrief(args: {
         parentId: portfolioString(row.parent_id),
       },
       worklist,
+      ...(collection ? { collection } : {}),
       pots,
       attribution,
       drainFleet: {

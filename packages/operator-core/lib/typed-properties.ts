@@ -12,6 +12,40 @@ import type { RefusalContract } from './capability-envelope/refusal-contract-typ
 
 export const PROPERTY_NAME = /^[a-z][a-z0-9_-]{0,63}$/;
 
+export const ORDERED_SELECTION_POLICY_DATATYPE = 'ordered-selection-policy';
+export const QUALIFIED_COLLECTION_PLAN_REF = /^plan:[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._-]*$/;
+
+const collectionItemId = z.string().min(1).max(400);
+const uniqueItemIds = z.array(collectionItemId).max(10_000)
+  .refine((ids) => new Set(ids).size === ids.length, 'collection item ids must be unique');
+
+/** Owner preferences retain dormant ids when their source disappears. */
+export const OrderedSelectionPolicySchema = z.object({
+  order: uniqueItemIds,
+  excluded: uniqueItemIds,
+  /** Explicit reselection when the collection starts unchecked. */
+  included: uniqueItemIds.optional(),
+}).strict();
+export type OrderedSelectionPolicy = z.infer<typeof OrderedSelectionPolicySchema>;
+
+/** The registry uses the existing JSON-Schema validator, with the same shape as the pure writer. */
+export function orderedSelectionPolicyPayloadSchema(): Record<string, unknown> {
+  const ids = { type: 'array', maxItems: 10_000, uniqueItems: true,
+    items: { type: 'string', minLength: 1, maxLength: 400 } };
+  return { type: 'object', required: ['order', 'excluded'], additionalProperties: false,
+    properties: { order: ids, excluded: ids, included: ids } };
+}
+
+/** Opt-in metadata; source data and owner policy remain separate properties. */
+export const TypedPropertyCollectionSchema = z.object({
+  source: z.enum(['manual', 'active-workspace-plans']),
+  policy: z.string().regex(PROPERTY_NAME),
+  order: z.enum(['display', 'priority']),
+  selectable: z.boolean(),
+  defaultSelected: z.boolean(),
+}).strict();
+export type TypedPropertyCollection = z.infer<typeof TypedPropertyCollectionSchema>;
+
 export const PropertyEditableBySchema = z.enum(['owner', 'agent', 'both']);
 export type PropertyEditableBy = z.infer<typeof PropertyEditableBySchema>;
 
@@ -20,13 +54,53 @@ export const TypedPropertyDefinitionSchema = z
     datatype: z.string().min(1).max(120),
     default: z.unknown().optional(),
     editable_by: PropertyEditableBySchema,
+    collection: TypedPropertyCollectionSchema.optional(),
   })
   .strict();
 export type TypedPropertyDefinition = z.infer<typeof TypedPropertyDefinitionSchema>;
 
 export const TypedPropertySchemaDocumentSchema = z
   .record(z.string().regex(PROPERTY_NAME), TypedPropertyDefinitionSchema)
-  .refine((document) => Object.keys(document).length <= 100, 'at most 100 properties may be declared');
+  .refine((document) => Object.keys(document).length <= 100, 'at most 100 properties may be declared')
+  .superRefine((document, ctx) => {
+    for (const [name, definition] of Object.entries(document)) {
+      if (definition.datatype === ORDERED_SELECTION_POLICY_DATATYPE &&
+          (definition.editable_by !== 'owner' || (definition.default !== undefined &&
+            !OrderedSelectionPolicySchema.safeParse(definition.default).success))) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: [name],
+          message: 'ordered-selection-policy must be owner-only with a valid policy default' });
+      }
+      const collection = definition.collection;
+      if (!collection) continue;
+      const policy = document[collection.policy];
+      if (collection.policy === name || !policy || policy.collection ||
+          policy.datatype !== ORDERED_SELECTION_POLICY_DATATYPE || policy.editable_by !== 'owner') {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: [name, 'collection', 'policy'],
+          message: 'collection policy must reference a separate owner-only ordered-selection-policy property' });
+      }
+      if (collection.source === 'active-workspace-plans' && definition.datatype !== 'plan-ref-list') {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: [name, 'datatype'],
+          message: 'active-workspace-plans requires the plan-ref-list datatype' });
+      }
+      if (collection.source === 'active-workspace-plans' && policy?.default !== undefined) {
+        const preferences = OrderedSelectionPolicySchema.safeParse(policy.default);
+        if (preferences.success && [...preferences.data.order, ...preferences.data.excluded,
+          ...(preferences.data.included ?? [])]
+            .some((id) => !QUALIFIED_COLLECTION_PLAN_REF.test(id))) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, path: [collection.policy, 'default'],
+            message: 'active plan policy defaults require qualified plan:<harness>/<slug> refs' });
+        }
+      }
+      if (definition.default !== undefined) {
+        const ids = uniqueItemIds.safeParse(definition.default);
+        if (!ids.success || (collection.source === 'active-workspace-plans' &&
+            ids.data.some((id) => !QUALIFIED_COLLECTION_PLAN_REF.test(id)))) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, path: [name, 'default'],
+            message: 'collection defaults must be unique item ids; active plans require qualified plan:<harness>/<slug> refs' });
+        }
+      }
+    }
+  });
 export type TypedPropertySchemaDocument = z.infer<typeof TypedPropertySchemaDocumentSchema>;
 
 export const PropertyEditProvenanceSchema = z.enum(['owner-edit', 'agent-edit']);
@@ -45,6 +119,78 @@ export type StoredTypedProperty = z.infer<typeof StoredTypedPropertySchema>;
 
 export const StoredTypedPropertiesSchema = z.record(z.string(), StoredTypedPropertySchema);
 export type StoredTypedProperties = z.infer<typeof StoredTypedPropertiesSchema>;
+
+export type TypedPropertyCollectionRead =
+  | { ok: true; configured: false }
+  | { ok: false; configured: true; reason: string }
+  | {
+      ok: true;
+      configured: true;
+      collection: TypedPropertyCollection;
+      policy: OrderedSelectionPolicy;
+      policyVersion: number;
+      items: Array<{ id: string; selected: boolean }>;
+      selected: string[];
+    };
+
+/**
+ * One effective selection for every opted-in collection. A registered source
+ * adapter supplies ids; this function never discovers, persists or admits work.
+ * Owner order/exclusions survive absent items, while newly seen ids append in
+ * source order. Domain blocking reasons belong to the consumer, not this policy.
+ */
+export function readTypedPropertyCollection(args: {
+  propertySchema: unknown;
+  properties: unknown;
+  property: string;
+  source?: { ok: true; items: readonly string[] } | { ok: false; reason: string };
+}): TypedPropertyCollectionRead {
+  const schema = TypedPropertySchemaDocumentSchema.safeParse(args.propertySchema ?? {});
+  if (!schema.success) return { ok: false, configured: true, reason: 'invalid collection declaration' };
+  const definition = schema.data[args.property];
+  const collection = definition?.collection;
+  if (!collection) return { ok: true, configured: false };
+  if (args.properties != null && (typeof args.properties !== 'object' || Array.isArray(args.properties))) {
+    return { ok: false, configured: true, reason: 'invalid stored property document' };
+  }
+  const properties = args.properties && typeof args.properties === 'object' && !Array.isArray(args.properties)
+    ? args.properties as Record<string, unknown> : {};
+  const policyDefinition = schema.data[collection.policy];
+  const policyEntry = properties[collection.policy] === undefined ? null
+    : StoredTypedPropertySchema.safeParse(properties[collection.policy]);
+  if (policyEntry && (!policyEntry.success || policyEntry.data.provenance !== 'owner-edit')) {
+    return { ok: false, configured: true, reason: 'owner policy envelope is invalid or not owner-authored' };
+  }
+  const policy = OrderedSelectionPolicySchema.safeParse(policyEntry?.success ? policyEntry.data.value
+    : policyDefinition.default ?? { order: [], excluded: [] });
+  if (!policy.success) return { ok: false, configured: true, reason: 'invalid owner selection policy' };
+  if (args.source?.ok === false) return { ok: false, configured: true, reason: args.source.reason };
+  if (collection.source !== 'manual' && !args.source) {
+    return { ok: false, configured: true, reason: 'registered collection source is unavailable' };
+  }
+  const sourceEntry = properties[args.property] === undefined ? null
+    : StoredTypedPropertySchema.safeParse(properties[args.property]);
+  if (!args.source && sourceEntry && !sourceEntry.success) {
+    return { ok: false, configured: true, reason: 'invalid manual collection envelope' };
+  }
+  const ids = z.array(collectionItemId).max(10_000).safeParse(args.source?.items ??
+    (sourceEntry?.success ? sourceEntry.data.value : definition.default ?? []));
+  if (!ids.success) return { ok: false, configured: true, reason: 'invalid collection item ids' };
+  if (collection.source === 'active-workspace-plans' &&
+      [...ids.data, ...policy.data.order, ...policy.data.excluded, ...(policy.data.included ?? [])]
+        .some((id) => !QUALIFIED_COLLECTION_PLAN_REF.test(id))) {
+    return { ok: false, configured: true, reason: 'active plan collections require qualified plan refs' };
+  }
+  const available = new Set(ids.data);
+  const ordered = [...new Set([...policy.data.order.filter((id) => available.has(id)), ...ids.data])];
+  const excluded = new Set(policy.data.excluded);
+  const included = new Set(policy.data.included ?? []);
+  const items = ordered.map((id) => ({ id, selected: !collection.selectable ||
+    (!excluded.has(id) && (collection.defaultSelected || included.has(id))) }));
+  return { ok: true, configured: true, collection, policy: policy.data,
+    policyVersion: policyEntry?.success ? policyEntry.data.version : 0,
+    items, selected: items.filter((item) => item.selected).map((item) => item.id) };
+}
 
 export type TypedPropertyMutationFailure =
   | { ok: false; code: 'bad_property_schema'; issues: string[] }
@@ -203,6 +349,26 @@ export function prepareTypedPropertyMutation(
       datatype: definition.datatype,
       issues: validation.issues,
     };
+  }
+
+  // Keep the declared collection semantics strict even if an existing registry
+  // row has an unconstrained payload. Never discard a dormant preference merely
+  // because the corresponding source item is currently absent.
+  const policyConsumers = Object.values(declaration.data)
+    .filter((def) => def.collection?.policy === args.property);
+  const policy = definition.datatype === ORDERED_SELECTION_POLICY_DATATYPE
+    ? OrderedSelectionPolicySchema.safeParse(args.value) : null;
+  const ids = definition.collection ? uniqueItemIds.safeParse(args.value) : null;
+  const activePlanIds = policy?.success && policyConsumers.some((def) =>
+    def.collection?.source === 'active-workspace-plans')
+    ? [...policy.data.order, ...policy.data.excluded, ...(policy.data.included ?? [])]
+    : ids?.success && definition.collection?.source === 'active-workspace-plans' ? ids.data : [];
+  if ((policy && !policy.success) || (ids && !ids.success) ||
+      activePlanIds.some((id) => !QUALIFIED_COLLECTION_PLAN_REF.test(id))) {
+    return { ok: false, code: 'invalid_value', property: args.property, datatype: definition.datatype,
+      issues: policy && !policy.success ? issuesOf(policy.error)
+        : ids && !ids.success ? issuesOf(ids.error)
+          : ['active plan collections require qualified plan:<harness>/<slug> refs'] };
   }
 
   const priorValue = current ? current.value : definition.default;

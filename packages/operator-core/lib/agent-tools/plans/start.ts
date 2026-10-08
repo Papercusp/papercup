@@ -270,11 +270,13 @@ export default defineTool({
         // plans with zero first-class clauses remain explicitly report-only.
         let specQuality: PlanSpecQualityGateVerdict | undefined;
         if (read) {
-          const planItemIds = specQualityPlanItemIds(read.row.items.length ? read.row.items : read.parsed.items);
+          const planItems = read.row.items.length ? read.row.items : read.parsed.items;
+          const planItemIds = specQualityPlanItemIds(planItems);
           specQuality = await evaluatePlanSpecQualityGate({
             harnessSlug,
             planSlug: slug,
             planItemIds,
+            planItems,
           });
           ctxAny.metadata?.({
             slug,
@@ -597,7 +599,10 @@ export default defineTool({
                 },
               };
               const currentSpecQuality = await evaluatePlanSpecQualityGate({
-                harnessSlug, planSlug: slug, planItemIds: specQualityPlanItemIds(lockedPlan.items),
+                harnessSlug,
+                planSlug: slug,
+                planItemIds: specQualityPlanItemIds(lockedPlan.items),
+                planItems: lockedPlan.items,
               });
               if (!currentSpecQuality.satisfied) return {
                 newBody: null,

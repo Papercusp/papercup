@@ -50,6 +50,7 @@ describe('morning AI operation admission and completion contracts', () => {
 
   it('loads the research spine and admits the explicit approved input', () => {
     expect(blueprint.knobs.requiresRepo).toBe(false);
+    expect(blueprint.knobs.maxTurns).toBe(12);
     expect(blueprint.spine.decider).toBe('research-director');
     expect(checkAgainstJsonSchema(inputSchema, input)).toEqual({ ok: true });
   });
@@ -96,10 +97,25 @@ describe('morning AI operation admission and completion contracts', () => {
     ['missing source coverage', { unavailableSources: undefined }],
     ['excess report items', { itemCount: 11 }],
     ['negative source count', { sourceCount: -1 }],
+    ['no source attempts', { sourceCount: 0 }],
+    ['unbounded source count', { sourceCount: 31 }],
+    ['duplicate failed feed', { status: 'partial', unavailableSources: ['openai', 'openai'] }],
+    ['empty failed feed id', { status: 'partial', unavailableSources: [''] }],
+    ['quiet day with material items', { status: 'no-material-updates', itemCount: 3 }],
+    ['quiet day hiding source outage', { status: 'no-material-updates', itemCount: 0, unavailableSources: ['openai'] }],
+    ['complete status hiding source outage', { unavailableSources: ['openai'] }],
+    ['material status on quiet day', { itemCount: 0 }],
+    ['partial status without coverage gap', { status: 'partial', unavailableSources: [] }],
     ['fabricated success status', { status: 'shipped' }],
     ['unexpected output', { secret: 'unapproved output' }],
   ])('refuses %s at completion', (_label, patch) => {
     expect(checkAgainstJsonSchema(operation.acceptance.resultSchema, { ...output, ...patch }))
       .toMatchObject({ ok: false, code: 'invalid_data' });
+  });
+
+  it('admits an explicitly partial quiet day after failed feeds', () => {
+    expect(checkAgainstJsonSchema(operation.acceptance.resultSchema, {
+      ...output, status: 'partial', itemCount: 0, unavailableSources: ['last-week-in-ai'],
+    })).toEqual({ ok: true });
   });
 });

@@ -1,4 +1,4 @@
-.reports-page { padding: 24px; color: var(--fg); max-width: 1600px; margin: 0 auto; }
+.reports-page { padding: 24px; color: var(--fg); max-width: 1600px; margin: 0 auto; container-type: inline-size; container-name: reports-page; }
 .reports-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .reports-heading h1 { margin: 0 0 6px; }
 .reports-heading p { opacity: .7; margin: 0; }
@@ -19,4 +19,5 @@
 .reports-history-item { display: block; padding: 8px; color: inherit; background: transparent; border: 0; cursor: pointer; text-align: left; }
 .reports-history-item[aria-current=true] { font-weight: bold; color: var(--accent); }
 .reports-body { margin-top: 24px; }
+@container reports-page (max-width: 640px) { .reports-workspace { grid-template-columns: 1fr; } .reports-list { border-right: 0; border-bottom: 1px solid var(--border); max-height: 35vh; } .reports-reader { padding: 16px; } }
 @media (max-width: 800px) { .reports-page { padding: 12px; } .reports-workspace { grid-template-columns: 1fr; } .reports-list { border-right: 0; border-bottom: 1px solid var(--border); max-height: 35vh; } .reports-reader { padding: 16px; } }

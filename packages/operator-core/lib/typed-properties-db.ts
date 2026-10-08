@@ -25,6 +25,8 @@ import type postgres from 'postgres';
 import {
   prepareTypedPropertyMutation,
   TypedPropertySchemaDocumentSchema,
+  ORDERED_SELECTION_POLICY_DATATYPE,
+  OrderedSelectionPolicySchema,
   type PropertyEditProvenance,
   type TypedPropertyMutationResult,
 } from './typed-properties';
@@ -34,6 +36,7 @@ import {
   CANONICAL_WORKLIST_PROPERTY,
   PLAN_REF_LIST_DATATYPE,
   ensurePlanRefListDatatype,
+  ensureOrderedSelectionPolicyDatatype,
   withCanonicalWorklistDeclaration,
 } from './goals/package-property-datatypes';
 
@@ -83,6 +86,13 @@ export async function validatePropertySchemaDeclaration(
   }
   const issues: string[] = [];
   for (const [name, def] of Object.entries(parsed.data)) {
+    if (def.datatype === ORDERED_SELECTION_POLICY_DATATYPE) {
+      await ensureOrderedSelectionPolicyDatatype(sql, workspaceId);
+      if (def.default !== undefined) {
+        const policy = OrderedSelectionPolicySchema.safeParse(def.default);
+        if (!policy.success) issues.push(`${name}: invalid ordered-selection-policy default`);
+      }
+    }
     const dt = await getDatatype(sql, workspaceId, def.datatype);
     if (!dt) {
       issues.push(
@@ -149,6 +159,9 @@ async function runPreparedMutation(
   const propsDoc = asDoc(row.properties);
   const parsed = TypedPropertySchemaDocumentSchema.safeParse(schemaDoc);
   const datatypeRef = parsed.success ? parsed.data[args.property]?.datatype : undefined;
+  if (datatypeRef === ORDERED_SELECTION_POLICY_DATATYPE) {
+    await ensureOrderedSelectionPolicyDatatype(sql, args.workspaceId);
+  }
   const resolved = datatypeRef
     ? await validateValueForDatatype(sql, args.workspaceId, datatypeRef, args.value)
     : null; // unknown property / bad schema — prepare refuses before validate runs

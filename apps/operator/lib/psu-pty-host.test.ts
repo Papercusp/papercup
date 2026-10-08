@@ -4762,7 +4762,7 @@ describe('Codex startup process trace (EI-24353430528930250)', () => {
       agent: 'codex', ownerId: 'su-trace', pid: 123, platform: 'linux',
       now: () => elapsedMs,
       resolveTargetPid: () => 456,
-      readCounters: (targetPid: number) => ({ pid: targetPid, majorFaults: 1, blockIoTicks: 2, readBytes: 3 }),
+      readCounters: (targetPid: number) => ({ pid: targetPid, comm: 'codex', majorFaults: 1, blockIoTicks: 2, readBytes: 3 }),
       emit: (_owner: string, kind: string, data: Record<string, unknown>) => { events.push({ kind, data }); return true; },
       interval: (fn: () => void, ms: number) => { expect(ms).toBe(500); tick = fn; return { unref: vi.fn() }; },
       clear,
@@ -4791,6 +4791,46 @@ describe('Codex startup process trace (EI-24353430528930250)', () => {
     startCodexStartupProcessTrace({ ...options, agent: 'claude' })('host-cleanup');
     startCodexStartupProcessTrace({ ...options, platform: 'win32' })('host-cleanup');
     expect(events).toHaveLength(0);
+  });
+
+  it('stops sampling a launcher after exec changes its comm and finds the later native child', () => {
+    let elapsedMs = 0;
+    let nativeReady = false;
+    let tick: (() => void) | undefined;
+    const events: Array<{ kind: string; data: Record<string, unknown> }> = [];
+    const stop = startCodexStartupProcessTrace({
+      agent: 'codex', ownerId: 'su-trace', pid: 100, platform: 'linux',
+      now: () => elapsedMs,
+      resolveTargetPid: () => elapsedMs === 0 ? 100 : nativeReady ? 200 : null,
+      readCounters: (pid: number) => ({
+        pid, comm: pid === 100 && elapsedMs > 0 ? 'node-MainThread' : 'codex',
+        majorFaults: pid === 200 ? 7 : 0, blockIoTicks: 0,
+        readBytes: pid === 200 ? 8192 : 0, writeBytes: 0,
+      }),
+      emit: (_owner: string, kind: string, data: Record<string, unknown>) => {
+        events.push({ kind, data });
+        return true;
+      },
+      interval: (fn: () => void) => { tick = fn; return { unref: vi.fn() }; },
+      clear: vi.fn(),
+    });
+    elapsedMs = 500;
+    tick?.();
+    expect(events.filter((event) => event.kind === 'codex-startup-process-sample'))
+      .toHaveLength(1);
+
+    nativeReady = true;
+    elapsedMs = 1000;
+    tick?.();
+    expect(events.at(-2)).toMatchObject({
+      kind: 'codex-startup-process-target-selected', data: { rootPid: 100, pid: 200 },
+    });
+    expect(events.at(-1)).toMatchObject({
+      kind: 'codex-startup-process-sample', data: { pid: 200, comm: 'codex', majorFaults: 7 },
+    });
+    expect(events.filter((event) => event.kind === 'codex-startup-process-sample')
+      .every((event) => event.data.comm === 'codex')).toBe(true);
+    stop('child-exit');
   });
 });
 

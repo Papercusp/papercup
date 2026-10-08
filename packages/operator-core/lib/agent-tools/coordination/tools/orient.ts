@@ -200,6 +200,8 @@ const ORIENT_COMPACTION_RECOVERY_TIMEOUT_MS = 15_000;
  * transport's required cleanup and response-serialization headroom.
  */
 export const ORIENT_AGGREGATE_TIMEOUT_MS = FOREGROUND_TIMEOUT_CEILING_MS;
+/** Leave the orchestration worker time to consume and return the degraded snapshot. */
+const ORIENT_PARENT_DEADLINE_HEADROOM_MS = 1_000;
 
 interface OrientPhaseDuration {
   phase: string;
@@ -260,10 +262,26 @@ export function withOrientAggregateTimeout<T>(
   work: Promise<T> | (() => Promise<T>),
   fallback: T,
   onTimeout?: (elapsedMs: number) => void,
+  callerDeadlineAtMs?: number,
 ): Promise<T> {
+  // A nested code:run may have only 30s (or a reduced post-preflight budget). Its worker
+  // cannot consume our flat 45s fallback after it dies. Honor the remaining absolute budget
+  // without widening either deadline, preserving the same honest unknown/partial snapshot.
+  const timeoutMs = typeof callerDeadlineAtMs === 'number' && Number.isFinite(callerDeadlineAtMs)
+    ? Math.max(0, Math.min(ORIENT_AGGREGATE_TIMEOUT_MS,
+      callerDeadlineAtMs - Date.now() - ORIENT_PARENT_DEADLINE_HEADROOM_MS))
+    : ORIENT_AGGREGATE_TIMEOUT_MS;
+  if (timeoutMs === 0) {
+    try {
+      onTimeout?.(0);
+    } catch {
+      /* diagnostics must never make the aggregate fallback less available */
+    }
+    return Promise.resolve(fallback);
+  }
   return withBoundedTimeout(work, {
     fallback,
-    timeoutMs: ORIENT_AGGREGATE_TIMEOUT_MS,
+    timeoutMs,
     label: 'orient:aggregate',
   }).then(({ value, reason, elapsedMs }) => {
     if (reason === 'timeout') {
@@ -4299,6 +4317,7 @@ export default defineTool({
           ...phaseTracker.snapshot(),
         };
       },
+      ctx.deadlineAtMs,
     );
     return aggregate;
   },

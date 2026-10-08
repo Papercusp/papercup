@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { readGoalPortfolioBrief } from '../goal-launch-settings';
 import { GOAL_OWNER_REPORT_FIELD, GOAL_OWNER_REPORT_SCHEMA_VERSION } from '../goal-owner-report';
+import { applyGoalPropertyWrite } from '../typed-properties-db';
 
 const WS = 'ws-goal-ladder-p019';
 const GOAL = 'goal-ladder-p019';
@@ -177,4 +178,128 @@ describe('canonical GOAL portfolio ladder (real Postgres)', () => {
     expect(verified?.reporting?.draft.unreadArtifacts).toEqual([]);
     expect(verified?.reporting?.draft.fields.moved).toContain('artifact work-item:WI-report-done read');
   }, 90_000);
+});
+
+describe('opt-in active workspace plan pool (P-003, real Postgres)', () => {
+  const declaration = {
+    worklist: { datatype: 'plan-ref-list', default: [], editable_by: 'both', collection: {
+      source: 'active-workspace-plans', policy: 'worklist_policy', order: 'priority',
+      selectable: true, defaultSelected: true,
+    } },
+    worklist_policy: { datatype: 'ordered-selection-policy', default: { order: [], excluded: [] }, editable_by: 'owner' },
+  };
+  const stored = (value: unknown) => ({ value, version: 7, edited_at: '2026-10-08T01:00:00.000Z',
+    edited_by: 'original-owner', provenance: 'owner-edit' });
+  async function fixture(name: string) {
+    const workspace = `ws-p003-${name}`;
+    const goal = `goal-p003-${name}`;
+    const sql = db.adminSql;
+    const properties = { worklist: stored(['plan:p003/two', 'plan:p003/one']) };
+    await sql`INSERT INTO harness_shared.goals
+      (workspace_id, id, install_slug, title, status, property_schema, properties)
+      VALUES (${workspace}, ${goal}, 'p003', 'Private discovery fixture', 'active',
+        ${sql.json(declaration)}, ${sql.json(properties)})`;
+    await sql`INSERT INTO harness_shared.goal_pots
+      (workspace_id, goal_id, harness_slug, role, kill_criterion)
+      VALUES (${workspace}, ${goal}, 'p003', 'owner', 'Stop when this private test finishes')`;
+    const plan = async (slug: string, status = 'active', harness = 'p003', planGoal: string | null = null,
+      planWorkspace = workspace) => {
+      await sql`INSERT INTO harness_shared.harness_plans
+        (workspace_id, harness_slug, plan_slug, title, status, goal_id)
+        VALUES (${planWorkspace}, ${harness}, ${slug}, ${slug}, ${status}, ${planGoal})`;
+      await sql`INSERT INTO harness_shared.plan_items
+        (workspace_id, harness_slug, plan_slug, item_id, item_text, status, seq)
+        VALUES (${planWorkspace}, ${harness}, ${slug}, 'P-001', 'Private ready work', 'todo', 1)`;
+    };
+    await plan('one');
+    await plan('two');
+    const read = () => readGoalPortfolioBrief({ workspaceId: workspace, goalId: goal, sql, claimability: 'skip',
+      launch: { goalBrief: { title: 'Private discovery fixture', body: null, killCriterion: 'Stop when done',
+        budgetCents: null, budgetWindowSec: null, standing: false }, settings: null, budget: null,
+        ceilings: { maxAgents: 12, maxPerFleet: 5 }, headcount: { total: 0, fleet: 0 } } });
+    const policy = (value: unknown, expectedVersion = 0) => sql.begin((tx) =>
+      applyGoalPropertyWrite(tx as unknown as typeof sql, { workspaceId: workspace, goalId: goal,
+        property: 'worklist_policy', value, expectedVersion, actorId: 'private-owner', provenance: 'owner-edit' }));
+    return { workspace, goal, sql, plan, read, policy, properties };
+  }
+
+  it('discovers newly active plans after saved order without changing any stored worklist or attribution', async () => {
+    const fx = await fixture('append');
+    await fx.plan('pending', 'draft');
+    await fx.plan('foreign', 'active', 'p003', null, 'different-workspace');
+    expect((await fx.read())?.worklist.map((p) => p.ref)).toEqual(['plan:p003/two', 'plan:p003/one']);
+    await fx.sql`UPDATE harness_shared.harness_plans SET status = 'active'
+      WHERE workspace_id = ${fx.workspace} AND plan_slug = 'pending'`;
+    const refreshed = await fx.read();
+    expect(refreshed?.degradedReasons.filter((r) => r.includes('portfolio read failed'))).toEqual([]);
+    expect(refreshed?.worklist.map((p) => [p.ref, p.selected])).toEqual([
+      ['plan:p003/two', true], ['plan:p003/one', true], ['plan:p003/pending', true],
+    ]);
+    expect(refreshed?.collection).toEqual({ source: 'active-workspace-plans', policyVersion: 0, available: true });
+    expect(refreshed?.attribution?.issues).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'unstamped-plan' }),
+    ]));
+    const [goal] = await fx.sql`SELECT properties FROM harness_shared.goals
+      WHERE workspace_id = ${fx.workspace} AND id = ${fx.goal}`;
+    expect(goal.properties).toEqual(fx.properties);
+    const plans = await fx.sql`SELECT goal_id FROM harness_shared.harness_plans WHERE workspace_id = ${fx.workspace}`;
+    expect(plans.every((p) => p.goal_id === null)).toBe(true);
+  });
+
+  it('persisted reorder/exclusion controls the next placement and survives deactivation and reactivation', async () => {
+    const fx = await fixture('policy');
+    await fx.plan('new');
+    expect(await fx.policy({ order: ['plan:p003/one', 'plan:p003/two'], excluded: ['plan:p003/one'] }))
+      .toMatchObject({ ok: true, entry: { version: 1 } });
+    const before = await fx.read();
+    expect(before?.worklist.map((p) => p.ref)).toEqual(['plan:p003/one', 'plan:p003/two', 'plan:p003/new']);
+    expect(before?.worklist[0]).toMatchObject({ selected: false, placement: { reconciliation: { toolCall: null } } });
+    expect(before?.worklist.find((p) => p.placement.reconciliation.toolCall)?.ref).toBe('plan:p003/two');
+    await fx.sql`UPDATE harness_shared.harness_plans SET status = 'draft'
+      WHERE workspace_id = ${fx.workspace} AND plan_slug = 'new'`;
+    expect((await fx.read())?.worklist.map((p) => p.ref)).not.toContain('plan:p003/new');
+    await fx.sql`UPDATE harness_shared.harness_plans SET status = 'active'
+      WHERE workspace_id = ${fx.workspace} AND plan_slug = 'new'`;
+    const reactivated = await fx.read();
+    expect(reactivated?.worklist[0]).toMatchObject({ ref: 'plan:p003/one', selected: false });
+    expect(reactivated?.collection?.policyVersion).toBe(1);
+    expect(await fx.policy({ order: ['plan:p003/one', 'plan:p003/two'], excluded: [] }, 1))
+      .toMatchObject({ ok: true, entry: { version: 2 } });
+    expect((await fx.read())?.worklist.find((p) => p.placement.reconciliation.toolCall)?.ref).toBe('plan:p003/one');
+  });
+
+  it('keeps peer claims and other-goal ownership intact and distinguishes qualified equal-slug plans', async () => {
+    const fx = await fixture('ownership');
+    await fx.plan('one', 'active', 'other-harness');
+    await fx.plan('owned', 'active', 'p003', 'different-goal');
+    await fx.sql`INSERT INTO harness_shared.plan_item_claims
+      (workspace_id, harness_slug, plan_slug, item_id, owner, expires_ts)
+      VALUES (${fx.workspace}, 'p003', 'two', 'P-001', 'peer-source-owner', now() + interval '1 hour')`;
+    const before = await fx.sql`SELECT owner, expires_ts FROM harness_shared.plan_item_claims
+      WHERE workspace_id = ${fx.workspace}`;
+    const result = await fx.read();
+    expect(result?.worklist.filter((p) => p.slug === 'one').map((p) => [p.ref, p.ambiguousMatches])).toEqual([
+      ['plan:p003/one', 1], ['plan:other-harness/one', 1],
+    ]);
+    expect(result?.worklist.find((p) => p.slug === 'owned')).toMatchObject({ selected: true,
+      placement: { state: 'blocked', reconciliation: { action: 'none', toolCall: null,
+        reason: expect.stringContaining('another goal') } } });
+    expect(await fx.sql`SELECT owner, expires_ts FROM harness_shared.plan_item_claims
+      WHERE workspace_id = ${fx.workspace}`).toEqual(before);
+    const [owned] = await fx.sql`SELECT goal_id FROM harness_shared.harness_plans
+      WHERE workspace_id = ${fx.workspace} AND plan_slug = 'owned'`;
+    expect(owned.goal_id).toBe('different-goal');
+  });
+
+  it('a corrupt owner policy disables new placement visibly instead of treating it as an empty policy', async () => {
+    const fx = await fixture('unavailable');
+    await fx.sql`UPDATE harness_shared.goals SET properties = properties ||
+      ${fx.sql.json({ worklist_policy: { ...stored({ order: [], excluded: [] }), provenance: 'agent-edit' } })}
+      WHERE workspace_id = ${fx.workspace} AND id = ${fx.goal}`;
+    const result = await fx.read();
+    expect(result?.collection).toMatchObject({ available: false, reason: expect.stringContaining('not owner-authored') });
+    expect(result?.worklist).toHaveLength(2);
+    expect(result?.worklist.every((p) => p.selected === false && p.placement.reconciliation.toolCall === null)).toBe(true);
+    expect(result?.degradedReasons).toEqual(expect.arrayContaining([expect.stringContaining('selection unavailable')]));
+  });
 });

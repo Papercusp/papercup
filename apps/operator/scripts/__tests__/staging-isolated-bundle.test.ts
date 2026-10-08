@@ -9,7 +9,11 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  getHarnessAdminUrlWithSource,
+  _resetHarnessAdminUrlCacheForTests,
+} from '../../../../packages/operator-core/lib/embedded-pg-discovery';
 
 const REPO_ROOT = resolve(__dirname, "../../../..");
 const HELPER = join(REPO_ROOT, "apps/operator/bin/bundle-host-freshness.mjs");
@@ -21,6 +25,57 @@ const STAGING_SYNC_SCRIPT = join(
   REPO_ROOT,
   "apps/operator/bin/release/sync-staging-checkout.sh",
 );
+
+describe('managed staging database selection', () => {
+  let discoveryRoot: string;
+
+  beforeEach(() => {
+    discoveryRoot = mkdtempSync(join(tmpdir(), 'staging-pg-discovery-'));
+    writeFileSync(join(discoveryRoot, 'embedded-pg.json'), JSON.stringify({
+      url: 'postgresql://fixture:fixture@localhost:23325/papercusp',
+    }));
+    for (const name of ['HARNESS_ADMIN_DATABASE_URL', 'DATABASE_URL', 'PAPERCUSP_PG_URL', 'PAPERCUSP_PG_PORT']) {
+      vi.stubEnv(name, '');
+    }
+    vi.stubEnv('PAPERCUSP_HOME', discoveryRoot);
+    vi.stubEnv('PAPERCUSP_SKIP_PG_DISCOVERY', '0');
+    _resetHarnessAdminUrlCacheForTests();
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    _resetHarnessAdminUrlCacheForTests();
+    rmSync(discoveryRoot, { recursive: true, force: true });
+  });
+
+  function applyManagedDiscoveryPolicy() {
+    const checkout = readFileSync(join(DROPIN_ROOT, '50-staging-checkout.conf'), 'utf8');
+    const match = checkout.match(/^Environment=PAPERCUSP_SKIP_PG_DISCOVERY=(.*)$/m);
+    if (match) vi.stubEnv('PAPERCUSP_SKIP_PG_DISCOVERY', match[1]);
+    _resetHarnessAdminUrlCacheForTests();
+  }
+
+  it('keeps the managed host on native PG when a desktop discovery file names another database', () => {
+    const redirected = getHarnessAdminUrlWithSource();
+    expect(redirected.source).toBe('discovery-file');
+    expect(new URL(redirected.url).port).toBe('23325');
+
+    applyManagedDiscoveryPolicy();
+    const managed = getHarnessAdminUrlWithSource();
+    expect(managed.source).toBe('native-fallback');
+    expect(new URL(managed.url).port).toBe('5432');
+  });
+
+  it('preserves an explicitly configured database over native fallback', () => {
+    applyManagedDiscoveryPolicy();
+    vi.stubEnv('HARNESS_ADMIN_DATABASE_URL', 'postgresql://fixture:fixture@localhost:24444/explicit');
+    _resetHarnessAdminUrlCacheForTests();
+    const configured = getHarnessAdminUrlWithSource();
+    expect(configured.source).toBe('env');
+    expect(new URL(configured.url).port).toBe('24444');
+    expect(new URL(configured.url).pathname).toBe('/explicit');
+  });
+});
 
 describe("staging systemd drop-ins keep the serving alias and runtime generation aligned", () => {
   const checkout = readFileSync(
@@ -92,7 +147,7 @@ describe("staging systemd drop-ins keep the serving alias and runtime generation
     const acquire = sync.indexOf('exec 9>"$STAGING_SYNC_LOCK_PATH"');
     const prepare = sync.indexOf('prepare_staging_candidate "$target"');
     const build = sync.indexOf(
-      'PAPERCUSP_INTEGRATION_ROOT="$SYNC_ROOT" PAPERCUSP_BUNDLE_REUSE_FRESH=1 bash "$bundle_script"',
+      'prebuild_staging_host_bundle "$SYNC_ROOT" "$bundle_script"',
     );
     const ready = sync.indexOf('mark_staging_candidate_ready "$target"');
     const publish = sync.indexOf(

@@ -47,6 +47,25 @@ const ACCEPTANCE_BAR_APPROVAL_REQUIRED_NEXT =
 const REVIEWER_MODEL_NOT_ALLOWED_CODE = 'reviewer_model_not_allowed';
 const REVIEWER_MODEL_NOT_ALLOWED_NEXT =
   'Choose an agent/model pair present in the workspace expert model allowlist, or update that allowlist before retrying. rubrics:amend never substitutes an unavailable reviewer.';
+const PROPOSE_RUBRIC_INVALID_ARGS_PREFIX = 'invalid_args: proposeRubric:';
+const PROPOSE_RUBRIC_INVALID_ARGS_NEXT =
+  'Correct the rubric input described in the error, then retry. For off-scale criterion instructions, use the rubric’s effective ratingScale or revise the procedure prose.';
+
+function proposeRubricInvalidArgsRefusal(error: unknown): {
+  ok: false;
+  code: string;
+  error: string;
+  next: string;
+} | null {
+  const message = error instanceof Error ? error.message : String(error);
+  if (!message.startsWith(PROPOSE_RUBRIC_INVALID_ARGS_PREFIX)) return null;
+  return {
+    ok: false,
+    code: 'invalid_args',
+    error: message,
+    next: PROPOSE_RUBRIC_INVALID_ARGS_NEXT,
+  };
+}
 
 function noLiveDischargeMappingRefusal(error: unknown): {
   ok: false;
@@ -506,7 +525,11 @@ export default defineTool({
         return { ok: true, dryRun: true, preview, review };
       });
       const settled = await settleWithin(run, amendForegroundBudgetMs());
-      if (settled.kind === 'rejected') throw settled.error;
+      if (settled.kind === 'rejected') {
+        const refusal = proposeRubricInvalidArgsRefusal(settled.error);
+        if (refusal) return { data: { ...refusal, dryRun: true } };
+        throw settled.error;
+      }
       const payload = settled.kind === 'resolved'
         ? settled.value
         : {
@@ -596,7 +619,10 @@ async function executeAmend(input: AmendRubricInput, rubricRef: string): Promise
   try {
     rubric = await amendRubric(input);
   } catch (error) {
-    const refusal = noLiveDischargeMappingRefusal(error) ?? acceptanceBarApprovalRequiredRefusal(error);
+    const refusal =
+      noLiveDischargeMappingRefusal(error) ??
+      acceptanceBarApprovalRequiredRefusal(error) ??
+      proposeRubricInvalidArgsRefusal(error);
     if (refusal) return refusal;
     throw error;
   }

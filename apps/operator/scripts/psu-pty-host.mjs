@@ -2386,6 +2386,11 @@ export function readLinuxStartupCounters(pid, readFile = readFileSync) {
   };
 }
 
+function isLinuxCodexProcess(counters) {
+  return Boolean(counters &&
+    (counters.comm === 'codex' || counters.comm?.startsWith('codex-')));
+}
+
 /** Resolve the Rust Codex runtime behind the npm/node launcher that owns the
  * PTY. The launcher stays alive for the whole session, so sampling its PID
  * produces a confident but irrelevant zero-IO trace. Linux exposes a cheap,
@@ -2404,7 +2409,7 @@ export function resolveLinuxCodexStartupPid(rootPid, {
     if (!current || seen.has(current.pid)) continue;
     seen.add(current.pid);
     const counters = readCounters(current.pid, readFile);
-    if (counters && (counters.comm === 'codex' || counters.comm?.startsWith('codex-'))) {
+    if (isLinuxCodexProcess(counters)) {
       return current.pid;
     }
     if (current.depth >= maxDepth) continue;
@@ -2452,13 +2457,20 @@ export function startCodexStartupProcessTrace({
     if (stopped) return;
     const elapsedMs = now() - startedAt;
     let counters = targetPid === null ? null : readCounters(targetPid);
-    if (targetPid === null || counters === null) {
+    // The launcher can initially inherit a Codex comm, then exec Node while
+    // retaining its PID. A readable cached PID is not proof it is still Codex.
+    if (!isLinuxCodexProcess(counters)) {
       const resolved = resolveTargetPid(pid, { readCounters });
-      if (Number.isInteger(resolved) && resolved > 0 && resolved !== targetPid) {
+      counters = Number.isInteger(resolved) && resolved > 0 ? readCounters(resolved) : null;
+      if (isLinuxCodexProcess(counters)) {
+        if (resolved !== targetPid) {
+          emit(ownerId, 'codex-startup-process-target-selected', { rootPid: pid, pid: resolved, elapsedMs });
+        }
         targetPid = resolved;
-        emit(ownerId, 'codex-startup-process-target-selected', { rootPid: pid, pid: targetPid, elapsedMs });
+      } else {
+        targetPid = null;
+        counters = null;
       }
-      counters = targetPid === null ? null : readCounters(targetPid);
     }
     if (counters) {
       samples++;
@@ -10260,8 +10272,14 @@ export function hostThroughPty(o) {
         // WI-10007230: owner input can cancel carry before its prewrite hook.
         // Bind the already-spawned child independently, then share this exact
         // report with the submission gate rather than superseding its retry.
-        const carryBinding = adoptedCarryRespawn && (adoptedCarryRespawn.nativeId || resolveRespawnNativeId)
-          ? prepareCarryBinding(adoptedCarryRespawn.nativeId, Date.now() + kickoffBudgetMs)
+        // A fresh Codex role also needs its native id registered before its
+        // first provider request: accepted operations attest against that id.
+        // Reuse the exact-child carry gate instead of racing a detached hook.
+        const needsInitialBinding = !isResumeLaunch &&
+          env.PAPERCUSP_AGENT === 'codex' && Boolean(resolveRespawnNativeId);
+        const carryBinding = (adoptedCarryRespawn || needsInitialBinding) &&
+          (adoptedCarryRespawn?.nativeId || resolveRespawnNativeId)
+          ? prepareCarryBinding(adoptedCarryRespawn?.nativeId ?? null, Date.now() + kickoffBudgetMs)
           : null;
         return injectTurnAtPrompt({
           text: launchKickoff,
@@ -10283,10 +10301,10 @@ export function hostThroughPty(o) {
             ),
           }),
           prepareBeforeWrite: async ({ deadline }) => {
-            if (adoptedCarryRespawn && (adoptedCarryRespawn.nativeId || resolveRespawnNativeId)) {
+            if (carryBinding) {
               const binding = await carryBinding;
               if (!binding.ok) return binding;
-              adoptedCarryRespawn.nativeId = binding.nativeId;
+              if (adoptedCarryRespawn) adoptedCarryRespawn.nativeId = binding.nativeId;
             }
             if (!requireRoleMcp) return { ok: true };
             const tap = makeOutputTap();

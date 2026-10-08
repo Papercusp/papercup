@@ -938,8 +938,9 @@ describe('coord:orient args', () => {
     }
   });
 
-  it('keeps recovery in the aggregate fallback when a post-composition fold stalls', async () => {
+  it.each([undefined, 30_000, 44_000])('keeps recovery in the aggregate fallback before the parent deadline (%s)', async (parentBudgetMs) => {
     vi.useFakeTimers();
+    const aggregateBudgetMs = parentBudgetMs === undefined ? ORIENT_AGGREGATE_TIMEOUT_MS : parentBudgetMs - 1_000;
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const ownerId = 'su-orient-recovery-fallback-test';
     const recovery = {
@@ -995,8 +996,11 @@ describe('coord:orient args', () => {
         log: vi.fn(),
         progress: vi.fn(),
         activateTools: vi.fn(() => false),
+        ...(parentBudgetMs === undefined ? {} : { deadlineAtMs: Date.now() + parentBudgetMs }),
       } as never,
     );
+    let settled = false;
+    void resultPromise.then(() => { settled = true; });
 
     try {
       await vi.advanceTimersByTimeAsync(8_000);
@@ -1006,7 +1010,8 @@ describe('coord:orient args', () => {
       await Promise.resolve();
       await vi.advanceTimersByTimeAsync(500);
       await Promise.resolve();
-      await vi.advanceTimersByTimeAsync(ORIENT_AGGREGATE_TIMEOUT_MS - 8_500);
+      await vi.advanceTimersByTimeAsync(aggregateBudgetMs - 8_500);
+      expect(settled).toBe(true);
       const result = (await resultPromise) as { data: Record<string, unknown> };
 
       expect(result.data).toMatchObject({
@@ -1028,7 +1033,7 @@ describe('coord:orient args', () => {
         },
       });
       expect(result.data.phaseDiagnostics).toMatchObject({
-        aggregateElapsedMs: ORIENT_AGGREGATE_TIMEOUT_MS,
+        aggregateElapsedMs: aggregateBudgetMs,
         activePhase: 'handler:governor',
         activePhaseSelection: 'latest-started-pending',
         completedDurationsMs: expect.arrayContaining([

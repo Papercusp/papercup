@@ -10,6 +10,13 @@
 import { describe, expect, it } from 'vitest';
 import { pathToFileURL } from 'node:url';
 import type { PrepareTypedPropertyMutationArgs } from './typed-properties';
+import {
+  OrderedSelectionPolicySchema,
+  TypedPropertySchemaDocumentSchema,
+  orderedSelectionPolicyPayloadSchema,
+  readTypedPropertyCollection,
+} from './typed-properties';
+import { checkAgainstJsonSchema } from './json-schema-validation';
 
 // Copy-out falsifiability probes exercise the unchanged suite against a relocated
 // subject. Ordinary CI always uses the real module; no in-tree mutation is needed.
@@ -256,5 +263,157 @@ describe('P-023: renderPropertyDelta', () => {
     const line = renderPropertyDelta('notes', undefined, long);
     expect(line.length).toBeLessThan(80);
     expect(line).toContain('…');
+  });
+});
+
+describe('opt-in typed collections and owner policies (P-002)', () => {
+  const portable = {
+    tea_choices: { datatype: 'list', default: ['mint', 'chamomile', 'rooibos'], editable_by: 'both',
+      collection: { source: 'manual', policy: 'tea_policy', order: 'display', selectable: true, defaultSelected: true } },
+    tea_policy: { datatype: 'ordered-selection-policy', default: { order: [], excluded: [] }, editable_by: 'owner' },
+  } as const;
+  const plans = {
+    worklist: { datatype: 'plan-ref-list', default: [], editable_by: 'both',
+      collection: { ...portable.tea_choices.collection, source: 'active-workspace-plans', policy: 'worklist_policy', order: 'priority' } },
+    worklist_policy: portable.tea_policy,
+  } as const;
+
+  it('accepts both sources without changing a legacy declaration or its default order', () => {
+    expect(TypedPropertySchemaDocumentSchema.parse(portable)).toEqual(portable);
+    expect(TypedPropertySchemaDocumentSchema.parse(plans)).toEqual(plans);
+    expect(TypedPropertySchemaDocumentSchema.parse(SCHEMA)).toEqual(SCHEMA);
+  });
+
+  it('refuses a missing, self-referencing, agent-editable or wrong-datatype policy', () => {
+    const { tea_policy: _policy, ...missing } = portable;
+    const invalid = [missing,
+      { ...portable, tea_choices: { ...portable.tea_choices, collection: { ...portable.tea_choices.collection, policy: 'tea_choices' } } },
+      { ...portable, tea_policy: { ...portable.tea_policy, editable_by: 'both' } },
+      { ...portable, tea_policy: { ...portable.tea_policy, datatype: 'record' } },
+      { ...portable, tea_choices: { ...portable.tea_choices, collection: { ...portable.tea_choices.collection, source: 'eval' } } },
+    ];
+    for (const schema of invalid) expect(TypedPropertySchemaDocumentSchema.safeParse(schema).success).toBe(false);
+  });
+
+  it('checks policy defaults, unique collection ids and qualified active-plan identity', () => {
+    for (const schema of [
+      { ...portable, tea_choices: { ...portable.tea_choices, default: ['mint', 'mint'] } },
+      { ...portable, tea_policy: { ...portable.tea_policy, default: { order: ['mint', 'mint'], excluded: [] } } },
+      { ...plans, worklist: { ...plans.worklist, default: ['plan:ambiguous'] } },
+      { ...plans, worklist_policy: { ...plans.worklist_policy, default: { order: [], excluded: ['plan:ambiguous'] } } },
+      { ...plans, worklist: { ...plans.worklist, datatype: 'list' } },
+    ]) expect(TypedPropertySchemaDocumentSchema.safeParse(schema).success).toBe(false);
+    expect(TypedPropertySchemaDocumentSchema.safeParse({ ...plans,
+      worklist: { ...plans.worklist, default: ['plan:one/shared', 'plan:two/shared'] },
+    }).success).toBe(true);
+  });
+
+  it('the pure policy and registry validator reject the same malformed values', () => {
+    for (const value of [
+      { order: [], excluded: [] },
+      { order: ['mint'], excluded: ['rooibos'] },
+      { order: ['mint', 'mint'], excluded: [] },
+      { order: [], excluded: ['mint', 'mint'] },
+      { order: [], excluded: [] , selected: [] },
+      { order: [], excluded: [1] },
+      { order: [''], excluded: [] },
+      { order: [] },
+      null,
+    ]) expect(checkAgainstJsonSchema(orderedSelectionPolicyPayloadSchema(), value).ok)
+      .toBe(OrderedSelectionPolicySchema.safeParse(value).success);
+  });
+
+  it('stores owner choices with CAS/provenance while independent agent source writes preserve the policy', () => {
+    const first = prepareTypedPropertyMutation(base({ propertySchema: portable, property: 'tea_policy',
+      value: { order: ['rooibos', 'mint'], excluded: ['chamomile'] } }));
+    expect(first.ok).toBe(true);
+    if (!first.ok) throw new Error('owner policy refused');
+    expect(first.entry).toMatchObject({ version: 1, provenance: 'owner-edit', edited_by: 'avi' });
+    const update = prepareTypedPropertyMutation(base({ propertySchema: portable, properties: first.properties,
+      property: 'tea_choices', value: ['mint', 'chamomile', 'rooibos', 'hibiscus'], provenance: 'agent-edit' }));
+    expect(update.ok).toBe(true);
+    if (!update.ok) throw new Error('source update refused');
+    expect(update.properties.tea_policy).toEqual(first.entry);
+    expect(prepareTypedPropertyMutation(base({ propertySchema: portable, properties: update.properties,
+      property: 'tea_policy', expectedVersion: 1, value: { order: [], excluded: [] }, provenance: 'agent-edit' })))
+      .toMatchObject({ ok: false, code: 'forbidden', editableBy: 'owner' });
+    expect(prepareTypedPropertyMutation(base({ propertySchema: portable, properties: update.properties,
+      property: 'tea_policy', expectedVersion: 0, value: { order: [], excluded: [] } })))
+      .toMatchObject({ ok: false, code: 'stale', actualVersion: 1 });
+  });
+
+  it('retains dormant preferences but refuses malformed and ambiguous policy writes', () => {
+    expect(prepareTypedPropertyMutation(base({ propertySchema: portable, property: 'tea_policy',
+      value: { order: ['temporarily-absent'], excluded: ['not-currently-listed'] } })).ok).toBe(true);
+    for (const value of [
+      { order: ['plan:ambiguous'], excluded: [] },
+      { order: [], excluded: ['plan:ambiguous'] },
+      { order: ['plan:one/shared', 'plan:one/shared'], excluded: [] },
+    ]) expect(prepareTypedPropertyMutation(base({ propertySchema: plans, property: 'worklist_policy', value })))
+      .toMatchObject({ ok: false, code: 'invalid_value' });
+    expect(prepareTypedPropertyMutation(base({ propertySchema: plans, property: 'worklist_policy',
+      value: { order: ['plan:one/shared', 'plan:two/shared'], excluded: ['plan:other/dormant'] } })).ok).toBe(true);
+  });
+
+  const entry = (value: unknown, version = 1) => ({ value, version,
+    edited_at: '2026-10-08T01:00:00.000Z', edited_by: 'owner', provenance: 'owner-edit' });
+
+  it('the same reader orders and selects a manual non-plan collection and discovered plans', () => {
+    const manual = readTypedPropertyCollection({ propertySchema: portable,
+      properties: { tea_policy: entry({ order: ['rooibos', 'mint'], excluded: ['chamomile'] }, 3) },
+      property: 'tea_choices' });
+    expect(manual).toMatchObject({ ok: true, configured: true, policyVersion: 3,
+      items: [{ id: 'rooibos', selected: true }, { id: 'mint', selected: true }, { id: 'chamomile', selected: false }],
+      selected: ['rooibos', 'mint'] });
+    const discovered = readTypedPropertyCollection({ propertySchema: plans, property: 'worklist',
+      properties: { worklist_policy: entry({ order: ['plan:one/b', 'plan:one/a'], excluded: ['plan:one/a'] }) },
+      source: { ok: true, items: ['plan:one/a', 'plan:one/b', 'plan:one/c', 'plan:one/a'] } });
+    expect(discovered).toMatchObject({ ok: true, items: [
+      { id: 'plan:one/b', selected: true }, { id: 'plan:one/a', selected: false }, { id: 'plan:one/c', selected: true }],
+      selected: ['plan:one/b', 'plan:one/c'] });
+  });
+
+  it('append, disappearance, reactivation and agent source edits preserve owner preferences', () => {
+    const policy = entry({ order: ['rooibos', 'mint'], excluded: ['rooibos'] }, 4);
+    const properties = { tea_policy: policy };
+    const snapshot = structuredClone(properties);
+    const read = (items: string[]) => readTypedPropertyCollection({ propertySchema: portable, properties,
+      property: 'tea_choices', source: { ok: true, items } });
+    expect(read(['mint', 'chamomile', 'rooibos', 'hibiscus'])).toMatchObject({
+      selected: ['mint', 'chamomile', 'hibiscus'] });
+    expect(read(['mint', 'hibiscus'])).toMatchObject({ selected: ['mint', 'hibiscus'], policy: policy.value });
+    expect(read(['mint', 'rooibos', 'hibiscus'])).toMatchObject({
+      items: [{ id: 'rooibos', selected: false }, { id: 'mint', selected: true }, { id: 'hibiscus', selected: true }] });
+    expect(properties).toEqual(snapshot);
+  });
+
+  it('an initially unchecked collection uses explicit inclusions, and exclusion always wins', () => {
+    const unchecked = { ...portable, tea_choices: { ...portable.tea_choices,
+      collection: { ...portable.tea_choices.collection, defaultSelected: false } } };
+    expect(readTypedPropertyCollection({ propertySchema: unchecked, properties: {}, property: 'tea_choices' }))
+      .toMatchObject({ selected: [] });
+    expect(readTypedPropertyCollection({ propertySchema: unchecked, property: 'tea_choices',
+      properties: { tea_policy: entry({ order: ['rooibos'], included: ['mint', 'rooibos'], excluded: ['rooibos'] }) } }))
+      .toMatchObject({ selected: ['mint'] });
+    expect(readTypedPropertyCollection({ propertySchema: portable, property: 'tea_choices',
+      properties: { tea_policy: entry({ order: [], excluded: [] }) } }))
+      .toMatchObject({ selected: ['mint', 'chamomile', 'rooibos'] });
+  });
+
+  it('source failures and malformed/agent-authored policies stay unavailable without a write', () => {
+    const properties = { worklist_policy: entry({ order: [], excluded: ['plan:one/a'] }) };
+    const snapshot = structuredClone(properties);
+    expect(readTypedPropertyCollection({ propertySchema: plans, properties, property: 'worklist' }))
+      .toMatchObject({ ok: false, reason: 'registered collection source is unavailable' });
+    expect(readTypedPropertyCollection({ propertySchema: plans, properties, property: 'worklist',
+      source: { ok: false, reason: 'provider offline' } })).toMatchObject({ ok: false, reason: 'provider offline' });
+    expect(readTypedPropertyCollection({ propertySchema: plans, properties, property: 'worklist',
+      source: { ok: true, items: ['plan:ambiguous'] } })).toMatchObject({ ok: false });
+    expect(readTypedPropertyCollection({ propertySchema: plans, property: 'worklist',
+      properties: { worklist_policy: { ...properties.worklist_policy, provenance: 'agent-edit' } },
+      source: { ok: true, items: [] } })).toMatchObject({ ok: false });
+    expect(properties).toEqual(snapshot);
+    expect(readTypedPropertyCollection({ propertySchema: SCHEMA, properties: {}, property: 'worklist' }))
+      .toEqual({ ok: true, configured: false });
   });
 });

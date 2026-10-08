@@ -275,6 +275,23 @@ cleanup_staging_candidate() {
   fi
 }
 
+copy_staging_runtime_environment() {
+  local candidate_root="$1" source_root
+  # The first generation has no current alias, and a previously published
+  # generation can lack the ignored runtime file. Preserve staging overrides,
+  # then recover the canonical environment instead of selecting a desktop DB
+  # through the machine-wide discovery file.
+  for source_root in "$STAGING_ROOT" "$LEGACY_STAGING_ROOT" "$INTEGRATION_ROOT"; do
+    if [[ -f "$source_root/apps/operator/.env.local" ]]; then
+      if ! cp -p -- "$source_root/apps/operator/.env.local" "$candidate_root/apps/operator/.env.local"; then
+        log "FATAL: could not copy the staging runtime environment into the candidate"
+        return 1
+      fi
+      return 0
+    fi
+  done
+}
+
 prepare_staging_candidate() {
   local target_sha="$1" phase
   local snapshot_script="$INTEGRATION_ROOT/apps/operator/scripts/systemd/papercusp-script-snapshot.sh"
@@ -290,12 +307,7 @@ prepare_staging_candidate() {
     fi
     staging_sync_checkpoint "candidate phase $phase complete" || return "$?"
   done
-  if [[ -f "$STAGING_ROOT/apps/operator/.env.local" ]]; then
-    if ! cp -p -- "$STAGING_ROOT/apps/operator/.env.local" "$STAGING_CANDIDATE_ROOT/apps/operator/.env.local"; then
-      log "FATAL: could not copy the staging runtime environment into the candidate"
-      return 1
-    fi
-  fi
+  copy_staging_runtime_environment "$STAGING_CANDIDATE_ROOT" || return 1
 }
 
 prebuild_staging_host_bundle() {
@@ -486,6 +498,13 @@ prepare_staging_schema() {
   local candidate_root="${1:-$STAGING_ROOT}"
   log "preparing the target schema while the current $UNIT process keeps serving"
   if ! (
+    # Use the same runtime environment as ExecStart. Otherwise preflight can
+    # migrate a discovered desktop DB while the candidate serves the pinned DB.
+    set -a
+    if [[ -f "$candidate_root/apps/operator/.env.local" ]]; then
+      . "$candidate_root/apps/operator/.env.local" || exit 1
+    fi
+    set +a
     cd "$candidate_root" &&
     PAPERCUSP_INTEGRATION_ROOT="$candidate_root" \
       TSX_TSCONFIG_PATH="$candidate_root/apps/operator/tsconfig.json" \

@@ -193,12 +193,17 @@ describe('subscribing: the handshake is accepted only inside the window the host
 describe('a delivery only wakes its source, and only with a valid signature', () => {
   it('wakes the source on a signature from any of its webhooks; nothing else is written', async () => {
     const id = await newSource({ projectGids: ['p1', 'p2'] });
+    const otherId = await newSource({ projectGids: ['other-project'] });
     await reconcile(id);
+    await reconcile(otherId);
+    const otherWakeBefore = (await sourceRow(otherId)).wake;
+    expect(otherWakeBefore).toBeNull();
     const body = JSON.stringify({ events: [{ action: 'changed', resource: { gid: 't-1', resource_type: 'task' } }] });
     expect((await sourceRow(id)).wake).toBeNull();
     const res = await post(id, body, { 'content-type': 'application/json', 'x-hook-signature': sign(secretFor('p2'), body) });
     expect(res).toMatchObject({ status: 200, body: { ok: true, woke: true } });
     expect((await sourceRow(id)).wake).not.toBeNull();
+    expect((await sourceRow(otherId)).wake).toEqual(otherWakeBefore);
     const [deliveries] = await sql<Array<{ n: number }>>`
       SELECT count(*)::int AS n FROM harness_shared.trigger_deliveries WHERE workspace_id = ${WS} AND source_id = ${id}::uuid`;
     expect(deliveries!.n).toBe(0);

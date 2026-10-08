@@ -8,7 +8,10 @@ import { LlmCallError } from '@papercusp/testing-shell/llm';
 import type { TurnError } from '../../agent-chat-stream';
 
 const rateLimited = (resetAt?: number): LlmCallError =>
-  new LlmCallError({ class: 'rate_limited', message: '429 rate limited', provider: 'anthropic', retryable: true, ...(resetAt !== undefined ? { resetAt } : {}) } as TurnError);
+  Object.assign(
+    new LlmCallError({ class: 'rate_limited', message: '429 rate limited', provider: 'anthropic', retryable: true, ...(resetAt !== undefined ? { resetAt } : {}) } as TurnError),
+    { costUsd: 0 }, // Explicit measured-zero evidence is required before retrying a rate-limited call.
+  );
 
 /**
  * P-014 bounded A/B harness: for each (variant × task × repeat) it runs the pipeline →

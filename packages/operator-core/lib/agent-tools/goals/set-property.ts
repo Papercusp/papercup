@@ -125,7 +125,8 @@ export default defineTool({
     // federation-owned rows). Best-effort in a savepoint: a stamping fault must not roll back or
     // abort the owner's worklist write, but it is reported on the result, never swallowed.
     let attributionBackfill: unknown = null;
-    if (args.property === CANONICAL_WORKLIST_PROPERTY) {
+    if (args.property === CANONICAL_WORKLIST_PROPERTY &&
+        result.definition.collection?.source !== 'active-workspace-plans') {
       const tx = ctx.tx as unknown as postgres.TransactionSql;
       const run = (sql: postgres.Sql | postgres.TransactionSql) =>
         backfillWorklistGoalAttribution(sql, {

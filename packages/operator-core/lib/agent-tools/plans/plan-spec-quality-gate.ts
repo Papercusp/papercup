@@ -7,7 +7,12 @@ import {
 } from '../../scorecards';
 import { getAcceptanceRubricsForPlan } from '../../rubrics';
 import { listSpecClauses } from './spec-clauses-store';
-import { evaluatePlanSpecQuality, SPEC_QUALITY_RUBRIC_REF, type PlanSpecQualityResult } from './spec-quality';
+import {
+  evaluatePlanSpecQuality,
+  SPEC_QUALITY_RUBRIC_REF,
+  type PlanSpecQualityResult,
+  type SpecQualityPlanItem,
+} from './spec-quality';
 import { PLAN_CLASS_RUBRIC_REFS, type PlanClassRubricRef } from './spec-test-adequacy';
 
 export type PlanSpecQualityGateCode =
@@ -191,7 +196,12 @@ function scorecardMatches(card: ScorecardRow, evaluation: PlanSpecQualityResult)
  * closed before promotion.
  */
 export async function evaluatePlanSpecQualityGate(
-  input: { harnessSlug: string; planSlug: string; planItemIds: readonly string[] },
+  input: {
+    harnessSlug: string;
+    planSlug: string;
+    planItemIds: readonly string[];
+    planItems?: readonly SpecQualityPlanItem[];
+  },
   deps: GateDeps = {},
 ): Promise<PlanSpecQualityGateVerdict> {
   const listClauses = deps.listClauses ?? listSpecClauses;
@@ -263,6 +273,7 @@ export async function evaluatePlanSpecQualityGate(
     planSlug: input.planSlug,
     harnessSlug: input.harnessSlug,
     planItemIds: input.planItemIds,
+    planItems: input.planItems,
     clauses,
     classRef: classResolution.classRef,
   });

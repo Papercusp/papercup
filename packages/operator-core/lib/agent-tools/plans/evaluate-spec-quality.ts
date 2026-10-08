@@ -131,11 +131,13 @@ export default defineTool({
         wouldBlock: blockers.map((b) => b.code),
       } };
     }
-    const planItemIds = specQualityPlanItemIds(read.row.items.length ? read.row.items : read.parsed.items);
+    const planItems = read.row.items.length ? read.row.items : read.parsed.items;
+    const planItemIds = specQualityPlanItemIds(planItems);
     const evaluation = evaluatePlanSpecQuality({
       planSlug: args.slug,
       harnessSlug,
       planItemIds,
+      planItems,
       clauses: clauseRead.value,
       classRef: classResolution.classRef,
       expectedSpecSetHash: args.expectedSpecSetHash,

@@ -1740,7 +1740,7 @@ describe('proxyOpenAi — codex terminal-429 shaping + stall attribution (WI-203
           headers: { 'content-type': 'application/json', 'retry-after': '20ms' },
         });
       }
-      return new Response('data: [DONE]\n\n', {
+      return new Response(`data: ${JSON.stringify(completedCodexResponse())}\n\ndata: [DONE]\n\n`, {
         status: 200,
         headers: { 'content-type': 'text/event-stream' },
       });
@@ -1766,7 +1766,9 @@ describe('proxyOpenAi — codex terminal-429 shaping + stall attribution (WI-203
     );
     expect(res.status).toBe(200);
     expect(calls).toBe(2);
-    expect(await res.text()).toContain('[DONE]');
+    const body = await res.text();
+    expect(body).toContain('"type":"response.completed"');
+    expect(body).toContain('[DONE]');
   });
 
   it('OAuth absorb releases the provider admission slot while waiting, then re-enters and succeeds', async () => {
@@ -1786,7 +1788,7 @@ describe('proxyOpenAi — codex terminal-429 shaping + stall attribution (WI-203
           headers: { 'content-type': 'application/json', 'retry-after': retryAfter },
         });
       }
-      return new Response('data: [DONE]\n\n', {
+      return new Response(`data: ${JSON.stringify(completedCodexResponse())}\n\ndata: [DONE]\n\n`, {
         status: 200,
         headers: { 'content-type': 'text/event-stream' },
       });
@@ -1837,7 +1839,9 @@ describe('proxyOpenAi — codex terminal-429 shaping + stall attribution (WI-203
     const res = await pending;
     expect(res.status).toBe(200);
     expect(calls).toBe(3);
-    expect(await res.text()).toContain('[DONE]');
+    const body = await res.text();
+    expect(body).toContain('"type":"response.completed"');
+    expect(body).toContain('[DONE]');
   });
 
   it('a short upstream retry-after passes through unchanged (only the multi-hour horizon is capped)', async () => {
@@ -2962,7 +2966,9 @@ describe('proxyOpenAi — pool recovery horizon + store↔pool reconciliation (c
       headers: { 'content-type': 'application/json', 'retry-after': retryAfter },
     });
   const sse200 = () =>
-    new Response('data: [DONE]\n\n', { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    new Response(`data: ${JSON.stringify(completedCodexResponse())}\n\ndata: [DONE]\n\n`, {
+      status: 200, headers: { 'content-type': 'text/event-stream' },
+    });
   const accountOf = (init?: RequestInit) =>
     new Headers((init?.headers ?? {}) as HeadersInit).get('chatgpt-account-id') ?? '';
 
@@ -3042,7 +3048,9 @@ describe('proxyOpenAi — pool recovery horizon + store↔pool reconciliation (c
     const res = await postResponses({ model: 'gpt-5.5', input: 'recover via a', stream: true });
     const elapsedMs = Date.now() - before;
     expect(res.status).toBe(200);
-    expect(await res.text()).toContain('[DONE]');
+    const body = await res.text();
+    expect(body).toContain('"type":"response.completed"');
+    expect(body).toContain('[DONE]');
     expect(aCalls).toBe(2);
     expect(res.headers.get(ROUTED_ACCOUNT_HEADER)).toBe('chatgpt-a');
     // Slept ~150ms toward a's park expiry — NOT the 2s budget b's 2h reset would have forced.

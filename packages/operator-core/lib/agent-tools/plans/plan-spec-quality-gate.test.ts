@@ -140,6 +140,48 @@ function withIdentityEvidence(card: ScorecardRow, evidence: string): ScorecardRo
 }
 
 describe('evaluatePlanSpecQualityGate', () => {
+  it('blocks activation when a runtime BAR is projected onto an exempt prerequisite instead of its dependent implementation', async () => {
+    const sourceBar = {
+      barKey: 'R-1',
+      barHash: 'a'.repeat(64),
+      barSetHash: 'b'.repeat(64),
+      rubricSlug: 'quality-plan-acceptance',
+      rubricRevision: 4,
+      evidencePlane: 'tree' as const,
+    };
+    const clauses = [
+      clause({
+        specId: 'INVENTORY-P-001', sourceValId: null, planItemId: 'P-001',
+        behaviorClass: 'non-automated', requiredTestLayers: [], mutationRequired: false,
+        lifecycleStatus: 'exempt', exemption: { justification: 'Read-only inventory.', provenance: 'D-006' },
+      }),
+      clause({ specId: 'AUTO-BAR-R-1-P-001', sourceValId: null, planItemId: 'P-001', sourceBar: { ...sourceBar } }),
+      clause({ specId: 'AUTO-BAR-R-1-P-002', sourceValId: null, planItemId: 'P-002', sourceBar: { ...sourceBar } }),
+      clause({ specId: 'CONTRACT-P-002', sourceValId: null, planItemId: 'P-002' }),
+    ];
+    const listCards = vi.fn(async () => []);
+    const result = await evaluatePlanSpecQualityGate(
+      {
+        harnessSlug: 'papercup',
+        planSlug: 'quality-plan',
+        planItemIds: ['P-001', 'P-002'],
+        planItems: [
+          { id: 'P-001', blockedBy: [] },
+          { id: 'P-002', blockedBy: ['P-001'] },
+        ],
+      },
+      gateDeps({ listClauses: async () => clauses, listCards }),
+    );
+
+    expect(result).toMatchObject({
+      satisfied: false,
+      applicable: true,
+      code: 'spec_quality_failed',
+      wouldBlock: ['item-contract-coverage'],
+    });
+    expect(listCards).not.toHaveBeenCalled();
+  });
+
   it.each(['current', 'active/accepted current'])(
     'preserves an audited all-active card with the exact equivalent "%s" identity wording',
     async (wording) => {

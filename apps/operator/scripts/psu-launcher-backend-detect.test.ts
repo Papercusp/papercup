@@ -26,7 +26,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { codexManagedDaemonArgs, detectBackendBin, ensureBackendInstalled, wellKnownBackendBin } from './psu-launcher.mjs';
 
@@ -86,6 +86,9 @@ describe('packaged backend launchers cannot recursively launch psu', () => {
   it.each([
     { operation: 'launch', args: ['--help'] },
     { operation: 'resume', args: ['resume', 'test-thread'] },
+    { operation: 'owner-reported flags', args: [
+      '--dangerously-bypass-hook-trust', '--dangerously-bypass-approvals-and-sandbox', '--no-alt-screen',
+    ] },
   ])('spawns the native executable for $operation without an earlier install check', ({ args }) => {
     const root = mkdtempSync(join(tmpdir(), 'psu-native-spawn-'));
     try {
@@ -101,7 +104,9 @@ describe('packaged backend launchers cannot recursively launch psu', () => {
         { mode: 0o755 },
       );
       writeFileSync(join(nativeDir, 'codex'), '#!/bin/sh\nprintf "NATIVE_ARG:%s\\n" "$@"\n', { mode: 0o755 });
-      const launcherUrl = new URL('./psu-launcher.mjs', import.meta.url).href;
+      const launcherUrl = process.env.PROBE_SUBJECT
+        ? pathToFileURL(process.env.PROBE_SUBJECT).href
+        : new URL('./psu-launcher.mjs', import.meta.url).href;
       const result = spawnSync(process.execPath, ['--input-type=module', '-e', `
         import { runWrapper } from ${JSON.stringify(launcherUrl)};
         runWrapper({

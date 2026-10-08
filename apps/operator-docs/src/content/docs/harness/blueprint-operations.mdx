@@ -5,7 +5,7 @@
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
 title: "Blueprint operations — typed durable work through blueprint:*"
-description: "How to declare, submit, observe, signal, resume, cancel and collect blueprint operations through the seven blueprint:* tools over HTTP and MCP; direct (agent/program) vs plan targets; trigger and schedule automation and legacy binding migration; vocabulary, typed client, durability and refusals. Runnable examples are executed verbatim by operation-docs-examples.integration.test.ts."
+description: "How to declare, submit, observe, signal, resume, cancel and collect blueprint operations through the seven blueprint:* tools over HTTP and MCP; direct vs plan targets; structured Requirements BARs and Design mapping for plan-target activation; trigger and schedule automation; vocabulary, durability and refusals. Runnable examples are executed verbatim by operation-docs-examples.integration.test.ts."
 type: Convention
 discovered: 2026-09-27
 tags: ["blueprint", "operations", "api"]
@@ -13,6 +13,9 @@ status: active
 documents:
   - "packages/operator-core/lib/blueprint/operation-*.ts"
   - "packages/operator-core/lib/agent-tools/blueprint/*-operation.ts"
+  - "packages/operator-core/lib/acceptance-bar-seed.ts"
+  - "packages/operator-core/lib/agent-tools/plans/rubric-template.ts"
+  - "packages/operator-core/lib/acceptance-bar-seed.test.ts"
 plans:
   - "blueprint-backed-work-item-execution-2026-09-23"
   - "external-app-access-to-workspaces-2026-09-29"
@@ -257,6 +260,38 @@ An armed plan schedule hits the same gate. Only the run instances a template min
 (`<template>@run-N`) are exempt. The benchmark's `p013-fork-join` template is a
 pre-contract test fixture seeded directly in the database; no public door creates one
 like it.
+
+### Activation BAR Markdown format
+
+`plans:audit { phase: "activation" }` reads the plan's Markdown source to seed its acceptance BARs. A plan that will be activated needs the structured fields below even when an older shipped plan uses plain prose.
+
+Under `## Requirements`, start each record with the exact form `**R-1 — Title.**` (bare `R-N` key, spaced dash, and the period before the closing `**`). Follow the title with one `requirement` JSON fence that is the whole body of the record. The top-level object has `intent`, `acceptance` and `verification` sections. Include `intent.request`, `acceptance.condition`, `acceptance.falsifier` and `verification.method`.
+
+Include a structured `verification.check`. For automated checks, use a supported kind such as `tests` with real test paths and include a non-empty `acceptance.requiredTestLayers` array that names the layer the check exercises. For deliberately manual review, use the manual instrument form `{"kind":"instrument","instrumentKey":"none"}` and describe the actual review in `verification.method`; do not claim automated layers for manual evidence.
+
+For example, replace the placeholders with the plan's real outcome and registered verification:
+
+~~~markdown
+**R-1 — Example outcome.**
+```requirement
+{
+  "intent": { "request": "..." },
+  "acceptance": {
+    "condition": "...",
+    "falsifier": "...",
+    "requiredTestLayers": ["e2e"]
+  },
+  "verification": {
+    "method": "...",
+    "check": { "kind": "tests", "files": ["path/to/registered.e2e.test.ts"] }
+  }
+}
+```
+~~~
+
+Inside `## Design`, add `### Bar-to-work map for this plan`. Its table maps each requirement once: the first cell is the bare `R-N` key, the second contains one or more existing `P-NNN` item IDs, and the optional third evidence-plane cell is `tree`, `deployed` or `live` (omission defaults to `tree`). A duplicate or unmapped requirement, unknown item, or mapping to dropped-only items prevents seeding.
+
+Then run the activation audit and use its returned repair details. The existing seed regression cases in `packages/operator-core/lib/acceptance-bar-seed.test.ts` guard the prose-only refusal and the complete structured source shape.
 
 ```json runnable=plan-target
 {

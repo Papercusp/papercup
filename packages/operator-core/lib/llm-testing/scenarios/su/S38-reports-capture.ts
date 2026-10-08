@@ -3,7 +3,7 @@ import type { Scenario, ToolDispatchOverride } from '@papercusp/testing-shell/ll
 import { SU_RUBRIC } from '../../rubrics/su';
 import { effectiveToolCall } from './_asserts';
 
-const REPORT_BODY = '# Architecture review\n\n## Findings\nThe queue reader uses the shared visibility predicate.\n\n## Verdict\nThe reviewed boundary is verified.\n\n```mermaid\ngraph TD; A[Publish] --> B[Library]\n```';
+export const REPORT_BODY = '# Architecture review\n\n## Findings\nThe queue reader uses the shared visibility predicate.\n\n## Verdict\nThe reviewed boundary is verified.\n\n```mermaid\ngraph TD; A[Publish] --> B[Library]\n```';
 const result = (data: unknown) => ({ ok: true as const, content: [{ type: 'text' as const, text: JSON.stringify(data) }] });
 const world: ToolDispatchOverride = {
   override(name, args) {
@@ -16,11 +16,20 @@ const world: ToolDispatchOverride = {
 };
 
 export const SU_S38_REPORTS_CAPTURE: Scenario = {
-  id: 'su-S38-reports-capture', version: 1, target: 'su', transport: 'in-process',
+  id: 'su-S38-reports-capture', version: 2, target: 'su', transport: 'in-process',
   description: 'The approved audit is finished in AUTO/self, and all source and test verification is already complete. '
     + 'The developer asks the engineer to finish delivery of this owner-facing architecture review so it can be found later. '
     + 'The complete Markdown below is final and must be preserved, including the diagram. No implementation remains.\n\n' + REPORT_BODY,
   persona: BRIEF_ADMIN, goal: { kind: 'user_satisfied', declaredBy: 'sim_user' },
+  targetConfig: { modes: ['auto'] },
+  // The review must reach the SUT verbatim. A free-form simulator previously
+  // omitted it and invented a docs/ file-save request, changing the task tested.
+  triggers: [{ on: 'after_turn', param: 0, fire: 'user_message',
+    text: 'The approved architecture review is complete. Finish delivery to me so I can find it later. '
+      + 'Preserve this final Markdown unchanged, including its diagram. All implementation and verification are finished.\n\n' + REPORT_BODY }],
+  simUserContext: 'You asked the engineer to finish delivery of the completed review. '
+    + 'The first message already contains its complete final Markdown. Success means a saved, private Reports citation; '
+    + 'do not invent a repository file path or ask for implementation.',
   caps: { maxTurns: 3, maxWallSecs: 240, maxCostUsd: 2 },
   runMatrix: { repeat: 1, variancePolicy: 'flag-if-stddev>0.5' }, toolOverride: world, rubric: SU_RUBRIC,
   asserts: [{ kind: 'custom', name: 'complete-private-report-published-and-read-back', eval(run) {

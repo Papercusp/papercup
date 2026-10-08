@@ -145,6 +145,45 @@ function exactStatusOnlyCodexReady(output: string): boolean {
 }
 
 describe('managed-pty integration evidence isolation', () => {
+  it('waits for fresh Codex native readiness before writing the first kickoff (WI-10007270)', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'psu-initial-native-ready-'));
+    const inputFile = join(root, 'input.txt');
+    const ownerId = `su-initial-native-${process.pid}-${Math.floor(performance.now())}`;
+    const nativeId = '01a117cf-6942-7bc3-9aee-1ff8ac3963b7';
+    let confirm: (() => void) | undefined;
+    const onRespawn = vi.fn((_id: string, options: { onConfirmed: () => void }) => {
+      confirm = options.onConfirmed;
+      return false;
+    });
+    const { io } = fakeIo();
+    const done = hostThroughPty({
+      command: execPath,
+      args: ['-e', "const fs=require('fs');process.stdin.setRawMode?.(true);process.stdin.setEncoding('utf8');process.stdout.write('model: GPT-6.1-Sol medium\\nReady · GPT-6.1-Sol medium · Context 100% left\\n');process.stdin.on('data',d=>fs.appendFileSync(process.env.INPUT_FILE,d));setTimeout(()=>process.exit(0),2000);"],
+      cwd: root,
+      env: {
+        ...hermeticEnv(), PAPERCUSP_AGENT: 'codex', INPUT_FILE: inputFile,
+        PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '10',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '20',
+        PAPERCUSP_PSU_PTY_CODEX_SUBMIT_CR_MS: '10',
+      },
+      ownerId, io, bridgeTty: false, kickoff: 'BEGIN_ACCEPTED_OPERATION',
+      resolveRespawnNativeId: () => nativeId,
+      onRespawn, signalSource: new EventEmitter(), onExit: () => undefined,
+    });
+    try {
+      await vi.waitFor(() => expect(onRespawn).toHaveBeenCalledOnce());
+      await new Promise(resolve => setTimeout(resolve, 50));
+      expect(existsSync(inputFile)).toBe(false);
+      confirm!();
+      await vi.waitFor(() => expect(readFileSync(inputFile, 'utf8')).toContain('BEGIN_ACCEPTED_OPERATION'));
+      expect(onRespawn.mock.calls[0][0]).toBe(nativeId);
+      expect(await done).toBe(0);
+    } finally {
+      await done.catch(() => undefined);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('excludes caller launch state and native homes while preserving explicit fixture inputs', () => {
     const source = {
       PATH: '/fixture/bin', TERM: 'xterm-256color',

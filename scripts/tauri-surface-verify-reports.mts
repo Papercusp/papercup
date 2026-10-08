@@ -16,6 +16,7 @@ async function verifyReports(evidenceDir: string) {
     [...args, '--pid', pid], { encoding: 'utf8', timeout: 60_000 });
   const save = (name: string, value: unknown) => writeFileSync(join(evidenceDir, name), JSON.stringify(value, null, 2));
   const sourcePaths = ['apps/operator-vite/src/components/reports/ReportsRoute.tsx',
+    'apps/operator-vite/src/components/reports/ReportsRoute.css',
     'apps/operator-vite/src/routes/reports.tsx', 'packages/operator-core/lib/sync-resolver/reports.ts',
     'packages/operator-core/lib/report-library.ts', 'packages/operator-core/lib/report-publication.ts',
     'packages/operator-core/lib/agent-tools/reports/publish.ts', 'packages/operator-core/lib/agent-tools/reports/_shared.ts'];
@@ -74,12 +75,17 @@ async function verifyReports(evidenceDir: string) {
     native('eval', `Array.from(document.querySelectorAll('.reports-actions button')).find(b => b.textContent === 'Previous version').click()`);
     poll(`new URL(location.href).searchParams.get('sel') === ${JSON.stringify(original.report_id)}
       && document.querySelector('.reports-reader h2')?.textContent === ${JSON.stringify(title)}`);
+    // The desktop's other panels can narrow Reports even on a wide viewport.
+    poll(`document.querySelector('.reports-reader').getBoundingClientRect().width >= 300`);
+    native('eval', `document.querySelector('.reports-reader').scrollIntoView({block:'start'})`);
     native('screenshot', '--output', join(evidenceDir, 'reports-reader.png'));
+    native('eval', `document.querySelector('.reports-reader svg').scrollIntoView({block:'center'})`);
+    native('screenshot', '--output', join(evidenceDir, 'reports-diagram.png'));
     const after = fingerprints();
     assert.deepEqual(after, before, 'Relevant source changed during the verification window');
     save('manifest.json', { result: 'pass', original: original.report_id, correction: correction.report_id,
       sourceFingerprints: before, assertions: step, checked: ['publish-tool', 'SSE-arrival', 'deep-link', 'Mermaid-render',
-        'copy-exact-Markdown', 'lineage-collapse', 'immutable-citation', 'previous-version'] });
+        'copy-exact-Markdown', 'lineage-collapse', 'immutable-citation', 'previous-version', 'reader-width'] });
   } catch (error) {
     save('failure.json', { error: String(error), step, sourceFingerprints: before,
       ui: native('eval', 'JSON.stringify({url:location.href, text:document.body.innerText})') });
@@ -93,5 +99,5 @@ const result = await runHarness({ contract: { name: 'reports-library-tauri',
   evidenceRoot: defaultEvidenceRoot('reports-library-tauri'), selection, reuseFrom: selection.reuse,
   async runPhase(ctx) { ctx.markStep('isolated-native-Reports'); await verifyReports(ctx.evidenceDir); return { ok: true }; },
 });
-console.log(`REPORTS_LIBRARY_TAURI_${result.verdict.toUpperCase()} evidence=${result.runDir}`);
+console.log(`REPORTS_LIBRARY_TAURI_${result.verdict.toUpperCase()} evidence=${result.evidenceDir}`);
 process.exitCode = result.verdict === 'pass' ? 0 : 1;
