@@ -2951,6 +2951,47 @@ async function injectPsuHostWake(
   const fireNumber = loopMarker?.wakeCount;
   const routineId = loopMarker?.routineId;
   const injectWarm = async (useConfirmation = true): Promise<WakeOutcome | null> => {
+    const confirming = useConfirmation
+      ? (deps.injectPsuHostWithConfirmation ?? (deps.injectPsuHost ? null : injectIntoHostWithConfirmation))
+      : null;
+    if (d.hostCancellation && confirming && d.hostCancellation.deliveryIds.length > 0) {
+      const cancellation = await confirming(sock, {
+        mode: 'turn',
+        data: warmText.text,
+        ownerId: d.subscriberId,
+        deliveryId: d.hostCancellation.deliveryIds[0],
+        cancelDeliveryIds: d.hostCancellation.deliveryIds,
+        handledMsgIds: d.hostCancellation.handledMsgIds,
+        provenanceIssuedAtMs: warmText.provenanceIssuedAtMs,
+      });
+      if (cancellation.ok && cancellation.reason === 'cancelled-before-write') {
+        return { kind: 'delivered', channel: 'suppressed-redundant' };
+      }
+      if (cancellation.ok && cancellation.reason === 'cancel-requested') {
+        return {
+          kind: 'park',
+          reason: 'psu-host accepted the cancellation request; waiting for its exact pre-write receipt',
+          hostCommitPending: true,
+        };
+      }
+      if (cancellation.ok && cancellation.reason === 'pending-delivery-id') {
+        return {
+          kind: 'park',
+          reason: 'psu-host still owns the accepted delivery; cancellation is unsupported and the retry remains durable',
+          hostCommitPending: true,
+        };
+      }
+      if (cancellation.ok && cancellation.reason === 'accepted') {
+        return {
+          kind: 'park',
+          reason: 'psu-host accepted the fail-open wake retry; waiting for its delivery outcome',
+          hostCommitPending: true,
+        };
+      }
+      if (cancellation.ok && cancellation.reason === 'duplicate-delivery-id') {
+        return { kind: 'delivered', channel: 'psu-socket-inject' };
+      }
+    }
     const quotaRecovery = decideQuotaWakeRecovery({
       host,
       subscriberId: d.subscriberId,
@@ -2984,12 +3025,12 @@ async function injectPsuHostWake(
     // only means the detached gate pipeline was queued; it is not proof that a
     // turn started. Keep the durable wake parked until a later retry observes a
     // completed/duplicate outcome. Boolean test stubs retain today's behavior.
-    const confirming = useConfirmation
-      ? (deps.injectPsuHostWithConfirmation ?? (deps.injectPsuHost ? null : injectIntoHostWithConfirmation))
-      : null;
     if (confirming) {
       const result = await confirming(sock, injectMsg);
       if (!result.ok) return parkOnHostDeferral(result.confirmation, result.reason);
+      if (result.reason === 'cancelled-before-write') {
+        return { kind: 'delivered', channel: 'suppressed-redundant' };
+      }
       if (result.reason === 'accepted' || result.reason === 'pending-delivery-id') {
         return {
           kind: 'park',

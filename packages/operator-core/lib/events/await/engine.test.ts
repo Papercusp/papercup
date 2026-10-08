@@ -76,6 +76,7 @@ const h = vi.hoisted(() => ({
   // record by default, matching the fail-open default (never suppresses anything
   // existing tests don't explicitly set up).
   repliedMsgIdsBatch: vi.fn(async (_subscriberId: string, _msgIds: readonly string[]): Promise<Set<string>> => new Set()),
+  readWatermark: vi.fn(async (_ownerId: string) => ({ messages_shown_ts: '' })),
   // P-024 clauses B/C: the actionability gate's envelope read. Unresolved (null) by
   // default, which the gate reads as "keep the turn" — existing tests never suppress.
   getLineEnvelopeById: vi.fn(async (_surface: string, _msgId: string): Promise<Record<string, unknown> | null> => null),
@@ -106,6 +107,9 @@ vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@p
 vi.mock('../../fleet/governor', () => ({ admitSpawn: h.admitSpawn }));
 vi.mock('../../agent-tools/coordination/inbox-read-freshness', () => ({
   lastInboxReadAtBatch: h.lastInboxReadAtBatch,
+}));
+vi.mock('../../agent-tools/coordination/watermarks', () => ({
+  readWatermark: h.readWatermark,
 }));
 vi.mock('../../agent-tools/coordination/line-event-by-id', () => ({
   getLineEnvelopeById: h.getLineEnvelopeById,
@@ -1778,6 +1782,103 @@ describe('pumpWakeDeliveries — EI-18673058981655804: redundant-inbox-wake supp
       if (previousReadAt) h.lastInboxReadAtBatch.mockImplementation(previousReadAt);
       else h.lastInboxReadAtBatch.mockReset();
     }
+  });
+
+  it('requests cancellation only for an exact shown non-actionable msg_id group and settles on the host receipt', async () => {
+    const acceptedReason = 'psu-host accepted: delivery accepted before turn-start proof; retry remains durable';
+    h.readWatermark.mockResolvedValueOnce({ messages_shown_ts: new Date(6000).toISOString() });
+    h.getLineEnvelopeById.mockResolvedValueOnce({
+      msg_id: 'm-fyi',
+      ts: new Date(5000).toISOString(),
+      from: 'su-b',
+      kind: 'message',
+      expects: 'none',
+    });
+    h.store.claimDueDeliveries.mockResolvedValueOnce([
+      workRow({
+        id: 51,
+        subscriberId: 'su-a',
+        eventKey: 'coord:inbox-wake:su-a',
+        payload: { msg_id: 'm-fyi' },
+        lastError: acceptedReason,
+      }),
+    ]);
+    h.executeWake.mockResolvedValueOnce({ kind: 'delivered', channel: 'suppressed-redundant' });
+
+    const stats = await pumpWakeDeliveries('ws-test');
+    const wake = h.executeWake.mock.calls[0][0] as DeliveryWork;
+
+    expect(h.readWatermark).toHaveBeenCalledWith('su-a');
+    expect(wake.hostCancellation).toEqual({ deliveryIds: ['51'], handledMsgIds: ['m-fyi'] });
+    expect(h.store.markDeliveryDelivered).toHaveBeenCalledWith(51, 'suppressed-redundant', 1);
+    expect(stats.suppressed).toBe(1);
+  });
+
+  it('keeps an accepted wake pending until the host confirms cancellation before the first byte', async () => {
+    const acceptedReason = 'psu-host accepted: delivery accepted before turn-start proof; retry remains durable';
+    h.readWatermark.mockResolvedValueOnce({ messages_shown_ts: new Date(6000).toISOString() });
+    h.getLineEnvelopeById.mockResolvedValueOnce({
+      msg_id: 'm-fyi',
+      ts: new Date(5000).toISOString(),
+      from: 'su-b',
+      kind: 'message',
+      expects: 'none',
+    });
+    h.store.claimDueDeliveries.mockResolvedValueOnce([
+      workRow({
+        id: 52,
+        subscriberId: 'su-a',
+        eventKey: 'coord:inbox-wake:su-a',
+        payload: { msg_id: 'm-fyi' },
+        lastError: acceptedReason,
+      }),
+    ]);
+    h.executeWake.mockResolvedValueOnce({
+      kind: 'park',
+      reason: 'psu-host accepted the cancellation request; waiting for its exact pre-write receipt',
+      hostCommitPending: true,
+    });
+
+    const stats = await pumpWakeDeliveries('ws-test');
+
+    expect(h.executeWake.mock.calls[0][0]).toMatchObject({
+      hostCancellation: { deliveryIds: ['52'], handledMsgIds: ['m-fyi'] },
+    });
+    expect(h.store.markDeliveryDelivered).not.toHaveBeenCalled();
+    expect(h.store.markDeliveryParked).toHaveBeenCalledWith(52, expect.any(String), expect.any(Number));
+    expect(stats.parked).toBe(1);
+  });
+
+  it('carries every nested coalesced msg_id into the host cancellation request', async () => {
+    const acceptedReason = 'psu-host pending-delivery-id: prior accepted delivery is still gated';
+    h.readWatermark.mockResolvedValueOnce({ messages_shown_ts: new Date(9000).toISOString() });
+    const envelopes = new Map([
+      ['m-a', { msg_id: 'm-a', ts: new Date(5000).toISOString(), kind: 'message', expects: 'none' }],
+      ['m-b', { msg_id: 'm-b', ts: new Date(7000).toISOString(), kind: 'message', expects: 'none' }],
+    ]);
+    h.getLineEnvelopeById.mockImplementation(async (_surface: string, msgId: string) => envelopes.get(msgId) ?? null);
+    h.store.claimDueDeliveries.mockResolvedValueOnce([
+      workRow({
+        id: 53,
+        subscriberId: 'su-a',
+        eventKey: 'coord:inbox-wake:su-a',
+        payload: {
+          coalesced: true,
+          events: [
+            { event: 'coord:inbox-wake:su-a', urgent: false, payload: { msg_id: 'm-a' } },
+            { event: 'coord:inbox-wake:su-a', urgent: false, payload: { msg_id: 'm-b' } },
+          ],
+        },
+        lastError: acceptedReason,
+      }),
+    ]);
+    h.executeWake.mockResolvedValueOnce({ kind: 'delivered', channel: 'suppressed-redundant' });
+
+    await pumpWakeDeliveries('ws-test');
+
+    expect(h.executeWake.mock.calls[0][0]).toMatchObject({
+      hostCancellation: { deliveryIds: ['53'], handledMsgIds: ['m-a', 'm-b'] },
+    });
   });
 
   it('does NOT suppress when the inbox-wake message postdates the last read (genuinely new mail)', async () => {
