@@ -277,6 +277,12 @@ export interface PlanRow {
   runSeq: number | null;
 }
 
+/** The small canonical projection needed by plans:get-item. Indexed plans leave
+ * `content` empty so the targeted read does not detoast a potentially large
+ * markdown body just to return one stored item. Empty/unindexed rows retain the
+ * content fallback used by planItemsForRow. */
+export type PlanItemSourceRow = Pick<PlanRow, 'planSlug' | 'archived' | 'isLegacy' | 'items' | 'content'>;
+
 interface PlanDbRow {
   active_acceptance_rubric_ref?: string | null;
   workspace_id: string;
@@ -859,6 +865,54 @@ export async function getPlanRow(
     }
     throw err;
   }
+}
+
+/**
+ * Fetch only the fields required to resolve one plan's stored item index.
+ * `getPlanRow` intentionally returns the full plan (including its markdown
+ * content) for consumers that need it; plans:get-item only needs the indexed
+ * items and otherwise transfers large, irrelevant content blobs for every
+ * distinct plan in a cross-plan batch.
+ *
+ * The CASE expression keeps the legacy fallback: only a non-legacy plan with
+ * an empty or absent item index returns its content for parsing. For a populated
+ * index the database returns an empty string without detoasting the content
+ * value.
+ */
+export async function getPlanItemRow(
+  slug: string,
+  opts: PlanSourceOpts = {},
+): Promise<PlanItemSourceRow | null> {
+  if (typeof slug !== 'string' || !VALID_PLAN_SLUG.test(slug)) return null;
+  const { workspaceId, harnessSlug } = await resolvePlanScope(opts);
+  const rows = await withWorkspace(workspaceId, async (tx) => {
+    return tx<Array<{
+      plan_slug: string;
+      archived: boolean;
+      is_legacy: boolean;
+      items: unknown;
+      content: string | null;
+    }>>`
+      SELECT plan_slug, archived, is_legacy, items,
+             CASE WHEN is_legacy THEN ''
+                  WHEN jsonb_typeof(items) = 'array' THEN
+                    CASE WHEN jsonb_array_length(items) > 0 THEN '' ELSE content END
+                  ELSE content
+             END AS content
+        FROM harness_shared.harness_plans
+       WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
+         AND plan_slug = ${slug}
+    `;
+  });
+  const row = rows[0];
+  if (!row) return null;
+  return {
+    planSlug: row.plan_slug,
+    archived: row.archived,
+    isLegacy: row.is_legacy,
+    items: Array.isArray(row.items) ? (row.items as PlanIndexItem[]) : [],
+    content: row.content ?? '',
+  };
 }
 
 /**
@@ -1678,7 +1732,7 @@ export {
  * does this plan have" — plans:items, set-status's flip, and declare-intent's
  * lane validation must all agree (EI-356).
  */
-export function planItemsForRow(row: PlanRow): PlanItem[] {
+export function planItemsForRow(row: Pick<PlanRow, 'items' | 'content'>): PlanItem[] {
   if (row.items.length > 0) {
     return row.items.map((i) => ({
       id: i.id,

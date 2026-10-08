@@ -19,7 +19,7 @@
 
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
-import { getPlanRow, planItemsForRow, type PlanRow } from './source';
+import { getPlanItemRow, planItemsForRow, type PlanItemSourceRow } from './source';
 import { ctxToPlanSourceOpts } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx, resolveHarnessScope } from '../_harness-scope';
 import { recoverHarnessFromSlugs, slugScopeErrorResult } from './slug-scope';
@@ -141,7 +141,7 @@ export default defineTool({
     }
 
     // Memoize the per-slug row fetch + parse so N items of one plan parse it once.
-    type RowResult = { kind: 'ok'; row: PlanRow } | { kind: 'error'; error: string };
+    type RowResult = { kind: 'ok'; row: PlanItemSourceRow } | { kind: 'error'; error: string };
     const rowCache = new Map<string, RowResult>();
     const resolveRow = async (slug: string, harness?: string): Promise<RowResult> => {
       const key = `${harness ?? ''}::${slug}`;
@@ -151,7 +151,7 @@ export default defineTool({
         harness ?? (autoResolvedHarness && homogeneousSlug === slug ? autoResolvedHarness : undefined);
       const sctx = harnessScopedCtx(effectiveHarness, ctx);
       const opts = await ctxToPlanSourceOpts(sctx);
-      const row = await getPlanRow(slug, opts);
+      const row = await getPlanItemRow(slug, opts);
       let res: RowResult;
       if (!row) res = { kind: 'error', error: 'not_found' };
       else if (row.isLegacy) res = { kind: 'error', error: 'legacy_plan' };
