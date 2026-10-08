@@ -2091,8 +2091,9 @@ dependency_generation_record_tree_bytes() {
 
 # Fail-closed headroom check, run under the copy lock. `size_ref` is the path
 # whose recorded size to use; an unknown size checks only reserve + margin.
+# A caller copying an ordinary donor may supply its measured size as argument 3.
 dependency_generation_check_headroom() {
-  local size_ref="$1" dest="$2" dir pct margin need size_note total reserve required avail base
+  local size_ref="$1" dest="$2" measured_need="${3:-}" dir pct margin need size_note total reserve required avail base
   local cap reserve_scope
   dir="$(dirname "$dest")"
   pct="${DEPENDENCY_GENERATION_HEADROOM_RESERVE_PCT:-2}"
@@ -2101,7 +2102,14 @@ dependency_generation_check_headroom() {
   case "$margin" in ''|*[!0-9]*) margin=10737418240 ;; esac
   cap="${DEPENDENCY_GENERATION_HEADROOM_OTHER_FS_RESERVE_CAP_BYTES:-21474836480}"
   case "$cap" in ''|*[!0-9]*) cap=21474836480 ;; esac
-  if need="$(dependency_generation_tree_bytes_lookup "$size_ref" 2>/dev/null)"; then
+  if [ -n "$measured_need" ]; then
+    case "$measured_need" in *[!0-9]*)
+      dependency_generation_log "DEPENDENCY_GENERATION_HEADROOM_UNMEASURED invalid copy size path=$dest"
+      return 77 ;;
+    esac
+    need="$measured_need"
+    size_note="size=measured"
+  elif need="$(dependency_generation_tree_bytes_lookup "$size_ref" 2>/dev/null)"; then
     size_note="size=recorded"
   else
     need=0
@@ -2109,8 +2117,8 @@ dependency_generation_check_headroom() {
   fi
   if ! total="$(dependency_generation_fs_bytes "$dir" %b)" \
     || ! avail="$(dependency_generation_fs_bytes "$dir" %a)"; then
-    dependency_generation_log "headroom check skipped: cannot statfs $dir"
-    return 0
+    dependency_generation_log "DEPENDENCY_GENERATION_HEADROOM_UNMEASURED cannot statfs $dir"
+    return 77
   fi
   reserve=$((total * pct / 100))
   # WI-10005931: 2% of an 8 TB data disk is 160 GB, which refused a 9 GB copy
