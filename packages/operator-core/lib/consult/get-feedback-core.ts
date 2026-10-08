@@ -243,6 +243,9 @@ export interface AcceptedFeedbackResult {
   request_key: string;
   state: string;
   pending: boolean;
+  /** Persisted routing outcome; lifecycle state alone cannot distinguish an
+   * unmeasured route, a measured absence, or deliberate retrieval-only. */
+  result?: GetFeedbackResult | GetFeedbackError;
   latency_contract: LatencyContract;
   park_key: string | null;
   hint: string;
@@ -290,7 +293,9 @@ export async function acceptFeedbackRequestCore(
     INSERT INTO harness_shared.consult_state
       (workspace_id, conversation_id, requester_id, state, question, latency_contract, routing)
     VALUES (${req.workspaceId}, ${opened.conversation_id}, ${req.requesterId}, 'routing', ${req.question},
-      ${req.latencyContract ?? 'proceed'}, ${sql.json({ request } as never)})
+      ${req.latencyContract ?? 'proceed'}, ${sql.json({
+        deliveryIntent: req.allowDispatch === false ? 'retrieval-only' : 'dispatch', request,
+      } as never)})
     ON CONFLICT (workspace_id, conversation_id) DO NOTHING`;
   const rows = await sql<{ state: string; routing: { request: AcceptedRequest } }[]>`
     SELECT state, routing FROM harness_shared.consult_state
@@ -302,11 +307,15 @@ export async function acceptFeedbackRequestCore(
     hint: 'This request_key already names a different question or options. Reuse its original payload for recovery, or use a new key for a fresh consult.',
   };
   const latency = req.latencyContract ?? 'proceed';
+  const result = row.routing.request.result;
+  const outcomeHint = result?.hint ?? (row.state === 'routing' ? ''
+    : 'No routing result is recorded; lifecycle state is not a measured no-expert verdict.');
   return { ok: true, verdict: 'accepted', conversation_id: opened.conversation_id, thread_id: opened.thread_id,
     request_key: key, state: row.state,
+    ...(result ? { result } : {}),
     pending: !row.routing.request.result && ['routing', 'awaiting_responder', 'active'].includes(row.state),
     latency_contract: latency, park_key: latency === 'hard-blocked' ? consultParkKey(opened.conversation_id) : null,
-    hint: `Accepted as ${opened.conversation_id}; current state is ${row.state}. Read conversations:get { id: '${opened.conversation_id}' } for routing and replies. Reuse request_key '${key}' with the same payload after a timeout; use a new key for a fresh consult. Pending means accepted work, not a launched or answered session.` };
+    hint: `Accepted as ${opened.conversation_id}; current state is ${row.state}. ${outcomeHint ? `${outcomeHint} ` : ''}Read conversations:get { id: '${opened.conversation_id}' } for routing and replies. Reuse request_key '${key}' with the same payload after a timeout; use a new key for a fresh consult. Pending means accepted work, not a launched or answered session.` };
 }
 
 /** A bounded CAS lease owns preparation. Once the core commits the selected
