@@ -291,7 +291,8 @@ export class FundedIdentityTurnStore {
   }
 
   async stageSettlement(workspaceId: string, turnId: string, revision: number, deps: {
-    signReceipt: (bytes: Buffer) => Promise<string> | string;
+    signReceipt: (bytes: Buffer, context: { turnId: string;
+      identityInference: { billedInferenceMicros: bigint; priorRemainderNumerator: bigint } }) => Promise<string> | string;
     readUsage?: (sql: Sql, binding: IdentityTurnUsageBinding) => Promise<IdentityTurnBilledCost>;
   }): Promise<Result> {
     const turn = await this.read(workspaceId, turnId);
@@ -318,7 +319,8 @@ export class FundedIdentityTurnStore {
     const unsigned: Omit<SignedUsageReceipt, 'signature'> = { channelId: turn.binding.channelId, usageNonce: turnId,
       meterQuantity: q.reservationQuantity, amountMicros: q.amountMicros,
       voucherDigest: turn.fundingReceipt!.voucherDigest, occurredAtMs: turn.closedAtMs! };
-    const signature = await deps.signReceipt(usageReceiptSigningBytes(unsigned));
+    const signature = await deps.signReceipt(usageReceiptSigningBytes(unsigned), {
+      turnId, identityInference: { billedInferenceMicros, priorRemainderNumerator: prior } });
     if (typeof signature !== 'string' || !signature.trim()) return fail('unsigned-receipt', 'a seller signature is required');
     const outbox: IdentityTurnSettlementOutbox = { billedInferenceMicros: String(billedInferenceMicros),
       priorRemainderNumerator: String(prior), remainderNumerator: String(q.remainderNumerator), samples,

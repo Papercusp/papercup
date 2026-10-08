@@ -23,7 +23,9 @@ export interface FundedIdentityTurnHostDeps {
   readonly payerTransport: MeteredTransportDeps;
   readonly sellerTransport: MeteredTransportDeps;
   readonly signVoucher: MeteredByteSigner;
-  readonly signReceipt: MeteredByteSigner;
+  readonly signReceipt: Parameters<FundedIdentityTurnStore['stageSettlement']>[3]['signReceipt'];
+  readonly settleRemote?: (binding: FundedIdentityTurnBinding,
+    outbox: NonNullable<FundedIdentityTurn['settlementOutbox']>) => Promise<void>;
   readonly nowMs?: () => number;
   /** Trusted billing-reader seam; production uses the store's canonical reader. */
   readonly readUsage?: Parameters<FundedIdentityTurnStore['stageSettlement']>[3]['readUsage'];
@@ -316,7 +318,12 @@ export class FundedIdentityTurnHost {
     const outbox = turn.settlementOutbox, r = outbox.receipt;
     const expectedBytes = usageReceiptSigningBytes({ ...r,
       meterQuantity: BigInt(r.meterQuantity), amountMicros: BigInt(r.amountMicros) });
-    const settled = await settleMeteredUnit({ channelId: turn.binding.channelId, usageNonce: turnId,
+    let settled: Awaited<ReturnType<typeof settleMeteredUnit>> | undefined;
+    if (d.settleRemote) {
+      // The seller may have committed before its peer response was lost. Only
+      // independent payer history can acknowledge the immutable signed outbox.
+      try { await d.settleRemote(turn.binding, outbox); } catch { /* retain the hold until readback */ }
+    } else settled = await settleMeteredUnit({ channelId: turn.binding.channelId, usageNonce: turnId,
       occurredAtMs: r.occurredAtMs,
       identityInference: { billedInferenceMicros: BigInt(outbox.billedInferenceMicros),
         priorRemainderNumerator: BigInt(outbox.priorRemainderNumerator) },
@@ -325,14 +332,14 @@ export class FundedIdentityTurnHost {
         return r.signature;
       } }, d.sellerTransport);
     // Both lost responses and already-settled refusals resolve through the same exact ack.
-    const current = await readChannelUsage(turn.binding.channelId, d.sellerTransport);
+    const current = await readChannelUsage(turn.binding.channelId, d.settleRemote ? d.payerTransport : d.sellerTransport);
     if (!current.ok) return current;
     if (current.usage.channelId !== turn.binding.channelId || !Array.isArray(current.usage.receipts)) {
       return fail('invalid-hosted-usage', 'hosted settlement history is unreadable');
     }
     const receipt = current.usage.receipts.find((x) => x.usageNonce === turnId);
     if (!receipt || receipt.state !== 'settled') {
-      return settled.ok ? fail('settlement-not-confirmed', 'hosted settlement disappeared') : settled;
+      return settled && !settled.ok ? settled : fail('settlement-not-confirmed', 'hosted settlement is not confirmed; retain the hold');
     }
     return d.store.acknowledgeSettlement(workspaceId, turnId, turn.revision, receipt);
   }
