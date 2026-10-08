@@ -3,10 +3,11 @@ import { runFullTextSearch, runHybridSearch } from '@papercusp/search';
 import { EMBEDDER_DIM_SPECS } from '@papercusp/memory';
 import { createReportSearchSource } from './report-source';
 import { publishReport, retireReport } from '../../report-library';
+import { publishReportWithEffects } from '../../report-publication';
 import { indexReport } from '../../search/report-index';
 import { SEARCH_SOURCES } from './sources';
 import { scopeArg } from './scope';
-import { SEARCH_SOURCE_SURFACES } from '../../search/coverage-gate';
+import { assessSourceCoverage, SEARCH_SOURCE_SURFACES, type CoverageSnapshot } from '../../search/coverage-gate';
 import { stampEmbedderMode } from '../../search/embedder-mode-registry';
 import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
 import { resolveNamedQueryV2 } from '../../sync-resolver';
@@ -18,6 +19,10 @@ vi.mock('@papercusp/db-org', async actual => ({
 }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => ui.workspaceId }));
 vi.mock('@papercusp/flags/server', () => ({ getFlag: async () => flag.enabled }));
+vi.mock('../../events/await/engine', () => ({ emitAwaitedEvent: async () => ({}) }));
+vi.mock('../../search/embed-backfill', () => ({
+  resolveBackfillEmbedder: async () => ({ mode: 'gemma', embed, profile: { profileId } }),
+}));
 const vector = (text: string) => [1, text.includes('zephyrquartz') ? 10 : 0, ...Array(766).fill(0)];
 const embed = async (text: string) => vector(text);
 const profileId = EMBEDDER_DIM_SPECS.gemma.profileId;
@@ -45,6 +50,51 @@ describe('Reports shared search (migrated PostgreSQL)', () => {
     expect(SEARCH_SOURCES.some(s => s.name === 'report')).toBe(true);
     expect(scopeArg().parse(['reports'])).toEqual(['report']);
     expect(SEARCH_SOURCE_SURFACES.report).toContain('harness_shared.text_chunks.embedding');
+  });
+
+  it('embeds the complete published and superseding bodies through the publication effects', async () => {
+    const original = await publishReportWithEffects(db.adminSql, {
+      workspaceId, title: 'Automatic indexing', bodyMd: 'ordinary filler '.repeat(500) + ' zephyrquartz',
+      visibility: 'workspace',
+    }, author, vi.fn());
+    const correction = await publishReportWithEffects(db.adminSql, {
+      workspaceId, title: 'Automatic indexing corrected', bodyMd: 'corrected filler '.repeat(500) + ' zephyrquartz',
+      visibility: 'workspace', supersedes: original.report.reportId,
+    }, author, vi.fn());
+    for (const report of [original.report, correction.report]) {
+      await vi.waitFor(async () => {
+        const [row] = await db.adminSql`SELECT count(*)::int AS chunks,
+          count(*) FILTER (WHERE embedding IS NULL)::int AS missing
+          FROM harness_shared.text_chunks WHERE surface = 'report'
+            AND parent_key = ${[workspaceId, report.reportId]}::text[]`;
+        expect(row.chunks).toBeGreaterThan(3);
+        expect(row.missing).toBe(0);
+      }, { timeout: 10_000 });
+    }
+    const rows = await createReportSearchSource().embedding!({ ...context(),
+      qVec: JSON.stringify(vector('zephyrquartz')), embeddingProfile: { profileId, legacyMode: 'gemma' } });
+    expect(rows.map(r => r.row.source_id)).toContain(correction.report.reportId);
+    expect(rows.map(r => r.row.source_id)).not.toContain(original.report.reportId);
+  });
+
+  it('reports measured missing report embeddings through the existing coverage gate', async () => {
+    await publish('workspace');
+    const assess = async () => {
+      const [row] = await db.adminSql`SELECT count(*)::int AS eligible,
+        count(*) FILTER (WHERE embedding IS NOT NULL)::int AS embedded
+        FROM harness_shared.text_chunks WHERE surface = 'report'
+          AND parent_key[1] = ${workspaceId}`;
+      const surface = 'harness_shared.text_chunks.embedding';
+      const snapshot: CoverageSnapshot = new Map([[surface, {
+        surface, observedAt: new Date(), eligibleRows: row.eligible, embeddedRows: row.embedded,
+        pct: row.embedded / row.eligible, recentPct: null, stale: false, ageMs: 0,
+      }]]);
+      return assessSourceCoverage('report', snapshot);
+    };
+    expect((await assess()).verdict).toBe('healthy');
+    await db.adminSql`UPDATE harness_shared.text_chunks SET embedding = NULL
+      WHERE surface = 'report' AND parent_key[1] = ${workspaceId}`;
+    expect(await assess()).toMatchObject({ verdict: 'degraded', coverage: 0 });
   });
 
   it('routes Reports tab search and the registered source to the same live corpus, ignoring a parallel decoy', async () => {
