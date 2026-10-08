@@ -5053,7 +5053,7 @@ async function completeOne(
 
   if (!stateError && finalState && TERMINAL_WORK_ITEM_STATES.has(finalState) && ctx.workspaceId) {
     void trackDetached(import('../../report-capture').then(({ captureAuditCompletion }) => captureAuditCompletion({
-      workspaceId: ctx.workspaceId!, ownerId: ident.ownerId, harnessSlug: ctx.harnessSlug,
+      workspaceId: ctx.workspaceId!, ownerId: ident.ownerId, harnessSlug: existing.harness,
       sessionRef: ctx.runId, itemId: it.id, completionRef: workItem?.terminalCompletionRef,
       title: existing.title, completion: it.completion,
     })).catch(error => ctx.log(`Reports audit capture failed for ${it.id}: ${String(error)}`)));

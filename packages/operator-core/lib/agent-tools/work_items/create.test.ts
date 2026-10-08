@@ -156,6 +156,20 @@ describe('Phone producer admission', () => {
     expect(result.data.results[0].id).toBe('WI-voice');
     expect(createM).not.toHaveBeenCalled();
   });
+  it("does not treat the operator '*' context as a requested harness", async () => {
+    const principal = { kind: 'service', slug: 'voice-service' };
+    phoneAdmission.admit.mockResolvedValue({ workItemId: 'WI-voice' });
+    const args = parse({ phone_producer: { roomName: 'room-a' } });
+    await tool.handler(args as never, { principal, workspaceId: 'workspace', harnessSlug: '*' } as never);
+    expect(phoneAdmission.admit).toHaveBeenCalledWith(principal, 'room-a', { harness: undefined, workspace: 'workspace' });
+  });
+  it('rejects an explicit cross-harness sentinel for Phone admission', async () => {
+    const principal = { kind: 'service', slug: 'voice-service' };
+    const args = parse({ phone_producer: { roomName: 'room-a' }, harness: 'all' });
+    await expect(tool.handler(args as never, { principal, workspaceId: 'workspace' } as never))
+      .rejects.toThrow('phone_producer_concrete_harness_required');
+    expect(phoneAdmission.admit).not.toHaveBeenCalled();
+  });
   it.each(['payload', 'items', 'assign_to', 'force', 'title', 'kind', 'state'])('rejects caller %s alongside Phone admission', (key) => {
     const ordinary: Record<string, unknown> = { payload: {}, items: [{ kind: 'task', title: 'x' }], assign_to: 'self',
       force: true, title: 'x', kind: 'task', state: 'wip' };

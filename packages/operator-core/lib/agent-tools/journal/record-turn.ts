@@ -23,6 +23,7 @@ import {
 } from '../../turn-journal';
 import { latestJournalCreatedAt, ledgerEntriesSince, recordTurnJournal } from '../../turn-journal-store';
 import { resolveCurrentTurnStamp } from '../../turn-provenance/turn-ref';
+import { resolveConcreteHarnessSlug } from '../_harness-scope';
 
 /** Without a previous journal row the turn window falls back to this. */
 const DEFAULT_TURN_WINDOW_MS = 6 * 60 * 60 * 1000;
@@ -175,7 +176,7 @@ export default defineTool({
     // P-013 tool-call log tail. Marked ⟦auto-checkpoint mechanical⟧, never
     // overwrites agent-authored prose. Bounded + fail-soft; plan D-003.
     let autoCheckpointed: Array<{ id: string; mechanical: true }> = [];
-    let unpublishedReportObserved = false;
+    let unpublishedReportObservationScheduled = false;
     if (ownerId && !deduped) {
       const { boundedAutoCheckpoint } = await import('../../turn-end-tracking-io');
       autoCheckpointed = await boundedAutoCheckpoint({
@@ -185,12 +186,16 @@ export default defineTool({
         sinceIso,
         journalNote: extracted.note,
       });
-      const { boundedUnpublishedReportTurn } = await import('../../turn-end-tracking-io');
-      unpublishedReportObserved = await boundedUnpublishedReportTurn({
+      const observationInput = {
         ownerId, workspaceId: journalWorkspaceId, sessionId: args.session_id, sinceIso,
         assistantText: turn.text, turnRef: `${args.session_id}:${turn.ts?.toISOString() ?? id}`,
-        harnessSlug: ctx.harnessSlug,
-      });
+        harnessSlug: resolveConcreteHarnessSlug(undefined, ctx),
+      };
+      // This optional observation must not delay or fail the recorded turn.
+      // The response reports scheduling; only the observation ledger proves filing.
+      void Promise.resolve().then(() => ioMod.boundedUnpublishedReportTurn(observationInput))
+        .catch(error => console.warn(`[reports] turn observation failed: ${String(error)}`));
+      unpublishedReportObservationScheduled = true;
     }
 
     // unread-count-truthfulness-2026-07-27 P-008 / D-008: SETTLE the coord
@@ -299,7 +304,7 @@ export default defineTool({
         turn_ts: turn.ts ? turn.ts.toISOString() : null,
         goalPlacementTurnEnd,
         ...(autoCheckpointed.length ? { autoCheckpointed } : {}),
-        ...(unpublishedReportObserved ? { unpublishedReportObserved } : {}),
+        ...(unpublishedReportObservationScheduled ? { unpublishedReportObservationScheduled } : {}),
         ...(unguardedHaltTripwire ? { unguardedHalt: unguardedHaltTripwire } : {}),
         ...(openTaskReminder
           ? {

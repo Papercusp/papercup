@@ -27,6 +27,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity, resolveSelfLiteral } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { potArg } from '../_pot-scope';
+import { resolveConcreteHarnessSlug } from '../_harness-scope';
 import {
   createOneWorkItem,
   type CreateOneWorkItemArgs,
@@ -399,8 +400,12 @@ export default defineTool({
   async handler(args, ctx) {
     if (args.phone_producer) {
       const { admitConfiguredPhoneProducer } = await import('../../blueprint/phone-producer-admission');
+      const requestedHarness = resolveConcreteHarnessSlug(args.harness, ctx);
+      if (args.harness?.trim() && !requestedHarness) {
+        throw new Error('phone_producer_concrete_harness_required');
+      }
       const binding = await admitConfiguredPhoneProducer(ctx.principal, args.phone_producer.roomName, {
-        harness: args.harness ?? ctx.harnessSlug,
+        harness: requestedHarness ?? undefined,
         workspace: args.workspace ?? ctx.workspaceId,
       });
       return { content: [{ type: 'text' as const, text: JSON.stringify(binding) }],
