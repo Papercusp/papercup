@@ -172,7 +172,7 @@ import {
 } from './codex-oauth-proxy';
 import type { AccountEgress, ClaudeAccount } from '../deployment/account-pool';
 import { egressEntries } from '../deployment/account-pool';
-import { egressCacheKey, egressIsHttpProxy, egressIsSocks5Proxy } from './egress-dispatcher';
+import { egressCacheKey, egressIsHttpProxy, egressIsSocks5Proxy, egressIsSupportedProxy } from './egress-dispatcher';
 import {
   CACHE_POLICY_VERSION,
   deferLargeToolsEnabled,
@@ -1807,6 +1807,15 @@ export interface GatewayStats {
     allDown: boolean;
     configured: boolean;
   };
+  /** Fresh, IP-redacted measurement of the direct-egress routes shared by this account population. */
+  egressExitIpHealth?: {
+    accountCount: number;
+    directAccountCount: number;
+    directRouteCount: number;
+    sampledDirectRouteCount: number;
+    distinctDirectExitIpCount: number;
+    sameDirectExitIp: boolean;
+  };
   /** Count of 429s shed at ADMISSION because the WHOLE pool was throttled with a far-off reset — the
    *  fail-fast path (B-GW-1) that frees the slot immediately instead of taking the acquire/retry path. */
   shedAllThrottled: number;
@@ -3338,6 +3347,50 @@ export function createInferenceGateway(deps: GatewayDeps) {
   // request would have failed on it. No governor is penalized (there is no request/model context) — the
   // `egressPauseUntil` map alone steers selection (keyOf ⇒ Infinity) and pin-yield away from the account.
   const lastEgressOkAt = new Map<string, number>();
+  // Direct-egress identity is sampled independently of proxy reachability. A unique default/local-address
+  // route can represent several credentials, so the probe set is route-keyed instead of account-keyed.
+  const directEgressIdentitySamples = new Map<string, { exitIp: string; observedAt: number }>();
+  const directEgressIdentityProbeAt = new Map<string, number>();
+  const directEgressIdentityProbePending = new Set<string>();
+  const directEgressRouteKey = (egress: AccountEgress | undefined): string => egress?.localAddress ?? '';
+  const directEgressIdentitySampleMaxAgeMs = Math.max(proactiveEgressProbeMs * 3, 60_000);
+  function computeEgressExitIpHealth(fallback: ActiveAccount): NonNullable<GatewayStats['egressExitIpHealth']> {
+    const accounts = providerAccounts(fallback);
+    const directRoutes = new Map<string, AccountEgress | undefined>();
+    let directAccountCount = 0;
+    for (const account of accounts) {
+      const configured = effectiveEgressEntries(account);
+      if (configured.some((entry) => egressIsSupportedProxy(entry.proxyUrl))) continue;
+      directAccountCount++;
+      for (const route of configured.length ? configured : [undefined]) {
+        if (route && egressIsSupportedProxy(route.proxyUrl)) continue;
+        directRoutes.set(directEgressRouteKey(route), route);
+      }
+    }
+    const now = Date.now();
+    const freshIps = new Set<string>();
+    let sampledDirectRouteCount = 0;
+    for (const key of directRoutes.keys()) {
+      const sample = directEgressIdentitySamples.get(key);
+      if (!sample || now - sample.observedAt > directEgressIdentitySampleMaxAgeMs) continue;
+      sampledDirectRouteCount++;
+      freshIps.add(sample.exitIp);
+    }
+    const directRouteCount = directRoutes.size;
+    return {
+      accountCount: accounts.length,
+      directAccountCount,
+      directRouteCount,
+      sampledDirectRouteCount,
+      distinctDirectExitIpCount: freshIps.size,
+      sameDirectExitIp:
+        accounts.length > 1 &&
+        directAccountCount === accounts.length &&
+        directRouteCount > 0 &&
+        sampledDirectRouteCount === directRouteCount &&
+        freshIps.size === 1,
+    };
+  }
   const proactiveProbeFailStreak = new Map<string, number>();
   let proactiveProbeLastTickAt = 0;
   let proactiveProbeOpens = 0;
@@ -3346,8 +3399,38 @@ export function createInferenceGateway(deps: GatewayDeps) {
     const entries = providerAccounts(claudeFallback);
     if (!entries.length) return;
     proactiveProbeLastTickAt = Date.now();
+    // Sample each distinct direct route at the existing proactive-probe cadence. This stays bounded for
+    // the common box-default case (one probe even when many accounts share that route) and gives /stats a
+    // fresh, IP-redacted basis to distinguish a genuinely shared exit from an unmeasured/partial pool.
+    const directRoutes = new Map<string, AccountEgress | undefined>();
+    for (const account of entries) {
+      const configured = effectiveEgressEntries(account);
+      if (configured.some((entry) => egressIsSupportedProxy(entry.proxyUrl))) continue;
+      for (const route of configured.length ? configured : [undefined]) {
+        if (route && egressIsSupportedProxy(route.proxyUrl)) continue;
+        const routeKey = directEgressRouteKey(route);
+        if (Date.now() - (directEgressIdentityProbeAt.get(routeKey) ?? 0) < proactiveEgressProbeMs) continue;
+        if (directEgressIdentityProbePending.has(routeKey)) continue;
+        directRoutes.set(routeKey, route);
+      }
+    }
+    const directProbeTasks = [...directRoutes].map(async ([routeKey, egress]) => {
+      directEgressIdentityProbeAt.set(routeKey, Date.now());
+      directEgressIdentityProbePending.add(routeKey);
+      try {
+        const probe = await doProbeEgress(
+          { id: 'direct-egress-identity', egress } as ClaudeAccount,
+          { timeoutMs: EGRESS_PROBE_HTTP_TIMEOUT_MS },
+        );
+        if (probe.exitIp) directEgressIdentitySamples.set(routeKey, { exitIp: probe.exitIp, observedAt: Date.now() });
+      } catch {
+        // A failed identity sample stays unknown; it must never be interpreted as proof of a shared IP.
+      } finally {
+        directEgressIdentityProbePending.delete(routeKey);
+      }
+    });
     await Promise.allSettled(
-      entries.map(async (account) => {
+      [...directProbeTasks, ...entries.map(async (account) => {
         const id = account.accountId;
         const now = Date.now();
         // Resolve the proxy route from the EFFECTIVE POOL, not the legacy singular `account.egress`
@@ -3355,7 +3438,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
         // pool-configured account — so this prober never ran, and the DEAD-PROXY watchdog it feeds went
         // silent from 2026-06-30 through a 16-day, three-proxy outage. `effectiveEgressEntries` also
         // applies the kill-switch, so the explicit `proxyEgressDisabled` check is subsumed.
-        const proxyEntry = effectiveEgressEntries(account).find((e) => e.proxyUrl);
+        const proxyEntry = effectiveEgressEntries(account).find((e) => egressIsSupportedProxy(e.proxyUrl));
         if (!proxyEntry) return; // only proxy routes flap; box-direct is the fallback everything shares
         if ((egressPauseUntil.get(id) ?? 0) > now) return; // circuit already open — half-open prober owns recovery
         if (egressProbePending.has(id)) return;
@@ -3391,7 +3474,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
         } catch (err) {
           log('warn', `inference-gateway: proactive egress probe error for '${id}': ${(err as Error).message}`);
         }
-      }),
+      })],
     );
   }
   const proactiveProbeHandle =
@@ -4725,6 +4808,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       // (never diverges from what pickEgress actually sees) — the CAUSE `accounts:status`'s "accounts
       // unavailable" SYMPTOM never showed.
       egressProxyHealth: computeEgressProxyHealth(active),
+      egressExitIpHealth: computeEgressExitIpHealth(active),
       shedAllThrottled,
       bareBurstRotateSuppressed,
       opusToSonnetDowngrades,
