@@ -193,14 +193,11 @@ export interface HarnessPlansProjectionOpts {
  *  Absent potHomeSlug (non-hive harness) or no policy ⇒ 'member' (today's behavior). */
 async function defaultResolveWriteMode(opts: HarnessPlansProjectionOpts): Promise<ContentWriteMode> {
   if (!opts.potHomeSlug) return 'member';
-  try {
-    const { getHivePolicy } = await import('../../../hive-policy-store');
-    const resolved = await getHivePolicy(opts.workspaceId, opts.potHomeSlug, opts.sql);
-    return resolveContentWriteMode(resolved?.policy ?? null);
-  } catch {
-    // Fail-safe to today's behavior on any read error — never break federation over a policy read.
-    return 'member';
-  }
+  const { getHivePolicy } = await import('../../../hive-policy-store');
+  // An unavailable policy is not a permissive policy. Let the error abort the
+  // projection before either an overwrite or a delete can bypass ownership.
+  const resolved = await getHivePolicy(opts.workspaceId, opts.potHomeSlug, opts.sql);
+  return resolveContentWriteMode(resolved?.policy ?? null);
 }
 
 /**
