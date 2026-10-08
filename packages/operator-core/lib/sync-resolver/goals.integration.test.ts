@@ -277,6 +277,30 @@ describe('goals.* resolvers against real SQL', () => {
     expect(detail.goalData.collections.worklist.rows).toContainEqual(expect.objectContaining({
       label: 'Readable without a holder', planSlug: 'worklist-a' }));
   });
+  it('keeps discovered scheduled runs addressable and applies their saved exclusion in goal detail', async () => {
+    await goal();
+    await plan('ordinary', { harness: 'alpha', status: 'active' });
+    const runSlug = 'nightly@run-1786557604333';
+    const runRef = `plan:alpha/${runSlug}`;
+    await plan(runSlug, { harness: 'alpha', title: 'Scheduled run', status: 'active' });
+    const schema = { worklist: { datatype: 'plan-ref-list', default: [], editable_by: 'both',
+      collection: { source: 'active-workspace-plans', policy: 'worklist_policy', order: 'priority', selectable: true, defaultSelected: true } },
+      worklist_policy: { datatype: 'ordered-selection-policy', editable_by: 'owner', default: { order: [], excluded: [] } } };
+    const policy = { value: { order: [runRef, 'plan:alpha/ordinary'], excluded: [runRef] }, version: 4,
+      provenance: 'owner-edit', edited_by: 'human', edited_at: '2026-10-01T00:00:00Z' };
+    await sql`UPDATE harness_shared.goals SET property_schema = ${sql.json(schema)},
+      properties = ${sql.json({ worklist_policy: policy })} WHERE workspace_id = ${WS} AND id = ${GOAL}`;
+    const { resolveGoalDetail } = await import('./goals');
+    const detail = await resolveGoalDetail({ workspaceId: WS, goalId: GOAL }) as {
+      goalData: { collections: Record<string, { selection: { ok: boolean; selected: string[] }; rows: Array<{ id: string; selected: boolean }> }> } };
+    expect(detail.goalData.collections.worklist.selection).toMatchObject({ ok: true, selected: ['plan:alpha/ordinary'] });
+    expect(detail.goalData.collections.worklist.rows).toMatchObject([
+      { id: runRef, selected: false }, { id: 'plan:alpha/ordinary', selected: true },
+    ]);
+    const [stored] = await sql`SELECT properties FROM harness_shared.goals WHERE workspace_id = ${WS} AND id = ${GOAL}`;
+    expect(stored.properties.worklist_policy).toEqual(policy);
+  });
+
   it('reads a non-plan collection through the shared reader, retaining owner choices', async () => {
     await goal();
     const { resolveGoalDetail } = await import('./goals');
