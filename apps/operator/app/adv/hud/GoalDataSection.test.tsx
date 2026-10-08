@@ -72,6 +72,26 @@ describe('generic declared goal collection controls', () => {
     expect(screen.getByRole('checkbox', { name: 'Include mint' }).getAttribute('aria-checked')).toBe('true');
   });
 
+  it('waits for the write response when canonical readback arrives before acknowledgement', async () => {
+    let acknowledge!: () => void;
+    const response = new Promise<{ ok: boolean; json: () => Promise<{ ok: boolean; version: number }> }>((resolve) => {
+      acknowledge = () => resolve({ ok: true, json: async () => ({ ok: true, version: 5 }) });
+    });
+    const writes = vi.fn(() => response);
+    vi.stubGlobal('fetch', writes);
+    const view = render(<GoalDataSection goalId="tea-goal" data={fixture('tea')} />);
+    const checkbox = screen.getByRole('checkbox', { name: 'Include mint' });
+    fireEvent.click(checkbox);
+    await waitFor(() => expect(writes).toHaveBeenCalledOnce());
+    view.rerender(<GoalDataSection goalId="tea-goal" data={fixture('tea', 5)} />);
+    expect(checkbox).toHaveProperty('disabled', true);
+    fireEvent.click(checkbox);
+    expect(writes).toHaveBeenCalledOnce();
+    acknowledge();
+    await waitFor(() => expect(checkbox).toHaveProperty('disabled', false));
+    expect(screen.queryByRole('status', { name: 'Save status' })).toBeNull();
+  });
+
   it('renders source failure visibly and never enables an empty-list write', () => {
     const writes = vi.fn();
     vi.stubGlobal('fetch', writes);
