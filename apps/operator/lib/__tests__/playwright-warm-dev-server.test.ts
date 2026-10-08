@@ -8,10 +8,13 @@ const rig = vi.hoisted(() => {
     locator: vi.fn(() => ({ waitFor })),
   };
   const browser = { newPage: vi.fn(() => page), close: vi.fn() };
-  return { page, browser, waitFor, launch: vi.fn(() => browser) };
+  const api = { get: vi.fn(), dispose: vi.fn() };
+  return { page, browser, waitFor, api, newContext: vi.fn(), launch: vi.fn(() => browser) };
 });
 
-vi.mock('@playwright/test', () => ({ chromium: { launch: rig.launch } }));
+vi.mock('@playwright/test', () => ({
+  chromium: { launch: rig.launch }, request: { newContext: rig.newContext },
+}));
 vi.mock('@papercusp/test-config/admin-test-runs-reporter', () => ({
   resolveTestRunWorkspaceId: () => 'real workspace',
 }));
@@ -28,6 +31,12 @@ describe('Playwright view preparation', () => {
     rig.page.waitForFunction.mockResolvedValue(undefined);
     rig.page.waitForLoadState.mockResolvedValue(undefined);
     vi.stubEnv('OPERATOR_E2E_SKIP_WARMUP', '0');
+    vi.stubEnv('PAPERCUSP_ONGOING_ACCEPTANCE_SHA', '0123456789');
+    rig.newContext.mockResolvedValue(rig.api);
+    rig.api.get.mockResolvedValue({
+      ok: () => true, status: () => 200, json: async () => ({ sha: '0123456789' }),
+    });
+    rig.api.dispose.mockResolvedValue(undefined);
     vi.spyOn(console, 'log').mockImplementation(() => undefined);
     vi.spyOn(console, 'warn').mockImplementation(() => undefined);
   });
@@ -45,6 +54,9 @@ describe('Playwright view preparation', () => {
 
   it('prepares the actual scoped HUD and waits for its view instead of only the shell', async () => {
     await warmOngoingWork(config);
+    expect(rig.newContext).toHaveBeenCalledWith({ baseURL: 'http://localhost:3427' });
+    expect(rig.api.get).toHaveBeenCalledWith('/api/health', { timeout: 10_000 });
+    expect(rig.api.dispose).toHaveBeenCalledOnce();
     expect(rig.page.goto).toHaveBeenCalledOnce();
     expect(rig.page.goto.mock.calls[0][0]).toBe(
       'http://localhost:3427/adv?tab=hud&scope=all&hudtab=goals&welcome=0&ws=real%20workspace',
@@ -53,6 +65,18 @@ describe('Playwright view preparation', () => {
     expect(rig.waitFor).toHaveBeenCalledWith({ state: 'visible', timeout: 120_000 });
     expect(rig.page.waitForFunction).not.toHaveBeenCalled();
     expect(rig.browser.close).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    { label: 'unhealthy HTTP response', ok: false, status: 503, health: {}, error: 'HTTP 503' },
+    { label: 'a different artifact', ok: true, status: 200, health: { sha: '9876543210' }, error: 'SHA mismatch' },
+    { label: 'a fallback bundle', ok: true, status: 200, health: { sha: '0123456789', bundleStale: true }, error: 'fallback bundle' },
+  ])('refuses browser preparation for $label and disposes its preflight context', async ({ ok, status, health, error }) => {
+    rig.api.get.mockResolvedValueOnce({ ok: () => ok, status: () => status, json: async () => health });
+    await expect(warmOngoingWork(config)).rejects.toThrow(error);
+    expect(rig.launch).not.toHaveBeenCalled();
+    expect(rig.page.goto).not.toHaveBeenCalled();
+    expect(rig.api.dispose).toHaveBeenCalledOnce();
   });
 
   it('refuses strict preparation when the required view never mounts and closes the browser', async () => {
