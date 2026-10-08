@@ -1839,6 +1839,12 @@ export function classifyOwnerNativeSessionRows(
 
 const NATIVE_SESSION_VERIFY_STATEMENT_TIMEOUT_MS = 2_000;
 const NATIVE_SESSION_VERIFY_LOCK_TIMEOUT_MS = 1_000;
+// The current process may configure the shared DB acquisition deadline below
+// the time its own admin-pool queue waits. Auth still fails closed if the
+// binding cannot be read, but a verified 5.6s queue wait must not be turned
+// into a false identity refusal by a 1s global override. Three bounded attempts
+// cap total acquisition waiting at just under 23 seconds.
+const NATIVE_SESSION_VERIFY_ACQUIRE_TIMEOUT_MS = 7_500;
 
 /**
  * Is `sessionId` the native session the owner's adv_sessions row is bound to?
@@ -1881,10 +1887,10 @@ export async function classifyOwnerNativeSession(opts: {
     return classifyOwnerNativeSessionRows(rows, opts.sessionId);
   }, {
     readOnly: true,
-    // Inherit boundedOrgTxn's shared acquisition deadline. This verifier runs
-    // before every MCP tool call, so a shorter local bound turns normal
-    // org-admin pool queuing into an authorization failure. Keep the query
-    // and lock budgets narrow after a connection has been acquired.
+    acquireTimeoutMs: NATIVE_SESSION_VERIFY_ACQUIRE_TIMEOUT_MS,
+    // This verifier runs before every MCP tool call, so an overly short global
+    // override can turn normal org-admin pool queuing into an auth failure.
+    // Keep query and lock budgets narrow after a connection has been acquired.
     statementTimeoutMs: NATIVE_SESSION_VERIFY_STATEMENT_TIMEOUT_MS,
     lockTimeoutMs: NATIVE_SESSION_VERIFY_LOCK_TIMEOUT_MS,
   });

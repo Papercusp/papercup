@@ -1,6 +1,5 @@
 import { readFileSync } from 'node:fs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { DEFAULT_TX_ACQUIRE_DEADLINE_MS } from '@papercusp/db-org';
 
 const { advSessionRowsMock, advSessionBeginMock, acquireTimeouts } = vi.hoisted(() => {
   const sql = vi.fn(async () => [] as unknown[]);
@@ -61,7 +60,7 @@ describe('classifyOwnerNativeSession exact incarnation (get-feedback D-006)', ()
   const nativeId = 'native-source';
   const rejected = { binding: 'foreign', boundSessionId: null, advSessionId: null };
 
-  it('uses the shared acquisition deadline and explicit statement bounds', async () => {
+  it('uses a measured-queue acquisition budget and explicit statement bounds', async () => {
     advSessionRowsMock.mockImplementation(async (...args: unknown[]) => {
       const template = args[0];
       const query = Array.isArray(template) ? template.join(' ') : String(template ?? '');
@@ -79,7 +78,7 @@ describe('classifyOwnerNativeSession exact incarnation (get-feedback D-006)', ()
     expect(statements[1]).toContain("set_config('lock_timeout'");
     expect(calls[1]?.slice(1)).toEqual(['1000ms', '2000ms']);
     expect(statements[2]).toContain('FROM harness_shared.adv_sessions');
-    expect(acquireTimeouts).toContain(DEFAULT_TX_ACQUIRE_DEADLINE_MS);
+    expect(acquireTimeouts).toContain(7_500);
     expect(acquireTimeouts).not.toContain(1_000);
   });
 
