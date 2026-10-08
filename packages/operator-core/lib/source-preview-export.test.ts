@@ -38,6 +38,7 @@ let out: string;
 let manifest: Awaited<ReturnType<typeof exportSnapshot>>['manifest'];
 
 const NATIVE_RUNTIME_FILES = [
+  'papercusp-desktop/src-tauri/sidecar.lock',
   'papercusp-desktop/src-tauri/gen/schemas/acl-manifests.json',
   'papercusp-desktop/src-tauri/gen/schemas/capabilities.json',
   'papercusp-desktop/src-tauri/gen/schemas/desktop-schema.json',
@@ -312,7 +313,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     await expect(verifyVerifierSource(dest, receipt, { runtimeArtifacts: true })).rejects.toThrow(`changed ${input}`);
   });
 
-  it.each(['.papercusp-pinned-deps', 'libs/generic/sse/dist', 'packages/omp-plugin/dist', 'papercusp-desktop/src-tauri/gen/schemas', ...NATIVE_RUNTIME_FILES.filter(path => path.endsWith('PLACEHOLDER-README.txt'))])('rejects a redirect posing as runtime output: %s', async artifact => {
+  it.each(['.papercusp-pinned-deps', 'libs/generic/sse/dist', 'packages/omp-plugin/dist', 'papercusp-desktop/src-tauri/gen/schemas', ...NATIVE_RUNTIME_FILES.filter(path => path.endsWith('PLACEHOLDER-README.txt') || path.endsWith('sidecar.lock'))])('rejects a redirect posing as runtime output: %s', async artifact => {
     const fixture = makeSuperproject(join(tmp, `verifier-output-link-${artifact.replaceAll('/', '-')}`));
     const input = SHIPPED.find(p => p.startsWith('apps/'))!;
     const dest = join(tmp, `verifier-output-link-export-${artifact.replaceAll('/', '-')}`);
