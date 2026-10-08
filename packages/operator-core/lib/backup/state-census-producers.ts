@@ -4,7 +4,7 @@ import { collectStateCensus, assertStateCensusComplete } from '@papercusp/backup
 import type { Sql } from 'postgres';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { readdir, readFile } from 'node:fs/promises';
+import { readdir, readFile, lstat } from 'node:fs/promises';
 import { dbEncryptionKeyFilePath } from '../db-encryption';
 import { superuserTokenPath } from '../superuser-token';
 import { workspacesRoot, readRegistry } from '../workspace-registry';
@@ -137,7 +137,18 @@ export async function gitStorageDeclaration(root: CensusRoot, repositoryName: st
   const repository = join(root.path, repositoryName);
   const options = { timeout: 5000, maxBuffer: 64 * 1024, env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' } };
   const { stdout: gitDirectory } = await execFileAsync('git', ['-C', repository, 'rev-parse', '--absolute-git-dir'], options);
-  if (resolve(gitDirectory.trim()) !== resolve(repository, '.git')) throw new Error('Repository metadata outside declared directory');
+  const actualGit = resolve(gitDirectory.trim());
+  if (actualGit !== resolve(repository, '.git')) {
+    const pointer = await lstat(join(repository, '.git'));
+    const common = (await execFileAsync('git', ['-C', repository, 'rev-parse', '--path-format=absolute', '--git-common-dir'], options)).stdout.trim();
+    const withinRoot = relative(root.path, resolve(common));
+    if (!pointer.isFile() || withinRoot === '..' || withinRoot.startsWith(`..${sep}`)) {
+      throw new Error('Repository metadata outside declared root');
+    }
+    // Pointer is state, common metadata is owned by its primary repository.
+    // Never collapse the pointer as though it contained that external subtree.
+    return { kind: 'path', root: root.id, name: `${repositoryName}/.git`, classification: 'state', producer: 'git-worktree-pointer' };
+  }
   const { stdout } = await execFileAsync('git', ['-C', repository, 'rev-parse', '--verify', 'HEAD'], options);
   const head = stdout.trim();
   if (!/^[0-9a-f]{40,64}$/.test(head)) throw new Error('Repository HEAD unavailable');

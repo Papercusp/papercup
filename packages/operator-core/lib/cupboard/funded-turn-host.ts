@@ -82,6 +82,14 @@ export class FundedIdentityTurnHost {
   /** An uncertain reserve never authorizes inference. A hosted read can resolve it. */
   async admit(input: FundedIdentityTurnBinding): Promise<Result> {
     const b = structuredClone(input), d = this.deps;
+    const active = await d.store.readActive(b);
+    if (!active.ok) return active;
+    if (active.turn?.state === 'closed' || active.turn?.state === 'settlement-pending') {
+      // Drive restart recovery before preparing another admission. Recovery
+      // uses the old row, not the next session's identity/channel/closure.
+      const recovered = await this.reconcileCompletion(b.workspaceId, active.turn.turnId);
+      if (!recovered.ok) return recovered;
+    }
     const prepared = await d.store.prepare(b);
     if (!prepared.ok) return prepared;
     let turn = prepared.turn;
@@ -100,33 +108,38 @@ export class FundedIdentityTurnHost {
         quantity: q.reservationQuantity, identityInferenceCeilingMicros: b.inferenceCeilingMicros,
         expiresAtMs: b.expiresAtMs, nowMs: (d.nowMs ?? Date.now)(), signVoucher: d.signVoucher }, d.payerTransport);
       // Even a 201 is re-read: the same contract handles duplicate and uncertain POSTs.
-      const current = await readChannelUsage(b.channelId, d.payerTransport, b.offerId);
-      if (!current.ok) return current;
-      if (current.usage.channelId !== b.channelId || !Array.isArray(current.usage.receipts)) {
-        return fail('invalid-hosted-usage', 'hosted channel history is unreadable');
-      }
-      const receipt = current.usage.receipts.find((r) => r.usageNonce === turn.turnId);
-      if (!receipt) return reserved.ok ? fail('funding-not-confirmed', 'reservation disappeared before admission') : reserved;
-      if (!current.usage.identityMarkupOrigin) return fail('funding-origin-missing', 'hosted payer/offer origin is required');
-      const confirmed = await d.store.confirmFunding(b.workspaceId, turn.turnId, turn.revision,
-        receipt, current.usage.identityMarkupOrigin);
+      const confirmed = await this.reconcileFunding(b.workspaceId, turn.turnId);
+      if (!confirmed.ok && confirmed.code === 'funding-not-confirmed' && !reserved.ok) return reserved;
       if (!confirmed.ok) return confirmed;
       turn = confirmed.turn;
     } else {
       // Crash after funding but before entry: revalidate both reservation and origin.
-      const current = await readChannelUsage(b.channelId, d.payerTransport, b.offerId);
-      if (!current.ok) return current;
-      if (current.usage.channelId !== b.channelId || !Array.isArray(current.usage.receipts)) {
-        return fail('invalid-hosted-usage', 'hosted channel history is unreadable');
-      }
-      const receipt = current.usage.receipts.find((r) => r.usageNonce === turn.turnId);
-      if (!receipt || !current.usage.identityMarkupOrigin) return fail('funding-not-confirmed', 'hosted reservation and origin are required');
-      const confirmed = await d.store.confirmFunding(b.workspaceId, turn.turnId, turn.revision,
-        receipt, current.usage.identityMarkupOrigin);
+      const confirmed = await this.reconcileFunding(b.workspaceId, turn.turnId);
       if (!confirmed.ok) return confirmed;
       turn = confirmed.turn;
     }
     return d.store.enter(b.workspaceId, turn.turnId, turn.revision, b, (d.nowMs ?? Date.now)());
+  }
+
+  /** Resolve a lost reservation acknowledgement without reserving again or
+   * electing inference. Recovery uses the durable binding, never today's worn
+   * identity. A missing/unreadable receipt retains the unresolved monetary hold. */
+  async reconcileFunding(workspaceId: string, turnId: string): Promise<Result> {
+    const d = this.deps, turn = await d.store.read(workspaceId, turnId);
+    if (!turn) return fail('unknown-turn', 'no durable native admission exists');
+    if (turn.state !== 'prepared' && turn.state !== 'funded') {
+      return fail('invalid-turn-state', 'funding recovery requires an unentered native admission');
+    }
+    const b = turn.binding;
+    const current = await readChannelUsage(b.channelId, d.payerTransport, b.offerId);
+    if (!current.ok) return current;
+    if (current.usage.channelId !== b.channelId || !Array.isArray(current.usage.receipts)) {
+      return fail('invalid-hosted-usage', 'hosted channel history is unreadable');
+    }
+    const receipt = current.usage.receipts.find((r) => r.usageNonce === turnId);
+    if (!receipt) return fail('funding-not-confirmed', 'hosted reservation is not confirmed; the admission remains held');
+    if (!current.usage.identityMarkupOrigin) return fail('funding-origin-missing', 'hosted payer/offer origin is required');
+    return d.store.confirmFunding(workspaceId, turnId, turn.revision, receipt, current.usage.identityMarkupOrigin);
   }
 
   /** Idempotent completion cannot change the exact population or closure time. */
@@ -152,6 +165,22 @@ export class FundedIdentityTurnHost {
       turn = staged.turn;
     }
     return this.settlePending(b.workspaceId, turn.turnId);
+  }
+
+  /** Restart recovery reads the original closed population and timestamp from
+   * the ledger. Uncertain native delivery/completion remains held; recovery
+   * cannot authorize another inference or infer a zero-cost completion. */
+  async reconcileCompletion(workspaceId: string, turnId: string): Promise<Result> {
+    const turn = await this.deps.store.read(workspaceId, turnId);
+    if (!turn) return fail('unknown-turn', 'no durable native admission exists');
+    if (turn.state === 'settlement-pending' || turn.state === 'settled') {
+      return this.settlePending(workspaceId, turnId);
+    }
+    if (turn.state !== 'closed' || turn.closedAtMs === null || !turn.usageEventKeys) {
+      return fail('native-completion-unconfirmed', 'only a durable closed population or signed outbox can reconcile completion; the hold remains');
+    }
+    return this.complete({ binding: turn.binding, turnId,
+      usageEventKeys: turn.usageEventKeys, closedAtMs: turn.closedAtMs });
   }
 
   /** Restart-safe outbox flush; never re-signs or substitutes a fresh timestamp. */

@@ -109,6 +109,18 @@ export class ScopeCoreRegistry {
   private readonly remotes = new Map<string, Map<string, RemoteEntry>>();
   /** live muxer → the scopes served on it (Map so revocation can iterate). */
   private readonly served = new Map<object, ServedConn>();
+  /** Cuts invalidate authorization reads that were started before them. */
+  private readonly serveGenerations = new WeakMap<object, Map<string, number>>();
+  private readonly pendingServes = new Set<{ mux: object; scopeId: string; peerGithubUserId: number }>();
+
+  private generationsFor(mux: object): Map<string, number> {
+    let generations = this.serveGenerations.get(mux);
+    if (!generations) {
+      generations = new Map();
+      this.serveGenerations.set(mux, generations);
+    }
+    return generations;
+  }
 
   constructor(store: ScopedStoreLike) {
     this.store = store;
@@ -197,7 +209,24 @@ export class ScopeCoreRegistry {
     isScopeMember: IsScopeMember,
   ): Promise<ServeScopeResult> {
     const id = formatScopeId(scope);
-    if (!(await isScopeMember(scope, peerGithubUserId))) {
+    const generations = this.generationsFor(mux);
+    const generation = generations.get(id) ?? 0;
+    const pending = { mux, scopeId: id, peerGithubUserId };
+    this.pendingServes.add(pending);
+    let member: boolean;
+    try {
+      member = await isScopeMember(scope, peerGithubUserId);
+    } catch (error) {
+      this.stopServingScope(mux, id);
+      throw error;
+    } finally {
+      this.pendingServes.delete(pending);
+    }
+    if (this.serveGenerations.get(mux) !== generations || (generations.get(id) ?? 0) !== generation) {
+      // A newer cut wins over this stale success; a new serve call may grant again.
+      return { ok: false, attached: 0, refusal: { reason: 'not-a-member', scopeId: id, peerGithubUserId } };
+    }
+    if (!member) {
       // Belt: if we were serving this scope here (roster changed under us),
       // stop NOW — a serve check is also a revocation edge (§5.3).
       this.stopServingScope(mux, id);
@@ -224,6 +253,8 @@ export class ScopeCoreRegistry {
 
   /** Stop serving ONE scope on ONE connection (detach every core of it). */
   stopServingScope(mux: object, scopeId: string): void {
+    const generations = this.generationsFor(mux);
+    generations.set(scopeId, (generations.get(scopeId) ?? 0) + 1);
     const conn = this.served.get(mux);
     if (conn) conn.scopes.delete(scopeId);
     const ownEntry = this.own.get(scopeId);
@@ -239,18 +270,20 @@ export class ScopeCoreRegistry {
    * (never wait for reconnect). Returns how many connections were cut.
    */
   revokePeerFromScope(scopeId: string, peerGithubUserId: number): number {
-    let cut = 0;
+    const cut = new Set<object>();
     for (const [mux, conn] of this.served) {
-      if (conn.scopes.get(scopeId) === peerGithubUserId) {
-        this.stopServingScope(mux, scopeId);
-        cut++;
-      }
+      if (conn.scopes.get(scopeId) === peerGithubUserId) cut.add(mux);
     }
-    return cut;
+    for (const pending of this.pendingServes) {
+      if (pending.scopeId === scopeId && pending.peerGithubUserId === peerGithubUserId) cut.add(pending.mux);
+    }
+    for (const mux of cut) this.stopServingScope(mux, scopeId);
+    return cut.size;
   }
 
   /** Transport died — forget its tracking (detach is moot on a dead stream). */
   dropConnection(mux: object): void {
+    this.serveGenerations.delete(mux);
     this.served.delete(mux);
   }
 

@@ -569,7 +569,7 @@ async function inspectQuotaStream(
         for (const frame of frames) {
           if (frame === 'prelude' && !commit) continue;
           if (frame && frame !== 'prelude') {
-            if (!commit) {
+            if (!commit || frame.protocolError) {
               await cancel();
               const bytes = Buffer.from(JSON.stringify({ error: frame.error }));
               return { quota: frame, body: { async *[Symbol.asyncIterator]() { yield bytes; }, cancel() {} } };
@@ -595,7 +595,14 @@ async function inspectQuotaStream(
         const next = await (pending ?? iterator.next());
         pending = null;
         if (next.done) { ended = true; break; }
-        for (const quota of decode(next.value)) if (quota && quota !== 'prelude' && !quota.protocolError) onLateQuota(quota);
+        for (const quota of decode(next.value)) {
+          if (quota && quota !== 'prelude') {
+            // Withhold this failed chunk, including any echoed credentials.
+            // The gateway emits the scrubbed failure; prior output is never replayed.
+            if (quota.protocolError) decode.assertComplete();
+            else onLateQuota(quota);
+          }
+        }
         yield next.value;
       }
       if (ended && !cancelled) decode.assertComplete();

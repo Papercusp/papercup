@@ -1609,6 +1609,10 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   // 30s client cutoff, so keep direct and tools:invoke-wrapped calls outside
   // the MCP transport floor instead of reporting an outcome-unknown timeout.
   ['dev:service_health', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
+  // EI-254011: storage:usage can spend more than the ordinary client deadline
+  // in bounded scratch sizing/recovery before returning its structured result.
+  // Keep direct and tools:invoke calls outside the flat 30s cutoff.
+  ['storage:usage', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   ['scorecards:get', PTOOL_SCORECARDS_GET_TIMEOUT_MS],
   // EI-22707343179859326: pipeline-position aggregates commit, gate, deploy, and
   // activation reads; keep its direct and deferred calls beyond the flat 30s

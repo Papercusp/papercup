@@ -8,7 +8,7 @@
  * subdir per phase, `result.json` rewritten after every phase so a killed run still leaves
  * its partial result) and repoints `<evidenceRoot>/latest` at it when it ends.
  */
-import { mkdir, readdir, readFile, readlink, rename, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, readdir, readFile, readlink, rename, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import {
@@ -230,6 +230,229 @@ export async function pruneRuns(evidenceRoot: string, keep = keepRunsFromEnv(), 
     removed.push(name);
   }
   return removed;
+}
+
+/**
+ * Entries of an evidence root that no run owns and retention never touches: the `latest` link and
+ * `retained/`, where pinned per-run artifacts (proof receipts) outlive their run dirs.
+ */
+const RESERVED_ROOT_ENTRIES = new Set(['latest', 'retained']);
+/** An entry with this file at its top level is kept regardless of age. */
+export const VH_KEEP_MARKER = '.vh-keep';
+export const DEFAULT_FOREIGN_MAX_AGE_HOURS = 72;
+/**
+ * Entries one prune call may visit across ALL foreign entries before it stops judging. Judging a
+ * stale entry walks it in full; measured hand-named dirs hold 450k-850k entries each, and 3M
+ * entries took 197s on a loaded host, so 1M bounds a finalize's added time to about a minute.
+ * Entries the budget does not reach are kept and reported as unjudged.
+ */
+export const FOREIGN_WALK_BUDGET = 1_000_000;
+const LSTAT_BATCH = 256;
+/**
+ * Per-root cache of freshness proofs: `{ [entry]: freshUntilMs }`. A walk that found a file
+ * modified at F proves the entry cannot be stale before F + maxAge, so it is not re-walked until
+ * then. Without it, an active entry whose fresh file sits deep (hardlinked shared inodes) is
+ * re-walked on every finalize and starves the budget for the entries after it. A dot-entry, so
+ * retention never judges it; a lost or corrupt cache only costs a re-walk.
+ */
+export const FOREIGN_FRESHNESS_CACHE = '.vh-foreign-freshness.json';
+
+export function foreignMaxAgeHoursFromEnv(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.VH_FOREIGN_MAX_AGE_HOURS;
+  if (raw === undefined || raw.trim() === '') return DEFAULT_FOREIGN_MAX_AGE_HOURS;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : DEFAULT_FOREIGN_MAX_AGE_HOURS;
+}
+
+export interface ForeignPruneResult {
+  /** Foreign entries removed because nothing under them changed within the max age. */
+  removed: string[];
+  /** Foreign entries kept WITHOUT a verdict (walk error or budget): a skipped check, not a fresh entry. */
+  unjudged: Array<{ name: string; reason: 'walk-budget' | 'walk-error' }>;
+}
+
+type Staleness =
+  | { verdict: 'fresh'; mtimeMs: number }
+  | { verdict: 'stale' | 'walk-budget' | 'walk-error' };
+
+/**
+ * Whether anything at or under `top` was modified at or after `cutoffMs` (a fresh verdict carries
+ * the mtime that proved it). Never follows symlinks. Breadth-first, returning at the FIRST fresh
+ * mtime, so a live entry usually costs little; a stale one is walked in full, which costs no more
+ * than removing it. Spends from the shared `budget` (entries visited); exhausting it returns
+ * 'walk-budget'. A child vanishing mid-walk is ignored; any other error returns 'walk-error'.
+ * Either non-verdict keeps the entry.
+ */
+async function stalenessOf(top: string, cutoffMs: number, budget: { left: number }): Promise<Staleness> {
+  const dirs: string[] = [];
+  let st;
+  try {
+    st = await lstat(top);
+  } catch {
+    return { verdict: 'walk-error' };
+  }
+  if (st.mtimeMs >= cutoffMs) return { verdict: 'fresh', mtimeMs: st.mtimeMs };
+  if (st.isDirectory()) dirs.push(top);
+  for (let head = 0; head < dirs.length; head++) {
+    const dir = dirs[head] as string;
+    let names: string[];
+    try {
+      names = await readdir(dir);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === 'ENOENT') continue;
+      return { verdict: 'walk-error' };
+    }
+    budget.left -= names.length;
+    if (budget.left < 0) return { verdict: 'walk-budget' };
+    for (let i = 0; i < names.length; i += LSTAT_BATCH) {
+      const batch = names.slice(i, i + LSTAT_BATCH).map((n) => path.join(dir, n));
+      const stats = await Promise.all(
+        batch.map((p) =>
+          lstat(p).then(
+            (s) => ({ p, s, err: null as NodeJS.ErrnoException | null }),
+            (err: NodeJS.ErrnoException) => ({ p, s: null, err }),
+          ),
+        ),
+      );
+      for (const { p, s, err } of stats) {
+        if (!s) {
+          if (err?.code === 'ENOENT') continue;
+          return { verdict: 'walk-error' };
+        }
+        if (s.mtimeMs >= cutoffMs) return { verdict: 'fresh', mtimeMs: s.mtimeMs };
+        if (s.isDirectory()) dirs.push(p);
+      }
+    }
+  }
+  return { verdict: 'stale' };
+}
+
+async function readFreshnessCache(evidenceRoot: string): Promise<Record<string, number>> {
+  try {
+    const parsed: unknown = JSON.parse(await readFile(path.join(evidenceRoot, FOREIGN_FRESHNESS_CACHE), 'utf8'));
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    return Object.fromEntries(
+      Object.entries(parsed as Record<string, unknown>).filter((kv): kv is [string, number] => typeof kv[1] === 'number'),
+    );
+  } catch {
+    return {};
+  }
+}
+
+async function writeFreshnessCache(evidenceRoot: string, cache: Record<string, number>): Promise<void> {
+  const tmp = path.join(evidenceRoot, `${FOREIGN_FRESHNESS_CACHE}.${process.pid}`);
+  try {
+    await writeFile(tmp, `${JSON.stringify(cache)}\n`);
+    await rename(tmp, path.join(evidenceRoot, FOREIGN_FRESHNESS_CACHE));
+  } catch {
+    await rm(tmp, { force: true }).catch(() => {});
+  }
+}
+
+export interface ForeignPruneOptions {
+  maxAgeHours?: number;
+  now?: number;
+  walkBudget?: number;
+  /** Judge only: `removed` names what WOULD be removed, nothing is deleted, the cache is not written. */
+  dryRun?: boolean;
+}
+
+/**
+ * Retention for FOREIGN entries: anything in an evidence root that is not a run dir, which
+ * {@link pruneRuns} never governs. Hand-named scratch and investigation dirs placed beside the
+ * runs otherwise grow the root without bound (WI-10007424 measured ~230G of them in one root).
+ * Removes a foreign dir or regular file when nothing at or under it was modified within
+ * `maxAgeHours`. Never touches run dirs, `latest`, `retained/`, dot-entries, symlinks, or an entry
+ * holding a {@link VH_KEEP_MARKER} file. `VH_FOREIGN_MAX_AGE_HOURS` sets the default; 0 disables.
+ * Cost is bounded by {@link FOREIGN_WALK_BUDGET} per call and amortised by
+ * {@link FOREIGN_FRESHNESS_CACHE}.
+ */
+export async function pruneStaleForeign(evidenceRoot: string, opts: ForeignPruneOptions = {}): Promise<ForeignPruneResult> {
+  const {
+    maxAgeHours = foreignMaxAgeHoursFromEnv(),
+    now = Date.now(),
+    walkBudget = FOREIGN_WALK_BUDGET,
+    dryRun = false,
+  } = opts;
+  const result: ForeignPruneResult = { removed: [], unjudged: [] };
+  if (!(maxAgeHours > 0)) return result;
+  const cutoffMs = now - maxAgeHours * 60 * 60 * 1000;
+  let entries;
+  try {
+    entries = await readdir(evidenceRoot, { withFileTypes: true });
+  } catch {
+    return result;
+  }
+  const candidates: Array<{ name: string; target: string; mtimeMs: number }> = [];
+  for (const entry of entries) {
+    const name = entry.name;
+    if (RUN_DIR_RE.test(name) || RESERVED_ROOT_ENTRIES.has(name) || name.startsWith('.')) continue;
+    if (!entry.isDirectory() && !entry.isFile()) continue; // symlinks, sockets, fifos: not ours to judge
+    const target = path.join(evidenceRoot, name);
+    if (entry.isDirectory()) {
+      const marked = await lstat(path.join(target, VH_KEEP_MARKER)).then(() => true, () => false);
+      if (marked) continue;
+    }
+    const mtimeMs = await lstat(target).then((s) => s.mtimeMs, () => now);
+    candidates.push({ name, target, mtimeMs });
+  }
+  const maxAgeMs = maxAgeHours * 60 * 60 * 1000;
+  const cached = await readFreshnessCache(evidenceRoot);
+  const nextCache: Record<string, number> = {};
+  // Oldest first: the likeliest-stale entries get the walk budget before it runs out.
+  candidates.sort((a, b) => a.mtimeMs - b.mtimeMs || a.name.localeCompare(b.name));
+  const budget = { left: walkBudget };
+  for (const { name, target } of candidates) {
+    const until = cached[name];
+    // If the proving file was since deleted, trusting the proof only DELAYS removal: the safe side.
+    if (until !== undefined && until > now) {
+      nextCache[name] = until;
+      continue;
+    }
+    if (budget.left <= 0) {
+      result.unjudged.push({ name, reason: 'walk-budget' });
+      continue;
+    }
+    const judged = await stalenessOf(target, cutoffMs, budget);
+    if (judged.verdict === 'fresh') {
+      nextCache[name] = judged.mtimeMs + maxAgeMs;
+      continue;
+    }
+    if (judged.verdict !== 'stale') {
+      result.unjudged.push({ name, reason: judged.verdict });
+      continue;
+    }
+    // A writer may have reached the entry while it was being walked: re-check its own mtime.
+    const again = await lstat(target).then((s) => s.mtimeMs, () => null);
+    if (again === null || again >= cutoffMs) continue;
+    if (!dryRun) await rm(target, { recursive: true, force: true });
+    result.removed.push(name);
+  }
+  if (!dryRun && JSON.stringify(nextCache) !== JSON.stringify(cached)) await writeFreshnessCache(evidenceRoot, nextCache);
+  return result;
+}
+
+export interface EvidenceRootPruneResult {
+  runs: string[];
+  foreign: ForeignPruneResult;
+}
+
+/** Full retention for an evidence root: {@link pruneRuns} by count, then {@link pruneStaleForeign} by age. */
+export async function pruneEvidenceRoot(
+  evidenceRoot: string,
+  env: NodeJS.ProcessEnv = process.env,
+  now = Date.now(),
+): Promise<EvidenceRootPruneResult> {
+  const runs = await pruneRuns(evidenceRoot, keepRunsFromEnv(env), now);
+  const foreign = await pruneStaleForeign(evidenceRoot, { maxAgeHours: foreignMaxAgeHoursFromEnv(env), now });
+  return { runs, foreign };
+}
+
+/** One stderr-ready line naming what retention removed or could not judge, or null when nothing happened. */
+export function formatForeignPruneLine(r: ForeignPruneResult): string | null {
+  if (r.removed.length === 0 && r.unjudged.length === 0) return null;
+  const unjudged = r.unjudged.map((u) => `${u.name}:${u.reason}`);
+  return `VH_PRUNED_FOREIGN removed=${r.removed.join(',') || '-'} unjudged=${unjudged.join(',') || '-'}`;
 }
 
 export function deriveVerdict(result: Pick<HarnessRunResult, 'preflight' | 'phases' | 'tierGate'>): {
@@ -573,6 +796,8 @@ export async function runHarness(args: RunHarnessArgs): Promise<HarnessRunResult
   result.endedAt = now().toISOString();
   await checkpoint();
   await linkLatest(args.evidenceRoot, runDir);
-  await pruneRuns(args.evidenceRoot);
+  const pruned = await pruneEvidenceRoot(args.evidenceRoot);
+  const prunedLine = formatForeignPruneLine(pruned.foreign);
+  if (prunedLine) process.stderr.write(`${prunedLine}\n`);
   return result;
 }

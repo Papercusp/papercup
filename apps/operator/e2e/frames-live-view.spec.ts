@@ -20,7 +20,7 @@ import { FRAME_THUMB_TESTSRC, FRAME_THUMB_SMPTE, FRAME_THUMB_RGB } from './__fix
 const baseURL =
   process.env.OPERATOR_E2E_BASE_URL ??
   `http://127.0.0.1:${Number(process.env.OPERATOR_E2E_PORT ?? process.env.PORT) || 3055}`;
-const ARTIFACT_DIR = join(__dirname, '__artifacts__');
+const ARTIFACT_DIR = join(import.meta.dirname, '__artifacts__');
 
 // A minimal valid 1×1 JPEG (black) — enough for <img> to decode.
 const TINY_JPEG_B64 =

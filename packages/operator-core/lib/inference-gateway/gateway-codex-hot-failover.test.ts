@@ -27,6 +27,41 @@ async function codexHome(accountId: string): Promise<string> {
 }
 
 describe('proxyOpenAi — Codex OAuth reachability and quota failover', () => {
+  it.each([false, true])('surfaces a generic context SSE error to the native client (after output: %s)', async afterOutput => {
+    const account = { accountId: 'context-account', home: await codexHome('context-account') };
+    const output = afterOutput ? 'data: ' + JSON.stringify({ type: 'response.output_text.delta', delta: 'visible once' }) + '\n\n' : '';
+    const wire = output + 'data: ' + JSON.stringify({ type: 'error', error: {
+      code: 'context_length_exceeded', message: 'context window exceeded',
+    } }) + '\n\n';
+    const fetchImpl = vi.fn(async () => new Response(new ReadableStream({ async start(controller) {
+      if (afterOutput) {
+        controller.enqueue(new TextEncoder().encode(output));
+        await new Promise(resolve => setTimeout(resolve, 25));
+      }
+      controller.enqueue(new TextEncoder().encode(wire.slice(output.length))); controller.close();
+    } }), { status: 200 })) as typeof fetch;
+    gateway = createInferenceGateway({ accountId: 'unused', token: async () => 'unused', fetchImpl,
+      codexCliAccounts: () => [account], codexOAuthProxy: true, selfHeal: { enabled: false } });
+    const port = await gateway.listen(0);
+    const response = await fetch('http://127.0.0.1:' + port + '/v1/responses', { method: 'POST',
+      headers: { 'content-type': 'application/json', [OWNER_HEADER]: 'context-owner' },
+      body: JSON.stringify({ model: 'gpt-6.1-sol', input: [], stream: true }) });
+    const result = await response.text();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    if (!afterOutput) {
+      expect(response.status).toBe(400);
+      expect(JSON.parse(result).error.code).toBe('context_length_exceeded');
+    } else {
+      expect(response.status).toBe(200);
+      const frames = result.split('\n\n').filter(Boolean).map(frame =>
+        JSON.parse(frame.split('\n').filter(line => line.startsWith('data:')).map(line => line.slice(5)).join('\n')));
+      expect(frames.filter(frame => frame.type === 'response.output_text.delta')).toHaveLength(1);
+      expect(frames.at(-1)).toMatchObject({ type: 'response.failed', response: {
+        status: 'failed', error: { code: 'context_length_exceeded', message: 'context window exceeded' },
+      } });
+      expect(frames.some(frame => frame.type === 'response.completed')).toBe(false);
+    }
+  });
   it('safely fails over a prelude-only EOF before exposing a response', async () => {
     const accounts = [
       { accountId: 'chatgpt-a', home: await codexHome('chatgpt-a') },
@@ -112,8 +147,9 @@ describe('proxyOpenAi — Codex OAuth reachability and quota failover', () => {
         id: 'resp_visible_eof', status: 'failed', error: { code: 'server_error', message: expect.stringContaining('EOF') },
       } });
     } else {
-      expect(frames.at(-1)).toMatchObject({ type: 'error', error: { code: 'server_error' } });
-      expect(frames.at(-1)).not.toHaveProperty('response.id');
+      expect(frames.at(-1)).toMatchObject({ type: 'response.failed', response: {
+        id: null, status: 'failed', error: { code: 'server_error' },
+      } });
     }
     const report = await fetch('http://127.0.0.1:' + port + '/admin/owner-report?owner=visible-eof-owner');
     expect(report.status).toBe(200);

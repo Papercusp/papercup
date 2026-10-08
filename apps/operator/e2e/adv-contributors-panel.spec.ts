@@ -38,7 +38,7 @@ const baseURL =
 // The contributors API is stubbed, so the slug only needs to mount the dock.
 const SLUG = process.env.ADV_CONTRIB_E2E_SLUG ?? 'papercup';
 
-const ARTIFACT_DIR = join(__dirname, '__artifacts__');
+const ARTIFACT_DIR = join(import.meta.dirname, '__artifacts__');
 
 // Two contributors: a VERIFIED viewer (alice, id 42) with real tier numbers,
 // and an UNVERIFIED peer (bob, id 7) whose non-zero raw stats MUST be zeroed

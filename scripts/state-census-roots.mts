@@ -2,7 +2,7 @@
 /** Partial writer-root diagnostic, explicitly not a whole-install ship verdict. */
 import { collectStateCensus, backupCacheCensusDeclarations } from '../packages/backup/src/state-census';
 import { installedRootCensusProducers, postgresStorageDeclaration, gitStorageDeclaration } from '../packages/operator-core/lib/backup/state-census-producers';
-import { readdir } from 'node:fs/promises';
+import { readdir, lstat } from 'node:fs/promises';
 import { join } from 'node:path';
 
 const producers = installedRootCensusProducers();
@@ -13,7 +13,10 @@ for (const root of producers.roots) {
   try { clones = await readdir(join(root.path, 'clones'), { withFileTypes: true }); }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
   for (const clone of clones ?? []) {
-    if (clone.isDirectory()) declarations.push(await gitStorageDeclaration(root, `clones/${clone.name}`));
+    if (!clone.isDirectory()) continue;
+    try { await lstat(join(root.path, 'clones', clone.name, '.git')); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error; }
+    declarations.push(await gitStorageDeclaration(root, `clones/${clone.name}`));
   }
   let children;
   try { children = await readdir(join(root.path, '.shared'), { withFileTypes: true }); }

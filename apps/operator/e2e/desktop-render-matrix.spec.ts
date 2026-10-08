@@ -9,7 +9,7 @@ import {
 } from '../../../packages/operator-core/lib/design-compare/render-matrix';
 
 test.describe.configure({ mode: 'serial' });
-const root = path.resolve(__dirname, '../../..');
+const root = path.resolve(import.meta.dirname, '../../..');
 const output = process.env.DESKTOP_MATRIX_OUTPUT_DIR;
 const referencePath = 'docs/evidence/visual-desktop-mockups-2026-09-07/b-workspace.png';
 const states = ['ready', 'empty', 'loading', 'disconnected', 'error'] as const;

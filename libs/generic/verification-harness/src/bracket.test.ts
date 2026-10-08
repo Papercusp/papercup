@@ -1,9 +1,31 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readlinkSync,
+  symlinkSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_KEEP_RUNS, keepRunsFromEnv, pruneRuns } from './runner.js';
+import {
+  DEFAULT_FOREIGN_MAX_AGE_HOURS,
+  DEFAULT_KEEP_RUNS,
+  FOREIGN_FRESHNESS_CACHE,
+  FOREIGN_WALK_BUDGET,
+  foreignMaxAgeHoursFromEnv,
+  formatForeignPruneLine,
+  keepRunsFromEnv,
+  pruneEvidenceRoot,
+  pruneRuns,
+  pruneStaleForeign,
+  VH_KEEP_MARKER,
+} from './runner.js';
 
 /**
  * vh.sh BRACKET MODE: a long linear `set -e` script marks section boundaries (vh_begin) instead
@@ -252,5 +274,150 @@ describe('pruneRuns (evidence retention)', () => {
     const root = tmp();
     mkRun(root, '20260101T000000Z-1');
     expect(await pruneRuns(root, 0)).toEqual([]);
+  });
+});
+
+describe('pruneStaleForeign (WI-10007424: hand-named entries beside the runs)', () => {
+  const OLD = new Date('2025-01-01T00:00:00Z');
+  const NOW = Date.parse('2026-10-08T12:00:00Z');
+  const age = (p: string) => utimesSync(p, OLD, OLD);
+  /** A foreign dir whose every entry is old, with one nested file so the walk has depth. */
+  const oldTree = (root: string, name: string) => {
+    const dir = path.join(root, name);
+    mkdirSync(path.join(dir, 'sub'), { recursive: true });
+    writeFileSync(path.join(dir, 'sub', 'image.raw'), 'x');
+    age(path.join(dir, 'sub', 'image.raw'));
+    age(path.join(dir, 'sub'));
+    age(dir);
+    return dir;
+  };
+
+  it('removes stale foreign dirs and files, keeps fresh ones and every protected entry', async () => {
+    const root = tmp();
+    oldTree(root, 'wi1-old-scratch');
+    writeFileSync(path.join(root, 'stray.log'), 'x');
+    age(path.join(root, 'stray.log'));
+    // Fresh deep inside, old at the top: a writer is still using it.
+    const live = oldTree(root, 'wi2-deep-live');
+    writeFileSync(path.join(live, 'sub', 'image.raw'), 'still being written');
+    age(live);
+    age(path.join(live, 'sub'));
+    mkdirSync(path.join(root, 'fresh-scratch'));
+    // Protected, all old: a run dir (count-governed), retained/, a dot-entry, a marked dir, a symlink.
+    oldTree(root, '20200101T000000Z-1');
+    oldTree(root, 'retained');
+    oldTree(root, '.latest-123');
+    const marked = oldTree(root, 'pinned-investigation');
+    writeFileSync(path.join(marked, VH_KEEP_MARKER), '');
+    age(path.join(marked, VH_KEEP_MARKER));
+    age(marked);
+    symlinkSync('wi1-old-scratch', path.join(root, 'link-to-old'));
+    symlinkSync('20200101T000000Z-1', path.join(root, 'latest'));
+
+    const dry = await pruneStaleForeign(root, { maxAgeHours: 72, now: NOW, dryRun: true });
+    expect(dry.removed.sort()).toEqual(['stray.log', 'wi1-old-scratch']);
+    expect(existsSync(path.join(root, 'wi1-old-scratch', 'sub', 'image.raw'))).toBe(true);
+    expect(existsSync(path.join(root, 'stray.log'))).toBe(true);
+
+    const r = await pruneStaleForeign(root, { maxAgeHours: 72, now: NOW });
+
+    expect(r.removed.sort()).toEqual(['stray.log', 'wi1-old-scratch']);
+    expect(r.unjudged).toEqual([]);
+    for (const kept of ['wi2-deep-live', 'fresh-scratch', '20200101T000000Z-1', 'retained', '.latest-123', 'pinned-investigation', 'latest']) {
+      expect(existsSync(path.join(root, kept)), kept).toBe(true);
+    }
+    // The symlink itself survives (dangling now): retention never judges or follows links.
+    expect(readlinkSync(path.join(root, 'link-to-old'))).toBe('wi1-old-scratch');
+  });
+
+  it('a max age of 0 disables it; the env knob falls back to the default on junk', async () => {
+    expect(foreignMaxAgeHoursFromEnv({ VH_FOREIGN_MAX_AGE_HOURS: '0' })).toBe(0);
+    expect(foreignMaxAgeHoursFromEnv({ VH_FOREIGN_MAX_AGE_HOURS: '12' })).toBe(12);
+    expect(foreignMaxAgeHoursFromEnv({ VH_FOREIGN_MAX_AGE_HOURS: 'soon' })).toBe(DEFAULT_FOREIGN_MAX_AGE_HOURS);
+    expect(foreignMaxAgeHoursFromEnv({})).toBe(DEFAULT_FOREIGN_MAX_AGE_HOURS);
+    const root = tmp();
+    oldTree(root, 'old');
+    expect(await pruneStaleForeign(root, { maxAgeHours: 0, now: NOW })).toEqual({ removed: [], unjudged: [] });
+    expect(existsSync(path.join(root, 'old'))).toBe(true);
+  });
+
+  it.skipIf(process.getuid?.() === 0)('an unreadable subtree is kept and reported as unjudged, never removed', async () => {
+    const root = tmp();
+    const dir = oldTree(root, 'locked');
+    chmodSync(path.join(dir, 'sub'), 0o000);
+    try {
+      const r = await pruneStaleForeign(root, { maxAgeHours: 72, now: NOW });
+      expect(r.removed).toEqual([]);
+      expect(r.unjudged).toEqual([{ name: 'locked', reason: 'walk-error' }]);
+      expect(formatForeignPruneLine(r)).toBe('VH_PRUNED_FOREIGN removed=- unjudged=locked:walk-error');
+    } finally {
+      chmodSync(path.join(dir, 'sub'), 0o755);
+    }
+    expect(existsSync(path.join(dir, 'sub', 'image.raw'))).toBe(true);
+  });
+
+  it('spends a bounded walk budget on the oldest entries first and reports the rest as unjudged', async () => {
+    const root = tmp();
+    oldTree(root, 'b-newer-old');
+    const later = new Date('2025-06-01T00:00:00Z');
+    utimesSync(path.join(root, 'b-newer-old'), later, later);
+    oldTree(root, 'a-oldest'); // two readdirs of one entry each: exactly a budget of 2
+    const r = await pruneStaleForeign(root, { maxAgeHours: 72, now: NOW, walkBudget: 2 });
+    expect(r).toEqual({ removed: ['a-oldest'], unjudged: [{ name: 'b-newer-old', reason: 'walk-budget' }] });
+    expect(existsSync(path.join(root, 'b-newer-old', 'sub', 'image.raw'))).toBe(true);
+    expect(FOREIGN_WALK_BUDGET).toBeGreaterThanOrEqual(1_000_000);
+  });
+
+  it('caches a freshness proof so a deep-fresh entry is walked once, not on every finalize', async () => {
+    const root = tmp();
+    const live = oldTree(root, 'deep-live');
+    const proof = new Date(NOW - 60 * 60 * 1000); // modified an hour before NOW, deep in the tree
+    utimesSync(path.join(live, 'sub', 'image.raw'), proof, proof);
+    const horizon = proof.getTime() + 72 * 60 * 60 * 1000;
+
+    expect(await pruneStaleForeign(root, { maxAgeHours: 72, now: NOW })).toEqual({ removed: [], unjudged: [] });
+    expect(JSON.parse(readFileSync(path.join(root, FOREIGN_FRESHNESS_CACHE), 'utf8'))).toEqual({ 'deep-live': horizon });
+
+    // Within the horizon: a zero budget still judges nothing, because the proof stands.
+    expect(await pruneStaleForeign(root, { maxAgeHours: 72, now: NOW + 1000, walkBudget: 0 })).toEqual({ removed: [], unjudged: [] });
+    // Past it: the proof has expired, so the entry needs a walk again, which a zero budget cannot afford.
+    expect(await pruneStaleForeign(root, { maxAgeHours: 72, now: horizon + 1, walkBudget: 0 })).toEqual({
+      removed: [],
+      unjudged: [{ name: 'deep-live', reason: 'walk-budget' }],
+    });
+    expect(existsSync(path.join(live, 'sub', 'image.raw'))).toBe(true);
+    // Past it with a budget: nothing changed under it for 72h, so it goes, and the cache forgets it.
+    expect(await pruneStaleForeign(root, { maxAgeHours: 72, now: horizon + 1 })).toEqual({ removed: ['deep-live'], unjudged: [] });
+    expect(JSON.parse(readFileSync(path.join(root, FOREIGN_FRESHNESS_CACHE), 'utf8'))).toEqual({});
+  });
+
+  it('pruneEvidenceRoot applies run-count and foreign-age retention together', async () => {
+    const root = tmp();
+    for (const n of ['20260101T000000Z-1', '20260102T000000Z-2', '20260103T000000Z-3']) {
+      mkdirSync(path.join(root, n));
+      writeFileSync(path.join(root, n, 'result.json'), '{}');
+    }
+    oldTree(root, 'old-scratch');
+    const r = await pruneEvidenceRoot(root, { VH_KEEP_RUNS: '1', VH_FOREIGN_MAX_AGE_HOURS: '72' }, NOW);
+    expect(r.runs.sort()).toEqual(['20260101T000000Z-1', '20260102T000000Z-2']);
+    expect(r.foreign).toEqual({ removed: ['old-scratch'], unjudged: [] });
+    expect(formatForeignPruneLine(r.foreign)).toBe('VH_PRUNED_FOREIGN removed=old-scratch unjudged=-');
+    expect(formatForeignPruneLine({ removed: [], unjudged: [] })).toBeNull();
+  });
+
+  it('vh.sh finalize prunes a stale hand-named dir in its evidence root and says so on stderr', () => {
+    const r = run(`
+mkdir -p "$ROOT/ev/old-scratch/sub" "$ROOT/ev/new-scratch"
+touch -d '2020-01-01T00:00:00Z' "$ROOT/ev/old-scratch/sub" "$ROOT/ev/old-scratch"
+${chain}
+vh_begin prep
+vh_begin build
+vh_begin ship
+exit 0
+`);
+    expect(r.code).toBe(0);
+    expect(r.stderr).toContain('VH_PRUNED_FOREIGN removed=old-scratch unjudged=-');
+    expect(existsSync(path.join(r.root, 'ev', 'old-scratch'))).toBe(false);
+    expect(existsSync(path.join(r.root, 'ev', 'new-scratch'))).toBe(true);
   });
 });

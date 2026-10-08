@@ -9215,7 +9215,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
         }
 
         const streamFailure = failure.cause && typeof failure.cause === 'object'
-          ? failure.cause as { protocol?: unknown; responseId?: unknown }
+          ? failure.cause as { protocol?: unknown; responseId?: unknown; error?: unknown }
           : null;
         const incompleteOAuthStream = failure.code === 'upstream-error' &&
           streamFailure?.protocol === 'openai-responses';
@@ -9233,10 +9233,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
             const responseId = typeof streamFailure?.responseId === 'string' && streamFailure.responseId.trim()
               ? streamFailure.responseId
               : null;
-            const error = { code: 'server_error', message: failure.message };
-            const terminal = responseId
-              ? { type: 'response.failed', response: { id: responseId, status: 'failed', error } }
-              : { type: 'error', error };
+            const error = streamFailure?.error && typeof streamFailure.error === 'object'
+              ? streamFailure.error : { code: 'server_error', message: failure.message };
+            const terminal = { type: 'response.failed', response: { id: responseId, status: 'failed', error } };
             res.end('event: ' + terminal.type + '\ndata: ' + JSON.stringify(terminal) + '\n\n');
           } else {
             res.destroy();

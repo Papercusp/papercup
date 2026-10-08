@@ -22,8 +22,9 @@ import {
   checkGuardRails,
   deriveVerdict,
   formatSummaryLine,
+  formatForeignPruneLine,
   linkLatest,
-  pruneRuns,
+  pruneEvidenceRoot,
   loadRunResult,
   PREFLIGHT_PHASE_ID,
   writeRunResult,
@@ -115,7 +116,9 @@ export async function finalizeCommand(argv: string[]): Promise<{ line: string; r
   Object.assign(result, deriveVerdict(result));
   await writeRunResult(result);
   await linkLatest(evidenceRoot, runDir);
-  await pruneRuns(evidenceRoot);
+  const pruned = await pruneEvidenceRoot(evidenceRoot);
+  const prunedLine = formatForeignPruneLine(pruned.foreign);
+  if (prunedLine) process.stderr.write(`${prunedLine}\n`);
   return { line: formatSummaryLine(result), result };
 }
 

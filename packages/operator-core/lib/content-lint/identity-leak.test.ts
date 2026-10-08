@@ -82,6 +82,19 @@ describe('findIdentityLeakError', () => {
       .toThrow('key contains a machine identity');
   });
 
+  it('exports retained test logs without changing their private proof hashes or execution counts', async () => {
+    const checkout = ['', 'home', 'somedev', 'project'].join('/');
+    const retainedLog = `repo: ${checkout}\nTests 26 passed\nexitCode=0\n`;
+    const report = { kind: 'operational-test-evidence', retainedLog,
+      provenance: { originalLogSha256: 'a'.repeat(64), originalTestRunId: 42, originalTestCount: 26, derivedAssertionCount: 3 } };
+    expect(await findIdentityLeakError('docs/evidence/test-log.json', JSON.stringify(report), REPO_ROOT)).toBeTruthy();
+    const exported = serializeIdentitySafeJson(report, []);
+    expect(await findIdentityLeakError('docs/evidence/test-log.json', exported, REPO_ROOT)).toBeNull();
+    expect(JSON.parse(exported).provenance).toEqual(report.provenance);
+    expect(JSON.parse(exported).retainedLog).toContain('Tests 26 passed\nexitCode=0');
+    expect(report.retainedLog).toBe(retainedLog);
+  });
+
   it('imports the serializer in a host bundle without running its standalone CLI', () => {
     const dir = mkdtempSync(join(tmpdir(), 'identity-serializer-bundle-'));
     const bundle = join(dir, 'host.mjs');

@@ -681,6 +681,13 @@ describe('ptool call deadlines', () => {
       args: { blueprintId: 'papercusp-engineer' },
     })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS).toBeGreaterThan(PTOOL_CALL_TOOL_TIMEOUT_MS);
+    // EI-254011: a measured storage:usage call settled server-side after the
+    // ordinary 30s ptool deadline. Cover direct and deferred routes.
+    expect(timeoutForTool('storage:usage')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', {
+      name: 'storage:usage',
+      args: { category: 'scratch' },
+    })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('fleet:launch-on-plan')).toBe(300_000);
     expect(timeoutForTool('tools:invoke', { name: 'fleet:launch-on-plan' })).toBe(300_000);
     // EI-21831468700319864: fleet:wind-down inherits the 60s dispatch default;

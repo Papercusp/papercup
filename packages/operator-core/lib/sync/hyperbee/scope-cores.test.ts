@@ -86,6 +86,12 @@ describe('private scoped-core transport isolation', () => {
       await expect(secretReplica.get(1, { timeout: 500 })).rejects.toMatchObject({ code: 'REQUEST_TIMEOUT' });
       await publicCore.append({ public: 2 });
       expect(await publicReplica.get(1, { timeout: 5000 })).toEqual({ public: 2 });
+
+      // A later authorized grant can reopen the private channel on the same
+      // live connection without reviving it during the revoked interval.
+      member = true;
+      expect(await registry.serveScopeOnConnection(mux, SCOPE_A, 777, isMember)).toMatchObject({ ok: true, attached: 1 });
+      expect(await secretReplica.get(1, { timeout: 5000 })).toEqual({ private: 'after-revocation' });
     } finally {
       serving?.destroy(); fetching?.destroy();
       await Promise.all([main.close(), scoped.close(), peer.close()]);
@@ -186,6 +192,40 @@ describe('ensureOwnScopeCore', () => {
 });
 
 describe('serveScopeOnConnection — the §5.3 gate', () => {
+  it.each([
+    { cut: 'revoke', served: true }, { cut: 'disconnect', served: true },
+    { cut: 'revoke', served: false }, { cut: 'disconnect', served: false },
+  ])('an in-flight roster read cannot open a scope after $cut (previously served=$served)', async ({ cut, served }) => {
+    const store = new FakeStore();
+    const reg = new ScopeCoreRegistry(store);
+    const { keyHex } = await reg.ensureOwnScopeCore(SCOPE_A);
+    const mux = {};
+    if (served) await reg.serveScopeOnConnection(mux, SCOPE_A, 777, () => true);
+    let finish!: (member: boolean) => void;
+    const pendingMembership = new Promise<boolean>((resolve) => { finish = resolve; });
+    const pendingServe = reg.serveScopeOnConnection(mux, SCOPE_A, 777, () => pendingMembership);
+    if (cut === 'revoke') reg.revokePeerFromScope('fleet:42/widgets', 777);
+    else { reg.stopServingScope(mux, 'fleet:42/widgets'); reg.dropConnection(mux); }
+    finish(true); // stale successful read returns after the newer cut
+    expect(await pendingServe).toMatchObject({ ok: false, attached: 0 });
+    expect(store.byKey.get(keyHex)!.attachedMuxes.has(mux)).toBe(false);
+    expect(reg.servedScopeIds(mux)).toEqual([]);
+    expect(await reg.serveScopeOnConnection(mux, SCOPE_A, 777, () => true)).toMatchObject({ ok: true, attached: 1 });
+  });
+
+  it('an unreadable roster cuts existing serving and permits a fresh authorized check after recovery', async () => {
+    const store = new FakeStore();
+    const reg = new ScopeCoreRegistry(store);
+    const { keyHex } = await reg.ensureOwnScopeCore(SCOPE_A);
+    const mux = {};
+    await reg.serveScopeOnConnection(mux, SCOPE_A, 777, () => true);
+    await expect(reg.serveScopeOnConnection(mux, SCOPE_A, 777, async () => {
+      throw new Error('roster unavailable');
+    })).rejects.toThrow('roster unavailable');
+    expect(store.byKey.get(keyHex)!.attachedMuxes.has(mux)).toBe(false);
+    expect(await reg.serveScopeOnConnection(mux, SCOPE_A, 777, () => true)).toMatchObject({ ok: true, attached: 1 });
+  });
+
   it('member: attaches own + admitted remote cores; re-serve is idempotent', async () => {
     const store = new FakeStore();
     const reg = new ScopeCoreRegistry(store);

@@ -1043,14 +1043,15 @@ describe('Codex OAuth quota errors inside successful HTTP streams', () => {
     const output = frame({ type: 'response.output_text.delta', delta: 'visible once' });
     const wire = output + frame({ type: 'error', error: { code: 'context_length_exceeded',
       message: 'context window exceeded; chatgpt-a-tok' } });
-    const h = harness(async () => upstream(200, {}, sseBody(wire)), {
+    const h = harness(async () => upstream(200, {}, sseBody(output, wire.slice(output.length))), {
       accounts: [cli('chatgpt-a'), cli('chatgpt-b')], pool,
     });
     const error = await executeGatewayRequestKernel(h.options).catch(e => e);
     expect(error).toMatchObject({ code: 'upstream-error', status: 400, retryable: false,
       cause: { protocol: 'openai-responses', error: { code: 'context_length_exceeded' } } });
     expect(JSON.stringify(error.cause)).not.toContain('chatgpt-a-tok');
-    expect(h.written.join('')).toBe(wire);
+    expect(h.written.join('')).toBe(output);
+    expect(h.written.join('')).not.toContain('chatgpt-a-tok');
     expect(h.prepared).toHaveLength(1);
     expect(pool.exhaustedCalls).toEqual([]);
   });

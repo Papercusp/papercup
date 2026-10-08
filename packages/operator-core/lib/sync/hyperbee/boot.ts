@@ -1334,6 +1334,24 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   };
   const admittedIdentities = new Map<string, AdmittedIdentity>();
 
+  type MemberReader = NonNullable<import('./hive-member-identity-set').MemberDeviceSetDeps['loadMembers']>;
+  async function resolveAdmittedUserIdentity(
+    identity: AdmittedIdentity,
+    loadMembers?: MemberReader,
+  ): Promise<import('./hive-member-identity-set').GithubMemberIdentity | null> {
+    if (revoked.has(identity.devicePubkey)) return null;
+    // Channel-2 verified these exact user claims. Offline admission verified
+    // only the device; its user authority comes from the receiver's roster.
+    if (identity.channel2Verified) {
+      return { githubUserId: identity.githubUserId, githubUsername: identity.githubLogin };
+    }
+    const hiveHome = hiveHomeProjectionSlug ?? resolvedPotHomeSlug;
+    if (!hiveHome) return null;
+    const { resolveGithubIdentityForDevicePubkey } = await loadHiveMemberIdentitySetModule();
+    return resolveGithubIdentityForDevicePubkey(opts.workspaceId, hiveHome, identity.devicePubkey,
+      undefined, loadMembers ? { loadMembers } : {});
+  }
+
   // WI-259 P-002 (membership-aware cross-member content apply): map an op's source-log
   // core key → the admission-VERIFIED device pubkey that vouched for that log (its
   // announce sig was checked against it AND it was a hive member — STEP 1 / P-001). The
@@ -3257,13 +3275,19 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           void (async () => {
             try {
               const { admitAnnouncedPeerAsOwner } = await loadHiveMembershipAdmissionModule();
+              const admittedIdentity = admittedIdentities.get(frame.log_core_key);
+              if (admittedIdentity?.devicePubkey !== frame.device_pubkey) return;
+              const peerIdentity = admittedIdentity
+                ? await resolveAdmittedUserIdentity(admittedIdentity)
+                : null;
+              if (!peerIdentity || revoked.has(frame.device_pubkey)) return;
               const res = await admitAnnouncedPeerAsOwner(
                 {
                   workspaceId: opts.workspaceId,
                   harnessSlug: opts.harnessSlug,
                   peer: {
-                    githubUserId: frame.github_user_id,
-                    githubLogin: frame.github_login,
+                    githubUserId: peerIdentity.githubUserId,
+                    githubLogin: peerIdentity.githubUsername,
                     devicePubkey: frame.device_pubkey,
                     attestationGistId: frame.attestation_gist_id,
                   },
@@ -4481,6 +4505,19 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // again before any cursor advances. Only a successful null is permissive.
       const ownerPolicy: HivePolicy | null =
         (await getHivePolicyCached(opts.workspaceId, policyScopeSlug))?.policy ?? null;
+      // One fresh, coherent roster read per policy pass, shared across all
+      // offline peers. Read failures abort the pass before any cursor advances.
+      const policyAuthors = new Map<string, import('./hive-member-identity-set').GithubMemberIdentity | null>();
+      if (ownerPolicy) {
+        let memberRead: ReturnType<MemberReader> | undefined;
+        const loadMembers: MemberReader = (ws, home, sql) => {
+          memberRead ??= loadFederatedPotScopeModule().then((m) => m.listHiveMembersForLocalPot(ws, home, sql));
+          return memberRead;
+        };
+        await Promise.all([...admittedIdentities].map(async ([key, identity]) => {
+          policyAuthors.set(key, await resolveAdmittedUserIdentity(identity, loadMembers));
+        }));
+      }
       // Compose the single enforcement decorator EXACTLY as policy-admission.ts documents:
       // EN-2 rate (inner) wrapped by EN-4 ban → allowlist → takedown → content (outer),
       // over the CURRENT scopedApply (which `rekey` may have rebound). With no policy this
@@ -4494,8 +4531,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         ? makePolicyEnforcedApply({
             currentPolicy: () => ownerPolicy,
             resolveAuthor: (k) => {
-              const id = admittedIdentities.get(k);
-              return id ? { githubUserId: id.githubUserId, githubUsername: id.githubLogin } : null;
+              return policyAuthors.get(k) ?? null;
             },
             ownLogKeyHex: ownLog.keyHex,
             isContentTakenDown: (policy, op) => isContentTakenDown(policy, op.hbKey ?? ''),
@@ -4508,7 +4544,8 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
               const id = admittedIdentities.get(k);
               if (!id) return false;
               if (joinedHiveOwnerDevice && id.devicePubkey === joinedHiveOwnerDevice) return true;
-              return localAnnounceGithubUserId != null && id.githubUserId === localAnnounceGithubUserId;
+              return localAnnounceGithubUserId != null &&
+                policyAuthors.get(k)?.githubUserId === localAnnounceGithubUserId;
             },
             // A policy drop is a visible witness, never a silent cursor advance: one
             // boot-history event + one refused-op counter bump per (reason, author,
@@ -4537,7 +4574,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
               limiter: rateLimiter,
               nicheLimiter: eliteNicheLimiter,
               ownLogKeyHex: ownLog.keyHex,
-              resolveAuthorId: (k) => admittedIdentities.get(k)?.githubUserId ?? null,
+              resolveAuthorId: (k) => policyAuthors.get(k)?.githubUserId ?? null,
               currentCaps: () => ownerPolicy.rate ?? null,
               apply: scopedApply,
             }),

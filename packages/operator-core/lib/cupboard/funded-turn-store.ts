@@ -130,6 +130,27 @@ export class FundedIdentityTurnStore {
     return row ? fromRow(row) : null;
   }
 
+  /** Locate recovery through the same immutable payer/offer account as prepare.
+   * A new session, channel or worn revision cannot replace the original turn. */
+  async readActive(input: FundedIdentityTurnBinding): Promise<
+    { readonly ok: true; readonly turn: FundedIdentityTurn | null } | Refused> {
+    const invalid = validateBinding(input);
+    if (invalid) return invalid;
+    const [account] = await this.sql<{ binding_hash: string; active_turn_id: string | null }[]>`
+      SELECT binding_hash, active_turn_id FROM harness_shared.cupboard_metered_accounts
+      WHERE workspace_id = ${input.workspaceId} AND account_id = ${accountId(input)}`;
+    if (!account) return { ok: true, turn: null };
+    if (account.binding_hash !== accountHash(input)) {
+      return fail('offer-binding-changed', 'the same payer/offer cannot change seller or immutable terms');
+    }
+    if (!account.active_turn_id) return { ok: true, turn: null };
+    const turn = await this.read(input.workspaceId, account.active_turn_id);
+    if (!turn || turn.accountId !== accountId(input)) {
+      return fail('invalid-active-turn', 'the immutable account has no matching durable active turn');
+    }
+    return { ok: true, turn };
+  }
+
   async prepare(input: FundedIdentityTurnBinding): Promise<Result> {
     const invalid = validateBinding(input);
     if (invalid) return invalid;

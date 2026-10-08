@@ -179,6 +179,10 @@ try {
   const [loserBefore] = await sql`SELECT payload, summary FROM harness_shared.work_items
     WHERE workspace_id = ${ws} AND harness_slug = ${harness} AND feature_id = 'd'`;
   assert.equal(loserBefore!.payload.admissionMerge.canonicalId, 'c');
+  assert.equal(loserBefore!.payload.admissionMerge.prior.takenBy, null,
+    'the actual merge receipt must record that the loser was unclaimed at commit');
+  assert.equal(loserBefore!.payload.admissionMerge.canonical.prior.takenBy, null,
+    'the actual merge receipt must record that the survivor was unclaimed at commit');
   const [adjudicationBefore] = await sql`SELECT verdict, evidence->>'reason' AS reason, judged_by AS model
     FROM harness_shared.dedup_adjudications
     WHERE workspace_id = ${ws} AND harness_slug = ${harness}

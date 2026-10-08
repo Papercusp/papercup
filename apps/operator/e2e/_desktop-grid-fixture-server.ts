@@ -8,7 +8,7 @@ import type { Page } from '@playwright/test';
 // class is replaced by the deterministic framebuffer in __fixtures__/desktop-render-rfb.ts,
 // and an optional `aliases` map substitutes further modules (the local spec stubs
 // @papercusp/sync, whose real provider needs a live operator SSE stream).
-export const root = path.resolve(__dirname, '../../..');
+export const root = path.resolve(import.meta.dirname, '../../..');
 
 /** A text matcher requiring every (non-null) part to appear somewhere in the element. */
 export function containsAll(...parts: Array<string | null>): RegExp {

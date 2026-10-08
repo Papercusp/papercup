@@ -51,6 +51,10 @@
 # that lets the phase run. VH_FAIL_OPEN=1 does the same, loudly (a VH_DISABLED line), when the
 # contract itself cannot start (no tsx, unwritable evidence root), so instrumentation can never
 # block the harness it instruments. VH_KEEP_RUNS bounds the retained run dirs (default 30).
+# Anything else in the evidence root (a hand-named scratch or investigation dir, a stray file) is
+# removed at finalize once nothing under it changed for VH_FOREIGN_MAX_AGE_HOURS (default 72; 0
+# disables), with a VH_PRUNED_FOREIGN line on stderr. `latest`, `retained/`, dot-entries and
+# symlinks are never touched; put a `.vh-keep` file in a dir to keep it indefinitely.
 
 VH_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # vh_converge: wait for a cross-host observation to converge instead of reading it once.

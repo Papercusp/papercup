@@ -14,7 +14,7 @@ import { createTextCollector } from '@papercusp/operator-core/lib/child-output';
 // Real process/media evidence on a private loopback candidate. Never connects
 // to the shared LiveKit/operator, provisions a carrier, or claims public audio.
 test.describe.configure({ mode: 'serial' });
-const repoRoot = resolve(__dirname, '../../..');
+const repoRoot = resolve(import.meta.dirname, '../../..');
 const serverBin = process.env.PHONE_TEST_LIVEKIT_BIN ?? join(homedir(), '.local/bin/livekit-server');
 const cliBin = process.env.PHONE_TEST_LK_BIN ?? join(homedir(), '.local/bin/lk');
 let root: string, port: number, server: ChildProcess | undefined;

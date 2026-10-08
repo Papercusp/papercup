@@ -40,6 +40,10 @@ import {
   dropReplicationLogState,
 } from '../replication-liveness';
 import * as replicationStallEi from '../replication-stall-ei';
+import * as hivePolicyStore from '../../../hive-policy-store';
+import * as hiveMemberIdentity from '../hive-member-identity-set';
+import * as federatedPotScope from '../../../federated-pot-scope';
+import type { HivePolicy } from '../../../hive-policy-schema';
 
 /**
  * Keep this composer suite hermetic. Production resolves re-key dependencies
@@ -111,6 +115,14 @@ function makeAnnounceIdentityOverride(githubLogin: string, githubUserId: number,
 }
 
 const cleanups: Array<() => void | Promise<void>> = [];
+
+beforeEach(() => {
+  // These composer fixtures have no PG policy store. Model a successful
+  // absent-policy read explicitly; a failed read must now block the merge.
+  const policyRead = vi.spyOn(hivePolicyStore, 'getHivePolicyCached').mockResolvedValue(null);
+  const rosterRead = vi.spyOn(federatedPotScope, 'listHiveMembersForLocalPot').mockResolvedValue([]);
+  cleanups.push(() => { policyRead.mockRestore(); rosterRead.mockRestore(); });
+});
 
 afterEach(async () => {
   schemaVersionEvents.removeAllListeners();
@@ -207,6 +219,42 @@ describe('bootHarnessSubstrate — Model B handle shape + single-peer merge', ()
     const applied = await handle.mergeNow();
     expect(applied).toBe(1);
     expect(writes).toEqual([{ id: 'F-1' }]);
+  });
+
+  it('policy lookup failure blocks apply without advancing the cursor, then retries after recovery', async () => {
+    const policyRead = vi.spyOn(hivePolicyStore, 'getHivePolicyCached').mockResolvedValue(null);
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    cleanups.push(() => { policyRead.mockRestore(); errors.mockRestore(); });
+    const writes: unknown[] = [];
+    const handle = await bootHarnessSubstrate({
+      workspaceRoot: tmpWorkspaceRoot(),
+      workspaceId: 'ws-policy-read',
+      harnessSlug: 'policy-read-retry',
+      ...joinUnitIsolation,
+      mergePollMs: 0,
+      loadRevokedOverride: async () => new Set(),
+      applyOverride: async (op) => { writes.push(op.value); return true; },
+    });
+    cleanups.push(() => handle.close());
+    await handle.mergeNow();
+    await handle.append({
+      type: 'put', table: 'mb_test_table', hbKey: 'policy-read-row',
+      value: { id: 'policy-read-row' }, ts: 1000, schema_version: CURRENT_SCHEMA_VERSION,
+    });
+
+    policyRead.mockRejectedValue(new Error('owner policy unavailable'));
+    expect(await handle.mergeNow()).toBe(0);
+    expect(writes).toEqual([]);
+    expect(listBootHistory({ workspaceId: 'ws-policy-read', harnessSlug: 'policy-read-retry' }).some(
+      (event) => event.kind === 'merge_error' && event.message?.includes('owner policy unavailable'),
+    )).toBe(true);
+
+    // A successful absent-policy lookup is permissive; an error is not.
+    policyRead.mockResolvedValue(null);
+    expect(await handle.mergeNow()).toBe(1);
+    expect(writes).toEqual([{ id: 'policy-read-row' }]);
+    expect(await handle.mergeNow()).toBe(0);
+    expect(writes).toHaveLength(1);
   });
 
   // ── registerCloseHook (Stage 5 outbox-drain teardown seam) ──────────────────
@@ -3593,6 +3641,8 @@ describe('bootHarnessSubstrate — P-006 scoped-log wiring (P-108)', () => {
     userId: number; keychainId: string;
     loadHiveMembers: (hiveHome: string) => Promise<string[]>;
     verifyBinding?: () => Promise<'verified' | 'pending' | 'fail'>;
+    applyOverride?: BootHarnessOpts['applyOverride'];
+    openRemoteLogOverride?: BootHarnessOpts['openRemoteLogOverride'];
   }) {
     const joiner = makeAnnounceIdentityOverride('p006-joiner', opts.userId, opts.keychainId);
     const handle = await bootHarnessSubstrate({
@@ -3610,12 +3660,17 @@ describe('bootHarnessSubstrate — P-006 scoped-log wiring (P-108)', () => {
       loadHiveMembersOverride: opts.loadHiveMembers,
       joinerPotHomeSlugOverride: async () => POT_HOME_SLUG,
       announceIdentityOverride: joiner.override,
+      applyOverride: opts.applyOverride,
+      openRemoteLogOverride: opts.openRemoteLogOverride,
     });
     cleanups.push(() => handle.close());
     return handle;
   }
 
   it('creates the coordinator on join, routes an ADMITTED announce (with ctx) into it, and never routes a non-admitted one', async () => {
+    const receiverIdentity = vi.spyOn(hiveMemberIdentity, 'resolveGithubUserIdForDevicePubkey')
+      .mockResolvedValue(9702);
+    cleanups.push(() => receiverIdentity.mockRestore());
     let ownerDevicePubkey = '';
     const handle = await bootP006(tmpWorkspaceRoot(), {
       userId: 9602,
@@ -3659,6 +3714,79 @@ describe('bootHarnessSubstrate — P-006 scoped-log wiring (P-108)', () => {
     // layer is skipped — no crash, no phantom connection record.
     await handle.onAnnounce(ownerFrame);
     expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  it('a known device cannot claim another GitHub user for private scope serving', async () => {
+    const member = makeAnnounceIdentityOverride('registered-member', 9703, 'kc-registered-member');
+    const receiverIdentity = vi.spyOn(hiveMemberIdentity, 'resolveGithubUserIdForDevicePubkey')
+      .mockResolvedValue(9703);
+    cleanups.push(() => receiverIdentity.mockRestore());
+    const handle = await bootP006(tmpWorkspaceRoot(), {
+      userId: 9602, keychainId: 'kc-p006-uid-guard',
+      loadHiveMembers: async () => [member.devicePubkey],
+      verifyBinding: async () => 'fail', // only the registered device grants base admission
+    });
+    const scoped = vi.spyOn(handle.scopeFederation!, 'onPeerAnnounce').mockResolvedValue(undefined);
+    const body = {
+      device_pubkey: member.devicePubkey, github_user_id: 9702,
+      github_login: 'scope-owner', attestation_gist_id: 'unavailable',
+      harness_slug: OWNER_MEMBER_SLUG, log_core_key: 'e3'.repeat(32),
+    };
+    const signer = (bytes: Buffer) => member.override.sign('kc-registered-member', bytes);
+    const forgedIdentity = await buildAnnounce(body, signer);
+    const ctx = { muxer: { stream: { destroyed: false } }, send: vi.fn() };
+    expect(await handle.onAnnounce(forgedIdentity, ctx)).toEqual({ admit: true });
+    expect(scoped).not.toHaveBeenCalled();
+
+    const boundIdentity = await buildAnnounce({ ...body, github_user_id: 9703 }, signer);
+    expect(await handle.onAnnounce(boundIdentity, ctx)).toEqual({ admit: true });
+    await vi.waitFor(() => expect(scoped).toHaveBeenCalledExactlyOnceWith(boundIdentity, ctx));
+  });
+
+  it.each([
+    { name: 'owner exemption', policy: { moderation: { bannedGithubIds: ['9703'] } }, userIds: [9602], login: 'scope-owner', expected: [] },
+    { name: 'numeric ban', policy: { moderation: { bannedGithubIds: ['9703'] } }, userIds: [9704], login: 'registered-member', expected: [] },
+    { name: 'login allowlist', policy: { membership: 'allowlist', allowlist: ['scope-owner'] }, userIds: [9703], login: 'scope-owner', expected: [] },
+    { name: 'per-user rate budget', policy: { rate: { opsPerMin: 1 } }, userIds: [9704, 9705], login: 'registered-member', expected: ['policy-op-0'] },
+    { name: 'authorized offline member', policy: { membership: 'allowlist', allowlist: ['registered-member'] }, userIds: [9703], login: 'registered-member', expected: ['policy-op-0'] },
+  ])('receiver-bound policy authority: $name', async ({ policy, userIds, login, expected }) => {
+    const member = makeAnnounceIdentityOverride('registered-member', 9703, 'kc-policy-member');
+    const members = vi.spyOn(federatedPotScope, 'listHiveMembersForLocalPot').mockResolvedValue([{
+      workspaceId: WORKSPACE_ID, potHomeSlug: POT_HOME_SLUG,
+      githubUserId: 9703, githubUsername: 'registered-member', displayName: null, avatarUrl: null,
+      deviceAttestations: [{ device_pubkey: member.devicePubkey, gist_id: 'unavailable', gist_url: '',
+        device_label: 'test', created_at: 1, signature_by_device: '' }],
+      revokedPubkeys: [], bindingStatus: 'verified',
+    }]);
+    const policyRead = vi.spyOn(hivePolicyStore, 'getHivePolicyCached').mockResolvedValue({
+      policy: policy as HivePolicy,
+    } as NonNullable<Awaited<ReturnType<typeof hivePolicyStore.getHivePolicyCached>>>);
+    cleanups.push(() => { members.mockRestore(); policyRead.mockRestore(); });
+    const writes: string[] = [];
+    const handle = await bootP006(tmpWorkspaceRoot(), {
+      userId: 9602, keychainId: 'kc-policy-receiver', loadHiveMembers: async () => [member.devicePubkey],
+      applyOverride: async (op) => { writes.push(op.hbKey!); return true; },
+      openRemoteLogOverride: async (_store, keyHex) => {
+        const index = Number.parseInt(keyHex.slice(0, 2), 16) - 0xa0;
+        return {
+          keyHex, length: 1, contiguousLength: 1,
+          get: async () => ({ type: 'put' as const, table: 'features-by-id', hbKey: `policy-op-${index}`,
+            value: { id: `policy-op-${index}` }, ts: 1000 + index, schema_version: CURRENT_SCHEMA_VERSION,
+            author_pubkey: member.devicePubkey }),
+          update: async () => {}, prefetch: () => {}, has: async () => true,
+        };
+      },
+    });
+    for (const [index, uid] of userIds.entries()) {
+      const frame = await buildAnnounce({
+        device_pubkey: member.devicePubkey, github_user_id: uid, github_login: login,
+        attestation_gist_id: 'unavailable', harness_slug: OWNER_MEMBER_SLUG,
+        log_core_key: (0xa0 + index).toString(16).repeat(32),
+      }, (bytes) => member.override.sign('kc-policy-member', bytes));
+      expect(await handle.onAnnounce(frame)).toEqual({ admit: true });
+      await handle.mergeNow();
+    }
+    expect(writes).toEqual(expected);
   });
 
   it('ensureScopeParticipation mints an own core in the SEPARATE scoped store; rediscloseScopes resolves', async () => {

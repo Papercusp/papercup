@@ -17,6 +17,10 @@ import {
 } from './su-session-claude-engine';
 import type { ClaudeSuRuntimeBinding } from './su-session-claude-adapter';
 
+const nativeFunding = vi.hoisted(() => vi.fn<typeof import('./cupboard/identity-activation-gate-io').admitNativeIdentityInference>());
+vi.mock('./cupboard/identity-activation-gate-io', () => ({ admitNativeIdentityInference: nativeFunding }));
+beforeEach(() => { nativeFunding.mockReset(); nativeFunding.mockResolvedValue({ ok: true }); });
+
 vi.mock('./su-session-persistence', () => ({
   persistSuSessionDescriptor: vi.fn(async () => true),
   bindSuSessionToAdvSession: vi.fn(async () => ({ status: 'bound' })),
@@ -129,6 +133,37 @@ function stalledReports(engine: ClaudeSuEngine) {
 }
 
 describe('structured Claude SU engine', () => {
+  it('awaits the exact native funding guard before writing querying input', async () => {
+    let release!: () => void;
+    const barrier = new Promise<void>((resolve) => { release = resolve; });
+    nativeFunding.mockImplementationOnce(async () => { await barrier; return { ok: true }; });
+    const p = peer(), engine = open(p); await engine.ready;
+    const dispatch = engine.adapter.host.startCommand(command(engine) as never);
+    await vi.waitFor(() => expect(nativeFunding).toHaveBeenCalledOnce());
+    expect(nativeFunding).toHaveBeenCalledWith({ workspaceId: 'workspace', ownerId: 'su-test', backend: 'claude' });
+    expect(p.prompts).toHaveLength(0);
+    release();
+    await expect(dispatch.terminal).resolves.toMatchObject({ status: 'completed' });
+    expect(p.prompts).toHaveLength(1);
+  });
+
+  it('refuses unpaid or unsupported paid inference without writing querying input', async () => {
+    nativeFunding.mockResolvedValueOnce({ ok: false, code: 'identity-native-billing-unsupported',
+      message: 'Provider-billed request cost is unavailable', retryable: false });
+    const p = peer(), engine = open(p); await engine.ready;
+    const dispatch = engine.adapter.host.startCommand(command(engine) as never);
+    await expect(dispatch.terminal).resolves.toMatchObject({ status: 'refused', refusal: { code: 'identity-native-billing-unsupported' } });
+    expect(p.prompts).toHaveLength(0);
+  });
+
+  it('keeps ordinary coding-assistant input independent of SU identity funding', async () => {
+    const p = peer(), engine = open(p, { identity: 'coding-assistant' }); await engine.ready;
+    const dispatch = engine.adapter.host.startCommand(command(engine) as never);
+    await expect(dispatch.terminal).resolves.toMatchObject({ status: 'completed' });
+    expect(nativeFunding).not.toHaveBeenCalled();
+    expect(p.prompts).toHaveLength(1);
+  });
+
   it.each([
     { toolApproval: undefined, permissionMode: 'bypassPermissions', dangerouslySkip: true },
     { toolApproval: 'prompt' as const, permissionMode: 'default', dangerouslySkip: undefined },
