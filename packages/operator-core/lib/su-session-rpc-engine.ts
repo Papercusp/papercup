@@ -29,6 +29,7 @@ import { SuSessionStartupTimeoutError, type SuSessionEventInput, type SuSessionH
 import { startSuStdioPeer, type RpcFrame, type SuStdioPeer } from './su-session-stdio-peer';
 import { SuNativeCards } from './su-session-native-cards';
 import { readSuperuserToken } from './superuser-token';
+import { resolveAgentBinarySync } from './agent-bin-detect';
 
 type Backend = 'codex' | 'omp';
 type NativeHandle = CodexNativeSessionHandle | OmpNativeSessionHandle;
@@ -497,11 +498,12 @@ export function startSuRpcEngine(
       if (closed) throw new Error('Structured connection closed during startup');
     }
     options.stage?.('rpc-spawn-peer');
+    const resolvedBinary = resolveAgentBinarySync(backend) ?? backend;
     peer = await (options.peerFactory ?? startSuStdioPeer)({
       stage: options.stage,
-      binary: backend, args, cwd: boot.cwd, env, ownerId: binding.ownerId!, workspaceId: boot.workspaceId, onMessage,
+      binary: resolvedBinary, args, cwd: boot.cwd, env, ownerId: binding.ownerId!, workspaceId: boot.workspaceId, onMessage,
       spec: { class: 'agent-session', title: `PUI ${backend} structured engine`, launchedBy: 'pui-su-session',
-        argv: [backend, ...args],
+        argv: [resolvedBinary, ...args],
         harnessSlug: binding.harnessSlug, planSlug: binding.planSlug, cwd: boot.cwd,
         detail: { coordOwnerId: binding.ownerId, advSessionId: binding.advSessionId, transport: 'structured' } },
     });

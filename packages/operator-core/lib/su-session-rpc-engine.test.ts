@@ -13,7 +13,9 @@ const mocks = vi.hoisted(() => ({
   writeOmp: vi.fn((_id: number, _options: Record<string, unknown>) => '.papercusp/su-omp-homes/session-71'),
   receipts: vi.fn(async (_identity: unknown): Promise<Array<{ turnId: string; content: string }>> => []),
   persona: vi.fn(),
+  resolveBinary: vi.fn((bin: string) => `/resolved/${bin}`),
 }));
+vi.mock('./agent-bin-detect', () => ({ resolveAgentBinarySync: mocks.resolveBinary }));
 vi.mock('./su-session-commands', async (orig) => ({
   ...(await orig<typeof import('./su-session-commands')>()),
   loadSuOwnerTurnReceipts: mocks.receipts,
@@ -252,6 +254,14 @@ describe.each(['codex', 'omp'] as const)('%s structured SU engine', (backend) =>
     expect(f.transport().args).toContain(backend === 'codex' ? 'app-server' : 'rpc-ui');
     // An assigned id and a working executor do not prove native persistence.
     expect(f.engine.nativeSession().exactResumeSupported).toBe(false);
+  });
+
+  it('launches the structured peer with the shared resolver’s absolute binary path', async () => {
+    const f = fixture(backend);
+    await f.engine.ready;
+    expect(mocks.resolveBinary).toHaveBeenCalledWith(backend);
+    expect(f.transport().binary).toBe(`/resolved/${backend}`);
+    expect(f.transport().spec.argv[0]).toBe(`/resolved/${backend}`);
   });
 
   it('waits for durable native identity persistence before signaling readiness', async () => {
