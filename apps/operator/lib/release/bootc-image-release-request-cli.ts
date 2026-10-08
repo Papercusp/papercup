@@ -235,6 +235,7 @@ export function evaluateBootcBundledSecretPolicy(text: string) {
     const row = requiredRecord(entry, `gitleaks report[${index}]`);
     const rule = requiredString(row.RuleID, `gitleaks report[${index}].RuleID`);
     const file = requiredString(row.File, `gitleaks report[${index}].File`);
+    if (!isAbsolute(file)) fail(`gitleaks report[${index}].File must be absolute for image scope attribution`);
     const line = row.StartLine;
     if (line !== undefined && (!Number.isInteger(line) || Number(line) < 1)) fail(`gitleaks report[${index}].StartLine is invalid`);
     return { rule, file, ...(line !== undefined ? { line: Number(line) } : {}) };

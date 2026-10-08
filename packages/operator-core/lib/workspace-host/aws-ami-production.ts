@@ -655,7 +655,7 @@ export class SdkAwsAmiReleaseAdapter implements AwsAmiReleaseAdapter {
     const mappings = image.BlockDeviceMappings ?? [];
     const root = mappings[0];
     const snapshotId = root?.Ebs?.SnapshotId;
-    if (mappings.length !== 1 || root?.DeviceName !== image.RootDeviceName ||
+    if (mappings.length !== 1 || image.RootDeviceName !== '/dev/xvda' || root?.DeviceName !== image.RootDeviceName ||
         !snapshotId || !SNAPSHOT_ID.test(snapshotId) || root?.Ebs?.Encrypted !== true) {
       fail('candidate recovery requires exactly one encrypted root snapshot');
     }

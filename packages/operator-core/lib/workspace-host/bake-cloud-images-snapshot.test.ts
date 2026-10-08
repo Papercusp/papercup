@@ -455,7 +455,7 @@ exit ${options.supplyChainRefused ? 3 : 0}
         PAPERCUSP_RELEASE_AUDITOR: auditorMode === 'env' ? fixtureAuditor : '',
         // These tools are not executed by this suite's fake supply chain. Their presence is
         // the early setup contract; image-secret-scan-binding tests exercise the actual step.
-        PAPERCUSP_BUNDLED_SECRET_POLICY_EVALUATOR: options.genericToolsMissing ? join(dir, 'missing-policy') : fixtureAuditor,
+        PAPERCUSP_BUNDLED_SECRET_POLICY_EVALUATOR: options.genericToolsMissing ? join(dir, 'missing-policy') : join(ROOT, 'apps/operator/lib/release/bootc-image-release-request-cli.ts'),
         PAPERCUSP_BUNDLED_SECRET_POLICY_RUNNER: '/bin/true',
         GITLEAKS_BIN: '/bin/true',
         BAKE_TEST_LIVE_CONTAINERFILE: liveContainerfile,

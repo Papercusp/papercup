@@ -178,7 +178,7 @@ TOML
   "$GITLEAKS" dir "$TREE" --config "$OUTDIR/gitleaks.toml" --report-format json \
     --report-path "$GITLEAKS_RAW" --no-banner --log-level error --exit-code 0 \
     >"$OUTDIR/bundled-secret-scan.log" 2>&1 || die "provider secret-policy scanner could not measure the image"
-  "$POLICY_RUNNER" --tsconfig "$(dirname "$POLICY_CLI")/../../../../tsconfig.json" "$POLICY_CLI" \
+  "$POLICY_RUNNER" "$POLICY_CLI" \
     --input-file "$GITLEAKS_RAW" --emit bundled-secret-policy >"$GENERIC_REPORT" \
     2>"$OUTDIR/bundled-secret-policy.err" || die "provider secret-policy report could not be evaluated"
   rm -f "$GITLEAKS_RAW"

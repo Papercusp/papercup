@@ -243,6 +243,7 @@ describe("bootc bundled-secret policy preflight", () => {
       expect(() => evaluateBootcBundledSecretPolicy(value)).toThrow();
     }
     expect(() => evaluateBootcBundledSecretPolicy(JSON.stringify([{ ...finding("serve.mjs"), StartLine: 0 }]))).toThrow();
+    expect(() => evaluateBootcBundledSecretPolicy(JSON.stringify([{ ...finding("serve.mjs"), File: "serve.mjs" }]))).toThrow(/must be absolute/);
   });
 });
 

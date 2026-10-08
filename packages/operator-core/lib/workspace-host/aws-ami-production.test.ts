@@ -191,6 +191,9 @@ describe('SdkAwsAmiReleaseAdapter private candidate recovery', () => {
   );
 
   it('rejects extra disks and a substituted snapshot provenance tag', async () => {
+    const missingRoot = recovery([], []);
+    missingRoot.image.RootDeviceName = '';
+    await expect(missingRoot.adapter.buildCandidate(missingRoot.input)).rejects.toThrow(/exactly one encrypted root/);
     const extra = recovery([], []);
     extra.image.BlockDeviceMappings.push({ DeviceName: '/dev/xvdb', Ebs: { SnapshotId: 'snap-0def', Encrypted: true } });
     await expect(extra.adapter.buildCandidate(extra.input)).rejects.toThrow(/exactly one encrypted root/);
