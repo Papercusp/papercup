@@ -942,7 +942,26 @@ export interface FrozenRepairRoundExecution {
   /** Why a `mode:'full'` round ran the full gate. Absent on a full round = UNEXPLAINED, which
    *  is exactly the fallthrough the P-018 `targeted-radius` invariant breaches on. */
   trigger?: FrozenRepairFullGateTrigger;
+  /** P-005 (green-main-cycle-time-2026-10-08): why this TARGETED round recorded no
+   *  selective-coverage receipt. Without a receipt the NEXT round cannot run the admission
+   *  delta and falls back to the cumulative radius, which only grows (measured: queue ad82b273
+   *  ran 15 rounds at a 12→157-path cumulative radius with no receipt ever recorded). Absent on
+   *  a round that recorded one, and on legacy rows. */
+  coverageWithheld?: FrozenRepairCoverageWithheldReason[];
 }
+
+/** The four independent conditions verifyRepairHead requires before it records a receipt. */
+export type FrozenRepairCoverageWithheldReason =
+  | 'selection-incomplete'
+  | 'radius-census-incomplete'
+  | 'file-run-incomplete'
+  | 'gate-run-incomplete';
+const FROZEN_REPAIR_COVERAGE_WITHHELD_REASONS: ReadonlySet<string> = new Set<FrozenRepairCoverageWithheldReason>([
+  'selection-incomplete',
+  'radius-census-incomplete',
+  'file-run-incomplete',
+  'gate-run-incomplete',
+]);
 
 /**
  * The legitimate reasons a round runs the full gate:
@@ -970,6 +989,7 @@ export function frozenRepairRoundExecution(input: {
   gateIds?: readonly string[];
   radiusMode?: string;
   trigger?: FrozenRepairFullGateTrigger | null;
+  coverageWithheld?: readonly FrozenRepairCoverageWithheldReason[];
 }): FrozenRepairRoundExecution {
   const keys = input.fileKeys ? [...new Set(input.fileKeys)].sort() : null;
   return normalizeRoundExecution({
@@ -981,6 +1001,9 @@ export function frozenRepairRoundExecution(input: {
     gateIds: [...(input.gateIds ?? [])],
     ...(input.radiusMode ? { radiusMode: input.radiusMode } : {}),
     ...(input.mode === 'full' && input.trigger ? { trigger: input.trigger } : {}),
+    ...(input.mode === 'targeted' && input.coverageWithheld?.length
+      ? { coverageWithheld: [...input.coverageWithheld] }
+      : {}),
   }) as FrozenRepairRoundExecution;
 }
 
@@ -1010,7 +1033,16 @@ function normalizeRoundExecution(value: unknown): FrozenRepairRoundExecution | u
     ...(row.mode === 'full' && typeof row.trigger === 'string' && FROZEN_REPAIR_FULL_GATE_TRIGGERS.has(row.trigger)
       ? { trigger: row.trigger as FrozenRepairFullGateTrigger }
       : {}),
+    ...withheldCoverage(row),
   };
+}
+
+/** Closed-set, de-duplicated, order-stable; unknown reasons are dropped, never thrown on. */
+function withheldCoverage(row: Record<string, unknown>): { coverageWithheld?: FrozenRepairCoverageWithheldReason[] } {
+  if (row.mode !== 'targeted' || !Array.isArray(row.coverageWithheld)) return {};
+  const reasons = [...new Set(row.coverageWithheld.filter((reason): reason is FrozenRepairCoverageWithheldReason =>
+    typeof reason === 'string' && FROZEN_REPAIR_COVERAGE_WITHHELD_REASONS.has(reason)))];
+  return reasons.length > 0 ? { coverageWithheld: reasons } : {};
 }
 
 /**
@@ -2255,7 +2287,20 @@ export interface FrozenRepairLatency {
     lastResumeRunStartedAtMs: number | null;
     lastVerdictAtMs: number | null;
   };
+  /**
+   * WI-10007622: optional clocks that were present but PREDATE the queue's own `openedAtMs` —
+   * impossible for a real event in this queue's life, so each is dropped from every span (and
+   * reported `null` in `stamps`) instead of being subtracted. Present only when non-empty.
+   */
+  inadmissibleStamps?: FrozenRepairLatencyStampKey[];
 }
+
+/** The four optional latency clocks a queue row carries (P-007). */
+export type FrozenRepairLatencyStampKey =
+  | 'fixerSpawnedAtMs'
+  | 'lastAdmittedAtMs'
+  | 'lastResumeRunStartedAtMs'
+  | 'lastVerdictAtMs';
 
 export type FrozenRepairLatencySource = Pick<FrozenCandidateRepairQueue, 'openedAtMs' | 'phase'> &
   Partial<
@@ -2273,10 +2318,25 @@ export function frozenRepairLatency(queue: FrozenRepairLatencySource, nowMs: num
       queue.openedAtMs,
     );
   const lastRedAtMs = redAt(null);
-  const fixerSpawnedAtMs = queue.fixerSpawnedAtMs ?? null;
-  const lastAdmittedAtMs = queue.lastAdmittedAtMs ?? null;
-  const lastResumeRunStartedAtMs = queue.lastResumeRunStartedAtMs ?? null;
-  const lastVerdictAtMs = queue.lastVerdictAtMs ?? null;
+  // WI-10007622: no clock in this queue's life can predate its opening. A stamp that does is a
+  // poisoned input, not a long wait: the synthetic ADMISSION_GIT_DATE (2000-01-01) reached
+  // lastAdmittedAtMs through a reconciled admission whose atMs was read from the commit date
+  // (fixed at the writer in c41fff15b1), and this function then published a 26-year
+  // admit→verdict span. Drop such a stamp from every span and NAME it; never subtract it.
+  const inadmissibleStamps: FrozenRepairLatencyStampKey[] = [];
+  const admissible = (key: FrozenRepairLatencyStampKey): number | null => {
+    const value = queue[key] ?? null;
+    if (value === null) return null;
+    if (value < queue.openedAtMs) {
+      inadmissibleStamps.push(key);
+      return null;
+    }
+    return value;
+  };
+  const fixerSpawnedAtMs = admissible('fixerSpawnedAtMs');
+  const lastAdmittedAtMs = admissible('lastAdmittedAtMs');
+  const lastResumeRunStartedAtMs = admissible('lastResumeRunStartedAtMs');
+  const lastVerdictAtMs = admissible('lastVerdictAtMs');
   const redToFixerSpawnMs =
     fixerSpawnedAtMs === null ? null : Math.max(0, fixerSpawnedAtMs - redAt(fixerSpawnedAtMs));
   const fixerSinceLastRed = fixerSpawnedAtMs !== null && fixerSpawnedAtMs >= lastRedAtMs;
@@ -2315,6 +2375,7 @@ export function frozenRepairLatency(queue: FrozenRepairLatencySource, nowMs: num
     admitAwaitingResumeRunStartMs,
     admitAwaitingVerdictMs,
     stamps: { openedAtMs: queue.openedAtMs, lastRedAtMs, fixerSpawnedAtMs, lastAdmittedAtMs, lastResumeRunStartedAtMs, lastVerdictAtMs },
+    ...(inadmissibleStamps.length > 0 ? { inadmissibleStamps } : {}),
   };
 }
 
