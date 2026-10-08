@@ -71,6 +71,9 @@ describe('producer-derived state census', () => {
       await writeFile(join(root, 'unknown'), 'new state');
       const changed = await read();
       expect(() => assertStateCensusComplete(changed)).toThrow('unknown');
+      await expect(collectStateCensus({ roots: [{ id: 'fixture-root', path: root }],
+        declarations: [], readCatalogs: async () => [], maxEntries: 1,
+      })).rejects.toThrow(/root=fixture-root; path=/);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 

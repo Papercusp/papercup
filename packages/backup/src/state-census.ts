@@ -117,7 +117,7 @@ export async function collectStateCensus(input: {
     for (const child of children) {
       const name = parent ? `${parent}/${child.name}` : child.name;
       entries.push({ kind: 'path', root: root.id, name });
-      if (entries.length > maxEntries) throw new Error(`Census entry bound exceeded: ${maxEntries}`);
+      if (entries.length > maxEntries) throw new Error(`Census entry bound exceeded: ${maxEntries}; root=${root.id}; path=${name}`);
       const owners = input.declarations.filter(declaration =>
         matches({ kind: 'path', root: root.id, name }, declaration));
       // A conflicting producer must not hide its descendants from drift checks.
