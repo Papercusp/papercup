@@ -221,6 +221,34 @@ describe('canonical goal selection at new-work claim boundaries', () => {
     expect(result?.workItem.id).toBe('WI-priority');
   });
 
+  it('owner priority cannot bypass an unmet plan dependency or starve a later eligible plan', async () => {
+    await policy([], [EXCLUDED, SELECTED]);
+    const items = [
+      { id: 'P-001', status: 'todo', text: 'Blocked work', blockedBy: ['P-000'] },
+      { id: 'P-000', status: 'todo', text: 'Prerequisite', blockedBy: [] },
+    ];
+    await h.sql`UPDATE harness_shared.harness_plans SET items = ${JSON.stringify(items)}::text::jsonb
+      WHERE workspace_id = ${WS} AND harness_slug = ${H} AND plan_slug = 'excluded'`;
+    await seed('WI-blocked', 'feature', 'excluded', null,
+      { plan_item: { harness_slug: H, plan_slug: 'excluded', item_id: 'P-001' } });
+    await seed('WI-eligible', 'feature', 'selected');
+
+    const picked = await getNextWorkItem(DEFAULT_CLAIM_SPEC, { assignee: 'worker' },
+      { harness: H, workspaceId: WS, client: h.sql });
+    expect(picked?.workItem.id).toBe('WI-eligible');
+    const [blocked] = await h.sql`SELECT taken_by FROM harness_shared.work_items
+      WHERE workspace_id = ${WS} AND harness_slug = ${H} AND feature_id = 'WI-blocked'`;
+    expect(blocked.taken_by).toBeNull();
+
+    items[1].status = 'done';
+    await h.sql`UPDATE harness_shared.harness_plans SET items = ${JSON.stringify(items)}::text::jsonb
+      WHERE workspace_id = ${WS} AND harness_slug = ${H} AND plan_slug = 'excluded'`;
+    await wi.releaseWorkItem('WI-eligible', { harness: H });
+    const unblocked = await getNextWorkItem(DEFAULT_CLAIM_SPEC, { assignee: 'worker' },
+      { harness: H, workspaceId: WS, client: h.sql });
+    expect(unblocked?.workItem.id).toBe('WI-blocked');
+  });
+
   it('a peer hold remains authoritative and an existing holder may finish after exclusion', async () => {
     await seed('WI-current', 'feature', 'excluded', 'worker');
     expect((await wi.claimWorkItem('WI-current', 'worker', { harness: H }))?.id).toBe('WI-current');
