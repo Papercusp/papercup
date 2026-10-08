@@ -426,3 +426,60 @@ prerequisite `WI-10007591`. Actual workspace acceptance must use that artifact
 and rerun the affected journey. The earlier passing account case remains
 retained. Both private diagnostic processes were drained and the configuration
 lock released; no model replay or shipment claim follows from this comparison.
+
+## Corrected immutable Portal API comparison, 2026-10-08 22:19Z
+
+The supplied corrected Portal artifact `6Avr3UKWpC7WkTO1D8XcA` passed the
+authenticated control-query prerequisite against the same frozen full hosted
+operator source `c19484fc98aa929a8596441a0ff1e52b0fe7315e`. Its manifest matches
+source-root digest
+`cbb7c257839f1110502775201f964e4f6f80355d332d2e21dee8d741deac1feb`.
+The maintained record is [portal-workspace-control-20261008.json](./portal-workspace-control-20261008.json).
+
+| Request | HTTP | Named result |
+| --- | --- | --- |
+| Portal auth session | 200 | Selected workspace matches the admitted binding |
+| Corrected Portal hosted workspace control query | 200 | Workspace and connection rows |
+| Direct hosted query, same cookie, no workspace header | 200 | Workspace and connection rows |
+| Direct hosted query with selected workspace header | 200 | Workspace and connection rows |
+
+The probe reused the genuine WorkOS TEST admission kit and completed with exit
+0 after TEST-user cleanup. The old and corrected artifact comparisons use
+distinct fresh TEST sessions; each uses one cookie for its Portal and direct
+controls. The earlier retained Portal 502 and this corrected Portal 200 support
+the route repair within this isolated fixture. They do not discharge workspace
+browser acceptance, provider readiness, the full manual journeys or shipment.
+
+The first corrected-artifact attempt stopped before TEST admission because the
+fixture inferred an operator integration root from a symlink layout, while the
+immutable Portal snapshot contains a copied `operator-core` package. The API
+diagnostic selected the supplied frozen operator dependency root through the
+kit's existing argument. Owned `WI-10007623` retains the durable browser-fixture
+repair and its required copied-package regression; the immutable artifact was
+not edited. The earlier passing account journey remains retained.
+
+## Corrected Portal workspace browser journey, 2026-10-08 22:36Z
+
+The filtered maintained workspace case failed on the unchanged `6Avr` artifact.
+The runner was clean committed `f812c6ece2`; its test and configuration matched
+the canonical files. The repaired fixture was immutable `2e52955ace`, with
+`PAPERCUSP_INTEGRATION_ROOT` selecting frozen full hosted operator `c19484fc98`.
+All seven imported admission source files matched before TEST admission. The
+fixture repair's ten focused tests passed with committed completion authority
+on `WI-10007623`.
+
+Within the browser run, genuine session admission and selected-workspace
+binding passed. The authenticated workspace control query also returned HTTP
+200 with rows. After the guide's **Open workspaces** link navigated to
+`/?app=workspaces`, the selected surface assertion failed. The retained browser
+snapshot displays **Control plane not reachable** and
+`portal_auth_session_not_found`. This is evidence of a remaining browser/server
+render authentication failure; its root cause is not yet confirmed.
+
+The record is [portal-workspace-browser-20261008.json](./portal-workspace-browser-20261008.json).
+The report contains zero passes, one failure and zero skips. The Portal/test
+command exited 1 and the Portal shutdown stages completed. `WI-10007627` is
+assigned to the existing tutorial implementer and linked as a blocker of
+`P-003`. The passing API comparison and earlier account journey remain valid
+within their recorded scopes. Workspace browser acceptance, full manual
+acceptance and production shipment remain open.
