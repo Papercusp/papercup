@@ -8,13 +8,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { parseTestRunExecutionDetails, recordedTestLayer } from '@papercusp/test-config/execution-details';
+import { parseTestRunExecutionDetails, recordedTestLayer, stableRecordedRuntimeEnvironment } from '@papercusp/test-config/execution-details';
 
 import { SCENARIOS } from './scenarios';
-import { beginLlmScenarioLedger, llmScenarioLedgerRow, recordLlmScenarioTestRun, resolveScenarioSourceFile, scenarioLedgerPath } from './test-run-ledger';
+import { beginLlmScenarioLedger, llmScenarioLedgerRow, prepareLlmScenarioRuntimeReader, recordLlmScenarioTestRun, resolveScenarioSourceFile, scenarioLedgerPath } from './test-run-ledger';
 import { captureWorktreeSnapshot } from '../testing-worktree';
 
-const ledger = vi.hoisted(() => ({ sql: vi.fn(), root: '' }));
+const ledger = vi.hoisted(() => ({ sql: vi.fn(), root: '', reportRuntime: vi.fn(), listRuntime: vi.fn(), measureRuntime: vi.fn() }));
+vi.mock('../runtime-vintage', () => ({ reportRuntimeVintage: ledger.reportRuntime,
+  listRuntimeVintage: ledger.listRuntime, measureRuntimeVintageEnvironment: ledger.measureRuntime }));
 vi.mock('../long-lived-admin-pool', () => ({ getLongLivedAdminPool: () => ledger.sql }));
 vi.mock('../agent-tools/capability/base-dir', () => ({
   resolveAgentWorkspaceRoot: (ctx: { projectDir?: string }) => ctx.projectDir ?? ledger.root,
@@ -36,6 +38,9 @@ describe('recordLlmScenarioTestRun scope attribution', () => {
     writeFileSync(file, '');
     ledger.root = dir;
     ledger.sql.mockReset().mockResolvedValue([{ id: 123 }]);
+    ledger.reportRuntime.mockReset().mockResolvedValue(undefined);
+    ledger.listRuntime.mockReset().mockResolvedValue([]);
+    ledger.measureRuntime.mockReset().mockReturnValue('a'.repeat(64));
     for (const key of ['PAPERCUSP_TEST_RUN_WORKSPACE', 'PAPERCUSP_WORKSPACE_ID',
       'PAPERCUSP_WORKSPACE', 'PAPERCUSP_TEST_RUN_HARNESS', 'HARNESS_SLUG', 'PAPERCUSP_HARNESS_SLUG']) {
       vi.stubEnv(key, '');
@@ -71,12 +76,79 @@ describe('recordLlmScenarioTestRun scope attribution', () => {
   });
   it('records a committed-clone scenario even when the inherited workspace points elsewhere', async () => {
     ledger.root = join(dir, 'different-inherited-tree');
-    const before = beginLlmScenarioLedger(file);
-    expect(before).toEqual({ commit: 'abc123' });
+    const before = await beginLlmScenarioLedger(file);
+    expect(before.worktree).toEqual({ commit: 'abc123' });
     expect(await recordLlmScenarioTestRun(report([run('passed', '2026-10-08T00:00:00Z',
       '2026-10-08T00:00:01Z')]), file, before)).toBe(123);
     expect(ledger.sql.mock.calls[0]![1]).toBe('scenario.ts');
     expect(vi.mocked(captureWorktreeSnapshot).mock.calls).toEqual([[dir], [dir]]);
+  });
+  it('records both independent SUT observations on the actual insert, with recorder-owned times', async () => {
+    const read = vi.fn(async () => ({ schemaVersion: 1 as const, units: ['actual-sut'],
+      fingerprint: 'a'.repeat(64), observedAt: '2000-01-01T00:00:00Z' }));
+    const before = await beginLlmScenarioLedger(file, read);
+    expect(read).toHaveBeenCalledTimes(1);
+    const startedAt = new Date().toISOString();
+    const finishedAt = new Date().toISOString();
+    await recordLlmScenarioTestRun(report([run('passed', startedAt, finishedAt)]), file, before);
+    expect(read).toHaveBeenCalledTimes(2);
+    const execution = parseTestRunExecutionDetails(ledger.sql.mock.calls[0]![14]);
+    expect(execution).toMatchObject({ runtimeEnvironmentBeforeCaptureStatus: 'captured',
+      runtimeEnvironmentAfterCaptureStatus: 'captured', testLayer: 'llm' });
+    expect(stableRecordedRuntimeEnvironment(execution?.runtimeEnvironmentBefore, execution?.runtimeEnvironmentAfter))
+      .toMatchObject({ fingerprint: 'a'.repeat(64), units: ['actual-sut'] });
+    expect(Date.parse(execution!.runtimeEnvironmentBefore!.observedAt)).toBeLessThanOrEqual(Date.parse(startedAt));
+    expect(Date.parse(execution!.runtimeEnvironmentAfter!.observedAt)).toBeGreaterThanOrEqual(Date.parse(finishedAt));
+  });
+  it('preserves a runtime replacement as unstable instead of forging a matching witness', async () => {
+    const read = vi.fn().mockResolvedValueOnce({ schemaVersion: 1, units: ['actual-sut'],
+      fingerprint: 'a'.repeat(64), observedAt: new Date().toISOString() })
+      .mockResolvedValueOnce({ schemaVersion: 1, units: ['actual-sut'],
+        fingerprint: 'b'.repeat(64), observedAt: new Date().toISOString() });
+    const before = await beginLlmScenarioLedger(file, read);
+    await recordLlmScenarioTestRun(report([run('passed', new Date().toISOString(), new Date().toISOString())]), file, before);
+    const execution = parseTestRunExecutionDetails(ledger.sql.mock.calls[0]![14]);
+    expect(execution).toBeDefined();
+    expect(stableRecordedRuntimeEnvironment(execution?.runtimeEnvironmentBefore, execution?.runtimeEnvironmentAfter)).toBeUndefined();
+  });
+  it.each([
+    ['unavailable', async () => null],
+    ['invalid', async () => ({ fingerprint: 'forged' })],
+    ['error', async () => { throw new Error('reader failed'); }],
+  ])('keeps a %s runtime observation explicit without changing the scenario result', async (status, read) => {
+    const before = await beginLlmScenarioLedger(file, read as never);
+    expect(await recordLlmScenarioTestRun(report([run('passed', new Date().toISOString(), new Date().toISOString())]), file, before)).toBe(123);
+    const execution = parseTestRunExecutionDetails(ledger.sql.mock.calls[0]![14]);
+    expect(execution).toMatchObject({ passed: 1, runtimeEnvironmentBeforeCaptureStatus: status,
+      runtimeEnvironmentAfterCaptureStatus: status });
+    expect(execution).not.toHaveProperty('runtimeEnvironmentBefore');
+    expect(execution).not.toHaveProperty('runtimeEnvironmentAfter');
+  });
+  it('pins the actual in-process SUT PID and source, rather than a provider host', async () => {
+    vi.stubEnv('PAPERCUSP_TEST_RUN_WORKSPACE', 'caller-workspace');
+    const read = await prepareLlmScenarioRuntimeReader(file, 'in-process');
+    expect(ledger.reportRuntime).toHaveBeenCalledWith(expect.objectContaining({
+      pid: process.pid, treeSha: 'abc123', workspaceId: 'caller-workspace',
+      unit: `llm-test-in-process-${process.pid}` }));
+    expect(await read!()).toMatchObject({ fingerprint: 'a'.repeat(64),
+      units: [`llm-test-in-process-${process.pid}`] });
+    expect(ledger.listRuntime).toHaveBeenCalledWith('caller-workspace');
+    expect(await prepareLlmScenarioRuntimeReader(file, 'http')).toBeUndefined();
+    expect(ledger.reportRuntime).toHaveBeenCalledTimes(1);
+  });
+  it('bounds a stalled runtime reader and still records the completed scenario', async () => {
+    vi.useFakeTimers();
+    try {
+      const pending = beginLlmScenarioLedger(file, () => new Promise(() => {}));
+      await vi.advanceTimersByTimeAsync(1_000);
+      const before = await pending;
+      const recording = recordLlmScenarioTestRun(report([run('passed', new Date().toISOString(),
+        new Date().toISOString())]), file, before);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(await recording).toBe(123);
+      expect(parseTestRunExecutionDetails(ledger.sql.mock.calls[0]![14])).toMatchObject({
+        runtimeEnvironmentBeforeCaptureStatus: 'timed-out', runtimeEnvironmentAfterCaptureStatus: 'timed-out' });
+    } finally { vi.useRealTimers(); }
   });
   it('reports a database failure while preserving the completed scenario outcome', async () => {
     ledger.sql.mockRejectedValueOnce(new Error('ledger unavailable'));

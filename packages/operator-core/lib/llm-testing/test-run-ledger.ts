@@ -22,6 +22,9 @@ import type { RunReport } from '@papercusp/testing-shell/llm';
 import { resolveTestRunHarnessSlug, resolveTestRunWorkspaceId } from '@papercusp/test-config/admin-test-runs-reporter';
 import {
   TEST_RUN_EXECUTION_DETAILS_SCHEMA_VERSION,
+  parseRecordedRuntimeEnvironment,
+  type RecordedRuntimeEnvironment,
+  type RuntimeEnvironmentCaptureStatus,
   type TestRunExecutionDetails,
 } from '@papercusp/test-config/execution-details';
 
@@ -50,6 +53,10 @@ export interface LlmScenarioLedgerContext {
   harnessSlug: string | null;
   commitSha: string | null;
   worktreeDirty: boolean;
+  runtimeEnvironmentBefore?: RecordedRuntimeEnvironment;
+  runtimeEnvironmentAfter?: RecordedRuntimeEnvironment;
+  runtimeEnvironmentBeforeCaptureStatus?: RuntimeEnvironmentCaptureStatus;
+  runtimeEnvironmentAfterCaptureStatus?: RuntimeEnvironmentCaptureStatus;
   /** Fallback clock when the report carries no runs. */
   now?: Date;
 }
@@ -100,6 +107,12 @@ export function llmScenarioLedgerRow(report: RunReport, ledger: LlmScenarioLedge
       mutationPhase: null,
       commitSha: ledger.commitSha,
       worktreeDirty: ledger.worktreeDirty,
+      ...(ledger.runtimeEnvironmentBefore ? { runtimeEnvironmentBefore: ledger.runtimeEnvironmentBefore } : {}),
+      ...(ledger.runtimeEnvironmentAfter ? { runtimeEnvironmentAfter: ledger.runtimeEnvironmentAfter } : {}),
+      ...(ledger.runtimeEnvironmentBeforeCaptureStatus
+        ? { runtimeEnvironmentBeforeCaptureStatus: ledger.runtimeEnvironmentBeforeCaptureStatus } : {}),
+      ...(ledger.runtimeEnvironmentAfterCaptureStatus
+        ? { runtimeEnvironmentAfterCaptureStatus: ledger.runtimeEnvironmentAfterCaptureStatus } : {}),
     },
   };
 }
@@ -178,14 +191,70 @@ export function scenarioLedgerPath(absPath: string | undefined, root: string): s
   return rel.split(/[/\\]/).join(posix.sep);
 }
 
-/** Snapshot taken BEFORE the scenario runs, so the row can prove the tree was stable. */
-export function beginLlmScenarioLedger(scenarioFilePath?: string): WorktreeGitSnapshot | null {
+type RuntimeReader = () => Promise<RecordedRuntimeEnvironment | null>;
+type RuntimeCapture = { status: RuntimeEnvironmentCaptureStatus; witness?: RecordedRuntimeEnvironment };
+const PROCESS_BOOT_TIME = new Date(Date.now() - process.uptime() * 1000).toISOString();
+export interface LlmScenarioLedgerStart {
+  worktree: WorktreeGitSnapshot | null;
+  runtime: RuntimeCapture;
+  readRuntimeEnvironment?: RuntimeReader;
+}
+
+/** Use the executing in-process SUT, rather than its external inference provider. */
+export async function prepareLlmScenarioRuntimeReader(
+  scenarioFilePath: string | undefined,
+  transport: string,
+): Promise<RuntimeReader | undefined> {
+  if (transport !== 'in-process') return undefined;
+  try {
+    const workspaceId = resolveTestRunWorkspaceId();
+    if (!workspaceId) return async () => null;
+    const root = resolveAgentWorkspaceRoot(scenarioFilePath ? { projectDir: dirname(scenarioFilePath) } : {});
+    const snapshot = captureWorktreeSnapshot(root);
+    if (!snapshot.commit) return async () => null;
+    const { reportRuntimeVintage, listRuntimeVintage, measureRuntimeVintageEnvironment } = await import('../runtime-vintage');
+    // Concurrent CLI processes use separate units; the kernel still verifies the
+    // actual local PID. Repeated scenarios in this process share one boot instant.
+    const units = [`llm-test-in-process-${process.pid}`];
+    await reportRuntimeVintage({ unit: units[0]!, workspaceId, pid: process.pid,
+      treeSha: snapshot.commit, buildTime: PROCESS_BOOT_TIME });
+    return async () => {
+      const fingerprint = measureRuntimeVintageEnvironment(await listRuntimeVintage(workspaceId), units);
+      return fingerprint ? { schemaVersion: 1, units, fingerprint, observedAt: new Date().toISOString() } : null;
+    };
+  } catch { return async () => null; }
+}
+
+/** Same bounded, recorder-owned observation contract as the Vitest reporter. */
+async function captureRuntimeEnvironment(read?: RuntimeReader): Promise<RuntimeCapture> {
+  if (!read) return { status: 'not-configured' };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = Symbol('runtime-capture-timeout');
+  try {
+    const result = await Promise.race([
+      Promise.resolve().then(read),
+      new Promise<typeof timedOut>(resolve => { timer = setTimeout(() => resolve(timedOut), 1_000); }),
+    ]);
+    if (result === timedOut) return { status: 'timed-out' };
+    if (result === null) return { status: 'unavailable' };
+    const parsed = parseRecordedRuntimeEnvironment(result);
+    if (!parsed) return { status: 'invalid' };
+    return { status: 'captured', witness: { ...parsed, units: [...parsed.units], observedAt: new Date().toISOString() } };
+  } catch { return { status: 'error' }; }
+  finally { if (timer) clearTimeout(timer); }
+}
+
+/** Snapshot taken BEFORE the scenario runs, so the row can prove the tree and SUT were stable. */
+export async function beginLlmScenarioLedger(
+  scenarioFilePath?: string,
+  readRuntimeEnvironment?: RuntimeReader,
+): Promise<LlmScenarioLedgerStart> {
+  let worktree: WorktreeGitSnapshot | null = null;
   try {
     const root = resolveAgentWorkspaceRoot(scenarioFilePath ? { projectDir: dirname(scenarioFilePath) } : {});
-    return captureWorktreeSnapshot(root);
-  } catch {
-    return null;
-  }
+    worktree = captureWorktreeSnapshot(root);
+  } catch { /* A missing tree snapshot must keep cleanliness unproven. */ }
+  return { worktree, runtime: await captureRuntimeEnvironment(readRuntimeEnvironment), readRuntimeEnvironment };
 }
 
 /**
@@ -195,7 +264,7 @@ export function beginLlmScenarioLedger(scenarioFilePath?: string): WorktreeGitSn
 export async function recordLlmScenarioTestRun(
   report: RunReport,
   scenarioFilePath: string | undefined,
-  before: WorktreeGitSnapshot | null,
+  before: LlmScenarioLedgerStart | null,
 ): Promise<number | null> {
   try {
     // The scenario's executed source owns this receipt. An inherited integration
@@ -207,8 +276,9 @@ export async function recordLlmScenarioTestRun(
       return null;
     }
 
+    const runtimeAfter = await captureRuntimeEnvironment(before?.readRuntimeEnvironment);
     const after = captureWorktreeSnapshot(root);
-    const worktreeDirty = before ? computeWorktreeDirty(before, after) : true;
+    const worktreeDirty = before?.worktree ? computeWorktreeDirty(before.worktree, after) : true;
     const { branch } = await resolveGitContext().catch(() => ({ branch: null as string | null }));
     const runGroupId = process.env.PAPERCUSP_TEST_RUN_GROUP ?? report.matrixGroupId ?? null;
     const workspaceId = resolveTestRunWorkspaceId();
@@ -218,6 +288,10 @@ export async function recordLlmScenarioTestRun(
       root, filePath, runGroupId, workspaceId, harnessSlug,
       commitSha: after.commit ?? null,
       worktreeDirty,
+      runtimeEnvironmentBefore: before?.runtime.witness,
+      runtimeEnvironmentAfter: runtimeAfter.witness,
+      runtimeEnvironmentBeforeCaptureStatus: before?.runtime.status ?? 'not-configured',
+      runtimeEnvironmentAfterCaptureStatus: runtimeAfter.status,
     });
 
     // Same pool + options as ./storage, so the two writers share one connection budget.

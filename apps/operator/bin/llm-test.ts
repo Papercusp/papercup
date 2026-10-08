@@ -39,6 +39,7 @@ import {
 } from '@papercusp/operator-core/lib/llm-testing/run-exit-code';
 import {
   beginLlmScenarioLedger,
+  prepareLlmScenarioRuntimeReader,
   recordLlmScenarioTestRun,
   resolveScenarioSourceFile,
 } from '@papercusp/operator-core/lib/llm-testing/test-run-ledger';
@@ -406,7 +407,9 @@ async function main(): Promise<void> {
     const scenarioFilePath = resolveScenarioFilePath(scenario);
     process.stdout.write(`\n▶ ${scenario.id}  [${scenario.target}]\n`);
     let report;
-    const ledgerBefore = args.noPersist ? null : beginLlmScenarioLedger(scenarioFilePath);
+    const runtimeReader = args.noPersist ? undefined
+      : await prepareLlmScenarioRuntimeReader(scenarioFilePath, scenario.transport);
+    const ledgerBefore = args.noPersist ? null : await beginLlmScenarioLedger(scenarioFilePath, runtimeReader);
     try {
       report = await runScenario(scenario, {
         forceRepeat: args.noMatrix ? 1 : undefined,
