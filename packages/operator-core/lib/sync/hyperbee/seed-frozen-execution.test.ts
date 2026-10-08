@@ -139,6 +139,16 @@ describe('D177 installed dependency census', () => {
       { path: 'tools/fixture/package-lock.json', packages: { 'node_modules/b': { version: '1.0.0' } } }]);
     expect(rows.map(row => row.name)).toEqual(['a', 'b']);
   });
+  it('ignores a standalone lock whose installed tree is absent from the generation census', async () => {
+    const root = temp(); pkg(root, 'node_modules/a', 'a');
+    const rows = await readSeedInstalledPackages(root, ['node_modules'], [
+      { path: 'package-lock.json', packages: { 'node_modules/a': { version: '1.0.0' } } },
+      { path: 'tools/docs-viewer/package-lock.json', packages: {
+        'node_modules/@astrojs/compiler': { version: '2.13.1' },
+      } },
+    ]);
+    expect(rows.map(row => row.path)).toEqual(['node_modules/a']);
+  });
 });
 
 function archive(root: string, name: string) {

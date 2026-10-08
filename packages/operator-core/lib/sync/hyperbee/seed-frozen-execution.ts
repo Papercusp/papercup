@@ -96,12 +96,20 @@ export async function readSeedInstalledPackages(root: string, trees: readonly st
     workspaceDirs = rootWorkspaceDirs({ packages: rootLock.packages });
   }
   const expected = new Map<string, { entry: LockEntry; lock: typeof locks[number]; key: string }>();
+  const installedTreePrefixes = trees.map(tree => `${tree}/`);
   for (const lock of [...locks].sort((a, b) => a.path.length - b.path.length)) {
     if (lock !== rootLock && workspaceDirs.has(posix.dirname(lock.path))) continue;
     for (const [key, entry] of Object.entries(lock.packages)) {
       if (!key.includes('node_modules/')) continue;
       if (!safe(key)) throw new Error('invalid committed package path');
       const path = posix.join(posix.dirname(lock.path), key);
+      // The generation manifest can include standalone package locks whose
+      // node_modules tree is deliberately not materialized (for example, a local
+      // docs viewer). The census population is the published tree list, so those
+      // locks remain fingerprinted inputs without becoming installed-package
+      // obligations. Entries inside any published tree still require an exact
+      // lock match below.
+      if (!installedTreePrefixes.some(prefix => path.startsWith(prefix))) continue;
       expected.set(path, { entry, lock, key });
     }
   }
