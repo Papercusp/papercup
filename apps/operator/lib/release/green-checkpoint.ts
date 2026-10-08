@@ -19054,7 +19054,7 @@ export function realCheckpointDeps(
         return {
           ok: false,
           summary:
-            `${describeBreaches(before)}; initial measurement: ${describe(before)}; ` +
+            `${describeTrigger(before, copyBefore)}; initial measurement: ${describe(before)}; ` +
             `${reclamationSummary}; post-cleanup statfs failed (${error instanceof Error ? error.message : error})`,
         };
       }
@@ -19062,17 +19062,18 @@ export function realCheckpointDeps(
         return {
           ok: false,
           summary:
-            `${describeBreaches(before)}; initial measurement: ${describe(before)}; ` +
+            `${describeTrigger(before, copyBefore)}; initial measurement: ${describe(before)}; ` +
             `${reclamationSummary}; post-cleanup statfs produced no readable snapshots`,
         };
       }
       const afterBreaches = detectCriticalWriteHeadroom(after, policy);
-      if (afterBreaches.length === 0) {
+      const copyAfter = await dependencyCopyHeadroom();
+      if (afterBreaches.length === 0 && copyAfter.ok) {
         return {
           ok: true,
           summary:
             `automatic headroom recovery succeeded; initial measurement: ${describe(before)}; ` +
-            `${reclamationSummary}; after cleanup: ${describe(after)}`,
+            `${reclamationSummary}; after cleanup: ${describe(after)}; ${copyAfter.summary}`,
         };
       }
       return {
@@ -19086,7 +19087,7 @@ export function realCheckpointDeps(
           // describeBreaches now carries the applied reserve and the absolute deficit,
           // which is the number a responder needs; a second, differently-derived floor
           // in the same sentence could only disagree with it again.
-          `${describeBreaches(after)}; initial measurement: ${describe(before)}; ` +
+          `${describeTrigger(after, copyAfter)}; initial measurement: ${describe(before)}; ` +
           `${reclamationSummary}; after cleanup: ${describe(after)}`,
       };
     },
