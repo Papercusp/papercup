@@ -340,6 +340,61 @@ describe('mutation-probe.sh — copy-out mode (the default)', () => {
     expect(read()).toBe(ORIGINAL);
   });
 
+  describe('scratch failure classification (EI-25433151376112553)', () => {
+    it.skipIf(!existsSync('/dev/full'))('reports an unmeasured digest as a harness error when its scratch write gets ENOSPC', () => {
+      const scratchRoot = join(dir, 'scratch');
+      mkdirSync(scratchRoot);
+      const { code, out } = runProbeIO([
+        '--file', subject, '--mutate', 's/beta/BETA/', '--relocation', 'mirror',
+        '--test', 'for probe in "$PROBE_TEST_SCRATCH_ROOT"/mutation-probe.*; do ln -sf /dev/full "$probe/current.sha"; done; grep -q "^beta$" {}',
+      ], { ...process.env, TMPDIR: scratchRoot, PROBE_TEST_SCRATCH_ROOT: scratchRoot });
+      expect(code, out).toBe(2);
+      expect(out).toContain('status=integrity-unverified');
+      expect(out).not.toContain('external-change-preserved');
+      expect(out).not.toContain('current_sha=MISSING');
+      expect(out.lastIndexOf('verdict=harness-error')).toBeGreaterThan(out.lastIndexOf('verdict=caught'));
+      expect(read()).toBe(ORIGINAL);
+    });
+
+    it('reports a failed hash command without inventing an external source change', () => {
+      const bin = join(dir, 'bin');
+      const marker = join(dir, 'guard-ran');
+      const realGit = spawnSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).stdout.trim();
+      mkdirSync(bin);
+      writeFileSync(join(bin, 'git'), `#!/usr/bin/env bash
+if [ "$1" = hash-object ] && [ -f "$PROBE_TEST_GUARD_MARKER" ]; then
+  printf 'fatal: source digest unavailable\\n' >&2
+  exit 128
+fi
+exec "$PROBE_TEST_REAL_GIT" "$@"
+`, { mode: 0o755 });
+      const { code, out } = runProbeIO([
+        '--file', subject, '--mutate', 's/beta/BETA/', '--relocation', 'mirror',
+        '--test', 'touch "$PROBE_TEST_GUARD_MARKER"; grep -q "^beta$" {}',
+      ], { ...process.env, PATH: `${bin}:${process.env.PATH}`, PROBE_TEST_REAL_GIT: realGit, PROBE_TEST_GUARD_MARKER: marker });
+      expect(code, out).toBe(2);
+      expect(out).toContain('status=integrity-unverified');
+      expect(out).not.toContain('external-change-preserved');
+      expect(read()).toBe(ORIGINAL);
+    });
+
+    it('checks the independent fs-mutex root before starting a managed guard', () => {
+      const bin = join(dir, 'bin');
+      const marker = join(dir, 'guard-ran');
+      const badLockRoot = join(dir, 'not-a-directory');
+      mkdirSync(bin);
+      writeFileSync(badLockRoot, 'occupied');
+      writeFileSync(join(bin, 'npm'), '#!/usr/bin/env bash\ntouch "$PROBE_TEST_GUARD_MARKER"\ngrep -q "^beta$" "$1"\n', { mode: 0o755 });
+      const { code, out } = runProbeIO([
+        '--file', subject, '--mutate', 's/beta/BETA/', '--relocation', 'mirror', '--test', 'npm {}',
+      ], { ...process.env, PATH: `${bin}:${process.env.PATH}`, PAPERCUSP_FS_MUTEX_LOCK_DIR: badLockRoot, PAPERCUSP_DISABLE_FS_MUTEX: '0', PROBE_TEST_GUARD_MARKER: marker });
+      expect(code, out).toBe(2);
+      expect(out).toContain('phase=preflight reason=scratch-unavailable root=fs-mutex');
+      expect(existsSync(marker)).toBe(false);
+      expect(read()).toBe(ORIGINAL);
+    });
+  });
+
   it('leaves the subject file byte-identical while still exercising the guard', () => {
     const code = runProbe(['--file', subject, '--mutate', 's/beta/BETA/', '--test', 'grep -q "^beta$" {}']);
     // The guard fails on the mutant => the mutant was CAUGHT => probe exits 0.
