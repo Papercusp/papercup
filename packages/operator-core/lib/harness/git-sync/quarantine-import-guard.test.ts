@@ -115,7 +115,7 @@ describe('detectQuarantineImporters', () => {
     expect(offenders).toEqual([]);
   });
 
-  it('ignores a non-relative (bare/aliased) specifier — out of scope, matches deletion-import-guard', async () => {
+  it('ignores an external package specifier without a repository package manifest', async () => {
     const files: Record<string, string> = {
       'lib/importer.ts': `import { x } from '@papercusp/quarantined';\n`,
     };
@@ -123,6 +123,62 @@ describe('detectQuarantineImporters', () => {
       readText: async (rel) => files[rel] ?? null,
       dirtyFiles: ['lib/quarantined.ts', 'lib/importer.ts'],
       alreadyQuarantined: ['lib/quarantined.ts'],
+    });
+    expect(offenders).toEqual([]);
+  });
+
+  it('holds a named consumer when the excluded tracked provider may have new exports', async () => {
+    const offenders = await detectQuarantineImporters({
+      readText: async () => `import { newlyAdded } from './tracked-source';\n`,
+      dirtyFiles: ['lib/tracked-source.ts', 'lib/consumer.ts'],
+      alreadyQuarantined: ['lib/tracked-source.ts'],
+      isResolvableAtHead: async () => true,
+    });
+    expect(offenders.map(row => row.file)).toEqual(['lib/consumer.ts']);
+  });
+
+  it('holds package-export alias consumers and their relative consumers to a fixed point', async () => {
+    const files: Record<string, string> = {
+      'packages/operator-core/package.json': JSON.stringify({ name: '@papercusp/operator-core',
+        exports: { './lib/*': './lib/*.ts' } }),
+      'packages/agent-mcp/src/create.ts': `import { recordExpertiseRoutingInvocation } from '@papercusp/operator-core/lib/endpoint-route/telemetry';\n`,
+      'packages/agent-mcp/src/index.ts': `export { create } from './create';\n`,
+    };
+    const offenders = await detectQuarantineImporters({
+      readText: async path => files[path] ?? null,
+      dirtyFiles: ['packages/agent-mcp/src/create.ts', 'packages/agent-mcp/src/index.ts'],
+      alreadyQuarantined: ['packages/operator-core/lib/endpoint-route/telemetry.ts'],
+      isResolvableAtHead: async () => true,
+    });
+    expect(offenders.map(row => row.file)).toEqual([
+      'packages/agent-mcp/src/create.ts', 'packages/agent-mcp/src/index.ts',
+    ]);
+  });
+
+  it('uses manifest export remapping instead of guessing a package directory from its name', async () => {
+    const files: Record<string, string> = {
+      'libs/unusually-named/package.json': JSON.stringify({ name: '@example/public-api',
+        exports: { './telemetry': { types: './types/telemetry.d.ts', default: './src/recorder.ts' } } }),
+      'packages/consumer.ts': `import { record } from '@example/public-api/telemetry';\n`,
+    };
+    const offenders = await detectQuarantineImporters({
+      readText: async path => files[path] ?? null,
+      dirtyFiles: ['packages/consumer.ts'],
+      alreadyQuarantined: ['libs/unusually-named/src/recorder.ts'],
+    });
+    expect(offenders.map(row => row.file)).toEqual(['packages/consumer.ts']);
+  });
+
+  it('does not hold a tracked package alias used only for side effects', async () => {
+    const files: Record<string, string> = {
+      'packages/provider/package.json': JSON.stringify({ name: '@example/provider', exports: { '.': './src/index.ts' } }),
+      'packages/consumer.ts': `import '@example/provider';\n`,
+    };
+    const offenders = await detectQuarantineImporters({
+      readText: async path => files[path] ?? null,
+      dirtyFiles: ['packages/consumer.ts'],
+      alreadyQuarantined: ['packages/provider/src/index.ts'],
+      sideEffectTargetAtHead: async () => true,
     });
     expect(offenders).toEqual([]);
   });

@@ -4,6 +4,7 @@ import type { DaoSection } from './dao-navigation';
 import DaoGovernance from './DaoGovernance';
 import DaoPolicyEditor from './DaoPolicyEditor';
 import DaoFinance from './DaoFinance';
+import DaoExecution from './DaoExecution';
 
 function ReadState({ read }: { read: DaoRead<unknown> | undefined }) {
   return read?.status === 'error' ? <p role="alert">{read.message}</p> : null;
@@ -25,12 +26,13 @@ export default function DaoWorkspaceDetails({ section, view, loading, error, onC
   const rounds = governance?.events.filter(event => event.kind === 'round-open') ?? [];
   const operations = '/adv?slug=' + encodeURIComponent(view.localHomeSlug!);
 
-  if (section === 'members' || section === 'reputation') return <section className="dao-card">
-    <h2>{section === 'members' ? 'Admitted contributors' : 'Contributor identities'}</h2><ReadState read={view.members} />
+  if (section === 'reputation' || section === 'work' || section === 'jobs' || section === 'inbox') return <><ReadState read={view.projects} /><DaoExecution key={view.directoryId} view={view} section={section} /></>;
+
+  if (section === 'members') return <section className="dao-card">
+    <h2>Admitted contributors</h2><ReadState read={view.members} />
     {members.length ? <div className="dao-table-wrap"><table><thead><tr><th>Contributor</th><th>Membership binding</th><th>Bound devices</th></tr></thead><tbody>
       {members.map(member => <tr key={member.id}><td><strong>{member.displayName || member.username}</strong><small>{member.username}</small></td><td>{member.bindingStatus}</td><td>{member.devices}</td></tr>)}
     </tbody></table></div> : view.members?.status === 'ready' ? <p>No admitted contributor records are available.</p> : null}
-    {section === 'reputation' ? <p>Membership identifies contributors. Accepted work and reputation remain distinct from equity ownership.</p> : null}
     <RouteLink className="dao-action" href={operations + '&tab=harnesses'}>Open contributor work</RouteLink>
   </section>;
 
@@ -58,15 +60,6 @@ export default function DaoWorkspaceDetails({ section, view, loading, error, onC
       <p>Plan admission does not authorize treasury transfers or ownership votes.</p>
     </section>
   </div>;
-
-  if (section === 'work' || section === 'jobs' || section === 'inbox') return <>
-    <ReadState read={view.projects} />
-    <div className="dao-directory">{projects.map(project => <section className="dao-card" key={project.slug}><p className="dao-eyebrow">Linked project</p><h2>{project.title}</h2>
-      {project.plans.length ? <ul className="dao-plan-list">{project.plans.map(plan => <li key={plan.slug}><RouteLink href={'/adv?slug=' + encodeURIComponent(project.slug) + '&tab=plans&plan=' + encodeURIComponent(plan.slug)}>{plan.title}</RouteLink><small>{plan.status} · {plan.itemCount} authored work items</small></li>)}</ul> : <p>No active plan records in this project.</p>}
-      <RouteLink className="dao-action" href={'/adv?slug=' + encodeURIComponent(project.slug) + '&tab=' + (section === 'jobs' ? 'harnesses' : 'plans')}>{section === 'jobs' ? 'Open agents and execution' : 'Open project workspace'}</RouteLink>
-    </section>)}</div>
-    {view.projects?.status === 'ready' && !projects.length ? <section className="dao-empty"><h2>No linked projects</h2><p>This organization has not linked project records in this workspace.</p></section> : null}
-  </>;
 
   if (section === 'settings') return <><DaoPolicyEditor view={view} onChanged={onChanged} /><section className="dao-card"><h2>Organization configuration</h2><p>Local organization home: <code>{view.localHomeSlug}</code></p><p>Membership mode: {policyAvailable ? policy?.membership ?? 'not configured' : 'unavailable'}</p><p>Policy version: {policyAvailable ? policy?.version || 'not configured' : 'unavailable'}</p><ReadState read={view.policy} />
     <div className="dao-actions"><RouteLink className="dao-action" href={operations + '&tab=settings'}>Open organization settings</RouteLink><RouteLink className="dao-action" href="/dao">Prepare legal entity and governance</RouteLink></div>

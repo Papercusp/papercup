@@ -418,6 +418,25 @@ describe('test-files router', () => {
     ]);
   });
 
+  it('extracts named-project file listings without treating project labels as paths', () => {
+    const cwd = resolve(REPO_ROOT, 'apps/operator-public');
+    const output = '[treasury-integration] src/__tests__/treasury.test.ts\n' +
+      '[unit] src/__tests__/settlements.test.ts\n' +
+      '[another project] src/__tests__/treasury.test.ts\n' +
+      '[warning] irrelevant process warning\n';
+    expect(listedFiles(output, cwd, true)).toEqual([
+      resolve(cwd, 'src/__tests__/treasury.test.ts'),
+      resolve(cwd, 'src/__tests__/settlements.test.ts'),
+    ]);
+  });
+
+  it('extracts named-project tree listings through the same canonical path format', () => {
+    const cwd = resolve(REPO_ROOT, 'apps/operator-public');
+    const output = '[treasury-integration] src/__tests__/treasury.test.ts > suite > case\n';
+    expect(listedFiles(output, cwd, true)).toEqual([resolve(cwd, 'src/__tests__/treasury.test.ts')]);
+    expect(listedFiles(output, cwd)).toEqual([resolve(cwd, 'src/__tests__/treasury.test.ts')]);
+  });
+
   it('keeps the filesOnly parser compatible with Vitest tree-shaped test stubs', () => {
     const cwd = resolve(REPO_ROOT, 'packages/operator-core');
     expect(listedFiles('lib/a.test.ts > suite > skipped test\n', cwd, true)).toEqual([

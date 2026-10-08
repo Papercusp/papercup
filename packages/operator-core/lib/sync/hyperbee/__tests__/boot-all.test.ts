@@ -5,7 +5,8 @@
  * filesystem (corestore / autobase boot is exercised in its own suites).
  */
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { readRealPgRailBlocks } from '@papercusp/test-config/silenced-console-census';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -25,6 +26,7 @@ import {
   reconcileRemoteHandlesAfterSidecarRestart,
   setSubstrateBootDefaults,
   _resetSubstrateBootDefaultsForTests,
+  type SendSideWiringDeps,
   type SwarmBindingResolver,
 } from '../boot-all';
 import type { BootedHarnessHandle, BootHarnessOpts } from '../boot';
@@ -55,6 +57,40 @@ const loadHarnessRegistryMock = vi.fn(async (_ws?: string) => ({
 // whole suite at import time rather than at any assertion. Listing the full
 // surface (as lib/fleet/operator-spawn.test.ts does) also keeps a FUTURE
 // transitive import from silently reintroducing the same break.
+// WI-10007538: boot-all fires a once-per-process, fire-and-forget seed of this
+// host's p2p routines (boot-all.ts → p2p/ensure-host-routines). Its default
+// writes the routines table in the REAL org Postgres; the unit rail blocks the
+// connection and the seeder reports it only via console.log ("seed failed"),
+// which no console guard sees. Replace just the boot hook.
+const { seedP2pHostRoutinesMock } = vi.hoisted(() => ({ seedP2pHostRoutinesMock: vi.fn() }));
+vi.mock('../../../p2p/ensure-host-routines', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../p2p/ensure-host-routines')>()),
+  ensureP2pHostRoutinesSeededOnce: seedP2pHostRoutinesMock,
+}));
+// Materialize that mock BEFORE any test boots. boot-all reaches the module only
+// through a fire-and-forget dynamic import(), and Vitest 4.1.8's module runner
+// keeps the in-flight mock id on a callstack array SHARED by every dynamic
+// import from the same importer (startVitestModuleRunner: "this will not work
+// if user does Promise.all(import(), import())"). So while the async
+// importOriginal factory above is still evaluating, a second boot-all call's
+// import() sees the mock id on that callstack and falls through to the REAL
+// module, which seeds against the real PG. Observed 2026-10-08 (WI-10007538):
+// the double was called AND the real seeder logged "seed failed". Resolving the
+// factory once here closes that window deterministically.
+beforeAll(async () => {
+  const seeded = await import('../../../p2p/ensure-host-routines');
+  expect(vi.isMockFunction(seeded.ensureP2pHostRoutinesSeededOnce)).toBe(true);
+});
+// WI-10007538: the rail's throw-site counter. The ZERO assertion is parked, not
+// dropped: its first run (2026-10-08 18:45Z) found 19 more swallowed real-PG
+// attempts in this file, via hive-store getHiveBySlug (listGitServingCapabilities)
+// and operator-state-pg readOperatorState (substrate-booted-handles-pg). Until
+// those seams are faked, assert only that the p2p seeder fixed above never
+// reaches the rail. Restore `expect(rail.blocked).toBe(0)` when they are.
+afterAll(() => {
+  const rail = readRealPgRailBlocks();
+  expect(rail.callers.filter((c) => c.includes('ensure-host-routines'))).toEqual([]);
+});
 vi.mock('../../../harness-registry', () => ({
   loadHarnessRegistry: (ws?: string) => loadHarnessRegistryMock(ws),
   // boot-all → pinRepoKeysForWorkspace (pot-git/pin-repo-keys.ts) falls back to
@@ -70,6 +106,13 @@ vi.mock('../../../harness-registry', () => ({
   deregisterEphemeralForeignHarness: vi.fn(async () => false),
   sweepOrphanedEphemeralForeignHarnesses: vi.fn(async () => ({ swept: 0, removed: [] })),
 }));
+
+/** WI-10007538: no-op send-side wiring. bootSingleHarness's DEFAULT wiring resolves
+ *  getOrgPg() (a real Postgres connection the unit rail blocks, which boot-all only
+ *  logs), so every boot here that does not set skipSendSideWiring passes this. */
+function hermeticSendSide(): SendSideWiringDeps {
+  return { wireOutbox: vi.fn(async () => {}), wirePresence: vi.fn(async () => {}) };
+}
 
 function fakeHandle(workspaceId: string, harnessSlug: string): BootedHarnessHandle {
   return makeFakeBootedHandle({ workspaceId, harnessSlug }).handle;
@@ -220,7 +263,10 @@ describe('boot-all — substrate orchestrator', () => {
 
   it('bootSingleHarness returns already-booted when cached', async () => {
     _setHandleForTests('ws-1', 'papercup', fakeHandle('ws-1', 'papercup'));
-    const result = await bootSingleHarness('ws-1', 'papercup');
+    // WI-10007538: the already-booted path still ensures send-side wiring, whose
+    // DEFAULT resolves getOrgPg() — a real Postgres connection the unit rail
+    // blocks and boot-all only logs. Inject the documented seam instead.
+    const result = await bootSingleHarness('ws-1', 'papercup', { wireSendSide: hermeticSendSide() });
     expect(result.state).toBe('already-booted');
   });
 
@@ -437,6 +483,23 @@ describe('boot-all — substrate orchestrator', () => {
     expect(result.attempted).toBe(2);
     expect(result.failed).toBe(2);
     expect(result.results.map((r) => r.harnessSlug).sort()).toEqual(['h1', 'h2']);
+  });
+
+  it('WI-10007538: the boot-time p2p host-routine seed reaches the test double, never the real (PG-writing) seeder', async () => {
+    // Guards the vi.mock above. A partial mock that spreads importOriginal can
+    // silently leave the SUT bound to the REAL module (Vitest 4 manual-mock
+    // callstack fall-through); the only symptom is a swallowed
+    // "[p2p-host-routines] ... seed failed — A UNIT test tried to open a REAL
+    // Postgres connection" log. Asserting the double is called makes that
+    // regression a red test instead of a log line.
+    await bootAllHarnessesForActiveWorkspace({
+      workspaceIds: ['ws-seed-double'],
+      discoverHarnessSlugs: async () => ['seed-h0'],
+      skipSendSideWiring: true,
+      resolveSwarmBinding: async () => null,
+      bootHarness: async ({ workspaceId, harnessSlug }) => fakeHandle(workspaceId, harnessSlug),
+    });
+    await vi.waitFor(() => expect(seedP2pHostRoutinesMock).toHaveBeenCalled());
   });
 
   it('WI-779: bounds substrate-boot concurrency so a joiner with many members does not time out ALL of them', async () => {
@@ -736,6 +799,7 @@ describe('boot-all — Phase 11 P-078 swarm-binding resolution', () => {
     };
     await bootSingleHarness('ws-resolver-spy', 'my-slug', {
       workspaceRoot: '/tmp/nonexistent-substrate-boot-test-resolver',
+      wireSendSide: hermeticSendSide(), // WI-10007538: default wiring = real org PG
       timeoutMs: 1,
       resolveSwarmBinding: fakeResolver,
     });
@@ -746,6 +810,7 @@ describe('boot-all — Phase 11 P-078 swarm-binding resolution', () => {
     const fakeResolver: SwarmBindingResolver = async () => null;
     const result = await bootSingleHarness('ws-null-resolver', 'slug-x', {
       workspaceRoot: '/tmp/nonexistent-substrate-boot-test-null',
+      wireSendSide: hermeticSendSide(),
       timeoutMs: 1,
       resolveSwarmBinding: fakeResolver,
     });
@@ -759,6 +824,7 @@ describe('boot-all — Phase 11 P-078 swarm-binding resolution', () => {
     const fakeResolver: SwarmBindingResolver = async () => binding;
     const result = await bootSingleHarness('ws-with-binding', 'slug-y', {
       workspaceRoot: '/tmp/nonexistent-substrate-boot-test-binding',
+      wireSendSide: hermeticSendSide(),
       timeoutMs: 1,
       resolveSwarmBinding: fakeResolver,
     });

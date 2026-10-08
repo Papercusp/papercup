@@ -18,7 +18,7 @@
  * variable, which would let an ambient `=/dev/null` blind a release gate — and the producer is
  * guard-tested below to pass exactly two arguments.
  */
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterEach } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import {
   readFileSync,
@@ -89,6 +89,9 @@ function runLib(args: string[], env?: NodeJS.ProcessEnv): { code: number; out: s
 }
 
 const scratch: string[] = [];
+afterEach(() => {
+  for (const dir of scratch.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
 function fixture(): string {
   const dir = mkdtempSync(join(tmpdir(), 'pinned-deps-'));
   scratch.push(dir);

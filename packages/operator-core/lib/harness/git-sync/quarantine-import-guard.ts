@@ -39,7 +39,8 @@
  * never blocks the commit (a guard bug must never wedge the whole fleet's commit).
  */
 import type { ContentOffender } from './content-guard';
-import { extractRelativeImportSpecifiers, resolveRelativeSpecifier, normalizeModulePath, RESOLVABLE_EXTS } from './deletion-import-guard';
+import { posix } from 'node:path';
+import { resolveRelativeSpecifier, normalizeModulePath, RESOLVABLE_EXTS } from './deletion-import-guard';
 
 export interface QuarantineImportGuardDeps {
   /** Read a repo-relative file's CURRENT working-tree text; null when unreadable/gone
@@ -55,11 +56,8 @@ export interface QuarantineImportGuardDeps {
    *  content-guard + deletion-guard offenders) — the "infectious" set an importer
    *  must be held back alongside. */
   alreadyQuarantined: string[];
-  /** Whether a quarantined path still resolves from the committed HEAD tree. A
-   *  tracked-but-modified dependency remains available to an importer in HEAD,
-   *  so it is safe for that importer to commit while the dependency stays dirty.
-   *  When omitted, the historical conservative behavior treats every quarantined
-   *  path as absent from HEAD (useful for the pure guard tests). */
+  /** Legacy HEAD-presence seam, used only for side-effect imports. A named
+   *  consumer can require a new export even when the old provider exists at HEAD. */
   isResolvableAtHead?: (relPath: string) => Promise<boolean>;
   /** WI-10006940: whether the TARGET of a bare side-effect import (`import './x'`)
    *  is present in HEAD. A side-effect import consumes no symbols, so when its target
@@ -100,12 +98,55 @@ function isScannableCandidate(path: string): boolean {
   return RESOLVABLE_EXTS.some((ext) => path.endsWith(ext));
 }
 
-const BARE_SIDE_EFFECT_IMPORT_RE = /(?:^|[;{}])[ \t]*import[ \t]*['"](\.[^'"]+)['"]/gm;
+const BARE_SIDE_EFFECT_IMPORT_RE = /(?:^|[;{}])[ \t]*import[ \t]*['"]([^'"]+)['"]/gm;
 const BINDING_IMPORT_RE =
-  /from\s*['"](\.[^'"]+)['"]|import\s*\(\s*['"](\.[^'"]+)['"]|require\(\s*['"](\.[^'"]+)['"]\s*\)/g;
+  /from\s*['"]([^'"]+)['"]|import\s*\(\s*['"]([^'"]+)['"]|require\(\s*['"]([^'"]+)['"]\s*\)/g;
+
+function extractImportSpecifiers(text: string): string[] {
+  const specs = new Set<string>();
+  const re = /(?:from|import)\s*\(?\s*['"]([^'"]+)['"]|require\(\s*['"]([^'"]+)['"]\s*\)/g;
+  for (const match of text.matchAll(re)) specs.add(match[1] ?? match[2]);
+  return [...specs];
+}
+
+interface RepositoryPackage { root: string; name: string; exports: Record<string, unknown> }
+
+/** Preserve runtime condition alternatives; declaration-only targets do not run. */
+function runtimeExportTargets(value: unknown): string[] {
+  if (typeof value === 'string') return [value];
+  if (Array.isArray(value)) return value.flatMap(runtimeExportTargets);
+  if (!value || typeof value !== 'object') return [];
+  return Object.entries(value).filter(([key]) => key !== 'types').flatMap(([, target]) => runtimeExportTargets(target));
+}
+
+function resolvePackageSpecifier(pkg: RepositoryPackage, spec: string): string[] {
+  const key = spec === pkg.name ? '.' : spec.startsWith(pkg.name + '/') ? './' + spec.slice(pkg.name.length + 1) : null;
+  if (key === null) return [];
+  let selected = pkg.exports[key];
+  let wildcard = '';
+  if (!(key in pkg.exports)) {
+    // Match the most specific declared export, including null blockers.
+    const patterns = Object.keys(pkg.exports).filter(pattern => pattern.includes('*'))
+      .sort((a, b) => b.indexOf('*') - a.indexOf('*') || b.length - a.length);
+    for (const pattern of patterns) {
+      const [prefix, suffix] = pattern.split('*');
+      if (key.startsWith(prefix) && key.endsWith(suffix) && key.length >= prefix.length + suffix.length) {
+        selected = pkg.exports[pattern];
+        wildcard = key.slice(prefix.length, suffix.length ? -suffix.length : undefined);
+        break;
+      }
+    }
+  }
+  return runtimeExportTargets(selected).flatMap(target => {
+    if (!target.startsWith('./')) return [];
+    const path = posix.normalize(posix.join(pkg.root, target.replaceAll('*', wildcard)));
+    if (pkg.root !== '.' && !path.startsWith(pkg.root + '/')) return [];
+    return [normalizeModulePath(path)];
+  });
+}
 
 /**
- * Relative specifiers that a file reaches ONLY through bare side-effect imports
+ * Specifiers that a file reaches ONLY through bare side-effect imports
  * (`import './x';`). A specifier that also appears in any binding form (`from`,
  * `export … from`, dynamic `import()`, `require`) is excluded — the conservative
  * reading wins whenever a file consumes symbols from the module anywhere.
@@ -138,24 +179,38 @@ export async function detectQuarantineImporters(deps: QuarantineImportGuardDeps)
     log,
   } = deps;
   if (alreadyQuarantined.length === 0) return [];
-  // A quarantined file that is already present in HEAD is not infectious: the
-  // importer committed by this tick still resolves the prior, committed copy.
-  // Only a dependency absent from HEAD can make an importer unresolvable in an
-  // isolated checkout. Keep the conservative old behavior when the HEAD seam is
-  // omitted by a caller that only wants the pure detector semantics.
-  const infectiousPaths: string[] = [];
-  for (const path of [...new Set(alreadyQuarantined)]) {
-    let presentAtHead = false;
-    if (isResolvableAtHead) {
-      try {
-        presentAtHead = await isResolvableAtHead(path);
-      } catch (e) {
-        log?.(`[quarantine-import-guard] could not check ${path} in HEAD — treating it as absent (fail safe): ${errMsg(e)}`);
+  // File existence does not prove that an old provider exports a consumer's new
+  // symbols. Only a side-effect-only edge may use the HEAD-presence exemption.
+  const infectiousPaths = [...new Set(alreadyQuarantined)];
+  const headTarget = sideEffectTargetAtHead ?? isResolvableAtHead;
+  // Resolve package aliases from the provider's own manifest. Do not infer a
+  // package directory from its name or substitute an installed dependency.
+  const packages = new Map<string, RepositoryPackage>();
+  const manifests = new Map<string, Promise<RepositoryPackage | null>>();
+  const registerPackage = async (path: string) => {
+    for (let dir = posix.dirname(path); ; dir = posix.dirname(dir)) {
+      let pending = manifests.get(dir);
+      if (!pending) {
+        pending = (async () => {
+          try {
+            const text = await readText(posix.join(dir, 'package.json'));
+            if (text === null) return null;
+            const manifest = JSON.parse(text);
+            if (typeof manifest.name !== 'string' || !manifest.exports) return null;
+            const declared = manifest.exports;
+            const exports = typeof declared === 'object' && !Array.isArray(declared)
+              && Object.keys(declared).some(key => key.startsWith('.')) ? declared : { '.': declared };
+            return { root: dir, name: manifest.name, exports };
+          } catch { return null; }
+        })();
+        manifests.set(dir, pending);
       }
+      const pkg = await pending;
+      if (pkg) { packages.set(pkg.root, pkg); return; }
+      if (dir === '.') return;
     }
-    if (!presentAtHead) infectiousPaths.push(path);
-  }
-  if (infectiousPaths.length === 0) return [];
+  };
+  await mapPool(infectiousPaths, MAX_READ_CONCURRENCY, registerPackage);
 
   const quarantined = new Set(infectiousPaths);
   // Normalized targets an importer's resolved specifier must match — precomputed once.
@@ -177,8 +232,8 @@ export async function detectQuarantineImporters(deps: QuarantineImportGuardDeps)
       return;
     }
     if (text == null) return; // gone/unreadable (e.g. a deletion in the dirty set)
-    specsByFile.set(file, extractRelativeImportSpecifiers(text));
-    if (sideEffectTargetAtHead) sideEffectOnlyByFile.set(file, extractSideEffectOnlySpecifiers(text));
+    specsByFile.set(file, extractImportSpecifiers(text));
+    if (headTarget) sideEffectOnlyByFile.set(file, extractSideEffectOnlySpecifiers(text));
   });
 
   // Actual repo path behind each normalized infectious target, so a side-effect edge
@@ -192,7 +247,7 @@ export async function detectQuarantineImporters(deps: QuarantineImportGuardDeps)
   const targetPresentAtHead = (path: string): Promise<boolean> => {
     let cached = headPresence.get(path);
     if (!cached) {
-      cached = (sideEffectTargetAtHead as (p: string) => Promise<boolean>)(path).catch((e) => {
+      cached = (headTarget as (p: string) => Promise<boolean>)(path).catch((e) => {
         log?.(`[quarantine-import-guard] could not check side-effect target ${path} in HEAD — treating it as absent (fail safe): ${errMsg(e)}`);
         return false;
       });
@@ -213,8 +268,10 @@ export async function detectQuarantineImporters(deps: QuarantineImportGuardDeps)
       if (!specs || specs.length === 0) continue;
       const sideEffectOnly = sideEffectOnlyByFile.get(file);
       for (const spec of specs) {
-        const resolved = resolveRelativeSpecifier(file, spec);
-        if (!quarantinedNormalized.has(resolved)) continue;
+        const targets = spec.startsWith('.') ? [resolveRelativeSpecifier(file, spec)]
+          : [...packages.values()].flatMap(pkg => resolvePackageSpecifier(pkg, spec));
+        const resolved = targets.find(target => quarantinedNormalized.has(target));
+        if (!resolved) continue;
         // Which quarantined path this resolves to (for the error message — several
         // could normalize the same; report the first match).
         const target = actualPathByNormalized.get(resolved) ?? resolved;
@@ -222,6 +279,7 @@ export async function detectQuarantineImporters(deps: QuarantineImportGuardDeps)
         // the target to EXIST in HEAD. Propagate through it only when it does not.
         if (sideEffectOnly?.has(spec) && (await targetPresentAtHead(target))) continue;
         quarantined.add(file);
+        await registerPackage(file);
         const fileNormalized = normalizeModulePath(file);
         quarantinedNormalized.add(fileNormalized);
         if (!actualPathByNormalized.has(fileNormalized)) actualPathByNormalized.set(fileNormalized, file);

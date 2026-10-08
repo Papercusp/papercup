@@ -32,6 +32,7 @@ import { sendMessage } from '../agent-tools/coordination/messages.js';
 import type { AgentIdentity } from '../agent-tools/coordination/identity.js';
 import type { CoordOpCaps, CoordOpCtx, ResolvedSpawn, SpawnRolesResult } from './types.js';
 import { runProgramCore, inlineRunOp } from './program-runner.js';
+import { findOverlappingGoalAsk } from './goal-ask-dedup.js';
 
 /** Identity + scoping a caps instance is built for. */
 export interface CoordOpEnvBase {
@@ -119,6 +120,16 @@ export function buildCoordOpCaps(base: CoordOpEnvBase): CoordOpCaps {
         conversation_id: r.conversation.id,
         ...(r.interestWatch ? { interest_watch: r.interestWatch } : {}),
       };
+    },
+
+    async findOverlappingGoalAsk(input) {
+      // Without a workspace there is no session brief to resolve a goal from.
+      if (!base.workspaceId) return { goalId: null, compared: 0, overlap: null };
+      return findOverlappingGoalAsk({
+        workspaceId: base.workspaceId,
+        ownerId: identity.ownerId,
+        question: input.question,
+      });
     },
 
     async postThread(input) {
