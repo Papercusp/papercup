@@ -1,7 +1,8 @@
 import postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createOrgTestDb, type OrgTestDb } from '../../../../packages/operator-core/test/_org-test-db';
-import { insertNativeCollectionGoal } from '../../e2e/_ongoing-work-native-fixture';
+import { insertNativeCollectionGoal, insertNativeCollectionPlan } from '../../e2e/_ongoing-work-native-fixture';
+import { readGoalPortfolioBrief } from '../../../../packages/operator-core/lib/goal-launch-settings';
 
 describe('native collection fixture against migrated private PG', () => {
   let db: OrgTestDb;
@@ -42,5 +43,42 @@ describe('native collection fixture against migrated private PG', () => {
               ${JSON.stringify(schema)}::jsonb)`).rejects.toMatchObject({
         code: '23514', constraint_name: 'goals_property_schema_object',
       });
+  });
+
+  it('makes the real native plan seed actionable through canonical portfolio admission', async () => {
+    const workspaceId = 'native-admission-test', goalId = 'native-admission-positive', harness = 'native-admission';
+    const ids = ['alpha', 'beta', 'blocked'].map(slug => `plan:${harness}/${slug}`);
+    await insertNativeCollectionGoal(sql, { workspaceId, goalId, title: 'Native admission', schema: {
+      worklist: { datatype: 'plan-ref-list', editable_by: 'both', default: ids,
+        collection: { source: 'active-workspace-plans', policy: 'worklist_policy', order: 'priority',
+          selectable: true, defaultSelected: true } },
+      worklist_policy: { datatype: 'ordered-selection-policy', editable_by: 'owner',
+        default: { order: [ids[1], ids[0], ids[2]], excluded: [] } },
+    } });
+    for (const slug of ['alpha', 'beta', 'blocked']) {
+      await insertNativeCollectionPlan(sql, { workspaceId, harness, slug, title: slug,
+        status: slug === 'blocked' ? 'draft' : 'active' });
+    }
+    const read = () => readGoalPortfolioBrief({ workspaceId, goalId, sql, claimability: 'skip' });
+    const brief = await read();
+    expect(brief?.worklist.map(plan => plan.slug)).toEqual(['beta', 'alpha', 'blocked']);
+    expect(brief?.worklist.find(plan => plan.slug === 'beta')).toMatchObject({
+      next: { id: 'P-001' }, counts: { todo: 1 },
+      placement: { state: 'unplaced', reconciliation: { toolCall: { tool: 'fleet:launch-on-plan' } } },
+    });
+    expect(brief?.worklist.find(plan => plan.placement.reconciliation.toolCall !== null)?.slug).toBe('beta');
+    expect(brief?.worklist.find(plan => plan.slug === 'blocked')?.placement.reconciliation.toolCall).toBeNull();
+
+    // Keep the legacy metadata intact while removing the canonical source.
+    // This distinguishes a fixture-source defect from ordering/admission logic.
+    await sql`DELETE FROM harness_shared.plan_items
+      WHERE workspace_id=${workspaceId} AND harness_slug=${harness} AND plan_slug='beta'`;
+    const [metadata] = await sql`SELECT jsonb_array_length(items) AS count FROM harness_shared.harness_plans
+      WHERE workspace_id=${workspaceId} AND harness_slug=${harness} AND plan_slug='beta'`;
+    expect(metadata.count).toBe(1);
+    expect((await read())?.worklist.find(plan => plan.slug === 'beta')).toMatchObject({
+      next: null, counts: { todo: 0 },
+      placement: { state: 'blocked', reconciliation: { toolCall: null } },
+    });
   });
 });
