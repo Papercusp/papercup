@@ -594,6 +594,8 @@ export function listedFiles(output, cwd, filesOnly = false) {
       output
         .split(/\r?\n/)
         .map((line) => line.trim())
+        // Named Vitest projects prefix both --filesOnly and tree listings.
+        .map((line) => line.replace(/^\[[^\]\r\n]+\]\s+/, ''))
         // Keep unit-test stubs that still return Vitest's tree form working while the
         // production call uses --filesOnly. A format-only launcher change must not turn
         // those tests into false route reds.
@@ -605,6 +607,7 @@ export function listedFiles(output, cwd, filesOnly = false) {
   return [...new Set(
     output
       .split(/\r?\n/)
+      .map((line) => line.trim().replace(/^\[[^\]\r\n]+\]\s+/, ''))
       .filter((line) => line.includes(' > '))
       .map((line) => line.split(' > ', 1)[0]?.trim())
       .filter(Boolean)
