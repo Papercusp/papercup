@@ -176,6 +176,7 @@ describe('result-door deferred spill (WI-10004533)', () => {
       returnedContextBytes: number;
       reason: string;
       aggregateOutputEscape: boolean;
+      fallbackUri?: string;
       errorCode?: string;
     }) => void;
     const writeStarted = new Promise<void>((resolve) => { signalStarted = resolve; });
@@ -188,17 +189,33 @@ describe('result-door deferred spill (WI-10004533)', () => {
       returnedContextBytes: number;
       reason: string;
       aggregateOutputEscape: boolean;
+      fallbackUri?: string;
       errorCode?: string;
     }>((resolve) => { resolveLateSettlement = resolve; });
     const writer = vi.spyOn(scratchGc, 'writeWithScratchQuota').mockImplementation((_opts, write) => {
       signalStarted();
       return stalledWrite.then(write);
     });
+    const fallbackReference = {
+      id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      uri: 'papercusp://result/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      byteCount: 42,
+      sha256: 'b'.repeat(64),
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      ownerId: 'owner-1',
+      audience: 'owner' as const,
+      mediaType: 'application/json' as const,
+    };
+    const reserveFallback = vi.fn(async (details: { status: string }) => {
+      expect(details.status).toBe('pending');
+      return fallbackReference;
+    });
     let resultPromise: Promise<DoorableResult> | undefined;
     try {
       resultPromise = applyResultDoorAsync(oversized(), {
         ...OPTS,
         onLateScratchWriteSettled: resolveLateSettlement,
+        onScratchWriteFallback: reserveFallback,
       });
       await writeStarted;
       await vi.advanceTimersByTimeAsync(30_000);
@@ -209,6 +226,8 @@ describe('result-door deferred spill (WI-10004533)', () => {
         spillPath?: unknown;
         spillUri?: unknown;
         spillErrorCode?: unknown;
+        fallbackUri?: unknown;
+        fallbackStatus?: unknown;
         recoveryCursor?: Record<string, unknown>;
       } | undefined);
 
@@ -223,13 +242,20 @@ describe('result-door deferred spill (WI-10004533)', () => {
         uri: meta?.spillUri,
         args: { file_path: meta?.spillPath },
       });
+      expect(reserveFallback).toHaveBeenCalledWith(expect.objectContaining({
+        status: 'pending',
+        sourceUri: meta?.spillUri,
+        sourcePath: meta?.spillPath,
+      }));
+      expect(meta).toMatchObject({ fallbackUri: fallbackReference.uri, fallbackStatus: 'pending' });
       const body = JSON.parse(result.content.find((item) => item.type === 'text')?.text ?? '{}') as {
         incomplete?: { note?: string };
-        _projection?: { cursor?: Record<string, unknown>; next?: string };
+        _projection?: { cursor?: Record<string, unknown>; fallback?: Record<string, unknown>; next?: string };
       };
-      expect(body.incomplete?.note ?? body._projection?.next).toContain('still running');
+      expect(body.incomplete?.note ?? body._projection?.next).toContain('The original spill remains pending');
       expect(body._projection?.cursor).toMatchObject({ kind: 'pending-spill', uri: meta?.spillUri });
-      expect(body._projection?.next).toContain('Do NOT repeat');
+      expect(body._projection?.fallback).toMatchObject({ uri: fallbackReference.uri, state: 'pending' });
+      expect(body._projection?.next).toContain('Retry capability:read');
       expect(spillFiles()).toHaveLength(0);
 
       releaseWrite();
@@ -241,6 +267,7 @@ describe('result-door deferred spill (WI-10004533)', () => {
         returnedContextBytes: expect.any(Number),
         reason: expect.any(String),
         aggregateOutputEscape: false,
+        fallbackUri: fallbackReference.uri,
       });
       expect(spillFiles()).toHaveLength(1);
     } finally {
@@ -250,6 +277,51 @@ describe('result-door deferred spill (WI-10004533)', () => {
       vi.useRealTimers();
       warn.mockRestore();
     }
+  });
+
+  it('returns a result URI when immediate scratch persistence fails but the durable fallback reserves successfully', async () => {
+    const blocker = join(sandbox, 'not-a-dir');
+    writeFileSync(blocker, 'x');
+    process.env.PAPERCUSP_SCRATCH_ROOT = join(blocker, 'scratch');
+    const input = oversized();
+    const reference = {
+      id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      uri: 'papercusp://result/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      byteCount: Buffer.byteLength(JSON.stringify({ content: input.content })),
+      sha256: 'a'.repeat(64),
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      ownerId: 'owner-1',
+      audience: 'owner' as const,
+      mediaType: 'application/json' as const,
+    };
+    let captured: { payload: Buffer; sourceUri?: string; sourcePath?: string; status: 'pending' | 'failed' } | undefined;
+    const out = await applyResultDoorAsync(input, {
+      ...OPTS,
+      onScratchWriteFallback: async (details) => {
+        captured = details;
+        return reference;
+      },
+    });
+    const meta = out._meta?.resultDoor as {
+      spillFailed?: boolean;
+      fallbackUri?: string;
+      fallbackStatus?: string;
+      recoveryCursor?: Record<string, unknown>;
+    };
+    expect(captured?.status).toBe('failed');
+    expect(captured?.payload.toString('utf8')).toBe(JSON.stringify({ content: input.content }));
+    expect(meta).toMatchObject({
+      spillFailed: true,
+      fallbackUri: reference.uri,
+      fallbackStatus: 'failed',
+      recoveryCursor: { kind: 'overflow-fallback', uri: reference.uri },
+    });
+    const body = JSON.parse(out.content.find((item) => item.type === 'text')?.text ?? '{}') as {
+      _projection?: { cursor?: Record<string, unknown>; next?: string };
+    };
+    expect(body._projection?.cursor).toMatchObject({ kind: 'overflow-fallback', uri: reference.uri });
+    expect(body._projection?.next).toContain(reference.uri);
+    expect(spillFiles()).toHaveLength(0);
   });
 
   it('reports late spill failure while retaining its reserved URI and path', async () => {
@@ -265,6 +337,7 @@ describe('result-door deferred spill (WI-10004533)', () => {
       returnedContextBytes: number;
       reason: string;
       aggregateOutputEscape: boolean;
+      fallbackUri?: string;
       errorCode?: string;
     }) => void;
     const writeStarted = new Promise<void>((resolve) => { signalStarted = resolve; });
@@ -277,17 +350,29 @@ describe('result-door deferred spill (WI-10004533)', () => {
       returnedContextBytes: number;
       reason: string;
       aggregateOutputEscape: boolean;
+      fallbackUri?: string;
       errorCode?: string;
     }>((resolve) => { resolveLateSettlement = resolve; });
     const writer = vi.spyOn(scratchGc, 'writeWithScratchQuota').mockImplementation((_opts, write) => {
       signalStarted();
       return stalledWrite.then(write);
     });
+    const fallbackReference = {
+      id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+      uri: 'papercusp://result/cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+      byteCount: 42,
+      sha256: 'c'.repeat(64),
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      ownerId: 'owner-1',
+      audience: 'owner' as const,
+      mediaType: 'application/json' as const,
+    };
     let resultPromise: Promise<DoorableResult> | undefined;
     try {
       resultPromise = applyResultDoorAsync(oversized(), {
         ...OPTS,
         onLateScratchWriteSettled: resolveLateSettlement,
+        onScratchWriteFallback: async () => fallbackReference,
       });
       await writeStarted;
       await vi.advanceTimersByTimeAsync(30_000);
@@ -303,6 +388,7 @@ describe('result-door deferred spill (WI-10004533)', () => {
         spillPath: meta?.spillPath,
         spillUri: meta?.spillUri,
         errorCode: 'EIO',
+        fallbackUri: fallbackReference.uri,
       });
       expect(spillFiles()).toHaveLength(0);
     } finally {

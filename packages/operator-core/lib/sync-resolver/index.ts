@@ -8506,9 +8506,10 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // (typically >90s apart), so each invalidation delivers promptly; any miss falls
   // back to the @papercusp/sync 180s drift-repair tick.
   'network.hiveDirectory': {
-    resolve: async () => {
+    argsSchema: z.object({ includeLocalViews: z.boolean().optional() }),
+    resolve: async (args) => {
       const { buildHiveDirectoryRows } = await import('../discovery-hive-rows');
-      return buildHiveDirectoryRows({ includeExpired: false });
+      return buildHiveDirectoryRows({ includeExpired: false, includeLocalViews: (args as { includeLocalViews?: boolean }).includeLocalViews === true });
     },
   },
 

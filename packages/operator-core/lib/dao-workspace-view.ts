@@ -13,6 +13,7 @@ export interface DaoWorkspaceDeps {
   projects(workspaceId: string): Promise<ProjectEntry[]>;
   hive(workspaceId: string, slug: string): Promise<HiveRecord | null>;
   members(workspaceId: string, slug: string): Promise<HiveMemberRecord[]>;
+  policyScope(workspaceId: string, localSlug: string): Promise<string>;
   policy(workspaceId: string, slug: string): Promise<ResolvedHivePolicy | null>;
   governance(workspaceId: string, slug: string): Promise<PlanAdmissionGovernanceSnapshot>;
   plans(workspaceId: string, slug: string): Promise<PlanIndexRow[]>;
@@ -23,6 +24,7 @@ const stores: DaoWorkspaceDeps = {
   hive: async (workspace, slug) => (await import('./hive-store')).getHiveBySlug(workspace, slug),
   // Resolve the owner-authored federated scope; a joiner's local slug can differ.
   members: async (workspace, slug) => (await import('./federated-pot-scope')).listHiveMembersForLocalPot(workspace, slug),
+  policyScope: async (workspace, slug) => (await import('./federated-pot-scope')).resolveFederatedPotScope(workspace, slug),
   policy: async (workspace, slug) => (await import('./hive-policy-store')).getHivePolicy(workspace, slug),
   governance: async (workspaceId, potHomeSlug) => (await import('./agent-tools/plans/plan-admission-governance-store')).readPlanAdmissionGovernanceSnapshot({ workspaceId, potHomeSlug }),
   plans: async (workspaceId, harnessSlug) => (await import('./agent-tools/plans/source')).listPlanIndexRows({ workspaceId, harnessSlug, includeArchived: false, heavyFields: true }),
@@ -50,7 +52,7 @@ export async function buildDaoWorkspaceView(
   const [members, policy, governance, work] = await Promise.all([
     read(async () => (await deps.members(workspaceId, slug)).map(member => ({ id: member.githubUserId, username: member.githubUsername, displayName: member.displayName, bindingStatus: member.bindingStatus, devices: member.deviceAttestations.length }))),
     read(async () => {
-      const signed = await deps.policy(workspaceId, slug);
+      const signed = await deps.policy(workspaceId, await deps.policyScope(workspaceId, slug));
       return { version: signed?.policyVersion ?? 0, membership: signed?.policy.membership ?? null, admission: signed?.policy.governance?.planAdmission ?? null, delegations: signed?.policy.governance?.signingAuthority?.delegations ?? [] };
     }),
     read(async () => {

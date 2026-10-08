@@ -242,6 +242,74 @@ describe('EI-21832562420831737 — a pinned cut owns its dependencies', () => {
       expect(readFileSync(join(t, 'snap', '.papercusp-pinned-deps'), 'utf8')).toContain('mode=copy');
     });
 
+    it('refuses an unaffordable independent copy before touching retained progress, then releases its lease', () => {
+      const t = fixture();
+      const donor = join(t, 'donor');
+      const snap = join(t, 'snap');
+      const retained = join(snap, 'node_modules.pinned-deps-tmp/p/kept.js');
+      const lock = join(t, 'copy.lock');
+      write(join(donor, 'node_modules/p/index.js'), 'new source bytes');
+      write(retained, 'forensic progress');
+      write(join(snap, '.papercusp-pinned-deps'), 'stale receipt');
+      const env = { DEPENDENCY_GENERATION_COPY_LOCK_FILE: lock,
+        DEPENDENCY_GENERATION_COPY_LOCK_TIMEOUT_SEC: '0', DEPENDENCY_GENERATION_COPY_LOCK_MAX_SEC: '0',
+        DEPENDENCY_GENERATION_HEADROOM_RESERVE_PCT: '0', DEPENDENCY_GENERATION_HEADROOM_MARGIN_BYTES: '0',
+        DEPENDENCY_GENERATION_HEADROOM_TOTAL_BYTES: '1048576', DEPENDENCY_GENERATION_HEADROOM_AVAIL_BYTES: '1' };
+      const refused = runLib(['snapshot', donor, snap, 'copy'], env);
+      expect(refused.code).toBe(77);
+      expect(refused.err).toContain('DEPENDENCY_GENERATION_HEADROOM_INSUFFICIENT');
+      expect(refused.err).toContain('size=measured');
+      expect(readFileSync(retained, 'utf8')).toBe('forensic progress');
+      expect(existsSync(join(snap, 'node_modules'))).toBe(false);
+      expect(existsSync(join(snap, '.papercusp-pinned-deps'))).toBe(false);
+      const admitted = runLib(['snapshot', donor, snap, 'copy'], {
+        ...env, DEPENDENCY_GENERATION_HEADROOM_AVAIL_BYTES: '1048576',
+      });
+      expect(admitted.code, admitted.err).toBe(0);
+      expect(readFileSync(join(snap, 'node_modules/p/index.js'), 'utf8')).toBe('new source bytes');
+      expect(existsSync(join(snap, '.papercusp-pinned-deps'))).toBe(true);
+    });
+
+    it.runIf(process.platform === 'linux')('independent snapshots honor the shared physical-copy lease', () => {
+      const t = fixture();
+      const donor = join(t, 'donor');
+      const snap = join(t, 'snap');
+      const lock = join(t, 'copy.lock');
+      write(join(donor, 'node_modules/p/index.js'), 'source');
+      const r = spawnSync('flock', [lock, 'bash', HELPER_PATH, 'snapshot', donor, snap, 'copy'], {
+        encoding: 'utf8', timeout: 10_000,
+        env: { ...process.env, DEPENDENCY_GENERATION_COPY_LOCK_FILE: lock,
+          DEPENDENCY_GENERATION_COPY_LOCK_TIMEOUT_SEC: '0', DEPENDENCY_GENERATION_COPY_LOCK_MAX_SEC: '0' },
+      });
+      expect(r.status, r.stderr).toBe(76);
+      expect(r.stderr).toContain('DEPENDENCY_GENERATION_LOCK_TIMEOUT');
+      expect(existsSync(snap)).toBe(false);
+      expect(runLib(['snapshot', donor, snap, 'copy'], {
+        DEPENDENCY_GENERATION_COPY_LOCK_FILE: lock,
+        DEPENDENCY_GENERATION_COPY_LOCK_TIMEOUT_SEC: '0', DEPENDENCY_GENERATION_COPY_LOCK_MAX_SEC: '0',
+      }).code).toBe(0);
+    });
+
+    it('refuses unmeasured destination capacity while preserving forensic staging', () => {
+      const t = fixture();
+      const donor = join(t, 'donor');
+      const snap = join(t, 'snap');
+      const retained = join(snap, 'node_modules.pinned-deps-tmp/p/kept.js');
+      write(join(donor, 'node_modules/p/index.js'), 'source');
+      write(retained, 'forensic progress');
+      const shim = join(t, 'bin/stat');
+      write(shim, '#!/usr/bin/env bash\nexit 1\n');
+      chmodSync(shim, 0o755);
+      const refused = runLib(['snapshot', donor, snap, 'copy'], {
+        PATH: `${dirname(shim)}:${process.env.PATH}`,
+        DEPENDENCY_GENERATION_HEADROOM_AVAIL_BYTES: '', DEPENDENCY_GENERATION_HEADROOM_TOTAL_BYTES: '',
+      });
+      expect(refused.code).toBe(77);
+      expect(refused.err).toContain('DEPENDENCY_GENERATION_HEADROOM_UNMEASURED');
+      expect(readFileSync(retained, 'utf8')).toBe('forensic progress');
+      expect(existsSync(join(snap, '.papercusp-pinned-deps'))).toBe(false);
+    });
+
     it('retains an interrupted copy, invalidates the old stamp and reuses verified completed files', () => {
       const t = fixture();
       const donor = join(t, 'donor');

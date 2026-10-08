@@ -191,6 +191,41 @@ describe('producerSilenceVerdict', () => {
     }));
     expect(producerSilenceNote(v)).toBe('checked 1 producer×pot (producing=1); unprobed loops 1');
   });
+
+  describe('su-ideate dead passes (plan D-010)', () => {
+    const circuit = { harnessSlug: 'email', attempts: 3, lastPassMs: null, lastLaunchMs: NOW - 3 * H };
+
+    it('raises an open circuit as a major bug signal scoped to its harness', () => {
+      const v = producerSilenceVerdict(facts({ suIdeateCircuits: { harnessesChecked: 2, open: [circuit] } }));
+      expect(v.signals).toEqual([
+        expect.objectContaining({
+          source: 'producer-silence',
+          key: 'producer-silence:su-ideate-circuit:email',
+          severity: 'major',
+          kind: 'bug',
+          scope: 'harness:email',
+          findingClass: 'learning-slo:producer-silence',
+        }),
+      ]);
+      expect(v.signals[0].body).toContain('launched 3 pass(es)');
+      expect(v.signals[0].body).toContain('never recorded a pass');
+      expect(v.suIdeate).toEqual({ harnessesChecked: 2, openCircuits: ['email'] });
+      expect(producerSilenceNote(v)).toBe('checked 0 producer×pot (none); unprobed loops 0; su-ideate circuits open 1 of 2 launched harness(es)');
+    });
+
+    it('closed circuits raise nothing but still report coverage', () => {
+      const v = producerSilenceVerdict(facts({ suIdeateCircuits: { harnessesChecked: 4, open: [] } }));
+      expect(v.signals).toEqual([]);
+      expect(producerSilenceNote(v)).toContain('su-ideate circuits open 0 of 4 launched harness(es)');
+    });
+
+    it('a failed circuit read is unmeasured: no signal, and the note says so (never a quiet pass)', () => {
+      const v = producerSilenceVerdict(facts({ suIdeateCircuits: 'unmeasured' }));
+      expect(v.signals).toEqual([]);
+      expect(v.suIdeate).toBe('unmeasured');
+      expect(producerSilenceNote(v)).toContain('su-ideate circuits unmeasured');
+    });
+  });
 });
 
 describe('PRODUCER_SILENCE_PROBES', () => {

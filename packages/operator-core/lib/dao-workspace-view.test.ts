@@ -8,6 +8,7 @@ function dependencies(): DaoWorkspaceDeps {
     projects: vi.fn().mockResolvedValue([{ slug: 'local-renamed', title: 'Local DAO', harness_kind: 'hive', remote_hive: true }, { slug: 'project', title: 'Project', hive_slug: 'local-renamed' }]),
     hive: vi.fn().mockResolvedValue({ pubkeyBase64: 'verified-key' }),
     members: vi.fn().mockResolvedValue([{ githubUserId: 1, githubUsername: 'contributor', displayName: 'Contributor', bindingStatus: 'bound', deviceAttestations: [{ pubkey: 'public-key' }], revokedPubkeys: ['revoked'], workspaceId: 'w', potHomeSlug: 'owner-home' }]),
+    policyScope: vi.fn().mockResolvedValue('owner-home'),
     policy: vi.fn().mockResolvedValue(null),
     governance: vi.fn().mockResolvedValue({ potId: 'owner-home', events: [], integrityErrors: [], conflictedRoundIds: new Set() }),
     plans: vi.fn().mockResolvedValue([]),
@@ -54,5 +55,14 @@ describe('DAO workspace reader boundaries', () => {
     deps.governance = vi.fn().mockResolvedValue({ potId: 'owner-home', events: [], integrityErrors: ['invalid signature'], conflictedRoundIds: new Set(['round-a']) });
     const result = await buildDaoWorkspaceView('w', directory, deps);
     expect(result.governance).toEqual({ status: 'ready', value: { events: [], integrityErrors: ['invalid signature'], conflictedRoundIds: ['round-a'] } });
+  });
+  it('reads the owner policy rather than a different policy under a colliding local name', async () => {
+    const deps = dependencies();
+    deps.policy = vi.fn().mockImplementation(async (_workspace, slug) => ({ policyVersion: slug === 'owner-home' ? 42 : 7,
+      policy: { membership: slug === 'owner-home' ? 'allowlist' : 'open' } }));
+    const result = await buildDaoWorkspaceView('w', directory, deps);
+    expect(deps.policyScope).toHaveBeenCalledWith('w', 'local-renamed');
+    expect(deps.policy).toHaveBeenCalledWith('w', 'owner-home');
+    expect(result.policy).toMatchObject({ status: 'ready', value: { version: 42, membership: 'allowlist' } });
   });
 });

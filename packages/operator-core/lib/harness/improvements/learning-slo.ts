@@ -916,6 +916,9 @@ export async function producerSilenceCollector(
   if (facts.unmeasured && facts.unmeasured.size > 0) {
     throw new Error(`producer-silence: output read failed for ${[...facts.unmeasured].join(', ')} — not judged this tick`);
   }
+  if (facts.suIdeateCircuits === 'unmeasured') {
+    throw new Error('producer-silence: su-ideate circuit read failed — not judged this tick (plan D-010)');
+  }
   const verdict = ps.producerSilenceVerdict(facts, opts);
   return { signals: verdict.signals, note: ps.producerSilenceNote(verdict) };
 }

@@ -48,7 +48,13 @@ export type AgentObligationFamily =
    * wake so a leader loop cannot keep recording quiet wakes over an empty fleet;
    * clears when the governor holds the fleet, it reaches target, or it winds down.
    */
-  | 'fleet-staffing';
+  | 'fleet-staffing'
+  /**
+   * Goal-created work items left open and unassigned: past the stranded threshold,
+   * or stamped by a refused goal launch (goal-stranded-work.ts). Clears when every
+   * such item is claimed, dropped or finished.
+   */
+  | 'stranded-goal-work';
 export type AgentObligationStatus = 'due' | 'in-progress' | 'blocked' | 'satisfied' | 'not-applicable' | 'unknown';
 export type AgentObligationPriority = 'critical' | 'high' | 'normal' | 'low';
 export type AgentObligationFreshness = 'current' | 'stale' | 'unknown';

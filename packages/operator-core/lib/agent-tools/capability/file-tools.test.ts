@@ -319,7 +319,7 @@ describe('capability:read', () => {
     expect(Buffer.concat(recovered)).toEqual(original);
   });
 
-  it('accepts a result-door papercusp://scratch URI as a byte-page alias', async () => {
+  it('recovers a long single-line result-door papercusp://scratch URI through byte pages', async () => {
     const previousScratchRoot = process.env.PAPERCUSP_SCRATCH_ROOT;
     const scratchRoot = join(DIR, 'result-door-scratch');
     const uri = 'papercusp://scratch/test-workspace/work_items:get/77777777-8888-4999-8aaa-bbbbbbbbbbbb/spill.md';
@@ -330,21 +330,50 @@ describe('capability:read', () => {
       '77777777-8888-4999-8aaa-bbbbbbbbbbbb',
       'spill.md',
     );
-    const original = Buffer.from('spill header\nrecovered bytes\n', 'utf8');
+    const original = Buffer.from(JSON.stringify({ payload: 'x'.repeat(6_100) }), 'utf8');
     process.env.PAPERCUSP_SCRATCH_ROOT = scratchRoot;
     mkdirSync(dirname(file), { recursive: true });
     writeFileSync(file, original);
 
     try {
-      const r = (await readTool.handler!({ uri, byte_offset: 0, byte_limit: 512 }, ctx)) as {
+      const lineRead = (await readTool.handler!({ uri }, ctx)) as {
         content: Array<{ text: string }>;
         isError?: boolean;
       };
-      expect(r.isError).not.toBe(true);
-      const page = parse(r) as { ok: boolean; data: string; byte_length: number };
-      expect(page.ok).toBe(true);
-      expect(Buffer.from(page.data, 'base64')).toEqual(original);
-      expect(page.byte_length).toBe(original.length);
+      expect(lineRead.isError).not.toBe(true);
+      expect(lineRead.content[0].text).toContain('[line truncated]');
+
+      const recovered: Buffer[] = [];
+      let byteOffset = 0;
+      let eof = false;
+      while (!eof && recovered.length < 100) {
+        const r = (await readTool.handler!(
+          { uri, byte_offset: byteOffset, byte_limit: 997 },
+          ctx,
+        )) as { content: Array<{ text: string }>; isError?: boolean };
+        expect(r.isError).not.toBe(true);
+        const page = parse(r) as {
+          ok: boolean;
+          encoding: string;
+          data: string;
+          byte_length: number;
+          eof: boolean;
+          next_cursor: { args: { byte_offset: number } } | null;
+        };
+        expect(page.ok).toBe(true);
+        expect(page.encoding).toBe('base64');
+        const bytes = Buffer.from(page.data, 'base64');
+        expect(bytes.length).toBe(page.byte_length);
+        recovered.push(bytes);
+        eof = page.eof;
+        if (!eof) {
+          expect(page.next_cursor).not.toBeNull();
+          byteOffset = page.next_cursor!.args.byte_offset;
+        }
+      }
+
+      expect(eof).toBe(true);
+      expect(Buffer.concat(recovered)).toEqual(original);
     } finally {
       if (previousScratchRoot === undefined) delete process.env.PAPERCUSP_SCRATCH_ROOT;
       else process.env.PAPERCUSP_SCRATCH_ROOT = previousScratchRoot;

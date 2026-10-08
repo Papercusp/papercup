@@ -1,6 +1,9 @@
 import type { DaoWorkspaceView, DaoRead } from '@papercusp/operator-core/lib/dao-workspace-types';
 import RouteLink from '@/app/_components/RouteLink';
 import type { DaoSection } from './dao-navigation';
+import DaoGovernance from './DaoGovernance';
+import DaoPolicyEditor from './DaoPolicyEditor';
+import DaoFinance from './DaoFinance';
 
 function ReadState({ read }: { read: DaoRead<unknown> | undefined }) {
   return read?.status === 'error' ? <p role="alert">{read.message}</p> : null;
@@ -10,7 +13,7 @@ function record(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
-export default function DaoWorkspaceDetails({ section, view, loading, error }: { section: DaoSection; view: DaoWorkspaceView | null; loading: boolean; error: string }) {
+export default function DaoWorkspaceDetails({ section, view, loading, error, onChanged }: { section: DaoSection; view: DaoWorkspaceView | null; loading: boolean; error: string; onChanged?: () => void }) {
   if (loading) return <p role="status">Loading organization records…</p>;
   if (error) return <div className="dao-notice" role="alert">{error}</div>;
   if (!view || view.status === 'not-joined') return <section className="dao-card"><h2>Connect to this DAO</h2><p>Join its published projects to access organization records. Directory discovery alone does not grant membership or voting rights.</p></section>;
@@ -32,6 +35,8 @@ export default function DaoWorkspaceDetails({ section, view, loading, error }: {
   </section>;
 
   if (['proposals', 'vote', 'delegation', 'records'].includes(section)) return <div className="dao-overview-grid">
+    {section === 'delegation' ? <DaoPolicyEditor view={view} onChanged={onChanged} /> : null}
+    {section === 'proposals' || section === 'vote' ? <DaoGovernance key={view.directoryId} view={view} onChanged={onChanged} /> : null}
     <section className="dao-card dao-purpose"><h2>{section === 'delegation' ? 'Vote delegation policy' : 'Plan admission decisions'}</h2><ReadState read={view.governance} /><ReadState read={view.policy} />
       {governance?.integrityErrors.length ? <div role="alert" className="dao-notice">Some governance records could not be verified against the current policy. They cannot authorize decisions.<ul>{governance.integrityErrors.map((message, index) => <li key={index}>{message}</li>)}</ul></div> : null}
       {section === 'delegation' ? <>
@@ -63,22 +68,11 @@ export default function DaoWorkspaceDetails({ section, view, loading, error }: {
     {view.projects?.status === 'ready' && !projects.length ? <section className="dao-empty"><h2>No linked projects</h2><p>This organization has not linked project records in this workspace.</p></section> : null}
   </>;
 
-  if (section === 'settings') return <section className="dao-card"><h2>Organization configuration</h2><p>Local organization home: <code>{view.localHomeSlug}</code></p><p>Membership mode: {policyAvailable ? policy?.membership ?? 'not configured' : 'unavailable'}</p><p>Policy version: {policyAvailable ? policy?.version || 'not configured' : 'unavailable'}</p><ReadState read={view.policy} />
+  if (section === 'settings') return <><DaoPolicyEditor view={view} onChanged={onChanged} /><section className="dao-card"><h2>Organization configuration</h2><p>Local organization home: <code>{view.localHomeSlug}</code></p><p>Membership mode: {policyAvailable ? policy?.membership ?? 'not configured' : 'unavailable'}</p><p>Policy version: {policyAvailable ? policy?.version || 'not configured' : 'unavailable'}</p><ReadState read={view.policy} />
     <div className="dao-actions"><RouteLink className="dao-action" href={operations + '&tab=settings'}>Open organization settings</RouteLink><RouteLink className="dao-action" href="/dao">Prepare legal entity and governance</RouteLink></div>
-  </section>;
+  </section></>;
 
   if (section === 'marketplace') return <section className="dao-card"><h2>Organization capabilities</h2><p>Browse maintained apps, tools and capabilities. Purchases retain the existing organization membership, seat and payment checks.</p><RouteLink className="dao-action" href="/cupboard">Browse marketplace</RouteLink></section>;
 
-  const finance = {
-    treasury: ['Treasury accounts & approvals', 'A discovered DAO does not establish a bank account or on-chain balance. Treasury setup requires verified account references and its signer policy.'],
-    funding: ['Funding & contribution agreements', 'Prepare your organization’s funding basis and revenue agreement. An organization revenue split is separate from Papercusp’s identity allocation.'],
-    billing: ['Purchases, usage & refunds', 'Billing belongs to a verified commerce account. Its buying-organization identity must be connected explicitly; a discovery ID is not a commerce account ID.'],
-    ownership: ['Equity & vesting', 'Ownership uses the organization’s equity deployment and eligible holder record. Membership and contribution reputation do not create shares.'],
-    returns: ['Additional-share returns', 'Return allocations require the existing equity contract and holder approvals. A directory listing does not establish a distribution entitlement.'],
-  } as const;
-  const content = finance[section as keyof typeof finance];
-  return <section className="dao-card"><h2>{content?.[0] ?? 'Organization records'}</h2><p>{content?.[1] ?? 'Review recorded organization information.'}</p>
-    <div className="dao-notice">Finance and ownership records require an explicit verified account binding.</div>
-    <RouteLink className="dao-action" href="/dao">Open organization launch preparation</RouteLink>
-  </section>;
+  return <DaoFinance key={view.directoryId} view={view} section={section} onChanged={onChanged} />;
 }

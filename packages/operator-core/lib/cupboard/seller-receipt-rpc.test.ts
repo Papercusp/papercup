@@ -67,6 +67,7 @@ describe('seller-local monetary RPC', () => {
     const f = fixture(), result = await f.run() as { signature: string };
     expect(verifyUsageReceiptSignature({ ...f.receipt, meterQuantity: 1n, amountMicros: 250n, signature: result.signature }, f.pub('seller'))).toBe(true);
     expect(f.deps.sign.mock.calls.every(([ws, hive]) => ws === 'seller-local-workspace' && hive === 'seller')).toBe(true);
+    expect(f.deps.readParty).toHaveBeenCalledWith(undefined, expect.objectContaining({ authToken: 'seller-secret' }));
     expect(f.deps.readUsage).toHaveBeenCalledWith('channel', expect.objectContaining({ authToken: 'seller-secret' }));
     expect(JSON.stringify(result)).not.toContain('seller-secret');
   });

@@ -95,7 +95,7 @@ export function buildSellerReceiptRpcHandler(deps: SellerReceiptRpcDeps): Author
     if (!token?.trim()) throw new Error('seller-rpc-credential-required');
     const transport = { authToken: token, fetchImpl: ((url, init) => fetch(url,
       { ...init, signal: AbortSignal.timeout(10_000) })) as typeof fetch };
-    const party = await (deps.readParty ?? readHostedToolEntitlements)(grant.seller.principal, transport);
+    const party = await (deps.readParty ?? readHostedToolEntitlements)(undefined, transport);
     const channel = await (deps.readChannel ?? readHostedToolChannel)(grant.channelId, grant.payerPrincipal, transport, grant.payerPubkeyBase64);
     const offers = await (deps.readOffers ?? readHostedPerUseOffers)(transport);
     const offerRows = offers.ok ? offers.offers.filter(o => o.offerId === grant.offerId) : [];

@@ -26,10 +26,13 @@
  * SCOPE: the producer set is DERIVED from `LEARNING_PRODUCERS`, and the probe map is
  * typed `Record<LearningProducer, …>`, so a producer added there cannot compile
  * without a probe. Governor loops no probe claims (dream:*, miners, …) are reported
- * as `unprobed` in the tick note rather than silently passed. su-ideate is out of
- * scope by decision (plan D-007): its passes are demand-driven by the D-015 overdue
- * verdict, so a quiet pot correctly produces nothing and a time-based alarm would
- * misfire; its scheduler's own decision log covers it.
+ * as `unprobed` in the tick note rather than silently passed. su-ideate's OUTPUT AGE
+ * is out of scope by decision (plan D-007): its passes are demand-driven by the D-015
+ * overdue verdict, so a quiet pot correctly produces nothing and a time-based alarm
+ * would misfire. Its DEAD PASSES are in scope (plan D-010): a harness whose scheduled
+ * passes keep dying without recording opens the scheduler's circuit
+ * (`readSuIdeateOpenCircuits`), and an open circuit is raised here as a bug signal —
+ * before D-010 it was only a logged scheduler decision that nothing surfaced.
  *
  * READ FAILURES never become "silent": a probe whose read throws is reported
  * `unmeasured` and emits nothing, so a broken table read cannot file a false bug.
@@ -41,6 +44,7 @@ import type { LearningLoopRegistration } from '../../learning-governor/core';
 import { isDeliberatePause, pauseReviewOverdue, type PotLearningScope } from '../../learning/pot-gate/core';
 import type { WatchdogSignal } from './watchdog';
 import { pgTimestampToIsoOrNull } from '../../pg-timestamp';
+import type { SuIdeateOpenCircuit } from '../../scout/su-ideate-schedule';
 
 /** Key for a workspace-level producer's single output reading (not per pot). */
 export const ANY_POT = '*';
@@ -187,6 +191,11 @@ export interface ProducerSilenceFacts {
   hints?: ReadonlyMap<string, string>;
   /** Producers whose output read failed this tick — never judged silent. */
   unmeasured?: ReadonlySet<LearningProducer>;
+  /**
+   * su-ideate scheduler circuits (plan D-010). `'unmeasured'` = the read failed (never
+   * judged quiet); absent = not read (callers that predate D-010).
+   */
+  suIdeateCircuits?: { harnessesChecked: number; open: ReadonlyArray<SuIdeateOpenCircuit> } | 'unmeasured';
 }
 
 export type ProducerCheckDisposition =
@@ -203,6 +212,8 @@ export interface ProducerSilenceVerdict {
   checked: Array<{ producer: LearningProducer; pot: string; loopId: string; disposition: ProducerCheckDisposition }>;
   /** Enabled governor loops no probe claims — reported, never silently passed. */
   unprobedLoops: string[];
+  /** su-ideate circuit coverage (plan D-010); absent when the facts carried none. */
+  suIdeate?: { harnessesChecked: number; openCircuits: string[] } | 'unmeasured';
 }
 
 function fmtAge(ms: number): string {
@@ -311,7 +322,37 @@ export function producerSilenceVerdict(facts: ProducerSilenceFacts, opts: Produc
       if (loop.potSlug) potSwitch(loop.potSlug, loop.loopId);
     }
   }
-  return { signals, checked, unprobedLoops };
+
+  // su-ideate dead passes (plan D-010). The reader already dropped harnesses whose pot
+  // learning switch is off and circuits whose last attempt may still record.
+  let suIdeate: ProducerSilenceVerdict['suIdeate'];
+  const circuits = facts.suIdeateCircuits;
+  if (circuits === 'unmeasured') suIdeate = 'unmeasured';
+  else if (circuits) {
+    suIdeate = { harnessesChecked: circuits.harnessesChecked, openCircuits: circuits.open.map((c) => c.harnessSlug) };
+    for (const c of circuits.open) {
+      const since = c.lastPassMs === null
+        ? 'it has never recorded a pass'
+        : `its last recorded pass was ${fmtAge(facts.nowMs - c.lastPassMs)} ago (${new Date(c.lastPassMs).toISOString()})`;
+      signals.push({
+        source: 'producer-silence',
+        key: `producer-silence:su-ideate-circuit:${c.harnessSlug}`,
+        title: `su-ideate passes for harness ${c.harnessSlug} keep dying without recording (circuit open)`,
+        body:
+          `Watchdog signal (producer-silence): the su-ideate scheduler launched ${c.attempts} pass(es) for harness ` +
+          `"${c.harnessSlug}" since its last pass and none recorded one; ${since}, newest launch ` +
+          `${new Date(c.lastLaunchMs).toISOString()}. The circuit is open, so the scheduler launches nothing more for ` +
+          `this harness until a pass records (plan D-006 §4) — its ideation has stopped. Read the dead launches ` +
+          `(processes:list { launchedBy:'system:su-ideate-schedule', includeEnded:true }, label su-ideate-pass:${c.harnessSlug}:…) ` +
+          `and fix why a pass dies before blender:ideate-pass-record.`,
+        severity: 'major',
+        kind: 'bug',
+        scope: `harness:${c.harnessSlug}`,
+        findingClass: 'learning-slo:producer-silence',
+      });
+    }
+  }
+  return { signals, checked, unprobedLoops, ...(suIdeate === undefined ? {} : { suIdeate }) };
 }
 
 /** Read every fact for one workspace. Each producer's output read fails independently to `unmeasured`. */
@@ -345,6 +386,15 @@ export async function readProducerSilenceFacts(sql: Sql, workspaceId: string, no
     }),
   );
 
+  let suIdeateCircuits: ProducerSilenceFacts['suIdeateCircuits'];
+  try {
+    const { readSuIdeateOpenCircuits } = await import('../../scout/su-ideate-schedule');
+    suIdeateCircuits = await readSuIdeateOpenCircuits(workspaceId, nowMs);
+  } catch (err) {
+    suIdeateCircuits = 'unmeasured';
+    console.warn('[producer-silence] su-ideate circuit read failed — reported unmeasured:', err instanceof Error ? err.message : err);
+  }
+
   const switchedOff = new Map<string, string>();
   const hints = new Map<string, string>();
   for (const g of gymRows) {
@@ -363,6 +413,7 @@ export async function readProducerSilenceFacts(sql: Sql, workspaceId: string, no
     switchedOff,
     hints,
     unmeasured,
+    suIdeateCircuits,
   };
 }
 
@@ -371,5 +422,8 @@ export function producerSilenceNote(v: ProducerSilenceVerdict): string {
   const counts = new Map<string, number>();
   for (const c of v.checked) counts.set(c.disposition, (counts.get(c.disposition) ?? 0) + 1);
   const parts = [...counts].map(([d, n]) => `${d}=${n}`);
-  return `checked ${v.checked.length} producer×pot (${parts.join(', ') || 'none'}); unprobed loops ${v.unprobedLoops.length}`;
+  const base = `checked ${v.checked.length} producer×pot (${parts.join(', ') || 'none'}); unprobed loops ${v.unprobedLoops.length}`;
+  if (v.suIdeate === undefined) return base;
+  if (v.suIdeate === 'unmeasured') return `${base}; su-ideate circuits unmeasured`;
+  return `${base}; su-ideate circuits open ${v.suIdeate.openCircuits.length} of ${v.suIdeate.harnessesChecked} launched harness(es)`;
 }

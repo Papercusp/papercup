@@ -1,5 +1,10 @@
 /** Child of governance-http.integration.test.ts; never run against a shared operator. */
 import assert from 'node:assert/strict';
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { resolve, join } from 'node:path';
+import { readProcessIdentity } from '../lib/process-identity';
 import { getOrgPg } from '@papercusp/db-org';
 import { insertHiveIfAbsent } from '../lib/hive-store';
 import { loadHarnessRegistry, saveHarnessRegistry } from '../lib/harness-registry';
@@ -16,6 +21,22 @@ import { DEFAULT_PLAN_ADMISSION_POLICY } from '../lib/agent-tools/plans/plan-adm
 import type { FederatedGovernanceEvent, GovernanceEventBody } from '../lib/agent-tools/plans/governance-federation';
 import { createInMemoryMirrorLedger, createOnChainGovernanceSource, executeOnChainMirror,
   governanceActionHash, type BridgeAction, type MirrorPlan } from '../lib/p2p/onchain-governance-bridge';
+
+let host: ChildProcess | undefined;
+let hostIdentity: ReturnType<typeof readProcessIdentity>;
+async function stopHost() {
+  if (!host) return;
+  if (host.exitCode === null && host.signalCode === null) {
+    const closed = new Promise<void>(done => host!.once('close', () => done()));
+    host.kill('SIGTERM');
+    let timer: ReturnType<typeof setTimeout>;
+    await Promise.race([closed, new Promise<void>(done => { timer = setTimeout(done, 5_000); })]);
+    clearTimeout(timer!);
+    if (host.exitCode === null && host.signalCode === null) host.kill('SIGKILL');
+    await closed;
+  }
+  assert.notEqual(readProcessIdentity(host.pid!), hostIdentity, 'private HTTP host survived owned cleanup');
+}
 
 async function main() {
   const e = process.env;
@@ -60,15 +81,46 @@ async function main() {
     potHomeSlug: workspace, potId: workspace }, sql), { ...authority, delegations: undefined });
   console.log('GOVERNANCE_HTTP_PHASE private-plan-partition-and-authority-verified');
 
-  // The actual maintained host, with request-only profile and private registry/sidecar.
-  await import('../../../apps/operator/bin/hono-host');
-  const deadline = Date.now() + 60_000;
-  let healthy = false;
+  // Reuse the production plain-node bundle and maintained API-test pattern.
+  // The HTTP client has its own event loop; host bootstrap cannot run its timer.
+  const root = resolve(import.meta.dirname, '../../..');
+  const evidenceDir = e.GOVERNANCE_HTTP_EVIDENCE_DIR!;
+  assert.ok(evidenceDir && !evidenceDir.startsWith('/tmp/'));
+  const bundle = join(evidenceDir, 'hono-host.mjs');
+  console.log('GOVERNANCE_HTTP_PHASE bundle-start');
+  try {
+    const out = execFileSync('bash', [join(root, 'apps/operator/bin/bundle-host.sh'), 'bin/hono-host.ts', bundle],
+      { cwd: root, env: e, encoding: 'utf8', timeout: 240_000, maxBuffer: 4 * 1024 * 1024 });
+    writeFileSync(join(evidenceDir, 'build.log'), out);
+  } catch (error: any) {
+    writeFileSync(join(evidenceDir, 'build.log'), String(error.stdout ?? '') + String(error.stderr ?? ''));
+    throw error;
+  }
+  const bundleSha256 = createHash('sha256').update(readFileSync(bundle)).digest('hex');
+  console.log('GOVERNANCE_HTTP_PHASE bundle-ready ' + bundleSha256);
+  host = spawn(process.execPath, [bundle], { cwd: root, env: e, stdio: ['ignore', 'pipe', 'pipe'] });
+  host.stdout!.on('data', chunk => process.stdout.write(chunk));
+  host.stderr!.on('data', chunk => process.stderr.write(chunk));
+  hostIdentity = readProcessIdentity(host.pid!);
+  assert.ok(hostIdentity, 'private host kernel identity missing');
+  const readyStart = performance.now(), deadline = Date.now() + 90_000;
+  let healthy = false, lastProbe: Record<string, unknown> = {}, loggedAt = 0;
   while (Date.now() < deadline && !healthy) {
-    try { healthy = (await fetch(base + '/api/health', { signal: AbortSignal.timeout(2000) })).ok; } catch { /* boot convergence */ }
+    assert.equal(host.exitCode, null, 'private host exited before readiness');
+    assert.equal(host.signalCode, null, 'private host was signaled before readiness');
+    try {
+      const response = await fetch(base + '/api/health', { signal: AbortSignal.timeout(2000) });
+      lastProbe = { status: response.status, body: await response.text() };
+      healthy = response.ok;
+    } catch (error) { lastProbe = { error: error instanceof Error ? error.message : String(error) }; }
+    if (healthy || performance.now() - loggedAt >= 5_000) {
+      loggedAt = performance.now();
+      console.log('GOVERNANCE_HTTP_PHASE readiness ' + JSON.stringify({ elapsedMs: loggedAt - readyStart, ...lastProbe }));
+    }
     if (!healthy) await new Promise(done => setTimeout(done, 250));
   }
-  assert.ok(healthy, 'private operator never became ready');
+  assert.ok(healthy, 'private operator never became ready: ' + JSON.stringify(lastProbe));
+  assert.equal(JSON.parse(String(lastProbe.body)).service, 'papercusp-operator');
   const slug = 'signed-http-journey-2026-10-08';
   async function post(verb: string, body: Record<string, unknown>, origin = base) {
     const response = await fetch(`${base}/api/admin/plans/${verb}`, { method: 'POST',
@@ -164,10 +216,17 @@ async function main() {
   const pausedExecution = await executeOnChainMirror({ request, governance, ledger, submitter });
   assert.equal(pausedExecution.ok, false);
   assert.equal(submitted.length, 1);
+  const hostPid = host.pid;
+  await stopHost();
   console.log('GOVERNANCE_HTTP_RECEIPT ' + JSON.stringify({ pid: process.pid, workspace, base, planRevisionHash: revision,
+    hostPid, hostIdentity, hostStopped: true, bundleSha256,
     certificateHash: finalized.value.certificateHash, httpRatified: true, forgedRefused: true, foreignRefused: true,
     conflictRefused: true, lateBallotRefused: true, pausedRefused: true, exactActionSubmissions: submitted.length,
     replayed: replay.ok && replay.replayed, adapter: 'isolated deterministic receipt; no chain transaction' }));
 }
 
-main().then(() => process.exit(0), error => { console.error(error); process.exit(1); });
+main().then(() => process.exit(0), async error => {
+  console.error(error);
+  try { await stopHost(); } catch (cleanupError) { console.error(cleanupError); }
+  process.exit(1);
+});

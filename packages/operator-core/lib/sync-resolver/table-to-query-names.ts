@@ -92,6 +92,7 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   // inside the window left open harness lists stale).
   // network.board: a hive create/dissolve changes its tier 1–2 rows.
   'harness_shared.harness_registry': [
+    'network.hiveDirectory',
     'harnessProjects.lite',
     'harnessWorkspaces.byHarness',
     'network.board',
@@ -883,7 +884,8 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   // EI-19304902443341820: `p2p.devices` renders the pot's device/member roster straight off this
   // table but was not listed, so a device joining or leaving never pushed to it. Low-churn table,
   // so the added fan-out is negligible. Found by the resolver→table coverage guard.
-  'harness_shared.pot_members': ['dev.assignableMembers', 'p2p.devices'],
+  'harness_shared.pot_members': ['dev.assignableMembers', 'p2p.devices', 'network.hiveDirectory'],
+  'harness_shared.pot_policy': ['network.hiveDirectory'],
   // external-app-access P-010 (D-025): Settings → Remote access lists every phone, app key and
   // service key and shows the workspace switch. Migration 1264 attaches the shared change-notify
   // trigger to both tables, so every writer (not only the screen's routes) refreshes an open page.
@@ -901,6 +903,7 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   // pot's integration mode; its args are the HARNESS slug, not the pot home slug, so it full-busts
   // (only mounted settings sections re-read).
   'harness_shared.pot_settings': [
+    'network.hiveDirectory',
     'hive.steering',
     'learning.dream',
     { name: 'hive.beaconConsent', scope: potHomeSlugScope },

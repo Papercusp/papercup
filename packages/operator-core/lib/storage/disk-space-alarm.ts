@@ -115,6 +115,8 @@ export function watchedPaths(): string[] {
 
 export interface DiskSnapshot {
   path: string;
+  /** Other watched paths on the same device; retain bind-mount attribution roots. */
+  aliases?: string[];
   totalBytes: number;
   freeBytes: number;
   /** 0–1, freeBytes/totalBytes. */
@@ -444,12 +446,18 @@ export function formatDiskEscalation(
  * so correctness-critical writers can reuse the alarm's statfs interpretation. */
 export async function sampleDiskSnapshots(paths: string[] = watchedPaths()): Promise<DiskSnapshot[]> {
   const out: DiskSnapshot[] = [];
-  const seenDevices = new Set<string>();
+  const seenDevices = new Map<string, DiskSnapshot>();
   for (const path of paths) {
     try {
       const fsIdentity = await statPath(path);
       const device = String(fsIdentity.dev);
-      if (seenDevices.has(device)) continue;
+      const existing = seenDevices.get(device);
+      if (existing) {
+        if (path !== existing.path && !existing.aliases?.includes(path)) {
+          (existing.aliases ??= []).push(path);
+        }
+        continue;
+      }
       const fsst = await statfs(path);
       const bsize = Number(fsst.bsize) || 0;
       const blocks = Number(fsst.blocks) || 0;
@@ -467,7 +475,7 @@ export async function sampleDiskSnapshots(paths: string[] = watchedPaths()): Pro
         freeInodes: ffree,
         freeInodesPct: files > 0 ? ffree / files : 0,
       });
-      seenDevices.add(device);
+      seenDevices.set(device, out[out.length - 1]!);
     } catch (err) {
       // A single unreadable path must not sink the whole probe.
       console.warn(`[disk-space-alarm] stat/statfs(${path}) failed (non-fatal): ${(err as Error)?.message ?? String(err)}`);
@@ -522,8 +530,15 @@ export async function runDiskSpaceAlarmOnce(
   let attribution = '';
   if (breaches.length > 0) {
     try {
+      const breachedPaths = breaches.flatMap((breach) => [
+        ...(snapshots.find((snapshot) => snapshot.path === breach.path)?.aliases ?? []),
+        breach.path,
+      ]);
       const usage = await (deps.attributeUsage ?? (() => listDiskRootChildrenAsync({
-        roots: [join(homedir(), '.papercusp'), workspacesRoot()],
+        // A separate temporary/extra filesystem can breach while both known
+        // Papercusp roots are healthy. Inspect the breached paths first so the
+        // shared scan budget cannot expire before reaching their consumers.
+        roots: [...new Set([...breachedPaths, join(homedir(), '.papercusp'), workspacesRoot()])],
         budget: { deadlineMs: Date.now() + 2_000 }, maxChildren: 1_000, followSymlinks: false,
       })))();
       const consumers = [...usage.entries].sort((a, b) => b.sizeBytes - a.sizeBytes).slice(0, 5);

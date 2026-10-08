@@ -95,6 +95,7 @@ describe('queryNamesForTriggerEvent', () => {
     // 👑 Queen tab's hive.steering query — the half pot:set-steering's explicit
     // notifySyncInvalidate does NOT cover (a remote write never runs that handler).
     expect(queryNamesForTriggerEvent('harness_shared.pot_settings.changed')).toEqual([
+      'network.hiveDirectory',
       'hive.steering',
       'learning.dream',
       'hive.beaconConsent',
@@ -108,11 +109,16 @@ describe('queryNamesForTriggerEvent', () => {
         harness_slug: 'acme-hive',
       }),
     ).toEqual([
+      'network.hiveDirectory',
       'hive.steering',
       'learning.dream',
       { name: 'hive.beaconConsent', args: { potId: 'acme-hive' } },
       'potIntegration.settings',
     ]);
+  });
+  it('refreshes DAO identity, membership, governance and policy readers through the existing directory subscription', () => {
+    for (const table of ['harness_registry', 'pot_members', 'pot_policy', 'pot_settings'])
+      expect(queryNamesForTriggerEvent('harness_shared.' + table + '.changed')).toContain('network.hiveDirectory');
   });
 
   it('maps harness_plans → the schedule queries (data-sync-push-completion P-002)', () => {

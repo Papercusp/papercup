@@ -157,7 +157,7 @@ describe('current-build execution route contract', () => {
     expect(probeResult.trace.phases).toContainEqual(expect.objectContaining({
       name: 'readInbox-derive', status: 'fulfilled', elapsedMs: expect.any(Number),
     }));
-    expect(probeResult.trace.phases.map(({ name }) => name)).toEqual(expect.arrayContaining([
+    expect(probeResult.trace.phases.map(({ name }: { name: string }) => name)).toEqual(expect.arrayContaining([
       'resolve-actor-identity',
       'drain-user-mailbox',
     ]));

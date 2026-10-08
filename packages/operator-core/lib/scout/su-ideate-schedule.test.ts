@@ -8,7 +8,9 @@ import {
   buildSuIdeatePassBrief,
   harnessFromPassLabel,
   nextSuIdeateLens,
+  readSuIdeateOpenCircuits,
   runSuIdeateSchedule,
+  suIdeateAttemptsSinceLastPass,
   SU_IDEATE_MAX_ATTEMPTS,
   SU_IDEATE_PASS_STALE_MS,
   type SuIdeateLaunchRecord,
@@ -195,6 +197,16 @@ describe('su-ideate schedule — cost and liveness bounds (D-006)', () => {
     expect(countObservationsSince).not.toHaveBeenCalled();
   });
 
+  it('counts attempts only after the last recorded pass, for that harness alone', () => {
+    const launches: SuIdeateLaunchRecord[] = [
+      { harnessSlug: 'email', startedAtMs: NOW - 10 * HOUR, live: false }, // before the pass
+      { harnessSlug: 'email', startedAtMs: NOW - 3 * HOUR, live: false },
+      { harnessSlug: 'portal', startedAtMs: NOW - 2 * HOUR, live: false },
+    ];
+    expect(suIdeateAttemptsSinceLastPass(launches, 'email', NOW - 5 * HOUR)).toHaveLength(1);
+    expect(suIdeateAttemptsSinceLastPass(launches, 'email', null)).toHaveLength(2);
+  });
+
   it('a refused launch ends the tick with the error, without trying the next harness', async () => {
     const { deps, launch } = makeDeps({
       email: { lastPassMs: null, observations: 50 },
@@ -207,5 +219,53 @@ describe('su-ideate schedule — cost and liveness bounds (D-006)', () => {
     expect(out.decisions).toEqual([
       expect.objectContaining({ harnessSlug: 'email', disposition: 'launch-failed', error: 'governor refused admission' }),
     ]);
+  });
+});
+
+describe('su-ideate open circuits — the dead-pass alarm feed (plan D-010)', () => {
+  const dead = (harnessSlug: string, n: number, newestAgoH = 3, live = false): SuIdeateLaunchRecord[] =>
+    Array.from({ length: n }, (_, i) => ({ harnessSlug, startedAtMs: NOW - (newestAgoH + i) * HOUR, live }));
+
+  it('reports a harness whose max scheduled passes since its last pass all ended without recording', async () => {
+    const { deps } = makeDeps(
+      { email: { lastPassMs: NOW - 40 * HOUR }, portal: { lastPassMs: NOW - HOUR } },
+      [...dead('email', SU_IDEATE_MAX_ATTEMPTS), ...dead('portal', 1)],
+    );
+    const out = await readSuIdeateOpenCircuits('ws', NOW, deps);
+    expect(out).toEqual({
+      harnessesChecked: 2,
+      open: [{ harnessSlug: 'email', attempts: SU_IDEATE_MAX_ATTEMPTS, lastPassMs: NOW - 40 * HOUR, lastLaunchMs: NOW - 3 * HOUR }],
+    });
+  });
+
+  it('agrees with the scheduler: the harness it reports is exactly the one the tick skips as attempts-exhausted', async () => {
+    const launches = dead('email', SU_IDEATE_MAX_ATTEMPTS);
+    const { deps } = makeDeps({ email: { lastPassMs: null, observations: 50 } }, launches);
+    const [open, tick] = await Promise.all([
+      readSuIdeateOpenCircuits('ws', NOW, deps),
+      runSuIdeateSchedule({ workspaceId: 'ws', nowMs: NOW }, deps),
+    ]);
+    expect(open.open.map((c) => c.harnessSlug)).toEqual(['email']);
+    expect(tick.decisions[0]).toMatchObject({ harnessSlug: 'email', disposition: 'attempts-exhausted' });
+  });
+
+  it('is not open while the newest attempt is live and fresh (it may still record)', async () => {
+    const launches = [{ harnessSlug: 'email', startedAtMs: NOW - HOUR, live: true }, ...dead('email', SU_IDEATE_MAX_ATTEMPTS - 1)];
+    const { deps } = makeDeps({ email: { lastPassMs: null } }, launches);
+    expect((await readSuIdeateOpenCircuits('ws', NOW, deps)).open).toEqual([]);
+    // …but a live attempt older than the stale window no longer defers the alarm.
+    const stale = [{ harnessSlug: 'email', startedAtMs: NOW - SU_IDEATE_PASS_STALE_MS - HOUR, live: true }, ...dead('email', SU_IDEATE_MAX_ATTEMPTS - 1)];
+    const { deps: staleDeps } = makeDeps({ email: { lastPassMs: null } }, stale);
+    expect((await readSuIdeateOpenCircuits('ws', NOW, staleDeps)).open.map((c) => c.harnessSlug)).toEqual(['email']);
+  });
+
+  it('a harness whose pot learning switch is off is deliberate silence, not an open circuit', async () => {
+    const { deps } = makeDeps({ email: { lastPassMs: null, enabled: false } }, dead('email', SU_IDEATE_MAX_ATTEMPTS));
+    expect(await readSuIdeateOpenCircuits('ws', NOW, deps)).toEqual({ harnessesChecked: 1, open: [] });
+  });
+
+  it('launches before the last recorded pass do not count toward the circuit', async () => {
+    const { deps } = makeDeps({ email: { lastPassMs: NOW - 2 * HOUR } }, dead('email', SU_IDEATE_MAX_ATTEMPTS, 3));
+    expect((await readSuIdeateOpenCircuits('ws', NOW, deps)).open).toEqual([]);
   });
 });

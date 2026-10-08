@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { useState } from 'react';
 import type { DaoDirectoryEntry } from './dao-navigation';
 import DaoWorkspace from './DaoWorkspace';
@@ -10,7 +10,9 @@ let queryError: unknown = null;
 let initialDao = '';
 let initialSection = 'directory';
 const invalidate = vi.fn();
-vi.mock('@papercusp/sync', () => ({ useSyncQuery: () => ({ data, error: queryError, invalidate }) }));
+let busListener: ((event: { name: string }) => void) | undefined;
+vi.mock('@papercusp/sync', () => ({ useSyncQuery: () => ({ data, error: queryError, invalidate }),
+  onSyncBusEvent: (listener: typeof busListener) => { busListener = listener; return () => { busListener = undefined; }; } }));
 vi.mock('nuqs', () => ({
   parseAsString: { withDefault: () => ({}) },
   useQueryState: (key: string) => useState(key === 'dao' ? initialDao : initialSection),
@@ -103,5 +105,17 @@ describe('DAO Workbench journeys', () => {
     render(<DaoWorkspace />);
     expect((await screen.findByRole('alert')).textContent).toContain('Unable to read this organization');
     expect(screen.queryByText('Admitted contributors')).toBeNull();
+  });
+  it('refreshes bound records on maintained push events without leaving the DAO', async () => {
+    initialDao = community.potId; initialSection = 'members';
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ workspace: { directoryId: community.potId,
+      localHomeSlug: 'renamed-home', status: 'connected', members: { status: 'ready', value: [] } } }) });
+    vi.stubGlobal('fetch', fetchMock);
+    render(<DaoWorkspace />);
+    await screen.findByText('No admitted contributor records are available.');
+    act(() => { busListener?.({ name: 'plans.list' }); });
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    expect((screen.getByLabelText('Choose a DAO') as HTMLSelectElement).value).toBe(community.potId);
+    expect(screen.queryByText('Loading organization records…')).toBeNull();
   });
 });

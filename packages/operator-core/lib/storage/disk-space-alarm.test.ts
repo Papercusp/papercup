@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { tmpdir } from 'node:os';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
+import { listDiskRootChildrenAsync } from './disk';
 vi.mock('./disk', async (importOriginal) => ({
   ...await importOriginal<typeof import('./disk')>(),
   listDiskRootChildrenAsync: vi.fn(async () => ({ entries: [], truncated: false })),
@@ -257,6 +258,36 @@ describe('formatDiskAlarmToast', () => {
 });
 
 describe('runDiskSpaceAlarmOnce', () => {
+  it('inspects breached temporary and extra paths before known roots and reports their consumers', async () => {
+    const retained = join(tmpdir(), 'retained-source-evidence');
+    const scan = vi.mocked(listDiskRootChildrenAsync);
+    scan.mockClear();
+    scan.mockImplementationOnce(async (options) => ({
+      entries: options?.roots?.[0] === tmpdir()
+        ? [{ path: retained, mtimeMs: 0, sizeBytes: 3 * GIB }]
+        : [],
+      truncated: true,
+    }));
+    const emitToast = vi.fn(async (_t: { description: string }) => {});
+    const escalate = vi.fn(async (_t: { body: string }) => {});
+    await runDiskSpaceAlarmOnce({
+      sample: async () => [
+        // The sampler deduplicates the /tmp bind mount against /mnt/data.
+        // Attribution must still reach that narrower alias before a broad scan.
+        snap({ path: '/mnt/data', aliases: [tmpdir()], freeBytes: 0, freePct: 0 }),
+        snap({ path: '/extra-volume', freeBytes: 0, freePct: 0 }),
+        snap(),
+      ],
+      emitToast, escalate, recentlyEscalated: async () => false,
+    });
+    expect(scan).toHaveBeenCalledOnce();
+    expect(scan.mock.calls[0]?.[0]?.roots?.slice(0, 3)).toEqual([tmpdir(), '/mnt/data', '/extra-volume']);
+    expect(scan.mock.calls[0]?.[0]?.followSymlinks).toBe(false);
+    expect(emitToast.mock.calls[0]?.[0].description).toContain(retained);
+    expect(emitToast.mock.calls[0]?.[0].description).toContain('partial scan');
+    expect(escalate.mock.calls[0]?.[0].body).toContain(retained);
+  });
+
   it('does not scan a healthy disk; labels partial and unavailable attribution', async () => {
     const attributeUsage = vi.fn(async () => ({ entries: [{ path: '/large-store', mtimeMs: 0, sizeBytes: GIB }], truncated: true }));
     const emitToast = vi.fn(async (_t: { description: string }) => {});
@@ -473,6 +504,7 @@ describe('watchedPaths', () => {
     try {
       const snapshots = await sampleDiskSnapshots([root, nested]);
       expect(snapshots.map((snapshot) => snapshot.path)).toEqual([root]);
+      expect(snapshots[0]?.aliases).toEqual([nested]);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

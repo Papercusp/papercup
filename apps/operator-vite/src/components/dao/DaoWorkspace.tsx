@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { DaoWorkspaceView } from '@papercusp/operator-core/lib/dao-workspace-types';
 import { parseAsString, useQueryState } from 'nuqs';
-import { useSyncQuery } from '@papercusp/sync';
+import { onSyncBusEvent, useSyncQuery } from '@papercusp/sync';
 import RouteLink from '@/app/_components/RouteLink';
 import { DAO_SECTIONS, daoSection, filterDaos, type DaoDirectoryEntry } from './dao-navigation';
 import DaoWorkspaceDetails from './DaoWorkspaceDetails';
@@ -10,7 +10,7 @@ import './dao-workspace.css';
 export default function DaoWorkspace() {
   const [selectedDao, setSelectedDao] = useQueryState('dao', parseAsString.withDefault(''));
   const [selectedSection, setSelectedSection] = useQueryState('daoSection', parseAsString.withDefault('directory'));
-  const { data, error, invalidate } = useSyncQuery({ queryName: 'network.hiveDirectory' });
+  const { data, error, invalidate } = useSyncQuery({ queryName: 'network.hiveDirectory', args: { includeLocalViews: true } });
   const rows = (data as DaoDirectoryEntry[] | undefined) ?? [];
   const sectionId = daoSection(selectedSection);
   const section = DAO_SECTIONS.find(value => value.id === sectionId)!;
@@ -23,19 +23,26 @@ export default function DaoWorkspace() {
   const [workspace, setWorkspace] = useState<DaoWorkspaceView | null>(null);
   const [workspaceLoading, setWorkspaceLoading] = useState(false);
   const [workspaceError, setWorkspaceError] = useState('');
+  const loadedDao = useRef('');
   const filtered = useMemo(() => filterDaos(rows, query), [rows, query]);
+  useEffect(() => onSyncBusEvent(event => {
+    if (selectedDao && (event.name.startsWith('plans.') || ['network.hiveDirectory', 'hive.overrides', 'hive.steering', 'dev.assignableMembers', 'harnessProjects.lite'].includes(event.name)))
+      setRefreshVersion(value => value + 1);
+  }), [selectedDao]);
 
   useEffect(() => {
-    setWorkspace(null); setWorkspaceError('');
+    const initialRead = loadedDao.current !== selectedDao;
+    if (initialRead) setWorkspace(null);
+    setWorkspaceError('');
     if (!selectedDao) { setWorkspaceLoading(false); return; }
     const controller = new AbortController();
-    setWorkspaceLoading(true);
+    if (initialRead) setWorkspaceLoading(true);
     void (async () => {
       try {
-        const response = await fetch('/api/discovery/pots?potId=' + encodeURIComponent(selectedDao), { signal: controller.signal });
+        const response = await fetch('/api/discovery/pots?potId=' + encodeURIComponent(selectedDao) + '&includeLocalViews=true', { signal: controller.signal });
         const result = await response.json();
         if (!response.ok || !result.workspace || result.workspace.directoryId !== selectedDao) throw new Error('Unable to read this organization’s records. Refresh to retry.');
-        if (!controller.signal.aborted) setWorkspace(result.workspace);
+        if (!controller.signal.aborted) { loadedDao.current = selectedDao; setWorkspace(result.workspace); }
       } catch (cause) {
         if (!controller.signal.aborted) setWorkspaceError(cause instanceof Error ? cause.message : 'Organization records are unavailable.');
       } finally {
@@ -108,7 +115,7 @@ export default function DaoWorkspace() {
           <label className="dao-search">Search organizations<input type="search" value={query} onChange={event => setQuery(event.target.value)} placeholder="Name, purpose or founder" /></label>
           <div className="dao-directory">
             {filtered.map(row => <article className="dao-card" key={row.potId}>
-              <div className="dao-card-heading"><span className="dao-avatar" aria-hidden="true">{row.title.slice(0, 1)}</span><span className="dao-badge">{row.visibility === 'invite' ? 'Invite only' : 'Public'}</span></div>
+              <div className="dao-card-heading"><span className="dao-avatar" aria-hidden="true">{row.title.slice(0, 1)}</span><span className="dao-badge">{row.source === 'local' ? 'Local workspace' : row.visibility === 'invite' ? 'Invite only' : 'Public'}</span></div>
               <h2>{row.title}</h2><p>{row.description || 'No organization description published yet.'}</p>
               <dl><div><dt>Published by</dt><dd>{row.owner}</dd></div><div><dt>Linked projects</dt><dd>{row.memberCount}</dd></div></dl>
               <button type="button" className="dao-action" onClick={() => { void choose(row); }}>Open workspace →</button>
@@ -124,7 +131,7 @@ export default function DaoWorkspace() {
             <label className="dao-check"><input type="checkbox" checked={acceptedTerms} onChange={event => setAcceptedTerms(event.target.checked)} /> I want to connect to this organization’s published projects.</label>
             {!selected.memberLinks.length ? <p>This publisher has not provided the project links required to join.</p> : null}
             <button type="button" className="dao-action" disabled={!acceptedTerms || joining || !selected.memberLinks.length} onClick={() => { void join(); }}>{joining ? 'Joining…' : 'Join organization'}</button>
-          </section> : <DaoWorkspaceDetails section={sectionId} view={workspace?.directoryId === selectedDao ? workspace : null} loading={workspaceLoading} error={workspaceError} />}
+          </section> : <DaoWorkspaceDetails section={sectionId} view={workspace?.directoryId === selectedDao ? workspace : null} loading={workspaceLoading} error={workspaceError} onChanged={() => setRefreshVersion(value => value + 1)} />}
           <aside className="dao-evidence"><h2>Decision boundaries</h2><p>Member plan votes authorize plan admission. Treasury transactions require their signer approvals. Ownership votes use the equity governance contract.</p><p>Directory entries describe discovered organizations; they do not establish legal formation or financial assets.</p></aside>
         </>}
       </main>

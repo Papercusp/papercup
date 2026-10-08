@@ -1450,7 +1450,8 @@
           "id": "e2e",
           "label": "E2E (all specs)",
           "globs": [
-            "apps/operator/e2e/*.spec.ts"
+            "apps/operator/e2e/*.spec.ts",
+            "apps/operator/e2e/*.spec.mts"
           ]
         },
         {

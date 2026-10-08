@@ -32,7 +32,7 @@ export default defineTool({
       .catch(() => {});
     const url = new URL(req.url);
     const includeExpired = url.searchParams.get('includeExpired') === 'true';
-    const rows = await buildHiveDirectoryRows({ includeExpired });
+    const rows = await buildHiveDirectoryRows({ includeExpired, includeLocalViews: url.searchParams.get('includeLocalViews') === 'true' });
     const potId = url.searchParams.get('potId');
     if (potId) {
       const selected = rows.find(row => row.potId === potId);

@@ -13,7 +13,7 @@ import { paymentTestOpening, signPaymentTestVoucher } from '@papercusp/operator-
  * under test and seeding a `final` row would assert it against a fixture rather
  * than against the lifecycle that produces one.
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, inject, it, vi } from 'vitest';
 import type {
   EvmSettlementFacilitator,
   EvmTransactionObservation,
@@ -614,6 +614,7 @@ describe('component author payouts on the existing settlement resource', () => {
   }
 
   it('calibrates the signed identity fixture against its final integer allocations before any payout', async () => {
+    expect(inject('papercuspTestLayer')).toBe('integration');
     const { adapter, submitTransfer } = fakeTreasuryAdapter();
     const h = await prepared({}, adapter, true);
     const usage = await h.db.prepare(`SELECT meter_quantity, unit_price_micros, amount_micros, state

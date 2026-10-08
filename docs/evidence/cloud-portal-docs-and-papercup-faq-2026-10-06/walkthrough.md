@@ -242,10 +242,12 @@ actual served origin `http://127.0.0.1:3801`. Setting `PORTAL_DOCS_BASE_URL`
 selects that origin and bypasses the test's local SSR fixture and bundle
 preparation. No operator or Portal build, account creation, model request or
 domain write was performed. From the configured Portal checkout, the command
-was:
+used the following arguments. The launcher path is expressed here through
+`PAPERCUSP_REPO_ROOT`, the canonical repository root; execution used that same
+launcher's absolute path.
 
 ```sh
-PORTAL_DOCS_BASE_URL=http://127.0.0.1:3801 PAPERCUSP_TEST_RUN_HARNESS=papercusp /home/marsh-office/papercupai-workspace/papercusp/scripts/pc-heavy.sh npx playwright test --config playwright.config.ts e2e/portal-public-docs.spec.ts --workers=1 --output=/tmp/su73-served-portal-docs-1830-artifacts
+PORTAL_DOCS_BASE_URL=http://127.0.0.1:3801 PAPERCUSP_TEST_RUN_HARNESS=papercusp "$PAPERCUSP_REPO_ROOT/scripts/pc-heavy.sh" npx playwright test --config playwright.config.ts e2e/portal-public-docs.spec.ts --workers=1 --output=/tmp/su73-served-portal-docs-1830-artifacts
 ```
 
 The command exited 0: **four passed**, no skipped tests. The retained log is

@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test';
 import type { OrderedSelectionPolicy } from '../../../packages/operator-core/lib/typed-properties';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { insertNativeCollectionGoal, insertNativeCollectionPlan } from './_ongoing-work-native-fixture';
+import { insertNativeCollectionGoal, insertNativeCollectionPlan, setNativeCollectionPlanArchived } from './_ongoing-work-native-fixture';
 
 // An explicit ESM entry keeps the backend writer graph on Playwright's ESM loader.
 async function loadNativeCollectionWriter() {
@@ -321,8 +321,7 @@ test('native declared collections persist controls and reject a barrier-controll
         await releaseWorkItem('WI-native-alpha', { harness });
         // Remove beta from both source legs, then rediscover it. The stored
         // owner overlay must survive every reload and source reconciliation.
-        await sql`UPDATE harness_shared.harness_plans SET archived=true,status='done'
-          WHERE workspace_id=${workspaceId} AND harness_slug=${harness} AND plan_slug='beta'`;
+        await setNativeCollectionPlanArchived(sql, { workspaceId, harness, slug: 'beta', archived: true });
         const sourceWrite = await sql.begin(tx => applyGoalPropertyWrite(tx as unknown as typeof sql, {
           workspaceId, goalId, property, value: [ids[0], ids[2]], expectedVersion: 0,
           provenance: 'agent-edit', actorId: 'native-fixture-agent',
@@ -331,8 +330,7 @@ test('native declared collections persist controls and reject a barrier-controll
         await reload();
         expect((await readback()).rows.map((row: { id: string }) => row.id)).not.toContain(ids[1]);
         expect((await policy())?.value.excluded).toEqual([dormant, ids[1]]);
-        await sql`UPDATE harness_shared.harness_plans SET archived=false,status='active',op_status=NULL
-          WHERE workspace_id=${workspaceId} AND harness_slug=${harness} AND plan_slug='beta'`;
+        await setNativeCollectionPlanArchived(sql, { workspaceId, harness, slug: 'beta', archived: false });
         await reload();
         await ready(`document.querySelector(${JSON.stringify(checkbox(labels[1]))})?.getAttribute('aria-checked') === 'false'`);
         expect((await readback()).rows.map((row: { id: string }) => row.id)).toEqual(reorderedIds);

@@ -30,6 +30,9 @@ import {
 } from '@papercusp/operator-core/lib/goal-launch-settings';
 import { validatePropertySchemaDeclaration } from '@papercusp/operator-core/lib/typed-properties-db';
 import { PLATFORM_POT_SLUG } from '@papercusp/operator-core/lib/platform-pot-slug';
+import { getBuildInfo } from '@papercusp/operator-core/lib/build-info';
+import { recordExpertiseRoutingInvocation } from '@papercusp/operator-core/lib/endpoint-route/telemetry';
+import { CONSULT_DEFAULT_POLICY } from '@papercusp/operator-core/lib/consult/selection-policies';
 import { isWildcardScopeToken } from '@papercusp/operator-core/lib/harness-slug';
 import { SU_WRITE_ROLES } from '../../role-config';
 import { GOAL_STATUSES, TripwireSchema, goalId, insertGoalRow } from './_core';
@@ -317,7 +320,10 @@ export default defineTool({
               },
               {
                 route: (params) =>
-                  routeConsult(params, {
+                  routeConsult({ ...params, telemetry: {
+                    caller: 'goals:create', policy: CONSULT_DEFAULT_POLICY, buildSha: getBuildInfo().sha,
+                  } }, {
+                    recordTelemetry: receipt => recordExpertiseRoutingInvocation(receipt, getOrgPg().sql),
                     getSql: () => getOrgPg().sql,
                     embed,
                     embeddingProfile,

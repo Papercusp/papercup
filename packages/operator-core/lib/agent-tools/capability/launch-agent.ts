@@ -1577,7 +1577,29 @@ export default defineTool({
         ...(args.model ? { model: args.model } : {}),
       },
     });
-    if (goalLaunch.refusal) return err(goalLaunch.refusal.message);
+    if (goalLaunch.refusal) {
+      // P-005 / R-5: a refused goal launch must not strand the goal-created work it
+      // was for. Stamp every open, unassigned item of this goal the launch named so
+      // the holder's stranded-goal-work agenda shows it at once. Best-effort: the
+      // refusal is returned either way.
+      let strandNote = '';
+      if (goalLaunch.goalId) {
+        const stranded = await import('../../goal-stranded-work');
+        const record = await stranded
+          .recordGoalPlacementRefusal({
+            workspaceId,
+            goalId: goalLaunch.goalId,
+            launcherOwnerId: callerOwnerId ?? '',
+            reason: goalLaunch.refusal.reason,
+            message: goalLaunch.refusal.message,
+            source: 'capability:launch-agent',
+            named: stranded.launchNamedWorkItemIds({ feature: args.feature, workItem: args.workItem, brief: args.brief }),
+          })
+          .catch((e: unknown) => ({ named: [] as string[], marked: [] as string[], error: e instanceof Error ? e.message : String(e) }));
+        strandNote = stranded.goalPlacementRefusalNote(record);
+      }
+      return err(goalLaunch.refusal.message + strandNote);
+    }
 
     const memberSpecs: (MemberSpec | undefined)[] = args.members ?? [];
     const flatBase: FleetMemberDefaults = {

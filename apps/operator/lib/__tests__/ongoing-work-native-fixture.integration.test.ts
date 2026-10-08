@@ -1,8 +1,10 @@
 import postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createOrgTestDb, type OrgTestDb } from '../../../../packages/operator-core/test/_org-test-db';
-import { insertNativeCollectionGoal, insertNativeCollectionPlan } from '../../e2e/_ongoing-work-native-fixture';
+import { insertNativeCollectionGoal, insertNativeCollectionPlan, setNativeCollectionPlanArchived } from '../../e2e/_ongoing-work-native-fixture';
 import { readGoalPortfolioBrief } from '../../../../packages/operator-core/lib/goal-launch-settings';
+import { applyGoalPropertyWrite } from '../../../../packages/operator-core/lib/typed-properties-db';
+import { ensureOrderedSelectionPolicyDatatype, ensurePlanRefListDatatype } from '../../../../packages/operator-core/lib/goals/package-property-datatypes';
 
 describe('native collection fixture against migrated private PG', () => {
   let db: OrgTestDb;
@@ -80,5 +82,58 @@ describe('native collection fixture against migrated private PG', () => {
       next: null, counts: { todo: 0 },
       placement: { state: 'blocked', reconciliation: { toolCall: null } },
     });
+  });
+
+  it('preserves owner order, exclusion and attribution through native archive, agent refresh and rediscovery', async () => {
+    const workspaceId = 'native-lifecycle-test', goalId = 'native-lifecycle-positive', harness = 'native-lifecycle';
+    const ids = ['alpha', 'beta', 'blocked'].map(slug => `plan:${harness}/${slug}`);
+    const dormant = `plan:${harness}/dormant`;
+    const order = [ids[1], ids[0], ids[2], dormant];
+    await ensureOrderedSelectionPolicyDatatype(sql, workspaceId);
+    await ensurePlanRefListDatatype(sql, workspaceId);
+    await insertNativeCollectionGoal(sql, { workspaceId, goalId, title: 'Native lifecycle', schema: {
+      worklist: { datatype: 'plan-ref-list', editable_by: 'both', default: ids,
+        collection: { source: 'active-workspace-plans', policy: 'worklist_policy', order: 'priority',
+          selectable: true, defaultSelected: true } },
+      worklist_policy: { datatype: 'ordered-selection-policy', editable_by: 'owner',
+        default: { order: [], excluded: [] } },
+    } });
+    for (const slug of ['alpha', 'beta', 'blocked']) {
+      await insertNativeCollectionPlan(sql, { workspaceId, harness, slug, title: slug,
+        status: slug === 'blocked' ? 'draft' : 'active' });
+    }
+    const write = (property: string, value: unknown, provenance: 'owner-edit' | 'agent-edit') =>
+      sql.begin(tx => applyGoalPropertyWrite(tx as unknown as typeof sql, { workspaceId, goalId,
+        property, value, expectedVersion: 0, provenance, actorId: `native-fixture-${provenance}` }));
+    expect((await write('worklist_policy', { order, excluded: [dormant, ids[1]] }, 'owner-edit')).ok).toBe(true);
+    const policy = async () => (await sql`SELECT properties->'worklist_policy' AS policy
+      FROM harness_shared.goals WHERE workspace_id=${workspaceId} AND id=${goalId}`)[0].policy;
+    const savedPolicy = await policy();
+    const read = () => readGoalPortfolioBrief({ workspaceId, goalId, sql, claimability: 'skip' });
+    expect((await read())?.worklist.map(plan => plan.ref)).toEqual(order.slice(0, 3));
+    expect((await read())?.worklist.find(plan => plan.slug === 'beta')?.selected).toBe(false);
+
+    await setNativeCollectionPlanArchived(sql, { workspaceId, harness, slug: 'beta', archived: true });
+    expect((await write('worklist', [ids[0], ids[2]], 'agent-edit')).ok).toBe(true);
+    expect((await read())?.worklist.map(plan => plan.ref)).toEqual([ids[0], ids[2]]);
+    expect(await policy()).toEqual(savedPolicy);
+
+    await setNativeCollectionPlanArchived(sql, { workspaceId, harness, slug: 'beta', archived: false });
+    const rediscovered = await read();
+    expect(rediscovered?.worklist.map(plan => plan.ref)).toEqual(order.slice(0, 3));
+    expect(rediscovered?.worklist.find(plan => plan.slug === 'beta')).toMatchObject({ selected: false, next: { id: 'P-001' } });
+    expect(await policy()).toEqual(savedPolicy);
+    expect(savedPolicy).toMatchObject({ version: 1, provenance: 'owner-edit', value: { order, excluded: [dormant, ids[1]] } });
+  });
+
+  it('rejects the item-status alias done before a native lifecycle assertion can run', async () => {
+    const workspaceId = 'native-invalid-lifecycle-test', harness = 'native-invalid-lifecycle';
+    await insertNativeCollectionPlan(sql, { workspaceId, harness, slug: 'beta', title: 'beta', status: 'active' });
+    await expect(sql`UPDATE harness_shared.harness_plans SET archived=true,status='done'
+      WHERE workspace_id=${workspaceId} AND harness_slug=${harness} AND plan_slug='beta'`)
+      .rejects.toMatchObject({ code: '23514', constraint_name: 'harness_plans_status_check' });
+    const [row] = await sql`SELECT status,archived FROM harness_shared.harness_plans
+      WHERE workspace_id=${workspaceId} AND harness_slug=${harness} AND plan_slug='beta'`;
+    expect(row).toMatchObject({ status: 'active', archived: false });
   });
 });

@@ -1144,7 +1144,10 @@ defineTestDomain({
         'apps/operator/test/**/*.test.ts',
         'apps/operator/__tests__/**/*.test.ts',
       ] },
-    { id: 'e2e', label: 'E2E (all specs)', globs: ['apps/operator/e2e/*.spec.ts'] },
+    { id: 'e2e', label: 'E2E (all specs)', globs: [
+        'apps/operator/e2e/*.spec.ts',
+        'apps/operator/e2e/*.spec.mts',
+      ] },
     // Vitest UNIT tests co-located with the e2e helpers they cover (e.g. the
     // hosted-http1 acceptance config parser) — run by apps/operator's Vitest
     // config, which does not exclude e2e/, never by Playwright.

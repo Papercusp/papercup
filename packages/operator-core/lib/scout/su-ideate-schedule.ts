@@ -73,6 +73,19 @@ export interface SuIdeateLaunchRecord {
   taskId?: string;
 }
 
+/**
+ * Scheduled launches for `harnessSlug` since its last recorded pass — the circuit-breaker
+ * count (D-006 §4). The ONE definition both the scheduler (skip) and the producer-silence
+ * alarm ({@link readSuIdeateOpenCircuits}) read, so "open" can never mean two things.
+ */
+export function suIdeateAttemptsSinceLastPass(
+  launches: readonly SuIdeateLaunchRecord[],
+  harnessSlug: string,
+  lastPassMs: number | null,
+): SuIdeateLaunchRecord[] {
+  return launches.filter((l) => l.harnessSlug === harnessSlug && (lastPassMs == null || l.startedAtMs > lastPassMs));
+}
+
 /** Parse `su-ideate-pass:<harness>:…` → harness; null for any other label. */
 export function harnessFromPassLabel(label: string | null | undefined): string | null {
   if (typeof label !== 'string' || !label.startsWith(SU_IDEATE_PASS_LABEL_PREFIX)) return null;
@@ -220,9 +233,7 @@ export async function runSuIdeateSchedule(
   const decisions: SuIdeateHarnessDecision[] = [];
   for (const harnessSlug of order) {
     const { lastPassMs, lastLens } = passes.get(harnessSlug) ?? { lastPassMs: null, lastLens: null };
-    const attempts = launches.filter(
-      (l) => l.harnessSlug === harnessSlug && (lastPassMs == null || l.startedAtMs > lastPassMs),
-    ).length;
+    const attempts = suIdeateAttemptsSinceLastPass(launches, harnessSlug, lastPassMs).length;
     if (attempts >= SU_IDEATE_MAX_ATTEMPTS) {
       decisions.push({ harnessSlug, disposition: 'attempts-exhausted', lastPassMs, attempts });
       continue;
@@ -360,3 +371,48 @@ export const defaultSuIdeateScheduleDeps: SuIdeateScheduleDeps = {
     return { ok: true, deduped: result.structuredContent?.deduped === true || /deduped/i.test(text) };
   },
 };
+
+/** One harness whose su-ideate circuit is open: its scheduled passes keep dying without recording. */
+export interface SuIdeateOpenCircuit {
+  harnessSlug: string;
+  /** Scheduled launches since the last recorded pass (≥ {@link SU_IDEATE_MAX_ATTEMPTS}). */
+  attempts: number;
+  lastPassMs: number | null;
+  /** The newest of those launches. */
+  lastLaunchMs: number;
+}
+
+/**
+ * Harnesses whose circuit is OPEN, for the producer-silence alarm (plan D-010, from the
+ * outside-lineage objection to the R-14 BAR amendment): at least
+ * {@link SU_IDEATE_MAX_ATTEMPTS} scheduled launches since the last recorded pass, every one
+ * of them finished or stale (a live, fresh attempt may still record, so it is not yet a
+ * dead circuit), and the harness's pot learning switch on (a switched-off pot is
+ * deliberate silence). Without this the open circuit was only a scheduler decision
+ * (`attempts-exhausted`) that nothing raised, so a harness whose passes always die was
+ * caught by no alarm. Only harnesses with a scheduled launch can have an open circuit,
+ * so the census is the launch ledger.
+ */
+export async function readSuIdeateOpenCircuits(
+  workspaceId: string,
+  nowMs: number = Date.now(),
+  deps: Pick<SuIdeateScheduleDeps, 'listLaunches' | 'readLastPass' | 'learningEnabled'> = defaultSuIdeateScheduleDeps,
+): Promise<{ harnessesChecked: number; open: SuIdeateOpenCircuit[] }> {
+  const launches = await deps.listLaunches(workspaceId);
+  const harnesses = [...new Set(launches.map((l) => l.harnessSlug))].sort();
+  const open: SuIdeateOpenCircuit[] = [];
+  for (const harnessSlug of harnesses) {
+    const { lastPassMs } = await deps.readLastPass(workspaceId, harnessSlug);
+    const since = suIdeateAttemptsSinceLastPass(launches, harnessSlug, lastPassMs);
+    if (since.length < SU_IDEATE_MAX_ATTEMPTS) continue;
+    if (since.some((l) => l.live && l.startedAtMs > nowMs - SU_IDEATE_PASS_STALE_MS)) continue;
+    if (!(await deps.learningEnabled(workspaceId, harnessSlug))) continue;
+    open.push({
+      harnessSlug,
+      attempts: since.length,
+      lastPassMs,
+      lastLaunchMs: Math.max(...since.map((l) => l.startedAtMs)),
+    });
+  }
+  return { harnessesChecked: harnesses.length, open };
+}

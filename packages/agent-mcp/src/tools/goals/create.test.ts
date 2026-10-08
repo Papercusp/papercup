@@ -20,9 +20,13 @@ import { HARNESS_SLUG_RE } from '@papercusp/operator-core/lib/harness-slug';
 // consult's wiring is dynamically imported by the handler; mock every leg so
 // the consult branch is deterministic (no embedder, no PG, no liveness oracle)
 // and drivable per-test via `goalKickoffConsultMock`.
-const { goalKickoffConsultMock } = vi.hoisted(() => ({ goalKickoffConsultMock: vi.fn() }));
+const { goalKickoffConsultMock, routeConsultMock, recordRoutingMock } = vi.hoisted(() => ({
+  goalKickoffConsultMock: vi.fn(), routeConsultMock: vi.fn(), recordRoutingMock: vi.fn(),
+}));
 vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: {} as never }) }));
-vi.mock('@papercusp/operator-core/lib/consult/relevance-router', () => ({ routeConsult: vi.fn() }));
+vi.mock('@papercusp/operator-core/lib/consult/relevance-router', () => ({ routeConsult: routeConsultMock }));
+vi.mock('@papercusp/operator-core/lib/endpoint-route/telemetry', () => ({ recordExpertiseRoutingInvocation: recordRoutingMock }));
+vi.mock('@papercusp/operator-core/lib/build-info', () => ({ getBuildInfo: () => ({ sha: 'fixture-build' }) }));
 vi.mock('@papercusp/operator-core/lib/agent-tools/search/embedder', () => ({
   buildQueryEmbedderResolved: vi.fn(async () => ({
     mode: 'local',
@@ -112,6 +116,8 @@ beforeEach(() => {
   modeUpdateThrows = false;
   modeSelectThrows = false;
   goalKickoffConsultMock.mockReset();
+  routeConsultMock.mockReset();
+  recordRoutingMock.mockReset();
   // Default: routing found nothing — the consult proceeds silently, so every
   // pre-P-010 test observes the exact behaviour it always did.
   goalKickoffConsultMock.mockResolvedValue({ outcome: 'proceed', verdict: 'no_qualified_responder' });
@@ -615,6 +621,22 @@ describe('goals:create — the GOAL-mode kickoff consult (P-010)', () => {
     goalKickoffConsultMock.mockResolvedValue(nudgeOutcome('floor'));
     const res = await call(ARGS(), CTX());
     expect((res.data as { hint: string }).hint).not.toMatch(/FIRST PRINCIPLES/);
+  });
+
+  it('attributes the active kickoff route and forwards its receipt to the shared ledger sink', async () => {
+    callerInGoalMode = true;
+    const params = { workspaceId: 'papercusp-workspace', requesterId: 'su-test', question: 'fixture question' };
+    const receipt = { correlationId: 'fixture-kickoff' };
+    goalKickoffConsultMock.mockImplementationOnce(async (_input, deps) => {
+      await deps.route(params);
+      return { outcome: 'proceed', verdict: 'no_qualified_responder' };
+    });
+    routeConsultMock.mockImplementationOnce(async (_params, deps) => { await deps.recordTelemetry(receipt); });
+    await call(ARGS({ killCriterion: 'no paying user by day 30' }), CTX());
+    expect(routeConsultMock).toHaveBeenCalledWith({
+      ...params, telemetry: { caller: 'goals:create', policy: 'consult-default', buildSha: 'fixture-build' },
+    }, expect.objectContaining({ recordTelemetry: expect.any(Function) }));
+    expect(recordRoutingMock).toHaveBeenCalledWith(receipt, expect.anything());
   });
 
   it('NEVER consults a caller without a GOAL-mode row — the owner UI confirm-card path stays unrefused', async () => {

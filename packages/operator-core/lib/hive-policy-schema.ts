@@ -130,12 +130,21 @@ export interface HivePolicyGovernance {
   [k: string]: unknown;
 }
 
+/** Account references travel with the existing owner-signed policy. They never grant custody. */
+export interface HivePolicyFinance {
+  commerce?: { buyerOrgId: string };
+  treasury?: { chainId: number; address: string };
+  equity?: { chainId: number; equity: string; governor: string; timelock: string };
+  funding?: { agreementRef: string };
+}
+
 /**
  * The typed view of a Hive policy document. This is a forward-compatible OPEN record:
  * the named fields are the EN-1..EN-4 surface, and `[k: string]: unknown` preserves
  * any field a newer authoring client added. The whole object is owner-signed.
  */
 export interface HivePolicy {
+  finance?: HivePolicyFinance;
   /** Owner-signed governance rules, including exact-plan admission. */
   governance?: HivePolicyGovernance;
   rate?: HivePolicyRate;
@@ -244,6 +253,26 @@ export function coerceHivePolicyInput(
     return { ok: false, error: 'policy must be a JSON object' };
   }
   const p = raw as Record<string, unknown>;
+  if (p.finance !== undefined) {
+    const finance = p.finance;
+    if (!finance || typeof finance !== 'object' || Array.isArray(finance)) return { ok: false, error: 'policy.finance must be an object' };
+    const f = finance as Record<string, unknown>;
+    for (const key of ['commerce', 'treasury', 'equity', 'funding']) {
+      if (f[key] === undefined) continue;
+      const value = f[key];
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return { ok: false, error: `policy.finance.${key} must be an object` };
+      const ref = value as Record<string, unknown>;
+      if (key === 'commerce' || key === 'funding') {
+        const field = key === 'commerce' ? 'buyerOrgId' : 'agreementRef';
+        if (typeof ref[field] !== 'string' || !String(ref[field]).trim() || String(ref[field]).length > 500) return { ok: false, error: `policy.finance.${key}.${field} must be a bounded nonempty reference` };
+      } else {
+        if (!Number.isSafeInteger(ref.chainId) || Number(ref.chainId) < 1) return { ok: false, error: `policy.finance.${key}.chainId must be a positive safe integer` };
+        for (const field of key === 'treasury' ? ['address'] : ['equity', 'governor', 'timelock']) {
+          if (typeof ref[field] !== 'string' || !/^0x[0-9a-fA-F]{40}$/.test(String(ref[field])) || /^0x0{40}$/i.test(String(ref[field]))) return { ok: false, error: `policy.finance.${key}.${field} must be a nonzero EVM address` };
+        }
+      }
+    }
+  }
   if (p.governance !== undefined) {
     if (!p.governance || typeof p.governance !== 'object' || Array.isArray(p.governance)) {
       return { ok: false, error: 'policy.governance must be an object' };
