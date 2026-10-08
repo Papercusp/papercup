@@ -77,8 +77,8 @@ function runProbe(args: string[]): number {
 }
 
 /** Run the probe and return its exit code AND combined output (for asserting guidance text). */
-function runProbeIO(args: string[], env: NodeJS.ProcessEnv = process.env): { code: number; out: string } {
-  const r = spawnSync('bash', [SCRIPT, ...args], { encoding: 'utf8', timeout: 60_000, env });
+function runProbeIO(args: string[], env: NodeJS.ProcessEnv = process.env, cwd?: string): { code: number; out: string } {
+  const r = spawnSync('bash', [SCRIPT, ...args], { encoding: 'utf8', timeout: 60_000, env, cwd });
   return { code: r.status ?? -1, out: `${r.stdout ?? ''}${r.stderr ?? ''}` };
 }
 
@@ -2296,6 +2296,41 @@ describe('mutation-probe.sh — destructive subjects are never executed unprotec
       expect(code, out).toBe(0); // the mutant was CAUGHT: both baselines ran and passed
       // Private: the bundler's write never reached the host directory.
       expect(readdirSync(viteTemp)).toEqual([]);
+    },
+  );
+
+  it.skipIf(!bwrapWorks)(
+    'WI-10007344: aliases of an external node_modules share one physical private Vite temp mount',
+    () => {
+      const repo = join(dir, 'vite-alias-repo');
+      const modules = join(dir, 'external-node-modules');
+      mkdirSync(modules);
+      mkdirSync(join(repo, 'apps', 'a'), { recursive: true });
+      mkdirSync(join(repo, 'apps', 'b'), { recursive: true });
+      // Use real filesystem aliases, as the maintained committed-source clones do.
+      for (const relative of ['', 'apps/a', 'apps/b']) {
+        const link = join(repo, relative, 'node_modules');
+        const result = spawnSync('ln', ['-s', modules, link], { encoding: 'utf8' });
+        expect(result.status, result.stderr).toBe(0);
+        writeFileSync(join(repo, relative, 'vitest.config.ts'), 'export default {};\n');
+      }
+      git(repo, ['init', '-q']);
+      const sub = join(repo, 'subject.sh');
+      writeFileSync(sub, '#!/usr/bin/env bash\nrm -f "$1" 2>/dev/null\necho ok\n');
+      git(repo, ['add', 'subject.sh', 'vitest.config.ts', 'apps/a/vitest.config.ts', 'apps/b/vitest.config.ts']);
+      const sb = join(dir, 'sb');
+      mkdirSync(sb);
+      const aliasedTemp = join(repo, 'apps', 'a', 'node_modules', '.vite-temp');
+      const { code, out } = runProbeIO([
+        '--i-know-this-deletes', '--sandbox-root', sb,
+        '--file', sub, '--mutate', 's/ok/OK/',
+        '--test', `echo bundled > "${aliasedTemp}/config.mjs" && [ "$(bash {} /nonexistent | tail -1)" = ok ]`,
+      ], process.env, repo);
+      expect(code, out).toBe(0);
+      expect(out).toContain('private tmpfs over 1 vite config temp dir');
+      expect(out).not.toMatch(/Can't mount tmpfs|SANDBOX READ-ONLY WRITE/);
+      expect(readdirSync(join(modules, '.vite-temp'))).toEqual([]);
+      expect(readFileSync(sub, 'utf8')).toContain('echo ok');
     },
   );
 
