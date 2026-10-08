@@ -231,6 +231,7 @@ interface OperatorKernelState extends KernelContextState {
   identityLaunchRecordMissing?: boolean;
   authorityUnavailable?: boolean;
   authorityUnavailableSources?: AuthorityUnavailableSource[];
+  authorityReadFailures?: AuthorityReadFailure[];
   /** The server-resolved owner whose active launch/control rows were read. */
   operationOwnerId?: string;
   /** The workspace those rows were read under (the resolver's own scope). */
@@ -245,6 +246,29 @@ type AuthorityUnavailableSource =
   | 'power-user-revocation-query-failed'
   | 'authority-reader-initialization-failed'
   | 'identity-policy-evaluation-failed';
+
+interface AuthorityReadFailure {
+  source: AuthorityUnavailableSource;
+  /** SQLSTATE only; never retain the error message, SQL, parameters, or stack. */
+  pgCode: string | null;
+  elapsedMs: number;
+}
+
+function authorityReadFailure(
+  source: AuthorityUnavailableSource,
+  error: unknown,
+  startedAt: number,
+): AuthorityReadFailure {
+  let pgCode: string | null = null;
+  try {
+    const code = error && typeof error === 'object'
+      ? (error as { code?: unknown }).code : null;
+    if (typeof code === 'string' && /^[0-9A-Z]{5}$/.test(code)) pgCode = code;
+  } catch {
+    // Diagnostic access must not replace the original fail-closed verdict.
+  }
+  return { source, pgCode, elapsedMs: Math.max(0, Math.round(performance.now() - startedAt)) };
+}
 
 /**
  * The launch record BODY, read only on an identity-resolution cache miss
@@ -400,6 +424,8 @@ export async function readControlAnchorKernelState(
     | undefined;
   let controlReadFailed = false;
   const authorityUnavailableSources: AuthorityUnavailableSource[] = [];
+  const authorityReadFailures: AuthorityReadFailure[] = [];
+  const anchorReadStartedAt = performance.now();
   try {
     const rows = await sql<Array<{
       control_state: unknown;
@@ -447,11 +473,12 @@ export async function readControlAnchorKernelState(
        LIMIT 1
     `;
     stateRow = rows[0];
-  } catch {
+  } catch (error) {
     // Unknown authority cannot authorize a new effect. In particular, neither
     // a missing migration nor a failed join is evidence of a legacy session.
     controlReadFailed = true;
     authorityUnavailableSources.push('control-anchor-query-failed');
+    authorityReadFailures.push(authorityReadFailure('control-anchor-query-failed', error, anchorReadStartedAt));
     stateRow = undefined;
   }
   if (callerAdvSessionId !== null) {
@@ -469,6 +496,7 @@ export async function readControlAnchorKernelState(
 
   let powerUserRevoked = false;
   if (request.ctx.isPowerUser && request.ctx.uiClientId) {
+    const revocationReadStartedAt = performance.now();
     try {
       const rows = await sql<Array<{ revoked_at: Date | string | null }>>`
         SELECT revoked_at
@@ -480,11 +508,12 @@ export async function readControlAnchorKernelState(
       // Absence is intentionally not treated as revocation: older/in-process
       // callers can carry the power-user marker without this optional table.
       powerUserRevoked = rows.length > 0 && rows[0].revoked_at != null;
-    } catch {
+    } catch (error) {
       // Failed credential-authority reads are not successful "not revoked"
       // reads. Preserve the same fail-closed posture as the control anchor.
       controlReadFailed = true;
       authorityUnavailableSources.push('power-user-revocation-query-failed');
+      authorityReadFailures.push(authorityReadFailure('power-user-revocation-query-failed', error, revocationReadStartedAt));
     }
   }
 
@@ -533,6 +562,7 @@ export async function readControlAnchorKernelState(
     ...(controlReadFailed ? {
       authorityUnavailable: true,
       authorityUnavailableSources: [...new Set(authorityUnavailableSources)],
+      ...(authorityReadFailures.length ? { authorityReadFailures } : {}),
     } : {}),
     ...(identityLaunchRecordMissing ? { identityLaunchRecordMissing: true } : {}),
     ...(stateRow && Object.prototype.hasOwnProperty.call(stateRow, 'launch_spec_type')
@@ -567,7 +597,10 @@ function evaluateOperatorKernelRequest(
       'current session authority could not be read; no effect authorized',
       policyRevision,
       state.authorityUnavailableSources?.length
-        ? { authorityUnavailableSources: state.authorityUnavailableSources }
+        ? {
+            authorityUnavailableSources: state.authorityUnavailableSources,
+            ...(state.authorityReadFailures?.length ? { authorityReadFailures: state.authorityReadFailures } : {}),
+          }
         : undefined,
     );
   }
@@ -788,16 +821,20 @@ async function resolveControlAnchorKernelOnce(
   onStaleArtifact?: (heal: StaleArtifactHeal) => void,
 ): Promise<KernelEnforcementResult> {
   let state: OperatorKernelState | null;
+  const authorityReadStartedAt = performance.now();
   try {
     state = await readControlAnchorKernelState(request);
-  } catch {
+  } catch (error) {
     // Client initialization itself can fail before the SELECT's try/catch.
     // Never let that escape into the generic optional-port fail-soft handler.
     return operatorKernelDenial(
       'policy-unavailable',
       'session authority reader unavailable; no effect authorized',
       undefined,
-      { authorityUnavailableSources: ['authority-reader-initialization-failed'] },
+      {
+        authorityUnavailableSources: ['authority-reader-initialization-failed'],
+        authorityReadFailures: [authorityReadFailure('authority-reader-initialization-failed', error, authorityReadStartedAt)],
+      },
     );
   }
   const verdict = evaluateOperatorKernelRequest(request, state ?? undefined);
@@ -809,6 +846,7 @@ async function resolveControlAnchorKernelOnce(
   // against, so every identity-bearing invocation persists a row reference (D-007).
   const ungoverned: { stamp?: IdentityLaunchAuditStamp } = {};
   if (state && Object.prototype.hasOwnProperty.call(state, 'identityLaunchRecord')) {
+    const identityReadStartedAt = performance.now();
     try {
       const { checkIdentityGrantKernel } = await import('./capability-envelope/identity-grants-port');
       const grants = await checkIdentityGrantKernel(
@@ -822,7 +860,7 @@ async function resolveControlAnchorKernelOnce(
         }
         return auditLaunchRowSelection(grants, state);
       }
-    } catch {
+    } catch (error) {
       // The generic optional port catches throws as unavailable/allow. This
       // resolver owns real authority, so it must publish an explicit denial —
       // with ONE exception, which is the difference between a degraded session
@@ -858,7 +896,10 @@ async function resolveControlAnchorKernelOnce(
         'policy-unavailable',
         'identity policy evaluation unavailable; no effect authorized',
         undefined,
-        { authorityUnavailableSources: ['identity-policy-evaluation-failed'] },
+        {
+          authorityUnavailableSources: ['identity-policy-evaluation-failed'],
+          authorityReadFailures: [authorityReadFailure('identity-policy-evaluation-failed', error, identityReadStartedAt)],
+        },
       );
     }
   }

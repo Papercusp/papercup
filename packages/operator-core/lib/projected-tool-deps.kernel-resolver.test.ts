@@ -682,6 +682,77 @@ describe('control-anchor kernel resolver (D-030)', () => {
     await expect(controlAnchorKernelResolver(request())).resolves.toMatchObject({ decision: 'allow', availability: 'unavailable' });
   });
 
+  it.each(['55P03', '57014', '08006'])('retains SQLSTATE %s on the failed authority read without exposing SQL or parameters', async (pgCode) => {
+    db.sql.mockRejectedValueOnce(Object.assign(new Error('private SQL and credential'), {
+      code: pgCode, query: 'SELECT private_value', parameters: ['secret'], detail: 'private detail',
+    }));
+    const verdict = await controlAnchorKernelResolver(request());
+    expect(verdict).toMatchObject({
+      decision: 'deny', code: 'policy-unavailable',
+      serverAudit: { authorityReadFailures: [{ source: 'control-anchor-query-failed', pgCode }] },
+    });
+    const failures = verdict?.serverAudit?.authorityReadFailures as Array<Record<string, unknown>>;
+    expect(failures).toHaveLength(1);
+    expect(Object.keys(failures[0]).sort()).toEqual(['elapsedMs', 'pgCode', 'source']);
+    expect(failures[0].elapsedMs).toEqual(expect.any(Number));
+    expect(failures[0].elapsedMs).toBeGreaterThanOrEqual(0);
+    expect(JSON.stringify(verdict?.serverAudit)).not.toMatch(/private|secret|SELECT/);
+  });
+
+  it.each([undefined, 55_003, 'ERR_CONNECTION_RESET', '55P03 private'])('keeps an unclassified authority failure explicit for code %s', async (code) => {
+    db.sql.mockRejectedValueOnce(Object.assign(new Error('private error'), { code }));
+    await expect(controlAnchorKernelResolver(request())).resolves.toMatchObject({
+      decision: 'deny', code: 'policy-unavailable',
+      serverAudit: { authorityReadFailures: [{ source: 'control-anchor-query-failed', pgCode: null }] },
+    });
+  });
+
+  it('preserves the denial even when inspecting an error code throws', async () => {
+    const error = Object.defineProperty(new Error('private error'), 'code', {
+      get() { throw new Error('diagnostic unavailable'); },
+    });
+    db.sql.mockRejectedValueOnce(error);
+    await expect(controlAnchorKernelResolver(request())).resolves.toMatchObject({
+      decision: 'deny', code: 'policy-unavailable',
+      serverAudit: { authorityReadFailures: [{ source: 'control-anchor-query-failed', pgCode: null }] },
+    });
+  });
+
+  it('attributes independent control and revocation SQL failures to their own reads', async () => {
+    db.sql.mockRejectedValueOnce(Object.assign(new Error('control locked'), { code: '55P03' }))
+      .mockRejectedValueOnce(Object.assign(new Error('revocation canceled'), { code: '57014' }));
+    await expect(controlAnchorKernelResolver(request({
+      ctx: ctx({ isSuperuser: false, isPowerUser: true, uiClientId: 'pus-a' }),
+    }))).resolves.toMatchObject({
+      decision: 'deny', code: 'policy-unavailable',
+      serverAudit: { authorityReadFailures: [
+        { source: 'control-anchor-query-failed', pgCode: '55P03' },
+        { source: 'power-user-revocation-query-failed', pgCode: '57014' },
+      ] },
+    });
+  });
+
+  it('audits a database lock refusal at dispatch without running the handler', async () => {
+    db.sql.mockRejectedValueOnce(Object.assign(new Error('control locked'), { code: '55P03' }));
+    const handler = vi.fn(async () => ({ content: [{ type: 'text' as const, text: 'effect' }] }));
+    const recordInvocation = vi.fn(async () => {});
+    const result = await dispatchProjectedTool({
+      pluginName: 'fixture', description: 'fixture', inputSchema: { type: 'object' },
+      capabilities: [], expose: { mcp: { name: 'mail:send' } }, fn: handler,
+    } as ProjectedTool, 'mail:send', {}, ctx(), { kernelEnforcement: controlAnchorKernelResolver, recordInvocation });
+    expect(result.ok).toBe(false);
+    expect(recordInvocation).toHaveBeenCalledOnce();
+    expect(recordInvocation).toHaveBeenCalledWith(expect.objectContaining({
+      kernelPreflight: expect.objectContaining({
+        decision: 'deny',
+        serverAudit: expect.objectContaining({
+          authorityReadFailures: [{ source: 'control-anchor-query-failed', pgCode: '55P03', elapsedMs: expect.any(Number) }],
+        }),
+      }),
+    }));
+    expect(handler).not.toHaveBeenCalled();
+  });
+
   // The compaction watchdog writes a session_briefs row (carry + control_state,
   // NO activation) for the session it force-compacts. For a launch that never
   // registered an adv_sessions row — every consult-expiry-sweep `psu --fork`
