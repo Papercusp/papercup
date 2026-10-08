@@ -175,6 +175,24 @@ describe('explicit authorized content summaries', () => {
     await expect(summarizeContent(await source(), { allowCloud: true, timeoutMs: 100 }, undefined, h.deps)).rejects.toMatchObject({ code: 'budget-exceeded' });
     expect(h.requests).toHaveLength(0);
   });
+  it.each(['budget-check', 'adapter-import', 'http-wait', 'model-wait', 'model-stream', 'spend-recording'] as const)('identifies a stalled %s without exposing source content', async stage => {
+    const h = harness();
+    const stalled = () => new Promise<never>(() => {});
+    if (stage === 'budget-check') h.deps.checkBudget = stalled;
+    else h.deps.run = async function* (request) {
+      if (stage === 'adapter-import' || stage === 'http-wait') request.onSummaryPhase?.(stage);
+      if (stage === 'model-stream') yield { type: 'delta', text: 'private output' };
+      if (stage === 'spend-recording') yield { type: 'result', finalText: 'private output', costUsd: 0, tokensIn: 1, tokensOut: 1 };
+      else await stalled();
+    };
+    if (stage === 'spend-recording') h.deps.recordSpend = stalled;
+    const error = await summarizeContent(await source('PRIVATE SOURCE-938'), { allowCloud: true, timeoutMs: 100 }, undefined, h.deps).catch(error => error);
+    expect(error).toMatchObject({ code: 'budget-exceeded', diagnostics: { stage, phase: 'source chunk 1/1', calls: stage === 'budget-check' ? 0 : 1 } });
+    expect(error.diagnostics.elapsedMs).toBeGreaterThanOrEqual(90);
+    expect(error.diagnostics.stageElapsedMs).toBeGreaterThanOrEqual(0);
+    expect(error.diagnostics.stageElapsedMs).toBeLessThanOrEqual(error.diagnostics.elapsedMs);
+    expect(JSON.stringify(error)).not.toMatch(/PRIVATE SOURCE-938|private output|private:report|reader-one/);
+  });
   it('cancels a cache join without waiting for another caller to finish', async () => {
     const h = harness(); let finish!: () => void;
     const ready = new Promise<void>(resolve => { finish = resolve; });
