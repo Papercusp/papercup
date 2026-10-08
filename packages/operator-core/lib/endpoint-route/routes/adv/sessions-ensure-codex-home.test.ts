@@ -86,6 +86,7 @@ beforeEach(() => {
   mocks.readRecord.mockResolvedValue(savedRecord);
   mocks.funding.mockResolvedValue({ ok: true });
   mocks.recordLaunchSpec.mockResolvedValue(true);
+  mocks.roleHome.mockReturnValue({ sqliteHome: '/original-state/session-123' });
   mocks.pinnedPrompt.mockReturnValue({ promptText: 'PINNED V1 INSTRUCTIONS', specificationRevision: REVISION });
   mocks.buildLaunchSpec.mockResolvedValue({ mcpUrl: 'http://localhost:3170/api/mcp?superuser=1' });
   mocks.ensureHome.mockReturnValue({ repaired: true, promptRepaired: true,
@@ -142,6 +143,49 @@ describe('ensure-codex-home pinned-source recovery', () => {
     const response = await call();
     expect(await response.json()).toMatchObject({ ok: true, repaired: false, reason: 'role-home-preserved' });
     expect(mocks.rebuild).not.toHaveBeenCalled();
+    expect(mocks.ensureHome).not.toHaveBeenCalled();
+    expect(mocks.recordLaunchSpec).not.toHaveBeenCalled();
+  });
+
+  it('restores an archived featureless judge with its recorded identity, state, model and auto route', async () => {
+    mocks.readRecord.mockResolvedValue({ model: 'gpt-5.6-sol', effort: 'high',
+      codexSqliteHome: '/original-state/session-123' });
+    mocks.sessionRow.mockResolvedValue({ coordOwnerId: OWNER, agent: 'codex', role: 'judge',
+      feature: null, workspaceId: 'papercusp-workspace', sessionId: 'original-native',
+      launchArgv: ['psu', '--role=judge', '--harness=papercusp', '--model=gpt-5.6-sol:high',
+        '--account=auto', '--headless'] });
+    mocks.buildRole.mockResolvedValue({ stack: ['domain:judge'], cwd: '/fixture/papercusp',
+      mcpUrl: 'http://localhost:3170/api/mcp?role=judge&sig=valid', promptText: 'RESTRICTED JUDGE',
+      specificationRevision: REVISION, stateRevision: 'judge-state', specificationArtifact: {} });
+    expect(await (await call()).json()).toMatchObject({ repaired: true, role: 'judge', acceptedOperation: false });
+    expect(mocks.buildRole).toHaveBeenCalledWith(expect.objectContaining({ role: 'judge',
+      harnessSlug: 'papercusp', acceptedOperation: null,
+      launchIdentity: { sid: OWNER, nativeSessionId: 'original-native' } }));
+    expect(mocks.roleHome).toHaveBeenCalledWith(expect.objectContaining({ preserveExisting: true,
+      recordedSqliteHome: '/original-state/session-123', sid: OWNER,
+      model: 'gpt-5.6-sol:high', codexGatewayAuto: true, headless: true,
+      mcpUrl: 'http://localhost:3170/api/mcp?role=judge&sig=valid' }));
+    expect(mocks.recordLaunchSpec).toHaveBeenCalledWith(123, OWNER, expect.objectContaining({
+      role: 'judge', codexSqliteHome: '/original-state/session-123', acceptedOperation: null }));
+    expect(mocks.rebuild).not.toHaveBeenCalled();
+    expect(mocks.ensureHome).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { record: { model: 'gpt-5.6-sol' }, error: 'role_state_binding_unavailable' },
+    { record: { codexSqliteHome: '' }, error: 'role_state_binding_unavailable' },
+    { record: { codexSqliteHome: 'relative-state' }, error: 'role_state_binding_unavailable' },
+    { record: { role: 'su', codexSqliteHome: '/original-state' }, error: 'role_launch_provenance_unavailable' },
+  ])('refuses missing or conflicting role recovery provenance: $error', async ({ record, error }) => {
+    mocks.readRecord.mockResolvedValue(record);
+    mocks.sessionRow.mockResolvedValue({ coordOwnerId: OWNER, agent: 'codex', role: 'judge',
+      feature: null, workspaceId: 'papercusp-workspace', sessionId: 'original-native',
+      launchArgv: ['psu', '--role=judge', '--harness=papercusp', '--model=gpt-5.6-sol:high'] });
+    const response = await call();
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error });
+    expect(mocks.buildRole).not.toHaveBeenCalled();
+    expect(mocks.roleHome).not.toHaveBeenCalled();
     expect(mocks.ensureHome).not.toHaveBeenCalled();
     expect(mocks.recordLaunchSpec).not.toHaveBeenCalled();
   });

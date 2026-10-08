@@ -1543,36 +1543,60 @@ const ensureCodexHome = defineTool({
     }
     // A role receipt is not an SU receipt. Parsing it as one drops role and
     // acceptedOperation, then the SU rebuild replaces its restricted grants.
-    // Recover accepted workers from the immutable item through the same role
-    // compiler/writer as launch, retaining the owner and native conversation.
+    // Recover accepted workers from the immutable item, and ordinary roles
+    // from their recorded launch, through the same restricted compiler/writer.
     if (sessionRow?.role && sessionRow.role !== 'su') {
       const saved = rawRecord && typeof rawRecord === 'object'
         ? rawRecord as Record<string, unknown> : {};
-      const harnessSlug = typeof saved.harnessSlug === 'string' ? saved.harnessSlug : null;
-      if (!sessionRow.feature || !harnessSlug || !sessionRow.sessionId || sessionRow.agent !== 'codex') {
+      const { flagValueFromArgv, modelSpecFromArgv } = await import('../../../agent-config-constants');
+      const harnessSlug = typeof saved.harnessSlug === 'string' ? saved.harnessSlug
+        : !sessionRow.feature ? flagValueFromArgv(sessionRow.launchArgv, 'harness') : null;
+      if (!harnessSlug || !sessionRow.sessionId || sessionRow.agent !== 'codex' || sessionRow.coordOwnerId !== owner) {
         return new Response(JSON.stringify({ ok: true, repaired: false, reason: 'role-home-preserved' }),
           { status: 200, headers: JSON_HEADERS });
+      }
+      const recordedModel = modelSpecFromArgv(sessionRow.launchArgv);
+      if (!sessionRow.feature) {
+        if ((saved.role && saved.role !== sessionRow.role)
+          || flagValueFromArgv(sessionRow.launchArgv, 'role') !== sessionRow.role || !recordedModel) {
+          return new Response(JSON.stringify({ ok: false, error: 'role_launch_provenance_unavailable' }),
+            { status: 409, headers: JSON_HEADERS });
+        }
+        const { existsSync, readFileSync } = await import('node:fs');
+        const { join, isAbsolute } = await import('node:path');
+        const { parse } = await import('@iarna/toml');
+        const { codexHomeForSessionKey } = await import('@papercusp/orchestrator/session-launch-dirs');
+        let stateHome: unknown = saved.codexSqliteHome;
+        const configPath = join(codexHomeForSessionKey(advSessionId), 'config.toml');
+        if (stateHome === undefined && existsSync(configPath)) {
+          try { stateHome = parse(readFileSync(configPath, 'utf8')).sqlite_home; } catch { /* refuse below */ }
+        }
+        if (typeof stateHome !== 'string' || !isAbsolute(stateHome) || stateHome.includes('\0')) {
+          return new Response(JSON.stringify({ ok: false, error: 'role_state_binding_unavailable' }),
+            { status: 409, headers: JSON_HEADERS });
+        }
       }
       const { resolveAcceptedOperationWorkerBinding, selectAcceptedOperationWorkerModel } =
         await import('../../../blueprint/operation-worker-binding');
       const { resolveProjectDir } = await import('../../../spawn-config');
       const { getOrgPg } = await import('@papercusp/db-org');
-      const accepted = await resolveAcceptedOperationWorkerBinding({
+      const accepted = sessionRow.feature ? await resolveAcceptedOperationWorkerBinding({
         sql: getOrgPg().sql, workspaceId: sessionRow.workspaceId, harnessSlug,
         workItemId: sessionRow.feature, role: sessionRow.role,
         repoDir: await resolveProjectDir(harnessSlug, sessionRow.workspaceId) ?? '',
-      });
-      if (!accepted) {
+      }) : null;
+      if (sessionRow.feature && !accepted) {
         return new Response(JSON.stringify({ ok: true, repaired: false, reason: 'role-home-preserved' }),
           { status: 200, headers: JSON_HEADERS });
       }
-      const selection = selectAcceptedOperationWorkerModel(accepted,
-        typeof body.model === 'string' ? body.model : null, 'codex');
+      const selection = accepted ? selectAcceptedOperationWorkerModel(accepted,
+        typeof body.model === 'string' ? body.model : null, 'codex') : null;
       const { buildRoleLaunchSpec } = await import('../../../role-launch-spec');
       const spec = await buildRoleLaunchSpec({
         role: sessionRow.role, workspaceId: sessionRow.workspaceId, harnessSlug,
         featureId: sessionRow.feature, operatorBaseUrl: new URL(req.url).origin,
-        acceptedOperation: selection ? { ...accepted, modelSelection: selection } : accepted,
+        acceptedOperation: accepted && selection ? { ...accepted, modelSelection: selection } : accepted,
+        ...(!accepted && Array.isArray(saved.stack) ? { stack: saved.stack as string[] } : {}),
         launchIdentity: { sid: owner, nativeSessionId: sessionRow.sessionId },
       });
       const { admitIdentityActivation } = await import('../../../cupboard/identity-activation-gate-io');
@@ -1585,23 +1609,26 @@ const ensureCodexHome = defineTool({
       }
       const route = codexWakeGatewayInputs(wakeAccountRouteFromArgv(sessionRow.launchArgv, owner));
       const { writeRoleCodexHome } = await import('../../../role-codex-home');
-      writeRoleCodexHome({
+      const home = writeRoleCodexHome({
         sessionKey: advSessionId, preserveExisting: true, sid: owner,
+        recordedSqliteHome: typeof saved.codexSqliteHome === 'string' ? saved.codexSqliteHome : null,
         mcpUrl: spec.mcpUrl, promptText: spec.promptText,
-        model: selection?.model ?? persistedRecord?.model ?? CODEX_DEFAULT_MODEL,
+        model: selection?.model ?? recordedModel ?? persistedRecord?.model ?? CODEX_DEFAULT_MODEL,
         codexGatewayAuto: route.requireGatewayProvider === true || body.requireGatewayProvider === true,
         codexGatewayAccountId: route.codexGatewayAccountId,
-        codexGatewayPriority: sessionRow.role, headless: body.headless === true, trustDir: spec.cwd,
+        codexGatewayPriority: sessionRow.role,
+        headless: body.headless === true || sessionRow.launchArgv?.includes('--headless') === true, trustDir: spec.cwd,
       });
-      const binding = {
+      const binding = accepted ? {
         kind: 'blueprint-operation-worker', workItemId: accepted.workItemId,
         operationId: accepted.operationId, specificationRevision: accepted.specificationRevision,
         pin: accepted.pin, identity: accepted.identity, requiredTools: accepted.requiredTools,
         ...(accepted.modelPolicy ? { modelPolicy: accepted.modelPolicy, modelSelection: selection } : {}),
-      };
+      } : null;
       if (!(await recordSuLaunchSpec(advSessionId, owner, {
         ...saved, v: 1, workspaceId: sessionRow.workspaceId, harnessSlug, role: sessionRow.role,
         acceptedOperation: binding, stack: spec.stack,
+        codexSqliteHome: home.sqliteHome,
         specificationRevision: spec.specificationRevision, stateRevision: spec.stateRevision,
         specificationArtifact: spec.specificationArtifact,
       }))) throw new Error('repaired role launch specification receipt was not persisted');
@@ -1611,7 +1638,7 @@ const ensureCodexHome = defineTool({
         attribution: { actorId: owner, principalId: owner, sessionId: owner }, source: 'restart', restart: true,
       });
       return new Response(JSON.stringify({ ok: true, owner, advSessionId, repaired: true,
-        role: sessionRow.role, acceptedOperation: true }), { status: 200, headers: JSON_HEADERS });
+        role: sessionRow.role, acceptedOperation: Boolean(accepted) }), { status: 200, headers: JSON_HEADERS });
     }
     const record = persistedRecord ?? fallbackCodexLaunchSpecFromAdvSession(sessionRow, owner);
     // Fail SOFT like persona-refresh: the caller's only sane response to any of
