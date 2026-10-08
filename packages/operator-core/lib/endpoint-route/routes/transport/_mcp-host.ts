@@ -1540,7 +1540,43 @@ type NativeSessionAuthFailureMetadata = {
   carrier: NonNullable<RequestOriginMetadata['nativeSession']>['carrier'];
   valueFingerprint: string;
   candidateAdvSessionId: number | null;
+  verifierFailure?: {
+    name: string;
+    code?: string;
+    message: string;
+    durationMs: number;
+  };
 };
+
+function describeNativeSessionVerifierFailure(
+  error: unknown,
+  ownerId: string,
+  sessionId: string,
+  durationMs: number,
+): NonNullable<NativeSessionAuthFailureMetadata['verifierFailure']> {
+  const failure = error as { name?: unknown; code?: unknown; pgCode?: unknown; message?: unknown } | null;
+  const rawName = failure?.name;
+  const name = typeof rawName === 'string' && /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/.test(rawName) ? rawName : 'Error';
+  const rawCode = failure?.pgCode ?? failure?.code;
+  const code = typeof rawCode === 'string' && /^[A-Za-z0-9_.-]{1,32}$/.test(rawCode) ? rawCode : undefined;
+  let message = typeof failure?.message === 'string' ? failure.message : 'Native-session verifier failed';
+  for (const sensitive of [ownerId, sessionId]) {
+    if (sensitive) message = message.split(sensitive).join('[redacted]');
+  }
+  message = message
+    .replace(/\b[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\b/gi, '[redacted-id]')
+    .replace(/\bpostgres(?:ql)?:\/\/\S+/gi, '[redacted-connection]')
+    .replace(/[\u0000-\u001f\u007f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 240);
+  return {
+    name,
+    ...(code ? { code } : {}),
+    message: message || 'Native-session verifier failed',
+    durationMs: Math.max(0, Math.round(durationMs)),
+  };
+}
 
 export type TrySpawnContextResult =
   | { kind: 'none' }
@@ -1676,7 +1712,10 @@ export async function tryBuildSpawnContext(
         : nativeSessionQuery
           ? 'query:native_session'
           : null;
-    const nativeSessionFailure = (candidateAdvSessionId: number | null): NativeSessionAuthFailureMetadata | undefined => {
+    const nativeSessionFailure = (
+      candidateAdvSessionId: number | null,
+      verifierFailure?: NonNullable<NativeSessionAuthFailureMetadata['verifierFailure']>,
+    ): NativeSessionAuthFailureMetadata | undefined => {
       if (!nativeSessionId || !nativeSessionCarrier) return undefined;
       return {
         carrier: nativeSessionCarrier,
@@ -1685,11 +1724,13 @@ export async function tryBuildSpawnContext(
           candidateAdvSessionId != null && Number.isSafeInteger(candidateAdvSessionId) && candidateAdvSessionId > 0
             ? candidateAdvSessionId
             : null,
+        ...(verifierFailure ? { verifierFailure } : {}),
       };
     };
     let verifiedAdvSessionId: number | null = null;
     let nativeSessionAudit: RequestOriginMetadata['nativeSession'];
     if (suIdentity && nativeSessionId) {
+      const verificationStartedAt = Date.now();
       try {
         const binding = await classifyOwnerNativeSession({ ownerId: suIdentity, sessionId: nativeSessionId });
         if (binding.binding === 'foreign') {
@@ -1711,14 +1752,22 @@ export async function tryBuildSpawnContext(
         ) {
           verifiedAdvSessionId = binding.advSessionId;
         }
-      } catch {
+      } catch (error) {
         // A supplied native-session claim is meaningful only when the binding
         // check succeeds. Failing open here would restore the inherited-SID bug
         // exactly when its verifier is unavailable.
         return {
           kind: 'failed',
-          reason: 'superuser_native_session_unverified',
-          nativeSessionFailure: nativeSessionFailure(null),
+          reason: 'superuser_native_session_verifier_unavailable',
+          nativeSessionFailure: nativeSessionFailure(
+            null,
+            describeNativeSessionVerifierFailure(
+              error,
+              suIdentity,
+              nativeSessionId,
+              Date.now() - verificationStartedAt,
+            ),
+          ),
         };
       }
     }

@@ -1,15 +1,22 @@
 import { readFileSync } from 'node:fs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { advSessionRowsMock, advSessionBeginMock } = vi.hoisted(() => {
+const { advSessionRowsMock, advSessionBeginMock, acquireTimeouts } = vi.hoisted(() => {
   const sql = vi.fn(async () => [] as unknown[]);
   const begin = vi.fn(async (fn: (tx: typeof sql) => unknown) => fn(sql));
-  return { advSessionRowsMock: sql, advSessionBeginMock: begin };
+  return { advSessionRowsMock: sql, advSessionBeginMock: begin, acquireTimeouts: [] as number[] };
 });
-vi.mock('@papercusp/db-org', async (orig) => ({
-  ...(await orig<typeof import('@papercusp/db-org')>()),
-  getOrgPg: () => ({ sql: Object.assign(advSessionRowsMock, { begin: advSessionBeginMock }) }),
-}));
+vi.mock('@papercusp/db-org', async (orig) => {
+  const actual = await orig<typeof import('@papercusp/db-org')>();
+  return {
+    ...actual,
+    getOrgPg: () => ({ sql: Object.assign(advSessionRowsMock, { begin: advSessionBeginMock }) }),
+    withAcquisitionDeadline: ((...args: Parameters<typeof actual.withAcquisitionDeadline>) => {
+      acquireTimeouts.push(args[1].ms);
+      return actual.withAcquisitionDeadline(...args);
+    }) as typeof actual.withAcquisitionDeadline,
+  };
+});
 
 import {
   isDeadTerminalLaunch,
@@ -39,22 +46,56 @@ beforeEach(() => {
   advSessionRowsMock.mockResolvedValue([]);
   advSessionBeginMock.mockReset();
   advSessionBeginMock.mockImplementation(async (fn: (tx: typeof advSessionRowsMock) => unknown) => fn(advSessionRowsMock));
+  acquireTimeouts.length = 0;
 });
+
+function advSessionTableReads(): unknown[][] {
+  return (advSessionRowsMock.mock.calls as unknown[][]).filter(([template]) =>
+    Array.isArray(template) && template.join(' ').includes('FROM harness_shared.adv_sessions'),
+  );
+}
 
 describe('classifyOwnerNativeSession exact incarnation (get-feedback D-006)', () => {
   const ownerId = 'su-incarnation-source';
   const nativeId = 'native-source';
   const rejected = { binding: 'foreign', boundSessionId: null, advSessionId: null };
 
+  it('uses a read-only transaction with explicit acquisition and statement bounds', async () => {
+    advSessionRowsMock.mockImplementation(async (...args: unknown[]) => {
+      const template = args[0];
+      const query = Array.isArray(template) ? template.join(' ') : String(template ?? '');
+      return query.includes('FROM harness_shared.adv_sessions')
+        ? [{ id: 541, session_id: nativeId, active: true }]
+        : [];
+    });
+
+    await expect(classifyOwnerNativeSession({ ownerId, sessionId: nativeId }))
+      .resolves.toEqual({ binding: 'bound', boundSessionId: nativeId, advSessionId: 541 });
+
+    const calls = advSessionRowsMock.mock.calls as unknown[][];
+    const statements = calls.map(([template]) => Array.isArray(template) ? template.join(' ') : '');
+    expect(statements[0]).toContain('SET TRANSACTION READ ONLY');
+    expect(statements[1]).toContain("set_config('lock_timeout'");
+    expect(calls[1]?.slice(1)).toEqual(['1000ms', '2000ms']);
+    expect(statements[2]).toContain('FROM harness_shared.adv_sessions');
+    expect(acquireTimeouts).toContain(1_000);
+  });
+
   it.each(['missing', 'owned by another session'])('does not replace an explicit %s row with another matching owner row', async () => {
     // The id/owner predicate returns no row in either case. A second lookup
     // could incorrectly find a different incarnation with the presented id.
-    advSessionRowsMock.mockResolvedValueOnce([]).mockResolvedValueOnce([
-      { id: 543, session_id: nativeId, active: true },
-    ]);
+    advSessionRowsMock.mockImplementation(async (...args: unknown[]) => {
+      const template = args[0];
+      const query = Array.isArray(template) ? template.join(' ') : String(template ?? '');
+      if (!query.includes('FROM harness_shared.adv_sessions')) return [];
+      return query.includes('WHERE id =') ? [] : [{ id: 543, session_id: nativeId, active: true }];
+    });
     await expect(classifyOwnerNativeSession({ ownerId, sessionId: nativeId, advSessionId: 541 }))
       .resolves.toEqual(rejected);
-    expect(advSessionRowsMock).toHaveBeenCalledTimes(1);
+    const reads = advSessionTableReads();
+    expect(reads).toHaveLength(1);
+    expect((reads[0]?.[0] as TemplateStringsArray).join(' ')).toContain('WHERE id =');
+    expect(reads[0]?.slice(1)).toEqual([541, ownerId]);
   });
 
   it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY])('rejects invalid explicit row %s before reading another incarnation', async (advSessionId) => {
@@ -68,8 +109,8 @@ describe('classifyOwnerNativeSession exact incarnation (get-feedback D-006)', ()
     advSessionRowsMock.mockResolvedValue([{ id: advSessionId, session_id: nativeId, active: true }]);
     await expect(classifyOwnerNativeSession({ ownerId, sessionId: nativeId, advSessionId }))
       .resolves.toEqual({ binding: 'bound', boundSessionId: nativeId, advSessionId });
-    expect(advSessionRowsMock).toHaveBeenCalledTimes(1);
-    const call = (advSessionRowsMock.mock.calls as unknown[][])[0];
+    expect(advSessionTableReads()).toHaveLength(1);
+    const call = advSessionTableReads()[0] ?? [];
     expect(call.slice(1)).toEqual([advSessionId, ownerId]);
   });
 
@@ -77,7 +118,7 @@ describe('classifyOwnerNativeSession exact incarnation (get-feedback D-006)', ()
     advSessionRowsMock.mockResolvedValue([{ id: 541, session_id: null, active: true }]);
     await expect(classifyOwnerNativeSession({ ownerId, sessionId: nativeId, advSessionId: 541 }))
       .resolves.toEqual({ binding: 'unbound', boundSessionId: null, advSessionId: 541 });
-    expect(advSessionRowsMock).toHaveBeenCalledTimes(1);
+    expect(advSessionTableReads()).toHaveLength(1);
   });
 
   it.each([undefined, null])('keeps owner-wide lookup when an exact row is omitted (%s)', async (advSessionId) => {
@@ -87,7 +128,7 @@ describe('classifyOwnerNativeSession exact incarnation (get-feedback D-006)', ()
     ]);
     await expect(classifyOwnerNativeSession({ ownerId, sessionId: nativeId, advSessionId }))
       .resolves.toEqual({ binding: 'bound', boundSessionId: nativeId, advSessionId: 541 });
-    expect(advSessionRowsMock).toHaveBeenCalledTimes(1);
+    expect(advSessionTableReads()).toHaveLength(1);
   });
 });
 

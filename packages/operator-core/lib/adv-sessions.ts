@@ -1837,6 +1837,10 @@ export function classifyOwnerNativeSessionRows(
   return { binding: 'foreign', boundSessionId: bound.session_id!.trim(), advSessionId: Number(bound.id) };
 }
 
+const NATIVE_SESSION_VERIFY_ACQUIRE_TIMEOUT_MS = 1_000;
+const NATIVE_SESSION_VERIFY_STATEMENT_TIMEOUT_MS = 2_000;
+const NATIVE_SESSION_VERIFY_LOCK_TIMEOUT_MS = 1_000;
+
 /**
  * Is `sessionId` the native session the owner's adv_sessions row is bound to?
  * With `advSessionId` (the launcher-exported PAPERCUSP_ADV_SESSION_ID) only that
@@ -1851,30 +1855,37 @@ export async function classifyOwnerNativeSession(opts: {
   sessionId: string;
   advSessionId?: number | null;
 }): Promise<{ binding: OwnerNativeSessionBinding; boundSessionId: string | null; advSessionId: number | null }> {
-  const { sql } = getOrgPg();
-  let rows: OwnerNativeSessionRow[] = [];
-  if (opts.advSessionId != null) {
-    if (!Number.isSafeInteger(opts.advSessionId) || opts.advSessionId <= 0) {
-      return { binding: 'foreign', boundSessionId: null, advSessionId: null };
-    }
-    rows = await sql<OwnerNativeSessionRow[]>`
-      SELECT id, session_id, (ended_at IS NULL AND ended_by IS NULL) AS active
-        FROM harness_shared.adv_sessions
-       WHERE id = ${opts.advSessionId} AND coord_owner_id = ${opts.ownerId}
-    `;
-    if (rows.length === 0) {
-      return { binding: 'foreign', boundSessionId: null, advSessionId: null };
-    }
-  } else {
-    rows = await sql<OwnerNativeSessionRow[]>`
-      SELECT id, session_id, (ended_at IS NULL AND ended_by IS NULL) AS active
-        FROM harness_shared.adv_sessions
-       WHERE coord_owner_id = ${opts.ownerId}
-       ORDER BY (ended_at IS NULL AND ended_by IS NULL) DESC, id DESC
-       LIMIT 20
-    `;
+  if (opts.advSessionId != null && (!Number.isSafeInteger(opts.advSessionId) || opts.advSessionId <= 0)) {
+    return { binding: 'foreign', boundSessionId: null, advSessionId: null };
   }
-  return classifyOwnerNativeSessionRows(rows, opts.sessionId);
+
+  return boundedOrgTxn(async (sql) => {
+    let rows: OwnerNativeSessionRow[];
+    if (opts.advSessionId != null) {
+      rows = await sql<OwnerNativeSessionRow[]>`
+        SELECT id, session_id, (ended_at IS NULL AND ended_by IS NULL) AS active
+          FROM harness_shared.adv_sessions
+         WHERE id = ${opts.advSessionId} AND coord_owner_id = ${opts.ownerId}
+      `;
+      if (rows.length === 0) {
+        return { binding: 'foreign', boundSessionId: null, advSessionId: null };
+      }
+    } else {
+      rows = await sql<OwnerNativeSessionRow[]>`
+        SELECT id, session_id, (ended_at IS NULL AND ended_by IS NULL) AS active
+          FROM harness_shared.adv_sessions
+         WHERE coord_owner_id = ${opts.ownerId}
+         ORDER BY (ended_at IS NULL AND ended_by IS NULL) DESC, id DESC
+         LIMIT 20
+      `;
+    }
+    return classifyOwnerNativeSessionRows(rows, opts.sessionId);
+  }, {
+    readOnly: true,
+    acquireTimeoutMs: NATIVE_SESSION_VERIFY_ACQUIRE_TIMEOUT_MS,
+    statementTimeoutMs: NATIVE_SESSION_VERIFY_STATEMENT_TIMEOUT_MS,
+    lockTimeoutMs: NATIVE_SESSION_VERIFY_LOCK_TIMEOUT_MS,
+  });
 }
 
 /**

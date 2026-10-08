@@ -73,6 +73,7 @@ const h = vi.hoisted(() => {
     fakeSql,
     nativeSessionBinding: 'unbound' as 'bound' | 'unbound' | 'foreign',
     nativeSessionRows: null as Map<string, Array<{ id: number; session_id: string | null; active: boolean }>> | null,
+    nativeSessionVerifierFailure: null as { sessionId: string; error: Error } | null,
     nativeSessionCalls: [] as Array<{ ownerId: string; sessionId: string }>,
     /** EI-21641783475680586: deterministic getRubric seam for the nested transport test. */
     rubricGet: vi.fn(async (_rubricRef: string): Promise<unknown> => null),
@@ -396,6 +397,7 @@ vi.mock('../../adv-sessions', async (importOriginal) => {
     workspaceForCoordOwner: h.workspaceForCoordOwner,
     classifyOwnerNativeSession: async ({ ownerId, sessionId }: { ownerId: string; sessionId: string }) => {
       h.nativeSessionCalls.push({ ownerId, sessionId });
+      if (h.nativeSessionVerifierFailure?.sessionId === sessionId) throw h.nativeSessionVerifierFailure.error;
       if (h.nativeSessionRows) {
         return actual.classifyOwnerNativeSessionRows(h.nativeSessionRows.get(ownerId) ?? [], sessionId);
       }
@@ -2019,6 +2021,7 @@ beforeEach(() => {
   h.withWorkspaceCalls.length = 0;
   h.nativeSessionBinding = 'unbound';
   h.nativeSessionRows = null;
+  h.nativeSessionVerifierFailure = null;
   h.nativeSessionCalls.length = 0;
   h.workspaceAcquireError = null;
   h.getPresence.mockResolvedValue(null);
@@ -5261,6 +5264,54 @@ describe('su identity precedence (EI-7066: explicit SID before Mcp-Session-Id)',
     expect(textOf(res)).toContain('superuser_native_session_unverified');
     expect(h.nativeSessionCalls).toHaveLength(0);
     expect(seen).toHaveLength(0);
+  });
+
+  it('fails closed with a retryable verifier reason when per-call verification throws despite a matching inherited SID', async () => {
+    const nativeThread = 'native-child-session';
+    const inheritedSession = 'native-parent-session';
+    h.nativeSessionRows = new Map([['su-owner', [{ id: 541, session_id: inheritedSession, active: true }]]]);
+    h.nativeSessionVerifierFailure = {
+      sessionId: nativeThread,
+      error: Object.assign(new Error(`verification timed out for ${nativeThread} and su-owner`), {
+        name: 'OrgTxnTimeoutError',
+        pgCode: '57014',
+      }),
+    };
+    const meta = { threadId: nativeThread };
+    const extra = {
+      ...(superuserExtra('&workspace=ws-test&client=su-owner', {
+        'x-papercusp-native-session': inheritedSession,
+      }) as Record<string, unknown>),
+      _meta: meta,
+    };
+
+    const res = await callTool('gatingtest:scoped', {}, extra, meta);
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('superuser_native_session_verifier_unavailable');
+    expect(h.nativeSessionCalls).toEqual([{ ownerId: 'su-owner', sessionId: nativeThread }]);
+    expect(seen).toHaveLength(0);
+    expect(h.invocations[0]).toMatchObject({
+      status: 'error',
+      errorMessage: 'superuser_native_session_verifier_unavailable',
+      metadataJson: {
+        mcpAuthFailure: {
+          reason: 'superuser_native_session_verifier_unavailable',
+          nativeSession: {
+            carrier: 'meta:threadId',
+            candidateAdvSessionId: null,
+            verifierFailure: {
+              name: 'OrgTxnTimeoutError',
+              code: '57014',
+              message: 'verification timed out for [redacted] and [redacted]',
+              durationMs: expect.any(Number),
+            },
+          },
+        },
+      },
+    });
+    expect(JSON.stringify(h.invocations[0]?.metadataJson)).toContain('[redacted]');
+    expect(JSON.stringify(h.invocations[0]?.metadataJson)).not.toContain(nativeThread);
+    expect(JSON.stringify(h.invocations[0]?.metadataJson)).not.toContain('su-owner');
   });
 
   it('rejects an inherited owner SID when the native CLI session is bound elsewhere', async () => {
