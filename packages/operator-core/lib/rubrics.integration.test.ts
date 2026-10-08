@@ -144,8 +144,15 @@ async function insertRubricPlan(
             'rubric', ${JSON.stringify(opts.data ?? rubricData)}::text::jsonb, ${opts.templateSlug ?? null}, 'local')`;
 }
 
-async function withPlanRevisionInsertFailure<T>(planSlug: string, run: () => Promise<T>): Promise<T> {
+async function withPlanRevisionInsertFailure<T>(
+  planSlug: string,
+  run: () => Promise<T>,
+  onlyRubricRevision?: number,
+): Promise<T> {
   if (!/^[a-z0-9-]+$/.test(planSlug)) throw new Error(`unsafe test plan slug: ${planSlug}`);
+  if (onlyRubricRevision !== undefined && !Number.isSafeInteger(onlyRubricRevision)) {
+    throw new Error('unsafe test rubric revision');
+  }
   const suffix = Math.random().toString(36).slice(2, 10);
   const functionName = `rubric_revision_failure_${suffix}`;
   const triggerName = `${functionName}_trigger`;
@@ -154,7 +161,8 @@ async function withPlanRevisionInsertFailure<T>(planSlug: string, run: () => Pro
       CREATE FUNCTION harness_shared.${functionName}() RETURNS trigger
       LANGUAGE plpgsql AS $revision_failure$
       BEGIN
-        IF NEW.plan_slug = '${planSlug}' THEN
+        IF NEW.plan_slug = '${planSlug}' ${onlyRubricRevision === undefined ? ''
+          : `AND position('"rubricRevision": ${onlyRubricRevision},' in NEW.content_snapshot) > 0`} THEN
           RAISE EXCEPTION 'injected plan_revisions insert failure';
         END IF;
         RETURN NEW;
@@ -205,10 +213,22 @@ describe('reads — a rubric-template plan resolves as a Rubric', () => {
     await insertRubricPlan('direct-id-fast-path');
     const originalSql = h.sql;
     const statements: string[] = [];
-    h.sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
-      statements.push(strings.join(' '));
-      return Reflect.apply(originalSql, undefined, [strings, ...values]);
-    }) as unknown as postgres.Sql;
+    const observe = (client: postgres.Sql): postgres.Sql => new Proxy(client, {
+      apply(target, thisArg, args) {
+        const statement = (args[0] as TemplateStringsArray).join(' ');
+        if (statement.includes('FROM harness_shared.harness_plans')) statements.push(statement);
+        return Reflect.apply(target, thisArg, args);
+      },
+    });
+    // Preserve the native SQL surface and observe the REAL bounded transaction.
+    // A bare callable drops .begin and makes the production read fail closed.
+    h.sql = new Proxy(originalSql, {
+      get(target, property, receiver) {
+        if (property !== 'begin') return Reflect.get(target, property, receiver);
+        return (run: (tx: postgres.Sql) => Promise<unknown>) =>
+          target.begin((tx) => run(observe(tx as unknown as postgres.Sql)));
+      },
+    });
     try {
       const rubric = await rubrics.getRubric('direct-id-fast-path');
       expect(rubric?.rubricId).toBe('direct-id-fast-path');
@@ -785,6 +805,116 @@ Preserve this plan body.
        WHERE plan_slug = ${rubricId}`;
     expect(await rubrics.getRubric(rubricId, 7)).toBeNull();
   });
+
+  it.each(['propose', 'amend', 'ratify', 'retire'] as const)(
+    'preserves a proved legacy rubric preimage when %s advances its version (EI-25394374042899729)',
+    async (write) => {
+      const rubricId = `legacy-preimage-${write}`;
+      const initial = await rubrics.proposeRubric({
+        rubricId, characteristic: 'hive-coordination', title: 'Legacy preimage',
+        criteria: sampleCriteria, by: 'author-a',
+      });
+      await db.adminSql`
+        UPDATE harness_shared.plan_revisions
+           SET content_snapshot = regexp_replace(content_snapshot, '\n  "rubricRevision": [0-9]+,', '', 'g')
+         WHERE plan_slug = ${rubricId}`;
+      // The audit sequence is 1 while the authoritative plan version is 7.
+      await db.adminSql`UPDATE harness_shared.harness_plans SET version = 7 WHERE plan_slug = ${rubricId}`;
+      const before = await db.adminSql<{ seq: number; content_hash: string; content_snapshot: string }[]>`
+        SELECT seq, content_hash, content_snapshot FROM harness_shared.plan_revisions
+         WHERE plan_slug = ${rubricId} ORDER BY seq`;
+      expect((await rubrics.getRubric(rubricId, 7))?.criteriaHash).toBe(initial.criteriaHash);
+      expect(await rubrics.getRubric(rubricId, 1)).toBeNull();
+      const changed = sampleCriteria.map((criterion, i) => i === 0
+        ? { ...criterion, method: 'Changed grading procedure after the legacy contract.' }
+        : criterion);
+      if (write === 'propose') {
+        await rubrics.proposeRubric({
+          rubricId, characteristic: 'hive-coordination', title: 'Legacy preimage',
+          criteria: changed, by: 'author-a',
+        });
+      } else if (write === 'amend') {
+        await rubrics.amendRubric({
+          rubricId, by: 'author-a',
+          criterion: { key: sampleCriteria[0].key, field: 'method', mode: 'append', text: 'New procedure.' },
+        });
+      } else if (write === 'ratify') {
+        await rubrics.ratifyRubric(rubricId, 'independent-reviewer');
+      } else {
+        await rubrics.retireRubric(rubricId, 'independent-reviewer', 'test retirement');
+      }
+      const historical = await rubrics.getRubric(rubricId, 7);
+      expect(historical?.revision).toBe(7);
+      expect(historical?.criteria).toEqual(initial.criteria);
+      expect(historical?.criteriaHash).toBe(initial.criteriaHash);
+      expect(await rubrics.getRubric(rubricId, 1)).toBeNull();
+      const after = await db.adminSql<{ seq: number; content_hash: string; content_snapshot: string }[]>`
+        SELECT seq, content_hash, content_snapshot FROM harness_shared.plan_revisions
+         WHERE plan_slug = ${rubricId} ORDER BY seq`;
+      expect(after.slice(0, before.length)).toEqual(before); // Append only; retain authentic raw evidence.
+      expect(after.map((row) => rubrics.inspectRubricRevisionSnapshot(row.content_snapshot).rubricRevision))
+        .toEqual([undefined, 7, 8]);
+      expect(after[1]!.content_hash).toBe(before[0]!.content_hash);
+      expect(rubrics.parseRubricRevisionTemplateData(after[1]!.content_snapshot))
+        .toEqual(rubrics.parseRubricRevisionTemplateData(before[0]!.content_snapshot));
+    },
+  );
+
+  it('rolls back legacy preimage capture and the advance when revision insertion fails', async () => {
+    const rubricId = 'legacy-preimage-rollback';
+    await rubrics.proposeRubric({
+      rubricId, characteristic: 'hive-coordination', title: 'Legacy rollback',
+      criteria: sampleCriteria, by: 'author-a',
+    });
+    await db.adminSql`
+      UPDATE harness_shared.plan_revisions
+         SET content_snapshot = regexp_replace(content_snapshot, '\n  "rubricRevision": [0-9]+,', '', 'g')
+       WHERE plan_slug = ${rubricId}`;
+    await db.adminSql`UPDATE harness_shared.harness_plans SET version = 7 WHERE plan_slug = ${rubricId}`;
+    const before = await db.adminSql`SELECT * FROM harness_shared.harness_plans WHERE plan_slug = ${rubricId}`;
+    const beforeRevisions = await db.adminSql`SELECT * FROM harness_shared.plan_revisions WHERE plan_slug = ${rubricId}`;
+    // Fail the NEW version insert after the legacy preimage insert succeeded.
+    await expect(withPlanRevisionInsertFailure(rubricId, () => rubrics.ratifyRubric(rubricId, 'reviewer'), 8))
+      .rejects.toThrow(/plan revision unavailable/);
+    expect(await db.adminSql`SELECT * FROM harness_shared.harness_plans WHERE plan_slug = ${rubricId}`)
+      .toEqual(before);
+    expect(await db.adminSql`SELECT * FROM harness_shared.plan_revisions WHERE plan_slug = ${rubricId}`)
+      .toEqual(beforeRevisions);
+    expect((await rubrics.getRubric(rubricId, 7))?.revision).toBe(7);
+  });
+
+  it.each(['structured-data', 'body-hash'] as const)(
+    'does not bind an unproved legacy preimage after %s drift', async (drift) => {
+      const rubricId = `legacy-unproved-${drift}`;
+      await rubrics.proposeRubric({
+        rubricId, characteristic: 'hive-coordination', title: 'Unproved legacy',
+        criteria: sampleCriteria, by: 'author-a',
+      });
+      await db.adminSql`
+        UPDATE harness_shared.plan_revisions
+           SET content_snapshot = regexp_replace(content_snapshot, '\n  "rubricRevision": [0-9]+,', '', 'g')
+         WHERE plan_slug = ${rubricId}`;
+      await db.adminSql`UPDATE harness_shared.harness_plans SET version = 7 WHERE plan_slug = ${rubricId}`;
+      if (drift === 'structured-data') {
+        await db.adminSql`
+          UPDATE harness_shared.harness_plans SET template_data =
+            jsonb_set(template_data, '{criteria,0,method}', '"Unrecorded grading procedure"')
+           WHERE plan_slug = ${rubricId}`;
+      } else {
+        await db.adminSql`
+          UPDATE harness_shared.plan_revisions SET content_hash = 'unproved'
+           WHERE plan_slug = ${rubricId}`;
+      }
+      expect(await rubrics.getRubric(rubricId, 7)).toBeNull();
+      await rubrics.ratifyRubric(rubricId, 'independent-reviewer');
+      expect(await rubrics.getRubric(rubricId, 7)).toBeNull();
+      const rows = await db.adminSql<{ content_snapshot: string }[]>`
+        SELECT content_snapshot FROM harness_shared.plan_revisions
+         WHERE plan_slug = ${rubricId} ORDER BY seq`;
+      expect(rows.map((row) => rubrics.inspectRubricRevisionSnapshot(row.content_snapshot).rubricRevision))
+        .toEqual([undefined, 8]);
+    },
+  );
 
   it('does not infer legacy historical versions even when sequence counters align', async () => {
     const rubricId = 'aligned-legacy-standard';

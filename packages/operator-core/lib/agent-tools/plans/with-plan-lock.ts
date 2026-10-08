@@ -202,6 +202,14 @@ export interface PlanWriteMeta {
   latestRevision?: { seq: number; body: string } | null;
 }
 
+/** Locked state before a strict revision writer advances the plan. */
+export interface PlanWritePreimage {
+  body: string;
+  contentHash: string;
+  templateData: unknown;
+  version: number;
+}
+
 /**
  * A structured `template_data` write (plan-templates-and-rubric-v2 P-005). A
  * mutator returns this (alongside its `value`) to write the plan's `template_data`
@@ -212,14 +220,6 @@ export interface PlanWriteMeta {
  * STRUCTURED-ONLY write that still bumps `version`, stamps `updated_at`, and fires
  * `afterWrite` (the revision spine) against the unchanged body.
  */
-/** Locked state before a strict revision writer advances the plan. */
-export interface PlanWritePreimage {
-  body: string;
-  contentHash: string;
-  templateData: unknown;
-  version: number;
-}
-
 export interface TemplateDataPatch {
   data: unknown;
   /**
