@@ -17,7 +17,7 @@ import {
   type FederatedGovernanceEvent,
   type PlanGovernanceControls,
 } from './governance-federation';
-import { finalizeGovernanceRound, rebuildGovernanceRound, type GovernanceRound } from './governance-round';
+import { finalizeGovernanceRound, rebuildGovernanceRound, type FinalizationCertificate, type GovernanceRound } from './governance-round';
 import type { AdmissionCertificate } from './plan-admission-enforcement';
 import type { PlanAdmissionCertificateSource } from './plan-admission-gate';
 import {
@@ -41,6 +41,16 @@ export interface PlanAdmissionCertificateSourceDeps {
   readonly resolvePotHomeSlug?: ResolvePotHomeSlug;
   readonly readSnapshot?: ReadSnapshot;
   readonly resolveAuthority?: typeof resolvePlanAdmissionGovernanceAuthority;
+}
+
+export interface AuthenticatedGovernanceFinalization {
+  readonly certificate: FinalizationCertificate | null;
+  readonly governance: PlanGovernanceControls | null;
+}
+
+export type GovernanceFinalizationInput = Parameters<PlanAdmissionCertificateSource['resolve']>[0];
+export interface AuthenticatedGovernanceFinalizationSource extends PlanAdmissionCertificateSource {
+  resolveFinalization(input: GovernanceFinalizationInput): Promise<AuthenticatedGovernanceFinalization>;
 }
 
 export function bridgeFinalizationToAdmissionCertificate(
@@ -87,15 +97,14 @@ function quarantinedControls(roundId: string, detail: string): PlanGovernanceCon
 
 export function createPlanAdmissionCertificateSource(
   deps: PlanAdmissionCertificateSourceDeps = {},
-): PlanAdmissionCertificateSource {
+): AuthenticatedGovernanceFinalizationSource {
   const resolvePotHomeSlug = deps.resolvePotHomeSlug ?? potHomeSlugForHarness;
   const readSnapshot = deps.readSnapshot ?? readPlanAdmissionGovernanceSnapshot;
 
-  return {
-    async resolve(input) {
+  const resolveFinalization = async (input: GovernanceFinalizationInput): Promise<AuthenticatedGovernanceFinalization> => {
       const workspaceId = input.opts.workspaceId;
       const harnessSlug = input.opts.harnessSlug;
-      if (!workspaceId || !harnessSlug) return { certificate: null, governance: null };
+        if (!workspaceId || !harnessSlug || !Number.isSafeInteger(input.nowMs)) return { certificate: null, governance: null };
 
       try {
         const potHomeSlug = await resolvePotHomeSlug(workspaceId, harnessSlug);
@@ -185,10 +194,7 @@ export function createPlanAdmissionCertificateSource(
           return { certificate: null, governance: quarantinedControls(selected.round.roundId,
             'finalization does not match authenticated ballot reconstruction') };
         return {
-          certificate: bridgeFinalizationToAdmissionCertificate(
-            finalization,
-            input.policy.ratificationWindowSec,
-          ),
+          certificate: finalization,
           governance,
         };
       } catch {
@@ -197,6 +203,16 @@ export function createPlanAdmissionCertificateSource(
         // of turning a transient backing-store fault into an unstructured tool crash.
         return { certificate: null, governance: null };
       }
+  };
+  return {
+    resolveFinalization,
+    async resolve(input) {
+      const resolved = await resolveFinalization(input);
+      return {
+        certificate: resolved.certificate ? bridgeFinalizationToAdmissionCertificate(
+          resolved.certificate, input.policy.ratificationWindowSec) : null,
+        governance: resolved.governance,
+      };
     },
   };
 }

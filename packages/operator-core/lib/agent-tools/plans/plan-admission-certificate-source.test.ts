@@ -333,6 +333,17 @@ describe('production plan-admission certificate source', () => {
     opts: { workspaceId: WORKSPACE_ID, harnessSlug: HARNESS_SLUG },
   });
 
+  it('exposes the same authenticated full certificate to governed execution', async () => {
+    const ratified = ratifiedRound();
+    const source = sourceFor(await snapshotFrom(ratified.events));
+    const full = await source.resolveFinalization({ slug: 'plan-1', door: 'start',
+      planRevisionHash: PLAN_REVISION, policy: POLICY, nowMs: NOW + 1,
+      opts: { workspaceId: WORKSPACE_ID, harnessSlug: HARNESS_SLUG } });
+    expect(full.certificate).toEqual(ratified.certificate);
+    expect(full.governance?.status).toBe('finalized');
+    expect((await resolve(source)).certificate?.certificateHash).toBe(full.certificate?.certificateHash);
+  });
+
   it('reconstructs real signed replacements and rejects a same-sequence replay', async () => {
     const ratified = ratifiedRound();
     const original = ratified.votes[0]!;
