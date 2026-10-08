@@ -15,6 +15,8 @@ import { paymentVoucherDigest, paymentVoucherSigningBytes, type CumulativePaymen
 import { usageReceiptSigningBytes, verifySellerReceiptAuthority } from '../p2p/metered-invocation';
 import { readChannelUsage, readHostedToolChannel, readHostedToolEntitlements, readHostedPerUseOffers, settleMeteredUnit } from './metered-invocation-door-io';
 import type { FundedToolTurn, FundedToolTurnBinding } from './funded-tool-turn-store';
+import type { FundedIdentityTurn, FundedIdentityTurnBinding } from './funded-turn-store';
+import { quoteIdentityInferenceTurn } from './identity-per-use-offer';
 
 export const INSTALLED_TOOL_FUNDING_CONFIG = 'CUPBOARD_INSTALLED_TOOL_FUNDING';
 export const SELLER_RECEIPT_RPC_KIND = 'commerce.seller-receipt';
@@ -39,6 +41,7 @@ const voucherSchema = z.object({ channelId: id, payer: id, seller: id, releaseRe
   expiresAtMs: timestamp, cumulativeClaimMicros: integer, signature: z.string().regex(/^[A-Za-z0-9+/]{86}==$/) }).strict();
 const requestSchema = z.object({ requestId: z.string().uuid(), grantId: id, sellerDevicePubkey: pubkey, channelId: id, turnId: id,
   action: z.enum(['authority', 'sign', 'settle']), receipt: receiptSchema.optional(),
+  identityInference: z.object({ billedInferenceMicros: integer, priorRemainderNumerator: integer }).strict().optional(),
   voucher: voucherSchema.optional(), signature: z.string().regex(/^[A-Za-z0-9+/]{86}==$/).optional() }).strict();
 type Request = z.infer<typeof requestSchema>;
 const digest = (value: unknown) => createHash('sha256').update(canonicalJson(value)).digest('hex');
@@ -114,23 +117,53 @@ export function buildSellerReceiptRpcHandler(deps: SellerReceiptRpcDeps): Author
       return signature.toString('base64');
     };
     if (request.action === 'authority') {
-      if (request.receipt || request.voucher || request.signature) throw new Error('seller-rpc-invalid-authority-request');
+      if (request.receipt || request.voucher || request.signature || request.identityInference) throw new Error('seller-rpc-invalid-authority-request');
       return { ok: true, requestDigest: digest(request), authoritySignature: await sign(proofBytes(request)) };
     }
     const r = request.receipt;
     if (!r || r.occurredAtMs > nowMs()) throw new Error('seller-rpc-exact-receipt-required');
-    const history = await (deps.readUsage ?? readChannelUsage)(grant.channelId, transport);
+    const history = request.identityInference
+      ? await (deps.readUsage ?? readChannelUsage)(grant.channelId, transport, grant.offerId)
+      : await (deps.readUsage ?? readChannelUsage)(grant.channelId, transport);
     if (!history.ok || history.usage.channelId !== grant.channelId || !Array.isArray(history.usage.receipts))
       throw new Error('seller-rpc-reservation-unavailable');
     const rows = history.usage.receipts.filter(v => v.usageNonce === request.turnId);
     const reserved = rows[0];
     if (rows.length !== 1 || !reserved || reserved.offerId !== grant.offerId || reserved.releaseRef !== grant.skuRef ||
-        reserved.payer !== grant.payerPrincipal || reserved.seller !== grant.seller.principal || reserved.identityInference ||
+        reserved.payer !== grant.payerPrincipal || reserved.seller !== grant.seller.principal ||
         reserved.expiresAtMs > grant.expiresAtMs || r.occurredAtMs < reserved.reservedAtMs ||
         BigInt(reserved.reservedMicros) > BigInt(grant.maxMicrosPerTurn) ||
         reserved.unitPriceMicros !== String(offer.terms.unitPriceMicros) || reserved.priceVersion !== offer.terms.priceVersion ||
-        reserved.splitManifestHash !== offer.terms.splitManifestHash || reserved.meterUnit !== 'tool-call' ||
-        BigInt(r.meterQuantity) > BigInt(reserved.meterQuantity) ||
+        reserved.splitManifestHash !== offer.terms.splitManifestHash || reserved.meterUnit !== offer.terms.meterUnit ||
+        BigInt(r.meterQuantity) > BigInt(reserved.meterQuantity))
+      throw new Error('seller-rpc-reservation-mismatch');
+    let identityRemainder: string | undefined;
+    if (request.identityInference) {
+      const basis = request.identityInference, original = reserved.identityInference;
+      if (!original || !integer.safeParse(original.ceilingMicros).success || request.voucher)
+        throw new Error('seller-rpc-identity-reservation-required');
+      const identityOffer = { skuRef: offer.skuRef, ...offer.terms, unitPriceMicros: Number(offer.terms.unitPriceMicros) };
+      const q = quoteIdentityInferenceTurn({ offer: identityOffer,
+        inferenceCeilingMicros: BigInt(original.ceilingMicros), billedInferenceMicros: BigInt(basis.billedInferenceMicros),
+        priorRemainderNumerator: BigInt(basis.priorRemainderNumerator) });
+      const origin = history.usage.identityMarkupOrigin;
+      if (!q.ok || BigInt(r.meterQuantity) !== q.reservationQuantity || BigInt(reserved.meterQuantity) !== q.reservationQuantity ||
+          BigInt(r.amountMicros) !== q.amountMicros || BigInt(reserved.reservedMicros) !== q.reservedMarkupMicros)
+        throw new Error('seller-rpc-identity-quote-mismatch');
+      identityRemainder = String(q.remainderNumerator);
+      // A settled retry retains its recorded basis; the account origin has
+      // already advanced to the NEXT remainder and cannot be reused here.
+      if (reserved.state === 'settled') {
+        if (original.billedInferenceMicros !== basis.billedInferenceMicros ||
+            original.priorRemainderNumerator !== basis.priorRemainderNumerator ||
+            original.remainderNumerator !== identityRemainder || reserved.amountMicros !== r.amountMicros ||
+            reserved.meterQuantity !== r.meterQuantity || reserved.settledAtMs !== r.occurredAtMs)
+          throw new Error('seller-rpc-identity-basis-changed');
+      } else if (!origin || origin.offerId !== grant.offerId || origin.payer !== grant.payerPrincipal ||
+          origin.seller !== grant.seller.principal || canonicalJson(origin.offer) !== canonicalJson(identityOffer) ||
+          origin.remainderNumerator !== basis.priorRemainderNumerator)
+        throw new Error('seller-rpc-identity-carry-mismatch');
+    } else if (reserved.identityInference || reserved.meterUnit !== 'tool-call' ||
         BigInt(r.amountMicros) !== BigInt(r.meterQuantity) * BigInt(reserved.unitPriceMicros))
       throw new Error('seller-rpc-reservation-mismatch');
     if (request.voucher) {
@@ -159,14 +192,22 @@ export function buildSellerReceiptRpcHandler(deps: SellerReceiptRpcDeps): Author
       await checkCurrent();
       if (await readKey(grant.seller.credentialRef) !== token) throw new Error('seller-rpc-credential-changed');
       await (deps.settle ?? settleMeteredUnit)({ channelId: grant.channelId, usageNonce: request.turnId,
-        actualQuantity: BigInt(r.meterQuantity), occurredAtMs: r.occurredAtMs,
+        ...(request.identityInference ? { identityInference: {
+          billedInferenceMicros: BigInt(request.identityInference.billedInferenceMicros),
+          priorRemainderNumerator: BigInt(request.identityInference.priorRemainderNumerator) } } : { actualQuantity: BigInt(r.meterQuantity) }),
+        occurredAtMs: r.occurredAtMs,
         signReceipt: candidate => { if (!candidate.equals(bytes)) throw new Error('seller-rpc-hosted-receipt-changed'); return signature; } }, transport);
       const confirmed = await (deps.readUsage ?? readChannelUsage)(grant.channelId, transport);
       const receipt = confirmed.ok && confirmed.usage.channelId === grant.channelId && Array.isArray(confirmed.usage.receipts)
         ? confirmed.usage.receipts.find(v => v.usageNonce === request.turnId) : undefined;
       if (!receipt || receipt.state !== 'settled' || receipt.receiptSignature !== signature ||
           receipt.voucherDigest !== r.voucherDigest || receipt.meterQuantity !== r.meterQuantity ||
-          receipt.amountMicros !== r.amountMicros || receipt.settledAtMs !== r.occurredAtMs)
+          receipt.amountMicros !== r.amountMicros || receipt.settledAtMs !== r.occurredAtMs ||
+          (request.identityInference && (!receipt.identityInference ||
+            receipt.identityInference.ceilingMicros !== reserved.identityInference?.ceilingMicros ||
+            receipt.identityInference.billedInferenceMicros !== request.identityInference.billedInferenceMicros ||
+            receipt.identityInference.priorRemainderNumerator !== request.identityInference.priorRemainderNumerator ||
+            receipt.identityInference.remainderNumerator !== identityRemainder)))
         throw new Error('seller-rpc-settlement-unconfirmed');
     }
     return { ok: true, signature, requestDigest: digest(request), authoritySignature: await sign(proofBytes(request)) };
@@ -194,12 +235,16 @@ export function remoteSellerReceiptCapability(remote: RemoteSeller, sellerPubkey
   const base = (turnId: string) => ({ requestId: randomUUID(), grantId: remote.grantId, sellerDevicePubkey: remote.devicePubkey, channelId, turnId });
   return {
     verify: async () => { await call({ ...base('authority-check'), action: 'authority' }); },
-    signReceipt: async (bytes: Buffer, context?: { turnId: string; voucher?: CumulativePaymentVoucher }) => {
+    signReceipt: async (bytes: Buffer, context?: { turnId: string; voucher?: CumulativePaymentVoucher;
+      identityInference?: { billedInferenceMicros: bigint; priorRemainderNumerator: bigint } }) => {
       if (!context) throw new Error('seller-rpc-original-turn-required');
       const receipt = receiptSchema.parse(JSON.parse(bytes.toString('utf8')));
       if (!receiptBytes(receipt).equals(bytes)) throw new Error('seller-rpc-canonical-receipt-required');
       const v = context.voucher;
       const request: Request = { ...base(context.turnId), action: 'sign', receipt,
+        ...(context.identityInference ? { identityInference: {
+          billedInferenceMicros: String(context.identityInference.billedInferenceMicros),
+          priorRemainderNumerator: String(context.identityInference.priorRemainderNumerator) } } : {}),
         ...(v ? { voucher: { ...v, meterQuantity: String(v.meterQuantity), pricePerUnitMicros: String(v.pricePerUnitMicros),
           cumulativeClaimMicros: String(v.cumulativeClaimMicros) } } : {}) };
       const result = await call(request);
@@ -207,11 +252,16 @@ export function remoteSellerReceiptCapability(remote: RemoteSeller, sellerPubkey
         throw new Error('seller-rpc-invalid-seller-signature');
       return result.signature;
     },
-    settle: async (binding: FundedToolTurnBinding, outbox: NonNullable<FundedToolTurn['settlementOutbox']>) => {
-      if (binding.channelId !== channelId || binding.offer.receiptAuthority?.pubkeyBase64 !== sellerPubkey)
+    settle: async (binding: FundedToolTurnBinding | FundedIdentityTurnBinding,
+      outbox: NonNullable<FundedToolTurn['settlementOutbox']> | NonNullable<FundedIdentityTurn['settlementOutbox']>) => {
+      const identity = 'receipt' in outbox;
+      if (binding.channelId !== channelId || (!identity &&
+          ('inferenceCeilingMicros' in binding || binding.offer.receiptAuthority?.pubkeyBase64 !== sellerPubkey)))
         throw new Error('seller-rpc-original-binding-required');
-      const { signature, ...receipt } = outbox;
-      await call({ ...base(outbox.usageNonce), action: 'settle', receipt, signature });
+      const { signature, ...receipt } = identity ? outbox.receipt : outbox;
+      await call({ ...base(receipt.usageNonce), action: 'settle', receipt, signature,
+        ...(identity ? { identityInference: { billedInferenceMicros: outbox.billedInferenceMicros,
+          priorRemainderNumerator: outbox.priorRemainderNumerator } } : {}) });
     },
   };
 }

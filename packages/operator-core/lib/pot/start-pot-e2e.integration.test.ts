@@ -153,7 +153,7 @@ describe('permanently retired Pot startup boundary', () => {
 
   it('default arming leaves no persisted subscriptions or live Mug rules in either mode', async () => {
     const before = await readPotWakeState(WS);
-    for (const mode of ['replace', 'merge'] as const) {
+    for (const mode of ['replace', 'ensure'] as const) {
       await expect(armDefaultPotWakeSubscriptions(WS, { mode })).resolves.toEqual({ rules: 0, added: 0 });
       expect(await readPotWakeState(WS)).toEqual(before);
       expect(potRules()).toHaveLength(0);

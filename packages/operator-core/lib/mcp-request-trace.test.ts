@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   buildMcpSessionSurfaceTraceEvent,
+  logMcpRequestTrace,
   mcpDataPlaneDegradedAtFromExtra,
   mcpTraceIdFromExtra,
   MCP_DATA_PLANE_DEGRADED_AT_HEADER,
@@ -63,6 +64,80 @@ describe('buildMcpSessionSurfaceTraceEvent', () => {
     expect(rejected.wireMcpSessionIdFingerprint).not.toBe(listed.wireMcpSessionIdFingerprint);
     expect(rejected.nativeSessionClaimFingerprint).toBe(listed.nativeSessionClaimFingerprint);
     expect(JSON.stringify({ listed, rejected })).not.toContain(nativeSessionId);
+  });
+});
+
+describe('logMcpRequestTrace', () => {
+  it('preserves scratch progress and terminal phase timings in trace output', () => {
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    const prefix = '[mcp-request-trace] ';
+    try {
+      logMcpRequestTrace({
+        traceId: '1cb45906-a016-4b0d-8ae8-7f0dfcbe8eb4',
+        toolName: 'work_items:get',
+        stage: 'scratch_write_progress',
+        elapsedMs: 5_000,
+        scratchWriteProgress: {
+          phase: 'file-write',
+          phaseElapsedMs: 5_000,
+          totalElapsedMs: 5_000,
+          bytes: 1_600,
+          pendingWrites: 1,
+          recoveryActive: false,
+          refreshActive: false,
+        },
+      });
+      logMcpRequestTrace({
+        traceId: '1cb45906-a016-4b0d-8ae8-7f0dfcbe8eb4',
+        toolName: 'work_items:get',
+        stage: 'scratch_write_settled',
+        elapsedMs: 30_007,
+        scratchWriteTimings: {
+          quotaWaitMs: 3,
+          refreshWaitMs: 0,
+          quotaRecoveryMs: 0,
+          writeMs: 30_004,
+          totalMs: 30_007,
+        },
+      });
+
+      const events = info.mock.calls.map(([line]) => {
+        expect(line).toContain(prefix);
+        return JSON.parse(String(line).slice(prefix.length));
+      });
+      expect(events).toEqual([
+        {
+          traceId: '1cb45906-a016-4b0d-8ae8-7f0dfcbe8eb4',
+          toolName: 'work_items:get',
+          stage: 'scratch_write_progress',
+          elapsedMs: 5_000,
+          scratchWriteProgress: {
+            phase: 'file-write',
+            phaseElapsedMs: 5_000,
+            totalElapsedMs: 5_000,
+            bytes: 1_600,
+            pendingWrites: 1,
+            recoveryActive: false,
+            refreshActive: false,
+          },
+        },
+        {
+          traceId: '1cb45906-a016-4b0d-8ae8-7f0dfcbe8eb4',
+          toolName: 'work_items:get',
+          stage: 'scratch_write_settled',
+          elapsedMs: 30_007,
+          scratchWriteTimings: {
+            quotaWaitMs: 3,
+            refreshWaitMs: 0,
+            quotaRecoveryMs: 0,
+            writeMs: 30_004,
+            totalMs: 30_007,
+          },
+        },
+      ]);
+    } finally {
+      info.mockRestore();
+    }
   });
 });
 

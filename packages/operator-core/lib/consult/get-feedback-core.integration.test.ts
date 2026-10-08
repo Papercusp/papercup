@@ -212,7 +212,7 @@ const cand = (ownerId: string, over: Partial<RoutingCandidate> = {}): RoutingCan
 
 const snapshotOf = (
   candidates: RoutingCandidate[],
-  degraded?: 'embed-unavailable',
+  degraded?: RoutingSnapshot['degraded'],
   fallback?: 'lexical',
 ): RoutingSnapshot => ({
   query: 'q',
@@ -229,7 +229,7 @@ const snapshotOf = (
 const routeOf = (
   qualified: RoutingCandidate[],
   opts: {
-    degraded?: 'embed-unavailable';
+    degraded?: RoutingSnapshot['degraded'];
     fallback?: 'lexical';
     all?: RoutingCandidate[];
     queryVec?: number[] | null;
@@ -1229,6 +1229,16 @@ describe('getFeedbackCore — honest no_qualified_responder', () => {
     // are separate fields — `routed` already pairs with `awaiting_responder`.
     expect(r.state).toBe('no_qualified_responder');
     expect(row.state).toBe('no_qualified_responder');
+  });
+
+  it('keeps unavailable subject evidence honest at the requester contract', async () => {
+    const { deps } = makeDeps(routeOf([], { degraded: 'evidence-unavailable' }));
+    const r = asOk(await getFeedbackCore(baseReq, deps));
+    expect(r.verdict).toBe('relevance_unmeasured');
+    expect(r.reason).toBe('evidence_unavailable');
+    expect(r.degraded).toBe('evidence-unavailable');
+    expect(r.hint).toContain('does not prove no expert exists');
+    expect((await stateRow(r.conversation_id)).routing).toMatchObject({ degraded: 'evidence-unavailable' });
   });
 
   it('embed_unavailable lexical candidates route one bounded manual-review pick', async () => {

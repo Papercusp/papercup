@@ -313,12 +313,14 @@ describe('loadRoleCapabilities', () => {
       const caps = await loadRoleCapabilities(fakeTx([]), 'ws', 'judge');
       const [
         { default: docsGet },
+        { default: reportsGet },
         { default: pgQuery },
         { default: pgMutate },
         { default: lspQuery },
         { default: lspApply },
       ] = await Promise.all([
         import('../../../agent-tools/docs/get'),
+        import('../../../agent-tools/reports/get'),
         import('../../../agent-tools/dev/pg_query'),
         import('../../../agent-tools/dev/pg_mutate'),
         import('../../../agent-tools/lsp/query'),
@@ -328,6 +330,10 @@ describe('loadRoleCapabilities', () => {
       expect(docsGet.agentRoles).toContain('judge');
       expect(docsGet.capability).toBe('docs:read');
       expect(caps.has(docsGet.capability as string)).toBe(true);
+      expect(reportsGet.agentRoles).toContain('judge');
+      expect(reportsGet.capability).toBe('reports:read');
+      expect(caps.has('reports:read')).toBe(true);
+      expect(caps.has('reports:write')).toBe(false);
       // Public evidence reads can be independently reproduced through the
       // read-only SQL/compiler surfaces when their projections omit fields.
       expect(pgQuery.agentRoles).toContain('judge');

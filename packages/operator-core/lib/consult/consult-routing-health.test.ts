@@ -8,6 +8,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   consultPolicyKey,
+  expertiseExecutionHealthFromRows,
+  readExpertiseExecutionHealth,
   resolveRoutingHealthWindow,
   routingHealthFromRows,
   type RoutingHealthConsultRow,
@@ -22,6 +24,31 @@ const iso = (ms: number) => new Date(ms).toISOString();
 const SINCE = T0;
 const UNTIL = T0 + 6 * H;
 const NOW = T0 + 8 * H;
+
+describe('routing execution cohort', () => {
+  const receipt = (durationMs: number, over: object = {}) => ({ metadata_json: {
+    schemaVersion: 1, caller: 'fixture-caller', policy: 'consult-default', buildSha: '1234567',
+    outcome: 'returned', durationMs, stages: { embedding: { durationMs: durationMs / 2, outcome: 'returned' } }, ...over,
+  } });
+  it('keeps caller/policy/build populations and observed stage failures separate', () => {
+    const result = expertiseExecutionHealthFromRows([
+      receipt(10), receipt(40, { outcome: 'threw', stages: { embedding: { durationMs: 20, outcome: 'threw' } } }),
+      receipt(20, { caller: 'preview', buildSha: null, outcome: 'degraded', stages: {} }), { metadata_json: null },
+    ], true);
+    expect(result).toMatchObject({ cohort: 'routing-execution-start', rowsScanned: 4, invalidReceipts: 1, truncatedByLimit: true });
+    expect(result.groups[0]).toMatchObject({ calls: 2, outcomes: { returned: 1, degraded: 0, threw: 1 },
+      latencyMs: { observed: 2, p50: 10, p95: 40 }, stages: { embedding: { observed: 2, threw: 1, p50: 5, p95: 20 } } });
+    expect(result.groups[1].stages.embedding).toBeUndefined();
+    expect(result.groups[1].buildSha).toBeNull();
+  });
+  it('a missing ledger is unavailable rather than a healthy zero', async () => {
+    const sql = (async () => { throw new Error('column metadata_json absent'); }) as never;
+    const result = await readExpertiseExecutionHealth(sql, 'fixture', iso(SINCE), iso(UNTIL));
+    expect(result.status).toBe('unavailable');
+    expect(result.unavailableReason).toBe('routing-invocation-ledger-unavailable');
+    expect(expertiseExecutionHealthFromRows([]).status).toBe('measured-empty');
+  });
+});
 
 const launch = (atMs: number, answeringOwnerId: string, extraAttempts: object[] = []) => ({
   at: iso(atMs),

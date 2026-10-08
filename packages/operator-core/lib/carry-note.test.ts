@@ -399,6 +399,16 @@ describe('checks — external-state claims with probes (cold-carry-system-harden
     expect(renderCheckLine(row!)).toContain('- ✓ ');
   });
 
+  it('does not treat a JSON out-of-scope disposition count as a coverage disclaimer', () => {
+    const claim = 'the scoped cohort snapshot is verified';
+    const evidence = JSON.stringify({ checked: 5, 'out-of-scope': 2, notChecked: 0 });
+
+    expect(findVerificationConflict(evidence, claim)).toBeNull();
+    expect(findVerificationConflict('two producer files were out-of-scope for this run', claim)).toMatch(
+      /out-of-scope/i,
+    );
+  });
+
   it('keeps running evidence VERIFIED when it supports a queued/running claim', () => {
     const claim = 'fresh typechecks remain queued';
     const evidence = "both sessions were 'still running and queued at ~180s'";

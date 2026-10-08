@@ -16,6 +16,13 @@ import {
   qualifyingScoreOf,
   relevanceOf,
   freshnessOf,
+  expertiseSubject,
+  subjectEvidenceQuery,
+  contrastedSubjectScore,
+  subjectContrasts,
+  scoreSubjectEvidence,
+  meetsRoutingFloors,
+  SUBJECT_EVIDENCE_MIN_SCORE,
   FRESHNESS_BASE,
   type RoutingCandidate,
   type SelectedResponder,
@@ -34,6 +41,75 @@ const cand = (ownerId: string, over: Partial<RoutingCandidate> = {}): RoutingCan
 
 const ids = (s: SelectedResponder[]) => s.map((x) => x.candidate.ownerId);
 const vias = (s: SelectedResponder[]) => s.map((x) => x.via);
+
+describe('problem-specific expertise qualification', () => {
+  it('requires measured contract evidence to beat a competing system, rather than trusting a high absolute score', async () => {
+    expect(contrastedSubjectScore(0.74, [0.91])).toBeLessThan(0.5);
+    expect(contrastedSubjectScore(0.81, [0.65])).toBeGreaterThan(0.5);
+    expect(contrastedSubjectScore(0.4, [0.1])).toBeLessThan(0.5);
+    for (const alternatives of [[], [null], [NaN], [2]]) expect(contrastedSubjectScore(0.9, alternatives)).toBeNull();
+    const contracts = [
+      { name: 'computer:provision_desktop', description: 'Start a sandboxed GUI desktop.' },
+      { name: 'computer:observe', description: 'Read accessible GUI widgets.' },
+      { name: 'release:checkpoint-run', description: 'Run the release gate checkpoint suite.' },
+    ];
+    expect(subjectContrasts('computer:provision_desktop', 'release gate checkpoint', contracts).map(c => c.name))
+      .toEqual(['release:checkpoint-run']);
+    const scorer = vi.fn(async (_query: string, texts: string[]) => texts.map((_, i) => i ? 0.91 : 0.74));
+    const scores = await scoreSubjectEvidence('computer:provision_desktop', ['release gate checkpoint'], Date.now() + 4000, { contracts, scorer });
+    expect(scores[0]).toBeLessThan(0.5);
+    expect(scorer.mock.calls[0][0]).toBe('release gate checkpoint');
+    expect(scorer.mock.calls[0][1]).toEqual(['computer:provision_desktop\nStart a sandboxed GUI desktop.',
+      'release:checkpoint-run\nRun the release gate checkpoint suite.']);
+    expect(await scoreSubjectEvidence('missing:contract', ['text'], Date.now() + 4000, { contracts, scorer })).toEqual([null]);
+  });
+
+  it('keeps measured peer evidence when another passage cannot be scored, and preserves missing contrasts as unknown', async () => {
+    const contracts = [
+      { name: 'computer:provision_desktop', description: 'Start a sandboxed GUI desktop.' },
+      { name: 'release:checkpoint-run', description: 'Run the release gate checkpoint suite.' },
+    ];
+    const scorer = async (text: string) => {
+      if (text.startsWith('unavailable')) throw new Error('deadline');
+      return [0.9, 0.2];
+    };
+    const observed = await scoreSubjectEvidence('computer:provision_desktop',
+      ['unavailable release checkpoint', 'desktop repair instead of release checkpoint'], Date.now() + 4000, { contracts, scorer });
+    expect(observed[0]).toBeNull();
+    expect(observed[1]).toBeGreaterThan(0.5);
+    expect(await scoreSubjectEvidence('computer:provision_desktop', ['unrelated'], Date.now() + 4000, { contracts, scorer })).toEqual([null]);
+  });
+
+  it('anchors named tools independently of shared ownership decision words', () => {
+    expect(expertiseSubject('stale desktop rows block computer:provision_desktop; use soleOwner?')).toBe('computer:provision_desktop');
+    expect(expertiseSubject('inspect packages/core/lease.ts for stale leases')).toBe('packages/core/lease.ts');
+    expect(expertiseSubject('how should ownership work?')).toBeNull();
+    expect(subjectEvidenceQuery('computer:observe')).toBeNull();
+    expect(subjectEvidenceQuery('computer:observe', 'Capture a desktop screenshot.')).toContain('desktop screenshot');
+    expect(subjectEvidenceQuery('packages/core/lease.ts')).toBe('packages/core/lease.ts');
+  });
+
+  it('preserves a conceptual positive and refuses above-floor mismatches, including snapshot refill', () => {
+    const floors = { simFloor: 0.4, relevanceFloor: 0.41 };
+    for (const status of ['supported', 'mismatch', 'unmeasured'] as const) {
+      const candidate = cand('historical-expert', { subjectEvidence: {
+        subject: 'computer:provision_desktop', status,
+        score: status === 'unmeasured' ? null : status === 'supported' ? 0.692 : 0.350,
+      } });
+      expect(meetsRoutingFloors(candidate, floors)).toBe(status === 'supported');
+      expect(snapshotCandidateQualifies(floors, candidate)).toBe(status === 'supported');
+    }
+    expect(SUBJECT_EVIDENCE_MIN_SCORE).toBe(0.5);
+    expect(meetsRoutingFloors(cand('legacy'), floors)).toBe(true);
+    expect(meetsRoutingFloors(cand('subject-only', { signals: { similarity: 0.1, verification: 1, authorship: 1, freshness: 1 },
+      subjectEvidence: { subject: 'computer:provision_desktop', status: 'supported', score: 1 } }), floors)).toBe(false);
+  });
+
+  it('keeps a subject mismatch labelled minimum instead of restoring expert status', () => {
+    const negative = cand('gate-owner', { subjectEvidence: { subject: 'computer:provision_desktop', status: 'mismatch', score: 0.35 } });
+    expect(vias(selectResponders({ qualified: [], allCandidates: [negative], min: 1, max: 1 }))).toEqual(['minimum']);
+  });
+});
 
 describe('routing stage receipts', () => {
   const params = {
@@ -70,6 +146,7 @@ describe('routing stage receipts', () => {
     expect(receipts[0].stages.embedding).toBeUndefined();
     expect(receipts[0].stages.verification).toBeUndefined();
     expect(receipts[0].stages.transcripts?.outcome).toBe('returned');
+    expect(receipts[0].stages.ranking?.outcome).toBe('returned');
     expect(result.snapshot.measurement).toEqual(receipts[0]);
   });
 

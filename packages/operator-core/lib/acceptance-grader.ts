@@ -30,6 +30,10 @@ import { killTask } from './task-manager/control';
 
 type LaunchCtx = Parameters<typeof launchAgentTool.handler>[1];
 
+import { getBuildInfo } from './build-info';
+import { recordExpertiseRoutingInvocation } from './endpoint-route/telemetry';
+import { ACCEPTANCE_GRADING_POLICY } from './consult/selection-policies';
+
 /**
  * WI-10002156: a REAPED session wears a healthy costume at grader selection.
  *
@@ -1678,7 +1682,10 @@ async function prodDiscoverGrader(
       // gate already resolves scorecard authors through.
       getPartyKeys: (workspaceId, ownerIds) => lineagePartyKeys(ownerIds, { sql: getOrgPg().sql, workspaceId }),
       route: (params) =>
-        routeConsult(params, {
+        routeConsult({ ...params, telemetry: {
+          caller: 'acceptance-grader', policy: ACCEPTANCE_GRADING_POLICY, buildSha: getBuildInfo().sha,
+        } }, {
+          recordTelemetry: receipt => recordExpertiseRoutingInvocation(receipt, getOrgPg().sql),
           getSql: () => getOrgPg().sql,
           embed: resolved?.embed ?? null,
           embeddingProfile,

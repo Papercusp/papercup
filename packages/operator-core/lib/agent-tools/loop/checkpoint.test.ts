@@ -2859,6 +2859,24 @@ describe("WI-7264: repair-don't-refuse — an oversized or wrong-shaped sub-fiel
       expect(written).toContain('- ✓ ');
     });
 
+    it('keeps structured out-of-scope disposition counts VERIFIED at the writer boundary', async () => {
+      const claim = 'the scoped cohort snapshot is complete';
+      const evidence = JSON.stringify({ checked: 5, 'out-of-scope': 2, notChecked: 0 });
+      const b = body(
+        await call({
+          did: 'checkpointed the scoped cohort snapshot',
+          checks: [{ claim, recheck: 'read the cohort counts', verified: evidence }],
+        }),
+      );
+
+      expect(b.ok).toBe(true);
+      expect(b.repairs).toBeUndefined();
+      const [, written] = setLoopCarryNote.mock.calls.at(-1) as [unknown, string];
+      expect(written).toContain('- ✓ ');
+      expect(written).toContain(evidence);
+      expect(written).not.toContain('- ⚠ ');
+    });
+
     it('keeps literal lifecycle fields and await counts VERIFIED at the writer boundary', async () => {
       const literalStateEvidence = [
         'events:status expected_verdict=pending',

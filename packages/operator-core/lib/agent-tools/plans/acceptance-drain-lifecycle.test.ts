@@ -86,6 +86,7 @@ const NO_OWNER_DIRECTIVES = {
   ownerDirectives: async () => [],
   waitingOn: async () => [],
   fleetStaffing: async () => [],
+  strandedGoalWork: async (_ws: string, goalId: string) => ({ goalId, thresholdMs: 0, total: 0, refusedCount: 0, sample: [], truncatedByLimit: false }),
   planAcceptance: async (_workspaceId: string, planSlug: string) => M.evaluate(planSlug),
 };
 let currentBody: string;

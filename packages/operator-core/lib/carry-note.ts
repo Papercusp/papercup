@@ -319,6 +319,18 @@ const VERIFICATION_COVERAGE_DISCLAIMER_PATTERNS: ReadonlyArray<RegExp> = [
 const CLAIM_EXPLICIT_COVERAGE_LIMIT_RE =
   /\b(?:not|never|uncovered|out[-\s]?of[-\s]?scope|partial(?:ly)?|excluded|excludes)\b[^\n.!?;]{0,120}\b(?:covered|included|exercised|tested|checked|verified|validated|measured|scope)\b|\b(?:needs?|wants?|requires?)\s+(?:a\s+)?(?:fresh\s+)?re[-\s]?check\b/i;
 
+/**
+ * A quoted JSON disposition key is structured cohort metadata, not a prose
+ * disclaimer that the verified claim lacks coverage.
+ */
+function isStructuredCoverageDispositionKey(text: string, match: RegExpExecArray): boolean {
+  const before = text.slice(Math.max(0, match.index - 1), match.index);
+  if (!/["'\x60]\s*$/.test(before)) return false;
+
+  const after = text.slice(match.index + match[0].length);
+  return /^\s*["'\x60]?\s*:\s*\S/.test(after);
+}
+
 /** Return a coverage disclaimer that makes a complete ✓ unsafe, if any. */
 function findVerificationCoverageDisclaimer(
   evidence: string,
@@ -331,7 +343,9 @@ function findVerificationCoverageDisclaimer(
     // completed negative measurement such as `no uncovered lockfiles` (or
     // `zero/none uncovered lockfiles`) proves the opposite and must remain a
     // VERIFIED row; the generic disclaimer matcher cannot infer that itself.
-    if (match?.[0] && !isNegatedVerificationConflict(evidence, match)) return match[0];
+    if (!match?.[0]) continue;
+    if (isStructuredCoverageDispositionKey(evidence, match)) continue;
+    if (!isNegatedVerificationConflict(evidence, match)) return match[0];
   }
   return null;
 }

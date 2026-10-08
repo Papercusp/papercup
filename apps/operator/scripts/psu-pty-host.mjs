@@ -1346,6 +1346,43 @@ function readIsolatedNativeTranscriptRows(options) {
   return readIsolatedNativeTranscriptWindow(options);
 }
 
+/** WI-10007526: a carry snapshot cannot replace a native owner turn accepted
+ * while that carry was being prepared. Use the existing isolated, exact-file
+ * reader; a PTY input epoch alone misses input already submitted before recycle.
+ * This is a preservation guard, not an owner-provenance or authorization stamp.
+ */
+export function carryNativeOwnerInputFreshness({
+  agent, env = process.env, transcriptPath, systemPromptAddendum, home = homedir(),
+}) {
+  const builtAt = /Carry document built at (\d{4}-\d\d-\d\dT[^\s]+Z)/.exec(String(systemPromptAddendum ?? ''))?.[1];
+  if (!builtAt) return { status: 'not-applicable', reason: 'no-snapshot-clock' };
+  const snapshotAtMs = Date.parse(builtAt);
+  if (!Number.isFinite(snapshotAtMs)) return { status: 'unverifiable', reason: 'invalid-snapshot-clock' };
+  const scan = readIsolatedNativeTranscriptForward({ agent, env, transcriptPath, home });
+  // A partial row or scan ceiling is unknown, never proof of no later input.
+  if (!scan || scan.nextOffset !== scan.size) return { status: 'unverifiable', reason: 'native-input-read-incomplete', snapshotAtMs };
+  let latestOwnerInputAtMs = null;
+  try {
+    for (const { text } of scan.lines) {
+      if (!/"role"\s*:\s*"user"/.test(text)) continue;
+      const row = JSON.parse(text);
+      const content = nativeUserPromptContent(row);
+      if (content == null) continue;
+      const prompt = nativeUserPromptText(content);
+      if (!prompt.trim() || isNativeLaunchContextPrompt(prompt, agent) ||
+          isClaudeLocalCommandRow(row, prompt) || leadingTurnOriginMarker(prompt)) continue;
+      const atMs = Date.parse(row.timestamp);
+      if (!Number.isFinite(atMs)) return { status: 'unverifiable', reason: 'native-input-clock-missing', snapshotAtMs };
+      if (atMs > snapshotAtMs) latestOwnerInputAtMs = Math.max(latestOwnerInputAtMs ?? 0, atMs);
+    }
+  } catch {
+    return { status: 'unverifiable', reason: 'native-input-read-invalid', snapshotAtMs };
+  }
+  return latestOwnerInputAtMs == null
+    ? { status: 'current', snapshotAtMs }
+    : { status: 'superseded', reason: 'owner-input-after-carry-snapshot', snapshotAtMs, latestOwnerInputAtMs };
+}
+
 /** WI-10004982: how far one launch-activity probe call reads FORWARD. It
  * matches the 64 MiB cap of the marker proof scan, so any transcript whose
  * marker the proof could find is one this probe can also read from the start. */
@@ -10946,6 +10983,7 @@ export function hostThroughPty(o) {
       }
       return recycleChild(message?.data, {
         systemPromptAddendum: message?.systemPromptAddendum ?? '',
+        sourceTranscriptPath: message?.sourceTranscriptPath ?? null,
         drillId,
         sessionClass: message?.sessionClass ?? '',
       });
@@ -12171,6 +12209,7 @@ export function hostThroughPty(o) {
           const recycleResult = await recycleChild(msg.data, {
             systemPromptAddendum:
               msg.mode === "carry-respawn" ? msg.systemPromptAddendum : "",
+            sourceTranscriptPath: msg.sourceTranscriptPath ?? null,
             drillId: msg.mode === "carry-respawn" ? msg.drillId : "",
             sessionClass: msg.mode === "carry-respawn" ? msg.sessionClass : "",
           });
@@ -13204,6 +13243,7 @@ export function hostThroughPty(o) {
       carryText,
       {
         systemPromptAddendum = '',
+        sourceTranscriptPath = null,
         drillId = '',
         sessionClass = '',
         quotaRecovery = null,
@@ -13240,6 +13280,19 @@ export function hostThroughPty(o) {
         : freshChildOnly
           ? 'launch-fresh-child'
           : 'recycle';
+      const carrySourceTranscript = systemPromptAddendum
+        ? sourceTranscriptPath || newestNativeTranscriptPath(env.PAPERCUSP_AGENT, env)
+        : null;
+      const preserveNewerOwnerInput = () => {
+        if (!systemPromptAddendum || drillId) return null;
+        const freshness = carryNativeOwnerInputFreshness({
+          agent: env.PAPERCUSP_AGENT, env, transcriptPath: carrySourceTranscript, systemPromptAddendum,
+        });
+        if (freshness.status === 'current' || freshness.status === 'not-applicable') return null;
+        appendHostEvent(ownerId, 'respawn-carry-dropped', { mode: respawnMode, ...freshness });
+        recycling = false;
+        return settleQuotaRecovery(false, freshness.reason);
+      };
       // WI-38292: a respawn replaces the CLI child but NOT this host process, so a
       // host fix committed after this process booted stays inert here — the live
       // reproduction was a continuation fix (d351ee3084) that a running host simply
@@ -13539,6 +13592,11 @@ export function hostThroughPty(o) {
             sessionClass: sessionClass || null,
           });
           if (handoffPath) {
+            const ownerInputRefusal = preserveNewerOwnerInput();
+            if (ownerInputRefusal) {
+              try { unlinkSync(handoffPath); } catch { /* no successor may adopt stale orders */ }
+              return ownerInputRefusal;
+            }
             appendHostEvent(ownerId, 'host-code-adopting', {
               mode: respawnMode,
               loaded: hostCode.loaded,
@@ -13577,6 +13635,10 @@ export function hostThroughPty(o) {
       const priorDisableAutoCompact = env.DISABLE_AUTO_COMPACT;
       const priorDisableCompact = env.DISABLE_COMPACT;
       try {
+        // No await between the final native-input read and predecessor stop.
+        // Persona/argv preparation above may have accepted a newer owner turn.
+        const ownerInputRefusal = preserveNewerOwnerInput();
+        if (ownerInputRefusal) return ownerInputRefusal;
         stopStartupTrace('recycle');
         const predecessorPid = child.pid;
         const predecessorStopStartedAt = Date.now();
@@ -14003,6 +14065,7 @@ export function hostThroughPty(o) {
         });
         return recycleChild(carryText, {
           systemPromptAddendum,
+          sourceTranscriptPath: carrySourceTranscript,
           drillId,
           sessionClass,
           quotaRecovery,

@@ -38,6 +38,7 @@ import postgres, { type Sql } from 'postgres';
 import { createFreshTestDb, type MigratedTestDb } from '@papercusp/test-config/pg';
 import { setupBaselineCoordFixture, type BaselineCoordFixture } from '../_baseline-coord-fixture';
 import { GOAL_SPEND_SNAPSHOT_SOURCE } from '@papercusp/db-org';
+import { readTypedPropertyCollection } from '../typed-properties';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const REPO = join(here, '..', '..', '..', '..');
@@ -317,6 +318,93 @@ describe('goals.* resolvers against real SQL', () => {
     expect(detail.goalData.collections.tea_choices.rows).toMatchObject([{ id: 'rooibos', selected: true }, { id: 'mint', selected: false }]);
     const [stored] = await sql`SELECT properties FROM harness_shared.goals WHERE workspace_id = ${WS} AND id = ${GOAL}`;
     expect(stored.properties.tea_policy).toEqual(policy);
+  });
+
+  it.each(['manual', 'active-workspace-plans'] as const)(
+    'returns multiple selected members in saved owner priority order for %s collections',
+    async (source) => {
+      await goal();
+      const ids = source === 'manual'
+        ? ['mint', 'rooibos', 'chamomile']
+        : ['plan:alpha/first', 'plan:alpha/second', 'plan:alpha/excluded'];
+      if (source === 'active-workspace-plans') {
+        for (const slug of ['first', 'second', 'excluded']) {
+          await plan(slug, { harness: 'alpha', status: 'active' });
+        }
+      }
+      const schema = {
+        choices: {
+          datatype: source === 'manual' ? 'list' : 'plan-ref-list',
+          default: ids, editable_by: 'both',
+          collection: { source, policy: 'choices_policy', order: 'priority', selectable: true, defaultSelected: true },
+        },
+        choices_policy: {
+          datatype: 'ordered-selection-policy', editable_by: 'owner',
+          default: { order: [], excluded: [] },
+        },
+      };
+      const policy = {
+        value: { order: [ids[1], ids[0], ids[2], source === 'manual' ? 'dormant' : 'plan:alpha/dormant'],
+          excluded: [ids[2], source === 'manual' ? 'dormant' : 'plan:alpha/dormant'] },
+        version: 4, provenance: 'owner-edit', edited_by: 'human', edited_at: '2026-10-01T00:00:00Z',
+      };
+      // Calibrate the fixture before writing it; policy-only dormant members
+      // must obey the source's reference grammar too.
+      expect(readTypedPropertyCollection({ propertySchema: schema,
+        properties: { choices_policy: policy }, property: 'choices', source: { ok: true, items: ids } }))
+        .toMatchObject({ ok: true, configured: true });
+      await sql`UPDATE harness_shared.goals SET property_schema = ${sql.json(schema)},
+        properties = ${sql.json({ choices_policy: policy })} WHERE workspace_id = ${WS} AND id = ${GOAL}`;
+      const { resolveGoalDetail } = await import('./goals');
+      const detail = await resolveGoalDetail({ workspaceId: WS, goalId: GOAL }) as {
+        goalData: { collections: Record<string, {
+          selection: { selected: string[]; policyVersion: number };
+          rows: Array<{ id: string; selected: boolean }>;
+        }> };
+      };
+      const collection = detail.goalData.collections.choices;
+      expect(collection.selection).toMatchObject({ policyVersion: 4, selected: [ids[1], ids[0]] });
+      expect(collection.rows.map(row => ({ id: row.id, selected: row.selected }))).toEqual([
+        { id: ids[1], selected: true }, { id: ids[0], selected: true }, { id: ids[2], selected: false },
+      ]);
+      const [stored] = await sql`SELECT properties FROM harness_shared.goals WHERE workspace_id = ${WS} AND id = ${GOAL}`;
+      expect(stored.properties.choices_policy).toEqual(policy);
+      const [claims] = await sql`SELECT count(*)::int AS count FROM harness_shared.work_items WHERE workspace_id = ${WS}`;
+      expect(claims.count).toBe(0);
+    },
+  );
+
+  it('keeps independent owner policies for two declared active-plan collections', async () => {
+    await goal();
+    for (const slug of ['first', 'second', 'third']) await plan(slug, { status: 'active' });
+    const ids = ['first', 'second', 'third'].map(slug => `plan:alpha/${slug}`);
+    const collection = (policy: string) => ({
+      datatype: 'plan-ref-list', default: ids, editable_by: 'both',
+      collection: { source: 'active-workspace-plans', policy, order: 'priority', selectable: true, defaultSelected: true },
+    });
+    const policyDefinition = { datatype: 'ordered-selection-policy', editable_by: 'owner', default: { order: [], excluded: [] } };
+    const schema = { worklist: collection('worklist_policy'), choices: collection('choices_policy'),
+      worklist_policy: policyDefinition, choices_policy: policyDefinition };
+    const policy = (order: string[], excluded: string[]) => ({
+      value: { order, excluded }, version: 4, provenance: 'owner-edit', edited_by: 'human', edited_at: '2026-10-01T00:00:00Z',
+    });
+    const properties = { worklist_policy: policy(ids, [ids[2]]),
+      choices_policy: policy([ids[1], ids[2], ids[0]], [ids[0]]) };
+    for (const property of ['worklist', 'choices']) {
+      expect(readTypedPropertyCollection({ propertySchema: schema, properties, property,
+        source: { ok: true, items: ids } })).toMatchObject({ ok: true, configured: true });
+    }
+    await sql`UPDATE harness_shared.goals SET property_schema = ${sql.json(schema)},
+      properties = ${sql.json(properties)} WHERE workspace_id = ${WS} AND id = ${GOAL}`;
+    const { resolveGoalDetail } = await import('./goals');
+    const detail = await resolveGoalDetail({ workspaceId: WS, goalId: GOAL }) as {
+      goalData: { collections: Record<string, { selection: { selected: string[] }; rows: Array<{ id: string }> }> };
+    };
+    expect(detail.goalData.collections.worklist.selection.selected).toEqual([ids[0], ids[1]]);
+    expect(detail.goalData.collections.choices.selection.selected).toEqual([ids[1], ids[2]]);
+    expect(detail.goalData.collections.choices.rows.map(row => row.id)).toEqual([ids[1], ids[2], ids[0]]);
+    const [stored] = await sql`SELECT properties FROM harness_shared.goals WHERE workspace_id = ${WS} AND id = ${GOAL}`;
+    expect(stored.properties).toEqual(properties);
   });
 
   it('exposes stored standing identity in list and detail even after a goal is renamed', async () => {

@@ -96,6 +96,7 @@ async function agenda(realAdmission = false) {
     // not launch admission or a plan acceptance verdict.
     deps: { planSlugs: async () => [], ownerDirectives: async () => [], waitingOn: async () => [], 
       fleetStaffing: async () => [],
+      strandedGoalWork: async (_ws: string, goalId: string) => ({ goalId, thresholdMs: 0, total: 0, refusedCount: 0, sample: [], truncatedByLimit: false }),
       ownerReport: async () => null,
       planAcceptance: async () => ({ satisfied: true, buildProvenance: { sha: null, version: 'fixture' } }),
       // Priority cases control admission as well as launch feasibility. The

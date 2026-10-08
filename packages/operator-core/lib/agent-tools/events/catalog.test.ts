@@ -436,6 +436,24 @@ describe('events:catalog — live_awaiters', () => {
     ]);
   });
 
+  it('surfaces the scorecard grading-audit park key family', async () => {
+    const out = await call({
+      family: 'scorecard-grading-audit',
+      announced: false,
+      installed: false,
+      liveAwaiters: false,
+    });
+
+    expect(out.families).toEqual([
+      expect.objectContaining({
+        family: 'scorecard-grading-audit',
+        key: 'scorecard:grading-audit:<id>',
+        awaitable_now: true,
+        emitter: expect.stringContaining('scorecard-emitted-events'),
+      }),
+    ]);
+  });
+
   it('unfiltered call requests counts for every rendered family in one round trip', async () => {
     const out = await call({});
     expect(out.count).toBe(EVENT_CATALOG.length);

@@ -491,6 +491,38 @@ export function nativeTurnVerifierSupport(agent: string | undefined, env?: Envir
     supported: boolean;
     reason: "no-classifier" | "no-isolated-root" | null;
 };
+/** WI-10007526: a carry snapshot cannot replace a native owner turn accepted
+ * while that carry was being prepared. Use the existing isolated, exact-file
+ * reader; a PTY input epoch alone misses input already submitted before recycle.
+ * This is a preservation guard, not an owner-provenance or authorization stamp.
+ */
+export function carryNativeOwnerInputFreshness({ agent, env, transcriptPath, systemPromptAddendum, home, }: {
+    agent: any;
+    env?: NodeJS.ProcessEnv | undefined;
+    transcriptPath: any;
+    systemPromptAddendum: any;
+    home?: string | undefined;
+}): {
+    status: string;
+    reason: string;
+    snapshotAtMs?: undefined;
+    latestOwnerInputAtMs?: undefined;
+} | {
+    status: string;
+    reason: string;
+    snapshotAtMs: number;
+    latestOwnerInputAtMs?: undefined;
+} | {
+    status: string;
+    snapshotAtMs: number;
+    reason?: undefined;
+    latestOwnerInputAtMs?: undefined;
+} | {
+    status: string;
+    reason: string;
+    snapshotAtMs: number;
+    latestOwnerInputAtMs: number;
+};
 /** Is this native row the kickoff PROMPT itself?
  *
  * WI-10004982: for claude this must be the real `type:'user'` prompt row.

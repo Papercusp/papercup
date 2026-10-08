@@ -46,6 +46,7 @@ function mkDeps(
     | 'listBlockingAwaits'
     | 'countActionableHeldItems'
     | 'ownerStewardsActiveGoal'
+    | 'readGoalHolderWakeState'
     | 'readLastDeliveredAt'
     | 'rescheduleSuppressedWake'
     | 'ensureWakeArmed'
@@ -83,6 +84,8 @@ function mkDeps(
     // WI-10005778: hermetic default — UNKNOWN stewardship keeps the decision above, and no
     // test reaches real PG.
     ownerStewardsActiveGoal: vi.fn(async () => null) as never,
+    // P-007: hermetic default — no goal-holder state block, and no test reaches the real agenda read.
+    readGoalHolderWakeState: vi.fn(async () => null) as never,
     // P-024: hermetic default — "never delivered" keeps the pre-heartbeat ceiling.
     readLastDeliveredAt: vi.fn(async () => null) as never,
     rescheduleSuppressedWake: vi.fn(async () => true) as never,
@@ -775,11 +778,72 @@ describe('fireLoopWake — the warm-wake fire (B-LOOP-3)', () => {
       expect(res).toMatchObject({ fired: false, reason: 'await-blocking' });
     });
 
-    it('WI-10005778: the goal lease is read only when an await would suppress', async () => {
-      const stewardship = vi.fn(async () => true);
-      const deps = mkDeps({ listBlockingAwaits: vi.fn(async () => []) as never, ownerStewardsActiveGoal: stewardship as never });
-      await fireLoopWake(baseInput, deps);
-      expect(stewardship).not.toHaveBeenCalled();
+    // P-007 superseded "read only when an await would suppress": the goal-holder state block
+    // needs the same verdict on every fire, so the lease is read exactly ONCE per fire and
+    // shared by the suppression guard and the wake block — never twice.
+    it('P-007: the goal lease is read once per fire, shared by suppression and the wake block', async () => {
+      const quiet = vi.fn(async () => true);
+      await fireLoopWake(baseInput, mkDeps({ listBlockingAwaits: vi.fn(async () => []) as never, ownerStewardsActiveGoal: quiet as never }));
+      expect(quiet).toHaveBeenCalledTimes(1);
+
+      const suppressing = vi.fn(async () => true);
+      await fireLoopWake(
+        baseInput,
+        mkDeps({
+          listBlockingAwaits: vi.fn(async () => ownerQuestionAwait()) as never,
+          countActionableHeldItems: vi.fn(async () => 0) as never,
+          ownerStewardsActiveGoal: suppressing as never,
+        }),
+      );
+      expect(suppressing).toHaveBeenCalledTimes(1);
+    });
+
+    it('P-007: a goal holder wake carries the goal-holder state block beneath the priority stack', async () => {
+      const block = 'GOAL-HOLDER STATE — goal g-1, read at fire time 2026-10-08T00:00:00.000Z.';
+      const readGoalHolderWakeState = vi.fn(async () => block);
+      const deps = mkDeps({
+        listBlockingAwaits: vi.fn(async () => []) as never,
+        ownerStewardsActiveGoal: vi.fn(async () => true) as never,
+        readGoalHolderWakeState: readGoalHolderWakeState as never,
+      });
+      await fireLoopWake({ ...baseInput, intervalSec: 900 } as never, deps);
+      expect(readGoalHolderWakeState).toHaveBeenCalledWith(
+        expect.objectContaining({
+          ownerId: baseInput.targetOwnerId,
+          loop: expect.objectContaining({ intervalSec: 900 }),
+        }),
+      );
+      const summary = (deps.wake as ReturnType<typeof vi.fn>).mock.calls[0][1].summary as string;
+      expect(summary).toContain(block);
+    });
+
+    it('P-007: a non-holder wake never reads or renders the goal-holder state block', async () => {
+      for (const stewards of [false, null]) {
+        const readGoalHolderWakeState = vi.fn(async () => 'GOAL-HOLDER STATE — must not render');
+        const deps = mkDeps({
+          listBlockingAwaits: vi.fn(async () => []) as never,
+          ownerStewardsActiveGoal: vi.fn(async () => stewards) as never,
+          readGoalHolderWakeState: readGoalHolderWakeState as never,
+        });
+        await fireLoopWake(baseInput, deps);
+        expect(readGoalHolderWakeState).not.toHaveBeenCalled();
+        const summary = (deps.wake as ReturnType<typeof vi.fn>).mock.calls[0][1].summary as string;
+        expect(summary).not.toContain('GOAL-HOLDER STATE');
+      }
+    });
+
+    it('P-007: a failed goal-holder state read ships the wake without the block', async () => {
+      const deps = mkDeps({
+        listBlockingAwaits: vi.fn(async () => []) as never,
+        ownerStewardsActiveGoal: vi.fn(async () => true) as never,
+        readGoalHolderWakeState: vi.fn(async () => {
+          throw new Error('agenda read failed');
+        }) as never,
+      });
+      const res = await fireLoopWake(baseInput, deps);
+      expect(res).toMatchObject({ fired: true });
+      const summary = (deps.wake as ReturnType<typeof vi.fn>).mock.calls[0][1].summary as string;
+      expect(summary).not.toContain('GOAL-HOLDER STATE');
     });
 
     it('a monitor loop keeps its heartbeat despite an active blocking await', async () => {

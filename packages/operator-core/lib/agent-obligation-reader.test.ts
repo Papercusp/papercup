@@ -134,6 +134,7 @@ function deps(overrides: Partial<AgentObligationReaderDeps> = {}): AgentObligati
     ownerDirectives: vi.fn(async () => []),
     waitingOn: vi.fn(async () => []),
     fleetStaffing: vi.fn(async () => []),
+    strandedGoalWork: vi.fn(async (_ws: string, goalId: string) => ({ goalId, thresholdMs: 0, total: 0, refusedCount: 0, sample: [], truncatedByLimit: false })),
     ...overrides,
   };
 }

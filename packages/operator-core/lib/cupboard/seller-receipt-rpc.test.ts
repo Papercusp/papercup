@@ -9,7 +9,9 @@ import { paymentVoucherDigest, paymentVoucherSigningBytes } from '../p2p/microch
 import { sellerReceiptAuthoritySigningBytes, usageReceiptSigningBytes, verifyUsageReceiptSignature } from '../p2p/metered-invocation';
 import { buildSellerReceiptRpcHandler, remoteSellerReceiptCapability, SELLER_RECEIPT_RPC_KIND, INSTALLED_TOOL_FUNDING_CONFIG } from './seller-receipt-rpc';
 import type { UsageReceiptWire, HostedPerUseOffer } from './metered-invocation-door-io';
-import { FundedToolTurnHost } from './funded-turn-host';
+import { FundedIdentityTurnHost, FundedToolTurnHost } from './funded-turn-host';
+import type { FundedIdentityTurn, FundedIdentityTurnStore } from './funded-turn-store';
+import { identityPerUseOfferTerms } from './identity-per-use-offer';
 import type { FundedToolTurn, FundedToolTurnStore } from './funded-tool-turn-store';
 import { createMicrochargeChannel } from '../p2p/microcharge';
 
@@ -216,5 +218,127 @@ describe('seller-local monetary RPC', () => {
     expect(signReceipt).toHaveBeenCalledWith(expect.any(Buffer), expect.objectContaining({ turnId: 'turn',
       voucher: expect.objectContaining({ channelId: 'local-tool-turn:turn', usageNonce: 'call', payer: 'gh:7' }) }));
     expect(meter.snapshot().units.call!.receipt?.signature).toBe('seller-signature');
+  });
+});
+
+function identityFixture() {
+  const f = fixture();
+  const priced = identityPerUseOfferTerms({ identity: { id: 'engineer', version: '1.0.0' }, markupBps: 2000 });
+  if (!priced.ok) throw new Error(priced.detail);
+  const { skuRef, ...terms } = priced.terms;
+  Object.assign(f.offer, { skuRef, terms, receiptAuthority: { pubkeyBase64: f.pub('seller'),
+    proof: sign(null, sellerReceiptAuthoritySigningBytes({ seller: 'gh:9', offerId: 'offer', productId: 'product',
+      skuRef, pubkeyBase64: f.pub('seller') }), f.keys.seller.privateKey).toString('base64') } });
+  Object.assign(f.grant, { skuRef, termsHash: createHash('sha256').update(canonicalJson(terms)).digest('hex') });
+  Object.assign(f.reserved, { releaseRef: skuRef, ...terms, unitPriceMicros: String(terms.unitPriceMicros),
+    meterQuantity: '2', reservedMicros: '400', identityInference: { ceilingMicros: '1001',
+      billedInferenceMicros: null, priorRemainderNumerator: null, remainderNumerator: null } });
+  // Independent integer oracle: one billed micro at 20% plus 8000/10000
+  // carried numerator charges exactly ONE micro and leaves zero remainder.
+  const basis = { billedInferenceMicros: '1', priorRemainderNumerator: '8000' };
+  const receipt = { ...f.receipt, meterQuantity: '2', amountMicros: '1' };
+  const bytes = usageReceiptSigningBytes({ ...receipt, meterQuantity: 2n, amountMicros: 1n });
+  const origin = { offerId: 'offer', payer: 'gh:7', seller: 'gh:9', offer: priced.terms, remainderNumerator: '8000' };
+  f.deps.readUsage.mockImplementation(async () => ({ ok: true, usage: { channelId: 'channel', escrowMicros: '2000',
+    committedMicros: '0', receipts: [structuredClone(f.reserved)], identityMarkupOrigin: origin } }));
+  f.deps.settle.mockImplementation(async input => {
+    const signature = await input.signReceipt(bytes);
+    Object.assign(f.reserved, { state: 'settled', amountMicros: '1', meterQuantity: '2', settledAtMs: f.now,
+      receiptSignature: signature, identityInference: { ceilingMicros: '1001', ...basis, remainderNumerator: '0' } });
+    origin.remainderNumerator = '0';
+    return { ok: true, amountMicros: 1n, receipt: structuredClone(f.reserved) };
+  });
+  const request = { ...f.request, receipt, identityInference: basis };
+  const rpc = vi.fn(async (_peer, call) => {
+    const env = await f.envelope(call.payload);
+    return f.handler(env.payload, env.harnessSlug, { envelope: env });
+  });
+  const remote = remoteSellerReceiptCapability({ grantId: 'grant', devicePubkey: f.pub('device'), harnessSlug: 'papercusp' },
+    f.pub('seller'), 'channel', { rpc });
+  return { ...f, basis, receipt, bytes, origin, request, remote, rpc };
+}
+
+describe('seller-local exact identity receipts', () => {
+  it('signs and settles sub-block inference with the hosted carry, including a settled retry', async () => {
+    const f = identityFixture();
+    await f.remote.verify();
+    const signature = await f.remote.signReceipt(f.bytes, { turnId: 'turn', identityInference: {
+      billedInferenceMicros: 1n, priorRemainderNumerator: 8000n } });
+    const outbox = { billedInferenceMicros: '1', priorRemainderNumerator: '8000', remainderNumerator: '0', samples: [],
+      receipt: { ...f.receipt, signature } };
+    const binding = { channelId: 'channel', offer: f.origin.offer, inferenceCeilingMicros: 1001n } as
+      Parameters<typeof f.remote.settle>[0];
+    await f.remote.settle(binding, outbox);
+    await f.remote.settle(binding, outbox);
+    expect(f.deps.settle).toHaveBeenCalledWith(expect.objectContaining({ identityInference: {
+      billedInferenceMicros: 1n, priorRemainderNumerator: 8000n } }), expect.objectContaining({ authToken: 'seller-secret' }));
+    expect(f.deps.settle.mock.calls[0]![0]).not.toHaveProperty('actualQuantity');
+    expect(f.reserved).toMatchObject({ amountMicros: '1', meterQuantity: '2', identityInference: {
+      billedInferenceMicros: '1', priorRemainderNumerator: '8000', remainderNumerator: '0' } });
+    expect(f.deps.readUsage).toHaveBeenCalledWith('channel', expect.objectContaining({ authToken: 'seller-secret' }), 'offer');
+  });
+
+  it.each(['carry', 'origin', 'origin-terms', 'ceiling', 'basis', 'amount', 'quantity', 'tool-crossover', 'local-voucher', 'authority'] as const)(
+    'refuses changed identity %s before a monetary signature', async scenario => {
+      const f = identityFixture();
+      if (scenario === 'carry') f.basis.priorRemainderNumerator = '7999';
+      if (scenario === 'origin') f.origin.payer = 'gh:8';
+      if (scenario === 'origin-terms') f.origin.offer = { ...f.origin.offer, unitPriceMicros: 199 };
+      if (scenario === 'ceiling') Object.assign(f.reserved.identityInference!, { ceilingMicros: '0' });
+      if (scenario === 'basis') f.basis.billedInferenceMicros = '1002';
+      if (scenario === 'amount') f.receipt.amountMicros = '2';
+      if (scenario === 'quantity') f.receipt.meterQuantity = '1';
+      if (scenario === 'tool-crossover') delete (f.request as { identityInference?: unknown }).identityInference;
+      const request = scenario === 'authority' ? { ...f.request, action: 'authority', receipt: undefined }
+        : scenario === 'local-voucher' ? { ...f.request, voucher: { channelId: 'local-tool-turn:turn', usageNonce: 'call',
+          payer: 'gh:7', seller: 'gh:9', releaseRef: f.offer.skuRef, meterQuantity: '1', pricePerUnitMicros: '200',
+          priceVersion: 'v1', splitManifestHash: 'hash', expiresAtMs: f.grant.expiresAtMs, cumulativeClaimMicros: '1',
+          signature: sign(null, f.bytes, f.keys.payer.privateKey).toString('base64') } } : f.request;
+      await expect(f.run(request)).rejects.toThrow();
+      expect(f.deps.sign).not.toHaveBeenCalled(); expect(f.deps.settle).not.toHaveBeenCalled();
+    });
+
+  it('refuses identity basis on an ordinary tool reservation', async () => {
+    const f = fixture();
+    await expect(f.run({ ...f.request, identityInference: { billedInferenceMicros: '1', priorRemainderNumerator: '0' } }))
+      .rejects.toThrow('seller-rpc-identity-reservation-required');
+    expect(f.deps.sign).not.toHaveBeenCalled();
+  });
+
+  it('does not acknowledge hosted settlement with changed inference basis', async () => {
+    const f = identityFixture();
+    const signature = sign(null, f.bytes, f.keys.seller.privateKey).toString('base64');
+    f.deps.settle.mockImplementation(async () => {
+      Object.assign(f.reserved, { state: 'settled', amountMicros: '1', meterQuantity: '2', settledAtMs: f.now,
+        receiptSignature: signature, identityInference: { ceilingMicros: '1001', ...f.basis, remainderNumerator: '1' } });
+      return { ok: true, amountMicros: 1n, receipt: f.reserved };
+    });
+    await expect(f.run({ ...f.request, action: 'settle', signature })).rejects.toThrow('seller-rpc-settlement-unconfirmed');
+  });
+
+  it.each([false, true])('retains remote identity uncertainty until payer readback (settled=%s)', async confirmed => {
+    const f = identityFixture();
+    const signature = sign(null, f.bytes, f.keys.seller.privateKey).toString('base64');
+    const outbox = { billedInferenceMicros: '1', priorRemainderNumerator: '8000', remainderNumerator: '0', samples: [],
+      receipt: { ...f.receipt, signature } };
+    const turn: FundedIdentityTurn = { turnId: 'turn', accountId: 'account', revision: 2, state: 'settlement-pending',
+      binding: { workspaceId: 'ws', ownerId: 'owner', principalId: 'system:superuser', nativeSessionId: 'session',
+        nativeTurnId: 'native-turn', specificationRevision: 'spec', stateRevision: 'state', payer: 'gh:7', seller: 'gh:9',
+        offerId: 'offer', channelId: 'channel', offer: f.origin.offer, inferenceCeilingMicros: 1001n,
+        expiresAtMs: f.grant.expiresAtMs }, fundingReceipt: f.reserved, usageEventKeys: ['a'.repeat(64)],
+      closedAtMs: f.now, settlementOutbox: outbox };
+    const acknowledgeSettlement = vi.fn(async () => ({ ok: true as const, turn: { ...turn, state: 'settled' as const } }));
+    const store = { read: vi.fn(async () => turn), acknowledgeSettlement } as unknown as FundedIdentityTurnStore;
+    const payerFetch = vi.fn(async () => Response.json({ channelId: 'channel', receipts: [{ ...f.reserved,
+      ...(confirmed ? { state: 'settled', amountMicros: '1', meterQuantity: '2', receiptSignature: signature, settledAtMs: f.now,
+        identityInference: { ceilingMicros: '1001', ...f.basis, remainderNumerator: '0' } } : {}) }] }));
+    const sellerFetch = vi.fn(async () => { throw new Error('buyer cannot use seller doors'); });
+    const settleRemote = vi.fn(async () => { throw new PeerUnreachableError('remote acknowledgement lost'); });
+    const host = new FundedIdentityTurnHost({ store, payerTransport: { authToken: 'buyer', fetchImpl: payerFetch },
+      sellerTransport: { fetchImpl: sellerFetch }, signVoucher: async () => 'unused', signReceipt: async () => 'unused', settleRemote });
+    expect((await host.settlePending('ws', 'turn')).ok).toBe(confirmed);
+    expect(settleRemote).toHaveBeenCalledWith(turn.binding, outbox);
+    expect(sellerFetch).not.toHaveBeenCalled();
+    expect(acknowledgeSettlement).toHaveBeenCalledTimes(confirmed ? 1 : 0);
   });
 });

@@ -67,6 +67,10 @@ import {
 } from '../search/prose-vector-dims';
 import { selectRanked, type Selected, type SelectionVia } from '@papercusp/ranked-selection';
 import { withIterativeScan } from '@papercusp/search';
+import { withDeadlineFallback } from '../sync-resolver/attention-counts';
+import { categoryOf, searchTools } from '../cupboard/tools-search';
+import type { ToolDiscoveryEntry } from '../cupboard/tools-discovery';
+import type { RerankScoreFn } from '@papercusp/rerank';
 
 /** Same shape as `@papercusp/search`'s Embedder, declared locally to keep this
  * module's import graph free of the search engine (only the TYPE is shared). */
@@ -150,6 +154,9 @@ export type ConsultLivenessReading = string | null | ConsultLiveness;
 
 export interface RoutingCandidate {
   ownerId: string;
+  /** Independent, bounded evidence about an explicitly named technical subject.
+   * Absence is the legacy/general-question contract, not a failed measurement. */
+  subjectEvidence?: { subject: string; status: 'supported' | 'mismatch' | 'unmeasured'; score: number | null };
   /**
    * Stage-1 QUALIFICATION score in [0,1] (D-001 §1) — the similarity /
    * verification / authorship blend renormalized by the weight total. Carries
@@ -226,7 +233,8 @@ export interface RoutingSnapshot {
   withheld?: { restricted_turns: number; restricted_owners: number; rule: string };
   /** Set when the instrument itself was degraded — 'embed-unavailable' means
    * similarity could not be measured at all (≠ measured and found nothing). */
-  degraded?: 'embed-unavailable';
+  degraded?: 'embed-unavailable' | 'evidence-unavailable';
+  subjectValidation?: { subject: string; threshold: number; evaluated: number; unmeasured: number; limit: number };
   /** The bounded retrieval leg used while the semantic instrument was down. */
   fallback?: 'lexical';
   /** Min/max responder-selection provenance (consult-min-max-and-rubric-vetting
@@ -422,6 +430,8 @@ export interface ConsultRouteParams {
 }
 
 export interface ConsultRouteDeps {
+  /** Same local crossencoder as prose search; no hosted credential required. */
+  scoreSubjectEvidence?: (subject: string, texts: string[], deadline: number) => Promise<Array<number | null>>;
   recordTelemetry?: (receipt: ExpertiseRoutingReceipt) => void | Promise<void>;
   monotonicNow?: () => number;
   measure?: <T>(stage: ExpertiseRoutingStage, work: () => Promise<T>) => Promise<T>;
@@ -451,6 +461,77 @@ export function extractPathTokens(question: string, cap = 4): string[] {
     if (seen.size >= cap) break;
   }
   return [...seen];
+}
+
+export const SUBJECT_EVIDENCE_MIN_SCORE = 0.5;
+export const SUBJECT_EVIDENCE_OWNER_LIMIT = 8;
+export const SUBJECT_EVIDENCE_TEXT_LIMIT = 4_000;
+export const SUBJECT_EVIDENCE_TIMEOUT_MS = 4_000;
+
+/** Name the problem's primary tool/path, independently of generic decision words.
+ * A crossencoder can recognise a paraphrase without an exact identifier mention. */
+export function expertiseSubject(question: string): string | null {
+  const tool = question.match(/\b[a-z][a-z0-9_-]*:[a-z][a-z0-9_-]*\b/i)?.[0];
+  return tool ?? extractPathTokens(question, 1)[0] ?? null;
+}
+
+/** Registered tool descriptions disambiguate generic names such as observe or
+ * migrate. A missing contract is unknown, never a bare-name expertise proof. */
+export function subjectEvidenceQuery(subject: string, toolDescription?: string | null): string | null {
+  if (!subject.includes(':')) return subject;
+  return toolDescription?.trim() ? `${subject}\n${toolDescription.trim().slice(0, 1_500)}` : null;
+}
+
+export const SUBJECT_EVIDENCE_CONTRAST_LIMIT = 3;
+export interface SubjectContract { name: string; description: string }
+
+/** Reuse tool discovery to nominate contrasting systems, never to establish
+ * expertise. The crossencoder compares their actual contracts semantically. */
+export function subjectContrasts(subject: string, text: string, contracts: readonly SubjectContract[]): SubjectContract[] {
+  const entries: ToolDiscoveryEntry[] = contracts.filter(c => c.description.trim() && categoryOf(c.name) !== categoryOf(subject))
+    .map(c => ({ tool: c.name, category: categoryOf(c.name), description: c.description,
+      status: 'available', provider: { kind: 'builtin', name: c.name } }));
+  return searchTools(entries, text, { limit: SUBJECT_EVIDENCE_CONTRAST_LIMIT })
+    .map(c => ({ name: c.tool, description: c.description! }));
+}
+
+/** A relevance score is not a probability of expertise. Require the named
+ * contract to beat the strongest competing system as well as the original
+ * evidence floor. The midpoint preserves the preregistered 0.5 decision
+ * boundary; this changes evidence, never transcript similarity floors. */
+export function contrastedSubjectScore(target: number | null, contrasts: readonly (number | null)[]): number | null {
+  if (target === null || !Number.isFinite(target) || target < 0 || target > 1 || !contrasts.length ||
+    contrasts.some(s => s === null || !Number.isFinite(s) || s < 0 || s > 1)) return null;
+  return Math.min(target, 0.5 + (target - Math.max(...contrasts as number[])) / 2);
+}
+
+let subjectScorer: Promise<RerankScoreFn> | null = null;
+export async function scoreSubjectEvidence(subject: string, texts: string[], deadline: number,
+  deps: { scorer?: RerankScoreFn; contracts?: readonly SubjectContract[] } = {}): Promise<Array<number | null>> {
+  const { listAllProjectedTools } = await import('@papercusp/tooldef');
+  const contracts = deps.contracts ?? listAllProjectedTools().flatMap(t => t.expose.mcp
+    ? [{ name: t.expose.mcp.name, description: t.description }] : []);
+  const query = subjectEvidenceQuery(subject, contracts.find(c => c.name === subject)?.description);
+  if (!query) return texts.map(() => null);
+  if (!deps.scorer && !subjectScorer) {
+    subjectScorer = import('../memory/embed-sidecar-wiring').then(async ({ buildSidecarAwareReranker }) => {
+      return buildSidecarAwareReranker();
+    }).catch(error => { subjectScorer = null; throw error; });
+  }
+  const scorer = deps.scorer ?? await subjectScorer!;
+  if (!subject.includes(':')) return scorer(query, texts, { deadline });
+  // At most 24 passages × (target + 3 contrasts), all on the same 4s deadline.
+  // Reverse retrieval asks which contract explains THIS passage, avoiding the
+  // procedural vocabulary that made broad tool descriptions false friends.
+  return Promise.all(texts.map(async text => {
+    const contrasts = subjectContrasts(subject, text, contracts);
+    if (!contrasts.length || Date.now() >= deadline) return null;
+    const scores = await scorer(text, [query, ...contrasts.map(c => subjectEvidenceQuery(c.name, c.description)!)], { deadline })
+      .catch(() => null);
+    if (scores === null) return null;
+    if (scores.length !== contrasts.length + 1) return null;
+    return contrastedSubjectScore(scores[0], scores.slice(1));
+  }));
 }
 
 /** Build a case-insensitive whole-reference matcher for transcript evidence.
@@ -535,10 +616,11 @@ export interface RoutingFloors {
  * caller can qualify on the recency-bearing comparison score by mistake.
  */
 export function meetsRoutingFloors(
-  candidate: { relevance: number; signals: { similarity: number } },
+  candidate: { relevance: number; signals: { similarity: number }; subjectEvidence?: RoutingCandidate['subjectEvidence'] },
   floors: RoutingFloors,
 ): boolean {
-  return candidate.signals.similarity >= floors.simFloor && candidate.relevance >= floors.relevanceFloor;
+  return (!candidate.subjectEvidence || candidate.subjectEvidence.status === 'supported') &&
+    candidate.signals.similarity >= floors.simFloor && candidate.relevance >= floors.relevanceFloor;
 }
 
 /**
@@ -557,9 +639,10 @@ export function meetsRoutingFloors(
  */
 export function snapshotCandidateQualifies(
   snapshot: { relevanceFloor?: unknown; floor?: unknown; simFloor?: unknown } | null | undefined,
-  candidate: { relevance?: unknown; score?: unknown; signals?: { similarity?: unknown } | null } | null | undefined,
+  candidate: { relevance?: unknown; score?: unknown; signals?: { similarity?: unknown } | null; subjectEvidence?: { status?: unknown } | null } | null | undefined,
 ): boolean {
   const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+  if (candidate?.subjectEvidence && candidate.subjectEvidence.status !== 'supported') return false;
   const simFloor = num(snapshot?.simFloor);
   const similarity = num(candidate?.signals?.similarity) ?? 0;
   // An unreadable floor must never admit anyone: a missing floor is an unknown
@@ -652,7 +735,7 @@ async function restrictedExpertsWithheld(
   return { restricted_turns: summary.turns, restricted_owners: summary.owners, rule: D006_TRANSCRIPT_RULE };
 }
 
-export type ExpertiseRoutingStage = 'disclosure' | 'embedding' | 'transcripts' | 'verification' | 'authorship' | 'liveness' | 'ranking';
+export type ExpertiseRoutingStage = 'disclosure' | 'embedding' | 'transcripts' | 'verification' | 'authorship' | 'liveness' | 'ranking' | 'evidence';
 export interface ExpertiseRoutingReceipt {
   schemaVersion: 1;
   correlationId: string;
@@ -833,6 +916,7 @@ async function routeConsultCore(
     // No candidate can qualify on this path (similarity was never measured), so
     // the stage-2 reference is the freshest candidate overall — freshness stays
     // relative here too, purely as an audit signal.
+    const snapshotCandidates = await measure('ranking', async () => {
     const lexicalReferenceMs = maxTimestamp([...byOwner.values()].map((o) => o.newestTs));
     const candidates: RoutingCandidate[] = owners.map((ownerId) => {
       const owner = byOwner.get(ownerId)!;
@@ -862,7 +946,8 @@ async function routeConsultCore(
       };
     });
     candidates.sort((a, b) => b.score - a.score || a.ownerId.localeCompare(b.ownerId));
-    const snapshotCandidates = candidates.slice(0, maxCandidates);
+    return candidates.slice(0, maxCandidates);
+    });
     return {
       // NOT `no_qualified_responder`: that verdict asserts a MEASURED conclusion
       // about the peer population, and on this path nothing was measured — the
@@ -896,6 +981,7 @@ async function routeConsultCore(
   const fetchedTurnRows = (await measure('transcripts', () => withIterativeScan(sql as never, (s) => (s as unknown as Sql)`
     SELECT owner, session_id, turn_idx,
            COALESCE(ts, ingested_at) AS ts,
+           left(COALESCE(text, ''), ${SUBJECT_EVIDENCE_TEXT_LIMIT}) AS "subjectText",
            1 - (text_embedding <=> ${qVec}::vector) AS sim
       FROM harness_shared.session_turns
      WHERE (workspace_id = ${params.workspaceId} OR workspace_id = 'default')
@@ -914,6 +1000,7 @@ async function routeConsultCore(
     turn_idx: number;
     ts: string | Date | null;
     sim: number;
+    subjectText: string;
   }>;
   const turnRows = fetchedTurnRows;
 
@@ -1005,6 +1092,46 @@ async function routeConsultCore(
     for (const r of authRows) authByOwner.set(r.owner, r.c);
   }
 
+  // Similar words and a general completion history do not establish expertise
+  // in a named system. Validate a bounded above-floor pool against its primary
+  // subject; keep mismatches/unmeasured candidates for labelled minimum fill.
+  const subject = expertiseSubject(params.question);
+  const subjectByOwner = new Map<string, NonNullable<RoutingCandidate['subjectEvidence']>>();
+  if (subject) {
+    const eligible = owners.filter(ownerId => {
+      const similarity = clamp01(Math.max(...byOwner.get(ownerId)!.sims));
+      const c = verByOwner.get(ownerId) ?? 0;
+      return meetsRoutingFloors({ relevance: relevanceOf({ similarity,
+        verification: c / (c + VERIFICATION_SATURATION_K), authorship: clamp01((authByOwner.get(ownerId) ?? 0) / 2) }, weights),
+        signals: { similarity } }, floors);
+    }).sort((a, b) => Math.max(...byOwner.get(b)!.sims) - Math.max(...byOwner.get(a)!.sims) || a.localeCompare(b));
+    for (const ownerId of eligible) subjectByOwner.set(ownerId, { subject, status: 'unmeasured', score: null });
+    const boundedOwners = eligible.slice(0, SUBJECT_EVIDENCE_OWNER_LIMIT);
+    const passages = boundedOwners.flatMap(ownerId => turnRows.filter(r => r.owner === ownerId)
+      .slice(0, Math.min(evidencePerOwner, 3)).map(r => ({ ownerId, text: r.subjectText })));
+    const usable = passages.filter(p => typeof p.text === 'string' && p.text.trim());
+    if (usable.length) {
+      try {
+        const deadline = Date.now() + SUBJECT_EVIDENCE_TIMEOUT_MS;
+        const { value: scores } = await measure('evidence', () => withDeadlineFallback(
+          (deps.scoreSubjectEvidence ?? scoreSubjectEvidence)(subject, usable.map(p => p.text), deadline),
+          SUBJECT_EVIDENCE_TIMEOUT_MS, () => usable.map(() => null)));
+        if (scores.length !== usable.length) throw new Error('subject-evidence-score-shape');
+        for (const ownerId of boundedOwners) {
+          const observed = usable.flatMap((p, i) => p.ownerId === ownerId && typeof scores[i] === 'number' &&
+            Number.isFinite(scores[i]) && scores[i]! >= 0 && scores[i]! <= 1 ? [scores[i] as number] : []);
+          if (!observed.length) continue;
+          const score = Math.max(...observed);
+          subjectByOwner.set(ownerId, { subject, status: score >= SUBJECT_EVIDENCE_MIN_SCORE ? 'supported' : 'mismatch', score });
+        }
+      } catch { /* unknown remains explicit, including capped or unavailable owners */ }
+    }
+    const unmeasured = [...subjectByOwner.values()].filter(r => r.status === 'unmeasured').length;
+    base.subjectValidation = { subject, threshold: SUBJECT_EVIDENCE_MIN_SCORE,
+      evaluated: subjectByOwner.size - unmeasured, unmeasured, limit: SUBJECT_EVIDENCE_OWNER_LIMIT };
+    if (unmeasured) base.degraded = 'evidence-unavailable';
+  }
+
   // 5) Liveness annotation (never a gate here — D-008 §5).
   let livenessByOwner: Record<string, ConsultLivenessReading> = {};
   if (deps.getLiveness) {
@@ -1026,6 +1153,7 @@ async function routeConsultCore(
       relevance: relevanceOf(signals, weights),
       newestTs: o.newestTs,
       evidence: o.evidence,
+      ...(subjectByOwner.has(ownerId) ? { subjectEvidence: subjectByOwner.get(ownerId)! } : {}),
     };
   });
 
@@ -1057,6 +1185,7 @@ async function routeConsultCore(
       relativeAgeDays,
       signals: { ...s.signals, freshness },
       evidence: s.evidence,
+      ...(s.subjectEvidence ? { subjectEvidence: s.subjectEvidence } : {}),
       ...annotateLiveness(livenessByOwner[s.ownerId]),
     };
   });
@@ -1071,7 +1200,7 @@ async function routeConsultCore(
   });
 
   return {
-    verdict: qualified.length > 0 ? 'routed' : 'no_qualified_responder',
+    verdict: qualified.length > 0 ? 'routed' : base.degraded === 'evidence-unavailable' ? 'relevance_unmeasured' : 'no_qualified_responder',
     qualified,
     snapshot: { ...base, candidates: snapshotCandidates },
     queryVec: vec,

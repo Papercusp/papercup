@@ -76,6 +76,7 @@ import {
   GOAL_OWNER_REPORT_SCHEMA_VERSION,
 } from '../goal-owner-report';
 import { runGoalGradingBacklogSweepOnce } from './goal-grading-backlog-sweep';
+import { runGoalComputedTenureCardSweepOnce } from './goal-computed-tenure-card-sweep';
 
 /** Hours-scale detection needs no seconds-scale sweep: one tick per 10 minutes
  *  bounds the worst-case detection lag to ~4% of the floor. */
@@ -648,6 +649,15 @@ export function startGoalOwnerReportWatchdog(sql: Sql, opts: { intervalMs?: numb
         .catch((e) => {
           console.warn(
             `[goal-owner-report-watchdog] sweep failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`,
+          );
+        })
+        // P-004 (goal-grading-live-coverage-and-holder-followthrough-2026-10-08): keep one
+        // current computed goal-mode-e2e card per holder tenure. Runs before the backlog
+        // sweep so the backlog reads this tick's cards.
+        .then(() => runGoalComputedTenureCardSweepOnce(sql))
+        .catch((e) => {
+          console.warn(
+            `[goal-computed-tenure-card] sweep failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`,
           );
         })
         // P-002 (goal-grading-live-coverage-and-holder-followthrough-2026-10-08):

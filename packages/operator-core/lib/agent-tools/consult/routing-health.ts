@@ -9,6 +9,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
+import { readExpertiseRoutingRecorderHealth } from '../../endpoint-route/telemetry';
 
 const countsShape = z
   .object({
@@ -40,7 +41,7 @@ export default defineTool({
     chaining:
       'Read bounded.truncatedByLimit and consultsWithoutDispatchRecords before trusting a zero: consults routed before the dispatch recorder shipped carry no records.',
     returns:
-      '{ ok, window:{since,until,cohort}, asOf, policies:[{ policy, consults, consultsWithoutDispatchRecords, launched, answered, declined, failed, failedReasons, hung, pending, skipped, skippedReasons }], totals, bounded:{ truncatedByLimit, consultsScanned, consultLimit, dispatchLogCapped } }.',
+      '{ ok, window:{since,until,cohort}, asOf, policies, totals, bounded, requestCohort, routingExecutions, routingRecorder }. Routing executions group recorded shared-router calls by caller/policy/build with observed stage latencies; unavailable ledgers remain unknown. routingRecorder describes this serving process since startup, including pending and failed writes, independently of all windowed cohorts.',
   },
   capability: 'coord:read',
   requirePrincipal: false,
@@ -74,6 +75,12 @@ export default defineTool({
         })
         .optional(),
       requestCohort: z.unknown().optional(),
+      routingExecutions: z.unknown().optional(),
+      routingRecorder: z.object({
+        scope: z.literal('serving-process'), processId: z.number(), since: z.string(),
+        attempted: z.number(), persisted: z.number(), failed: z.number(), pending: z.number(),
+        lastFailure: z.object({ at: z.string(), code: z.string(), caller: z.string(), policy: z.string() }).nullable(),
+      }).optional(),
     })
     .passthrough(),
   async handler(args, ctx) {
@@ -100,6 +107,9 @@ export default defineTool({
       new Date(nowMs).toISOString(),
     );
     const result = health.routingHealthFromRows(rows, { ...window, nowMs, truncatedByLimit: truncated });
-    return { data: { ok: true, ...result } };
+    const routingExecutions = await health.readExpertiseExecutionHealth(
+      getOrgPg().sql, workspaceId, new Date(window.sinceMs).toISOString(), new Date(window.untilMs).toISOString(),
+    );
+    return { data: { ok: true, ...result, routingExecutions, routingRecorder: readExpertiseRoutingRecorderHealth() } };
   },
 });

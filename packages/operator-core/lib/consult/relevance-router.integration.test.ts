@@ -18,11 +18,15 @@
  *    and a missing embedder degrades honestly while exposing only an explicit
  *    lexical fallback path (never semantic qualification).
  */
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { DISCLOSURE_LEDGER_FIXTURE_DDL } from '../../test/_disclosure-ledger-fixture';
 import { D006_TRANSCRIPT_RULE } from '../personal-vault/transcript-exclusion';
 import postgres, { type Sql } from 'postgres';
 import { randomBytes } from 'node:crypto';
+import { existsSync, readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { recordExpertiseRoutingInvocation, readExpertiseRoutingRecorderHealth, EXPERTISE_ROUTING_PATH } from '../endpoint-route/telemetry';
+import { readExpertiseExecutionHealth } from './consult-routing-health';
 import { getTestPg } from '@papercusp/test-config/pg';
 import { EMBEDDER_DIM_SPECS } from '@papercusp/memory';
 import { resolveProseProfileSelection } from '../search/prose-vector-dims';
@@ -31,7 +35,11 @@ import {
   extractPathTokens,
   DEFAULT_SIM_FLOOR,
   DEFAULT_RELEVANCE_FLOOR,
+  SUBJECT_EVIDENCE_OWNER_LIMIT,
+  SUBJECT_EVIDENCE_TIMEOUT_MS,
+  snapshotCandidateQualifies,
   type ConsultRouteDeps,
+  type ExpertiseRoutingReceipt,
 } from './relevance-router';
 
 const WS = 'ws-consult';
@@ -56,6 +64,9 @@ const deps = (embedTheta: number | null, over: Partial<ConsultRouteDeps> = {}): 
     : resolveProseProfileSelection('gemma', EMBEDDER_DIM_SPECS.gemma),
   embeddingMode: embedTheta === null ? null : 'gemma',
   now: () => NOW,
+  // Analytic vector fixtures isolate the PG/vector contract. Subject scenarios
+  // override this seam with independent positive/counterexample evidence.
+  scoreSubjectEvidence: async (_subject, texts) => texts.map(() => 1),
   ...over,
 });
 
@@ -98,6 +109,10 @@ beforeAll(async () => {
   rootSql = postgres(u.toString(), { max: 1, onnotice: () => {} });
   await rootSql.unsafe('CREATE EXTENSION IF NOT EXISTS vector');
   await rootSql.unsafe('CREATE SCHEMA harness_shared');
+  const ledgerMigration = fileURLToPath(new URL('../../../../libs/papercusp/libs/db/sql/archive/077-route-invocations.sql', import.meta.url));
+  await rootSql.unsafe(readFileSync(ledgerMigration, 'utf8').replace(/^\\.*$/gm, ''));
+  const metadataMigration = fileURLToPath(new URL('../../../../libs/papercusp/libs/db/sql/1429-route-invocation-metadata.sql', import.meta.url));
+  await rootSql.unsafe(readFileSync(existsSync(metadataMigration) ? metadataMigration : metadataMigration + '.DRAFT', 'utf8'));
   // D-006: routing excludes experts who have held a disclosure; the ledger must exist.
   await rootSql.unsafe(DISCLOSURE_LEDGER_FIXTURE_DDL);
   // Only the columns the router reads. ⚠ These names MUST match the real
@@ -172,6 +187,144 @@ afterAll(async () => {
 });
 
 const baseParams = { workspaceId: WS, requesterId: 'agent-self', question: 'how does the consult router work?' };
+
+describe('bounded subject evidence against real transcript SQL', () => {
+  const question = 'stale desktop registry rows block computer:provision_desktop; invoke soleOwner reconciliation?';
+  let addedOwners: string[] = [];
+  afterEach(async () => {
+    if (addedOwners.length) await rootSql`DELETE FROM harness_shared.session_turns WHERE owner = ANY(${addedOwners}::text[])`;
+    addedOwners = [];
+  });
+  async function passage(owner: string, text: string, angle: number) {
+    addedOwners.push(owner);
+    await insertTurn(owner, angle, DAY);
+    await rootSql`UPDATE harness_shared.session_turns SET text = ${text} WHERE owner = ${owner}`;
+  }
+
+  it('rejects the sole-live-gate collision while keeping direct and conceptual expertise', async () => {
+    await passage('subject-gate', 'The ownership cell is held-live; this is the sole live gate lane. Do not run the checkpoint.', 0);
+    await passage('subject-direct', 'Fixed computer:provision_desktop stale rows on desktop_sessions_live_display_uq.', 0.1);
+    await passage('subject-concept', 'Xvfb screen allocations use database leases; reclaim an orphan only after verifying the former process died.', 0.2);
+    const seen: string[] = [];
+    const result = await routeConsult({ ...baseParams, question }, deps(0, {
+      scoreSubjectEvidence: async (subject, texts, deadline) => {
+        expect(subject).toBe('computer:provision_desktop');
+        expect(deadline - Date.now()).toBeLessThanOrEqual(SUBJECT_EVIDENCE_TIMEOUT_MS);
+        seen.push(...texts);
+        return texts.map(text => text.includes('Xvfb') ? 0.692 : text.includes('Fixed computer:') ? 0.902 : 0.350);
+      },
+    }));
+    expect(seen.some(text => text.includes('Xvfb'))).toBe(true);
+    expect(result.qualified.map(c => c.ownerId)).toEqual(['subject-direct', 'subject-concept']);
+    const gate = result.snapshot.candidates.find(c => c.ownerId === 'subject-gate')!;
+    expect(gate.signals.similarity).toBe(1);
+    expect(snapshotCandidateQualifies(result.snapshot, gate)).toBe(false);
+    expect(snapshotCandidateQualifies(result.snapshot, { ...gate, subjectEvidence: undefined })).toBe(true);
+    expect(result.snapshot.subjectValidation?.unmeasured).toBe(0);
+  });
+
+  it('distinguishes failed/malformed scores from a measured no-expert case', async () => {
+    for (const scoreSubjectEvidence of [async () => { throw new Error('scorer unavailable'); }, async () => [], async (_q: string, texts: string[]) => texts.map(() => NaN)]) {
+      const result = await routeConsult({ ...baseParams, question }, deps(0, { scoreSubjectEvidence }));
+      expect(result.verdict).toBe('relevance_unmeasured');
+      expect(result.snapshot.degraded).toBe('evidence-unavailable');
+      expect(result.qualified).toEqual([]);
+    }
+    const measured = await routeConsult({ ...baseParams, question }, deps(0, { scoreSubjectEvidence: async (_q, texts) => texts.map(() => 0.1) }));
+    expect(measured.verdict).toBe('no_qualified_responder');
+    expect(measured.snapshot.subjectValidation?.unmeasured).toBe(0);
+  });
+
+  it('caps scored owners and leaves overflow explicitly unmeasured', async () => {
+    for (let i = 0; i < SUBJECT_EVIDENCE_OWNER_LIMIT + 2; i++) await passage(`subject-cap-${i}`, 'virtual screen lease diagnosis', i * 0.01);
+    let pairs = 0;
+    const result = await routeConsult({ ...baseParams, question }, deps(0, {
+      scoreSubjectEvidence: async (_q, texts) => { pairs = texts.length; return texts.map(() => 0.9); },
+    }));
+    expect(pairs).toBeLessThanOrEqual(SUBJECT_EVIDENCE_OWNER_LIMIT * 3);
+    expect(result.snapshot.subjectValidation?.unmeasured).toBeGreaterThan(0);
+    expect(result.snapshot.degraded).toBe('evidence-unavailable');
+    expect(result.qualified.length).toBeGreaterThan(0);
+  });
+});
+
+describe('shared routing telemetry in the real invocation ledger', () => {
+  beforeEach(async () => {
+    await rootSql`DELETE FROM harness_shared.route_invocations WHERE workspace_id = ${WS}`;
+  });
+
+  it('persists the exact returned stage receipt and remains distinct from HTTP/MCP invocations', async () => {
+    const writes: Promise<void>[] = [];
+    const result = await routeConsult({ ...baseParams, telemetry: {
+      caller: 'fixture-consult', policy: 'consult-default', buildSha: '1234567', correlationId: 'ledger-success',
+    } }, deps(0, { recordTelemetry: r => { writes.push(recordExpertiseRoutingInvocation(r, rootSql)); } }));
+    await Promise.all(writes);
+    const rows = await rootSql<{ method: string; path: string; metadata_json: ExpertiseRoutingReceipt }[]>`
+      SELECT method, path, metadata_json FROM harness_shared.route_invocations
+       WHERE workspace_id = ${WS} AND metadata_json->>'correlationId' = 'ledger-success'`;
+    expect(rows).toHaveLength(1);
+    expect(rows[0].method).toBe('INTERNAL');
+    expect(rows[0].path).toBe(EXPERTISE_ROUTING_PATH);
+    expect(rows[0].metadata_json).toEqual(result.snapshot.measurement);
+    const executionHealth = await readExpertiseExecutionHealth(rootSql, WS, '2000-01-01T00:00:00Z', '2100-01-01T00:00:00Z');
+    expect(executionHealth).toMatchObject({ status: 'measured', cohort: 'routing-execution-start', rowsScanned: 1, invalidReceipts: 0 });
+    expect(executionHealth.groups).toEqual([expect.objectContaining({
+      caller: 'fixture-consult', policy: 'consult-default', buildSha: '1234567', calls: 1,
+      outcomes: { returned: 1, degraded: 0, threw: 0 },
+      latencyMs: { observed: 1, p50: rows[0].metadata_json.durationMs, p95: rows[0].metadata_json.durationMs },
+    })]);
+    // Counterexample: postgres.js serializes a string AGAIN when PG describes
+    // its parameter as jsonb. The writer must bind text before converting it.
+    const legacy = await rootSql.unsafe<{ kind: string }[]>(
+      'SELECT jsonb_typeof($1::jsonb) AS kind', [JSON.stringify(rows[0].metadata_json)],
+    );
+    expect(legacy[0].kind).toBe('string');
+    expect(rows[0].metadata_json.stages).toMatchObject({
+      disclosure: { outcome: 'returned' }, embedding: { outcome: 'returned' },
+      transcripts: { outcome: 'returned' }, verification: { outcome: 'returned' }, ranking: { outcome: 'returned' },
+    });
+    expect(JSON.stringify(rows[0].metadata_json)).not.toContain(baseParams.question);
+  });
+
+  it('persists a thrown pre-consult route even when no consultation was created', async () => {
+    const writes: Promise<void>[] = [];
+    const error = Object.assign(new Error('private database details'), { code: '57P01' });
+    await expect(routeConsult({ ...baseParams, telemetry: {
+      caller: 'fixture-preview', policy: 'consult-default', buildSha: null, correlationId: 'ledger-throw',
+    } }, deps(0, {
+      getSql: () => { throw error; },
+      recordTelemetry: r => { writes.push(recordExpertiseRoutingInvocation(r, rootSql)); },
+    }))).rejects.toBe(error);
+    await Promise.all(writes);
+    const rows = await rootSql<{ metadata_json: ExpertiseRoutingReceipt }[]>`
+      SELECT metadata_json FROM harness_shared.route_invocations
+       WHERE workspace_id = ${WS} AND metadata_json->>'correlationId' = 'ledger-throw'`;
+    expect(rows).toHaveLength(1);
+    expect(rows[0].metadata_json).toMatchObject({ caller: 'fixture-preview', outcome: 'threw', verdict: null, errorCode: '57P01' });
+    expect(JSON.stringify(rows)).not.toContain('private database');
+  });
+
+  it('exposes recorder failures independently of ledger cohorts without replacing the original error', async () => {
+    const before = readExpertiseRoutingRecorderHealth();
+    const error = Object.assign(new Error('private recorder failure'), { code: '57P01' });
+    const receipt: ExpertiseRoutingReceipt = {
+      schemaVersion: 1, correlationId: 'sink-failure', workspaceId: WS, requesterId: 'fixture-requester',
+      caller: 'fixture-recorder', policy: 'consult-default', buildSha: null,
+      startedAt: NOW.toISOString(), durationMs: 1, outcome: 'threw', verdict: null, errorCode: null, stages: {},
+    };
+    const failingSql = { begin: async () => { throw error; } } as unknown as Sql;
+    await expect(recordExpertiseRoutingInvocation(receipt, failingSql)).rejects.toBe(error);
+    const after = readExpertiseRoutingRecorderHealth();
+    expect(after).toMatchObject({
+      scope: 'serving-process', attempted: before.attempted + 1, persisted: before.persisted,
+      failed: before.failed + 1, pending: before.pending,
+      lastFailure: { code: '57P01', caller: 'fixture-recorder', policy: 'consult-default' },
+    });
+    expect(JSON.stringify(after)).not.toContain('private');
+    const health = await readExpertiseExecutionHealth(rootSql, WS, '2000-01-01T00:00:00Z', '2100-01-01T00:00:00Z');
+    expect(health).toMatchObject({ status: 'measured-empty', rowsScanned: 0, groups: [] });
+  });
+});
 
 describe('routeConsult — routing + blend', () => {
   it('routes to the similar+recent+verified owner; snapshot carries the D-008 shape', async () => {

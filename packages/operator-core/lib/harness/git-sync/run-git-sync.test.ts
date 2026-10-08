@@ -3208,6 +3208,44 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(git(repo, 'status', '--porcelain')).not.toContain('watchdog.test.ts');
   });
 
+  it('EI-25437238223518184: commits a named package consumer only with its changed provider', async () => {
+    const providerDir = join(repo, 'packages/provider/src');
+    mkdirSync(providerDir, { recursive: true });
+    writeFileSync(join(repo, 'packages/provider/package.json'), JSON.stringify({
+      name: '@fixture/provider', exports: { './telemetry': './src/telemetry.ts' },
+    }));
+    writeFileSync(join(providerDir, 'telemetry.ts'), 'export const existing = 1;\n');
+    git(repo, 'add', 'packages/provider');
+    git(repo, 'commit', '--no-verify', '-m', 'seed package provider');
+    git(repo, 'push', 'origin', 'HEAD:main');
+
+    const provider = 'packages/provider/src/telemetry.ts';
+    const consumer = 'consumer.ts';
+    const detector: ContentDetector = {
+      ...brokenDetector, glob: '**/*.ts', matches: file => file === provider,
+    };
+    writeFileSync(join(repo, provider), 'export const newlyAdded = 2; // BROKEN\n');
+    writeFileSync(join(repo, consumer), "import { newlyAdded } from '@fixture/provider/telemetry';\nexport const value = newlyAdded;\n");
+    writeFileSync(join(repo, 'good.txt'), 'unrelated clean change\n');
+
+    const held = await runGitSync('test', { repoPath: repo, config: cfg, contentDetectors: [detector] });
+    expect(held.status).toBe('synced');
+    expect(held.contentErrors.some(row => row.file === consumer && row.detectorKey === 'quarantined-importer')).toBe(true);
+    const heldFiles = git(originDir, 'ls-tree', '-r', '--name-only', 'main').split('\n');
+    expect(heldFiles).toContain('good.txt');
+    expect(heldFiles).not.toContain(consumer);
+    expect(git(originDir, 'show', 'main:' + provider)).toBe('export const existing = 1;');
+    expect(git(repo, 'status', '--porcelain')).toContain(consumer);
+
+    writeFileSync(join(repo, provider), 'export const newlyAdded = 2;\n');
+    const recovered = await runGitSync('test', { repoPath: repo, config: cfg, contentDetectors: [detector] });
+    expect(recovered.status).toBe('synced');
+    expect(recovered.contentErrors).toEqual([]);
+    expect(git(originDir, 'show', 'main:' + provider)).toBe('export const newlyAdded = 2;');
+    expect(git(originDir, 'show', 'main:' + consumer)).toContain("from '@fixture/provider/telemetry'");
+    expect(git(repo, 'status', '--porcelain')).toBe('');
+  });
+
   it('EI-19932544083689229: once the subject is fixed, the previously-held-back importer commits too (self-heal, no residual quarantine)', async () => {
     writeFileSync(join(repo, 'watchdog.md'), 'this is BROKEN\n');
     writeFileSync(join(repo, 'watchdog.test.ts'), `import './watchdog.md';\nit('ok', () => {});\n`);
@@ -3583,6 +3621,96 @@ describe('runGitSync (real git, with a submodule) — P-007 submodule-push-first
       // and that submodule commit exists on the submodule's origin (pin is reachable remotely)
       expect(() => git(subOrigin, 'cat-file', '-e', `${subHead}^{commit}`)).not.toThrow();
     });
+  });
+
+  it('commits a changed superproject gitlink before attributed root sources', async () => {
+    const subRepo = join(repo, 'libs/sub');
+    writeFileSync(join(subRepo, 'sub.txt'), 'sub-v2\n');
+    writeFileSync(join(repo, 'root-attributed.ts'), 'export const sourceVersion = 2;\n');
+
+    const out = await runGitSync('test', {
+      repoPath: repo,
+      loadRoster: async () => [
+        {
+          agent: 'cup-7',
+          agentLabel: 'Cup Seven',
+          intent: 'update the root integration',
+          files: ['root-attributed.ts'],
+        },
+      ],
+    });
+
+    expect(out.status).toBe('synced');
+    const subHead = git(subRepo, 'rev-parse', 'HEAD');
+    const attributed = git(
+      superOrigin,
+      'log',
+      '-1',
+      '--fixed-strings',
+      '--grep=Co-Authored-By: Cup Seven <cup-7@agents.papercusp>',
+      '--format=%H',
+      'main',
+    );
+    expect(attributed).not.toBe('');
+    // The attributed commit's parent already carries the newly committed submodule pin.
+    expect(git(superOrigin, 'rev-parse', attributed + '^:libs/sub')).toBe(subHead);
+    expect(git(superOrigin, 'rev-parse', attributed + ':libs/sub')).toBe(subHead);
+    expect(git(superOrigin, 'rev-parse', 'main:libs/sub')).toBe(subHead);
+    expect(git(repo, 'status', '--porcelain')).toBe('');
+  });
+
+  it('falls back to one catch-all when the priority gitlink commit CAS is refused', async () => {
+    const subRepo = join(repo, 'libs/sub');
+    const initialSuperHead = git(superOrigin, 'rev-parse', 'main');
+    writeFileSync(join(subRepo, 'sub.txt'), 'sub-v2\n');
+    writeFileSync(join(repo, 'root-attributed.ts'), 'export const sourceVersion = 2;\n');
+    let priorityCasRefused = false;
+    const logs: string[] = [];
+    const runGit: RunGit = async (args, cwd, options) => {
+      if (
+        !priorityCasRefused &&
+        cwd === repo &&
+        args.includes('update-ref') &&
+        args.includes('git-sync: priority submodule gitlinks')
+      ) {
+        priorityCasRefused = true;
+        return { code: 1, stdout: '', stderr: 'fatal: update-ref CAS refused by test' };
+      }
+      return directRunGit(args, cwd, options);
+    };
+
+    const out = await runGitSync('test', {
+      repoPath: repo,
+      runGit,
+      log: (message) => logs.push(message),
+      loadRoster: async () => [
+        {
+          agent: 'cup-7',
+          agentLabel: 'Cup Seven',
+          intent: 'update the root integration',
+          files: ['root-attributed.ts'],
+        },
+      ],
+    });
+
+    expect(priorityCasRefused).toBe(true);
+    expect(out.status).toBe('synced');
+    expect(logs.join('\n')).toContain('priority gitlink commit CAS refused');
+    expect(git(superOrigin, 'rev-parse', 'main^')).toBe(initialSuperHead);
+    const subHead = git(subRepo, 'rev-parse', 'HEAD');
+    expect(git(superOrigin, 'rev-parse', 'main:libs/sub')).toBe(subHead);
+    expect(git(superOrigin, 'show', 'main:root-attributed.ts')).toBe('export const sourceVersion = 2;');
+    expect(
+      git(
+        superOrigin,
+        'log',
+        '--fixed-strings',
+        '--grep=Co-Authored-By: Cup Seven <cup-7@agents.papercusp>',
+        '--format=%H',
+        'main',
+      ),
+    ).toBe('');
+    expect(git(repo, 'status', '--porcelain')).toBe('');
   });
 
   it('EI-25243356801974396: merges a submodule pin when the incoming pin is an ancestor of the local pin', async () => {

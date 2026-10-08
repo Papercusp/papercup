@@ -286,7 +286,7 @@ export interface GetFeedbackResult {
   /** WHY, honestly (D-003: distinct causes must stay distinguishable).
    * `embed_unavailable` always accompanies verdict `relevance_unmeasured`; the
    * other two accompany `no_qualified_responder`. */
-  reason?: 'below_floor' | 'no_available_responder' | 'embed_unavailable' | 'retrieval_only';
+  reason?: 'below_floor' | 'no_available_responder' | 'embed_unavailable' | 'evidence_unavailable' | 'retrieval_only';
   conversation_id: string;
   thread_id: string;
   /** 'served_from_archive' is a TS-surface state only — the DB row reuses
@@ -349,7 +349,7 @@ export interface GetFeedbackResult {
      * { answer?, confidence?, evidence?, reason? }). */
     answer: unknown;
   };
-  degraded?: 'embed-unavailable';
+  degraded?: 'embed-unavailable' | 'evidence-unavailable';
   hint: string;
 }
 
@@ -1313,6 +1313,8 @@ export async function getFeedbackCore(
       ? undefined
       : route.snapshot.degraded === 'embed-unavailable'
         ? 'embed_unavailable'
+        : route.snapshot.degraded === 'evidence-unavailable'
+          ? 'evidence_unavailable'
         : 'below_floor';
 
   // 4) Delivery gating is SELECTION only — the per-task wake budget is REMOVED
@@ -1550,6 +1552,8 @@ export async function getFeedbackCore(
       ? 'Retrieval-only: dispatch was disabled. No answering session was requested; do not park. Read remaining_candidates with sessions:read / sessions:search and decide from their transcript evidence.'
     : reason === 'embed_unavailable'
       ? `The embedder is unavailable on this host — similarity could NOT be measured, so there is no ranking to fill a minimum from (cannot-measure ≠ measured-nothing). Proceed on your own judgment; retry later if the answer matters.`
+      : reason === 'evidence_unavailable'
+        ? 'Problem-specific expertise could not be fully measured within the bounded evidence check. This does not prove no expert exists. Read the candidate transcript references and retry if the answer matters.'
       : reason === 'no_available_responder' && preLaunchRefusals && preLaunchRefusals.total > 0 &&
           preLaunchRefusals.refused === preLaunchRefusals.total
         ? `Matching experts were selected, but every dispatch walk (${preLaunchRefusals.total}) was refused BEFORE any model was tried, so no account wall is involved and retrying after a reset will not help: ${preLaunchRefusals.details.join(' | ')}. Nothing is coming, so do not park: remaining_candidates lists the experts; read their transcripts via sessions:read / sessions:search (retrieval fallback) and proceed.`
@@ -1566,7 +1570,7 @@ export async function getFeedbackCore(
       ? 'retrieval_only'
       : finalChosen
         ? 'routed'
-        : reason === 'embed_unavailable'
+        : reason === 'embed_unavailable' || reason === 'evidence_unavailable'
           ? 'relevance_unmeasured'
           : 'no_qualified_responder',
     ...(reason ? { reason } : {}),

@@ -1,3 +1,7 @@
+import { getBuildInfo } from '../../build-info';
+import { recordExpertiseRoutingInvocation } from '../../endpoint-route/telemetry';
+import { CONSULT_DEFAULT_POLICY } from '../../consult/selection-policies';
+
 /**
  * plans:start — approve a plan and promote its items into work_items.
  *
@@ -462,7 +466,10 @@ export default defineTool({
               },
               {
                 route: (params) =>
-                  routeConsult(params, {
+                  routeConsult({ ...params, telemetry: {
+                    caller: 'plans:start', policy: CONSULT_DEFAULT_POLICY, buildSha: getBuildInfo().sha,
+                  } }, {
+                    recordTelemetry: receipt => recordExpertiseRoutingInvocation(receipt, getOrgPg().sql),
                     getSql: () => getOrgPg().sql,
                     embed: resolved?.embed ?? null,
                     embeddingProfile,

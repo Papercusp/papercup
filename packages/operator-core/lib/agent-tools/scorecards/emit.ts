@@ -153,6 +153,7 @@ import { acceptanceSeatRefusalHint, resolveAcceptanceSeatSuccession } from '../.
 import { readAndEvaluateAcceptanceBarLifecycle } from '../../acceptance-bar-lifecycle-evaluator';
 import { evidenceCurrentInputSchema } from '../plans/spec-evidence-store';
 import { runtimeCitationRefusal } from '../../acceptance-runtime-citation';
+import { adoptComputedTenureRatings } from '../../goal-computed-tenure-card';
 // TYPE-ONLY (erased at runtime) — see defaultResolveAuthorSessionState below,
 // which mirrors rebind-identity.ts's own dynamic-import discipline for the
 // same oracle so this write-path module never carries it on its static graph.
@@ -2037,7 +2038,38 @@ export async function emitScorecard(
     // names `acceptanceOf` as the way to get it.
     const adoptedRatings =
       args.ratings === undefined && acceptanceOf && acceptedIndependent ? acceptedIndependent.ratings : undefined;
-    const suppliedRatings = (args.ratings ?? adoptedRatings) as ObservationRatings | undefined;
+    // P-004 (goal-grading-live-coverage-and-holder-followthrough-2026-10-08): a grader who
+    // supersedes a holder tenure's COMPUTED goal-mode-e2e card for the identical window
+    // rates only the residual criteria; the computed card's settled ratings (pass, and
+    // unknown idle/not-exercised) fill every criterion the grader omitted. Anything else
+    // stays missing, so the completeness check below names exactly the residual keys.
+    const computedAdoption = await adoptComputedTenureRatings(
+      {
+        rubricRef: args.rubricRef,
+        supersedes: args.supersedes,
+        subject: args.subject,
+        supplied: args.ratings as Record<string, Record<string, unknown>> | undefined,
+        criterionKeys: rubric.criteria.map((criterion) => criterion.key),
+      },
+      {
+        readCard: async (issueId) => {
+          const issue = await getIssue(issueId);
+          const payload =
+            issue?.payload && typeof issue.payload === 'object' && !Array.isArray(issue.payload)
+              ? (issue.payload as { observation?: unknown; _ei?: { created_by?: unknown } })
+              : null;
+          const observation = asStructuredObservation(payload?.observation);
+          if (!observation?.ratings) return null;
+          const createdBy = typeof payload?._ei?.created_by === 'string' ? payload._ei.created_by.trim() : null;
+          return {
+            createdBy,
+            subject: observation.subject ?? null,
+            ratings: observation.ratings as Record<string, { rating?: string; unknownReason?: string; evidence?: string }>,
+          };
+        },
+      },
+    );
+    const suppliedRatings = (computedAdoption?.ratings ?? args.ratings ?? adoptedRatings) as ObservationRatings | undefined;
     if (suppliedRatings === undefined) {
       return {
         ok: false as const,
@@ -2141,6 +2173,21 @@ export async function emitScorecard(
       return {
         ok: false as const,
         error: 'A registered platform measurement contradicts the claimed rating.',
+        instrumentContract,
+        instrumentSnapshots,
+      };
+    }
+    // P-003 (goal-grading-live-coverage-and-holder-followthrough-2026-10-08): on goal-mode-e2e a
+    // claimed pass is refused only where a platform-computed instrument measured a fail or that
+    // the criterion's trigger never occurred. A fail over a computed pass stays allowed: the
+    // grader may see what the ledgers cannot (a shell-only edit, a perfunctory search).
+    if (args.rubricRef === 'goal-mode-e2e' && instrumentContract.positiveClaimContradictions.length) {
+      return {
+        ok: false as const,
+        error:
+          `A platform-computed measurement contradicts the claimed pass for ` +
+          `${instrumentContract.positiveClaimContradictions.join(', ')}. Read instrumentSnapshots[<key>].value.reason; ` +
+          'rate fail, or unknown with unknownReason not-exercised, as the measurement shows.',
         instrumentContract,
         instrumentSnapshots,
       };

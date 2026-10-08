@@ -46,6 +46,7 @@ import {
 } from './agent-obligations';
 import {
   fleetStaffingObligations,
+  strandedGoalWorkObligations,
   ownerDirectiveObligations,
   waitingOnObligations,
 } from './agent-obligation-providers';
@@ -721,6 +722,44 @@ const FAMILY_PROBES: Record<string, FamilyProbe> = {
         },
       }),
     marker: /fleet-coverage-probe/,
+  },
+  // P-005 / R-5: the real provider, on the row the measured incident needed — a
+  // goal-created item left unassigned by a refused launch.
+  'stranded-goal-work': {
+    build: () =>
+      strandedGoalWorkObligations({
+        workspaceId: 'papercusp-workspace',
+        ownerId: 'su-coverage-probe',
+        goalId: 'goal-coverage-probe',
+        observedAt: FAMILY_OBSERVED_AT,
+        sourceGeneration: 'coverage-probe',
+        read: {
+          status: 'known',
+          value: {
+            goalId: 'goal-coverage-probe',
+            thresholdMs: 4 * 60 * 60_000,
+            total: 1,
+            refusedCount: 1,
+            sample: [
+              {
+                id: 'WI-stranded-coverage-probe',
+                title: 'coverage probe item',
+                createdAt: FAMILY_OBSERVED_AT,
+                placementRefusal: {
+                  at: FAMILY_OBSERVED_AT,
+                  reason: 'goal_max_agents',
+                  goalId: 'goal-coverage-probe',
+                  launcherOwnerId: 'su-coverage-probe',
+                  message: 'probe refusal',
+                  source: 'capability:launch-agent',
+                },
+              },
+            ],
+            truncatedByLimit: false,
+          },
+        },
+      }),
+    marker: /stranded unassigned/,
   },
 };
 

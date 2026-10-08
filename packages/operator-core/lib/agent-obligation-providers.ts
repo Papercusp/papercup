@@ -27,6 +27,7 @@ import type { GoalOwnerReportObligation } from './system-health/goal-owner-repor
 import { GOAL_OWNER_REPORT_HEADING_LIST } from './goal-owner-report';
 import type { PlanAcceptanceGateCode } from './plan-acceptance-gate';
 import type { FleetStaffingRow } from './fleet/fleet-staffing-read';
+import type { StrandedGoalWork } from './goal-stranded-work';
 import type { PlanClosureGateFields } from './goals/plan-closure-observations';
 import { advanceGoalPlacementProgress, goalPlacementProgressScopeKey } from './goal-placement-progress';
 import type { ExactPlanAdmission, ExactPlanAdmissionReason } from './agent-tools/plans/plan-admission-preflight';
@@ -45,6 +46,7 @@ export const INDEPENDENT_VERIFICATION_OBLIGATION_REVISION = 'plan-independent-ve
 export const OWNER_DIRECTIVE_OBLIGATION_REVISION = 'owner-directive-disposition-v1';
 export const WAITING_ON_OBLIGATION_REVISION = 'waiting-on-progress-v2';
 export const FLEET_STAFFING_OBLIGATION_REVISION = 'fleet-staffing-v1';
+export const STRANDED_GOAL_WORK_OBLIGATION_REVISION = 'stranded-goal-work-v1';
 
 interface ProviderBase {
   workspaceId: string;
@@ -1795,6 +1797,108 @@ export function fleetStaffingObligations(input: FleetStaffingProviderInput): Age
   return out;
 }
 
+export interface StrandedGoalWorkProviderInput extends ProviderBase {
+  goalId: string;
+  read: ProviderRead<StrandedGoalWork>;
+}
+
+const STRANDED_GOAL_WORK_SOURCE = 'stranded-goal-work:open+unassigned+goal_id';
+
+function strandedAgeLabel(createdAt: string | null, observedAt: string): string {
+  if (!createdAt) return 'age unknown';
+  const hours = Math.max(0, Math.floor((Date.parse(observedAt) - Date.parse(createdAt)) / 3_600_000));
+  return hours >= 48 ? `${Math.floor(hours / 24)}d unassigned` : `${hours}h unassigned`;
+}
+
+/**
+ * P-005 / R-5: goal-created work items left open and unassigned (goal-stranded-work.ts).
+ *
+ * DUE when the goal has any item past the stranded threshold or stamped by a
+ * refused launch. One obligation per goal, not one per item: the holder's
+ * action is a single triage pass (place or drop each), and N rows would crowd
+ * every other obligation off a bounded brief. The count is exact; the sample
+ * names the refusal-stamped items first, then the oldest. An unreadable source
+ * is UNKNOWN, never "nothing stranded". An empty read produces no row, which
+ * is how the obligation clears.
+ */
+export function strandedGoalWorkObligations(input: StrandedGoalWorkProviderInput): AgentObligation[] {
+  const ref = `goal:${input.goalId}`;
+  const common = {
+    ruleId: 'stranded-goal-work',
+    ruleRevision: STRANDED_GOAL_WORK_OBLIGATION_REVISION,
+    family: 'stranded-goal-work' as const,
+    scope: { workspaceId: input.workspaceId, ownerId: input.ownerId, goalId: input.goalId },
+    responsibleOwnerId: input.ownerId,
+    causalRank: 2,
+    sourceGeneration: input.sourceGeneration,
+    authority: policyAuthority(STRANDED_GOAL_WORK_SOURCE, STRANDED_GOAL_WORK_OBLIGATION_REVISION),
+    clearsWhen: {
+      id: `stranded-goal-work-cleared:${input.goalId}`,
+      summary: 'every goal-created item past the threshold or refused at launch is claimed, dropped or finished',
+      evidenceKind: 'state' as const,
+      sourceRef: ref,
+    },
+  };
+  if (input.read.status === 'unknown') {
+    return [
+      defineAgentObligation({
+        ...common,
+        title: 'Stranded goal work is unmeasured',
+        episode: `unknown:${input.sourceGeneration}`,
+        status: 'unknown',
+        priority: 'normal',
+        reason: input.read.failure.detail,
+        applicableDemand: 0,
+        evidence: [],
+        action: { kind: 'inspect', summary: input.read.failure.retry, targetRef: ref },
+        measurementFailure: input.read.failure,
+      }),
+    ];
+  }
+  const work = input.read.value;
+  if (work.total <= 0) return [];
+  const hours = Math.round(work.thresholdMs / 3_600_000);
+  const named = work.sample
+    .map((row) =>
+      `${row.id} (${row.placementRefusal ? `launch refused ${row.placementRefusal.reason}` : strandedAgeLabel(row.createdAt, input.observedAt)})`,
+    )
+    .join(', ');
+  const more = work.truncatedByLimit ? ` and ${work.total - work.sample.length} more` : '';
+  return [
+    defineAgentObligation({
+      ...common,
+      title:
+        work.refusedCount > 0
+          ? `${work.total} goal work item(s) are stranded unassigned, ${work.refusedCount} left by a refused launch`
+          : `${work.total} goal work item(s) are stranded unassigned past ${hours}h`,
+      // The episode is the set's shape, not its clock: the same stranded set keeps
+      // one episode across reads, and a newly stranded or newly refused item opens
+      // a new one.
+      episode: `goal:${input.goalId}:${work.total}:${work.refusedCount}:${work.sample.map((row) => row.id).join(',')}`,
+      status: 'due',
+      priority: work.refusedCount > 0 ? 'high' : 'normal',
+      reason: `Stranded: ${named}${more}. Goal-created work that nobody holds is not progressing.`,
+      applicableDemand: work.total,
+      evidence: [
+        evidence(
+          ref,
+          input.observedAt,
+          input.sourceGeneration,
+          `total=${work.total}, refusedAtLaunch=${work.refusedCount}, thresholdHours=${hours}, sample=${work.sample.map((row) => row.id).join(',')}`,
+        ),
+      ],
+      action: {
+        kind: 'repair',
+        summary:
+          'for each stranded item: place it (dispatch it to a live goal fleet, or launch with feature:<id> once a seat is free) ' +
+          "or drop it with work_items:set_state { state: 'dropped', reason }; never raise a ceiling to force a launch",
+        tool: 'work_items:list',
+        targetRef: ref,
+      },
+    }),
+  ];
+}
+
 export function buildAgentObligationAgenda(
   inputs: {
     planPlacement?: PlanPlacementProviderInput;
@@ -1804,6 +1908,7 @@ export function buildAgentObligationAgenda(
     ownerDirectives?: OwnerDirectivesProviderInput;
     waitingOn?: WaitingOnProviderInput;
     fleetStaffing?: FleetStaffingProviderInput;
+    strandedGoalWork?: StrandedGoalWorkProviderInput;
   },
   evaluatedAt: string,
 ): AgentObligationAgenda {
@@ -1815,6 +1920,7 @@ export function buildAgentObligationAgenda(
     ...(inputs.ownerDirectives ? ownerDirectiveObligations(inputs.ownerDirectives) : []),
     ...(inputs.waitingOn ? waitingOnObligations(inputs.waitingOn) : []),
     ...(inputs.fleetStaffing ? fleetStaffingObligations(inputs.fleetStaffing) : []),
+    ...(inputs.strandedGoalWork ? strandedGoalWorkObligations(inputs.strandedGoalWork) : []),
   ];
   return evaluateAgentObligations(obligations, evaluatedAt);
 }

@@ -236,6 +236,24 @@ describe('retained grading auditor lease delivery (EI-25289706163098558)', () =>
     expect(f.d.wake).toHaveBeenCalledTimes(1);
   });
 
+  it('resumes a parked task once under its existing lease even after its renewal was delivered', async () => {
+    const f = fixture();
+    const renewed = await notifyRetainedGradingAuditor(f.input, f.d);
+    const results = await Promise.all(Array.from({ length: 4 }, () =>
+      notifyRetainedGradingAuditor({ ...f.input, resumeParked: true }, f.d)));
+    expect(results.map((r) => r.state).sort()).toEqual(['already-delivered', 'already-delivered', 'already-delivered', 'delivered']);
+    expect(new Set(results.map((r) => r.msgId)).size).toBe(1);
+    expect(results[0]!.msgId).not.toBe(renewed.msgId);
+    const sent = f.d.send.mock.calls[1]![1];
+    expect(sent.to).toEqual(['su-independent']);
+    expect(sent.summary).toContain('Resume retained grading audit');
+    expect(sent.body).toContain("reservedAt '2026-10-07T04:00:51.909Z'");
+    expect(sent.body).toContain("exact target 'EI-renew' and evidence fingerprint 'exact-fingerprint'");
+    expect(f.d.confirmReservation).toHaveBeenCalledTimes(2);
+    expect(f.d.wake).toHaveBeenCalledTimes(2);
+    expect(f.stored.size).toBe(2);
+  });
+
   it.each(['owner', 'target', 'label-boundary', 'task-state', 'workspace', 'fingerprint', 'lease-key', 'task-class'])
   ('refuses mismatched or missing %s provenance without notifying another actor', async (field) => {
     const f = fixture();
@@ -986,6 +1004,66 @@ describe('dispatchPendingGradingAudits', () => {
     expect(d.launch).not.toHaveBeenCalled();
   });
 
+  function parkedAuditorFixture() {
+    const d = deps();
+    const prior = { key: 'grading-audit:EI-parked', reservedAt: '2026-09-07T23:40:00.000Z' };
+    d.reserve.mockResolvedValue({ status: 'claimed', prior,
+      reservation: { key: prior.key, reservedAt: '2026-09-08T00:00:00.000Z' } });
+    d.listScorecards.mockResolvedValue([card('EI-parked', { evidenceFingerprint: 'exact-fingerprint' })]);
+    d.listTasks.mockResolvedValue([{ taskId: 'retained', state: 'running',
+      detail: { label: prior.key, coordOwnerId: 'su-independent' } } as unknown as TaskRow]);
+    const resolveOwnerLiveness = vi.fn<NonNullable<DispatchPendingGradingAuditsDeps['resolveOwnerLiveness']>>()
+      .mockResolvedValue({ sessionState: 'parked' });
+    const killTask = vi.fn<NonNullable<DispatchPendingGradingAuditsDeps['killTask']>>();
+    return { d, prior, resolveOwnerLiveness, killTask,
+      isCurrentSourceAuditResponder: vi.fn(async () => true) };
+  }
+
+  it('wakes a positively parked retained auditor without replacing its expired lease or launching another task', async () => {
+    const f = parkedAuditorFixture();
+    const result = await dispatchPendingGradingAudits({ targetIds: ['EI-parked'], ctx }, { ...f.d, ...f });
+    expect(result.receipts[0]).toMatchObject({ state: 'deduped', dispatchReservation: f.prior,
+      renewalNotification: { state: 'delivered' } });
+    expect(f.d.notifyRetainedAuditor).toHaveBeenCalledWith(expect.objectContaining({
+      reservation: f.prior, resumeParked: true, task: expect.objectContaining({ taskId: 'retained' }),
+    }));
+    expect(f.resolveOwnerLiveness).toHaveBeenCalledWith('su-independent');
+    expect(f.d.launch).not.toHaveBeenCalled();
+    expect(f.d.route).not.toHaveBeenCalled();
+    expect(f.killTask).not.toHaveBeenCalled();
+  });
+
+  it.each(['live', 'suspect', 'ended', 'unknown', 'unavailable'])
+  ('does not resume an existing lease when auditor liveness is %s', async (state) => {
+    const f = parkedAuditorFixture();
+    if (state === 'unavailable') f.resolveOwnerLiveness.mockRejectedValue(new Error('oracle unavailable'));
+    else f.resolveOwnerLiveness.mockResolvedValue(state === 'unknown' ? null
+      : { sessionState: state as 'live' | 'suspect' | 'ended' });
+    const result = await dispatchPendingGradingAudits({ targetIds: ['EI-parked'], ctx }, { ...f.d, ...f });
+    expect(result.receipts[0]).toMatchObject({ state: 'deduped', dispatchReservation: f.prior });
+    expect(f.d.notifyRetainedAuditor).not.toHaveBeenCalled();
+    expect(f.d.launch).not.toHaveBeenCalled();
+    expect(f.killTask).not.toHaveBeenCalled();
+  });
+
+  it('does not choose among multiple retained tasks even when a prior lease exists', async () => {
+    const f = parkedAuditorFixture();
+    f.d.listTasks.mockResolvedValue(['first', 'second'].map((taskId) => ({ taskId, state: 'running',
+      detail: { label: f.prior.key, coordOwnerId: 'su-independent' } } as unknown as TaskRow)));
+    await dispatchPendingGradingAudits({ targetIds: ['EI-parked'], ctx }, { ...f.d, ...f });
+    expect(f.resolveOwnerLiveness).not.toHaveBeenCalled();
+    expect(f.d.notifyRetainedAuditor).not.toHaveBeenCalled();
+  });
+
+  it('clears the restored epoch, not the temporary dispatch epoch, if a parked-auditor notice is undelivered', async () => {
+    const f = parkedAuditorFixture();
+    f.d.notifyRetainedAuditor.mockResolvedValue({ state: 'failed', reason: 'delivery unavailable' });
+    await dispatchPendingGradingAudits({ targetIds: ['EI-parked'], ctx }, { ...f.d, ...f });
+    expect(f.d.release).toHaveBeenLastCalledWith('EI-parked', f.prior.key,
+      { workspaceId: 'ws-test', reservedAt: f.prior.reservedAt });
+    expect(f.d.launch).not.toHaveBeenCalled();
+  });
+
   it('does not guess an auditor when multiple live tasks claim the target', async () => {
     const d = deps();
     d.listScorecards.mockResolvedValue([card('EI-renew')]);
@@ -1462,8 +1540,13 @@ describe('dispatchPendingGradingAudits', () => {
     expect(brief).toContain("state is not 'pending' (including 'passed', 'failed', or 'cancelled')");
     expect(brief).toContain('superseded or retracted');
     expect(brief).toContain("Dispatch lease: key 'grading-audit:EI-state-recheck', reservedAt '2026-09-08T00:00:00.000Z'");
-    expect(brief).toContain("gradingAuditReservation:{ key:'grading-audit:EI-state-recheck', reservedAt:'2026-09-08T00:00:00.000Z' }");
+    expect(brief).toContain("gradingAuditReservation:{ key:'<effective key>', reservedAt:'<effective reservedAt>' }");
     expect(brief).toContain('Before reading criterion evidence');
+    expect(brief).toContain('A missing reservation at the START means this kickoff is stale');
+    expect(brief).toContain('If a present reservation differs, treat it as a renewal only when your direct coord inbox contains a message from system:grading-audit-dispatch');
+    expect(brief).toContain('then use the renewed key and reservedAt as your effective lease for the audit and eventual gradingAuditReservation');
+    expect(brief).toContain('Without that direct matching renewal, report the current state and stop without grading or emitting');
+    expect(brief).toContain('If you verified a renewal at start or pre-emit, use its renewed key and reservedAt');
     // WI-10006794: an auditor whose lease lapsed mid-audit must still emit. A renewed epoch
     // is accepted only through its direct retained-task notice; unrelated changes still stop.
     expect(brief).toContain('This strict check applies only at the START of the audit');

@@ -97,8 +97,8 @@ export function gitSyncLegPhrase(leg: GitSyncFailingLeg | null): string {
       return 'submodule config-lock contention — canonical URL sync blocked locally; origin is unaffected';
     case 'disk-headroom':
       return (
-        "LOCAL DISK FULL — free space is at or under git-sync's fetch-headroom reserve, so every fetch " +
-        'is refused and nothing commits; free space on that filesystem (network, credentials and origin are unaffected)'
+        'DISK SPACE / HEADROOM — a Git operation was refused for insufficient space or fetch headroom; ' +
+        'this does not establish a local commit failure'
       );
     default:
       return "cause unclassified — read that routine's last_error";

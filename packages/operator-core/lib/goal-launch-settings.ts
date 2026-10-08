@@ -1799,6 +1799,8 @@ export async function readGoalPortfolioBrief(args: ReadGoalPortfolioArgs): Promi
 async function assembleGoalPortfolioBrief(args: {
   workspaceId: string;
   goalId: string;
+  /** Declared goal-data collection to project; supervision callers use worklist. */
+  collectionProperty?: string;
   /** Only attest the elected holder when composing that holder's orient. */
   attestOwnerId?: string;
   sql?: Sql;
@@ -1821,6 +1823,7 @@ async function assembleGoalPortfolioBrief(args: {
     degradedReasons?: string[];
   };
 }, stage: GoalPortfolioClaimStage): Promise<GoalPortfolioBrief | null> {
+  const collectionProperty = args.collectionProperty ?? 'worklist';
   const degradedReasons = [...(args.launch?.degradedReasons ?? [])];
   let launch = args.launch;
   if (!launch) {
@@ -1914,9 +1917,9 @@ async function assembleGoalPortfolioBrief(args: {
       ), explicit_refs AS (
         SELECT wr.ref, wr.ordinality
           FROM goal_row g,
-               jsonb_array_elements_text(COALESCE(g.properties->'worklist'->'value',
-                 CASE WHEN g.property_schema->'worklist'->'collection' IS NOT NULL
-                   THEN g.property_schema->'worklist'->'default' ELSE NULL END, '[]'::jsonb))
+               jsonb_array_elements_text(COALESCE(g.properties->${collectionProperty}::text->'value',
+                 CASE WHEN g.property_schema->${collectionProperty}::text->'collection' IS NOT NULL
+                   THEN g.property_schema->${collectionProperty}::text->'default' ELSE NULL END, '[]'::jsonb))
                WITH ORDINALITY AS wr(ref, ordinality)
       ), worklist_refs AS (
         SELECT ref, ordinality FROM explicit_refs
@@ -1926,7 +1929,7 @@ async function assembleGoalPortfolioBrief(args: {
                  row_number() OVER (ORDER BY hp.created_at, hp.harness_slug, hp.plan_slug)
           FROM goal_row g
           JOIN harness_shared.harness_plans hp ON hp.workspace_id = g.workspace_id
-         WHERE g.property_schema->'worklist'->'collection'->>'source' = 'active-workspace-plans'
+         WHERE g.property_schema->${collectionProperty}::text->'collection'->>'source' = 'active-workspace-plans'
            AND COALESCE(hp.op_status, hp.status) = 'active'
            AND hp.archived = false
            AND NOT EXISTS (SELECT 1 FROM explicit_refs er
@@ -2067,7 +2070,7 @@ async function assembleGoalPortfolioBrief(args: {
                WHERE wi.workspace_id = g.workspace_id
                  AND EXISTS (
                    SELECT 1
-                     FROM jsonb_array_elements_text(COALESCE(g.properties->'worklist'->'value', '[]'::jsonb)) wr(ref)
+                     FROM jsonb_array_elements_text(COALESCE(g.properties->${collectionProperty}::text->'value', '[]'::jsonb)) wr(ref)
                     WHERE wi.source_plan_slug = regexp_replace(wr.ref, '^plan:(?:[^/]+/)?', '')
                       AND (
                         position('/' in regexp_replace(wr.ref, '^plan:', '')) = 0
@@ -2123,7 +2126,7 @@ async function assembleGoalPortfolioBrief(args: {
                      AND hp.updated_at IS NOT NULL
                      AND (extract(epoch FROM hp.updated_at) * 1000)::bigint > ${reportCutoffMs}
                      AND EXISTS (
-                       SELECT 1 FROM jsonb_array_elements_text(COALESCE(g.properties->'worklist'->'value', '[]'::jsonb)) wr(ref)
+                       SELECT 1 FROM jsonb_array_elements_text(COALESCE(g.properties->${collectionProperty}::text->'value', '[]'::jsonb)) wr(ref)
                         WHERE hp.plan_slug = regexp_replace(wr.ref, '^plan:(?:[^/]+/)?', '')
                           AND (position('/' in regexp_replace(wr.ref, '^plan:', '')) = 0
                             OR hp.harness_slug = split_part(regexp_replace(wr.ref, '^plan:', ''), '/', 1))
@@ -2226,9 +2229,9 @@ async function assembleGoalPortfolioBrief(args: {
       ? `plan:${plan.harness}/${plan.slug}` : plan.ref;
     const resolvable = worklist.filter((plan) => plan.harness !== null || plan.ref.includes('/'));
     const unresolved = worklist.filter((plan) => plan.harness === null && !plan.ref.includes('/'));
-    const selection = readTypedPropertyCollection({ propertySchema, properties, property: 'worklist',
+    const selection = readTypedPropertyCollection({ propertySchema, properties, property: collectionProperty,
       source: { ok: true, items: resolvable.map(canonical) } });
-    const worklistDefinition = portfolioObject(propertySchema.worklist);
+    const worklistDefinition = portfolioObject(propertySchema[collectionProperty]);
     const collectionDefinition = portfolioObject(worklistDefinition?.collection);
     const configured = worklistDefinition !== null && Object.prototype.hasOwnProperty.call(worklistDefinition, 'collection');
     let collection: GoalPortfolioBrief['collection'];

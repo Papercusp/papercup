@@ -105,6 +105,8 @@ const WRITE_VERBS = new Set([
   // plan's values, so a human can satisfy the start gate from the UI rather
   // than having to call plans:set-template-data from an agent session.
   'set-template-data',
+  // Signed immutable ingress uses the same policy verifier and federated store.
+  'governance-event',
 ]);
 
 // Admin proxy identity: the writes (set-status/set-now/add-decision/

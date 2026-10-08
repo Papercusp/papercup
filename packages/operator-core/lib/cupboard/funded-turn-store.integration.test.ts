@@ -276,7 +276,10 @@ describe('funded native turn SQL history', () => {
   it('persists exact signed actual cost for restart retry and advances remainder only on acknowledgement', async () => {
     const b = binding();
     const c = await closed(b);
-    const p = accepted(await store.stageSettlement(b.workspaceId, c.turnId, c.revision, { signReceipt: sign, readUsage: usage(999n) }));
+    const signer = vi.fn(sign);
+    const p = accepted(await store.stageSettlement(b.workspaceId, c.turnId, c.revision, { signReceipt: signer, readUsage: usage(999n) }));
+    expect(signer).toHaveBeenCalledWith(expect.any(Buffer), { turnId: c.turnId,
+      identityInference: { billedInferenceMicros: 999n, priorRemainderNumerator: 0n } });
     expect(p.settlementOutbox).toMatchObject({ billedInferenceMicros: '999', priorRemainderNumerator: '0', remainderNumerator: '7500',
       receipt: { amountMicros: '249', meterQuantity: '1', occurredAtMs: 3 } });
     const { signature, ...wire } = p.settlementOutbox!.receipt;

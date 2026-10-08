@@ -35,6 +35,7 @@ import type { GoalOwnerReportObligation } from './system-health/goal-owner-repor
 import type { GoalPlacementProgressState } from './goal-placement-progress';
 import { fleetSlugFromName } from './agent-fleets-store';
 import type { FleetStaffingRow } from './fleet/fleet-staffing-read';
+import type { StrandedGoalWork } from './goal-stranded-work';
 import type { ExactPlanAdmission } from './agent-tools/plans/plan-admission-preflight';
 
 export const AGENT_OBLIGATION_OPTIONAL_READ_TIMEOUT_MS = 900;
@@ -117,6 +118,13 @@ export interface AgentObligationReaderDeps {
    * lead a fleet. An empty array means the owner leads no active fleet.
    */
   fleetStaffing: (workspaceId: string, ownerId: string) => Promise<FleetStaffingRow[]>;
+  /**
+   * P-005 / R-5: the goal's open, unassigned goal-created items past the stranded
+   * threshold or stamped by a refused launch (goal-stranded-work.ts). REQUIRED for
+   * the same reason as `waitingOn`. Gated on an active goal: only a goal has
+   * goal-created work.
+   */
+  strandedGoalWork: (workspaceId: string, goalId: string, nowMs: number) => Promise<StrandedGoalWork>;
 }
 
 interface ReadOutcome<T> {
@@ -377,7 +385,15 @@ export async function readAgentObligationAgenda(input: {
     [] as FleetStaffingRow[],
     sourceTimeoutMs,
   );
-  const [portfolio, admission, launch, fleet, report, ownAcceptances, worklistAcceptance, directives, waits, planning, staffing] =
+  const strandedPromise = goalId
+    ? boundedRead(
+        'stranded-goal-work',
+        deps.strandedGoalWork(input.workspaceId, goalId, now.getTime()),
+        null as StrandedGoalWork | null,
+        sourceTimeoutMs,
+      )
+    : Promise.resolve<ReadOutcome<StrandedGoalWork | null>>({ value: null, degraded: false, elapsedMs: 0 });
+  const [portfolio, admission, launch, fleet, report, ownAcceptances, worklistAcceptance, directives, waits, planning, staffing, stranded] =
     await Promise.all([
       portfolioPromise,
       admissionPromise,
@@ -390,6 +406,7 @@ export async function readAgentObligationAgenda(input: {
       waitingOnPromise,
       planningPromise,
       fleetStaffingPromise,
+      strandedPromise,
     ]);
   const planSlugs = [...ownPlanSlugs, ...worklistAcceptance.planSlugs];
   const acceptances = [...ownAcceptances, ...worklistAcceptance.acceptances];
@@ -397,6 +414,7 @@ export async function readAgentObligationAgenda(input: {
   if (directives.degraded) degradedSources.push(readFailure('owner directives', directives));
   if (waits.degraded) degradedSources.push(readFailure('waiting-on', waits));
   if (staffing.degraded) degradedSources.push(readFailure('fleet staffing', staffing));
+  if (stranded.degraded) degradedSources.push(readFailure('stranded goal work', stranded));
   const waitingOn: WaitingOnProviderInput = {
     workspaceId: input.workspaceId,
     ownerId: input.ownerId,
@@ -683,6 +701,35 @@ export async function readAgentObligationAgenda(input: {
       : { status: 'known', value: staffing.value },
   };
 
+  // P-005 / R-5. Row facts only (ids, refusal count), no clock: the same stranded
+  // set keeps the same generation across warm turns.
+  const strandedGoalWork: NonNullable<Parameters<typeof buildAgentObligationAgenda>[0]['strandedGoalWork']> | undefined =
+    goalId
+      ? {
+          workspaceId: input.workspaceId,
+          ownerId: input.ownerId,
+          goalId,
+          observedAt,
+          sourceGeneration: agentObligationSourceGeneration({
+            strandedGoalWork:
+              stranded.degraded || !stranded.value
+                ? 'unknown'
+                : [stranded.value.total, stranded.value.refusedCount, stranded.value.sample.map((row) => row.id)],
+          }),
+          read:
+            stranded.degraded || !stranded.value
+              ? {
+                  status: 'unknown',
+                  failure: {
+                    code: 'canonical-stranded-goal-work-read-failed',
+                    detail: readFailure('stranded goal work', stranded),
+                    retry: `retry work_items:list { goalId: '${goalId}', state: 'open' } and check which items are unassigned`,
+                  },
+                }
+              : { status: 'known', value: stranded.value },
+        }
+      : undefined;
+
   return {
     agenda: buildAgentObligationAgenda(
       {
@@ -693,6 +740,7 @@ export async function readAgentObligationAgenda(input: {
         ownerDirectives,
         waitingOn,
         fleetStaffing,
+        ...(strandedGoalWork ? { strandedGoalWork } : {}),
       },
       observedAt,
     ),
@@ -868,6 +916,8 @@ export function defaultAgentObligationReaderDeps(): AgentObligationReaderDeps {
     // P-005 / D-030 step 6: the brief's own headcount primitives, loaded lazily.
     fleetStaffing: async (workspaceId, ownerId) =>
       (await import('./fleet/fleet-staffing-read')).readLedFleetStaffing({ workspaceId, ownerId }),
+    strandedGoalWork: async (workspaceId, goalId, nowMs) =>
+      (await import('./goal-stranded-work')).readStrandedGoalWork({ workspaceId, goalId, nowMs }),
     goalSubject: async (workspaceId, ownerId) => {
       const [{ getModes }, { goalIdFromModes }] = await Promise.all([
         import('./modes/store'),

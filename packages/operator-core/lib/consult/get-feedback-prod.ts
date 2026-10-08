@@ -1,5 +1,8 @@
 /** Shared production binding for consult lifecycle consumers. No tool recursion. */
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
+import { getBuildInfo } from '../build-info';
+import { recordExpertiseRoutingInvocation } from '../endpoint-route/telemetry';
+import { CONSULT_DEFAULT_POLICY } from './selection-policies';
 import type { GetFeedbackDeps, GetFeedbackRequest } from './get-feedback-core';
 
 export async function getFeedbackProd(
@@ -56,6 +59,7 @@ export async function getFeedbackProd(
     route: async (params) => {
       const routed = await routeConsult({
         ...params,
+        telemetry: { caller: 'consult:get_feedback', policy: request.policy ?? CONSULT_DEFAULT_POLICY, buildSha: getBuildInfo().sha },
         // ⚠ STAGE-2 ONLY [owner 2026-09-22]: "recently should only be considered
         // when comparing... If we have like any expert floor that an agent has to
         // pass, the recency shouldnt be considered for this." This tunes how
@@ -63,6 +67,7 @@ export async function getFeedbackProd(
         // qualification, so time away cannot strip an agent of expert status.
         recencyHalfLifeDays: expertRouting.recencyHalfLifeDays,
       }, {
+        recordTelemetry: receipt => recordExpertiseRoutingInvocation(receipt, getOrgPg().sql),
         getSql: () => getOrgPg().sql,
         embed,
         embeddingProfile,

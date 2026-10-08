@@ -15,6 +15,51 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../workspace-registry';
 import type { RouteExecution } from './route-stack';
+import type { Sql } from 'postgres';
+import type { ExpertiseRoutingReceipt } from '../consult/relevance-router';
+import { pinModuleState } from '@papercusp/module-singleton';
+
+export const EXPERTISE_ROUTING_PATH = 'internal:expertise-routing';
+
+const expertiseRecorder = pinModuleState('@papercusp/operator-core.expertise-routing-recorder', () => ({
+  since: new Date().toISOString(), attempted: 0, persisted: 0, failed: 0,
+  lastFailure: null as null | { at: string; code: string; caller: string; policy: string },
+}));
+
+/** Process-local recorder observations, independent of persisted routing cohorts. */
+export function readExpertiseRoutingRecorderHealth() {
+  return structuredClone({
+    scope: 'serving-process' as const, processId: process.pid, ...expertiseRecorder,
+    pending: expertiseRecorder.attempted - expertiseRecorder.persisted - expertiseRecorder.failed,
+  });
+}
+
+/** Reuse route_invocations without manufacturing an MCP tool execution. */
+export async function recordExpertiseRoutingInvocation(receipt: ExpertiseRoutingReceipt, inject?: Sql): Promise<void> {
+  expertiseRecorder.attempted++;
+  try {
+    const sql = inject ?? getOrgPg().sql;
+    await sql.begin(async tx => {
+      await tx.unsafe(`SELECT set_config('app.workspace_id', $1, true)`, [receipt.workspaceId]);
+      await tx.unsafe(
+        `INSERT INTO harness_shared.route_invocations
+           (workspace_id, method, path, status, duration_ms, error_message, invoked_at, metadata_json)
+         VALUES ($1, 'INTERNAL', $2, $3, $4, $5, $6::timestamptz, $7::text::jsonb)`,
+        [receipt.workspaceId, EXPERTISE_ROUTING_PATH, receipt.outcome,
+          Math.round(receipt.durationMs), receipt.errorCode, receipt.startedAt, JSON.stringify(receipt)],
+      );
+    });
+    expertiseRecorder.persisted++;
+  } catch (error) {
+    expertiseRecorder.failed++;
+    const rawCode = error && typeof error === 'object' && 'code' in error ? String(error.code) : '';
+    expertiseRecorder.lastFailure = {
+      at: new Date().toISOString(), code: /^[A-Z0-9_]{1,40}$/.test(rawCode) ? rawCode : 'recorder_exception',
+      caller: receipt.caller, policy: receipt.policy,
+    };
+    throw error;
+  }
+}
 
 /** "logged once and swallowed" — the once. Repeated write failures (PG down,
  *  unmigrated dev DB) must not flood the console: under vitest-fail-on-console

@@ -917,7 +917,7 @@ describe('launchAcceptanceGrader', () => {
   });
 
   it('launches an unrelated judge on the recruiting host with its restricted role intact', async () => {
-    const launch = vi.fn(async () => ({
+    const launch = vi.fn(async (_args: unknown) => ({
       content: [{ type: 'text', text: 'launched' }],
       data: { deduped: false, launch: { tasks: [{ taskId: 'task-independent' }] } },
     }));

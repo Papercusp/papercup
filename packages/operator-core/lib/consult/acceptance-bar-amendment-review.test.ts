@@ -354,8 +354,8 @@ describe('openAcceptanceBarAmendmentReview (P-006)', () => {
 
   it('front-loads spill recovery for a long review brief', () => {
     const changes = [
-      { barKey: 'R-1', kinds: ['bar-meaning'], fields: ['model'] },
-      { barKey: 'R-2', kinds: ['bar-meaning'], fields: ['model'] },
+      { barKey: 'R-1', kinds: ['bar-meaning' as const], fields: ['model'] },
+      { barKey: 'R-2', kinds: ['bar-meaning' as const], fields: ['model'] },
     ];
     const patch = {
       criteria: [

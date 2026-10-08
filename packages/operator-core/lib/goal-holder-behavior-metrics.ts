@@ -195,6 +195,111 @@ export interface GoalHolderBehaviorMetrics {
     /** Untimed obligation watches (plan:/goal: keys) cancelled in the window with no reason. */
     watchChurnWithoutReason: number;
   };
+  /** P-007 (goal-grading-live-coverage-and-holder-followthrough-2026-10-08): the share of the
+   *  holder's own non-automatic calls spent re-reading its own state or carrying its own
+   *  continuity instead of advancing the goal. Context only — it decides no
+   *  HOLDER_BEHAVIOR_CRITERIA rating. Every collector run sets it; optional so hand-built
+   *  fixtures that predate it stay valid. */
+  selfManagement?: HolderSelfManagementShare;
+}
+
+/** Why a tool counts as holder self-management (P-007). */
+export type HolderSelfManagementClass = 'own-state-read' | 'continuity' | 'tool-discovery';
+
+/**
+ * The holder self-management classification (P-007). Own-state reads re-derive what the
+ * holder already knew; continuity calls carry its own session forward; tool discovery is
+ * catalog re-search. Reading peers' messages (coord:inbox / coord:read) and fleet/goal WORK
+ * (fleet:assignments, plans:*, work_items:*) are deliberately NOT here — that is stewardship.
+ * Measured baseline with this set: ~60% (holder su-d5bfd1a5, goal 60d3a8, 2026-10-07..08).
+ */
+export const HOLDER_SELF_MANAGEMENT_TOOLS: Readonly<Record<string, HolderSelfManagementClass>> = Object.freeze({
+  'loop:status': 'own-state-read',
+  'goals:get': 'own-state-read',
+  'coord:orient': 'own-state-read',
+  'coord:whoami': 'own-state-read',
+  'mode:get': 'own-state-read',
+  'facts:list': 'own-state-read',
+  'orders:list': 'own-state-read',
+  'events:status': 'own-state-read',
+  'coord:plan-events': 'own-state-read',
+  'coord:declare-intent': 'continuity',
+  'loop:checkpoint': 'continuity',
+  'loop:arm': 'continuity',
+  'session:request-compaction': 'continuity',
+  'config:set-compaction-limit': 'continuity',
+  'mode:set': 'continuity',
+  'tools:find': 'tool-discovery',
+});
+
+/** Ambient calls a hook or the client makes on the holder's behalf — never in either side. */
+export const HOLDER_AUTOMATIC_TOOLS = ['activity:report', 'journal:record-turn', 'coord:glance'] as const;
+/** R-7 acceptance: the canary tenure's self-management share must stay below this. */
+export const HOLDER_SELF_MANAGEMENT_SHARE_MAX = 0.3;
+
+export interface HolderSelfManagementShare {
+  /** Non-automatic calls in the window (tools:invoke unwrapped to the dispatched tool). */
+  total: number;
+  selfManagement: number;
+  /** selfManagement / total; null when the window holds no call (unmeasured, not zero). */
+  share: number | null;
+  byClass: Record<HolderSelfManagementClass, number>;
+  /** The heaviest self-management tools, descending. */
+  top: Array<{ tool: string; n: number }>;
+  /** share < HOLDER_SELF_MANAGEMENT_SHARE_MAX; null when share is null. */
+  withinTarget: boolean | null;
+}
+
+export function summarizeHolderSelfManagement(mix: Readonly<Record<string, number>>): HolderSelfManagementShare {
+  const automatic = new Set<string>(HOLDER_AUTOMATIC_TOOLS);
+  const byClass: Record<HolderSelfManagementClass, number> = { 'own-state-read': 0, continuity: 0, 'tool-discovery': 0 };
+  const top: Array<{ tool: string; n: number }> = [];
+  let total = 0;
+  for (const [tool, raw] of Object.entries(mix)) {
+    const n = Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 0;
+    if (n === 0 || automatic.has(tool)) continue;
+    total += n;
+    const cls = HOLDER_SELF_MANAGEMENT_TOOLS[tool];
+    if (cls) {
+      byClass[cls] += n;
+      top.push({ tool, n });
+    }
+  }
+  const selfManagement = byClass['own-state-read'] + byClass.continuity + byClass['tool-discovery'];
+  const share = total > 0 ? selfManagement / total : null;
+  top.sort((a, b) => b.n - a.n || a.tool.localeCompare(b.tool));
+  return {
+    total,
+    selfManagement,
+    share,
+    byClass,
+    top: top.slice(0, 8),
+    withinTarget: share == null ? null : share < HOLDER_SELF_MANAGEMENT_SHARE_MAX,
+  };
+}
+
+/**
+ * The holder's own tool mix in a window, tools:invoke unwrapped to the dispatched tool.
+ * Hook-origin rows and ambient tools are excluded at the source; `call_origin` is NOT
+ * required to be 'agent', because a large share of real agent calls is stamped 'unknown'.
+ */
+export async function readHolderToolMix(
+  window: Pick<GoalHolderWindow, 'workspaceId' | 'holderOwnerId' | 'windowStart' | 'windowEnd'>,
+  deps: { sql: Sql },
+): Promise<Record<string, number>> {
+  const { sql } = deps;
+  const rows = await sql<{ tool: string; n: string }[]>`
+    SELECT CASE WHEN t.tool_name = 'tools:invoke' THEN coalesce(t.args_json ->> 'name', 'tools:invoke')
+                ELSE t.tool_name END AS tool,
+           count(*)::text AS n
+      FROM harness_shared.tool_invocations t
+     WHERE t.workspace_id = ${window.workspaceId}
+       AND t.coord_owner_id = ${window.holderOwnerId}
+       AND t.invoked_at BETWEEN ${new Date(window.windowStart)} AND ${new Date(window.windowEnd)}
+       AND t.call_origin IS DISTINCT FROM 'hook'
+       AND t.tool_name NOT IN ${sql([...HOLDER_AUTOMATIC_TOOLS])}
+     GROUP BY 1`;
+  return Object.fromEntries(rows.map((r) => [r.tool, Number(r.n)]));
 }
 
 // ---------------------------------------------------------------------------
@@ -911,6 +1016,7 @@ export async function collectGoalHolderBehaviorMetrics(
     })),
   );
   const clusters = await readWindowClusters(window, start.getTime(), endMs, sql);
+  const selfManagement = summarizeHolderSelfManagement(await readHolderToolMix(window, { sql }));
   const reminder = reminderRows[0];
   return {
     version: GOAL_HOLDER_METRICS_VERSION,
@@ -947,5 +1053,6 @@ export async function collectGoalHolderBehaviorMetrics(
       dischargedCancels: Number(reminder?.discharged ?? 0),
       watchChurnWithoutReason: Number(churnRows[0]?.n ?? 0),
     },
+    selfManagement,
   };
 }

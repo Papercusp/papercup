@@ -51,6 +51,10 @@ import {
   type GoalHolders,
 } from '../../goals/holder';
 import { assessGoalStaleness, extractGoalWorkItemIds } from './loop-goal-staleness';
+import {
+  readGoalHolderWakeState as defaultReadGoalHolderWakeState,
+  type GoalHolderWakeLoop,
+} from '../../goal-holder-wake-state';
 import { assessGoalFactDivergence, type CorrectedFact } from './loop-goal-fact-divergence';
 import {
   assessBlockerLiveness,
@@ -167,6 +171,15 @@ export interface LoopFireDeps {
    *  Read only when an await would otherwise suppress the wake. A failed read returns null,
    *  which keeps the decision above. Injected for tests. */
   ownerStewardsActiveGoal?: (input: { ownerId: string; sql?: Sql }) => Promise<boolean | null>;
+  /** P-007 (goal-grading-live-coverage-and-holder-followthrough-2026-10-08): render the
+   *  goal-holder state block (goal snapshot, loop cadence, obligations) for an owner that
+   *  holds an active goal's lease. Read only when `ownerStewardsActiveGoal` is true; a
+   *  failed or timed-out read returns null and the wake ships without it. Injected for tests. */
+  readGoalHolderWakeState?: (input: {
+    workspaceId: string;
+    ownerId: string;
+    loop: GoalHolderWakeLoop;
+  }) => Promise<string | null>;
   /** EI-21350609923930437: re-arm a parked pure loop at the suppression threshold before
    *  withholding its wake. Injected for tests; a failed write fails open and delivers the
    *  wake rather than leaving the claimed row parked forever. */
@@ -849,6 +862,10 @@ export function renderLoopWakeText(opts: {
    *  ABOVE the wall nag, the walls, and the loop contract, in EVERY form:
    *  an owner order outranks the loop's re-injected standing agenda. */
   ownerDirectivesBlock?: string | null;
+  /** P-007: the pre-rendered goal-holder state block (renderGoalHolderWakeState) — fresh
+   *  state read at fire time, so it rides directly beneath the priority stack (owner
+   *  directives / walls / checks) and above the carry-note, in EVERY form. */
+  goalHolderStateBlock?: string | null;
   /** WI-5092: true when the carry-note READ FAILED (store error) — suppresses the
    *  first-carry-note mandate, which must only assert emptiness on a CONFIRMED-empty
    *  read (a failed read may hide a real note the mandate would nudge an overwrite of). */
@@ -897,9 +914,13 @@ export function renderLoopWakeText(opts: {
   });
   const wallsBlock = renderLoopWallsBlock(opts.walls ?? [], opts.nowMs);
   const checksBlock = renderLoopChecksBlock(opts.checks ?? []);
-  const priority = [opts.ownerDirectivesBlock || null, opts.wallNagLine || null, wallsBlock, checksBlock].filter(
-    (s): s is string => Boolean(s),
-  );
+  const priority = [
+    opts.ownerDirectivesBlock || null,
+    opts.wallNagLine || null,
+    wallsBlock,
+    checksBlock,
+    opts.goalHolderStateBlock || null,
+  ].filter((s): s is string => Boolean(s));
   // WI-5092 (su-behavior audit): an armed loop whose carry-note is NEVER written is the
   // audited continuity gap — monitor loops especially armed fine, then settled wake after
   // wake with loop:checkpoint absent from every call, leaving a cold wake / successor /
@@ -1134,6 +1155,14 @@ export async function fireLoopWake(input: LoopFireInput, deps: LoopFireDeps = {}
   const deadMan = deps.deadMan ?? defaultCheckLoopDeadMan;
   const incrementFireCount = deps.incrementFireCount ?? defaultIncrementLoopFireCount;
   const readFireCount = deps.readFireCount ?? defaultReadLoopFireCount;
+  // WI-10005778 + P-007: one stewardship read per fire, shared by the await-suppression
+  // guard and the goal-holder state block. Lazy and fail-soft (null = unknown).
+  let stewardshipRead: Promise<boolean | null> | null = null;
+  const readStewardshipOnce = (): Promise<boolean | null> =>
+    (stewardshipRead ??= (deps.ownerStewardsActiveGoal ?? defaultOwnerStewardsActiveGoal)({
+      ownerId: input.targetOwnerId,
+      sql: input.sql,
+    }).catch(() => null));
   const getNoteMeta =
     deps.getLoopCarryNoteWithMeta ??
     (deps.getLoopCarryNote
@@ -1231,11 +1260,7 @@ export async function fireLoopWake(input: LoopFireInput, deps: LoopFireDeps = {}
       }).catch(() => null);
       // WI-10005778: a goal holder's stewardship loop is standing work no await gates.
       // Read lazily (only when the decision would still suppress) and fail-soft.
-      const readStewardship = deps.ownerStewardsActiveGoal ?? defaultOwnerStewardsActiveGoal;
-      const ownerStewardsActiveGoal = await readStewardship({
-        ownerId: input.targetOwnerId,
-        sql: input.sql,
-      }).catch(() => null);
+      const ownerStewardsActiveGoal = await readStewardshipOnce();
       decision = decideLoopAwaitSuppression({
         awaits: blockingAwaits,
         nowMs,
@@ -1418,8 +1443,19 @@ export async function fireLoopWake(input: LoopFireInput, deps: LoopFireDeps = {}
     blockerLiveness,
     Date.now(),
   ).note;
+  // P-007: a goal holder's wake carries the goal snapshot, loop cadence and obligations it
+  // would otherwise re-fetch (goals:get / loop:status / coord:orient) at the top of every wake.
+  const goalHolderStateBlock =
+    (await readStewardshipOnce()) === true
+      ? await (deps.readGoalHolderWakeState ?? defaultReadGoalHolderWakeState)({
+          workspaceId: input.workspaceId,
+          ownerId: input.targetOwnerId,
+          loop: { fireNumber, intervalSec: input.intervalSec ?? null, firedAtMs: Date.now() },
+        }).catch(() => null)
+      : null;
   const kickoff = renderLoopWakeText({
     kickoff: armTimeKickoff,
+    goalHolderStateBlock,
     goalStalenessNote,
     goalFactDivergenceNote,
     blockerLivenessNote,

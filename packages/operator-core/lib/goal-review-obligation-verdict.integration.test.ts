@@ -99,6 +99,7 @@ async function readAgenda(refusal: GoalLaunchRefusal | null = null, admission: '
     // admission cases below opt into the production preflight explicitly.
     deps: { planSlugs: async () => [], ownerDirectives: async () => [], waitingOn: async () => [], 
       fleetStaffing: async () => [],
+      strandedGoalWork: async (_ws: string, goalId: string) => ({ goalId, thresholdMs: 0, total: 0, refusedCount: 0, sample: [], truncatedByLimit: false }),
       ownerReport: async () => null,
       planAcceptance: async () => ({ satisfied: true, buildProvenance: { sha: null, version: 'fixture' } }),
       ...(admission === 'controlled-ready' ? { planAdmission: async () => ({

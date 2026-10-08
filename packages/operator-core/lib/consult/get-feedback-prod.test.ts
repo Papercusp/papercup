@@ -77,9 +77,11 @@ describe('getFeedbackProd expert-routing settings', () => {
     const routeParams = h.routeConsult.mock.calls[0]?.[0] as {
       recencyHalfLifeDays?: number;
       subjectRef?: string | null;
+      telemetry?: { caller: string; policy: string; buildSha: string | null };
     };
     expect(routeParams.recencyHalfLifeDays).toBe(14);
     expect(routeParams.subjectRef).toBe('acceptance-x');
+    expect(routeParams.telemetry).toMatchObject({ caller: 'consult:get_feedback', policy: 'consult-default' });
 
     const routeDeps = h.routeConsult.mock.calls[0]?.[1] as {
       getLiveness?: (ownerIds: string[]) => Promise<unknown>;

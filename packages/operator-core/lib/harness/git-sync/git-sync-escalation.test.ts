@@ -346,8 +346,8 @@ describe('classifyGitSyncFailingLeg (EI-19275994927087666)', () => {
   });
 
   it('WI-10004397: a disk-headroom refusal is classified as the DISK, never as push or unclassified', () => {
-    // The two real 2026-09-30 forms (object-store path shortened). Root sat at ~25 GB free
-    // against a ~40 GB reserve; every superproject commit on the box stopped for ~40 min.
+    // The two real 2026-09-30 forms (object-store path shortened). A fetch reserve
+    // refusal measures the fetch, not whether the superproject committed locally.
     const verifyForm =
       'fetch failed; submodule remote state could not be verified before superproject publication: ' +
       'git fetch stopped for disk headroom at /repo/.git/modules/libs/generic/cache/objects: ' +
@@ -373,9 +373,25 @@ describe('classifyGitSyncFailingLeg (EI-19275994927087666)', () => {
       consecutiveErrorTicks: PUSH_FAILURE_ESCALATION_TICKS,
       errors: [{ scope: 'libs/token-kit', message: unpushedForm }],
     });
-    expect(decision.broadcast).toContain('LOCAL DISK FULL');
+    expect(decision.broadcast).toContain('DISK SPACE / HEADROOM');
     expect(decision.broadcast).not.toContain('cause unclassified');
     expect(decision.broadcast).not.toContain('NOT reaching origin');
+  });
+
+  it('EI-25439777241393921: a locally synced tick can report submodule headroom errors without claiming commits stopped', () => {
+    const decision = decideGitSyncEscalation({
+      ...base,
+      status: 'synced',
+      consecutiveErrorTicks: PUSH_FAILURE_ESCALATION_TICKS,
+      errors: [{
+        scope: 'libs/token-kit',
+        message: 'fetch failed; git fetch stopped for disk headroom at /repo/.git/objects: 32 bytes available; critical reserve 40 bytes',
+      }],
+    });
+    expect(decision.broadcast).toContain('DISK SPACE / HEADROOM');
+    expect(decision.broadcast).toContain('does not establish a local commit failure');
+    expect(decision.broadcast).not.toContain('nothing commits');
+    expect(decision.broadcast).not.toContain('LOCAL DISK FULL');
   });
 
   it('infers commit for a commit-only member when the error text is unusable', () => {

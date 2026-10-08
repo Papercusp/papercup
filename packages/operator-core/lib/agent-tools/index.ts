@@ -1390,6 +1390,7 @@ import './plans/rubric-template';
 // schema SOURCE (JSON Schema, runtime-declared) beside the code registry above. Its
 // `required` array is what the start gate (P-005/P-006) enforces before a plan runs.
 import './plans/get-input-schema';
+import './plans/governance-event';
 import './plans/set-input-schema';
 import './plans/get-output-schema';
 import './plans/set-output-schema';

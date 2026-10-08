@@ -16,6 +16,7 @@ import {
   readFileSync,
   rmSync,
   unlinkSync,
+  writeFileSync,
 } from 'node:fs';
 import net from 'node:net';
 import { tmpdir } from 'node:os';
@@ -30,6 +31,7 @@ const subjectPath = process.env.PROBE_SCRIPT
 const subject = (await import(/* @vite-ignore */ pathToFileURL(subjectPath).href)) as typeof import('../scripts/psu-pty-host.mjs');
 const {
   encodeControl,
+  carryNativeOwnerInputFreshness,
   eventLogPathForOwner,
   hostThroughPty,
   metaPathFor,
@@ -94,6 +96,85 @@ function injectRaw(socketPath: string, data: string): Promise<void> {
 }
 
 describe('carry-respawn native-turn delivery authority', () => {
+  it.each(['before-request', 'during-argv'] as const)(
+    '%s: preserves an owner instruction accepted after the carry snapshot',
+    async (arrival) => {
+      const root = mkdtempSync(join(tmpdir(), 'carry-late-owner-'));
+      const ownerId = `su-carry-late-${arrival}-${process.pid}-${Math.floor(performance.now())}`;
+      const nativePath = join(root, 'sessions', '2026', '10', '08', 'rollout-owner.jsonl');
+      mkdirSync(join(root, 'sessions', '2026', '10', '08'), { recursive: true });
+      const snapshotAt = new Date(Date.now() - 1000).toISOString();
+      const sourceRow = (text: string, timestamp: string) => JSON.stringify({ timestamp,
+        type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text }] } });
+      writeFileSync(nativePath, sourceRow('Original task', new Date(Date.now() - 2000).toISOString()) + '\n');
+      const lateOwnerRow = sourceRow('Choose Workbench C and implement it yourself', new Date().toISOString()) + '\n';
+      const { captured, io } = fakeIo();
+      let mints = 0;
+      const env = { ...process.env, PAPERCUSP_AGENT: 'codex', CODEX_HOME: root, PAPERCUSP_SID: ownerId,
+        PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '20', PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '100' };
+      const done = hostThroughPty({ command: execPath,
+        args: ['-e', "process.stdout.write('OLD-READY\\n');process.stdin.on('data',d=>{if(d.includes(4))process.exit(0);});setTimeout(()=>process.exit(0),7000);"],
+        cwd: root, env, ownerId, io, bridgeTty: false, onExit: () => {},
+        mintCarryRespawnArgs: () => {
+          mints += 1;
+          if (arrival === 'during-argv') writeFileSync(nativePath, readFileSync(nativePath, 'utf8') + lateOwnerRow);
+          return { args: ['-e', "process.stdout.write('FRESH-BOOT\\n');setTimeout(()=>process.exit(0),1000);"], nativeId: null };
+        },
+      });
+      try {
+        const readyDeadline = Date.now() + 2000;
+        while (!captured().includes('OLD-READY') && Date.now() < readyDeadline) await sleep(10);
+        expect(captured()).toContain('OLD-READY');
+        if (arrival === 'before-request') writeFileSync(nativePath, readFileSync(nativePath, 'utf8') + lateOwnerRow);
+        expect(await injectEnvelope(socketPathFor(ownerId), { mode: 'carry-respawn', ownerId,
+          data: '⟦turn-origin:self-compaction nonce:0011223344556677⟧\nContinue saved work',
+          systemPromptAddendum: `Carry document built at ${snapshotAt} — snapshot`, sourceTranscriptPath: nativePath,
+        })).toMatchObject({ ok: true });
+        const deadline = Date.now() + 2500;
+        let events = '';
+        while (Date.now() < deadline) {
+          events = existsSync(eventLogPathForOwner(ownerId)) ? readFileSync(eventLogPathForOwner(ownerId), 'utf8') : '';
+          if (events.includes('owner-input-after-carry-snapshot')) break;
+          await sleep(10);
+        }
+        expect(events).toContain('owner-input-after-carry-snapshot');
+        expect(events).not.toContain('respawn-predecessor-stop-started');
+        expect(events).not.toContain('respawn-carry-delivered');
+        expect(captured()).not.toContain('FRESH-BOOT');
+        expect(mints).toBe(1);
+        expect(carryNativeOwnerInputFreshness({ agent: 'codex', env, transcriptPath: nativePath,
+          systemPromptAddendum: `Carry document built at ${new Date(Date.now() + 1).toISOString()} — refreshed`,
+        })).toMatchObject({ status: 'current' });
+      } finally {
+        if (existsSync(socketPathFor(ownerId))) await injectRaw(socketPathFor(ownerId), '\x04');
+        await done;
+        if (existsSync(eventLogPathForOwner(ownerId))) unlinkSync(eventLogPathForOwner(ownerId));
+        rmSync(root, { recursive: true, force: true });
+      }
+    }, 10_000,
+  );
+
+  it('distinguishes tagged machine turns, incomplete evidence, and an owner turn', () => {
+    const root = mkdtempSync(join(tmpdir(), 'carry-input-evidence-'));
+    const path = join(root, 'sessions', 'rollout.jsonl');
+    mkdirSync(join(root, 'sessions'));
+    const env = { CODEX_HOME: root };
+    const systemPromptAddendum = 'Carry document built at 2026-10-08T15:11:40.503Z — snapshot';
+    const row = (text: string) => JSON.stringify({ timestamp: '2026-10-08T15:11:41.382Z',
+      type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text }] } });
+    const read = () => carryNativeOwnerInputFreshness({ agent: 'codex', env, transcriptPath: path, systemPromptAddendum });
+    try {
+      writeFileSync(path, row('⟦turn-origin:loop nonce:0011223344556677⟧\nResume') + '\n');
+      expect(read()).toMatchObject({ status: 'current' });
+      writeFileSync(path, row('I like C best'));
+      expect(read()).toMatchObject({ status: 'unverifiable', reason: 'native-input-read-incomplete' });
+      writeFileSync(path, row('I like C best') + '\n');
+      expect(read()).toMatchObject({ status: 'superseded', latestOwnerInputAtMs: Date.parse('2026-10-08T15:11:41.382Z') });
+      expect(carryNativeOwnerInputFreshness({ agent: 'codex', env, transcriptPath: join(root, '..', 'outside.jsonl'), systemPromptAddendum }))
+        .toMatchObject({ status: 'unverifiable' });
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   it.each(['direct', 'rearmed'] as const)(
     '%s: a failed carry remains retryable under its exact delivery id',
     async (route) => {

@@ -229,7 +229,7 @@ import {
   getUnreachableAudienceSelectors,
 } from '../messages';
 import { resolveRecipients, remoteSessionOwnerIds, remoteSessionsByOwnerId } from '../recipient-resolve';
-import { wakeRecipients, reportIdleRecipients } from '../inbox-wake';
+import { wakeRecipients, reportIdleRecipients, EMPTY_IDLE_REPORT } from '../inbox-wake';
 import { describeMissedRecipients } from '../recipient-liveness';
 import { resolveWorkspaceHiveScope } from '../federation-scope';
 import { getPresence } from '../presence';
@@ -388,7 +388,7 @@ describe('coord:send handler (bulk keyed-array)', () => {
       now += 23;
       return append(...args);
     });
-    idleM.mockImplementationOnce(async () => { now += 31; return { idle: [] }; });
+    idleM.mockImplementationOnce(async () => { now += 31; return { ...EMPTY_IDLE_REPORT }; });
 
     const b = await bodyWithCtx({ to: ['bee-1'], summary: 'hi' }, { metadata });
 

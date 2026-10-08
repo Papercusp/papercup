@@ -1,3 +1,7 @@
+import { getBuildInfo } from '../../build-info';
+import { recordExpertiseRoutingInvocation } from '../../endpoint-route/telemetry';
+import { CONSULT_DEFAULT_POLICY } from '../../consult/selection-policies';
+
 /**
  * Side-effect-free activation-readiness consult preview.
  *
@@ -47,7 +51,10 @@ export async function previewPlanStartConsult(params: {
       params,
       {
         route: (routeParams) =>
-          routeConsult(routeParams, {
+          routeConsult({ ...routeParams, telemetry: {
+            caller: 'plans:activation-preview', policy: CONSULT_DEFAULT_POLICY, buildSha: getBuildInfo().sha,
+          } }, {
+            recordTelemetry: receipt => recordExpertiseRoutingInvocation(receipt, getOrgPg().sql),
             getSql: () => getOrgPg().sql,
             embed: resolved?.embed ?? null,
             embeddingProfile,
