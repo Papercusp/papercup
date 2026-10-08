@@ -12,6 +12,15 @@ import { pathToFileURL } from "node:url";
 
 export type HostedSecretRefResolver = (reference: string) => Promise<string>;
 
+function positiveSetting(name: string, fallback: number): number {
+  const value = process.env[name]?.trim();
+  if (!value) return fallback;
+  if (!/^\d+$/.test(value) || !Number.isSafeInteger(Number(value)) || Number(value) < 1) {
+    throw new Error(`portal_hosted_invalid_${name.toLowerCase()}`);
+  }
+  return Number(value);
+}
+
 const INTEGRATION_PREFIX = "integration:";
 const SAFE_OPERATOR_ENV = [
   "HARNESS_ADMIN_DATABASE_URL",
@@ -154,17 +163,101 @@ async function main(): Promise<void> {
   const rewritten = await resolveIntegrationReferences(hosted, resolverModule.resolveHostedSecretRef);
   Object.assign(childEnv, rewritten);
 
+  // This maintained launcher is the service's supervision boundary. The Portal
+  // checkout remains immutable/read-only here, and must not run a competing
+  // fork-per-heartbeat notifier underneath this parent.
+  const { createSystemdNotifier } = process.env.NOTIFY_SOCKET
+    ? await import(pathToFileURL(join(integrationRoot, "packages/operator-core/lib/systemd-readiness.ts")).href)
+    : { createSystemdNotifier: () => null };
+  const notifier = createSystemdNotifier(process.env, positiveSetting("PORTAL_SYSTEMD_NOTIFY_TIMEOUT_MS", 2_000));
+  if (notifier) {
+    delete childEnv.NOTIFY_SOCKET;
+    delete childEnv.WATCHDOG_USEC;
+    delete childEnv.WATCHDOG_PID;
+  }
   const child = spawn(process.execPath, [startWeb], {
     cwd: portalRoot,
     env: childEnv,
     stdio: "inherit",
   });
   for (const signal of ["SIGTERM", "SIGINT"] as const) process.on(signal, () => child.kill(signal));
-  const exit = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
+  let childExited = false;
+  let serviceFailed = false;
+  let watchdogTimer: ReturnType<typeof setInterval> | undefined;
+  const childExit = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
     child.once("error", reject);
-    child.once("exit", (code, signal) => resolve({ code, signal }));
+    child.once("exit", (code, signal) => {
+      childExited = true;
+      resolve({ code, signal });
+    });
   });
-  process.exitCode = exit.signal ? 1 : (exit.code ?? 1);
+  try {
+    if (notifier) {
+      const port = positiveSetting("PORT", 3801);
+      if (port > 65_535) throw new Error("portal_hosted_invalid_port");
+      const healthPath = process.env.PORTAL_HEALTH_PATH?.trim() || "/";
+      if (!healthPath.startsWith("/") || /[\0\r\n]/.test(healthPath)) throw new Error("portal_hosted_invalid_health_path");
+      const healthUrl = `http://127.0.0.1:${port}${healthPath}`;
+      const requestTimeout = positiveSetting("PORTAL_READINESS_REQUEST_TIMEOUT_MS", 5_000);
+      const probe = async () => {
+        try {
+          const response = await fetch(healthUrl, { signal: AbortSignal.timeout(requestTimeout), cache: "no-store" });
+          void response.body?.cancel().catch(() => {});
+          return response.ok;
+        } catch { return false; }
+      };
+      const failService = (reason: string) => {
+        if (serviceFailed) return;
+        serviceFailed = true;
+        console.error(`portal_hosted_supervision_failed:${reason}`);
+        child.kill("SIGTERM");
+        const killTimer = setTimeout(() => child.kill("SIGKILL"), 2_000);
+        killTimer.unref();
+      };
+      const deadline = Date.now() + positiveSetting("PORTAL_READINESS_TIMEOUT_MS", 60_000);
+      const interval = positiveSetting("PORTAL_READINESS_INTERVAL_MS", 500);
+      let ready = false;
+      while (!childExited && Date.now() <= deadline) {
+        if (await probe()) { ready = true; break; }
+        await Promise.race([childExit, new Promise((resolve) => setTimeout(resolve, interval))]);
+      }
+      if (!ready) failService("startup-timeout");
+      else {
+        await notifier.notify(`READY=1\nSTATUS=Portal HTTP ready at ${healthUrl}`);
+        const watchdogUsec = process.env.WATCHDOG_USEC ? positiveSetting("WATCHDOG_USEC", 0) : 0;
+        if (watchdogUsec > 0) {
+          const watchdogInterval = positiveSetting("PORTAL_WATCHDOG_INTERVAL_MS", Math.max(250, Math.floor(watchdogUsec / 3_000)));
+          const failureLimit = positiveSetting("PORTAL_WATCHDOG_PROBE_FAILURES", 3);
+          let probing = false;
+          let failures = 0;
+          const check = async () => {
+            if (probing || serviceFailed || childExited) return;
+            probing = true;
+            try {
+              if (!(await probe())) {
+                if (++failures >= failureLimit) failService("steady-state-probe");
+                return;
+              }
+              failures = 0;
+              await notifier.notify(`WATCHDOG=1\nSTATUS=Portal HTTP healthy at ${healthUrl}`);
+            } catch (error) {
+              console.warn(`portal_hosted_notification_failed:${error instanceof Error ? error.message : "unknown"}`);
+            } finally { probing = false; }
+          };
+          await check();
+          if (!serviceFailed) watchdogTimer = setInterval(() => void check(), watchdogInterval);
+        }
+      }
+    }
+    const exit = await childExit;
+    process.exitCode = serviceFailed || exit.signal ? 1 : (exit.code ?? 1);
+  } catch (error) {
+    child.kill("SIGTERM");
+    throw error;
+  } finally {
+    if (watchdogTimer) clearInterval(watchdogTimer);
+    notifier?.close();
+  }
 }
 
 if (process.argv[1]?.endsWith("portal-hosted-launcher.ts") || process.argv[1]?.endsWith("cloud-portal-launcher.ts")) {
