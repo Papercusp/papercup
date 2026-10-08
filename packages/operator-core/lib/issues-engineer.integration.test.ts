@@ -1343,7 +1343,7 @@ describe('engineer issues surface (real PG)', () => {
     expect(await issues.mergeIssuePayload(item.id, { externalBlockers: [] }, {
       expectedExternalBlockers: [{ ref: 'stale' }],
     })).toBeNull();
-    expect((await issues.getIssue(item.id))?.payload?.externalBlockers).toEqual(history);
+    expect((await issues.getIssue(item.id))?.payload).toMatchObject({ externalBlockers: history });
   });
 
   it('WI-10007310: payload enrichment keeps a genuinely foreign publisher immutable', async () => {
