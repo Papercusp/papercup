@@ -75,6 +75,8 @@ const repoMeasurementPathSchema = z
   );
 const repoMeasurementGlobSchema = repoMeasurementPathSchema
   .refine((value) => !value.startsWith('!'), 'measurement globs must be positive patterns');
+const runtimeUnitsSchema = z.array(z.string().trim().min(1).max(120)).min(1).max(32)
+  .refine(units => new Set(units).size === units.length, 'runtime units must be unique');
 
 export const repoFilesEvidenceMeasurementSchema = z
   .object({
@@ -99,8 +101,7 @@ export const repoFilesEvidenceMeasurementSchema = z
     /** Optional registered harness root for fixturePaths when calibration sources live elsewhere. */
     fixtureRootHarnessSlug: z.string().trim().min(1).max(120).optional(),
     /** Local runtime units observed around execution; evidence reads independently remeasure them. */
-    runtimeUnits: z.array(z.string().trim().min(1).max(120)).min(1).max(32)
-      .refine(units => new Set(units).size === units.length, 'runtime units must be unique').optional(),
+    runtimeUnits: runtimeUnitsSchema.optional(),
     /** Completed isolated tests certify retained source/lifecycle artifacts, not a live deployment. */
     completedRuntime: z.discriminatedUnion('kind', [z.object({
       kind: z.literal('verification-harness'),
@@ -168,6 +169,8 @@ export const workItemsEvidenceMeasurementSchema = z
      * enough to recompute on every evidence read.
      */
     workItemIds: z.array(ledgerMeasurementIdSchema).min(1).max(64),
+    /** Optional local runtime units; live/deployed evidence remeasures them independently of ledger state. */
+    runtimeUnits: runtimeUnitsSchema.optional(),
   })
   .strict();
 
@@ -757,6 +760,7 @@ export async function measureWorkItemsEvidenceForScope(
   workspaceId: string,
   harnessSlug: string,
   measurement: WorkItemsEvidenceMeasurement,
+  runtimeRows?: Awaited<ReturnType<typeof listRuntimeVintage>>,
 ): Promise<MeasuredRepoEvidenceFingerprints> {
   const parsed = workItemsEvidenceMeasurementSchema.parse(measurement);
   const ids = [...new Set(parsed.workItemIds)].sort();
@@ -771,7 +775,14 @@ export async function measureWorkItemsEvidenceForScope(
   const statusById = new Map(rows.map((row) => [row.feature_id, row.status]));
   const entries = ids.map((id) => ({ id, status: statusById.get(id) ?? null }));
   const digest = createHash('sha256').update(JSON.stringify(entries)).digest('hex');
-  return { sourceFingerprint: `sha256-work-item-set-v1:${digest}`, testFingerprint: null };
+  const environmentFingerprint = parsed.runtimeUnits
+    ? measureRuntimeVintageEnvironment(runtimeRows ?? await listRuntimeVintage(workspaceId), parsed.runtimeUnits)
+    : undefined;
+  return {
+    sourceFingerprint: `sha256-work-item-set-v1:${digest}`,
+    testFingerprint: null,
+    ...(parsed.runtimeUnits ? { environmentFingerprint } : {}),
+  };
 }
 
 /** Dispatch a measurement recipe to its basis. Both bases are server-measured, never caller-attested. */
@@ -1145,7 +1156,7 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
     }
     let executionRuntimeFingerprint: string | null = null;
     const runtimeRecipe = measurementFromDetails(input.details ?? {});
-    const runtimeUnits = runtimeRecipe?.kind === 'repo-files' ? runtimeRecipe.runtimeUnits : undefined;
+    const runtimeUnits = runtimeRecipe?.runtimeUnits;
     if (input.testRunId != null) {
       const rows = await tx<{ id: number; execution_details?: unknown }[]>`
         SELECT id, execution_details FROM harness_shared.test_runs
@@ -2619,7 +2630,12 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
         let sourceEquivalence: StaticGuidanceSourceEquivalence | undefined;
         if (recipe.kind === 'work-items') {
           // Ledger state has no checkout to resolve: the digest is recomputed from the rows.
-          measured = await measureWorkItemsEvidenceForScope(scope.workspaceId, scope.harnessSlug, recipe);
+          measured = await measureWorkItemsEvidenceForScope(
+            scope.workspaceId,
+            scope.harnessSlug,
+            recipe,
+            recipe.runtimeUnits ? await (runtimeRows ??= listRuntimeVintage(scope.workspaceId)) : undefined,
+          );
         } else {
           const measurementRoot = await measurementRootFor(recipe, 'source');
           const fixtureRoot = hasRepoFixturePaths(recipe)

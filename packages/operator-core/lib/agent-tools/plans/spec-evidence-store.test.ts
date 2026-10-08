@@ -1799,6 +1799,27 @@ describe('ledger-state server measurement', () => {
     expect(first.testFingerprint).toBeNull();
   });
 
+  it('measures declared runtime units and keeps missing environment witnesses unknown', async () => {
+    configureRuntimeVintageStore(new InMemoryRuntimeVintageStore());
+    await reportRuntimeVintage({ workspaceId: 'workspace-test', unit: 'ledger-runtime',
+      treeSha: 'a'.repeat(40), pid: process.pid });
+
+    const measured = await measureWorkItemsEvidenceForScope('workspace-test', 'papercusp', {
+      ...recipe,
+      runtimeUnits: ['ledger-runtime'],
+    });
+    expect(measured.environmentFingerprint).toMatch(/^[a-f0-9]{64}$/);
+
+    const missing = await measureWorkItemsEvidenceForScope('workspace-test', 'papercusp', {
+      ...recipe,
+      runtimeUnits: ['missing-runtime'],
+    });
+    expect(missing.environmentFingerprint).toBeNull();
+
+    const withoutRuntime = await measureWorkItemsEvidenceForScope('workspace-test', 'papercusp', recipe);
+    expect(withoutRuntime).not.toHaveProperty('environmentFingerprint');
+  });
+
   it('moves the digest when a disposition changes — this is what makes a reopened row go stale', async () => {
     h.rows = [
       { feature_id: 'EI-1', status: 'done' },
@@ -1833,6 +1854,10 @@ describe('ledger-state server measurement', () => {
     expect(
       evidenceMeasurementSchema.safeParse({ schemaVersion: 1, kind: 'work-items', workItemIds: ['WI-1234'] }).success,
     ).toBe(true);
+    expect(evidenceMeasurementSchema.safeParse({ schemaVersion: 1, kind: 'work-items',
+      workItemIds: ['WI-1234'], runtimeUnits: ['bg-host'] }).success).toBe(true);
+    expect(evidenceMeasurementSchema.safeParse({ schemaVersion: 1, kind: 'work-items',
+      workItemIds: ['WI-1234'], runtimeUnits: ['bg-host', 'bg-host'] }).success).toBe(false);
 
     // CALIBRATION / positive control: the pre-existing repo-files basis must still parse, or the
     // assertions above could pass simply because the union stopped accepting anything real.
