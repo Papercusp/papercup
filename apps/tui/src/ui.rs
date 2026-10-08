@@ -5496,7 +5496,10 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     // (an SSE subscribe, an inbox stream) is its symptom, and showing the
     // symptom's internal route hid the cause and its repair (P-021).
     let identity_error = app.backend_identity_error.as_ref();
-    let error = identity_error.or(app.last_error.as_ref());
+    let error = identity_error
+        .map(String::as_str)
+        .or_else(|| app.pending_chat_model_blocker())
+        .or(app.last_error.as_deref());
     let (text, style) = match error {
         Some(e) => (
             format!("{} {e}", crate::glyph::severity::WARN),
@@ -9084,6 +9087,39 @@ mod tests {
         app.last_error = Some("backend down".into());
         let text = render(&app, 60, 8);
         assert!(text.contains("backend down"));
+    }
+
+    #[test]
+    fn unsupported_pending_launch_model_shows_in_status_before_first_message() {
+        let mut app = App::new();
+        app.apply_chat_launch_choice(Some("model-not-offered"), None);
+        app.set_operator_config(crate::models::OperatorConfig {
+            agent: Some(
+                serde_json::from_value(serde_json::json!({
+                    "effectiveBackend":"claude-code",
+                    "binaries":{"claude":"/test/claude"}
+                }))
+                .unwrap(),
+            ),
+            tiers: vec![crate::session_config::ModelTier {
+                name: "quick".into(),
+                spec: "haiku".into(),
+                backend: Some("claude-code".into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+
+        assert!(app.session_setup.is_none(), "the first message has not opened setup");
+        let text = render(&app, 100, 12);
+        assert!(
+            text.contains(crate::app::SETUP_MODEL_UNAVAILABLE_NOTE),
+            "{text}"
+        );
+
+        app.apply_chat_launch_choice(Some("haiku"), None);
+        let text = render(&app, 100, 12);
+        assert!(!text.contains(crate::app::SETUP_MODEL_UNAVAILABLE_NOTE), "{text}");
     }
 
     #[test]

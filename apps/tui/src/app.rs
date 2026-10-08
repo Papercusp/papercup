@@ -130,6 +130,9 @@ pub const FLEET_DETAIL_SCROLL_STEP: u16 = 6;
 /// answers (P-021): sending a message opens setup, which offers the cloud path.
 pub const SETUP_DISCONNECTED_LABEL: &str =
     "not connected to an operator · send a message to open setup";
+/// Shared by the pending-launch status and the reviewed first-send guard.
+pub const SETUP_MODEL_UNAVAILABLE_NOTE: &str =
+    "Selected model is no longer available for this backend.";
 /// How long a chat-first quick start may wait behind the chat (the message
 /// echoed, "Starting Claude…" above it) before the setup form opens on the
 /// live reason (`App::chat_first_quiet_wait`, pui-chat-first-ux P-012).
@@ -8880,6 +8883,43 @@ impl App {
             .is_some_and(|path| !path.is_empty())
     }
 
+    fn model_offered_by_backend(
+        &self,
+        model: &str,
+        backend: crate::su_session::SuSessionBackend,
+    ) -> bool {
+        self.operator_config.tiers.iter().any(|tier| {
+            tier.spec == model
+                && tier
+                    .loop_capability
+                    .as_ref()
+                    .is_none_or(|cap| cap.executable)
+                && tier.backend.as_deref().is_none_or(|tier_backend| {
+                    tier_backend == backend.as_str()
+                        || (tier_backend == "claude-code"
+                            && backend == crate::su_session::SuSessionBackend::Claude)
+                })
+        })
+    }
+
+    /// Warn on an unsupported new-chat launch model as soon as the operator's
+    /// catalog arrives, instead of waiting until the owner sends their first
+    /// message and opens Session Setup. A bound conversation owns its own
+    /// model, and an open setup form has the same check in `setup_blocker()`.
+    pub fn pending_chat_model_blocker(&self) -> Option<&'static str> {
+        if self.session_setup.is_some() || self.su_session.is_some() || self.agent_chat_id.is_some()
+        {
+            return None;
+        }
+        self.operator_config.agent.as_ref()?;
+        let model = self.chat_model.as_deref()?;
+        let backend = self
+            .su_backend
+            .or(self.configured_su_backend())
+            .unwrap_or(crate::su_session::PUI_DEFAULT_SU_BACKEND);
+        (!self.model_offered_by_backend(model, backend)).then_some(SETUP_MODEL_UNAVAILABLE_NOTE)
+    }
+
     pub fn setup_blocker(&self) -> Option<String> {
         let setup = self.session_setup.as_ref()?;
         if self.chat_streaming || self.su_pending_turn.is_some() {
@@ -8944,21 +8984,12 @@ impl App {
             let Some(config) = self.operator_config.agent.as_ref() else {
                 return Some("Waiting for current runtime configuration.".into());
             };
-            if setup.model.as_ref().is_some_and(|model| {
-                !self.operator_config.tiers.iter().any(|tier| {
-                    &tier.spec == model
-                        && tier
-                            .loop_capability
-                            .as_ref()
-                            .is_none_or(|cap| cap.executable)
-                        && tier.backend.as_deref().is_none_or(|backend| {
-                            backend == setup.backend.as_str()
-                                || (backend == "claude-code"
-                                    && setup.backend == crate::su_session::SuSessionBackend::Claude)
-                        })
-                })
-            }) {
-                return Some("Selected model is no longer available for this backend.".into());
+            if setup
+                .model
+                .as_ref()
+                .is_some_and(|model| !self.model_offered_by_backend(model, setup.backend))
+            {
+                return Some(SETUP_MODEL_UNAVAILABLE_NOTE.into());
             }
             if setup
                 .effort
@@ -19230,6 +19261,59 @@ mod tests {
         a.tab = Tab::Operator;
         a.chat_composing = true;
         a
+    }
+
+    #[test]
+    fn unsupported_launch_model_is_reported_before_first_message_and_still_blocked() {
+        let mut app = chat_first_app();
+        app.operator_config.agent = None;
+        app.apply_chat_launch_choice(Some("model-not-offered"), None);
+        assert_eq!(
+            app.pending_chat_model_blocker(),
+            None,
+            "wait for the live catalog"
+        );
+
+        let mut config = app.operator_config.clone();
+        config.tiers = vec![tier("quick", "haiku")];
+        config.agent = Some(
+            serde_json::from_value(json!({
+                "effectiveBackend":"claude-code",
+                "binaries":{"claude":"/test/claude"}
+            }))
+            .unwrap(),
+        );
+        app.set_operator_config(config);
+
+        assert_eq!(app.chat_model.as_deref(), Some("model-not-offered"));
+        assert!(app.session_setup.is_none());
+        assert_eq!(
+            app.pending_chat_model_blocker(),
+            Some(SETUP_MODEL_UNAVAILABLE_NOTE),
+            "the server's catalog should diagnose the launch pick before the first message"
+        );
+        app.apply_chat_launch_choice(Some("haiku"), None);
+        assert_eq!(
+            app.pending_chat_model_blocker(),
+            None,
+            "an offered model is accepted"
+        );
+        app.apply_chat_launch_choice(Some("model-not-offered"), None);
+
+        app.chat_input = "hello".into();
+        app.chat_cursor = app.chat_input.len();
+        assert_eq!(
+            app.on_key(KeyCode::Enter, KeyModifiers::NONE),
+            Action::CheckSessionSetup
+        );
+        assert_eq!(
+            app.setup_blocker().as_deref(),
+            Some(SETUP_MODEL_UNAVAILABLE_NOTE)
+        );
+        assert!(
+            app.su_pending_turn.is_none(),
+            "the invalid model is blocked before dispatch"
+        );
     }
 
     /// P-025: chat-first Esc stays in the message box (P-027), so `/backend`
