@@ -2453,10 +2453,16 @@ dependency_generation_copy_incremental() {
   verified="$(awk 'END { print NR + 0 }' "$work/kept-verified")"
 
   dependency_generation_acquire_copy_lock "incremental ${dest##*/tree/}" || return $?
+  # The destination's parent is part of the filesystem headroom probe. Unlike
+  # the full-copy path, incremental copy previously created it only after that
+  # probe, so a new nested workspace tree failed with statfs/exit 77.
+  mkdir -p "$(dirname "$dest")" || {
+    dependency_generation_release_copy_lock
+    return 1
+  }
   dependency_generation_check_headroom "$seed" "$dest" || rc=$?
   if [ "$rc" -eq 0 ]; then
     rm -rf -- "$dest"
-    mkdir -p "$(dirname "$dest")"
     dependency_generation_copy_with_progress "$seed" "$dest" \
       "--reflink=${DEPENDENCY_GENERATION_INCREMENTAL_SEED_REFLINK:-always}" || rc=1
   fi

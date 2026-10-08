@@ -3899,6 +3899,48 @@ describe('P-012: incremental copy of a changed dependency tree', () => {
   );
 
   it(
+    'creates a missing nested destination parent before incremental headroom measurement',
+    () => {
+      const integration = makeIntegration();
+      const nestedPkg = join(
+        integration,
+        'tools/perf-test/wdio/node_modules/pkg',
+      );
+      mkdirSync(nestedPkg, { recursive: true });
+      writeFileSync(join(nestedPkg, 'index.js'), 'v1\n');
+      const env = {
+        ...incrementalEnv('0'),
+        DEPENDENCY_GENERATION_HEADROOM_RESERVE_PCT: '0',
+        DEPENDENCY_GENERATION_HEADROOM_MARGIN_BYTES: '0',
+      };
+
+      const first = publish(integration, env);
+      expect(first.status, first.stderr).toBe(0);
+
+      writeFileSync(join(nestedPkg, 'index.js'), 'v2\n');
+      const second = publish(integration, env);
+      expect(second.status, second.stderr).toBe(0);
+      expect(second.stderr).not.toContain(
+        'DEPENDENCY_GENERATION_HEADROOM_UNMEASURED',
+      );
+      expect(lastSummary(second)).toMatchObject({
+        result: 'published',
+        trees_incremental: '1',
+      });
+      expect(
+        readFileSync(
+          join(
+            publishedPath(second.stdout),
+            'tree/tools/perf-test/wdio/node_modules/pkg/index.js',
+          ),
+          'utf8',
+        ),
+      ).toBe('v2\n');
+    },
+    NATIVE_SHELL_TIMEOUT_MS,
+  );
+
+  it(
     'reuses files whose only change is ctime from a hard-linked sibling checkout',
     () => {
       const integration = makeIntegration();
