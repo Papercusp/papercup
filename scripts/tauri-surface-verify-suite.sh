@@ -116,11 +116,12 @@ for entry in "${LEGS[@]}"; do
     # isolated sidecar starts, then invokes the same maintained verifier.
     bash "$script" >"$log_file" 2>&1
   elif [ "$leg" = "dao-launch" ]; then
+    bash "$script" --check-syntax >"$log_file" 2>&1 && \
     VERIFY_TAURI_ISOLATED_DB=1 \
       VERIFY_TAURI_ISOLATED_SEED=ready \
       VERIFY_TAURI_REQUIRE_BUILT='apps/operator/app/dao/DaoLaunchWorkspace.tsx apps/operator/app/dao/dao-launch.css' \
       VERIFY_TAURI_ASSERT_SNAPSHOT_CONTAINS='dao-workspace-container' \
-      "$VERIFIER" -- bash "$script" >"$log_file" 2>&1
+      "$VERIFIER" -- bash "$script" >>"$log_file" 2>&1
   elif [ "$leg" = "reporter-status" ]; then
     node --import tsx "$script" --check-imports >"$log_file" 2>&1 && \
       VERIFY_TAURI_ISOLATED_DB=1 VERIFY_TAURI_ISOLATED_SEED=ready \
