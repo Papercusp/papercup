@@ -6,6 +6,10 @@
  * call sites — these tests pin them.
  */
 import { describe, expect, it, vi } from 'vitest';
+import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import * as ts from 'typescript';
 import {
   selectResponders,
   routeConsult,
@@ -112,6 +116,54 @@ describe('problem-specific expertise qualification', () => {
 });
 
 describe('routing stage receipts', () => {
+  it('derives production callers and requires attributable telemetry and a receipt sink on every binding', () => {
+    const root = fileURLToPath(new URL('../../../../', import.meta.url));
+    const files = execFileSync('rg', [
+      '-l', '\\brouteConsult\\b', 'apps', 'packages', 'libs',
+      '--glob', '*.ts', '--glob', '*.tsx', '--glob', '!*.test.ts',
+      '--glob', '!*.test.tsx', '--glob', '!*.integration.test.ts',
+      '--glob', '!**/node_modules/**', '--glob', '!**/dist/**',
+    ], { cwd: root, encoding: 'utf8' }).trim().split('\n');
+    const callers: string[] = [];
+    const gaps: string[] = [];
+    for (const file of files) {
+      const source = ts.createSourceFile(file, readFileSync(new URL(file, `file://${root}`), 'utf8'),
+        ts.ScriptTarget.Latest, true);
+      const names = new Set(['routeConsult']);
+      const discoverAliases = (node: ts.Node) => {
+        if (ts.isImportSpecifier(node) && node.propertyName?.text === 'routeConsult') names.add(node.name.text);
+        if (ts.isBindingElement(node) && node.propertyName?.getText(source) === 'routeConsult'
+          && ts.isIdentifier(node.name)) names.add(node.name.text);
+        if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer
+          && ts.isIdentifier(node.initializer) && names.has(node.initializer.text)) names.add(node.name.text);
+        ts.forEachChild(node, discoverAliases);
+      };
+      discoverAliases(source);
+      const property = (node: ts.Node | undefined, name: string) => node && ts.isObjectLiteralExpression(node)
+        ? node.properties.find(p => p.name?.getText(source).replace(/['"]/g, '') === name) : undefined;
+      const inspect = (node: ts.Node) => {
+        if (ts.isCallExpression(node) && (
+          (ts.isIdentifier(node.expression) && names.has(node.expression.text))
+          || (ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === 'routeConsult')
+          || (ts.isElementAccessExpression(node.expression) && ts.isStringLiteral(node.expression.argumentExpression)
+            && node.expression.argumentExpression.text === 'routeConsult')
+        )) {
+          const label = `${file}:${source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1}`;
+          callers.push(label);
+          const telemetry = property(node.arguments[0], 'telemetry');
+          if (!telemetry || !ts.isPropertyAssignment(telemetry)
+            || !['caller', 'policy', 'buildSha'].every(key => property(telemetry.initializer, key))
+            || !property(node.arguments[1], 'recordTelemetry')) gaps.push(label);
+        }
+        ts.forEachChild(node, inspect);
+      };
+      inspect(source);
+    }
+    // A deleted/renamed mechanism cannot make an empty census pass.
+    expect(callers.some(path => path.startsWith('packages/operator-core/lib/consult/get-feedback-prod.ts:'))).toBe(true);
+    expect(gaps, `Unattributable production routing calls: ${gaps.join(', ')}`).toEqual([]);
+  });
+
   const params = {
     workspaceId: 'fixture-workspace', requesterId: 'requester', question: 'private question',
     telemetry: { caller: 'fixture-caller', policy: 'consult-default', buildSha: '1234567', correlationId: 'fixture-correlation' },
