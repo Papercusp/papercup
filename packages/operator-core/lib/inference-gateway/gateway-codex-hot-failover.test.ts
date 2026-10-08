@@ -27,6 +27,45 @@ async function codexHome(accountId: string): Promise<string> {
 }
 
 describe('proxyOpenAi — Codex OAuth reachability and quota failover', () => {
+  it('moves the next retry off an account whose HTTP-200 stream fails after the prelude lookahead', async () => {
+    const accounts = [
+      { accountId: 'chatgpt-a', home: await codexHome('chatgpt-a') },
+      { accountId: 'chatgpt-b', home: await codexHome('chatgpt-b') },
+    ];
+    const routed: string[] = [];
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      const account = new Headers(init?.headers).get('chatgpt-account-id') ?? '';
+      routed.push(account);
+      return new Response(new ReadableStream({
+        async start(controller) {
+          controller.enqueue(new TextEncoder().encode('data: {"type":"response.created"}\n\n'));
+          await new Promise((resolve) => setTimeout(resolve, 250));
+          const event = account === 'chatgpt-a'
+            ? { type: 'response.failed', response: { error: { code: 'server_error', message: 'high demand' } } }
+            : { type: 'response.completed', response: { id: 'healthy', status: 'completed', output: [] } };
+          controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(event)}\n\n`));
+          controller.close();
+        },
+      }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    }) as unknown as typeof fetch;
+    gateway = createInferenceGateway({
+      accountId: 'claude-acct', token: async () => 'claude-tok', fetchImpl,
+      codexCliAccounts: () => accounts,
+      codexCliPool: createFailoverPool(accounts.map(({ accountId }) => ({ accountId, token: async () => 'unused' }))),
+      codexOAuthProxy: true, selfHeal: { enabled: false },
+      maxAttempts: 4,
+    });
+    const port = await gateway.listen(0);
+    for (const expected of ['high demand', 'response.completed']) {
+      const response = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
+        method: 'POST', headers: { 'content-type': 'application/json', [OWNER_HEADER]: 'live-overload-session' },
+        body: JSON.stringify({ model: 'gpt-6.1-sol', input: [], stream: true }),
+      });
+      expect(await response.text()).toContain(expected);
+    }
+    expect(routed).toEqual(['chatgpt-a', 'chatgpt-b']);
+  });
+
   it('moves a live auto session to a credited account and keeps the new affinity without restarting', async () => {
     const accounts = [
       { accountId: 'chatgpt-a', home: await codexHome('chatgpt-a') },
