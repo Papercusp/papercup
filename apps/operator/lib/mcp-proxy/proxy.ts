@@ -2062,6 +2062,8 @@ export const DEFAULT_COORD_SEND_QUEUE_WAIT_MS = 20_000;
  * durable checkpoint/completion writes do not become ambiguous by default.
  */
 export const DEFAULT_IMPROVEMENTS_CAPTURE_QUEUE_WAIT_MS = 20_000;
+/** Bound the one emergency toolFailure waiter below the common 55s MCP client deadline. */
+const TOOL_FAILURE_CAPTURE_QUEUE_WAIT_MS = 45_000;
 const configuredCriticalContinuationQueueWaitLogMs = Number(
   process.env.PAPERCUSP_MCP_PROXY_CRITICAL_CONTINUATION_QUEUE_WAIT_LOG_MS ??
     5_000,
@@ -2408,6 +2410,8 @@ export function coordSendToolNames(
 
 interface ImprovementsCaptureIdentity {
   improvementsCapture: boolean;
+  /** Incident reports need one capture slot outside normal capture saturation. */
+  toolFailureCapture: boolean;
   /** Bounded, argument-free tool identities safe to expose in health + failure telemetry. */
   tools: string[];
 }
@@ -2422,11 +2426,12 @@ function classifyImprovementsCaptureCall(
   requestPath?: string,
 ): ImprovementsCaptureIdentity {
   if (isCriticalSessionLifecyclePath(requestPath)) {
-    return { improvementsCapture: false, tools: [] };
+    return { improvementsCapture: false, toolFailureCapture: false, tools: [] };
   }
   try {
     const parsed = JSON.parse(rawBody.toString("utf8")) as unknown;
     const messages = Array.isArray(parsed) ? parsed : [parsed];
+    let toolFailureCapture = false;
     const isCapture = messages.every((message) => {
       if (!message || typeof message !== "object") return false;
       const call = message as {
@@ -2436,7 +2441,15 @@ function classifyImprovementsCaptureCall(
       if (call.method !== "tools/call" || typeof call.params?.name !== "string")
         return false;
       const calledTool = normalizeMcpName(call.params.name);
-      if (calledTool === IMPROVEMENTS_CAPTURE_TOOL_NAME) return true;
+      if (calledTool === IMPROVEMENTS_CAPTURE_TOOL_NAME) {
+        const args = call.params.arguments;
+        if (args && typeof args === "object" && !Array.isArray(args)) {
+          const toolFailure = (args as { toolFailure?: unknown }).toolFailure;
+          if (toolFailure && typeof toolFailure === "object")
+            toolFailureCapture = true;
+        }
+        return true;
+      }
       if (calledTool !== TOOLS_INVOKE_NAME) return false;
       const invokeArgs = call.params.arguments;
       if (
@@ -2446,16 +2459,33 @@ function classifyImprovementsCaptureCall(
       )
         return false;
       const target = (invokeArgs as { name?: unknown }).name;
-      return (
+      const isDeferredCapture =
         typeof target === "string" &&
-        normalizeMcpName(target) === IMPROVEMENTS_CAPTURE_TOOL_NAME
-      );
+        normalizeMcpName(target) === IMPROVEMENTS_CAPTURE_TOOL_NAME;
+      if (isDeferredCapture) {
+        const deferredArgs = (invokeArgs as { args?: unknown }).args;
+        if (
+          deferredArgs &&
+          typeof deferredArgs === "object" &&
+          !Array.isArray(deferredArgs)
+        ) {
+          const toolFailure = (deferredArgs as { toolFailure?: unknown })
+            .toolFailure;
+          if (toolFailure && typeof toolFailure === "object")
+            toolFailureCapture = true;
+        }
+      }
+      return isDeferredCapture;
     });
     return isCapture && messages.length > 0
-      ? { improvementsCapture: true, tools: ["improvements:capture"] }
-      : { improvementsCapture: false, tools: [] };
+      ? {
+          improvementsCapture: true,
+          toolFailureCapture,
+          tools: ["improvements:capture"],
+        }
+      : { improvementsCapture: false, toolFailureCapture: false, tools: [] };
   } catch {
-    return { improvementsCapture: false, tools: [] };
+    return { improvementsCapture: false, toolFailureCapture: false, tools: [] };
   }
 }
 
@@ -2810,7 +2840,8 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
     opts.improvementsCaptureAgent ??
     new http.Agent({
       keepAlive: false,
-      maxSockets: improvementsCaptureConcurrencyCeiling,
+      // Reserve one socket outside normal capture capacity for toolFailure incident records.
+      maxSockets: improvementsCaptureConcurrencyCeiling + 1,
     });
   const maxHandshakeInFlight =
     opts.maxHandshakeInFlight ?? DEFAULT_MAX_HANDSHAKES_IN_FLIGHT;
@@ -2885,6 +2916,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
   let criticalContinuationInFlight = 0;
   let coordSendInFlight = 0;
   let improvementsCaptureInFlight = 0;
+  let toolFailureCaptureInFlight = 0;
   const maxHoldMs = opts.maxHoldMs ?? DEFAULT_MAX_HOLD_MS;
   const initializeSlowMs = opts.initializeSlowMs ?? DEFAULT_INITIALIZE_SLOW_MS;
   const inFlightStarts = new Map<number, number>();
@@ -3023,6 +3055,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
     traceId: string;
     tools: string[];
     maxWaitMs: number;
+    toolFailureCapture: boolean;
   }
   const improvementsCaptureQueue: QueuedImprovementsCapture[] = [];
   // Resolve one waiter at a time so the async continuation can increment the live counters
@@ -3035,6 +3068,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
   let coordSendGrantReservations = 0;
   let pumpCoordSendQueue: () => void = () => {};
   let improvementsCaptureGrantReservations = 0;
+  let toolFailureCaptureGrantReservations = 0;
   let pumpImprovementsCaptureQueue: () => void = () => {};
 
   const handshakeQueueLength = (): number =>
@@ -3262,11 +3296,19 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
     pumpCoordSendQueue();
   };
 
-  const canGrantImprovementsCapture = (): boolean =>
-    !shouldShedForInFlight(
-      improvementsCaptureInFlight + improvementsCaptureGrantReservations,
-      improvementsCaptureConcurrencyCeiling,
-    );
+  const canGrantImprovementsCapture = (
+    toolFailureCapture = false,
+  ): boolean =>
+    (toolFailureCapture
+      ? !shouldShedForInFlight(
+          toolFailureCaptureInFlight + toolFailureCaptureGrantReservations,
+          1,
+        )
+      : !shouldShedForInFlight(
+          improvementsCaptureInFlight - toolFailureCaptureInFlight +
+            improvementsCaptureGrantReservations,
+          improvementsCaptureConcurrencyCeiling,
+        ));
 
   const cancelQueuedImprovementsCapture = (
     waiter: QueuedImprovementsCapture,
@@ -3328,15 +3370,18 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
   };
 
   pumpImprovementsCaptureQueue = (): void => {
-    while (improvementsCaptureQueue.length > 0) {
-      const waiter = improvementsCaptureQueue.shift();
-      if (!waiter || waiter.cancelled) continue;
-      if (!canGrantImprovementsCapture()) {
-        improvementsCaptureQueue.unshift(waiter);
-        return;
+    for (let index = 0; index < improvementsCaptureQueue.length; index++) {
+      const waiter = improvementsCaptureQueue[index];
+      if (!waiter || waiter.cancelled || waiter.granted) {
+        improvementsCaptureQueue.splice(index, 1);
+        index--;
+        continue;
       }
+      if (!canGrantImprovementsCapture(waiter.toolFailureCapture)) continue;
+      improvementsCaptureQueue.splice(index, 1);
       waiter.granted = true;
-      improvementsCaptureGrantReservations++;
+      if (waiter.toolFailureCapture) toolFailureCaptureGrantReservations++;
+      else improvementsCaptureGrantReservations++;
       waiter.resolve(true);
       // The continuation that received this reservation increments the live counter before the
       // event loop returns here, so one grant per pump is the fail-closed hand-off.
@@ -3576,6 +3621,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           traceId: details.traceId,
           tools: details.tools,
           ageMs: Math.max(0, healthNow - details.startedAtMs),
+          ...(details.toolFailureCapture ? { toolFailureCapture: true } : {}),
         }));
       const waitingImprovementsCaptureRequests = improvementsCaptureQueue
         .filter((waiter) => !waiter.cancelled && !waiter.granted)
@@ -3585,6 +3631,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           tools: waiter.tools,
           ageMs: Math.max(0, healthNow - waiter.enqueuedAtMs),
           maxWaitMs: waiter.maxWaitMs,
+          ...(waiter.toolFailureCapture ? { toolFailureCapture: true } : {}),
         }));
       res.writeHead(200, { "content-type": "application/json" });
       res.end(
@@ -3618,10 +3665,14 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             },
             improvementsCapture: improvementsCaptureInFlight,
             improvementsCaptureMax: improvementsCaptureConcurrencyCeiling,
+            improvementsCaptureToolFailureInFlight: toolFailureCaptureInFlight,
+            improvementsCaptureToolFailureMax: 1,
             improvementsCaptureRequests: activeImprovementsCaptureRequests,
             improvementsCaptureQueue: {
               waiting: improvementsCaptureQueueLength(),
               max: maxImprovementsCaptureQueue,
+              toolFailureMax: 1,
+              waiterCapacity: maxImprovementsCaptureQueue + 1,
               maxWaitMs: improvementsCaptureQueueWaitMs,
               oldestAgeMs:
                 waitingImprovementsCaptureRequests.length > 0
@@ -3761,6 +3812,8 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
         const coordSendTools = coordSendIdentity.tools;
         const improvementsCapture =
           improvementsCaptureIdentity.improvementsCapture;
+        const toolFailureCapture =
+          improvementsCaptureIdentity.toolFailureCapture;
         const improvementsCaptureTools = improvementsCaptureIdentity.tools;
         const criticalContinuation = criticalContinuationIdentity.critical;
         const criticalContinuationTools = criticalContinuationIdentity.tools;
@@ -3872,11 +3925,23 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
         // lane bounded by the reserved control-plane budget. A slow checkpoint/completion on
         // criticalContinuationAgent must not consume the capture's entire client deadline;
         // mixed batches remain on the shared lane.
-        if (improvementsCapture && !canGrantImprovementsCapture()) {
+        if (
+          improvementsCapture &&
+          !canGrantImprovementsCapture(toolFailureCapture)
+        ) {
           pumpImprovementsCaptureQueue();
-          if (
-            maxImprovementsCaptureQueue <= improvementsCaptureQueueLength()
-          ) {
+          const queuedToolFailureCaptures = improvementsCaptureQueue.filter(
+            (waiter) =>
+              !waiter.cancelled &&
+              !waiter.granted &&
+              waiter.toolFailureCapture,
+          ).length;
+          const queuedNormalCaptures =
+            improvementsCaptureQueueLength() - queuedToolFailureCaptures;
+          const queueFull = toolFailureCapture
+            ? queuedToolFailureCaptures >= 1
+            : queuedNormalCaptures >= maxImprovementsCaptureQueue;
+          if (queueFull) {
             const blocker = improvementsCaptureBlocker();
             const blockedByDetail = blocker
               ? ` — blocked by ${blocker.tools.join(",") || "an unnamed capture"} in flight ${blocker.ageMs}ms (trace ${blocker.traceId})`
@@ -3934,7 +3999,10 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               expired: false,
               traceId: requestTraceId,
               tools: improvementsCaptureTools,
-              maxWaitMs: improvementsCaptureQueueWaitMs,
+              maxWaitMs: toolFailureCapture
+                ? TOOL_FAILURE_CAPTURE_QUEUE_WAIT_MS
+                : improvementsCaptureQueueWaitMs,
+              toolFailureCapture,
             };
             improvementsCaptureQueue.push(queuedImprovementsCapture);
             cancelQueuedAdmission = (): void => {
@@ -4028,10 +4096,17 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           cancelQueuedAdmission = null;
           if (!granted || clientGone) {
             if (granted) {
-              improvementsCaptureGrantReservations = Math.max(
-                0,
-                improvementsCaptureGrantReservations - 1,
-              );
+              if (toolFailureCapture) {
+                toolFailureCaptureGrantReservations = Math.max(
+                  0,
+                  toolFailureCaptureGrantReservations - 1,
+                );
+              } else {
+                improvementsCaptureGrantReservations = Math.max(
+                  0,
+                  improvementsCaptureGrantReservations - 1,
+                );
+              }
               pumpImprovementsCaptureQueue();
             } else if (queuedImprovementsCapture.expired && !clientGone) {
               const waitedMs =
@@ -4073,10 +4148,17 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             }
             return;
           }
-          improvementsCaptureGrantReservations = Math.max(
-            0,
-            improvementsCaptureGrantReservations - 1,
-          );
+          if (toolFailureCapture) {
+            toolFailureCaptureGrantReservations = Math.max(
+              0,
+              toolFailureCaptureGrantReservations - 1,
+            );
+          } else {
+            improvementsCaptureGrantReservations = Math.max(
+              0,
+              improvementsCaptureGrantReservations - 1,
+            );
+          }
         }
         // EI-21669304707115602 — pure coord:send handoffs have a dedicated continuation
         // lane. They must not wait behind a long completion/checkpoint on the shared critical
@@ -4745,12 +4827,14 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
         inFlightStarts.set(inFlightId, inFlightStartedAt);
         if (improvementsCapture) {
           improvementsCaptureInFlight++;
+          if (toolFailureCapture) toolFailureCaptureInFlight++;
           improvementsCaptureInFlightStarts.set(inFlightId, inFlightStartedAt);
           improvementsCaptureRequests.set(inFlightId, {
             startedAtMs: inFlightStartedAt,
             traceId: requestTraceId,
             tools: improvementsCaptureTools,
             conflictKeys: null,
+            toolFailureCapture,
           });
         } else if (coordSend) {
           coordSendInFlight++;
@@ -5393,6 +5477,12 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               0,
               improvementsCaptureInFlight - 1,
             );
+            if (toolFailureCapture) {
+              toolFailureCaptureInFlight = Math.max(
+                0,
+                toolFailureCaptureInFlight - 1,
+              );
+            }
             improvementsCaptureInFlightStarts.delete(inFlightId);
             improvementsCaptureRequests.delete(inFlightId);
           } else if (coordSend) {

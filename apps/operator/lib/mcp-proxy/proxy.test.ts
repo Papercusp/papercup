@@ -7585,6 +7585,161 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     expect(hits).toEqual(["held-capture", "default-capture"]);
   });
 
+  it("EI-25387799480927943: toolFailure captures bypass ordinary capture saturation and keep one bounded waiter", async () => {
+    let releaseNormal: () => void = () => {};
+    const normalGate = new Promise<void>((resolve) => {
+      releaseNormal = resolve;
+    });
+    let releaseFailure: () => void = () => {};
+    const failureGate = new Promise<void>((resolve) => {
+      releaseFailure = resolve;
+    });
+    let noteNormalStarted: () => void = () => {};
+    const normalStarted = new Promise<void>((resolve) => {
+      noteNormalStarted = resolve;
+    });
+    const hits: string[] = [];
+    const logs: string[] = [];
+    const upstream = track(
+      http.createServer((req, res) => {
+        const client =
+          new URL(req.url ?? "/", "http://127.0.0.1").searchParams.get(
+            "client",
+          ) ?? "";
+        hits.push(client);
+        if (client === "held-normal") {
+          noteNormalStarted();
+          void normalGate.then(() => res.end('{"result":{"captured":true}}'));
+          return;
+        }
+        if (client === "held-tool-failure") {
+          void failureGate.then(() => res.end('{"result":{"captured":true}}'));
+          return;
+        }
+        res.end('{"result":{"captured":true}}');
+      }),
+    );
+    await listen(upstream);
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0,
+        targetHost: "127.0.0.1",
+        targetPort: port(upstream),
+        retryWindowMs: 1_000,
+        maxInFlight: 10,
+        controlPlaneReserve: 1,
+        maxCriticalContinuationQueue: 1,
+        maxImprovementsCaptureQueue: 1,
+        improvementsCaptureQueueWaitMs: 100,
+        criticalContinuationQueueWaitLogMs: 10,
+        log: (line) => logs.push(line),
+      }),
+    );
+    await listen(proxy);
+
+    const body = (id: number, args: Record<string, unknown>) =>
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id,
+        method: "tools/call",
+        params: { name: "improvements:capture", arguments: args },
+      });
+    const deferredToolFailureBody = (id: number) =>
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id,
+        method: "tools/call",
+        params: {
+          name: "tools:invoke",
+          arguments: {
+            name: "improvements:capture",
+            args: {
+              toolFailure: {
+                toolName: "storage:usage",
+                message: "The read exceeded its request deadline.",
+              },
+            },
+          },
+        },
+      });
+    let normal: ReturnType<typeof request> | null = null;
+    let failure: ReturnType<typeof request> | null = null;
+    let queuedFailure: ReturnType<typeof request> | null = null;
+    try {
+      normal = request(
+        port(proxy),
+        body(1, { title: "ordinary capture" }),
+        "/api/mcp?client=held-normal",
+      );
+      await normalStarted;
+
+      failure = request(
+        port(proxy),
+        deferredToolFailureBody(2),
+        "/api/mcp?client=held-tool-failure",
+      );
+      await waitFor(() => hits.includes("held-tool-failure"));
+
+      let queuedFailureSettled = false;
+      queuedFailure = request(
+        port(proxy),
+        body(3, {
+          toolFailure: {
+            toolName: "work_items:get",
+            message: "A second failure needs a durable record.",
+          },
+        }),
+        "/api/mcp?client=queued-tool-failure",
+      ).then((result) => {
+        queuedFailureSettled = true;
+        return result;
+      });
+      await waitFor(() =>
+        logs.some((line) => line.includes("queued improvements:capture request")),
+      );
+
+      const health = JSON.parse(
+        (await get(port(proxy), MCP_PROXY_LOCAL_HEALTH_PATH)).body,
+      ) as {
+        inFlight: {
+          improvementsCaptureToolFailureMax: number;
+          improvementsCaptureQueue: {
+            waiting: number;
+            toolFailureMax: number;
+            requests: Array<{ maxWaitMs: number; toolFailureCapture?: boolean }>;
+          };
+        };
+      };
+      expect(health.inFlight.improvementsCaptureQueue).toMatchObject({
+        waiting: 1,
+        requests: [
+          expect.objectContaining({ maxWaitMs: 45_000, toolFailureCapture: true }),
+        ],
+      });
+      expect(health.inFlight.improvementsCaptureQueue.toolFailureMax).toBe(1);
+      expect(health.inFlight.improvementsCaptureToolFailureMax).toBe(1);
+
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      expect(queuedFailureSettled).toBe(false);
+      expect(hits).toEqual(["held-normal", "held-tool-failure"]);
+
+      releaseFailure();
+      await waitFor(() => hits.includes("queued-tool-failure"));
+      expect((await queuedFailure).status).toBe(200);
+      releaseNormal();
+      expect((await failure).status).toBe(200);
+      expect((await normal).status).toBe(200);
+    } finally {
+      releaseFailure();
+      releaseNormal();
+      await Promise.all(
+        [normal, failure, queuedFailure]
+          .filter((pending): pending is ReturnType<typeof request> => pending !== null)
+          .map((pending) => pending.catch(() => undefined)),
+      );
+    }
+  });
+
   it("WI-950869: expires the dedicated improvements:capture queue at its configured finite dwell", async () => {
     const os = await import("node:os");
     const fs = await import("node:fs");
