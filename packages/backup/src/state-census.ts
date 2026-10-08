@@ -1,6 +1,7 @@
 import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { REBUILDABLE_DIRECTORY_PATTERNS } from './policy';
+import { evaluateHostDumpCoverage, type HostDumpStatus } from './host-dump-coverage';
 
 /** Producer declarations, not a second hand-maintained list of install paths. */
 export type StateClass = 'state' | 'config' | 'secret' | 'cache' | 'dev-only';
@@ -20,6 +21,22 @@ export interface CensusDeclaration extends CensusEntry {
   prune?: boolean;
   /** Policy-owned directory names can occur inside any producer subtree. */
   anyDepth?: boolean;
+}
+
+/** Snapshot coverage is separate evidence, never a substitute for state ownership. */
+export function databaseCensusSnapshotCoverage(input: {
+  entries: readonly CensusEntry[];
+  systemIdentifier: string;
+  status: HostDumpStatus | null;
+  nowEpoch: number;
+}) {
+  return input.entries.filter(entry => entry.kind === 'database').map(entry => ({
+    ...entry,
+    coverage: entry.root === `postgres-cluster:${input.systemIdentifier}`
+      ? evaluateHostDumpCoverage({ database: entry.name, targetSystemIdentifier: input.systemIdentifier,
+        status: input.status, nowEpoch: input.nowEpoch })
+      : { covered: false, reason: 'census entry belongs to a different cluster' },
+  }));
 }
 
 /** Semantic cache ownership derived from the existing backup policy, not all ignores. */

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { mkdtemp, mkdir, writeFile, symlink, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { assertStateCensusComplete, collectStateCensus, generateStateCensus, backupCacheCensusDeclarations, type CensusDeclaration } from './state-census';
+import { assertStateCensusComplete, collectStateCensus, generateStateCensus, backupCacheCensusDeclarations, databaseCensusSnapshotCoverage, type CensusDeclaration } from './state-census';
 
 const declaration: CensusDeclaration = {
   kind: 'path', root: 'app-home', name: 'hives', classification: 'state',
@@ -10,6 +10,15 @@ const declaration: CensusDeclaration = {
 };
 
 describe('producer-derived state census', () => {
+  it('keeps snapshot evidence fail-closed and separate from ownership classification', () => {
+    const entries = [{ kind: 'database' as const, root: 'postgres-cluster:123', name: 'app' }];
+    const report = databaseCensusSnapshotCoverage({ entries, systemIdentifier: '123', status: null, nowEpoch: 1000 });
+    expect(report[0].coverage.covered).toBe(false);
+    expect(generateStateCensus(entries, []).ok).toBe(false);
+    expect(databaseCensusSnapshotCoverage({ entries, systemIdentifier: '456',
+      status: { ok: true, systemIdentifier: '456', lastSuccessEpoch: 1000, dumped: ['app'] }, nowEpoch: 1000,
+    })[0].coverage.covered).toBe(false);
+  });
   it('fails closed on entry limits rather than certifying a truncated inventory', async () => {
     const entries = [declaration, { ...declaration, name: 'other' }];
     await expect(collectStateCensus({ roots: [], declarations: [],
