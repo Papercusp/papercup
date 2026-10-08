@@ -13,8 +13,9 @@
  * the `op_*` operational dispatch state (started/paused/priority — each machine
  * manages its own started set), and `created_at`/`updated_at`/`_search`.
  *
- * harness_plans has NO jsonb columns (content is TEXT, supersedes is text[]), so
- * no jsonb-binding dance is needed — unlike features/issues.
+ * Current readers still use the legacy items/decisions JSONB arrays. This
+ * projection derives and writes them from canonical markdown alongside the
+ * normalized rows; other structured JSONB fields remain opaque here.
  */
 
 import { getOrgPg } from '@papercusp/db-org';
@@ -359,6 +360,7 @@ async function writeToPg(
   // content. Recomputing once at projection time keeps the bounded column true
   // without making every plans:get/list call parse the document.
   const forcedPast = summarizeForcedPast(row.content);
+  const planIndex = deriveIndexFromContent(row.content);
   // P-018 / D-012 — author-scoped write authority. Only a cross-member REMOTE op is gated (a local
   // op is the operator's own write; own-slug is already 'apply'). In a trusted hive the mode is
   // 'member' → always ok, owner never bound (byte-identical to today). In an open/author-scoped
@@ -421,7 +423,7 @@ async function writeToPg(
             (workspace_id, harness_slug, plan_slug, content, content_hash, version,
              title, status, created, updated, owner, initiative, template, template_data, promote_policy, input_schema,
              output_schema, property_schema, properties, forced_past, supersedes, superseded_by,
-             archived, is_legacy, author_pubkey, owner_author_pubkey, origin, fed_ts, fed_hlc)
+             archived, is_legacy, items, decisions, author_pubkey, owner_author_pubkey, origin, fed_ts, fed_hlc)
           VALUES
             (${opts.workspaceId}, ${row.harness_slug}, ${row.plan_slug}, ${row.content}, ${row.content_hash}, 0,
              ${row.title}, ${row.status}, ${row.created}, ${row.updated}, ${row.owner}, ${row.initiative ?? null},
@@ -432,7 +434,9 @@ async function writeToPg(
              COALESCE(${row.properties == null ? null : JSON.stringify(row.properties)}::text::jsonb, '{}'::jsonb),
              ${forcedPast == null ? null : JSON.stringify(forcedPast)}::text::jsonb,
              ${row.supersedes}, ${row.superseded_by},
-             ${row.archived}, ${row.is_legacy}, ${authorPubkey}, ${ownerToBind}, ${origin}, ${fedTs}, ${fedHlc})
+             ${row.archived}, ${row.is_legacy},
+             ${JSON.stringify(planIndex.items)}::text::jsonb, ${JSON.stringify(planIndex.decisions)}::text::jsonb,
+             ${authorPubkey}, ${ownerToBind}, ${origin}, ${fedTs}, ${fedHlc})
           ON CONFLICT (workspace_id, harness_slug, plan_slug) DO NOTHING
           RETURNING plan_slug
         `;
@@ -444,7 +448,7 @@ async function writeToPg(
           await writePlanIndexRows(
             tx as unknown as Parameters<typeof writePlanIndexRows>[0],
             { workspaceId: opts.workspaceId, harnessSlug: row.harness_slug, planSlug: row.plan_slug },
-            deriveIndexFromContent(row.content),
+            planIndex,
           );
           if (origin === 'remote') {
             // WI-10006275: a remote bootstrap creates this node's copy of the plan
@@ -473,7 +477,7 @@ async function writeToPg(
           (workspace_id, harness_slug, plan_slug, content, content_hash, version,
            title, status, created, updated, owner, initiative, template, template_data, promote_policy, input_schema,
            output_schema, property_schema, properties, forced_past, supersedes, superseded_by,
-           archived, is_legacy, author_pubkey, owner_author_pubkey, origin, fed_ts, fed_hlc)
+           archived, is_legacy, items, decisions, author_pubkey, owner_author_pubkey, origin, fed_ts, fed_hlc)
         VALUES
           (${opts.workspaceId}, ${row.harness_slug}, ${row.plan_slug}, ${row.content}, ${row.content_hash}, 0,
            ${row.title}, ${row.status}, ${row.created}, ${row.updated}, ${row.owner}, ${row.initiative ?? null},
@@ -484,7 +488,9 @@ async function writeToPg(
            COALESCE(${row.properties == null ? null : JSON.stringify(row.properties)}::text::jsonb, '{}'::jsonb),
            ${forcedPast == null ? null : JSON.stringify(forcedPast)}::text::jsonb,
            ${row.supersedes}, ${row.superseded_by},
-           ${row.archived}, ${row.is_legacy}, ${authorPubkey}, ${ownerToBind}, ${origin}, ${fedTs}, ${fedHlc})
+           ${row.archived}, ${row.is_legacy},
+           ${JSON.stringify(planIndex.items)}::text::jsonb, ${JSON.stringify(planIndex.decisions)}::text::jsonb,
+           ${authorPubkey}, ${ownerToBind}, ${origin}, ${fedTs}, ${fedHlc})
         ON CONFLICT (workspace_id, harness_slug, plan_slug) DO UPDATE SET
           content       = EXCLUDED.content,
           content_hash  = EXCLUDED.content_hash,
@@ -511,6 +517,8 @@ async function writeToPg(
           superseded_by = EXCLUDED.superseded_by,
           archived      = EXCLUDED.archived,
           is_legacy     = EXCLUDED.is_legacy,
+          items         = EXCLUDED.items,
+          decisions     = EXCLUDED.decisions,
           author_pubkey = EXCLUDED.author_pubkey,
           origin        = EXCLUDED.origin,
           fed_ts        = EXCLUDED.fed_ts,
@@ -522,7 +530,7 @@ async function writeToPg(
         await writePlanIndexRows(
           tx as unknown as Parameters<typeof writePlanIndexRows>[0],
           { workspaceId: opts.workspaceId, harnessSlug: row.harness_slug, planSlug: row.plan_slug },
-          deriveIndexFromContent(row.content),
+          planIndex,
         );
         // WI-10006313: this upsert writes harness_plans.content outside withPlanLock,
         // so when it changes the bytes it records the revision in the same tx (bytes

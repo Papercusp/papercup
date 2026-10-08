@@ -8,6 +8,7 @@ import { describe, it, expect } from 'vitest';
 import type postgres from 'postgres';
 import { buildHarnessPlansProjection, type HarnessPlanRow } from './harness-plans';
 import type { ProvenanceContext } from '../projection';
+import { deriveIndexFromContent } from '../../../agent-tools/plans/derive-index';
 import { stampForcedPastWaiver, summarizeForcedPast } from '../../../agent-tools/plans/forced-past-stamp';
 
 interface Recorded {
@@ -46,6 +47,23 @@ const PLAN_ROW: HarnessPlanRow = {
   is_legacy: false,
 };
 
+const INDEXED_CONTENT = [
+  '---',
+  'slug: plan-x',
+  'status: active',
+  '---',
+  '',
+  '## Phase 1',
+  '',
+  '- **P-001** `todo` retain the item',
+  '',
+  '## Decisions',
+  '',
+  '### D-001 — retain the decision',
+  'Date: 2026-10-08',
+  'Preserve the decision body.',
+].join('\n');
+
 // A remote op authored by device 'DEV-B', resolved via resolveAuthorDevice.
 const remoteProvenance: ProvenanceContext = { authorPubkey: 'srclog-B', origin: 'remote', ts: 1000, fedHlc: 'h1000' };
 
@@ -67,6 +85,42 @@ function deleted(calls: Recorded[]): boolean {
 }
 
 describe('harness-plans author-scoped write authority (P-018/D-012)', () => {
+  it('whole-blob updates keep legacy JSONB indexes aligned with canonical content', async () => {
+    const derived = deriveIndexFromContent(INDEXED_CONTENT);
+    const { sql, calls } = fakeSql(null);
+    const proj = buildHarnessPlansProjection(
+      baseOpts({ sql, resolveWriteMode: async () => 'member' }) as never,
+    );
+
+    await proj.writeToPg({ ...PLAN_ROW, content: INDEXED_CONTENT }, remoteProvenance);
+
+    const insert = calls.find((c) => c.text.startsWith('INSERT INTO HARNESS_SHARED.HARNESS_PLANS'))!;
+    expect(insert.text).toContain('ITEMS = EXCLUDED.ITEMS');
+    expect(insert.text).toContain('DECISIONS = EXCLUDED.DECISIONS');
+    expect(insert.values).toContain(JSON.stringify(derived.items));
+    expect(insert.values).toContain(JSON.stringify(derived.decisions));
+  });
+
+  it('per-part bootstrap seeds legacy JSONB indexes from canonical content', async () => {
+    const derived = deriveIndexFromContent(INDEXED_CONTENT);
+    const { sql, calls } = fakeSql(null);
+    const proj = buildHarnessPlansProjection(
+      baseOpts({
+        sql,
+        isFlagOn: async () => true,
+        resolveWriteMode: async () => 'member',
+      }) as never,
+    );
+
+    await proj.writeToPg({ ...PLAN_ROW, content: INDEXED_CONTENT }, remoteProvenance);
+
+    const insert = calls.find((c) => c.text.startsWith('INSERT INTO HARNESS_SHARED.HARNESS_PLANS'))!;
+    expect(insert.text).toContain('ITEMS');
+    expect(insert.text).toContain('DECISIONS');
+    expect(insert.values).toContain(JSON.stringify(derived.items));
+    expect(insert.values).toContain(JSON.stringify(derived.decisions));
+  });
+
   it('recomputes forced_past from canonical content and ignores a stale wire projection', async () => {
     const content = stampForcedPastWaiver(
       '# Plan\n',
