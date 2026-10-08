@@ -9,8 +9,9 @@ const { releaseConfig } = createRequire(import.meta.url)('../apps/operator/lib/r
 import { workspacesRoot, readRegistry } from '../packages/operator-core/lib/workspace-registry';
 import postgres from 'postgres';
 import { getHarnessAdminUrl } from '../packages/operator-core/lib/embedded-pg-discovery';
-import { physicalDatabaseCensusEntries, integrationBaselineCensusDeclarations, unitCensusEntries, installedUnitCensusDeclarations } from '../packages/operator-core/lib/backup/state-census-producers';
+import { physicalDatabaseCensusEntries, integrationBaselineCensusDeclarations, templateDatabaseCensusDeclarations, unitCensusEntries, installedUnitCensusDeclarations } from '../packages/operator-core/lib/backup/state-census-producers';
 import type { CensusEntry } from '../packages/backup/src/state-census';
+import { configuredOperatorDatabaseCensusDeclarations } from '../packages/operator-core/lib/backup/state-census-producers';
 
 const installed = installedRootCensusProducers();
 const checkpointLogDir = releaseConfig().checkpointLogDir;
@@ -34,13 +35,17 @@ if (process.argv.includes('--restore-events') || hostCatalogs) {
       const databases = await physicalDatabaseCensusEntries(sql);
       catalogEntries.push(...databases);
       declarations.push(...integrationBaselineCensusDeclarations(databases));
+      if (databases.length) declarations.push(...await templateDatabaseCensusDeclarations(sql, databases[0].root));
+      if (databases.length) declarations.push(...configuredOperatorDatabaseCensusDeclarations(databases[0].root, getHarnessAdminUrl()));
       for (const scope of ['user', 'system'] as const) {
         catalogEntries.push(...await unitCensusEntries(scope));
         declarations.push(...await installedUnitCensusDeclarations(scope));
       }
       // Catalog only declared secret paths that exist; never read their values.
       // Unknown secret locations still appear as filesystem residue.
-      for (const declaration of installed.declarations.filter(entry => entry.classification === 'secret')) {
+      const secretPaths = installed.declarations.filter(entry => entry.classification === 'secret');
+      for (const declaration of secretPaths.filter((entry, index) => secretPaths.findIndex(other =>
+        other.root === entry.root && other.name === entry.name) === index)) {
         const root = installed.roots.find(entry => entry.id === declaration.root)!;
         try { await lstat(join(root.path, declaration.name)); }
         catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error; }

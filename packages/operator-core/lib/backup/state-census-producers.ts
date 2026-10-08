@@ -16,7 +16,7 @@ import { googleOAuthClientPath } from '../oauth/providers';
 
 /** Compose independent writers without traversing the same physical root twice. */
 export function installedRootCensusProducers() {
-  const producers = [workspaceRegistryCensusProducer(), secretCensusProducers(), scratchCensusProducer(), stripRangeCacheCensusProducer()];
+  const producers = [workspaceRegistryCensusProducer(), secretCensusProducers(), hostedConfigurationCensusProducers(), scratchCensusProducer(), stripRangeCacheCensusProducer()];
   const roots: CensusRoot[] = [];
   const declarations: CensusDeclaration[] = [];
   for (const producer of producers) {
@@ -113,6 +113,33 @@ export function secretCensusProducers() {
   return { roots, declarations };
 }
 
+/** Exact paths resolved by the hosted deploy and public-download publishers. */
+export function hostedConfigurationCensusProducers() {
+  const config = process.env.XDG_CONFIG_HOME || join(homedir(), '.config');
+  const paths = [
+    { path: process.env.PAPERCUSP_HOSTED_CP_ENV_FILE || join(config, 'papercusp', 'hosted-control-plane.env'), classification: 'secret' as const, producer: 'deploy-hosted-control-plane' },
+    { path: process.env.PAPERCUSP_CLOUD_PORTAL_HOSTED_ENV_FILE || join(config, 'papercusp', 'hosted-control-plane.env'), classification: 'secret' as const, producer: 'deploy-cloud-portal' },
+    { path: process.env.PUI_PORTAL_LINKS_ENV || join(homedir(), '.config', 'papercusp', 'portal-public-links.env'), classification: 'config' as const, producer: 'publish-tui-release' },
+  ];
+  const roots: CensusRoot[] = [];
+  const declarations: CensusDeclaration[] = [];
+  for (const entry of paths) {
+    let root = roots.find(candidate => candidate.path === dirname(entry.path));
+    if (!root) { root = { id: `hosted-config-${roots.length}`, path: dirname(entry.path) }; roots.push(root); }
+    declarations.push({ kind: 'path', root: root.id, name: basename(entry.path), classification: entry.classification, producer: entry.producer });
+  }
+  return { roots, declarations };
+}
+
+/** Operator database selection is configuration evidence, not name matching. */
+export function configuredOperatorDatabaseCensusDeclarations(clusterIdentity: string, operatorUrl: string): CensusDeclaration[] {
+  if (!/^postgres-cluster:\d+$/.test(clusterIdentity)) throw new Error('Missing physical operator cluster identity');
+  const database = decodeURIComponent(new URL(operatorUrl).pathname.slice(1));
+  if (!database || database.includes('/')) throw new Error('Missing operator database identity');
+  return [{ kind: 'database', root: clusterIdentity, name: database, classification: 'state', producer: 'embedded-pg-discovery-operator' },
+    { kind: 'database', root: clusterIdentity, name: 'papercusp_su', classification: 'state', producer: 'su-lock-store' }];
+}
+
 /**
  * Read the actual cluster catalog, including disconnected databases. Classification
  * belongs to each database producer; an unexpected DB remains census residue.
@@ -142,6 +169,17 @@ export function integrationBaselineCensusDeclarations(entries: readonly CensusEn
     /^papercusp_it_baseline_[0-9a-f]{12}$/.test(entry.name)).map(entry => ({
       ...entry, classification: 'dev-only', producer: 'baseline-schema-global-setup',
     }));
+}
+
+/** The integration template builder stamps readiness in the shared PG catalog. */
+export async function templateDatabaseCensusDeclarations(sql: Sql, clusterIdentity: string): Promise<CensusDeclaration[]> {
+  if (!clusterIdentity.startsWith('postgres-cluster:') || !/^\d+$/.test(clusterIdentity.slice('postgres-cluster:'.length))) throw new Error('Missing physical template cluster identity');
+  const rows = await sql<{ datname: string; marker: string }[]>`
+    SELECT datname, shobj_description(oid, 'pg_database') AS marker FROM pg_database
+    WHERE starts_with(datname, 'tmpl_') AND shobj_description(oid, 'pg_database') = 'pc-template-ready'
+  `;
+  return rows.filter(row => row.datname.startsWith('tmpl_') && row.marker === 'pc-template-ready')
+    .map(row => ({ kind: 'database', root: clusterIdentity, name: row.datname, classification: 'dev-only', producer: 'pg-migrate-template-ready' }));
 }
 
 const execFileAsync = promisify(execFile);

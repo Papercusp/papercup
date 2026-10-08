@@ -38,6 +38,7 @@ describe('unit census executable exit contract', () => {
         ['--import', 'tsx', 'scripts/state-census-roots.mts'], {
           cwd: root, encoding: 'utf8', timeout: 30_000,
           env: { ...process.env, HOME: directory, PAPERCUSP_HOME: directory,
+            XDG_CONFIG_HOME: join(directory, '.config'),
             PAPERCUSP_WORKSPACES_ROOT: join(directory, 'registry'),
             PAPERCUSP_SCRATCH_ROOT: join(directory, 'spills'),
             PAPERCUSP_STRIP_CACHE_DIR: join(directory, 'analysis-cache'),
