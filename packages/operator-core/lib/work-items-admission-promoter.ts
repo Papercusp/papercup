@@ -2088,6 +2088,10 @@ export async function readPendingBatch(
   // lead the already-unreviewed ones because they are about to fail open and become new debt.
   // Ordering only, like `demote`; the pair read stays the authority on what has a candidate.
   const modelFree = opts.preferModelFree === true;
+  // WI-10007333: ambiguous holds advance lastRetryAt, but FIFO/candidate priority
+  // alone selected those same rows on every model tick. Rotate scheduled model
+  // reviews by that existing watermark so never-reviewed debt gets a turn.
+  // Targeted reads and the model-free pass retain their existing priorities.
   const rows = await sql<WorkItemRow[]>`
     SELECT feature_id, title, summary, status, item_kind, admission, condition_key, created_ts
       FROM harness_shared.work_items
@@ -2108,6 +2112,10 @@ export async function readPendingBatch(
           FALSE)) ASC,
        (${modelFree} AND admission <> 'pending') ASC,
        (${modelFree} AND (payload -> 'dedupCandidates') IS NOT NULL) ASC,
+       CASE WHEN ${demote} AND NOT ${modelFree}
+              AND pg_input_is_valid(payload #>> '{admissionReview,lastRetryAt}', 'timestamp with time zone')
+            THEN (payload #>> '{admissionReview,lastRetryAt}')::timestamptz
+            ELSE NULL END ASC NULLS FIRST,
        (payload -> 'dedupCandidates') IS NOT NULL DESC,
        COALESCE((payload -> 'dedupCoverage' ->> 'degraded')::boolean, false) DESC,
        created_ts ASC NULLS FIRST, feature_id ASC
