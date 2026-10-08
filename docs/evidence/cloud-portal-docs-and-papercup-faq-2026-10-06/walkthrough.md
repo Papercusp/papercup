@@ -167,3 +167,29 @@ seven tests with no skips. Retained logs are `/tmp/su73-docs-r1-build-1304.log`
 and `/tmp/su73-docs-r1-test-1306.log`. `git diff --check` passed for the changed
 manual and evidence paths. This verifies local source/build parity, not a
 browser or novice rerun, loaded Portal behavior, clause acceptance or shipment.
+
+## Browser check of the revised manual, 2026-10-08 14:37Z
+
+The existing 13:04Z static build was served through Astro preview at the
+private loopback route `http://127.0.0.1:32123/docs`. No operator or Portal
+rebuild was performed. The maintained browser command was:
+
+```sh
+OPERATOR_E2E_BASE_URL=http://127.0.0.1:32123 OPERATOR_E2E_REUSE_SERVER=1 OPERATOR_E2E_SKIP_WARMUP=1 PAPERCUSP_TEST_RUN_HARNESS=papercusp scripts/pc-heavy.sh npx playwright test --config apps/operator/playwright.config.ts apps/operator/e2e/public-manual.spec.ts --workers=1 --output=/tmp/su73-docs-browser-1438-artifacts
+```
+
+The command exited 0: **13 passed**, no skipped tests. LOCAL ledger
+**20934288** records the conventional Playwright profile, source head
+`16975cacd1cda73088791a1b031c5a7eb7a69c6b`, and `worktreeDirty: true`.
+The relevant manual/test paths were clean before and after the run. The
+unchanged built HTML hashes were checked on both sides:
+
+- `dist/quickstart.html`: `3a0dc3b37b9de36895f9f1d7c5bb41d72e2965cc07ad5d3d51ee5940b2ca1a62`.
+- `dist/faq.html`: `f5be7cb337756890d88a48485fd0d88bafc4d8a15187f7f8e7dd36fe63bec625`.
+
+The retained log is `/tmp/su73-docs-browser-1438.log`. Observed checks cover
+guide navigation/reload/mobile readability, real Pagefind results, keyboard
+entry and search focus, theme persistence, FAQ bookmarks and alternate-wording
+search. This is current built-manual browser evidence. It does not discharge
+the seven actual product journeys, model answers, real novice observations,
+independent acceptance or production shipment.
