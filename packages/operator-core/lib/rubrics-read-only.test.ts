@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const h = vi.hoisted(() => ({ sql: vi.fn() }));
+const h = vi.hoisted(() => ({ sql: vi.fn(), boundedPgReadTxn: vi.fn() }));
 
 vi.mock('@papercusp/db-org', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@papercusp/db-org')>();
@@ -10,11 +10,23 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
   };
 });
 
+vi.mock('./pg-read-query', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./pg-read-query')>();
+  return {
+    ...actual,
+    boundedPgReadTxn: (...args: unknown[]) => h.boundedPgReadTxn(...args),
+  };
+});
+
 const { getRubricWithoutSeeding } = await import('./rubrics');
 
 describe('getRubricWithoutSeeding', () => {
   beforeEach(() => {
     h.sql.mockReset();
+    h.boundedPgReadTxn.mockReset();
+    h.boundedPgReadTxn.mockImplementation(
+      async (run: (tx: unknown) => Promise<unknown>) => run(h.sql),
+    );
   });
 
   it.each([
@@ -40,6 +52,8 @@ describe('getRubricWithoutSeeding', () => {
 
     // The helper performs one direct id lookup. A regression to getRubric's broad
     // fallback would issue a second rubric-library query (and can trigger seeding).
+    expect(h.boundedPgReadTxn).toHaveBeenCalledTimes(1);
+    expect(h.boundedPgReadTxn).toHaveBeenCalledWith(expect.any(Function));
     expect(h.sql).toHaveBeenCalledTimes(1);
   });
 });

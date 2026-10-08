@@ -31,6 +31,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { isDeepStrictEqual } from 'node:util';
 import { parsePlan } from '@papercusp/plan-parser';
 import { activeWorkspaceId } from './workspace-registry';
+import { boundedPgReadTxn } from './pg-read-query';
 import { runWithWorkspaceIfConcrete } from './workspace-als';
 import type { EvidenceRuntimeId } from './serving-runtimes';
 import {
@@ -996,8 +997,8 @@ type RubricPlanRowRead =
  */
 async function readRubricPlanRowById(rubricId: string): Promise<RubricPlanRowRead> {
   try {
-    const { sql } = getOrgPg();
-    const rows = await sql<RubricPlanRow[]>`
+    const rows = await boundedPgReadTxn<RubricPlanRow[]>(
+      (tx) => tx<RubricPlanRow[]>`
       SELECT plan_slug, workspace_id, harness_slug, title, status, created, updated, updated_at,
              version, owner, archived, template_data
         FROM harness_shared.harness_plans
@@ -1005,7 +1006,8 @@ async function readRubricPlanRowById(rubricId: string): Promise<RubricPlanRowRea
          AND template = ${RUBRIC_TEMPLATE_NAME}
          AND template_slug IS NULL
          AND plan_slug = ${rubricId}
-       LIMIT 1`;
+       LIMIT 1`,
+    );
     // Client-side slug guard: mocked-sql fixtures may return a wider row set than
     // the predicates describe, so the explicit id remains authoritative here.
     const row = rows.find((candidate) => candidate.plan_slug === rubricId);
