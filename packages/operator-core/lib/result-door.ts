@@ -40,7 +40,7 @@
  * capping/spilling remain fail-soft and return the ORIGINAL result untouched.
  * A recognized spill-write failure instead returns a bounded
  * `output_spill_failed` error, or a receipt-preserving projection for committed
- * writes (`scheduler:get_next`, `coord:send`, and `work_items:complete`); it
+ * writes (`scheduler:get_next`, `improvements:agent-review`, `coord:send`, and `work_items:complete`); it
  * never re-exposes an over-budget result.
  */
 
@@ -620,6 +620,61 @@ function isJsonObject(value: unknown): value is JsonObject {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
+type AgentReviewClaimReceipt = {
+  body: JsonObject;
+  readArgs: { id: string; harness?: string };
+  ideaId?: string;
+};
+
+function agentReviewClaimReceipt(
+  result: DoorableResult,
+  opts: { toolName: string; nestedTargetToolName?: string },
+): AgentReviewClaimReceipt | undefined {
+  if (opts.toolName !== 'improvements:agent-review' &&
+      !(opts.toolName === 'tools:invoke' && opts.nestedTargetToolName === 'improvements:agent-review')) {
+    return undefined;
+  }
+  const body = [result.structuredContent, ...result.content.filter(isTextItem).map((item) => {
+    try {
+      return JSON.parse(item.text) as unknown;
+    } catch {
+      return null;
+    }
+  })].find((value): value is JsonObject => {
+    if (!isJsonObject(value) || value.claimed !== true || !isJsonObject(value.workItem)) return false;
+    return typeof value.workItem.id === 'string';
+  });
+  if (!body || !isJsonObject(body.workItem)) return undefined;
+
+  const workItem = body.workItem;
+  const id = typeof workItem.id === 'string' ? workItem.id : undefined;
+  if (!id) return undefined;
+  const harness = typeof workItem.harness === 'string' ? workItem.harness : undefined;
+  const gradeWith = isJsonObject(body.gradeWith) ? body.gradeWith : undefined;
+  const ideaId = typeof body.ledgerIdeaId === 'string'
+    ? body.ledgerIdeaId
+    : typeof gradeWith?.ideaId === 'string'
+      ? gradeWith.ideaId
+      : undefined;
+  return {
+    body,
+    readArgs: { id, ...(harness ? { harness } : {}) },
+    ...(ideaId ? { ideaId } : {}),
+  };
+}
+
+function agentReviewClaimRecovery(claim: AgentReviewClaimReceipt) {
+  return {
+    cursor: { kind: 'committed-review-claim', tool: 'work_items:get', args: claim.readArgs },
+    next:
+      `The peer-review claim for ${claim.readArgs.id} is committed. Do not retry improvements:agent-review. ` +
+      `Read work_items:get ${JSON.stringify(claim.readArgs)} for the full item details` +
+      (claim.ideaId
+        ? `, then grade its routed idea with blender:grade-idea { ideaId: ${JSON.stringify(claim.ideaId)} }.`
+        : '.'),
+  };
+}
+
 /** Keep evaluator decisions inline; verbose evidence remains in the spill. */
 function compactSpecTestAdequacyRatings(value: unknown): JsonObject | null {
   if (!isJsonObject(value)) return null;
@@ -1144,6 +1199,49 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
     return {
       ...input.result,
       content: [{ type: 'text' as const, text: JSON.stringify(boundedSchedulerClaim) }],
+      _meta: {
+        ...(input.result._meta ?? {}),
+        resultDoor: {
+          truncated: true,
+          structural: true,
+          spillPath,
+          spillUri,
+          spillFailed: spillPath == null,
+          spillError,
+          spillErrorCode,
+          originalChars: input.sourceBytes,
+          originalBytes: input.sourceBytes,
+          nonTextChars: input.nonTextBytes,
+          nonTextBytes: input.nonTextBytes,
+          doorTokens: input.doorTokens,
+          reason: input.reason,
+          upstreamProjected: Boolean(upstreamProjection?.truncated),
+          innerTruncationMarkers,
+          ...(input.aggregate ? { aggregate: input.aggregate } : {}),
+        },
+      },
+    } as T;
+  }
+  const agentReviewClaim = !reference ? agentReviewClaimReceipt(input.result, input.opts) : undefined;
+  const boundedAgentReviewClaim = agentReviewClaim
+    ? projectBoundedPayload(agentReviewClaim.body, {
+        toolName: 'improvements:agent-review',
+        tier: 'trimmed',
+        forced: true,
+        originalChars: input.sourceBytes,
+        targetChars: Math.min(input.doorTokens * CHARS_PER_TOKEN_ESTIMATE, 1_200),
+        preservePaths: [
+          'ok', 'mode', 'claimed', 'workItem.id', 'workItem.title', 'workItem.harness',
+          'ledgerIdeaId', 'gradeWith.ideaId',
+        ],
+        preserveTopLevelKeys: ['ok', 'mode', 'claimed', 'ledgerIdeaId', 'gradeWith'],
+        recovery: agentReviewClaimRecovery(agentReviewClaim),
+      })
+    : undefined;
+  if (boundedAgentReviewClaim) {
+    return {
+      ...input.result,
+      content: [{ type: 'text' as const, text: JSON.stringify(boundedAgentReviewClaim) }],
       _meta: {
         ...(input.result._meta ?? {}),
         resultDoor: {
@@ -1910,6 +2008,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
     const partialJsonReRead = upstreamJsonProjection
       ? upstreamProjectionRecoveryInstruction(opts.toolName, opts.nestedTargetToolName)
       : innerTruncationRecoveryInstruction(opts.toolName, innerTruncationMarkers, opts.nestedTargetToolName);
+    const agentReviewClaim = fsPath == null ? agentReviewClaimReceipt(result, opts) : undefined;
     // TWO different byte streams reach a caller here, and ONE offset cannot
     // serve both — EI-21239097430071791 followed this cursor exactly as written
     // and landed mid-body, because the offset was measured against a stream the
@@ -1931,8 +2030,9 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
     const bodyOffsetInFile = spillManifest == null
       ? null
       : scratchReferencePayloadByteOffset(spillManifest) + spillPrefixBytes;
-    const recovery =
-      fsPath != null && uri != null
+    const recovery = agentReviewClaim
+      ? agentReviewClaimRecovery(agentReviewClaim)
+      : fsPath != null && uri != null
         ? {
             cursor: {
               kind: 'scratch-page',
@@ -2084,6 +2184,12 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
         (opts.toolName === 'tools:invoke' && opts.nestedTargetToolName === 'coord:send')
         ? COORD_SEND_DELIVERY_PRESERVE_PATHS
         : []),
+      ...(agentReviewClaim
+        ? [
+            'ok', 'mode', 'claimed', 'workItem.id', 'workItem.title', 'workItem.harness',
+            'ledgerIdeaId', 'gradeWith.ideaId',
+          ]
+        : []),
       // Exact events:status snapshots carry the only in-band identity for the
       // requested key. Preserving the event_inspection root alone kept that
       // snapshot from disappearing, but an oversized history could still be
@@ -2200,7 +2306,9 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
         ? { preserveTopLevelKeys: ['self', 'recovery'] as const }
         : opts.toolName === 'events:status'
           ? { preserveTopLevelKeys: ['event_inspection'] as const }
-          : {}),
+          : agentReviewClaim
+            ? { preserveTopLevelKeys: ['ok', 'mode', 'claimed', 'workItem', 'ledgerIdeaId', 'gradeWith'] as const }
+            : {}),
       ...(isWorkItemsCompleteCall(opts)
         ? { preserveTopLevelKeys: ['ok', 'counts', 'results'] as const }
         : {}),
