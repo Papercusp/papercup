@@ -574,6 +574,21 @@ const WORK_ITEMS_COMPLETE_RECEIPT_PRESERVE_PATHS = [
   'results[].finishFailed',
 ] as const;
 
+/**
+ * `scorecards:emit` can commit a card before its oversized response is spilled.
+ * Keep its durable write receipt and the degenerate-distribution verdict
+ * addressable if the spill fails, so callers do not replay a non-idempotent
+ * emit to recover them.
+ */
+const SCORECARDS_EMIT_SPILL_PRESERVE_PATHS = [
+  'ok',
+  'completionReceipt',
+  'canonicalRatings.degenerate-distribution.rating',
+  'created',
+  'issueId',
+  'previousIssueId',
+] as const;
+
 function isWorkItemsCompleteCall(input: { toolName: string; nestedTargetToolName?: string }): boolean {
   return input.toolName === 'work_items:complete' ||
     (input.toolName === 'tools:invoke' && input.nestedTargetToolName === 'work_items:complete');
@@ -584,10 +599,20 @@ function isWorkItemsGetCall(input: { toolName: string; nestedTargetToolName?: st
     (input.toolName === 'tools:invoke' && input.nestedTargetToolName === 'work_items:get');
 }
 
+function isScorecardsEmitCall(input: { toolName: string; nestedTargetToolName?: string }): boolean {
+  return input.toolName === 'scorecards:emit' ||
+    (input.toolName === 'tools:invoke' && input.nestedTargetToolName === 'scorecards:emit');
+}
+
 const WORK_ITEMS_COMPLETE_SPILL_RECOVERY =
   'The work_items:complete write may already have committed before its response spill failed. Do NOT repeat this call. ' +
   'Read each preserved results[].id with work_items:get and inspect the current item state and completionAuthority ' +
   'before deciding any follow-up; the omitted echo cannot be recovered.';
+
+const SCORECARDS_EMIT_SPILL_RECOVERY =
+  'scorecards:emit may have recorded a card before its response spill failed. Do NOT repeat this non-idempotent emit. ' +
+  'Use the preserved completionReceipt and canonicalRatings.degenerate-distribution.rating to determine the write ' +
+  'outcome; the omitted response bytes cannot be recovered.';
 
 function workItemsCompleteReceipt(result: DoorableResult): Record<string, unknown> | undefined {
   const candidates = [result.structuredContent, ...result.content.filter(isTextItem).map((item) => {
@@ -2155,7 +2180,18 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
                     ? ` The tool also tier-projected upstream (omittedCount=${upstreamProjection.omittedCount}), ` +
                       `so those fields were never serialized either.`
                     : '')
-                : `The result was structurally bounded, but its spill write failed ` +
+                : isScorecardsEmitCall(opts)
+                  ? SCORECARDS_EMIT_SPILL_RECOVERY +
+                    ' Spill write error: ' +
+                    (spillErrorCode && spillErrorCode !== 'unknown error'
+                      ? spillErrorCode
+                      : spillErrorSummary ?? 'unknown error') +
+                    '.' +
+                    (upstreamProjection
+                      ? ` The tool also tier-projected upstream (omittedCount=${upstreamProjection.omittedCount}), ` +
+                        `so those fields were never serialized either.`
+                      : '')
+                  : `The result was structurally bounded, but its spill write failed ` +
                   `(${spillErrorCode && spillErrorCode !== 'unknown error' ? spillErrorCode : spillErrorSummary ?? 'unknown error'}), ` +
                   `so the omitted bytes are NOT recoverable and no ` +
                   `spill path exists. Re-call ${opts.toolName} with narrower arguments or a projection.` +
@@ -2197,6 +2233,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
             'evidenceRead.criteria',
           ]
         : []),
+      ...(isScorecardsEmitCall(opts) ? SCORECARDS_EMIT_SPILL_PRESERVE_PATHS : []),
       ...(opts.toolName === 'plans:get' ? ['results[].shipReadiness', 'results[].items[].text'] : []),
       ...(opts.toolName === PIPELINE_POSITION_TOOL ? PIPELINE_POSITION_PRESERVE_PATHS : []),
       ...(opts.toolName === 'coord:send' ||
