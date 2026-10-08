@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtemp, mkdir, rm, writeFile, symlink } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, writeFile, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -136,7 +136,11 @@ describe('completed isolated runtime certification', () => {
   });
   afterAll(async () => { await rm(root, { recursive: true, force: true });
     await rm(artifacts, { recursive: true, force: true }); });
-  afterEach(() => { h.measurementRoot = measurementRoot; vi.unstubAllEnvs(); resetRuntimeVintageStore(); });
+  afterEach(async () => {
+    h.measurementRoot = measurementRoot; vi.unstubAllEnvs(); resetRuntimeVintageStore();
+    await Promise.all(['verify-tauri-headless', 'native-journey'].map(harness =>
+      rm(join(artifacts, harness, 'retained'), { recursive: true, force: true })));
+  });
 
   async function setup() {
     h.measurementRoot = root;
@@ -193,6 +197,32 @@ describe('completed isolated runtime certification', () => {
     const evidence = await read();
     expect(evidence.currentness).toMatchObject({ overall: 'current', provenance: 'server-measured',
       dimensions: { source: 'current', test: 'current', environment: 'current', testRun: 'current' } });
+  });
+  it('keeps exact certification receipts through actual harness retention pruning', async () => {
+    await setup();
+    await measureAndPinRepoFilesEvidenceAtRoot(root, recipe);
+    const { pruneRuns } = await import('@papercusp/verification-harness');
+    for (const [harness, runId] of [['verify-tauri-headless', verifierRunId], ['native-journey', journeyRunId]]) {
+      const base = join(artifacts, harness);
+      const newer = join(base, '20261008T000100Z-300');
+      await mkdir(newer, { recursive: true });
+      await writeFile(join(newer, 'result.json'), '{}');
+      expect(await pruneRuns(base, 1)).toContain(runId);
+    }
+    expect((await read()).currentness.dimensions.environment).toBe('current');
+    const retainedReceipt = join(artifacts, 'verify-tauri-headless', 'retained', verifierRunId,
+      'phases/prepare/verifier-source-receipt.json');
+    const receipt = JSON.parse(await readFile(retainedReceipt, 'utf8'));
+    receipt.files[0].sha256 = 'b'.repeat(64);
+    await writeFile(retainedReceipt, JSON.stringify(receipt));
+    expect((await read()).currentness.dimensions.environment).toBe('unknown');
+  });
+  it('refuses to overwrite an immutable retained receipt during repeated pinning', async () => {
+    const state = await setup();
+    await measureAndPinRepoFilesEvidenceAtRoot(root, recipe);
+    state.receipt.files[0].sha256 = 'b'.repeat(64);
+    await state.save();
+    await expect(measureAndPinRepoFilesEvidenceAtRoot(root, recipe)).rejects.toThrow('retained harness artifact changed');
   });
   it('independently qualifies only static guidance drift while retaining both raw source fingerprints', async () => {
     const state = await setup();

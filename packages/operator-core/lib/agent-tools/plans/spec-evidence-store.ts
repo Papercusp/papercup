@@ -1,7 +1,7 @@
 /** Exact work-item/spec-revision coverage and immutable evidence bindings (P-005). */
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { readFile, realpath, stat } from 'node:fs/promises';
+import { mkdir, readFile, realpath, stat, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { hostname } from 'node:os';
 import fastGlob from 'fast-glob';
@@ -650,6 +650,7 @@ export async function measureAndPinRepoFilesEvidenceAtRoot(
     ...(options.git ? { git: options.git } : {}),
     ...(fixtureRootHarnessSlug ? { roots: { [fixtureRootHarnessSlug]: fixtureRoot } } : {}),
   });
+  await retainCompletedRuntimeArtifacts(measurement);
   return {
     sourceFingerprint: detailed.sourceFingerprint,
     testFingerprint: detailed.testFingerprint,
@@ -687,6 +688,7 @@ export async function measureAndPinRepoFilesEvidenceAtCommitForScope(
     ...(options.git ? { git: options.git } : {}),
     ...(hasRepoFixturePaths(measurement) && fixtureRootHarnessSlug ? { roots: { [fixtureRootHarnessSlug]: fixtureRoot } } : {}),
   });
+  await retainCompletedRuntimeArtifacts(measurement);
   return {
     sourceFingerprint: detailed.sourceFingerprint,
     testFingerprint: detailed.testFingerprint,
@@ -2209,6 +2211,52 @@ async function onlyStaticToolGuidanceChanged(root: string, original: MeasuredRep
   return beforeRuntime !== null && beforeRuntime === agentToolRuntimeSourceWithoutStaticGuidance(after.toString('utf8'));
 }
 
+/** These four bounded receipts outlive the disposable runtime and the harness's run-count pruning. */
+function completedRuntimeArtifactRefs(selector: NonNullable<RepoFilesEvidenceMeasurement['completedRuntime']>) {
+  return selector.kind === 'verification-harness' ? [
+    ['verify-tauri-headless', selector.verifierRunId, 'result.json'],
+    ['verify-tauri-headless', selector.verifierRunId, 'phases/prepare/verifier-source-receipt.json'],
+    [selector.journeyHarness, selector.journeyRunId, 'result.json'],
+    [selector.journeyHarness, selector.journeyRunId, 'phases/native/manifest.json'],
+  ] as const : [];
+}
+
+async function readCompletedRuntimeArtifact(harness: string, runId: string, file: string) {
+  const base = await realpath(defaultEvidenceRoot(harness));
+  let path: string;
+  try { path = await realpath(join(base, runId, file)); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    path = await realpath(join(base, 'retained', runId, file));
+  }
+  if (relative(base, path).startsWith('..') || isAbsolute(relative(base, path))) throw new Error('artifact outside harness');
+  const info = await stat(path);
+  if (!info.isFile() || info.size > 16 * 1024 * 1024) throw new Error('invalid harness artifact');
+  const bytes = await readFile(path);
+  if (bytes.length > 16 * 1024 * 1024) throw new Error('invalid harness artifact');
+  return { base, bytes, data: JSON.parse(bytes.toString('utf8')) };
+}
+
+/** Extend existing proof pinning; retain receipt bytes, rather than whole multi-GB verifier runs. */
+async function retainCompletedRuntimeArtifacts(recipe: RepoFilesEvidenceMeasurement) {
+  if (!recipe.completedRuntime) return;
+  await Promise.all(completedRuntimeArtifactRefs(recipe.completedRuntime).map(async ([harness, runId, file]) => {
+    const { base, bytes } = await readCompletedRuntimeArtifact(harness, runId, file);
+    const destination = join(base, 'retained', runId, file);
+    await mkdir(dirname(destination), { recursive: true });
+    const parent = await realpath(dirname(destination));
+    if (relative(base, parent).startsWith('..') || isAbsolute(relative(base, parent))) throw new Error('artifact outside harness');
+    try { await writeFile(destination, bytes, { flag: 'wx' }); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      const existingPath = await realpath(destination);
+      if (relative(base, existingPath).startsWith('..') || isAbsolute(relative(base, existingPath))) throw new Error('artifact outside harness');
+      const existing = await readFile(destination);
+      if (!existing.equals(bytes)) throw new Error('retained harness artifact changed');
+    }
+  }));
+}
+
 /**
  * A disposed verifier cannot be re-probed through /proc. Certify its completed
  * execution from the retained harness lifecycle and independently rehashed source
@@ -2279,21 +2327,10 @@ export async function measureCompletedTestRuntime(
       return witness.fingerprint;
     } catch { return null; }
   }
-  const readArtifact = async (harness: string, runId: string, file: string) => {
-    const base = await realpath(defaultEvidenceRoot(harness));
-    const path = await realpath(join(base, runId, file));
-    if (relative(base, path).startsWith('..') || isAbsolute(relative(base, path))) throw new Error('artifact outside harness');
-    const info = await stat(path);
-    if (!info.isFile() || info.size > 16 * 1024 * 1024) throw new Error('invalid harness artifact');
-    return JSON.parse(await readFile(path, 'utf8'));
-  };
   try {
-    const [verifier, receipt, journey, manifest] = await Promise.all([
-      readArtifact('verify-tauri-headless', selector.verifierRunId, 'result.json'),
-      readArtifact('verify-tauri-headless', selector.verifierRunId, 'phases/prepare/verifier-source-receipt.json'),
-      readArtifact(selector.journeyHarness, selector.journeyRunId, 'result.json'),
-      readArtifact(selector.journeyHarness, selector.journeyRunId, 'phases/native/manifest.json'),
-    ]);
+    const [verifier, receipt, journey, manifest] = await Promise.all(
+      completedRuntimeArtifactRefs(selector).map(async ([harness, runId, file]) =>
+        (await readCompletedRuntimeArtifact(harness, runId, file)).data));
     const completed = (result: any, harness: string, runId: string) => result?.schemaVersion === 1
       && result.harness === harness && result.runId === runId && result.verdict === 'pass'
       && !result.reuseFromRunId && Array.isArray(result.phases) && result.phases.length > 0
