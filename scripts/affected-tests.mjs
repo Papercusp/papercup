@@ -3831,6 +3831,31 @@ const REPO_WIDE_INVARIANT_GUARDS = [
       f === `${MIGRATION_SQL_DIR}/986-resource-governor-work-item-queue-identity.sql`,
   },
   {
+    // EI-25380500579773160 — keep the large scorecards:list → tools:invoke →
+    // result-door spill path measurable in a disposable current-build background
+    // runtime. The test asserts scratch readback; the shared isolation helper
+    // records source/build identity, process ownership, and cleanup receipts.
+    workspace: "@papercusp/operator-core",
+    script: "test:integration:scorecards-result-door",
+    appliesTo: (f) =>
+      f === "package.json" ||
+      f === "packages/operator-core/package.json" ||
+      f === "packages/operator-core/vitest.integration.config.ts" ||
+      f === "scripts/affected-tests.mjs" ||
+      f === "packages/operator-core/lib/agent-tools/scorecards/list.ts" ||
+      f === "packages/operator-core/lib/agent-tools/scorecards/list-result-door-background.integration.test.ts" ||
+      f === "packages/operator-core/lib/scorecards.ts" ||
+      f === "packages/operator-core/lib/sync-resolver/scorecard-history-list-query.ts" ||
+      f === "packages/operator-core/lib/result-door.ts" ||
+      f === "packages/operator-core/lib/scratch-reference.ts" ||
+      f === "packages/operator-core/lib/scratch-gc.ts" ||
+      f === "packages/operator-core/lib/agent-tools/capability/read.ts" ||
+      f === "packages/operator-core/lib/agent-tools/tools/invoke.ts" ||
+      f === "packages/operator-core/test/_scorecards-list-result-door-child.ts" ||
+      f === "packages/operator-core/test/isolated-integration-proof.ts" ||
+      f === "scripts/with-test-pg.mjs",
+  },
+  {
     // EI-23210600888560844 — sessions:read's private-Postgres regression suite was
     // present and green, but the ordinary operator-core task intentionally excludes
     // `*.integration.test.ts`, while the broad `test:integration` task is opt-in and
