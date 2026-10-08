@@ -23,6 +23,7 @@ import {
 import { createMicrochargeChannel, type MicrochargeChannel } from './microcharge';
 import { emptyMeteringLedger, contributionOf, spentOn } from './metering-ledger';
 import { createByocBudget, prepareByocExecution, settleByocExecution } from './byoc-execution';
+import { identityPerUseOfferTerms } from '../cupboard/identity-per-use-offer';
 
 const TERMS = {
   unitPriceMicros: 250,
@@ -212,6 +213,44 @@ describe('LocalMeteredTurn', () => {
 function open(channel: MicrochargeChannel, u: BillableUnit = unit(), nowMs = 1_000) {
   return openMeteredInvocation({ channel, meter: meter(), unit: u, nowMs, signVoucher });
 }
+
+describe('exact identity closure', () => {
+  function reserved() {
+    const offer = identityPerUseOfferTerms({ identity: { id: 'analyst', version: '1.0.0' }, markupBps: 2500 });
+    if (!offer.ok) throw new Error(offer.detail);
+    const declared = declareMeter(offer.terms);
+    if (!declared.ok) throw new Error(declared.detail);
+    const opened = openMeteredInvocation({ channel: createMicrochargeChannel('identity-channel', 500n),
+      meter: declared.meter, unit: unit({ releaseRef: offer.terms.skuRef, quantity: 1n }), nowMs: 1000, signVoucher });
+    if (!opened.ok) throw new Error(opened.detail);
+    return { opened, identityInference: { offer: offer.terms, billedInferenceMicros: 999n,
+      inferenceCeilingMicros: 1000n, priorRemainderNumerator: 0n } };
+  }
+  it('signs exact billed micros and fixed time while retaining the reserved voucher quantity', () => {
+    const { opened, identityInference } = reserved();
+    let bytes = '';
+    const closed = closeMeteredInvocation({ channel: opened.channel, voucher: opened.voucher,
+      identityInference, occurredAtMs: 2000, signReceipt: (b) => { bytes = b.toString(); return 'signed'; } });
+    expect(closed).toMatchObject({ ok: true, amountMicros: 249n, receipt: { meterQuantity: 1n, occurredAtMs: 2000 } });
+    expect(JSON.parse(bytes)).toMatchObject({ amountMicros: '249', occurredAtMs: 2000, meterQuantity: '1' });
+  });
+  it('settles a verified zero-cost turn without quantizing it to a whole inference block', () => {
+    const { opened, identityInference } = reserved();
+    expect(closeMeteredInvocation({ channel: opened.channel, voucher: opened.voucher,
+      identityInference: { ...identityInference, billedInferenceMicros: 0n }, occurredAtMs: 2000, signReceipt }))
+      .toMatchObject({ ok: true, amountMicros: 0n });
+  });
+  it.each(['offer', 'ceiling', 'quantity', 'missing', 'cost', 'remainder'] as const)('refuses a changed %s binding', (change) => {
+    const { opened, identityInference } = reserved();
+    const exact = change === 'offer' ? { ...identityInference, offer: { ...identityInference.offer, skuRef: 'identity-release:other@1.0.0' } } :
+      change === 'ceiling' ? { ...identityInference, inferenceCeilingMicros: 1001n } :
+      change === 'cost' ? { ...identityInference, billedInferenceMicros: 1001n } :
+      change === 'remainder' ? { ...identityInference, priorRemainderNumerator: 10000n } : identityInference;
+    expect(closeMeteredInvocation({ channel: opened.channel, voucher: opened.voucher,
+      ...(change === 'missing' ? {} : { identityInference: exact }),
+      ...(change === 'quantity' ? { actualQuantity: 1n } : {}), occurredAtMs: 2000, signReceipt })).toMatchObject({ ok: false });
+  });
+});
 
 describe('declareMeter', () => {
   it('accepts published per-use terms and converts the price to bigint micros', () => {

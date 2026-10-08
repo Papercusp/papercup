@@ -33,6 +33,7 @@ import {
 } from './microcharge';
 import { recordContribution, recordSpend, type MeteringLedger } from './metering-ledger';
 import type { BudgetAxis, BudgetUnit } from './offer-budget';
+import { quoteIdentityInferenceTurn, type IdentityPerUseOfferTerms } from '../cupboard/identity-per-use-offer';
 
 /** A `sha256:<64 hex>` split-manifest hash, exactly as `cupboard:publish-offer` accepts it. */
 const SPLIT_MANIFEST_HASH = /^sha256:[0-9a-f]{64}$/i;
@@ -284,6 +285,13 @@ export interface CloseMeteredInvocationInput {
   readonly voucher: CumulativePaymentVoucher;
   /** Units actually served; defaults to the reserved quantity. Never more. */
   readonly actualQuantity?: bigint;
+  /** Exact billed-cost settlement. Offer and prior remainder come from durable authority. */
+  readonly identityInference?: {
+    readonly offer: IdentityPerUseOfferTerms;
+    readonly billedInferenceMicros: bigint;
+    readonly inferenceCeilingMicros: bigint;
+    readonly priorRemainderNumerator: bigint;
+  };
   readonly occurredAtMs: number;
   /** Returns the seller/host signature over the receipt's canonical bytes. */
   readonly signReceipt: (bytes: Buffer) => string;
@@ -319,8 +327,26 @@ export function closeMeteredInvocation(input: CloseMeteredInvocationInput): Clos
   if (served > input.voucher.meterQuantity) {
     return refuse('actual-exceeds-reservation', `served ${served} exceeds the reserved quantity ${input.voucher.meterQuantity}`);
   }
-  if (!Number.isFinite(input.occurredAtMs)) return refuse('invalid-unit', 'occurredAtMs must be finite');
-  const amountMicros = input.voucher.pricePerUnitMicros * served;
+  if (!Number.isSafeInteger(input.occurredAtMs) || input.occurredAtMs < 0) return refuse('invalid-unit', 'occurredAtMs must be a non-negative safe integer');
+  let amountMicros = input.voucher.pricePerUnitMicros * served;
+  if (input.identityInference) {
+    const exact = input.identityInference;
+    const offer = exact.offer;
+    const q = quoteIdentityInferenceTurn(exact);
+    if (!q.ok) return refuse('terms-mismatch', q.detail);
+    if (input.actualQuantity !== undefined || input.metering ||
+        offer.skuRef !== input.voucher.releaseRef ||
+        BigInt(offer.unitPriceMicros) !== input.voucher.pricePerUnitMicros ||
+        offer.priceVersion !== input.voucher.priceVersion || offer.splitManifestHash !== input.voucher.splitManifestHash) {
+      return refuse('terms-mismatch', 'exact identity cost must bind the reserved identity offer without a quantity override');
+    }
+    if (q.reservationQuantity !== input.voucher.meterQuantity) {
+      return refuse('terms-mismatch', 'identity inference ceiling differs from the signed reservation');
+    }
+    amountMicros = q.amountMicros;
+  } else if (input.voucher.releaseRef.startsWith('identity-release:')) {
+    return refuse('terms-mismatch', 'identity releases require exact billed inference settlement');
+  }
   const unsignedReceipt: Omit<SignedUsageReceipt, 'signature'> = {
     channelId: input.channel.channelId,
     usageNonce: input.voucher.usageNonce,
