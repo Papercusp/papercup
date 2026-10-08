@@ -452,6 +452,32 @@ export interface AcceptanceGraderTerminalFailure {
 
 type AcceptanceGraderLogTailReader = (path: string) => string | Promise<string>;
 
+/** Native API-error metadata separates a failed assistant turn from quoted
+ * diagnostics in the frozen user brief or a successful assistant answer. */
+export function hasAcceptanceGraderNativeApiError(rawTranscript: string, sessionId: string): boolean {
+  type NativeTurn = { type?: unknown; sessionId?: unknown; isSidechain?: unknown;
+    isApiErrorMessage?: unknown; apiErrorStatus?: unknown;
+    message?: { role?: unknown; stop_reason?: unknown } | null };
+  let lastTurn: NativeTurn | null = null;
+  for (const line of rawTranscript.split(/\r?\n/u)) {
+    if (!line.trim()) continue;
+    try {
+      const row = JSON.parse(line) as NativeTurn | null;
+      if (row?.sessionId === sessionId && row.isSidechain !== true &&
+          (row.type === 'user' || row.type === 'assistant')) lastTurn = row;
+    } catch {
+      // A bounded tail can start inside a JSONL record. Incomplete records
+      // cannot authorize recovery, including a new turn after an error.
+      lastTurn = null;
+    }
+  }
+  return lastTurn?.type === 'assistant' && lastTurn.message?.role === 'assistant' &&
+    lastTurn.isApiErrorMessage === true &&
+    typeof lastTurn.apiErrorStatus === 'number' && lastTurn.apiErrorStatus >= 400 && lastTurn.apiErrorStatus < 600 &&
+    typeof lastTurn.message.stop_reason === 'string' &&
+    ['end_turn', 'stop_sequence'].includes(lastTurn.message.stop_reason);
+}
+
 /**
  * Read a launch receipt's log more than once, but only inside a bounded
  * post-launch window. `capability:launch-agent` returns when the process is
@@ -479,6 +505,8 @@ export async function detectAcceptanceGraderTerminalFailure(
     allowToolSurfaceRefusal = false,
     allowGradingAuditRefusal = false,
     detectStartupStall = true,
+    nativeTranscriptPath = null,
+    nativeSessionId = null,
   }: {
     readLogTail: AcceptanceGraderLogTailReader;
     sleep?: (ms: number) => Promise<void>;
@@ -532,17 +560,28 @@ export async function detectAcceptanceGraderTerminalFailure(
     /** Some consumers only need terminal quota detection and must not spend the
      * longer connection-stall window inside their synchronous dispatch path. */
     detectStartupStall?: boolean;
+    /** Exact native JSONL path and session id supplied by the launch receipt. */
+    nativeTranscriptPath?: string | null;
+    nativeSessionId?: string | null;
   },
 ): Promise<AcceptanceGraderTerminalFailure | null> {
   if (!logPath) return null;
   const boundedRechecks = Math.max(0, Math.floor(maxRechecks));
   const boundedDelay = Math.max(0, Math.floor(delayMs));
+  const nativeApiError = async (): Promise<boolean> => {
+    if (!nativeTranscriptPath || !nativeSessionId) return false;
+    try {
+      return hasAcceptanceGraderNativeApiError(await readLogTail(nativeTranscriptPath), nativeSessionId);
+    } catch {
+      return false;
+    }
+  };
   let latestRawLog = '';
   for (let recheck = 0; recheck <= boundedRechecks; recheck += 1) {
     latestRawLog = await readLogTail(logPath);
     const terminalFailure = classifyAcceptanceGraderTerminalFailure(latestRawLog, {
       allowStandaloneWeeklyLimit,
-      allowInferenceGatewayError,
+      allowInferenceGatewayError: allowInferenceGatewayError || await nativeApiError(),
       allowGatewayErrorWithoutFooter,
       allowLauncherQuotaDrop,
       allowLauncherWalledPoolRefusal,
@@ -566,7 +605,7 @@ export async function detectAcceptanceGraderTerminalFailure(
     latestRawLog = await readLogTail(logPath);
     const terminalFailure = classifyAcceptanceGraderTerminalFailure(latestRawLog, {
       allowStandaloneWeeklyLimit,
-      allowInferenceGatewayError,
+      allowInferenceGatewayError: allowInferenceGatewayError || await nativeApiError(),
       allowGatewayErrorWithoutFooter,
       allowLauncherQuotaDrop,
       allowLauncherWalledPoolRefusal,
@@ -2853,7 +2892,8 @@ export async function launchAcceptanceGrader(
                * its deadline; only `kickoff-not-submitted:*` is conclusive by
                * itself. Pair other negative receipts with `agentStarted`.
                */
-              kickoffProof?: { persisted?: unknown; reason?: unknown } | null;
+              kickoffProof?: { persisted?: unknown; reason?: unknown; nativeRef?: unknown } | null;
+              nativeSession?: { backend?: unknown; sessionId?: unknown } | null;
             }>;
             // EI-21923986145923904: present only when the fresh-launch verification
             // path ran (see FreshLaunchVerdict.agentStarted); absent for a discovery
@@ -2898,6 +2938,12 @@ export async function launchAcceptanceGrader(
         : logPath
         ? await detectAcceptanceGraderTerminalFailure(logPath, {
             readLogTail,
+            ...(launchedTask?.nativeSession?.backend === 'claude' &&
+                typeof launchedTask.nativeSession.sessionId === 'string' &&
+                typeof launchedTask.kickoffProof?.nativeRef === 'string'
+              ? { nativeTranscriptPath: launchedTask.kickoffProof.nativeRef,
+                  nativeSessionId: launchedTask.nativeSession.sessionId }
+              : {}),
             ...(sleep ? { sleep } : {}),
             ...(deps.terminalLogRecheckDelayMs !== undefined ? { delayMs: deps.terminalLogRecheckDelayMs } : {}),
             ...(deps.terminalLogMaxRechecks !== undefined ? { maxRechecks: deps.terminalLogMaxRechecks } : {}),

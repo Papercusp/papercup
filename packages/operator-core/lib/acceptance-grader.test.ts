@@ -11,6 +11,7 @@ import {
   classifyAcceptanceGraderParkedWithoutEmit,
   classifyAcceptanceGraderTerminalFailure,
   detectAcceptanceGraderTerminalFailure,
+  hasAcceptanceGraderNativeApiError,
   launchAcceptanceGrader,
   isAcceptanceGradingRequestForPlan,
   isInFlightAcceptanceGradingRequest,
@@ -27,6 +28,62 @@ import {
   GRADING_CASCADE_ANSWER_GRACE_MS,
 } from './acceptance-grader';
 import { ACCEPTANCE_GRADING_BAR_SCOPE_GUIDANCE } from './consult/grading-cascade';
+
+describe('native terminal API-error provenance', () => {
+  const sessionId = 'native-fixture-session';
+  const record = (overrides: Record<string, unknown> = {}) => JSON.stringify({
+    type: 'assistant', sessionId, isSidechain: false, isApiErrorMessage: true, apiErrorStatus: 429,
+    message: { role: 'assistant', stop_reason: 'stop_sequence', content: [{ type: 'text', text: 'API error' }] },
+    ...overrides,
+  });
+
+  it('recognizes the exact native failed assistant turn even after a partial JSONL tail', () => {
+    expect(hasAcceptanceGraderNativeApiError('partial record\n' + record() + '\n', sessionId)).toBe(true);
+  });
+
+  it.each([
+    { type: 'user' },
+    { isApiErrorMessage: false },
+    { apiErrorStatus: 200 },
+    { isSidechain: true },
+    { sessionId: 'another-native-session' },
+    { message: { role: 'assistant', stop_reason: null } },
+  ])('refuses quoted, incomplete, foreign or non-error records: %j', (override) => {
+    expect(hasAcceptanceGraderNativeApiError(record(override), sessionId)).toBe(false);
+  });
+
+  it('does not retire a session whose user started another turn after the API error', () => {
+    expect(hasAcceptanceGraderNativeApiError(record() + '\n' + record({ type: 'user' }), sessionId)).toBe(false);
+  });
+
+  it('fails closed if a subsequent native turn is only partially written', () => {
+    expect(hasAcceptanceGraderNativeApiError(record() + '\n{"type":"user"', sessionId)).toBe(false);
+  });
+
+  it.each([
+    [400, "API Error: 400 role 'system' is not supported on this model"],
+    [429, 'API Error: Request rejected (429) · inference-gateway: all accounts throttled; retry after 60s'],
+  ])('enables the existing bounded classifier only for native completed API %s', async (status, error) => {
+    const log = `●${error}\n✻ Worked for 1m 9s · done 9:30 PM\n❯`;
+    const native = record({ apiErrorStatus: status });
+    const readLogTail = vi.fn((path: string) => path === 'native.jsonl' ? native : log);
+    const options = { readLogTail, nativeTranscriptPath: 'native.jsonl', nativeSessionId: sessionId,
+      maxRechecks: 0, detectStartupStall: false };
+    await expect(detectAcceptanceGraderTerminalFailure('judge.log', options))
+      .resolves.toMatchObject({ code: 'inference_gateway_error' });
+    await expect(detectAcceptanceGraderTerminalFailure('judge.log', {
+      ...options, readLogTail: (path: string) => path === 'native.jsonl' ? record({ type: 'user' }) : log,
+    })).resolves.toBeNull();
+  });
+
+  it('keeps recovery unconfirmed when the native transcript cannot be read', async () => {
+    const log = "●API Error: 400 role 'system' is not supported on this model\n✻ Worked for 1m 9s · done\n❯";
+    await expect(detectAcceptanceGraderTerminalFailure('judge.log', {
+      readLogTail: (path) => { if (path === 'native.jsonl') throw new Error('unreadable'); return log; },
+      nativeTranscriptPath: 'native.jsonl', nativeSessionId: sessionId, maxRechecks: 0, detectStartupStall: false,
+    })).resolves.toBeNull();
+  });
+});
 
 describe('answeringOwnerAtCursor (WI-10003786)', () => {
   const routing = {
@@ -1178,6 +1235,39 @@ describe('launchAcceptanceGrader', () => {
         fallback: { agent: 'codex', model: 'gpt-5.6-sol', effort: 'high', account: 'auto' },
       },
     });
+  });
+
+  it('recovers a general grader from its native API-error turn while rejecting quoted error evidence', async () => {
+    const error = '●API Error: Request rejected (429) · inference-gateway: all accounts throttled; retry after 60s\n' +
+      '✻ Worked for 1m 9s · done 9:30 PM\n❯';
+    const nativeRecord = (apiError: boolean) => JSON.stringify({
+      type: 'assistant', sessionId: 'native-primary', isApiErrorMessage: apiError, apiErrorStatus: 429,
+      message: { role: 'assistant', stop_reason: 'stop_sequence' },
+    });
+    const makeLaunch = () => vi.fn(async (args: Record<string, unknown>) => ({
+      data: { deduped: false, launch: { tasks: [args.agent === 'codex'
+        ? { taskId: 'task-fallback' }
+        : { taskId: 'task-native-error', logPath: '/tmp/native-error.log',
+            kickoffProof: { persisted: true, nativeRef: '/tmp/native-primary.jsonl' },
+            nativeSession: { backend: 'claude', sessionId: 'native-primary' } }] } },
+    }));
+    const launch = makeLaunch(), kill = vi.fn(async () => ({ ok: true }));
+    const result = await launchAcceptanceGrader('ship-the-thing', ctx, {
+      ...deps(launch), killTask: kill as never, terminalLogMaxRechecks: 0,
+      readLogTail: (path) => path.endsWith('.jsonl') ? nativeRecord(true) : error,
+    });
+    expect(result.terminalRecovery?.codes).toEqual(['inference_gateway_error']);
+    expect(kill).toHaveBeenCalledWith('task-native-error', { includeSubtree: true, escalateAfterMs: 5_000 });
+    expect(launch).toHaveBeenCalledTimes(2);
+    expect(launch.mock.calls[1][0]).toMatchObject({ agent: 'codex', account: 'auto' });
+
+    const quoted = makeLaunch(), quotedKill = vi.fn(async () => ({ ok: true }));
+    await launchAcceptanceGrader('ship-the-thing', ctx, {
+      ...deps(quoted), killTask: quotedKill as never, terminalLogMaxRechecks: 0,
+      readLogTail: (path) => path.endsWith('.jsonl') ? nativeRecord(false) : error,
+    });
+    expect(quoted).toHaveBeenCalledTimes(1);
+    expect(quotedKill).not.toHaveBeenCalled();
   });
 
   it('rechecks the headless log after launch returns before deciding quota fallback', async () => {
