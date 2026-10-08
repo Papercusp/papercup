@@ -139,7 +139,23 @@ export default defineTool({
     .object({
       ok: z.unknown().optional(),
       ownerId: z.unknown().optional(),
-      loop: z.unknown().optional(),
+      // Keep the stable fields used by continuation recipes in the published
+      // result contract; passthrough preserves the rest of LoopStatus.
+      loop: z
+        .object({
+          active: z.boolean(),
+          carry: z.enum(['warm', 'cold']),
+        })
+        .passthrough()
+        .nullable()
+        .optional(),
+      rewake: z
+        .object({
+          rewakeGuaranteed: z.boolean(),
+          reason: z.string().nullable(),
+        })
+        .nullable()
+        .optional(),
       lastTransition: z.unknown().optional(),
       carryNote: z.unknown().optional(),
       reachability: z.unknown().optional(),

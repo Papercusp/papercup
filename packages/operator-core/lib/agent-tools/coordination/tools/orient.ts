@@ -3374,7 +3374,11 @@ export default defineTool({
     .object({
       ok: z.boolean().optional(),
       status: z.string().optional(),
+      // These roots are emitted by the handler and read by continuation
+      // recovery recipes. Declare them here so recipe preflight can validate
+      // those reads against the same contract the live response provides.
       self: z.unknown().optional(),
+      host: z.unknown().optional(),
       assignments: z.unknown().optional(),
       claimable: z.unknown().optional(),
       inbox: z.unknown().optional(),

@@ -3,6 +3,8 @@ import { z } from 'zod';
 import type { ProjectedTool } from '@papercusp/tooldef';
 import { validateRecipeScriptAgainstCatalog } from './recipe-schema-validation';
 import orientTool from '../coordination/tools/orient';
+import factsListTool from '../facts/list';
+import loopStatusTool from '../loop/status';
 import workItemsGetTool from '../work_items/get';
 import '../pre-prompt-registry-config';
 
@@ -26,6 +28,81 @@ const tool = (
 });
 
 describe('validateRecipeScriptAgainstCatalog', () => {
+  it('keeps the saved continuation ownership recipe aligned with live result contracts', async () => {
+    const catalog = [
+      tool('coord:orient', z.toJSONSchema(orientTool.args), z.toJSONSchema(zodResult(orientTool.result))),
+      tool('facts:list', z.toJSONSchema(factsListTool.args)),
+      tool('loop:status', z.toJSONSchema(loopStatusTool.args), z.toJSONSchema(zodResult(loopStatusTool.result))),
+    ];
+    const script =
+      'const s = await tools.loop.status({});\n' +
+      'const o = await tools.coord.orient({ afterCompaction: true });\n' +
+      'const f = await tools.facts.list({ scope: "work_item", scopeRef: inputs.workItemId, full: true });\n' +
+      'return { loop: { active: s.loop?.active ?? null, carry: s.loop?.carry ?? null, rewake: s.rewake ?? null }, ' +
+      'host: o.host ?? null, self: o.self ?? null, obligationKeys: Object.keys(o.recovery ?? {}), ' +
+      'facts: (f.facts || []).map((x) => ({ key: x.key, body: x.body })) };';
+
+    const result = await validateRecipeScriptAgainstCatalog(script, catalog);
+    expect(result).toEqual({
+      ok: true,
+      issues: [],
+      staticToolNames: ['coord:orient', 'facts:list', 'loop:status'],
+    });
+
+    const stale = await validateRecipeScriptAgainstCatalog(
+      'const s = await tools.loop.status({}); return s.loop?.rewake ?? null;',
+      catalog,
+    );
+    expect(stale.ok).toBe(false);
+    expect(stale.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        tool: 'loop:status',
+        path: 'result.loop.rewake',
+        kind: 'output-field',
+      }),
+    ]));
+  });
+
+  it('accepts guarded reads through nullable result branches but still rejects unguarded reads', async () => {
+    const catalog = [tool('loop:status', { type: 'object', properties: {}, additionalProperties: false }, {
+      type: 'object',
+      properties: {
+        loop: {
+          anyOf: [
+            {
+              type: 'object',
+              properties: { active: { type: 'boolean' } },
+              required: ['active'],
+              additionalProperties: false,
+            },
+            { type: 'null' },
+          ],
+        },
+      },
+      required: ['loop'],
+      additionalProperties: false,
+    })];
+
+    const guarded = await validateRecipeScriptAgainstCatalog(
+      'const status = await tools.loop.status({}); return status.loop?.active ?? null;',
+      catalog,
+    );
+    expect(guarded).toEqual({ ok: true, issues: [], staticToolNames: ['loop:status'] });
+
+    const unguarded = await validateRecipeScriptAgainstCatalog(
+      'const status = await tools.loop.status({}); return status.loop.active;',
+      catalog,
+    );
+    expect(unguarded.ok).toBe(false);
+    expect(unguarded.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        tool: 'loop:status',
+        path: 'result.loop.active',
+        kind: 'output-field',
+      }),
+    ]));
+  });
+
   it('accepts the saved obligation recovery read against the actual orient output contract', async () => {
     const catalog = [tool('coord:orient', z.toJSONSchema(orientTool.args), z.toJSONSchema(zodResult(orientTool.result)))];
     const guarded = await validateRecipeScriptAgainstCatalog(

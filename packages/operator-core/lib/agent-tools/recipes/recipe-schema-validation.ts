@@ -189,6 +189,18 @@ function outputPathFailure(
   const alternatives = schema.anyOf ?? schema.oneOf;
   if (alternatives?.length) {
     for (const alternative of alternatives) {
+      // A guarded optional chain can safely skip a nullable parent branch.
+      // Without this, `result.loop?.active ?? null` is rejected because the
+      // schema's `null` alternative naturally has no `active` property, even
+      // though JavaScript never reads it on that branch. Keep object/shape
+      // alternatives strict; only the null branch is skipped, and only when
+      // the script's parser proved the nullable parent is guarded.
+      if (
+        alternative.type === 'null' &&
+        safeOptionalPaths.some((safePath) =>
+          safePath.length === offset && safePath.every((segment, index) => segment === path[index]),
+        )
+      ) continue;
       const failure = outputPathFailure(alternative, path, safeOptionalPaths, offset);
       if (failure) return failure;
     }
