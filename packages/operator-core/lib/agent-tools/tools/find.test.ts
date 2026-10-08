@@ -523,6 +523,7 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     } | undefined;
 
     expect(entry?.argSchema).toContain('one-of:owner|session_id');
+    expect(entry?.argSchema).toContain('max_lines?:integer(5-200)');
     expect(schema?.anyOf?.some((branch) => branch.required?.includes('owner'))).toBe(true);
     expect(schema?.anyOf?.some((branch) => branch.required?.includes('session_id'))).toBe(true);
     expect(activityToolLog.args.safeParse({}).success).toBe(false);
