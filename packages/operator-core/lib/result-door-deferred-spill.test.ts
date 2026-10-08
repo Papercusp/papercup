@@ -27,7 +27,7 @@ import {
 } from './result-door';
 import * as scratchGc from './scratch-gc';
 import { _resetScratchUsageForTests, _setScratchUsageForTests, refreshScratchUsage, WORKSPACE_QUOTA_BYTES, writeWithScratchQuota } from './scratch-gc';
-import { parseScratchReference, writeScratchReference } from './scratch-reference';
+import { parseScratchReference, readVolatileScratchReference, writeScratchReference } from './scratch-reference';
 import type { ScratchWriteTimings } from './scratch-gc';
 
 const BUDGET_CHARS = RESULT_DOOR_TOKENS * CHARS_PER_TOKEN_ESTIMATE;
@@ -50,6 +50,58 @@ function spillDir(toolName = 'plans:get'): string {
 
 function spillFiles(toolName = 'plans:get'): string[] {
   return existsSync(spillDir(toolName)) ? readdirSync(spillDir(toolName)) : [];
+}
+
+function volatileCursorFrom(out: DoorableResult): Record<string, unknown> {
+  const metaCursor = (out as DoorableResult & {
+    _meta?: { resultDoor?: { recoveryCursor?: Record<string, unknown> } };
+  })._meta?.resultDoor?.recoveryCursor;
+  if (metaCursor) return metaCursor;
+
+  const item = out.content.find((candidate) => candidate.type === 'text');
+  if (!item || item.type !== 'text') throw new Error('result has no text recovery envelope');
+  const envelope = JSON.parse(item.text) as {
+    _projection?: { cursor?: Record<string, unknown> };
+    content?: Array<{ kind?: unknown; uri?: unknown }>;
+  };
+  const cursor = envelope._projection?.cursor;
+  if (cursor) return cursor;
+  const reference = envelope.content?.find((entry) =>
+    entry.kind === 'reference' && typeof entry.uri === 'string',
+  );
+  if (typeof reference?.uri === 'string') {
+    return {
+      kind: 'volatile-scratch-page',
+      tool: 'capability:read',
+      uri: reference.uri,
+      args: { uri: reference.uri, byte_offset: 0, byte_limit: 3_072 },
+    };
+  }
+  throw new Error('result has no recovery cursor');
+}
+
+function readVolatileText(cursor: Record<string, unknown>, workspaceId = 'ws-1'): string {
+  const args = cursor.args && typeof cursor.args === 'object'
+    ? cursor.args as Record<string, unknown>
+    : undefined;
+  const uri = typeof cursor.uri === 'string'
+    ? cursor.uri
+    : typeof args?.uri === 'string'
+      ? args.uri
+      : undefined;
+  if (!uri) throw new Error('volatile recovery cursor has no URI');
+
+  const reference = readVolatileScratchReference(uri, { workspaceId });
+  const bodyOffset = reference.manifest.bodyOffsetInPayload ?? 0;
+  const pageText = reference.payload.subarray(bodyOffset).toString('utf8');
+  try {
+    const envelope = JSON.parse(pageText) as { content?: Array<{ type?: unknown; text?: unknown }> };
+    const text = envelope.content?.find((entry) => entry.type === 'text')?.text;
+    if (typeof text === 'string') return text;
+  } catch {
+    // Plain-text spills have a framing prefix and are checked by substring.
+  }
+  return pageText;
 }
 
 beforeEach(() => {
@@ -335,15 +387,18 @@ describe('result-door deferred spill (WI-10004533)', () => {
     });
     const text = (out.content.find((item) => item.type === 'text') as { text: string }).text;
     const body = JSON.parse(text) as { _projection?: { cursor?: Record<string, unknown>; next?: string } };
+    const cursor = volatileCursorFrom(out);
 
     expect(body._projection?.cursor).toMatchObject({
-      kind: 'unavailable',
+      kind: 'volatile-scratch-page',
+      tool: 'capability:read',
       reason: 'spill-write-failed',
       errorDetail: 'ScratchWriteError: writer rejected directory \'<scratch path>\'',
     });
     expect(body._projection?.next).toContain('ScratchWriteError: writer rejected directory');
     expect(body._projection?.next).not.toContain(scratchRunDir);
     expect(text).not.toContain(scratchRunDir);
+    expect(readVolatileText(cursor)).toContain(oversized().content[0].text);
   });
 
   it('keeps an explicit-full result bounded and diagnosable when its asynchronous spill rejects without an error code', async () => {
@@ -369,6 +424,7 @@ describe('result-door deferred spill (WI-10004533)', () => {
         _meta: { explicitFullRequest: true },
       }, { ...OPTS, toolName: 'work_items:get' });
       const text = (out.content[0] as { text: string }).text;
+      const cursor = volatileCursorFrom(out);
       const envelope = JSON.parse(text) as {
         results: Array<{ id: string; checkpoint: string }>;
         _projection: { truncated: boolean; cursor: Record<string, unknown>; next: string };
@@ -378,7 +434,8 @@ describe('result-door deferred spill (WI-10004533)', () => {
       expect(envelope._projection).toMatchObject({
         truncated: true,
         cursor: {
-          kind: 'unavailable',
+          kind: 'volatile-scratch-page',
+          tool: 'capability:read',
           reason: 'spill-write-failed',
           errorDetail: "ScratchWriteError: writer rejected directory '<scratch path>'",
         },
@@ -390,6 +447,7 @@ describe('result-door deferred spill (WI-10004533)', () => {
       expect(text.length).toBeLessThan(original.length);
       expect(envelope._projection.next).toContain('work_items:get');
       expect(envelope._projection.next).toContain('ScratchWriteError: writer rejected directory');
+      expect(readVolatileText(cursor)).toBe(original);
       expect(text).not.toContain(scratchRoot);
       expect(out._meta?.resultDoor).toMatchObject({
         spillFailed: true,
@@ -455,11 +513,13 @@ describe('result-door deferred spill (WI-10004533)', () => {
     await refreshScratchUsage('ws-1');
     const out = await applyResultDoorAsync(oversized(), OPTS);
     const meta = (out as { _meta?: { resultDoor?: { spillFailed?: boolean; spillErrorCode?: string; spillError?: string; spillPath?: string } } })._meta?.resultDoor;
+    const cursor = volatileCursorFrom(out);
     expect(meta?.spillFailed).toBe(true);
     expect(meta?.spillErrorCode).toBe('SCRATCH_QUOTA_EXCEEDED');
     expect(meta?.spillError).toMatch(/^scratch reservation: workspace ws-1 used \d+ \+ \d+ > quota 5368709120$/);
     expect(meta?.spillPath ?? null).toBeNull();
     expect(JSON.stringify(out.content)).toContain('SCRATCH_QUOTA_EXCEEDED');
+    expect(readVolatileText(cursor)).toContain(oversized().content[0].text);
     expect(spillFiles()).toHaveLength(0);
 
     const completionPayload = {
@@ -484,6 +544,7 @@ describe('result-door deferred spill (WI-10004533)', () => {
       results: Array<Record<string, any>>;
       _projection: { truncated: boolean; cursor: Record<string, unknown>; next: string };
     };
+    const completionCursor = volatileCursorFrom(completionOut);
     expect(completionMeta).toMatchObject({
       spillFailed: true,
       spillErrorCode: 'SCRATCH_QUOTA_EXCEEDED',
@@ -501,18 +562,22 @@ describe('result-door deferred spill (WI-10004533)', () => {
     expect(completionReceipt.results[0].completion.summary.length).toBeLessThan(1_200);
     expect(completionReceipt._projection).toMatchObject({
       truncated: true,
-      cursor: { kind: 'unavailable', reason: 'spill-write-failed', errorCode: 'SCRATCH_QUOTA_EXCEEDED' },
+      cursor: { kind: 'volatile-scratch-page', tool: 'capability:read', reason: 'spill-write-failed', errorCode: 'SCRATCH_QUOTA_EXCEEDED' },
     });
     expect(completionReceipt._projection.next).toContain('Do NOT repeat this call');
     expect(completionReceipt._projection.next).toContain('work_items:get');
+    expect(readVolatileText(completionCursor)).toBe(completionOriginal);
     expect(JSON.stringify(completionOut.content).length).toBeLessThan(completionOriginal.length);
     expect(spillFiles()).toHaveLength(0);
 
     // Non-text overflow uses the hard-envelope branch; its error must retain the same cause.
     const hard = await applyResultDoorAsync({ content: [{ type: 'image' as const,
       mimeType: 'image/png', data: 'A'.repeat(BUDGET_CHARS * 3) }] }, OPTS);
-    expect(JSON.stringify(hard.content)).toContain('SCRATCH_QUOTA_EXCEEDED');
-    expect(JSON.stringify(hard.content)).toContain('output_spill_failed');
+    const hardMeta = (hard as { _meta?: { resultDoor?: { spillErrorCode?: string } } })._meta?.resultDoor;
+    const hardCursor = volatileCursorFrom(hard);
+    expect(hardMeta?.spillErrorCode).toBe('SCRATCH_QUOTA_EXCEEDED');
+    expect(hardCursor).toMatchObject({ kind: 'volatile-scratch-page', tool: 'capability:read' });
+    expect(readVolatileText(hardCursor)).toContain('A'.repeat(BUDGET_CHARS * 3));
     expect(spillFiles()).toHaveLength(0);
   });
 
@@ -551,6 +616,7 @@ describe('result-door deferred spill (WI-10004533)', () => {
       _projection: { cursor: Record<string, unknown>; next: string };
     };
 
+    const cursor = volatileCursorFrom(out);
     expect((out._meta?.resultDoor as { spillFailed?: boolean; spillErrorCode?: string }) ?? {})
       .toMatchObject({ spillFailed: true, spillErrorCode: 'SCRATCH_QUOTA_EXCEEDED' });
     expect(receipt).toMatchObject({
@@ -560,12 +626,12 @@ describe('result-door deferred spill (WI-10004533)', () => {
       gradeWith: { ideaId: 'agent-review:WI-review-claim-1' },
       _projection: {
         cursor: {
-          kind: 'committed-review-claim',
-          tool: 'work_items:get',
-          args: { id: 'WI-review-claim-1', harness: 'papercusp' },
+          kind: 'volatile-scratch-page',
+          tool: 'capability:read',
         },
       },
     });
+    expect(readVolatileText(cursor)).toBe(JSON.stringify(claim));
     expect(receipt.workItem.payload?.largeSubmission).toContain('TRUNCATED');
     expect(receipt._projection.next).toContain('Do not retry improvements:agent-review');
     expect(receipt._projection.next).toContain('blender:grade-idea');
@@ -597,12 +663,15 @@ describe('result-door deferred spill (WI-10004533)', () => {
     }
 
     it.each(['coord:feed', 'work_items:list', 'work_items:get'] as const)(
-      '%s returns a bounded result without a dangling cursor when the shared writer fails',
+      '%s returns a readable volatile cursor when the shared writer fails',
       async (toolName) => {
         breakScratchRoot();
         const rows = Array.from({ length: 12 }, (_, index) => ({
           id: `WI-${index}`,
           summary: 's'.repeat(900),
+          ...(toolName === 'work_items:get'
+            ? { comments: [{ body: 'newer comment body ' + index }] }
+            : {}),
         }));
         const body = toolName === 'work_items:list'
           ? rows
@@ -631,13 +700,19 @@ describe('result-door deferred spill (WI-10004533)', () => {
         })._meta?.resultDoor;
 
         expect(resultText.length).toBeLessThan(original.length);
-        expect(meta?.recoveryCursor).toMatchObject({ kind: 'unavailable', reason: 'spill-write-failed' });
-        expect(resultText).not.toContain('papercusp://scratch');
+        expect(meta?.recoveryCursor).toMatchObject({
+          kind: 'volatile-scratch-page',
+          tool: 'capability:read',
+          reason: 'spill-write-failed',
+        });
+        expect(resultText).not.toContain(sandbox);
         expect(meta).toMatchObject({ spillFailed: true, spillPath: null, spillUri: null, spillErrorCode: 'ENOTDIR' });
+        if (!meta?.recoveryCursor) throw new Error('missing volatile recovery cursor');
+        expect(readVolatileText(meta.recoveryCursor)).toBe(original);
       },
     );
 
-    it('coord:feed reports the failed hard-overflow envelope with accounting when aggregate spill cannot persist', async () => {
+    it('coord:feed returns a readable volatile page with accounting when aggregate spill cannot persist', async () => {
       breakScratchRoot();
       const aggregateScope = beginResultDoorAggregate({ sessionKey: 'read-surface-test', outputGroupId: 'turn-1' });
       const fill = { content: [{ type: 'text' as const, text: 'f'.repeat(BUDGET_CHARS) }] };
@@ -654,12 +729,9 @@ describe('result-door deferred spill (WI-10004533)', () => {
         error?: { code?: string; message?: string; retryable?: boolean };
       };
       const meta = (out as { _meta?: { resultDoor?: Record<string, unknown> } })._meta?.resultDoor;
+      const cursor = volatileCursorFrom(out);
 
-      expect(envelope).toMatchObject({ state: 'error', error: { code: 'output_spill_failed', retryable: true } });
-      expect(envelope.error?.message).toContain('ENOTDIR');
-      expect(envelope.error?.message).toContain('not a directory');
-      expect(envelope.error?.message).toContain('<scratch path>');
-      expect(envelope.error?.message).not.toContain(sandbox);
+      expect(envelope).toMatchObject({ state: 'incomplete' });
       expect(meta).toMatchObject({
         spillFailed: true,
         spillPath: null,
@@ -667,7 +739,8 @@ describe('result-door deferred spill (WI-10004533)', () => {
         spillErrorCode: 'ENOTDIR',
         originalBytes: Buffer.byteLength(original),
       });
-      expect(JSON.stringify(out.content)).not.toContain('papercusp://scratch');
+      expect(readVolatileText(cursor)).toContain(original);
+      expect(JSON.stringify(out.content)).not.toContain(sandbox);
     });
   });
 });

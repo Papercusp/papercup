@@ -68,6 +68,8 @@ import {
 import {
   contentMetadata,
   scratchReferencePayloadByteOffset,
+  storeVolatileScratchReference,
+  VOLATILE_SCRATCH_REFERENCE_TTL_MS,
   writeScratchReference,
   type ScratchReferenceManifest,
 } from './scratch-reference';
@@ -976,6 +978,139 @@ function scratchParts(opts: ResultDoorOpts): { workspaceId: string; toolName: st
   return { workspaceId, toolName, runId };
 }
 
+function cacheFailedSpill(input: {
+  opts: ResultDoorOpts;
+  payload: Buffer | string;
+  mediaType: string;
+  content: ReturnType<typeof contentMetadata>;
+  evidence?: ReturnType<typeof detectResultEvidence>;
+  bodyOffsetInPayload?: number;
+}): NonNullable<ReturnType<typeof storeVolatileScratchReference>> | null {
+  try {
+    const parts = scratchParts(input.opts);
+    return storeVolatileScratchReference({
+      payload: input.payload,
+      workspaceId: parts.workspaceId,
+      ownerId: input.opts.ownerId,
+      audience: input.opts.ownerId ? 'owner' : 'workspace',
+      mediaType: input.mediaType,
+      content: input.content,
+      evidence: input.evidence,
+      bodyOffsetInPayload: input.bodyOffsetInPayload,
+    });
+  } catch {
+    // The emergency cache is strictly best-effort; the caller still returns a
+    // bounded, explicitly unavailable cursor if the fallback itself cannot fit.
+    return null;
+  }
+}
+
+function volatileScratchRecovery(
+  fallback: NonNullable<ReturnType<typeof storeVolatileScratchReference>>,
+  bodyComplete: boolean,
+  toolName: string,
+  spillErrorCode: string | null = null,
+  spillErrorSummary: string | null = null,
+) {
+  const spillDiagnostic = [
+    spillErrorCode && spillErrorCode !== 'unknown error' ? spillErrorCode : null,
+    spillErrorSummary,
+  ].filter(Boolean).join('; ');
+  return {
+    cursor: {
+      kind: 'volatile-scratch-page',
+      tool: 'capability:read',
+      reason: 'spill-write-failed',
+      ...(spillErrorCode && spillErrorCode !== 'unknown error' ? { errorCode: spillErrorCode } : {}),
+      ...(spillErrorSummary ? { errorDetail: spillErrorSummary } : {}),
+      args: { uri: fallback.uri, byte_offset: 0, byte_limit: 3_072 },
+      uri: fallback.uri,
+      maxByteLimit: CAPABILITY_READ_MAX_BYTE_PAGE,
+      dataEncoding: 'base64',
+      expiresAt: fallback.manifest.expiresAt,
+      ...(fallback.manifest.bodyOffsetInPayload !== undefined
+        ? { bodyOffsetInPayload: fallback.manifest.bodyOffsetInPayload, ...(!bodyComplete ? { bodyComplete: false } : {}) }
+        : {}),
+    },
+    next:
+      'Primary scratch persistence failed' +
+      (spillDiagnostic ? ' (' + spillDiagnostic + ')' : '') +
+      '; an exact in-process copy is available until ' + fallback.manifest.expiresAt + '. ' +
+      `Read cursor.args with capability:read and follow next_cursor until eof. This URI is not a file and is ` +
+      `lost on server restart or cache eviction. ` +
+      (bodyComplete
+        ? 'The copy preserves the exact bytes received by the result door from ' + toolName + '.'
+        : 'The copy preserves the bytes received by the result door from ' + toolName + '; fields already omitted upstream remain absent.'),
+  };
+}
+
+function preferVolatileScratchRecovery(
+  volatileRecovery: ReturnType<typeof volatileScratchRecovery> | undefined,
+  fallback: { cursor: Record<string, unknown>; next: string },
+  volatileNote: string = fallback.next,
+) {
+  return volatileRecovery
+    ? { cursor: volatileRecovery.cursor, next: volatileRecovery.next + ' ' + volatileNote }
+    : fallback;
+}
+
+function volatileScratchRecoveryForTool(
+  recovery: ReturnType<typeof volatileScratchRecovery>,
+  toolName: string,
+  nestedTargetToolName?: string,
+) {
+  const target = toolName === 'tools:invoke' ? nestedTargetToolName : toolName;
+  const note = target === 'coord:send'
+    ? 'The delivery outcome is unknown; do NOT repeat the send until checking coord:feed or coord:inbox. ' +
+      COORD_SEND_RECEIPT_RECOVERY
+    : target === 'work_items:complete'
+      ? 'The complete work_items:complete response is available in the volatile page above. ' +
+        'Do NOT repeat this call; read work_items:get to confirm current item state before follow-up.'
+      : target === 'work_items:set_blocker'
+        ? 'The work_items:set_blocker mutation may have committed. Do NOT repeat it; read work_items:get to inspect current blocker state.'
+        : target === 'scorecards:emit'
+          ? 'The scorecards:emit outcome must be established from the volatile page and scorecard ledger. ' +
+            'Do NOT repeat this non-idempotent emit; inspect completionReceipt if present.'
+          : target === 'improvements:agent-review'
+            ? 'The peer-review claim may have committed. Do NOT repeat improvements:agent-review; inspect the claim before follow-up.'
+            : undefined;
+  return note
+    ? { cursor: recovery.cursor, next: recovery.next + ' ' + note }
+    : recovery;
+}
+
+function spillFailureDetails(error: unknown, candidatePaths: Array<string | undefined>) {
+  const record = error && typeof error === 'object' ? error as Record<string, unknown> : undefined;
+  const rawMessage = error instanceof Error
+    ? error.message
+    : typeof error === 'string'
+      ? error
+      : typeof record?.message === 'string'
+        ? record.message
+        : error == null
+          ? 'empty rejection'
+          : (() => {
+              try { return JSON.stringify(error) ?? String(error); }
+              catch { return String(error); }
+            })();
+  const code = typeof record?.code === 'string' ? record.code : 'unknown error';
+  const name = error instanceof Error
+    ? error.name
+    : typeof record?.name === 'string'
+      ? record.name
+      : 'Error';
+  let safeMessage = rawMessage.replace(/[\r\n\t]+/g, ' ').trim();
+  const paths = [...new Set(candidatePaths.filter((path): path is string => Boolean(path)))];
+  for (const path of paths.sort((a, b) => b.length - a.length)) {
+    safeMessage = safeMessage.replaceAll(path, '<scratch path>');
+  }
+  return {
+    error: rawMessage,
+    code,
+    summary: `${name}${safeMessage ? `: ${safeMessage}` : ''}`.slice(0, 240),
+  };
+}
+
 interface JsonPrefixSlice {
   start: number;
   end: number;
@@ -1305,6 +1440,7 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
   let spillErrorCode: string | null = null;
   let spillErrorSummary: string | null = null;
   let manifest: ScratchReferenceManifest | null = null;
+  let volatileFallback: NonNullable<ReturnType<typeof storeVolatileScratchReference>> | null = null;
   const evidence = detectResultEvidence(input.result.content);
   try {
     if (input.opts.scratchWriteFailure) throw input.opts.scratchWriteFailure.error;
@@ -1336,41 +1472,46 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
     });
   } catch (err) {
     input.onSpillFailure?.(err);
-    spillError = err instanceof Error ? err.message : String(err);
-    spillErrorCode = (err as NodeJS.ErrnoException | undefined)?.code ?? 'unknown error';
-    if (err instanceof Error) {
-      let message = err.message.replace(/[\r\n\t]+/g, ' ').trim();
-      const scratchPaths = [
-        ...(spillPath ? [spillPath, dirname(spillPath)] : []),
-        process.env.PAPERCUSP_SCRATCH_ROOT,
-      ].filter((path): path is string => Boolean(path));
-      for (const path of scratchPaths.sort((a, b) => b.length - a.length)) {
-        if (path) message = message.replaceAll(path, '<scratch path>');
-      }
-      spillErrorSummary = `${err.name || 'Error'}${message ? `: ${message}` : ''}`.slice(0, 240);
-    } else {
-      spillErrorSummary = err == null ? 'empty rejection' : `${typeof err} rejection`;
-    }
+    const details = spillFailureDetails(err, [
+      ...(spillPath ? [spillPath, dirname(spillPath)] : []),
+      process.env.PAPERCUSP_SCRATCH_ROOT,
+    ]);
+    spillError = details.error;
+    spillErrorCode = details.code;
+    spillErrorSummary = details.summary;
     spillPath = null;
     spillUri = null;
+    volatileFallback = cacheFailedSpill({
+      opts: input.opts,
+      payload,
+      mediaType: 'application/json',
+      content: contentMetadata(input.result.content),
+      evidence,
+      bodyOffsetInPayload: 0,
+    });
   }
 
   const firstText = input.result.content.find(isTextItem)?.text ?? '';
   const preview = firstText
     ? firstText.slice(0, 240)
     : `[${input.result.content.map((item) => String((item as { type?: unknown }).type ?? 'unknown')).join(', ')}]`;
-  const reference: OutputReferenceContentItem | null = spillUri && manifest
+  const referenceUri = spillUri && manifest ? spillUri : volatileFallback?.uri;
+  const referenceManifest = manifest ?? volatileFallback?.manifest;
+  const reference: OutputReferenceContentItem | null = referenceUri && referenceManifest
     ? {
         kind: 'reference',
-        uri: spillUri,
+        uri: referenceUri,
         preview,
-        byteCount: manifest.byteCount,
-        sha256: manifest.sha256,
-        expiresAt: manifest.expiresAt,
-        ...(manifest.ownerId ? { ownerId: manifest.ownerId } : {}),
-        audience: manifest.audience,
+        byteCount: referenceManifest.byteCount,
+        sha256: referenceManifest.sha256,
+        expiresAt: referenceManifest.expiresAt,
+        ...(referenceManifest.ownerId ? { ownerId: referenceManifest.ownerId } : {}),
+        audience: referenceManifest.audience,
       }
     : null;
+  const volatileRecovery = volatileFallback
+    ? volatileScratchRecovery(volatileFallback, !sourceWasPartial, input.opts.toolName, spillErrorCode, spillErrorSummary)
+    : undefined;
   const evidenceReferences: OutputEvidenceReferenceContentItem[] = reference
     ? [...new Set(evidence.map((entry) => entry.evidenceClass))].map((evidenceClass) => ({
         ...reference,
@@ -1389,7 +1530,7 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
         targetChars: Math.min(input.doorTokens * CHARS_PER_TOKEN_ESTIMATE, 1_200),
         preservePaths: ['ok', 'claimReceipt', 'claimReceipt.committed', 'claimReceipt.workItemId'],
         preserveTopLevelKeys: ['ok', 'claimReceipt'],
-        recovery: schedulerClaimRecovery(schedulerClaim),
+        recovery: volatileRecovery ?? schedulerClaimRecovery(schedulerClaim),
       })
     : undefined;
   if (boundedSchedulerClaim) {
@@ -1406,6 +1547,9 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
           spillFailed: spillPath == null,
           spillError,
           spillErrorCode,
+          ...(volatileFallback
+            ? { volatileFallbackUri: volatileFallback.uri, volatileFallbackExpiresAt: volatileFallback.manifest.expiresAt }
+            : {}),
           originalChars: input.sourceBytes,
           originalBytes: input.sourceBytes,
           nonTextChars: input.nonTextBytes,
@@ -1419,7 +1563,7 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
       },
     } as T;
   }
-  const agentReviewClaim = !reference ? agentReviewClaimReceipt(input.result, input.opts) : undefined;
+  const agentReviewClaim = spillPath == null ? agentReviewClaimReceipt(input.result, input.opts) : undefined;
   const boundedAgentReviewClaim = agentReviewClaim
     ? projectBoundedPayload(agentReviewClaim.body, {
         toolName: 'improvements:agent-review',
@@ -1432,7 +1576,10 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
           'ledgerIdeaId', 'gradeWith.ideaId',
         ],
         preserveTopLevelKeys: ['ok', 'mode', 'claimed', 'ledgerIdeaId', 'gradeWith'],
-        recovery: agentReviewClaimRecovery(agentReviewClaim),
+        recovery: preferVolatileScratchRecovery(
+          volatileRecovery,
+          agentReviewClaimRecovery(agentReviewClaim),
+        ),
       })
     : undefined;
   if (boundedAgentReviewClaim) {
@@ -1462,7 +1609,7 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
       },
     } as T;
   }
-  const coordSendReceipt = !reference &&
+  const coordSendReceipt = spillPath == null &&
     (input.opts.toolName === 'coord:send' ||
       (input.opts.toolName === 'tools:invoke' && input.opts.nestedTargetToolName === 'coord:send'))
     ? [input.result.structuredContent, ...input.result.content.filter(isTextItem).map((item) => {
@@ -1483,18 +1630,23 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
         targetChars: input.doorTokens * CHARS_PER_TOKEN_ESTIMATE,
         preservePaths: COORD_SEND_DELIVERY_PRESERVE_PATHS,
         preserveTopLevelKeys: ['ok', 'partial', 'counts', 'deliveryFailureWarning'],
-        recovery: {
-          cursor: {
-            kind: 'unavailable',
-            tool: 'coord:send',
-            args: {},
-            reason: 'spill-write-failed',
-            ...(spillErrorCode && spillErrorCode !== 'unknown error' ? { errorCode: spillErrorCode } : {}),
+        recovery: preferVolatileScratchRecovery(
+          volatileRecovery,
+          {
+            cursor: {
+              kind: 'unavailable',
+              tool: 'coord:send',
+              args: {},
+              reason: 'spill-write-failed',
+              ...(spillErrorCode && spillErrorCode !== 'unknown error' ? { errorCode: spillErrorCode } : {}),
+            },
+            next:
+              'The coord:send delivery receipt is preserved here, but oversized message details could not be saved. ' +
+              'The delivery outcome is unknown; do NOT repeat the send until checking coordination state. ' +
+              COORD_SEND_RECEIPT_RECOVERY,
           },
-          next:
-            'The coord:send delivery receipt is preserved here, but oversized message details could not be saved. ' +
-            COORD_SEND_RECEIPT_RECOVERY,
-        },
+          COORD_SEND_RECEIPT_RECOVERY,
+        ),
       })
     : undefined;
   if (boundedCoordSendReceipt) {
@@ -1524,7 +1676,7 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
       },
     } as T;
   }
-  const completionReceipt = !reference && isWorkItemsCompleteCall(input.opts)
+  const completionReceipt = spillPath == null && isWorkItemsCompleteCall(input.opts)
     ? workItemsCompleteReceipt(input.result)
     : undefined;
   const boundedCompletionReceipt = completionReceipt
@@ -1536,16 +1688,21 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
         targetChars: Math.min(input.doorTokens * CHARS_PER_TOKEN_ESTIMATE, 1_200),
         preservePaths: WORK_ITEMS_COMPLETE_RECEIPT_PRESERVE_PATHS,
         preserveTopLevelKeys: ['ok', 'counts', 'results'],
-        recovery: {
-          cursor: {
-            kind: 'unavailable',
-            tool: 'work_items:complete',
-            args: {},
-            reason: 'spill-write-failed',
-            ...(spillErrorCode && spillErrorCode !== 'unknown error' ? { errorCode: spillErrorCode } : {}),
+        recovery: preferVolatileScratchRecovery(
+          volatileRecovery,
+          {
+            cursor: {
+              kind: 'unavailable',
+              tool: 'work_items:complete',
+              args: {},
+              reason: 'spill-write-failed',
+              ...(spillErrorCode && spillErrorCode !== 'unknown error' ? { errorCode: spillErrorCode } : {}),
+            },
+            next: WORK_ITEMS_COMPLETE_SPILL_RECOVERY,
           },
-          next: WORK_ITEMS_COMPLETE_SPILL_RECOVERY,
-        },
+          'The complete work_items:complete response is available in the volatile page above. ' +
+            'Do NOT repeat this call; read work_items:get to confirm current item state before follow-up.',
+        ),
       })
     : undefined;
   if (boundedCompletionReceipt) {
@@ -1575,7 +1732,7 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
       },
     } as T;
   }
-  const setBlockerReceipt = !reference ? workItemsSetBlockerReceipt(input.result, input.opts) : undefined;
+  const setBlockerReceipt = spillPath == null ? workItemsSetBlockerReceipt(input.result, input.opts) : undefined;
   const boundedSetBlockerReceipt = setBlockerReceipt
     ? projectBoundedPayload(setBlockerReceipt.body, {
         toolName: 'work_items:set_blocker',
@@ -1585,7 +1742,10 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
         targetChars: Math.min(input.doorTokens * CHARS_PER_TOKEN_ESTIMATE, 1_200),
         preservePaths: WORK_ITEMS_SET_BLOCKER_RECEIPT_PRESERVE_PATHS,
         preserveTopLevelKeys: ['ok', 'counts', 'results'],
-        recovery: workItemsSetBlockerRecovery(setBlockerReceipt),
+        recovery: preferVolatileScratchRecovery(
+          volatileRecovery,
+          workItemsSetBlockerRecovery(setBlockerReceipt),
+        ),
       })
     : undefined;
   if (boundedSetBlockerReceipt) {
@@ -1615,7 +1775,7 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
       },
     } as T;
   }
-  const scorecardReceipt = !reference ? scorecardsEmitReceipt(input.result, input.opts) : undefined;
+  const scorecardReceipt = spillPath == null ? scorecardsEmitReceipt(input.result, input.opts) : undefined;
   const boundedScorecardReceipt = scorecardReceipt
     ? projectBoundedPayload(scorecardReceipt, {
         toolName: 'scorecards:emit',
@@ -1625,16 +1785,21 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
         targetChars: Math.min(input.doorTokens * CHARS_PER_TOKEN_ESTIMATE, 1_200),
         preservePaths: SCORECARDS_EMIT_SPILL_PRESERVE_PATHS,
         preserveTopLevelKeys: ['ok', 'committed', 'completionReceipt', 'created', 'issueId', 'previousIssueId', 'canonicalRatings'],
-        recovery: {
-          cursor: {
-            kind: 'unavailable',
-            tool: 'scorecards:emit',
-            args: {},
-            reason: 'spill-write-failed',
-            ...(spillErrorCode && spillErrorCode !== 'unknown error' ? { errorCode: spillErrorCode } : {}),
-          },
+        recovery: preferVolatileScratchRecovery(
+          volatileRecovery,
+          {
+            cursor: {
+              kind: 'unavailable',
+              tool: 'scorecards:emit',
+              args: {},
+              reason: 'spill-write-failed',
+              ...(spillErrorCode && spillErrorCode !== 'unknown error' ? { errorCode: spillErrorCode } : {}),
+            },
           next: SCORECARDS_EMIT_SPILL_RECOVERY,
-        },
+          },
+          'The full scorecards:emit response is available in the volatile page above. ' +
+            'Do NOT repeat this non-idempotent emit; inspect completionReceipt and the preserved commit status before follow-up.',
+        ),
       })
     : undefined;
   if (boundedScorecardReceipt) {
@@ -1675,13 +1840,19 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
             reason: input.reason,
             spilledItems: input.result.content.length,
             recoverable: !sourceWasPartial,
-            note: spillRecoveryNote(input.reason, {
-              toolName: input.opts.toolName,
-              nestedTargetToolName: input.opts.nestedTargetToolName,
-              upstreamProjection: Boolean(upstreamProjection?.truncated),
-              innerTruncationMarkers,
-              aggregateMode: input.aggregate?.mode,
-            }),
+            note: volatileFallback
+              ? volatileScratchRecoveryForTool(
+                  volatileRecovery!,
+                  input.opts.toolName,
+                  input.opts.nestedTargetToolName,
+                ).next
+              : spillRecoveryNote(input.reason, {
+                  toolName: input.opts.toolName,
+                  nestedTargetToolName: input.opts.nestedTargetToolName,
+                  upstreamProjection: Boolean(upstreamProjection?.truncated),
+                  innerTruncationMarkers,
+                  aggregateMode: input.aggregate?.mode,
+                }),
           },
         },
         { summaryBudgetChars: 0 },
@@ -1732,6 +1903,9 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
         spillFailed: spillPath == null,
         spillError,
         spillErrorCode,
+        ...(volatileFallback
+          ? { volatileFallbackUri: volatileFallback.uri, volatileFallbackExpiresAt: volatileFallback.manifest.expiresAt }
+          : {}),
         originalChars: input.sourceBytes,
         originalBytes: input.sourceBytes,
         nonTextChars: input.nonTextBytes,
@@ -2281,24 +2455,15 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
     let spillErrorCode: string | null = null;
     let spillErrorSummary: string | null = null;
     let spillManifest: ScratchReferenceManifest | null = null;
+    let volatileFallback: NonNullable<ReturnType<typeof storeVolatileScratchReference>> | null = null;
     const noteSpillFailure = (err: unknown): void => {
-      spillError = err instanceof Error ? err.message : String(err);
-      spillErrorCode = (err as NodeJS.ErrnoException | undefined)?.code ?? 'unknown error';
-      if (err instanceof Error) {
-        let message = err.message.replace(/[\r\n\t]+/g, ' ').trim();
-        // The complete message remains on private `_meta`; model-facing recovery
-        // text may include the useful reason, but never the scratch filesystem path.
-        const scratchPaths = [
-          ...(fsPath ? [fsPath, dirname(fsPath)] : []),
-          process.env.PAPERCUSP_SCRATCH_ROOT,
-        ].filter((path): path is string => Boolean(path));
-        for (const path of scratchPaths.sort((a, b) => b.length - a.length)) {
-          if (path) message = message.replaceAll(path, '<scratch path>');
-        }
-        spillErrorSummary = `${err.name || 'Error'}${message ? `: ${message}` : ''}`.slice(0, 240);
-      } else {
-        spillErrorSummary = err == null ? 'empty rejection' : `${typeof err} rejection`;
-      }
+      const details = spillFailureDetails(err, [
+        ...(fsPath ? [fsPath, dirname(fsPath)] : []),
+        process.env.PAPERCUSP_SCRATCH_ROOT,
+      ]);
+      spillError = details.error;
+      spillErrorCode = details.code;
+      spillErrorSummary = details.summary;
       spillManifest = null;
       fsPath = null;
       uri = null;
@@ -2403,9 +2568,20 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
       } catch (err) {
         // WI-36047: the write failed — fall through to the CAP anyway, and null
         // the path so no footer, no `_meta`, and no telemetry backfill advertises
-        // a spill file that is not there. Truncate-without-recovery, never no-cap.
+        // a spill file that is not there. The bounded volatile cache below is a
+        // short-lived recovery path; when it cannot retain the body we still cap.
         noteSpillFailure(err);
       }
+    }
+    if (spillError !== null) {
+      volatileFallback = cacheFailedSpill({
+        opts,
+        payload: spillPrefix + spillBodyText,
+        mediaType: 'text/plain',
+        content: contentMetadata(items),
+        evidence: spillEvidence,
+        ...(bodyShape.json != null ? { bodyOffsetInPayload: Buffer.byteLength(spillPrefix, 'utf8') } : {}),
+      });
     }
 
     const baseResultDoorMeta = {
@@ -2423,6 +2599,9 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
        *  model-facing footer, which gets `spillErrorCode` instead). */
       spillError,
       spillErrorCode,
+      ...(volatileFallback
+        ? { volatileFallbackUri: volatileFallback.uri, volatileFallbackExpiresAt: volatileFallback.manifest.expiresAt }
+        : {}),
       originalChars: totalChars,
       /** Exact UTF-8 bytes as they reached the door. Unlike originalChars this
        * remains comparable to intermediateBytes for non-ASCII payloads. */
@@ -2492,12 +2671,18 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
     const bodyOffsetInFile = spillManifest == null
       ? null
       : scratchReferencePayloadByteOffset(spillManifest) + spillPrefixBytes;
+    const bodyComplete = !upstreamProjection?.truncated && innerTruncationMarkers.length === 0;
+    const volatileRecovery = volatileFallback
+      ? volatileScratchRecovery(volatileFallback, bodyComplete, opts.toolName, spillErrorCode, spillErrorSummary)
+      : undefined;
     const recovery = schedulerClaim
-      ? schedulerClaimRecovery(schedulerClaim)
+      ? preferVolatileScratchRecovery(volatileRecovery, schedulerClaimRecovery(schedulerClaim))
       : agentReviewClaim
-        ? agentReviewClaimRecovery(agentReviewClaim)
+        ? preferVolatileScratchRecovery(volatileRecovery, agentReviewClaimRecovery(agentReviewClaim))
       : setBlockerReceipt
-        ? workItemsSetBlockerRecovery(setBlockerReceipt)
+        ? preferVolatileScratchRecovery(volatileRecovery, workItemsSetBlockerRecovery(setBlockerReceipt))
+      : volatileRecovery
+        ? volatileScratchRecoveryForTool(volatileRecovery, opts.toolName, opts.nestedTargetToolName)
       : fsPath != null && uri != null
         ? {
             cursor: {
