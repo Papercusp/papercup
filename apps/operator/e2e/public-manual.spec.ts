@@ -27,6 +27,19 @@ for (const [slug, title] of guides) {
   });
 }
 
+test('account guide separates portal identity, model accounts and organization access', async ({ page }) => {
+  await page.goto('/docs/accounts-and-billing');
+  const guide = page.getByRole('main');
+  await expect(guide.getByRole('heading', { level: 1, name: 'Accounts and billing' })).toBeVisible();
+  await expect(guide).toContainText('Portal account');
+  await expect(guide).toContainText('navigation rail');
+  await expect(guide).toContainText('Status');
+  await expect(guide).toContainText(/Accounts sidebar[\s\S]*model accounts/);
+  await expect(guide).toContainText('does not show an organization name or selector');
+  await expect(guide).toContainText(/administrator to confirm[\s\S]*membership/);
+  await expect(guide).not.toContainText(/Open the portal.s Accounts destination to check the signed-in identity/);
+});
+
 test('a new guide is present in the actual Pagefind search index', async ({ page }) => {
   await page.goto('/docs');
   await page.getByRole('button', { name: 'Search', exact: true }).click();
