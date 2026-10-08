@@ -7,6 +7,35 @@ import { PassThrough } from 'node:stream';
 import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { transformSync } from 'esbuild';
+
+it('records a real node:test child when the focused router starts without a TS loader', () => {
+  const router = new URL('../../../../scripts/test-files.mjs', import.meta.url).href;
+  const child = spawnSync(process.execPath, ['--input-type=module', '-e', `
+    import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+    import { tmpdir } from 'node:os';
+    import { join } from 'node:path';
+    import { spawnSync } from 'node:child_process';
+    const { loadNodeTestLedger } = await import(${JSON.stringify(router)});
+    const { beginNodeTestLedger } = await loadNodeTestLedger();
+    const dir = mkdtempSync(join(tmpdir(), 'plain-node-ledger-'));
+    try {
+      writeFileSync(join(dir, 'fx.test.mjs'), "import { test } from 'node:test'; test('recorded case', () => {});");
+      const rows = [];
+      const session = await beginNodeTestLedger({ repoRoot: dir,
+        readSnapshot: async () => ({ commit: 'feedface00', porcelain: '' }),
+        writeRows: async batch => { rows.push(...batch); } });
+      const run = spawnSync(process.execPath, ['--test', ...session.reporterArgs, 'fx.test.mjs'],
+        { cwd: dir, encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: '' } });
+      if (run.status !== 0) throw new Error(run.stderr || run.stdout);
+      const result = await session.record();
+      console.log(JSON.stringify({ recorded: result.recorded, reason: result.reason,
+        status: rows[0]?.status, cases: rows[0]?.executionDetails?.passedCaseTitles }));
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  `], { encoding: 'utf8', timeout: 30_000, env: { ...process.env, NODE_OPTIONS: '' } });
+  expect(child.status, child.stderr).toBe(0);
+  expect(JSON.parse(child.stdout.trim())).toMatchObject({ recorded: 1, reason: null,
+    status: 'pass', cases: ['recorded case'] });
+});
 // The production entrypoint deliberately stays executable by plain Node.
 import {
   aggregateGroupResults,

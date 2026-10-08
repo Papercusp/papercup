@@ -39,6 +39,7 @@ import {
   createGovernedProcessDemandSampler,
   governedProcessIdempotencyKey,
   isRetryableAdmissionFailure,
+  loadGovernedExecutionModule,
   runGovernedTestProcess,
 } from './lib/governed-test-process.mjs';
 import {
@@ -66,6 +67,14 @@ export { testsExecutedFrom, testsSkippedFrom };
 export function unscopedFocusedRunWarning(env = process.env) {
   if (env.PAPERCUSP_TEST_RUN_HARNESS?.trim()) return null;
   return 'Focused runner has no explicit PAPERCUSP_TEST_RUN_HARNESS. Test-ledger scope is unverified here; check the authoritative testing:runs row before binding proof, or set PAPERCUSP_TEST_RUN_HARNESS to the target harness (papercusp for this repo).';
+}
+
+/** Node's type stripping does not resolve the reporter's TypeScript .js imports. */
+export async function loadNodeTestLedger() {
+  // Reuse the runner's process-lifetime tsx registration before loading the
+  // recorder, rather than waiting until governed admission starts the child.
+  await loadGovernedExecutionModule();
+  return import('../libs/test-config/src/node-test-ledger.ts');
 }
 
 /**
@@ -2937,7 +2946,7 @@ export async function main(
       let nodeLedger = null;
       if (!dry && !vitestArgs.some((arg) => String(arg).startsWith('--test-reporter'))) {
         try {
-          const { beginNodeTestLedger } = await import('../libs/test-config/src/node-test-ledger.ts');
+          const { beginNodeTestLedger } = await loadNodeTestLedger();
           // AWAITED: the before-snapshot must settle before the spawnSync below blocks the loop.
           nodeLedger = await beginNodeTestLedger({ repoRoot: REPO_ROOT });
         } catch (error) {
