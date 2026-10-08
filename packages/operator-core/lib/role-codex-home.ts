@@ -59,7 +59,8 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
+import { parse as parseToml } from '@iarna/toml';
 import {
   codexHomeForSessionKey,
   codexSqliteHomeForSessionKey,
@@ -211,6 +212,20 @@ function freshCodexSqliteHome(sessionKey: string | number): string {
   const sqliteHome = codexSqliteHomeForSessionKey(sessionKey);
   rmSync(sqliteHome, { recursive: true, force: true });
   mkdirSync(sqliteHome, { recursive: true, mode: 0o700 });
+  return sqliteHome;
+}
+
+/** A resume must retain its recorded state location even when the serving
+ * operator has a different TMPDIR or SQLite-root override from the launch. */
+function preservedCodexSqliteHome(codexHome: string, sessionKey: string | number): string {
+  const configPath = join(codexHome, 'config.toml');
+  if (!existsSync(configPath)) return codexSqliteHomeForSessionKey(sessionKey);
+  const text = readFileSync(configPath, 'utf8');
+  if (!/^sqlite_home\s*=/m.test(text)) return codexSqliteHomeForSessionKey(sessionKey);
+  const sqliteHome = parseToml(text).sqlite_home;
+  if (typeof sqliteHome !== 'string' || !isAbsolute(sqliteHome) || sqliteHome.includes('\0')) {
+    throw new Error('Cannot repair Codex home: recorded sqlite_home must be an absolute path');
+  }
   return sqliteHome;
 }
 
@@ -1197,7 +1212,7 @@ export function writeRoleCodexHome(opts: {
     ? codexHomeForSessionKey(opts.sessionKey)
     : freshCodexHome(codexHomeForSessionKey(opts.sessionKey));
   const sqliteHome = opts.preserveExisting
-    ? codexSqliteHomeForSessionKey(opts.sessionKey)
+    ? preservedCodexSqliteHome(codexHome, opts.sessionKey)
     : freshCodexSqliteHome(opts.sessionKey);
   if (opts.preserveExisting) {
     mkdirSync(codexHome, { recursive: true, mode: 0o700 });
@@ -1477,7 +1492,7 @@ export function ensureSuCodexHomeConfig(opts: SuCodexConfigInput & {
   reason?: 'no-home';
 } {
   const codexHome = codexHomeForSessionKey(opts.sessionKey);
-  const sqliteHome = codexSqliteHomeForSessionKey(opts.sessionKey);
+  const sqliteHome = preservedCodexSqliteHome(codexHome, opts.sessionKey);
   const configPath = join(codexHome, 'config.toml');
   if (!existsSync(codexHome)) {
     if (!opts.recoverMissingHome || !opts.promptText?.trim()) {

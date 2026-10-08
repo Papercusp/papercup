@@ -136,12 +136,31 @@ describe('writeRoleCodexHome', () => {
     const database = join(first.sqliteHome, 'state.sqlite');
     writeFileSync(transcript, 'native history');
     writeFileSync(database, 'native state');
+    const replacementRoot = join(fakeHome, 'different-serving-tmp-root');
+    process.env.PAPERCUSP_CODEX_SQLITE_HOMES_DIR = replacementRoot;
     const repaired = writer({ ...input, preserveExisting: true, promptText: 'CURRENT RESEARCH ROLE' });
     expect(readFileSync(transcript, 'utf8')).toBe('native history');
     expect(readFileSync(database, 'utf8')).toBe('native state');
+    expect(repaired.sqliteHome).toBe(first.sqliteHome);
+    expect(parseToml(readFileSync(repaired.configPath, 'utf8')).sqlite_home).toBe(first.sqliteHome);
+    expect(existsSync(replacementRoot)).toBe(false);
     expect(readFileSync(repaired.agentsPath, 'utf8')).toContain('CURRENT RESEARCH ROLE');
     expect(readFileSync(repaired.configPath, 'utf8')).toContain('[mcp_servers.papercusp]');
     expect(readFileSync(repaired.configPath, 'utf8')).not.toContain('[mcp_servers.papercusp-su]');
+  });
+
+  it('preserves an escaped absolute SQLite path and refuses a relative recorded path', async () => {
+    process.env.PAPERCUSP_CODEX_SQLITE_HOMES_DIR = join(fakeHome, 'state with "quotes"');
+    const writer = await load();
+    const input = { sessionKey: 'escaped-state', mcpUrl: 'http://x/?role=researcher&sig=1', promptText: 'ROLE' };
+    const first = writer(input);
+    process.env.PAPERCUSP_CODEX_SQLITE_HOMES_DIR = join(fakeHome, 'new-state');
+    expect(writer({ ...input, preserveExisting: true }).sqliteHome).toBe(first.sqliteHome);
+    const invalid = readFileSync(first.configPath, 'utf8').replace(/^sqlite_home\s*=.*$/m,
+      'sqlite_home = "relative-state"');
+    writeFileSync(first.configPath, invalid);
+    expect(() => writer({ ...input, preserveExisting: true })).toThrow(/recorded sqlite_home must be an absolute path/);
+    expect(readFileSync(first.configPath, 'utf8')).toBe(invalid);
   });
 
   it('prepends the exact 1M/900k root keys for an extended-window role model', async () => {
@@ -950,6 +969,22 @@ describe('writeSuCodexHome', () => {
     expect(readFileSync(join(repaired.codexHome, 'AGENTS.md'), 'utf8'))
       .toContain('RESTORED CANONICAL SU RULES');
     expect(readFileSync(repaired.configPath, 'utf8')).toContain('client=su-gc-removed-home');
+  });
+
+  it('keeps an SU session on its native SQLite companion after the serving root changes', async () => {
+    const { writeSuCodexHome, ensureSuCodexHomeConfig } = await loadMod();
+    const input = { sessionKey: 'stable-sqlite', mcpUrl: 'http://x/api/mcp?superuser=1',
+      sid: 'su-stable-sqlite', promptText: 'CURRENT SU RULES' };
+    const first = writeSuCodexHome(input);
+    const database = join(first.sqliteHome, 'state_5.sqlite');
+    writeFileSync(database, 'native conversation state');
+    const replacementRoot = join(fakeHome, 'different-serving-root');
+    process.env.PAPERCUSP_CODEX_SQLITE_HOMES_DIR = replacementRoot;
+    const repaired = ensureSuCodexHomeConfig(input);
+    expect(repaired.sqliteHome).toBe(first.sqliteHome);
+    expect(parseToml(readFileSync(repaired.configPath, 'utf8')).sqlite_home).toBe(first.sqliteHome);
+    expect(readFileSync(database, 'utf8')).toBe('native conversation state');
+    expect(existsSync(replacementRoot)).toBe(false);
   });
 
   it('rekeys a prepared home to the durable adv-session id without rebuilding or overwriting', async () => {
