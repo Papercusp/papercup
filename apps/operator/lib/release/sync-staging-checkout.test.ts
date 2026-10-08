@@ -32,7 +32,7 @@
  * shipped logic, never a copy) and drive it under controlled inputs.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, realpathSync, symlinkSync, existsSync, readdirSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, realpathSync, symlinkSync, existsSync, readdirSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn, spawnSync, execFileSync } from 'node:child_process';
@@ -408,6 +408,50 @@ describe('sync-staging-checkout.sh forward-compat review-date alarm (WI-10003599
   });
 });
 
+describe('staging runtime environment inheritance', () => {
+  let root: string;
+  beforeEach(() => { root = mkdtempSync(join(tmpdir(), 'staging-env-')); });
+  afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+  function copyEnvironment(sources: Array<string | null>): string | null {
+    const [current, legacy, canonical] = ['current', 'legacy', 'canonical'].map((name, i) => {
+      const dir = join(root, name);
+      mkdirSync(join(dir, 'apps/operator'), { recursive: true });
+      if (sources[i] !== null) writeFileSync(join(dir, 'apps/operator/.env.local'), sources[i]!, { mode: 0o600 });
+      return dir;
+    });
+    const candidate = join(root, 'candidate');
+    mkdirSync(join(candidate, 'apps/operator'), { recursive: true });
+    const r = runFn(['copy_staging_runtime_environment'],
+      'log() { printf "%s\\n" "$*"; }\ncopy_staging_runtime_environment "$CANDIDATE"', {
+        env: { STAGING_ROOT: current, LEGACY_STAGING_ROOT: legacy, INTEGRATION_ROOT: canonical, CANDIDATE: candidate },
+      });
+    expect(r.status).toBe(0);
+    const copied = join(candidate, 'apps/operator/.env.local');
+    if (!existsSync(copied)) return null;
+    expect(statSync(copied).mode & 0o777).toBe(0o600);
+    return readFileSync(copied, 'utf8');
+  }
+
+  it('preserves the current staging environment over legacy and canonical settings', () => {
+    expect(copyEnvironment(['DATABASE_URL=current\n', 'DATABASE_URL=legacy\n', 'DATABASE_URL=canonical\n']))
+      .toBe('DATABASE_URL=current\n');
+  });
+
+  it('retains the legacy environment during the first generation cutover', () => {
+    expect(copyEnvironment([null, 'DATABASE_URL=legacy\n', 'DATABASE_URL=canonical\n']))
+      .toBe('DATABASE_URL=legacy\n');
+  });
+
+  it('recovers the canonical DB pin when published staging has no runtime file', () => {
+    expect(copyEnvironment([null, null, 'DATABASE_URL=canonical\n'])).toBe('DATABASE_URL=canonical\n');
+  });
+
+  it('leaves explicitly inherited runtime configuration available when no file exists', () => {
+    expect(copyEnvironment([null, null, null])).toBeNull();
+  });
+});
+
 describe('staging schema preparation before cutover (EI-24180022773715880)', () => {
   let root: string;
   beforeEach(() => {
@@ -420,6 +464,10 @@ describe('staging schema preparation before cutover (EI-24180022773715880)', () 
     writeFileSync(join(root, 'packages/operator-core/lib/db-boot-migrate.ts'), `
       import { appendFileSync, watch, existsSync } from 'node:fs';
       export async function applyPendingMigrationsNow(options) {
+        if (process.env.EXPECT_DATABASE_URL) {
+          if (process.env.DATABASE_URL !== process.env.EXPECT_DATABASE_URL) throw new Error('wrong preflight database');
+          if (process.env.PAPERCUSP_INTEGRATION_ROOT !== process.cwd()) throw new Error('wrong preflight source root');
+        }
         appendFileSync(process.env.TRACE_FILE, JSON.stringify(options) + '\\n');
         if (process.env.FIXTURE_RESULT === 'wait') {
           await new Promise(resolve => {
@@ -436,6 +484,33 @@ describe('staging schema preparation before cutover (EI-24180022773715880)', () 
     `);
   });
   afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+  it('preflights the candidate DB pin instead of an inherited discovery target', () => {
+    writeFileSync(join(root, 'apps/operator/.env.local'),
+      'DATABASE_URL=postgresql://fixture/candidate\nPAPERCUSP_INTEGRATION_ROOT=/stale/source\n');
+    const r = runFn(['prepare_staging_schema'],
+      'log() { printf "%s\\n" "$*"; }\nprepare_staging_schema && echo restart-requested', {
+        env: { STAGING_ROOT: root, UNIT: 'fixture.service', TRACE_FILE: join(root, 'trace'),
+          DATABASE_URL: 'postgresql://fixture/inherited', EXPECT_DATABASE_URL: 'postgresql://fixture/candidate',
+          FIXTURE_RESULT: '{"applied":0,"failed":[]}' },
+      });
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain('restart-requested');
+    expect(JSON.parse(readFileSync(join(root, 'trace'), 'utf8')).sqlDir).toBe(join(root, 'libs/papercusp/libs/db/sql'));
+  });
+
+  it('refuses schema preparation when the candidate environment cannot be loaded', () => {
+    writeFileSync(join(root, 'apps/operator/.env.local'), 'return 1\n');
+    const trace = join(root, 'trace');
+    const r = runFn(['prepare_staging_schema'],
+      'log() { printf "%s\\n" "$*"; }\nprepare_staging_schema && echo restart-requested', {
+        env: { STAGING_ROOT: root, UNIT: 'fixture.service', TRACE_FILE: trace,
+          FIXTURE_RESULT: '{"applied":0,"failed":[]}' },
+      });
+    expect(r.status).toBe(1);
+    expect(existsSync(trace)).toBe(false);
+    expect(r.stdout).not.toContain('restart-requested');
+  });
 
   it.each(['null', '{"applied":0,"failed":[{"file":"pending.sql","error":"guard refused"}]}', 'throw'])(
     'never requests restart when guarded preparation returns %s', (result) => {
@@ -1426,9 +1501,10 @@ describe('sync-staging-checkout.sh coordinated restart identity (EI-240774465417
 
 describe('sync-staging-checkout.sh completed-phase startup budget (WI-10006606)', () => {
   function prepareWithOutput(output: string, status = 0) {
-    return runFn(['staging_sync_checkpoint', 'prepare_staging_candidate'], [
+    return runFn(['staging_sync_checkpoint', 'copy_staging_runtime_environment', 'prepare_staging_candidate'], [
       'INTEGRATION_ROOT=/unused-staging-test',
       'STAGING_ROOT=/absent-staging-test',
+      'LEGACY_STAGING_ROOT=/absent-legacy-staging-test',
       'create_staging_candidate() { STAGING_CANDIDATE_ROOT=/unused-candidate; }',
       'log() { printf "%s\\n" "$*"; }',
       'timeout() { printf "BOUND:%s\\n" "$*"; shift 2; "$@"; }',
