@@ -55,6 +55,12 @@ export const RETENTION_MS = 24 * 60 * 60 * 1000;
 export const WORKSPACE_QUOTA_BYTES = 5 * 1024 * 1024 * 1024;
 
 /**
+ * Reserve 256 MiB below the hard quota so the existing background usage refresh can
+ * reclaim old runs before a result spill has to wait for a request-time full-tree scan.
+ */
+export const SCRATCH_QUOTA_RECOVERY_HEADROOM_BYTES = 256 * 1024 * 1024;
+
+/**
  * GC sweep schedule — the ONE source for it. `dbos/periodic-workflows.ts` registers the
  * `scratchGc` DBOS workflow with exactly this crontab (6-field, seconds first: daily 03:00
  * host-local). It replaces a hand-maintained `GC_INTERVAL_MS = 1h` that nothing read: the
@@ -429,6 +435,7 @@ async function evictWorkspaceQuota(
   targetBytes: () => number,
   reconcileReservations = false,
   diagnostics?: ScratchQuotaRecoveryDiagnostics,
+  now: () => number = Date.now,
 ): Promise<{
   used: number; evictions: number; bytes: number;
 }> {
@@ -504,7 +511,7 @@ async function evictWorkspaceQuota(
       if (!write.reserved || evictedRuns.some((run) => write.filePath.startsWith(run + sep))) return sum;
       return sum + Math.max(0, write.bytes - (observedWriterBytes.get(write.filePath) ?? 0));
     }, 0);
-    entry.measuredAt = Date.now();
+    entry.measuredAt = now();
     entry.refreshDeferred = overlappingWrites;
   } else if (overlappingWrites) {
     // The size walk may have included only part of an in-flight write. Adjust the prior
@@ -513,7 +520,7 @@ async function evictWorkspaceQuota(
     entry.refreshDeferred = true;
   } else {
     entry.bytes = used;
-    entry.measuredAt = Date.now();
+    entry.measuredAt = now();
     entry.refreshDeferred = false;
   }
   scheduleDeferredUsageRefresh(workspaceId, entry);
@@ -630,25 +637,22 @@ async function treeStatsAsync(dir: string): Promise<{ bytes: number; newestMtime
 
 /**
  * Re-measure a workspace's scratch usage in the background and replace the cached total.
- * Concurrent callers share the one in-flight measurement. Exported for tests and for any host
- * that wants to warm the cache.
+ * When the tree approaches the hard quota, this same walk also evicts oldest runs to restore
+ * headroom. Concurrent callers share the one in-flight measurement. Exported for tests and for
+ * any host that wants to warm the cache.
  */
 export function refreshScratchUsage(workspaceId: string, now: () => number = Date.now): Promise<void> {
   const entry = usageEntry(workspaceId);
   if (entry.refreshing) return entry.refreshing;
-  const writeGeneration = entry.writeGeneration;
   const run = (async () => {
     try {
-      const measured = await sizeOfDirAsync(scratchRootForWorkspace(workspaceId));
-      if (entry.writeGeneration !== writeGeneration || [...entry.writes.values()].some((write) => write.reserved)) {
-        // The walk is not a consistent snapshot if a deferred write overlapped it. Keep the
-        // reservation-based count and take one clean measurement after the writers settle.
-        entry.refreshDeferred = true;
-      } else {
-        entry.bytes = measured;
-        entry.measuredAt = now();
-        entry.refreshDeferred = false;
-      }
+      await evictWorkspaceQuota(
+        workspaceId,
+        () => WORKSPACE_QUOTA_BYTES - SCRATCH_QUOTA_RECOVERY_HEADROOM_BYTES,
+        false,
+        undefined,
+        now,
+      );
     } finally {
       entry.refreshing = null;
       scheduleDeferredUsageRefresh(workspaceId, entry);
@@ -871,7 +875,8 @@ export async function writeWithScratchQuota(
             const diagnostics = newScratchQuotaRecoveryDiagnostics();
             activeRecoveryDiagnostics = diagnostics;
             try {
-              await evictWorkspaceQuota(opts.workspaceId, () => Math.max(0, WORKSPACE_QUOTA_BYTES -
+              await evictWorkspaceQuota(opts.workspaceId, () => Math.max(0,
+                WORKSPACE_QUOTA_BYTES - SCRATCH_QUOTA_RECOVERY_HEADROOM_BYTES -
                 [...entry.writes.values()].reduce((sum, request) => sum + request.bytes, 0)), true, diagnostics);
             } finally {
               timings.quotaRecoveryDiagnostics = { ...diagnostics };
