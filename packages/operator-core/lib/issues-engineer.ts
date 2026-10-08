@@ -4074,6 +4074,11 @@ export async function mergeIssuePayload(
   const ws = await resolveIssueWorkspace(id);
   const physicalSlug = await resolveIssuePhysicalSlug(sql, ws, id, opts.harnessSlug);
   if (physicalSlug === null) return null;
+  // WI-10007310: federation can label this workspace's own authored rows remote.
+  // Reuse the lifecycle writer's identity-checked repair before the local-only
+  // payload write. Its WHERE clause leaves genuine foreign publishers untouched;
+  // pin the resolved physical row so a same-id harness twin is never repaired.
+  await selfHealOwnNodeOriginIfStranded(ws, id, physicalSlug);
   // The claim-subject baseline is server-owned identity, not caller payload.
   // Coalescing and other bookkeeping legitimately merge arbitrary top-level
   // keys, but must never forge, replace, or remove the baseline that protects
