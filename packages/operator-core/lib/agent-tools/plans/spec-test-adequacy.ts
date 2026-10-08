@@ -1554,7 +1554,9 @@ function appendRatingRerunProbes(
       ...rating,
       evidence:
         `${rating.evidence} Replay the shared scorecard rerunRecipe (${rerunRecipe.evaluator}) once with its stored args; ` +
-        `inspect rows[0].ratings[${JSON.stringify(criterion)}].`,
+        `inspect rows[0].ratings[${JSON.stringify(criterion)}] against the current evidence state. ` +
+        'This replay remeasures currentness at replay time, so freshness-dependent ratings may differ from the emitted card after evidence changes. ' +
+        'It is not a historical as-of replay; grading-integrity audits reconstruct the emitted card using its creation-time snapshot.',
     };
   }
 }

@@ -823,7 +823,9 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     for (const criterion of ADEQUACY_CRITERIA) {
       expect(result.ratings[criterion].evidence).toContain(
         `Replay the shared scorecard rerunRecipe (plans:evaluate-spec-test-adequacy) once with its stored args; ` +
-          `inspect rows[0].ratings[${JSON.stringify(criterion)}].`,
+          `inspect rows[0].ratings[${JSON.stringify(criterion)}] against the current evidence state. ` +
+          'This replay remeasures currentness at replay time, so freshness-dependent ratings may differ from the emitted card after evidence changes. ' +
+          'It is not a historical as-of replay; grading-integrity audits reconstruct the emitted card using its creation-time snapshot.',
       );
       expect(result.ratings[criterion].evidence).not.toContain('with args=');
     }
@@ -3119,7 +3121,9 @@ describe('rerunRecipe is submittable to its own evaluator', () => {
     expect(evaluatorArgsSchema.safeParse(recipe.args).success).toBe(true);
     expect(recipe.args).toEqual(crossGenerationAuditProbeArgs(recipe));
     expect(evidenceText).toContain(
-      'Replay the shared scorecard rerunRecipe (plans:evaluate-spec-test-adequacy) once with its stored args; inspect rows[0].ratings["traceability"].',
+      'Replay the shared scorecard rerunRecipe (plans:evaluate-spec-test-adequacy) once with its stored args; inspect rows[0].ratings["traceability"] against the current evidence state. ' +
+        'This replay remeasures currentness at replay time, so freshness-dependent ratings may differ from the emitted card after evidence changes. ' +
+        'It is not a historical as-of replay; grading-integrity audits reconstruct the emitted card using its creation-time snapshot.',
     );
     expect(evidenceText).not.toContain('with args=');
     expect(Object.values(result.ratings).every((rating) => !rating.evidence.includes('with args='))).toBe(true);
