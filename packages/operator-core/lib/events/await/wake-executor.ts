@@ -170,7 +170,16 @@ export type WakeTurnTagger = (args: Parameters<typeof tagTurnForInjection>[0]) =
 // its provenance ledger entry and prefixed the envelope. The brand lets the
 // source guard preserve that proof through the nested warm-wake closure.
 declare const ENROLLED_WAKE_TEXT: unique symbol;
-type EnrolledWakeText = string & { readonly [ENROLLED_WAKE_TEXT]: true };
+type EnrolledWakeText = {
+  readonly [ENROLLED_WAKE_TEXT]: true;
+  readonly text: string;
+  /** The exact timestamp supplied to the provenance ledger writer. */
+  readonly provenanceIssuedAtMs: number;
+};
+
+function enrolledWakeText(text: string, provenanceIssuedAtMs: number): EnrolledWakeText {
+  return { text, provenanceIssuedAtMs } as EnrolledWakeText;
+}
 import { isInboxOwnerReplyPayload } from '../../agent-tools/coordination/inbox-reply';
 import {
   readOwnerChatTurnText,
@@ -2104,15 +2113,17 @@ async function tagWakeText(d: DeliveryWork, text: string, tag: WakeTurnTagger): 
       isInboxOwnerReplyPayload(d.payload) || readOwnerChatTurnText(d.payload)
       ? OWNER_CHAT_TURN_ORIGIN
       : 'wake-pump';
+  const provenanceIssuedAtMs = Date.now();
   try {
-    return (await tag({ sid: d.subscriberId, origin, text })).taggedText as EnrolledWakeText;
+    const tagged = await tag({ sid: d.subscriberId, origin, text, nowMs: provenanceIssuedAtMs });
+    return enrolledWakeText(tagged.taggedText, provenanceIssuedAtMs);
   } catch {
     // The wake itself is fail-soft, but returning it without an envelope turns a
     // machine prompt into affirmative owner speech in every transcript reader.
     // Keep delivery moving with a syntactically valid, unverified envelope; the
     // prompt hook can classify it as unverified (there is no ledger row), while
     // owner-visible readers still fail closed on the non-owner origin.
-    return `${formatEnvelope(origin, mintNonce())}\n${text}` as EnrolledWakeText;
+    return enrolledWakeText(`${formatEnvelope(origin, mintNonce())}\n${text}`, provenanceIssuedAtMs);
   }
 }
 
@@ -2953,11 +2964,12 @@ async function injectPsuHostWake(
     // committed to, instead of injecting a second real duplicate turn.
     const injectMsg = {
       mode: quotaRecovery.eligible && useConfirmation ? 'recycle' : 'turn',
-      data: warmText,
+      data: warmText.text,
       fireNumber,
       routineId,
       ownerId: d.subscriberId,
       deliveryId: String(d.id),
+      provenanceIssuedAtMs: warmText.provenanceIssuedAtMs,
       ...(quotaRecovery.eligible && useConfirmation
         ? {
             quotaRecovery: {
@@ -3297,15 +3309,16 @@ async function injectPsuHostWake(
     // EI-19311270129974785: same delivery-id dedup rationale as injectWarm above —
     // the cold reset/recycle path goes through the identical gated pipeline and
     // is exposed to the identical ack-loss-then-retry duplicate.
-    const injectMsg: Parameters<typeof injectIntoHost>[1] = {
+    const injectMsg = {
       mode: coldTransportMode,
-      data: coldText,
-      ...(codexColdRespawn ? { systemPromptAddendum: coldText } : {}),
+      data: coldText.text,
+      ...(codexColdRespawn ? { systemPromptAddendum: coldText.text } : {}),
       fireNumber: coldFireCount,
       routineId,
       ownerId: d.subscriberId,
       deliveryId: String(d.id),
-    };
+      provenanceIssuedAtMs: coldText.provenanceIssuedAtMs,
+    } as Parameters<typeof injectIntoHost>[1] & { provenanceIssuedAtMs: number };
     let ok: boolean;
     let confirmation: InjectConfirmation | null = null;
     let confirmationReason: string | null | undefined;
@@ -3984,7 +3997,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
         applyInjectionDoor(d, await rehydrateForDelivery(d, wakeTurnText(d))),
         tagTurn,
       );
-      const r = await resumePlanRun({ runId: handle.runId, wakeText: planRunText });
+      const r = await resumePlanRun({ runId: handle.runId, wakeText: planRunText.text });
       if (r.ok) return { kind: 'delivered', channel: 'plan-run-resume' };
       return { kind: 'error', error: r.error };
     }
@@ -4172,7 +4185,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
         // claude TUI's paste detector (CR → literal newline, turn never submits).
         // Mirror of psu-pty-host.mjs controlWrites (different process + pty owner,
         // so the code can't be shared — kept in lockstep via the shared env var).
-        const okWrite = write(pty.id, Buffer.from(text, 'utf8'), pty.accessScope);
+        const okWrite = write(pty.id, Buffer.from(text.text, 'utf8'), pty.accessScope);
         if (okWrite) {
           setTimeout(() => {
             try {
@@ -4309,7 +4322,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
         subscriberId: d.subscriberId,
         workspaceId: fresh?.workspaceId ?? sessionDelivery.workspaceId,
         harness: fresh?.harnessSlug ?? readLoopDeliveryMarker(d.payload)?.harness ?? null,
-        wakeText: text,
+        wakeText: text.text,
         deliveryId: d.id,
         ...(coldWakeNeedsHost ? { carry: 'cold' as const } : {}),
       }).catch((error) => {
@@ -4372,7 +4385,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     // time/watchdog wake re-surveys, so the no-resume invariant holds absolutely.
     const hiveInstallSlug = hiveInstallSlugFromLabel(fresh?.label ?? null);
     if (hiveInstallSlug) {
-      const fired = await fireHiveWake({ installSlug: hiveInstallSlug, kickoff: text }).catch(() => false);
+      const fired = await fireHiveWake({ installSlug: hiveInstallSlug, kickoff: text.text }).catch(() => false);
       if (fired) return { kind: 'delivered', channel: 'hive-fresh-wake' };
       return {
         kind: 'park',
@@ -4425,7 +4438,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
           workspaceId: sessionDelivery.workspaceId,
           harnessSlug: fresh?.harnessSlug ?? readLoopDeliveryMarker(d.payload)?.harness ?? null,
           cwd: fresh?.cwd ?? handle.cwd ?? null,
-          wakeText: appendCrashResumeAdvisory(text, {
+          wakeText: appendCrashResumeAdvisory(text.text, {
             agent: resumeAgent,
             endedAtIso: typeof fresh?.endedAt === 'string' ? fresh.endedAt : null,
           }),
@@ -4591,7 +4604,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     // carries the crash-resume re-verify advisory (EI-16611 class). Appended
     // HERE, after channel selection, so every in-place inject above stays
     // byte-identical (D-002's channel-agnostic wakeTurnText contract).
-    const resumeText = appendCrashResumeAdvisory(text, {
+    const resumeText = appendCrashResumeAdvisory(text.text, {
       agent: resumeAgent,
       endedAtIso: typeof fresh?.endedAt === 'string' ? fresh.endedAt : null,
     });
