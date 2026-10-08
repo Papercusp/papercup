@@ -42,6 +42,7 @@ import {
 } from './outcome-feedback';
 import { CREATIVE_LENSES, type CreativeLens, type SuIdeationLens } from './types';
 import { readPausedRails } from './paused-rails';
+import { IDEA_ORIGIN_PAYLOAD_KEY, isIdeationLedgerOrigin } from './ideation-origin';
 import { SHADOW_VARIANT_ORIGIN, type ShadowVariantOrigin } from './shadow-variant-origin';
 import { trackDetached } from '../detached-imports';
 import type { PortfolioOutcomeCandidate } from './portfolio-frontier';
@@ -325,6 +326,17 @@ export async function recordRoutedIdea(input: RecordRoutedIdeaInput): Promise<vo
       model_spec = COALESCE(EXCLUDED.model_spec, scout_routed_ideas.model_spec),
       model_config = COALESCE(EXCLUDED.model_config, scout_routed_ideas.model_config)
     WHERE ${!input.preserveExisting}`;
+  // P-005 (R-10/R-11, EI-18697923246606437): stamp the routed work-item so the claim-spec
+  // `item_class` field can tell it is an idea. Payload-only on purpose — the JS claim matcher
+  // sees only the item's own payload, so a ledger lookup would break SQL/JS parity (see
+  // scout/ideation-origin.ts). Write-once: an existing stamp is never overwritten.
+  if (isIdeationLedgerOrigin(origin) && input.routedRef.startsWith('wi:')) {
+    await sql`
+      UPDATE harness_shared.work_items
+         SET payload = COALESCE(payload, '{}'::jsonb) || jsonb_build_object(${IDEA_ORIGIN_PAYLOAD_KEY}::text, ${origin}::text)
+       WHERE workspace_id = ${ws} AND feature_id = ${input.routedRef.slice(3)}
+         AND (payload IS NULL OR payload->>(${IDEA_ORIGIN_PAYLOAD_KEY}::text) IS NULL)`;
+  }
   if (origin === 'scout') {
     await recordProducerObservation(sql, { producer: 'scout', workspaceId: ws, sourceId: input.ideaId });
   }
