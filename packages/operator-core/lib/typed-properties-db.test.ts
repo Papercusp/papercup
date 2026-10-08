@@ -12,12 +12,14 @@ const selection = (overrides: Partial<GoalPlanClaimSelection> = {}): GoalPlanCla
   appliesToActor: false, policyVersion: 4, ...overrides,
 });
 
+const applicabilityCases: Array<[string, Partial<GoalPlanClaimSelection>, { goalId?: string }]> = [
+  ['actor context', { appliesToActor: true }, {}],
+  ['explicit goal stamp', {}, { goalId: 'collection-goal' }],
+  ['persisted plan attribution', { attributed: [ref] }, {}],
+];
+
 describe('goal selection at the assignment boundary', () => {
-  it.each([
-    ['actor context', { appliesToActor: true }, {}],
-    ['explicit goal stamp', {}, { goalId: 'collection-goal' }],
-    ['persisted plan attribution', { attributed: [ref] }, {}],
-  ] as const)('refuses excluded work through %s and permits its selected control', (_name, scope, args) => {
+  it.each(applicabilityCases)('refuses excluded work through %s and permits its selected control', (_name, scope, args) => {
     const request = { harness: 'hive', planSlug: 'alpha', ...args };
     expect(() => assertGoalPlanClaimSelection([selection(scope)], request))
       .toThrow('goal_plan_excluded: plan:hive/alpha');
