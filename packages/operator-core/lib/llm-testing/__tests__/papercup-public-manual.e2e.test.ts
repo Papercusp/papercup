@@ -88,6 +88,72 @@ async function verifyFixtureBundle() {
   return result;
 }
 
+async function loadPortalFixtureModules(portalRoot: string) {
+  // Vitest already owns TypeScript loading here. An outer tsImport registers
+  // another namespace around helpers which use tsImport themselves; its query
+  // suffix can then reach fs as part of the launcher filename. Use the runner's
+  // normal import path, and reuse the statically loaded parseEnvFile above.
+  const sourceImport = async (path: string) => {
+    const loaded = await import(/* @vite-ignore */ pathToFileURL(path).href);
+    return { ...loaded.default, ...loaded };
+  };
+  const { loadHostedTestUserKit } = await sourceImport(join(portalRoot, 'e2e/hosted-test-user.ts'));
+  const { resolveServedRelease } = await sourceImport(join(portalRoot, 'e2e/served-artifact.ts'));
+  return { loadHostedTestUserKit, resolveServedRelease };
+}
+
+function publicManualPortalUser() {
+  // Reuse the maintained hosted tutorial fixture's TEST connection domain.
+  // WorkOS connection policy also applies to password-created TEST users.
+  return { email: `manual-${randomUUID()}@papercusp.com`, attemptId: randomUUID(),
+    firstName: 'Public', lastName: 'Manual', displayName: 'Public manual browser acceptance' };
+}
+
+async function verifyPortalRuntimePreconditions(candidateRoot: string) {
+  // copy-standalone.mjs and publishStandaloneRelease both publish this entry.
+  const entry = join(realpathSync(candidateRoot), 'standalone-entry.mjs');
+  expect(existsSync(entry), `Published Portal entry is missing: ${entry}`).toBe(true);
+  const metadata = JSON.parse(readFileSync(join(candidateRoot, '.papercusp-release.json'), 'utf8'));
+  expect(metadata.buildId).toBeTruthy();
+  // Fixture deletion uses the existing admin tooling transaction, with exact
+  // disposable identifiers. The application role deliberately has no DELETE.
+  await withWorkspace(process.env.PAPERCUSP_WORKSPACE || 'papercusp-workspace', async (sql) => {
+    const [row] = await sql`SELECT has_table_privilege(current_user, 'harness_shared.customer_workspaces', 'DELETE') AS allowed`;
+    expect(row.allowed, 'Fixture cleanup requires its configured admin database role').toBe(true);
+  }, { bypassRlsForAdmin: true });
+  return { entry, metadata };
+}
+
+describe('public manual Portal fixture preparation', () => {
+  it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
+    'loads the maintained Portal acceptance sources before live fixture creation', async () => {
+      const portalRoot = realpathSync(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT!);
+      const { loadHostedTestUserKit, resolveServedRelease } = await loadPortalFixtureModules(portalRoot);
+      expect(resolveServedRelease).toBeTypeOf('function');
+      // Loads the real auth/session helpers and resolves their TEST credentials,
+      // but creates no account, browser, host, or model request.
+      const kit = await loadHostedTestUserKit(portalRoot);
+      expect(kit.create).toBeTypeOf('function');
+    }, 60_000);
+  it.runIf(process.env.PAPERCUSP_TEST_PUBLIC_PORTAL === '1')(
+    'validates the selected Portal entry and cleanup authority before account creation', async () => {
+      await verifyPortalRuntimePreconditions(process.env.PAPERCUSP_TEST_PORTAL_CANDIDATE_ROOT!);
+    }, 30_000);
+  it.runIf(process.env.PAPERCUSP_TEST_PUBLIC_PORTAL === '1')(
+    'authenticates the real hosted TEST connection before browser acceptance', async () => {
+      const portalRoot = realpathSync(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT!);
+      const { loadHostedTestUserKit } = await loadPortalFixtureModules(portalRoot);
+      const kit = await loadHostedTestUserKit(portalRoot);
+      const user = await kit.create(publicManualPortalUser());
+      try {
+        const admitted = await resolveHostedSession(user.sessionId);
+        expect(admitted?.organizationId).toBe(user.organizationId);
+      } finally {
+        await user.cleanup('public manual hosted connection preflight cleanup');
+      }
+    }, 60_000);
+});
+
 async function mutateFixtureRegistry(
   mutate: () => void,
   operatorUrl = baseUrl,
@@ -505,19 +571,11 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
     expect(manualFixtureDir, 'Use the verified disposable public/private canary bundle').toBeTruthy();
     expect(principalBearer).toBeTruthy();
     expect(['127.0.0.1', 'localhost']).toContain(new URL(baseUrl!).hostname);
-    const metadata = JSON.parse(readFileSync(join(candidateRoot!, '.papercusp-release.json'), 'utf8'));
+    const { entry: portalEntry, metadata } = await verifyPortalRuntimePreconditions(candidateRoot!);
     const repoRoot = resolve(import.meta.dirname, '../../../../..');
-    const { tsImport } = await import('tsx/esm/api');
-    const sourceImport = async (path: string) => {
-      const loaded = await tsImport(pathToFileURL(path).href, import.meta.url);
-      return { ...loaded.default, ...loaded };
-    };
-    const { loadHostedTestUserKit } = await sourceImport(join(portalRoot!, 'e2e/hosted-test-user.ts'));
-    const { resolveServedRelease } = await sourceImport(join(portalRoot!, 'e2e/served-artifact.ts'));
-    const { parseEnvFile } = await sourceImport(join(repoRoot, 'apps/operator/scripts/systemd/portal-hosted-launcher.ts'));
+    const { loadHostedTestUserKit, resolveServedRelease } = await loadPortalFixtureModules(portalRoot!);
     const kit = await loadHostedTestUserKit(portalRoot!);
-    const user = await kit.create({ email: `manual-${randomUUID()}@example.com`, attemptId: randomUUID(),
-      firstName: 'Public', lastName: 'Manual', displayName: 'Public manual browser acceptance' });
+    let user: { sessionId: string; organizationId: string; cleanup(reason: string): Promise<void> } | undefined;
     const controlWorkspace = process.env.PAPERCUSP_WORKSPACE || 'papercusp-workspace';
     const connectionId = `manual-connection-${randomUUID()}`;
     const hostId = `manual-host-${randomUUID()}`;
@@ -535,8 +593,10 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
     let stream = '';
     let history: { turns?: Array<{ role: string; text: string; source?: string }> } | undefined;
     let browserText = '';
+    let caseFailure: unknown;
     const question = 'How do I check the orchard workspace? Search the public manual, read the FAQ section, give its recovery marker, and cite the section. Do not perform a recovery.';
     try {
+      user = await kit.create(publicManualPortalUser());
       const admitted = await resolveHostedSession(user.sessionId);
       expect(admitted).not.toBeNull();
       expect(admitted!.organizationId).toBe(user.organizationId);
@@ -566,7 +626,7 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
       child = spawn(process.execPath, ['--import', 'tsx', join(repoRoot, 'apps/operator/scripts/systemd/portal-hosted-launcher.ts')], {
         cwd: repoRoot,
         env: { ...process.env, PAPERCUSP_PORTAL_ROOT: candidateRoot!,
-          PAPERCUSP_PORTAL_START_WEB: join(candidateRoot!, 'standalone-entry.cjs'),
+          PAPERCUSP_PORTAL_START_WEB: portalEntry,
           PAPERCUSP_PORTAL_HOSTED_ENV_FILE: envFile, PAPERCUSP_INTEGRATION_ROOT: repoRoot,
           PAPERCUSP_PORTAL_OPERATOR_ENV_FILE: join(repoRoot, 'apps/operator/.env.local'),
           // Credential custody: server environment only; never an env file or browser argument.
@@ -637,6 +697,9 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
       expect(visibleData.includes(privateCanary)).toBe(false);
       await page.screenshot({ path: join(evidenceDir, 'typed-answer.png'), fullPage: true });
       stage = 'passed';
+    } catch (error) {
+      caseFailure = error;
+      throw error;
     } finally {
       // Only the public projected stream/history is retained. Failure stage and
       // runtime log let a continuation diagnose without replaying a paid turn.
@@ -648,6 +711,7 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
       const safeEvidence = principalBearer
         ? serializedEvidence.split(principalBearer).join('[REDACTED]') : serializedEvidence;
       writeFileSync(join(evidenceDir, 'case.json'), safeEvidence, { mode: 0o600 });
+      try {
       try { await browser?.close(); }
       finally {
         if (child && child.exitCode === null) {
@@ -659,15 +723,19 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
         closeSync(logFd);
         try {
           if (hostedSessionId) await revokeHostedSession(hostedSessionId, 'public manual browser fixture cleanup');
-          await user.cleanup('public manual browser fixture cleanup');
+          await user?.cleanup('public manual browser fixture cleanup');
         } finally {
-          await withWorkspace(controlWorkspace, async (sql) => {
+          try { await withWorkspace(controlWorkspace, async (sql) => {
             await sql`DELETE FROM harness_shared.customer_workspaces WHERE workspace_id=${controlWorkspace} AND id=${workspaceId}`;
             await sql`DELETE FROM harness_shared.workspace_hosts WHERE workspace_id=${controlWorkspace} AND id=${hostId}`;
             await sql`DELETE FROM harness_shared.workspace_host_connections WHERE workspace_id=${controlWorkspace} AND id=${connectionId}`;
-          });
-          rmSync(temporaryHome, { recursive: true, force: true });
+          }, { bypassRlsForAdmin: true }); }
+          finally { rmSync(temporaryHome, { recursive: true, force: true }); }
         }
+      }
+      } catch (cleanupError) {
+        if (caseFailure) throw new AggregateError([caseFailure, cleanupError], 'Portal acceptance and fixture cleanup both failed');
+        throw cleanupError;
       }
     }
   }, 240_000);
