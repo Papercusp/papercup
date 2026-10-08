@@ -65,7 +65,7 @@ const h = vi.hoisted(() => {
     invocations: [] as unknown[],
     resultDoorDelayMs: 0,
     resultDoorCalls: 0,
-    scratchWriteTimings: [] as Array<{ quotaWaitMs: number; refreshWaitMs: number; quotaRecoveryMs: number; writeMs: number; totalMs: number }>,
+    scratchWriteTimings: [] as ScratchWriteTimings[],
     realScratchWriteTimings: [] as ScratchWriteTimings[],
     captureScratchWriteTimings: false,
     spillWriteGate: null as Promise<void> | null,
@@ -462,6 +462,73 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
       expect(Number(settled?.elapsedMs)).toBeGreaterThanOrEqual(TEST_DEADLINE_MS);
     } finally {
       info.mockRestore();
+    }
+  });
+
+  it('forwards scratch spill progress to MCP clients that supplied a progress token', async () => {
+    const sandbox = mkdtempSync(join(tmpdir(), 'papercusp-mcp-progress-'));
+    const previousRoot = process.env.PAPERCUSP_SCRATCH_ROOT;
+    const previousKillSwitch = process.env.PAPERCUSP_RESULT_DOOR_OFF;
+    process.env.PAPERCUSP_SCRATCH_ROOT = join(sandbox, 'scratch');
+    delete process.env.PAPERCUSP_RESULT_DOOR_OFF;
+    _resetScratchUsageForTests();
+    const progressToken = 'mcp-spill-progress';
+    const notifications: Array<{ method: string; params: Record<string, unknown> }> = [];
+    const extra = {
+      ...superuserExtra('&workspace=ws-test'),
+      sendNotification: async (notification: { method: string; params: Record<string, unknown> }) => {
+        notifications.push(notification);
+      },
+    };
+    h.scratchWriteTimings = [{
+      quotaWaitMs: 0,
+      refreshWaitMs: 0,
+      quotaRecoveryMs: 5_000,
+      writeMs: 0,
+      totalMs: 5_000,
+      progress: {
+        phase: 'quota-recovery',
+        phaseElapsedMs: 5_000,
+        totalElapsedMs: 5_000,
+        bytes: 60_000,
+        pendingWrites: 1,
+        recoveryActive: true,
+        refreshActive: false,
+      },
+    }];
+    try {
+      const result = await callTool('deadlinetest:spill', {}, extra, { progressToken });
+      expect(result.isError).not.toBe(true);
+      expect(notifications).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          method: 'notifications/papercusp/event',
+          params: expect.objectContaining({
+            progressToken,
+            event: 'progress',
+            data: expect.objectContaining({
+              progress: 0,
+              total: 100,
+              message: expect.stringContaining('quota recovery'),
+            }),
+          }),
+        }),
+        expect.objectContaining({
+          method: 'notifications/progress',
+          params: expect.objectContaining({
+            progressToken,
+            progress: 0,
+            total: 100,
+            message: expect.stringContaining('quota recovery'),
+          }),
+        }),
+      ]));
+    } finally {
+      _resetScratchUsageForTests();
+      if (previousRoot === undefined) delete process.env.PAPERCUSP_SCRATCH_ROOT;
+      else process.env.PAPERCUSP_SCRATCH_ROOT = previousRoot;
+      if (previousKillSwitch === undefined) delete process.env.PAPERCUSP_RESULT_DOOR_OFF;
+      else process.env.PAPERCUSP_RESULT_DOOR_OFF = previousKillSwitch;
+      rmSync(sandbox, { recursive: true, force: true });
     }
   });
 
