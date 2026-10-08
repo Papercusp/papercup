@@ -5909,8 +5909,21 @@ export function buildReleaseFixerKickoff(input: {
   failingTests?: readonly string[];
   repairQueue?: FrozenCandidateRepairQueue | null;
   flakeAnnotation?: string;
+  /** WI-10007494: queue entries the latest repair tick passed at this same repairHead. When
+   *  non-empty, `failingTests` holds only the remaining real reds. */
+  sameHeadContradicted?: readonly string[];
 }): string {
   const queue = input.repairQueue;
+  const contradicted = input.sameHeadContradicted ?? [];
+  // The fixer reads the full signature from `release:repair-queue { op: 'get' }`, which keeps
+  // the contradicted entries on purpose, so the brief must say which entries to leave alone.
+  const contradictionNote =
+    queue && contradicted.length > 0
+      ? `\n\nFix ONLY: ${(input.failingTests ?? []).join(', ')}. Do NOT fix: ${contradicted.join(', ')}. ` +
+        `The repair tick re-ran those at repairHead ${queue.repairHead.slice(0, 12)} and they passed, so they ` +
+        `are a same-head measurement contradiction, not a defect at this head. They stay in the queue's ` +
+        `signature (repair-queue get still lists them) and the verification after your admission re-measures them.`
+      : '';
   const kickoff = queue
     ? `green-checkpoint froze candidate ${queue.candidate.slice(0, 8)} and assigned you repair attempt ${queue.attempts + 1}. ` +
       `You are the AUTHORIZED delegated repair child, not a second LIVE_GATE_OPS owner. ` +
@@ -5939,7 +5952,7 @@ export function buildReleaseFixerKickoff(input: {
       `Read the exact supplied checkpoint artifact, reproduce the failing test(s) locally to classify ` +
       `regression-vs-flake, then fix the code or de-flake (hermetic > tier-out > accountable quarantine). ` +
       `Do NOT push — the next checkpoint re-verifies.`;
-  return kickoff + (input.flakeAnnotation ? `\n\n${input.flakeAnnotation}` : '');
+  return kickoff + contradictionNote + (input.flakeAnnotation ? `\n\n${input.flakeAnnotation}` : '');
 }
 
 /** Live-compute {@link ReleaseFixerCandidateStaleCheck} for `candidate` in `root`. */
@@ -6957,14 +6970,17 @@ export async function dispatchReleaseFixer(
   // only reordered, plus one more selected column.
   const { getOrgPg } = await import('@papercusp/db-org');
   const { sql } = getOrgPg();
+  // WI-10007494: `repairTickLegs` rides on the same row read so a frozen dispatch can drop
+  // same-head-contradicted entries from the fixer's targets (see below).
   const rows = (await sql.unsafe(
     `SELECT metadata->'last_fixer' AS lf,
             metadata->'gate_health'->>'failingTestsMeasured' AS ftm,
-            metadata->'gate_health'->'candidateSnapshot' AS cs
+            metadata->'gate_health'->'candidateSnapshot' AS cs,
+            metadata->'gate_health'->'repairTickLegs' AS legs
        FROM harness_shared.routines
       WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'`,
     [ctx.installSlug],
-  )) as Array<{ lf: ReleaseFixerRecord | null; ftm: string | null; cs: unknown }>;
+  )) as Array<{ lf: ReleaseFixerRecord | null; ftm: string | null; cs: unknown; legs?: unknown }>;
   const lf = rows[0]?.lf ?? null;
   const failingTestsMeasured = rows[0]?.ftm === 'true' ? true : rows[0]?.ftm === 'false' ? false : null;
   const candidateSnapshot = parseCandidateSnapshot(rows[0]?.cs);
@@ -7016,6 +7032,29 @@ export async function dispatchReleaseFixer(
       },
     }).catch(() => {});
     return null;
+  }
+
+  // WI-10007494: a frozen queue can mix a real red with an entry the latest repair tick
+  // re-ran at the SAME repairHead and saw pass (a same-head measurement contradiction).
+  // Nothing removed the contradicted entry, so the fixer was told to fix a leg its own head
+  // passes. Narrow only what the fixer is TOLD: `fixerTargets` drives the brief, the escalation
+  // context, the notification and the flake annotation. The dedup `signature` below stays on
+  // the full set, and so does the queue, whose next verification re-measures every entry.
+  // A parse failure yields no contradiction, i.e. the full set (the pre-existing behaviour).
+  let fixerTargets = failingTests;
+  let sameHeadContradicted: string[] = [];
+  if (repairQueue) {
+    const { parseRepairTickLegs, releaseFixerTargetsAfterSameHeadContradictions } =
+      await import('../../release/repair-tick-legs-snapshot');
+    const narrowed = releaseFixerTargetsAfterSameHeadContradictions(
+      failingTests,
+      parseRepairTickLegs(rows[0]?.legs),
+      repairQueue.repairHead,
+    );
+    if (narrowed.sameHeadContradicted.length > 0) {
+      fixerTargets = narrowed.targets;
+      sameHeadContradicted = narrowed.sameHeadContradicted;
+    }
   }
 
   // P-012: dedup by the FAILURE SIGNATURE (the failing test files / workspaces), not the
@@ -7090,13 +7129,13 @@ export async function dispatchReleaseFixer(
           ? 'Release gate still held — prior fixer died, re-dispatched'
           : 'Release gate held — staging→main blocked',
         body:
-          `green-checkpoint couldn't promote candidate ${candidate.slice(0, 8)} (gate red${failingTests && failingTests.length > 0 ? `: ${failingTests.slice(0, 5).join(', ')}` : ''}); ` +
+          `green-checkpoint couldn't promote candidate ${candidate.slice(0, 8)} (gate red${fixerTargets && fixerTargets.length > 0 ? `: ${fixerTargets.slice(0, 5).join(', ')}` : ''}); ` +
           `${selfHeal ? 'the previous release-fixer ended without clearing it — a fresh one was' : 'a release-fixer was'} dispatched to diagnose it.`,
         importance: 'high',
         workspaceId: ctx.workspaceId,
         data: {
           candidate: candidate.slice(0, 12),
-          failing: (failingTests ?? []).slice(0, 10).join(','),
+          failing: (fixerTargets ?? []).slice(0, 10).join(','),
           selfHeal: String(selfHeal),
         },
       });
@@ -7112,7 +7151,7 @@ export async function dispatchReleaseFixer(
   try {
     const { testFlakeRollup, flagFlakeSuspects } = await import('../../dev-data');
     const { entries } = await testFlakeRollup(7);
-    flakeAnnotation = annotateFailingTestsWithFlakeStats(failingTests, flagFlakeSuspects(entries, 7));
+    flakeAnnotation = annotateFailingTestsWithFlakeStats(fixerTargets, flagFlakeSuspects(entries, 7));
   } catch (e) {
     console.warn(
       `${orchestratorStdoutTag()} flake-suspect annotation skipped (non-fatal): ${e instanceof Error ? e.message : e}`,
@@ -7126,9 +7165,10 @@ export async function dispatchReleaseFixer(
   try {
     const kickoff = buildReleaseFixerKickoff({
       candidate,
-      failingTests,
+      failingTests: fixerTargets,
       repairQueue,
       flakeAnnotation,
+      sameHeadContradicted,
     });
     fired = await fireLaunchBlueprintForEvent('green-checkpoint:red', {
       installSlug: ctx.installSlug,
@@ -7138,7 +7178,8 @@ export async function dispatchReleaseFixer(
       bodyExtra: {
         releaseFixerContext: {
           candidate: candidate.slice(0, 12),
-          failingTests: (failingTests ?? []).slice(0, 20),
+          failingTests: (fixerTargets ?? []).slice(0, 20),
+          ...(sameHeadContradicted.length > 0 ? { sameHeadContradicted: sameHeadContradicted.slice(0, 20) } : {}),
           ...(repairQueue
             ? {
                 frozenCandidate: repairQueue.candidate,
@@ -7182,6 +7223,7 @@ export async function dispatchReleaseFixer(
       spawnId: spawnId ?? undefined,
       snapshotIdentity,
       recordPatched,
+      ...(sameHeadContradicted.length > 0 ? { sameHeadContradicted: sameHeadContradicted.slice(0, 20) } : {}),
     },
   }).catch(() => {});
   return { spawnId, runId };

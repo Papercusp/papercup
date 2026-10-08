@@ -270,6 +270,7 @@ import {
   buildCheckpointDetail,
   verdictQualificationAttemptId,
   buildReleaseFixerKickoff,
+  dispatchReleaseFixer,
   buildScheduledCheckpointShell,
   checkpointRunLogPaths,
   checkpointTerminalHasOomKill,
@@ -4775,6 +4776,93 @@ describe('EI-13723: recordCheckpointVerdict also dispatches the release-fixer (n
     expect(brief).toContain('failed the gate suite');
     expect(brief).not.toContain('authorized-delegate');
     expect(brief).not.toContain('repairQueue.fixerSpawnId');
+  });
+
+  // WI-10007494: a frozen queue mixing a same-head contradiction with a real red. Before the
+  // fix the fixer was handed both, i.e. told to fix a leg its own repairHead had passed.
+  describe('WI-10007494: same-head contradiction beside a real red', () => {
+    const LANE = '@papercusp/operator-core :: test:lane-stateful';
+    const RED = 'lint:design-primitives';
+    const queue = (): FrozenCandidateRepairQueue => ({
+      schemaVersion: 1,
+      phase: 'awaiting-fixer',
+      candidate: 'a'.repeat(40),
+      base: 'b'.repeat(40),
+      repairHead: 'c'.repeat(40),
+      affectedTestProofGroup: 'proof-1',
+      attempts: 1,
+      openedAtMs: 1,
+      updatedAtMs: 2,
+      fixerSpawnId: null,
+      failingTests: [LANE, RED],
+      signature: [],
+    });
+    const tickAt = (head: string) => ({
+      head: head.slice(0, 12),
+      atMs: 1,
+      ok: false,
+      failingSignatures: [RED],
+      legs: [
+        { id: LANE, status: 'pass', durationMs: 1_159_339 },
+        { id: RED, status: 'fail', durationMs: 4_000 },
+      ],
+    });
+    type Fire = {
+      kickoff: string;
+      bodyExtra: { releaseFixerContext: { failingTests: string[]; sameHeadContradicted?: string[] } };
+    };
+    const dispatchWithTick = async (repairQueue: FrozenCandidateRepairQueue, tickHead: string) => {
+      spawnMock.mockImplementation((_cmd: unknown, args: string[]) => {
+        if (args.includes('cat-file')) return fakeSpawn('', 0);
+        if (args.some((a) => typeof a === 'string' && a.startsWith('origin/main..'))) return fakeSpawn('3', 0);
+        return fakeSpawn('', 0);
+      });
+      const snapshot = buildCandidateSnapshot(
+        { candidate: repairQueue.candidate, failingTests: repairQueue.failingTests, repairQueue },
+        Date.now(),
+      );
+      expect(snapshot).not.toBeNull();
+      fakeSql.unsafe
+        .mockResolvedValueOnce(sqlRows([{ lf: null, ftm: 'true', cs: snapshot, legs: tickAt(tickHead) }]))
+        .mockResolvedValueOnce(sqlRows([{ written: true }]));
+      await dispatchReleaseFixer(
+        { workspaceId: 'ws-42', installSlug: 'my-harness' },
+        repairQueue.repairHead,
+        repairQueue.failingTests,
+        repairQueue,
+      );
+      expect(fireLaunchBlueprintForEvent).toHaveBeenCalledTimes(1);
+      const fire = fireLaunchBlueprintForEvent.mock.calls[0]![1] as Fire;
+      const reservation = fakeSql.unsafe.mock.calls.find(([query]) => {
+        const text = String(query);
+        return text.includes("metadata->'gate_health'->'candidateSnapshot'->>'identity'") && text.includes("metadata->'last_fixer'");
+      });
+      expect(reservation).toBeDefined();
+      const record = JSON.parse(String((reservation![1] as unknown[])[3])).last_fixer as { signature: string };
+      return { fire, record };
+    };
+
+    it('hands the fixer only the real red, while the dedup signature and the queue keep both', async () => {
+      const repairQueue = queue();
+      const { fire, record } = await dispatchWithTick(repairQueue, repairQueue.repairHead);
+      expect(fire.bodyExtra.releaseFixerContext.failingTests).toEqual([RED]);
+      expect(fire.bodyExtra.releaseFixerContext.sameHeadContradicted).toEqual([LANE]);
+      expect(fire.kickoff).toContain(`Fix ONLY: ${RED}. Do NOT fix: ${LANE}.`);
+      // The obligation to re-measure LANE survives: the queue is untouched and the dedup
+      // signature is still the full set.
+      expect(record.signature).toBe([LANE, RED].sort().join(','));
+      expect(repairQueue.failingTests).toEqual([LANE, RED]);
+      const select = fakeSql.unsafe.mock.calls.find(([query]) => String(query).includes("AS legs"));
+      expect(String(select?.[0])).toContain("metadata->'gate_health'->'repairTickLegs' AS legs");
+    });
+
+    it('control: a tick from an earlier head contradicts nothing, so the fixer gets the full set', async () => {
+      const repairQueue = queue();
+      const { fire } = await dispatchWithTick(repairQueue, 'f'.repeat(40));
+      expect(fire.bodyExtra.releaseFixerContext.failingTests).toEqual([LANE, RED]);
+      expect(fire.bodyExtra.releaseFixerContext.sameHeadContradicted).toBeUndefined();
+      expect(fire.kickoff).not.toContain('Do NOT fix:');
+    });
   });
 
   it('⭐ a manual run (release:checkpoint-run) — which self-records via recordCheckpointVerdict and never touches the routine handler — still fires the release-fixer for a fresh red', async () => {
