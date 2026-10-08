@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "public-manual-freshness-integration-20261008",
   "workItem": "WI-10006921",
-  "stage": "local-functional-pass",
+  "stage": "committed-isolated-pass",
   "acceptanceStatus": "unverified",
   "observedAt": "2026-10-08T23:04:00Z",
   "testFile": "packages/operator-core/lib/harness/docs/public-manual-freshness.integration.test.ts",
@@ -77,8 +77,56 @@
     "writer": "libs/test-config/src/admin-test-runs-reporter.ts",
     "explanation": "Writer prefers PAPERCUSP_TEST_RUNS_DB_URL and otherwise uses HARNESS_ADMIN_DATABASE_URL; isolated runtime strips inherited PAPERCUSP_/HARNESS_ variables. No shared ledger destination was restored inside this run."
   },
+  "committedVerification": {
+    "sourceCommit": "1a9fbcfba1eefb90b4f4d6544144a9cd8907b9cc",
+    "startedAt": "2026-10-08T23:17:53.741Z",
+    "finishedAt": "2026-10-08T23:21:20.094Z",
+    "command": "node scripts/with-test-pg.mjs --isolated-runtime -- env <ledger-only overrides> node scripts/lint-as-committed.mjs test:file --any --ref=1a9fbcfba1eefb90b4f4d6544144a9cd8907b9cc -- packages/operator-core/lib/harness/docs/public-manual-freshness.integration.test.ts",
+    "result": {
+      "exitCode": 0,
+      "passed": 2,
+      "failed": 0,
+      "skipped": 0,
+      "requestedFiles": 1,
+      "executedFiles": 1,
+      "matchedFiles": 1,
+      "uncommittedPaths": "0/1",
+      "provenance": "stamped"
+    },
+    "ledger": {
+      "testRunIds": [20940593],
+      "runGroup": "1d05d504-74be-4ffd-857b-ddac906b05da",
+      "workspace": "papercusp-workspace",
+      "harness": "papercusp",
+      "status": "pass",
+      "worktreeDirty": false,
+      "receiptOutcome": "inserted",
+      "readBack": "testing:runs exact testRunIds, workspace and harness returned the matching committed row",
+      "resolutionSource": "default",
+      "scope": "Reporter and execution-map writer use the existing dedicated shared-ledger seam; product/test SQL stays on isolated PG."
+    },
+    "childOverrides": [
+      "PAPERCUSP_TEST_RUNS_DB_URL",
+      "PAPERCUSP_TEST_RUN_HARNESS",
+      "PAPERCUSP_TEST_RUN_WORKSPACE",
+      "PAPERCUSP_TEST_RUN_GROUP",
+      "PAPERCUSP_TEST_RUN_RECEIPT_FILE"
+    ],
+    "retainedEvidence": {
+      "log": "/tmp/su73-manual-freshness-committed-2320.log",
+      "metadata": "/tmp/su73-manual-freshness-committed-2320-meta.json",
+      "receipts": "/tmp/su73-manual-freshness-committed-2320-receipts.jsonl"
+    },
+    "sourceComparison": "All nine postRunSnapshot source files equal this commit and the earlier local-run snapshot. Earlier local result and ledger absence remain historical, not relabeled."
+  },
+  "maintenanceProcedure": {
+    "canonicalDoc": "agent-insights/docs-drift-tracking-how-it-works",
+    "authorReceipt": "/tmp/su73-docs-drift-author-2324-receipt.json",
+    "readBack": "/tmp/su73-docs-drift-source-2325.json",
+    "verification": "Canonical source read contains the exact full replacement body and five added source anchors; manual projection lock released.",
+    "addedGuidance": "Maintained integration coverage and child-scoped ledger-only environment restoration under committed-source isolation."
+  },
   "remaining": [
-    "Committed immutable-source rerun with canonical ledger receipt and measured execution provenance.",
     "Exact current-source sensitive review reconciliation and accountable semantic approval.",
     "Actual installed public retriever and published index revision propagation.",
     "Actual product journeys, real novices, independent final acceptance and exact shipment."
