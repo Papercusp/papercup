@@ -314,6 +314,13 @@ const child = spawn(cmd[0], cmd.slice(1), {
   detached: isolatedRuntime,
 });
 
+// The test parent measures these PIDs during their actual lifetime. Ordinary
+// runs have no IPC observer and pay no receipt cost.
+if (isolatedRuntime && process.env.PC_ISOLATED_RUNTIME_PROOF === '1' && process.send) {
+  process.send({ kind: 'isolated-runtime-start', supervisorPid: process.pid, childPid: child.pid,
+    workspace: runtimeId, runtimeRoot, dataDir, pgPort: port, root: ROOT });
+}
+
 for (const sig of ['SIGINT', 'SIGTERM']) {
   process.on(sig, () => {
     if (isolatedRuntime && child.pid) {
@@ -335,6 +342,10 @@ child.on('exit', async (code, signal) => {
     try { process.kill(-child.pid, 'SIGTERM'); } catch { /* already exited */ }
   }
   await cleanup();
+  if (isolatedRuntime && process.env.PC_ISOLATED_RUNTIME_PROOF === '1' && process.send) {
+    await new Promise(done => process.send({ kind: 'isolated-runtime-end', childPid: child.pid,
+      exitCode: code, signal, runtimeRemoved: !existsSync(runtimeRoot), pgDataRemoved: !existsSync(dataDir) }, done));
+  }
   if (signal) process.kill(process.pid, signal);
   else process.exit(code ?? 1);
 });
