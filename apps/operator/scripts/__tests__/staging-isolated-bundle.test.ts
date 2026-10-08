@@ -48,26 +48,31 @@ describe('managed staging database selection', () => {
     rmSync(discoveryRoot, { recursive: true, force: true });
   });
 
-  function applyManagedDiscoveryPolicy() {
-    const checkout = readFileSync(join(DROPIN_ROOT, '50-staging-checkout.conf'), 'utf8');
+  const managedDropIns = [
+    join(DROPIN_ROOT, '50-staging-checkout.conf'),
+    join(REPO_ROOT, 'apps/operator/scripts/systemd/papercup-staging-sync.service.d/50-script-snapshot.conf'),
+  ];
+
+  function applyManagedDiscoveryPolicy(dropIn: string) {
+    const checkout = readFileSync(dropIn, 'utf8');
     const match = checkout.match(/^Environment=PAPERCUSP_SKIP_PG_DISCOVERY=(.*)$/m);
     if (match) vi.stubEnv('PAPERCUSP_SKIP_PG_DISCOVERY', match[1]);
     _resetHarnessAdminUrlCacheForTests();
   }
 
-  it('keeps the managed host on native PG when a desktop discovery file names another database', () => {
+  it.each(managedDropIns)('keeps %s on native PG when desktop discovery names another database', (dropIn) => {
     const redirected = getHarnessAdminUrlWithSource();
     expect(redirected.source).toBe('discovery-file');
     expect(new URL(redirected.url).port).toBe('23325');
 
-    applyManagedDiscoveryPolicy();
+    applyManagedDiscoveryPolicy(dropIn);
     const managed = getHarnessAdminUrlWithSource();
     expect(managed.source).toBe('native-fallback');
     expect(new URL(managed.url).port).toBe('5432');
   });
 
-  it('preserves an explicitly configured database over native fallback', () => {
-    applyManagedDiscoveryPolicy();
+  it.each(managedDropIns)('preserves an explicitly configured database over native fallback for %s', (dropIn) => {
+    applyManagedDiscoveryPolicy(dropIn);
     vi.stubEnv('HARNESS_ADMIN_DATABASE_URL', 'postgresql://fixture:fixture@localhost:24444/explicit');
     _resetHarnessAdminUrlCacheForTests();
     const configured = getHarnessAdminUrlWithSource();
