@@ -613,6 +613,26 @@ describe('component author payouts on the existing settlement resource', () => {
     return h.api.request(`/commerce/payment-channels/${CHANNEL}/settlements/${h.batchId}/treasury?scope=components`, bearer(body), h.env);
   }
 
+  it('calibrates the signed identity fixture against its final integer allocations before any payout', async () => {
+    const { adapter, submitTransfer } = fakeTreasuryAdapter();
+    const h = await prepared({}, adapter, true);
+    const usage = await h.db.prepare(`SELECT meter_quantity, unit_price_micros, amount_micros, state
+      FROM usage_receipts WHERE channel_id = ? AND usage_nonce = 'n1'`)
+      .bind(CHANNEL).first();
+    // These literal amounts are independent of the split implementation:
+    // fifty 200-micro uses, 500 component basis points and 1000 DAO basis points.
+    expect(usage).toMatchObject({ meter_quantity: 50, unit_price_micros: 200, amount_micros: 10000, state: 'settled' });
+    const batch = await h.db.prepare(`SELECT claim_micros, provider_cost_micros, distributable_micros,
+      allocations_micros, state FROM settlement_batches WHERE batch_id = ?`)
+      .bind(h.batchId).first<{ claim_micros: number; provider_cost_micros: number;
+        distributable_micros: number; allocations_micros: string; state: string }>();
+    expect(batch).toMatchObject({ claim_micros: 10000, provider_cost_micros: 0,
+      distributable_micros: 10000, state: 'final' });
+    expect(JSON.parse(batch!.allocations_micros)).toMatchObject({ creator: '8500', component: '500', dao: '1000',
+      componentAuthors: { 'gh:11': '250', 'gh:12': '250' } });
+    expect(submitTransfer).not.toHaveBeenCalled();
+  });
+
   it('settles signed identity terms with exact authors independently of the deployment-wide manifest', async () => {
     const { adapter, submitTransfer } = fakeTreasuryAdapter();
     const h = await prepared({}, adapter, true);
