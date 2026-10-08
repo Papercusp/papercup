@@ -368,6 +368,48 @@
         },
         "remaining": "Peer repair-item attribution and complete source/import/environment disposition remain open; this focused receipt does not close the final D006 assurance gap."
       },
+      "historicalQualification": {
+        "kind": "historical-source-and-stored-receipt-scope",
+        "archive": {
+          "collected": 42,
+          "executed": 42,
+          "passed": 38,
+          "failed": 4,
+          "skipped": 0,
+          "causeLocation": "bind-from-test-run.ts:733 selects started_at from the private test_runs fixture; affected-tests.log:14946-14949 names the four fromTestRun cases.",
+          "originalTestSha256": "cafc70bf289df7f1f815ecc655681c92fa2ba30556b52c25d8fcbca1d59df965",
+          "originalLoaderSha256": "aabb18220b923b96d875ccaa1f98dd68ef61b28af31b1ff9a9ad7c081c2b9722",
+          "repositoryComparison": "The named test and loader match run-start d2a53e and both October failure commits 159fa07eba/0d0655c790. This does not identify the imports actually loaded by the archived process."
+        },
+        "existingRepairs": {
+          "startedAtCommit": "a1109d57cbe1ec5b3c75685b4b4af2403aa5e945",
+          "startedAtScope": "Exact path diff adds only the started_at comment and column; the loader is unchanged across that commit and clean receipt 20808370. Original repair-item attribution remains unknown.",
+          "frameworkItem": "WI-10006905",
+          "frameworkDisposition": "done/committed; stored causal control retains the concurrent store edit and adds only the framework fixture column, yielding 46/46 pass. This is a later dependency, separate from the original started_at failure; no terminal replay.",
+          "frameworkSettlementEvidenceHash": "5e591d7e6843faf10fe1a9658e837f633a444c2d58a62e4201235885c4c007e0"
+        },
+        "storedReceiptScope": {
+          "literalFileLocalLedger": "68/68 returned, truncatedByLimit=false, latestPerFile=false; explicit local filter omits 10 other-source rows. This is historical local evidence, not a gate verdict.",
+          "originalFailureReceipts": "20746437 clean isolated and 20765876 canonical dirty each record 38 pass/4 fail/0 skip. Later 20801467 records 40 pass/4 fail/0 skip with the same missing started_at diagnostic.",
+          "startedAtPassReceipts": "20802927 canonical dirty and 20808370 canonical clean each record 44 pass/0 fail/0 skip; test and loader bytes at 20808370 match the post-a1109d57 versions.",
+          "frameworkPassReceipt": "20854207 canonical dirty records 46 pass/0 fail/0 skip, corroborating the existing terminal repair.",
+          "laterWholeFilePass": "20894630 records 48 pass/0 fail/0 skip, clean/non-scratch, with raw root /dev/shm/pcv/papercusp-lint-as-committed-8f7048ce7d-DyCuRj. Its named test and loader differ from current bytes.",
+          "laterCanonicalWholeFilePass": "20927404 records 50 pass/0 fail/0 skip, canonical dirty/non-scratch; both runtime capture statuses are not-configured, so this is not a loaded-runtime witness.",
+          "laterFocusedPasses": "20926679 is 5 pass/0 fail/44 skip under supersedeAtRevision; newest 20932865 is 3 pass/0 fail/47 skip under detached recovery/idempotence/replay patterns. Neither is a whole-file or original fromTestRun proof.",
+          "readerQualification": "testing:runs returns root=null for 20894630 and the newest receipts, while exact raw execution_details contain roots. The reader applies a strict execution-details parser; the serving parser's exact rejection cause was not measured. Do not equate this reader result with an absent stored root.",
+          "exactRecovery": "/tmp/wi-10006170-fire88-spec-exact.json",
+          "exactRecoverySha256": "398c0a5f2537b7e6fb8cea91c4235b6f3dcea9709e8bf357348030ab14e0f2d8"
+        },
+        "currentRepositoryScope": {
+          "testSha256": "7fd8851f3d86717d08cbe045abbd8c8eaf42fa1960922f110d190fde86f9ef18",
+          "loaderSha256": "1773d59985736d7b10ed6efb74e459bf943d7da26ae8e717d00b9c2d318c84aa",
+          "storeSha256": "d85128b8aeaf02b3083a80cd3cb48b905f693942f8487c12f117d3428826e9d6",
+          "pgHelperSha256": "d14d60a445e17811e601944a09c6e8a2e3f852fad10d2b59b13a222b29ff36e3",
+          "comparison": "All four named files equal HEAD and newest focused receipt commit c23935bbff; the test, loader and store differ from the clean 48-case receipt. Equality to a three-case focused receipt does not establish whole-file coverage or imported runtime identity.",
+          "comparisonRef": "/tmp/wi-10006170-fire88-source-compare.json"
+        },
+        "limits": "Historical source/receipt qualification only. Original repair-item attribution, actually loaded source/transitive imports/config/schema/environment, current full consumer, final D006/P004 acceptance and shipment remain UNKNOWN. State remains open-unknown; no source/test/native/final/gate/git action."
+      },
       "lines": [
         14946,
         14947,
