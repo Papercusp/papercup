@@ -111,6 +111,7 @@ export interface GoalDetailActivityInput {
   id: string;
   title: string;
   harnessSlug?: string | null;
+  planSlug?: string | null;
   status?: string | null;
   closedAt?: string | null;
   updatedAt?: string | null;
@@ -311,9 +312,15 @@ export interface GoalModeStateInput {
 export interface GoalDetailInput {
   goalData?: {
     error?: string | null;
+    historyError?: string | null;
+    worklistHistory?: Array<{ id: string; ref: string; at: string; actor: string; label: string; detail: string | null }>;
     collections: Record<string, {
       selection: import('@papercusp/operator-core/lib/typed-properties').TypedPropertyCollectionRead;
-      rows: Array<{ id: string; selected: boolean; label: string; state: string | null; reason: string | null }>;
+      rows: Array<{ id: string; selected: boolean; label: string; state: string | null; reason: string | null;
+        harness?: string | null; planSlug?: string | null; nextStep?: string | null;
+        liveLaneOwner?: string | null; fleetMembers?: number | null;
+        counts?: { todo: number; wip: number; blocked: number; needsHuman: number; done: number } | null;
+        outcomes?: GoalDetailActivityInput[] }>;
     }>;
   } | null;
   goal: GoalDetailGoalInput | null;
