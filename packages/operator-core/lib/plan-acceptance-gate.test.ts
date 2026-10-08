@@ -1715,6 +1715,17 @@ describe('the vetting check (consult-min-max-and-rubric-vetting-2026-08-17 P-004
         metaRubricRef: 'grading-integrity',
         stampedAt: '2026-09-24T03:54:29.339Z',
       },
+      // Only a pending audit on a CURRENT rubric subject is dispatchable; a stale or
+      // unknown subject is told to re-attest instead (acceptance-rubric-vetting.ts,
+      // matching grading-integrity's dispatch filter), so suppression never applies.
+      subjectRubricCurrentness: {
+        state: 'current',
+        reason: 'current',
+        recordedRevision: 7,
+        currentRevision: 7,
+        recordedCriteriaHash: 'criteria-hash-current',
+        currentCriteriaHash: 'criteria-hash-current',
+      },
     })]);
     const readSuppression = vi.fn(async (ownerId?: string | null) =>
       ownerId === 'su-implementer' ? suppression : null,
