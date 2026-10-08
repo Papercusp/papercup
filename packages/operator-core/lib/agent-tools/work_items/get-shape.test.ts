@@ -1001,15 +1001,30 @@ describe("shapeWorkItemsGet — operationalBrief stays bounded across multi-item
 
     for (const tier of ["trimmed", "standard"] as const) {
       const out = shapeWorkItemsGet({ ...envelope(rows), read }, tier) as Envelope;
-      console.log("COMPACT_IDENTITY_PROFILE", tier, JSON.stringify(out).length, out.results.map((result) =>
-        result.operationalBrief === undefined ? null : JSON.stringify(result.operationalBrief).length,
-      ));
 
       expect(out.results.map((result) => result.id)).toEqual(ids);
       expect(out.results.every((result) => result._stub === undefined)).toBe(true);
       for (const result of out.results) {
         const workItem = result.workItem as Record<string, unknown>;
-        expect(result.operationalBrief).toMatchObject({ subject: result.id });
+        expect(result.operationalBrief).toMatchObject({
+          subject: result.id,
+          state: { status: "known", value: "open" },
+          shapeNote: {
+            clipped: true,
+            paths: expect.arrayContaining([
+              "operationalBrief.text",
+              "operationalBrief.facts",
+              "operationalBrief.unknowns",
+            ]),
+          },
+        });
+        expect(result.operationalBrief).not.toHaveProperty("text");
+        expect(result.operationalBrief).not.toHaveProperty("facts");
+        expect(result.operationalBrief).not.toHaveProperty("unknowns");
+        expect(result.operationalBrief).toMatchObject({
+          owner: { status: "known", value: "su-1" },
+          nextAction: { status: "known" },
+        });
         expect(result.hasCompletionEvidence).toBe(true);
         expect(result.completion).toBeNull();
         expect(workItem.terminalCompletionEvidence).toBeNull();

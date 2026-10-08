@@ -831,11 +831,31 @@ function projectOperationalBriefValue(
   maxObjectKeys: number,
   path: string,
   clippedPaths: Set<string>,
+  compact: boolean,
 ): unknown {
   if (typeof value === "string") {
-    if (value.length <= maxString) return value;
+    const identityPath = compact && [
+      "operationalBrief.schemaVersion",
+      "operationalBrief.surface",
+      "operationalBrief.subject",
+      "operationalBrief.state.status",
+      "operationalBrief.state.value",
+      "operationalBrief.owner.status",
+      "operationalBrief.owner.value",
+    ].includes(path);
+    const importantAction = compact && path === "operationalBrief.nextAction.value";
+    const provenance = compact && /\.(?:source|reason)$/.test(path);
+    const stringCap = identityPath
+      ? Number.POSITIVE_INFINITY
+      : importantAction
+        ? Math.max(maxString, 160)
+        : provenance
+          ? 8
+          : maxString;
+    if (value.length <= stringCap) return value;
     clippedPaths.add(path);
-    return clip(value, maxString);
+    if (compact) return `${value.slice(0, stringCap)}…[TRUNCATED +${value.length - stringCap}]`;
+    return clip(value, stringCap);
   }
   if (Array.isArray(value)) {
     if (value.length > maxArray) clippedPaths.add(path);
@@ -848,6 +868,7 @@ function projectOperationalBriefValue(
         maxObjectKeys,
         `${path}[${index}]`,
         clippedPaths,
+        compact,
       ));
   }
   if (!value || typeof value !== "object") return value;
@@ -863,6 +884,7 @@ function projectOperationalBriefValue(
         maxObjectKeys,
         path ? `${path}.${key}` : key,
         clippedPaths,
+        compact,
       ),
     ]),
   );
@@ -879,6 +901,7 @@ function projectOperationalBrief(
   caps: FieldCaps,
   maxChars: number,
   dropped: Set<string>,
+  compact = false,
 ): unknown {
   if (raw === undefined) return undefined;
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
@@ -889,52 +912,68 @@ function projectOperationalBrief(
     dropped.add("operationalBrief");
     return undefined;
   }
-  if (jsonLen(raw) <= maxChars) return raw;
+  const rawRow = raw as Row;
+  const compactOmissions = compact
+    ? new Set(["text", "facts", "unknowns"].filter((key) => Object.hasOwn(rawRow, key)))
+    : new Set<string>();
+  const source = compactOmissions.size > 0
+    ? Object.fromEntries(Object.entries(rawRow).filter(([key]) => !compactOmissions.has(key)))
+    : rawRow;
+  const initialClippedPaths = new Set<string>();
+  for (const key of compactOmissions) initialClippedPaths.add(`operationalBrief.${key}`);
+  if (initialClippedPaths.size === 0 && jsonLen(source) <= maxChars) return source;
 
-  const initialStringCap = Math.min(caps.operationalBriefString, Math.max(40, Math.floor(maxChars / 8)));
+  const minimumStringCap = compact ? 12 : 40;
+  const initialStringCap = Math.min(
+    caps.operationalBriefString,
+    Math.max(minimumStringCap, Math.floor(maxChars / 8)),
+  );
   const stringCaps = [...new Set([
     initialStringCap,
-    Math.max(40, Math.floor(initialStringCap / 2)),
-    40,
+    Math.max(minimumStringCap, Math.floor(initialStringCap / 2)),
+    minimumStringCap,
   ])];
   const initialArrayCap = Math.min(caps.operationalBriefArray, Math.max(1, Math.floor(maxChars / 400)));
   const arrayCaps = [...new Set([initialArrayCap, Math.max(1, Math.floor(initialArrayCap / 2)), 1])];
-  const profilingSubject = (raw as Row).subject === "EI-11111111111111111";
-  let smallestCandidateChars = Number.POSITIVE_INFINITY;
 
   for (const maxString of stringCaps) {
     for (const maxArray of arrayCaps) {
-      const clippedPaths = new Set<string>();
+      const clippedPaths = new Set(initialClippedPaths);
       const projected = projectOperationalBriefValue(
-        raw,
+        source,
         maxString,
         maxArray,
         caps.operationalBriefObjectKeys,
         "operationalBrief",
         clippedPaths,
+        compact,
       ) as Row;
-      const paths = [...clippedPaths].sort();
+      const paths = compact
+        ? [
+            ...initialClippedPaths,
+            ...[...clippedPaths].filter((clippedPath) => !initialClippedPaths.has(clippedPath)).sort(),
+          ]
+        : [...clippedPaths].sort();
       const shaped = paths.length > 0
         ? {
             ...projected,
             shapeNote: {
               clipped: true,
-              paths: paths.slice(0, 8),
-              ...(paths.length > 8 ? { additionalPaths: paths.length - 8 } : {}),
+              paths: paths.slice(0, compact ? 4 : 8),
+              ...(paths.length > (compact ? 4 : 8)
+                ? { additionalPaths: paths.length - (compact ? 4 : 8) }
+                : {}),
             },
           }
         : projected;
       const shapedChars = jsonLen(shaped);
-      smallestCandidateChars = Math.min(smallestCandidateChars, shapedChars);
       if (shapedChars <= maxChars) {
         dropped.add("operationalBrief(clipped)");
-        if (profilingSubject) console.log("BRIEF_PROJECTION_SELECTED", maxChars, shapedChars);
         return shaped;
       }
     }
   }
 
-  if (profilingSubject) console.log("BRIEF_PROJECTION_MIN", maxChars, smallestCandidateChars);
   dropped.add("operationalBrief");
   return undefined;
 }
@@ -948,6 +987,7 @@ function projectRow(
   operationalBriefChars: number,
   dropped: Set<string>,
   includeCompletionEvidence = true,
+  compactOperationalBrief = false,
 ): Row {
   if (r.ok === false) return r; // an error row is already tiny and self-describing
   if (r.reportAttachments !== undefined) return r; // producer bounds one metadata list + a <=2048-byte page
@@ -957,7 +997,13 @@ function projectRow(
     dropped.add("checkpoint(clipped)");
   }
   const w = r.workItem as Row | undefined;
-  const operationalBrief = projectOperationalBrief(r.operationalBrief, caps, operationalBriefChars, dropped);
+  const operationalBrief = projectOperationalBrief(
+    r.operationalBrief,
+    caps,
+    operationalBriefChars,
+    dropped,
+    compactOperationalBrief,
+  );
   // Disclose the summary's fate in the SAME two shapes used for the checkpoint:
   // a full drop and a clip are different losses and a reader acts differently on
   // them (a clip is recoverable from what is in hand; a drop is not).
@@ -1221,17 +1267,18 @@ export function shapeWorkItemsGet(data: unknown, tier: WorkItemsGetTier): unknow
   // bounded records can therefore exceed the door by themselves. Before losing
   // all row identity, make one measured pass that preserves three compact rows
   // and their requested briefs while keeping evidence presence (not its body).
-  attempts.splice(attempts.length - 1, 0, {
+  const compactIdentityAttempt = {
     rung: ladder.length - 1,
     withSummary: false,
     withOperationalBrief: true,
     compactIdentity: true,
-  });
+  };
+  attempts.splice(attempts.length - 1, 0, compactIdentityAttempt);
 
   for (let attempt = 0; attempt < attempts.length; attempt += 1) {
     const { rung, withSummary, withOperationalBrief, compactIdentity } = attempts[attempt];
     const { fullRows, checkpointTotal, summaryTotal, lifecycleTotal, operationalBriefTotal } = compactIdentity
-      ? { fullRows: 3, checkpointTotal: 0, summaryTotal: 0, lifecycleTotal: 0, operationalBriefTotal: 4_200 }
+      ? { fullRows: 3, checkpointTotal: 0, summaryTotal: 0, lifecycleTotal: 0, operationalBriefTotal: 2_700 }
       : ladder[rung];
     const dropped = new Set<string>();
     const carrying = rows
@@ -1298,6 +1345,7 @@ export function shapeWorkItemsGet(data: unknown, tier: WorkItemsGetTier): unknow
             operationalBriefChars,
             dropped,
             !compactIdentity,
+            compactIdentity === true,
           )
         : singleItemFloor
           ? compactSingleRow(r, caps, tier, dropped)
