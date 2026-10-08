@@ -1077,6 +1077,53 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
     expect(revision.revision).toMatch(/^[a-f0-9]{64}$/);
   }, 30_000);
 
+  it.runIf(Boolean(manualFixtureDir))('invalidates mounted docs retrieval after a fixture revision without model calls', async () => {
+    // Exercise the real principal, MCP mount and request host. Repeated reads
+    // warm both metadata/rendered content and search at the same public URL.
+    const send = vi.spyOn(chat!, 'send');
+    const evidenceDir = join(llmBatteryEvidenceRoot(), `mounted-manual-revision-${randomUUID()}`);
+    mkdirSync(evidenceDir, { recursive: true });
+    const observations: Record<string, unknown> = {};
+    let stage = 'before';
+    const readMounted = async (marker: string, absentMarker: string) => {
+      const get = await verifyFixtureBundle();
+      const search = await fixtureRead('docs:search', { query: 'orchard recovery marker' });
+      expect(search.surface).toBe('public');
+      expect(search.revision).toBe(get.revision);
+      expect(Array.isArray(search.hits)).toBe(true);
+      const hit = (search.hits as Array<Record<string, unknown>>).find(entry => entry.slug === 'faq');
+      expect(hit).toMatchObject({ url: '/docs/faq#how-do-i-check-the-orchard-workspace',
+        heading: 'how-do-i-check-the-orchard-workspace' });
+      expect(JSON.stringify(get)).toContain(marker);
+      expect(JSON.stringify(search)).toContain(marker);
+      expect(JSON.stringify(get)).not.toContain(absentMarker);
+      expect(JSON.stringify(search)).not.toContain(absentMarker);
+      return { get, search };
+    };
+    try {
+      writeFileSync(join(manualFixtureDir!, 'faq.mdx'), fixtureFaq('ORCHARD-RED-5831'));
+      const before = await readMounted('ORCHARD-RED-5831', 'ORCHARD-BLUE-9274');
+      observations.before = before;
+      stage = 'unchanged';
+      const unchanged = await readMounted('ORCHARD-RED-5831', 'ORCHARD-BLUE-9274');
+      observations.unchanged = unchanged;
+      expect(unchanged.get.revision).toBe(before.get.revision);
+      stage = 'changed';
+      writeFileSync(join(manualFixtureDir!, 'faq.mdx'), fixtureFaq('ORCHARD-BLUE-9274'));
+      const after = await readMounted('ORCHARD-BLUE-9274', 'ORCHARD-RED-5831');
+      observations.after = after;
+      expect(after.get.revision).not.toBe(before.get.revision);
+      stage = 'passed';
+    } finally {
+      writeFileSync(join(evidenceDir, 'case.json'), JSON.stringify({
+        id: 'mounted-manual-revision', stage, runtimeBuild, workspaceId,
+        observedAt: new Date().toISOString(), modelSendCount: send.mock.calls.length, observations,
+      }, null, 2));
+      expect(send).not.toHaveBeenCalled();
+      send.mockRestore();
+    }
+  }, 60_000);
+
   const actualPortalAcceptance = async (mismatchedOrigin: boolean, preflightOnly = false, canonicalQuestion?: string) => {
     // Explicit roots prevent this acceptance case from silently testing a mutable
     // development server or a different installed app. It never promotes a build.
