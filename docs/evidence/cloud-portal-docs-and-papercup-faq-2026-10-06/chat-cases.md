@@ -132,10 +132,57 @@ excluded by the filter. The temporary host has exited and the fixture bundle
 was restored. This establishes the scoped capture repair and these three
 behaviors, with broader acceptance still open.
 
+## Current policy evidence and retained Portal journey, 2026-10-08
+
+The current P-006 policy bindings are `30742` (`DOCS-CONCEPTUAL@1`),
+`30743` (`DOCS-INJECTION@1`) and `30744` (`DOCS-LIVE-STATE@1`). They reuse
+passing maintained prompt-assembly ledger `20912116`. The source and test
+files predate that run; the binding service accepted their measured file sets,
+and the subsequent evidence read reports all three bindings `current`.
+They supersede stale bindings `29629`–`29631`. No test or model was rerun to
+renew these records.
+
+These checks exercise the actual owner/public Papercup prompt assembly and
+canonical `papercup-deep` tools resolver. They establish that the current
+policy loads FAQ-first references, clarification before retrieval/live-state
+fallback, authorized live-evidence boundaries and the untrusted-reference
+rule. They do not establish actual deep-model behavior or discharge the final
+`AUTO-BAR-R-5-P-006@3` session contract.
+
+One actual hosted Portal typed-answer and saved-history journey passed at
+10:23Z. The retained public-only record is
+[portal-typed-history-20261008.json](./portal-typed-history-20261008.json).
+It contains successful, call-ID-paired `docs:search` and `docs:get`, a public
+FAQ citation and fixture marker, conversation creation status `201`, and
+persisted user and assistant turns with source `text_typed`. The run passed
+one case; 36 other collected cases were filter-excluded.
+
+This was an isolated candidate with a disposable docs-only principal and
+public manual fixture. Imported-source provenance remains `unknown`: runner
+HEAD moved while the named test remained unchanged, and the imported change
+radius was not measured. Preserve that limitation. This functional result
+does not prove canonical FAQ coverage, fresh-install parity, the deep route
+or production shipment. The paid Portal case was not replayed.
+
+The new canonical-FAQ Portal cases at 10:52Z attempted a natural paraphrase
+and an ordinary misspelling in separate fresh hosted sessions. Both stopped
+at the SDK preflight with `public_scope_conflict`; neither generated a model
+answer. The run failed two cases and filter-excluded 37. Its log is
+`/tmp/su73-canonical-portal-natural-1053.log`, with retained failure records
+under `/tmp/su73-canonical-portal-evidence-1053`.
+
+The public-bound docs mount intentionally rejects an explicit `harness`
+argument. The new test preflight has been corrected to omit it, but has not
+been rerun. The same route mismatch exists in the unconditional FAQ policy's
+`harness: "public"` instructions; owned defect `EI-25408384808475230` tracks
+the policy repair and maintained owner/public regression. The current prompt
+bindings above establish loaded text, including that instruction, and do not
+prove that every advertised call shape is valid on the public mount.
+
 ## Outstanding acceptance
 
-The following remain unobserved here: the actual portal browser journey and
-deep-delegation route; the full canonical seed/paraphrase matrix; fresh installed
+The following remain unobserved here: the deep-delegation route; the full
+canonical seed/paraphrase matrix; fresh installed
 artifact behavior; live authorized account facts; stale, conflicting, missing
 and unavailable evidence beyond the scoped public-bundle case above; the full
 accepted isolation cohort and retriever/index outage matrix; real novice outcomes;
