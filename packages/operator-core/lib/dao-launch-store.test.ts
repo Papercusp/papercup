@@ -35,6 +35,20 @@ describe('workspace-scoped DAO launch store', () => {
     expect((await listDaoLaunches())[0]?.name).toBe('First edit');
     expect((await listDaoLaunches())[0]?.revision).toBe(2);
   });
+  it('pushes committed draft revisions and stays silent on refused mutations', async () => {
+    const pushedRevisions: number[] = [];
+    storage.notifications.mockImplementation((name: string) => {
+      expect(name).toBe('dao.launches');
+      const records = storage.rows.get('workspace-a')?.dao_launches as Record<string, DaoLaunchRecord>;
+      pushedRevisions.push(Object.values(records)[0]!.revision);
+    });
+    const created = await createDaoLaunch({ name: 'Example', purpose: 'Work together' }, { id: 'user-a', name: 'Founder' });
+    await updateDaoLaunch(created.id, { expectedRevision: 1, name: 'Changed', sections: created.sections });
+    await expect(updateDaoLaunch(created.id, { expectedRevision: 1, name: 'Stale', sections: created.sections })).rejects.toMatchObject({ code: 'revision-conflict' });
+    await expect(reviewDaoLaunch(created.id, { expectedRevision: 2, acknowledgePreparationOnly: true })).rejects.toMatchObject({ code: 'not-ready' });
+    expect(pushedRevisions).toEqual([1, 2]);
+    expect(storage.notifications).toHaveBeenCalledTimes(2);
+  });
   it('blocks premature review and invalidates exact-version review after a later edit', async () => {
     const created = await createDaoLaunch({ name: 'Example', purpose: 'Work together' }, { id: 'user-a', name: 'Founder' });
     await expect(reviewDaoLaunch(created.id, { expectedRevision: 1, acknowledgePreparationOnly: true })).rejects.toMatchObject({ code: 'not-ready' });
