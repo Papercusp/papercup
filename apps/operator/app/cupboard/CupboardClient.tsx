@@ -61,6 +61,7 @@ import { CUPBOARD_LISTING_KIND_TONE } from '../harness/theme';
 import { CupboardErrorState, cupboardHttpError } from './CupboardErrorState';
 import { ToolsSection } from './ToolsSection';
 import InstalledPacksSection from './InstalledPacksSection';
+import IdentityStatements from './IdentityStatements';
 import { useLexicon } from '@/lib/useLexicon';
 
 type ClaimFilter = 'all' | 'claimed' | 'unclaimed';
@@ -70,7 +71,7 @@ type KindFilter = 'all' | ListingKind;
  *  RETIRED — pot blueprints now fold into the single 'blueprint' tab, badged
  *  distinctly per-card; the 'template' listing kind gets its own tab for the
  *  app/aspect templates.) */
-type ViewFilter = KindFilter | 'tools';
+type ViewFilter = KindFilter | 'tools' | 'statements';
 
 interface CupboardListingsEnvelope {
   listings?: HarnessListing[];
@@ -83,7 +84,7 @@ interface CupboardListingsEnvelope {
 // 'recipe' get their own tabs. They sit AFTER the code kinds and before 'tools'
 // because they are the judgment/procedure family (what grades work, what work to
 // do, how to do it) rather than things that add runtime surface.
-const VIEW_FILTERS: ViewFilter[] = ['all', 'harness', 'app', 'theme', 'blueprint', 'template', 'plugin', 'pack', 'knowledge-pack', 'rubric', 'plan', 'recipe', 'goal', 'tools'];
+const VIEW_FILTERS: ViewFilter[] = ['all', 'harness', 'app', 'theme', 'blueprint', 'template', 'plugin', 'pack', 'knowledge-pack', 'rubric', 'plan', 'recipe', 'goal', 'tools', 'statements'];
 // Tab labels resolve inside the component via the lexicon — see the
 // VIEW_FILTER_LABEL memo in CupboardClient. The `harness` view lists hive-bound
 // listings, so its label is the project term ("Pots"/"Hives"), not "Harnesses".
@@ -196,6 +197,7 @@ export default function CupboardClient() {
       rule: 'Rules',
       event: 'Events',
       tools: 'Tools',
+      statements: 'Statements',
     }),
     [t],
   );
@@ -213,6 +215,7 @@ export default function CupboardClient() {
     parseAsStringEnum<ViewFilter>(VIEW_FILTERS).withDefault('all'),
   );
   const toolsView = kindFilter === 'tools';
+  const statementsView = kindFilter === 'statements';
   // Per-Hive rollup (D-005): when set, the storefront narrows to one project
   // ("Hive") and presents its recipe/snapshot/plugin/harness facets grouped by
   // kind. `null` = normal flat browse. A Hive is identified by `project_ref`
@@ -312,9 +315,9 @@ export default function CupboardClient() {
 
   useEffect(() => {
     // The Tools view has its own fetch (ToolsSection); skip the listings read.
-    if (toolsView && !hive) return;
+    if (statementsView || (toolsView && !hive)) return;
     void fetchListings();
-  }, [fetchListings, toolsView, hive]);
+  }, [fetchListings, toolsView, statementsView, hive]);
 
   // Hive rollup: narrow to the one hive. A pubkey ref matches the member rows'
   // `hive_pubkey` (the hive-native key — comb-hive-native-sharing P-001); a
@@ -420,6 +423,11 @@ export default function CupboardClient() {
     [router, setHive],
   );
 
+  if (statementsView) return <div>
+    <Button onClick={() => void setKindFilter('all')}>Back to Cupboard</Button>
+    <IdentityStatements />
+  </div>;
+
   return (
     <div
       style={{
@@ -522,11 +530,13 @@ export default function CupboardClient() {
             >
               {k === 'tools' ? (
                 <Wrench size={11} />
+              ) : k === 'statements' ? (
+                <ListChecks size={11} />
               ) : k !== 'all' ? (
                 <KindIcon kind={k} />
               ) : null}
               {VIEW_FILTER_LABEL[k]}
-              {k !== 'tools' && (
+              {k !== 'tools' && k !== 'statements' && (
                 <span data-testid={`cupboard-kind-count-${k}`} style={{ opacity: 0.72 }}>
                   {k === 'all' ? allKindsTotal ?? '—' : kindCounts.get(k as ListingKind) ?? '—'}
                 </span>
