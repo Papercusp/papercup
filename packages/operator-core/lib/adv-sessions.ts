@@ -1837,7 +1837,6 @@ export function classifyOwnerNativeSessionRows(
   return { binding: 'foreign', boundSessionId: bound.session_id!.trim(), advSessionId: Number(bound.id) };
 }
 
-const NATIVE_SESSION_VERIFY_ACQUIRE_TIMEOUT_MS = 1_000;
 const NATIVE_SESSION_VERIFY_STATEMENT_TIMEOUT_MS = 2_000;
 const NATIVE_SESSION_VERIFY_LOCK_TIMEOUT_MS = 1_000;
 
@@ -1882,7 +1881,10 @@ export async function classifyOwnerNativeSession(opts: {
     return classifyOwnerNativeSessionRows(rows, opts.sessionId);
   }, {
     readOnly: true,
-    acquireTimeoutMs: NATIVE_SESSION_VERIFY_ACQUIRE_TIMEOUT_MS,
+    // Inherit boundedOrgTxn's shared acquisition deadline. This verifier runs
+    // before every MCP tool call, so a shorter local bound turns normal
+    // org-admin pool queuing into an authorization failure. Keep the query
+    // and lock budgets narrow after a connection has been acquired.
     statementTimeoutMs: NATIVE_SESSION_VERIFY_STATEMENT_TIMEOUT_MS,
     lockTimeoutMs: NATIVE_SESSION_VERIFY_LOCK_TIMEOUT_MS,
   });
