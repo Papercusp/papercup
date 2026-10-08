@@ -5,7 +5,8 @@ vi.mock('../workspace-registry', () => ({
   workspacesRoot: () => '/relocated/workspaces',
   readRegistry: () => ({ workspaces: [{ id: 'registered-project' }] }),
 }));
-import { databaseCensusEntries, secretCensusProducers, unitCensusEntries, unitCensusDeclarations, verifyHostStateCensus, workspaceRegistryCensusProducer } from './state-census-producers';
+vi.mock('../scratch-uri', () => ({ scratchRoot: () => '/relocated/cache/spills' }));
+import { databaseCensusEntries, secretCensusProducers, unitCensusEntries, unitCensusDeclarations, verifyHostStateCensus, workspaceRegistryCensusProducer, scratchCensusProducer } from './state-census-producers';
 import { mkdtemp, writeFile, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -14,6 +15,11 @@ import type { Sql } from 'postgres';
 
 afterEach(() => vi.clearAllMocks());
 describe('secret census producer adapters', () => {
+  it('derives scratch cache ownership from the relocated writer root', () => {
+    const result = scratchCensusProducer();
+    expect(result.roots[0].path).toBe('/relocated/cache');
+    expect(result.declarations[0]).toMatchObject({ name: 'spills', classification: 'cache', prune: true });
+  });
   it('derives unit classification from installer sources, not installed-unit observations', async () => {
     const path = await mkdtemp(join(tmpdir(), 'unit-producer-'));
     try {

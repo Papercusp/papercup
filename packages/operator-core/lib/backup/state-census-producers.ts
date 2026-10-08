@@ -8,6 +8,18 @@ import { readdir } from 'node:fs/promises';
 import { dbEncryptionKeyFilePath } from '../db-encryption';
 import { superuserTokenPath } from '../superuser-token';
 import { workspacesRoot, readRegistry } from '../workspace-registry';
+import { scratchRoot } from '../scratch-uri';
+
+/** Result spills are rebuildable, using the actual relocated scratch writer root. */
+export function scratchCensusProducer() {
+  const path = scratchRoot();
+  const root: CensusRoot = { id: 'scratch-parent', path: dirname(path) };
+  const declaration: CensusDeclaration = {
+    kind: 'path', root: root.id, name: basename(path), classification: 'cache',
+    producer: 'scratch-uri', descendants: true, prune: true,
+  };
+  return { roots: [root], declarations: [declaration] };
+}
 
 /** Registry producer's real relocated root, not the operator's remapped HOME. */
 export function workspaceRegistryCensusProducer() {
