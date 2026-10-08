@@ -203,10 +203,10 @@ async function bindWallet(db: D1Database): Promise<void> {
 }
 
 async function seedSettledReceipt(db: D1Database, nonce: string, cumulative: number, splitManifestHash = SPLIT.manifestHash, terms?: IdentityPerUseOfferTerms): Promise<void> {
-  const v = { ...voucher(nonce, cumulative), splitManifestHash, ...(terms ? {
+  const v = signPaymentTestVoucher({ ...voucher(nonce, cumulative), splitManifestHash, ...(terms ? {
     releaseRef: terms.skuRef, priceVersion: terms.priceVersion, pricePerUnitMicros: BigInt(terms.unitPriceMicros),
     meterQuantity: BigInt(cumulative / terms.unitPriceMicros),
-  } : {}) };
+  } : {}) });
   await db
     .prepare(
       `INSERT INTO usage_receipts
