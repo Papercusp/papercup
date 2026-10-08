@@ -437,7 +437,10 @@ async function evictWorkspaceQuota(workspaceId: string, targetBytes: () => numbe
   // and falsely refuse every spill while a writer is active.
   const writers = reconcileReservations ? [...entry.writes.values()].filter((write) => write.reserved) : [];
   const observedWriterBytes = new Map(writers.map((write) => [write.filePath, 0]));
-  let used = await sizeOfDirAsync(wsRoot, observedWriterBytes);
+  // Reuse the same walk's per-run totals while selecting FIFO eviction candidates. Without
+  // this index, each candidate is recursively sized again after the full workspace scan.
+  const runBytesByPath = new Map<string, number>();
+  let used = await sizeOfDirAsync(wsRoot, observedWriterBytes, runBytesByPath);
   let evictions = 0;
   let bytes = 0;
   const evictedRuns: string[] = [];
@@ -446,15 +449,17 @@ async function evictWorkspaceQuota(workspaceId: string, targetBytes: () => numbe
     runs.sort((a, b) => a.mtimeMs - b.mtimeMs);
     for (const run of runs) {
       if (used <= targetBytes()) break;
-      const runBytes = await sizeOfDirAsync(run.dir);
+      // Symlinked tool/run directories are discovered by runDirsOf but are not traversed by
+      // the workspace size walk; retain the old fallback for those paths.
+      const bytesInRun = runBytesByPath.get(run.dir) ?? await sizeOfDirAsync(run.dir);
       // Recheck after the walk: a writer may have arrived while it was in flight.
       if ([...entry.writes.values()].some((write) => write.filePath.startsWith(run.dir + sep))) continue;
       await rmAsync(run.dir, { recursive: true, force: true });
-      used -= runBytes;
+      used -= bytesInRun;
       evictedRuns.push(run.dir);
       evictions += 1;
-      bytes += runBytes;
-      evictedBytesTotal += runBytes;
+      bytes += bytesInRun;
+      evictedBytesTotal += bytesInRun;
     }
   }
   const overlappingWrites = hadActiveWrites || entry.writeGeneration !== writeGeneration;
@@ -485,7 +490,13 @@ async function evictWorkspaceQuota(workspaceId: string, targetBytes: () => numbe
  * time): it never blocks the event loop, and it occupies at most one libuv threadpool thread,
  * so a slow disk can't starve the pool other async I/O shares.
  */
-async function sizeOfDirAsync(dir: string, observedFileBytes?: Map<string, number>): Promise<number> {
+async function sizeOfDirAsync(
+  dir: string,
+  observedFileBytes?: Map<string, number>,
+  runBytesByPath?: Map<string, number>,
+  depth = 0,
+  runDir?: string,
+): Promise<number> {
   let entries;
   try {
     entries = await readdirAsync(dir, { withFileTypes: true });
@@ -496,12 +507,20 @@ async function sizeOfDirAsync(dir: string, observedFileBytes?: Map<string, numbe
   for (const entry of entries) {
     const child = join(dir, entry.name);
     if (entry.isDirectory()) {
-      total += await sizeOfDirAsync(child, observedFileBytes);
+      // Scratch run directories are exactly the directory level below each tool directory.
+      // Record their totals as this normal size walk visits files, so FIFO recovery can reuse
+      // them without a second recursive stat pass.
+      const childRunDir = runBytesByPath && depth === 1 ? child : runDir;
+      if (runBytesByPath && depth === 1) runBytesByPath.set(child, 0);
+      total += await sizeOfDirAsync(child, observedFileBytes, runBytesByPath, depth + 1, childRunDir);
     } else {
       try {
         const bytes = (await statAsync(child)).size;
         total += bytes;
         if (observedFileBytes?.has(child)) observedFileBytes.set(child, bytes);
+        if (runDir && runBytesByPath) {
+          runBytesByPath.set(runDir, (runBytesByPath.get(runDir) ?? 0) + bytes);
+        }
       } catch {
         /* vanished mid-walk (GC) — skip */
       }

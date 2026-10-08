@@ -20,7 +20,7 @@ vi.mock('node:fs', async (importOriginal) => {
 });
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
-  return { ...actual, readdir: vi.fn(actual.readdir), rm: vi.fn(actual.rm) };
+  return { ...actual, readdir: vi.fn(actual.readdir), rm: vi.fn(actual.rm), stat: vi.fn(actual.stat) };
 });
 import {
   mkdtempSync,
@@ -38,7 +38,7 @@ import {
   realpathSync,
   truncateSync,
 } from 'node:fs';
-import { readdir as readdirAsync, rm as rmAsync, writeFile } from 'node:fs/promises';
+import { readdir as readdirAsync, rm as rmAsync, stat as statAsync, writeFile } from 'node:fs/promises';
 import { tmpdir, homedir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -801,18 +801,28 @@ describe('deferred scratch quota recovery', () => {
   it('coalesces pressure recovery while preserving concurrent reservations without synchronous scans', async () => {
     const old = makeSparseRun('ws-Q', UUID(1), 4 * 1024 ** 3, 10_000);
     const fresh = makeSparseRun('ws-Q', UUID(2), 1024 ** 3);
+    const oldDataPath = join(old, 'data.bin');
     await refreshScratchUsage('ws-Q');
     vi.mocked(readdirAsync).mockClear();
     vi.mocked(rmAsync).mockClear();
+    vi.mocked(statAsync).mockClear();
     vi.mocked(readdirSync).mockClear();
     vi.mocked(statSync).mockClear();
+    let oldDataStatsAtFirstWrite = -1;
     await Promise.all(Array.from({ length: 8 }, (_, i) => {
       const filePath = join(fresh, `write-${i}`);
       return writeWithScratchQuota({ workspaceId: 'ws-Q', filePath, bytes: 100 },
-        () => writeFile(filePath, Buffer.alloc(100)));
+        async () => {
+          if (oldDataStatsAtFirstWrite < 0) {
+            oldDataStatsAtFirstWrite = vi.mocked(statAsync).mock.calls
+              .filter(([path]) => path === oldDataPath).length;
+          }
+          await writeFile(filePath, Buffer.alloc(100));
+        });
     }));
     expect(existsSync(old)).toBe(false);
     expect(vi.mocked(rmAsync)).toHaveBeenCalledTimes(1);
+    expect(oldDataStatsAtFirstWrite).toBe(1);
     // One shared usage walk plus FIFO discovery. Waiting callers do not trigger another walk.
     expect(vi.mocked(readdirAsync).mock.calls.filter(([path]) => path === scratchRootForWorkspace('ws-Q'))).toHaveLength(2);
     expect(vi.mocked(readdirSync)).not.toHaveBeenCalled();
