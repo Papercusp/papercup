@@ -278,3 +278,47 @@ The test's full imported-source provenance was not captured and remains
 workspace readiness, README implementation/result, approval, the remaining
 product outcomes, real novice observations, independent acceptance and exact
 shipment remain open.
+
+## Actual account and workspace checks, 2026-10-08 19:35Z
+
+The maintained `apps/operator/e2e/public-manual-product.spec.ts` ran against
+the retained immutable Portal release
+`EJhqVxwQCX2gcGbngiare-20261008140427223-3801066-e4bba695` and a fresh private
+operator answering `/api/health` with source `ddce55d82d`. The run used
+`OPERATOR_E2E_SKIP_WARMUP=1`, system Chrome, genuine WorkOS TEST admission,
+private database/workspace validation and the retained kit's cleanup. It built
+no new operator or Portal artifact and invoked no model.
+
+Read evidence: `/tmp/su73-r2-report-1936.json` and
+`/tmp/su73-r2-served-1936.log`. Result: **1 passed, 1 failed, 0 skipped**;
+the process exited 1. The account case passed: the signed-in account panel
+showed identity text and the Status label, exposed the Sign out control, and
+its Billing link reached `/billing` with a visible billing card. Its attached
+record identifies build `EJhqVxwQCX2gcGbngiare`, release publication
+`2026-10-08T14:04:27.223Z` and the currently read account guide SHA-256
+`6057fa08a0beb6b9575435a253188cb9a0a1ed25491fea18aa6cd363536754b4`.
+This proves those controls and navigation, not sign-out execution, payment,
+organization selection, full readiness or shipment of the corrected manual.
+
+The workspace case passed authenticated session/workspace binding and reached
+the visible Workspaces surface. It failed on the expected Provider connections
+region. The retained accessibility snapshot instead shows **Control plane not
+reachable**, `operator_unreachable`, and an explicit explanation that this is
+an unreachable upstream rather than an empty estate. Evidence:
+`/tmp/su73-r2-output-1936/public-manual-product-manu-f41c3-t-claiming-a-connected-host-chromium/error-context.md`
+and its adjacent screenshot. The upstream failure's cause is **unknown**;
+operator health success alone does not establish the workspace API's transport,
+authentication or scope. Workspace listing and readiness remain unverified.
+
+Before this run, the two distinct harness failures were audited: the initial
+warm-up aborted before cases, and the next attempt loaded two Playwright
+runners through the external fixture. The generic warm-up repair's maintained
+suite passed 11 tests with no skips (`/tmp/su73-warmup-1931.log`, local dirty
+`fdecccfff0`). The fixture adapter now reuses the retained kit in a separate
+process and validates module loading/private context before account creation;
+this run reached actual account and workspace pages. Earlier failed reports
+`/tmp/su73-r2-report-1917.json` and `/tmp/su73-r2-report-1928.json` remain
+separate. No earlier passing suites or paid cases were replayed.
+
+R-2's remaining journeys, README result/approval, real novice observations,
+independent acceptance, loaded-source provenance and exact shipment remain open.
