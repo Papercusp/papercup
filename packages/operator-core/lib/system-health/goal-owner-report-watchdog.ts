@@ -75,6 +75,7 @@ import {
   GOAL_OWNER_REPORT_LEGACY_SQL_PATTERNS,
   GOAL_OWNER_REPORT_SCHEMA_VERSION,
 } from '../goal-owner-report';
+import { runGoalGradingBacklogSweepOnce } from './goal-grading-backlog-sweep';
 
 /** Hours-scale detection needs no seconds-scale sweep: one tick per 10 minutes
  *  bounds the worst-case detection lag to ~4% of the floor. */
@@ -647,6 +648,14 @@ export function startGoalOwnerReportWatchdog(sql: Sql, opts: { intervalMs?: numb
         .catch((e) => {
           console.warn(
             `[goal-owner-report-watchdog] sweep failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`,
+          );
+        })
+        // P-002 (goal-grading-live-coverage-and-holder-followthrough-2026-10-08):
+        // the grading-backlog sweep rides this timer rather than a new scheduler.
+        .then(() => runGoalGradingBacklogSweepOnce(sql))
+        .catch((e) => {
+          console.warn(
+            `[goal-grading-backlog] sweep failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`,
           );
         })
         .finally(() => {

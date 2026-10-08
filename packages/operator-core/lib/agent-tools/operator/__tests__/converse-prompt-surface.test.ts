@@ -100,6 +100,29 @@ describe('buildOperatorPrompt — per-surface affordances', () => {
     expect(systemPromptText).toMatch(/underscores, never colons/i);
   });
 
+  it('supports native Codex MCP execution while preserving the public catalog boundary', async () => {
+    const { systemPromptText } = await buildOperatorPrompt(
+      { messages: [{ role: 'user', content: 'Will remote agents stop when I close this tab?' }],
+        trigger: 'user_message', role: 'papercup', hostTrust: 'public',
+        toolNames: ['mcp__agentmcp__agent_tools:list'] },
+      null,
+    );
+    const callingContract = systemPromptText.split('## Calling tools')[1].split('# Papercup tool playbook')[0];
+    // Codex Luna's native fixture has only functions.exec at the top level;
+    // its MCP wrappers are callable inside that runtime. The policy must not
+    // prohibit the only available transport or imply it widens permissions.
+    expect(callingContract).toContain('functions.exec');
+    expect(callingContract).toContain('ALL_TOOLS');
+    expect(callingContract).toContain('mcp__agentmcp__<catalog_name>');
+    expect(callingContract).toContain('tools[methodName](arguments)');
+    expect(callingContract).toContain('not permission to use shell');
+    expect(callingContract).toContain('absent from the catalog does not exist here');
+    expect(callingContract).not.toContain('ALREADY LOADED');
+    expect(callingContract).not.toContain('there are no built-ins');
+    expect(systemPromptText).toContain('Explain the product from the public FAQ first');
+    expect(systemPromptText).not.toContain('## Fleet status');
+  });
+
   it('makes choice cards mandatory for enumerated pick-one questions (WI-4950)', async () => {
     const { userPromptText } = await buildOperatorPrompt(
       {

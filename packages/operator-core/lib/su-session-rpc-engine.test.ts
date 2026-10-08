@@ -17,11 +17,13 @@ const mocks = vi.hoisted(() => ({
   resolveBinary: vi.fn((bin: string) => `/resolved/${bin}`),
   nativeFunding: vi.fn(async (_input: unknown): Promise<{ ok: true } | { ok: false; code: string; message: string; retryable: false }> => ({ ok: true })),
   installedProvenance: vi.fn(async (_input: unknown): Promise<import('./cupboard/types').InstalledPluginProvenance | null> => null),
+  installedFunding: vi.fn(async (_input: unknown): Promise<import('./agent-tools/per-use-chokepoint').AttachedInstalledToolFunding | undefined> => undefined),
 }));
 vi.mock('./cupboard/install-io', async original => ({
   ...(await original<typeof import('./cupboard/install-io')>()), readInstalledPluginCommerceProvenance: mocks.installedProvenance,
 }));
 vi.mock('./cupboard/identity-activation-gate-io', () => ({ admitNativeIdentityInference: mocks.nativeFunding }));
+vi.mock('./cupboard/installed-tool-funding', () => ({ productionInstalledToolFunding: mocks.installedFunding }));
 vi.mock('./agent-bin-detect', () => ({ resolveAgentBinarySync: mocks.resolveBinary }));
 vi.mock('./su-session-commands', async (orig) => ({
   ...(await orig<typeof import('./su-session-commands')>()),
@@ -153,7 +155,7 @@ describe('P-017 awaited Codex host lifecycle', () => {
     const target: ProjectedTool = { pluginName: 'attached-paid-fixture',
       pluginInstallation: { version: '1.0.0', path: '/loaded/attached-paid', source: 'project' },
       description: 'fixture', capabilities: [], inputSchema: { type: 'object' },
-      expose: { mcp: { name: 'attached_paid_run' } }, fn: vi.fn() };
+      expose: { mcp: { name: 'attached-paid-fixture.run' } }, fn: vi.fn() };
     registerProjectedTool(target);
     mocks.installedProvenance.mockResolvedValue({ schema: 'papercusp.plugin-installation/v1',
       name: target.pluginName, version: '1.0.0', contentFingerprint: 'a'.repeat(64), hadListing: true, contentSource: 'r2',
@@ -162,16 +164,18 @@ describe('P-017 awaited Codex host lifecycle', () => {
     const barrier = gate();
     mocks.installedProvenance.mockImplementationOnce(async () => { await barrier.promise; return mocks.installedProvenance.getMockImplementation()!({}); });
     const f = fixture('codex', { resume, request: async frame => frame.method === 'mcpServerStatus/list'
-      ? { data: [{ name: 'papercusp-su', tools: { attached_paid_run: {} } }] } : undefined });
+      ? { data: [{ name: 'papercusp-su', tools: { 'attached-paid-fixture.run': {} } }] } : undefined });
     await f.engine.ready;
     const dispatched = f.engine.adapter.host.startCommand(command(f.engine, 'owner_turn') as never);
     await vi.waitFor(() => expect(mocks.installedProvenance).toHaveBeenCalledOnce());
+    expect(mocks.installedFunding).not.toHaveBeenCalled();
     expect(f.sent.some(r => r.method === 'turn/start')).toBe(false);
     barrier.release();
     await expect(dispatched.terminal).resolves.toMatchObject({ status: 'refused', refusal: {
       code: 'native-installed-admission-failed', message: expect.stringContaining('native-installed-funding-unavailable') } });
     expect(target.fn).not.toHaveBeenCalled(); expect(f.sent.some(r => r.method === 'turn/start')).toBe(false);
     expect(mocks.nativeFunding).toHaveBeenCalledOnce();
+    expect(mocks.installedFunding).toHaveBeenCalledExactlyOnceWith({ workspaceId: 'workspace', ownerId: 'su-rpc-fixture', principalId: 'system:operator' });
   });
 
   it.each(['codex', 'omp'] as const)('awaits the production paid-identity guard before %s native inference', async (backend) => {

@@ -268,28 +268,31 @@ export async function buildOperatorPrompt(
   const catalog = renderToolsCatalog(role, operatorToolNames, modality, toClaudeName, servingGeneration);
   if (catalog) systemSections.push(catalog);
 
-  // Tool-calling contract (voice-persona P-005/P-009). The brain runs on
-  // claude-code with a SMALL, directly-loaded MCP surface — the catalog above
-  // is every tool it has, already loaded, NOT deferred. The historical failure
-  // mode was the brain `ToolSearch`-ing colon names (`harness:status`) that
-  // never resolved (claude-code presents the sanitized underscore form), firing
-  // 4+ searches per turn and occasionally looping to the wall-clock cap. This
-  // note + the underscore-named catalog close that gap.
+  // The catalog is the permission boundary; each native backend supplies its
+  // own calling transport. Codex code mode exposes MCP methods through
+  // functions.exec/ALL_TOOLS rather than direct top-level declarations. Keep
+  // both transports in the shared contract, including when a turn fails over.
   systemSections.push(
     `## Calling tools\n\n` +
-      `Every tool you can call is listed in **Available tools** above — they are ` +
-      `ALREADY LOADED and ready to call directly. Three hard rules:\n` +
-      `- **Never call \`ToolSearch\`.** Your tools are not deferred; searching ` +
-      `finds nothing new and wastes the turn. Just call the tool.\n` +
+      `The tools permitted for this turn are listed in **Available tools** above. ` +
+      `Use the calling transport your runtime exposes:\n` +
+      `- When tools are directly declared, call them directly. **Never call ` +
+      `\`ToolSearch\`** to search for another tool surface.\n` +
       `- **Use the exact catalog name — underscores, never colons.** It is ` +
       `\`harness_status\`, not \`harness:status\`; \`chat_ask_choice\`, not ` +
-      `\`chat:ask_choice\`. Don't retry name variants; the catalog name is the ` +
-      `only form that resolves.\n` +
-      `- **The catalog is your ENTIRE tool surface — there are no built-ins.** ` +
-      `You have no \`Bash\`, no \`Task\`, no file or shell access, and they will ` +
-      `not work if you try. Never emit a \`Bash(...)\` call as a comment or ` +
-      `no-op. If no catalog tool does what you need, say so in your \`<say>\` ` +
-      `instead of improvising a tool.` +
+      `\`chat:ask_choice\`.\n` +
+      `- When Codex exposes \`functions.exec\`, use it to call the permitted MCP ` +
+      `methods on \`tools\`. Inside that runtime, check \`ALL_TOOLS\` for the ` +
+      `exact method \`mcp__agentmcp__<catalog_name>\`, then call ` +
+      `\`tools[methodName](arguments)\` and return its result with \`text(...)\`. ` +
+      `For example, the catalog's \`docs_search\` is ` +
+      `\`tools.mcp__agentmcp__docs_search(...)\`. A missing top-level MCP ` +
+      `declaration does not establish that the tool is unavailable.\n` +
+      `- **The catalog remains your ENTIRE permitted tool surface.** ` +
+      `\`functions.exec\` is a calling transport, not permission to use shell, ` +
+      `file, network or task APIs outside that catalog. You have no \`Bash\` ` +
+      `or \`Task\`. If no catalog tool does what you need, say so in your ` +
+      `\`<say>\` instead of improvising a tool.` +
       (hostTrust === 'public'
         ? `\n- **This is a PUBLIC surface.** The catalog above is the complete set ` +
           `for this host; a tool named anywhere else in these instructions but ` +

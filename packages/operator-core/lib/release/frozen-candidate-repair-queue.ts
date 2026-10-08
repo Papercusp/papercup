@@ -1745,6 +1745,8 @@ export function createFrozenCandidateRepairQueue(
     measuredKinds: input.measuredKinds,
     signatureContext: input.signatureContext,
     nowMs: input.nowMs,
+    // WI-10007489: the opening red records the radius that produced it, like every later one.
+    executed: input.executed,
   });
 }
 

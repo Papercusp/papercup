@@ -15,8 +15,17 @@ describe('governance round records', () => {
     const second = appendGovernanceVote(round.value, first.value, vote('b', 2));
     expect(second.ok).toBe(true);
     if (!second.ok) return;
-    const cert = finalizeGovernanceRound({ round: round.value, events: second.value, policy: DEFAULT_PLAN_ADMISSION_POLICY, nowMs: 2_000 });
+    const cert = finalizeGovernanceRound({ round: round.value, events: second.value, members: [{ memberId: 'a' }, { memberId: 'b' }], policy: DEFAULT_PLAN_ADMISSION_POLICY, nowMs: 2_000 });
     expect(cert).toMatchObject({ ok: true, value: { admitted: true, certificateHash: expect.stringMatching(/^[0-9a-f]{64}$/) } });
+  });
+
+  it('refuses an omitted roster instead of assuming unit weights and live keys', () => {
+    if (!round.ok) throw new Error('invalid fixture');
+    // The runtime guard also protects JavaScript and legacy callers.
+    // @ts-expect-error an authenticated explicit roster is mandatory
+    const result = finalizeGovernanceRound({ round: round.value, events: [vote('a', 1), vote('b', 1)],
+      policy: DEFAULT_PLAN_ADMISSION_POLICY, nowMs: 2_000 });
+    expect(result).toMatchObject({ ok: false, code: 'unknown-member', detail: 'an explicit voting roster is required' });
   });
 
   it('rebuilds deterministically and rejects duplicate/unknown votes', () => {
@@ -44,7 +53,7 @@ describe('finalization consults the weighted vote reducer', () => {
     if (!weighted.ok) return;
     // POSITIVE CONTROL: at equal weights the same ballots ARE admitted, so a
     // veto below is the weights talking and not some unrelated refusal.
-    const equal = finalizeGovernanceRound({ round: weighted.value, events, policy: DEFAULT_PLAN_ADMISSION_POLICY, nowMs: 2_000 });
+    const equal = finalizeGovernanceRound({ round: weighted.value, events, members: ['a', 'b', 'c', 'd'].map(memberId => ({ memberId })), policy: DEFAULT_PLAN_ADMISSION_POLICY, nowMs: 2_000 });
     expect(equal).toMatchObject({ ok: true, value: { admitted: true } });
 
     const skewed = finalizeGovernanceRound({
@@ -85,7 +94,7 @@ describe('finalization consults the weighted vote reducer', () => {
   it('covers the tally with the certificate hash, so a swapped tally fails verification', () => {
     expect(weighted.ok).toBe(true);
     if (!weighted.ok) return;
-    const cert = finalizeGovernanceRound({ round: weighted.value, events, policy: DEFAULT_PLAN_ADMISSION_POLICY, nowMs: 2_000 });
+    const cert = finalizeGovernanceRound({ round: weighted.value, events, members: ['a', 'b', 'c', 'd'].map(memberId => ({ memberId })), policy: DEFAULT_PLAN_ADMISSION_POLICY, nowMs: 2_000 });
     expect(cert.ok).toBe(true);
     if (!cert.ok) return;
     expect(verifyFinalizationCertificate(cert.value)).toBe(true);
@@ -117,7 +126,7 @@ describe('finalization consults the weighted vote reducer', () => {
     expect(underQuorum).toMatchObject({ ok: true, value: { admitted: false, reason: 'weighted-quorum-not-met' } });
     for (const [approvalBps, admitted] of [[7_500, true], [7_501, false]] as const) {
       expect(finalizeGovernanceRound({ round: weighted.value, events,
-        policy: { ...DEFAULT_PLAN_ADMISSION_POLICY, approvalBps }, nowMs: 2_000 }))
+        policy: { ...DEFAULT_PLAN_ADMISSION_POLICY, approvalBps }, nowMs: 2_000, members }))
         .toMatchObject({ ok: true, value: { admitted } });
     }
   });
@@ -125,7 +134,8 @@ describe('finalization consults the weighted vote reducer', () => {
   it('finalizes advancing replacements deterministically and refuses replay/conflict or extra roster weight', () => {
     if (!weighted.ok) throw new Error('invalid fixture');
     const replacement = { ...ballot('d', 'approve', 5), eventId: 'replacement-d' };
-    const input = { round: weighted.value, policy: DEFAULT_PLAN_ADMISSION_POLICY, nowMs: 2_000 };
+    const input = { round: weighted.value, policy: DEFAULT_PLAN_ADMISSION_POLICY, nowMs: 2_000,
+      members: ['a', 'b', 'c', 'd'].map(memberId => ({ memberId })) };
     const revised = finalizeGovernanceRound({ ...input, events: [...events, replacement] });
     expect(revised).toMatchObject({ ok: true, value: { admitted: true, tally: { approveWeight: 4, replacements: 1 } } });
     expect(finalizeGovernanceRound({ ...input, events: [replacement, ...events].reverse() })).toEqual(revised);

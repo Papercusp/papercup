@@ -77,7 +77,7 @@ export default function DaoWorkspaceDetails({ section, view, loading, error }: {
   } as const;
   const content = finance[section as keyof typeof finance];
   return <section className="dao-card"><h2>{content?.[0] ?? 'Organization records'}</h2><p>{content?.[1] ?? 'Review recorded organization information.'}</p>
-    <div className="dao-notice">No verified finance or ownership account is connected to this directory record.</div>
+    <div className="dao-notice">Finance and ownership records require an explicit verified account binding.</div>
     <RouteLink className="dao-action" href="/dao">Open organization launch preparation</RouteLink>
   </section>;
 }

@@ -835,6 +835,7 @@ describe('ptool call deadlines', () => {
     })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('activity:tool-log')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('sessions:search')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('sessions:read')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('release:deploy')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     // EI-22646214305093468: checkpoint-run detaches the ~55min suite, but its
     // admission/launch receipt still crosses the 55s MCP floor. Keep both
@@ -891,6 +892,10 @@ describe('ptool call deadlines', () => {
     expect(timeoutForTool('tools:invoke', {
       name: 'sessions:search',
       args: { query: 'timeout', mode: 'verbatim', limit: 1, context: 0 },
+    })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', {
+      name: 'sessions:read',
+      args: { session: 'codex:timeout-mapping-regression', tail: 10, text_limit: 1000 },
     })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('tools:invoke', {
       name: 'release:deploy',

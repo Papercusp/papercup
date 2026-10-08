@@ -741,6 +741,47 @@ export async function readPendingOutcomeCandidates(opts: {
   }));
 }
 
+/** The origins whose `wi:` routes have a window-free, ref-scoped terminal read. */
+export type RefScopedTerminalOrigin = 'scout' | 'su-ideate' | typeof AGENT_REVIEW_LEDGER_ORIGIN;
+
+/**
+ * WI-10007540 — routed ideas of `origin` whose `wi:` work item has ALREADY reached a
+ * terminal status, yet whose cached outcome is still NULL/'pending' and has not been
+ * checked since that item last changed.
+ *
+ * The eager path ({@link propagateWorkItemOutcome}) settles a route the moment its
+ * item terminalizes, but it is a single best-effort write: a terminal reached before
+ * that hook existed, or by a path that bypasses it, leaves the row unresolved forever.
+ * Scout and su-ideate rows have the portfolio frontier as their backstop; agent-review
+ * rows had none (measured 2026-10-08: 885 terminal-but-NULL rows). This read is the
+ * selector for that backstop. It returns ONLY rows that already have a terminal, so a
+ * batch never spends its budget on genuinely open work, and the `outcome_checked_at <
+ * updated_ts` predicate stops a row the outcome rule cannot settle from being picked
+ * again until its item changes.
+ */
+export async function readTerminalUnresolvedRefIdeaIds(opts: {
+  workspaceId: string;
+  origin: RefScopedTerminalOrigin;
+  limit?: number;
+}): Promise<string[]> {
+  const { sql } = getOrgPg();
+  const limit = Math.max(1, Math.min(2_000, Math.floor(opts.limit ?? 200)));
+  const rows = await sql<{ idea_id: string }[]>`
+    SELECT s.idea_id
+      FROM harness_shared.scout_routed_ideas s
+      JOIN harness_shared.work_items w
+        ON w.feature_id = substring(s.routed_ref FROM 4)
+     WHERE s.workspace_id = ${opts.workspaceId}
+       AND s.origin = ${opts.origin}
+       AND s.routed_ref LIKE 'wi:%'
+       AND (s.outcome IS NULL OR s.outcome = 'pending')
+       AND w.status = ANY(${[...CHANGE_FEED_COMPLETION_STATUSES, ...WORK_ITEM_LOSS_STATUSES]}::text[])
+       AND (s.outcome_checked_at IS NULL OR s.outcome_checked_at < w.updated_ts)
+     ORDER BY w.updated_ts DESC NULLS LAST, s.idea_id ASC
+     LIMIT ${limit}`;
+  return rows.map((row) => row.idea_id);
+}
+
 /**
  * Last successful ideator attempt or routed instant per lens (ms epoch), workspace-scoped, origin='scout' by
  * default (D-009 lens-learning isolation) and deliberately NOT harness-filtered
@@ -996,7 +1037,7 @@ export function workItemTerminalEntries(rows: readonly WorkItemTerminalRow[]): C
  * decides won / lost / unsettled.
  */
 async function readRefScopedWorkItemTerminals(
-  origin: 'scout' | 'su-ideate',
+  origin: RefScopedTerminalOrigin,
   opts: ScoutLedgerOpts = {},
 ): Promise<ChangeFeedEntry[]> {
   const { sql } = getOrgPg();
@@ -1340,6 +1381,16 @@ async function gatherCompletionsForOrigin(
   }
   if (o === 'scout') {
     const refScoped = await readScoutRefScopedTerminalEntries(opts);
+    return refScoped.length > 0 ? dedupById([...completions, ...refScoped]) : completions;
+  }
+  if (o === AGENT_REVIEW_LEDGER_ORIGIN) {
+    // WI-10007540: agent-review enrollment rows route only to `wi:` refs. Without
+    // the window-free terminal read, a reviewed item that resolved outside the
+    // feed's top-500 window (or reached a loss terminal, which the feed never
+    // carries) would classify pending forever — the same gap P-016 closed for
+    // su-ideate. Outcome cache only: the D-003 guard in refreshScoutOutcomes keeps
+    // this origin away from scout_lens_weights.
+    const refScoped = await readRefScopedWorkItemTerminals(AGENT_REVIEW_LEDGER_ORIGIN, opts);
     return refScoped.length > 0 ? dedupById([...completions, ...refScoped]) : completions;
   }
   return completions;

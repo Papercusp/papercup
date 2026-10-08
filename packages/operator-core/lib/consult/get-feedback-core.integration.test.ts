@@ -588,6 +588,7 @@ describe('source-audit dispatcher through persisted consult routing', () => {
             reservationReservedAt: SOURCE_AUDIT_RESERVED_AT,
           }, {
             getSql: () => rootSql,
+            resolveResponderLiveness: async () => ({ sessionState: 'live' as const }),
             confirmReservation: async () => true,
             resolveParties: async (ids) => new Map(ids.filter((id): id is string => Boolean(id))
               .map((id) => [id, id === 'author-child' ? 'excluded-author' : id])),
@@ -609,6 +610,12 @@ describe('source-audit dispatcher through persisted consult routing', () => {
         };
         const dispatchDeps = {
           listScorecards: async () => [source], getRubric: async () => ({ kind: 'standard' } as Rubric),
+          // This fixture has no task-manager rows. Keep the live-task guard
+          // inside the fixture instead of opening the production org database.
+          listTasks: async () => [],
+          // The restored direct-launch defect returns a synthetic task receipt;
+          // its task row is absent in this fixture, too.
+          getTask: async () => null,
           reserve: async () => ({ status: 'claimed' as const }), release: async () => true,
           confirmReservation: async () => true,
           listWorkspaceWideLoopStanddownOwners: async () => new Set<string>(), route, launch,
@@ -836,6 +843,7 @@ describe('source-audit dispatcher through persisted consult routing', () => {
       routeDeps?: Parameters<typeof routeSourceGradingAudit>[1],
     ) => routeSourceGradingAudit(input, {
       getSql: () => rootSql,
+      resolveResponderLiveness: async () => ({ sessionState: 'live' as const }),
       confirmReservation: routeDeps?.confirmReservation ?? (async () => true),
       resolveParties: async (ids) => new Map(ids.filter((id): id is string => Boolean(id)).map((id) => [id,
         id === 'author-child' ? 'source-author' : id === 'critic-child' ? 'critic' : id])),
@@ -847,6 +855,7 @@ describe('source-audit dispatcher through persisted consult routing', () => {
     const ctx = { workspaceId: WS, uiClientId: 'requester', isSuperuser: true } as DispatchPendingGradingAuditsInput['ctx'];
     const dispatchDeps = {
       listScorecards: async () => [source], getRubric: async () => ({ kind: 'standard' } as Rubric),
+      listTasks: async () => [],
       reserve: async (_issueId: string, reservationKey: string) => ({
         status: 'claimed' as const,
         reservation: { key: reservationKey, reservedAt: SOURCE_AUDIT_RESERVED_AT },

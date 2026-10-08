@@ -40,7 +40,8 @@ import {
   type LedgerSource,
 } from '../../cupboard/ledger-chain';
 
-export const PLAN_ADMISSION_GOVERNANCE_EVENT_PREFIX = 'governanceEvent.v1.';
+import { PLAN_ADMISSION_GOVERNANCE_EVENT_PREFIX } from './governance-federation';
+export { PLAN_ADMISSION_GOVERNANCE_EVENT_PREFIX } from './governance-federation';
 /** Hash-chain stream per pot (agent-economy-flywheel P-040); suffix is the federated pot id. */
 export const PLAN_ADMISSION_GOVERNANCE_STREAM_PREFIX = 'governance.plan-admission:';
 
@@ -376,6 +377,12 @@ export async function appendPlanAdmissionGovernanceEvent(
     [...snapshot.events, input.event], authority, (deps.nowMs ?? Date.now)());
   if (authentication.integrityErrors.length > 0) {
     throw new Error(`appendPlanAdmissionGovernanceEvent: authentication refused: ${authentication.integrityErrors.join('; ')}`);
+  }
+  if (input.event.body.kind === 'vote') {
+    const ballotId = input.event.body.vote.eventId;
+    const finalizations = snapshot.events.filter(event => event.roundId === input.event.roundId && event.body.kind === 'finalize');
+    if (finalizations.some(event => event.body.kind === 'finalize' && !event.body.certificate.voteEventIds.includes(ballotId)))
+      throw new Error('appendPlanAdmissionGovernanceEvent: vote is outside the finalized ballot set');
   }
   record ??= await (deps.setSetting ?? setHiveSetting)(
     {

@@ -6,6 +6,8 @@ import {
   FROZEN_REPAIR_CONVERGENCE_HOLD_MS,
   FROZEN_REPAIR_COLLISION_PATH_DISPLAY_CAP,
   FROZEN_REPAIR_CONVERGENCE_ROUND_CAP,
+  FROZEN_REPAIR_ROUND_GATE_ID_CAP,
+  frozenRepairRoundExecution,
   createFrozenCandidateQueue,
   createFrozenCandidateRepairQueue,
   describeUnreadableFrozenCandidateRepairQueue,
@@ -1783,6 +1785,140 @@ describe('P-013 / D-007 — convergence rounds + the owner-visible off switch', 
     expect(decideFrozenConvergenceCycleEntry({ flagEnabled: true, hasOpenQueue: true })).toEqual(
       decideFrozenConvergenceCycleEntry({ flagEnabled: false, hasOpenQueue: true }),
     );
+  });
+});
+
+describe('WI-10007489 — each red round records the radius it EXECUTED', () => {
+  function readyToVerify(overrides: Partial<FrozenCandidateRepairQueue> = {}): FrozenCandidateRepairQueue {
+    return { ...fresh(), phase: 'ready-to-verify', attempts: 1, fixerSpawnId: 'spawn-1', ...overrides };
+  }
+
+  const targeted = frozenRepairRoundExecution({
+    mode: 'targeted',
+    fileKeys: ['lib/b.test.ts', 'lib/a.test.ts', 'lib/a.test.ts'],
+    gateIds: ['lint:tsc', 'operator-core:test'],
+    radiusMode: 'repair-ledger',
+  });
+
+  it('the builder counts de-duplicated files and digests them independent of order', () => {
+    expect(targeted).toMatchObject({
+      mode: 'targeted',
+      fileCount: 2,
+      gateIds: ['lint:tsc', 'operator-core:test'],
+      radiusMode: 'repair-ledger',
+    });
+    expect(targeted.filesDigest).toMatch(/^[0-9a-f]{16}$/);
+    const reordered = frozenRepairRoundExecution({
+      mode: 'targeted',
+      fileKeys: ['lib/a.test.ts', 'lib/b.test.ts'],
+    });
+    expect(reordered.filesDigest).toBe(targeted.filesDigest);
+    // A different set must not collide with this one, or the digest proves nothing.
+    const other = frozenRepairRoundExecution({ mode: 'targeted', fileKeys: ['lib/a.test.ts'] });
+    expect(other.filesDigest).not.toBe(targeted.filesDigest);
+  });
+
+  it('an empty file set records a ZERO count and no digest; an uncounted full run records no count', () => {
+    const empty = frozenRepairRoundExecution({ mode: 'targeted', fileKeys: [] });
+    expect(empty.fileCount).toBe(0);
+    expect(empty.filesDigest).toBeUndefined();
+    const full = frozenRepairRoundExecution({ mode: 'full' });
+    // Absent, never 0: a full run whose files were not counted did not run zero files.
+    expect(Object.hasOwn(full, 'fileCount')).toBe(false);
+    expect(full).toEqual({ mode: 'full', gateIds: [] });
+  });
+
+  it('gate ids are capped so the persisted row stays bounded', () => {
+    const many = Array.from({ length: FROZEN_REPAIR_ROUND_GATE_ID_CAP + 9 }, (_, i) => `gate-${i}`);
+    const record = frozenRepairRoundExecution({ mode: 'targeted', gateIds: many });
+    expect(record.gateIds).toHaveLength(FROZEN_REPAIR_ROUND_GATE_ID_CAP);
+    expect(record.gateIds[0]).toBe('gate-0');
+  });
+
+  it('a repair-head red stores the executed radius on the round it appends', () => {
+    const next = markFrozenRepairVerificationRed(readyToVerify(), {
+      repairHead: C,
+      failingTests: ['lib/a.test.ts', 'lib/b.test.ts'],
+      nowMs: T0 + 1_000,
+      executed: targeted,
+    });
+    expect(next.convergenceRounds).toEqual([
+      { round: 1, head: C, failingCount: 1, atMs: T0 },
+      { round: 2, head: C, failingCount: 2, atMs: T0 + 1_000, executed: targeted },
+    ]);
+  });
+
+  it('a superseded red and an opening candidate red record it too', () => {
+    const admitted = markFrozenRepairAdmitted(readyToVerify(), {
+      atMs: T0 + 500,
+      actor: 'su-peer',
+      source: { ref: 'staging', sha: C1 },
+      fromRepairHead: C,
+      toRepairHead: C1,
+      paths: ['lib/a.ts'],
+      unchanged: [],
+      blobs: {},
+    });
+    const superseded = recordFrozenRepairSupersededRed(admitted, {
+      measuredHead: C,
+      failingTests: ['lib/a.test.ts'],
+      nowMs: T0 + 1_000,
+      executed: frozenRepairRoundExecution({ mode: 'full' }),
+    });
+    expect(superseded.convergenceRounds?.at(-1)?.executed).toEqual({ mode: 'full', gateIds: [] });
+
+    // The gate's opening red: a ready-to-test candidate measured red by the full suite.
+    const readyToTest = createFrozenCandidateQueue({
+      candidate: C,
+      base: BASE,
+      failingTests: ['lib/a.test.ts'],
+      nowMs: T0,
+    });
+    const opened = markFrozenCandidateVerificationRed(readyToTest, {
+      failingTests: ['lib/a.test.ts'],
+      nowMs: T0 + 2_000,
+      executed: frozenRepairRoundExecution({ mode: 'full' }),
+    });
+    expect(opened.convergenceRounds).toEqual([
+      { round: 1, head: C, failingCount: 1, atMs: T0 + 2_000, executed: { mode: 'full', gateIds: [] } },
+    ]);
+  });
+
+  it('the executed record survives a persist + parse round trip', () => {
+    const next = markFrozenRepairVerificationRed(readyToVerify(), {
+      repairHead: C,
+      failingTests: ['lib/a.test.ts'],
+      nowMs: T0 + 1_000,
+      executed: targeted,
+    });
+    const parsed = parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(next)));
+    expect(parsed?.convergenceRounds?.at(-1)?.executed).toEqual(targeted);
+  });
+
+  it('LEGACY: a round with no executed record parses unchanged and gains no field', () => {
+    const parsed = parseFrozenCandidateRepairQueue({
+      ...readyToVerify(),
+      convergenceRounds: [{ round: 1, head: C, failingCount: 3, atMs: T0 }],
+    });
+    expect(parsed?.convergenceRounds).toEqual([{ round: 1, head: C, failingCount: 3, atMs: T0 }]);
+    expect(Object.hasOwn(parsed!.convergenceRounds![0]!, 'executed')).toBe(false);
+  });
+
+  it('a malformed executed record is dropped while its ROUND is kept', () => {
+    const parsed = parseFrozenCandidateRepairQueue({
+      ...readyToVerify(),
+      convergenceRounds: [
+        { round: 1, head: C, failingCount: 3, atMs: T0, executed: { mode: 'partial', gateIds: [] } },
+        { round: 2, head: C, failingCount: 2, atMs: T0 + 1, executed: { mode: 'full', gateIds: 'lint:tsc' } },
+        { round: 3, head: C, failingCount: 1, atMs: T0 + 2, executed: { mode: 'full', fileCount: -1, gateIds: [] } },
+        { round: 4, head: C, failingCount: 1, atMs: T0 + 3, executed: { mode: 'full', filesDigest: 'NOT-HEX', gateIds: [] } },
+      ],
+    });
+    expect(parsed).not.toBeNull();
+    expect(parsed!.convergenceRounds!.map((round) => round.round)).toEqual([1, 2, 3, 4]);
+    expect(parsed!.convergenceRounds!.slice(0, 3).every((round) => round.executed === undefined)).toBe(true);
+    // A bad digest alone is stripped; the rest of the record is still evidence.
+    expect(parsed!.convergenceRounds![3]!.executed).toEqual({ mode: 'full', gateIds: [] });
   });
 });
 

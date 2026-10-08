@@ -913,6 +913,7 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     const { deps, calls } = stubDeps(false, ["lib/broken.test.ts"]);
     let queue: FrozenCandidateRepairQueue | null = null;
     const dispatchedHeads: string[] = [];
+    const dispatchedEvidence: unknown[] = [];
     let tipRetests = 0;
     deps.runGreen = async () => {
       calls.push("runGreen");
@@ -923,6 +924,7 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
         failingFiles: [
           { file: "lib/broken.test.ts", workspace: "@papercusp/web" },
         ],
+        logPath: "/tmp/checkpoint-exact-run.log",
         isolationNote:
           "isolation: 1 file STILL FAILED at the candidate — real break, gate stays red",
       };
@@ -936,8 +938,9 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     deps.writeFrozenRepairQueue = async (next) => {
       queue = next;
     };
-    deps.dispatchFrozenRepairFixer = async (next) => {
+    deps.dispatchFrozenRepairFixer = async (next, evidence) => {
       dispatchedHeads.push(next.repairHead);
+      dispatchedEvidence.push(evidence);
       return { spawnId: "fixer-1", runId: "run-1" };
     };
     deps.frozenRepairFixerAlive = async () => true;
@@ -961,6 +964,12 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
         fixerSpawnId: "fixer-1",
       },
     });
+    expect(first.checkpointEvidence).toMatchObject({
+      logPath: "/tmp/checkpoint-exact-run.log",
+      runId: "initial-proof-run",
+      integrationRoot: cfg().integrationRoot,
+    });
+    expect(dispatchedEvidence).toEqual([first.checkpointEvidence]);
     // EI-208045: the queue returns before moving-tip re-triage. Even though this fixture
     // deliberately carries the old candidate-framed "real break" isolation note and a
     // newer tip whose test would pass, the emitted result can never combine that note with

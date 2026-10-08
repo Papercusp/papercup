@@ -33,6 +33,7 @@ import { readSuperuserToken } from './superuser-token';
 import { admitNativeIdentityInference } from './cupboard/identity-activation-gate-io';
 import { resolveAgentBinarySync } from './agent-bin-detect';
 import { attachedInstalledToolLifecycle, type AttachedInstalledToolFunding } from './agent-tools/per-use-chokepoint';
+import { productionInstalledToolFunding } from './cupboard/installed-tool-funding';
 import { synthesizeTransportPrincipal } from './endpoint-route/routes/transport/role-principal-caps';
 
 type Backend = 'codex' | 'omp';
@@ -226,6 +227,8 @@ export function startSuRpcEngine(
     session: { workspaceId: binding.workspaceId ?? '', ownerId: binding.ownerId ?? '', advSessionId: binding.advSessionId,
       principalId: synthesizeTransportPrincipal({ workspaceId: binding.workspaceId ?? '', role: 'operator', isSuperuser: true })?.slug ?? '' },
     funding: options.installedToolFunding,
+    resolveFunding: () => productionInstalledToolFunding({ workspaceId: binding.workspaceId ?? '', ownerId: binding.ownerId ?? '',
+      principalId: synthesizeTransportPrincipal({ workspaceId: binding.workspaceId ?? '', role: 'operator', isSuperuser: true })?.slug ?? '' }),
     identityLifecycle: { admit: async context => {
       const verdict = await admitNativeIdentityInference({ workspaceId: context.workspaceId, ownerId: context.ownerId, backend });
       return verdict.ok ? { ok: true, bindNativeTurn: async () => {}, complete: async () => {}, reconcile: async () => {} } : verdict;

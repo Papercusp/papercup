@@ -25,6 +25,7 @@
 
 import type { OpEnvelope } from './op-envelope-types';
 import type { PeerLogOp } from './peer-log';
+import { PLAN_ADMISSION_GOVERNANCE_EVENT_PREFIX } from '../../agent-tools/plans/governance-federation';
 import type postgres from 'postgres';
 import {
   applyHyperbeeOpToPg,
@@ -339,6 +340,19 @@ export async function mergeAdmittedLogs(logs: AdmittedLog[], opts?: MergeOpts): 
   // cap's purpose — bounding per-pass ingest from any single author so a noisy
   // peer can't make the merge unbounded. A `<= 0` cap disables the bound.
   const winners = new Map<string, OpEnvelope>();
+  // Immutable governance facts must reach receiver validation individually.
+  // Picking a newer malformed rewrite/delete first would hide the valid put
+  // from a fresh replica, even when its PG projection refuses that winner.
+  const governancePuts: OpEnvelope[] = [];
+  const fold = (env: OpEnvelope) => {
+    if (env.table === 'hive-settings-by-key' && env.hbKey?.startsWith(PLAN_ADMISSION_GOVERNANCE_EVENT_PREFIX)) {
+      if (env.type === 'put') governancePuts.push(env);
+      return;
+    }
+    const groupKey = `${env.table}::${env.hbKey}`;
+    const prev = winners.get(groupKey);
+    winners.set(groupKey, prev ? lwwPick(prev, env) : env);
+  };
   let opsSinceYield = 0;
   // WI-2344: wall-clock companion to the op counter, same rationale as the
   // incremental merge below (MERGE_YIELD_MAX_MS).
@@ -372,22 +386,18 @@ export async function mergeAdmittedLogs(logs: AdmittedLog[], opts?: MergeOpts): 
       if (isSnapshotOp(op)) {
         for (const row of snapshotRows(op)) {
           const env = snapshotRowToEnvelope(row, log.keyHex);
-          const groupKey = `${env.table}::${env.hbKey}`;
-          const prev = winners.get(groupKey);
-          winners.set(groupKey, prev ? lwwPick(prev, env) : env);
+          fold(env);
         }
         continue;
       }
       const env = toEnvelope(op, log.keyHex);
-      const groupKey = `${env.table}::${env.hbKey}`;
-      const prev = winners.get(groupKey);
-      winners.set(groupKey, prev ? lwwPick(prev, env) : env);
+      fold(env);
     }
   }
 
   // 4+5. Apply each winning op; count those that applied.
   let applied = 0;
-  for (const env of winners.values()) {
+  for (const env of [...winners.values(), ...governancePuts]) {
     if (await apply(env)) applied++;
   }
   return applied;

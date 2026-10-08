@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { productWorkspaceHref } from './chrome-shell-nav';
+import { isDaoWorkspacePath, productWorkspaceHref } from './chrome-shell-nav';
 
 describe('product workspace navigation', () => {
   it('restores independent pot/tab and DAO/section selections', () => {
@@ -12,5 +12,10 @@ describe('product workspace navigation', () => {
   it('falls back safely when storage has no value or the other product', () => {
     expect(productWorkspaceHref(null, 'operations')).toBe('/adv');
     expect(productWorkspaceHref('/daos?dao=alpha', 'operations')).toBe('/adv');
+  });
+  it('keeps the existing legal/entity launch route inside the DAO product workspace', () => {
+    expect(isDaoWorkspacePath('/dao')).toBe(true);
+    expect(productWorkspaceHref('/dao?daoOrg=org-a', 'dao')).toBe('/dao?daoOrg=org-a');
+    expect(isDaoWorkspacePath('/dao-unrelated')).toBe(false);
   });
 });

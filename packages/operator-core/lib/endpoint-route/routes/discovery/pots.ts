@@ -33,6 +33,15 @@ export default defineTool({
     const url = new URL(req.url);
     const includeExpired = url.searchParams.get('includeExpired') === 'true';
     const rows = await buildHiveDirectoryRows({ includeExpired });
+    const potId = url.searchParams.get('potId');
+    if (potId) {
+      const selected = rows.find(row => row.potId === potId);
+      if (!selected) return Response.json({ error: 'dao_not_discovered' }, { status: 404 });
+      const { activeWorkspaceId } = await import('../../../workspace-registry');
+      const { buildDaoWorkspaceView } = await import('../../../dao-workspace-view');
+      const workspace = await buildDaoWorkspaceView(activeWorkspaceId(), selected);
+      return Response.json({ workspace });
+    }
     return Response.json({ count: rows.length, rows });
   },
 });

@@ -7,6 +7,9 @@ import { upsertHivePolicyRow } from '../../hive-policy-store';
 import { canonicalizeHivePolicy, hivePolicySignedBytes, type HivePolicy } from '../../hive-policy-schema';
 import { generateEd25519KeypairDer, signWithPrivateKeyDer } from '../../identity/ed25519';
 import { buildHiveSettingsProjection } from '../../sync/hyperbee/projections/hive-settings';
+import { mergeAdmittedLogs, type AdmittedLog } from '../../sync/hyperbee/read-merge';
+import type { PeerLogOp } from '../../sync/hyperbee/peer-log';
+import { PendingMembershipContent } from '../../sync/hyperbee/pending-membership-content';
 import { authenticateGovernanceEvent, governanceAuthorityHash, governanceEventSigningBytes,
   governanceVoteSigningBytes, type GovernanceSigningAuthority } from './governance-authentication';
 import { ingestGovernanceEvents, selectFederatableEvents,
@@ -69,6 +72,15 @@ describe('signed governance partition and immutable persistence (real PG)', () =
   beforeEach(async () => {
     for (const db of replicas) {
       await db.adminSql`DELETE FROM harness_shared.pot_settings WHERE workspace_id = ${WORKSPACE}`;
+      // Seed already-admitted transport devices; membership admission itself is
+      // exercised by the real-DHT suite. The receiver reads these real PG rows.
+      await db.adminSql`DELETE FROM harness_shared.pot_members WHERE workspace_id = ${WORKSPACE}`;
+      for (const [i, key] of [voterA, voterB].entries()) await db.adminSql`
+        INSERT INTO harness_shared.pot_members
+          (workspace_id, pot_home_slug, github_user_id, github_username, device_attestations, revoked_pubkeys, binding_status)
+        VALUES (${WORKSPACE}, ${POT}, ${i + 1}, ${`member-${i}`},
+          ${JSON.stringify([{ device_pubkey: key.pubkeyBase64 }])}::text::jsonb, '{}', 'verified')
+      `;
       await persistPolicy(db);
     }
   });
@@ -125,6 +137,10 @@ describe('signed governance partition and immutable persistence (real PG)', () =
   const append = (db: OrgTestDb, event: FederatedGovernanceEvent) =>
     appendPlanAdmissionGovernanceEvent({ ...scope, event }, db.adminSql, deps);
   const snapshot = (db: OrgTestDb) => readPlanAdmissionGovernanceSnapshot(scope, db.adminSql, deps);
+  const receiver = (db: OrgTestDb, pendingMemberContent?: PendingMembershipContent) => buildHiveSettingsProjection({ workspaceId: WORKSPACE,
+    pendingMemberContent,
+    harnessSlug: POT, sql: db.adminSql, resolveAuthorDevice: source =>
+      [voterA.pubkeyBase64, voterB.pubkeyBase64].includes(source) ? source : null });
   const resolve = (db: OrgTestDb) => createPlanAdmissionCertificateSource({
     resolvePotHomeSlug: async () => POT,
     readSnapshot: input => readPlanAdmissionGovernanceSnapshot(input, db.adminSql, deps),
@@ -142,7 +158,7 @@ describe('signed governance partition and immutable persistence (real PG)', () =
       verifySignature: event => authenticateGovernanceEvent({ authority: trusted!, event,
         round: f.round, nowMs: NOW }).ok,
     });
-    const projection = buildHiveSettingsProjection({ workspaceId: WORKSPACE, harnessSlug: POT, sql: db.adminSql });
+    const projection = receiver(db);
     for (const event of result.accepted) await projection.writeToPg({ harness_slug: POT,
       setting_key: planAdmissionGovernanceEventSettingKey(event), value: JSON.stringify(event) },
     { origin: 'remote', authorPubkey: event.originPeerId === 'peer-b' ? voterB.pubkeyBase64 : voterA.pubkeyBase64, ts: NOW });
@@ -215,7 +231,7 @@ describe('signed governance partition and immutable persistence (real PG)', () =
     const conflict = f.sign('envelope-a', { kind: 'vote', vote: f.votes[0]! }, { occurredAtMs: NOW - 1 });
     // Separate content-addressed keys model concurrent peer writes, which cannot
     // use the local append's prior-snapshot check as a distributed lock.
-    const projection = buildHiveSettingsProjection({ workspaceId: WORKSPACE, harnessSlug: POT, sql: db.adminSql });
+    const projection = receiver(db);
     await projection.writeToPg({ harness_slug: POT, setting_key: planAdmissionGovernanceEventSettingKey(conflict),
       value: JSON.stringify(conflict) }, { origin: 'remote', authorPubkey: voterA.pubkeyBase64, ts: NOW });
     expect((await listHiveSettings(WORKSPACE, POT, db.adminSql))).toHaveLength(5);
@@ -238,5 +254,125 @@ describe('signed governance partition and immutable persistence (real PG)', () =
         AND setting_key = ${planAdmissionGovernanceEventSettingKey(forged)}`;
     expect((await snapshot(db)).integrityErrors.join(';')).toContain('unverified-signature');
     expect((await resolve(db)).certificate).toBeNull();
+  });
+
+  it('refuses malformed, forged and foreign governance rows at the PG receiver', async () => {
+    const f = fixture(), db = replicas[0];
+    for (const event of f.events) await append(db, event);
+    const projection = receiver(db);
+    const foreign = f.sign('foreign-row', { kind: 'vote', vote: f.votes[0]! }, { potId: 'other-pot' });
+    const forged = { ...f.events[1]!, signature: Buffer.alloc(64).toString('base64') };
+    for (const row of [
+      { setting_key: 'governanceEvent.v1.malformed', value: '{}' },
+      { setting_key: planAdmissionGovernanceEventSettingKey(foreign), value: JSON.stringify(foreign) },
+      { setting_key: planAdmissionGovernanceEventSettingKey(forged), value: JSON.stringify(forged) },
+      { setting_key: 'governanceEvent.v1.wrong-digest', value: JSON.stringify(f.events[0]) },
+    ]) await projection.writeToPg({ harness_slug: POT, ...row },
+      { origin: 'remote', authorPubkey: voterA.pubkeyBase64, ts: NOW + 1 });
+    expect((await snapshot(db)).integrityErrors).toEqual([]);
+    expect((await listHiveSettings(WORKSPACE, POT, db.adminSql))).toHaveLength(4);
+    expect((await resolve(db)).certificate).toEqual(f.certificate);
+  });
+
+  it.each(['pause', 'revoke'] as const)('preserves %s history against receiver overwrite and deletion', async kind => {
+    const f = fixture(), db = replicas[0];
+    for (const event of f.events) await append(db, event);
+    const control = f.sign('control', kind === 'pause' ? { kind } : { kind, reason: 'withdrawn' });
+    await append(db, control);
+    const projection = receiver(db);
+    const key = planAdmissionGovernanceEventSettingKey(control);
+    await projection.writeToPg({ harness_slug: POT, setting_key: key, value: JSON.stringify(f.events[0]) },
+      { origin: 'remote', authorPubkey: voterA.pubkeyBase64, ts: Date.now() + 10_000 });
+    await projection.deleteFromPg(key, Date.now() + 20_000);
+    const stored = await listHiveSettings(WORKSPACE, POT, db.adminSql);
+    expect(stored.find(row => row.settingKey === key)?.value).toEqual(control);
+    expect(stored).toHaveLength(5);
+    expect((await resolve(db)).certificate).toBeNull();
+    expect((await resolve(db)).governance?.status).toBe(kind === 'pause' ? 'paused' : 'revoked');
+  });
+
+  it.each([1, 2])('freezes the certified ballot set against a late signed sequence-%s ballot', async sequence => {
+    const f = fixture(), [left, right] = replicas;
+    for (const event of f.events) await append(left, event);
+    const { signature: _signature, ...original } = f.votes[0]!;
+    const unsigned = { ...original, eventId: 'late-ballot', choice: 'reject' as const, sequence };
+    const vote = { ...unsigned, signature: signWithPrivateKeyDer(voterA.privateKeyDer,
+      governanceVoteSigningBytes(authority, f.round, unsigned)).toString('base64') };
+    const late = f.sign('late-envelope', { kind: 'vote', vote }, { occurredAtMs: NOW - 1 });
+    expect(authenticateGovernanceEvent({ authority, event: late, round: f.round, nowMs: NOW }).ok).toBe(true);
+    await expect(append(left, late)).rejects.toThrow(/finalized ballot set/);
+    // A peer can receive a valid late ballot before it sees finalization. The
+    // signed certificate's ballot IDs, rather than arrival order, freeze the set.
+    await append(right, f.events[0]!);
+    await append(right, late);
+    for (const event of f.events.slice(1)) await append(right, event);
+    expect((await resolve(left)).certificate).toEqual(f.certificate);
+    expect((await resolve(right)).certificate).toEqual(f.certificate);
+    expect((await resolve(right)).governance?.status).toBe('finalized');
+  });
+
+  it('requires current receiver-stamped transport membership while allowing signed event relay', async () => {
+    const f = fixture(), db = replicas[0], projection = receiver(db);
+    const row = { harness_slug: POT, setting_key: planAdmissionGovernanceEventSettingKey(f.events[0]!),
+      value: JSON.stringify(f.events[0]) };
+    for (const authorPubkey of ['', 'forged-source-log']) {
+      expect(await projection.writeToPg(row, { origin: 'remote', authorPubkey, ts: NOW })).toBe(false);
+      expect((await listHiveSettings(WORKSPACE, POT, db.adminSql))).toEqual([]);
+    }
+    // Member B forwards A's signed round; transport and signer identities differ.
+    await projection.writeToPg(row, { origin: 'remote', authorPubkey: voterB.pubkeyBase64, ts: NOW });
+    expect((await snapshot(db)).events).toEqual([f.events[0]]);
+    await db.adminSql`UPDATE harness_shared.pot_members SET revoked_pubkeys = ARRAY[${voterB.pubkeyBase64}]
+      WHERE workspace_id = ${WORKSPACE} AND github_user_id = 2`;
+    expect(await projection.writeToPg({ ...row,
+      setting_key: planAdmissionGovernanceEventSettingKey(f.events[1]!), value: JSON.stringify(f.events[1]) },
+    { origin: 'remote', authorPubkey: voterB.pubkeyBase64, ts: NOW })).toBe(false);
+    expect((await listHiveSettings(WORKSPACE, POT, db.adminSql))).toHaveLength(1);
+  });
+
+  it.each([false, true])('recovers immutable history on a fresh full-fold replica (reverse logs=%s)', async reverse => {
+    const f = fixture(), db = replicas[0], projection = receiver(db);
+    const revoke = f.sign('withdraw', { kind: 'revoke', reason: 'terminal withdrawal' });
+    const legitimate: PeerLogOp[] = [...f.events, revoke].map(event => ({ type: 'put',
+      table: 'hive-settings-by-key', hbKey: planAdmissionGovernanceEventSettingKey(event),
+      value: { harness_slug: POT, setting_key: planAdmissionGovernanceEventSettingKey(event), value: JSON.stringify(event) },
+      ts: NOW, schema_version: 1, author_pubkey: 'untrusted-payload-author' }));
+    const key = planAdmissionGovernanceEventSettingKey(revoke);
+    const attacks: PeerLogOp[] = [
+      { ...legitimate[0]!, hbKey: key, ts: Date.now() + 10_000,
+        value: { harness_slug: POT, setting_key: key, value: '{}' } },
+      { ...legitimate[0]!, type: 'del', hbKey: key, ts: Date.now() + 20_000, value: undefined },
+    ];
+    const log = (ops: PeerLogOp[], keyHex: string): AdmittedLog => ({ keyHex, length: ops.length,
+      get: async index => ops[index] ?? null });
+    const logs = [log(legitimate, voterA.pubkeyBase64), log(attacks, voterB.pubkeyBase64)];
+    await mergeAdmittedLogs(reverse ? logs.reverse() : logs, { applyImpl: async op => {
+      if (op.type === 'del') return (await projection.deleteFromPg(op.hbKey!, op.ts)) !== false;
+      const row = projection.decodeValue(op.value);
+      if (!row) return false;
+      return (await projection.writeToPg(row, { origin: 'remote', authorPubkey: op.sourceLogKeyHex ?? '',
+        ts: op.ts })) !== false;
+    } });
+    expect((await snapshot(db)).integrityErrors).toEqual([]);
+    expect((await snapshot(db)).events).toHaveLength(5);
+    expect((await resolve(db)).certificate).toBeNull();
+    expect((await resolve(db)).governance?.status).toBe('revoked');
+  });
+
+  it('replays authenticated governance through the existing membership-ordering buffer', async () => {
+    const f = fixture(), db = replicas[0], pending = new PendingMembershipContent(), projection = receiver(db, pending);
+    await db.adminSql`DELETE FROM harness_shared.pot_members WHERE workspace_id = ${WORKSPACE} AND github_user_id = 2`;
+    expect(await projection.writeToPg({ harness_slug: POT,
+      setting_key: planAdmissionGovernanceEventSettingKey(f.events[0]!), value: JSON.stringify(f.events[0]) },
+    { origin: 'remote', authorPubkey: voterB.pubkeyBase64, ts: NOW })).toBe(false);
+    expect((await listHiveSettings(WORKSPACE, POT, db.adminSql))).toEqual([]);
+    await db.adminSql`INSERT INTO harness_shared.pot_members
+      (workspace_id, pot_home_slug, github_user_id, github_username, device_attestations, revoked_pubkeys, binding_status)
+      VALUES (${WORKSPACE}, ${POT}, 2, 'member-1', ${JSON.stringify([{ device_pubkey: voterB.pubkeyBase64 }])}::text::jsonb, '{}', 'verified')`;
+    const ready = pending.drainForDevices(new Set([voterB.pubkeyBase64]), Date.now());
+    expect(ready).toHaveLength(1);
+    for (const op of ready) await op.reapply();
+    expect((await snapshot(db)).events).toEqual([f.events[0]]);
+    expect(pending.drainForDevices(new Set([voterB.pubkeyBase64]), Date.now())).toEqual([]);
   });
 });

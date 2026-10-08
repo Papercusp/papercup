@@ -190,6 +190,8 @@ import {
   type RepairSignatureKind,
   type FrozenRepairRetestRequest,
   type FrozenRepairSelectiveCoverage,
+  frozenRepairRoundExecution,
+  type FrozenRepairRoundExecution,
 } from "@papercusp/operator-core/lib/release/frozen-candidate-repair-queue";
 import type {
   FreezeAndConvergeDisposition,
@@ -5467,7 +5469,13 @@ export function rescueGateIdsFrom(
 export type RepairHeadVerification =
   /** Every selective leg passed AT the repair head; the full canonical gate at that same sha
    *  is the promotion proof (P-007). */
-  | { kind: "green"; summary: string; selectiveCoverage?: FrozenRepairSelectiveCoverage }
+  | {
+      kind: "green";
+      summary: string;
+      selectiveCoverage?: FrozenRepairSelectiveCoverage;
+      /** WI-10007489: the targeted radius this verdict actually ran. */
+      executed?: FrozenRepairRoundExecution;
+    }
   /** At least one leg is still red AT the repair head. `signature` is the FRESH typed
    *  signature (P-006: files as `test-file` + their `workspace-task`, gates as the entries
    *  they were re-run from) and `failingTests` its flat projection, for the re-queued row. */
@@ -5477,6 +5485,8 @@ export type RepairHeadVerification =
       signature: RepairSignatureInput[];
       summary: string;
       selectiveCoverage?: FrozenRepairSelectiveCoverage;
+      /** WI-10007489: the targeted radius this verdict actually ran, recorded on its round. */
+      executed?: FrozenRepairRoundExecution;
     }
   /** A typed post-suite leg is present, so the FULL gate at the repair head is the only
    *  runner that can re-measure it. Repair-radius widening never produces this verdict. */
@@ -6374,6 +6384,14 @@ export async function verifyRepairHead(
 
   const fileList = [...files.values()];
   const gateList = [...gates];
+  // WI-10007489: the radius this round EXECUTES, stamped on the verdict so the queue's
+  // convergence round records it — "no full-gate fallthrough" is then checkable from history.
+  const executed = frozenRepairRoundExecution({
+    mode: "targeted",
+    fileKeys: fileList.map(failingFileKey),
+    gateIds: gateList,
+    radiusMode: selection.mode,
+  });
   // Sequential on purpose: both runners materialize `head` in the SAME checkpoint tree, and
   // two concurrent setupTree calls on one directory race each other's checkout.
   const fileSettled =
@@ -6495,6 +6513,7 @@ export async function verifyRepairHead(
       failingTests: [...fresh.keys()],
       signature: [...fresh.values()],
       ...(selectiveCoverage ? { selectiveCoverage } : {}),
+      executed,
       summary:
         `still red at repair head ${at}: ` +
         [fileRun?.summary, gateRun?.summary, radiusNote].filter(Boolean).join("; "),
@@ -6503,6 +6522,7 @@ export async function verifyRepairHead(
   return {
     kind: "green",
     ...(selectiveCoverage ? { selectiveCoverage } : {}),
+    executed,
     summary:
       `every selective leg passed at repair head ${at} ` +
       `(${fileList.length} file(s), ${gateList.length} gate(s); ${radiusNote}); ` +
@@ -12181,6 +12201,8 @@ async function runGreenCheckpointInner(
               : verification.failingTests,
             signature: redSignature,
             signatureContext: { gateRegistry: NON_TEST_GATE_SCRIPTS },
+            // WI-10007489: the round records the targeted radius that produced this red.
+            ...(verification.executed ? { executed: verification.executed } : {}),
           };
           repairQueue = await commitFrozenRepairQueueTransition(
             deps,
@@ -13444,12 +13466,19 @@ async function runGreenCheckpointInner(
       // union the red post-suite legs, plus which kinds this run measured, so a suite-red run
       // that deferred the post-suite legs EXTENDS the signature instead of silently dropping
       // the lint legs it never re-measured.
-      const measuredSignature = repairSignatureFromVerdict({
-        failingTests,
-        postSuiteMeasured,
-        postSuiteLegs,
-        typecheckPreflight,
-      });
+      // WI-10007489: every round this block appends ran the FULL gate, so each records
+      // `mode:'full'` — the fallthrough the zero-wait-convergence promise forbids is then
+      // countable from the queue's own history. An early typecheck-preflight failure never
+      // ran the suite, so it records no radius (absent = "not recorded", never "nothing ran").
+      const measuredSignature = {
+        ...repairSignatureFromVerdict({
+          failingTests,
+          postSuiteMeasured,
+          postSuiteLegs,
+          typecheckPreflight,
+        }),
+        ...(earlyPreflightFailure ? {} : { executed: frozenRepairRoundExecution({ mode: "full" }) }),
+      };
       if (repairVerification && repairQueue) {
         // EI-22430783328866306 (second half): persist the red BEFORE the dispatch attempt,
         // exactly as the ready-to-test branch below does. `reserveFrozenCandidateRepairFixer`

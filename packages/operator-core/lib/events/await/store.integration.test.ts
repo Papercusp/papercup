@@ -184,6 +184,10 @@ beforeAll(async () => {
       target_owner_id text, active boolean NOT NULL DEFAULT true,
       reschedule_interval_sec integer
     )`);
+  await rootSql.unsafe(`CREATE TABLE harness_shared.audit_log (
+    id text PRIMARY KEY, ts bigint NOT NULL, actor text NOT NULL, action text NOT NULL,
+    subject text, details jsonb, workspace_id text NOT NULL DEFAULT 'default'
+  )`);
   hb.sql = rootSql;
 }, 90_000);
 
@@ -198,6 +202,7 @@ beforeEach(async () => {
   await rootSql`TRUNCATE harness_shared.event_key_fires`;
   await rootSql`TRUNCATE harness_shared.work_items`;
   await rootSql`TRUNCATE harness_shared.routines`;
+  await rootSql`TRUNCATE harness_shared.audit_log`;
 });
 
 async function waitForAnnouncementAdvisoryLock(eventKey: string, expected: 'held' | 'waiting') {
@@ -1136,6 +1141,34 @@ describe('await-event store (PG)', () => {
     const assigned = rows.find((row) => row.feature_id === 'EI-fire-durable-park-assigned')!;
     expect(assigned.taken_by).toBe('active-worker');
     expect(assigned.payload).toHaveProperty('claim_hold_by', 'park-owner');
+    const receipts = await rootSql`SELECT subject, actor, details FROM harness_shared.audit_log
+      WHERE action = 'work_items:durable_park:clear' ORDER BY subject`;
+    expect(receipts.map((row) => row.subject)).toEqual(['EI-fire-durable-park', 'EI-fire-durable-park-lease']);
+    expect(receipts[0]).toMatchObject({ actor: 'emit', details: { reasonCode: 'condition-satisfied',
+      trigger: eventKey, priorPark: { by: 'park-owner', reason: 'resume when the gate opens',
+        at: '2026-09-08T18:00:00.000Z' }, preservedLease: false } });
+    expect(receipts[1].details.preservedLease).toBe(true);
+    await expect(stampAnnouncementsFired(eventKey, { firedBy: 'emit' })).resolves.toBe(0);
+    expect(await rootSql`SELECT id FROM harness_shared.audit_log`).toHaveLength(2);
+  });
+
+  it('rolls back the announcement fire and park clear when its audit receipt cannot commit', async () => {
+    const eventKey = 'gate:audit-receipt-rollback';
+    await registerAnnouncement({ subscriberId: 'declarer', eventKey, scopeKind: 'global' });
+    const payload = { _claimHold: true, claim_hold_by: 'park-owner',
+      claim_hold_release: { condition: 'gate opens', owner: 'gate-owner', trigger: eventKey,
+        reachability: 'reachable', evidence: 'producer declared' } };
+    await rootSql`INSERT INTO harness_shared.work_items (feature_id, status, item_kind, payload)
+      VALUES ('EI-audit-rollback', 'open', 'bug', ${JSON.stringify(payload)}::text::jsonb)`;
+    await rootSql`ALTER TABLE harness_shared.audit_log ADD CONSTRAINT reject_park_receipt
+      CHECK (action <> 'work_items:durable_park:clear')`;
+    try {
+      await expect(stampAnnouncementsFired(eventKey, { firedBy: 'emit' })).rejects.toMatchObject({ code: '23514' });
+      expect((await rootSql`SELECT payload FROM harness_shared.work_items WHERE feature_id = 'EI-audit-rollback'`)[0].payload).toEqual(payload);
+      expect((await findAnnouncementsForKey(eventKey))[0].firedAt).toBeNull();
+    } finally {
+      await rootSql`ALTER TABLE harness_shared.audit_log DROP CONSTRAINT reject_park_receipt`;
+    }
   });
 
   it.each(['work-item:claimable', 'release:deployed', 'release:deployed:abc123',
@@ -1153,6 +1186,7 @@ describe('await-event store (PG)', () => {
     const rows = await rootSql`SELECT payload FROM harness_shared.work_items
       WHERE feature_id = 'EI-broad-fire-durable-park'`;
     expect(rows[0].payload).toEqual(payload);
+    expect(await rootSql`SELECT id FROM harness_shared.audit_log`).toHaveLength(0);
   });
 
   it('guards announcement retirement by owner, generation, and fired state', async () => {

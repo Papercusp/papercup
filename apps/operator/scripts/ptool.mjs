@@ -1745,6 +1745,11 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   // search result (or its structured server-side failure) wins over an
   // ambiguous -32001 outcome.
   ['sessions:search', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
+  // sessions:read has no shorter tool-specific timeout; its bounded window is
+  // still subject to the MCP transport's ~55s ceiling. Keep ptool above that
+  // floor so a deferred read returns its structured result or transport
+  // timeout instead of ptool's flat 30s outcome-unknown cutoff.
+  ['sessions:read', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   // EI-24857804837312348: the bounded historical sessions:list census can
   // legitimately outlive ptool's 30s default while its indexed SQL completes.
   // The tool does not declare a shorter server timeout, so the MCP transport

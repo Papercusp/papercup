@@ -277,6 +277,10 @@ export type WatchdogSource =
   // error-streak pager — N consecutive ERROR ticks fire one debounced @role:mug
   // escalation (the circuit gate backs off but pages nobody).
   | 'scout-error-streak'
+  // scout-su-ideate-pipeline-gaps-2026-10-08 P-008 / R-17: the weekly owner grading
+  // sample — one message per ~7d window to the human inbox with a stratified sample
+  // of routed ideation ideas to grade (scout/weekly-grading-sample.ts).
+  | 'scout-weekly-grading-sample'
   // rubric-system-hardening-2026-07-14 P-004 (EI-12149): the rubric-staleness
   // watchdog — an ACTIVE releaseGating rubric with no COMPLETE scorecard within
   // its threshold window (default 6h) fires one debounced alert + escalation

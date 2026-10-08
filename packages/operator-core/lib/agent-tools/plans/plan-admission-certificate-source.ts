@@ -181,8 +181,14 @@ export function createPlanAdmissionCertificateSource(
           return { certificate: null, governance: quarantinedControls(selected.round.roundId, 'invalid finalization time') };
         // A hash authenticates bytes, not the claimed verdict. Rebuild from the
         // independently authenticated ballots and the pinned owner policy/roster.
+        // The signed certificate commits the complete immutable ballot set.
+        // A backdated ballot delivered later cannot change that commitment;
+        // every listed ballot must still arrive, authenticate and reconstruct.
+        const certifiedIds = new Set(finalization.voteEventIds);
+        if (certifiedIds.size !== finalization.voteEventIds.length)
+          return { certificate: null, governance: quarantinedControls(selected.round.roundId, 'duplicate certified ballot id') };
         const ballots = snapshot.events.flatMap(event => event.roundId === selected.round.roundId &&
-          event.body.kind === 'vote' && event.occurredAtMs <= finalization.finalizedAtMs
+          event.body.kind === 'vote' && certifiedIds.has(event.body.vote.eventId) && event.occurredAtMs <= finalization.finalizedAtMs
           ? [event.body.vote] : []);
         const rebuilt = rebuildGovernanceRound(selected.round, ballots);
         if (!rebuilt.ok) return { certificate: null,

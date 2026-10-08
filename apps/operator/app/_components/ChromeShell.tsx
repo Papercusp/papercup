@@ -32,7 +32,7 @@ import { PLAN_DASHBOARD_PARAM } from './plans/PlanDashboardHost';
 import { FLAGS } from '@papercusp/flags';
 import { useFlag } from '@/lib/flag-hooks';
 import { useLexicon } from '@/lib/useLexicon';
-import { isChromeShellNavActive, productWorkspaceHref } from './chrome-shell-nav';
+import { isChromeShellNavActive, isDaoWorkspacePath, productWorkspaceHref } from './chrome-shell-nav';
 import { isChromelessPath, isPortalEmbedLocation } from '@papercusp/operator-core/lib/chromeless-routes';
 // OracleDock + TutorialButton remain RETIRED (design-simplification-2026-07-09
 // P-003; see _retired/legacy-web-chats/RESTORE.md). OperatorChatSidebar was
@@ -154,7 +154,7 @@ export default function ChromeShell({ chatFaces }: { chatFaces?: readonly OpChat
   const onAdv = isChromeShellNavActive(pathname, '/adv');
   const opsIsCurrent = onAdv && !searchParams.has(PLAN_DASHBOARD_PARAM);
   const onRes = isChromeShellNavActive(pathname, '/res');
-  const onDao = isChromeShellNavActive(pathname, '/daos');
+  const onDao = isDaoWorkspacePath(pathname);
   const [operationsHref, setOperationsHref] = useState('/adv');
   const [daoHref, setDaoHref] = useState('/daos');
   const workspaceSearch = searchParams.toString();

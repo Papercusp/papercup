@@ -15,7 +15,7 @@ describe('DAO workspace record presentation', () => {
   });
   it('keeps finance account prerequisites explicit and invents no balance', () => {
     render(<DaoWorkspaceDetails section="treasury" view={view} loading={false} error="" />);
-    expect(screen.getByText('No verified finance or ownership account is connected to this directory record.')).toBeTruthy();
+    expect(screen.getByText('Finance and ownership records require an explicit verified account binding.')).toBeTruthy();
     expect(screen.getByRole('link', { name: 'Open organization launch preparation' }).getAttribute('href')).toBe('/dao');
     expect(screen.queryByText('$0')).toBeNull();
   });

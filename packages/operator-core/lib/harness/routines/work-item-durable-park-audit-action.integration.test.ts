@@ -87,7 +87,7 @@ try {
   // An assignment and a park-control edit AFTER the evidence snapshot must
   // defeat reconciliation, even though their event conditions really fired.
   await sql.unsafe('UPDATE harness_shared.work_items SET taken_by = $1 WHERE workspace_id = $2 AND feature_id = $3', ['concurrent-builder', ws, 'WI-assigned']);
-  await sql.unsafe('UPDATE harness_shared.work_items SET payload = jsonb_set(payload, $1::text[], $2::jsonb) WHERE workspace_id = $3 AND feature_id = $4', ['{claim_hold_reason}', JSON.stringify('changed park condition'), ws, 'WI-stale']);
+  await sql.unsafe('UPDATE harness_shared.work_items SET payload = jsonb_set(payload, $1::text[], $2::jsonb) WHERE workspace_id = $3 AND feature_id = $4', ['{claim_hold_release,condition}', JSON.stringify('a new dependency must resolve first'), ws, 'WI-stale']);
   const controlSnapshot = await readItems();
   const decisions = matrix.rows.filter(row => row.id !== 'WI-pending').map(row => ({
     id: row.id, expectedParkFingerprint: row.parkFingerprint, reasonCode: 'condition-satisfied',
