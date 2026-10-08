@@ -204,6 +204,7 @@ beforeAll(async () => {
       workspace_id text NOT NULL,
       harness_slug text NOT NULL,
       feature_id text NOT NULL,
+      status text,
       source_plan_slug text,
       admission text, admitted_at timestamptz, admitted_by text,
       PRIMARY KEY (harness_slug, feature_id)
