@@ -95,6 +95,41 @@ const statusOf = (p: ReturnType<typeof deriveCandidateProvenance>, id: string) =
   p.provenance.checks.find((c) => c.id === id)?.status;
 
 describe('deriveCandidateProvenance', () => {
+  it('derives an unpublished private source from the producer primary snapshot corroborated by its sidecar', () => {
+    const over = { dirtySource: { status: 'captured', repositories: [{ label: 'primary', gitHead: SRC, files: [] }] } };
+    const p = deriveCandidateProvenance({ version: '0.0.25', channel: 'alpha', legs: legs({ linux: over, mac: over }) });
+    expect(p.sourceSha).toBe(SRC);
+    expect(statusOf(p, 'source-revision')).toBe('pass');
+    // Source identification does not manufacture a missing release-cut receipt.
+    expect(statusOf(p, 'build-command')).not.toBe('pass');
+  });
+
+  it.each([
+    { repositories: [{ label: 'primary', gitHead: DESKTOP, files: [] }] },
+    { repositories: [{ label: 'primary', gitHead: SRC, files: [] }, { label: 'primary', gitHead: SRC, files: [] }] },
+  ])('refuses an uncorroborated or ambiguous primary source: %j', ({ repositories }) => {
+    const over = { dirtySource: { status: 'captured', repositories } };
+    expect(() => deriveCandidateProvenance({ version: '0.0.25', channel: 'alpha', legs: legs({ linux: over, mac: over }) }))
+      .toThrow(/cannot identify the candidate source/);
+  });
+
+  it('keeps explicit workspace source authoritative over a primary desktop capture', () => {
+    const over = { dirtySource: { status: 'captured', repositories: [
+      { label: 'primary', gitHead: DESKTOP, files: [] }, { label: 'workspace', gitHead: SRC, files: [] },
+    ] } };
+    const p = deriveCandidateProvenance({ version: '0.0.25', channel: 'alpha', legs: legs({ linux: over, mac: over }) });
+    expect(p.sourceSha).toBe(SRC);
+    expect(statusOf(p, 'source-revision')).toBe('pass');
+  });
+
+  it('reports a primary source contradicting the release ledger instead of silently replacing the ledger', () => {
+    const over = { dirtySource: { status: 'captured', repositories: [{ label: 'primary', gitHead: SRC, files: [] }] } };
+    const p = deriveCandidateProvenance({ version: '0.0.25', channel: 'alpha', legs: legs({ linux: over, mac: over }),
+      ledger: ledger({ gitSha: 'f'.repeat(40) }) });
+    expect(statusOf(p, 'source-revision')).toBe('fail');
+    expect(p.provenance.ok).toBe(false);
+  });
+
   it('derives source, pins and a digest over the union of leg + ledger artifacts', () => {
     const p = deriveCandidateProvenance({ version: '0.0.25', channel: 'alpha', legs: legs(), ledger: ledger(), buildCommand: RUN_CMD });
     expect(p.sourceSha).toBe(SRC);

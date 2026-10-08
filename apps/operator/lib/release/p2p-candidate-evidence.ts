@@ -274,8 +274,16 @@ export function artifactBasename(name: string): string {
 }
 
 function workspaceHeadOf(record: LegBuildProvenance): string | null {
-  const repo = record.dirtySource?.repositories?.find((r) => r.label === 'workspace');
-  return repo?.gitHead ? repo.gitHead : null;
+  const repositories = record.dirtySource?.repositories ?? [];
+  const repo = repositories.find((r) => r.label === 'workspace');
+  if (repo) return repo.gitHead || null;
+  // emit-build-provenance --capture-source labels its selected root `primary`.
+  // A private producer can select the product monorepo itself rather than the
+  // desktop submodule. Admit that label only when the separately recorded
+  // sidecar source corroborates it; a desktop-only capture is insufficient.
+  const primary = repositories.filter((r) => r.label === 'primary');
+  return primary.length === 1 && primary[0].gitHead === record.sidecar?.gitHead
+    && GIT_SHA.test(primary[0].gitHead) ? primary[0].gitHead : null;
 }
 
 function uniq(values: Iterable<string>): string[] {
