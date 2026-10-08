@@ -2863,6 +2863,47 @@
     },
     {
       "path": "packages/operator-core/lib/events/await/wake-executor-resume-exit.integration.test.ts",
+      "historicalQualification": {
+        "measuredAt": "2026-10-08T11:25:30Z",
+        "scope": "Read-only archive/source-history/terminal-receipt recovery under WI-10006170; no real CLI or test subprocess, source implementation, final TEST, native or shipment action.",
+        "originalArchiveLine": 15061,
+        "originalCensus": { "collected": 5, "executed": 5, "failed": 1, "skipped": 0 },
+        "originalSymptom": "The papercup-dev-api service-PATH case fails at test105 before its defaultSpawnDetached call: expected the staged node25/bin/codex, observed the installed .local/bin/codex. The second service-PATH case and three subprocess-exit cases have no named failures in this file's immutable census.",
+        "existingTerminalRecords": [
+          {
+            "item": "WI-10006412",
+            "state": "done",
+            "authority": "committed",
+            "scope": "Later stale Codex selection repair changes the shared synchronous/asynchronous resolver to prefer process/Papercusp-managed candidates over PATH, and changes structured RPC startup to use the selected absolute path. Completion reports two files/85 tests/zero skips; it does not report this wake-executor integration file passing.",
+            "proof": "Stored rootCauseVerification distinguishes resolver precedence from a structured-peer handoff bypass using mocked executable/PATH selection and peer-factory assertions. Its four-file whole-source pin cannot be extended to current RPC source/tests: those two files have since changed. Current resolver source/test exactly match its terminal commit0076a8859b."
+          },
+          {
+            "items": ["WI-40028", "WI-40029", "WI-39538", "EI-21247464483615698"],
+            "scope": "August identity-fixture repairs attest this integration file5/5 at9c42fd07; the older shared-resolver repair reports41 tests, while EI212474 repairs a different non-integration resume-exit fixture. These terminal records are historical scopes, not later proof of the October failure's repair. None was replayed."
+          }
+        ],
+        "existingReceiptEvidence": {
+          "octoberCanonicalDirtyFailure": 20766945,
+          "octoberCleanIsolatedFailure": 20747393,
+          "sameAssertion": "Both local/non-scratch receipts preserve installed .local/bin/codex versus staged node25/bin/codex at the first service-PATH assertion. The isolated receipt explicitly records worktreeDirty:false.",
+          "newestOlderPass": 16123210,
+          "olderPassScope": "August29 local PASS, commitSha:null/root:null/worktreeDirty:true; predates the October failures and does not establish current imported bytes or environment.",
+          "laterSharedResolverPass": 20920967,
+          "laterSharedResolverScope": "October8 local agent-bin-detect.test.ts PASS at81db733043, root:null/worktreeDirty:true/non-scratch. The stored terminal completion records the two-file85/0skip focused result; this ledger row alone has no test-count or loaded-byte manifest.",
+          "lookupScope": "Literal wake-executor integration filename lookup returned52/52 rows without limit truncation, excluding mutation-probe by default; newest recorded row20766945. Resolver lookup since2026-10-08T01:30Z returned1/1 row. Neither query establishes absence of unrecorded execution or differently named repairs."
+        },
+        "namedSourceComparison": {
+          "testSha256": "aacc70208a9f08e80979efb4d6f405e4f8c8798278e0c35f6a6e022b53b78479",
+          "wakeExecutorSha256": "87ff9c79fb06c462ad52060adc0be67551764a0d17bacb771c84d642307928d0",
+          "resolverSha256": "011eae052745785cc4f79e7a2561b58d0a873e20ced8483d1444d81a6be0895c",
+          "resolverTestSha256": "d4c1d1dbbee47a543d2e1a346851aa681e392403450454fa2173cb87054e2e8c",
+          "precedenceChangeCommit": "8adb4e4c611ec6f7f5b090322e6482d9f12e40f3",
+          "scope": "All four named files are clean and equal HEAD. The integration test equals run-startd2a53e, both October receipt commits0d0655c7/159fa07e, and older identity-fix commit9c42fd07. The defaultSpawnDetached-through-resolveResumeSpawnBin region equals run-start, although the whole wake-executor file has changed. Run-start/October resolver bytes are PATH-first; current source/test match terminal0076a8859b and the managed-first change8adb4e4c61. Repository comparison is not a loaded-runtime manifest."
+        },
+        "sourceContractFinding": "resolveResumeSpawnBin delegates known agent names to resolveAgentBinarySync. In the compared October repository bytes, whichSync runs before executable candidate selection; the first service-PATH fixture includes the installed .local/bin directory, so a PATH hit can shadow the staged sibling even though process.execPath is overridden. The later existing repair reverses that priority and adds the conventional regression guard; this supplies a supported source-level explanation without attributing the original failure to load or pipe backpressure.",
+        "rootCauseStatus": "Original loaded-runtime causal assurance and current whole-file integration parity remain UNKNOWN. No original real service-PATH control, current integration run, loaded transitive-import/config/main/subprocess/native environment proof or final population verdict was performed. The terminal shared-resolver repair is relevant reuse evidence, not authorization for a competing executor or blanket current assurance.",
+        "assurance": "UNKNOWN retained; original five-case population and final D006/P004 acceptance remain unverified. Fleet refusal EI-24890385770678975 and D011 original-source/native STOP remain binding; no terminal repair rerun, new source work, LIVE_GATE_OPS or shipment claim."
+      },
       "class": "assertion",
       "state": "open-unknown",
       "item": "WI-10006170",
