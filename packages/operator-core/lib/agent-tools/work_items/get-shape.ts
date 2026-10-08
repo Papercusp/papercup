@@ -87,24 +87,20 @@ const TIER_TARGET_CHARS = { trimmed: RESULT_DOOR_BUDGET_CHARS, standard: RESULT_
  */
 const DEGRADATION_LADDER = {
   trimmed: [
-    { fullRows: 100, checkpointTotal: 6_000, summaryTotal: 2_400, lifecycleTotal: 2_400, operationalBriefTotal: 3_600, completionEvidence: "full" },
-    { fullRows: 25, checkpointTotal: 3_000, summaryTotal: 1_200, lifecycleTotal: 1_200, operationalBriefTotal: 2_400, completionEvidence: "full" },
-    { fullRows: 12, checkpointTotal: 1_200, summaryTotal: 600, lifecycleTotal: 600, operationalBriefTotal: 1_200, completionEvidence: "full" },
-    { fullRows: 6, checkpointTotal: 600, summaryTotal: 0, lifecycleTotal: 300, operationalBriefTotal: 0, completionEvidence: "full" },
-    // Preserve a few requested rows after large completion evidence exhausts
-    // every full-body rung. The evidence body has a precise, narrower recovery
-    // path; its presence bit stays in-band while briefs and identity survive.
-    { fullRows: 3, checkpointTotal: 0, summaryTotal: 0, lifecycleTotal: 0, operationalBriefTotal: 2_400, completionEvidence: "presence-only" },
-    { fullRows: 0, checkpointTotal: 0, summaryTotal: 0, lifecycleTotal: 0, operationalBriefTotal: 0, completionEvidence: "full" },
+    { fullRows: 100, checkpointTotal: 6_000, summaryTotal: 2_400, lifecycleTotal: 2_400, operationalBriefTotal: 3_600 },
+    { fullRows: 25, checkpointTotal: 3_000, summaryTotal: 1_200, lifecycleTotal: 1_200, operationalBriefTotal: 2_400 },
+    { fullRows: 12, checkpointTotal: 1_200, summaryTotal: 600, lifecycleTotal: 600, operationalBriefTotal: 1_200 },
+    { fullRows: 6, checkpointTotal: 600, summaryTotal: 0, lifecycleTotal: 300, operationalBriefTotal: 0 },
+    { fullRows: 3, checkpointTotal: 0, summaryTotal: 0, lifecycleTotal: 0, operationalBriefTotal: 0 },
+    { fullRows: 0, checkpointTotal: 0, summaryTotal: 0, lifecycleTotal: 0, operationalBriefTotal: 0 },
   ],
   standard: [
-    { fullRows: 100, checkpointTotal: 16_000, summaryTotal: 4_000, lifecycleTotal: 4_000, operationalBriefTotal: 4_200, completionEvidence: "full" },
-    { fullRows: 50, checkpointTotal: 8_000, summaryTotal: 2_400, lifecycleTotal: 2_400, operationalBriefTotal: 3_000, completionEvidence: "full" },
-    { fullRows: 25, checkpointTotal: 3_000, summaryTotal: 1_200, lifecycleTotal: 1_200, operationalBriefTotal: 1_800, completionEvidence: "full" },
-    { fullRows: 12, checkpointTotal: 1_200, summaryTotal: 600, lifecycleTotal: 600, operationalBriefTotal: 0, completionEvidence: "full" },
-    { fullRows: 6, checkpointTotal: 600, summaryTotal: 0, lifecycleTotal: 300, operationalBriefTotal: 0, completionEvidence: "full" },
-    { fullRows: 3, checkpointTotal: 0, summaryTotal: 0, lifecycleTotal: 0, operationalBriefTotal: 2_400, completionEvidence: "presence-only" },
-    { fullRows: 0, checkpointTotal: 0, summaryTotal: 0, lifecycleTotal: 0, operationalBriefTotal: 0, completionEvidence: "full" },
+    { fullRows: 100, checkpointTotal: 16_000, summaryTotal: 4_000, lifecycleTotal: 4_000, operationalBriefTotal: 4_200 },
+    { fullRows: 50, checkpointTotal: 8_000, summaryTotal: 2_400, lifecycleTotal: 2_400, operationalBriefTotal: 3_000 },
+    { fullRows: 25, checkpointTotal: 3_000, summaryTotal: 1_200, lifecycleTotal: 1_200, operationalBriefTotal: 1_800 },
+    { fullRows: 12, checkpointTotal: 1_200, summaryTotal: 600, lifecycleTotal: 600, operationalBriefTotal: 0 },
+    { fullRows: 6, checkpointTotal: 600, summaryTotal: 0, lifecycleTotal: 300, operationalBriefTotal: 0 },
+    { fullRows: 0, checkpointTotal: 0, summaryTotal: 0, lifecycleTotal: 0, operationalBriefTotal: 0 },
   ],
 } as const;
 
@@ -903,6 +899,8 @@ function projectOperationalBrief(
   ])];
   const initialArrayCap = Math.min(caps.operationalBriefArray, Math.max(1, Math.floor(maxChars / 400)));
   const arrayCaps = [...new Set([initialArrayCap, Math.max(1, Math.floor(initialArrayCap / 2)), 1])];
+  const profilingSubject = (raw as Row).subject === "EI-11111111111111111";
+  let smallestCandidateChars = Number.POSITIVE_INFINITY;
 
   for (const maxString of stringCaps) {
     for (const maxArray of arrayCaps) {
@@ -926,13 +924,17 @@ function projectOperationalBrief(
             },
           }
         : projected;
-      if (jsonLen(shaped) <= maxChars) {
+      const shapedChars = jsonLen(shaped);
+      smallestCandidateChars = Math.min(smallestCandidateChars, shapedChars);
+      if (shapedChars <= maxChars) {
         dropped.add("operationalBrief(clipped)");
+        if (profilingSubject) console.log("BRIEF_PROJECTION_SELECTED", maxChars, shapedChars);
         return shaped;
       }
     }
   }
 
+  if (profilingSubject) console.log("BRIEF_PROJECTION_MIN", maxChars, smallestCandidateChars);
   dropped.add("operationalBrief");
   return undefined;
 }
@@ -1191,7 +1193,12 @@ export function shapeWorkItemsGet(data: unknown, tier: WorkItemsGetTier): unknow
   // summary withdrawn, then with the requested operational brief withdrawn.
   // Descending a rung cuts the checkpoint, so optional/read-side attachments
   // give way first; the summary can never buy its bytes from the checkpoint.
-  const attempts: Array<{ rung: number; withSummary: boolean; withOperationalBrief: boolean }> = [];
+  const attempts: Array<{
+    rung: number;
+    withSummary: boolean;
+    withOperationalBrief: boolean;
+    compactIdentity?: boolean;
+  }> = [];
   for (let rung = 0; rung < ladder.length; rung += 1) {
     const hasSummaryBudget = ladder[rung].summaryTotal > 0;
     const hasBriefBudget = ladder[rung].operationalBriefTotal > 0;
@@ -1209,23 +1216,30 @@ export function shapeWorkItemsGet(data: unknown, tier: WorkItemsGetTier): unknow
       attempts.push({ rung, withSummary: false, withOperationalBrief: false });
     }
   }
+  // Completion evidence is exposed twice on each ordinary row: once under the
+  // row-level `completion` alias and again under `workItem`. Three individually
+  // bounded records can therefore exceed the door by themselves. Before losing
+  // all row identity, make one measured pass that preserves three compact rows
+  // and their requested briefs while keeping evidence presence (not its body).
+  attempts.splice(attempts.length - 1, 0, {
+    rung: ladder.length - 1,
+    withSummary: false,
+    withOperationalBrief: true,
+    compactIdentity: true,
+  });
 
   for (let attempt = 0; attempt < attempts.length; attempt += 1) {
-    const { rung, withSummary, withOperationalBrief } = attempts[attempt];
-    const {
-      fullRows,
-      checkpointTotal,
-      summaryTotal,
-      lifecycleTotal,
-      operationalBriefTotal,
-      completionEvidence,
-    } = ladder[rung];
+    const { rung, withSummary, withOperationalBrief, compactIdentity } = attempts[attempt];
+    const { fullRows, checkpointTotal, summaryTotal, lifecycleTotal, operationalBriefTotal } = compactIdentity
+      ? { fullRows: 3, checkpointTotal: 0, summaryTotal: 0, lifecycleTotal: 0, operationalBriefTotal: 4_200 }
+      : ladder[rung];
     const dropped = new Set<string>();
     const carrying = rows
       .slice(0, fullRows)
       .filter((r) => typeof r.checkpoint === "string" && r.checkpoint.length > 0).length;
-    const checkpointChars =
-      carrying === 0 ? 0 : Math.max(caps.checkpointMin, Math.floor(checkpointTotal / carrying));
+    const checkpointChars = compactIdentity
+      ? 0
+      : carrying === 0 ? 0 : Math.max(caps.checkpointMin, Math.floor(checkpointTotal / carrying));
 
 
     // Divided across the rows that actually HAVE a summary, so one row's read is
@@ -1283,7 +1297,7 @@ export function shapeWorkItemsGet(data: unknown, tier: WorkItemsGetTier): unknow
             lifecycleChars,
             operationalBriefChars,
             dropped,
-            completionEvidence === "full",
+            !compactIdentity,
           )
         : singleItemFloor
           ? compactSingleRow(r, caps, tier, dropped)
