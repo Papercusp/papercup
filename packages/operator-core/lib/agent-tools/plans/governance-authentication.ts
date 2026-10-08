@@ -100,10 +100,11 @@ export type GovernanceAuthentication = { ok: true } | { ok: false; code:
   'stale-key-epoch' | 'expired-signer' | 'unauthorized-role' | 'wrong-origin-peer' |
   'invalid-time' | 'invalid-round-binding' | 'unverified-signature' | 'unverified-ballot' };
 
-/** Authenticate transport/control signer AND the voter's independent ballot signature. */
-export function authenticateGovernanceEvent(input: {
+/** Authenticate the signed envelope before persisting unordered peer delivery.
+ * Round-dependent ballot verification remains mandatory at consumption. */
+export function authenticateGovernanceEnvelope(input: {
   authority: GovernanceSigningAuthority; event: FederatedGovernanceEvent;
-  round?: GovernanceRound; nowMs: number;
+  nowMs: number;
 }): GovernanceAuthentication {
   const { authority, event, nowMs } = input;
   if (!validGovernanceSigningAuthority(authority)) return { ok: false, code: 'invalid-authority' };
@@ -124,6 +125,21 @@ export function authenticateGovernanceEvent(input: {
     return { ok: false, code: 'expired-signer' };
   if (!member.roles.includes(event.body.kind)) return { ok: false, code: 'unauthorized-role' };
   if (!member.originPeerIds.includes(event.originPeerId)) return { ok: false, code: 'wrong-origin-peer' };
+  const { signature, ...unsigned } = event;
+  if (!canonicalBase64(signature, 64) || !verifyEd25519(governanceEventSigningBytes(unsigned), member.publicKey, Buffer.from(signature, 'base64')))
+    return { ok: false, code: 'unverified-signature' };
+  return { ok: true };
+}
+
+/** Authenticate transport/control signer AND the voter's independent ballot signature. */
+export function authenticateGovernanceEvent(input: {
+  authority: GovernanceSigningAuthority; event: FederatedGovernanceEvent;
+  round?: GovernanceRound; nowMs: number;
+}): GovernanceAuthentication {
+  const envelope = authenticateGovernanceEnvelope(input);
+  if (!envelope.ok) return envelope;
+  const { authority, event } = input;
+  const member = authority.members.find(m => m.memberId === event.authorization!.memberId)!;
   const round = event.body.kind === 'round-open' ? event.body.round : input.round;
   const eligible = authority.members.filter(m => !m.revoked && m.roles.includes('vote')).map(m => m.memberId).sort();
   if (!round || round.roundId !== event.roundId || !nonempty(round.planRevisionHash) ||
@@ -133,9 +149,6 @@ export function authenticateGovernanceEvent(input: {
       !Number.isSafeInteger(round.createdAtMs) || round.createdAtMs < 0 || round.createdAtMs > event.occurredAtMs ||
       canonicalJson([...round.eligibleMemberIds].sort()) !== canonicalJson(eligible))
     return { ok: false, code: 'invalid-round-binding' };
-  const { signature, ...unsigned } = event;
-  if (!canonicalBase64(signature, 64) || !verifyEd25519(governanceEventSigningBytes(unsigned), member.publicKey, Buffer.from(signature, 'base64')))
-    return { ok: false, code: 'unverified-signature' };
   if (event.body.kind === 'vote') {
     const { signature: ballotSignature, ...vote } = event.body.vote;
     if (vote.memberId !== member.memberId || vote.roundId !== round.roundId || vote.keyEpoch !== member.keyEpoch ||
