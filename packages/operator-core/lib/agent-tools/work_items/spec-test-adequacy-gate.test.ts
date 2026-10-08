@@ -56,6 +56,7 @@ function clause(over: Partial<SpecClauseRevision> = {}): SpecClauseRevision {
 function passingExecution(): NonNullable<ListedEvidence['testRunExecution']> {
   return {
     status: 'pass', passed: 1, failed: 0, skipped: 0, collectionFailed: false,
+    filePath: RECONNECT_TEST_PATH,
     testLayer: 'integration', passedCaseTitles: ['acknowledged events are not replayed'],
   };
 }
@@ -132,7 +133,7 @@ function listedEvidence(over: Partial<ListedEvidence> = {}): ListedEvidence {
     // binding on the same clause revision, matched by testRunProvenance.filePath. A null
     // provenance can never link, so the whole suite rated falsifiability `unknown`. Both the
     // test binding and counterexampleEvidence() (which spreads this) share one file.
-    testRunProvenance: { filePath: RECONNECT_TEST_PATH, commitSha: 'abc123', worktreeDirty: false },
+    testRunProvenance: { filePath: RECONNECT_TEST_PATH, framework: 'vitest', commitSha: 'abc123', worktreeDirty: false },
     ...over,
   };
 }
