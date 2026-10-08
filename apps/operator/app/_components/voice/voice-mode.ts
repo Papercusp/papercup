@@ -51,6 +51,169 @@ import {
   type PapercupVoiceTransport,
 } from '@papercusp/operator-core/lib/papercup-voice-turn-adapter';
 import type { VoiceTurnEvent } from '@papercusp/chat-protocol';
+import { splitSpeechText } from '@papercusp/operator-core/lib/voice-turn-sentences';
+import { prepareForReading } from '@papercusp/operator-core/lib/voice-engines/prepareForTTS';
+
+export interface ReadingState {
+  readingId: string | null;
+  status: 'idle' | 'starting' | 'playing' | 'paused' | 'completed' | 'stopped' | 'error';
+  position: number;
+  total: number;
+  error?: string;
+  warnings: string[];
+}
+let readingState: ReadingState = { readingId: null, status: 'idle', position: 0, total: 0, warnings: [] };
+const readingListeners = new Set<(state: ReadingState) => void>();
+let readingRuntime: { abort: AbortController; browser: boolean; audio?: HTMLAudioElement; resume?: () => void } | null = null;
+export function getReadingState(): ReadingState { return { ...readingState, warnings: [...readingState.warnings] }; }
+export function subscribeReadingState(listener: (state: ReadingState) => void): () => void {
+  readingListeners.add(listener);
+  return () => { readingListeners.delete(listener); };
+}
+function updateReading(patch: Partial<ReadingState>): void {
+  readingState = { ...readingState, ...patch };
+  for (const listener of readingListeners) listener(getReadingState());
+}
+export function stopReading(): void {
+  if (!readingRuntime) return;
+  readingRuntime.abort.abort();
+  readingRuntime.audio?.pause();
+  readingRuntime.resume?.();
+  readingRuntime = null;
+  playoutLedger.close();
+  if (['starting', 'playing', 'paused'].includes(readingState.status)) updateReading({ status: 'stopped' });
+}
+export function controlReading(readingId: string, action: 'pause' | 'resume' | 'stop' | 'status'): ReadingState {
+  if (readingId !== readingState.readingId) throw new Error('This reading is no longer active in this tab.');
+  if (action === 'stop') stopReading();
+  else if (action === 'pause' && readingRuntime && ['starting', 'playing'].includes(readingState.status)) {
+    readingRuntime.audio?.pause();
+    if (readingRuntime.browser && typeof window !== 'undefined') window.speechSynthesis?.pause?.();
+    playoutLedger.close();
+    updateReading({ status: 'paused' });
+  } else if (action === 'resume' && readingRuntime && readingState.status === 'paused') {
+    updateReading({ status: 'playing' });
+    playoutLedger.open();
+    if (readingRuntime.browser && typeof window !== 'undefined') window.speechSynthesis?.resume?.();
+    void readingRuntime.audio?.play().catch(error => { stopReading(); updateReading({ status: 'error', error: String(error) }); });
+    readingRuntime.resume?.();
+    readingRuntime.resume = undefined;
+  }
+  return getReadingState();
+}
+
+/** Output only: never starts voice mode, a full-agent connection or a microphone. */
+export function startReading(text: string, options: { allowCloud?: boolean; format?: 'text' | 'markdown'; coverage?: { complete: boolean; warnings: string[] } } = {}): ReadingState {
+  if (typeof window === 'undefined') throw new Error('Reading requires an output app tab.');
+  if (isVoiceOutputMuted()) throw new Error('Spoken output is muted. Unmute the speaker to start reading.');
+  if (realtimeSession) throw new Error('Finish the active voice conversation before starting a reading.');
+  const leader = getVoiceLeaderState();
+  if (leader.available && !leader.isLeader) throw new Error('This tab is not the active audio player. Start reading in the active player tab.');
+  const source = prepareForReading(text, options.format).text;
+  if (!source) throw new Error('No readable text selected.');
+  stopSpeechPlayback();
+  const browser = loadVoicePrefsClient().ttsEngine === 'browser';
+  const runtime = { abort: new AbortController(), browser } as NonNullable<typeof readingRuntime>;
+  readingRuntime = runtime;
+  updateReading({ readingId: crypto.randomUUID(), status: 'starting', position: 0, total: source.length, error: undefined, warnings: options.coverage?.warnings ?? [] });
+  const rate = config.rate;
+  const waitForResume = async () => {
+    if (readingState.status === 'paused' && !runtime.abort.signal.aborted) await new Promise<void>(resolve => { runtime.resume = resolve; });
+  };
+  const play = async (audio: HTMLAudioElement) => {
+    runtime.audio = audio;
+    audio.playbackRate = rate;
+    await waitForResume();
+    if (runtime.abort.signal.aborted) return;
+    updateReading({ status: 'playing' });
+    playoutLedger.open();
+    await new Promise<void>((resolve, reject) => {
+      const finish = (error?: Error) => {
+        runtime.abort.signal.removeEventListener('abort', cancel);
+        audio.onended = audio.onerror = null;
+        playoutLedger.close();
+        error ? reject(error) : resolve();
+      };
+      const cancel = () => { audio.pause(); finish(); };
+      runtime.abort.signal.addEventListener('abort', cancel, { once: true });
+      audio.onended = () => finish();
+      audio.onerror = () => finish(new Error('Speech audio could not be played.'));
+      void audio.play().catch(error => finish(error));
+    });
+    runtime.audio = undefined;
+  };
+  void (async () => {
+    if (browser) {
+      if (!window.speechSynthesis) throw new Error('Browser speech is unavailable. Choose a supported engine in voice settings.');
+      const name = voiceForRole('system:operator');
+      const voice = window.speechSynthesis.getVoices().find(candidate => candidate.name === name);
+      if (!voice) throw new Error('The selected browser voice is unavailable. Choose a voice in settings.');
+      if (!options.allowCloud && !voice.localService) throw new Error('This browser voice uses a remote service. Select a local voice or explicitly allow cloud speech.');
+      for (const chunk of splitSpeechText(source, { maxChars: 4000, maxUtf8Bytes: 4000 })) {
+        await waitForResume();
+        if (runtime.abort.signal.aborted) return;
+        updateReading({ status: 'playing' });
+        playoutLedger.open();
+        recentSpokenTtsLedger.record(chunk);
+        await new Promise<void>((resolve, reject) => {
+          const utterance = new SpeechSynthesisUtterance(chunk);
+          utterance.voice = voice; utterance.rate = rate;
+          const cancel = () => { window.speechSynthesis.cancel(); resolve(); };
+          runtime.abort.signal.addEventListener('abort', cancel, { once: true });
+          utterance.onend = () => { runtime.abort.signal.removeEventListener('abort', cancel); playoutLedger.close(); resolve(); };
+          utterance.onerror = () => { runtime.abort.signal.removeEventListener('abort', cancel); playoutLedger.close(); reject(new Error('Browser speech failed.')); };
+          window.speechSynthesis.speak(utterance);
+        });
+        if (runtime.abort.signal.aborted) return;
+        updateReading({ position: readingState.position + chunk.length });
+      }
+    } else {
+      const response = await fetch('/api/agent-mcp/operator-tts', {
+        method: 'POST', headers: { 'content-type': 'application/json' }, signal: runtime.abort.signal,
+        body: JSON.stringify({ operation: 'read', text: source, allowCloud: options.allowCloud === true }),
+      });
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.error ?? `Speech returned ${response.status}.`);
+      }
+      if (!response.body) throw new Error('Speech returned no audio stream.');
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let completed = false;
+      try {
+        while (!runtime.abort.signal.aborted) {
+          await waitForResume();
+          if (runtime.abort.signal.aborted) return;
+          const next = await reader.read();
+          buffer += decoder.decode(next.value, { stream: !next.done });
+          let newline: number;
+          while ((newline = buffer.indexOf('\n')) >= 0) {
+            const record = JSON.parse(buffer.slice(0, newline)); buffer = buffer.slice(newline + 1);
+            if (record.type === 'error' || !record.ok) throw new Error(record.error ?? 'Reading failed.');
+            if (record.type === 'completed') { completed = true; continue; }
+            if (record.type !== 'chunk' || record.start !== readingState.position || record.end !== record.start + record.text.length || record.text !== source.slice(record.start, record.end)) throw new Error('Reading source/progress mismatch.');
+            const bytes = Uint8Array.from(atob(record.audioBase64), char => char.charCodeAt(0));
+            recentSpokenTtsLedger.record(record.text);
+            const url = URL.createObjectURL(new Blob([bytes], { type: record.contentType }));
+            try { await play(new Audio(url)); } finally { URL.revokeObjectURL(url); }
+            if (runtime.abort.signal.aborted) return;
+            updateReading({ position: record.end });
+          }
+          if (next.done) break;
+        }
+        if (!completed || buffer.trim() || readingState.position !== source.length) throw new Error('Reading ended before the source was complete.');
+      } finally { await reader.cancel().catch(() => {}); }
+    }
+    if (readingRuntime === runtime && !runtime.abort.signal.aborted) { readingRuntime = null; updateReading({ status: 'completed' }); }
+  })().catch(error => {
+    if (readingRuntime !== runtime || runtime.abort.signal.aborted) return;
+    runtime.abort.abort(); readingRuntime = null;
+    playoutLedger.close();
+    updateReading({ status: 'error', error: error instanceof Error ? error.message : String(error) });
+  });
+  return getReadingState();
+}
 
 /**
  * Canonical event observer for the local/browser Papercup path. The hosted
@@ -2851,6 +3014,7 @@ export function speak(
       return;
     }
   } catch { /* leader module not yet loaded — fall through and speak */ }
+  if (readingRuntime) { silenceSpeak('reading-active', text); return; }
   synthQueue.push({
     text,
     role,
@@ -2877,6 +3041,7 @@ function processSynthQueue(): void {
     return;
   }
   isSynthSpeaking = true;
+  const playbackGeneration = adapterPlaybackGeneration;
   playoutLedger.open(); // our voice is audible from here until the queue drains
   // Record only after all speak() gates have passed and this utterance is
   // selected for playout. Web Speech has no capture window, so it compares
@@ -2913,8 +3078,12 @@ function processSynthQueue(): void {
       const v = voices.find((vv) => vv.name === voiceName);
       if (v) utt.voice = v;
     }
-    utt.onend = () => { processSynthQueue(); };
-    utt.onerror = () => { processSynthQueue(); };
+    utt.onend = () => {
+      if (playbackGeneration === adapterPlaybackGeneration) processSynthQueue();
+    };
+    utt.onerror = () => {
+      if (playbackGeneration === adapterPlaybackGeneration) processSynthQueue();
+    };
     window.speechSynthesis.speak(utt);
     // Kick off prefs fetch in the background so the next utterance can
     // route correctly once we know the user's pick.
@@ -2923,11 +3092,50 @@ function processSynthQueue(): void {
   }
 
   // Adapter route — Kokoro / ElevenLabs / OpenAI / Cartesia via the
-  // server-side TTS preview endpoint (keys never leave the server).
-  void synthViaAdapter(next.text, next.role).finally(() => processSynthQueue());
+  // bounded full-reply route (keys never leave the server).
+  void synthViaAdapter(next.text, next.role, playbackGeneration).finally(() => {
+    if (playbackGeneration === adapterPlaybackGeneration) processSynthQueue();
+  });
 }
 
 let adapterAudio: HTMLAudioElement | null = null;
+// Keep every provider request within operator-voice-proxy-helpers.MAX_TEXT_CHARS.
+// Requests are sequential, so long replies have bounded provider/backpressure
+// behavior while retaining every character.
+const MAX_TTS_SEGMENT_CHARS = 4000;
+let adapterPlaybackGeneration = 0;
+let adapterSynthesisAbort: AbortController | null = null;
+let adapterAudioCancel: (() => void) | null = null;
+
+function splitTtsText(text: string): string[] {
+  const chunks: string[] = [];
+  let offset = 0;
+
+  while (text.length - offset > MAX_TTS_SEGMENT_CHARS) {
+    const window = text.slice(offset, offset + MAX_TTS_SEGMENT_CHARS);
+    let boundary = 0;
+    const paragraphBreak = window.lastIndexOf('\n\n');
+    if (paragraphBreak >= 0) boundary = Math.max(boundary, paragraphBreak + 2);
+    const lineBreak = window.lastIndexOf('\n');
+    if (lineBreak >= 0) boundary = Math.max(boundary, lineBreak + 1);
+    const sentenceBreak = Math.max(
+      window.lastIndexOf('. '),
+      window.lastIndexOf('! '),
+      window.lastIndexOf('? '),
+    );
+    if (sentenceBreak >= 0) boundary = Math.max(boundary, sentenceBreak + 2);
+    const wordBreak = Math.max(window.lastIndexOf(' '), window.lastIndexOf('\t'));
+    if (wordBreak >= 0) boundary = Math.max(boundary, wordBreak + 1);
+
+    const length = boundary || MAX_TTS_SEGMENT_CHARS;
+    chunks.push(text.slice(offset, offset + length));
+    offset += length;
+  }
+
+  if (offset < text.length || chunks.length === 0) chunks.push(text.slice(offset));
+  return chunks;
+}
+
 /**
  * The user's selected TTS engine, read fresh from the client prefs cache.
  *
@@ -2950,64 +3158,96 @@ async function fetchPreferredEngine(): Promise<string> {
   return readPreferredEngine() ?? 'kokoro';
 }
 
-async function synthViaAdapter(text: string, role: string): Promise<void> {
+async function synthViaAdapter(text: string, role: string, playbackGeneration: number): Promise<void> {
   let engine = await fetchPreferredEngine();
   // 'browser' isn't synthable here (no speechSynthesis); coerce to kokoro.
   if (engine === 'browser') engine = 'kokoro';
   const voiceId = voiceForEngineRole(engine, role);
   try {
-    const r = await fetch('/api/agent-mcp/operator-tts-preview', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ engine, text, voiceId }),
-    });
-    if (!r.ok) {
-      // The TTS route itself failed — no audio bytes exist to play.
-      dispatchSpeechPlaybackToast(
-        `Couldn't generate speech (${engine} returned ${r.status}) — the reply is in the chat.`,
-      );
-      return;
+    for (const segment of splitTtsText(text)) {
+      if (playbackGeneration !== adapterPlaybackGeneration) return;
+      const controller = new AbortController();
+      adapterSynthesisAbort = controller;
+      try {
+        const r = await fetch('/api/agent-mcp/operator-tts', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ engine, text: segment, voiceId }),
+          signal: controller.signal,
+        });
+        if (playbackGeneration !== adapterPlaybackGeneration) return;
+        if (!r.ok) {
+          dispatchSpeechPlaybackToast(
+            "Couldn't generate speech (" + engine + ' returned ' + r.status + ') — the reply is in the chat.',
+          );
+          return;
+        }
+
+        const result = await r.json() as { audioBase64?: unknown; contentType?: unknown };
+        if (playbackGeneration !== adapterPlaybackGeneration) return;
+        if (typeof result.audioBase64 !== 'string' || result.audioBase64.length === 0) {
+          dispatchSpeechPlaybackToast(
+            "Couldn't generate speech (" + engine + ' returned no audio) — the reply is in the chat.',
+          );
+          return;
+        }
+        const binary = atob(result.audioBase64);
+        const audioBuffer = new ArrayBuffer(binary.length);
+        const audioBytes = new Uint8Array(audioBuffer);
+        for (let index = 0; index < binary.length; index++) {
+          audioBytes[index] = binary.charCodeAt(index);
+        }
+        const contentType = typeof result.contentType === 'string' ? result.contentType : 'audio/wav';
+        const blob = new Blob([audioBuffer], { type: contentType });
+        const url = URL.createObjectURL(blob);
+        if (adapterAudio) {
+          try { adapterAudio.pause(); } catch {}
+          try { URL.revokeObjectURL(adapterAudio.src); } catch {}
+        }
+        const a = new Audio(url);
+        adapterAudio = a;
+        await new Promise<void>((resolve) => {
+          // onerror and play()'s rejection can BOTH fire for one segment; settle
+          // once so a single failure yields one toast and one revoke.
+          let settled = false;
+          let cancelAudio: () => void = () => {};
+          const settle = (failure?: string): void => {
+            if (settled) return;
+            settled = true;
+            if (adapterAudioCancel === cancelAudio) adapterAudioCancel = null;
+            if (adapterAudio === a) adapterAudio = null;
+            try { URL.revokeObjectURL(url); } catch { /* ignore */ }
+            if (failure) dispatchSpeechPlaybackToast(failure);
+            resolve();
+          };
+          cancelAudio = () => settle();
+          adapterAudioCancel = cancelAudio;
+          a.onended = () => settle();
+          a.onerror = () => settle("The spoken reply couldn't be played — the reply is in the chat.");
+          void a.play().catch((err: unknown) => {
+            // Autoplay policy is the one recoverable case and needs its own words:
+            // the browser refused because no user gesture has unlocked audio yet.
+            // "Check your speakers" would send the user hunting the wrong problem.
+            const name = err instanceof Error ? err.name : '';
+            const autoplayBlocked = /NotAllowedError|SecurityError/i.test(
+              `${name} ${err instanceof Error ? err.message : String(err)}`,
+            );
+            settle(
+              autoplayBlocked
+                ? 'Audio is blocked until you interact with the window — click anywhere, then try again.'
+                : "The spoken reply couldn't be played — the reply is in the chat.",
+            );
+          });
+        });
+      } finally {
+        if (adapterSynthesisAbort === controller) adapterSynthesisAbort = null;
+      }
     }
-    const blob = await r.blob();
-    const url = URL.createObjectURL(blob);
-    if (adapterAudio) {
-      try { adapterAudio.pause(); } catch {}
-      try { URL.revokeObjectURL(adapterAudio.src); } catch {}
-    }
-    const a = new Audio(url);
-    adapterAudio = a;
-    await new Promise<void>((resolve) => {
-      // onerror and play()'s rejection can BOTH fire for one utterance; settle
-      // once so a single failure yields a single toast and a single revoke.
-      let settled = false;
-      const settle = (failure?: string): void => {
-        if (settled) return;
-        settled = true;
-        try { URL.revokeObjectURL(url); } catch { /* ignore */ }
-        if (failure) dispatchSpeechPlaybackToast(failure);
-        resolve();
-      };
-      a.onended = () => settle();
-      a.onerror = () => settle("The spoken reply couldn't be played — the reply is in the chat.");
-      void a.play().catch((err: unknown) => {
-        // Autoplay policy is the one recoverable case and needs its own words:
-        // the browser refused because no user gesture has unlocked audio yet.
-        // "Check your speakers" would send the user hunting the wrong problem.
-        const name = err instanceof Error ? err.name : '';
-        const autoplayBlocked = /NotAllowedError|SecurityError/i.test(
-          `${name} ${err instanceof Error ? err.message : String(err)}`,
-        );
-        settle(
-          autoplayBlocked
-            ? 'Audio is blocked until you interact with the window — click anywhere, then try again.'
-            : "The spoken reply couldn't be played — the reply is in the chat.",
-        );
-      });
-    });
   } catch (e) {
+    if (playbackGeneration !== adapterPlaybackGeneration) return;
     // Never swallow: the queue keeps flowing either way, but the user is told.
     dispatchSpeechPlaybackToast(
-      `Speech playback failed (${e instanceof Error ? e.name : 'error'}) — the reply is in the chat.`,
+      'Speech playback failed (' + (e instanceof Error ? e.name : 'error') + ') — the reply is in the chat.',
     );
   }
 }
@@ -3030,8 +3270,12 @@ export function cancelAllSpeech(): void {
  * barge-in, so the turn and its answer in the chat stay intact.
  */
 function stopSpeechPlayback(): void {
+  stopReading();
   synthQueue = [];
   isSynthSpeaking = false;
+  adapterPlaybackGeneration += 1;
+  adapterSynthesisAbort?.abort();
+  adapterSynthesisAbort = null;
   // BARGE-IN CLOSES THE INTERVAL TOO (WI-954890). The old code cleared
   // isSynthSpeaking here and left synthQuietSince untouched, so a CANCELLED reply
   // started no cooldown at all — the constant's own comment claimed "processSynthQueue
@@ -3046,11 +3290,16 @@ function stopSpeechPlayback(): void {
       /* ignore */
     }
   }
+  const cancelAdapterAudio = adapterAudioCancel;
+  adapterAudioCancel = null;
   if (adapterAudio) {
     try { adapterAudio.pause(); } catch {}
-    try { URL.revokeObjectURL(adapterAudio.src); } catch {}
+    if (!cancelAdapterAudio) {
+      try { URL.revokeObjectURL(adapterAudio.src); } catch {}
+    }
     adapterAudio = null;
   }
+  cancelAdapterAudio?.();
   if (state.status === 'speaking') {
     setState({ status: state.mode === 'off' ? 'off' : 'idle', speakingRole: null });
   }
