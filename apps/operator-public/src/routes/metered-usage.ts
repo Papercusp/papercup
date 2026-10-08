@@ -29,6 +29,7 @@ import {
 import type { CumulativePaymentVoucher } from '@papercusp/operator-core/lib/p2p/microcharge.ts';
 import { paymentVoucherDigest, unsignedVoucher, verifyPaymentVoucherSignature } from '@papercusp/operator-core/lib/p2p/microcharge.ts';
 import { quoteIdentityInferenceTurn } from '@papercusp/operator-core/lib/cupboard/identity-per-use-offer';
+import { identityUsageStatement } from '@papercusp/operator-core/lib/cupboard/commerce-dashboards';
 import type { Env } from '../env.ts';
 import { AuthError, resolveGithubBearer } from '../auth.ts';
 import { getCommerceOffer } from '../commerce-store.ts';
@@ -414,11 +415,13 @@ export function meteredUsageRoute(): Hono<{ Bindings: Env }> {
         return c.json({ error: 'identity-history-unverifiable' }, 422);
       }
     }
+    const renderedReceipts = visible.map(receiptJson);
     return c.json({
       channelId,
       escrowMicros: String(channel.escrowMicros),
       committedMicros: String(channel.committedMicros),
-      receipts: visible.map(receiptJson),
+      receipts: renderedReceipts,
+      identityStatement: identityUsageStatement(renderedReceipts, auth.principalId),
       ...(identityMarkupOrigin ? { identityMarkupOrigin } : {}),
     });
   });

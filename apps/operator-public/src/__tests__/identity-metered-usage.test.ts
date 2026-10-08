@@ -55,6 +55,46 @@ function closure(body: Record<string, unknown> = {}) {
 
 describe('exact identity settlement through the hosted production handler and real migrated D1', () => {
   beforeEach(() => { auth.resolveGithubBearer.mockReset(); auth.resolveGithubBearer.mockResolvedValue({ id: 9 }); });
+  it('reads immutable receipt costs through the authenticated channel route for both parties, without writes', async () => {
+    const h = harness(); await reserveUsageReceipt(h.db, reservation());
+    expect((await h.api.request('/commerce/metered-invocations/n1/settle', post(closure()), h.env)).status).toBe(200);
+    await reserveUsageReceipt(h.db, reservation('pending', { cumulativeClaimMicros: 500n }));
+    // A current offer mutation cannot rewrite the history the parties signed.
+    h.raw.prepare("UPDATE commerce_offers SET active=0,price_version='new-terms' WHERE offer_id='o1'").run();
+    const read = async (id: number) => {
+      auth.resolveGithubBearer.mockResolvedValue({ id });
+      const response = await h.api.request('/commerce/payment-channels/c1/usage', { headers: { Authorization: 'Bearer test' } }, h.env);
+      return { status: response.status, body: await response.json() as Record<string, unknown> };
+    };
+    const buyer = await read(7), seller = await read(9);
+    expect(buyer.status).toBe(200); expect(seller.status).toBe(200);
+    expect(buyer.body.identityStatement).toEqual(seller.body.identityStatement);
+    expect(buyer.body.identityStatement).toMatchObject({ basis: 'hosted-settled-usage', markupMicros: '249', reservedReceipts: 1,
+      complete: true, chainFinality: 'not-measured', costPerAcceptedOutcomeMicros: null,
+      lines: [{ offerId: 'o1', billedInferenceMicros: '999', markupMicros: '249',
+        allocationQuote: { creatorMicros: '224', daoMicros: '25', componentMicros: '0' } }] });
+    expect((await read(11)).status).toBe(403);
+    expect(h.raw.prepare('SELECT committed_micros FROM payment_channels WHERE channel_id=?').get('c1'))
+      .toMatchObject({ committed_micros: 249 });
+    expect(h.raw.prepare('SELECT COUNT(*) AS n FROM usage_receipts').get()).toMatchObject({ n: 2 });
+  });
+
+  it('excludes another seller on the same channel from a seller statement', async () => {
+    const h = harness(); expect(await reserveUsageReceipt(h.db, reservation())).toMatchObject({ ok: true });
+    expect((await h.api.request('/commerce/metered-invocations/n1/settle', post(closure()), h.env)).status).toBe(200);
+    // Each seller has its own offer. Migration045 rejects substituting the
+    // seller on an already-used payer/offer binding before it writes a row.
+    expect(await reserveUsageReceipt(h.db, reservation('foreign', { seller: 'gh:10', offerId: 'o2', cumulativeClaimMicros: 500n })))
+      .toMatchObject({ ok: true });
+    const settled = await settleUsageReceipt(h.db, { channelId: 'c1', usageNonce: 'foreign', amountMicros: 249n, meterQuantity: 1n,
+      receiptSignature: 'other-seller', nowMs: at + 600,
+      identityInference: { billedInferenceMicros: 999n, priorRemainderNumerator: 0n, remainderNumerator: 7500n } });
+    expect(settled).toMatchObject({ ok: true });
+    const response = await h.api.request('/commerce/payment-channels/c1/usage', { headers: { Authorization: 'Bearer test' } }, h.env);
+    const body = await response.json() as { receipts: unknown[]; identityStatement: { lines: unknown[]; reservedReceipts: number } };
+    expect(response.status).toBe(200); expect(body.receipts).toHaveLength(1);
+    expect(body.identityStatement.lines).toHaveLength(1); expect(body.identityStatement.reservedReceipts).toBe(0);
+  });
   it.each([false, true])('refuses forged signatures or legacy unbound channels before durable reservation (bound=%s)', async (bound) => {
     const h = harness(bound); auth.resolveGithubBearer.mockResolvedValue({ id: 7 }); const r = reservation();
     const voucher = { channelId: r.channelId, payer: r.payer, seller: r.seller, releaseRef: r.releaseRef,

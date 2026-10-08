@@ -38,6 +38,7 @@ import type { CumulativePaymentVoucher, MicrochargeChannel } from '../p2p/microc
 import { resolveCupboardBaseUrl } from './base-url';
 import type { InstalledPluginProvenance } from './types';
 import { quoteIdentityInferenceTurn } from './identity-per-use-offer';
+import type { IdentityUsageStatement } from './commerce-dashboards';
 
 /** Reused verbatim from the checkout door so both share one transport seam. */
 export interface MeteredTransportDeps {
@@ -119,6 +120,7 @@ export interface ChannelUsageWire {
   readonly escrowMicros: string;
   readonly committedMicros: string;
   readonly receipts: readonly UsageReceiptWire[];
+  readonly identityStatement?: IdentityUsageStatement;
   /** Requested explicitly; the hosted payer/offer history spans every channel. */
   readonly identityMarkupOrigin?: IdentityMarkupOriginWire;
 }

@@ -136,6 +136,32 @@ function receiptDigest(input: Omit<SettlementReceipt, 'receiptHash'>): string {
   return createHash('sha256').update(canonicalJson(serializeBigInts(input))).digest('hex');
 }
 
+/** Quote integer shares without manufacturing a settlement receipt or payout. */
+export function quoteRevenueAllocations(input: {
+  distributableMicros: bigint;
+  splitManifest: RevenueSplitManifest;
+}): { readonly ok: true; readonly allocationsMicros: Readonly<Record<RevenueShare, bigint>>;
+  readonly componentAllocationsMicros?: Readonly<Record<string, bigint>> } |
+  { readonly ok: false; readonly code: SettlementRefusalCode; readonly detail: string } {
+  if (typeof input.distributableMicros !== 'bigint' || input.distributableMicros < 0n) {
+    return { ok: false, code: 'invalid-amount', detail: 'distributable micros must be non-negative' };
+  }
+  const split = validateRevenueSplit(input.splitManifest);
+  if (!split.ok) return split;
+  const allocations = {} as Record<RevenueShare, bigint>;
+  let allocated = 0n;
+  for (const share of REVENUE_SHARES) {
+    const amount = input.distributableMicros * BigInt(input.splitManifest.sharesBps[share]) / 10_000n;
+    allocations[share] = amount;
+    allocated += amount;
+  }
+  allocations.dao += input.distributableMicros - allocated;
+  return { ok: true, allocationsMicros: allocations,
+    ...(input.splitManifest.componentDependencies !== undefined ? {
+      componentAllocationsMicros: allocateComponents(allocations.component, input.splitManifest.componentDependencies),
+    } : {}) };
+}
+
 /** Compute integer allocations. Any rounding remainder is assigned to the DAO. */
 export function settleRevenue(input: {
   settlementId: string;
@@ -150,23 +176,17 @@ export function settleRevenue(input: {
   if (!split.ok) return split;
   if (input.providerCostMicros > input.grossMicros) return { ok: false, code: 'cost-exceeds-gross', detail: 'provider cost cannot exceed gross amount' };
   const distributableMicros = input.grossMicros - input.providerCostMicros;
-  const allocations = {} as Record<RevenueShare, bigint>;
-  let allocated = 0n;
-  for (const share of REVENUE_SHARES) {
-    const amount = (distributableMicros * BigInt(input.splitManifest.sharesBps[share]!)) / 10_000n;
-    allocations[share] = amount;
-    allocated += amount;
-  }
-  allocations.dao += distributableMicros - allocated;
+  const quote = quoteRevenueAllocations({ distributableMicros, splitManifest: input.splitManifest });
+  if (!quote.ok) return quote;
   const base: Omit<SettlementReceipt, 'receiptHash'> = {
     settlementId: input.settlementId,
     currency: 'stablecoin-micros',
     grossMicros: input.grossMicros,
     providerCostMicros: input.providerCostMicros,
     distributableMicros,
-    allocationsMicros: allocations,
-    ...(input.splitManifest.componentDependencies !== undefined ? {
-      componentAllocationsMicros: allocateComponents(allocations.component, input.splitManifest.componentDependencies),
+    allocationsMicros: quote.allocationsMicros,
+    ...(quote.componentAllocationsMicros !== undefined ? {
+      componentAllocationsMicros: quote.componentAllocationsMicros,
     } : {}),
     daoTreasury: input.daoTreasury,
     splitManifestHash: input.splitManifest.manifestHash,
