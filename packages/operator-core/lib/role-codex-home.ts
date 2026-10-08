@@ -1583,6 +1583,7 @@ export function ensureSuCodexHomeConfig(opts: SuCodexConfigInput & {
       current.includes(expectedProjectMcp) &&
       current.includes(expectedClient) &&
       current.includes(expectedNativeSessionHeader) &&
+      parseToml(current).check_for_update_on_startup === false &&
       contextMatches &&
       current.includes(expectedSqliteHome) &&
       current.includes(expectedLogDir) &&
