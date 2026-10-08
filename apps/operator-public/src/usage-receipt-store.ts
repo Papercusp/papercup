@@ -41,6 +41,7 @@ interface UsageReceiptRow {
   voucher_digest: string;
   voucher_signature: string;
   receipt_signature: string | null;
+  seller_pubkey_base64: string | null;
   state: string;
   reserved_at_ms: number;
   settled_at_ms: number | null;
@@ -72,6 +73,7 @@ export interface StoredUsageReceipt {
   readonly voucherDigest: string;
   readonly voucherSignature: string;
   readonly receiptSignature: string | null;
+  readonly sellerPubkeyBase64?: string | null;
   readonly state: UsageReceiptState;
   readonly reservedAtMs: number;
   readonly settledAtMs: number | null;
@@ -89,7 +91,7 @@ const COLUMNS = `channel_id, usage_nonce, principal_id, offer_id, payer, seller,
        cumulative_claim_micros, expires_at_ms, voucher_digest, voucher_signature,
        receipt_signature, state, reserved_at_ms, settled_at_ms,
        identity_ceiling_micros, billed_inference_micros, prior_markup_remainder, markup_remainder,
-       settled_meter_quantity`;
+       settled_meter_quantity, seller_pubkey_base64`;
 
 function fromRow(row: UsageReceiptRow): StoredUsageReceipt {
   return {
@@ -115,6 +117,7 @@ function fromRow(row: UsageReceiptRow): StoredUsageReceipt {
     voucherDigest: row.voucher_digest,
     voucherSignature: row.voucher_signature,
     receiptSignature: row.receipt_signature,
+    sellerPubkeyBase64: row.seller_pubkey_base64 ?? null,
     state: row.state as UsageReceiptState,
     reservedAtMs: Number(row.reserved_at_ms),
     settledAtMs: row.settled_at_ms == null ? null : Number(row.settled_at_ms),
@@ -203,6 +206,7 @@ export interface ReserveUsageReceiptInput {
   readonly voucherSignature: string;
   readonly nowMs: number;
   readonly identityInferenceCeilingMicros?: bigint;
+  readonly sellerPubkeyBase64?: string;
 }
 
 export type ReserveUsageReceiptResult =
@@ -266,8 +270,8 @@ export async function reserveUsageReceipt(
          release_ref, meter_unit, meter_quantity, unit_price_micros,
          price_version, split_manifest_hash, reserved_micros, amount_micros,
          cumulative_claim_micros, expires_at_ms, voucher_digest, voucher_signature,
-         receipt_signature, state, reserved_at_ms, settled_at_ms, identity_ceiling_micros
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, NULL, 'reserved', ?, NULL, ?)
+         receipt_signature, state, reserved_at_ms, settled_at_ms, identity_ceiling_micros, seller_pubkey_base64
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, NULL, 'reserved', ?, NULL, ?, ?)
        ON CONFLICT (channel_id, usage_nonce) DO NOTHING`,
     )
     .bind(
@@ -290,6 +294,7 @@ export async function reserveUsageReceipt(
       input.voucherSignature,
       input.nowMs,
       input.identityInferenceCeilingMicros === undefined ? null : Number(input.identityInferenceCeilingMicros),
+      input.sellerPubkeyBase64 ?? null,
     )
     .run();
     changes = written.meta.changes;
