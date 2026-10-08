@@ -1035,6 +1035,14 @@ export function ListingCard({
       )}
 
       {/* Tier-A stats (P-076) */}
+      {isIdentity && (
+        <p
+          aria-label="Identity outcome cost"
+          style={{ fontFamily: FONTS.ui, fontSize: 12, color: COLORS.textMuted, margin: 0 }}
+        >
+          Cost per accepted outcome: unavailable
+        </p>
+      )}
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
         {contributors > 0 && (
           <Stat icon={<Users size={11} />} label={`${contributors} contributors`} />
