@@ -37,6 +37,12 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" || exit 1
+source "$ROOT/libs/generic/verification-harness/bin/vh.sh"
+vh_phase preflight ""
+vh_phase isolated-suite preflight
+vh_init operator-e2e-isolated "${OPERATOR_E2E_HARNESS_EVIDENCE_ROOT:-/tmp/pcv/operator-e2e-isolated}"
+vh_bracket_trap
+vh_begin preflight
 DEFAULT_LEDGER_URL='postgresql://harness_admin:harness_admin_pwd@localhost:5432/papercusp'
 
 for arg in "$@"; do
@@ -77,6 +83,7 @@ RIG="${OPERATOR_E2E_RIG:-$ROOT/scripts/verify-tauri-headless.sh}"
 
 echo "OPERATOR_E2E_ISOLATED group=$PAPERCUSP_TEST_RUN_GROUP ledger=${PAPERCUSP_TEST_RUNS_DB_URL##*@} workspace=${PAPERCUSP_TEST_RUN_WORKSPACE:-<rig>} harness=$PAPERCUSP_TEST_RUN_HARNESS rig=$RIG"
 
+vh_begin isolated-suite
 # shellcheck disable=SC2016 # expanded by the inner shell, inside the rig
 VERIFY_TAURI_ISOLATED_DB=1 "$RIG" -- bash -c '
   set -u

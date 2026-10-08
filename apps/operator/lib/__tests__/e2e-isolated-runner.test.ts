@@ -136,11 +136,15 @@ describe('run-operator-e2e-isolated.sh', () => {
     const r = run(fixture(1), []);
     expect(r.status, r.out).toBe(1);
     expect(r.out).toContain('OPERATOR_E2E_ISOLATED exit=1');
+    expect(r.out).toContain('HARNESS_RESULT');
+    expect(r.out).toContain('verdict=fail');
   });
 
   it('exits 0 when the suite passes', () => {
     const r = run(fixture(0), []);
     expect(r.status, r.out).toBe(0);
+    expect(r.out).toContain('HARNESS_RESULT');
+    expect(r.out).toContain('verdict=pass');
   });
 
   it('points the ledger at the shared database while the app keeps the isolated one', () => {
