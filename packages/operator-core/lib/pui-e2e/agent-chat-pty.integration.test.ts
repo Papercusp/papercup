@@ -3929,7 +3929,9 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
     const launches = () => sessionTraffic.filter((entry) => entry.path === '/api/adv/sessions/launch-su')
       .reduce((total, entry) => total + Number(entry.count ?? 1), 0);
 
-    const inputTraceLog = path.join(home, 'pui-input-trace.log');
+    const inputTraceLog = process.env.PUI_INPUT_TRACE_LOG?.trim()
+      || path.join(home, 'pui-input-trace.log');
+    mkdirSync(path.dirname(inputTraceLog), { recursive: true });
     writeFileSync(inputTraceLog, '');
     pane = new PuiPane(bin, operatorPort, home, { env: { PUI_INPUT_TRACE_LOG: inputTraceLog } });
     try {
@@ -3957,11 +3959,19 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       // Every row comes from the operator's own inventory; the default row is
       // named and an unsupported tier stays visible with its reason. On this
       // live conversation the default row keeps its running model (P-026).
+      const modelRows = ['Keep the current model',
+        ...chatTiers.map((tier) => `${tier.name} — ${tier.spec}`),
+        ...disabledTiers.map((tier) => `${tier.name} — ${tier.spec} — not settable`),
+        ...(disabledTiers.length > 0 ? ['not executable by Agent Chat loop'] : [])];
+      const modelFrames: string[] = [];
+      for (let attempt = 0; attempt < 20; attempt++) {
+        if (attempt > 0) pane.resize(attempt % 2 === 1 ? 161 : 160, 48);
+        stage = attempt === 0 ? 'pickers' : `pickers:model-repeat-${attempt + 1}`;
+        modelFrames.push(await picker(pane, 'm', 'Model', modelRows));
+      }
+      stage = 'pickers';
       const frames = {
-        model: await picker(pane, 'm', 'Model', ['Keep the current model',
-          ...chatTiers.map((tier) => `${tier.name} — ${tier.spec}`),
-          ...disabledTiers.map((tier) => `${tier.name} — ${tier.spec} — not settable`),
-          ...(disabledTiers.length > 0 ? ['not executable by Agent Chat loop'] : [])]),
+        model: modelFrames[0]!,
         effort: await picker(pane, 'e', 'Effort', ['Model/default effort', ...config.effortLevels]),
         account: await picker(pane, 'a', 'Account route', ['Auto (gateway routing)', 'Default system account']),
         mode: await picker(pane, 'u', 'Launch mode', ['Manual (no launch mode)', ...config.launchableModes.map((mode) => mode.title)]),
@@ -4008,6 +4018,7 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       console.info('PUI_SETTINGS_PICKERS_ACCEPTANCE', JSON.stringify({ binary: bin, binarySha256, chatId: chat.id,
         servedTiers: config.effectiveTiers.map((tier) => tier.spec), disabledTiers: disabledTiers.map((tier) => tier.spec),
         chatTiers: chatTiers.map((tier) => tier.spec), pickedTier: picked.spec, frames, routeFrame,
+        modelAttemptCount: modelFrames.length,
         inputTrace: readFileSync(inputTraceLog, 'utf8') }));
     } finally { await pane?.stop().catch(() => {}); }
   }, 240_000);
