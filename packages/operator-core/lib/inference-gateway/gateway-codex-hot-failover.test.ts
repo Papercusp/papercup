@@ -27,6 +27,104 @@ async function codexHome(accountId: string): Promise<string> {
 }
 
 describe('proxyOpenAi — Codex OAuth reachability and quota failover', () => {
+  it('safely fails over a prelude-only EOF before exposing a response', async () => {
+    const accounts = [
+      { accountId: 'chatgpt-a', home: await codexHome('chatgpt-a') },
+      { accountId: 'chatgpt-b', home: await codexHome('chatgpt-b') },
+    ];
+    const routed: string[] = [];
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      const account = new Headers(init?.headers).get('chatgpt-account-id') ?? '';
+      routed.push(account);
+      const event = account === 'chatgpt-a'
+        ? { type: 'response.created', response: { id: 'resp_pre_output_eof' } }
+        : { type: 'response.completed', response: { id: 'resp_healthy', status: 'completed', output: [] } };
+      return new Response(new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('data: ' + JSON.stringify(event) + '\n\n'));
+          controller.close();
+        },
+      }), { status: 200 });
+    }) as typeof fetch;
+    gateway = createInferenceGateway({
+      accountId: 'claude-acct', token: async () => 'claude-tok', fetchImpl,
+      codexCliAccounts: () => accounts,
+      codexCliPool: createFailoverPool(accounts.map(({ accountId }) => ({ accountId, token: async () => 'unused' }))),
+      codexOAuthProxy: true, selfHeal: { enabled: false },
+    });
+    const port = await gateway.listen(0);
+    const response = await fetch('http://127.0.0.1:' + port + '/v1/responses', {
+      method: 'POST', headers: { 'content-type': 'application/json', [OWNER_HEADER]: 'pre-output-eof-owner' },
+      body: JSON.stringify({ model: 'gpt-6.1-sol', input: [], stream: true }),
+    });
+    const wire = await response.text();
+    expect(response.status).toBe(200);
+    expect(response.headers.get(ROUTED_ACCOUNT_HEADER)).toBe('chatgpt-b');
+    expect(wire).toContain('resp_healthy');
+    expect(wire).not.toContain('resp_pre_output_eof');
+    expect(routed).toEqual(['chatgpt-a', 'chatgpt-b']);
+  });
+
+  it.each([true, false])('returns a truthful terminal after visible-output EOF without replay (provider id known: %s)', async (knownId) => {
+    const accounts = [
+      { accountId: 'chatgpt-a', home: await codexHome('chatgpt-a') },
+      { accountId: 'chatgpt-b', home: await codexHome('chatgpt-b') },
+    ];
+    const routed: string[] = [];
+    const events = [
+      ...(knownId ? [{ type: 'response.created', response: { id: 'resp_visible_eof' } }] : []),
+      { type: 'response.output_text.delta', delta: 'once-only-visible-output' },
+      { type: 'response.output_item.done', item: {
+        id: 'tool_item', type: 'function_call', call_id: 'call_once', name: 'once_only_tool', arguments: '{}' },
+      },
+    ];
+    const upstreamWire = events.map(event => 'data: ' + JSON.stringify(event) + '\n\n').join('');
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      routed.push(new Headers(init?.headers).get('chatgpt-account-id') ?? '');
+      return new Response(new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(upstreamWire));
+          controller.close();
+        },
+      }), { status: 200 });
+    }) as typeof fetch;
+    gateway = createInferenceGateway({
+      accountId: 'claude-acct', token: async () => 'claude-tok', fetchImpl,
+      codexCliAccounts: () => accounts,
+      codexCliPool: createFailoverPool(accounts.map(({ accountId }) => ({ accountId, token: async () => 'unused' }))),
+      codexOAuthProxy: true, selfHeal: { enabled: false },
+    });
+    const port = await gateway.listen(0);
+    const response = await fetch('http://127.0.0.1:' + port + '/v1/responses', {
+      method: 'POST', headers: { 'content-type': 'application/json', [OWNER_HEADER]: 'visible-eof-owner' },
+      body: JSON.stringify({ model: 'gpt-6.1-sol', input: [], stream: true }),
+    });
+    const wire = await response.text();
+    const frames = wire.split(/\r?\n\r?\n/).filter(Boolean).map(frame =>
+      JSON.parse(frame.split(/\r?\n/).filter(line => line.startsWith('data:')).map(line => line.slice(5).trimStart()).join('\n')));
+    expect(routed).toEqual(['chatgpt-a']);
+    expect(wire.startsWith(upstreamWire)).toBe(true);
+    expect(frames.filter(event => event.type === 'response.output_text.delta')).toHaveLength(1);
+    expect(frames.filter(event => event.type === 'response.output_item.done')).toHaveLength(1);
+    expect(frames.some(event => event.type === 'response.completed')).toBe(false);
+    if (knownId) {
+      expect(frames.at(-1)).toMatchObject({ type: 'response.failed', response: {
+        id: 'resp_visible_eof', status: 'failed', error: { code: 'server_error', message: expect.stringContaining('EOF') },
+      } });
+    } else {
+      expect(frames.at(-1)).toMatchObject({ type: 'error', error: { code: 'server_error' } });
+      expect(frames.at(-1)).not.toHaveProperty('response.id');
+    }
+    const report = await fetch('http://127.0.0.1:' + port + '/admin/owner-report?owner=visible-eof-owner');
+    expect(report.status).toBe(200);
+    const owner = await report.json() as { ledger: { upstreamErrors: number; lastStatus: number; recent: unknown[] } };
+    expect(owner.ledger.upstreamErrors).toBe(1);
+    expect(owner.ledger.lastStatus).toBe(502);
+    expect(owner.ledger.recent).toContainEqual(expect.objectContaining({
+      kind: 'upstream_error', detail: 'oauth-stream-incomplete', account: 'chatgpt-a',
+    }));
+  });
+
   it('moves the next retry off an account whose HTTP-200 stream fails after the prelude lookahead', async () => {
     const accounts = [
       { accountId: 'chatgpt-a', home: await codexHome('chatgpt-a') },
@@ -53,7 +151,6 @@ describe('proxyOpenAi — Codex OAuth reachability and quota failover', () => {
       codexCliAccounts: () => accounts,
       codexCliPool: createFailoverPool(accounts.map(({ accountId }) => ({ accountId, token: async () => 'unused' }))),
       codexOAuthProxy: true, selfHeal: { enabled: false },
-      maxAttempts: 4,
     });
     const port = await gateway.listen(0);
     for (const expected of ['high demand', 'response.completed']) {
