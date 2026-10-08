@@ -291,11 +291,17 @@ async function computeDiskUsage(
 /** Compute usage for every category. Sequential (gentle on the DB); a failing
  *  category yields an explicit unknown size and note rather than failing the page. */
 export async function computeStorageUsage(
-  opts: { sizesOnly?: boolean; offReadPath?: boolean; deadlineMs?: number } = {},
+  opts: { sizesOnly?: boolean; offReadPath?: boolean; deadlineMs?: number; categoryId?: string } = {},
 ): Promise<StorageUsageRow[]> {
   const { getOrgPg } = await import('@papercusp/db-org');
   const sql = getOrgPg().sql as unknown as Sql;
   const out = new Map<string, StorageUsageRow>();
+  const selectedCategories = opts.categoryId
+    ? STORAGE_CATEGORIES.filter((cat) => cat.id === opts.categoryId)
+    : STORAGE_CATEGORIES;
+  if (opts.categoryId && selectedCategories.length === 0) {
+    throw new Error('Unknown storage category: ' + opts.categoryId);
+  }
   // One shared wall-clock budget spans catalog sizing, age distributions, and
   // disk sizing. Previously the per-query PG caps and disk cap were independent,
   // so seven sequential age scans could consume the entire code:run foreground
@@ -309,7 +315,7 @@ export async function computeStorageUsage(
   // category order in the returned rows.
   const priority = (cat: StorageCategory): number =>
     cat.id === 'scratch' ? 0 : cat.kind === 'disk' ? 1 : 2;
-  const executionOrder = [...STORAGE_CATEGORIES].sort((a, b) => priority(a) - priority(b));
+  const executionOrder = [...selectedCategories].sort((a, b) => priority(a) - priority(b));
   for (const cat of executionOrder) {
     if (cat.kind === 'pg') {
       out.set(cat.id, await computePgUsage(sql, cat, { sizesOnly: opts.sizesOnly, budget: diskBudget }));
@@ -352,5 +358,5 @@ export async function computeStorageUsage(
       }
     }
   }
-  return STORAGE_CATEGORIES.map((cat) => out.get(cat.id)!);
+  return selectedCategories.map((cat) => out.get(cat.id)!);
 }

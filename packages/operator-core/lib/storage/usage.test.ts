@@ -4,6 +4,7 @@ const h = vi.hoisted(() => ({
   diskEntries: [] as Array<{ path: string; mtimeMs: number; sizeBytes: number }>,
   catalogCalls: 0,
   ageCalls: 0,
+  diskCalls: 0,
 }));
 
 function makeSql() {
@@ -36,7 +37,10 @@ vi.mock('./disk', () => ({
   listDiskEntries: () => h.diskEntries,
   // computeStorageUsage now walks disk via the event-loop-cooperative async twin
   // (WI-5471); the sync export stays mocked for any direct caller.
-  listDiskEntriesAsync: () => Promise.resolve(h.diskEntries),
+  listDiskEntriesAsync: () => {
+    h.diskCalls += 1;
+    return Promise.resolve(h.diskEntries);
+  },
 }));
 
 import { computeStorageUsage, sumStorageUsageTotalBytes, TRIM_THRESHOLD_DAYS } from './usage';
@@ -45,6 +49,7 @@ import { STORAGE_CATEGORIES } from './categories';
 beforeEach(() => {
   h.catalogCalls = 0;
   h.ageCalls = 0;
+  h.diskCalls = 0;
   const now = Date.now();
   h.diskEntries = [
     { path: '/d/old', mtimeMs: now - 400 * 86400000, sizeBytes: 700 },
@@ -111,6 +116,21 @@ describe('computeStorageUsage', () => {
     expect(rows.every((row) => row.totalBytes === null)).toBe(true);
     expect(h.catalogCalls).toBe(0);
     expect(h.ageCalls).toBe(0);
+  });
+
+  it('measures only the requested category and skips unrelated disk scans', async () => {
+    const rows = await computeStorageUsage({ categoryId: 'tool-invocations' });
+
+    expect(rows.map((row) => row.id)).toEqual(['tool-invocations']);
+    expect(h.catalogCalls).toBe(1);
+    expect(h.ageCalls).toBe(1);
+    expect(h.diskCalls).toBe(0);
+  });
+
+  it('rejects an unknown requested category instead of returning an empty success', async () => {
+    await expect(computeStorageUsage({ categoryId: 'unknown-category' })).rejects.toThrow(
+      'Unknown storage category: unknown-category',
+    );
   });
 
   it('does not report a numeric aggregate when one category size is unknown', () => {
