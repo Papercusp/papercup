@@ -25,6 +25,7 @@ import { SuSessionStartupTimeoutError, type SuSessionHost, type SuSessionEventIn
 import { claudeModelOptions } from './su-session-engine-models';
 import { SuNativeCards } from './su-session-native-cards';
 import { loadSuOwnerTurnReceipts } from './su-session-commands';
+import { admitNativeIdentityInference } from './cupboard/identity-activation-gate-io';
 
 export type ClaudeEngineQuery = AsyncIterable<SDKMessage> & Pick<Query, 'initializationResult' | 'mcpServerStatus' | 'interrupt' | 'close'>
   // P-026: the streaming-input model switch. Optional so a peer without it
@@ -301,6 +302,17 @@ export function startClaudeSuEngine(
         let timer: ReturnType<typeof setTimeout> | undefined;
         inputTail = inputTail.then(async () => {
           if (closed) { receipt.resolve(unavailable('Claude closed before this saved turn was sent')); return; }
+          if (su) {
+            if (!binding.workspaceId || !binding.ownerId) {
+              receipt.resolve(unavailable('Native admission requires the authenticated workspace and owner')); return;
+            }
+            const admission = await admitNativeIdentityInference({ workspaceId: binding.workspaceId,
+              ownerId: binding.ownerId, backend: 'claude' });
+            if (!admission.ok) { receipt.resolve(admission); return; }
+            // A funding read can outlive teardown; it never authorizes writing
+            // a querying input to an engine that closed while admission waited.
+            if (closed) { receipt.resolve(unavailable('Claude closed during native admission')); return; }
+          }
           // P-026: switch in the input order, after any earlier queued turn has
           // finished (so it never changes the model under that turn) and before
           // this one is written (so a refused switch refuses this turn instead
