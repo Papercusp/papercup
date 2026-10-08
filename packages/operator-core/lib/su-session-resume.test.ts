@@ -39,7 +39,10 @@ vi.mock('./adv-sessions', async (orig) => ({
 vi.mock('./su-persona-render', () => ({ parseSuLaunchSpecRecord: (value: unknown) => value }));
 vi.mock('./console-launcher', () => ({ buildConsoleEnvelope: m.envelope }));
 vi.mock('./interactive-safety-floor', () => ({ checkInteractiveSafetyFloor: async () => ({ ok: true }) }));
-vi.mock('./events/await/psu-pty-discovery', () => ({ findLiveHost: m.live }));
+vi.mock('./events/await/psu-pty-discovery', () => ({
+  findLiveHost: m.live,
+  findLiveHostAsync: async (ownerId: string) => m.live(ownerId),
+}));
 vi.mock('./mcp-base-url', () => ({ resolveSpawnHostOperatorBaseUrl: () => 'http://localhost:3170' }));
 vi.mock('./session-transcript-resolvers', () => ({ findOmpSessionPath: m.ompPath }));
 vi.mock('./endpoint-route/routes/agent-mcp/bootstrap-su', () => ({ resolveAccountPin: m.account }));
