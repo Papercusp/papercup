@@ -901,6 +901,47 @@ function publicPortalFrames(stream: string): Array<{ event: string; data: Record
   });
 }
 
+function assertPublicDocsResults(frames: ReturnType<typeof publicPortalFrames>) {
+  const calls = frames.filter((frame) => frame.event === 'tool_call' && String(frame.data.name).startsWith('docs:'));
+  expect(calls[0]?.data.name).toBe('docs:search');
+  const successful = new Set<string>();
+  for (const call of calls) {
+    expect(call.data.callId).toBeTruthy();
+    const paired = frames.filter((frame) => frame.event === 'tool_result'
+      && frame.data.name === call.data.name && frame.data.callId === call.data.callId);
+    expect(paired).toHaveLength(1);
+    expect(typeof paired[0].data.ok).toBe('boolean');
+    if (paired[0].data.ok === true) successful.add(String(call.data.name));
+  }
+  // A failed attempt can be corrected. Require actual successful retrieval,
+  // while retaining and correlating every failed attempt as well.
+  expect(successful.has('docs:search')).toBe(true);
+  expect(successful.has('docs:get')).toBe(true);
+}
+
+describe('public manual Portal docs result pairing', () => {
+  const frames = () => [false, true].flatMap((ok, attempt) => ['docs:search', 'docs:get'].flatMap((name, index) => {
+    const callId = `attempt-${attempt}-${index}`;
+    return [{ event: 'tool_result', data: { name, callId, ok } }, { event: 'tool_call', data: { name, callId } }];
+  }));
+
+  it('accepts failed calls followed by correlated successful search and get', () => {
+    expect(() => assertPublicDocsResults(frames())).not.toThrow();
+  });
+
+  it('rejects missing results and results paired to the wrong call', () => {
+    expect(() => assertPublicDocsResults(frames().slice(1))).toThrow();
+    const mismatched = frames();
+    mismatched[0].data.callId = 'unrelated-call';
+    expect(() => assertPublicDocsResults(mismatched)).toThrow();
+  });
+
+  it('rejects failed-only retrieval and a missing successful get', () => {
+    expect(() => assertPublicDocsResults(frames().slice(0, 4))).toThrow();
+    expect(() => assertPublicDocsResults(frames().filter((frame) => frame.data.name !== 'docs:get'))).toThrow();
+  });
+});
+
 async function recordedCase(id: string, question: string) {
   const result = await chat!.send({
     messages: [{ role: 'user', content: question }], trigger: 'user_message',
@@ -1197,14 +1238,7 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
       stream = await response.text();
       const frames = publicPortalFrames(stream);
       expect(frames.some((frame) => frame.event === 'error')).toBe(false);
-      const calls = frames.filter((frame) => frame.event === 'tool_call' && String(frame.data.name).startsWith('docs:'));
-      expect(calls[0]?.data.name).toBe('docs:search');
-      expect(calls.some((frame) => frame.data.name === 'docs:get')).toBe(true);
-      for (const call of calls) {
-        expect(call.data.callId).toBeTruthy();
-        expect(frames.some((frame) => frame.event === 'tool_result' && frame.data.name === call.data.name
-          && frame.data.callId === call.data.callId && frame.data.ok === true)).toBe(true);
-      }
+      assertPublicDocsResults(frames);
       const chatId = new URL(response.url()).pathname.split('/').at(-2)!;
       const historyPath = `/api/papercup-chat/conversations/${chatId}/turns`;
       stage = 'persisted-history';
