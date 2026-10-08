@@ -304,6 +304,10 @@ export async function* synthesizeReading(
 ): AsyncGenerator<ReadingSynth> {
   const snapshot = { ...prefs };
   if (options.signal?.aborted) { yield { ok: false, error: 'speech cancelled', status: 499 }; return; }
+  if (snapshot.ttsEngine === 'browser') {
+    yield { ok: false, error: 'Browser speech requires the active browser player. Start this reading in the app, or explicitly select a server speech engine in /settings/voice.', status: 400 };
+    return;
+  }
   // Never infer source-disclosure permission from having a configured cloud key.
   if (!options.allowCloud && snapshot.ttsEngine !== 'kokoro' && snapshot.ttsEngine !== 'browser') {
     yield { ok: false, error: 'This source is restricted to local speech. Choose a local engine in /settings/voice or explicitly allow cloud speech.', status: 403 };

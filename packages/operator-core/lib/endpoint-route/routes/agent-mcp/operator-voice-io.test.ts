@@ -148,6 +148,17 @@ describe('POST /agent-mcp/operator-tts original reading', () => {
     expect(mock).not.toHaveBeenCalled();
   });
 
+  it('requires the browser player for explicit reading instead of substituting a server engine', async () => {
+    (loadVoicePrefs as Mock).mockResolvedValue({ ...DEFAULT_VOICE_PREFS, ttsEngine: 'browser' });
+    const mock = stubFetch(() => new Response(FAKE_WAV));
+    for (const allowCloud of [false, true]) {
+      const res = await post(ttsRoute, 'operator-tts', { operation: 'read', text: 'original words', allowCloud });
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toContain('active browser player');
+    }
+    expect(mock).not.toHaveBeenCalled();
+  });
+
   it('does not emit completed when a later chunk fails', async () => {
     let calls = 0;
     stubFetch(() => ++calls === 1 ? new Response(FAKE_WAV) : new Response('unavailable', { status: 500 }));

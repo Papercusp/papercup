@@ -82,6 +82,18 @@ describe('shared authorized content intake', () => {
     await expect(readContent({ kind: 'html', html: '<script>only code</script>' }, context, allowed)).rejects.toMatchObject({ code: 'unreadable' });
     await expect(readContent({ kind: 'reference', ref: 'doc:one' }, context, allowed)).rejects.toMatchObject({ code: 'unsupported' });
   });
+  it('preserves multiple source order, refs and partial coverage within one total limit', async () => {
+    const sources = [{ kind: 'text' as const, text: 'FIRST', ref: 'doc:one' }, { kind: 'html' as const, html: '<p>FINAL</p>', ref: 'doc:two', partial: true }];
+    const result = await readContent({ kind: 'collection', sources }, context, allowed);
+    expect(result.text).toBe('FIRST\n\nFINAL');
+    expect(result.sourceRefs).toEqual(['doc:one', 'doc:two']);
+    expect(result.coverage).toEqual({ complete: false, warnings: ['source-partial'] });
+    const capped = await readContent({ kind: 'collection', sources }, context, allowed, { maxChars: 8 });
+    expect(capped.text).toBe('FIRST\n\nF');
+    expect(capped.coverage.warnings).toContain('character-limit');
+    await expect(readContent({ kind: 'collection', sources }, context, allowed, { maxInputBytes: 10 })).rejects.toMatchObject({ code: 'input-too-large' });
+    await expect(readContent({ kind: 'collection', sources }, context, { authorize: async input => input.ref !== 'doc:two' })).rejects.toMatchObject({ code: 'unauthorized' });
+  });
   it('extracts real PDF pages in order and preserves the final page text', async () => {
     const result = await readContent({ kind: 'pdf', bytes: pdfFixture(['FIRST PAGE', 'FINAL PAGE TAIL']), ref: 'file:report.pdf' }, context, allowed);
     expect(result.text).toBe('FIRST PAGE\n\nFINAL PAGE TAIL');

@@ -41,4 +41,15 @@ describe('documents:read projection and intake integration', () => {
     expect(response.ok).toBe(true);
     expect(response.result?.structuredContent).toMatchObject({ ok: true, text: 'first\n', coverage: { complete: false, warnings: ['source-partial', 'character-limit'] } });
   });
+  it('accepts a bounded provided-source collection through the real tool schema', async () => {
+    const response = await dispatch({ content: { kind: 'collection', sources: [
+      { kind: 'text', text: 'FIRST', ref: 'provided:one' },
+      { kind: 'html', html: '<p>FINAL</p>', ref: 'provided:two', partial: true },
+    ] } });
+    expect(response.ok, JSON.stringify(response)).toBe(true);
+    expect(response.result?.structuredContent).toMatchObject({ ok: true, text: 'FIRST\n\nFINAL', sourceRefs: ['provided:one', 'provided:two'], coverage: { complete: false, warnings: ['source-partial'] } });
+    const denied = await dispatch({ content: { kind: 'collection', sources: [{ kind: 'reference', ref: 'private:unread' }] } });
+    expect(denied.ok).toBe(false);
+    expect(denied.error?.code).toBe('invalid_input');
+  });
 });

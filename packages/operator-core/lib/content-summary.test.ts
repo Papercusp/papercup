@@ -48,6 +48,19 @@ describe('explicit authorized content summaries', () => {
     expect(h.requests[0]!.systemPromptText).toContain('untrusted material');
     expect(JSON.parse(h.requests[0]!.promptText)).toMatchObject({ audience: 'engineers', focus: 'costs', format: 'bullets', language: 'Spanish', quotedSource: original.text });
   });
+  it('summarizes every provided source and binds reuse to the complete source inventory', async () => {
+    const h = harness();
+    const original = await readContent({ kind: 'collection', sources: [
+      { kind: 'text', text: 'FIRST 12', ref: 'doc:one' },
+      { kind: 'text', text: 'FINAL 34', ref: 'doc:two', partial: true },
+    ] }, { workspaceId: 'ws-one', readerId: 'reader-one' }, { authorize: async () => true });
+    const result = await summarizeContent(original, { allowCloud: true }, undefined, h.deps);
+    expect(JSON.parse(h.requests[0]!.promptText)).toMatchObject({ quotedSource: 'FIRST 12\n\nFINAL 34', sourceRefs: ['doc:one', 'doc:two'] });
+    expect(result.sourceRefs).toEqual(['doc:one', 'doc:two']);
+    expect(result.coverage.complete).toBe(false);
+    await summarizeContent({ ...original, sourceRefs: ['doc:one', 'doc:three'] }, { allowCloud: true }, undefined, h.deps);
+    expect(h.requests).toHaveLength(2);
+  });
   it('requires cloud consent and fails closed when a local route is unavailable', async () => {
     const h = harness();
     await expect(summarizeContent(await source(), {}, undefined, h.deps)).rejects.toMatchObject({ code: 'cloud-consent-required' });

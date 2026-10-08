@@ -3,10 +3,12 @@ import { labelExternalContent, type ExternalProvenance } from './external-conten
 import { readableHtmlText } from './html-to-text';
 
 /** Already obtained bytes/text, or a reference resolved under the caller's existing ACL. */
-export type ContentInput =
+export type ProvidedContentInput =
   | { kind: 'text' | 'selection'; text: string; ref?: string; title?: string; partial?: boolean }
   | { kind: 'html'; html: string; ref?: string; title?: string; partial?: boolean }
-  | { kind: 'pdf'; bytes: Uint8Array; ref?: string; title?: string; partial?: boolean }
+  | { kind: 'pdf'; bytes: Uint8Array; ref?: string; title?: string; partial?: boolean };
+export type ContentInput = ProvidedContentInput
+  | { kind: 'collection'; sources: ProvidedContentInput[]; ref?: string; title?: string; partial?: boolean }
   | { kind: 'reference'; ref: string };
 
 export interface ContentReaderContext { workspaceId: string; readerId: string; signal?: AbortSignal }
@@ -110,6 +112,27 @@ export async function readContent(
     if (input.ref !== request.ref || !await deps.authorize(input, context)) throw new ContentIntakeError('unauthorized', 'The resolved source does not match the authorized reference.');
   } else { input = request; }
   checkCancelled(context.signal);
+  if (input.kind === 'collection') {
+    if (!input.sources.length || input.sources.length > 20) throw new ContentIntakeError('unsupported', 'Supply between 1 and 20 provided sources.');
+    const inputBytes = input.sources.reduce((total, member) => total + (member.kind === 'pdf' ? member.bytes.byteLength : Buffer.byteLength(member.kind === 'html' ? member.html : member.text, 'utf8')), 0);
+    if (inputBytes > limits.maxInputBytes) throw new ContentIntakeError('input-too-large', `Sources exceed the ${limits.maxInputBytes}-byte intake limit; no complete collection was read.`);
+    const members: ReadableContent[] = [];
+    for (const member of input.sources) members.push(await readContent(member, context, deps, limits));
+    const combined = members.map(member => member.text).join('\n\n');
+    const text = boundedText(combined, limits.maxChars);
+    const warnings = [...new Set([
+      ...(input.partial ? ['source-partial'] : []), ...members.flatMap(member => member.coverage.warnings),
+      ...(combined.length > limits.maxChars ? ['character-limit'] : []),
+    ])];
+    return {
+      text, format: 'text', ...(input.title ? { title: input.title } : {}),
+      sourceRefs: [...new Set([...(input.ref ? [input.ref] : []), ...members.flatMap(member => member.sourceRefs)])],
+      provenance: labelExternalContent({ kind: 'other', label: input.ref ?? 'collection:provided' }),
+      access: { workspaceId: context.workspaceId, readerId: context.readerId },
+      digest: createHash('sha256').update(text).digest('hex'),
+      coverage: { complete: warnings.length === 0, warnings },
+    };
+  }
   const raw = input.kind === 'pdf' ? input.bytes : input.kind === 'html' ? input.html : input.text;
   if ((typeof raw === 'string' ? Buffer.byteLength(raw, 'utf8') : raw.byteLength) > limits.maxInputBytes) {
     throw new ContentIntakeError('input-too-large', `Source exceeds the ${limits.maxInputBytes}-byte intake limit; no complete source was read.`);
