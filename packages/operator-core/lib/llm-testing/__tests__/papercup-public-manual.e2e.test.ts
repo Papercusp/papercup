@@ -11,12 +11,13 @@
  * on an isolated, immutable Portal candidate. Novice and final shipment
  * acceptance remain separate.
  */
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, randomUUID, X509Certificate } from 'node:crypto';
 import { execFile, spawn } from 'node:child_process';
 import { closeSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve, sep } from 'node:path';
 import { createServer } from 'node:net';
+import { createServer as createHttpsServer, request as httpsRequest } from 'node:https';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -36,6 +37,7 @@ import { HostedSessionCookieCodec, HOSTED_SESSION_COOKIE, resolveHostedSession, 
 import { resolveHostedSecretRef } from '../../auth/hosted/secret-ref';
 import { withWorkspace } from '@papercusp/db-org';
 import { parseEnvFile } from '../../../../../apps/operator/scripts/systemd/portal-hosted-launcher';
+import { exactOriginOr403 } from '../../endpoint-route/hosted-browser-context';
 
 let baseUrl = process.env.OPERATOR_BASE_URL;
 const enabled = Boolean(baseUrl) && process.env.PAPERCUSP_TEST_PUBLIC_CHAT === '1';
@@ -116,6 +118,138 @@ function publicManualHostedCookie(origin: string, value: string) {
   return { name: HOSTED_SESSION_COOKIE, value, domain: new URL(origin).hostname,
     path: '/', secure: true, httpOnly: true, sameSite: 'Lax' as const };
 }
+
+async function ownPortalHttps(targetPort: number) {
+  // Reuse the deployed Portal proxy for request/SSE forwarding. Only the local
+  // TLS listener and disposable certificate are specific to this test fixture.
+  const root = mkdtempSync(join(tmpdir(), 'public-manual-tls-'));
+  let server: ReturnType<typeof createHttpsServer> | undefined;
+  try {
+    const certPath = join(root, 'cert.pem');
+    const keyPath = join(root, 'key.pem');
+    await promisify(execFile)('openssl', ['req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:prime256v1', '-nodes',
+      '-keyout', keyPath, '-out', certPath, '-days', '1', '-subj', '/CN=127.0.0.1',
+      '-addext', 'subjectAltName=IP:127.0.0.1'], { timeout: 10_000 });
+    const cert = readFileSync(certPath);
+    const spki = createHash('sha256').update(new X509Certificate(cert).publicKey.export({
+      type: 'spki', format: 'der',
+    })).digest('base64');
+    const proxyPath = resolve(import.meta.dirname, '../../../../../apps/operator/scripts/systemd/papercusp-cloud-portal-proxy.mjs');
+    const { createPortalProxy } = await import(/* @vite-ignore */ pathToFileURL(proxyPath).href);
+    const proxy = createPortalProxy({ targetPort, retryWindowMs: 1000, retryDelayMs: 25 });
+    server = createHttpsServer({ key: readFileSync(keyPath), cert }, (request, response) => {
+      if (request.method === 'GET' && request.url === '/__public_manual_tls_preflight') {
+        response.writeHead(200, { 'content-type': 'text/plain', 'cache-control': 'no-store' });
+        response.end('public-manual-tls-ready');
+      } else proxy.emit('request', request, response);
+    });
+    server.on('upgrade', (request, socket, head) => proxy.emit('upgrade', request, socket, head));
+    await new Promise<void>((ready, reject) => {
+      server!.once('error', reject);
+      server!.listen(0, '127.0.0.1', () => { server!.off('error', reject); ready(); });
+    });
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('public_manual_tls_listener_missing');
+    const origin = `https://127.0.0.1:${address.port}`;
+    const request = (path: string, options: { method?: string; headers?: Record<string, string>; body?: string; trustFixture?: boolean } = {}) =>
+      new Promise<{ status: number; body: string }>((ready, reject) => {
+        const pending = httpsRequest(new URL(path, origin), {
+          ca: options.trustFixture === false ? undefined : cert,
+          method: options.method ?? 'GET', headers: options.headers,
+        }, (response) => {
+          let body = '';
+          response.setEncoding('utf8');
+          response.on('data', (chunk) => { body += chunk; });
+          response.once('error', reject);
+          response.once('end', () => ready({ status: response.statusCode ?? 0, body }));
+        });
+        pending.once('error', reject);
+        pending.setTimeout(2000, () => pending.destroy(new Error('public_manual_tls_request_timeout')));
+        pending.end(options.body);
+      });
+    const assertReady = async () => {
+      const result = await request('/__public_manual_tls_preflight');
+      if (result.status !== 200 || result.body !== 'public-manual-tls-ready') {
+        throw new Error('public_manual_tls_preflight_failed');
+      }
+    };
+    await assertReady();
+    return { origin, spki, request, assertReady, close: async () => {
+      try {
+        server!.closeAllConnections();
+        await new Promise<void>((ready, reject) => server!.close((error) => error ? reject(error) : ready()));
+      } finally { rmSync(root, { recursive: true, force: true }); }
+    } };
+  } catch (error) {
+    server?.closeAllConnections();
+    server?.close();
+    rmSync(root, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+describe('public manual isolated HTTPS transport', () => {
+  it('trusts only its fixture certificate and preserves the production origin guard through the Portal proxy', async () => {
+    const { createServer: createHttpServer } = await import('node:http');
+    let origin = '';
+    let mutations = 0;
+    const upstream = createHttpServer(async (request, response) => {
+      const refusal = exactOriginOr403(new Request('http://127.0.0.1/guard', {
+        method: request.method, headers: { origin: String(request.headers.origin ?? '') },
+      }), origin);
+      if (refusal) {
+        response.writeHead(refusal.status, { 'content-type': 'application/json' });
+        response.end(await refusal.text());
+        return;
+      }
+      mutations += 1;
+      let body = '';
+      for await (const chunk of request) body += chunk;
+      response.writeHead(200, { 'content-type': 'text/event-stream' });
+      response.end(`event: forwarded\ndata: ${JSON.stringify({ body, host: request.headers['x-forwarded-host'] })}\n\n`);
+    });
+    await new Promise<void>((ready) => upstream.listen(0, '127.0.0.1', ready));
+    let tls: Awaited<ReturnType<typeof ownPortalHttps>> | undefined;
+    try {
+      tls = await ownPortalHttps((upstream.address() as { port: number }).port);
+      origin = tls.origin;
+      await expect(tls.request('/__public_manual_tls_preflight', { trustFixture: false })).rejects.toThrow();
+      expect(mutations).toBe(0);
+      const rejected = await tls.request('/guard', { method: 'POST', headers: { origin: 'https://app.papercusp.com' } });
+      expect(rejected.status).toBe(403);
+      expect(JSON.parse(rejected.body)).toMatchObject({ error: 'cross_origin_blocked' });
+      expect(mutations).toBe(0);
+      const accepted = await tls.request('/guard', { method: 'POST', headers: { origin }, body: 'fixture-request' });
+      expect(accepted.status).toBe(200);
+      expect(accepted.body).toContain('event: forwarded');
+      expect(accepted.body).toContain('fixture-request');
+      expect(accepted.body).toContain(new URL(origin).host);
+      expect(mutations).toBe(1);
+    } finally {
+      try { await tls?.close(); }
+      finally {
+        upstream.closeAllConnections();
+        await new Promise<void>((ready) => upstream.close(() => ready()));
+      }
+    }
+  }, 20_000);
+
+  it.runIf(process.env.PAPERCUSP_TEST_PUBLIC_PORTAL === '1')('opens the isolated HTTPS origin with certificate-specific Chromium trust', async () => {
+    const tls = await ownPortalHttps(await freeLoopbackPort());
+    let browser: import('@playwright/test').Browser | undefined;
+    try {
+      const { chromium } = await import('playwright');
+      browser = await chromium.launch({ headless: true, args: [`--ignore-certificate-errors-spki-list=${tls.spki}`] });
+      const page = await browser.newPage();
+      expect((await page.goto(`${tls.origin}/__public_manual_tls_preflight`))?.ok()).toBe(true);
+      expect(await page.locator('body').innerText()).toBe('public-manual-tls-ready');
+      expect(new URL(page.url()).protocol).toBe('https:');
+    } finally {
+      try { await browser?.close(); }
+      finally { await tls.close(); }
+    }
+  }, 30_000);
+});
 
 function serializePortalEvidence(record: Record<string, unknown>, failure?: unknown, credentials?: string | string[]) {
   // Preserve the original error before a reporter attempts source-map parsing.
@@ -750,6 +884,7 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
     let hostedSessionId: string | undefined;
     let child: ReturnType<typeof spawn> | undefined;
     let browser: import('@playwright/test').Browser | undefined;
+    let tls: Awaited<ReturnType<typeof ownPortalHttps>> | undefined;
     let stage = 'hosted-fixture';
     let servedRelease: Record<string, unknown> | undefined;
     let stream = '';
@@ -758,10 +893,21 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
     let captureBrowser: ReturnType<typeof observePortalBrowser> | undefined;
     let browserState: Awaited<ReturnType<ReturnType<typeof observePortalBrowser>>> | undefined;
     let guideMutation: { status: number; errorCode: string | null } | undefined;
+    let browserOrigin: string | undefined;
+    let configuredPublicOrigin: string | undefined;
     const evidenceCredentials = [principalBearer!];
     let caseFailure: unknown;
     const question = 'How do I check the orchard workspace? Search the public manual, read the FAQ section, give its recovery marker, and cite the section. Do not perform a recovery.';
     try {
+      stage = 'tls-preflight';
+      const port = await freeLoopbackPort();
+      tls = await ownPortalHttps(port);
+      const origin = tls.origin;
+      browserOrigin = origin;
+      // TLS readiness and fixture certificate trust are measured before creating
+      // an account or making a paid request. The inner Portal stays on loopback.
+      await tls.assertReady();
+      stage = 'hosted-fixture';
       user = await kit.create(publicManualPortalUser());
       const admitted = await resolveHostedSession(user.sessionId);
       expect(admitted).not.toBeNull();
@@ -784,14 +930,13 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
       const hostedConfig = parseEnvFile(readFileSync(hostedFile!, 'utf8'));
       const secret = await resolveHostedSecretRef(hostedConfig.PAPERCUSP_HOSTED_SESSION_COOKIE_SECRET_REF);
       evidenceCredentials.push(secret);
-      const port = await freeLoopbackPort();
-      const origin = `http://127.0.0.1:${port}`;
       // Production browser mutations require an exact configured public origin.
       // Bind the isolated candidate to its own address; the paired negative
       // control retains the inherited hosted origin to reproduce the refusal.
       expect(hostedConfig.PAPERCUSP_HOSTED_PUBLIC_ORIGIN).not.toBe(origin);
+      configuredPublicOrigin = mismatchedOrigin ? hostedConfig.PAPERCUSP_HOSTED_PUBLIC_ORIGIN : origin;
       const overrides = { ...hostedConfig,
-        PAPERCUSP_HOSTED_PUBLIC_ORIGIN: mismatchedOrigin ? hostedConfig.PAPERCUSP_HOSTED_PUBLIC_ORIGIN : origin,
+        PAPERCUSP_HOSTED_PUBLIC_ORIGIN: configuredPublicOrigin,
         PORTAL_OPERATOR_ORIGIN: baseUrl!, PAPERCUSP_WORKSPACE_ID: workspaceId,
         PAPERCUSP_SHARED_OPERATOR: '0', PORTAL_HOME: temporaryHome, PORT: String(port), HOSTNAME: '127.0.0.1' };
       const envFile = join(temporaryHome, 'hosted.env');
@@ -809,11 +954,11 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
       stage = 'portal-startup';
       await expect.poll(async () => {
         if (child!.exitCode !== null) throw new Error(`portal_fixture_exited:${child!.exitCode}; see ${logFile}`);
-        try { return (await fetch(origin, { signal: AbortSignal.timeout(2000) })).ok; } catch { return false; }
+        try { return (await fetch(`http://127.0.0.1:${port}`, { signal: AbortSignal.timeout(2000) })).ok; } catch { return false; }
       }, { timeout: 45_000, interval: 500 }).toBe(true);
       stage = 'browser-launch';
       const { chromium } = await import('playwright');
-      browser = await chromium.launch({ headless: true });
+      browser = await chromium.launch({ headless: true, args: [`--ignore-certificate-errors-spki-list=${tls.spki}`] });
       const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
       const cookieValue = new HostedSessionCookieCodec(secret).encode(hostedSessionId!);
       evidenceCredentials.push(cookieValue);
@@ -912,12 +1057,15 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
       // Only the public projected stream/history is retained. Failure stage and
       // runtime log let a continuation diagnose without replaying a paid turn.
       const safeEvidence = serializePortalEvidence({ id: mismatchedOrigin ? 'actual-portal-origin-negative' : 'actual-portal-typed', stage,
-        question, runtimeBuild, candidateRoot, servedRelease, workspaceId, recordedAt: new Date().toISOString(),
+        question, runtimeBuild, candidateRoot, servedRelease, workspaceId, browserOrigin, configuredPublicOrigin,
+        recordedAt: new Date().toISOString(),
         frames: publicPortalFrames(stream), history, browserText, browserState, guideMutation }, caseFailure, evidenceCredentials);
       writeFileSync(join(evidenceDir, 'case.json'), safeEvidence, { mode: 0o600 });
       try {
       try { await browser?.close(); }
       finally {
+        try { await tls?.close(); }
+        finally {
         if (child && child.exitCode === null) {
           const exited = new Promise<void>((resolve) => child!.once('exit', () => resolve()));
           child.kill('SIGTERM');
@@ -935,6 +1083,7 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
             await sql`DELETE FROM harness_shared.workspace_host_connections WHERE workspace_id=${controlWorkspace} AND id=${connectionId}`;
           }, { bypassRlsForAdmin: true }); }
           finally { rmSync(temporaryHome, { recursive: true, force: true }); }
+        }
         }
       }
       } catch (cleanupError) {
