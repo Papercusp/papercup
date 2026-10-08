@@ -43,6 +43,9 @@ function boundedText(text: string, maxChars: number): string {
 }
 
 async function readPdf(bytes: Uint8Array, limits: ContentLimits, signal?: AbortSignal) {
+  // PDF.js installs its in-process handler on globalThis. Keep the import explicit
+  // so esbuild includes it in hosts/sidecars instead of resolving a sibling file.
+  await import('pdfjs-dist/legacy/build/pdf.worker.mjs');
   const { getDocument } = await import('pdfjs-dist/legacy/build/pdf.mjs');
   checkCancelled(signal);
   const task = getDocument({ data: bytes.slice(), isEvalSupported: false, disableFontFace: true, useWorkerFetch: false, stopAtErrors: true, verbosity: 0 });

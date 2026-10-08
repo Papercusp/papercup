@@ -1,5 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
-import { readContent, ContentIntakeError, type ContentIntakeDeps } from './content-intake';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { execFileSync } from 'node:child_process';
+import { build } from 'esbuild';
+import type { ContentIntakeDeps } from './content-intake';
+const { readContent, ContentIntakeError } = await import(process.env.CONTENT_INTAKE_PROBE ?? './content-intake');
 
 const context = { workspaceId: 'workspace-a', readerId: 'reader-a' };
 const allowed: ContentIntakeDeps = { authorize: async () => true };
@@ -97,4 +104,15 @@ describe('shared authorized content intake', () => {
     await expect(readContent({ kind: 'text', text: 'anything' }, { ...context, signal: controller.signal }, { authorize })).rejects.toMatchObject({ code: 'cancelled' });
     expect(authorize).not.toHaveBeenCalled();
   });
+  it('reads real PDFs from a standalone host bundle without a sibling worker file', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'content-bundle-test-'));
+    try {
+      const bundle = await build({ entryPoints: [join(import.meta.dirname, 'content-intake.ts')], bundle: true, platform: 'node', format: 'esm', target: 'node22', write: false, external: ['@napi-rs/canvas'], banner: { js: 'import { createRequire } from "node:module"; const require = createRequire(import.meta.url);' } });
+      const file = join(dir, 'host.mjs');
+      await writeFile(file, bundle.outputFiles[0]!.contents);
+      const program = `const {readContent} = await import(${JSON.stringify(pathToFileURL(file).href)}); const bytes = new Uint8Array(Buffer.from(${JSON.stringify(Buffer.from(pdfFixture(['BUNDLED FIRST', 'BUNDLED TAIL'])).toString('base64'))}, 'base64')); const result = await readContent({kind:'pdf',bytes},{workspaceId:'test',readerId:'test'},{authorize:async()=>true}); console.log(JSON.stringify({text:result.text,coverage:result.coverage}));`;
+      const output = execFileSync(process.execPath, ['--input-type=module', '-e', program], { encoding: 'utf8', timeout: 15_000 });
+      expect(JSON.parse(output.trim().split('\n').at(-1)!)).toEqual({ text: 'BUNDLED FIRST\n\nBUNDLED TAIL', coverage: { complete: true, warnings: [], pages: { total: 2, read: 2, unreadable: [] } } });
+    } finally { await rm(dir, { recursive: true, force: true }); }
+  }, 20_000);
 });
