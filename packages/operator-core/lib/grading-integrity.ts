@@ -462,6 +462,8 @@ export async function notifyRetainedGradingAuditor(
     reservation: { key: string; reservedAt: string };
     workspaceId: string;
     harness?: string;
+    /** Resume a positively parked retained task without replacing its lease. */
+    resumeParked?: boolean;
   },
   deps: {
     append?: PgCoordLog['appendLineIfAbsent'];
@@ -484,14 +486,17 @@ export async function notifyRetainedGradingAuditor(
       (task.workItemId != null && task.workItemId !== card.issueId)) {
     return { state: 'skipped', reason: 'retained auditor target/owner/fingerprint provenance is missing or mismatched' };
   }
-  const msgId = `grading-audit-renewal:${createHash('sha256')
+  const msgId = `${input.resumeParked ? 'grading-audit-resume' : 'grading-audit-renewal'}:${createHash('sha256')
     .update(JSON.stringify([workspaceId, card.issueId, card.evidenceFingerprint, ownerId, reservation]))
     .digest('hex')}`;
   const body = [
-    `Renewed lease: key '${key}', reservedAt '${reservation.reservedAt}'. Your existing independent audit task '${task.taskId}' is retained.`,
+    `${input.resumeParked ? 'Resume retained audit under existing lease' : 'Renewed lease'}: key '${key}', reservedAt '${reservation.reservedAt}'. Your existing independent audit task '${task.taskId}' is retained.`,
     `Continue only for exact target '${card.issueId}' and evidence fingerprint '${card.evidenceFingerprint}'. Re-read scorecards:get and require pending state plus this exact key/reservedAt and fingerprint before auditing; otherwise stop without grading or emitting.`,
     gradingAuditBrief(card, reservation.reservedAt),
   ].join('\n\n');
+  const summary = input.resumeParked
+    ? `Resume retained grading audit for ${card.issueId}`
+    : `Renewed grading-audit lease for ${card.issueId}`;
   // Lazy imports keep the existing dispatcher unit-test graph free of coord stores.
   const send = deps.send ?? (await import('./agent-tools/coordination/messages')).sendMessage;
   const wake = deps.wake ?? (await import('./agent-tools/coordination/inbox-wake')).wakeRecipients;
@@ -510,7 +515,7 @@ export async function notifyRetainedGradingAuditor(
       await send({ ownerId: GRADING_AUDIT_DISPATCH_ACTOR, ownerLabel: 'grading audit dispatch',
         source: 'principal', workspaceId, userId: null }, {
         to: [ownerId], msgId, harnessSlug: input.harness,
-        summary: `Renewed grading-audit lease for ${card.issueId}`,
+        summary,
         body,
         expectsReply: true,
         extra: { expects: 'action', sections: [{ text: body,
@@ -549,7 +554,7 @@ export async function notifyRetainedGradingAuditor(
     });
     if (!created) return { state: 'already-delivered', ownerId, msgId, pickupConfirmed: false };
     const outcome = await wake([ownerId], { workspaceId, requiredWake: true,
-      source: GRADING_AUDIT_DISPATCH_ACTOR, summary: `Renewed grading-audit lease for ${card.issueId}`,
+      source: GRADING_AUDIT_DISPATCH_ACTOR, summary,
       payload: { msg_id: msgId, issueId: card.issueId, evidenceFingerprint: card.evidenceFingerprint, reservation } });
     return { state: 'delivered', ownerId, msgId, queued: outcome.queued ?? outcome.woken, pickupConfirmed: false };
   } catch (error) {
@@ -1606,8 +1611,22 @@ export async function dispatchPendingGradingAudits(
           return { issueId, rubricRef: card.rubricRef, state: 'skipped', idempotencyKey,
             reason: 'reservation restore CAS lost; renewal handoff abandoned', ...recoveryFields() };
         }
-        // A restored prior epoch is already in the auditor's original brief. Only
-        // a NEW epoch needs a guarded handoff. A failed restore CAS must not send.
+        // A prior epoch needs no renewal, but its retained task can be parked
+        // before finishing. Resume only one positively parked owner; unknown
+        // liveness and ambiguous task identity do not authorize a wake.
+        let resumeParked = false;
+        if (priorReservation && viableLiveTasks.length === 1) {
+          const ownerId = typeof viableLiveTasks[0]!.detail?.coordOwnerId === 'string'
+            ? viableLiveTasks[0]!.detail.coordOwnerId.trim() : '';
+          if (ownerId) {
+            try {
+              resumeParked = (await (deps.resolveOwnerLiveness ?? resolveGradingAuditorOwnerLiveness)(ownerId))
+                ?.sessionState === 'parked';
+            } catch {
+              // An unavailable oracle preserves the retained task and lease.
+            }
+          }
+        }
         const renewalNotification = !priorReservation
           ? viableLiveTasks.length !== 1
               ? { state: 'skipped' as const, reason: 'retained auditor task identity is ambiguous' }
@@ -1615,12 +1634,18 @@ export async function dispatchPendingGradingAudits(
                   card, task: viableLiveTasks[0]!, reservation: retainedReservation,
                   workspaceId: input.ctx.workspaceId?.trim() ?? '', ...(harnessResolved ? { harness } : {}),
                 })
-          : undefined;
+          : resumeParked
+            ? await (deps.notifyRetainedAuditor ?? notifyRetainedGradingAuditor)({
+                card, task: viableLiveTasks[0]!, reservation: retainedReservation,
+                workspaceId: input.ctx.workspaceId?.trim() ?? '', ...(harnessResolved ? { harness } : {}),
+                resumeParked: true,
+              })
+            : undefined;
         if (renewalNotification?.state === 'failed') {
           // A pre-append failure delivered nothing. Clear only this exact epoch
           // so the next scheduled repair can reissue and retry the handoff.
           // A settlement/new lease winning this CAS remains untouched.
-          await release(issueId, idempotencyKey, { workspaceId: input.ctx.workspaceId, reservedAt: reservationReservedAt });
+          await release(issueId, idempotencyKey, { workspaceId: input.ctx.workspaceId, reservedAt: retainedReservation.reservedAt });
         }
         receipt = {
           issueId,
