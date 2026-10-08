@@ -6,9 +6,94 @@ import type { AccountTutorialProgressRecord } from '@papercusp/operator-core/lib
 import { captureBrowserTelemetry } from '../browser-telemetry';
 
 type GuideCapture = typeof captureBrowserTelemetry;
+/** The host supplies its maintained voice transport; the guide owns consent. */
+export interface ProductTutorialVoiceSession {
+  setMicrophoneMuted(muted: boolean): void | Promise<void>;
+  setOutputMuted(muted: boolean): void;
+  stop(): Promise<void>;
+}
+export type ProductTutorialVoiceLauncher = (input: {
+  account: ProductTutorialAccount; lesson: ProductTutorialLesson; consent: true; signal: AbortSignal;
+  onStatus(status: string): void; onTurn(turn: { speaker: 'user' | 'assistant'; text: string }): void;
+}) => Promise<ProductTutorialVoiceSession>;
+
+export function ProductTutorialVoiceQuestion({ account, lesson, openVoice, onQuestion }: {
+  account: ProductTutorialAccount; lesson: ProductTutorialLesson; openVoice: ProductTutorialVoiceLauncher; onQuestion?: () => void;
+}) {
+  const [consent, setConsent] = useState(false);
+  const [status, setStatus] = useState('off');
+  const [error, setError] = useState<string | null>(null);
+  const [microphoneMuted, setMicrophoneMuted] = useState(false);
+  const [outputMuted, setOutputMuted] = useState(false);
+  const [turn, setTurn] = useState<string | null>(null);
+  const connection = useRef<AbortController | null>(null);
+  const session = useRef<ProductTutorialVoiceSession | null>(null);
+  const deadline = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const stop = useCallback(() => {
+    if (deadline.current) clearTimeout(deadline.current); deadline.current = null;
+    connection.current?.abort(); connection.current = null;
+    const current = session.current; session.current = null;
+    if (current) {
+      current.setOutputMuted(true);
+      void Promise.resolve(current.setMicrophoneMuted(true)).catch(() => {});
+      void current.stop().catch(() => {});
+    }
+    setStatus('off'); setConsent(false); setMicrophoneMuted(false); setOutputMuted(false);
+  }, []);
+  const identity = `${account.tenantId}:${account.userId}:${account.sessionId}:${account.workspaceId}:${lesson.id}`;
+  useEffect(() => {
+    setError(null); setTurn(null);
+    const hidden = () => { if (document.visibilityState === 'hidden') stop(); };
+    document.addEventListener('visibilitychange', hidden);
+    return () => { document.removeEventListener('visibilitychange', hidden); stop(); };
+  }, [identity, openVoice, stop]);
+  async function start() {
+    if (!consent || connection.current) return;
+    const controller = new AbortController(); connection.current = controller;
+    setError(null); setTurn(null); setStatus('connecting'); onQuestion?.();
+    deadline.current = setTimeout(() => {
+      if (connection.current !== controller) return;
+      stop(); setError('Spoken questions took too long to connect. Type your question or try again.');
+    }, 20_000);
+    try {
+      const opened = await openVoice({ account, lesson, consent: true, signal: controller.signal,
+        onStatus: value => {
+          if (connection.current !== controller || controller.signal.aborted) return;
+          if (value === 'off' || value === 'disconnected') { stop(); return; }
+          setStatus(value);
+        },
+        onTurn: value => {
+          if (connection.current === controller && !controller.signal.aborted) setTurn(`${value.speaker === 'user' ? 'You' : 'Lesson Help'}: ${value.text.slice(0, 2000)}`);
+        } });
+      if (connection.current !== controller || controller.signal.aborted) { await opened.stop(); return; }
+      if (deadline.current) clearTimeout(deadline.current); deadline.current = null;
+      session.current = opened; setStatus('listening');
+    } catch {
+      if (connection.current === controller && !controller.signal.aborted) {
+        stop(); setError('Spoken questions are unavailable. Type your question or use the lesson instructions.');
+      }
+    }
+  }
+  return <section aria-label="Spoken lesson questions">
+    <p>Optional spoken questions use Papercusp’s tutorial voice service. Your microphone audio goes to ElevenLabs. Keep credentials and private content out of spoken questions.</p>
+    <label><input type="checkbox" checked={consent} disabled={status !== 'off'} onChange={event => setConsent(event.target.checked)} />Allow microphone audio for this lesson</label>
+    {status === 'off' ? <button type="button" disabled={!consent} onClick={() => void start()}>Start spoken questions</button> : <>
+      <button type="button" onClick={stop}>Stop spoken questions</button>
+      <button type="button" disabled={!session.current} onClick={() => {
+        const next = !microphoneMuted;
+        void Promise.resolve(session.current?.setMicrophoneMuted(next)).then(() => setMicrophoneMuted(next)).catch(() => {
+          stop(); setError('The microphone could not be muted. Spoken questions have stopped; text Help remains available.');
+        });
+      }}>{microphoneMuted ? 'Unmute microphone' : 'Mute microphone'}</button>
+      <button type="button" disabled={!session.current} onClick={() => { const next = !outputMuted; session.current?.setOutputMuted(next); setOutputMuted(next); }}>{outputMuted ? 'Unmute spoken answers' : 'Mute spoken answers'}</button>
+    </>}
+    {status !== 'off' && <p role="status">{status === 'connecting' ? 'Connecting spoken questions…' : microphoneMuted ? 'Microphone muted' : 'Spoken questions active'}</p>}
+    {turn && <p aria-live="polite">{turn}</p>}{error && <p role="alert">{error}</p>}
+  </section>;
+}
 /** Advisory text only. This component has no progress or product mutator. */
-export function ProductTutorialAssistance({ account, lesson, onQuestion }: {
-  account: ProductTutorialAccount; lesson: ProductTutorialLesson; onQuestion?: () => void;
+export function ProductTutorialAssistance({ account, lesson, onQuestion, openVoice }: {
+  account: ProductTutorialAccount; lesson: ProductTutorialLesson; onQuestion?: () => void; openVoice?: ProductTutorialVoiceLauncher;
 }) {
   const [question, setQuestion] = useState('');
   const [answer, setAnswer] = useState<string | null>(null);
@@ -60,6 +145,7 @@ export function ProductTutorialAssistance({ account, lesson, onQuestion }: {
     </form>
     {busy && <p role="status">Asking about this lesson…</p>}
     {answer && <p aria-live="polite">{answer}</p>}{error && <p role="alert">{error}</p>}
+    {openVoice && <ProductTutorialVoiceQuestion account={account} lesson={lesson} openVoice={openVoice} onQuestion={onQuestion} />}
   </section>;
 }
 /** Observe saved learning records. Explanation review is never domain success. */
@@ -111,13 +197,14 @@ export function validProductTutorialRecord(value: unknown, account: ProductTutor
 
 /** Account entry wraps the host's existing first-run/shell choice. It never
  * mounts that workspace UI while an enrolled guide is active. */
-export function AccountProductTutorial({ account, sessionSignal = 'valid', children }: { account: ProductTutorialAccount; sessionSignal?: string; children: ReactNode | ((guideControls: ReactNode) => ReactNode) }) {
+export function AccountProductTutorial({ account, sessionSignal = 'valid', children, openVoice }: { account: ProductTutorialAccount; sessionSignal?: string; children: ReactNode | ((guideControls: ReactNode) => ReactNode); openVoice?: ProductTutorialVoiceLauncher }) {
   const [record, setRecord] = useState<AccountTutorialProgressRecord | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [reload, setReload] = useState(0);
   const [continueUnavailable, setContinueUnavailable] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
   const heading = useRef<HTMLHeadingElement>(null);
   const resume = useRef<HTMLButtonElement>(null);
   const requestedFocus = useRef<'heading' | 'resume' | null>(null);
@@ -239,7 +326,7 @@ export function AccountProductTutorial({ account, sessionSignal = 'valid', child
           <a href={href} onClick={event => { event.preventDefault(); if (!busy) void save({ ...record, disposition: 'paused' }, href); }}>Open {target.id}</a>}</li>;
       })}</ul> : <p>You can read this lesson before selecting a workspace. The navigation lesson shows where the product controls live.</p>}
     </section>
-    <details onToggle={event => { if (event.currentTarget.open) analytics.current?.observer.help(lesson.id); }}><summary>Help with this lesson</summary><p>{lesson.help}</p><a href="/docs">Read public Docs</a>{' · '}<a href="/?app=support" onClick={event => { event.preventDefault(); if (!busy) void save({ ...record, disposition: 'paused' }, '/?app=support'); }}>Open Support</a><ProductTutorialAssistance key={identity + lesson.id} account={account} lesson={lesson} onQuestion={() => analytics.current?.observer.help(lesson.id)} /></details>
+    <details onToggle={event => { setHelpOpen(event.currentTarget.open); if (event.currentTarget.open) analytics.current?.observer.help(lesson.id); }}><summary>Help with this lesson</summary><p>{lesson.help}</p><a href="/docs">Read public Docs</a>{' · '}<a href="/?app=support" onClick={event => { event.preventDefault(); if (!busy) void save({ ...record, disposition: 'paused' }, '/?app=support'); }}>Open Support</a><ProductTutorialAssistance key={identity + lesson.id} account={account} lesson={lesson} openVoice={!busy && helpOpen ? openVoice : undefined} onQuestion={() => analytics.current?.observer.help(lesson.id)} /></details>
     <p role="status">{busy ? 'Saving your choice…' : `${record.reviewedLessonIds.length} explanations reviewed. Product tasks are verified separately.`}</p>
     {error && <p role="alert">{error}</p>}{pending.current && error && <button disabled={busy} onClick={() => save(pending.current!.patch, pending.current!.href)}>Retry saving choice</button>}
     <div className="product-guide-actions">

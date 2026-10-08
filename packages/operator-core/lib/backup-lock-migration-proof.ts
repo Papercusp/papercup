@@ -78,6 +78,20 @@ function escapeRegExp(value: string): string {
 }
 
 const SQL_IDENTIFIER = '[a-z_][a-z0-9_$]*(?:\\.[a-z_][a-z0-9_$]*)*';
+const STATIC_TABLE_ANNOTATION = new RegExp(
+  '^(comment\\s+on\\s+table\\s+' + SQL_IDENTIFIER + '\\s+is\\s+)' +
+  "(?:'(?:''|[^'])*'|(\\$[a-z_][a-z0-9_]*\\$|\\$\\$)[\\s\\S]*\\2)$",
+);
+
+/** A table annotation is data, while its target still takes a relation lock.
+ * Only recognize this narrow static form. Keep executable function/DO bodies
+ * and unknown COMMENT syntax visible to the conservative safety proof. */
+function withoutStaticTableAnnotation(text: string): string {
+  return splitStatements(text)
+    .map((statement) => statement.replace(STATIC_TABLE_ANNOTATION, '$1null'))
+    .join(';\n');
+}
+
 const TRIGGER_EVENT = '(?:insert|update|delete|truncate)';
 const STATIC_TRIGGER_ACTION = new RegExp(
   '^(create\\s+(?:or\\s+replace\\s+)?(?:constraint\\s+)?trigger\\s+' + SQL_IDENTIFIER +
@@ -112,7 +126,7 @@ export function findBackupLockConflicts(
   }));
   const conflicts: MigrationLockConflict[] = [];
   for (const { file, sqlText } of pending) {
-    const text = normalizeMigrationSql(sqlText);
+    const text = withoutStaticTableAnnotation(normalizeMigrationSql(sqlText));
     const statementText = withoutStaticTriggerAction(text);
     for (const { label, re } of UNPROVABLE_STATEMENTS) {
       if (re.test(statementText)) conflicts.push({ file, subject: label, reason: 'unprovable-statement' });

@@ -53,6 +53,30 @@ describe('findBackupLockConflicts', () => {
     ).toEqual([]);
   });
 
+  it.each([
+    "'Prepared rows and cached receipts grant no authority; EXECUTE and VACUUM are prose.'",
+    "'The backup''s rows are described here; DROP SCHEMA is prose.'",
+    '$note$Prepared rows; EXECUTE and VACUUM are prose.$note$',
+    '$$Prepared rows; DROP SCHEMA is prose.$$',
+  ])('ignores table annotation prose while preserving its target: %s', (annotation) => {
+    const sql = `CREATE TABLE harness_shared.cupboard_funded_turns (id int);
+      COMMENT ON TABLE harness_shared.cupboard_funded_turns IS ${annotation};`;
+    expect(findBackupLockConflicts(pending(sql), ['rows'])).toEqual([]);
+    expect(findBackupLockConflicts(pending(sql), ['cupboard_funded_turns'])).toEqual([
+      { file: '1228-x.sql', subject: 'cupboard_funded_turns', reason: 'names-locked-relation' },
+    ]);
+  });
+
+  it('preserves a locked annotation target and executable SQL following an annotation', () => {
+    const sql = `COMMENT ON TABLE "harness_shared"."rows" IS 'unrelated';
+      COMMENT ON TABLE harness_shared.other IS 'rows; EXECUTE is prose';
+      DO $$ BEGIN EXECUTE 'ALTER TABLE rows ADD c int'; END $$;`;
+    expect(findBackupLockConflicts(pending(sql), ['rows'])).toEqual([
+      { file: '1228-x.sql', subject: 'EXECUTE (dynamic SQL)', reason: 'unprovable-statement' },
+      { file: '1228-x.sql', subject: 'rows', reason: 'names-locked-relation' },
+    ]);
+  });
+
   const ticketTriggers = (action = 'FUNCTION') =>
     ['data_sources', 'admission_rules', 'work_admissions'].map((table) => `
       CREATE OR REPLACE TRIGGER emit_change_notify_trg

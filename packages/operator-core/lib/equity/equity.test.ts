@@ -36,7 +36,7 @@ describe('actual equity ownership and equity-paid returns on Cancun EVM', () => 
     expect(issued - 100_000n).toBe(10_000n * (e.now() - start) / (end - start));
     await e.govern([{ contract: t, name: 'stopGrant', args: [id] }]);
     const earned = await e.read(t, 'earnedGrant', [id]) as bigint;
-    const stopped = (await e.read(t, 'grants', [id]) as readonly bigint[])[5];
+    const stopped = BigInt((await e.read(t, 'grants', [id]) as readonly (bigint | number)[])[5]);
     expect(earned).toBe(10_000n * (stopped - start) / (end - start));
     expect(earned).toBeGreaterThan(2000n);
     e.advance(200 * 86400);

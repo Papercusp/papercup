@@ -426,13 +426,20 @@ export function resolveAgentIdentity(ctx: ResolveIdentityCtx): AgentIdentity {
     const isReaction = ctx.reactionCause != null &&
       (principal.slug === 'system:event-reaction' || principal.slug.startsWith('plugin:event-reaction:'));
     const source: IdentitySource = isReaction ? 'event-reaction' : 'principal';
+    const principalOwnerId = operationCallerId(principal.slug, uiClientId);
+    // EI-25399686835596633: the synthesized role principal supplies capabilities,
+    // but its verified spawn client remains the accepted worker's session owner.
+    // Reuse the trusted spawn alias proof; ordinary bearer clients stay namespaced.
+    const spawnOwnerId = principal.kind === 'harness'
+      ? verifiedSpawnSessionAlias(ctx, principalOwnerId)
+      : null;
     return {
       // Event reactions deliberately speak as their trigger agent. Ordinary
       // bearer clients are unverified and must stay inside the principal's
       // namespace (HTTP header/query and MCP client= are caller-controlled).
       ownerId: source === 'event-reaction'
         ? uiClientId ?? principal.slug
-        : operationCallerId(principal.slug, uiClientId),
+        : spawnOwnerId ?? principalOwnerId,
       ownerLabel: sysRole
         ? `${sysRole} · ${ctx.harnessSlug ?? 'system'}`
         : `${principal.kind ?? 'principal'} · ${principal.slug}`,

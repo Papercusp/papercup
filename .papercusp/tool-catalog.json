@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 956,
+  "count": 957,
   "tools": [
     {
       "name": "ablation:report",
@@ -26631,6 +26631,24 @@
       }
     },
     {
+      "name": "pot:equity",
+      "http": {
+        "path": "/api/agent-tools/pot/equity",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "OpenZeppelin actual-equity software: manifest, paged ABI/bytecode, unsigned wallet transaction preparation and pinned-block chain inspection. No signing or broadcasting. Issuer documents and holder consent remain required; returns are additional shares. Large payloads are paged with hashes and must be assembled before wallet signing.",
+      "capabilities": [
+        "harness:read"
+      ],
+      "guidance": {
+        "when": "Prepare deployment or ownership/governance/grant/return actions, or inspect an existing equity deployment.",
+        "notWhen": "Cash dividends, securities/legal validation, private-key custody, ordinary plan admission or authorizing DAO treasury spending.",
+        "chaining": "manifest → artifact/prepare pages → concatenate and verify payload hash → the authorized wallet reviews/signs → inspect. Reuse cupboard:bind-wallet for principal binding. inspect uses the existing PAPERCUSP_RECONCILIATION_CHAIN_RPC_URL operator configuration."
+      }
+    },
+    {
       "name": "pot:get",
       "http": {
         "path": "/api/agent-tools/pot/get",
@@ -31541,7 +31559,7 @@
       "guidance": {
         "when": "The owner (or the Storage settings page) deliberately trims a local-only category — telemetry tables, the drained federation outbox, or on-disk session/scratch/flight-recorder stores.",
         "notWhen": "To read sizes use storage:usage. Federated categories (plans/features/issues/coord) are refused — trimming would change what peers see.",
-        "chaining": "storage:usage → storage:prune { category, olderThanDays, dryRun: true } → review reclaim → storage:prune { category, olderThanDays }."
+        "chaining": "storage:usage { category } → storage:prune { category, olderThanDays, dryRun: true } → review reclaim → storage:prune { category, olderThanDays }."
       }
     },
     {
@@ -31552,7 +31570,7 @@
           "POST"
         ]
       },
-      "description": "Live storage usage by category (PG tables grouped by federation class + on-disk stores), each with total size, an age distribution, and whether it is safe to trim. A size or aggregate is null when the bounded read could not measure every included category. Read-only.",
+      "description": "Live storage usage by category (PG tables grouped by federation class + on-disk stores), each with total size, an age distribution, and whether it is safe to trim. Pass category to measure one known category without scanning unrelated stores; omit it for all categories. A size or aggregate is null when the bounded read could not measure every included category. Read-only.",
       "capabilities": [
         "storage:read"
       ],
@@ -31561,9 +31579,9 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "Inspecting what is consuming local storage, or before a trim, to see per-category size + the age distribution and which categories are federated (read-only).",
+        "when": "Inspecting what is consuming local storage, or before a trim. Pass category when you only need one known category so unrelated disk stores are not scanned.",
         "notWhen": "To actually delete, use storage:prune (with dryRun first). This never deletes.",
-        "chaining": "storage:usage → storage:prune { category, olderThanDays, dryRun: true } → storage:prune { category, olderThanDays }."
+        "chaining": "For one known category, pass category to storage:usage to avoid unrelated disk scans; omit category to inspect all categories."
       }
     },
     {

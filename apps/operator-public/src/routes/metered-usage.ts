@@ -28,6 +28,7 @@ import {
 } from '@papercusp/operator-core/lib/p2p/metered-invocation.ts';
 import type { CumulativePaymentVoucher } from '@papercusp/operator-core/lib/p2p/microcharge.ts';
 import { paymentVoucherDigest, unsignedVoucher } from '@papercusp/operator-core/lib/p2p/microcharge.ts';
+import { quoteIdentityInferenceTurn } from '@papercusp/operator-core/lib/cupboard/identity-per-use-offer';
 import type { Env } from '../env.ts';
 import { AuthError, resolveGithubBearer } from '../auth.ts';
 import { getCommerceOffer } from '../commerce-store.ts';
@@ -37,6 +38,7 @@ import {
   listChannelUsageReceipts,
   loadMicrochargeChannel,
   reserveUsageReceipt,
+  readIdentityMarkupRemainder,
   settleUsageReceipt,
   type StoredUsageReceipt,
 } from '../usage-receipt-store.ts';
@@ -147,6 +149,12 @@ function receiptJson(receipt: StoredUsageReceipt) {
     state: receipt.state,
     reservedAtMs: receipt.reservedAtMs,
     settledAtMs: receipt.settledAtMs,
+    ...(receipt.identityInference ? { identityInference: {
+      ceilingMicros: String(receipt.identityInference.ceilingMicros),
+      billedInferenceMicros: receipt.identityInference.billedInferenceMicros === null ? null : String(receipt.identityInference.billedInferenceMicros),
+      priorRemainderNumerator: receipt.identityInference.priorRemainderNumerator === null ? null : String(receipt.identityInference.priorRemainderNumerator),
+      remainderNumerator: receipt.identityInference.remainderNumerator === null ? null : String(receipt.identityInference.remainderNumerator),
+    } } : {}),
   };
 }
 
@@ -209,6 +217,17 @@ export function meteredUsageRoute(): Hono<{ Bindings: Env }> {
     }
     const declared = declareMeter(offer.perUse);
     if (!declared.ok) return c.json({ error: declared.code, detail: declared.detail }, 422);
+    const identityCeiling = bigintFrom(body.identityInferenceCeilingMicros);
+    const isIdentity = offer.skuRef.startsWith('identity-release:');
+    if (isIdentity) {
+      const q = quoteIdentityInferenceTurn({ offer: { skuRef: offer.skuRef, ...offer.perUse },
+        billedInferenceMicros: 0n, inferenceCeilingMicros: identityCeiling ?? 0n });
+      if (!q.ok || q.reservationQuantity !== meterQuantity) {
+        return c.json({ error: 'identity-ceiling-mismatch', detail: 'identity reserve requires its exact positive inference ceiling and matching block quantity' }, 422);
+      }
+    } else if (body.identityInferenceCeilingMicros !== undefined) {
+      return c.json({ error: 'identity-ceiling-mismatch', detail: 'only identity offers accept inference ceilings' }, 422);
+    }
 
     const unit: BillableUnit = {
       payer: channel.principalId,
@@ -262,9 +281,10 @@ export function meteredUsageRoute(): Hono<{ Bindings: Env }> {
       voucherDigest: paymentVoucherDigest(unsignedVoucher(voucher)),
       voucherSignature: voucher.signature,
       nowMs: Date.now(),
+      ...(isIdentity ? { identityInferenceCeilingMicros: identityCeiling! } : {}),
     });
     if (!stored.ok) {
-      return c.json({ error: 'duplicate-nonce', detail: `usage nonce '${voucher.usageNonce}' was already observed` }, 409);
+      return c.json({ error: stored.code, detail: 'the durable usage ledger refused admission' }, stored.code === 'cap-exhausted' ? 402 : 409);
     }
     return c.json({ reserved: true, receipt: receiptJson(stored.receipt) }, 201);
   });
@@ -293,20 +313,45 @@ export function meteredUsageRoute(): Hono<{ Bindings: Env }> {
     if (reserved.seller !== auth.principalId) {
       return c.json({ error: 'forbidden', detail: 'only the seller named on the reservation can settle it' }, 403);
     }
-    if (reserved.state === 'settled') {
-      return c.json({ error: 'already-settled', detail: `usage nonce '${usageNonce}' was already settled` }, 409);
-    }
 
     const channel = await getPaymentChannel(c.env.DB, body.channelId);
     if (!channel) return c.json({ error: 'unknown_channel', detail: `payment channel ${body.channelId} does not exist` }, 404);
 
+    const occurredAtMs = body.occurredAtMs === undefined && !reserved.identityInference ? Date.now() : body.occurredAtMs;
+    if (typeof occurredAtMs !== 'number' || !Number.isSafeInteger(occurredAtMs) || occurredAtMs < reserved.reservedAtMs || occurredAtMs > Date.now()) {
+      return c.json({ error: 'invalid_request', detail: 'a signed completion timestamp between admission and now is required' }, 400);
+    }
+    let identityInference;
+    let exact;
+    if (reserved.releaseRef.startsWith('identity-release:')) {
+      const billed = bigintFrom(body.billedInferenceMicros), prior = bigintFrom(body.priorRemainderNumerator);
+      if (!reserved.identityInference || billed === null || prior === null || actualQuantity != null) {
+        return c.json({ error: 'identity-settlement-mismatch', detail: 'exact billed cost and prior remainder are required for an admitted identity turn' }, 422);
+      }
+      // Replays quote with their stored prior; new settlements use hosted history.
+      const authoritativePrior = reserved.state === 'settled' ? BigInt(reserved.identityInference.priorRemainderNumerator!) :
+        await readIdentityMarkupRemainder(c.env.DB, reserved.payer, reserved.offerId);
+      if (prior !== authoritativePrior) return c.json({ error: 'identity-remainder-mismatch', detail: 'prior remainder differs from hosted history' }, 409);
+      identityInference = { offer: { skuRef: reserved.releaseRef, meterUnit: reserved.meterUnit,
+        unitPriceMicros: reserved.unitPriceMicros, priceVersion: reserved.priceVersion, splitManifestHash: reserved.splitManifestHash },
+        billedInferenceMicros: billed, inferenceCeilingMicros: BigInt(reserved.identityInference.ceilingMicros), priorRemainderNumerator: prior };
+      const q = quoteIdentityInferenceTurn(identityInference);
+      if (!q.ok) return c.json({ error: q.code, detail: q.detail }, 422);
+      exact = { billedInferenceMicros: billed, priorRemainderNumerator: prior, remainderNumerator: q.remainderNumerator };
+    } else if (body.billedInferenceMicros !== undefined || body.priorRemainderNumerator !== undefined) {
+      return c.json({ error: 'identity-settlement-mismatch', detail: 'ordinary units cannot override their published price' }, 422);
+    }
     const durable = await loadMicrochargeChannel(c.env.DB, channel);
-    const occurredAtMs = Date.now();
+    // An identical retry is checked against the stored receipt, using the same
+    // pure closure, rather than signing a new timestamp after a transport loss.
+    const closureChannel = reserved.state === 'settled' ? { ...durable,
+      reservations: { ...durable.reservations, [usageNonce]: BigInt(reserved.reservedMicros) } } : durable;
     const closed = closeMeteredInvocation({
-      channel: durable,
+      channel: closureChannel,
       voucher: voucherFromReceipt(reserved),
       ...(actualQuantity != null ? { actualQuantity } : {}),
       occurredAtMs,
+      ...(identityInference ? { identityInference } : {}),
       signReceipt: () => body.receiptSignature as string,
     });
     if (!closed.ok) return c.json({ error: closed.code, detail: closed.detail }, statusFor(closed.code));
@@ -318,11 +363,13 @@ export function meteredUsageRoute(): Hono<{ Bindings: Env }> {
       meterQuantity: closed.receipt.meterQuantity,
       receiptSignature: closed.receipt.signature,
       nowMs: occurredAtMs,
+      ...(exact ? { identityInference: exact } : {}),
     });
     if (!persisted.ok) {
       return c.json(
         { error: persisted.code, detail: persisted.detail },
-        persisted.code === 'cap-exhausted' ? 402 : persisted.code === 'already-settled' ? 409 : 404,
+        persisted.code === 'cap-exhausted' ? 402 : persisted.code === 'already-settled' ? 409 :
+          persisted.code === 'unknown-reservation' ? 404 : 422,
       );
     }
     return c.json({ settled: true, receipt: receiptJson(persisted.receipt) });
