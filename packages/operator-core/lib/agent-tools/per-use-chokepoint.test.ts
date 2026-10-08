@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
 import { runDispatchStack, type ProjectedTool, type UnifiedToolContext } from '@papercusp/tooldef';
-import { admitInstalledPerUseToolTurn, createInstalledPerUseChokepoint, type AdmittedPerUseToolTurn } from './per-use-chokepoint';
+import { admitInstalledPerUseToolTurn, createInstalledPerUseChokepoint, NativeInstalledPerUseTurns,
+  nativeInstalledPerUseTurns, type AdmittedPerUseToolTurn } from './per-use-chokepoint';
+import { canonicalJson } from '../authority/authority-rpc-envelope';
 import type { FundedToolTurnBinding, FundedToolTurnResult } from '../cupboard/funded-tool-turn-store';
 import { PROJECTED_DEPS } from '../projected-tool-deps';
 import { readInstalledPluginProvenance } from '../cupboard/install-plugin-core';
@@ -30,6 +33,189 @@ const tool = (fn = vi.fn(async () => ({ content: [{ type: 'text' as const, text:
   pluginName: provenance.name, pluginInstallation: { version: provenance.version, path: '/loaded/plugin', source: 'project' },
   description: 'paid tool', capabilities: [], inputSchema: { type: 'object' },
   expose: { mcp: { name: 'paid.run' }, http: { path: '/api/plugins/paid/run' } }, fn,
+});
+
+describe('trusted observed native call lookup', () => {
+  const fp = (value: string) => createHash('sha256').update(value).digest('hex');
+  function nativeFixture(registry = new NativeInstalledPerUseTurns()) {
+    const { authority, turn } = admitted();
+    const binding: FundedToolTurnBinding = { kind: 'tool', workspaceId: 'workspace', ownerId: 'host-owner',
+      principalId: 'target-agent', executionId: 'native-session', admissionId: 'owner-turn',
+      provenanceHash: fp(canonicalJson(provenance)), payer: authority.payer, seller: authority.offer.creatorId,
+      channelId: 'funded-channel', offer: authority.offer, quantityCeiling: 4n, expiresAtMs: 10_000 };
+    const input = { workspaceId: 'workspace', ownerId: 'host-owner', principalId: 'target-agent',
+      nativeSessionId: 'native-session', ownerTurnId: 'owner-turn', advSessionId: 7,
+      mcpServer: 'papercusp-su', nativeTools: { paid_run: 'paid.run', tools_invoke: 'tools:invoke' },
+      admissions: [{ ok: true as const, admission: authority, turnId: 'host-turn', binding }] };
+    const context = ctx();
+    Object.assign(context, { advSessionId: 7, uiClientId: 'host-owner',
+      requestOrigin: { transport: 'mcp', nativeSession: { carrier: 'meta:threadId', binding: 'bound',
+        valueFingerprint: fp('native-session'), callIdFingerprint: fp('native-call'), candidateAdvSessionId: 7 } } });
+    const hooks = registry.register(input);
+    const observation = { nativeTurnId: 'native-turn', callId: 'native-call', server: 'papercusp-su', tool: 'paid_run' };
+    const aroundInvoke = createInstalledPerUseChokepoint({ readProvenance: async () => provenance,
+      resolveAdmittedTurn: request => registry.resolve(request) });
+    const observe = async (changes: Partial<typeof observation> = {}) => {
+      await hooks.bindNativeTurn('native-turn');
+      await hooks.observeToolCall!({ ...observation, ...changes });
+    };
+    return { registry, input, context, hooks, observe, observation, aroundInvoke, turn };
+  }
+
+  it('production consumes the exact observed native call once across different dispatch nonces', async () => {
+    const f = nativeFixture(nativeInstalledPerUseTurns);
+    vi.mocked(readInstalledPluginProvenance).mockResolvedValue(provenance);
+    try {
+      await f.observe();
+      const target = tool();
+      expect((await execute(target, PROJECTED_DEPS.aroundInvoke, {}, f.context)).result?.isError).not.toBe(true);
+      expect((await execute(target, PROJECTED_DEPS.aroundInvoke, {}, f.context)).result?.isError).toBe(true);
+      expect(target.fn).toHaveBeenCalledOnce();
+      expect(Object.values(f.turn.snapshot().units)).toHaveLength(1);
+      expect(Object.keys(f.turn.snapshot().units)[0]).not.toBe('native-call');
+    } finally { await f.hooks.withdraw(); }
+  });
+
+  it('native metadata and forged arguments without a trusted observation grant no execution', async () => {
+    const f = nativeFixture(), target = tool(); await f.hooks.bindNativeTurn('native-turn');
+    const result = await execute(target, f.aroundInvoke, { funded: true, callId: 'native-call', entitled: true }, f.context);
+    expect(result.result?.isError).toBe(true); expect(target.fn).not.toHaveBeenCalled();
+    expect(f.turn.snapshot().units).toEqual({});
+  });
+
+  it.each(['binding', 'carrier', 'session', 'call', 'adv-session', 'context-adv-session', 'owner', 'principal', 'workspace', 'trust']) (
+    'refuses changed %s lineage without consuming the original observation', async kind => {
+      const f = nativeFixture(); await f.observe();
+      const changed = { ...f.context, principal: { ...f.context.principal! },
+        requestOrigin: { ...f.context.requestOrigin!, nativeSession: { ...f.context.requestOrigin!.nativeSession! } } };
+      const native = changed.requestOrigin.nativeSession;
+      if (kind === 'binding') native.binding = 'unbound';
+      if (kind === 'carrier') native.carrier = 'header:x-papercusp-native-session';
+      if (kind === 'session') native.valueFingerprint = fp('other-session');
+      if (kind === 'call') native.callIdFingerprint = fp('other-call');
+      if (kind === 'adv-session') native.candidateAdvSessionId = 8;
+      if (kind === 'context-adv-session') changed.advSessionId = 8;
+      if (kind === 'owner') changed.uiClientId = 'other-owner';
+      if (kind === 'principal') changed.principal.slug = 'other-agent';
+      if (kind === 'workspace') changed.workspaceId = 'other-workspace';
+      if (kind === 'trust') changed.principal.trust = 'unverified-loopback';
+      const target = tool();
+      expect((await execute(target, f.aroundInvoke, {}, changed)).result?.isError).toBe(true);
+      expect(target.fn).not.toHaveBeenCalled();
+      expect((await execute(target, f.aroundInvoke, {}, f.context)).result?.isError).not.toBe(true);
+      expect(target.fn).toHaveBeenCalledOnce();
+    });
+
+  it('does not associate a foreign MCP server or unknown tool with the funded host', async () => {
+    const f = nativeFixture(), target = tool();
+    await f.observe({ server: 'other-server' }); await f.observe({ tool: 'unknown' });
+    expect((await execute(target, f.aroundInvoke, {}, f.context)).result?.isError).toBe(true);
+    expect(target.fn).not.toHaveBeenCalled();
+    await f.observe();
+    expect((await execute(target, f.aroundInvoke, {}, f.context)).result?.isError).not.toBe(true);
+  });
+
+  it('requires the exact native turn before observations and refuses rebinding', async () => {
+    const f = nativeFixture();
+    await expect(f.hooks.observeToolCall!(f.observation)).rejects.toThrow('original active bound turn');
+    await f.hooks.bindNativeTurn('native-turn');
+    await expect(f.hooks.observeToolCall!({ ...f.observation, nativeTurnId: 'other-turn' })).rejects.toThrow('original active bound turn');
+    await expect(f.hooks.bindNativeTurn('other-turn')).rejects.toThrow('original bound turn');
+    await f.observe();
+    await expect(f.hooks.observeToolCall!({ ...f.observation, tool: 'tools_invoke' })).rejects.toThrow('changed its target');
+  });
+
+  it('direct target observation cannot authorize another target or an indirect dispatch', async () => {
+    const f = nativeFixture(); await f.observe();
+    const target = tool();
+    const other = await runDispatchStack(target, 'paid.other', {}, f.context, { aroundInvoke: f.aroundInvoke });
+    expect(other.result?.isError).toBe(true);
+    expect((await execute(target, f.aroundInvoke, {}, { ...f.context, indirectDispatch: true })).result?.isError).toBe(true);
+    expect(target.fn).not.toHaveBeenCalled();
+    expect((await execute(target, f.aroundInvoke, {}, f.context)).result?.isError).not.toBe(true);
+  });
+
+  it('tools:invoke observation grants one indirect funded target and cannot be reused', async () => {
+    const f = nativeFixture(); await f.observe({ tool: 'tools_invoke' });
+    const target = tool();
+    expect((await execute(target, f.aroundInvoke, {}, f.context)).result?.isError).toBe(true);
+    const outer = { ...f.context, dispatchTool: async (_name: string, args: unknown) =>
+      (await execute(target, f.aroundInvoke, args, { ...f.context, indirectDispatch: true })).result! };
+    const wrapper = invokeTool as unknown as { handler(args: { name: string }, context: UnifiedToolContext): Promise<ToolResult> };
+    expect((await wrapper.handler({ name: 'paid.run' }, outer)).isError).not.toBe(true);
+    await expect(wrapper.handler({ name: 'paid.run' }, outer)).rejects.toBeInstanceOf(NestedToolRefusalError);
+    expect(target.fn).toHaveBeenCalledOnce();
+  });
+
+  it('parallel duplicate requests elect only one dispatch', async () => {
+    const f = nativeFixture(), target = tool(); await f.observe();
+    const results = await Promise.all([execute(target, f.aroundInvoke, {}, f.context), execute(target, f.aroundInvoke, {}, f.context)]);
+    expect(results.filter(result => result.result?.isError === true)).toHaveLength(1);
+    expect(target.fn).toHaveBeenCalledOnce();
+  });
+
+  it('retains call consumption across duplicate observations', async () => {
+    const f = nativeFixture(), target = tool(); await f.observe();
+    await execute(target, f.aroundInvoke, {}, f.context); await f.observe();
+    expect((await execute(target, f.aroundInvoke, {}, f.context)).result?.isError).toBe(true);
+    expect(target.fn).toHaveBeenCalledOnce();
+  });
+
+  it('withdraws lookup authority synchronously and refuses a late observation', async () => {
+    const f = nativeFixture(); await f.observe();
+    let release!: () => void;
+    const stopped = new Promise<void>(resolve => { release = resolve; });
+    const stop = vi.spyOn(f.turn, 'stopAdmission').mockImplementation(() => stopped);
+    const withdrawing = f.hooks.withdraw(), target = tool();
+    expect(() => f.registry.register(f.input)).toThrow('already has a host admission');
+    expect((await execute(target, f.aroundInvoke, {}, f.context)).result?.isError).toBe(true);
+    await expect(f.hooks.observeToolCall!(f.observation)).rejects.toThrow('original active bound turn');
+    expect(target.fn).not.toHaveBeenCalled(); expect(stop).toHaveBeenCalledOnce();
+    release(); await withdrawing;
+  });
+
+  it('failed durable revocation does not restore lookup authority', async () => {
+    const f = nativeFixture(); await f.observe();
+    vi.spyOn(f.turn, 'stopAdmission').mockRejectedValue(new Error('storage unavailable'));
+    await expect(f.hooks.withdraw()).rejects.toThrow('storage unavailable');
+    expect(() => f.registry.register(f.input)).toThrow('already has a host admission');
+    const target = tool();
+    expect((await execute(target, f.aroundInvoke, {}, f.context)).result?.isError).toBe(true);
+    expect(target.fn).not.toHaveBeenCalled();
+  });
+
+  it('copies original authority and catalog terms rather than retaining mutable caller objects', async () => {
+    const f = nativeFixture();
+    Object.assign(f.input.admissions[0]!.admission, { payer: 'forged-payer' });
+    Object.assign(f.input.admissions[0]!.binding, { executionId: 'other-session' });
+    f.input.nativeTools.paid_run = 'paid.other';
+    await f.observe();
+    const target = tool();
+    expect((await execute(target, f.aroundInvoke, {}, f.context)).result?.isError).not.toBe(true);
+    expect(target.fn).toHaveBeenCalledOnce();
+    expect(Object.values(f.turn.snapshot().units)[0]!.voucher.payer).toBe('authenticated-buyer');
+  });
+
+  it.each(['owner', 'session', 'admission', 'principal', 'provenance', 'terms', 'turn']) (
+    'rejects registration that borrows a funded %s binding', kind => {
+      const f = nativeFixture();
+      const input = { ...f.input, nativeSessionId: 'second-session',
+        admissions: [{ ...f.input.admissions[0]!, binding: { ...f.input.admissions[0]!.binding, executionId: 'second-session' } }] };
+      const b = input.admissions[0]!.binding;
+      if (kind === 'owner') b.ownerId = 'other-owner';
+      if (kind === 'session') b.executionId = 'other-session';
+      if (kind === 'admission') b.admissionId = 'other-admission';
+      if (kind === 'principal') b.principalId = 'other-agent';
+      if (kind === 'provenance') b.provenanceHash = 'd'.repeat(64);
+      if (kind === 'terms') b.offer = { ...b.offer, terms: { ...b.offer.terms, unitPriceMicros: 1 } };
+      if (kind === 'turn') input.admissions[0]!.turnId = 'other-turn';
+      expect(() => f.registry.register(input)).toThrow('original funded installation');
+    });
+
+  it('rejects a concurrent admission for the same native execution', () => {
+    const f = nativeFixture();
+    expect(() => f.registry.register(f.input)).toThrow('already has a host admission');
+  });
 });
 
 describe('host-owned installed tool admission composition', () => {

@@ -171,6 +171,7 @@ describe('P-017 awaited Codex host lifecycle', () => {
   }
   function lifecycle() {
     const lease = { ok: true as const, bindNativeTurn: vi.fn(async (_id: string) => {}),
+      observeToolCall: vi.fn(async (_input: { nativeTurnId: string; callId: string; server: string; tool: string }) => {}),
       complete: vi.fn(async (_input: { nativeTurnId: string; status: string; completedAtMs: number }) => {}),
       reconcile: vi.fn(async (_input: { phase: 'delivery' | 'binding' | 'completion'; message: string }) => {}) };
     const admit = vi.fn(async (_input: Parameters<SuCodexTurnLifecycle['admit']>[0]) => lease);
@@ -286,6 +287,97 @@ describe('P-017 awaited Codex host lifecycle', () => {
 
   it('refuses OMP capability injection without a proven native-turn identity', () => {
     expect(() => fixture('omp', { turnLifecycle: lifecycle() })).toThrow('proven Codex native turn identity');
+  });
+
+  function nativeTool(f: ReturnType<typeof fixture>, fields: Record<string, unknown> = {}, method = 'item/started') {
+    const { threadId = 'native-codex', turnId = 'native-turn', ...item } = fields;
+    f.emit({ method, params: { threadId, turnId, item: {
+      id: 'native-call', type: 'mcpToolCall', server: 'papercusp-su', tool: 'paid.run', ...item,
+    } } });
+  }
+
+  it('observes the exact native MCP call once after durable turn binding', async () => {
+    const l = lifecycle(), f = fixture('codex', { turnLifecycle: l }); await f.engine.ready;
+    await f.engine.adapter.host.startCommand(command(f.engine, 'owner_turn') as never).terminal;
+    nativeTool(f); nativeTool(f); nativeTool(f, {}, 'item/completed');
+    await vi.waitFor(() => expect(l.lease.observeToolCall).toHaveBeenCalledOnce());
+    expect(l.lease.observeToolCall).toHaveBeenCalledWith({ nativeTurnId: 'native-turn', callId: 'native-call',
+      server: 'papercusp-su', tool: 'paid.run' });
+  });
+
+  it('waits for immutable binding before observing an early native MCP call', async () => {
+    const l = lifecycle(), barrier = gate();
+    l.lease.bindNativeTurn.mockImplementation(async () => { await barrier.promise; });
+    const f = fixture('codex', { turnLifecycle: l, request: async frame => {
+      if (frame.method === 'turn/start') nativeTool(f);
+      return undefined;
+    } }); await f.engine.ready;
+    const dispatch = f.engine.adapter.host.startCommand(command(f.engine, 'owner_turn') as never);
+    await vi.waitFor(() => expect(l.lease.bindNativeTurn).toHaveBeenCalledOnce());
+    expect(l.lease.observeToolCall).not.toHaveBeenCalled();
+    barrier.release(); await dispatch.terminal;
+    await vi.waitFor(() => expect(l.lease.observeToolCall).toHaveBeenCalledOnce());
+  });
+
+  it.each([
+    { threadId: null }, { turnId: null }, { turnId: 'other-turn' },
+    { id: '' }, { id: 'call with whitespace' }, { id: 'c'.repeat(257) },
+    { server: '' }, { tool: '' }, { type: 'commandExecution' },
+  ])('does not authorize an incomplete or unrelated native observation %j', async fields => {
+    const l = lifecycle(), f = fixture('codex', { turnLifecycle: l }); await f.engine.ready;
+    await f.engine.adapter.host.startCommand(command(f.engine, 'owner_turn') as never).terminal;
+    nativeTool(f, fields); completed(f);
+    await vi.waitFor(() => expect(l.lease.complete).toHaveBeenCalledOnce());
+    expect(l.lease.observeToolCall).not.toHaveBeenCalled();
+  });
+
+  it('does not observe an early tool from another turn after the correlated response binds', async () => {
+    const l = lifecycle(), f = fixture('codex', { turnLifecycle: l, request: async frame => {
+      if (frame.method === 'turn/start') nativeTool(f, { turnId: 'other-turn' });
+      return undefined;
+    } }); await f.engine.ready;
+    await f.engine.adapter.host.startCommand(command(f.engine, 'owner_turn') as never).terminal;
+    completed(f);
+    await vi.waitFor(() => expect(l.lease.complete).toHaveBeenCalledOnce());
+    expect(l.lease.observeToolCall).not.toHaveBeenCalled();
+  });
+
+  it('drains native tool observations before completion or the next turn', async () => {
+    const l = lifecycle(), barrier = gate();
+    l.lease.observeToolCall.mockImplementation(async () => { await barrier.promise; });
+    const f = fixture('codex', { turnLifecycle: l }); await f.engine.ready;
+    await f.engine.adapter.host.startCommand(command(f.engine, 'owner_turn', 'first') as never).terminal;
+    nativeTool(f);
+    await vi.waitFor(() => expect(l.lease.observeToolCall).toHaveBeenCalledOnce());
+    const second = f.engine.adapter.host.startCommand(command(f.engine, 'owner_turn', 'second') as never);
+    completed(f); nativeTool(f, { id: 'late-call' });
+    expect(l.lease.complete).not.toHaveBeenCalled(); expect(starts(f)).toHaveLength(1);
+    barrier.release(); await second.terminal;
+    expect(l.lease.observeToolCall).toHaveBeenCalledOnce();
+    expect(l.lease.complete).toHaveBeenCalledOnce(); expect(starts(f)).toHaveLength(2);
+  });
+
+  it('retains the hold and stops queued inference when a native observation fails', async () => {
+    const l = lifecycle(); l.lease.observeToolCall.mockRejectedValue(new Error('native call binding unavailable'));
+    const f = fixture('codex', { turnLifecycle: l }); await f.engine.ready;
+    await f.engine.adapter.host.startCommand(command(f.engine, 'owner_turn', 'first') as never).terminal;
+    const second = f.engine.adapter.host.startCommand(command(f.engine, 'owner_turn', 'second') as never);
+    nativeTool(f); completed(f);
+    await vi.waitFor(() => expect(l.lease.reconcile).toHaveBeenCalledOnce());
+    expect(l.lease.reconcile).toHaveBeenCalledWith({ phase: 'binding', message: expect.stringContaining('native call binding unavailable') });
+    await second.terminal;
+    expect(l.lease.complete).not.toHaveBeenCalled(); expect(starts(f)).toHaveLength(1);
+  });
+
+  it('never publishes native observations when durable turn binding fails', async () => {
+    const l = lifecycle(); l.lease.bindNativeTurn.mockRejectedValue(new Error('binding failed'));
+    const f = fixture('codex', { turnLifecycle: l, request: async frame => {
+      if (frame.method === 'turn/start') nativeTool(f);
+      return undefined;
+    } }); await f.engine.ready;
+    await f.engine.adapter.host.startCommand(command(f.engine, 'owner_turn') as never).terminal;
+    await vi.waitFor(() => expect(l.lease.reconcile).toHaveBeenCalledOnce());
+    expect(l.lease.observeToolCall).not.toHaveBeenCalled();
   });
 });
 

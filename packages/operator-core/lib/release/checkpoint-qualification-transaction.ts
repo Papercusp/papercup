@@ -1786,11 +1786,15 @@ async function mutateStoredQualification(
       if (transition.status !== 'updated') return transition;
       const persistTerminalEvent = async (): Promise<void> => {
         if (!options.terminalEvent || !isTerminalQualificationOutcome(transition.transaction.outcome)) return;
+        // WI-10007497: stamp the logical attempt this event settles. The event commits in the same
+        // row write as the transition, so the transaction's own id is the authoritative one; without
+        // it, attempt-to-verdict latency (and joins from skipped-joined-attempt rows) is unmeasurable.
         await appendPipelineEvent({
           workspaceId: target.workspaceId,
           installSlug: target.installSlug,
           kind: 'green_checkpoint',
-          ...options.terminalEvent,
+          status: options.terminalEvent.status,
+          detail: { ...options.terminalEvent.detail, attemptId: transition.transaction.attemptId },
         }, tx as unknown as Sql, { required: true });
       };
       const successorInput =

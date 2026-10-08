@@ -321,6 +321,23 @@ export async function unitCensusDeclarations(
     .map(file => ({ kind: 'unit' as const, root: `systemd-${scope}`, name: file.name,
       classification, producer: `unit-definition:${sourceDirectory}` }));
 }
+
+/** Service-manager source directories, shared by unit and whole-host diagnostics. */
+export async function installedUnitCensusDeclarations(scope: 'user' | 'system'): Promise<CensusDeclaration[]> {
+  if (process.platform !== 'linux') throw new Error('Systemd census requires Linux');
+  const runtime = scope === 'system' ? '/run/systemd' : `/run/user/${process.getuid!()}/systemd`;
+  const sources = scope === 'system'
+    ? ['/usr/lib/systemd/system', '/etc/systemd/system', '/run/systemd/system']
+    : [join(homedir(), '.config/systemd/user'), '/usr/lib/systemd/user', '/etc/systemd/user'];
+  sources.push(...['generator', 'generator.early', 'generator.late', 'transient'].map(name => join(runtime, name)));
+  const declarations: CensusDeclaration[] = [];
+  for (const source of sources) {
+    try { await lstat(source); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error; }
+    declarations.push(...await unitCensusDeclarations(source, scope, source === join(runtime, 'transient') ? 'dev-only' : 'config'));
+  }
+  return declarations;
+}
 /** Installed units, not just currently running services; no shell parsing. */
 export async function unitCensusEntries(
   scope: 'user' | 'system',

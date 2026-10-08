@@ -173,3 +173,77 @@ live payment, Avi's acceptance or exact production behavior. Further FAQ edits
 require renewed review. The portal's potentially misleading pending-payment
 notice is separately filed and assigned as `EI-25270514474947388`; the FAQ keeps
 its conservative confirmation language.
+
+## Source-linked review reconciliation, 2026-10-08
+
+The current accountable maintainer for this FAQ is this session through
+**WI-10006921 / P-007**. The independent sensitive-source reviewer remains
+`su-a21e7be0-2338-4117-a0cc-bd59694631fe`; the approval is
+`thread-post:1160798`, read in full again on this date. Its scope is source
+truth at FAQ SHA-256
+`908687ae99d490db965919cb6f1297d409754453666e733027d505b7cbd2205a`.
+The current FAQ has that exact hash. No new independent approval, permanent
+human maintainer assignment or runtime journey is inferred from this check.
+
+The existing `public-manual/faq.mdx` record retains all seven concrete code
+anchors, `source: manual`, and the original verification baseline
+`ff223fd86f27c8eeaba8f23b366324d38c2e7b24`. The current maintenance read
+reports **review**, specifically because `backup/restore.ts` changed. This
+is the expected review request, not semantic approval or a missing source.
+The serving reader also reports `bodyMissing: true`; the historical
+current-build reader observation is separate. This reconciliation does not
+reset the baseline through that older serving reader.
+
+The source comparison used reviewed core HEAD `3c2e82741bfd` and current
+core HEAD `e447980feb3a586dbe2204fcf085a84de64f3d0c`. Each current file was
+hashed directly and compared byte for byte with its reviewed git blob:
+
+| Existing FAQ anchor | Current SHA-256 | Delta since reviewed core HEAD |
+| --- | --- | --- |
+| `auth/hosted/self-signup.ts` | `6492f96249807c33c7c1883e0895fa1ed79055bf25eff2b83431496bb5d239b1` | Identical. |
+| `auth/hosted/billing/entitlement-seam.ts` | `010161f4dc3e95d0093e860e3519297a17765673137ddb5f561d749a964d38e0` | Identical; absent allowance still makes no unlimited-use claim. |
+| `agent-tools/mode/set.ts` | `e49381b064fe74464adb69686687ce9131ca8a830d65feb5b5a465be4ec4a043` | Identical. |
+| `workspace-host/hosted-provider-delegation.ts` | `3dbeb9db5dec8443ddadbd746d4968a891ad1592b72c2e62e12758b022550853` | Identical. |
+| `agent-tools/access/create.ts` | `3077a764aadf980db5f34e94b08b0b20aeca93bceccbdce55f419bcdd011eadb` | Identical. |
+| `agent-tools/backup/snapshot_create.ts` | `31be8c275a3de39aa598ee25c03305f84895f2215d677969470407ea7418cef5` | Identical. |
+| `agent-tools/backup/restore.ts` | `058404f72734069baa7b9185270ae7654f8370f7e8bd46cc0dfc01dffb607d99` | Only the header comment changed: clone is the default; explicit in-place restore replaces its target after a safety snapshot. |
+
+Paths in that table are relative to `packages/operator-core/lib`. The full
+restore delta and current description, schema and handler were read. The
+handler still distinguishes `clone` from `in_place`; the FAQ already warns
+that in-place recovery can overwrite newer work. The comment repair resolves
+the earlier source contradiction without changing that answer's meaning.
+
+The separate Portal comparison used reviewed HEAD `4a281f46e83f` and current
+HEAD `96350b330ae9e1781d56b23b8f3ba650aaa93f08`:
+
+| Source | Current SHA-256 | Reviewed delta and effect |
+| --- | --- | --- |
+| `packages/ui/src/auth.tsx` | `7aef72afb0a431396db5f004bb55f10a19f664e0f948434fc7a61c05cbeefaa4` | Identical; the reviewed sign-in and integration distinctions persist. |
+| `packages/ui/src/billing.tsx` | `23eb2aaaf2850a48e13c8ea44e5a8c24f6067800ce247c491a06055d772f1e09` | Pending checkout now asks readers to wait for confirmation; canceled checkout asks them to check billing status. Only an active subscription claims active status. The existing account tutorial now wraps Billing. |
+
+The complete Billing delta was read. Its revised notices preserve the FAQ's
+conservative instruction to verify subscription status and avoid duplicate
+checkout. The tutorial wrapper can change the reader's runtime path, so its
+source support does not discharge the actual billing journey.
+
+The current sensitive-guide deltas were also read: `remote-access.mdx`,
+`cloud-workspaces.mdx` and `harness-snapshots.mdx` add goal/result openings;
+`accounts-and-billing.mdx` additionally explains identity/organization,
+separate cost categories and the expected confirmed state. The privacy,
+cost and destructive-action caveats remain. This is an author reconciliation
+of changes since the independent review, not a new independent guide review.
+
+Maintenance continues through the existing manual-doc anchor, freshness
+sweep and doc-steward dispatch. A future relevant source change must retain
+a review request until its semantic effect is checked; a FAQ prose change
+requires renewed exact-hash approval. The current WI-10006921 holder owns
+that unresolved work. No parallel FAQ table, service or review-status field
+was introduced.
+
+The saved mounted-revision test remains separate evidence:
+[mounted-manual-revision-20261008.json](./mounted-manual-revision-20261008.json).
+It proves disposable MCP retrieval invalidation with zero chat sends, with
+the recorded source-provenance limitation. Canonical/model-cache coverage,
+runtime journeys, real novices, independent acceptance and exact shipment
+remain open. No tests or model calls were repeated for this reconciliation.

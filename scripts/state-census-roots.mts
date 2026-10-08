@@ -9,6 +9,8 @@ const { releaseConfig } = createRequire(import.meta.url)('../apps/operator/lib/r
 import { workspacesRoot, readRegistry } from '../packages/operator-core/lib/workspace-registry';
 import postgres from 'postgres';
 import { getHarnessAdminUrl } from '../packages/operator-core/lib/embedded-pg-discovery';
+import { physicalDatabaseCensusEntries, integrationBaselineCensusDeclarations, unitCensusEntries, installedUnitCensusDeclarations } from '../packages/operator-core/lib/backup/state-census-producers';
+import type { CensusEntry } from '../packages/backup/src/state-census';
 
 const installed = installedRootCensusProducers();
 const checkpointLogDir = releaseConfig().checkpointLogDir;
@@ -20,11 +22,32 @@ const producers = mergeNestedCensusRoots({ roots: [...installed.roots,
 }] });
 const declarations = [...producers.declarations,
   ...producers.roots.flatMap(root => backupCacheCensusDeclarations(root.id))];
-if (process.argv.includes('--restore-events')) {
+const hostCatalogs = process.argv.includes('--host-catalogs');
+const catalogEntries: CensusEntry[] = [];
+if (process.argv.includes('--restore-events') || hostCatalogs) {
   const sql = postgres(getHarnessAdminUrl(), { max: 1, connect_timeout: 5 });
   try {
     for (const workspace of readRegistry().workspaces) {
       declarations.push(...await restoredCloneCensusDeclarations(sql, workspace.id, join(workspacesRoot(), workspace.id), producers.roots));
+    }
+    if (hostCatalogs) {
+      const databases = await physicalDatabaseCensusEntries(sql);
+      catalogEntries.push(...databases);
+      declarations.push(...integrationBaselineCensusDeclarations(databases));
+      for (const scope of ['user', 'system'] as const) {
+        catalogEntries.push(...await unitCensusEntries(scope));
+        declarations.push(...await installedUnitCensusDeclarations(scope));
+      }
+      // Catalog only declared secret paths that exist; never read their values.
+      // Unknown secret locations still appear as filesystem residue.
+      for (const declaration of installed.declarations.filter(entry => entry.classification === 'secret')) {
+        const root = installed.roots.find(entry => entry.id === declaration.root)!;
+        try { await lstat(join(root.path, declaration.name)); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error; }
+        const entry: CensusEntry = { kind: 'secret', root: declaration.root, name: declaration.name };
+        catalogEntries.push(entry);
+        declarations.push({ ...declaration, kind: 'secret' });
+      }
     }
   } finally { await sql.end(); }
 }
@@ -169,10 +192,10 @@ for (const root of producers.roots) {
 const census = await collectStateCensus({
   ...producers, declarations, representUnknownSubtrees: true,
   // This diagnostic intentionally does not certify catalogs.
-  readCatalogs: async () => [],
+  readCatalogs: async () => catalogEntries,
 });
 console.log(JSON.stringify({
-  scope: 'implemented-writer-filesystem-roots-only', wholeInstallVerified: false,
+  scope: hostCatalogs ? 'implemented-writer-filesystem-roots-and-host-catalogs' : 'implemented-writer-filesystem-roots-only', wholeInstallVerified: false,
   roots: producers.roots, ...census,
 }, null, 2));
 if (!census.ok) process.exitCode = 1;

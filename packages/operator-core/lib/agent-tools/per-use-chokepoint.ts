@@ -2,6 +2,7 @@
  * to the authenticated turn host; this dispatch path does no hosted IO. */
 import type { DispatchProjectedDeps } from '@papercusp/agent-mcp';
 import { createHash } from 'node:crypto';
+import { pinModuleState } from '@papercusp/module-singleton';
 import { canonicalJson } from '../authority/authority-rpc-envelope';
 import { readInstalledPluginProvenance } from '../cupboard/install-plugin-core';
 import { bindInstalledPerUseOffer, readHostedPerUseOffers, readHostedToolEntitlements,
@@ -10,9 +11,12 @@ import { readInstalledPluginCommerceProvenance } from '../cupboard/install-io';
 import type { FundedToolTurnHost } from '../cupboard/funded-turn-host';
 import type { FundedToolTurnBinding, FundedToolTurnResult } from '../cupboard/funded-tool-turn-store';
 import type { InstalledPluginProvenance } from '../cupboard/types';
+import type { SuCodexTurnAdmission } from '../su-session-usage';
 import { declareMeter, LocalMeteredTurnRefusedError, type LocalMeteredTurn } from '../p2p/metered-invocation';
 
 type Request = Parameters<NonNullable<DispatchProjectedDeps['aroundInvoke']>>[0];
+type FundedInstalledAdmission = { ok: true; admission: AdmittedPerUseToolTurn;
+  turnId: string; binding: FundedToolTurnBinding };
 
 /** Host-owned capability from once-per-turn authenticated admission. The host
  * must verify the installed provenance, entitlement and funding, retain durable
@@ -51,7 +55,7 @@ export async function admitInstalledPerUseToolTurn(input: {
   resolvePayer?: () => Promise<string>;
   resolveFunding: (offer: HostedPerUseOffer) => Promise<Pick<FundedToolTurnBinding, 'channelId' | 'quantityCeiling' | 'expiresAtMs'>>;
   readProvenance?: typeof readInstalledPluginCommerceProvenance;
-}): Promise<{ ok: true; admission: AdmittedPerUseToolTurn; turnId: string } | Extract<FundedToolTurnResult, { ok: false }>> {
+}): Promise<FundedInstalledAdmission | Extract<FundedToolTurnResult, { ok: false }>> {
   const context = structuredClone(input.context), installation = structuredClone(input.installation);
   const loaded = await (input.readProvenance ?? readInstalledPluginCommerceProvenance)(installation);
   if (!loaded) return { ok: false, code: 'installation-binding-required', detail: 'exact installed commerce provenance is required' };
@@ -70,9 +74,143 @@ export async function admitInstalledPerUseToolTurn(input: {
     offer: bound.offer, provenanceHash: createHash('sha256').update(canonicalJson(provenance)).digest('hex') };
   const admitted = await input.host.admit(binding);
   if (!admitted.ok) return admitted;
-  return { ok: true, turnId: admitted.turn.turnId, admission: { kind: 'per-use', ...context, payer,
+  return { ok: true, turnId: admitted.turn.turnId, binding: structuredClone(admitted.turn.binding), admission: { kind: 'per-use', ...context, payer,
     provenance, offer: bound.offer, entitled: true, turn: input.host.localTurn(admitted.turn) } };
 }
+
+/** Process-local extension of the installed admission provider. Registration is
+ * a trusted host capability, never a tool. A different request worker must route
+ * to this owning host; this lookup cannot reconstruct authority from metadata.
+ * Keep call tombstones until withdrawal so a new dispatch nonce cannot replay an
+ * observed native call. Restart loses lookup authority and retains durable holds. */
+export class NativeInstalledPerUseTurns {
+  private readonly turns = new Map<string, {
+    context: NativeInstalledTurnContext;
+    nativeTurnId: string | null;
+    withdrawn: boolean;
+    admissions: readonly FundedInstalledAdmission[];
+    observations: Map<string, { toolName: string; consumed: boolean }>;
+  }>();
+
+  register(input: NativeInstalledTurnContext & {
+    admissions: readonly FundedInstalledAdmission[];
+  }): Pick<SuCodexTurnAdmission, 'bindNativeTurn' | 'observeToolCall'> & { withdraw(): Promise<void> } {
+    const { admissions: original, ...rawContext } = input;
+    const context = structuredClone(rawContext);
+    const boundedId = (value: string) => /^[A-Za-z0-9._:-]{1,256}$/.test(value);
+    if ([context.workspaceId, context.ownerId, context.principalId, context.nativeSessionId,
+      context.ownerTurnId, context.mcpServer].some(value => !boundedId(value)) ||
+      context.nativeSessionId.length > 128 || !Number.isSafeInteger(context.advSessionId) || context.advSessionId <= 0 ||
+      original.length === 0 || original.length > 1000 ||
+      Object.entries(context.nativeTools).some(([name, target]) => !boundedId(name) || !boundedId(target))) {
+      throw new Error('Exact authenticated native turn context and bounded tool bindings are required');
+    }
+    const admissions = original.map(value => ({ ...value, binding: structuredClone(value.binding),
+      admission: { ...value.admission, provenance: structuredClone(value.admission.provenance),
+        offer: structuredClone(value.admission.offer) } }));
+    const provenanceHashes = new Set<string>(), turnIds = new Set<string>();
+    for (const value of admissions) {
+      const b = value.binding, a = value.admission;
+      const provenanceHash = createHash('sha256').update(canonicalJson(a.provenance)).digest('hex');
+      if (value.ok !== true || a.kind !== 'per-use' || !a.entitled || b.kind !== 'tool' ||
+        b.workspaceId !== context.workspaceId || b.ownerId !== context.ownerId ||
+        b.principalId !== context.principalId || b.executionId !== context.nativeSessionId ||
+        b.admissionId !== context.ownerTurnId || a.workspaceId !== b.workspaceId || a.principalId !== b.principalId ||
+        a.payer !== b.payer || b.seller !== a.offer.creatorId || b.provenanceHash !== provenanceHash ||
+        canonicalJson(b.offer) !== canonicalJson(a.offer) || value.turnId !== a.turn.snapshot().turnId ||
+        a.turn.snapshot().admissionClosed || provenanceHashes.has(provenanceHash) || turnIds.has(value.turnId)) {
+        throw new Error('Native lookup requires distinct original funded installation admissions');
+      }
+      provenanceHashes.add(provenanceHash); turnIds.add(value.turnId);
+    }
+    const key = this.key(context.workspaceId, context.advSessionId, fingerprint(context.nativeSessionId));
+    if (this.turns.has(key)) throw new Error('The native execution already has a host admission');
+    const entry = { context, admissions, nativeTurnId: null as string | null, withdrawn: false,
+      observations: new Map<string, { toolName: string; consumed: boolean }>() };
+    this.turns.set(key, entry);
+    let withdrawn = false;
+    return {
+      bindNativeTurn: async nativeTurnId => {
+        if (withdrawn || !boundedId(nativeTurnId) || (entry.nativeTurnId !== null && entry.nativeTurnId !== nativeTurnId)) {
+          throw new Error('Native lookup retains its original bound turn');
+        }
+        entry.nativeTurnId = nativeTurnId;
+      },
+      observeToolCall: async ({ nativeTurnId, callId, server, tool }) => {
+        if (withdrawn || entry.nativeTurnId === null || entry.nativeTurnId !== nativeTurnId || !boundedId(callId)) {
+          throw new Error('Native call observation requires its original active bound turn');
+        }
+        if (server !== context.mcpServer || !Object.hasOwn(context.nativeTools, tool)) return;
+        const toolName = context.nativeTools[tool]!;
+        const callKey = fingerprint(callId), prior = entry.observations.get(callKey);
+        if (prior) {
+          if (prior.toolName !== toolName) throw new Error('Native call observation changed its target');
+          return;
+        }
+        if (entry.observations.size >= 1000) throw new Error('Native turn call population exceeds the admission bound');
+        entry.observations.set(callKey, { toolName, consumed: false });
+      },
+      withdraw: () => {
+        // Remove lookup authority BEFORE the first await. Retain a tombstone
+        // until durable stop succeeds so a host cannot re-register the same
+        // still-open meter during a slow or failed revocation.
+        withdrawn = true;
+        entry.withdrawn = true;
+        return Promise.all(admissions.map(value => value.admission.turn.stopAdmission())).then(() => {
+          if (this.turns.get(key) === entry) this.turns.delete(key);
+        });
+      },
+    };
+  }
+
+  /** Synchronous claim at the dispatch seat. No handler/input/output cohort can
+   * add an observation or choose a payer. A wrapper observation permits exactly
+   * one indirect target among the installations funded BEFORE inference. */
+  resolve(request: Request): AdmittedPerUseToolTurn | null {
+    const native = request.ctx.requestOrigin?.nativeSession, principal = request.ctx.principal;
+    if (request.ctx.requestOrigin?.transport !== 'mcp' || native?.binding !== 'bound' ||
+      native.carrier !== 'meta:threadId' || !/^[a-f0-9]{64}$/.test(native.valueFingerprint) ||
+      !native.callIdFingerprint || !/^[a-f0-9]{64}$/.test(native.callIdFingerprint) ||
+      !Number.isSafeInteger(native.candidateAdvSessionId) || !principal?.workspaceId ||
+      !['trusted', 'verified'].includes(principal.trust ?? '') || request.ctx.workspaceId !== principal.workspaceId ||
+      request.ctx.advSessionId !== native.candidateAdvSessionId) return null;
+    const entry = this.turns.get(this.key(principal.workspaceId, native.candidateAdvSessionId!, native.valueFingerprint));
+    if (!entry || entry.withdrawn || entry.nativeTurnId === null || entry.context.principalId !== principal.slug ||
+      entry.context.ownerId !== request.ctx.uiClientId) return null;
+    const observed = entry.observations.get(native.callIdFingerprint);
+    if (!observed || observed.consumed || (observed.toolName === 'tools:invoke'
+      ? request.ctx.indirectDispatch !== true : observed.toolName !== request.toolName || request.ctx.indirectDispatch === true)) return null;
+    const installation = request.tool.pluginInstallation;
+    if (!installation) return null;
+    const admitted = entry.admissions.find(value => value.admission.provenance.name === request.tool.pluginName &&
+      value.admission.provenance.version === installation.version);
+    if (!admitted || admitted.admission.turn.snapshot().admissionClosed) return null;
+    observed.consumed = true;
+    // Return a snapshot of immutable terms. The local meter remains the single
+    // original capability; callers cannot mutate later lookup authority.
+    return { ...admitted.admission, provenance: structuredClone(admitted.admission.provenance),
+      offer: structuredClone(admitted.admission.offer) };
+  }
+
+  private key(workspaceId: string, advSessionId: number, nativeFingerprint: string): string {
+    return canonicalJson([workspaceId, advSessionId, nativeFingerprint]);
+  }
+}
+
+interface NativeInstalledTurnContext {
+  workspaceId: string;
+  ownerId: string;
+  principalId: string;
+  nativeSessionId: string;
+  ownerTurnId: string;
+  advSessionId: number;
+  mcpServer: string;
+  /** Exact native MCP names resolved by the trusted host's catalog. */
+  nativeTools: Readonly<Record<string, string>>;
+}
+const fingerprint = (value: string) => createHash('sha256').update(value, 'utf8').digest('hex');
+export const nativeInstalledPerUseTurns = pinModuleState('@papercusp/operator-core.native-installed-per-use-turns',
+  () => new NativeInstalledPerUseTurns());
 
 const refuse = (code: string, detail: string) => ({
   isError: true,
@@ -142,6 +280,8 @@ export function createInstalledPerUseChokepoint(deps: {
   };
 }
 
-// Until the authenticated native/app host supplies an admission provider, a
-// Cupboard installation is refused. Tool arguments cannot supply that provider.
-export const installedPerUseChokepoint = createInstalledPerUseChokepoint();
+// Empty until the owning authenticated host registers funded admissions. A
+// request in another worker cannot borrow a session-wide or metadata-only turn.
+export const installedPerUseChokepoint = createInstalledPerUseChokepoint({
+  resolveAdmittedTurn: request => nativeInstalledPerUseTurns.resolve(request),
+});

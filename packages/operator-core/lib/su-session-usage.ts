@@ -25,6 +25,9 @@ import type { SuPlanItem, SuPlanItemStatus, SuSessionUsage, SuSessionRefusal } f
 export interface SuCodexTurnAdmission {
   readonly ok: true;
   bindNativeTurn(nativeTurnId: string): Promise<void>;
+  /** Trusted app-server observation after immutable native binding. A request's
+   * own metadata/arguments are never a substitute for this host observation. */
+  observeToolCall?(input: { nativeTurnId: string; callId: string; server: string; tool: string }): Promise<void>;
   complete(input: { nativeTurnId: string; status: string; completedAtMs: number }): Promise<void>;
   reconcile(input: { phase: 'delivery' | 'binding' | 'completion'; message: string }): Promise<void>;
 }

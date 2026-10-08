@@ -209,6 +209,9 @@ export function startSuRpcEngine(
   let nativeBinding: Promise<void> | undefined;
   let releaseNativeBinding: (() => void) | undefined;
   let nativeBindingFailed = false;
+  let nativeToolObservationTail = Promise.resolve();
+  const observedNativeToolCalls = new Set<string>();
+  const completedNativeToolTurns = new Set<string>();
   let inputTail = Promise.resolve();
   const streams = new Map<string, string>();
   const tools = new Map<string, string>();
@@ -260,6 +263,9 @@ export function startSuRpcEngine(
         ownerTurnId = turnId;
         turnCompletionSettled = false;
         nativeBindingFailed = false;
+        nativeToolObservationTail = Promise.resolve();
+        observedNativeToolCalls.clear();
+        completedNativeToolTurns.clear();
         nativeBinding = new Promise<void>((resolve) => { releaseNativeBinding = resolve; });
         const finished = new Promise<void>((resolve) => { turnFinished = resolve; });
         turnCompletion = finished;
@@ -325,6 +331,8 @@ export function startSuRpcEngine(
         } finally {
           releaseNativeBinding?.();
           turnAdmission = undefined; nativeBinding = undefined; releaseNativeBinding = undefined;
+          observedNativeToolCalls.clear();
+          completedNativeToolTurns.clear();
           turnFinished = undefined; turnCompletion = undefined; nativeStart = undefined; ownerTurnId = ''; nativeTurnId = ''; streams.clear();
         }
       });
@@ -423,12 +431,21 @@ export function startSuRpcEngine(
     const owner = ownerTurnId, admission = turnAdmission;
     const completedAtMs = Date.now();
     if (!owner || turnCompletionSettled) return;
+    // Close this exact turn's observation population synchronously. Waiting
+    // for binding first would admit item/started frames after turn/completed.
+    // An early unrelated completion closes only its own ID, not the current
+    // turn whose ID still comes from the correlated turn/start response.
+    if (backend === 'codex' && eventNativeTurnId) completedNativeToolTurns.add(eventNativeTurnId);
     // Completion can arrive before turn/start responds or while the durable
     // native binding is in flight. Neither may open the next inference turn.
     if (backend === 'codex') await nativeBinding;
     if (closed || nativeBindingFailed || owner !== ownerTurnId || turnCompletionSettled) return;
     if (backend === 'codex' && (!eventNativeTurnId || eventNativeTurnId !== nativeTurnId)) return;
     turnCompletionSettled = true;
+    // A tool announcement may have preceded turn/start's acknowledgement.
+    // Its host observation must settle before closing the monetary population.
+    await nativeToolObservationTail;
+    if (closed || nativeBindingFailed || owner !== ownerTurnId) return;
     if (admission) {
       try { await admission.complete({ nativeTurnId, status, completedAtMs }); }
       catch (completionError) {
@@ -448,6 +465,32 @@ export function startSuRpcEngine(
     await adapter.refreshAccountServed();
     host.transition(status === 'interrupted' ? 'interrupted' : 'waiting-for-owner', error ?? `${backend} turn ${status}`);
     turnFinished?.();
+  }
+  function observeNativeToolCall(thread: unknown, turn: string, item: RpcFrame): void {
+    const admission = turnAdmission, owner = ownerTurnId, bindingReady = nativeBinding;
+    const callId = string(item.id), server = string(item.server), tool = string(item.tool);
+    const boundedId = (value: string) => /^[A-Za-z0-9._:-]{1,256}$/.test(value);
+    // No session-wide current-turn guess, completed-item fallback, or invented
+    // call ID. Capture this admission now so an early event cannot borrow the
+    // next turn's authority after an async binding wait.
+    if (!admission?.observeToolCall || !owner || turnCompletionSettled ||
+        completedNativeToolTurns.has(turn) ||
+        thread !== nativeId() || !boundedId(turn) || !boundedId(callId) ||
+        !boundedId(server) || !boundedId(tool) || observedNativeToolCalls.has(callId)) return;
+    observedNativeToolCalls.add(callId);
+    nativeToolObservationTail = nativeToolObservationTail.then(async () => {
+      await bindingReady;
+      if (closed || nativeBindingFailed || owner !== ownerTurnId || admission !== turnAdmission || turn !== nativeTurnId) return;
+      await admission.observeToolCall!({ nativeTurnId: turn, callId, server, tool });
+    }).catch(async (error) => {
+      // An observation failure cannot release a funded hold or open another
+      // inference turn. Use the existing durable binding-recovery contract.
+      nativeBindingFailed = true; ready = false;
+      try { await admission.reconcile({ phase: 'binding', message: String(error) }); }
+      catch (reconcileError) { reportRuntimeFailure(reconcileError); }
+      reportRuntimeFailure(error);
+      await close();
+    });
   }
   function onMessage(frame: RpcFrame): void {
     if (closed) return;
@@ -491,6 +534,7 @@ export function startSuRpcEngine(
         transcript(`${params.itemId}:reasoning`, 'reasoning', string(params.delta));
       } else if (method === 'item/started' || method === 'item/completed') {
         const item = object(params.item), id = string(item.id), type = string(item.type);
+        if (method === 'item/started' && type === 'mcpToolCall') observeNativeToolCall(frameThreadId, eventTurnId, item);
         if (type === 'agentMessage' && method === 'item/completed') {
           transcript(id, 'text', streams.has(id) ? '' : string(item.text), true);
         } else if (['commandExecution', 'fileChange', 'mcpToolCall', 'webSearch'].includes(type) && ownerTurnId) {
