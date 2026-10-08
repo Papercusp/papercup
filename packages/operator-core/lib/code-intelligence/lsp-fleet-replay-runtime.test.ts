@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -18,7 +18,7 @@ vi.mock('./code-intel-bench.ts', () => { throw new Error('legacy benchmark must 
 vi.mock('./lsp-daemon-client', () => ({ callLspDaemonRpc: vi.fn(), readLspDaemonAdmission: vi.fn() }));
 
 const roots: string[] = [];
-afterEach(() => { vi.clearAllMocks(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+afterEach(() => { vi.clearAllMocks(); vi.unstubAllEnvs(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 describe('prelaunch replay runtime dependency population', () => {
   function fixture() {
     const root = mkdtempSync(join(tmpdir(), 'lsp-runtime-population-')); roots.push(root);
@@ -363,9 +363,78 @@ describe('independent replay source materialization', () => {
       tsconfigPath: 'tsconfig.json', definition: { file: 'source.ts', line1: 2, character: 1 },
       references: { file: 'source.ts', line1: 2, character: 1 }, runtimeFiles: [], evidenceRef: 'source-copy-fixture' };
     const dependencies = (_donor: string, out: string) => writeFileSync(join(out, '.papercusp-pinned-deps'), 'mode=copy\ntrees=0\n');
-    const options = { enumerateSources: () => ['source.ts', 'tsconfig.json'], snapshotDependencies: dependencies };
+    const options = { enumerateSources: () => ['source.ts', 'tsconfig.json'], snapshotDependencies: dependencies,
+      checkSourceHeadroom: vi.fn() };
     return { input, target, options, parent };
   }
+  function realHeadroomFixture() {
+    const f = fixture();
+    const helper = join(f.input.rootPath, 'apps/operator/bin/release/dependency-generation.sh');
+    mkdirSync(join(f.input.rootPath, 'apps/operator/bin/release'), { recursive: true });
+    writeFileSync(helper, readFileSync(new URL('../../../../apps/operator/bin/release/dependency-generation.sh', import.meta.url)));
+    vi.stubEnv('DEPENDENCY_GENERATION_COPY_LOCK_FILE', join(f.parent, 'copy.lock'));
+    vi.stubEnv('DEPENDENCY_GENERATION_HEADROOM_TOTAL_BYTES', '1000000');
+    vi.stubEnv('DEPENDENCY_GENERATION_HEADROOM_AVAIL_BYTES', '1');
+    vi.stubEnv('DEPENDENCY_GENERATION_HEADROOM_MARGIN_BYTES', '0');
+    vi.stubEnv('DEPENDENCY_GENERATION_HEADROOM_RESERVE_PCT', '0');
+    vi.stubEnv('DEPENDENCY_GENERATION_COPY_LOCK_TIMEOUT_SEC', '0');
+    vi.stubEnv('DEPENDENCY_GENERATION_COPY_LOCK_MAX_SEC', '0');
+    vi.stubEnv('DEPENDENCY_GENERATION_HEADROOM_SAME_FS', '1');
+    return { ...f, options: { ...f.options, checkSourceHeadroom: undefined } };
+  }
+  it('refuses actual low-space admission before creating a source capture and releases its copy lease', () => {
+    const f = realHeadroomFixture();
+    const retained = join(f.parent, 'source.generation-tmp.evidence');
+    mkdirSync(retained); writeFileSync(join(retained, 'proof'), 'retained peer evidence');
+    const dependencies = vi.fn(f.options.snapshotDependencies);
+    expect(() => materializeReplaySource(f.input, f.target, { ...f.options, snapshotDependencies: dependencies }))
+      .toThrow('DEPENDENCY_GENERATION_HEADROOM_INSUFFICIENT');
+    expect(existsSync(f.target)).toBe(false);
+    expect(dependencies).not.toHaveBeenCalled();
+    expect(readFileSync(join(retained, 'proof'), 'utf8')).toBe('retained peer evidence');
+    vi.stubEnv('DEPENDENCY_GENERATION_HEADROOM_AVAIL_BYTES', '1000000');
+    const copied = materializeReplaySource(f.input, f.target, f.options);
+    expect(readFileSync(join(copied.rootPath, 'source.ts'), 'utf8')).toContain('hot();');
+  });
+  it('fails closed when headroom cannot be measured, leaving no capture', () => {
+    const f = realHeadroomFixture();
+    const bin = join(f.parent, 'bin'); mkdirSync(bin);
+    const stat = join(bin, 'stat'); writeFileSync(stat, '#!/usr/bin/env bash\nexit 1\n'); chmodSync(stat, 0o755);
+    vi.stubEnv('PATH', `${bin}:${process.env.PATH}`);
+    vi.stubEnv('DEPENDENCY_GENERATION_HEADROOM_TOTAL_BYTES', '');
+    vi.stubEnv('DEPENDENCY_GENERATION_HEADROOM_AVAIL_BYTES', '');
+    expect(() => materializeReplaySource(f.input, f.target, f.options))
+      .toThrow('DEPENDENCY_GENERATION_HEADROOM_UNMEASURED');
+    expect(existsSync(f.target)).toBe(false);
+  });
+  it('admits ignored package outputs and declared external runtime bytes before source writes', () => {
+    const f = fixture();
+    const binary = join(f.parent, 'runtime'); writeFileSync(binary, Buffer.alloc(64000));
+    mkdirSync(join(f.input.rootPath, 'dist'));
+    writeFileSync(join(f.input.rootPath, 'dist', 'cli.js'), Buffer.alloc(32000));
+    writeFileSync(join(f.input.rootPath, 'package.json'), JSON.stringify({ bin: './dist/cli.js' }));
+    let observed = 0;
+    const copied = materializeReplaySource({ ...f.input, runtimeFiles: [binary] }, f.target, { ...f.options,
+      enumerateSources: () => [...f.options.enumerateSources(), 'package.json', 'deleted.ts'],
+      checkSourceHeadroom: (root, target, bytes) => {
+        expect(root).toBe(realpathSync(f.input.rootPath));
+        expect(target).toBe(f.target); expect(existsSync(target)).toBe(false);
+        observed = bytes;
+      } });
+    expect(observed).toBeGreaterThan(96000);
+    expect(readFileSync(copied.runtimeFiles[0])).toHaveLength(64000);
+    expect(JSON.parse(readFileSync(copied.sourceSnapshot!.manifestPath, 'utf8')).absent).toEqual(['deleted.ts']);
+  });
+  it.each(['growth', 'resurrection'])('refuses unadmitted source bytes after the census (%s)', change => {
+    const f = fixture();
+    const file = change === 'growth' ? 'source.ts' : 'deleted.ts';
+    expect(() => materializeReplaySource(f.input, f.target, { ...f.options,
+      enumerateSources: () => [file, 'tsconfig.json'],
+      checkSourceHeadroom: () => writeFileSync(join(f.input.rootPath, file), Buffer.alloc(1000000)),
+    })).toThrow('changed-since-replay-admission');
+    expect(existsSync(join(f.target, file))).toBe(false);
+    expect(existsSync(join(f.target, '.replay-source-snapshot.json'))).toBe(false);
+  });
   function pluginFixture(external: boolean) {
     const f = fixture();
     const location = join(external ? f.parent : f.input.rootPath, 'probe');

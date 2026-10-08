@@ -467,6 +467,7 @@ function replayPackageRuntimeSources(root: string, sources: string[]): string[] 
 export function materializeReplaySource(input: ReplayOracleInput, destination: string, options: {
   enumerateSources?: (root: string) => string[];
   snapshotDependencies?: (root: string, destination: string) => void;
+  checkSourceHeadroom?: (root: string, destination: string, bytes: number) => void;
   onProgress?: (progress: { phase: string; completed: number; total: number }) => void;
 } = {}): ReplayOracleInput {
   const donor = realpathSync(input.rootPath);
@@ -501,12 +502,56 @@ export function materializeReplaySource(input: ReplayOracleInput, destination: s
     }
     semanticCompletionPlugin = { ...plugin, location, files };
   }
+  // Admit the selected population before creating a capture. The dependency
+  // phase has its own copy admission; source and external runtime bytes used
+  // to bypass it entirely. Apparent sizes include sparse files; per-entry
+  // overhead conservatively covers directories and the two source manifests.
+  const paths = replayPackageRuntimeSources(donor, (options.enumerateSources ?? replayRepositorySources)(donor));
+  const sources = new Set<string>();
+  for (const path of paths) {
+    const source = resolve(donor, path);
+    if (isAbsolute(path) || !insideReplayRoot(donor, source) || path.split('/').includes('.git'))
+      throw new Error(`escaping-replay-source:${path}`);
+    try { lstatSync(source); } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      continue;
+    }
+    if (!insideReplayRoot(donor, realpathSync(dirname(source)))) throw new Error(`escaping-replay-source:${path}`);
+    sources.add(source);
+  }
+  for (const file of input.runtimeFiles) sources.add(resolve(donor, file));
+  const admittedFiles = new Map<string, ReturnType<typeof replaySourceAdmissionStat>>();
+  let sourceBytes = 8192;
+  for (const source of sources) {
+    const info = replaySourceAdmissionStat(source);
+    if (!info.isFile() && !info.isSymbolicLink()) throw new Error(`unsupported-replay-source:${source}`);
+    admittedFiles.set(source, info);
+    sourceBytes += Number(info.size) + 4096 * (relative(donor, source).split('/').length + 1);
+    if (!Number.isSafeInteger(sourceBytes)) throw new Error('replay-source-size-unmeasured');
+  }
+  (options.checkSourceHeadroom ?? ((root, out, bytes) => {
+    // Reuse the host copy lease and donor-scoped reserve policy. Check-only
+    // never invokes the generation reaper on retained replay evidence. This
+    // lease protects the preflight measurement, not the subsequent JS writes.
+    execFileSync('bash', ['-c', `source "$1" || exit $?
+dependency_generation_record_reserve_fs "$2"
+dependency_generation_acquire_copy_lock "replay source $3" || exit $?
+trap dependency_generation_release_copy_lock EXIT
+DEPENDENCY_GENERATION_HEADROOM_CHECK_ONLY=1 dependency_generation_check_headroom "$2" "$3" "$4"`,
+      'replay-source-headroom', join(root, 'apps/operator/bin/release/dependency-generation.sh'), root, out, String(bytes)],
+    { encoding: 'utf8', timeout: 600_000 });
+  }))(donor, target, sourceBytes);
+  options.onProgress?.({ phase: 'source-admitted', completed: 0, total: paths.length });
   // Exclusive creation refuses a previous run; failures leave forensic inputs.
   mkdirSync(target, { mode: 0o700 });
   const hashes: Record<string, string> = {};
   const absent: string[] = [];
   const copy = (source: string, out: string) => {
     const before = lstatSync(source, { bigint: true });
+    const admitted = admittedFiles.get(source);
+    if (!admitted || ['dev', 'ino', 'size', 'mtimeNs', 'ctimeNs'].some(key =>
+      before[key as keyof typeof before] !== admitted[key as keyof typeof admitted]))
+      throw new Error(`changed-since-replay-admission:${source}`);
     mkdirSync(dirname(out), { recursive: true });
     if (before.isSymbolicLink()) {
       const link = readlinkSync(source);
@@ -523,7 +568,6 @@ export function materializeReplaySource(input: ReplayOracleInput, destination: s
     if (['dev', 'ino', 'size', 'mtimeNs', 'ctimeNs'].some(key => before[key as keyof typeof before] !== after[key as keyof typeof after]))
       throw new Error(`changed-during-replay-copy:${source}`);
   };
-  const paths = replayPackageRuntimeSources(donor, (options.enumerateSources ?? replayRepositorySources)(donor));
   for (const [index, path] of paths.entries()) {
     const source = resolve(donor, path);
     if (isAbsolute(path) || !insideReplayRoot(donor, source) || path.split('/').includes('.git'))
@@ -589,6 +633,10 @@ export function materializeReplaySource(input: ReplayOracleInput, destination: s
   return { ...input, rootPath: target, tsconfigPath, definition, references, runtimeFiles: [...runtimeFiles, dependencyStamp, manifestPath],
     ...(semanticCompletionPlugin ? { semanticCompletionPlugin } : {}),
     sourceSnapshot: { manifestPath, sha256: replayHash(manifest) } };
+}
+
+function replaySourceAdmissionStat(source: string) {
+  return lstatSync(source, { bigint: true });
 }
 
 /**
