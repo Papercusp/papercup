@@ -27,6 +27,8 @@ const config = { projects: [{ use: { baseURL: 'http://localhost:3427' } }] } as 
 describe('Playwright view preparation', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    rig.launch.mockImplementation(() => rig.browser);
+    rig.browser.close.mockResolvedValue(undefined);
     rig.waitFor.mockResolvedValue(undefined);
     rig.page.waitForFunction.mockResolvedValue(undefined);
     rig.page.waitForLoadState.mockResolvedValue(undefined);
@@ -89,5 +91,34 @@ describe('Playwright view preparation', () => {
     rig.page.waitForFunction.mockRejectedValue(new Error('shell never mounted'));
     await expect(warmDevServer(config)).resolves.toBeUndefined();
     expect(rig.browser.close).toHaveBeenCalledOnce();
+  });
+
+  it('continues ordinary specs when the warm-up browser cannot launch', async () => {
+    rig.launch.mockRejectedValueOnce(new Error('Executable does not exist'));
+    await expect(warmDevServer(config)).resolves.toBeUndefined();
+    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('Executable does not exist'));
+    expect(rig.page.goto).not.toHaveBeenCalled();
+    expect(rig.browser.close).not.toHaveBeenCalled();
+  });
+
+  it('still refuses strict preparation when the browser cannot launch', async () => {
+    rig.launch.mockRejectedValueOnce(new Error('Executable does not exist'));
+    await expect(warmDevServer(config, { strict: true })).rejects.toThrow('Executable does not exist');
+    expect(rig.browser.close).not.toHaveBeenCalled();
+  });
+
+  it('uses the profile browser and launch options during preparation', async () => {
+    const profile = { projects: [{ use: {
+      baseURL: 'http://localhost:3427', channel: 'chrome', launchOptions: { timeout: 12_000 },
+    } }] } as FullConfig;
+    await warmDevServer(profile);
+    expect(rig.launch).toHaveBeenCalledWith({ channel: 'chrome', timeout: 12_000 });
+    expect(rig.page.goto).toHaveBeenCalledTimes(WARMUP_PATHS.length);
+  });
+
+  it('keeps browser cleanup failure fail-soft for ordinary specs', async () => {
+    rig.browser.close.mockRejectedValueOnce(new Error('Browser already disconnected'));
+    await expect(warmDevServer(config)).resolves.toBeUndefined();
+    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('Browser already disconnected'));
   });
 });
