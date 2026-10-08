@@ -37,7 +37,10 @@ native eval 'document.querySelector("[role=dialog] button[aria-label=Close]").cl
 "$VERIFY_TAURI_POLL" --require '.dao-task' --require-min 5 --eval '!document.querySelector(".dao-modal")'
 # A wide desktop can leave a narrow content pane when chat is open. Check the
 # page at that actual containing width, and at a still narrower host width.
-native eval 'window.__daoLayoutFits=()=>{const host=document.querySelector(".dao-workspace-container");if(!host)return false;const h=host.getBoundingClientRect();return [".dao-sidebar",".dao-summary",".dao-checklist",".dao-next-column"].every(s=>{const e=document.querySelector(s),r=e?.getBoundingClientRect();return r && r.width>100 && r.left>=h.left-2 && r.right<=h.right+2 && e.scrollWidth<=e.clientWidth+2;});}' >/dev/null
+define_layout_guard() {
+  native eval 'window.__daoLayoutFits=()=>{const host=document.querySelector(".dao-workspace-container");if(!host)return false;const h=host.getBoundingClientRect();return [".dao-sidebar",".dao-summary",".dao-checklist",".dao-next-column"].every(s=>{const e=document.querySelector(s),r=e?.getBoundingClientRect();return r && r.width>100 && r.left>=h.left-2 && r.right<=h.right+2 && e.scrollWidth<=e.clientWidth+2;});}' >/dev/null
+}
+define_layout_guard
 "$VERIFY_TAURI_POLL" --require '.dao-task' --require-min 5 --eval '__daoLayoutFits()'
 native eval 'document.querySelector(".dao-workspace-container").style.width="560px"' >/dev/null
 "$VERIFY_TAURI_POLL" --require '.dao-task' --require-min 5 --eval '__daoLayoutFits()'
@@ -45,6 +48,20 @@ native eval 'document.querySelector(".dao-workspace-container").style.width=""' 
 "$VERIFY_TAURI_POLL" --require '.dao-task' --require-min 5 --eval '__daoLayoutFits() && document.querySelector(".dao-summary").textContent.includes("Not connected")'
 native eval 'JSON.stringify({viewport:{width:innerWidth,height:innerHeight},containerWidth:document.querySelector(".dao-workspace-container").getBoundingClientRect().width,checklistWidth:document.querySelector(".dao-checklist").getBoundingClientRect().width,steps:document.querySelectorAll(".dao-task").length,organization:document.querySelector(".dao-org-select").textContent})' >"$OUT_DIR/layout.json"
 native screenshot --selector '[data-testid="dao-launch-workspace"]' --output "$OUT_DIR/checklist.png" >/dev/null
+# Exercise the real app theme picker; setting CSS tokens directly would not
+# prove that the saved app preference and DAO surface stay in sync.
+for theme in portal-light portal-dark; do
+  native click 'button[aria-label="Switch theme"]' >/dev/null
+  "$VERIFY_TAURI_POLL" --selector "[data-testid=\"theme-selector-option\"][data-theme-id=\"$theme\"]"
+  native click "[data-testid=\"theme-selector-option\"][data-theme-id=\"$theme\"]" >/dev/null
+  "$VERIFY_TAURI_POLL" --require '.dao-task' --require-min 5 --eval "document.documentElement.dataset.theme===\"$theme\" && __daoLayoutFits()"
+  native eval 'JSON.stringify({theme:document.documentElement.dataset.theme,background:getComputedStyle(document.querySelector(".dao-workspace")).backgroundColor,foreground:getComputedStyle(document.querySelector(".dao-workspace")).color,steps:document.querySelectorAll(".dao-task").length,url:location.href})' >"$OUT_DIR/theme-$theme.json"
+  native screenshot --selector '[data-testid="dao-launch-workspace"]' --output "$OUT_DIR/theme-$theme.png" >/dev/null
+  native eval 'location.reload()' >/dev/null
+  "$VERIFY_TAURI_POLL" --selector '[data-testid="dao-launch-workspace"]'
+  define_layout_guard
+  "$VERIFY_TAURI_POLL" --require '.dao-task' --require-min 5 --eval "document.documentElement.dataset.theme===\"$theme\" && document.querySelector(\".dao-org-select\").textContent.includes(\"Native DAO regression\") && __daoLayoutFits()"
+done
 if native check --selector '.dao-task-intentionally-missing' --json >"$OUT_DIR/negative-control.json" 2>&1; then
   echo 'Missing-selector negative control unexpectedly passed' >&2; exit 1
 fi
