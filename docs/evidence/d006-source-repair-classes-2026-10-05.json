@@ -2213,7 +2213,42 @@
       "item": "WI-10006170",
       "lines": [
         14459
-      ]
+      ],
+      "historicalQualification": {
+        "qualifiedAt": "2026-10-08",
+        "scope": "Read-only archive, existing source-repair records and stored test receipts; no new test/native execution, source admission, final D006 acceptance or shipment.",
+        "originalFailure": "Immutable affected-tests.log line14459 reports relation harness_shared.routines does not exist at sweepOrphanedTakenBy/fleet-monitors.ts165. Original census line8907 records1collected/1executed/1failed/0skip. The case reaches orphan recovery after revocation, caller rejection and survivor progress; the archived error does not prove those preceding assertions currently pass.",
+        "sourceContract": "Run-start d2a53e composition-rig boots private real PG schemas without a routines table. sweepOrphanedTakenBy embeds liveHolderFragment; that fragment selects armed same-owner loops from harness_shared.routines. Commit924d4332f47c67b54e2f1c64182125ca1f0e6a70 added this dependency on2026-08-25. Existing terminal EI-21431501901242395 verifies loop-preserved feature/issue claims and genuine terminal cleanup; removing its protection is not the fixture repair. Later commit2763fadb52 removes the private schema and supplies both cells through maintained createOrgTestDb. These repository comparisons do not identify the originally loaded runtime or establish a missing/restored-routines causal control.",
+        "existingRepair": {
+          "adoption": "WI-10006495 DONE/committed is focused P002 canonical-cell adoption, with conventional actual-factory/schema/readiness/cleanup guards. Exact stored terminal evidence recovered without replay. WI-10006496 remains BLOCKED/unassigned and owns full eleven-consumer/original custody work; no new executor follows from this qualification.",
+          "coverage": "Existing adoption artifact0404c430 partitions11consumers into3checked/8notChecked; revoked-swarm is explicitly notChecked. A later passing receipt is separate evidence, not P003 acceptance or original-source closure.",
+          "olderGuard": "EI-6794 DONE exact raw completion verifies its earlier2-test real-migration schema guard but explicitly limits it to harness_features_consolidated. It did not check all fixture tables and does not guard this newly imported routines dependency. EI-527 resolved earlier admission-gate repair/July integration passes also predate this October schema failure. Neither terminal item was replayed."
+        },
+        "storedReceipts": {
+          "original": "20766490 FAIL at0d0655c7 canonical/staging/local/dirty/non-scratch and20747053 FAIL at159fa07e clean isolated/local/non-scratch both preserve the same missing-routines message. Earlier20473650 also fails on that relation.",
+          "later": "20843658 PASS at9548d219d7768be89980368e3ca1f47b3c7ba26d canonical/staging/local/dirty/non-scratch. Preserved consumer log SHA805379cae74ddc2a964081c234624729b2ebb5ab1e2edc97032747a982b8c271 records the named file1test PASS in38510ms. Dirty repository evidence is not clean as-committed/full-import assurance.",
+          "older": "13502226 PASS at0193eccb is clean/local/non-scratch with root:null, predates the routines dependency and uses different test/monitor bytes. Later16123334 fails on cell scope, a distinct historical symptom.",
+          "lookupScope": "Literal-file explicit-local ledger read returned38/38 rows, truncatedByLimit:false/latestPerFile:false/omittedBySourceFilter:0. Exact receipt lookup returned20843658/20766490/20747053/13502226,4/4 with no source filter. These are persisted rows, not an assertion that every execution was recorded."
+        },
+        "byteComparison": {
+          "testSha256": "0a7cc163f63f3ae53c848e86e2fe9745a65ccdc86f3f7e00a644e06c2db18a0b",
+          "monitorSha256": "4fef8bd40c68e2569a3463e8d1f282c8e70a152206c227b2f12f8b857ac99187",
+          "liveHolderFragmentSha256": "12ee9751f6df1d1c1ba988b9d84cb79956624efc8d8ab40a71ca8a19d55b81ec",
+          "meaning": "Named test and monitor working blobs equal HEAD/run-startd2a53e/bothOctoberfailurecommits/later9548d219. Whole stale-claims source changed; its historical liveHolderFragment remains identical across those four commits. Current rigbde719b0 differs from9548d219 only at two mergeNow calls wrapped in runAsCell. Named files are clean, but Git blobs do not identify actually loaded source, transitive imports, config, schema or environment."
+        },
+        "evidenceRefs": [
+          "EI-6794#completion",
+          "EI-527#completion",
+          "EI-21431501901242395#completion",
+          "WI-10006495#completion",
+          "WI-10006496#checkpoint",
+          "test-run:20766490",
+          "test-run:20747053",
+          "test-run:20843658",
+          "docs/evidence/composition-rig-canonical-adoption-2026-10-06.json"
+        ],
+        "remaining": "Original/current loaded-source, full imports/config/schema/native environment, current full-consumer assurance, original-source acceptance and final D006/P004/shipment remain UNKNOWN. Preserve D011/P003 STOP, the fleet admission refusal and historical124failed/298skipped population."
+      }
     },
     {
       "path": "packages/operator-core/lib/claim-next-co-location.integration.test.ts",
@@ -2859,7 +2894,40 @@
       "item": "WI-10006170",
       "lines": [
         14441
-      ]
+      ],
+      "historicalQualification": {
+        "qualifiedAt": "2026-10-08",
+        "scope": "Read-only archive, existing source-repair records and stored test receipts; no test/native replay, source admission, final D006 acceptance or shipment.",
+        "originalFailure": "Immutable affected-tests.log lines14439-14456 groups composition-happy-path, redundancy-two-swarm and split-brain-mug: PostgresError base_harness_slug does not exist at issues-engineer.getIssue2650. Census records each file1collected/1executed/1failed/0skip.",
+        "sourceContract": "Run-start d2a53e composition-rig boots empty databases through createFreshPgDb and setupCellSchema, with a private real engineer_issues table and no base_harness_slug in the whole rig source. getIssue orders by that column. Later commit2763fadb52 removes the private schema and supplies both cells through maintained createOrgTestDb; current setup follows that factory. This source comparison does not establish the original actually-loaded runtime or a missing/restored-column causal control.",
+        "existingRepair": {
+          "adoption": "WI-10006495 DONE/committed: P002 canonical cell adoption and focused recurrence controls. Exact terminal summary/testResult/testsRun/filesChanged recovered without replay; schema-drift clean20835764 PASS9 and original happy-path controls are within its scope.",
+          "original": "WI-10005142 OPEN/unassigned and full-consumer WI-10006496 BLOCKED/unassigned in this read. Existing adoption artifact0404c4301fd2f70df6ea463a9afa877fa1631097fa84d9c1cf37869d53760983 partitions11consumers into3checked/8notChecked, with split-brain and redundancy notChecked. Do not extend P002 completion into original-source/full-consumer closure or reopen a parallel executor.",
+          "guardScope": "Conventional composition-rig-schema-drift.integration tests query production issue read columns on actual canonical cells and use real missing/restored admission and readiness controls. The selected issue-column query is narrower than the complete getIssue sorting/import/environment contract."
+        },
+        "laterReceipts": {
+          "splitBrain": "20843660 PASS local/canonical/staging/dirty/non-scratch at9548d219d7768be89980368e3ca1f47b3c7ba26d, 2026-10-06T14:43:23.053Z.",
+          "happyPath": "20843656 PASS under the same commit/root/dirty scope; clean20834565 at6e51798741 and20834339 at2763fadb52 also PASS. Earlier20830313 fails on template-lock-wait console.error; preserve that distinct historical failure.",
+          "redundancy": "20843657 PASS under the same9548d219 canonical/dirty scope.",
+          "schemaGuard": "20843662 PASS at9548d219; clean20835764 PASS at5b1e4a0e65. Earlier clean20834340 FAIL at2763fadb52 is an extra-setup database-cleanup expectation, not the original missing-column failure.",
+          "lookupScope": "Exact literal-file local ledger queries since2026-10-05T22:29:37Z: split1/1, happy5/5, redundancy1/1, schema-guard9/9 and template-spike3/3, each truncatedByLimit:false/latestPerFile:false. Explicit local source omits6happy/2schema-guard non-local rows; no claim about those omitted rows."
+        },
+        "byteComparison": {
+          "splitBrainSha256": "d5741958671e433cf82d07cf5231648d73d9521b442e96360a96dbde74ca742c",
+          "happyPathSha256": "b247607d1d0207eb6e99d55fed11d2edbb26e771e79f4627298d8d4d1063d5fd",
+          "redundancySha256": "a74f926c4a20532b6932f86e897d55c9c8875b36a9aafe49ba461fd4664f25b0",
+          "meaning": "All three working test blobs equal HEAD, run-start d2a53e and9548d219. Current rigbde719b0 differs from receipt970525f6 only at two convergence mergeNow calls now wrapped in runAsCell; current issue reader010b7009 also differs from9548d219. Git equality is not actually-loaded source or full-import assurance."
+        },
+        "evidenceRefs": [
+          "WI-10006495#completion",
+          "docs/evidence/composition-rig-canonical-adoption-2026-10-06.json",
+          "test-run:20843660",
+          "test-run:20843656",
+          "test-run:20843657",
+          "test-run:20835764"
+        ],
+        "remaining": "Original/current loaded-source, complete imports/config/schema/native environment, current full-consumer assurance, original-source acceptance and final D006/P004/shipment remain UNKNOWN. Preserve D011/P003 STOP, the existing fleet admission refusal and the historical124failed/298skipped population."
+      }
     },
     {
       "path": "packages/operator-core/lib/events/await/wake-executor-resume-exit.integration.test.ts",
