@@ -40,8 +40,9 @@
  * capping/spilling remain fail-soft and return the ORIGINAL result untouched.
  * A recognized spill-write failure instead returns a bounded
  * `output_spill_failed` error, or a receipt-preserving projection for committed
- * writes (`scheduler:get_next`, `improvements:agent-review`, `coord:send`, and `work_items:complete`); it
- * never re-exposes an over-budget result.
+ * writes (`scheduler:get_next`, `improvements:agent-review`, `coord:send`,
+ * `work_items:complete`, and `work_items:set_blocker`); it never re-exposes an
+ * over-budget result.
  */
 
 import { createHash, randomUUID } from 'node:crypto';
@@ -49,6 +50,7 @@ import { dirname } from 'node:path';
 import type { ScratchWriteTimings } from './scratch-gc';
 import { withBoundedTimeout } from './bounded-timeout';
 import { projectBoundedPayload, type BulkEnvelopeProjectionOpts } from '@papercusp/tooldef';
+import { decode } from '@papercusp/result-encoding';
 import { CHARS_PER_TOKEN_ESTIMATE, computeTurnDoors } from './context-doors';
 import { getDoorConstantsSync } from './context-doors-config';
 import { buildScratchUri, safeScratchFilesystemPath } from './scratch-uri';
@@ -575,6 +577,42 @@ const WORK_ITEMS_COMPLETE_RECEIPT_PRESERVE_PATHS = [
 ] as const;
 
 /**
+ * `work_items:set_blocker` can persist the typed blocker before its oversized
+ * response is spilled. Keep enough of each row to identify committed and
+ * partial writes, then let callers read the authoritative current blocker
+ * state instead of replaying the mutation when scratch storage is unavailable.
+ */
+const WORK_ITEMS_SET_BLOCKER_RECEIPT_PRESERVE_PATHS = [
+  'ok',
+  'counts.ok',
+  'counts.failed',
+  'results[].ok',
+  'results[].id',
+  'results[].changed',
+  'results[].error',
+  'results[].code',
+  'results[].partialOutcome.blockerHistoryPersisted',
+  'results[].partialOutcome.lifecycleApplied',
+  'results[].partialOutcome.currentState',
+  'results[].partialOutcome.activeBlockerCount',
+  'results[].partialOutcome.recoveryAction',
+  'results[].activeBlockers[].kind',
+  'results[].activeBlockers[].ref',
+  'results[].activeBlockers[].capability',
+  'results[].activeBlockers[].summary',
+  'results[].activeBlockers[].nextVerb',
+  'results[].activeBlockers[].status',
+  'results[].capabilityDisposition.capability',
+  'results[].capabilityDisposition.disposition',
+  'results[].capabilityDispositions[].capability',
+  'results[].capabilityDispositions[].disposition',
+  'results[].workItem.id',
+  'results[].workItem.state',
+  'results[].workItem.harness',
+  'results[].autoCleared',
+] as const;
+
+/**
  * `scorecards:emit` can commit a card before its oversized response is spilled.
  * Keep its durable write receipt and the degenerate-distribution verdict
  * addressable if the spill fails, so callers do not replay a non-idempotent
@@ -592,6 +630,11 @@ const SCORECARDS_EMIT_SPILL_PRESERVE_PATHS = [
 function isWorkItemsCompleteCall(input: { toolName: string; nestedTargetToolName?: string }): boolean {
   return input.toolName === 'work_items:complete' ||
     (input.toolName === 'tools:invoke' && input.nestedTargetToolName === 'work_items:complete');
+}
+
+function isWorkItemsSetBlockerCall(input: { toolName: string; nestedTargetToolName?: string }): boolean {
+  return input.toolName === 'work_items:set_blocker' ||
+    (input.toolName === 'tools:invoke' && input.nestedTargetToolName === 'work_items:set_blocker');
 }
 
 function isWorkItemsGetCall(input: { toolName: string; nestedTargetToolName?: string }): boolean {
@@ -625,6 +668,65 @@ function workItemsCompleteReceipt(result: DoorableResult): Record<string, unknow
   return candidates.find((value): value is Record<string, unknown> =>
     isJsonObject(value) && Array.isArray(value.results));
 }
+
+function workItemsSetBlockerReceipt(
+  result: DoorableResult,
+  opts: { toolName: string; nestedTargetToolName?: string },
+): { body: JsonObject; readArgs: { ids: string[]; harness?: string } } | undefined {
+  if (!isWorkItemsSetBlockerCall(opts)) return undefined;
+  const textBodies = result.content.filter(isTextItem).map((item) => {
+    try {
+      return JSON.parse(item.text) as unknown;
+    } catch {
+      const toon = /^format:\s*toon\s*\r?\n/.exec(item.text);
+      if (!toon) return null;
+      try {
+        return decode(item.text.slice(toon[0].length), 'toon');
+      } catch {
+        return null;
+      }
+    }
+  });
+  const body = [result.structuredContent, ...textBodies].find(
+    (value): value is JsonObject => isJsonObject(value) && Array.isArray(value.results),
+  );
+  if (!body || !Array.isArray(body.results)) return undefined;
+  const rows = body.results.filter(isJsonObject);
+  const committedRows = rows.filter((row) =>
+    row.changed === true ||
+    (isJsonObject(row.partialOutcome) &&
+      (row.partialOutcome.blockerHistoryPersisted === true || row.partialOutcome.dependencyEdgesMayBePersisted === true)),
+  );
+  const ids = [...new Set(committedRows.flatMap((row) =>
+    typeof row.id === 'string' && row.id.length > 0 ? [row.id] : [],
+  ))];
+  if (ids.length === 0) return undefined;
+  const harnesses = [...new Set(committedRows.flatMap((row) =>
+    isJsonObject(row.workItem) && typeof row.workItem.harness === 'string' ? [row.workItem.harness] : [],
+  ))];
+  return {
+    body,
+    readArgs: { ids, ...(harnesses.length === 1 ? { harness: harnesses[0] } : {}) },
+  };
+}
+
+function workItemsSetBlockerRecovery(
+  receipt: NonNullable<ReturnType<typeof workItemsSetBlockerReceipt>>,
+) {
+  const args = JSON.stringify(receipt.readArgs);
+  return {
+    cursor: { kind: 'committed-blocker-write', tool: 'work_items:get', args: receipt.readArgs },
+    next:
+      `The work_items:set_blocker write committed for ${receipt.readArgs.ids.join(', ')}. ` +
+      `Do NOT repeat this mutation. Read work_items:get ${args} and inspect each item's current blockers ` +
+      'and lifecycle before deciding any follow-up; the omitted response details cannot be recovered.',
+  };
+}
+
+const WORK_ITEMS_SET_BLOCKER_SPILL_RECOVERY =
+  'The work_items:set_blocker write may already have committed before its response spill failed. ' +
+  'Do NOT repeat this mutation. Read work_items:get for the submitted item ids and inspect current blockers ' +
+  'and lifecycle before deciding any follow-up; the omitted response details cannot be recovered.';
 
 /**
  * `dev:pipeline_position`'s marker argument exists to settle these verdicts,
@@ -1416,6 +1518,46 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
       },
     } as T;
   }
+  const setBlockerReceipt = !reference ? workItemsSetBlockerReceipt(input.result, input.opts) : undefined;
+  const boundedSetBlockerReceipt = setBlockerReceipt
+    ? projectBoundedPayload(setBlockerReceipt.body, {
+        toolName: 'work_items:set_blocker',
+        tier: 'trimmed',
+        forced: true,
+        originalChars: input.sourceBytes,
+        targetChars: Math.min(input.doorTokens * CHARS_PER_TOKEN_ESTIMATE, 1_200),
+        preservePaths: WORK_ITEMS_SET_BLOCKER_RECEIPT_PRESERVE_PATHS,
+        preserveTopLevelKeys: ['ok', 'counts', 'results'],
+        recovery: workItemsSetBlockerRecovery(setBlockerReceipt),
+      })
+    : undefined;
+  if (boundedSetBlockerReceipt) {
+    return {
+      ...input.result,
+      content: [{ type: 'text' as const, text: JSON.stringify(boundedSetBlockerReceipt) }],
+      _meta: {
+        ...(input.result._meta ?? {}),
+        resultDoor: {
+          truncated: true,
+          structural: true,
+          spillPath: null,
+          spillUri: null,
+          spillFailed: true,
+          spillError,
+          spillErrorCode,
+          originalChars: input.sourceBytes,
+          originalBytes: input.sourceBytes,
+          nonTextChars: input.nonTextBytes,
+          nonTextBytes: input.nonTextBytes,
+          doorTokens: input.doorTokens,
+          reason: input.reason,
+          upstreamProjected: Boolean(upstreamProjection?.truncated),
+          innerTruncationMarkers,
+          ...(input.aggregate ? { aggregate: input.aggregate } : {}),
+        },
+      },
+    } as T;
+  }
   const spillDiagnostic = [spillErrorCode, spillErrorSummary].filter(Boolean).join('; ') || 'unknown error';
   const envelope = reference
     ? buildOutputEnvelope(
@@ -1452,11 +1594,15 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
                 : isWorkItemsCompleteCall(input.opts)
                   ? `Output exceeded its hard budget and the spill write failed (${spillDiagnostic}). ` +
                     'The work_items:complete write may already have committed; do NOT repeat it. Read the requested items with work_items:get before deciding any follow-up.'
+                  : isWorkItemsSetBlockerCall(input.opts)
+                    ? `Output exceeded its hard budget and the spill write failed (${spillDiagnostic}). ` +
+                      WORK_ITEMS_SET_BLOCKER_SPILL_RECOVERY
                 : `Output exceeded its hard budget and the spill write failed (${spillDiagnostic}).`,
             retryable: !(
               input.opts.toolName === 'coord:send' ||
               (input.opts.toolName === 'tools:invoke' && input.opts.nestedTargetToolName === 'coord:send') ||
-              isWorkItemsCompleteCall(input.opts)
+              isWorkItemsCompleteCall(input.opts) ||
+              isWorkItemsSetBlockerCall(input.opts)
             ),
           },
         },
@@ -2050,6 +2196,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
     // The claim committed before the optional scratch write. Recover the item
     // through a read, using the same receipt contract as the hard-spill path.
     const schedulerClaim = fsPath == null ? schedulerClaimReceipt(result, opts) : undefined;
+    const setBlockerReceipt = fsPath == null ? workItemsSetBlockerReceipt(result, opts) : undefined;
     // TWO different byte streams reach a caller here, and ONE offset cannot
     // serve both — EI-21239097430071791 followed this cursor exactly as written
     // and landed mid-body, because the offset was measured against a stream the
@@ -2075,6 +2222,8 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
       ? schedulerClaimRecovery(schedulerClaim)
       : agentReviewClaim
         ? agentReviewClaimRecovery(agentReviewClaim)
+      : setBlockerReceipt
+        ? workItemsSetBlockerRecovery(setBlockerReceipt)
       : fsPath != null && uri != null
         ? {
             cursor: {
@@ -2180,6 +2329,12 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
                     ? ` The tool also tier-projected upstream (omittedCount=${upstreamProjection.omittedCount}), ` +
                       `so those fields were never serialized either.`
                     : '')
+                : isWorkItemsSetBlockerCall(opts)
+                  ? WORK_ITEMS_SET_BLOCKER_SPILL_RECOVERY +
+                    (upstreamProjection
+                      ? ` The tool also tier-projected upstream (omittedCount=${upstreamProjection.omittedCount}), ` +
+                        `so those fields were never serialized either.`
+                      : '')
                 : isScorecardsEmitCall(opts)
                   ? SCORECARDS_EMIT_SPILL_RECOVERY +
                     ' Spill write error: ' +
@@ -2334,6 +2489,9 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
       ...(isWorkItemsCompleteCall(opts)
         ? WORK_ITEMS_COMPLETE_RECEIPT_PRESERVE_PATHS
         : []),
+      ...(isWorkItemsSetBlockerCall(opts)
+        ? WORK_ITEMS_SET_BLOCKER_RECEIPT_PRESERVE_PATHS
+        : []),
       ...(opts.preservePaths ?? []),
     ];
     const structuralProjectionWarning = extractStructuralProjectionWarning(result, textItems, jsonItemIndex);
@@ -2351,7 +2509,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
         ? compactSpecTestAdequacyBody(bodyShape.json!.parsed)
         : null;
     const projected = projectBoundedPayload(
-      evaluatorCompactBody ?? (parsedJsonBody ? bodyShape.json!.parsed : { text: fullText }),
+      evaluatorCompactBody ?? setBlockerReceipt?.body ?? (parsedJsonBody ? bodyShape.json!.parsed : { text: fullText }),
       {
       toolName: opts.toolName,
       // `work_items:get` is the continuity read. If its spill cannot be
@@ -2385,6 +2543,8 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
               : {}),
       ...(isWorkItemsCompleteCall(opts)
         ? { preserveTopLevelKeys: ['ok', 'counts', 'results'] as const }
+        : isWorkItemsSetBlockerCall(opts)
+          ? { preserveTopLevelKeys: ['ok', 'counts', 'results'] as const }
         : {}),
       ...(evaluatorCompactBody == null && preservePaths.length > 0 ? { preservePaths } : {}),
       bulkEnvelope: opts.bulkEnvelope,

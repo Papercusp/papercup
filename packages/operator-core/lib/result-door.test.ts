@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BAKED_DOOR_CONSTANTS, CHARS_PER_TOKEN_ESTIMATE } from './context-doors';
 import { applyPayloadTier } from '@papercusp/tooldef';
+import { encode } from '@papercusp/result-encoding';
 import { shapeCodeRunSummary } from './agent-tools/code/run';
 
 // P-023: the door resolves its constants through the config surface per call — stub it
@@ -1082,6 +1083,80 @@ describe('applyResultDoor', () => {
     expect(control.results.some((row) => row.completionAuthority === undefined)).toBe(true);
   });
 
+  it('REGRESSION (EI-25394627440656634): preserves committed blocker writes when the ordinary spill fails', () => {
+    const noise = Object.fromEntries(
+      Array.from({ length: 18 }, (_, index) => [`detail${index}`, 'n'.repeat(900)]),
+    );
+    const payload = {
+      ok: true,
+      results: [{
+        ok: true,
+        id: 'EI-blocker-write-1',
+        changed: true,
+        ...noise,
+        workItem: { id: 'EI-blocker-write-1', state: 'blocked', harness: 'papercup', payload: noise },
+        activeBlockers: [{
+          kind: 'runtime',
+          ref: 'runtime:worker',
+          capability: 'live-dependency',
+          summary: 'Worker runtime is not ready.',
+          nextVerb: 'events:await { event: "runtime:worker" }',
+          status: 'active',
+        }],
+        capabilityDispositions: [{ capability: 'live-dependency', disposition: 'await-event' }],
+        blockerHistory: noise,
+      }],
+      counts: { ok: 1, failed: 0 },
+    };
+    const original = `format: toon\n${encode(payload, 'toon')}`;
+    expect(original.length).toBeGreaterThan(BUDGET_CHARS);
+    // Make the normal spill fail deterministically after a committed mutation.
+    writeFileSync(join(sandbox, 'scratch'), 'not a directory');
+
+    const doored = applyResultDoor(
+      { content: [{ type: 'text' as const, text: original }], _meta: { format: 'toon' } },
+      {
+        toolName: 'work_items:set_blocker',
+        workspaceId: 'ws-1',
+        runId: RUN_ID,
+      },
+    ) as DoorableResult;
+    const output = JSON.parse((doored.content[0] as { text: string }).text) as {
+      results: Array<Record<string, any>>;
+      _projection: { truncated: boolean; cursor: Record<string, unknown>; next: string };
+    };
+
+    expect(output.results[0]).toMatchObject({
+      ok: true,
+      id: 'EI-blocker-write-1',
+      changed: true,
+      workItem: { id: 'EI-blocker-write-1', state: 'blocked', harness: 'papercup' },
+      activeBlockers: [{
+        kind: 'runtime',
+        ref: 'runtime:worker',
+        capability: 'live-dependency',
+        status: 'active',
+      }],
+      capabilityDispositions: [{ capability: 'live-dependency', disposition: 'await-event' }],
+    });
+    expect(output._projection).toMatchObject({
+      truncated: true,
+      cursor: {
+        kind: 'committed-blocker-write',
+        tool: 'work_items:get',
+        args: { ids: ['EI-blocker-write-1'], harness: 'papercup' },
+      },
+    });
+    expect(output._projection.next).toContain('Do NOT repeat this mutation');
+    expect(output._projection.next).toContain('work_items:get');
+    expect((doored._meta as { resultDoor?: Record<string, unknown> }).resultDoor).toMatchObject({
+      spillFailed: true,
+      spillPath: null,
+      spillUri: null,
+    });
+    expect((doored.content[0] as { text: string }).text.length).toBeLessThan(original.length);
+  });
+
   it('REGRESSION (EI-22652581729405439): evaluator compact preview keeps all eight ratings and verdict metadata', () => {
     const criteria = [
       'traceability', 'fixture-calibration', 'falsifiability', 'correct-layer',
@@ -1847,6 +1922,63 @@ describe('applyResultDoor', () => {
       content: [{ type: 'text' as const, text: 'm'.repeat(5_000) }],
     });
 
+    it.each([
+      { label: 'direct', toolName: 'scorecards:emit' },
+      { label: 'nested', toolName: 'tools:invoke', nestedTargetToolName: 'scorecards:emit' },
+    ])('preserves the scorecard write receipt after a $label spill failure', ({ toolName, nestedTargetToolName }) => {
+      const noise = Object.fromEntries(
+        Array.from({ length: 18 }, (_, index) => [`detail${index}`, 'n'.repeat(900)]),
+      );
+      const receipt = {
+        ok: true,
+        completionReceipt: { status: 'recorded', effectRef: 'scorecard-emit-1' },
+        canonicalRatings: { 'degenerate-distribution': { rating: 'preserved-rating' } },
+        created: true,
+        issueId: 'scorecard-emit-1',
+        ...noise,
+      };
+      const original = JSON.stringify(receipt);
+      expect(original.length).toBeGreaterThan(BUDGET_CHARS);
+      writeFileSync(join(sandbox, 'scratch'), 'not a directory');
+
+      const doored = applyResultDoor(
+        { content: [{ type: 'text' as const, text: original }] },
+        {
+          toolName,
+          ...(nestedTargetToolName ? { nestedTargetToolName } : {}),
+          workspaceId: 'ws-1',
+          runId: RUN_ID,
+        },
+      ) as DoorableResult;
+      const output = JSON.parse((doored.content[0] as { text: string }).text) as {
+        completionReceipt: Record<string, unknown>;
+        canonicalRatings: Record<string, { rating: unknown }>;
+        created: boolean;
+        issueId: string;
+        _projection: { kind: string; truncated: boolean; cursor: Record<string, unknown>; next: string };
+      };
+
+      expect(output).toMatchObject({
+        completionReceipt: { status: 'recorded', effectRef: 'scorecard-emit-1' },
+        canonicalRatings: { 'degenerate-distribution': { rating: 'preserved-rating' } },
+        created: true,
+        issueId: 'scorecard-emit-1',
+      });
+      expect(output._projection).toMatchObject({
+        kind: 'bounded-payload',
+        truncated: true,
+        cursor: { kind: 'unavailable', reason: 'spill-write-failed' },
+      });
+      expect(output._projection.next).toContain('Do NOT repeat this non-idempotent emit');
+      expect(output._projection.next).toContain('completionReceipt');
+      expect((doored._meta as { resultDoor?: Record<string, unknown> }).resultDoor).toMatchObject({
+        spillFailed: true,
+        spillPath: null,
+        spillUri: null,
+      });
+      expect((doored.content[0] as { text: string }).text.length).toBeLessThan(original.length);
+    });
+
     it('retains a nested coord:send receipt when the aggregate hard-spill write fails', () => {
       // Two ordinary results consume 10KB of the 12KB cohort. The third result
       // must take the hard whole-result spill route; making scratch unavailable
@@ -1962,6 +2094,94 @@ describe('applyResultDoor', () => {
         spillErrorCode: 'SCRATCH_QUOTA_EXCEEDED',
       });
       expect((doored.content[0] as { text: string }).text.length).toBeLessThan(original.length);
+    });
+
+    it('retains committed work_items:set_blocker verdicts when the aggregate spill fails', () => {
+      const scope = () => beginResultDoorAggregate({ sessionKey: 'owner-blocker-receipt', outputGroupId: 'turn-1' });
+      applyResultDoor(medium(), { toolName: 'tools:invoke', workspaceId: 'ws-1', runId: RUN_ID, aggregateScope: scope() });
+      applyResultDoor(medium(), { toolName: 'tools:invoke', workspaceId: 'ws-1', runId: RUN_ID, aggregateScope: scope() });
+
+      const receipt = {
+        ok: true,
+        results: [{
+          ok: true,
+          id: 'EI-blocker-write-2',
+          changed: true,
+          workItem: { id: 'EI-blocker-write-2', state: 'blocked', harness: 'papercup' },
+          activeBlockers: [{ kind: 'runtime', ref: 'runtime:worker', status: 'active' }],
+          blockerHistory: 'B'.repeat(4_800),
+        }],
+        counts: { ok: 1, failed: 0 },
+      };
+      const original = JSON.stringify(receipt);
+      const failure = Object.assign(new Error('workspace quota exhausted'), { code: 'SCRATCH_QUOTA_EXCEEDED' });
+      const doored = applyResultDoor(
+        { content: [{ type: 'text' as const, text: original }] },
+        {
+          toolName: 'tools:invoke',
+          nestedTargetToolName: 'work_items:set_blocker',
+          workspaceId: 'ws-1',
+          runId: RUN_ID,
+          aggregateScope: scope(),
+          scratchWriteFailure: { error: failure },
+        },
+      ) as DoorableResult;
+      const output = JSON.parse((doored.content[0] as { text: string }).text) as {
+        results: Array<Record<string, any>>;
+        _projection: { truncated: boolean; cursor: Record<string, unknown>; next: string };
+      };
+
+      expect(output.results[0]).toMatchObject({
+        ok: true,
+        id: 'EI-blocker-write-2',
+        changed: true,
+        workItem: { id: 'EI-blocker-write-2', state: 'blocked', harness: 'papercup' },
+        activeBlockers: [{ kind: 'runtime', ref: 'runtime:worker', status: 'active' }],
+      });
+      expect(output._projection).toMatchObject({
+        truncated: true,
+        cursor: {
+          kind: 'committed-blocker-write',
+          tool: 'work_items:get',
+          args: { ids: ['EI-blocker-write-2'], harness: 'papercup' },
+        },
+      });
+      expect(output._projection.next).toContain('Do NOT repeat this mutation');
+      expect(output._projection.next).toContain('work_items:get');
+      expect((doored._meta as { resultDoor?: Record<string, unknown> }).resultDoor).toMatchObject({
+        spillFailed: true,
+        spillErrorCode: 'SCRATCH_QUOTA_EXCEEDED',
+        spillPath: null,
+        spillUri: null,
+      });
+      expect((doored.content[0] as { text: string }).text.length).toBeLessThan(original.length);
+    });
+
+    it('makes a nested work_items:set_blocker hard-spill failure non-retryable without a parseable receipt', () => {
+      const scope = () => beginResultDoorAggregate({ sessionKey: 'owner-blocker-no-receipt', outputGroupId: 'turn-1' });
+      applyResultDoor(medium(), { toolName: 'tools:invoke', workspaceId: 'ws-1', runId: RUN_ID, aggregateScope: scope() });
+      applyResultDoor(medium(), { toolName: 'tools:invoke', workspaceId: 'ws-1', runId: RUN_ID, aggregateScope: scope() });
+
+      const failure = Object.assign(new Error('workspace quota exhausted'), { code: 'SCRATCH_QUOTA_EXCEEDED' });
+      const doored = applyResultDoor(
+        { content: [{ type: 'text' as const, text: 'x'.repeat(4_800) }] },
+        {
+          toolName: 'tools:invoke',
+          nestedTargetToolName: 'work_items:set_blocker',
+          workspaceId: 'ws-1',
+          runId: RUN_ID,
+          aggregateScope: scope(),
+          scratchWriteFailure: { error: failure },
+        },
+      ) as DoorableResult;
+      const envelope = JSON.parse((doored.content[0] as { text: string }).text) as {
+        error?: { code?: string; message?: string; retryable?: boolean };
+      };
+
+      expect(envelope.error).toMatchObject({ code: 'output_spill_failed', retryable: false });
+      expect(envelope.error?.message).toContain('work_items:set_blocker write may already have committed');
+      expect(envelope.error?.message).toContain('Do NOT repeat this mutation');
+      expect(envelope.error?.message).toContain('work_items:get');
     });
 
     it('makes a nested work_items:complete hard-spill failure non-retryable when no receipt parses', () => {
