@@ -22,6 +22,9 @@ import {
 } from './spec-test-adequacy';
 import { getBuildInfo, type BuildInfo } from '../../build-info';
 import { fullBodyRef, isFullDetail, reviewReadDetailArg } from '../_review-read-detail';
+import { getWorkItem } from '../../work-items';
+import { resolveWorkItemBehaviorContract } from './behavior-contract-resolver';
+import { ADHOC_WORK_ITEM_SPEC_SCOPE } from './adhoc-spec-scope';
 
 type EvaluatedRow = ReturnType<typeof evaluateSpecTestAdequacy>;
 const PASS_LIKE = new Set(['pass', 'not-applicable']);
@@ -69,17 +72,53 @@ function evaluatorBuildDiff(recorded: BuildInfo, live: BuildInfo): boolean {
   return recorded.sha !== live.sha || recorded.version !== live.version;
 }
 
-type EvaluatorClassSource = 'active-acceptance-rubric' | 'retired-acceptance-rubric';
+type EvaluatorClassSource = 'active-acceptance-rubric' | 'retired-acceptance-rubric' | 'work-item-completion-attestation';
 
 type EvaluatorClassResolution =
   | {
       ok: true;
       classRef: PlanClassRubricRef;
       source: EvaluatorClassSource;
+      contractSpecIds?: string[];
     }
   | { ok: false; code: string; message: string; wouldBlock: string[] };
 
-async function resolveEvaluatorClassRef(planSlug: string, harnessSlug: string): Promise<EvaluatorClassResolution> {
+async function resolveEvaluatorClassRef(
+  planSlug: string,
+  harnessSlug: string,
+  selection: { classRef: PlanClassRubricRef; workItemIds?: string[]; specIds?: string[] },
+): Promise<EvaluatorClassResolution> {
+  if (planSlug === ADHOC_WORK_ITEM_SPEC_SCOPE) {
+    // This system scope is a clause namespace, not a plan with an acceptance rubric.
+    // Reuse the completion gate's explicit class attestation, but only for the exact
+    // canonical work item's BehaviorContract. It never establishes a namespace-wide class.
+    const refuse = (code: string, message: string): EvaluatorClassResolution =>
+      ({ ok: false, code, message, wouldBlock: [code.replaceAll('_', '-')] });
+    if (selection.workItemIds?.length !== 1) {
+      return refuse('adhoc_work_item_required', 'Select exactly one workItemId to attest its ad-hoc behavior contract.');
+    }
+    try {
+      const workItem = await getWorkItem(selection.workItemIds[0], harnessSlug);
+      if (!workItem || workItem.harness !== harnessSlug) {
+        return refuse('adhoc_work_item_unresolved', 'The selected work item could not be resolved in this harness.');
+      }
+      const contract = await resolveWorkItemBehaviorContract(workItem);
+      const contractSpecIds = contract.groups
+        .filter((group) => group.planSlug === ADHOC_WORK_ITEM_SPEC_SCOPE)
+        .flatMap((group) => group.clauses.map((clause) => clause.specId));
+      if (contractSpecIds.length === 0) {
+        return refuse('adhoc_contract_unresolved', 'The selected work item has no resolved ad-hoc behavior clauses.');
+      }
+      if (selection.specIds?.some((id) => !contractSpecIds.includes(id))) {
+        return refuse('adhoc_spec_outside_work_item', 'Select only clauses in this work item\'s resolved ad-hoc behavior contract.');
+      }
+      return { ok: true, classRef: selection.classRef, source: 'work-item-completion-attestation', contractSpecIds };
+    } catch (error) {
+      return refuse('adhoc_contract_read_unavailable',
+        'The canonical work item or its behavior contract could not be read (' +
+        (error instanceof Error ? error.message : String(error)) + '). Refusing to grade until it can be read.');
+    }
+  }
   let rubrics: Awaited<ReturnType<typeof getAcceptanceRubricsForPlan>>;
   try {
     rubrics = await getAcceptanceRubricsForPlan(planSlug, { harnessSlug, strict: true });
@@ -150,7 +189,7 @@ export const argsSchema = refineEvenWithShapeIssues(z.object({
   slug: z.string().min(1),
   classRef: z
     .enum(PLAN_CLASS_RUBRIC_REFS)
-    .describe('Plan-class standard rubric referenced by the plan acceptance rubric; must match the persisted plan class.'),
+    .describe('Must match the persisted plan acceptance class. In the system ad-hoc scope, attests exactly one selected work item using the completion gate class contract.'),
   /** Build identity recorded by a rerun recipe; used to surface evaluator drift. */
   evaluatorBuild: evaluatorBuildSchema.optional(),
   workItemIds: z.array(z.string().min(1)).min(1).max(500).optional(),
@@ -376,7 +415,7 @@ export default defineTool({
     'Grade each affected current spec revision as one row against the reusable spec-test-adequacy rubric. Resolves exact P-005 evidence bindings and returns a per-clause verdict table with every would-block reason; detail:"full" adds criterion evidence and scorecards:emit-compatible drafts. Read-only; it never files a verdict. evidenceRefs selects immutable evidence references; bindingIds pins a replay to the exact persisted binding rows, including when references repeat. When replaySnapshot is true, include both specRevision and specFingerprint from the same immutable clause revision. Always check ok and rows.length before indexing rows[0].',
   guidance: {
     returns:
-      'A caller classRef that disagrees with the plan acceptance class is refused with ok:false, no rows, and callerClassRef/declaredClassRef/classRefSource. On success { ok, rows, count, verdicts, wouldBlock, includeDraft, excludedDraftCount, excludedDraftSpecIds, excludedClauses } has ok:true; every successful result reports the resolved classRef and its source. Every successful result reports the lifecycle-filtered clauses and an explicit draft-exclusion count, including zero, so row counts do not imply that excluded drafts were evaluated. No call succeeds vacuously: when the plan has clauses but none is eligible — selector or not — the reply is ok:false with error:"selection_empty" rather than ok:true with zero rows. On evidence_selection_hit_limit the reply is ok:false with error, count, limit and remedy and NO rows field at all. The default detail:"summary" rows carry specId, specRevision, specFingerprint, verdict, wouldBlock and ratings[criterion].rating, plus a top-level fullBody ref (the exact re-call with detail:"full"); rows[].scorecardDraft and criterion evidence text exist only under detail:"full".',
+      'A caller classRef that disagrees with the plan acceptance class is refused with ok:false, no rows, and callerClassRef/declaredClassRef/classRefSource. The system ad-hoc scope instead requires exactly one workItemId and uses its explicit completion-class attestation, limited to its resolved BehaviorContract clauses; classRefSource is work-item-completion-attestation. On success { ok, rows, count, verdicts, wouldBlock, includeDraft, excludedDraftCount, excludedDraftSpecIds, excludedClauses } has ok:true; every successful result reports the resolved classRef and its source. Every successful result reports the lifecycle-filtered clauses and an explicit draft-exclusion count, including zero, so row counts do not imply that excluded drafts were evaluated. No call succeeds vacuously: when the plan has clauses but none is eligible — selector or not — the reply is ok:false with error:"selection_empty" rather than ok:true with zero rows. On evidence_selection_hit_limit the reply is ok:false with error, count, limit and remedy and NO rows field at all. The default detail:"summary" rows carry specId, specRevision, specFingerprint, verdict, wouldBlock and ratings[criterion].rating, plus a top-level fullBody ref (the exact re-call with detail:"full"); rows[].scorecardDraft and criterion evidence text exist only under detail:"full".',
     when: 'During implementation feedback or immediately before attempting work-item completion for spec-covered behavior.',
     notWhen: 'Authoring clauses — plans:set-specs. Binding proof — plans:bind-spec-evidence. Filing a returned draft — scorecards:emit. Indexing rows[0] without checking ok/rows.length first — an empty or error-shaped reply has no rows[0] to read.',
     chaining:
@@ -421,7 +460,7 @@ export default defineTool({
       recordedEvaluatorBuild && evaluatorBuildDiff(recordedEvaluatorBuild, liveEvaluatorBuild)
         ? { recorded: recordedEvaluatorBuild, live: liveEvaluatorBuild }
         : undefined;
-    const classResolution = await resolveEvaluatorClassRef(args.slug, harnessSlug);
+    const classResolution = await resolveEvaluatorClassRef(args.slug, harnessSlug, args);
     if (!classResolution.ok) {
       return {
         data: {
@@ -574,7 +613,7 @@ export default defineTool({
       };
     }
     const evidenceSpecIds = new Set(allEvidence.map((row) => row.specId));
-    const requestedSpecIds = args.specIds ?? (bindingSelection ? [...evidenceSpecIds] : undefined);
+    const requestedSpecIds = args.specIds ?? (bindingSelection ? [...evidenceSpecIds] : classResolution.contractSpecIds);
     const clauses = await listSpecClauses({
       harnessSlug,
       planSlug: args.slug,
@@ -582,9 +621,10 @@ export default defineTool({
       planItemIds: args.planItemIds,
       revision: args.specRevision,
     });
-    const pinnedClauses = args.specFingerprint
-      ? clauses.filter((clause) => clause.contentHash === args.specFingerprint)
-      : clauses;
+    const pinnedClauses = clauses.filter((clause) =>
+      (!classResolution.contractSpecIds || classResolution.contractSpecIds.includes(clause.specId)) &&
+      (!args.specFingerprint || clause.contentHash === args.specFingerprint),
+    );
     const isEligibleClause = (clause: (typeof pinnedClauses)[number]) =>
       args.includeDraft === true || clause.lifecycleStatus === 'active' || clause.lifecycleStatus === 'accepted';
     const eligible = pinnedClauses.filter(isEligibleClause);

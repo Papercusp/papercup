@@ -15,6 +15,10 @@ const acceptanceRubricMocks = vi.hoisted(() => ({
   active: vi.fn(),
   retired: vi.fn(),
 }));
+const adhocContractMocks = vi.hoisted(() => ({ workItem: vi.fn(), contract: vi.fn() }));
+
+vi.mock('../../work-items', () => ({ getWorkItem: adhocContractMocks.workItem }));
+vi.mock('./behavior-contract-resolver', () => ({ resolveWorkItemBehaviorContract: adhocContractMocks.contract }));
 
 vi.mock('../../harness-registry', () => ({
   loadHarnessRegistry: async () => ({
@@ -115,9 +119,85 @@ beforeEach(() => {
     { rubricId: 'plan-a-acceptance', classRef: 'plan-class-feature-ship' } as never,
   ]);
   listRetiredAcceptanceRubrics.mockResolvedValue([]);
+  adhocContractMocks.workItem.mockResolvedValue({ id: 'EI-12345', harness: 'papercusp', kind: 'bug' });
+  adhocContractMocks.contract.mockResolvedValue({
+    groups: [{ planSlug: 'adhoc-work-item-specs', clauses: [{ specId: 'adhoc.EI-12345.deadline' }] }],
+  });
 });
 
 describe('plans:evaluate-spec-test-adequacy handler', () => {
+  it('evaluates an exact ad-hoc work-item clause without a plan acceptance rubric', async () => {
+    listAcceptanceRubrics.mockResolvedValue([]);
+    listRetiredAcceptanceRubrics.mockResolvedValue([]);
+    listClauses.mockResolvedValue([{
+      ...clause('active'),
+      planSlug: 'adhoc-work-item-specs',
+      specId: 'adhoc.EI-12345.deadline',
+      planItemId: 'P-12345',
+    }]);
+
+    const result = await call({
+      harness: 'papercusp',
+      slug: 'adhoc-work-item-specs',
+      classRef: 'plan-class-bugfix',
+      workItemIds: ['EI-12345'],
+      specIds: ['adhoc.EI-12345.deadline'],
+      detail: 'full',
+    });
+
+    expect(result).toMatchObject({ ok: true, count: 1, classRef: 'plan-class-bugfix', classRefSource: 'work-item-completion-attestation' });
+    expect(adhocContractMocks.workItem).toHaveBeenCalledWith('EI-12345', 'papercusp');
+    expect(adhocContractMocks.contract).toHaveBeenCalledWith({ id: 'EI-12345', harness: 'papercusp', kind: 'bug' });
+    expect(listAcceptanceRubrics).not.toHaveBeenCalled();
+    expect(listRetiredAcceptanceRubrics).not.toHaveBeenCalled();
+    // Resolving a class allows honest grading; absent proof must still block certification.
+    expect(result.rows[0].wouldBlock.length).toBeGreaterThan(0);
+    expect(result.rows[0].requiredProofFloor).toBe('l4');
+    expect(result.rows[0].scorecardDraft.rerunRecipe.args).toMatchObject({
+      slug: 'adhoc-work-item-specs', classRef: 'plan-class-bugfix',
+      workItemIds: ['EI-12345'], specIds: ['adhoc.EI-12345.deadline'],
+    });
+  });
+
+  it.each([undefined, ['EI-12345', 'EI-67890']])('refuses a namespace-wide or mixed-work-item ad-hoc attestation (%j)', async (workItemIds) => {
+    const result = await call({ slug: 'adhoc-work-item-specs', classRef: 'plan-class-bugfix', workItemIds });
+    expect(result).toMatchObject({ ok: false, error: 'adhoc_work_item_required', count: 0 });
+    expect(adhocContractMocks.workItem).not.toHaveBeenCalled();
+    expect(listEvidence).not.toHaveBeenCalled();
+  });
+
+  it.each([null, { id: 'EI-12345', harness: 'elsewhere' }])('refuses an absent or cross-harness work item (%j)', async (workItem) => {
+    adhocContractMocks.workItem.mockResolvedValue(workItem);
+    const result = await call({ slug: 'adhoc-work-item-specs', classRef: 'plan-class-bugfix', workItemIds: ['EI-12345'] });
+    expect(result).toMatchObject({ ok: false, error: 'adhoc_work_item_unresolved', count: 0 });
+    expect(adhocContractMocks.contract).not.toHaveBeenCalled();
+    expect(listEvidence).not.toHaveBeenCalled();
+  });
+
+  it('refuses a clause outside the exact work-item contract', async () => {
+    const result = await call({ slug: 'adhoc-work-item-specs', classRef: 'plan-class-bugfix', workItemIds: ['EI-12345'], specIds: ['adhoc.EI-67890.deadline'] });
+    expect(result).toMatchObject({ ok: false, error: 'adhoc_spec_outside_work_item', count: 0 });
+    expect(listEvidence).not.toHaveBeenCalled();
+  });
+
+  it('fails closed on unresolved or unreadable ad-hoc contracts', async () => {
+    const args = { slug: 'adhoc-work-item-specs', classRef: 'plan-class-bugfix', workItemIds: ['EI-12345'] };
+    adhocContractMocks.contract.mockResolvedValue({ groups: [] });
+    expect(await call(args)).toMatchObject({ ok: false, error: 'adhoc_contract_unresolved', count: 0 });
+    adhocContractMocks.contract.mockRejectedValue(new Error('contract unavailable'));
+    expect(await call(args)).toMatchObject({ ok: false, error: 'adhoc_contract_read_unavailable', count: 0 });
+    expect(listEvidence).not.toHaveBeenCalled();
+  });
+
+  it('keeps a binding-only ad-hoc selection inside the resolved contract', async () => {
+    listEvidence.mockResolvedValue([{ specId: 'SPEC-OTHER' } as never]);
+    listClauses.mockResolvedValue([clause('active')]);
+    const result = await call({ slug: 'adhoc-work-item-specs', classRef: 'plan-class-bugfix', workItemIds: ['EI-12345'], bindingIds: [42] });
+    expect(result).toMatchObject({ ok: false, error: 'selection_empty', count: 0 });
+    expect(result.rows).toBeUndefined();
+    expect(listEvidence).toHaveBeenCalledWith(expect.objectContaining({ workItemIds: ['EI-12345'], bindingIds: [42] }));
+  });
+
   it('refuses a caller class that disagrees with the active acceptance rubric before grading', async () => {
     listAcceptanceRubrics.mockResolvedValue([
       { rubricId: 'plan-a-acceptance', classRef: 'plan-class-bugfix' } as never,
