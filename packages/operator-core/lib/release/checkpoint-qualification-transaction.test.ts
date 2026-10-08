@@ -22,6 +22,8 @@ import {
   decideFrozenCandidateRepairQueue,
   markFrozenCandidateVerificationRed,
   markFrozenRepairAdmitted,
+  markFrozenRepairFixerDead,
+  markFrozenRepairFixerDispatched,
   markFrozenRepairVerificationGreen,
 } from './frozen-candidate-repair-queue';
 import {
@@ -1113,6 +1115,132 @@ describe('logical checkpoint qualification transaction', () => {
         qualificationAttemptId: 'someone-else',
       }),
     ).toMatchObject({ status: 'blocked', reason: 'queue-origin-mismatch' });
+  });
+
+  // green-main-cycle-time-2026-10-08 P-001 / WI-10007578. The two tests above prove each begin
+  // arm in isolation. This one pins the END-TO-END property the gate actually needs: an
+  // awaiting-fixer queue left behind by a terminal predecessor gets a fixer DISPATCHED within the
+  // successor's one tick. Measured 2026-09-22 -> 2026-10-08: dispatchReleaseFixer was not
+  // reached for hours at a time because begin refused the successor (queue-not-safe-unstarted),
+  // and each fix (WI-10007398 unassigned, WI-10007408 dead) closed one arm while every other
+  // narrowing kept failing closed. A future edit that preserves at begin but has no matching
+  // dispatch exit, or that dispatches but refuses at begin, fails here instead of freezing main.
+  it('dispatches a fixer within one tick for every awaiting-fixer queue a terminal predecessor leaves behind', () => {
+    const maxAttempts = 3; // DEFAULT_FROZEN_REPAIR_QUEUE_LIMITS.maxAttempts
+    const terminalFor = (attemptId: string, kind: 'red' | 'code-inconclusive') => {
+      const begun = beginQualificationTransaction(null, {
+        attemptId,
+        requiredAncestorSha: 'abc123',
+        declaredPaths: [],
+        candidate: 'candidate-1',
+        nowMs: 100,
+      }).transaction;
+      const settled = settleQualificationTransaction(begun, {
+        attemptId,
+        ...(kind === 'red' ? ({ reason: 'not-green', green: false } as const) : ({ reason: 'error', green: null } as const)),
+        nowMs: 400,
+      }).transaction;
+      expect(settled.outcome.kind).toBe(kind);
+      return settled;
+    };
+    const redQueue = (qualificationAttemptId: string) =>
+      markFrozenCandidateVerificationRed(
+        createFrozenCandidateQueue({ candidate: 'candidate-1', qualificationAttemptId, base: null, nowMs: 200 }),
+        { failingTests: ['broken.test.ts'], nowMs: 300 },
+      );
+
+    // One scheduled tick, composed exactly as the gate composes it: begin reconciliation with the
+    // caller's liveness probe, then the run's queue policy, then (on a dead fixer) the persisted
+    // recovery and a re-decide, then the dispatch transition.
+    const tick = (
+      terminal: ReturnType<typeof terminalFor>,
+      queue: ReturnType<typeof redQueue>,
+      nowMs: number,
+      assess: typeof assessTerminalRepairQueueReconciliation = assessTerminalRepairQueueReconciliation,
+    ) => {
+      const fixerAlive = queue.fixerSpawnId ? false : undefined;
+      const reconciliation = assess(
+        terminal,
+        {
+          attemptId: `successor-of-${terminal.attemptId}`,
+          declaredPaths: [],
+          candidate: 'candidate-2',
+          nowMs,
+          assignedFixerLiveness: queue.fixerSpawnId ? { spawnId: queue.fixerSpawnId, liveness: 'dead' } : null,
+        },
+        queue,
+      );
+      if (reconciliation.status !== 'preserved') return { begin: reconciliation, decisions: [] as string[], dispatched: null };
+      const decisions: string[] = [];
+      let current = queue;
+      let decision = decideFrozenCandidateRepairQueue(current, { nowMs, fixerAlive });
+      decisions.push(decision.kind);
+      if (decision.kind === 'recover-dead-fixer') {
+        current = markFrozenRepairFixerDead(current, { spawnId: decision.fixerSpawnId, nowMs });
+        decision = decideFrozenCandidateRepairQueue(current, { nowMs });
+        decisions.push(decision.kind);
+      }
+      const dispatched =
+        decision.kind === 'dispatch-fixer'
+          ? markFrozenRepairFixerDispatched(current, { spawnId: `fixer-${decision.nextAttempt}`, nowMs })
+          : null;
+      return { begin: reconciliation, decisions, dispatched };
+    };
+
+    const cases: Array<{ name: string; queue: ReturnType<typeof redQueue>; expectDecisions: string[] }> = [];
+    for (const kind of ['red', 'code-inconclusive'] as const) {
+      const base = redQueue('attempt-1');
+      cases.push({ name: `${kind} / unassigned`, queue: base, expectDecisions: ['dispatch-fixer'] });
+      cases.push({
+        name: `${kind} / unassigned behind an expired reservation`,
+        queue: { ...base, dispatchReservation: { token: 'stale', claimedAtMs: 100, expiresAtMs: 499 } },
+        expectDecisions: ['dispatch-fixer'],
+      });
+      for (let attempts = 1; attempts < maxAttempts; attempts++) {
+        cases.push({
+          name: `${kind} / dead fixer after ${attempts} attempt(s)`,
+          queue: { ...base, fixerSpawnId: `fixer-${attempts}`, attempts },
+          expectDecisions: ['recover-dead-fixer', 'dispatch-fixer'],
+        });
+      }
+      for (const c of cases.filter((entry) => entry.name.startsWith(kind))) {
+        const result = tick(terminalFor('attempt-1', kind), c.queue, 500);
+        expect(result.begin, c.name).toMatchObject({ status: 'preserved' });
+        expect(result.decisions, c.name).toEqual(c.expectDecisions);
+        expect(result.dispatched, c.name).not.toBeNull();
+        expect(result.dispatched!.fixerSpawnId, c.name).toMatch(/^fixer-\d+$/);
+        expect(result.dispatched!.attempts, c.name).toBe(c.queue.attempts + 1);
+      }
+    }
+
+    // The live 2026-10-08 sequence: the successor that inherited the queue at begin was re-stamped
+    // as its owner, then crashed pre-verdict (ENOSPC in npm-install-safe at 17:28Z), so the queue
+    // now names THAT attempt while still awaiting a dead fixer. The next successor must dispatch.
+    const inherited = { ...redQueue('attempt-2'), fixerSpawnId: 'fixer-1', attempts: 1 };
+    const crashedHeir = tick(terminalFor('attempt-2', 'code-inconclusive'), inherited, 700);
+    expect(crashedHeir.begin).toMatchObject({ status: 'preserved', reason: 'awaiting-dead-fixer' });
+    expect(crashedHeir.decisions).toEqual(['recover-dead-fixer', 'dispatch-fixer']);
+    expect(crashedHeir.dispatched?.attempts).toBe(2);
+
+    // Boundary control: at the attempt budget the queue HOLDS (D-005 exhaustion escalates, never
+    // re-cuts), but it still holds through the run's decision, not through a refusal at begin.
+    const exhausted = tick(terminalFor('attempt-1', 'red'), { ...redQueue('attempt-1'), fixerSpawnId: 'fixer-3', attempts: maxAttempts }, 500);
+    expect(exhausted.begin).toMatchObject({ status: 'preserved', reason: 'awaiting-dead-fixer' });
+    expect(exhausted.decisions).toEqual(['recover-dead-fixer', 'hold-exhausted']);
+    expect(exhausted.dispatched).toBeNull();
+
+    // Falsifiability control (kept permanently, per the testing doctrine for imported modules):
+    // the pre-WI-10007408 begin, which refused an assigned-but-dead fixer, must make this
+    // composed tick report NO dispatch. If it did not, the assertions above could pass vacuously.
+    const preWi10007408: typeof assessTerminalRepairQueueReconciliation = (current, successor, raw) => {
+      const verdict = assessTerminalRepairQueueReconciliation(current, successor, raw);
+      return verdict.reason === 'awaiting-dead-fixer'
+        ? { ...verdict, status: 'blocked', reason: 'queue-not-safe-unstarted' }
+        : verdict;
+    };
+    const regressed = tick(terminalFor('attempt-2', 'code-inconclusive'), inherited, 700, preWi10007408);
+    expect(regressed.begin).toMatchObject({ status: 'blocked', reason: 'queue-not-safe-unstarted' });
+    expect(regressed.dispatched).toBeNull();
   });
 
   // EI-24610407938327281: a green advance whose P-008 staging bridge lost the git-sync lock
