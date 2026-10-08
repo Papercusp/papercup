@@ -113,6 +113,7 @@ export const StoredTypedPropertySchema = z
     edited_at: z.string().datetime(),
     edited_by: z.string().min(1).max(200),
     provenance: PropertyEditProvenanceSchema,
+    reason: z.string().max(2000).optional(),
   })
   .strict();
 export type StoredTypedProperty = z.infer<typeof StoredTypedPropertySchema>;
@@ -245,6 +246,8 @@ export interface PrepareTypedPropertyMutationArgs {
   provenance: PropertyEditProvenance;
   actorId: string;
   editedAt?: string;
+  /** Owner's explanation, persisted atomically with the versioned value. */
+  reason?: string;
   /** Validate against the definition's datatype_registry payload_schema. */
   validate: (datatype: string, value: unknown) => { ok: true } | { ok: false; issues: string[] };
 }
@@ -406,6 +409,7 @@ export function prepareTypedPropertyMutation(
     edited_at: args.editedAt ?? new Date().toISOString(),
     edited_by: args.actorId,
     provenance: args.provenance,
+    ...(args.reason?.trim() ? { reason: args.reason.trim() } : {}),
   };
   return {
     ok: true,
