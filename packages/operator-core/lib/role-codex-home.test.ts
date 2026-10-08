@@ -1147,6 +1147,47 @@ describe('writeSuCodexHome', () => {
   });
 
   describe('EI-11366 identity-split collision guard', () => {
+    it('async bootstrap preflight refuses a live prior owner before the synchronous home writer runs', async () => {
+      const { assertSuCodexHomeNotOwnedByLiveSession, writeSuCodexHome } = await loadMod();
+      const original = writeSuCodexHome({
+        sessionKey: 'k-async-live',
+        mcpUrl: 'http://x/api/mcp?superuser=1',
+        promptText: 'FIRST',
+        sid: 'prior-live-owner',
+      });
+      const isOwnerLive = vi.fn(async (sid: string) => sid === 'prior-live-owner');
+
+      await expect(
+        assertSuCodexHomeNotOwnedByLiveSession('k-async-live', 'next-owner', isOwnerLive),
+      ).rejects.toThrow(/refusing to rebuild/);
+      expect(isOwnerLive).toHaveBeenCalledWith('prior-live-owner');
+      expect(readFileSync(original.agentsPath, 'utf8')).toContain('FIRST');
+    });
+
+    it('async bootstrap preflight allows a dead prior owner and skips missing or same-owner sentinels', async () => {
+      const { assertSuCodexHomeNotOwnedByLiveSession, writeSuCodexHome } = await loadMod();
+      writeSuCodexHome({
+        sessionKey: 'k-async-dead',
+        mcpUrl: 'http://x/api/mcp?superuser=1',
+        promptText: 'FIRST',
+        sid: 'prior-dead-owner',
+      });
+      const isOwnerLive = vi.fn(async () => false);
+      await expect(
+        assertSuCodexHomeNotOwnedByLiveSession('k-async-dead', 'next-owner', isOwnerLive),
+      ).resolves.toBeUndefined();
+      expect(isOwnerLive).toHaveBeenCalledWith('prior-dead-owner');
+
+      const sameOwnerCheck = vi.fn(async () => true);
+      await expect(
+        assertSuCodexHomeNotOwnedByLiveSession('k-async-dead', 'prior-dead-owner', sameOwnerCheck),
+      ).resolves.toBeUndefined();
+      await expect(
+        assertSuCodexHomeNotOwnedByLiveSession('k-async-missing', 'next-owner', sameOwnerCheck),
+      ).resolves.toBeUndefined();
+      expect(sameOwnerCheck).not.toHaveBeenCalled();
+    });
+
     it('with no isOwnerLive wired, a same-sessionKey rebuild under a different sid stays byte-identical to today (no default liveness check)', async () => {
       const { writeSuCodexHome } = await loadMod();
       writeSuCodexHome({ sessionKey: 'k2', mcpUrl: 'http://x/api/mcp?superuser=1', promptText: 'OLD', sid: 's1' });
