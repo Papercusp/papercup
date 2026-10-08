@@ -101,6 +101,8 @@ import GoalEndsSection from './GoalEndsSection';
 import OngoingWorkOverview from './OngoingWorkOverview';
 import GoalModeStateSection from './GoalModeStateSection';
 import GoalDataSection from './GoalDataSection';
+import WorkOnEverythingPanel from './WorkOnEverythingPanel';
+import { isWorkOnEverything } from './ongoing-work-draft';
 /* D-011: the goal popup hosts the SAME conversation the sessions popup does —
    the same renderer, fed by the same extracted wiring. Not a second chat. */
 import { LiveSessionChat } from '@/app/_components/chat/SessionChatModal';
@@ -466,7 +468,20 @@ function useIsNarrowViewport(query: string): boolean {
   return narrow;
 }
 
-export default function GoalDetailPanel({
+/** Same URL and sync query; package identity selects the dedicated interface. */
+export default function GoalDetailPanel(props: Parameters<typeof StandardGoalDetailPanel>[0]) {
+  const detail = useSyncQuery<GoalDetailInput>({ queryName: 'goals.detail',
+    args: { workspaceId: props.workspaceId, goalId: props.goalId ?? '' }, enabled: props.goalId !== null });
+  const data = detail.data?.[0] ?? null;
+  if (isWorkOnEverything(data) && data?.goal?.id === props.goalId) {
+    return <WorkOnEverythingPanel key={data.goal.id} data={data} nowMs={props.nowMs} onClose={props.onClose}
+      onOpenPlan={props.onOpenPlan} onOpenWorkItem={props.onOpenWorkItem} onOpenAgent={props.onOpenAgent}
+      refresh={() => { void detail.invalidate(); }} />;
+  }
+  return <StandardGoalDetailPanel {...props} />;
+}
+
+function StandardGoalDetailPanel({
   goalId,
   workspaceId,
   nowMs,

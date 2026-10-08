@@ -1296,14 +1296,24 @@ export async function resolveGoalDetail(args: {
   const { readTypedPropertyCollection, TypedPropertySchemaDocumentSchema } = await import('../typed-properties');
   const rawData = shaped.goalData as { propertySchema: unknown; properties: unknown };
   const declaration = TypedPropertySchemaDocumentSchema.safeParse(rawData.propertySchema);
-  const portfolio = goalModeState.portfolio;
+  let portfolio = goalModeState.portfolio;
+  let collectionReadError: string | null = null;
+  // An owner can inspect/steer a paused or unheld goal too. Its collection is
+  // goal data, so a missing agent-mode context must not hide the worklist.
+  if (!portfolio && declaration.success && Object.values(declaration.data)
+    .some((d) => d.collection?.source === 'active-workspace-plans')) {
+    try {
+      const { readGoalPortfolioBrief } = await import('../goal-launch-settings');
+      portfolio = await readGoalPortfolioBrief({ workspaceId, goalId, claimability: 'skip' });
+    } catch { collectionReadError = 'Active workspace plans could not be read.'; }
+  }
   const collections = Object.fromEntries(Object.entries(declaration.success ? declaration.data : {})
     .filter(([, definition]) => definition.collection)
     .map(([property, definition]) => {
       const source = definition.collection!.source === 'active-workspace-plans'
         ? portfolio?.collection?.available
           ? { ok: true as const, items: portfolio.worklist.map((p) => p.harness ? `plan:${p.harness}/${p.slug}` : p.ref) }
-          : { ok: false as const, reason: portfolio?.collection?.reason ?? 'Active plans could not be read.' }
+          : { ok: false as const, reason: collectionReadError ?? portfolio?.collection?.reason ?? 'Active plans could not be read.' }
         : undefined;
       const selection = readTypedPropertyCollection({ ...rawData, property, source });
       const rows = selection.ok && selection.configured ? selection.items.map((item) => {

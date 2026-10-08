@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { parseAsBoolean, parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
 import { Infinity as InfinityIcon, Search, Settings2, MessageSquare, X } from 'lucide-react';
 import { Modal } from '@/app/harness/Modal';
+import { TextInput, TextArea } from '@/app/harness/TextInput';
 import GoalStatusControl from './GoalStatusControl';
 import GoalSettingsSection from './GoalSettingsSection';
 import { agoText, type GoalDetailInput } from './goal-detail-model';
@@ -165,7 +166,8 @@ export default function WorkOnEverythingPanel({ data, nowMs, onClose, onOpenPlan
           <h3>Worklist unavailable</h3><p>{selection && !selection.ok ? selection.reason : 'The goal’s active-plan collection is not available yet.'}</p>
           <button type="button" className="pc-ctl-act" onClick={refresh}>Refresh worklist</button></div> :
         <div className="woe__layout"><div className="woe__list-column">
-          <div className="woe__toolbar"><label className="woe__search"><Search size={15} /><input
+          <div className="woe__toolbar"><label className="woe__search"><TextInput leading={<Search size={15} />}
+            style={{ width: '100%', border: 0, background: 'transparent', padding: 0 }}
             aria-label="Search worklist" placeholder="Search plans…" value={query}
             onChange={(e) => void setQuery(e.target.value)} /></label>
             <span className="woe__shortcuts">↑↓ select · Alt+↑↓ move · X add/remove · Enter open</span></div>
@@ -234,7 +236,7 @@ export default function WorkOnEverythingPanel({ data, nowMs, onClose, onOpenPlan
         {changes.filter((c) => c.label === 'Removing').map((c) => <p key={c.id}>
           {rows.find((r) => r.id === c.id)?.label}: excluded from new work by this goal.</p>)}
         <label className="woe__reason">Why? <small>Optional. Saved with this edit and shared in plan history.</small>
-          <textarea value={reason} onChange={(e) => setReason(e.target.value)} maxLength={2000} rows={3}
+          <TextArea value={reason} onChange={(e) => setReason(e.target.value)} maxLength={2000} rows={3}
             placeholder="e.g. Desktop needs to ship before Friday’s demo" /></label>
         {stale ? <p role="alert">The saved worklist changed. Discard this draft and review the current list.</p> : null}
         {problem ? <p role="alert">{problem}</p> : null}
