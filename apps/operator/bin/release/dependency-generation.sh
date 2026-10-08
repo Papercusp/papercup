@@ -2123,6 +2123,16 @@ dependency_generation_check_headroom() {
     [ "$reserve" -le "$cap" ] || reserve="$cap"
   fi
   required="$(dependency_generation_headroom_required "$need" "$reserve" "$margin")"
+  # --check-headroom is a pure measurement: it names no copy, so it has no
+  # siblings of its own to reap and must not delete anything on the gate's behalf.
+  if [ -n "${DEPENDENCY_GENERATION_HEADROOM_CHECK_ONLY:-}" ]; then
+    if [ "$avail" -lt "$required" ]; then
+      dependency_generation_log "DEPENDENCY_GENERATION_HEADROOM_INSUFFICIENT need=$need avail=$avail reserve=$reserve reserve_scope=$reserve_scope margin=$margin required=$required $size_note path=$dest"
+      return 77
+    fi
+    dependency_generation_log "DEPENDENCY_GENERATION_HEADROOM_OK need=$need avail=$avail reserve=$reserve reserve_scope=$reserve_scope margin=$margin required=$required $size_note path=$dest"
+    return 0
+  fi
   if [ "$avail" -lt "$required" ]; then
     base="${dest%.generation-tmp.*}"
     base="${base%.copy-up.*}"
@@ -3255,7 +3265,7 @@ dependency_generation_prepare_exact_ref_root() {
 }
 
 dependency_generation_main() {
-  local integration_root='' generation_root='' select_inputs_from='' ensure_ref='' fingerprint_ref='' retention_rc=0 prune_only=''
+  local integration_root='' generation_root='' select_inputs_from='' ensure_ref='' fingerprint_ref='' retention_rc=0 prune_only='' check_headroom=''
   local input_before='' input_after='' exact_input='' selector='' lease_owner_pid='' live_input='' build_root=''
   local predict_ref='' predict_verdict='' predict_rc=0 line
   local workspace_dirs=()
@@ -3275,7 +3285,7 @@ dependency_generation_main() {
     esac
   done
   [ -z "$predict_ref" ] || {
-    [ -z "$select_inputs_from$ensure_ref$fingerprint_ref$lease_owner_pid$prune_only" ] \
+    [ -z "$select_inputs_from$ensure_ref$fingerprint_ref$lease_owner_pid$prune_only$check_headroom" ] \
       && [ "${#workspace_dirs[@]}" -eq 0 ] || {
       dependency_generation_log '--predict-ref cannot be combined with another mode or --workspace-dir'
       return 2
@@ -3290,6 +3300,21 @@ dependency_generation_main() {
   # WI-10005931: git-sync fetches into the integration checkout, so its
   # filesystem is the one the percentage headroom reserve protects.
   dependency_generation_record_reserve_fs "$integration_root"
+  # WI-10007424 (green-main-cycle-time P-003): the gate's up-front preflight asks
+  # THIS script whether a dependency copy beside the integration root could start
+  # now, so a run refuses before setup with the same typed exit 77 instead of
+  # failing mid-materialization. It applies the copy path's own reserve + margin
+  # (size unknown: no tree is named), reaps nothing, and never creates a store.
+  if [ -n "$check_headroom" ]; then
+    [ -z "$select_inputs_from$ensure_ref$fingerprint_ref$lease_owner_pid$prune_only" ] \
+      && [ "${#workspace_dirs[@]}" -eq 0 ] || {
+      dependency_generation_log '--check-headroom cannot be combined with another mode or --workspace-dir'
+      return 2
+    }
+    DEPENDENCY_GENERATION_HEADROOM_CHECK_ONLY=1 \
+      dependency_generation_check_headroom '' "$integration_root/.dependency-generation-headroom-check"
+    return $?
+  fi
   # Preserve an explicit CLI root, then honor the service-level override, then
   # the root that override recorded for this integration root (WI-10005159),
   # before falling back to the integration checkout's local generation store.
