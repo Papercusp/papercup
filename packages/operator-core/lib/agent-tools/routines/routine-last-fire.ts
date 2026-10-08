@@ -111,6 +111,18 @@ export function parseRoutineFireOutput(row: {
 /** Minimal tagged-template surface this module needs from `getOrgPg().sql`. */
 export type LastFireSql = <T>(strings: TemplateStringsArray, ...values: unknown[]) => Promise<T>;
 
+type LastFireRow = {
+  routine_id: string;
+  workflow_uuid: string;
+  output: string | null;
+  error: string | null;
+  completed_at_epoch_ms: string | number | null;
+};
+
+type LastFireQueryRunner = (
+  query: (sql: LastFireSql) => Promise<LastFireRow[]>,
+) => Promise<LastFireRow[]>;
+
 /**
  * Read the newest completed fire of each SYSTEM routine in `routines` (keyed by
  * routine id). Non-system routines are absent from the map. A failed lookup (e.g.
@@ -121,6 +133,7 @@ export async function readRoutineLastFires(
   sql: LastFireSql,
   routines: ReadonlyArray<{ id: string; targetRole: string }>,
   nowMs: number = Date.now(),
+  runQuery?: LastFireQueryRunner,
 ): Promise<Map<string, RoutineLastFireReading>> {
   const out = new Map<string, RoutineLastFireReading>();
   const system = routines.filter((r) => r.targetRole.startsWith('system:'));
@@ -128,13 +141,7 @@ export async function readRoutineLastFires(
   const ids = system.map((r) => r.id);
   const roles = [...new Set(system.map((r) => r.targetRole))];
   try {
-    const rows = await sql<Array<{
-      routine_id: string;
-      workflow_uuid: string;
-      output: string | null;
-      error: string | null;
-      completed_at_epoch_ms: string | number | null;
-    }>>`
+    const query = (querySql: LastFireSql) => querySql<LastFireRow[]>`
       SELECT DISTINCT ON (x.routine_id) x.routine_id, x.workflow_uuid, x.output, x.error, x.completed_at_epoch_ms
         FROM (
           SELECT o.workflow_uuid, o.output, o.error, o.completed_at_epoch_ms,
@@ -147,6 +154,7 @@ export async function readRoutineLastFires(
         ) x
        WHERE x.routine_id = ANY(${ids}::text[])
        ORDER BY x.routine_id, x.completed_at_epoch_ms DESC`;
+    const rows = await (runQuery ? runQuery(query) : query(sql));
     for (const id of ids) out.set(id, null);
     for (const row of rows) out.set(row.routine_id, parseRoutineFireOutput(row));
   } catch (err) {

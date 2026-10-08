@@ -20,28 +20,47 @@ import '../cell-registrations-wiring';
 // nothing to do with the assertions themselves. Typing the rest args as `unknown[]`
 // gives `.flat()` an `unknown[]`, which those guards narrow correctly. (WI-3616 drive-by:
 // these 5 were the entire operator-core typecheck overage, 228 vs baseline 224.)
-const { sqlMock, controlMock, resourceQueueMock, deadPidMock } = vi.hoisted(() => ({
-  sqlMock: vi.fn(async (..._args: unknown[]) => [] as unknown[]),
-  controlMock: vi.fn(async (spec: any, opts: any = {}) => {
-    const prev = await spec.capturePrev();
-    if (opts.dryRun) return { dryRun: true, applied: false, prev, preview: spec.describe?.(prev) };
-    const next = await spec.apply();
-    const verify = spec.verify ? await spec.verify(next) : undefined;
-    return { dryRun: false, applied: true, prev, next, verify, auditId: 'aud-1' };
-  }),
-  resourceQueueMock: vi.fn(async (..._args: unknown[]) => ({
-    holders: [] as Array<{ owner: string; mode: 'shared' | 'exclusive'; status: 'held' | 'draining' }>,
-    draining: false,
-    queue: [],
-  })),
-  deadPidMock: vi.fn((_pid: number) => false),
-}));
+const {
+  sqlMock,
+  controlMock,
+  resourceQueueMock,
+  deadPidMock,
+  lockTxnSqlMock,
+  resourcePoolBeginMock,
+  boundedOrgTxnMock,
+} = vi.hoisted(() => {
+  const sqlMock = vi.fn(async (..._args: unknown[]) => [] as unknown[]);
+  const lockTxnSqlMock = vi.fn(async (..._args: unknown[]) => [] as unknown[]);
+  return {
+    sqlMock,
+    controlMock: vi.fn(async (spec: any, opts: any = {}) => {
+      const prev = await spec.capturePrev();
+      if (opts.dryRun) return { dryRun: true, applied: false, prev, preview: spec.describe?.(prev) };
+      const next = await spec.apply();
+      const verify = spec.verify ? await spec.verify(next) : undefined;
+      return { dryRun: false, applied: true, prev, next, verify, auditId: 'aud-1' };
+    }),
+    resourceQueueMock: vi.fn(async (..._args: unknown[]) => ({
+      holders: [] as Array<{ owner: string; mode: 'shared' | 'exclusive'; status: 'held' | 'draining' }>,
+      draining: false,
+      queue: [],
+    })),
+    deadPidMock: vi.fn((_pid: number) => false),
+    lockTxnSqlMock,
+    resourcePoolBeginMock: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(lockTxnSqlMock)),
+    boundedOrgTxnMock: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(sqlMock)),
+  };
+});
 vi.mock('../locks/su-lock-store', () => ({
-  getTxPool: vi.fn(() => ({}) as never),
+  getTxPool: vi.fn(() => ({ begin: resourcePoolBeginMock }) as never),
   readResourceQueue: resourceQueueMock,
 }));
 vi.mock('../locks/resource-acquire-wait', () => ({ isPidDefinitivelyDead: deadPidMock }));
 vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<Record<string, unknown>>()), getOrgPg: () => ({ sql: sqlMock }) }));
+vi.mock('../../pg-bounded-txn', async (orig) => ({
+  ...(await orig<Record<string, unknown>>()),
+  boundedOrgTxn: boundedOrgTxnMock,
+}));
 vi.mock('../../workspace-registry', async (orig) => ({ ...(await orig<Record<string, unknown>>()), activeWorkspaceId: () => 'default' }));
 vi.mock('../../harness/operator-home-harness', async (orig) => ({ ...(await orig<Record<string, unknown>>()), operatorHomeHarnessSlug: () => 'home-harness' }));
 vi.mock('../../harness/routines/cron', async (orig) => ({ ...(await orig<Record<string, unknown>>()), computeNextFireAt: vi.fn(() => new Date('2030-01-01T00:00:00Z')) }));
@@ -137,6 +156,12 @@ beforeEach(() => {
   vi.clearAllMocks();
   resourceQueueMock.mockReset();
   resourceQueueMock.mockResolvedValue({ holders: [], draining: false, queue: [] });
+  lockTxnSqlMock.mockReset();
+  lockTxnSqlMock.mockResolvedValue([]);
+  resourcePoolBeginMock.mockReset();
+  resourcePoolBeginMock.mockImplementation(async (fn) => fn(lockTxnSqlMock));
+  boundedOrgTxnMock.mockReset();
+  boundedOrgTxnMock.mockImplementation(async (fn) => fn(sqlMock));
   deadPidMock.mockReset();
   deadPidMock.mockReturnValue(false);
   cronM.mockReturnValue(new Date('2030-01-01T00:00:00Z'));
@@ -166,6 +191,83 @@ beforeEach(() => {
 });
 
 describe('routines:list', () => {
+  it('bounds the conditional DBOS read and returns unavailable when that phase times out', async () => {
+    sqlMock.mockResolvedValueOnce([{ ...gitSyncRoutineRow({}), install_slug: 'other-harness' }]);
+    boundedOrgTxnMock.mockRejectedValueOnce(Object.assign(new Error('statement timeout'), { code: '57014' }));
+    const metadata = vi.fn();
+
+    const result = body(await listTool.handler(
+      { installSlug: 'other-harness', name: 'git-sync' } as never,
+      { role: 'su', metadata } as never,
+    ));
+
+    expect(boundedOrgTxnMock).toHaveBeenCalledWith(
+      expect.any(Function),
+      expect.objectContaining({
+        acquireTimeoutMs: 5_000,
+        statementTimeoutMs: 5_000,
+        lockTimeoutMs: 750,
+        readOnly: true,
+      }),
+    );
+    expect(result.routines[0]?.lastFire).toEqual({ unavailable: expect.stringContaining('statement timeout') });
+    expect(metadata).toHaveBeenCalledWith(expect.objectContaining({
+      routinesListPhases: expect.objectContaining({
+        schemaVersion: 'routines-list-phase-timings-v1',
+        lastFireLookupMs: expect.any(Number),
+        lastFireUnavailableCount: 1,
+      }),
+    }));
+  });
+
+  it('bounds stale git-sync queue reads and records a failed phase as unverified', async () => {
+    deadPidMock.mockReturnValue(true);
+    sqlMock.mockResolvedValueOnce([{
+      ...gitSyncRoutineRow({
+        git_sync_activity: {
+          active: true,
+          owner: 'system:git-sync:12345:fire',
+          owner_pid: 12345,
+        },
+      }),
+      install_slug: 'other-harness',
+    }]);
+    resourceQueueMock.mockRejectedValueOnce(Object.assign(new Error('statement timeout'), { code: '57014' }));
+    const metadata = vi.fn();
+
+    const result = body(await listTool.handler(
+      { installSlug: 'other-harness' } as never,
+      { role: 'su', metadata } as never,
+    ));
+
+    expect(resourcePoolBeginMock).toHaveBeenCalledTimes(1);
+    expect(lockTxnSqlMock).toHaveBeenCalledTimes(2);
+    const timeoutSetup = lockTxnSqlMock.mock.calls[1]?.[0] as TemplateStringsArray;
+    expect(timeoutSetup.join('')).toContain("set_config('statement_timeout'");
+    expect(timeoutSetup.join('')).toContain("set_config('lock_timeout'");
+    expect(resourceQueueMock).toHaveBeenCalledWith(
+      lockTxnSqlMock,
+      { coordinationDomain: 'default', resource: 'git-sync:other-harness' },
+    );
+    expect(result.routines[0]?.health).toMatchObject({
+      git_sync_freshness: {
+        execution: {
+          owner_reconciliation: {
+            status: 'unverified',
+            lock_state: 'unknown',
+          },
+        },
+      },
+    });
+    expect(metadata).toHaveBeenCalledWith(expect.objectContaining({
+      routinesListPhases: expect.objectContaining({
+        resourceQueueReadCount: 1,
+        resourceQueueReadFailures: 1,
+        resourceQueueReadMaxMs: expect.any(Number),
+      }),
+    }));
+  });
+
   it('derives degraded git-sync health when last_synced_at is older than three scheduled intervals', () => {
     const now = Date.parse('2026-08-27T18:00:00.000Z');
     cronM.mockImplementation((_cron, from) => new Date(from.getTime() + 3 * 60_000));

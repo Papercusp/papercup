@@ -8,7 +8,7 @@
  *
  * Run: npm run test:file -- packages/operator-core/lib/agent-tools/routines/routine-last-fire.test.ts
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   parseRoutineFireOutput,
   readRoutineLastFires,
@@ -126,5 +126,21 @@ describe('readRoutineLastFires', () => {
     const { sql } = fakeSql(() => new Error('relation "dbos.operation_outputs" does not exist'));
     const out = await readRoutineLastFires(sql, [{ id: 'rt_x', targetRole: 'system:git-sync' }], NOW);
     expect(out.get('rt_x')).toEqual({ unavailable: expect.stringContaining('dbos.operation_outputs') });
+  });
+
+  it('converts a timeout from the bounded query runner to unavailable instead of failing the list', async () => {
+    const { sql } = fakeSql(() => []);
+    const runQuery = vi.fn(async () => {
+      throw Object.assign(new Error('statement timeout'), { code: '57014' });
+    });
+    const out = await readRoutineLastFires(
+      sql,
+      [{ id: 'rt_x', targetRole: 'system:git-sync' }],
+      NOW,
+      runQuery,
+    );
+
+    expect(runQuery).toHaveBeenCalledTimes(1);
+    expect(out.get('rt_x')).toEqual({ unavailable: expect.stringContaining('statement timeout') });
   });
 });

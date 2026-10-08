@@ -7,7 +7,7 @@
  */
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
-import { getOrgPg } from '@papercusp/db-org';
+import { getOrgPg, withAcquisitionDeadline } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
 import { statePlaneForDoor } from '../state-plane-door';
@@ -22,11 +22,17 @@ import { isAdmissionSyntheticCommitDate } from '../../release/admission-commit-d
 import { gateAbortVintage } from '../../release/gate-abort-status';
 import { computeNextFireAt } from '../../harness/routines/cron';
 import { readRoutineLastFires, type LastFireSql } from './routine-last-fire';
+import { boundedOrgTxn } from '../../pg-bounded-txn';
 import { effectivePauseExpiryMs, readRoutinePause } from '../../harness/routines/release-pause-ttl';
 import { isPidDefinitivelyDead } from '../locks/resource-acquire-wait';
 import { getTxPool, readResourceQueue } from '../locks/su-lock-store';
 
 const GIT_SYNC_FRESHNESS_INTERVALS = 3;
+const ROUTINE_LAST_FIRE_ACQUIRE_TIMEOUT_MS = 5_000;
+const ROUTINE_LAST_FIRE_STATEMENT_TIMEOUT_MS = 5_000;
+const ROUTINE_RESOURCE_QUEUE_ACQUIRE_TIMEOUT_MS = 5_000;
+const ROUTINE_RESOURCE_QUEUE_STATEMENT_TIMEOUT_MS = 1_500;
+const ROUTINE_RESOURCE_QUEUE_LOCK_TIMEOUT_MS = 750;
 
 /**
  * The DELIBERATE-PAUSE record, read back out of `routines.metadata.pause`.
@@ -377,6 +383,32 @@ type GitSyncActivityOwnerReconciliation = {
 };
 
 /**
+ * The SU lock pool is separate from the operator-admin pool and has no default
+ * statement_timeout. Keep this read-only queue lookup bounded without taking the
+ * workspace advisory lock that mutating locks operations use.
+ */
+async function readResourceQueueBounded(
+  params: Parameters<typeof readResourceQueue>[1],
+) {
+  return withAcquisitionDeadline(
+    ({ disarm, expired }) =>
+      getTxPool().begin(async (tx) => {
+        // `sql.begin` can sit in postgres-js's pool queue before the callback runs.
+        // The acquisition deadline races that wait; this guard prevents a late
+        // connection from doing work after the caller already received a timeout.
+        if (expired()) throw new Error('routines:list resource-queue acquisition expired');
+        disarm();
+        await tx`SET TRANSACTION READ ONLY`;
+        await tx`SELECT set_config('application_name', ${'papercusp-su:routines-list:resource-queue'}, true),
+                        set_config('statement_timeout', ${`${ROUTINE_RESOURCE_QUEUE_STATEMENT_TIMEOUT_MS}ms`}, true),
+                        set_config('lock_timeout', ${`${ROUTINE_RESOURCE_QUEUE_LOCK_TIMEOUT_MS}ms`}, true)`;
+        return readResourceQueue(tx as unknown as Parameters<typeof readResourceQueue>[0], params);
+      }),
+    { ms: ROUTINE_RESOURCE_QUEUE_ACQUIRE_TIMEOUT_MS, label: 'routines:list:resource-queue-acquire' },
+  );
+}
+
+/**
  * An active metadata bit is not proof that its writer still exists. A marker is
  * stale only when its persisted per-fire PID is definitively gone AND the
  * workspace lock plane shows no live exclusive lease for that git-sync resource.
@@ -386,6 +418,7 @@ async function reconcileGitSyncActivityOwner(
   metadata: Record<string, unknown> | null,
   coordinationDomain: string,
   installSlug: string,
+  onQueueRead?: (phase: { durationMs: number; outcome: 'ok' | 'error' }) => void,
 ): Promise<GitSyncActivityOwnerReconciliation | null> {
   const markerRaw = metadata?.git_sync_activity;
   const marker = markerRaw && typeof markerRaw === 'object' ? (markerRaw as Record<string, unknown>) : null;
@@ -419,11 +452,13 @@ async function reconcileGitSyncActivityOwner(
     };
   }
 
+  const queueReadStartedAtMs = Date.now();
   try {
-    const queue = await readResourceQueue(getTxPool(), {
+    const queue = await readResourceQueueBounded({
       coordinationDomain: coordinationDomain || '*',
       resource: `git-sync:${installSlug}`,
     });
+    onQueueRead?.({ durationMs: Date.now() - queueReadStartedAtMs, outcome: 'ok' });
     const exclusiveHolders = queue.holders.filter((holder) => holder.mode === 'exclusive');
     const matchingOwnerLock = exclusiveHolders.some((holder) => holder.owner === owner);
     if (exclusiveHolders.length > 0) {
@@ -445,6 +480,7 @@ async function reconcileGitSyncActivityOwner(
       reason: `Owner PID ${ownerPid} is definitively gone and no live exclusive git-sync resource lease remains.`,
     };
   } catch {
+    onQueueRead?.({ durationMs: Date.now() - queueReadStartedAtMs, outcome: 'error' });
     return {
       status: 'unverified',
       owner_pid: ownerPid,
@@ -1241,6 +1277,13 @@ export default defineTool({
          AND (NOT ${groupFilterActive}::boolean OR (${groupIsNull}::boolean AND group_slug IS NULL) OR group_slug = ${groupVal})
        ORDER BY install_slug, name`;
     const home = operatorHomeHarnessSlug();
+    const routineListPhases = {
+      lastFireLookupMs: null as number | null,
+      lastFireUnavailableCount: 0,
+      resourceQueueReadCount: 0,
+      resourceQueueReadFailures: 0,
+      resourceQueueReadMaxMs: 0,
+    };
     let acceptanceBacklog: { depth: number; oldestPlanUpdatedAt: string | null } | null = null;
     if (rows.some((r) => r.name === 'acceptance-grading-sweep')) {
       const backlog = await sql<Array<{ depth: string; oldest_plan_updated_at: Date | null }>>`
@@ -1257,14 +1300,44 @@ export default defineTool({
     }
     // EI-25264102161745452: what the newest fire DID, only when `name` pins the read —
     // the lookup joins DBOS tables, and an unpinned listing should not pay for it.
+    const lastFireLookupStartedAtMs = Date.now();
     const lastFires = name
-      ? await readRoutineLastFires(sql as unknown as LastFireSql, rows.map((r) => ({ id: r.id, targetRole: r.target_role })))
+      ? await readRoutineLastFires(
+          sql as unknown as LastFireSql,
+          rows.map((r) => ({ id: r.id, targetRole: r.target_role })),
+          Date.now(),
+          (query) =>
+            boundedOrgTxn((tx) => query(tx as unknown as LastFireSql), {
+              acquireTimeoutMs: ROUTINE_LAST_FIRE_ACQUIRE_TIMEOUT_MS,
+              statementTimeoutMs: ROUTINE_LAST_FIRE_STATEMENT_TIMEOUT_MS,
+              lockTimeoutMs: ROUTINE_RESOURCE_QUEUE_LOCK_TIMEOUT_MS,
+              readOnly: true,
+            }),
+        )
       : null;
+    if (name) routineListPhases.lastFireLookupMs = Date.now() - lastFireLookupStartedAtMs;
+    if (lastFires) {
+      routineListPhases.lastFireUnavailableCount = [...lastFires.values()].filter(
+        (value) => value !== null && typeof value === 'object' && 'unavailable' in value,
+      ).length;
+    }
     const routines = await Promise.all(rows.map(async (r) => {
       const cron = (r.trigger_config as { cron?: string } | null)?.cron ?? null;
       let health: Record<string, unknown> | null;
       if (r.target_role === 'system:git-sync') {
-        const ownerReconciliation = await reconcileGitSyncActivityOwner(r.metadata, ws || '*', r.install_slug);
+        const ownerReconciliation = await reconcileGitSyncActivityOwner(
+          r.metadata,
+          ws || '*',
+          r.install_slug,
+          (phase) => {
+            routineListPhases.resourceQueueReadCount += 1;
+            routineListPhases.resourceQueueReadMaxMs = Math.max(
+              routineListPhases.resourceQueueReadMaxMs,
+              phase.durationMs,
+            );
+            if (phase.outcome === 'error') routineListPhases.resourceQueueReadFailures += 1;
+          },
+        );
         const freshness = deriveGitSyncFreshness(r.metadata, cron, r.active, Date.now(), ownerReconciliation);
         const originFreshness = deriveOriginFreshness(r.metadata);
         // The derived verdict replaces the headline it contradicts, rather than sitting
@@ -1317,6 +1390,26 @@ export default defineTool({
     // `limit` bounds the rows only; `count` stays the true total so a narrowed read
     // is never mistaken for a smaller fleet (same contract as locks:list registryCount).
     const limited = typeof args.limit === 'number' ? routines.slice(0, args.limit) : routines;
+    // One last-write-wins telemetry stamp keeps future settled invocations
+    // distinguishable by conditional phase. Both DB reads now fail soft under
+    // server-side deadlines, so this metadata survives their timeout fallback.
+    ctx.metadata?.({
+      routinesListPhases: {
+        schemaVersion: 'routines-list-phase-timings-v1',
+        unit: 'ms',
+        lastFireLookupMs: routineListPhases.lastFireLookupMs,
+        lastFireUnavailableCount: routineListPhases.lastFireUnavailableCount,
+        resourceQueueReadCount: routineListPhases.resourceQueueReadCount,
+        resourceQueueReadFailures: routineListPhases.resourceQueueReadFailures,
+        resourceQueueReadMaxMs: routineListPhases.resourceQueueReadMaxMs,
+        deadlinesMs: {
+          lastFireAcquire: ROUTINE_LAST_FIRE_ACQUIRE_TIMEOUT_MS,
+          lastFireStatement: ROUTINE_LAST_FIRE_STATEMENT_TIMEOUT_MS,
+          resourceQueueAcquire: ROUTINE_RESOURCE_QUEUE_ACQUIRE_TIMEOUT_MS,
+          resourceQueueStatement: ROUTINE_RESOURCE_QUEUE_STATEMENT_TIMEOUT_MS,
+        },
+      },
+    });
     return { data: { count: routines.length, routines: limited } };
   },
 });
