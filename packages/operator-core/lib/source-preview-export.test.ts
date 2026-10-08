@@ -262,18 +262,46 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     await expect(verifyVerifierSource(dest, receipt, { runtimeArtifacts: true })).rejects.toThrow(`changed ${input}`);
   });
 
-  it('never excludes a recorded generated router tree', async () => {
-    const fixture = makeSuperproject(join(tmp, 'verifier-router-recorded-fixture'));
-    const input = 'apps/operator-vite/src/routeTree.gen.ts';
+  it.each(['apps/operator-vite/src/routeTree.gen.ts', '.papercusp-pinned-deps', 'libs/generic/sse/dist/index.js'])('never excludes recorded output from source attestation: %s', async input => {
+    const suffix = input.replaceAll('/', '-');
+    const fixture = makeSuperproject(join(tmp, `verifier-output-recorded-${suffix}`));
     write(fixture.repo, input, 'recorded route tree');
     git(fixture.repo, ['add', input]);
     git(fixture.repo, ['commit', '-qm', 'recorded route tree fixture']);
     const ref = git(fixture.repo, ['rev-parse', 'HEAD']).trim();
-    const dest = join(tmp, 'verifier-router-recorded-export');
+    const dest = join(tmp, `verifier-output-recorded-export-${suffix}`);
     const receipt = await prepareVerifierSource({ repo: fixture.repo, ref, dest, inputs: [input] });
     await expect(verifyVerifierSource(dest, receipt, { runtimeArtifacts: true })).resolves.toEqual(receipt);
     writeFileSync(join(dest, input), 'changed recorded route tree');
     await expect(verifyVerifierSource(dest, receipt, { runtimeArtifacts: true })).rejects.toThrow(`changed ${input}`);
+  });
+
+  it('accepts unrecorded pinned dependency output while still detecting recorded source changes', async () => {
+    const fixture = makeSuperproject(join(tmp, 'verifier-pinned-output-fixture'));
+    const input = 'libs/generic/sse/src/index.ts';
+    write(fixture.repo, input, 'export const source = true;');
+    git(fixture.repo, ['add', input]);
+    git(fixture.repo, ['commit', '-qm', 'pinned runtime source fixture']);
+    const ref = git(fixture.repo, ['rev-parse', 'HEAD']).trim();
+    const dest = join(tmp, 'verifier-pinned-output-export');
+    const receipt = await prepareVerifierSource({ repo: fixture.repo, ref, dest, inputs: [input] });
+    write(dest, '.papercusp-pinned-deps', 'immutable dependency receipt');
+    write(dest, 'libs/generic/sse/dist/index.js', 'export const source = true;');
+    await expect(verifyVerifierSource(dest, receipt)).rejects.toThrow('added .papercusp-pinned-deps');
+    await expect(verifyVerifierSource(dest, receipt, { runtimeArtifacts: true })).resolves.toEqual(receipt);
+    writeFileSync(join(dest, input), 'changed recorded source');
+    await expect(verifyVerifierSource(dest, receipt, { runtimeArtifacts: true })).rejects.toThrow(`changed ${input}`);
+  });
+
+  it.each(['.papercusp-pinned-deps', 'libs/generic/sse/dist'])('rejects a redirect posing as runtime output: %s', async artifact => {
+    const fixture = makeSuperproject(join(tmp, `verifier-output-link-${artifact.replaceAll('/', '-')}`));
+    const input = SHIPPED.find(p => p.startsWith('apps/'))!;
+    const dest = join(tmp, `verifier-output-link-export-${artifact.replaceAll('/', '-')}`);
+    const receipt = await prepareVerifierSource({ repo: fixture.repo, ref: fixture.commit, dest, inputs: [input] });
+    write(dest, artifact, 'placeholder');
+    rmSync(join(dest, artifact));
+    symlinkSync(join(dest, input), join(dest, artifact));
+    await expect(verifyVerifierSource(dest, receipt, { runtimeArtifacts: true })).rejects.toThrow('runtime artifact is not an independent');
   });
 
   it('rejects a symlink posing as an unrecorded generated router tree', async () => {

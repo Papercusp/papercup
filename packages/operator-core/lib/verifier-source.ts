@@ -34,7 +34,7 @@ export function verifierSourceFiles(root: string, {
       if (rel === '.verifier-source.json') continue;
       // TanStack derives this file from the recorded routes/config on startup.
       // A tracked tree remains source, and a redirect is never a build output.
-      if (runtimeArtifacts && rel === 'apps/operator-vite/src/routeTree.gen.ts'
+      if (runtimeArtifacts && ['apps/operator-vite/src/routeTree.gen.ts', '.papercusp-pinned-deps'].includes(rel)
         && !recordedPaths.includes(rel)) {
         if (!lstatSync(path).isFile()) throw new VerifierSourceError(`runtime artifact is not an independent file: ${rel}`);
         continue;
@@ -44,6 +44,7 @@ export function verifierSourceFiles(root: string, {
       const runtimeDirectory = entry.name === 'node_modules' || [
         'apps/operator/dist-verify', 'apps/operator/test-results',
         'apps/operator/playwright-report', 'papercusp-desktop/src-tauri/target',
+        'libs/generic/sse/dist',
       ].includes(rel);
       if (runtimeArtifacts && runtimeDirectory
         && !recordedPaths.some(p => p === rel || p.startsWith(`${rel}/`))) {
