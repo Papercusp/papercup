@@ -16,6 +16,8 @@
  */
 
 import { registerOverride, clearOverride } from '@papercusp/testing-shell/llm';
+import { TOOL_RESULT_EVIDENCE_MAX_EVENTS } from '@papercusp/testing-shell/llm';
+import { captureToolResultEvidence } from '../tool-result-evidence';
 
 import { llmTestBaseUrl } from './base-url';
 import type { ConverseHostTrust } from '../../agent-tools/operator/converse-toolset';
@@ -499,6 +501,14 @@ function applyEvent(ev: SseEvent, result: TurnResult): void {
       if (tc?.name) {
         const event: ToolCallEvent = { name: tc.name, input: tc.input };
         result.toolCalls.push(event);
+      }
+      break;
+    }
+    case 'tool_result': {
+      const returned = ev.data as { name?: unknown; summary?: unknown; ok?: unknown };
+      if (typeof returned?.name === 'string' && typeof returned.summary === 'string'
+        && result.toolResults.length < TOOL_RESULT_EVIDENCE_MAX_EVENTS) {
+        result.toolResults.push(captureToolResultEvidence(returned.name, returned.summary, returned.ok === false));
       }
       break;
     }
