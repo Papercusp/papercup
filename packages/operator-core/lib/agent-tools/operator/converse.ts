@@ -288,8 +288,8 @@ export default defineTool({
   args: ArgsSchema,
   events: {
     delta: z.object({ text: z.string() }),
-    tool_call: z.object({ name: z.string(), input: z.unknown() }),
-    tool_result: z.object({ name: z.string(), summary: z.string(), ok: z.boolean() }),
+    tool_call: z.object({ name: z.string(), input: z.unknown(), callId: z.string().optional() }),
+    tool_result: z.object({ name: z.string(), summary: z.string(), ok: z.boolean(), callId: z.string().optional() }),
   },
   handler: async (input: Args, ctx) => {
     const sessionUser: ConverseSessionUser | null = input.lessonContext ? null : input.sessionUser ?? null;
@@ -657,12 +657,13 @@ export default defineTool({
             allowedTools: [...allowedTools],
             // Reuse chat-protocol's result summary for public manual evidence.
             // Owner/private tools never publish their return bodies here.
-            ...(hostTrust === 'public' ? { onToolResult: (result: { name: string; output: string; isError: boolean }) => {
+            ...(hostTrust === 'public' ? { onToolResult: (result: { name: string; output: string; isError: boolean; callId?: string }) => {
               const name = canonicalToolName(result.name);
               if (!PUBLIC_MANUAL_TOOLS.includes(`mcp__agentmcp__${name}`)) return;
               const evidence = captureToolResultEvidence(name, result.output, result.isError);
               emitChatEvent(ctx, { type: 'tool_result', name: evidence.name,
-                summary: evidence.output, ok: !evidence.isError });
+                summary: evidence.output, ok: !evidence.isError,
+                ...(result.callId ? { callId: result.callId } : {}) });
             } } : {}),
             permissionMode: 'bypassPermissions',
             // Isolate the claude-code brain spawn from the host ~/.claude so
@@ -699,7 +700,8 @@ export default defineTool({
               // ask_choice gates match on; without it the card silently never
               // renders and the user sees a "pick one" with nothing to pick.
               const name = canonicalToolName(ev.name);
-              emitChatEvent(ctx, { type: 'tool_call', name, input: ev.input });
+              emitChatEvent(ctx, { type: 'tool_call', name, input: ev.input,
+                ...(ev.callId ? { callId: ev.callId } : {}) });
             } else if (ev.type === 'result') {
               totalCost += ev.costUsd ?? 0;
               if (typeof ev.unreportedFrames === 'number' && Number.isSafeInteger(ev.unreportedFrames) && ev.unreportedFrames > 0) {

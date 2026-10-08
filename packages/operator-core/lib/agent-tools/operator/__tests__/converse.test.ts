@@ -763,8 +763,10 @@ describe('operator:converse — loop behaviors (P-019)', () => {
 
   it('publishes redacted public manual returns, omits other tools and never observes owner returns', async () => {
     vi.mocked(runAgentChat).mockImplementation(async function* (opts): AnyGen {
-      opts.onToolResult?.({ name: 'docs:get', output: JSON.stringify({ marker: 'PUBLIC-ORCHARD', token: 'secret-fixture' }), isError: false });
-      opts.onToolResult?.({ name: 'docs:search', output: 'public manual unavailable', isError: true });
+      yield { type: 'tool_call', name: 'docs:get', input: {}, callId: 'docs-get-1' };
+      opts.onToolResult?.({ name: 'docs:get', output: JSON.stringify({ marker: 'PUBLIC-ORCHARD', token: 'secret-fixture' }), isError: false, callId: 'docs-get-1' });
+      yield { type: 'tool_call', name: 'docs:search', input: {}, callId: 'docs-search-1' };
+      opts.onToolResult?.({ name: 'docs:search', output: 'public manual unavailable', isError: true, callId: 'docs-search-1' });
       opts.onToolResult?.({ name: 'documents:read', output: 'PRIVATE-FIXTURE', isError: false });
       yield { type: 'delta', text: 'hi' };
     });
@@ -773,10 +775,12 @@ describe('operator:converse — loop behaviors (P-019)', () => {
       principalToken: 'portal-user-bearer', sessionUser: null }, publicCtx);
     const returns = publicCtx.emit.mock.calls.filter(([name]) => name === 'tool_result');
     expect(returns).toHaveLength(2);
-    expect(returns[0][1]).toMatchObject({ name: 'docs:get', ok: true });
+    expect(publicCtx.emit.mock.calls.filter(([name]) => name === 'tool_call').map(([, data]) => data.callId))
+      .toEqual(['docs-get-1', 'docs-search-1']);
+    expect(returns[0][1]).toMatchObject({ name: 'docs:get', ok: true, callId: 'docs-get-1' });
     expect(returns[0][1].summary).toContain('PUBLIC-ORCHARD');
     expect(returns[0][1].summary).not.toContain('secret-fixture');
-    expect(returns[1][1]).toMatchObject({ name: 'docs:search', ok: false });
+    expect(returns[1][1]).toMatchObject({ name: 'docs:search', ok: false, callId: 'docs-search-1' });
     expect(JSON.stringify(returns)).not.toContain('PRIVATE-FIXTURE');
     const ownerCtx = makeCtx();
     await handler({ messages: [], trigger: 'user_message', hostTrust: 'owner', sessionUser: null }, ownerCtx);
