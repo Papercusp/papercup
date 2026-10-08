@@ -49,7 +49,7 @@ function fixtureFaq(marker: string, extra = '') {
 
 async function fixtureRead(name: string, args: Record<string, unknown>, expectedError = false) {
   const mount = buildConverseMcpMount({ hostTrust: 'public', baseUrl: baseUrl!, workspaceId,
-    tools: PUBLIC_MANUAL_TOOLS, uiClientId: null, superuserToken: '', principalToken: principalBearer });
+    tools: PUBLIC_MANUAL_TOOLS, uiClientId: null, superuserToken: '', principalToken: principalBearer ?? null });
   expect(mount).not.toBeNull();
   const url = new URL(mount!.url);
   url.searchParams.set('format', 'json');
