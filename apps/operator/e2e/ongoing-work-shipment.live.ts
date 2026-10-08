@@ -5,6 +5,80 @@ type Goal = { id: string; title: string; standing?: boolean };
 type Package = { ref: string; title: string; standing: boolean; featured: boolean; activeGoalId: string | null };
 type Goals = { goals: Goal[]; goalPackages: Package[] };
 
+test('the explicitly enrolled goal renders its real declared collection through reload on the identified artifact', async ({ page, request }, info) => {
+  const workspaceId = resolveTestRunWorkspaceId();
+  const goalId = process.env.PAPERCUSP_ONGOING_COLLECTION_GOAL_ID?.trim();
+  const expectedSha = process.env.PAPERCUSP_ONGOING_ACCEPTANCE_SHA?.trim();
+  expect(workspaceId, 'Supply the real workspace before reading its enrolled goal').toBeTruthy();
+  expect(goalId, 'Supply PAPERCUSP_ONGOING_COLLECTION_GOAL_ID for the existing enrolled goal; package projection may select a different legacy instance').toBeTruthy();
+  expect(expectedSha, 'Supply the independently resolved runtime SHA').toMatch(/^[a-f0-9]{10,40}$/);
+  const health = await (await request.get('/api/health')).json();
+  expect(health.sha).toBe(expectedSha);
+  expect(health.bundleStale).toBeUndefined();
+
+  const read = await request.get('/api/zero-harness/rest-query', {
+    params: { name: 'goals.detail', args: JSON.stringify({ workspaceId, goalId }) },
+  });
+  expect(read.ok(), 'The actual enrolled goal must be readable').toBe(true);
+  const before = (await read.json()).rows[0];
+  expect(before.goal.id).toBe(goalId);
+  expect(before.goalData?.collections?.worklist?.selection).toMatchObject({ ok: true, configured: true,
+    collection: { source: 'active-workspace-plans', order: 'priority', selectable: true } });
+  expect(before.goalData.collections.worklist.rows.length, 'Discovery must supply real plan rows').toBeGreaterThan(0);
+
+  const writes: string[] = [];
+  page.on('request', (request) => {
+    if (request.method() !== 'GET' && new URL(request.url()).pathname.startsWith('/api/admin/goals/')) {
+      writes.push(new URL(request.url()).pathname);
+    }
+  });
+  await page.goto(`/adv?tab=hud&scope=all&hudtab=goals&hudgoal=${encodeURIComponent(goalId!)}&welcome=0&ws=${encodeURIComponent(workspaceId!)}`);
+  const editor = page.getByTestId('goal-data');
+  await expect(editor).toBeVisible({ timeout: 30_000 });
+  await expect(editor.getByText('Order sets priority.', { exact: false })).toBeVisible();
+
+  // Await the actual HTTP snapshot after reload. A cached first DOM sample
+  // cannot establish the current policy or discovery order.
+  const readback = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    if (!url.pathname.endsWith('/rest-query') || url.searchParams.get('name') !== 'goals.detail') return false;
+    return JSON.parse(url.searchParams.get('args') ?? '{}').goalId === goalId;
+  });
+  await page.reload();
+  const after = (await (await readback).json()).rows[0];
+  const collection = after.goalData.collections.worklist;
+  expect(collection.selection).toMatchObject({ ok: true, configured: true });
+  expect(collection.rows.map((row: { id: string }) => row.id))
+    .toEqual(collection.selection.items.map((row: { id: string }) => row.id));
+  await info.attach('real-enrolled-collection-readback', {
+    body: JSON.stringify({ workspaceId, goalId, expectedSha,
+      policyVersion: collection.selection.policyVersion, rows: collection.rows }),
+    contentType: 'application/json',
+  });
+  // Read the entire population in one browser round trip. Per-row assertions
+  // exhaust the fixed journey deadline on a large workspace plan pool.
+  await expect.poll(() => editor.locator('li').evaluateAll((nodes) => nodes.map((node) => {
+    const checkbox = node.querySelector('[role="checkbox"]');
+    return { label: checkbox?.getAttribute('aria-label')?.replace(/^Include /, ''),
+      selected: checkbox?.getAttribute('aria-checked') === 'true',
+      reason: node.querySelector('small')?.textContent?.trim() ?? '' };
+  })), { timeout: 15_000 }).toEqual(collection.rows.map((row: { label: string; selected: boolean; reason?: string | null }) => ({
+    label: row.label, selected: row.selected, reason: row.reason ?? '',
+  })));
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await editor.evaluate((node) => node.scrollWidth > node.clientWidth)).toBe(false);
+  await page.screenshot({ path: info.outputPath('real-enrolled-collection.png') });
+  expect(writes, 'This real-data acceptance journey must preserve the owner policy and lifecycle').toEqual([]);
+  const healthAfter = await (await request.get('/api/health')).json();
+  expect(healthAfter.sha).toBe(expectedSha);
+  expect(healthAfter.bundleStale).toBeUndefined();
+  await info.attach('real-enrolled-collection-receipt', {
+    body: JSON.stringify({ workspaceId, goalId, expectedSha, actualSha: healthAfter.sha,
+      policyVersion: collection.selection.policyVersion, rows: collection.rows, writes }),
+    contentType: 'application/json',
+  });
+});
+
 test('real ongoing goal data reaches featured, compact and worklist detail on the identified artifact', async ({ page, request }, info) => {
   const workspaceId = resolveTestRunWorkspaceId();
   expect(workspaceId, 'The real workspace must be explicit before reading goal data').toBeTruthy();
