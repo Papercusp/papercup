@@ -814,6 +814,8 @@ export interface GatherOptions {
   loadReleases: ReleaseRecordSource;
   /** any path inside the repo; the MAIN worktree is derived from its worktree list */
   repoPath: string;
+  /** Inspect only named registered trees; retain the full registry for containment guards. */
+  targets?: readonly string[];
   retentionDir?: string;
   minIdleHours?: number;
   nowMs?: number;
@@ -838,6 +840,8 @@ export async function gatherCutReclaimPlan(opts: GatherOptions): Promise<Reclaim
   const worktrees = await (
     opts.listWorktrees ?? (async (r: string) => parseWorktreePorcelain(await git(r, ['worktree', 'list', '--porcelain'], 10_000)))
   )(opts.repoPath);
+  const selected = opts.targets?.length ? new Set(opts.targets.map((p) => path.resolve(p))) : null;
+  const includes = (p: string) => selected === null || selected.has(path.resolve(p));
   let rootDev: number | null = null;
   try {
     rootDev = fs.statSync('/').dev;
@@ -846,7 +850,7 @@ export async function gatherCutReclaimPlan(opts: GatherOptions): Promise<Reclaim
   }
   const probe = opts.probe ?? ((p: string) => probeTree(p, rootDev));
   const probes = new Map<string, TreeProbe>();
-  for (const w of worktrees.slice(1)) if (!w.prunable) probes.set(w.path, probe(w.path));
+  for (const w of worktrees.slice(1)) if (!w.prunable && includes(w.path)) probes.set(w.path, probe(w.path));
   const { leases, errors } = (opts.readLeases ?? readRetentionLeases)(opts.retentionDir ?? defaultRetentionDir());
   let releases: ReleaseRecord[] | { error: string };
   try {
@@ -877,7 +881,7 @@ export async function gatherCutReclaimPlan(opts: GatherOptions): Promise<Reclaim
     const inspect =
       opts.authoredWork ?? ((tree: string, canon: string) => inspectAuthoredWork(tree, canon, opts.releaseVersionPaths));
     const pending = cheap.verdicts
-      .filter((v) => v.reasons.length === 1 && v.reasons[0] === AUTHORED_UNCHECKED)
+      .filter((v) => includes(v.path) && v.reasons.length === 1 && v.reasons[0] === AUTHORED_UNCHECKED)
       .map((v) => v.path);
     const results = await mapWithConcurrency(
       pending,
@@ -886,7 +890,15 @@ export async function gatherCutReclaimPlan(opts: GatherOptions): Promise<Reclaim
     );
     pending.forEach((tree, i) => authored.set(tree, results[i] as AuthoredWork));
   }
-  return planCutReclaim({ ...base, authored });
+  const result = planCutReclaim({ ...base, authored });
+  if (selected === null) return result;
+  const verdicts = result.verdicts.filter((v) => includes(v.path));
+  const found = new Set(verdicts.map((v) => path.resolve(v.path)));
+  return {
+    ...result,
+    verdicts,
+    failClosed: [...result.failClosed, ...[...selected].filter((p) => !found.has(p)).map((p) => `target-not-inspectable:${p}`)],
+  };
 }
 
 // ---------------------------------------------------------------- removal (effectful)

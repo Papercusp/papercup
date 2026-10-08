@@ -949,6 +949,75 @@ describe("shapeWorkItemsGet — operationalBrief stays bounded across multi-item
     }
   });
 
+  it("keeps three brief rows when duplicated completion bodies exhaust the door", () => {
+    const evidence = {
+      summary: "S".repeat(1_800),
+      testsRun: "T".repeat(1_600),
+      testResult: "R".repeat(1_600),
+      verifiedHow: "V".repeat(600),
+      workOutcome: "O".repeat(1_200),
+      addedTests: "A".repeat(900),
+      filesChanged: Array.from(
+        { length: 24 },
+        (_, index) => `packages/path/${String(index).padStart(2, "0")}-${"x".repeat(80)}`,
+      ),
+    };
+    const ids = ["EI-11111111111111111", "EI-22222222222222222", "EI-33333333333333333"];
+    const rows = ids.map((id) => row({
+      id,
+      availability: "available",
+      workItem: {
+        id,
+        kind: "bug",
+        family: "issue",
+        harness: "papercusp",
+        state: "done",
+        title: "terminal item",
+        severity: "major",
+        origin: "local",
+        assignee: "su-1",
+        summary: "summary ".repeat(500),
+        payload: { details: "P".repeat(4_000) },
+        terminalCompletionEvidence: evidence,
+      },
+      checkpoint: "C".repeat(3_000),
+      completion: evidence,
+      hasCompletionEvidence: true,
+      operationalBrief: operationalBrief(id, "Verified next action and evidence. ".repeat(100)),
+    }));
+    const read = {
+      schemaVersion: "work-items-get-read-v1",
+      mode: "complete",
+      requested: 3,
+      available: 3,
+      absent: 0,
+      unavailable: 0,
+      budgetMs: 30_000,
+      elapsedMs: 7,
+      baseReadMaxMs: 4,
+      enrichmentMaxMs: 0,
+      outerStageAttribution: "tool_invocations.duration_ms minus elapsedMs is combined dispatch/projection/serialization time",
+    };
+
+    for (const tier of ["trimmed", "standard"] as const) {
+      const out = shapeWorkItemsGet({ ...envelope(rows), read }, tier) as Envelope;
+
+      expect(out.results.map((result) => result.id)).toEqual(ids);
+      expect(out.results.every((result) => result._stub === undefined)).toBe(true);
+      for (const result of out.results) {
+        const workItem = result.workItem as Record<string, unknown>;
+        expect(result.operationalBrief).toMatchObject({ subject: result.id });
+        expect(result.hasCompletionEvidence).toBe(true);
+        expect(result.completion).toBeNull();
+        expect(workItem.terminalCompletionEvidence).toBeNull();
+      }
+      expect(out._shapeNote?.dropped).toEqual(
+        expect.arrayContaining(["completion", "workItem.terminalCompletionEvidence"]),
+      );
+      expect(JSON.stringify(out).length).toBeLessThanOrEqual(DOOR);
+    }
+  });
+
   it("does not spend more bulk-row capacity on briefs whose shared share is too small", () => {
     const rows = Array.from({ length: 12 }, (_, index) =>
       briefRow(`EI-${String(index).padStart(17, "0")}`, "Large brief text. ".repeat(300)),

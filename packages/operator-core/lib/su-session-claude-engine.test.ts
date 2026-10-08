@@ -328,7 +328,10 @@ describe('structured Claude SU engine', () => {
       expect(result.status).toBe('completed');
       expect(s.order).toEqual(['setModel:claude-sonnet-4-5:after-0-prompts', 'effort:high:after-0-prompts']);
       expect(s.peer.prompts).toHaveLength(1);
-      expect(engine.adapter.host.descriptor().model).toBe('claude-sonnet-4-5:high');
+      expect(engine.adapter.host.descriptor()).toMatchObject({
+        model: 'claude-sonnet-4-5:high',
+        ownerSelectedModel: 'claude-sonnet-4-5:high',
+      });
     });
 
     it('does not switch for a turn naming the current model', async () => {
@@ -515,12 +518,24 @@ describe('structured Claude SU engine', () => {
       await vi.waitFor(() => expect(stalledReports(engine)).toHaveLength(1), { timeout: 2_000 });
     });
 
-    it('does not report a stall on a turn that produced frames and ended', async () => {
-      const p = peer(); const engine = open(p, { turnStallTimeoutMs: 60 }); await engine.ready;
-      await engine.adapter.host.startCommand(command(engine)).terminal;
+    it('does not report a stall after the terminal result while served-account provenance is pending', async () => {
+      const p = peer();
+      let resolveServedAccount!: (account: string) => void;
+      const servedAccountRead = new Promise<string>((resolve) => { resolveServedAccount = resolve; });
+      const servedAccountReader = vi.fn(() => servedAccountRead);
+      const engine = open(p, { turnStallTimeoutMs: 60, servedAccountReader }); await engine.ready;
+      const terminal = engine.adapter.host.startCommand(command(engine)).terminal;
+
+      await vi.waitFor(() => expect(servedAccountReader).toHaveBeenCalledWith('su-test'));
       await vi.waitFor(() => expect(engine.adapter.host.descriptor().lifecycle).toBe('waiting-for-owner'));
-      await new Promise((resolve) => setTimeout(resolve, 300));
+      await new Promise((resolve) => setTimeout(resolve, 200));
       expect(stalledReports(engine)).toEqual([]);
+
+      resolveServedAccount('pool-claude-success');
+      await expect(terminal).resolves.toMatchObject({ status: 'completed' });
+      await vi.waitFor(() => expect(engine.adapter.host.descriptor()).toMatchObject({
+        accountServed: 'pool-claude-success',
+      }));
     });
 
     it('does not report a stall while an approval card waits for the owner, and restarts the clock after the answer', async () => {

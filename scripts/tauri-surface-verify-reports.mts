@@ -31,11 +31,11 @@ async function verifyReports(evidenceDir: string) {
   const title = 'Reports native verification';
   const body = '# Findings\n\nA complete private report.\n\n```mermaid\ngraph TD; A[Published] --> B[Reader]\n```\n';
   const subject = { kind: 'external', ref: 'reports-native-fixture', label: 'Native acceptance subject' };
-  const publish = (args: Record<string, unknown>) => {
+  const runTool = (name: string, args: Record<string, unknown>) => {
     native('eval', `window.__reportsPublication = { done: false }; void (async () => {
       try {
         const response = await fetch('/api/agent-mcp/run-tool', { method:'POST', headers:{'content-type':'application/json'},
-          body:JSON.stringify(${JSON.stringify({ name: 'reports:publish', args, confirmed: true })}) });
+          body:JSON.stringify(${JSON.stringify({ name, args, confirmed: true })}) });
         const envelope = await response.json();
         const result = envelope.result;
         const record = result?.data ?? (result?.content?.find(x => x.type === 'text')
@@ -45,11 +45,16 @@ async function verifyReports(evidenceDir: string) {
     })()`);
     poll('window.__reportsPublication?.done === true');
     const published = JSON.parse(native('eval', 'JSON.stringify(window.__reportsPublication)'));
-    save(`publish-${step}.json`, published);
+    save(`tool-${name.replace(':', '-')}-${step}.json`, published);
     assert.equal(published.status, 200, 'Native tool transport failed');
-    assert.equal(published.record?.ok, true, 'Publisher refused the fixture');
-    assert.ok(published.record.report_id && published.record.path, 'Publication must return an exact citation');
+    assert.notEqual(published.envelope.result?.isError, true, `${name} refused the request`);
     return published.record;
+  };
+  const publish = (args: Record<string, unknown>) => {
+    const published = runTool('reports:publish', args);
+    assert.equal(published?.ok, true, 'Publisher refused the fixture');
+    assert.ok(published.report_id && published.path, 'Publication must return an exact citation');
+    return published;
   };
   try {
     native('navigate', `/reports?ws=${encodeURIComponent(workspace)}`, '--json');
@@ -97,6 +102,46 @@ async function verifyReports(evidenceDir: string) {
       && document.querySelector('[aria-label="Search reports"]')?.value === ${JSON.stringify(title)}
       && document.querySelector('[aria-label="Report subject"]')?.value === ${JSON.stringify(`${subject.kind}:${subject.ref}`)}
       && document.querySelectorAll('.reports-history-item').length === 2`);
+    // Use the same public tools an agent uses, through the real native tab's
+    // presence + intent/SSE transport. Every Reports state field round-trips.
+    poll(`!!sessionStorage.getItem('papercusp_ui_client_id')`);
+    const clientId = JSON.parse(native('eval', `JSON.stringify(sessionStorage.getItem('papercusp_ui_client_id'))`));
+    const drivenParams = Object.fromEntries(filters);
+    drivenParams.pot = original.origin.harness_slug ?? 'reports-native-no-such-pot';
+    const dispatch = runTool('ui:dispatch', { client_id: clientId, intent: 'set_url',
+      args: { path: '/reports', mode: 'replace', params: drivenParams }, timeout_ms: 30_000 });
+    assert.equal(dispatch.status, 'done', 'Real Reports tab did not acknowledge ui:dispatch');
+    poll(`document.querySelectorAll('.reports-list-item').length === ${original.origin.harness_slug ? 1 : 0}
+      && document.querySelector('.reports-reader h2')?.textContent === ${JSON.stringify(title)}
+      && document.querySelectorAll('.reports-history-item').length === 2`);
+    let drivenState;
+    for (let attempt = 0; attempt < 20; attempt++) {
+      drivenState = runTool('ui:get_state', { client_id: clientId });
+      if (Object.entries(drivenParams).every(([key, value]) => drivenState.params?.[key] === value)) break;
+      await new Promise(resolve => setTimeout(resolve, 250));
+    }
+    assert.equal(drivenState.pathname, '/reports');
+    assert.equal(drivenState.stale, false);
+    for (const [key, value] of Object.entries(drivenParams)) assert.equal(drivenState.params[key], value, `UI state lost ${key}`);
+    save('agent-control-state.json', { clientId, dispatch, expectedParams: drivenParams, actual: drivenState });
+    if (!original.origin.harness_slug) {
+      const clearPot = runTool('ui:dispatch', { client_id: clientId, intent: 'set_url',
+        args: { params: { pot: null } }, timeout_ms: 30_000 });
+      assert.equal(clearPot.status, 'done');
+      poll(`document.querySelectorAll('.reports-list-item').length === 1
+        && !new URL(location.href).searchParams.has('pot')`);
+    }
+    const closeReader = runTool('ui:dispatch', { client_id: clientId, intent: 'set_url',
+      args: { params: { sel: null, hist: null } }, timeout_ms: 30_000 });
+    assert.equal(closeReader.status, 'done');
+    poll(`!document.querySelector('.reports-reader h2') && !new URL(location.href).searchParams.has('sel')`);
+    const reopenReader = runTool('ui:dispatch', { client_id: clientId, intent: 'set_url',
+      args: { params: { sel: original.report_id, hist: 'true', pot: null } }, timeout_ms: 30_000 });
+    assert.equal(reopenReader.status, 'done');
+    poll(`document.querySelector('.reports-reader h2')?.textContent === ${JSON.stringify(title)}
+      && document.querySelectorAll('.reports-history-item').length === 2`);
+    poll(`Object.entries(${JSON.stringify(Object.fromEntries(filters))})
+      .every(([key, value]) => new URL(location.href).searchParams.get(key) === value)`);
     filters.set('kind', 'review');
     native('navigate', `/reports?${filters}`, '--json');
     poll(`document.querySelectorAll('.reports-list-item').length === 0
@@ -134,7 +179,8 @@ async function verifyReports(evidenceDir: string) {
       privatePeer: privatePeer.reportId, sourceFingerprints: before, assertions: step,
       checked: ['publish-tool', 'SSE-arrival', 'deep-link', 'metadata', 'Mermaid-render', 'copy-exact-Markdown',
         'lineage-collapse', 'immutable-citation', 'previous-version', 'history-URL', 'history-navigation',
-        'filter-restoration', 'filter-negative-control', 'clear-filters-preserves-citation', 'reader-width', 'human-owner-private-read'] });
+        'filter-restoration', 'agent-tools-filter-state-roundtrip', 'agent-tools-reader-close-reopen',
+        'filter-negative-control', 'clear-filters-preserves-citation', 'reader-width', 'human-owner-private-read'] });
   } catch (error) {
     save('failure.json', { error: String(error), step, sourceFingerprints: before,
       ui: native('eval', 'JSON.stringify({url:location.href, text:document.body.innerText})') });

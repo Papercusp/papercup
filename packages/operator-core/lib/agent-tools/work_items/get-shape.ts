@@ -87,20 +87,24 @@ const TIER_TARGET_CHARS = { trimmed: RESULT_DOOR_BUDGET_CHARS, standard: RESULT_
  */
 const DEGRADATION_LADDER = {
   trimmed: [
-    { fullRows: 100, checkpointTotal: 6_000, summaryTotal: 2_400, lifecycleTotal: 2_400, operationalBriefTotal: 3_600 },
-    { fullRows: 25, checkpointTotal: 3_000, summaryTotal: 1_200, lifecycleTotal: 1_200, operationalBriefTotal: 2_400 },
-    { fullRows: 12, checkpointTotal: 1_200, summaryTotal: 600, lifecycleTotal: 600, operationalBriefTotal: 1_200 },
-    { fullRows: 6, checkpointTotal: 600, summaryTotal: 0, lifecycleTotal: 300, operationalBriefTotal: 0 },
-    { fullRows: 3, checkpointTotal: 0, summaryTotal: 0, lifecycleTotal: 0, operationalBriefTotal: 0 },
-    { fullRows: 0, checkpointTotal: 0, summaryTotal: 0, lifecycleTotal: 0, operationalBriefTotal: 0 },
+    { fullRows: 100, checkpointTotal: 6_000, summaryTotal: 2_400, lifecycleTotal: 2_400, operationalBriefTotal: 3_600, completionEvidence: "full" },
+    { fullRows: 25, checkpointTotal: 3_000, summaryTotal: 1_200, lifecycleTotal: 1_200, operationalBriefTotal: 2_400, completionEvidence: "full" },
+    { fullRows: 12, checkpointTotal: 1_200, summaryTotal: 600, lifecycleTotal: 600, operationalBriefTotal: 1_200, completionEvidence: "full" },
+    { fullRows: 6, checkpointTotal: 600, summaryTotal: 0, lifecycleTotal: 300, operationalBriefTotal: 0, completionEvidence: "full" },
+    // Preserve a few requested rows after large completion evidence exhausts
+    // every full-body rung. The evidence body has a precise, narrower recovery
+    // path; its presence bit stays in-band while briefs and identity survive.
+    { fullRows: 3, checkpointTotal: 0, summaryTotal: 0, lifecycleTotal: 0, operationalBriefTotal: 2_400, completionEvidence: "presence-only" },
+    { fullRows: 0, checkpointTotal: 0, summaryTotal: 0, lifecycleTotal: 0, operationalBriefTotal: 0, completionEvidence: "full" },
   ],
   standard: [
-    { fullRows: 100, checkpointTotal: 16_000, summaryTotal: 4_000, lifecycleTotal: 4_000, operationalBriefTotal: 4_200 },
-    { fullRows: 50, checkpointTotal: 8_000, summaryTotal: 2_400, lifecycleTotal: 2_400, operationalBriefTotal: 3_000 },
-    { fullRows: 25, checkpointTotal: 3_000, summaryTotal: 1_200, lifecycleTotal: 1_200, operationalBriefTotal: 1_800 },
-    { fullRows: 12, checkpointTotal: 1_200, summaryTotal: 600, lifecycleTotal: 600, operationalBriefTotal: 0 },
-    { fullRows: 6, checkpointTotal: 600, summaryTotal: 0, lifecycleTotal: 300, operationalBriefTotal: 0 },
-    { fullRows: 0, checkpointTotal: 0, summaryTotal: 0, lifecycleTotal: 0, operationalBriefTotal: 0 },
+    { fullRows: 100, checkpointTotal: 16_000, summaryTotal: 4_000, lifecycleTotal: 4_000, operationalBriefTotal: 4_200, completionEvidence: "full" },
+    { fullRows: 50, checkpointTotal: 8_000, summaryTotal: 2_400, lifecycleTotal: 2_400, operationalBriefTotal: 3_000, completionEvidence: "full" },
+    { fullRows: 25, checkpointTotal: 3_000, summaryTotal: 1_200, lifecycleTotal: 1_200, operationalBriefTotal: 1_800, completionEvidence: "full" },
+    { fullRows: 12, checkpointTotal: 1_200, summaryTotal: 600, lifecycleTotal: 600, operationalBriefTotal: 0, completionEvidence: "full" },
+    { fullRows: 6, checkpointTotal: 600, summaryTotal: 0, lifecycleTotal: 300, operationalBriefTotal: 0, completionEvidence: "full" },
+    { fullRows: 3, checkpointTotal: 0, summaryTotal: 0, lifecycleTotal: 0, operationalBriefTotal: 2_400, completionEvidence: "presence-only" },
+    { fullRows: 0, checkpointTotal: 0, summaryTotal: 0, lifecycleTotal: 0, operationalBriefTotal: 0, completionEvidence: "full" },
   ],
 } as const;
 
@@ -384,6 +388,7 @@ function projectWorkItem(
   caps: FieldCaps,
   summaryChars: number,
   dropped: Set<string>,
+  includeCompletionEvidence = true,
 ): unknown {
   if (!raw || typeof raw !== "object") return raw ?? null;
   const w = raw as Row;
@@ -393,7 +398,10 @@ function projectWorkItem(
   const terminal = ANY_FAMILY_TERMINAL_STATES.includes(state);
   const rawCompletionEvidence = w.terminalCompletionEvidence;
   const completionEvidencePresent = hasCompletionEvidence(rawCompletionEvidence);
-  const completionEvidence = completionEvidencePresent
+  if (completionEvidencePresent && !includeCompletionEvidence) {
+    dropped.add("workItem.terminalCompletionEvidence");
+  }
+  const completionEvidence = completionEvidencePresent && includeCompletionEvidence
     ? projectCompletionEvidence(rawCompletionEvidence, caps, dropped, "workItem.terminalCompletionEvidence")
     : null;
   const shouldExposeCompletionAuthority =
@@ -937,6 +945,7 @@ function projectRow(
   lifecycleChars: number,
   operationalBriefChars: number,
   dropped: Set<string>,
+  includeCompletionEvidence = true,
 ): Row {
   if (r.ok === false) return r; // an error row is already tiny and self-describing
   if (r.reportAttachments !== undefined) return r; // producer bounds one metadata list + a <=2048-byte page
@@ -957,7 +966,8 @@ function projectRow(
   if (w?.payload !== undefined) dropped.add("workItem.payload");
   const rawCompletion = r.completion !== undefined ? r.completion : w?.terminalCompletionEvidence;
   const completionPresent = hasCompletionEvidence(rawCompletion);
-  const completion = completionPresent
+  if (completionPresent && !includeCompletionEvidence) dropped.add("completion");
+  const completion = completionPresent && includeCompletionEvidence
     ? projectCompletionEvidence(rawCompletion, caps, dropped, "completion")
     : null;
   const state = typeof w?.state === "string" ? w.state.toLowerCase() : "";
@@ -1011,7 +1021,7 @@ function projectRow(
     ok: r.ok ?? true,
     id: r.id ?? null,
     ...(r.availability !== undefined ? { availability: r.availability } : {}),
-    workItem: projectWorkItem(r.workItem, caps, summaryChars, dropped),
+    workItem: projectWorkItem(r.workItem, caps, summaryChars, dropped, includeCompletionEvidence),
     ...(operationalBrief !== undefined ? { operationalBrief } : {}),
     ...(r.threadWindow !== undefined
       ? {
@@ -1202,7 +1212,14 @@ export function shapeWorkItemsGet(data: unknown, tier: WorkItemsGetTier): unknow
 
   for (let attempt = 0; attempt < attempts.length; attempt += 1) {
     const { rung, withSummary, withOperationalBrief } = attempts[attempt];
-    const { fullRows, checkpointTotal, summaryTotal, lifecycleTotal, operationalBriefTotal } = ladder[rung];
+    const {
+      fullRows,
+      checkpointTotal,
+      summaryTotal,
+      lifecycleTotal,
+      operationalBriefTotal,
+      completionEvidence,
+    } = ladder[rung];
     const dropped = new Set<string>();
     const carrying = rows
       .slice(0, fullRows)
@@ -1258,7 +1275,16 @@ export function shapeWorkItemsGet(data: unknown, tier: WorkItemsGetTier): unknow
     const stubCompletionEvidenceIds: unknown[] = [];
     const projected = rows.map((r, i) =>
       i < fullRows
-        ? projectRow(r, caps, checkpointChars, summaryChars, lifecycleChars, operationalBriefChars, dropped)
+        ? projectRow(
+            r,
+            caps,
+            checkpointChars,
+            summaryChars,
+            lifecycleChars,
+            operationalBriefChars,
+            dropped,
+            completionEvidence === "full",
+          )
         : singleItemFloor
           ? compactSingleRow(r, caps, tier, dropped)
           : stubRow(r, dropped, stubCompletionEvidenceIds),

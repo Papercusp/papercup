@@ -414,6 +414,39 @@ describe('gather + execute against a real temporary repo', () => {
     expect(plan.verdicts.find((v) => v.path.endsWith('relcut-a'))?.disposition).toBe('named-only');
   });
 
+  it('inspects a named target without probing unrelated trees', async () => {
+    const selected = path.join(tmp, 'selected');
+    const other = path.join(tmp, 'unrelated');
+    g(repo, 'worktree', 'add', '-q', '--detach', selected);
+    g(repo, 'worktree', 'add', '-q', '--detach', other);
+    const inspect = vi.fn(() => ({ ok: true as const, authored: [], machineWritten: 0 }));
+    const probeTarget = vi.fn((p: string) => {
+      if (p === other) throw new Error('unrelated tree must not be visited');
+      return probeTree(p, null);
+    });
+    const plan = await gather({ targets: [selected], probe: probeTarget, authoredWork: inspect });
+    expect(probeTarget).toHaveBeenCalledTimes(1);
+    expect(inspect).toHaveBeenCalledExactlyOnceWith(selected, repo);
+    expect(plan.verdicts.map((v) => v.path)).toEqual([selected]);
+    expect(plan.failClosed).toEqual([]);
+    const absent = await gather({ targets: [path.join(tmp, 'not-registered')] });
+    expect(absent.verdicts).toEqual([]);
+    expect(absent.failClosed).toEqual([`target-not-inspectable:${path.join(tmp, 'not-registered')}`]);
+  });
+
+  it('preserves containment protection when a nested worktree is outside the target selection', async () => {
+    const parent = path.join(tmp, 'parent');
+    const nested = path.join(parent, 'nested');
+    g(repo, 'worktree', 'add', '-q', '--detach', parent);
+    g(repo, 'worktree', 'add', '-q', '--detach', nested);
+    const inspect = vi.fn(() => ({ ok: true as const, authored: [], machineWritten: 0 }));
+    const plan = await gather({ targets: [parent], authoredWork: inspect });
+    expect(plan.verdicts).toHaveLength(1);
+    expect(plan.verdicts[0]?.reasons).toContain(`contains-worktree:${nested}`);
+    expect(plan.verdicts[0]?.disposition).toBe('protected');
+    expect(inspect).not.toHaveBeenCalled();
+  });
+
   it('runs the authored-work reads width-bounded and keeps each result with its own tree', async () => {
     const trees = [1, 2, 3, 4, 5].map((i) => path.join(tmp, `relcut-${i}`));
     for (const t of trees) g(repo, 'worktree', 'add', '-q', '--detach', t);

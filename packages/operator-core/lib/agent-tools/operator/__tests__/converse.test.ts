@@ -289,16 +289,20 @@ describe('operator:converse — mcpUrl / state-channel shape', () => {
       'tasks:ops',
       'chat:ask_choice',
       'voice:delegate_deep',
+      'docs:search',
+      'docs:get',
     ]);
     expect(call.allowedTools).toEqual([
       'mcp__agentmcp__capability:read',
       'mcp__agentmcp__tasks:ops',
       'mcp__agentmcp__chat:ask_choice',
       'mcp__agentmcp__voice:delegate_deep',
+      'mcp__agentmcp__docs:search',
+      'mcp__agentmcp__docs:get',
     ]);
     expect(customerPiMocks.start).toHaveBeenCalledWith(expect.objectContaining({
       workspaceId: 'ws-real',
-      allowedTools: ['capability:read', 'tasks:ops', 'chat:ask_choice', 'voice:delegate_deep'],
+      allowedTools: ['capability:read', 'tasks:ops', 'chat:ask_choice', 'voice:delegate_deep', 'docs:search', 'docs:get'],
       capabilities: ['chat:write', 'not-granted', 'operator:read'],
       expiresAt: expect.any(Date),
     }));
@@ -755,6 +759,29 @@ describe('operator:converse — loop behaviors (P-019)', () => {
     expect(callOf(1).model).toBe(callOf(0).model);
     expect(callOf(1).backend).toBe(callOf(0).backend);
     errSpy.mockRestore();
+  });
+
+  it('publishes redacted public manual returns, omits other tools and never observes owner returns', async () => {
+    vi.mocked(runAgentChat).mockImplementation(async function* (opts): AnyGen {
+      opts.onToolResult?.({ name: 'docs:get', output: JSON.stringify({ marker: 'PUBLIC-ORCHARD', token: 'secret-fixture' }), isError: false });
+      opts.onToolResult?.({ name: 'docs:search', output: 'public manual unavailable', isError: true });
+      opts.onToolResult?.({ name: 'documents:read', output: 'PRIVATE-FIXTURE', isError: false });
+      yield { type: 'delta', text: 'hi' };
+    });
+    const publicCtx = { ...makeCtx(), role: 'papercup' };
+    await handler({ messages: [], trigger: 'user_message', role: 'papercup', hostTrust: 'public',
+      principalToken: 'portal-user-bearer', sessionUser: null }, publicCtx);
+    const returns = publicCtx.emit.mock.calls.filter(([name]) => name === 'tool_result');
+    expect(returns).toHaveLength(2);
+    expect(returns[0][1]).toMatchObject({ name: 'docs:get', ok: true });
+    expect(returns[0][1].summary).toContain('PUBLIC-ORCHARD');
+    expect(returns[0][1].summary).not.toContain('secret-fixture');
+    expect(returns[1][1]).toMatchObject({ name: 'docs:search', ok: false });
+    expect(JSON.stringify(returns)).not.toContain('PRIVATE-FIXTURE');
+    const ownerCtx = makeCtx();
+    await handler({ messages: [], trigger: 'user_message', hostTrust: 'owner', sessionUser: null }, ownerCtx);
+    expect(vi.mocked(runAgentChat).mock.calls.at(-1)?.[0].onToolResult).toBeUndefined();
+    expect(ownerCtx.emit.mock.calls.some(([name]) => name === 'tool_result')).toBe(false);
   });
 
   it('hostTrust=public: NO superuser mount, doors + card + deep tool; tool-less without the boundary bearer (D-007 §2)', async () => {

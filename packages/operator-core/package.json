@@ -8,6 +8,14 @@
   "types": "./lib/index.ts",
   "exports": {
     ".": "./lib/index.ts",
+    "./lib/endpoint-route/hosted-auth-runtime": {
+      "types": "./lib/endpoint-route/hosted-auth-runtime.types.d.ts",
+      "default": "./lib/endpoint-route/hosted-auth-runtime.ts"
+    },
+    "./lib/endpoint-route/hosted-auth-runtime.ts": {
+      "types": "./lib/endpoint-route/hosted-auth-runtime.types.d.ts",
+      "default": "./lib/endpoint-route/hosted-auth-runtime.ts"
+    },
     "./lib/*": "./lib/*.ts",
     "./lib/*.ts": "./lib/*.ts",
     "./lib/*.mjs": "./lib/*.mjs",

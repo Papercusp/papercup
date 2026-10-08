@@ -9,8 +9,14 @@ import { scopeArg } from './scope';
 import { SEARCH_SOURCE_SURFACES } from '../../search/coverage-gate';
 import { stampEmbedderMode } from '../../search/embedder-mode-registry';
 import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
+import { resolveNamedQueryV2 } from '../../sync-resolver';
 
 const flag = vi.hoisted(() => ({ enabled: true }));
+const ui = vi.hoisted(() => ({ sql: undefined as unknown as import('postgres').Sql, workspaceId: '' }));
+vi.mock('@papercusp/db-org', async actual => ({
+  ...await actual<typeof import('@papercusp/db-org')>(), getOrgPg: () => ({ sql: ui.sql }),
+}));
+vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => ui.workspaceId }));
 vi.mock('@papercusp/flags/server', () => ({ getFlag: async () => flag.enabled }));
 const vector = (text: string) => [1, text.includes('zephyrquartz') ? 10 : 0, ...Array(766).fill(0)];
 const embed = async (text: string) => vector(text);
@@ -21,7 +27,11 @@ stampEmbedderMode(embed, 'gemma', profileId);
 describe('Reports shared search (migrated PostgreSQL)', () => {
   let db: OrgTestDb;
   const workspaceId = `report-search-${Date.now()}`;
-  beforeAll(async () => { db = await createOrgTestDb({ adminPoolMax: 3 }); }, 180_000);
+  beforeAll(async () => {
+    db = await createOrgTestDb({ adminPoolMax: 3 });
+    ui.sql = db.adminSql;
+    ui.workspaceId = workspaceId;
+  }, 180_000);
   afterAll(async () => { await db?.cleanup(); });
   const context = () => ({ sql: db.adminSql, workspaceId, query: 'zephyrquartz', scopeFilter: null, limit: 20 });
   const author = { authorOwnerId: 'writer', harnessSlug: 'pot-a' };
@@ -35,6 +45,39 @@ describe('Reports shared search (migrated PostgreSQL)', () => {
     expect(SEARCH_SOURCES.some(s => s.name === 'report')).toBe(true);
     expect(scopeArg().parse(['reports'])).toEqual(['report']);
     expect(SEARCH_SOURCE_SURFACES.report).toContain('harness_shared.text_chunks.embedding');
+  });
+
+  it('routes Reports tab search and the registered source to the same live corpus, ignoring a parallel decoy', async () => {
+    const report = await publish('owner', 'corpusquartzunique');
+    // A real second corpus disagrees with the authoritative document. Routing
+    // the UI to this legacy table must fail the positive and negative controls.
+    await db.adminSql`INSERT INTO harness_shared.report_library_chunks
+      (workspace_id, report_id, chunk_idx, text)
+      VALUES (${workspaceId}, ${report.reportId}, 0, 'paralleldecoyunique')`;
+    const uiIds = async (query: string) => {
+      const rows = await resolveNamedQueryV2('reports.list', { query, limit: 200 });
+      expect(Array.isArray(rows)).toBe(true);
+      return (rows as Array<{ report_id: string }>).map(r => r.report_id);
+    };
+    const sourceIds = async (query: string) => (await createReportSearchSource({ isOwner: true })
+      .lexical!({ ...context(), query })).map(r => r.row.source_id);
+    for (const query of ['corpusquartzunique', 'paralleldecoyunique']) {
+      const expected = query === 'corpusquartzunique' ? [report.reportId] : [];
+      expect(await uiIds(query)).toEqual(expected);
+      expect(await sourceIds(query)).toEqual(expected);
+    }
+    // Change only the canonical row: both paths must immediately follow its
+    // generated search_tsv; the parallel corpus remains deliberately stale.
+    await db.adminSql`UPDATE harness_shared.report_library SET body_md = 'corpusreplacementunique'
+      WHERE workspace_id = ${workspaceId} AND report_id = ${report.reportId}`;
+    expect(await uiIds('corpusquartzunique')).toEqual([]);
+    expect(await sourceIds('corpusquartzunique')).toEqual([]);
+    expect(await uiIds('corpusreplacementunique')).toEqual([report.reportId]);
+    expect(await sourceIds('corpusreplacementunique')).toEqual([report.reportId]);
+    expect(await uiIds('paralleldecoyunique')).toEqual([]);
+    await retireReport(db.adminSql, workspaceId, report.reportId);
+    expect(await uiIds('corpusreplacementunique')).toEqual([]);
+    expect(await sourceIds('corpusreplacementunique')).toEqual([]);
   });
 
   it('finds a long report tail through lexical and semantic engines', async () => {

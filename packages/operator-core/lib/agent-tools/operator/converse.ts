@@ -69,6 +69,7 @@ import {
   buildConverseMcpMount,
   CONVERSE_HOST_TRUSTS,
   selectConverseTools,
+  PUBLIC_MANUAL_TOOLS,
   type ConverseHostTrust,
 } from './converse-toolset';
 import type { ChatEvent } from '@papercusp/chat-protocol';
@@ -80,6 +81,7 @@ import {
 import { agentBackendCredentialVerdict } from '../../agent-auth-detect';
 import { brainNoOutputMessage, type BrainAttemptOutcome, type SkippedBrainFailover } from './converse-failure';
 import { tutorialHelpContext, tutorialHelpContextSchema } from '../../onboarding/cloud-tutorial-help';
+import { captureToolResultEvidence } from '../../llm-testing/tool-result-evidence';
 
 const CONVERSE_PI_SESSION_TTL_MS = 30 * 60 * 1000;
 
@@ -287,6 +289,7 @@ export default defineTool({
   events: {
     delta: z.object({ text: z.string() }),
     tool_call: z.object({ name: z.string(), input: z.unknown() }),
+    tool_result: z.object({ name: z.string(), summary: z.string(), ok: z.boolean() }),
   },
   handler: async (input: Args, ctx) => {
     const sessionUser: ConverseSessionUser | null = input.lessonContext ? null : input.sessionUser ?? null;
@@ -652,6 +655,15 @@ export default defineTool({
             priority: 'interactive',
             mcpConfig,
             allowedTools: [...allowedTools],
+            // Reuse chat-protocol's result summary for public manual evidence.
+            // Owner/private tools never publish their return bodies here.
+            ...(hostTrust === 'public' ? { onToolResult: (result: { name: string; output: string; isError: boolean }) => {
+              const name = canonicalToolName(result.name);
+              if (!PUBLIC_MANUAL_TOOLS.includes(`mcp__agentmcp__${name}`)) return;
+              const evidence = captureToolResultEvidence(name, result.output, result.isError);
+              emitChatEvent(ctx, { type: 'tool_result', name: evidence.name,
+                summary: evidence.output, ok: !evidence.isError });
+            } } : {}),
             permissionMode: 'bypassPermissions',
             // Isolate the claude-code brain spawn from the host ~/.claude so
             // it loads ONLY its agentmcp tools + persona — not the dev box's

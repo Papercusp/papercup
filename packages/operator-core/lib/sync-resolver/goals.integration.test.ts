@@ -36,6 +36,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import postgres, { type Sql } from 'postgres';
 import { createFreshTestDb, type MigratedTestDb } from '@papercusp/test-config/pg';
+import { setupBaselineCoordFixture, type BaselineCoordFixture } from '../_baseline-coord-fixture';
 import { GOAL_SPEND_SNAPSHOT_SOURCE } from '@papercusp/db-org';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -56,6 +57,7 @@ const GOAL = 'goal-under-test';
 
 let db: MigratedTestDb;
 let sql: Sql;
+let nestedPg: BaselineCoordFixture;
 
 // The resolvers reach for their connection through `getOrgPg()` at call time
 // (a dynamic import inside each function), so pointing that at the test
@@ -107,9 +109,12 @@ async function provision(url: string): Promise<void> {
 beforeAll(async () => {
   db = await createFreshTestDb({ provision });
   sql = postgres(db.url, { max: 4, onnotice: () => {}, prepare: false });
+  // The owner report also uses dedicated connections outside getOrgPg().
+  nestedPg = await setupBaselineCoordFixture({ dsn: db.url });
 }, 600_000);
 
 afterAll(async () => {
+  await nestedPg?.dispose();
   await sql?.end({ timeout: 5 });
   await db?.drop();
 });
@@ -256,16 +261,34 @@ async function usage(slug: string, tsMs: number, costUsd: number, goalId: string
 }
 
 describe('goals.* resolvers against real SQL', () => {
+  it('reads a non-plan collection through the shared reader, retaining owner choices', async () => {
+    await goal();
+    const { resolveGoalDetail } = await import('./goals');
+    const schema = { tea_choices: { datatype: 'list', default: ['mint', 'rooibos'], editable_by: 'both',
+      collection: { source: 'manual', policy: 'tea_policy', order: 'priority', selectable: true, defaultSelected: true } },
+      tea_policy: { datatype: 'ordered-selection-policy', editable_by: 'owner', default: { order: [], excluded: [] } } };
+    const policy = { value: { order: ['rooibos', 'mint', 'dormant'], excluded: ['mint'] }, version: 4,
+      provenance: 'owner-edit', edited_by: 'human', edited_at: '2026-10-01T00:00:00Z' };
+    await sql`UPDATE harness_shared.goals SET property_schema = ${sql.json(schema)},
+      properties = ${sql.json({ tea_policy: policy })} WHERE workspace_id = ${WS} AND id = ${GOAL}`;
+    const detail = await resolveGoalDetail({ workspaceId: WS, goalId: GOAL }) as {
+      goalData: { collections: Record<string, { selection: { selected: string[]; policyVersion: number }; rows: Array<{ id: string; selected: boolean }> }> } };
+    expect(detail.goalData.collections.tea_choices.selection).toMatchObject({ policyVersion: 4, selected: ['rooibos'] });
+    expect(detail.goalData.collections.tea_choices.rows).toMatchObject([{ id: 'rooibos', selected: true }, { id: 'mint', selected: false }]);
+    const [stored] = await sql`SELECT properties FROM harness_shared.goals WHERE workspace_id = ${WS} AND id = ${GOAL}`;
+    expect(stored.properties.tea_policy).toEqual(policy);
+  });
+
   it('exposes stored standing identity in list and detail even after a goal is renamed', async () => {
     await goal();
     await sql`UPDATE harness_shared.goals SET standing = true, title = 'Renamed steward' WHERE id = ${GOAL}`;
     const { resolveGoalsList, resolveGoalDetail } = await import('./goals');
     const list = await resolveGoalsList({ workspaceId: WS });
-    const detail = await resolveGoalDetail({ workspaceId: WS, goalId: GOAL });
+    const detail = await resolveGoalDetail({ workspaceId: WS, goalId: GOAL }) as { goal: { standing: boolean } | null };
     expect(list.goals.find((g) => g.id === GOAL)?.standing).toBe(true);
     expect(detail.goal?.standing).toBe(true);
     await sql`UPDATE harness_shared.goals SET standing = false WHERE id = ${GOAL}`;
-    const ordinary = await resolveGoalDetail({ workspaceId: WS, goalId: GOAL });
+    const ordinary = await resolveGoalDetail({ workspaceId: WS, goalId: GOAL }) as { goal: { standing: boolean } | null };
     expect(ordinary.goal?.standing).toBe(false);
   });
   it('resolveGoalsList RUNS — the assertion the whole file exists for', async () => {

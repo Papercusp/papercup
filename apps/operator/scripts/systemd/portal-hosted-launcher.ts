@@ -122,6 +122,15 @@ async function main(): Promise<void> {
 
   const hosted = parseEnvFile(readFileSync(hostedEnvFile, "utf8"));
   const operatorFile = readOptional(process.env.PAPERCUSP_PORTAL_OPERATOR_ENV_FILE?.trim());
+  const adminDatabaseUrl =
+    process.env.HARNESS_ADMIN_DATABASE_URL
+    ?? operatorFile.HARNESS_ADMIN_DATABASE_URL
+    ?? operatorFile.DATABASE_URL;
+  if (!adminDatabaseUrl) throw new Error("portal_hosted_admin_database_url_missing");
+  // Integration references are resolved in this launcher process, before the
+  // Portal child starts. Give that reader the same admin URL the child receives;
+  // setting it only on childEnv makes the resolver silently read the wrong store.
+  process.env.HARNESS_ADMIN_DATABASE_URL = adminDatabaseUrl;
   // The launcher is copied to ~/.local/bin, outside the repo's tsconfig path
   // map. Load the canonical resolver by absolute URL so a service restart does
   // not depend on the current working directory or a symlinked node_modules.
@@ -135,10 +144,7 @@ async function main(): Promise<void> {
   // The encrypted store reader uses the admin URL. Keep DATABASE_URL out of
   // the child so the Portal's own store remains its persistent/embedded store,
   // while the operator-state reader still has its database connection.
-  childEnv.HARNESS_ADMIN_DATABASE_URL =
-    process.env.HARNESS_ADMIN_DATABASE_URL
-    ?? operatorFile.HARNESS_ADMIN_DATABASE_URL
-    ?? operatorFile.DATABASE_URL;
+  childEnv.HARNESS_ADMIN_DATABASE_URL = adminDatabaseUrl;
   childEnv.PAPERCUSP_INTEGRATION_ROOT = integrationRoot;
   childEnv.PORTAL_LOCAL_MODE = "0";
   childEnv.PORTAL_USE_MEMORY_STORE = "0";

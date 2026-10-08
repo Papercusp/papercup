@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { pushSentinelSay } from '../../sentinel-output-buffer';
 import { getOrgPg } from '@papercusp/db-org';
 import uiDispatch from '../ui/dispatch';
@@ -31,7 +31,7 @@ export default defineTool({
   effect: 'write',
   guidance: {
     when: `For a short reply pass text. When the user explicitly asks to read content aloud, pass operation:'read' and content from an authorized reader (text, selection, HTML or PDF). Read is lossless, not summarize. Check source coverage and the returned receipt; started does not mean audibly completed. operation:'control' targets that reading's id for pause/resume/stop/status.`,
-    notWhen: `Don't speak internal tool steps, long detail, or code aloud. For multi-peer P2P voice use voice:join, not this.`,
+    notWhen: `Don't speak internal tool steps. Long original content uses operation:read. For a requested summary, use your native summary when the complete source fits your context, or documents:read operation:summarize for bounded/repeated processing; then read the explicit summary. For multi-peer P2P voice use voice:join.`,
     seeAlso: [
       'voice:join (multi-peer P2P voice)',
       'voice:transcript (read what was heard / spoken)',
@@ -39,7 +39,7 @@ export default defineTool({
   },
   requirePrincipal: false,
   // The voice-first Sentinel is the primary caller; operator may speak too.
-  agentRoles: ['papercup', 'operator'],
+  agentRoles: [...SU_ROLES, 'papercup', 'papercup-deep', 'kettle', 'operator'],
   rolesQuota: { sentinel: { perRun: 2000 }, papercup: { perRun: 2000 }, operator: { perRun: 400 } }, // papercup: pot-rename dual-accept twin of sentinel (P1 MIGRATE)
   args: z.union([
     z.object({ text: z.string().min(1).describe('Short spoken reply.') }),

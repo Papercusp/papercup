@@ -1059,7 +1059,7 @@ export default defineTool({
         .array(z.string().min(1))
         .max(50)
         .optional()
-        .describe('confirm:true only: registered worktree paths from the dry-run list to remove.'),
+        .describe('Registered worktree paths: narrow a dry-run preview, or remove those targets with confirm:true. Omit for the full preview.'),
       confirm: z
         .boolean()
         .optional()
@@ -1097,6 +1097,7 @@ export default defineTool({
         isAutoManaged: isAutoManagedCutWorktree,
         releaseVersionPaths: RELEASE_RESUME_VERSION_PATHS,
         loadReleases: loadReleaseRecords,
+        ...(args.targets?.length ? { targets: args.targets } : {}),
         ...(args.minIdleHours !== undefined ? { minIdleHours: args.minIdleHours } : {}),
       });
       if (!args.confirm) {

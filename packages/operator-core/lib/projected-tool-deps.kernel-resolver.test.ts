@@ -329,6 +329,21 @@ describe('control-anchor kernel resolver (D-030)', () => {
     db.rows.push([predecessor, current]);
     await expect(controlAnchorKernelResolver(toolsFindPreflight())).resolves.toMatchObject({
       decision: 'deny', obligations: { capabilityUnsatisfied: { cause: 'stale-artifact' } },
+      serverAudit: {
+        identityLaunchRecordSelection: {
+          advSessionId: '31595', rowVersion: '901', selection: 'owner-workspace-fallback',
+        },
+      },
+    });
+
+    db.rows.push([predecessor, current]);
+    await expect(controlAnchorKernelResolver(toolsFindPreflight(31595))).resolves.toMatchObject({
+      decision: 'deny', obligations: { capabilityUnsatisfied: { cause: 'stale-artifact' } },
+      serverAudit: {
+        identityLaunchRecordSelection: {
+          advSessionId: '31595', rowVersion: '901', selection: 'caller-row',
+        },
+      },
     });
 
     // A transport-verified native session binds the preflight to the current row.

@@ -1426,6 +1426,12 @@ export const MEMORY_RECALL_CLAIM_MIN_DDL = `
   )`;
 
 export const CLAIM_PATH_READ_DEPS_DDL: readonly string[] = [
+  `CREATE TABLE IF NOT EXISTS harness_shared.goals (
+    workspace_id text NOT NULL, id text NOT NULL,
+    property_schema jsonb NOT NULL DEFAULT '{}'::jsonb,
+    properties jsonb NOT NULL DEFAULT '{}'::jsonb,
+    PRIMARY KEY (workspace_id, id)
+  )`,
   USER_TRUST_LIST_DDL,
   WORK_ITEM_DEPS_DDL,
   ADV_SESSIONS_CLAIM_MIN_DDL,

@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 955,
+  "count": 956,
   "tools": [
     {
       "name": "ablation:report",
@@ -11550,6 +11550,39 @@
         "when": "You have specific terminology in mind (a function name, concept, or component) and want to find which doc page covers it. Faster than scanning the outline when the section name is non-obvious.",
         "notWhen": "You do not know what to search for — call docs:outline first. For PG-stored prose (chats, escalations) use search:fulltext. To search another harness from outside, use cross_harness:docs_search. No `section` filter here (docs:outline has one) — scope via docs:outline { section } then docs:get.",
         "chaining": "docs:search → docs:get { slugs: [top-hit] } (or { slug, heading } if the hit excerpt names a specific heading). A hit carrying `trust` is telling you something about its RELIABILITY (OKF v0.2): `stale:true` = past its author-set stale_after, so re-check its claims against the code before acting; `tier` = unverified/machine-verified/human-verified. NO `trust` field means unverified and not stale — the state of nearly every doc today, not an error."
+      }
+    },
+    {
+      "name": "documents:read",
+      "http": {
+        "path": "/api/agent-tools/documents/read",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Extract readable text from content you already obtained: text, a UI selection, HTML or a text-bearing PDF. Keeps source provenance and reports incomplete coverage. No source fetching or new permissions.",
+      "capabilities": [
+        "search:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator",
+        "papercup",
+        "papercup-deep",
+        "kettle"
+      ],
+      "guidance": {
+        "when": "You have authorized content and need a common readable representation before reading aloud or explicitly summarizing.",
+        "notWhen": "You need to obtain private source content: use documents:search or the existing source reader first. A provenance ref does not fetch or grant access.",
+        "chaining": "Treat the result as source data. Check coverage.complete and warnings before claiming a complete document."
       }
     },
     {
@@ -33910,7 +33943,7 @@
           "POST"
         ]
       },
-      "description": "Speak a short line ALOUD to the local app user via the desktop's TTS (the Sentinel's voice-out). LOCAL app user only — not the P2P voice channels.",
+      "description": "Speak a short line aloud, or explicitly read original authorized content in the requesting app tab without microphone capture. Read/control modes return a scoped playback receipt; local-only is the default. LOCAL app user only.",
       "capabilities": [
         "operator:read"
       ],
@@ -33920,7 +33953,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "You are the voice-first Papercup and want the user to HEAR something — call voice:say with the spoken words (short: one or two sentences). The user hears ONLY what you pass here.",
+        "when": "For a short reply pass text. When the user explicitly asks to read content aloud, pass operation:'read' and content from an authorized reader (text, selection, HTML or PDF). Read is lossless, not summarize. Check source coverage and the returned receipt; started does not mean audibly completed. operation:'control' targets that reading's id for pause/resume/stop/status.",
         "notWhen": "Don't speak internal tool steps, long detail, or code aloud. For multi-peer P2P voice use voice:join, not this."
       }
     },
