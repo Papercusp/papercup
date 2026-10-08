@@ -105,7 +105,7 @@ import {
   type ClaimHealth,
 } from '../../fleet/assignments';
 import { listPresence } from '../coordination/presence';
-import { findLiveHost } from '../../events/await/psu-pty-discovery';
+import { findLiveHost, findLiveHostAsync } from '../../events/await/psu-pty-discovery';
 import { applyPsuHostAuthority } from '../coordination/liveness-oracle';
 import {
   reconcileWakeability,
@@ -4345,7 +4345,26 @@ export async function buildLeaderBrief(
     () => listPresence({ workspaceId }),
     [],
   );
-  reconcilePsuHostLiveness(rosterEntries, new Map(presence.map((p) => [p.ownerId, p.agentRole] as const)));
+  const visibleHostIds = [...new Set(rosterEntries
+    .filter((agent) => {
+      const role = presence.find((row) => row.ownerId === agent.agentId)?.agentRole;
+      return agent.tty != null && role != null && role !== 'cup';
+    })
+    .map((agent) => agent.agentId))];
+  const visibleHosts = await boundedLeaderBriefRead('visible-psu-hosts', async () => {
+    const hosts = new Map<string, unknown | null>();
+    for (let i = 0; i < visibleHostIds.length; i += 16) {
+      await Promise.all(visibleHostIds.slice(i, i + 16).map(async (ownerId) => {
+        hosts.set(ownerId, await findLiveHostAsync(ownerId).catch(() => null));
+      }));
+    }
+    return hosts;
+  }, new Map<string, unknown | null>(visibleHostIds.map((id) => [id, { lookupTimedOut: true }])));
+  reconcilePsuHostLiveness(
+    rosterEntries,
+    new Map(presence.map((p) => [p.ownerId, p.agentRole] as const)),
+    (ownerId) => visibleHosts.get(ownerId) ?? null,
+  );
   const { rows: grouped, census: memberCensus } = selectLeaderBriefMembers(rosterEntries, fleet, args.include_stale);
   await boundedLeaderBriefRead('decorate-parked-on', () => decorateParkedOn(grouped), grouped);
   // Keep the parked-on → loop → member-verdict dependency chain intact. The

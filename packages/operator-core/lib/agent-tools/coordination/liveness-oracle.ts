@@ -83,7 +83,7 @@ import {
   recordedLiveOwnerIds,
   type AdvSessionRow,
 } from '../../adv-sessions';
-import { findLiveHost } from '../../events/await/psu-pty-discovery';
+import { findLiveHost, findLiveHostAsync } from '../../events/await/psu-pty-discovery';
 
 /** The per-owner inputs a caller supplies. Everything beyond `ownerId` is
  *  optional — a missing leg degrades exactly like the legacy call sites did
@@ -227,6 +227,8 @@ export interface ResolveSessionStatesOpts {
   fetchRecordedEndedFn?: (ids: string[]) => Promise<Set<string>>;
   probePidFn?: (r: { host?: string | null; pid?: number | null }) => boolean | null;
   findHostFn?: (ownerId: string) => unknown | null;
+  /** Async production lookup so psu-pty filesystem waits stay off request event loops. */
+  findHostAsyncFn?: (ownerId: string) => Promise<unknown | null>;
   getPresenceFn?: (
     ownerId: string,
   ) => Promise<{
@@ -524,7 +526,8 @@ export async function resolveSessionStates(
   const fetchRecorded = opts.fetchRecordedLiveFn ?? recordedLiveOwnerIds;
   const fetchEnded = opts.fetchRecordedEndedFn ?? endedRecordedOwnerIds;
   const probePidFn = opts.probePidFn ?? probeProcessLiveness;
-  const findHostFn = opts.findHostFn ?? findLiveHost;
+  const explicitFindHostFn = opts.findHostFn;
+  const findHostAsyncFn = opts.findHostAsyncFn ?? findLiveHostAsync;
 
   let hydrated: readonly LivenessSubject[] = subjects;
   const absentPresence = new Set<string>();
@@ -644,6 +647,27 @@ export async function resolveSessionStates(
       ? fetchSelf(ids).catch(() => new Map<string, SelfWakeSignals>())
       : Promise.resolve(new Map<string, SelfWakeSignals>()),
   ]);
+  const pidProbeByOwner = new Map<string, boolean | null>();
+  const hostLookupOwnerIds = new Set<string>();
+  for (const subject of hydrated) {
+    const pidResult = probePidFn({ host: subject.host, pid: subject.pid });
+    pidProbeByOwner.set(subject.ownerId, pidResult);
+    if (pidResult === false || (
+      opts.psuHostPositiveAuthority === true &&
+      subject.agentRole != null &&
+      subject.agentRole !== 'cup'
+    )) hostLookupOwnerIds.add(subject.ownerId);
+  }
+  const liveHostsByOwner = new Map<string, unknown | null>();
+  if (!explicitFindHostFn) {
+    const idsToLookup = [...hostLookupOwnerIds];
+    for (let i = 0; i < idsToLookup.length; i += 16) {
+      await Promise.all(idsToLookup.slice(i, i + 16).map(async (ownerId) => {
+        liveHostsByOwner.set(ownerId, await findHostAsyncFn(ownerId).catch(() => null));
+      }));
+    }
+  }
+  const findHostFn = explicitFindHostFn ?? ((ownerId: string) => liveHostsByOwner.get(ownerId) ?? null);
   const psuHost = {
     enabled: opts.psuHostAuthority === true || opts.psuHostPositiveAuthority === true,
     negative: opts.psuHostAuthority === true,
@@ -683,7 +707,7 @@ export async function resolveSessionStates(
         w,
         recordedLive,
         nowMs,
-        probePidFn,
+        (r) => pidProbeByOwner.has(s.ownerId) ? pidProbeByOwner.get(s.ownerId)! : probePidFn(r),
         psuHost,
         selfWake.get(s.ownerId),
         recordedEnded,

@@ -25,6 +25,7 @@ import {
   type FleetRosterDegradedLeg,
 } from '../../fleet/fleet-roster';
 import { applyPsuHostAuthority } from '../coordination/liveness-oracle';
+import { findLiveHostAsync } from '../../events/await/psu-pty-discovery';
 import { getCompletionIntegrityStats, type CompletionIntegrityStats } from '../../work-items';
 import { withBoundedTimeout } from '../../bounded-timeout';
 import type { AdvSessionEndedBy } from '../../adv-sessions';
@@ -486,7 +487,26 @@ export default defineTool({
       !queriedRosterIds.has(fleet.leaderOwnerId)
         ? [...rosterResult.entries, rosterResult.leaderEntry]
         : rosterResult.entries;
-    const reconciledRoster = reconcileFleetStatusLiveness(rosterForLiveness);
+    const visibleHostIds = rosterForLiveness
+      .filter((member) => member.tty != null && member.agentRole != null && member.agentRole !== 'cup')
+      .map((member) => member.agentId);
+    const visibleHostsResult = await withBoundedTimeout((async () => {
+      const hosts = new Map<string, unknown | null>();
+      for (let i = 0; i < visibleHostIds.length; i += 16) {
+        await Promise.all(visibleHostIds.slice(i, i + 16).map(async (ownerId) => {
+          hosts.set(ownerId, await findLiveHostAsync(ownerId).catch(() => null));
+        }));
+      }
+      return hosts;
+    })(), {
+      fallback: new Map<string, unknown | null>(visibleHostIds.map((id) => [id, { lookupTimedOut: true }])),
+      timeoutMs: FLEET_STATUS_OPTIONAL_LEG_TIMEOUT_MS,
+      label: 'fleet:status:psuHosts',
+    });
+    const reconciledRoster = reconcileFleetStatusLiveness(
+      rosterForLiveness,
+      (ownerId) => visibleHostsResult.value.get(ownerId) ?? null,
+    );
     const roster = reconciledRoster.filter((member) => queriedRosterIds.has(member.agentId));
     const completionStats = completionStatsResult.value;
     const runningBees = runningBeesResult.value;

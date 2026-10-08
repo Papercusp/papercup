@@ -52,7 +52,7 @@ import {
 import { listFleets, type AgentFleetRecord } from '../agent-fleets-store';
 import { getOrgPg } from '@papercusp/db-org';
 import { withBoundedTimeout } from '../bounded-timeout';
-import { findLiveHost } from '../events/await/psu-pty-discovery';
+import { findLiveHost, findLiveHostAsync } from '../events/await/psu-pty-discovery';
 
 /**
  * WI-3818: per-sub-read budget for listFleetRoster's fan-out (presence and the
@@ -211,6 +211,7 @@ export function foldFleetRoster(
    *  `selfWake: null` (UNKNOWN) — never a fabricated `'none'`. */
   selfWake: Map<string, SelfWakeSignals> = new Map(),
   recordedEnded: ReadonlySet<string> = new Set<string>(),
+  psuHosts?: ReadonlyMap<string, unknown | null>,
 ): FleetRosterEntry[] {
   const presById = new Map(presence.map((p) => [p.ownerId, p]));
   const asgById = new Map(assignments.map((a) => [a.agentId, a]));
@@ -252,7 +253,14 @@ export function foldFleetRoster(
           undefined,
           // Match targeted presence's verified native-host authority. Keep
           // negative authority off: a missing local host is not death evidence.
-          { enabled: true, negative: false, positive: true, findHostFn: findLiveHost },
+          {
+            enabled: true,
+            negative: false,
+            positive: true,
+            findHostFn: psuHosts
+              ? (ownerId) => psuHosts.get(ownerId) ?? null
+              : findLiveHost,
+          },
           selfWake.get(id),
           recordedEnded,
         )
@@ -440,7 +448,8 @@ export type FleetRosterDegradedLeg =
   | 'assignments'
   | 'wakeability'
   | 'recorded'
-  | 'selfwake';
+  | 'selfwake'
+  | 'psuHosts';
 
 export interface ListFleetRosterResult {
   entries: FleetRosterEntry[];
@@ -538,7 +547,7 @@ export async function listFleetRosterDiagnosed(opts: ListFleetRosterOpts): Promi
     ]),
   ];
 
-  const [tier1Result, wakeabilityResult, recordedResult, selfWakeResult, rowsResult] = await Promise.all([
+  const [tier1Result, wakeabilityResult, recordedResult, selfWakeResult, hostResult, rowsResult] = await Promise.all([
     withBoundedTimeout(fetchPresenceTier1(enrichmentIds), {
       fallback: new Map<string, PresenceTier1Joins>(),
       timeoutMs: FLEET_ROSTER_SUBREAD_TIMEOUT_MS,
@@ -578,6 +587,19 @@ export async function listFleetRosterDiagnosed(opts: ListFleetRosterOpts): Promi
       timeoutMs: FLEET_ROSTER_SUBREAD_TIMEOUT_MS,
       label: 'fleet-roster:selfwake',
     }),
+    withBoundedTimeout((async () => {
+      const hosts = new Map<string, unknown | null>();
+      for (let i = 0; i < enrichmentIds.length; i += 16) {
+        await Promise.all(enrichmentIds.slice(i, i + 16).map(async (ownerId) => {
+          hosts.set(ownerId, await findLiveHostAsync(ownerId).catch(() => null));
+        }));
+      }
+      return hosts;
+    })(), {
+      fallback: new Map<string, unknown | null>(),
+      timeoutMs: FLEET_ROSTER_SUBREAD_TIMEOUT_MS,
+      label: 'fleet-roster:psu-hosts',
+    }),
     rowsResultPromise,
   ]);
   if (tier1Result.degraded) degradedLegs.push('tier1');
@@ -585,6 +607,7 @@ export async function listFleetRosterDiagnosed(opts: ListFleetRosterOpts): Promi
   if (wakeabilityResult.degraded) degradedLegs.push('wakeability');
   if (recordedResult.degraded) degradedLegs.push('recorded');
   if (selfWakeResult.degraded) degradedLegs.push('selfwake');
+  if (hostResult.degraded) degradedLegs.push('psuHosts');
 
   // A degraded `assignments` leg naturally drops the heaviest per-member detail
   // first (WI-3818's "drop queued detail first" fallback): foldFleetRoster
@@ -602,6 +625,7 @@ export async function listFleetRosterDiagnosed(opts: ListFleetRosterOpts): Promi
     recordedResult.value.live,
     selfWakeResult.value,
     recordedResult.value.ended,
+    hostResult.value,
   );
   let leaderEntry: FleetRosterEntry | null | undefined;
   if (leaderOwnerId != null) {
@@ -618,6 +642,7 @@ export async function listFleetRosterDiagnosed(opts: ListFleetRosterOpts): Promi
           recordedResult.value.live,
           selfWakeResult.value,
           recordedResult.value.ended,
+          hostResult.value,
         ).find((entry) => entry.agentId === leaderOwnerId) ?? null;
     } else {
       leaderEntry = null;
