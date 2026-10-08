@@ -55,6 +55,8 @@ export type SyncRowsResolver = (
 ) => readonly unknown[] | undefined;
 
 export interface SyncQueryStub {
+  /** Deliver a fixture writer's invalidation through the real SSE subscriber. */
+  invalidate(name: string, args?: Record<string, unknown>): Promise<void>;
   /** How many `rest-query` requests this stub actually served. */
   readonly hits: number;
   /** Query names served, in request order (duplicates kept — refetches are real). */
@@ -78,12 +80,29 @@ export interface SyncQueryStub {
 export async function stubSyncQueries(
   page: Page,
   resolve: SyncRowsResolver,
-  options: { transport?: "local" | "hosted" } = {},
+  options: { transport?: "local" | "hosted"; push?: boolean } = {},
 ): Promise<SyncQueryStub> {
   const names: string[] = [];
   const observed: string[] = [];
 
   const endpoint = options.transport === "hosted" ? "/api/hosted/browser" : "/api/zero-harness";
+  if (options.push) {
+    // Keep the actual EventSource and SSEAdapter. Only the fixture's writer is
+    // fake, so its missing server invalidation must cross that same subscriber
+    // boundary rather than directly setting or clearing the query cache.
+    await page.addInitScript(({ endpoint }) => {
+      const NativeEventSource = window.EventSource;
+      const sources = new Set<EventSource>();
+      Object.assign(window, { __syncQueryFixtureSources: sources });
+      window.EventSource = new Proxy(NativeEventSource, {
+        construct(target, args) {
+          const source = Reflect.construct(target, args) as EventSource;
+          if (new URL(source.url, location.href).pathname === `${endpoint}/sse`) sources.add(source);
+          return source;
+        },
+      });
+    }, { endpoint });
+  }
   await page.route(REST_QUERY_ROUTES[options.transport ?? "local"], async (route) => {
     const url = new URL(route.request().url());
     const name = url.searchParams.get('name') ?? '';
@@ -111,6 +130,21 @@ export async function stubSyncQueries(
   });
 
   return {
+    async invalidate(name, args) {
+      if (!options.push) throw new Error('stubSyncQueries.invalidate requires push:true');
+      await page.waitForFunction(() => {
+        const sources = (window as unknown as { __syncQueryFixtureSources?: Set<EventSource> }).__syncQueryFixtureSources;
+        return [...(sources ?? [])].some((source) => source.readyState !== EventSource.CLOSED);
+      });
+      await page.evaluate(({ name, args }) => {
+        const sources = (window as unknown as { __syncQueryFixtureSources: Set<EventSource> }).__syncQueryFixtureSources;
+        for (const source of sources) {
+          if (source.readyState !== EventSource.CLOSED) source.dispatchEvent(new MessageEvent('invalidate', {
+            data: JSON.stringify({ name, args, tsMs: Date.now() }),
+          }));
+        }
+      }, { name, args });
+    },
     get hits() {
       return names.length;
     },

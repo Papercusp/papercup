@@ -37,6 +37,7 @@ interface ScanOptions {
    * snapshot does (<out>/build-context/image-secret-scan.sh). Default: the script in place.
    */
   fromSnapshotCopy?: boolean;
+  genericAccepted?: boolean;
 }
 
 function runScan(fixture: Fixture, options: ScanOptions = {}) {
@@ -47,6 +48,8 @@ function runScan(fixture: Fixture, options: ScanOptions = {}) {
   const rootfs = join(dir, 'rootfs');
   const manifest = join(dir, 'manifest.json');
   const auditor = join(dir, 'auditor.py');
+  const policy = join(dir, 'policy.mjs');
+  const policyRunner = join(bin, 'policy-runner');
   const podmanCallLog = join(dir, 'podman-calls.log');
   mkdirSync(bin);
   mkdirSync(join(rootfs, 'etc'), { recursive: true });
@@ -61,6 +64,13 @@ function runScan(fixture: Fixture, options: ScanOptions = {}) {
   writeFileSync(manifest, JSON.stringify(fixture.manifest));
   writeFileSync(podmanCallLog, '');
   writeFileSync(auditor, ['import sys', 'print("  coverage: 2 file(s) scanned")', 'sys.exit(0)', ''].join('\n'));
+  writeFileSync(policy, 'process.stdout.write(JSON.stringify({accepted: process.env.FAKE_GENERIC_ACCEPTED === "true"}));\n');
+  writeFileSync(policyRunner, ['#!/usr/bin/env bash', 'set -euo pipefail', '[ "${1:-}" = "--tsconfig" ] && shift 2', 'exec node "$@"', ''].join('\n'), { mode: 0o755 });
+  writeFileSync(join(bin, 'gitleaks'), [
+    '#!/usr/bin/env bash', 'set -euo pipefail',
+    'while [ "$#" -gt 0 ]; do if [ "$1" = "--report-path" ]; then printf "[]\\n" > "$2"; exit 0; fi; shift; done',
+    'exit 1', '',
+  ].join('\n'), { mode: 0o755 });
 
   writeFileSync(
     join(bin, 'sudo'),
@@ -111,6 +121,10 @@ function runScan(fixture: Fixture, options: ScanOptions = {}) {
       env: {
         ...process.env,
         PAPERCUSP_RELEASE_AUDITOR: envAuditor,
+        PAPERCUSP_BUNDLED_SECRET_POLICY_EVALUATOR: policy,
+        PAPERCUSP_BUNDLED_SECRET_POLICY_RUNNER: policyRunner,
+        GITLEAKS_BIN: join(bin, 'gitleaks'),
+        FAKE_GENERIC_ACCEPTED: options.genericAccepted === false ? 'false' : 'true',
         PATH: bin + ':' + (process.env.PATH ?? ''),
         PODMAN_CALL_LOG: podmanCallLog,
         FAKE_IMAGE_ID: fixture.imageId,
@@ -129,6 +143,7 @@ function runScan(fixture: Fixture, options: ScanOptions = {}) {
     podmanCalls: readFileSync(podmanCallLog, 'utf8').split('\n').filter(Boolean),
     record: existsSync(recordPath) ? JSON.parse(readFileSync(recordPath, 'utf8')) : null,
     treeLeftBehind: existsSync(join(out, 'secret-scan-rootfs')),
+    rawMatchesLeftBehind: existsSync(join(out, '.secret-scan-gitleaks.raw.json')),
   };
 }
 
@@ -146,6 +161,17 @@ afterEach(() => {
     spawnSync('chmod', ['-R', 'u+w', dir]);
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+describe('image-secret-scan provider-policy preflight', () => {
+  it('refuses a generic-policy finding after a clean privacy audit and removes raw matches', () => {
+    const result = runScan({ imageId: CONFIG_HEX, manifest: singlePlatformManifest('sha256:' + CONFIG_HEX) }, { genericAccepted: false });
+    expect(result.status).toBe(1);
+    expect(result.record).toMatchObject({ verdict: 'findings', exitCode: 1 });
+    expect(result.output).toContain('SECRET_SCAN_RESULT=FINDINGS');
+    expect(result.treeLeftBehind).toBe(false);
+    expect(result.rawMatchesLeftBehind).toBe(false);
+  });
 });
 
 describe('image-secret-scan removes the exported tree even when the image ships read-only directories', () => {

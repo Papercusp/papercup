@@ -16,6 +16,7 @@ vi.mock('@papercusp/db-org', async (original) => ({
 }));
 
 import { emitScorecard, _closeScorecardEmitMutexForTests } from './emit';
+import { recordGradingAudit } from '../../scorecards';
 import { createIssue, getIssue, issuesScopeWorkspace } from '../../issues-engineer';
 import { getRubricCriteriaHash } from '../../rubrics';
 import { OBSERVATION_TOPIC } from '../../harness/improvements/read-items';
@@ -73,6 +74,36 @@ afterAll(async () => {
 });
 
 describe('scorecard audit emission after lease lapse, real Postgres', () => {
+  it('refuses an untracked lease when no active or retained reservation epoch exists', async () => {
+    const hash = await getRubricCriteriaHash(RUBRIC);
+    expect(hash).toBeTruthy();
+    const source = await createIssue({
+      title: 'Untracked lapsed audit lease', kind: 'change',
+      topics: [OBSERVATION_TOPIC], createdBy: 'su-source-author',
+      payload: { observation: {
+        rubricRef: 'lease-acceptance-source', sourceHive: 'papercusp',
+        ratings: { source: { rating: 'pass', evidence: 'source evidence' } },
+        gradingAudit: { state: 'pending', metaRubricRef: RUBRIC,
+          stampedAt: '2026-10-07T00:00:00.000Z', rubricRevision: 1, criteriaHash: hash },
+      } },
+    });
+    const result = await emitScorecard({
+      rubricRef: RUBRIC,
+      terminal: true,
+      subject: { kind: 'scorecard', ref: source.id },
+      gradingAuditReservation: {
+        key: `grading-audit:${source.id}`,
+        reservedAt: '2026-10-07T00:01:00.000Z',
+      },
+      ratings: { 'lease-settlement': { rating: 'pass', evidence: 'No current lease epoch was retained.' } },
+    }, { createdBy: AUDITOR, ctxHarness: 'papercusp', workspaceId: activeWorkspaceId() });
+
+    expect(result).toMatchObject({ ok: false, code: 'grading_audit_reservation_unavailable' });
+    const persisted = await getIssue(source.id);
+    expect((persisted!.payload as { observation: { gradingAudit: unknown } }).observation.gradingAudit)
+      .toMatchObject({ state: 'pending' });
+  });
+
   it('retains the original lease in the request and settles the lease-less pending stamp', async () => {
     const hash = await getRubricCriteriaHash(RUBRIC);
     expect(hash).toBeTruthy();
@@ -89,12 +120,13 @@ describe('scorecard audit emission after lease lapse, real Postgres', () => {
     const lease = { key: `grading-audit:${source.id}`, reservedAt: '2026-10-07T00:01:00.000Z' };
     const workspace = issuesScopeWorkspace();
     await org.adminSql`
-      UPDATE harness_shared.work_items SET payload = jsonb_set(payload,
-        '{observation,gradingAudit,dispatchReservation}', ${JSON.stringify(lease)}::text::jsonb)
+      UPDATE harness_shared.work_items SET payload = jsonb_set(
+        jsonb_set(payload, '{observation,gradingAudit,dispatchReservation}', ${JSON.stringify(lease)}::text::jsonb),
+        '{observation,gradingAudit,lastDispatchReservation}', ${JSON.stringify(lease)}::text::jsonb)
        WHERE workspace_id = ${workspace} AND feature_id = ${source.id}`;
     const start = await getIssue(source.id);
     expect((start!.payload as { observation: { gradingAudit: unknown } }).observation.gradingAudit)
-      .toMatchObject({ state: 'pending', dispatchReservation: lease });
+      .toMatchObject({ state: 'pending', dispatchReservation: lease, lastDispatchReservation: lease });
 
     const args = { rubricRef: RUBRIC, terminal: true,
       subject: { kind: 'scorecard' as const, ref: source.id }, gradingAuditReservation: lease,
@@ -102,14 +134,21 @@ describe('scorecard audit emission after lease lapse, real Postgres', () => {
     };
     const input = { createdBy: AUDITOR, ctxHarness: 'papercusp', workspaceId: activeWorkspaceId() };
     // A newer owner wins: the original lease must never settle a replacement lease.
+    const replacementLease = { key: lease.key, reservedAt: '2026-10-07T00:02:00.000Z' };
     await org.adminSql`
-      UPDATE harness_shared.work_items SET payload = jsonb_set(payload,
-        '{observation,gradingAudit,dispatchReservation,reservedAt}',
-        ${JSON.stringify('2026-10-07T00:02:00.000Z')}::text::jsonb)
+      UPDATE harness_shared.work_items SET payload = jsonb_set(
+        jsonb_set(payload, '{observation,gradingAudit,dispatchReservation}', ${JSON.stringify(replacementLease)}::text::jsonb),
+        '{observation,gradingAudit,lastDispatchReservation}', ${JSON.stringify(replacementLease)}::text::jsonb)
        WHERE workspace_id = ${workspace} AND feature_id = ${source.id}`;
     expect(await emitScorecard(args, input)).toMatchObject({ ok: false, code: 'grading_audit_reservation_mismatch' });
 
-    // Simulate expiration after the start read; retain the original request lease.
+    // A dispatcher that restores the original live auditor restores its lease epoch too.
+    await org.adminSql`
+      UPDATE harness_shared.work_items SET payload = jsonb_set(
+        jsonb_set(payload, '{observation,gradingAudit,dispatchReservation}', ${JSON.stringify(lease)}::text::jsonb),
+        '{observation,gradingAudit,lastDispatchReservation}', ${JSON.stringify(lease)}::text::jsonb)
+       WHERE workspace_id = ${workspace} AND feature_id = ${source.id}`;
+    // Simulate expiration after the start read; retain the original request lease epoch.
     await org.adminSql`
       UPDATE harness_shared.work_items SET payload = payload #- '{observation,gradingAudit,dispatchReservation}'
        WHERE workspace_id = ${workspace} AND feature_id = ${source.id}`;
@@ -131,10 +170,78 @@ describe('scorecard audit emission after lease lapse, real Postgres', () => {
     } } }).observation.gradingAudit;
     expect(audit).toMatchObject({ state: 'passed', auditor: AUDITOR });
     expect(audit).not.toHaveProperty('dispatchReservation');
+    expect(audit).toHaveProperty('lastDispatchReservation', lease);
     const auditCard = await getIssue(audit.auditIssueId);
     expect(auditCard).not.toBeNull();
     expect(auditCard!.createdBy).toBe(AUDITOR);
     expect((auditCard!.payload as { observation: unknown }).observation)
       .toMatchObject({ rubricRef: RUBRIC, subject: { kind: 'scorecard', ref: source.id } });
+  });
+
+  it('fences a lapsed auditor after a newer lease is released, including a settlement race', async () => {
+    const hash = await getRubricCriteriaHash(RUBRIC);
+    expect(hash).toBeTruthy();
+    const source = await createIssue({
+      title: 'Superseded lapsed audit lease', kind: 'change',
+      topics: [OBSERVATION_TOPIC], createdBy: 'su-source-author',
+      payload: { observation: {
+        rubricRef: 'lease-acceptance-source', sourceHive: 'papercusp',
+        ratings: { source: { rating: 'pass', evidence: 'source evidence' } },
+        gradingAudit: { state: 'pending', metaRubricRef: RUBRIC,
+          stampedAt: '2026-10-07T00:00:00.000Z', rubricRevision: 1, criteriaHash: hash },
+      } },
+    });
+    const oldLease = { key: `grading-audit:${source.id}`, reservedAt: '2026-10-07T00:03:00.000Z' };
+    const newLease = { key: oldLease.key, reservedAt: '2026-10-07T00:04:00.000Z' };
+    const workspace = issuesScopeWorkspace();
+    await org.adminSql`
+      UPDATE harness_shared.work_items SET payload = jsonb_set(
+        jsonb_set(payload, '{observation,gradingAudit,dispatchReservation}', ${JSON.stringify(oldLease)}::text::jsonb),
+        '{observation,gradingAudit,lastDispatchReservation}', ${JSON.stringify(oldLease)}::text::jsonb)
+       WHERE workspace_id = ${workspace} AND feature_id = ${source.id}`;
+    const staleRead = await getIssue(source.id);
+    if (!staleRead) throw new Error('expected the grading-audit source to exist');
+
+    // A newer dispatcher claims the card, then releases its active field. The
+    // persistent latest epoch must still reject the old auditor.
+    await org.adminSql`
+      UPDATE harness_shared.work_items SET payload = jsonb_set(
+        jsonb_set(payload, '{observation,gradingAudit,dispatchReservation}', ${JSON.stringify(newLease)}::text::jsonb),
+        '{observation,gradingAudit,lastDispatchReservation}', ${JSON.stringify(newLease)}::text::jsonb)
+       WHERE workspace_id = ${workspace} AND feature_id = ${source.id}`;
+    await org.adminSql`
+      UPDATE harness_shared.work_items SET payload = payload #- '{observation,gradingAudit,dispatchReservation}'
+       WHERE workspace_id = ${workspace} AND feature_id = ${source.id}`;
+
+    const args = {
+      rubricRef: RUBRIC,
+      terminal: true,
+      subject: { kind: 'scorecard' as const, ref: source.id },
+      gradingAuditReservation: oldLease,
+      ratings: { 'lease-settlement': { rating: 'pass', evidence: 'Old lease must not settle after replacement.' } },
+    };
+    const input = { createdBy: AUDITOR, ctxHarness: 'papercusp', workspaceId: activeWorkspaceId() };
+    expect(await emitScorecard(args, input)).toMatchObject({
+      ok: false,
+      code: 'grading_audit_reservation_mismatch',
+    });
+
+    // Simulate the newer dispatch landing after an old auditor's read but before
+    // its atomic settle write. The stale snapshot passes recordGradingAudit's
+    // read-side lease check; the database CAS must reject the newer epoch.
+    const raced = await recordGradingAudit(
+      source.id,
+      {
+        auditIssueId: 'EI-stale-audit-card',
+        auditor: AUDITOR,
+        verdict: 'passed',
+        dispatchReservation: oldLease,
+      },
+      { getIssue: async () => staleRead },
+    );
+    expect(raced).toMatchObject({ ok: false, error: expect.stringContaining('failed to record grading audit') });
+    const persisted = await getIssue(source.id);
+    expect((persisted!.payload as { observation: { gradingAudit: unknown } }).observation.gradingAudit)
+      .toMatchObject({ state: 'pending', lastDispatchReservation: newLease });
   });
 });

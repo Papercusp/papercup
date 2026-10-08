@@ -8,10 +8,12 @@
 # the server bundle ships through (papercusp-desktop/bin/audit-release-bundle.py --scan-dir),
 # then writes a machine-readable record beside the log.
 #
-# Why the release auditor and not gitleaks: the question is "does this image carry anything that
+# The release auditor answers "does this image carry anything that
 # must never leave this machine" — this build box's identity literals, the known sensitive
 # identities, and credential values. That is exactly the auditor's policy, and the server bundle
-# is already gated on it. A second, differently-tuned scanner would answer a different question.
+# is already gated on it. The provider's gitleaks policy answers a separate bundled-secret
+# question, so WI-10007452 also exercises its existing counted justifications on this export.
+# That preflight catches policy drift before signing/cloud spend; publication still scans the AMI.
 #
 # Why the scan runs as THIS user over an exported copy: the auditor resolves its identity
 # literals (build user, home path, hostname) from the process that runs it. Under sudo the user
@@ -38,6 +40,9 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # points outside the repository. The bake resolves the auditor from the real source tree and
 # exports it here. --auditor still wins over both.
 AUDITOR="${PAPERCUSP_RELEASE_AUDITOR:-$HERE/../../../papercusp-desktop/bin/audit-release-bundle.py}"
+POLICY_CLI="${PAPERCUSP_BUNDLED_SECRET_POLICY_EVALUATOR:-$HERE/../../../apps/operator/lib/release/bootc-image-release-request-cli.ts}"
+POLICY_RUNNER="${PAPERCUSP_BUNDLED_SECRET_POLICY_RUNNER:-$HERE/../../../node_modules/.bin/tsx}"
+GITLEAKS="${GITLEAKS_BIN:-$(command -v gitleaks || true)}"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -62,6 +67,9 @@ case "$IMAGE" in *@sha256:*) ;; *) die "--image must be digest-pinned (repo@sha2
 DIGEST="${IMAGE#*@}"
 case "$DIGEST" in sha256:[0-9a-f]*) [ "${#DIGEST}" -eq 71 ] || die "malformed digest $DIGEST";; *) die "malformed digest $DIGEST";; esac
 [ -f "$AUDITOR" ] || die "release auditor not found: $AUDITOR"
+[ -f "$POLICY_CLI" ] || die "bundled secret policy evaluator not found: $POLICY_CLI"
+[ -x "$POLICY_RUNNER" ] || die "bundled secret policy runner not executable: $POLICY_RUNNER"
+[ -x "$GITLEAKS" ] || die "gitleaks is required for the provider secret-policy preflight"
 case "$MIN_FILES" in ''|*[!0-9]*) die "--min-files must be a whole number";; esac
 [ "$(id -u)" -ne 0 ] || die "run as the build user, not root: the auditor's identity literals come from the running user"
 
@@ -70,6 +78,8 @@ OUTDIR="$(cd "$OUTDIR" && pwd)"
 TREE="$OUTDIR/secret-scan-rootfs"
 LOG="$OUTDIR/secret-scan.log"
 REC="$OUTDIR/secret-scan.json"
+GITLEAKS_RAW="$OUTDIR/.secret-scan-gitleaks.raw.json"
+GENERIC_REPORT="$OUTDIR/bundled-secret-policy.json"
 rm -f "$LOG" "$REC"
 
 PODMAN=(sudo -n podman)
@@ -91,6 +101,7 @@ remove_tree() {
 cleanup() {
   [ -n "$CTR" ] && "${PODMAN[@]}" rm -f "$CTR" >/dev/null 2>&1
   [ "$KEEP_TREE" -eq 1 ] || remove_tree "$TREE"
+  rm -f "$GITLEAKS_RAW"
 }
 trap cleanup EXIT
 
@@ -153,6 +164,29 @@ echo "extracted regular files: $FILES (floor $MIN_FILES)"
 echo "=== audit-release-bundle.py --scan-dir ==="
 python3 "$AUDITOR" --scan-dir "$TREE" >"$LOG" 2>&1
 RC=$?
+# WI-10007452: the privacy auditor and the provider's generic-secret policy answer different
+# questions. Exercise BOTH against this already digest-bound export before signing or uploading.
+# Keep the full provider image scan at publication; this is only an early bundled-policy guard.
+if [ "$RC" -eq 0 ]; then
+  cat >"$OUTDIR/gitleaks.toml" <<'TOML'
+[extend]
+useDefault = true
+[allowlist]
+description = "ostree object store duplicates the scanned deployment"
+paths = ['''/ostree/repo/objects/''']
+TOML
+  "$GITLEAKS" dir "$TREE" --config "$OUTDIR/gitleaks.toml" --report-format json \
+    --report-path "$GITLEAKS_RAW" --no-banner --log-level error --exit-code 0 \
+    >"$OUTDIR/bundled-secret-scan.log" 2>&1 || die "provider secret-policy scanner could not measure the image"
+  "$POLICY_RUNNER" --tsconfig "$(dirname "$POLICY_CLI")/../../../../tsconfig.json" "$POLICY_CLI" \
+    --input-file "$GITLEAKS_RAW" --emit bundled-secret-policy >"$GENERIC_REPORT" \
+    2>"$OUTDIR/bundled-secret-policy.err" || die "provider secret-policy report could not be evaluated"
+  rm -f "$GITLEAKS_RAW"
+  GENERIC_ACCEPTED="$(jq -er 'if .accepted == true then "true" elif .accepted == false then "false" else error("missing measured verdict") end' "$GENERIC_REPORT")" \
+    || die "provider secret-policy report has no measured verdict"
+  echo "BUNDLED_SECRET_POLICY_ACCEPTED=$GENERIC_ACCEPTED" >>"$LOG"
+  [ "$GENERIC_ACCEPTED" = "true" ] || RC=1
+fi
 AUDITOR_SHA="$(sha256sum "$AUDITOR" | cut -d' ' -f1)"
 COVERAGE="$(sed -n 's/^ *coverage: \([0-9,]*\) file(s).*/\1/p' "$LOG" | head -1 | tr -d ,)"
 case "$RC" in

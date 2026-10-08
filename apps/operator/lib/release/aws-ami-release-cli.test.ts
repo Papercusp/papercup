@@ -99,6 +99,13 @@ describe("aws AMI release CLI", () => {
     });
   });
 
+  it("parses explicit candidate recovery and keeps it on the production composition", () => {
+    const args = parseAwsAmiReleaseCliArgs(["--request-file", "/tmp/r", "--resume-candidate-ami", "ami-0abc"]);
+    expect(awsAmiReleaseCompositionOptions(args, undefined, {})).toEqual({ resumeCandidateImageId: "ami-0abc" });
+    expect(() => parseAwsAmiReleaseCliArgs(["--request-file", "/tmp/r", "--resume-candidate-ami", "latest"]))
+      .toThrow(/must be an AMI id/);
+  });
+
   it("maps flags and executable env overrides onto composition options", () => {
     const options = awsAmiReleaseCompositionOptions(
       {

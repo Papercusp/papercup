@@ -25,23 +25,22 @@ import {
 } from './image-scan-policy';
 
 /** The image-side path prefix the scanner reports, mount point and all. */
-const BUNDLE = '/mnt/candidate/sda1/opt/papercusp/releases/0.0.21-p318r62b';
+const BUNDLE = '/mnt/candidate/sda1/opt/papercusp/releases/0.0.21-p012r69';
 
 /**
- * The 0.0.21-p318r62b bundle's real bundled population, measured 2026-10-06 (WI-10006421) by
- * the AWS AMI scan of candidate A-r62b and reproduced by running the pinned gitleaks 8.30.1
- * directly over that release root's serve.mjs and Monaco file: 2 gcp-api-key + 31
- * generic-api-key in serve.mjs + 1 generic-api-key in the vendored Monaco editor = 34, which
- * matches the image scan's own bundled census to the unit. The earlier measurements this
- * replaced (0.0.18, r19) are recorded on the allowance list itself. These are reproductions
- * of a real scan, never a count chosen to pass.
+ * The complete p012r69 population from the exact AMI scan and pinned gitleaks 8.30.1 local
+ * reproduction (2026-10-08, WI-10007452): 33 server + 35 sidecar + 96 page digests + the
+ * unchanged three SPA findings = 167. The hash-verified earlier p318r62b bundle reproduces
+ * its 31 server matches and supplies the multiset difference documented on the allowances.
  */
 function realBundledFindings(): ImageScanSecretFinding[] {
   return [
     { rule: 'gcp-api-key', file: `${BUNDLE}/spa/assets/chunk-ZUYEQ4TG-50072df8.js` },
     { rule: 'gcp-api-key', file: `${BUNDLE}/spa/excalidraw/chunk-ZUYEQ4TG.js` },
-    ...Array.from({ length: 31 }, () => ({ rule: 'generic-api-key', file: `${BUNDLE}/serve.mjs` })),
+    ...Array.from({ length: 33 }, () => ({ rule: 'generic-api-key', file: `${BUNDLE}/serve.mjs` })),
     { rule: 'generic-api-key', file: `${BUNDLE}/spa/monaco/vs/editor-KLE6jdfb.js` },
+    ...Array.from({ length: 35 }, () => ({ rule: 'generic-api-key', file: `${BUNDLE}/spawner-sidecar.mjs` })),
+    ...Array.from({ length: 96 }, () => ({ rule: 'generic-api-key', file: `${BUNDLE}/doc-vector-seed/manifest.json` })),
   ];
 }
 
@@ -67,7 +66,7 @@ function scanWith(
 }
 
 describe('workspace-host secret allowances — the real population', () => {
-  it('accounts for every one of the 34 measured findings, leaving nothing to judge', () => {
+  it('accounts for the complete 167 measured findings, leaving nothing to judge', () => {
     const outcome = applySecretAllowances(realBundledFindings(), WORKSPACE_HOST_SECRET_ALLOWANCES);
     expect(outcome.unjustified).toEqual([]);
     expect(outcome.overflowed).toEqual([]);
@@ -112,21 +111,27 @@ describe('workspace-host secret allowances — the excusing direction', () => {
     expect(failure?.message).toContain('config/id_ed25519');
   });
 
-  it('DENIES a NEW secret hiding in an already-justified file', () => {
-    // The realistic leak: serve.mjs is justified for 31 entropy matches, so a real credential
-    // bundled into it would arrive as a 32nd. maxFindings is what stops it being absorbed.
-    // This boundary moves with the justified count and must never be raised without one:
-    // the r19 bump 29→30 was paid for by identifying the added match as the minified form of
-    // `const verdictFns = await import(...)`, and the 0.0.21 bump 30→31 by reading both added
-    // matches (WI-10006421), not by widening the number to clear a red gate.
+  it.each(['serve.mjs', 'spawner-sidecar.mjs', 'doc-vector-seed/manifest.json'])(
+    'DENIES a NEW secret hiding in already-justified %s', (file) => {
+    // Each bound is paid for by the measured, individually explained population. A further
+    // finding in any of these files must still deny, even when the existing findings pass.
     const findings = [
       ...realBundledFindings(),
-      { rule: 'generic-api-key', file: `${BUNDLE}/serve.mjs` },
+      { rule: 'generic-api-key', file: `${BUNDLE}/${file}` },
     ];
     const verdict = evaluateImageScanPolicy(scanWith(findings), GCP_IMAGE_SCAN_POLICY);
     expect(verdict.accepted).toBe(false);
     expect(verdict.failures.some((f) => f.code === 'secret-allowance-overflow')).toBe(true);
   });
+
+  it.each(['spawner-sidecar.mjs.backup', 'doc-vector-seed/extra.json'])(
+    'DENIES findings in nearby unjustified %s', (file) => {
+      const findings = [...realBundledFindings(), { rule: 'generic-api-key', file: `${BUNDLE}/${file}` }];
+      const verdict = evaluateImageScanPolicy(scanWith(findings), AWS_IMAGE_SCAN_POLICY);
+      expect(verdict.accepted).toBe(false);
+      expect(verdict.failures.some((f) => f.code === 'secret-unjustified')).toBe(true);
+    },
+  );
 
   it('DENIES when the finding list is not proven complete', () => {
     for (const complete of [false, undefined, 'true', 1]) {
@@ -144,8 +149,8 @@ describe('workspace-host secret allowances — the excusing direction', () => {
     // trusting the shorter one would excuse whatever the difference is.
     const verdict = evaluateImageScanPolicy(
       scanWith(realBundledFindings(), {
-        secretsByScope: { 'papercusp-bundled': 40, 'inherited-base-image': 0 },
-        secretFindings: 40,
+        secretsByScope: { 'papercusp-bundled': 168, 'inherited-base-image': 0 },
+        secretFindings: 168,
       }),
       GCP_IMAGE_SCAN_POLICY,
     );
@@ -160,8 +165,8 @@ describe('workspace-host secret allowances — the excusing direction', () => {
       const verdict = evaluateImageScanPolicy(
         scanWith(realBundledFindings(), {
           secretBundledSample: [...realBundledFindings(), row],
-          secretsByScope: { 'papercusp-bundled': 32, 'inherited-base-image': 0 },
-          secretFindings: 32,
+          secretsByScope: { 'papercusp-bundled': 168, 'inherited-base-image': 0 },
+          secretFindings: 168,
         }),
         GCP_IMAGE_SCAN_POLICY,
       );
@@ -248,9 +253,9 @@ describe('workspace-host secret allowances — scope of the mechanism', () => {
     const codes = verdict.failures.map((failure) => failure.code);
     expect(codes).toContain('secret-allowance-unusable');
     expect(codes).toContain('secret-threshold');
-    // All 34 judged — none quietly excused by a list that could not be trusted.
+    // All 167 judged — none quietly excused by a list that could not be trusted.
     expect(verdict.policyViolatingSecrets).toBe(realBundledFindings().length);
-    expect(verdict.policyViolatingSecrets).toBe(34);
+    expect(verdict.policyViolatingSecrets).toBe(167);
   });
 
   it('does not require a sample when the bundle is clean', () => {

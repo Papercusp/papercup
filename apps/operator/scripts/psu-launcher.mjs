@@ -11074,16 +11074,40 @@ export async function reportSessionRespawned(
     operatorUrl = OPERATOR_URL,
     token = null,
     timeoutMs = 2_000,
+    appendEventImpl = appendHostEvent,
   } = {},
 ) {
   if (!sessionId || (!advSessionId && !coordOwnerId)) return false;
+  const startedAt = Date.now();
+  let signal;
+  const finish = (accepted, outcome, status = null, errorName = null, errorCode = null) => {
+    // Keep the existing per-owner lifecycle ledger diagnostic-only. Neither
+    // request/response bodies, URLs, credentials nor free-form errors belong in it.
+    if (coordOwnerId) {
+      try {
+        appendEventImpl(coordOwnerId, "respawn-report-attempt", {
+          nativeId: String(sessionId),
+          endpointClass: "session-respawned",
+          outcome,
+          status,
+          errorName,
+          errorCode,
+          elapsedMs: Math.max(0, Date.now() - startedAt),
+        });
+      } catch {
+        /* a diagnostic write must not change the identity-binding verdict */
+      }
+    }
+    return accepted;
+  };
   try {
     const tok = token ?? readToken();
+    signal = AbortSignal.timeout(timeoutMs);
     const response = await fetchImpl(
       operatorUrl + "/api/agent-mcp/console/bootstrap-su/session-respawned",
       {
         method: "POST",
-        signal: AbortSignal.timeout(timeoutMs),
+        signal,
         headers: {
           "content-type": "application/json",
           ...(tok ? { authorization: `Bearer ${tok}` } : {}),
@@ -11095,10 +11119,19 @@ export async function reportSessionRespawned(
         }),
       },
     );
-    return response?.ok === true;
-  } catch {
+    const accepted = response?.ok === true;
+    const status = Number.isInteger(response?.status) && response.status >= 100 && response.status <= 599
+      ? response.status : null;
+    return finish(accepted, accepted ? "accepted" : "http-refused", status);
+  } catch (error) {
     /* best-effort — never surface; callers must not announce an unconfirmed cut */
-    return false;
+    const errorName = ["TimeoutError", "AbortError", "TypeError", "RangeError", "Error"].includes(error?.name)
+      ? error.name : "Error";
+    const code = error?.cause?.code ?? error?.code;
+    const errorCode = ["ECONNREFUSED", "ECONNRESET", "ENOTFOUND", "EAI_AGAIN", "ETIMEDOUT", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_SOCKET"].includes(code)
+      ? code : null;
+    return finish(false, signal?.aborted || errorName === "TimeoutError" ? "timeout" : "transport-error",
+      null, errorName, errorCode);
   }
 }
 

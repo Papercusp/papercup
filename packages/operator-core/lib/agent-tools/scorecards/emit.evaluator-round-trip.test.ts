@@ -101,6 +101,8 @@ const getRubricPlanRevision = vi.fn();
 const readRubricPlanRevision = vi.fn();
 const listScorecards = vi.fn();
 const captureImprovement = vi.fn();
+const getAcceptanceRubricsForPlan = vi.fn();
+const getRetiredAcceptanceRubricsForPlan = vi.fn();
 
 vi.mock('../../rubrics', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../rubrics')>()),
@@ -108,6 +110,8 @@ vi.mock('../../rubrics', async (importOriginal) => ({
   getRubricWithoutSeeding: (...args: unknown[]) => getRubric(...args),
   getRubricPlanRevision: (...args: unknown[]) => getRubricPlanRevision(...args),
   readRubricPlanRevision: (...args: unknown[]) => readRubricPlanRevision(...args),
+  getAcceptanceRubricsForPlan: (...args: unknown[]) => getAcceptanceRubricsForPlan(...args),
+  getRetiredAcceptanceRubricsForPlan: (...args: unknown[]) => getRetiredAcceptanceRubricsForPlan(...args),
 }));
 vi.mock('../../scorecards', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../scorecards')>()),
@@ -251,6 +255,36 @@ function bindingRow(
   };
 }
 
+const MUTATION_FAILURE_CASE_TITLE =
+  'code-search.callers-lookup — measurement and promotion state > keeps the lane honest';
+
+async function installMeasuredFalsifiabilityProof(): Promise<void> {
+  const fingerprints = await measureAndPinRepoFilesEvidenceAtRoot(root, MEASUREMENT);
+  h.rows = h.rows
+    .filter((row) => row.id !== 2)
+    .map((row) => {
+      if (row.id !== 3) return row;
+      const details = row.details as Record<string, unknown>;
+      const adequacy = details.adequacy as Record<string, unknown>;
+      const run = row.test_run_execution_details as Record<string, unknown>;
+      return {
+        ...row,
+        test_run_execution_details: { ...run, passedCaseTitles: [MUTATION_FAILURE_CASE_TITLE] },
+        details: { ...details, adequacy: { ...adequacy, testCases: [MUTATION_FAILURE_CASE_TITLE] } },
+      };
+    });
+  h.rows.push(bindingRow({
+    id: 5,
+    evidenceKind: 'mutation',
+    evidenceRef: 'mutation-probe:callers-lookup:caught',
+    outcome: 'caught',
+    testRunId: 44,
+    testRunSource: 'mutation-probe',
+    testRunStatus: 'fail',
+    testRunOutputTail: `${MUTATION_FAILURE_CASE_TITLE}: expected 'needs-widening' to be 'equivalent'`,
+  }, fingerprints));
+}
+
 const activeClause = {
   planSlug: PLAN,
   specId: SPEC,
@@ -370,6 +404,10 @@ beforeEach(async () => {
   });
   getRubricPlanRevision.mockResolvedValue(7);
   readRubricPlanRevision.mockResolvedValue({ ok: true, revision: 7 });
+  getAcceptanceRubricsForPlan.mockResolvedValue([
+    { rubricId: 'rubric-fixture', classRef: 'plan-class-feature-ship' },
+  ]);
+  getRetiredAcceptanceRubricsForPlan.mockResolvedValue([]);
   listScorecards.mockResolvedValue([]);
   captureImprovement.mockResolvedValue({ ok: true, created: true, issue: { id: 'EI-ROUND-TRIP' } });
 });
@@ -439,6 +477,7 @@ describe('spec-test-adequacy evaluator → scorecards:emit round trip', () => {
   });
 
   it('files the evaluator’s own all-pass card, freshness included, through its own exact replay', async () => {
+    await installMeasuredFalsifiabilityProof();
     const live = await runEvaluator({
       harness: 'papercusp',
       slug: PLAN,
@@ -481,14 +520,14 @@ describe('spec-test-adequacy evaluator → scorecards:emit round trip', () => {
       specRevision: recipe.selection.specRevision,
       specFingerprint: recipe.selection.specFingerprint,
       replaySnapshot: true,
-      bindingIds: [1, 2, 3, 4],
+      bindingIds: [1, 3, 4, 5],
       current: recipe.current.fingerprints,
     });
     expect(recipe.args.evidenceRefs).toEqual(
       recipe.selection.evidence.map(({ evidenceRef }) => evidenceRef).sort((a, b) => a.localeCompare(b)),
     );
-    expect(row!.scorecardDraft.rerunRecipe.args).toMatchObject({ replaySnapshot: true, bindingIds: [1, 2, 3, 4] });
-    expect(scorecardEmitArgs.parse(row!.scorecardDraft).rerunRecipe?.selection.bindingIds).toEqual([1, 2, 3, 4]);
+    expect(row!.scorecardDraft.rerunRecipe.args).toMatchObject({ replaySnapshot: true, bindingIds: [1, 3, 4, 5] });
+    expect(scorecardEmitArgs.parse(row!.scorecardDraft).rerunRecipe?.selection.bindingIds).toEqual([1, 3, 4, 5]);
 
     const exactReplay = await runEvaluator({
       ...row!.scorecardDraft.rerunRecipe.args,
@@ -514,6 +553,37 @@ describe('spec-test-adequacy evaluator → scorecards:emit round trip', () => {
       payloadTier: 'full',
     });
     expect(captureImprovement).toHaveBeenCalledTimes(1);
+  });
+
+  it('replays an evaluator-generated draft-clause card with draft eligibility preserved', async () => {
+    listClauses.mockResolvedValue([{ ...activeClause, lifecycleStatus: 'draft' } as never]);
+    await installMeasuredFalsifiabilityProof();
+
+    const live = await runEvaluator({
+      harness: 'papercusp',
+      slug: PLAN,
+      classRef: 'plan-class-feature-ship',
+      specIds: [SPEC],
+      includeDraft: true,
+      detail: 'full',
+    });
+
+    expect(live.ok, JSON.stringify(live)).toBe(true);
+    expect(live.rows).toHaveLength(1);
+    expect(live.rows[0]!.verdict).toBe('pass');
+    const draft = live.rows[0]!.scorecardDraft;
+    expect(draft.rerunRecipe.args.includeDraft).toBe(true);
+
+    const result = await emitDraft(draft);
+
+    expect(result, JSON.stringify(result)).toMatchObject({ ok: true, created: true, issueId: 'EI-ROUND-TRIP' });
+    expect(dispatchTool).toHaveBeenCalledTimes(1);
+    expect(dispatchTool).toHaveBeenCalledWith('plans:evaluate-spec-test-adequacy', {
+      ...draft.rerunRecipe.args,
+      detail: 'summary',
+      includeDraft: true,
+      payloadTier: 'full',
+    });
   });
 
   it('refuses a card stamped by an older evaluator rule revision even when its build replay matches', async () => {
@@ -546,6 +616,7 @@ describe('spec-test-adequacy evaluator → scorecards:emit round trip', () => {
   });
 
   it('refuses the same card once the proven source moves because its current test witness no longer qualifies', async () => {
+    await installMeasuredFalsifiabilityProof();
     const live = await runEvaluator({
       harness: 'papercusp',
       slug: PLAN,

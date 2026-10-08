@@ -307,6 +307,7 @@ function safeHostedErrorCode(body: unknown): string | null {
 
 function observePortalConversationCreation(page: import('playwright').Page) {
   let creation: { status: number; errorCode: string | null } | undefined;
+  const responses: Array<{ status: number; errorCode: string | null }> = [];
   let refuse!: (error: Error) => void;
   // Resolve with the failure instead of rejecting in an event listener. Creation
   // can fail during navigation, before the test begins awaiting a typed turn.
@@ -317,6 +318,7 @@ function observePortalConversationCreation(page: import('playwright').Page) {
     void (async () => {
       const body = await response.json().catch(() => null);
       creation = { status: response.status(), errorCode: safeHostedErrorCode(body) };
+      responses.push(creation);
       if (!response.ok() || typeof body?.chat?.id !== 'string' || !body.chat.id) {
         refuse(new Error(`public_manual_portal_create_failed:${creation.status}; code=${creation.errorCode ?? 'unreported'}`));
       }
@@ -324,6 +326,7 @@ function observePortalConversationCreation(page: import('playwright').Page) {
   });
   return {
     snapshot: () => creation,
+    responses: () => [...responses],
     waitForTurn: async (send: () => Promise<unknown>, timeout = 150_000) => {
       const response = page.waitForResponse((response) => response.request().method() === 'POST'
         && /\/api\/papercup-chat\/conversations\/[^/]+\/turns$/.test(new URL(response.url()).pathname), { timeout });
@@ -1143,8 +1146,14 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
       }
       expect(guideResponse.ok()).toBe(true);
       expect(guideBody).toMatchObject({ record: { disposition: 'skipped' } });
+      stage = 'portal-auto-create-preflight';
+      await expect.poll(() => conversationCreation!.responses().length, { timeout: 15_000, interval: 100 }).toBeGreaterThan(0);
+      const automaticCreation = conversationCreation!.responses()[0];
       // Exercise the two creation boundaries without sending a model turn.
       // Scope the direct control exactly as the Portal's dedicated-instance path.
+      // Additional force-create requests belong only to the zero-model case;
+      // a typed journey must retain the conversation its sidebar already owns.
+      if (preflightOnly) {
       stage = 'operator-create-preflight';
       const direct = await fetch(new URL('/api/operator/conversations', baseUrl!), {
         method: 'POST', headers: { 'content-type': 'application/json', 'x-papercusp-workspace': workspaceId },
@@ -1154,6 +1163,9 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
       operatorCreation = { status: direct.status, hasConversationId: typeof directBody?.conversation?.id === 'string' };
       expect(operatorCreation, 'The selected operator must create a conversation before Portal ownership or a paid turn').toMatchObject({
         status: 200, hasConversationId: true,
+      });
+      expect(automaticCreation, 'The first sidebar creation must pass; a later explicit request cannot erase its failure').toEqual({
+        status: 201, errorCode: null,
       });
       stage = 'portal-create-preflight';
       const created = await page.evaluate(async () => {
@@ -1172,10 +1184,10 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
       creationPreflight.historyStatus = initialHistory.status;
       expect(initialHistory.status).toBe(200);
       expect(initialHistory.body.turns).toEqual([]);
-      if (preflightOnly) {
-        stage = 'passed-create-preflight';
-        return;
+      stage = 'passed-create-preflight';
+      return;
       }
+      expect(automaticCreation).toEqual({ status: 201, errorCode: null });
       stage = 'typed-browser';
       const composer = page.getByRole('textbox', { name: 'Message Papercup', exact: true });
       await composer.waitFor({ state: 'visible', timeout: 30_000 });
@@ -1240,7 +1252,8 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
         question, runtimeBuild, candidateRoot, servedRelease, workspaceId, browserOrigin, configuredPublicOrigin,
         recordedAt: new Date().toISOString(),
         frames: publicPortalFrames(stream), history, browserText, browserState, guideMutation,
-        conversationCreation: conversationCreation?.snapshot(), operatorCreation, creationPreflight }, caseFailure, evidenceCredentials);
+        conversationCreation: conversationCreation?.snapshot(), creationResponses: conversationCreation?.responses(),
+        operatorCreation, creationPreflight }, caseFailure, evidenceCredentials);
       writeFileSync(join(evidenceDir, 'case.json'), safeEvidence, { mode: 0o600 });
       try {
       try { await browser?.close(); }

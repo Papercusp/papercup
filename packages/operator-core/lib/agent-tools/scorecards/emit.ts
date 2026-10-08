@@ -2561,28 +2561,56 @@ export async function emitScorecard(
         };
       }
       const activeDispatchReservation = gradedObservation.gradingAudit.dispatchReservation;
+      const lastDispatchReservation = gradedObservation.gradingAudit.lastDispatchReservation;
+      const latestDispatchReservation = activeDispatchReservation ?? lastDispatchReservation;
       const suppliedDispatchReservation = args.gradingAuditReservation;
-      if (gradedObservation.gradingAudit.state === 'pending' && activeDispatchReservation && !suppliedDispatchReservation) {
+      if (
+        gradedObservation.gradingAudit.state === 'pending' &&
+        activeDispatchReservation &&
+        lastDispatchReservation &&
+        (activeDispatchReservation.key !== lastDispatchReservation.key ||
+          activeDispatchReservation.reservedAt !== lastDispatchReservation.reservedAt)
+      ) {
         return {
           ok: false as const,
-          code: 'grading_audit_reservation_missing' as const,
-          error:
-            `audit subject '${args.subject.ref}' has an active dispatch reservation, but gradingAuditReservation is missing; ` +
-            `re-read the target and pass the exact lease key '${activeDispatchReservation.key}' and reservedAt '${activeDispatchReservation.reservedAt}'`,
+          code: 'grading_audit_reservation_mismatch' as const,
+          error: `audit subject '${args.subject.ref}' has inconsistent active and latest dispatch reservation epochs; re-dispatch before emitting`,
         };
       }
       if (
         gradedObservation.gradingAudit.state === 'pending' &&
-        activeDispatchReservation &&
+        !latestDispatchReservation &&
+        suppliedDispatchReservation
+      ) {
+        return {
+          ok: false as const,
+          code: 'grading_audit_reservation_unavailable' as const,
+          error:
+            `audit subject '${args.subject.ref}' has no active or retained dispatch reservation epoch for the supplied lease; ` +
+            're-dispatch the pending audit before emitting',
+        };
+      }
+      if (gradedObservation.gradingAudit.state === 'pending' && latestDispatchReservation && !suppliedDispatchReservation) {
+        return {
+          ok: false as const,
+          code: 'grading_audit_reservation_missing' as const,
+          error:
+            `audit subject '${args.subject.ref}' has a dispatch reservation epoch, but gradingAuditReservation is missing; ` +
+            `re-read the target and pass the exact latest lease key '${latestDispatchReservation.key}' and reservedAt '${latestDispatchReservation.reservedAt}'`,
+        };
+      }
+      if (
+        gradedObservation.gradingAudit.state === 'pending' &&
+        latestDispatchReservation &&
         suppliedDispatchReservation &&
-        (suppliedDispatchReservation.key !== activeDispatchReservation.key ||
-          suppliedDispatchReservation.reservedAt !== activeDispatchReservation.reservedAt)
+        (suppliedDispatchReservation.key !== latestDispatchReservation.key ||
+          suppliedDispatchReservation.reservedAt !== latestDispatchReservation.reservedAt)
       ) {
         return {
           ok: false as const,
           code: 'grading_audit_reservation_mismatch' as const,
           error:
-            `audit subject '${args.subject.ref}' gradingAuditReservation does not match its current active dispatch reservation; ` +
+            `audit subject '${args.subject.ref}' gradingAuditReservation does not match its latest dispatch reservation epoch; ` +
             're-read the target and use the exact current lease key and reservedAt, or stop if the lease changed',
         };
       }
@@ -2591,8 +2619,8 @@ export async function emitScorecard(
       // gradingAuditReservation is admitted on exactly that card, so refusing the dispatched
       // auditor that honestly presents its lapsed lease only refused the diligent one: a full
       // audit of a 39-criterion card took ~18 min against the 15-min lease and its verdict was
-      // lost. Admit it while it is still the source responder for that lease. A NEWER lease is
-      // an active reservation, refused as a mismatch above, so two auditors still cannot settle.
+      // lost. Admit it while it is still the source responder for that lease. A NEWER lease
+      // remains in lastDispatchReservation after release, so it is refused as a mismatch above.
       if (
         gradedObservation.gradingAudit.state === 'pending' &&
         !activeDispatchReservation &&
@@ -2764,11 +2792,10 @@ export async function emitScorecard(
         verdict: auditVerdict,
         ...(rubric.revision != null ? { rubricRevision: rubric.revision } : {}),
         ...(rubric.criteriaHash ? { criteriaHash: rubric.criteriaHash } : {}),
-        // Carry the lease into the settle compare-and-set only while it is still ACTIVE.
-        // A lapsed lease is no longer on the stamp, and recordGradingAudit matches the
-        // stamp's actual reservation, so passing it would file the audit card and leave the
-        // target pending (EI-25246208524832409).
-        ...(args.gradingAuditReservation && activeDispatchReservation
+        // Carry a known lease epoch into the settle compare-and-set even after its active
+        // reservation lapses. lastDispatchReservation fences a late audit from a newer
+        // dispatch that also claimed and released the card in the meantime.
+        ...(args.gradingAuditReservation && latestDispatchReservation
           ? { dispatchReservation: args.gradingAuditReservation }
           : {}),
       };

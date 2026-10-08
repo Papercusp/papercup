@@ -195,6 +195,7 @@ for (const kind of ['plans', 'tea'] as const) {
     let refuseSave = false;
     const writes: Array<{ value: OrderedSelectionPolicy; expectedVersion: number }> = [];
     const reads: Array<{ version: number; order: string[] }> = [];
+    const invalidations: Array<{ before: number; after: number }> = [];
     const selection = () => readTypedPropertyCollection({ propertySchema: schema, property,
       properties: { [property]: { value: ids, version: 2, edited_by: 'agent', provenance: 'agent-edit', edited_at: '2026-10-07T00:00:00Z' },
         [policyName]: { value: policy, version, edited_by: 'owner', provenance: 'owner-edit', edited_at: '2026-10-07T00:00:00Z' } },
@@ -212,7 +213,7 @@ for (const kind of ['plans', 'tea'] as const) {
             state: row.id === ids[2] ? 'blocked' : 'ready', reason: row.id === ids[2] ? 'Waiting for dependency' : null })) } } } }];
       }
       return headerRows(name);
-    });
+    }, { push: true });
     await page.route('**/api/admin/goals/set-property', async (route) => {
       const posted = route.request().postDataJSON();
       expect(posted.goalId).toBe(goal.id);
@@ -223,20 +224,31 @@ for (const kind of ['plans', 'tea'] as const) {
         return;
       }
       writes.push(posted);
+      const before = reads.at(-1)!.version;
       policy = posted.value;
       version++;
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, version, provenance: 'owner-edit' }) });
+      invalidations.push({ before, after: version });
+      await sync.invalidate('goals.detail');
     });
     await openHud(page, `/adv?tab=hud&scope=all&hudtab=goals&hudgoal=${goal.id}&welcome=0`, page.getByTestId('goal-data'));
     await sync.waitForServed(['goals.detail']);
     const editor = page.getByTestId('goal-data');
-    async function reloadWithReadback() {
-      const readback = page.waitForResponse((response) => {
+    async function saveWithReadback(action: () => Promise<void>) {
+      const expectedVersion = version + 1;
+      const saved = page.waitForResponse('**/api/admin/goals/set-property');
+      const readback = page.waitForResponse(async (response) => {
         const url = new URL(response.url());
-        return url.pathname.endsWith('/rest-query') && url.searchParams.get('name') === 'goals.detail';
+        if (!url.pathname.endsWith('/rest-query') || url.searchParams.get('name') !== 'goals.detail') return false;
+        // Mount/real-backend invalidations can already have an older response
+        // in flight. A write is acknowledged only by its exact goal/revision.
+        const payload = await response.json();
+        return payload.rows[0]?.goal?.id === goal.id
+          && payload.rows[0]?.goalData?.collections?.[property]?.selection?.policyVersion === expectedVersion;
       });
-      await page.reload();
+      await action();
       try {
+        expect((await saved).status()).toBe(200);
         const payload = await (await readback).json();
         expect(payload.rows[0].goalData.collections[property].selection.policyVersion).toBe(version);
         const expected = selection();
@@ -245,20 +257,29 @@ for (const kind of ['plans', 'tea'] as const) {
           .toEqual(expected.items.map((row) => row.id));
       } finally {
         await test.info().attach(`collection-${kind}-readback-v${version}`, {
-          body: JSON.stringify({ reads, writes, policy, version }), contentType: 'application/json',
+          body: JSON.stringify({ reads, writes, invalidations, policy, version }), contentType: 'application/json',
         });
       }
     }
+    async function reloadWithReadback() {
+      // A fresh persisted query is allowed to skip REST on mount. First prove
+      // the canonical response reached disk, then exercise that real reload
+      // path without clearing the cache or requiring a redundant request.
+      await expect.poll(() => page.evaluate(({ goalId, property }) => {
+        const stored = JSON.parse(localStorage.getItem('papercusp:sync-cache:v1') ?? 'null');
+        const query = stored?.state?.queries?.find((entry: { queryKey: [string, string, { goalId?: string }] }) =>
+          entry.queryKey[1] === 'goals.detail' && entry.queryKey[2]?.goalId === goalId);
+        return query?.state?.data?.rows?.[0]?.goalData?.collections?.[property]?.selection;
+      }, { goalId: goal.id, property })).toMatchObject({ policyVersion: version, policy });
+      await page.reload();
+      await editor.waitFor({ state: 'visible' });
+    }
     await expect(editor.getByText('Waiting for dependency')).toBeVisible();
-    const saved = page.waitForResponse('**/api/admin/goals/set-property');
-    await editor.getByRole('button', { name: 'Move Second choice up' }).click();
-    expect((await saved).status()).toBe(200);
+    await saveWithReadback(() => editor.getByRole('button', { name: 'Move Second choice up' }).click());
     expect(policy.order).toEqual([ids[1], ids[0], ids[2], dormant]);
     await reloadWithReadback();
     await expect(editor.locator('li').first()).toContainText('Second choice');
-    const excluded = page.waitForResponse('**/api/admin/goals/set-property');
-    await editor.getByRole('checkbox', { name: 'Include Second choice' }).click();
-    expect((await excluded).status()).toBe(200);
+    await saveWithReadback(() => editor.getByRole('checkbox', { name: 'Include Second choice' }).click());
     expect(policy.excluded).toEqual([dormant, ids[1]]);
     await reloadWithReadback();
     await expect(editor.getByRole('checkbox', { name: 'Include Second choice' })).not.toBeChecked();
@@ -266,13 +287,12 @@ for (const kind of ['plans', 'tea'] as const) {
     const afterExclusion = selection();
     if (!afterExclusion.ok || !afterExclusion.configured) throw new Error('collection unavailable');
     expect(afterExclusion.items.filter((row) => row.selected).map((row) => row.id)).toEqual([ids[0], ids[2]]);
-    const reselected = page.waitForResponse('**/api/admin/goals/set-property');
-    await editor.getByRole('checkbox', { name: 'Include Second choice' }).click();
-    expect((await reselected).status()).toBe(200);
+    await saveWithReadback(() => editor.getByRole('checkbox', { name: 'Include Second choice' }).click());
     await reloadWithReadback();
     await expect(editor.getByRole('checkbox', { name: 'Include Second choice' })).toBeChecked();
     expect(policy.excluded).toEqual([dormant]);
     expect(writes.map((write) => write.expectedVersion)).toEqual([4, 5, 6]);
+    expect(invalidations).toEqual([{ before: 4, after: 5 }, { before: 5, after: 6 }, { before: 6, after: 7 }]);
     refuseSave = true;
     await editor.getByRole('checkbox', { name: 'Include First choice' }).click();
     await expect(editor.getByRole('alert')).toContainText('stale');

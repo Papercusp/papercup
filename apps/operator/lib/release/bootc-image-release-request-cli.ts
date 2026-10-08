@@ -76,6 +76,10 @@ import {
   type GcpImageFamilyExactPathReadinessConfig,
 } from "@papercusp/operator-core/lib/workspace-host/gcp-image-family-production";
 import { evaluateWorkspaceHostReleaseGate } from "@papercusp/operator-core/lib/workspace-host/workspace-host-release-gate";
+import {
+  applySecretAllowances,
+  WORKSPACE_HOST_SECRET_ALLOWANCES,
+} from "@papercusp/operator-core/lib/workspace-host/image-scan-secret-allowances";
 import { isCliEntry } from "@papercusp/operator-core/lib/util/cli-entry";
 import { activeWorkspaceId } from "@papercusp/operator-core/lib/workspace-registry";
 import { governedExecutionLeaseTtlForTimeout, runGovernedOperation } from "@papercusp/operator-core/lib/resource-governor/execution";
@@ -93,7 +97,7 @@ export const BOOTC_SECRET_SCAN_MIN_COVERAGE = 5000;
 const SHA256_HEX = /^[0-9a-f]{64}$/;
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
 
-export type BootcEmit = "trust-report" | "artifact" | "clean-room-input" | "request" | "guest-tool-versions";
+export type BootcEmit = "trust-report" | "artifact" | "clean-room-input" | "request" | "guest-tool-versions" | "bundled-secret-policy";
 
 /**
  * The guest tools each provider's release pins, keyed by `--provider`. Each composed request
@@ -196,8 +200,8 @@ export function parseBootcImageReleaseRequestCliArgs(argv: readonly string[]): B
     index += 1;
   }
   const emit = (values.emit ?? "request") as BootcEmit;
-  if (!["trust-report", "artifact", "clean-room-input", "request", "guest-tool-versions"].includes(emit)) {
-    fail("--emit must be one of: trust-report, artifact, clean-room-input, request, guest-tool-versions");
+  if (!["trust-report", "artifact", "clean-room-input", "request", "guest-tool-versions", "bundled-secret-policy"].includes(emit)) {
+    fail("--emit must be one of: trust-report, artifact, clean-room-input, request, guest-tool-versions, bundled-secret-policy");
   }
   if (!values["input-file"]) fail("--input-file is required");
   if (emit === "request" && !values["clean-room-report"]) {
@@ -221,6 +225,31 @@ export function parseBootcImageReleaseRequestCliArgs(argv: readonly string[]): B
 }
 
 /* ------------------------------------------------------------------ evidence readers */
+
+/** Cheap preflight of the provider's bundled-secret justifications; never image acceptance. */
+export function evaluateBootcBundledSecretPolicy(text: string) {
+  let raw: unknown;
+  try { raw = JSON.parse(text); } catch { fail("gitleaks report is not valid JSON"); }
+  if (!Array.isArray(raw)) fail("gitleaks report must be a complete array");
+  const all = raw.map((entry, index) => {
+    const row = requiredRecord(entry, `gitleaks report[${index}]`);
+    const rule = requiredString(row.RuleID, `gitleaks report[${index}].RuleID`);
+    const file = requiredString(row.File, `gitleaks report[${index}].File`);
+    const line = row.StartLine;
+    if (line !== undefined && (!Number.isInteger(line) || Number(line) < 1)) fail(`gitleaks report[${index}].StartLine is invalid`);
+    return { rule, file, ...(line !== undefined ? { line: Number(line) } : {}) };
+  });
+  const findings = all.filter(row => row.file.includes("/opt/papercusp/"));
+  const outcome = applySecretAllowances(findings, WORKSPACE_HOST_SECRET_ALLOWANCES);
+  return {
+    preflightOnly: true,
+    accepted: outcome.unjustified.length === 0 && outcome.overflowed.length === 0,
+    totalFindings: all.length,
+    bundledFindings: findings.length,
+    unjustified: outcome.unjustified,
+    overflowed: outcome.overflowed.map(row => ({ rule: row.allowance.rule, filePattern: row.allowance.filePattern, matched: row.matched, maxFindings: row.allowance.maxFindings })),
+  };
+}
 
 /**
  * The digests cosign reported VERIFYING, from `cosign verify` output (release-supply-chain.sh
@@ -1173,6 +1202,10 @@ export async function composeBootcGcpRequest(
 export async function main(argv: readonly string[] = process.argv.slice(2)): Promise<void> {
   const args = parseBootcImageReleaseRequestCliArgs(argv);
   const write = (value: unknown) => process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
+  if (args.emit === "bundled-secret-policy") {
+    write(evaluateBootcBundledSecretPolicy(await readText(args.inputFile, "gitleaks report")));
+    return;
+  }
   if (args.emit === "request") {
     const provider = bootcReleaseProvider((await loadInput(args)).input);
     write(provider === "gcp" ? await composeBootcGcpRequest(args) : await composeBootcAwsRequest(args));

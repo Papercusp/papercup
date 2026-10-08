@@ -40,6 +40,8 @@ export interface AwsAmiReleaseCliInput {
 
 export interface AwsAmiReleaseCliArgs {
   requestFile: string;
+  /** Recover an exact private encrypted candidate instead of uploading the same disk again. */
+  resumeCandidateImageId?: string;
   repositoryRoot?: string;
   guestToolVersionsFile?: string;
   /** SSM parameter path prefix for the version manifest and per-region pins. */
@@ -93,6 +95,7 @@ export function parseAwsAmiReleaseCliArgs(
     "repo-root",
     "guest-tool-versions-file",
     "parameter-prefix",
+    "resume-candidate-ami",
   ]);
   const booleanFlags = new Set(["json"]);
   for (let index = 0; index < argv.length; index += 1) {
@@ -119,8 +122,12 @@ export function parseAwsAmiReleaseCliArgs(
   const parameterPrefix = values["parameter-prefix"];
   if (typeof parameterPrefix === "string" && !parameterPrefix.startsWith("/"))
     throw new Error("--parameter-prefix must be an absolute SSM path");
+  const resumeCandidateImageId = values["resume-candidate-ami"];
+  if (typeof resumeCandidateImageId === "string" && !/^ami-[a-f0-9]+$/.test(resumeCandidateImageId))
+    throw new Error("--resume-candidate-ami must be an AMI id");
   return {
     requestFile: requiredString(values["request-file"], "--request-file"),
+    ...(typeof resumeCandidateImageId === "string" ? { resumeCandidateImageId } : {}),
     ...(typeof values["repo-root"] === "string"
       ? { repositoryRoot: values["repo-root"] }
       : {}),
@@ -163,6 +170,7 @@ export function awsAmiReleaseCompositionOptions(
   env: NodeJS.ProcessEnv = process.env,
 ): AwsAmiReleaseCompositionOptions {
   return {
+    ...(args.resumeCandidateImageId ? { resumeCandidateImageId: args.resumeCandidateImageId } : {}),
     ...(args.repositoryRoot ? { repositoryRoot: args.repositoryRoot } : {}),
     ...(guestToolVersions ? { guestToolVersions } : {}),
     ...(args.parameterPrefix ? { parameterPrefix: args.parameterPrefix } : {}),

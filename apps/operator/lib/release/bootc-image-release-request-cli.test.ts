@@ -37,6 +37,7 @@ import {
   buildBootcTrustReport,
   composeBootcAwsRequest,
   composeBootcGcpRequest,
+  evaluateBootcBundledSecretPolicy,
   main,
   parseBootcImageReleaseRequestCliArgs,
   parseBootcSecretScan,
@@ -206,6 +207,43 @@ const scanRecord = (overrides: Record<string, unknown> = {}) => ({
   tool: { name: "papercusp-audit-release-bundle.py", version: `sha256:${"b".repeat(64)}` },
   exitCode: 0,
   ...overrides,
+});
+
+describe("bootc bundled-secret policy preflight", () => {
+  const root = "/candidate/opt/papercusp/releases/0.0.21-p012r69";
+  const finding = (file: string, RuleID = "generic-api-key") => ({ RuleID, File: `${root}/${file}`, StartLine: 1, Secret: "never emit this field" });
+  const population = () => [
+    ...Array.from({ length: 33 }, () => finding("serve.mjs")),
+    ...Array.from({ length: 35 }, () => finding("spawner-sidecar.mjs")),
+    ...Array.from({ length: 96 }, () => finding("doc-vector-seed/manifest.json")),
+    finding("spa/assets/chunk-ZUYEQ4TG-50072df8.js", "gcp-api-key"),
+    finding("spa/excalidraw/chunk-ZUYEQ4TG.js", "gcp-api-key"),
+    finding("spa/monaco/vs/editor-KLE6jdfb.js"),
+  ];
+
+  it("uses the same measured population and emits only a redacted preflight", () => {
+    const report = evaluateBootcBundledSecretPolicy(JSON.stringify(population()));
+    expect(report).toMatchObject({ preflightOnly: true, accepted: true, totalFindings: 167, bundledFindings: 167 });
+    expect(JSON.stringify(report)).not.toContain("never emit this field");
+    expect(parseBootcImageReleaseRequestCliArgs(["--input-file", "scan.json", "--emit", "bundled-secret-policy"]).emit)
+      .toBe("bundled-secret-policy");
+  });
+
+  it.each(["serve.mjs", "spawner-sidecar.mjs", "doc-vector-seed/manifest.json"])(
+    "refuses surplus findings in %s before an image is signed or uploaded", (file) => {
+      const report = evaluateBootcBundledSecretPolicy(JSON.stringify([...population(), finding(file)]));
+      expect(report.accepted).toBe(false);
+      expect(report.overflowed).toHaveLength(1);
+    },
+  );
+
+  it("refuses unknown rules and malformed/incomplete report shapes", () => {
+    expect(evaluateBootcBundledSecretPolicy(JSON.stringify([finding("serve.mjs", "private-key")])).accepted).toBe(false);
+    for (const value of ["invalid", "{}", "null", JSON.stringify([{ RuleID: "generic-api-key" }])]) {
+      expect(() => evaluateBootcBundledSecretPolicy(value)).toThrow();
+    }
+    expect(() => evaluateBootcBundledSecretPolicy(JSON.stringify([{ ...finding("serve.mjs"), StartLine: 0 }]))).toThrow();
+  });
 });
 
 describe("bootc release request evidence readers", () => {

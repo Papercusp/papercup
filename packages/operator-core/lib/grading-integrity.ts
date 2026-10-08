@@ -805,6 +805,7 @@ export async function reservePendingGradingAudit(
         criteriaHash: reopenIdentity.criteriaHash,
         stampedAt: now.toISOString(),
         dispatchReservation: { key: reservationKey, reservedAt },
+        lastDispatchReservation: { key: reservationKey, reservedAt },
       })
     : null;
 
@@ -827,10 +828,15 @@ export async function reservePendingGradingAudit(
     const claimed = await tx<{ feature_id: string }[]>`
       UPDATE harness_shared.work_items
          SET payload = jsonb_set(
-               -- A claim only succeeds once any quota backoff below has EXPIRED,
-               -- so clearing it here is the natural place: the stamp is spent.
-               COALESCE(payload, '{}'::jsonb) #- '{observation,gradingAudit,dispatchBackoff}',
-               '{observation,gradingAudit,dispatchReservation}',
+               jsonb_set(
+                 -- A claim only succeeds once any quota backoff below has EXPIRED,
+                 -- so clearing it here is the natural place: the stamp is spent.
+                 COALESCE(payload, '{}'::jsonb) #- '{observation,gradingAudit,dispatchBackoff}',
+                 '{observation,gradingAudit,dispatchReservation}',
+                 ${reservation}::jsonb,
+                 true
+               ),
+               '{observation,gradingAudit,lastDispatchReservation}',
                ${reservation}::jsonb,
                true
              ),
@@ -981,21 +987,41 @@ export async function releasePendingGradingAudit(
          SET payload = ${
            restoreJson && backoffJson
              ? tx`jsonb_set(
-                 jsonb_set(payload, '{observation,gradingAudit,dispatchReservation}', ${restoreJson}::jsonb, true),
+                 jsonb_set(
+                   jsonb_set(payload, '{observation,gradingAudit,dispatchReservation}', ${restoreJson}::jsonb, true),
+                   '{observation,gradingAudit,lastDispatchReservation}',
+                   ${restoreJson}::jsonb,
+                   true
+                 ),
                  '{observation,gradingAudit,dispatchBackoff}',
                  ${backoffJson}::jsonb,
                  true
                )`
              : restoreJson
-               ? tx`jsonb_set(payload, '{observation,gradingAudit,dispatchReservation}', ${restoreJson}::jsonb, true)`
+               ? tx`jsonb_set(
+                   jsonb_set(payload, '{observation,gradingAudit,dispatchReservation}', ${restoreJson}::jsonb, true),
+                   '{observation,gradingAudit,lastDispatchReservation}',
+                   ${restoreJson}::jsonb,
+                   true
+                 )`
                : backoffJson
                  ? tx`jsonb_set(
-                 payload #- '{observation,gradingAudit,dispatchReservation}',
-                 '{observation,gradingAudit,dispatchBackoff}',
-                 ${backoffJson}::jsonb,
-                 true
-               )`
-                 : tx`payload #- '{observation,gradingAudit,dispatchReservation}'`
+                     jsonb_set(
+                       payload #- '{observation,gradingAudit,dispatchReservation}',
+                       '{observation,gradingAudit,lastDispatchReservation}',
+                       payload->'observation'->'gradingAudit'->'dispatchReservation',
+                       true
+                     ),
+                     '{observation,gradingAudit,dispatchBackoff}',
+                     ${backoffJson}::jsonb,
+                     true
+                   )`
+                 : tx`jsonb_set(
+                     payload #- '{observation,gradingAudit,dispatchReservation}',
+                     '{observation,gradingAudit,lastDispatchReservation}',
+                     payload->'observation'->'gradingAudit'->'dispatchReservation',
+                     true
+                   )`
          },
              origin = 'local',
              updated_ts = ${Date.now()}
@@ -1049,7 +1075,7 @@ function gradingAuditBrief(card: ScorecardRow, reservationReservedAt: string): s
     // reservation only means this lease lapsed while the audit ran (a full audit of a large card
     // outlasts GRADING_AUDIT_RESERVATION_TTL_MS). scorecards:emit admits a lapsed lease's own
     // auditor (EI-25246208524832409); an auditor that stops here throws the finished audit away.
-    `At this pre-emit re-read, a dispatchReservation that is ABSENT means only that your lease lapsed while you audited; it is NOT a reason to stop. If gradingAudit.state is still exactly 'pending', emit with your original gradingAuditReservation unchanged: scorecards:emit admits the auditor that held a lapsed lease and refuses anyone else. Stop without emitting only when a dispatchReservation IS present and its key or reservedAt differs from your lease, because a newer dispatch owns the card. If the emit is refused, report the refusal code and stop.`,
+    `At this pre-emit re-read, a dispatchReservation that is ABSENT means only that your lease lapsed while you audited; it is NOT a reason to stop. If gradingAudit.state is still exactly 'pending', emit with your original gradingAuditReservation unchanged: scorecards:emit admits the auditor that held a lapsed lease and refuses anyone else. A present reservation with a different key or reservedAt is a renewal only if your direct coord inbox contains a message from system:grading-audit-dispatch with summary "Renewed grading-audit lease for ${card.issueId}", and the message says your existing independent audit task is retained. Require the notice to identify this exact target '${card.issueId}', the current evidence fingerprint '${card.evidenceFingerprint ?? 'not recorded'}', the expected key 'grading-audit:${card.issueId}', and a renewed reservedAt that matches the target's current dispatchReservation exactly. Re-read scorecards:get and require the target is still current and pending with that exact target, fingerprint, key, and reservedAt; then emit using the renewed key and reservedAt in gradingAuditReservation. Without that direct matching renewal, stop without emitting: an unrelated reservation change or a notice for another task, target, fingerprint, key, or reservedAt is not authority to continue. If the emit is refused, report the refusal code and stop.`,
     'A successful audit emission settles the target scorecard; do not emit any second audit or other scorecard.',
   ].join('\n\n');
 }

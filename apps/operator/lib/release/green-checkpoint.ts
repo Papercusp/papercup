@@ -18911,9 +18911,78 @@ export function realCheckpointDeps(
       // turning a warning-only condition into an indefinitely red release gate.
       // Evaluate every watched filesystem, because any one shared backing volume
       // can exhaust while the others remain healthy.
+      // WI-10007424: the critical-write floor is the disk ALARM's reserve
+      // (min(2% of the fs, 64 GiB)), but setup's dependency copy enforces its OWN
+      // reserve (2%, uncapped on the protected fs) plus a 10 GiB margin. A run
+      // between those two floors passed this preflight and then died mid-setup with
+      // exit 77 (WI-10005705: 43.7 GiB free, 51.0 GiB required), after spending the
+      // fire. Ask the copy path itself, in its pure-measurement mode, so the gate
+      // and the copy cannot disagree about what "enough" means. Exit 77 is the
+      // script's reserved insufficient-headroom code; any other failure of the probe
+      // leaves the critical-write floor as the only admission check and says so.
+      const dependencyCopyHeadroom = async (): Promise<{
+        ok: boolean;
+        summary: string;
+      }> => {
+        let probe: Awaited<ReturnType<CheckpointExec>>;
+        try {
+          probe = await exec(
+            "bash",
+            [
+              path.join(
+                toolingRoot(),
+                "apps/operator/bin/release/dependency-generation.sh",
+              ),
+              "--integration",
+              cfg.integrationRoot,
+              "--check-headroom",
+            ],
+            { allowNonZero: true, timeoutMs: 60_000 },
+          );
+        } catch (error) {
+          return {
+            ok: true,
+            summary: `dependency-copy headroom probe unavailable (${error instanceof Error ? error.message : error}); the critical-write floor is the only admission check`,
+          };
+        }
+        const line = `${probe.stdout}\n${probe.stderr}`
+          .split(/\r?\n/)
+          .find((l) => l.includes("DEPENDENCY_GENERATION_HEADROOM_"))
+          ?.replace(/^\[dependency-generation\]\s*/, "")
+          .trim();
+        if (probe.code === 77) {
+          return {
+            ok: false,
+            summary: `dependency copy cannot start: ${line ?? "dependency-generation.sh --check-headroom exited 77 (insufficient headroom)"}`,
+          };
+        }
+        if (probe.code === 0)
+          return { ok: true, summary: line ?? "dependency-copy headroom ok" };
+        return {
+          ok: true,
+          summary: `dependency-copy headroom probe exited ${probe.code}; the critical-write floor is the only admission check`,
+        };
+      };
+      // Names exactly what tripped admission: the critical-write floor, the
+      // dependency-copy floor, or both. Either may be the sole trigger.
+      const describeTrigger = (
+        snapshots: CheckpointDiskSnapshot[],
+        copy: { ok: boolean; summary: string },
+      ) =>
+        [
+          describeBreaches(snapshots) || null,
+          copy.ok ? null : copy.summary,
+        ]
+          .filter((part): part is string => part !== null)
+          .join("; ");
+
       const beforeBreaches = detectCriticalWriteHeadroom(before, policy);
-      if (beforeBreaches.length === 0)
-        return { ok: true, summary: describe(before) };
+      const copyBefore = await dependencyCopyHeadroom();
+      if (beforeBreaches.length === 0 && copyBefore.ok)
+        return {
+          ok: true,
+          summary: `${describe(before)}; ${copyBefore.summary}`,
+        };
 
       // EI-22642378999251872: the old path returned immediately and spent one singleton fire per
       // hour rediscovering the same breach. Reuse the existing age+bytes-bounded fleet-log GC

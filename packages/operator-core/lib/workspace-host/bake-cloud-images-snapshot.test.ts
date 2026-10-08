@@ -90,6 +90,7 @@ function runFixture(
      * resolve it. 'missing': no auditor anywhere and the env var empty.
      */
     auditor?: 'env' | 'source-tree' | 'missing';
+    genericToolsMissing?: boolean;
   } = {},
 ): {
   status: number;
@@ -452,6 +453,11 @@ exit ${options.supplyChainRefused ? 3 : 0}
         BAKE_TEST_SOURCE_EXISTS: sourceImage?.exists === false ? '0' : '1',
         BAKE_TEST_SUPPLY_CHAIN_MARKER: supplyChainMarker,
         PAPERCUSP_RELEASE_AUDITOR: auditorMode === 'env' ? fixtureAuditor : '',
+        // These tools are not executed by this suite's fake supply chain. Their presence is
+        // the early setup contract; image-secret-scan-binding tests exercise the actual step.
+        PAPERCUSP_BUNDLED_SECRET_POLICY_EVALUATOR: options.genericToolsMissing ? join(dir, 'missing-policy') : fixtureAuditor,
+        PAPERCUSP_BUNDLED_SECRET_POLICY_RUNNER: '/bin/true',
+        GITLEAKS_BIN: '/bin/true',
         BAKE_TEST_LIVE_CONTAINERFILE: liveContainerfile,
         BAKE_TEST_BUILT_CONTAINERFILE: builtContainerfilePath,
         BAKE_TEST_RENDER: render,
@@ -578,6 +584,12 @@ function runImageBuildProbeStorageFixture(
 }
 
 describe('bake-cloud-images.sh startup snapshot (EI-22355025813361885)', () => {
+  it('refuses missing provider secret-policy tooling before starting a build', () => {
+    const result = runFixture(SOURCE, 'raw', undefined, undefined, false, 'pass', { genericToolsMissing: true });
+    expect(result.status).not.toBe(0);
+    expect(result.output).toContain('bundled secret policy evaluator missing before bake');
+    expect(result.buildArgs).toEqual([]);
+  });
   it('refuses duplicate release admission and permits retry after process exit', () => {
     const dir = mkdtempSync(join(tmpdir(), 'bake-admission-'));
     const start = SOURCE.indexOf('# EI-25301484626869456:');

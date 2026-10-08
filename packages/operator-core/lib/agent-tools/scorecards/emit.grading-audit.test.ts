@@ -668,6 +668,18 @@ describe('scorecards:emit grading audit path (P-013)', () => {
       },
     },
   });
+  const gradedCardWithLapsedReservation = () => ({
+    ...GRADED_CARD,
+    payload: {
+      observation: {
+        ...GRADED_CARD.payload.observation,
+        gradingAudit: {
+          ...GRADED_CARD.payload.observation.gradingAudit,
+          lastDispatchReservation: activeReservation,
+        },
+      },
+    },
+  });
   beforeEach(() => {
     getRubric.mockResolvedValue(mkRubric('grading-integrity', 'standard'));
     getIssue.mockResolvedValue(GRADED_CARD);
@@ -698,7 +710,7 @@ describe('scorecards:emit grading audit path (P-013)', () => {
 
     expect(res.ok).toBe(false);
     expect((res as { code?: string }).code).toBe('grading_audit_reservation_mismatch');
-    expect((res as { error?: string }).error).toContain('does not match its current active dispatch reservation');
+    expect((res as { error?: string }).error).toContain('does not match its latest dispatch reservation epoch');
     expect(captureImprovement).not.toHaveBeenCalled();
     expect(recordGradingAudit).not.toHaveBeenCalled();
   });
@@ -734,10 +746,10 @@ describe('scorecards:emit grading audit path (P-013)', () => {
     expect(recordGradingAudit).not.toHaveBeenCalled();
   });
 
-  // EI-25246208524832409: the 15-min lease lapsed mid-audit (39-criterion card, ~18 min of
-  // honest work), the dispatcher dropped it, and nobody re-dispatched. GRADED_CARD is that
-  // state: pending with NO dispatchReservation.
-  it('admits the dispatched auditor whose lease lapsed and settles against the lease-less stamp', async () => {
+  // EI-25246208524832409: a long audit can outlive the 15-min active lease. The
+  // retained latest epoch proves this is still the dispatched auditor's lease.
+  it('admits the dispatched auditor whose lease lapsed and carries the retained epoch into settlement', async () => {
+    getIssue.mockResolvedValue(gradedCardWithLapsedReservation());
     const res = await emitScorecard(
       { ...auditArgs, gradingAuditReservation: activeReservation },
       { createdBy: 'su-lapsed-auditor', ctxHarness: 'papercusp' },
@@ -746,15 +758,16 @@ describe('scorecards:emit grading audit path (P-013)', () => {
     expect(res.ok).toBe(true);
     expect(isCurrentSourceAuditResponder).toHaveBeenCalledWith('EI-CARD', activeReservation, 'su-lapsed-auditor');
     expect(recordGradingAudit).toHaveBeenCalledTimes(1);
-    // recordGradingAudit compares the supplied lease with the stamp's ACTUAL one; carrying
-    // the lapsed lease would file the audit card and leave the target pending.
+    // The lapsed token must reach the settle CAS so a newer claim-and-release cannot win
+    // between the pre-emit read and the atomic update.
     const [subject, settled] = recordGradingAudit.mock.calls[0] as [string, Record<string, unknown>];
     expect(subject).toBe('EI-CARD');
-    expect(settled).not.toHaveProperty('dispatchReservation');
+    expect(settled).toMatchObject({ dispatchReservation: activeReservation });
     expect(settled).toMatchObject({ auditor: 'su-lapsed-auditor' });
   });
 
   it('refuses a lapsed lease presented by a session that is not its consult answerer', async () => {
+    getIssue.mockResolvedValue(gradedCardWithLapsedReservation());
     isCurrentSourceAuditResponder.mockResolvedValue(false);
 
     const res = await emitScorecard(

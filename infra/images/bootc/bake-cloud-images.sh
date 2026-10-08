@@ -319,6 +319,15 @@ else
   die "release auditor not found: $PAPERCUSP_RELEASE_AUDITOR. The supply chain's secret scan needs it; set PAPERCUSP_RELEASE_AUDITOR=/path/to/audit-release-bundle.py"
 fi
 export PAPERCUSP_RELEASE_AUDITOR
+# The generic provider-policy guard also lives outside the snapshotted build context.
+PAPERCUSP_BUNDLED_SECRET_POLICY_EVALUATOR="${PAPERCUSP_BUNDLED_SECRET_POLICY_EVALUATOR:-$HERE_REAL/../../../apps/operator/lib/release/bootc-image-release-request-cli.ts}"
+PAPERCUSP_BUNDLED_SECRET_POLICY_RUNNER="${PAPERCUSP_BUNDLED_SECRET_POLICY_RUNNER:-$HERE_REAL/../../../node_modules/.bin/tsx}"
+if [ "$DRY_RUN" -ne 1 ]; then
+  [ -f "$PAPERCUSP_BUNDLED_SECRET_POLICY_EVALUATOR" ] || die "bundled secret policy evaluator missing before bake"
+  [ -x "$PAPERCUSP_BUNDLED_SECRET_POLICY_RUNNER" ] || die "bundled secret policy runner missing before bake"
+  [ -x "${GITLEAKS_BIN:-$(command -v gitleaks || true)}" ] || die "gitleaks missing before bake"
+fi
+export PAPERCUSP_BUNDLED_SECRET_POLICY_EVALUATOR PAPERCUSP_BUNDLED_SECRET_POLICY_RUNNER
 # From here on every step reads the snapshot, never the live checkout.
 HERE="$BUILD_CONTEXT"
 BUILD_HEALTH="$HERE/p307-build-health.sh"

@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
+import { createServer } from "node:http";
+import { appendHostEvent, eventLogPathForOwner } from "../scripts/psu-pty-host.mjs";
 import {
   mkdtempSync,
   mkdirSync,
@@ -14617,6 +14619,123 @@ describe("reportSessionRespawned (WI-5075: re-anchor adv row native id on carry-
         token: "t",
       }),
     ).resolves.toBe(false);
+  });
+
+  describe("respawn report diagnostics", () => {
+    it.each([200, 503])("persists the real HTTP %i outcome without request or response secrets", async (status) => {
+      const dir = mkdtempSync(join(tmpdir(), "respawn-report-events-"));
+      const server = createServer((_request, response) => {
+        response.writeHead(status);
+        response.end("response-body-that-must-not-be-logged");
+      });
+      try {
+        await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+        const address = server.address();
+        if (!address || typeof address === "string") throw new Error("test listener missing");
+        await expect(reportSessionRespawned("42", freshId, {
+          coordOwnerId: "su-diagnostic-fixture",
+          operatorUrl: `http://127.0.0.1:${address.port}`,
+          token: "never-log-this-token",
+          appendEventImpl: (owner, kind, extra) => appendHostEvent(owner, kind, extra, dir),
+        })).resolves.toBe(status === 200);
+        const rows = readFileSync(eventLogPathForOwner("su-diagnostic-fixture", dir), "utf8")
+          .trim().split("\n").map((line) => JSON.parse(line));
+        expect(rows).toHaveLength(1);
+        expect(rows[0]).toMatchObject({
+          kind: "respawn-report-attempt",
+          nativeId: freshId,
+          endpointClass: "session-respawned",
+          outcome: status === 200 ? "accepted" : "http-refused",
+          status,
+          errorName: null,
+          errorCode: null,
+          elapsedMs: expect.any(Number),
+        });
+        expect(rows[0].elapsedMs).toBeGreaterThanOrEqual(0);
+        const saved = JSON.stringify(rows);
+        expect(saved).not.toContain("never-log-this-token");
+        expect(saved).not.toContain("response-body-that-must-not-be-logged");
+        expect(saved).not.toContain("http://");
+      } finally {
+        server.closeAllConnections();
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it("distinguishes a transport refusal and allowlists error fields", async () => {
+      const appendEventImpl = vi.fn();
+      const error = Object.assign(new TypeError("secret endpoint and bearer"), {
+        cause: { code: "ECONNREFUSED", message: "secret request body" },
+      });
+      await expect(reportSessionRespawned("42", freshId, {
+        coordOwnerId: "su-diagnostic-fixture",
+        token: "secret bearer",
+        fetchImpl: async () => { throw error; },
+        appendEventImpl,
+      })).resolves.toBe(false);
+      expect(appendEventImpl).toHaveBeenCalledExactlyOnceWith("su-diagnostic-fixture", "respawn-report-attempt", {
+        nativeId: freshId,
+        endpointClass: "session-respawned",
+        outcome: "transport-error",
+        status: null,
+        errorName: "TypeError",
+        errorCode: "ECONNREFUSED",
+        elapsedMs: expect.any(Number),
+      });
+      expect(JSON.stringify(appendEventImpl.mock.calls)).not.toContain("secret");
+    });
+
+    it("records an actual deadline abort as a timeout", async () => {
+      const appendEventImpl = vi.fn();
+      await expect(reportSessionRespawned("42", freshId, {
+        coordOwnerId: "su-diagnostic-fixture",
+        token: "fixture",
+        timeoutMs: 10,
+        fetchImpl: async (_url, options) => {
+          const signal = options?.signal;
+          if (!signal) throw new Error("test request signal missing");
+          return new Promise<Response>((_resolve, reject) => {
+            signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+          });
+        },
+        appendEventImpl,
+      })).resolves.toBe(false);
+      expect(appendEventImpl).toHaveBeenCalledExactlyOnceWith("su-diagnostic-fixture", "respawn-report-attempt", {
+        nativeId: freshId,
+        endpointClass: "session-respawned",
+        outcome: "timeout",
+        status: null,
+        errorName: "TimeoutError",
+        errorCode: null,
+        elapsedMs: expect.any(Number),
+      });
+    });
+
+    it("omits arbitrary error names and codes", async () => {
+      const appendEventImpl = vi.fn();
+      await reportSessionRespawned("42", freshId, {
+        coordOwnerId: "su-diagnostic-fixture",
+        token: "fixture",
+        fetchImpl: async () => { throw { name: "secret name", code: "secret code", message: "secret message" }; },
+        appendEventImpl,
+      });
+      expect(appendEventImpl.mock.calls[0]?.[2]).toMatchObject({
+        outcome: "transport-error", errorName: "Error", errorCode: null,
+      });
+      expect(JSON.stringify(appendEventImpl.mock.calls)).not.toContain("secret");
+    });
+
+    it.each([true, false])("a failed diagnostic write preserves the report verdict %s", async (ok) => {
+      const appendEventImpl = vi.fn(() => { throw new Error("event store unavailable"); });
+      await expect(reportSessionRespawned("42", freshId, {
+        coordOwnerId: "su-diagnostic-fixture",
+        token: "fixture",
+        fetchImpl: async () => new Response("", { status: ok ? 200 : 503 }),
+        appendEventImpl,
+      })).resolves.toBe(ok);
+      expect(appendEventImpl).toHaveBeenCalledTimes(1);
+    });
   });
 });
 

@@ -3097,13 +3097,14 @@ export function describeResumeClaimRefusal(outcome: {
  * 2026-07-18 su-57b6247d successor-kill loop). Fire-and-forget, bounded, never
  * rejects — a respawn must never wait on it. Exported with injectables for tests.
  */
-export function reportSessionRespawned(advSessionId: any, sessionId: any, { coordOwnerId, fetchImpl, operatorUrl, token, timeoutMs, }?: {
+export function reportSessionRespawned(advSessionId: any, sessionId: any, { coordOwnerId, fetchImpl, operatorUrl, token, timeoutMs, appendEventImpl, }?: {
     coordOwnerId?: null | undefined;
     fetchImpl?: typeof fetch | undefined;
     operatorUrl?: any;
     token?: null | undefined;
     timeoutMs?: number | undefined;
-}): Promise<boolean>;
+    appendEventImpl?: typeof appendHostEvent | undefined;
+}): Promise<any>;
 /**
  * {@link reportSessionRespawned} that keeps retrying in the background until the
  * operator accepts it (WI-10004917). A single 2s attempt was the only chance the
@@ -4925,6 +4926,7 @@ declare function api(path: any, opts?: {}): Promise<any>;
 declare function slowRequestNoticeOncePerLaunch({ url }: {
     url: any;
 }): Promise<string | null>;
+import { appendHostEvent } from "./psu-pty-host.mjs";
 import { fireSessionCompactedEvent } from "./psu-pty-host.mjs";
 import { statSync } from "node:fs";
 declare function safeReaddir(dir: any): import("fs").Dirent<string>[];
