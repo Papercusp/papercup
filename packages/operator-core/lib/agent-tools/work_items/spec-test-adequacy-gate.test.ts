@@ -53,6 +53,13 @@ function clause(over: Partial<SpecClauseRevision> = {}): SpecClauseRevision {
   };
 }
 
+function passingExecution(): NonNullable<ListedEvidence['testRunExecution']> {
+  return {
+    status: 'pass', passed: 1, failed: 0, skipped: 0, collectionFailed: false,
+    testLayer: 'integration', passedCaseTitles: ['acknowledged events are not replayed'],
+  };
+}
+
 function evidence(over: Partial<SpecEvidenceForAdequacy> = {}): SpecEvidenceForAdequacy {
   return {
     workItemId: 'WI-101',
@@ -71,9 +78,11 @@ function evidence(over: Partial<SpecEvidenceForAdequacy> = {}): SpecEvidenceForA
     },
     coverageEvidenceRef: null,
     testRunId: 43,
-    testRunExecution: { passed: 1, failed: 0, skipped: 0, collectionFailed: false },
+    testRunExecution: passingExecution(),
     details: {
       adequacy: {
+        fixtureFree: true,
+        testCases: ['acknowledged events are not replayed'],
         falsifiable: true,
         testLayer: 'integration',
         pathReachable: true,
@@ -117,6 +126,7 @@ function listedEvidence(over: Partial<ListedEvidence> = {}): ListedEvidence {
     createdBy: 'su-test',
     createdAt: '2026-08-20T00:01:31.000Z',
     ...evidence(),
+    testRunExecution: passingExecution(),
     // Evaluator revision 4 (WI-10006856): a mutation/counterexample target only establishes
     // falsifiability when its run's canonical test FILE also has a successful current test
     // binding on the same clause revision, matched by testRunProvenance.filePath. A null
@@ -145,6 +155,7 @@ function counterexampleEvidence(over: Partial<ListedEvidence> = {}): ListedEvide
         ...((evidence().details.adequacy ?? {}) as Record<string, unknown>),
         outcome: 'killed',
         targeted: 'spec-003-01',
+        scenarioIds: ['acknowledged-event-negative-control'],
       },
     },
     ...over,
