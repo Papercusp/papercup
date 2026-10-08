@@ -16,7 +16,9 @@ import {
 } from "./green-checkpoint";
 import {
   FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION,
+  frozenRepairRoundExecution,
   markFrozenRepairVerificationRed,
+  selectFrozenRepairAdmissionPaths,
   type FrozenCandidateRepairQueue,
   type FrozenRepairAdmission,
   type RepairSignatureEntry,
@@ -815,5 +817,70 @@ describe("WI-10004151 verifyRepairHead carries a runner's failure into the hold"
     expect(described).toContain('no compatible installed source was found: node_modules/pkg: version "1.0.0" (ref) vs "2.0.0" (live)');
     expect(described).toContain("Install the head's lockfiles in an isolated source");
     expect(described).not.toContain("\n");
+  });
+});
+
+describe("WI-10007489 verifyRepairHead stamps the radius it EXECUTED on its verdict", () => {
+  const signature = [
+    entry({ kind: "test-file", id: "lib/a.test.ts", workspace: CORE }),
+    entry({ kind: "lint-leg", id: "lint:remaining" }),
+  ];
+  const expectedFor = (queue: FrozenCandidateRepairQueue) =>
+    frozenRepairRoundExecution({
+      mode: "targeted",
+      fileKeys: [`${CORE} :: lib/a.test.ts`],
+      gateIds: ["lint:remaining"],
+      radiusMode: selectFrozenRepairAdmissionPaths(queue).mode,
+    });
+
+  it("a red verdict carries the targeted files + gates it ran, and the queue records them on its round", async () => {
+    const queue = queueWith(signature);
+    const result = await verifyRepairHead({
+      runTestsAtRef: async (head, files) => ({
+        pass: false, summary: "a fails", measuredHead: head, coverageComplete: true,
+        perWorkspace: [{ workspace: CORE, files: files.map((f) => f.file), status: "fail" }],
+      }),
+      runGateAtRef: async (head, ids) => ({
+        pass: true, summary: "lint passes", measuredHead: head, coverageComplete: true,
+        perGate: ids.map((id) => ({ id, status: "pass" as const })),
+      }),
+    }, queue);
+    expect(result.kind).toBe("red");
+    if (result.kind !== "red") throw new Error("unreachable");
+    expect(result.executed).toEqual(expectedFor(queue));
+    expect(result.executed).toMatchObject({ mode: "targeted", fileCount: 1, gateIds: ["lint:remaining"] });
+
+    // The verdict's record reaches the persisted round unchanged (the wiring the gate does).
+    const next = markFrozenRepairVerificationRed(queue, {
+      repairHead: HEAD,
+      failingTests: result.failingTests,
+      signature: result.signature,
+      nowMs: 10,
+      executed: result.executed,
+    });
+    expect(next.convergenceRounds?.at(-1)?.executed).toEqual(expectedFor(queue));
+  });
+
+  it("a green verdict carries the same record — a passing targeted round is still not a full-gate run", async () => {
+    const queue = queueWith(signature);
+    const result = await verifyRepairHead({
+      runTestsAtRef: async (head, files) => ({
+        pass: true, summary: "a passes", measuredHead: head, coverageComplete: true,
+        perWorkspace: [{ workspace: CORE, files: files.map((f) => f.file), status: "pass" }],
+      }),
+      runGateAtRef: async (head, ids) => ({
+        pass: true, summary: "lint passes", measuredHead: head, coverageComplete: true,
+        perGate: ids.map((id) => ({ id, status: "pass" as const })),
+      }),
+    }, queue);
+    expect(result.kind).toBe("green");
+    expect(result).toMatchObject({ executed: expectedFor(queue) });
+  });
+
+  it("a verdict that ran nothing (full-run-required / unavailable) claims no executed radius", async () => {
+    const fullOnly = queueWith([entry({ kind: "post-suite-leg", id: "perf:budget" })]);
+    const full = await verifyRepairHead({}, fullOnly);
+    expect(full.kind).toBe("full-run-required");
+    expect(full).not.toHaveProperty("executed");
   });
 });

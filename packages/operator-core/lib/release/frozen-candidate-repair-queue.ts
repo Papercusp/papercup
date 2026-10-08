@@ -939,7 +939,25 @@ export interface FrozenRepairRoundExecution {
   gateIds: string[];
   /** `selectFrozenRepairAdmissionPaths().mode` for a targeted round. */
   radiusMode?: string;
+  /** Why a `mode:'full'` round ran the full gate. Absent on a full round = UNEXPLAINED, which
+   *  is exactly the fallthrough the P-018 `targeted-radius` invariant breaches on. */
+  trigger?: FrozenRepairFullGateTrigger;
 }
+
+/**
+ * The legitimate reasons a round runs the full gate:
+ * - `candidate`: the frozen candidate's opening red (nothing has been targeted yet).
+ * - `promotion-proof`: every targeted leg passed at the repair head, and the full gate at that
+ *   same sha is the promotion proof (P-007). A red here means the targeted radius missed a leg.
+ * - `full-run-required`: the signature holds an entry only the full gate re-measures (a
+ *   post-suite leg) or no signature at all.
+ */
+export type FrozenRepairFullGateTrigger = 'candidate' | 'promotion-proof' | 'full-run-required';
+const FROZEN_REPAIR_FULL_GATE_TRIGGERS: ReadonlySet<string> = new Set<FrozenRepairFullGateTrigger>([
+  'candidate',
+  'promotion-proof',
+  'full-run-required',
+]);
 
 export const FROZEN_REPAIR_ROUND_GATE_ID_CAP = 32;
 const FROZEN_REPAIR_ROUND_GATE_ID_CHARS = 128;
@@ -951,6 +969,7 @@ export function frozenRepairRoundExecution(input: {
   fileKeys?: readonly string[];
   gateIds?: readonly string[];
   radiusMode?: string;
+  trigger?: FrozenRepairFullGateTrigger | null;
 }): FrozenRepairRoundExecution {
   const keys = input.fileKeys ? [...new Set(input.fileKeys)].sort() : null;
   return normalizeRoundExecution({
@@ -961,6 +980,7 @@ export function frozenRepairRoundExecution(input: {
       : {}),
     gateIds: [...(input.gateIds ?? [])],
     ...(input.radiusMode ? { radiusMode: input.radiusMode } : {}),
+    ...(input.mode === 'full' && input.trigger ? { trigger: input.trigger } : {}),
   }) as FrozenRepairRoundExecution;
 }
 
@@ -985,6 +1005,10 @@ function normalizeRoundExecution(value: unknown): FrozenRepairRoundExecution | u
     gateIds,
     ...(typeof row.radiusMode === 'string' && row.radiusMode !== ''
       ? { radiusMode: row.radiusMode.slice(0, FROZEN_REPAIR_ROUND_RADIUS_MODE_CHARS) }
+      : {}),
+    // An unrecognised trigger is dropped, so the round reads as an UNEXPLAINED full run.
+    ...(row.mode === 'full' && typeof row.trigger === 'string' && FROZEN_REPAIR_FULL_GATE_TRIGGERS.has(row.trigger)
+      ? { trigger: row.trigger as FrozenRepairFullGateTrigger }
       : {}),
   };
 }

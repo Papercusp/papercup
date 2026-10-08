@@ -191,6 +191,7 @@ import {
   type FrozenRepairRetestRequest,
   type FrozenRepairSelectiveCoverage,
   frozenRepairRoundExecution,
+  type FrozenRepairFullGateTrigger,
   type FrozenRepairRoundExecution,
 } from "@papercusp/operator-core/lib/release/frozen-candidate-repair-queue";
 import type {
@@ -11025,6 +11026,10 @@ async function runGreenCheckpointInner(
   // than silently discarding a queue whose state we could not read.
   let repairQueue: FrozenCandidateRepairQueue | null = null;
   let repairVerification = false;
+  // WI-10007489: WHY a repair-head run proceeds to the full gate (set only from verifyRepairHead's
+  // green / full-run-required verdict). A full-gate red at a repair head with this still null is
+  // recorded with no trigger — the unexplained fallthrough the targeted-radius invariant flags.
+  let repairFullGateTrigger: FrozenRepairFullGateTrigger | null = null;
   let initialCandidateVerification = false;
   const withRepairIdentity = <T extends CheckpointResult>(result: T): T => {
     let next = result;
@@ -12278,6 +12283,8 @@ async function runGreenCheckpointInner(
       }
       // "green" / "full-run-required": the full canonical gate runs at `candidate` (the repair
       // head) below — that run, not the selective pass, is the promotion proof (P-007).
+      repairFullGateTrigger =
+        verification.kind === "green" ? "promotion-proof" : "full-run-required";
     }
   }
 
@@ -13477,7 +13484,14 @@ async function runGreenCheckpointInner(
           postSuiteLegs,
           typecheckPreflight,
         }),
-        ...(earlyPreflightFailure ? {} : { executed: frozenRepairRoundExecution({ mode: "full" }) }),
+        ...(earlyPreflightFailure
+          ? {}
+          : {
+              executed: frozenRepairRoundExecution({
+                mode: "full",
+                trigger: repairVerification ? repairFullGateTrigger : "candidate",
+              }),
+            }),
       };
       if (repairVerification && repairQueue) {
         // EI-22430783328866306 (second half): persist the red BEFORE the dispatch attempt,
