@@ -2165,7 +2165,19 @@ export async function foldFilteredSnapshotRows(
   let seedIndex = 0;
   let chunkCount = 0;
   let from = 0;
-  if (prior && !conflictingSnapshotExclusion(prior, excluded)) {
+  // The guard that makes the seek safe to ship rather than merely fast: seeding from a set
+  // that dropped a table THIS fold keeps would yield a silently THINNER result, strictly
+  // worse than a slow one. The from-zero fallback is always correct but costs O(history),
+  // so it must stay visible to an operator (WI-10007536: the D-174 extraction dropped this).
+  const conflict = prior ? conflictingSnapshotExclusion(prior, excluded) : null;
+  if (prior && conflict) {
+    console.error(
+      `[snapshot] filtered source scan: prior snapshot at ${prior.coversUpTo} ` +
+        `excluded table '${conflict}' which this seed keeps; folding the full source ` +
+        `instead of seeding (correct, but O(history))`,
+    );
+  }
+  if (prior && !conflict) {
     seedIndex = prior.coversUpTo;
     chunkCount = prior.chunkCount;
     for (const [offset, chunk] of prior.chunks.entries()) {

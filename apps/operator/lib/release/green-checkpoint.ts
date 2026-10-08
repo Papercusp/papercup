@@ -1381,6 +1381,7 @@ export interface CheckpointDeps {
   ): Promise<{ infrastructure: boolean; reason: string } | null>;
   dispatchFrozenRepairFixer?(
     queue: FrozenCandidateRepairQueue,
+    checkpointEvidence?: CheckpointEvidence,
   ): Promise<{ spawnId: string | null; runId: string | null } | null>;
   /**
    * WI-10003213: TRUE when the queue's current red measured no failing test — the exact
@@ -6828,6 +6829,12 @@ export function validateTargetedGateOutcomes(
   return result.perGate;
 }
 
+/** Per-run budget of a targeted leg's persisted `outputTail`. Below the 2000-char joined
+ *  cap so the `<ws> :: <script>: ` label fits without cutting the digest's first line. */
+const TARGETED_LEG_TAIL_BUDGET = 1_900;
+/** Per-run budget of the same leg's `(output: …)` clause in the one-line summary. */
+const TARGETED_LEG_BRIEF_BUDGET = 600;
+
 /**
  * Measure the complete bounded target set, reusing duplicate physical invocations within
  * this batch only. A first failing script no longer hides passes (or later failures).
@@ -6840,6 +6847,7 @@ export async function measureTargetedGateRuns(
   const key = (script: string, workspace: string | null) => JSON.stringify([workspace, script]);
   const measured = new Map<string, TargetedGateOutcome["status"]>();
   const failureOutputs = new Map<string, string>();
+  const failureBriefs = new Map<string, string>();
   const summaries: string[] = [];
   for (const { script, workspace } of resolveGateRuns(gateIds)) {
     const label = workspace ? `${workspace} :: ${script}` : script;
@@ -6857,9 +6865,14 @@ export async function measureTargetedGateRuns(
       if (status === "fail") {
         // A clean nonzero exit can fail before a test reporter runs. Keep both
         // streams so a quiet stdout cannot hide the stderr that explains it.
-        const tail = [result.stdout?.slice(-1_000).trim(), result.stderr?.slice(-1_000).trim()]
-          .filter(Boolean).join("\n").slice(-2_000);
-        if (tail) failureOutputs.set(key(script, workspace), tail);
+        // WI-10007516: digest-first over BOTH streams in full, at each consumer's own
+        // budget — a blind tail of each was npm's footer, never the failing test.
+        const streams = [result.stdout, result.stderr];
+        const tail = summarizeLegStreams(streams, TARGETED_LEG_TAIL_BUDGET);
+        if (tail) {
+          failureOutputs.set(key(script, workspace), tail);
+          failureBriefs.set(key(script, workspace), summarizeLegStreams(streams, TARGETED_LEG_BRIEF_BUDGET));
+        }
       }
     } catch (e) {
       status = "errored";
@@ -6867,15 +6880,17 @@ export async function measureTargetedGateRuns(
       erroredReason = firstLine.replace(/;/g, ",").trim().slice(0, 200) || null;
     }
     measured.set(key(script, workspace), status);
-    const diagnostic = failureOutputs.get(key(script, workspace));
-    summaries.push(`${label}: ${status === "not-checked" ? "NOT CHECKED (examined nothing — not gating)" : status === "pass" ? "pass" : status.toUpperCase()}${erroredReason ? ` (${erroredReason})` : ""}${diagnostic ? ` (output: ${diagnostic.replace(/\s+/g, " ").replace(/;/g, ",").slice(-600)})` : ""}`);
+    const diagnostic = failureBriefs.get(key(script, workspace));
+    summaries.push(`${label}: ${status === "not-checked" ? "NOT CHECKED (examined nothing — not gating)" : status === "pass" ? "pass" : status.toUpperCase()}${erroredReason ? ` (${erroredReason})` : ""}${diagnostic ? ` (output: ${diagnostic.replace(/\s+/g, " ").replace(/;/g, ",")})` : ""}`);
   }
   const perGate = [...new Set(gateIds)].map((id): TargetedGateOutcome => {
     const statuses = resolveGateRuns([id]).map(({ script, workspace }) => measured.get(key(script, workspace)));
+    // Each tail LEADS with its digest, so the joined set is bounded from the FRONT: a cut
+    // from the end only ever loses raw tail, never a failing test's name.
     const outputTail = resolveGateRuns([id]).map(({ script, workspace }) => {
       const tail = failureOutputs.get(key(script, workspace));
       return tail ? `${workspace ? `${workspace} :: ` : ""}${script}: ${tail}` : "";
-    }).filter(Boolean).join("\n").slice(-2_000);
+    }).filter(Boolean).join("\n").slice(0, 2_000);
     return {
       id,
       status: statuses.length === 0 || statuses.some((status) => status === undefined || status === "errored")
@@ -9695,35 +9710,120 @@ export function summarizeSuiteOutput(fullOutput: string): string {
  *  names; the raw tail still follows, because a wedge, an npm resolution failure or a
  *  runner crash surfaces there and nowhere else. */
 export function summarizeLegOutput(fullOutput: string, budget = 1200): string {
-  const lines = stripAnsi(fullOutput)
-    .split("\n")
-    .filter((l) => !/^npm error/.test(l));
+  return summarizeLegStreams([fullOutput], budget);
+}
 
-  const isSignal = (l: string): boolean =>
-    // Per-file baseline regression row — the single most useful line in a red leg, because it
-    // names the file AND its baseline/current counts. The producer is `formatRow` in
-    // scripts/lib/tsc-baseline-gate.mjs, reached on the red path by the
-    // `for (const r of result.regressions) console.error(formatRow(r))` loop, and it renders
-    //     `   path/to/file.ts: 12 → 11  (-1)`
-    // with U+2192 — NEVER an ASCII `>`. An earlier version of this pattern required `>` and so
-    // could not match a single real regression. Accept the ASCII spellings too, so a later
-    // re-render cannot silently drop this line again.
-    /\.[cm]?[jt]sx?:\s*\d+\s*(?:→|->|>)\s*\d+/.test(l) ||
-    // raw tsc diagnostics, in either `error TS1234:` or `file(line,col):` form
-    /\berror TS\d{3,5}\b/.test(l) ||
-    /\.[cm]?[jt]sx?\(\d+,\d+\):/.test(l) ||
-    // the gate scripts' own verdict lines
-    /\bLINT_TSC_RESULT\b/.test(l) ||
-    /\bstatus=(?:regressed|partial)\b/.test(l) ||
-    /^\s*FAIL\s+\S/.test(l);
+/** Lines that carry no evidence about WHY a leg failed: npm's lifecycle footer (~450 chars
+ *  per failed workspace script) and the executed-source-map reporter's trailing receipt. */
+const LEG_NOISE_LINE = /^(?:npm error\b|\[executed-source-map\])/;
 
-  const digest = lines.filter(isSignal).slice(0, 25);
+/** Tier 1: lines that NAME what failed (a file, a case, a count, a termination). */
+const isLegFailureSignal = (l: string): boolean =>
+  // Per-file baseline regression row — the single most useful line in a red leg, because it
+  // names the file AND its baseline/current counts. The producer is `formatRow` in
+  // scripts/lib/tsc-baseline-gate.mjs, reached on the red path by the
+  // `for (const r of result.regressions) console.error(formatRow(r))` loop, and it renders
+  //     `   path/to/file.ts: 12 → 11  (-1)`
+  // with U+2192 — NEVER an ASCII `>`. An earlier version of this pattern required `>` and so
+  // could not match a single real regression. Accept the ASCII spellings too, so a later
+  // re-render cannot silently drop this line again.
+  /\.[cm]?[jt]sx?:\s*\d+\s*(?:→|->|>)\s*\d+/.test(l) ||
+  // raw tsc diagnostics, in either `error TS1234:` or `file(line,col):` form
+  /\berror TS\d{3,5}\b/.test(l) ||
+  /\.[cm]?[jt]sx?\(\d+,\d+\):/.test(l) ||
+  // the gate scripts' own verdict lines
+  /\bLINT_TSC_RESULT\b/.test(l) ||
+  /\bstatus=(?:regressed|partial)\b/.test(l) ||
+  // vitest (WI-10007516): the failing file/case, the per-file rollup and the run counts
+  /^\s*FAIL\s+\S/.test(l) ||
+  /^\s*×\s+\S/.test(l) ||
+  /^\s*❯\s+\S+\s+\(\d+\s+tests?[^)]*\|\s*\d+\s+failed\)/.test(l) ||
+  /^\s*(?:Test Files|Tests)\s+.*\b(?:failed|passed)\b/.test(l) ||
+  /^\s*Errors\s+\d+\s+errors?\b/.test(l) ||
+  // node:test, spec (`✖ name`) and TAP (`not ok 3 - name`, `# fail 1`) reporters
+  /^\s*✖\s+\S/.test(l) ||
+  /^\s*not ok\s+\d+/.test(l) ||
+  /^\s*(?:#|ℹ)\s*fail\s+[1-9]/.test(l) ||
+  // process-level terminations — the tell that a red is NOT a substantive test failure
+  /\bTest timed out\b/.test(l) ||
+  /\bWorker (?:exited|terminated) unexpectedly\b/.test(l) ||
+  /^npm error (?:signal\s+SIG[A-Z]+|Missing script:)/.test(l);
+
+/** Tier 2: an error HEADER (`AssertionError: expected …`, `TypeError: …`). Useful beside the
+ *  tier-1 names, but a passing test that logs an expected error prints the same shape, so it
+ *  only fills the slots tier 1 left over and can never push a FAIL name out of the digest. */
+const isLegErrorHeader = (l: string): boolean =>
+  /^\s*(?:[A-Z]\w*)?Error(?:\s*\[[A-Z_]+\])?:\s+\S/.test(l);
+
+const LEG_DIGEST_LINES = 25;
+const LEG_ERROR_HEADER_LINES = 8;
+const LEG_DIGEST_LINE_CHARS = 300;
+
+/** `summarizeLegOutput` over SEVERAL streams of one run (stdout, stderr).
+ *
+ *  WI-10007516, measured 2026-10-07 (pipeline_events 601064): a red `test:lane-stateful`
+ *  repair leg was summarized as `[executed-source-map] written … npm error Lifecycle script
+ *  … command failed` and nothing else. The repair-round capture kept the last 1000 chars of
+ *  each stream and the summary the last 600 of those, which npm's stderr footer and the
+ *  source-map receipt fill exactly — so no artifact named the failing test, and the probe
+ *  that followed (WI-10007508) had to recover it from the test-run ledger. The two other leg
+ *  seams were worse: `stderr || stdout` discards vitest's stdout ENTIRELY whenever npm writes
+ *  its footer to stderr, which it does on every failed script.
+ *
+ *  The digest is taken over EVERY stream, in full. The no-digest fallback still splits the
+ *  budget per stream, so a quiet stdout cannot hide the stderr that explains it (nor the
+ *  reverse); a stream that is nothing BUT npm footer keeps that footer, since a missing
+ *  script or a spawn failure is then the only evidence there is. */
+export function summarizeLegStreams(
+  streams: readonly (string | null | undefined)[],
+  budget = 1200,
+): string {
+  const perStream = streams
+    .filter((s): s is string => typeof s === "string" && s.trim() !== "")
+    .map((s) => stripAnsi(s).split("\n"));
+  if (perStream.length === 0) return "";
+
+  const all = perStream.flat();
+  const seen = new Set<string>();
+  const pick = (pred: (l: string) => boolean, max: number): string[] => {
+    const out: string[] = [];
+    for (const raw of all) {
+      if (out.length >= max) break;
+      if (!pred(raw)) continue;
+      const line = raw.trimEnd().slice(0, LEG_DIGEST_LINE_CHARS);
+      // vitest prints each failing file/case twice (progress + the Failed Tests section).
+      if (seen.has(line.trim())) continue;
+      seen.add(line.trim());
+      out.push(line);
+    }
+    return out;
+  };
+  const names = pick(isLegFailureSignal, LEG_DIGEST_LINES);
+  const digest = [
+    ...names,
+    ...pick(
+      (l) => !isLegFailureSignal(l) && isLegErrorHeader(l),
+      Math.min(LEG_ERROR_HEADER_LINES, LEG_DIGEST_LINES - names.length),
+    ),
+  ];
+
+  // `keepBareNoise`: with no digest, a stream that is NOTHING but npm footer is still the only
+  // evidence there is; beside a digest it says nothing the digest does not.
+  const tail = (share: number, keepBareNoise: boolean): string => {
+    const separators = perStream.length - 1;
+    const each = Math.max(0, Math.floor((share - separators) / perStream.length));
+    return perStream
+      .map((lines) => {
+        const denoised = lines.filter((l) => !LEG_NOISE_LINE.test(l)).join("\n").trim();
+        return (denoised || (keepBareNoise ? lines.join("\n").trim() : "")).slice(-each);
+      })
+      .filter(Boolean)
+      .join("\n");
+  };
   // No recognizable diagnostic (a wedge, a crash, a missing script): the tail is the
   // ONLY evidence there is, so it keeps the whole budget — same fallback as the suite.
-  if (digest.length === 0) return lines.join("\n").slice(-budget);
-  return `${digest.join("\n")}\n\n--- tail ---\n${lines
-    .join("\n")
-    .slice(-Math.floor(budget / 3))}`.slice(0, budget);
+  if (digest.length === 0) return tail(budget, true).slice(-budget);
+  return `${digest.join("\n")}\n\n--- tail ---\n${tail(Math.floor(budget / 3), false)}`.slice(0, budget);
 }
 
 export interface CheckpointOpts {
@@ -10949,6 +11049,7 @@ async function runGreenCheckpointInner(
   const dispatchFrozenRepair = async (
     queue: FrozenCandidateRepairQueue,
     allowCreateIfAbsent: boolean,
+    checkpointEvidence?: CheckpointEvidence,
   ): Promise<{
     queue: FrozenCandidateRepairQueue | null;
     fired: FrozenRepairDispatchResult | null;
@@ -11069,7 +11170,7 @@ async function runGreenCheckpointInner(
     try {
       await renewalChain;
       if (!reservationLost) {
-        fired = (await deps.dispatchFrozenRepairFixer?.(dispatchQueue)) ?? null;
+        fired = (await deps.dispatchFrozenRepairFixer?.(dispatchQueue, checkpointEvidence)) ?? null;
       }
     } catch (error) {
       dispatchError = error;
@@ -13552,7 +13653,7 @@ async function runGreenCheckpointInner(
           // Reserve the durable candidate row before the external fixer launch. The candidate
           // is normally already present from the pre-suite write; allowCreateIfAbsent keeps the
           // compatibility first-red path atomic for callers that learned about C only here.
-          const dispatch = await dispatchFrozenRepair(repairQueue, true);
+          const dispatch = await dispatchFrozenRepair(repairQueue, true, checkpointEvidence);
           if (dispatch.capacityHold) {
             // WI-606293: the queue row is written and the red still stands — we simply do
             // not launch into an exhausted pool. No attempt is spent; the next tick retries.
@@ -13604,7 +13705,7 @@ async function runGreenCheckpointInner(
           await deps.writeFrozenRepairQueue(repairQueue, {
             expectedUpdatedAtMs: repairQueue.updatedAtMs,
           });
-          const dispatch = await dispatchFrozenRepair(repairQueue, false);
+          const dispatch = await dispatchFrozenRepair(repairQueue, false, checkpointEvidence);
           repairQueue = dispatch.queue ?? repairQueue;
           fired = dispatch.fired;
         }
@@ -19340,7 +19441,10 @@ export function realCheckpointDeps(
           // WI-2140605 no-measured-failures). The wiring invariant — dispatcher present iff
           // the reservation trio is — is pinned by
           // green-checkpoint-frozen-repair-dispatcher-wiring.test.ts.
-          async dispatchFrozenRepairFixer(queue: FrozenCandidateRepairQueue) {
+          async dispatchFrozenRepairFixer(
+            queue: FrozenCandidateRepairQueue,
+            checkpointEvidence?: CheckpointEvidence,
+          ) {
             const { dispatchReleaseFixer } =
               await import("@papercusp/operator-core/lib/harness/routines/release-actions");
             return dispatchReleaseFixer(
@@ -19348,6 +19452,7 @@ export function realCheckpointDeps(
               queue.repairHead,
               queue.failingTests,
               queue,
+              checkpointEvidence,
             );
           },
           // WI-10003213: the same no-measured-failures verdict the dispatcher refuses on,
@@ -20900,7 +21005,9 @@ export function realCheckpointDeps(
               code: r.code,
               // WI-10002075: digest-first, never a blind tail — a red lint leg's last
               // 300 chars are its generic trailer, not the files it named.
-              tail: summarizeLegOutput(r.stderr || r.stdout),
+              // WI-10007516: BOTH streams — `stderr || stdout` dropped vitest's stdout
+              // whenever npm wrote its lifecycle footer to stderr (every failed script).
+              tail: summarizeLegStreams([r.stdout, r.stderr]),
             };
           },
           scriptAvailability: (script) =>
@@ -20932,7 +21039,7 @@ export function realCheckpointDeps(
             ...rescueTaskWatchdogOptions(script, env),
           });
           // WI-10002075: see the repair-tick seam above — same digest-first capture.
-          return { code: r.code, tail: summarizeLegOutput(r.stderr || r.stdout) };
+          return { code: r.code, tail: summarizeLegStreams([r.stdout, r.stderr]) };
         },
         refreshAfterRefMove: async (previous) => {
           const fresh = await this.readFrozenRepairQueue?.();

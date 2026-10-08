@@ -28,6 +28,33 @@ describe("targeted gate outcome evidence", () => {
     expect(result.perGate?.[1]).toEqual({ id: "lint:after", status: "pass" });
   });
 
+  it("names the failing test in both outputTail and summary, not npm's footer (WI-10007516)", async () => {
+    // pipeline_events 601064's shape: vitest on stdout, ending in the source-map receipt;
+    // npm's lifecycle footer on stderr. Pre-fix, both artifacts held only the footer.
+    const failCase = "admission fix precheck exec > kills the backgrounded grandchild";
+    const stdout = [
+      ` FAIL  lib/release/admission-fix-precheck-exec.test.ts > ${failCase}`,
+      "AssertionError: expected false to be true // Object.is equality",
+      ...Array.from({ length: 40 }, (_, i) => `     ${i}|     frame line ${"·".repeat(40)}`),
+      " Test Files  1 failed | 904 passed (905)",
+      "[executed-source-map] written ws=@papercusp/operator-core rows=905 skipped=14 sha=f07043ba dirty=false",
+    ].join("\n");
+    const stderr = [
+      "npm error Lifecycle script `test:lane-stateful` failed with error:",
+      "npm error code 1",
+      "npm error command failed",
+      "npm error command sh -c PC_TEST_LANE=stateful ../../scripts/pc-heavy.sh -- vitest run --passWithNoTests",
+    ].join("\n");
+    const result = await measureTargetedGateRuns(["lint:broken"], async () => ({ code: 1, stdout, stderr }));
+    const tail = result.perGate?.[0]?.outputTail ?? "";
+    expect(tail.startsWith("lint:broken:  FAIL  lib/release/admission-fix-precheck-exec.test.ts")).toBe(true);
+    expect(tail.length).toBeLessThanOrEqual(2_000);
+    expect(result.summary).toContain(failCase);
+    expect(result.summary).toContain("Test Files 1 failed");
+    expect(result.summary).not.toContain("npm error");
+    expect(result.summary).not.toContain("[executed-source-map]");
+  });
+
   it("runs beyond the first failure and retains each task's actual result", async () => {
     const run = vi.fn(async (script: string) => ({ code: script === "lint:broken" ? 1 : 0 }));
     const result = await measureTargetedGateRuns(["lint:before", "lint:broken", "lint:after"], run);

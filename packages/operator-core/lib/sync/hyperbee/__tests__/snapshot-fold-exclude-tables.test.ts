@@ -11,6 +11,10 @@ import {
   type SnapshotFoldProgress,
 } from '../log-snapshot';
 import type { OwnLog, PeerLogOp } from '../peer-log';
+import { stubHivePolicyReadsForSuite } from './_hive-policy-read-stubs';
+
+// WI-10007530: no PG here, and the merge pass no longer swallows a failed policy read.
+stubHivePolicyReadsForSuite();
 
 const NEVER_EMIT_MARKER = 'never-emit-me';
 
