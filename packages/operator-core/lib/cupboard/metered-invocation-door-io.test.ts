@@ -318,6 +318,20 @@ describe('metering interception through the hosted doors', () => {
     expect(door.channel().reservations).toEqual({});
   });
 
+  it('sends a signed zero-served closure and releases the funded hold', async () => {
+    const door = fakeDoor({ escrowMicros: 100_000n });
+    await reserveMeteredUnit(reserveArgs('unused-turn', 10n), door.deps);
+    const settled = await settleMeteredUnit({ channelId: CHANNEL, usageNonce: 'unused-turn',
+      actualQuantity: 0n, occurredAtMs: NOW, signReceipt: signer('seller') }, door.deps);
+    expect(settled).toMatchObject({ ok: true, amountMicros: 0n,
+      receipt: { state: 'settled', meterQuantity: '0', amountMicros: '0' } });
+    expect(door.channel().reservations).toEqual({});
+    expect(door.channel().committedMicros).toBe(0n);
+    expect(await settleMeteredUnit({ channelId: CHANNEL, usageNonce: 'unused-turn',
+      actualQuantity: 0n, occurredAtMs: NOW, signReceipt: signer('seller') }, door.deps))
+      .toMatchObject({ ok: false, code: 'already-settled' });
+  });
+
   it('binds the settled receipt to the voucher the payer actually signed', async () => {
     // Regression: rebuilding the reservation with a SUBSTITUTED expiresAtMs
     // produced a receipt digest over a voucher nobody signed — well-formed, and

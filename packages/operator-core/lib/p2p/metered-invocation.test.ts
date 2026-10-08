@@ -78,6 +78,15 @@ describe('LocalMeteredTurn', () => {
   const call = (usageNonce: string, quantity = 1n) => ({ payer: 'org_buyer',
     releaseRef: 'sku:sentiment-tool@1.4.0', usageNonce, quantity });
 
+  it('persists host withdrawal and refuses new calls after restoring the closed snapshot', async () => {
+    const { turn, stored } = localTurn();
+    await turn.stopAdmission();
+    expect(stored()?.admissionClosed).toBe(true);
+    const execute = () => { throw new Error('must not execute'); };
+    await expect(turn.invoke(call('late'), execute)).rejects.toMatchObject({ code: 'turn-admission-closed' });
+    await expect(localTurn(stored()!).turn.invoke(call('restart'), execute)).rejects.toMatchObject({ code: 'turn-admission-closed' });
+  });
+
   it('persists a bound signed reservation before execution and an itemized settlement before returning', async () => {
     const { turn, stored } = localTurn();
     expect(await turn.invoke(call('one'), () => {
@@ -334,6 +343,20 @@ describe('metering interception on a billable unit', () => {
     if (!closed.ok) return;
     expect(closed.receipt.meterQuantity).toBe(1n);
     expect(closed.channel.committedMicros).toBe(250n);
+  });
+
+  it('signs a zero-served closure, releases the whole hold and prevents nonce reuse', () => {
+    const opened = open(createMicrochargeChannel('ch_1', 10_000n));
+    if (!opened.ok) throw new Error('reservation must open');
+    const closed = closeMeteredInvocation({ channel: opened.channel, voucher: opened.voucher,
+      actualQuantity: 0n, occurredAtMs: 2_000, signReceipt });
+    expect(closed).toMatchObject({ ok: true, amountMicros: 0n,
+      receipt: { meterQuantity: 0n, signature: 'seller-signature' },
+      channel: { committedMicros: 0n, reservations: {} } });
+    if (!closed.ok) throw new Error('zero closure must succeed');
+    expect(open(closed.channel)).toMatchObject({ ok: false, code: 'duplicate-nonce' });
+    expect(closeMeteredInvocation({ channel: opened.channel, voucher: opened.voucher,
+      actualQuantity: -1n, occurredAtMs: 2_000, signReceipt })).toMatchObject({ ok: false, code: 'invalid-unit' });
   });
 
   it('refuses to settle more units than were reserved', () => {
