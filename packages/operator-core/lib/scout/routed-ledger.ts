@@ -36,6 +36,8 @@ import {
   type ScoutRewardReport,
   type ScoutRewardInput,
   WORK_ITEM_LOSS_STATUSES,
+  outcomeOfWorkItemTag,
+  workItemOutcomeTag,
 } from './outcome-feedback';
 import { CREATIVE_LENSES, type CreativeLens, type SuIdeationLens } from './types';
 import { SHADOW_VARIANT_ORIGIN, type ShadowVariantOrigin } from './shadow-variant-origin';
@@ -352,11 +354,33 @@ export async function propagateWorkItemOutcome(input: {
   const losingStates = WORK_ITEM_LOSS_STATUSES as readonly string[];
   if (![...winningStates, ...losingStates].includes(normalizedState)) return 0;
 
-  const outcome = losingStates.includes(normalizedState) ? 'lost' : 'won';
   const ws = input.workspaceId ?? activeWorkspaceId();
   const routedRef = `wi:${input.workItemId}`;
   const now = Date.now();
   const { sql } = getOrgPg();
+  // WI-10007390: the state alone does not decide the idea's fate — a hygiene
+  // `closed` is a rejection, and a winning state with no completion record
+  // proves nothing. Read the same facts the sweep's ref-scoped read uses and
+  // apply the one shared rule, so the eager path and the sweep cannot disagree.
+  const [facts] = await sql<
+    { terminal_owner: string | null; has_completion_evidence: boolean; triage_rejected: boolean }[]
+  >`
+    SELECT w.terminal_owner,
+           (COALESCE(w.terminal_completion_ref, '') <> ''
+             OR COALESCE(w.payload ? '_completionEvidence', false)) AS has_completion_evidence,
+           COALESCE(w.payload #>> '{ideaLifecycle,triageDecision}' = 'reject', false) AS triage_rejected
+      FROM harness_shared.work_items w
+     WHERE w.feature_id = ${input.workItemId} AND w.workspace_id = ${ws}
+     LIMIT 1`;
+  const outcome = outcomeOfWorkItemTag(
+    workItemOutcomeTag({
+      status: normalizedState,
+      terminalOwner: facts?.terminal_owner ?? null,
+      hasCompletionEvidence: facts?.has_completion_evidence ?? false,
+      triageRejected: facts?.triage_rejected ?? false,
+    }),
+  );
+  if (outcome === null) return 0;
   return withProducerLifecycleWrite(sql, async (sql) => {
   const rows = await sql<{ idea_id: string }[]>`
     UPDATE harness_shared.scout_routed_ideas
@@ -900,39 +924,83 @@ async function readWorkItemLossEntries(): Promise<ChangeFeedEntry[]> {
 async function readSuRefScopedTerminalEntries(
   opts: ScoutLedgerOpts = {},
 ): Promise<ChangeFeedEntry[]> {
+  return readRefScopedWorkItemTerminals('su-ideate', opts);
+}
+
+/** One work-item terminal row, with the facts {@link workItemOutcomeTag} decides on. */
+interface WorkItemTerminalRow {
+  feature_id: string;
+  harness_slug: string | null;
+  title: string | null;
+  status: string | null;
+  updated_ts: string | null;
+  terminal_owner: string | null;
+  has_completion_evidence: boolean;
+  triage_rejected: boolean;
+}
+
+/**
+ * Map work-item terminal rows to change-feed completion entries through the
+ * single {@link workItemOutcomeTag} rule (WI-10007390). A row the rule cannot
+ * settle (a winning status with no completion record) emits NO entry, so its
+ * idea stays pending instead of being scored on an unproven close.
+ */
+export function workItemTerminalEntries(rows: readonly WorkItemTerminalRow[]): ChangeFeedEntry[] {
+  const entries: ChangeFeedEntry[] = [];
+  for (const r of rows) {
+    const tag = workItemOutcomeTag({
+      status: r.status,
+      terminalOwner: r.terminal_owner,
+      hasCompletionEvidence: r.has_completion_evidence,
+      triageRejected: r.triage_rejected,
+    });
+    if (tag === null) continue;
+    const lost = outcomeOfWorkItemTag(tag) === 'lost';
+    entries.push({
+      id: `wi:${r.feature_id}`,
+      kind: 'completion' as const,
+      title: r.title || `${lost ? 'Closed' : 'Completed'}: ${r.feature_id}`,
+      detail: `Status: ${tag}`,
+      harness: r.harness_slug ?? undefined,
+      workItemId: r.feature_id,
+      ref: `wi:${r.feature_id}`,
+      ts: epochMsToIso(r.updated_ts),
+    });
+  }
+  return entries;
+}
+
+/**
+ * WI-10007390 — the window-free, ref-scoped work-item terminal read shared by the
+ * scout and su-ideate origins. It selects every terminal (win AND loss statuses)
+ * for the `wi:` refs this origin routed, plus the facts the outcome rule needs:
+ * the terminal owner, whether a completion record exists on EITHER surface
+ * (`terminal_completion_ref` or `payload._completionEvidence`), and the idea
+ * triage decision. The rule, not this query, decides won / lost / unsettled.
+ */
+async function readRefScopedWorkItemTerminals(
+  origin: 'scout' | 'su-ideate',
+  opts: ScoutLedgerOpts = {},
+): Promise<ChangeFeedEntry[]> {
   const { sql } = getOrgPg();
   const ws = opts.workspaceId ?? activeWorkspaceId();
-  const rows = await sql<
-    {
-      feature_id: string;
-      harness_slug: string | null;
-      title: string | null;
-      status: string | null;
-      updated_ts: string | null;
-    }[]
-  >`
-    SELECT w.feature_id, w.harness_slug, w.title, w.status, w.updated_ts
+  const rows = await sql<WorkItemTerminalRow[]>`
+    SELECT w.feature_id, w.harness_slug, w.title, w.status, w.updated_ts, w.terminal_owner,
+           (COALESCE(w.terminal_completion_ref, '') <> ''
+             OR COALESCE(w.payload ? '_completionEvidence', false)) AS has_completion_evidence,
+           COALESCE(w.payload #>> '{ideaLifecycle,triageDecision}' = 'reject', false) AS triage_rejected
       FROM harness_shared.work_items w
      WHERE w.status = ANY(${[...CHANGE_FEED_COMPLETION_STATUSES, ...WORK_ITEM_LOSS_STATUSES]}::text[])
        AND w.feature_id IN (
              SELECT substring(routed_ref FROM 4)
                FROM harness_shared.scout_routed_ideas
-              WHERE origin = 'su-ideate'
+              WHERE origin = ${origin}
                 AND routed_ref LIKE 'wi:%'
                 AND workspace_id = ${ws}
                 ${opts.harnessSlug ? sql`AND harness_slug = ${opts.harnessSlug}` : sql``}
                 ${opts.cycleId ? sql`AND cycle_id = ${opts.cycleId}` : sql``}
            )`;
-  return rows.map((r) => ({
-    id: `wi:${r.feature_id}`,
-    kind: 'completion' as const,
-    title: r.title || `Completed: ${r.feature_id}`,
-    detail: `Status: ${r.status}`,
-    harness: r.harness_slug ?? undefined,
-    workItemId: r.feature_id,
-    ref: `wi:${r.feature_id}`,
-    ts: epochMsToIso(r.updated_ts),
-  }));
+  return workItemTerminalEntries(rows);
 }
 
 /**
@@ -1007,30 +1075,13 @@ async function readScoutRefScopedTerminalEntries(
        ${opts.harnessSlug ? sql`AND harness_slug = ${opts.harnessSlug}` : sql``}
        ${opts.cycleId ? sql`AND cycle_id = ${opts.cycleId}` : sql``}`;
 
-  const [wiRows, wiLossRows, gymRows, gymArchiveWonRows, gymArchiveLostRows, planRows, planShippedRows, droppedPlanRows, planSupersededRows, goalRows] =
+  const [wi, gymRows, gymArchiveWonRows, gymArchiveLostRows, planRows, planShippedRows, droppedPlanRows, planSupersededRows, goalRows] =
     await Promise.all([
-    sql<
-      { feature_id: string; harness_slug: string | null; title: string | null; status: string | null; updated_ts: string | null }[]
-    >`
-      SELECT w.feature_id, w.harness_slug, w.title, w.status, w.updated_ts
-        FROM harness_shared.work_items w
-       WHERE w.status = ANY(${[...CHANGE_FEED_COMPLETION_STATUSES]}::text[])
-         AND w.terminal_owner IS NOT NULL AND w.terminal_owner <> ''
-         AND w.terminal_completion_ref IS NOT NULL AND w.terminal_completion_ref <> ''
-         AND ('wi:' || w.feature_id) IN (${scoutRefsFor('wi:')})`,
-    // EI-20307121130730172 — the wi-rail LOSS terminal, the sibling of the
-    // winning read above. Deliberately NO completion-integrity pair: the
-    // integrity columns exist to prove a WIN was genuinely shipped, and a
-    // dropped/deprecated item never sets them, so requiring them here would
-    // re-create exactly the zero-loss channel this fixes. Mirrors
-    // readWorkItemLossEntries' "a hygiene death is still a negative signal".
-    sql<
-      { feature_id: string; harness_slug: string | null; title: string | null; status: string | null; updated_ts: string | null }[]
-    >`
-      SELECT w.feature_id, w.harness_slug, w.title, w.status, w.updated_ts
-        FROM harness_shared.work_items w
-       WHERE w.status = ANY(${[...WORK_ITEM_LOSS_STATUSES]}::text[])
-         AND ('wi:' || w.feature_id) IN (${scoutRefsFor('wi:')})`,
+    // WI-10007390: the wi rail's wins AND losses through the one shared rule.
+    // The win read used to require `terminal_completion_ref`, which a
+    // work_items:complete close never writes (it writes
+    // payload._completionEvidence), so no completed scout filing ever scored.
+    readRefScopedWorkItemTerminals(refOrigin, opts),
     // GYM-3 (autonomous-loop-prod-audit-2026-07-02 P-013): gym_proposals.id is a
     // COMPOUND key (`${variantId}__${role}`, control-plane.ts recordProposal) —
     // it never equals the bare candidateId the Scout router stamps as
@@ -1163,26 +1214,6 @@ async function readScoutRefScopedTerminalEntries(
          AND ('goal:' || g.id) IN (${scoutRefsFor('goal:')})`,
   ]);
 
-  const wi: ChangeFeedEntry[] = wiRows.map((r) => ({
-    id: `wi:${r.feature_id}`,
-    kind: 'completion' as const,
-    title: r.title || `Completed: ${r.feature_id}`,
-    detail: `Status: ${r.status}`,
-    harness: r.harness_slug ?? undefined,
-    workItemId: r.feature_id,
-    ref: `wi:${r.feature_id}`,
-    ts: epochMsToIso(r.updated_ts),
-  }));
-  const wiLoss: ChangeFeedEntry[] = wiLossRows.map((r) => ({
-    id: `wi:${r.feature_id}`,
-    kind: 'completion' as const,
-    title: r.title || `${r.status === 'dropped' ? 'Dropped' : 'Deprecated'}: ${r.feature_id}`,
-    detail: `Status: ${r.status}`,
-    harness: r.harness_slug ?? undefined,
-    workItemId: r.feature_id,
-    ref: `wi:${r.feature_id}`,
-    ts: epochMsToIso(r.updated_ts),
-  }));
   const gymLabel: Record<string, string> = { accepted: 'Accepted', rejected: 'Rejected', superseded: 'Superseded' };
   const gym: ChangeFeedEntry[] = gymRows.map((r) => ({
     id: `gym:${r.variant_id}`,
@@ -1257,7 +1288,7 @@ async function readScoutRefScopedTerminalEntries(
   // Decided-proposal / op_status entries are listed before their archive- and
   // frontmatter-status-derived siblings so a higher-fidelity explicit decision
   // wins the first-wins-by-ref dedup (computeLensOutcomes) on the rare overlap.
-  return [...wi, ...wiLoss, ...gym, ...gymArchiveWon, ...gymArchiveLost, ...plan, ...planShipped, ...droppedPlan, ...planSuperseded, ...goal];
+  return [...wi, ...gym,...gymArchiveWon, ...gymArchiveLost, ...plan, ...planShipped, ...droppedPlan, ...planSuperseded, ...goal];
 }
 
 /**
