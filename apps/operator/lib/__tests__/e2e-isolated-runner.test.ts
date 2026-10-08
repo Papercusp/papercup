@@ -42,7 +42,11 @@ function fixture(playwrightExit: number, viteLogStyle: 'bare' | 'arrow' | 'color
       `export PAPERCUSP_WORKSPACE_ID='${ISOLATED_WS}' PAPERCUSP_WORKSPACE='${ISOLATED_WS}'`,
       'export VERIFY_TAURI_DEV_URL=http://127.0.0.1:1420',
       'if [ -n "${E2E_FIXTURE_SOURCE_ROOT:-}" ]; then export OPERATOR_SOURCE_ROOT="$E2E_FIXTURE_SOURCE_ROOT"; fi',
+      'if [ -n "${E2E_FIXTURE_ASSERT_DIR:-}" ]; then export VH_PHASE_DIR="$E2E_FIXTURE_ASSERT_DIR"; fi',
       '"$@"',
+      'rc=$?',
+      'if [ "${E2E_FIXTURE_REMOVE_SOURCE:-0}" = "1" ]; then rm -rf -- "$OPERATOR_SOURCE_ROOT"; fi',
+      'exit "$rc"',
     ].join('\n'),
   );
   const pw = join(dir, 'playwright.sh');
@@ -53,6 +57,7 @@ function fixture(playwrightExit: number, viteLogStyle: 'bare' | 'arrow' | 'color
       '#!/usr/bin/env bash',
       'set -eu',
       'pwd > "$E2E_FIXTURE_VITE_CWD"',
+      'if [ "${E2E_FIXTURE_VITE_FAIL:-0}" = "1" ]; then echo "fixture Vite bootstrap failure"; exit 74; fi',
       '[ "$1" = "run" ] && [ "$2" = "dev" ] || exit 73',
       'vite_port=',
       'expect_port=0',
@@ -76,6 +81,14 @@ function fixture(playwrightExit: number, viteLogStyle: 'bare' | 'arrow' | 'color
     [
       '#!/usr/bin/env bash',
       'set -e',
+      'artifact_dir=test-results',
+      'for arg in "$@"; do case "$arg" in --output=*) artifact_dir="${arg#--output=}" ;; esac; done',
+      'if [ "${E2E_FIXTURE_WRITE_ARTIFACTS:-0}" = "1" ]; then',
+      '  mkdir -p "$artifact_dir/failed-spec"',
+      '  for name in test-failed-1.png video.webm error-context.md trace.zip; do printf "fixture diagnostic %s\\n" "$name" > "$artifact_dir/failed-spec/$name"; done',
+      'fi',
+      'echo "fixture Playwright stdout"',
+      'echo "fixture Playwright stderr" >&2',
       `node -e '(async()=>{const port=process.env.OPERATOR_E2E_PORT;const result={argv:process.argv.slice(2),cwd:process.cwd(),env:{ledger:process.env.PAPERCUSP_TEST_RUNS_DB_URL,admin:process.env.HARNESS_ADMIN_DATABASE_URL,group:process.env.PAPERCUSP_TEST_RUN_GROUP,port,api:process.env.PAPERCUSP_API_TARGET,disabled:process.env.PAPERCUSP_DISABLE_TEST_RUNS_REPORTER??null,ledgerWorkspace:process.env.PAPERCUSP_TEST_RUN_WORKSPACE??null,ledgerHarness:process.env.PAPERCUSP_TEST_RUN_HARNESS??null,appWorkspace:process.env.PAPERCUSP_WORKSPACE_ID??null,reuse:process.env.OPERATOR_E2E_REUSE_SERVER??null,baseUrl:process.env.OPERATOR_E2E_BASE_URL??null},viteStatus:null};if(port)result.viteStatus=(await fetch("http://127.0.0.1:"+port+"/")).status;require("node:fs").writeFileSync(process.argv[1],JSON.stringify(result))})().catch(error=>{console.error(error);process.exitCode=1})' '${record}' "$@"`,
       `exit ${playwrightExit}`,
     ].join('\n'),
@@ -98,6 +111,7 @@ function run(f: ReturnType<typeof fixture>, args: string[], env: Record<string, 
     'HARNESS_SLUG',
     'PAPERCUSP_HARNESS_SLUG',
     'OPERATOR_SOURCE_ROOT',
+    'VH_PHASE_DIR',
   ]) delete base[k];
   const res = spawnSync('bash', [RUNNER, ...args], {
     env: {
@@ -199,6 +213,61 @@ describe('run-operator-e2e-isolated.sh', () => {
     });
     expect(res.status, res.stderr).toBe(0);
     expect(res.stdout).toBe(sourceRoot);
+  });
+
+  it('exports the retained assertion phase through the real verifier boundary', () => {
+    const verifier = readFileSync(join(REPO_ROOT, 'scripts/verify-tauri-headless.sh'), 'utf8');
+    const boundary = verifier.slice(verifier.lastIndexOf('\nverify_assertion_input_integrity || exit $?'));
+    const phaseDir = join(fixture(0).dir, 'retained assertion');
+    const res = spawnSync('bash', ['-c', [
+      'set -eu',
+      'verify_assertion_input_integrity() { return 0; }',
+      'vh_begin() { VH_PHASE_DIR="$E2E_FIXTURE_ASSERT_DIR"; }',
+      'log() { :; }',
+      'ISOLATED_DB=0',
+      'OPERATOR_SOURCE_ROOT=/unused/frozen/source',
+      boundary,
+    ].join('\n'), 'assertion-boundary', process.execPath, '-e',
+      'process.stdout.write(process.env.VH_PHASE_DIR ?? "missing")'], {
+      env: { ...process.env, VH_PHASE_DIR: undefined, E2E_FIXTURE_ASSERT_DIR: phaseDir },
+      encoding: 'utf8',
+      timeout: 5_000,
+    });
+    expect(res.status, res.stderr).toBe(0);
+    expect(res.stdout).toBe(phaseDir);
+  });
+
+  it('retains failed Playwright artifacts and both logs after frozen source teardown', () => {
+    const f = fixture(1);
+    const sourceRoot = join(f.dir, 'disposable source');
+    const phaseDir = join(f.dir, 'retained assertion');
+    mkdirSync(join(sourceRoot, 'apps/operator'), { recursive: true });
+    const r = run(f, ['ongoing-work-ui', '--workers', '1'], {
+      E2E_FIXTURE_SOURCE_ROOT: sourceRoot,
+      E2E_FIXTURE_ASSERT_DIR: phaseDir,
+      E2E_FIXTURE_REMOVE_SOURCE: '1',
+      E2E_FIXTURE_WRITE_ARTIFACTS: '1',
+    });
+    expect(r.status, r.out).toBe(1);
+    expect(existsSync(sourceRoot)).toBe(false);
+    for (const name of ['test-failed-1.png', 'video.webm', 'error-context.md', 'trace.zip']) {
+      expect(readFileSync(join(phaseDir, 'playwright/failed-spec', name), 'utf8')).toContain(name);
+    }
+    expect(readFileSync(join(phaseDir, 'vite.log'), 'utf8')).toContain('Local:');
+    const output = readFileSync(join(phaseDir, 'playwright.log'), 'utf8');
+    expect(output).toContain('fixture Playwright stdout');
+    expect(output).toContain('fixture Playwright stderr');
+    expect(r.recorded.argv).toContain('--trace=retain-on-failure');
+    expect(r.recorded.argv.slice(0, 3)).toEqual(['ongoing-work-ui', '--workers', '1']);
+  });
+
+  it('retains the Vite bootstrap failure log without claiming Playwright ran', () => {
+    const f = fixture(0);
+    const phaseDir = join(f.dir, 'retained assertion');
+    const r = run(f, [], { E2E_FIXTURE_ASSERT_DIR: phaseDir, E2E_FIXTURE_VITE_FAIL: '1' });
+    expect(r.status, r.out).toBe(98);
+    expect(r.recorded).toBeNull();
+    expect(readFileSync(join(phaseDir, 'vite.log'), 'utf8')).toContain('fixture Vite bootstrap failure');
   });
 
   it('refuses a missing snapshot operator instead of falling back to shared source', () => {

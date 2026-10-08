@@ -30,6 +30,9 @@
 #   The rig exports OPERATOR_SOURCE_ROOT at its assertion boundary; Vite and
 #   Playwright both execute from that frozen source. Legacy/test rigs without
 #   a source snapshot keep the caller checkout.
+#   VH_PHASE_DIR is exported by the rig at the assertion boundary. The runner
+#   retains Vite/Playwright logs and failed screenshots, video and traces there;
+#   its Playwright output/trace options override caller options for that run.
 #   The last two are test seams (apps/operator/lib/__tests__/e2e-isolated-runner.test.ts).
 set -uo pipefail
 
@@ -92,7 +95,14 @@ VERIFY_TAURI_ISOLATED_DB=1 "$RIG" -- bash -c '
       exit 98
       ;;
   esac
-  vite_log=$(mktemp "${TMPDIR:-/tmp}/operator-e2e-vite.XXXXXX") || exit 98
+  assertion_evidence="${VH_PHASE_DIR:-}"
+  if [ -n "$assertion_evidence" ]; then
+    mkdir -p -- "$assertion_evidence/playwright" || exit 98
+    vite_log="$assertion_evidence/vite.log"
+    : > "$vite_log" || exit 98
+  else
+    vite_log=$(mktemp "${TMPDIR:-/tmp}/operator-e2e-vite.XXXXXX") || exit 98
+  fi
   env -u PORT \
     OPERATOR_E2E_PORT="$requested_port" \
     PAPERCUSP_BIND_HOST=127.0.0.1 \
@@ -107,7 +117,9 @@ VERIFY_TAURI_ISOLATED_DB=1 "$RIG" -- bash -c '
       kill "$vite_pid" 2>/dev/null || true
       wait "$vite_pid" 2>/dev/null || true
     fi
-    rm -f "$vite_log"
+    # The frozen source is deleted by the rig after this shell exits. Logs in
+    # its retained assertion phase remain available for post-run diagnosis.
+    [ -n "$assertion_evidence" ] || rm -f "$vite_log"
   }
   trap cleanup_vite EXIT
 
@@ -138,11 +150,22 @@ VERIFY_TAURI_ISOLATED_DB=1 "$RIG" -- bash -c '
   fi
   echo "OPERATOR_E2E_ISOLATED vite-port=$port"
   # $OPERATOR_E2E_PLAYWRIGHT is a command line; word-splitting it is intended.
-  OPERATOR_E2E_PORT="$port" \
+  export OPERATOR_E2E_PORT="$port" \
     OPERATOR_E2E_BASE_URL="http://127.0.0.1:$port" \
     OPERATOR_E2E_REUSE_SERVER=1 \
-    PAPERCUSP_API_TARGET="${VERIFY_TAURI_DEV_URL:-}" \
+    PAPERCUSP_API_TARGET="${VERIFY_TAURI_DEV_URL:-}"
+  if [ -n "$assertion_evidence" ]; then
+    # Write browser artifacts outside the disposable source from the outset.
+    # Keep both output streams and the first-failure trace even without retries.
+    $OPERATOR_E2E_PLAYWRIGHT "$@" \
+      --output="$assertion_evidence/playwright" --trace=retain-on-failure \
+      2>&1 | tee "$assertion_evidence/playwright.log"
+    statuses=("${PIPESTATUS[@]}")
+    [ "${statuses[0]}" -eq 0 ] || exit "${statuses[0]}"
+    [ "${statuses[1]}" -eq 0 ] || exit 98
+  else
     $OPERATOR_E2E_PLAYWRIGHT "$@"
+  fi
 ' operator-e2e-isolated "$ROOT" "$@"
 rc=$?
 echo "OPERATOR_E2E_ISOLATED exit=$rc group=$PAPERCUSP_TEST_RUN_GROUP"
