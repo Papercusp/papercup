@@ -38,8 +38,9 @@ const tool = (fn = vi.fn(async () => ({ content: [{ type: 'text' as const, text:
 
 describe('trusted observed native call lookup', () => {
   const fp = (value: string) => createHash('sha256').update(value).digest('hex');
-  function nativeFixture(registry = new NativeInstalledPerUseTurns()) {
-    const { authority, turn } = admitted();
+  function nativeFixture(registry = new NativeInstalledPerUseTurns(), verifyCurrentAuthority?: () => Promise<void>) {
+    const base = admitted(), { turn } = base;
+    const authority = { ...base.authority, verifyCurrentAuthority };
     const binding: FundedToolTurnBinding = { kind: 'tool', workspaceId: 'workspace', ownerId: 'host-owner',
       principalId: 'target-agent', executionId: 'native-session', admissionId: 'owner-turn',
       provenanceHash: fp(canonicalJson(provenance)), payer: authority.payer, seller: authority.offer.creatorId,
@@ -75,6 +76,47 @@ describe('trusted observed native call lookup', () => {
       expect(Object.values(f.turn.snapshot().units)).toHaveLength(1);
       expect(Object.keys(f.turn.snapshot().units)[0]).not.toBe('native-call');
     } finally { await f.hooks.withdraw(); }
+  });
+
+  it('a host authority refusal withdraws the cohort and preserves already served units', async () => {
+    const refresh = vi.fn(async () => {}), f = nativeFixture(undefined, refresh);
+    await f.observe();
+    const target = tool();
+    expect((await execute(target, f.aroundInvoke, {}, f.context)).result?.isError).not.toBe(true);
+    const units = f.turn.snapshot().units;
+    refresh.mockRejectedValueOnce(new Error('hosted entitlement revoked'));
+    await f.observe({ callId: 'revoked-call' });
+    f.context.requestOrigin!.nativeSession!.callIdFingerprint = fp('revoked-call');
+    const refused = await execute(target, f.aroundInvoke, { entitled: true }, f.context);
+    expect(refused.result?.isError).toBe(true);
+    expect(JSON.stringify(refused.result)).toContain('tool_current_authority_required');
+    expect(target.fn).toHaveBeenCalledOnce();
+    expect(f.turn.snapshot()).toMatchObject({ admissionClosed: true, units });
+    await expect(f.observe({ callId: 'later-call' })).rejects.toThrow('original bound turn');
+  });
+
+  it('a successful authority read cannot resurrect an externally revoked cohort', async () => {
+    let release!: () => void, started!: () => void;
+    const reading = new Promise<void>(resolve => { started = resolve; });
+    const refresh = vi.fn(async () => { started(); await new Promise<void>(resolve => { release = resolve; }); });
+    const f = nativeFixture(undefined, refresh); await f.observe();
+    const target = tool(), pending = execute(target, f.aroundInvoke, {}, f.context);
+    await reading;
+    await f.registry.revoke({ workspaceId: 'workspace', principalId: 'target-agent', target: { kind: 'principal' } });
+    release();
+    expect((await pending).result?.isError).toBe(true);
+    expect(target.fn).not.toHaveBeenCalled(); expect(f.turn.snapshot().units).toEqual({});
+  });
+
+  it('failed withdrawal persistence retains the refusal tombstone and holds', async () => {
+    const f = nativeFixture(undefined, async () => { throw new Error('authority unavailable'); });
+    await f.observe();
+    const stop = vi.spyOn(f.turn, 'stopAdmission').mockRejectedValueOnce(new Error('stop persistence failed'));
+    const target = tool();
+    expect((await execute(target, f.aroundInvoke, {}, f.context)).result?.isError).toBe(true);
+    expect(() => f.registry.register(f.input)).toThrow('already has a host admission');
+    expect(target.fn).not.toHaveBeenCalled(); expect(f.turn.snapshot().units).toEqual({});
+    stop.mockRestore(); await f.hooks.withdraw();
   });
 
   it('native metadata and forged arguments without a trusted observation grant no execution', async () => {

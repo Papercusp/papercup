@@ -1,5 +1,5 @@
 /** P-007 shared target-bound admission. Hosted verification and funding belong
- * to the authenticated turn host; this dispatch path does no hosted IO. */
+ * to the authenticated turn host, including current authority before dispatch. */
 import type { DispatchProjectedDeps } from '@papercusp/agent-mcp';
 import { listAllProjectedTools, resolveMcpName, type ProjectedTool } from '@papercusp/tooldef';
 import { createHash } from 'node:crypto';
@@ -47,6 +47,8 @@ export interface AdmittedPerUseToolTurn {
   readonly offer: HostedPerUseOffer;
   readonly entitled: boolean;
   readonly turn: LocalMeteredTurn;
+  /** Host-owned refresh capability; never provided by invocation arguments. */
+  readonly verifyCurrentAuthority?: () => Promise<void>;
 }
 
 export interface VerifiedFreeToolAdmission {
@@ -70,9 +72,11 @@ export async function admitInstalledPerUseToolTurn(input: {
    * organization; invocation arguments cannot provide this resolver. */
   resolvePayer?: () => Promise<string>;
   resolveFunding: (offer: HostedPerUseOffer) => Promise<Pick<FundedToolTurnBinding, 'channelId' | 'quantityCeiling' | 'expiresAtMs'>>;
+  verifyCurrentAuthority?: (binding: FundedToolTurnBinding) => Promise<void>;
   readProvenance?: typeof readInstalledPluginCommerceProvenance;
 }): Promise<FundedInstalledAdmission | Extract<FundedToolTurnResult, { ok: false }>> {
   const context = structuredClone(input.context), installation = structuredClone(input.installation);
+  const verifyCurrentAuthority = input.verifyCurrentAuthority;
   const loaded = await (input.readProvenance ?? readInstalledPluginCommerceProvenance)(installation);
   if (!loaded) return { ok: false, code: 'installation-binding-required', detail: 'exact installed commerce provenance is required' };
   const provenance = structuredClone(loaded), requestedPayer = await input.resolvePayer?.();
@@ -91,7 +95,8 @@ export async function admitInstalledPerUseToolTurn(input: {
   const admitted = await input.host.admit(binding);
   if (!admitted.ok) return admitted;
   return { ok: true, turnId: admitted.turn.turnId, binding: structuredClone(admitted.turn.binding), admission: { kind: 'per-use', ...context, payer,
-    provenance, offer: bound.offer, entitled: true, turn: input.host.localTurn(admitted.turn) } };
+    provenance, offer: bound.offer, entitled: true, turn: input.host.localTurn(admitted.turn),
+    verifyCurrentAuthority: verifyCurrentAuthority && (() => verifyCurrentAuthority(structuredClone(binding))) } };
 }
 
 /** Process-local extension of the installed admission provider. Registration is
@@ -412,7 +417,19 @@ export class NativeInstalledPerUseTurns {
     // Return a snapshot of immutable terms. The local meter remains the single
     // original capability; callers cannot mutate later lookup authority.
     return { ...admitted.admission, provenance: structuredClone(admitted.admission.provenance),
-      offer: structuredClone(admitted.admission.offer) };
+      offer: structuredClone(admitted.admission.offer), verifyCurrentAuthority: async () => {
+        try {
+          if (entry.withdrawn) throw new Error('native-installed-authority-withdrawn');
+          await admitted.admission.verifyCurrentAuthority?.();
+          // An external revoke may have arrived while the hosted read awaited.
+          if (entry.withdrawn || admitted.admission.turn.snapshot().admissionClosed)
+            throw new Error('native-installed-authority-withdrawn');
+        } catch (error) {
+          await this.revoke({ workspaceId: entry.context.workspaceId, principalId: entry.context.principalId,
+            target: { kind: 'installation', provenanceHash: admitted.binding.provenanceHash } });
+          throw error;
+        }
+      } };
   }
 
   private key(workspaceId: string, advSessionId: number, nativeFingerprint: string): string {
@@ -580,6 +597,11 @@ export function createInstalledPerUseChokepoint(deps: {
           canonicalJson({ ...declared.meter, unitPriceMicros: String(declared.meter.unitPriceMicros) }) ||
         !request.callId.trim()) {
       return refuse('tool_turn_binding_mismatch', 'The funded meter differs from the exact installed offer');
+    }
+    try {
+      await admitted.verifyCurrentAuthority?.();
+    } catch (error) {
+      return refuse('tool_current_authority_required', error instanceof Error ? error.message : String(error));
     }
     try {
       return await admitted.turn.invoke({ payer: state.payer, releaseRef: state.releaseRef,
