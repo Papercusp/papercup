@@ -35,6 +35,8 @@ import {
   resolveMutationProbePhase,
   resolveTestRunHarnessSlug,
   resolveTestRunWorkspaceId,
+  appendTestRunReceipts,
+  reporterWriteBudget,
 } from '@papercusp/test-config/admin-test-runs-reporter';
 import { posix, relative } from 'node:path';
 import {
@@ -162,6 +164,20 @@ async function tryGetPg(): Promise<{
   }
 }
 
+function settleWithin(promise: Promise<unknown>, timeoutMs: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (result: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(result);
+    };
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    promise.then(() => finish(true), () => finish(true));
+  });
+}
+
 async function insertRow(row: TestRunRow, worktreeAfter: WorktreeGitSnapshot, root: string): Promise<void> {
   let branch: string | null = null;
   try {
@@ -175,7 +191,15 @@ async function insertRow(row: TestRunRow, worktreeAfter: WorktreeGitSnapshot, ro
   const commit = worktreeAfter.commit;
 
   const pg = await tryGetPg();
-  if (!pg) return;
+  if (!pg) {
+    appendTestRunReceipts(process.env, [{
+      filePath: row.filePath,
+      status: row.status,
+      outcome: 'failed',
+      reason: 'pg_unavailable',
+    }]);
+    return;
+  }
 
   const source = resolveTestRunSource();
   const runGroupId = process.env.PAPERCUSP_TEST_RUN_GROUP ?? null;
@@ -186,23 +210,43 @@ async function insertRow(row: TestRunRow, worktreeAfter: WorktreeGitSnapshot, ro
   // were stamped with the rig's throwaway workspace — WI-10006804).
   const harnessSlug = resolveTestRunHarnessSlug();
   const workspaceId = resolveTestRunWorkspaceId();
+  const budget = reporterWriteBudget(process.env);
+  const startedAt = Date.now();
+  const query = Promise.resolve().then(() => pg.sql`
+      INSERT INTO harness_shared.test_runs
+        (file_path, framework, status, duration_ms, started_at, finished_at, output_tail, run_group_id, source, branch, commit_sha, harness_slug, workspace_id, loop_lag_p95_ms, rss_mb, worktree_dirty, execution_details)
+      VALUES
+        (${row.filePath}, 'playwright', ${row.status}, ${row.durationMs}, ${row.startedAt},
+         ${row.finishedAt}, ${row.outputTail}, ${runGroupId}, ${source}, ${branch}, ${commit}, ${harnessSlug}, ${workspaceId}, ${loopLagP95Ms}, ${rssMb}, ${row.worktreeDirty},
+         ${playwrightExecutionDetails(row, { root, runGroupId, workspaceId, harnessSlug, commitSha: commit }) as never}::jsonb)
+      RETURNING id
+    `).then((result) => {
+    const first = Array.isArray(result) ? result[0] as { id?: unknown } | undefined : undefined;
+    appendTestRunReceipts(process.env, first?.id === undefined || first.id === null
+      ? [{ filePath: row.filePath, status: row.status, outcome: 'failed', reason: 'insert_returned_no_id' }]
+      : [{ filePath: row.filePath, status: row.status, outcome: 'inserted', id: String(first.id) }]);
+  }, (error: unknown) => {
+    const reason = error instanceof Error ? error.message : String(error);
+    appendTestRunReceipts(process.env, [{
+      filePath: row.filePath,
+      status: row.status,
+      outcome: 'failed',
+      reason: reason.slice(0, 200) || 'unknown',
+    }]);
+  });
 
-  try {
-    await Promise.race([
-      pg.sql`
-        INSERT INTO harness_shared.test_runs
-          (file_path, framework, status, duration_ms, started_at, finished_at, output_tail, run_group_id, source, branch, commit_sha, harness_slug, workspace_id, loop_lag_p95_ms, rss_mb, worktree_dirty, execution_details)
-        VALUES
-          (${row.filePath}, 'playwright', ${row.status}, ${row.durationMs}, ${row.startedAt},
-           ${row.finishedAt}, ${row.outputTail}, ${runGroupId}, ${source}, ${branch}, ${commit}, ${harnessSlug}, ${workspaceId}, ${loopLagP95Ms}, ${rssMb}, ${row.worktreeDirty},
-           ${playwrightExecutionDetails(row, { root, runGroupId, workspaceId, harnessSlug, commitSha: commit }) as never}::jsonb)
-      `,
-      new Promise((_, reject) => setTimeout(() => reject(new Error('pg_insert_timeout')), 1000)),
-    ]).catch(() => {
-      /* swallow — D-007 */
-    });
-  } catch {
-    /* swallow — D-007 */
+  if (!(await settleWithin(query, budget.insertTimeoutMs))) {
+    appendTestRunReceipts(process.env, [{
+      filePath: row.filePath,
+      status: row.status,
+      outcome: 'timeout',
+      reason: `pg_insert_timeout_${budget.insertTimeoutMs}ms`,
+    }]);
+    // The query may still commit after the first deadline. Keep the reporter
+    // alive through its bounded flush window so its late RETURNING id can
+    // supersede this timeout receipt in the mutation probe's collector.
+    const remainingMs = Math.max(0, budget.flushBudgetMs - (Date.now() - startedAt));
+    if (remainingMs > 0) await settleWithin(query, remainingMs);
   }
 }
 
@@ -348,10 +392,7 @@ export default class AdminTestRunsPlaywrightReporter implements Reporter {
 
   async onExit(): Promise<void> {
     try {
-      await Promise.race([
-        Promise.allSettled(this.pending),
-        new Promise((resolve) => setTimeout(resolve, 5000)),
-      ]);
+      await settleWithin(Promise.allSettled(this.pending), reporterWriteBudget(process.env).flushBudgetMs);
     } catch {
       /* swallow */
     }

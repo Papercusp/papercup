@@ -56,7 +56,40 @@ describe('AdminTestRunsPlaywrightReporter worktree provenance', () => {
     delete process.env.PAPERCUSP_DISABLE_TEST_RUNS_REPORTER;
     delete process.env.PAPERCUSP_TEST_RUN_GROUP;
     delete process.env.PAPERCUSP_TEST_RUN_HARNESS;
+    delete process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE;
     delete process.env.PAPERCUSP_WORKSPACE_ID;
+  });
+
+  it('writes confirmed Playwright mutation-probe row ids to the probe receipt file', async () => {
+    const receiptDir = mkdtempSync(join(tmpdir(), 'playwright-test-run-receipt-'));
+    const receiptFile = join(receiptDir, 'receipts.jsonl');
+    try {
+      vi.stubEnv('PAPERCUSP_TEST_RUN_RECEIPT_FILE', receiptFile);
+      vi.stubEnv('PAPERCUSP_MUTATION_PROBE', '1');
+      vi.stubEnv('PAPERCUSP_MUTATION_PHASE', 'mutant');
+      mocks.captureWorktreeSnapshot.mockReturnValue({ commit: 'sha', porcelain: '' });
+      mocks.computeWorktreeDirty.mockReturnValue(false);
+      mocks.sql.mockResolvedValueOnce([{ id: 20923588 }]);
+
+      const reporter = new AdminTestRunsPlaywrightReporter();
+      await reporter.onBegin();
+      reporter.onTestEnd(
+        { location: { file: '/repo/e2e/width.spec.ts' } } as never,
+        { startTime: new Date(0), duration: 5, status: 'failed', errors: [{ message: 'overflow expected false, received true' }] } as never,
+      );
+      await reporter.onEnd();
+      await reporter.onExit();
+
+      expect(process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE).toBe(receiptFile);
+      expect(mocks.sql).toHaveBeenCalledTimes(1);
+      expect(readFileSync(receiptFile, 'utf8').trim().split('\n').map((line) => JSON.parse(line))).toEqual([
+        { filePath: 'e2e/width.spec.ts', status: 'fail', outcome: 'inserted', id: '20923588' },
+      ]);
+      expect(mocks.sql.mock.calls[0]![0].join('')).toContain('RETURNING id');
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(receiptDir, { recursive: true, force: true });
+    }
   });
 
   it('persists synchronous Git failure diagnostics with the fail-closed dirty verdict', async () => {
