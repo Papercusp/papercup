@@ -24,7 +24,8 @@ describe('P-030 scoped current-round service', () => {
   const scope = { workspaceId: 'ws', harnessSlug: 'h', sinceMs: NOW - DAY_MS, nowMs: NOW,
     verifierIds: ['su-verifier'], verificationSpecs: [{ specId: 'verify', revision: 2 }] };
   const row = (id: string, status = 'pending', age = 0.5): AgentReviewServiceRow => ({
-    id, workspaceId: 'ws', harnessSlug: 'h', state: 'open', createdAt: daysAgo(20), reviewRoutedAtMs: NOW - 10 * DAY_MS,
+    id, workspaceId: 'ws', harnessSlug: 'h', state: 'open', createdBy: 'su-filer', terminalOwner: null,
+    createdAt: daysAgo(20), reviewRoutedAtMs: NOW - 10 * DAY_MS,
     payload: { agentReview: { status, submittedBy: 'su-author', ledgerIdeaId: id, round: 2,
       timing: { round: 2, enteredAt: daysAgo(age), ...(status === 'pending' ? {} : { decidedAt: daysAgo(0.1) }) } } },
     ledger: { ideaId: id, routedRef: `wi:${id}`, grade: status === 'approved' ? 5 : 2, gradedBy: 'su-verifier' },
@@ -64,6 +65,11 @@ describe('P-030 scoped current-round service', () => {
       pull({ lateSettlement: { kind: 'rejected-unknown', settledAt: daysAgo(0.05) } })]);
     expect(out).toMatchObject({ pickups: { attempts: 4, claimed: 1, noClaim: 1, unknown: 2,
       noClaimReasons: { 'no-eligible-work': 1 } }, unscopedPickupAttempts: 1 });
+  });
+  it.each(['createdBy', 'terminalOwner'] as const)('refuses a reviewer recorded as %s outside the payload', party => {
+    const conflicting = { ...row('conflicting', 'approved'), [party]: 'su-verifier' };
+    expect(computeAgentReviewService(scope, [conflicting, row('independent', 'approved')], []))
+      .toMatchObject({ outcomes: { approved: 1, revisionRequested: 0 }, outcomesUnknown: 1 });
   });
 });
 

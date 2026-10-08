@@ -234,6 +234,14 @@ function openPanelsMenu() {
 }
 
 describe('GoalDetailPanel', () => {
+  it('opens the dedicated 02C destination only for the declared Work on Everything package', () => {
+    const base = detail();
+    renderPanel({ ...base, goal: { ...base.goal!, title: 'Renamed ongoing goal',
+      goalPackage: { ref: 'work-on-everything' } } });
+    expect(screen.getByTestId('work-on-everything-console')).toBeTruthy();
+    expect(screen.getByText('Plan the next pass.')).toBeTruthy();
+    expect(screen.queryByTestId('goal-ends-section')).toBeNull();
+  });
   it('shows the ongoing work overview first for standing goals and opens actual completed work', () => {
     const base = detail();
     const onOpenWorkItem = vi.fn();

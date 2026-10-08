@@ -25,7 +25,7 @@ const requestSessionIdentityActivationMock = vi.hoisted(() =>
   vi.fn(async (_input: unknown) => ({ generation: 1 })),
 );
 const buildLaunchSpecMock = vi.hoisted(() =>
-  vi.fn(async () => ({
+  vi.fn(async (input: { stack?: readonly string[] } = {}) => ({
     kind: 'su',
     role: 'su',
     runId: 'r',
@@ -38,6 +38,7 @@ const buildLaunchSpecMock = vi.hoisted(() =>
     mcpUrl: 'http://localhost:3070/api/mcp?superuser=1',
     mcpJsonContents: '{}',
     personaTier: 'full' as const,
+    stack: input.stack ?? [],
   })),
 );
 const compileLaunchSpecificationArtifactMock = vi.hoisted(() =>
@@ -58,7 +59,10 @@ vi.mock('../../../auth/require-principal', () => ({
     reason = 'denied';
   },
 }));
-vi.mock('../../../adv-sessions', async (orig) => ({ ...(await orig<typeof import('../../../adv-sessions')>()),
+// The route uses mocked store calls. Importing the real store here still loads its
+// entire dependency graph before beforeAll, even though no store implementation runs.
+vi.mock('../../../adv-sessions', () => ({
+  NATIVE_SESSION_ID_RE: /^[0-9a-f-]{36}$/i,
   endedRecordedOwnerIds: vi.fn(async () => new Set<string>()),
   recordAdvSession: vi.fn(async () => 1),
   recordSuLaunchSpec: vi.fn(async () => true),
@@ -81,8 +85,7 @@ const admitMock = vi.hoisted(() =>
 vi.mock('../../../cupboard/identity-activation-gate-io', () => ({
   admitIdentityActivation: (request: unknown) => admitMock(request),
 }));
-vi.mock('../../../agent-tools/coordination/presence', async (orig) => ({
-  ...(await orig<typeof import('../../../agent-tools/coordination/presence')>()),
+vi.mock('../../../agent-tools/coordination/presence', () => ({
   touchHeartbeat: vi.fn(async () => {}),
 }));
 

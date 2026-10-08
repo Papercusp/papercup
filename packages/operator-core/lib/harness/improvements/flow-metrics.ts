@@ -103,6 +103,8 @@ export interface AgentReviewServiceRow {
   harnessSlug: string;
   state: string;
   payload: unknown;
+  createdBy: string | null;
+  terminalOwner: string | null;
   createdAt: string | null;
   reviewRoutedAtMs: number | null;
   ledger: { ideaId: string; routedRef: string; grade: number | null; gradedBy: string | null } | null;
@@ -151,7 +153,7 @@ export function computeAgentReviewService(
     if (!ledger || ledger.ideaId !== review.ledgerIdeaId || ledger.routedRef !== `wi:${row.id}` ||
         ledger.grade === null || !Number.isInteger(ledger.grade) || ledger.grade < 1 || ledger.grade > 5 ||
         !ledger.gradedBy || !workers.has(ledger.gradedBy) ||
-        verificationConflict(verificationParties({ payload: row.payload }), ledger.gradedBy) !== null ||
+        verificationConflict(verificationParties(row), ledger.gradedBy) !== null ||
         (review.status === 'approved' ? ledger.grade < 4 : ledger.grade > 3)) {
       outcomesUnknown++;
       continue;
@@ -190,14 +192,17 @@ export function computeAgentReviewService(
 
 /** Complete scoped census before serialization; no display LIMIT can change these totals. */
 export async function readAgentReviewService(scope: AgentReviewServiceScope) {
+  let stage = 'review-census';
   try {
     const { sql } = getOrgPg();
     const rows = await sql<{
       id: string; state: string; payload: unknown; created_ts: number | null;
+      created_by: string | null; terminal_owner: string | null;
       idea_id: string | null; routed_ref: string | null; routed_at: number | null;
       human_grade: number | null; graded_by: string | null;
     }[]>`
       SELECT wi.feature_id AS id, wi.status AS state, wi.payload, wi.created_ts,
+             wi.payload #>> '{_ei,created_by}' AS created_by, wi.terminal_owner,
              l.idea_id, l.routed_ref, l.routed_at, l.human_grade, l.graded_by
         FROM harness_shared.work_items wi
         LEFT JOIN harness_shared.scout_routed_ideas l
@@ -205,6 +210,7 @@ export async function readAgentReviewService(scope: AgentReviewServiceScope) {
          AND l.idea_id = wi.payload #>> '{agentReview,ledgerIdeaId}'
        WHERE wi.workspace_id = ${scope.workspaceId} AND wi.harness_slug = ${scope.harnessSlug}
          AND jsonb_typeof(wi.payload -> 'agentReview') = 'object'`;
+    stage = 'pickup-ledger';
     const pulls = await sql<{
       invoked_at: Date; coord_owner_id: string | null; harness_slug: string; status: string;
       duration_ms: number | null; disposition: unknown; late_settlement: unknown;
@@ -216,9 +222,11 @@ export async function readAgentReviewService(scope: AgentReviewServiceScope) {
        WHERE workspace_id = ${scope.workspaceId} AND harness_slug = ${scope.harnessSlug}
          AND tool_name = 'scheduler:get_next' AND coord_owner_id = ANY(${[...scope.verifierIds]}::text[])
          AND invoked_at >= ${new Date(scope.sinceMs)} AND invoked_at <= ${new Date(scope.nowMs)}`;
+    stage = 'service-computation';
     const { pullLedgerRowFromInvocation } = await import('../../agent-tools/scheduler/pull_ledger');
     return { status: 'known' as const, ...computeAgentReviewService(scope, rows.map(row => ({
       id: row.id, state: row.state, payload: row.payload, workspaceId: scope.workspaceId, harnessSlug: scope.harnessSlug,
+      createdBy: row.created_by, terminalOwner: row.terminal_owner,
       createdAt: row.created_ts === null ? null : new Date(Number(row.created_ts)).toISOString(),
       reviewRoutedAtMs: row.routed_at === null ? null : Number(row.routed_at),
       ledger: row.idea_id && row.routed_ref ? { ideaId: row.idea_id, routedRef: row.routed_ref,
@@ -226,8 +234,10 @@ export async function readAgentReviewService(scope: AgentReviewServiceScope) {
     })), pulls.map(pull => ({ workspaceId: scope.workspaceId,
       ...pullLedgerRowFromInvocation({ ...pull, invoked_at: new Date(pull.invoked_at).toISOString() }),
     }))) };
-  } catch {
-    return { status: 'unknown' as const, scope, reason: 'service-read-failed' as const };
+  } catch (error) {
+    return { status: 'unknown' as const, scope, reason: 'service-read-failed' as const,
+      failure: { stage, message: error instanceof Error ? error.message : String(error),
+        code: error && typeof error === 'object' && 'code' in error ? String(error.code) : null } };
   }
 }
 

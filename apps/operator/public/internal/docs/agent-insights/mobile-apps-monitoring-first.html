@@ -76,12 +76,23 @@ owner, with <strong>no execute/approve/claim affordances</strong>. Keep that pri
 extending it — add read-only tiles and attention producers, not action buttons.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="where-the-code-lives">Where the code lives</h2><a class="sl-anchor-link" href="#where-the-code-lives"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Where the code lives”</span></a></div>
 <ul>
-<li><strong>App:</strong> <code dir="auto">papercup-rust-mobile/</code> — a <strong>separate git repo</strong> on branch <code dir="auto">master</code>,
-<strong>NOT</strong> covered by the papercup git-sync auto-commit. Edits there need a
-<strong>manual commit</strong>, and the papercup Edit-tool worktree guard refuses it (it
-can’t tell a separate repo from a stray worktree) — edit via <code dir="auto">sed</code>/<code dir="auto">bash</code> and
-commit by hand. Rust core (<code dir="auto">crates/papercup-core</code>) + UniFFI bindings, Jetpack
-Compose (Android), SwiftUI (iOS).</li>
+<li><strong>App:</strong> <code dir="auto">papercup-rust-mobile/</code> is a separate Git repository in its own main
+checkout, currently on branch <code dir="auto">master</code>. Use normal guarded native edits, such as
+built-in <code dir="auto">apply_patch</code>, with the lock mode reported by the current runtime’s
+<code dir="auto">coord:orient</code>. The worktree guard in
+<code dir="auto">apps/operator/scripts/hooks/cc/pretooluse-locks-acquire.sh</code> explicitly exempts
+independent sibling repositories whose readable origin differs from the
+canonical Papercusp project: this app uses <code dir="auto">Papercusp/papercup-rust-mobile.git</code>,
+while the platform uses <code dir="auto">Papercusp/papercup.git</code>. Do not bypass an edit denial
+or edit a linked Papercusp worktree.
+Mobile edits are covered by the existing automatic git-sync route, verified
+from its authored commits on 2026-10-07. Leave changes for that routine; do not
+manually commit or push. Verify the current repository identity and sync
+receipt before claiming a change committed. Rust core (<code dir="auto">crates/papercup-core</code>)
+<ul>
+<li>UniFFI bindings, Jetpack Compose (Android), SwiftUI (iOS).</li>
+</ul>
+</li>
 <li><strong>Server (device API):</strong> <code dir="auto">packages/operator-core/lib/endpoint-route/routes/device/*</code>
 — <code dir="auto">defineTool</code> routes gated by <code dir="auto">DEVICE_AUTH</code> (<code dir="auto">{ kind: ['device'] }</code>). The phone
 reaches them at <code dir="auto">https://api.papercuspai.com/api/device/*</code>.</li>
@@ -216,4 +227,4 @@ and confirms a push actually lands; can’t be done without their devices.</li>
 <li><strong>Graduating the <code dir="auto">mobile-pairing</code> onboarding item</strong> out of <code dir="auto">ONBOARDING_PREVIEW_FEATURES</code>
 — wait until pairing + push are owner-verified end-to-end (Android works; iOS pending
 enrollment), or a fresh install is promised notifications that don’t fire.</li>
-</ul> </div> <footer class="sl-flex astro-j7wz5khy"> <div class="meta sl-flex astro-j7wz5khy">  <p>Last updated: <time datetime="2026-08-10T14:54:59.000Z">Aug 10, 2026</time></p> </div> <div class="pagination-links print:hidden astro-td3zbozv" dir="ltr"> <a href="/internal/docs/agent-insights/migration-reapply-lock-guards.html" rel="prev" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17 11H9.41l3.3-3.29a1.004 1.004 0 1 0-1.42-1.42l-5 5a1 1 0 0 0-.21.33 1 1 0 0 0 0 .76 1 1 0 0 0 .21.33l5 5a1.002 1.002 0 0 0 1.639-.325 1 1 0 0 0-.219-1.095L9.41 13H17a1 1 0 0 0 0-2Z"/></svg> <span class="astro-td3zbozv"> Previous <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">Manually-applied migrations must be re-run-safe — guard DDL or the auto-deploy dies on lock timeouts</span> </span> </a> <a href="/internal/docs/agent-insights/mocking-fire-and-forget-emits-through-a-circular-dynamic-import.html" rel="next" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17.92 11.62a1.001 1.001 0 0 0-.21-.33l-5-5a1.003 1.003 0 1 0-1.42 1.42l3.3 3.29H7a1 1 0 0 0 0 2h7.59l-3.3 3.29a1.002 1.002 0 0 0 .325 1.639 1 1 0 0 0 1.095-.219l5-5a1 1 0 0 0 .21-.33 1 1 0 0 0 0-.76Z"/></svg> <span class="astro-td3zbozv"> Next <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">Mock the leaf sink, not the mid-cycle module, for fire-and-forget emits</span> </span> </a> </div>  </footer> </div> </div>  </main> </div> </div> </div> </div> </body></html>
+</ul> </div> <footer class="sl-flex astro-j7wz5khy"> <div class="meta sl-flex astro-j7wz5khy">  <p>Last updated: <time datetime="2026-10-08T03:30:55.000Z">Oct 8, 2026</time></p> </div> <div class="pagination-links print:hidden astro-td3zbozv" dir="ltr"> <a href="/internal/docs/agent-insights/migration-reapply-lock-guards.html" rel="prev" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17 11H9.41l3.3-3.29a1.004 1.004 0 1 0-1.42-1.42l-5 5a1 1 0 0 0-.21.33 1 1 0 0 0 0 .76 1 1 0 0 0 .21.33l5 5a1.002 1.002 0 0 0 1.639-.325 1 1 0 0 0-.219-1.095L9.41 13H17a1 1 0 0 0 0-2Z"/></svg> <span class="astro-td3zbozv"> Previous <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">Manually-applied migrations must be re-run-safe — guard DDL or the auto-deploy dies on lock timeouts</span> </span> </a> <a href="/internal/docs/agent-insights/mocking-fire-and-forget-emits-through-a-circular-dynamic-import.html" rel="next" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17.92 11.62a1.001 1.001 0 0 0-.21-.33l-5-5a1.003 1.003 0 1 0-1.42 1.42l3.3 3.29H7a1 1 0 0 0 0 2h7.59l-3.3 3.29a1.002 1.002 0 0 0 .325 1.639 1 1 0 0 0 1.095-.219l5-5a1 1 0 0 0 .21-.33 1 1 0 0 0 0-.76Z"/></svg> <span class="astro-td3zbozv"> Next <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">Mock the leaf sink, not the mid-cycle module, for fire-and-forget emits</span> </span> </a> </div>  </footer> </div> </div>  </main> </div> </div> </div> </div> </body></html>

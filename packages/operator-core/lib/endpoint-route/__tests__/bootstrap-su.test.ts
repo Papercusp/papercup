@@ -1902,6 +1902,60 @@ describe('bootstrap-su', () => {
     });
   });
 
+  it('options sections keep harness menus independent of stalled account/model reads', async () => {
+    const originalFlag = getFlagMock.getMockImplementation()!;
+    const originalCatalog = readOmpModelCatalogMock.getMockImplementation()!;
+    const originalPool = loadAccountPoolMock.getMockImplementation()!;
+    getFlagMock.mockResolvedValueOnce(true);
+    readOmpModelCatalogMock.mockImplementationOnce(() => new Promise(() => {}));
+    loadAccountPoolMock.mockImplementationOnce(() => new Promise(() => {}));
+    try {
+      const res = await callGet('?include=workspaces,harnesses,fleets');
+      expect(res.status).toBe(200);
+      const page = await res.json();
+      expect(page.harnesses).toEqual([{ slug: 'papercup', path: '/repo', status: 'active' }]);
+      expect(page.workspaces).toHaveLength(2);
+      expect(page.fleets).toEqual([]);
+      expect(page).not.toHaveProperty('accounts');
+      expect(page).not.toHaveProperty('ompCatalog');
+      expect(page).not.toHaveProperty('roles');
+      expect(readOmpModelCatalogMock).not.toHaveBeenCalled();
+      expect(loadAccountPoolMock).not.toHaveBeenCalled();
+      expect(getFlagMock).not.toHaveBeenCalled();
+      expect(listFleetsMock).toHaveBeenCalledTimes(1);
+    } finally {
+      // These deliberately stalled mocks must not leak to another test.
+      getFlagMock.mockReset().mockImplementation(originalFlag);
+      readOmpModelCatalogMock.mockReset().mockImplementation(originalCatalog);
+      loadAccountPoolMock.mockReset().mockImplementation(originalPool);
+    }
+  });
+
+  it('options account reads retain provider filtering and skip unrelated menu stores', async () => {
+    getFlagMock.mockResolvedValueOnce(true);
+    loadAccountPoolMock.mockResolvedValueOnce({ accounts: [
+      { id: 'claude-account', provider: 'claude' }, { id: 'codex-account', provider: 'codex' },
+    ] });
+    const res = await callGet('?include=accounts&workspace=ws2&agent=codex');
+    expect(res.status).toBe(200);
+    const page = await res.json();
+    expect(page.accounts).toMatchObject({ provider: 'codex', pool: ['codex-account'] });
+    expect(loadAccountPoolMock).toHaveBeenCalledWith('ws2');
+    expect(page).not.toHaveProperty('harnesses');
+    expect(page).not.toHaveProperty('fleets');
+    expect(readOmpModelCatalogMock).not.toHaveBeenCalled();
+    expect(listFleetsMock).not.toHaveBeenCalled();
+  });
+
+  it('options rejects unknown sections before loading picker data', async () => {
+    const res = await callGet('?include=unknown');
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe('unknown launch-options section');
+    expect(readOmpModelCatalogMock).not.toHaveBeenCalled();
+    expect(loadAccountPoolMock).not.toHaveBeenCalled();
+    expect(listFleetsMock).not.toHaveBeenCalled();
+  });
+
   it('options?harness lists non-archived plan slugs', async () => {
     const res = await callGet('?harness=papercup');
     const json = await res.json();

@@ -1620,6 +1620,10 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   ['backup:snapshot_create', PTOOL_BACKUP_SNAPSHOT_CREATE_TIMEOUT_MS],
   ['backup:restore', PTOOL_BACKUP_RESTORE_TIMEOUT_MS],
   ['templates:new-app', PTOOL_TEMPLATES_NEW_APP_TIMEOUT_MS],
+  // `plans:certify-spec-clauses` runs the evaluator and then emits passing
+  // clause cards through the same 900s server budget as `scorecards:emit`.
+  // Keep the client outside that budget on both direct and tools:invoke paths.
+  ['plans:certify-spec-clauses', PTOOL_SCORECARD_EMIT_TIMEOUT_MS],
   ['scorecards:emit', PTOOL_SCORECARD_EMIT_TIMEOUT_MS],
   ['scorecards:repair', PTOOL_SCORECARD_REPAIR_TIMEOUT_MS],
   ['release:checkpoint-run', PTOOL_CHECKPOINT_RUN_TIMEOUT_MS],

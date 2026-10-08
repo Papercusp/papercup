@@ -49,7 +49,7 @@ import { deriveVerdict } from './liveness-oracle';
 // hours from being reported as a promise that it will fire again.
 import { deriveDormantSchedule, fetchSelfWake, type SelfWakeSignals } from './presence-selfwake';
 import { getLoopStatuses, type LoopStatus } from '../../harness/routines/loop';
-import { findLiveHost } from '../../events/await/psu-pty-discovery';
+import { findLiveHostAsync } from '../../events/await/psu-pty-discovery';
 import { deriveContextPressure, deriveContextPressureAgeSec } from './context-pressure';
 import { writeWatermark } from './watermarks';
 import {
@@ -763,24 +763,36 @@ export async function assemblePresenceSnapshot(
    *  sessionState/wakeable stay absent (emitted as null by toStableRosterRow). */
   const nowMs = Date.now();
   const hostLookupTiming = { calls: 0, totalMs: 0, maxMs: 0, nullResults: 0, errors: 0 };
-  const findHostForVerdict = opts.onDiagnostic
-    ? (ownerId: string) => {
+  const activeWithTier1 = mergeTier1(active, joins, now);
+  const hostLookupRows = [...activeWithTier1, ...stale];
+  const hostOwnerIds = [...new Set(hostLookupRows
+    .filter((r) => !isFederated(r) && wakeability.has(r.ownerId))
+    .map((r) => r.ownerId))];
+  const liveHostsByOwner = new Map<string, unknown | null>();
+  await timeAsync('enrichment', 'findLiveHostsAsync', async () => {
+    // A synchronous `existsSync` in this same psu-pty directory was measured
+    // holding the staging API's event loop in D state for 24 seconds (the
+    // accept-loop wedge). Keep these per-owner lookups off-loop and bounded.
+    for (let i = 0; i < hostOwnerIds.length; i += 16) {
+      await Promise.all(hostOwnerIds.slice(i, i + 16).map(async (ownerId) => {
         const startedAt = performance.now();
         hostLookupTiming.calls += 1;
         try {
-          const host = findLiveHost(ownerId);
+          const host = await findLiveHostAsync(ownerId);
+          liveHostsByOwner.set(ownerId, host);
           if (host === null) hostLookupTiming.nullResults += 1;
-          return host;
-        } catch (error) {
+        } catch {
           hostLookupTiming.errors += 1;
-          throw error;
+          liveHostsByOwner.set(ownerId, null);
         } finally {
           const elapsedMs = Math.max(0, performance.now() - startedAt);
           hostLookupTiming.totalMs += elapsedMs;
           hostLookupTiming.maxMs = Math.max(hostLookupTiming.maxMs, elapsedMs);
         }
-      }
-    : findLiveHost;
+      }));
+    }
+  });
+  const findHostForVerdict = (ownerId: string) => liveHostsByOwner.get(ownerId) ?? null;
   const withWakeability = (r: RosterRow): RosterRow => {
     const w = wakeability.get(r.ownerId);
     if (!w) return r;
@@ -898,7 +910,7 @@ export async function assemblePresenceSnapshot(
   let derivationStatus: 'ok' | 'error' = 'error';
   const derivationStartedAt = opts.onDiagnostic ? performance.now() : 0;
   try {
-    activeEnriched = mergeTier1(active, joins, now)
+    activeEnriched = activeWithTier1
       .map(withWakeability)
       .map(withOnDesktop)
       .map(withViewerAttached)

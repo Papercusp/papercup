@@ -8925,13 +8925,59 @@ async function pickSubagents() {
   });
 }
 
+/** One short-lived snapshot per workspace/provider/section for a launch. Share
+ * pending reads too; rejected reads are evicted so a later menu can recover.
+ * No disk cache: another psu invocation always gets fresh operator data.
+ * @param {{ request?: (path: string) => Promise<any>, now?: () => number,
+ *   maxAgeMs?: number, scope?: () => string }} [options]
+ * @returns {(options?: { workspace?: string|null, agent?: string|null,
+ *   include?: string }) => Promise<any>}
+ */
+export function createLaunchOptionsReader({
+  request = api,
+  now = Date.now,
+  maxAgeMs = 30_000,
+  scope = () => OPERATOR_URL,
+} = {}) {
+  const cache = new Map();
+  return function readOptions({ workspace = null, agent = null,
+    include = "workspaces,harnesses,fleets" } = {}) {
+    const fields = [...new Set(include.split(","))].sort().join(",");
+    const origin = scope();
+    const keyFor = (ws) => JSON.stringify([origin, ws || null, agent, fields]);
+    const key = keyFor(workspace);
+    const cached = cache.get(key);
+    if (cached && (cached.pending || cached.expiresAt > now())) return cached.promise;
+    const query = new URLSearchParams({ include: fields });
+    if (workspace) query.set("workspace", workspace);
+    if (agent) query.set("agent", agent);
+    const entry = { pending: true, expiresAt: 0, promise: null };
+    entry.promise = Promise.resolve().then(() =>
+      request(`/api/agent-mcp/console/bootstrap-su/options?${query}`),
+    ).then((page) => {
+      entry.pending = false;
+      entry.expiresAt = now() + maxAgeMs;
+      // The first workspace read also contains that workspace's harnesses and
+      // fleets. Reuse it when the selected workspace is the active one.
+      if (!workspace && page.workspace) cache.set(keyFor(page.workspace), entry);
+      return page;
+    }).catch((error) => {
+      if (cache.get(key) === entry) cache.delete(key);
+      throw error;
+    });
+    cache.set(key, entry);
+    return entry.promise;
+  };
+}
+// Programmatic calls observe live choices; main enables snapshot reuse for its
+// single CLI launch. Reuse never crosses separate picker invocations.
+let readLaunchOptions = createLaunchOptionsReader({ maxAgeMs: 0 });
+
 /** Pick a workspace. Harnesses are workspace-scoped, so this comes
  *  before the harness picker. Auto-resolves (no prompt) when there's
  *  0 or 1 workspace. Returns the workspace id (or null → active). */
 async function pickWorkspace() {
-  const { workspaces, activeWorkspace } = await api(
-    "/api/agent-mcp/console/bootstrap-su/options",
-  );
+  const { workspaces, activeWorkspace } = await readLaunchOptions();
   if (!Array.isArray(workspaces) || workspaces.length <= 1) {
     return (
       activeWorkspace ?? (workspaces && workspaces[0] ? workspaces[0].id : null)
@@ -8955,10 +9001,7 @@ function filterRows(rows, term) {
 
 async function pickHarness(workspace) {
   const { search } = await import("@inquirer/prompts");
-  const q = workspace ? `?workspace=${encodeURIComponent(workspace)}` : "";
-  const { harnesses, workspace: ws } = await api(
-    `/api/agent-mcp/console/bootstrap-su/options${q}`,
-  );
+  const { harnesses, workspace: ws } = await readLaunchOptions({ workspace });
   const rows = [
     { name: `· workspace root — no harness  [${ws}]`, value: null },
     ...harnesses.map((h) => ({
@@ -9014,12 +9057,8 @@ async function pickPlan(workspace, harness) {
  *  null on any error (fail-soft → no pin). */
 async function fetchAccountChoices(workspace, agent = "claude") {
   try {
-    const params = new URLSearchParams();
-    if (workspace) params.set("workspace", workspace);
-    if (agent) params.set("agent", agent);
-    const q = params.toString() ? `?${params.toString()}` : "";
     return (
-      (await api(`/api/agent-mcp/console/bootstrap-su/options${q}`)).accounts ??
+      (await readLaunchOptions({ workspace, agent, include: "accounts" })).accounts ??
       null
     );
   } catch {
@@ -9040,8 +9079,7 @@ async function fetchAccountChoices(workspace, agent = "claude") {
  *  degraded, never absent. */
 async function fetchOmpModelCatalog(workspace) {
   try {
-    const q = workspace ? `?workspace=${encodeURIComponent(workspace)}` : "";
-    const r = await api(`/api/agent-mcp/console/bootstrap-su/options${q}`);
+    const r = await readLaunchOptions({ workspace, include: "ompCatalog" });
     const catalog = r?.ompCatalog;
     if (!catalog || catalog.status !== "available") return [];
     return Array.isArray(catalog.models) ? catalog.models : [];
@@ -9200,10 +9238,7 @@ export function colorSwatch(color) {
  *  picker still shows its two default rows. */
 async function fetchFleetChoices(workspace) {
   try {
-    const params = new URLSearchParams();
-    if (workspace) params.set("workspace", workspace);
-    const q = params.toString() ? `?${params.toString()}` : "";
-    const resp = await api(`/api/agent-mcp/console/bootstrap-su/options${q}`);
+    const resp = await readLaunchOptions({ workspace });
     return {
       fleets: Array.isArray(resp.fleets) ? resp.fleets : [],
       nextScheme: resp.nextScheme ?? null,
@@ -16823,6 +16858,7 @@ async function main() {
     process.stdout.write(`psu ${psuClientVersion()}\n`);
     return;
   }
+  readLaunchOptions = createLaunchOptionsReader();
   if (await recoveryFlow(args, { rawArgv: connection.argv })) return;
   // A host-code adoption handoff is consumed BEFORE any normal fresh/resume
   // flow. Re-running bootstrap-su here would select or mint another adv row
@@ -16948,6 +16984,10 @@ async function main() {
     // fills the unflagged case.
     if (!args.contextSize) args.contextSize = SU_CONTEXT_SIZE;
     const workspace = p.needWorkspace ? await pickWorkspace() : p.workspace;
+    // Load the later account menu while the user selects harness/identity/plan.
+    // Selection and bootstrap still validate the chosen provider and account.
+    if (!args.account && (agent === "claude" || agent === "codex"))
+      void fetchAccountChoices(workspace, agent);
     const harness = p.needHarness ? await pickHarness(workspace) : p.harness;
     if (!args.stack?.length && role === "su") {
       const identity = await pickIdentity(workspace, harness);

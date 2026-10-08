@@ -14,10 +14,10 @@ vi.mock('./workspace-registry', async (original) => ({
 const { createOrgTestDb } = await import('../test/_org-test-db');
 const wi = await import('./work-items');
 const { claimIssue } = await import('./issues-engineer');
-const { getNextWorkItem } = await import('./scheduler/get-next');
+const { getNextWorkItem, getNextWorkItemDefault } = await import('./scheduler/get-next');
 const { getNextForBee } = await import('./scheduler/claim-spec-store');
 const { DEFAULT_CLAIM_SPEC } = await import('./scheduler/claim-spec');
-const { claimNextVerificationTask, claimNextVerificationWork } = await import('./harness/improvements/agent-review');
+const { claimNextAgentReview, claimNextVerificationTask, claimNextVerificationWork } = await import('./harness/improvements/agent-review');
 const { lockGoalPlanClaimSelections, applyGoalPropertyWrite } = await import('./typed-properties-db');
 const { createFleetIfAbsent, claimFleetLaunchSlot } = await import('./agent-fleets-store');
 const { createVerificationTask } = await import('./harness/improvements/agent-review-policy');
@@ -92,6 +92,8 @@ describe('canonical goal selection at new-work claim boundaries', () => {
   it('the bottom issue writer also refuses direct calls', async () => {
     await seed('EI-excluded', 'bug');
     expect(await claimIssue('EI-excluded', 'worker', { workspaceId: WS })).toBeNull();
+    await seed('EI-selected', 'bug', 'selected');
+    expect((await claimIssue('EI-selected', 'worker', { workspaceId: WS }))?.id).toBe('EI-selected');
   });
 
   it.each(['feature', 'bug'] as const)('creating a born-assigned %s cannot bypass the exclusion', async (kind) => {
@@ -101,6 +103,9 @@ describe('canonical goal selection at new-work claim boundaries', () => {
     const rows = await h.sql`SELECT feature_id FROM harness_shared.work_items
       WHERE workspace_id = ${WS} AND feature_id = 'WI-born'`;
     expect(rows).toHaveLength(0);
+    const selected = await wi.createWorkItem({ kind, id: 'WI-born-selected', harness: H, workspaceId: WS,
+      title: 'Selected born assigned fixture', sourcePlanSlug: 'selected', assignee: 'worker', createdBy: 'worker' });
+    expect(selected).toMatchObject({ id: 'WI-born-selected', assignee: 'worker' });
   });
 
   it('a new reservation and an orphan reservation rebind cannot bypass exclusion', async () => {
@@ -113,6 +118,10 @@ describe('canonical goal selection at new-work claim boundaries', () => {
       fleetSlug: 'new-fleet' })).toBe(false);
     const [row] = await h.sql`SELECT payload FROM harness_shared.work_items WHERE feature_id = 'WI-reserved'`;
     expect(row.payload.fleet_slug).toBe('orphan');
+    await seed('WI-reserved-selected', 'feature', 'selected', null,
+      { plan_item: { harness_slug: H, plan_slug: 'selected', item_id: 'P-001' }, fleet_slug: 'orphan' });
+    expect(await wi.rebindOrphanedPlanFleetReservation({ id: 'WI-reserved-selected', harness: H, workspaceId: WS,
+      fleetSlug: 'new-fleet' })).toBe(true);
   });
 
   it('final fleet registry placement rejects an excluded goal-stamped plan before reservation', async () => {
@@ -146,6 +155,8 @@ describe('canonical goal selection at new-work claim boundaries', () => {
   it('the direct issue next-pick refuses an excluded-only queue', async () => {
     await seed('EI-excluded', 'bug');
     expect(await wi.claimNextIssueWorkItem({ harness: H, assignee: 'worker' }, WS)).toBeNull();
+    await seed('EI-selected', 'bug', 'selected');
+    expect((await wi.claimNextIssueWorkItem({ harness: H, assignee: 'worker' }, WS))?.id).toBe('EI-selected');
   });
 
   it.each(['feature', 'bug'])('the spec-driven scheduler preserves exclusion for %s', async (kind) => {
@@ -159,6 +170,27 @@ describe('canonical goal selection at new-work claim boundaries', () => {
   it('the standing-drain wrapper cannot pick an excluded goal-stamped plan', async () => {
     await seed('WI-excluded');
     expect(await getNextForBee({ cupId: 'drainer', harness: H, workspaceId: WS, ignoreStoredSpec: true })).toBeNull();
+    await seed('WI-selected', 'feature', 'selected');
+    expect((await getNextForBee({ cupId: 'drainer', harness: H, workspaceId: WS, ignoreStoredSpec: true }))?.workItem.id)
+      .toBe('WI-selected');
+  });
+
+  it.each(['feature', 'bug'])('the default scheduler skips excluded %s and claims its selected control', async (kind) => {
+    await seed('WI-excluded', kind);
+    await seed('WI-selected', kind, 'selected');
+    const result = await getNextWorkItemDefault({ assignee: 'worker' },
+      { harness: H, workspaceId: WS, client: h.sql });
+    expect(result?.workItem.id).toBe('WI-selected');
+  });
+
+  it('the pending-review picker reaches the real claim writer for excluded and selected plans', async () => {
+    const review = { agentReview: { status: 'pending', submittedBy: 'author', ledgerIdeaId: 'EI-review', round: 2 } };
+    await seed('EI-review-excluded', 'change', 'excluded', null, review);
+    expect(await claimNextAgentReview({ reviewer: 'reviewer', harnessSlug: H })).toBeNull();
+    await seed('EI-review-selected', 'change', 'selected', null, review);
+    expect((await claimNextAgentReview({ reviewer: 'reviewer', harnessSlug: H }))?.id).toBe('EI-review-selected');
+    const [excluded] = await h.sql`SELECT taken_by FROM harness_shared.work_items WHERE feature_id = 'EI-review-excluded'`;
+    expect(excluded.taken_by).toBeNull();
   });
 
   it.each(['task', 'work'])('verification %s delegation cannot claim an excluded plan', async (path) => {
@@ -237,7 +269,10 @@ describe('canonical goal selection at new-work claim boundaries', () => {
     const ready = new Promise<void>((resolve) => { writerReady = resolve; });
     let commit!: () => void;
     const barrier = new Promise<void>((resolve) => { commit = resolve; });
+    let writerPid = 0;
     const writer = h.sql.begin(async (tx) => {
+      const [process] = await tx`SELECT pg_backend_pid() AS pid`;
+      writerPid = process.pid;
       await tx`SELECT id FROM harness_shared.goals WHERE id = ${GOAL} FOR UPDATE`;
       const result = await applyGoalPropertyWrite(tx as unknown as postgres.Sql, {
         workspaceId: WS, goalId: GOAL, property: 'worklist_policy', value: { order: [], excluded: [EXCLUDED] },
@@ -248,9 +283,31 @@ describe('canonical goal selection at new-work claim boundaries', () => {
       await barrier;
     });
     await ready;
-    const admission = h.sql.begin(async (tx) => lockGoalPlanClaimSelections(tx as unknown as postgres.Sql, WS));
-    commit();
-    await writer;
+    let readerPid = 0;
+    let readerStarted!: () => void;
+    const started = new Promise<void>((resolve) => { readerStarted = resolve; });
+    const admission = h.sql.begin(async (tx) => {
+      const [process] = await tx`SELECT pg_backend_pid() AS pid`;
+      readerPid = process.pid;
+      readerStarted();
+      return lockGoalPlanClaimSelections(tx as unknown as postgres.Sql, WS);
+    });
+    try {
+      await started;
+      // Observe the actual PostgreSQL lock edge before committing. Without FOR
+      // SHARE a reader can finish on the old policy, so merely racing commit
+      // against a read is not a distinguishing test of the admission fence.
+      await vi.waitFor(async () => {
+        // adminSql has two connections, both occupied by writer and reader.
+        // Observe through the fixture's independent app pool so the instrument
+        // does not queue behind the very transactions it is measuring.
+        const [locks] = await db.appSql`SELECT pg_blocking_pids(${readerPid}) AS blockers`;
+        expect(locks.blockers).toContain(writerPid);
+      }, { timeout: 5_000, interval: 20 });
+    } finally {
+      commit();
+      await Promise.all([writer, admission]);
+    }
     const selections = await admission;
     expect(selections[0].policyVersion).toBe(3);
     expect(selections[0].selected).not.toContain(EXCLUDED);

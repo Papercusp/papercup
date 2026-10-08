@@ -14,14 +14,24 @@ const packageRow = {
   instances: [{ goalId: current.id, status: 'active', adoptableStub: false }],
 };
 
-// These header reads share the finite-request scheduler with the goal queries.
+// These shell reads share the finite-request scheduler with the goal queries.
 // Letting them reach the shared backend makes a fixture's goal admission depend
-// on a live process scan and hive registry. Model those two shell contracts here;
+// on live process scans, attention aggregation and plan-list hydration. Model
+// those ancillary contracts here without swallowing the required dock layout;
 // the separate shipment profile still exercises real goal data without stubs.
 function headerRows(name: string): readonly unknown[] | undefined {
   if (name === 'taskManager.inventory') return [{ enabled: false }];
   if (name === 'hive.controlState') return [];
+  if (name === 'plans.attentionCounts') return [{ decisionItems: 0, decisionPlans: 0, alerts: 0, total: 0, degraded: false }];
+  if (name === 'plans.list' || name === 'plans.attention' || name === 'planWorkActivity.list') return [];
   return undefined;
+}
+
+async function openHud(page: Page, path: string) {
+  await page.goto(path);
+  // Vite's load event precedes the lazy HUD graph. Admission is measured only
+  // after its caller mounts; keep both existing assertion deadlines unchanged.
+  await page.getByRole('tablist', { name: 'HUD board' }).waitFor({ state: 'visible', timeout: 30_000 });
 }
 
 async function scopeFixture(page: Page) {
@@ -84,7 +94,7 @@ for (const kind of ['plans', 'tea'] as const) {
       version++;
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, version, provenance: 'owner-edit' }) });
     });
-    await page.goto(`/adv?tab=hud&scope=all&hudtab=goals&hudgoal=${goal.id}&welcome=0`);
+    await openHud(page, `/adv?tab=hud&scope=all&hudtab=goals&hudgoal=${goal.id}&welcome=0`);
     await sync.waitForServed(['goals.detail']);
     const editor = page.getByTestId('goal-data');
     async function reloadWithReadback() {
@@ -156,7 +166,7 @@ test('ongoing work stays visible across tabs, keeps ordinary goals, and opens th
       plans: [{ planSlug: 'search', harnessSlug: 'papercusp', title: 'Search plan', stamped: true, openItems: 2 }] }];
     return headerRows(name);
   });
-  await page.goto('/adv?tab=hud&scope=all&hudtab=goals&welcome=0');
+  await openHud(page, '/adv?tab=hud&scope=all&hudtab=goals&welcome=0');
   await sync.waitForServed(['goals.list', 'goals.detail']);
   const rail = page.getByTestId('goal-packages-rail');
   await expect(rail.getByRole('button', { name: 'View ongoing work' })).toBeVisible();
@@ -176,7 +186,9 @@ test('ongoing work stays visible across tabs, keeps ordinary goals, and opens th
   await expect(page.getByRole('heading', { name: current.title, exact: true })).toHaveCount(1);
   await page.screenshot({ path: test.info().outputPath('ongoing-featured.png') });
   for (const tab of ['Sessions', 'Plans', 'Work items']) {
-    await page.getByRole('tablist', { name: 'HUD board' }).getByRole('tab', { name: tab, exact: true }).click();
+    const target = page.getByRole('tablist', { name: 'HUD board' }).getByRole('tab', { name: tab, exact: true });
+    await target.click();
+    await expect(target).toHaveAttribute('aria-selected', 'true');
     await expect(rail.getByRole('button', { name: 'View work' })).toBeVisible();
     await expect(rail.getByText('31 needs you')).toBeVisible();
   }
@@ -212,7 +224,7 @@ test('mobile strip preserves truthful status after a refused pause', async ({ pa
   });
   await page.route('**/api/admin/goals/update', (route) => route.fulfill({ status: 409,
     contentType: 'application/json', body: JSON.stringify({ error: { message: 'Pause refused for test' } }) }));
-  await page.goto('/adv?tab=hud&scope=all&hudtab=sessions&welcome=0');
+  await openHud(page, '/adv?tab=hud&scope=all&hudtab=sessions&welcome=0');
   await sync.waitForServed(['goals.list', 'goals.detail']);
   const rail = page.getByTestId('goal-packages-rail');
   await expect(rail.getByText('Running', { exact: true })).toBeVisible();
@@ -237,4 +249,5 @@ test('mobile strip preserves truthful status after a refused pause', async ({ pa
   await page.screenshot({ path: test.info().outputPath('ongoing-mobile-detail.png') });
   sync.assertServed('goals.list');
   sync.assertServed('goals.detail');
+  sync.assertServed('plans.attentionCounts', 'plans.list', 'plans.attention');
 });

@@ -39,6 +39,7 @@ import {
   pickRole,
   pickIdentity,
   identityPickerChoices,
+  createLaunchOptionsReader,
   PSU_HELP_TEXT,
   planValue,
   parkRoleScopedMcpJson,
@@ -683,6 +684,67 @@ describe("backend-not-installed helpers (owner req 2026-07-06 — psu prompt-to-
     } finally {
       rmSync(winHome, { recursive: true, force: true });
     }
+  });
+});
+
+describe("launch-options menu reuse", () => {
+  it("shares an in-flight read and reuses the active workspace for harness and fleet menus", async () => {
+    let resolve!: (page: object) => void;
+    const request = vi.fn((_path: string) => new Promise<object>((done) => { resolve = done; }));
+    const read = createLaunchOptionsReader({ request });
+    const first = read();
+    const concurrent = read({ include: "harnesses,workspaces,fleets" });
+    expect(concurrent).toBe(first);
+    await Promise.resolve();
+    resolve({ workspace: "ws1", harnesses: [{ slug: "app" }], fleets: [] });
+    const page = await first;
+    expect(await read({ workspace: "ws1" })).toBe(page);
+    expect(await read({ workspace: "ws1" })).toBe(page);
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(new URL(request.mock.calls[0]![0], "http://operator").searchParams.get("include"))
+      .toBe("fleets,harnesses,workspaces");
+  });
+
+  it("keeps provider, workspace, section and operator data separate", async () => {
+    let origin = "operator-a";
+    const request = vi.fn(async (_path: string) => ({ accounts: { pool: [] } }));
+    const read = createLaunchOptionsReader({ request, scope: () => origin });
+    await read({ workspace: "ws1", agent: "claude", include: "accounts" });
+    await read({ workspace: "ws1", agent: "codex", include: "accounts" });
+    await read({ workspace: "ws2", agent: "codex", include: "accounts" });
+    await read({ workspace: "ws2", include: "ompCatalog" });
+    origin = "operator-b";
+    await read({ workspace: "ws1", agent: "codex", include: "accounts" });
+    expect(request).toHaveBeenCalledTimes(5);
+  });
+
+  it("expires snapshots and does not retain failed requests", async () => {
+    let clock = 0;
+    const request = vi.fn(async (_path: string) => ({ workspace: "ws1" }));
+    const read = createLaunchOptionsReader({ request, now: () => clock, maxAgeMs: 30_000 });
+    await read();
+    clock = 29_999;
+    await read({ workspace: "ws1" });
+    expect(request).toHaveBeenCalledTimes(1);
+    clock = 30_000;
+    await read({ workspace: "ws1" });
+    expect(request).toHaveBeenCalledTimes(2);
+    request.mockRejectedValueOnce(new Error("operator restarting"));
+    await expect(read({ workspace: "ws2" })).rejects.toThrow("operator restarting");
+    await read({ workspace: "ws2" });
+    expect(request).toHaveBeenCalledTimes(4);
+  });
+
+  it("does not block an earlier menu on a pending account read", async () => {
+    const request = vi.fn(async (path: string) => {
+      const include = new URL(path, "http://operator").searchParams.get("include");
+      if (include === "accounts") return new Promise<object>(() => {});
+      return { workspace: "ws1", harnesses: [] };
+    });
+    const read = createLaunchOptionsReader({ request });
+    void read({ workspace: "ws1", agent: "claude", include: "accounts" });
+    expect(await read({ workspace: "ws1" })).toEqual({ workspace: "ws1", harnesses: [] });
+    expect(request).toHaveBeenCalledTimes(2);
   });
 });
 

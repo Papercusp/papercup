@@ -34,15 +34,51 @@ export interface SummaryResult {
 }
 export interface SummaryDeps {
   run(options: RunAgentChatOptions): AsyncIterable<ChatEvent>;
+  runLocal?(options: RunAgentChatOptions): AsyncIterable<ChatEvent>;
   isLocalModel(model: string, workspaceId: string): Promise<boolean>;
   checkBudget(): Promise<{ exceeded: boolean }>;
   recordSpend(usd: number): Promise<void>;
   reuse<T>(workspaceId: string, key: string, factory: () => Promise<T>): Promise<T>;
 }
 const INPUT_BYTES = 16_000; // Conservative token bound, including non-Latin input.
-const PROTOCOL = 'authorized-content-summary-v1';
+const PROTOCOL = 'authorized-content-summary-v2';
+
+/** Local summaries reuse the owned ModelPort and gateway's local-only namespace.
+ * Never resolve ambient provider credentials, cloud base URLs or account fallbacks.
+ */
+export async function* runLocalSummary(options: RunAgentChatOptions): AsyncIterable<ChatEvent> {
+  const [{ createOpenAI }, { createAiSdkPort }, { ownerHeaders, priorityTierHeaders }] = await Promise.all([
+    import('@ai-sdk/openai'), import('./agent-loop/ai-sdk-port'), import('./agent-chat-stream'),
+  ]);
+  const configuredPort = Number(process.env.PAPERCUSP_GATEWAY_PORT);
+  const port = Number.isInteger(configuredPort) && configuredPort > 0 && configuredPort <= 65535 ? configuredPort : 8788;
+  const model = options.model!;
+  const provider = createOpenAI({ baseURL: `http://127.0.0.1:${port}/v1`, apiKey: 'local-gateway',
+    fetch: (url, init) => fetch(url, { ...init, redirect: 'error' }) });
+  const adapter = createAiSdkPort({ resolveModel: () => ({ model: provider.chat(model), provider: 'openai', modelId: model,
+    headers: { ...ownerHeaders(options.ownerId), ...priorityTierHeaders(options.priority) } }) });
+  let text = '';
+  for await (const event of adapter.stream({ model, system: options.systemPromptText,
+    messages: [{ role: 'user', content: [{ type: 'text', text: options.promptText }] }],
+    maxTokens: options.maxTokens, signal: options.signal })) {
+    if (event.type === 'text_delta') {
+      text += event.text;
+      if (Buffer.byteLength(text, 'utf8') > (options.maxTokens ?? 4096) * 16) {
+        throw new ContentSummaryError('output-incomplete', 'The local model returned an oversized summary.');
+      }
+      yield { type: 'delta', text: event.text };
+    }
+    if (event.type === 'error') { yield { type: 'error', message: event.message }; return; }
+    if (event.type === 'tool_call') { yield { type: 'error', message: 'The local summary model returned an unexpected tool call.' }; return; }
+    if (event.type === 'stop') {
+      yield { type: 'result', finalText: text, stopReason: event.reason, costUsd: 0,
+        tokensIn: event.usage?.inputTokens ?? 0, tokensOut: event.usage?.outputTokens ?? 0 };
+    }
+  }
+}
 const defaults: SummaryDeps = {
   async *run(options) { const { runAgentChat } = await import('./agent-chat-stream'); yield* runAgentChat(options); },
+  runLocal: runLocalSummary,
   async isLocalModel(model, workspaceId) {
     const { listLocalBackends } = await import('./inference-gateway/local-backend-store');
     return (await listLocalBackends({ workspaceId })).some(backend => backend.enabled && backend.models.includes(model));
@@ -76,19 +112,17 @@ export async function summarizeContent(source: ReadableContent, input: SummaryOp
   const options = summaryOptionsSchema.parse(input);
   const model = options.model ?? process.env.PAPERCUSP_HAIKU_MODEL ?? 'claude-haiku-4-5';
   const localModel = await awaitWithCancellation(deps.isLocalModel(model, source.access.workspaceId), signal);
-  // TEMPORARY MITIGATION (EI-25381558498899737): the current stateless runner
-  // speaks Anthropic, while registered local models require OpenAI chat. Never
-  // let a local selection enter that cloud transport, including with consent.
-  if (localModel) {
-    throw new ContentSummaryError('local-route-unavailable', 'The local summary route is unavailable. No source was sent. Choose a supported cloud model with explicit consent.');
+  if (localModel && (!deps.runLocal || !['auto', 'default'].includes(options.account))) {
+    throw new ContentSummaryError('local-route-unavailable', 'Local summarization requires the local gateway route and does not support cloud account pins. No source was sent.');
   }
-  if (!options.allowCloud) {
+  if (!localModel && !options.allowCloud) {
     throw new ContentSummaryError('cloud-consent-required', 'The selected summary model may receive this content in the cloud. Explicitly allow cloud summarization or select a registered local model.');
   }
   cancelled(signal);
+  const run = localModel ? deps.runLocal! : deps.run;
   const maxTokens = options.maxOutputTokens ?? { short: 256, standard: 768, detailed: 1536 }[options.length];
   const key = createHash('sha256').update(JSON.stringify({ protocol: PROTOCOL, access: source.access, digest: source.digest,
-    refs: source.sourceRefs, title: source.title, coverage: source.coverage, format: source.format, options, model, maxTokens })).digest('hex');
+    refs: source.sourceRefs, title: source.title, coverage: source.coverage, format: source.format, options, model, localModel, maxTokens })).digest('hex');
   let built = false;
   const factory = async (): Promise<SummaryResult> => {
     built = true;
@@ -115,8 +149,9 @@ export async function summarizeContent(source: ReadableContent, input: SummaryOp
         usage.calls++;
         let terminal: Extract<ChatEvent, { type: 'result' }> | undefined;
         let fail: string | undefined;
-        for await (const event of deps.run({
-          backend: 'anthropic-direct', model, routeAccountId: options.account, maxTokens, requireOutputTokenLimit: true,
+        for await (const event of run({
+          backend: localModel ? undefined : 'anthropic-direct', model,
+          routeAccountId: localModel ? undefined : options.account, maxTokens, requireOutputTokenLimit: true,
           signal: controller.signal, retryDeadlineMs: deadline, governorMaxWaitMs: Math.max(1, deadline - Date.now()),
           priority: 'interactive', ownerId: source.access.readerId,
           usageAttribution: { role: 'content-summary', toolName: 'documents:read', sessionId: source.access.readerId },

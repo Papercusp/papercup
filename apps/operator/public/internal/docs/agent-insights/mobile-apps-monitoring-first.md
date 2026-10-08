@@ -1,7 +1,7 @@
 # Mobile apps (Android + iOS) — how the monitoring-first phone app works
 URL: /internal/docs/agent-insights/mobile-apps-monitoring-first
 
-The papercup-rust-mobile app, its device API, push, build, and the gotchas that make "why is my phone silent" diagnosable. From mobile-apps-revival-v2-2026-07-13.
+The papercup-rust-mobile app, its device API, push, build, and the gotchas that make \"why is my phone silent\" diagnosable. From mobile-apps-revival-v2-2026-07-13.
 
 The phone app is a **monitoring interface, not a work surface**. The desktop is
 where the owner works; the phone shows what the fleet is doing and what needs the
@@ -10,12 +10,20 @@ extending it — add read-only tiles and attention producers, not action buttons
 
 ## Where the code lives
 
-* **App:** `papercup-rust-mobile/` — a **separate git repo** on branch `master`,
-  **NOT** covered by the papercup git-sync auto-commit. Edits there need a
-  **manual commit**, and the papercup Edit-tool worktree guard refuses it (it
-  can't tell a separate repo from a stray worktree) — edit via `sed`/`bash` and
-  commit by hand. Rust core (`crates/papercup-core`) + UniFFI bindings, Jetpack
-  Compose (Android), SwiftUI (iOS).
+* **App:** `papercup-rust-mobile/` is a separate Git repository in its own main
+  checkout, currently on branch `master`. Use normal guarded native edits, such as
+  built-in `apply_patch`, with the lock mode reported by the current runtime's
+  `coord:orient`. The worktree guard in
+  `apps/operator/scripts/hooks/cc/pretooluse-locks-acquire.sh` explicitly exempts
+  independent sibling repositories whose readable origin differs from the
+  canonical Papercusp project: this app uses `Papercusp/papercup-rust-mobile.git`,
+  while the platform uses `Papercusp/papercup.git`. Do not bypass an edit denial
+  or edit a linked Papercusp worktree.
+  Mobile edits are covered by the existing automatic git-sync route, verified
+  from its authored commits on 2026-10-07. Leave changes for that routine; do not
+  manually commit or push. Verify the current repository identity and sync
+  receipt before claiming a change committed. Rust core (`crates/papercup-core`)
+  * UniFFI bindings, Jetpack Compose (Android), SwiftUI (iOS).
 * **Server (device API):** `packages/operator-core/lib/endpoint-route/routes/device/*`
   — `defineTool` routes gated by `DEVICE_AUTH` (`{ kind: ['device'] }`). The phone
   reaches them at `https://api.papercuspai.com/api/device/*`.

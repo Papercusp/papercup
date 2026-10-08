@@ -133,6 +133,50 @@ describe('scheduler:get_next claim-time decisions survive the result-door', () =
   });
 
   it.each([
+    { toolName: 'scheduler:get_next', nestedTargetToolName: undefined },
+    { toolName: 'tools:invoke', nestedTargetToolName: 'scheduler:get_next' },
+  ])('recovers an ordinary failed spill through the committed item ($toolName)', ({
+    toolName,
+    nestedTargetToolName,
+  }) => {
+    writeFileSync(join(sandbox, 'scratch'), 'not a directory');
+    const assembled = assembleSchedulerClaimResult({
+      planDecisions: decisions(),
+      workItem: { ...bulkyWorkItem(), harness: 'papercusp' },
+    });
+    const doored = applyResultDoor(
+      { content: [{ type: 'text' as const, text: JSON.stringify(assembled) }] },
+      { toolName, nestedTargetToolName, workspaceId: 'ws-1', runId: RUN_ID },
+    );
+    const output = JSON.parse((doored.content[0] as { text: string }).text);
+
+    expect(output.claimReceipt).toMatchObject({ committed: true, workItemId: CLAIM_MARKER });
+    expect(output._projection.cursor).toMatchObject({
+      kind: 'committed-claim',
+      tool: 'work_items:get',
+      args: { id: CLAIM_MARKER, harness: 'papercusp' },
+    });
+    expect(output._projection.next).toContain('Do not retry scheduler:get_next');
+    expect(output._projection.next).not.toContain('Re-call');
+    expect(doored._meta?.resultDoor).toMatchObject({ structural: true, spillFailed: true });
+    expect(doored._meta?.resultDoor).not.toHaveProperty('aggregate');
+  });
+
+  it('does not manufacture a committed claim from an uncommitted receipt', () => {
+    writeFileSync(join(sandbox, 'scratch'), 'not a directory');
+    const doored = doorify({
+      ok: false,
+      claimReceipt: { committed: false, workItemId: CLAIM_MARKER },
+      workItem: bulkyWorkItem(),
+    });
+    const output = JSON.parse((doored.content[0] as { text: string }).text);
+
+    expect(output._projection.cursor).toMatchObject({ kind: 'unavailable', reason: 'spill-write-failed' });
+    expect(output._projection.next).not.toContain('is committed');
+    expect(output._projection.next).not.toContain('Read work_items:get');
+  });
+
+  it.each([
     { toolName: 'scheduler:get_next', nestedTargetToolName: undefined, failSpill: false },
     { toolName: 'tools:invoke', nestedTargetToolName: 'scheduler:get_next', failSpill: true },
   ])('keeps a committed claim receipt visible through aggregate hard spill ($toolName)', ({

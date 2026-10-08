@@ -808,6 +808,7 @@ class PuiPane {
   private stoppedScreen: string | undefined;
   // Longest the observing event loop was blocked during any wait (WI-10003175).
   private observerMaxLateMs = 0;
+  private readonly inputTraceLog: string | undefined;
 
   /** SU tool approvals this pane answered, in order. */
   get answeredSuToolApprovals(): readonly string[] { return this.suToolApprovals ?? []; }
@@ -861,6 +862,7 @@ class PuiPane {
   ) {
     this.cols = options.cols ?? 150;
     this.rows = options.rows ?? 44;
+    this.inputTraceLog = options.env?.PUI_INPUT_TRACE_LOG;
     // The chat surface (pui-chat-first-ux P-001) is `pui --solo`: one
     // full-screen conversation with no zellij, tab strip or footer. Bare `pui`
     // wraps that same surface in the chat workbench (P-030: the chat as the
@@ -929,6 +931,10 @@ class PuiPane {
   resize(cols: number, rows: number): void {
     this.cols = cols;
     this.rows = rows;
+    if (this.inputTraceLog) {
+      appendFileSync(this.inputTraceLog,
+        `at_ms=${Date.now()} stage=pty-resize cols=${cols} rows=${rows}\n`);
+    }
     this.pty.resize(cols, rows);
   }
 
@@ -965,6 +971,8 @@ class PuiPane {
       screen: this.stoppedScreen ?? this.screen(),
       screenFrozenAtStop: this.stoppedScreen !== undefined,
       observerMaxLateMs: this.observerMaxLateMs,
+      inputTrace: this.inputTraceLog && existsSync(this.inputTraceLog)
+        ? readFileSync(this.inputTraceLog, 'utf8') : undefined,
       traffic: sessionTraffic,
       commands: commandPosts.map(({ type, commandId }) => ({ type, commandId })),
       commandReplies,
@@ -981,6 +989,10 @@ class PuiPane {
   }
 
   write(keys: string): void {
+    if (keys === 'm' && this.inputTraceLog) {
+      appendFileSync(this.inputTraceLog,
+        `at_ms=${Date.now()} stage=pty-write bytes=6d key=m\n`);
+    }
     this.pty.write(keys);
   }
 
@@ -3917,7 +3929,9 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
     const launches = () => sessionTraffic.filter((entry) => entry.path === '/api/adv/sessions/launch-su')
       .reduce((total, entry) => total + Number(entry.count ?? 1), 0);
 
-    pane = new PuiPane(bin, operatorPort, home);
+    const inputTraceLog = path.join(home, 'pui-input-trace.log');
+    writeFileSync(inputTraceLog, '');
+    pane = new PuiPane(bin, operatorPort, home, { env: { PUI_INPUT_TRACE_LOG: inputTraceLog } });
     try {
       stage = 'launch';
       await openComposer(pane);
@@ -3993,7 +4007,8 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       expect(binding.sessions).toBe(1);
       console.info('PUI_SETTINGS_PICKERS_ACCEPTANCE', JSON.stringify({ binary: bin, binarySha256, chatId: chat.id,
         servedTiers: config.effectiveTiers.map((tier) => tier.spec), disabledTiers: disabledTiers.map((tier) => tier.spec),
-        chatTiers: chatTiers.map((tier) => tier.spec), pickedTier: picked.spec, frames, routeFrame }));
+        chatTiers: chatTiers.map((tier) => tier.spec), pickedTier: picked.spec, frames, routeFrame,
+        inputTrace: readFileSync(inputTraceLog, 'utf8') }));
     } finally { await pane?.stop().catch(() => {}); }
   }, 240_000);
 

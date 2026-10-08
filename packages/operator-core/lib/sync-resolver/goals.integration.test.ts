@@ -261,6 +261,22 @@ async function usage(slug: string, tsMs: number, costUsd: number, goalId: string
 }
 
 describe('goals.* resolvers against real SQL', () => {
+  it('reads the active-plan collection even when the goal has no attached holder', async () => {
+    await goal();
+    await plan('worklist-a', { harness: 'alpha', title: 'Readable without a holder', status: 'active' });
+    const schema = { worklist: { datatype: 'plan-ref-list', default: [], editable_by: 'both',
+      collection: { source: 'active-workspace-plans', policy: 'worklist_policy', order: 'priority', selectable: true, defaultSelected: true } },
+      worklist_policy: { datatype: 'ordered-selection-policy', editable_by: 'owner', default: { order: [], excluded: [] } } };
+    await sql`UPDATE harness_shared.goals SET property_schema = ${sql.json(schema)} WHERE id = ${GOAL} AND workspace_id = ${WS}`;
+    const { resolveGoalDetail } = await import('./goals');
+    const detail = await resolveGoalDetail({ workspaceId: WS, goalId: GOAL }) as {
+      goalModeState: { ownerId: string | null }; goalData: { collections: Record<string, {
+        selection: { ok: boolean; configured: boolean }; rows: Array<{ label: string; planSlug: string }> }> } };
+    expect(detail.goalModeState.ownerId).toBeNull();
+    expect(detail.goalData.collections.worklist.selection).toMatchObject({ ok: true, configured: true });
+    expect(detail.goalData.collections.worklist.rows).toContainEqual(expect.objectContaining({
+      label: 'Readable without a holder', planSlug: 'worklist-a' }));
+  });
   it('reads a non-plan collection through the shared reader, retaining owner choices', async () => {
     await goal();
     const { resolveGoalDetail } = await import('./goals');

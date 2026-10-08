@@ -48,7 +48,7 @@ describe('explicit authorized content summaries', () => {
     expect(h.requests[0]!.systemPromptText).toContain('untrusted material');
     expect(JSON.parse(h.requests[0]!.promptText)).toMatchObject({ audience: 'engineers', focus: 'costs', format: 'bullets', language: 'Spanish', quotedSource: original.text });
   });
-  it('requires cloud consent and keeps a registered local selection off the cloud transport', async () => {
+  it('requires cloud consent and fails closed when a local route is unavailable', async () => {
     const h = harness();
     await expect(summarizeContent(await source(), {}, undefined, h.deps)).rejects.toMatchObject({ code: 'cloud-consent-required' });
     expect(h.requests).toHaveLength(0);
@@ -58,6 +58,31 @@ describe('explicit authorized content summaries', () => {
     expect(h.requests).toHaveLength(0);
     expect(h.deps.checkBudget).not.toHaveBeenCalled();
     expect(h.deps.recordSpend).not.toHaveBeenCalled();
+  });
+  it('uses only the local runner regardless of cloud consent and refuses a cloud account pin', async () => {
+    const h = harness(); const localRequests: RunAgentChatOptions[] = [];
+    h.deps.isLocalModel = vi.fn(async () => true);
+    h.deps.runLocal = async function* (request) {
+      localRequests.push(request);
+      yield { type: 'result', finalText: 'Local summary.', costUsd: 0, tokensIn: 12, tokensOut: 3, stopReason: 'end_turn' };
+    };
+    for (const allowCloud of [false, true]) {
+      const result = await summarizeContent(await source(), { model: 'registered-local', allowCloud }, undefined, h.deps);
+      expect(result).toMatchObject({ summary: 'Local summary.', usage: { costUsd: 0 }, servedAccounts: [] });
+    }
+    expect(localRequests).toHaveLength(2); expect(h.requests).toHaveLength(0);
+    expect(localRequests[0]).toMatchObject({ model: 'registered-local', maxTokens: 768 });
+    expect(localRequests[0]!.backend).toBeUndefined(); expect(localRequests[0]!.routeAccountId).toBeUndefined();
+    await expect(summarizeContent(await source(), { model: 'registered-local', account: 'cloud-pin' }, undefined, h.deps)).rejects.toMatchObject({ code: 'local-route-unavailable' });
+    expect(localRequests).toHaveLength(2); expect(h.requests).toHaveLength(0);
+  });
+  it('isolates cached summaries by local versus cloud transport even when model and options match', async () => {
+    const h = harness(); const original = await source();
+    const options = { model: 'model-moved-between-registries', allowCloud: true };
+    await summarizeContent(original, options, undefined, h.deps);
+    h.deps.isLocalModel = vi.fn(async () => true);
+    h.deps.runLocal = async function* () { yield { type: 'result', finalText: 'New local summary.', costUsd: 0, tokensIn: 1, tokensOut: 1 }; };
+    expect(await summarizeContent(original, options, undefined, h.deps)).toMatchObject({ summary: 'New local summary.', cached: false });
   });
   it('isolates reuse by reader, workspace, source version, coverage, options, model and account', async () => {
     const h = harness(); const original = await source(); const options = { allowCloud: true };

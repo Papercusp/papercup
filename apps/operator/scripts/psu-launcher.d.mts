@@ -2529,6 +2529,24 @@ export function runLaunchPreflight({ promptFile, contextSize, model, agent, budg
         estimator: string;
     };
 };
+/** One short-lived snapshot per workspace/provider/section for a launch. Share
+ * pending reads too; rejected reads are evicted so a later menu can recover.
+ * No disk cache: another psu invocation always gets fresh operator data.
+ * @param {{ request?: (path: string) => Promise<any>, now?: () => number,
+ *   maxAgeMs?: number, scope?: () => string }} [options]
+ * @returns {(options?: { workspace?: string|null, agent?: string|null,
+ *   include?: string }) => Promise<any>}
+ */
+export function createLaunchOptionsReader({ request, now, maxAgeMs, scope, }?: {
+    request?: (path: string) => Promise<any>;
+    now?: () => number;
+    maxAgeMs?: number;
+    scope?: () => string;
+}): (options?: {
+    workspace?: string | null;
+    agent?: string | null;
+    include?: string;
+}) => Promise<any>;
 /** Build the account picker rows from already-fetched choices. Pure so the
  * provider-specific routing contract is regression-testable without driving
  * Inquirer. */
