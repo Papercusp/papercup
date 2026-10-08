@@ -265,6 +265,11 @@
 #                                binary (default 300 — cold/changed src-tauri
 #                                builds are intentionally outside the bridge
 #                                readiness budget)
+#   VERIFY_TAURI_HOST_IMPORT_TIMEOUT
+#                              bounded cold-import budget, 1–300 seconds (default
+#                              60). This is separate from Cargo and bridge startup:
+#                              a valid frozen host measured 20.1s before its smoke
+#                              success marker, exceeding the former fixed 15s.
 #   VERIFY_TAURI_HEALTH_TIMEOUT seconds to wait for the owned Hono+SPA origin
 #                                (/api/health and /) to answer 200 from inside
 #                                the webview AFTER the bridge is up (default
@@ -848,6 +853,14 @@ TIMEOUT="${VERIFY_TAURI_TIMEOUT:-180}"
 # desktop process even exists, so give the build its own bounded clock and
 # start TIMEOUT only after Cargo emits its Running ... papercusp-desktop marker.
 BUILD_TIMEOUT="${VERIFY_TAURI_BUILD_TIMEOUT:-300}"
+HOST_IMPORT_TIMEOUT="${VERIFY_TAURI_HOST_IMPORT_TIMEOUT:-60}"
+case "$HOST_IMPORT_TIMEOUT" in
+  ''|*[!0-9]*) echo 'FATAL: VERIFY_TAURI_HOST_IMPORT_TIMEOUT must be an integer from 1 to 300 seconds' >&2; exit 2 ;;
+esac
+if [ "$HOST_IMPORT_TIMEOUT" -lt 1 ] || [ "$HOST_IMPORT_TIMEOUT" -gt 300 ]; then
+  echo 'FATAL: VERIFY_TAURI_HOST_IMPORT_TIMEOUT must be an integer from 1 to 300 seconds' >&2
+  exit 2
+fi
 NATIVE_TERMINAL="${VERIFY_TAURI_NATIVE_TERMINAL:-0}"
 case "$NATIVE_TERMINAL" in
   0|1) ;;
@@ -1374,7 +1387,7 @@ build_verifier_operator_host() {
 }
 
 smoke_verifier_operator_host() {
-  local timeout_sec="${1:-15}"
+  local timeout_sec="${1:-${HOST_IMPORT_TIMEOUT:-${VERIFY_TAURI_HOST_IMPORT_TIMEOUT:-60}}}"
   local smoke_output="" smoke_rc=0
   local evidence_dir="${VH_PHASE_DIR:-$(dirname "$OPERATOR_HOST_BUNDLE")}/host-import-smoke"
   local started_ms finished_ms elapsed_ms bundle_bytes bundle_hash outcome
@@ -1384,8 +1397,8 @@ smoke_verifier_operator_host() {
       return 1
       ;;
   esac
-  [ "$timeout_sec" -gt 0 ] || {
-    echo "FATAL: verifier host import smoke timeout must be a positive integer" >&2
+  [ "$timeout_sec" -gt 0 ] && [ "$timeout_sec" -le 300 ] || {
+    echo "FATAL: verifier host import smoke timeout must be an integer from 1 to 300 seconds" >&2
     return 1
   }
   mkdir -p -- "$evidence_dir" || return 1
