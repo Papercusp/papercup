@@ -758,6 +758,7 @@ export const PORTLESS_PROBE_NAMES = {
   bgHostTicker: 'bg-host-ticker',
   bgHostCode: 'bg-host-code',
   mcpProxyCode: 'mcp-proxy-code',
+  mcpProxyBgHostCode: 'mcp-proxy-bg-host-code',
   substrateSidecar: 'substrate-sidecar',
   embedSidecar: 'embed-sidecar',
   /** See {@link probeJournalCanary} (EI-15810, EI-2434 follow-up). */
@@ -931,6 +932,12 @@ export const MCP_PROXY_HOT_PATHS = [
   'apps/operator/bin/mcp-proxy.ts',
 ] as const;
 
+/** The BG-host proxy also consumes its own systemd launch options. */
+export const MCP_PROXY_BG_HOST_HOT_PATHS = [
+  ...MCP_PROXY_HOT_PATHS,
+  'apps/operator/scripts/systemd/papercup-mcp-proxy-bg-host.service',
+] as const;
+
 /**
  * Pure verdict for bg-host CODE DRIFT (WI-1867), from the bg-host process start (ms)
  * + the newest hot-path ON-DISK CHANGE (ms; the bg-host tsx-loads the WORKING TREE at
@@ -1000,6 +1007,38 @@ export function evaluateMcpProxyCodeDrift(
       `the :9071 proxy is running STALE code until ` +
       `\`systemctl --user restart papercup-mcp-proxy.service\`.`,
   }, loadedIdentity, currentSourceSha, sourceChangedSinceLoaded);
+}
+
+/** Pure code-drift verdict for the separate BG-host MCP proxy on :9271. */
+export function evaluateMcpProxyBgHostCodeDrift(
+  bootMs: number | null,
+  hotChangeMs: number | null,
+  newestFile?: string | null,
+  loadedIdentity?: LoadedCodeIdentity | null,
+  currentSourceSha?: string | null,
+  sourceChangedSinceLoaded?: boolean | null,
+): ProbeResult {
+  return evaluateCodeDrift(
+    PORTLESS_PROBE_NAMES.mcpProxyBgHostCode,
+    bootMs,
+    hotChangeMs,
+    newestFile,
+    {
+      unknown: 'BG-host mcp-proxy code-drift unknown (boot time or hot-path change time unreadable)',
+      current: 'BG-host mcp-proxy code current (no proxy hot-path change on disk since its boot)',
+      drift: (behindMin, which) =>
+        `⚠ BG-host mcp-proxy CODE DRIFT: :9271 proxy code changed on disk${which} ~${behindMin}m AFTER papercup-mcp-proxy-bg-host booted — ` +
+        `the proxy tsx-loads the working tree with NO file-watch, so capture admission and retry behavior are running STALE code until dev:restart target mcp-proxy-bg-host is run.`,
+      identityCurrent: (loadedSha, expectedSha) =>
+        `BG-host mcp-proxy code current (loaded build ${loadedSha} matches current hot-path source at ${expectedSha}; mtime is only a fallback signal)`,
+      identityDrift: (loadedSha, expectedSha, identity) =>
+        `⚠ BG-host mcp-proxy CODE DRIFT: loaded build ${loadedSha} from ${identityLabel(identity)} differs from current source ${expectedSha} — ` +
+        `the :9271 proxy is running STALE code until dev:restart target mcp-proxy-bg-host is run.`,
+    },
+    loadedIdentity,
+    currentSourceSha,
+    sourceChangedSinceLoaded,
+  );
 }
 
 /** Shared pure verdict for a "tsx-loads the working tree, no file-watch" unit: process
@@ -1197,6 +1236,21 @@ export async function probeMcpProxyCodeDrift(now: number = Date.now()): Promise<
       evaluate: evaluateMcpProxyCodeDrift,
       platformNote: 'mcp-proxy code-drift probe is Linux/systemd-only — not applicable on this platform',
       failedNote: 'mcp-proxy code-drift unknown (probe failed)',
+    },
+    now,
+  );
+}
+
+/** Probe the separate :9271 BG-host MCP proxy against the same source tree. */
+export async function probeMcpProxyBgHostCodeDrift(now: number = Date.now()): Promise<ProbeResult> {
+  return probeCodeDrift(
+    {
+      name: PORTLESS_PROBE_NAMES.mcpProxyBgHostCode,
+      unit: 'papercup-mcp-proxy-bg-host',
+      hotPaths: MCP_PROXY_BG_HOST_HOT_PATHS,
+      evaluate: evaluateMcpProxyBgHostCodeDrift,
+      platformNote: 'BG-host mcp-proxy code-drift probe is Linux/systemd-only — not applicable on this platform',
+      failedNote: 'BG-host mcp-proxy code-drift unknown (probe failed)',
     },
     now,
   );
@@ -2306,17 +2360,18 @@ export async function probeAll(specs?: EndpointSpec[]): Promise<ProbeResult[]> {
   // the embed sidecar HAS a port but is opt-in, so its probe is present:false-aware
   // rather than a raw HEALTH_ENDPOINTS entry (phantom-DOWN guard).
   const probeSpecs = specs ?? resolveHealthEndpoints();
-  const [http, desktop, bgHostTicker, bgHostCode, mcpProxyCode, substrateSidecar, embedSidecar, journalCanary] = await Promise.all([
+  const [http, desktop, bgHostTicker, bgHostCode, mcpProxyCode, mcpProxyBgHostCode, substrateSidecar, embedSidecar, journalCanary] = await Promise.all([
     Promise.all(probeSpecs.map((s) => probeEndpoint(s))),
     probeDesktop(),
     probeBgHostTicker(),
     probeBgHostCodeDrift(),
     probeMcpProxyCodeDrift(),
+    probeMcpProxyBgHostCodeDrift(),
     probeSubstrateSidecar(),
     probeEmbedSidecar(),
     probeJournalCanary(),
   ]);
-  return [...http, desktop, bgHostTicker, bgHostCode, mcpProxyCode, substrateSidecar, embedSidecar, journalCanary];
+  return [...http, desktop, bgHostTicker, bgHostCode, mcpProxyCode, mcpProxyBgHostCode, substrateSidecar, embedSidecar, journalCanary];
 }
 
 /**
@@ -2341,6 +2396,8 @@ export async function probeNamedService(name: string): Promise<ProbeResult | nul
       return probeBgHostCodeDrift();
     case PORTLESS_PROBE_NAMES.mcpProxyCode:
       return probeMcpProxyCodeDrift();
+    case PORTLESS_PROBE_NAMES.mcpProxyBgHostCode:
+      return probeMcpProxyBgHostCodeDrift();
     case PORTLESS_PROBE_NAMES.substrateSidecar:
       return probeSubstrateSidecar();
     case PORTLESS_PROBE_NAMES.embedSidecar:

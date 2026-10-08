@@ -14,8 +14,11 @@ import {
   evaluateBgHostTicker,
   evaluateBgHostCodeDrift,
   evaluateMcpProxyCodeDrift,
+  evaluateMcpProxyBgHostCodeDrift,
   MCP_PROXY_HOT_PATHS,
+  MCP_PROXY_BG_HOST_HOT_PATHS,
   probeBgHostCodeDrift,
+  probeMcpProxyBgHostCodeDrift,
   BG_HOST_HOT_PATHS,
   BG_HOST_ARTIFACT_PATHS,
   BG_HOST_STALE_MS,
@@ -1045,6 +1048,44 @@ describe('probeBgHostCodeDrift — platform guard (P-005, cross-platform hardeni
     const res = await probeBgHostCodeDrift();
     expect(res.present).toBe(false);
     expect(res.note).toMatch(/not applicable on this platform/);
+  });
+});
+
+describe('evaluateMcpProxyBgHostCodeDrift (stale :9271 proxy detection)', () => {
+  const NOW = 1_700_000_000_000;
+
+  it('covers the source and launch unit used by the :9271 proxy', () => {
+    expect(MCP_PROXY_BG_HOST_HOT_PATHS).toContain('apps/operator/lib/mcp-proxy');
+    expect(MCP_PROXY_BG_HOST_HOT_PATHS).toContain('apps/operator/bin/mcp-proxy.ts');
+    expect(MCP_PROXY_BG_HOST_HOT_PATHS).toContain('apps/operator/scripts/systemd/papercup-mcp-proxy-bg-host.service');
+  });
+
+  it('names the :9271 runtime and its sanctioned restart target when source changed after boot', () => {
+    const res = evaluateMcpProxyBgHostCodeDrift(NOW - 60 * 60_000, NOW - 10 * 60_000, 'proxy.ts');
+    expect(res.name).toBe('mcp-proxy-bg-host-code');
+    expect(res.up).toBe(true);
+    expect(res.note).toMatch(/:9271 proxy code changed/);
+    expect(res.note).toMatch(/dev:restart.*mcp-proxy-bg-host/);
+  });
+
+  it('returns present:false when boot or hot-change time is unknown', () => {
+    expect(evaluateMcpProxyBgHostCodeDrift(null, NOW).present).toBe(false);
+    expect(evaluateMcpProxyBgHostCodeDrift(NOW, null).present).toBe(false);
+  });
+});
+
+describe('probeMcpProxyBgHostCodeDrift — platform guard', () => {
+  const realPlatform = process.platform;
+  const setPlatform = (p: NodeJS.Platform) =>
+    Object.defineProperty(process, 'platform', { value: p, configurable: true });
+  afterEach(() => setPlatform(realPlatform));
+
+  it('is honestly not applicable off Linux rather than reporting a missing unit as a failure', async () => {
+    setPlatform('darwin');
+    const res = await probeMcpProxyBgHostCodeDrift();
+    expect(res.name).toBe('mcp-proxy-bg-host-code');
+    expect(res.present).toBe(false);
+    expect(res.note).toMatch(/Linux\/systemd-only/);
   });
 });
 
