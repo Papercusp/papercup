@@ -1770,7 +1770,7 @@ export default defineTool({
         note: `Pass confirm:true to acquire exclusive(${cfg.resource}), drain current users, then restart. DISRUPTS all agents.${cooldownNote} confirm:true ALONE is not enough — the real restart also needs the enablement gate: pass authorize:true + a short \`reason\` (≤300 chars) in the same call, or set PAPERCUSP_ALLOW_DEV_RESTART=1 on the operator process. Without it the call is REFUSED outright (ok:false, nothing drained).${
           gitSyncPreview?.blocked
             ? gitSyncDrainSec > 0
-              ? ` ℹ A git-sync operation shares this cgroup, but you passed git_sync_drain_sec:${gitSyncDrainSec} — on that path the cgroup preflight is ADVISORY and the workspace-wide \`git-sync\` barrier arbitrates instead (fires hold it only ~5-10s). This preview reserves nothing; the confirmed call can still refuse with drain_timeout, which is transient and side-effect-free — retry rather than abandon.`
+              ? ` ℹ A git-sync operation shares this cgroup, but you passed git_sync_drain_sec:${gitSyncDrainSec} — on that path the cgroup preflight is ADVISORY and the workspace-wide \`git-sync\` barrier arbitrates instead (an in-flight pass yields at its next submodule batch, WI-10007606). This preview reserves nothing; the confirmed call can still refuse with drain_timeout, which is transient and side-effect-free — retry rather than abandon.`
               : ` ⚠ ${gitSyncPreview.note} On a merely BUSY host the supported way through is git_sync_drain_sec (up to ${GIT_SYNC_RESTART_BARRIER_DRAIN_SEC}s) — WAIT for the drain. override_git_sync_collision is for a WEDGED host: it SIGKILLs an in-flight commit and strands a peer's uncommitted work.`
             : ''
         }${stagingSyncPreview?.blocked ? ` ⚠ ${stagingSyncPreview.note}` : ''}${preview.blocked ? ` ⚠ ${preview.note}` : ''}${quiescePreview?.blocked ? ` ⚠ ${quiescePreview.note}` : ''}`,
@@ -2205,7 +2205,7 @@ export default defineTool({
           // Point at the lever rather than leaving the reader to invent one: a bare
           // refusal here is exactly what made this remediation look unreachable.
           (gitSyncDrainSec === 0
-            ? ` git-sync fires hold this barrier only ~5-10s, so pass git_sync_drain_sec (up to ${GIT_SYNC_RESTART_BARRIER_DRAIN_SEC}) to WAIT for it instead of retrying by hand — that is the supported way through on a merely busy host, not override_git_sync_collision.`
+            ? ` an in-flight git-sync pass yields this barrier at its next submodule batch (WI-10007606), so pass git_sync_drain_sec (up to ${GIT_SYNC_RESTART_BARRIER_DRAIN_SEC}) to WAIT for it instead of retrying by hand — that is the supported way through on a merely busy host, not override_git_sync_collision.`
             : ` The git-sync barrier did not clear within the requested ${gitSyncDrainSec}s wait; check the live barrier before retrying.`),
       });
     }

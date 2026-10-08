@@ -1697,6 +1697,31 @@ export type GitSyncOutcome = {
  */
 export type GitSyncStepRunner = <T>(name: string, fn: () => Promise<T>) => Promise<T>;
 
+/** Where a cooperative yield ({@link RunGitSyncOpts.shouldYield}) ended the pass. */
+export type GitSyncYieldBoundary = 'submodule-batch' | 'before-pointer-bump';
+
+/**
+ * WI-10007606: thrown by {@link runGitSync} when `opts.shouldYield` reports a waiting
+ * exclusive at a batch or phase boundary. It is NOT a failure: the caller records a
+ * skip (no error streak, no escalation) and the next tick redoes the pass, which is
+ * safe because every phase is idempotent (see GitSyncStepRunner's replay contract).
+ */
+export class GitSyncYieldError extends Error {
+  readonly reason: string;
+  readonly boundary: GitSyncYieldBoundary;
+  /** Submodules fully synced before the yield (all of them at `before-pointer-bump`). */
+  readonly submodulesSynced: number;
+  readonly submodulesTotal: number;
+  constructor(reason: string, boundary: GitSyncYieldBoundary, submodulesSynced: number, submodulesTotal: number) {
+    super(`git-sync yielded at ${boundary} (${submodulesSynced}/${submodulesTotal} submodules synced): ${reason}`);
+    this.name = 'GitSyncYieldError';
+    this.reason = reason;
+    this.boundary = boundary;
+    this.submodulesSynced = submodulesSynced;
+    this.submodulesTotal = submodulesTotal;
+  }
+}
+
 export interface RunGitSyncOpts {
   /**
    * Override the repo path (manual-fire pin + tests); else resolve via
@@ -1717,6 +1742,17 @@ export interface RunGitSyncOpts {
   /** WI-1416: run each pipeline phase as a checkpointed durable step (see
    *  GitSyncStepRunner). Default: plain passthrough execution. */
   step?: GitSyncStepRunner;
+  /**
+   * WI-10007606: cooperative yield to a waiting exclusive (dev:restart's git-sync
+   * restart barrier). One papercusp pass can hold the shared barrier for many minutes
+   * under load (~41 submodules at ~12s per git call), far past any bounded drain, so
+   * waiting it out never converged. Polled ONLY at submodule-batch boundaries and once
+   * before the pointer-bump phase — never while a git command runs — so a yield cannot
+   * leave an index, merge or commit half done. A non-null reason ends the pass with
+   * {@link GitSyncYieldError}. A probe that throws fails OPEN (the pass continues): a
+   * broken probe must never stop commits.
+   */
+  shouldYield?: () => Promise<string | null>;
   config?: GitSyncConfig;
   /** Override submodule discovery (tests). Repo-relative paths. */
   submodulePaths?: string[];
@@ -6557,7 +6593,21 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
      * filter submodule-relative protected paths out of the superproject stage. */
     submodulePaths: string[];
     didSomething: boolean;
+    /** WI-10007606: set when the walk stopped at a batch boundary to yield. Part of the
+     *  checkpointed output, so a crash-replay of this step yields again instead of
+     *  treating the partial walk as a complete phase. */
+    yielded?: { reason: string; synced: number; total: number };
   }
+  // WI-10007606: fail-open probe — a throwing shouldYield must never stop commits.
+  const checkYield = async (): Promise<string | null> => {
+    if (!opts.shouldYield) return null;
+    try {
+      return await opts.shouldYield();
+    } catch (e) {
+      log(`[git-sync] ${slug}: shouldYield probe failed (${e instanceof Error ? e.message : String(e)}) — continuing the pass`);
+      return null;
+    }
+  };
   const emptyPhase = (): PhaseCollect => ({
     dirtyPathCount: 0,
     committedCount: 0,
@@ -6710,11 +6760,19 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
     // behind a 338s submodule phase on a 38-submodule checkout. Sync only
     // independent repos together; finish every child depth before starting a
     // parent so a parent's pushed gitlink always resolves on the child origin.
+    let synced = 0;
     for (let depthStart = 0; depthStart < subPaths.length; ) {
       const depth = subPaths[depthStart]!.split('/').length;
       let depthEnd = depthStart + 1;
       while (depthEnd < subPaths.length && subPaths[depthEnd]!.split('/').length === depth) depthEnd++;
       for (let batchStart = depthStart; batchStart < depthEnd; batchStart += SUBMODULE_SYNC_CONCURRENCY) {
+        // WI-10007606: the only safe yield point inside the walk — the previous batch
+        // has fully settled and the next has not started a single git command.
+        const yieldReason = await checkYield();
+        if (yieldReason) {
+          out.yielded = { reason: yieldReason, synced, total: subPaths.length };
+          return out;
+        }
         const batch = subPaths.slice(batchStart, Math.min(batchStart + SUBMODULE_SYNC_CONCURRENCY, depthEnd));
         // allSettled is a safety barrier: an unexpected rejection must not let a
         // sibling start more Git commands after the action releases its locks.
@@ -6724,11 +6782,15 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
           if (result.status === 'rejected') throw result.reason;
           absorb(out, batch[i]!, result.value);
         }
+        synced += batch.length;
       }
       depthStart = depthEnd;
     }
     return out;
   });
+  if (sub.yielded) {
+    throw new GitSyncYieldError(sub.yielded.reason, 'submodule-batch', sub.yielded.synced, sub.yielded.total);
+  }
   const strandedSubmodules = sub.strandedSubmodules;
   // `submodulePaths` is part of the checkpointed phase output. The fallback keeps
   // compatibility with an older in-flight checkpoint created before that field
@@ -6769,6 +6831,14 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
   const superprojectProtectedHoldings = protectedHoldings.filter(
     (holding) => !submodulePaths.some((s) => holding.path === s || holding.path.startsWith(`${s}/`)),
   );
+
+  // WI-10007606: the superproject stage/guard/commit phase alone took minutes under
+  // load (single read-tree/write-tree calls of 11-25s). Yield before entering it; the
+  // submodule commits above are already durable, and the next tick bumps their pointers.
+  const pointerBumpYield = await checkYield();
+  if (pointerBumpYield) {
+    throw new GitSyncYieldError(pointerBumpYield, 'before-pointer-bump', submodulePaths.length, submodulePaths.length);
+  }
 
   // PHASE `git-sync:pointer-bump` — superproject stage + content-guard + commit (this
   // commit is what bakes the bumped submodule pointers in). ALWAYS runs.

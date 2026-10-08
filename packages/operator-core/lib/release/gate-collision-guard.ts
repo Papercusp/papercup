@@ -966,6 +966,14 @@ export interface GitSyncRestartBarrierDeps {
  * polling the cgroup predicate never could — polling races the sweep it is trying to
  * observe. If this value goes stale again, re-sample `locks:list { resource:'git-sync' }`
  * over a live window rather than guessing.
+ *
+ * WI-10007606 (2026-10-08): the "fires hold it ~5-10s" premise failed outright under load —
+ * ONE papercusp pass (~41 submodules, ~12s per git call) held the barrier 11+ minutes, so
+ * six 120s drains in a row refused and bg-host could not be restarted for hours. No drain
+ * cap fixes that class. An in-flight pass now YIELDS at its next submodule-batch boundary
+ * (or before its pointer-bump phase) when it sees this barrier's exclusive `draining`
+ * (`gitSyncRestartYieldReason` in git-sync-action.ts), so the drain is bounded by one
+ * batch of git work, not by the whole pass.
  */
 export const GIT_SYNC_RESTART_BARRIER_DRAIN_SEC = 120;
 
