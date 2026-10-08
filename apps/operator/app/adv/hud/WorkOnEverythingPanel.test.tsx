@@ -146,6 +146,8 @@ describe('Work on everything: progress table (WI-10007603)', () => {
         /Plans could not be loaded/],
       [(d) => { d.goalData = null; }, /Goal data did not load/],
       [(d) => { d.goalData!.collections = {}; }, /no plan worklist/],
+      [(d) => { d.goalData!.collections = {}; d.goalData!.error = 'permission denied for goal data'; },
+        /Goal data could not be read/],
     ];
     for (const [mutate, title] of cases) {
       const data = fixture(); mutate(data);
