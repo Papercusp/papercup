@@ -45,6 +45,8 @@ export interface AwsBootcCleanRoomStageInput {
   /** The ONLY account granted launch and create-volume permission. */
   shareWithAccountId: string;
   tags: Readonly<Record<string, string>>;
+  /** Actual bootstrap size for the inherited parent-deadline preflight. */
+  fixture?: WorkspaceHostCleanRoomInstallFixture;
 }
 
 export interface AwsBootcCleanRoomDiscardInput {
@@ -161,6 +163,7 @@ export class AwsBootcCleanRoomExecutor implements WorkspaceHostCleanRoomExecutor
       imageName: `papercusp-workspace-host-clean-room-${version}-${runId.slice(0, 8)}`,
       description: `Papercusp workspace-host clean room ${version} (transient, run ${runId})`,
       architecture: placement.architecture,
+      fixture,
       shareWithAccountId: placement.cleanAccount.accountId,
       tags: {
         [AWS_BOOTC_CLEAN_ROOM_RUN_TAG]: runId,
