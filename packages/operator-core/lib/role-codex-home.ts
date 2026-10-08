@@ -58,6 +58,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
 import { parse as parseToml } from '@iarna/toml';
@@ -306,6 +307,29 @@ function existingCodexHomeOwnerSid(codexHome: string): string | null {
     return v.length > 0 ? v : null;
   } catch {
     return null;
+  }
+}
+
+/** Async preflight for bootstrap callers: keep the psu-host liveness probe off
+ *  the operator event loop before the synchronous home materialization begins. */
+export async function assertSuCodexHomeNotOwnedByLiveSession(
+  sessionKey: string | number,
+  sid: string,
+  isOwnerLive: (ownerSid: string) => Promise<boolean>,
+): Promise<void> {
+  let priorSid: string | null = null;
+  try {
+    priorSid = (await readFile(join(codexHomeForSessionKey(sessionKey), '.owner-sid'), 'utf8')).trim() || null;
+  } catch {
+    return;
+  }
+  if (priorSid && priorSid !== sid && (await isOwnerLive(priorSid))) {
+    throw new Error(
+      `writeSuCodexHome: refusing to rebuild a live Codex home owned by a different session ` +
+        `(owner ${priorSid}); overwriting it would silently split that session's identity ` +
+        `(EI-11366). Pass the same sid to re-prepare that session, or use a sessionKey that ` +
+        `does not collide with a live session's home.`,
+    );
   }
 }
 
