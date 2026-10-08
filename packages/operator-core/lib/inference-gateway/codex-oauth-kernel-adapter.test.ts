@@ -24,6 +24,7 @@ import {
   type CodexOAuthPreparedAttempt,
   type CodexOAuthResponseMetadata,
   type CodexOAuthRouteValue,
+  type CodexOAuthStreamObservation,
 } from './codex-oauth-kernel-adapter';
 import {
   executeGatewayRequestKernel,
@@ -907,6 +908,56 @@ describe('Codex OAuth quota errors inside successful HTTP streams', () => {
     await executeGatewayRequestKernel(h.options);
     expect(h.prepared).toHaveLength(1);
     expect(h.written.join('')).toBe(wire);
+  });
+
+  it.each(['completed', 'incomplete', 'iterator-error', 'wrong-mime', 'opaque', 'empty'] as const)(
+    'retains bounded %s protocol evidence without changing bytes or mistaking HTTP 200 for completion', async mode => {
+      const observed: CodexOAuthStreamObservation[] = [];
+      const privateText = 'PRIVATE_OUTPUT_MUST_NOT_BE_RETAINED';
+      const created = frame({ type: 'response.created', response: { id: 'resp_fixture' } });
+      const delta = frame({ type: 'response.output_text.delta', delta: privateText });
+      const complete = frame({ type: 'response.completed', response: { id: 'resp_fixture' } });
+      const wire = mode === 'empty' ? '' : mode === 'wrong-mime' ? JSON.stringify({ content: privateText })
+        : mode === 'opaque' ? frame({ padding: privateText.repeat(4_000), type: 'response.completed' })
+        : created + delta + (mode === 'completed' ? complete : '');
+      const source = sseBody(wire)!;
+      const originalError = new Error(privateText);
+      const body = mode === 'iterator-error' ? {
+        async *[Symbol.asyncIterator]() { yield Buffer.from(wire); throw originalError; },
+        cancel: vi.fn(),
+      } : source;
+      const h = harness(async () => upstream(200, {
+        'content-type': mode === 'wrong-mime' ? 'application/json; private=' + privateText : 'text/event-stream',
+      }, body), { extra: { onStreamObservation: x => observed.push(x) } });
+      const result = await executeGatewayRequestKernel(h.options).catch(e => e);
+      expect(observed).toHaveLength(1);
+      expect(observed[0]).toMatchObject({ requestedStream: true, upstreamStatus: 200,
+        bytesRead: Buffer.byteLength(wire), termination: mode === 'iterator-error' ? 'threw' : 'done' });
+      expect(JSON.stringify(observed)).not.toContain(privateText);
+      if (mode === 'wrong-mime') {
+        expect(observed[0]).toMatchObject({ contentType: 'json', inspected: false,
+          sawResponseEvent: null, sawTerminal: null });
+      } else {
+        expect(observed[0]).toMatchObject({ inspected: true,
+          sawTerminal: mode === 'completed', opaqueLargeFrame: mode === 'opaque' });
+      }
+      if (mode === 'incomplete' || mode === 'iterator-error') expect(result).toBeInstanceOf(GatewayRequestKernelError);
+      else expect(result.status).toBe(200);
+      expect(h.written.join('')).toBe(wire);
+    },
+  );
+
+  it('emits cancellation once and preserves original body cancellation without diagnostic exceptions escaping', async () => {
+    const observed: CodexOAuthStreamObservation[] = [];
+    const source = sseBody(frame({ type: 'response.output_text.delta', delta: 'visible' }))!;
+    const h = harness(async () => upstream(200, { 'content-type': 'text/event-stream' }, source), {
+      extra: { onStreamObservation: x => { observed.push(x); throw new Error('private diagnostic failure'); } },
+    });
+    h.options.downstream.write = () => { throw new Error('downstream rejected output'); };
+    await expect(executeGatewayRequestKernel(h.options)).rejects.toBeInstanceOf(GatewayRequestKernelError);
+    expect(observed).toHaveLength(1);
+    expect(observed[0]).toMatchObject({ termination: 'cancelled', sawTerminal: false });
+    expect((source as unknown as { cancelled: number }).cancelled).toBe(1);
   });
 
   it('rejects EOF after Responses preludes before committing a false successful head', async () => {

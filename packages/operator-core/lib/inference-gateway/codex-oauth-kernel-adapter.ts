@@ -91,6 +91,23 @@ export interface CodexOAuthRouteValue {
 
 export type CodexOAuthChunk = Uint8Array;
 
+/** Bounded protocol evidence, never response content or arbitrary header/error text. */
+export interface CodexOAuthStreamObservation {
+  accountId: string;
+  upstreamStatus: number;
+  requestedStream: boolean;
+  contentType: 'event-stream' | 'json' | 'other' | 'missing';
+  inspected: boolean;
+  bytesRead: number;
+  termination: 'done' | 'threw' | 'cancelled' | 'no-body';
+  sawResponseEvent: boolean | null;
+  sawTerminal: boolean | null;
+  terminalType: 'response.completed' | 'response.failed' | 'response.incomplete' | 'error' | null;
+  lastEventType: string | null;
+  opaqueLargeFrame: boolean | null;
+  pendingFrame: boolean | null;
+}
+
 export interface CodexOAuthResponseMetadata {
   /** Account that actually served the attempt (`x-papercusp-routed-account`). */
   accountId: string;
@@ -198,6 +215,8 @@ export interface CodexOAuthAdapterOptions {
    * are walled" when every account reads unserviceable.
    */
   onUpstreamResponse?(accountId: string, status: number): void;
+  /** Once per 2xx upstream body's termination; HTTP headers alone prove no terminal event. */
+  onStreamObservation?(observation: CodexOAuthStreamObservation): void;
   /**
    * The request's public model id (WI-10003306). When set, a definitive model refusal
    * (`400 "The '<model>' model is not supported when using Codex with a ChatGPT account."`) is
@@ -320,6 +339,7 @@ function quotaDecoder() {
   let oversizedPrefix = '';
   let sawResponseEvent = false;
   let sawTerminal = false;
+  let terminalType: CodexOAuthStreamObservation['terminalType'] = null;
   let opaqueLargeFrame = false;
   let lastEventType: string | null = null;
   let responseId: string | null = null;
@@ -352,6 +372,7 @@ function quotaDecoder() {
       lastEventType = type;
       if (terminated && ['response.completed', 'response.failed', 'response.incomplete', 'error'].includes(type)) {
         sawTerminal = true;
+        terminalType = type as NonNullable<CodexOAuthStreamObservation['terminalType']>;
       }
     }
   };
@@ -379,6 +400,21 @@ function quotaDecoder() {
     return frames;
   };
   return Object.assign(push, {
+    snapshot() {
+      // An unterminated frame may contain an event type, but is never a terminal witness.
+      if (carry.trim() || oversized) noteFrame(oversized ? oversizedPrefix : carry,
+        !oversized && carry.length <= QUOTA_FRAME_MAX_BYTES, false);
+      // Only enumerated protocol names enter retained evidence. An arbitrary type
+      // can contain private provider text, just like arbitrary error/header strings.
+      const safeTypes = new Set(['response.created', 'response.in_progress', 'response.completed',
+        'response.failed', 'response.incomplete', 'error', 'response.output_text.delta',
+        'response.output_text.done', 'response.output_item.added', 'response.output_item.done',
+        'response.content_part.added', 'response.content_part.done',
+        'response.function_call_arguments.delta', 'response.function_call_arguments.done']);
+      return { sawResponseEvent, sawTerminal, terminalType,
+        lastEventType: lastEventType === null ? null : safeTypes.has(lastEventType) ? lastEventType : 'other-response-event',
+        opaqueLargeFrame, pendingFrame: Boolean(carry.trim() || oversized) };
+    },
     assertComplete() {
       if (carry.trim() || oversized) noteFrame(oversized ? oversizedPrefix : carry,
         !oversized && carry.length <= QUOTA_FRAME_MAX_BYTES, false);
@@ -390,6 +426,52 @@ function quotaDecoder() {
       }
     },
   });
+}
+
+/** Passive tee on the existing async iterator: one read, no prefetch, no content retention. */
+function observeOAuthStream(
+  body: CodexOAuthFetchResponse['body'],
+  base: Pick<CodexOAuthStreamObservation, 'accountId' | 'upstreamStatus' | 'requestedStream' | 'contentType' | 'inspected'>,
+  observe: NonNullable<CodexOAuthAdapterOptions['onStreamObservation']>,
+): CodexOAuthFetchResponse['body'] {
+  const decode = base.inspected ? quotaDecoder() : null;
+  let bytesRead = 0;
+  let finished = false;
+  const finish = (termination: CodexOAuthStreamObservation['termination']) => {
+    if (finished) return;
+    finished = true;
+    const protocol = decode?.snapshot() ?? { sawResponseEvent: null, sawTerminal: null,
+      terminalType: null, lastEventType: null, opaqueLargeFrame: null, pendingFrame: null };
+    try { observe({ ...base, bytesRead, termination, ...protocol }); }
+    catch { /* diagnostics must not change the stream or mask its original failure */ }
+  };
+  if (!body) { finish('no-body'); return body; }
+  const iterator = body[Symbol.asyncIterator]();
+  return {
+    async *[Symbol.asyncIterator]() {
+      try {
+        for (;;) {
+          const next = await iterator.next();
+          if (next.done) { finish('done'); return; }
+          bytesRead += next.value.byteLength;
+          decode?.(next.value);
+          yield next.value;
+        }
+      } catch (error) { finish('threw'); throw error; }
+      finally {
+        if (!finished) {
+          finish('cancelled');
+          await iterator.return?.();
+        }
+      }
+    },
+    async cancel() {
+      finish('cancelled');
+      // Unblock any pending read before returning the original iterator.
+      await body.cancel?.();
+      await iterator.return?.();
+    },
+  };
 }
 
 /** Inspect the opening SSE frames before the response is committed. Harmless response
@@ -779,12 +861,21 @@ export function createCodexOAuthKernelAdapter(opts: CodexOAuthAdapterOptions): C
       // non-rate-limit 4xx range is read (a few hundred bytes); 2xx streams are never touched.
       let body = upstream.body;
       const contentType = headers['content-type']?.trim().toLowerCase();
+      const inspectStream = Boolean(contentType?.includes('text/event-stream') || (!contentType && opts.streaming));
+      if (status >= 200 && status < 300 && opts.onStreamObservation) {
+        body = observeOAuthStream(body, {
+          accountId: account.accountId, upstreamStatus: status, requestedStream: opts.streaming,
+          contentType: !contentType ? 'missing' : contentType.includes('text/event-stream') ? 'event-stream'
+            : contentType.split(';')[0]?.trim() === 'application/json' ? 'json' : 'other',
+          inspected: inspectStream,
+        }, opts.onStreamObservation);
+      }
       // WI-10007298: OAuth streaming responses can contain valid SSE without
       // Content-Type. Do not let a missing header bypass protocol quota inspection
       // and pin the client's retries to an exhausted account. Explicit non-SSE
       // media types retain their existing byte-transparent behavior.
       if (body && status >= 200 && status < 300 &&
-          (contentType?.includes('text/event-stream') || (!contentType && opts.streaming))) {
+          inspectStream) {
         const inspected = await inspectQuotaStream(body, (quota) => {
           const reset = opts.rateReset(headers);
           if (quota.accountWide || reset.transient === false) {

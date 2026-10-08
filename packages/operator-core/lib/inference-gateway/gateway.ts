@@ -8597,6 +8597,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
         requestHeaders: req.headers,
         stripRequestHeaders: STRIP_REQUEST,
         streaming: wantStream,
+        onStreamObservation: (observation) => log('info', 'inference-gateway: codex OAuth stream-evidence/v1 ' +
+          JSON.stringify({ requestId: stageSpan?.requestId ?? null, ownerId: routing.ownerId ?? null,
+            model: bodyModel || null, ...observation })),
         // Public Luna may be backed by the ChatGPT subscription's hidden reserve
         // tier after a premium-window 429. The adapter keeps the public model in
         // telemetry and only rewrites the retry body at the upstream seam.
