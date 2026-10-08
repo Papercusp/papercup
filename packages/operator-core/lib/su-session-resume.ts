@@ -142,7 +142,11 @@ export async function prepareStructuredSuResume(record: DurableSuSessionRecord,
     stage?.('resume-account-route');
     const { resolveAccountPin } = await import('./endpoint-route/routes/agent-mcp/bootstrap-su');
     const account = saved.accountRoute ?? 'default';
-    let model = spec.model ?? saved.model;
+    // Launch specs describe the original selection. P-026 model changes are
+    // applied on owner turns and persisted on the descriptor; resume must keep
+    // the latest explicit choice even when the native engine reports a
+    // resolved id or the launch spec still names the original model.
+    let model = saved.ownerSelectedModel ?? spec.model ?? saved.model;
     // The native init frame reports only the resolved model id, never the
     // Claude Code `[1m]` window marker. A PUI conversation launched on the
     // implicit/default model can therefore have only `saved.model` available

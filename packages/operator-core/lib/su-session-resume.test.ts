@@ -160,6 +160,23 @@ describe('structured exact resume preparation', () => {
     );
   });
 
+  it('resumes with the latest owner-selected model when the launch spec is stale', async () => {
+    const saved = fixture('claude');
+    saved.descriptor!.model = 'claude-sonnet-4-5'; // native resolved id may omit effort
+    saved.descriptor!.ownerSelectedModel = 'claude-haiku-4-5:high';
+    m.spec.mockResolvedValue({ agent: 'claude', workspaceId: 'workspace', harnessSlug: 'project',
+      profile: 'engineer', model: 'claude-opus-4-1:low', planSlug: 'saved-plan',
+      specificationRevision: 'spec-1', stateRevision: 'state-2' });
+
+    const resume = await prepareStructuredSuResume(saved);
+
+    expect(resume.options.model).toBe('claude-haiku-4-5:high');
+    expect(m.account).toHaveBeenCalledWith(
+      'workspace', 'named-account', 'claude', 'saved-owner', true, 'claude-haiku-4-5:high',
+    );
+    await resume.release();
+  });
+
   it('refuses scope mismatch and a competing host before reserving or touching credentials', async () => {
     const saved = fixture('codex');
     saved.descriptor!.identity.workspaceId = 'another-workspace';

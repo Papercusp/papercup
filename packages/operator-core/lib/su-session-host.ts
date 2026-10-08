@@ -335,12 +335,14 @@ export class SuSessionHost<B extends SuSessionBackend = SuSessionBackend> {
 
   /** P-026: publish the model the engine now runs on, after it applied an
    * owner's switch, so the footer and /status read the engine's model rather
-   * than the PUI's guess. */
+   * than the PUI's guess. Keep the full owner-selected spec separately:
+   * native observations can report only the resolved id and must not erase
+   * a selected effort. */
   updateModel(model: string | null): SuSessionEvent<B> | null {
-    if (this.descriptorValue.model === model) return null;
+    if (this.descriptorValue.model === model && this.descriptorValue.ownerSelectedModel === model) return null;
     return this.emit({
       type: 'session',
-      descriptor: { ...this.descriptorValue, model },
+      descriptor: { ...this.descriptorValue, model, ownerSelectedModel: model },
     } as SuSessionEventInput<B>);
   }
 

@@ -363,6 +363,25 @@ describe('durable SU owner-turn acceptance', () => {
     expect(eventTypes(host).slice(before)).toEqual(['session']);
   });
 
+  it('P-026: persists the owner-selected model separately from later native model observations', async () => {
+    const persist = vi.fn(async (_snapshot: SuSessionDescriptor<'claude'>) => true);
+    const host = new SuSessionHost({ descriptor: descriptor(), persistDescriptor: persist });
+    try {
+      host.updateModel('claude-haiku-4-5:high');
+      host.emit({ type: 'session', descriptor: { ...host.descriptor(), model: 'claude-haiku-4-5' } });
+      await expect(host.persistDescriptorNow()).resolves.toBe(true);
+
+      expect(host.descriptor()).toMatchObject({
+        model: 'claude-haiku-4-5',
+        ownerSelectedModel: 'claude-haiku-4-5:high',
+      });
+      expect(persist.mock.calls.at(-1)?.[0]).toMatchObject({
+        model: 'claude-haiku-4-5',
+        ownerSelectedModel: 'claude-haiku-4-5:high',
+      });
+    } finally { host.dispose(); }
+  });
+
   // pui-chat-first-ux P-027 / D-026: an owner turn may carry an approvals mode.
   it('D-026: refuses an owner turn whose approvals mode is unknown, before reserving', async () => {
     const store: SuSessionCommandStore = { reserve: vi.fn(), finish: vi.fn() };
