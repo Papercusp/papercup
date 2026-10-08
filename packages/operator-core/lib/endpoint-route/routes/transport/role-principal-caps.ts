@@ -126,6 +126,10 @@ export const BLUEPRINT_ROLE_CAPS: Readonly<Record<string, readonly string[]>> = 
     // EI-24903256825782248: a rubric method can mandate a grading-runbook
     // read; docs:get is the only reader (allowlists `judge`). Read-only.
     'docs:read',
+    // EI-25410096224440228: graders re-run report-cited evidence through
+    // reports:get. The report store's R-7 visibility matrix still applies,
+    // so this does not expose owner-only reports authored by another agent.
+    'reports:read',
     'intel:read',
   ],
   // The SENTINEL — the fleet WATCHER (unify-launch-mechanics-2026-06-09 D-004,
