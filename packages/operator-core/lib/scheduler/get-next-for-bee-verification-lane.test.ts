@@ -49,25 +49,25 @@ vi.mock('../harness/improvements/agent-review', async (importOriginal) => ({
 
 import { getNextForBee } from './claim-spec-store';
 
-function storedSpec(lane?: 'implementation' | 'verification') {
+function storedSpec(lane?: 'implementation' | 'verification', filter?: unknown) {
   return {
     specVersion: '1.0',
     specId: lane === 'verification' ? 'verifier-lane' : 'builder-lane',
     revision: 3,
-    view: {},
+    view: filter ? { filter } : {},
     rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
     ...(lane ? { lane } : {}),
   };
 }
 
-function withStoredSpec(lane?: 'implementation' | 'verification') {
+function withStoredSpec(lane?: 'implementation' | 'verification', filter?: unknown) {
   const branches = createBranchedSqlMock([
     {
       label: 'per-bee claim-spec lookup (cup_claim_specs)',
       match: (q) => q.includes('FROM harness_shared.cup_claim_specs'),
       respond: () => [
         {
-          spec: storedSpec(lane),
+          spec: storedSpec(lane, filter),
           revision: 3,
           updated_by: 'leader',
           updated_at: new Date().toISOString(),
@@ -107,7 +107,10 @@ describe('getNextForBee — verifier lane (P-007 Phase B / D-027)', () => {
     const res = await getNextForBee({ cupId: 'su-verifier', harness: 'papercusp', onClaimStep: (s) => void steps.push(s) });
 
     expect(claimNextVerificationWorkMock).toHaveBeenCalledOnce();
-    expect(claimNextVerificationWorkMock).toHaveBeenCalledWith({ verifier: 'su-verifier', harnessSlug: 'papercusp' });
+    expect(claimNextVerificationWorkMock).toHaveBeenCalledWith({
+      verifier: 'su-verifier', harnessSlug: 'papercusp',
+      filter: undefined, workspaceId: undefined, signal: undefined,
+    });
     expect(getNextWorkItemMock).not.toHaveBeenCalled();
     expect(res?.workItem.id).toBe('EI-REVIEW');
     expect(res?.verificationKind).toBe('agent-review');
@@ -127,6 +130,18 @@ describe('getNextForBee — verifier lane (P-007 Phase B / D-027)', () => {
   });
 
   it('a verifier-lane miss returns null and does NOT fall back to implementation work', async () => {
+    const filter = { not: { field: 'plan', op: 'glob', value: 'p2p-*' } };
+    withStoredSpec('verification', filter);
+    const abort = new AbortController();
+    claimNextVerificationWorkMock.mockResolvedValueOnce(null);
+    await getNextForBee({ cupId: 'su-verifier', harness: 'papercusp', workspaceId: 'ws-scoped', signal: abort.signal });
+    expect(claimNextVerificationWorkMock).toHaveBeenCalledWith({
+      verifier: 'su-verifier', harnessSlug: 'papercusp', filter, workspaceId: 'ws-scoped', signal: abort.signal,
+    });
+    expect(getNextWorkItemMock).not.toHaveBeenCalled();
+  });
+
+  it('an unfiltered verifier miss does not fall back to implementation work', async () => {
     withStoredSpec('verification');
     claimNextVerificationWorkMock.mockResolvedValueOnce(null);
     getNextWorkItemMock.mockResolvedValue({ workItem: workItem('F-IMPL'), claimedUnder: { specId: 'x', revision: 1 } });

@@ -17,25 +17,30 @@ import {
   type FederatedGovernanceEvent,
   type PlanGovernanceControls,
 } from './governance-federation';
-import type { GovernanceRound } from './governance-round';
+import { finalizeGovernanceRound, rebuildGovernanceRound, type GovernanceRound } from './governance-round';
 import type { AdmissionCertificate } from './plan-admission-enforcement';
 import type { PlanAdmissionCertificateSource } from './plan-admission-gate';
 import {
+  authenticatePlanAdmissionGovernanceEvents,
+  resolvePlanAdmissionGovernanceAuthority,
   readPlanAdmissionGovernanceSnapshot,
   type PlanAdmissionGovernanceSnapshot,
 } from './plan-admission-governance-store';
+import { canonicalizePlanAdmissionPolicy } from './plan-admission-policy';
+import { governanceAuthorityHash } from './governance-authentication';
 
 type ResolvePotHomeSlug = (
   workspaceId: string,
   harnessSlug: string,
 ) => Promise<string | null>;
 type ReadSnapshot = (
-  input: { workspaceId: string; potHomeSlug: string },
+  input: { workspaceId: string; potHomeSlug: string; planRevisionHash?: string; policyVersion?: number },
 ) => Promise<PlanAdmissionGovernanceSnapshot>;
 
 export interface PlanAdmissionCertificateSourceDeps {
   readonly resolvePotHomeSlug?: ResolvePotHomeSlug;
   readonly readSnapshot?: ReadSnapshot;
+  readonly resolveAuthority?: typeof resolvePlanAdmissionGovernanceAuthority;
 }
 
 export function bridgeFinalizationToAdmissionCertificate(
@@ -95,7 +100,19 @@ export function createPlanAdmissionCertificateSource(
       try {
         const potHomeSlug = await resolvePotHomeSlug(workspaceId, harnessSlug);
         if (!potHomeSlug) return { certificate: null, governance: null };
-        const snapshot = await readSnapshot({ workspaceId, potHomeSlug });
+        const stored = await readSnapshot({ workspaceId, potHomeSlug,
+          planRevisionHash: input.planRevisionHash, policyVersion: input.policy.policyVersion });
+        const authority = await (deps.resolveAuthority ?? resolvePlanAdmissionGovernanceAuthority)(
+          { workspaceId, potHomeSlug, potId: stored.potId });
+        if (!authority || canonicalizePlanAdmissionPolicy(authority.policy) !== canonicalizePlanAdmissionPolicy(input.policy))
+          return { certificate: null, governance: null };
+        const candidateIds = new Set(roundOpenEvents(stored.events, input.planRevisionHash, input.policy.policyVersion)
+          .filter(candidate => candidate.round.authorityHash === governanceAuthorityHash(authority))
+          .map(candidate => candidate.round.roundId));
+        const authenticated = authenticatePlanAdmissionGovernanceEvents(
+          stored.events.filter(event => candidateIds.has(event.roundId)), authority, input.nowMs);
+        const snapshot = { ...stored, events: authenticated.events,
+          integrityErrors: [...stored.integrityErrors, ...authenticated.integrityErrors] };
         // A malformed dedicated-prefix row means the event set is incomplete or
         // tampered. Never admit from a partial subset that merely happens to retain
         // one valid finalization certificate.
@@ -148,6 +165,25 @@ export function createPlanAdmissionCertificateSource(
           input.nowMs,
         );
         if (!finalization) return { certificate: null, governance };
+        if (!Number.isSafeInteger(finalization.finalizedAtMs) ||
+            finalization.finalizedAtMs < selected.round.createdAtMs || finalization.finalizedAtMs > input.nowMs ||
+            snapshot.events.some(event => event.roundId === selected.round.roundId && event.body.kind === 'finalize' &&
+              event.occurredAtMs !== event.body.certificate.finalizedAtMs))
+          return { certificate: null, governance: quarantinedControls(selected.round.roundId, 'invalid finalization time') };
+        // A hash authenticates bytes, not the claimed verdict. Rebuild from the
+        // independently authenticated ballots and the pinned owner policy/roster.
+        const ballots = snapshot.events.flatMap(event => event.roundId === selected.round.roundId &&
+          event.body.kind === 'vote' && event.occurredAtMs <= finalization.finalizedAtMs
+          ? [event.body.vote] : []);
+        const rebuilt = rebuildGovernanceRound(selected.round, ballots);
+        if (!rebuilt.ok) return { certificate: null,
+          governance: quarantinedControls(selected.round.roundId, `ballot reconstruction refused: ${rebuilt.detail}`) };
+        const reconstructed = finalizeGovernanceRound({ round: selected.round, events: rebuilt.value,
+          policy: authority.policy, members: authority.members.filter(m => !m.revoked && m.roles.includes('vote')),
+          delegations: authority.delegations, nowMs: finalization.finalizedAtMs });
+        if (!reconstructed.ok || canonicalJson(reconstructed.value) !== canonicalJson(finalization))
+          return { certificate: null, governance: quarantinedControls(selected.round.roundId,
+            'finalization does not match authenticated ballot reconstruction') };
         return {
           certificate: bridgeFinalizationToAdmissionCertificate(
             finalization,
@@ -168,11 +204,13 @@ export function createPlanAdmissionCertificateSource(
 /** Production default imported by the common gate; test overrides still win. */
 export const productionPlanAdmissionCertificateSource =
   createPlanAdmissionCertificateSource({
-    readSnapshot: async ({ workspaceId, potHomeSlug }) => {
+    readSnapshot: async ({ workspaceId, potHomeSlug, planRevisionHash, policyVersion }) => {
       const potId = await resolveFederatedPotScope(workspaceId, potHomeSlug);
       const snapshot = await readPlanAdmissionGovernanceSnapshot({
         workspaceId,
         potHomeSlug,
+        planRevisionHash,
+        policyVersion,
       });
       // Pin the source and store to the same canonical identity even if a registry
       // refresh races the two reads. A mismatch fails closed as an integrity error.

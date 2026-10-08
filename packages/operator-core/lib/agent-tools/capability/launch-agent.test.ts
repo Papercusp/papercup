@@ -1595,7 +1595,7 @@ describe('resume + fork (D-004/D-007)', () => {
   describe('originalRouting custody contract', () => {
     const uuid = '0123abcd-1234-5678-9abc-def012345678';
     const source = { ...dead, agent: 'codex', sessionId: uuid, account: 'auto',
-      model: null, binding: { ...dead.binding, sessionId: uuid } };
+      model: null, headless: false, binding: { ...dead.binding, sessionId: uuid } };
     const pin = { ownerId: source.ownerId, advSessionId: source.advSessionId, sessionId: uuid,
       codexHome: '/isolated/session-11', profileFingerprint: 'a'.repeat(64) };
     const request = { resume: { sessionId: uuid }, originalRouting: pin, brief: 'continue original work' };
@@ -1622,6 +1622,24 @@ describe('resume + fork (D-004/D-007)', () => {
       expect(isError(result)).toBe(false);
       expect(originalRoutingGuardMock).toHaveBeenCalledTimes(3);
       for (const [record] of originalRoutingGuardMock.mock.calls) expect(record).toMatchObject({ role: 'judge' });
+    });
+
+    it.each([true, false])('inherits original placement without a request override (%s)', async (headless) => {
+      resolveResumeTargetMock.mockResolvedValue({ ...source, headless });
+      const result = await launchAgent.handler({ ...request }, ctx);
+      expect(isError(result)).toBe(false);
+      const chosen = headless ? spawnHeadlessMock : spawnConsoleMock;
+      expect(chosen).toHaveBeenCalledTimes(1);
+      expect(headless ? spawnConsoleMock : spawnHeadlessMock).not.toHaveBeenCalled();
+      expect(spawnedCommand(chosen).includes('--headless')).toBe(headless);
+      expect(request).not.toHaveProperty('headless');
+    });
+
+    it('refuses unknown original placement before opening a process', async () => {
+      resolveResumeTargetMock.mockResolvedValue({ ...source, headless: undefined });
+      const result = await launchAgent.handler({ ...request }, ctx);
+      expect(isError(result)).toBe(true);
+      expect(spawnConsoleMock).not.toHaveBeenCalled();
     });
 
     it.each([{ fork: true }, { successor: { agentId: 'su-other' } }, { agent: 'claude' },

@@ -61,7 +61,7 @@ export interface RuntimeVintageRow {
 
 export interface RuntimeVintageStore {
   report(input: RuntimeVintageReport): Promise<void>;
-  list(workspaceId?: string, client?: RuntimeVintageSql): Promise<RuntimeVintageRow[]>;
+  list(workspaceId?: string, client?: RuntimeVintageSql, units?: readonly string[]): Promise<RuntimeVintageRow[]>;
 }
 
 class PgRuntimeVintageStore implements RuntimeVintageStore {
@@ -91,7 +91,7 @@ class PgRuntimeVintageStore implements RuntimeVintageStore {
     `;
   }
 
-  async list(workspaceId?: string, client?: RuntimeVintageSql): Promise<RuntimeVintageRow[]> {
+  async list(workspaceId?: string, client?: RuntimeVintageSql, units?: readonly string[]): Promise<RuntimeVintageRow[]> {
     const sql = client ?? getOrgPg().sql;
     const ws = workspaceId ?? activeWorkspaceId();
     const rows = await sql<Array<{
@@ -108,6 +108,7 @@ class PgRuntimeVintageStore implements RuntimeVintageStore {
       SELECT workspace_id, unit, host, tree_sha, build_time, bundle_version, pid, extra, reported_at
         FROM harness_shared.runtime_vintage
        WHERE workspace_id = ${ws}
+         AND (${units === undefined} OR unit = ANY(${units ?? []}::text[]))
        ORDER BY unit, host
     `;
     return rows.map((r) => ({
@@ -149,10 +150,10 @@ export class InMemoryRuntimeVintageStore implements RuntimeVintageStore {
       reportedAt: new Date().toISOString(),
     });
   }
-  async list(workspaceId?: string): Promise<RuntimeVintageRow[]> {
+  async list(workspaceId?: string, _client?: RuntimeVintageSql, units?: readonly string[]): Promise<RuntimeVintageRow[]> {
     const ws = workspaceId ?? activeWorkspaceId();
     return Array.from(this.rows.values())
-      .filter((r) => r.workspaceId === ws)
+      .filter((r) => r.workspaceId === ws && (units === undefined || units.includes(r.unit)))
       .sort((a, b) => (a.unit === b.unit ? a.host.localeCompare(b.host) : a.unit.localeCompare(b.unit)));
   }
 }
@@ -329,8 +330,9 @@ export function measureRuntimeVintageEnvironment(
 export async function listRuntimeVintage(
   workspaceId?: string,
   client?: RuntimeVintageSql,
+  units?: readonly string[],
 ): Promise<RuntimeVintageRow[]> {
-  return store.list(workspaceId, client);
+  return store.list(workspaceId, client, units);
 }
 
 /**

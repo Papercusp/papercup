@@ -3270,6 +3270,7 @@ dependency_generation_main() {
       --fingerprint-ref) fingerprint_ref="$2"; shift 2 ;;
       --predict-ref) predict_ref="$2"; shift 2 ;;
       --prune-only) prune_only='1'; shift ;;
+      --check-headroom) check_headroom='1'; shift ;;
       *) dependency_generation_log "unknown arg: $1"; return 2 ;;
     esac
   done

@@ -218,8 +218,13 @@ export async function prepareLlmScenarioRuntimeReader(
     const units = [`llm-test-in-process-${process.pid}`];
     await reportRuntimeVintage({ unit: units[0]!, workspaceId, pid: process.pid,
       treeSha: snapshot.commit, buildTime: PROCESS_BOOT_TIME });
+    // Retain the original own-unit pin once. Each boundary independently reads
+    // the live kernel through measureRuntimeVintageEnvironment; a fleet-wide PG
+    // census cannot consume the bounded observation window after a model turn.
+    const rows = (await listRuntimeVintage(workspaceId, undefined, units))
+      .map(row => ({ ...row, extra: { ...row.extra } }));
     return async () => {
-      const fingerprint = measureRuntimeVintageEnvironment(await listRuntimeVintage(workspaceId), units);
+      const fingerprint = measureRuntimeVintageEnvironment(rows, units);
       return fingerprint ? { schemaVersion: 1, units, fingerprint, observedAt: new Date().toISOString() } : null;
     };
   } catch { return async () => null; }

@@ -19,9 +19,10 @@ describe('secret census producer adapters', () => {
     try {
       await writeFile(join(path, 'app.service'), '[Service]');
       await symlink('/dev/null', join(path, 'masked.service'));
+      await writeFile(join(path, 'data.mount'), '[Mount]');
       await writeFile(join(path, 'README.md'), 'not a unit');
       const declarations = await unitCensusDeclarations(path, 'user');
-      expect(declarations.map(entry => entry.name).sort()).toEqual(['app.service', 'masked.service']);
+      expect(declarations.map(entry => entry.name).sort()).toEqual(['app.service', 'data.mount', 'masked.service']);
       expect(declarations[0].classification).toBe('config');
       expect(declarations[0].producer).toBe(`unit-definition:${path}`);
       expect((await unitCensusDeclarations(path, 'user', 'dev-only'))[0].classification).toBe('dev-only');

@@ -75,6 +75,15 @@ describe('runtime-vintage — self-report ledger (P-008)', () => {
     expect(await listRuntimeVintage('ws-b')).toHaveLength(1);
     expect((await listRuntimeVintage('ws-a'))[0].treeSha).toBe('sha-a');
   });
+  it('selects only named units and preserves workspace isolation', async () => {
+    await reportRuntimeVintage({ unit: 'own-test', host: 'tower', treeSha: 'aaaaaaa', workspaceId: 'ws-a' });
+    await reportRuntimeVintage({ unit: 'other-test', host: 'tower', treeSha: 'bbbbbbb', workspaceId: 'ws-a' });
+    await reportRuntimeVintage({ unit: 'own-test', host: 'tower', treeSha: 'ccccccc', workspaceId: 'ws-b' });
+    expect(await listRuntimeVintage('ws-a', undefined, ['own-test']))
+      .toEqual([expect.objectContaining({ unit: 'own-test', treeSha: 'aaaaaaa', workspaceId: 'ws-a' })]);
+    expect(await listRuntimeVintage('ws-a', undefined, [])).toEqual([]);
+    expect(await listRuntimeVintage('ws-a', undefined, ['missing'])).toEqual([]);
+  });
 
   it('defaults host to os.hostname() when omitted', async () => {
     await reportRuntimeVintage({ unit: 'bg-host', treeSha: 'sha-x', workspaceId: 'default' });

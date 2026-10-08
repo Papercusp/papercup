@@ -13253,12 +13253,16 @@ export function originalCodexRoutingAccount(session) {
 /** Fail closed on custody/prerequisite uncertainty; never repair files.
  * @param {*} session
  * @param {{ownerId:string, advSessionId:number, sessionId:string, codexHome:string, profileFingerprint:string}} pin
- * @param {{liveHost?: (owner:string)=>any, writerHolder?: (home:string,id:string)=>any}} [deps]
+ * @param {{liveHost?: (owner:string)=>any, writerHolder?: (home:string,id:string)=>any, launchArgs?: any}} [deps]
  */
 export function assertOriginalCodexRouting(session, pin, {
-  liveHost = findLiveHostFor, writerHolder = codexThreadWriterHolder,
+  liveHost = findLiveHostFor, writerHolder = codexThreadWriterHolder, launchArgs = null,
 } = {}) {
   const refuse = (reason) => { throw new Error(`original Codex routing refused: ${reason}`); };
+  if (launchArgs && (String(launchArgs.resumeId) !== pin?.sessionId || launchArgs.fork ||
+      launchArgs.agent || launchArgs.model || launchArgs.ownerId || launchArgs.passthrough?.length ||
+      launchArgs.addDir?.length || launchArgs.allowSubagents != null || launchModeFromArgs(launchArgs)))
+    refuse("exact resume without settings overrides required");
   if (!pin || session.agent !== "codex" || session.id !== pin.advSessionId ||
       session.coordOwnerId !== pin.ownerId || session.sessionId !== pin.sessionId || !session.endedAt)
     refuse("original ended row, actor or native UUID changed");
@@ -15824,14 +15828,10 @@ async function launchResolvedResume(source, args, { tracked }) {
 async function resumeFlow(args = {}) {
   const originalRouting = consumeOriginalCodexRouting();
   if (originalRouting) {
-    if (String(args.resumeId) !== originalRouting.sessionId || args.fork || args.agent || args.model ||
-        args.ownerId || args.passthrough?.length || args.addDir?.length || args.allowSubagents !== undefined ||
-        launchModeFromArgs(args))
-      throw new Error("original Codex routing refused: exact resume without settings overrides required");
     const read = await api(`/api/adv/sessions/resumable?id=${originalRouting.advSessionId}`);
     const source = read?.sessions?.find((row) => row.id === originalRouting.advSessionId);
     if (!source) throw new Error("original Codex routing refused: original row missing");
-    assertOriginalCodexRouting(source, originalRouting);
+    assertOriginalCodexRouting(source, originalRouting, { launchArgs: args });
     const saved = originalCodexRoutingAccount(source);
     if (args.account !== saved) throw new Error("original Codex routing refused: saved account required");
     const model = lastActiveModelFor(source);

@@ -774,6 +774,44 @@ describe('coord:send handler (bulk keyed-array)', () => {
     expect(b.deliveryFailureWarning).toMatch(/failed delivery/i);
     expect(b.deliveryFailureWarning).toMatch(/do not assume every message was delivered/i);
     expect(b.deliveryFailureWarning).toContain('canceling statement due to lock timeout');
+    expect(b.results[0].phaseTimingsMs).toEqual({
+      prePersistMs: expect.any(Number),
+      persistMs: expect.any(Number),
+      postPersistMs: expect.any(Number),
+    });
+    // Timing evidence describes the wait, never whether a throwing write landed.
+    expect(tool.abortCompletionReceipt?.({}, {
+      content: [{ type: 'text', text: JSON.stringify(b) }],
+    }, { callId: 'call-failed-send', toolName: 'coord:send' })).toMatchObject({
+      status: 'recovery-incomplete',
+      failures: ['unresolved-message-outcomes'],
+      diagnostics: {
+        coordSendPhaseTimingsMs: [{
+          itemIndex: 0,
+          prePersistMs: expect.any(Number),
+          persistMs: expect.any(Number),
+          postPersistMs: expect.any(Number),
+        }],
+      },
+    });
+  });
+
+  it('retains pre-persist timing when recipient resolution throws without implying a write', async () => {
+    resolveM.mockRejectedValueOnce(new Error('recipient lookup unavailable'));
+
+    const b = await body({ to: ['bee-1'], summary: 'cannot resolve this recipient' });
+
+    expect(b).toMatchObject({
+      ok: false,
+      counts: { ok: 0, failed: 1 },
+      results: [{ ok: false, to: ['bee-1'], error: 'recipient lookup unavailable' }],
+    });
+    expect(sendM).not.toHaveBeenCalled();
+    expect(b.results[0].phaseTimingsMs).toEqual({
+      prePersistMs: expect.any(Number),
+      persistMs: null,
+      postPersistMs: null,
+    });
   });
 
   it('EI-21860312102671987: a hung sendMessage() persist is bounded by withDbCallDeadline instead of hanging indefinitely', async () => {
@@ -804,6 +842,11 @@ describe('coord:send handler (bulk keyed-array)', () => {
       expect(b.results[0].error).toMatch(
         /\[db-call-deadline\] "coord:send\.sendMessage" did not resolve within/,
       );
+      expect(b.results[0].phaseTimingsMs).toEqual({
+        prePersistMs: expect.any(Number),
+        persistMs: COORD_SEND_DB_DEADLINE_MS,
+        postPersistMs: 0,
+      });
       expect(b.deliveryFailureWarning).toMatch(/coord:send completed the batch/i);
       expect(b.deliveryFailureWarning).toMatch(/failed delivery/i);
       expect(b.deliveryFailureWarning).toContain('db-call-deadline');

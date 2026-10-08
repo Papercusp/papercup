@@ -758,7 +758,10 @@ export async function getNextForBee(args: {
   if (record.spec.lane === 'verification') {
     claimStep('verification-lane');
     const { claimNextVerificationWork } = await import('../harness/improvements/agent-review');
-    const served = await claimNextVerificationWork({ verifier: args.cupId, harnessSlug: args.harness });
+    const served = await claimNextVerificationWork({
+      verifier: args.cupId, harnessSlug: args.harness,
+      filter: record.spec.view.filter, workspaceId: args.workspaceId, signal: args.signal,
+    });
     if (!served) {
       if (args.checkIdleDrainOnMiss) maybeEmitFleetIdleDrain(args.cupId, args.workspaceId);
       return null;

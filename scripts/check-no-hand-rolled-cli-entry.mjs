@@ -23,24 +23,14 @@ import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { stripCommentsAndStrings } from './lib/strip-comments-and-strings.mjs';
+import { isBuildOutput } from './check-declared-consumed.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const SOURCE_ROOTS = ['scripts', 'packages', 'libs', 'apps'];
 const SOURCE_EXT = /\.(?:[cm]?[jt]sx?|mjs|cjs)$/i;
-const SKIP_DIRS = new Set([
-  '.git',
-  '.next',
-  '_retired',
-  'build',
-  'coverage',
-  'dist',
-  'dist-host',
-  'dist-sidecar',
-  'node_modules',
-  'out',
-  'public',
-  'target',
-]);
+// Build-output directories use the shared location policy; retain only the
+// non-build exclusions here.
+const SKIP_DIRS = new Set(['.git', '_retired', 'node_modules', 'target']);
 
 /**
  * Measured pre-existing population. This is deliberately empty until the
@@ -165,9 +155,18 @@ export const ALLOW_COUNTS = new Map([
  *
  * Exported alongside ALLOW_COUNTS for the edit-time nudge, for the same reason.
  */
-export const STANDALONE_ENTRY_EXEMPTIONS = new Map();
+export const STANDALONE_ENTRY_EXEMPTIONS = new Map([
+  [
+    'scripts/reviewer-operator-assert.mjs|file-url-to-path',
+    {
+      count: 1,
+      reason:
+        'The only production callers are scripts/reviewer-operator.sh and verify-tauri-headless.sh, which execute this file directly with Node for the disposable reviewer verifier.',
+    },
+  ],
+]);
 
-function* walk(dir) {
+function* walk(dir, rootDir = ROOT) {
   let entries;
   try {
     entries = readdirSync(dir);
@@ -184,7 +183,9 @@ function* walk(dir) {
       continue;
     }
     if (st.isDirectory()) {
-      yield* walk(full);
+      const rel = relative(rootDir, full).replaceAll('\\', '/');
+      if (isBuildOutput(rel)) continue;
+      yield* walk(full, rootDir);
     } else if (
       SOURCE_EXT.test(name) &&
       !/(?:\.test|\.spec)\.[cm]?[jt]sx?$/i.test(name) &&
@@ -246,25 +247,26 @@ function keyFor(rel, kind) {
   return `${rel}|${kind}`;
 }
 
-function currentSourceFiles() {
+function currentSourceFiles(rootDir = ROOT, sourceRoots = SOURCE_ROOTS) {
   const files = [];
-  for (const root of SOURCE_ROOTS) {
-    for (const file of walk(join(ROOT, root))) files.push(file);
+  for (const root of sourceRoots) {
+    for (const file of walk(join(rootDir, root), rootDir)) files.push(file);
   }
   return files.sort();
 }
 
 /** Scan the complete source population, ignoring the shrink-only baseline. */
-export function scanTree() {
+export function scanTree({ root = ROOT, sourceRoots = SOURCE_ROOTS } = {}) {
+  const repoRoot = resolve(root);
   const everyGuard = [];
-  for (const file of currentSourceFiles()) {
+  for (const file of currentSourceFiles(repoRoot, sourceRoots)) {
     let source;
     try {
       source = readFileSync(file, 'utf8');
     } catch {
       continue;
     }
-    const rel = relative(ROOT, file).replaceAll('\\', '/');
+    const rel = relative(repoRoot, file).replaceAll('\\', '/');
     for (const hit of findGuards(source, rel)) everyGuard.push({ rel, ...hit });
   }
 

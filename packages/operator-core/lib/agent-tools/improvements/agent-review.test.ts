@@ -8,6 +8,7 @@ const h = vi.hoisted(() => ({
   claim: vi.fn(),
   claimNext: vi.fn(),
   resubmit: vi.fn(),
+  claimSpec: vi.fn(),
   identity: vi.fn(() => ({ ownerId: 'su-reviewer' })),
 }));
 
@@ -17,6 +18,7 @@ vi.mock('../../harness/improvements/agent-review', () => ({
   resubmitAgentReview: h.resubmit,
 }));
 vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: h.identity }));
+vi.mock('../../scheduler/claim-spec-store', () => ({ getClaimSpecRecord: h.claimSpec }));
 
 import tool, { agentReviewAbortCompletionReceipt } from './agent-review';
 
@@ -34,10 +36,24 @@ beforeEach(() => {
   h.identity.mockReturnValue({ ownerId: 'su-reviewer' });
   h.claim.mockResolvedValue({ claimed: false, workItem: null, reason: 'not-found' });
   h.claimNext.mockResolvedValue(null);
+  h.claimSpec.mockResolvedValue({ source: 'cup', spec: { view: {} } });
   h.resubmit.mockResolvedValue({ resubmitted: true, state: { status: 'pending', round: 2 } });
 });
 
 describe('improvements:agent-review public door', () => {
+  it('uses the caller canonical filter, and refuses a missing inherited fleet spec', async () => {
+    const filter = { not: { field: 'plan', op: 'glob', value: 'p2p-*' } };
+    h.claimSpec.mockResolvedValueOnce({ source: 'fleet', fleetSlug: 'verifiers', spec: { view: { filter } } });
+    const abort = new AbortController();
+    await call({ mode: 'claim-next' }, { harnessSlug: 'papercusp', signal: abort.signal });
+    expect(h.claimNext).toHaveBeenCalledWith({
+      reviewer: 'su-reviewer', harnessSlug: 'papercusp', filter, workspaceId: undefined, signal: abort.signal,
+    });
+    h.claimNext.mockClear();
+    h.claimSpec.mockResolvedValueOnce({ source: 'default', fleetSlug: 'verifiers', spec: { view: {} } });
+    await expect(call({ mode: 'claim-next' }, { harnessSlug: 'papercusp' })).rejects.toThrow('valid fleet claim spec');
+    expect(h.claimNext).not.toHaveBeenCalled();
+  });
   it('declares a late-completion receipt on the public mutating tool', () => {
     expect(tool.abortCompletionReceipt).toBe(agentReviewAbortCompletionReceipt);
   });
@@ -153,7 +169,9 @@ describe('improvements:agent-review public door', () => {
 
     const out = await call({ mode: 'claim-next' }, { harnessSlug: 'papercusp' });
 
-    expect(h.claimNext).toHaveBeenCalledWith({ reviewer: 'su-reviewer', harnessSlug: 'papercusp' });
+    expect(h.claimNext).toHaveBeenCalledWith({
+      reviewer: 'su-reviewer', harnessSlug: 'papercusp', filter: undefined, workspaceId: undefined, signal: undefined,
+    });
     expect(body(out)).toEqual({
       ok: true,
       mode: 'claim-next',

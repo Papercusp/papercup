@@ -883,6 +883,16 @@ describe('composeModelSpec (D-001: effort rides the model spec)', () => {
 });
 
 describe('resolveResumeTarget', () => {
+  it.each([true, false])('retains recorded headless placement (%s)', async (headless) => {
+    launchCoreSql.mockResolvedValue([{
+      id: 22664, workspace_id: 'ws-test', coord_owner_id: OWNER, session_id: 'original-native',
+      agent: 'codex', role: 'judge', cwd: '/repo', started_at: '2026-10-07T00:00:00.000Z',
+      ended_at: '2026-10-07T00:01:00.000Z', ended_by: 'self',
+      launch_argv: ['psu', '--account=auto', ...(headless ? ['--headless'] : [])],
+    }] as unknown[]);
+    await expect(resolveResumeTarget({ agentId: OWNER })).resolves.toMatchObject({ ok: true, headless });
+  });
+
   it('resolves a tracked OMP thread-only row and keeps the raw session binding distinct', async () => {
     launchCoreSql.mockResolvedValue([{
       id: 22663, workspace_id: 'ws-omp', coord_owner_id: OWNER, session_id: null, omp_thread_id: 'omp-native-thread',

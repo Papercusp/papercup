@@ -3621,7 +3621,7 @@ export function originalCodexRoutingAccount(session: any): string | null;
 /** Fail closed on custody/prerequisite uncertainty; never repair files.
  * @param {*} session
  * @param {{ownerId:string, advSessionId:number, sessionId:string, codexHome:string, profileFingerprint:string}} pin
- * @param {{liveHost?: (owner:string)=>any, writerHolder?: (home:string,id:string)=>any}} [deps]
+ * @param {{liveHost?: (owner:string)=>any, writerHolder?: (home:string,id:string)=>any, launchArgs?: any}} [deps]
  */
 export function assertOriginalCodexRouting(session: any, pin: {
     ownerId: string;
@@ -3629,9 +3629,10 @@ export function assertOriginalCodexRouting(session: any, pin: {
     sessionId: string;
     codexHome: string;
     profileFingerprint: string;
-}, { liveHost, writerHolder, }?: {
+}, { liveHost, writerHolder, launchArgs, }?: {
     liveHost?: (owner: string) => any;
     writerHolder?: (home: string, id: string) => any;
+    launchArgs?: any;
 }): void;
 /** Re-read exact custody AFTER the existing reservation, then patch only the provider.
  * @param {*} session

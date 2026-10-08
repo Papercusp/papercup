@@ -1224,7 +1224,9 @@ export default defineTool({
   // of making the caller retry an already-landed write.
   idempotent: true,
   requirePrincipal: false,
-  agentRoles: [...COORD_ROLES],
+  // Admit the research task's claim door without adding researcher to the
+  // general coordination/placement role set.
+  agentRoles: [...COORD_ROLES, 'researcher'],
   args: z
     .object({
       id: z.string().min(1).optional().describe('single-claim shorthand: the work-item id'),

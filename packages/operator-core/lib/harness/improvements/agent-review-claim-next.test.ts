@@ -8,6 +8,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { WorkItem } from '../../work-items';
+import { buildP2pLaneFence } from '../../scheduler/p2p-lane-fence';
 
 const h = vi.hoisted(() => ({ rows: [] as Array<{ feature_id: string }> }));
 
@@ -61,7 +62,13 @@ function build(ledger: Record<string, AgentReviewLedgerGrade | null>) {
     items.set(id, next);
     return next;
   });
-  const releaseWorkItem = vi.fn(async (id: string) => items.get(id) ?? null);
+  const releaseWorkItem = vi.fn(async (id: string) => {
+    const current = items.get(id);
+    if (!current) return null;
+    const released = { ...current, assignee: null };
+    items.set(id, released);
+    return released;
+  });
   const commentWorkItem = vi.fn(async () => ({}) as never);
   const deps = {
     getWorkItem: vi.fn(async (id: string) => items.get(id) ?? null),
@@ -80,6 +87,57 @@ function build(ledger: Record<string, AgentReviewLedgerGrade | null>) {
 // WI-10006314 — `origin` records how a row ARRIVED, not who wrote it. The pickup selector does not
 // filter on origin, so an own-node pending row stranded at 'remote' used to be selected and then
 // silently skipped as 'remote-owned'. It must be healed and handed out; a foreign one stays skipped.
+describe('P-026 review pickup scope and cancellation', () => {
+  beforeEach(() => { h.rows = [{ feature_id: 'WI-A' }, { feature_id: 'WI-B' }]; });
+
+  it('skips an excluded proposal before its ledger or claim is touched', async () => {
+    const { items, deps, claimWorkItem } = build({});
+    items.set('WI-A', { ...items.get('WI-A')!, sourcePlanSlug: 'p2p-release' });
+    expect((await claimNextAgentReview({ reviewer: 'su-reviewer', filter: buildP2pLaneFence() }, deps))?.id).toBe('WI-B');
+    expect(claimWorkItem.mock.calls.map((c) => c[0])).toEqual(['WI-B']);
+    expect(deps.readLedgerGrade).not.toHaveBeenCalledWith('WI-A');
+  });
+
+  it('releases a scope change racing the review claim', async () => {
+    const { items, deps, claimWorkItem, releaseWorkItem } = build({});
+    claimWorkItem.mockImplementationOnce(async (id, assignee) => {
+      const claimed = { ...items.get(id)!, assignee, sourcePlanSlug: 'p2p-release' };
+      items.set(id, claimed);
+      return claimed;
+    });
+    expect((await claimNextAgentReview({ reviewer: 'su-reviewer', filter: buildP2pLaneFence() }, deps))?.id).toBe('WI-B');
+    expect(releaseWorkItem).toHaveBeenCalledWith('WI-A', {
+      harness: 'papercusp', expectedAssignee: 'su-reviewer', announceClaimable: false,
+    });
+    expect(items.get('WI-A')!.assignee).toBeNull();
+  });
+
+  it('propagates an uncertain review claim after reconciling, without trying the next candidate', async () => {
+    const { items, deps, claimWorkItem } = build({});
+    claimWorkItem.mockImplementationOnce(async (id, assignee) => {
+      items.set(id, { ...items.get(id)!, assignee });
+      throw new Error('review response lost');
+    });
+    await expect(claimNextAgentReview({ reviewer: 'su-reviewer' }, deps)).rejects.toThrow('review response lost');
+    expect(items.get('WI-A')!.assignee).toBeNull();
+    expect(claimWorkItem).toHaveBeenCalledOnce();
+  });
+
+  it('releases a claim completed during cancellation and never retries', async () => {
+    const { items, deps, claimWorkItem } = build({});
+    const abort = new AbortController();
+    claimWorkItem.mockImplementationOnce(async (id, assignee) => {
+      const claimed = { ...items.get(id)!, assignee };
+      items.set(id, claimed);
+      abort.abort(new Error('cancelled review'));
+      return claimed;
+    });
+    await expect(claimNextAgentReview({ reviewer: 'su-reviewer', signal: abort.signal }, deps)).rejects.toThrow('cancelled review');
+    expect(items.get('WI-A')!.assignee).toBeNull();
+    expect(claimWorkItem).toHaveBeenCalledOnce();
+  });
+});
+
 describe('claimNextAgentReview heals own-node rows stranded at origin=remote', () => {
   beforeEach(() => {
     h.rows = [{ feature_id: 'WI-A' }, { feature_id: 'WI-B' }];

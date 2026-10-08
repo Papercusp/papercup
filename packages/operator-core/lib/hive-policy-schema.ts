@@ -20,6 +20,7 @@ import {
   type PlanAdmissionPolicy,
   validatePlanAdmissionPolicy,
 } from './agent-tools/plans/plan-admission-policy';
+import type { GovernanceSigningAuthority } from './agent-tools/plans/governance-authentication';
 
 /** Per-member rate caps (EN-2 P-RATE reads these). Absent ⇒ no limiting. */
 export interface HivePolicyRate {
@@ -123,6 +124,8 @@ export interface HivePolicySecretsGuard {
 export interface HivePolicyGovernance {
   /** P-001: exact-plan admission thresholds and ratification epoch rules. */
   planAdmission?: PlanAdmissionPolicy;
+  /** Independent voter keys, epochs, roles and weights, covered by the owner signature. */
+  signingAuthority?: Pick<GovernanceSigningAuthority, 'members' | 'delegations'>;
   /** Forward-compatibility for future governance policy fields. */
   [k: string]: unknown;
 }

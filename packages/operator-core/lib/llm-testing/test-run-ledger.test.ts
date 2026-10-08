@@ -132,9 +132,22 @@ describe('recordLlmScenarioTestRun scope attribution', () => {
       unit: `llm-test-in-process-${process.pid}` }));
     expect(await read!()).toMatchObject({ fingerprint: 'a'.repeat(64),
       units: [`llm-test-in-process-${process.pid}`] });
-    expect(ledger.listRuntime).toHaveBeenCalledWith('caller-workspace');
+    expect(ledger.listRuntime).toHaveBeenCalledWith('caller-workspace', undefined, [`llm-test-in-process-${process.pid}`]);
     expect(await prepareLlmScenarioRuntimeReader(file, 'http')).toBeUndefined();
     expect(ledger.reportRuntime).toHaveBeenCalledTimes(1);
+  });
+  it('measures the live kernel at both boundaries without awaiting the database again', async () => {
+    vi.stubEnv('PAPERCUSP_TEST_RUN_WORKSPACE', 'caller-workspace');
+    ledger.listRuntime.mockResolvedValueOnce([]).mockImplementation(() => new Promise(() => {}));
+    const read = await prepareLlmScenarioRuntimeReader(file, 'in-process');
+    expect(read).toBeDefined();
+    const before = await beginLlmScenarioLedger(file, read);
+    expect(before.runtime.status).toBe('captured');
+    ledger.measureRuntime.mockReturnValueOnce(null); // The original process no longer matches its kernel pin.
+    expect(await read!()).toBeNull();
+    expect(await read!()).toMatchObject({ fingerprint: 'a'.repeat(64) });
+    expect(ledger.listRuntime).toHaveBeenCalledTimes(1);
+    expect(ledger.measureRuntime).toHaveBeenCalledTimes(3);
   });
   it('bounds a stalled runtime reader and still records the completed scenario', async () => {
     vi.useFakeTimers();

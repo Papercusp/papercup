@@ -35,6 +35,7 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'papercusp-workspace' }));
 
 import { claimNextVerificationTask, claimNextVerificationWork, type AgentReviewDeps } from './agent-review';
+import { buildP2pLaneFence } from '../../scheduler/p2p-lane-fence';
 
 function review(id: string): WorkItem {
   return {
@@ -79,14 +80,21 @@ function build(refuse: ReadonlySet<string> = new Set()) {
     getWorkItem: vi.fn(async (id: string) => items.get(id) ?? null),
     getWorkItemDetail: vi.fn(async (id: string) => ({ ...items.get(id), posts: [], topics: [], links: [] }) as never),
     mergeWorkItemPayload: vi.fn(async (id: string) => items.get(id) ?? null),
-    releaseWorkItem: vi.fn(async (id: string) => items.get(id) ?? null),
+    releaseWorkItem: vi.fn(async (id: string, opts: { expectedAssignee?: string }) => {
+      const current = items.get(id);
+      if (!current) return null;
+      if (current.assignee !== opts.expectedAssignee) return current;
+      const released = { ...current, assignee: null };
+      items.set(id, released);
+      return released;
+    }),
     claimWorkItem,
     commentWorkItem: vi.fn(async () => ({}) as never),
     readLedgerGrade: vi.fn(async () => null),
     deliverRevision: vi.fn(async () => ({ woken: 0 })),
     healOwnNodeOrigin: vi.fn(async () => false),
   } as unknown as AgentReviewDeps;
-  return { deps, claimWorkItem };
+  return { deps, claimWorkItem, items };
 }
 
 describe('claimNextVerificationWork — pending reviews first, then verification tasks (P-007 Phase B)', () => {
@@ -177,5 +185,85 @@ describe('claimNextVerificationTask — the writer decides, the SQL only orders 
     expect(await claimNextVerificationTask({ verifier: '   ' }, deps)).toBeNull();
     expect(claimWorkItem).not.toHaveBeenCalled();
     expect(h.queries).toEqual([]);
+  });
+
+  it('never hands the writer an excluded task or a reporter/implementer conflict', async () => {
+    h.taskRows = ['WI-P2P', 'WI-REPORTER', 'WI-IMPLEMENTER', 'WI-IN'].map((feature_id) => ({ feature_id, harness_slug: 'papercusp' }));
+    const { deps, claimWorkItem, items } = build();
+    items.set('WI-P2P', { ...items.get('WI-P2P')!, sourcePlanSlug: 'p2p-release' });
+    for (const [id, role] of [['WI-REPORTER', 'reporters'], ['WI-IMPLEMENTER', 'implementers']] as const) {
+      items.set(id, { ...items.get(id)!, payload: { verification: {
+        schemaVersion: 'verification-task-v1', subject: 'WI-S', check: 'completion', [role]: ['su-verifier'],
+      } } });
+    }
+    items.set('WI-IN', { ...items.get('WI-IN')!, createdBy: 'su-verifier' });
+    expect((await claimNextVerificationTask({ verifier: 'su-verifier', filter: buildP2pLaneFence() }, deps))?.id).toBe('WI-IN');
+    expect(claimWorkItem.mock.calls.map((c) => c[0])).toEqual(['WI-IN']);
+  });
+
+  it('releases a task whose scope changed during the claim, then takes the in-scope control', async () => {
+    h.taskRows = ['WI-RACE', 'WI-IN'].map((feature_id) => ({ feature_id, harness_slug: 'papercusp' }));
+    const { deps, claimWorkItem, items } = build();
+    claimWorkItem.mockImplementationOnce(async (id, assignee) => {
+      const raced = { ...items.get(id)!, assignee, sourcePlanSlug: 'p2p-release' };
+      items.set(id, raced);
+      return raced;
+    });
+    expect((await claimNextVerificationTask({ verifier: 'su-verifier', filter: buildP2pLaneFence() }, deps))?.id).toBe('WI-IN');
+    expect(items.get('WI-RACE')!.assignee).toBeNull();
+    expect(deps.releaseWorkItem).toHaveBeenCalledWith('WI-RACE', {
+      harness: 'papercusp', expectedAssignee: 'su-verifier', announceClaimable: false,
+    });
+  });
+
+  it('reconciles a committed but failed writer and propagates instead of trying another row', async () => {
+    h.taskRows = ['WI-UNKNOWN', 'WI-NEXT'].map((feature_id) => ({ feature_id, harness_slug: 'papercusp' }));
+    const { deps, claimWorkItem, items } = build();
+    claimWorkItem.mockImplementationOnce(async (id, assignee) => {
+      items.set(id, { ...items.get(id)!, assignee });
+      throw new Error('claim response lost');
+    });
+    await expect(claimNextVerificationTask({ verifier: 'su-verifier' }, deps)).rejects.toThrow('claim response lost');
+    expect(items.get('WI-UNKNOWN')!.assignee).toBeNull();
+    expect(claimWorkItem).toHaveBeenCalledOnce();
+  });
+
+  it('does not release a peer when an uncertain claim reconciles to that peer', async () => {
+    h.taskRows = [{ feature_id: 'WI-UNKNOWN', harness_slug: 'papercusp' }];
+    const { deps, claimWorkItem, items } = build();
+    claimWorkItem.mockImplementationOnce(async (id) => {
+      items.set(id, { ...items.get(id)!, assignee: 'su-peer' });
+      throw new Error('claim response lost');
+    });
+    await expect(claimNextVerificationTask({ verifier: 'su-verifier' }, deps)).rejects.toThrow('claim response lost');
+    expect(deps.releaseWorkItem).not.toHaveBeenCalled();
+    expect(items.get('WI-UNKNOWN')!.assignee).toBe('su-peer');
+  });
+
+  it('releases a completed claim after cancellation and never retries', async () => {
+    h.taskRows = ['WI-ABORT', 'WI-NEXT'].map((feature_id) => ({ feature_id, harness_slug: 'papercusp' }));
+    const { deps, claimWorkItem, items } = build();
+    const abort = new AbortController();
+    claimWorkItem.mockImplementationOnce(async (id, assignee) => {
+      const claimed = { ...items.get(id)!, assignee };
+      items.set(id, claimed);
+      abort.abort(new Error('cancelled pickup'));
+      return claimed;
+    });
+    await expect(claimNextVerificationTask({ verifier: 'su-verifier', signal: abort.signal }, deps)).rejects.toThrow('cancelled pickup');
+    expect(items.get('WI-ABORT')!.assignee).toBeNull();
+    expect(claimWorkItem).toHaveBeenCalledOnce();
+  });
+
+  it('fails closed when reconciliation cannot release its own uncertain claim', async () => {
+    h.taskRows = ['WI-UNKNOWN', 'WI-NEXT'].map((feature_id) => ({ feature_id, harness_slug: 'papercusp' }));
+    const { deps, claimWorkItem, items } = build();
+    claimWorkItem.mockImplementationOnce(async (id, assignee) => {
+      items.set(id, { ...items.get(id)!, assignee });
+      throw new Error('claim response lost');
+    });
+    vi.mocked(deps.releaseWorkItem).mockResolvedValueOnce(null);
+    await expect(claimNextVerificationTask({ verifier: 'su-verifier' }, deps)).rejects.toThrow('could not reconcile');
+    expect(claimWorkItem).toHaveBeenCalledOnce();
   });
 });

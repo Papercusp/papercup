@@ -236,6 +236,8 @@ export interface ResumeTarget {
   modelSource: CodexModelSource | null;
   /** The account route recorded in the source session's launch argv, when present. */
   account: string | null;
+  /** Recorded terminal placement; used by recovery paths that forbid caller overrides. */
+  headless?: boolean;
   /** ⚠ Only an end time when {@link endedBy} is `'self'`. Otherwise a sweeper stamped it on
    *  NOTICING the process was gone, so it cannot answer "when did this session end". */
   endedAt: string | null;
@@ -447,6 +449,7 @@ export async function resolveResumeTarget(ref: {
     feature: row.feature,
     cwd: row.cwd,
     ...launchMetadata,
+    headless: row.launchArgv?.includes('--headless') === true,
     endedAt: row.endedAt,
     endedBy: row.endedBy,
     live: host != null,

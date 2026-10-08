@@ -955,6 +955,10 @@ export default defineTool({
       resumeAccount = target.account;
       if (args.originalRouting) {
         const pin = args.originalRouting;
+        if (typeof target.headless !== 'boolean') return err('originalRouting refused: recorded placement is unavailable.');
+        // The request forbids placement overrides. Carry the recorded value
+        // into the existing command/member configuration after that check.
+        args = { ...args, headless: target.headless };
         const snapshot = JSON.stringify(target);
         const validate = (current: typeof target) => {
           if (current.live || current.binding?.sessionId !== pin.sessionId ||

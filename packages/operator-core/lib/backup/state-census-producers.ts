@@ -68,7 +68,7 @@ export async function unitCensusDeclarations(
   const files = await readdir(sourceDirectory, { withFileTypes: true });
   // Unit aliases/masks are producer-owned configuration too; do not follow them
   // (a masked unit points at /dev/null and a broken alias still needs transport).
-  return files.filter(file => (file.isFile() || file.isSymbolicLink()) && /\.(service|timer|socket|target|path|slice|scope)$/.test(file.name))
+  return files.filter(file => (file.isFile() || file.isSymbolicLink()) && /\.(service|timer|socket|target|path|slice|scope|mount|automount|swap|device)$/.test(file.name))
     .map(file => ({ kind: 'unit' as const, root: `systemd-${scope}`, name: file.name,
       classification, producer: `unit-definition:${sourceDirectory}` }));
 }

@@ -19,6 +19,7 @@ import { asRecord, completedResultPayload } from '../abort-completion-payload';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { harnessRequiredResult, resolveConcreteHarnessSlug } from '../_harness-scope';
+import { getClaimSpecRecord } from '../../scheduler/claim-spec-store';
 
 function gradeHandoff(workItem: WorkItem | null) {
   const review = workItem ? readAgentReviewState(workItem.payload) : null;
@@ -196,7 +197,14 @@ export default defineTool({
           ],
         };
       }
-      const workItem = await claimNextAgentReview({ reviewer: identity.ownerId, harnessSlug });
+      const record = await getClaimSpecRecord({ cupId: identity.ownerId, workspaceId: identity.workspaceId ?? undefined });
+      if (record.source === 'default' && record.fleetSlug) {
+        throw new Error('Review pickup requires a valid fleet claim spec; no claim was attempted.');
+      }
+      const workItem = await claimNextAgentReview({
+        reviewer: identity.ownerId, harnessSlug, filter: record.spec.view.filter,
+        workspaceId: identity.workspaceId ?? undefined, signal: ctx.signal,
+      });
       return {
         content: [
           {
