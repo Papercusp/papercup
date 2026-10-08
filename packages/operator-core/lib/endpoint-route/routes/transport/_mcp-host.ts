@@ -4800,6 +4800,11 @@ export function registerMcpHost(server: McpServer): void {
                       trace('scratch_write_progress', {
                         scratchWriteProgress: timings.progress,
                       });
+                      const phase = timings.progress.phase.replace(/-/g, ' ');
+                      ctx.progress(
+                        0,
+                        `Preparing the tool result; scratch ${phase} has taken ${Math.ceil(timings.progress.phaseElapsedMs / 1_000)}s.`,
+                      );
                       return;
                     }
                     const total = raced.phaseTimingsMs.scratchWrites ??= {

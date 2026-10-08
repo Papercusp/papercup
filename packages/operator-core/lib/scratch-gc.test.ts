@@ -685,6 +685,60 @@ describe('deferred scratch quota recovery', () => {
     }
   });
 
+  it('emits one-shot progress while a quota recovery phase is still pending', async () => {
+    makeSparseRun('ws-Q', UUID(1), WORKSPACE_QUOTA_BYTES + 1024);
+    _setScratchUsageForTests('ws-Q', WORKSPACE_QUOTA_BYTES + 1024);
+    const readdirMock = vi.mocked(readdirAsync);
+    const originalRead = readdirMock.getMockImplementation()!;
+    const read = originalRead as unknown as (path: unknown, options?: unknown) => Promise<unknown>;
+    let releaseScan!: () => void;
+    let reachedRoot!: () => void;
+    const scanGate = new Promise<void>((resolve) => { releaseScan = resolve; });
+    const atRoot = new Promise<void>((resolve) => { reachedRoot = resolve; });
+    readdirMock.mockImplementation((async (path: unknown, options: unknown) => {
+      const entries = await read(path, options);
+      if (String(path) === scratchRootForWorkspace('ws-Q')) {
+        reachedRoot();
+        await scanGate;
+      }
+      return entries as never;
+    }) as typeof readdirAsync);
+    const timings: ScratchWriteTimings[] = [];
+    const filePath = join(scratchRootForWorkspace('ws-Q'), 'quota', UUID(2), 'progress.bin');
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const write = writeWithScratchQuota({
+      workspaceId: 'ws-Q',
+      filePath,
+      bytes: 16,
+      onTiming: (row) => timings.push(row),
+    }, async () => {});
+    try {
+      await atRoot;
+      await vi.advanceTimersByTimeAsync(5_000);
+      const progressRows = timings.filter((row) => row.progress);
+      expect(progressRows).toHaveLength(1);
+      expect(progressRows[0].progress).toMatchObject({
+        phase: 'quota-recovery',
+        bytes: 16,
+        pendingWrites: 1,
+        recoveryActive: true,
+        refreshActive: false,
+      });
+      releaseScan();
+      await write;
+      expect(timings.filter((row) => row.progress)).toHaveLength(1);
+      expect(timings.find((row) => !row.progress)).toMatchObject({
+        quotaRecoveryMs: expect.any(Number),
+        writeMs: expect.any(Number),
+      });
+    } finally {
+      releaseScan();
+      readdirMock.mockImplementation(originalRead);
+      vi.useRealTimers();
+      await Promise.allSettled([write]);
+    }
+  });
+
   it('reports a failed filesystem write without letting its diagnostic observer replace the error', async () => {
     _setScratchUsageForTests('ws-Q', 0);
     let clock = 0;
