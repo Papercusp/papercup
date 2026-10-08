@@ -1,4 +1,4 @@
-import { test, expect, type Page } from './_egress';
+import { test, expect, type Page, type Locator } from './_egress';
 import { stubSyncQueries } from './_sync-stub';
 import { readTypedPropertyCollection, type OrderedSelectionPolicy } from '../../../packages/operator-core/lib/typed-properties';
 
@@ -27,11 +27,11 @@ function headerRows(name: string): readonly unknown[] | undefined {
   return undefined;
 }
 
-async function openHud(page: Page, path: string) {
+async function openHud(page: Page, path: string, ready: Locator = page.getByRole('tablist', { name: 'HUD board' })) {
   await page.goto(path);
-  // Vite's load event precedes the lazy HUD graph. Admission is measured only
-  // after its caller mounts; keep both existing assertion deadlines unchanged.
-  await page.getByRole('tablist', { name: 'HUD board' }).waitFor({ state: 'visible', timeout: 30_000 });
+  // Deep-linked goal dialogs hide the background HUD from accessibility queries.
+  // Wait on the visible caller being exercised, with the same readiness deadline.
+  await ready.waitFor({ state: 'visible', timeout: 30_000 });
 }
 
 async function scopeFixture(page: Page) {
@@ -94,7 +94,7 @@ for (const kind of ['plans', 'tea'] as const) {
       version++;
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, version, provenance: 'owner-edit' }) });
     });
-    await openHud(page, `/adv?tab=hud&scope=all&hudtab=goals&hudgoal=${goal.id}&welcome=0`);
+    await openHud(page, `/adv?tab=hud&scope=all&hudtab=goals&hudgoal=${goal.id}&welcome=0`, page.getByTestId('goal-data'));
     await sync.waitForServed(['goals.detail']);
     const editor = page.getByTestId('goal-data');
     async function reloadWithReadback() {
