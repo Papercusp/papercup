@@ -28,7 +28,7 @@ import { ContentSummaryError, summaryOptionsSchema, summarizeContent } from '../
 import { providedContentSchema } from '../../../agent-tools/documents/content';
 
 /** Same authorized provided-content contract; this operation never starts speech. */
-async function summaryResponse(req: Request, body: Record<string, unknown>): Promise<Response> {
+async function summaryResponse(req: Request, body: Record<string, unknown>, signal: AbortSignal): Promise<Response> {
   const content = providedContentSchema.safeParse(body.content);
   const options = summaryOptionsSchema.safeParse(body.summary ?? {});
   if (!content.success || !options.success) return Response.json({ ok: false, error: 'Valid provided content and summary options are required.' }, { status: 400 });
@@ -39,8 +39,8 @@ async function summaryResponse(req: Request, body: Record<string, unknown>): Pro
   try {
     const supplied = content.data;
     const input: ContentInput = supplied.kind === 'pdf' ? { ...supplied, kind: 'pdf', bytes: new Uint8Array(Buffer.from(supplied.base64, 'base64')) } : supplied;
-    const source = await readContent(input, { workspaceId, readerId: `user:${user.id}`, signal: req.signal }, { authorize: async candidate => candidate.kind !== 'reference' });
-    return Response.json({ ok: true, ...await summarizeContent(source, options.data, req.signal) }, { headers: { 'cache-control': 'no-store' } });
+    const source = await readContent(input, { workspaceId, readerId: `user:${user.id}`, signal }, { authorize: async candidate => candidate.kind !== 'reference' });
+    return Response.json({ ok: true, ...await summarizeContent(source, options.data, signal) }, { headers: { 'cache-control': 'no-store' } });
   } catch (error) {
     if (error instanceof ContentIntakeError || error instanceof ContentSummaryError) {
       const status = error.code === 'cancelled' ? 499 : error.code === 'cloud-consent-required' ? 403 : error.code === 'budget-exceeded' ? 429 : error.code === 'local-route-unavailable' ? 503 : error instanceof ContentIntakeError ? 422 : 502;
@@ -51,7 +51,7 @@ async function summaryResponse(req: Request, body: Record<string, unknown>): Pro
 }
 
 /** Explicit original reading on the same speech endpoint; never a summary operation. */
-async function readingResponse(req: Request, body: Record<string, unknown>): Promise<Response> {
+async function readingResponse(body: Record<string, unknown>, requestSignal: AbortSignal): Promise<Response> {
   const text = typeof body.text === 'string' ? body.text : '';
   if (!text.trim()) return Response.json({ ok: false, error: 'text (string) required' }, { status: 400 });
   if (text.length > CONTENT_LIMITS.maxChars || Buffer.byteLength(text, 'utf8') > CONTENT_LIMITS.maxInputBytes) {
@@ -67,7 +67,7 @@ async function readingResponse(req: Request, body: Record<string, unknown>): Pro
   // file access, or remote fetching. Source readers retain their existing ACLs.
   const prefs = await loadVoicePrefs();
   const abort = new AbortController();
-  const signal = AbortSignal.any([req.signal, abort.signal]);
+  const signal = AbortSignal.any([requestSignal, abort.signal]);
   const reading = synthesizeReading(text, prefs, {
     format: body.format as 'text' | 'markdown' | undefined,
     allowCloud: body.allowCloud === true,
@@ -122,7 +122,11 @@ export default defineTool({
   method: 'POST',
   path: '/agent-mcp/operator-tts',
   auth: 'loopback',
-  async handler(req) {
+  // Summaries own a bounded budget up to 180s, as on documents:read. The
+  // watchdog must permit that budget and abort the same underlying work.
+  timeoutSec: 190,
+  async handler(req, ctx) {
+    const signal = ctx?.signal ? AbortSignal.any([req.signal, ctx.signal]) : req.signal;
     let body: Record<string, unknown> = {};
     try {
       body = (await req.json()) as typeof body;
@@ -132,8 +136,8 @@ export default defineTool({
     if (!body || typeof body !== 'object' || Array.isArray(body)) {
       return Response.json({ ok: false, error: 'JSON object required' }, { status: 400 });
     }
-    if (body.operation === 'read') return readingResponse(req, body);
-    if (body.operation === 'summarize') return summaryResponse(req, body);
+    if (body.operation === 'read') return readingResponse(body, signal);
+    if (body.operation === 'summarize') return summaryResponse(req, body, signal);
     if (body.operation !== undefined) return Response.json({ ok: false, error: 'unsupported operation' }, { status: 400 });
     const text = typeof body.text === 'string' ? body.text : '';
     if (!text.trim()) {
@@ -157,7 +161,7 @@ export default defineTool({
     const engine = resolved.engine;
     const voiceId = typeof body.voiceId === 'string' && body.voiceId ? body.voiceId : undefined;
 
-    const synth = await synthesize(engine, text, voiceId, prefs);
+    const synth = await synthesize(engine, text, voiceId, prefs, { signal });
     if (!synth.ok) {
       return Response.json({ ok: false, error: synth.error, engine }, { status: synth.status });
     }

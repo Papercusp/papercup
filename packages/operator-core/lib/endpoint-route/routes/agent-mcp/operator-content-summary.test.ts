@@ -1,5 +1,6 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-const h = vi.hoisted(() => ({ user: 'user-one', workspace: 'ws-one', prompts: [] as { promptText: string }[], localPrompts: [] as unknown[], fail: false, synth: vi.fn(), prefs: vi.fn() }));
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { Hono } from 'hono';
+const h = vi.hoisted(() => ({ user: 'user-one', workspace: 'ws-one', prompts: [] as { promptText: string }[], localPrompts: [] as { signal?: AbortSignal }[], localDelayMs: 0, fail: false, synth: vi.fn(), prefs: vi.fn() }));
 vi.mock('../../../auth', () => ({ getSessionUserOrDefault: async () => h.user ? { id: h.user } : null }));
 vi.mock('../../../workspace-registry', () => ({ activeWorkspaceId: () => h.workspace }));
 vi.mock('../../../agent-chat-stream', () => ({ runAgentChat: async function* (request: { promptText: string }) {
@@ -7,8 +8,9 @@ vi.mock('../../../agent-chat-stream', () => ({ runAgentChat: async function* (re
   if (h.fail) { yield { type: 'error', message: 'Model unavailable.' }; return; }
   yield { type: 'result', finalText: 'Requested explicit summary.', costUsd: 0, tokensIn: 10, tokensOut: 10, stopReason: 'end_turn' };
 }, ownerHeaders: () => ({}), priorityTierHeaders: () => ({}) }));
-vi.mock('../../../agent-loop/ai-sdk-port', () => ({ createAiSdkPort: () => ({ stream: async function* (request: unknown) {
+vi.mock('../../../agent-loop/ai-sdk-port', () => ({ createAiSdkPort: () => ({ stream: async function* (request: { signal?: AbortSignal }) {
   h.localPrompts.push(request);
+  if (h.localDelayMs) await new Promise(resolve => setTimeout(resolve, h.localDelayMs));
   yield { type: 'text_delta', text: 'Local explicit summary.' };
   yield { type: 'stop', reason: 'end_turn', usage: { inputTokens: 10, outputTokens: 5 } };
 } }) }));
@@ -18,13 +20,57 @@ vi.mock('../../../cache/instance', () => ({ getOperatorCache: () => ({ getOrSet:
 vi.mock('../../../voice-prefs', () => ({ loadVoicePrefs: h.prefs }));
 vi.mock('../../../voice-node/kokoro-local', () => ({ kokoroTtsAvailable: async () => false }));
 vi.mock('./tts-synth', () => ({ synthesize: h.synth, synthesizeReading: h.synth }));
+vi.mock('../../../endpoint-route/telemetry', () => ({ recordRouteInvocation: vi.fn() }));
 import tool from './operator-tts';
-type Route = { handler(req: Request): Promise<Response> };
-async function post(body: unknown, signal?: AbortSignal) {
-  return (tool as unknown as Route).handler(new Request('http://localhost/api/agent-mcp/operator-tts', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal }));
+import { registerRoute } from '../../../endpoint-route/define-route';
+import { DEFAULT_ROUTE_STACK } from '../../../endpoint-route/route-stack';
+type Route = { handler(req: Request, ctx?: { signal: AbortSignal }): Promise<Response> };
+async function post(body: unknown, signal?: AbortSignal, routeSignal?: AbortSignal) {
+  return (tool as unknown as Route).handler(new Request('http://localhost/api/agent-mcp/operator-tts', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal }), routeSignal ? { signal: routeSignal } : undefined);
 }
-beforeEach(() => { h.user = 'user-one'; h.workspace = 'ws-one'; h.fail = false; h.prompts.length = 0; h.localPrompts.length = 0; vi.clearAllMocks(); });
+beforeEach(() => { h.user = 'user-one'; h.workspace = 'ws-one'; h.fail = false; h.localDelayMs = 0; h.prompts.length = 0; h.localPrompts.length = 0; vi.clearAllMocks(); });
+afterEach(() => { vi.useRealTimers(); });
 describe('existing output endpoint explicit summary operation', () => {
+  it('honors a bounded summary longer than the default route watchdog', async () => {
+    vi.useFakeTimers(); h.localDelayMs = 45_000;
+    const app = new Hono();
+    // Use the production invocation/watchdog; identity is covered separately.
+    registerRoute(app, tool, DEFAULT_ROUTE_STACK.filter(step => step.name === 'invoke'));
+    const pending = app.request('/agent-mcp/operator-tts', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ operation: 'summarize', content: { kind: 'text', text: 'Bounded local source.' }, summary: { model: 'fixture-local', timeoutMs: 60_000 } }) });
+    await vi.waitFor(() => expect(h.localPrompts).toHaveLength(1));
+    await vi.advanceTimersByTimeAsync(45_000);
+    const result = await pending;
+    expect(result.status).toBe(200);
+    expect(await result.json()).toMatchObject({ ok: true, summary: 'Local explicit summary.' });
+  });
+  it('propagates the route abort to an in-flight summary even if the adapter returns late', async () => {
+    vi.useFakeTimers(); h.localDelayMs = 1000;
+    const route = new AbortController();
+    const pending = post({ operation: 'summarize', content: { kind: 'text', text: 'Source.' }, summary: { model: 'fixture-local' } }, undefined, route.signal);
+    await vi.waitFor(() => expect(h.localPrompts).toHaveLength(1));
+    route.abort();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect((await pending).status).toBe(499);
+    expect(h.localPrompts[0].signal?.aborted).toBe(true);
+    expect(h.synth).not.toHaveBeenCalled();
+  });
+  it('propagates the route abort to original reading before audio can escape', async () => {
+    const route = new AbortController(); route.abort();
+    h.prefs.mockResolvedValue({ ttsEngine: 'kokoro' });
+    h.synth.mockImplementationOnce(async function* (_text, _prefs, options) {
+      if (options.signal.aborted) yield { ok: false, status: 499, error: 'speech cancelled' };
+      else yield { ok: true, audio: new Uint8Array([1]).buffer };
+    });
+    expect((await post({ operation: 'read', text: 'Original source.' }, undefined, route.signal)).status).toBe(499);
+  });
+  it('propagates the route abort to the existing single-chunk speech path', async () => {
+    const route = new AbortController(); route.abort();
+    h.prefs.mockResolvedValue({ ttsEngine: 'kokoro' });
+    h.synth.mockImplementationOnce(async (_engine, _text, _voice, _prefs, options) => options?.signal?.aborted
+      ? { ok: false, status: 499, error: 'speech cancelled' }
+      : { ok: true, audio: new Uint8Array([1]).buffer, contentType: 'audio/wav' });
+    expect((await post({ text: 'Source.', engine: 'kokoro' }, undefined, route.signal)).status).toBe(499);
+  });
   it('processes the full supplied selection, forwards options and never synthesizes speech', async () => {
     const text = 'Authorized selection. '.repeat(1800) + 'EXACT FINAL TAIL';
     const result = await post({ operation: 'summarize', content: { kind: 'selection', text, partial: true, ref: 'provided:selection' }, summary: { allowCloud: true, length: 'short', focus: 'numbers', language: 'French' } });
