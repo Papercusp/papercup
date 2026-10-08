@@ -45,6 +45,11 @@ export type BulkAutomationMode = (typeof BULK_AUTOMATION_MODES)[number];
 export const BULK_AUTOMATION_LEVELS = ['L0', 'L1', 'L2'] as const;
 export type BulkAutomationLevel = (typeof BULK_AUTOMATION_LEVELS)[number];
 
+/** Risk follows the existing attention delegation classification. */
+export const BULK_AUTOMATION_RISKS = ['low', 'medium', 'high'] as const;
+export type BulkAutomationRisk = (typeof BULK_AUTOMATION_RISKS)[number];
+export type BulkRiskAutonomy = Record<BulkAutomationRisk, 'review' | 'automatic'>;
+
 export interface BulkAutomationPolicy {
   /** `safe-high` is the default when a legacy run has no policy snapshot. */
   mode: BulkAutomationMode;
@@ -52,6 +57,7 @@ export interface BulkAutomationPolicy {
   minConfidence: BulkConfidence;
   /** P-006 snapshot metadata; absent on legacy run rows. */
   level?: BulkAutomationLevel;
+  riskLevels?: BulkRiskAutonomy;
 }
 
 export const DEFAULT_BULK_AUTOMATION_POLICY: Readonly<BulkAutomationPolicy> = {
@@ -66,6 +72,23 @@ export const DEFAULT_BULK_AUTOMATION_POLICY: Readonly<BulkAutomationPolicy> = {
 export interface StandingBulkAutomationPolicy {
   level: BulkAutomationLevel;
   minConfidence: BulkConfidence;
+  riskLevels?: BulkRiskAutonomy;
+}
+
+export function bulkRiskAutonomy(policy: StandingBulkAutomationPolicy): BulkRiskAutonomy {
+  return policy.riskLevels ?? {
+    low: policy.level === 'L0' ? 'review' : 'automatic',
+    medium: policy.level === 'L2' ? 'automatic' : 'review',
+    high: 'review',
+  };
+}
+
+export function isBulkRiskAutonomy(value: unknown): value is BulkRiskAutonomy {
+  if (!value || typeof value !== 'object') return false;
+  return BULK_AUTOMATION_RISKS.every((risk) => {
+    const mode = (value as Record<string, unknown>)[risk];
+    return mode === 'review' || mode === 'automatic';
+  });
 }
 
 export const DEFAULT_STANDING_BULK_AUTOMATION_POLICY: Readonly<StandingBulkAutomationPolicy> = {
@@ -133,6 +156,7 @@ export function normalizeStandingBulkAutomationPolicy(
     minConfidence: isBulkConfidence(value?.minConfidence)
       ? value!.minConfidence
       : DEFAULT_STANDING_BULK_AUTOMATION_POLICY.minConfidence,
+    ...(isBulkRiskAutonomy(value?.riskLevels) ? { riskLevels: { ...value!.riskLevels } } : {}),
   };
 }
 
@@ -140,10 +164,14 @@ export function normalizeStandingBulkAutomationPolicy(
 export function bulkAutomationSnapshot(
   policy: StandingBulkAutomationPolicy,
 ): BulkAutomationPolicy {
+  const risks = bulkRiskAutonomy(policy);
+  const level = risks.medium === 'automatic' || risks.high === 'automatic'
+    ? 'L2' : risks.low === 'automatic' ? 'L1' : 'L0';
   return {
-    level: policy.level,
-    mode: policy.level === 'L0' ? 'review-all' : 'safe-high',
+    level,
+    mode: level === 'L0' ? 'review-all' : 'safe-high',
     minConfidence: policy.minConfidence,
+    ...(policy.riskLevels ? { riskLevels: { ...policy.riskLevels } } : {}),
   };
 }
 
@@ -185,6 +213,7 @@ export function normalizeBulkAutomationPolicy(
       (level === 'L0' ? 'review-all' : level ? 'safe-high' : DEFAULT_BULK_AUTOMATION_POLICY.mode),
     minConfidence,
     ...(explicitLevel ? { level: explicitLevel } : {}),
+    ...(isBulkRiskAutonomy(value?.riskLevels) ? { riskLevels: { ...value!.riskLevels } } : {}),
   };
 }
 
