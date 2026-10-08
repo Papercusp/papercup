@@ -473,6 +473,7 @@ export function attachedInstalledToolLifecycle(deps: {
   readNativeToolNames(): Promise<readonly string[]>;
   recordFailure: NativeLifecycleDeps['recordFailure'];
   funding?: AttachedInstalledToolFunding;
+  resolveFunding?: () => Promise<AttachedInstalledToolFunding | undefined>;
   registry?: NativeInstalledPerUseTurns;
   readTools?: CatalogLifecycleDeps['readTools'];
   readProvenance?: CatalogLifecycleDeps['readProvenance'];
@@ -485,10 +486,21 @@ export function attachedInstalledToolLifecycle(deps: {
     if (context.workspaceId !== session.workspaceId || context.ownerId !== session.ownerId)
       return { ok: false, code: 'native-installed-session-mismatch', message: 'Installed admission requires the attached engine owner', retryable: false };
     let catalog: readonly ProjectedTool[] = [];
+    let funding = deps.funding;
+    // Resolve secrets only for a verified paid installation. Core/free cohorts
+    // keep their existing admission even on a host with no commerce credentials.
+    const fundingHost: NativePlan['host'] = {
+      admit: binding => (funding?.host ?? unfundedHost).admit(binding),
+      localTurn: turn => (funding?.host ?? unfundedHost).localTurn(turn),
+      complete: (...args) => (funding?.host ?? unfundedHost).complete(...args),
+    };
     return (deps.registry ?? nativeInstalledPerUseTurns).nativeLifecycleFromCatalog({
       identityLifecycle: deps.identityLifecycle, recordFailure: deps.recordFailure,
       readProvenance: deps.readProvenance, readTools: () => catalog,
-      resolveInstallation: deps.funding?.resolveInstallation ?? unavailable,
+      resolveInstallation: async input => {
+        funding ??= await deps.resolveFunding?.();
+        return funding ? funding.resolveInstallation(input) : unavailable();
+      },
       resolveContext: async () => {
         const nativeNames = [...await deps.readNativeToolNames()];
         if (nativeNames.length > 1000 || new Set(nativeNames).size !== nativeNames.length)
@@ -505,7 +517,7 @@ export function attachedInstalledToolLifecycle(deps: {
           if (tool.pluginInstallation && tool.expose.mcp?.name) names.add(tool.expose.mcp.name);
         }
         return { context: { principalId: session.principalId, advSessionId: session.advSessionId,
-          mcpServer: 'papercusp-su', nativeTools }, host: deps.funding?.host ?? unfundedHost, toolNames: [...names] };
+          mcpServer: 'papercusp-su', nativeTools }, host: fundingHost, toolNames: [...names] };
       },
     }).admit(context);
   } };

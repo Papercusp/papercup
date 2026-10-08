@@ -413,9 +413,10 @@ describe('host-owned installed tool admission composition', () => {
     return { ...f, selected, catalog, resolveContext, resolveInstallation, readTools, deps, lifecycle };
   }
 
-  function attachedFixture(funded = true) {
+  function attachedFixture(funded = true, lazy = false) {
     const f = catalogFixture();
     const readNativeToolNames = vi.fn(async () => ['paid_run']);
+    const resolveFunding = vi.fn(async () => ({ host: f.plan.host, resolveInstallation: f.resolveInstallation }));
     const lifecycle = attachedInstalledToolLifecycle({
       session: { workspaceId: f.context.workspaceId, ownerId: f.context.ownerId,
         advSessionId: f.plan.context.advSessionId, principalId: f.plan.context.principalId },
@@ -423,10 +424,29 @@ describe('host-owned installed tool admission composition', () => {
       recordFailure: f.recordFailure, registry: f.registry, readTools: f.readTools,
       readProvenance: f.readProvenance,
       resolveNativeName: name => ({ paid_run: 'paid.run', tools_invoke: 'tools:invoke' } as Record<string, string>)[name],
-      ...(funded ? { funding: { host: f.plan.host, resolveInstallation: f.resolveInstallation } } : {}),
+      ...(lazy ? { resolveFunding } : funded ? { funding: { host: f.plan.host, resolveInstallation: f.resolveInstallation } } : {}),
     });
-    return { ...f, lifecycle, readNativeToolNames };
+    return { ...f, lifecycle, readNativeToolNames, resolveFunding };
   }
+
+  it('resolves the production financial capability for each paid turn before funding', async () => {
+    const f = attachedFixture(false, true);
+    const admitted = await f.lifecycle.admit(f.context);
+    expect(admitted.ok).toBe(true);
+    expect(f.resolveFunding).toHaveBeenCalledOnce();
+    expect(f.admit).toHaveBeenCalledOnce();
+    if (admitted.ok) await admitted.reconcile({ phase: 'delivery', message: 'not delivered' });
+    await f.lifecycle.admit({ ...f.context, ownerTurnId: 'another-turn' });
+    expect(f.resolveFunding).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not load financial credentials for a verified free installed cohort', async () => {
+    const f = attachedFixture(false, true);
+    f.readProvenance.mockResolvedValue({ ...provenance, listing: { ...provenance.listing, priceModel: 'free' } });
+    expect((await f.lifecycle.admit(f.context)).ok).toBe(true);
+    expect(f.resolveFunding).not.toHaveBeenCalled();
+    expect(f.admit).not.toHaveBeenCalled();
+  });
 
   it('attached default refuses an installed paid cohort before any tool or funding entry without host capabilities', async () => {
     const f = attachedFixture(false);
