@@ -169,6 +169,23 @@ describe('POST /agent-mcp/operator-tts original reading', () => {
     expect(calls).toBe(2);
   });
 
+  it('bounds synthesis to one prepared chunk while the response consumer is stalled', async () => {
+    const mock = stubFetch(() => new Response(FAKE_WAV));
+    const res = await post(ttsRoute, 'operator-tts', { operation: 'read', text: 'x'.repeat(9001) });
+    const reader = res.body!.getReader();
+    expect(mock).toHaveBeenCalledTimes(1);
+    const first = await reader.read();
+    expect(JSON.parse(new TextDecoder().decode(first.value))).toMatchObject({ type: 'chunk', index: 0 });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(mock).toHaveBeenCalledTimes(1);
+    const second = await reader.read();
+    expect(JSON.parse(new TextDecoder().decode(second.value))).toMatchObject({ type: 'chunk', index: 1 });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(mock).toHaveBeenCalledTimes(2);
+    await reader.cancel();
+    expect(mock).toHaveBeenCalledTimes(2);
+  });
+
   it('stops synthesis when the response consumer cancels', async () => {
     const mock = stubFetch(() => new Response(FAKE_WAV));
     const res = await post(ttsRoute, 'operator-tts', { operation: 'read', text: 'x'.repeat(9000) });

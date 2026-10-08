@@ -34,7 +34,15 @@ export function verifierSourceFiles(root: string, {
       if (rel === '.verifier-source.json') continue;
       // TanStack derives this file from the recorded routes/config on startup.
       // A tracked tree remains source, and a redirect is never a build output.
-      if (runtimeArtifacts && ['apps/operator-vite/src/routeTree.gen.ts', '.papercusp-pinned-deps'].includes(rel)
+      if (runtimeArtifacts && [
+        'apps/operator-vite/src/routeTree.gen.ts', '.papercusp-pinned-deps',
+        // build.rs creates these exact placeholders on a clean native build.
+        'papercusp-desktop/src-tauri/sidecar/PLACEHOLDER-README.txt',
+        'papercusp-desktop/src-tauri/sidecar/db-sql/PLACEHOLDER-README.txt',
+        'papercusp-desktop/src-tauri/sidecar/spa/PLACEHOLDER-README.txt',
+        'papercusp-desktop/src-tauri/seed/PLACEHOLDER-README.txt',
+        'papercusp-desktop/src-tauri/doc-vector-seed/PLACEHOLDER-README.txt',
+      ].includes(rel)
         && !recordedPaths.includes(rel)) {
         if (!lstatSync(path).isFile()) throw new VerifierSourceError(`runtime artifact is not an independent file: ${rel}`);
         continue;
@@ -44,6 +52,7 @@ export function verifierSourceFiles(root: string, {
       const runtimeDirectory = entry.name === 'node_modules' || [
         'apps/operator/dist-verify', 'apps/operator/test-results',
         'apps/operator/playwright-report', 'papercusp-desktop/src-tauri/target',
+        'papercusp-desktop/src-tauri/gen/schemas',
         'libs/generic/sse/dist', 'packages/omp-plugin/dist',
       ].includes(rel);
       if (runtimeArtifacts && runtimeDirectory
