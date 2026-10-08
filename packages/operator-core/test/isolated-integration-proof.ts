@@ -19,7 +19,7 @@ import { createProgressAwareWatchdog } from '../../../scripts/lib/batch-watchdog
 export const isolatedIntegrationCases = it.for([false, true]);
 
 type WorkerPhase = 'bootstrap' | 'execute' | 'teardown';
-type WorkerDeadlines = { bootstrapMs: number; executeMs: number; teardownMs: number; executeMaxMs?: number };
+type WorkerDeadlines = { bootstrapMs: number; bootstrapMaxMs?: number; executeMs: number; teardownMs: number; executeMaxMs?: number };
 
 /** Compose the actual nested router contract; startup consumes none of its
  * collection/execution allowance. Teardown allows the router's cgroup stop,
@@ -30,13 +30,17 @@ export function isolatedWorkerOptions(executeMs: number, env: NodeJS.ProcessEnv 
   const listMs = testFileListTimeoutMs(env);
   const teardownMs = TEST_FILE_SCOPE_STOP_TIMEOUT_SEC * 1000 + 5_000 + 30_000;
   const phaseTimeouts: WorkerDeadlines = {
+    // Collection time is a progress checkpoint, not a maximum PG boot time.
+    // Use the configured single-file verification allowance as the absolute
+    // preparation ceiling; only distinct observed boot stages can extend it.
     bootstrapMs: listMs,
+    bootstrapMaxMs: Math.max(listMs, testFileRunTimeoutMs(env, 1)),
     executeMs,
     executeMaxMs,
     teardownMs,
   };
   return { phaseTimeouts, killGraceMs: teardownMs, drainGraceMs: 5_000,
-    testTimeoutMs: phaseTimeouts.bootstrapMs + phaseTimeouts.executeMaxMs! + 2 * teardownMs + 20_000 };
+    testTimeoutMs: phaseTimeouts.bootstrapMaxMs! + phaseTimeouts.executeMaxMs! + 2 * teardownMs + 20_000 };
 }
 
 export function isolatedTestFileWorkerOptions(env: NodeJS.ProcessEnv, fileCount: number) {
@@ -58,6 +62,7 @@ export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, 
     assert.ok(ms === undefined || Number.isSafeInteger(ms) && ms > 0, 'deadlines must be positive safe integers');
   }
   assert.ok(!deadlines || !deadlines.executeMaxMs || deadlines.executeMaxMs >= deadlines.executeMs);
+  assert.ok(!deadlines || !deadlines.bootstrapMaxMs || deadlines.bootstrapMaxMs >= deadlines.bootstrapMs);
   let ownsProcessGroup = false;
   if (process.platform === 'linux' && child.pid) {
     try {
@@ -87,16 +92,20 @@ export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, 
     let forceTimer: ReturnType<typeof setTimeout> | undefined;
     let exitWaitTimer: ReturnType<typeof setTimeout> | undefined;
     let drainTimer: ReturnType<typeof setTimeout> | undefined;
+    const bootStages = new Set<string>();
     const capture = (chunk: Buffer) => {
       output += String(chunk); writeSync(fd, chunk);
-      progressWatchdog?.noteProgress();
+      if (phase === 'execute') progressWatchdog?.noteProgress();
     };
     const armPhase = (next: WorkerPhase) => {
       clearTimeout(timeout);
       progressWatchdog?.stop();
       phase = next;
       const ms = deadlines![next === 'bootstrap' ? 'bootstrapMs' : next === 'execute' ? 'executeMs' : 'teardownMs'];
-      if (next === 'execute' && deadlines!.executeMaxMs) {
+      if (next === 'bootstrap' && deadlines!.bootstrapMaxMs) {
+        progressWatchdog = createProgressAwareWatchdog({ timeoutMs: ms, maxMs: deadlines!.bootstrapMaxMs,
+          stallWindowMs: ms, extensionMs: ms, onKill: terminate });
+      } else if (next === 'execute' && deadlines!.executeMaxMs) {
         progressWatchdog = createProgressAwareWatchdog({ timeoutMs: ms, maxMs: deadlines!.executeMaxMs,
           stallWindowMs: 5 * 60_000, extensionMs: 5 * 60_000, onKill: terminate });
       } else timeout = setTimeout(terminate, ms);
@@ -105,6 +114,12 @@ export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, 
       appendFileSync(join(evidenceDir, 'runtime-events.ndjson'), JSON.stringify(value) + '\n');
       if (!deadlines || timedOut || !value || typeof value !== 'object') return;
       const kind = (value as { kind?: string }).kind;
+      const stage = (value as { stage?: unknown }).stage;
+      if (phase === 'bootstrap' && kind === 'isolated-runtime-bootstrap-progress' && typeof stage === 'string' &&
+          /^(initdb(?::sync)?|postmaster|database|migration:[\w.-]+|profile:[\w:-]+)$/.test(stage) && !bootStages.has(stage)) {
+        bootStages.add(stage);
+        progressWatchdog?.noteProgress();
+      }
       // Repeated or out-of-order IPC cannot renew a phase's deadline.
       if (kind === 'isolated-runtime-start' && phase === 'bootstrap') armPhase('execute');
       else if ((kind === 'isolated-runtime-stopping' || kind === 'isolated-runtime-end') && phase === 'execute') armPhase('teardown');
@@ -182,7 +197,7 @@ export async function recordIsolatedIntegrationProof(options: {
   execute: (observe: (child: ChildProcess) => void, evidenceDir: string) => Promise<void>;
 }): Promise<string> {
   const { root, filePath } = options;
-  const paths = [...new Set([filePath, ...options.sourcePaths])].sort();
+  const paths = [...new Set([filePath, 'scripts/lib/isolated-runtime-start.mjs', ...options.sourcePaths])].sort();
   let source: any;
   let lifecycle: any;
   let ended: any;
@@ -213,6 +228,9 @@ export async function recordIsolatedIntegrationProof(options: {
           assert.ok(!observedChild, 'one lifecycle per run');
           observedChild = child;
           child.on('message', (message: any) => {
+            // Bootstrap progress has its own append-only stream. Only actual
+            // lifecycle events can change the original lifetime snapshot.
+            if (message.kind !== 'isolated-runtime-start' && message.kind !== 'isolated-runtime-end') return;
             try {
               if (message.kind === 'isolated-runtime-start') {
                 assert.ok(!lifecycle, 'one start per run');
@@ -249,6 +267,10 @@ export async function recordIsolatedIntegrationProof(options: {
               lifecycle: lifecycle ?? null, ended: ended ?? null,
               observationError: observationError instanceof Error ? observationError.message : observationError ? String(observationError) : null,
             }));
+            if (message.kind === 'isolated-runtime-start') {
+              child.send({ kind: 'isolated-runtime-observed', childPid: message.childPid,
+                token: message.token, accepted: !observationError && !!lifecycle });
+            }
           });
         }, ctx.evidenceDir);
         if (observationError) throw observationError;

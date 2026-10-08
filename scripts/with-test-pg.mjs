@@ -95,6 +95,47 @@ function cleanupStage(stage, detail = {}) {
   console.log('[with-test-pg] cleanup ' + JSON.stringify(message));
   if (process.connected && process.send) return new Promise(done => process.send(message, done));
 }
+function observePrivatePgStop() {
+  if (!isolatedRuntime || process.env.PC_ISOLATED_RUNTIME_PROOF !== '1' || process.platform !== 'linux') return () => {};
+  let postmasterPid;
+  let postmasterStart;
+  const stat = pid => {
+    const fields = readFileSync(`/proc/${pid}/stat`, 'utf8').slice(readFileSync(`/proc/${pid}/stat`, 'utf8').lastIndexOf(')') + 2).split(/\s+/);
+    return { state: fields[0], parentPid: Number(fields[1]), startTicks: fields[19] };
+  };
+  try {
+    const record = readFileSync(join(dataDir, 'postmaster.pid'), 'utf8').split('\n');
+    postmasterPid = Number(record[0]);
+    const pin = stat(postmasterPid);
+    if (record[1] !== dataDir || Number(record[3]) !== port || pin.parentPid !== process.pid) {
+      throw new Error('private postmaster identity does not match owned runtime');
+    }
+    postmasterStart = pin.startTicks;
+  } catch (error) {
+    cleanupStage('pg-stop-observation-unavailable', { error: error.message });
+    return () => {};
+  }
+  const sample = () => {
+    try {
+      if (stat(postmasterPid).startTicks !== postmasterStart) throw new Error('private postmaster lifetime ended');
+      const descendants = readFileSync(`/proc/${postmasterPid}/task/${postmasterPid}/children`, 'utf8').trim().split(/\s+/).filter(Boolean).map(Number);
+      const processes = [postmasterPid, ...descendants].map(pid => {
+        try {
+          const pin = stat(pid);
+          if (pid !== postmasterPid && pin.parentPid !== postmasterPid) throw new Error('PG child reparented');
+          const io = Object.fromEntries(readFileSync(`/proc/${pid}/io`, 'utf8').trim().split('\n').map(line => line.split(':').map(s => s.trim())));
+          return { pid, ...pin, command: readFileSync(`/proc/${pid}/cmdline`, 'utf8').replaceAll('\0', ' ').trim(),
+            waitChannel: readFileSync(`/proc/${pid}/wchan`, 'utf8').trim(), io };
+        } catch (error) { return { pid, unavailable: error.message }; }
+      });
+      cleanupStage('pg-stop-observation', { processes });
+    } catch (error) { cleanupStage('pg-stop-observation-unavailable', { error: error.message }); }
+  };
+  sample();
+  const timer = setInterval(sample, 5000);
+  timer.unref();
+  return () => clearInterval(timer);
+}
 async function cleanup() {
   // Signals and failed bootstrap may converge here. Every caller waits for
   // the same cleanup rather than mistaking "started" for "finished".
@@ -113,6 +154,7 @@ async function cleanupOwnedState() {
       await exited;
     }
   }
+  const stopObserving = observePrivatePgStop();
   try {
     cleanupStage('pg-stop', { health: pg?.health() ?? null });
     await pg?.stop();
@@ -120,7 +162,7 @@ async function cleanupOwnedState() {
   } catch (error) {
     cleanupStage('pg-stop-error', { error: error?.message ?? String(error) });
     /* best effort — we still want the datadir gone */
-  }
+  } finally { stopObserving(); }
   cleanupStage('remove-private-state');
   await rm(dataDir, { recursive: true, force: true }).catch(() => {});
   if (runtimeRoot) await rm(runtimeRoot, { recursive: true, force: true }).catch(() => {});
@@ -144,7 +186,9 @@ for (const sig of ['SIGINT', 'SIGTERM']) {
     if (ownProcessGroup) {
       // The repeated signal to this supervisor is ignored by the guard above;
       // its exact owned initdb/postmaster descendants receive it as well.
-      try { process.kill(-process.pid, sig); } catch { /* group already exited */ }
+      // PG's maintained stop() uses SIGINT (fast shutdown). SIGTERM requests
+      // smart shutdown and waits for our still-running migration connection.
+      try { process.kill(-process.pid, 'SIGINT'); } catch { /* group already exited */ }
     }
     if (profileProcess?.pid) {
       try { process.kill(-profileProcess.pid, sig); } catch { /* already exited */ }
@@ -168,6 +212,16 @@ pg = await startEmbeddedPostgresServer({ dataDir, port, dbSqlDir: sqlDir, onLog:
     // Preserve boot/migration progress as well as shutdown. A deadline before
     // start() returns otherwise erases the stage that actually consumed it.
     console.log('[with-test-pg] pg ' + String(message));
+    if (!child && cleanupStartedAt === null && process.env.PC_ISOLATED_RUNTIME_PROOF === '1' && process.connected) {
+      const text = String(message);
+      const migration = text.match(/^apply ([\w.-]+\.sql)$/)?.[1];
+      const stage = text.startsWith('initialising data dir') ? 'initdb'
+        : text.includes('syncing data to disk') ? 'initdb:sync'
+        : text.startsWith('starting postgres on ') ? 'postmaster'
+        : text.startsWith('creating database ') ? 'database'
+        : migration ? 'migration:' + migration : null;
+      if (stage) process.send({ kind: 'isolated-runtime-bootstrap-progress', stage }, () => {});
+    }
     if (cleanupStartedAt !== null) cleanupStage('pg-log', { message });
 } });
 assertNotTerminating();
@@ -343,6 +397,9 @@ if (operatorApi) {
           if (Array.isArray(message.pendingGateSources)) pendingGateSources = message.pendingGateSources;
           console.log('[with-test-pg] operator-api stage ' + lastStage + ' +' + (Date.now() - started) + 'ms' +
             (Array.isArray(message.pendingGateSources) ? ' pending=' + JSON.stringify(pendingGateSources) : ''));
+          if (process.env.PC_ISOLATED_RUNTIME_PROOF === '1' && process.connected) {
+            process.send({ kind: 'isolated-runtime-bootstrap-progress', stage: 'profile:' + lastStage }, () => {});
+          }
           return;
         }
         clearTimeout(timer);
@@ -367,9 +424,16 @@ if (operatorApi) {
   }
 }
 assertNotTerminating();
-child = spawn(cmd[0], cmd.slice(1), {
+const observedRuntime = isolatedRuntime && process.env.PC_ISOLATED_RUNTIME_PROOF === '1' && process.send;
+const startToken = observedRuntime ? randomUUID() : null;
+if (observedRuntime && resolve(cmd[0]) !== process.execPath) {
+  throw new Error('original lifetime proof requires the maintained Node worker route');
+}
+const childArgs = observedRuntime
+  ? ['--import', join(ROOT, 'scripts/lib/isolated-runtime-start.mjs'), ...cmd.slice(1)] : cmd.slice(1);
+child = spawn(cmd[0], childArgs, {
   cwd: ROOT,
-  stdio: 'inherit',
+  stdio: observedRuntime ? ['inherit', 'inherit', 'inherit', 'ipc'] : 'inherit',
   env: {
     ...childEnv,
     // PAPERCUSP_PG_PORT is the repo's OWN isolation lever for "this process owns a
@@ -388,15 +452,28 @@ child = spawn(cmd[0], cmd.slice(1), {
     // a CLI) must also never resolve the *product's* live embedded PG.
     PAPERCUSP_SKIP_PG_DISCOVERY: '1',
     ...runtimeEnv,
+    ...(observedRuntime ? { PC_ISOLATED_RUNTIME_START_TOKEN: startToken } : {}),
   },
   detached: isolatedRuntime,
 });
 
 // The test parent measures these PIDs during their actual lifetime. Ordinary
 // runs have no IPC observer and pay no receipt cost.
-if (isolatedRuntime && process.env.PC_ISOLATED_RUNTIME_PROOF === '1' && process.send) {
-  process.send({ kind: 'isolated-runtime-start', supervisorPid: process.pid, childPid: child.pid,
-    workspace: runtimeId, runtimeRoot, dataDir, pgPort: port, root: ROOT });
+if (observedRuntime) {
+  let announced = false;
+  const acknowledge = message => {
+    if (!announced || message?.kind !== 'isolated-runtime-observed' || message.childPid !== child.pid || message.token !== startToken) return;
+    process.off('message', acknowledge);
+    child.send({ kind: 'isolated-worker-observed', token: startToken, accepted: message.accepted === true });
+  };
+  process.on('message', acknowledge);
+  child.on('message', message => {
+    if (announced || message?.kind !== 'isolated-worker-ready' || message.token !== startToken) return;
+    announced = true;
+    process.send({ kind: 'isolated-runtime-start', supervisorPid: process.pid, childPid: child.pid,
+      workspace: runtimeId, runtimeRoot, dataDir, pgPort: port, root: ROOT, token: startToken });
+  });
+  child.once('exit', () => process.off('message', acknowledge));
 }
 
 child.on('error', async (error) => {

@@ -52,7 +52,7 @@ it('cleans owned state when cancelled during real initdb before runtime-start', 
   let cancelled = false;
   let dataDir: string | undefined;
   const messages: Array<Record<string, unknown>> = [];
-  child.on('message', value => { if (value && typeof value === 'object') messages.push(value); });
+  child.on('message', value => { if (value && typeof value === 'object') messages.push(value as Record<string, unknown>); });
   child.stdout!.on('data', chunk => {
     const output = String(chunk);
     dataDir ??= output.match(/\(datadir (.+)\)/)?.[1];
