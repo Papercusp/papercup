@@ -14,7 +14,9 @@ const mocks = vi.hoisted(() => ({
   receipts: vi.fn(async (_identity: unknown): Promise<Array<{ turnId: string; content: string }>> => []),
   persona: vi.fn(),
   resolveBinary: vi.fn((bin: string) => `/resolved/${bin}`),
+  nativeFunding: vi.fn(async (_input: unknown): Promise<{ ok: true } | { ok: false; code: string; message: string; retryable: false }> => ({ ok: true })),
 }));
+vi.mock('./cupboard/identity-activation-gate-io', () => ({ admitNativeIdentityInference: mocks.nativeFunding }));
 vi.mock('./agent-bin-detect', () => ({ resolveAgentBinarySync: mocks.resolveBinary }));
 vi.mock('./su-session-commands', async (orig) => ({
   ...(await orig<typeof import('./su-session-commands')>()),
@@ -40,7 +42,7 @@ vi.mock('../../../apps/operator/scripts/psu-launcher.mjs', async (original) => (
     ? ['--dangerously-bypass-hook-trust']
     : ['--approval-mode', 'yolo', '--system-prompt', '/sealed/su.md'] }),
 }));
-import { codexApprovalsPolicy, startSuRpcEngine, type SuRpcEngine } from './su-session-rpc-engine';
+import { codexApprovalsPolicy, startSuRpcEngine, type SuRpcEngine, type SuCodexTurnLifecycle } from './su-session-rpc-engine';
 
 const engines: SuRpcEngine[] = [];
 const nativeDirs: string[] = [];
@@ -51,6 +53,7 @@ afterEach(async () => {
   mocks.persona.mockReset();
   mocks.persist.mockResolvedValue(true);
   mocks.receipts.mockResolvedValue([]);
+  mocks.nativeFunding.mockResolvedValue({ ok: true });
 });
 
 function fixture(backend: 'codex' | 'omp', overrides: {
@@ -64,6 +67,7 @@ function fixture(backend: 'codex' | 'omp', overrides: {
   beforeReady?: () => Promise<void>;
   toolApproval?: 'prompt';
   identity?: 'su' | 'coding-assistant';
+  turnLifecycle?: SuCodexTurnLifecycle;
   stage?: (name: string) => void;
   env?: Record<string, string>;
 } = {}) {
@@ -121,6 +125,7 @@ function fixture(backend: 'codex' | 'omp', overrides: {
     beforeReady: overrides.beforeReady,
     toolApproval: overrides.toolApproval,
     identity: overrides.identity,
+    turnLifecycle: overrides.turnLifecycle,
     stage: overrides.stage,
     accountRoute: 'default', carry: 'warm', modes: ['auto'], register: false,
     ...(overrides.resume ? { nativeSession } : {}),
@@ -135,6 +140,154 @@ function command(engine: SuRpcEngine, type: 'owner_turn' | 'interrupt', id: stri
     commandId: id, issuedAt: new Date().toISOString(), target: engine.adapter.host.descriptor().identity };
   return type === 'owner_turn' ? { ...base, type, turnId: `owner-${id}`, content: 'Hello from PUI' } : { ...base, type };
 }
+
+describe('P-017 awaited Codex host lifecycle', () => {
+  it.each(['codex', 'omp'] as const)('awaits the production paid-identity guard before %s native inference', async (backend) => {
+    const barrier = gate();
+    mocks.nativeFunding.mockImplementation(async () => { await barrier.promise;
+      return { ok: false, code: 'identity-native-billing-unsupported', message: 'No provider dollars', retryable: false }; });
+    const f = fixture(backend); await f.engine.ready;
+    const dispatched = f.engine.adapter.host.startCommand(command(f.engine, 'owner_turn') as never);
+    await vi.waitFor(() => expect(mocks.nativeFunding).toHaveBeenCalledOnce());
+    expect(f.sent.some((r) => r.method === 'turn/start' || r.type === 'prompt')).toBe(false);
+    expect(mocks.nativeFunding).toHaveBeenCalledWith({ workspaceId: 'workspace', ownerId: 'su-rpc-fixture', backend });
+    barrier.release();
+    await expect(dispatched.terminal).resolves.toMatchObject({ status: 'refused', refusal: { code: 'identity-native-billing-unsupported' } });
+    expect(f.sent.some((r) => r.method === 'turn/start' || r.type === 'prompt')).toBe(false);
+  });
+
+  it('rechecks APPLIED funding on the resumed engine rather than granting from its saved descriptor', async () => {
+    const f = fixture('codex', { resume: true }); await f.engine.ready;
+    mocks.nativeFunding.mockResolvedValue({ ok: false, code: 'identity-activation-unfunded', message: 'revoked', retryable: false });
+    await expect(f.engine.adapter.host.startCommand(command(f.engine, 'owner_turn') as never).terminal)
+      .resolves.toMatchObject({ status: 'refused', refusal: { code: 'identity-activation-unfunded' } });
+    expect(starts(f)).toHaveLength(0);
+    expect(mocks.nativeFunding).toHaveBeenCalledOnce();
+  });
+  function gate() {
+    let release!: () => void;
+    const promise = new Promise<void>((resolve) => { release = resolve; });
+    return { promise, release };
+  }
+  function lifecycle() {
+    const lease = { ok: true as const, bindNativeTurn: vi.fn(async (_id: string) => {}),
+      complete: vi.fn(async (_input: { nativeTurnId: string; status: string; completedAtMs: number }) => {}),
+      reconcile: vi.fn(async (_input: { phase: 'delivery' | 'binding' | 'completion'; message: string }) => {}) };
+    const admit = vi.fn(async (_input: Parameters<SuCodexTurnLifecycle['admit']>[0]) => lease);
+    return { lease, admit };
+  }
+  function completed(f: ReturnType<typeof fixture>, id = 'native-turn', status = 'completed') {
+    f.emit({ method: 'turn/completed', params: { threadId: 'native-codex', turn: { id, status } } });
+  }
+  const starts = (f: ReturnType<typeof fixture>) => f.sent.filter((frame) => frame.method === 'turn/start');
+
+  it('awaits host admission before sending inference and passes distinct owner/native identities', async () => {
+    const l = lifecycle(), barrier = gate();
+    l.admit.mockImplementation(async () => { await barrier.promise; return l.lease; });
+    const f = fixture('codex', { turnLifecycle: l }); await f.engine.ready;
+    const dispatch = f.engine.adapter.host.startCommand(command(f.engine, 'owner_turn', 'admitted') as never);
+    await vi.waitFor(() => expect(l.admit).toHaveBeenCalledOnce());
+    expect(starts(f)).toHaveLength(0);
+    expect(l.admit).toHaveBeenCalledWith({ workspaceId: 'workspace', ownerId: 'su-rpc-fixture',
+      nativeSessionId: 'native-codex', ownerTurnId: 'owner-admitted', model: 'codex-model' });
+    barrier.release();
+    await expect(dispatch.terminal).resolves.toMatchObject({ status: 'completed' });
+    expect(l.lease.bindNativeTurn).toHaveBeenCalledExactlyOnceWith('native-turn');
+    expect(l.lease.complete).not.toHaveBeenCalled(); // delivery ack is not completion
+    completed(f);
+    await vi.waitFor(() => expect(l.lease.complete).toHaveBeenCalledOnce());
+    expect(l.lease.complete).toHaveBeenCalledWith({ nativeTurnId: 'native-turn', status: 'completed', completedAtMs: expect.any(Number) });
+  });
+
+  it('refuses an exhausted admission without starting inference or fabricating usage', async () => {
+    const admit = vi.fn(async () => ({ ok: false as const, code: 'identity_cap_exhausted',
+      message: 'The funded identity cap is exhausted', retryable: false }));
+    const f = fixture('codex', { turnLifecycle: { admit } }); await f.engine.ready;
+    await expect(f.engine.adapter.host.startCommand(command(f.engine, 'owner_turn') as never).terminal)
+      .resolves.toMatchObject({ status: 'refused', refusal: { code: 'identity_cap_exhausted' } });
+    expect(starts(f)).toHaveLength(0);
+  });
+
+  it.each(['failed', 'interrupted'])('retains billable completion for a native %s turn', async (status) => {
+    const l = lifecycle();
+    const f = fixture('codex', { turnLifecycle: l }); await f.engine.ready;
+    await f.engine.adapter.host.startCommand(command(f.engine, 'owner_turn') as never).terminal;
+    completed(f, 'native-turn', status);
+    await vi.waitFor(() => expect(l.lease.complete).toHaveBeenCalledOnce());
+    expect(l.lease.complete).toHaveBeenCalledWith({ nativeTurnId: 'native-turn', status, completedAtMs: expect.any(Number) });
+  });
+
+  it('waits for durable binding when completion arrives before the native response', async () => {
+    const l = lifecycle(), barrier = gate();
+    l.lease.bindNativeTurn.mockImplementation(async () => { await barrier.promise; });
+    const f = fixture('codex', { turnLifecycle: l, request: async (frame) => {
+      if (frame.method === 'turn/start') completed(f);
+      return undefined;
+    } }); await f.engine.ready;
+    const dispatch = f.engine.adapter.host.startCommand(command(f.engine, 'owner_turn') as never);
+    await vi.waitFor(() => expect(l.lease.bindNativeTurn).toHaveBeenCalledOnce());
+    expect(l.lease.complete).not.toHaveBeenCalled();
+    barrier.release();
+    await dispatch.terminal;
+    await vi.waitFor(() => expect(l.lease.complete).toHaveBeenCalledOnce());
+  });
+
+  it('blocks the next turn until completion settles and deduplicates native completion', async () => {
+    const l = lifecycle(), barrier = gate();
+    l.lease.complete.mockImplementation(async () => { await barrier.promise; });
+    const f = fixture('codex', { turnLifecycle: l }); await f.engine.ready;
+    await f.engine.adapter.host.startCommand(command(f.engine, 'owner_turn', 'first') as never).terminal;
+    const second = f.engine.adapter.host.startCommand(command(f.engine, 'owner_turn', 'second') as never);
+    completed(f); completed(f);
+    await vi.waitFor(() => expect(l.lease.complete).toHaveBeenCalledOnce());
+    expect(l.admit).toHaveBeenCalledOnce();
+    expect(starts(f)).toHaveLength(1);
+    barrier.release();
+    await second.terminal;
+    expect(starts(f)).toHaveLength(2);
+    expect(l.admit).toHaveBeenCalledTimes(2);
+  });
+
+  it('ignores an early unrelated turn and binds only the correlated native response', async () => {
+    const l = lifecycle();
+    const f = fixture('codex', { turnLifecycle: l, request: async (frame) => {
+      if (frame.method === 'turn/start') {
+        f.emit({ method: 'turn/started', params: { threadId: 'native-codex', turn: { id: 'unrelated' } } });
+        completed(f, 'unrelated');
+      }
+      return undefined;
+    } }); await f.engine.ready;
+    await f.engine.adapter.host.startCommand(command(f.engine, 'owner_turn') as never).terminal;
+    expect(l.lease.bindNativeTurn).toHaveBeenCalledExactlyOnceWith('native-turn');
+    expect(l.lease.complete).not.toHaveBeenCalled();
+    completed(f);
+    await vi.waitFor(() => expect(l.lease.complete).toHaveBeenCalledOnce());
+  });
+
+  it.each(['delivery', 'binding', 'completion'] as const)('retains the %s failure for reconciliation and stops queued inference', async (phase) => {
+    const l = lifecycle();
+    if (phase === 'binding') l.lease.bindNativeTurn.mockRejectedValue(new Error('durable binding unavailable'));
+    if (phase === 'completion') l.lease.complete.mockRejectedValue(new Error('complete billed population unavailable'));
+    const f = fixture('codex', { turnLifecycle: l, request: async (frame) => {
+      if (phase === 'delivery' && frame.method === 'turn/start') throw new Error('native response lost');
+      return undefined;
+    } }); await f.engine.ready;
+    const first = f.engine.adapter.host.startCommand(command(f.engine, 'owner_turn', 'first') as never);
+    const second = f.engine.adapter.host.startCommand(command(f.engine, 'owner_turn', 'second') as never);
+    await first.terminal;
+    if (phase === 'completion') completed(f);
+    await vi.waitFor(() => expect(l.lease.reconcile).toHaveBeenCalledOnce());
+    expect(l.lease.reconcile).toHaveBeenCalledWith({ phase, message: expect.any(String) });
+    await second.terminal;
+    await vi.waitFor(() => expect(f.engine.adapter.host.snapshot().terminal).toBe(true));
+    expect(starts(f)).toHaveLength(1);
+    if (phase !== 'completion') expect(l.lease.complete).not.toHaveBeenCalled();
+  });
+
+  it('refuses OMP capability injection without a proven native-turn identity', () => {
+    expect(() => fixture('omp', { turnLifecycle: lifecycle() })).toThrow('proven Codex native turn identity');
+  });
+});
 
 describe.each(['codex', 'omp'] as const)('%s structured SU engine', (backend) => {
   it('names the pending native initialization operation without advertising readiness', async () => {

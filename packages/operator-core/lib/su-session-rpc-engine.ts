@@ -23,12 +23,14 @@ import { makeCodingAssistantCodexHome } from './role-codex-home';
 import type { ClaudeEngineIdentity } from './su-session-claude-engine';
 import { persistSuSessionDescriptor } from './su-session-persistence';
 import { listCodexModels } from './su-session-engine-models';
-import { codexAppServerTokenUsage, codexPlan, ompMessageUsage } from './su-session-usage';
+import { codexAppServerTokenUsage, codexPlan, ompMessageUsage, type SuCodexTurnAdmission, type SuCodexTurnLifecycle } from './su-session-usage';
+export type { SuCodexTurnAdmission, SuCodexTurnLifecycle } from './su-session-usage';
 import { findCodexRolloutPathByUuid } from './session-transcript-resolvers';
 import { SuSessionStartupTimeoutError, type SuSessionEventInput, type SuSessionHost, type SuSessionServedAccountReader } from './su-session-host';
 import { startSuStdioPeer, type RpcFrame, type SuStdioPeer } from './su-session-stdio-peer';
 import { SuNativeCards } from './su-session-native-cards';
 import { readSuperuserToken } from './superuser-token';
+import { admitNativeIdentityInference } from './cupboard/identity-activation-gate-io';
 import { resolveAgentBinarySync } from './agent-bin-detect';
 
 type Backend = 'codex' | 'omp';
@@ -59,6 +61,9 @@ export interface SuRpcEngineOptions {
   /** Saved owner turns the resume replay pairs restored prompts with
    * (default: loadSuOwnerTurnReceipts, WI-10004254). */
   ownerTurnReceipts?: (identity: SuOwnerTurn['target']) => Promise<readonly SuOwnerTurnReceiptRef[]>;
+  /** Awaited admission/binding/completion for hosts enforcing paid inference.
+   * OMP has no proven native turn identity and cannot use this capability. */
+  turnLifecycle?: SuCodexTurnLifecycle;
 }
 
 /** The user's own OMP MCP servers, minus papercusp-su (P-016). */
@@ -116,6 +121,9 @@ export function startSuRpcEngine(
   options: SuRpcEngineOptions,
 ): SuRpcEngine {
   const backend = binding.backend;
+  if (options.turnLifecycle && backend !== 'codex') {
+    throw new Error('Awaited turn lifecycle requires a proven Codex native turn identity');
+  }
   if (boot.agent !== backend || boot.sessionId !== binding.advSessionId
     || boot.workspaceId !== binding.workspaceId || boot.harnessSlug !== binding.harnessSlug
     || boot.envelopeEnv.PAPERCUSP_SID !== binding.ownerId) {
@@ -197,6 +205,10 @@ export function startSuRpcEngine(
   let turnFinished: (() => void) | undefined;
   let turnCompletion: Promise<void> | undefined;
   let nativeStart: Promise<RpcFrame> | undefined;
+  let turnAdmission: SuCodexTurnAdmission | undefined;
+  let nativeBinding: Promise<void> | undefined;
+  let releaseNativeBinding: (() => void) | undefined;
+  let nativeBindingFailed = false;
   let inputTail = Promise.resolve();
   const streams = new Map<string, string>();
   const tools = new Map<string, string>();
@@ -247,15 +259,37 @@ export function startSuRpcEngine(
         }
         ownerTurnId = turnId;
         turnCompletionSettled = false;
+        nativeBindingFailed = false;
+        nativeBinding = new Promise<void>((resolve) => { releaseNativeBinding = resolve; });
         const finished = new Promise<void>((resolve) => { turnFinished = resolve; });
         turnCompletion = finished;
+        let deliveryAttempted = false;
+        let failurePhase: 'delivery' | 'binding' = 'delivery';
         try {
+          if (su && !options.turnLifecycle) {
+            if (!binding.workspaceId || !binding.ownerId) throw new Error('Native admission requires the authenticated workspace and owner');
+            const admission = await admitNativeIdentityInference({ workspaceId: binding.workspaceId,
+              ownerId: binding.ownerId, backend });
+            if (!admission.ok) { acknowledged(admission); return; }
+          }
+          if (options.turnLifecycle) {
+            if (!binding.workspaceId || !binding.ownerId || !nativeId()) {
+              throw new Error('Turn admission requires the authenticated workspace, owner and native session');
+            }
+            const admission = await options.turnLifecycle.admit({ workspaceId: binding.workspaceId,
+              ownerId: binding.ownerId, nativeSessionId: nativeId(), ownerTurnId: turnId,
+              model: nextModel ?? selectedModel });
+            if (!admission.ok) { acknowledged(admission); return; }
+            turnAdmission = admission;
+          }
+          if (!ready || closed) throw new Error('The engine closed during turn admission');
           // The command is durably accepted before native delivery. Persist its
           // visible prompt before RPC can stream a reply; restored sessions use
           // these owner events to place each reply under its original prompt.
           emit({ type: 'transcript', phase: 'completed', turnId, role: 'owner',
             channel: 'text', content });
           if (backend === 'codex') {
+            deliveryAttempted = true;
             nativeStart = peer!.request({ method: 'turn/start', params: {
               threadId: nativeId(), input: [{ type: 'text', text: content }],
               ...(switchTo ? { model: switchTo.model, ...(switchTo.effort ? { effort: switchTo.effort } : {}) } : {}),
@@ -264,20 +298,35 @@ export function startSuRpcEngine(
             const result = await nativeStart;
             nativeTurnId = string(object(result.turn).id);
             if (!nativeTurnId) throw new Error('Codex accepted no identifiable native turn');
+            failurePhase = 'binding';
+            await turnAdmission?.bindNativeTurn(nativeTurnId);
           } else await peer!.request({ type: 'prompt', message: content }, options.deliveryTimeoutMs ?? 30_000);
+          releaseNativeBinding?.();
           if (switchTo) { selectedModel = nextModel; host.updateModel(nextModel!); }
           if (approvalsTo) { selectedApprovals = approvalsTo; host.updateApprovals(approvalsTo); }
           await refreshResumeEvidence();
           acknowledged({ ok: true });
           await finished;
         } catch (error) {
+          nativeBindingFailed = true;
+          releaseNativeBinding?.();
           acknowledged(unavailable(String(error)));
           // The native turn may have begun despite a lost response. Do not
           // send queued input into an uncorrelated turn or replay this one.
           ready = false;
+          // Persist the uncertain outcome before teardown; never release an
+          // admission merely because its native acknowledgement was lost.
+          if (turnAdmission) {
+            try { await turnAdmission.reconcile({ phase: deliveryAttempted ? failurePhase : 'delivery', message: String(error) }); }
+            catch (reconcileError) { reportRuntimeFailure(reconcileError); }
+          }
           adapter.reconcileRuntimeExit({ expected: false, reason: `Native delivery is unknown: ${String(error)}` });
           await close();
-        } finally { turnFinished = undefined; turnCompletion = undefined; nativeStart = undefined; ownerTurnId = ''; nativeTurnId = ''; streams.clear(); }
+        } finally {
+          releaseNativeBinding?.();
+          turnAdmission = undefined; nativeBinding = undefined; releaseNativeBinding = undefined;
+          turnFinished = undefined; turnCompletion = undefined; nativeStart = undefined; ownerTurnId = ''; nativeTurnId = ''; streams.clear();
+        }
       });
       return receipt;
     },
@@ -370,9 +419,27 @@ export function startSuRpcEngine(
     }
     if (completed) emit({ type: 'transcript', phase: 'completed', turnId: ownerTurnId, role: 'assistant', channel, content: streams.get(key) });
   }
-  async function finish(status: string, error?: string): Promise<void> {
-    if (turnCompletionSettled) return;
+  async function finish(status: string, error?: string, eventNativeTurnId?: string): Promise<void> {
+    const owner = ownerTurnId, admission = turnAdmission;
+    const completedAtMs = Date.now();
+    if (!owner || turnCompletionSettled) return;
+    // Completion can arrive before turn/start responds or while the durable
+    // native binding is in flight. Neither may open the next inference turn.
+    if (backend === 'codex') await nativeBinding;
+    if (closed || nativeBindingFailed || owner !== ownerTurnId || turnCompletionSettled) return;
+    if (backend === 'codex' && (!eventNativeTurnId || eventNativeTurnId !== nativeTurnId)) return;
     turnCompletionSettled = true;
+    if (admission) {
+      try { await admission.complete({ nativeTurnId, status, completedAtMs }); }
+      catch (completionError) {
+        ready = false;
+        try { await admission.reconcile({ phase: 'completion', message: String(completionError) }); }
+        catch (reconcileError) { reportRuntimeFailure(reconcileError); }
+        reportRuntimeFailure(completionError);
+        await close();
+        return;
+      }
+    }
     if (error) emit({ type: 'error', scope: 'turn', code: `${backend}_turn_failed`, message: error, recoverable: true });
     // The native transcript/RPC frame carries completion, but not the account
     // selected by Papercusp's inference gateway. Refresh that provenance before
@@ -401,15 +468,15 @@ export function startSuRpcEngine(
     if (backend === 'codex') {
       const method = string(frame.method), params = object(frame.params);
       const eventTurnId = string(params.turnId) || string(object(params.turn).id);
-      if (method !== 'turn/started' && eventTurnId && nativeTurnId && eventTurnId !== nativeTurnId) return;
+      if (eventTurnId && nativeTurnId && eventTurnId !== nativeTurnId) return;
       if (frame.id != null && method) {
         // Do not execute or approve a request this PUI cannot answer yet.
         peer?.send({ id: frame.id, error: { code: -32601, message: `PUI cannot answer ${method}` } });
         emit({ type: 'error', scope: 'command', code: 'native_request_unsupported', message: `This Codex request is unavailable in PUI: ${method}`, recoverable: true });
       } else if (method === 'turn/started') {
-        nativeTurnId = string(object(params.turn).id); host.transition('running', 'Codex native turn started');
+        if (ownerTurnId) host.transition('running', 'Codex native turn started');
       } else if (method === 'turn/completed') {
-        const turn = object(params.turn); void finish(string(turn.status), string(object(turn.error).message) || undefined);
+        const turn = object(params.turn); void finish(string(turn.status), string(object(turn.error).message) || undefined, eventTurnId);
       } else if (method === 'thread/tokenUsage/updated') {
         // WI-10006653: a live conversation's context meter. Without this the
         // descriptor carried usage only after a resume replayed the rollout.
