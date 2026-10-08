@@ -352,8 +352,60 @@ describe('boundedOrgTxn', () => {
     ).catch((e) => e);
 
     expect(err).toBeInstanceOf(DbCallDeadlineError);
-    expect((err as DbCallDeadlineError).label).toBe('boundedOrgTxn:acquire(admin)');
+    expect((err as DbCallDeadlineError).label).toBe('boundedOrgTxn:begin(admin)');
     expect(fnRan).toBe(false);
+  });
+
+  it.each([
+    ['begin', 'boundedOrgTxn:begin(admin)'],
+    ['read-only', 'boundedOrgTxn:setup-read-only(admin)'],
+    ['timeouts', 'boundedOrgTxn:setup-timeouts(admin)'],
+  ] as const)('attributes a stalled %s phase and prevents late caller work', async (stalledPhase, label) => {
+    vi.useFakeTimers();
+    try {
+      let releaseStall!: () => void;
+      const stall = new Promise<void>((resolve) => { releaseStall = resolve; });
+      const queries: string[] = [];
+      let began = false;
+      let lateError: unknown;
+      const tag = async (strings: TemplateStringsArray) => {
+        const query = strings.join('?');
+        queries.push(query);
+        if ((stalledPhase === 'read-only' && query.includes('SET TRANSACTION')) ||
+            (stalledPhase === 'timeouts' && query.includes('set_config'))) await stall;
+        return [];
+      };
+      const client = {
+        begin: async (cb: (tx: unknown) => Promise<unknown>) => {
+          if (stalledPhase === 'begin') await stall;
+          began = true;
+          try {
+            return await cb(tag);
+          } catch (error) {
+            lateError = error;
+            throw error;
+          }
+        },
+      } as never;
+      const caller = vi.fn(async () => 'unreachable');
+      const transaction = boundedOrgTxn(caller, { client, readOnly: true, acquireTimeoutMs: 20 })
+        .catch((error: unknown) => error);
+
+      await vi.advanceTimersByTimeAsync(20);
+      const error = await transaction;
+      expect(error).toBeInstanceOf(DbCallDeadlineError);
+      expect(error).toMatchObject({ label, deadlineMs: 20, elapsedMs: 20 });
+      expect(began).toBe(stalledPhase !== 'begin');
+      expect(queries).toHaveLength(stalledPhase === 'begin' ? 0 : stalledPhase === 'read-only' ? 1 : 2);
+      expect(caller).not.toHaveBeenCalled();
+
+      releaseStall();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(lateError).toBeInstanceOf(DbCallDeadlineError);
+      expect(caller).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('maps a PG 57014 (statement_timeout) to OrgTxnTimeoutError with pgCode', async () => {
