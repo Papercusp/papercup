@@ -754,6 +754,60 @@ const execute = (target: ProjectedTool, aroundInvoke = PROJECTED_DEPS.aroundInvo
 afterEach(() => vi.resetAllMocks());
 
 describe('installed per-use shared chokepoint', () => {
+  it('R16 refusal oracle catches a deliberately bypassed entitlement check', async () => {
+    const witness = async (aroundInvoke: NonNullable<typeof PROJECTED_DEPS.aroundInvoke>) => {
+      const target = tool();
+      const result = await execute(target, aroundInvoke, { entitled: true, funded: true });
+      return { target, result };
+    };
+    const assertRefused = ({ target, result }: Awaited<ReturnType<typeof witness>>) => {
+      expect(result.result).toMatchObject({ isError: true });
+      expect(target.fn).not.toHaveBeenCalled();
+    };
+    const production = createInstalledPerUseChokepoint({ readProvenance: async () => provenance,
+      resolveAdmittedTurn: () => null });
+    assertRefused(await witness(production));
+    // Permanent broken control: caller-supplied funding must not authorize the handler.
+    const bypassed = await witness(request => request.invoke());
+    expect(bypassed.target.fn).toHaveBeenCalledOnce();
+    expect(() => assertRefused(bypassed)).toThrow();
+  });
+
+  it.each(['omitted', 'duplicated'] as const)(
+    'R17 charge oracle catches a deliberately %s settlement', async (corruption) => {
+      const witness = async (broken: boolean) => {
+        const { authority, turn, persisted } = admitted();
+        const production = createInstalledPerUseChokepoint({ readProvenance: async () => provenance,
+          resolveAdmittedTurn: () => authority });
+        const aroundInvoke: NonNullable<typeof production> = !broken ? production : corruption === 'omitted'
+          ? request => request.invoke()
+          : async request => {
+            const result = await production(request);
+            // A second nonce charges the same handler result again without another dispatch.
+            await production({ ...request, callId: `${request.callId}-duplicate`, invoke: async () => result });
+            return result;
+          };
+        const target = tool();
+        const result = await execute(target, aroundInvoke);
+        return { target, result, units: Object.values(turn.snapshot().units),
+          committedMicros: persisted()?.channel.committedMicros ?? 0n };
+      };
+      const assertExactlyOneCharge = (observed: Awaited<ReturnType<typeof witness>>) => {
+        expect(observed.result.result?.isError).not.toBe(true);
+        expect(observed.target.fn).toHaveBeenCalledOnce();
+        expect(observed.units).toHaveLength(1);
+        expect(observed.units[0]!.receipt?.amountMicros).toBe(250n);
+        expect(observed.committedMicros).toBe(250n);
+      };
+      assertExactlyOneCharge(await witness(false));
+      const broken = await witness(true);
+      expect(broken.target.fn).toHaveBeenCalledOnce();
+      expect(broken.units).toHaveLength(corruption === 'omitted' ? 0 : 2);
+      expect(broken.committedMicros).toBe(corruption === 'omitted' ? 0n : 500n);
+      expect(() => assertExactlyOneCharge(broken)).toThrow();
+    },
+  );
+
   it('production refuses an installed paid tool before dispatch, including forged funding arguments', async () => {
     vi.mocked(readInstalledPluginProvenance).mockResolvedValue(provenance);
     const target = tool();
