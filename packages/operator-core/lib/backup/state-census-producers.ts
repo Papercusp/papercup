@@ -1,5 +1,9 @@
 import { dirname, basename } from 'node:path';
-import type { CensusDeclaration, CensusRoot } from '@papercusp/backup';
+import type { CensusDeclaration, CensusRoot, CensusEntry } from '@papercusp/backup';
+import { collectStateCensus, assertStateCensusComplete } from '@papercusp/backup';
+import type { Sql } from 'postgres';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { dbEncryptionKeyFilePath } from '../db-encryption';
 import { superuserTokenPath } from '../superuser-token';
 
@@ -22,4 +26,57 @@ export function secretCensusProducers() {
       classification: 'secret', producer });
   }
   return { roots, declarations };
+}
+
+/**
+ * Read the actual cluster catalog, including disconnected databases. Classification
+ * belongs to each database producer; an unexpected DB remains census residue.
+ * Cluster identity is supplied explicitly so equal names on two clusters never alias.
+ */
+export async function databaseCensusEntries(sql: Sql, clusterIdentity: string): Promise<CensusEntry[]> {
+  if (!clusterIdentity.trim()) throw new Error('Missing census cluster identity');
+  const rows = await sql<{ datname: string }[]>`
+    SELECT datname FROM pg_database WHERE NOT datistemplate ORDER BY datname
+  `;
+  return rows.map(row => ({ kind: 'database', root: clusterIdentity, name: row.datname }));
+}
+
+const execFileAsync = promisify(execFile);
+/** Installed units, not just currently running services; no shell parsing. */
+export async function unitCensusEntries(
+  scope: 'user' | 'system',
+  read: () => Promise<string> = async () => (await execFileAsync('systemctl', [
+    ...(scope === 'user' ? ['--user'] : []), 'list-unit-files', '--output=json', '--no-pager',
+  ], { timeout: 15_000, maxBuffer: 8 * 1024 * 1024 })).stdout,
+): Promise<CensusEntry[]> {
+  const rows: unknown = JSON.parse(await read());
+  if (!Array.isArray(rows)) throw new Error('Invalid unit census catalog');
+  return rows.map(row => {
+    if (!row || typeof row !== 'object' || !('unit_file' in row) ||
+      typeof row.unit_file !== 'string' || !row.unit_file.trim()) {
+      throw new Error('Invalid unit census entry');
+    }
+    return { kind: 'unit', root: `systemd-${scope}`, name: row.unit_file };
+  });
+}
+
+/** Host integration route; declarations come from producers, never observed names. */
+export async function verifyHostStateCensus(input: {
+  roots: readonly CensusRoot[];
+  declarations: readonly CensusDeclaration[];
+  readDatabases: () => Promise<readonly CensusEntry[]>;
+  readUnits: () => Promise<readonly CensusEntry[]>;
+  readSecrets: () => Promise<readonly CensusEntry[]>;
+}) {
+  const census = await collectStateCensus({
+    roots: input.roots, declarations: input.declarations,
+    readCatalogs: async () => {
+      const catalogs = await Promise.all([
+        input.readDatabases(), input.readUnits(), input.readSecrets(),
+      ]);
+      return catalogs.flat();
+    },
+  });
+  assertStateCensusComplete(census);
+  return census;
 }
