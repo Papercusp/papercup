@@ -301,7 +301,34 @@
       "lines": [
         13293,
         13320
-      ]
+      ],
+      "historicalQualification": {
+        "scope": "Read-only archival and existing-repair qualification; no terminal repair replay, source edit, new test, final D006 acceptance or shipment claim.",
+        "originalFailure": "Both selected/refill early-stamp cases at saved test line1109 expected advanced_to=booting/exhausted=false/woke=0 but received advanced_to=null/exhausted=true/woke=0. The original fixture called onAnsweringOwner and then returned woke=0 without answeringOwnerId.",
+        "existingItems": [
+          "EI-24957452801424534 (done): separate pre-spawn owner reservation from confirmed dispatch; clear failed reservation in cursor CAS",
+          "EI-25223250404775736 (done): align successful booting fixture with returned answeringOwnerId contract"
+        ],
+        "sourceMechanism": "Cascade commit b7cfe52f1339c3792b7e2e53c0f7b0586dd7c512 removed announcedOwner as a success signal in both selected/refill paths. A callback runs before spawn and can reserve a participant even when launch fails; dispatch returns the answering identity for a successfully launched but still-booting session. Original/current cascade bytes agree. This supports an obsolete fixture expectation; the original actually loaded source/import/config/environment is not recovered.",
+        "fixtureRepairCommit": "104c3a5aa3d40e2e4847d8a28213a38a79bac4b8",
+        "fixtureRepair": "Both return/early-stamp success paths now return woke=0 and answeringOwnerId=booting-fork; the early-stamp path additionally calls the callback. Existing refusal, exhaustion, concurrent progress and first-reply-during-dispatch cases remain in the real integration suite.",
+        "originalRunStartCommit": "d2a53e115436fe5b2a72c261abbc66f337642672",
+        "originalRunStartTestSha256": "cf57bdb5df01cc95d615b21d604c6f04bd2a109a7c72853c63b1a61bb8c00408",
+        "currentTestSha256": "15b1bcc6bbc98d02bd8080b54165e968d43bb5f856e272dd88530e72737cd5ef",
+        "originalAndCurrentCascadeSha256": "43339df1fe1e563cf666c705f46915d466919d207545252e10d5fb4caa3d3dba",
+        "originalRunStartDispatcherSha256": "0f727708f89d70cfbb14e2cc0d96e1cd1bc294e224aec182a3316a361aa5ee68",
+        "repairedReceiptDispatcherSha256": "60822cbde72ef4f3f399e6a8ab255491f1fbac1ba9b8d5316418c67f0638152e",
+        "currentDispatcherSha256": "8775731b769747e5baf412e0ece5cbc389c42055310bb3b222e9767cb3aae1e7",
+        "existingReceipts": {
+          "original": { "id": 20765874, "status": "fail", "commitSha": "0d0655c7909ce8c170a5aae58e56ece24d592a49" },
+          "laterReproduction": { "id": 20837671, "status": "fail", "commitSha": "72f1e3cdbd965945216a036d48e5a5e3fb78cd3f" },
+          "afterFixtureRepair": { "id": 20837868, "status": "pass", "commitSha": "72f1e3cdbd965945216a036d48e5a5e3fb78cd3f" },
+          "terminalWholeFile": { "id": 20838211, "status": "pass", "commitSha": "3c555c8db13d68209816cedd1a5ab8942bb7f1a6" },
+          "scope": "All four ledger rows are local, canonical staging root, dirty worktree and non-scratch config. Terminal completion reports93/93 for20838211 and clean tested paths; testing:runs exposes status but no case counts. Current named test and cascade bytes equal the20838211 commit blobs; whole production dispatcher bytes have since changed. Loaded bytes and complete transitive imports/config/environment remain unknown."
+        },
+        "terminalFreshness": "EI-25223250404775736 returned fresh for its declared path content across HEAD movement; EI-24957452801424534 returned stale for changed get-feedback-core.integration.test.ts. Neither verdict proves full loaded-source or environment currentness.",
+        "assurance": "UNKNOWN retained: historical fixture repair and scoped named-byte equality recovered; original/current actually loaded imports, config, main/subprocess/native environment, full source assurance, final D006/P004 acceptance and shipment are unverified. No competing or duplicate source repair created."
+      }
     },
     {
       "path": "packages/operator-core/lib/agent-tools/plans/spec-evidence-store.integration.test.ts",
