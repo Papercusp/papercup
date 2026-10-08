@@ -3046,10 +3046,12 @@ export async function repairLegacyRubricRevisionSnapshots(
 }
 
 /**
- * Prepare an append-only snapshot for one missing CURRENT first-party revision.
+ * Prepare an append-only snapshot for one missing CURRENT standard rubric revision.
  * This does not reconstruct an older version from today's template_data: the
- * caller must name the live plan version, which must still exactly match the
- * bundled standard rubric under the CAS applied at write time.
+ * caller must name the live plan version. Standard rubric template_data writes
+ * advance that version through the rubric revision writer; acceptance rubrics
+ * are excluded because their subject-revision pin has a separate in-place writer.
+ * The append CAS rechecks the exact plan row and full revision chain at apply time.
  */
 export async function inspectCurrentRubricRevisionBackfill(
   rubricId: string,
@@ -3075,27 +3077,14 @@ export async function inspectCurrentRubricRevisionBackfill(
   if (currentRevision !== rubricRevision) {
     return reject('only the exact current rubric revision can be backfilled');
   }
-  if (plan.owner !== FIRST_PARTY_RUBRIC_SEED_OWNER) return reject('rubric plan is not first-party seeded');
   if (plan.template !== RUBRIC_TEMPLATE_NAME) return reject('rubric plan does not use the rubric template');
   if (plan.templateSlug !== null) return reject('rubric plan is a template instance, not a rubric definition');
   if (plan.archived) return reject('rubric plan is archived');
 
   const parsed = rubricTemplateDataSchema.safeParse(plan.templateData);
-  if (!parsed.success) return reject('current first-party rubric template_data is malformed');
+  if (!parsed.success) return reject('current rubric template_data is malformed');
   if (rubricKindOf(parsed.data) !== 'standard') return reject('acceptance rubrics are outside this backfill');
   if (parsed.data.classRef) return reject('delegated-class rubrics are outside this backfill');
-
-  const bundled = listLocalRubrics().find(
-    (candidate) => candidate.rubricId === rubricId && candidate.source === 'first-party',
-  );
-  if (!bundled) return reject('matching first-party bundled rubric source is unavailable');
-  const liveBundleHash = computeSeedContentHash(parsed.data);
-  if (liveBundleHash !== computeSeedContentHash(bundled)) {
-    return reject('current rubric differs from the first-party bundle');
-  }
-  if (parsed.data.seedContentHash && parsed.data.seedContentHash !== liveBundleHash) {
-    return reject('current rubric seed content hash does not match its stored fields');
-  }
   if (plan.contentHash !== hashPlanContent(plan.content)) {
     return reject('current rubric body hash is inconsistent');
   }
@@ -3167,7 +3156,7 @@ export async function inspectCurrentRubricRevisionBackfill(
       currentRubric.criteriaHash,
       rubricRevision,
     ),
-    rationale: `rubrics:repair backfilled missing current rubric revision ${rubricRevision} from exact first-party plan state`,
+    rationale: `rubrics:repair backfilled missing current standard rubric revision ${rubricRevision} from exact plan state`,
   };
   return {
     result: legacyRubricRepairResult(rubricId, 'repairable', inspected, 1, undefined, currentRevision),

@@ -801,6 +801,98 @@ Preserve this plan body.
     expect((await rubrics.getRubric(rubricId, 2))?.criteriaHash).toBe(current?.criteriaHash);
   });
 
+  it('backfills only the exact current non-first-party standard rubric version', async () => {
+    const rubricId = 'legacy-current-standard-backfill';
+    const write = (criteria: typeof sampleCriteria) => rubrics.proposeRubric({
+      rubricId,
+      characteristic: 'hive-coordination',
+      title: 'Legacy current standard backfill',
+      criteria,
+      by: 'su-test',
+    });
+    await write(sampleCriteria);
+    const changedCriteria = sampleCriteria.map((criterion, index) => index === 0
+      ? { ...criterion, method: 'Read the current claim ledger and verify its owner.' }
+      : criterion);
+    const current = await write(changedCriteria);
+    const currentRevision = Number(current.revision);
+    expect(currentRevision).toBeGreaterThan(1);
+
+    const [plan] = await db.adminSql<{ content: string; content_hash: string; owner: string; template_data: unknown }[]>`
+      SELECT content, content_hash, owner, template_data
+        FROM harness_shared.harness_plans
+       WHERE workspace_id = ${activeWorkspaceId()} AND harness_slug = 'papercusp'
+         AND plan_slug = ${rubricId}`;
+    expect(plan!.owner).toBe('su-test');
+    const priorRows = await db.adminSql<{
+      id: number; seq: number; content_snapshot: string; content_hash: string; author_id: string;
+    }[]>`
+      SELECT id, seq, content_snapshot, content_hash, author_id
+        FROM harness_shared.plan_revisions
+       WHERE workspace_id = ${activeWorkspaceId()} AND harness_slug = 'papercusp'
+         AND plan_slug = ${rubricId}
+       ORDER BY seq ASC`;
+    expect(priorRows.length).toBeGreaterThan(1);
+
+    // Model the pre-snapshot history: immutable rows retain their hashes and
+    // provenance, but their stored snapshots contain only rubric markdown.
+    await db.adminSql`
+      UPDATE harness_shared.plan_revisions
+         SET content_snapshot = ${plan!.content}
+       WHERE workspace_id = ${activeWorkspaceId()} AND harness_slug = 'papercusp'
+         AND plan_slug = ${rubricId}`;
+    const legacyRows = await db.adminSql<{
+      id: number; seq: number; content_snapshot: string; content_hash: string; author_id: string;
+    }[]>`
+      SELECT id, seq, content_snapshot, content_hash, author_id
+        FROM harness_shared.plan_revisions
+       WHERE workspace_id = ${activeWorkspaceId()} AND harness_slug = 'papercusp'
+         AND plan_slug = ${rubricId}
+       ORDER BY seq ASC`;
+    expect(legacyRows.every((row) => row.content_snapshot === plan!.content)).toBe(true);
+
+    const scope = { workspaceId: activeWorkspaceId(), harnessSlug: 'papercusp' };
+    const historical = await rubrics.repairLegacyRubricRevisionSnapshots(rubricId, scope, {
+      dryRun: true,
+      rubricRevision: currentRevision - 1,
+    });
+    expect(historical).toMatchObject({ status: 'not_eligible', currentRevision });
+
+    const preview = await rubrics.repairLegacyRubricRevisionSnapshots(rubricId, scope, {
+      dryRun: true,
+      rubricRevision: currentRevision,
+    });
+    expect(preview).toMatchObject({ status: 'dry_run', currentRevision, revisionsToRepair: 1 });
+
+    const identity = {
+      ownerId: 'test-current-standard-rubric-backfill',
+      ownerLabel: 'test-current-standard-rubric-backfill',
+      source: 'static-client' as const,
+      workspaceId: null,
+      userId: null,
+    };
+    const applied = await rubrics.repairLegacyRubricRevisionSnapshots(rubricId, scope, {
+      dryRun: false,
+      rubricRevision: currentRevision,
+      identity,
+    });
+    expect(applied).toMatchObject({ status: 'repaired', currentRevision, revisionsRepaired: 1 });
+
+    const afterRows = await db.adminSql<{
+      id: number; seq: number; content_snapshot: string; content_hash: string; author_id: string;
+    }[]>`
+      SELECT id, seq, content_snapshot, content_hash, author_id
+        FROM harness_shared.plan_revisions
+       WHERE workspace_id = ${activeWorkspaceId()} AND harness_slug = 'papercusp'
+         AND plan_slug = ${rubricId}
+       ORDER BY seq ASC`;
+    expect(afterRows.slice(0, legacyRows.length)).toEqual(legacyRows);
+    expect(afterRows).toHaveLength(legacyRows.length + 1);
+    expect(afterRows.at(-1)!.content_snapshot).toContain(`"rubricRevision": ${currentRevision},`);
+    expect((await rubrics.getRubric(rubricId, currentRevision))?.criteriaHash).toBe(current.criteriaHash);
+    expect(await rubrics.getRubric(rubricId, currentRevision - 1)).toBeNull();
+  });
+
   it('appends an exact current first-party snapshot without rewriting divergent history', async () => {
     rubrics.__resetRubricSeedStateForTests();
     try {
