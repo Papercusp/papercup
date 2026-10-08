@@ -71,7 +71,8 @@ async function verifyReports(evidenceDir: string) {
     'apps/operator-vite/src/components/reports/ReportsRoute.css',
     'apps/operator-vite/src/routes/reports.tsx', 'packages/operator-core/lib/sync-resolver/reports.ts',
     'packages/operator-core/lib/report-library.ts', 'packages/operator-core/lib/report-publication.ts',
-    'packages/operator-core/lib/agent-tools/reports/publish.ts', 'packages/operator-core/lib/agent-tools/reports/_shared.ts'];
+    'packages/operator-core/lib/agent-tools/reports/publish.ts', 'packages/operator-core/lib/agent-tools/reports/retire.ts',
+    'packages/operator-core/lib/agent-tools/reports/_shared.ts'];
   const fingerprints = () => sourcePaths.map(path => ({ path, sha256: createHash('sha256').update(readFileSync(path)).digest('hex') }));
   const before = fingerprints();
   let step = 0;
@@ -223,6 +224,31 @@ async function verifyReports(evidenceDir: string) {
     native('screenshot', '--output', join(evidenceDir, 'reports-reader.png'));
     native('eval', `document.querySelector('.reports-reader svg').scrollIntoView({block:'center'})`);
     native('screenshot', '--output', join(evidenceDir, 'reports-diagram.png'));
+    const selectRetiring = runTool('ui:dispatch', { client_id: clientId, intent: 'set_url',
+      args: { params: { sel: correction.report_id, hist: null } }, timeout_ms: 30_000 });
+    assert.equal(selectRetiring.status, 'done');
+    poll(`document.querySelector('.reports-reader h2')?.textContent === ${JSON.stringify(correctedTitle)}`);
+    const transportBeforeRetire = transportSnapshot();
+    save('transport-before-retire.json', transportBeforeRetire);
+    const retired = runTool('reports:retire', { id: correction.report_id });
+    assert.equal(retired.ok, true, 'Retirement tool refused the authored fixture');
+    assert.equal(retired.results?.[0]?.id, correction.report_id);
+    assert.equal(retired.results?.[0]?.ok, true);
+    assert.ok(retired.results?.[0]?.report?.retired_at, 'Retirement must keep a soft-state timestamp');
+    // No refresh or navigation: removal and the pinned reader must update over SSE.
+    poll(`!Array.from(document.querySelectorAll('.reports-list-item')).some(n => n.textContent.includes(${JSON.stringify(correctedTitle)}))
+      && document.querySelector('.reports-reader h2')?.textContent === ${JSON.stringify(correctedTitle)}
+      && document.querySelector('.reports-reader')?.textContent.includes('This report was retired.')`);
+    const transportAfterRetire = transportSnapshot();
+    save('transport-after-retire.json', transportAfterRetire);
+    assert.ok((transportAfterRetire.sync?.invalidations?.bySseName?.['reports.list'] ?? 0)
+      > (transportBeforeRetire.sync?.invalidations?.bySseName?.['reports.list'] ?? 0),
+    'Retirement removal must have a measured reports.list SSE invalidation');
+    const retiredReadback = runTool('reports:get', { id: correction.report_id });
+    assert.equal(retiredReadback.results?.[0]?.ok, true);
+    assert.equal(retiredReadback.results?.[0]?.report?.body_md, body + '\nA correction.\n');
+    assert.ok(retiredReadback.results?.[0]?.report?.retired_at, 'The exact retired citation remains readable');
+    native('screenshot', '--output', join(evidenceDir, 'reports-retired-citation.png'));
     // This is a separate author in the verifier's private database. The UI must
     // exercise the human-owner read path rather than pass by being the author.
     const { getOrgPg } = await import('@papercusp/db-org');
@@ -242,12 +268,14 @@ async function verifyReports(evidenceDir: string) {
     const after = fingerprints();
     assert.deepEqual(after, before, 'Relevant source changed during the verification window');
     save('manifest.json', { result: 'pass', original: original.report_id, correction: correction.report_id,
-      privatePeer: privatePeer.reportId, sourceFingerprints: before, assertions: step,
-      sse: { before: transportBefore.sync, afterPublish: transportAfter.sync },
+      privatePeer: privatePeer.reportId, retired: correction.report_id, sourceFingerprints: before, assertions: step,
+      sse: { before: transportBefore.sync, afterPublish: transportAfter.sync,
+        beforeRetire: transportBeforeRetire.sync, afterRetire: transportAfterRetire.sync },
       checked: ['publish-tool', 'SSE-arrival', 'deep-link', 'metadata', 'Mermaid-render', 'copy-exact-Markdown',
         'lineage-collapse', 'immutable-citation', 'previous-version', 'history-URL', 'history-navigation',
         'filter-restoration', 'agent-tools-filter-state-roundtrip', 'agent-tools-reader-close-reopen',
-        'filter-negative-control', 'clear-filters-preserves-citation', 'reader-width', 'human-owner-private-read'] });
+        'filter-negative-control', 'clear-filters-preserves-citation', 'reader-width', 'human-owner-private-read',
+        'retire-tool', 'SSE-retirement', 'retired-citation-readback'] });
   } catch (error) {
     // Keep the original failure even when the diagnostic transport is broken.
     const failure: Record<string, unknown> = { error: String(error), step, sourceFingerprints: before };

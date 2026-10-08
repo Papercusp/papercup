@@ -71,11 +71,15 @@ describe.skipIf(!isolated)('Reports library in the isolated native desktop', () 
     expect(manifest.sse.before.sse.connectedSinceMs).not.toBeNull();
     expect(manifest.sse.afterPublish.invalidations.bySseName['reports.list'])
       .toBeGreaterThan(manifest.sse.before.invalidations.bySseName['reports.list'] ?? 0);
+    expect(manifest.retired).toBe(manifest.correction);
+    expect(manifest.sse.afterRetire.invalidations.bySseName['reports.list'])
+      .toBeGreaterThan(manifest.sse.beforeRetire.invalidations.bySseName['reports.list'] ?? 0);
     expect(manifest.checked).toEqual(expect.arrayContaining([
       'publish-tool', 'SSE-arrival', 'deep-link', 'metadata', 'Mermaid-render',
       'copy-exact-Markdown', 'immutable-citation', 'history-navigation',
       'agent-tools-filter-state-roundtrip', 'agent-tools-reader-close-reopen',
       'filter-negative-control', 'reader-width', 'human-owner-private-read',
+      'retire-tool', 'SSE-retirement', 'retired-citation-readback',
     ]));
     // Preserve exact receipts in the recorded test output, so bindings can cite
     // the native evidence rather than substituting an earlier successful run.
