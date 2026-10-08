@@ -1138,6 +1138,7 @@ export function supersedeEligibilityGaps(binding: {
   testRunId?: number | null;
   coverageEvidenceRef?: number | null;
   testRunExecution?: SpecEvidenceForAdequacy['testRunExecution'];
+  testRunProvenance?: SpecEvidenceForAdequacy['testRunProvenance'];
   details?: Record<string, unknown>;
 }): string[] {
   const row = {
@@ -1145,6 +1146,7 @@ export function supersedeEligibilityGaps(binding: {
     testRunId: binding.testRunId ?? null,
     coverageEvidenceRef: binding.coverageEvidenceRef ?? null,
     ...(binding.testRunExecution !== undefined ? { testRunExecution: binding.testRunExecution } : {}),
+    ...(binding.testRunProvenance !== undefined ? { testRunProvenance: binding.testRunProvenance } : {}),
     details: binding.details ?? {},
   } as SpecEvidenceForAdequacy;
   const details = detailsOf(row);

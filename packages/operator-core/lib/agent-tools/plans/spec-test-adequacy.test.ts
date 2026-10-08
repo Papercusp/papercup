@@ -12,6 +12,7 @@ import {
   isNonCodeWorkItemKind,
   latestLogicalEvidence,
   requiredProofFloor,
+  supersedeEligibilityGaps,
 } from './spec-test-adequacy';
 import { argsSchema as evaluatorArgsSchema } from './evaluate-spec-test-adequacy';
 import { classifySpecEvidenceCurrentness, type EvidenceCurrentInput } from './spec-evidence-store';
@@ -19,6 +20,53 @@ import { asStructuredObservation } from '../../harness/improvements/observation-
 import { resolveLocalRubric } from '../../cupboard/rubric-store';
 
 const DEFAULT_MUTATION_TEST_CASE = 'the mutation is detected';
+
+describe('supersession preserves measured mutation provenance', () => {
+  function caughtMutation(): SpecEvidenceForAdequacy {
+    return evidence({
+      evidenceKind: 'mutation',
+      testRunProvenance: {
+        filePath: 'test/claim-policy.integration.test.ts',
+        commitSha: 'abc123',
+        worktreeDirty: false,
+        mutationFailureLines: [`${DEFAULT_MUTATION_TEST_CASE}: recorded failed assertion`],
+        mutationFailedCaseTitles: [DEFAULT_MUTATION_TEST_CASE],
+      },
+    });
+  }
+
+  it('allows a caught ledger-backed mutant to replace earlier proof', () => {
+    expect(supersedeEligibilityGaps(caughtMutation())).toEqual([]);
+  });
+
+  it('retains exact failed identities for an explicitly bounded filtered mutant', () => {
+    const row = caughtMutation();
+    row.testRunExecution!.skipped = 23;
+    expect(supersedeEligibilityGaps(row)).toEqual([]);
+    row.testRunProvenance!.mutationFailedCaseTitles = ['a different failed case'];
+    expect(supersedeEligibilityGaps(row)).toEqual([
+      expect.stringContaining('canonical execution=unknown'),
+    ]);
+  });
+
+  it('refuses binder success claims without measured mutation assertions', () => {
+    const row = caughtMutation();
+    delete row.testRunProvenance;
+    expect(supersedeEligibilityGaps(row)).toEqual([
+      expect.stringContaining('measuredMutationFailure=false'),
+    ]);
+  });
+
+  it.each([
+    { status: 'pass', passed: 1, failed: 0, collectionFailed: false },
+    { status: 'fail', passed: 0, failed: 1, collectionFailed: true },
+    { status: 'fail', passed: 0, failed: 0, collectionFailed: false },
+  ])('refuses an uncaught or non-assertion mutant %j', execution => {
+    const row = caughtMutation();
+    row.testRunExecution = { ...row.testRunExecution!, ...execution };
+    expect(supersedeEligibilityGaps(row)).not.toEqual([]);
+  });
+});
 
 function clause(over: Partial<SpecClauseRevision> = {}): SpecClauseRevision {
   return {
