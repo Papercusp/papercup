@@ -89,10 +89,10 @@ export const HOSTED_BROWSER_ROUTE_ALLOWLIST = [
   { method: 'POST', path: HOSTED_BROWSER_ACTION_PATH, access: 'authenticated' },
   { method: 'POST', path: HOSTED_BROWSER_FIRST_WORKSPACE_PATH, access: 'authenticated' },
   { method: 'POST', path: HOSTED_BROWSER_SELECT_WORKSPACE_PATH, access: 'authenticated' },
-  { method: 'GET', path: HOSTED_BROWSER_TUTORIAL_PROGRESS_PATH, access: 'authenticated' },
-  { method: 'POST', path: HOSTED_BROWSER_TUTORIAL_PROGRESS_PATH, access: 'authenticated' },
-  { method: 'POST', path: HOSTED_BROWSER_TUTORIAL_HELP_PATH, access: 'authenticated' },
-  { method: 'POST', path: HOSTED_BROWSER_TUTORIAL_SPEECH_PATH, access: 'authenticated' },
+  { method: 'GET', path: HOSTED_BROWSER_TUTORIAL_PROGRESS_PATH, access: 'session' },
+  { method: 'POST', path: HOSTED_BROWSER_TUTORIAL_PROGRESS_PATH, access: 'session' },
+  { method: 'POST', path: HOSTED_BROWSER_TUTORIAL_HELP_PATH, access: 'session' },
+  { method: 'POST', path: HOSTED_BROWSER_TUTORIAL_SPEECH_PATH, access: 'session' },
 ] as const;
 
 const HOSTED_VIEW_AUTH = {

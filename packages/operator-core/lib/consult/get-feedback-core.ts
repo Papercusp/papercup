@@ -32,6 +32,7 @@
  *    reply verbs). expires_at derives from the contract.
  */
 import type { Sql } from 'postgres';
+import { createHash, randomUUID } from 'node:crypto';
 import { withIterativeScan, type PgHandle } from '@papercusp/search';
 import type { RouteResult, RoutingCandidate, SelectionVia } from './relevance-router';
 import type { SessionState } from '../agent-tools/coordination/presence-wakeability';
@@ -98,6 +99,8 @@ export interface ConsultReviewerModel {
 }
 
 export interface GetFeedbackRequest {
+  /** Reuse on transport retries; a new key explicitly asks for a fresh consult. */
+  requestKey?: string;
   workspaceId: string;
   requesterId: string;
   question: string;
@@ -164,6 +167,8 @@ export type GetFeedbackError =
   | { error: 'consult_cycle'; lineage: string[]; hint: string };
 
 export interface GetFeedbackDeps {
+  /** Internal recovery context, never an externally supplied conversation id. */
+  acceptedRequest?: { conversation_id: string; thread_id: string; leaseToken: string };
   getSql: () => Sql;
   route: (params: {
     workspaceId: string;
@@ -175,6 +180,7 @@ export interface GetFeedbackDeps {
   }) => Promise<RouteResult>;
   /** Opens the kind='consult' conversation (bound to openConversation in prod). */
   open: (input: {
+    id?: string;
     kind: 'consult';
     title: string;
     body: string;
@@ -227,6 +233,129 @@ export interface GetFeedbackDeps {
     };
   }>;
   now?: () => Date;
+}
+
+export interface AcceptedFeedbackResult {
+  ok: true;
+  verdict: 'accepted';
+  conversation_id: string;
+  thread_id: string;
+  request_key: string;
+  state: string;
+  pending: boolean;
+  latency_contract: LatencyContract;
+  park_key: string | null;
+  hint: string;
+}
+
+interface AcceptedRequest {
+  version: 1;
+  key: string;
+  fingerprint: string;
+  payload: GetFeedbackRequest;
+  leaseToken?: string | null;
+  leaseUntil?: string | null;
+  attempts?: number;
+  result?: GetFeedbackResult | GetFeedbackError;
+  lastError?: string;
+}
+
+function requestFingerprint(req: GetFeedbackRequest): string {
+  // Normalize object order and undefined values so a transport retry hashes
+  // identically even when its client serializes optional fields differently.
+  const canonical = (value: unknown): unknown => Array.isArray(value)
+    ? value.map(canonical)
+    : value && typeof value === 'object'
+      ? Object.fromEntries(Object.entries(value).filter(([key, v]) => key !== 'requestKey' && v !== undefined)
+        .sort(([a], [b]) => a.localeCompare(b)).map(([key, v]) => [key, canonical(v)]))
+      : value;
+  return createHash('sha256').update(JSON.stringify(canonical(req))).digest('hex');
+}
+
+/** Persist before embeddings or launches. Conversation-store creation and the
+ * consult PK both converge on the same requester/workspace/key identity. */
+export async function acceptFeedbackRequestCore(
+  req: GetFeedbackRequest,
+  deps: Pick<GetFeedbackDeps, 'getSql' | 'open'>,
+): Promise<AcceptedFeedbackResult | { error: 'request_key_conflict'; conversation_id: string; hint: string }> {
+  const sql = deps.getSql();
+  const fingerprint = requestFingerprint(req);
+  const key = req.requestKey?.trim() || `auto:${fingerprint}`;
+  const id = `conv-request-${createHash('sha256').update(JSON.stringify([req.workspaceId, req.requesterId, key])).digest('hex')}`;
+  const opened = await deps.open({ id, kind: 'consult', title: consultTitle(req.question), body: consultBody(req),
+    ...(req.topics?.length ? { topics: req.topics } : {}),
+    ...(req.harnessSlug ? { harness_slug: req.harnessSlug } : {}), direct_to: [] });
+  const request: AcceptedRequest = { version: 1, key, fingerprint, payload: req, attempts: 0 };
+  await sql`
+    INSERT INTO harness_shared.consult_state
+      (workspace_id, conversation_id, requester_id, state, question, latency_contract, routing)
+    VALUES (${req.workspaceId}, ${opened.conversation_id}, ${req.requesterId}, 'routing', ${req.question},
+      ${req.latencyContract ?? 'proceed'}, ${sql.json({ request } as never)})
+    ON CONFLICT (workspace_id, conversation_id) DO NOTHING`;
+  const rows = await sql<{ state: string; routing: { request: AcceptedRequest } }[]>`
+    SELECT state, routing FROM harness_shared.consult_state
+    WHERE workspace_id = ${req.workspaceId} AND conversation_id = ${opened.conversation_id}
+      AND requester_id = ${req.requesterId}`;
+  const row = rows[0];
+  if (!row || row.routing.request?.fingerprint !== fingerprint) return {
+    error: 'request_key_conflict', conversation_id: opened.conversation_id,
+    hint: 'This request_key already names a different question or options. Reuse its original payload for recovery, or use a new key for a fresh consult.',
+  };
+  const latency = req.latencyContract ?? 'proceed';
+  return { ok: true, verdict: 'accepted', conversation_id: opened.conversation_id, thread_id: opened.thread_id,
+    request_key: key, state: row.state,
+    pending: !row.routing.request.result && ['routing', 'awaiting_responder', 'active'].includes(row.state),
+    latency_contract: latency, park_key: latency === 'hard-blocked' ? consultParkKey(opened.conversation_id) : null,
+    hint: `Accepted as ${opened.conversation_id}; current state is ${row.state}. Read conversations:get { id: '${opened.conversation_id}' } for routing and replies. Reuse request_key '${key}' with the same payload after a timeout; use a new key for a fresh consult. Pending means accepted work, not a launched or answered session.` };
+}
+
+/** A bounded CAS lease owns preparation. Once the core commits the selected
+ * awaiting row, retries leave delivery to its existing stamp/attempt/expiry
+ * lifecycle; they never replay the launch because a response was lost. */
+export async function continueFeedbackRequestCore(
+  workspaceId: string,
+  conversationId: string,
+  deps: { getSql: () => Sql; now?: () => Date;
+    execute: (req: GetFeedbackRequest, accepted: NonNullable<GetFeedbackDeps['acceptedRequest']>) => Promise<GetFeedbackResult | GetFeedbackError> },
+): Promise<boolean> {
+  const sql = deps.getSql();
+  const now = deps.now?.() ?? new Date();
+  const token = randomUUID();
+  const rows = await sql<{ requester_id: string; routing: { request: AcceptedRequest } }[]>`
+    UPDATE harness_shared.consult_state
+       SET routing = jsonb_set(routing, '{request}', (routing->'request') ||
+         ${sql.json({ leaseToken: token, leaseUntil: new Date(now.getTime() + 120_000).toISOString() } as never)}),
+           updated_at = ${now.toISOString()}::timestamptz
+     WHERE workspace_id = ${workspaceId} AND conversation_id = ${conversationId}
+       AND state = 'routing' AND closed_at IS NULL AND routing #>> '{request,version}' = '1'
+       AND COALESCE((routing #>> '{request,leaseUntil}')::timestamptz, '-infinity'::timestamptz) <= ${now.toISOString()}::timestamptz
+     RETURNING requester_id, routing`;
+  const row = rows[0];
+  if (!row) return false;
+  const request = row.routing.request;
+  if (request.payload.workspaceId !== workspaceId || request.payload.requesterId !== row.requester_id ||
+      request.fingerprint !== requestFingerprint(request.payload)) throw new Error('consult-request-provenance-mismatch');
+  try {
+    const result = await deps.execute(request.payload, { conversation_id: conversationId, thread_id: `thr-${conversationId}`, leaseToken: token });
+    await sql`
+      UPDATE harness_shared.consult_state SET routing = jsonb_set(routing, '{request}',
+        (routing->'request') || ${sql.json({ result, leaseToken: null, leaseUntil: null } as never)}),
+        state = CASE WHEN state = 'routing' THEN 'no_qualified_responder' ELSE state END
+      WHERE workspace_id = ${workspaceId} AND conversation_id = ${conversationId}
+        AND routing #>> '{request,leaseToken}' = ${token}`;
+  } catch (error) {
+    const attempts = (request.attempts ?? 0) + 1;
+    await sql`
+      UPDATE harness_shared.consult_state SET routing = jsonb_set(routing, '{request}',
+        (routing->'request') || ${sql.json({ attempts, leaseToken: null,
+          leaseUntil: new Date(now.getTime() + 30_000).toISOString(),
+          lastError: String(error).slice(0, 500) } as never)}),
+        state = CASE WHEN state = 'routing' AND ${attempts} >= 3 THEN 'no_qualified_responder' ELSE state END
+      WHERE workspace_id = ${workspaceId} AND conversation_id = ${conversationId}
+        AND routing #>> '{request,leaseToken}' = ${token}`;
+    throw error;
+  }
+  return true;
 }
 
 /**
@@ -1062,7 +1191,7 @@ export async function getFeedbackCore(
   // exclusion predicate. Prod (buildClient, prepare:false) sends text and
   // single-encodes either way; sql.json() single-encodes under BOTH modes.
   if (archiveHit) {
-    const opened = await deps.open({
+    const opened = deps.acceptedRequest ?? await deps.open({
       kind: 'consult',
       title: consultTitle(req.question),
       body: consultBody(req),
@@ -1103,7 +1232,7 @@ export async function getFeedbackCore(
     //     analytic and leaving the row un-orderable against its own siblings.
     //     Both timestamps now come from the SAME clock, so the row cannot
     //     close before it opens.
-    await sql`
+    const persisted = await sql`
       INSERT INTO harness_shared.consult_state
         (workspace_id, conversation_id, requester_id, responder_id, state, question,
          latency_contract, origin_task_ref, routing, outcome, closed_at, wakes_used,
@@ -1115,7 +1244,17 @@ export async function getFeedbackCore(
          ${sql.json(outcome as never)}, now(), 0,
          ${depth}, ${req.parentConsultId ?? null}, ${qVecStr}::vector,
          ${route.queryMode}, ${route.queryProfile!.profileId})
+      ON CONFLICT (workspace_id, conversation_id) DO UPDATE SET
+        state = EXCLUDED.state, responder_id = EXCLUDED.responder_id,
+        origin_task_ref = EXCLUDED.origin_task_ref, outcome = EXCLUDED.outcome,
+        closed_at = EXCLUDED.closed_at, depth = EXCLUDED.depth, parent_consult_id = EXCLUDED.parent_consult_id,
+        routing = EXCLUDED.routing || jsonb_build_object('request', consult_state.routing->'request'),
+        query_embedding = EXCLUDED.query_embedding, query_embedding_mode = EXCLUDED.query_embedding_mode,
+        query_embedding_profile = EXCLUDED.query_embedding_profile
+      WHERE consult_state.state = 'routing' AND consult_state.routing #>> '{request,leaseToken}' = ${deps.acceptedRequest?.leaseToken ?? null}
+      RETURNING conversation_id
     `;
+    if (persisted.length === 0) throw new Error('consult-request-lease-lost');
     return {
       ok: true,
       verdict: 'served_from_archive',
@@ -1229,7 +1368,7 @@ export async function getFeedbackCore(
   //     agent through the back door the wake seam just stopped using. Nobody
   //     needs the subscription anyway — appendPost auto-joins a contributor, so
   //     the answering session can post without being enrolled first.
-  const opened = await deps.open({
+  const opened = deps.acceptedRequest ?? await deps.open({
     kind: 'consult',
     title: consultTitle(req.question),
     body: consultBody(req),
@@ -1269,8 +1408,9 @@ export async function getFeedbackCore(
   // query_embedding is stored whenever the column exists (embeddingColumnOk —
   // proven by the archive probe) and this route produced a vector: every
   // consult forward-fills the P-006 retrieval cache, hit or miss.
+  let persisted;
   if (embeddingColumnOk && qVecStr) {
-    await sql`
+    persisted = await sql`
       INSERT INTO harness_shared.consult_state
         (workspace_id, conversation_id, requester_id, responder_id, state, question,
          latency_contract, origin_task_ref, routing, expires_at, wakes_used,
@@ -1281,9 +1421,18 @@ export async function getFeedbackCore(
          ${originRef}, ${sql.json(route.snapshot as never)}, ${provisionalExpiresAt},
          ${provisionalWillWake ? 1 : 0}, ${depth}, ${req.parentConsultId ?? null}, ${qVecStr}::vector,
          ${route.queryMode}, ${route.queryProfile!.profileId})
+      ON CONFLICT (workspace_id, conversation_id) DO UPDATE SET
+        responder_id = EXCLUDED.responder_id, state = EXCLUDED.state,
+        origin_task_ref = EXCLUDED.origin_task_ref, expires_at = EXCLUDED.expires_at,
+        wakes_used = EXCLUDED.wakes_used, depth = EXCLUDED.depth, parent_consult_id = EXCLUDED.parent_consult_id,
+        routing = EXCLUDED.routing || jsonb_build_object('request', consult_state.routing->'request'),
+        query_embedding = EXCLUDED.query_embedding, query_embedding_mode = EXCLUDED.query_embedding_mode,
+        query_embedding_profile = EXCLUDED.query_embedding_profile
+      WHERE consult_state.state = 'routing' AND consult_state.routing #>> '{request,leaseToken}' = ${deps.acceptedRequest?.leaseToken ?? null}
+      RETURNING conversation_id
     `;
   } else {
-    await sql`
+    persisted = await sql`
       INSERT INTO harness_shared.consult_state
         (workspace_id, conversation_id, requester_id, responder_id, state, question,
          latency_contract, origin_task_ref, routing, expires_at, wakes_used,
@@ -1293,8 +1442,16 @@ export async function getFeedbackCore(
          ${finalChosen?.ownerId ?? null}, ${provisionalState}, ${req.question}, ${latency},
          ${originRef}, ${sql.json(route.snapshot as never)}, ${provisionalExpiresAt},
          ${provisionalWillWake ? 1 : 0}, ${depth}, ${req.parentConsultId ?? null})
+      ON CONFLICT (workspace_id, conversation_id) DO UPDATE SET
+        responder_id = EXCLUDED.responder_id, state = EXCLUDED.state,
+        origin_task_ref = EXCLUDED.origin_task_ref, expires_at = EXCLUDED.expires_at,
+        wakes_used = EXCLUDED.wakes_used, depth = EXCLUDED.depth, parent_consult_id = EXCLUDED.parent_consult_id,
+        routing = EXCLUDED.routing || jsonb_build_object('request', consult_state.routing->'request')
+      WHERE consult_state.state = 'routing' AND consult_state.routing #>> '{request,leaseToken}' = ${deps.acceptedRequest?.leaseToken ?? null}
+      RETURNING conversation_id
     `;
   }
+  if (persisted.length === 0) throw new Error('consult-request-lease-lost');
 
 
   // An empty selection is now a pure ROUTING verdict, and that is the D-002

@@ -1,14 +1,19 @@
 import postgres from 'postgres';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createOrgTestDb, type OrgTestDb } from '../../../../packages/operator-core/test/_org-test-db';
 import { insertNativeCollectionGoal, insertNativeCollectionPlan, setNativeCollectionPlanArchived } from '../../e2e/_ongoing-work-native-fixture';
 import { readGoalPortfolioBrief } from '../../../../packages/operator-core/lib/goal-launch-settings';
 import { applyGoalPropertyWrite } from '../../../../packages/operator-core/lib/typed-properties-db';
 import { ensureOrderedSelectionPolicyDatatype, ensurePlanRefListDatatype } from '../../../../packages/operator-core/lib/goals/package-property-datatypes';
 
+let sql: ReturnType<typeof postgres>;
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  getOrgPg: () => ({ sql }),
+}));
+
 describe('native collection fixture against migrated private PG', () => {
   let db: OrgTestDb;
-  let sql: ReturnType<typeof postgres>;
   const schema = {
     tea_choices: { datatype: 'string-list', editable_by: 'both', default: ['mint', 'rooibos'],
       collection: { source: 'manual', policy: 'tea_policy', order: 'display', selectable: true, defaultSelected: true } },
@@ -110,8 +115,13 @@ describe('native collection fixture against migrated private PG', () => {
       FROM harness_shared.goals WHERE workspace_id=${workspaceId} AND id=${goalId}`)[0].policy;
     const savedPolicy = await policy();
     const read = () => readGoalPortfolioBrief({ workspaceId, goalId, sql, claimability: 'skip' });
+    const { resolveGoalDetail } = await import('../../../../packages/operator-core/lib/sync-resolver/goals');
+    const detail = async () => (await resolveGoalDetail({ workspaceId, goalId }) as {
+      goalData: { collections: { worklist: { rows: Array<{ id: string; selected: boolean }> } } };
+    }).goalData.collections.worklist;
     expect((await read())?.worklist.map(plan => plan.ref)).toEqual(order.slice(0, 3));
     expect((await read())?.worklist.find(plan => plan.slug === 'beta')?.selected).toBe(false);
+    expect((await detail()).rows.find(row => row.id === ids[1])).toMatchObject({ selected: false });
 
     await setNativeCollectionPlanArchived(sql, { workspaceId, harness, slug: 'beta', archived: true });
     const lifecycle = async () => (await sql`SELECT status,archived FROM harness_shared.harness_plans
@@ -123,6 +133,7 @@ describe('native collection fixture against migrated private PG', () => {
     expect(await policy()).toEqual(savedPolicy);
     expect(await write('worklist', [ids[0], ids[2]], 'agent-edit', true)).toMatchObject({ ok: true });
     expect((await read())?.worklist.map(plan => plan.ref)).toEqual([ids[0], ids[2]]);
+    expect((await detail()).rows.map(row => row.id)).toEqual([ids[0], ids[2]]);
     expect(await policy()).toEqual(savedPolicy);
 
     await setNativeCollectionPlanArchived(sql, { workspaceId, harness, slug: 'beta', archived: false });
@@ -130,6 +141,9 @@ describe('native collection fixture against migrated private PG', () => {
     const rediscovered = await read();
     expect(rediscovered?.worklist.map(plan => plan.ref)).toEqual(order.slice(0, 3));
     expect(rediscovered?.worklist.find(plan => plan.slug === 'beta')).toMatchObject({ selected: false, next: { id: 'P-001' } });
+    const rediscoveredDetail = await detail();
+    expect(rediscoveredDetail.rows.map(row => row.id)).toEqual(order.slice(0, 3));
+    expect(rediscoveredDetail.rows.find(row => row.id === ids[1])).toMatchObject({ selected: false });
     expect(await policy()).toEqual(savedPolicy);
     expect(savedPolicy).toMatchObject({ version: 1, provenance: 'owner-edit', value: { order, excluded: [dormant, ids[1]] } });
   });

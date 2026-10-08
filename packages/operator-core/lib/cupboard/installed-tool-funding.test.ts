@@ -4,7 +4,11 @@ import type { Sql } from 'postgres';
 import { canonicalJson } from '../authority/authority-rpc-envelope';
 import type { InstalledPluginProvenance } from './types';
 import type { AttachedInstalledToolFunding } from '../agent-tools/per-use-chokepoint';
-import { INSTALLED_TOOL_FUNDING_CONFIG, productionInstalledToolFunding } from './installed-tool-funding';
+import { INSTALLED_TOOL_FUNDING_CONFIG, productionInstalledToolFunding, productionFundedIdentityTurnHost } from './installed-tool-funding';
+import { identityPerUseOfferTerms } from './identity-per-use-offer';
+import { FundedIdentityTurnHost, type FundedIdentityTurnHostDeps } from './funded-turn-host';
+import type { AppliedIdentityRules } from '../agent-identities/sync-hook-rules';
+import type { FundedIdentityTurnBinding } from './funded-turn-store';
 import type { HostedPerUseOffer } from './metered-invocation-door-io';
 import type { FundedToolTurnBinding } from './funded-tool-turn-store';
 import { sellerReceiptAuthoritySigningBytes } from '../p2p/metered-invocation';
@@ -80,6 +84,117 @@ function fixture() {
       channelState = change.state ?? channelState; escrow = change.escrow ?? escrow;
     } };
 }
+
+describe('production identity funding supplier', () => {
+  function identityFixture() {
+    const f = fixture(), quoted = identityPerUseOfferTerms({ identity: { id: 'paid', version: '1.0.0' } });
+    if (!quoted.ok) throw new Error('invalid identity fixture');
+    const worn = { applied: { specificationRevision: 'spec', stateRevision: 'state' },
+      packagePins: [{ packageKind: 'blueprint', ref: 'paid', revision: '1.0.0', contentHash: 'a'.repeat(64) }],
+      pins: {}, sync: {}, declaredClassNeeds: null } as unknown as AppliedIdentityRules;
+    Object.assign(f.offer, { skuRef: quoted.terms.skuRef, terms: quoted.terms });
+    Object.assign(f.offer, { receiptAuthority: { pubkeyBase64: f.grant.seller.pubkeyBase64,
+      proof: sign(null, sellerReceiptAuthoritySigningBytes({ seller: f.offer.creatorId, offerId: f.offer.offerId,
+        productId: f.offer.productId, skuRef: f.offer.skuRef, pubkeyBase64: f.grant.seller.pubkeyBase64 }), f.pairs.seller.privateKey).toString('base64') } });
+    f.grant.skuRef = f.offer.skuRef;
+    f.grant.termsHash = digest(f.offer.terms);
+    f.grant.provenanceHash = digest({ applied: worn.applied, packagePins: worn.packagePins });
+    const binding: FundedIdentityTurnBinding = { ...f.session, nativeSessionId: 'native', nativeTurnId: null,
+      admissionId: 'turn', specificationRevision: 'spec', stateRevision: 'state', payer: f.grant.payer.principal,
+      seller: f.grant.seller.principal, channelId: 'channel', offerId: f.offer.offerId, offer: quoted.terms,
+      inferenceCeilingMicros: 4000n, expiresAtMs: f.grant.expiresAtMs };
+    const readApplied = vi.fn(async () => worn);
+    const resolveLayers = vi.fn(async () => [{ layerRef: 'blueprint:paid', identity: quoted.identity, skuRef: quoted.terms.skuRef }]);
+    const createIdentityHost = vi.fn((deps: FundedIdentityTurnHostDeps) => new FundedIdentityTurnHost(deps));
+    const deps = { ...f.deps, readApplied, resolveLayers, createIdentityHost };
+    return { ...f, worn, binding, readApplied, resolveLayers, createIdentityHost, deps,
+      supplier: () => productionFundedIdentityTurnHost(binding, deps) };
+  }
+
+  it('uses seller RPC without loading seller secrets and preserves canonical billed usage', async () => {
+    const f = identityFixture(), remote = { grantId: 'seller-grant', devicePubkey: f.grant.seller.pubkeyBase64, harnessSlug: 'papercusp' };
+    const configured = { ...f.grant, seller: { ...f.grant.seller, remote } };
+    const original = f.deps.readKey.getMockImplementation()!;
+    f.deps.readKey.mockImplementation(async key => key === INSTALLED_TOOL_FUNDING_CONFIG
+      ? JSON.stringify({ schema: 'papercusp.installed-tool-funding/v1', grants: [configured] }) : original(key));
+    const capability = { verify: vi.fn(async () => {}), signReceipt: vi.fn(), settle: vi.fn() };
+    const remoteSeller = vi.fn(() => capability);
+    await f.run(async () => {
+      expect(await productionFundedIdentityTurnHost(f.binding, { ...f.deps, remoteSeller })).toBeInstanceOf(FundedIdentityTurnHost);
+      const hostDeps = f.createIdentityHost.mock.calls[0]![0];
+      expect(hostDeps.signReceipt).toBe(capability.signReceipt);
+      expect(hostDeps.settleRemote).toBe(capability.settle);
+      expect(hostDeps.readUsage).toBeUndefined();
+      expect(remoteSeller).toHaveBeenCalledWith(remote, f.grant.seller.pubkeyBase64, 'channel');
+      expect(f.deps.readKey.mock.calls.some(([key]) => key === 'seller-token')).toBe(false);
+      expect(f.deps.readKeyStatus.mock.calls.every(([, hive]) => hive === 'payer')).toBe(true);
+      capability.verify.mockRejectedValueOnce(new Error('seller-rpc-revoked'));
+      await expect(hostDeps.verifyCurrentAuthority!(f.binding)).rejects.toThrow('seller-rpc-revoked');
+    });
+  });
+
+  it.each(['specificationRevision', 'stateRevision'] as const)('refuses a different APPLIED %s before creating a host', async field => {
+    const f = identityFixture(); f.binding = { ...f.binding, [field]: 'other' };
+    await f.run(async () => {
+      await expect(productionFundedIdentityTurnHost(f.binding, f.deps)).rejects.toThrow('identity-funding-applied-mismatch');
+      expect(f.createIdentityHost).not.toHaveBeenCalled();
+    });
+  });
+
+  it.each([4001n, 5000n])('refuses inference ceiling %s above the grant pricing-block budget', async ceiling => {
+    const f = identityFixture();
+    await expect(productionFundedIdentityTurnHost({ ...f.binding, inferenceCeilingMicros: ceiling }, f.deps)).rejects.toThrow('identity-funding-budget-exceeded');
+    expect(f.createIdentityHost).not.toHaveBeenCalled();
+  });
+
+  it('refuses changed APPLIED pins, entitlement, credentials and channel after composition', async () => {
+    const f = identityFixture();
+    await f.run(async () => {
+      await f.supplier();
+      const verify = f.createIdentityHost.mock.calls[0]![0].verifyCurrentAuthority!;
+      await expect(verify(f.binding)).resolves.toBeUndefined();
+      f.readApplied.mockResolvedValueOnce({ ...f.worn, packagePins: [...f.worn.packagePins,
+        { packageKind: 'blueprint', ref: 'other', revision: '1', contentHash: 'b'.repeat(64) }] });
+      await expect(verify(f.binding)).rejects.toThrow('identity-funding-applied-withdrawn');
+      f.keys['buyer-token'] = 'changed';
+      await expect(verify(f.binding)).rejects.toThrow('identity-funding-credential-changed');
+      f.keys['buyer-token'] = 'buyer-secret-fixture'; f.changeChannel({ state: 'closed' });
+      await expect(verify(f.binding)).rejects.toThrow('identity-funding-channel-withdrawn');
+      f.changeChannel({ state: 'open' }); f.revokeEntitlement();
+      await expect(verify(f.binding)).rejects.toThrow('identity-funding-entitlement-withdrawn');
+    });
+  });
+
+  it('rejects withdrawn authority before preparing a monetary turn', async () => {
+    const f = identityFixture();
+    await f.run(async () => {
+      const host = await f.supplier(); f.revokeEntitlement();
+      expect(await host!.admit(f.binding)).toMatchObject({ ok: false, code: 'identity-authority-unavailable' });
+    });
+  });
+
+  it('refuses withdrawn published offer and signing key, and modified bindings', async () => {
+    const f = identityFixture();
+    await f.run(async () => {
+      await f.supplier();
+      const verify = f.createIdentityHost.mock.calls[0]![0].verifyCurrentAuthority!;
+      await expect(verify({ ...f.binding, inferenceCeilingMicros: 1n })).rejects.toThrow('authority-expired-or-changed');
+      f.deps.readKeyStatus.mockResolvedValueOnce({ kind: 'ok', pubkeyBase64: f.grant.seller.pubkeyBase64 });
+      await expect(verify(f.binding)).rejects.toThrow('identity-funding-signing-key-changed');
+      Object.assign(f.offer, { active: false });
+      await expect(verify(f.binding)).rejects.toThrow('identity-funding-offer-withdrawn');
+    });
+  });
+
+  it('enforces markup budget and requires a unique exact grant', async () => {
+    const f = identityFixture(); f.grant.maxMicrosPerTurn = '799';
+    await expect(f.supplier()).rejects.toThrow('identity-funding-budget-exceeded');
+    f.grant.maxMicrosPerTurn = '1000';
+    f.deps.readKey.mockResolvedValue(JSON.stringify({ schema: 'papercusp.installed-tool-funding/v1', grants: [f.grant, f.grant] }));
+    await expect(f.supplier()).rejects.toThrow('identity-funding-exact-grant-required');
+    expect(f.createIdentityHost).not.toHaveBeenCalled();
+  });
+});
 
 describe('production installed funding with independent seller credentials', () => {
   it('uses the exact remote seller capability without reading seller secrets or local seller keys', async () => {

@@ -27,6 +27,8 @@ export interface FundedIdentityTurnHostDeps {
   readonly settleRemote?: (binding: FundedIdentityTurnBinding,
     outbox: NonNullable<FundedIdentityTurn['settlementOutbox']>) => Promise<void>;
   readonly nowMs?: () => number;
+  /** Production supplier refreshes the original applied/grant/channel authority. */
+  readonly verifyCurrentAuthority?: (binding: FundedIdentityTurnBinding) => Promise<void>;
   /** Trusted billing-reader seam; production uses the store's canonical reader. */
   readonly readUsage?: Parameters<FundedIdentityTurnStore['stageSettlement']>[3]['readUsage'];
 }
@@ -206,6 +208,8 @@ export class FundedIdentityTurnHost {
   /** An uncertain reserve never authorizes inference. A hosted read can resolve it. */
   async admit(input: FundedIdentityTurnBinding): Promise<Result> {
     const b = structuredClone(input), d = this.deps;
+    try { await d.verifyCurrentAuthority?.(structuredClone(b)); }
+    catch { return fail('identity-authority-unavailable', 'The original identity funding authority could not be verified'); }
     const active = await d.store.readActive(b);
     if (!active.ok) return active;
     if (active.turn?.state === 'closed' || active.turn?.state === 'settlement-pending') {
@@ -242,6 +246,8 @@ export class FundedIdentityTurnHost {
       if (!confirmed.ok) return confirmed;
       turn = confirmed.turn;
     }
+    try { await d.verifyCurrentAuthority?.(structuredClone(b)); }
+    catch { return fail('identity-authority-unavailable', 'Identity authority changed after funding; retain the original hold'); }
     return d.store.enter(b.workspaceId, turn.turnId, turn.revision, b, (d.nowMs ?? Date.now)());
   }
 

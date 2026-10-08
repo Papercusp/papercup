@@ -235,8 +235,11 @@ test('native declared collections persist controls and reject a barrier-controll
       };
       async function reload() {
         evidence.push({ writesBeforeNavigation: await measure('window.__nativeCollectionWrites ?? []') });
+        // navigate acknowledges location assignment before the old document
+        // unloads. An editor already on that document is not reload evidence.
+        await native('eval', 'window.__nativeCollectionPreviousDocument = true; true');
         await native('navigate', url, '--json');
-        await ready(`!!document.querySelector(${JSON.stringify(editor)}) && document.querySelector(${JSON.stringify(editor)})?.getBoundingClientRect().height > 0`);
+        await ready(`window.__nativeCollectionPreviousDocument !== true && document.readyState === 'complete' && !!document.querySelector(${JSON.stringify(editor)}) && document.querySelector(${JSON.stringify(editor)})?.getBoundingClientRect().height > 0`);
         await observeWrites();
       }
       async function readback() {
@@ -331,8 +334,16 @@ test('native declared collections persist controls and reject a barrier-controll
         expect((await readback()).rows.map((row: { id: string }) => row.id)).not.toContain(ids[1]);
         expect((await policy())?.value.excluded).toEqual([dormant, ids[1]]);
         await setNativeCollectionPlanArchived(sql, { workspaceId, harness, slug: 'beta', archived: false });
+        const [reactivated] = await sql`SELECT status,op_status,archived FROM harness_shared.harness_plans
+          WHERE workspace_id=${workspaceId} AND harness_slug=${harness} AND plan_slug='beta'`;
+        evidence.push({ reactivatedLifecycle: reactivated });
+        expect(reactivated).toMatchObject({ status: 'active', archived: false });
+        const rediscovered = await readback();
+        expect(rediscovered.rows.map((row: { id: string }) => row.id)).toEqual(reorderedIds);
+        expect(rediscovered.rows.find((row: { id: string }) => row.id === ids[1])).toMatchObject({ selected: false });
         await reload();
-        await ready(`document.querySelector(${JSON.stringify(checkbox(labels[1]))})?.getAttribute('aria-checked') === 'false'`);
+        await expect.poll(() => measure(`(() => { const control = document.querySelector(${JSON.stringify(checkbox(labels[1]))}); return { present: !!control, checked: control?.getAttribute('aria-checked') ?? null, labels: Array.from(document.querySelectorAll(${JSON.stringify(`${editor} [role="checkbox"]`)})).map(n => n.getAttribute('aria-label')) }; })()`),
+          { timeout: 30_000, intervals: [200, 500, 1000] }).toMatchObject({ present: true, checked: 'false' });
         expect((await readback()).rows.map((row: { id: string }) => row.id)).toEqual(reorderedIds);
         expect((await policy())?.version).toBe(2);
         expect((await policy())?.value.order).toEqual([...reorderedIds, dormant]);

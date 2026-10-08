@@ -86,7 +86,11 @@ export default function DaoGovernance({ view, onChanged }: { view: DaoWorkspaceV
       const content = '## Now\n\nDraft proposal for member review.\n\n## Background\n\n' + purpose.trim() +
         '\n\n## Requirements\n\n**R-1 — Accepted outcome.** ' + acceptance.trim() +
         '\n\n## Design\n\n### Bar-to-work map for this plan\n\n| bar | implementing plan items | evidence plane |\n| --- | --- | --- |\n| R-1 | P-001 | tree |\n\n## Phase 1\n\n- **P-001** `todo` ' + purpose.trim().split('\n')[0] + '\n\n## Decisions\n';
-      await plansRequest('new', { harness: projectSlug, slug, title: title.trim(), rationale: purpose.trim(), content });
+      const created = await plansRequest('new', { harness: projectSlug, slug, title: title.trim(), rationale: purpose.trim(), content });
+      // plans:new adds its canonical date suffix to an undated requested slug.
+      const confirmedSlug = typeof created.slug === 'string' && (created.slug === slug ||
+        (created.slug.startsWith(slug + '-') && /^\d{4}-\d{2}-\d{2}$/.test(created.slug.slice(slug.length + 1))));
+      if (created.ok !== true || !confirmedSlug) throw new Error('The server did not confirm this proposal was saved. Your draft is retained.');
       setMessage('Proposal saved as a draft. Review its scope before opening voting.');
       setTitle(''); setPurpose(''); setAcceptance(''); onChanged?.();
     } catch (cause) { setError(cause instanceof Error ? cause.message : 'Proposal could not be saved.'); }

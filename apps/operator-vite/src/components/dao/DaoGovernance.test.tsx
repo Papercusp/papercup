@@ -12,13 +12,15 @@ const inspection = { ok: true, planRevisionHash: 'reviewed-hash', actor: { membe
 let current = inspection;
 let document = { title: 'Build the tool', raw: 'Exact proposal text', contentHash: 'reviewed-hash' };
 let actionResponse: Record<string, unknown>;
+let creationResponse: Record<string, unknown>;
 let fetchMock: ReturnType<typeof vi.fn>;
 beforeEach(() => {
   current = structuredClone(inspection); document = { title: 'Build the tool', raw: 'Exact proposal text', contentHash: 'reviewed-hash' };
   actionResponse = { ...inspection };
+  creationResponse = { ok: true, slug: 'new-proposal-2026-10-08' };
   fetchMock = vi.fn(async (url: string, init: RequestInit) => {
     const args = JSON.parse(String(init.body));
-    return { ok: true, json: async () => url.endsWith('/get') ? document : url.endsWith('/new') ? { ok: true, slug: 'new-proposal' } : args.op === 'inspect' ? current : actionResponse };
+    return { ok: true, json: async () => url.endsWith('/get') ? document : url.endsWith('/new') ? creationResponse : args.op === 'inspect' ? current : actionResponse };
   });
   vi.stubGlobal('fetch', fetchMock);
 });
@@ -64,7 +66,7 @@ describe('DAO member decision actions', () => {
     await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('key was revoked'));
     expect(screen.queryByText('Your reject vote was recorded.')).toBeNull();
   });
-  it('authors a real draft in the explicitly chosen linked project', async () => {
+  it('accepts the canonical dated creation receipt in the explicitly chosen linked project', async () => {
     render(<DaoGovernance view={view} />);
     fireEvent.change(screen.getByLabelText('Project'), { target: { value: 'project' } });
     fireEvent.change(screen.getByLabelText('Proposal title'), { target: { value: 'New proposal' } });
@@ -77,5 +79,21 @@ describe('DAO member decision actions', () => {
     expect(args).toMatchObject({ harness: 'project', slug: 'new-proposal', title: 'New proposal' });
     expect(args.content).toContain('The export includes the records');
     expect(args.content).toContain('| R-1 | P-001 | tree |');
+  });
+
+  it.each([{}, { ok: true, slug: 'another-proposal' }, { ok: true, slug: 'new-proposal-other' },
+    { ok: true, slug: 'new-proposal-2026-10-08-other' }])('retains the draft when the server does not confirm its creation: %j', async response => {
+    creationResponse = response;
+    const onChanged = vi.fn();
+    render(<DaoGovernance view={view} onChanged={onChanged} />);
+    fireEvent.change(screen.getByLabelText('Project'), { target: { value: 'project' } });
+    fireEvent.change(screen.getByLabelText('Proposal title'), { target: { value: 'New proposal' } });
+    fireEvent.change(screen.getByLabelText('Purpose & scope'), { target: { value: 'Build an export' } });
+    fireEvent.change(screen.getByLabelText('How members will verify success'), { target: { value: 'The records persist' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save draft proposal' }));
+    await screen.findByText(/The server did not confirm/);
+    expect((screen.getByLabelText('Proposal title') as HTMLInputElement).value).toBe('New proposal');
+    expect(screen.queryByText(/Proposal saved as a draft/)).toBeNull();
+    expect(onChanged).not.toHaveBeenCalled();
   });
 });

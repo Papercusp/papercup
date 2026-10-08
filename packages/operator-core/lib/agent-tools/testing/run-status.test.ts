@@ -91,8 +91,8 @@ describe('testing:run-status handler', () => {
       finishedAt: 1_700_000_005_000,
       fileCount: 2,
       files: [
-        { filePath: 'lib/one.test.ts', status: 'pass', finishedAt: 1_700_000_004_000 },
-        { filePath: 'lib/two.test.ts', status: 'pass', finishedAt: 1_700_000_005_000 },
+        { filePath: 'lib/one.test.ts', status: 'pass', finishedAt: 1_700_000_004_000, executionDetails: null },
+        { filePath: 'lib/two.test.ts', status: 'pass', finishedAt: 1_700_000_005_000, executionDetails: null },
       ],
       message: 'Recovered pass from 2 latest per-file test_runs row(s); the detached lifecycle snapshot is missing or unreadable.',
     };
@@ -112,7 +112,7 @@ describe('testing:run-status handler', () => {
       exitCode: 1,
       finishedAt: 1_700_000_005_000,
       fileCount: 1,
-      files: [{ filePath: 'lib/failing.test.ts', status: 'fail', finishedAt: 1_700_000_005_000 }],
+      files: [{ filePath: 'lib/failing.test.ts', status: 'fail', finishedAt: 1_700_000_005_000, executionDetails: null }],
       message: 'Recovered fail from 1 latest per-file test_runs row(s); the detached lifecycle snapshot is missing or unreadable.',
     };
     getRunMock.mockResolvedValue(null);

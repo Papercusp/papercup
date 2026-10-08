@@ -97,8 +97,9 @@ function harness() {
     ({ ok: true, billedInferenceMicros: cost, samples: binding.usageEventKeys.map((usageEventKey) =>
       ({ usageEventKey, sampleId: 'trusted-provider-sample', activationEventId: 'active-identity-span' })) });
   const signReceipt = vi.fn(sign), signVoucher = vi.fn((bytes: Buffer) => cryptoSign(null, bytes, payerKey.privateKey).toString('base64'));
-  const host = (store = new FundedIdentityTurnStore(db.sql)) => new FundedIdentityTurnHost({ store,
-    payerTransport, sellerTransport, signVoucher, signReceipt, readUsage });
+  const host = (store = new FundedIdentityTurnStore(db.sql),
+    verifyCurrentAuthority?: ConstructorParameters<typeof FundedIdentityTurnHost>[0]['verifyCurrentAuthority']) => new FundedIdentityTurnHost({ store,
+    payerTransport, sellerTransport, signVoucher, signReceipt, readUsage, verifyCurrentAuthority });
   const binding: FundedIdentityTurnBinding = { workspaceId: 'host-ws-' + ++seq, ownerId: 'su-buyer', principalId: 'system:superuser',
     nativeSessionId: 'native-session', nativeTurnId: 'turn-1', specificationRevision: 'spec-1', stateRevision: 'state-1',
     payer: 'gh:7', seller: 'gh:9', offerId: 'o1', channelId: 'c1', offer, inferenceCeilingMicros: 1000n, expiresAtMs: now + 100000 };
@@ -252,6 +253,33 @@ describe('aggregate funded tool host with real PG CAS and migrated hosted D1', (
 });
 
 describe('trusted funded turn host with real PG CAS and migrated hosted D1', () => {
+  it('refuses withdrawn identity authority before reserving any money', async () => {
+    const h = harness(), store = new FundedIdentityTurnStore(db.sql);
+    const verify = vi.fn(async () => { throw new Error('grant withdrawn'); });
+    expect(await h.host(store, verify).admit(h.binding)).toMatchObject({ ok: false, code: 'identity-authority-unavailable' });
+    expect(verify).toHaveBeenCalledOnce();
+    expect(await store.read(h.binding.workspaceId, fundedIdentityTurnId(h.binding))).toBeNull();
+    expect(h.raw.prepare('SELECT count(*) AS count FROM usage_receipts').get()).toMatchObject({ count: 0 });
+  });
+
+  it('retains the funded hold and refuses entry when authority withdraws during reservation', async () => {
+    const h = harness(), store = new FundedIdentityTurnStore(db.sql);
+    let calls = 0, revoked = true;
+    const verify = vi.fn(async () => { if (++calls > 1 && revoked) throw new Error('grant withdrawn'); });
+    const host = h.host(store, verify);
+    expect(await host.admit(h.binding)).toMatchObject({ ok: false, code: 'identity-authority-unavailable' });
+    const turnId = fundedIdentityTurnId(h.binding);
+    expect(await store.read(h.binding.workspaceId, turnId)).toMatchObject({ state: 'funded' });
+    expect(h.raw.prepare('SELECT state FROM usage_receipts').get()).toMatchObject({ state: 'reserved' });
+    expect(await host.admit(h.binding)).toMatchObject({ ok: false, code: 'identity-authority-unavailable' });
+    expect(await store.read(h.binding.workspaceId, turnId)).toMatchObject({ state: 'funded' });
+    revoked = false;
+    const entered = await host.admit(h.binding);
+    if (!entered.ok) throw new Error(entered.detail);
+    expect(entered.turn.state).toBe('running');
+    expect(h.raw.prepare('SELECT count(*) AS count FROM usage_receipts').get()).toMatchObject({ count: 1 });
+  });
+
   it('composes pre-inference funding, exact native binding and hosted settlement through the awaited lifecycle', async () => {
     const h = harness(), b = { ...h.binding, admissionId: 'owner-command', nativeTurnId: null };
     const resolveClosedPopulation = vi.fn(async () => [eventKey]), recordFailure = vi.fn(async () => {});

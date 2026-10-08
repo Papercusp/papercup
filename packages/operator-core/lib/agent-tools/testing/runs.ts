@@ -77,6 +77,21 @@ const testingRunResultSchema = z
     workspaceId: z.string().nullable(),
     harnessSlug: z.string().nullable(),
     root: z.string().nullable(),
+    executionDetails: z.object({
+      schemaVersion: z.literal(1),
+      passed: z.number().int().nonnegative(),
+      failed: z.number().int().nonnegative(),
+      skipped: z.number().int().nonnegative(),
+      collectionFailed: z.boolean(),
+      testNamePattern: z.string().nullable(),
+      passedCaseTitles: z.array(z.string()).optional(),
+      failedCaseTitles: z.array(z.string()).optional(),
+    }).passthrough().nullable(),
+    executionDetailsBounded: z.object({
+      passedCaseTitlesOmitted: z.number().int().nonnegative(),
+      failedCaseTitlesOmitted: z.number().int().nonnegative(),
+      fieldsOmitted: z.array(z.string()),
+    }).optional(),
     filePath: z.string(),
     status: z.enum(['pass', 'fail', 'skip', 'cancelled', 'error', 'running']),
     framework: z.string(),
@@ -210,6 +225,24 @@ function clipOutputTail(value: unknown, maxChars: number): { value: unknown; cli
 function projectTestingRun(row: unknown, outputTailChars: number): { row: Record<string, unknown>; clipped: boolean } {
   const r = (row ?? {}) as Record<string, unknown>;
   const outputTail = clipOutputTail(r.outputTail, outputTailChars);
+  const details = r.executionDetails as Record<string, unknown> | null | undefined;
+  let executionProjection: Record<string, unknown> = {};
+  if (details && JSON.stringify(details).length > 1_400) {
+    const summaryKeys = ['schemaVersion', 'passed', 'failed', 'skipped', 'collectionFailed', 'testNamePattern'];
+    const summary = Object.fromEntries(summaryKeys.map(key => [key, details[key]]));
+    const omitted = { passedCaseTitlesOmitted: 0, failedCaseTitlesOmitted: 0,
+      fieldsOmitted: Object.keys(details).filter(key => !summaryKeys.includes(key)
+        && key !== 'passedCaseTitles' && key !== 'failedCaseTitles') };
+    for (const key of ['passedCaseTitles', 'failedCaseTitles'] as const) {
+      const titles = details[key];
+      if (!Array.isArray(titles)) continue;
+      // Preserve exact identities; a clipped prefix is not a case title.
+      const kept = titles.filter(title => typeof title === 'string' && title.length <= 256).slice(0, 3);
+      summary[key] = kept;
+      omitted[`${key}Omitted`] = titles.length - kept.length;
+    }
+    executionProjection = { executionDetails: summary, executionDetailsBounded: omitted };
+  }
   return {
     row: {
       ...r,
@@ -217,6 +250,7 @@ function projectTestingRun(row: unknown, outputTailChars: number): { row: Record
       workspaceId: r.workspaceId ?? null,
       harnessSlug: r.harnessSlug ?? null,
       outputTail: outputTail.value,
+      ...executionProjection,
       ...(outputTail.clipped ? { outputTailTruncated: true } : {}),
     },
     clipped: outputTail.clipped,
@@ -296,7 +330,7 @@ export default defineTool({
     // Response docs live HERE, not in description/when — those are
     // prompt-weight budgeted (the guard refused the P-002 edit on routines:list).
     returns: [
-      'Each row: { id, workspaceId, harnessSlug, root, filePath, status, framework, startedAt, finishedAt, durationMs, commitSha, runGroupId, source, branch, outputTail, loopLagP95Ms, rssMb, saturationSuspect, worktreeDirty, isScratchConfig }. id is the durable testRunId for evidence binding; workspaceId/harnessSlug report the stored scope and may be null. root is the parser-validated absolute checkout root captured in execution_details, or null for legacy/malformed rows. outputTail is populated only for fail/error rows and is truncated.',
+      'Each row: { id, workspaceId, harnessSlug, root, executionDetails, filePath, status, framework, startedAt, finishedAt, durationMs, commitSha, runGroupId, source, branch, outputTail, loopLagP95Ms, rssMb, saturationSuspect, worktreeDirty, isScratchConfig }. id is the durable testRunId for evidence binding; workspaceId/harnessSlug report the stored scope and may be null. root is the parser-validated absolute checkout root captured in execution_details, or null for legacy/malformed rows. executionDetails returns validated measured case counts, selector and saved case titles; null means unavailable, not zero executed cases. Bounded responses may omit titles and report executionDetailsBounded; payloadTier:"full" preserves complete saved details. outputTail is populated only for fail/error rows and is truncated.',
       '`runGroup` is the canonical exact run_group_id input selector; `runGroupId` is accepted as a compatibility alias because output rows expose the same value as runGroupId. If both are supplied, runGroup wins.',
       '`testRunIds` is an exact primary-key selector for evidence-lineage lookups; when supplied without an explicit `latestPerFile`, it defaults to `latestPerFile:false` so every requested receipt remains visible, including multiple attempts for one file. Set `latestPerFile:true` only when intentionally collapsing the selected IDs.',
       '{ count, total, truncatedByLimit, latestPerFile, runs, groups } — `runs` is the row list and `groups` is present for rollups.',
@@ -659,11 +693,16 @@ export default defineTool({
         latestPerFile,
         effectiveSourceFilter,
         omittedBySourceFilter,
-        runs: rows.map((r) => ({
+        runs: rows.map((r) => {
+          const parsedDetails = parseStoredExecutionDetails(r.execution_details);
+          const executionDetails = parsedDetails?.filePath === r.file_path && parsedDetails.runGroupId === r.run_group_id
+            ? parsedDetails : null;
+          return {
           id: Number(r.id),
           workspaceId: r.workspace_id,
           harnessSlug: r.harness_slug,
-          root: parseStoredExecutionDetails(r.execution_details)?.root ?? null,
+          root: executionDetails?.root ?? null,
+          executionDetails,
           filePath: r.file_path,
           status: r.status,
           framework: r.framework,
@@ -680,7 +719,8 @@ export default defineTool({
           saturationSuspect: isSaturationSuspect(r.loop_lag_p95_ms),
           worktreeDirty: r.worktree_dirty,
           isScratchConfig: r.is_scratch_config,
-        })),
+          };
+        }),
       },
     };
   },

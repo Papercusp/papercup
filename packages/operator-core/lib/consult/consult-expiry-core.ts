@@ -154,6 +154,8 @@ function currentSelectionAnswerer(
 }
 
 export interface ExpirySweepDeps {
+  /** Resume a durably accepted routing row through the same production core. */
+  resumeRequest?: (workspaceId: string, conversationId: string) => Promise<boolean>;
   getSql: () => Sql;
   /** Latched `consult:reply:<conv>` emit → the (possibly parked) requester.
    * Prod binds emitAwaitedEvent per-row-workspace; best-effort there. */
@@ -247,6 +249,18 @@ export async function sweepExpiredConsults(deps: ExpirySweepDeps): Promise<Expir
   const sql = deps.getSql();
   const nowIso = (deps.now ? deps.now() : new Date()).toISOString();
   const limit = deps.limit ?? EXPIRY_SWEEP_LIMIT;
+
+  if (deps.resumeRequest) {
+    const pending = await sql<{ workspace_id: string; conversation_id: string }[]>`
+      SELECT workspace_id, conversation_id FROM harness_shared.consult_state
+      WHERE state = 'routing' AND closed_at IS NULL AND routing #>> '{request,version}' = '1'
+        AND COALESCE((routing #>> '{request,leaseUntil}')::timestamptz, '-infinity'::timestamptz) <= ${nowIso}::timestamptz
+      ORDER BY created_at LIMIT ${Math.min(limit, 20)}`;
+    for (const row of pending) {
+      try { await deps.resumeRequest(row.workspace_id, row.conversation_id); }
+      catch { /* bounded error/retry state is persisted by the request core */ }
+    }
+  }
 
   // Read the due rows WITH their cascade columns — the advance-vs-expire
   // branch is per row, so the bulk single-statement flip is gone. The CAS

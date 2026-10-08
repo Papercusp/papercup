@@ -4208,10 +4208,10 @@ export default defineTool({
       testingRun: {
         schemaVersion: 'testing-run-phase-telemetry-v1',
         runId,
-        outcome: result.error ?? (result.ok ? 'passed' : result.status ?? 'failed'),
+        outcome: result.error ?? (result.ok ? 'passed' : ('status' in result ? result.status : 'failed')),
         phaseTimingsMs: { ...phaseTimingsMs },
-        ...(result.detachedRunId ? { detachedRunId: result.detachedRunId } : {}),
-        ...(result.taskId ? { taskId: result.taskId } : {}),
+        ...('detachedRunId' in result && result.detachedRunId ? { detachedRunId: result.detachedRunId } : {}),
+        ...('taskId' in result && result.taskId ? { taskId: result.taskId } : {}),
       },
     });
     if (result.ok === false && result.error === 'timeout') {

@@ -11,8 +11,12 @@ import { verifySellerReceiptAuthority } from '../p2p/metered-invocation';
 import { readIntegrationKey } from '../integration-credentials';
 import { activeWorkspaceId } from '../workspace-registry';
 import { readReleaseFunding } from './identity-release-funding-store';
-import { FundedToolTurnHost } from './funded-turn-host';
+import { FundedToolTurnHost, FundedIdentityTurnHost, type FundedIdentityTurnHostDeps } from './funded-turn-host';
 import { FundedToolTurnStore } from './funded-tool-turn-store';
+import { FundedIdentityTurnStore, type FundedIdentityTurnBinding } from './funded-turn-store';
+import { quoteIdentityInferenceTurn } from './identity-per-use-offer';
+import type { readAppliedIdentityRules } from '../agent-identities/sync-hook-rules';
+import type { resolveAppliedIdentityReleaseLayers } from './identity-activation-gate-io';
 import { readHostedToolChannel, readHostedToolEntitlements, readHostedPerUseOffers, type HostedPerUseOffer,
   type MeteredTransportDeps } from './metered-invocation-door-io';
 import { INSTALLED_TOOL_FUNDING_CONFIG, fundingPartySchema, remoteSellerSchema, sellerGrantSchema,
@@ -190,4 +194,110 @@ export async function productionInstalledToolFunding(session: Session, deps: Dep
         } };
     },
   };
+}
+
+/** D-073: host-only composition for an exact APPLIED paid identity. The same
+ * grant's quantityPerTurn caps pricing blocks; maxMicrosPerTurn caps markup.
+ * This supplies monetary authority, never a native billing capability. The
+ * existing store still requires the complete provider-billed usage population. */
+export async function productionFundedIdentityTurnHost(input: FundedIdentityTurnBinding, deps: Omit<Deps, 'createHost'> & {
+  readApplied?: typeof readAppliedIdentityRules;
+  resolveLayers?: typeof resolveAppliedIdentityReleaseLayers;
+  createIdentityHost?: (deps: FundedIdentityTurnHostDeps) => FundedIdentityTurnHost;
+} = {}): Promise<FundedIdentityTurnHost | undefined> {
+  const binding = structuredClone(input), readKey = deps.readKey ?? readIntegrationKey;
+  const bindingHash = (value: FundedIdentityTurnBinding) => hash({ ...value,
+    inferenceCeilingMicros: String(value.inferenceCeilingMicros) });
+  const nowMs = deps.nowMs ?? Date.now;
+  if ((deps.workspaceId ?? activeWorkspaceId)() !== binding.workspaceId)
+    throw new Error('identity-funding-workspace-mismatch');
+  const raw = await readKey(INSTALLED_TOOL_FUNDING_CONFIG);
+  if (raw === undefined) return undefined;
+  const config = configSchema.safeParse(JSON.parse(raw));
+  if (!config.success) throw new Error('identity-funding-grant-invalid');
+  const readApplied = deps.readApplied ?? (await import('../agent-identities/sync-hook-rules')).readAppliedIdentityRules;
+  const resolveLayers = deps.resolveLayers ?? (await import('./identity-activation-gate-io')).resolveAppliedIdentityReleaseLayers;
+  const worn = await readApplied(binding.ownerId, binding.workspaceId);
+  if (!worn || worn.applied.specificationRevision !== binding.specificationRevision ||
+      worn.applied.stateRevision !== binding.stateRevision ||
+      !(await resolveLayers(worn)).some(layer => layer.skuRef === binding.offer.skuRef))
+    throw new Error('identity-funding-applied-mismatch');
+  const fingerprint = hash({ applied: worn.applied, packagePins: worn.packagePins });
+  const matches = config.data.grants.filter(grant => grant.workspaceId === binding.workspaceId &&
+    grant.ownerId === binding.ownerId && grant.principalId === binding.principalId &&
+    grant.skuRef === binding.offer.skuRef && grant.provenanceHash === fingerprint && grant.offerId === binding.offerId);
+  if (matches.length !== 1) throw new Error('identity-funding-exact-grant-required');
+  const grant = matches[0]!, grantHash = hash(grant);
+  const quote = quoteIdentityInferenceTurn({ offer: binding.offer, billedInferenceMicros: 0n,
+    inferenceCeilingMicros: binding.inferenceCeilingMicros });
+  if (!quote.ok || quote.reservationQuantity > BigInt(grant.quantityPerTurn) ||
+      quote.reservedMarkupMicros > BigInt(grant.maxMicrosPerTurn))
+    throw new Error('identity-funding-budget-exceeded');
+  if (binding.payer !== grant.payer.principal || binding.seller !== grant.seller.principal ||
+      hash(binding.offer) !== grant.termsHash || binding.expiresAtMs > grant.expiresAtMs)
+    throw new Error('identity-funding-binding-mismatch');
+  if (grant.payer.credentialRef === grant.seller.credentialRef || grant.payer.pubkeyBase64 === grant.seller.pubkeyBase64 ||
+      grant.payer.principal === grant.seller.principal)
+    throw new Error('identity-funding-independent-seller-required');
+  const payerToken = await readKey(grant.payer.credentialRef);
+  const sellerToken = grant.seller.remote ? undefined : await readKey(grant.seller.credentialRef);
+  if (!payerToken?.trim() || (!grant.seller.remote && (!sellerToken?.trim() || payerToken === sellerToken)))
+    throw new Error('identity-funding-independent-credentials-required');
+  const transport = (authToken: string | undefined): MeteredTransportDeps => ({ authToken,
+    fetchImpl: (url, init) => fetch(url, { ...init, signal: AbortSignal.timeout(10_000) }) });
+  const payerTransport = transport(payerToken), sellerTransport = transport(sellerToken);
+  const remote = grant.seller.remote
+    ? (deps.remoteSeller ?? remoteSellerReceiptCapability)(grant.seller.remote, grant.seller.pubkeyBase64, binding.channelId)
+    : undefined;
+  const sql = await (deps.sql ?? (async () => (await import('@papercusp/db-org')).getOrgPg().sql as unknown as Sql))();
+  const verifyCurrentAuthority = async (candidate: FundedIdentityTurnBinding) => {
+    if (bindingHash(candidate) !== bindingHash(binding) || (deps.workspaceId ?? activeWorkspaceId)() !== binding.workspaceId ||
+        binding.expiresAtMs <= nowMs() || grant.expiresAtMs <= nowMs())
+      throw new Error('identity-funding-authority-expired-or-changed');
+    const currentRaw = await readKey(INSTALLED_TOOL_FUNDING_CONFIG);
+    const current = configSchema.safeParse(currentRaw === undefined ? undefined : JSON.parse(currentRaw));
+    if (!current.success || current.data.grants.filter(value => hash(value) === grantHash).length !== 1)
+      throw new Error('identity-funding-grant-withdrawn');
+    const applied = await readApplied(binding.ownerId, binding.workspaceId);
+    if (!applied || hash({ applied: applied.applied, packagePins: applied.packagePins }) !== fingerprint ||
+        !(await resolveLayers(applied)).some(layer => layer.skuRef === binding.offer.skuRef))
+      throw new Error('identity-funding-applied-withdrawn');
+    for (const [party, token, io] of [[grant.payer, payerToken, payerTransport], [grant.seller, sellerToken, sellerTransport]] as const) {
+      if (party === grant.seller && remote) continue;
+      if (await readKey(party.credentialRef) !== token) throw new Error('identity-funding-credential-changed');
+      const key = await (deps.readKeyStatus ?? loadHiveKeyStatus)(binding.workspaceId, party.hiveSlug);
+      if (key.kind !== 'ok' || key.pubkeyBase64 !== party.pubkeyBase64) throw new Error('identity-funding-signing-key-changed');
+      const principal = await (deps.readParty ?? readHostedToolEntitlements)(undefined, io);
+      if (!principal.ok || principal.payer !== party.principal ||
+          (party === grant.payer && !principal.productIds.includes(grant.productId)))
+        throw new Error('identity-funding-entitlement-withdrawn');
+    }
+    const offers = await (deps.readOffers ?? readHostedPerUseOffers)(payerTransport);
+    const rows = offers.ok ? offers.offers.filter(value => value.offerId === grant.offerId) : [];
+    const offer = rows[0];
+    if (rows.length !== 1 || !offer || !offer.active || !offer.productActive || offer.skuRef !== grant.skuRef ||
+        offer.productId !== grant.productId || offer.creatorId !== grant.seller.principal || hash(offer.terms) !== grant.termsHash ||
+        offer.receiptAuthority?.pubkeyBase64 !== grant.seller.pubkeyBase64 ||
+        !verifySellerReceiptAuthority({ seller: offer.creatorId, offerId: offer.offerId, productId: offer.productId,
+          skuRef: offer.skuRef }, offer.receiptAuthority)) throw new Error('identity-funding-offer-withdrawn');
+    const channelId = (await (deps.readFunding ?? readReleaseFunding)(sql, binding.workspaceId, [grant.skuRef])).get(grant.skuRef)?.channelId;
+    if (channelId !== binding.channelId) throw new Error('identity-funding-channel-binding-changed');
+    const channel = await (deps.readChannel ?? readHostedToolChannel)(binding.channelId, grant.payer.principal, payerTransport, grant.payer.pubkeyBase64);
+    // Once hosted funding is confirmed, its own reservation may consume the
+    // free balance. FundedIdentityTurnHost checks funds when it reserves; this
+    // refresh checks the exact channel's continuing authority, not free funds.
+    if (!channel.ok || grant.expiresAtMs <= nowMs()) throw new Error('identity-funding-channel-withdrawn');
+    if (remote) await remote.verify();
+  };
+  await verifyCurrentAuthority(binding);
+  const signer = (party: typeof grant.payer) => async (bytes: Buffer) => {
+    const signature = await (deps.sign ?? signWithHiveKey)(binding.workspaceId, party.hiveSlug, bytes);
+    if (!verifyEd25519(bytes, party.pubkeyBase64, signature)) throw new Error('identity-funding-signing-key-changed');
+    return signature.toString('base64');
+  };
+  return (deps.createIdentityHost ?? (value => new FundedIdentityTurnHost(value)))({
+    store: new FundedIdentityTurnStore(sql), payerTransport, sellerTransport,
+    signVoucher: signer(grant.payer), signReceipt: remote ? remote.signReceipt : signer(grant.seller),
+    ...(remote ? { settleRemote: remote.settle } : {}), verifyCurrentAuthority, nowMs,
+  });
 }

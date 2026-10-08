@@ -275,8 +275,9 @@ describe('testing:runs evidence identity', () => {
     expect(data).toMatchObject({
       count: 2,
       runs: [
-        { id: 17692431, workspaceId: 'workspace-a', harnessSlug: 'harness-a', root: '/checkouts/papercusp' },
-        { id: 17692432, workspaceId: null, harnessSlug: null, root: null },
+        { id: 17692431, workspaceId: 'workspace-a', harnessSlug: 'harness-a', root: '/checkouts/papercusp',
+          executionDetails: row.execution_details },
+        { id: 17692432, workspaceId: null, harnessSlug: null, root: null, executionDetails: null },
       ],
     });
     // Both rows have the same path/time/commit. Those labels cannot replace
@@ -306,11 +307,15 @@ describe('testing:runs evidence identity', () => {
       content?: Array<{ text: string }>;
     };
     const data = result.data ?? JSON.parse(result.content?.[0]?.text ?? '{}');
-    expect(data.runs).toEqual([expect.objectContaining({ root: null })]);
+    expect(data.runs).toEqual([expect.objectContaining({ root: null, executionDetails: null })]);
     expect(selectedSql).toContain('p.execution_details');
   });
 
-  it('projects the validated root from a JSONB string with measured passing cases', async () => {
+  it.each([
+    { filePath: 'same.test.ts', runGroupId: null, matches: true },
+    { filePath: 'other.test.ts', runGroupId: null, matches: false },
+    { filePath: 'same.test.ts', runGroupId: 'other-run', matches: false },
+  ])('binds JSONB measured cases to their exact file and group: $filePath/$runGroupId', async (scenario) => {
     sqlMock.mockImplementation((strings: TemplateStringsArray, ...values: unknown[]) => {
       const call = { strings: Array.from(strings), values };
       if (!call.strings.some((part) => part.includes('WITH filtered'))) return call;
@@ -319,8 +324,8 @@ describe('testing:runs evidence identity', () => {
         execution_details: JSON.stringify({
           schemaVersion: 1,
           root: '/checkouts/papercusp',
-          filePath: 'same.test.ts',
-          runGroupId: null,
+          filePath: scenario.filePath,
+          runGroupId: scenario.runGroupId,
           workspaceId: 'workspace-a',
           harnessSlug: 'harness-a',
           testNamePattern: null,
@@ -346,7 +351,10 @@ describe('testing:runs evidence identity', () => {
       content?: Array<{ text: string }>;
     };
     const data = result.data ?? JSON.parse(result.content?.[0]?.text ?? '{}');
-    expect(data.runs).toEqual([expect.objectContaining({ root: '/checkouts/papercusp' })]);
+    expect(data.runs).toMatchObject([scenario.matches
+      ? { root: '/checkouts/papercusp', executionDetails: { passed: 1, failed: 0, skipped: 0,
+        collectionFailed: false, passedCaseTitles: ['suite > passed case'], testNamePattern: null } }
+      : { root: null, executionDetails: null }]);
   });
 });
 
@@ -572,6 +580,25 @@ describe('testing:runs payload-tier shape', () => {
     expect(payload?.runs.every((row) => Number.isInteger(row.id))).toBe(true);
     expect(payload?.runs.every((row) => 'workspaceId' in row && 'harnessSlug' in row)).toBe(true);
     expect(payload?.runs[0]).toMatchObject({ id: 17692431, workspaceId: 'workspace-a', harnessSlug: 'papercusp' });
+  });
+
+  it('bounds verbose saved case details without clipping identities or changing measured counts', () => {
+    const executionDetails = {
+      schemaVersion: 1, root: '/tmp', filePath: 'measured.test.ts', runGroupId: 'measured',
+      workspaceId: null, harnessSlug: null, passed: 7, failed: 0, skipped: 118,
+      collectionFailed: false, testNamePattern: 'selected assertion',
+      mutationPhase: null, commitSha: null, worktreeDirty: false,
+      passedCaseTitles: ['exact short case', 'x'.repeat(2_048)],
+    };
+    const shaped = shapeTestingRuns({ runs: [{ id: 42, executionDetails }] }, 'trimmed') as {
+      runs: Array<{ executionDetails: Record<string, unknown>; executionDetailsBounded: unknown }>;
+    };
+    expect(shaped.runs[0]?.executionDetails).toMatchObject({ passed: 7, failed: 0, skipped: 118,
+      collectionFailed: false, testNamePattern: 'selected assertion', passedCaseTitles: ['exact short case'] });
+    expect(shaped.runs[0]?.executionDetailsBounded).toMatchObject({ passedCaseTitlesOmitted: 1,
+      failedCaseTitlesOmitted: 0, fieldsOmitted: expect.arrayContaining(['root', 'filePath']) });
+    expect(JSON.stringify(shaped).length).toBeLessThan(1_400);
+    expect(executionDetails.passedCaseTitles).toHaveLength(2);
   });
 
   it('preserves the required fields and announces row/tail bounds in the shaper output', () => {

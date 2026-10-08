@@ -303,6 +303,22 @@ describe('ChromeShell', () => {
     expect(screen.queryByTestId('op-chat')).toBeNull();
   });
 
+  it('switches the operations chat off for DAO Management and restores it on returning', () => {
+    operatorChatSidebarFlag = true;
+    pathname = '/adv';
+    const { rerender } = render(<ChromeShell />);
+    expect(screen.getByTestId('op-chat')).toBeTruthy();
+    for (const path of ['/daos', '/dao']) {
+      pathname = path;
+      rerender(<ChromeShell />);
+      expect(screen.queryByTestId('op-chat')).toBeNull();
+      expect(screen.getByLabelText('DAO Management (current page)')).toBeTruthy();
+    }
+    pathname = '/adv';
+    rerender(<ChromeShell />);
+    expect(screen.getByTestId('op-chat')).toBeTruthy();
+  });
+
   it('renders CONTENT ONLY when /adv is framed by the portal — no header, no Papercup chat dock, even with the chat flag ON', () => {
     // cloud-portal-extract-remaining-papercusp-panes-2026-09-01 P-002: the
     // portal hosts the Papercup chat (from /portal-panes/chat) and the

@@ -46,6 +46,9 @@ describe('hosted runtime composition', () => {
       if (reference === configuration.workosCookiePasswordRef) return 'workos-cookie-password-over-32-bytes-long';
       throw new Error(`unexpected secret read: ${reference}`);
     });
+    // This constructs the complete production browser/profile/stack, so
+    // session-only tutorial leaves cannot pass isolated handler tests while
+    // breaking the hosted deployment at startup.
     const plane = await createHostedRuntime(configuration, {
       resolveSecret,
       runService: serviceRunner('hosted_service', bootOrder),
