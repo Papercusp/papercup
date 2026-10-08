@@ -653,7 +653,64 @@
       "lines": [
         16146,
         16165
-      ]
+      ],
+      "historicalQualification": {
+        "observedOn": "2026-10-08",
+        "scope": "Read-only archive, source-baseline and existing-record qualification; no new test execution, source repair, terminal-item replay, final acceptance or shipment.",
+        "archiveSha256": "43cf66489baf7cf665a9746d097375cffc7cdc6262014929c3cc398155b579f4",
+        "archivedCensus": {
+          "collected": 4,
+          "executed": 3,
+          "failed": 2,
+          "skipped": 1,
+          "skippedCase": "a member-authored feature lands on the owner within a bounded window via the real onAnnounce/poll-driven merge + WI-259 content guard"
+        },
+        "archivedFailure": "The alternating-restart soak fails before its first cycle because initial roster+feature federation does not complete. The zombie case reports memberConnAttempts=2, forceRejoinFired=true, one live connection and a frozen merge position0/backlog3; F-zombie is absent. The test's dead-muxer/re-attach explanation is a hypothesis, not a measured root cause.",
+        "existingTerminalItems": [
+          {
+            "id": "WI-6324",
+            "state": "done",
+            "attestedCommit": "e39be36c1775d563632456f1469b2129ef5c0e8c",
+            "attestedCommitDate": "2026-08-27",
+            "testSha256": "60545c72c426e77b4467b583bc2489577b9079208038496ca51dbc3525d15b90",
+            "sourceSha256": "7c9f6fbc65f45f192aa37422a08b9380c2635fb79c5460cf27107cc5e8f49a4d",
+            "reportedVerification": "Stored terminal completion reports a focused zombie1/1 pass and whole named file3 passed/1 intentional skip. Exact commit-prefix testing:runs lookup returned no_runs_recorded, which neither disproves execution nor supplies an independent PASS receipt.",
+            "repairMechanism": "Independent admitted-log liveness sampling on the existing cadence lets the detector mature while a dead remote blocks the serialized merge. The source sampler remains present at the October run-start baseline and in the current file.",
+            "meaning": "The repair and reported pass predate the archived October failures. They cannot establish a later repair of the archived reconnect-without-content failure. The older comment's memberConnAttempts=1 observation also differs from the archive's2."
+          },
+          {
+            "id": "WI-5579",
+            "state": "done",
+            "meaning": "Historical zombie-repro construction. Its stored five green runs are not attributed to the later archived failure or the current loaded source."
+          }
+        ],
+        "existingNonterminalItem": {
+          "id": "EI-24099631804056975",
+          "state": "open",
+          "assigneeAtRead": null,
+          "meaning": "Existing six-file federation defect records the same soak/zombie failures and a pre-P008 redirect control. This item was read only; specific fleet admission is required before claiming or implementing it. Its load/infra explanation for other files is not adopted as a measured cause."
+        },
+        "runStartCommit": "d2a53e115436fe5b2a72c261abbc66f337642672",
+        "runStartAndCurrentTestSha256": "7161cd9bd1cd0890016d0dd75ae0dcb3c72eaf64f66bb2f8da1de6ec7d33141a",
+        "runStartSourceSha256": "9834858e3683b6e4352cb15f5300a1e5a9e5948cc2951eb13f9ebc5a9f200ea1",
+        "currentSourceSha256": "24b27d9bf541a47bbdb5de69388efa0155e6bb25bf8e52e7456cbe6ac328832f",
+        "sourceComparison": "Current named test equals the run-start commit blob and is clean in staging. Against WI-6324's attested test, only four cleanup calls gained optional chaining. Current independent-sampler/timer region equals the run-start source region; whole boot.ts differs. Commit comparisons do not prove original or current actually loaded bytes/imports/config/environment.",
+        "existingFailureReceipts": [
+          {
+            "id": 20765910,
+            "status": "fail",
+            "commit": "0d0655c7909ce8c170a5aae58e56ece24d592a49",
+            "meaning": "2026-10-05 local canonical dirty staging/non-scratch-config row; outputTail retains the initial-federation assertion and truncated zombie case name. The immutable archive supplies the detailed zombie observation."
+          },
+          {
+            "id": 20815748,
+            "status": "fail",
+            "commit": "81c7be521adb885de5ec230c8511424ec63804d3",
+            "meaning": "2026-10-06 local clean isolated as-committed checkout/non-scratch-config row; same initial-federation assertion. This is existing historical failure evidence, not a current-HEAD reproduction."
+          }
+        ],
+        "assurance": "UNKNOWN retained: no later causal repair or current passing receipt established. Root cause, original/current loaded source, transitive imports, config, main/subprocess/native environment, final D006/P004 acceptance and shipment remain unverified."
+      }
     },
     {
       "path": "packages/operator-core/lib/sync/hyperbee/__tests__/cross-plan-federation-seam.integration.test.ts",
