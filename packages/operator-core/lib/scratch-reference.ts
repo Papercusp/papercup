@@ -6,10 +6,11 @@
  * Legacy scratch files remain readable as ordinary files.
  */
 
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
+import { pinModuleState } from '@papercusp/module-singleton';
 import type { OutputAudience, OutputEvidenceClass } from './output-envelope';
 import {
   reserveScratchSpace,
@@ -22,6 +23,30 @@ import {
 
 export const SCRATCH_REFERENCE_SCHEMA_VERSION = 'papercusp.scratch-reference/v1' as const;
 export const SCRATCH_REFERENCE_MAGIC = `${SCRATCH_REFERENCE_SCHEMA_VERSION}\n`;
+/** Volatile recovery references use the same reader contract without pretending a file exists. */
+export const VOLATILE_SCRATCH_REFERENCE_SCHEME = 'papercusp://scratch-memory';
+export const VOLATILE_SCRATCH_REFERENCE_TTL_MS = 5 * 60 * 1000;
+const VOLATILE_SCRATCH_REFERENCE_MAX_ENTRY_BYTES = 16 * 1024 * 1024;
+const VOLATILE_SCRATCH_REFERENCE_MAX_BYTES = 64 * 1024 * 1024;
+const VOLATILE_SCRATCH_REFERENCE_MAX_ENTRIES = 64;
+const VOLATILE_SCRATCH_REFERENCE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+interface VolatileScratchReferenceEntry {
+  manifest: ScratchReferenceManifest;
+  payload: Buffer;
+}
+
+interface VolatileScratchReferenceState {
+  entries: Map<string, VolatileScratchReferenceEntry>;
+  bytes: number;
+}
+
+// result-door and capability:read can be loaded through distinct module records in tsx.
+// Pin the fallback store so a reference written by one is readable by the other.
+const volatileScratchState = pinModuleState<VolatileScratchReferenceState>(
+  '@papercusp/operator-core.volatile-scratch-reference',
+  () => ({ entries: new Map(), bytes: 0 }),
+);
 
 export interface ScratchReferenceContentMetadata {
   index: number;
@@ -173,6 +198,44 @@ export function contentMetadata(items: readonly unknown[]): ScratchReferenceCont
   });
 }
 
+function createScratchReferenceManifest(input: {
+  payload: Buffer;
+  workspaceId: string;
+  ownerId?: string | null;
+  audience?: OutputAudience;
+  mediaType: string;
+  content?: readonly ScratchReferenceContentMetadata[];
+  evidence?: readonly ScratchReferenceEvidenceSelector[];
+  nowMs?: number;
+  ttlMs?: number;
+  bodyOffsetInPayload?: number;
+}): ScratchReferenceManifest {
+  const nowMs = input.nowMs ?? Date.now();
+  const audience = input.audience ?? (input.ownerId ? 'owner' : 'workspace');
+  if (audience === 'owner' && !input.ownerId) {
+    throw new ScratchReferenceError('invalid_reference', 'owner audience requires ownerId');
+  }
+  return {
+    schemaVersion: SCRATCH_REFERENCE_SCHEMA_VERSION,
+    createdAt: new Date(nowMs).toISOString(),
+    expiresAt: new Date(nowMs + (input.ttlMs ?? RETENTION_MS)).toISOString(),
+    workspaceId: input.workspaceId,
+    ...(input.ownerId ? { ownerId: input.ownerId } : {}),
+    audience,
+    mediaType: input.mediaType,
+    byteCount: input.payload.length,
+    sha256: sha256(input.payload),
+    content: [...(input.content ?? [])],
+    ...(input.evidence?.length ? { evidence: input.evidence.map((entry) => ({ ...entry, jsonPointers: [...entry.jsonPointers] })) } : {}),
+    ...(input.bodyOffsetInPayload != null &&
+    Number.isSafeInteger(input.bodyOffsetInPayload) &&
+    input.bodyOffsetInPayload >= 0 &&
+    input.bodyOffsetInPayload < input.payload.length
+      ? { bodyOffsetInPayload: input.bodyOffsetInPayload }
+      : {}),
+  };
+}
+
 export function writeScratchReference(input: {
   filePath: string;
   payload: Buffer | string;
@@ -199,33 +262,7 @@ export function writeScratchReference(input: {
   onScratchWriteTiming?: (timings: ScratchWriteTimings) => void;
 }): ScratchReferenceManifest {
   const payload = Buffer.isBuffer(input.payload) ? input.payload : Buffer.from(input.payload, 'utf8');
-  const nowMs = input.nowMs ?? Date.now();
-  const audience = input.audience ?? (input.ownerId ? 'owner' : 'workspace');
-  if (audience === 'owner' && !input.ownerId) {
-    throw new ScratchReferenceError('invalid_reference', 'owner audience requires ownerId');
-  }
-  const manifest: ScratchReferenceManifest = {
-    schemaVersion: SCRATCH_REFERENCE_SCHEMA_VERSION,
-    createdAt: new Date(nowMs).toISOString(),
-    expiresAt: new Date(nowMs + RETENTION_MS).toISOString(),
-    workspaceId: input.workspaceId,
-    ...(input.ownerId ? { ownerId: input.ownerId } : {}),
-    audience,
-    mediaType: input.mediaType,
-    byteCount: payload.length,
-    sha256: sha256(payload),
-    content: [...(input.content ?? [])],
-    ...(input.evidence?.length ? { evidence: input.evidence.map((entry) => ({ ...entry, jsonPointers: [...entry.jsonPointers] })) } : {}),
-    // Declared only when it actually points INTO this payload. An offset past the end
-    // would send a consumer to EOF and read as "empty body" rather than as a broken
-    // manifest, so it is dropped rather than written down wrong.
-    ...(input.bodyOffsetInPayload != null &&
-    Number.isSafeInteger(input.bodyOffsetInPayload) &&
-    input.bodyOffsetInPayload >= 0 &&
-    input.bodyOffsetInPayload < payload.length
-      ? { bodyOffsetInPayload: input.bodyOffsetInPayload }
-      : {}),
-  };
+  const manifest = createScratchReferenceManifest({ ...input, payload });
   const header = scratchReferenceHeader(manifest);
   const bytes = Buffer.concat([header, payload]);
   if (input.deferredWrites) {
@@ -253,6 +290,95 @@ export function writeScratchReference(input: {
   );
   writeFileSync(input.filePath, bytes, { mode: 0o600 });
   return manifest;
+}
+
+/** Store an exact temporary recovery copy when the primary scratch writer fails. */
+export function storeVolatileScratchReference(input: {
+  payload: Buffer | string;
+  workspaceId: string;
+  ownerId?: string | null;
+  audience?: OutputAudience;
+  mediaType: string;
+  content?: readonly ScratchReferenceContentMetadata[];
+  evidence?: readonly ScratchReferenceEvidenceSelector[];
+  nowMs?: number;
+  bodyOffsetInPayload?: number;
+}): { uri: string; manifest: ScratchReferenceManifest } | null {
+  const payloadBytes = Buffer.isBuffer(input.payload)
+    ? input.payload.byteLength
+    : Buffer.byteLength(input.payload, 'utf8');
+  if (payloadBytes > VOLATILE_SCRATCH_REFERENCE_MAX_ENTRY_BYTES) return null;
+
+  const nowMs = input.nowMs ?? Date.now();
+  pruneVolatileScratchReferences(nowMs);
+  const payload = Buffer.from(input.payload);
+  const manifest = createScratchReferenceManifest({
+    ...input,
+    payload,
+    nowMs,
+    ttlMs: VOLATILE_SCRATCH_REFERENCE_TTL_MS,
+  });
+  while (
+    volatileScratchState.entries.size >= VOLATILE_SCRATCH_REFERENCE_MAX_ENTRIES ||
+    volatileScratchState.bytes + payload.length > VOLATILE_SCRATCH_REFERENCE_MAX_BYTES
+  ) {
+    const oldest = volatileScratchState.entries.keys().next().value as string | undefined;
+    if (!oldest) return null;
+    deleteVolatileScratchReference(oldest);
+  }
+
+  const uri = `${VOLATILE_SCRATCH_REFERENCE_SCHEME}/${randomUUID()}`;
+  volatileScratchState.entries.set(uri, { manifest, payload });
+  volatileScratchState.bytes += payload.length;
+  return { uri, manifest };
+}
+
+/** True only for an opaque, well-formed volatile scratch URI. */
+export function isVolatileScratchReferenceUri(uri: string): boolean {
+  const prefix = `${VOLATILE_SCRATCH_REFERENCE_SCHEME}/`;
+  return uri.startsWith(prefix) && VOLATILE_SCRATCH_REFERENCE_ID.test(uri.slice(prefix.length));
+}
+
+/** Read and authorize one temporary reference. The returned buffer is read-only by convention. */
+export function readVolatileScratchReference(
+  uri: string,
+  caller: { workspaceId?: string | null; ownerId?: string | null; nowMs?: number },
+): { manifest: ScratchReferenceManifest; payload: Buffer } {
+  if (!isVolatileScratchReferenceUri(uri)) {
+    throw new ScratchReferenceError('invalid_reference', 'volatile scratch reference URI is malformed');
+  }
+  const entry = volatileScratchState.entries.get(uri);
+  if (!entry) {
+    throw new ScratchReferenceError(
+      'expired_reference',
+      'in-memory scratch fallback is no longer available; it may have expired or been evicted',
+    );
+  }
+  try {
+    authorizeScratchReference(entry.manifest, caller);
+  } catch (error) {
+    if (error instanceof ScratchReferenceError && error.code === 'expired_reference') {
+      deleteVolatileScratchReference(uri);
+    }
+    throw error;
+  }
+  // Map insertion order is the bounded cache's LRU order.
+  volatileScratchState.entries.delete(uri);
+  volatileScratchState.entries.set(uri, entry);
+  return entry;
+}
+
+function pruneVolatileScratchReferences(nowMs: number): void {
+  for (const [uri, entry] of volatileScratchState.entries) {
+    if (nowMs >= Date.parse(entry.manifest.expiresAt)) deleteVolatileScratchReference(uri);
+  }
+}
+
+function deleteVolatileScratchReference(uri: string): void {
+  const entry = volatileScratchState.entries.get(uri);
+  if (!entry) return;
+  volatileScratchState.entries.delete(uri);
+  volatileScratchState.bytes = Math.max(0, volatileScratchState.bytes - entry.payload.length);
 }
 
 /** Null means a legacy/non-reference scratch file. A matching magic prefix is

@@ -21,7 +21,9 @@ import { redactSensitiveText } from '../../sensitive-text';
 import {
   SCRATCH_REFERENCE_MAGIC,
   authorizeScratchReference,
+  isVolatileScratchReferenceUri,
   parseScratchReference,
+  readVolatileScratchReference,
   ScratchReferenceError,
   type ScratchReferenceManifest,
 } from '../../scratch-reference';
@@ -569,7 +571,7 @@ function renderLargeLineWindow(
 export default defineTool({
   name: 'capability:read',
   description:
-    'Read a file with line-numbered text windows, exact undecorated text windows (raw:true), or exact resumable byte pages. offset/limit window lines; tail:N reads the last N lines. byte_offset+byte_limit returns base64 bytes with a next cursor, including for a single very long line. Credential-bearing config/auth files are redacted for ordinary line reads and refuse exact/raw/byte/structured modes. Path is absolute, ~/-relative, relative to the project dir, or a papercusp://scratch URI.',
+    'Read a file with line-numbered text windows, exact undecorated text windows (raw:true), or exact resumable byte pages. offset/limit window lines; tail:N reads the last N lines. byte_offset+byte_limit returns base64 bytes with a next cursor, including for a single very long line. Credential-bearing config/auth files are redacted for ordinary line reads and refuse exact/raw/byte/structured modes. Path is absolute, ~/-relative, relative to the project dir, a papercusp://scratch URI, or a short-lived in-memory scratch fallback URI.',
   guidance: {
     when: 'Read a source/text file before editing it, or inspect content. Use offset+limit for line pages, tail:N for a log tail, raw:true when passing text to capability:write/edit, and byte_offset+byte_limit when exact resumable bytes matter or the file may be one long line.',
     notWhen: 'To run a command, use capability:bash. To search across files, use capability:bash with grep/rg.',
@@ -588,6 +590,52 @@ export default defineTool({
   async handler(args, ctx) {
     const filePath = args.file_path ?? args.uri;
     if (!filePath) return err('missing_path', 'file_path or uri must be supplied.');
+
+    if (isVolatileScratchReferenceUri(filePath)) {
+      if (args.byte_offset === undefined || args.byte_limit === undefined) {
+        return err(
+          'volatile_reference_requires_byte_window',
+          'In-memory scratch fallbacks support exact byte pages only; supply byte_offset and byte_limit from the cursor.',
+        );
+      }
+      if (
+        args.offset !== undefined || args.limit !== undefined || args.tail !== undefined ||
+        args.raw === true || args.content_indexes !== undefined || args.evidence_class !== undefined
+      ) {
+        return err('mixed_window_modes', 'In-memory scratch fallback byte pages cannot be combined with other read modes.');
+      }
+      let ownerId: string | null = null;
+      try {
+        // Use the same signed-spawn identity rule as filesystem scratch references.
+        const identityCtx = ctx as ResolveIdentityCtx;
+        ownerId = resolveAgentIdentity(
+          identityCtx.sigVerifiedSpawn &&
+          !identityCtx.isSuperuser &&
+          !identityCtx.isPowerUser &&
+          identityCtx.uiClientId
+            ? { ...identityCtx, principal: undefined }
+            : identityCtx,
+        ).ownerId;
+      } catch {
+        ownerId = null;
+      }
+      try {
+        const fallback = readVolatileScratchReference(filePath, {
+          workspaceId: ctx.workspaceId ?? ctx.principal?.workspaceId ?? null,
+          ownerId,
+        });
+        return renderByteWindow(
+          filePath,
+          args as ByteReadArgs,
+          fallback.manifest.byteCount,
+          (offset, limit) => fallback.payload.subarray(offset, offset + limit),
+          fallback.manifest,
+        );
+      } catch (e: unknown) {
+        if (e instanceof ScratchReferenceError) return err(e.code, e.message);
+        return err('invalid_reference', e instanceof Error ? e.message : String(e));
+      }
+    }
 
 
     let abs: string;
