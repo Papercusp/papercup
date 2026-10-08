@@ -92,7 +92,7 @@
  *    explicitly, so you can see WHY a working-tree run disagreed with this one.
  */
 import { execFileSync, spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   appendFileSync,
   existsSync,
@@ -101,6 +101,7 @@ import {
   readdirSync,
   readFileSync,
   realpathSync,
+  renameSync,
   rmSync,
   symlinkSync,
   mkdirSync,
@@ -199,6 +200,45 @@ export const MAX_AGE_MS = 24 * 3600_000;
  */
 export const MAX_IDLE_KEPT_TREES = 4;
 
+/** Verify a retained source before launching anything that imports from it. */
+export function verifyCommittedWorkRoot(workRoot, expectedSha, requiredPaths = []) {
+  if (!/^[0-9a-f]{40}$/.test(expectedSha)) throw new Error('lint-as-committed: expected source commit must be a full SHA');
+  if (!existsSync(workRoot)) throw new Error(`lint-as-committed: retained source root is missing: ${workRoot}; rematerialize the recorded commit`);
+  const root = realpathSync(workRoot);
+  const marker = JSON.parse(readFileSync(join(root, OWNER_MARKER), 'utf8'));
+  if (marker.sha !== expectedSha || git(['rev-parse', 'HEAD'], root) !== expectedSha) {
+    throw new Error('lint-as-committed: retained source commit does not match the recorded artifact');
+  }
+  for (const path of requiredPaths) {
+    const target = resolve(root, path);
+    if (isAbsolute(path) || target === root || !target.startsWith(root + sep)) {
+      throw new Error('lint-as-committed: required source path must be inside the retained root');
+    }
+    if (!existsSync(target)) throw new Error(`lint-as-committed: retained source dependency is missing: ${path}`);
+    if (!realpathSync(target).startsWith(root + sep)) {
+      throw new Error(`lint-as-committed: retained source dependency escapes the recorded root: ${path}`);
+    }
+  }
+  return { root, sha: expectedSha };
+}
+
+/** Keep the existing owner marker alive for the lifetime of a dependent artifact. */
+export function retainCommittedWorkRoot(workRoot, expectedSha, artifactPath) {
+  const { root } = verifyCommittedWorkRoot(workRoot, expectedSha);
+  const artifact = realpathSync(artifactPath); // Missing artifacts must never create a hold.
+  if (artifact === root || artifact.startsWith(root + sep)) {
+    throw new Error('lint-as-committed: dependent artifact must be outside its source root');
+  }
+  const markerPath = join(root, OWNER_MARKER);
+  const marker = JSON.parse(readFileSync(markerPath, 'utf8'));
+  const retainedFor = Array.isArray(marker.retainedFor) ? marker.retainedFor : [];
+  if (!retainedFor.some((entry) => entry.path === artifact && entry.sha === expectedSha)) {
+    retainedFor.push({ path: artifact, sha: expectedSha });
+  }
+  writeFileSync(markerPath, JSON.stringify({ ...marker, keep: true, retainedFor }));
+  return { root, sha: expectedSha, artifact };
+}
+
 /**
  * Decide one tree's fate. Pure: the caller supplies liveness facts.
  * - `inUse`: some live process has its cwd inside the tree (e.g. a testing:run on the
@@ -207,8 +247,9 @@ export const MAX_IDLE_KEPT_TREES = 4;
  * - `ownerAlive`: whether `marker.pid` is a live process (ignored without a marker).
  * - `ageMs`: from `marker.createdAtMs`, else from the directory mtime.
  */
-export function classifyWorkRoot({ inUse, marker, ownerAlive, ageMs, keepTtlMs = KEEP_TTL_MS, maxAgeMs = MAX_AGE_MS }) {
+export function classifyWorkRoot({ inUse, dependentArtifactPresent = false, marker, ownerAlive, ageMs, keepTtlMs = KEEP_TTL_MS, maxAgeMs = MAX_AGE_MS }) {
   if (inUse) return { remove: false, reason: 'in-use' };
+  if (dependentArtifactPresent) return { remove: false, reason: 'dependent-artifact' };
   if (!(ageMs >= 0)) return { remove: false, reason: 'age-unknown' };
   if (ageMs > maxAgeMs) return { remove: true, reason: 'max-age' };
   if (!marker) return ageMs > keepTtlMs ? { remove: true, reason: 'unmarked-expired' } : { remove: false, reason: 'unmarked-young' };
@@ -286,7 +327,10 @@ export function sweepStaleWorkRoots({ root = tmpdir(), nowMs = Date.now(), cwds 
     const inUse = cwds === null ? null : cwds.some((c) => c === path || c.startsWith(path + sep));
     const createdAtMs = Number.isFinite(marker?.createdAtMs) ? marker.createdAtMs : st.mtimeMs;
     const ownerAlive = marker ? isAlive(marker.pid) : false;
-    const verdict = classifyWorkRoot({ inUse: inUse === true, marker, ownerAlive, ageMs: nowMs - createdAtMs });
+    const dependentArtifactPresent = Array.isArray(marker?.retainedFor) && marker.retainedFor.some((entry) =>
+      entry?.sha === marker.sha && typeof entry.path === 'string' && isAbsolute(entry.path)
+        && entry.path !== path && !entry.path.startsWith(path + sep) && existsSync(entry.path));
+    const verdict = classifyWorkRoot({ inUse: inUse === true, dependentArtifactPresent, marker, ownerAlive, ageMs: nowMs - createdAtMs });
     // A dead non-keep owner is proof the tree is abandoned whatever its age; anything else
     // needs the cwd scan to rule out a process still working inside it.
     const ownerDead = marker !== null && !marker.keep && !ownerAlive;
@@ -345,6 +389,8 @@ export function parseArgs(argv) {
   let ref = 'HEAD';
   let workspace;
   let keep = false;
+  let materializeOnly = false;
+  let retainFor;
   let any = false;
   let sawSeparator = false;
   const unknown = [];
@@ -356,6 +402,8 @@ export function parseArgs(argv) {
     }
     if (arg === '--') sawSeparator = true;
     else if (arg === '--keep') keep = true;
+    else if (arg === '--materialize-only') materializeOnly = true;
+    else if (arg.startsWith('--retain-for=')) retainFor = arg.slice('--retain-for='.length);
     else if (arg === '--any') any = true;
     else if (arg.startsWith('--ref=')) ref = arg.slice('--ref='.length);
     else if (arg.startsWith('--workspace=')) workspace = arg.slice('--workspace='.length);
@@ -378,6 +426,8 @@ export function parseArgs(argv) {
   // other, and the summary reports on whatever came back. Refuse instead.
   const forwardAmbiguous = forward.length > 0 && scripts.length > 1;
   return { help: false, scripts, forward, ref, keep, any, unknown, nonLint, selfRecursive, forwardAmbiguous, sawSeparator,
+    ...(materializeOnly ? { materializeOnly: true, keep: true } : {}),
+    ...(retainFor !== undefined ? { retainFor } : {}),
     ...(workspace !== undefined ? { workspace } : {}) };
 }
 
@@ -577,6 +627,40 @@ export function cloneWorkspaceTarget(realTarget, repoRoot, workRoot) {
   return join(workRoot, rel);
 }
 
+/** Repair existing workspace shadows after exact source rematerialization. */
+export function remapRetainedWorkspaceLinks(moduleRoot, priorRoot, workRoot, expectedSha) {
+  const { root } = verifyCommittedWorkRoot(workRoot, expectedSha);
+  const previous = resolve(priorRoot);
+  const plan = [];
+  const inspect = (path) => {
+    if (!lstatSync(path).isSymbolicLink()) return;
+    const oldLink = readlinkSync(path);
+    const target = cloneWorkspaceTarget(resolve(dirname(path), oldLink), previous, root);
+    if (!target) return;
+    const inner = relative(root, target);
+    verifyCommittedWorkRoot(root, expectedSha, [join(inner, 'package.json')]);
+    plan.push({ path, oldLink, target });
+  };
+  for (const entry of readdirSync(moduleRoot, { withFileTypes: true })) {
+    const path = join(moduleRoot, entry.name);
+    if (entry.name.startsWith('@') && entry.isDirectory()) {
+      for (const name of readdirSync(path)) inspect(join(path, name));
+    } else inspect(path);
+  }
+  // Validate the whole plan before changing any import, then replace links atomically.
+  for (const { path, oldLink, target } of plan) {
+    if (readlinkSync(path) !== oldLink) throw new Error(`lint-as-committed: workspace link changed during recovery: ${path}`);
+    const temporary = `${path}.retained-${randomUUID()}`;
+    try {
+      symlinkSync(target, temporary, 'dir');
+      renameSync(temporary, path);
+    } finally {
+      rmSync(temporary, { force: true });
+    }
+  }
+  return { root, sha: expectedSha, remapped: plan.length };
+}
+
 /**
  * Build `cloneNm` as a REAL directory mirroring `sharedNm` entry by entry (EI-24790229053787032).
  * Installed packages have real directory shells with linked contents (nothing is installed or
@@ -747,6 +831,8 @@ lint-as-committed — run a lint as the release gate runs it (committed detector
   --workspace=<dir> select a committed npm workspace, e.g. apps/sidecar;
                     script definitions and forwarded file paths use that directory
   --keep            do not delete the extracted tree (path is printed)
+  --materialize-only prepare committed source without running a lint/test (implies --keep)
+  --retain-for=<path> retain source while this external artifact exists; requires --materialize-only
   --any             allow a non-'lint:' npm script (blast-radius opt-in)
   --                everything after this is forwarded verbatim to the npm script
                     (only one script may be named when forwarding)
@@ -843,7 +929,15 @@ function main() {
     );
     process.exit(2);
   }
-  if (args.scripts.length === 0) {
+  if (args.materializeOnly && (args.scripts.length > 0 || args.forward.length > 0)) {
+    console.error('lint-as-committed: --materialize-only cannot run or forward a command.');
+    process.exit(2);
+  }
+  if (args.retainFor !== undefined && (!args.materializeOnly || !args.retainFor || !existsSync(args.retainFor))) {
+    console.error('lint-as-committed: --retain-for requires --materialize-only and an existing dependent artifact.');
+    process.exit(2);
+  }
+  if (args.scripts.length === 0 && !args.materializeOnly) {
     process.stdout.write(USAGE);
     process.exit(args.help ? 0 : 2);
   }
@@ -1142,6 +1236,13 @@ function main() {
       return;
     }
 
+    if (args.materializeOnly) {
+      verifyCommittedWorkRoot(workRoot, sha);
+      if (args.retainFor) retainCommittedWorkRoot(workRoot, sha, args.retainFor);
+      console.log(`\nCommitted source prepared at ${workRoot}; no lint or test was run.`);
+      return;
+    }
+
     // ── read the COMMITTED package.json: the script DEFINITION is versioned too ──
     let refScripts = {};
     try {
@@ -1219,7 +1320,7 @@ function main() {
       }
     }
   } finally {
-    if (args.keep) console.log(`\n  --keep: extracted tree left at ${workRoot} (swept by a later run after ${KEEP_TTL_MS / 3600_000}h unless a process is inside it)`);
+    if (args.keep) console.log(`\n  --keep: extracted tree left at ${workRoot} (swept after ${KEEP_TTL_MS / 3600_000}h unless in use or retained by a dependent artifact)`);
     else cleanupWorkRoot();
   }
 

@@ -1351,6 +1351,95 @@ describe('extracted-tree lifecycle (WI-10005705)', () => {
   };
   const H = 3600_000;
 
+  it('retains dependent source past the age and idle cap, then releases it when the artifact disappears', () => {
+    const root = mkdtempSync(join(tmpdir(), 'lac-dependent-'));
+    try {
+      const source = join(root, `${WORK_ROOT_PREFIX}source`);
+      const artifact = join(root, 'portal-release');
+      mkdirSync(join(source, '.git'), { recursive: true });
+      mkdirSync(artifact);
+      const sha = 'a'.repeat(40);
+      writeFileSync(join(source, OWNER_MARKER), JSON.stringify({
+        pid: 101, keep: true, sha, createdAtMs: 0, retainedFor: [{ path: artifact, sha }],
+      }));
+      const options = { root, nowMs: MAX_AGE_MS + H, cwds: [], isAlive: () => false, maxIdleKept: 0 };
+      expect(mod.sweepStaleWorkRoots(options).kept).toContainEqual({ name: `${WORK_ROOT_PREFIX}source`, reason: 'dependent-artifact' });
+      expect(existsSync(source)).toBe(true);
+      rmSync(artifact, { recursive: true });
+      expect(mod.sweepStaleWorkRoots(options).removed).toContainEqual({ name: `${WORK_ROOT_PREFIX}source`, reason: 'max-age' });
+      expect(existsSync(source)).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('preflights commit identity and imports before registering a dependent artifact', () => {
+    const root = mkdtempSync(join(tmpdir(), 'lac-preflight-'));
+    try {
+      const source = join(root, 'source');
+      const artifact = join(root, 'portal-release');
+      mkdirSync(source);
+      mkdirSync(artifact);
+      execFileSync('git', ['init', '--quiet', source]);
+      execFileSync('git', ['-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '--quiet', '--allow-empty', '-m', 'fixture'], { cwd: source });
+      const sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: source, encoding: 'utf8' }).trim();
+      writeFileSync(join(source, OWNER_MARKER), JSON.stringify({ pid: 101, keep: true, sha, createdAtMs: 0 }));
+      mkdirSync(join(source, 'packages', 'core'), { recursive: true });
+      symlinkSync(artifact, join(source, 'escape'), 'dir');
+      expect(() => mod.verifyCommittedWorkRoot(join(root, 'missing'), sha)).toThrow('source root is missing');
+      expect(() => mod.verifyCommittedWorkRoot(source, 'b'.repeat(40))).toThrow('commit does not match');
+      expect(() => mod.verifyCommittedWorkRoot(source, sha, ['missing'])).toThrow('dependency is missing');
+      expect(() => mod.verifyCommittedWorkRoot(source, sha, ['escape'])).toThrow('escapes');
+      expect(() => mod.verifyCommittedWorkRoot(source, sha, ['../portal-release'])).toThrow('inside');
+      expect(mod.verifyCommittedWorkRoot(source, sha, ['packages/core']).sha).toBe(sha);
+      expect(() => mod.retainCommittedWorkRoot(source, sha, source)).toThrow('outside');
+      expect(() => mod.retainCommittedWorkRoot(source, sha, join(root, 'missing'))).toThrow();
+      mod.retainCommittedWorkRoot(source, sha, artifact);
+      mod.retainCommittedWorkRoot(source, sha, artifact);
+      expect(JSON.parse(readFileSync(join(source, OWNER_MARKER), 'utf8')).retainedFor).toEqual([{ path: realpathSync(artifact), sha }]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('materializes without replaying a command and explicitly retains its dependent artifact', () => {
+    expect(mod.parseArgs(['--materialize-only', '--ref=recorded', '--retain-for=/tmp/release'])).toMatchObject({
+      materializeOnly: true, keep: true, ref: 'recorded', retainFor: '/tmp/release', scripts: [],
+    });
+    const run = spawnSync('node', [scriptPath, '--materialize-only', 'test:file'], { encoding: 'utf8' });
+    expect(run.status).toBe(2);
+    expect(run.stderr).toContain('cannot run or forward a command');
+  });
+
+  it('repairs dangling workspace imports only after validating every replacement against the exact source', () => {
+    const root = mkdtempSync(join(tmpdir(), 'lac-remap-'));
+    try {
+      const source = join(root, 'source');
+      const prior = join(root, 'removed-source');
+      const modules = join(root, 'portal', 'node_modules');
+      mkdirSync(source);
+      mkdirSync(join(modules, '@fixture'), { recursive: true });
+      execFileSync('git', ['init', '--quiet', source]);
+      execFileSync('git', ['-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '--quiet', '--allow-empty', '-m', 'fixture'], { cwd: source });
+      const sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: source, encoding: 'utf8' }).trim();
+      writeFileSync(join(source, OWNER_MARKER), JSON.stringify({ sha, keep: true }));
+      mkdirSync(join(source, 'packages', 'core'), { recursive: true });
+      writeFileSync(join(source, 'packages', 'core', 'package.json'), '{}');
+      const core = join(modules, '@fixture', 'core');
+      const missing = join(modules, '@fixture', 'missing');
+      symlinkSync(join(prior, 'packages', 'core'), core, 'dir');
+      symlinkSync(join(prior, 'packages', 'missing'), missing, 'dir');
+      expect(() => mod.remapRetainedWorkspaceLinks(modules, prior, source, sha)).toThrow('dependency is missing');
+      expect(existsSync(core)).toBe(false); // Refusal did not partially remap a valid sibling.
+      rmSync(missing);
+      expect(mod.remapRetainedWorkspaceLinks(modules, prior, source, sha).remapped).toBe(1);
+      expect(realpathSync(core)).toBe(join(source, 'packages', 'core'));
+      expect(mod.remapRetainedWorkspaceLinks(modules, prior, source, sha).remapped).toBe(0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('classifies each tree by liveness, keep flag and age', () => {
     const c = (inUse: boolean, marker: Marker, ownerAlive: boolean, ageMs: number) => classifyWorkRoot({ inUse, marker, ownerAlive, ageMs });
     expect(c(true, null, false, MAX_AGE_MS * 10)).toEqual({ remove: false, reason: 'in-use' });
