@@ -11,6 +11,7 @@
  * failover — so both are asserted here in their own right.
  */
 import { describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
 import { makeGatewayLaneRegistry } from './provider-adapters';
 import type { AccountPool, ActiveAccount } from './provider-contracts';
 import type { CodexCliAccount } from './codex-cli-bridge';
@@ -960,6 +961,25 @@ describe('Codex OAuth quota errors inside successful HTTP streams', () => {
     expect((source as unknown as { cancelled: number }).cancelled).toBe(1);
   });
 
+  it.each(['flat', 'nested', 'response'] as const)('distinguishes the %s error envelope without retaining its content', async envelope => {
+    const observed: CodexOAuthStreamObservation[] = [];
+    const privateCode = 'PRIVATE_ERROR_CODE';
+    const error = { code: privateCode, message: 'PRIVATE_MESSAGE context length exceeded' };
+    const event = envelope === 'flat' ? { type: 'error', ...error } : envelope === 'nested'
+      ? { type: 'error', error } : { type: 'response.failed', response: { error } };
+    const wire = frame(event);
+    const h = harness(async () => upstream(200, {}, sseBody(wire)), {
+      extra: { onStreamObservation: x => observed.push(x) },
+    });
+    await executeGatewayRequestKernel(h.options);
+    if (envelope === 'response') expect(h.written.join('')).toBe(wire);
+    else expect(JSON.parse(h.written.join('')).error.code).toBe(privateCode);
+    expect(observed).toHaveLength(1);
+    expect(observed[0]).toMatchObject({ errorEnvelope: envelope, errorCode: 'other',
+      errorCodeSha256: createHash('sha256').update(privateCode).digest('hex'), errorMessageClass: 'context-limit' });
+    expect(JSON.stringify(observed)).not.toMatch(/PRIVATE_/);
+  });
+
   it('rejects EOF after Responses preludes before committing a false successful head', async () => {
     const h = harness(async () => upstream(200, {}, sseBody(frame({ type: 'response.created' }))));
     await expect(executeGatewayRequestKernel(h.options)).rejects.toMatchObject({
@@ -999,7 +1019,40 @@ describe('Codex OAuth quota errors inside successful HTTP streams', () => {
     const h = harness(async () => upstream(200, {}, sseBody(wire)));
     await executeGatewayRequestKernel(h.options);
     expect(h.prepared).toHaveLength(1);
+    if (type === 'error') {
+      expect(h.started[0]?.status).toBe(400);
+      expect(JSON.parse(h.written.join('')).error).toMatchObject({ code: 'context_length_exceeded' });
+    } else expect(h.written.join('')).toBe(wire);
+  });
+
+  it.each(['flat', 'nested'] as const)('surfaces a %s context error before output without rotating or retiring accounts', async envelope => {
+    const accounts = [cli('chatgpt-a'), cli('chatgpt-b')];
+    const pool = makePool([{ accountId: 'chatgpt-b' }]);
+    const error = { code: 'context_length_exceeded', message: 'context window exceeded' };
+    const wire = frame(envelope === 'flat' ? { type: 'error', ...error } : { type: 'error', error });
+    const h = harness(async () => upstream(200, {}, sseBody(wire)), { accounts, pool });
+    const result = await executeGatewayRequestKernel(h.options);
+    expect(result.status).toBe(400);
+    expect(h.prepared).toHaveLength(1);
+    expect(JSON.parse(h.written.join('')).error).toMatchObject(error);
+    expect(pool.exhaustedCalls).toEqual([]);
+  });
+
+  it('preserves a late context error in the failure cause, scrubbing credentials and never replaying output', async () => {
+    const pool = makePool([{ accountId: 'chatgpt-b' }]);
+    const output = frame({ type: 'response.output_text.delta', delta: 'visible once' });
+    const wire = output + frame({ type: 'error', error: { code: 'context_length_exceeded',
+      message: 'context window exceeded; chatgpt-a-tok' } });
+    const h = harness(async () => upstream(200, {}, sseBody(wire)), {
+      accounts: [cli('chatgpt-a'), cli('chatgpt-b')], pool,
+    });
+    const error = await executeGatewayRequestKernel(h.options).catch(e => e);
+    expect(error).toMatchObject({ code: 'upstream-error', status: 400, retryable: false,
+      cause: { protocol: 'openai-responses', error: { code: 'context_length_exceeded' } } });
+    expect(JSON.stringify(error.cause)).not.toContain('chatgpt-a-tok');
     expect(h.written.join('')).toBe(wire);
+    expect(h.prepared).toHaveLength(1);
+    expect(pool.exhaustedCalls).toEqual([]);
   });
 
   it('does not accept an unterminated final SSE frame as a Responses completion', async () => {

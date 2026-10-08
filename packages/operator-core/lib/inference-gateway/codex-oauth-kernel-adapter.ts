@@ -40,10 +40,11 @@
  * (gateway.ts:5451). This adapter is oauth-http only and never substitutes it.
  */
 import { StringDecoder } from 'node:string_decoder';
+import { createHash } from 'node:crypto';
 import { describeFetchError } from '../loopback-fetch';
 import type { GatewayTransportId } from './provider-adapters';
 import type { AccountPool, ActiveAccount } from './provider-contracts';
-import { presentedSecretsFromHeaders, scrubbedErrorBody } from './error-body-scrub';
+import { presentedSecretsFromHeaders, scrubbedErrorBody, scrubErrorText } from './error-body-scrub';
 import { isCodexAuthFailure, type CodexCliAccount } from './codex-cli-bridge';
 import { rewriteCodexRequestModel, type CodexAuth } from './codex-oauth-proxy';
 import {
@@ -106,6 +107,10 @@ export interface CodexOAuthStreamObservation {
   lastEventType: string | null;
   opaqueLargeFrame: boolean | null;
   pendingFrame: boolean | null;
+  errorEnvelope: 'flat' | 'nested' | 'response' | 'missing' | null;
+  errorCode: string | null;
+  errorCodeSha256: string | null;
+  errorMessageClass: 'context-limit' | 'invalid-tools' | 'missing-instructions' | 'other' | null;
 }
 
 export interface CodexOAuthResponseMetadata {
@@ -303,7 +308,8 @@ function egressView(account: CodexCliAccount, token: () => Promise<string>): Act
   };
 }
 
-type StreamQuota = { error: Record<string, unknown>; status: 429 | 503; resetAt: number | null; accountWide: boolean };
+type StreamQuota = { error: Record<string, unknown>; status: 400 | 401 | 403 | 429 | 502 | 503;
+  resetAt: number | null; accountWide: boolean; protocolError?: true };
 type QuotaFrame = StreamQuota | 'prelude' | null;
 const QUOTA_FRAME_MAX_BYTES = 64 * 1024;
 const QUOTA_PRELUDE_PEEK_MS = 200;
@@ -314,15 +320,28 @@ const CODEX_OVERLOAD_CODES = new Set(['server_error', 'overloaded_error', 'servi
 function quotaFrame(frame: string): QuotaFrame {
   const data = frame.split(/\r?\n/).filter((line) => line.startsWith('data:'))
     .map((line) => line.slice(5).trimStart()).join('\n');
-  let event: { type?: string; error?: Record<string, unknown>; response?: { error?: Record<string, unknown> } };
+  let event: { type?: string; code?: unknown; message?: unknown; error?: Record<string, unknown>;
+    response?: { error?: Record<string, unknown> } };
   try { event = JSON.parse(data); } catch { return null; }
   if (!event || typeof event !== 'object') return null;
   if (event.type === 'response.created' || event.type === 'response.in_progress') return 'prelude';
-  const error = event.type === 'error' ? event.error : event.type === 'response.failed' ? event.response?.error : null;
+  // Public Responses errors put code/message at the root; ChatGPT also uses
+  // nested errors. Classify provider metadata in either envelope, never output.
+  const error = event.type === 'error' ? event.error ??
+    (typeof event.code === 'string' || typeof event.message === 'string' ? event as Record<string, unknown> : null)
+    : event.type === 'response.failed' ? event.response?.error : null;
   if (!error || typeof error !== 'object') return null;
   const code = String(error.code ?? error.type);
   const overloaded = CODEX_OVERLOAD_CODES.has(code);
-  if (!overloaded && !CODEX_QUOTA_CODES.has(code)) return null;
+  if (!overloaded && !CODEX_QUOTA_CODES.has(code)) {
+    if (event.type !== 'error' || code === 'flex_unavailable') return null;
+    // Native Codex ignores general `error` SSE events and diagnoses their EOF
+    // as disconnection. Before output, use the existing HTTP error boundary;
+    // after output, assertComplete carries it to a truthful response.failed.
+    const status = ['context_length_exceeded', 'invalid_prompt', 'invalid_request', 'invalid_request_error', 'bad_request'].includes(code)
+      ? 400 : ['unauthorized', 'authentication_error', 'invalid_api_key'].includes(code) ? 401 : 502;
+    return { error, status, resetAt: null, accountWide: false, protocolError: true };
+  }
   const reset = error.resets_at;
   return {
     error,
@@ -332,7 +351,7 @@ function quotaFrame(frame: string): QuotaFrame {
   };
 }
 
-function quotaDecoder() {
+function quotaDecoder(scrubError: (error: Record<string, unknown>) => Record<string, unknown> = error => error) {
   const decoder = new StringDecoder('utf8');
   let carry = '';
   let oversized = false;
@@ -343,6 +362,11 @@ function quotaDecoder() {
   let opaqueLargeFrame = false;
   let lastEventType: string | null = null;
   let responseId: string | null = null;
+  let errorEnvelope: CodexOAuthStreamObservation['errorEnvelope'] = null;
+  let errorCode: string | null = null;
+  let errorCodeSha256: string | null = null;
+  let errorMessageClass: CodexOAuthStreamObservation['errorMessageClass'] = null;
+  let protocolFailure: StreamQuota | null = null;
   const noteFrame = (frame: string, bounded: boolean, terminated: boolean): void => {
     const prefix = frame.slice(0, 2048);
     let type = /(?:^|\n)event:\s*([^\r\n\s]+)/.exec(prefix)?.[1]
@@ -355,6 +379,21 @@ function quotaDecoder() {
         const event = JSON.parse(data);
         if (event && typeof event.type === 'string') {
           type = event.type;
+          if (type === 'error' || type === 'response.failed') {
+            const error = type === 'response.failed' ? event.response?.error : event.error ?? event;
+            errorEnvelope = type === 'response.failed' ? 'response' : event.error && typeof event.error === 'object'
+              ? 'nested' : typeof event.code === 'string' || typeof event.message === 'string' ? 'flat' : 'missing';
+            const code = error && typeof error === 'object' ? error.code ?? error.type : null;
+            const knownCodes = new Set([...CODEX_QUOTA_CODES, ...CODEX_OVERLOAD_CODES, 'context_length_exceeded',
+              'invalid_request_error', 'invalid_request', 'invalid_prompt', 'bad_request', 'prompt_too_long',
+              'model_not_found', 'unauthorized', 'authentication_error', 'invalid_api_key', 'flex_unavailable']);
+            errorCode = typeof code === 'string' ? knownCodes.has(code) ? code : 'other' : null;
+            errorCodeSha256 = typeof code === 'string' ? createHash('sha256').update(code).digest('hex') : null;
+            const message = error && typeof error.message === 'string' ? error.message : '';
+            errorMessageClass = /context.{0,30}(length|window|limit)|too many tokens|prompt.{0,20}too long/i.test(message)
+              ? 'context-limit' : /tool.{0,30}(invalid|unsupported)|invalid.{0,20}tool/i.test(message)
+              ? 'invalid-tools' : /instructions.{0,30}(missing|required|empty)/i.test(message) ? 'missing-instructions' : 'other';
+          }
           // Only provider response metadata is an identity witness. Never infer
           // an id from model text, and retain the first genuine response id.
           const id = event.response?.id;
@@ -385,7 +424,9 @@ function quotaDecoder() {
     while ((match = boundary.exec(carry))) {
       const frame = carry.slice(start, match.index);
       noteFrame(oversized ? oversizedPrefix : frame, !oversized && frame.length <= QUOTA_FRAME_MAX_BYTES, true);
-      frames.push(!oversized && frame.length <= QUOTA_FRAME_MAX_BYTES ? quotaFrame(frame) : null);
+      const classified = !oversized && frame.length <= QUOTA_FRAME_MAX_BYTES ? quotaFrame(frame) : null;
+      if (classified && classified !== 'prelude' && classified.protocolError) protocolFailure = classified;
+      frames.push(classified);
       oversized = false;
       oversizedPrefix = '';
       start = boundary.lastIndex;
@@ -413,11 +454,18 @@ function quotaDecoder() {
         'response.function_call_arguments.delta', 'response.function_call_arguments.done']);
       return { sawResponseEvent, sawTerminal, terminalType,
         lastEventType: lastEventType === null ? null : safeTypes.has(lastEventType) ? lastEventType : 'other-response-event',
-        opaqueLargeFrame, pendingFrame: Boolean(carry.trim() || oversized) };
+        opaqueLargeFrame, pendingFrame: Boolean(carry.trim() || oversized),
+        errorEnvelope, errorCode, errorCodeSha256, errorMessageClass };
     },
     assertComplete() {
       if (carry.trim() || oversized) noteFrame(oversized ? oversizedPrefix : carry,
         !oversized && carry.length <= QUOTA_FRAME_MAX_BYTES, false);
+      if (protocolFailure && terminalType === 'error') {
+        throw new GatewayRequestKernelError('Codex OAuth upstream returned a Responses error', {
+          code: 'upstream-error', outcome: 'upstream-error', status: protocolFailure.status, retryable: false,
+          cause: { protocol: 'openai-responses', responseId, lastEventType, error: scrubError(protocolFailure.error) },
+        });
+      }
       if (sawResponseEvent && !sawTerminal && !opaqueLargeFrame) {
         throw new GatewayRequestKernelError('Codex OAuth stream EOF before a Responses terminal event', {
           code: 'upstream-error', outcome: 'upstream-error', status: 502, retryable: true,
@@ -441,7 +489,8 @@ function observeOAuthStream(
     if (finished) return;
     finished = true;
     const protocol = decode?.snapshot() ?? { sawResponseEvent: null, sawTerminal: null,
-      terminalType: null, lastEventType: null, opaqueLargeFrame: null, pendingFrame: null };
+      terminalType: null, lastEventType: null, opaqueLargeFrame: null, pendingFrame: null,
+      errorEnvelope: null, errorCode: null, errorCodeSha256: null, errorMessageClass: null };
     try { observe({ ...base, bytesRead, termination, ...protocol }); }
     catch { /* diagnostics must not change the stream or mask its original failure */ }
   };
@@ -481,9 +530,10 @@ function observeOAuthStream(
 async function inspectQuotaStream(
   body: NonNullable<CodexOAuthFetchResponse['body']>,
   onLateQuota: (quota: StreamQuota) => void,
+  scrubError: (error: Record<string, unknown>) => Record<string, unknown>,
 ): Promise<{ body: NonNullable<CodexOAuthFetchResponse['body']>; quota: StreamQuota | null }> {
   const iterator = body[Symbol.asyncIterator]();
-  const decode = quotaDecoder();
+  const decode = quotaDecoder(scrubError);
   const prefix: Uint8Array[] = [];
   const late: StreamQuota[] = [];
   let size = 0;
@@ -539,13 +589,13 @@ async function inspectQuotaStream(
   }
   return { quota: null, body: {
     async *[Symbol.asyncIterator]() {
-      for (const quota of late) onLateQuota(quota);
+      for (const quota of late) if (!quota.protocolError) onLateQuota(quota);
       for (const chunk of prefix) yield chunk;
       while (!ended && !cancelled) {
         const next = await (pending ?? iterator.next());
         pending = null;
         if (next.done) { ended = true; break; }
-        for (const quota of decode(next.value)) if (quota && quota !== 'prelude') onLateQuota(quota);
+        for (const quota of decode(next.value)) if (quota && quota !== 'prelude' && !quota.protocolError) onLateQuota(quota);
         yield next.value;
       }
       if (ended && !cancelled) decode.assertComplete();
@@ -884,7 +934,7 @@ export function createCodexOAuthKernelAdapter(opts: CodexOAuthAdapterOptions): C
           } else {
             opts.coolIp(egress.key, Math.min(reset.retryAfterMs ?? opts.failoverBackoffMs, opts.ipCooldownMaxMs));
           }
-        });
+        }, error => JSON.parse(scrubErrorText(JSON.stringify(error), presentedSecretsFromHeaders(prepared.headers))));
         body = inspected.body;
         if (inspected.quota) {
           status = inspected.quota.status;
