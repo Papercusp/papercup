@@ -1376,6 +1376,8 @@ build_verifier_operator_host() {
 smoke_verifier_operator_host() {
   local timeout_sec="${1:-15}"
   local smoke_output="" smoke_rc=0
+  local evidence_dir="${VH_PHASE_DIR:-$(dirname "$OPERATOR_HOST_BUNDLE")}/host-import-smoke"
+  local started_ms finished_ms elapsed_ms bundle_bytes bundle_hash outcome
   case "$timeout_sec" in
     ''|*[!0-9]*)
       echo "FATAL: verifier host import smoke timeout must be a positive integer" >&2
@@ -1386,8 +1388,37 @@ smoke_verifier_operator_host() {
     echo "FATAL: verifier host import smoke timeout must be a positive integer" >&2
     return 1
   }
-  smoke_output="$(timeout --signal=TERM --kill-after=1s "${timeout_sec}s" \
-    node "$OPERATOR_HOST_BUNDLE" --papercusp-import-smoke 2>&1)" || smoke_rc=$?
+  mkdir -p -- "$evidence_dir" || return 1
+  bundle_bytes="$(wc -c < "$OPERATOR_HOST_BUNDLE")" || return 1
+  bundle_hash="$(sha256sum "$OPERATOR_HOST_BUNDLE")" || return 1
+  bundle_hash="${bundle_hash%% *}"
+  started_ms="$(date +%s%3N)"
+  # The preload runs before Node parses/evaluates the large entry bundle. Stream
+  # it to durable phase evidence: a deadline kill must not erase the last stage
+  # or the exact bytes that failed when source-snapshot cleanup runs below.
+  timeout --signal=TERM --kill-after=1s "${timeout_sec}s" \
+    node --import='data:text/javascript,import{writeSync}from"node:fs";writeSync(2,"PAPERCUSP_HOST_IMPORT_SMOKE_START\n")' \
+    "$OPERATOR_HOST_BUNDLE" --papercusp-import-smoke \
+    >"$evidence_dir/output.log" 2>&1 || smoke_rc=$?
+  finished_ms="$(date +%s%3N)"
+  elapsed_ms=$((finished_ms - started_ms))
+  smoke_output="$(cat "$evidence_dir/output.log")"
+  outcome=passed
+  if [ "$smoke_rc" -ne 0 ]; then outcome=process-failed; fi
+  case "$smoke_output" in
+    *PAPERCUSP_HOST_IMPORT_SMOKE_OK*) ;;
+    *) [ "$smoke_rc" -ne 0 ] || outcome=missing-marker ;;
+  esac
+  printf '{"exitCode":%s,"elapsedMs":%s,"timeoutSec":%s,"bundleBytes":%s,"bundleSha256":"%s","outcome":"%s"}\n' \
+    "$smoke_rc" "$elapsed_ms" "$timeout_sec" "$bundle_bytes" "$bundle_hash" "$outcome" \
+    >"$evidence_dir/result.json" || return 1
+  if [ "$outcome" != passed ]; then
+    cp -- "$OPERATOR_HOST_BUNDLE" "$evidence_dir/hono-host.mjs" || {
+      echo "FATAL: could not retain failed host bundle in $evidence_dir" >&2
+      return 1
+    }
+  fi
+  log "host import smoke evidence: $evidence_dir (outcome=$outcome elapsedMs=$elapsed_ms)"
   if [ "$smoke_rc" -ne 0 ]; then
     echo "FATAL: frozen verifier operator host import smoke failed before Tauri startup (exit $smoke_rc)" >&2
     [ -z "$smoke_output" ] || printf '%s\n' "$smoke_output" >&2
