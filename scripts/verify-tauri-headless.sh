@@ -191,10 +191,11 @@
 #                                See the header block.
 #                                Default 0 (today's shared-live-DB behavior).
 #   VERIFY_TAURI_ISOLATED_PG_TIMEOUT
-#                               seconds to wait for the isolated Postgres to
-#                                come up (default 90 — a from-scratch initdb +
-#                                full migration replay is ~10-30s; a pre-built
-#                                seed extract is ~1s). Only used with
+#                               initial/no-progress readiness window (seconds,
+#                                default 90). Advancing migrations extend this
+#                                window through the existing bounded watchdog,
+#                                at most 600s total (or a longer explicit window).
+#                                Notices alone do not count as progress. Used with
 #                                VERIFY_TAURI_ISOLATED_DB=1.
 #   VERIFY_TAURI_ISOLATED_SEED  which app STATE the isolated run starts from
 #                                (EI-20191599988350937). Default `fresh` — a
@@ -2775,6 +2776,7 @@ ISOLATED_BEARER_NODE
 
 if [ "$ISOLATED_DB" = "1" ]; then
   ISOLATED_PG_TIMEOUT="${VERIFY_TAURI_ISOLATED_PG_TIMEOUT:-90}"
+  [[ "$ISOLATED_PG_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || { echo 'FATAL: VERIFY_TAURI_ISOLATED_PG_TIMEOUT must be a positive integer' >&2; exit 1; }
   ISOLATED_PG_DATA_DIR="$WORK/isolated-pgdata"
   ISOLATED_PG_LOG="$WORK/isolated-pg.log"
   ISOLATED_HOME="$WORK/papercusp-home"
@@ -2859,6 +2861,7 @@ console.log(
 );
 
 let pg = null;
+const observedMigrations = new Set();
 async function shutdown() {
   try {
     await pg?.stop();
@@ -2877,7 +2880,14 @@ try {
     port,
     dbSqlDir: sqlDir,
     extraPostgresSettings,
-    onLog: () => {},
+    onLog: message => {
+      // The next distinct migration can only start after the preceding one
+      // finishes. Provider chatter/NOTICEs and retries of one file are not
+      // forward progress and must not keep a stalled boot alive.
+      if (!/^apply [^/\r\n]+\.sql$/.test(message) || observedMigrations.has(message)) return;
+      observedMigrations.add(message);
+      console.log(`PG_PROGRESS migration=${message.slice(6)}`);
+    },
   });
   // Deliberately NOT flushed through `log()` — one grep-able line for the shell.
   console.log(`PG_READY port=${port} admin=${pg.urls.admin} app=${pg.urls.app}`);
@@ -2901,11 +2911,49 @@ PGBOOT
   # ~277 (right after Xvfb boot), and bash traps re-read every var (including
   # ISOLATED_PG_PID) at FIRE time, not at trap-registration time.
 
+  ISOLATED_PG_STARTED="$SECONDS"
+  isolated_pg_elapsed() { printf '%s\n' "$((SECONDS - ISOLATED_PG_STARTED))"; }
   ISOLATED_PG_ELAPSED=0
+  ISOLATED_PG_DEADLINE="$ISOLATED_PG_TIMEOUT"
+  ISOLATED_PG_CEILING=600
+  [ "$ISOLATED_PG_TIMEOUT" -le "$ISOLATED_PG_CEILING" ] || ISOLATED_PG_CEILING="$ISOLATED_PG_TIMEOUT"
+  ISOLATED_PG_PROGRESS_COUNT=0
+  ISOLATED_PG_LAST_PROGRESS=-1
   until grep -q '^PG_READY ' "$ISOLATED_PG_LOG" 2>/dev/null; do
+    ISOLATED_PG_ELAPSED="$(isolated_pg_elapsed)"
     kill -0 "$ISOLATED_PG_PID" 2>/dev/null || { echo "FATAL: isolated-db postgres exited before ready — tail:" >&2; tail -40 "$ISOLATED_PG_LOG" >&2; exit 1; }
-    [ "$ISOLATED_PG_ELAPSED" -ge "$ISOLATED_PG_TIMEOUT" ] && { echo "FATAL: isolated-db postgres did not come up within ${ISOLATED_PG_TIMEOUT}s — tail:" >&2; tail -40 "$ISOLATED_PG_LOG" >&2; exit 1; }
-    sleep 1; ISOLATED_PG_ELAPSED=$((ISOLATED_PG_ELAPSED + 1))
+    ISOLATED_PG_PROGRESS_NOW="$(awk '/^PG_PROGRESS / { n++ } END { print n+0 }' "$ISOLATED_PG_LOG")"
+    if [ "$ISOLATED_PG_PROGRESS_NOW" -gt "$ISOLATED_PG_PROGRESS_COUNT" ]; then
+      ISOLATED_PG_PROGRESS_COUNT="$ISOLATED_PG_PROGRESS_NOW"
+      ISOLATED_PG_LAST_PROGRESS="$ISOLATED_PG_ELAPSED"
+    fi
+    if [ "$ISOLATED_PG_ELAPSED" -ge "$ISOLATED_PG_DEADLINE" ]; then
+      ISOLATED_PG_DECISION="$(node --input-type=module - "$REPO_DIR/scripts/lib/batch-watchdog.mjs" "$ISOLATED_PG_ELAPSED" "$ISOLATED_PG_LAST_PROGRESS" "$ISOLATED_PG_TIMEOUT" "$ISOLATED_PG_CEILING" <<'PGWATCHDOG'
+import { pathToFileURL } from 'node:url';
+const [modulePath, elapsed, lastProgress, window, ceiling] = process.argv.slice(2);
+const { decideWatchdogExpiry } = await import(pathToFileURL(modulePath).href);
+const decision = decideWatchdogExpiry({
+  elapsedMs: Number(elapsed) * 1000,
+  lastProgressAgeMs: Number(lastProgress) < 0 ? null : (Number(elapsed) - Number(lastProgress)) * 1000,
+  maxMs: Number(ceiling) * 1000,
+  stallWindowMs: Number(window) * 1000,
+  extensionMs: Number(window) * 1000,
+});
+console.log(`${decision.action}:${Math.ceil(decision.extendByMs / 1000)}:${decision.reason}`);
+PGWATCHDOG
+)"
+      if [[ "$ISOLATED_PG_DECISION" = extend:* ]]; then
+        ISOLATED_PG_EXTENSION="${ISOLATED_PG_DECISION#extend:}"
+        ISOLATED_PG_EXTENSION="${ISOLATED_PG_EXTENSION%%:*}"
+        ISOLATED_PG_DEADLINE=$((ISOLATED_PG_ELAPSED + ISOLATED_PG_EXTENSION))
+        log "PG_BOOT_PROGRESS elapsed=${ISOLATED_PG_ELAPSED}s migrations=$ISOLATED_PG_PROGRESS_COUNT next_check=${ISOLATED_PG_DEADLINE}s ceiling=${ISOLATED_PG_CEILING}s"
+      else
+        echo "FATAL: isolated-db readiness ${ISOLATED_PG_DECISION##*:} after ${ISOLATED_PG_ELAPSED}s (migrations=$ISOLATED_PG_PROGRESS_COUNT) — tail:" >&2
+        tail -40 "$ISOLATED_PG_LOG" >&2
+        exit 1
+      fi
+    fi
+    sleep 1
   done
   ISOLATED_PG_READY_LINE="$(grep '^PG_READY ' "$ISOLATED_PG_LOG" | head -1)"
   ISOLATED_PG_PORT="$(sed -n 's/^PG_READY port=\([0-9]*\).*/\1/p' <<<"$ISOLATED_PG_READY_LINE")"
