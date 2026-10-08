@@ -23,6 +23,7 @@
  */
 
 import type { CoordEnvelope } from '@papercusp/coordination/core';
+import type postgres from 'postgres';
 import { parseBody } from '@papercusp/coordination/event-log';
 import { coordLog, coordWorkspaceId, coordSql, coordHasPgFastPath } from './log';
 
@@ -49,10 +50,11 @@ export type CoordLineSurface = 'messages' | 'plan-events';
 export async function getLineEnvelopeById(
   surface: CoordLineSurface,
   msgId: string,
+  sqlOverride?: postgres.Sql,
 ): Promise<CoordEnvelope | null> {
   if (!msgId) return null;
   if (coordHasPgFastPath()) {
-    const sql = coordSql();
+    const sql = sqlOverride ?? coordSql();
     const rows = await sql<{ body: unknown; ts: unknown; msg_id: string; harness_slug: string | null }[]>`
       SELECT body, ts, msg_id, harness_slug
         FROM harness_shared.coord_event_log

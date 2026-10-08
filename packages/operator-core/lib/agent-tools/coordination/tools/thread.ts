@@ -5,7 +5,7 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { readThread, resolveMessageRef } from '../messages';
+import { readThreadFromRef } from '../messages';
 import { projectAuthoredFields } from '../message-fields';
 import { COORD_ROLES } from '../roles';
 import { boundInboxEntries } from './inbox';
@@ -255,7 +255,7 @@ export default defineTool({
     // WI-6725: a truncated root_msg_id used to walk a chain rooted at an id
     // that matches nothing and return `entries: []` — indistinguishable from a
     // thread that does not exist. Resolve the ref first (see resolveMessageRef).
-    const resolution = await resolveMessageRef(args.root_msg_id);
+    const { resolution, entries } = await readThreadFromRef(args.root_msg_id);
     if (resolution.status === 'ambiguous') {
       return {
         data: {
@@ -281,7 +281,6 @@ export default defineTool({
         },
       };
     }
-    const entries = await readThread(resolution.msgId);
     const window = selectThreadWindow(entries, resolution.msgId);
     const contentCap = Math.min(
       THREAD_CONTENT_CAP,

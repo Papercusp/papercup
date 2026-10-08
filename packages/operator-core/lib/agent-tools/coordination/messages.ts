@@ -11,6 +11,7 @@
  */
 
 import type postgres from 'postgres';
+import { boundedPgReadTxn } from '../../pg-read-query';
 import {
   newMsgId,
   filterInbox,
@@ -1427,8 +1428,8 @@ export async function readInvolvingOwner(
  * parameterised, so `plan-events` could get the same correct by-id lookup
  * without a second copy of this query. Behaviour here is unchanged.
  */
-export async function getMessageById(msgId: string): Promise<CoordEnvelope | null> {
-  return getLineEnvelopeById('messages', msgId);
+export async function getMessageById(msgId: string, sqlOverride?: postgres.Sql): Promise<CoordEnvelope | null> {
+  return getLineEnvelopeById('messages', msgId, sqlOverride);
 }
 
 /**
@@ -1631,9 +1632,9 @@ export type MessageRefResolution =
 
 /** Ids whose msg_id starts with `prefix` (bounded). Prefix-only — never a substring match.
  *  On PG a query error PROPAGATES (D-011); the scan below is the non-PG seam only. */
-async function findMessageIdsByPrefix(prefix: string, limit: number): Promise<string[]> {
+async function findMessageIdsByPrefix(prefix: string, limit: number, sqlOverride?: postgres.Sql): Promise<string[]> {
   if (coordHasPgFastPath()) {
-    const sql = coordSql();
+    const sql = sqlOverride ?? coordSql();
     // starts_with() rather than LIKE: no escaping of `%`/`_` in the ref.
     const rows = await sql<{ msg_id: string }[]>`
       SELECT msg_id
@@ -1670,13 +1671,17 @@ async function findMessageIdsByPrefix(prefix: string, limit: number): Promise<st
  * must not hide a projection-only open escalation. Non-PG seams read the
  * original escalation events directly; resolved siblings do not remove them.
  */
-async function findEscalationsByPrefix(prefix: string, limit: number): Promise<CoordEnvelope[]> {
+async function findEscalationsByPrefix(
+  prefix: string,
+  limit: number,
+  sqlOverride?: postgres.Sql,
+): Promise<CoordEnvelope[]> {
   if (!prefix || limit <= 0) return [];
 
   if (coordHasPgFastPath()) {
     const candidates = new Map<string, CoordEnvelope>();
     try {
-      const sql = coordSql();
+      const sql = sqlOverride ?? coordSql();
       const rows = await sql<{ body: unknown }[]>`
         SELECT body
           FROM harness_shared.coord_event_log
@@ -1695,7 +1700,7 @@ async function findEscalationsByPrefix(prefix: string, limit: number): Promise<C
       // Fall through to the projection: it may still retain an open original.
     }
     try {
-      const sql = coordSql();
+      const sql = sqlOverride ?? coordSql();
       const rows = await sql<{ body: unknown }[]>`
         SELECT body
           FROM harness_shared.coord_open_escalations
@@ -1737,12 +1742,16 @@ async function findEscalationsByPrefix(prefix: string, limit: number): Promise<C
  * The PG path uses the same indexed prefix lookup as the message resolver;
  * non-PG seams fall back to the event-log abstraction used by handoffs.ts.
  */
-async function findHandoffsByPrefix(prefix: string, limit: number): Promise<CoordEnvelope[]> {
+async function findHandoffsByPrefix(
+  prefix: string,
+  limit: number,
+  sqlOverride?: postgres.Sql,
+): Promise<CoordEnvelope[]> {
   if (!prefix || limit <= 0) return [];
 
   if (coordHasPgFastPath()) {
     try {
-      const sql = coordSql();
+      const sql = sqlOverride ?? coordSql();
       const rows = await sql<{ body: unknown }[]>`
         SELECT body
           FROM harness_shared.coord_event_log
@@ -1774,18 +1783,18 @@ async function findHandoffsByPrefix(prefix: string, limit: number): Promise<Coor
  * See the WI-6725 note above for why this is three-valued rather than
  * `CoordEnvelope | null`.
  */
-export async function resolveMessageRef(ref: string): Promise<MessageRefResolution> {
+export async function resolveMessageRef(ref: string, sqlOverride?: postgres.Sql): Promise<MessageRefResolution> {
   const msgId = (ref ?? '').trim();
   if (!msgId) return { status: 'not-found', msgId, looksTruncated: false };
 
-  const exact = await getMessageById(msgId);
+  const exact = await getMessageById(msgId, sqlOverride);
   if (exact) return { status: 'found', msgId, message: exact, resolvedFrom: 'exact' };
 
   // EI-21271857379493174: an open escalation can outlive its original
   // `escalations` event in the log while remaining durable in the open-set
   // projection. Treat that live record as a valid exact/prefix target so a
   // driver can acknowledge it through coord:send.
-  const escalations = await findEscalationsByPrefix(msgId, REF_CANDIDATE_CAP + 1);
+  const escalations = await findEscalationsByPrefix(msgId, REF_CANDIDATE_CAP + 1, sqlOverride);
   const exactEscalation = escalations.find((event) => event.msg_id === msgId);
   if (exactEscalation) {
     return { status: 'found', msgId, message: exactEscalation, resolvedFrom: 'exact' };
@@ -1794,7 +1803,7 @@ export async function resolveMessageRef(ref: string): Promise<MessageRefResoluti
   // coord:feed includes handoffs, whose immutable records live on their own
   // event surface. Resolve them before treating a well-formed full id as a
   // genuine miss, and retain the candidates for truncated-prefix resolution.
-  const handoffs = await findHandoffsByPrefix(msgId, REF_CANDIDATE_CAP + 1);
+  const handoffs = await findHandoffsByPrefix(msgId, REF_CANDIDATE_CAP + 1, sqlOverride);
   const exactHandoff = handoffs.find((event) => event.msg_id === msgId);
   if (exactHandoff) {
     return { status: 'found', msgId, message: exactHandoff, resolvedFrom: 'exact' };
@@ -1803,7 +1812,7 @@ export async function resolveMessageRef(ref: string): Promise<MessageRefResoluti
   // A well-formed full id that missed is a genuine not-found — no prefix scan.
   if (FULL_MSG_ID_SHAPE.test(msgId)) return { status: 'not-found', msgId, looksTruncated: false };
 
-  const messageCandidates = await findMessageIdsByPrefix(msgId, REF_CANDIDATE_CAP + 1);
+  const messageCandidates = await findMessageIdsByPrefix(msgId, REF_CANDIDATE_CAP + 1, sqlOverride);
   const candidates = [
     ...new Set([
       ...messageCandidates,
@@ -1815,7 +1824,7 @@ export async function resolveMessageRef(ref: string): Promise<MessageRefResoluti
   if (candidates.length > 1) {
     return { status: 'ambiguous', msgId, candidates: candidates.slice(0, REF_CANDIDATE_CAP) };
   }
-  const resolved = await getMessageById(candidates[0]);
+  const resolved = await getMessageById(candidates[0], sqlOverride);
   if (resolved) return { status: 'found', msgId: candidates[0], message: resolved, resolvedFrom: 'prefix' };
   const escalation = escalations.find((event) => event.msg_id === candidates[0]);
   if (escalation) return { status: 'found', msgId: candidates[0], message: escalation, resolvedFrom: 'prefix' };
@@ -1828,7 +1837,7 @@ export async function resolveMessageRef(ref: string): Promise<MessageRefResoluti
  * Reconstruct a thread rooted at `rootMsgId` by walking the
  * `related_msg_id` chain in both directions. Sorted by ts ascending.
  */
-export async function readThread(rootMsgId: string): Promise<CoordEnvelope[]> {
+export async function readThread(rootMsgId: string, sqlOverride?: postgres.Sql): Promise<CoordEnvelope[]> {
   // EI-21150596392578187: the old implementation loaded the entire messages
   // surface and only then folded the related_msg_id graph in JavaScript. On a
   // cold PG cache that made one rooted thread read pay for every message ever
@@ -1844,7 +1853,7 @@ export async function readThread(rootMsgId: string): Promise<CoordEnvelope[]> {
   // On PG a query error PROPAGATES: the full read is exactly the whole-surface
   // load this fast path replaced (host-memory-reduction-2026-09-27 D-011).
   if (coordHasPgFastPath()) {
-    const sql = coordSql();
+    const sql = sqlOverride ?? coordSql();
     const rows = await sql<
       { body: unknown; ts: unknown; msg_id: string; harness_slug: string | null }[]
     >`
@@ -1889,4 +1898,35 @@ export async function readThread(rootMsgId: string): Promise<CoordEnvelope[]> {
   }
   const all = await coordLog.readLines('messages');
   return foldThread(all, rootMsgId);
+}
+
+export const THREAD_READ_STATEMENT_TIMEOUT_MS = 12_000;
+export const THREAD_READ_ACQUIRE_TIMEOUT_MS = 5_000;
+
+/**
+ * Resolve and reconstruct a thread on one bounded, READ ONLY admin-pool
+ * transaction. Bare getOrgPg() checkouts have no effective statement_timeout
+ * behind PgBouncer, so leaving either the id lookup or recursive graph walk on
+ * the ambient pool can outlive ptool's 30s call deadline. The shared bounded
+ * read seam sets server-side statement + acquisition deadlines and keeps both
+ * reads within its whole-call deadline on one snapshot. Non-PG test/dev seams
+ * retain their small portable read path.
+ */
+export async function readThreadFromRef(ref: string): Promise<{
+  resolution: MessageRefResolution;
+  entries: CoordEnvelope[];
+}> {
+  const read = async (sqlOverride?: postgres.Sql) => {
+    const resolution = await resolveMessageRef(ref, sqlOverride);
+    if (resolution.status !== 'found') return { resolution, entries: [] as CoordEnvelope[] };
+    const entries = await readThread(resolution.msgId, sqlOverride);
+    return { resolution, entries };
+  };
+
+  if (!coordHasPgFastPath()) return read();
+  return boundedPgReadTxn((tx) => read(tx as unknown as postgres.Sql), {
+    client: coordSql(),
+    timeoutMs: THREAD_READ_STATEMENT_TIMEOUT_MS,
+    acquireTimeoutMs: THREAD_READ_ACQUIRE_TIMEOUT_MS,
+  });
 }
