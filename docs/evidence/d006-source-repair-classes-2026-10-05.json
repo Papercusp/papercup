@@ -6,8 +6,8 @@
   "population": {
     "failedFiles": 124,
     "repairedFocused": 33,
-    "repairedPeerFocused": 19,
-    "openUnknown": 72
+    "repairedPeerFocused": 20,
+    "openUnknown": 71
   },
   "classes": {
     "assertion": 55,
@@ -23,7 +23,8 @@
     "peer-plan-cutover-schema": 1,
     "peer-dial-process-isolation": 1,
     "embedding-provider-fixture": 1,
-    "unclassified": 6,
+    "unclassified": 5,
+    "peer-hosted-role-catalog-serialization": 1,
     "console-guard": 4,
     "goal-budget-fixture": 1,
     "plan-receiver-schema-fixture": 1,
@@ -2775,12 +2776,50 @@
     },
     {
       "path": "libs/papercusp/libs/db/src/worked-by-history.integration.test.ts",
-      "class": "unclassified",
-      "state": "open-unknown",
-      "item": "WI-10006170",
+      "class": "peer-hosted-role-catalog-serialization",
+      "state": "repaired-peer-focused",
+      "item": "WI-10006171",
       "lines": [
         17859
-      ]
+      ],
+      "historicalSymptomClass": "unclassified",
+      "originalTestRun": 20767241,
+      "originalDiagnostic": "Migration 978-hosted-customer-rls.sql failed with tuple concurrently updated (SQLSTATE XX000) while provisioning worked-history_7818a181fc62; no usable inner query position was recorded. The original eleven named cases were skipped after the suite setup failure.",
+      "diagnosis": "Existing committed WI-10006171 reproduced the same XX000 with a role-only block in private database B while a measured ALTER ROLE transaction in private database A committed. Locking cluster-shared pg_authid before normalization made the controlled case complete and restored role safety. Attribution of the archived failure to that specific inner statement is inferred; original dirty loaded-source and inner-position evidence remain unavailable.",
+      "causalGuardTestRun": 20775640,
+      "afterTestRun": 20838275,
+      "passed": 11,
+      "skipped": 0,
+      "testSha256": "ca764a99dec9cbfa7720aae3a16c31fd45efa3e97912a458f630d0bc36a843d4",
+      "receiptCommit": "c6b4a37fc6515d576c52ca86f28e6abe7af25075",
+      "receiptSubmoduleCommit": "4f166af26556c8abe15e56c161b047715c457cc7",
+      "causalGuardCommit": "694f4df59f38acb75c72f0212a2f00cbd089d7f8",
+      "causalGuardSubmoduleCommit": "1c714094d41a606d010a8d6c6ddfa838e80b01aa",
+      "sourceFingerprints": {
+        "migration978Sha256": "529319544476aae241f6889b7de0d3880e7ac97e53b044729f01c70c1ae916bc",
+        "roleConcurrencyTestSha256": "8b869e9e4ea10ee13fce3d4ae13ccee5695f46ab7a417eaf260eb8458104016d",
+        "currentMatchesBothSavedSubmoduleCommits": true
+      },
+      "nativePassLog": {
+        "path": "/tmp/cloud-tutorial-required-affected-c6b4a37f-20261006T1126-inner-0.log",
+        "sha256": "5681fc0dcae6446108920f069017da76bbbbe294563765152a21eae7d038deab",
+        "line": 4392,
+        "scope": "Named worked-history suite reports eleven tests without skips; this is scoped evidence within a larger run, not a final D006 verdict."
+      },
+      "causalReproductionLog": {
+        "path": "/tmp/cloud-tutorial-wi6171-role-repro.log",
+        "sha256": "cf3814c7acb9b611c48c2a8645f1949790b5018a640b39c26b5e6a3e8aa9ea44"
+      },
+      "causalPassLog": {
+        "path": "/tmp/cloud-tutorial-wi6171-clean-694f4df5.log",
+        "sha256": "c9d6ca9894429a3d743c9dc9107cf82b396bb649b132a4ce48dfbd180d1054e1"
+      },
+      "completionAuthority": "committed",
+      "testFileAtReceiptMatchesCurrent": true,
+      "worktreeDirty": false,
+      "isScratchConfig": false,
+      "completeImportGraphCurrentness": "unknown",
+      "assuranceLimits": "Existing historical peer repair and current equality of the three named blobs only. Original loaded-source/config/environment, complete current imports, final D006 readiness and shipment remain unverified. No terminal repair was replayed."
     },
     {
       "path": "libs/test-config/src/pg-migrate.integration.test.ts",
@@ -2798,7 +2837,25 @@
       "item": "WI-10006170",
       "lines": [
         18044
-      ]
+      ],
+      "originalDiagnostic": "The archived @papercusp/search integration task failed during suite setup: CREATE EXTENSION IF NOT EXISTS vector at line47 raised duplicate key violates pg_extension_name_index. All five embedding-space cases were skipped; the five sibling suites passed. No conflicting backend or transaction identity is preserved.",
+      "diagnosticRef": "WI-10006170#comment1164439",
+      "causalHypothesis": "Suite-local vector extension installation races against another fixture using the shared fresh searchPgUrl. Current native-pg setup provides the URL without initializing vector, and six fixture files install vector themselves. Attribution is inferred; original loaded-source and conflicting-transaction evidence remain unavailable.",
+      "rootCauseVerified": false,
+      "priorCleanTestRun": 20443940,
+      "priorCleanReceiptCommit": "e2cd43cf06404accee368b2167ba74c8c3cbfbb0",
+      "priorCleanReceiptStartedAt": "2026-10-01T21:55:14.011Z",
+      "priorCleanReceiptPredatesFailure": true,
+      "testSha256": "02882a85bbdc95857b95932999cda5f2315d9affe383db2ed43b773f5d96f395",
+      "sourceFingerprints": {
+        "nativePgSetupSha256": "55c6adc20ee894dcafb296ff434fccb710240cd214fcc24c2ed5ca6555803646",
+        "integrationConfigSha256": "22fff73b2d3771ea464d4d18139c1bcdf0aae718dd607218a5ebea259e193c29",
+        "coverageFixtureSha256": "a457c0e753c37f4868bdc267b35c54674387bd8c17d70cd379940ceb6c6ef60a",
+        "committedRunStartSubmodule": "b1b81f63554fe58fa5e0729c7d88808040201895",
+        "fourNamedBlobsMatchCommittedRunStart": true,
+        "originalLoadedSourceCurrentness": "unknown"
+      },
+      "assuranceLimits": "Read-only diagnostic recovery. The clean receipt predates the failure and does not establish a repair. Basename ledger lookup excluded mutation probes; no matching original run-group receipt was recovered. No new test, causal control, source repair, final D006 readiness or shipment claim. Keep UNKNOWN pending a specific admitted repair and distinguishing guard."
     }
   ],
   "sourceCensusRef": "local-state:verification-harness/goal-report-d006/1307302-b9c3dd76/file-census.json",
@@ -3000,17 +3057,30 @@
     },
     {
       "class": "unclassified",
-      "count": 6,
+      "count": 5,
+      "originalClassCount": 6,
       "status": "partially-repaired-focused",
       "stateCounts": {
         "repaired-peer-focused": 2,
-        "open-unknown": 4
+        "open-unknown": 3
       },
       "item": "WI-10006170",
       "owner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
       "scope": "diagnosis-and-placement",
-      "rootCause": "Hive-roster's historical membership fixture is covered by committed WI-10006194 and real Pot controls. Atomic-registry's unreachable barrier and missing inherited-provider fixture are covered by committed WI-10006502, retained interleaving assertions and early-refusal controls; attribution of the archived timeout is explicitly inferred. Four other original unclassified files remain unproved; original class membership is preserved.",
-      "next": "Retain roster20793752 clean focused5PASS/0skip and atomic20831098 clean focused4PASS/0skip with named-byte equality only. Diagnose the four remaining unclassified files from exact archived errors and existing repair records; complete source/import/environment and final D006 assurance remain unverified."
+      "rootCause": "Hive-roster's historical membership fixture is covered by committed WI-10006194 and real Pot controls. Atomic-registry's unreachable barrier and missing inherited-provider fixture are covered by committed WI-10006502, retained interleaving assertions and early-refusal controls; attribution of the archived timeout is explicitly inferred. Three remaining unclassified rows are unproved. Worked-history is qualified separately by the existing role-catalog serialization repair; its original symptom class remains recorded on that row.",
+      "next": "Retain roster20793752 clean focused5PASS/0skip and atomic20831098 clean focused4PASS/0skip with named-byte equality only. Diagnose the three remaining unclassified files from exact archived errors and existing repair records; complete source/import/environment and final D006 assurance remain unverified."
+    },
+    {
+      "class": "peer-hosted-role-catalog-serialization",
+      "count": 1,
+      "status": "repaired-peer-focused",
+      "item": "WI-10006171",
+      "rootCause": "A controlled role-only replay distinguishes cross-database pg_authid normalization from private-schema DDL: the original block fails with XX000; catalog serialization passes and restores role safety. Attribution of the archived worked-history error to the specific inner statement is inferred because no original query position or complete dirty loaded graph was saved.",
+      "testRunIds": [20767241, 20775640, 20838275],
+      "passed": 11,
+      "skipped": 0,
+      "scope": "historical-causal-role-guard-and-current-equality-of-three-named-blobs",
+      "next": "Retain committed WI-10006171 and saved clean named-file PASS20838275; do not replay terminal repair. Complete original/current loaded-source, imports, config, environment and final D006 assurance remain unverified."
     },
     {
       "class": "plan-observation-fixture",
