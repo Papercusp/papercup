@@ -442,6 +442,31 @@ describe('goals.* resolvers against real SQL', () => {
     });
   });
 
+  it('releases the detail transaction before holder liveness acquires the same one-connection pool', async () => {
+    const { resolveGoalDetail } = await import('./goals');
+    await goal();
+    await agentOnGoal('su-single-connection');
+    await sql.end({ timeout: 5 });
+    sql = postgres(db.url, { max: 1, onnotice: () => {}, prepare: false });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const out = await Promise.race([
+        resolveGoalDetail({ workspaceId: WS, goalId: GOAL }),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error('goal detail held the only connection during holder liveness')), 5_000);
+        }),
+      ]) as { goal: { id: string }; agents: Array<{ ownerId: string }>; holderLiveness: string };
+      expect(out.goal.id).toBe(GOAL);
+      expect(out.agents.map((agent) => agent.ownerId)).toEqual(['su-single-connection']);
+      expect(['held', 'lost', 'unknown']).toContain(out.holderLiveness);
+      expect(await sql`SELECT 1 AS n`).toEqual([{ n: 1 }]);
+    } finally {
+      clearTimeout(timer);
+      await sql.end({ timeout: 1 });
+      sql = postgres(db.url, { max: 4, onnotice: () => {}, prepare: false });
+    }
+  }, 15_000);
+
   it('returns the goal holder’s exact turn-start obligation projection and canonical portfolio', async () => {
     const { resolveGoalDetail } = await import('./goals');
     await goal();
