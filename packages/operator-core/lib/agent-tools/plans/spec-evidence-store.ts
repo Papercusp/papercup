@@ -2,7 +2,7 @@
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, realpath, stat, writeFile } from 'node:fs/promises';
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { hostname } from 'node:os';
 import fastGlob from 'fast-glob';
 import { z } from 'zod';
@@ -111,7 +111,11 @@ export const repoFilesEvidenceMeasurementSchema = z
       /** Static model-facing metadata may differ; the full raw file still participates in currentness. */
       guidanceOnlySourcePaths: z.array(repoMeasurementPathSchema).min(1).max(8)
         .refine(paths => new Set(paths).size === paths.length, 'guidance paths must be unique').optional(),
-    }).strict(), z.object({ kind: z.literal('llm-in-process') }).strict()]).optional(),
+    }).strict(), z.object({ kind: z.literal('llm-in-process') }).strict(), z.object({
+      kind: z.literal('isolated-integration'),
+      runIds: z.array(z.string().regex(/^\d{8}T\d{6}Z-\d+(?:\.\d+)?$/)).min(1).max(32)
+        .refine(ids => new Set(ids).size === ids.length, 'integration run ids must be unique'),
+    }).strict()]).optional(),
   })
   .strict()
   .superRefine((measurement, ctx) => {
@@ -1198,6 +1202,11 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
         if (witness && JSON.stringify([...witness.units].sort()) === JSON.stringify([...runtimeUnits].sort())) {
           executionRuntimeFingerprint = witness.fingerprint;
         }
+        if (execution?.testLayer === 'integration' && execution.isolatedRuntimeReceipts
+          && JSON.stringify(runtimeUnits.slice().sort()) === JSON.stringify(execution.isolatedRuntimeReceipts
+            .map(receipt => `isolated-integration:${receipt.runId}`).sort())) {
+          executionRuntimeFingerprint = isolatedIntegrationFingerprint(execution.isolatedRuntimeReceipts);
+        }
       }
     }
 
@@ -2213,6 +2222,11 @@ async function onlyStaticToolGuidanceChanged(root: string, original: MeasuredRep
 
 /** These four bounded receipts outlive the disposable runtime and the harness's run-count pruning. */
 function completedRuntimeArtifactRefs(selector: NonNullable<RepoFilesEvidenceMeasurement['completedRuntime']>) {
+  if (selector.kind === 'isolated-integration') return selector.runIds.flatMap(runId => [
+    ['isolated-integration', runId, 'result.json'],
+    ['isolated-integration', runId, 'phases/prepare/source.json'],
+    ['isolated-integration', runId, 'phases/execute/lifecycle.json'],
+  ] as const);
   return selector.kind === 'verification-harness' ? [
     ['verify-tauri-headless', selector.verifierRunId, 'result.json'],
     ['verify-tauri-headless', selector.verifierRunId, 'phases/prepare/verifier-source-receipt.json'],
@@ -2272,6 +2286,7 @@ export async function measureCompletedTestRuntime(
   options: { onStaticGuidanceEquivalence?: (value: StaticGuidanceSourceEquivalence) => void } = {},
 ): Promise<string | null> {
   const selector = recipe.completedRuntime;
+  if (selector?.kind === 'isolated-integration') return measureCompletedIntegrationRuntime(row, recipe, currentFiles, scope, root);
   const execution = parseTestRunExecutionDetails(row.test_run_execution_details);
   const witness = stableRecordedRuntimeEnvironment(
     execution?.runtimeEnvironmentBefore, execution?.runtimeEnvironmentAfter);
@@ -2376,6 +2391,72 @@ export async function measureCompletedTestRuntime(
         measuredFingerprint: repoFileSetFingerprint(currentFiles.filter(file => file.dimension === 'source')) });
     }
     return witness.fingerprint;
+  } catch { return null; }
+}
+
+function isolatedIntegrationFingerprint(receipts: NonNullable<ReturnType<typeof parseTestRunExecutionDetails>>['isolatedRuntimeReceipts']): string {
+  return createHash('sha256').update(JSON.stringify([...receipts!].sort((a, b) => a.runId.localeCompare(b.runId)))).digest('hex');
+}
+
+/** Certify the original mid-test lifetime, never the current serving host or retrofitted stdout. */
+async function measureCompletedIntegrationRuntime(row: EvidenceRow, recipe: RepoFilesEvidenceMeasurement,
+  currentFiles: readonly MeasuredRepoFile[], scope: { workspaceId: string; harnessSlug: string }, root: string): Promise<string | null> {
+  const execution = parseTestRunExecutionDetails(row.test_run_execution_details);
+  const selector = recipe.completedRuntime;
+  if (selector?.kind !== 'isolated-integration' || !execution?.isolatedRuntimeReceipts || !recipe.runtimeUnits
+    || row.evidence_kind !== 'test' || row.details.evidencePlane !== 'live' || row.test_run_status !== 'pass'
+    || row.test_run_framework !== 'vitest' || execution.testLayer !== 'integration'
+    || row.test_run_worktree_dirty !== false || execution.worktreeDirty || execution.collectionFailed
+    || execution.failed !== 0 || execution.skipped !== 0 || execution.passed !== selector.runIds.length
+    || execution.workspaceId !== scope.workspaceId || execution.harnessSlug !== scope.harnessSlug
+    || !execution.commitSha || !/^[a-f0-9]{40,64}$/.test(execution.commitSha)
+    || execution.commitSha !== row.test_run_commit_sha || !recipe.testPaths?.includes(execution.filePath)
+    || recipe.rootHarnessSlug || recipe.fixtureRootHarnessSlug
+    || JSON.stringify([...selector.runIds].sort()) !== JSON.stringify(execution.isolatedRuntimeReceipts.map(r => r.runId).sort())
+    || JSON.stringify([...recipe.runtimeUnits].sort()) !== JSON.stringify(selector.runIds.map(id => `isolated-integration:${id}`).sort())) return null;
+  const at = (value: any) => new Date(value).getTime();
+  const start = at(row.test_run_started_at), end = at(row.test_run_finished_at);
+  if (![start, end].every(Number.isFinite) || start > end) return null;
+  try {
+    const recorded = await measureRepoFilesEvidenceDetailedAtCommit(root, recipe, execution.commitSha);
+    const originals = new Map(recorded.files.map(file => [`${file.dimension}:${file.path}`, file]));
+    if (!currentFiles.length || currentFiles.length !== recorded.files.length
+      || currentFiles.some(file => originals.get(`${file.dimension}:${file.path}`)?.sha256 !== file.sha256)) return null;
+    for (const original of execution.isolatedRuntimeReceipts) {
+      const artifacts = await Promise.all(['result.json', 'phases/prepare/source.json', 'phases/execute/lifecycle.json']
+        .map(file => readCompletedRuntimeArtifact('isolated-integration', original.runId, file)));
+      const expected = [original.resultSha256, original.sourceSha256, original.lifecycleSha256];
+      if (artifacts.some((artifact, i) => createHash('sha256').update(artifact.bytes).digest('hex') !== expected[i])) return null;
+      const [result, source, life] = artifacts.map(a => a.data);
+      const phases = result?.phases;
+      if (result?.schemaVersion !== 1 || result.harness !== 'isolated-integration' || result.runId !== original.runId
+        || result.verdict !== 'pass' || result.reuseFromRunId || result.preflight?.status === 'failed'
+        || !Array.isArray(phases) || phases.length !== 3
+        || JSON.stringify(phases.map((p: any) => p.phase)) !== JSON.stringify(['prepare', 'execute', 'teardown'])
+        || phases.some((p: any) => p.status !== 'passed' || p.reusedFromRunId)
+        || source?.schemaVersion !== 1 || source.runId !== original.runId || source.sourceCommit !== execution.commitSha
+        || source.filePath !== execution.filePath || source.runGroupId !== execution.runGroupId
+        || source.workspaceId !== execution.workspaceId || source.harnessSlug !== execution.harnessSlug
+        || !Array.isArray(source.files) || new Set(source.files.map((f: any) => f.path)).size !== source.files.length
+        || recorded.files.some(file => !source.files.some((f: any) => f.path === file.path && f.sha256 === file.sha256 && f.gitSha256 === file.sha256))
+        || life?.schemaVersion !== 1 || life.runId !== original.runId || life.host !== hostname()
+        || life.cwd !== root || !/^test-runtime-/.test(life.workspace)
+        || typeof life.runtimeRoot !== 'string' || !basename(life.runtimeRoot).startsWith('papercusp-test-runtime-')
+        || typeof life.dataDir !== 'string' || !basename(life.dataDir).startsWith('papercusp-test-pg-')
+        || !Number.isInteger(life.pgPort) || life.pgPort <= 0 || life.pgPort === 5432
+        || !Array.isArray(life.argv) || !life.argv.length
+        || [life.observer, life.supervisor, life.worker, life.database].some(pin => !Number.isSafeInteger(pin?.pid) || pin.pid <= 0
+          || !/^linux:[^:]+:\d+$/.test(pin.identity) || !Number.isSafeInteger(pin.parentPid))
+        || life.supervisor.parentPid !== life.observer.pid || life.worker.parentPid !== life.supervisor.pid
+        || life.database.parentPid !== life.supervisor.pid
+        || !life.ended || life.ended.childPid !== life.worker.pid || life.ended.signal
+        || !Number.isInteger(life.ended.exitCode) || !life.ended.runtimeRemoved || !life.ended.pgDataRemoved) return null;
+      const times = [start, at(result.startedAt), ...phases.flatMap((p: any) => [at(p.startedAt), at(p.endedAt)]), at(result.endedAt), end];
+      if (times.some((time, i) => !Number.isFinite(time) || (i > 0 && time < times[i - 1]))
+        || !(at(phases[1].startedAt) <= at(life.observedAt) && at(life.observedAt) < at(life.ended.observedAt)
+          && at(life.ended.observedAt) <= at(phases[1].endedAt))) return null;
+    }
+    return isolatedIntegrationFingerprint(execution.isolatedRuntimeReceipts);
   } catch { return null; }
 }
 

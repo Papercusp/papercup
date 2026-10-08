@@ -192,6 +192,82 @@ describe('completed isolated runtime certification', () => {
   }
   const read = async () => (await listSpecEvidence({ harnessSlug: 'papercusp', planSlugs: ['plan-one'] }))[0];
 
+  async function setupIntegration() {
+    const state = await setup();
+    const runId = '20261008T000021Z-201';
+    const basis: any = { ...recipe, runtimeUnits: [`isolated-integration:${runId}`],
+      completedRuntime: { kind: 'isolated-integration', runIds: [runId] } };
+    const measured = await measureRepoFilesEvidenceDetailedAtRoot(root, basis);
+    const result: any = { schemaVersion: 1, harness: 'isolated-integration', runId,
+      verdict: 'pass', reuseFromRunId: null, startedAt: at(13), endedAt: at(33), phases: [
+        { phase: 'prepare', status: 'passed', startedAt: at(13), endedAt: at(14) },
+        { phase: 'execute', status: 'passed', startedAt: at(14), endedAt: at(32) },
+        { phase: 'teardown', status: 'passed', startedAt: at(32), endedAt: at(33) },
+      ] };
+    const source: any = { schemaVersion: 1, runId, sourceCommit: commit, filePath: state.execution.filePath,
+      runGroupId: state.execution.runGroupId, workspaceId: 'workspace-test', harnessSlug: 'papercusp',
+      files: measured.files.map(file => ({ ...file, gitSha256: file.sha256 })) };
+    const pin = (pid: number, parentPid: number) => ({ pid, parentPid, identity: `linux:fixture-boot:${pid}` });
+    const life: any = { schemaVersion: 1, runId, host: hostname(), cwd: root, observedAt: at(15),
+      observer: pin(100, 1), supervisor: pin(200, 100), worker: pin(300, 200), database: pin(400, 200),
+      argv: ['node', 'test-child.ts'], workspace: 'test-runtime-private',
+      runtimeRoot: '/tmp/papercusp-test-runtime-private', dataDir: '/tmp/papercusp-test-pg-private', pgPort: 54422,
+      ended: { childPid: 300, observedAt: at(31), exitCode: 23, signal: null, runtimeRemoved: true, pgDataRemoved: true } };
+    const dir = join(artifacts, 'isolated-integration', runId);
+    await mkdir(join(dir, 'phases/prepare'), { recursive: true });
+    await mkdir(join(dir, 'phases/execute'), { recursive: true });
+    const save = async (recordHashes = false) => {
+      const values = [result, source, life];
+      for (const [i, file] of ['result.json', 'phases/prepare/source.json', 'phases/execute/lifecycle.json'].entries())
+        await writeFile(join(dir, file), JSON.stringify(values[i]));
+      if (recordHashes) {
+        const hashes = values.map(value => createHash('sha256').update(JSON.stringify(value)).digest('hex'));
+        (state.execution as any).isolatedRuntimeReceipts = [{ runId, resultSha256: hashes[0], sourceSha256: hashes[1], lifecycleSha256: hashes[2] }];
+      }
+    };
+    state.execution.testLayer = 'integration';
+    delete (state.execution as any).runtimeEnvironmentBefore;
+    delete (state.execution as any).runtimeEnvironmentAfter;
+    state.row.details.currentMeasurement = basis;
+    await save(true);
+    state.row.environment_fingerprint = createHash('sha256').update(JSON.stringify((state.execution as any).isolatedRuntimeReceipts)).digest('hex');
+    return { ...state, basis, measured, result, source, life, save, dir };
+  }
+
+  it('certifies the original integration lifetime with the reporter hashes after both worker and private PG exit', async () => {
+    await setupIntegration();
+    expect((await read()).currentness.dimensions.environment).toBe('current');
+  });
+  it.each(['tampered-receipt', 'missing-artifact', 'reused-run', 'wrong-source', 'wrong-layer', 'dirty',
+    'outside-test', 'wrong-parent', 'missing-kernel', 'missing-teardown', 'wrong-scope', 'unrecorded', 'wrong-unit'])(
+    'rejects isolated integration proof for %s', async failure => {
+      const state = await setupIntegration();
+      if (failure === 'tampered-receipt') state.life.pgPort++;
+      if (failure === 'reused-run') state.result.reuseFromRunId = 'earlier';
+      if (failure === 'wrong-source') state.source.files[0].gitSha256 = 'b'.repeat(64);
+      if (failure === 'outside-test') state.result.phases[2].endedAt = at(36);
+      if (failure === 'wrong-parent') state.life.worker.parentPid = 1;
+      if (failure === 'missing-kernel') state.life.worker.identity = '';
+      if (failure === 'missing-teardown') state.life.ended.pgDataRemoved = false;
+      if (failure === 'wrong-scope') state.source.workspaceId = 'foreign';
+      await state.save(failure !== 'tampered-receipt');
+      if (failure === 'missing-artifact') await rm(join(state.dir, 'phases/execute/lifecycle.json'));
+      if (failure === 'wrong-layer') state.execution.testLayer = 'unit';
+      if (failure === 'dirty') state.row.test_run_worktree_dirty = true;
+      if (failure === 'unrecorded') delete (state.execution as any).isolatedRuntimeReceipts;
+      if (failure === 'wrong-unit') state.basis.runtimeUnits = ['bg-host'];
+      expect((await read()).currentness.dimensions.environment).toBe('unknown');
+    });
+  it('retains integration receipt bytes through pruning and detects a changed retained artifact', async () => {
+    const state = await setupIntegration();
+    await measureAndPinRepoFilesEvidenceAtRoot(root, state.basis);
+    await rm(state.dir, { recursive: true });
+    expect((await read()).currentness.dimensions.environment).toBe('current');
+    const retained = join(artifacts, 'isolated-integration', 'retained', state.result.runId, 'phases/execute/lifecycle.json');
+    await writeFile(retained, '{}');
+    expect((await read()).currentness.dimensions.environment).toBe('unknown');
+  });
+
   it('certifies the original completed execution after teardown using retained artifacts and Git objects', async () => {
     await setup();
     const evidence = await read();
