@@ -36,6 +36,8 @@ export function verifierSourceFiles(root: string, {
       // A tracked tree remains source, and a redirect is never a build output.
       if (runtimeArtifacts && [
         'apps/operator-vite/src/routeTree.gen.ts', '.papercusp-pinned-deps',
+        // Native build wrappers create this exact regular flock file.
+        'papercusp-desktop/src-tauri/sidecar.lock',
         // build.rs creates these exact placeholders on a clean native build.
         'papercusp-desktop/src-tauri/sidecar/PLACEHOLDER-README.txt',
         'papercusp-desktop/src-tauri/sidecar/db-sql/PLACEHOLDER-README.txt',
