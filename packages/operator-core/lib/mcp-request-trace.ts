@@ -19,6 +19,7 @@ export type McpRequestTraceStage =
   | 'inner_dispatch_settled'
   | 'deadline'
   | 'scratch_write_progress'
+  | 'scratch_write_settled'
   | 'tools_list_completed'
   | 'proxy_response_finished'
   | 'stale_contract_rejected';
@@ -38,6 +39,8 @@ export interface McpRequestTraceEvent {
   afterDeadline?: boolean;
   /** One-shot phase snapshot when a result-door scratch spill exceeds five seconds. */
   scratchWriteProgress?: ScratchWriteProgress;
+  /** Final per-write timing emitted if a spill settles after its dispatch trace. */
+  scratchWriteTimings?: ScratchWriteTimings;
   /** Hashes only; never persist the protocol/native session identifiers themselves. */
   mcpSessionKeyFingerprint?: string | null;
   wireMcpSessionIdFingerprint?: string | null;
