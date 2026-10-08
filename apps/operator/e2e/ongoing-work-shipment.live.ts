@@ -10,6 +10,15 @@ test('real ongoing goal data reaches featured, compact and standing detail on th
   expect(workspaceId, 'The real workspace must be explicit before reading goal data').toBeTruthy();
   const diagnostics: string[] = [];
   page.on('pageerror', (error) => diagnostics.push(`pageerror: ${error.message.slice(0, 500)}`));
+  page.on('console', (message) => {
+    if (message.type() === 'error') diagnostics.push(`console: ${message.text().slice(0, 500)}`);
+  });
+  page.on('requestfailed', (request) => {
+    if (['document', 'script', 'stylesheet', 'xhr', 'fetch'].includes(request.resourceType())) {
+      const failure = request.failure()?.errorText ?? 'unknown';
+      diagnostics.push(`requestfailed ${request.resourceType()} ${new URL(request.url()).pathname}: ${failure}`);
+    }
+  });
   page.on('response', (response) => {
     const url = new URL(response.url());
     if (url.pathname.includes('rest-query')) diagnostics.push(`${url.searchParams.get('name')}: ${response.status()}`);
@@ -18,29 +27,40 @@ test('real ongoing goal data reaches featured, compact and standing detail on th
   const expectedSha = process.env.PAPERCUSP_ONGOING_ACCEPTANCE_SHA?.trim();
   expect(expectedSha, 'Supply the independently resolved runtime SHA; a missing identity cannot certify shipment').toMatch(/^[a-f0-9]{10,40}$/);
   const healthResponse = await request.get('/api/health');
-  expect(healthResponse.ok()).toBe(true);
+  expect(healthResponse.ok(), 'The selected artifact must answer /api/health').toBe(true);
   const health = await healthResponse.json();
   expect(health.bundleStale, 'A fallback bundle cannot establish the current artifact').toBeUndefined();
-  expect(health.sha).toBe(expectedSha);
+  expect(health.sha, `The selected runtime SHA must be ${expectedSha}`).toBe(expectedSha);
 
   // The maintained REST query reads real data independently of whether the UI's
   // initial delivery came through REST, SSE or its synchronized cache.
   const response = await request.get('/api/zero-harness/rest-query', {
     params: { name: 'goals.list', args: JSON.stringify({ workspaceId }) },
   });
-  expect(response.ok()).toBe(true);
+  expect(response.ok(), 'The selected workspace goals query must succeed').toBe(true);
   const payload = (await response.json()).rows[0] as Goals;
   const entry = payload.goalPackages.find((item) => item.ref === 'work-on-everything');
   expect(entry, 'The real workspace must have its existing ongoing package').toBeDefined();
-  expect(entry!.standing).toBe(true);
+  expect(entry!.standing, 'The existing ongoing package must remain standing').toBe(true);
   expect(entry!.featured, 'The existing ongoing package must retain its featured server projection').toBe(true);
-  expect(entry!.activeGoalId).toBeTruthy();
+  expect(entry!.activeGoalId, 'The ongoing package must point to an active goal').toBeTruthy();
   const goal = payload.goals.find((item) => item.id === entry!.activeGoalId);
   expect(goal, 'The projected package must resolve to an actual goal row').toBeDefined();
   expect(goal!.standing, 'The introduced standing read-model projection must be present').toBe(true);
 
   await page.goto(`/adv?tab=hud&scope=all&hudtab=goals&welcome=0&ws=${encodeURIComponent(workspaceId!)}`);
-  await expect(page.getByRole('tablist', { name: 'HUD board' }), 'The real HUD must mount before judging goal rendering').toBeVisible();
+  try {
+    await expect(page.getByRole('tablist', { name: 'HUD board' }), 'The real HUD must mount before judging goal rendering').toBeVisible();
+  } catch (error) {
+    const observed = diagnostics.slice(-40);
+    throw new Error([
+      error instanceof Error ? error.message : String(error),
+      `Runtime SHA: ${expectedSha}`,
+      `Workspace: ${workspaceId}`,
+      `Page URL: ${page.url()}`,
+      `Browser diagnostics: ${observed.length ? observed.join('\n') : 'no page errors, console errors, failed requests, or rest-query responses observed'}`,
+    ].join('\n'));
+  }
 
   const featured = page.locator('section.hud-ongoing--featured[data-testid="ongoing-work-overview"]').filter({ has: page.getByRole('heading', { name: entry!.title, exact: true }) });
   await expect(featured).toBeVisible();
@@ -65,12 +85,12 @@ test('real ongoing goal data reaches featured, compact and standing detail on th
   expect(await detail.evaluate((node) => {
     const ends = document.querySelector('[data-testid="goal-ends-section"]');
     return !!ends && !!(node.compareDocumentPosition(ends) & Node.DOCUMENT_POSITION_FOLLOWING);
-  })).toBe(true);
+  }), 'The goal detail must precede its end section').toBe(true);
   await page.screenshot({ path: info.outputPath('real-ongoing-detail.png') });
 
   const healthAfter = await (await request.get('/api/health')).json();
   expect(healthAfter.sha, 'The runtime must not move during the acceptance journey').toBe(expectedSha);
-  expect(healthAfter.bundleStale).toBeUndefined();
+  expect(healthAfter.bundleStale, 'The runtime must not fall back to a stale bundle during the journey').toBeUndefined();
   await info.attach('ongoing-real-data-receipt', {
     body: JSON.stringify({ expectedSha, actualSha: health.sha, workspaceId, goalId: goal!.id, packageRef: entry!.ref,
       views: ['featured', 'compact', 'standing-detail'], navigationGoalId: new URL(page.url()).searchParams.get('hudgoal') }),
