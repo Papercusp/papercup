@@ -130,6 +130,17 @@ function serializePortalEvidence(record: Record<string, unknown>, failure?: unkn
   return serialized;
 }
 
+function safeHostedErrorCode(body: unknown): string | null {
+  if (!body || typeof body !== 'object') return null;
+  const error = (body as { error?: unknown }).error;
+  const code = typeof error === 'string' ? error
+    : error && typeof error === 'object' ? (error as { code?: unknown }).code : undefined;
+  // Retain only documented refusal codes, never arbitrary response content.
+  return typeof code === 'string' && ['cross_origin_blocked', 'control_plane_binding_mismatch',
+    'workspace_binding_mismatch', 'tutorial_scope_changed', 'hosted_principal_required',
+    'permission_missing', 'forbidden', 'unauthorized', 'authority_unavailable'].includes(code) ? code : null;
+}
+
 function observePortalBrowser(page: import('playwright').Page) {
   // Capture presentation failures before closing Chromium. Keep no request
   // headers, response bodies or URL queries (which can contain credentials).
@@ -167,6 +178,13 @@ function observePortalBrowser(page: import('playwright').Page) {
 }
 
 describe('public manual Portal failure evidence', () => {
+  it('retains documented hosted refusal codes without retaining arbitrary response content', () => {
+    expect(safeHostedErrorCode({ error: 'cross_origin_blocked', session: 'private-response' })).toBe('cross_origin_blocked');
+    expect(safeHostedErrorCode({ error: { code: 'forbidden', message: 'private-response' } })).toBe('forbidden');
+    expect(safeHostedErrorCode({ error: 'private-response' })).toBeNull();
+    expect(safeHostedErrorCode(null)).toBeNull();
+  });
+
   it('preserves the original browser failure while redacting its server credential', () => {
     const bearer = 'disposable-credential-fixture';
     const failure = new Error(`Browser failed with ${bearer}`);
@@ -703,7 +721,7 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
     expect(revision.revision).toMatch(/^[a-f0-9]{64}$/);
   }, 30_000);
 
-  it.runIf(process.env.PAPERCUSP_TEST_PUBLIC_PORTAL === '1')('answers typed input on the actual hosted Portal with docs-only tools and persisted history', async () => {
+  const actualPortalAcceptance = async (mismatchedOrigin: boolean) => {
     // Explicit roots prevent this acceptance case from silently testing a mutable
     // development server or a different installed app. It never promotes a build.
     const portalRoot = process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT;
@@ -739,6 +757,7 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
     let browserText = '';
     let captureBrowser: ReturnType<typeof observePortalBrowser> | undefined;
     let browserState: Awaited<ReturnType<ReturnType<typeof observePortalBrowser>>> | undefined;
+    let guideMutation: { status: number; errorCode: string | null } | undefined;
     const evidenceCredentials = [principalBearer!];
     let caseFailure: unknown;
     const question = 'How do I check the orchard workspace? Search the public manual, read the FAQ section, give its recovery marker, and cite the section. Do not perform a recovery.';
@@ -767,7 +786,13 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
       evidenceCredentials.push(secret);
       const port = await freeLoopbackPort();
       const origin = `http://127.0.0.1:${port}`;
-      const overrides = { ...hostedConfig, PORTAL_OPERATOR_ORIGIN: baseUrl!, PAPERCUSP_WORKSPACE_ID: workspaceId,
+      // Production browser mutations require an exact configured public origin.
+      // Bind the isolated candidate to its own address; the paired negative
+      // control retains the inherited hosted origin to reproduce the refusal.
+      expect(hostedConfig.PAPERCUSP_HOSTED_PUBLIC_ORIGIN).not.toBe(origin);
+      const overrides = { ...hostedConfig,
+        PAPERCUSP_HOSTED_PUBLIC_ORIGIN: mismatchedOrigin ? hostedConfig.PAPERCUSP_HOSTED_PUBLIC_ORIGIN : origin,
+        PORTAL_OPERATOR_ORIGIN: baseUrl!, PAPERCUSP_WORKSPACE_ID: workspaceId,
         PAPERCUSP_SHARED_OPERATOR: '0', PORTAL_HOME: temporaryHome, PORT: String(port), HOSTNAME: '127.0.0.1' };
       const envFile = join(temporaryHome, 'hosted.env');
       writeFileSync(envFile, Object.entries(overrides).map(([key, value]) => `${key}=${value}`).join('\n'), { mode: 0o600 });
@@ -815,8 +840,15 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
         && new URL(response.url()).pathname === '/api/hosted/browser/onboarding/tutorial-progress');
       await skipGuide.click();
       const guideResponse = await guideSaved;
+      const guideBody = await guideResponse.json();
+      guideMutation = { status: guideResponse.status(), errorCode: safeHostedErrorCode(guideBody) };
+      if (mismatchedOrigin) {
+        expect(guideMutation).toEqual({ status: 403, errorCode: 'cross_origin_blocked' });
+        stage = 'passed-origin-negative-control';
+        return;
+      }
       expect(guideResponse.ok()).toBe(true);
-      expect(await guideResponse.json()).toMatchObject({ record: { disposition: 'skipped' } });
+      expect(guideBody).toMatchObject({ record: { disposition: 'skipped' } });
       stage = 'typed-browser';
       const composer = page.getByRole('textbox', { name: 'Message Papercup', exact: true });
       await composer.waitFor({ state: 'visible', timeout: 30_000 });
@@ -879,9 +911,9 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
     } finally {
       // Only the public projected stream/history is retained. Failure stage and
       // runtime log let a continuation diagnose without replaying a paid turn.
-      const safeEvidence = serializePortalEvidence({ id: 'actual-portal-typed', stage,
+      const safeEvidence = serializePortalEvidence({ id: mismatchedOrigin ? 'actual-portal-origin-negative' : 'actual-portal-typed', stage,
         question, runtimeBuild, candidateRoot, servedRelease, workspaceId, recordedAt: new Date().toISOString(),
-        frames: publicPortalFrames(stream), history, browserText, browserState }, caseFailure, evidenceCredentials);
+        frames: publicPortalFrames(stream), history, browserText, browserState, guideMutation }, caseFailure, evidenceCredentials);
       writeFileSync(join(evidenceDir, 'case.json'), safeEvidence, { mode: 0o600 });
       try {
       try { await browser?.close(); }
@@ -910,7 +942,15 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
         throw cleanupError;
       }
     }
-  }, 240_000);
+  };
+
+  it.runIf(process.env.PAPERCUSP_TEST_PUBLIC_PORTAL === '1')(
+    'rejects the mismatched hosted tutorial origin before any model call',
+    () => actualPortalAcceptance(true), 240_000);
+
+  it.runIf(process.env.PAPERCUSP_TEST_PUBLIC_PORTAL === '1')(
+    'answers typed input on the actual hosted Portal with docs-only tools and persisted history',
+    () => actualPortalAcceptance(false), 240_000);
 
   it('retrieves the canonical FAQ for a natural question with a misspelling', async () => {
     const result = await recordedCase('conceptual-misspelling',
