@@ -324,7 +324,9 @@ export type CloseMeteredInvocationResult =
  */
 export function closeMeteredInvocation(input: CloseMeteredInvocationInput): CloseMeteredInvocationResult {
   const served = input.actualQuantity ?? input.voucher.meterQuantity;
-  if (served <= 0n) return refuse('invalid-unit', 'actualQuantity must be positive');
+  // A funded turn can close without entering any tool handler. Its original
+  // positive voucher still binds the released hold and the signed zero receipt.
+  if (served < 0n) return refuse('invalid-unit', 'actualQuantity must be non-negative');
   if (served > input.voucher.meterQuantity) {
     return refuse('actual-exceeds-reservation', `served ${served} exceeds the reserved quantity ${input.voucher.meterQuantity}`);
   }
@@ -413,6 +415,8 @@ export function closeMeteredInvocation(input: CloseMeteredInvocationInput): Clos
 /** Local state of ONE host-authorized funded turn, including its settlement outbox. */
 export interface LocalMeteredTurnState {
   readonly turnId: string;
+  /** Durable host closure/revocation. Omitted only in legacy open snapshots. */
+  readonly admissionClosed?: boolean;
   readonly payer: string;
   readonly seller: string;
   readonly releaseRef: string;
@@ -496,6 +500,16 @@ export class LocalMeteredTurn {
 
   snapshot(): LocalMeteredTurnState { return structuredClone(this.state); }
 
+  /** Stop new calls before closing or revoking a host admission. Calls already
+   * entered must finish; their durable holds cannot be treated as unused funds. */
+  stopAdmission(): Promise<void> {
+    return this.serialize(async () => {
+      if (this.state.admissionClosed) return;
+      this.state = { ...this.state, admissionClosed: true };
+      await this.persist();
+    });
+  }
+
   private serialize<T>(operation: () => Promise<T>): Promise<T> {
     const next = this.tail.then(() => {
       if (this.persistenceFailed) {
@@ -521,6 +535,9 @@ export class LocalMeteredTurn {
     execute: () => Promise<T> | T): Promise<T> {
     await this.serialize(async () => {
       const s = this.state;
+      if (s.admissionClosed) {
+        throw new LocalMeteredTurnRefusedError('turn-admission-closed', 'the host has closed or revoked this funded turn');
+      }
       if (unit.payer !== s.payer || unit.releaseRef !== s.releaseRef) {
         throw new LocalMeteredTurnRefusedError('binding-mismatch', 'target payer and installed release must match the funded turn');
       }
