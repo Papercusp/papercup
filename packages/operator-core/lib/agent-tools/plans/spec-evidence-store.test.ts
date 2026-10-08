@@ -238,6 +238,25 @@ describe('completed isolated runtime certification', () => {
     await setupIntegration();
     expect((await read()).currentness.dimensions.environment).toBe('current');
   });
+  it('certifies runtime execution when the reporter-derived start follows harness preparation', async () => {
+    const state = await setupIntegration();
+    // The reporter subtracts rounded duration from its later completion clock.
+    // The retained harness clock is authoritative for its own phase ordering.
+    state.row.test_run_started_at = at(14);
+    expect((await read()).currentness.dimensions.environment).toBe('current');
+  });
+  it('rejects runtime execution that starts before the parent test interval', async () => {
+    const state = await setupIntegration();
+    state.row.test_run_started_at = at(15);
+    expect((await read()).currentness.dimensions.environment).toBe('unknown');
+  });
+  it('rejects an out-of-order preparation receipt even when execution is inside the parent interval', async () => {
+    const state = await setupIntegration();
+    state.row.test_run_started_at = at(14);
+    state.result.phases[0].startedAt = at(12);
+    await state.save(true);
+    expect((await read()).currentness.dimensions.environment).toBe('unknown');
+  });
   it('certifies a committed disposable checkout against the same current Git objects', async () => {
     const state = await setupIntegration();
     state.source.repoRoot = '/tmp/papercusp-lint-as-committed-original';

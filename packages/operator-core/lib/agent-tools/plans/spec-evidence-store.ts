@@ -2452,8 +2452,14 @@ async function measureCompletedIntegrationRuntime(row: EvidenceRow, recipe: Repo
         || life.database.parentPid !== life.supervisor.pid
         || !life.ended || life.ended.childPid !== life.worker.pid || life.ended.signal
         || !Number.isInteger(life.ended.exitCode) || !life.ended.runtimeRemoved || !life.ended.pgDataRemoved) return null;
-      const times = [start, at(result.startedAt), ...phases.flatMap((p: any) => [at(p.startedAt), at(p.endedAt)]), at(result.endedAt), end];
+      // The reporter derives its start by subtracting rounded duration from a
+      // later completion observation. Harness preparation may already have
+      // started on its own clock. Validate that receipt's full internal order,
+      // then bind the actual runtime execution and completion to the parent
+      // interval; an old execution still cannot be admitted by a new test.
+      const times = [at(result.startedAt), ...phases.flatMap((p: any) => [at(p.startedAt), at(p.endedAt)]), at(result.endedAt)];
       if (times.some((time, i) => !Number.isFinite(time) || (i > 0 && time < times[i - 1]))
+        || at(phases[1].startedAt) < start || at(result.endedAt) > end
         || !(at(phases[1].startedAt) <= at(life.observedAt) && at(life.observedAt) < at(life.ended.observedAt)
           && at(life.ended.observedAt) <= at(phases[1].endedAt))) return null;
     }
