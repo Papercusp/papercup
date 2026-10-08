@@ -219,14 +219,79 @@ try {
       AND run_id = ${`${root}-stage-1`} AND a = 'c' AND b = 'd'`;
   assert.deepEqual(adjudicationAfter, adjudicationBefore, 'reversal must preserve the immutable judgment trail');
 
-  // A synthetic DBOS live-fire row exercises the real PG guard and routine
-  // writer. This proves enqueue/rearm refusal, not a running DBOS worker.
-  await sql.unsafe(`CREATE SCHEMA IF NOT EXISTS dbos;
-    CREATE TABLE IF NOT EXISTS dbos.workflow_status (
-      workflow_uuid text PRIMARY KEY, status text NOT NULL,
-      deduplication_id text, created_at bigint NOT NULL DEFAULT 0
-    )`);
+  // Use the real routine workflow and its maintained action-factory seam.
+  // Only the model and invalidation are deterministic substitutes; DBOS,
+  // admission ledgers, merge writers, and serialized inputs remain real.
+  const { DBOS } = await import('@dbos-inc/dbos-sdk');
+  DBOS.setConfig({
+    name: 'papercusp-bulk-grade-test', systemDatabaseUrl: dsn,
+    systemDatabaseSchemaName: 'dbos', applicationVersion: process.env.DBOS__APPVERSION,
+    runAdminServer: false,
+  });
+  const { enqueueRoutineFire } = await import('../lib/dbos/routines-workflow');
+  const { registerSystemAction } = await import('../lib/harness/routines/system-actions');
+  const { makeWorkItemAdmissionBulkDedupAction, bulkDedupRuntimeWiring,
+    BULK_DEDUP_ROUTINE_FIRE_TIMEOUT_MS } = await import('../lib/harness/routines/work-item-admission-bulk-dedup-action');
   const fireRunId = 'bulk-grade-live-fire-rehearsal';
+  const priorJudgedPairs = await sql`SELECT a, b FROM harness_shared.dedup_adjudications
+    WHERE workspace_id = ${ws} AND harness_slug = ${harness} ORDER BY a, b`;
+  assert.deepEqual(priorJudgedPairs.map((row) => `${row.a}::${row.b}`), ['c::d'],
+    'reopened pair retains its prior adjudication and is excluded from fresh judging');
+  const workerPairs = new Set<string>();
+  let executions = 0;
+  let releaseWorker!: () => void;
+  const workerRelease = new Promise<void>((resolve) => { releaseWorker = resolve; });
+  let enteredWorker!: () => void;
+  const workerEntered = new Promise<void>((resolve) => { enteredWorker = resolve; });
+  let enteredReplay!: () => void;
+  const replayEntered = new Promise<void>((resolve) => { enteredReplay = resolve; });
+  const phase = (name: string) => process.stdout.write(`BULK_BACKGROUND_WORKER_PHASE ${name}\n`);
+  async function awaitEntry(promise: Promise<void>, name: string) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([promise, new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(`private routine ${name} did not enter in 30s`)), 30_000);
+      })]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  const workerIds: string[] = [];
+  registerSystemAction('work-item-admission-bulk-dedup', makeWorkItemAdmissionBulkDedupAction({
+    run: async (ctx) => {
+      executions += 1;
+      assert.ok(ctx.workflowId);
+      workerIds.push(ctx.workflowId);
+      if (executions === 2) enteredReplay();
+      phase(`entered:${executions}`);
+      assert.equal(ctx.payloadTemplate?.runId, fireRunId);
+      assert.equal(ctx.payloadTemplate?.maxStages, 1);
+      assert.equal(ctx.payloadTemplate?.shardConcurrency, 1);
+      await DBOS.runStep(async () => {
+        enteredWorker();
+        await workerRelease;
+        return { released: true };
+      }, { name: 'bulk-grade-worker-hold' });
+      const wiring = bulkDedupRuntimeWiring(fireRunId, ctx.workflowId);
+      // Retain the source runner's deterministic canary/preflight. Production
+      // capacity/model calls are outside this disposable verification.
+      return runWorkItemAdmissionBulkDedup({
+        ...opts, runId: fireRunId, step: wiring.step, executionId: wiring.executionId,
+        ownerId: wiring.ownerId, maxStages: 1, shardConcurrency: 1,
+        llmCall: async (input) => {
+          if (!input.messages[0]?.content.includes(ADMISSION_MERGE_QUALITY_GOLD_CORPUS[0]!.pair.pairKey)) {
+            for (const match of input.messages[0]!.content.matchAll(/^([^\s]+::[^\s]+) \|/gm)) workerPairs.add(match[1]!);
+          }
+          return opts.llmCall!(input);
+        },
+      });
+    },
+    invalidate: async () => {}, log: () => {},
+  }), { ownSteps: true, scheduling: 'on-demand', routineTimeoutMs: BULK_DEDUP_ROUTINE_FIRE_TIMEOUT_MS });
+  phase('launching');
+  await DBOS.launch();
+  phase('launched');
+  try {
   const firstEnqueue = await enqueueBulkDedupRun(sql, {
     workspaceId: ws, harnessSlug: harness, runId: fireRunId, controls: { maxStages: 1, shardConcurrency: 1 },
   });
@@ -234,8 +299,18 @@ try {
   assert.equal(firstEnqueue.enqueued, true);
   const routineId = firstEnqueue.routineId;
   const [originalRoutine] = await sql`SELECT payload_template FROM harness_shared.routines WHERE id = ${routineId}`;
-  await sql`INSERT INTO dbos.workflow_status (workflow_uuid, status, deduplication_id, created_at)
-    VALUES ('bulk-grade-live-workflow', 'PENDING', ${`routine:${routineId}`}, 1)`;
+  const [routine] = await sql`SELECT id, workspace_id AS "workspaceId", install_slug AS "installSlug",
+    target_role AS "targetRole", trigger_config AS "triggerConfig", payload_template AS "payloadTemplate", name
+    FROM harness_shared.routines WHERE id = ${routineId}`;
+  assert.ok(routine);
+  const fireInput = routine as Parameters<typeof enqueueRoutineFire>[0];
+  assert.equal((await enqueueRoutineFire(fireInput)).status, 'enqueued');
+  await awaitEntry(workerEntered, 'first worker');
+  const workflowId = workerIds[0]!;
+  const [liveWorkflow] = await sql`SELECT status, name, inputs FROM dbos.workflow_status WHERE workflow_uuid = ${workflowId}`;
+  assert.equal(liveWorkflow!.status, 'PENDING');
+  assert.equal(liveWorkflow!.name, 'routineFire');
+  assert.equal((await enqueueRoutineFire(fireInput)).status, 'deduplicated');
   const secondEnqueue = await enqueueBulkDedupRun(sql, {
     workspaceId: ws, harnessSlug: harness, runId: fireRunId, controls: { maxStages: 1, shardConcurrency: 1 },
   });
@@ -247,20 +322,59 @@ try {
     assert.equal(refusal.enqueued, false);
     assert.equal(refusal.alreadyRunning, true);
     assert.equal(refusal.reason, 'already_running');
-    assert.equal(refusal.workflowUuid, 'bulk-grade-live-workflow');
+    assert.equal(refusal.workflowUuid, workflowId);
   }
   const [retainedRoutine] = await sql`SELECT payload_template FROM harness_shared.routines WHERE id = ${routineId}`;
   assert.deepEqual(retainedRoutine!.payload_template, originalRoutine!.payload_template);
-  await sql`UPDATE dbos.workflow_status SET status = 'CANCELLED' WHERE workflow_uuid = 'bulk-grade-live-workflow'`;
+  const [retainedWorkflow] = await sql`SELECT inputs FROM dbos.workflow_status WHERE workflow_uuid = ${workflowId}`;
+  assert.equal(retainedWorkflow!.inputs, liveWorkflow!.inputs, 'live serialized input must remain immutable');
+  assert.equal(executions, 1, 'duplicate dispatch must not enter another worker');
+  releaseWorker();
+  await DBOS.getResult(workflowId, 60);
+  const [completedWorkflow] = await sql`SELECT status FROM dbos.workflow_status WHERE workflow_uuid = ${workflowId}`;
+  assert.equal(completedWorkflow!.status, 'SUCCESS');
+  phase('first-success');
+  const operationRows = await sql`SELECT function_name FROM dbos.operation_outputs
+    WHERE workflow_uuid = ${workflowId} ORDER BY function_id`;
+  const durableSteps = operationRows.map((row) => String(row.function_name));
+  assert.ok(durableSteps.some((name) => name.startsWith(`bulk:${fireRunId}:`)), 'bulk phases must have real DBOS checkpoints');
+  const [workerStage] = await sql`SELECT detail->>'status' AS status, detail->'outcome' AS outcome
+    FROM harness_shared.admission_runs WHERE id = ${`${fireRunId}-stage-1`}`;
+  assert.equal(workerStage!.status, 'complete');
+  assert.deepEqual([...workerPairs], ['a::b']);
+  assert.equal(workerStage!.outcome.successful, 1);
+  const modelCallsBeforeRepeat = calls;
+  const terminalRearm = await enqueueBulkDedupRun(sql, {
+    workspaceId: ws, harnessSlug: harness, runId: fireRunId, controls: { maxStages: 1, shardConcurrency: 1 },
+  });
+  assert.equal(terminalRearm.enqueued, true);
+  assert.equal((await enqueueRoutineFire(fireInput)).status, 'enqueued');
+  await awaitEntry(replayEntered, 'terminal replay');
+  const replayWorkflowId = workerIds[1]!;
+  assert.notEqual(replayWorkflowId, workflowId);
+  await DBOS.getResult(replayWorkflowId, 60);
+  phase('replay-success');
+  assert.equal(executions, 2);
+  assert.equal(calls, modelCallsBeforeRepeat, 'completed bulk root must replay its admission receipt without model work');
+  const [repeatedStage] = await sql`SELECT detail->>'status' AS status, detail->'outcome' AS outcome
+    FROM harness_shared.admission_runs WHERE id = ${`${fireRunId}-stage-1`}`;
+  assert.deepEqual(repeatedStage, workerStage, 'terminal rearm must not repeat merges');
   await sql`UPDATE harness_shared.routines SET active = false, next_fire_at = NULL WHERE id = ${routineId}`;
   process.stdout.write('BULK_BACKGROUND_RECEIPT ' + JSON.stringify({
     sourceHash, workspace: ws, home, runtimeRoot: dirname(home), pgPort: server!.port,
     runId: root, candidatePairs: [...candidatePairs].sort(), merged: recovered.stages[0]!.merged, driftRefusals: ledger!.refusals,
     convergenceReason: recovered.convergenceReason, digest: { status: digest.status, sourceCensusRunId: digest.sourceCensusRunId, coverage: digest.coverage },
     reversal: { ...reversal, historyPreserved: true, duplicateLinks: duplicateLinks.length, adjudicationPreserved: true },
-    liveFire: { syntheticWorkflow: true, secondEnqueue: secondEnqueue.reason, rearm: rearm.reason, controlsPreserved: true, cancelled: true },
+    liveFire: { syntheticWorkflow: false, workflowId, secondEnqueue: secondEnqueue.reason, rearm: rearm.reason,
+      controlsPreserved: true, serializedInputsPreserved: true, status: completedWorkflow!.status,
+      executions, terminalReplayWithoutModel: true, merged: workerStage!.outcome.successful, durableSteps },
     pinnedRecompute,
   }) + '\n');
+  } finally {
+    releaseWorker();
+    await DBOS.shutdown();
+    phase('shutdown-complete');
+  }
 } finally {
   await sql.end({ timeout: 5 });
 }

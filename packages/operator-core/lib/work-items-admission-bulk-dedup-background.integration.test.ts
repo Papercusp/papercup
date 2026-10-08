@@ -17,7 +17,13 @@ it.each([false, true])('recovers a guarded partial stage and removes its private
   ], { cwd: root, env: { ...process.env, BULK_BG_EXPECTED_SOURCE_SHA: sourceHash, BULK_BG_INJECT_FAILURE: failingExit ? '1' : '0' }, stdio: ['ignore', 'pipe', 'pipe'] });
   let output = '';
   let errors = '';
-  child.stdout.on('data', (chunk) => { output += String(chunk); });
+  child.stdout.on('data', (chunk) => {
+    const text = String(chunk);
+    output += text;
+    for (const line of text.split('\n')) {
+      if (line.startsWith('BULK_BACKGROUND_WORKER_PHASE ')) console.info(line);
+    }
+  });
   child.stderr.on('data', (chunk) => { errors += String(chunk); });
   try {
     const code = await new Promise<number | null>((done, fail) => {
@@ -38,7 +44,12 @@ it.each([false, true])('recovers a guarded partial stage and removes its private
     expect(receipt.digest).toMatchObject({ status: 'complete', coverage: { live: 3, covered: 3, uncovered: 0 } });
     expect(receipt.convergenceReason).toBe('stage-budget');
     expect(receipt.reversal).toMatchObject({ state: 'open', historyPreserved: true, duplicateLinks: 0, adjudicationPreserved: true });
-    expect(receipt.liveFire).toEqual({ syntheticWorkflow: true, secondEnqueue: 'already_running', rearm: 'already_running', controlsPreserved: true, cancelled: true });
+    expect(receipt.liveFire).toMatchObject({ syntheticWorkflow: false, secondEnqueue: 'already_running',
+      rearm: 'already_running', controlsPreserved: true, serializedInputsPreserved: true,
+      status: 'SUCCESS', executions: 2, terminalReplayWithoutModel: true, merged: 1 });
+    expect(receipt.liveFire.workflowId).toBeTruthy();
+    expect(receipt.liveFire.durableSteps).toContain('routine-fire-start');
+    expect(receipt.liveFire.durableSteps.some((name: string) => name.startsWith('bulk:bulk-grade-live-fire-rehearsal:'))).toBe(true);
     expect(receipt.pinnedRecompute).toEqual({ sourceCensusRunId: 'bulk-background-acceptance-census-0', before: 2, after: 1, retiredByStage: 1 });
     expect(existsSync(receipt.runtimeRoot)).toBe(false);
     const dataDir = output.match(/datadir ([^)\n]+)/)?.[1];
