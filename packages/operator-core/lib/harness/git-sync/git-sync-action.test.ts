@@ -3203,6 +3203,14 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
       expect(returned).toBe(false);
       expect(releasedResources()).toEqual([]);
       expect(heartbeatStopped).toBe(false);
+      // EI-25430105870893148: the deadline aborts the child but is not an
+      // exit receipt. An inactive marker makes routines:list report idle and
+      // safe_to_restart while this same child still holds repository leases.
+      expect(gitSyncActivityPatches().at(-1)).toMatchObject({
+        active: true,
+        phase: 'error',
+        completed_at: null,
+      });
       const acquisitions = acquiredResources().length;
       heartbeat();
       await Promise.resolve();
@@ -3212,6 +3220,8 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
       expect(await running).toBeInstanceOf(GitSyncActionTimeoutError);
       expect(releasedResources()).toEqual(['libs-papercusp-submodule', 'git-sync:papercup', 'git-sync']);
       expect(heartbeatStopped).toBe(true);
+      expect(gitSyncActivityPatches().at(-1)).toMatchObject({ active: false, phase: 'error' });
+      expect(gitSyncActivityPatches().at(-1)?.completed_at).toBeTypeOf('number');
     } finally {
       finishChild?.();
       await running;

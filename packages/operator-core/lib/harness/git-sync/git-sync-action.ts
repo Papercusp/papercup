@@ -3652,6 +3652,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
   // block can race: whichever notices expiry first must stop the heartbeat before
   // releasing the leases, while a late callback must never release a second time.
   let lockCleanup: Promise<void> | null = null;
+  let timeoutAwaitingGitExit = false;
   const cleanupLocks = (): Promise<void> => {
     if (lockCleanup) return lockCleanup;
     lockCleanup = (async () => {
@@ -3684,6 +3685,24 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
               }`,
             );
           }
+          if (timeoutAwaitingGitExit) {
+            // EI-25430105870893148: the timeout is an abort request, not a
+            // child-exit receipt. Publish terminal activity only after the
+            // tracked Git work settles, while this fire still owns its leases.
+            // The activity queue keeps this after the initial timeout marker.
+            timeoutAwaitingGitExit = false;
+            const completedAt = Date.now();
+            await writeActivity({
+              active: false,
+              phase: 'error',
+              started_at: activityStartedAt,
+              updated_at: completedAt,
+              completed_at: completedAt,
+              outcome_status: null,
+            }).catch((error) => {
+              console.warn(`[git-sync] ${slug}: could not record Git exit after timeout: ${String(error)}`);
+            });
+          }
           if (lock.state === 'acquired') {
             try {
               await releaseAll(cd, lockOwner, acquired);
@@ -3708,6 +3727,8 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
     // The marker writer shares the same queue, so an already-started heartbeat
     // lands first and a queued-but-not-started heartbeat sees the terminal fence.
     activityTerminal = true;
+    timeoutAwaitingGitExit = activeGitExecutions.size > 0;
+    const awaitingGitExit = timeoutAwaitingGitExit;
     const failedAt = Date.now();
     timeoutActivity = enqueueActivityWrite(() =>
       patchRoutineMetadata(slug, workspaceId, {
@@ -3716,11 +3737,11 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
         last_error: error.message,
         last_errors: [`git-sync action timeout (${error.timeoutKind}) during ${error.phase}`],
         git_sync_activity: withActivityOwner({
-          active: false,
+          active: awaitingGitExit,
           phase: 'error',
           started_at: activityStartedAt,
           updated_at: failedAt,
-          completed_at: failedAt,
+          completed_at: awaitingGitExit ? null : failedAt,
           outcome_status: null,
         }),
       }),
