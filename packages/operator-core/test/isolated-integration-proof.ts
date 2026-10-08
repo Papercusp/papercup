@@ -10,37 +10,100 @@ import { join } from 'node:path';
 import { defaultEvidenceRoot, runHarness } from '@papercusp/verification-harness';
 import { linuxPpidFromProcStat, readProcessIdentity } from '../lib/process-identity';
 import { it } from 'vitest';
+// @ts-ignore -- reuse the maintained JS router's deadline contract.
+import { testFileListTimeoutMs, testFileRunTimeoutMs, MAX_TEST_FILE_RUN_TIMEOUT_MS, TEST_FILE_KILL_GRACE_MS, TEST_FILE_SCOPE_STOP_TIMEOUT_SEC } from '../../../scripts/test-files.mjs';
+// @ts-ignore -- same progress watchdog used by that router.
+import { createProgressAwareWatchdog } from '../../../scripts/lib/batch-watchdog.mjs';
 
 /** Shared with the cheap context guard so the expensive fixture uses the tested API. */
 export const isolatedIntegrationCases = it.for([false, true]);
+
+type WorkerPhase = 'bootstrap' | 'execute' | 'teardown';
+type WorkerDeadlines = { bootstrapMs: number; executeMs: number; teardownMs: number; executeMaxMs?: number };
+
+/** Compose the actual nested router contract; startup consumes none of its
+ * collection/execution allowance. Teardown allows the router's cgroup stop,
+ * the private API's five-second stop, and thirty seconds for PG/removal.
+ * The latter is a bound, never evidence that cleanup actually succeeded.
+ */
+export function isolatedWorkerOptions(executeMs: number, env: NodeJS.ProcessEnv = process.env, executeMaxMs = executeMs) {
+  const listMs = testFileListTimeoutMs(env);
+  const teardownMs = TEST_FILE_SCOPE_STOP_TIMEOUT_SEC * 1000 + 5_000 + 30_000;
+  const phaseTimeouts: WorkerDeadlines = {
+    bootstrapMs: listMs,
+    executeMs,
+    executeMaxMs,
+    teardownMs,
+  };
+  return { phaseTimeouts, killGraceMs: teardownMs, drainGraceMs: 5_000,
+    testTimeoutMs: phaseTimeouts.bootstrapMs + phaseTimeouts.executeMaxMs! + 2 * teardownMs + 20_000 };
+}
+
+export function isolatedTestFileWorkerOptions(env: NodeJS.ProcessEnv, fileCount: number) {
+  const listMs = testFileListTimeoutMs(env);
+  return isolatedWorkerOptions(listMs + testFileRunTimeoutMs(env, fileCount) + TEST_FILE_KILL_GRACE_MS,
+    env, listMs + MAX_TEST_FILE_RUN_TIMEOUT_MS + TEST_FILE_KILL_GRACE_MS);
+}
 
 /** Retain original output before termination can interrupt the fixture. A
  * descendant holding stdio must not turn a completed supervisor into a wait
  * without a deadline. Failure receipts never stand in for successful cleanup.
  */
 export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, options: {
-  timeoutMs: number; killGraceMs?: number;
+  timeoutMs?: number; phaseTimeouts?: WorkerDeadlines; killGraceMs?: number; drainGraceMs?: number;
 }) {
+  assert.ok((options.timeoutMs === undefined) !== (options.phaseTimeouts === undefined), 'one deadline contract is required');
+  const deadlines = options.phaseTimeouts;
+  for (const ms of [options.timeoutMs, ...Object.values(deadlines ?? {}), options.killGraceMs, options.drainGraceMs]) {
+    assert.ok(ms === undefined || Number.isSafeInteger(ms) && ms > 0, 'deadlines must be positive safe integers');
+  }
+  assert.ok(!deadlines || !deadlines.executeMaxMs || deadlines.executeMaxMs >= deadlines.executeMs);
   const fd = openSync(join(evidenceDir, 'worker.log'), 'wx');
-  const grace = options.killGraceMs ?? 5_000;
+  const grace = options.killGraceMs ?? TEST_FILE_SCOPE_STOP_TIMEOUT_SEC * 1000 + 5_000 + 30_000;
+  const drainGrace = options.drainGraceMs ?? options.killGraceMs ?? 5_000;
   let output = '';
   let timedOut = false;
+  let phase: WorkerPhase = 'bootstrap';
+  let timeoutPhase: WorkerPhase | null = null;
+  let exitWaitTimedOut = false;
   let stdioDrainTimedOut = false;
-  const capture = (chunk: Buffer) => { output += String(chunk); writeSync(fd, chunk); };
-  const message = (value: unknown) => appendFileSync(join(evidenceDir, 'runtime-events.ndjson'), JSON.stringify(value) + '\n');
-  child.stdout?.on('data', capture);
-  child.stderr?.on('data', capture);
-  child.on('message', message);
   return new Promise<{ code: number | null; signal: NodeJS.Signals | null; timedOut: boolean;
-    stdioDrainTimedOut: boolean; output: string }>((resolve, reject) => {
+    timeoutPhase: WorkerPhase | null; exitWaitTimedOut: boolean; stdioDrainTimedOut: boolean; output: string }>((resolve, reject) => {
     let settled = false;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    let progressWatchdog: ReturnType<typeof createProgressAwareWatchdog> | undefined;
     let forceTimer: ReturnType<typeof setTimeout> | undefined;
+    let exitWaitTimer: ReturnType<typeof setTimeout> | undefined;
     let drainTimer: ReturnType<typeof setTimeout> | undefined;
+    const capture = (chunk: Buffer) => {
+      output += String(chunk); writeSync(fd, chunk);
+      progressWatchdog?.noteProgress();
+    };
+    const armPhase = (next: WorkerPhase) => {
+      clearTimeout(timeout);
+      progressWatchdog?.stop();
+      phase = next;
+      const ms = deadlines![next === 'bootstrap' ? 'bootstrapMs' : next === 'execute' ? 'executeMs' : 'teardownMs'];
+      if (next === 'execute' && deadlines!.executeMaxMs) {
+        progressWatchdog = createProgressAwareWatchdog({ timeoutMs: ms, maxMs: deadlines!.executeMaxMs,
+          stallWindowMs: 5 * 60_000, extensionMs: 5 * 60_000, onKill: terminate });
+      } else timeout = setTimeout(terminate, ms);
+    };
+    const message = (value: unknown) => {
+      appendFileSync(join(evidenceDir, 'runtime-events.ndjson'), JSON.stringify(value) + '\n');
+      if (!deadlines || timedOut || !value || typeof value !== 'object') return;
+      const kind = (value as { kind?: string }).kind;
+      // Repeated or out-of-order IPC cannot renew a phase's deadline.
+      if (kind === 'isolated-runtime-start' && phase === 'bootstrap') armPhase('execute');
+      else if ((kind === 'isolated-runtime-stopping' || kind === 'isolated-runtime-end') && phase === 'execute') armPhase('teardown');
+    };
     const finish = (error?: Error) => {
       if (settled) return;
       settled = true;
       clearTimeout(timeout);
+      progressWatchdog?.stop();
       clearTimeout(forceTimer);
+      clearTimeout(exitWaitTimer);
       clearTimeout(drainTimer);
       child.stdout?.off('data', capture);
       child.stderr?.off('data', capture);
@@ -49,7 +112,7 @@ export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, 
       child.off('close', onClose);
       child.off('error', onError);
       closeSync(fd);
-      const result = { code: child.exitCode, signal: child.signalCode, timedOut, stdioDrainTimedOut };
+      const result = { code: child.exitCode, signal: child.signalCode, timedOut, timeoutPhase, exitWaitTimedOut, stdioDrainTimedOut };
       writeFileSync(join(evidenceDir, 'worker-result.json'), JSON.stringify({ ...result, error: error?.message ?? null }), { flag: 'wx' });
       if (error) reject(error);
       else resolve({ ...result, output });
@@ -61,22 +124,36 @@ export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, 
       if (child.connected) child.disconnect();
       finish();
     };
-    const onExit = () => { drainTimer = setTimeout(stopDraining, grace); };
+    const onExit = () => {
+      clearTimeout(timeout); progressWatchdog?.stop(); clearTimeout(forceTimer); clearTimeout(exitWaitTimer); clearTimeout(drainTimer);
+      drainTimer = setTimeout(stopDraining, drainGrace);
+    };
     const onClose = () => finish();
     const onError = (error: Error) => finish(error);
-    const timeout = setTimeout(() => {
+    const terminate = () => {
+      if (timedOut || settled) return;
       timedOut = true;
+      timeoutPhase = phase;
       child.kill('SIGTERM');
       forceTimer = setTimeout(() => {
         if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
-        // Also bound pipe drainage if a startup orphan retained the supervisor's
-        // descriptors. Its missing cleanup remains a failed proof.
-        drainTimer = setTimeout(stopDraining, grace);
+        // Pipe drainage begins at observed exit, not when a signal was merely
+        // sent. Otherwise a delayed kernel exit loses its actual signal/code.
+        // Keep non-acknowledgement bounded and explicitly uncertified.
+        exitWaitTimer = setTimeout(() => {
+          exitWaitTimedOut = true;
+          stopDraining();
+        }, TEST_FILE_SCOPE_STOP_TIMEOUT_SEC * 1000);
       }, grace);
-    }, options.timeoutMs);
+    };
+    child.stdout?.on('data', capture);
+    child.stderr?.on('data', capture);
+    child.on('message', message);
     child.once('exit', onExit);
     child.once('close', onClose);
     child.once('error', onError);
+    if (deadlines) armPhase('bootstrap');
+    else timeout = setTimeout(terminate, options.timeoutMs);
   });
 }
 

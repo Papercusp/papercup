@@ -5,18 +5,20 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { expect } from 'vitest';
-import { isolatedIntegrationCases, recordIsolatedIntegrationProof } from '../test/isolated-integration-proof';
+import { captureIsolatedWorker, isolatedIntegrationCases, isolatedWorkerOptions, recordIsolatedIntegrationProof } from '../test/isolated-integration-proof';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
+const workerOptions = isolatedWorkerOptions(390_000);
 
-isolatedIntegrationCases('recovers a guarded partial stage and removes its private runtime (failing exit: %s)', async (failingExit, context) => {
+isolatedIntegrationCases('recovers a guarded partial stage and removes its private runtime (failing exit: %s)', { timeout: workerOptions.testTimeoutMs }, async (failingExit, context) => {
   const runId = await recordIsolatedIntegrationProof({ root,
     filePath: 'packages/operator-core/lib/work-items-admission-bulk-dedup-background.integration.test.ts',
     sourcePaths: ['packages/operator-core/lib/work-items-admission-bulk-dedup.ts',
       'packages/operator-core/lib/work-items-admission-promoter.ts',
       'packages/operator-core/test/_bulk-dedup-background-child.ts', 'packages/operator-core/test/isolated-integration-proof.ts',
-      'packages/operator-core/lib/process-identity.ts', 'scripts/with-test-pg.mjs'],
-    execute: async observe => {
+      'packages/operator-core/lib/process-identity.ts', 'scripts/with-test-pg.mjs',
+      'scripts/test-files.mjs', 'scripts/lib/batch-watchdog.mjs'],
+    execute: async (observe, evidenceDir) => {
   const source = resolve(root, 'packages/operator-core/lib/work-items-admission-bulk-dedup.ts');
   const sourceHash = createHash('sha256').update(readFileSync(source)).digest('hex');
   const child = spawn(process.execPath, [
@@ -24,23 +26,18 @@ isolatedIntegrationCases('recovers a guarded partial stage and removes its priva
     process.execPath, '--import', 'tsx', resolve(root, 'packages/operator-core/test/_bulk-dedup-background-child.ts'),
   ], { cwd: root, env: { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', BULK_BG_EXPECTED_SOURCE_SHA: sourceHash, BULK_BG_INJECT_FAILURE: failingExit ? '1' : '0' }, stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
   observe(child);
-  let output = '';
-  let errors = '';
-  child.stdout.on('data', (chunk) => {
+  child.stdout!.on('data', (chunk) => {
     const text = String(chunk);
-    output += text;
     for (const line of text.split('\n')) {
       if (line.startsWith('BULK_BACKGROUND_WORKER_PHASE ')) console.info(line);
     }
   });
-  child.stderr.on('data', (chunk) => { errors += String(chunk); });
   try {
-    const code = await new Promise<number | null>((done, fail) => {
-      child.once('error', fail);
-      child.once('exit', done);
-    });
-    expect(code, JSON.stringify({ stderrTail: errors.slice(-6_000), stdoutTail: output.slice(-2_000) })).toBe(failingExit ? 23 : 0);
-    if (failingExit) expect(errors).toContain('BULK_BACKGROUND_INJECT_FAILURE');
+    const result = await captureIsolatedWorker(child, evidenceDir, workerOptions);
+    const output = result.output;
+    const code = result.code;
+    expect(result, output.slice(-12_000)).toMatchObject({ code: failingExit ? 23 : 0, signal: null, timedOut: false, exitWaitTimedOut: false, stdioDrainTimedOut: false });
+    if (failingExit) expect(output).toContain('BULK_BACKGROUND_INJECT_FAILURE');
     const line = output.split('\n').find((row) => row.startsWith('BULK_BACKGROUND_RECEIPT '));
     expect(line, output.slice(-8_000)).toBeTruthy();
     const receipt = JSON.parse(line!.slice('BULK_BACKGROUND_RECEIPT '.length));
@@ -70,4 +67,4 @@ isolatedIntegrationCases('recovers a guarded partial stage and removes its priva
   }
   } });
   Object.assign(context.task.meta, { papercuspIsolatedRuntimeRunId: runId });
-}, 420_000);
+});

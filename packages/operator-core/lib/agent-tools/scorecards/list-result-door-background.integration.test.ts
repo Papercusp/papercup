@@ -5,9 +5,10 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { expect, it } from 'vitest';
-import { recordIsolatedIntegrationProof } from '../../../test/isolated-integration-proof';
+import { captureIsolatedWorker, isolatedWorkerOptions, recordIsolatedIntegrationProof } from '../../../test/isolated-integration-proof';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../..');
+const workerOptions = isolatedWorkerOptions(450_000);
 const filePath = 'packages/operator-core/lib/agent-tools/scorecards/list-result-door-background.integration.test.ts';
 const sourcePaths = [
   filePath,
@@ -21,6 +22,8 @@ const sourcePaths = [
   'packages/operator-core/test/_scorecards-list-result-door-child.ts',
   'packages/operator-core/test/isolated-integration-proof.ts',
   'scripts/with-test-pg.mjs',
+  'scripts/test-files.mjs',
+  'scripts/lib/batch-watchdog.mjs',
 ];
 
 const sha256 = (path: string) =>
@@ -32,7 +35,7 @@ it('spills and reads back a real 100-row scorecards:list result in a private iso
     root,
     filePath,
     sourcePaths,
-    execute: async (observe) => {
+    execute: async (observe, evidenceDir) => {
       const child = spawn(process.execPath, [
         resolve(root, 'scripts/with-test-pg.mjs'),
         '--isolated-runtime',
@@ -52,23 +55,17 @@ it('spills and reads back a real 100-row scorecards:list result in a private iso
       });
       observe(child);
 
-      let output = '';
-      let errors = '';
-      child.stdout.on('data', (chunk) => {
+      child.stdout!.on('data', (chunk) => {
         const text = String(chunk);
-        output += text;
         for (const line of text.split('\n')) {
           if (line.startsWith('SCORECARDS_LIST_RESULT_DOOR_RECEIPT ')) console.info(line);
         }
       });
-      child.stderr.on('data', (chunk) => { errors = (errors + String(chunk)).slice(-12_000); });
 
       try {
-        const code = await new Promise<number | null>((done, fail) => {
-          child.once('error', fail);
-          child.once('exit', done);
-        });
-        expect(code, JSON.stringify({ stderrTail: errors, stdoutTail: output.slice(-6_000) })).toBe(0);
+        const result = await captureIsolatedWorker(child, evidenceDir, workerOptions);
+        const output = result.output;
+        expect(result, output.slice(-12_000)).toMatchObject({ code: 0, signal: null, timedOut: false, exitWaitTimedOut: false, stdioDrainTimedOut: false });
         const line = output.split('\n').find((row) => row.startsWith('SCORECARDS_LIST_RESULT_DOOR_RECEIPT '));
         expect(line, output.slice(-8_000)).toBeTruthy();
         const receipt = JSON.parse(line!.slice('SCORECARDS_LIST_RESULT_DOOR_RECEIPT '.length));
@@ -115,4 +112,4 @@ it('spills and reads back a real 100-row scorecards:list result in a private iso
     },
   });
   Object.assign(context.task.meta, { papercuspIsolatedRuntimeRunId: runId });
-}, 480_000);
+}, workerOptions.testTimeoutMs);
