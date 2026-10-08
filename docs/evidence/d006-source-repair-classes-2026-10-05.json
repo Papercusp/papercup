@@ -6,8 +6,8 @@
   "population": {
     "failedFiles": 124,
     "repairedFocused": 33,
-    "repairedPeerFocused": 17,
-    "openUnknown": 74
+    "repairedPeerFocused": 18,
+    "openUnknown": 73
   },
   "classes": {
     "assertion": 55,
@@ -2210,8 +2210,8 @@
     {
       "path": "packages/operator-core/lib/fleet/hive-roster.integration.test.ts",
       "class": "unclassified",
-      "state": "open-unknown",
-      "item": "WI-10006170",
+      "state": "repaired-peer-focused",
+      "item": "WI-10006194",
       "lines": [
         13482,
         13500
@@ -2226,7 +2226,47 @@
         "root": "/tmp/papercusp-lint-as-committed-54c6f7604a-I4I82x",
         "startedAt": "2026-10-06T00:16:37.067Z"
       },
-      "latestReceiptMeaning": "Observed focused result only; causal repair attribution and complete current source/import/environment assurance remain unknown."
+      "latestReceiptMeaning": "Qualified historical focused repair. Stored clean, non-scratch local receipt and current named test-byte equality do not establish complete current source/import/environment or final D006 assurance.",
+      "registeredRepairItem": "WI-10006194",
+      "terminalRepairOwner": "su-7a94555d-4fbb-42b8-a39d-ff28fade9e0f",
+      "completionAuthority": "committed",
+      "repairStage": "inherited-committed-fixture-repair-qualified-historical-focused",
+      "diagnosis": "The original shared baseline fixture inserted HR-TEST-1 and HR-TEST-2 into demo/default without registering a real demo Pot. The active membership trigger correctly rejected both writes before roster folding. The existing repair uses the maintained caller-owned migrated OrgTestDb and coordination DSN seam, registers real platform/demo Pots, and retains reader scope and all four original cases.",
+      "peerTestRun": 20793752,
+      "passed": 5,
+      "skipped": 0,
+      "receiptExitCode": 0,
+      "testSha256": "bbdd3f4fdf0694894dae40d5459648cfd4874b0ef9232786947b4ec9756a289e",
+      "runStartCommittedTestSha256": "8c2f388c7cbef6f8226c7904f3c204e572d0d3c0931899fd056f72d4364980c6",
+      "namedTestEquality": "Current named bytes equal committed 54c6f7604a/20793752. The run-start commit d2a53e1154 and repair predecessor both have the recorded different original fixture bytes; complete original loaded-source identity remains unknown.",
+      "fixtureRepairCommit": "4fe82660159a65bb0f258ce9e68dea2e2c749732",
+      "committedContentRef": "54c6f7604a2462fe28b85cff05f3aa894dd1b45d",
+      "focusedLog": "/tmp/cloud-tutorial-wi6194-6195-clean-54c6f760.log",
+      "focusedLogSha256": "f631a0e971af22a80d1c98e7c8e731e64408502c7b71e8b60da307e1c14fe000",
+      "originalFailureRef": "local-state:verification-harness/goal-report-d006/1307302-b9c3dd76/affected-tests.log",
+      "originalFailureSha256": "43cf66489baf7cf665a9746d097375cffc7cdc6262014929c3cc398155b579f4",
+      "recurrenceGuard": "Conventional real-PG integration case rejects an unregistered Pot while the four original scope, identity, claims, work-detail and snapshot cases pass with real registered Pots. Production membership enforcement remains active.",
+      "causalVerification": {
+        "hypothesis": "The shared baseline fixture seeds demo without a real Pot while membership guard652 is active, so setup writes fail before roster folding.",
+        "alternativeHypothesis": "The roster reader cannot fold valid presence and claims even when seeded in a correctly registered Pot.",
+        "distinguishingTest": "Run unchanged roster fold and snapshot assertions in a caller-owned migrated database with real platform/demo Pots, and attempt an unregistered Pot insertion.",
+        "predictedObservations": {
+          "hypothesis": "Valid Pot seeding makes fold and snapshot pass while invalid Pot insertion remains rejected.",
+          "alternativeHypothesis": "Valid Pot insertion succeeds but roster fold or snapshot assertions still fail."
+        },
+        "actualObservation": "Original archived failures at lines13482/13500 and the owner's before log report demo/default membership rejection at seedWorkItem. Stored clean committed run20793752 passes all five roster cases, including invalid-Pot rejection; the combined log records seven total passes, zero skips and exit0.",
+        "testResult": "Roster5PASS/0skip, clean local non-scratch committed54c6f7604a. Historical focused fixture proof only.",
+        "testProcedure": "PAPERCUSP_TEST_RUN_HARNESS=papercusp PAPERCUSP_TEST_FILE_TIMEOUT_MS=300000 npm run lint:as-committed -- test:file --any --ref=54c6f7604a2462fe28b85cff05f3aa894dd1b45d -- packages/operator-core/lib/dream/dream-sink.integration.test.ts packages/operator-core/lib/fleet/hive-roster.integration.test.ts",
+        "evidenceRefs": [
+          "WI-10006194#completion.rootCauseVerification",
+          "test-run:20793752",
+          "/tmp/cloud-tutorial-parent-dream-roster-current.log",
+          "/tmp/cloud-tutorial-wi6194-6195-clean-54c6f760.log",
+          "commit:4fe82660159a65bb0f258ce9e68dea2e2c749732"
+        ]
+      },
+      "completeImportGraphCurrentness": "unknown",
+      "sourceEqualityScope": "Named test bytes only. Original/current loaded imports, config, main process, subprocesses, native dependencies and environment remain UNKNOWN; no test was rerun or terminal repair reclosed during this qualification."
     },
     {
       "path": "packages/operator-core/lib/agent-tools/harness/__tests__/create-atomic-registry.integration.test.ts",
@@ -2853,17 +2893,21 @@
         "causalVerification": "not-run; no controlled failed/passing fixture-lifecycle execution or source repair in this lane",
         "disposition": "Existing open federation issue includes this warning. Legacy EI-10726 is resolved without committed completion authority and describes hook/store errors, so it is not closure evidence for the pool-rebind warning. One of ten console-guard files investigated; no census state or population count changed."
       },
-      "countCorrection": "Four original console-guard rows retained: delegated-tasks, dock-layouts and sidecar-exec-lifetime are qualified historical repaired-focused; join-hive is repaired-peer-focused. Delegated schema controls are recorded on its row, and full original/import/environment equality remains unverified. Population33 focused,17 peer focused,74 UNKNOWN classifies historical dispositions, not current full-source readiness."
+      "countCorrection": "Four original console-guard rows retained: delegated-tasks, dock-layouts and sidecar-exec-lifetime are qualified historical repaired-focused; join-hive is repaired-peer-focused. Delegated schema controls are recorded on its row, and full original/import/environment equality remains unverified. Population33 focused,18 peer focused,73 UNKNOWN classifies historical dispositions, not current full-source readiness."
     },
     {
       "class": "unclassified",
       "count": 6,
-      "status": "open-unknown",
+      "status": "partially-repaired-focused",
+      "stateCounts": {
+        "repaired-peer-focused": 1,
+        "open-unknown": 5
+      },
       "item": "WI-10006170",
       "owner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
       "scope": "diagnosis-and-placement",
-      "rootCause": "unproved",
-      "next": "Inspect exact saved error/source, deduplicate accepted defect and focused guard before source edits."
+      "rootCause": "Hive-roster's historical demo/default membership rejection is covered by committed WI-10006194, real registered-Pot fixtures and a retained invalid-Pot guard. Five other original unclassified files remain unproved; original class membership is preserved.",
+      "next": "Retain roster20793752 clean focused5PASS/0skip and named-byte equality only. Diagnose the five remaining unclassified files from their exact archived errors and existing repair records; complete source/import/environment and final D006 assurance remain unverified."
     },
     {
       "class": "plan-observation-fixture",
