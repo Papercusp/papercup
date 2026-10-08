@@ -2091,8 +2091,8 @@ export default defineTool({
         // proxy — so advice and refusal cannot disagree. Best-effort; unknown ⇒ null.
         let selfCompactionAvailable: boolean | null = null;
         try {
-          const { selfCompactionAvailability } = await import('../../events/await/psu-pty-discovery');
-          selfCompactionAvailable = selfCompactionAvailability(ownerId).available;
+          const { selfCompactionAvailabilityAsync } = await import('../../events/await/psu-pty-discovery');
+          selfCompactionAvailable = (await selfCompactionAvailabilityAsync(ownerId)).available;
         } catch {
           selfCompactionAvailable = null;
         }

@@ -23,7 +23,7 @@ import {
 
 import { getAdvSession } from './adv-sessions';
 import {
-  findLiveHost,
+  findLiveHostAsync,
   injectIntoHostWithConfirmation,
   interruptViaPty,
   shutdownViaPty,
@@ -139,7 +139,7 @@ export interface ResolveCodexSuRuntimeDeps {
   getSession?: typeof getAdvSession;
   findRolloutPath?: typeof findCodexRolloutPath;
   findLiveThreadId?: typeof findCodexLiveThreadId;
-  findHost?: typeof findLiveHost;
+  findHost?: typeof findLiveHostAsync | ((ownerId: string) => ReturnType<typeof findLiveHostAsync> | null);
 }
 
 /**
@@ -157,7 +157,7 @@ export async function resolveCodexSuRuntime(
 ): Promise<CodexSuRuntimeBinding | null> {
   if (binding.backend !== 'codex') return null;
   const findPath = deps.findRolloutPath ?? findCodexRolloutPath;
-  const host = binding.ownerId ? (deps.findHost ?? findLiveHost)(binding.ownerId) : null;
+  const host = binding.ownerId ? await (deps.findHost ?? findLiveHostAsync)(binding.ownerId) : null;
   const returnedHandle =
     binding.nativeSession?.backend === 'codex' ? materializedCodexHandle(binding.nativeSession) : null;
   if (returnedHandle) {
@@ -208,7 +208,7 @@ function refused(code: string, message: string, retryable = true): Exclude<Codex
 function defaultControls(): CodexSuSessionControls {
   return {
     async ownerTurn({ ownerId, content }) {
-      const host = findLiveHost(ownerId);
+      const host = await findLiveHostAsync(ownerId);
       if (!host) return refused('runtime_unavailable', 'Codex has no live managed-PTY host');
       const delivered = await injectIntoHostWithConfirmation(host.sock, {
         mode: 'turn',
@@ -250,7 +250,7 @@ function defaultControls(): CodexSuSessionControls {
       // Resume of a still-attached runtime is an interaction-state transition.
       // Re-launch/reconciliation after process loss belongs to P-004 and calls
       // replaceRuntime once the exact rollout has been resumed.
-      return findLiveHost(ownerId)
+      return (await findLiveHostAsync(ownerId))
         ? { ok: true }
         : refused(
             'runtime_reconciliation_required',

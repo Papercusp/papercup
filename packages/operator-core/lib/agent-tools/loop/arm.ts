@@ -65,7 +65,7 @@ import { getSessionBrief } from '../../session-brief';
 import { lintCarrySurfaceProvenance } from '../../carry-surface-provenance-lint';
 import { acceptancePlaneAdvisoryForWait, mainWaitPlanReviewForWait } from '../../acceptance-runtime-wait-guard';
 import { getLoopCarryNoteWithMeta } from '../../carry-note';
-import { selfCompactionAvailability } from '../../events/await/psu-pty-discovery';
+import { selfCompactionAvailabilityAsync } from '../../events/await/psu-pty-discovery';
 import {
   admitMonitorArm,
   monitorPredicateDedupRefusal,
@@ -1509,7 +1509,7 @@ export default defineTool({
     let coldCarryNoHostWarning: string | null = null;
     if (carry === 'cold') {
       try {
-        const availability = selfCompactionAvailability(ownerId);
+        const availability = await selfCompactionAvailabilityAsync(ownerId);
         if (!availability.available) {
           coldCarryNoHostWarning =
             `This loop is armed COLD, but this session has no live psu-pty host able to carry-respawn it ` +

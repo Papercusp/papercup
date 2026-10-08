@@ -31,7 +31,7 @@ import {
   type SelectedIdentityPin,
 } from './su-persona-render';
 import { requestSessionIdentityActivationInTransaction } from './agent-tools/coordination/control-anchor';
-import { findLiveHost, injectIntoHost } from './events/await/psu-pty-discovery';
+import { findLiveHostAsync, injectIntoHost } from './events/await/psu-pty-discovery';
 import { tagTurnForInjection } from './turn-provenance/turn-provenance';
 
 const HISTORY_LIMIT = IDENTITY_HISTORY_LIMIT;
@@ -469,7 +469,7 @@ async function nudgeOwner(
   delivery: MutationDelivery | null,
 ): Promise<{ queued: boolean; reason: string | null }> {
   if (!delivery) return { queued: false, reason: null };
-  const host = findLiveHost(ownerId);
+  const host = await findLiveHostAsync(ownerId);
   if (!host)
     return {
       queued: false,

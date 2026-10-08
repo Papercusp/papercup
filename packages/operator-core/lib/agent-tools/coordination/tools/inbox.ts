@@ -75,7 +75,7 @@ import { readPriorRespawnOutcome, lostRespawnAmbientLine } from "../../../carry-
 import { classifyStaleClaims, renderFlushGateLine, FLUSH_GATE_PCT } from "./inbox-flush-gate";
 import { currentContextTokensForOwner } from "../../../compaction-usage";
 import { getContextUsage } from "../../../system-health/context-usage-cache";
-import { selfCompactionAvailability } from "../../../events/await/psu-pty-discovery";
+import { selfCompactionAvailabilityAsync } from "../../../events/await/psu-pty-discovery";
 import { listActiveClaimFreshnessForOwner } from "../../../work-item-claims";
 import { activeWorkspaceId } from "../../../workspace-registry";
 import { cachedRead, type CachedReadCtx } from "../../../cache";
@@ -1680,7 +1680,7 @@ export default defineTool({
       // guaranteed `no_live_pty_host` refusal.
       const selfCompactionAvailable =
         pct != null && pct >= CONTEXT_GAUGE_LOUD_PCT
-          ? selfCompactionAvailability(identity.ownerId).available
+          ? (await selfCompactionAvailabilityAsync(identity.ownerId)).available
           : null;
       let fleetWindDownLoopEndAuthorized: boolean | null = null;
       const authorizationWorkspaceId =

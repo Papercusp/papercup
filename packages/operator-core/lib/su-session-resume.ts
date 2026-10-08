@@ -19,7 +19,7 @@ import {
   readSuLaunchSpecByOwner, releaseAdvSessionResume, setAdvSessionPid,
 } from './adv-sessions';
 import { buildConsoleEnvelope } from './console-launcher';
-import { findLiveHost } from './events/await/psu-pty-discovery';
+import { findLiveHostAsync } from './events/await/psu-pty-discovery';
 import type { BootstrapSuResult } from './endpoint-route/routes/agent-mcp/bootstrap-su';
 import type { PuiSuSessionBinding } from './launch-agent';
 import { resolveSpawnHostOperatorBaseUrl } from './mcp-base-url';
@@ -72,7 +72,7 @@ export async function prepareStructuredSuResume(record: DurableSuSessionRecord,
     configDir: native.backend === 'claude' ? native.configDir : undefined,
     codexHome: native.backend === 'codex' ? native.codexHome : undefined };
   stage?.('resume-local-liveness');
-  let liveHost = findLiveHost(record.ownerId);
+  let liveHost = await findLiveHostAsync(record.ownerId);
   if (liveHost) throw new Error('This session still has a live host; reconnect to that process');
   if (row.pid) {
     try { process.kill(row.pid, 0); throw new Error('The saved native process is still alive'); }
@@ -89,7 +89,7 @@ export async function prepareStructuredSuResume(record: DurableSuSessionRecord,
       await sleep(Math.min(250, Math.max(0, deadline - Date.now())));
       processHolder = sessionProcessHolder(nativeId);
     }
-    liveHost = findLiveHost(record.ownerId);
+    liveHost = await findLiveHostAsync(record.ownerId);
     if (liveHost) throw new Error('This session gained a live host while waiting for its native process to exit');
   }
   const writerHolder = native.backend === 'codex' ? codexThreadWriterHolder(native.codexHome, nativeId) : null;

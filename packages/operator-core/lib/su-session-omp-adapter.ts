@@ -23,7 +23,7 @@ import {
 
 import { getAdvSession } from './adv-sessions';
 import {
-  findLiveHost,
+  findLiveHostAsync,
   injectIntoHostWithConfirmation,
   interruptViaPty,
   shutdownViaPty,
@@ -175,7 +175,7 @@ function refused(code: string, message: string, retryable = true): Exclude<OmpNa
 function defaultControls(): OmpSuSessionControls {
   return {
     async ownerTurn({ ownerId, content }) {
-      const host = findLiveHost(ownerId);
+      const host = await findLiveHostAsync(ownerId);
       if (!host) return refused('runtime_unavailable', 'OMP has no live managed-PTY host');
       const delivered = await injectIntoHostWithConfirmation(host.sock, { mode: 'turn', data: content, ownerId });
       if (!delivered.ok) {
@@ -198,7 +198,7 @@ function defaultControls(): OmpSuSessionControls {
         : refused('interrupt_unavailable', 'OMP runtime could not be interrupted');
     },
     async resume({ ownerId }) {
-      return findLiveHost(ownerId)
+      return (await findLiveHostAsync(ownerId))
         ? { ok: true }
         : refused(
             'runtime_reconciliation_required',

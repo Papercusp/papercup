@@ -24,7 +24,7 @@ import {
 
 import { getAdvSession } from './adv-sessions';
 import {
-  findLiveHost,
+  findLiveHostAsync,
   injectIntoHostWithConfirmation,
   interruptViaPty,
   shutdownViaPty,
@@ -183,7 +183,7 @@ function refused(code: string, message: string, retryable = true): Exclude<Claud
 function defaultControls(): ClaudeSuSessionControls {
   return {
     async ownerTurn({ ownerId, content }) {
-      const host = findLiveHost(ownerId);
+      const host = await findLiveHostAsync(ownerId);
       if (!host) return refused('runtime_unavailable', 'Claude has no live managed-PTY host');
       const delivered = await injectIntoHostWithConfirmation(host.sock, {
         mode: 'turn',
@@ -210,7 +210,7 @@ function defaultControls(): ClaudeSuSessionControls {
         : refused('interrupt_unavailable', 'Claude runtime could not be interrupted');
     },
     async resume({ ownerId }) {
-      return findLiveHost(ownerId)
+      return (await findLiveHostAsync(ownerId))
         ? { ok: true }
         : refused(
             'runtime_reconciliation_required',

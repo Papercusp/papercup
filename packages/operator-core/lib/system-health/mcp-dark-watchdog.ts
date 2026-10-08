@@ -899,7 +899,7 @@ async function runInteractiveHealStep(
     out.healed.push(step.ownerId);
     // POSITIVE transport truth (fresh beat after a SENT envelope) — tell the
     // session ONCE to re-arm.
-    const host = discovery.findLiveHost(step.ownerId);
+    const host = await discovery.findLiveHostAsync(step.ownerId);
     if (host) {
       await discovery.injectIntoHost(host.sock, {
         mode: 'turn',

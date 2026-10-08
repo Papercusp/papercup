@@ -28,7 +28,7 @@ import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { resolveWakeMode } from '../coordination/wake-mode';
-import { injectIntoHost, selfCompactionAvailability } from '../../events/await/psu-pty-discovery';
+import { injectIntoHost, selfCompactionAvailabilityAsync } from '../../events/await/psu-pty-discovery';
 import { tagTurnForInjection } from '../../turn-provenance/turn-provenance';
 import { carryProvenanceFields } from '../../carry-surface-provenance-stamp';
 import { buildOwnerRespawnLaunchSpec } from '../../carry-respawn';
@@ -519,7 +519,7 @@ export default defineTool({
     // self-compaction — so a recommendation and this refusal cannot drift apart.
     // Loop state can prepare durable carry, but it cannot prove a fresh turn
     // will be delivered without a host. Keep the no-host response explicit.
-    const availability = selfCompactionAvailability(identity.ownerId);
+    const availability = await selfCompactionAvailabilityAsync(identity.ownerId);
     if (!availability.available && availability.reason === 'no_live_pty_host') {
       // A saved carry-note and an armed cold loop are registration evidence,
       // not proof that this process can receive a fresh turn. The no-host cold

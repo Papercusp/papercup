@@ -1161,10 +1161,10 @@ async function maybeCarryRespawn(
     return false;
   }
   try {
-    const { findLiveHost, hostSupports, injectIntoHost } = await import(
+    const { findLiveHostAsync, hostSupports, injectIntoHost } = await import(
       '../events/await/psu-pty-discovery'
     );
-    const host = findLiveHost(ownerId);
+    const host = await findLiveHostAsync(ownerId);
     if (!host || !hostSupports(host, 'carry-respawn')) return false;
 
     // EI-13477: reconciled — a same-pid self-relaunch's dead native id must not
@@ -1374,10 +1374,10 @@ async function maybeForceRespawn(
     return false; // flag infra unavailable ⇒ do NOT force (fail-safe)
   }
   try {
-    const { findLiveHost, hostSupports, injectIntoHost } = await import(
+    const { findLiveHostAsync, hostSupports, injectIntoHost } = await import(
       '../events/await/psu-pty-discovery'
     );
-    const host = findLiveHost(ownerId);
+    const host = await findLiveHostAsync(ownerId);
     if (!host) {
       // EI-9982: distinguish "no live psu-pty host" from the flag-off / grace-suppressed /
       // inject-failed silent-no-op paths — this is the dominant cause of a continuously-active

@@ -96,7 +96,7 @@ import { preflightBackendLaunch } from '../../backend-bin-resolve.mjs';
 import { describeSessionEndTime, hasAdvSessionTerminalEvidence, markAdvSessionEnded } from '../../adv-sessions';
 import { resolveSessionStates } from '../coordination/liveness-oracle';
 import type { ColorScheme } from '../../console-color-schemes';
-import { findLiveHost, shutdownViaPty } from '../../events/await/psu-pty-discovery';
+import { findLiveHostAsync, shutdownViaPty } from '../../events/await/psu-pty-discovery';
 import { armInboxWake } from '../../events/await/inbox-wake-arm';
 import { classifyResumeTurnExit } from '../../events/await/resume-turn-outcome';
 import { nodeCgroupFs } from '../../task-manager/cgroup-read';
@@ -1126,7 +1126,7 @@ export default defineTool({
               current.binding?.startedAt !== binding.startedAt) {
             return 'Cannot start successor: the predecessor binding changed during preparation. Re-resolve the source; no process was opened.';
           }
-          if (current.live || findLiveHost(binding.coordOwnerId)) {
+          if (current.live || (await findLiveHostAsync(binding.coordOwnerId))) {
             return 'Cannot start successor: a LIVE source host appeared during preparation. No process was opened.';
           }
           if (readSourceCodexWriter()?.held) {
@@ -1143,7 +1143,7 @@ export default defineTool({
               return `Cannot start successor: predecessor liveness is ${state ?? 'unknown'}; positive terminal evidence is required. No process was opened.`;
             }
           }
-          if (findLiveHost(binding.coordOwnerId)) {
+          if (await findLiveHostAsync(binding.coordOwnerId)) {
             return 'Cannot start successor: a LIVE source host appeared during reconciliation. No process was opened.';
           }
           if (readSourceCodexWriter()?.held) {
@@ -1178,7 +1178,7 @@ export default defineTool({
               'continuing with an ordinary exact resume (nothing to terminate).',
           );
         } else {
-          const host = findLiveHost(target.ownerId);
+          const host = await findLiveHostAsync(target.ownerId);
           if (!host) {
             // The host can disappear between resolveResumeTarget and this check.
             // That race is safe: there is no remaining CLI to collide with, so
@@ -1228,7 +1228,7 @@ export default defineTool({
       if (!isSuccessor) {
         let staleHeadlessRecovery = false;
         if (sourceStillLive && !codexWriterHeld && !fork && !args.restoreVisible && target.ownerId) {
-          const host = findLiveHost(target.ownerId);
+          const host = await findLiveHostAsync(target.ownerId);
           if (!host) {
             // The host can disappear between resolveResumeTarget and this check.
             // There is then no remaining CLI to collide with, so exact-resume.

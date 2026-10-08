@@ -48,7 +48,7 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { activeWorkspaceId } from '../../workspace-registry';
 import {
-  findLiveHost,
+  findLiveHostAsync,
   sessionClassForHost,
   type PsuPtyHost,
 } from '../../events/await/psu-pty-discovery';
@@ -101,7 +101,7 @@ export interface ProcInfo {
 
 export interface KillDeps {
   /** Live psu-pty host for a coord ownerId (null = no live interactive session). */
-  findHost?: (ownerId: string) => PsuPtyHost | null;
+  findHost?: (ownerId: string) => PsuPtyHost | null | Promise<PsuPtyHost | null>;
   /** Fresh presence for a session that is alive but has no operator-managed
    *  host handle (currently OMP hook sessions). */
   findLiveUnmanaged?: (
@@ -365,7 +365,7 @@ export async function killOne(input: KillOneInput, deps: KillDeps): Promise<Kill
   }
 
   // ── leg 2: desktop interactive psu session ──
-  const host = deps.findHost?.(input.target) ?? null;
+  const host = (await deps.findHost?.(input.target)) ?? null;
   if (!host) {
     // `ended_by` is terminal evidence even when a crash/reconciler left
     // `ended_at` unset. Heal that split-brain tuple before presence can classify
@@ -459,7 +459,7 @@ export async function killOne(input: KillOneInput, deps: KillDeps): Promise<Kill
     const hostGone = deps.waitForHostGone
       ? await deps.waitForHostGone(input.target)
       : await waitForPtyHostGone(input.target, {
-          findHost: deps.findHost ?? findLiveHost,
+          findHost: deps.findHost ?? findLiveHostAsync,
           sleep: prims.sleep,
         });
     if (!hostGone) {
@@ -764,7 +764,7 @@ export default defineTool({
     const reason = clampText(args.reason, 4000) ?? 'fleet:kill';
     const closeTerminal = args.close_terminal !== false;
     const deps: KillDeps = {
-      findHost: (ownerId) => findLiveHost(ownerId),
+      findHost: (ownerId) => findLiveHostAsync(ownerId),
       findLiveUnmanaged: (ownerId) => findLiveUnmanagedSession(ownerId, workspaceId),
       cancelNursery: (target, why) => cancelNurseryTarget(target, why, workspaceId, actor),
       deactivateLoop: (ownerId, why) =>

@@ -90,11 +90,11 @@ import {
 } from '../../../agent-launch-core';
 import { renderModeInstructionsFact } from '../../../agent-tools/mode/set';
 import { resolveRemoteSeatInventory } from '../../../agent-tools/plans/remote-seat-inventory';
-import { writeSuCodexHome } from '../../../role-codex-home';
+import { assertSuCodexHomeNotOwnedByLiveSession, writeSuCodexHome } from '../../../role-codex-home';
 // EI-11366: the real liveness check wired into writeSuCodexHome's identity-
 // split collision guard — is there a LIVE psu-pty host process for a sid that
 // previously owned the CODEX_HOME directory we're about to rebuild?
-import { findLiveHost } from '../../../events/await/psu-pty-discovery';
+import { findLiveHostAsync } from '../../../events/await/psu-pty-discovery';
 import { writeInteractiveClaudeConfig } from '../../../interactive-claude-config';
 import { resolveSuLaunchCwd, type SuLaunchCwdPolicy } from '../../../su-launch-cwd';
 import {
@@ -3012,6 +3012,11 @@ export const bootstrapSu = defineTool({
         // D-006: the superuser bearer is baked into the home's config.toml
         // (codex 0.135's bearer_token_env_var doesn't deliver for HTTP MCP).
         // Read it server-side — it never transits the bootstrap HTTP response.
+        await assertSuCodexHomeNotOwnedByLiveSession(
+          sessionKey,
+          sid,
+          async (priorSid) => (await findLiveHostAsync(priorSid)) != null,
+        );
         const ch = writeSuCodexHome({
           sessionKey,
           mcpUrl: spec.mcpUrl,
@@ -3032,13 +3037,6 @@ export const bootstrapSu = defineTool({
           // "Do you trust this directory?" boot prompt (an su launch is trusted).
           trustDir: cwd,
           instructionRuntime,
-          // EI-11366: refuse to silently destroy a DIFFERENT sid's still-live
-          // Codex home (the identity-split incident this bug reported) —
-          // findLiveHost is the same self-validating (pid-alive + socket-exists
-          // + cmdline-verified) liveness oracle the wake-executor injects
-          // through, so "live" here means a real running psu-pty host, not
-          // just a DB row.
-          isOwnerLive: (priorSid: string) => findLiveHost(priorSid) != null,
         });
         codexHome = ch.codexHome;
         promptFile = ch.agentsPath; // AGENTS.md — diagnostics

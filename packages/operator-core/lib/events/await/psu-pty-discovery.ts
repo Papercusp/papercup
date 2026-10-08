@@ -642,6 +642,20 @@ export function selfCompactionAvailability(
   return { available: true, reason: null, host };
 }
 
+/** Async counterpart for callers that run on the operator event loop. */
+export async function selfCompactionAvailabilityAsync(
+  ownerId: string,
+  dir: string = PSU_PTY_DIR,
+  opts: { verifyIdentity?: VerifyPidIdentity } = {},
+): Promise<SelfCompactionAvailability> {
+  const host = await findLiveHostAsync(ownerId, dir, opts);
+  if (!host) return { available: false, reason: 'no_live_pty_host', host: null };
+  if (!hostSupports(host, 'carry-respawn')) {
+    return { available: false, reason: 'host_predates_carry_respawn', host };
+  }
+  return { available: true, reason: null, host };
+}
+
 async function pathExistsAsync(p: string): Promise<boolean> {
   try {
     await fsp.access(p);
@@ -673,7 +687,7 @@ async function pidIsPsuHostAsync(pid: number): Promise<boolean> {
 export async function findLiveHostAsync(
   ownerId: string,
   dir: string = PSU_PTY_DIR,
-  opts: { verifyIdentity?: VerifyPidIdentityAsync } = {},
+  opts: { verifyIdentity?: VerifyPidIdentity | VerifyPidIdentityAsync } = {},
 ): Promise<PsuPtyHost | null> {
   startJanitor();
   const verify = opts.verifyIdentity ?? pidIsPsuHostAsync;
@@ -681,7 +695,14 @@ export async function findLiveHostAsync(
   try {
     const h = JSON.parse(await fsp.readFile(metaPath, 'utf8')) as PsuPtyHost;
     if (h && h.ownerId && h.ownerId !== ownerId) return null;
-    if (h && h.sock && h.pid && (await pathExistsAsync(h.sock)) && pidAlive(h.pid) && (await verify(h.pid))) {
+    if (
+      h &&
+      h.sock &&
+      h.pid &&
+      (await pathExistsAsync(h.sock)) &&
+      pidAlive(h.pid) &&
+      (await verify(h.pid))
+    ) {
       return h;
     }
   } catch {
@@ -1484,13 +1505,13 @@ export async function interruptViaPty(
   opts: { verifyIdentity?: VerifyPidIdentity } = {},
 ): Promise<boolean> {
   const data = key === 'esc' ? '\x1b' : '\x03';
-  let host = findLiveHost(ownerId, PSU_PTY_DIR, opts);
+  let host = await findLiveHostAsync(ownerId, PSU_PTY_DIR, opts);
   for (let attempt = 0; host && attempt < 2; attempt += 1) {
     const ok = await injectIntoHost(host.sock, { mode: 'raw', data, ownerId });
     if (ok) return true;
     // Re-read the owner-scoped discovery record after a miss. Do not reuse the
     // first host object: a live psu host may have rebound its control socket.
-    host = findLiveHost(ownerId, PSU_PTY_DIR, opts);
+    host = await findLiveHostAsync(ownerId, PSU_PTY_DIR, opts);
   }
   return false;
 }
@@ -1513,7 +1534,7 @@ export async function recolorViaPty(
   opts: { verifyIdentity?: VerifyPidIdentity } = {},
 ): Promise<boolean> {
   if (!osc) return false;
-  const host = findLiveHost(ownerId, PSU_PTY_DIR, opts);
+  const host = await findLiveHostAsync(ownerId, PSU_PTY_DIR, opts);
   if (!host) return false;
   return injectIntoHost(host.sock, { mode: 'osc', data: osc, ownerId });
 }
@@ -1571,7 +1592,7 @@ export async function shutdownViaPty(
   ownerId: string,
   opts: { reason?: string; force?: boolean; verifyIdentity?: VerifyPidIdentity } = {},
 ): Promise<ShutdownViaPtyResult> {
-  const host = findLiveHost(ownerId, PSU_PTY_DIR, { verifyIdentity: opts.verifyIdentity });
+  const host = await findLiveHostAsync(ownerId, PSU_PTY_DIR, { verifyIdentity: opts.verifyIdentity });
   if (!host) return 'no-host';
   if (!hostSupports(host, 'shutdown')) return 'no-cap';
   const res = await injectIntoHostWithConfirmation(host.sock, {
@@ -1596,7 +1617,7 @@ export async function mcpReconnectViaPty(
   serverName = 'papercusp-su',
   opts: { verifyIdentity?: VerifyPidIdentity } = {},
 ): Promise<'sent' | 'no-host' | 'no-cap' | 'send-failed'> {
-  const host = findLiveHost(ownerId, PSU_PTY_DIR, opts);
+  const host = await findLiveHostAsync(ownerId, PSU_PTY_DIR, opts);
   if (!host) return 'no-host';
   if (!hostSupports(host, 'mcp-reconnect')) return 'no-cap';
   const ok = await injectIntoHost(host.sock, { mode: 'mcp-reconnect', data: serverName, ownerId });

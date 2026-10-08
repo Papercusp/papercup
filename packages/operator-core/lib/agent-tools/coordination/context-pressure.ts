@@ -154,8 +154,8 @@ export async function resolveContextPressureRecoveryPath(
   workspaceId?: string | null,
 ): Promise<ContextPressureRecoveryResolution> {
   try {
-    const { selfCompactionAvailability } = await import('../../events/await/psu-pty-discovery');
-    const availability = selfCompactionAvailability(ownerId);
+    const { selfCompactionAvailabilityAsync } = await import('../../events/await/psu-pty-discovery');
+    const availability = await selfCompactionAvailabilityAsync(ownerId);
     if (availability.available || availability.reason === 'host_predates_carry_respawn') {
       return deriveContextPressureRecoveryPath({ selfCompaction: availability });
     }

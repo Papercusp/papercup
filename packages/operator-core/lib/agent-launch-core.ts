@@ -21,7 +21,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { getAdvSession, mapAdvSessionRow, type AdvSessionRow, type AdvSessionEndedBy, type AdvSessionExpectedBinding } from './adv-sessions';
 import { getSessionPort } from './session-port/store';
 import type { SessionBackend, SessionPortContractSummary } from './session-port/types';
-import { findLiveHost, injectIntoHost, type PsuPtyHost } from './events/await/psu-pty-discovery';
+import { findLiveHost, findLiveHostAsync, injectIntoHost, type PsuPtyHost } from './events/await/psu-pty-discovery';
 import { fetchSelfWake } from './agent-tools/coordination/presence-selfwake';
 import {
   accountFromArgv,
@@ -435,7 +435,7 @@ export async function resolveResumeTarget(ref: {
         '(`psu --resume` picker) instead.',
     };
   }
-  const host: PsuPtyHost | null = row.coordOwnerId ? findLiveHost(row.coordOwnerId) : null;
+  const host: PsuPtyHost | null = row.coordOwnerId ? await findLiveHostAsync(row.coordOwnerId) : null;
   return {
     ok: true,
     // Exact native UUID pins are never replaced by the logical owner's older
@@ -1449,14 +1449,14 @@ export async function injectKickoffAfterResume(
   {
     timeoutMs = 120_000,
     pollMs = 2_000,
-    findHost = findLiveHost,
+    findHost = findLiveHostAsync,
     inject = injectIntoHost,
     tagTurn = tagTurnForInjection,
     sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms)),
   }: {
     timeoutMs?: number;
     pollMs?: number;
-    findHost?: typeof findLiveHost;
+    findHost?: typeof findLiveHost | typeof findLiveHostAsync;
     inject?: typeof injectIntoHost;
     tagTurn?: typeof tagTurnForInjection;
     sleep?: (ms: number) => Promise<void>;
@@ -1464,7 +1464,7 @@ export async function injectKickoffAfterResume(
 ): Promise<{ delivered: boolean; waitedMs: number; error?: string }> {
   const started = Date.now();
   for (;;) {
-    const host = findHost(ownerId);
+    const host = await findHost(ownerId);
     if (host?.sock) {
       // EI-153 addressing: currently zero production callers, but this is the
       // closest shape-match in the tree to an observed cross-owner fan-out (a
@@ -2205,7 +2205,7 @@ export async function probeFreshLaunchSessions({
     const selfWakeByOwner = await fetchSelfWake(ownerIds);
     const wanted = expectedOwnerIds?.length ? new Set(expectedOwnerIds) : null;
     const expectedByOwner = new Map((expectedAttestations ?? []).map((item) => [item.ownerId, item]));
-    return rows.filter((r) => !wanted || (r.coord_owner_id != null && wanted.has(r.coord_owner_id))).map((r) => {
+    return Promise.all(rows.filter((r) => !wanted || (r.coord_owner_id != null && wanted.has(r.coord_owner_id))).map(async (r) => {
       const expected = r.coord_owner_id ? expectedByOwner.get(r.coord_owner_id) : undefined;
       const actual = launchAttestationFromLedger(r.launch_spec, r.launch_argv);
       const attestationDiffs: FreshLaunchAttestationDiff[] = [];
@@ -2231,7 +2231,7 @@ export async function probeFreshLaunchSessions({
       const wakeSource = r.coord_owner_id
         ? selfWakeByOwner.get(r.coord_owner_id)?.selfWake ?? null
         : null;
-      const host = r.coord_owner_id ? findLiveHost(r.coord_owner_id) : null;
+      const host = r.coord_owner_id ? await findLiveHostAsync(r.coord_owner_id) : null;
       const quotaBlocked =
         host && typeof host.quotaBlocked === 'boolean' ? host.quotaBlocked : null;
       const quotaBlockedSinceMs =
@@ -2258,7 +2258,7 @@ export async function probeFreshLaunchSessions({
           claimedWorkItemId: r.claimed_work_item_id,
         }),
       };
-    });
+    }));
   } catch (e) {
     // ⚠ THROW, never `return []`. An empty list means "nothing registered", which
     // this verifier reads as agentStarted:FALSE — so swallowing a DB fault here
@@ -2301,7 +2301,7 @@ export async function verifyResumeStarted(
     expectedPort,
     timeoutMs = 30_000,
     pollMs = 1_000,
-    findHost = findLiveHost,
+    findHost = findLiveHostAsync,
     readAdvSession = getAdvSession,
     readPort = getSessionPort,
     sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms)),
@@ -2312,7 +2312,7 @@ export async function verifyResumeStarted(
     expectedPort?: { sourceAdvSessionId: number; targetBackend: SessionBackend };
     timeoutMs?: number;
     pollMs?: number;
-    findHost?: typeof findLiveHost;
+    findHost?: typeof findLiveHost | typeof findLiveHostAsync;
     readAdvSession?: typeof getAdvSession;
     readPort?: typeof getSessionPort;
     sleep?: (ms: number) => Promise<void>;
@@ -2328,7 +2328,7 @@ export async function verifyResumeStarted(
   let portExpected: string | null = null;
   let portActual: string | null = null;
   for (;;) {
-    const host = findHost(ownerId);
+    const host = await findHost(ownerId);
     if (host) {
       const expected = expectedSessionId?.trim() || null;
       const actual = nativeSessionIdFromHost(host);
@@ -2452,18 +2452,18 @@ export async function waitForPtyHostGone(
   {
     timeoutMs = 10_000,
     pollMs = 100,
-    findHost = findLiveHost,
+    findHost = findLiveHostAsync,
     sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
   }: {
     timeoutMs?: number;
     pollMs?: number;
-    findHost?: typeof findLiveHost;
+    findHost?: typeof findLiveHost | typeof findLiveHostAsync;
     sleep?: (ms: number) => Promise<void>;
   } = {},
 ): Promise<boolean> {
   const begun = Date.now();
   for (;;) {
-    if (!findHost(ownerId)) return true;
+    if (!(await findHost(ownerId))) return true;
     if (Date.now() - begun + pollMs > timeoutMs) return false;
     await sleep(pollMs);
   }

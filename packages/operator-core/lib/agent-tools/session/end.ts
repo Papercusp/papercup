@@ -54,7 +54,7 @@
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
-import { findLiveHost, hostSupports, shutdownViaPty } from '../../events/await/psu-pty-discovery';
+import { findLiveHostAsync, hostSupports, shutdownViaPty } from '../../events/await/psu-pty-discovery';
 import { getLoopStatus } from '../../harness/routines/loop';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { markAdvSessionShutdownAcceptedByOwner } from '../../adv-sessions';
@@ -153,7 +153,7 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
-    const host = findLiveHost(identity.ownerId);
+    const host = await findLiveHostAsync(identity.ownerId);
     // An ARMED LOOP is a guaranteed future wake, which makes "nothing will wake me
     // again" false by construction — so this is a real precondition, not advice, and
     // it is enforced HERE because the psu host has no DB to read it from. Closing a

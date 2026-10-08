@@ -25,7 +25,7 @@ import { getPresence } from '../coordination/presence';
 import { listFleetPresence, type FleetPresenceRow } from '../coordination/presence-fleet';
 import { sendMessage } from '../coordination/messages';
 import { wakeRecipients } from '../coordination/inbox-wake';
-import { findLiveHost } from '../../events/await/psu-pty-discovery';
+import { findLiveHostAsync } from '../../events/await/psu-pty-discovery';
 import { resolveConcreteHarnessSlug } from '../_harness-scope';
 import { getSessionBrief } from '../../session-brief';
 import { resolveProjectDir } from '../../spawn-config';
@@ -1466,7 +1466,7 @@ export default defineTool({
     // this: both hosts truthfully record the SAME ownerId, so it is not a sanitizeKey collision
     // between distinct owners — it is a genuine duplicate identity. Refuse loudly instead of
     // silently spawning a second process under an identity that already has a live host.
-    const collidingLiveHost = findLiveHost(replacementOwner);
+    const collidingLiveHost = await findLiveHostAsync(replacementOwner);
     if (collidingLiveHost) {
       return json(
         {
