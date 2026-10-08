@@ -9,10 +9,12 @@ import { signPaymentTestBytes, paymentTestVerifier } from '../p2p/_payment-vouch
  * mock that simply returned 201 would assert the opposite of it.
  */
 import { describe, expect, it } from 'vitest';
+import { generateKeyPairSync, sign } from 'node:crypto';
 import {
   acceptMeteredVoucher,
   closeMeteredInvocation,
   declareMeter,
+  sellerReceiptAuthoritySigningBytes,
   type BillableUnit,
 } from '../p2p/metered-invocation';
 import {
@@ -74,6 +76,22 @@ describe('P-007 exact hosted paid-tool binding', () => {
     expect(t.requests[0]?.url).toBe('https://cupboard.test/commerce/offers?pricing=per-use');
     expect(t.requests[0]?.init?.headers).toMatchObject({ Authorization: 'Bearer test-token' });
     expect(t.requests[0]?.init?.signal).toBeInstanceOf(AbortSignal);
+  });
+  it('retains the verified publisher receipt authority through installation binding', async () => {
+    const pair = generateKeyPairSync('ed25519');
+    const pubkeyBase64 = pair.publicKey.export({ format: 'der', type: 'spki' }).subarray(-32).toString('base64');
+    const receiptAuthority = { pubkeyBase64, proof: sign(null, sellerReceiptAuthoritySigningBytes({
+      seller: SELLER, offerId: offer.offerId, productId: offer.productId, skuRef: RELEASE, pubkeyBase64 }),
+      pair.privateKey).toString('base64') };
+    const read = await readHostedPerUseOffers(transport({ offers: [{ ...wireOffer, receiptAuthority }] }).deps);
+    expect(read).toEqual({ ok: true, offers: [{ ...offer, receiptAuthority }] });
+    if (!read.ok) throw new Error(read.detail);
+    expect(bindInstalledPerUseOffer(provenance, read.offers)).toEqual({ ok: true, offer: { ...offer, receiptAuthority } });
+    for (const change of [{ creatorId: 'gh:other' }, { offerId: 'other' }, { productId: 'other' }, { skuRef: 'other' },
+      { receiptAuthority: null }, { receiptAuthority: {} }, { receiptAuthority: { ...receiptAuthority, proof: 'nonempty' } }]) {
+      expect(await readHostedPerUseOffers(transport({ offers: [{ ...wireOffer, receiptAuthority, ...change }] }).deps))
+        .toMatchObject({ ok: false, code: 'invalid_catalog' });
+    }
   });
   it.each([
     { creatorId: 'gh:someone-else' }, { skuRef: provenance.name }, { active: false }, { productActive: false },
