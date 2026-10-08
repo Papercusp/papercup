@@ -29,7 +29,7 @@ import { acquireWithContentionRetry } from './agent-tools/locks/contention-retry
 import { admissionIdentity } from './harness/improvements/digest';
 import { ALL_TERMINAL_STATUSES } from './work-item-blocking';
 import type { AdmissionRunOutcome } from './work-items-admission-promoter';
-import type { OrgSql } from './work-items';
+import { natureWhereSql, type OrgSql } from './work-items';
 import {
   proseProfilePredicateSql,
   resolveAcceptedProseProfileSelection,
@@ -558,13 +558,14 @@ function corpusWhere(sql: OrgSql, opts: Pick<AdmissionCensusRunOptions, 'workspa
   const a = sql.unsafe(alias);
   return sql`${a}.workspace_id = ${opts.workspaceId}
     AND ${a}.harness_slug = ${opts.harnessSlug}
+    AND ${natureWhereSql(sql, undefined, undefined)}
     AND ${a}.lane IS DISTINCT FROM 'observation'
     AND (${a}.status IS NULL OR NOT (${a}.status = ANY(${terminal}::text[])))`;
 }
 
 /**
  * The corpus definition ("every open lane bug") — every non-terminal,
- * non-observation work item in one workspace/harness. Exported for the P-007
+ * non-observation row with nature 'work' in one workspace/harness. Exported for the P-007
  * whole-corpus resolver pass, which reuses this exact definition rather than
  * re-deriving its own `corpusWhere` (reuse-first mandate).
  */
@@ -854,7 +855,9 @@ export async function withCensusStatementTimeout<T>(
  * The pin lives in `admission_runs.detail.resume` only while the run is unfinished;
  * the completion write replaces `detail` and drops it.
  */
-export const ADMISSION_CENSUS_RESUME_SCHEMA = 'work-item-admission-census-resume-v1';
+// Older pins used the broader corpus, which included DATA rows. Rebuild their
+// chunks against the work-only corpus rather than reusing those anchors.
+export const ADMISSION_CENSUS_RESUME_SCHEMA = 'work-item-admission-census-resume-v2';
 /** A pin older than this is discarded; a routine fire's own timeout is 24h. */
 export const ADMISSION_CENSUS_RESUME_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
