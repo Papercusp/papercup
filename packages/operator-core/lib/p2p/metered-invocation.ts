@@ -491,7 +491,7 @@ export class LocalMeteredTurn {
     state: LocalMeteredTurnState;
     nowMs: () => number;
     signVoucher: (bytes: Buffer) => Promise<string> | string;
-    signReceipt: (bytes: Buffer) => Promise<string> | string;
+    signReceipt: (bytes: Buffer, voucher?: CumulativePaymentVoucher) => Promise<string> | string;
     persist: (state: LocalMeteredTurnState) => Promise<void>;
   }) {
     this.state = structuredClone(deps.state);
@@ -627,7 +627,7 @@ export class LocalMeteredTurn {
     const probe = closeMeteredInvocation({ channel: s.channel, voucher: entry.voucher,
       occurredAtMs: entry.completedAtMs, signReceipt: (value) => { bytes = value; return 'signing-probe'; } });
     if (!probe.ok) throw new LocalMeteredTurnRefusedError(probe.code, probe.detail);
-    const signature = await this.deps.signReceipt(bytes!);
+    const signature = await this.deps.signReceipt(bytes!, entry.voucher);
     const closed = closeMeteredInvocation({ channel: s.channel, voucher: entry.voucher,
       occurredAtMs: entry.completedAtMs, signReceipt: () => signature });
     if (!closed.ok) throw new LocalMeteredTurnRefusedError(closed.code, closed.detail);
