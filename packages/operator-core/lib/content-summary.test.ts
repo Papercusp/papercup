@@ -4,6 +4,23 @@ import { readContent } from './content-intake';
 import { summarizeContent, type SummaryDeps } from './content-summary';
 import type { RunAgentChatOptions, ChatEvent } from './agent-chat-stream';
 
+const defaultRouting = vi.hoisted(() => ({
+  listLocalBackends: vi.fn(),
+  cloudRun: vi.fn(),
+  localStream: vi.fn(),
+}));
+vi.mock('./inference-gateway/local-backend-store', () => ({ listLocalBackends: defaultRouting.listLocalBackends }));
+vi.mock('./agent-chat-stream', () => ({
+  runAgentChat: defaultRouting.cloudRun,
+  ownerHeaders: () => ({}),
+  priorityTierHeaders: () => ({}),
+}));
+vi.mock('./agent-loop/ai-sdk-port', () => ({
+  createAiSdkPort: () => ({ stream: defaultRouting.localStream }),
+}));
+vi.mock('./operator-budget', () => ({ checkBudget: async () => ({ exceeded: false }), recordSpend: async () => {} }));
+vi.mock('./cache/instance', () => ({ getOperatorCache: () => ({ getOrSet: (_workspace: string, _key: string, factory: () => unknown) => factory() }) }));
+
 async function source(text = 'Alpha 12. Beta 34. Tail 56.', partial = false) {
   return readContent({ kind: 'text', text, ref: 'private:report', partial }, { workspaceId: 'ws-one', readerId: 'reader-one' }, { authorize: async () => true });
 }
@@ -183,5 +200,38 @@ describe('explicit authorized content summaries', () => {
     const original = await source();
     for (let index = 0; index < 2; index++) await expect(summarizeContent(original, { allowCloud: true }, undefined, h.deps)).rejects.toMatchObject({ code: 'model-failed' });
     expect(attempts).toBe(2);
+  });
+});
+
+describe('default summary transport classification', () => {
+  it.each([false, true])('keeps a disabled registered model local with allowCloud=%s', async allowCloud => {
+    defaultRouting.listLocalBackends.mockResolvedValue([{ enabled: false, models: ['registered-local'] }]);
+    defaultRouting.cloudRun.mockClear();
+    defaultRouting.cloudRun.mockImplementation(async function* () {
+      yield { type: 'result', finalText: 'Cloud summary.', costUsd: 0, tokensIn: 1, tokensOut: 1 };
+    });
+    defaultRouting.localStream.mockClear();
+    defaultRouting.localStream.mockImplementation(async function* () {
+      yield { type: 'error', message: 'No enabled local backend is available.' };
+    });
+    await expect(summarizeContent(await source(), { model: 'registered-local', allowCloud, cache: false }))
+      .rejects.toMatchObject({ code: 'model-failed' });
+    expect(defaultRouting.localStream).toHaveBeenCalledTimes(1);
+    expect(defaultRouting.cloudRun).not.toHaveBeenCalled();
+    await expect(summarizeContent(await source(), { model: 'registered-local', allowCloud, account: 'cloud-pin' }))
+      .rejects.toMatchObject({ code: 'local-route-unavailable' });
+    expect(defaultRouting.cloudRun).not.toHaveBeenCalled();
+  });
+  it('retains the consented cloud route for a model outside the local inventory', async () => {
+    defaultRouting.listLocalBackends.mockResolvedValue([{ enabled: false, models: ['registered-local'] }]);
+    defaultRouting.cloudRun.mockClear();
+    defaultRouting.cloudRun.mockImplementation(async function* () {
+      yield { type: 'result', finalText: 'Cloud summary.', costUsd: 0, tokensIn: 1, tokensOut: 1 };
+    });
+    defaultRouting.localStream.mockClear();
+    await expect(summarizeContent(await source(), { model: 'cloud-model', allowCloud: true, cache: false }))
+      .resolves.toMatchObject({ summary: 'Cloud summary.' });
+    expect(defaultRouting.cloudRun).toHaveBeenCalledTimes(1);
+    expect(defaultRouting.localStream).not.toHaveBeenCalled();
   });
 });
