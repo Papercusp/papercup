@@ -62,8 +62,10 @@ async function defaultHolderMetrics(input: {
  * followthrough-2026-10-08): resolve the stewarded goal the same way, then read the ledgers.
  * goal-launch-settings is imported lazily: it value-imports the db-org chain and the
  * launch-settings schema, which nothing else on the scorecard read path needs.
+ * Exported for the P-004 computed tenure-card sweep, so a computed card and the instrument
+ * snapshots emit stores beside it come from one measurement path.
  */
-async function defaultGoalModeMetrics(input: {
+export async function measureGoalModeComputedWindow(input: {
   holderOwnerId: string;
   windowStart: string;
   windowEnd: string;
@@ -409,7 +411,7 @@ export async function resolveScorecardInstrumentSnapshots(
   const measureGoalMode = (subject: ObservationSubject) => {
     goalModeRatings ??= (async () => {
       try {
-        const metrics = await (deps.goalModeMetrics ?? defaultGoalModeMetrics)({
+        const metrics = await (deps.goalModeMetrics ?? measureGoalModeComputedWindow)({
           holderOwnerId: subject.ref,
           windowStart: subject.windowStart as string,
           windowEnd: subject.windowEnd as string,

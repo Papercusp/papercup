@@ -950,6 +950,8 @@ const critIdle = (criterion: string, idleCount: number, ...ratings: string[]): C
     first: { rating: ratings[0] ?? 'unknown', at: '2026-06-20T00:00:00.000Z' },
     latest: { rating: ratings[ratings.length - 1] ?? 'unknown', at: '2026-06-20T01:00:00.000Z' },
     direction: 'unknown',
+    // CriterionTrend gained a required scale-aware mean; these direction fixtures do not read it.
+    mean10: null,
   };
 };
 
