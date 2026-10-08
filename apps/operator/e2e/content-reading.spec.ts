@@ -181,6 +181,48 @@ test('cancel summary ignores a late result and cannot start obsolete speech', as
   expect((await output(page)).created).toBe(0);
 });
 
+test('global speech cancellation stops active narration and suppresses its queued final tail', async ({ page }) => {
+  await page.addInitScript(() => {
+    // Reuse the existing desktop verification seam; cancel calls the production
+    // cancelAllSpeech entry used by barge-in, rather than reading-scoped Stop.
+    (window as Window & { __PAPERCUSP_DEV_WRAPPER__?: boolean }).__PAPERCUSP_DEV_WRAPPER__ = true;
+  });
+  await page.route('**/api/agent-mcp/operator-tts', async route => {
+    const body = route.request().postDataJSON();
+    expect(body.operation).toBe('read');
+    await fulfillReading(route, body.text);
+  });
+  const turns = await openReading(page);
+  const source = 'Active narration with a queued continuation. '.repeat(130) + 'CANCELLED FINAL TAIL';
+  await page.getByRole('textbox', { name: 'Text to read or summarize' }).fill(source);
+  await page.getByRole('button', { name: 'Read selection', exact: true }).click();
+  await expect.poll(async () => (await output(page)).plays).toBe(1);
+  const before = await output(page);
+  await page.evaluate(() => {
+    const voice = (window as Window & { __pcVoiceTest?: { cancel(): void } }).__pcVoiceTest;
+    if (!voice) throw new Error('Production global speech cancellation seam is unavailable');
+    voice.cancel();
+  });
+  await expect(page.getByRole('group', { name: 'Original reading controls' }).getByRole('status')).toHaveText('stopped · 0%');
+  // A late end event from the cancelled output must not advance the old queue.
+  await finishOutput(page);
+  await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => resolve())));
+  const cancelled = await output(page);
+  expect(cancelled.created).toBe(before.created);
+  expect(cancelled.plays).toBe(before.plays);
+  expect(cancelled.pauses).toBeGreaterThan(before.pauses);
+  await expect(page.getByRole('progressbar', { name: 'Reading progress' })).toHaveAttribute('value', '0');
+  expect(cancelled.utterances.join('')).not.toContain('CANCELLED FINAL TAIL');
+  expect(cancelled.mic).toBe(0);
+  expect(turns).toEqual([]);
+  // Cancellation must also leave the ordinary player usable for fresh content.
+  await page.getByRole('textbox', { name: 'Text to read or summarize' }).fill('Fresh narration after cancellation.');
+  await page.getByRole('button', { name: 'Read selection', exact: true }).click();
+  await expect.poll(async () => (await output(page)).plays).toBe(before.plays + 1);
+  await finishOutput(page);
+  await expect(page.getByRole('group', { name: 'Original reading controls' }).getByRole('status')).toHaveText('completed · 100%');
+});
+
 test('summary failure is visible and never becomes summary text or speech', async ({ page }) => {
   await page.route('**/api/agent-mcp/operator-tts', route => route.fulfill({ status: 403, json: { ok: false, error: 'Cloud summary requires explicit consent.' } }));
   await openReading(page);
