@@ -8,6 +8,7 @@ import { LocalMeteredTurn, LocalMeteredTurnRefusedError, usageReceiptSigningByte
 import { FundedToolTurnStore, type FundedToolTurnBinding, type FundedToolTurnResult } from './funded-tool-turn-store';
 import { FundedIdentityTurnStore, type FundedIdentityTurn, type FundedIdentityTurnBinding } from './funded-turn-store';
 import { quoteIdentityInferenceTurn } from './identity-per-use-offer';
+import type { CumulativePaymentVoucher } from '../p2p/microcharge';
 import { readChannelUsage, readHostedToolChannel, reserveMeteredUnit, settleMeteredUnit,
   type MeteredTransportDeps, type MeteredByteSigner } from './metered-invocation-door-io';
 
@@ -37,7 +38,8 @@ export class FundedToolTurnHost {
     payerTransport: MeteredTransportDeps;
     sellerTransport: MeteredTransportDeps;
     signVoucher: MeteredByteSigner;
-    signReceipt: MeteredByteSigner;
+    signReceipt: (bytes: Buffer, context?: { turnId: string; voucher?: CumulativePaymentVoucher }) => Promise<string> | string;
+    settleRemote?: (binding: FundedToolTurnBinding, outbox: NonNullable<Extract<FundedToolTurnResult, { ok: true }>['turn']['settlementOutbox']>) => Promise<void>;
     nowMs?: () => number;
   }) {}
 
@@ -90,7 +92,8 @@ export class FundedToolTurnHost {
     if (turn.state !== 'running' || !turn.meterState) throw new LocalMeteredTurnRefusedError('invalid-turn-state', 'an entered funded tool snapshot is required');
     let revision = turn.revision;
     return new LocalMeteredTurn({ state: turn.meterState, nowMs: this.deps.nowMs ?? Date.now,
-      signVoucher: this.deps.signVoucher, signReceipt: this.deps.signReceipt,
+      signVoucher: this.deps.signVoucher,
+      signReceipt: (bytes, voucher) => this.deps.signReceipt(bytes, { turnId: turn.turnId, voucher }),
       persist: async state => {
         const saved = await this.deps.store.persistMeter(turn.binding.workspaceId, turn.turnId, revision, state);
         if (!saved.ok) throw new LocalMeteredTurnRefusedError(saved.code, saved.detail);
@@ -117,7 +120,8 @@ export class FundedToolTurnHost {
     if (!turn) return { ok: false, code: 'unknown-turn', detail: 'no durable tool admission exists' };
     if (turn.state === 'settled') return { ok: true, turn };
     if (turn.state === 'closed') {
-      const staged = await this.deps.store.stageSettlement(workspaceId, turnId, turn.revision, this.deps.signReceipt);
+      const staged = await this.deps.store.stageSettlement(workspaceId, turnId, turn.revision,
+        bytes => this.deps.signReceipt(bytes, { turnId }));
       if (!staged.ok) return staged;
       turn = staged.turn;
     }
@@ -125,16 +129,22 @@ export class FundedToolTurnHost {
       return { ok: false, code: 'tool-completion-unconfirmed', detail: 'retain the hold until the exact durable population closes' };
     const outbox = turn.settlementOutbox;
     const bytes = usageReceiptSigningBytes({ ...outbox, meterQuantity: BigInt(outbox.meterQuantity), amountMicros: BigInt(outbox.amountMicros) });
-    const settled = await settleMeteredUnit({ channelId: turn.binding.channelId, usageNonce: turnId,
+    const remote = this.deps.settleRemote;
+    let settled: Awaited<ReturnType<typeof settleMeteredUnit>> | undefined;
+    if (remote) {
+      // Lost remote acknowledgement may still have committed. The independent
+      // payer read below can confirm the exact durable outbox; no buyer POST.
+      try { await remote(turn.binding, outbox); } catch { /* retain uncertainty until readback */ }
+    } else settled = await settleMeteredUnit({ channelId: turn.binding.channelId, usageNonce: turnId,
       actualQuantity: BigInt(outbox.meterQuantity), occurredAtMs: outbox.occurredAtMs,
       signReceipt: candidate => { if (!candidate.equals(bytes)) throw new Error('hosted reservation differs from the durable tool outbox'); return outbox.signature; } }, this.deps.sellerTransport);
-    const current = await readChannelUsage(turn.binding.channelId, this.deps.sellerTransport);
+    const current = await readChannelUsage(turn.binding.channelId, remote ? this.deps.payerTransport : this.deps.sellerTransport);
     if (!current.ok) return current;
     if (current.usage.channelId !== turn.binding.channelId || !Array.isArray(current.usage.receipts))
       return { ok: false, code: 'invalid-hosted-usage', detail: 'hosted settlement history is unreadable' };
     const receipt = current.usage.receipts.find(row => row.usageNonce === turnId);
-    if (!receipt || receipt.state !== 'settled') return settled.ok
-      ? { ok: false, code: 'settlement-not-confirmed', detail: 'hosted acknowledgement is missing' } : settled;
+    if (!receipt || receipt.state !== 'settled') return settled && !settled.ok ? settled
+      : { ok: false, code: 'settlement-not-confirmed', detail: 'hosted acknowledgement is missing; retain the hold' };
     return this.deps.store.acknowledgeSettlement(workspaceId, turnId, turn.revision, receipt);
   }
 }
