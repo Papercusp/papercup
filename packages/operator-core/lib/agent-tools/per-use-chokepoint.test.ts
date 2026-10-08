@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
 import { registerProjectedTool, unregisterProjectedToolsForPlugin,
   runDispatchStack, type ProjectedTool, type UnifiedToolContext } from '@papercusp/tooldef';
-import { admitInstalledPerUseToolTurn, createInstalledPerUseChokepoint, NativeInstalledPerUseTurns,
+import { admitInstalledPerUseToolTurn, attachedInstalledToolLifecycle, createInstalledPerUseChokepoint, NativeInstalledPerUseTurns,
   nativeInstalledPerUseTurns, type AdmittedPerUseToolTurn } from './per-use-chokepoint';
 import { canonicalJson } from '../authority/authority-rpc-envelope';
 import type { FundedToolTurnBinding, FundedToolTurnResult } from '../cupboard/funded-tool-turn-store';
@@ -412,6 +412,65 @@ describe('host-owned installed tool admission composition', () => {
     const lifecycle = f.registry.nativeLifecycleFromCatalog(deps);
     return { ...f, selected, catalog, resolveContext, resolveInstallation, readTools, deps, lifecycle };
   }
+
+  function attachedFixture(funded = true) {
+    const f = catalogFixture();
+    const readNativeToolNames = vi.fn(async () => ['paid_run']);
+    const lifecycle = attachedInstalledToolLifecycle({
+      session: { workspaceId: f.context.workspaceId, ownerId: f.context.ownerId,
+        advSessionId: f.plan.context.advSessionId, principalId: f.plan.context.principalId },
+      identityLifecycle: f.deps.identityLifecycle, readNativeToolNames,
+      recordFailure: f.recordFailure, registry: f.registry, readTools: f.readTools,
+      readProvenance: f.readProvenance,
+      resolveNativeName: name => ({ paid_run: 'paid.run', tools_invoke: 'tools:invoke' } as Record<string, string>)[name],
+      ...(funded ? { funding: { host: f.plan.host, resolveInstallation: f.resolveInstallation } } : {}),
+    });
+    return { ...f, lifecycle, readNativeToolNames };
+  }
+
+  it('attached default refuses an installed paid cohort before any tool or funding entry without host capabilities', async () => {
+    const f = attachedFixture(false);
+    expect(await f.lifecycle.admit(f.context)).toMatchObject({ ok: false,
+      code: 'native-installed-admission-failed', message: expect.stringContaining('native-installed-funding-unavailable') });
+    expect(f.admitIdentity).toHaveBeenCalledOnce(); expect(f.admit).not.toHaveBeenCalled();
+    expect(f.recordFailure).toHaveBeenCalledOnce();
+  });
+
+  it('attached default registers hosted-verified free tools and withdraws them on completion', async () => {
+    const f = attachedFixture(false), free = structuredClone(provenance);
+    free.listing.priceModel = 'free'; f.readProvenance.mockResolvedValue(free);
+    const lease = await f.lifecycle.admit(f.context);
+    if (!lease.ok) throw new Error(lease.message);
+    await lease.bindNativeTurn('native-turn'); await lease.observeToolCall!(f.observation);
+    expect(f.registry.resolve({ tool: f.catalog[0]!, toolName: 'paid.run', ctx: f.requestContext } as never)).toMatchObject({ kind: 'free' });
+    await lease.complete(f.closure);
+    expect(f.registry.resolve({ tool: f.catalog[0]!, toolName: 'paid.run', ctx: f.requestContext } as never)).toBeNull();
+    expect(f.admit).not.toHaveBeenCalled();
+  });
+
+  it('attached supplier funds deferred installed targets reachable through the native wrapper', async () => {
+    const f = attachedFixture();
+    f.catalog.push({ ...tool(), pluginName: 'core', pluginInstallation: undefined, expose: { mcp: { name: 'tools:invoke' } } });
+    f.readNativeToolNames.mockResolvedValue(['tools_invoke']);
+    const lease = await f.lifecycle.admit(f.context);
+    if (!lease.ok) throw new Error(lease.message);
+    expect(f.resolveInstallation).toHaveBeenCalledOnce(); expect(f.admit).toHaveBeenCalledOnce();
+    await lease.bindNativeTurn('native-turn');
+    await lease.observeToolCall!({ ...f.observation, tool: 'tools_invoke' });
+    expect(f.registry.resolve({ tool: f.catalog[0]!, toolName: 'paid.run', ctx: { ...f.requestContext, indirectDispatch: true } } as never)).toMatchObject({ kind: 'per-use' });
+    await lease.complete(f.closure);
+  });
+
+  it('attached supplier refreshes inventory each turn and preserves identity refusals', async () => {
+    const f = attachedFixture(false);
+    f.admitIdentity.mockResolvedValueOnce({ ok: false, code: 'identity-refused', message: 'blocked', retryable: false } as never);
+    expect(await f.lifecycle.admit(f.context)).toMatchObject({ ok: false, code: 'identity-refused' });
+    expect(f.readNativeToolNames).not.toHaveBeenCalled();
+    f.readNativeToolNames.mockResolvedValueOnce([]);
+    expect(await f.lifecycle.admit(f.context)).toMatchObject({ ok: true });
+    expect(await f.lifecycle.admit({ ...f.context, ownerTurnId: 'next-owner-turn' })).toMatchObject({ ok: false });
+    expect(f.readNativeToolNames).toHaveBeenCalledTimes(2);
+  });
 
   it('supplies one funding admission for several exact loaded targets of the same installation', async () => {
     const f = catalogFixture();

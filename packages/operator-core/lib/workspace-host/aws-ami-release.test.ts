@@ -18,7 +18,9 @@ import {
   type WorkspaceHostCleanRoomInstallSpec,
   type WorkspaceHostImageArtifact,
 } from '@papercusp/deployment-driver';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { assertAwsAmiTaskBudget, awsAmiPublicationBudgetMs, executeConfiguredAwsAmiRelease } from './aws-ami-production';
+import { TASK_DEADLINE_EPOCH_MS_ENV } from '../systemd-scope';
 
 import {
   ATTESTATION_PREFIX as CANARY_ATTESTATION_PREFIX,
@@ -56,6 +58,39 @@ const PUBLISHER = '111111111111';
 const CLEAN_ACCOUNT = '222222222222';
 const REGIONS = ['us-east-1', 'us-west-2'] as const;
 const BOOTC_SHA = '9'.repeat(64);
+
+describe('AWS publication phase budget with a real rendered canary fixture', () => {
+  it('rejects the combined three-hour caller before any production side effect', async () => {
+    const send = vi.fn();
+    const run = vi.fn();
+    const input = request();
+    vi.stubEnv(TASK_DEADLINE_EPOCH_MS_ENV, String(3 * 60 * 60_000));
+    try {
+      await expect(executeConfiguredAwsAmiRelease(input, {
+        target: 'aws', scope: { kind: 'account', id: PUBLISHER },
+      } as never, {}, {
+        now: () => 0, ec2: () => ({ send }), ssm: () => ({ send }), kms: () => ({ send }),
+        childCredentials: async () => ({}), commands: { run },
+      })).rejects.toThrow(/AWS_AMI_TASK_BUDGET_REFUSAL publication/);
+      expect(send).not.toHaveBeenCalled();
+      expect(run).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('reserves retries, copies and fixture-sized canary work; recovery skips only rebuilding', () => {
+    const input = request();
+    const full = awsAmiPublicationBudgetMs(input);
+    const recovered = awsAmiPublicationBudgetMs(input, true);
+    expect(full - recovered).toBe(2 * 2 * 60 * 60_000 + 2 * 60 * 60_000);
+    expect(awsAmiPublicationBudgetMs({ ...input, targets: input.targets.slice(0, 1) }, true))
+      .toBe(recovered - 60 * 60_000);
+    const env = { [TASK_DEADLINE_EPOCH_MS_ENV]: String(full + 1000) };
+    expect(() => assertAwsAmiTaskBudget('publication', () => full, 1000, env)).not.toThrow();
+    expect(() => assertAwsAmiTaskBudget('publication', () => full, 1001, env)).toThrow(/REFUSAL/);
+  });
+});
 
 function artifact(): WorkspaceHostImageArtifact {
   const buildManifest = buildWorkspaceHostBuildManifest({

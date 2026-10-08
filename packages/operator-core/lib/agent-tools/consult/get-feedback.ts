@@ -48,7 +48,7 @@ export default defineTool({
     notWhen:
       'Reading an existing conversation? use conversations:get { id }. Query live state; coord:ask-owner for owner decisions, coord:send for known agents. Do not consult to meet a quota or when code, docs, or search answer it. Do not open duplicate consults or repeat unchanged questions after no_available_responder; advice is not a handoff.',
     chaining:
-      "This tool does not read an existing conversation; use conversations:get { id }. The dispatcher already walks allowed model ranks; do not retry. Set latency_contract:'hard-blocked' only if blocked on the answer; declines/expiries advance the cascade. After advice arrives, read the reply and compare it with the decision you took; record confirmed/rescoped/reversed/moot via consult:reconcile with a substantive note. Receipt or silence does not prove usefulness. With allow_dispatch:false, retrieval-only returns candidates but no answer session.",
+      "This tool does not read an existing conversation; use conversations:get { id }. The dispatcher already walks allowed model ranks; do not retry. Set latency_contract:'hard-blocked' only if blocked on the answer; declines/expiries advance the cascade. After advice arrives, read the reply and apply relevant findings to your project decision. Receipt or silence does not prove usefulness. With allow_dispatch:false, retrieval-only returns candidates but no answer session.",
     returns:
       '{ verdict, conversation_id, thread_id, responder, responder_via, remaining_candidates, latency_contract, expires_at, archive?, hint }',
   },
@@ -64,7 +64,7 @@ export default defineTool({
     latency_contract: z
       .enum(['proceed', 'hard-blocked'])
       .optional()
-      .describe("'proceed' (default): continue on your own judgment, reconcile when the reply lands. 'hard-blocked': you will park on the returned park_key event."),
+      .describe("'proceed' (default): continue on your own judgment and use relevant advice when it arrives. 'hard-blocked': you will park on the returned park_key event."),
     origin_task_ref: z
       .string()
       .min(1)

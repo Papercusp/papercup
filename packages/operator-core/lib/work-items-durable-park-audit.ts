@@ -17,6 +17,7 @@ import { ANY_FAMILY_TERMINAL_STATES } from './work-item-dispatch-states';
 import type { AdmissionRunOutcome } from './work-items-admission-promoter';
 import { readWorkItemClaimHoldProvenance, type OrgSql } from './work-items';
 import { buildDurableParkReleaseContract } from './durable-park-release-contract';
+import { eventHasSpecificCondition } from './external-condition-reachability';
 
 export const WORK_ITEM_DURABLE_PARK_AUDIT = 'work-item-durable-park-audit';
 /**
@@ -501,7 +502,7 @@ type EventDurableParkRow = {
 /**
  * Clear durable parks whose typed release contract names the event that just
  * fired. This is intentionally narrower than external-blocker reconciliation:
- * a durable park has no TTL and must only be cleared by its own exact trigger,
+ * a durable park has no TTL and must only be cleared by its own specific trigger,
  * never by an unrelated event or by the holder's liveness changing.
  *
  * The caller supplies its transaction so announcement latching and park
@@ -517,6 +518,9 @@ export async function reconcileEventDurableParks(
 ): Promise<EventDurableParkReconcileResult> {
   const trigger = eventKey.trim();
   if (!trigger) return { matched: 0, cleared: 0, skipped: 0, preservedLeases: 0 };
+  // The caller has just latched a producer announcement in this transaction.
+  // Even a declared broad notification is only a wake, not condition satisfaction.
+  const specificCondition = eventHasSpecificCondition(trigger, true);
 
   const parsedNow = Date.parse(now);
   const updatedTs = Number.isFinite(parsedNow) ? parsedNow : Date.now();
@@ -535,6 +539,10 @@ export async function reconcileEventDurableParks(
   let skipped = 0;
   let preservedLeases = 0;
   for (const row of rows) {
+    if (!specificCondition) {
+      skipped += 1;
+      continue;
+    }
     const expectedParkFingerprint = durableParkFingerprint({
       state: row.state,
       takenBy: row.taken_by,

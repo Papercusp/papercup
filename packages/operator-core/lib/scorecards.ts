@@ -3251,6 +3251,18 @@ export interface CriterionTrend {
    * 'unknown' and false-positived the model-drift detector).
    */
   idleCount: number;
+  /**
+   * # in-window `unknown` ratings carrying unknownReason `not-assessed`: the GRADER
+   * did not finish this criterion. Grader backlog, not rubric drift and not an
+   * instrument failure (EI-25425148387198503) — excluded from staleness like idle.
+   */
+  notAssessedCount: number;
+  /**
+   * In-window `unknown` ratings split by their STRUCTURED unknownReason; a legacy
+   * unknown without one counts under `unspecified`. Lets a reader tell unfinished
+   * grading (`not-assessed`) from a real measurement failure (`instrument-unavailable`).
+   */
+  unknownReasons: Record<string, number>;
   /** The earliest rating in the window (chronological). */
   first: { rating: string; at: string };
   /** The most-recent rating in the window. */
@@ -3363,7 +3375,9 @@ export function computeRubricStaleness(
     // (EI-7624). Exclude them from BOTH sides of the fraction, so a mostly-idle
     // window neither manufactures staleness nor dilutes a real drift signal in
     // the few non-idle samples.
-    const idle = staleRatings.has('unknown') ? (c.idleCount ?? 0) : 0;
+    // A `not-assessed` unknown is unfinished GRADING (EI-25425148387198503), not the
+    // rubric failing to describe reality — excluded on the same both-sides basis.
+    const idle = staleRatings.has('unknown') ? (c.idleCount ?? 0) + (c.notAssessedCount ?? 0) : 0;
     const samples = c.count - idle;
     if (samples < minSamples) continue; // too little non-idle evidence → not "stale", just quiet
     judgedCriteria += 1;
@@ -3466,6 +3480,19 @@ export interface RubricTrend {
   >>;
   /** Per-criterion trends, criterion key ASC (stable output). */
   criteria: CriterionTrend[];
+  /**
+   * Every in-window `unknown` rating across all criteria, split by STRUCTURED
+   * unknownReason (`unspecified` = legacy unknown with none). `graderIncomplete` is
+   * the `not-assessed` share and `instrumentUnavailable` the measurement-failure
+   * share, broken out so the two are never added together as "unknowns"
+   * (EI-25425148387198503).
+   */
+  unknownBreakdown: {
+    total: number;
+    graderIncomplete: number;
+    instrumentUnavailable: number;
+    byReason: Record<string, number>;
+  };
   /** Governance provenance (WI-4607, D-012): the rubric's status + who proposed vs.
    *  ratified it, so the detail panel can surface author≠ratifier the same way the
    *  RubricsPanel list does. Sourced from the same getRubric() read the mean10 scale
@@ -3716,7 +3743,7 @@ export async function scorecardTrend(filter: ScorecardTrendFilter): Promise<Rubr
     if (key) instrumentKeyByCriterion.set(c.key, key);
   }
 
-  const byCriterion = new Map<string, { at: string; rating: string; idle: boolean }[]>();
+  const byCriterion = new Map<string, { at: string; rating: string; idle: boolean; unknownReason: string | null }[]>();
   for (const sc of chrono) {
     for (const [criterion, entry] of Object.entries(sc.ratings)) {
       // Historical writers could store ad-hoc rating keys while still passing
@@ -3726,22 +3753,39 @@ export async function scorecardTrend(filter: ScorecardTrendFilter): Promise<Rubr
       // key set to filter against.
       if (declaredCriterionKeys && !declaredCriterionKeys.has(criterion)) continue;
       const arr = byCriterion.get(criterion) ?? [];
-      arr.push({ at: sc.createdAt, rating: entry.rating, idle: isIdleUnknown(entry.rating, entry.evidence) });
+      const isUnknown = entry.rating.toLowerCase() === 'unknown';
+      arr.push({
+        at: sc.createdAt,
+        rating: entry.rating,
+        idle: isIdleUnknown(entry.rating, entry.evidence),
+        unknownReason: isUnknown ? (entry.unknownReason ?? 'unspecified') : null,
+      });
       byCriterion.set(criterion, arr);
     }
   }
 
+  const unknownByReason: Record<string, number> = {};
   const criteria: CriterionTrend[] = [...byCriterion.entries()]
     .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
     .map(([criterion, series]) => {
       const distribution: Record<string, number> = {};
       for (const s of series) distribution[s.rating] = (distribution[s.rating] ?? 0) + 1;
+      const unknownReasons: Record<string, number> = {};
+      for (const s of series) {
+        if (s.unknownReason === null) continue;
+        unknownReasons[s.unknownReason] = (unknownReasons[s.unknownReason] ?? 0) + 1;
+        unknownByReason[s.unknownReason] = (unknownByReason[s.unknownReason] ?? 0) + 1;
+      }
       const nums = series.map((s) => ratingScore10(s.rating, scoreOverrides)).filter((n): n is number => n !== null);
       return {
         criterion,
         count: series.length,
         distribution,
+        // A rating counted idle by its evidence prefix is not also counted not-assessed:
+        // staleness subtracts both, so double-counting one rating would shrink samples twice.
         idleCount: series.reduce((n, s) => n + (s.idle ? 1 : 0), 0),
+        notAssessedCount: series.reduce((n, s) => n + (!s.idle && s.unknownReason === 'not-assessed' ? 1 : 0), 0),
+        unknownReasons,
         first: { rating: series[0].rating, at: series[0].at },
         latest: { rating: series[series.length - 1].rating, at: series[series.length - 1].at },
         direction: computeTrendDirection(series),
@@ -3829,6 +3873,12 @@ export async function scorecardTrend(filter: ScorecardTrendFilter): Promise<Rubr
         }
       : {}),
     criteria,
+    unknownBreakdown: {
+      total: Object.values(unknownByReason).reduce((sum, n) => sum + n, 0),
+      graderIncomplete: unknownByReason['not-assessed'] ?? 0,
+      instrumentUnavailable: unknownByReason['instrument-unavailable'] ?? 0,
+      byReason: unknownByReason,
+    },
     ...(trendRubric ? { status: trendRubric.status } : {}),
     proposedBy: trendRubric?.proposedBy ?? null,
     ratifiedBy: trendRubric?.ratifiedBy ?? null,

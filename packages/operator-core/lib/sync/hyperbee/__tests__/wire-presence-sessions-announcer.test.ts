@@ -267,6 +267,19 @@ describe('one roster read per workspace per tick — WI-10005271', () => {
     expect(broadcastSessions).toHaveBeenCalledTimes(1);
   });
 
+  it('a roster is retried on the next tick when the session frame was not sent', async () => {
+    const t = timers();
+    await wire(handle('repo-a', 'topic-1').h, t);
+    broadcastSessions.mockResolvedValueOnce(false);
+
+    await tickAll(t);
+    expect(broadcastSessions).toHaveBeenCalledTimes(1);
+
+    clock += SESSION_TICK_MS;
+    await tickAll(t);
+    expect(broadcastSessions).toHaveBeenCalledTimes(2);
+  });
+
   it('different workspaces never share a roster snapshot', async () => {
     const t = timers();
     await wire(handle('repo-a', 'topic-1', 'ws-1').h, t);

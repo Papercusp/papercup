@@ -28,6 +28,20 @@ function alive(pid: number): boolean {
   }
 }
 
+/**
+ * Wait (bounded) for a signalled pid to stop executing, then report whether it still is.
+ *
+ * WI-10007518: `defaultExec` resolves right after SENDING the group kill, and the kernel acts on
+ * it only once the target is next scheduled. A fixed 200ms pause lost that race in 4 of 27 CI
+ * runs on a loaded gate box (`alive(holder)` still true). The deadline is still far below the
+ * fixtures' `sleep 30`, so an executor that never signals the group fails exactly as before.
+ */
+async function stillAliveAfterKill(pid: number, deadlineMs = 7_000): Promise<boolean> {
+  const deadline = performance.now() + deadlineMs;
+  while (alive(pid) && performance.now() < deadline) await realSetTimeout(10);
+  return alive(pid);
+}
+
 // WI-10004928 part 5: a grandchild that inherited stdout (a dependency-generation `cp`) kept
 // 'close' from firing, so the pre-check held its single slot far past the setup budget.
 describe('admission pre-check defaultExec subtree handling', () => {
@@ -98,8 +112,7 @@ describe('admission pre-check defaultExec subtree handling', () => {
     expect(r.durationMs).toBeLessThan(EXEC_STDIO_CLOSE_GRACE_MS + 5_000);
     const holder = Number(r.output.split('\n')[0]);
     expect(Number.isInteger(holder) && holder > 0).toBe(true);
-    await new Promise((res) => setTimeout(res, 200));
-    expect(alive(holder)).toBe(false);
+    expect(await stillAliveAfterKill(holder), 'the inherited-pipe holder is killed').toBe(false);
   }, 15_000);
 
   it('a timeout kills the whole process group, not just the direct child', async () => {
@@ -111,8 +124,7 @@ describe('admission pre-check defaultExec subtree handling', () => {
     expect(r.durationMs).toBeLessThan(EXEC_STDIO_CLOSE_GRACE_MS + 5_000);
     const grandchild = Number(r.output.split('\n')[0]);
     expect(Number.isInteger(grandchild) && grandchild > 0).toBe(true);
-    await new Promise((res) => setTimeout(res, 200));
-    expect(alive(grandchild)).toBe(false);
+    expect(await stillAliveAfterKill(grandchild), 'the timeout kills the whole group').toBe(false);
   }, 15_000);
 
   it.each(['wall', 'idle', 'idle-after-output'] as const)(

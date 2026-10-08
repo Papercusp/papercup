@@ -7,7 +7,8 @@ import {
   parseWorkspaceHostBootstrapAttestation,
   type WorkspaceHostCleanRoomInstallFixture,
 } from '@papercusp/deployment-driver';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { TASK_DEADLINE_EPOCH_MS_ENV } from '../systemd-scope';
 
 import type { AwsAmiCleanAccountLaunchProof } from './aws-ami-release';
 import { SdkAwsAmiReleaseAdapter, type AwsAmiCommandRunner } from './aws-ami-production';
@@ -26,6 +27,9 @@ const RELEASE_SHA = 'b'.repeat(64);
 const MANIFEST = `sha256:${'c'.repeat(64)}`;
 const AMI = 'ami-0123456789abcdef0';
 const SNAP = 'snap-0abc123';
+
+beforeEach(() => vi.stubEnv(TASK_DEADLINE_EPOCH_MS_ENV, undefined));
+afterEach(() => vi.unstubAllEnvs());
 
 const placement: AwsBootcCleanRoomPlacement = {
   publisherAccountId: PUBLISHER,

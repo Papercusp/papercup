@@ -27,13 +27,13 @@ export function assertDurableParkReleaseContract(value: unknown): void {
   }
 }
 
-/** Resolve, rather than trust, the release condition. A fired latch is already satisfied;
- * an unregistered/unmeasured key is blocked, never guessed unreachable from age or prose. */
+/** Resolve, rather than trust, the release condition. Only a specific condition's
+ * fired latch is satisfied; broad wakes and unmeasured keys remain unverified. */
 export async function buildDurableParkReleaseContract(
   input: { condition: string; trigger: string; owner?: string },
   defaultOwner: string,
 ): Promise<DurableParkReleaseContract> {
-  const reachability = await readEventConditionReachability(input.trigger);
+  const reachability = await readEventConditionReachability(input.trigger, { requireSpecificCondition: true });
   return {
     condition: input.condition.trim(),
     owner: input.owner?.trim() || defaultOwner,

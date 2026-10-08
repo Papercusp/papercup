@@ -1138,6 +1138,23 @@ describe('await-event store (PG)', () => {
     expect(assigned.payload).toHaveProperty('claim_hold_by', 'park-owner');
   });
 
+  it.each(['work-item:claimable', 'release:deployed', 'release:deployed:abc123',
+    'coord:inbox-wake:park-owner', 'fleet:item-completed:test', 'work-item:unblocked'])
+  ('firing a declared broad trigger retains the specific-condition park: %s', async (eventKey) => {
+    await registerAnnouncement({ subscriberId: 'declarer', eventKey, scopeKind: 'global' });
+    const payload = { _claimHold: true, claim_hold_by: 'park-owner',
+      claim_hold_reason: 'owner grade has not cleared', claim_hold_at: '2026-09-08T18:00:00.000Z',
+      held_open_by: 'independent-reviewer', held_open_reason: 'review pending',
+      claim_hold_release: { condition: 'owner grade is cleared', owner: 'grade-owner',
+        trigger: eventKey, reachability: 'reachable', evidence: 'wake is registered' } };
+    await rootSql`INSERT INTO harness_shared.work_items (feature_id, status, item_kind, payload)
+      VALUES ('EI-broad-fire-durable-park', 'open', 'bug', ${JSON.stringify(payload)}::text::jsonb)`;
+    await expect(stampAnnouncementsFired(eventKey, { firedBy: 'unrelated-producer' })).resolves.toBe(1);
+    const rows = await rootSql`SELECT payload FROM harness_shared.work_items
+      WHERE feature_id = 'EI-broad-fire-durable-park'`;
+    expect(rows[0].payload).toEqual(payload);
+  });
+
   it('guards announcement retirement by owner, generation, and fired state', async () => {
     const foreign = await registerAnnouncement({ subscriberId: 'owner-a', eventKey: 'gate:retire-foreign', scopeKind: 'global' });
     await expect(retireAnnouncement({ announcementId: foreign.id, subscriberId: 'owner-b' })).resolves.toMatchObject({

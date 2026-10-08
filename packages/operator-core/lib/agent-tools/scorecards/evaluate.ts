@@ -11,6 +11,7 @@ import {
   validateScorecardRatingValues,
   validateScorecardPoorRatingDisposition,
   ObservationEvidenceError,
+  OBSERVATION_UNKNOWN_REASONS,
   type ObservationRatings,
 } from '../../harness/improvements/observation-types';
 import {
@@ -37,18 +38,9 @@ export const scorecardRatingEntrySchema = z
     evidenceKind: z.string().min(1).max(80).optional(),
     positiveControlRef: z.string().min(1).max(500).optional(),
     absenceClaim: z.boolean().optional(),
-    unknownReason: z
-      .enum([
-        'idle',
-        'not-exercised',
-        'instrument-unavailable',
-        'retention-gap',
-        'generation-mismatch',
-        'external-capacity',
-        'scope-mismatch',
-        'other',
-      ])
-      .optional(),
+    // One vocabulary (observation-types): a second hand-copied literal list here is
+    // how `not-assessed` could exist on the read path but be refused on emit.
+    unknownReason: z.enum(OBSERVATION_UNKNOWN_REASONS).optional(),
     attribution: z.enum(['subject', 'system', 'instrument', 'environment', 'ambiguous']).optional(),
     nextEvidenceAction: z.string().min(1).max(1000).optional(),
     suggestion: z.string().min(1).max(2000).optional(),

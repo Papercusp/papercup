@@ -344,6 +344,7 @@ import desktopDocsAgentAsk from './desktop/docs-agent-ask';
 import desktopSetupPtyCommands from './desktop/setup-pty-commands';
 import desktopSetupStatus from './desktop/setup-status';
 import desktopSetupWizardState from './desktop/setup-wizard-state';
+import desktopDaoLaunch from './desktop/dao-launch';
 import desktopTelemetryConfig from './desktop/telemetry-config';
 import desktopTelemetryFlush from './desktop/telemetry-flush';
 import desktopTelemetryReport from './desktop/telemetry-report';
@@ -867,6 +868,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(desktopSetupPtyCommands as AnyRoute),
   ...flatten(desktopSetupStatus as AnyRoute),
   ...flatten(desktopSetupWizardState as AnyRoute[]),
+  ...flatten(desktopDaoLaunch as AnyRoute[]),
   ...flatten(desktopTelemetryConfig as AnyRoute),
   ...flatten(desktopTelemetryFlush as AnyRoute),
   ...flatten(desktopTelemetryReport as AnyRoute[]),

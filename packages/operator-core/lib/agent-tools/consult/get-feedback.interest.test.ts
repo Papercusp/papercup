@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { existsSync, readFileSync } from 'node:fs';
 
 const h = vi.hoisted(() => ({
   getFeedbackCore: vi.fn(),
@@ -169,6 +170,12 @@ describe('consult:get_feedback requester interest handle (P-024)', () => {
 });
 
 describe('consult:get_feedback requester guidance', () => {
+  it('keeps the retired reporting verb out of the production registration entrypoint', () => {
+    const entrypoint = readFileSync(new URL('../index.ts', import.meta.url), 'utf8');
+    expect(entrypoint).not.toMatch(/import\s+['"]\.\/consult\/reconcile['"]/);
+    expect(existsSync(new URL('./reconcile.ts', import.meta.url))).toBe(false);
+  });
+
   it('stays within the live prompt-weight budget', () => {
     const projected = lookupByMcpName('consult:get_feedback');
     expect(projected).toBeDefined();
@@ -194,14 +201,12 @@ describe('consult:get_feedback requester guidance', () => {
     expect((tool as any).guidance.chaining).toContain('dispatcher already walks allowed model ranks');
   });
 
-  it('requires requester follow-through without inferring usefulness from delivery', () => {
+  it('asks agents to use advice without a separate reporting tool call', () => {
     expect((tool as any).guidance.chaining).toContain('read the reply');
-    expect((tool as any).guidance.chaining).toContain('compare it with the decision');
-    expect((tool as any).guidance.chaining).toContain('consult:reconcile');
-    expect((tool as any).guidance.chaining).toContain('confirmed/rescoped/reversed/moot');
-    expect((tool as any).guidance.chaining).toContain('substantive note');
+    expect((tool as any).guidance.chaining).toContain('apply relevant findings to your project decision');
     expect((tool as any).guidance.chaining).toContain('Receipt or silence does not prove usefulness');
     expect((tool as any).guidance.chaining).toContain('retrieval-only');
+    expect((tool as any).guidance.chaining).not.toContain('consult:reconcile');
     expect((tool as any).guidance.notWhen).toContain('Do not consult to meet a quota');
   });
 });

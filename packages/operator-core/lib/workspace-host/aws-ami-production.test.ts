@@ -15,6 +15,9 @@ import {
 } from './aws-ami-release';
 import {
   AWS_AMI_COMMAND_ERROR_DETAIL_CHARS,
+  AWS_AMI_CONTAINED_CANARY_TAG,
+  type AwsAmiCandidateContainmentReceipt,
+  assertAwsAmiTaskBudget,
   SdkAwsAmiReleaseAdapter,
   composeAwsAmiReleaseAdapter,
   executeConfiguredAwsAmiRelease,
@@ -23,6 +26,8 @@ import {
 } from './aws-ami-production';
 import { NodeGcpImageFamilyCommandRunner } from './gcp-image-family-adapter';
 import { CANARY_BUDGETS, SSM_CHUNK_CHARS } from '../../bin/aws-ami-canary-measure.mjs';
+import { AWS_AMI_SCAN_RUNNER_TIMEOUT_MS } from '../../bin/aws-ami-scan-measure.mjs';
+import { TASK_DEADLINE_EPOCH_MS_ENV } from '../systemd-scope';
 
 const KMS = 'arn:aws:kms:us-east-1:111111111111:key/abc';
 const SHARE_ACCOUNT = '497149484242';
@@ -53,12 +58,71 @@ let dir: string;
 let diskPath: string;
 let diskSha: string;
 beforeEach(async () => {
+  // Unit adapters have their own injected clock; the test runner's task deadline is unrelated.
+  vi.stubEnv(TASK_DEADLINE_EPOCH_MS_ENV, undefined);
   dir = await mkdtemp(join(tmpdir(), 'aws-ami-production-'));
   diskPath = join(dir, 'disk.raw');
   await writeFile(diskPath, 'bootc-ami-disk');
   diskSha = createHash('sha256').update('bootc-ami-disk').digest('hex');
 });
-afterEach(async () => rm(dir, { recursive: true, force: true }));
+afterEach(async () => {
+  vi.unstubAllEnvs();
+  await rm(dir, { recursive: true, force: true });
+});
+
+describe('AWS AMI inherited task budget preflight (WI-10007501)', () => {
+  it('uses remaining absolute time rather than restarting a duration at each phase', () => {
+    const env = { [TASK_DEADLINE_EPOCH_MS_ENV]: '10000' };
+    expect(() => assertAwsAmiTaskBudget('publication', () => 5000, 5000, env)).not.toThrow();
+    expect(() => assertAwsAmiTaskBudget('publication', () => 5000, 5001, env))
+      .toThrow(/remainingMs=4999 requiredMs=5000/);
+    expect(() => assertAwsAmiTaskBudget('publication', () => 5000, 10001, env))
+      .toThrow(/AWS_AMI_TASK_BUDGET_REFUSAL/);
+  });
+
+  it('keeps unbounded calls unchanged and refuses malformed inherited deadlines', () => {
+    const derive = vi.fn(() => 5000);
+    assertAwsAmiTaskBudget('publication', derive, 0, {});
+    expect(derive).not.toHaveBeenCalled();
+    for (const raw of ['', 'invalid', '-1', 'Infinity', '1.5']) {
+      expect(() => assertAwsAmiTaskBudget('publication', derive, 0, { [TASK_DEADLINE_EPOCH_MS_ENV]: raw }))
+        .toThrow(/invalid inherited/);
+    }
+  });
+
+  it('refuses a three-hour clean-room envelope before any upload or AWS mutation', async () => {
+    vi.stubEnv(TASK_DEADLINE_EPOCH_MS_ENV, String(3 * 60 * 60_000));
+    const calls: Call[] = [];
+    const runs: unknown[] = [];
+    const adapter = new SdkAwsAmiReleaseAdapter({
+      ec2: () => fakeSender({}, calls), ssm: () => fakeSender({}, calls), kms: () => fakeSender({}, calls),
+      childCredentials: async () => ({}), commands: fakeCommands('', runs), now: () => 0,
+    });
+    await expect(adapter.stageCleanRoomImage({
+      region: 'us-east-1', bootcArtifact: buildInput().bootcArtifact!,
+      imageName: 'clean-room', description: 'test', architecture: 'x86_64',
+      shareWithAccountId: SHARE_ACCOUNT, tags: {},
+    })).rejects.toThrow(/AWS_AMI_TASK_BUDGET_REFUSAL clean room/);
+    expect(calls).toEqual([]);
+    expect(runs).toEqual([]);
+  });
+
+  it('does not start a scan or create a canary when only one minute remains', async () => {
+    vi.stubEnv(TASK_DEADLINE_EPOCH_MS_ENV, '60000');
+    const calls: Call[] = [];
+    const runs: unknown[] = [];
+    const adapter = new SdkAwsAmiReleaseAdapter({
+      ec2: () => fakeSender({}, calls), ssm: () => fakeSender({}, calls), kms: () => fakeSender({}, calls),
+      childCredentials: async () => ({}), commands: fakeCommands('{}', runs), now: () => 0,
+    });
+    await expect(adapter.scanImage({ region: 'us-east-1', imageId: 'ami-0abc', buildManifestIdentity: `sha256:${SHA}`, releaseSha256: SHA }))
+      .rejects.toThrow(/AWS_AMI_TASK_BUDGET_REFUSAL AMI scan/);
+    await expect(adapter.launchCleanAccountCanary({ region: 'us-east-1', fixture: { bootstrapScript: 'x'.repeat(24001) } } as never))
+      .rejects.toThrow(/AWS_AMI_TASK_BUDGET_REFUSAL clean-account canary/);
+    expect(calls).toEqual([]);
+    expect(runs).toEqual([]);
+  });
+});
 
 function buildInput(overrides: Record<string, unknown> = {}) {
   return {
@@ -110,7 +174,7 @@ describe('AWS AMI release description (cross-account provenance)', () => {
 });
 
 describe('SdkAwsAmiReleaseAdapter private candidate recovery', () => {
-  function recovery(calls: Call[], runs: unknown[]) {
+  function recovery(calls: Call[], runs: unknown[], contained = false) {
     const input = buildInput();
     const provenance = {
       'papercusp:managed': 'true',
@@ -132,6 +196,17 @@ describe('SdkAwsAmiReleaseAdapter private candidate recovery', () => {
     };
     const launch = { LaunchPermissions: [] as { Group?: string; UserId?: string }[] };
     const permissions = { CreateVolumePermissions: [] as { Group?: string; UserId?: string }[] };
+    const receipt: AwsAmiCandidateContainmentReceipt = {
+      schemaVersion: 1, publisherAccountId: '111111111111', region: input.sourceRegion,
+      imageId: 'ami-0abc', snapshotId: 'snap-0abc', releaseSha256: input.releaseSha256,
+      buildManifestIdentity: input.buildManifestIdentity, cleanAccountId: SHARE_ACCOUNT,
+      canaryInstanceId: 'i-0abc', terminated: true, residualResourceIds: [],
+      observedAt: new Date().toISOString(), evidenceRef: 'work-item:WI-10007515/custody-receipt',
+    };
+    if (contained) {
+      image.Tags.push({ Key: AWS_AMI_CONTAINED_CANARY_TAG, Value: receipt.canaryInstanceId });
+      snapshot.Tags.push({ Key: AWS_AMI_CONTAINED_CANARY_TAG, Value: receipt.canaryInstanceId });
+    }
     const deps = {
       publisherAccountId: '111111111111',
       ec2: () => fakeSender({
@@ -144,11 +219,52 @@ describe('SdkAwsAmiReleaseAdapter private candidate recovery', () => {
       childCredentials: async () => ({}), commands: fakeCommands('', runs),
     };
     const adapter = new SdkAwsAmiReleaseAdapter(deps, {
-      resumeCandidateImageId: 'ami-0abc',
+      ...(contained ? { containedCandidateRecovery: receipt } : { resumeCandidateImageId: 'ami-0abc' }),
       guestToolVersions: { 'amazon-ssm-agent': '3.3.1', 'openssh-server': '9.6' },
     });
-    return { input, image, snapshot, launch, permissions, deps, adapter };
+    return { input, image, snapshot, launch, permissions, deps, adapter, receipt };
   }
+
+  it('admits explicit contained custody and keeps it forbidden on the original private path', async () => {
+    const calls: Call[] = []; const runs: unknown[] = []; const f = recovery(calls, runs, true);
+    await expect(f.adapter.buildCandidate(f.input)).resolves.toEqual({ imageId: 'ami-0abc' });
+    expect(runs).toEqual([]); expect(calls.every(x => x.name.startsWith('Describe'))).toBe(true);
+    const original = new SdkAwsAmiReleaseAdapter(f.deps, {
+      resumeCandidateImageId: 'ami-0abc', guestToolVersions: { 'amazon-ssm-agent': '3.3.1', 'openssh-server': '9.6' },
+    });
+    await expect(original.buildCandidate(f.input)).rejects.toThrow(/formerly shared candidate/);
+  });
+
+  it.each(['publisherAccountId', 'region', 'releaseSha256', 'buildManifestIdentity', 'canaryInstanceId', 'observedAt', 'evidenceRef'])(
+    'refuses a contained recovery receipt with invalid %s', async field => {
+      const calls: Call[] = []; const runs: unknown[] = []; const f = recovery(calls, runs, true);
+      (f.receipt as unknown as Record<string, unknown>)[field] = '';
+      await expect(f.adapter.buildCandidate(f.input)).rejects.toThrow(/fresh exact custody receipt/);
+      expect(calls).toEqual([]); expect(runs).toEqual([]);
+    },
+  );
+
+  it('refuses expired, residual, unterminated or still-shared contained custody', async () => {
+    const calls: Call[] = []; const runs: unknown[] = []; const f = recovery(calls, runs, true);
+    f.receipt.observedAt = new Date(Date.now() - 2 * 60 * 60_000).toISOString();
+    await expect(f.adapter.buildCandidate(f.input)).rejects.toThrow(/fresh exact custody receipt/);
+    f.receipt.observedAt = new Date().toISOString(); f.receipt.residualResourceIds = ['vol-0bad'];
+    await expect(f.adapter.buildCandidate(f.input)).rejects.toThrow(/zero residue/);
+    f.receipt.residualResourceIds = []; (f.receipt as unknown as { terminated: boolean }).terminated = false;
+    await expect(f.adapter.buildCandidate(f.input)).rejects.toThrow(/terminated canary/);
+    (f.receipt as unknown as { terminated: boolean }).terminated = true; f.launch.LaunchPermissions.push({ UserId: SHARE_ACCOUNT });
+    await expect(f.adapter.buildCandidate(f.input)).rejects.toThrow(/empty launch permissions/);
+    expect(runs).toEqual([]); expect(calls.every(x => x.name.startsWith('Describe'))).toBe(true);
+  });
+
+  it('binds contained root snapshot and its permanent marker to the receipt', async () => {
+    const f = recovery([], [], true);
+    f.receipt.snapshotId = 'snap-0bad';
+    await expect(f.adapter.buildCandidate(f.input)).rejects.toThrow(/root does not match/);
+    f.receipt.snapshotId = 'snap-0abc';
+    f.snapshot.Tags.find(x => x.Key === AWS_AMI_CONTAINED_CANARY_TAG)!.Value = 'i-0bad';
+    await expect(f.adapter.buildCandidate(f.input)).rejects.toThrow(/snapshot.*containment marker/);
+  });
 
   it('reuses only the exact private encrypted candidate with read-only metadata calls and no upload', async () => {
     const calls: Call[] = []; const runs: unknown[] = [];
@@ -490,6 +606,16 @@ describe('SdkAwsAmiReleaseAdapter.publishPermissions', () => {
 });
 
 describe('SdkAwsAmiReleaseAdapter.scanImage', () => {
+  it('reserves the scanner download, three scans, bounded host work and teardown', async () => {
+    const runs: unknown[] = [];
+    const adapter = new SdkAwsAmiReleaseAdapter({
+      ec2: () => fakeSender({}, []), ssm: () => fakeSender({}, []), kms: () => fakeSender({}, []),
+      childCredentials: async () => ({}), commands: fakeCommands('{}', runs),
+    });
+    await adapter.scanImage({ region: 'us-east-1', imageId: 'ami-0abc', buildManifestIdentity: `sha256:${SHA}`, releaseSha256: SHA });
+    expect(runs[0]).toMatchObject({ timeoutMs: AWS_AMI_SCAN_RUNNER_TIMEOUT_MS });
+    expect(AWS_AMI_SCAN_RUNNER_TIMEOUT_MS).toBeGreaterThan(60 * 60_000 + 3 * 45 * 60_000);
+  });
   it('hands the scan child the same coldsnap the upload uses (WI-10005642)', async () => {
     const runs: unknown[] = [];
     const scanInput = { region: 'us-east-1', imageId: 'ami-0bbb', buildManifestIdentity: `sha256:${'c'.repeat(64)}`, releaseSha256: SHA };
@@ -565,6 +691,7 @@ describe('SdkAwsAmiReleaseAdapter.launchCleanAccountCanary failure output', () =
       CANARY_BUDGETS.bootstrapMs +
       CANARY_BUDGETS.terminateMs +
       (uploadCount + 2) * CANARY_BUDGETS.shortCommandMs +
+      (uploadCount + 3) * CANARY_BUDGETS.ssmDeliveryMs +
       (uploadCount + 6) * 3 * CANARY_BUDGETS.pollMs +
       5 * 60_000;
     expect(runs[0]).toMatchObject({

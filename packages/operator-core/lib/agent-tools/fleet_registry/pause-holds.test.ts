@@ -87,7 +87,7 @@ describe('applyFleetPauseHolds — the pause leg', () => {
       condition: 'fleet my-fleet resumes', owner: 'su-owner', trigger: resumeGate,
       reachability: 'reachable', evidence: 'current resume announcement is active',
     });
-    expect(readEventConditionReachability).toHaveBeenCalledWith(resumeGate);
+    expect(readEventConditionReachability).toHaveBeenCalledWith(resumeGate, { requireSpecificCondition: true });
     expect(opts).not.toHaveProperty('by');
     expect(opts!.parkedReason).toBe(`${fleetPauseHoldMarker('my-fleet')} owner paused`);
     // The row's own harness is threaded through; a null one is omitted, not passed as null.

@@ -2435,12 +2435,13 @@ async function measureCompletedIntegrationRuntime(row: EvidenceRow, recipe: Repo
         || JSON.stringify(phases.map((p: any) => p.phase)) !== JSON.stringify(['prepare', 'execute', 'teardown'])
         || phases.some((p: any) => p.status !== 'passed' || p.reusedFromRunId)
         || source?.schemaVersion !== 1 || source.runId !== original.runId || source.sourceCommit !== execution.commitSha
+        || typeof source.repoRoot !== 'string' || !isAbsolute(source.repoRoot)
         || source.filePath !== execution.filePath || source.runGroupId !== execution.runGroupId
         || source.workspaceId !== execution.workspaceId || source.harnessSlug !== execution.harnessSlug
         || !Array.isArray(source.files) || new Set(source.files.map((f: any) => f.path)).size !== source.files.length
         || recorded.files.some(file => !source.files.some((f: any) => f.path === file.path && f.sha256 === file.sha256 && f.gitSha256 === file.sha256))
         || life?.schemaVersion !== 1 || life.runId !== original.runId || life.host !== hostname()
-        || life.cwd !== root || !/^test-runtime-/.test(life.workspace)
+        || life.cwd !== source.repoRoot || !/^test-runtime-/.test(life.workspace)
         || typeof life.runtimeRoot !== 'string' || !basename(life.runtimeRoot).startsWith('papercusp-test-runtime-')
         || typeof life.dataDir !== 'string' || !basename(life.dataDir).startsWith('papercusp-test-pg-')
         || !Number.isInteger(life.pgPort) || life.pgPort <= 0 || life.pgPort === 5432

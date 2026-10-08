@@ -1542,6 +1542,11 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     argsSchema: reportsListArgs,
     resolve: async (args) => (await import('./reports')).resolveReportsList(args as never),
   },
+  'dao.launches': {
+    backingTables: ['harness_shared.setup_wizard_state'],
+    argsSchema: z.object({}).strict(),
+    resolve: async () => (await import('../dao-launch-store')).listDaoLaunches(),
+  },
   // Compatibility with the original publish producer's query name.
   'reports.library': {
     backingTables: ['harness_shared.report_library'],

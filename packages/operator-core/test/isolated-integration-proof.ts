@@ -9,6 +9,10 @@ import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { defaultEvidenceRoot, runHarness } from '@papercusp/verification-harness';
 import { linuxPpidFromProcStat, readProcessIdentity } from '../lib/process-identity';
+import { it } from 'vitest';
+
+/** Shared with the cheap context guard so the expensive fixture uses the tested API. */
+export const isolatedIntegrationCases = it.for([false, true]);
 
 const hash = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
 function processPin(pid: number) {
@@ -44,7 +48,7 @@ export async function recordIsolatedIntegrationProof(options: {
             { maxBuffer: 16 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] })); } catch { /* uncommitted local test remains usable, not live proof */ }
           return { path, sha256: hash(bytes), gitSha256 };
         });
-        source = { schemaVersion: 1, runId: ctx.runId, sourceCommit: commit, filePath,
+        source = { schemaVersion: 1, runId: ctx.runId, sourceCommit: commit, repoRoot: root, filePath,
           runGroupId: process.env.PAPERCUSP_TEST_RUN_GROUP ?? null,
           workspaceId: process.env.PAPERCUSP_WORKSPACE_ID ?? process.env.PAPERCUSP_WORKSPACE ?? null,
           harnessSlug: process.env.PAPERCUSP_TEST_RUN_HARNESS ?? null, files };

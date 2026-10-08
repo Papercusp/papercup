@@ -32,6 +32,8 @@ import { SuNativeCards } from './su-session-native-cards';
 import { readSuperuserToken } from './superuser-token';
 import { admitNativeIdentityInference } from './cupboard/identity-activation-gate-io';
 import { resolveAgentBinarySync } from './agent-bin-detect';
+import { attachedInstalledToolLifecycle, type AttachedInstalledToolFunding } from './agent-tools/per-use-chokepoint';
+import { synthesizeTransportPrincipal } from './endpoint-route/routes/transport/role-principal-caps';
 
 type Backend = 'codex' | 'omp';
 type NativeHandle = CodexNativeSessionHandle | OmpNativeSessionHandle;
@@ -64,6 +66,8 @@ export interface SuRpcEngineOptions {
   /** Awaited admission/binding/completion for hosts enforcing paid inference.
    * OMP has no proven native turn identity and cannot use this capability. */
   turnLifecycle?: SuCodexTurnLifecycle;
+  /** Host-owned installed funding; never restored from command arguments. */
+  installedToolFunding?: AttachedInstalledToolFunding;
 }
 
 /** The user's own OMP MCP servers, minus papercusp-su (P-016). */
@@ -218,6 +222,34 @@ export function startSuRpcEngine(
   const initializingFrames: RpcFrame[] = [];
   let initializingFrameBytes = 0;
   const unavailable = (message: string) => ({ ok: false as const, code: 'engine_delivery_unknown', message, retryable: false });
+  const turnLifecycle = options.turnLifecycle ?? (su && backend === 'codex' ? attachedInstalledToolLifecycle({
+    session: { workspaceId: binding.workspaceId ?? '', ownerId: binding.ownerId ?? '', advSessionId: binding.advSessionId,
+      principalId: synthesizeTransportPrincipal({ workspaceId: binding.workspaceId ?? '', role: 'operator', isSuperuser: true })?.slug ?? '' },
+    funding: options.installedToolFunding,
+    identityLifecycle: { admit: async context => {
+      const verdict = await admitNativeIdentityInference({ workspaceId: context.workspaceId, ownerId: context.ownerId, backend });
+      return verdict.ok ? { ok: true, bindNativeTurn: async () => {}, complete: async () => {}, reconcile: async () => {} } : verdict;
+    } },
+    readNativeToolNames: async () => {
+      const names: string[] = [], cursors = new Set<string>();
+      let cursor: string | undefined;
+      do {
+        const page = await peer!.request({ method: 'mcpServerStatus/list', params: cursor ? { cursor } : {} }, options.deliveryTimeoutMs ?? 30_000);
+        if (!Array.isArray(page.data)) throw new Error('Native MCP inventory is unreadable');
+        for (const server of page.data.map(object)) if (server.name === 'papercusp-su') names.push(...Object.keys(object(server.tools)));
+        cursor = page.nextCursor == null ? undefined : string(page.nextCursor);
+        if (page.nextCursor != null && (!cursor || cursors.has(cursor)) || cursors.size >= 100)
+          throw new Error('Native MCP inventory pagination is incomplete');
+        if (cursor) cursors.add(cursor);
+      } while (cursor);
+      if (!names.length) throw new Error('Codex SU tools are not connected');
+      return names;
+    },
+    recordFailure: async failure => {
+      emit({ type: 'error', scope: 'transport', code: 'native_installed_reconciliation', recoverable: false,
+        message: `Installed tool ${failure.phase}: ${failure.message}` });
+    },
+  }) : undefined);
   const controls = {
     async ownerTurn({ content, turnId, model: nextModel, approvals: nextApprovals }: { content: string; turnId: string; model?: string; approvals?: SuApprovalsMode }) {
       if (!ready || closed) return unavailable(`${backend} connection is not ready`);
@@ -272,17 +304,17 @@ export function startSuRpcEngine(
         let deliveryAttempted = false;
         let failurePhase: 'delivery' | 'binding' = 'delivery';
         try {
-          if (su && !options.turnLifecycle) {
+          if (su && !turnLifecycle) {
             if (!binding.workspaceId || !binding.ownerId) throw new Error('Native admission requires the authenticated workspace and owner');
             const admission = await admitNativeIdentityInference({ workspaceId: binding.workspaceId,
               ownerId: binding.ownerId, backend });
             if (!admission.ok) { acknowledged(admission); return; }
           }
-          if (options.turnLifecycle) {
+          if (turnLifecycle) {
             if (!binding.workspaceId || !binding.ownerId || !nativeId()) {
               throw new Error('Turn admission requires the authenticated workspace, owner and native session');
             }
-            const admission = await options.turnLifecycle.admit({ workspaceId: binding.workspaceId,
+            const admission = await turnLifecycle.admit({ workspaceId: binding.workspaceId,
               ownerId: binding.ownerId, nativeSessionId: nativeId(), ownerTurnId: turnId,
               model: nextModel ?? selectedModel });
             if (!admission.ok) { acknowledged(admission); return; }

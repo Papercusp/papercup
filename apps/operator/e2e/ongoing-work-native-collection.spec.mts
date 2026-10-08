@@ -25,6 +25,101 @@ test('native collection fixture writer graph loads under the Playwright Node loa
   for (const method of Object.values(writer)) expect(typeof method).toBe('function');
 });
 
+test('Work on Everything design stays readable and draft controls work in the native viewport', async ({ request }, info) => {
+  test.skip(!process.env.VERIFY_TAURI_PID, 'Requires the maintained isolated native rig');
+  test.setTimeout(180_000);
+  expect(process.env.VERIFY_TAURI_ISOLATED_DB).toBe('1');
+  const workspaceId = process.env.PAPERCUSP_WORKSPACE_ID!;
+  expect(workspaceId).toMatch(/^verify-tauri-isolated-/);
+  const { postgres, ensureOrderedSelectionPolicyDatatype, ensurePlanRefListDatatype } = await loadNativeCollectionWriter();
+  const sql = postgres(process.env.HARNESS_ADMIN_DATABASE_URL!, { max: 1, connect_timeout: 5 });
+  const run = promisify(execFile), bridge = process.env.VERIFY_TAURI_AGENT_TOOLS_BIN!;
+  expect(bridge).toBeTruthy();
+  async function native(command: string, ...args: string[]) {
+    const result = await run(bridge, [command, '--pid', process.env.VERIFY_TAURI_PID!, ...args], { timeout: 20_000 });
+    if (command === 'screenshot') return result.stdout.trim();
+    const value = JSON.parse(result.stdout);
+    return typeof value === 'string' ? JSON.parse(value) : value;
+  }
+  const measure = (expression: string) => native('eval', `JSON.stringify(${expression})`);
+  const ready = (expression: string) => expect.poll(() => measure(expression), { timeout: 45_000,
+    intervals: [300, 1000] }).toBe(true);
+  const panel = '[data-testid="work-on-everything-console"]';
+  const goalId = 'native-worklist-design';
+  const ids = ['desktop', 'search', 'mobile'].map(slug => `plan:native-design/${slug}`);
+  const labels = ['Design desktop release', 'Design search reliability', 'Design mobile workspace'];
+  try {
+    await ensureOrderedSelectionPolicyDatatype(sql, workspaceId);
+    await ensurePlanRefListDatatype(sql, workspaceId);
+    await insertNativeCollectionGoal(sql, { workspaceId, goalId, title: 'Work on everything · design acceptance', schema: {
+      worklist: { datatype: 'plan-ref-list', editable_by: 'both', default: ids,
+        collection: { source: 'active-workspace-plans', policy: 'worklist_policy', order: 'priority', selectable: true, defaultSelected: false } },
+      worklist_policy: { datatype: 'ordered-selection-policy', editable_by: 'owner',
+        default: { order: ids, included: ids.slice(0, 2), excluded: [ids[2]] } },
+    } });
+    await sql`UPDATE harness_shared.goals SET metadata = ${JSON.stringify({ goalPackageRef: 'work-on-everything' })}::text::jsonb
+      WHERE workspace_id=${workspaceId} AND id=${goalId}`;
+    for (const [index, slug] of ['desktop', 'search', 'mobile'].entries()) {
+      await sql`INSERT INTO harness_shared.harness_plans (workspace_id,harness_slug,plan_slug,title,status,op_status)
+        VALUES (${workspaceId},'native-design',${slug},${labels[index]},'active',NULL)`;
+    }
+    const readback = await request.get(`${process.env.VERIFY_TAURI_DEV_URL}/api/zero-harness/rest-query`, {
+      params: { name: 'goals.detail', args: JSON.stringify({ workspaceId, goalId }) },
+      headers: { 'x-papercusp-workspace': workspaceId },
+    });
+    expect(readback.ok()).toBe(true);
+    const detail = (await readback.json()).rows[0];
+    expect(detail.goal.goalPackage.ref).toBe('work-on-everything');
+    expect(detail.goalData.collections.worklist.selection.configured).toBe(true);
+    await native('navigate', `${process.env.VERIFY_TAURI_DEV_URL}/adv?tab=hud&scope=all&hudtab=goals&welcome=0&hudgoal=${goalId}&hudwoesearch=Design`, '--json');
+    await ready(`document.querySelectorAll('${panel} [role="option"]').length === 3`);
+    const layout = await measure(`(() => {
+      const root = document.querySelector('${panel}');
+      return { width: innerWidth, height: innerHeight,
+        layoutColumns: getComputedStyle(root.querySelector('.woe__layout')).gridTemplateColumns,
+        summary: Array.from(root.querySelectorAll('.woe__overview dd')).map(n => n.textContent),
+        overflow: Array.from(root.querySelectorAll('.woe__row, .woe__overview, .woe__inspector, .woe__body'))
+          .filter(n => n.scrollWidth > n.clientWidth + 1).map(n => n.className),
+        nextSteps: Array.from(root.querySelectorAll('.woe__next')).map(n => ({ text: n.textContent,
+          displayed: getComputedStyle(n).display, width: n.getBoundingClientRect().width })),
+        inspector: !!root.querySelector('[aria-label="Plan inspector"]') };
+    })()`);
+    const expectedWidth = Number(process.env.VERIFY_TAURI_WINDOW?.split('x')[0] ?? 1280);
+    expect(layout.width).toBe(expectedWidth);
+    expect(layout.overflow).toEqual([]);
+    expect(layout.summary[0]).toBe('2');
+    expect(layout.summary[2]).toBe('0');
+    expect(layout.inspector).toBe(true);
+    for (const next of layout.nextSteps) {
+      expect(next.text.length).toBeGreaterThan(0);
+      expect(next.displayed).not.toBe('none');
+      expect(next.width).toBeGreaterThan(0);
+    }
+    if (expectedWidth <= 650) expect(layout.layoutColumns.trim().split(/\s+/)).toHaveLength(1);
+    await native('screenshot', '--output', info.outputPath(`worklist-${expectedWidth}.png`));
+    await native('click', 'button[aria-label="Move Design search reliability up"]', '--json');
+    await ready(`document.querySelector('${panel} [role="option"] strong')?.textContent === ${JSON.stringify(labels[1])}`);
+    await native('click', 'button[aria-label="Remove Design desktop release"]', '--json');
+    await ready(`document.querySelector('${panel} .woe__overview dd')?.textContent === '1'`);
+    await native('eval', `(() => { const body = document.querySelector('${panel} .woe__body'); body.scrollTop = body.scrollHeight; return true; })()`);
+    await native('click', '.woe__draft-bar .pc-ctl-act--primary', '--json');
+    await ready(`Array.from(document.querySelectorAll('[role="dialog"]')).some(n => n.textContent.includes('After apply'))`);
+    expect(await measure(`Array.from(document.querySelectorAll('.woe__diff li')).map(n => n.textContent)`))
+      .toContain(labels[1]);
+    await native('screenshot', '--output', info.outputPath(`review-${expectedWidth}.png`));
+    await native('eval', `(() => { const button = Array.from(document.querySelectorAll('.woe__review button')).find(n => n.textContent === 'Keep editing'); button.click(); return true; })()`);
+    await ready(`!document.querySelector('.woe__review')`);
+    await native('eval', `(() => { const button = Array.from(document.querySelectorAll('.woe__draft-bar button')).find(n => n.textContent === 'Discard'); button.click(); return true; })()`);
+    await ready(`!document.querySelector('.woe__draft-bar') && document.querySelector('${panel} .woe__overview dd')?.textContent === '2'`);
+    const [saved] = await sql`SELECT properties FROM harness_shared.goals WHERE workspace_id=${workspaceId} AND id=${goalId}`;
+    expect(saved.properties?.worklist_policy).toBeUndefined();
+    await info.attach('native-design-layout', { body: JSON.stringify({ layout, fixture: { goalId, labels },
+      draftReordered: true, scopeStaged: true, reviewOpened: true, discardRestored: true, applyClicked: false }), contentType: 'application/json' });
+  } finally {
+    await sql.end();
+  }
+});
+
 test('native declared collections persist controls and reject a barrier-controlled stale save', async ({ request }, info) => {
   test.skip(!process.env.VERIFY_TAURI_PID, 'Run with scripts/run-operator-e2e-isolated.sh for the owned Tauri bridge');
   test.setTimeout(180_000);

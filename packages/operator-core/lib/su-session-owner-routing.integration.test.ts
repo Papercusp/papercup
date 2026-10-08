@@ -165,7 +165,7 @@ describe('su-session owner routing across cluster workers (WI-10003879)', () => 
     expect(out.text).toContain(marker);
   }, 30_000);
 
-  it('native paid calls use only the owner observation/meter, consume once and retain failed holds', async () => {
+  it('native paid calls use only the owner observation/meter, consume once and retain unsettled holds', async () => {
     const nativeOwner = (await op(a, { op: 'open-native-engine' })).owner;
     await op(b, { op: 'set-owner-record', owner: nativeOwner });
     // An authenticated native transport alone grants no unit.
@@ -177,7 +177,7 @@ describe('su-session owner routing across cluster workers (WI-10003879)', () => 
     expect(await op(b, call)).toMatchObject({ content: [{ text: `paid-owner:${a.pid}` }] });
     expect(await op(b, call)).toMatchObject({ isError: true });
     let meter = await op(a, { op: 'native-meter' });
-    expect(meter).toMatchObject({ nativeInvocations: 1, channelSpentMicros: '250', reservedMicros: '0' });
+    expect(meter).toMatchObject({ nativeInvocations: 1, channelCommittedMicros: '250', reservedMicros: '250', outstandingMicros: '0' });
     expect(Object.values(meter.units)).toHaveLength(1);
 
     // A wrapper's original observation authorizes one indirect target.
@@ -187,13 +187,16 @@ describe('su-session owner routing across cluster workers (WI-10003879)', () => 
     expect(await op(b, wrapper)).toMatchObject({ isError: true });
 
     await op(a, { op: 'native-observe', callId: 'failed-call' });
-    const failed = { op: 'native-route', request: { callId: 'failed-call', fail: true } };
+    // Completion alone cannot release a hold when the signed receipt is absent.
+    const failed = { op: 'native-route', request: { callId: 'failed-call', fail: true, settlementFail: true } };
     expect(await op(b, failed)).toMatchObject({ isError: true });
     expect(await op(b, failed)).toMatchObject({ isError: true });
     await op(a, { op: 'native-stop' });
     meter = await op(a, { op: 'native-meter' });
-    expect(meter).toMatchObject({ nativeInvocations: 3, channelSpentMicros: '500', reservedMicros: '250', admissionClosed: true });
+    expect(meter).toMatchObject({ nativeInvocations: 3, channelCommittedMicros: '500', reservedMicros: '750',
+      outstandingMicros: '250', admissionClosed: true });
     expect(Object.values(meter.units)).toHaveLength(3);
+    expect(Object.values(meter.units).filter((unit: any) => !unit.hasReceipt)).toHaveLength(1);
     expect(await op(b, { op: 'native-meter' })).toMatchObject({ nativeLocalCalls: 0, nativeInvocations: 0, units: {} });
     // Restore the original host's record for the remaining service-routing test.
     await op(b, { op: 'set-owner-record', owner });

@@ -204,7 +204,7 @@ describe('completed isolated runtime certification', () => {
         { phase: 'execute', status: 'passed', startedAt: at(14), endedAt: at(32) },
         { phase: 'teardown', status: 'passed', startedAt: at(32), endedAt: at(33) },
       ] };
-    const source: any = { schemaVersion: 1, runId, sourceCommit: commit, filePath: state.execution.filePath,
+    const source: any = { schemaVersion: 1, runId, sourceCommit: commit, repoRoot: root, filePath: state.execution.filePath,
       runGroupId: state.execution.runGroupId, workspaceId: 'workspace-test', harnessSlug: 'papercusp',
       files: measured.files.map(file => ({ ...file, gitSha256: file.sha256 })) };
     const pin = (pid: number, parentPid: number) => ({ pid, parentPid, identity: `linux:fixture-boot:${pid}` });
@@ -238,8 +238,17 @@ describe('completed isolated runtime certification', () => {
     await setupIntegration();
     expect((await read()).currentness.dimensions.environment).toBe('current');
   });
+  it('certifies a committed disposable checkout against the same current Git objects', async () => {
+    const state = await setupIntegration();
+    state.source.repoRoot = '/tmp/papercusp-lint-as-committed-original';
+    state.life.cwd = state.source.repoRoot;
+    await state.save(true);
+    state.row.environment_fingerprint = createHash('sha256').update(JSON.stringify((state.execution as any).isolatedRuntimeReceipts)).digest('hex');
+    expect((await read()).currentness.dimensions.environment).toBe('current');
+  });
   it.each(['tampered-receipt', 'missing-artifact', 'reused-run', 'wrong-source', 'wrong-layer', 'dirty',
-    'outside-test', 'wrong-parent', 'missing-kernel', 'missing-teardown', 'wrong-scope', 'unrecorded', 'wrong-unit'])(
+    'outside-test', 'wrong-parent', 'missing-kernel', 'missing-teardown', 'wrong-scope', 'unrecorded', 'wrong-unit',
+    'missing-original-root', 'relative-original-root', 'wrong-worker-cwd'])(
     'rejects isolated integration proof for %s', async failure => {
       const state = await setupIntegration();
       if (failure === 'tampered-receipt') state.life.pgPort++;
@@ -250,6 +259,9 @@ describe('completed isolated runtime certification', () => {
       if (failure === 'missing-kernel') state.life.worker.identity = '';
       if (failure === 'missing-teardown') state.life.ended.pgDataRemoved = false;
       if (failure === 'wrong-scope') state.source.workspaceId = 'foreign';
+      if (failure === 'missing-original-root') delete state.source.repoRoot;
+      if (failure === 'relative-original-root') state.source.repoRoot = 'relative-root';
+      if (failure === 'wrong-worker-cwd') state.life.cwd = '/tmp/different-worker-root';
       await state.save(failure !== 'tampered-receipt');
       if (failure === 'missing-artifact') await rm(join(state.dir, 'phases/execute/lifecycle.json'));
       if (failure === 'wrong-layer') state.execution.testLayer = 'unit';
@@ -266,6 +278,12 @@ describe('completed isolated runtime certification', () => {
     const retained = join(artifacts, 'isolated-integration', 'retained', state.result.runId, 'phases/execute/lifecycle.json');
     await writeFile(retained, '{}');
     expect((await read()).currentness.dimensions.environment).toBe('unknown');
+  });
+  it('rejects current integration source drift against the executed Git objects', async () => {
+    const state = await setupIntegration();
+    const files = state.measured.files.map((file, i) => i === 0 ? { ...file, sha256: 'b'.repeat(64) } : file);
+    expect(await measureCompletedTestRuntime(state.row as any, state.basis, files,
+      { workspaceId: 'workspace-test', harnessSlug: 'papercusp' }, root)).toBeNull();
   });
 
   it('certifies the original completed execution after teardown using retained artifacts and Git objects', async () => {

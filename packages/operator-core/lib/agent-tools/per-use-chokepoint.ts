@@ -1,7 +1,7 @@
 /** P-007 shared target-bound admission. Hosted verification and funding belong
  * to the authenticated turn host; this dispatch path does no hosted IO. */
 import type { DispatchProjectedDeps } from '@papercusp/agent-mcp';
-import { listAllProjectedTools, type ProjectedTool } from '@papercusp/tooldef';
+import { listAllProjectedTools, resolveMcpName, type ProjectedTool } from '@papercusp/tooldef';
 import { createHash } from 'node:crypto';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { canonicalJson } from '../authority/authority-rpc-envelope';
@@ -454,6 +454,62 @@ interface NativeInstalledTurnContext {
 const fingerprint = (value: string) => createHash('sha256').update(value, 'utf8').digest('hex');
 export const nativeInstalledPerUseTurns = pinModuleState('@papercusp/operator-core.native-installed-per-use-turns',
   () => new NativeInstalledPerUseTurns());
+
+type CatalogLifecycleDeps = Parameters<NativeInstalledPerUseTurns['nativeLifecycleFromCatalog']>[0];
+/** Attached-engine capability, never an owner command or invocation argument.
+ * The authenticated host supplies both parties' financial authority explicitly. */
+export interface AttachedInstalledToolFunding {
+  host: NativePlan['host'];
+  resolveInstallation: CatalogLifecycleDeps['resolveInstallation'];
+}
+
+/** Fresh and resumed engines re-read native inventory on every turn. A wrapper
+ * can reach deferred installed targets, so its cohort includes those loaded
+ * installations before inference. Missing financial authority refuses paid
+ * admission; it cannot be reconstructed from a saved session descriptor. */
+export function attachedInstalledToolLifecycle(deps: {
+  session: { workspaceId: string; ownerId: string; advSessionId: number; principalId: string };
+  identityLifecycle: SuCodexTurnLifecycle;
+  readNativeToolNames(): Promise<readonly string[]>;
+  recordFailure: NativeLifecycleDeps['recordFailure'];
+  funding?: AttachedInstalledToolFunding;
+  registry?: NativeInstalledPerUseTurns;
+  readTools?: CatalogLifecycleDeps['readTools'];
+  readProvenance?: CatalogLifecycleDeps['readProvenance'];
+  resolveNativeName?: (name: string) => string | undefined;
+}): SuCodexTurnLifecycle {
+  const unavailable = () => { throw new Error('native-installed-funding-unavailable: authenticated tool funding and seller capabilities are required'); };
+  const unfundedHost: NativePlan['host'] = { admit: unavailable, localTurn: unavailable, complete: unavailable };
+  const session = structuredClone(deps.session);
+  return { admit: async context => {
+    if (context.workspaceId !== session.workspaceId || context.ownerId !== session.ownerId)
+      return { ok: false, code: 'native-installed-session-mismatch', message: 'Installed admission requires the attached engine owner', retryable: false };
+    let catalog: readonly ProjectedTool[] = [];
+    return (deps.registry ?? nativeInstalledPerUseTurns).nativeLifecycleFromCatalog({
+      identityLifecycle: deps.identityLifecycle, recordFailure: deps.recordFailure,
+      readProvenance: deps.readProvenance, readTools: () => catalog,
+      resolveInstallation: deps.funding?.resolveInstallation ?? unavailable,
+      resolveContext: async () => {
+        const nativeNames = [...await deps.readNativeToolNames()];
+        if (nativeNames.length > 1000 || new Set(nativeNames).size !== nativeNames.length)
+          throw new Error('Native installed inventory must be distinct and bounded');
+        catalog = (deps.readTools ?? listAllProjectedTools)();
+        const nativeTools: Record<string, string> = Object.create(null);
+        for (const name of nativeNames) {
+          const canonical = deps.resolveNativeName ? deps.resolveNativeName(name) : resolveMcpName(name)?.expose.mcp?.name;
+          // Unloaded native/core tools grant no installed lookup authority.
+          if (canonical) nativeTools[name] = canonical;
+        }
+        const names = new Set(Object.values(nativeTools));
+        if (names.has('tools:invoke')) for (const tool of catalog) {
+          if (tool.pluginInstallation && tool.expose.mcp?.name) names.add(tool.expose.mcp.name);
+        }
+        return { context: { principalId: session.principalId, advSessionId: session.advSessionId,
+          mcpServer: 'papercusp-su', nativeTools }, host: deps.funding?.host ?? unfundedHost, toolNames: [...names] };
+      },
+    }).admit(context);
+  } };
+}
 
 const refuse = (code: string, detail: string) => ({
   isError: true,

@@ -82,12 +82,9 @@ const PLAN = 'drained-plan-2026-09-20';
 // This suite's subject is the drain -> filing -> obligation join over the MOCKED
 // gate verdict, so it pins the dep to that same verdict; the persisted-read path
 // has its own coverage in the plan-closure-observations tests.
-// Likewise the consult-reconciliation family (EI-23764501791910357): its default
-// dep reads harness_shared.consult_state, which this suite never seeds.
 const NO_OWNER_DIRECTIVES = {
   ownerDirectives: async () => [],
   waitingOn: async () => [],
-  consultReconciliations: async () => [],
   fleetStaffing: async () => [],
   planAcceptance: async (_workspaceId: string, planSlug: string) => M.evaluate(planSlug),
 };

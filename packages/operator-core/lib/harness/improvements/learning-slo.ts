@@ -898,6 +898,28 @@ export async function governorStarvationCollector(
   return { signals: await collectGovernorStarvationSignals(deps.sql(), workspaceId, opts) };
 }
 
+/**
+ * producer-silence collector (flag-gated; plan scout-su-ideate-pipeline-gaps-2026-10-08
+ * P-009 — logic in ./producer-silence). THROWS when any producer's output read failed:
+ * an unmeasured producer emits nothing, and a quiet tick is what auto-close reads as
+ * "resolved", so a broken read must surface as a failed collector instead.
+ */
+export async function producerSilenceCollector(
+  workspaceId: string,
+  opts: import('./producer-silence').ProducerSilenceOptions = {},
+  deps: LearningSloDeps = defaultDeps,
+): Promise<CollectorResult> {
+  const dark = await darkOrNull(deps);
+  if (dark) return dark;
+  const ps = await import('./producer-silence');
+  const facts = await ps.readProducerSilenceFacts(deps.sql(), workspaceId);
+  if (facts.unmeasured && facts.unmeasured.size > 0) {
+    throw new Error(`producer-silence: output read failed for ${[...facts.unmeasured].join(', ')} — not judged this tick`);
+  }
+  const verdict = ps.producerSilenceVerdict(facts, opts);
+  return { signals: verdict.signals, note: ps.producerSilenceNote(verdict) };
+}
+
 /** memory zero-hit collector (flag-gated; box-global — see collectMemoryZeroHitSignals). */
 export async function memoryZeroHitCollector(
   opts: LearningSloOptions = {},

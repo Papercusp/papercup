@@ -38,10 +38,19 @@ import { leadingScaleLabel } from '../../rubric-rating-vocabulary';
 export const OBSERVATION_RATING_SCALE = ['healthy', 'degraded', 'broken', 'unknown'] as const;
 export type ObservationRating = (typeof OBSERVATION_RATING_SCALE)[number];
 
-/** Explicit epistemic reason for an unknown rating. */
+/**
+ * Explicit epistemic reason for an unknown rating.
+ *
+ * `not-assessed` = the GRADER has not (yet) assessed this criterion — unfinished
+ * grading, not a measurement failure. It must never be filed as
+ * `instrument-unavailable`: on the 2026-10-08 goal-mode-e2e card 26 of 37 unknowns
+ * were unfinished grading mislabelled as broken instruments (EI-25425148387198503),
+ * which sent the owner hunting for instrument defects that did not exist.
+ */
 export const OBSERVATION_UNKNOWN_REASONS = [
   'idle',
   'not-exercised',
+  'not-assessed',
   'instrument-unavailable',
   'retention-gap',
   'generation-mismatch',

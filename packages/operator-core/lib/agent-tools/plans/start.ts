@@ -99,7 +99,7 @@ const argsSchema = z
       .max(200)
       .optional()
       .describe(
-        'Consult you requested and proceeded on (full id or unique prefix). Recorded; the result says whether a proceed-consult still owes consult:reconcile. Needs `consulted`.',
+        'Consult you requested and proceeded on (full id or unique prefix). Recorded as the consultation that informed this plan. Needs `consulted`.',
       ),
     harness: harnessArg,
   })
@@ -415,10 +415,6 @@ export default defineTool({
               consultId: resolvedConsult.conversation_id,
               consultState: resolvedConsult.consult_state,
               latencyContract: resolvedConsult.latency_contract,
-              reconciliationOwed: resolvedConsult.reconciliation_owed,
-              ...(resolvedConsult.reconciliation_owed
-                ? { reconcileWith: 'consult:reconcile { conversation_id, disposition, note }' }
-                : {}),
             };
           }
           checkpointConsult = {

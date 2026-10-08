@@ -209,6 +209,8 @@ interface LedgerRow {
   created_by: string | null;
   /** Cached outcome (refreshScoutOutcomes); NULL until first checked. */
   outcome: string | null;
+  /** Ledger origin (scout / su-ideate / agent-review / ...); NOT NULL in the schema. */
+  origin: string | null;
 }
 
 const IDEA_OUTCOMES: ReadonlySet<string> = new Set<IdeaOutcome>(['won', 'lost', 'pending', 'unresolvable']);
@@ -791,7 +793,7 @@ export async function readRoutedIdeas(opts: ScoutLedgerOpts = {}): Promise<Route
   const rows = await sql<LedgerRow[]>`
     SELECT idea_id, lens, cycle_id, rail, routed_ref, source_hive, target_hive, title,
            addresses_pattern_refs, routed_at,
-           human_grade, human_feedback, graded_by, graded_at, created_by, outcome
+           human_grade, human_feedback, graded_by, graded_at, created_by, outcome, origin
      FROM harness_shared.scout_routed_ideas
      WHERE workspace_id = ${ws}
        ${originClause(sql, opts.origin)}
@@ -869,6 +871,9 @@ export async function readRoutedIdeas(opts: ScoutLedgerOpts = {}): Promise<Route
       // P-002 (scout-su-ideate-pipeline-gaps-2026-10-08): the cached outcome feeds the
       // success-metrics outcome tally. An unknown label is dropped, not guessed.
       ...(r.outcome && IDEA_OUTCOMES.has(r.outcome) ? { outcome: r.outcome as IdeaOutcome } : {}),
+      // P-008 / R-18: success-metrics partitions agent-review rows out of every ideation
+      // bar by this field, so a caller that widens the read cannot silently mix them.
+      ...(r.origin ? { origin: r.origin } : {}),
       ...(feedbackRevisions.length > 0
         ? {
             feedbackRevisions: feedbackRevisions.map((revision) => ({

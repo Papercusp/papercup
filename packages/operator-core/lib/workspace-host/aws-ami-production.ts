@@ -60,6 +60,7 @@ import { canonicalize } from '@papercusp/publish-auth/jcs';
 
 import {
   AwsAmiReleaseError,
+  awsCleanAccountFixture,
   buildAwsAmiVersionManifest,
   executeAwsAmiRelease,
   type AwsAmiCleanAccountLaunchProof,
@@ -82,6 +83,8 @@ import { AWS_AMI_SCAN_COLDSNAP_ENV } from './coldsnap-pin';
 import { spillDiagnostic } from './diagnostic-excerpt';
 import { resolveSbomGuestToolVersions } from './guest-tool-versions';
 import { CANARY_BUDGETS, SSM_CHUNK_CHARS } from '../../bin/aws-ami-canary-measure.mjs';
+import { AWS_AMI_SCAN_RUNNER_TIMEOUT_MS } from '../../bin/aws-ami-scan-measure.mjs';
+import { TASK_DEADLINE_EPOCH_MS_ENV } from '../systemd-scope';
 // The argv/shell:false process boundary is cloud-neutral; reuse it rather than fork a second one.
 import {
   NodeGcpImageFamilyCommandRunner,
@@ -145,8 +148,8 @@ const CANARY_RUNNER_SAFETY_MARGIN_MS = 5 * 60 * 1000;
  * outer deadline from the canary's per-phase budgets and the actual fixture size so the parent
  * cannot SIGKILL a valid run before the canary reaches its own timeout and residue census.
  */
-function cleanAccountCanaryRunnerTimeoutMs(
-  input: Parameters<AwsAmiReleaseAdapter['launchCleanAccountCanary']>[0],
+export function cleanAccountCanaryRunnerTimeoutMs(
+  input: { fixture?: { bootstrapScript?: string } },
 ): number {
   // Keep malformed test/caller payloads on the child path so its schema error remains visible.
   const bootstrapScript = typeof input.fixture?.bootstrapScript === 'string' ? input.fixture.bootstrapScript : '';
@@ -154,6 +157,7 @@ function cleanAccountCanaryRunnerTimeoutMs(
   const uploadCount = Math.max(1, Math.ceil(encodedChars / SSM_CHUNK_CHARS));
   const waitCount = uploadCount + 6; // instance, SSM online, uploads, bootstrap, attestation, service, teardown
   const shortCommandCount = uploadCount + 2; // uploads plus success-path attestation and service checks
+  const ssmCommandCount = shortCommandCount + 1; // bootstrap also has a delivery allowance
   const budgets = CANARY_BUDGETS;
   // SSM waits reserve two poll intervals; allow one more for each wait-loop's final sleep/probe.
   return (
@@ -162,9 +166,49 @@ function cleanAccountCanaryRunnerTimeoutMs(
     budgets.bootstrapMs +
     budgets.terminateMs +
     shortCommandCount * budgets.shortCommandMs +
+    ssmCommandCount * budgets.ssmDeliveryMs +
     waitCount * 3 * budgets.pollMs +
     CANARY_RUNNER_SAFETY_MARGIN_MS
   );
+}
+
+const PUBLICATION_SAFETY_MARGIN_MS = 5 * 60_000;
+
+/** Reserve all declared serial phases, including the upload retry and the canary's teardown. */
+export function awsAmiPublicationBudgetMs(request: AwsAmiReleaseRequest, resumeCandidate = false): number {
+  // Reserve the longest real EC2 id before one exists; this renders the same canonical script
+  // the release will run, rather than guessing a fixed canary duration or fixture size.
+  const fixture = awsCleanAccountFixture(request, request.releaseGate.artifact, 'ami-fffffffffffffffff');
+  return (
+    (resumeCandidate ? 0 : UPLOAD_ATTEMPTS * UPLOAD_TIMEOUT_MS + 2 * IMAGE_WAIT_TIMEOUT_MS) +
+    AWS_AMI_SCAN_RUNNER_TIMEOUT_MS +
+    Math.max(0, request.targets.length - 1) * IMAGE_WAIT_TIMEOUT_MS +
+    cleanAccountCanaryRunnerTimeoutMs({ fixture }) +
+    PUBLICATION_SAFETY_MARGIN_MS
+  );
+}
+
+/** Reuse the launcher's inherited ABSOLUTE deadline; absence means no measured parent bound. */
+export function assertAwsAmiTaskBudget(
+  operation: string,
+  requiredMs: () => number,
+  nowMs: number = Date.now(),
+  env: NodeJS.ProcessEnv = process.env,
+): void {
+  const raw = env[TASK_DEADLINE_EPOCH_MS_ENV];
+  if (raw === undefined) return;
+  const deadlineAtMs = Number(raw);
+  if (!raw.trim() || !Number.isSafeInteger(deadlineAtMs) || deadlineAtMs <= 0) {
+    fail(`AWS_AMI_TASK_BUDGET_REFUSAL ${operation}: invalid inherited ${TASK_DEADLINE_EPOCH_MS_ENV}`);
+  }
+  const remainingMs = deadlineAtMs - nowMs;
+  const budgetMs = requiredMs();
+  if (remainingMs < budgetMs) {
+    fail(
+      `AWS_AMI_TASK_BUDGET_REFUSAL ${operation}: remainingMs=${remainingMs} requiredMs=${budgetMs}; ` +
+      'launch this phase in a separate task with enough timeout; the current task deadline cannot be extended',
+    );
+  }
 }
 
 /** The one SDK capability the adapter needs: send a v3 command. Tests inject a fake. */
@@ -176,6 +220,8 @@ export interface AwsAmiReleaseCompositionOptions {
   repositoryRoot?: string;
   /** Explicit recovery of a private encrypted candidate; every remaining release gate still runs. */
   resumeCandidateImageId?: string;
+  /** Explicit, audited recovery AFTER containment of an unsuccessful shared publication. */
+  containedCandidateRecovery?: AwsAmiCandidateContainmentReceipt;
   /** Operator-pinned versions of the guest tools baked into the image (`--guest-tool-versions-file`). */
   guestToolVersions?: Readonly<Record<string, string>>;
   coldsnapExecutable?: string;
@@ -183,6 +229,25 @@ export interface AwsAmiReleaseCompositionOptions {
   canaryExecutable?: string;
   parameterPrefix?: string;
   resolvers?: AwsSdkCredentialResolvers;
+}
+
+export const AWS_AMI_CONTAINED_CANARY_TAG = 'papercusp:contained-canary';
+
+/** Operator custody evidence; immutable image/snapshot provenance is also measured from AWS. */
+export interface AwsAmiCandidateContainmentReceipt {
+  schemaVersion: 1;
+  publisherAccountId: string;
+  region: string;
+  imageId: string;
+  snapshotId: string;
+  releaseSha256: string;
+  buildManifestIdentity: string;
+  cleanAccountId: string;
+  canaryInstanceId: string;
+  terminated: true;
+  residualResourceIds: readonly string[];
+  observedAt: string;
+  evidenceRef: string;
 }
 
 export interface AwsAmiReleaseAdapterDeps {
@@ -365,6 +430,7 @@ export class SdkAwsAmiReleaseAdapter implements AwsAmiReleaseAdapter {
   private readonly repositoryRoot: string;
   private readonly parameterPrefix: string;
   private readonly resumeCandidateImageId: string | undefined;
+  private readonly containment: AwsAmiCandidateContainmentReceipt | undefined;
   private readonly executables: { coldsnap: string; scan: string; canary: string };
 
   constructor(
@@ -377,7 +443,14 @@ export class SdkAwsAmiReleaseAdapter implements AwsAmiReleaseAdapter {
     this.guestToolVersions = options.guestToolVersions ?? {};
     this.repositoryRoot = resolve(options.repositoryRoot ?? process.cwd());
     this.parameterPrefix = (options.parameterPrefix ?? AWS_AMI_DEFAULT_PARAMETER_PREFIX).replace(/\/+$/, '');
-    this.resumeCandidateImageId = options.resumeCandidateImageId;
+    if (options.resumeCandidateImageId && options.containedCandidateRecovery) {
+      fail('private and contained candidate recovery are mutually exclusive');
+    }
+    this.containment = options.containedCandidateRecovery;
+    if (this.containment && (!AMI_ID.test(this.containment.imageId ?? '') || typeof this.containment !== 'object')) {
+      fail('contained candidate recovery requires an exact custody receipt');
+    }
+    this.resumeCandidateImageId = options.resumeCandidateImageId ?? this.containment?.imageId;
     this.executables = {
       coldsnap: options.coldsnapExecutable ?? AWS_AMI_RELEASE_EXECUTABLES.coldsnap,
       scan: options.scanExecutable ?? AWS_AMI_RELEASE_EXECUTABLES.scan,
@@ -534,6 +607,10 @@ export class SdkAwsAmiReleaseAdapter implements AwsAmiReleaseAdapter {
    * image is discarded when the clean-room run ends.
    */
   async stageCleanRoomImage(input: AwsBootcCleanRoomStageInput): Promise<{ imageId: string; snapshotId: string }> {
+    assertAwsAmiTaskBudget('clean room', () =>
+      UPLOAD_ATTEMPTS * UPLOAD_TIMEOUT_MS + IMAGE_WAIT_TIMEOUT_MS +
+      cleanAccountCanaryRunnerTimeoutMs({ fixture: input.fixture }) + PUBLICATION_SAFETY_MARGIN_MS,
+    this.now());
     const diskPath = await verifyBootcAmiArtifact(input.bootcArtifact, this.repositoryRoot);
     const staged = await this.uploadAndRegister({
       region: input.region,
@@ -634,6 +711,21 @@ export class SdkAwsAmiReleaseAdapter implements AwsAmiReleaseAdapter {
     if (!AMI_ID.test(imageId) || !owner || !/^\d{12}$/.test(owner)) {
       fail('candidate recovery requires a valid AMI id and the persisted publisher account');
     }
+    const containment = this.containment;
+    if (containment) {
+      const at = Date.parse(containment.observedAt);
+      const ageMs = this.now() - at;
+      if (containment.schemaVersion !== 1 || containment.imageId !== imageId ||
+          containment.publisherAccountId !== owner || containment.region !== input.sourceRegion ||
+          containment.releaseSha256 !== input.releaseSha256 || containment.buildManifestIdentity !== input.buildManifestIdentity ||
+          !/^\d{12}$/.test(containment.cleanAccountId ?? '') || containment.cleanAccountId === owner ||
+          !/^i-[a-f0-9]+$/.test(containment.canaryInstanceId ?? '') || containment.terminated !== true ||
+          !Array.isArray(containment.residualResourceIds) || containment.residualResourceIds.length !== 0 ||
+          !Number.isFinite(at) || ageMs < 0 || ageMs > 60 * 60_000 ||
+          typeof containment.evidenceRef !== 'string' || !containment.evidenceRef.trim()) {
+        fail('contained candidate recovery requires a fresh exact custody receipt with terminated canary and zero residue');
+      }
+    }
     const ec2 = this.deps.ec2(input.sourceRegion);
     const result = (await ec2.send(new DescribeImagesCommand({ ImageIds: [imageId], Owners: [owner] }))) as DescribeImagesResult;
     const image = result.Images?.[0];
@@ -649,12 +741,19 @@ export class SdkAwsAmiReleaseAdapter implements AwsAmiReleaseAdapter {
       'papercusp:image-version': input.releaseVersion,
     };
     const tags = tagMap(image.Tags);
+    if (!containment && tags[AWS_AMI_CONTAINED_CANARY_TAG]) {
+      fail('formerly shared candidate requires explicit contained-candidate recovery, not private recovery');
+    }
+    if (containment && tags[AWS_AMI_CONTAINED_CANARY_TAG] !== containment.canaryInstanceId) {
+      fail('contained candidate AMI is missing the exact permanent containment marker');
+    }
     for (const [key, value] of Object.entries({ ...this.imageTags(input.tags), ...provenanceTags })) {
       if (tags[key] !== value) fail(`candidate recovery AMI is missing exact tag ${key}`);
     }
     const mappings = image.BlockDeviceMappings ?? [];
     const root = mappings[0];
     const snapshotId = root?.Ebs?.SnapshotId;
+    if (containment && snapshotId !== containment.snapshotId) fail('contained candidate root does not match its custody receipt');
     if (mappings.length !== 1 || image.RootDeviceName !== '/dev/xvda' || root?.DeviceName !== image.RootDeviceName ||
         !snapshotId || !SNAPSHOT_ID.test(snapshotId) || root?.Ebs?.Encrypted !== true) {
       fail('candidate recovery requires exactly one encrypted root snapshot');
@@ -672,6 +771,12 @@ export class SdkAwsAmiReleaseAdapter implements AwsAmiReleaseAdapter {
       fail('candidate recovery snapshot does not match the publisher, completed state, disk size and exact encryption key');
     }
     const snapshotTags = tagMap(snapshot.Tags);
+    if (!containment && snapshotTags[AWS_AMI_CONTAINED_CANARY_TAG]) {
+      fail('formerly shared snapshot requires explicit contained-candidate recovery, not private recovery');
+    }
+    if (containment && snapshotTags[AWS_AMI_CONTAINED_CANARY_TAG] !== containment.canaryInstanceId) {
+      fail('contained candidate snapshot is missing the exact permanent containment marker');
+    }
     for (const [key, value] of Object.entries(provenanceTags)) {
       if (snapshotTags[key] !== value) fail(`candidate recovery snapshot is missing exact tag ${key}`);
     }
@@ -685,10 +790,12 @@ export class SdkAwsAmiReleaseAdapter implements AwsAmiReleaseAdapter {
   }
 
   async scanImage(input: Parameters<AwsAmiReleaseAdapter['scanImage']>[0]): Promise<AwsAmiScanEvidence> {
+    assertAwsAmiTaskBudget('AMI scan', () => AWS_AMI_SCAN_RUNNER_TIMEOUT_MS, this.now());
     // The release contract validates every field; this layer only enforces the JSON boundary.
     // The scan downloads the candidate's snapshot with coldsnap too: hand it the SAME binary the
     // upload used (pinned install or override) instead of letting it re-resolve one off its PATH.
     return (await this.runJson(this.executables.scan, input, input.region, 'AMI scan', {
+      timeoutMs: AWS_AMI_SCAN_RUNNER_TIMEOUT_MS,
       extraEnv: { [AWS_AMI_SCAN_COLDSNAP_ENV]: this.executables.coldsnap },
     })) as AwsAmiScanEvidence;
   }
@@ -837,6 +944,7 @@ export class SdkAwsAmiReleaseAdapter implements AwsAmiReleaseAdapter {
   async launchCleanAccountCanary(
     input: Parameters<AwsAmiReleaseAdapter['launchCleanAccountCanary']>[0],
   ): Promise<AwsAmiCleanAccountLaunchProof> {
+    assertAwsAmiTaskBudget('clean-account canary', () => cleanAccountCanaryRunnerTimeoutMs(input), this.now());
     return (await this.runJson(this.executables.canary, input, input.region, 'clean-account canary', {
       timeoutMs: cleanAccountCanaryRunnerTimeoutMs(input),
     })) as AwsAmiCleanAccountLaunchProof;
@@ -1070,6 +1178,11 @@ export async function executeConfiguredAwsAmiRelease(
   if (connection.scope?.id !== request.publisherAccountId) {
     fail(`publisherAccountId '${request.publisherAccountId}' is not the connection's account '${connection.scope?.id ?? ''}'`);
   }
+  if (options.containedCandidateRecovery && options.containedCandidateRecovery.cleanAccountId !== request.cleanAccount.accountId) {
+    fail('contained candidate custody receipt names a different clean account');
+  }
+  assertAwsAmiTaskBudget('publication', () => awsAmiPublicationBudgetMs(request, Boolean(options.resumeCandidateImageId || options.containedCandidateRecovery)),
+    (overrides.now ?? Date.now)());
   const guestToolVersions = resolveSbomGuestToolVersions(request.guestToolVersions, options.guestToolVersions);
   return await executeAwsAmiRelease(
     request,

@@ -267,7 +267,7 @@ describe('env toggles + database precedence', () => {
     // isolated run's rows into the throwaway database (WI-10006736).
     const writers = [
       'libs/test-config/src/admin-test-runs-reporter.ts',
-      'apps/operator/test/reporters/admin-test-runs-reporter-playwright.ts',
+      'packages/operator-core/lib/testing-playwright-reporter.ts',
       'apps/operator/scripts/prune-test-runs.ts',
     ];
     const chain = /process\.env\.(PAPERCUSP_TEST_RUNS_DB_URL|HARNESS_ADMIN_DATABASE_URL)\s*\?\?\s*process\.env\.(PAPERCUSP_TEST_RUNS_DB_URL|HARNESS_ADMIN_DATABASE_URL)\s*\?\?/g;

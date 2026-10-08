@@ -43,15 +43,6 @@ export type AgentObligationFamily =
    */
   | 'waiting-on'
   /**
-   * A consult opened under `latency_contract:'proceed'` whose ASSUMPTION the
-   * originator has not reconciled. 'proceed' lets the agent keep working before
-   * the answer arrives, which incurs a debt: if the answer (or its absence)
-   * contradicts what was assumed, work built on the assumption must be redone.
-   * Until now that debt was an honour-system instruction — no row, no terminal
-   * state, so a compaction or a lapsed consult silently dropped it.
-   */
-  | 'consult-reconciliation'
-  /**
    * P-005 / D-030 step 6: a fleet this session leads is under-staffed and nothing
    * will restore it (the headcount governor does not hold it). Rendered on every
    * wake so a leader loop cannot keep recording quiet wakes over an empty fleet;

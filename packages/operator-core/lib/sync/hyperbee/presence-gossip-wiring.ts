@@ -455,8 +455,8 @@ export function invalidatePresenceGossipMemberCache(
 /**
  * Broadcast THIS machine's presence row as a signed gossip frame (the writer
  * path — callers gate on FLAGS.PRESENCE_GOSSIP; the topic's registered writer
- * signs). Returns false when the gossip/writer is unavailable (caller treats
- * it as a skipped beat — the TTL absorbs it).
+ * signs). Returns true only when at least one paired channel was sent the frame
+ * and no channel send threw.
  */
 export async function broadcastPresencePut(topicHex: string, row: SharedPresenceRow): Promise<boolean> {
   try {
@@ -464,8 +464,7 @@ export async function broadcastPresencePut(topicHex: string, row: SharedPresence
     const writer = s.bindings.get(topicHex)?.writer;
     if (!writer) return false;
     const frame = await buildPresencePutFrame(row, Date.now(), writer.sign);
-    s.gossip.broadcast(topicHex, frame);
-    return true;
+    return s.gossip.broadcast(topicHex, frame);
   } catch (e) {
     // EI-18767449529288937: this catch used to be fully silent, collapsing a real
     // send/sign FAILURE into the same bare `false` as the benign "no writer bound
@@ -485,7 +484,7 @@ export async function broadcastPresencePut(topicHex: string, row: SharedPresence
 /**
  * Broadcast THIS machine's full current session set (P-005 — the session-grain
  * roster beat). Receivers replace the device's previous set. Returns false when
- * the gossip/writer is unavailable (a skipped beat; the TTL absorbs it).
+ * no paired channel was sent the frame or any channel send threw.
  */
 export async function broadcastSessions(
   topicHex: string,
@@ -506,8 +505,7 @@ export async function broadcastSessions(
       Date.now(),
       writer.sign,
     );
-    s.gossip.broadcast(topicHex, frame);
-    return true;
+    return s.gossip.broadcast(topicHex, frame);
   } catch {
     return false;
   }
@@ -524,8 +522,7 @@ export async function broadcastPresenceDel(
     const writer = s.bindings.get(topicHex)?.writer;
     if (!writer) return false;
     const frame = await buildPresenceDelFrame(writer.devicePubkey, del, Date.now(), writer.sign);
-    s.gossip.broadcast(topicHex, frame);
-    return true;
+    return s.gossip.broadcast(topicHex, frame);
   } catch {
     return false;
   }

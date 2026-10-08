@@ -1,5 +1,7 @@
 # Recommended improvements to get_feedback and the shared relevance router
 
+Owner correction (2026-10-08): `session_turn:codex:01a11971-3adc-7420-be12-467f04fe8c82:22` removes `consult:reconcile` entirely. The historical recommendation in section 4 is superseded: remove the tool and mandatory reporting obligations, preserve existing records, and assess quality from existing project evidence without an extra reporting call. The approved implementation plan records this as D-008.
+
 I would prioritise reliable delivery, trustworthy measurement, and evidence-backed expertise selection. Adoption already doubled; increasing invocation volume is not the immediate bottleneck.
 
 This is a proposal, not an implementation or deployment claim. It builds on the seven-day assessment in docs/evidence/get-feedback-router-assessment-2026-10-08.md (assessment WI-10007395; report rpt_80682b92-1dd0-47c1-8a2d-a63030bb39f3). Current source and existing remediation items were read again for this recommendation.
@@ -65,4 +67,3 @@ Implement launch repair and measurement together; verify the served request/rece
 Verification for this proposal: inspected saved assessment, current get_feedback binding and abort-completion receipt, shared router subject/score paths, dispatcher failure handling, routing-health request/launch schemas, existing relevance-evaluation module and live remediation item states. No implementation tests were run and no product source changes were made.
 
 Published report: `rpt_49133c8e-ca0c-42bd-acc9-6239058ded28`. Publisher-returned path: `/reports/rpt_49133c8e-ca0c-42bd-acc9-6239058ded28`. Independently read back with reports:get; native UI delivery was not asserted.
-

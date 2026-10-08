@@ -657,7 +657,7 @@ describe('work_items:release { claimHold } (WI-2797 claim-hold lever)', () => {
         owner: 'release-owner',
       },
     });
-    expect(reachabilityM).toHaveBeenCalledWith('deploy:ready:staging');
+    expect(reachabilityM).toHaveBeenCalledWith('deploy:ready:staging', { requireSpecificCondition: true });
     expect(holdM).toHaveBeenCalledWith('WI-1', true, {
       harness: undefined,
       parkedBy: 'me',

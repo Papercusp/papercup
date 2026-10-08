@@ -97,7 +97,7 @@ async function readAgenda(refusal: GoalLaunchRefusal | null = null, admission: '
     // Real mode/goal/portfolio/tick/authority/obligation reads. Unrelated admission
     // and final acceptance are controlled for review/budget cases. The canonical
     // admission cases below opt into the production preflight explicitly.
-    deps: { planSlugs: async () => [], ownerDirectives: async () => [], waitingOn: async () => [], consultReconciliations: async () => [],
+    deps: { planSlugs: async () => [], ownerDirectives: async () => [], waitingOn: async () => [], 
       fleetStaffing: async () => [],
       ownerReport: async () => null,
       planAcceptance: async () => ({ satisfied: true, buildProvenance: { sha: null, version: 'fixture' } }),

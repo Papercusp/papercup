@@ -4,12 +4,12 @@ import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { expect, it } from 'vitest';
-import { recordIsolatedIntegrationProof } from '../test/isolated-integration-proof';
+import { expect } from 'vitest';
+import { isolatedIntegrationCases, recordIsolatedIntegrationProof } from '../test/isolated-integration-proof';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 
-it.each([false, true])('recovers a guarded partial stage and removes its private runtime (failing exit: %s)', async (failingExit, context) => {
+isolatedIntegrationCases('recovers a guarded partial stage and removes its private runtime (failing exit: %s)', async (failingExit, context) => {
   const runId = await recordIsolatedIntegrationProof({ root,
     filePath: 'packages/operator-core/lib/work-items-admission-bulk-dedup-background.integration.test.ts',
     sourcePaths: ['packages/operator-core/lib/work-items-admission-bulk-dedup.ts',

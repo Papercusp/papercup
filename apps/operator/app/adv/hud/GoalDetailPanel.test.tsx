@@ -239,7 +239,7 @@ describe('GoalDetailPanel', () => {
     renderPanel({ ...base, goal: { ...base.goal!, title: 'Renamed ongoing goal',
       goalPackage: { ref: 'work-on-everything' } } });
     expect(screen.getByTestId('work-on-everything-console')).toBeTruthy();
-    expect(screen.getByText('Plan the next pass.')).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Worklist unavailable' })).toBeTruthy();
     expect(screen.queryByTestId('goal-ends-section')).toBeNull();
   });
   it('shows the ongoing work overview first for standing goals and opens actual completed work', () => {

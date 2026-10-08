@@ -1,5 +1,19 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { dispatchProjectedTool, lookupByMcpName, type UnifiedToolContext } from '@papercusp/agent-mcp';
+const summaryTransport = vi.hoisted(() => ({ requests: [] as Record<string, unknown>[] }));
+vi.mock('../../agent-chat-stream', () => ({
+  runAgentChat: async function* (request: Record<string, unknown>) {
+    summaryTransport.requests.push(request);
+    const input = JSON.parse(request.promptText as string);
+    yield { type: 'result', finalText: input.quotedSource.includes('TAIL-942') ? 'Includes TAIL-942.' : 'Intermediate report.',
+      costUsd: 0, tokensIn: 10, tokensOut: 4, stopReason: 'end_turn', servedAccount: 'integration-account' };
+  },
+}));
+vi.mock('../../operator-budget', () => ({ checkBudget: async () => ({ exceeded: false }), recordSpend: async () => {} }));
+vi.mock('../../inference-gateway/local-backend-store', () => ({ listLocalBackends: async () => [] }));
+vi.mock('../../cache/instance', () => ({ getOperatorCache: () => ({
+  getOrSet: async (_workspace: string, _key: string, factory: () => Promise<unknown>) => factory(),
+}) }));
 import './read';
 
 function context(overrides: Partial<UnifiedToolContext> = {}): UnifiedToolContext {
@@ -15,6 +29,7 @@ function context(overrides: Partial<UnifiedToolContext> = {}): UnifiedToolContex
 const projected = lookupByMcpName('documents:read');
 if (!projected) throw new Error('documents:read must be registered');
 const dispatch = (args: unknown, ctx = context()) => dispatchProjectedTool(projected, 'documents:read', args, ctx, {});
+beforeEach(() => { summaryTransport.requests.length = 0; });
 
 describe('documents:read projection and intake integration', () => {
   it('runs the real registry, input schema, identity and HTML reader together', async () => {
@@ -51,5 +66,35 @@ describe('documents:read projection and intake integration', () => {
     const denied = await dispatch({ content: { kind: 'collection', sources: [{ kind: 'reference', ref: 'private:unread' }] } });
     expect(denied.ok).toBe(false);
     expect(denied.error?.code).toBe('invalid_input');
+  });
+  it('summarizes the complete provided sources through registry, schema, intake and summary routing', async () => {
+    const first = ('😀 Café.\n').repeat(3500);
+    const final = 'FINAL TAIL-942';
+    const response = await dispatch({ operation: 'summarize', maxChars: 6,
+      content: { kind: 'collection', sources: [
+        { kind: 'text', text: first, ref: 'provided:one' },
+        { kind: 'html', html: `<p>${final}</p>`, ref: 'provided:two', partial: true },
+      ] },
+      summary: { allowCloud: true, model: 'integration-model', account: 'integration-account',
+        length: 'short', audience: 'engineers', focus: 'coverage', format: 'bullets', language: 'Spanish', maxCalls: 20 },
+    });
+    expect(response.ok, JSON.stringify(response)).toBe(true);
+    expect(response.result?.structuredContent).toMatchObject({ ok: true, operation: 'summarize',
+      summary: 'Includes TAIL-942.', sourceRefs: ['provided:one', 'provided:two'],
+      coverage: { complete: false, characters: first.length + 2 + final.length, warnings: ['source-partial'] },
+      servedAccounts: ['integration-account'],
+    });
+    const inputs = summaryTransport.requests.map(request => JSON.parse(request.promptText as string));
+    const leaves = inputs.filter(input => input.phase.startsWith('source chunk'));
+    expect(leaves.length).toBeGreaterThan(1);
+    expect(leaves.map(input => input.quotedSource).join('')).toBe(first + '\n\n' + final);
+    expect(inputs).toHaveLength(leaves.length + 1);
+    expect(inputs.at(-1).quotedSource).toContain('Includes TAIL-942.');
+    for (const request of summaryTransport.requests) {
+      expect(request).toMatchObject({ backend: 'anthropic-direct', model: 'integration-model',
+        routeAccountId: 'integration-account', maxTokens: 256 });
+      expect(JSON.parse(request.promptText as string)).toMatchObject({ audience: 'engineers', focus: 'coverage',
+        format: 'bullets', language: 'Spanish', sourceRefs: ['provided:one', 'provided:two'], sourceCoverage: { complete: false } });
+    }
   });
 });

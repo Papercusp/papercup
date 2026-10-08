@@ -150,6 +150,11 @@ export type WatchdogSource =
   // learning-slo.ts; flag-gated dark per D-001 until the P-001 arming gate):
   | 'triage-entropy' | 'capture-consume-imbalance' | 'mttsh-regression'
   | 'governor-starvation' | 'memory-zero-hit'
+  // scout-su-ideate-pipeline-gaps-2026-10-08 P-009 (producer-silence.ts): an ACTIVE
+  // learning producer (loop enabled, pot on, routine not stopped) with no output past
+  // its threshold — the six-week silent Gym class (WI-10007379) — plus the unexplained
+  // pot learning switch that silences every producer for a pot.
+  | 'producer-silence'
   // context-injection-audit-2026-07-28 P-013 (D-024): the PER-POOL slice of recall
   // health, which the blended 'memory-zero-hit' aggregate above cannot express. The
   // push path fuses three independently-budgeted pools into ONE recorded row, so a
@@ -4475,6 +4480,13 @@ export async function defaultPapercuspCollectors(
       name: 'papercusp-governor-starvation',
       collect: () => import('./learning-slo').then((m) => m.governorStarvationCollector(workspaceId, opts)),
     },
+    // P-009 (scout-su-ideate-pipeline-gaps-2026-10-08): the zero-output sibling of the
+    // collector above — starvation asks "can this loop still afford to run?", this asks
+    // "is an active producer actually producing?". Same flag, SQL-only.
+    {
+      name: 'papercusp-producer-silence',
+      collect: () => import('./learning-slo').then((m) => m.producerSilenceCollector(workspaceId)),
+    },
     {
       name: 'papercusp-memory-recall-zero-hit',
       collect: () => import('./learning-slo').then((m) => m.memoryZeroHitCollector(opts)),
@@ -4621,6 +4633,9 @@ const HARNESS_SCOPED_WATCHDOG_SOURCES: ReadonlySet<WatchdogSource> = new Set([
   'stalled-feature', 'unresolved-escalation', 'escalation-spike', 'orphaned-spawn',
   'failed-spawn', 'stuck-plan', 'smoke-fail', 'fire-circuit-open', 'ship-link-stuck',
   'governor-starvation',
+  // producer-silence is per-pot (scope harness:<slug>): a torn-down benchmark pot's
+  // silent producer or switched-off learning is test debris, not an improvement.
+  'producer-silence',
   // bridge-needs-owner-unalerted is per-harness (scope harness:<slug>): a torn-down
   // benchmark instance's un-paged bridge block is test debris, not an improvement.
   'bridge-needs-owner-unalerted',

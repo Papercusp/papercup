@@ -963,7 +963,21 @@
       "item": "WI-10006170",
       "lines": [
         14242
-      ]
+      ],
+      "historicalQualification": {
+        "originalCensus": "Immutable file-census records 8 collected/executed, 1 failed, 0 skipped; 7 passed is inferred from that accounting. affected-tests.log:14242-14258 reports personal_documents.embedding vector(768), relkind=v, absent from the expected inventory.",
+        "storedRuns": "Local rows 20746592 (clean159fa07eba), 20765932 (dirty0d0655c790), and latest literal-file row20815866 (clean81c7be521a) each store schemaVersion1: passed7/failed1/skipped0, collectionFailed:false, testNamePattern:null. Their stored failure tails name the same compatibility-view inventory gap. Local literal-file ledger47/47 has no limit truncation and excludes6 other-source rows; it is historical evidence, not current execution.",
+        "relatedTerminalScopes": "Committed WI-10003956 covered event_key_registry.embedding and report_library_chunks.embedding, with older local rows20314197/20314204 storing8pass/0fail/0skip. Committed EI-25184116853759962 removed obsolete1154 replay from three different fixture files. Neither terminal scope demonstrates repair of this personal_documents view failure; neither was replayed.",
+        "repositoryPins": "Named test272bc6dc and imported prose-vector-dims65c8a8c4 are byte-identical across run-startd2a53e, three failure commits, HEAD and working files. Submodule migration1327 SHA66e97a04 is likewise equal and creates the personal_documents compatibility view over documents. These are repository-byte comparisons, not loaded-source or applied-schema fingerprints.",
+        "evidenceRefs": [
+          "/tmp/wi-10006170-current-vector-ledger.json",
+          "/tmp/wi-10006170-current-vector-exact.json",
+          "/tmp/wi-10006170-current-vector-failed-records.json",
+          "/tmp/wi-10006170-current-vector-source.json",
+          "/tmp/wi-10006170-current-vector-migration.json"
+        ],
+        "limits": "No demonstrated causal repair or fresh current test. Original/current loaded source, complete imports/config/schema/environment, final D006/P004 acceptance and shipment remain unknown. State remains open-unknown; no source-repair admission, final-test replay or gate action."
+      }
     },
     {
       "path": "packages/operator-core/lib/scout/cycle-real-rails.integration.test.ts",

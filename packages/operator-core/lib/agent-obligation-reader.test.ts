@@ -4,9 +4,6 @@ import { advanceGoalPlacementProgress, goalPlacementProgressScopeKey } from './g
 import { buildGoalOwnerReportDraft } from './goal-owner-report';
 
 import {
-  CONSULT_RECONCILIATION_MAX_ROWS,
-  CONSULT_RECONCILIATION_WINDOW_HOURS,
-  consultReconciliationPhase,
   defaultAgentObligationReaderDeps,
   PLAN_CONTEXT_MAX,
   projectAgentObligationBrief,
@@ -136,7 +133,6 @@ function deps(overrides: Partial<AgentObligationReaderDeps> = {}): AgentObligati
     // empty so these cases keep measuring the goal/plan providers.
     ownerDirectives: vi.fn(async () => []),
     waitingOn: vi.fn(async () => []),
-    consultReconciliations: vi.fn(async () => []),
     fleetStaffing: vi.fn(async () => []),
     ...overrides,
   };
@@ -880,139 +876,16 @@ describe('default planAcceptance dep serves the persisted gate verdict (D-039, W
   });
 });
 
-describe('consult-reconciliation source (EI-23764501791910357 slice 2)', () => {
-  afterEach(() => {
-    vi.doUnmock('@papercusp/db-org');
-  });
-
-  /** Replaces `getOrgPg().sql` with a recorder; the default dep imports it lazily. */
-  function mockConsultSql(rows: unknown[]) {
-    const sql = vi.fn(async (_strings: TemplateStringsArray, ..._values: unknown[]) => rows);
-    vi.doMock('@papercusp/db-org', async (orig) => ({
-      ...(await orig<typeof import('@papercusp/db-org')>()),
-      getOrgPg: () => ({ sql: Object.assign(sql, { begin: vi.fn() }) }),
-    }));
-    return {
-      sql,
-      /** The one statement the dep issued, whitespace-collapsed, with `$` where a value was bound. */
-      statement: () => (sql.mock.calls[0]![0] as unknown as readonly string[]).join('$').replace(/\s+/g, ' '),
-      bound: () => sql.mock.calls[0]!.slice(1),
-    };
-  }
-
-  it('maps consult_state.state to the phase the originator owes — an unmapped state is UNANSWERED, never answered', () => {
-    for (const state of ['routing', 'awaiting_responder', 'active']) {
-      expect(consultReconciliationPhase(state)).toBe('pending');
-    }
-    for (const state of ['closed_answered', 'graduated']) {
-      expect(consultReconciliationPhase(state)).toBe('answered');
-    }
-    // Silence is not confirmation: a closed-without-answer, an expiry and a state added
-    // after this test was written must all read as the conservative phase.
-    for (const state of ['closed_unanswered', 'expired', 'cancelled', 'a_state_added_next_year']) {
-      expect(consultReconciliationPhase(state)).toBe('unanswered');
-    }
-  });
-
-  it('reads only THIS requester’s unreconciled proceed consults, excluding the grading sweep and bounding the window', async () => {
-    const { GRADING_CASCADE_FLAVOR } = await import('./consult/grading-cascade');
-    const probe = mockConsultSql([]);
-
-    await expect(defaultAgentObligationReaderDeps().consultReconciliations('ws-1', 'su-me')).resolves.toEqual([]);
-
-    const statement = probe.statement();
-    // Each predicate is the debt's definition; dropping one changes WHICH consults are owed.
-    expect(statement).toContain('FROM harness_shared.consult_state');
-    expect(statement).toContain('workspace_id = $');
-    expect(statement).toContain('requester_id = $');
-    expect(statement).toContain("latency_contract = 'proceed'");
-    expect(statement).toContain("(outcome -> 'reconciliation') IS NULL");
-    // The grading sweep opens ~80 proceed consults a week as a REQUEST to be graded —
-    // counting them as assumption debt would flood every agenda.
-    expect(statement).toContain("COALESCE(routing -> 'cascade' ->> 'flavor', '') <> $");
-    expect(statement).toContain("make_interval(hours => $::int)");
-    expect(statement).toContain('LIMIT $');
-    expect(probe.bound()).toEqual([
-      'ws-1',
-      'su-me',
-      GRADING_CASCADE_FLAVOR,
-      CONSULT_RECONCILIATION_WINDOW_HOURS,
-      CONSULT_RECONCILIATION_MAX_ROWS,
-    ]);
-  });
-
-  it('shapes rows: a pending consult has no settledAt, a settled one carries it, expiry is ISO or null', async () => {
-    mockConsultSql([
-      {
-        conversation_id: 'c-pending', state: 'active', question: 'assume X', origin_task_ref: 'EI-1',
-        expires_at: new Date('2026-10-02T00:00:00.000Z'), settled_at: new Date('2026-10-01T20:00:00.000Z'),
-      },
-      {
-        conversation_id: 'c-answered', state: 'closed_answered', question: null, origin_task_ref: null,
-        expires_at: null, settled_at: '2026-10-01T21:00:00.000Z',
-      },
-    ]);
-
-    await expect(defaultAgentObligationReaderDeps().consultReconciliations('ws', 'su-me')).resolves.toEqual([
-      // `settled_at` is COALESCE(closed_at, updated_at), so for a still-open consult it is
-      // merely the last touch — reporting it as a settle time would be wrong.
-      { consultId: 'c-pending', phase: 'pending', assumption: 'assume X', originTaskRef: 'EI-1', settledAt: null, expiresAt: '2026-10-02T00:00:00.000Z' },
-      { consultId: 'c-answered', phase: 'answered', assumption: null, originTaskRef: null, settledAt: '2026-10-01T21:00:00.000Z', expiresAt: null },
-    ]);
-  });
-
-  it('puts an unreconciled consult on the agenda as one consult-reconciliation obligation', async () => {
+describe('consultation reporting retirement', () => {
+  it('does not query consult follow-through or put reporting obligations on the agenda', async () => {
+    const readDeps = deps({});
+    const legacyRead = vi.fn(async () => [{ consultId: 'old-consult', phase: 'answered' }]);
     const read = await readAgentObligationAgenda({
       workspaceId: 'ws', ownerId: 'su-me', now: NOW,
-      deps: deps({
-        consultReconciliations: vi.fn(async () => [
-          { consultId: 'c-1', phase: 'answered' as const, assumption: 'assume 811', originTaskRef: 'EI-1', settledAt: '2026-09-05T19:00:00.000Z', expiresAt: null },
-        ]),
-      }),
+      deps: Object.assign(readDeps, { consultReconciliations: legacyRead }),
     });
-
-    const rows = read.agenda.evaluations.filter((entry) => entry.family === 'consult-reconciliation');
-    expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ status: 'due', priority: 'high' });
-    // An answered consult may falsify work already built, so it must be ranked, not just listed.
-    expect(read.agenda.primary.map((entry) => entry.family)).toContain('consult-reconciliation');
-  });
-
-  it('keeps an unreadable consult_state as an explicit unknown row, never as "no debt"', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const read = await readAgentObligationAgenda({
-      workspaceId: 'ws', ownerId: 'su-me', now: NOW,
-      deps: deps({ consultReconciliations: vi.fn(async () => { throw new Error('consult_state unavailable'); }) }),
-    });
-    warn.mockRestore();
-
-    const rows = read.agenda.evaluations.filter((entry) => entry.family === 'consult-reconciliation');
-    expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ status: 'unknown', measurementFailure: { code: 'canonical-consult-reconciliation-read-failed' } });
-    expect(read.degradedSources.some((entry) => entry.includes('consult reconciliation'))).toBe(true);
-  });
-
-  it('renders NO row when the requester owes nothing, so the primary-obligation count is unchanged', async () => {
-    const read = await readAgentObligationAgenda({ workspaceId: 'ws', ownerId: 'su-me', now: NOW, deps: deps({}) });
-    expect(read.agenda.evaluations.filter((entry) => entry.family === 'consult-reconciliation')).toEqual([]);
-  });
-
-  it('keeps the generation stable when only the observation clock moves, and changes it when a consult changes phase', async () => {
-    const rowAt = (phase: 'pending' | 'answered') => ({
-      consultId: 'c-1', phase, assumption: 'assume 811', originTaskRef: null,
-      settledAt: phase === 'pending' ? null : '2026-09-05T19:00:00.000Z', expiresAt: null,
-    });
-    const generation = async (now: Date, phase: 'pending' | 'answered') => {
-      const read = await readAgentObligationAgenda({
-        workspaceId: 'ws', ownerId: 'su-me', now,
-        deps: deps({ consultReconciliations: vi.fn(async () => [rowAt(phase)]) }),
-      });
-      return read.agenda.evaluations.find((entry) => entry.family === 'consult-reconciliation')!.sourceGeneration;
-    };
-
-    const first = await generation(NOW, 'pending');
-    // The turn-start cursor dedups on this value: a clock in it would re-deliver the same debt every turn.
-    expect(await generation(new Date(NOW.getTime() + 60_000), 'pending')).toBe(first);
-    expect(await generation(NOW, 'answered')).not.toBe(first);
+    expect(legacyRead).not.toHaveBeenCalled();
+    expect(read.agenda.evaluations.map(row => row.family)).not.toContain('consult-reconciliation');
+    expect(read.degradedSources.some(source => source.includes('consult reconciliation'))).toBe(false);
   });
 });

@@ -22,7 +22,8 @@ import { _resetSuClientLeaseForTest } from '../su-session-client-lease.ts';
 import type { SuSessionCommandStore } from '../su-session-commands.ts';
 import type { SuSessionHostOwner } from '../su-session-persistence.ts';
 import { createHash } from 'node:crypto';
-import { runDispatchStack, type ProjectedTool, type UnifiedToolContext } from '@papercusp/tooldef';
+import type { ProjectedTool, UnifiedToolContext } from '@papercusp/tooldef';
+import { dispatchProjectedToolToMcp } from '@papercusp/tooldef-mcp';
 import { NativeInstalledPerUseTurns, createInstalledPerUseChokepoint, type AdmittedPerUseToolTurn } from '../agent-tools/per-use-chokepoint.ts';
 import { canonicalJson } from '../authority/authority-rpc-envelope.ts';
 import { declareMeter, LocalMeteredTurn } from '../p2p/metered-invocation.ts';
@@ -115,11 +116,13 @@ let nativeMeter: LocalMeteredTurn | null = null;
 let nativeHooks: ReturnType<NativeInstalledPerUseTurns['register']> | null = null;
 let nativeLocalCalls = 0;
 let nativeInvocations = 0;
+let nativeReceiptFailure = false;
 const nativeAroundInvoke = createInstalledPerUseChokepoint({ readProvenance: async () => nativeProvenance,
   resolveAdmittedTurn: request => nativeRegistry.resolve(request) });
 
 async function dispatchNative(body: unknown) {
-  const request = body as { callId: string; fail?: boolean; indirect?: boolean };
+  const request = body as { callId: string; fail?: boolean; indirect?: boolean; settlementFail?: boolean };
+  nativeReceiptFailure = request.settlementFail === true;
   const ctx = { log: () => {}, signal: new AbortController().signal, progress: () => {}, emit: () => {},
     workspaceId: nativeAddress.workspaceId, role: 'worker', advSessionId: nativeAddress.advSessionId,
     uiClientId: nativeAddress.ownerId, indirectDispatch: request.indirect === true,
@@ -128,7 +131,8 @@ async function dispatchNative(body: unknown) {
       candidateAdvSessionId: nativeAddress.advSessionId, valueFingerprint: nativeAddress.nativeSessionIdFingerprint,
       callIdFingerprint: fp(request.callId) } },
   } as UnifiedToolContext;
-  const target = { pluginName: nativeProvenance.name,
+  const target = { name: 'run', description: 'native paid fixture', capabilities: [], inputSchema: { type: 'object' },
+    pluginName: nativeProvenance.name,
     pluginInstallation: { version: '1.0.0', path: '/fixture/owner-paid', source: 'project' },
     expose: { mcp: { name: 'owner-paid:run' } },
     fn: async () => {
@@ -137,7 +141,14 @@ async function dispatchNative(body: unknown) {
       return { content: [{ type: 'text', text: `paid-owner:${process.pid}` }] };
     },
   } as ProjectedTool;
-  return (await runDispatchStack(target, 'owner-paid:run', {}, ctx, { aroundInvoke: nativeAroundInvoke })).result;
+  try {
+    return await dispatchProjectedToolToMcp(target, 'owner-paid:run', {}, ctx, { aroundInvoke: nativeAroundInvoke });
+  } catch (error) {
+    // Keep the originating error in the runner's durable log: the receiver
+    // correctly exposes only outcome uncertainty after a remote exception.
+    console.error('[native-paid-fixture] dispatch failed', error);
+    throw error;
+  }
 }
 
 registerSuNativeToolDispatcher(dispatchNative);
@@ -159,7 +170,11 @@ async function handle(message: any): Promise<unknown> {
       nativeMeter = new LocalMeteredTurn({ state: { turnId: 'native-funded-turn', payer: 'authenticated-buyer',
         seller: 'gh:4242', releaseRef: 'native-paid-sku', meter: declared.meter, ceilingMicros: 1_000n,
         expiresAtMs: 10_000, reservedMicros: 0n, channel: createMicrochargeChannel('native-channel', 2_000n), units: {} },
-        nowMs: () => 1_000, signVoucher: signPaymentTestBytes, signReceipt: () => 'seller-signature',
+        nowMs: () => 1_000, signVoucher: signPaymentTestBytes,
+        signReceipt: () => {
+          if (nativeReceiptFailure) throw new Error('fixture receipt signing unavailable');
+          return 'seller-signature';
+        },
         persist: async () => {} });
       const admission: AdmittedPerUseToolTurn = { kind: 'per-use', workspaceId: ADDRESS.workspaceId,
         principalId: 'native-agent', payer: 'authenticated-buyer', provenance: nativeProvenance, entitled: true,
@@ -190,8 +205,12 @@ async function handle(message: any): Promise<unknown> {
       return { ok: true };
     case 'native-meter': {
       const state = nativeMeter?.snapshot();
-      return { nativeLocalCalls, nativeInvocations, units: state?.units ?? {},
-        reservedMicros: String(state?.reservedMicros ?? 0n), channelSpentMicros: String(state?.channel.spentMicros ?? 0n),
+      const units = Object.fromEntries(Object.entries(state?.units ?? {}).map(([nonce, unit]) =>
+        [nonce, { quantity: String(unit.voucher.meterQuantity), completedAtMs: unit.completedAtMs,
+          hasReceipt: unit.receipt !== null }]));
+      return { nativeLocalCalls, nativeInvocations, units,
+        outstandingMicros: String(Object.values(state?.channel.reservations ?? {}).reduce((sum, value) => sum + value, 0n)),
+        reservedMicros: String(state?.reservedMicros ?? 0n), channelCommittedMicros: String(state?.channel.committedMicros ?? 0n),
         admissionClosed: state?.admissionClosed ?? false };
     }
     case 'open-engine': {

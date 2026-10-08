@@ -12,6 +12,10 @@ import { describe, expect, it } from 'vitest';
 
 import {
   AWS_AMI_DESCRIPTION_PATTERN,
+  AWS_AMI_SCAN_BUDGETS,
+  AWS_AMI_SCAN_WORK_TIMEOUT_MS,
+  AWS_AMI_SCAN_RUNNER_TIMEOUT_MS,
+  boundAwsAmiScanCommandTimeoutMs,
   GUEST_PACKAGE_PROBES,
   assertAwsAmiProvenance,
   buildAwsAmiScanEvidence,
@@ -35,6 +39,25 @@ const CONTAINERFILE = join(BOOTC_DIR, 'workspace-host.Containerfile');
 const SHA = 'a'.repeat(64);
 const MANIFEST = `sha256:${'b'.repeat(64)}`;
 const REQUEST = { region: 'us-east-1', imageId: 'ami-0123456789abcdef0', buildManifestIdentity: MANIFEST, releaseSha256: SHA };
+
+describe('AWS scanner parent and phase deadline contract', () => {
+  it('allows a complete download and all three scans while preserving cleanup headroom', () => {
+    expect(AWS_AMI_SCAN_WORK_TIMEOUT_MS).toBe(
+      AWS_AMI_SCAN_BUDGETS.downloadMs + 3 * AWS_AMI_SCAN_BUDGETS.scanMs + AWS_AMI_SCAN_BUDGETS.hostWorkMs,
+    );
+    expect(AWS_AMI_SCAN_RUNNER_TIMEOUT_MS - AWS_AMI_SCAN_WORK_TIMEOUT_MS)
+      .toBe(AWS_AMI_SCAN_BUDGETS.teardownMs + AWS_AMI_SCAN_BUDGETS.runnerMarginMs);
+    // Old parent killed even a valid 46-minute download; the maintained boundary admits it.
+    expect(boundAwsAmiScanCommandTimeoutMs(AWS_AMI_SCAN_WORK_TIMEOUT_MS, AWS_AMI_SCAN_BUDGETS.downloadMs, 46 * 60_000))
+      .toBe(AWS_AMI_SCAN_BUDGETS.downloadMs);
+  });
+
+  it('shrinks successive commands against one absolute phase clock and refuses an expired phase', () => {
+    expect(boundAwsAmiScanCommandTimeoutMs(10000, 8000, 1000)).toBe(8000);
+    expect(boundAwsAmiScanCommandTimeoutMs(10000, 8000, 3000)).toBe(7000);
+    expect(() => boundAwsAmiScanCommandTimeoutMs(10000, 8000, 10000)).toThrow(/execution budget exhausted/);
+  });
+});
 
 function image(overrides: Record<string, unknown> = {}) {
   return {

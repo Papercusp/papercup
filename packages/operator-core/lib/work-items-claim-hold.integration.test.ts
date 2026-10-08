@@ -131,6 +131,23 @@ afterEach(() => {
 });
 
 describe('setWorkItemClaimHold (WI-2797)', () => {
+  it.each(['work-item:claimable', 'release:deployed', 'release:deployed:abc123',
+    'coord:inbox-wake:park-owner', 'fleet:item-completed:test'])
+  ('does not mistake a broad fired wake for owner-grade clearance: %s', async (trigger) => {
+    const id = 'WI-owner-grade-park';
+    await seedIssue(id, { payload: { held_open_by: 'reviewer', held_open_reason: 'independent review' } });
+    const releaseContract = await buildDurableParkReleaseContract({ condition: 'owner grade is cleared', trigger }, 'park-owner');
+    await wi.setWorkItemClaimHold(id, true, { harness: H, parkedBy: 'park-owner', releaseContract });
+    const original = await readPayload(id);
+    await recordKeyFire({ eventKey: trigger, firedBy: 'unrelated-producer' });
+    expect((await readEventConditionReachability(trigger)).basis).toBe('fired');
+    const audit = await runWorkItemDurableParkAudit({ workspaceId: WS, harnessSlug: H,
+      runId: 'broad-fire-audit', sql: db.sql, artifactPath: false });
+    expect(audit.durableParks[0]?.releaseLiveness.status).toBe('unverified');
+    expect(audit.durableParks[0]?.releaseLiveness.findings).toContain('reachability-unverified');
+    expect(await readPayload(id)).toEqual(original);
+  });
+
   it('refreshes a fired condition from the event ledger without changing the park, lease or assignment', async () => {
     const id = 'WI-event-park';
     const trigger = `work-item:unblocked:${id}`;

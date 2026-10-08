@@ -44,7 +44,6 @@ export const OWNER_REPORT_OBLIGATION_REVISION = 'goal-owner-report-v1';
 export const INDEPENDENT_VERIFICATION_OBLIGATION_REVISION = 'plan-independent-verification-v1';
 export const OWNER_DIRECTIVE_OBLIGATION_REVISION = 'owner-directive-disposition-v1';
 export const WAITING_ON_OBLIGATION_REVISION = 'waiting-on-progress-v2';
-export const CONSULT_RECONCILIATION_OBLIGATION_REVISION = 'consult-proceed-reconciliation-v1';
 export const FLEET_STAFFING_OBLIGATION_REVISION = 'fleet-staffing-v1';
 
 interface ProviderBase {
@@ -1676,159 +1675,6 @@ export function waitingOnObligations(input: WaitingOnProviderInput): AgentObliga
   );
 }
 
-/**
- * ONE consult this session opened under `latency_contract:'proceed'` and has not
- * reconciled. Row facts only — no observation clock — so an unchanged consult
- * keeps an unchanged `sourceGeneration` across warm turns.
- *
- * `phase` is the part that decides what the originator owes:
- *  · `pending`    the consult is still open — the agent proceeded on an ASSUMPTION
- *                 and nothing has yet confirmed or contradicted it.
- *  · `answered`   a reply arrived (closed_answered / graduated). It may contradict
- *                 the assumption; the originator must diff it against what it built.
- *  · `unanswered` the consult ended WITHOUT an answer (expired, declined,
- *                 closed_cant_help, no_qualified_responder). The assumption was
- *                 never validated — and silence is not confirmation.
- */
-export interface ConsultReconciliationRow {
-  /** `consult_state.conversation_id`. */
-  consultId: string;
-  phase: 'pending' | 'answered' | 'unanswered';
-  /**
-   * What the originator assumed — the consult `question`, which is the only
-   * durable account of the assumption today. Null when the row carried none.
-   */
-  assumption: string | null;
-  /** The task the consult was opened under (`origin_task_ref`), when known. */
-  originTaskRef: string | null;
-  /** ISO — when the consult stopped being open; null while `pending`. */
-  settledAt: string | null;
-  /** ISO — when an open consult lapses unanswered; null when it has no deadline. */
-  expiresAt: string | null;
-}
-
-export interface ConsultReconciliationProviderInput extends ProviderBase {
-  read: ProviderRead<ConsultReconciliationRow[]>;
-}
-
-const CONSULT_RECONCILIATION_SOURCE = 'consult_state:proceed-unreconciled';
-
-/** Row-sized excerpt of the assumption; the recovery verb carries the rest. */
-function consultAssumptionExcerpt(assumption: string | null): string | null {
-  if (!assumption) return null;
-  const flat = assumption.replace(/\s+/g, ' ').trim();
-  if (flat.length === 0) return null;
-  return flat.length > 72 ? `${flat.slice(0, 71)}…` : flat;
-}
-
-/**
- * Unreconciled `proceed` consults → class-B obligation rows.
- *
- * ⚠ EMPTY FOR MOST AGENTS AND RENDERS NO ROW AT ALL — unlike `waiting-on`, an empty
- * read returns `[]` rather than a `not-applicable` placeholder. A placeholder per
- * session would change the primary-obligation COUNT every agenda carries, which is
- * exactly the strand WI-10002424 recorded when `waiting-on` landed; the debt only
- * exists for the sessions that actually opened a `proceed` consult.
- * An UNREADABLE source is different — that still yields one `unknown` row, because
- * "I could not tell whether I owe a reconciliation" must not read as "I owe none".
- *
- * ONE OBLIGATION PER CONSULT, keyed on the consult id alone, so a re-render of the
- * same consult is the same obligation and a warm-turn dedup does not read it as new.
- * The three phases have different duties, so they are different statuses:
- * `answered` and `unanswered` are `due` (the originator can act NOW: diff the answer
- * against the work built on the assumption, or treat the silence as unconfirmed),
- * `pending` is `in-progress` (nothing to reconcile YET, but the assumption is live
- * and must survive a compaction).
- */
-export function consultReconciliationObligations(input: ConsultReconciliationProviderInput): AgentObligation[] {
-  const common = {
-    ruleId: 'consult-proceed-reconciliation',
-    ruleRevision: CONSULT_RECONCILIATION_OBLIGATION_REVISION,
-    family: 'consult-reconciliation' as const,
-    scope: { workspaceId: input.workspaceId, ownerId: input.ownerId },
-    responsibleOwnerId: input.ownerId,
-    // The SAME downstream tier as `waiting-on` (2): below an owner directive and below
-    // every repair-shaped duty. A reconciliation corrects work already done; it must
-    // not outrank a duty that is still blocking someone.
-    causalRank: 2,
-    sourceGeneration: input.sourceGeneration,
-  };
-  if (input.read.status === 'unknown') {
-    return [
-      defineAgentObligation({
-        ...common,
-        title: 'Consult reconciliation state is unavailable',
-        episode: `unknown:${input.sourceGeneration}`,
-        status: 'unknown',
-        priority: 'normal',
-        authority: policyAuthority(CONSULT_RECONCILIATION_SOURCE, CONSULT_RECONCILIATION_OBLIGATION_REVISION),
-        reason: input.read.failure.detail,
-        applicableDemand: 0,
-        evidence: [],
-        action: { kind: 'inspect', summary: input.read.failure.retry, targetRef: CONSULT_RECONCILIATION_SOURCE },
-        clearsWhen: {
-          id: 'consult-reconciliation-readable',
-          summary: 'the consult reconciliation read succeeds again',
-          evidenceKind: 'state',
-          sourceRef: CONSULT_RECONCILIATION_SOURCE,
-        },
-        measurementFailure: input.read.failure,
-      }),
-    ];
-  }
-  return input.read.value.map((row) => {
-    const excerpt = consultAssumptionExcerpt(row.assumption);
-    const phaseNote =
-      row.phase === 'pending'
-        ? 'open — you proceeded on an assumption nothing has confirmed yet'
-        : row.phase === 'answered'
-          ? 'answered — diff the reply against the work you built on your assumption'
-          : 'ended with NO answer — silence does not confirm your assumption';
-    return defineAgentObligation({
-      ...common,
-      // The consult id goes in the TITLE: it is the only field that renders at BOTH detail
-      // levels (`reason` drops at the narrow `action` detail), and it is the handle the
-      // originator needs to find the thread.
-      title: `Reconcile proceed-consult ${row.consultId} (${row.phase})`,
-      episode: `consult:${row.consultId}`,
-      status: row.phase === 'pending' ? 'in-progress' : 'due',
-      // An answer can falsify work already built, so it outranks an unanswered lapse,
-      // which outranks a still-open consult.
-      priority: row.phase === 'answered' ? 'high' : 'normal',
-      authority: policyAuthority(`consult:${row.consultId}`, CONSULT_RECONCILIATION_OBLIGATION_REVISION),
-      reason:
-        `${phaseNote}` +
-        (excerpt ? `; assumed: "${excerpt}"` : '') +
-        (row.originTaskRef ? `; under ${row.originTaskRef}` : ''),
-      applicableDemand: 1,
-      evidence: [
-        evidence(
-          `consult:${row.consultId}`,
-          input.observedAt,
-          input.sourceGeneration,
-          `latency_contract=proceed, phase=${row.phase}` +
-            (row.settledAt ? `, settled ${row.settledAt}` : '') +
-            (row.expiresAt && row.phase === 'pending' ? `, lapses ${row.expiresAt}` : ''),
-        ),
-      ],
-      action: {
-        kind: 'inspect',
-        summary:
-          'read the consult thread, then call consult:reconcile to record confirmed|rescoped|reversed|moot; if unavailable on this operator, use staging (:3170) until the release build is updated',
-        tool: 'consult:reconcile',
-        targetRef: `consult:${row.consultId}`,
-      },
-      clearsWhen: {
-        id: `consult-reconciled:${row.consultId}`,
-        summary: 'the originator records confirmed, rescoped, reversed, or moot for this consult',
-        evidenceKind: 'state',
-        sourceRef: `consult:${row.consultId}`,
-      },
-      ...(row.phase === 'pending' && row.expiresAt ? { dueAt: row.expiresAt } : {}),
-    });
-  });
-}
-
 export interface FleetStaffingProviderInput extends ProviderBase {
   read: ProviderRead<FleetStaffingRow[]>;
 }
@@ -1957,7 +1803,6 @@ export function buildAgentObligationAgenda(
     independentVerification?: IndependentVerificationProviderInput[];
     ownerDirectives?: OwnerDirectivesProviderInput;
     waitingOn?: WaitingOnProviderInput;
-    consultReconciliation?: ConsultReconciliationProviderInput;
     fleetStaffing?: FleetStaffingProviderInput;
   },
   evaluatedAt: string,
@@ -1969,7 +1814,6 @@ export function buildAgentObligationAgenda(
     ...(inputs.independentVerification ?? []).map(independentVerificationObligation),
     ...(inputs.ownerDirectives ? ownerDirectiveObligations(inputs.ownerDirectives) : []),
     ...(inputs.waitingOn ? waitingOnObligations(inputs.waitingOn) : []),
-    ...(inputs.consultReconciliation ? consultReconciliationObligations(inputs.consultReconciliation) : []),
     ...(inputs.fleetStaffing ? fleetStaffingObligations(inputs.fleetStaffing) : []),
   ];
   return evaluateAgentObligations(obligations, evaluatedAt);

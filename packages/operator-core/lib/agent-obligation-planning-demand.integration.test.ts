@@ -94,7 +94,7 @@ async function agenda(realAdmission = false) {
     // Scope, portfolio, review, ownership, index and ordering are real. Launch admissibility
     // and unrelated final acceptance are controlled inputs: this proves priority,
     // not launch admission or a plan acceptance verdict.
-    deps: { planSlugs: async () => [], ownerDirectives: async () => [], waitingOn: async () => [], consultReconciliations: async () => [],
+    deps: { planSlugs: async () => [], ownerDirectives: async () => [], waitingOn: async () => [], 
       fleetStaffing: async () => [],
       ownerReport: async () => null,
       planAcceptance: async () => ({ satisfied: true, buildProvenance: { sha: null, version: 'fixture' } }),

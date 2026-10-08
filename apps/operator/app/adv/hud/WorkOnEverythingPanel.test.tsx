@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
 import type { GoalDetailInput } from './goal-detail-model';
 
@@ -106,5 +106,49 @@ describe('02C draft and apply', () => {
     expect(screen.getByText(/No scope or priority change/)).toBeTruthy();
     fireEvent.change(screen.getByRole('textbox', { name: 'Search worklist' }), { target: { value: 'does-not-exist' } });
     expect(screen.getByText('No plans match your search.')).toBeTruthy();
+  });
+  it('keeps scope totals separate from search and updates them while staging and discarding', () => {
+    const fetch = vi.fn(); vi.stubGlobal('fetch', fetch);
+    render(<WorkOnEverythingPanel data={fixture()} nowMs={Date.now()} onClose={vi.fn()} refresh={vi.fn()} />);
+    const summary = document.querySelector('dl[aria-label="Worklist overview"]')!;
+    const values = () => Array.from(summary.querySelectorAll('dd')).map((el) => el.textContent);
+    expect(values()).toEqual(['2', '1', '0']);
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search worklist' }), { target: { value: 'Cloud' } });
+    expect(screen.getAllByRole('option')).toHaveLength(1);
+    expect(values()).toEqual(['2', '1', '0']);
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Cloud setup' }));
+    expect(values()).toEqual(['1', '2', '2']);
+    fireEvent.click(screen.getByText('Discard'));
+    expect(values()).toEqual(['2', '1', '0']);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+  it('shows complete next steps and measured progress, and keeps unknown progress unknown', () => {
+    const data = fixture(), rows = data.goalData!.collections.worklist.rows;
+    rows[0].nextStep = 'Verify the deployment configuration before opening the next work item';
+    rows[0].counts = { todo: 2, wip: 1, done: 3, blocked: 0, needsHuman: 0 };
+    const view = render(<WorkOnEverythingPanel data={data} nowMs={Date.now()} onClose={vi.fn()} refresh={vi.fn()} />);
+    expect(within(screen.getAllByRole('option')[0]).getByText(rows[0].nextStep)).toBeTruthy();
+    const progress = screen.getByRole('progressbar', { name: 'Plan completion' }) as HTMLProgressElement;
+    expect(progress.value).toBe(3);
+    expect(progress.max).toBe(6);
+    fireEvent.click(screen.getAllByRole('option')[1]);
+    expect(screen.queryByRole('progressbar')).toBeNull();
+    expect(screen.getByText('Task progress has not been measured.')).toBeTruthy();
+    const unavailable = fixture(); unavailable.goalData!.collections = {};
+    view.rerender(<WorkOnEverythingPanel data={unavailable} nowMs={Date.now()} onClose={vi.fn()} refresh={vi.fn()} />);
+    expect(document.querySelector('dl[aria-label="Worklist overview"]')).toBeNull();
+    expect(screen.getByText('Worklist unavailable')).toBeTruthy();
+  });
+  it('reorders from a focused row control without triggering global navigation', () => {
+    render(<WorkOnEverythingPanel data={fixture()} nowMs={Date.now()} onClose={vi.fn()} refresh={vi.fn()} />);
+    const control = screen.getByRole('button', { name: 'Move Search reliability up' });
+    control.focus();
+    const navigation = vi.fn();
+    document.addEventListener('keydown', navigation);
+    fireEvent.keyDown(control, { key: 'ArrowUp', altKey: true });
+    document.removeEventListener('keydown', navigation);
+    expect(navigation).not.toHaveBeenCalled();
+    expect(screen.getAllByRole('option')[0].textContent).toContain('Search reliability');
+    expect(screen.getByRole('region', { name: 'Pending changes' })).toBeTruthy();
   });
 });

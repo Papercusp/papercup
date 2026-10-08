@@ -154,6 +154,13 @@ export interface RoutedIdeaProvenance {
    * success-metrics outcome tally; the lens-weight math re-classifies from the feed.
    */
   outcome?: IdeaOutcome;
+  /**
+   * Ledger `origin` (scout / su-ideate / dream / agent-review / ...), mapped by
+   * readRoutedIdeas. Absent on in-memory provenance built at cycle time (always
+   * scout). success-metrics uses it to keep agent-review rows out of every ideation
+   * bar and report them in their own bucket (scout-su-ideate-pipeline-gaps P-008 / R-18).
+   */
+  origin?: string;
 }
 
 /**

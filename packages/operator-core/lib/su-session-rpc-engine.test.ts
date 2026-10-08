@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SU_SESSION_PROTOCOL_VERSION, SU_SESSION_SCHEMA } from '@papercusp/chat-protocol';
 import { resolveCardResponse } from '@papercusp/agent-mcp';
+import { registerProjectedTool, unregisterProjectedToolsForPlugin, type ProjectedTool } from '@papercusp/tooldef';
 import type { BootstrapSuResult } from './endpoint-route/routes/agent-mcp/bootstrap-su';
 import type { PuiSuSessionBinding } from './launch-agent';
 import type { RpcFrame, SuStdioPeerOptions } from './su-session-stdio-peer';
@@ -15,6 +16,10 @@ const mocks = vi.hoisted(() => ({
   persona: vi.fn(),
   resolveBinary: vi.fn((bin: string) => `/resolved/${bin}`),
   nativeFunding: vi.fn(async (_input: unknown): Promise<{ ok: true } | { ok: false; code: string; message: string; retryable: false }> => ({ ok: true })),
+  installedProvenance: vi.fn(async (_input: unknown): Promise<import('./cupboard/types').InstalledPluginProvenance | null> => null),
+}));
+vi.mock('./cupboard/install-io', async original => ({
+  ...(await original<typeof import('./cupboard/install-io')>()), readInstalledPluginCommerceProvenance: mocks.installedProvenance,
 }));
 vi.mock('./cupboard/identity-activation-gate-io', () => ({ admitNativeIdentityInference: mocks.nativeFunding }));
 vi.mock('./agent-bin-detect', () => ({ resolveAgentBinarySync: mocks.resolveBinary }));
@@ -54,6 +59,8 @@ afterEach(async () => {
   mocks.persist.mockResolvedValue(true);
   mocks.receipts.mockResolvedValue([]);
   mocks.nativeFunding.mockResolvedValue({ ok: true });
+  mocks.installedProvenance.mockResolvedValue(null);
+  unregisterProjectedToolsForPlugin('attached-paid-fixture');
 });
 
 function fixture(backend: 'codex' | 'omp', overrides: {
@@ -142,6 +149,31 @@ function command(engine: SuRpcEngine, type: 'owner_turn' | 'interrupt', id: stri
 }
 
 describe('P-017 awaited Codex host lifecycle', () => {
+  it.each([false, true])('default attached installed admission refuses paid tools before inference (resume=%s)', async resume => {
+    const target: ProjectedTool = { pluginName: 'attached-paid-fixture',
+      pluginInstallation: { version: '1.0.0', path: '/loaded/attached-paid', source: 'project' },
+      description: 'fixture', capabilities: [], inputSchema: { type: 'object' },
+      expose: { mcp: { name: 'attached_paid_run' } }, fn: vi.fn() };
+    registerProjectedTool(target);
+    mocks.installedProvenance.mockResolvedValue({ schema: 'papercusp.plugin-installation/v1',
+      name: target.pluginName, version: '1.0.0', contentFingerprint: 'a'.repeat(64), hadListing: true, contentSource: 'r2',
+      listing: { listingId: 'paid', githubUrl: 'https://github.com/seller/tool', ref: '.', publisherId: 'gh:4242',
+        skuRef: 'paid-sku', releaseVersion: '1.0.0', priceModel: 'per-use', releaseContentHash: 'b'.repeat(64) } });
+    const barrier = gate();
+    mocks.installedProvenance.mockImplementationOnce(async () => { await barrier.promise; return mocks.installedProvenance.getMockImplementation()!({}); });
+    const f = fixture('codex', { resume, request: async frame => frame.method === 'mcpServerStatus/list'
+      ? { data: [{ name: 'papercusp-su', tools: { attached_paid_run: {} } }] } : undefined });
+    await f.engine.ready;
+    const dispatched = f.engine.adapter.host.startCommand(command(f.engine, 'owner_turn') as never);
+    await vi.waitFor(() => expect(mocks.installedProvenance).toHaveBeenCalledOnce());
+    expect(f.sent.some(r => r.method === 'turn/start')).toBe(false);
+    barrier.release();
+    await expect(dispatched.terminal).resolves.toMatchObject({ status: 'refused', refusal: {
+      code: 'native-installed-admission-failed', message: expect.stringContaining('native-installed-funding-unavailable') } });
+    expect(target.fn).not.toHaveBeenCalled(); expect(f.sent.some(r => r.method === 'turn/start')).toBe(false);
+    expect(mocks.nativeFunding).toHaveBeenCalledOnce();
+  });
+
   it.each(['codex', 'omp'] as const)('awaits the production paid-identity guard before %s native inference', async (backend) => {
     const barrier = gate();
     mocks.nativeFunding.mockImplementation(async () => { await barrier.promise;

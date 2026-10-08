@@ -41,6 +41,7 @@ describe('external condition reachability', () => {
 
   it('uses an announcement fire when the unconditional latch is unavailable', async () => {
     const reachability = await readEventConditionReachability('fleet:test:gate', {
+      requireSpecificCondition: true,
       now: new Date(NOW),
       inspect: async () => ({
         announcements: [{ firedAt: '2026-08-27T11:30:00.000Z', supersededAt: null }] as never,
@@ -49,6 +50,32 @@ describe('external condition reachability', () => {
         fireLatch: null,
         composedRoot: null,
       }),
+    });
+    expect(reachability).toMatchObject({ verdict: 'reachable', basis: 'fired', authoritative: true });
+  });
+
+  it.each([
+    'work-item:claimable', 'release:deployed', 'release:deployed:abc123',
+    'coord:inbox-wake:park-owner', 'fleet:item-completed:test', 'work-item:unblocked',
+    'work-item:unblocked:*',
+  ])('keeps a fired broad or incomplete trigger unverified for a specific condition: %s', async (trigger) => {
+    const inspect = async () => ({
+      announcements: [{ firedAt: '2026-08-27T11:30:00.000Z', supersededAt: null }] as never,
+      waiters: [], deliveries: [], fireLatch: null, composedRoot: null,
+    });
+    // The ordinary reachability reader still reports the wake itself truthfully.
+    expect((await readEventConditionReachability(trigger, { inspect })).basis).toBe('fired');
+    const condition = await readEventConditionReachability(trigger, { inspect, requireSpecificCondition: true });
+    expect(condition).toMatchObject({ verdict: 'unknown', authoritative: false });
+    expect(condition.basis).not.toBe('fired');
+    expect(condition.evidence).toContain('specific release condition');
+  });
+
+  it('accepts an exact required subject key without requiring an announcement', async () => {
+    const reachability = await readEventConditionReachability('work-item:unblocked:WI-specific', {
+      requireSpecificCondition: true,
+      inspect: async () => ({ announcements: [], waiters: [], deliveries: [], composedRoot: null,
+        fireLatch: { lastFiredAt: '2026-08-27T11:30:00.000Z' } as never }),
     });
     expect(reachability).toMatchObject({ verdict: 'reachable', basis: 'fired', authoritative: true });
   });

@@ -28,6 +28,7 @@ interface FakeChannel {
   id: Buffer | null;
   onopen?: () => void;
   sent: unknown[];
+  throwOnSend: boolean;
   inbound?: (frame: unknown) => void;
   open(): void;
   pairRemote(): void;
@@ -51,6 +52,7 @@ function makeMux(): FakeMux {
         id: spec.id ?? null,
         onopen: spec.onopen,
         sent: [],
+        throwOnSend: false,
         open() {},
         pairRemote() {
           this.onopen?.();
@@ -58,7 +60,12 @@ function makeMux(): FakeMux {
       };
       (ch as unknown as { addMessage: (m: { onmessage?: (f: unknown) => void }) => { send: (v: unknown) => void } }).addMessage = (m) => {
         ch.inbound = m.onmessage;
-        return { send: (v: unknown) => ch.sent.push(v) };
+        return {
+          send: (v: unknown) => {
+            if (ch.throwOnSend) throw new Error('simulated send failure');
+            ch.sent.push(v);
+          },
+        };
       };
       mux.channels.push(ch);
       allChannels.push(ch);
@@ -77,6 +84,8 @@ vi.mock('protomux', () => ({
 const {
   registerPresenceGossipTopic,
   broadcastPresencePut,
+  broadcastSessions,
+  broadcastPresenceDel,
   invalidatePresenceGossipMemberCache,
   __setPresenceGossipWiringDeps,
   __resetPresenceGossipWiring,
@@ -412,7 +421,7 @@ describe('presence-gossip wiring (real PG, fake swarm)', () => {
     ).toHaveLength(0);
   });
 
-  it('the writer leg broadcasts a verifiable signed frame; hello serves the current row', async () => {
+  it('writer helpers report actual channel send outcomes; hello serves the current row', async () => {
     expect(
       await registerPresenceGossipTopic({
         topicHex: TOPIC_HEX,
@@ -430,8 +439,27 @@ describe('presence-gossip wiring (real PG, fake swarm)', () => {
     ).toBe(true);
     const before = channel.sent.length;
     expect(await broadcastPresencePut(TOPIC_HEX, row({ intent: 'writer beat' }))).toBe(true);
-    expect(channel.sent.length).toBe(before + 1);
-    const frame = channel.sent[channel.sent.length - 1] as never;
+    expect(await broadcastSessions(TOPIC_HEX, [])).toBe(true);
+    expect(
+      await broadcastPresenceDel(TOPIC_HEX, {
+        github_user_id: 42,
+        machine_label: 'laptop',
+        harness_slug: HIVE,
+      }),
+    ).toBe(true);
+    expect(channel.sent.length).toBe(before + 3);
+    const frame = channel.sent[before] as never;
     expect(verifyPresenceFrame(frame, { nowMs: Date.now() })).toBe(true);
+
+    channel.throwOnSend = true;
+    expect(await broadcastPresencePut(TOPIC_HEX, row({ intent: 'missed writer beat' }))).toBe(false);
+    expect(await broadcastSessions(TOPIC_HEX, [])).toBe(false);
+    expect(
+      await broadcastPresenceDel(TOPIC_HEX, {
+        github_user_id: 42,
+        machine_label: 'laptop',
+        harness_slug: HIVE,
+      }),
+    ).toBe(false);
   });
 });

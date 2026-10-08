@@ -166,6 +166,16 @@ describe("aws AMI release CLI", () => {
     });
   });
 
+  it('parses the contained receipt route and refuses mixing it with private recovery', () => {
+    const args = parseAwsAmiReleaseCliArgs(['--request-file', '/tmp/r', '--contained-candidate-receipt-file', '/tmp/c']);
+    expect(args.containedCandidateReceiptFile).toBe('/tmp/c');
+    expect(() => awsAmiReleaseCompositionOptions(args, undefined, {})).toThrow(/receipt must be read/);
+    const receipt = { imageId: 'ami-0abc' } as never;
+    expect(awsAmiReleaseCompositionOptions(args, undefined, {}, receipt)).toEqual({ containedCandidateRecovery: receipt });
+    expect(() => parseAwsAmiReleaseCliArgs(['--request-file', '/tmp/r', '--resume-candidate-ami', 'ami-0abc', '--contained-candidate-receipt-file', '/tmp/c']))
+      .toThrow(/mutually exclusive/);
+  });
+
   it("never reaches the executor when the credential resolves to another account", async () => {
     const wrongAccount = {
       ok: false,

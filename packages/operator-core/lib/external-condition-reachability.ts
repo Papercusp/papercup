@@ -1,4 +1,4 @@
-import { EVENT_CATALOG, keyMatchesCatalog } from './events/await/catalog';
+import { EVENT_CATALOG, deriveSubjectScope, familyAdmitsKey, familyKeyPrefix, keyMatchesCatalog } from './events/await/catalog';
 import { findRootAnchor, loadNode } from './events/await/compose-store';
 import { inspectEventKey } from './events/await/store';
 
@@ -141,6 +141,24 @@ function latestAnnouncementState(
   return 'live';
 }
 
+/**
+ * A wake's reachability is not evidence for an arbitrary named release condition.
+ * Reuse the catalogue's subject contract: only a concrete required subject key,
+ * or an explicitly declared non-catalogue gate, binds a condition. Declaring a
+ * global/owner/fleet notification cannot turn that broad wake into subject proof.
+ * Optional parameters remain unverified because the family does not require a subject.
+ */
+export function eventHasSpecificCondition(eventKey: string, producerDeclared = false): boolean {
+  const key = eventKey.trim();
+  if (!key || /[*<>]/.test(key)) return false;
+  const families = EVENT_CATALOG.filter((entry) => familyAdmitsKey(entry, key));
+  if (families.length === 0) return producerDeclared;
+  return families.some((entry) =>
+    key !== familyKeyPrefix(entry) &&
+    (entry.subjectScope ?? deriveSubjectScope(entry)) === 'id',
+  );
+}
+
 /** Resolve one event/gate key from the existing event ledger and emitter catalog. */
 export async function readEventConditionReachability(
   eventKey: string,
@@ -149,6 +167,8 @@ export async function readEventConditionReachability(
     now?: Date;
     loadComposedRoot?: ComposedRootLoader;
     loadComposedRootAnchor?: ComposedRootAnchorLoader;
+    /** A durable park needs condition evidence, not merely an emitter that can wake it. */
+    requireSpecificCondition?: boolean;
   } = {},
 ): Promise<ExternalConditionReachability> {
   const now = opts.now ?? new Date();
@@ -162,6 +182,12 @@ export async function readEventConditionReachability(
     // when there is no current declaration. Otherwise a fire from generation N
     // would incorrectly satisfy a newly declared generation N+1.
     const currentAnnouncement = snapshot.announcements.find((row) => !row.supersededAt);
+    if (opts.requireSpecificCondition && !eventHasSpecificCondition(eventKey, Boolean(currentAnnouncement))) {
+      return {
+        ...classifyExternalConditionReachability({ registration: 'unmeasured' }, now.toISOString()),
+        evidence: `trigger "${eventKey}" may wake a consumer but cannot establish the specific release condition; subject-bound evidence is required`,
+      };
+    }
     const firedAt = currentAnnouncement
       ? currentAnnouncement.firedAt
       : snapshot.fireLatch?.lastFiredAt ?? null;

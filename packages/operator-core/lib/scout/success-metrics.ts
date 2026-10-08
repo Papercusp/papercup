@@ -47,6 +47,7 @@ import type { ScoutTickRecord } from './tick-ledger';
 // only the safety-net used when that rubric read is unavailable.
 import { DEFAULT_CRITERION_WINDOW_MS } from '../agent-tools/plans/rubric-template';
 import { hasForcedDiversity } from './invariants';
+import { isIdeationLedgerOrigin } from './ideation-origin';
 import {
   tallyRoutedOutcomes,
   type RoutedIdeaProvenance,
@@ -90,6 +91,14 @@ export const LENS_DIVERSITY_SAMPLE = 20;
 export interface ProgramSuccessInputs {
   cadence: ScoutQualityInputs<CreativeLens>;
   ideas: readonly RoutedIdeaProvenance[];
+  /**
+   * origin='agent-review' ledger rows (review-enrollment plumbing, not ideation).
+   * Reported ONLY in {@link ProgramSuccessReport.outcomes}.agentReview — never in an
+   * ideation bar, tally or window count (scout-su-ideate-pipeline-gaps-2026-10-08 P-008 /
+   * R-18). Any non-ideation-origin row that arrives in `ideas` is moved here too, so a
+   * widened read cannot silently mix the populations. Absent ⇒ an empty bucket.
+   */
+  agentReviewIdeas?: readonly RoutedIdeaProvenance[];
   /**
    * Rails paused right now (paused-rails.ts). An idea on a paused rail that has not
    * decided counts as unresolvable in {@link ProgramSuccessReport.outcomes}, never in a
@@ -196,8 +205,14 @@ export interface ProgramSuccessReport {
   outcomes: {
     /** Scout-origin routed ideas (the cadence partition). */
     scout: RoutedOutcomeTally;
-    /** Every routed idea in the window, both origins. */
+    /** Every routed IDEATION idea in the window (scout + su-ideate); never agent-review. */
     all: RoutedOutcomeTally;
+    /**
+     * Agent-review enrollment rows (origin='agent-review'), tallied on their own so they
+     * never inflate or dilute an ideation win rate (P-008 / R-18). `graded` counts rows
+     * carrying a reviewer grade.
+     */
+    agentReview: RoutedOutcomeTally & { graded: number };
     /** The rails treated as paused for this tally. */
     pausedRails: RoutedRail[];
   };
@@ -401,7 +416,14 @@ export function evaluateProgramSuccess(
   const report = computeScoutQualityReport(inputs.cadence);
   const maxErrorRate = opts.maxErrorRate ?? DEFAULT_MAX_ERROR_RATE;
   const ranTicks = inputs.cadence.ticks.filter((t) => t.status === 'ran');
-  const ideas = inputs.ideas;
+  // P-008 / R-18: only ideation-origin rows feed the ideation bars. A row with no origin is
+  // in-memory cycle provenance (always scout). Anything else — agent-review enrollment in
+  // particular — is reported in its own bucket below and nowhere else.
+  const ideas = inputs.ideas.filter((i) => i.origin == null || isIdeationLedgerOrigin(i.origin));
+  const agentReviewIdeas = [
+    ...(inputs.agentReviewIdeas ?? []),
+    ...inputs.ideas.filter((i) => i.origin != null && !isIdeationLedgerOrigin(i.origin)),
+  ];
   const criteria: SuccessCriterion[] = [];
 
   // EI-19899928839197448: shared LIVENESS precondition for two bars keyed to the mere
@@ -819,7 +841,11 @@ export function evaluateProgramSuccess(
     verdict: failed > 0 ? 'fail' : unknown > 0 ? 'incomplete' : 'pass',
     outcomes: {
       scout: tallyRoutedOutcomes(inputs.cadence.routedIdeas, tallyOpts),
-      all: tallyRoutedOutcomes(inputs.ideas, tallyOpts),
+      all: tallyRoutedOutcomes(ideas, tallyOpts),
+      agentReview: {
+        ...tallyRoutedOutcomes(agentReviewIdeas, tallyOpts),
+        graded: agentReviewIdeas.filter((i) => i.humanGrade != null).length,
+      },
       pausedRails,
     },
     window: {
@@ -1073,10 +1099,26 @@ export async function buildProgramSuccessReport(opts: BuildProgramSuccessOptions
       return [];
     }
   })();
+  // P-008 / R-18: agent-review enrollment rows, read on their OWN origin so they land
+  // only in outcomes.agentReview. Best-effort and lazily imported like the reads above;
+  // a failed read leaves the bucket empty rather than failing the report.
+  const agentReviewIdeas = await (async () => {
+    try {
+      const { readRoutedIdeas, AGENT_REVIEW_LEDGER_ORIGIN } = await import('./routed-ledger');
+      return await readRoutedIdeas({
+        origin: AGENT_REVIEW_LEDGER_ORIGIN,
+        limit,
+        ...(opts.workspaceId ? { workspaceId: opts.workspaceId } : {}),
+      });
+    } catch {
+      return [];
+    }
+  })();
   const report = evaluateProgramSuccess(
     {
       cadence,
       ideas,
+      agentReviewIdeas,
       pausedRails,
       ...(cadenceByCodeHash ? { cadenceByCodeHash } : {}),
       ...(gymCorpus ? { gymCorpus } : {}),

@@ -613,7 +613,6 @@ describe('plans:start — consult_id links the override to a requested consult (
       reason: 'consult concluded the plan assumptions hold',
       consultId: FULL_ID,
       latencyContract: 'proceed',
-      reconciliationOwed: true,
     });
     expect(await frontmatterStatus()).toBe('ready');
   });
@@ -624,10 +623,10 @@ describe('plans:start — consult_id links the override to a requested consult (
 
     const { data, isError } = await runWithConsultId('conv-cid1');
     expect(isError, JSON.stringify(data)).toBe(false);
-    expect(data.checkpointConsult).toMatchObject({ consultId: FULL_ID, reconciliationOwed: true });
+    expect(data.checkpointConsult).toMatchObject({ consultId: FULL_ID });
   });
 
-  it('reports reconciliationOwed:false once the consult is reconciled, and for a blocking consult', async () => {
+  it('links historical and blocking consultations without requiring a reporting action', async () => {
     await seedConsultRow({
       id: FULL_ID,
       requester: CALLER,
@@ -638,15 +637,18 @@ describe('plans:start — consult_id links the override to a requested consult (
     await seedLegacyPlan('draft');
     const reconciled = await runWithConsultId(FULL_ID);
     expect(reconciled.isError, JSON.stringify(reconciled.data)).toBe(false);
-    expect(reconciled.data.checkpointConsult).toMatchObject({ consultId: FULL_ID, reconciliationOwed: false });
+    expect(reconciled.data.checkpointConsult).toMatchObject({ consultId: FULL_ID });
+    expect(reconciled.data.checkpointConsult).not.toHaveProperty('reconciliationOwed');
+    expect(reconciled.data.checkpointConsult).not.toHaveProperty('reconcileWith');
 
     const blocking = await runWithConsultId(BLOCKING_ID);
     expect(blocking.isError, JSON.stringify(blocking.data)).toBe(false);
     expect(blocking.data.checkpointConsult).toMatchObject({
       consultId: BLOCKING_ID,
       latencyContract: 'hard-blocked',
-      reconciliationOwed: false,
     });
+    expect(blocking.data.checkpointConsult).not.toHaveProperty('reconciliationOwed');
+    expect(blocking.data.checkpointConsult).not.toHaveProperty('reconcileWith');
   });
 
   it("refuses a consult the caller did NOT request, and refuses BEFORE any approval write (plan stays draft)", async () => {

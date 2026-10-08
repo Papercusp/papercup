@@ -45,7 +45,6 @@ import {
   type AgentObligationFamily,
 } from './agent-obligations';
 import {
-  consultReconciliationObligations,
   fleetStaffingObligations,
   ownerDirectiveObligations,
   waitingOnObligations,
@@ -691,32 +690,6 @@ const FAMILY_PROBES: Record<string, FamilyProbe> = {
         },
       }),
     marker: /gate:coverage-probe/,
-  },
-  // EI-23764501791910357: the real provider, on a real row shape. The probe uses an
-  // ANSWERED consult deliberately — that is the phase whose absence from the prompt is
-  // costly (the reply may falsify work the originator already built on the assumption).
-  'consult-reconciliation': {
-    build: () =>
-      consultReconciliationObligations({
-        workspaceId: 'papercusp-workspace',
-        ownerId: 'su-coverage-probe',
-        observedAt: FAMILY_OBSERVED_AT,
-        sourceGeneration: 'coverage-probe',
-        read: {
-          status: 'known',
-          value: [
-            {
-              consultId: 'consult-coverage-probe',
-              phase: 'answered',
-              assumption: 'coverage probe assumption',
-              originTaskRef: 'EI-coverage-probe',
-              settledAt: '2026-09-21T15:00:00.000Z',
-              expiresAt: null,
-            },
-          ],
-        },
-      }),
-    marker: /consult-coverage-probe/,
   },
   // P-005 / D-030: the real provider, on the row whose absence is the failure this
   // family exists for — a led fleet at zero workers that nothing will restore.
