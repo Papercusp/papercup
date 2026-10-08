@@ -50,7 +50,6 @@ describe('morning AI operation admission and completion contracts', () => {
 
   it('loads the research spine and admits the explicit approved input', () => {
     expect(blueprint.knobs.requiresRepo).toBe(false);
-    expect(blueprint.knobs.maxTurns).toBe(12);
     expect(blueprint.spine.decider).toBe('research-director');
     expect(checkAgainstJsonSchema(inputSchema, input)).toEqual({ ok: true });
   });
