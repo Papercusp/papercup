@@ -196,8 +196,10 @@ describe('EI-20685195115158619: spill cursor encoding contract', () => {
     // EI-21349944846228401: the path is a self-describing scratch reference,
     // not the raw JSON payload. Say that at the recovery decision point so a
     // caller does not feed the manifest-bearing file to jq/JSON.parse directly.
-    expect(next).toContain('cursor.args.file_path (scratch-reference, not JSON)');
-    expect(next).toContain('Use capability:read at cursor.args.file_path');
+    expect(next).toContain('Use capability:read with cursor.args');
+    expect(next).toContain('byte_offset+byte_limit');
+    expect(next).toContain('file_path-only truncates long lines');
+    expect(next).toContain('Scratch ref, not JSON');
   });
 
   it('still LOCATES a tool-internally clipped body, and marks it incomplete (P-005; supersedes the EI-21185758364267344 withholding)', () => {
@@ -223,7 +225,7 @@ describe('EI-20685195115158619: spill cursor encoding contract', () => {
     expect(next).toContain('bodyComplete:false');
     expect(next).toContain('body_truncated');
     expect(next).toContain('paging cannot recover omitted fields');
-    expect(next).toContain('Re-call work_items:get');
+    expect(next).toContain("Re-read using that field's documented recovery handle or narrower arguments");
     expect(next).not.toContain('recover the exact spill bytes');
 
     // The locator must actually WORK on the partial path, not merely be present.
@@ -262,7 +264,7 @@ describe('EI-20685195115158619: spill cursor encoding contract', () => {
   it('offers plaintext recovery for runtimes without atob and names the byte field', () => {
     const { next } = doorOversizedResult();
 
-    expect(next).toContain('raw:true line windows are plaintext');
+    expect(next).toContain('raw:true plaintext');
     expect(next).toContain('runtime codec');
 
     // A bare "base64-decode data" is what left the reporter decoding the file.

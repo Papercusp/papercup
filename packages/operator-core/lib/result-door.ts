@@ -137,6 +137,26 @@ export interface ResultDoorOpts {
   onScratchWriteTiming?: (timings: ScratchWriteTimings) => void;
   /** Internal replay of a deferred failure: cap honestly without retrying filesystem I/O. */
   scratchWriteFailure?: { error: unknown };
+  /** Transport-owned durable fallback reserved after scratch persistence fails. */
+  scratchWriteFallback?: ResultDoorFallbackReference;
+  /** Reserve and start a durable fallback after a hard failure or timeout. */
+  onScratchWriteFallback?: (input: {
+    payload: Buffer;
+    sourceUri?: string;
+    sourcePath?: string;
+    status: 'pending' | 'failed';
+  }) => Promise<ResultDoorFallbackReference | null>;
+}
+
+export interface ResultDoorFallbackReference {
+  id: string;
+  uri: string;
+  byteCount: number;
+  sha256: string;
+  expiresAt: string;
+  ownerId: string;
+  audience: 'owner';
+  mediaType: 'application/json';
 }
 
 export interface ResultDoorLateScratchWriteSettlement {
@@ -147,6 +167,7 @@ export interface ResultDoorLateScratchWriteSettlement {
   returnedContextBytes: number;
   reason: string;
   aggregateOutputEscape: boolean;
+  fallbackUri?: string;
   errorCode?: string;
 }
 
@@ -1669,7 +1690,9 @@ export async function applyResultDoorAsync<T extends DoorableResult>(
 ): Promise<T> {
   const deferred: Promise<void>[] = [];
   const doored = applyResultDoor(result, { ...opts, deferredScratchWrites: deferred });
-  if (deferred.length === 0) return doored;
+  if (deferred.length === 0) {
+    return reserveScratchWriteFallback(doored, result, doored, opts, 'failed');
+  }
   const writeSettlements = Promise.allSettled(deferred);
   const boundedWrites = await withBoundedTimeout(writeSettlements, {
     fallback: null,
@@ -1686,21 +1709,176 @@ export async function applyResultDoorAsync<T extends DoorableResult>(
     if (boundedWrites.reason === 'timeout') {
       const pendingResult = markPendingScratchWrite(doored, error, opts);
       if (pendingResult) {
-        observeLateScratchWrite(writeSettlements, pendingResult, opts);
-        return pendingResult;
+        const fallbackResult = await reserveScratchWriteFallback(
+          pendingResult,
+          result,
+          doored,
+          opts,
+          'pending',
+        );
+        const fallbackMeta = recordAt(fallbackResult._meta?.resultDoor);
+        const fallbackReference = recordAt(fallbackMeta?.fallbackReference) as
+          | ResultDoorFallbackReference
+          | null;
+        observeLateScratchWrite(writeSettlements, fallbackResult, opts, result, fallbackReference ?? undefined);
+        return fallbackResult;
       }
     }
-    return applyResultDoor(result, {
+    const failedResult = applyResultDoor(result, {
       ...opts,
       deferredScratchWrites: undefined,
       scratchWriteFailure: { error },
     });
+    return reserveScratchWriteFallback(failedResult, result, doored, opts, 'failed');
   }
   const settled = boundedWrites.value;
   const failure = settled.find((s) => s.status === 'rejected');
   if (!failure || failure.status !== 'rejected') return doored;
-  return applyResultDoor(result, { ...opts, deferredScratchWrites: undefined,
+  const failedResult = applyResultDoor(result, { ...opts, deferredScratchWrites: undefined,
     scratchWriteFailure: { error: failure.reason } });
+  return reserveScratchWriteFallback(failedResult, result, doored, opts, 'failed');
+}
+
+function resultDoorMeta(result: DoorableResult): Record<string, unknown> | null {
+  return recordAt(result._meta?.resultDoor);
+}
+
+function fallbackCursor(reference: ResultDoorFallbackReference): Record<string, unknown> {
+  return {
+    kind: 'overflow-fallback',
+    tool: 'capability:read',
+    args: { uri: reference.uri, byte_offset: 0, byte_limit: 3_072 },
+    uri: reference.uri,
+    byteCount: reference.byteCount,
+    sha256: reference.sha256,
+    expiresAt: reference.expiresAt,
+    ownerId: reference.ownerId,
+    audience: reference.audience,
+  };
+}
+
+function attachFallbackReference<T extends DoorableResult>(
+  result: T,
+  reference: ResultDoorFallbackReference,
+  status: 'pending' | 'failed',
+): T {
+  const meta = result._meta ?? {};
+  const doorMeta = resultDoorMeta(result) ?? {};
+  const cursor = fallbackCursor(reference);
+  const note = status === 'pending'
+    ? `The original spill remains pending at its reserved papercusp://scratch URI. A durable fallback copy is being stored at ${reference.uri}; if the original writer fails, the same scratch URI resolves through that copy. Retry capability:read if the fallback reports pending, and verify the complete payload against SHA-256 ${reference.sha256}.`
+    : `Scratch persistence failed. A durable fallback copy is reserved at ${reference.uri}. Read it with capability:read byte pages, retry if it reports pending, and verify the complete payload against SHA-256 ${reference.sha256}.`;
+  const referenceItem = {
+    kind: 'reference',
+    uri: reference.uri,
+    preview: 'Overflow fallback payload (JSON bytes)',
+    byteCount: reference.byteCount,
+    sha256: reference.sha256,
+    expiresAt: reference.expiresAt,
+    ownerId: reference.ownerId,
+    audience: reference.audience,
+  };
+  let outputEnvelope: Record<string, unknown> | undefined;
+  const content = result.content.map((item) => {
+    if (!isTextItem(item)) return item;
+    try {
+      const body = recordAt(JSON.parse(item.text));
+      if (!body) return { ...item, text: `${item.text}\n\n${note}` };
+      const projection = recordAt(body._projection);
+      const incomplete = recordAt(body.incomplete);
+      const oldError = recordAt(body.error);
+      const isErrorEnvelope = body.state === 'error' && oldError !== null;
+      const nextBody: Record<string, unknown> = {
+        ...body,
+        ...(isErrorEnvelope
+          ? {
+              state: 'incomplete',
+              content: [referenceItem],
+              incomplete: {
+                reason: doorMeta.reason ?? 'per-result-budget-exceeded',
+                spilledItems: result.content.length,
+                recoverable: true,
+                note,
+              },
+            }
+          : incomplete
+            ? { incomplete: { ...incomplete, note } }
+            : {}),
+        _projection: {
+          ...(projection ?? {}),
+          kind: projection?.kind ?? 'bounded-payload',
+          truncated: true,
+          ...(status === 'pending' && projection?.cursor ? { cursor: projection.cursor } : { cursor }),
+          fallback: { uri: reference.uri, sha256: reference.sha256, state: status },
+          next: note,
+        },
+      };
+      if (isErrorEnvelope) delete nextBody.error;
+      if (nextBody.state === 'incomplete') outputEnvelope = nextBody;
+      return { ...item, text: JSON.stringify(nextBody) };
+    } catch {
+      return { ...item, text: `${item.text}\n\n${note}` };
+    }
+  });
+  if (content.length === 0) content.push({ type: 'text' as const, text: note });
+  const nextDoorMeta = {
+    ...doorMeta,
+    ...(status === 'pending' ? { spillPending: true } : { spillPending: false, spillFailed: true }),
+    fallbackReference: reference,
+    fallbackUri: reference.uri,
+    fallbackSha256: reference.sha256,
+    fallbackByteCount: reference.byteCount,
+    fallbackExpiresAt: reference.expiresAt,
+    fallbackStatus: status,
+    ...(status === 'pending' ? {} : { recoveryCursor: cursor }),
+    ...(outputEnvelope ? { outputEnvelope } : {}),
+  };
+  return {
+    ...result,
+    content,
+    _meta: { ...meta, resultDoor: nextDoorMeta },
+  } as T;
+}
+
+async function reserveScratchWriteFallback<T extends DoorableResult>(
+  result: T,
+  original: T,
+  sourceResult: T,
+  opts: ResultDoorOpts,
+  status: 'pending' | 'failed',
+): Promise<T> {
+  const doorMeta = resultDoorMeta(result);
+  if (
+    !opts.onScratchWriteFallback ||
+    !doorMeta ||
+    (status === 'pending'
+      ? doorMeta.spillPending !== true
+      : doorMeta.spillFailed !== true && doorMeta.spillPending !== true)
+  ) return result;
+  let payload: Buffer;
+  try {
+    payload = Buffer.from(JSON.stringify({
+      content: original.content,
+      ...(original.isError !== undefined ? { isError: original.isError } : {}),
+    }), 'utf8');
+  } catch {
+    return result;
+  }
+  const sourceMeta = resultDoorMeta(sourceResult);
+  try {
+    const reference = await opts.onScratchWriteFallback({
+      payload,
+      ...(typeof sourceMeta?.spillUri === 'string' ? { sourceUri: sourceMeta.spillUri } : {}),
+      ...(typeof sourceMeta?.spillPath === 'string' ? { sourcePath: sourceMeta.spillPath } : {}),
+      status,
+    });
+    return reference ? attachFallbackReference(result, reference, status) : result;
+  } catch (error) {
+    console.warn(
+      `[result-door] overflow fallback reservation failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return result;
+  }
 }
 
 function markPendingScratchWrite<T extends DoorableResult>(
@@ -1793,6 +1971,8 @@ function observeLateScratchWrite<T extends DoorableResult>(
   writeSettlements: Promise<PromiseSettledResult<void>[]>,
   pendingResult: T,
   opts: ResultDoorOpts,
+  original: T,
+  fallbackReference?: ResultDoorFallbackReference,
 ): void {
   const callback = opts.onLateScratchWriteSettled;
   const meta = recordAt(pendingResult._meta?.resultDoor);
@@ -1817,9 +1997,14 @@ function observeLateScratchWrite<T extends DoorableResult>(
       ? failure.reason.code
       : undefined;
     try {
+      const fallback = failure && !fallbackReference
+        ? await reserveScratchWriteFallback(pendingResult, original, pendingResult, opts, 'failed')
+        : pendingResult;
+      const fallbackUri = fallbackReference?.uri ?? resultDoorMeta(fallback)?.fallbackUri;
       await callback({
         ...settlementBase,
         status: failure ? 'failed' : 'persisted',
+        ...(fallbackUri ? { fallbackUri } : {}),
         ...(errorCode ? { errorCode } : {}),
       });
     } catch (callbackError) {
@@ -2060,11 +2245,11 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
     // would have: worse than the tier the caller explicitly opted out of.
     // Spilling the untouched full body and pointing at it is honest about the
     // size and strictly recoverable in full, which the generic reprojection
-    // is not. If persistence fails, continue into the existing bounded
-    // projector instead of replacing a readable result with an empty error
-    // envelope. That fallback keeps the door cap, preserves the tool-specific
-    // receipt/checkpoint paths below, and carries the failed writer's cause in
-    // the unavailable cursor; it does not retry the tool or the failed write.
+    // is not. If persistence fails for an ordinary result, continue into the
+    // existing bounded projector instead of replacing readable content with an
+    // error envelope. coord:send keeps its specialized failure result: when a
+    // receipt is present it preserves delivery fields, and when no receipt can
+    // be recovered it must retain the non-retryable unknown-delivery verdict.
     if (explicitFullRequest && sourceBytes > budgetChars) {
       const spilled = spillResultAsReferenceEnvelope({
         result,
@@ -2079,7 +2264,9 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
           explicitFullSpillError = error;
         },
       });
-      if (!explicitFullSpillFailed) return spilled;
+      const coordSendCall = opts.toolName === 'coord:send' ||
+        (opts.toolName === 'tools:invoke' && opts.nestedTargetToolName === 'coord:send');
+      if (!explicitFullSpillFailed || coordSendCall) return spilled;
     }
 
     if (sourceBytes <= budgetChars) {
@@ -2442,9 +2629,10 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
               // Some callers (including Codex functions.exec) have no base64 codec.
               // The cursor points to a manifest-bearing scratch file, not the JSON body;
               // offer plaintext line windows and retain the validated byte-page path.
-              `Use capability:read at cursor.args.file_path (scratch-reference, not JSON); ` +
-              `raw:true line windows are plaintext. Byte pages put canonical base64 in response.data; ` +
-              `use a runtime codec, verify decoded.length===byte_length, follow next_cursor; ` +
+              `Use capability:read with cursor.args (byte_offset+byte_limit); ` +
+              `file_path-only truncates long lines. Scratch ref, not JSON; raw:true plaintext. ` +
+              `response.data canonical base64; runtime codec, check decoded.length===byte_length, ` +
+              `follow next_cursor; ` +
               `parse JSON only at eof:true + next_cursor:null. ` +
               (partialJsonBody
                 ? `inspect the emitted spill bytes at cursor.bodyOffsetInPayload. The source is already ` +
