@@ -4182,6 +4182,50 @@ const sessionRespawned = defineTool({
         reanchored = fallback.reanchored;
         owner = fallback.owner ?? owner;
       }
+      // The host confirms the native binding before sending a fresh Codex
+      // kickoff. An accepted worker also needs its launch-proven identity and
+      // model evidence sink ready at that boundary, before any provider call.
+      // Use the existing activation writer; a lifecycle receipt never widens
+      // grants or acknowledges delivery of a control update.
+      if (owner) {
+        const { readSuLaunchSpecByOwner } = await import('../../../adv-sessions');
+        const launch = await readSuLaunchSpecByOwner(owner) as {
+          acceptedOperation?: { kind?: string; modelPolicy?: unknown };
+        } | null;
+        if (launch?.acceptedOperation?.kind === 'blueprint-operation-worker') {
+          const workspaceId = activeWorkspaceId();
+          const {
+            preparePendingControlTransition, applyRelaunchedActivation,
+          } = await import('../../../agent-tools/coordination/control-anchor');
+          const pending = await preparePendingControlTransition(owner, workspaceId);
+          if (pending?.state.activation?.desired) {
+            await applyRelaunchedActivation(
+              owner, workspaceId, pending.generation, pending.state.activation.desired,
+            );
+          }
+          const { readActiveOperationWorkerClaimBinding, readActiveOperationModelPolicy } =
+            await import('../../../blueprint/operation-worker-binding');
+          const binding = await readActiveOperationWorkerClaimBinding(workspaceId, owner);
+          if (binding.status !== 'bound') {
+            return jsonRes({ ok: false, reanchored, error: 'accepted operation identity is not ready' }, 503);
+          }
+          if (launch.acceptedOperation.modelPolicy != null) {
+            const [native] = await getOrgPg().sql<Array<{ agent: string }>>`
+              SELECT agent FROM harness_shared.adv_sessions
+               WHERE id = ${binding.receipt.sessionId} AND workspace_id = ${workspaceId}
+                 AND coord_owner_id = ${owner} AND session_id = ${sessionId}
+                 AND ended_at IS NULL AND ended_by IS NULL
+            `;
+            if (native?.agent !== 'claude' && native?.agent !== 'codex') {
+              return jsonRes({ ok: false, reanchored, error: 'accepted operation native session is not ready' }, 503);
+            }
+            const policy = await readActiveOperationModelPolicy(workspaceId, owner, native.agent);
+            if (policy.status !== 'bound' || policy.attestation?.nativeSessionId !== sessionId) {
+              return jsonRes({ ok: false, reanchored, error: 'accepted operation attestation is not ready' }, 503);
+            }
+          }
+        }
+      }
       if (owner) {
         await bindKnownAgentSessionTasks({
           workspaceId: activeWorkspaceId(),
