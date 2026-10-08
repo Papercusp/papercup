@@ -4354,6 +4354,102 @@ async function publishPrivateIndexCommit(
 }
 
 /**
+ * Commit selected paths in an isolated index before per-agent groups. Used for
+ * superproject gitlinks so a root source commit can never publish against the
+ * previous submodule pin.
+ */
+async function commitPriorityPaths(
+  runGit: RunGit,
+  repoPath: string,
+  paths: readonly string[],
+  message: string,
+  diffSubjects: boolean | undefined,
+  beforeCommit?: (privateRunGit: RunGit) => Promise<{ ok: true } | { ok: false; error: string }>,
+  log: (m: string) => void = () => {},
+): Promise<
+  | { status: 'nothing' }
+  | { status: 'committed' }
+  | { status: 'cas-refused'; detail: string }
+  | { status: 'error'; error: string }
+> {
+  if (paths.length === 0) return { status: 'nothing' };
+  const opened = await openPrivateIndexSite(runGit, repoPath, 'priority path commit', 'priority');
+  if (!opened.ok) return { status: 'error', error: opened.error };
+
+  const { site } = opened;
+  const indexFile = site.newIndexFile();
+  const privateGit = site.bindIndex(indexFile);
+  try {
+    const seeded = await seedPrivateIndex(runGit, privateGit, repoPath, indexFile, site.sharedIndex, 'priority path commit');
+    if (!seeded.ok) return { status: 'error', error: seeded.error };
+    const add = await privateGit(['add', '--', ...paths], repoPath);
+    if (add.code !== 0) {
+      return { status: 'error', error: 'priority path add failed: ' + gitFailureDetail(add) };
+    }
+    if (beforeCommit) {
+      const guard = await beforeCommit(privateGit);
+      if (!guard.ok) return { status: 'error', error: guard.error };
+    }
+
+    const published = await publishPrivateIndexCommit(runGit, privateGit, repoPath, {
+      base: seeded.base,
+      baseTree: seeded.baseTree,
+      label: 'priority path commit',
+      reflogMessage: 'git-sync: priority submodule gitlinks',
+      messageArgs: async () => {
+        if (diffSubjects === false) return ['-m', message];
+        const numstat = await privateGit(
+          ['diff', '--cached', '--numstat', ...(seeded.base ? [seeded.base] : []), '--', ...paths],
+          repoPath,
+        );
+        const subject =
+          numstat.code === 0
+            ? diffDerivedSubject([...paths], parseNumstat(numstat.stdout))
+            : 'sync(submodules): update gitlinks';
+        return ['-m', subject + skipCiSuffix(message), '-m', message];
+      },
+      beforePublish: async (commit, tree) => {
+        const changed = await runGit(['diff', '--name-only', '--no-renames', '-z', seeded.baseTree, tree], repoPath);
+        if (changed.code !== 0) {
+          return {
+            ok: false,
+            error: 'priority path commit not published: could not list its paths: ' + gitFailureDetail(changed),
+          };
+        }
+        const committedPaths = changed.stdout.split('\0').filter(Boolean);
+        if (committedPaths.length === 0) return { ok: true };
+        const literal = { env: { GIT_LITERAL_PATHSPECS: '1' } };
+        const resetArgs = ['reset', '-q', commit, '--', ...committedPaths];
+        const refresh = await recoverIndexLockContention(
+          await runGit(resetArgs, repoPath, literal),
+          () => runGit(resetArgs, repoPath, literal),
+          runGit,
+          repoPath,
+          'priority shared-index refresh',
+          log,
+        );
+        if (refresh.code === 0) return { ok: true };
+        return {
+          ok: false,
+          error:
+            'priority path commit not published: the shared index could not be refreshed for ' +
+            committedPaths.length +
+            ' path(s): ' +
+            gitFailureDetail(refresh),
+        };
+      },
+    });
+    if (published.status === 'committed') return { status: 'committed' };
+    if (published.status === 'cas-refused') return { status: 'cas-refused', detail: published.detail };
+    if (published.status === 'error') return { status: 'error', error: published.error };
+    return { status: 'nothing' };
+  } finally {
+    await rm(indexFile, { force: true }).catch(() => {});
+    await rm(indexFile + '.lock', { force: true }).catch(() => {});
+  }
+}
+
+/**
  * P-004 (git-sync-dx-hardening): peel each declaring agent's dirty files into its OWN commit
  * (intent subject + a Co-Authored-By trailer), preserving the CI-skip marker. Excluded files
  * (oversized / content offenders) stay quarantined. The catch-all (agent=null) group is left
@@ -4388,6 +4484,10 @@ export async function commitAttributedGroups(
   message: string,
   opts: {
     diffSubjects?: boolean;
+    /** Paths that must land before attributed source groups, normally superproject gitlinks. */
+    priorityPaths?: string[];
+    /** Keep attributed sources out of the catch-all when a protected priority path cannot land. */
+    deferAttributedPaths?: (paths: string[]) => void;
     /** EI-24712906810240170: runs after each group's add and before its commit (see
      *  guardStagedIndexBeforeCommit). WI-10006705: it receives the runner bound to the
      *  group's PRIVATE index and must guard through it. A failure aborts the phase. */
@@ -4397,7 +4497,11 @@ export async function commitAttributedGroups(
   } = {},
 ): Promise<{ committedAny: boolean; committedCount: number; error?: string }> {
   const excludeSet = new Set(excludePaths);
-  const dirty = (await dirtyFiles(runGit, repoPath)).filter((f) => !excludeSet.has(f));
+  const allDirty = await dirtyFiles(runGit, repoPath);
+  const prioritySet = new Set(opts.priorityPaths ?? []);
+  const dirtyPriorityPaths = allDirty.filter((f) => prioritySet.has(f));
+  const blockedPriorityPaths = dirtyPriorityPaths.filter((f) => excludeSet.has(f));
+  const dirty = allDirty.filter((f) => !excludeSet.has(f) && !prioritySet.has(f));
   // The catch-all (agent=null) group is handled by the caller's add -A.
   const groups = groupFilesForAttribution(dirty, attribution).filter((g) => g.agent !== null && g.files.length > 0);
   if (groups.length === 0) return { committedAny: false, committedCount: 0 };
@@ -4410,6 +4514,58 @@ export async function commitAttributedGroups(
   const opened = await openPrivateIndexSite(runGit, repoPath, 'attributed commits', 'attributed');
   if (!opened.ok) return { committedAny, committedCount, error: opened.error };
   const { site } = opened;
+
+  if (dirtyPriorityPaths.length > 0) {
+    if (blockedPriorityPaths.length > 0) {
+      opts.deferAttributedPaths?.([...new Set(groups.flatMap((g) => g.files))]);
+      return {
+        committedAny,
+        committedCount,
+        error:
+          'priority gitlink path(s) are excluded; attributed sources must wait for the pointer commit: ' +
+          blockedPriorityPaths.join(', '),
+      };
+    }
+    const priority = await commitPriorityPaths(
+      runGit,
+      repoPath,
+      dirtyPriorityPaths,
+      message,
+      opts.diffSubjects,
+      opts.beforeCommit,
+      log,
+    );
+    if (priority.status === 'committed') {
+      committedAny = true;
+      committedCount += 1;
+    } else if (priority.status === 'cas-refused') {
+      log(
+        '[git-sync] ' +
+          repoPath +
+          ': HEAD moved while the priority gitlink commit was being built (update-ref CAS refused: ' +
+          priority.detail +
+          ') — skipping attributed commits and falling through to the catch-all',
+      );
+      return {
+        committedAny,
+        committedCount,
+        error: 'priority gitlink commit CAS refused; the catch-all will sweep it with the root sources',
+      };
+    } else if (priority.status === 'error') {
+      return { committedAny, committedCount, error: priority.error };
+    }
+    const remainingPriorityPaths = (await dirtyFiles(runGit, repoPath)).filter((f) => prioritySet.has(f));
+    if (remainingPriorityPaths.length > 0) {
+      if (priority.status === 'nothing') {
+        opts.deferAttributedPaths?.([...new Set(groups.flatMap((g) => g.files))]);
+      }
+      return {
+        committedAny,
+        committedCount,
+        error: 'priority gitlink path(s) remain dirty; skipping attributed commits and falling through to the catch-all',
+      };
+    }
+  }
 
   for (const g of groups) {
     const indexFile = site.newIndexFile();
@@ -4545,6 +4701,8 @@ interface CommitRepoOpts {
    *  `git add -A` commit (today's behavior) sweeps the remainder. Absent/empty = byte-identical
    *  to today's single commit. */
   attribution?: Map<string, FileAttribution>;
+  /** Root-relative submodule gitlinks to commit before any attributed source groups. */
+  priorityPaths?: string[];
   /** Source/generated pairs that must bypass per-agent peeling and land together
    *  in the catch-all commit. They remain stageable; this is NOT an exclusion. */
   forceCatchAllPaths?: string[];
@@ -5310,7 +5468,21 @@ async function commitOneRepoWithScratch(
         o.attribution,
         [...stagingExcludePaths, ...migrationCandidates, ...(o.forceCatchAllPaths ?? [])],
         message,
-        { diffSubjects: o.diffSubjects, beforeCommit: (privateRunGit) => postStageGuard(privateRunGit), log: o.log },
+        {
+          diffSubjects: o.diffSubjects,
+          priorityPaths: o.priorityPaths,
+          deferAttributedPaths: (paths) => {
+            stagingExcludePaths = [...new Set([...stagingExcludePaths, ...paths])];
+            o.log(
+              '[git-sync] ' +
+                repoPath +
+                ': deferring attributed source path(s) until protected priority gitlinks can commit: ' +
+                paths.join(', '),
+            );
+          },
+          beforeCommit: (privateRunGit) => postStageGuard(privateRunGit),
+          log: o.log,
+        },
       );
       if (res.error) {
         // STRANDING GUARD (2026-06-30): a failed per-agent attributed commit — e.g. an
@@ -5322,7 +5494,7 @@ async function commitOneRepoWithScratch(
         // Log it and FALL THROUGH; the catch-all commits everything still dirty (the
         // failed group's files + the remainder), so no file is ever left behind.
         o.log(
-          `[git-sync] ${repoPath}: attributed-commit phase errored (${res.error}); falling through to the catch-all 'git add -A' sweep so no file strands`,
+          `[git-sync] ${repoPath}: path-specific commit phase errored (${res.error}); falling through to the catch-all 'git add -A' sweep so no file strands`,
         );
       }
       committedAny = res.committedAny;
@@ -6562,6 +6734,9 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
   // compatibility with an older in-flight checkpoint created before that field
   // existed when the caller supplied an explicit path list.
   const submodulePaths = sub.submodulePaths ?? opts.submodulePaths ?? [];
+  const superprojectGitlinkPaths = submodulePaths.filter(
+    (path) => !submodulePaths.some((candidate) => candidate !== path && path.startsWith(candidate + '/')),
+  );
 
   // Superproject last. An unreconciled submodule defers its PUSH — and ONLY its push.
   // (Oversized exclusions defer nothing: the submodule's commit — without the big
@@ -6667,6 +6842,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
       protectedHoldings: superprojectProtectedHoldings,
       refreshLiveLockHoldings: refreshLiveLockHoldingsForRepo?.('', submodulePaths),
       attribution: attributionMapForRepo(roster, '', repo),
+      priorityPaths: superprojectGitlinkPaths,
       forceCatchAllPaths: declarationRepair.status === 'regenerated' ? declarationRepair.atomicPaths : [],
     });
   });
