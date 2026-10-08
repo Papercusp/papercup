@@ -110,6 +110,11 @@ cd "$OPERATOR_DIR"
 
 ENTRY="${1:-bin/hono-host.ts}"
 OUTFILE="${2:-dist-host/hono-host.mjs}"
+# The package-cache reader executes from REPO_ROOT. Resolve both paths while
+# their documented base is still OPERATOR_DIR, including ordinary relative
+# outputs used by systemd builds, so the reader cannot retarget either path.
+[[ "$ENTRY" = /* ]] || ENTRY="$OPERATOR_DIR/$ENTRY"
+[[ "$OUTFILE" = /* ]] || OUTFILE="$OPERATOR_DIR/$OUTFILE"
 OUTDIR="$(dirname "$OUTFILE")"
 STALE_MARKER="$OUTDIR/.bundle-stale.json"
 FRESH_MARKER="$OUTDIR/.bundle-fresh.json"
