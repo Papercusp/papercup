@@ -1860,9 +1860,10 @@ export function resetGradingAuditStampForRetraction(
     pendingGradingAudit.criteriaHash = auditCriteriaHash;
   }
   // A retracted audit re-opens the subject for dispatch. Do not carry the old
-  // launch reservation across that boundary or the repaired subject would stay
-  // blocked until the reservation TTL elapsed.
+  // launch reservation epoch across that boundary or an old auditor could
+  // settle the repaired subject before its replacement dispatch claims it.
   delete pendingGradingAudit.dispatchReservation;
+  delete pendingGradingAudit.lastDispatchReservation;
   delete pendingGradingAudit.auditIssueId;
   delete pendingGradingAudit.auditor;
   delete pendingGradingAudit.auditedAt;
@@ -2196,13 +2197,14 @@ export async function settlePendingGradingAuditAtomically(
 ): Promise<boolean> {
   const workspaceId = await (deps.resolveWorkspace ?? resolveIssueWorkspace)(issueId);
   const transact = deps.transact ?? boundedOrgTxn;
+  const fencingReservation = expected.lastDispatchReservation ?? expected.dispatchReservation;
   const rows = await transact(async (tx: OrgSql) => {
-    if (expected.dispatchReservation) {
+    if (fencingReservation) {
       const current = await readActiveSourceAuditConsultResponder(
         tx,
         workspaceId,
         issueId,
-        expected.dispatchReservation,
+        fencingReservation,
       );
       if (current && current.answering_owner_id !== settled.auditor) return [];
     }
@@ -2225,8 +2227,37 @@ export async function settlePendingGradingAuditAtomically(
          AND payload->'observation'->'gradingAudit'->>'stampedAt' = ${expected.stampedAt}
          AND payload->'observation'->'gradingAudit'->>'rubricRevision' IS NOT DISTINCT FROM ${expected.rubricRevision == null ? null : String(expected.rubricRevision)}
          AND payload->'observation'->'gradingAudit'->>'criteriaHash' IS NOT DISTINCT FROM ${expected.criteriaHash ?? null}
-         AND payload->'observation'->'gradingAudit'->'dispatchReservation'->>'key' IS NOT DISTINCT FROM ${expected.dispatchReservation?.key ?? null}
-         AND payload->'observation'->'gradingAudit'->'dispatchReservation'->>'reservedAt' IS NOT DISTINCT FROM ${expected.dispatchReservation?.reservedAt ?? null}
+         AND (
+           (
+             ${fencingReservation != null}::boolean = false
+             AND payload->'observation'->'gradingAudit'->'dispatchReservation'->>'key' IS NULL
+             AND payload->'observation'->'gradingAudit'->'dispatchReservation'->>'reservedAt' IS NULL
+             AND payload->'observation'->'gradingAudit'->'lastDispatchReservation'->>'key' IS NULL
+             AND payload->'observation'->'gradingAudit'->'lastDispatchReservation'->>'reservedAt' IS NULL
+           )
+           OR (
+             ${fencingReservation != null}::boolean = true
+             AND (
+               (
+                 payload->'observation'->'gradingAudit'->'dispatchReservation'->>'key' = ${fencingReservation?.key ?? null}
+                 AND payload->'observation'->'gradingAudit'->'dispatchReservation'->>'reservedAt' = ${fencingReservation?.reservedAt ?? null}
+               )
+               OR (
+                 payload->'observation'->'gradingAudit'->'dispatchReservation'->>'key' IS NULL
+                 AND payload->'observation'->'gradingAudit'->'dispatchReservation'->>'reservedAt' IS NULL
+                 AND payload->'observation'->'gradingAudit'->'lastDispatchReservation'->>'key' = ${fencingReservation?.key ?? null}
+                 AND payload->'observation'->'gradingAudit'->'lastDispatchReservation'->>'reservedAt' = ${fencingReservation?.reservedAt ?? null}
+               )
+             )
+             AND (
+               payload->'observation'->'gradingAudit'->'lastDispatchReservation'->>'key' IS NULL
+               OR (
+                 payload->'observation'->'gradingAudit'->'lastDispatchReservation'->>'key' = ${fencingReservation?.key ?? null}
+                 AND payload->'observation'->'gradingAudit'->'lastDispatchReservation'->>'reservedAt' = ${fencingReservation?.reservedAt ?? null}
+               )
+             )
+           )
+         )
        RETURNING feature_id`;
   });
   return rows.length > 0;
@@ -2422,11 +2453,18 @@ export async function recordGradingAudit(
   }
   if (existing.state === 'pending') {
     const activeReservation = existing.dispatchReservation;
+    const lastReservation = existing.lastDispatchReservation;
     const suppliedReservation = input.dispatchReservation;
-    const reservationMatches = activeReservation
-      ? suppliedReservation?.key === activeReservation.key &&
-        suppliedReservation.reservedAt === activeReservation.reservedAt
-      : suppliedReservation == null;
+    const reservationHistoryConsistent =
+      !activeReservation ||
+      !lastReservation ||
+      (activeReservation.key === lastReservation.key && activeReservation.reservedAt === lastReservation.reservedAt);
+    const latestReservation = activeReservation ?? lastReservation;
+    const reservationMatches =
+      reservationHistoryConsistent &&
+      (latestReservation
+        ? suppliedReservation?.key === latestReservation.key && suppliedReservation.reservedAt === latestReservation.reservedAt
+        : suppliedReservation == null);
     if (!reservationMatches) {
       return {
         ok: false,

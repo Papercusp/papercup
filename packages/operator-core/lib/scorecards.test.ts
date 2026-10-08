@@ -31,6 +31,10 @@ describe('recordGradingAudit settled-stamp corrections (EI-22592430715863943)', 
         key: 'grading-audit:EI-TARGET',
         reservedAt: '2026-09-20T04:02:01.600Z',
       },
+      lastDispatchReservation: {
+        key: 'grading-audit:EI-TARGET',
+        reservedAt: '2026-09-20T04:02:01.600Z',
+      },
     };
     const settled = {
       state: 'passed' as const,
@@ -55,8 +59,10 @@ describe('recordGradingAudit settled-stamp corrections (EI-22592430715863943)', 
     expect(write.text).toContain("payload->'observation'->'gradingAudit'->>'state' = 'pending'");
     expect(write.text).toContain("payload->'observation'->'gradingAudit'->>'stampedAt' = ?");
     expect(write.text).toContain("payload->'observation'->'gradingAudit'->>'criteriaHash' IS NOT DISTINCT FROM ?");
-    expect(write.text).toContain("payload->'observation'->'gradingAudit'->'dispatchReservation'->>'key' IS NOT DISTINCT FROM ?");
-    expect(write.text).toContain("payload->'observation'->'gradingAudit'->'dispatchReservation'->>'reservedAt' IS NOT DISTINCT FROM ?");
+    expect(write.text).toContain("payload->'observation'->'gradingAudit'->'dispatchReservation'->>'key' = ?");
+    expect(write.text).toContain("payload->'observation'->'gradingAudit'->'dispatchReservation'->>'reservedAt' = ?");
+    expect(write.text).toContain("payload->'observation'->'gradingAudit'->'lastDispatchReservation'->>'key' = ?");
+    expect(write.text).toContain("payload->'observation'->'gradingAudit'->'lastDispatchReservation'->>'reservedAt' = ?");
     expect(write.values).toContain('ws-test');
     expect(write.values).toContain('EI-TARGET');
     expect(write.values).toContain('grading-audit:EI-TARGET');
@@ -99,8 +105,10 @@ describe('recordGradingAudit settled-stamp corrections (EI-22592430715863943)', 
     expect(notifySyncInvalidate).toHaveBeenCalledWith('rubrics.trend');
     const write = statements.find((statement) => statement.text.includes('UPDATE harness_shared.work_items'))!;
     expect(write.text).toContain("payload->'observation'->'gradingAudit'->>'state' = 'pending'");
-    expect(write.text).toContain("payload->'observation'->'gradingAudit'->'dispatchReservation'->>'key' IS NOT DISTINCT FROM ?");
-    expect(write.text).toContain("payload->'observation'->'gradingAudit'->'dispatchReservation'->>'reservedAt' IS NOT DISTINCT FROM ?");
+    expect(write.text).toContain("payload->'observation'->'gradingAudit'->'dispatchReservation'->>'key' = ?");
+    expect(write.text).toContain("payload->'observation'->'gradingAudit'->'dispatchReservation'->>'reservedAt' = ?");
+    expect(write.text).toContain("payload->'observation'->'gradingAudit'->'lastDispatchReservation'->>'key' = ?");
+    expect(write.text).toContain("payload->'observation'->'gradingAudit'->'lastDispatchReservation'->>'reservedAt' = ?");
     expect(write.values).toContain('grading-audit:EI-TARGET');
     expect(write.values).toContain('2026-09-20T04:02:01.600Z');
     const stamp = write.values.find((value): value is string => typeof value === 'string' && value.includes('"awaiting-reemit"'));

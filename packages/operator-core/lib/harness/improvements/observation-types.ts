@@ -734,6 +734,15 @@ export interface ScorecardGradingAudit {
     key: string;
     reservedAt: string;
   };
+  /**
+   * Latest fencing epoch, retained when the active dispatch reservation is
+   * released. A lapsed auditor may settle only while this still matches its
+   * exact lease; every newer dispatch replaces the epoch.
+   */
+  lastDispatchReservation?: {
+    key: string;
+    reservedAt: string;
+  };
   /** Why the source card must be re-emitted before its audit can be retried. */
   reemitRequired?: {
     code: 'grading_audit_evaluator_changed';
@@ -1636,6 +1645,14 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
       const reservationKey = typeof dispatchReservation?.key === 'string' ? dispatchReservation.key : undefined;
       const reservationTimestamp =
         typeof dispatchReservation?.reservedAt === 'string' ? dispatchReservation.reservedAt : undefined;
+      const lastDispatchReservation =
+        g.lastDispatchReservation && typeof g.lastDispatchReservation === 'object' && !Array.isArray(g.lastDispatchReservation)
+          ? (g.lastDispatchReservation as Record<string, unknown>)
+          : undefined;
+      const lastReservationKey =
+        typeof lastDispatchReservation?.key === 'string' ? lastDispatchReservation.key : undefined;
+      const lastReservationTimestamp =
+        typeof lastDispatchReservation?.reservedAt === 'string' ? lastDispatchReservation.reservedAt : undefined;
       const rawReemitRequired =
         g.reemitRequired && typeof g.reemitRequired === 'object' && !Array.isArray(g.reemitRequired)
           ? (g.reemitRequired as Record<string, unknown>)
@@ -1671,6 +1688,17 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
               dispatchReservation: {
                 key: reservationKey,
                 reservedAt: reservationTimestamp,
+              },
+            }
+          : {}),
+        ...(lastReservationKey &&
+        lastReservationKey.trim() &&
+        lastReservationTimestamp &&
+        lastReservationTimestamp.trim()
+          ? {
+              lastDispatchReservation: {
+                key: lastReservationKey,
+                reservedAt: lastReservationTimestamp,
               },
             }
           : {}),

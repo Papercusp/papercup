@@ -223,6 +223,10 @@ describe('asStructuredObservation — read-side payload surfacing', () => {
       stampedAt: '2026-10-02T02:30:01.384Z',
       rubricRevision: 7,
       criteriaHash: 'criteria-hash-v7',
+      lastDispatchReservation: {
+        key: 'grading-audit:EI-lapsed',
+        reservedAt: '2026-10-02T02:30:00.000Z',
+      },
       reemitRequired: {
         code: 'grading_audit_evaluator_changed',
         at: '2026-10-02T02:31:00.000Z',
