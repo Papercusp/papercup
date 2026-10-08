@@ -860,14 +860,17 @@ export async function withCensusStatementTimeout<T>(
  * the pin are covered by one delta scan (new ids x the live corpus). Everything
  * after the edge scan (plan, counts, shard map) uses the live corpus, as before.
  *
- * The pin lives in `admission_runs.detail.resume` only while the run is unfinished;
- * the completion write replaces `detail` and drops it.
+ * The working pin lives in `detail.resume`. Original pin identities and bounded
+ * edge-write witnesses remain in `detail.edgeEvidence` after completion.
  */
 // Older pins used the broader corpus, which included DATA rows. Rebuild their
 // chunks against the work-only corpus rather than reusing those anchors.
 export const ADMISSION_CENSUS_RESUME_SCHEMA = 'work-item-admission-census-resume-v2';
 /** A pin older than this is discarded; a routine fire's own timeout is 24h. */
 export const ADMISSION_CENSUS_RESUME_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+/** Per committed scan/removal statement, not a claim of exhaustive history. */
+export const ADMISSION_CENSUS_EDGE_EVIDENCE_LIMIT = 200;
+const CENSUS_EDGE_EVIDENCE_SCHEMA = 'work-item-admission-census-edge-evidence-v1';
 
 export interface AdmissionCensusChunkCheckpoint {
   /** Pinned positions assigned to this chunk. */
@@ -914,9 +917,9 @@ function isChunkCheckpoint(value: unknown): value is AdmissionCensusChunkCheckpo
 export function parseAdmissionCensusResume(
   row: { started_at: string | Date; detail: unknown } | undefined,
   expected: { chunkCount: number; nowMs: number },
-): { startedAt: string; pin: AdmissionCensusResumePin } | null {
+): { startedAt: string; pin: AdmissionCensusResumePin; edgeEvidence?: unknown } | null {
   if (!row || !row.detail || typeof row.detail !== 'object') return null;
-  const detail = row.detail as { status?: unknown; resume?: unknown };
+  const detail = row.detail as { status?: unknown; resume?: unknown; edgeEvidence?: unknown };
   if (detail.status !== 'running' && detail.status !== 'failed') return null;
   const pin = detail.resume as Partial<AdmissionCensusResumePin> | undefined;
   if (!pin || pin.schemaVersion !== ADMISSION_CENSUS_RESUME_SCHEMA) return null;
@@ -938,7 +941,75 @@ export function parseAdmissionCensusResume(
   return {
     startedAt: new Date(startedMs).toISOString(),
     pin: { ...(pin as AdmissionCensusResumePin), profileId: pin.profileId ?? null, chunks },
+    edgeEvidence: detail.edgeEvidence,
   };
+}
+
+/** Append the FIRST witness for a statement slot in the SAME edge transaction.
+ * A crash after edges commit but before the chunk checkpoint must not replace it
+ * with the re-scan's preimage. Before values are statement-snapshot observations;
+ * concurrent non-census writers are explicitly outside this recorder's coverage.
+ * The caller supplies a `changes` CTE with a,b,before_value,after_value.
+ */
+function retainCensusEdgeChangesSql(sql: OrgSql, opts: AdmissionCensusRunOptions, runId: string, slot: string) {
+  return sql`
+    evidence_samples AS MATERIALIZED (
+      SELECT * FROM changes ORDER BY a, b LIMIT ${ADMISSION_CENSUS_EDGE_EVIDENCE_LIMIT}
+    ), evidence_recorded AS (
+      UPDATE harness_shared.admission_runs
+         SET detail = jsonb_set(detail, ${['edgeEvidence', 'writes', slot]}::text[],
+           jsonb_build_object(
+             'capturedAt', statement_timestamp(),
+             'changed', (SELECT count(*) FROM changes),
+             'omitted', (SELECT count(*) FROM changes) - (SELECT count(*) FROM evidence_samples),
+             'samples', COALESCE((
+               SELECT jsonb_agg(jsonb_build_object(
+                 'a', s.a, 'b', s.b, 'before', s.before_value, 'after', s.after_value,
+                 'embeddingSha256', jsonb_build_object(
+                   'a', CASE WHEN wa.embedding IS NOT NULL THEN encode(sha256(convert_to(wa.embedding::text, 'UTF8')), 'hex') END,
+                   'b', CASE WHEN wb.embedding IS NOT NULL THEN encode(sha256(convert_to(wb.embedding::text, 'UTF8')), 'hex') END
+                 )) ORDER BY s.a, s.b)
+                 FROM evidence_samples s
+                 LEFT JOIN harness_shared.work_items wa ON wa.workspace_id = ${opts.workspaceId}
+                   AND wa.harness_slug = ${opts.harnessSlug} AND wa.feature_id = s.a
+                 LEFT JOIN harness_shared.work_items wb ON wb.workspace_id = ${opts.workspaceId}
+                   AND wb.harness_slug = ${opts.harnessSlug} AND wb.feature_id = s.b
+             ), '[]'::jsonb)
+           ), true)
+       WHERE id = ${runId} AND workspace_id = ${opts.workspaceId} AND harness_slug = ${opts.harnessSlug}
+         AND NOT (COALESCE(detail #> '{edgeEvidence,writes}', '{}'::jsonb) ? ${slot})
+      RETURNING id
+    )`;
+}
+
+/** Shared by pinned chunks and new-member delta scans. `pairs` is a materialized
+ * CTE on the same statement snapshot. Keep only changed scores/membership: a
+ * timestamp-only refresh is not evidence of a vector or candidate-set change.
+ */
+function writeCensusEdgesSql(sql: OrgSql, opts: AdmissionCensusRunOptions, runId: string, slot: string) {
+  return sql`
+    preimages AS MATERIALIZED (
+      SELECT e.a, e.b, jsonb_build_object('cos', e.cos, 'trgm', e.trgm,
+               'runId', e.run_id, 'computedAt', e.computed_at) AS value,
+             e.cos, e.trgm
+        FROM harness_shared.dedup_edges e JOIN pairs p ON p.a = e.a AND p.b = e.b
+       WHERE e.workspace_id = ${opts.workspaceId} AND e.harness_slug = ${opts.harnessSlug}
+    ), written AS (
+      INSERT INTO harness_shared.dedup_edges
+        (workspace_id, harness_slug, a, b, cos, trgm, run_id, computed_at)
+      SELECT ${opts.workspaceId}, ${opts.harnessSlug}, a, b, cos, trgm, ${runId}, clock_timestamp()
+        FROM pairs WHERE cos >= ${ADMISSION_EDGE_FLOOR}
+      ON CONFLICT (workspace_id, harness_slug, a, b) DO UPDATE SET
+        cos = EXCLUDED.cos, trgm = EXCLUDED.trgm,
+        run_id = EXCLUDED.run_id, computed_at = EXCLUDED.computed_at
+      RETURNING a, b, cos, trgm, run_id, computed_at
+    ), changes AS MATERIALIZED (
+      SELECT w.a, w.b, p.value AS before_value,
+             jsonb_build_object('cos', w.cos, 'trgm', w.trgm,
+               'runId', w.run_id, 'computedAt', w.computed_at) AS after_value
+        FROM written w LEFT JOIN preimages p ON p.a = w.a AND p.b = w.b
+       WHERE p.a IS NULL OR p.cos IS DISTINCT FROM w.cos OR p.trgm IS DISTINCT FROM w.trgm
+    ), ${retainCensusEdgeChangesSql(sql, opts, runId, slot)}`;
 }
 
 async function scanEdgeChunk(
@@ -950,6 +1021,7 @@ async function scanEdgeChunk(
   embeddedIds: readonly string[],
   chunkIndex: number,
   chunkCount: number,
+  evidenceSlot: string,
 ): Promise<AdmissionCensusChunkCheckpoint> {
   // WI-1194246: runs under the census's declared statement_timeout. It MUST be
   // SET LOCAL, never a session-level `SET`: this can run on a SHARED pool
@@ -993,19 +1065,7 @@ async function scanEdgeChunk(
              similarity(a.title, b.title)::real AS trgm
         FROM anchors a
         JOIN corpus b ON a.id < b.id
-    ), written AS (
-      INSERT INTO harness_shared.dedup_edges
-        (workspace_id, harness_slug, a, b, cos, trgm, run_id, computed_at)
-      SELECT ${opts.workspaceId}, ${opts.harnessSlug}, a, b, cos, trgm, ${runId}, clock_timestamp()
-        FROM pairs
-       WHERE cos >= ${ADMISSION_EDGE_FLOOR}
-      ON CONFLICT (workspace_id, harness_slug, a, b) DO UPDATE SET
-        cos = EXCLUDED.cos,
-        trgm = EXCLUDED.trgm,
-        run_id = EXCLUDED.run_id,
-        computed_at = EXCLUDED.computed_at
-      RETURNING cos
-    )
+    ), ${writeCensusEdgesSql(tx, opts, runId, evidenceSlot)}
     SELECT (SELECT count(*)::int FROM slot) AS positions,
            (SELECT count(*)::int
               FROM slot s
@@ -1040,6 +1100,7 @@ async function scanDeltaEdges(
   selection: ProseProfileSelection,
   deltaIds: readonly string[],
   liveEmbeddedIds: readonly string[],
+  attempt: number,
 ): Promise<{ anchors: number; edges: number; hard: number }> {
   const rows = await withCensusStatementTimeout(sql, opts, (tx) =>
     tx<Array<{ anchors: number; edges: number; hard: number }>>`
@@ -1063,19 +1124,7 @@ async function scanDeltaEdges(
              similarity(a.title, b.title)::real AS trgm
         FROM anchors a
         JOIN corpus b ON a.id <> b.id AND (NOT b.is_delta OR a.id < b.id)
-    ), written AS (
-      INSERT INTO harness_shared.dedup_edges
-        (workspace_id, harness_slug, a, b, cos, trgm, run_id, computed_at)
-      SELECT ${opts.workspaceId}, ${opts.harnessSlug}, a, b, cos, trgm, ${runId}, clock_timestamp()
-        FROM pairs
-       WHERE cos >= ${ADMISSION_EDGE_FLOOR}
-      ON CONFLICT (workspace_id, harness_slug, a, b) DO UPDATE SET
-        cos = EXCLUDED.cos,
-        trgm = EXCLUDED.trgm,
-        run_id = EXCLUDED.run_id,
-        computed_at = EXCLUDED.computed_at
-      RETURNING cos
-    )
+    ), ${writeCensusEdgesSql(tx, opts, runId, `delta:${attempt}`)}
     SELECT (SELECT count(*)::int FROM anchors) AS anchors,
            count(*)::int AS edges,
            count(*) FILTER (WHERE cos >= ${ADMISSION_COMPONENT_FLOOR})::int AS hard
@@ -1093,15 +1142,24 @@ async function removeStaleEdges(
   runId: string,
   startedAt: string,
   embeddedIds: readonly string[],
+  attempt: number,
 ): Promise<void> {
   await sql`
+    WITH removed AS (
     DELETE FROM harness_shared.dedup_edges e
      WHERE e.workspace_id = ${opts.workspaceId}
        AND e.harness_slug = ${opts.harnessSlug}
        AND e.run_id <> ${runId}
        AND e.computed_at < ${startedAt}::timestamptz
        AND e.a = ANY(${embeddedIds}::text[])
-       AND e.b = ANY(${embeddedIds}::text[])`;
+       AND e.b = ANY(${embeddedIds}::text[])
+    RETURNING e.a, e.b, e.cos, e.trgm, e.run_id, e.computed_at
+    ), changes AS MATERIALIZED (
+      SELECT a, b, jsonb_build_object('cos', cos, 'trgm', trgm,
+               'runId', run_id, 'computedAt', computed_at) AS before_value,
+             NULL::jsonb AS after_value FROM removed
+    ), ${retainCensusEdgeChangesSql(sql, opts, runId, `stale-removal:${attempt}`)}
+    SELECT count(*) FROM removed`;
 }
 
 async function readCosineEdges(
@@ -1352,6 +1410,19 @@ export async function runWorkItemAdmissionCensus(opts: AdmissionCensusRunOptions
   // treat edges written by other runs during the earlier attempts as stale, and
   // the bulk-dedup in-flight window is measured from it.
   let startedAt = prior?.startedAt ?? new Date(startedMs).toISOString();
+  const oldEvidence = prior?.edgeEvidence as Record<string, unknown> | undefined;
+  const oldScope = oldEvidence?.scope as Record<string, unknown> | undefined;
+  const evidenceMatches = oldEvidence?.schemaVersion === CENSUS_EDGE_EVIDENCE_SCHEMA
+    && oldScope?.runId === runId && oldScope?.workspaceId === opts.workspaceId
+    && oldScope?.harnessSlug === opts.harnessSlug;
+  const edgeEvidence = evidenceMatches ? oldEvidence : {
+    schemaVersion: CENSUS_EDGE_EVIDENCE_SCHEMA,
+    scope: { workspaceId: opts.workspaceId, harnessSlug: opts.harnessSlug, runId },
+    coverage: 'census-write-transitions-only; before=statement-snapshot; concurrent-writers-not-covered',
+    sampleLimitPerStatement: ADMISSION_CENSUS_EDGE_EVIDENCE_LIMIT,
+    missingPriorChunks: Object.keys(prior?.pin.chunks ?? {}),
+    writes: {},
+  };
 
   await lockRetry(() => sql`
     INSERT INTO harness_shared.admission_runs
@@ -1361,6 +1432,7 @@ export async function runWorkItemAdmissionCensus(opts: AdmissionCensusRunOptions
               schemaVersion: 'work-item-admission-census-v1',
               status: 'running',
               config,
+              edgeEvidence,
               outcome: {
                 unit: 'snapshots',
                 attempted: 1,
@@ -1441,7 +1513,7 @@ export async function runWorkItemAdmissionCensus(opts: AdmissionCensusRunOptions
       UPDATE harness_shared.admission_runs
          SET batch_size = ${corpus.length},
              started_at = ${startedAt}::timestamptz,
-             detail = detail || ${JSON.stringify({
+             detail = jsonb_set(detail || ${JSON.stringify({
                snapshot: {
                  fingerprint: snapshotFingerprint,
                  corpusSize: corpus.length,
@@ -1449,7 +1521,16 @@ export async function runWorkItemAdmissionCensus(opts: AdmissionCensusRunOptions
                  missingEmbeddingItems: missingEmbeddingIds.length,
                },
                ...(resumable ? { resume: activePin } : {}),
-             })}::text::jsonb
+             })}::text::jsonb, '{edgeEvidence,pin}',
+               COALESCE(detail #> '{edgeEvidence,pin}', jsonb_build_object(
+                 'embeddedIds', ${pinnedIds}::text[], 'fingerprint', ${activePin.pinnedFingerprint}::text,
+                 'profileId', ${profileId}::text, 'capturedAt', statement_timestamp(),
+                 'embeddings', COALESCE((SELECT jsonb_object_agg(wi.feature_id,
+                   CASE WHEN wi.embedding IS NOT NULL THEN encode(sha256(convert_to(wi.embedding::text, 'UTF8')), 'hex') END)
+                   FROM harness_shared.work_items wi
+                   WHERE wi.workspace_id = ${opts.workspaceId} AND wi.harness_slug = ${opts.harnessSlug}
+                     AND wi.feature_id = ANY(${pinnedIds}::text[])), '{}'::jsonb)
+               )), true)
        WHERE id = ${runId}`);
 
     const chunkResults: AdmissionCensusChunkCheckpoint[] = [];
@@ -1467,7 +1548,8 @@ export async function runWorkItemAdmissionCensus(opts: AdmissionCensusRunOptions
           continue;
         }
         const result = await lockRetry(() =>
-          scanEdgeChunk(sql, opts, runId, mode, selection, pinnedIds, i, chunkCount),
+          scanEdgeChunk(sql, opts, runId, mode, selection, pinnedIds, i, chunkCount,
+            `chunk:${profileId}:${activePin.pinnedFingerprint}:${i}`),
         );
         chunkResults.push(result);
         if (resumable) {
@@ -1496,12 +1578,12 @@ export async function runWorkItemAdmissionCensus(opts: AdmissionCensusRunOptions
       const pinnedSet = new Set(pinnedIds);
       const deltaIds = embeddedIds.filter((id) => !pinnedSet.has(id));
       if (deltaIds.length > 0) {
-        const delta = await lockRetry(() => scanDeltaEdges(sql, opts, runId, selection, deltaIds, embeddedIds));
+        const delta = await lockRetry(() => scanDeltaEdges(sql, opts, runId, selection, deltaIds, embeddedIds, activePin.attempts));
         deltaAnchors = delta.anchors;
         scannedEdgeWrites += delta.edges;
         scannedHardEdges += delta.hard;
       }
-      await lockRetry(() => removeStaleEdges(sql, opts, runId, startedAt, embeddedIds));
+      await lockRetry(() => removeStaleEdges(sql, opts, runId, startedAt, embeddedIds, activePin.attempts));
     }
     const chunkCoverage = chunkResults.map((r) => r.anchors);
 
@@ -1567,8 +1649,8 @@ export async function runWorkItemAdmissionCensus(opts: AdmissionCensusRunOptions
         maxGhostTokens: Math.max(0, ...plan.shards.map((shard) => shard.ghostTokens)),
       },
       projection: plan.projection,
-      // WI-10004965: how this census was assembled across attempts. The pinned id
-      // list itself is dropped here (this write replaces `detail`).
+      // Working checkpoints are compacted; original IDs/digests and atomic edge
+      // witnesses remain under edgeEvidence and are never rebuilt from live rows.
       resume: {
         attempts: activePin.attempts,
         resumedChunks,
@@ -1608,7 +1690,7 @@ export async function runWorkItemAdmissionCensus(opts: AdmissionCensusRunOptions
              tokens_in = 0,
              tokens_out = 0,
              latency_ms = ${latencyMs},
-             detail = ${JSON.stringify(detail)}::text::jsonb
+             detail = jsonb_build_object('edgeEvidence', detail->'edgeEvidence') || ${JSON.stringify(detail)}::text::jsonb
        WHERE id = ${runId}`);
 
     return {

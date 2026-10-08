@@ -15,6 +15,7 @@ const {
   ADMISSION_CENSUS_RESUME_MAX_AGE_MS,
   ADMISSION_CENSUS_RESUME_SCHEMA,
   ADMISSION_CENSUS_STATEMENT_TIMEOUT_MS,
+  ADMISSION_CENSUS_EDGE_EVIDENCE_LIMIT,
   readPinnedUnadjudicatedCensus,
 } = await import('./work-items-admission-census');
 
@@ -752,6 +753,112 @@ describe('runWorkItemAdmissionCensus resume after interruption (WI-10004965, rea
       SELECT started_at, detail FROM harness_shared.admission_runs WHERE id = ${runId}`;
     return { started_at: rows[0]!.started_at.toISOString(), detail: rows[0]!.detail };
   }
+
+  interface Witness {
+    a: string; b: string;
+    before: { cos: number; runId: string; computedAt: string } | null;
+    after: { cos: number; runId: string; computedAt: string } | null;
+    embeddingSha256: { a: string | null; b: string | null };
+  }
+  interface EdgeEvidence {
+    scope: { workspaceId: string; harnessSlug: string; runId: string };
+    coverage: string;
+    missingPriorChunks: string[];
+    pin: { embeddedIds: string[]; embeddings: Record<string, string>; fingerprint: string };
+    writes: Record<string, { changed: number; omitted: number; samples: Witness[] }>;
+  }
+  const retained = async (id: string) => (await runRow(id)).detail.edgeEvidence as EdgeEvidence;
+
+  it('retains original vector-change preimages through a committed-chunk retry, completion and later overwrite', async () => {
+    await seed();
+    await runWorkItemAdmissionCensus({ ...base, sql: db.sql, runId: 'witness-baseline' });
+    const baseline = await retained('witness-baseline');
+    expect(baseline.pin.embeddedIds).toEqual(['a', 'b', 'c']);
+    const baselineEdge = await edge('a', 'c');
+    await db.sql`UPDATE harness_shared.work_items SET embedding = '[0.999,0.04,0]'::vector
+      WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND feature_id = 'c'`;
+    await interruptedAttempt('witness-change', Date.now());
+    const first = await retained('witness-change');
+    const chunkKey = Object.keys(first.writes).find(key => key.startsWith('chunk:') && key.endsWith(':0'))!;
+    const witness = first.writes[chunkKey]!.samples.find(s => s.a === 'a' && s.b === 'c')!;
+    expect(witness.before).toMatchObject({ runId: 'witness-baseline' });
+    expect(witness.before!.cos).toBeLessThan(0.9);
+    expect(new Date(witness.before!.computedAt).getTime()).toBe(new Date(baselineEdge!.at).getTime());
+    expect(witness.after).toMatchObject({ runId: 'witness-change' });
+    expect(witness.after!.cos).toBeGreaterThan(0.9);
+    expect(witness.embeddingSha256.b).not.toBe(baseline.pin.embeddings.c);
+    expect(first.pin.embeddings.c).toBe(witness.embeddingSha256.b);
+    expect(Object.keys(first.writes).filter(key => key.endsWith(':1'))).toEqual([]);
+
+    // Model a kill after atomic edge/evidence commit but before chunk checkpoint.
+    // The retry sees already refreshed values and must keep the first witness.
+    await killed('witness-change');
+    await db.sql`UPDATE harness_shared.admission_runs
+      SET detail = detail #- '{resume,chunks,0}' WHERE id = 'witness-change'`;
+    await db.sql`INSERT INTO harness_shared.work_items
+      (workspace_id, harness_slug, feature_id, title, summary, status, payload, created_ts, embedding, embedding_mode)
+      VALUES (${WS}, ${HARNESS}, 'e', 'new member', '', 'open', '{}'::jsonb, 3, '[1,0,0]'::vector, 'gemma')`;
+    await runWorkItemAdmissionCensus({ ...base, sql: db.sql, runId: 'witness-change' });
+    const completed = await retained('witness-change');
+    expect(completed.pin).toEqual(first.pin);
+    expect(completed.writes[chunkKey]).toEqual(first.writes[chunkKey]);
+    expect(completed.writes['delta:2']!.samples.some(s => s.b === 'e' && s.after?.runId === 'witness-change')).toBe(true);
+    expect(completed.scope).toEqual({ workspaceId: WS, harnessSlug: HARNESS, runId: 'witness-change' });
+    expect(completed.coverage).toContain('concurrent-writers-not-covered');
+    expect(completed.missingPriorChunks).toEqual([]);
+
+    await db.sql`UPDATE harness_shared.work_items SET embedding = '[0,0,1]'::vector
+      WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND feature_id = 'c'`;
+    await runWorkItemAdmissionCensus({ ...base, sql: db.sql, runId: 'witness-later' });
+    expect(await edge('a', 'c')).toBeUndefined();
+    expect(await retained('witness-change')).toEqual(completed);
+    expect(await retained('witness-baseline')).toEqual(baseline);
+    const removed = (await retained('witness-later')).writes['stale-removal:1']!.samples;
+    expect(removed).toContainEqual(expect.objectContaining({ a: 'a', b: 'c',
+      before: expect.objectContaining({ runId: 'witness-change' }), after: null }));
+  }, 60_000);
+
+  it('rolls back edge writes when their evidence cannot commit, then recovers normally', async () => {
+    await seed();
+    await db.sql.unsafe(`CREATE FUNCTION reject_census_evidence() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        IF NEW.detail #> '{edgeEvidence,writes}' IS DISTINCT FROM OLD.detail #> '{edgeEvidence,writes}' THEN
+          RAISE EXCEPTION 'evidence persistence refused';
+        END IF;
+        RETURN NEW;
+      END; $$;
+      CREATE TRIGGER reject_census_evidence BEFORE UPDATE ON harness_shared.admission_runs
+        FOR EACH ROW EXECUTE FUNCTION reject_census_evidence();`);
+    try {
+      await expect(runWorkItemAdmissionCensus({ ...base, sql: db.sql, runId: 'witness-atomic' }))
+        .rejects.toThrow('evidence persistence refused');
+      expect(await db.sql`SELECT a FROM harness_shared.dedup_edges`).toHaveLength(0);
+      expect((await retained('witness-atomic')).writes).toEqual({});
+    } finally {
+      await db.sql.unsafe('DROP TRIGGER reject_census_evidence ON harness_shared.admission_runs; DROP FUNCTION reject_census_evidence();');
+    }
+    await runWorkItemAdmissionCensus({ ...base, sql: db.sql, runId: 'witness-atomic' });
+    expect((await runRow('witness-atomic')).detail.status).toBe('complete');
+    expect(Object.values((await retained('witness-atomic')).writes).some(w => w.changed > 0)).toBe(true);
+  }, 60_000);
+
+  it('reports omitted witnesses and isolates identical endpoint IDs in other tenants', async () => {
+    await db.sql`INSERT INTO harness_shared.work_items
+      (workspace_id, harness_slug, feature_id, title, summary, status, payload, created_ts, embedding, embedding_mode)
+      SELECT ${WS}, ${HARNESS}, 'p' || lpad(n::text, 2, '0'), 'same', '', 'open', '{}'::jsonb, n,
+        '[1,0,0]'::vector, 'gemma' FROM generate_series(1,22) n`;
+    await db.sql`INSERT INTO harness_shared.dedup_edges
+      (workspace_id,harness_slug,a,b,cos,run_id) VALUES ('other',${HARNESS},'p01','p02',0.91,'foreign')`;
+    await runWorkItemAdmissionCensus({ ...base, chunkCount: 1, sql: db.sql, runId: 'witness-bounded' });
+    const saved = await retained('witness-bounded');
+    const scan = Object.entries(saved.writes).find(([key]) => key.startsWith('chunk:'))![1];
+    expect(scan.changed).toBe(231);
+    expect(scan.samples).toHaveLength(ADMISSION_CENSUS_EDGE_EVIDENCE_LIMIT);
+    expect(scan.omitted).toBe(231 - ADMISSION_CENSUS_EDGE_EVIDENCE_LIMIT);
+    expect(scan.samples.find(s => s.a === 'p01' && s.b === 'p02')!.before).toBeNull();
+    expect(await db.sql`SELECT run_id FROM harness_shared.dedup_edges WHERE workspace_id='other'`)
+      .toEqual([{ run_id: 'foreign' }]);
+  }, 60_000);
 
   it('skips the finished chunk, keeps the first start, and scans items filed after the pin', async () => {
     await seed();
