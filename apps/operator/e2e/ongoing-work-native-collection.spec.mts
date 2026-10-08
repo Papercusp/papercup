@@ -276,6 +276,21 @@ test('native declared collections persist controls and reject a barrier-controll
         const picked = await claimNextWorkItem({ harness, assignee: 'native-policy-picker' });
         expect(picked?.id).toBe('WI-native-beta');
         evidence.push({ canonicalPickAfterNativeReorder: picked?.id });
+        // Fill both eligible lanes through the canonical claim boundary. A
+        // later requester must preserve those claims after the native reorder.
+        const peerPick = await claimNextWorkItem({ harness, assignee: 'native-peer-holder' });
+        expect(peerPick?.id).toBe('WI-native-alpha');
+        const refused = await claimNextWorkItem({ harness, assignee: 'native-later-requester' });
+        expect(refused).toBeNull();
+        const heldRows = await sql`SELECT feature_id, taken_by FROM harness_shared.work_items
+          WHERE workspace_id=${workspaceId} AND harness_slug=${harness}
+            AND feature_id IN ('WI-native-alpha', 'WI-native-beta') ORDER BY feature_id`;
+        expect(heldRows.map(row => ({ id: row.feature_id, assignee: row.taken_by }))).toEqual([
+          { id: 'WI-native-alpha', assignee: 'native-peer-holder' },
+          { id: 'WI-native-beta', assignee: 'native-policy-picker' },
+        ]);
+        evidence.push({ peerClaimRefusedAfterNativeReorder: refused, retainedHolders: heldRows });
+        await releaseWorkItem('WI-native-alpha', { harness });
         await releaseWorkItem('WI-native-beta', { harness });
         const portfolio = await readGoalPortfolioBrief({ workspaceId, goalId, claimability: 'skip' });
         expect(portfolio).not.toBeNull();
