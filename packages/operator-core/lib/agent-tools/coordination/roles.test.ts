@@ -21,6 +21,31 @@ import {
 } from './roles';
 
 describe('COORD_ROLES', () => {
+  test('researcher reaches every morning AI operation dependency without broad coordination or placement', { timeout: 60_000 }, async () => {
+    // EI-25392637620560983: requiredTools passed the identity/listing gates,
+    // but the independent dispatch role gate rejected get, claim and send.
+    const required = [
+      '../capability/fetch.js', '../capability/read.js',
+      '../work_items/get.js', '../work_items/claim.js', '../work_items/complete.js',
+      '../plans/get.js', '../reports/publish.js', '../reports/get.js',
+      '../reports/list.js', './tools/send.js',
+    ];
+    const tools = await Promise.all(required.map(async (path) => (await import(path)).default));
+    expect(tools.filter((tool) => !tool.agentRoles?.includes('researcher')).map((tool) => tool.name))
+      .toEqual([]);
+    // Keep the extension on the concrete tools; joining any of these sets
+    // would also open unrelated writers, readers, or placement surfaces.
+    for (const roles of [COORD_ROLES, COORD_READ_ROLES, COORD_REPLY_ROLES,
+      WORK_ITEM_LIFECYCLE_ROLES, QUEEN_PLACEMENT_ROLES, DESKTOP_AGENT_ROLES]) {
+      expect(roles).not.toContain('researcher');
+    }
+    for (const path of ['../work_items/create.js', '../work_items/set_state.js',
+      './tools/escalate.js', '../gym/judge.js']) {
+      const { default: tool } = await import(path);
+      expect(tool.agentRoles, `${tool.name}: researcher must not gain this surface`).not.toContain('researcher');
+    }
+  });
+
   test('acceptance judge can read and settle its own owner directives without general coordination writes', async () => {
     const [get, list, summarize, disposition, record] = await Promise.all([
       import('../orders/get.js'),

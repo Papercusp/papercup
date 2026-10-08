@@ -26,6 +26,16 @@ export const BLUEPRINT_ROLE_CAPS: Readonly<Record<string, readonly string[]>> = 
   voter: ['coord:read', 'coord:write', 'docs:read', 'search:read'],
   advocate: ['coord:read', 'coord:write', 'docs:read', 'search:read'],
   scanner: ['coord:read', 'coord:write', 'docs:read', 'search:read', 'harness:read', 'plans:read'],
+  // The research blueprint stores findings in the existing work-item ledger.
+  // Its morning AI operation fetches/reads sources, publishes a report and
+  // sends an in-app result. Match that workflow without granting source writes,
+  // shell, placement or plan mutation. Concrete tool roles, the accepted receipt
+  // and the existing role/pot ceilings remain independent dispatch gates.
+  researcher: [
+    'work_items:read', 'work_items:write', 'plans:read',
+    'reports:read', 'reports:write', 'coord:write',
+    'capability:fs-read', 'capability:net',
+  ],
   // The pipeline reviewer has no provisioned system_principals row. Its grading-
   // integrity workflow reads scorecards, rubrics and facts, declares coordination
   // intent, and captures defects; it also inspects/claims adequacy-gate work. Keep

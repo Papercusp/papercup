@@ -669,7 +669,9 @@ export default defineTool({
   skipWorkspaceTx: true,
   // Acceptance judges need to inspect cited work-item evidence; keep this
   // read-only admission local instead of widening the shared coord role set.
-  agentRoles: [...COORD_ROLES, 'judge'],
+  // Research tasks use the same work-item ledger; their accepted-operation
+  // receipt and current role ceiling still narrow each call independently.
+  agentRoles: [...COORD_ROLES, 'judge', 'researcher'],
   args: z
     .object({
       id: z.string().min(1).optional().describe('a single work-item id (n=1 shorthand for ids:[id])'),

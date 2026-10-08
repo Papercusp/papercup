@@ -41,6 +41,18 @@ beforeEach(() => {
 });
 
 describe('app-declared worker role capabilities (WI-10007010)', () => {
+  test('the registered researcher gets only its research workflow principal, never app-provided elevation', async () => {
+    seams.declared.mockImplementation(() => ['plans:write', 'capability:bash', 'capability:fs-write']);
+    const principal = await synthesizeDispatchPrincipal(fakeTx([]), {
+      workspaceId: 'ws', role: 'researcher', harnessSlug: 'morning-ai-intelligence',
+    });
+    expect([...principal.capabilities].sort()).toEqual([
+      'agent_tools:read', 'capability:fs-read', 'capability:net', 'coord:write',
+      'plans:read', 'reports:read', 'reports:write', 'work_items:read', 'work_items:write',
+    ]);
+    expect(seams.declared).not.toHaveBeenCalled();
+  });
+
   test('an app worker role gets exactly the capabilities its pot blueprint declares', async () => {
     const caps = await loadRoleCapabilities(fakeTx([]), 'ws', 'calendar-prep-worker', 'calendar');
     for (const capability of CALENDAR_WORKER_CAPS) expect(caps.has(capability), capability).toBe(true);

@@ -2806,7 +2806,9 @@ export default defineTool({
   argReencodings: [PREMISES_REF_OBJECT_REENCODING],
   capability: 'coord:write',
   requirePrincipal: false,
-  agentRoles: [...COORD_REPLY_ROLES],
+  // A researcher may deliver its result on the existing reply channel;
+  // broader coordination writers and placement keep their current role sets.
+  agentRoles: [...COORD_REPLY_ROLES, 'researcher'],
   // EI-20186059075216845: coord:send persists through the coordination/admin
   // seams and never reads ctx.tx. Do not hold an org-app transaction open while
   // roster, federation, and wake delivery work runs; under fleet concurrency
