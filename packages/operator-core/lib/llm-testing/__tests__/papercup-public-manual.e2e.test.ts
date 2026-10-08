@@ -38,6 +38,7 @@ import { resolveHostedSecretRef } from '../../auth/hosted/secret-ref';
 import { withWorkspace } from '@papercusp/db-org';
 import { parseEnvFile } from '../../../../../apps/operator/scripts/systemd/portal-hosted-launcher';
 import { exactOriginOr403 } from '../../endpoint-route/hosted-browser-context';
+import { PAPERCUSP_TMPDIR_CANDIDATES, tmpdirIsInsideRepo } from '../../../../../libs/test-config/src/tmpdir-guard';
 
 let baseUrl = process.env.OPERATOR_BASE_URL;
 const enabled = Boolean(baseUrl) && process.env.PAPERCUSP_TEST_PUBLIC_CHAT === '1';
@@ -567,10 +568,19 @@ async function stopFixtureChild(child: ReturnType<typeof spawn>) {
 }
 
 /** The suite owns both the disposable cwd and its request host, in that order. */
+function isDisposableManualFixture(seedDir: string, roots = [tmpdir(), ...PAPERCUSP_TMPDIR_CANDIDATES]) {
+  const seed = realpathSync(seedDir);
+  if (tmpdirIsInsideRepo(seed)) return false;
+  // The maintained runner can relocate TMPDIR between artifact preparation
+  // and execution. A retained seed under another maintained temp root remains
+  // disposable; real paths prevent a symlink from admitting canonical content.
+  return roots.some((root) => existsSync(root) && seed.startsWith(`${realpathSync(root)}${sep}`));
+}
+
 async function ownFixtureOperator(seedDir: string,
   launch?: (root: string, port: number, logFd: number) => ReturnType<typeof spawn>) {
   const seed = realpathSync(seedDir);
-  expect(seed.startsWith(`${realpathSync(tmpdir())}${sep}`), 'Fixture seed must be disposable').toBe(true);
+  expect(isDisposableManualFixture(seed), 'Fixture seed must be disposable').toBe(true);
   // Validate before starting anything; a missing seed is not a reason to serve
   // the canonical manual and accidentally pass the public/private controls.
   await createPublicManualSource(seed).revision();
@@ -665,6 +675,32 @@ describe('public manual owned host lifecycle', () => {
   const launch = (root: string, port: number, logFd: number) => spawn(process.execPath, ['-e',
     "require('node:http').createServer((req,res)=>res.end(JSON.stringify({sha:'1234567'}))).listen(Number(process.env.FIXTURE_PORT),'127.0.0.1')"],
   { cwd: root, env: { ...process.env, FIXTURE_PORT: String(port) }, stdio: ['ignore', logFd, logFd] });
+
+  it('accepts a retained seed after the runner relocates TMPDIR and still rejects canonical or escaped content', async () => {
+    const seed = mkdtempSync(join(tmpdir(), 'public-manual-retained-seed-'));
+    const relocated = mkdtempSync(join(tmpdir(), 'public-manual-relocated-root-'));
+    const repoRoot = resolve(import.meta.dirname, '../../../../..');
+    const escaped = join(relocated, 'canonical-content');
+    writeFileSync(join(seed, 'faq.mdx'), fixtureFaq(publicCanary));
+    symlinkSync(join(repoRoot, 'apps/papercusp-docs/src/content/docs'), escaped, 'dir');
+    vi.stubEnv('TMPDIR', relocated);
+    let host: Awaited<ReturnType<typeof ownFixtureOperator>> | undefined;
+    try {
+      expect(seed.startsWith(`${realpathSync(tmpdir())}${sep}`)).toBe(false);
+      host = await ownFixtureOperator(seed, launch);
+      host.assertAlive();
+      expect(readFileSync(join(host.manualDir, 'faq.mdx'), 'utf8')).toContain(publicCanary);
+      expect(isDisposableManualFixture(repoRoot)).toBe(false);
+      expect(isDisposableManualFixture(escaped)).toBe(false);
+      expect(isDisposableManualFixture(relocated, [relocated])).toBe(false);
+      expect(isDisposableManualFixture(seed, [relocated])).toBe(false);
+    } finally {
+      await host?.close();
+      vi.unstubAllEnvs();
+      rmSync(seed, { recursive: true, force: true });
+      rmSync(relocated, { recursive: true, force: true });
+    }
+  }, 15_000);
 
   it('keeps its copied fixture alive through readiness and reaps the host before removing it', async () => {
     const seed = mkdtempSync(join(tmpdir(), 'public-manual-lifetime-control-'));
