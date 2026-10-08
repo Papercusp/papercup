@@ -296,12 +296,14 @@ export async function readHostedToolChannel(
   channelId: string,
   payer: string,
   deps: MeteredTransportDeps = {},
+  expectedPayerPubkeyBase64?: string,
 ): Promise<{ ok: true; escrowMicros: bigint; committedMicros: bigint } | MeteredDoorFailure> {
   const called = await callHostedDoor({ path: `${CHANNEL_USAGE_PATH}/${encodeURIComponent(channelId)}`,
     method: 'GET', expect: [200] }, deps);
   if (!called.ok) return called;
   const c = called.payload.channel as Record<string, unknown> | undefined;
   if (!c || c.channelId !== channelId || c.principalId !== payer || c.state !== 'open' ||
+      (expectedPayerPubkeyBase64 !== undefined && c.payerPubkeyBase64 !== expectedPayerPubkeyBase64) ||
       !Number.isSafeInteger(c.escrowMicros) || !Number.isSafeInteger(c.committedMicros) ||
       (c.escrowMicros as number) < 0 || (c.committedMicros as number) < 0 ||
       (c.committedMicros as number) > (c.escrowMicros as number)) {
