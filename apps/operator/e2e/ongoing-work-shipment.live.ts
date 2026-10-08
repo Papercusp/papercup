@@ -5,7 +5,7 @@ type Goal = { id: string; title: string; standing?: boolean };
 type Package = { ref: string; title: string; standing: boolean; featured: boolean; activeGoalId: string | null };
 type Goals = { goals: Goal[]; goalPackages: Package[] };
 
-test('real ongoing goal data reaches featured, compact and standing detail on the identified artifact', async ({ page, request }, info) => {
+test('real ongoing goal data reaches featured, compact and worklist detail on the identified artifact', async ({ page, request }, info) => {
   const workspaceId = resolveTestRunWorkspaceId();
   expect(workspaceId, 'The real workspace must be explicit before reading goal data').toBeTruthy();
   const diagnostics: string[] = [];
@@ -81,13 +81,30 @@ test('real ongoing goal data reaches featured, compact and standing detail on th
   await open.focus();
   await open.press('Enter');
   await expect.poll(() => new URL(page.url()).searchParams.get('hudgoal')).toBe(goal!.id);
-  const detail = page.getByRole('region', { name: `Ongoing work: ${goal!.title}`, exact: true });
+  // Package goals use the approved draft/review/apply console. Its modal is
+  // distinct from the generic ongoing summary retained for unpackaged goals.
+  const detail = page.getByTestId('work-on-everything-console');
   await expect(detail).toBeVisible();
-  await expect(detail.getByRole('heading', { name: 'Where work is moving', exact: true })).toBeVisible();
-  expect(await detail.evaluate((node) => {
-    const ends = document.querySelector('[data-testid="goal-ends-section"]');
-    return !!ends && !!(node.compareDocumentPosition(ends) & Node.DOCUMENT_POSITION_FOLLOWING);
-  }), 'The goal detail must precede its end section').toBe(true);
+  await expect(detail).toHaveAttribute('aria-label', 'Work on everything worklist');
+  await expect(detail.getByRole('heading', { name: goal!.title, exact: true })).toBeVisible();
+  await expect(detail.getByRole('heading', { name: 'Plan the next pass.', exact: true })).toBeVisible();
+  await expect(detail.getByRole('button', { name: 'Settings', exact: true })).toBeVisible();
+  // Read the collection's declaration before requiring rows: a retained legacy
+  // instance without opt-in must truthfully report unavailability, never drive
+  // an empty or silently fabricated draft. This profile performs no policy write.
+  const detailResponse = await request.get('/api/zero-harness/rest-query', {
+    params: { name: 'goals.detail', args: JSON.stringify({ workspaceId, goalId: goal!.id }) },
+  });
+  expect(detailResponse.ok(), 'The opened real goal detail must be readable').toBe(true);
+  const realDetail = (await detailResponse.json()).rows[0];
+  const selection = realDetail.goalData?.collections?.worklist?.selection;
+  if (selection?.ok && selection.configured) {
+    await expect(detail.getByRole('listbox', { name: 'Worklist draft' })).toBeVisible();
+    await expect(detail.getByRole('textbox', { name: 'Search worklist', exact: true })).toBeVisible();
+  } else {
+    await expect(detail.getByRole('heading', { name: 'Worklist unavailable', exact: true })).toBeVisible();
+    await expect(detail.getByRole('button', { name: 'Refresh worklist', exact: true })).toBeVisible();
+  }
   await page.screenshot({ path: info.outputPath('real-ongoing-detail.png') });
 
   const healthAfter = await (await request.get('/api/health')).json();
@@ -95,7 +112,8 @@ test('real ongoing goal data reaches featured, compact and standing detail on th
   expect(healthAfter.bundleStale, 'The runtime must not fall back to a stale bundle during the journey').toBeUndefined();
   await info.attach('ongoing-real-data-receipt', {
     body: JSON.stringify({ expectedSha, actualSha: health.sha, workspaceId, goalId: goal!.id, packageRef: entry!.ref,
-      views: ['featured', 'compact', 'standing-detail'], navigationGoalId: new URL(page.url()).searchParams.get('hudgoal') }),
+      views: ['featured', 'compact', 'worklist-detail'], collectionConfigured: !!(selection?.ok && selection.configured),
+      navigationGoalId: new URL(page.url()).searchParams.get('hudgoal') }),
     contentType: 'application/json',
   });
   } finally {
