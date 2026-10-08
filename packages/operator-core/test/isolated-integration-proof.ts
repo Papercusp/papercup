@@ -24,7 +24,7 @@ function processPin(pid: number) {
 
 export async function recordIsolatedIntegrationProof(options: {
   root: string; filePath: string; sourcePaths: string[];
-  execute: (observe: (child: ChildProcess) => void) => Promise<void>;
+  execute: (observe: (child: ChildProcess) => void, evidenceDir: string) => Promise<void>;
 }): Promise<string> {
   const { root, filePath } = options;
   const paths = [...new Set([filePath, ...options.sourcePaths])].sort();
@@ -91,7 +91,7 @@ export async function recordIsolatedIntegrationProof(options: {
               }
             } catch (error) { observationError = error; }
           });
-        });
+        }, ctx.evidenceDir);
         if (observationError) throw observationError;
         assert.ok(lifecycle && ended, 'original start and cleanup observations are required');
         assert.ok(!ended.signal && ended.runtimeRemoved && ended.pgDataRemoved);
