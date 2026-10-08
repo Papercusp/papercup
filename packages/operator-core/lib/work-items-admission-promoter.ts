@@ -3943,6 +3943,7 @@ export async function previewReviewedAdmissionCleanup(
 interface AdmissionMergeMutableRow {
   feature_id: string;
   status: string | null;
+  taken_by: string | null;
   admission: string | null;
   admitted_at: Date | string | null;
   admitted_by: string | null;
@@ -4012,7 +4013,7 @@ async function persistApprovedAdmissionMerge(
   },
 ): Promise<void> {
   const [loserPrior] = await sql<AdmissionMergeMutableRow[]>`
-    SELECT feature_id, status, admission, admitted_at, admitted_by, condition_key, payload,
+    SELECT feature_id, status, taken_by, admission, admitted_at, admitted_by, condition_key, payload,
            source_plan_slug, source_plan_item_ids, see_also, closed_ts, terminal_reason, terminal_owner
       FROM harness_shared.work_items
      WHERE workspace_id = ${input.workspaceId}
@@ -4080,7 +4081,7 @@ async function persistApprovedAdmissionMerge(
   }
 
   const [canonicalPrior] = await sql<AdmissionMergeMutableRow[]>`
-    SELECT feature_id, status, admission, admitted_at, admitted_by, condition_key, payload,
+    SELECT feature_id, status, taken_by, admission, admitted_at, admitted_by, condition_key, payload,
            source_plan_slug, source_plan_item_ids, see_also, closed_ts, terminal_reason, terminal_owner
       FROM harness_shared.work_items
      WHERE workspace_id = ${input.workspaceId}
@@ -4311,6 +4312,10 @@ async function persistApprovedAdmissionMerge(
     },
     prior: {
       status: loserPrior.status,
+      // Both rows remain locked by persistAdmissionPlan. Together with
+      // mergedAtMs, this preserves the claim identity at the merge commit;
+      // absence on older receipts must remain unknown rather than unclaimed.
+      takenBy: loserPrior.taken_by,
       admission: loserPrior.admission,
       admittedAt: nullableIso(loserPrior.admitted_at),
       admittedBy: loserPrior.admitted_by,
@@ -4328,6 +4333,7 @@ async function persistApprovedAdmissionMerge(
     },
     canonical: {
       prior: {
+        takenBy: canonicalPrior.taken_by,
         conditionKey: canonicalPrior.condition_key,
         watchdogIdentity: payloadIdentityState(canonicalPrior.payload),
         sourcePlanSlug: canonicalPrior.source_plan_slug,

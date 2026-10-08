@@ -1267,12 +1267,13 @@ describe('work-item admission promoter (real Postgres)', () => {
       prior: {
         status: 'open',
         admission: 'admitted',
+        takenBy: null,
         sourcePlanSlug: 'source-plan',
         sourcePlanItemIds: ['P-003'],
         seeAlso: ['WI-outgoing'],
       },
       canonical: {
-        prior: { sourcePlanSlug: null, sourcePlanItemIds: null, seeAlso: ['WI-canonical-existing'] },
+        prior: { takenBy: null, sourcePlanSlug: null, sourcePlanItemIds: null, seeAlso: ['WI-canonical-existing'] },
         applied: { sourcePlanSlug: 'source-plan', sourcePlanItemIds: ['P-003'] },
       },
       transfers: {
@@ -1335,6 +1336,13 @@ describe('work-item admission promoter (real Postgres)', () => {
       async () =>
         db.sql`UPDATE harness_shared.work_items SET taken_by = 'su-live-holder', updated_ts = updated_ts + 1
                 WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND feature_id = 'WI-loser'`,
+      'snapshot-drift',
+    ],
+    [
+      'canonical claim',
+      async () =>
+        db.sql`UPDATE harness_shared.work_items SET taken_by = 'su-live-canonical-holder', updated_ts = updated_ts + 1
+                WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND feature_id = 'WI-canonical'`,
       'snapshot-drift',
     ],
     [
