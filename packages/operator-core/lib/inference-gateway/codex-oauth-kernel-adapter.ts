@@ -322,6 +322,7 @@ function quotaDecoder() {
   let sawTerminal = false;
   let opaqueLargeFrame = false;
   let lastEventType: string | null = null;
+  let responseId: string | null = null;
   const noteFrame = (frame: string, bounded: boolean, terminated: boolean): void => {
     const prefix = frame.slice(0, 2048);
     let type = /(?:^|\n)event:\s*([^\r\n\s]+)/.exec(prefix)?.[1]
@@ -332,7 +333,14 @@ function quotaDecoder() {
       if (data === '[DONE]') sawResponseEvent = true;
       try {
         const event = JSON.parse(data);
-        if (event && typeof event.type === 'string') type = event.type;
+        if (event && typeof event.type === 'string') {
+          type = event.type;
+          // Only provider response metadata is an identity witness. Never infer
+          // an id from model text, and retain the first genuine response id.
+          const id = event.response?.id;
+          if (responseId === null && (type === 'response.created' || type === 'response.in_progress') &&
+              typeof id === 'string' && id.trim()) responseId = id;
+        }
       } catch { /* the byte-transparent relay retains the original malformed event */ }
     } else if (!type && terminated && /(?:^|\n)data:/.test(prefix)) {
       // Do not turn an unclassifiable, oversized *complete* frame into a false
@@ -377,7 +385,7 @@ function quotaDecoder() {
       if (sawResponseEvent && !sawTerminal && !opaqueLargeFrame) {
         throw new GatewayRequestKernelError('Codex OAuth stream EOF before a Responses terminal event', {
           code: 'upstream-error', outcome: 'upstream-error', status: 502, retryable: true,
-          cause: { protocol: 'openai-responses', lastEventType },
+          cause: { protocol: 'openai-responses', responseId, lastEventType },
         });
       }
     },

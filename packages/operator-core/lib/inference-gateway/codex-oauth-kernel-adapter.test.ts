@@ -921,14 +921,25 @@ describe('Codex OAuth quota errors inside successful HTTP streams', () => {
   it('rejects incomplete EOF after visible output without replaying that output on another account', async () => {
     const accounts = [cli('chatgpt-a'), cli('chatgpt-b')];
     const pool = makePool([{ accountId: 'chatgpt-b' }]);
-    const wire = frame({ type: 'response.output_text.delta', delta: 'already visible' });
+    const wire = frame({ type: 'response.created', response: { id: 'resp_incomplete' } })
+      + frame({ type: 'response.output_text.delta', delta: 'already visible' });
     const h = harness(async () => upstream(200, {}, sseBody(wire)), { accounts, pool });
     await expect(executeGatewayRequestKernel(h.options)).rejects.toMatchObject({
       code: 'upstream-error', status: 502,
+      cause: { protocol: 'openai-responses', responseId: 'resp_incomplete', lastEventType: 'response.output_text.delta' },
     });
     expect(h.prepared).toHaveLength(1);
     expect(h.written.join('')).toBe(wire);
     expect(pool.exhaustedCalls).toEqual([]);
+  });
+
+  it('does not invent a response id from model text or malformed provider metadata', async () => {
+    const wire = frame({ type: 'response.created', response: { id: 123 } })
+      + frame({ type: 'response.output_text.delta', delta: '{"response":{"id":"model-text-not-a-provider-id"}}' });
+    const h = harness(async () => upstream(200, {}, sseBody(wire)));
+    await expect(executeGatewayRequestKernel(h.options)).rejects.toMatchObject({
+      cause: { protocol: 'openai-responses', responseId: null },
+    });
   });
 
   it.each(['response.failed', 'response.incomplete', 'error'])('preserves an explicit %s terminal instead of misclassifying it as bare EOF', async (type) => {

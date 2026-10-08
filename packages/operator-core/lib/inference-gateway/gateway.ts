@@ -9199,8 +9199,33 @@ export function createInferenceGateway(deps: GatewayDeps) {
           return;
         }
 
+        const streamFailure = failure.cause && typeof failure.cause === 'object'
+          ? failure.cause as { protocol?: unknown; responseId?: unknown }
+          : null;
+        const incompleteOAuthStream = failure.code === 'upstream-error' &&
+          streamFailure?.protocol === 'openai-responses';
+        if (incompleteOAuthStream) {
+          recordOwnerOutcome(routing.ownerId, 'upstream_error', {
+            account: lastAccountId, status: 502, detail: 'oauth-stream-incomplete',
+          });
+          log('error', 'inference-gateway: codex OAuth incomplete stream on ' + lastAccountId + ': ' + failure.message);
+        }
         if (res.headersSent) {
-          res.destroy();
+          if (incompleteOAuthStream && !reqAbort.signal.aborted && !res.destroyed && !res.writableEnded) {
+            // The kernel has already exposed output, so replay is unsafe. End
+            // truthfully instead of making the native client diagnose a socket
+            // disconnect or inventing a successful Responses completion.
+            const responseId = typeof streamFailure?.responseId === 'string' && streamFailure.responseId.trim()
+              ? streamFailure.responseId
+              : null;
+            const error = { code: 'server_error', message: failure.message };
+            const terminal = responseId
+              ? { type: 'response.failed', response: { id: responseId, status: 'failed', error } }
+              : { type: 'error', error };
+            res.end('event: ' + terminal.type + '\ndata: ' + JSON.stringify(terminal) + '\n\n');
+          } else {
+            res.destroy();
+          }
           return;
         }
 
