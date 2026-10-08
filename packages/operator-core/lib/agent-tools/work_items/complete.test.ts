@@ -570,6 +570,25 @@ describe('EI-18793465701838962 — contrastive root-cause verification gate', ()
     expect(String(missingCompletion.error)).toMatch(closeShape);
   });
 
+  it('names the wrong type on the legacy top-level verification alias', () => {
+    const safeParse = (
+      complete.args as { safeParse: (value: unknown) => { success: boolean; error?: unknown } }
+    ).safeParse;
+    const parsed = safeParse({
+      id: 'WI-typed',
+      state: 'done',
+      assumptions: 'none',
+      completion: { summary: 'fixed it' },
+      verification: 'a plain string',
+    });
+    const diagnostic = String(parsed.error);
+
+    expect(parsed.success).toBe(false);
+    expect(diagnostic).toContain('completion.verification');
+    expect(diagnostic).toMatch(/record|object/i);
+    expect(diagnostic).not.toMatch(/to CLOSE a work-item, pass \{ id, state, assumptions/);
+  });
+
   // EI-25240542476501298: the union message is lifted from a NESTED unrecognized-key issue
   // and the union node sits at the root, so without its path the refusal read like a stray
   // top-level arg (and the dispatcher listed top-level keys the caller had right).
