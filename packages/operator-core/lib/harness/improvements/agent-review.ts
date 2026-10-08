@@ -73,6 +73,8 @@ import {
   verificationConflictSql,
   verificationParties,
   verificationTaskConflictSql,
+  verificationTaskConflict,
+  readVerificationTask,
   type VerificationConflictRole,
 } from './agent-review-policy';
 import { readBornVerifiedReproduction } from '../../attention/bug-reproduction';
@@ -88,6 +90,9 @@ import { readBornVerifiedReproduction } from '../../attention/bug-reproduction';
 import { REBIND_BLOCKING_SESSION_STATES } from '../../agent-tools/coordination/rebind-identity';
 import type { SessionState } from '../../agent-tools/coordination/presence-wakeability';
 import { effectiveReporter, storedReporter } from './provenance';
+import type { FilterNode } from '../../scheduler/claim-spec';
+import { compileFilter } from '../../scheduler/get-next';
+import { claimSpecSubjectFromWorkItem, matchesClaimSpecFilter } from '../../scheduler/claim-spec-match';
 
 export const AGENT_REVIEW_MAX_REVISION_GRADE = 3;
 
@@ -1109,13 +1114,64 @@ export async function claimAgentReview(
   return { claimed: true, workItem: claimed };
 }
 
+interface VerificationPickupScope {
+  filter?: FilterNode;
+  workspaceId?: string;
+  signal?: AbortSignal;
+}
+
+type VerificationClaimDeps = Pick<AgentReviewDeps, 'claimWorkItem' | 'getWorkItem' | 'releaseWorkItem'>;
+
+/** A failed/aborted writer is never a queue miss: reconcile its holder, then propagate. */
+async function claimVerificationCandidate(
+  itemId: string,
+  actor: string,
+  harness: string | undefined,
+  scope: VerificationPickupScope,
+  deps: VerificationClaimDeps,
+  claim: () => Promise<WorkItem | null>,
+  eligible: (item: WorkItem) => boolean,
+): Promise<WorkItem | null> {
+  scope.signal?.throwIfAborted();
+  const releaseOwned = async () => {
+    const latest = await deps.getWorkItem(itemId, harness);
+    if (latest?.assignee !== actor) return;
+    const released = await deps.releaseWorkItem(itemId, {
+      ...(harness ? { harness } : {}), expectedAssignee: actor, announceClaimable: false,
+    });
+    if (!released || released.assignee === actor) {
+      throw new Error(`verification pickup: could not reconcile invalidated claim on '${itemId}'`);
+    }
+  };
+  let claimed: WorkItem | null;
+  try {
+    claimed = await claim();
+  } catch (error) {
+    // The write may have committed before a transport/deadline error. A fresh read
+    // plus expected-holder CAS releases only our claim, never a concurrent peer's.
+    await releaseOwned();
+    throw error;
+  }
+  if (scope.signal?.aborted || (claimed && (
+    claimed.assignee !== actor || !eligible(claimed)
+    || !matchesClaimSpecFilter(claimSpecSubjectFromWorkItem(claimed), scope.filter)
+  ))) {
+    await releaseOwned();
+    scope.signal?.throwIfAborted();
+    return null;
+  }
+  return claimed;
+}
+
 /** Reviewer pickup over the unified queue; direct claims still use claimWorkItem's CAS. */
 export async function claimNextAgentReview(
-  input: { reviewer: string; harnessSlug?: string },
+  input: { reviewer: string; harnessSlug?: string } & VerificationPickupScope,
   deps: AgentReviewDeps = defaultDeps,
 ): Promise<WorkItem | null> {
+  input.signal?.throwIfAborted();
+  if (!input.reviewer.trim()) return null;
   const { sql } = getOrgPg();
-  const ws = activeWorkspaceId();
+  const ws = input.workspaceId ?? activeWorkspaceId();
   const rows = await sql<{ feature_id: string }[]>`
     SELECT feature_id
       FROM harness_shared.work_items wi
@@ -1128,13 +1184,16 @@ export async function claimNextAgentReview(
        AND COALESCE(payload, '{}'::jsonb) -> 'agentReview' ->> 'submittedBy' IS DISTINCT FROM ${input.reviewer}
        AND NOT ${verificationConflictSql(sql, input.reviewer, { payload: 'wi.payload', terminalOwner: 'wi.terminal_owner' })}
        AND ${input.harnessSlug ? sql`harness_slug = ${input.harnessSlug}` : sql`TRUE`}
+       AND ${compileFilter(sql, input.filter)}
      -- P-012 (D-049): an authored order stays first; within it, more independent
      -- reporters are reviewed sooner. Ordering only: claimWorkItem still admits.
      ORDER BY feature_order ASC NULLS LAST, ${corroborationReportersSql(sql)} DESC, created_ts ASC
      LIMIT 25`;
   for (const row of rows) {
+    input.signal?.throwIfAborted();
     const found = await deps.getWorkItem(row.feature_id, input.harnessSlug);
     if (!found) continue;
+    if (!matchesClaimSpecFilter(claimSpecSubjectFromWorkItem(found), input.filter)) continue;
     const workItem = await healOwnNodeRemoteOrigin(found, deps, { harnessSlug: input.harnessSlug, workspaceId: ws });
     if (!agentReviewEligibility(workItem).eligible) continue;
     const review = readAgentReviewState(workItem.payload);
@@ -1177,10 +1236,15 @@ export async function claimNextAgentReview(
           parties,
         })
       : null;
-    const claimed = await deps.claimWorkItem(workItem.id, input.reviewer, {
-      ...(workItem.harness ? { harness: workItem.harness } : {}),
-      ...(agentReviewAdmission ? { agentReviewAdmission } : {}),
-    });
+    const claimed = await claimVerificationCandidate(
+      workItem.id, input.reviewer, workItem.harness ?? undefined, input, deps,
+      () => deps.claimWorkItem(workItem.id, input.reviewer, {
+        ...(workItem.harness ? { harness: workItem.harness } : {}),
+        ...(agentReviewAdmission ? { agentReviewAdmission } : {}),
+      }),
+      (item) => readAgentReviewState(item.payload)?.status === 'pending'
+        && !verificationConflict(verificationParties(item), input.reviewer),
+    );
     if (claimed) return claimed;
   }
   return null;
@@ -1194,13 +1258,14 @@ export async function claimNextAgentReview(
  * dependency floor; it admits nothing the writer would refuse.
  */
 export async function claimNextVerificationTask(
-  input: { verifier: string; harnessSlug?: string },
-  deps: Pick<AgentReviewDeps, 'claimWorkItem'> = defaultDeps,
+  input: { verifier: string; harnessSlug?: string } & VerificationPickupScope,
+  deps: VerificationClaimDeps = defaultDeps,
 ): Promise<WorkItem | null> {
+  input.signal?.throwIfAborted();
   const verifier = input.verifier.trim();
   if (!verifier) return null;
   const { sql } = getOrgPg();
-  const ws = activeWorkspaceId();
+  const ws = input.workspaceId ?? activeWorkspaceId();
   const rows = await sql<{ feature_id: string; harness_slug: string | null }[]>`
     SELECT feature_id, harness_slug
       FROM harness_shared.work_items wi
@@ -1211,11 +1276,20 @@ export async function claimNextVerificationTask(
        ${input.harnessSlug ? sql`AND harness_slug = ${input.harnessSlug}` : sql``}
        AND ${depsBlockedExclusionSql(sql)}
        AND NOT ${verificationTaskConflictSql(sql, verifier, 'wi.payload')}
+       AND ${compileFilter(sql, input.filter)}
      -- P-012 (D-049): the subject with more independent reporters is verified first.
      ORDER BY ${corroborationReportersSql(sql, VERIFICATION_SUBJECT_ID_SQL)} DESC, created_ts ASC, feature_id ASC
      LIMIT 20`;
   for (const row of rows) {
-    const claimed = await deps.claimWorkItem(row.feature_id, verifier, row.harness_slug ? { harness: row.harness_slug } : {});
+    input.signal?.throwIfAborted();
+    const found = await deps.getWorkItem(row.feature_id, row.harness_slug ?? undefined);
+    if (!found || !matchesClaimSpecFilter(claimSpecSubjectFromWorkItem(found), input.filter)) continue;
+    if (verificationTaskConflict(found.payload, verifier)) continue;
+    const claimed = await claimVerificationCandidate(
+      row.feature_id, verifier, row.harness_slug ?? undefined, input, deps,
+      () => deps.claimWorkItem(row.feature_id, verifier, row.harness_slug ? { harness: row.harness_slug } : {}),
+      (item) => readVerificationTask(item.payload) !== null && !verificationTaskConflict(item.payload, verifier),
+    );
     if (claimed) return claimed;
   }
   return null;
@@ -1225,10 +1299,10 @@ export type VerificationWorkKind = 'agent-review' | 'verification-task';
 
 /** P-007 Phase B (D-027): one verifier-lane pull. Pending reviews first, then verification tasks. */
 export async function claimNextVerificationWork(
-  input: { verifier: string; harnessSlug?: string },
+  input: { verifier: string; harnessSlug?: string } & VerificationPickupScope,
   deps: AgentReviewDeps = defaultDeps,
 ): Promise<{ workItem: WorkItem; kind: VerificationWorkKind } | null> {
-  const review = await claimNextAgentReview({ reviewer: input.verifier, harnessSlug: input.harnessSlug }, deps);
+  const review = await claimNextAgentReview({ ...input, reviewer: input.verifier }, deps);
   if (review) return { workItem: review, kind: 'agent-review' };
   const task = await claimNextVerificationTask(input, deps);
   return task ? { workItem: task, kind: 'verification-task' } : null;
