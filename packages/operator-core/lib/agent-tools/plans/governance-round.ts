@@ -73,16 +73,18 @@ function certificateHash(cert: Omit<FinalizationCertificate, 'certificateHash'>)
 /**
  * Finalize a round. The weighted reducer is CONSULTED FIRST and is load-bearing
  * through its refusals and the policy's weighted quorum/approval thresholds.
- * `members`/`delegations` describe the voting roster; omitted, every id
- * in the round's own eligibility snapshot votes unrevoked at weight 1.
+ * `members`/`delegations` describe the explicit voting roster. The caller must
+ * supply verified weights, revocation state and key epochs; deriving a default
+ * from electorate ids would silently discard those authority constraints.
  */
-export function finalizeGovernanceRound(input: { round: GovernanceRound; events: readonly GovernanceVoteEvent[]; policy: PlanAdmissionPolicy; nowMs: number; members?: readonly VotingMember[]; delegations?: readonly Delegation[] }): RoundResult<FinalizationCertificate> {
+export function finalizeGovernanceRound(input: { round: GovernanceRound; events: readonly GovernanceVoteEvent[]; policy: PlanAdmissionPolicy; nowMs: number; members: readonly VotingMember[]; delegations?: readonly Delegation[] }): RoundResult<FinalizationCertificate> {
   if (!createGovernanceRound(input.round).ok || !validatePlanAdmissionPolicy(input.policy).ok ||
       !Number.isSafeInteger(input.nowMs) || input.nowMs < input.round.createdAtMs)
     return { ok: false, code: 'invalid-round', detail: 'a valid round, policy and finalization time are required' };
   const rebuilt = rebuildGovernanceRound(input.round, input.events);
   if (!rebuilt.ok) return rebuilt;
-  const members: readonly VotingMember[] = input.members ?? input.round.eligibleMemberIds.map((memberId) => ({ memberId }));
+  if (!Array.isArray(input.members)) return { ok: false, code: 'unknown-member', detail: 'an explicit voting roster is required' };
+  const members: readonly VotingMember[] = input.members;
   const rosterIds = new Set(members.map((m) => m.memberId));
   if (rosterIds.size !== members.length) return { ok: false, code: 'duplicate-member', detail: 'voting roster contains duplicate member ids' };
   const absent = input.round.eligibleMemberIds.find((id) => !rosterIds.has(id));

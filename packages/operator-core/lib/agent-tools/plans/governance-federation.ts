@@ -43,6 +43,9 @@ export type GovernanceEventBody =
 
 export type GovernanceEventKind = GovernanceEventBody['kind'];
 
+/** Immutable facts carried by the existing hive-settings projection. */
+export const PLAN_ADMISSION_GOVERNANCE_EVENT_PREFIX = 'governanceEvent.v1.';
+
 export interface FederatedGovernanceEvent {
   readonly eventId: string;
   readonly potId: string;
