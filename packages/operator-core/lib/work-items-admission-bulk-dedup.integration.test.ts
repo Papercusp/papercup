@@ -794,8 +794,8 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
   /**
    * WI-2140406 F4 — a process death mid-run strands admission_runs rows in
    * status 'running' forever (d035-1-stage-1 + d035-3-census-0, stuck since
-   * 2026-08-30). The next run start must mark stale foreign rows failed while
-   * leaving genuinely-live rows alone.
+   * 2026-08-30). The next run start must mark expired foreign rows failed while
+   * leaving a refreshed lease alone even when its row is old.
    */
   it('reaps foreign admission runs stuck running past the stage lease at run start', async () => {
     await seed();
@@ -805,7 +805,13 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
       VALUES ('d035-old-stage-1', ${WS}, ${HARNESS}, 'bulk-stage', now() - interval '3 hours',
               '{"status":"running"}'::jsonb),
              ('fresh-census-0', ${WS}, ${HARNESS}, 'census', now(),
-              '{"status":"running"}'::jsonb)`;
+              '{"status":"running"}'::jsonb),
+             ('expired-lease-stage', ${WS}, ${HARNESS}, 'bulk-stage', now() - interval '10 minutes',
+              jsonb_build_object('status', 'running', 'lease',
+                jsonb_build_object('ownerId', 'workflow-expired', 'expiresAt', ${Date.now() - 1}::bigint))),
+             ('z-live-long-stage', ${WS}, ${HARNESS}, 'bulk-stage', now() - interval '3 hours',
+              jsonb_build_object('status', 'running', 'lease',
+                jsonb_build_object('ownerId', 'workflow-live', 'expiresAt', ${Date.now() + 60 * 60_000}::bigint)))`;
 
     const result = await runBulk({
       workspaceId: WS,
@@ -825,10 +831,19 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
     });
     expect(result.converged).toBe(true);
 
-    const rows = await db.sql<Array<{ id: string; finished: boolean; status: string; error: string | null }>>`
-      SELECT id, (finished_at IS NOT NULL) AS finished, detail->>'status' AS status, detail->>'error' AS error
+    const rows = await db.sql<Array<{
+      id: string;
+      finished: boolean;
+      status: string;
+      error: string | null;
+      failureReason: string | null;
+      leaseOwner: string | null;
+    }>>`
+      SELECT id, (finished_at IS NOT NULL) AS finished, detail->>'status' AS status,
+             detail->>'error' AS error, detail->'outcome'->>'failureReason' AS "failureReason",
+             detail->'lease'->>'ownerId' AS "leaseOwner"
         FROM harness_shared.admission_runs
-       WHERE id IN ('d035-old-stage-1', 'fresh-census-0')
+       WHERE id IN ('d035-old-stage-1', 'expired-lease-stage', 'fresh-census-0', 'z-live-long-stage')
        ORDER BY id`;
     expect(rows).toEqual([
       {
@@ -836,8 +851,26 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
         finished: true,
         status: 'failed',
         error: expect.stringContaining('reaped') as unknown as string,
+        failureReason: 'stranded',
+        leaseOwner: null,
       },
-      { id: 'fresh-census-0', finished: false, status: 'running', error: null },
+      {
+        id: 'expired-lease-stage',
+        finished: true,
+        status: 'failed',
+        error: expect.stringContaining('reaped') as unknown as string,
+        failureReason: 'stranded',
+        leaseOwner: null,
+      },
+      { id: 'fresh-census-0', finished: false, status: 'running', error: null, failureReason: null, leaseOwner: null },
+      {
+        id: 'z-live-long-stage',
+        finished: false,
+        status: 'running',
+        error: null,
+        failureReason: null,
+        leaseOwner: 'workflow-live',
+      },
     ]);
   }, 60_000);
 

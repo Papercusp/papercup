@@ -1025,6 +1025,17 @@ describe('ptool call deadlines', () => {
   });
 });
 
+describe('ptool content-summary transport budget', () => {
+  it('keeps direct and deferred summaries outside their 190-second server budget', () => {
+    const args = { operation: 'summarize', summary: { timeoutMs: 180_000 } };
+    const direct = timeoutForTool('documents:read', args);
+    const deferred = timeoutForTool('tools:invoke', { name: 'documents:read', args });
+    expect(direct).toBeGreaterThan(190_000);
+    expect(deferred).toBe(direct);
+    expect(timeoutForTool('ordinary:read')).toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
+  });
+});
+
 describe('ptool tools/call failure diagnostics', () => {
   it('identifies a catalog timeout as pre-dispatch and safe to retry', () => {
     const error = Object.assign(new Error('Request timed out'), { code: -32001 });

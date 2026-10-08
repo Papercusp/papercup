@@ -4,13 +4,17 @@
  * The census owns corpus selection, >=0.90 hard components, 0.85–0.90 ghost
  * context, and deterministic shard packing. This runner consumes that exact
  * pinned shard map, applies the promoter's duplication-only charter/code set,
- * and commits each stage only when a fresh census satisfies the monotone
- * non-increase ratchet. A rise rolls the whole stage back and leaves a failed
- * `bulk-stage` ledger row outside the transaction.
+ * and commits guarded merges with a durable receipt in a short serializable
+ * transaction. Per D-013, a fresh post-commit census checks the non-increase
+ * ratchet over census-0 members. A rise fails the stage and stops the pass;
+ * the failure ledger reports the committed work from its receipt. Recovery
+ * finishes that post-commit check without re-judging or re-merging the pairs.
  */
 import { createHash, randomUUID } from 'node:crypto';
 import { getOrgPg } from '@papercusp/db-org';
 import { isLlmCallError } from '@papercusp/testing-shell/llm';
+import { DEFAULT_BULK_STAGE_LEASE_MS } from './admission-runs-reaper';
+export { DEFAULT_BULK_STAGE_LEASE_MS };
 import { admissionIdentity } from './harness/improvements/digest';
 import { isTransientNetworkError } from './harness/routines/hetzner-orphan-frame-reaper';
 import { LEARNING_MODEL_SPEC } from './learning/model-policy';
@@ -200,10 +204,7 @@ export async function runBulkJudgeCallWithDeadline<T>(
 }
 export const BULK_STAGE_SCHEMA_VERSION = 'work-item-admission-bulk-stage-v2';
 export const BULK_BATCH_CHECKPOINT_SCHEMA_VERSION = 'work-item-admission-bulk-batch-v1';
-/** A live owner refreshes this lease before and after every batch. Two hours is
- * deliberately much longer than one normal model call, while still letting a
- * dead routine be reclaimed without manual row surgery. */
-export const DEFAULT_BULK_STAGE_LEASE_MS = 2 * 60 * 60_000;
+/** A live owner refreshes this shared two-hour lease before and after every batch. */
 
 export type BulkDedupScope = 'full-corpus' | 'machine-emitter-targeted';
 
@@ -2201,10 +2202,11 @@ async function judgeBulkPairs(
  * when the process dies mid-run (measured: `d035-1-stage-1` and
  * `d035-3-census-0` stuck 'running' since 2026-08-30). A stranded row misleads
  * every ledger reader — it looks like live work and hides that the run
- * delivered nothing. Reap at the next run start: any same-scope row still
- * 'running' past the stage lease with no finish is marked failed. The current
- * root's own rows are excluded because stage resumption legitimately takes over
- * an expired lease (`acquireBulkStageLease`), and a reap must never race it.
+ * delivered nothing. Reap at the next run start when the same-scope stage lease
+ * expired without a finish. Older rows without lease metadata fall back to the
+ * two-hour start-time threshold. The current root's own rows are excluded
+ * because stage resumption legitimately takes over an expired lease
+ * (`acquireBulkStageLease`), and a reap must never race it.
  */
 async function reapStaleRunningAdmissionRuns(
   sql: OrgSql,
@@ -2214,17 +2216,36 @@ async function reapStaleRunningAdmissionRuns(
   const rows = await sql<Array<{ id: string }>>`
     UPDATE harness_shared.admission_runs
        SET finished_at = clock_timestamp(),
-           detail = COALESCE(detail, '{}'::jsonb) || ${JSON.stringify({
-             status: 'failed',
-             error: 'reaped: still running past the stage lease with no finish (process died mid-run)',
-             reapedBy: input.rootRunId,
-             reapedAt: new Date(input.nowMs).toISOString(),
-           })}::text::jsonb
+           detail = jsonb_set(
+             jsonb_set(
+               COALESCE(detail, '{}'::jsonb) || ${JSON.stringify({
+                 status: 'failed',
+                 error: 'reaped: still running past the stage lease with no finish (process died mid-run)',
+                 reapedBy: input.rootRunId,
+                 reapedAt: new Date(input.nowMs).toISOString(),
+               })}::text::jsonb,
+               '{lease}',
+               COALESCE(detail->'lease', '{}'::jsonb) || jsonb_build_object(
+                 'invalidatedOwnerId', detail->'lease'->'ownerId',
+                 'ownerId', NULL::text,
+                 'invalidatedAt', ${new Date(input.nowMs).toISOString()}::text
+               ),
+               true
+             ),
+             '{outcome}',
+             COALESCE(detail->'outcome', '{}'::jsonb)
+               || jsonb_build_object('failureReason', 'stranded'),
+             true
+           )
      WHERE workspace_id = ${input.workspaceId}
        AND harness_slug = ${input.harnessSlug}
        AND finished_at IS NULL
        AND detail->>'status' = 'running'
-       AND started_at < ${cutoff}::timestamptz
+       AND CASE
+         WHEN jsonb_typeof(detail->'lease'->'expiresAt') = 'number'
+           THEN (detail->'lease'->>'expiresAt')::double precision <= ${input.nowMs}::double precision
+         ELSE started_at < ${cutoff}::timestamptz
+       END
        AND id NOT LIKE ${`${input.rootRunId}%`}
      RETURNING id`;
   return rows.map((row) => row.id).sort();

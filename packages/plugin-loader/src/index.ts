@@ -907,6 +907,7 @@ export async function registerPluginTools(
         }
         registerProjectedTool({
           pluginName: lp.plugin.name,
+          pluginInstallation: Object.freeze({ version: lp.plugin.version, path: lp.path, source: lp.source }),
           description: def.description,
           inputSchema: def.inputSchema,
           capabilities: def.capabilities,

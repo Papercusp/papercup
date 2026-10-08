@@ -7858,7 +7858,8 @@
         "release-fixer",
         "merge-resolver",
         "content-fixer",
-        "judge"
+        "judge",
+        "researcher"
       ],
       "guidance": {
         "when": "Share context or ask. `summary` is the required inbox headline; `body` is detail. A complete active-GOAL owner report (MOVED/COST/OWNER-WALLED/KILLED) must fit in one body of at most 600 characters; longer ones are refused unsent (see returns). Directed action/answer needs `forYouBecause: { relation, ref?, note? }` on a body section; broadcasts, human, ack and none are exempt. `why` is { goalRef, note? } — a goal REF, never prose. `basedOn` is OUTPUT-ONLY, auto-derived — omit it. Waiting? `blockedOn: { kind, ref }` on a section gives a live cleared/pending verdict. SHAPES: `premises` is an array of ref STRINGS; `youMayNotKnow` is [{ ref, provenance }]; `couldNotDetermine` is [{ what, note? }] — objects, never bare strings. ",
@@ -23073,7 +23074,8 @@
         "worker",
         "cup",
         "judge",
-        "release-fixer"
+        "release-fixer",
+        "researcher"
       ],
       "guidance": {
         "when": "You have an exact slug and need the plan contents. In operator/superuser scope, the slug auto-resolves its owning harness within the caller's workspace; pass a concrete `harness` (for example, 'papercusp') when you need to constrain or disambiguate that lookup. `harness: 'all'` is only valid in an unscoped (--all-workspaces) session.",
@@ -24694,7 +24696,9 @@
           "POST"
         ]
       },
-      "description": "Set or clear a plan's `initiative` grouping label — a single free-text frontmatter field that groups related plans (surfaced as a filter facet in the plans list). Surgical frontmatter edit (other keys preserved), inside the plan lock, records a revision + refreshes the plans list. Pass `initiative: null` to clear. Refuses a legacy plan — convert itrite"
+      "description": "Set or clear a plan's `initiative` grouping label — a single free-text frontmatter field that groups related plans (surfaced as a filter facet in the plans list). Surgical frontmatter edit (other keys preserved), inside the plan lock, records a revision + refreshes the plans list. Pass `initiative: null` to clear. Refuses a legacy plan — convert it with plans:set-frontmatter first.",
+      "capabilities": [
+        "plans:write"
       ],
       "agentRoles": [
         "scoper",
@@ -34409,7 +34413,8 @@
         "doc-steward",
         "release-fixer",
         "merge-resolver",
-        "content-fixer"
+        "content-fixer",
+        "researcher"
       ],
       "profile": "engineer",
       "guidance": {
@@ -34645,7 +34650,8 @@
         "release-fixer",
         "merge-resolver",
         "content-fixer",
-        "judge"
+        "judge",
+        "researcher"
       ],
       "profile": "engineer",
       "guidance": {
@@ -34879,7 +34885,8 @@
         "release-fixer",
         "merge-resolver",
         "content-fixer",
-        "judge"
+        "judge",
+        "researcher"
       ],
       "profile": "engineer",
       "guidance": {
@@ -36021,11 +36028,6 @@
         "when": "As the resolver behind state:read { cell:\"workspace.workScope\" }, or when you only need to READ whether the workspace is confined to an allow-list of harnesses.",
         "notWhen": "To set or clear the policy — that is workspace:work_scope { op:\"set\"|\"clear\" }.",
         "chaining": "state:read { cell:\"workspace.workScope\" } is the ordinary entry point; workspace:work_scope { op:\"get\" } returns the same policy with the full ledger ring."
-      }
-    }
-  ]
-}
-\" } returns the same policy with the full ledger ring."
       }
     }
   ]

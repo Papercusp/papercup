@@ -205,8 +205,8 @@ export interface AdmissionFailOpenActionDeps {
    * Settle stranded admission_runs rows (WI-10004726, plan
    * work-queue-bulk-cleanup-remediation-2026-10-01 P-008). It runs here because the
    * fail-open tick is the one admission action that fires every tick, workspace-wide,
-   * independent of model spend. The bulk-stage lease reaper fires only when a stage
-   * starts, and none started between 2026-09-05 and 2026-10-01.
+   * independent of model spend. It also expires bulk-stage leases that stopped
+   * renewing; active leases remain available for their stage-resumption path.
    */
   reap: (ctx: SystemActionCtx, reaperRunId: string) => Promise<ReapedAdmissionRun[]>;
   alarm: (ctx: SystemActionCtx, result: FailOpenRunResult) => Promise<void>;

@@ -9,18 +9,17 @@
  * `promoter-tick` rows (oldest 2026-09-08) and one `durable-park-audit` row
  * (2026-09-15) were still 'running'.
  *
- * `bulk-stage` / `census` already have a lease reaper
- * (`reapStaleRunningAdmissionRuns` in work-items-admission-bulk-dedup.ts), but it
- * fires only when a bulk stage STARTS — and no stage had started since
- * 2026-09-05, so it never reached these rows. This reaper therefore runs from
- * the fail-open tick, the one admission action that fires every tick,
- * workspace-wide, independent of model spend.
+ * `bulk-stage` rows have a lease reaper at the next bulk run start. Because
+ * bulk runs are on demand, this workspace-wide fail-open tick also reaps an
+ * expired stage lease after its deadline. A live, renewed lease remains
+ * resumable. Census rows retain their run-start reaper.
  *
  * Each reapable kind has its own threshold, set well above that kind's measured
  * worst legitimate latency (2026-10-01, papercusp: promoter-tick p99 981s;
  * durable-park-audit max 15s; delta-sweep max 3135s; daily-digest max 1326s).
- * `bulk-stage` and `census` are deliberately NOT reapable here: they legitimately
- * resume an expired lease across ticks, and the lease reaper owns them.
+ * `bulk-stage` uses the separate lease-aware branch below instead of the
+ * per-kind start-age thresholds. `census` remains excluded because the bulk
+ * run-start reaper owns its resumable state.
  */
 import type { OrgSql } from './work-items';
 
@@ -34,6 +33,8 @@ export const REAPABLE_ADMISSION_RUN_KINDS = [
 export type ReapableAdmissionRunKind = (typeof REAPABLE_ADMISSION_RUN_KINDS)[number];
 
 const MINUTE_MS = 60_000;
+/** Must match the lease duration used by the bulk-stage writer. */
+export const DEFAULT_BULK_STAGE_LEASE_MS = 2 * 60 * 60_000;
 
 /** A run still 'running' this long after it started is stranded, per kind. */
 export const ADMISSION_RUN_STRANDED_AFTER_MS: Readonly<Record<ReapableAdmissionRunKind, number>> = {
@@ -102,7 +103,44 @@ export async function reapStrandedAdmissionRuns(
        AND ar.started_at < ${nowIso}::timestamptz - (k.ms::bigint * interval '1 millisecond')
        AND ar.id <> ${input.reaperRunId}
      RETURNING ar.id, ar.harness_slug, ar.run_kind, ar.started_at`;
-  return rows
+  const expiredStages = await sql<Array<{ id: string; harness_slug: string; run_kind: string; started_at: Date | string }>>`
+    UPDATE harness_shared.admission_runs ar
+       SET finished_at = clock_timestamp(),
+           detail = jsonb_set(
+             jsonb_set(
+               COALESCE(ar.detail, '{}'::jsonb) || jsonb_build_object(
+                 'status', 'failed',
+                 'error', 'reaped: bulk-stage lease expired with no finish (owner lease was not renewed)',
+                 'reapedBy', ${input.reaperRunId}::text,
+                 'reapedAt', ${nowIso}::text,
+                 'strandedAfterMs', ${DEFAULT_BULK_STAGE_LEASE_MS}::bigint
+               ),
+               '{lease}',
+               COALESCE(ar.detail->'lease', '{}'::jsonb) || jsonb_build_object(
+                 'invalidatedOwnerId', ar.detail->'lease'->'ownerId',
+                 'ownerId', NULL::text,
+                 'invalidatedAt', ${nowIso}::text
+               ),
+               true
+             ),
+             '{outcome}',
+             COALESCE(ar.detail->'outcome', '{}'::jsonb)
+               || jsonb_build_object('failureReason', ${STRANDED_ADMISSION_RUN_REASON}::text),
+             true
+           )
+     WHERE ar.workspace_id = ${input.workspaceId}
+       AND ar.run_kind = 'bulk-stage'
+       AND ar.finished_at IS NULL
+       AND ar.detail->>'status' = 'running'
+       AND ar.id <> ${input.reaperRunId}
+       AND CASE
+         WHEN jsonb_typeof(ar.detail->'lease'->'expiresAt') = 'number'
+           THEN (ar.detail->'lease'->>'expiresAt')::double precision <= ${input.nowMs}::double precision
+         ELSE ar.started_at < ${nowIso}::timestamptz
+           - (${DEFAULT_BULK_STAGE_LEASE_MS}::bigint * interval '1 millisecond')
+       END
+     RETURNING ar.id, ar.harness_slug, ar.run_kind, ar.started_at`;
+  return [...rows, ...expiredStages]
     .map((row) => ({
       id: row.id,
       harnessSlug: row.harness_slug,

@@ -6,6 +6,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 import {
   ADMISSION_RUN_STRANDED_AFTER_MS,
+  DEFAULT_BULK_STAGE_LEASE_MS,
   reapStrandedAdmissionRuns,
   STRANDED_ADMISSION_RUN_REASON,
 } from './admission-runs-reaper';
@@ -48,9 +49,17 @@ async function seed(row: {
   harness?: string;
   finished?: boolean;
   status?: string;
+  lease?: { ownerId: string; expiresAtMs: number };
 }): Promise<void> {
   const startedAt = new Date(NOW_MS - row.ageMin * MIN).toISOString();
-  const detail = { status: row.status ?? 'running', mode: 'promoter', outcome: { unit: 'items', failureReason: null } };
+  const detail = {
+    status: row.status ?? 'running',
+    mode: 'promoter',
+    outcome: { unit: 'items', failureReason: null },
+    ...(row.lease
+      ? { lease: { ownerId: row.lease.ownerId, expiresAt: row.lease.expiresAtMs } }
+      : {}),
+  };
   await db.sql`
     INSERT INTO harness_shared.admission_runs (id, workspace_id, harness_slug, run_kind, started_at, finished_at, detail)
     VALUES (${row.id}, ${row.workspace ?? WS}, ${row.harness ?? 'papercusp'}, ${row.kind}, ${startedAt}::timestamptz,
@@ -92,13 +101,60 @@ describe('reapStrandedAdmissionRuns', () => {
     expect(String(row.detail.error)).toContain('promoter-tick stranded threshold');
   });
 
+  it('reaps only expired bulk-stage leases on the recurring tick and fences their old owner', async () => {
+    await seed({
+      id: 'stage-expired',
+      kind: 'bulk-stage',
+      ageMin: 10,
+      lease: { ownerId: 'workflow-dead', expiresAtMs: NOW_MS - 1 },
+    });
+    await seed({
+      id: 'stage-live-old-start',
+      kind: 'bulk-stage',
+      ageMin: 10 * 24 * 60,
+      lease: { ownerId: 'workflow-live', expiresAtMs: NOW_MS + 60 * MIN },
+    });
+    await seed({ id: 'stage-legacy-stranded', kind: 'bulk-stage', ageMin: 121 });
+    await seed({ id: 'census-old', kind: 'census', ageMin: 10 * 24 * 60 });
+
+    const reaped = await reapStrandedAdmissionRuns(db.sql as unknown as OrgSql, {
+      workspaceId: WS,
+      reaperRunId: 'fail-open-reaper',
+      nowMs: NOW_MS,
+    });
+
+    expect(reaped.map((row) => row.id).sort()).toEqual(['stage-expired', 'stage-legacy-stranded']);
+    const expired = await readRow('stage-expired');
+    expect(expired.finished_at).not.toBeNull();
+    expect(expired.detail.status).toBe('failed');
+    expect(expired.detail.outcome.failureReason).toBe(STRANDED_ADMISSION_RUN_REASON);
+    expect(expired.detail.lease).toMatchObject({
+      ownerId: null,
+      invalidatedOwnerId: 'workflow-dead',
+      invalidatedAt: new Date(NOW_MS).toISOString(),
+    });
+    expect(expired.detail.reapedBy).toBe('fail-open-reaper');
+    expect(expired.detail.strandedAfterMs).toBe(DEFAULT_BULK_STAGE_LEASE_MS);
+
+    const live = await readRow('stage-live-old-start');
+    expect(live.finished_at).toBeNull();
+    expect(live.detail.status).toBe('running');
+    expect(live.detail.lease.ownerId).toBe('workflow-live');
+    expect((await readRow('census-old')).finished_at).toBeNull();
+  });
+
   it('leaves live, finished, lease-owned, foreign-workspace and self rows untouched', async () => {
     await seed({ id: 'tick-live', kind: 'promoter-tick', ageMin: 119 });
     await seed({ id: 'park-live', kind: 'durable-park-audit', ageMin: 59 });
     await seed({ id: 'tick-finished', kind: 'promoter-tick', ageMin: 600, finished: true, status: 'complete' });
     await seed({ id: 'tick-status-complete', kind: 'promoter-tick', ageMin: 600, status: 'complete' });
-    // bulk-stage / census resume expired leases; the bulk-dedup lease reaper owns them.
-    await seed({ id: 'stage-old', kind: 'bulk-stage', ageMin: 10 * 24 * 60 });
+    // A live bulk-stage lease remains resumable; census keeps its run-start reaper.
+    await seed({
+      id: 'stage-old',
+      kind: 'bulk-stage',
+      ageMin: 10 * 24 * 60,
+      lease: { ownerId: 'workflow-live', expiresAtMs: NOW_MS + 60 * MIN },
+    });
     await seed({ id: 'census-old', kind: 'census', ageMin: 10 * 24 * 60 });
     await seed({ id: 'tick-foreign', kind: 'promoter-tick', ageMin: 600, workspace: 'other-ws' });
     await seed({ id: 'fail-open-reaper', kind: 'promoter-tick', ageMin: 600 });

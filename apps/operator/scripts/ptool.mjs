@@ -1366,6 +1366,11 @@ export const PTOOL_LIST_TOOLS_TOTAL_TIMEOUT_MS = PTOOL_CONNECT_TIMEOUT_MS;
 // long-running call by passing timeoutMs: 0 to the exported helper.
 export const PTOOL_CALL_TOOL_TIMEOUT_MS = 30_000;
 
+// documents:read permits a bounded summary up to 180s and declares a 190s
+// handler budget. Observe its terminal receipt before the client deadline;
+// local reasoning models can legitimately use most of that allowance.
+const PTOOL_CONTENT_SUMMARY_TIMEOUT_MS = 195_000;
+
 // `fleet:launch-on-plan` opens terminals/processes in waves and then waits for
 // bounded first-turn verification. A five-member visible wave has measured
 // multi-minute completion time under fleet load; keep ptool from abandoning the
@@ -1588,6 +1593,7 @@ export const PTOOL_SCORECARDS_GET_TIMEOUT_MS = PTOOL_FOREGROUND_TOOL_TIMEOUT_MS;
 export const PTOOL_HEARTBEAT_RESOURCE_TIMEOUT_MS = 60_000;
 
 const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
+  ['documents:read', PTOOL_CONTENT_SUMMARY_TIMEOUT_MS],
   ['fleet:launch-on-plan', PTOOL_FLEET_LAUNCH_ON_PLAN_TIMEOUT_MS],
   ['fleet:respawn-member', PTOOL_RESPAWN_MEMBER_TIMEOUT_MS],
   ['fleet:require-checkpoint', PTOOL_REQUIRE_CHECKPOINT_TIMEOUT_MS],
