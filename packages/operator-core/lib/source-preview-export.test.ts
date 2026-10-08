@@ -262,7 +262,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     await expect(verifyVerifierSource(dest, receipt, { runtimeArtifacts: true })).rejects.toThrow(`changed ${input}`);
   });
 
-  it.each(['apps/operator-vite/src/routeTree.gen.ts', '.papercusp-pinned-deps', 'libs/generic/sse/dist/index.js'])('never excludes recorded output from source attestation: %s', async input => {
+  it.each(['apps/operator-vite/src/routeTree.gen.ts', '.papercusp-pinned-deps', 'libs/generic/sse/dist/index.js', 'packages/omp-plugin/dist/native-extension.mjs'])('never excludes recorded output from source attestation: %s', async input => {
     const suffix = input.replaceAll('/', '-');
     const fixture = makeSuperproject(join(tmp, `verifier-output-recorded-${suffix}`));
     write(fixture.repo, input, 'recorded route tree');
@@ -287,13 +287,14 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     const receipt = await prepareVerifierSource({ repo: fixture.repo, ref, dest, inputs: [input] });
     write(dest, '.papercusp-pinned-deps', 'immutable dependency receipt');
     write(dest, 'libs/generic/sse/dist/index.js', 'export const source = true;');
+    write(dest, 'packages/omp-plugin/dist/native-extension.mjs', 'export const source = true;');
     await expect(verifyVerifierSource(dest, receipt)).rejects.toThrow('added .papercusp-pinned-deps');
     await expect(verifyVerifierSource(dest, receipt, { runtimeArtifacts: true })).resolves.toEqual(receipt);
     writeFileSync(join(dest, input), 'changed recorded source');
     await expect(verifyVerifierSource(dest, receipt, { runtimeArtifacts: true })).rejects.toThrow(`changed ${input}`);
   });
 
-  it.each(['.papercusp-pinned-deps', 'libs/generic/sse/dist'])('rejects a redirect posing as runtime output: %s', async artifact => {
+  it.each(['.papercusp-pinned-deps', 'libs/generic/sse/dist', 'packages/omp-plugin/dist'])('rejects a redirect posing as runtime output: %s', async artifact => {
     const fixture = makeSuperproject(join(tmp, `verifier-output-link-${artifact.replaceAll('/', '-')}`));
     const input = SHIPPED.find(p => p.startsWith('apps/'))!;
     const dest = join(tmp, `verifier-output-link-export-${artifact.replaceAll('/', '-')}`);
