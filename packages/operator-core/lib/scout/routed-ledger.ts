@@ -359,15 +359,11 @@ export async function propagateWorkItemOutcome(input: {
   const now = Date.now();
   const { sql } = getOrgPg();
   // WI-10007390: the state alone does not decide the idea's fate — a hygiene
-  // `closed` is a rejection, and a winning state with no completion record
-  // proves nothing. Read the same facts the sweep's ref-scoped read uses and
-  // apply the one shared rule, so the eager path and the sweep cannot disagree.
-  const [facts] = await sql<
-    { terminal_owner: string | null; has_completion_evidence: boolean; triage_rejected: boolean }[]
-  >`
+  // `closed` is a rejection. Read the same facts the sweep's ref-scoped read
+  // uses and apply the one shared rule, so the eager path and the sweep cannot
+  // disagree.
+  const [facts] = await sql<{ terminal_owner: string | null; triage_rejected: boolean }[]>`
     SELECT w.terminal_owner,
-           (COALESCE(w.terminal_completion_ref, '') <> ''
-             OR COALESCE(w.payload ? '_completionEvidence', false)) AS has_completion_evidence,
            COALESCE(w.payload #>> '{ideaLifecycle,triageDecision}' = 'reject', false) AS triage_rejected
       FROM harness_shared.work_items w
      WHERE w.feature_id = ${input.workItemId} AND w.workspace_id = ${ws}
@@ -376,7 +372,6 @@ export async function propagateWorkItemOutcome(input: {
     workItemOutcomeTag({
       status: normalizedState,
       terminalOwner: facts?.terminal_owner ?? null,
-      hasCompletionEvidence: facts?.has_completion_evidence ?? false,
       triageRejected: facts?.triage_rejected ?? false,
     }),
   );
@@ -935,15 +930,13 @@ interface WorkItemTerminalRow {
   status: string | null;
   updated_ts: string | null;
   terminal_owner: string | null;
-  has_completion_evidence: boolean;
   triage_rejected: boolean;
 }
 
 /**
  * Map work-item terminal rows to change-feed completion entries through the
  * single {@link workItemOutcomeTag} rule (WI-10007390). A row the rule cannot
- * settle (a winning status with no completion record) emits NO entry, so its
- * idea stays pending instead of being scored on an unproven close.
+ * settle (a live status) emits NO entry, so its idea stays pending.
  */
 export function workItemTerminalEntries(rows: readonly WorkItemTerminalRow[]): ChangeFeedEntry[] {
   const entries: ChangeFeedEntry[] = [];
@@ -951,7 +944,6 @@ export function workItemTerminalEntries(rows: readonly WorkItemTerminalRow[]): C
     const tag = workItemOutcomeTag({
       status: r.status,
       terminalOwner: r.terminal_owner,
-      hasCompletionEvidence: r.has_completion_evidence,
       triageRejected: r.triage_rejected,
     });
     if (tag === null) continue;
@@ -974,9 +966,8 @@ export function workItemTerminalEntries(rows: readonly WorkItemTerminalRow[]): C
  * WI-10007390 — the window-free, ref-scoped work-item terminal read shared by the
  * scout and su-ideate origins. It selects every terminal (win AND loss statuses)
  * for the `wi:` refs this origin routed, plus the facts the outcome rule needs:
- * the terminal owner, whether a completion record exists on EITHER surface
- * (`terminal_completion_ref` or `payload._completionEvidence`), and the idea
- * triage decision. The rule, not this query, decides won / lost / unsettled.
+ * the terminal owner and the idea triage decision. The rule, not this query,
+ * decides won / lost / unsettled.
  */
 async function readRefScopedWorkItemTerminals(
   origin: 'scout' | 'su-ideate',
@@ -986,8 +977,6 @@ async function readRefScopedWorkItemTerminals(
   const ws = opts.workspaceId ?? activeWorkspaceId();
   const rows = await sql<WorkItemTerminalRow[]>`
     SELECT w.feature_id, w.harness_slug, w.title, w.status, w.updated_ts, w.terminal_owner,
-           (COALESCE(w.terminal_completion_ref, '') <> ''
-             OR COALESCE(w.payload ? '_completionEvidence', false)) AS has_completion_evidence,
            COALESCE(w.payload #>> '{ideaLifecycle,triageDecision}' = 'reject', false) AS triage_rejected
       FROM harness_shared.work_items w
      WHERE w.status = ANY(${[...CHANGE_FEED_COMPLETION_STATUSES, ...WORK_ITEM_LOSS_STATUSES]}::text[])

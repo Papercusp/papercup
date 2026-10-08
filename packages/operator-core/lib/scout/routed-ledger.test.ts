@@ -16,7 +16,7 @@ const h = vi.hoisted(() => ({
   /** Rows the existence SELECT yields. */
   selectRows: [] as Array<{ idea_id: string }>,
   /** Rows the work-item terminal-facts SELECT yields (WI-10007390). */
-  factsRows: [] as Array<{ terminal_owner: string | null; has_completion_evidence: boolean; triage_rejected: boolean }>,
+  factsRows: [] as Array<{ terminal_owner: string | null; triage_rejected: boolean }>,
   queries: [] as string[],
   /** Interpolated values per query, index-aligned with `queries`. */
   values: [] as unknown[][],
@@ -123,7 +123,7 @@ describe('hiveFromPatternRefs (D-003 target-hive derivation, P-002)', () => {
 describe('propagateWorkItemOutcome (EI-22414305411561114)', () => {
   it('writes a winning outcome for a terminal success and scopes the routed ref', async () => {
     h.updateRows = [{ idea_id: 'idea-1' }];
-    h.factsRows = [{ terminal_owner: 'su-x', has_completion_evidence: true, triage_rejected: false }];
+    h.factsRows = [{ terminal_owner: 'su-x', triage_rejected: false }];
 
     await expect(
       propagateWorkItemOutcome({
@@ -170,37 +170,24 @@ describe('propagateWorkItemOutcome (EI-22414305411561114)', () => {
 
   it('WI-10007390: a hygiene close is a LOSS even though `closed` is a winning status', async () => {
     h.updateRows = [{ idea_id: 'idea-h' }];
-    h.factsRows = [{ terminal_owner: 'improvement-hygiene', has_completion_evidence: false, triage_rejected: true }];
+    h.factsRows = [{ terminal_owner: 'improvement-hygiene', triage_rejected: true }];
 
     await expect(
       propagateWorkItemOutcome({ workItemId: 'EI-h', state: 'closed', workspaceId: 'ws-1' }),
     ).resolves.toBe(1);
     expect(writtenOutcome()).toBe('lost');
+    const factsQuery = h.queries.find((q) => q.includes('SELECT w.terminal_owner')) ?? '';
+    expect(factsQuery).toContain('triageDecision');
   });
 
-  it('WI-10007390: a done close counts as a win when its evidence is only on payload._completionEvidence', async () => {
+  it('WI-10007390: a done close with no terminal pair is still a win', async () => {
     h.updateRows = [{ idea_id: 'idea-d' }];
-    // has_completion_evidence is computed over BOTH surfaces in SQL; pin that the
-    // query reads the payload surface, not only terminal_completion_ref.
-    h.factsRows = [{ terminal_owner: 'su-x', has_completion_evidence: true, triage_rejected: false }];
+    h.factsRows = [{ terminal_owner: null, triage_rejected: false }];
 
     await expect(
       propagateWorkItemOutcome({ workItemId: 'EI-d', state: 'done', workspaceId: 'ws-1' }),
     ).resolves.toBe(1);
     expect(writtenOutcome()).toBe('won');
-    const factsQuery = h.queries.find((q) => q.includes('SELECT w.terminal_owner')) ?? '';
-    expect(factsQuery).toContain('_completionEvidence');
-    expect(factsQuery).toContain('terminal_completion_ref');
-  });
-
-  it('WI-10007390: a winning state with no completion record settles nothing', async () => {
-    h.updateRows = [{ idea_id: 'idea-n' }];
-    h.factsRows = [{ terminal_owner: null, has_completion_evidence: false, triage_rejected: false }];
-
-    await expect(
-      propagateWorkItemOutcome({ workItemId: 'EI-n', state: 'done', workspaceId: 'ws-1' }),
-    ).resolves.toBe(0);
-    expect(writtenOutcome()).toBeUndefined();
   });
 });
 
@@ -212,22 +199,23 @@ describe('workItemTerminalEntries (WI-10007390)', () => {
     status: 'done',
     updated_ts: '1790000000000',
     terminal_owner: 'su-x',
-    has_completion_evidence: true,
     triage_rejected: false,
     ...over,
   });
 
-  it('tags each terminal by the shared rule and drops unprovable wins', () => {
+  it('tags each terminal by the shared rule and skips live rows', () => {
     const entries = workItemTerminalEntries([
       row({ feature_id: 'EI-won' }),
-      row({ feature_id: 'EI-hyg', status: 'closed', terminal_owner: 'improvement-hygiene', has_completion_evidence: false }),
-      row({ feature_id: 'EI-drop', status: 'dropped', has_completion_evidence: false }),
-      row({ feature_id: 'EI-bare', status: 'done', terminal_owner: null, has_completion_evidence: false }),
+      row({ feature_id: 'EI-hyg', status: 'closed', terminal_owner: 'improvement-hygiene' }),
+      row({ feature_id: 'EI-drop', status: 'dropped' }),
+      row({ feature_id: 'EI-bare', status: 'done', terminal_owner: null }),
+      row({ feature_id: 'EI-live', status: 'open' }),
     ]);
     expect(entries.map((e) => [e.ref, e.detail])).toEqual([
       ['wi:EI-won', 'Status: done'],
       ['wi:EI-hyg', 'Status: rejected'],
       ['wi:EI-drop', 'Status: dropped'],
+      ['wi:EI-bare', 'Status: done'],
     ]);
   });
 });

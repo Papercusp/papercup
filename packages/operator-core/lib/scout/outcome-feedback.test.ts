@@ -27,27 +27,27 @@ import {
 
 describe('workItemOutcomeTag (WI-10007390)', () => {
   const tag = (status: string, over: Partial<Parameters<typeof workItemOutcomeTag>[0]> = {}) =>
-    workItemOutcomeTag({ status, terminalOwner: 'su-x', hasCompletionEvidence: true, triageRejected: false, ...over });
+    workItemOutcomeTag({ status, terminalOwner: 'su-x', triageRejected: false, ...over });
 
-  it('a winning status with a completion record on either surface is a win', () => {
+  it('a winning status is a win, with or without a terminal owner (status is the fate)', () => {
     for (const s of ['done', 'passed', 'resolved', 'closed']) {
       expect(outcomeOfWorkItemTag(tag(s))).toBe('won');
     }
+    expect(outcomeOfWorkItemTag(tag('Done', { terminalOwner: null }))).toBe('won');
   });
 
   it('a hygiene close or a triage reject is a loss, though `closed` is a winning status', () => {
-    expect(tag('closed', { terminalOwner: 'improvement-hygiene', hasCompletionEvidence: false })).toBe('rejected');
+    expect(tag('closed', { terminalOwner: 'improvement-hygiene' })).toBe('rejected');
     expect(tag('done', { triageRejected: true })).toBe('rejected');
     expect(outcomeOfWorkItemTag('rejected')).toBe('lost');
   });
 
-  it('dropped / deprecated are losses with or without a completion record', () => {
-    expect(outcomeOfWorkItemTag(tag('dropped', { hasCompletionEvidence: false }))).toBe('lost');
-    expect(outcomeOfWorkItemTag(tag('deprecated'))).toBe('lost');
+  it('dropped / deprecated are losses', () => {
+    expect(outcomeOfWorkItemTag(tag('dropped'))).toBe('lost');
+    expect(outcomeOfWorkItemTag(tag('deprecated', { terminalOwner: 'improvement-hygiene' }))).toBe('lost');
   });
 
-  it('a winning status with no completion record, or a live status, settles nothing', () => {
-    expect(tag('done', { terminalOwner: null, hasCompletionEvidence: false })).toBeNull();
+  it('a live status settles nothing', () => {
     expect(tag('open')).toBeNull();
     expect(tag('wip')).toBeNull();
     expect(outcomeOfWorkItemTag(null)).toBeNull();

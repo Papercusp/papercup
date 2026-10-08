@@ -350,14 +350,6 @@ function isWorkItemLossTag(tag: string): boolean {
 export interface WorkItemTerminalFacts {
   status: string | null | undefined;
   terminalOwner?: string | null;
-  /**
-   * A completion record exists on EITHER surface. The close routes write
-   * different columns — `work_items:complete` writes
-   * `payload._completionEvidence`, a dropped/administrative close writes
-   * `terminal_completion_ref` — and none writes both, so a read that requires
-   * one surface misses every close made through the other.
-   */
-  hasCompletionEvidence: boolean;
   /** `payload.ideaLifecycle.triageDecision === 'reject'`. */
   triageRejected?: boolean;
 }
@@ -370,21 +362,25 @@ export interface WorkItemTerminalFacts {
  * - a loss status (`dropped` / `deprecated`) → that status (lost);
  * - a winning status closed by the hygiene sweep, or triage-rejected →
  *   {@link WORK_ITEM_REJECTED_TAG} (lost);
- * - a winning status WITH a completion record on either surface → the status (won);
- * - a winning status with no completion record → `null`: nothing proves the
- *   filed work shipped, so the idea is not scored.
+ * - any other winning status → the status (won). The terminal status is the
+ *   idea's fate (su-ideate-learning-substrate P-016); completion-record
+ *   metadata is not required, because the close routes write it to different
+ *   columns (`payload._completionEvidence` vs `terminal_completion_ref`) and
+ *   legacy closes wrote neither;
+ * - a live status → `null` (no entry; the idea stays pending).
  *
  * Before this rule the scout read required `terminal_completion_ref`, which a
  * `work_items:complete` close never writes, so 340 scout ideas on terminal
  * items read pending (205 done, 135 hygiene-closed) and scout recorded 2 wins
- * in total; the su-ideate read required nothing, so hygiene closes counted as wins.
+ * in total; the su-ideate read had no hygiene exception, so 46 hygiene closes
+ * counted as wins.
  */
 export function workItemOutcomeTag(facts: WorkItemTerminalFacts): string | null {
   const status = (facts.status ?? '').trim().toLowerCase();
   if (isWorkItemLossStatus(status)) return status;
   if (!(CHANGE_FEED_COMPLETION_STATUSES as readonly string[]).includes(status)) return null;
   if (facts.terminalOwner === IMPROVEMENT_HYGIENE_OWNER || facts.triageRejected) return WORK_ITEM_REJECTED_TAG;
-  return facts.hasCompletionEvidence ? status : null;
+  return status;
 }
 
 /** The idea outcome a {@link workItemOutcomeTag} result settles, or null when it settles nothing. */
