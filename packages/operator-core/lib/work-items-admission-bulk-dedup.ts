@@ -375,6 +375,9 @@ interface BulkStageMergeReceipt {
   /** Pairs adjudicated by the committed transaction. */
   successful: number;
   uniqueRowsChanged: number;
+  /** Refused endpoints remain unchanged; carried through post-commit recovery.
+   * Optional for receipts written before partial stage progress was supported. */
+  guardRefusals?: AdmissionMergeGuardRefusal[];
   verdicts: Record<string, number>;
   judged: BulkStageJudgeSummary;
 }
@@ -1496,6 +1499,7 @@ async function failBulkStage(
                       outcome,
                       ...(committed ? { failedAfterMergeCommit: true } : {}),
                       ...(guardPersistence ? { guardRefusals: guardPersistence.guardRefusals } : {}),
+                      ...(committed?.guardRefusals?.length ? { guardRefusals: committed.guardRefusals } : {}),
                       ...(cause !== undefined ? { errorCause: serializeBulkErrorCause(cause) } : {}),
                     })}::text::jsonb
      WHERE id = ${runId}
@@ -2559,6 +2563,7 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
       mergeQuality: AdmissionMergeQualityReport,
     ): Promise<{ result: BulkDedupRunResult } | { census: AdmissionCensusRunResult }> => {
       try {
+        const guardRefusals = receipt.guardRefusals ?? [];
         await opts.beforePostStageCensus?.(sql, stageIndex);
         const nextCensus = await runCensus({ ...censusBase, sql, runId: `${stageRunId}-census-after` });
         // WI-10006336: ratchet over census-0's own members, not the live corpus.
@@ -2617,8 +2622,7 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
           reusedBatches: receipt.judged.reusedBatches,
           priorRunDonatedPairs: receipt.judged.priorRunDonatedPairs,
           mergeQuality,
-          // A non-empty refusal set aborts the merge transaction before a receipt exists.
-          guardRefusals: [],
+          guardRefusals,
         };
         const outcome = {
           unit: 'pairs',
@@ -2628,7 +2632,9 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
           unchanged: Math.max(0, receipt.pairs - receipt.successful),
           uniqueRowsChanged: receipt.uniqueRowsChanged,
           failureReason: null,
-          blockedReason: null,
+          blockedReason: guardRefusals.length > 0
+            ? `${guardRefusals.length} guarded endpoint(s) remain unchanged; safe sibling work committed`
+            : null,
         } satisfies AdmissionRunOutcome;
         const finishedAt = now();
         const completedEnvelope: BulkStageEnvelope = {
@@ -2658,7 +2664,7 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
             takeoverCount: stageEnvelope.lease?.takeoverCount ?? 0,
           },
           outcome,
-          guardRefusals: [],
+          guardRefusals,
         };
         // Two ledger writes, one short READ COMMITTED transaction: the
         // conditional UPDATE is the ownership fence for the envelope merge.
@@ -2692,7 +2698,7 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
                      verdicts: receipt.verdicts,
                      ratchet,
                      outcome,
-                     guardRefusals: [],
+                     guardRefusals,
                    })}::text::jsonb
              WHERE id = ${stageRunId}
                AND detail->'lease'->>'ownerId' = ${executionId}
@@ -2968,10 +2974,10 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
             reviewedReadyIds,
             actor: BULK_DEDUP_ACTOR,
           });
-          // A guarded refusal is an intentional no-mutation outcome for the
-          // complete stage. Throwing inside this transaction rolls back any
-          // sibling writes too; failBulkStage records the exact refusal set.
-          if (persistence.guardRefusals.length > 0) {
+          // The shared writer has already excluded unsafe endpoints from its
+          // safePlan. Keep an all-refused stage blocked, while disjoint guarded
+          // work commits with the refusals in its atomic recovery receipt.
+          if (persistence.guardRefusals.length > 0 && persistence.adjudications.length === 0) {
             throw new BulkAdmissionMergeGuardBlockedError(persistence);
           }
           const committedAt = now();
@@ -2988,6 +2994,7 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
             held: persistence.held.length,
             successful: persistence.adjudications.length,
             uniqueRowsChanged: persistence.uniqueRowsChanged,
+            guardRefusals: persistence.guardRefusals,
             verdicts: persistence.adjudications.reduce<Record<string, number>>((acc, row) => {
               acc[row.verdict] = (acc[row.verdict] ?? 0) + 1;
               return acc;
