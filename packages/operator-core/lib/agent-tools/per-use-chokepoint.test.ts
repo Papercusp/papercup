@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
-import { runDispatchStack, type ProjectedTool, type UnifiedToolContext } from '@papercusp/tooldef';
+import { registerProjectedTool, unregisterProjectedToolsForPlugin,
+  runDispatchStack, type ProjectedTool, type UnifiedToolContext } from '@papercusp/tooldef';
 import { admitInstalledPerUseToolTurn, createInstalledPerUseChokepoint, NativeInstalledPerUseTurns,
   nativeInstalledPerUseTurns, type AdmittedPerUseToolTurn } from './per-use-chokepoint';
 import { canonicalJson } from '../authority/authority-rpc-envelope';
@@ -292,6 +293,237 @@ describe('host-owned installed tool admission composition', () => {
     const f = fixture(); f.admit.mockResolvedValue({ ok: false, code: 'funding-not-confirmed', detail: 'no authoritative reservation' });
     expect(await admitInstalledPerUseToolTurn(f.input)).toMatchObject({ ok: false, code: 'funding-not-confirmed' });
     expect(f.localTurn).not.toHaveBeenCalled();
+  });
+
+  function lifecycleFixture() {
+    const f = fixture(), registry = new NativeInstalledPerUseTurns();
+    const identity = { ok: true as const, bindNativeTurn: vi.fn(async (_id: string) => {}),
+      observeToolCall: vi.fn(async () => {}), complete: vi.fn(async () => {}), reconcile: vi.fn(async () => {}) };
+    const admitIdentity = vi.fn(async () => identity);
+    const complete = vi.fn(async (_workspace: string, _id: string, _turn: LocalMeteredTurn, _time: number): Promise<FundedToolTurnResult> =>
+      ({ ok: true, turn: { ...(await f.admit.mock.results[0]!.value as Extract<FundedToolTurnResult, { ok: true }>).turn, state: 'settled' } }));
+    const { host: _host, context: _context, ...installation } = f.input;
+    const plan = { context: { principalId: 'target-agent', advSessionId: 7, mcpServer: 'papercusp-su',
+      nativeTools: { paid_run: 'paid.run' } }, host: { ...f.input.host, complete }, installations: [installation] };
+    const resolvePlan = vi.fn(async () => plan), recordFailure = vi.fn(async () => {});
+    const lifecycle = registry.nativeLifecycle({ identityLifecycle: { admit: admitIdentity }, resolvePlan, recordFailure, nowMs: () => 1_000 });
+    const context = { workspaceId: 'workspace', ownerId: 'authenticated-owner', nativeSessionId: 'native-session', ownerTurnId: 'owner-turn' };
+    const fp = (value: string) => createHash('sha256').update(value).digest('hex');
+    const requestContext = ctx();
+    Object.assign(requestContext, { advSessionId: 7, uiClientId: context.ownerId,
+      requestOrigin: { transport: 'mcp', nativeSession: { carrier: 'meta:threadId', binding: 'bound',
+        valueFingerprint: fp(context.nativeSessionId), callIdFingerprint: fp('native-call'), candidateAdvSessionId: 7 } } });
+    const aroundInvoke = createInstalledPerUseChokepoint({ readProvenance: async () => provenance,
+      resolveAdmittedTurn: request => registry.resolve(request) });
+    const observation = { nativeTurnId: 'native-turn', callId: 'native-call', server: 'papercusp-su', tool: 'paid_run' };
+    const closure = { nativeTurnId: 'native-turn', status: 'completed', completedAtMs: 1_000 };
+    return { ...f, registry, identity, admitIdentity, complete, plan, resolvePlan, recordFailure, lifecycle,
+      context, requestContext, aroundInvoke, observation, closure };
+  }
+
+  function catalogFixture() {
+    const f = lifecycleFixture();
+    const catalog = [tool()];
+    const selected = { context: structuredClone(f.plan.context), host: f.plan.host, toolNames: ['paid.run'] };
+    const resolveContext = vi.fn(async () => selected);
+    const { installation: _installation, readProvenance: _read, host: _host, context: _context, ...capability } = f.input;
+    const resolveInstallation = vi.fn(async () => capability);
+    const readTools = vi.fn(() => catalog);
+    const deps = { identityLifecycle: { admit: f.admitIdentity }, resolveContext, resolveInstallation,
+      readTools, readProvenance: f.readProvenance, recordFailure: f.recordFailure, nowMs: () => 1_000 };
+    const lifecycle = f.registry.nativeLifecycleFromCatalog(deps);
+    return { ...f, selected, catalog, resolveContext, resolveInstallation, readTools, deps, lifecycle };
+  }
+
+  it('supplies one funding admission for several exact loaded targets of the same installation', async () => {
+    const f = catalogFixture();
+    f.catalog.push({ ...tool(), expose: { mcp: { name: 'paid.other' } } });
+    f.selected.toolNames.push('paid.other');
+    const lease = await f.lifecycle.admit(f.context);
+    if (!lease.ok) throw new Error(lease.message);
+    expect(f.readProvenance).toHaveBeenCalledExactlyOnceWith(f.input.installation);
+    expect(f.resolveInstallation).toHaveBeenCalledExactlyOnceWith({ context: f.context,
+      installation: f.input.installation, provenance });
+    expect(f.admit).toHaveBeenCalledOnce();
+    await lease.bindNativeTurn('native-turn'); await lease.observeToolCall!(f.observation);
+    const target = tool();
+    expect((await execute(target, f.aroundInvoke, {}, f.requestContext)).result?.isError).not.toBe(true);
+    expect(target.fn).toHaveBeenCalledOnce();
+    await lease.complete(f.closure);
+  });
+
+  it('uses the actual production projected registry when no catalog reader is supplied', async () => {
+    const f = catalogFixture(), target = tool();
+    registerProjectedTool(target);
+    try {
+      const { readTools: _reader, ...deps } = f.deps;
+      const lease = await f.registry.nativeLifecycleFromCatalog(deps).admit(f.context);
+      if (!lease.ok) throw new Error(lease.message);
+      expect(f.readTools).not.toHaveBeenCalled(); expect(f.admit).toHaveBeenCalledOnce();
+      await lease.reconcile({ phase: 'delivery', message: 'test withdrawal' });
+    } finally { unregisterProjectedToolsForPlugin(provenance.name); }
+  });
+
+  it.each(['missing-target', 'duplicate-target', 'conflicting-installation', 'escaping-map', 'wrong-provenance']) (
+    'refuses %s before resolving financial capabilities or reserving', async kind => {
+      const f = catalogFixture();
+      if (kind === 'missing-target') f.selected.toolNames[0] = 'missing.tool';
+      if (kind === 'duplicate-target') f.selected.toolNames.push('paid.run');
+      if (kind === 'conflicting-installation') {
+        f.catalog.push({ ...tool(), pluginInstallation: { ...tool().pluginInstallation!, path: '/shadow/plugin' },
+          expose: { mcp: { name: 'paid.other' } } });
+        f.selected.toolNames.push('paid.other');
+      }
+      if (kind === 'escaping-map') f.selected.context.nativeTools.paid_run = 'missing.tool';
+      if (kind === 'wrong-provenance') f.readProvenance.mockResolvedValue({ ...provenance, version: 'other' });
+      expect(await f.lifecycle.admit(f.context)).toMatchObject({ ok: false, code: 'native-installed-admission-failed' });
+      expect(f.resolveInstallation).not.toHaveBeenCalled(); expect(f.admit).not.toHaveBeenCalled();
+      expect(f.identity.reconcile).toHaveBeenCalledOnce(); expect(f.recordFailure).toHaveBeenCalledOnce();
+    });
+
+  it('retains a snapshot of loaded installation and verified terms across asynchronous financial resolution', async () => {
+    const f = catalogFixture();
+    f.resolveInstallation.mockImplementation(async () => {
+      Object.assign(f.catalog[0]!.pluginInstallation!, { path: '/changed', version: 'other' });
+      f.selected.context.nativeTools.paid_run = 'other.tool';
+      return { payerTransport: f.input.payerTransport, resolvePayer: f.input.resolvePayer, resolveFunding: f.input.resolveFunding };
+    });
+    const lease = await f.lifecycle.admit(f.context);
+    if (!lease.ok) throw new Error(lease.message);
+    expect(f.admit.mock.calls[0]![0].offer.skuRef).toBe(provenance.listing.skuRef);
+    await lease.bindNativeTurn('native-turn'); await lease.observeToolCall!(f.observation);
+    const target = tool();
+    expect((await execute(target, f.aroundInvoke, {}, f.requestContext)).result?.isError).not.toBe(true);
+    expect(target.fn).toHaveBeenCalledOnce(); await lease.complete(f.closure);
+  });
+
+  it.each(['completion', 'reconciliation'] as const)(
+    'admits a hosted-verified free installation without reserves and withdraws it on %s', async phase => {
+      const f = catalogFixture(), free = { ...provenance, listing: { ...provenance.listing, priceModel: 'free' as const } };
+      f.readProvenance.mockResolvedValue(free);
+      const aroundInvoke = createInstalledPerUseChokepoint({ readProvenance: async () => free,
+        resolveAdmittedTurn: request => f.registry.resolve(request) });
+      const lease = await f.lifecycle.admit(f.context);
+      if (!lease.ok) throw new Error(lease.message);
+      expect(f.resolveInstallation).not.toHaveBeenCalled(); expect(f.admit).not.toHaveBeenCalled();
+      await lease.bindNativeTurn('native-turn'); await lease.observeToolCall!(f.observation);
+      const target = tool();
+      expect((await execute(target, aroundInvoke, {}, f.requestContext)).result?.isError).not.toBe(true);
+      expect(target.fn).toHaveBeenCalledOnce();
+      expect((await execute(target, aroundInvoke, {}, f.requestContext)).result?.isError).toBe(true);
+      if (phase === 'completion') await lease.complete(f.closure);
+      else await lease.reconcile({ phase: 'delivery', message: 'withdraw free admission' });
+      expect(f.complete).not.toHaveBeenCalled();
+      expect((await execute(target, aroundInvoke, {}, f.requestContext)).result?.isError).toBe(true);
+      expect(target.fn).toHaveBeenCalledOnce();
+    });
+
+  it('does not treat an unreceipted loaded plugin as a hosted free admission', async () => {
+    const f = catalogFixture(); f.readProvenance.mockResolvedValue(null as never);
+    expect(await f.lifecycle.admit(f.context)).toBe(f.identity);
+    expect(f.resolveInstallation).not.toHaveBeenCalled(); expect(f.admit).not.toHaveBeenCalled();
+  });
+
+  it('keeps identity refusal ahead of the loaded catalog and financial supplier', async () => {
+    const f = catalogFixture();
+    f.admitIdentity.mockResolvedValue({ ok: false, code: 'identity-required', message: 'identity refusal', retryable: false } as never);
+    expect(await f.lifecycle.admit(f.context)).toMatchObject({ ok: false, code: 'identity-required' });
+    expect(f.resolveContext).not.toHaveBeenCalled(); expect(f.readTools).not.toHaveBeenCalled();
+    expect(f.resolveInstallation).not.toHaveBeenCalled(); expect(f.admit).not.toHaveBeenCalled();
+  });
+
+  it('funds installed tools before publishing lookup and binds/settles the exact original native lifecycle', async () => {
+    const f = lifecycleFixture(), lease = await f.lifecycle.admit(f.context);
+    if (!lease.ok) throw new Error(lease.message);
+    expect(f.admitIdentity).toHaveBeenCalledWith(f.context);
+    expect(f.admit).toHaveBeenCalledOnce();
+    expect(f.admit.mock.calls[0]![0]).toMatchObject({ ownerId: f.context.ownerId,
+      executionId: f.context.nativeSessionId, admissionId: f.context.ownerTurnId });
+    const target = tool();
+    expect((await execute(target, f.aroundInvoke, {}, f.requestContext)).result?.isError).toBe(true);
+    await lease.bindNativeTurn('native-turn'); await lease.observeToolCall!(f.observation);
+    expect((await execute(target, f.aroundInvoke, {}, f.requestContext)).result?.isError).not.toBe(true);
+    await lease.complete(f.closure); await lease.complete(f.closure);
+    expect(f.complete).toHaveBeenCalledExactlyOnceWith('workspace', 'host-turn', f.localTurn(), 1_000);
+    expect(f.identity.complete).toHaveBeenCalledExactlyOnceWith(f.closure);
+    expect(target.fn).toHaveBeenCalledOnce(); expect(f.recordFailure).not.toHaveBeenCalled();
+  });
+
+  it('preserves an identity refusal before resolving or funding installed tools', async () => {
+    const f = lifecycleFixture();
+    const refused = { ok: false as const, code: 'identity-native-billing-unsupported', message: 'unproven cost', retryable: false };
+    f.admitIdentity.mockResolvedValueOnce(refused as never);
+    expect(await f.lifecycle.admit(f.context)).toBe(refused);
+    expect(f.resolvePlan).not.toHaveBeenCalled(); expect(f.admit).not.toHaveBeenCalled();
+  });
+
+  it('retains the identity lifecycle when there are no paid installations', async () => {
+    const f = lifecycleFixture(); f.plan.installations = [];
+    expect(await f.lifecycle.admit(f.context)).toBe(f.identity);
+    expect(f.admit).not.toHaveBeenCalled();
+  });
+
+  it('closes only known unserved handles after a later installation admission fails', async () => {
+    const f = lifecycleFixture(); f.plan.installations.push(f.plan.installations[0]!);
+    f.readProvenance.mockResolvedValueOnce(provenance).mockResolvedValueOnce(null as never);
+    expect(await f.lifecycle.admit(f.context)).toMatchObject({ ok: false, code: 'native-installed-admission-failed',
+      message: expect.stringContaining('installation-binding-required') });
+    expect(f.complete).toHaveBeenCalledExactlyOnceWith('workspace', 'host-turn', f.localTurn(), 1_000);
+    expect(f.identity.reconcile).toHaveBeenCalledOnce();
+    expect(f.recordFailure).toHaveBeenCalledWith({ context: f.context, turnIds: ['host-turn'],
+      phase: 'delivery', message: expect.stringContaining('installation-binding-required') });
+    expect(f.localTurn().snapshot().admissionClosed).toBe(true);
+  });
+
+  it('does not infer a refund for an uncertain reservation without a successful local handle', async () => {
+    const f = lifecycleFixture(); f.admit.mockResolvedValue({ ok: false, code: 'funding-not-confirmed', detail: 'lost reserve response' });
+    expect(await f.lifecycle.admit(f.context)).toMatchObject({ ok: false, message: expect.stringContaining('funding-not-confirmed') });
+    expect(f.complete).not.toHaveBeenCalled(); expect(f.localTurn).not.toHaveBeenCalled();
+    expect(f.recordFailure).toHaveBeenCalledWith({ context: f.context, turnIds: [], phase: 'delivery',
+      message: expect.stringContaining('funding-not-confirmed') });
+  });
+
+  it('elects the native binding before an async write and rejects concurrent changed bindings', async () => {
+    const f = lifecycleFixture(), lease = await f.lifecycle.admit(f.context);
+    if (!lease.ok) throw new Error(lease.message);
+    let release!: () => void;
+    f.identity.bindNativeTurn.mockImplementation(async () => { await new Promise<void>(resolve => { release = resolve; }); });
+    const binding = lease.bindNativeTurn('native-turn');
+    expect(lease.bindNativeTurn('native-turn')).toBe(binding);
+    await expect(lease.bindNativeTurn('other-turn')).rejects.toThrow('original binding');
+    await expect(lease.observeToolCall!(f.observation)).rejects.toThrow('active bound turn');
+    expect(f.identity.bindNativeTurn).toHaveBeenCalledOnce(); release(); await binding;
+    await lease.reconcile({ phase: 'delivery', message: 'delivery uncertain' });
+  });
+
+  it.each(['delivery', 'binding', 'completion'] as const)('withdraws lookup and retains monetary holds on %s reconciliation', async phase => {
+    const f = lifecycleFixture(), lease = await f.lifecycle.admit(f.context);
+    if (!lease.ok) throw new Error(lease.message);
+    await lease.bindNativeTurn('native-turn'); await lease.observeToolCall!(f.observation);
+    const recovery = lease.reconcile({ phase, message: 'uncertain native execution' });
+    const target = tool();
+    expect((await execute(target, f.aroundInvoke, {}, f.requestContext)).result?.isError).toBe(true);
+    await recovery;
+    expect(f.complete).not.toHaveBeenCalled(); expect(target.fn).not.toHaveBeenCalled();
+    expect(f.identity.reconcile).toHaveBeenCalledWith({ phase, message: 'uncertain native execution' });
+    expect(f.recordFailure).toHaveBeenCalledWith({ context: f.context, turnIds: ['host-turn'], phase, message: 'uncertain native execution' });
+  });
+
+  it('withdraws before async completion, shares concurrent closure and retries only the same metadata', async () => {
+    const f = lifecycleFixture(), lease = await f.lifecycle.admit(f.context);
+    if (!lease.ok) throw new Error(lease.message);
+    await lease.bindNativeTurn('native-turn'); await lease.observeToolCall!(f.observation);
+    await expect(lease.complete({ ...f.closure, nativeTurnId: 'wrong' })).rejects.toThrow('original turn');
+    f.complete.mockResolvedValueOnce({ ok: false, code: 'tool-completion-unconfirmed', detail: 'retained hold' });
+    const closing = lease.complete(f.closure);
+    expect(lease.complete(f.closure)).toBe(closing);
+    const target = tool();
+    expect((await execute(target, f.aroundInvoke, {}, f.requestContext)).result?.isError).toBe(true);
+    await expect(closing).rejects.toThrow('recovery remains unconfirmed');
+    expect(f.identity.complete).toHaveBeenCalledOnce();
+    await expect(lease.complete({ ...f.closure, completedAtMs: 1_001 })).rejects.toThrow('original turn');
+    await lease.complete(f.closure);
+    expect(f.complete).toHaveBeenCalledTimes(2); expect(target.fn).not.toHaveBeenCalled();
   });
 });
 

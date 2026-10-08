@@ -1,6 +1,7 @@
 /** P-007 shared target-bound admission. Hosted verification and funding belong
  * to the authenticated turn host; this dispatch path does no hosted IO. */
 import type { DispatchProjectedDeps } from '@papercusp/agent-mcp';
+import { listAllProjectedTools, type ProjectedTool } from '@papercusp/tooldef';
 import { createHash } from 'node:crypto';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { canonicalJson } from '../authority/authority-rpc-envelope';
@@ -11,12 +12,27 @@ import { readInstalledPluginCommerceProvenance } from '../cupboard/install-io';
 import type { FundedToolTurnHost } from '../cupboard/funded-turn-host';
 import type { FundedToolTurnBinding, FundedToolTurnResult } from '../cupboard/funded-tool-turn-store';
 import type { InstalledPluginProvenance } from '../cupboard/types';
-import type { SuCodexTurnAdmission } from '../su-session-usage';
+import type { SuCodexTurnAdmission, SuCodexTurnLifecycle } from '../su-session-usage';
 import { declareMeter, LocalMeteredTurnRefusedError, type LocalMeteredTurn } from '../p2p/metered-invocation';
 
 type Request = Parameters<NonNullable<DispatchProjectedDeps['aroundInvoke']>>[0];
 type FundedInstalledAdmission = { ok: true; admission: AdmittedPerUseToolTurn;
   turnId: string; binding: FundedToolTurnBinding };
+type NativeAdmissionContext = Parameters<SuCodexTurnLifecycle['admit']>[0];
+type InstalledAdmissionInput = Parameters<typeof admitInstalledPerUseToolTurn>[0];
+type NativePlan = {
+  context: Pick<NativeInstalledTurnContext, 'principalId' | 'advSessionId' | 'mcpServer' | 'nativeTools'>;
+  host: Pick<FundedToolTurnHost, 'admit' | 'localTurn' | 'complete'>;
+  installations: readonly Omit<InstalledAdmissionInput, 'host' | 'context'>[];
+  freeAdmissions?: readonly VerifiedFreeToolAdmission[];
+};
+type NativeLifecycleDeps = {
+  identityLifecycle: SuCodexTurnLifecycle;
+  resolvePlan(context: NativeAdmissionContext): Promise<NativePlan>;
+  recordFailure(input: { context: NativeAdmissionContext; turnIds: readonly string[];
+    phase: Parameters<SuCodexTurnAdmission['reconcile']>[0]['phase']; message: string }): Promise<void>;
+  nowMs?: () => number;
+};
 
 /** Host-owned capability from once-per-turn authenticated admission. The host
  * must verify the installed provenance, entitlement and funding, retain durable
@@ -89,19 +105,196 @@ export class NativeInstalledPerUseTurns {
     nativeTurnId: string | null;
     withdrawn: boolean;
     admissions: readonly FundedInstalledAdmission[];
+    freeAdmissions: readonly VerifiedFreeToolAdmission[];
     observations: Map<string, { toolName: string; consumed: boolean }>;
   }>();
 
+  /** Production population supplier over the existing loaded registry. The
+   * authenticated host selects the exact allowed target cohort and financial
+   * capabilities; request arguments cannot add installations to a turn. */
+  nativeLifecycleFromCatalog(deps: Omit<NativeLifecycleDeps, 'resolvePlan'> & {
+    resolveContext(context: NativeAdmissionContext): Promise<Pick<NativePlan, 'context' | 'host'> & {
+      toolNames: readonly string[];
+    }>;
+    resolveInstallation(input: { context: NativeAdmissionContext;
+      installation: InstalledAdmissionInput['installation']; provenance: InstalledPluginProvenance;
+    }): Promise<Omit<InstalledAdmissionInput, 'host' | 'context' | 'installation' | 'readProvenance'>>;
+    readTools?: () => readonly ProjectedTool[];
+    readProvenance?: typeof readInstalledPluginCommerceProvenance;
+  }): SuCodexTurnLifecycle {
+    return this.nativeLifecycle({ ...deps, resolvePlan: async context => {
+      const resolved = await deps.resolveContext(structuredClone(context));
+      const boundContext = structuredClone(resolved.context), names = [...resolved.toolNames];
+      if (names.length > 1000 || new Set(names).size !== names.length)
+        throw new Error('Native installed target cohort must be distinct and bounded');
+      // Capture loader-owned fields before the first hosted provenance read.
+      const tools = (deps.readTools ?? listAllProjectedTools)().map(value => ({
+        name: value.expose.mcp?.name, pluginName: value.pluginName,
+        installation: value.pluginInstallation && { ...value.pluginInstallation },
+      }));
+      const selected = names.map(name => {
+        const matches = tools.filter(value => value.name === name);
+        if (matches.length !== 1) throw new Error('Native target is not an exact current loaded tool: ' + name);
+        return matches[0]!;
+      });
+      for (const target of Object.values(boundContext.nativeTools)) {
+        const matches = tools.filter(value => value.name === target);
+        if (matches.length !== 1 || (matches[0]!.installation && !names.includes(target)))
+          throw new Error('Native tool mapping escapes the admitted loaded target cohort');
+      }
+      const population = new Map<string, InstalledAdmissionInput['installation']>();
+      for (const value of selected) {
+        if (!value.installation) continue;
+        const installation = { name: value.pluginName, version: value.installation.version, path: value.installation.path };
+        const previous = population.get(installation.name);
+        if (previous && canonicalJson(previous) !== canonicalJson(installation))
+          throw new Error('Native target cohort contains conflicting loaded installations');
+        population.set(installation.name, installation);
+      }
+      const installations: NativePlan['installations'][number][] = [], freeAdmissions: VerifiedFreeToolAdmission[] = [];
+      for (const installation of population.values()) {
+        const loaded = await (deps.readProvenance ?? readInstalledPluginCommerceProvenance)(structuredClone(installation));
+        if (!loaded) continue; // Non-Cupboard installations retain the existing dispatch path.
+        const provenance = structuredClone(loaded);
+        if (provenance.name !== installation.name || provenance.version !== installation.version)
+          throw new Error('Hosted provenance differs from the exact loaded installation');
+        if (provenance.listing.priceModel === 'free') {
+          freeAdmissions.push({ kind: 'free', workspaceId: context.workspaceId,
+            principalId: boundContext.principalId, provenance });
+          continue;
+        }
+        if (provenance.listing.priceModel !== 'per-use')
+          throw new Error('Installed pricing requires a supported native admission');
+        const capability = await deps.resolveInstallation({ context: structuredClone(context),
+          installation: structuredClone(installation), provenance: structuredClone(provenance) });
+        installations.push({ ...capability, installation: structuredClone(installation),
+          readProvenance: async requested => {
+            if (canonicalJson(requested) !== canonicalJson(installation))
+              throw new Error('Native funding requested another loaded installation');
+            return structuredClone(provenance);
+          } });
+      }
+      return { context: boundContext, host: resolved.host, installations, freeAdmissions };
+    } });
+  }
+
+  /** Trusted host composition. Resolve and fund the exact installed population
+   * before native delivery. The identity lifecycle is required because supplying
+   * this capability replaces the engine's default identity admission gate. */
+  nativeLifecycle(deps: NativeLifecycleDeps): SuCodexTurnLifecycle {
+    return { admit: async rawContext => {
+      const context = structuredClone(rawContext);
+      const identity = await deps.identityLifecycle.admit(structuredClone(context));
+      if (!identity.ok) return identity;
+      const admissions: FundedInstalledAdmission[] = [];
+      let plan: Awaited<ReturnType<typeof deps.resolvePlan>> | undefined;
+      let hooks: ReturnType<NativeInstalledPerUseTurns['register']> | undefined;
+      const recordFailure = (failure: Parameters<SuCodexTurnAdmission['reconcile']>[0]) =>
+        deps.recordFailure({ context: structuredClone(context), turnIds: admissions.map(value => value.turnId), ...failure });
+      try {
+        plan = await deps.resolvePlan(structuredClone(context));
+        if (plan.installations.length === 0 && !plan.freeAdmissions?.length) return identity;
+        if (plan.installations.length + (plan.freeAdmissions?.length ?? 0) > 1000)
+          throw new Error('Native installed population exceeds the admission bound');
+        for (const installation of plan.installations) {
+          const admitted = await admitInstalledPerUseToolTurn({ ...installation, host: plan.host,
+            context: { workspaceId: context.workspaceId, ownerId: context.ownerId, principalId: plan.context.principalId,
+              executionId: context.nativeSessionId, admissionId: context.ownerTurnId } });
+          if (!admitted.ok) throw new Error(admitted.code + ': ' + admitted.detail);
+          admissions.push(admitted);
+        }
+        hooks = this.register({ ...plan.context, ...context, admissions, freeAdmissions: plan.freeAdmissions });
+      } catch (error) {
+        // No lookup was published and native delivery has not begun. Only known
+        // successful local handles can be closed as unserved; an uncertain
+        // reservation remains in the existing durable ledger for recovery.
+        const message = error instanceof Error ? error.message : String(error);
+        const closedAtMs = (deps.nowMs ?? Date.now)();
+        const recovery = await Promise.allSettled([
+          ...admissions.map(async value => {
+            await value.admission.turn.stopAdmission();
+            const result = await plan!.host.complete(context.workspaceId, value.turnId, value.admission.turn, closedAtMs);
+            if (!result.ok) throw new Error(result.code + ': ' + result.detail);
+          }),
+          identity.reconcile({ phase: 'delivery', message }), recordFailure({ phase: 'delivery', message }),
+        ]);
+        const failures = recovery.filter((value): value is PromiseRejectedResult => value.status === 'rejected');
+        return { ok: false, code: 'native-installed-admission-failed', retryable: false,
+          message: message + (failures.length ? '; recovery remains unconfirmed: ' + failures.map(value => String(value.reason)).join('; ') : '') };
+      }
+      const registered = hooks, host = plan.host;
+      let nativeTurnId: string | null = null, bound = false;
+      let binding: Promise<void> | undefined;
+      let closure: Parameters<SuCodexTurnAdmission['complete']>[0] | undefined;
+      let closing: Promise<void> | undefined, completed = false, withdrawn = false;
+      const withdraw = () => {
+        withdrawn = true;
+        return registered.withdraw();
+      };
+      const requireSuccess = async (operations: readonly Promise<unknown>[]) => {
+        const results = await Promise.allSettled(operations);
+        const errors = results.filter((value): value is PromiseRejectedResult => value.status === 'rejected');
+        if (errors.length) throw new AggregateError(errors.map(value => value.reason), 'Native installed monetary recovery remains unconfirmed');
+      };
+      return { ok: true,
+        bindNativeTurn: value => {
+          if (withdrawn || !/^[A-Za-z0-9._:-]{1,256}$/.test(value) || (nativeTurnId !== null && nativeTurnId !== value))
+            return Promise.reject(new Error('Native installed turn retains its original binding'));
+          if (binding) return binding;
+          // Elect the immutable binding before an asynchronous identity write.
+          nativeTurnId = value;
+          binding = (async () => {
+            await identity.bindNativeTurn(value);
+            await registered.bindNativeTurn(value);
+            bound = true;
+          })();
+          return binding;
+        },
+        observeToolCall: async observation => {
+          if (withdrawn || !bound || observation.nativeTurnId !== nativeTurnId)
+            throw new Error('Native installed observation requires its original active bound turn');
+          await identity.observeToolCall?.(observation);
+          await registered.observeToolCall!(observation);
+        },
+        complete: input => {
+          if (!bound || input.nativeTurnId !== nativeTurnId ||
+            !Number.isSafeInteger(input.completedAtMs) || input.completedAtMs < 0 ||
+            (closure && canonicalJson(closure) !== canonicalJson(input))) {
+            return Promise.reject(new Error('Native installed completion retains its original turn and closure'));
+          }
+          if (completed) return Promise.resolve();
+          if (closing) return closing;
+          closure ??= structuredClone(input);
+          // Lookup authority disappears synchronously before the first await.
+          const stopped = withdraw();
+          closing = (async () => {
+            await stopped;
+            await requireSuccess([
+              ...admissions.map(async value => {
+                const result = await host.complete(context.workspaceId, value.turnId, value.admission.turn, closure!.completedAtMs);
+                if (!result.ok) throw new Error(result.code + ': ' + result.detail);
+              }), identity.complete(structuredClone(closure!)),
+            ]);
+            completed = true;
+          })().finally(() => { closing = undefined; });
+          return closing;
+        },
+        reconcile: failure => requireSuccess([withdraw(), identity.reconcile({ ...failure }), recordFailure({ ...failure })]),
+      };
+    } };
+  }
+
   register(input: NativeInstalledTurnContext & {
     admissions: readonly FundedInstalledAdmission[];
+    freeAdmissions?: readonly VerifiedFreeToolAdmission[];
   }): Pick<SuCodexTurnAdmission, 'bindNativeTurn' | 'observeToolCall'> & { withdraw(): Promise<void> } {
-    const { admissions: original, ...rawContext } = input;
+    const { admissions: original, freeAdmissions: originalFree = [], ...rawContext } = input;
     const context = structuredClone(rawContext);
     const boundedId = (value: string) => /^[A-Za-z0-9._:-]{1,256}$/.test(value);
     if ([context.workspaceId, context.ownerId, context.principalId, context.nativeSessionId,
       context.ownerTurnId, context.mcpServer].some(value => !boundedId(value)) ||
       context.nativeSessionId.length > 128 || !Number.isSafeInteger(context.advSessionId) || context.advSessionId <= 0 ||
-      original.length === 0 || original.length > 1000 ||
+      original.length + originalFree.length === 0 || original.length + originalFree.length > 1000 ||
       Object.entries(context.nativeTools).some(([name, target]) => !boundedId(name) || !boundedId(target))) {
       throw new Error('Exact authenticated native turn context and bounded tool bindings are required');
     }
@@ -123,9 +316,18 @@ export class NativeInstalledPerUseTurns {
       }
       provenanceHashes.add(provenanceHash); turnIds.add(value.turnId);
     }
+    const freeAdmissions = originalFree.map(value => structuredClone(value));
+    for (const value of freeAdmissions) {
+      const provenanceHash = createHash('sha256').update(canonicalJson(value.provenance)).digest('hex');
+      if (value.kind !== 'free' || value.workspaceId !== context.workspaceId ||
+        value.principalId !== context.principalId || value.provenance.listing.priceModel !== 'free' ||
+        provenanceHashes.has(provenanceHash))
+        throw new Error('Native lookup requires distinct original verified free installations');
+      provenanceHashes.add(provenanceHash);
+    }
     const key = this.key(context.workspaceId, context.advSessionId, fingerprint(context.nativeSessionId));
     if (this.turns.has(key)) throw new Error('The native execution already has a host admission');
-    const entry = { context, admissions, nativeTurnId: null as string | null, withdrawn: false,
+    const entry = { context, admissions, freeAdmissions, nativeTurnId: null as string | null, withdrawn: false,
       observations: new Map<string, { toolName: string; consumed: boolean }>() };
     this.turns.set(key, entry);
     let withdrawn = false;
@@ -166,7 +368,7 @@ export class NativeInstalledPerUseTurns {
   /** Synchronous claim at the dispatch seat. No handler/input/output cohort can
    * add an observation or choose a payer. A wrapper observation permits exactly
    * one indirect target among the installations funded BEFORE inference. */
-  resolve(request: Request): AdmittedPerUseToolTurn | null {
+  resolve(request: Request): AdmittedPerUseToolTurn | VerifiedFreeToolAdmission | null {
     const native = request.ctx.requestOrigin?.nativeSession, principal = request.ctx.principal;
     if (request.ctx.requestOrigin?.transport !== 'mcp' || native?.binding !== 'bound' ||
       native.carrier !== 'meta:threadId' || !/^[a-f0-9]{64}$/.test(native.valueFingerprint) ||
@@ -184,6 +386,12 @@ export class NativeInstalledPerUseTurns {
     if (!installation) return null;
     const admitted = entry.admissions.find(value => value.admission.provenance.name === request.tool.pluginName &&
       value.admission.provenance.version === installation.version);
+    const free = entry.freeAdmissions.find(value => value.provenance.name === request.tool.pluginName &&
+      value.provenance.version === installation.version);
+    if (free && !admitted) {
+      observed.consumed = true;
+      return structuredClone(free);
+    }
     if (!admitted || admitted.admission.turn.snapshot().admissionClosed) return null;
     observed.consumed = true;
     // Return a snapshot of immutable terms. The local meter remains the single
