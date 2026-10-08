@@ -11,6 +11,10 @@ export interface GovernanceRound {
   readonly policyVersion: number;
   readonly eligibleMemberIds: readonly string[];
   readonly createdAtMs: number;
+  /** Commitment to the independently resolved owner-signed policy and signer roster. */
+  readonly authorityHash?: string;
+  /** Exact canonical action commitment; required when this round authorizes execution. */
+  readonly approvedActionHash?: string;
 }
 
 export interface GovernanceVoteEvent {

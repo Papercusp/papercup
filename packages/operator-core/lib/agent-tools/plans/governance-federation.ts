@@ -50,7 +50,9 @@ export interface FederatedGovernanceEvent {
   readonly originPeerId: string;
   readonly occurredAtMs: number;
   readonly body: GovernanceEventBody;
-  /** Signature over `governanceEventDigest`; verification is injected. */
+  /** Current eligible signer identity and key epoch; absent legacy records cannot authorize. */
+  readonly authorization?: { readonly memberId: string; readonly keyEpoch: number };
+  /** Signature over canonical domain-separated governanceEventSigningBytes. */
   readonly signature: string;
 }
 
