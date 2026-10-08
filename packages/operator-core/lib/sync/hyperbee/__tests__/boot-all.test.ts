@@ -81,15 +81,31 @@ beforeAll(async () => {
   const seeded = await import('../../../p2p/ensure-host-routines');
   expect(vi.isMockFunction(seeded.ensureP2pHostRoutinesSeededOnce)).toBe(true);
 });
-// WI-10007538: the rail's throw-site counter. The ZERO assertion is parked, not
-// dropped: its first run (2026-10-08 18:45Z) found 19 more swallowed real-PG
-// attempts in this file, via hive-store getHiveBySlug (listGitServingCapabilities)
-// and operator-state-pg readOperatorState (substrate-booted-handles-pg). Until
-// those seams are faked, assert only that the p2p seeder fixed above never
-// reaches the rail. Restore `expect(rail.blocked).toBe(0)` when they are.
+// WI-10007538: every boot here that injects no resolveSwarmBinding runs
+// defaultResolveSwarmBinding, which reads two PG-backed resolvers: hive-federation
+// → hive-store getHiveBySlug, and resolveHarnessPaths → loadHarnessRegistry. Both
+// failed closed against the unit rail and were swallowed (19 attempts per run,
+// observed 2026-10-08 19:02Z via the rail's caller chains). resolveHarnessPaths
+// reached the REAL harness-registry despite the vi.mock below, so it is stubbed
+// at its own namespace rather than trusted to see that mock. Each stub returns
+// what an empty registry yields: no hive row, and the unresolved placeholder.
+// Tests that need a hive row re-spy getHiveBySlug and mockRestore it after.
+beforeEach(async () => {
+  const [hiveStore, harnessPaths] = await Promise.all([
+    import('../../../hive-store'),
+    import('../../../resolve-harness-paths'),
+  ]);
+  vi.spyOn(hiveStore, 'getHiveBySlug').mockResolvedValue(null);
+  vi.spyOn(harnessPaths, 'resolveHarnessPaths').mockImplementation(async (harnessSlug, workspaceId) => {
+    const placeholder = `/tmp/papercusp-unresolved/${workspaceId}/${harnessSlug}`;
+    return { projectDir: placeholder, stateDir: `${placeholder}/.papercusp` };
+  });
+});
+// The rail's throw-site counter: nothing in this file may reach real Postgres,
+// whether or not the caller logged the refusal.
 afterAll(() => {
   const rail = readRealPgRailBlocks();
-  expect(rail.callers.filter((c) => c.includes('ensure-host-routines'))).toEqual([]);
+  expect(rail.blocked, `real-PG attempts blocked: ${rail.callers.join(' | ')}`).toBe(0);
 });
 vi.mock('../../../harness-registry', () => ({
   loadHarnessRegistry: (ws?: string) => loadHarnessRegistryMock(ws),
