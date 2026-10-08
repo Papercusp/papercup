@@ -11,10 +11,16 @@ describe('unit census executable exit contract', () => {
     try {
       mkdirSync(join(directory, 'registry'));
       mkdirSync(join(directory, 'spills'));
+      mkdirSync(join(directory, 'analysis-cache'));
+      mkdirSync(join(directory, 'checkpoint-history'));
+      mkdirSync(join(directory, '.config', 'papercusp'), { recursive: true });
       const peer = join(directory, 'registry', 'fixture', '.papercusp', 'harness', 'hyperbee');
       mkdirSync(join(peer, 'db'), { recursive: true });
       writeFileSync(join(peer, 'CORESTORE'), 'device/platform=linux\ndevice/inode=123\ndevice/created=456\n');
       writeFileSync(join(peer, 'db', 'persistent-log'), 'state');
+      const restoredPeer = join(directory, 'registry', 'fixture', '.restored', 'snapshot', 'clone', '.papercusp', 'harness', 'hyperbee');
+      mkdirSync(join(restoredPeer, 'db'), { recursive: true });
+      writeFileSync(join(restoredPeer, 'CORESTORE'), 'device/platform=linux\ndevice/inode=789\ndevice/created=123\n');
       const app = join(directory, 'registry', 'fixture', '.papercusp', 'apps-copy', 'portal');
       mkdirSync(join(app, 'scripts'), { recursive: true });
       mkdirSync(join(app, '.next-build-123-456-abcd'));
@@ -31,19 +37,23 @@ describe('unit census executable exit contract', () => {
       const result = spawnSync(process.execPath,
         ['--import', 'tsx', 'scripts/state-census-roots.mts'], {
           cwd: root, encoding: 'utf8', timeout: 30_000,
-          env: { ...process.env, PAPERCUSP_HOME: directory,
+          env: { ...process.env, HOME: directory, PAPERCUSP_HOME: directory,
             PAPERCUSP_WORKSPACES_ROOT: join(directory, 'registry'),
             PAPERCUSP_SCRATCH_ROOT: join(directory, 'spills'),
+            PAPERCUSP_STRIP_CACHE_DIR: join(directory, 'analysis-cache'),
+            PAPERCUSP_CHECKPOINT_LOG_DIR: join(directory, 'checkpoint-history'),
             PAPERCUSP_DB_ENCRYPTION_KEY_FILE: join(directory, 'db-key') },
         });
       expect(result.status, result.stderr).toBe(1);
       const report = JSON.parse(result.stdout);
       expect(report.wholeInstallVerified).toBe(false);
       expect(report.scope).toBe('implemented-writer-filesystem-roots-only');
-      expect(report.representedPeers).toHaveLength(1);
-      expect(report.representedPeers[0].name).toBe('registry/fixture/.papercusp/harness/hyperbee');
+      expect(report.representedPeers).toHaveLength(2);
+      expect(report.representedPeers.some((entry: { name: string }) => entry.name === 'registry/fixture/.papercusp/harness/hyperbee')).toBe(true);
+      expect(report.representedPeers.some((entry: { name: string }) => entry.name.includes('/.restored/snapshot/clone/'))).toBe(true);
       expect(report.representedPeers[0].disposition).toBe('preserve-state-subtree');
       expect(report.representedReleases[0].disposition).toBe('preserve-state-subtree');
+      expect(report.representedSubtrees.some((entry: { name: string }) => entry.name === 'checkpoint-history')).toBe(true);
       expect(report.inventory.find((entry: { name: string }) => entry.name.endsWith('.next-build-123-456-abcd')).classification).toBe('cache');
       expect(report.residue.some((entry: { name: string }) => entry.name === 'unknown')).toBe(true);
     } finally { rmSync(directory, { recursive: true, force: true }); }

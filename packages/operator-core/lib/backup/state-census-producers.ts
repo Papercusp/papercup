@@ -6,15 +6,17 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
+import { homedir } from 'node:os';
 import { readdir, readFile, lstat, open } from 'node:fs/promises';
 import { dbEncryptionKeyFilePath } from '../db-encryption';
 import { superuserTokenPath } from '../superuser-token';
 import { workspacesRoot, readRegistry } from '../workspace-registry';
 import { scratchRoot } from '../scratch-uri';
+import { googleOAuthClientPath } from '../oauth/providers';
 
 /** Compose independent writers without traversing the same physical root twice. */
 export function installedRootCensusProducers() {
-  const producers = [workspaceRegistryCensusProducer(), secretCensusProducers(), scratchCensusProducer()];
+  const producers = [workspaceRegistryCensusProducer(), secretCensusProducers(), scratchCensusProducer(), stripRangeCacheCensusProducer()];
   const roots: CensusRoot[] = [];
   const declarations: CensusDeclaration[] = [];
   for (const producer of producers) {
@@ -64,6 +66,15 @@ export function scratchCensusProducer() {
   return { roots: [root], declarations: [declaration] };
 }
 
+/** Same relocated compile-analysis cache used by strip-comments-and-strings. */
+export function stripRangeCacheCensusProducer() {
+  const path = process.env.PAPERCUSP_STRIP_CACHE_DIR || join(homedir(), '.papercusp', 'cache', 'strip-ranges');
+  return { roots: [{ id: 'strip-range-cache-parent', path: dirname(path) }], declarations: [{
+    kind: 'path' as const, root: 'strip-range-cache-parent', name: basename(path),
+    classification: 'cache' as const, producer: 'strip-comments-and-strings', descendants: true, prune: true,
+  }] };
+}
+
 /** Registry producer's real relocated root, not the operator's remapped HOME. */
 export function workspaceRegistryCensusProducer() {
   const root: CensusRoot = { id: 'workspace-registry', path: workspacesRoot() };
@@ -85,6 +96,7 @@ export function secretCensusProducers() {
   const paths = [
     { path: dbEncryptionKeyFilePath(), producer: 'db-encryption' },
     { path: superuserTokenPath(), producer: 'superuser-token' },
+    { path: googleOAuthClientPath(), producer: 'google-oauth-desktop-client' },
   ];
   const roots: CensusRoot[] = [];
   const declarations: CensusDeclaration[] = [];
@@ -133,6 +145,69 @@ export function integrationBaselineCensusDeclarations(entries: readonly CensusEn
 }
 
 const execFileAsync = promisify(execFile);
+/** Python/uv's environment marker and generated interpreter/package layout.
+ * The directory name alone never establishes rebuildable ownership.
+ */
+export async function virtualenvCacheDeclaration(root: CensusRoot, name: string): Promise<CensusDeclaration> {
+  if (name.startsWith('/') || name.includes('\\') || name.split('/').some(part => !part || part === '.' || part === '..')) throw new Error('Invalid virtualenv path');
+  const path = join(root.path, name);
+  if (!(await lstat(path)).isDirectory()) throw new Error('Invalid virtualenv directory');
+  const handle = await open(join(path, 'pyvenv.cfg'), constants.O_RDONLY | constants.O_NOFOLLOW);
+  let text: string;
+  try {
+    const stat = await handle.stat();
+    if (!stat.isFile() || stat.size > 16_384) throw new Error('Invalid virtualenv marker');
+    text = await handle.readFile('utf8');
+  } finally { await handle.close(); }
+  const fields = new Map(text.trim().split(/\r?\n/).map(line => {
+    const separator = line.indexOf('=');
+    return [line.slice(0, separator).trim(), line.slice(separator + 1).trim()];
+  }));
+  const version = (fields.get('version') ?? fields.get('version_info'))?.match(/^(\d+\.\d+)\.\d+$/)?.[1];
+  const home = fields.get('home');
+  if (!version || !home || !(isAbsolute(home) || win32.isAbsolute(home)) ||
+    !['true', 'false'].includes(fields.get('include-system-site-packages') ?? '')) throw new Error('Invalid virtualenv marker');
+  let windows = false;
+  try { await lstat(join(path, 'bin', 'python')); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    if (!(await lstat(join(path, 'Scripts', 'python.exe'))).isFile()) throw new Error('Invalid virtualenv interpreter');
+    windows = true;
+  }
+  if (!(await lstat(windows ? join(path, 'Lib', 'site-packages') : join(path, 'lib', `python${version}`, 'site-packages'))).isDirectory()) throw new Error('Invalid virtualenv packages');
+  return { kind: 'path', root: root.id, name, classification: 'cache', producer: 'python-virtualenv', descendants: true, prune: true };
+}
+/** Restore-to-clone completion is producer provenance, not byte certification.
+ * A latest started/failed event never authorizes an opaque completed clone.
+ */
+export async function restoredCloneCensusDeclarations(sql: Sql, workspaceId: string, workspacePath: string, roots: readonly CensusRoot[]): Promise<CensusDeclaration[]> {
+  const rows = await sql<{ id: string; target: string; phase: string }[]>`
+    SELECT DISTINCT ON (payload_json->>'target') id::text,
+      payload_json->>'target' AS target, payload_json->>'phase' AS phase
+    FROM harness_shared.backup_events
+    WHERE workspace_id = ${workspaceId} AND kind = 'restore'
+      AND starts_with(payload_json->>'target', ${join(workspacePath, '.restored') + sep})
+    ORDER BY payload_json->>'target', id DESC LIMIT 1001
+  `;
+  if (rows.length > 1000) throw new Error('Restore event census bound exceeded');
+  const declarations: CensusDeclaration[] = [];
+  for (const row of rows) {
+    if (row.phase !== 'done') continue;
+    const clone = relative(join(workspacePath, '.restored'), row.target);
+    if (clone.split(sep).length !== 2 || clone.split(sep).some(part => !part || part === '.' || part === '..')) continue;
+    const root = roots.find(candidate => {
+      const suffix = relative(candidate.path, row.target);
+      return suffix && suffix !== '..' && !suffix.startsWith(`..${sep}`) && !isAbsolute(suffix);
+    });
+    if (!root || !/^\d+$/.test(row.id)) throw new Error('Unqualified restore census evidence');
+    try { if (!(await lstat(row.target)).isDirectory()) continue; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error; }
+    declarations.push({ kind: 'path', root: root.id, name: relative(root.path, row.target).split(sep).join('/'),
+      classification: 'state', producer: 'workspace-backup-restore-to-clone', descendants: true,
+      recoveryStorage: { restoreEventId: row.id, evidenceRef: `backup-restore-event:${workspaceId}:${row.id}` } });
+  }
+  return declarations;
+}
 /** Published generations are retained install state, including rollback artifacts.
  * Build provenance does not certify the bytes of a running or exported snapshot.
  */

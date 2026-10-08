@@ -10,6 +10,54 @@ const declaration: CensusDeclaration = {
 };
 
 describe('producer-derived state census', () => {
+  it('reports unknown subtree frontier as failing residue without hiding registered descendants', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'frontier-census-'));
+    try {
+      await mkdir(join(root, 'unknown'));
+      await writeFile(join(root, 'unknown', 'nested'), 'unclassified');
+      const input = { roots: [{ id: 'home', path: root }], declarations: [], readCatalogs: async () => [] };
+      const frontier = await collectStateCensus({ ...input, representUnknownSubtrees: true, maxEntries: 1 });
+      expect(frontier.ok).toBe(false);
+      expect(frontier.residue[0].name).toBe('unknown');
+      expect(frontier.representedUnknown[0].disposition).toBe('unclassified-subtree');
+      const expanded = await collectStateCensus({ ...input, representUnknownSubtrees: true,
+        declarations: [{ kind: 'path', root: 'home', name: 'unknown/nested', classification: 'secret', producer: 'fixture' }] });
+      expect(expanded.representedUnknown).toEqual([]);
+      expect(expanded.inventory.some(entry => entry.name === 'unknown/nested' && entry.classification === 'secret')).toBe(true);
+      await expect(collectStateCensus({ ...input, maxEntries: 1 })).rejects.toThrow('bound');
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+  it('retains producer-owned audit history while refusing cache or conflicting descendant ownership', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'audit-census-'));
+    try {
+      await mkdir(join(root, 'history'));
+      await writeFile(join(root, 'history', 'verdict'), 'audit');
+      const owner: CensusDeclaration = { kind: 'path', root: 'home', name: 'history', classification: 'state',
+        producer: 'checkpoint', descendants: true, retainedSubtree: { evidenceRef: 'fixture:log-writer' } };
+      const input = { roots: [{ id: 'home', path: root }], declarations: [owner], readCatalogs: async () => [] };
+      expect((await collectStateCensus({ ...input, maxEntries: 1 })).representedSubtrees[0].disposition).toBe('preserve-state-subtree');
+      await expect(collectStateCensus({ ...input, declarations: [{ ...owner, classification: 'cache' }] })).rejects.toThrow('Retained subtree');
+      const conflict = await collectStateCensus({ ...input, declarations: [owner,
+        { ...owner, name: 'history/verdict', classification: 'secret', retainedSubtree: undefined, descendants: false }] });
+      expect(conflict.representedSubtrees).toEqual([]);
+      expect(conflict.ok).toBe(false);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+  it('retains completed recovery clones without disguising an overridden descendant', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'recovery-census-'));
+    try {
+      await mkdir(join(root, 'clone'));
+      await writeFile(join(root, 'clone', 'state'), 'recovery');
+      const owner: CensusDeclaration = { kind: 'path', root: 'home', name: 'clone', classification: 'state',
+        producer: 'restore-to-clone', descendants: true, recoveryStorage: { restoreEventId: '123', evidenceRef: 'fixture:event' } };
+      const input = { roots: [{ id: 'home', path: root }], declarations: [owner], readCatalogs: async () => [] };
+      expect((await collectStateCensus({ ...input, maxEntries: 1 })).representedRecoveries[0].disposition).toBe('preserve-state-subtree');
+      const conflict = await collectStateCensus({ ...input, declarations: [owner,
+        { ...owner, name: 'clone/state', classification: 'secret', recoveryStorage: undefined, descendants: false }] });
+      expect(conflict.representedRecoveries).toEqual([]);
+      expect(conflict.ok).toBe(false);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
   it('retains published runtime artifacts as state and refuses nested cache overrides', async () => {
     const root = await mkdtemp(join(tmpdir(), 'release-census-'));
     try {
@@ -93,10 +141,11 @@ describe('producer-derived state census', () => {
   });
   it('derives rebuildable caches but never backup-repository or recovery-debris classification from ignores', () => {
     const declarations = backupCacheCensusDeclarations('home');
-    const census = generateStateCensus(['node_modules/pkg', 'projects/a/node_modules/pkg', 'projects/node_modules-old', 'backups', '.broken-old'].map(name =>
+    const census = generateStateCensus(['node_modules/pkg', 'projects/a/node_modules/pkg', 'venv/lib/site-packages/pkg', 'projects/node_modules-old', 'backups', '.broken-old'].map(name =>
       ({ kind: 'path' as const, root: 'home', name })), declarations);
     expect(census.inventory.find(entry => entry.name === 'node_modules/pkg')?.classification).toBe('cache');
     expect(census.inventory.find(entry => entry.name === 'projects/a/node_modules/pkg')?.classification).toBe('cache');
+    expect(census.inventory.find(entry => entry.name === 'venv/lib/site-packages/pkg')?.classification).toBe('cache');
     expect(census.residue.map(entry => entry.name).sort()).toEqual(['.broken-old', 'backups', 'projects/node_modules-old']);
   });
   it('rejects non-canonical paths and empty producer identities', () => {

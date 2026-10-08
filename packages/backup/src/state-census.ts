@@ -27,6 +27,9 @@ export interface CensusDeclaration extends CensusEntry {
   /** Producer device identity; not a content checksum or snapshot receipt. */
   peerStorage?: { markerSha256: string; evidenceRef: string };
   releaseStorage?: { manifestSha256: string; evidenceRef: string };
+  recoveryStorage?: { restoreEventId: string; evidenceRef: string };
+  /** Exact producer-owned retained tree; evidence identifies ownership, not bytes. */
+  retainedSubtree?: { evidenceRef: string };
 }
 
 /** Snapshot coverage is separate evidence, never a substitute for state ownership. */
@@ -122,10 +125,21 @@ export async function collectStateCensus(input: {
   readCatalogs: () => Promise<readonly CensusEntry[]>;
   /** Refuse oversized inventories rather than returning a truncated success. */
   maxEntries?: number;
+  /** Diagnostic frontier only: unknown trees remain explicit failing residue. */
+  representUnknownSubtrees?: boolean;
 }) {
   const maxEntries = input.maxEntries ?? 100_000;
   if (!Number.isSafeInteger(maxEntries) || maxEntries < 1) throw new Error('Invalid census entry bound');
   for (const declaration of input.declarations) {
+    if (declaration.retainedSubtree && (declaration.kind !== 'path' || declaration.classification !== 'state' ||
+      !declaration.descendants || declaration.anyDepth || declaration.prune || !declaration.retainedSubtree.evidenceRef.trim())) {
+      throw new Error('Retained subtree requires exact state ownership and producer evidence');
+    }
+    if (declaration.recoveryStorage && (declaration.kind !== 'path' || declaration.classification !== 'state' ||
+      !declaration.descendants || declaration.anyDepth || declaration.prune ||
+      !/^\d+$/.test(declaration.recoveryStorage.restoreEventId) || !declaration.recoveryStorage.evidenceRef.trim())) {
+      throw new Error('Recovery storage requires exact retained state ownership and restore evidence');
+    }
     if (declaration.releaseStorage && (declaration.kind !== 'path' || declaration.classification !== 'state' ||
       !declaration.descendants || declaration.anyDepth || declaration.prune ||
       !/^[0-9a-f]{64}$/.test(declaration.releaseStorage.manifestSha256) || !declaration.releaseStorage.evidenceRef.trim())) {
@@ -161,6 +175,9 @@ export async function collectStateCensus(input: {
   const representedGit: Array<CensusEntry & { head: string; evidenceRef: string; disposition: 'preserve-state-subtree' }> = [];
   const representedPeers: Array<CensusEntry & { markerSha256: string; evidenceRef: string; disposition: 'preserve-state-subtree' }> = [];
   const representedReleases: Array<CensusEntry & { manifestSha256: string; evidenceRef: string; disposition: 'preserve-state-subtree' }> = [];
+  const representedRecoveries: Array<CensusEntry & { restoreEventId: string; evidenceRef: string; disposition: 'preserve-state-subtree' }> = [];
+  const representedSubtrees: Array<CensusEntry & { evidenceRef: string; disposition: 'preserve-state-subtree' }> = [];
+  const representedUnknown: Array<CensusEntry & { disposition: 'unclassified-subtree' }> = [];
   async function walk(root: CensusRoot, parent: string): Promise<void> {
     const children = await readdir(join(root.path, parent), { withFileTypes: true });
     for (const child of children) {
@@ -175,6 +192,8 @@ export async function collectStateCensus(input: {
       const storage = owners.find(owner => owner.name === name && owner.databaseStorage);
       const nestedOverride = input.declarations.some(declaration => declaration.root === root.id &&
         declaration.name.startsWith(`${name}/`));
+      const unknownSubtree = input.representUnknownSubtrees && child.isDirectory() && owners.length === 0 && !nestedOverride;
+      if (unknownSubtree) representedUnknown.push({ kind: 'path', root: root.id, name, disposition: 'unclassified-subtree' });
       const represented = child.isDirectory() && storage?.databaseStorage && !nestedOverride &&
         owners.every(owner => owner.classification === 'state');
       if (represented && storage?.databaseStorage) {
@@ -196,13 +215,23 @@ export async function collectStateCensus(input: {
         owners.every(owner => owner.classification === 'state');
       if (representedRelease && release?.releaseStorage) representedReleases.push({ kind: 'path', root: root.id, name,
         ...release.releaseStorage, disposition: 'preserve-state-subtree' });
-      if (child.isDirectory() && !prune && !represented && !representedRepo && !representedPeer && !representedRelease) await walk(root, name);
+      const recovery = owners.find(owner => owner.name === name && owner.recoveryStorage);
+      const representedRecovery = child.isDirectory() && recovery?.recoveryStorage && !nestedOverride &&
+        owners.every(owner => owner.classification === 'state');
+      if (representedRecovery && recovery?.recoveryStorage) representedRecoveries.push({ kind: 'path', root: root.id, name,
+        ...recovery.recoveryStorage, disposition: 'preserve-state-subtree' });
+      const retained = owners.find(owner => owner.name === name && owner.retainedSubtree);
+      const representedSubtree = child.isDirectory() && retained?.retainedSubtree && !nestedOverride &&
+        owners.every(owner => owner.classification === 'state');
+      if (representedSubtree && retained?.retainedSubtree) representedSubtrees.push({ kind: 'path', root: root.id, name,
+        ...retained.retainedSubtree, disposition: 'preserve-state-subtree' });
+      if (child.isDirectory() && !prune && !represented && !representedRepo && !representedPeer && !representedRelease && !representedRecovery && !representedSubtree && !unknownSubtree) await walk(root, name);
     }
   }
   for (const root of input.roots) await walk(root, '');
   entries.push(...await input.readCatalogs());
   if (entries.length > maxEntries) throw new Error(`Census entry bound exceeded: ${maxEntries}`);
-  return { ...generateStateCensus(entries, input.declarations), representedStorage, representedGit, representedPeers, representedReleases };
+  return { ...generateStateCensus(entries, input.declarations), representedStorage, representedGit, representedPeers, representedReleases, representedRecoveries, representedSubtrees, representedUnknown };
 }
 
 /** Collect and validate in one call; consumers cannot accidentally ignore residue. */

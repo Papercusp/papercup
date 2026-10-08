@@ -48,11 +48,12 @@ export const REBUILDABLE_DIRECTORY_PATTERNS = [
   '.svelte-kit', '.nuxt', '.angular', '.vite', '.parcel-cache',
   '.yarn/cache', '.pnpm-store', '.bun',
   'coverage', '.nyc_output',
+  '__pycache__', '.venv', 'venv', '.pytest_cache', '.mypy_cache', '.ruff_cache',
 ];
 
 export const IGNORE_PATTERNS = [
   ...REBUILDABLE_DIRECTORY_PATTERNS,
-  '__pycache__', '*.pyc', '.venv', 'venv', '.pytest_cache', '.mypy_cache', '.ruff_cache',
+  '*.pyc',
   '.gradle', '.terraform',
   // Transactional writers use a `.tmp` suffix until an artifact is complete.
   // Never snapshot one: a failed PG dump used to leave a ~1GB
