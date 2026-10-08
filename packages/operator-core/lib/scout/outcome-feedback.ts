@@ -532,13 +532,48 @@ export function computeLensOutcomes<L extends string = CreativeLens>(
   completions: readonly ChangeFeedEntry[],
   opts: LensWeightOptions & { lenses?: readonly L[] } & ClassifyIdeaOutcomeOptions = {},
 ): LensOutcomeReport<L> {
-  const lenses = opts.lenses ?? (CREATIVE_LENSES as readonly string[] as readonly L[]);
   const completionByRef = new Map<string, ChangeFeedEntry>();
   for (const e of completions) {
     // First-wins matches gatherCompletions' dedup; refs are unique per artifact.
     if (!completionByRef.has(e.ref)) completionByRef.set(e.ref, e);
   }
+  return lensOutcomeReportFrom(provenance, (prov) => classifyIdeaOutcome(prov, completionByRef, opts), opts);
+}
 
+/**
+ * The same per-lens report, recomputed from each row's CACHED outcome (the ledger
+ * `outcome` column the corrected resolver wrote in refreshScoutOutcomes) instead of a
+ * fresh change-feed join. A missing/'pending' cache still passes through
+ * {@link classifyIdeaOutcome} with no feed, so paused-rail and legacy-gym rows read
+ * 'unresolvable' exactly as the resolver reads them.
+ *
+ * scout-su-ideate-pipeline-gaps-2026-10-08 P-008 / R-19: this is the independent
+ * recompute that proves a persisted lens weight comes from the corrected outcomes —
+ * refreshScoutOutcomes writes the cache and the weights from ONE classification, so the
+ * two must agree; a disagreement means a weight was derived from an outcome the resolver
+ * reads differently.
+ */
+export function computeLensOutcomesFromCached<L extends string = CreativeLens>(
+  provenance: readonly RoutedIdeaProvenance[],
+  opts: LensWeightOptions & { lenses?: readonly L[] } & ClassifyIdeaOutcomeOptions = {},
+): LensOutcomeReport<L> {
+  const noFeed = new Map<string, ChangeFeedEntry>();
+  return lensOutcomeReportFrom(
+    provenance,
+    (prov) =>
+      prov.outcome === 'won' || prov.outcome === 'lost' || prov.outcome === 'unresolvable'
+        ? prov.outcome
+        : classifyIdeaOutcome(prov, noFeed, opts),
+    opts,
+  );
+}
+
+function lensOutcomeReportFrom<L extends string>(
+  provenance: readonly RoutedIdeaProvenance[],
+  outcomeOf: (prov: RoutedIdeaProvenance) => IdeaOutcome,
+  opts: LensWeightOptions & { lenses?: readonly L[] },
+): LensOutcomeReport<L> {
+  const lenses = opts.lenses ?? (CREATIVE_LENSES as readonly string[] as readonly L[]);
   const byLens = Object.fromEntries(
     lenses.map((l) => [l, emptyStat(l)]),
   ) as Record<L, LensOutcomeStat<L>>;
@@ -551,7 +586,7 @@ export function computeLensOutcomes<L extends string = CreativeLens>(
     const grade = validGradeOf(prov);
     // P-002: an ungraded idea that can never decide stays out of `routed` and every
     // denominator. A graded one still counts: the grade decides it (C-5 / D-002).
-    const feedOutcome = grade === null ? classifyIdeaOutcome(prov, completionByRef, opts) : null;
+    const feedOutcome = grade === null ? outcomeOf(prov) : null;
     if (feedOutcome === 'unresolvable') {
       stat.unresolvable += 1;
       continue;

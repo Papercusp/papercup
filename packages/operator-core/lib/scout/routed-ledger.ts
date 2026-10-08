@@ -1467,19 +1467,69 @@ export async function readScoutLensWeights(
 ): Promise<Partial<Record<CreativeLens, number>>> {
   const sql = opts.sql ?? getOrgPg().sql;
   const ws = opts.workspaceId ?? activeWorkspaceId();
-  const rows = await sql<{ lens: string; weight: string | number }[]>`
-    SELECT lens, weight
+  const rows = await sql<{ lens: string; weight: string | number; pot_slug: string | null; updated_at: Date | string | null }[]>`
+    SELECT lens, weight, pot_slug, updated_at
       FROM harness_shared.scout_lens_weights
      WHERE workspace_id = ${ws}
        ${opts.potSlug ? sql`AND pot_slug = ${opts.potSlug}` : sql``}`;
-  const out: Partial<Record<CreativeLens, number>> = {};
+  return pickNewestLensWeightScope(
+    rows.map((r) => ({ lens: r.lens, weight: r.weight, potSlug: r.pot_slug, updatedAt: r.updated_at })),
+  ).weights;
+}
+
+/** One persisted `scout_lens_weights` row, as {@link pickNewestLensWeightScope} reads it. */
+export interface PersistedLensWeightRow {
+  lens: string;
+  weight: string | number;
+  potSlug: string | null;
+  updatedAt: Date | string | null;
+}
+
+/**
+ * Choose ONE coherent weight scope: the pot_slug whose newest row is the most recent
+ * write (ties → the lexically smallest slug, so the choice is deterministic), and return
+ * only that scope's valid lens weights.
+ *
+ * scout-su-ideate-pipeline-gaps-2026-10-08 P-008 / R-19: a workspace-wide read used to
+ * fold EVERY scope's rows into one map, last row wins, in unspecified heap order. The
+ * workspace holds a live sentinel scope (rewritten each refresh from the corrected
+ * outcomes) beside retired per-hive scopes last written 2026-08-02, so the scout cycle's
+ * no-hive read and the learning.scout snapshot could serve an August weight that the
+ * corrected resolver no longer supports. refreshScoutOutcomes writes all lenses of a scope
+ * in one upsert, so the newest scope is always the latest complete derivation.
+ */
+export function pickNewestLensWeightScope(
+  rows: readonly PersistedLensWeightRow[],
+): { potSlug: string | null; updatedAtMs: number | null; weights: Partial<Record<CreativeLens, number>> } {
+  const newestByScope = new Map<string, number>();
   for (const r of rows) {
-    const w = typeof r.weight === 'number' ? r.weight : Number(r.weight);
-    if ((CREATIVE_LENSES as readonly string[]).includes(r.lens) && Number.isFinite(w)) {
-      out[r.lens as CreativeLens] = w;
+    const key = r.potSlug ?? '';
+    const ms = r.updatedAt == null ? Number.NEGATIVE_INFINITY : new Date(r.updatedAt).getTime();
+    const t = Number.isFinite(ms) ? ms : Number.NEGATIVE_INFINITY;
+    newestByScope.set(key, Math.max(newestByScope.get(key) ?? Number.NEGATIVE_INFINITY, t));
+  }
+  let chosen: string | null = null;
+  let chosenMs = Number.NEGATIVE_INFINITY;
+  for (const [key, ms] of [...newestByScope.entries()].sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))) {
+    if (chosen === null || ms > chosenMs) {
+      chosen = key;
+      chosenMs = ms;
     }
   }
-  return out;
+  const weights: Partial<Record<CreativeLens, number>> = {};
+  if (chosen === null) return { potSlug: null, updatedAtMs: null, weights };
+  for (const r of rows) {
+    if ((r.potSlug ?? '') !== chosen) continue;
+    const w = typeof r.weight === 'number' ? r.weight : Number(r.weight);
+    if ((CREATIVE_LENSES as readonly string[]).includes(r.lens) && Number.isFinite(w)) {
+      weights[r.lens as CreativeLens] = w;
+    }
+  }
+  return {
+    potSlug: chosen === '' ? null : chosen,
+    updatedAtMs: Number.isFinite(chosenMs) ? chosenMs : null,
+    weights,
+  };
 }
 
 /**
@@ -1522,8 +1572,14 @@ export async function getScoutLensWeights(
         if (Object.keys(persisted).length > 0) break;
       }
     } else {
-      // No hive context → the workspace-wide read (today's behavior).
-      persisted = await readScoutLensWeights({ workspaceId: ws });
+      // No hive context. P-008 / R-19: ON → the workspace sentinel row first (exactly the
+      // scope refreshScoutOutcomes writes from the corrected outcomes); then, or OFF, the
+      // newest single scope (pickNewestLensWeightScope) — never a mix of retired scopes.
+      for (const key of workspaceBrainReadKeys(ws, '', on)) {
+        persisted = await readScoutLensWeights({ workspaceId: ws, potSlug: key });
+        if (Object.keys(persisted).length > 0) break;
+      }
+      if (Object.keys(persisted).length === 0) persisted = await readScoutLensWeights({ workspaceId: ws });
     }
   } catch (err) {
     // Best-effort read: fall through with no persisted signal → uniform weights.
