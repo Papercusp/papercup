@@ -28,6 +28,8 @@ import { canonicalTreeDigest, GIT_OBJECT_ID_RE, HEX_SHA256_RE,
 import { fetchVerifiedReleaseFiles, packSelfDescribingDir, packSelfDescribingArchive,
   unpackSelfDescribingArchive, type SelfDescribingArchiveFile } from './self-describing-release';
 import type { ResolvedListingCoords } from './resolve-listing-by-kind';
+import type { InstalledPluginProvenance } from './types';
+export type { InstalledPluginProvenance } from './types';
 
 export interface InstallPluginCoreInput {
   /** The plugin repo's GitHub URL (https://github.com/owner/repo[.git]). */
@@ -487,16 +489,6 @@ async function copyPluginDir(src: string, target: string): Promise<void> {
     recursive: true,
     filter: (s) => !s.split(/[/\\]/).includes('.git'),
   });
-}
-
-export interface InstalledPluginProvenance {
-  readonly schema: 'papercusp.plugin-installation/v1';
-  readonly name: string;
-  readonly version: string;
-  readonly listing: ResolvedListingCoords;
-  readonly contentSource: 'r2' | 'github';
-  readonly contentFingerprint: string;
-  readonly hadListing: boolean;
 }
 
 /** Fingerprint original package bytes, excluding only the host-owned install receipt. */

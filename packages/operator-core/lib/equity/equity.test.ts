@@ -2,6 +2,15 @@ import { describe, it, expect } from 'vitest';
 import { equityEvm, digest, TERMS } from './evm-test-helpers';
 
 describe('actual equity ownership and equity-paid returns on Cancun EVM', () => {
+  it('retains ownership ballots during a complete transfer freeze so governance can restore eligibility', async () => {
+    const e = await equityEvm(); const t = e.equity;
+    await e.govern([{ contract: t, name: 'setEligibility', args: [1n, false] }]);
+    await expect(e.send(t, 'transfer', [e.accounts[1], 1n])).rejects.toThrow('Ineligible');
+    await e.govern([{ contract: t, name: 'setEligibility', args: [1n, true] }]);
+    expect((await e.read(t, 'holders', [1n]) as unknown[])[2]).toBe(true);
+    expect(await e.read(t, 'totalSupply')).toBe(100_000n);
+  }, 60_000);
+
   it('requires issuer documents, personal acceptance and eligible transfers; rejects bootstrap/admin mint and replay', async () => {
     const e = await equityEvm();
     const { equity: t, send, read, govern, accounts } = e;

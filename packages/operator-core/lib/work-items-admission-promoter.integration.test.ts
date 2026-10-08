@@ -2909,6 +2909,55 @@ describe('readPendingBatch resolver-input priority (P-006)', () => {
     // stamp.ts's contract) rather than left for a reader to rediscover by surprise.
     expect(batch.map((item) => item.id)).toEqual(['WI-6', 'WI-5']);
   });
+
+  it('rotates scheduled ambiguous reviews behind never-reviewed and less-recently reviewed rows', async () => {
+    await seedPending({ id: 'WI-repeat', createdAtMs: NOW - 30_000, dedupCandidates: [{ id: 'WI-twin' }] });
+    await seedPending({ id: 'WI-earlier-review', createdAtMs: NOW - 20_000 });
+    await seedPending({ id: 'WI-never-reviewed', createdAtMs: NOW - 10_000 });
+    await db.sql`
+      UPDATE harness_shared.work_items
+         SET admission = 'unreviewed', payload = payload || jsonb_build_object('admissionReview',
+           CASE feature_id
+             WHEN 'WI-repeat' THEN jsonb_build_object('state', 'pending', 'retryAttempts', 176,
+               'lastRetryAt', to_jsonb(to_timestamp(${NOW - 1_000} / 1000.0)))
+             WHEN 'WI-earlier-review' THEN jsonb_build_object('state', 'pending', 'retryAttempts', 1,
+               'lastRetryAt', to_jsonb(to_timestamp(${NOW - 10_000} / 1000.0)))
+             ELSE jsonb_build_object('state', 'pending', 'retryAttempts', 0)
+           END)`;
+    const next = () => readPendingBatch(db.sql, WS, HARNESS, 2, undefined, { demoteGuardBlocked: true });
+    expect((await next()).map((item) => item.id)).toEqual(['WI-never-reviewed', 'WI-earlier-review']);
+    await db.sql`
+      UPDATE harness_shared.work_items SET payload = payload || jsonb_build_object('admissionReview',
+        jsonb_build_object('state', 'pending', 'retryAttempts', 1, 'lastRetryAt', to_jsonb(to_timestamp(${NOW} / 1000.0))))
+       WHERE feature_id = 'WI-never-reviewed'`;
+    expect((await next()).map((item) => item.id)).toEqual(['WI-earlier-review', 'WI-repeat']);
+    // Explicit target reads retain resolver candidate/FIFO priority.
+    expect((await readPendingBatch(db.sql, WS, HARNESS, 2,
+      ['WI-repeat', 'WI-earlier-review', 'WI-never-reviewed'])).map((item) => item.id))
+      .toEqual(['WI-repeat', 'WI-earlier-review']);
+  });
+
+  it('treats malformed retry timestamps as unmeasured and retains model-free candidate priority', async () => {
+    await seedPending({ id: 'WI-retried', createdAtMs: NOW - 20_000, dedupCandidates: [{ id: 'WI-twin' }] });
+    await seedPending({ id: 'WI-malformed', createdAtMs: NOW - 10_000 });
+    await db.sql`
+      UPDATE harness_shared.work_items SET admission = 'unreviewed',
+        payload = payload || jsonb_build_object('admissionReview', jsonb_build_object('state', 'pending',
+          'lastRetryAt', CASE WHEN feature_id = 'WI-malformed' THEN '2026-02-31T12:00:00Z'
+                             ELSE '2026-08-26T10:00:00Z' END))`;
+    expect((await readPendingBatch(db.sql, WS, HARNESS, 2, undefined,
+      { demoteGuardBlocked: true })).map((item) => item.id)).toEqual(['WI-malformed', 'WI-retried']);
+    // The no-model path still prioritizes rows it can resolve without judging.
+    await db.sql`
+      UPDATE harness_shared.work_items SET payload = payload - 'dedupCandidates'
+       WHERE feature_id = 'WI-retried'`;
+    await db.sql`
+      UPDATE harness_shared.work_items SET payload = payload || '{"dedupCandidates":[{"id":"WI-twin"}]}'::jsonb
+       WHERE feature_id = 'WI-malformed'`;
+    expect((await readPendingBatch(db.sql, WS, HARNESS, 2, undefined,
+      { demoteGuardBlocked: true, preferModelFree: true })).map((item) => item.id))
+      .toEqual(['WI-retried', 'WI-malformed']);
+  });
 });
 
 // WI-10004725 / plan work-queue-bulk-cleanup-remediation-2026-10-01 P-007. Measured 2026-10-01:

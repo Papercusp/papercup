@@ -6,7 +6,7 @@ vi.mock('../workspace-registry', () => ({
   readRegistry: () => ({ workspaces: [{ id: 'registered-project' }] }),
 }));
 vi.mock('../scratch-uri', () => ({ scratchRoot: () => '/relocated/cache/spills' }));
-import { databaseCensusEntries, secretCensusProducers, unitCensusEntries, unitCensusDeclarations, verifyHostStateCensus, workspaceRegistryCensusProducer, scratchCensusProducer, installedRootCensusProducers } from './state-census-producers';
+import { databaseCensusEntries, secretCensusProducers, unitCensusEntries, unitCensusDeclarations, verifyHostStateCensus, workspaceRegistryCensusProducer, scratchCensusProducer, installedRootCensusProducers, mergeNestedCensusRoots } from './state-census-producers';
 import { mkdtemp, writeFile, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -15,6 +15,14 @@ import type { Sql } from 'postgres';
 
 afterEach(() => vi.clearAllMocks());
 describe('secret census producer adapters', () => {
+  it('merges nested roots without losing child-relative secret ownership or conflating prefixes', () => {
+    const result = mergeNestedCensusRoots({ roots: [
+      { id: 'child', path: '/home/app/secrets' }, { id: 'parent', path: '/home/app' },
+      { id: 'sibling', path: '/home/app-other' },
+    ], declarations: [{ kind: 'path', root: 'child', name: 'key', classification: 'secret', producer: 'key' }] });
+    expect(result.roots.map(root => root.id)).toEqual(['parent', 'sibling']);
+    expect(result.declarations[0]).toMatchObject({ root: 'parent', name: 'secrets/key', classification: 'secret' });
+  });
   it('composes writer roots and rewrites declaration identities consistently', () => {
     const result = installedRootCensusProducers();
     expect(new Set(result.roots.map(root => root.path)).size).toBe(result.roots.length);

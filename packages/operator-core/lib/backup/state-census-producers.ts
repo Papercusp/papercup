@@ -1,4 +1,4 @@
-import { dirname, basename } from 'node:path';
+import { dirname, basename, relative, resolve, sep } from 'node:path';
 import type { CensusDeclaration, CensusRoot, CensusEntry } from '@papercusp/backup';
 import { collectStateCensus, assertStateCensusComplete } from '@papercusp/backup';
 import type { Sql } from 'postgres';
@@ -28,6 +28,26 @@ export function installedRootCensusProducers() {
       declarations.push({ ...declaration, root });
     }
   }
+  return mergeNestedCensusRoots({ roots, declarations });
+}
+
+/** Parent roots already walk descendants; preserve child ownership by prefixing names. */
+export function mergeNestedCensusRoots(input: { roots: CensusRoot[]; declarations: CensusDeclaration[] }) {
+  const normalized = input.roots.map(root => ({ ...root, path: resolve(root.path) }));
+  const contains = (parent: CensusRoot, child: CensusRoot) => {
+    const suffix = relative(parent.path, child.path);
+    return !suffix || (!suffix.startsWith(`..${sep}`) && suffix !== '..' && !suffix.startsWith(sep));
+  };
+  const roots = normalized.filter((root, index) => !normalized.some((other, otherIndex) =>
+    otherIndex !== index && contains(other, root) && (other.path !== root.path || otherIndex < index)));
+  const declarations = input.declarations.map(declaration => {
+    const source = normalized.find(root => root.id === declaration.root);
+    if (!source) throw new Error('Census declaration has no root');
+    const parent = roots.find(root => contains(root, source));
+    if (!parent) throw new Error('Census root merge failed');
+    const prefix = relative(parent.path, source.path).split(sep).join('/');
+    return { ...declaration, root: parent.id, name: prefix ? `${prefix}/${declaration.name}` : declaration.name };
+  });
   return { roots, declarations };
 }
 

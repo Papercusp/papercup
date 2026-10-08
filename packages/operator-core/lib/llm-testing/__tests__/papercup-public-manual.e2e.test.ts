@@ -189,6 +189,15 @@ async function ownPortalHttps(targetPort: number) {
   }
 }
 
+async function readPortalJson(page: import('@playwright/test').Page, path: string) {
+  // Keep history on the browser's pinned TLS transport and secure cookie jar.
+  // Playwright's separate APIRequestContext does not inherit Chromium's trust.
+  return page.evaluate(async (path) => {
+    const response = await fetch(path, { credentials: 'same-origin', signal: AbortSignal.timeout(2000) });
+    return { status: response.status, body: await response.json() };
+  }, path);
+}
+
 describe('public manual isolated HTTPS transport', () => {
   it('trusts only its fixture certificate and preserves the production origin guard through the Portal proxy', async () => {
     const { createServer: createHttpServer } = await import('node:http');
@@ -235,8 +244,15 @@ describe('public manual isolated HTTPS transport', () => {
     }
   }, 20_000);
 
-  it.runIf(process.env.PAPERCUSP_TEST_PUBLIC_PORTAL === '1')('opens the isolated HTTPS origin with certificate-specific Chromium trust', async () => {
-    const tls = await ownPortalHttps(await freeLoopbackPort());
+  it.runIf(process.env.PAPERCUSP_TEST_PUBLIC_PORTAL === '1')('opens the isolated HTTPS origin and reads authenticated history with certificate-specific Chromium trust', async () => {
+    const cookieValue = 'disposable-history-control';
+    const upstream = createServer((request, response) => {
+      const authorized = request.headers.cookie?.includes(`__Host-papercusp_session=${cookieValue}`);
+      response.writeHead(authorized ? 200 : 401, { 'content-type': 'application/json' });
+      response.end(JSON.stringify(authorized ? { turns: [{ role: 'assistant', text: 'saved-history-control' }] } : { error: 'unauthorized' }));
+    });
+    await new Promise<void>((ready) => upstream.listen(0, '127.0.0.1', ready));
+    const tls = await ownPortalHttps((upstream.address() as { port: number }).port);
     let browser: import('@playwright/test').Browser | undefined;
     try {
       const { chromium } = await import('playwright');
@@ -245,9 +261,20 @@ describe('public manual isolated HTTPS transport', () => {
       expect((await page.goto(`${tls.origin}/__public_manual_tls_preflight`))?.ok()).toBe(true);
       expect(await page.locator('body').innerText()).toBe('public-manual-tls-ready');
       expect(new URL(page.url()).protocol).toBe('https:');
+      expect((await readPortalJson(page, '/history')).status).toBe(401);
+      await page.context().addCookies([publicManualHostedCookie(tls.origin, cookieValue)]);
+      expect(await readPortalJson(page, '/history')).toEqual({
+        status: 200, body: { turns: [{ role: 'assistant', text: 'saved-history-control' }] },
+      });
     } finally {
       try { await browser?.close(); }
-      finally { await tls.close(); }
+      finally {
+        try { await tls.close(); }
+        finally {
+          upstream.closeAllConnections();
+          await new Promise<void>((ready) => upstream.close(() => ready()));
+        }
+      }
     }
   }, 30_000);
 });
@@ -1058,9 +1085,9 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
       const historyPath = `/api/papercup-chat/conversations/${chatId}/turns`;
       stage = 'persisted-history';
       await expect.poll(async () => {
-        const saved = await context.request.get(`${origin}${historyPath}`);
-        expect(saved.ok()).toBe(true);
-        history = await saved.json();
+        const saved = await readPortalJson(page, historyPath);
+        expect(saved.status).toBe(200);
+        history = saved.body;
         return history!.turns?.some((turn) => turn.role === 'assistant' && turn.text.includes(publicCanary)) ?? false;
       }, { timeout: 15_000, interval: 250 }).toBe(true);
       expect(history!.turns?.find((turn) => turn.role === 'user')).toMatchObject({ text: question, source: 'text_typed' });
