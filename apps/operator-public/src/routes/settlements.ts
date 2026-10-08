@@ -28,7 +28,7 @@ import {
   type CommerceEvent,
 } from '@papercusp/operator-core/lib/p2p/commerce-events.ts';
 import type { CumulativePaymentVoucher } from '@papercusp/operator-core/lib/p2p/microcharge.ts';
-import { paymentVoucherDigest, unsignedVoucher } from '@papercusp/operator-core/lib/p2p/microcharge.ts';
+import { paymentVoucherDigest, unsignedVoucher, verifyPaymentVoucherSignature } from '@papercusp/operator-core/lib/p2p/microcharge.ts';
 import { isIdentityReleaseSkuRef, verifyIdentityPerUseOffer } from '@papercusp/operator-core/lib/cupboard/identity-per-use-offer.ts';
 import {
   REVENUE_SHARES,
@@ -371,6 +371,10 @@ export function settlementsRoute(
         batches,
       }),
       vouchers: pending.map(voucherFromReceipt),
+      verifySignature: (voucher) => verifyPaymentVoucherSignature(voucher, {
+        channelId: channel.channelId, payer: channel.principalId,
+        pubkeyBase64: channel.payerPubkeyBase64 ?? '',
+      }),
       nowMs,
       settlementId: `settlement:${channelId}:${pending[pending.length - 1]!.cumulativeClaimMicros}`,
       splitManifest: receiptSplit.manifest,

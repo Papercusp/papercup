@@ -208,10 +208,16 @@ const receiptOffer = (r: StoredUsageReceipt) => ({ skuRef: r.releaseRef, meterUn
 
 /** Insertion order is authoritative; signed completion timestamps may run backwards across channels. */
 export async function readIdentityMarkupRemainder(db: D1Database, payer: string, offerId: string): Promise<bigint> {
+  const legacy = await db.prepare(`SELECT 1 AS legacy FROM usage_receipts
+    WHERE payer = ? AND offer_id = ? AND release_ref LIKE 'identity-release:%'
+      AND identity_ceiling_micros IS NULL LIMIT 1`).bind(payer, offerId).first();
+  if (legacy) throw new Error('identity-history-unverifiable');
   const row = await db.prepare(`SELECT markup_remainder FROM usage_receipts
     WHERE payer = ? AND offer_id = ? AND identity_ceiling_micros IS NOT NULL AND state = 'settled'
     ORDER BY rowid DESC LIMIT 1`).bind(payer, offerId).first<{ markup_remainder: number }>();
-  if (row && !Number.isSafeInteger(row.markup_remainder)) throw new Error('unreadable identity remainder');
+  if (row && (!Number.isSafeInteger(row.markup_remainder) || row.markup_remainder < 0 || row.markup_remainder >= 10000)) {
+    throw new Error('unreadable identity remainder');
+  }
   return row ? BigInt(row.markup_remainder) : 0n;
 }
 

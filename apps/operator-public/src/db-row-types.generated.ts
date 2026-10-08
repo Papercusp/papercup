@@ -2,12 +2,12 @@
  * GENERATED FILE — do not edit by hand.
  *
  * Source: apps/operator-public/migrations/*.sql applied in filename order
- * Migration digest: 36d09c819dbeabf2f9416f5c354fe354cc16b711a984b5c5a403f384cc56573d
+ * Migration digest: 62b190b1268d6088c667d13db8bd430521aa62dc62f8b9a8a91653209be658be
  * Regenerate with: npm run db:types:generate --workspace @papercusp/cupboard-worker
  */
 
 export const GENERATED_MIGRATION_DIGEST =
-  "36d09c819dbeabf2f9416f5c354fe354cc16b711a984b5c5a403f384cc56573d";
+  "62b190b1268d6088c667d13db8bd430521aa62dc62f8b9a8a91653209be658be";
 export const GENERATED_TABLES = [
   "audit",
   "banned_publisher_pubkeys",
@@ -311,6 +311,8 @@ export interface PaymentChannelsRow {
   created_at_ms: number;
   updated_at_ms: number;
   closed_at_ms: number | null;
+  payer_pubkey_base64: string | null;
+  payer_key_proof: string | null;
 }
 
 export interface PrepaidCreditBalancesRow {

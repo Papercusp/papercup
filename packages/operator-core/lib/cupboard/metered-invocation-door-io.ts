@@ -32,10 +32,12 @@ import {
   type MeterDeclaration,
   type MeteredRefusalCode,
   type PerUseTermsInput,
+  type CloseMeteredInvocationInput,
 } from '../p2p/metered-invocation';
 import type { CumulativePaymentVoucher, MicrochargeChannel } from '../p2p/microcharge';
 import { resolveCupboardBaseUrl } from './base-url';
-import type { InstalledPluginProvenance } from './install-plugin-core';
+import type { InstalledPluginProvenance } from './types';
+import { quoteIdentityInferenceTurn } from './identity-per-use-offer';
 
 /** Reused verbatim from the checkout door so both share one transport seam. */
 export interface MeteredTransportDeps {
@@ -104,6 +106,12 @@ export interface UsageReceiptWire {
   readonly state: 'reserved' | 'settled';
   readonly reservedAtMs: number;
   readonly settledAtMs: number | null;
+  readonly identityInference?: {
+    readonly ceilingMicros: string;
+    readonly billedInferenceMicros: string | null;
+    readonly priorRemainderNumerator: string | null;
+    readonly remainderNumerator: string | null;
+  };
 }
 
 export interface ChannelUsageWire {
@@ -111,6 +119,17 @@ export interface ChannelUsageWire {
   readonly escrowMicros: string;
   readonly committedMicros: string;
   readonly receipts: readonly UsageReceiptWire[];
+  /** Requested explicitly; the hosted payer/offer history spans every channel. */
+  readonly identityMarkupOrigin?: IdentityMarkupOriginWire;
+}
+
+export interface IdentityMarkupOriginWire {
+  readonly offerId: string;
+  readonly payer: string;
+  readonly seller: string;
+  readonly offer: { readonly skuRef: string; readonly meterUnit: string; readonly unitPriceMicros: number;
+    readonly priceVersion: string; readonly splitManifestHash: string };
+  readonly remainderNumerator: string;
 }
 
 const fail = (
@@ -306,9 +325,11 @@ export function channelFromUsage(usage: ChannelUsageWire): MicrochargeChannel {
 export async function readChannelUsage(
   channelId: string,
   deps: MeteredTransportDeps = {},
+  identityOfferId?: string,
 ): Promise<{ ok: true; usage: ChannelUsageWire } | MeteredDoorFailure> {
   const called = await callHostedDoor(
-    { path: `${CHANNEL_USAGE_PATH}/${encodeURIComponent(channelId)}/usage`, method: 'GET', expect: [200] },
+    { path: `${CHANNEL_USAGE_PATH}/${encodeURIComponent(channelId)}/usage` +
+      (identityOfferId === undefined ? '' : `?identityOfferId=${encodeURIComponent(identityOfferId)}`), method: 'GET', expect: [200] },
     deps,
   );
   if (!('usage' in called) && called.ok !== true) return called as MeteredDoorFailure;
@@ -347,6 +368,7 @@ export interface ReserveMeteredUnitInput {
   readonly expiresAtMs: number;
   readonly nowMs?: number;
   readonly signVoucher: MeteredByteSigner;
+  readonly identityInferenceCeilingMicros?: bigint;
 }
 
 export interface ReserveMeteredUnitOk {
@@ -371,6 +393,14 @@ export async function reserveMeteredUnit(
 ): Promise<ReserveMeteredUnitOk | MeteredDoorFailure> {
   const declared = declareMeter(input.terms);
   if (!declared.ok) return fail(declared.code, declared.detail, 0, 'local-interception');
+  if (input.releaseRef.startsWith('identity-release:')) {
+    if (typeof input.terms.unitPriceMicros !== 'number') return fail('identity-ceiling-mismatch', 'identity terms require an exact catalog price', 0, 'local-interception');
+    const q = quoteIdentityInferenceTurn({ offer: { skuRef: input.releaseRef, ...input.terms, unitPriceMicros: input.terms.unitPriceMicros },
+      billedInferenceMicros: 0n, inferenceCeilingMicros: input.identityInferenceCeilingMicros ?? 0n });
+    if (!q.ok || q.reservationQuantity !== input.quantity) return fail('identity-ceiling-mismatch', 'the identity ceiling must match the signed block quantity', 0, 'local-interception');
+  } else if (input.identityInferenceCeilingMicros !== undefined) {
+    return fail('identity-ceiling-mismatch', 'ordinary units cannot carry identity ceilings', 0, 'local-interception');
+  }
 
   const usage = await readChannelUsage(input.channelId, deps);
   if (usage.ok !== true) return usage;
@@ -416,7 +446,8 @@ export async function reserveMeteredUnit(
     {
       path: METERED_INVOCATIONS_PATH,
       method: 'POST',
-      body: { channelId: input.channelId, offerId: input.offerId, voucher: voucherWire(opened.voucher) },
+      body: { channelId: input.channelId, offerId: input.offerId, voucher: voucherWire(opened.voucher),
+        ...(input.identityInferenceCeilingMicros !== undefined ? { identityInferenceCeilingMicros: String(input.identityInferenceCeilingMicros) } : {}) },
       expect: [201],
     },
     deps,
@@ -439,6 +470,7 @@ export interface SettleMeteredUnitInput {
   readonly actualQuantity?: bigint;
   readonly occurredAtMs?: number;
   readonly signReceipt: MeteredByteSigner;
+  readonly identityInference?: { readonly billedInferenceMicros: bigint; readonly priorRemainderNumerator: bigint };
 }
 
 export interface SettleMeteredUnitOk {
@@ -491,12 +523,23 @@ export async function settleMeteredUnit(
 
   const occurredAtMs = input.occurredAtMs ?? Date.now();
   const quantityArg = input.actualQuantity != null ? { actualQuantity: input.actualQuantity } : {};
+  let identityArg: Pick<CloseMeteredInvocationInput, 'identityInference'> = {};
+  if (input.identityInference) {
+    if (!reserved.identityInference || !/^[1-9]\d*$/.test(reserved.identityInference.ceilingMicros)) {
+      return fail('identity-settlement-mismatch', 'hosted reservation lacks an exact identity ceiling', 0, 'local-interception');
+    }
+    identityArg = { identityInference: { ...input.identityInference,
+      inferenceCeilingMicros: BigInt(reserved.identityInference.ceilingMicros),
+      offer: { skuRef: reserved.releaseRef, meterUnit: reserved.meterUnit,
+        unitPriceMicros: Number(reserved.unitPriceMicros), priceVersion: reserved.priceVersion, splitManifestHash: reserved.splitManifestHash } } };
+  }
 
   let receiptBytes: Buffer | null = null;
   const probe = closeMeteredInvocation({
     channel,
     voucher,
     ...quantityArg,
+    ...identityArg,
     occurredAtMs,
     signReceipt: (bytes) => {
       receiptBytes = bytes;
@@ -517,6 +560,7 @@ export async function settleMeteredUnit(
     channel,
     voucher,
     ...quantityArg,
+    ...identityArg,
     occurredAtMs,
     signReceipt: () => signature,
   });
@@ -529,6 +573,9 @@ export async function settleMeteredUnit(
       body: {
         channelId: input.channelId,
         receiptSignature: signature,
+        occurredAtMs,
+        ...(input.identityInference ? { billedInferenceMicros: String(input.identityInference.billedInferenceMicros),
+          priorRemainderNumerator: String(input.identityInference.priorRemainderNumerator) } : {}),
         ...(input.actualQuantity != null ? { actualQuantity: String(input.actualQuantity) } : {}),
       },
       expect: [200],
@@ -537,5 +584,21 @@ export async function settleMeteredUnit(
   );
   if (called.ok !== true) return called;
 
-  return { ok: true, amountMicros: closed.amountMicros, receipt: (called.payload.receipt ?? {}) as UsageReceiptWire };
+  const receipt = called.payload.receipt as UsageReceiptWire | undefined;
+  if (!receipt || receipt.state !== 'settled' || receipt.channelId !== reserved.channelId || receipt.usageNonce !== reserved.usageNonce ||
+      receipt.amountMicros !== String(closed.amountMicros) || receipt.meterQuantity !== String(closed.receipt.meterQuantity) ||
+      receipt.receiptSignature !== signature || receipt.settledAtMs !== occurredAtMs || receipt.voucherDigest !== reserved.voucherDigest) {
+    return fail('settlement-binding-mismatch', 'hosted acknowledgement differs from the signed settlement', 200, 'hosted-door');
+  }
+  if (identityArg.identityInference) {
+    const q = quoteIdentityInferenceTurn(identityArg.identityInference);
+    const exact = receipt.identityInference;
+    if (!q.ok || !exact || exact.ceilingMicros !== reserved.identityInference!.ceilingMicros ||
+        exact.billedInferenceMicros !== String(identityArg.identityInference.billedInferenceMicros) ||
+        exact.priorRemainderNumerator !== String(identityArg.identityInference.priorRemainderNumerator) ||
+        exact.remainderNumerator !== String(q.remainderNumerator)) {
+      return fail('settlement-binding-mismatch', 'hosted exact-cost acknowledgement differs from the durable quotation', 200, 'hosted-door');
+    }
+  }
+  return { ok: true, amountMicros: closed.amountMicros, receipt };
 }

@@ -22,6 +22,8 @@
 import { createHash } from 'node:crypto';
 import { canonicalJson } from '../authority/authority-rpc-envelope';
 import { verifyFinalizationCertificate, type FinalizationCertificate } from '../agent-tools/plans/governance-round';
+import { productionPlanAdmissionCertificateSource, type AuthenticatedGovernanceFinalization,
+  type AuthenticatedGovernanceFinalizationSource, type GovernanceFinalizationInput } from '../agent-tools/plans/plan-admission-certificate-source';
 import { authorizeTreasuryTransfer, type SafeTreasuryConfig, type TreasuryTransferRequest } from './treasury-controls';
 import { buildEvmBatchSettlementRequest, type EvmBatchSettlementRequest, type EvmSettlementConfig } from './evm-settlement';
 import type { PaymentChannelState } from './payment-channel';
@@ -68,6 +70,7 @@ export interface MirrorPlan {
 }
 
 export type BridgeRefusalCode =
+  | 'unverified-governance'
   | 'certificate-not-admitted'
   | 'certificate-tampered'
   | 'decision-not-mirrorable'
@@ -109,10 +112,18 @@ export function governanceActionHash(action: BridgeAction): string {
  * Build the on-chain mirror for a finalized decision, or refuse. Pure: it never
  * submits anything — submission is the injected edge (`executeOnChainMirror`).
  */
-export function planOnChainMirror(input: MirrorRequest): BridgeResult {
+export function planOnChainMirror(input: MirrorRequest, decision?: AuthenticatedGovernanceFinalization): BridgeResult {
   const { certificate, action } = input;
   if (!verifyFinalizationCertificate(certificate)) {
     return { ok: false, code: 'certificate-tampered', detail: 'finalization certificate hash does not match its contents' };
+  }
+  // This context belongs to the trusted execution edge, never the wire request.
+  // The production source authenticates owner policy, keys, ballots and current
+  // controls and reconstructs the verdict. A self-computable hash proves none of that.
+  if (!decision?.certificate || decision.governance?.roundId !== certificate.roundId ||
+      decision.governance.status !== 'finalized' ||
+      canonicalJson(decision.certificate) !== canonicalJson(certificate)) {
+    return { ok: false, code: 'unverified-governance', detail: 'the exact decision requires independently authenticated current governance' };
   }
   if (input.authorizedByCertificateHash !== certificate.certificateHash) {
     return { ok: false, code: 'action-not-bound-to-certificate', detail: 'action was authorized under a different governance round' };
@@ -211,8 +222,30 @@ export interface OnChainSubmitter {
   submit(plan: MirrorPlan): Promise<{ ok: true; txHash: string } | { ok: false; detail: string }>;
 }
 
+export interface OnChainGovernanceSource {
+  resolve(certificate: FinalizationCertificate): Promise<AuthenticatedGovernanceFinalization>;
+}
+
+/** Pin workspace, pot policy and clock at the trusted edge, independently of requests. */
+export function createOnChainGovernanceSource(
+  context: Omit<GovernanceFinalizationInput, 'planRevisionHash' | 'nowMs'> & { nowMs: () => number },
+  source: AuthenticatedGovernanceFinalizationSource = productionPlanAdmissionCertificateSource,
+): OnChainGovernanceSource {
+  return { async resolve(certificate) {
+    const nowMs = context.nowMs();
+    const resolved = await source.resolveFinalization({ ...context,
+      planRevisionHash: certificate.planRevisionHash, nowMs });
+    return resolved.certificate && nowMs <= resolved.certificate.finalizedAtMs + context.policy.ratificationWindowSec * 1_000
+      ? resolved : { certificate: null, governance: resolved.governance };
+  } };
+}
+
 /** Records which mirrors already executed, so a replayed certificate cannot double-spend. */
 export interface MirrorLedger {
+  /** Serialize the check, submission and receipt for one certificate. Durable
+   * implementations must enforce this across their workers, not just one process.
+   * Submitters must also honor mirrorId as an idempotency key across crash/retry. */
+  runExclusive<T>(certificateHash: string, execute: () => Promise<T>): Promise<T>;
   has(mirrorId: string): Promise<boolean> | boolean;
   record(mirrorId: string, txHash: string): Promise<void> | void;
 }
@@ -234,8 +267,17 @@ export async function executeOnChainMirror(input: {
   request: MirrorRequest;
   submitter: OnChainSubmitter;
   ledger: MirrorLedger;
+  /** Independently configured authority/store source. Omission fails closed. */
+  governance?: OnChainGovernanceSource;
 }): Promise<MirrorExecution> {
-  const planned = planOnChainMirror(input.request);
+  // Pin the request across awaits. The wire caller cannot substitute action
+  // bytes after the authority or bounded adapter has validated them.
+  const request = structuredClone(input.request);
+  return input.ledger.runExclusive(request.certificate.certificateHash, async (): Promise<MirrorExecution> => {
+  let decision: AuthenticatedGovernanceFinalization | undefined;
+  try { decision = await input.governance?.resolve(request.certificate); }
+  catch { /* An unreadable authority is not approval. */ }
+  const planned = planOnChainMirror(request, decision);
   if (!planned.ok) {
     return {
       ok: false,
@@ -256,12 +298,27 @@ export async function executeOnChainMirror(input: {
   }
   await input.ledger.record(plan.mirrorId, submitted.txHash);
   return { ok: true, mirrorId: plan.mirrorId, txHash: submitted.txHash, replayed: false, decisionStanding: true };
+  });
 }
 
 /** In-memory ledger for tests and single-process pilots; production supplies a durable one. */
 export function createInMemoryMirrorLedger(): MirrorLedger & { entries(): ReadonlyMap<string, string> } {
   const seen = new Map<string, string>();
+  const running = new Map<string, Promise<void>>();
   return {
+    async runExclusive<T>(id: string, execute: () => Promise<T>): Promise<T> {
+      const preceding = running.get(id) ?? Promise.resolve();
+      let release!: () => void;
+      const barrier = new Promise<void>(resolve => { release = resolve; });
+      const queued = preceding.then(() => barrier);
+      running.set(id, queued);
+      await preceding;
+      try { return await execute(); }
+      finally {
+        release();
+        if (running.get(id) === queued) running.delete(id);
+      }
+    },
     has: (id) => seen.has(id),
     record: (id, txHash) => {
       seen.set(id, txHash);

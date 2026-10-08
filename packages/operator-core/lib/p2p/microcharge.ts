@@ -7,6 +7,7 @@
  */
 import { createHash } from 'node:crypto';
 import { canonicalJson } from '../authority/authority-rpc-envelope';
+import { verifyEd25519 } from '../identity/ed25519';
 
 export interface CumulativePaymentVoucher {
   readonly channelId: string;
@@ -57,6 +58,27 @@ export function paymentVoucherSigningBytes(voucher: Omit<CumulativePaymentVouche
 
 export function paymentVoucherDigest(voucher: Omit<CumulativePaymentVoucher, 'signature'>): string {
   return createHash('sha256').update(paymentVoucherSigningBytes(voucher)).digest('hex');
+}
+
+/** Authority comes from the authenticated channel, never from voucher fields. */
+export interface PaymentVoucherAuthority {
+  readonly channelId: string;
+  readonly payer: string;
+  readonly pubkeyBase64: string;
+}
+
+export function verifyPaymentVoucherSignature(voucher: CumulativePaymentVoucher, authority: PaymentVoucherAuthority): boolean {
+  try {
+    if (voucher.channelId !== authority.channelId || voucher.payer !== authority.payer ||
+        !authority.payer.trim() || !/^[A-Za-z0-9+/]{43}=$/.test(authority.pubkeyBase64) ||
+        !/^[A-Za-z0-9+/]{86}==$/.test(voucher.signature)) return false;
+    const key = Buffer.from(authority.pubkeyBase64, 'base64');
+    const signature = Buffer.from(voucher.signature, 'base64');
+    if (key.toString('base64') !== authority.pubkeyBase64 || signature.toString('base64') !== voucher.signature) return false;
+    return verifyEd25519(paymentVoucherSigningBytes(unsignedVoucher(voucher)), authority.pubkeyBase64, signature);
+  } catch {
+    return false;
+  }
 }
 
 export interface SignedUsageReceipt {

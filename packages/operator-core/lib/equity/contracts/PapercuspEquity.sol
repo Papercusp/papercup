@@ -258,7 +258,9 @@ contract PapercuspEquity is ERC20, ERC20Votes {
         Holder storage h = holders[id];
         uint208 shares = uint208(balanceOf(h.wallet));
         uint208 eligible = h.eligible && h.accepted ? 1 : 0;
-        uint208 member = eligible == 1 && shares != 0 ? 1 : 0;
+        // Transfer/issuance eligibility cannot erase existing ownership ballots.
+        // Otherwise freezing the last holder makes governance restoration impossible.
+        uint208 member = h.accepted && shares != 0 ? 1 : 0;
         uint208 oldMember = _membership[id].latest();
         _shares[id].push(clock(), shares);
         _eligibility[id].push(clock(), eligible);

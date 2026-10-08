@@ -1,3 +1,4 @@
+import { signPaymentTestBytes, signPaymentTestVoucher, paymentTestVerifier } from './_payment-voucher-fixture';
 /**
  * P-031 metering interception — the pure core and the BYOC honor-path leg.
  *
@@ -50,7 +51,7 @@ function unit(overrides: Partial<BillableUnit> = {}): BillableUnit {
   };
 }
 
-const signVoucher = () => 'payer-signature';
+const signVoucher = signPaymentTestBytes;
 const signReceipt = () => 'seller-signature';
 
 function localTurn(overrides: Partial<LocalMeteredTurnState> = {}, deps: {
@@ -287,7 +288,7 @@ describe('metering interception on a billable unit', () => {
       pricePerUnitMicros: 250n,
       priceVersion: 'v3',
       splitManifestHash: TERMS.splitManifestHash,
-      signature: 'payer-signature',
+      signature: expect.stringMatching(/^[A-Za-z0-9+/]{86}==$/),
     });
     // 4 units x 250 micros, reserved against a channel that had claimed nothing.
     expect(opened.voucher.cumulativeClaimMicros).toBe(1_000n);
@@ -413,6 +414,7 @@ describe('metering interception on a billable unit', () => {
 
     expect(
       acceptMeteredVoucher({
+        verifySignature: paymentTestVerifier('ch_1', 'org_buyer'),
         channel: first.channel,
         meter: meter(),
         unit: unit({ usageNonce: 'n-2' }),
@@ -437,8 +439,9 @@ describe('metering interception on a billable unit', () => {
 
   it('re-derives a wire voucher against the DECLARED meter and refuses forged terms', () => {
     const channel = createMicrochargeChannel('ch_1', 10_000n);
-    const honest = { ...buildUsageVoucher(channel, meter(), unit()), signature: 'payer-signature' };
-    expect(acceptMeteredVoucher({ channel, meter: meter(), unit: unit(), voucher: honest, nowMs: 1_000 }).ok).toBe(true);
+    const honest = signPaymentTestVoucher({ ...buildUsageVoucher(channel, meter(), unit()), signature: '' });
+    expect(acceptMeteredVoucher({
+        verifySignature: paymentTestVerifier('ch_1', 'org_buyer'), channel, meter: meter(), unit: unit(), voucher: honest, nowMs: 1_000 }).ok).toBe(true);
 
     for (const [label, forged] of [
       ['a discounted unit price', { ...honest, pricePerUnitMicros: 1n }],
@@ -448,21 +451,34 @@ describe('metering interception on a billable unit', () => {
       ['a substituted seller', { ...honest, seller: 'gh:9999' }],
     ] as const) {
       expect(
-        acceptMeteredVoucher({ channel, meter: meter(), unit: unit(), voucher: forged, nowMs: 1_000 }),
+        acceptMeteredVoucher({
+        verifySignature: paymentTestVerifier('ch_1', 'org_buyer'), channel, meter: meter(), unit: unit(), voucher: forged, nowMs: 1_000 }),
         label,
       ).toMatchObject({ ok: false, code: 'terms-mismatch' });
     }
 
     expect(
       acceptMeteredVoucher({
+        verifySignature: paymentTestVerifier('ch_1', 'org_buyer'),
         channel,
         meter: meter(),
         unit: unit(),
         voucher: honest,
         nowMs: 1_000,
-        verifySignature: () => false,
+        // Replace the trusted verifier with a refusal for this negative control.
+        ...{ verifySignature: () => false },
       }),
     ).toMatchObject({ ok: false, code: 'invalid-voucher' });
+  });
+
+  it('refuses omitted and throwing authentication before reserving a real signed voucher', () => {
+    const channel = createMicrochargeChannel('ch_1', 10_000n);
+    const honest = signPaymentTestVoucher({ ...buildUsageVoucher(channel, meter(), unit()), signature: '' });
+    const input = { channel, meter: meter(), unit: unit(), voucher: honest, nowMs: 1_000 };
+    expect(acceptMeteredVoucher(input)).toMatchObject({ ok: false, code: 'invalid-voucher' });
+    expect(acceptMeteredVoucher({ ...input, verifySignature: () => { throw new Error('unavailable authority'); } }))
+      .toMatchObject({ ok: false, code: 'invalid-voucher' });
+    expect(channel.reservations).toEqual({});
   });
 
   it('refuses an expired voucher at the interception point', () => {

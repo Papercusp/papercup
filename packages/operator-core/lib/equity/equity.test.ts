@@ -137,10 +137,10 @@ describe('actual equity ownership and equity-paid returns on Cancun EVM', () => 
     await e.govern([{ contract: t, name: 'setEligibility', args: [2n, false] }], [0, 1]);
     await expect(e.send(t, 'transfer', [e.accounts[0], 1n], 1)).rejects.toThrow('Ineligible');
     const id = digest('eligibility-record');
-    await e.govern([{ contract: t, name: 'declareReturn', args: [id, 500] }]);
+    await e.govern([{ contract: t, name: 'declareReturn', args: [id, 500] }], [0, 1]);
     expect(await e.read(t, 'returnEntitlement', [id, 2n])).toBe(0n);
     expect(await e.read(t, 'returnEntitlement', [id, 1n])).toBe(4500n);
-    await e.govern([{ contract: t, name: 'setEligibility', args: [2n, true] }]);
+    await e.govern([{ contract: t, name: 'setEligibility', args: [2n, true] }], [0, 1]);
     await expect(e.send(t, 'claimReturn', [id], 1)).rejects.toThrow('NothingEarned');
     expect(await e.read(t, 'balanceOf', [e.accounts[1]])).toBe(10_000n);
   }, 60_000);

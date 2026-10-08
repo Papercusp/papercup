@@ -27,7 +27,7 @@ import {
   type MeteredRefusalCode,
 } from '@papercusp/operator-core/lib/p2p/metered-invocation.ts';
 import type { CumulativePaymentVoucher } from '@papercusp/operator-core/lib/p2p/microcharge.ts';
-import { paymentVoucherDigest, unsignedVoucher } from '@papercusp/operator-core/lib/p2p/microcharge.ts';
+import { paymentVoucherDigest, unsignedVoucher, verifyPaymentVoucherSignature } from '@papercusp/operator-core/lib/p2p/microcharge.ts';
 import { quoteIdentityInferenceTurn } from '@papercusp/operator-core/lib/cupboard/identity-per-use-offer';
 import type { Env } from '../env.ts';
 import { AuthError, resolveGithubBearer } from '../auth.ts';
@@ -259,6 +259,11 @@ export function meteredUsageRoute(): Hono<{ Bindings: Env }> {
       unit,
       voucher,
       nowMs: Date.now(),
+      verifySignature: (candidate) => verifyPaymentVoucherSignature(candidate, {
+        channelId: channel.channelId,
+        payer: channel.principalId,
+        pubkeyBase64: channel.payerPubkeyBase64 ?? '',
+      }),
     });
     if (!accepted.ok) return c.json({ error: accepted.code, detail: accepted.detail }, statusFor(accepted.code));
 
@@ -388,11 +393,33 @@ export function meteredUsageRoute(): Hono<{ Bindings: Env }> {
       return c.json({ error: 'forbidden', detail: 'only the funding principal or a named seller can read this usage' }, 403);
     }
     const visible = channel.principalId === auth.principalId ? receipts : receipts.filter((r) => r.seller === auth.principalId);
+    const identityOfferId = c.req.query('identityOfferId');
+    let identityMarkupOrigin;
+    if (identityOfferId !== undefined) {
+      const offered = await getCommerceOffer(c.env.DB, identityOfferId);
+      if (!offered || !offered.perUse || !offered.skuRef.startsWith('identity-release:')) {
+        return c.json({ error: 'unknown_identity_offer' }, 404);
+      }
+      if (!offered.active || !offered.productActive) return c.json({ error: 'inactive_offer' }, 422);
+      if (channel.principalId !== auth.principalId && !visible.some((r) => r.offerId === identityOfferId)) {
+        return c.json({ error: 'forbidden' }, 403);
+      }
+      const offer = { skuRef: offered.skuRef, ...offered.perUse };
+      const valid = quoteIdentityInferenceTurn({ offer, billedInferenceMicros: 0n, inferenceCeilingMicros: 1n });
+      if (!valid.ok) return c.json({ error: valid.code }, 422);
+      try {
+        identityMarkupOrigin = { offerId: identityOfferId, payer: channel.principalId, seller: offered.creatorId,
+          offer, remainderNumerator: String(await readIdentityMarkupRemainder(c.env.DB, channel.principalId, identityOfferId)) };
+      } catch {
+        return c.json({ error: 'identity-history-unverifiable' }, 422);
+      }
+    }
     return c.json({
       channelId,
       escrowMicros: String(channel.escrowMicros),
       committedMicros: String(channel.committedMicros),
       receipts: visible.map(receiptJson),
+      ...(identityMarkupOrigin ? { identityMarkupOrigin } : {}),
     });
   });
 

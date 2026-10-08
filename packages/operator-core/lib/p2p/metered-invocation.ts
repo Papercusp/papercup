@@ -243,7 +243,7 @@ export interface AcceptMeteredVoucherInput {
   /** The voucher as the PAYER signed it, arriving over the wire. */
   readonly voucher: CumulativePaymentVoucher;
   readonly nowMs: number;
-  /** Cryptographic verification of the payer signature; defaults to presence. */
+  /** Trusted host cryptographic verifier. Omission or a verifier error refuses admission. */
   readonly verifySignature?: (voucher: CumulativePaymentVoucher) => boolean;
 }
 
@@ -273,8 +273,9 @@ export function acceptMeteredVoucher(input: AcceptMeteredVoucherInput): OpenMete
   if (v.priceVersion !== expected.priceVersion) return refuse('terms-mismatch', 'voucher priceVersion does not match the declared meter');
   if (v.splitManifestHash !== expected.splitManifestHash) return refuse('terms-mismatch', 'voucher splitManifestHash does not match the declared meter');
   if (!v.signature.trim()) return refuse('unsigned-voucher', 'the cumulative voucher carries no payer signature');
-  const verify = input.verifySignature ?? ((candidate: CumulativePaymentVoucher) => candidate.signature.trim().length > 0);
-  if (!verify(v)) return refuse('invalid-voucher', 'the payer signature failed verification');
+  let authenticated = false;
+  try { authenticated = input.verifySignature?.(v) === true; } catch { /* verifier failure refuses payment */ }
+  if (!authenticated) return refuse('invalid-voucher', 'the payer signature failed verification');
   const reserved = reserveMicrocharge(input.channel, v, input.nowMs);
   if (!reserved.ok) return refuse(reserved.code, reserved.detail);
   return { ok: true, channel: reserved.channel, voucher: v, reservedMicros: reserved.deltaMicros };

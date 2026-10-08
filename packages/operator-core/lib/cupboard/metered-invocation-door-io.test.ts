@@ -1,3 +1,4 @@
+import { signPaymentTestBytes, paymentTestVerifier } from '../p2p/_payment-voucher-fixture';
 /**
  * P-031 — metering interception THROUGH THE DOORS.
  *
@@ -179,7 +180,7 @@ function fakeDoor(options: { escrowMicros: bigint; failNextReserveWith?: { statu
         quantity: voucher.meterQuantity,
         expiresAtMs: voucher.expiresAtMs,
       };
-      const accepted = acceptMeteredVoucher({ channel, meter: declared.meter, unit, voucher, nowMs: NOW });
+      const accepted = acceptMeteredVoucher({ channel, meter: declared.meter, unit, voucher, nowMs: NOW, verifySignature: paymentTestVerifier(CHANNEL, PAYER) });
       if (!accepted.ok) return json({ error: accepted.code, detail: accepted.detail }, 409);
       channel = accepted.channel;
       const row: UsageReceiptWire = {
@@ -275,7 +276,7 @@ const reserveArgs = (nonce: string, quantity: bigint) => ({
   quantity,
   expiresAtMs: NOW + 60_000,
   nowMs: NOW,
-  signVoucher: signer('payer'),
+  signVoucher: signPaymentTestBytes,
 });
 
 describe('metering interception through the hosted doors', () => {
