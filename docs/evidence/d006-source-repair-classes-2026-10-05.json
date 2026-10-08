@@ -6,8 +6,8 @@
   "population": {
     "failedFiles": 124,
     "repairedFocused": 33,
-    "repairedPeerFocused": 16,
-    "openUnknown": 75
+    "repairedPeerFocused": 17,
+    "openUnknown": 74
   },
   "classes": {
     "assertion": 55,
@@ -1339,23 +1339,58 @@
     {
       "path": "packages/operator-core/lib/harness/join-hive-from-repo-incremental-federation.integration.test.ts",
       "class": "console-guard",
-      "state": "open-unknown",
-      "item": "WI-10006170",
+      "state": "repaired-peer-focused",
+      "item": "EI-24329108585573844",
       "lines": [
         13740,
         13759
       ],
       "latestLocalReceipt": {
-        "id": 20794452,
+        "id": 20905584,
         "filePath": "packages/operator-core/lib/harness/join-hive-from-repo-incremental-federation.integration.test.ts",
         "status": "pass",
-        "commitSha": "d152edfe0371ce04abb94d19eee265c7d6829809",
+        "commitSha": "9a996d182039906f402aabb590326661333734f7",
         "worktreeDirty": true,
         "isScratchConfig": false,
         "root": "<repo-root>",
-        "startedAt": "2026-10-06T00:28:42.057Z"
+        "startedAt": "2026-10-07T20:04:01.905Z"
       },
-      "latestReceiptMeaning": "Observed focused result only; causal repair attribution and complete current source/import/environment assurance remain unknown."
+      "latestReceiptMeaning": "Qualified historical focused pass only. Complete current source/import/environment, final D006 and shipment remain unverified.",
+      "registeredRepairItem": "EI-24329108585573844",
+      "repairStage": "inherited-committed-fixture-repair-qualified-historical-focused",
+      "diagnosis": "The archived successful-join fixture supplied hive_pubkey but returned no owner_device_pubkey. Production correctly refused a partial identity stamp and emitted the degraded-join error. The existing repair supplies a complete typed synthetic public identity and strengthens real persisted-registry assertions.",
+      "peerTestRun": 20795770,
+      "afterTestRun": 20905584,
+      "passed": 1,
+      "skipped": 0,
+      "testSha256": "e10ec1861b5abaf348ee9992a89ee1e2f5afbf87523c8c3b0229e7c0a618fcc8",
+      "archivedTestSha256": "4c040103fe2d59d82c91224e4e169dfc08d48e6f1389b2ebf5903eb81f1cae04",
+      "namedTestEquality": "Current named test equals committed d152edfe03/20795770; archived named bytes differ by owner identity resolver and persisted identity assertions.",
+      "sourceProofRef": "docs/evidence/d006-join-hive-source-scope-2026-10-08.json",
+      "sourceProofSha256": "ce5cf2644c6c64f7c6c1a34c9b9d392e892908eda4287f5c12d54f030f505e23",
+      "sourceEqualityScope": "1132 captured repository-worker originals stable at run end. Later measured source movement invalidates currentness; config/main-process/subprocess/native/environment assurance remains UNKNOWN.",
+      "recurrenceGuard": "The existing conventional real-PG test asserts both hive_pubkey and owner_device_pubkey in the committed home-view, fresh registry visibility at every rekey, and home-before-member rekey order. Production partial-identity refusal remains unchanged.",
+      "causalVerification": {
+        "hypothesis": "Successful-join fixture lacked owner_device_pubkey, correctly entering production partial_identity_stamp refusal despite valid registry/rekey ordering.",
+        "testResult": "Local and immutable full named suite1PASS0skip; all retained ordering and added identity assertions pass.",
+        "evidenceRefs": [
+          "/tmp/cloud-tutorial-parent-join-identity-current.log",
+          "/tmp/cloud-tutorial-ei243291-local.log",
+          "/tmp/cloud-tutorial-ei243291-clean-d152edfe.log",
+          "test-run:20795770",
+          "commit:d152edfe0371ce04abb94d19eee265c7d6829809"
+        ],
+        "testProcedure": "PAPERCUSP_TEST_RUN_HARNESS=papercusp PAPERCUSP_TEST_FILE_TIMEOUT_MS=300000 npm run lint:as-committed -- test:file --any --ref=d152edfe0371ce04abb94d19eee265c7d6829809 -- packages/operator-core/lib/harness/join-hive-from-repo-incremental-federation.integration.test.ts",
+        "contractVersion": 2,
+        "actualObservation": "Current baseline logs missing owner_device_pubkey degraded join and fails. Changing only the fixture identity and strengthening persisted-field oracle gives clean committedPASS with real registry/rekey checks.",
+        "distinguishingTest": "Supply owner public key through the existing fixture resolver, assert both identity fields in real persisted registry, and retain fresh registry-at-rekey and home-before-member ordering assertions.",
+        "alternativeHypothesis": "Registry commit/rekey ordering is broken even with a complete identity stamp.",
+        "predictedObservations": {
+          "hypothesis": "Complete owner identity removes partial-stamp refusal; real registry commit and ordering assertions pass.",
+          "alternativeHypothesis": "Complete identity succeeds but registry visibility/order assertions fail."
+        }
+      },
+      "committedContentRef": "d152edfe0371ce04abb94d19eee265c7d6829809"
     },
     {
       "path": "packages/operator-core/lib/experiment/producer-lifecycle-store.integration.test.ts",
@@ -2685,8 +2720,8 @@
       "item": "WI-10006170",
       "owner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
       "scope": "diagnosis-and-placement",
-      "rootCause": "Sidecar lifetime failure is omitted asserted fault-injection diagnostics. The remaining join-hive source/import/environment assurance is unproved; historical repaired rows retain their individual evidence limits.",
-      "next": "Resolve remaining join-hive console-guard row against exact archived failure and cheapest current focused reproduction. Sidecar lifetime WI-10007273 now passes4/0skip in20905559 with strict correlated-warning assertions; dock and delegated historical proof qualifiers are preserved. No final/current full-source assurance.",
+      "rootCause": "Qualified historical fixture repairs include exact IPC-warning assertions, complete join owner identity, and delegated completion-receipt schema controls. Complete original/current source, imports and environment remain unproved.",
+      "next": "Continue remaining original failures under held parent, preserving current-source UNKNOWN after movement and sole P004 final TEST/D011 original-source STOP.",
       "archivedDiagnosticInventory": {
         "archiveSha256": "43cf66489baf7cf665a9746d097375cffc7cdc6262014929c3cc398155b579f4",
         "scope": "Exact ANSI-stripped error groups from the immutable D006 archive, indexed by the existing FAIL-header line identities. These are historical symptoms, not current test verdicts or proved source causes. Candidate terminal records require completion and source-assurance review.",
@@ -2764,7 +2799,7 @@
             ],
             "observed": "res.ok=false and degraded-join console.error because hive_pubkey exists while owner_device_pubkey is missing",
             "candidateRepair": "EI-24329108585573844",
-            "candidateEvidence": "Committed completion reports a typed synthetic owner identity fixture and clean focused receipt20795770 at d152edfe0371ce04abb94d19eee265c7d6829809. This pointer alone does not establish current import/environment assurance or alter the historical census."
+            "candidateEvidence": "Recovered full terminal EI-24329108585573844 causal completion and exact clean20795770. Saved20905584 passes1/0skip/exit0 on dirty staging with unchanged named bytes and1132 stable worker originals at run end; subsequent source movement is explicitly recorded in docs/evidence/d006-join-hive-source-scope-2026-10-08.json. Row is qualified historical repaired-peer-focused; full current import/environment/final D006 assurance remains unknown."
           },
           {
             "path": "packages/operator-core/lib/fleet/sidecar-exec-lifetime.integration.test.ts",
@@ -2818,7 +2853,7 @@
         "causalVerification": "not-run; no controlled failed/passing fixture-lifecycle execution or source repair in this lane",
         "disposition": "Existing open federation issue includes this warning. Legacy EI-10726 is resolved without committed completion authority and describes hook/store errors, so it is not closure evidence for the pool-rebind warning. One of ten console-guard files investigated; no census state or population count changed."
       },
-      "countCorrection": "Four original console-guard rows are retained: delegated-tasks, dock-layouts and sidecar-exec-lifetime are qualified repaired-focused; join-hive is open-unknown. Population33 focused repairs,16 peer focused repairs,75 UNKNOWN describes historical dispositions, not current full-source readiness."
+      "countCorrection": "Four original console-guard rows retained: delegated-tasks, dock-layouts and sidecar-exec-lifetime are qualified historical repaired-focused; join-hive is repaired-peer-focused. Delegated schema controls are recorded on its row, and full original/import/environment equality remains unverified. Population33 focused,17 peer focused,74 UNKNOWN classifies historical dispositions, not current full-source readiness."
     },
     {
       "class": "unclassified",
