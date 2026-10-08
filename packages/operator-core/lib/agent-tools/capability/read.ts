@@ -9,14 +9,14 @@
 
 import { closeSync, createReadStream, existsSync, openSync, readFileSync, readSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { isAbsolute, resolve } from 'node:path';
+import { isAbsolute, resolve, sep } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { resolveCapabilityBaseDir, resolveCapabilityIntegrationRoot } from './base-dir';
 import { CHARS_PER_TOKEN_ESTIMATE, computeTurnDoors } from '../../context-doors';
 import { selectUnambiguousEvidenceRoot } from '../../evidence-root-selection';
-import { SCRATCH_SCHEME, safeScratchFilesystemPath } from '../../scratch-uri';
+import { SCRATCH_SCHEME, safeScratchFilesystemPath, scratchRoot } from '../../scratch-uri';
 import { redactSensitiveText } from '../../sensitive-text';
 import {
   SCRATCH_REFERENCE_MAGIC,
@@ -27,6 +27,12 @@ import {
 } from '../../scratch-reference';
 import { OUTPUT_EVIDENCE_CLASSES } from '../../output-envelope';
 import { resolveAgentIdentity, type ResolveIdentityCtx } from '../coordination/identity';
+import {
+  MCP_OVERFLOW_FALLBACK_SCHEME,
+  mcpOverflowFallbackIdFromUri,
+  readMcpOverflowFallbackPage,
+  readMcpOverflowFallbackPageForSource,
+} from '../../endpoint-route/routes/transport/_mcp-result-replay';
 
 /**
  * Exported so the bash-substitution audit can PIN its model to it
@@ -309,6 +315,8 @@ const capabilityReadResultSchema = z
     byte_length: z.number().int().nonnegative().optional(),
     total_bytes: z.number().int().nonnegative().optional(),
     data: z.string().optional(),
+    sha256: z.string().optional(),
+    fallback_uri: z.string().optional(),
     eof: z.boolean().optional(),
     next_cursor: z
       .object({
@@ -346,6 +354,15 @@ type ReadContext = {
   codeMode?: boolean;
   transport?: string;
   requestedStructured?: boolean;
+  uiClientId?: string | null;
+  isSuperuser?: boolean;
+  isPowerUser?: boolean;
+  workspaceId?: string | null;
+  userId?: string | null;
+  principal?: { kind?: string; slug: string; workspaceId: string } | null;
+  harnessSlug?: string | null;
+  sigVerifiedSpawn?: boolean;
+  spawnId?: string | null;
 };
 
 type SelectedLine = { line: string; index: number };
@@ -499,6 +516,129 @@ function renderByteWindow(
   };
 }
 
+type OverflowFallbackArgs = ByteReadArgs & {
+  content_indexes?: number[];
+  evidence_class?: string;
+};
+
+function overflowFallbackIdentity(ctx: ReadContext): {
+  ownerKey: string;
+  ownerId: string;
+  workspaceId: string;
+} | null {
+  const identityCtx = ctx as ReadContext & ResolveIdentityCtx;
+  const ownerKey = identityCtx.uiClientId ?? identityCtx.spawnId ?? null;
+  const workspaceId = identityCtx.workspaceId ?? identityCtx.principal?.workspaceId ?? null;
+  if (!ownerKey || !workspaceId || workspaceId === '*') return null;
+  try {
+    const ownerId = resolveAgentIdentity(
+      identityCtx.sigVerifiedSpawn &&
+      !identityCtx.isSuperuser &&
+      !identityCtx.isPowerUser &&
+      identityCtx.uiClientId
+        ? { ...identityCtx, principal: undefined }
+        : identityCtx,
+    ).ownerId;
+    return { ownerKey, ownerId, workspaceId };
+  } catch {
+    return null;
+  }
+}
+
+async function readOverflowFallback(
+  inputPath: string,
+  args: OverflowFallbackArgs,
+  ctx: ReadContext,
+  lookup: { id: string } | { source: string },
+): Promise<ReturnType<typeof err> | { content: Array<{ type: 'text'; text: string }> } | null> {
+  const identity = overflowFallbackIdentity(ctx);
+  if (!identity) {
+    return 'id' in lookup
+      ? err('forbidden_reference', 'A verified owner and concrete workspace are required to read this fallback.')
+      : null;
+  }
+  if (
+    args.byte_offset === undefined || args.byte_limit === undefined || args.raw ||
+    args.offset !== undefined || args.limit !== undefined || args.tail !== undefined ||
+    args.content_indexes !== undefined || args.evidence_class !== undefined
+  ) {
+    return err(
+      'fallback_requires_byte_window',
+      'Overflow fallback references support bounded byte pages only; use byte_offset and byte_limit with capability:read.',
+    );
+  }
+  const requestedBytes = Math.min(args.byte_limit, MAX_BYTE_PAGE);
+  const effectiveLimit = doorSafePageBytes(inputPath, requestedBytes);
+  const noPositivePageFits = effectiveLimit <= 0;
+  const normalRequestWouldBeSubFloor = requestedBytes >= MIN_PAGE_BYTES && effectiveLimit < MIN_PAGE_BYTES;
+  if (noPositivePageFits || normalRequestWouldBeSubFloor) {
+    return err(
+      'path_too_long_for_byte_window',
+      `${inputPath} leaves room for only ${Math.max(0, effectiveLimit)} fallback bytes per response. Use a shorter URI or a smaller byte_limit.`,
+    );
+  }
+  let page;
+  try {
+    page = 'id' in lookup
+      ? await readMcpOverflowFallbackPage({
+          ...identity,
+          id: lookup.id,
+          byteOffset: args.byte_offset,
+          byteLimit: effectiveLimit,
+        })
+      : await readMcpOverflowFallbackPageForSource({
+          ...identity,
+          source: lookup.source,
+          byteOffset: args.byte_offset,
+          byteLimit: effectiveLimit,
+        });
+  } catch (error) {
+    return err(
+      'fallback_unavailable',
+      `Could not read the overflow fallback: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  if (page.state === 'missing') {
+    return 'source' in lookup ? null : err('fallback_not_found', 'The overflow fallback reference was not found for this owner and workspace.');
+  }
+  if (page.state === 'pending') return err('fallback_pending', 'The fallback chunks are still being persisted. Keep the URI and retry capability:read shortly.');
+  if (page.state === 'failed') return err('fallback_failed', 'The fallback chunk write failed; the original overflow bytes could not be recovered.');
+  if (page.state === 'expired') return err('fallback_expired', 'The one-hour overflow fallback has expired.');
+  if (page.state === 'forbidden') return err('forbidden_reference', 'This overflow fallback belongs to a different owner.');
+  if (page.state === 'integrity_mismatch') return err('fallback_integrity_mismatch', 'A stored fallback chunk failed its integrity check.');
+
+  const nextCursorArgs = inputPath.startsWith('papercusp://')
+    ? { uri: inputPath, byte_offset: page.nextOffset, byte_limit: effectiveLimit }
+    : { file_path: inputPath, byte_offset: page.nextOffset, byte_limit: effectiveLimit };
+  return {
+    content: [{
+      type: 'text' as const,
+      text: JSON.stringify({
+        ok: true,
+        file_path: inputPath,
+        encoding: 'base64',
+        byte_offset: page.byteOffset,
+        byte_length: page.page.byteLength,
+        total_bytes: page.totalBytes,
+        data: page.page.toString('base64'),
+        sha256: page.sha256,
+        fallback_uri: page.uri,
+        reference: {
+          uri: page.uri,
+          source: inputPath,
+          sha256: page.sha256,
+          expires_at: page.expiresAt,
+          audience: 'owner',
+        },
+        eof: page.nextOffset === null,
+        next_cursor: page.nextOffset === null
+          ? null
+          : { tool: 'capability:read', args: { ...nextCursorArgs, byte_offset: page.nextOffset } },
+      }),
+    }],
+  };
+}
+
 function renderLargeLineWindow(
   abs: string,
   args: LineReadArgs,
@@ -578,6 +718,12 @@ export default defineTool({
     const filePath = args.file_path ?? args.uri;
     if (!filePath) return err('missing_path', 'file_path or uri must be supplied.');
 
+    if (filePath.startsWith(MCP_OVERFLOW_FALLBACK_SCHEME.slice(0, -1))) {
+      const id = mcpOverflowFallbackIdFromUri(filePath);
+      if (!id) return err('invalid_reference', 'Invalid papercusp://result fallback URI.');
+      return readOverflowFallback(filePath, args as OverflowFallbackArgs, ctx as ReadContext, { id });
+    }
+
     let abs: string;
     try {
       const baseDir = selectCapabilityReadBaseDir(filePath, resolveCapabilityBaseDir(ctx));
@@ -587,11 +733,26 @@ export default defineTool({
       return err('invalid_path', msg);
     }
 
+    const scratchSource = filePath.startsWith(`${SCRATCH_SCHEME}/`)
+      ? filePath
+      : isScratchFilesystemPath(abs)
+        ? abs
+        : null;
+
     let stat: ReturnType<typeof statSync>;
     try {
       stat = statSync(abs);
       if (stat.isDirectory()) return err('is_a_directory', `${abs} is a directory. List it with capability:list.`);
     } catch (e: unknown) {
+      if (scratchSource) {
+        const fallback = await readOverflowFallback(
+          filePath,
+          args as OverflowFallbackArgs,
+          ctx as ReadContext,
+          { source: scratchSource },
+        );
+        if (fallback) return fallback;
+      }
       const msg = e instanceof Error ? e.message : String(e);
       return err('read_failed', msg);
     }
@@ -614,6 +775,15 @@ export default defineTool({
     const boundedLineRead = args.offset !== undefined || args.limit !== undefined || args.tail !== undefined;
     if (stat.size > MAX_FILE_BYTES) {
       if (startsWithScratchReference(abs)) {
+        if (scratchSource) {
+          const fallback = await readOverflowFallback(
+            filePath,
+            args as OverflowFallbackArgs,
+            ctx as ReadContext,
+            { source: scratchSource },
+          );
+          if (fallback) return fallback;
+        }
         return err(
           'too_large',
           `${abs} is a large scratch reference; use its emitted reference cursor instead of reading the container as a plain file.`,
@@ -692,9 +862,28 @@ export default defineTool({
           ownerId,
         });
         bytes = parsed.payload;
+      } else if (scratchSource) {
+        const fallback = await readOverflowFallback(
+          filePath,
+          args as OverflowFallbackArgs,
+          ctx as ReadContext,
+          { source: scratchSource },
+        );
+        if (fallback) return fallback;
       }
     } catch (e: unknown) {
-      if (e instanceof ScratchReferenceError) return err(e.code, e.message);
+      if (e instanceof ScratchReferenceError) {
+        if (scratchSource) {
+          const fallback = await readOverflowFallback(
+            filePath,
+            args as OverflowFallbackArgs,
+            ctx as ReadContext,
+            { source: scratchSource },
+          );
+          if (fallback) return fallback;
+        }
+        return err(e.code, e.message);
+      }
       return err('invalid_reference', e instanceof Error ? e.message : String(e));
     }
 
@@ -963,6 +1152,11 @@ export function resolveReadPath(filePath: string, baseDir: string): string {
   if (filePath === '~') return homedir();
   if (filePath.startsWith('~/')) return resolve(homedir(), filePath.slice(2));
   return isAbsolute(filePath) ? filePath : resolve(baseDir, filePath);
+}
+
+function isScratchFilesystemPath(absPath: string): boolean {
+  const root = resolve(scratchRoot());
+  return absPath === root || absPath.startsWith(root + sep);
 }
 
 type CapabilityReadRootSource = 'project-dir' | 'integration-root';

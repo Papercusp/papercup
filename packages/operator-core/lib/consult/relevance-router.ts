@@ -59,6 +59,7 @@
  * reaches memory/configure, which opens PG at import time).
  */
 import type { Sql } from 'postgres';
+import { randomUUID } from 'node:crypto';
 import { D006_TRANSCRIPT_RULE, restrictedOwnerSql, restrictedTranscriptSummary } from '../personal-vault/transcript-exclusion';
 import {
   proseProfilePredicateSql,
@@ -197,6 +198,8 @@ export interface RoutingCandidate {
 
 export interface RoutingSnapshot {
   query: string;
+  /** This routing execution, separate from consultation delivery. */
+  measurement?: ExpertiseRoutingReceipt;
   /** Set by consultation creation; absent on legacy rows, never inferred. */
   deliveryIntent?: 'dispatch' | 'retrieval-only';
   /**
@@ -385,6 +388,7 @@ export interface RouteResult {
 }
 
 export interface ConsultRouteParams {
+  telemetry?: { caller: string; policy: string; buildSha: string | null; correlationId?: string };
   workspaceId: string;
   /** The asking agent — excluded from candidacy ("no one knows more than you
    * do" must be reachable, D-003). */
@@ -418,6 +422,9 @@ export interface ConsultRouteParams {
 }
 
 export interface ConsultRouteDeps {
+  recordTelemetry?: (receipt: ExpertiseRoutingReceipt) => void | Promise<void>;
+  monotonicNow?: () => number;
+  measure?: <T>(stage: ExpertiseRoutingStage, work: () => Promise<T>) => Promise<T>;
   getSql: () => Sql;
   /** null = no embedder available this host right now (honest degrade). */
   embed: ConsultEmbedder | null;
@@ -645,10 +652,77 @@ async function restrictedExpertsWithheld(
   return { restricted_turns: summary.turns, restricted_owners: summary.owners, rule: D006_TRANSCRIPT_RULE };
 }
 
-export async function routeConsult(
+export type ExpertiseRoutingStage = 'disclosure' | 'embedding' | 'transcripts' | 'verification' | 'authorship' | 'liveness' | 'ranking';
+export interface ExpertiseRoutingReceipt {
+  schemaVersion: 1;
+  correlationId: string;
+  workspaceId: string;
+  requesterId: string;
+  caller: string;
+  policy: string;
+  buildSha: string | null;
+  startedAt: string;
+  durationMs: number;
+  outcome: 'returned' | 'degraded' | 'threw';
+  verdict: RouteResult['verdict'] | null;
+  errorCode: string | null;
+  /** Missing means not exercised, never a zero-duration observation. */
+  stages: Partial<Record<ExpertiseRoutingStage, { durationMs: number; outcome: 'returned' | 'threw' }>>;
+}
+
+/** Measure the shared seam, including exceptions before a consult row exists. */
+export async function routeConsult(params: ConsultRouteParams, deps: ConsultRouteDeps): Promise<RouteResult> {
+  const clock = deps.monotonicNow ?? (() => performance.now());
+  const started = clock();
+  const receipt: ExpertiseRoutingReceipt = {
+    schemaVersion: 1, correlationId: params.telemetry?.correlationId ?? randomUUID(),
+    workspaceId: params.workspaceId, requesterId: params.requesterId,
+    caller: params.telemetry?.caller ?? 'unattributed', policy: params.telemetry?.policy ?? 'unknown',
+    buildSha: params.telemetry?.buildSha ?? null,
+    startedAt: (deps.now?.() ?? new Date()).toISOString(), durationMs: 0,
+    outcome: 'threw', verdict: null, errorCode: null, stages: {},
+  };
+  const elapsed = (at: number) => Math.max(0, Math.round((clock() - at) * 10) / 10);
+  const measure: NonNullable<ConsultRouteDeps['measure']> = async (stage, work) => {
+    const at = clock();
+    try {
+      const value = await work();
+      receipt.stages[stage] = { durationMs: elapsed(at), outcome: 'returned' };
+      return value;
+    } catch (error) {
+      receipt.stages[stage] = { durationMs: elapsed(at), outcome: 'threw' };
+      throw error;
+    }
+  };
+  try {
+    const result = await routeConsultCore(params, { ...deps, measure });
+    receipt.verdict = result.verdict;
+    receipt.outcome = result.snapshot.degraded || Object.values(receipt.stages).some(s => s.outcome === 'threw')
+      ? 'degraded' : 'returned';
+    receipt.durationMs = elapsed(started);
+    if (params.telemetry || deps.recordTelemetry) result.snapshot.measurement = structuredClone(receipt);
+    return result;
+  } catch (error) {
+    const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : '';
+    // Raw error text can contain questions, SQL values or credentials.
+    receipt.errorCode = /^[A-Z0-9_]{1,40}$/.test(code) ? code : 'routing_exception';
+    throw error;
+  } finally {
+    if (receipt.outcome === 'threw') receipt.durationMs = elapsed(started);
+    if (deps.recordTelemetry) {
+      try {
+        // Diagnostics never change routing or extend its acknowledgement.
+        void Promise.resolve(deps.recordTelemetry(structuredClone(receipt))).catch(() => {});
+      } catch { /* synchronous recorder failures are diagnostic, too */ }
+    }
+  }
+}
+
+async function routeConsultCore(
   params: ConsultRouteParams,
   deps: ConsultRouteDeps,
 ): Promise<RouteResult> {
+  const measure: NonNullable<ConsultRouteDeps['measure']> = deps.measure ?? ((_stage, work) => work());
   // `now` stamps the snapshot. It is deliberately NOT read by any scoring path
   // any more: stage 1 has no time term and stage 2 compares candidates against
   // each other, so wall-clock cannot reach the ranking (D-001).
@@ -676,11 +750,11 @@ export async function routeConsult(
   };
 
   const sql = deps.getSql();
-  const withheld = await restrictedExpertsWithheld(sql, params);
+  const withheld = await measure('disclosure', () => restrictedExpertsWithheld(sql, params));
   if (withheld) base.withheld = withheld;
   const notRestricted = (sql as unknown as Sql)`NOT ${restrictedOwnerSql(sql as unknown as Sql, 'session_turns')}`;
   const vec = deps.embed && deps.embeddingProfile
-    ? await deps.embed(params.question).catch(() => null)
+    ? await measure('embedding', () => deps.embed!(params.question)).catch(() => null)
     : null;
   if (!vec || vec.length === 0) {
     // The semantic instrument is unavailable, but the session-turn index still
@@ -697,7 +771,7 @@ export async function routeConsult(
       lexicalRank: number;
     }> = [];
     try {
-      lexicalRows = (await sql`
+      lexicalRows = (await measure('transcripts', () => sql`
         SELECT owner, session_id, turn_idx,
                COALESCE(ts, ingested_at) AS ts,
                ts_rank_cd(text_tsv, plainto_tsquery('english', ${params.question})) AS "lexicalRank"
@@ -711,7 +785,7 @@ export async function routeConsult(
            AND ${notRestricted}
       ORDER BY "lexicalRank" DESC, COALESCE(ts, ingested_at) DESC
          LIMIT ${turnLimit}
-      `) as unknown as Array<{
+      `)) as unknown as Array<{
         owner: string;
         session_id: string;
         turn_idx: number;
@@ -754,7 +828,7 @@ export async function routeConsult(
     const owners = [...byOwner.keys()];
     let livenessByOwner: Record<string, ConsultLivenessReading> = {};
     if (deps.getLiveness && owners.length > 0) {
-      livenessByOwner = await deps.getLiveness(owners).catch(() => ({}));
+      livenessByOwner = await measure('liveness', () => deps.getLiveness!(owners)).catch(() => ({}));
     }
     // No candidate can qualify on this path (similarity was never measured), so
     // the stage-2 reference is the freshest candidate overall — freshness stays
@@ -819,7 +893,7 @@ export async function routeConsult(
   //      over-filtering starves the router.
   //    - withIterativeScan: without it the HNSW scan stops at hnsw.ef_search
   //      and silently under-returns (WI-37603).
-  const fetchedTurnRows = (await withIterativeScan(sql as never, (s) => (s as unknown as Sql)`
+  const fetchedTurnRows = (await measure('transcripts', () => withIterativeScan(sql as never, (s) => (s as unknown as Sql)`
     SELECT owner, session_id, turn_idx,
            COALESCE(ts, ingested_at) AS ts,
            1 - (text_embedding <=> ${qVec}::vector) AS sim
@@ -834,7 +908,7 @@ export async function routeConsult(
        AND ${notRestricted}
   ORDER BY text_embedding <=> ${qVec}::vector
      LIMIT ${turnLimit}
-  `)) as unknown as Array<{
+  `))) as unknown as Array<{
     owner: string;
     session_id: string;
     turn_idx: number;
@@ -904,13 +978,13 @@ export async function routeConsult(
   //    Do not "restore" the longer name here; change the schema first or not at all.
   //    (`closed_at` DOES exist on harness_shared.consult_state — that is why the
   //    other consult modules use it correctly and only this query was wrong.)
-  const verRows = (await sql`
+  const verRows = (await measure('verification', () => sql`
     SELECT terminal_owner AS owner, count(*)::int AS c
       FROM harness_shared.work_items
      WHERE terminal_owner = ANY(${owners}::text[])
        AND authority = 'committed'
   GROUP BY terminal_owner
-  `) as unknown as Array<{ owner: string; c: number }>;
+  `)) as unknown as Array<{ owner: string; c: number }>;
   const verByOwner = new Map(verRows.map((r) => [r.owner, r.c]));
 
   // 4) Authorship: only when the question names code paths. Matches the
@@ -919,7 +993,7 @@ export async function routeConsult(
   const authByOwner = new Map<string, number>();
   if (pathTokens.length > 0) {
     const patterns = pathTokens.map((t) => `%${t}%`);
-    const authRows = (await sql`
+    const authRows = (await measure('authorship', () => sql`
       SELECT terminal_owner AS owner, count(DISTINCT feature_id)::int AS c
         FROM harness_shared.work_items w,
              LATERAL jsonb_array_elements_text(w.payload->'paths') AS p(path)
@@ -927,17 +1001,18 @@ export async function routeConsult(
          AND jsonb_typeof(w.payload->'paths') = 'array'
          AND p.path ILIKE ANY(${patterns}::text[])
     GROUP BY terminal_owner
-    `) as unknown as Array<{ owner: string; c: number }>;
+    `)) as unknown as Array<{ owner: string; c: number }>;
     for (const r of authRows) authByOwner.set(r.owner, r.c);
   }
 
   // 5) Liveness annotation (never a gate here — D-008 §5).
   let livenessByOwner: Record<string, ConsultLivenessReading> = {};
   if (deps.getLiveness) {
-    livenessByOwner = await deps.getLiveness(owners).catch(() => ({}));
+    livenessByOwner = await measure('liveness', () => deps.getLiveness!(owners)).catch(() => ({}));
   }
 
   // 6) STAGE 1 — QUALIFY, with no time term anywhere (D-001 §1).
+  const { qualified, snapshotCandidates } = await measure('ranking', async () => {
   const scored = owners.map((ownerId) => {
     const o = byOwner.get(ownerId)!;
     const similarity = clamp01(Math.max(...o.sims));
@@ -992,6 +1067,8 @@ export async function routeConsult(
 
   const qualified = candidates.filter((c) => qualifiedIds.has(c.ownerId)).slice(0, maxQualified);
   const snapshotCandidates = boundedSnapshot(candidates, qualified, maxCandidates);
+  return { qualified, snapshotCandidates };
+  });
 
   return {
     verdict: qualified.length > 0 ? 'routed' : 'no_qualified_responder',

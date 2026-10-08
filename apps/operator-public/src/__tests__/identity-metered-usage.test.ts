@@ -4,6 +4,7 @@ import { generateKeyPairSync, sign } from 'node:crypto';
 import { identityPerUseOfferTerms } from '@papercusp/operator-core/lib/cupboard/identity-per-use-offer';
 import { paymentVoucherDigest, paymentVoucherSigningBytes, unsignedVoucher, type CumulativePaymentVoucher } from '@papercusp/operator-core/lib/p2p/microcharge';
 import { meteredUsageRoute } from '../routes/metered-usage';
+import { sellerReceiptAuthoritySigningBytes, usageReceiptSigningBytes } from '@papercusp/operator-core/lib/p2p/metered-invocation';
 import { resolveUsageSplitManifest } from '../routes/settlements';
 import { getUsageReceipt, reserveUsageReceipt, settleUsageReceipt, readIdentityMarkupRemainder,
   type ReserveUsageReceiptInput } from '../usage-receipt-store';
@@ -21,6 +22,9 @@ const at = Date.now() - 10000;
 const payerKey = generateKeyPairSync('ed25519');
 const payerPubkeyBase64 = payerKey.publicKey.export({ format: 'der', type: 'spki' }).subarray(-32).toString('base64');
 const signVoucher = (bytes: Buffer): string => sign(null, bytes, payerKey.privateKey).toString('base64');
+const sellerKey = generateKeyPairSync('ed25519');
+const sellerPubkeyBase64 = sellerKey.publicKey.export({ format: 'der', type: 'spki' }).subarray(-32).toString('base64');
+const signReceipt = (bytes: Buffer): string => sign(null, bytes, sellerKey.privateKey).toString('base64');
 
 function harness(withPayerKey = true) {
   const { db, raw } = makeSqliteDb();
@@ -32,11 +36,14 @@ function harness(withPayerKey = true) {
   raw.prepare(`INSERT INTO commerce_offers (offer_id,product_id,pricing_model,amount_minor,currency,
     unit_price_micros,meter_unit,price_version,split_manifest_hash) VALUES ('o1','p1','per-use',0,'usd',?,?,?,?)`)
     .run(offer.unitPriceMicros,offer.meterUnit,offer.priceVersion,offer.splitManifestHash);
+  raw.prepare('UPDATE commerce_offers SET seller_pubkey_base64=?,seller_key_proof=? WHERE offer_id=?')
+    .run(sellerPubkeyBase64, signReceipt(sellerReceiptAuthoritySigningBytes({ seller: 'gh:9', productId: 'p1',
+      offerId: 'o1', skuRef: offer.skuRef, pubkeyBase64: sellerPubkeyBase64 })), 'o1');
   const { env } = makeEnv(); env.DB = db;
   return { db, raw, env, api: meteredUsageRoute() };
 }
 function reservation(nonce = 'n1', overrides: Partial<ReserveUsageReceiptInput> = {}): ReserveUsageReceiptInput {
-  const v: CumulativePaymentVoucher = signPaymentTestVoucher({ channelId: 'c1', usageNonce: nonce, payer: 'gh:7', seller: 'gh:9',
+  const v: CumulativePaymentVoucher = signPaymentTestVoucher({ channelId: overrides.channelId ?? 'c1', usageNonce: nonce, payer: 'gh:7', seller: 'gh:9',
     releaseRef: offer.skuRef, meterQuantity: 1n, pricePerUnitMicros: 250n,
     priceVersion: offer.priceVersion, splitManifestHash: offer.splitManifestHash,
     cumulativeClaimMicros: 250n, expiresAtMs: at + 1000000, signature: '' });
@@ -45,13 +52,22 @@ function reservation(nonce = 'n1', overrides: Partial<ReserveUsageReceiptInput> 
     seller: v.seller, releaseRef: v.releaseRef, meterUnit: offer.meterUnit, meterQuantity: 1n, unitPriceMicros: 250n,
     priceVersion: v.priceVersion, splitManifestHash: v.splitManifestHash, reservedMicros: 250n,
     cumulativeClaimMicros: 250n, expiresAtMs: v.expiresAtMs, voucherDigest: paymentVoucherDigest(unsignedVoucher(v)),
-    voucherSignature, nowMs: at, identityInferenceCeilingMicros: 1000n, ...overrides };
+    voucherSignature, sellerPubkeyBase64, nowMs: at, identityInferenceCeilingMicros: 1000n, ...overrides };
 }
 const post = (body: unknown): RequestInit => ({ method: 'POST', headers: { Authorization: 'Bearer test',
   'Content-Type': 'application/json' }, body: JSON.stringify(body) });
 function closure(body: Record<string, unknown> = {}) {
-  return { channelId: 'c1', receiptSignature: 'seller-signature', occurredAtMs: at + 500,
+  const closed = { channelId: 'c1', occurredAtMs: at + 500,
     billedInferenceMicros: '999', priorRemainderNumerator: '0', ...body };
+  const channelId = String(closed.channelId), nonce = channelId === 'c2' ? 'n2' : 'n1';
+  let signature = 'malformed-input';
+  if (/^[0-9]+$/.test(String(closed.billedInferenceMicros)) && /^[0-9]+$/.test(String(closed.priorRemainderNumerator))) {
+    const r = reservation(nonce, { channelId });
+    signature = signReceipt(usageReceiptSigningBytes({ channelId, usageNonce: nonce,
+      meterQuantity: 1n, amountMicros: (BigInt(closed.billedInferenceMicros) * 2500n + BigInt(closed.priorRemainderNumerator)) / 10000n,
+      occurredAtMs: closed.occurredAtMs as number, voucherDigest: r.voucherDigest }));
+  }
+  return { ...closed, receiptSignature: signature, ...body };
 }
 
 describe('exact identity settlement through the hosted production handler and real migrated D1', () => {
@@ -68,7 +84,10 @@ describe('exact identity settlement through the hosted production handler and re
       meterUnit: 'tool-call', meterQuantity: 5n, reservedMicros: 1250n, cumulativeClaimMicros: 1250n,
       voucherDigest: paymentVoucherDigest(original), voucherSignature: signVoucher(paymentVoucherSigningBytes(original)),
       identityInferenceCeilingMicros: undefined }))).toMatchObject({ ok: true });
-    const body = { channelId: 'c1', actualQuantity: String(quantity), occurredAtMs: at + 500, receiptSignature: 'signed-closure' };
+    const body = { channelId: 'c1', actualQuantity: String(quantity), occurredAtMs: at + 500,
+      receiptSignature: signReceipt(usageReceiptSigningBytes({ channelId: 'c1', usageNonce: 'tools',
+        meterQuantity: BigInt(quantity), amountMicros: BigInt(quantity * 250), occurredAtMs: at + 500,
+        voucherDigest: paymentVoucherDigest(original) })) };
     for (let i = 0; i < 2; i++) {
       const response = await h.api.request('/commerce/metered-invocations/tools/settle', post(body), h.env);
       expect(response.status).toBe(200);
@@ -178,7 +197,7 @@ describe('exact identity settlement through the hosted production handler and re
     expect(h.raw.prepare('SELECT committed_micros FROM payment_channels WHERE channel_id=?').get('c1'))
       .toMatchObject({committed_micros:249});
     const changed = await h.api.request('/commerce/metered-invocations/n1/settle',post(closure({receiptSignature:'changed'})),h.env);
-    expect(changed.status).toBe(409);
+    expect(changed.status).toBe(422);
   });
   it('retains remainder across channel switches, using insertion order rather than signed timestamps', async () => {
     const h=harness(); await reserveUsageReceipt(h.db,reservation());
@@ -239,12 +258,12 @@ describe('exact identity settlement through the hosted production handler and re
       identityInferenceCeilingMicros:999n,signVoucher},deps);
     expect(funded.ok).toBe(true);
     auth.resolveGithubBearer.mockResolvedValue({id:9});
-    const occurredAtMs=Date.now(); let signed: Record<string,unknown>={};
+    const occurredAtMs=Date.now(); let signed: Record<string,unknown>={}, signature = '';
     const result=await settleMeteredUnit({channelId:'c1',usageNonce:'native',occurredAtMs,
       identityInference:{billedInferenceMicros:999n,priorRemainderNumerator:0n},
-      signReceipt:(bytes)=>{signed=JSON.parse(bytes.toString());return 'fixed-outbox-signature';}},deps);
+      signReceipt:(bytes)=>{signed=JSON.parse(bytes.toString());signature=signReceipt(bytes);return signature;}},deps);
     expect(result).toMatchObject({ok:true,amountMicros:249n,receipt:{settledAtMs:occurredAtMs,
-      receiptSignature:'fixed-outbox-signature',identityInference:{ceilingMicros:'999',remainderNumerator:'7500'}}});
+      receiptSignature:signature,identityInference:{ceilingMicros:'999',remainderNumerator:'7500'}}});
     expect(signed).toMatchObject({amountMicros:'249',occurredAtMs});
   });
   it('serializes one payer/offer admission across channels and refuses changed immutable terms',async()=>{

@@ -522,6 +522,25 @@ export function buildMcpProxyTransportBlock(
   };
 }
 
+/** Measure one independently awaited handler phase using a monotonic clock. */
+function measureHealthPhase<T>(
+  timings: Record<string, number>,
+  phase: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const startedAt = performance.now();
+  let result: Promise<T>;
+  try {
+    result = operation();
+  } catch (error) {
+    timings[phase] = Math.max(0, Math.round(performance.now() - startedAt));
+    throw error;
+  }
+  return result.finally(() => {
+    timings[phase] = Math.max(0, Math.round(performance.now() - startedAt));
+  });
+}
+
 /** Additive stable scan path over the existing service/supervision payload. */
 export function buildServiceHealthDiagnostic(
   services: ProbeResult[],
@@ -631,7 +650,7 @@ export default defineTool({
       },
     },
     returns:
-      "{ configured, effective, evidence, rootCause, nextVerb, services, telemetry, supervision, dhtUniverse?, unitStates?, unitsUnknown?, scopesUnavailable? }. `dhtUniverse.warnings` flags a product host off the public DHT outside a drill. The last three fields appear when `units` is requested; read `unitsUnknown` before treating an inactive `unitStates` entry as a stopped unit. On a failed service, `wedged:true` plus `acceptQueue` means a listener exists but its event loop is blocked; `down` means no listener. PID/port/TCP liveness cannot overrule a failed probe. Missing `wedged` is unknown. Capture logs before restarting a wedged service, because restart destroys the evidence.",
+      "{ configured, effective, evidence, rootCause, nextVerb, services, telemetry, supervision, dhtUniverse?, unitStates?, unitsUnknown?, scopesUnavailable?, healthPhaseTimingsMs }. `healthPhaseTimingsMs` reports measured wall time for each independently awaited handler phase; absent optional phases were not requested or not entered. `dhtUniverse.warnings` flags a product host off the public DHT outside a drill. The unit fields appear when `units` is requested; read `unitsUnknown` before treating an inactive `unitStates` entry as a stopped unit. On a failed service, `wedged:true` plus `acceptQueue` means a listener exists but its event loop is blocked; `down` means no listener. PID/port/TCP liveness cannot overrule a failed probe. Missing `wedged` is unknown. Capture logs before restarting a wedged service, because restart destroys the evidence.",
     seeAlso: [
       "dev:restart (restart a down service)",
       "dev:pg_health (Postgres health specifically)",
@@ -699,6 +718,7 @@ export default defineTool({
       services: z.unknown().optional(),
       telemetry: z.unknown().optional(),
       supervision: z.unknown().optional(),
+      healthPhaseTimingsMs: z.record(z.string(), z.number()),
       unitStates: z.unknown().optional(),
       unitsUnknown: z.unknown().optional(),
       scopesUnavailable: z.unknown().optional(),
@@ -712,22 +732,27 @@ export default defineTool({
     // whole plan exists to remove.
     // These reads do not depend on one another. A slow systemd/spawner-sidecar
     // request must not serialize two more probe phases past the MCP deadline.
-    const unitStatesPromise = units?.length ? probeUnitStates(units, scope ?? "user") : Promise.resolve(null);
-    const supervisionPromise = overlaySystemdRestartRecency(
-      overlayNodeChildSupervision(
-        supervisionSnapshot(),
-        substrateSidecarSupervisionStatus(),
-        spawnerSidecarSupervisionStatus(),
+    const healthPhaseTimingsMs: Record<string, number> = {};
+    const unitStatesPromise = units?.length
+      ? measureHealthPhase(healthPhaseTimingsMs, "requestedUnitStates", () => probeUnitStates(units, scope ?? "user"))
+      : Promise.resolve(null);
+    const supervisionPromise = measureHealthPhase(healthPhaseTimingsMs, "supervision", () =>
+      overlaySystemdRestartRecency(
+        overlayNodeChildSupervision(
+          supervisionSnapshot(),
+          substrateSidecarSupervisionStatus(),
+          spawnerSidecarSupervisionStatus(),
+        ),
       ),
     );
     const [unitStates, rawServices, mcpHandshake, supervision, dhtUniverse] = await Promise.all([
       unitStatesPromise,
-      probeAll(),
-      probeMcpHandshake(),
+      measureHealthPhase(healthPhaseTimingsMs, "probeAll", () => probeAll()),
+      measureHealthPhase(healthPhaseTimingsMs, "mcpHandshake", () => probeMcpHandshake()),
       supervisionPromise,
       // WI-10005995: product hosts on an isolated DHT outside a drill. null = systemd unreadable
       // (no verdict); a probe failure must never take the rest of the snapshot down with it.
-      probeProductHostDhtUniverse().catch(() => null),
+      measureHealthPhase(healthPhaseTimingsMs, "dhtUniverse", () => probeProductHostDhtUniverse().catch(() => null)),
     ]);
     // EI-19934795546523351: reconcile the bg-host-ticker verdict against this SAME
     // response's supervision block BEFORE it can drive a contradictory rootCause/
@@ -741,7 +766,9 @@ export default defineTool({
     const bgHostFailing = services.some((s) => s.present !== false && !s.up && s.name.includes("bg-host"));
     let watchdogActive: boolean | undefined;
     if (bgHostFailing) {
-      const probed = await probeUnitStates([BG_HOST_WATCHDOG_UNIT], "user").catch(() => null);
+      const probed = await measureHealthPhase(healthPhaseTimingsMs, "watchdogUnitStates", () =>
+        probeUnitStates([BG_HOST_WATCHDOG_UNIT], "user").catch(() => null),
+      );
       const row = probed?.states?.[0];
       // `not-found` (never installed) is a determinate NO supervisor, not an unknown. A missing
       // row / failed probe stays undefined — an unreadable probe must never read as an absence.
@@ -778,6 +805,7 @@ export default defineTool({
             // watchdogActive was computed above but never passed, so a failing bg-host always
             // read as watchdog-liveness UNKNOWN on the live tool (WI-10005995 review).
             ...buildServiceHealthDiagnostic(services, supervision, watchdogActive, dhtUniverse?.warnings),
+            healthPhaseTimingsMs,
           }),
         },
       ],

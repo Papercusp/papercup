@@ -16,6 +16,10 @@ vi.mock('../harness-registry', () => ({
   resolveHarnessContentPath: registry.contentPath,
 }));
 vi.mock('../harness/routines/release-actions', () => ({ resolveIntegrationRoot: registry.integrationRoot }));
+// WI-10007542: the prune start runs behind governed admission. The seam is faked so this
+// unit suite never reaches the durable admission tables.
+const governed = vi.hoisted(() => ({ run: vi.fn() }));
+vi.mock('../resource-governor/execution', () => ({ runGovernedOperation: governed.run }));
 
 let fixture: string;
 let integration: string;
@@ -38,6 +42,7 @@ beforeEach(() => {
   registry.read.mockReturnValue({ workspaces: [{ id: 'ws-1' }] });
   registry.load.mockResolvedValue({ projects: [{ slug: 'project' }] });
   registry.contentPath.mockReturnValue(integration);
+  governed.run.mockImplementation((_input: unknown, start: (context: unknown) => Promise<unknown>) => start({}));
 });
 
 afterEach(() => {
@@ -101,6 +106,7 @@ describe('hourly dependency-generation retention discovery', () => {
 
     expect(pruneArguments()).toEqual([]);
     expect(existsSync(join(integration, '.papercusp'))).toBe(false);
+    expect(governed.run).not.toHaveBeenCalled();
   });
 
   it('sweeps a shared integration root once across workspace registrations', async () => {
@@ -112,6 +118,25 @@ describe('hourly dependency-generation retention discovery', () => {
 
     expect(registry.load).toHaveBeenCalledTimes(2);
     expect(pruneArguments()).toEqual(['--integration', integration, '--generation-root', store, '--prune-only']);
+    // One admission per swept root, owned by the first workspace that registered it.
+    expect(governed.run).toHaveBeenCalledTimes(1);
+    expect(governed.run.mock.calls[0]![0]).toMatchObject({
+      workspaceId: 'ws-1',
+      namespace: 'dependency-generation-retention',
+      admissionClass: 'process',
+      payloadRef: `dependency-generation-retention:${integration}`,
+    });
+  });
+
+  it('starts no prune when governed admission refuses the root', async () => {
+    mkdirSync(join(integration, '.papercusp/dependency-generations'), { recursive: true });
+    governed.run.mockRejectedValueOnce(new Error('admission refused'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await runDependencyGenerationRetention();
+
+    expect(pruneArguments()).toEqual([]);
+    expect(warn).toHaveBeenCalledWith(`[dependency-generation-retention] ${integration}: admission refused`);
   });
 
   it('continues discovering stores after a workspace registry failure', async () => {

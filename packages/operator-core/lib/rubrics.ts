@@ -2131,9 +2131,18 @@ export function effectiveCriterionInstrumentKey(criterion: {
     return criterion.check.instrumentKey.trim();
   }
   if (criterion.instrumentKey?.trim()) return criterion.instrumentKey.trim();
-  const match = /\[instrumentKey:\s*([a-z0-9-]+|none)\]\s*$/.exec(criterion.model ?? '');
+  const match = CRITERION_INSTRUMENT_TOKEN.exec(criterion.model ?? '');
   return match?.[1] ?? null;
 }
+
+/**
+ * The legacy trailing `[instrumentKey: <key>|none]` binding token on a criterion's model
+ * prose (WI-4607). The ONE pattern every reader uses. Registered instrument keys are
+ * dotted (`woe.ideation-yield`, `goal-mode.never-implements`); the earlier `[a-z0-9-]+`
+ * copies here and in scorecards.ts could never bind one, so a token binding silently
+ * produced no binding at all (found binding goal-mode-e2e, 2026-10-08, P-003).
+ */
+export const CRITERION_INSTRUMENT_TOKEN = /\[instrumentKey:\s*([a-z0-9][a-z0-9.-]*|none)\]\s*$/;
 
 export interface RubricInstrumentContract {
   valid: boolean;

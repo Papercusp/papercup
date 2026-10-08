@@ -199,14 +199,52 @@ export const evaluateFixerSpawnLatency: Evaluator = (s, t) => {
   return { status: 'pass', observed: `a live fixer was dispatched${spawnLatency === null ? '' : ` ${minutes(spawnLatency)} after the red`}` };
 };
 
+/**
+ * WI-10007489: each red round records the radius it EXECUTED (`convergenceRounds[].executed`).
+ * A targeted round passes, and so does a full-gate round with a legitimate trigger: the opening
+ * candidate red, the promotion proof after a targeted green (P-007), or a signature only the full
+ * gate re-measures. A full round with NO trigger is the fallthrough the zero-wait-convergence
+ * promise forbids. Rounds written before the record existed are counted, never judged.
+ */
 export const evaluateTargetedRadius: Evaluator = (s) => {
   if (!s.queueReadable) return unreadableQueue;
-  if (!s.queue) return { status: 'pass', observed: 'no frozen repair queue is open, so no repair rounds run' };
-  return {
-    status: 'unknown',
-    observed:
-      'no per-round executed radius is recorded (green_checkpoint repair rounds carry no executed-leg set), so a round that fell through to the full radius is indistinguishable from a targeted one',
-  };
+  const q = s.queue;
+  if (!q) return { status: 'pass', observed: 'no frozen repair queue is open, so no repair rounds run' };
+  const rounds = q.convergenceRounds ?? [];
+  const recorded = rounds.filter((round) => round.executed !== undefined);
+  if (recorded.length === 0) {
+    return {
+      status: 'unknown',
+      observed:
+        rounds.length === 0
+          ? 'the open repair queue has no red round recorded yet'
+          : `none of the open queue's ${rounds.length} round(s) records its executed radius (written before WI-10007489), so a full-gate fallthrough cannot be told from a targeted round`,
+    };
+  }
+  let targeted = 0;
+  let opening = 0;
+  let promotionProof = 0;
+  let fullRequired = 0;
+  const unexplained: number[] = [];
+  for (const round of recorded) {
+    const executed = round.executed!;
+    if (executed.mode === 'targeted') targeted += 1;
+    else if (executed.trigger === 'candidate') opening += 1;
+    else if (executed.trigger === 'promotion-proof') promotionProof += 1;
+    else if (executed.trigger === 'full-run-required') fullRequired += 1;
+    else unexplained.push(round.round);
+  }
+  const unrecorded = rounds.length - recorded.length;
+  const counts =
+    `${targeted} targeted, ${promotionProof} full as promotion proof, ${fullRequired} full-run-required, ${opening} opening` +
+    (unrecorded > 0 ? `; ${unrecorded} older round(s) carry no record` : '');
+  if (unexplained.length > 0) {
+    return {
+      status: 'breach',
+      observed: `${unexplained.length} round(s) ran the full gate with no recorded reason (round ${unexplained.slice(0, 5).join(', ')}${unexplained.length > 5 ? ', …' : ''}): ${counts}`,
+    };
+  }
+  return { status: 'pass', observed: `every recorded round ran its targeted radius or a justified full gate: ${counts}` };
 };
 
 export const evaluateAdmissionPrecheck: Evaluator = (s) => {

@@ -9,6 +9,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { classifyGradingAuditCurrentness, classifySubjectRubricCurrentness, computeTrendDirection, computeRubricStaleness, compressSeries, evaluateScorecardInstrumentContract, evaluateScorecardReleaseGateBinding, isCurrentSourceAuditResponder, isIdleUnknown, markGradingAuditAwaitingReemit, parseCriterionInstrumentKey, parseGradedGeneration, ratingScore10, recordGradingAudit, scorecardEvidenceFingerprint, scorecardScore10, scoreOverridesForScale, settlePendingGradingAuditAtomically } from './scorecards';
 import type { Rubric } from './rubrics';
+import { effectiveCriterionInstrumentKey } from './rubrics';
 import type { CriterionTrend, ScorecardReleaseGateSnapshot } from './scorecards';
 
 describe('recordGradingAudit settled-stamp corrections (EI-22592430715863943)', () => {
@@ -576,6 +577,16 @@ describe('parseCriterionInstrumentKey (WI-4607)', () => {
   });
   it('returns null when the model carries no token', () => {
     expect(parseCriterionInstrumentKey('good fresh ideas keep flowing')).toBeNull();
+  });
+  it('binds a dotted registered key (woe.*, goal-mode.*) in BOTH readers — the old [a-z0-9-]+ copies dropped it', () => {
+    expect(parseCriterionInstrumentKey('never edits [instrumentKey: goal-mode.never-implements]')).toBe(
+      'goal-mode.never-implements',
+    );
+    expect(effectiveCriterionInstrumentKey({ model: 'ideas land [instrumentKey: woe.ideation-yield]' })).toBe(
+      'woe.ideation-yield',
+    );
+    // A key must still start with a letter or digit, so a stray separator does not bind.
+    expect(parseCriterionInstrumentKey('x [instrumentKey: .hidden]')).toBeNull();
   });
   it('binds only a TRAILING token — a mid-prose mention does NOT bind', () => {
     expect(parseCriterionInstrumentKey('the [instrumentKey: foo] is discussed but not bound here')).toBeNull();

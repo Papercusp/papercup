@@ -23,6 +23,8 @@ import {
   acceptMeteredVoucher,
   closeMeteredInvocation,
   declareMeter,
+  verifySellerReceiptAuthority,
+  verifyUsageReceiptSignature,
   type BillableUnit,
   type MeteredRefusalCode,
 } from '@papercusp/operator-core/lib/p2p/metered-invocation.ts';
@@ -147,6 +149,7 @@ function receiptJson(receipt: StoredUsageReceipt) {
     voucherDigest: receipt.voucherDigest,
     voucherSignature: receipt.voucherSignature,
     receiptSignature: receipt.receiptSignature,
+    sellerPubkeyBase64: receipt.sellerPubkeyBase64 ?? null,
     state: receipt.state,
     reservedAtMs: receipt.reservedAtMs,
     settledAtMs: receipt.settledAtMs,
@@ -267,6 +270,10 @@ export function meteredUsageRoute(): Hono<{ Bindings: Env }> {
       }),
     });
     if (!accepted.ok) return c.json({ error: accepted.code, detail: accepted.detail }, statusFor(accepted.code));
+    if (!offer.receiptAuthority || !verifySellerReceiptAuthority({ seller: offer.creatorId,
+        offerId: offer.offerId, productId: offer.productId, skuRef: offer.skuRef }, offer.receiptAuthority)) {
+      return c.json({ error: 'seller-authority-required', detail: 'publish an authenticated seller receipt key before reserving usage' }, 422);
+    }
 
     const stored = await reserveUsageReceipt(c.env.DB, {
       channelId: channel.channelId,
@@ -286,6 +293,7 @@ export function meteredUsageRoute(): Hono<{ Bindings: Env }> {
       expiresAtMs: voucher.expiresAtMs,
       voucherDigest: paymentVoucherDigest(unsignedVoucher(voucher)),
       voucherSignature: voucher.signature,
+      sellerPubkeyBase64: offer.receiptAuthority.pubkeyBase64,
       nowMs: Date.now(),
       ...(isIdentity ? { identityInferenceCeilingMicros: identityCeiling! } : {}),
     });
@@ -361,6 +369,9 @@ export function meteredUsageRoute(): Hono<{ Bindings: Env }> {
       signReceipt: () => body.receiptSignature as string,
     });
     if (!closed.ok) return c.json({ error: closed.code, detail: closed.detail }, statusFor(closed.code));
+    if (!reserved.sellerPubkeyBase64 || !verifyUsageReceiptSignature(closed.receipt, reserved.sellerPubkeyBase64)) {
+      return c.json({ error: 'invalid-receipt-signature', detail: 'the original seller key must sign the exact usage receipt' }, 422);
+    }
 
     const persisted = await settleUsageReceipt(c.env.DB, {
       channelId: channel.channelId,

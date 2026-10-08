@@ -460,11 +460,12 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
     code: "resource-start-outside-admission",
     disposition: "bypass",
     reason:
-      "P-016 reviewed bypass disposition for scripts/tauri-surface-verify-reports.mts (EI-25357092317407008): this is a disposable isolated Tauri Reports Library acceptance driver, not a serving or scheduled runtime. It requires PAPERCUSP_VERIFY_TAURI_ISOLATED=1 and a concrete native PID and polling helper. Its two execFileSync sites invoke the native bridge and DOM poll helper with 60s/90s deadlines; each child is awaited to exit before the next call. The script creates no detached worker or resident queue and exits after the bounded verification phase, so it adds no independently managed application capacity for Governor.admit to meter.",
+      "P-016 reviewed bypass disposition for scripts/tauri-surface-verify-reports.mts (EI-25357092317407008; third start reviewed under WI-10007542): this is a disposable isolated Tauri Reports Library acceptance driver, not a serving or scheduled runtime. It requires PAPERCUSP_VERIFY_TAURI_ISOLATED=1 and a concrete native PID and polling helper. Two of its three execFileSync sites invoke the native bridge and DOM poll helper with 60s/90s deadlines. The third is one awaited `npm run lint:as-committed -- test:file --any --ref=<source receipt commit>` run of the native e2e test files; its test child is admitted upstream, because test:file enters scripts/test-files.mjs, which runs each file under runGovernedTestProcess. Each child is awaited to exit before the next call. The script creates no detached worker or resident queue and exits after the bounded verification phase, so it adds no independently managed application capacity for Governor.admit to meter.",
     matchesSource: (source) => {
       const code = stripCommentsAndStrings(source);
-      return resourceStartCallCount(source) === 2 &&
-        [...code.matchAll(/\bexecFileSync\s*\(/g)].length === 2 &&
+      return resourceStartCallCount(source) === 3 &&
+        [...code.matchAll(/\bexecFileSync\s*\(/g)].length === 3 &&
+        source.includes("execFileSync('npm', ['run', 'lint:as-committed', '--', 'test:file', '--any',") &&
         source.includes("assert.equal(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED, '1'") &&
         source.includes("assert.ok(pid && workspace && process.env.VERIFY_TAURI_POLL") &&
         source.includes("timeout: 60_000") &&
@@ -2102,6 +2103,21 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
       source.includes("execFileSync(tool, [...args, '--pid', pid], { encoding: 'utf8', timeout: 60_000 })") &&
       source.includes("assert.equal(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED, '1'") &&
       source.includes("runPhase(ctx)"),
+  },
+  {
+    path: "packages/operator-core/lib/agent-tools/per-use-chokepoint.ts",
+    code: "resource-start-outside-admission",
+    disposition: "semantic",
+    reason:
+      "P-016 reviewed semantic disposition for packages/operator-core/lib/agent-tools/per-use-chokepoint.ts (WI-10007542; owner lane WI-10004291): the detector's `.admit(` arm fires on funded per-use tool-turn admission (SuCodexTurnLifecycle['admit'] and the installed-plugin funding host), which reserves a buyer's money for one paid tool invocation before the tools:invoke dispatch runs. It starts no child process, worker or resident queue, and holds no machine capacity of its own; the tool handler it guards is dispatched by the existing tools:invoke path, whose own process starts are scanned at their own sites. A monetary entitlement decision is policy state, not a resource start for Governor.admit to meter.",
+    matchesSource: (source) => {
+      const code = stripCommentsAndStrings(source);
+      return resourceStartCallCount(source) === 0 &&
+        !hasCalledResourceStartAlias(code) &&
+        !/\bnew\s+(?:Worker|Piscina)\s*\(|\bdetached\b/.test(code) &&
+        !/\bfrom\s+['"]node:child_process['"]|\brequire\s*\(\s*['"](?:node:)?child_process['"]/.test(source) &&
+        source.includes("type NativeAdmissionContext = Parameters<SuCodexTurnLifecycle['admit']>[0];");
+    },
   },
 ]);
 export const P016_DISPOSITION_REGISTRY = new Map(

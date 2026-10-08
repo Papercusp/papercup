@@ -36,6 +36,7 @@ import { upsertWorkspaceHost, upsertWorkspaceHostConnection } from '../../worksp
 import { HostedSessionCookieCodec, HOSTED_SESSION_COOKIE, resolveHostedSession, revokeHostedSession, rotateHostedSession } from '../../auth/hosted-session';
 import { resolveHostedSecretRef } from '../../auth/hosted/secret-ref';
 import { withWorkspace } from '@papercusp/db-org';
+import { parseChatEvent } from '@papercusp/chat-protocol';
 import { parseEnvFile } from '../../../../../apps/operator/scripts/systemd/portal-hosted-launcher';
 import { exactOriginOr403 } from '../../endpoint-route/hosted-browser-context';
 import { PAPERCUSP_TMPDIR_CANDIDATES, tmpdirIsInsideRepo } from '../../../../../libs/test-config/src/tmpdir-guard';
@@ -952,6 +953,45 @@ function assertPublicDocsResults(frames: ReturnType<typeof publicPortalFrames>) 
   expect(successful.has('docs:get')).toBe(true);
 }
 
+function assertPublicToolContext(frames: ReturnType<typeof publicPortalFrames>) {
+  const provenance = frames.filter((frame) => frame.event === 'provenance');
+  expect(provenance.length, 'The actual Portal stream must identify its callable surface').toBeGreaterThan(0);
+  for (const frame of provenance) {
+    const event = parseChatEvent(frame.event, frame.data);
+    if (event?.type !== 'provenance') throw new Error('Malformed public tool provenance');
+    expect(event.toolContext?.authorization, 'The actual turn must have its own authorized MCP mount').toBe('granted');
+    expect(event.toolContext?.toolNames).toEqual(expect.arrayContaining(['docs:search', 'docs:get']));
+  }
+}
+
+describe('public manual Portal tool provenance', () => {
+  const frame = (context: Record<string, unknown> = {
+    authorization: 'granted', toolNames: ['docs:search', 'docs:get'], promptHash: 'a'.repeat(32),
+  }) => ({ event: 'provenance', data: { engine: 'codex', model: 'public-fixture', toolContext: context } });
+
+  it('accepts the actual authorized manual surface through a backend failover', () => {
+    expect(() => assertPublicToolContext(publicPortalFrames([
+      `event: provenance\ndata: ${JSON.stringify(frame().data)}\n\n`,
+      `event: provenance\ndata: ${JSON.stringify({ ...frame().data, engine: 'claude-code' })}\n\n`,
+    ].join('')))).not.toThrow();
+  });
+
+  it('rejects an old stream or malformed prompt identity', () => {
+    expect(() => assertPublicToolContext([])).toThrow();
+    expect(() => assertPublicToolContext([{ event: 'provenance', data: { engine: 'codex', model: 'public-fixture' } }])).toThrow();
+    expect(() => assertPublicToolContext([frame({ authorization: 'granted',
+      toolNames: ['docs:search', 'docs:get'], promptHash: 'not-a-prompt-hash' })])).toThrow();
+  });
+
+  it.each([
+    { authorization: 'unavailable', toolNames: [] },
+    { authorization: 'granted', toolNames: ['docs:get'] },
+    { authorization: 'granted', toolNames: ['docs:search'] },
+  ])('rejects a turn without authorized search and get: %j', (context) => {
+    expect(() => assertPublicToolContext([frame({ ...context, promptHash: 'a'.repeat(32) })])).toThrow();
+  });
+});
+
 describe('public manual Portal docs result pairing', () => {
   const frames = () => [false, true].flatMap((ok, attempt) => ['docs:search', 'docs:get'].flatMap((name, index) => {
     const callId = `attempt-${attempt}-${index}`;
@@ -1334,6 +1374,7 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
       stream = await response.text();
       const frames = publicPortalFrames(stream);
       expect(frames.some((frame) => frame.event === 'error')).toBe(false);
+      assertPublicToolContext(frames);
       assertPublicDocsResults(frames);
       const chatId = new URL(response.url()).pathname.split('/').at(-2)!;
       const historyPath = `/api/papercup-chat/conversations/${chatId}/turns`;

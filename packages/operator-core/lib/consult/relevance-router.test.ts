@@ -5,9 +5,12 @@
  * and shared by every selecting surface so the semantics cannot drift between
  * call sites — these tests pin them.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   selectResponders,
+  routeConsult,
+  type ConsultRouteDeps,
+  type ExpertiseRoutingReceipt,
   selectionSnapshot,
   snapshotCandidateQualifies,
   qualifyingScoreOf,
@@ -31,6 +34,55 @@ const cand = (ownerId: string, over: Partial<RoutingCandidate> = {}): RoutingCan
 
 const ids = (s: SelectedResponder[]) => s.map((x) => x.candidate.ownerId);
 const vias = (s: SelectedResponder[]) => s.map((x) => x.via);
+
+describe('routing stage receipts', () => {
+  const params = {
+    workspaceId: 'fixture-workspace', requesterId: 'requester', question: 'private question',
+    telemetry: { caller: 'fixture-caller', policy: 'consult-default', buildSha: '1234567', correlationId: 'fixture-correlation' },
+  };
+
+  it('records a pre-query exception once without losing its identity or logging private text', async () => {
+    const error = Object.assign(new Error('private error containing secret text'), { code: '57P01' });
+    const receipts: ExpertiseRoutingReceipt[] = [];
+    let tick = 0;
+    await expect(routeConsult(params, {
+      getSql: () => { throw error; }, embed: null, embeddingProfile: null, embeddingMode: null,
+      monotonicNow: () => ++tick, recordTelemetry: r => { receipts.push(r); },
+    })).rejects.toBe(error);
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0]).toMatchObject({
+      caller: 'fixture-caller', policy: 'consult-default', correlationId: 'fixture-correlation',
+      buildSha: '1234567', outcome: 'threw', verdict: null, errorCode: '57P01', stages: {},
+    });
+    expect(JSON.stringify(receipts)).not.toContain('private');
+    expect(receipts[0].durationMs).toBeGreaterThan(0);
+  });
+
+  it('distinguishes missing embedding from a measured no-expert verdict, and keeps unexecuted stages absent', async () => {
+    const sql = vi.fn(async () => []) as unknown as ReturnType<ConsultRouteDeps['getSql']>;
+    const receipts: ExpertiseRoutingReceipt[] = [];
+    const result = await routeConsult(params, {
+      getSql: () => sql, embed: null, embeddingProfile: null, embeddingMode: null,
+      recordTelemetry: r => { receipts.push(r); },
+    });
+    expect(result.verdict).toBe('relevance_unmeasured');
+    expect(receipts[0]).toMatchObject({ outcome: 'degraded', verdict: 'relevance_unmeasured' });
+    expect(receipts[0].stages.embedding).toBeUndefined();
+    expect(receipts[0].stages.verification).toBeUndefined();
+    expect(receipts[0].stages.transcripts?.outcome).toBe('returned');
+    expect(result.snapshot.measurement).toEqual(receipts[0]);
+  });
+
+  it('a synchronous or rejected diagnostic recorder does not replace the routing exception', async () => {
+    const error = new Error('route failed');
+    for (const recordTelemetry of [() => { throw new Error('sink failed'); }, async () => { throw new Error('sink failed'); }]) {
+      await expect(routeConsult(params, {
+        getSql: () => { throw error; }, embed: null, embeddingProfile: null, embeddingMode: null,
+        recordTelemetry,
+      })).rejects.toBe(error);
+    }
+  });
+});
 
 describe('selectResponders — floor picks', () => {
   it('selects every qualified candidate best-first up to max, labeled via:floor', () => {

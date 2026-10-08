@@ -31,9 +31,19 @@ import {
   HOLDER_BEHAVIOR_INSTRUMENT_KEYS,
   holderBehaviorCriterionForInstrument,
   rateGoalHolderBehavior,
+  readHolderPlanToolCounts,
   resolveHolderGoalForWindow,
   type GoalHolderBehaviorMetrics,
 } from './goal-holder-behavior-metrics';
+import {
+  collectGoalModeComputedMetrics,
+  GOAL_MODE_COMPUTED_VERSION,
+  GOAL_MODE_INSTRUMENT_KEYS,
+  goalModeCriterionForInstrument,
+  goalModeMeasureSummary,
+  rateGoalModeComputed,
+  type GoalModeComputedMetrics,
+} from './goal-mode-computed-instruments';
 
 /** Default holder-behavior measurement: resolve the stewarded goal, then read the ledgers. */
 async function defaultHolderMetrics(input: {
@@ -45,6 +55,40 @@ async function defaultHolderMetrics(input: {
   const goal = await resolveHolderGoalForWindow(input, { sql });
   if (!goal) return null;
   return collectGoalHolderBehaviorMetrics({ ...input, ...goal }, { sql });
+}
+
+/**
+ * Default goal-mode-e2e computed measurement (P-003, goal-grading-live-coverage-and-holder-
+ * followthrough-2026-10-08): resolve the stewarded goal the same way, then read the ledgers.
+ * goal-launch-settings is imported lazily: it value-imports the db-org chain and the
+ * launch-settings schema, which nothing else on the scorecard read path needs.
+ */
+async function defaultGoalModeMetrics(input: {
+  holderOwnerId: string;
+  windowStart: string;
+  windowEnd: string;
+}): Promise<GoalModeComputedMetrics | null> {
+  const { sql } = getOrgPg();
+  const goal = await resolveHolderGoalForWindow(input, { sql });
+  if (!goal) return null;
+  const [{ resolveCeiling, GOAL_LAUNCH_DEFAULTS, UNLIMITED_CEILING }, plans] = await Promise.all([
+    import('./goal-launch-settings'),
+    readHolderPlanToolCounts({ ...input, workspaceId: goal.workspaceId }, { sql }),
+  ]);
+  return collectGoalModeComputedMetrics(
+    { ...input, ...goal },
+    {
+      sql,
+      plansWritten: plans.plansNew,
+      resolveMaxAgents: (stored) =>
+        resolveCeiling(
+          stored === UNLIMITED_CEILING || (typeof stored === 'number' && Number.isFinite(stored))
+            ? (stored as number | typeof UNLIMITED_CEILING)
+            : null,
+          GOAL_LAUNCH_DEFAULTS.maxAgents,
+        ),
+    },
+  );
 }
 import {
   OBSERVATION_UNKNOWN_REASONS,
@@ -77,6 +121,7 @@ import { boundedOrgTxn } from './pg-bounded-txn';
 import { OrgTxnTimeoutError } from './pg-bounded-txn';
 import { boundedPgReadTxn } from './pg-read-query';
 import {
+  CRITERION_INSTRUMENT_TOKEN,
   classifyRubricEvidenceCurrentness,
   getRubric,
   getRubricWithoutSeeding,
@@ -339,6 +384,12 @@ export async function resolveScorecardInstrumentSnapshots(
       windowStart: string;
       windowEnd: string;
     }) => Promise<GoalHolderBehaviorMetrics | null>;
+    /** goal-mode-e2e computed measurement for the subject window; null when no goal was stewarded. */
+    goalModeMetrics?: (input: {
+      holderOwnerId: string;
+      windowStart: string;
+      windowEnd: string;
+    }) => Promise<GoalModeComputedMetrics | null>;
   } = {},
 ): Promise<Record<string, ScorecardInstrumentSnapshot> | undefined> {
   const snapshots: Record<string, ScorecardInstrumentSnapshot> = Object.fromEntries(
@@ -348,7 +399,29 @@ export async function resolveScorecardInstrumentSnapshots(
     ]),
   );
   const registered = new Set(['woe.goal-mode-base-scorecard', GATE_REUSE_AUDIT_INSTRUMENT_KEY,
-    ...Object.values(HOLDER_BEHAVIOR_INSTRUMENT_KEYS)]);
+    ...Object.values(HOLDER_BEHAVIOR_INSTRUMENT_KEYS), ...Object.values(GOAL_MODE_INSTRUMENT_KEYS)]);
+  // P-003 (goal-grading-live-coverage-and-holder-followthrough-2026-10-08): the goal-mode-e2e
+  // mechanical criteria and trigger census are measured once per call, like the holder metrics.
+  let goalModeRatings: Promise<
+    | { ratings: ReturnType<typeof rateGoalModeComputed>; metrics: GoalModeComputedMetrics }
+    | { error: string }
+  > | null = null;
+  const measureGoalMode = (subject: ObservationSubject) => {
+    goalModeRatings ??= (async () => {
+      try {
+        const metrics = await (deps.goalModeMetrics ?? defaultGoalModeMetrics)({
+          holderOwnerId: subject.ref,
+          windowStart: subject.windowStart as string,
+          windowEnd: subject.windowEnd as string,
+        });
+        if (!metrics) return { error: 'No goal stewarded by this holder in the window.' };
+        return { ratings: rateGoalModeComputed(metrics), metrics };
+      } catch (error) {
+        return { error: error instanceof Error ? error.message : String(error) };
+      }
+    })();
+    return goalModeRatings;
+  };
   // P-013 (goal-holder-plans-ideation-truthful-reports-2026-10-03): the holder-behavior
   // criteria are measured once per call from the canonical ledgers, so a grader's claimed
   // pass is refused (verdictMismatches) when the measurement says fail.
@@ -455,6 +528,36 @@ export async function resolveScorecardInstrumentSnapshots(
             loop: measured.metrics.loop,
             nudges: measured.metrics.nudges,
           },
+        },
+      };
+      continue;
+    }
+    const goalModeCriterion = goalModeCriterionForInstrument(key);
+    if (goalModeCriterion) {
+      const measured = await measureGoalMode(subject);
+      if ('error' in measured) {
+        snapshots[key] = {
+          ...unknown(`Goal-mode instrument unavailable: ${measured.error}`),
+          evidenceRef: 'goal-mode-computed-instruments',
+          value: { resolver: key, resolverVersion: GOAL_MODE_COMPUTED_VERSION, reason: measured.error },
+        };
+        continue;
+      }
+      const rating = measured.ratings[goalModeCriterion]!;
+      snapshots[key] = {
+        verdict: rating.verdict,
+        measuredAt,
+        provenance: 'platform-computed',
+        window,
+        evidenceRef: 'goal-mode-computed-instruments',
+        value: {
+          resolver: key,
+          resolverVersion: GOAL_MODE_COMPUTED_VERSION,
+          criterion: goalModeCriterion,
+          ...(rating.unknownReason ? { unknownReason: rating.unknownReason } : {}),
+          reason: rating.reason,
+          goalId: measured.metrics.window.goalId,
+          measure: goalModeMeasureSummary(measured.metrics),
         },
       };
       continue;
@@ -592,6 +695,13 @@ export interface ScorecardInstrumentContractEvaluation {
    * returns this whole contract to the grader) rather than to pretend it away.
    */
   selfReportedInstruments: string[];
+  /**
+   * P-003: bound keys where the rating claims a pass but a PLATFORM-COMPUTED snapshot
+   * measured a fail, or measured that the criterion's trigger never occurred
+   * (unknownReason not-exercised / idle). Unlike verdictMismatches this never counts a
+   * negative claim over a computed pass: a grader may fail on what the ledger cannot see.
+   */
+  positiveClaimContradictions: string[];
 }
 
 function expectedInstrumentVerdict(rating: string): ScorecardInstrumentSnapshot['verdict'] | null {
@@ -795,6 +905,7 @@ export function evaluateScorecardInstrumentContract(input: {
   const staleSnapshots: string[] = [];
   const windowMismatches: string[] = [];
   const verdictMismatches: string[] = [];
+  const positiveClaimContradictions: string[] = [];
   const selfReportedInstruments: string[] = [];
   const nowMs = input.nowMs ?? Date.now();
 
@@ -842,8 +953,22 @@ export function evaluateScorecardInstrumentContract(input: {
     // resolver reads as 'unknown'), so that fail is unconfirmed, not contradicted. A claimed
     // PASS over an unknown snapshot stays a mismatch: a positive needs the measurement.
     const unconfirmedNegative = expected === 'fail' && snapshot.verdict === 'unknown';
-    if (expected && expected !== snapshot.verdict && !unconfirmedNegative) {
+    // P-003 (goal-grading-live-coverage-and-holder-followthrough-2026-10-08): an instrument
+    // that measured the trigger but leaves the rest to judgment says so structurally
+    // (value.unknownReason 'needs-judgment'). It defers, so it contradicts no rating.
+    const defers = snapshot.verdict === 'unknown' && instrumentUnknownReason(snapshot) === 'needs-judgment';
+    if (expected && expected !== snapshot.verdict && !unconfirmedNegative && !defers) {
       verdictMismatches.push(instrumentKey);
+    }
+    // A claimed positive over a platform-computed fail, or over a computed "the trigger never
+    // happened", asserts behavior the ledger contradicts.
+    if (
+      expected === 'pass' &&
+      scorecardInstrumentProvenance(snapshot) === 'platform-computed' &&
+      (snapshot.verdict === 'fail' ||
+        (snapshot.verdict === 'unknown' && ['not-exercised', 'idle'].includes(instrumentUnknownReason(snapshot) ?? '')))
+    ) {
+      positiveClaimContradictions.push(instrumentKey);
     }
   }
 
@@ -863,8 +988,17 @@ export function evaluateScorecardInstrumentContract(input: {
     staleSnapshots: [...new Set(staleSnapshots)],
     windowMismatches: [...new Set(windowMismatches)],
     verdictMismatches: [...new Set(verdictMismatches)],
+    positiveClaimContradictions: [...new Set(positiveClaimContradictions)],
     selfReportedInstruments: [...new Set(selfReportedInstruments)],
   };
+}
+
+/** The structured unknownReason a resolver stamped on a snapshot's value, if any. */
+export function instrumentUnknownReason(snapshot: ScorecardInstrumentSnapshot): string | null {
+  const value = snapshot.value;
+  if (!value || typeof value !== 'object') return null;
+  const reason = (value as Record<string, unknown>).unknownReason;
+  return typeof reason === 'string' ? reason : null;
 }
 
 /** The canonical 15 keys for pot-coordination-health. This is a fallback for
@@ -3644,8 +3778,8 @@ export function parseCriterionInstrumentKey(
   instrumentKey?: string | null,
 ): string | null {
   if (instrumentKey?.trim()) return instrumentKey.trim();
-  const m = /\[instrumentKey:\s*([a-z0-9-]+|none)\]\s*$/.exec(model ?? '');
-  return m ? m[1] : null;
+  const m = CRITERION_INSTRUMENT_TOKEN.exec(model ?? '');
+  return m ? m[1]! : null;
 }
 
 /**

@@ -200,6 +200,22 @@ describe("dev:service_health handler", () => {
     expect(getTelemetryHealth).toHaveBeenCalledTimes(1);
   });
 
+  it("reports monotonic timings for each handler phase that ran", async () => {
+    probeM.mockResolvedValue([{ name: "operator", up: true, latencyMs: 5 }] as never);
+    unitM.mockResolvedValue({ states: [], unitsUnknown: [], scopesUnavailable: [] } as never);
+
+    const b = body((await tool.handler({ units: ["papercusp-staging-api"], scope: "user" } as never, {} as never)) as Out);
+
+    expect(b.healthPhaseTimingsMs).toEqual(expect.objectContaining({
+      requestedUnitStates: expect.any(Number),
+      probeAll: expect.any(Number),
+      mcpHandshake: expect.any(Number),
+      supervision: expect.any(Number),
+      dhtUniverse: expect.any(Number),
+    }));
+    expect(Object.values(b.healthPhaseTimingsMs).every((duration) => Number.isFinite(duration) && duration >= 0)).toBe(true);
+  });
+
   it("P-004: folds the additive supervision block without disturbing the pre-existing { ok, services, telemetry } shape", async () => {
     probeM.mockResolvedValue([{ name: "operator", up: true, latencyMs: 5 }] as never);
     const b = body((await tool.handler({} as never, {} as never)) as Out);

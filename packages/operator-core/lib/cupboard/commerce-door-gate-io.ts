@@ -491,6 +491,7 @@ export interface CommerceOfferPublishRequest {
   readonly pricingModel: PricingModel;
   readonly price: Money;
   readonly perUse?: PerUseOfferTerms;
+  readonly receiptAuthority?: import('../p2p/metered-invocation').SellerReceiptAuthority;
   readonly active?: boolean;
 }
 

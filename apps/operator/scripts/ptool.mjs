@@ -1480,6 +1480,11 @@ export const PTOOL_SCORECARD_REPAIR_TIMEOUT_MS = 915_000;
 // cutoff — instead of pre-empting both.
 export const PTOOL_FOREGROUND_TOOL_TIMEOUT_MS = 60_000;
 
+// EI-25416411149123222: a measured dev:service_health dispatch settled after
+// 77.2s. Keep the ptool client above that observed handler time so its phase
+// breakdown can reach the caller instead of becoming an outcome-unknown timeout.
+export const PTOOL_SERVICE_HEALTH_TIMEOUT_MS = 90_000;
+
 // EI-22646214305093468: release:checkpoint-run launches the green-checkpoint
 // suite detached, but its pre-launch admission path still runs inside the MCP
 // call. The tool declares no timeoutSec, so MCP uses its 55s deadline floor;
@@ -1608,7 +1613,7 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   // endpoints and systemd state. Its valid read can outlive ptool's ordinary
   // 30s client cutoff, so keep direct and tools:invoke-wrapped calls outside
   // the MCP transport floor instead of reporting an outcome-unknown timeout.
-  ['dev:service_health', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
+  ['dev:service_health', PTOOL_SERVICE_HEALTH_TIMEOUT_MS],
   // EI-254011: storage:usage can spend more than the ordinary client deadline
   // in bounded scratch sizing/recovery before returning its structured result.
   // Keep direct and tools:invoke calls outside the flat 30s cutoff.

@@ -12,6 +12,7 @@ import { FundedIdentityTurnStore, fundedIdentityTurnId, type FundedIdentityTurnB
 import { FundedIdentityTurnHost, FundedToolTurnHost } from '@papercusp/operator-core/lib/cupboard/funded-turn-host';
 import { FundedToolTurnStore, type FundedToolTurnBinding, type FundedToolTurnResult } from '@papercusp/operator-core/lib/cupboard/funded-tool-turn-store';
 import { identityPerUseOfferTerms } from '@papercusp/operator-core/lib/cupboard/identity-per-use-offer';
+import { sellerReceiptAuthoritySigningBytes } from '@papercusp/operator-core/lib/p2p/metered-invocation';
 import type { IdentityTurnBilledCost } from '@papercusp/operator-core/lib/cupboard/shadow-metering-reader';
 
 const auth = vi.hoisted(() => ({ resolveGithubBearer: vi.fn() }));
@@ -33,7 +34,9 @@ afterAll(async () => { await peerSql?.end({ timeout: 1 }); await db?.cleanup(); 
 const offered = identityPerUseOfferTerms({ identity: { id: 'analyst', version: '1.0.0' }, markupBps: 2500 });
 if (!offered.ok) throw new Error(offered.detail);
 const offer = offered.terms, eventKey = 'a'.repeat(64);
-const sign = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
+const sellerKey = generateKeyPairSync('ed25519');
+const sellerPubkeyBase64 = sellerKey.publicKey.export({ format: 'der', type: 'spki' }).subarray(-32).toString('base64');
+const sign = (bytes: Buffer) => cryptoSign(null, bytes, sellerKey.privateKey).toString('base64');
 
 function harness() {
   const { db: d1, raw } = makeSqliteDb(), { env } = makeEnv(); env.DB = d1;
@@ -48,6 +51,9 @@ function harness() {
   raw.prepare(`INSERT INTO commerce_offers (offer_id,product_id,pricing_model,amount_minor,currency,
     unit_price_micros,meter_unit,price_version,split_manifest_hash) VALUES ('o1','p1','per-use',0,'usd',?,?,?,?)`)
     .run(offer.unitPriceMicros,offer.meterUnit,offer.priceVersion,offer.splitManifestHash);
+  raw.prepare('UPDATE commerce_offers SET seller_pubkey_base64=?,seller_key_proof=? WHERE offer_id=?')
+    .run(sellerPubkeyBase64, sign(sellerReceiptAuthoritySigningBytes({ seller: 'gh:9', productId: 'p1',
+      offerId: 'o1', skuRef: offer.skuRef, pubkeyBase64: sellerPubkeyBase64 })), 'o1');
   const api = new Hono().route('/', meteredUsageRoute());
   // This existing endpoint is tested independently. Read actual fixture rows,
   // rather than inventing a second funded channel in the local adapter.
@@ -109,6 +115,16 @@ function toolHarness() {
   h.raw.prepare('UPDATE commerce_products SET sku_ref=? WHERE product_id=?').run('sku:tool@1.0.0', 'p1');
   h.raw.prepare('UPDATE commerce_offers SET unit_price_micros=?,meter_unit=?,price_version=?,split_manifest_hash=? WHERE offer_id=?')
     .run(terms.unitPriceMicros, terms.meterUnit, terms.priceVersion, terms.splitManifestHash, 'o1');
+  // A different SKU is a different authority binding. This fixture builds a
+  // separate offer before any reservation; production publication refuses an
+  // authority replacement on an existing offer.
+  h.raw.prepare('DELETE FROM commerce_offers WHERE offer_id=?').run('o1');
+  h.raw.prepare(`INSERT INTO commerce_offers (offer_id,product_id,pricing_model,amount_minor,currency,
+    unit_price_micros,meter_unit,price_version,split_manifest_hash,seller_pubkey_base64,seller_key_proof)
+    VALUES ('o1','p1','per-use',0,'usd',?,?,?,?,?,?)`).run(terms.unitPriceMicros, terms.meterUnit,
+      terms.priceVersion, terms.splitManifestHash, sellerPubkeyBase64,
+      sign(sellerReceiptAuthoritySigningBytes({ seller: 'gh:9', productId: 'p1', offerId: 'o1',
+        skuRef: 'sku:tool@1.0.0', pubkeyBase64: sellerPubkeyBase64 })));
   const binding: FundedToolTurnBinding = { kind: 'tool', workspaceId: h.binding.workspaceId, ownerId: 'su-buyer',
     principalId: 'system:superuser', executionId: 'authenticated-native-session', admissionId: 'owner-command',
     provenanceHash: 'c'.repeat(64), payer: 'gh:7', seller: 'gh:9', channelId: 'c1', quantityCeiling: 4n,

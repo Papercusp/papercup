@@ -1624,6 +1624,43 @@ async function routinesSweepTickImpl(): Promise<void> {
     { name: 'su-ideate-ungraded-sweep' },
   );
 
+  // scout-su-ideate-pipeline-gaps-2026-10-08 P-008 / R-17: the WEEKLY OWNER GRADING
+  // SAMPLE. The sweep above nudges the Mug to grade; nothing put routed ideas in front
+  // of the HUMAN, so agent grades were never calibrated against owner judgement. Once
+  // per ~7d (debounced on the shared pot_watchdog_fires ledger) this sends the owner a
+  // small stratified sample of owner-ungraded ideation ideas to grade. Fail-soft;
+  // tuning/kill switch: PAPERCUSP_SCOUT_WEEKLY_GRADING_SAMPLE_SIZE (<= 0 disables).
+  await DBOS.runStep(
+    async () => {
+      const { weeklyGradingSampleSweep } = await import('../scout/weekly-grading-sample');
+      const res = await weeklyGradingSampleSweep();
+      if (res.outcome === 'sent' || res.outcome === 'error') {
+        console.warn(`[weekly-grading-sample] ${res.outcome}: ${res.workspaceId} ${res.weekKey} — ${res.reason}`);
+      }
+      // Returned (not void) so operation_outputs records each run's verdict, including a
+      // fail-soft error that would otherwise look identical to a healthy debounced run.
+      return { ranAtMs: Date.now(), ...res };
+    },
+    { name: 'scout-weekly-grading-sample' },
+  );
+
+  // scout-su-ideate-pipeline-gaps-2026-10-08 P-005 / R-9: IDEATION BACKLOG ADJUDICATION.
+  // Every ideation-origin work-item gets a recorded keep/merge/drop disposition
+  // (payload.ideaDisposition), and up to ADJUDICATION_CLOSE_BATCH still-open merge/drop
+  // ideas are retired through setWorkItemState. Incremental: a recorded disposition is
+  // never rewritten. Fail-soft; kill switch: PAPERCUSP_SCOUT_IDEATION_ADJUDICATION=0.
+  await DBOS.runStep(
+    async () => {
+      const { ideationBacklogAdjudicationSweep } = await import('../scout/ideation-backlog-adjudication');
+      const res = await ideationBacklogAdjudicationSweep();
+      if (res.outcome === 'error' || res.closeFailures > 0) {
+        console.warn(`[ideation-adjudication] ${res.outcome}: ${res.workspaceId} closeFailures=${res.closeFailures} — ${res.reason ?? ''}`);
+      }
+      return { ranAtMs: Date.now(), ...res };
+    },
+    { name: 'scout-ideation-backlog-adjudication' },
+  );
+
   // WI-1574 (2026-07-02): the ready-plan AUTOSTART sweep — the missing CONSUMER of
   // the review loop's `ready` terminal. The Queen ratified scout drafts to 'ready'
   // and the chain stopped: nothing ran plans:start, so promotePlanItems never ran,

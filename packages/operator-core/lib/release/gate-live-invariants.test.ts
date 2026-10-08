@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { createFrozenCandidateRepairQueue, type FrozenCandidateRepairQueue, type FrozenRepairAdmission } from './frozen-candidate-repair-queue';
+import {
+  createFrozenCandidateRepairQueue,
+  frozenRepairRoundExecution,
+  parseFrozenCandidateRepairQueue,
+  type FrozenCandidateRepairQueue,
+  type FrozenRepairAdmission,
+} from './frozen-candidate-repair-queue';
 import {
   classifyFixerDeath,
   DEFAULT_GATE_INVARIANT_THRESHOLDS as T,
@@ -259,11 +265,63 @@ describe('executor-freshness', () => {
   });
 });
 
-describe('targeted-radius has no ledger yet, so it reports unknown while a queue is open', () => {
-  it('unknown with a reason, never a fabricated pass', () => {
-    const r = status(snap({ queue: queue() }), 'targeted-radius');
+describe('targeted-radius judges each round by the radius it recorded (WI-10007489)', () => {
+  const targeted = frozenRepairRoundExecution({ mode: 'targeted', fileKeys: ['core :: lib/a.test.ts'], gateIds: ['lint:tsc'] });
+  const round = (n: number, executed?: ReturnType<typeof frozenRepairRoundExecution>) => ({
+    round: n,
+    head: C,
+    failingCount: 1,
+    atMs: T0 + n * MIN,
+    ...(executed ? { executed } : {}),
+  });
+  const radius = (rounds: ReturnType<typeof round>[]) =>
+    status(snap({ queue: queue({ convergenceRounds: rounds }) }), 'targeted-radius');
+
+  it('rounds written before the record are UNKNOWN with a reason, never a fabricated pass', () => {
+    const r = radius([round(1), round(2)]);
     expect(r.status).toBe('unknown');
-    expect(r.observed).toMatch(/no per-round executed radius/);
+    expect(r.observed).toMatch(/none of the open queue's 2 round\(s\) records its executed radius/);
+  });
+
+  it('targeted rounds plus justified full-gate rounds pass, with the counts named', () => {
+    const r = radius([
+      round(1, frozenRepairRoundExecution({ mode: 'full', trigger: 'candidate' })),
+      round(2, targeted),
+      round(3, frozenRepairRoundExecution({ mode: 'full', trigger: 'promotion-proof' })),
+      round(4, frozenRepairRoundExecution({ mode: 'full', trigger: 'full-run-required' })),
+    ]);
+    expect(r.status).toBe('pass');
+    expect(r.observed).toContain('1 targeted, 1 full as promotion proof, 1 full-run-required, 1 opening');
+  });
+
+  it('LOAD-BEARING: a full-gate round with NO recorded reason is the fallthrough, and breaches', () => {
+    const r = radius([
+      round(1, frozenRepairRoundExecution({ mode: 'full', trigger: 'candidate' })),
+      round(2, targeted),
+      round(3, frozenRepairRoundExecution({ mode: 'full' })),
+    ]);
+    expect(r.status).toBe('breach');
+    expect(r.observed).toMatch(/1 round\(s\) ran the full gate with no recorded reason \(round 3\)/);
+  });
+
+  it('an unrecognised trigger read back from the row counts as unexplained, not as justified', () => {
+    const parsedTrigger = parseFrozenCandidateRepairQueue({
+      ...queue(),
+      convergenceRounds: [{ ...round(1), executed: { mode: 'full', gateIds: [], trigger: 'because' } }],
+    });
+    expect(parsedTrigger?.convergenceRounds?.[0]?.executed).toEqual({ mode: 'full', gateIds: [] });
+    expect(status(snap({ queue: parsedTrigger }), 'targeted-radius').status).toBe('breach');
+  });
+
+  it('older unrecorded rounds are counted beside recorded ones, never judged', () => {
+    const r = radius([round(1), round(2, targeted)]);
+    expect(r.status).toBe('pass');
+    expect(r.observed).toContain('1 older round(s) carry no record');
+  });
+
+  it('a trigger is never stored on a targeted round', () => {
+    const record = frozenRepairRoundExecution({ mode: 'targeted', trigger: 'promotion-proof' });
+    expect(Object.hasOwn(record, 'trigger')).toBe(false);
   });
 });
 

@@ -66,6 +66,7 @@ import {
   PTOOL_PLANS_NEW_TIMEOUT_MS,
   PTOOL_REQUIRE_CHECKPOINT_TIMEOUT_MS,
   PTOOL_SESSION_REQUEST_COMPACTION_TIMEOUT_MS,
+  PTOOL_SERVICE_HEALTH_TIMEOUT_MS,
   PTOOL_WORK_ITEMS_GET_TIMEOUT_MS,
   PTOOL_SCORECARDS_GET_TIMEOUT_MS,
   PTOOL_WORK_ITEMS_COMPLETE_TIMEOUT_MS,
@@ -769,11 +770,12 @@ describe('ptool call deadlines', () => {
     // EI-23079930157206205: service-health's fixed-endpoint/systemd fan-out
     // can outlive ptool's ordinary 30s client cutoff. Cover both transport
     // routes so a valid read is not surfaced as outcome-unknown.
-    expect(timeoutForTool('dev:service_health')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('dev:service_health')).toBe(PTOOL_SERVICE_HEALTH_TIMEOUT_MS);
     expect(timeoutForTool('tools:invoke', {
       name: 'dev:service_health',
       args: { target: 'staging' },
-    })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    })).toBe(PTOOL_SERVICE_HEALTH_TIMEOUT_MS);
+    expect(PTOOL_SERVICE_HEALTH_TIMEOUT_MS).toBeGreaterThan(77_226);
     // EI-23098800759403082: carry-respawn's 600s server budget + 5s MCP
     // settlement buffer must also apply when wrapped by tools:invoke.
     expect(timeoutForTool('session:request-compaction')).toBe(PTOOL_SESSION_REQUEST_COMPACTION_TIMEOUT_MS);
