@@ -110,7 +110,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 /** Child environment for commands executing against the isolated committed clone. */
 export function lintAsCommittedChildEnv(environment = process.env, repoRoot = null) {
@@ -632,21 +632,44 @@ export function remapRetainedWorkspaceLinks(moduleRoot, priorRoot, workRoot, exp
   const { root } = verifyCommittedWorkRoot(workRoot, expectedSha);
   const previous = resolve(priorRoot);
   const plan = [];
-  const inspect = (path) => {
+  const inspect = (path, packageEntry = true) => {
     if (!lstatSync(path).isSymbolicLink()) return;
     const oldLink = readlinkSync(path);
-    const target = cloneWorkspaceTarget(resolve(dirname(path), oldLink), previous, root);
+    // Mirrored package shells link children through the shared node_modules.
+    // Resolve that indirection too; keep lexical resolution for removed roots.
+    let target = cloneWorkspaceTarget(resolve(dirname(path), oldLink), previous, root);
+    if (!target && existsSync(path)) target = cloneWorkspaceTarget(realpathSync(path), previous, root);
     if (!target) return;
     const inner = relative(root, target);
-    verifyCommittedWorkRoot(root, expectedSha, [join(inner, 'package.json')]);
+    if (!packageEntry && !existsSync(target)) {
+      // Shells mirror local caches/settings too. Git's source inventory,
+      // including the owning submodule, distinguishes these from missing source.
+      const priorTarget = join(previous, inner);
+      const tracked = spawnSync('git', ['-C', dirname(priorTarget), 'ls-files', '--', basename(priorTarget)],
+        { encoding: 'utf8', timeout: 15000 });
+      if (!tracked.error && tracked.status === 0 && !tracked.stdout.trim()) return;
+    }
+    verifyCommittedWorkRoot(root, expectedSha, [packageEntry ? join(inner, 'package.json') : inner]);
     plan.push({ path, oldLink, target });
   };
-  for (const entry of readdirSync(moduleRoot, { withFileTypes: true })) {
-    const path = join(moduleRoot, entry.name);
-    if (entry.name.startsWith('@') && entry.isDirectory()) {
-      for (const name of readdirSync(path)) inspect(join(path, name));
-    } else inspect(path);
-  }
+  const inspectPackage = (path) => {
+    if (lstatSync(path).isSymbolicLink()) return inspect(path);
+    if (!lstatSync(path).isDirectory() || !existsSync(join(path, 'package.json'))) return;
+    for (const child of readdirSync(path, { withFileTypes: true })) {
+      const childPath = join(path, child.name);
+      if (child.name === 'node_modules' && child.isDirectory()) inspectModules(childPath);
+      else if (child.isSymbolicLink()) inspect(childPath, false);
+    }
+  };
+  const inspectModules = (modules) => {
+    for (const entry of readdirSync(modules, { withFileTypes: true })) {
+      const path = join(modules, entry.name);
+      if (entry.name.startsWith('@') && entry.isDirectory()) {
+        for (const name of readdirSync(path)) inspectPackage(join(path, name));
+      } else inspectPackage(path);
+    }
+  };
+  inspectModules(moduleRoot);
   // Validate the whole plan before changing any import, then replace links atomically.
   for (const { path, oldLink, target } of plan) {
     if (readlinkSync(path) !== oldLink) throw new Error(`lint-as-committed: workspace link changed during recovery: ${path}`);

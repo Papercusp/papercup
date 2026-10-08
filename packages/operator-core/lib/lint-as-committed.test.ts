@@ -1440,6 +1440,59 @@ describe('extracted-tree lifecycle (WI-10005705)', () => {
     }
   });
 
+  it('repairs real mirrored package shells through shared-module indirection without changing the install', () => {
+    const root = mkdtempSync(join(tmpdir(), 'lac-shell-remap-'));
+    try {
+      const source = join(root, 'frozen'), prior = join(root, 'live'), shared = join(root, 'install');
+      const modules = join(root, 'portal/node_modules');
+      for (const [base, value] of [[source, 'frozen'], [prior, 'live']]) {
+        const pkg = join(base, 'packages/core');
+        mkdirSync(pkg, { recursive: true });
+        writeFileSync(join(pkg, 'package.json'), JSON.stringify({ name: '@fixture/core', main: './index.cjs' }));
+        writeFileSync(join(pkg, 'index.cjs'), `module.exports = '${value}';`);
+      }
+      execFileSync('git', ['init', '--quiet', source]);
+      execFileSync('git', ['-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '--quiet', '--allow-empty', '-m', 'fixture'], { cwd: source });
+      const sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: source, encoding: 'utf8' }).trim();
+      writeFileSync(join(source, OWNER_MARKER), JSON.stringify({ sha, keep: true }));
+      const installed = join(shared, 'node_modules/@fixture/core');
+      execFileSync('git', ['init', '--quiet', prior]);
+      writeFileSync(join(prior, '.gitignore'), '.cache/\n');
+      mkdirSync(join(prior, 'packages/core/.cache'));
+      writeFileSync(join(prior, 'packages/core/.cache/generated'), 'ignored cache');
+      mkdirSync(join(prior, 'packages/core/empty-cache'));
+      writeFileSync(join(prior, 'packages/core/missing.cjs'), 'committed source missing from frozen root');
+      execFileSync('git', ['add', '--', '.gitignore', 'packages/core/package.json', 'packages/core/index.cjs', 'packages/core/missing.cjs'], { cwd: prior });
+      execFileSync('git', ['-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '--quiet', '-m', 'fixture source'], { cwd: prior });
+      mkdirSync(installed, { recursive: true });
+      for (const child of ['package.json', 'index.cjs']) symlinkSync(join(prior, 'packages/core', child), join(installed, child));
+      symlinkSync(join(prior, 'packages/core/.cache'), join(installed, '.cache'));
+      symlinkSync(join(prior, 'packages/core/empty-cache'), join(installed, 'empty-cache'));
+      linkNodeModulesShadow(join(shared, 'node_modules'), modules, shared, join(root, 'portal'));
+      const shell = join(modules, '@fixture/core');
+      const req = createRequire(join(root, 'portal/app.js'));
+      expect(lstatSync(shell).isDirectory()).toBe(true);
+      expect(req('@fixture/core')).toBe('live');
+      // Whole-plan prevalidation must catch a missing source child before changing its manifest.
+      symlinkSync(join(prior, 'packages/core/missing.cjs'), join(shell, 'missing.cjs'));
+      expect(() => mod.remapRetainedWorkspaceLinks(modules, prior, source, sha)).toThrow('dependency is missing');
+      expect(realpathSync(join(shell, 'package.json'))).toBe(join(prior, 'packages/core/package.json'));
+      rmSync(join(shell, 'missing.cjs'));
+      expect(mod.remapRetainedWorkspaceLinks(modules, prior, source, sha).remapped).toBe(2);
+      // Recovery runs before a fresh consumer starts, as in the native launcher.
+      const consumed = JSON.parse(execFileSync(process.execPath, ['-e',
+        "console.log(JSON.stringify({value:require('@fixture/core'),path:require.resolve('@fixture/core')}))"],
+      { cwd: join(root, 'portal'), encoding: 'utf8' }));
+      expect(consumed.value).toBe('frozen');
+      expect(realpathSync(consumed.path)).toBe(join(source, 'packages/core/index.cjs'));
+      expect(lstatSync(shell).isDirectory()).toBe(true);
+      expect(realpathSync(join(installed, 'index.cjs'))).toBe(join(prior, 'packages/core/index.cjs'));
+      expect(realpathSync(join(shell, '.cache'))).toBe(join(prior, 'packages/core/.cache'));
+      expect(realpathSync(join(shell, 'empty-cache'))).toBe(join(prior, 'packages/core/empty-cache'));
+      expect(mod.remapRetainedWorkspaceLinks(modules, prior, source, sha).remapped).toBe(0);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   it('classifies each tree by liveness, keep flag and age', () => {
     const c = (inUse: boolean, marker: Marker, ownerAlive: boolean, ageMs: number) => classifyWorkRoot({ inUse, marker, ownerAlive, ageMs });
     expect(c(true, null, false, MAX_AGE_MS * 10)).toEqual({ remove: false, reason: 'in-use' });
