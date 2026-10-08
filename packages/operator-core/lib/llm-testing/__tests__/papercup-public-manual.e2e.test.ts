@@ -109,6 +109,28 @@ function publicManualPortalUser() {
     firstName: 'Public', lastName: 'Manual', displayName: 'Public manual browser acceptance' };
 }
 
+function serializePortalEvidence(record: Record<string, unknown>, failure?: unknown, bearer?: string) {
+  // Preserve the original error before a reporter attempts source-map parsing.
+  // Credential custody applies to failure messages and stacks too.
+  const error = failure instanceof Error
+    ? { name: failure.name, message: failure.message, stack: failure.stack }
+    : failure === undefined ? undefined : { message: String(failure) };
+  const serialized = JSON.stringify({ ...record, error }, null, 2);
+  return bearer ? serialized.split(bearer).join('[REDACTED]') : serialized;
+}
+
+describe('public manual Portal failure evidence', () => {
+  it('preserves the original browser failure while redacting its server credential', () => {
+    const bearer = 'disposable-credential-fixture';
+    const failure = new Error(`Browser failed with ${bearer}`);
+    const evidence = serializePortalEvidence({ stage: 'browser-launch', stream: bearer }, failure, bearer);
+    expect(evidence.includes(bearer)).toBe(false);
+    expect(JSON.parse(evidence)).toMatchObject({ stage: 'browser-launch', stream: '[REDACTED]',
+      error: { name: 'Error', message: 'Browser failed with [REDACTED]' } });
+    expect(JSON.parse(evidence).error.stack).toContain('Browser failed with [REDACTED]');
+  });
+});
+
 async function verifyPortalRuntimePreconditions(candidateRoot: string) {
   // copy-standalone.mjs and publishStandaloneRelease both publish this entry.
   const entry = join(realpathSync(candidateRoot), 'standalone-entry.mjs');
@@ -125,6 +147,26 @@ async function verifyPortalRuntimePreconditions(candidateRoot: string) {
 }
 
 describe('public manual Portal fixture preparation', () => {
+  it.runIf(process.env.PAPERCUSP_TEST_PUBLIC_PORTAL === '1')(
+    'launches the actual Chromium binary before hosted fixture creation', async () => {
+      const evidenceDir = join(llmBatteryEvidenceRoot(), 'public-manual-browser-preflight');
+      mkdirSync(evidenceDir, { recursive: true });
+      let browser: import('@playwright/test').Browser | undefined;
+      try {
+        // The maintained hosted kit imports its own checkout's Playwright test
+        // runner. Exercise that same ordering here; this Vitest case needs the
+        // browser API and must not load a second Playwright test runner.
+        const portalRoot = realpathSync(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT!);
+        const { loadHostedTestUserKit } = await loadPortalFixtureModules(portalRoot);
+        await loadHostedTestUserKit(portalRoot);
+        const { chromium } = await import('playwright');
+        browser = await chromium.launch({ headless: true });
+        expect(browser.isConnected()).toBe(true);
+      } catch (error) {
+        writeFileSync(join(evidenceDir, 'case.json'), serializePortalEvidence({ stage: 'browser-launch' }, error), { mode: 0o600 });
+        throw error;
+      } finally { await browser?.close(); }
+    }, 30_000);
   it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
     'loads the maintained Portal acceptance sources before live fixture creation', async () => {
       const portalRoot = realpathSync(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT!);
@@ -638,20 +680,23 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
         if (child!.exitCode !== null) throw new Error(`portal_fixture_exited:${child!.exitCode}; see ${logFile}`);
         try { return (await fetch(origin, { signal: AbortSignal.timeout(2000) })).ok; } catch { return false; }
       }, { timeout: 45_000, interval: 500 }).toBe(true);
-      stage = 'typed-browser';
-      const { chromium } = await import('@playwright/test');
+      stage = 'browser-launch';
+      const { chromium } = await import('playwright');
       browser = await chromium.launch({ headless: true });
       const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
       await context.addCookies([{ name: HOSTED_SESSION_COOKIE,
         value: new HostedSessionCookieCodec(secret).encode(hostedSessionId!), url: origin,
         secure: true, httpOnly: true, sameSite: 'Lax' }]);
       const page = await context.newPage();
+      stage = 'authenticated-navigation';
       const journeyStartedAt = new Date();
       const firstPage = await page.goto(`${origin}/?app=papercup`);
       expect(firstPage?.ok()).toBe(true);
       const html = await firstPage!.text();
+      stage = 'serving-identity';
       servedRelease = resolveServedRelease({ html, releasesDir: dirname(candidateRoot!), journeyStartedAt });
       expect(servedRelease!.buildId).toBe(metadata.buildId);
+      stage = 'typed-browser';
       const composer = page.getByRole('textbox', { name: 'Message Papercup', exact: true });
       await composer.waitFor({ state: 'visible', timeout: 30_000 });
       await verifyFixtureBundle();
@@ -703,13 +748,9 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
     } finally {
       // Only the public projected stream/history is retained. Failure stage and
       // runtime log let a continuation diagnose without replaying a paid turn.
-      const serializedEvidence = JSON.stringify({ id: 'actual-portal-typed', stage,
+      const safeEvidence = serializePortalEvidence({ id: 'actual-portal-typed', stage,
         question, runtimeBuild, candidateRoot, servedRelease, workspaceId, recordedAt: new Date().toISOString(),
-        frames: publicPortalFrames(stream), history, browserText }, null, 2);
-      // A custody assertion can fail: failure evidence must still never retain
-      // the server-only principal credential that triggered that failure.
-      const safeEvidence = principalBearer
-        ? serializedEvidence.split(principalBearer).join('[REDACTED]') : serializedEvidence;
+        frames: publicPortalFrames(stream), history, browserText }, caseFailure, principalBearer);
       writeFileSync(join(evidenceDir, 'case.json'), safeEvidence, { mode: 0o600 });
       try {
       try { await browser?.close(); }
