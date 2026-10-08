@@ -796,21 +796,53 @@ describe('coord:send handler (bulk keyed-array)', () => {
     });
   });
 
-  it('retains pre-persist timing when recipient resolution throws without implying a write', async () => {
-    resolveM.mockRejectedValueOnce(new Error('recipient lookup unavailable'));
+  it('retains pre-persist timing when scope resolution throws without implying a write', async () => {
+    fedScopeM.mockRejectedValueOnce(new Error('scope lookup unavailable'));
 
     const b = await body({ to: ['bee-1'], summary: 'cannot resolve this recipient' });
 
     expect(b).toMatchObject({
       ok: false,
       counts: { ok: 0, failed: 1 },
-      results: [{ ok: false, to: ['bee-1'], error: 'recipient lookup unavailable' }],
+      results: [{ ok: false, to: ['bee-1'], error: 'scope lookup unavailable' }],
     });
     expect(sendM).not.toHaveBeenCalled();
     expect(b.results[0].phaseTimingsMs).toEqual({
       prePersistMs: expect.any(Number),
       persistMs: null,
       postPersistMs: null,
+    });
+  });
+
+  it('correlates failed-send timings with their bulk item beside a delivered message', async () => {
+    sendM.mockRejectedValueOnce(new Error('persist failed'));
+
+    const b = await body({ items: [
+      { to: ['bee-1'], summary: 'first item fails' },
+      { to: ['bee-2'], summary: 'second item lands' },
+    ] });
+
+    expect(b).toMatchObject({
+      ok: false,
+      counts: { ok: 1, failed: 1 },
+      results: [
+        { ok: false, to: ['bee-1'], error: 'persist failed' },
+        { ok: true, to: ['bee-2'], msg_id: 'm1' },
+      ],
+    });
+    const phaseTimings = b.results.map((row: { phaseTimingsMs: unknown }, itemIndex: number) => ({
+      itemIndex,
+      prePersistMs: expect.any(Number),
+      persistMs: expect.any(Number),
+      postPersistMs: expect.any(Number),
+    }));
+    expect(tool.abortCompletionReceipt?.({}, {
+      content: [{ type: 'text', text: JSON.stringify(b) }],
+    }, { callId: 'call-mixed-send', toolName: 'coord:send' })).toMatchObject({
+      status: 'recovery-incomplete',
+      effectRef: 'coord:send:m1',
+      failures: ['unresolved-message-outcomes'],
+      diagnostics: { coordSendPhaseTimingsMs: phaseTimings },
     });
   });
 

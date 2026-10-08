@@ -3348,11 +3348,13 @@ export default defineTool({
       }
     }
 
+    const phaseTimers = new Map<number, CoordSendPhaseTimer>();
     const env = await runBulk(
       expanded,
       async ({ msg, refusal, goalReportPreVerdict }, itemIndex): Promise<BulkItemResult> => {
         if (refusal) return { ok: false, to: msg.to, ...refusal };
         const phaseTimer: CoordSendPhaseTimer = { startedAt: performance.now() };
+        phaseTimers.set(itemIndex, phaseTimer);
         // Capture the ORIGINAL broadcast intent BEFORE scopeBroadcastAudience
         // rewrites `*` → @fleet:<slug>: only a broadcast is stamped (P-003).
         const wasBroadcast = msg.to.includes('*');
@@ -3431,7 +3433,16 @@ export default defineTool({
         return { ...result, phaseTimingsMs: coordSendPhaseTimingsMs(phaseTimer) };
       },
       {
-        keyOf: ({ msg }) => ({ to: msg.to }),
+        // runBulk owns the established thrown-error shape. Enrich its failure
+        // key at the catch boundary so a thrown send keeps phase diagnostics,
+        // including when persistence throws after an ambiguous durable effect.
+        keyOf: ({ msg }, itemIndex) => {
+          const phaseTimer = phaseTimers.get(itemIndex);
+          return {
+            to: msg.to,
+            ...(phaseTimer ? { phaseTimingsMs: coordSendPhaseTimingsMs(phaseTimer) } : {}),
+          };
+        },
       },
     );
     // RSR-P-008-B: stamp each delivered part with its place in the chunked message,
