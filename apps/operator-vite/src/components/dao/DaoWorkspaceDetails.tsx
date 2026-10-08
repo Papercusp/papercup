@@ -18,6 +18,7 @@ export default function DaoWorkspaceDetails({ section, view, loading, error }: {
   const members = view.members?.status === 'ready' ? view.members.value : [];
   const governance = view.governance?.status === 'ready' ? view.governance.value : null;
   const policy = view.policy?.status === 'ready' ? view.policy.value : null;
+  const policyAvailable = view.policy?.status === 'ready';
   const rounds = governance?.events.filter(event => event.kind === 'round-open') ?? [];
   const operations = '/adv?slug=' + encodeURIComponent(view.localHomeSlug!);
 
@@ -32,10 +33,10 @@ export default function DaoWorkspaceDetails({ section, view, loading, error }: {
 
   if (['proposals', 'vote', 'delegation', 'records'].includes(section)) return <div className="dao-overview-grid">
     <section className="dao-card dao-purpose"><h2>{section === 'delegation' ? 'Vote delegation policy' : 'Plan admission decisions'}</h2><ReadState read={view.governance} /><ReadState read={view.policy} />
-      {governance?.integrityErrors.length ? <div role="alert" className="dao-notice">Some governance records failed integrity verification. They cannot authorize decisions.<ul>{governance.integrityErrors.map((message, index) => <li key={index}>{message}</li>)}</ul></div> : null}
+      {governance?.integrityErrors.length ? <div role="alert" className="dao-notice">Some governance records could not be verified against the current policy. They cannot authorize decisions.<ul>{governance.integrityErrors.map((message, index) => <li key={index}>{message}</li>)}</ul></div> : null}
       {section === 'delegation' ? <>
         <p>Delegations are bound to the organization’s signed policy and voter key epochs.</p>
-        <details><summary>Review recorded delegation rules</summary><pre>{JSON.stringify(policy?.delegations ?? [], null, 2)}</pre></details>
+        {policyAvailable ? <details><summary>Review recorded delegation rules</summary><pre>{JSON.stringify(policy?.delegations ?? [], null, 2)}</pre></details> : <p>Delegation rules are unavailable.</p>}
       </> : rounds.length ? <div className="dao-decision-list">{rounds.map(event => {
         const round = record(record(event.body).round);
         const ballots = governance!.events.filter(ballot => ballot.roundId === event.roundId && ballot.kind === 'vote');
@@ -47,8 +48,8 @@ export default function DaoWorkspaceDetails({ section, view, loading, error }: {
       })}</div> : governance ? <p>No verified plan-admission rounds have been recorded.</p> : null}
       <RouteLink className="dao-action" href={operations + '&tab=plans'}>Open proposal and plan workspace</RouteLink>
     </section>
-    <section className="dao-card"><h2>Governance policy</h2><p>{policy?.version ? 'Policy version ' + policy.version : 'No policy recorded'}</p><p>Admission: {policy?.membership ?? 'not configured'}</p>
-      <details><summary>Review admission thresholds</summary><pre>{JSON.stringify(policy?.admission ?? null, null, 2)}</pre></details>
+    <section className="dao-card"><h2>Governance policy</h2><p>{policyAvailable ? (policy?.version ? 'Policy version ' + policy.version : 'No policy recorded') : 'Policy unavailable'}</p><p>Admission: {policyAvailable ? policy?.membership ?? 'not configured' : 'unavailable'}</p>
+      {policyAvailable ? <details><summary>Review admission thresholds</summary><pre>{JSON.stringify(policy?.admission ?? null, null, 2)}</pre></details> : null}
       <p>Plan admission does not authorize treasury transfers or ownership votes.</p>
     </section>
   </div>;
@@ -62,7 +63,7 @@ export default function DaoWorkspaceDetails({ section, view, loading, error }: {
     {view.projects?.status === 'ready' && !projects.length ? <section className="dao-empty"><h2>No linked projects</h2><p>This organization has not linked project records in this workspace.</p></section> : null}
   </>;
 
-  if (section === 'settings') return <section className="dao-card"><h2>Organization configuration</h2><p>Local organization home: <code>{view.localHomeSlug}</code></p><p>Membership mode: {policy?.membership ?? 'not configured'}</p><p>Policy version: {policy?.version ?? 'unavailable'}</p><ReadState read={view.policy} />
+  if (section === 'settings') return <section className="dao-card"><h2>Organization configuration</h2><p>Local organization home: <code>{view.localHomeSlug}</code></p><p>Membership mode: {policyAvailable ? policy?.membership ?? 'not configured' : 'unavailable'}</p><p>Policy version: {policyAvailable ? policy?.version || 'not configured' : 'unavailable'}</p><ReadState read={view.policy} />
     <div className="dao-actions"><RouteLink className="dao-action" href={operations + '&tab=settings'}>Open organization settings</RouteLink><RouteLink className="dao-action" href="/dao">Prepare legal entity and governance</RouteLink></div>
   </section>;
 

@@ -24,4 +24,11 @@ describe('DAO workspace record presentation', () => {
     expect(screen.getByRole('link', { name: 'Build a thing' }).getAttribute('href')).toContain('slug=project-home');
     expect(screen.getByText('active · 3 authored work items')).toBeTruthy();
   });
+  it('keeps an unreadable policy distinct from a policy that does not exist', () => {
+    render(<DaoWorkspaceDetails section="vote" view={{ ...view, policy: { status: 'error', message: 'Policy read failed' } }} loading={false} error="" />);
+    expect(screen.getByRole('alert').textContent).toBe('Policy read failed');
+    expect(screen.getByText('Policy unavailable')).toBeTruthy();
+    expect(screen.queryByText('No policy recorded')).toBeNull();
+    expect(screen.queryByText('Review admission thresholds')).toBeNull();
+  });
 });

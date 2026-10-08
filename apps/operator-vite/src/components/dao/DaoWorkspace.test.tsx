@@ -48,6 +48,18 @@ describe('DAO Workbench journeys', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
     expect(invalidate).toHaveBeenCalledOnce();
   });
+  it('does not claim a saved DAO disappeared before the directory loads', () => {
+    data = undefined; initialDao = community.potId; initialSection = 'members';
+    render(<DaoWorkspace />);
+    expect(screen.getByText('Loading discovered organizations…')).toBeTruthy();
+    expect(screen.queryByText('This organization is not listed in this directory')).toBeNull();
+  });
+  it('does not present a cached empty directory as a fresh absence after an error', () => {
+    data = []; queryError = new Error('offline');
+    render(<DaoWorkspace />);
+    expect(screen.getByRole('alert')).toBeTruthy();
+    expect(screen.queryByText('No DAOs discovered yet')).toBeNull();
+  });
   it('requires explicit membership consent before invoking the composed join', async () => {
     initialDao = community.potId; initialSection = 'join';
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true, potSlug: 'builders', members: [{ ok: true }] }) });

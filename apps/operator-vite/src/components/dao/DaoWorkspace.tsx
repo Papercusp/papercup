@@ -114,8 +114,8 @@ export default function DaoWorkspace() {
               <button type="button" className="dao-action" onClick={() => { void choose(row); }}>Open workspace →</button>
             </article>)}
           </div>
-          {data !== undefined && !filtered.length ? <div className="dao-empty"><h2>{query ? 'No matching organizations' : 'No DAOs discovered yet'}</h2><p>{query ? 'Try another name or purpose.' : 'Organizations published to this peer’s directory will appear here.'}</p></div> : null}
-        </> : !selected ? <div className="dao-empty"><h2>{selectedDao ? 'This organization is no longer in the directory' : 'Choose an organization'}</h2><p>Select a DAO to open its workspace.</p><button type="button" className="dao-action" onClick={() => { void setSelectedSection('directory'); }}>Browse DAOs</button></div> : <>
+          {data !== undefined && !error && !filtered.length ? <div className="dao-empty"><h2>{query ? 'No matching organizations' : 'No DAOs discovered yet'}</h2><p>{query ? 'Try another name or purpose.' : 'Organizations published to this peer’s directory will appear here.'}</p></div> : null}
+        </> : !selected ? (data !== undefined && !error ? <div className="dao-empty"><h2>{selectedDao ? 'This organization is not listed in this directory' : 'Choose an organization'}</h2><p>Select a DAO to open its workspace.</p><button type="button" className="dao-action" onClick={() => { void setSelectedSection('directory'); }}>Browse DAOs</button></div> : null) : <>
           {sectionId === 'overview' ? <div className="dao-overview-grid">
             <section className="dao-card dao-purpose"><p className="dao-eyebrow">Organization</p><h2>{selected.title}</h2><p>{selected.description || 'No purpose published yet.'}</p><div className="dao-meta">Published by {selected.owner} · {selected.visibility}</div></section>
             <section className="dao-card"><p className="dao-eyebrow">Projects</p><strong className="dao-stat">{selected.memberCount}</strong><p>Linked projects in the discovery record</p><button type="button" className="dao-action" onClick={() => { void setSelectedSection('work'); }}>Explore work →</button></section>
@@ -124,7 +124,7 @@ export default function DaoWorkspace() {
             <label className="dao-check"><input type="checkbox" checked={acceptedTerms} onChange={event => setAcceptedTerms(event.target.checked)} /> I want to connect to this organization’s published projects.</label>
             {!selected.memberLinks.length ? <p>This publisher has not provided the project links required to join.</p> : null}
             <button type="button" className="dao-action" disabled={!acceptedTerms || joining || !selected.memberLinks.length} onClick={() => { void join(); }}>{joining ? 'Joining…' : 'Join organization'}</button>
-          </section> : <DaoWorkspaceDetails section={sectionId} view={workspace} loading={workspaceLoading} error={workspaceError} />}
+          </section> : <DaoWorkspaceDetails section={sectionId} view={workspace?.directoryId === selectedDao ? workspace : null} loading={workspaceLoading} error={workspaceError} />}
           <aside className="dao-evidence"><h2>Decision boundaries</h2><p>Member plan votes authorize plan admission. Treasury transactions require their signer approvals. Ownership votes use the equity governance contract.</p><p>Directory entries describe discovered organizations; they do not establish legal formation or financial assets.</p></aside>
         </>}
       </main>
