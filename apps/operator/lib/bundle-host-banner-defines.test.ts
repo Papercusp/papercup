@@ -16,7 +16,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -49,6 +49,42 @@ interface SharedBanner {
   banner: string;
   defines: Record<string, string>;
 }
+
+describe('EI-25446866026477971 — host build paths across the package-cache reader', () => {
+  it.each([
+    { label: 'documented defaults', args: [], entry: 'bin/hono-host.ts', outfile: 'dist-host/hono-host.mjs' },
+    { label: 'relative paths with spaces', args: ['bin/other host.ts', 'dist-other/host output.mjs'], entry: 'bin/other host.ts', outfile: 'dist-other/host output.mjs' },
+  ])('bundles $label from the repo-root reader into the operator output', ({ args, entry, outfile }) => {
+    const dir = mkdtempSync(join(tmpdir(), 'host-reader-paths-'));
+    try {
+      const operatorDir = join(dir, 'apps/operator');
+      const source = readFileSync(join(REPO_ROOT, 'apps/operator/bin/bundle-host.sh'), 'utf8');
+      // Execute the production path-selection boundary, then exercise its paths
+      // through the real reader and compiler from a different working directory.
+      const block = source.slice(source.indexOf('ENTRY="${1:-'), source.indexOf('STALE_MARKER='));
+      expect(block).toContain('OUTFILE=');
+      const entryPath = join(operatorDir, entry), outputPath = join(operatorDir, outfile);
+      mkdirSync(dirname(entryPath), { recursive: true });
+      writeFileSync(entryPath, 'console.log("reader-relative-entry");\n');
+      const selection = spawnSync('bash', ['-c', 'OPERATOR_DIR="$1"; shift;\n' + block + '\nprintf "%s\\0%s" "$ENTRY" "$OUTFILE"', '_', operatorDir, ...args], { encoding: 'utf8' });
+      expect(selection.status, selection.stderr).toBe(0);
+      const [selectedEntry, selectedOutput] = selection.stdout.split('\0');
+      const reader = [join(REPO_ROOT, 'scripts/npm-install-safe.mjs'), '--repo-root', dir,
+        '--exec-under-cache-lock', '--', join(REPO_ROOT, 'node_modules/esbuild/bin/esbuild')];
+      const wrongBase = spawnSync(process.execPath, [...reader, entry, '--bundle', '--platform=node', '--format=esm', '--outfile=' + outfile], { cwd: operatorDir, encoding: 'utf8' });
+      expect(wrongBase.status).not.toBe(0);
+      expect(wrongBase.stderr).toContain('Could not resolve');
+      expect(existsSync(outputPath)).toBe(false);
+      const compile = spawnSync(process.execPath, [...reader,
+        selectedEntry, '--bundle', '--platform=node', '--format=esm', '--outfile=' + selectedOutput], { cwd: operatorDir, encoding: 'utf8' });
+      expect(compile.status, compile.stderr).toBe(0);
+      expect(readFileSync(outputPath, 'utf8')).toContain('reader-relative-entry');
+      expect(existsSync(join(dir, outfile))).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
 
 /** Read the banner and its defines exactly as bash sees them, by sourcing the real script. */
 function loadSharedBanner(): SharedBanner {
