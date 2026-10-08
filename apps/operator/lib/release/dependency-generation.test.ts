@@ -4065,3 +4065,76 @@ describe('P-012: incremental copy of a changed dependency tree', () => {
     NATIVE_SHELL_TIMEOUT_MS,
   );
 });
+
+// WI-10007424 (green-main-cycle-time P-003): the gate's up-front disk preflight
+// asks the script itself, so a run refuses BEFORE setup with the same typed exit
+// 77 the copy path uses, instead of passing the alarm's smaller floor and then
+// dying mid-materialization (WI-10005705: avail 43.7G, required 51.0G).
+describe('WI-10007424: --check-headroom is the copy path\'s own reserve, measured up front', () => {
+  const GIB = 1024 ** 3;
+  const runCheck = (integration: string, env: Record<string, string>, extra: string[] = []) =>
+    spawnSync('bash', [SCRIPT, '--integration', integration, '--check-headroom', ...extra], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        DEPENDENCY_GENERATION_RESERVE_FS_PATH: '',
+        DEPENDENCY_GENERATION_HEADROOM_SAME_FS: '1',
+        DEPENDENCY_GENERATION_HEADROOM_TOTAL_BYTES: String(1900 * GIB),
+        // dependency-copy-isolation.setup-vitest.ts zeroes both for ordinary fixtures;
+        // this suite measures the production reserve, so restore its defaults.
+        DEPENDENCY_GENERATION_HEADROOM_RESERVE_PCT: '2',
+        DEPENDENCY_GENERATION_HEADROOM_MARGIN_BYTES: String(10 * GIB),
+        ...env,
+      },
+      timeout: NATIVE_SHELL_TIMEOUT_MS,
+    });
+  const freshIntegration = () => {
+    const parent = mkdtempSync(join(tmpdir(), 'dependency-generation-headroom-'));
+    roots.push(parent);
+    const integration = join(parent, 'integration');
+    mkdirSync(integration);
+    return integration;
+  };
+
+  it('refuses with exit 77 in the band the gate alarm used to admit (above 2%, below 2% + margin)', () => {
+    const integration = freshIntegration();
+    // 45 GiB free on a 1900 GiB root: above the alarm's 38 GiB floor, below 38 + 10 GiB.
+    const result = runCheck(integration, {
+      DEPENDENCY_GENERATION_HEADROOM_AVAIL_BYTES: String(45 * GIB),
+    });
+    expect(result.status).toBe(77);
+    expect(result.stderr).toMatch(
+      /DEPENDENCY_GENERATION_HEADROOM_INSUFFICIENT need=0 avail=\d+ reserve=\d+ reserve_scope=protected-fs margin=10737418240 required=\d+ size=unknown/,
+    );
+    // A pure measurement: nothing is created beside the integration root.
+    expect(readdirSync(integration)).toEqual([]);
+  });
+
+  it('admits with exit 0 and reports the same numbers when free space covers reserve + margin', () => {
+    const integration = freshIntegration();
+    const result = runCheck(integration, {
+      DEPENDENCY_GENERATION_HEADROOM_AVAIL_BYTES: String(60 * GIB),
+    });
+    expect(result.status).toBe(0);
+    expect(result.stderr).toMatch(/DEPENDENCY_GENERATION_HEADROOM_OK need=0 avail=\d+ .*required=\d+/);
+    expect(readdirSync(integration)).toEqual([]);
+  });
+
+  it('never reaps: a dead copy sibling survives a refusing check', () => {
+    const integration = freshIntegration();
+    const sibling = join(integration, '.dependency-generation-headroom-check.deploy-tmp.99999999');
+    mkdirSync(sibling);
+    const result = runCheck(integration, {
+      DEPENDENCY_GENERATION_HEADROOM_AVAIL_BYTES: String(1 * GIB),
+    });
+    expect(result.status).toBe(77);
+    expect(existsSync(sibling)).toBe(true);
+  });
+
+  it('cannot be combined with another mode', () => {
+    const integration = freshIntegration();
+    const result = runCheck(integration, {}, ['--prune-only']);
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('--check-headroom cannot be combined');
+  });
+});
