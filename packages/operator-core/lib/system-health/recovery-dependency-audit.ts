@@ -389,6 +389,15 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     note: 'Alarms on a silently-stalled green-checkpoint run.',
   },
   {
+    // The gate run is its own process (not the operator), so a run lost mid-flight leaves
+    // this operator-hosted timer alive to page about it: nothing it rides is in the failure.
+    name: 'green-checkpoint-lost-run-alarm',
+    file: 'packages/operator-core/lib/release/green-stall-watchdog.ts',
+    executor: 'operator-in-process-timer',
+    recovers: [],
+    note: 'Pages the gate holder and fleet leader once per green-checkpoint run that died with its marker set.',
+  },
+  {
     name: 'git-sync-stall-watchdog',
     file: 'packages/operator-core/lib/release/git-sync-stall-watchdog.ts',
     executor: 'operator-in-process-timer',

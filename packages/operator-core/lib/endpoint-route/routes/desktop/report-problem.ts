@@ -232,7 +232,7 @@ export async function answerReportFollowUp(body: unknown) {
   const parsed = z.object({ operation: z.literal('answer-follow-up'), id: z.string().min(1), harness: z.string().min(1),
     questionId: z.string().min(1), text: z.string().trim().min(1).max(4000) }).strict().safeParse(body);
   if (!parsed.success) return { status: 400, body: { error: 'invalid-follow-up' } };
-  const [{ getIssue, mergeIssuePayload }, { readReporterStatus }, { redactSensitiveText }, { defaultIntakePromotionDeps }] = await Promise.all([
+  const [{ getIssue, mergeIssuePayload, healOwnNodeIssueOrigin }, { readReporterStatus }, { redactSensitiveText }, { defaultIntakePromotionDeps }] = await Promise.all([
     import('../../../issues-engineer'), import('../../../harness/improvements/reporter-status'), import('../../../sensitive-text'),
     import('../../../attention/intake-promotion'),
   ]);
@@ -240,7 +240,10 @@ export async function answerReportFollowUp(body: unknown) {
   return defaultIntakePromotionDeps().withLocks([input.id], async () => {
   // A reporter can answer only the source owned by this install, never a foreign
   // canonical target. The existing payload writer repeats the authorship guard.
-  const source = await getIssue(input.id);
+  // `origin` records how a row ARRIVED, not who wrote it (WI-10003565): heal our own
+  // report stranded at origin='remote' first, or its reporter could never answer it.
+  let source = await getIssue(input.id);
+  if (source?.origin === 'remote' && await healOwnNodeIssueOrigin(input.id)) source = await getIssue(input.id);
   if (!source || source.origin !== 'local' || source.scope !== `harness:${input.harness}`) {
     return { status: 404, body: { error: 'report-not-owned-by-install' } };
   }

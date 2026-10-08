@@ -134,13 +134,18 @@ export async function readReporterStatus(input: { id: string; harness: string; w
 
 /** Purpose-shaped case on work_items:update: only the current fixer asks once. */
 export async function askReporterQuestion(input: { id: string; harness?: string; actor: string; text: string }) {
-  const [{ getWorkItem, mergeWorkItemPayload }, { defaultIntakePromotionDeps }] = await Promise.all([
-    import('../../work-items'), import('../../attention/intake-promotion'),
+  const [{ getWorkItem, mergeWorkItemPayload }, { defaultIntakePromotionDeps }, { healOwnNodeIssueOrigin }] = await Promise.all([
+    import('../../work-items'), import('../../attention/intake-promotion'), import('../../issues-engineer'),
   ]);
   const text = redactSensitiveText(input.text.trim());
   if (!text || text.length > 4000) return { ok: false as const, id: input.id, error: 'question-must-be-1-to-4000-characters' };
   return defaultIntakePromotionDeps().withLocks([input.id], async () => {
-    const item = await getWorkItem(input.id, input.harness);
+    // `origin` records how a row ARRIVED, not who wrote it (WI-10003565): heal our own
+    // item stranded at origin='remote' before the local-only check refuses its fixer.
+    let item = await getWorkItem(input.id, input.harness);
+    if (item?.origin === 'remote' && await healOwnNodeIssueOrigin(input.id, input.harness)) {
+      item = await getWorkItem(input.id, input.harness);
+    }
     if (!item || item.origin !== 'local' || item.assignee !== input.actor || !isPersonReporterKind(objectReporterKind(item.payload))) {
       return { ok: false as const, id: input.id, error: 'only-current-fixer-may-ask-reporter' };
     }

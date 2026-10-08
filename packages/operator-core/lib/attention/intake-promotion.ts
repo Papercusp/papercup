@@ -60,6 +60,7 @@ import {
 import {
   createIssue,
   getIssue,
+  healOwnNodeIssueOrigin,
   issueRef,
   linkIssue,
   mergeIssuePayload,
@@ -184,6 +185,9 @@ export interface IntakePromotionDeps {
   latestOccurrenceId(id: string): Promise<number | null>;
   /** Real occurrence reporters, including inherited source filings. Read errors fail closed. */
   occurrenceReporters?(id: string): Promise<string[]>;
+  /** Heal an own-node row stranded at origin='remote' (true iff healed). Absent ⇒ no heal,
+   *  so a unit test without it never reaches PG; the default deps wire the real one. */
+  healOwnNodeOrigin?(id: string): Promise<boolean>;
   now(): Date;
 }
 
@@ -453,7 +457,12 @@ async function executePromotion(input: IntakeExecutionInput, deps: IntakePromoti
     };
   }
   return deps.withLocks([input.sourceId], async () => {
-    const source = await deps.getItem(input.sourceId);
+    // `origin` records how a row ARRIVED, not who wrote it (WI-10003565). Heal our own source
+    // stranded at origin='remote' first, so it is promoted in place and gets its pointer.
+    let source = await deps.getItem(input.sourceId);
+    if (source?.origin === 'remote' && deps.healOwnNodeOrigin && await deps.healOwnNodeOrigin(source.id)) {
+      source = await deps.getItem(input.sourceId);
+    }
     if (!source) return { ok: false, refusal: 'source-not-found', detail: `${input.sourceId} does not exist` };
     const sourceRevision = intakeSourceRevision(source);
     const key = intakePromotionKey(source.id, sourceRevision);
@@ -1010,6 +1019,7 @@ export function defaultIntakePromotionDeps(): IntakePromotionDeps {
       });
       return result;
     },
+    healOwnNodeOrigin: (id) => healOwnNodeIssueOrigin(id),
     async getItem(id) {
       const issue = await getIssue(id);
       return issue ? toIntakeWorkItem(issue) : null;

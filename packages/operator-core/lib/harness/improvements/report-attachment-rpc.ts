@@ -13,6 +13,7 @@ import { getPeerRpcTransport, type PeerRpcTransport } from '../../authority/peer
 import type { PeerRef } from '../../authority/lock-authority';
 import { bakedCanonicalHiveInvite } from '../papercusp-hive-join';
 import { getHiveByPubkey } from '../../hive-store';
+import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
 import {
   REPORT_ATTACHMENT_KINDS, REPORT_ATTACHMENT_MAX_BYTES, putReportAttachment, prepareReportAttachment,
   type PutReportAttachmentResult,
@@ -97,16 +98,17 @@ export function defaultReportAttachmentRpcDeps(workspaceId: string, sql: Sql = g
     ownsRetainedReport: async (caller, id) => {
       // A late retry must not resurrect bytes deleted under D053. Ambiguous
       // canonical mappings are preserved by retention but not writable here.
+      // Terminal = the canonical cross-family set (D-068): no item_kind filter here.
       const [row] = await sql.unsafe<Array<{ allowed: boolean }>>(`
         SELECT (canonical.targets <= 1 AND NOT (
           (canonical.targets = 1 AND canonical.closed AND canonical.closed_at < now() - interval '90 days')
-          OR (canonical.targets = 0 AND w.status IN ('done','dropped','resolved','closed')
+          OR (canonical.targets = 0 AND w.status = ANY($5::text[])
             AND w.state_changed_at < now() - interval '90 days')
         )) AS allowed
         FROM harness_shared.work_items w
         LEFT JOIN LATERAL (
           SELECT count(*)::int AS targets,
-            bool_and(c.status IN ('done','dropped','resolved','closed')) AS closed,
+            bool_and(c.status = ANY($5::text[])) AS closed,
             max(c.state_changed_at) AS closed_at
           FROM harness_shared.work_items c
           WHERE c.workspace_id = w.workspace_id
@@ -114,7 +116,8 @@ export function defaultReportAttachmentRpcDeps(workspaceId: string, sql: Sql = g
             AND c.payload -> 'intakeSource' ->> 'id' = w.feature_id
         ) canonical ON true
         WHERE w.workspace_id = $1 AND w.harness_slug = $2 AND w.feature_id = $3
-          AND w.author_pubkey = $4 AND w.origin = 'remote'`, [workspaceId, PLATFORM_POT_SLUG, id, caller]);
+          AND w.author_pubkey = $4 AND w.origin = 'remote'`,
+      [workspaceId, PLATFORM_POT_SLUG, id, caller, [...ANY_FAMILY_TERMINAL_STATES]]);
       return row?.allowed === true;
     },
     putAttachment: input => putReportAttachment(input, { sql }),
