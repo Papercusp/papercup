@@ -96,6 +96,16 @@ const listTool = (await import('./list')).default;
 const searchTool = (await import('./search')).default;
 const retireTool = (await import('./retire')).default;
 
+describe('Reports delivery guidance', () => {
+  it('requires readback and content verification before citation for new reports and corrections', () => {
+    expect(publishTool.description).toContain('reports:get { id: report_id }');
+    expect(publishTool.description).toContain('verify the complete body and visibility');
+    expect(publishTool.guidance?.chaining).toContain('reports:publish → reports:get { id: report_id } → verify');
+    expect(publishTool.guidance?.chaining).toContain('Claim saved or delivered only after readback succeeds');
+    expect(publishTool.guidance?.chaining).toContain('new report_id → verify the correction → cite it');
+  });
+});
+
 type Out = { data?: any; content?: Array<{ text: string }> };
 const body = (o: Out) => (o.data ?? JSON.parse(o.content![0].text));
 

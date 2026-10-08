@@ -41,7 +41,9 @@ export default defineTool({
     'markdown (mermaid fences allowed), bounded at 512KB — an over-cap body is REFUSED with its exact ' +
     'overage, never silently truncated. Origin (who wrote it, in which pot, in which session) is ' +
     'stamped by the server from your session and cannot be passed in. Pass `supersedes` to republish a ' +
-    'corrected version: it inherits the original lineage, and the old body stays resolvable by id.',
+    'corrected version: it inherits the original lineage, and the old body stays resolvable by id. ' +
+    'After publishing, call reports:get { id: report_id } and verify the complete body and visibility ' +
+    'before citing the path or claiming delivery.',
   guidance: {
     when:
       'When you have finished a piece of written work the OWNER should be able to find later — an audit, ' +
@@ -53,9 +55,10 @@ export default defineTool({
       'a specific agent (coord:send). Do NOT republish to fix a typo in a report you just published ' +
       'unless it is worth a new lineage entry.',
     chaining:
-      'reports:publish → the returned `path` is the owner deep link; cite `report_id` anywhere. ' +
-      'Correcting one: reports:get { id } → reports:publish { supersedes: id } → reports:list shows only ' +
-      'the new one, with the history behind it.',
+      'reports:publish → reports:get { id: report_id } → verify the complete body and visibility → ' +
+      'cite the returned `path` and `report_id`. Claim saved or delivered only after readback succeeds. ' +
+      'Correcting one: reports:get { id } → reports:publish { supersedes: id } → reports:get with the ' +
+      'new report_id → verify the correction → cite it. reports:list shows the new edition with its history.',
     returns:
       '{ ok:true, report_id, workspace_id, title, summary, kind, subject, origin, visibility, ' +
       'supersedes_report_id, lineage_id, source, tags, published_at, updated_at, retired_at, path, ' +
