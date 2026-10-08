@@ -18,7 +18,7 @@
  * Fail-soft: a warm-up failure is logged and the run continues; the specs then
  * report their own failures. OPERATOR_E2E_SKIP_WARMUP=1 skips it.
  */
-import { chromium, type FullConfig } from '@playwright/test';
+import { chromium, type Browser, type FullConfig } from '@playwright/test';
 
 /** Routes whose lazy chunks pull most of the dependency graph. */
 export const WARMUP_PATHS = ['/adv', '/settings/agent', '/cupboard', '/admin/plans'] as const;
@@ -48,8 +48,13 @@ export default async function warmDevServer(config: FullConfig, options: WarmDev
   if (!baseURL) return;
 
   const started = Date.now();
-  const browser = await chromium.launch();
+  let browser: Browser | undefined;
   try {
+    const use = config.projects[0]?.use;
+    browser = await chromium.launch({
+      ...use?.launchOptions,
+      ...(use?.channel ? { channel: use.channel } : {}),
+    });
     const page = await browser.newPage();
     // Never let the warm-up reach off-box: the specs' egress sensor does not
     // watch globalSetup, so keep it as hermetic as the specs themselves.
@@ -83,7 +88,12 @@ export default async function warmDevServer(config: FullConfig, options: WarmDev
     if (options.strict) throw err;
     console.warn(`[e2e warm-up] skipped after error: ${(err as Error).message.split('\n')[0]}`);
   } finally {
-    await browser.close();
+    try {
+      await browser?.close();
+    } catch (err) {
+      if (options.strict) throw err;
+      console.warn(`[e2e warm-up] browser cleanup failed: ${(err as Error).message.split('\n')[0]}`);
+    }
   }
-  console.log(`[e2e warm-up] dev server warmed in ${Math.round((Date.now() - started) / 1000)}s`);
+  console.log(`[e2e warm-up] preparation finished in ${Math.round((Date.now() - started) / 1000)}s`);
 }
