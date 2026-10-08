@@ -25,8 +25,10 @@
  * it is scoped the way it is.
  *
  * Every function takes an optional `sql` so integration tests can pass a
- * per-file schema, and carries an explicit `workspace_id` predicate (RLS is the
- * backstop, not the guard) — the convention shared with hive-membership-store.
+ * per-file schema, and tenant-scoped functions carry an explicit `workspace_id`
+ * predicate (RLS is the backstop, not the guard) — the convention shared with
+ * hive-membership-store. `listReservedLocalDesktopDisplays` is intentionally
+ * global because the live-display unique index itself has no workspace column.
  */
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
@@ -648,6 +650,21 @@ export async function listGovernableDesktopSessions(
      ORDER BY last_active_at ASC
      LIMIT ${Math.min(args.limit ?? 500, 2000)}`;
   return rows.map(toRecord);
+}
+
+/**
+ * Displays reserved on this local host by any live registry row. Deliberately
+ * workspace-global: desktop_sessions_live_display_uq keys on COALESCE(host_ref,
+ * '') and display, without workspace_id, so every local reservation blocks this
+ * allocator even when another workspace or sibling operator owns the lease.
+ * This is read-only admission data; it never reconciles or retires a lease.
+ */
+export async function listReservedLocalDesktopDisplays(sql?: Sql): Promise<string[]> {
+  const rows = await db(sql)`
+    SELECT DISTINCT display FROM harness_shared.desktop_sessions
+     WHERE COALESCE(host_ref, '') = ''
+       AND state NOT IN ('released', 'dead')`;
+  return rows.map((row) => row.display as string);
 }
 
 /**

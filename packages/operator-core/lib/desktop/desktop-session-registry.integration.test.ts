@@ -15,11 +15,14 @@
  * happily against a sweep that reaps everything, which would tear down working
  * desktops fleet-wide.
  */
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readFileSync } from 'node:fs';
 import { createFreshPgDb, applyMigrationForTest, type FreshPgDb } from '../../test/_pg-helpers';
+// Registry mutations enqueue a UI invalidation. This suite uses a throwaway PG
+// schema, so keep that detached signal from opening the protected live org DB.
+vi.mock('../sync-sse', () => ({ notifySyncInvalidate: vi.fn(async () => {}) }));
 import {
   registerDesktopSession,
   markDesktopReady,
@@ -36,6 +39,7 @@ import {
   markDesktopFrozen,
   markDesktopThawed,
   listGovernableDesktopSessions,
+  listReservedLocalDesktopDisplays,
   guestDisplayBackendError,
   DEFAULT_CAPTURE_GEOMETRY,
   TERMINAL_DESKTOP_STATES,
@@ -192,6 +196,51 @@ describe('resolution + enumeration', () => {
     await registerDesktopSession(base({ workspaceId: ws, scope: 'agent', scopeRef: 'byoc' }), sql);
     expect(await listDesktopSessions({ workspaceId: ws, scope: 'workspace' }, sql)).toHaveLength(1);
     expect(await listDesktopSessions({ workspaceId: ws, scope: 'agent' }, sql)).toHaveLength(1);
+  });
+});
+
+describe('local display allocation reservations', () => {
+  it('includes live sibling and cross-workspace local leases, but ignores remote and terminal rows', async () => {
+    // A different pid on this boot may be a live sibling operator lease. The
+    // allocator reads it as occupied and leaves its lifecycle entirely untouched.
+    await registerDesktopSession(base({
+      workspaceId: WS,
+      scopeRef: 'sibling-local-lease',
+      display: ':980',
+      ownerPid: 987654,
+    }), sql);
+    await registerDesktopSession(base({
+      workspaceId: 'ws-another-tenant',
+      scopeRef: 'cross-workspace-local-lease',
+      display: ':981',
+      ownerPid: 876543,
+    }), sql);
+    await registerDesktopSession(base({
+      workspaceId: WS,
+      scopeRef: 'remote-lease',
+      display: ':982',
+      hostRef: 'frame-reservation-test',
+    }), sql);
+    const terminal = await registerDesktopSession(base({
+      workspaceId: WS,
+      scopeRef: 'terminal-lease',
+      display: ':983',
+    }), sql);
+    await closeDesktopSession(terminal.id, 'released', sql);
+
+    const displays = await listReservedLocalDesktopDisplays(sql);
+    expect(displays).toContain(':980');
+    expect(displays).toContain(':981');
+    expect(displays).not.toContain(':982');
+    expect(displays).not.toContain(':983');
+    const sibling = await listDesktopSessions({
+      workspaceId: WS,
+      scope: 'pot',
+      scopeRef: 'sibling-local-lease',
+    }, sql);
+    expect(sibling).toHaveLength(1);
+    expect(sibling[0].ownerPid).toBe(987654);
+    expect(sibling[0].state).toBe('provisioning');
   });
 });
 
