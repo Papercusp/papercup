@@ -144,6 +144,17 @@ export function applySecretAllowances(
  * left ('EMPTY_SET3=new') and two arrived ('result30=key16', 'SESSION_PORT_TOKEN_ESTIMATOR'),
  * both named in the entry below. The Monaco match is a new entry of its own.
  *
+ * RE-MEASURED 2026-10-08 for 0.0.21-p012r69 (WI-10007452): the complete AWS census is
+ * 167 bundled findings, reproduced with gitleaks 8.30.1 on the exact baked release root:
+ * 33 in serve.mjs, 35 in spawner-sidecar.mjs, 96 in the doc-vector seed manifest, and the
+ * unchanged three SPA findings. The hash-verified p318r62b bundle reproduces its earlier
+ * 31 server findings. The multiset difference is five arrivals and three departures:
+ * one tokenizer match disappears; the two comparator matches are minifier renumberings;
+ * the other arrivals are an iterator assignment, an AWS SDK schema variable assignment,
+ * and the Monaco glyph-cache expression. None contains a credential value. The sidecar
+ * contains the same dependency code and public constants; all manifest matches are the
+ * pageSha field (rows[][3]) defined by search/doc-vector-seed.ts, not an API credential.
+ *
  * ⛔ SHRINK-ONLY IN SPIRIT: adding an entry means a new unexplained secret appeared in content
  * we ship. That is a finding to investigate first and justify second, never a line to append
  * to make a red gate green.
@@ -165,13 +176,16 @@ export const WORKSPACE_HOST_SECRET_ALLOWANCES: readonly ImageScanSecretAllowance
   {
     rule: 'generic-api-key',
     filePattern: '*/serve.mjs',
-    maxFindings: 31,
+    maxFindings: 33,
     reason:
       'The bundled server is a single ~57MB minified file, and gitleaks\' generic-api-key rule is ' +
-      'entropy-based, so it matches high-entropy NON-secret text. All 31 were read individually: ' +
-      '20 are base64-encoded tokenizer vocabulary (decoding the matches gives ordinary words in ' +
+      'entropy-based, so it matches high-entropy NON-secret text. All 33 were read individually: ' +
+      '19 are base64-encoded tokenizer vocabulary (decoding the matches gives ordinary words in ' +
       'several languages — " Canaveral", " subreddit", " richten", " gerçekle", Arabic script, ' +
-      '"UITextFiel"); 9 are minified JS source fragments (matches begin "sortKey3=e8.sortKey" twice, ' +
+      '"UITextFiel"); 12 are minified JS source fragments or version labels (including two ' +
+      'comparator assignments, an additional iterator assignment, the EC2 SDK schema variable ' +
+      'following DescribeVpcBlockPublicAccessExclusionsRequest, and the Monaco glyph-cache ' +
+      'expression; none is a credential value). Earlier matches include ' +
       '"consumed=await", "this.signature", "parent=keyOfRow", "result27=key14", "verdictFns=await" — ' +
       'the minified form of `const verdictFns = await import(...)` in packages/operator-core/lib/' +
       'harness/routines/release-actions.ts; gitleaks flags it because the ADJACENT minified token ' +
@@ -202,5 +216,33 @@ export const WORKSPACE_HOST_SECRET_ALLOWANCES: readonly ImageScanSecretAllowance
       'the class name NKeyMap trips the rule\'s keyword proximity check, which then captures the next ' +
       'assignment. The captured text is two identifiers and `new`, with no value of any kind. The ' +
       'filename hash changes when Monaco is upgraded, so the pattern keeps the directory and prefix.',
+  },
+  {
+    rule: 'generic-api-key',
+    filePattern: '*/spawner-sidecar.mjs',
+    maxFindings: 35,
+    reason:
+      'The maintained spawner sidecar bundles the same dependencies and public configuration as ' +
+      'the server. Pinned gitleaks 8.30.1 reproduces all 35 matches in the exact p012r69 artifact: ' +
+      '20 tokenizer vocabulary strings, 13 JavaScript expressions or estimator version labels, ' +
+      'and the same documented public PostHog ingestion and canonical discovery constants. The ' +
+      'expressions include comparator and iterator assignments, the EC2 SDK schema variable, ' +
+      'the Monaco glyph-cache expression, and a condition-key field reference in the sidecar. The ' +
+      'matched assignments have no credential value. Only this exact filename and rule are ' +
+      'justified; an additional finding still overflows this measured population.',
+  },
+  {
+    rule: 'generic-api-key',
+    filePattern: '*/doc-vector-seed/manifest.json',
+    maxFindings: 96,
+    reason:
+      'Every one of the 96 exact p012r69 manifest matches equals a lowercase SHA-256 page digest ' +
+      'at rows[][3]. DocVectorSeedRowKey in packages/operator-core/lib/search/doc-vector-seed.ts ' +
+      'defines that position as pageSha; the seed writer obtains it from the page_sha column ' +
+      'of the shipped documentation corpus. These are public content identities used to match ' +
+      'a documentation page to its seeded vector, with no credential or authorization role. ' +
+      'The scanner reproduction checked each captured value against the manifest tuple, ' +
+      'rather than excusing arbitrary hexadecimal strings or the whole seed directory. The ' +
+      'exact path, rule and measured count remain bounded; any surplus finding still denies.',
   },
 ]);

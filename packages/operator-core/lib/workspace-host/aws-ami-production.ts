@@ -174,6 +174,8 @@ export interface AwsAmiSdkSender {
 
 export interface AwsAmiReleaseCompositionOptions {
   repositoryRoot?: string;
+  /** Explicit recovery of a private encrypted candidate; every remaining release gate still runs. */
+  resumeCandidateImageId?: string;
   /** Operator-pinned versions of the guest tools baked into the image (`--guest-tool-versions-file`). */
   guestToolVersions?: Readonly<Record<string, string>>;
   coldsnapExecutable?: string;
@@ -184,6 +186,8 @@ export interface AwsAmiReleaseCompositionOptions {
 }
 
 export interface AwsAmiReleaseAdapterDeps {
+  /** Publisher account from the persisted connection, required for explicit candidate recovery. */
+  publisherAccountId?: string;
   ec2: (region: string) => AwsAmiSdkSender;
   ssm: (region: string) => AwsAmiSdkSender;
   /** Publisher access needs kms:ListGrants for idempotency and kms:CreateGrant on target keys. */
@@ -360,6 +364,7 @@ export class SdkAwsAmiReleaseAdapter implements AwsAmiReleaseAdapter {
   private readonly guestToolVersions: Readonly<Record<string, string>>;
   private readonly repositoryRoot: string;
   private readonly parameterPrefix: string;
+  private readonly resumeCandidateImageId: string | undefined;
   private readonly executables: { coldsnap: string; scan: string; canary: string };
 
   constructor(
@@ -372,6 +377,7 @@ export class SdkAwsAmiReleaseAdapter implements AwsAmiReleaseAdapter {
     this.guestToolVersions = options.guestToolVersions ?? {};
     this.repositoryRoot = resolve(options.repositoryRoot ?? process.cwd());
     this.parameterPrefix = (options.parameterPrefix ?? AWS_AMI_DEFAULT_PARAMETER_PREFIX).replace(/\/+$/, '');
+    this.resumeCandidateImageId = options.resumeCandidateImageId;
     this.executables = {
       coldsnap: options.coldsnapExecutable ?? AWS_AMI_RELEASE_EXECUTABLES.coldsnap,
       scan: options.scanExecutable ?? AWS_AMI_RELEASE_EXECUTABLES.scan,
@@ -579,6 +585,10 @@ export class SdkAwsAmiReleaseAdapter implements AwsAmiReleaseAdapter {
     if (missing.length > 0) fail(`guest tool versions are not pinned for: ${missing.join(', ')}`);
     const diskPath = await verifyBootcAmiArtifact(input.bootcArtifact, this.repositoryRoot);
 
+    if (this.resumeCandidateImageId !== undefined) {
+      return await this.resumePrivateCandidate(input, this.resumeCandidateImageId);
+    }
+
     const ec2 = this.deps.ec2(input.sourceRegion);
     const stagingTags = { ...this.imageTags(input.tags), 'papercusp:release-stage': 'unencrypted-staging' };
     const { imageId: stagingImageId, snapshotId } = await this.uploadAndRegister({
@@ -612,6 +622,65 @@ export class SdkAwsAmiReleaseAdapter implements AwsAmiReleaseAdapter {
     // The staging image is unencrypted and must not outlive the build: no residue is the contract.
     await ec2.send(new DeregisterImageCommand({ ImageId: stagingImageId }));
     await ec2.send(new DeleteSnapshotCommand({ SnapshotId: snapshotId }));
+    return { imageId };
+  }
+
+  /** Recover only an exact, still-private candidate after a pre-publication failure. */
+  private async resumePrivateCandidate(
+    input: Parameters<AwsAmiReleaseAdapter['buildCandidate']>[0],
+    imageId: string,
+  ): Promise<{ imageId: string }> {
+    const owner = this.deps.publisherAccountId;
+    if (!AMI_ID.test(imageId) || !owner || !/^\d{12}$/.test(owner)) {
+      fail('candidate recovery requires a valid AMI id and the persisted publisher account');
+    }
+    const ec2 = this.deps.ec2(input.sourceRegion);
+    const result = (await ec2.send(new DescribeImagesCommand({ ImageIds: [imageId], Owners: [owner] }))) as DescribeImagesResult;
+    const image = result.Images?.[0];
+    if (result.Images?.length !== 1 || !image || image.ImageId !== imageId || image.OwnerId !== owner ||
+        image.State !== 'available' || image.Name !== input.imageName || image.Description !== input.description ||
+        image.Architecture !== input.architecture) {
+      fail('candidate recovery AMI does not match the exact publisher, name, description, architecture and available state');
+    }
+    const provenanceTags = {
+      'papercusp:managed': 'true',
+      'papercusp:build-manifest': input.buildManifestIdentity,
+      'papercusp:release-sha256': input.releaseSha256,
+      'papercusp:image-version': input.releaseVersion,
+    };
+    const tags = tagMap(image.Tags);
+    for (const [key, value] of Object.entries({ ...this.imageTags(input.tags), ...provenanceTags })) {
+      if (tags[key] !== value) fail(`candidate recovery AMI is missing exact tag ${key}`);
+    }
+    const mappings = image.BlockDeviceMappings ?? [];
+    const root = mappings[0];
+    const snapshotId = root?.Ebs?.SnapshotId;
+    if (mappings.length !== 1 || root?.DeviceName !== image.RootDeviceName ||
+        !snapshotId || !SNAPSHOT_ID.test(snapshotId) || root?.Ebs?.Encrypted !== true) {
+      fail('candidate recovery requires exactly one encrypted root snapshot');
+    }
+    const launch = (await ec2.send(new DescribeImageAttributeCommand({ ImageId: imageId, Attribute: 'launchPermission' }))) as ImageAttribute;
+    if (!Array.isArray(launch.LaunchPermissions) || launch.LaunchPermissions.length !== 0) {
+      fail('candidate recovery AMI must still be private with measured empty launch permissions');
+    }
+    const detail = (await ec2.send(new DescribeSnapshotsCommand({ SnapshotIds: [snapshotId] }))) as DescribeSnapshotsResult;
+    const snapshot = detail.Snapshots?.[0];
+    if (detail.Snapshots?.length !== 1 || !snapshot || snapshot.SnapshotId !== snapshotId ||
+        snapshot.OwnerId !== owner || snapshot.State !== 'completed' || snapshot.Encrypted !== true ||
+        snapshot.KmsKeyId !== input.kmsKeyArn ||
+        snapshot.VolumeSize !== Math.ceil(input.bootcArtifact!.sizeBytes / (1024 ** 3))) {
+      fail('candidate recovery snapshot does not match the publisher, completed state, disk size and exact encryption key');
+    }
+    const snapshotTags = tagMap(snapshot.Tags);
+    for (const [key, value] of Object.entries(provenanceTags)) {
+      if (snapshotTags[key] !== value) fail(`candidate recovery snapshot is missing exact tag ${key}`);
+    }
+    const permissions = (await ec2.send(new DescribeSnapshotAttributeCommand({ SnapshotId: snapshotId, Attribute: 'createVolumePermission' }))) as DescribeSnapshotAttributeResult;
+    if (!Array.isArray(permissions.CreateVolumePermissions) || permissions.CreateVolumePermissions.length !== 0) {
+      fail('candidate recovery snapshot must still be private with measured empty volume permissions');
+    }
+    // No upload, copy, permission change or pin write occurs here. executeAwsAmiRelease continues
+    // with a fresh exact-image scan, sharing/encryption inspection and clean-account proof.
     return { imageId };
   }
 
@@ -872,6 +941,7 @@ export function composeAwsAmiReleaseAdapter(
   });
   return new SdkAwsAmiReleaseAdapter(
     {
+      publisherAccountId: connection.scope?.id,
       ec2: (region) => {
         if (!ec2Clients.has(region)) ec2Clients.set(region, new EC2Client({ region, credentials }));
         return sender(ec2Clients.get(region)!);

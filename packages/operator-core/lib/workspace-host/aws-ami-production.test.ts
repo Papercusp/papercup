@@ -109,6 +109,121 @@ describe('AWS AMI release description (cross-account provenance)', () => {
   });
 });
 
+describe('SdkAwsAmiReleaseAdapter private candidate recovery', () => {
+  function recovery(calls: Call[], runs: unknown[]) {
+    const input = buildInput();
+    const provenance = {
+      'papercusp:managed': 'true',
+      'papercusp:build-manifest': input.buildManifestIdentity,
+      'papercusp:release-sha256': input.releaseSha256,
+      'papercusp:image-version': input.releaseVersion,
+    };
+    const toTags = (values: Record<string, string>) => Object.entries(values).map(([Key, Value]) => ({ Key, Value }));
+    const image = {
+      ImageId: 'ami-0abc', OwnerId: '111111111111', Name: input.imageName,
+      Description: input.description, State: 'available', Architecture: input.architecture,
+      RootDeviceName: '/dev/xvda',
+      BlockDeviceMappings: [{ DeviceName: '/dev/xvda', Ebs: { SnapshotId: 'snap-0abc', Encrypted: true } }],
+      Tags: toTags({ ...provenance, 'papercusp:guest-tool:amazon-ssm-agent': '3.3.1', 'papercusp:guest-tool:openssh-server': '9.6' }),
+    };
+    const snapshot = {
+      SnapshotId: 'snap-0abc', OwnerId: '111111111111', State: 'completed',
+      Encrypted: true, KmsKeyId: KMS, VolumeSize: 1, Tags: toTags(provenance),
+    };
+    const launch = { LaunchPermissions: [] as { Group?: string; UserId?: string }[] };
+    const permissions = { CreateVolumePermissions: [] as { Group?: string; UserId?: string }[] };
+    const deps = {
+      publisherAccountId: '111111111111',
+      ec2: () => fakeSender({
+        DescribeImagesCommand: () => ({ Images: [image] }),
+        DescribeImageAttributeCommand: () => launch,
+        DescribeSnapshotsCommand: () => ({ Snapshots: [snapshot] }),
+        DescribeSnapshotAttributeCommand: () => permissions,
+      }, calls),
+      ssm: () => fakeSender({}, calls), kms: () => fakeSender({}, calls),
+      childCredentials: async () => ({}), commands: fakeCommands('', runs),
+    };
+    const adapter = new SdkAwsAmiReleaseAdapter(deps, {
+      resumeCandidateImageId: 'ami-0abc',
+      guestToolVersions: { 'amazon-ssm-agent': '3.3.1', 'openssh-server': '9.6' },
+    });
+    return { input, image, snapshot, launch, permissions, deps, adapter };
+  }
+
+  it('reuses only the exact private encrypted candidate with read-only metadata calls and no upload', async () => {
+    const calls: Call[] = []; const runs: unknown[] = [];
+    const f = recovery(calls, runs);
+    await expect(f.adapter.buildCandidate(f.input)).resolves.toEqual({ imageId: 'ami-0abc' });
+    expect(runs).toEqual([]);
+    expect(calls.map(x => x.name)).toEqual([
+      'DescribeImagesCommand', 'DescribeImageAttributeCommand', 'DescribeSnapshotsCommand', 'DescribeSnapshotAttributeCommand',
+    ]);
+    expect(calls[0].input).toEqual({ ImageIds: ['ami-0abc'], Owners: ['111111111111'] });
+  });
+
+  it.each(['ImageId', 'OwnerId', 'Name', 'Description', 'State', 'Architecture'])(
+    'rejects a mismatched AMI %s without any mutation or upload', async (field) => {
+      const calls: Call[] = []; const runs: unknown[] = []; const f = recovery(calls, runs);
+      (f.image as Record<string, unknown>)[field] = 'different';
+      await expect(f.adapter.buildCandidate(f.input)).rejects.toThrow(/does not match the exact publisher/);
+      expect(runs).toEqual([]);
+      expect(calls.every(x => x.name.startsWith('Describe'))).toBe(true);
+    },
+  );
+
+  it.each(['papercusp:build-manifest', 'papercusp:release-sha256', 'papercusp:image-version', 'papercusp:guest-tool:amazon-ssm-agent'])(
+    'rejects a mismatched AMI tag %s', async (key) => {
+      const runs: unknown[] = []; const f = recovery([], runs);
+      f.image.Tags.find(x => x.Key === key)!.Value = 'different';
+      await expect(f.adapter.buildCandidate(f.input)).rejects.toThrow(/missing exact tag/);
+      expect(runs).toEqual([]);
+    },
+  );
+
+  it.each(['SnapshotId', 'OwnerId', 'State', 'Encrypted', 'KmsKeyId', 'VolumeSize'])(
+    'rejects a mismatched snapshot %s', async (field) => {
+      const calls: Call[] = []; const runs: unknown[] = []; const f = recovery(calls, runs);
+      (f.snapshot as Record<string, unknown>)[field] = field === 'Encrypted' ? false : 'different';
+      await expect(f.adapter.buildCandidate(f.input)).rejects.toThrow(/snapshot does not match/);
+      expect(runs).toEqual([]);
+      expect(calls.every(x => x.name.startsWith('Describe'))).toBe(true);
+    },
+  );
+
+  it('rejects extra disks and a substituted snapshot provenance tag', async () => {
+    const extra = recovery([], []);
+    extra.image.BlockDeviceMappings.push({ DeviceName: '/dev/xvdb', Ebs: { SnapshotId: 'snap-0def', Encrypted: true } });
+    await expect(extra.adapter.buildCandidate(extra.input)).rejects.toThrow(/exactly one encrypted root/);
+    const tag = recovery([], []);
+    tag.snapshot.Tags.find(x => x.Key === 'papercusp:release-sha256')!.Value = 'f'.repeat(64);
+    await expect(tag.adapter.buildCandidate(tag.input)).rejects.toThrow(/snapshot is missing exact tag/);
+  });
+
+  it('rejects shared or unmeasured AMI and snapshot permissions', async () => {
+    for (const target of ['launch', 'snapshot', 'missing-launch', 'missing-snapshot']) {
+      const runs: unknown[] = []; const f = recovery([], runs);
+      if (target === 'launch') f.launch.LaunchPermissions.push({ Group: 'all' });
+      if (target === 'snapshot') f.permissions.CreateVolumePermissions.push({ UserId: SHARE_ACCOUNT });
+      if (target === 'missing-launch') delete (f.launch as Record<string, unknown>).LaunchPermissions;
+      if (target === 'missing-snapshot') delete (f.permissions as Record<string, unknown>).CreateVolumePermissions;
+      await expect(f.adapter.buildCandidate(f.input)).rejects.toThrow(/must still be private/);
+      expect(runs).toEqual([]);
+    }
+  });
+
+  it('still verifies the disk bytes and requires a persisted publisher owner', async () => {
+    const calls: Call[] = []; const f = recovery(calls, []);
+    await expect(f.adapter.buildCandidate({ ...f.input, bootcArtifact: { ...f.input.bootcArtifact!, sha256: 'f'.repeat(64) } }))
+      .rejects.toThrow(/disk digest/);
+    expect(calls).toEqual([]);
+    const unbound = new SdkAwsAmiReleaseAdapter({ ...f.deps, publisherAccountId: undefined }, {
+      resumeCandidateImageId: 'ami-0abc', guestToolVersions: { 'amazon-ssm-agent': '3.3.1', 'openssh-server': '9.6' },
+    });
+    await expect(unbound.buildCandidate(f.input)).rejects.toThrow(/persisted publisher account/);
+    expect(calls).toEqual([]);
+  });
+});
+
 describe('SdkAwsAmiReleaseAdapter.buildCandidate', () => {
   it('refuses a Packer-kind build before any upload or AWS call', async () => {
     const calls: Call[] = [];
