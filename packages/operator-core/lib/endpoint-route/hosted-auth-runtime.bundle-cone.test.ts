@@ -25,6 +25,8 @@ const FORBIDDEN = [
   'auth/hosted/secret-ref.ts',
   'sync-sse.ts',
   'endpoint-route/routes/index.ts',
+  'endpoint-route/routes/hosted-tutorial-assistance-runtime.ts',
+  'agent-tools/operator/converse.ts',
 ] as const;
 
 const IMPORT_RE = /(?:^|\n)\s*(?:import|export)\s[^'"]*?from\s*['"]([^'"]+)['"]|(?:^|\n)\s*import\s*['"]([^'"]+)['"]/g;
@@ -53,6 +55,18 @@ function walk(entry: string): Map<string, string> {
       const target = resolveRelative(file, spec);
       if (target && target.startsWith(ROOT) && !seen.has(target)) queue.push([target, file]);
     }
+    // esbuild follows lazy literal imports too; ignoring them let Help pull
+    // the execution graph into hosted sign-in without this guard noticing.
+    const syntax = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
+    const visit = (node: ts.Node): void => {
+      if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword
+        && node.arguments.length === 1 && ts.isStringLiteral(node.arguments[0])) {
+        const target = resolveRelative(file, node.arguments[0].text);
+        if (target && target.startsWith(ROOT) && !seen.has(target)) queue.push([target, file]);
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(syntax);
   }
   return seen;
 }

@@ -105,14 +105,40 @@ Require `PAPERCUSP_HOST_IMPORT_SMOKE_OK`, then successful `/api/health` and
 the suite's SDK revision check. A failed preflight is a startup failure, with
 zero model cases executed. Retain its diagnostic before retrying.
 
+## Public result capture and three pending cases
+
+The three pending cases passed on 2026-10-08 (ledger `20922602`): hostile
+retrieved instructions with paired public/private controls, a real missing
+public bundle, and changed-revision retrieval in actual chat. The four retained
+answer records each contain two actual public tool results, including the
+hostile instruction, `public_docs_unavailable`, and the new revision marker.
+The exact questions, answers, bounded public results, assertion names and log
+hashes are retained in
+[chat-case-records-capture-20261008.json](./chat-case-records-capture-20261008.json).
+Fixture conversation/workspace identifiers are omitted from this public-only
+record; credentials and provider tapes are excluded.
+
+The failure originated in the evidence transport: the native stream lacked a
+result observer, public converse emitted calls without returned results, and
+the HTTP target did not consume result events. The maintained regressions now
+cover native Claude/Codex/OMP pairing, the public docs-only output boundary,
+redaction, errors and the HTTP reducer. A separate real-renderer regression
+keeps fixture canaries stable through Markdown rendering.
+
+This passing run used a request-only canonical-source utility on :3397 and a
+disposable public manual fixture. The ledger marks dirty local source at
+`0cb841a816a05296427e4f0283d53e7ed75a0118`; eleven other collected tests were
+excluded by the filter. The temporary host has exited and the fixture bundle
+was restored. This establishes the scoped capture repair and these three
+behaviors, with broader acceptance still open.
+
 ## Outstanding acceptance
 
 The following remain unobserved here: the actual portal browser journey and
 deep-delegation route; the full canonical seed/paraphrase matrix; fresh installed
 artifact behavior; live authorized account facts; stale, conflicting, missing
-and unavailable evidence; a model turn over hostile retrieved content; paired
-public/private isolation controls in the same acceptance run; retriever/index
-outage behavior; changed-revision behavior in actual chat; real novice outcomes;
+and unavailable evidence beyond the scoped public-bundle case above; the full
+accepted isolation cohort and retriever/index outage matrix; real novice outcomes;
 independent final acceptance; and exact production shipment.
 
 Unit prompt-assembly checks, SDK retrieval checks and model responses discharge

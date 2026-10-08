@@ -50,7 +50,8 @@ import {
   normalizeBulkAutomationPolicy,
   readIntakeDecision,
 } from './bulk-dispositions';
-import { readStandingBulkAutomationPolicy } from './automation-policy';
+import { readStandingBulkAutomationPolicy, standingAutomationEligibility } from './automation-policy';
+import type { StandingBulkAutomationPolicy } from './bulk-dispositions';
 import { deliverUnattendedRunOwnerDigest, UNATTENDED_BULK_REQUESTER } from './bulk-run-owner-digest';
 
 /** Lifecycle of a run. `review` means the agent is done and the owner has
@@ -1048,11 +1049,12 @@ export async function getRunningRun(
 export async function getItemIdsAwaitingOwnerReview(
   workspaceId?: string,
   kind: BulkRunKind | null = DEFAULT_RUN_KIND,
+  automaticPolicy?: StandingBulkAutomationPolicy,
 ): Promise<Set<string>> {
   const { sql } = getOrgPg();
   const ws = workspaceId ?? activeWorkspaceId();
-  const rows = await sql<{ item_id: string }[]>`
-    SELECT DISTINCT i.item_id
+  const rows = await sql<{ item_id: string; outcome: BulkItemOutcome; item_kind: string | null; ref_kind: string | null; confidence_level: BulkConfidence | null; confidence: 'low' | 'high' | null }[]>`
+    SELECT DISTINCT i.item_id, i.outcome, i.item_kind, i.item_ref->>'kind' AS ref_kind, i.confidence_level, i.confidence
       FROM harness_shared.attention_bulk_run_items i
       JOIN harness_shared.attention_bulk_runs r
         ON r.workspace_id = i.workspace_id AND r.run_id = i.run_id
@@ -1060,7 +1062,10 @@ export async function getItemIdsAwaitingOwnerReview(
        AND (${kind ?? null}::text IS NULL OR r.run_kind = ${kind ?? null})
        AND i.outcome <> 'auto_resolved'
   `;
-  return new Set(rows.map((row) => row.item_id));
+  return new Set(rows.filter((row) => row.outcome !== 'recommended' || !automaticPolicy || !standingAutomationEligibility(
+    automaticPolicy, row.ref_kind ?? row.item_kind ?? '',
+    row.confidence_level ?? (row.confidence === 'high' ? 'high' : row.confidence === 'low' ? 'low' : null),
+  ).allowed).map((row) => row.item_id));
 }
 
 /**

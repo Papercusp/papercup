@@ -85,12 +85,12 @@ describe('settings nav — /settings/autonomy is permanently hidden (P-011 / D-0
     expect(p2pLink()).toBeNull();
   });
 
-  it('stays hidden with its own page flag ON — no flag state can bring it back', () => {
+  it('shows current queue autonomy controls independently of the retired Queen page flag', () => {
     // The strongest form the deletion allows: the surviving half of the old AND is
     // forced ON, and the entry is still absent.
     flagValues[FLAGS.MUG_AUTONOMY_SETTINGS] = true;
     renderNav();
-    expect(autonomyLink()).toBeNull();
+    expect(autonomyLink()).not.toBeNull();
     expect(document.querySelector('nav a[href="/settings/profile"]')).not.toBeNull();
   });
 

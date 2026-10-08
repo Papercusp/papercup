@@ -105,6 +105,7 @@ export async function getInheritedGoalContext(
   workspaceId: string,
   ownerId: string,
   sql?: Sql,
+  opts: { requireRead?: boolean } = {},
 ): Promise<string | null> {
   if (!workspaceId || workspaceId === '*' || !ownerId) return null;
   try {
@@ -114,7 +115,8 @@ export async function getInheritedGoalContext(
       LIMIT 1`;
     const raw = rows.length ? (rows[0] as { goal_id?: unknown }).goal_id : null;
     return raw == null || raw === '' ? null : String(raw);
-  } catch {
+  } catch (error) {
+    if (opts.requireRead) throw error;
     return null;
   }
 }
@@ -174,13 +176,14 @@ export async function resolveGoalContext(
   workspaceId: string,
   ownerId: string,
   sql?: Sql,
+  opts: { requireRead?: boolean } = {},
 ): Promise<string | null> {
   if (!workspaceId || workspaceId === '*' || !ownerId) return null;
   const authority = await assertGoalHolderMutationAuthority(workspaceId, ownerId, sql);
   if (authority.status === 'elected' || authority.status === 'handoff') {
     return authority.goalId;
   }
-  return getInheritedGoalContext(workspaceId, ownerId, sql);
+  return getInheritedGoalContext(workspaceId, ownerId, sql, opts);
 }
 
 /**

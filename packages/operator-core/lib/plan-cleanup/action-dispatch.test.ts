@@ -120,4 +120,15 @@ describe('dispatchCleanupFindingAction', () => {
     ).rejects.toThrow(/requires an authored state\/next proposal/);
     expect(h.call).not.toHaveBeenCalled();
   });
+
+  it('dispatches an authored Now update through the canonical validator', async () => {
+    await dispatchCleanupFindingAction({
+      run, finding: finding('stale-now', null), call: h.call,
+      proposal: { state: 'P-002 remains open.', next: 'Implement P-002 and verify its acceptance.' },
+    });
+    expect(h.call).toHaveBeenCalledWith('plans:set-now', {
+      slug: 'plan-a', harness: 'papercusp', state: 'P-002 remains open.',
+      next: 'Implement P-002 and verify its acceptance.',
+    });
+  });
 });

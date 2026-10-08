@@ -25,6 +25,7 @@ import setGoalProperty from './agent-tools/goals/set-property';
 import { readGoalPortfolioBrief } from './goal-launch-settings';
 import {
   applyGoalPropertyWrite,
+  extendGoalPropertySchema,
   applyPlanPropertyWrite,
   derivePropertySurface,
   validatePropertySchemaDeclaration,
@@ -627,6 +628,36 @@ describe('typed-properties-db (real PG, migration 923)', () => {
       SELECT property_schema, properties FROM harness_shared.goals
        WHERE id = 'g-tp-tea-race' AND workspace_id = ${WS}`;
     expect(derivePropertySurface(row!).properties.tea_policy).toEqual(winner.entry);
+  });
+
+  it('enrolls an unpackaged goal through an additive schema CAS without changing saved properties', async () => {
+    const legacy = { tea_choices: { datatype: 'string-list', default: ['mint', 'chamomile'], editable_by: 'both' } };
+    const saved = { tea_choices: { value: ['rooibos', 'mint'], version: 7, edited_by: 'agent',
+      edited_at: '2026-10-07T00:00:00Z', provenance: 'agent-edit' } };
+    await db.adminSql`INSERT INTO harness_shared.goals (id, install_slug, workspace_id, title, status,
+      property_schema, properties) VALUES ('g-tp-legacy-collection', ${HARNESS}, ${WS}, 'Legacy tea goal', 'active',
+        ${JSON.stringify(legacy)}::jsonb, ${JSON.stringify(saved)}::jsonb)`;
+    const patch = { tea_choices: { ...legacy.tea_choices, collection: { source: 'manual', policy: 'tea_policy',
+      order: 'display', selectable: true, defaultSelected: true } },
+      tea_policy: { datatype: 'ordered-selection-policy', editable_by: 'owner', default: { order: [], excluded: [] } } };
+    const applied = await db.adminSql.begin((tx) => extendGoalPropertySchema(tx as unknown as typeof db.adminSql,
+      { workspaceId: WS, goalId: 'g-tp-legacy-collection', patch, expected: legacy }));
+    expect(applied).toMatchObject({ ok: true });
+    const [row] = await db.adminSql`SELECT properties, property_schema FROM harness_shared.goals
+      WHERE workspace_id = ${WS} AND id = 'g-tp-legacy-collection'`;
+    expect(row.properties).toEqual(saved);
+    expect(row.property_schema).toEqual(patch);
+    expect(await db.adminSql.begin((tx) => extendGoalPropertySchema(tx as unknown as typeof db.adminSql,
+      { workspaceId: WS, goalId: 'g-tp-legacy-collection', patch, expected: legacy })))
+      .toEqual({ ok: false, code: 'stale_schema' });
+    const tampered = { tea_choices: { ...patch.tea_choices, collection: { ...patch.tea_choices.collection, defaultSelected: false } } };
+    expect(await db.adminSql.begin((tx) => extendGoalPropertySchema(tx as unknown as typeof db.adminSql,
+      { workspaceId: WS, goalId: 'g-tp-legacy-collection', patch: tampered, expected: patch })))
+      .toEqual({ ok: false, code: 'owner_policy_declaration' });
+    const invalid = { bad: { datatype: 'missing-registry-type', editable_by: 'both' } };
+    expect(await db.adminSql.begin((tx) => extendGoalPropertySchema(tx as unknown as typeof db.adminSql,
+      { workspaceId: WS, goalId: 'g-tp-legacy-collection', patch: invalid, expected: patch })))
+      .toMatchObject({ ok: false, code: 'invalid_schema' });
   });
 
   it('the authenticated door protects owner policy and never attributes discovered worklist candidates', async () => {

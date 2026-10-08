@@ -51,6 +51,7 @@ describe('narrow hosted auth runtime', () => {
     expect(resolveSecret).toHaveBeenCalledTimes(1);
     expect(runtime.tutorialMounted.map(route => `${route.method} ${route.path}`)).toEqual([
       'GET /hosted/browser/onboarding/tutorial-progress', 'POST /hosted/browser/onboarding/tutorial-progress',
+      'POST /hosted/browser/onboarding/tutorial-help',
     ]);
     for (const method of ['GET', 'POST']) {
       const progress = await runtime.tutorial.request('/api/hosted/browser/onboarding/tutorial-progress?scope=account&version=3', { method });
@@ -58,6 +59,11 @@ describe('narrow hosted auth runtime', () => {
       expect(await progress.json()).toMatchObject({ error: { message: 'session_cookie_missing' } });
     }
     expect((await runtime.tutorial.request('/api/hosted/browser/rest-query')).status).toBe(404);
+    const help = await runtime.tutorial.request('/api/hosted/browser/onboarding/tutorial-help', { method: 'POST' });
+    expect(help.status).toBe(401);
+    expect(await help.json()).toMatchObject({ error: { message: 'session_cookie_missing' } });
+    expect((await runtime.tutorial.request('/api/hosted/browser/onboarding/tutorial-help')).status).toBe(404);
+    expect((await runtime.tutorial.request('/api/hosted/browser/onboarding/tutorial-speech', { method: 'POST' })).status).toBe(404);
     expect((await runtime.app.request('/api/auth/login', { method: 'POST' })).status).toBe(404);
     const session = await runtime.app.request('/api/hosted/auth/session');
     expect(session.status).toBe(401);

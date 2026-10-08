@@ -6,6 +6,23 @@ import {
 import { standingAutomationEligibility } from './automation-policy';
 
 describe('P-006 standing automation policy', () => {
+  it('lets an owner grant every risk without disabling confidence or unknown-kind checks', () => {
+    const policy = { level: 'L0' as const, minConfidence: 'high' as const,
+      riskLevels: { low: 'automatic' as const, medium: 'automatic' as const, high: 'automatic' as const } };
+    for (const kind of ['coord-message', 'work-item-needs-human', 'smoke-fail']) {
+      expect(standingAutomationEligibility(policy, kind, 'high')).toEqual({ allowed: true, reason: null });
+      expect(standingAutomationEligibility(policy, kind, 'low').allowed).toBe(false);
+    }
+    expect(standingAutomationEligibility(policy, 'unknown-kind', 'high').allowed).toBe(false);
+  });
+
+  it('independently revokes one risk while keeping the other grants', () => {
+    const policy = { level: 'L2' as const, minConfidence: 'high' as const,
+      riskLevels: { low: 'review' as const, medium: 'automatic' as const, high: 'review' as const } };
+    expect(standingAutomationEligibility(policy, 'coord-message', 'high').allowed).toBe(false);
+    expect(standingAutomationEligibility(policy, 'work-item-needs-human', 'high').allowed).toBe(true);
+    expect(standingAutomationEligibility(policy, 'smoke-fail', 'high').allowed).toBe(false);
+  });
   it('ships L0 review-all with an independent high confidence floor', () => {
     expect(DEFAULT_STANDING_BULK_AUTOMATION_POLICY).toEqual({ level: 'L0', minConfidence: 'high' });
     expect(normalizeStandingBulkAutomationPolicy({ level: 'L2', minConfidence: 'low' })).toEqual({

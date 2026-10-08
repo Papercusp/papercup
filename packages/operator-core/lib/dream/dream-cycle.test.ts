@@ -218,6 +218,7 @@ describe('Dream capability cycle governance — AUTO-REQ-M-002-P-005', () => {
     h.input.pass = DEFAULT_DREAM_PASS_CONFIG;
     h.input.review = DEFAULT_DREAM_REVIEW_CONFIG;
     expect(h.input.pass.model).toBe(h.input.review.model);
+    h.d.estimateCall = estimateDreamCall;
 
     await runDreamCycle(h.input, h.d);
 
@@ -473,6 +474,26 @@ describe('Dream capability cycle governance — AUTO-REQ-M-002-P-005', () => {
       estimateDreamCall({ model: 'claude-haiku-4-5', messages: [{ role: 'user', content: 'source' }] }),
     ).toBeGreaterThan(0);
     expect(() => estimateDreamCall({ model: 'unpriced-provider', messages: [] })).toThrow('unpriced');
+  });
+
+  it.each([DEFAULT_DREAM_PASS_CONFIG.model, 'gpt-6-astra:xhigh', 'gpt-5.4:medium'])(
+    'admits a priced tiered model %s using the actual request estimate', (model) => {
+      const estimate = estimateDreamCall({
+        model, messages: [{ role: 'user', content: 'A bounded Dream source packet' }], maxTokens: 1024,
+      });
+      expect(Number.isFinite(estimate)).toBe(true);
+      expect(estimate).toBeGreaterThan(0);
+    },
+  );
+
+  it('reserves the long-context tier and reasoning output for a large Dream request', () => {
+    const estimate = estimateDreamCall({
+      model: DEFAULT_DREAM_PASS_CONFIG.model,
+      system: 'x'.repeat(272_001), messages: [], maxTokens: 1024, thinkingBudgetTokens: 2048,
+    });
+    // The maintained Sol rate above 272k input is $4/M input and $15/M output.
+    // This lower bound excludes envelope bytes; ordinary-tier admission is unsafe.
+    expect(estimate).toBeGreaterThanOrEqual((272_001 * 4 + 3072 * 15) / 1_000_000);
   });
 
   it('refused admission reads no source and sends no model call', async () => {

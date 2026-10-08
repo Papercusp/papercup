@@ -12,7 +12,7 @@ import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { callPlansRead } from '../../agent-tools/plans/read-dispatch';
 import { readStandingBulkAutomationPolicy } from '../../attention/automation-policy';
-import { bulkAutomationSnapshot } from '../../attention/bulk-dispositions';
+import { bulkAutomationSnapshot, bulkRiskAutonomy, type StandingBulkAutomationPolicy } from '../../attention/bulk-dispositions';
 import {
   BulkRunAlreadyActiveError,
   createRun,
@@ -108,6 +108,7 @@ function seedItems(
 
 export interface InboxBulkResolveActionDeps {
   enabled: () => Promise<boolean>;
+  readPolicy: (workspaceId: string) => Promise<StandingBulkAutomationPolicy>;
   readAttention: () => Promise<unknown>;
   /**
    * The run that EXCLUDES a new one: `pending`/`running` only — the same set
@@ -123,7 +124,7 @@ export interface InboxBulkResolveActionDeps {
    * review gate (above) without this made every fire re-seed the same 200
    * items — 13 duplicate runs in 3h (WI-10004720 follow-up).
    */
-  awaitingReview: (workspaceId: string) => Promise<ReadonlySet<string>>;
+  awaitingReview: (workspaceId: string, automaticPolicy?: StandingBulkAutomationPolicy) => Promise<ReadonlySet<string>>;
   /**
    * The owner's saved inbox-resolve launch profile (model / effort / account /
    * carry) — the same settings the pane's Run button uses. The scheduled path
@@ -154,10 +155,13 @@ async function productionLaunch(input: {
 
 export function makeInboxBulkResolveAction(overrides: Partial<InboxBulkResolveActionDeps> = {}) {
   const deps: InboxBulkResolveActionDeps = {
+    readPolicy: readStandingBulkAutomationPolicy,
     enabled: () => getFlag(FLAGS.INBOX_BULK_RESOLVE, 'system:inbox-bulk-resolve').catch(() => false),
     readAttention: () => callPlansRead('attention', {}, { uiProjection: false }),
     runningRun: (workspaceId) => getRunningRun(workspaceId, 'inbox-resolve'),
-    awaitingReview: (workspaceId) => getItemIdsAwaitingOwnerReview(workspaceId, 'inbox-resolve'),
+    awaitingReview: (workspaceId, policy) => policy
+      ? getItemIdsAwaitingOwnerReview(workspaceId, 'inbox-resolve', policy)
+      : getItemIdsAwaitingOwnerReview(workspaceId, 'inbox-resolve'),
     readLaunchProfile: async () => (await readAgentConfig()).resolverProfiles?.['inbox-resolve'] ?? null,
     recentNeverBeat: (workspaceId) =>
       readConsecutiveNeverBeatRuns({ workspaceId, kind: 'inbox-resolve', requestedBy: SCHEDULED_REQUESTER }),
@@ -178,7 +182,13 @@ export function makeInboxBulkResolveAction(overrides: Partial<InboxBulkResolveAc
       deps.log(`skip: run=${running.runId} is ${running.phase} (single-flight)`);
       return;
     }
-    const held = await deps.awaitingReview(ctx.workspaceId);
+    const standingPolicy = await deps.readPolicy(ctx.workspaceId);
+    // Previously-reviewed items become eligible for a fresh live adjudication when
+    // the owner grants autonomy. Existing report auto-accept performs the action.
+    const hasAutomaticRisk = Object.values(bulkRiskAutonomy(standingPolicy)).includes('automatic');
+    const held = hasAutomaticRisk
+      ? await deps.awaitingReview(ctx.workspaceId, standingPolicy)
+      : await deps.awaitingReview(ctx.workspaceId);
     const items = seedItems(await deps.readAttention(), INBOX_BULK_RESOLVE_CAP, held);
     if (items.length === 0) {
       deps.log(
@@ -196,7 +206,7 @@ export function makeInboxBulkResolveAction(overrides: Partial<InboxBulkResolveAc
       );
       return;
     }
-    const policy = bulkAutomationSnapshot(await readStandingBulkAutomationPolicy(ctx.workspaceId));
+    const policy = bulkAutomationSnapshot(standingPolicy);
     const profile = await deps.readLaunchProfile();
     // Same shape as plan-cleanup-sweep-action: the profile supplies the launch
     // route, the standing automation policy supplies authority. An absent field

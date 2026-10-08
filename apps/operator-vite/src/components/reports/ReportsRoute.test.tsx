@@ -8,7 +8,7 @@ const fixture = vi.hoisted(() => ({ enabled: true, queries: [] as { queryName: s
 vi.mock('@papercusp/flags/client', () => ({ useFlag: () => fixture.enabled }));
 vi.mock('@papercusp/sync', () => ({ useSyncQuery: (opts: { queryName: string; args: Record<string, unknown>; enabled?: boolean }) => {
   fixture.queries.push(opts);
-  return { data: opts.enabled === false ? [] : opts.queryName === 'reports.list' ? fixture.list
+  return { data: opts.queryName === 'reports.list' ? fixture.list
     : opts.queryName === 'reports.get' ? fixture.detail : fixture.history, loading: false,
     error: fixture.error, invalidate: vi.fn() };
 } }));
@@ -54,6 +54,26 @@ describe('Reports route', () => {
     const params = update.mock.calls.at(-1)![0].searchParams as URLSearchParams;
     expect(params.get('sel')).toBe('edition-2');
     expect(params.get('q')).toBe('findings');
+  });
+  it('hides a cached reader snapshot when the selection is cleared', () => {
+    fixture.detail = [report];
+    fixture.history = [report];
+    mount('?q=findings&hist=true');
+    expect(screen.getByText('Select a report to read it.')).toBeTruthy();
+    expect(screen.queryByTestId('markdown-preview')).toBeNull();
+    expect(screen.queryByRole('heading', { name: report.title })).toBeNull();
+    expect(fixture.queries.find(q => q.queryName === 'reports.get')?.enabled).toBe(false);
+    expect(fixture.queries.find(q => q.queryName === 'reports.lineage')?.enabled).toBe(false);
+  });
+  it('hides the previous cached edition while a different exact citation loads', async () => {
+    fixture.detail = [report];
+    const update = mount('?sel=edition-2&q=findings');
+    expect(screen.getByTestId('markdown-preview')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Previous version' }));
+    await waitFor(() => expect(update).toHaveBeenCalled());
+    await waitFor(() => expect(screen.queryByTestId('markdown-preview')).toBeNull());
+    expect(fixture.queries.filter(q => q.queryName === 'reports.get').at(-1)?.args).toEqual({ reportId: 'edition-1' });
+    expect((update.mock.calls.at(-1)![0].searchParams as URLSearchParams).get('q')).toBe('findings');
   });
   it('copies complete Markdown with Mermaid fences and navigates to the previous edition', async () => {
     fixture.detail = [report];

@@ -313,6 +313,30 @@ describe('inbox:bulk-run-report standing-policy auto-accept', () => {
     }));
   }
 
+  it.each([
+    ['coord-message', 'ack'],
+    ['work-item-needs-human', 'resolve'],
+    ['smoke-fail', 'resolve'],
+  ])('automatically applies a recommended %s action with an explicit all-risk grant', async (kind, actionId) => {
+    const riskLevels = { low: 'automatic', medium: 'automatic', high: 'automatic' } as const;
+    h.readStandingBulkAutomationPolicy.mockResolvedValue({ level: 'L0', minConfidence: 'high', riskLevels });
+    arrangeSuccessfulAction({ ...item, kind, ref: { kind } }, actionId);
+    const result = body(await bulkRunReport.handler({ runId: run.runId,
+      items: [reportItem({ actionId })] }, { workspaceId: run.workspaceId } as never));
+    expect(h.dispatchAttentionTerminalAction).toHaveBeenCalledTimes(1);
+    expect(result.autoAccept).toMatchObject({ attempted: 1, resolved: 1, leftForReview: 0 });
+  });
+
+  it('rechecks a revoked grant inside the action window and leaves the recommendation for review', async () => {
+    arrangeSuccessfulAction();
+    h.readStandingBulkAutomationPolicy.mockResolvedValueOnce({ level: 'L1', minConfidence: 'high' })
+      .mockResolvedValue({ level: 'L0', minConfidence: 'high' });
+    const result = body(await bulkRunReport.handler({ runId: run.runId,
+      items: [reportItem()] }, { workspaceId: run.workspaceId } as never));
+    expect(h.dispatchAttentionTerminalAction).not.toHaveBeenCalled();
+    expect(result.autoAccept).toMatchObject({ resolved: 0, leftForReview: 1 });
+  });
+
   it('persists first, then auto-accepts an above-floor L1 recommendation through bulk-run-act', async () => {
     arrangeSuccessfulAction();
 

@@ -24,7 +24,6 @@ import { useLexicon } from '@/lib/useLexicon';
 export const SETTINGS_PATH_FLAGS: Record<string, FlagKey> = {
   '/settings/publishing': FLAGS.CLOUDFLARE_PUBLISH,
   '/settings/prompt-studio': FLAGS.PROMPT_STUDIO,
-  '/settings/autonomy':   FLAGS.MUG_AUTONOMY_SETTINGS,
   '/settings/storage':    FLAGS.STORAGE_SETTINGS,
   '/settings/pot-customization': FLAGS.BLUEPRINT_AWARE_SETTINGS,
   '/settings/p2p':        FLAGS.P2P,
@@ -165,7 +164,6 @@ export default function SettingsLayout({ children }: { children: React.ReactNode
 
   const publishingEnabled = useFlag(FLAGS.CLOUDFLARE_PUBLISH);
   const promptStudioEnabled = useFlag(FLAGS.PROMPT_STUDIO);
-  const autonomySettingsEnabled = useFlag(FLAGS.MUG_AUTONOMY_SETTINGS);
   const storageSettingsEnabled = useFlag(FLAGS.STORAGE_SETTINGS);
   const blueprintAwareSettingsEnabled = useFlag(FLAGS.BLUEPRINT_AWARE_SETTINGS);
   const p2pEnabled = useFlag(FLAGS.P2P);
@@ -186,7 +184,7 @@ export default function SettingsLayout({ children }: { children: React.ReactNode
   const flagEnabled: Record<string, boolean> = {
     [FLAGS.CLOUDFLARE_PUBLISH]: publishingEnabled,
     [FLAGS.PROMPT_STUDIO]: promptStudioEnabled,
-    [FLAGS.MUG_AUTONOMY_SETTINGS]: false,
+    [FLAGS.MUG_AUTONOMY_SETTINGS]: true,
     [FLAGS.STORAGE_SETTINGS]: storageSettingsEnabled,
     [FLAGS.BLUEPRINT_AWARE_SETTINGS]: blueprintAwareSettingsEnabled,
     [FLAGS.P2P]: p2pEnabled,

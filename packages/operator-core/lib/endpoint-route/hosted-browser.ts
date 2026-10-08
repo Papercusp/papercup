@@ -63,7 +63,8 @@ import {
   type WorkspaceHostBringUp,
 } from '../workspace-host/hosted-bring-up';
 import type { HostedFirstWorkspace } from '../auth/hosted/first-workspace';
-import { createHostedTutorialProgressRoutes, createHostedTutorialAssistanceRoutes, HOSTED_BROWSER_TUTORIAL_PROGRESS_PATH, HOSTED_BROWSER_TUTORIAL_HELP_PATH, HOSTED_BROWSER_TUTORIAL_SPEECH_PATH, type TutorialAssistanceDependencies } from './routes/hosted-tutorial-progress';
+import { createHostedTutorialProgressRoutes, HOSTED_BROWSER_TUTORIAL_PROGRESS_PATH, HOSTED_BROWSER_TUTORIAL_HELP_PATH, HOSTED_BROWSER_TUTORIAL_SPEECH_PATH, type TutorialAssistanceDependencies } from './routes/hosted-tutorial-progress';
+import { createHostedTutorialAssistanceRoutes } from './routes/hosted-tutorial-assistance-runtime';
 import { exactOriginOr403, jsonError, selectedHostedPrincipal, tenantContext, workspaceHeaderMismatch, type HostedPrincipalSelection } from './hosted-browser-context';
 export { HOSTED_BROWSER_TUTORIAL_PROGRESS_PATH } from './routes/hosted-tutorial-progress';
 
@@ -787,7 +788,7 @@ export function createHostedBrowserRoutes(configuration: HostedBrowserRouteConfi
   });
 
   const tutorialProgress = createHostedTutorialProgressRoutes({ origin, controlPlaneWorkspaceId, runTenant });
-  const tutorialAssistance = createHostedTutorialAssistanceRoutes({ origin, controlPlaneWorkspaceId, dependencies: deps.tutorialAssistance });
+  const tutorialAssistance = createHostedTutorialAssistanceRoutes({ origin, controlPlaneWorkspaceId, runTenant, dependencies: deps.tutorialAssistance });
   return {
     routes: [query, sse, connection, provision, action, firstWorkspace, selectWorkspace, ...tutorialProgress, ...tutorialAssistance],
     allowlist: HOSTED_BROWSER_ROUTE_ALLOWLIST,

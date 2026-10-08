@@ -139,8 +139,19 @@ export interface RegisterTaskOptions {
  * Insert the `pending` row. Returns the full row — callers need `taskId` to build
  * the scope name and to correlate the child's exit.
  */
-export async function registerTask(spec: TaskSpec, opts: RegisterTaskOptions = {}, inject?: Sql): Promise<TaskRow> {
+export interface RegisterTaskStageObserver {
+  stage(name: string): void;
+}
+
+export async function registerTask(
+  spec: TaskSpec,
+  opts: RegisterTaskOptions = {},
+  inject?: Sql,
+  observer?: RegisterTaskStageObserver,
+): Promise<TaskRow> {
+  observer?.stage?.('task-ledger-client-init');
   const sql = sqlOf(inject);
+  observer?.stage?.('task-ledger-prepare');
   const ws = opts.workspaceId ?? activeWorkspaceId();
   const taskId = opts.taskId ?? newTaskId();
   const rootTaskId = spec.parentTaskId ? await resolveRoot(spec.parentTaskId, taskId, sql) : taskId;
@@ -159,6 +170,7 @@ export async function registerTask(spec: TaskSpec, opts: RegisterTaskOptions = {
   // the scope under the exact task id, creating an `unaccounted` placeholder;
   // allow that one narrow conflict to regain provenance. Ordinary duplicate ids
   // still return no row and fail below rather than overwriting a real task.
+  observer?.stage?.('task-ledger-insert');
   const rows = await sql`
     INSERT INTO harness_shared.task_ledger (
       task_id, workspace_id, harness_slug, parent_task_id, root_task_id,

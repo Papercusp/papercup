@@ -344,7 +344,7 @@ export async function managedSpawn(
   };
   try {
     opts.stage?.('spawn-register-task');
-    row = await registerTask(argvSpec, registerOptions);
+    row = await registerTask(argvSpec, registerOptions, undefined, opts.stage ? { stage: opts.stage } : undefined);
   } catch (e) {
     ledgered = false;
     const why = `ledger register failed: ${rememberLedgerRegistrationFailure(registrationFailures, e)}`;

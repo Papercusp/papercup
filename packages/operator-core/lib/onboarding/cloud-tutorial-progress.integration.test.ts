@@ -122,7 +122,7 @@ describe('hosted tutorial progress through real Postgres and composed browser ro
     expect((await post(request({ ...patch, expectedScope: { ...account, tenantId: tenantB } }), context(p))).status).toBe(403);
     expect((await post(request({ ...patch, completed: ['task'] }), context(p))).status).toBe(400);
     expect((await handler('GET')(new Request(url.replace('version=3', 'version=4')), context(p))).status).toBe(400);
-    expect((await handler('GET')(new Request(url), { ...context(p), principal: undefined })).status).toBe(401);
+    expect((await handler('GET')(new Request(url), { ...context(p), principal: null })).status).toBe(401);
     // A preassigned workspace cannot change the account record or make it Cloud scoped.
     const selected = principal({ userId: account.userId, selectedWorkspaceId: 'assigned-workspace' });
     await expect((await handler('GET')(new Request(url), context(selected))).json()).resolves.toMatchObject({ record: { scope: account, revision: 1 } });

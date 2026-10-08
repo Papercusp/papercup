@@ -115,6 +115,54 @@ function storeHarness(rows: CleanupRunFindingRow[]) {
 }
 
 describe('runDeterministicPlanCleanup', () => {
+  it('automatically applies an archive recommendation and observes the changed plan', async () => {
+    const rows: CleanupRunFindingRow[] = [];
+    const store = storeHarness(rows);
+    const archive = finding('archive-candidate', false);
+    archive.confidence = 'recommended';
+    let archived = false;
+    const cleanupRun = run();
+    cleanupRun.automationPolicy = {
+      mode: 'safe-high', level: 'L2', minConfidence: 'medium',
+      riskLevels: { low: 'automatic', medium: 'automatic', high: 'automatic' },
+    };
+    const result = await runDeterministicPlanCleanup({
+      run: cleanupRun, call: vi.fn(), deps: {
+        ...store, scanRun: vi.fn(async () => archived ? [] : [archive]),
+        dispatch: vi.fn(async () => { archived = true; return { ok: true }; }),
+        settle: vi.fn(async () => ({ ...cleanupRun, phase: 'complete' as const })),
+        notify: vi.fn(async () => undefined),
+      } as never,
+    });
+    expect(archived).toBe(true);
+    expect(rows[0].outcome).toBe('auto_applied');
+    expect(result).toMatchObject({ applied: 1, failed: 0, needsResolver: false, phase: 'complete' });
+  });
+
+  it('preserves review for a withheld tier while applying an allowed tier', async () => {
+    const rows: CleanupRunFindingRow[] = [];
+    const store = storeHarness(rows);
+    const blocker = finding('cleared-blocker', true);
+    const archive = finding('archive-candidate', false);
+    archive.confidence = 'recommended';
+    let cleared = false;
+    const cleanupRun = run();
+    cleanupRun.automationPolicy = {
+      mode: 'safe-high', level: 'L2', minConfidence: 'medium',
+      riskLevels: { low: 'automatic', medium: 'review', high: 'review' },
+    };
+    const result = await runDeterministicPlanCleanup({
+      run: cleanupRun, call: vi.fn(), deps: {
+        ...store, scanRun: vi.fn(async () => [...(cleared ? [] : [blocker]), archive]),
+        dispatch: vi.fn(async () => { cleared = true; return { ok: true }; }),
+        settle: vi.fn(), notify: vi.fn(async () => undefined),
+      } as never,
+    });
+    expect(cleared).toBe(true);
+    expect(rows.find((row) => row.kind === 'archive-candidate')?.outcome).toBe('pending');
+    expect(result).toMatchObject({ applied: 1, needsResolver: true });
+  });
+
   it('enforces one run-wide enlistment cap across locked rescans and later passes', async () => {
     const rows: CleanupRunFindingRow[] = [];
     const store = storeHarness(rows);

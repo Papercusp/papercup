@@ -23,7 +23,32 @@ import {
 } from './operator-voice-proxy-helpers';
 import { kokoroTtsAvailable } from '../../../voice-node/kokoro-local';
 import { synthesize, synthesizeReading } from './tts-synth';
-import { CONTENT_LIMITS } from '../../../content-intake';
+import { CONTENT_LIMITS, ContentIntakeError, readContent, type ContentInput } from '../../../content-intake';
+import { ContentSummaryError, summaryOptionsSchema, summarizeContent } from '../../../content-summary';
+import { providedContentSchema } from '../../../agent-tools/documents/content';
+
+/** Same authorized provided-content contract; this operation never starts speech. */
+async function summaryResponse(req: Request, body: Record<string, unknown>): Promise<Response> {
+  const content = providedContentSchema.safeParse(body.content);
+  const options = summaryOptionsSchema.safeParse(body.summary ?? {});
+  if (!content.success || !options.success) return Response.json({ ok: false, error: 'Valid provided content and summary options are required.' }, { status: 400 });
+  const [{ getSessionUserOrDefault }, { activeWorkspaceId }] = await Promise.all([import('../../../auth'), import('../../../workspace-registry')]);
+  const user = await getSessionUserOrDefault(req.headers);
+  const workspaceId = activeWorkspaceId();
+  if (!user?.id || !workspaceId || workspaceId === '*') return Response.json({ ok: false, error: 'A current user and workspace are required.' }, { status: 401 });
+  try {
+    const supplied = content.data;
+    const input: ContentInput = supplied.kind === 'pdf' ? { ...supplied, kind: 'pdf', bytes: new Uint8Array(Buffer.from(supplied.base64, 'base64')) } : supplied;
+    const source = await readContent(input, { workspaceId, readerId: `user:${user.id}`, signal: req.signal }, { authorize: async candidate => candidate.kind !== 'reference' });
+    return Response.json({ ok: true, ...await summarizeContent(source, options.data, req.signal) }, { headers: { 'cache-control': 'no-store' } });
+  } catch (error) {
+    if (error instanceof ContentIntakeError || error instanceof ContentSummaryError) {
+      const status = error.code === 'cancelled' ? 499 : error.code === 'cloud-consent-required' ? 403 : error.code === 'budget-exceeded' ? 429 : error instanceof ContentIntakeError ? 422 : 502;
+      return Response.json({ ok: false, code: error.code, error: error.message }, { status });
+    }
+    throw error;
+  }
+}
 
 /** Explicit original reading on the same speech endpoint; never a summary operation. */
 async function readingResponse(req: Request, body: Record<string, unknown>): Promise<Response> {
@@ -108,6 +133,7 @@ export default defineTool({
       return Response.json({ ok: false, error: 'JSON object required' }, { status: 400 });
     }
     if (body.operation === 'read') return readingResponse(req, body);
+    if (body.operation === 'summarize') return summaryResponse(req, body);
     if (body.operation !== undefined) return Response.json({ ok: false, error: 'unsupported operation' }, { status: 400 });
     const text = typeof body.text === 'string' ? body.text : '';
     if (!text.trim()) {

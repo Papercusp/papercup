@@ -4,9 +4,13 @@
 # Edit the doc with docs:author { overwrite: true } — a hand-edit here is REFUSED by
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
-title: Mobile apps (Android + iOS) — how the monitoring-first phone app works
-description: The papercup-rust-mobile app, its device API, push, build, and the gotchas that make "why is my phone silent" diagnosable. From mobile-apps-revival-v2-2026-07-13.
+title: "Mobile apps (Android + iOS) — how the monitoring-first phone app works"
+description: "The papercup-rust-mobile app, its device API, push, build, and the gotchas that make \"why is my phone silent\" diagnosable. From mobile-apps-revival-v2-2026-07-13."
 type: Insight
+discovered: 2026-10-08
+status: active
+documents:
+  - "apps/operator/scripts/hooks/cc/pretooluse-locks-acquire.sh"
 generated:
   by: agent
   at: 2026-07-13
@@ -19,12 +23,20 @@ extending it — add read-only tiles and attention producers, not action buttons
 
 ## Where the code lives
 
-- **App:** `papercup-rust-mobile/` — a **separate git repo** on branch `master`,
-  **NOT** covered by the papercup git-sync auto-commit. Edits there need a
-  **manual commit**, and the papercup Edit-tool worktree guard refuses it (it
-  can't tell a separate repo from a stray worktree) — edit via `sed`/`bash` and
-  commit by hand. Rust core (`crates/papercup-core`) + UniFFI bindings, Jetpack
-  Compose (Android), SwiftUI (iOS).
+- **App:** `papercup-rust-mobile/` is a separate Git repository in its own main
+  checkout, currently on branch `master`. Use normal guarded native edits, such as
+  built-in `apply_patch`, with the lock mode reported by the current runtime's
+  `coord:orient`. The worktree guard in
+  `apps/operator/scripts/hooks/cc/pretooluse-locks-acquire.sh` explicitly exempts
+  independent sibling repositories whose readable origin differs from the
+  canonical Papercusp project: this app uses `Papercusp/papercup-rust-mobile.git`,
+  while the platform uses `Papercusp/papercup.git`. Do not bypass an edit denial
+  or edit a linked Papercusp worktree.
+  Mobile edits are covered by the existing automatic git-sync route, verified
+  from its authored commits on 2026-10-07. Leave changes for that routine; do not
+  manually commit or push. Verify the current repository identity and sync
+  receipt before claiming a change committed. Rust core (`crates/papercup-core`)
+  + UniFFI bindings, Jetpack Compose (Android), SwiftUI (iOS).
 - **Server (device API):** `packages/operator-core/lib/endpoint-route/routes/device/*`
   — `defineTool` routes gated by `DEVICE_AUTH` (`{ kind: ['device'] }`). The phone
   reaches them at `https://api.papercuspai.com/api/device/*`.

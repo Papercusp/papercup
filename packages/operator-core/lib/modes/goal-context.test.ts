@@ -273,6 +273,8 @@ describe('resolveGoalContext', () => {
     // A node that has not yet applied migration 785. Provenance is a decoration:
     // losing it must never fail the creation it was decorating.
     const { sql } = mockSql({ failOn: /session_briefs/ });
+    await expect(resolveGoalContext(WS, 'member-1', sql, { requireRead: true }))
+      .rejects.toThrow('column "goal_id" does not exist');
     await expect(resolveGoalContext(WS, 'member-1', sql)).resolves.toBeNull();
   });
 });

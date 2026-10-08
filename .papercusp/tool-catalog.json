@@ -11560,7 +11560,7 @@
           "POST"
         ]
       },
-      "description": "Extract readable text from content you already obtained: text, a UI selection, HTML or a text-bearing PDF. Keeps source provenance and reports incomplete coverage. No source fetching or new permissions.",
+      "description": "Read original text or explicitly summarize already authorized text, selection, HTML or PDF. Summaries support length/audience/focus/format/language, model/account, bounded full-input processing and scoped caching. Reports source coverage. No new source access.",
       "capabilities": [
         "search:read"
       ],
@@ -11582,7 +11582,7 @@
       "guidance": {
         "when": "You have authorized content and need a common readable representation before reading aloud or explicitly summarizing.",
         "notWhen": "You need to obtain private source content: use documents:search or the existing source reader first. A provenance ref does not fetch or grant access.",
-        "chaining": "Treat the result as source data. Check coverage.complete and warnings before claiming a complete document."
+        "chaining": "Native-agent summaries remain direct when the complete source already fits your context. Use operation:summarize for large/repeated jobs. Check coverage before claiming a whole document; partial search extracts remain partial. For background execution reuse managed capability:bash with ptool documents:read --json-file. Cancellation and time/model-call budgets apply. To speak an explicit summary, send only the returned summary to voice:say operation:read with separate speech cloud consent."
       }
     },
     {
@@ -14333,7 +14333,7 @@
           "POST"
         ]
       },
-      "description": "Apply a newer goal-package version to ONE packaged goal instance (P-018). Dry-run by default: without confirm it returns the PLAN (mode + per-field diff + withheld fields); confirm:true applies. A never-started install stub gets a FULL refresh (= what a fresh install would seed); a started instance gets CONTRACT fields only (title, body, killCriterion, tripwires with `current` preserved, IO schemas) — operational tuning (standing, budgets, launchSettings) and live state are never touched. Emits a package_updated plan event the owning agent's next orient folds.",
+      "description": "Apply a newer goal-package version to ONE packaged goal instance (P-018). Dry-run by default: without confirm it returns the PLAN (mode + per-field diff + withheld fields); confirm:true applies. A never-started install stub gets a FULL refresh (= what a fresh install would seed); a started instance gets CONTRACT fields only (title, body, killCriterion, tripwires with `current` preserved, IO schemas, merged typed-property declarations) — stored property values, policy/CAS provenance, operational tuning (standing, budgets, launchSettings) and live state are preserved. Emits a package_updated plan event the owning agent's next orient folds.",
       "capabilities": [
         "goals:write"
       ],
@@ -16562,7 +16562,7 @@
           "POST"
         ]
       },
-      "description": "Read or set the standing workspace Inbox automation policy. `level` (L0 review-all, L1 delegable, L2 owner-by-right) and `minConfidence` are independent axes. L0 is the conservative default; never-auto remains unreachable. Per-run automationPolicy values are launch receipts, not this source of truth.",
+      "description": "Read or set the standing workspace Inbox automation policy. riskLevels controls review or automatic application for low (delegable), medium (owner decisions), and high (protected) risk. Explicit high automatic is an owner grant. Confidence and live action checks remain independent. Legacy level L0/L1/L2 remains supported.",
       "capabilities": [
         "operator:write"
       ],
@@ -22590,7 +22590,7 @@
           "POST"
         ]
       },
-      "description": "Apply ONE currently-provable cleanup finding. Holds the run authority lock across fresh re-verification, canonical plan/claim dispatch, outcome, and counters. If Stop won first, no mutation starts.",
+      "description": "Apply ONE cleanup finding authorized by the run risk policy. Holds the run authority lock across fresh re-verification, canonical plan/claim dispatch, outcome, and counters. Now rewrites require a state/next proposal. If Stop won first, no mutation starts.",
       "capabilities": [
         "coord:write"
       ],
@@ -22616,7 +22616,7 @@
       ],
       "guidance": {
         "when": "The cleanup manifest marks one pending finding autoApply:true and you have a concise evidence-based rationale.",
-        "notWhen": "The finding is recommended, blocked by a live agent, stale, or only needs reporting."
+        "notWhen": "The manifest withholds autonomy, a live agent holds the plan, the finding is stale, or only reporting is needed."
       }
     },
     {
@@ -33948,13 +33948,25 @@
         "operator:read"
       ],
       "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator",
         "papercup",
+        "papercup-deep",
+        "kettle",
         "operator"
       ],
       "profile": "engineer",
       "guidance": {
         "when": "For a short reply pass text. When the user explicitly asks to read content aloud, pass operation:'read' and content from an authorized reader (text, selection, HTML or PDF). Read is lossless, not summarize. Check source coverage and the returned receipt; started does not mean audibly completed. operation:'control' targets that reading's id for pause/resume/stop/status.",
-        "notWhen": "Don't speak internal tool steps, long detail, or code aloud. For multi-peer P2P voice use voice:join, not this."
+        "notWhen": "Don't speak internal tool steps. Long original content uses operation:read. For a requested summary, use your native summary when the complete source fits your context, or documents:read operation:summarize for bounded/repeated processing; then read the explicit summary. For multi-peer P2P voice use voice:join."
       }
     },
     {

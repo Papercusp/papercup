@@ -591,6 +591,23 @@ describe('attention bulk-run store (real PG)', () => {
     expect(settled!.phase).toBe('review');
   });
 
+  it('releases only granted above-floor recommendations for automatic re-review, preserving owner dismissals', async () => {
+    const run = await createRun({ items: seed('risk-held') });
+    await reportOutcomes({ runId: run.runId, outcomes: [
+      { itemId: 'coord-escalation:risk-held-1', outcome: 'recommended', actionId: 'resolve', rationale: 'supported', confidenceLevel: 'high' },
+      { itemId: 'work-item-needs-human:risk-held-2', outcome: 'recommended', actionId: 'resolve', rationale: 'owner decision', confidenceLevel: 'medium' },
+      { itemId: 'smoke-fail:risk-held-3', outcome: 'recommended', actionId: 'resolve', rationale: 'owner dismissed', confidenceLevel: 'high' },
+    ] });
+    await unsafeSetRunPhaseForFixtures({ runId: run.runId, phase: 'review' });
+    await markItemDismissed({ runId: run.runId, itemId: 'smoke-fail:risk-held-3', note: 'Declined by owner' });
+    const riskLevels = { low: 'automatic', medium: 'automatic', high: 'automatic' } as const;
+    const highFloor = await getItemIdsAwaitingOwnerReview(h.ws, 'inbox-resolve', { level: 'L0', minConfidence: 'high', riskLevels });
+    expect([...highFloor].sort()).toEqual(['smoke-fail:risk-held-3', 'work-item-needs-human:risk-held-2']);
+    const mediumFloor = await getItemIdsAwaitingOwnerReview(h.ws, 'inbox-resolve', { level: 'L0', minConfidence: 'medium', riskLevels });
+    expect([...mediumFloor]).toEqual(['smoke-fail:risk-held-3']);
+    expect((await getRun(run.runId))!.automationPolicy).not.toHaveProperty('riskLevels');
+  });
+
   it('admits owner acceptance only in review and never rewrites an executing or handled row', async () => {
     const run = await createRun({ items: seed('owner-accept-rail') });
     await setRunPhase({ runId: run.runId, phase: 'running', resolverOwner: 'su-resolver' });

@@ -251,7 +251,7 @@ function mkFinding(
   liveAgentOwners: string[],
 ): CleanupFinding {
   const provable = fields.confidence === 'provable';
-  const liveBlocked = provable && liveAgentOwners.length > 0;
+  const liveBlocked = liveAgentOwners.length > 0;
   const evidence = [...fields.evidence];
   if (liveBlocked) {
     evidence.push({
@@ -272,7 +272,7 @@ function mkFinding(
     to: fields.to,
     confidence: fields.confidence,
     autoApply: provable && !liveBlocked,
-    autoApplyBlockedBy: !provable ? 'judgment-call' : liveBlocked ? 'live-agents' : null,
+    autoApplyBlockedBy: liveBlocked ? 'live-agents' : !provable ? 'judgment-call' : null,
     evidence: fields.evidence.length === evidence.length ? fields.evidence : evidence,
   };
 }

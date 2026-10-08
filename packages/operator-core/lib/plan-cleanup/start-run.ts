@@ -15,6 +15,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import {
   BulkRunAlreadyActiveError,
   createRun,
+  getRun,
   failRunIfExecuting,
   setRunPhase,
   type BulkRunPhase,
@@ -178,6 +179,7 @@ export async function launchCleanupResolver(
   workspaceIdOverride?: string,
 ): Promise<{ ok: boolean; sessionId?: string; error?: string }> {
   try {
+    const runPolicy = (await getRun(runId, workspaceIdOverride))?.automationPolicy;
     const [{ buildConsoleEnvelope }, { spawnHeadless }, { activeWorkspaceId }, { resolveSpawnHostOperatorBaseUrl }] =
       await Promise.all([
         import('../console-launcher'),
@@ -207,7 +209,7 @@ export async function launchCleanupResolver(
           PAPERCUSP_KICKOFF_PROMPT: buildCleanupResolverBrief(
             runId,
             planSlugs,
-            normalizeBulkAutomationPolicy({
+            runPolicy ?? normalizeBulkAutomationPolicy({
               mode: launch?.automationMode,
               minConfidence: launch?.minConfidence,
             }),

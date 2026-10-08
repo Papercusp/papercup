@@ -713,6 +713,10 @@ export const bulkRunAct = defineTool({
         resolverOwner: identity.ownerId,
         workspaceId: run.workspaceId,
         async execute() {
+          const currentPolicy = await readStandingBulkAutomationPolicy(run.workspaceId);
+          const currentEligibility = standingAutomationEligibility(currentPolicy, actionKind, confidenceLevel);
+          if (!currentEligibility.allowed) throw new Error(`automation policy revoked: ${currentEligibility.reason}`);
+          if (!(await bulkResolveEnabled())) throw new Error('bulk resolve feature disabled before application');
           // Re-read INSIDE the run-row authority window. A manifest read is
           // advisory; this is the last check before the irreversible effect.
           // P-008: an intake-triage row is never an attention-feed member; its

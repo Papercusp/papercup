@@ -43,6 +43,7 @@ export async function dispatchCleanupFindingAction(input: {
   run: BulkRunRow;
   finding: CleanupFinding;
   call: InnerCall;
+  proposal?: { state: string; next: string };
 }): Promise<unknown> {
   const { run, finding, call } = input;
   const harness = finding.harnessSlug || run.harnessSlug || undefined;
@@ -120,9 +121,18 @@ export async function dispatchCleanupFindingAction(input: {
       }
       return { released: reaped.released[0] };
     }
-    case 'stale-now':
-      throw new Error(
-        `${finding.findingId}: refreshing ## Now requires an authored state/next proposal; keep this finding recommended`,
-      );
+    case 'stale-now': {
+      if (!input.proposal?.state.trim() || !input.proposal.next.trim()) {
+        throw new Error(
+          `${finding.findingId}: refreshing ## Now requires an authored state/next proposal; keep this finding recommended`,
+        );
+      }
+      return callRequired(call, 'plans:set-now', {
+        slug: finding.planSlug,
+        state: input.proposal.state,
+        next: input.proposal.next,
+        ...(harness ? { harness } : {}),
+      });
+    }
   }
 }

@@ -1,9 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { RouteContext } from '@papercusp/agent-mcp';
+import type { Sql } from 'postgres';
+import type { VerifiedTenantServerContext } from '@papercusp/db-org';
 import { createHostedPrincipal } from '../auth/hosted-principal';
 import { createHostedTutorialAssistanceRoutes, HOSTED_BROWSER_TUTORIAL_HELP_PATH, HOSTED_BROWSER_TUTORIAL_SPEECH_PATH } from '../endpoint-route/routes/hosted-tutorial-progress';
 import { createTutorialState, confirmedTutorialSteps } from './cloud-tutorial-lesson';
-import type { TutorialHelpRequest } from './cloud-tutorial-help';
+import type { TutorialAssistanceRequest } from './cloud-tutorial-help';
+vi.mock('./cloud-tutorial-progress', () => ({ readAccountTutorialProgress: vi.fn() }));
+import { readAccountTutorialProgress } from './cloud-tutorial-progress';
 const origin = 'https://app.papercusp.com';
 const scope = { tenantId: 'tenant-a', userId: 'user-a', workspaceId: 'customer-a' };
 const input = { expectedScope: scope, context: { step: 'connection', status: 'ready' }, question: 'Where do I connect my project?' };
@@ -11,19 +15,69 @@ const principal = (patch: Partial<Parameters<typeof createHostedPrincipal>[0]> =
   workspaceId: 'control', userId: scope.userId, activeOrganizationId: scope.tenantId, selectedWorkspaceId: scope.workspaceId,
   sessionId: 'session', sessionVersion: 1, permissions: ['workspace:view'], ...patch,
 });
-function setup() {
-  const answer = vi.fn(async (_input: TutorialHelpRequest, _signal: AbortSignal, _workspaceId: string) => 'Use the app connection form. The app validates your project.');
+function setup(withProviders = true) {
+  const answer = vi.fn(async (_input: TutorialAssistanceRequest, _signal: AbortSignal, _workspaceId: string) => 'Use the app connection form. The app validates your project.');
   const speech = vi.fn(async (_text: string, _engine: string, _voice: string | undefined) => ({ audio: new ArrayBuffer(16), contentType: 'audio/wav' }));
-  const routes = createHostedTutorialAssistanceRoutes({ origin, controlPlaneWorkspaceId: 'control', dependencies: { answer, speech } });
+  const runTenant = vi.fn(async <T>(_context: unknown, callback: (tx: Sql) => Promise<T>) => callback({} as Sql));
+  // Vitest's spy return type erases a generic call signature. Preserve the
+  // tenant runner's callback/result relationship at the route boundary.
+  const routes = createHostedTutorialAssistanceRoutes({ origin, controlPlaneWorkspaceId: 'control',
+    runTenant: <T>(context: VerifiedTenantServerContext, callback: (tx: Sql) => Promise<T>) => runTenant(context, callback) as Promise<T>,
+    dependencies: withProviders ? { answer, speech } : {} });
   const call = (body: unknown = input, options: { path?: string; origin?: string; principal?: ReturnType<typeof principal> | null; signal?: AbortSignal } = {}) => {
     const route = routes.find(row => row.path === (options.path ?? HOSTED_BROWSER_TUTORIAL_HELP_PATH))!;
     const request = new Request(`${origin}/api${route.path}`, { method: 'POST', headers: { origin: options.origin ?? origin, 'content-type': 'application/json' }, body: JSON.stringify(body), signal: options.signal });
     const context: RouteContext = { principal: options.principal === null ? null : options.principal ?? principal(), params: {}, input: undefined, signal: request.signal, log: () => {} };
     return route.handler(request, context);
   };
-  return { call, answer, speech };
+  return { call, answer, speech, runTenant };
 }
 describe('hosted lesson assistance boundary', () => {
+  it('fails closed when a host has not configured an execution provider', async () => {
+    const { call, answer, speech } = setup(false);
+    for (const body of [input, { ...input, engine: 'openai' }]) {
+      const response = await call(body, { path: 'engine' in body ? HOSTED_BROWSER_TUTORIAL_SPEECH_PATH : HOSTED_BROWSER_TUTORIAL_HELP_PATH });
+      expect(response.status).toBe(503);
+      expect(response.headers.get('cache-control')).toBe('no-store');
+    }
+    expect(answer).not.toHaveBeenCalled(); expect(speech).not.toHaveBeenCalled();
+  });
+  it('checks the account-owned current lesson before AI Help without granting workspace or speech authority', async () => {
+    const { call, answer, speech, runTenant } = setup();
+    const accountInput = { expectedScope: { tenantId: scope.tenantId, userId: scope.userId },
+      context: { version: 3, step: 'billing', status: 'ready' }, question: 'Who bills cloud resources?' };
+    const unselected = principal({ selectedWorkspaceId: undefined, permissions: [] });
+    vi.mocked(readAccountTutorialProgress).mockResolvedValue({ currentLessonId: 'billing', disposition: 'active' } as never);
+    expect((await call(accountInput, { principal: unselected })).status).toBe(200);
+    expect(answer.mock.calls[0][0]).toEqual(accountInput);
+    expect(runTenant.mock.calls[0][0]).toMatchObject({ principal: { userId: scope.userId, activeOrganizationId: scope.tenantId } });
+    expect(runTenant.mock.calls[0][0]).not.toHaveProperty('selectedWorkspace');
+    answer.mockClear();
+    expect((await call(accountInput, { principal: principal({ userId: 'foreign', selectedWorkspaceId: undefined }) })).status).toBe(403);
+    expect((await call({ ...accountInput, context: { ...accountInput.context, transcript: 'private' } }, { principal: unselected })).status).toBe(400);
+    expect((await call({ ...accountInput, engine: 'openai' }, { path: HOSTED_BROWSER_TUTORIAL_SPEECH_PATH, principal: unselected })).status).toBe(400);
+    expect((await call(input, { principal: unselected })).status).toBe(403);
+    expect(answer).not.toHaveBeenCalled(); expect(speech).not.toHaveBeenCalled();
+    for (const saved of [null, { currentLessonId: 'account', disposition: 'active' }, { currentLessonId: 'billing', disposition: 'closed' }]) {
+      vi.mocked(readAccountTutorialProgress).mockResolvedValue(saved as never);
+      expect((await call(accountInput, { principal: unselected })).status).toBe(409);
+    }
+    expect(answer).not.toHaveBeenCalled();
+  });
+  it('keeps account progress-store failures private and never invokes assistance providers', async () => {
+    const { call, answer, speech, runTenant } = setup();
+    const accountInput = { expectedScope: { tenantId: scope.tenantId, userId: scope.userId },
+      context: { version: 3, step: 'billing', status: 'ready' }, question: 'Who bills cloud resources?' };
+    const unselected = principal({ selectedWorkspaceId: undefined, permissions: [] });
+    for (const failureSource of [vi.mocked(readAccountTutorialProgress), runTenant]) {
+      failureSource.mockRejectedValueOnce(new Error('private progress store diagnostic'));
+      const response = await call(accountInput, { principal: unselected });
+      expect(response.status).toBe(503);
+      expect(response.headers.get('cache-control')).toBe('no-store');
+      expect(await response.json()).toEqual({ ok: false, error: 'tutorial_help_unavailable', message: 'tutorial_help_unavailable' });
+    }
+    expect(answer).not.toHaveBeenCalled(); expect(speech).not.toHaveBeenCalled();
+  });
   it('accepts v2 public recovery and blocks private category/diagnostic input before both providers', async () => {
     const { call, answer, speech } = setup();
     const context = { step: 'practice', status: 'error', version: 2, recoveryCategory: 'unknown' };

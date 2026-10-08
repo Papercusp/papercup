@@ -48,7 +48,8 @@ export function ReportsLibrary() {
     ...(since ? { since } : {}), limit: 200,
   } });
   const detail = useSyncQuery<Full>({ queryName: 'reports.get', args: { reportId: state.sel || '__none__' }, enabled: !!state.sel });
-  const report = detail.data[0];
+  // A disabled or changing subscription may still hold its previous snapshot.
+  const report = state.sel ? detail.data.find(row => row.report_id === state.sel) : undefined;
   const history = useSyncQuery<Summary>({ queryName: 'reports.lineage', args: { lineageId: report?.lineage_id || '__none__' },
     enabled: !!report && state.hist });
   const change = (key: keyof typeof state, value: string) => { void setState({ [key]: value }); };
@@ -87,7 +88,7 @@ export function ReportsLibrary() {
       <section className="reports-reader" aria-label="Report reader">
         {!state.sel && <p>Select a report to read it.</p>}
         {state.sel && detail.loading && <p role="status">Loading report…</p>}
-        {detail.error && <div role="alert"><p>{detail.error.message}</p><Button onClick={detail.invalidate}>Retry</Button></div>}
+        {state.sel && detail.error && <div role="alert"><p>{detail.error.message}</p><Button onClick={detail.invalidate}>Retry</Button></div>}
         {state.sel && !detail.loading && !detail.error && !report && <p>This report is unavailable.</p>}
         {report && <article key={report.report_id}>
           <h2>{report.title}</h2>

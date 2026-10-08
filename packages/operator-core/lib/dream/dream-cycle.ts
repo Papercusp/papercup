@@ -143,6 +143,9 @@ const record = (value: unknown) => JSON.parse(JSON.stringify(value)) as Record<s
 export function estimateDreamCall(input: Parameters<ScoutLlmCall>[0]): number {
   const bytes = Buffer.byteLength((input.system ?? '') + JSON.stringify(input.messages), 'utf8') + 256;
   const estimate = costFromTokens(input.model, {
+    // This is one request, not an aggregate. Tiered models need its complete
+    // input bound to select the rate; bytes conservatively bound token count.
+    requestInputTokens: bytes,
     inputTokens: bytes,
     outputTokens: (input.maxTokens ?? 4096) + (input.thinkingBudgetTokens ?? 0),
   });

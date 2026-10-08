@@ -293,6 +293,15 @@ describe('orphaned-claim', () => {
 });
 
 describe('stale-now', () => {
+  it('withholds judgment findings while a live agent holds the plan', () => {
+    const p = plan({ nowState: 'P-001 is complete.', nowNext: 'Ship P-001.',
+      items: [item('P-001', 'done'), item('P-002', 'todo')] });
+    const stale = ofKind(scan({ plans: [p], claims: [claim('P-002', { holderAlive: true })] }), 'stale-now');
+    expect(stale).toHaveLength(1);
+    expect(stale[0].autoApplyBlockedBy).toBe('live-agents');
+    expect(stale[0].evidence.some((ref) => ref.note?.includes('live agent'))).toBe(true);
+  });
+
   it('recommends a rewrite when ## Now references ONLY terminal items while open work exists', () => {
     const p = plan({
       nowState: 'Landed P-001 and P-002; wrapping up.',

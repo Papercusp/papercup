@@ -288,6 +288,8 @@ export interface CreateFleetInput {
    *  on FIRST INSERT only, like title/description/owner (createFleetIfAbsent is
    *  idempotent; change an existing fleet's type via updateFleetMeta). */
   fleetType?: FleetType;
+  /** Final plan-placement fence supplied by launch-on-plan, never a caller policy snapshot. */
+  planSelection?: { harness: string; planSlug: string; goalId?: string | null; actorId: string };
 }
 
 /** Validated launch recipe persisted for the headcount governor. */
@@ -958,6 +960,16 @@ export async function createFleetIfAbsent(
   sql?: Sql,
 ): Promise<{ record: AgentFleetRecord; created: boolean }> {
   const s = pg(sql);
+  if (input.planSelection) {
+    const { boundedOrgTxn } = await import('./pg-bounded-txn');
+    const { lockGoalPlanClaimSelections, assertGoalPlanClaimSelection } = await import('./typed-properties-db');
+    const { planSelection, ...fleetInput } = input;
+    return boundedOrgTxn(async (tx) => {
+      const selections = await lockGoalPlanClaimSelections(tx, input.workspaceId, planSelection.actorId);
+      assertGoalPlanClaimSelection(selections, planSelection);
+      return createFleetIfAbsent(fleetInput, tx);
+    }, { client: s });
+  }
   const now = Date.now();
   // Bind a color scheme at birth — per-fleet permanent visual identity. Caller
   // may force one; else allocate the next UNUSED catalog scheme so distinct
@@ -1412,8 +1424,19 @@ export async function claimFleetLaunchSlot(opts: {
   allowCountIncreaseWithinWindow?: boolean;
   now?: number;
   sql?: Sql;
+  planSelection?: CreateFleetInput['planSelection'];
 }): Promise<FleetLaunchSlot> {
   const s = pg(opts.sql);
+  if (opts.planSelection) {
+    const { boundedOrgTxn } = await import('./pg-bounded-txn');
+    const { lockGoalPlanClaimSelections, assertGoalPlanClaimSelection } = await import('./typed-properties-db');
+    const { planSelection, ...slotOpts } = opts;
+    return boundedOrgTxn(async (tx) => {
+      const selections = await lockGoalPlanClaimSelections(tx, opts.workspaceId, planSelection.actorId);
+      assertGoalPlanClaimSelection(selections, planSelection);
+      return claimFleetLaunchSlot({ ...slotOpts, sql: tx });
+    }, { client: s });
+  }
   const now = opts.now ?? Date.now();
   const won = (await s.unsafe(
     `UPDATE harness_shared.agent_fleets
