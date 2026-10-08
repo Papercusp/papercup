@@ -4281,5 +4281,8 @@ if [ "$ISOLATED_DB" = "1" ]; then
 fi
 
 vh_begin assert
+# Assertions write diagnostics outside the disposable operator source. Export
+# after vh_begin so children receive the current phase, not the boot directory.
+export VH_PHASE_DIR
 log "running assertion command: $*"
 "$@"
