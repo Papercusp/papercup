@@ -75,6 +75,8 @@ test('native declared collections persist controls and reject a barrier-controll
           await sql`INSERT INTO harness_shared.harness_plans (workspace_id,harness_slug,plan_slug,title,status,op_status)
             VALUES (${workspaceId},${harness},${slug},${labels[index]},${slug === 'blocked' ? 'draft' : 'active'},NULL)`;
         }
+        await sql`INSERT INTO harness_shared.harness_plans (workspace_id,harness_slug,plan_slug,title,status,op_status)
+          VALUES (${workspaceId},'native-unrelated','preserved','Unrelated preserved plan','active',NULL)`;
       }
       const url = `${process.env.VERIFY_TAURI_DEV_URL}/adv?tab=hud&scope=all&hudtab=goals&welcome=0&hudgoal=${goalId}`;
       const policy = async () => {
@@ -97,24 +99,32 @@ test('native declared collections persist controls and reject a barrier-controll
       const checkbox = (label: string) => `${editor} [role="checkbox"][aria-label=${JSON.stringify(`Include ${label}`)}]`;
       await reload();
       const initial = await readback();
-      expect(initial.rows.map((row: { id: string }) => row.id)).toEqual(ids);
+      const initialIds: string[] = initial.rows.map((row: { id: string }) => row.id);
+      // A migrated workspace also contains maintained rubric plans. Pin our
+      // independently seeded controls and preserve the complete discovered
+      // population through edits instead of assuming the database is empty.
+      expect(initialIds.slice(0, ids.length)).toEqual(ids);
+      expect(new Set(initialIds).size).toBe(initialIds.length);
       if (kind === 'plans') {
+        expect(initialIds).toContain('plan:native-unrelated/preserved');
         expect(initial.rows[2].reason).toBeTruthy();
         await ready(`document.querySelector(${JSON.stringify(editor)})?.textContent.includes(${JSON.stringify(initial.rows[2].reason)}) === true`);
-      }
+      } else expect(initialIds).toEqual(ids);
+      const reorderedIds = [initialIds[1], initialIds[0], ...initialIds.slice(2)];
       await native('click', `${editor} button[aria-label=${JSON.stringify(`Move ${labels[1]} up`)}]`, '--json');
       await expect.poll(async () => (await policy())?.version).toBe(1);
-      expect((await policy())?.value.order).toEqual([ids[1], ids[0], ids[2], dormant]);
+      expect((await policy())?.value.order).toEqual([...reorderedIds, dormant]);
       expect((await policy())?.provenance).toBe('owner-edit');
       await reload();
       await ready(`document.querySelector(${JSON.stringify(`${editor} li`)})?.textContent.includes(${JSON.stringify(labels[1])}) === true`);
-      expect((await readback()).rows.map((row: { id: string }) => row.id)).toEqual([ids[1], ids[0], ids[2]]);
+      expect((await readback()).rows.map((row: { id: string }) => row.id)).toEqual(reorderedIds);
       await native('click', checkbox(labels[1]), '--json');
       await expect.poll(async () => (await policy())?.version).toBe(2);
       expect((await policy())?.value.excluded).toEqual([dormant, ids[1]]);
       await reload();
       await ready(`document.querySelector(${JSON.stringify(checkbox(labels[1]))})?.getAttribute('aria-checked') === 'false' && document.querySelector(${JSON.stringify(`${editor} li`)})?.textContent.includes('Excluded') === true`);
-      expect((await readback()).rows.filter((row: { selected: boolean }) => row.selected).map((row: { id: string }) => row.id)).toEqual([ids[0], ids[2]]);
+      expect((await readback()).rows.filter((row: { selected: boolean }) => row.selected).map((row: { id: string }) => row.id))
+        .toEqual(initialIds.filter((id) => id !== ids[1]));
       await native('click', checkbox(labels[1]), '--json');
       await expect.poll(async () => (await policy())?.version).toBe(3);
       await reload();

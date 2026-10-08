@@ -54,8 +54,10 @@ for (const kind of ['plans', 'tea'] as const) {
     const property = kind === 'plans' ? 'worklist' : 'tea_choices';
     const policyName = kind === 'plans' ? 'worklist_policy' : 'tea_policy';
     const ids = kind === 'plans' ? ['plan:papercusp/alpha', 'plan:papercusp/beta', 'plan:papercusp/blocked'] : ['mint', 'chamomile', 'rooibos'];
+    const discoveredExtras = kind === 'plans' ? ['plan:papercusp/maintained-rubric'] : [];
+    const visibleIds = [...ids, ...discoveredExtras];
     const dormant = kind === 'plans' ? 'plan:papercusp/dormant' : 'lavender';
-    const labels = ['First choice', 'Second choice', 'Blocked choice'];
+    const labels = ['First choice', 'Second choice', 'Blocked choice', 'Maintained rubric'];
     const schema = {
       [property]: { datatype: kind === 'plans' ? 'plan-ref-list' : 'string-list', default: [], editable_by: 'both',
         collection: { source: kind === 'plans' ? 'active-workspace-plans' : 'manual', policy: policyName,
@@ -67,11 +69,12 @@ for (const kind of ['plans', 'tea'] as const) {
     let refuseSave = false;
     const writes: Array<{ value: OrderedSelectionPolicy; expectedVersion: number }> = [];
     const reads: Array<{ version: number; order: string[] }> = [];
+    const unreadableReadbacks: string[] = [];
     const invalidations: Array<{ before: number; after: number }> = [];
     const selection = () => readTypedPropertyCollection({ propertySchema: schema, property,
       properties: { [property]: { value: ids, version: 2, edited_by: 'agent', provenance: 'agent-edit', edited_at: '2026-10-07T00:00:00Z' },
         [policyName]: { value: policy, version, edited_by: 'owner', provenance: 'owner-edit', edited_at: '2026-10-07T00:00:00Z' } },
-      ...(kind === 'plans' ? { source: { ok: true as const, items: ids } } : {}) });
+      ...(kind === 'plans' ? { source: { ok: true as const, items: visibleIds } } : {}) });
     const sync = await stubSyncQueries(page, (name) => {
       if (name === 'harnessProjects.lite') return projects;
       if (name === 'advRoster.list') return [{ active: [], pending: [] }];
@@ -81,7 +84,7 @@ for (const kind of ['plans', 'tea'] as const) {
         if (!selected.ok || !selected.configured) throw new Error(JSON.stringify(selected));
         reads.push({ version: selected.policyVersion, order: selected.items.map((row) => row.id) });
         return [{ goal, goalData: { collections: { [property]: { selection: selected,
-          rows: selected.items.map((row) => ({ ...row, label: labels[ids.indexOf(row.id)],
+          rows: selected.items.map((row) => ({ ...row, label: labels[visibleIds.indexOf(row.id)],
             state: row.id === ids[2] ? 'blocked' : 'ready', reason: row.id === ids[2] ? 'Waiting for dependency' : null })) } } } }];
       }
       return headerRows(name);
@@ -114,7 +117,18 @@ for (const kind of ['plans', 'tea'] as const) {
         if (!url.pathname.endsWith('/rest-query') || url.searchParams.get('name') !== 'goals.detail') return false;
         // Mount/real-backend invalidations can already have an older response
         // in flight. A write is acknowledged only by its exact goal/revision.
-        const payload = await response.json();
+        let payload;
+        try {
+          payload = await response.json();
+        } catch (error) {
+          // An earlier response can lose its body across navigation. It cannot
+          // acknowledge this save: keep waiting for the readable exact revision.
+          const message = String(error);
+          if (!message.includes('Network.getResponseBody')
+              || !message.includes('No data found for resource with given identifier')) throw error;
+          unreadableReadbacks.push(response.url());
+          return false;
+        }
         return payload.rows[0]?.goal?.id === goal.id
           && payload.rows[0]?.goalData?.collections?.[property]?.selection?.policyVersion === expectedVersion;
       });
@@ -129,7 +143,7 @@ for (const kind of ['plans', 'tea'] as const) {
           .toEqual(expected.items.map((row) => row.id));
       } finally {
         await test.info().attach(`collection-${kind}-readback-v${version}`, {
-          body: JSON.stringify({ reads, writes, invalidations, policy, version }), contentType: 'application/json',
+          body: JSON.stringify({ reads, writes, invalidations, unreadableReadbacks, policy, version }), contentType: 'application/json',
         });
       }
     }
@@ -148,7 +162,7 @@ for (const kind of ['plans', 'tea'] as const) {
     }
     await expect(editor.getByText('Waiting for dependency')).toBeVisible();
     await saveWithReadback(() => editor.getByRole('button', { name: 'Move Second choice up' }).click());
-    expect(policy.order).toEqual([ids[1], ids[0], ids[2], dormant]);
+    expect(policy.order).toEqual([ids[1], ids[0], ids[2], ...discoveredExtras, dormant]);
     await reloadWithReadback();
     await expect(editor.locator('li').first()).toContainText('Second choice');
     await saveWithReadback(() => editor.getByRole('checkbox', { name: 'Include Second choice' }).click());
@@ -158,7 +172,8 @@ for (const kind of ['plans', 'tea'] as const) {
     await expect(editor.locator('li').first()).toContainText('Excluded');
     const afterExclusion = selection();
     if (!afterExclusion.ok || !afterExclusion.configured) throw new Error('collection unavailable');
-    expect(afterExclusion.items.filter((row) => row.selected).map((row) => row.id)).toEqual([ids[0], ids[2]]);
+    expect(afterExclusion.items.filter((row) => row.selected).map((row) => row.id)).toEqual([ids[0], ids[2], ...discoveredExtras]);
+    if (kind === 'plans') await expect(editor.getByRole('checkbox', { name: 'Include Maintained rubric' })).toBeChecked();
     await saveWithReadback(() => editor.getByRole('checkbox', { name: 'Include Second choice' }).click());
     await reloadWithReadback();
     await expect(editor.getByRole('checkbox', { name: 'Include Second choice' })).toBeChecked();
