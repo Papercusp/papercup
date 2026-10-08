@@ -816,7 +816,7 @@ tr -d '[:space:]' < "$BASE" > "$BASE_NON_WHITESPACE" || die "could not normalize
 # claim this script makes is decided against this, never against `git status`
 # (on a swept tree a clean status means the sweep ran, not that the file is
 # unmodified — CLAUDE.md documents this at length).
-ORIG_SUM="$(git hash-object "$FILE")"
+ORIG_SUM="$(git hash-object "$FILE")" || die "could not measure the original source digest"
 readonly BASE BASE_NON_WHITESPACE ORIG_SUM
 
 # The subject's own extension, preserved onto every RELOCATED snapshot path.
@@ -867,13 +867,24 @@ finish() {
   # exact mutant generated from BASE; otherwise a blind copy would erase a peer
   # edit. Hash into scratch and read it without command substitution so a
   # signal cannot interrupt nested hash parsing inside this trap.
-  local now tree_conflict=0
+  local now="" tree_conflict=0 measurement_failed=0
   if git hash-object "$FILE" > "$SCRATCH/current.sha" 2>/dev/null; then
-    IFS= read -r now < "$SCRATCH/current.sha" || now="MISSING"
+    IFS= read -r now < "$SCRATCH/current.sha" || measurement_failed=1
   else
-    now="MISSING"
+    measurement_failed=1
   fi
-  if [ "$now" = "$ORIG_SUM" ]; then
+  if [[ ! "$now" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]]; then
+    measurement_failed=1
+  fi
+  if [ "$measurement_failed" -eq 1 ]; then
+    RESTORE_STATUS="integrity-unverified"
+    log "source integrity UNVERIFIED: the digest command or scratch write failed; no source change has been measured."
+    log "Preserving recovery snapshots at $SCRATCH; no restore was attempted."
+    printf 'MUTATION_PROBE_TREE_RESULT status=integrity-unverified target=%s source_sha=%s current_sha=unknown\n' \
+      "${TARGET_MODE:-unknown}" "$ORIG_SUM"
+    printf 'MUTATION_PROBE_RESULT verdict=harness-error expected=%s target=%s phase=integrity reason=digest-unavailable\n' \
+      "$EXPECT" "${TARGET_MODE:-unknown}"
+  elif [ "$now" = "$ORIG_SUM" ]; then
     RESTORE_STATUS="verified-identical"
     log "tree integrity: VERIFIED — $FILE is byte-identical to its pre-probe state"
   elif [ "$IN_TREE" = "1" ] && [ "$PROBE_MUTATION_APPLIED" = "1" ] &&
@@ -915,6 +926,11 @@ finish() {
   if [ -n "$CHILD" ]; then
     kill_tree "$CHILD"
   fi
+  if [ "$measurement_failed" -eq 1 ]; then
+    # Keep an in-tree admission manifest conservative until integrity can be
+    # measured. A failed measurement cannot authorize restoration or cleanup.
+    exit 2
+  fi
   if [ "$tree_conflict" -eq 1 ]; then
     trap - EXIT
     exit 3
@@ -936,6 +952,42 @@ finish() {
 trap 'finish "$?"' EXIT
 trap 'finish 130' INT
 trap 'finish 143' TERM
+# A writable TMPDIR does not establish that npm's independent, host-stable
+# mutex root can allocate its metadata. Check both before spending a baseline,
+# and use the existing root resolver rather than deriving a second lock domain.
+if ! node --input-type=module - "$SCRATCH" "$FILE" "$TEST_CMD" "$(dirname -- "$MUTATION_PROBE_SOURCE_PATH")/lib/fs-mutex.mjs" <<'JS'
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+const [scratch, subject, guard, mutexModule] = process.argv.slice(2);
+let rootKind = 'scratch';
+function checkRoot(root, copySubject) {
+  mkdirSync(root, { recursive: true });
+  const probe = mkdtempSync(join(root, '.mutation-probe-preflight-'));
+  try {
+    if (copySubject) copyFileSync(subject, join(probe, 'source'));
+    writeFileSync(join(probe, 'metadata'), 'mutation-probe scratch allocation control\n');
+  } finally {
+    rmSync(probe, { recursive: true, force: true });
+  }
+}
+try {
+  checkRoot(scratch, true);
+  const managedGuard = /\b(?:npm|npx|pnpm|bun)(?:\s|$)|(?:^|[\s/])(?:test-files\.mjs|npm-install-safe\.mjs|pc-heavy\.sh)(?:\s|$)/.test(guard);
+  if (managedGuard && process.env.PAPERCUSP_DISABLE_FS_MUTEX !== '1') {
+    rootKind = 'fs-mutex';
+    const { resolveFsMutexLockRoot } = await import(pathToFileURL(mutexModule).href);
+    checkRoot(resolveFsMutexLockRoot(), false);
+  }
+} catch (error) {
+  console.error(`MUTATION_PROBE_RESULT verdict=harness-error phase=preflight reason=scratch-unavailable root=${rootKind} errorCode=${error.code ?? 'unknown'}`);
+  console.error(`mutation-probe: scratch allocation preflight failed: ${error.message}`);
+  process.exitCode = 2;
+}
+JS
+then
+  die "scratch preflight failed; no baseline guard was started"
+fi
 if [ "$IN_TREE" -eq 1 ]; then
   printf '%s\0%s\0%s\0%s\0' "$ADMISSION_ROOT" "$FILE" "$BASE" "$$" >"$PROBE_MANIFEST" ||
     die "cannot publish original-byte mutation snapshot"
