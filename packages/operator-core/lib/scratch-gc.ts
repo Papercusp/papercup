@@ -424,7 +424,12 @@ function scheduleDeferredUsageRefresh(workspaceId: string, entry: ScratchUsageEn
 }
 
 /** The same FIFO phase serves the daily sweep and request-time async quota recovery. */
-async function evictWorkspaceQuota(workspaceId: string, targetBytes: () => number, reconcileReservations = false): Promise<{
+async function evictWorkspaceQuota(
+  workspaceId: string,
+  targetBytes: () => number,
+  reconcileReservations = false,
+  diagnostics?: ScratchQuotaRecoveryDiagnostics,
+): Promise<{
   used: number; evictions: number; bytes: number;
 }> {
   const wsRoot = scratchRootForWorkspace(workspaceId);
@@ -440,25 +445,55 @@ async function evictWorkspaceQuota(workspaceId: string, targetBytes: () => numbe
   // Reuse the same walk's per-run totals while selecting FIFO eviction candidates. Without
   // this index, each candidate is recursively sized again after the full workspace scan.
   const runBytesByPath = new Map<string, number>();
-  let used = await sizeOfDirAsync(wsRoot, observedWriterBytes, runBytesByPath);
+  const sizeWalkStartedAt = performance.now();
+  let used: number;
+  try {
+    used = await sizeOfDirAsync(wsRoot, observedWriterBytes, runBytesByPath, 0, undefined, diagnostics);
+  } finally {
+    if (diagnostics) diagnostics.sizeWalkMs += Math.max(0, performance.now() - sizeWalkStartedAt);
+  }
   let evictions = 0;
   let bytes = 0;
   const evictedRuns: string[] = [];
   if (used > targetBytes()) {
+    const runListingStartedAt = performance.now();
     const runs = await runDirsOf(wsRoot);
+    if (diagnostics) {
+      diagnostics.runListingMs += Math.max(0, performance.now() - runListingStartedAt);
+      diagnostics.runsListed += runs.length;
+    }
     runs.sort((a, b) => a.mtimeMs - b.mtimeMs);
     for (const run of runs) {
       if (used <= targetBytes()) break;
+      if (diagnostics) diagnostics.runsConsidered += 1;
       // Symlinked tool/run directories are discovered by runDirsOf but are not traversed by
       // the workspace size walk; retain the old fallback for those paths.
-      const bytesInRun = runBytesByPath.get(run.dir) ?? await sizeOfDirAsync(run.dir);
+      const runSizingStartedAt = performance.now();
+      let bytesInRun: number;
+      try {
+        const indexedBytes = runBytesByPath.get(run.dir);
+        if (indexedBytes === undefined && diagnostics) diagnostics.fallbackRunSizes += 1;
+        bytesInRun = indexedBytes ?? await sizeOfDirAsync(run.dir);
+      } finally {
+        if (diagnostics) diagnostics.selectedRunSizingMs += Math.max(0, performance.now() - runSizingStartedAt);
+      }
       // Recheck after the walk: a writer may have arrived while it was in flight.
       if ([...entry.writes.values()].some((write) => write.filePath.startsWith(run.dir + sep))) continue;
-      await rmAsync(run.dir, { recursive: true, force: true });
+      if (diagnostics) diagnostics.deleteAttempts += 1;
+      const deletionStartedAt = performance.now();
+      try {
+        await rmAsync(run.dir, { recursive: true, force: true });
+      } finally {
+        if (diagnostics) diagnostics.deletionMs += Math.max(0, performance.now() - deletionStartedAt);
+      }
       used -= bytesInRun;
       evictedRuns.push(run.dir);
       evictions += 1;
       bytes += bytesInRun;
+      if (diagnostics) {
+        diagnostics.runsDeleted += 1;
+        diagnostics.deletedBytes += bytesInRun;
+      }
       evictedBytesTotal += bytesInRun;
     }
   }
@@ -485,10 +520,29 @@ async function evictWorkspaceQuota(workspaceId: string, targetBytes: () => numbe
   return { used, evictions, bytes };
 }
 
+const SCRATCH_SIZE_SCAN_MAX_IN_FLIGHT = 2;
+let scratchSizeScanInFlight = 0;
+const scratchSizeScanWaiters: Array<() => void> = [];
+
+async function withScratchSizeScanSlot<T>(operation: () => Promise<T>): Promise<T> {
+  if (scratchSizeScanInFlight < SCRATCH_SIZE_SCAN_MAX_IN_FLIGHT) {
+    scratchSizeScanInFlight += 1;
+  } else {
+    await new Promise<void>((resolve) => scratchSizeScanWaiters.push(resolve));
+  }
+  try {
+    return await operation();
+  } finally {
+    const next = scratchSizeScanWaiters.shift();
+    if (next) next(); // transfer the held slot directly to the next queued filesystem operation
+    else scratchSizeScanInFlight -= 1;
+  }
+}
+
 /**
- * Measure a directory tree's size ASYNCHRONOUSLY and SEQUENTIALLY (one fs op in flight at a
- * time): it never blocks the event loop, and it occupies at most one libuv threadpool thread,
- * so a slow disk can't starve the pool other async I/O shares.
+ * Measure a directory tree asynchronously with a small process-wide I/O bound. Independent
+ * entries overlap, while concurrent workspace walks cannot multiply their filesystem pressure
+ * without limit; the walk never blocks the event loop.
  */
 async function sizeOfDirAsync(
   dir: string,
@@ -496,36 +550,48 @@ async function sizeOfDirAsync(
   runBytesByPath?: Map<string, number>,
   depth = 0,
   runDir?: string,
+  diagnostics?: ScratchQuotaRecoveryDiagnostics,
 ): Promise<number> {
+  if (diagnostics) diagnostics.sizeWalkDirectories += 1;
   let entries;
   try {
-    entries = await readdirAsync(dir, { withFileTypes: true });
+    entries = await withScratchSizeScanSlot(() => readdirAsync(dir, { withFileTypes: true }));
   } catch {
+    if (diagnostics) diagnostics.directoryReadErrors += 1;
     return 0; // missing or unreadable — counts as empty
   }
+  if (diagnostics) diagnostics.sizeWalkEntries += entries.length;
   let total = 0;
-  for (const entry of entries) {
-    const child = join(dir, entry.name);
-    if (entry.isDirectory()) {
-      // Scratch run directories are exactly the directory level below each tool directory.
-      // Record their totals as this normal size walk visits files, so FIFO recovery can reuse
-      // them without a second recursive stat pass.
-      const childRunDir = runBytesByPath && depth === 1 ? child : runDir;
-      if (runBytesByPath && depth === 1) runBytesByPath.set(child, 0);
-      total += await sizeOfDirAsync(child, observedFileBytes, runBytesByPath, depth + 1, childRunDir);
-    } else {
-      try {
-        const bytes = (await statAsync(child)).size;
-        total += bytes;
-        if (observedFileBytes?.has(child)) observedFileBytes.set(child, bytes);
-        if (runDir && runBytesByPath) {
-          runBytesByPath.set(runDir, (runBytesByPath.get(runDir) ?? 0) + bytes);
+  let nextEntry = 0;
+  const workerCount = Math.min(SCRATCH_SIZE_SCAN_MAX_IN_FLIGHT, entries.length);
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (nextEntry < entries.length) {
+      const entry = entries[nextEntry++];
+      const child = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        // Scratch run directories are exactly the directory level below each tool directory.
+        // Record their totals as this normal size walk visits files, so FIFO recovery can reuse
+        // them without a second recursive stat pass.
+        const childRunDir = runBytesByPath && depth === 1 ? child : runDir;
+        if (runBytesByPath && depth === 1) runBytesByPath.set(child, 0);
+        const childBytes = await sizeOfDirAsync(child, observedFileBytes, runBytesByPath, depth + 1, childRunDir, diagnostics);
+        total += childBytes;
+      } else {
+        if (diagnostics) diagnostics.sizeWalkFiles += 1;
+        try {
+          const bytes = (await withScratchSizeScanSlot(() => statAsync(child))).size;
+          total += bytes;
+          if (observedFileBytes?.has(child)) observedFileBytes.set(child, bytes);
+          if (runDir && runBytesByPath) {
+            runBytesByPath.set(runDir, (runBytesByPath.get(runDir) ?? 0) + bytes);
+          }
+        } catch {
+          if (diagnostics) diagnostics.fileStatErrors += 1;
+          /* vanished mid-walk (GC) — skip */
         }
-      } catch {
-        /* vanished mid-walk (GC) — skip */
       }
     }
-  }
+  }));
   return total;
 }
 
@@ -667,8 +733,48 @@ export interface ScratchWriteTimings {
   quotaRecoveryMs: number;
   writeMs: number;
   totalMs: number;
+  /** Present when this write initiated an actual request-time quota-recovery scan. */
+  quotaRecoveryDiagnostics?: ScratchQuotaRecoveryDiagnostics;
   /** Present only for the one-shot progress notification while a phase is still pending. */
   progress?: ScratchWriteProgress;
+}
+
+export interface ScratchQuotaRecoveryDiagnostics {
+  sizeWalkMs: number;
+  sizeWalkDirectories: number;
+  sizeWalkEntries: number;
+  sizeWalkFiles: number;
+  directoryReadErrors: number;
+  fileStatErrors: number;
+  runListingMs: number;
+  runsListed: number;
+  selectedRunSizingMs: number;
+  runsConsidered: number;
+  fallbackRunSizes: number;
+  deletionMs: number;
+  deleteAttempts: number;
+  runsDeleted: number;
+  deletedBytes: number;
+}
+
+function newScratchQuotaRecoveryDiagnostics(): ScratchQuotaRecoveryDiagnostics {
+  return {
+    sizeWalkMs: 0,
+    sizeWalkDirectories: 0,
+    sizeWalkEntries: 0,
+    sizeWalkFiles: 0,
+    directoryReadErrors: 0,
+    fileStatErrors: 0,
+    runListingMs: 0,
+    runsListed: 0,
+    selectedRunSizingMs: 0,
+    runsConsidered: 0,
+    fallbackRunSizes: 0,
+    deletionMs: 0,
+    deleteAttempts: 0,
+    runsDeleted: 0,
+    deletedBytes: 0,
+  };
 }
 
 export interface ScratchWriteProgress {
@@ -679,6 +785,7 @@ export interface ScratchWriteProgress {
   pendingWrites: number;
   recoveryActive: boolean;
   refreshActive: boolean;
+  quotaRecoveryDiagnostics?: ScratchQuotaRecoveryDiagnostics;
 }
 
 const SCRATCH_WRITE_PROGRESS_AFTER_MS = 5_000;
@@ -699,6 +806,7 @@ export async function writeWithScratchQuota(
   const timings: ScratchWriteTimings = {
     quotaWaitMs: 0, refreshWaitMs: 0, quotaRecoveryMs: 0, writeMs: 0, totalMs: 0,
   };
+  let activeRecoveryDiagnostics: ScratchQuotaRecoveryDiagnostics | undefined;
   const timed = async (
     phase: 'quotaWaitMs' | 'refreshWaitMs' | 'quotaRecoveryMs' | 'writeMs',
     run: () => Promise<void>,
@@ -724,6 +832,9 @@ export async function writeWithScratchQuota(
                 pendingWrites: entry.writes.size,
                 recoveryActive: Boolean(entry.recovering),
                 refreshActive: Boolean(entry.refreshing),
+                ...(phase === 'quotaRecoveryMs' && activeRecoveryDiagnostics
+                  ? { quotaRecoveryDiagnostics: { ...activeRecoveryDiagnostics } }
+                  : {}),
               },
             });
           } catch {
@@ -757,8 +868,15 @@ export async function writeWithScratchQuota(
             sum + (request.reserved ? 0 : request.bytes), 0);
           if (entry.bytes + waitingBytes <= WORKSPACE_QUOTA_BYTES) return;
           await timed('quotaRecoveryMs', async () => {
-            await evictWorkspaceQuota(opts.workspaceId, () => Math.max(0, WORKSPACE_QUOTA_BYTES -
-              [...entry.writes.values()].reduce((sum, request) => sum + request.bytes, 0)), true);
+            const diagnostics = newScratchQuotaRecoveryDiagnostics();
+            activeRecoveryDiagnostics = diagnostics;
+            try {
+              await evictWorkspaceQuota(opts.workspaceId, () => Math.max(0, WORKSPACE_QUOTA_BYTES -
+                [...entry.writes.values()].reduce((sum, request) => sum + request.bytes, 0)), true, diagnostics);
+            } finally {
+              timings.quotaRecoveryDiagnostics = { ...diagnostics };
+              activeRecoveryDiagnostics = undefined;
+            }
           });
         })().finally(() => { entry.recovering = null; });
       }
