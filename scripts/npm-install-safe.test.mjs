@@ -60,6 +60,7 @@ function createManifestResolutionFixture({
   staleDuringResolve = false,
   expectFallback = false,
   publisherStatus,
+  flagOnlyDuringResolve = false,
 } = {}) {
   const tempRoot = mkdtempSync(join(tmpdir(), "npm-install-safe-resolution-"));
   const repoRoot = join(tempRoot, "repo");
@@ -121,7 +122,16 @@ function createManifestResolutionFixture({
           "packages/operator-core": {
             name: "@fixture/operator-core",
             version: "1.0.0",
+            ...(flagOnlyDuringResolve ? { dependencies: { "fixture-pkg": "1.2.3" } } : {}),
           },
+          ...(flagOnlyDuringResolve ? {
+            "node_modules/fixture-pkg": {
+              version: "1.2.3",
+              resolved: "https://registry.npmjs.org/fixture-pkg/-/fixture-pkg-1.2.3.tgz",
+              integrity: "sha512-fixture",
+              devOptional: true,
+            },
+          } : {}),
         },
       },
       null,
@@ -131,7 +141,11 @@ function createManifestResolutionFixture({
   writeFileSync(
     join(workspaceRoot, "package.json"),
     JSON.stringify(
-      { name: "@fixture/operator-core", version: "1.0.0" },
+      {
+        name: "@fixture/operator-core",
+        version: "1.0.0",
+        ...(flagOnlyDuringResolve ? { dependencies: { "fixture-pkg": "1.2.3" } } : {}),
+      },
       null,
       2,
     ) + "\n",
@@ -173,7 +187,7 @@ function createManifestResolutionFixture({
     "    const lockfilePath = path.join(process.cwd(), \"package-lock.json\");",
     "    const lockfile = JSON.parse(fs.readFileSync(lockfilePath, \"utf8\"));",
     "    lockfile.packages[\"packages/operator-core\"].dependencies = { \"fixture-pkg\": \"1.2.3\" };",
-    "    lockfile.packages[\"node_modules/fixture-pkg\"] = { version: \"1.2.3\", resolved: \"https://registry.npmjs.org/fixture-pkg/-/fixture-pkg-1.2.3.tgz\", integrity: \"sha512-fixture\" };",
+    "    lockfile.packages[\"node_modules/fixture-pkg\"] = { version: \"1.2.3\", resolved: \"https://registry.npmjs.org/fixture-pkg/-/fixture-pkg-1.2.3.tgz\", integrity: \"sha512-fixture\", ...(process.env.NPM_INSTALL_SAFE_TEST_FLAG_ONLY === \"1\" ? { dev: true } : {}) };",
     "    fs.writeFileSync(lockfilePath, JSON.stringify(lockfile, null, 2) + \"\\n\");",
     "    if (process.env.NPM_INSTALL_SAFE_TEST_STALE) {",
     "      const livePath = path.join(repoRoot, \"packages\", \"operator-core\", \"package.json\");",
@@ -223,6 +237,7 @@ function createManifestResolutionFixture({
       NPM_INSTALL_SAFE_TEST_ROOT: repoRoot,
       NPM_INSTALL_SAFE_TEST_TRACE: tracePath,
       NPM_INSTALL_SAFE_TEST_LOCK_NAME: repoLockName(repoRoot),
+      ...(flagOnlyDuringResolve ? { NPM_INSTALL_SAFE_TEST_FLAG_ONLY: "1" } : {}),
       ...(expectFallback
         ? {
             NPM_INSTALL_SAFE_TEST_EXPECT_FALLBACK: "1",
@@ -261,6 +276,30 @@ test("manifest resolution fixtures ignore inherited npm routing config", {
     rmSync(fixture.tempRoot, { recursive: true, force: true });
   }
 });
+
+for (const lockOnly of [false, true]) {
+  test(`workspace-scoped resolver preserves original flag-only lock bytes (${lockOnly ? "lock-only" : "reify"})`, {
+    skip: process.platform === "win32",
+  }, () => {
+    const fixture = createManifestResolutionFixture({ flagOnlyDuringResolve: true });
+    try {
+      const lockPath = join(fixture.repoRoot, "package-lock.json");
+      const original = readFileSync(lockPath, "utf8");
+      if (lockOnly) fixture.args.push("--package-lock-only");
+      const result = spawnSync(process.execPath, [fixture.cli, ...fixture.args], {
+        encoding: "utf8", timeout: 15_000, env: fixture.env,
+      });
+      assert.ifError(result.error);
+      assert.equal(result.status, 0, result.stderr + result.stdout);
+      assert.deepEqual(readFileSync(fixture.tracePath, "utf8").trim().split("\n"),
+        lockOnly ? ["cache-verify", "resolve"] : ["cache-verify", "resolve", "reify", "repair"]);
+      assert.equal(readFileSync(lockPath, "utf8"), original,
+        "the resolver must preserve the pre-resolution lock before reify takes its snapshot");
+    } finally {
+      rmSync(fixture.tempRoot, { recursive: true, force: true });
+    }
+  });
+}
 
 test("lock-only resolution does not publish unchanged installed dependencies", {
   skip: process.platform === "win32",

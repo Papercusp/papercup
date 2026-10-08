@@ -136,6 +136,66 @@ export function inboxWakeDeliveryMsgId(payload: unknown): string | null {
   return null;
 }
 
+export interface InboxWakeMessageComponent {
+  eventKey: string;
+  urgent: boolean;
+  payload: unknown;
+  msgId: string;
+}
+
+/** Expand raw deliveries and the `coalesceDeliveries()` payload shape. A null
+ *  result means some component is ambiguous, urgent, mixed-event, or lacks an
+ *  exact msg_id; callers must keep the wake. */
+export function inboxWakeMessageComponents(
+  group: readonly InboxWakeGroupActionabilityInput[],
+): InboxWakeMessageComponent[] | null {
+  if (group.length === 0) return null;
+  const components: InboxWakeMessageComponent[] = [];
+  for (const delivery of group) {
+    const payload = isRecord(delivery.payload) ? delivery.payload : null;
+    const nested = payload?.coalesced === true && Array.isArray(payload.events) ? payload.events : null;
+    if (nested) {
+      if (nested.length === 0) return null;
+      for (const raw of nested) {
+        if (!isRecord(raw) || typeof raw.event !== 'string' || typeof raw.urgent !== 'boolean') return null;
+        const msgId = inboxWakeDeliveryMsgId(raw.payload);
+        if (!msgId || raw.urgent || !raw.event.startsWith(COORD_INBOX_WAKE_PREFIX)) return null;
+        components.push({ eventKey: raw.event, urgent: raw.urgent, payload: raw.payload, msgId });
+      }
+      continue;
+    }
+    if (typeof delivery.urgent !== 'boolean' || delivery.urgent) return null;
+    const msgId = inboxWakeDeliveryMsgId(delivery.payload);
+    if (!msgId || !delivery.eventKey.startsWith(COORD_INBOX_WAKE_PREFIX)) return null;
+    components.push({ eventKey: delivery.eventKey, urgent: delivery.urgent, payload: delivery.payload, msgId });
+  }
+  return components.length > 0 ? components : null;
+}
+
+/** Exact handled-state proof for canceling a wake already accepted by the psu
+ *  host. An exact recipient reply discharges that msg_id. Otherwise, only a
+ *  known non-actionable envelope whose own timestamp is covered by the inbox's
+ *  messages_shown_ts receipt is safe to retire. Read actionable mail, unknown
+ *  envelopes, and any incomplete receipt fail open. */
+export function inboxWakeGroupHandled(
+  group: readonly InboxWakeGroupActionabilityInput[],
+  envelopes: ReadonlyMap<string, unknown>,
+  messagesShownThrough: string | null | undefined,
+  repliedMsgIds?: ReadonlySet<string>,
+): boolean {
+  const components = inboxWakeMessageComponents(group);
+  if (!components) return false;
+  const shownThroughMs = messagesShownThrough ? Date.parse(messagesShownThrough) : NaN;
+  return components.every(({ msgId }) => {
+    const envelope = envelopes.get(msgId);
+    if (!isRecord(envelope) || envelope.msg_id !== msgId) return false;
+    if (repliedMsgIds?.has(msgId)) return true;
+    if (classifyInboxWakeMessage(envelope).actionable) return false;
+    const messageTsMs = typeof envelope.ts === 'string' ? Date.parse(envelope.ts) : NaN;
+    return Number.isFinite(shownThroughMs) && Number.isFinite(messageTsMs) && messageTsMs <= shownThroughMs;
+  });
+}
+
 export interface InboxWakeGroupActionabilityInput {
   eventKey: string;
   urgent?: boolean;

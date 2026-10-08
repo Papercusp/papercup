@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { DaoWorkspaceView } from '@papercusp/operator-core/lib/dao-workspace-types';
+import { fetchPlan } from '@/app/admin/plans/plans-api';
 
 interface Proposal { title?: string; raw?: string; prose?: string; contentHash: string }
 interface Round {
@@ -47,11 +48,16 @@ export default function DaoGovernance({ view, onChanged }: { view: DaoWorkspaceV
     const args = { harness: selected.harness, slug: selected.slug };
     void (async () => {
       const [document, decision] = await Promise.allSettled([
-        plansRequest('get', { ...args, mode: 'full' }, controller.signal),
+        fetchPlan(selected.slug, selected.harness, controller.signal, { includeEnrichments: false, trackInteraction: false }),
         plansRequest('governance-event', { ...args, op: 'inspect' }, controller.signal),
       ]);
       if (controller.signal.aborted) return;
-      if (document.status === 'fulfilled') setProposal(document.value);
+      if (document.status === 'fulfilled') {
+        const value = document.value;
+        if (typeof value.contentHash === 'string' && value.contentHash.trim())
+          setProposal({ ...value, contentHash: value.contentHash });
+        else setError('Unable to read this proposal’s exact revision. Reload to retry.');
+      }
       else setError(document.reason instanceof Error ? document.reason.message : 'Unable to read this proposal.');
       if (decision.status === 'fulfilled') setInspection(decision.value);
       else setError(decision.reason instanceof Error ? decision.reason.message : 'Voting policy is unavailable.');

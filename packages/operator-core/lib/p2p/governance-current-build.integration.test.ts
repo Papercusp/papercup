@@ -2,9 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { fork, execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { recordIsolatedIntegrationProof } from '../../test/isolated-integration-proof';
+import { captureIsolatedWorker, recordIsolatedIntegrationProof } from '../../test/isolated-integration-proof';
 
 const root = resolve(import.meta.dirname, '../../../..');
 const journeys = [
@@ -51,7 +51,6 @@ describe('isolated current-build governance and P2P journeys', () => {
       execute: async (observe, evidenceDir) => {
         await mkdir(join(evidenceDir, 'tmp'));
         const messages: Array<Record<string, unknown>> = [];
-        let output = '';
         // The outer canonical runner already owns these barriers. A nested
         // runner must not republish or remove its live parent's marker.
         const environment: Record<string, string | undefined> = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0',
@@ -71,19 +70,12 @@ describe('isolated current-build governance and P2P journeys', () => {
           stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
         });
         observe(child);
-        child.stdout!.on('data', chunk => { output += String(chunk); });
-        child.stderr!.on('data', chunk => { output += String(chunk); });
         child.on('message', message => {
           if (message && typeof message === 'object') messages.push(message as Record<string, unknown>);
         });
-        const result = await new Promise<{ code: number | null; signal: string | null }>((done, reject) => {
-          const timeout = setTimeout(() => child.kill('SIGTERM'), 140_000);
-          child.once('error', error => { clearTimeout(timeout); reject(error); });
-          child.once('close', (code, signal) => { clearTimeout(timeout); done({ code, signal }); });
-        });
-        const cleanOutput = output.replace(/\u001b\[[0-9;]*m/g, '');
-        await writeFile(join(evidenceDir, 'worker.log'), cleanOutput, { flag: 'wx' });
-        expect(result, cleanOutput.slice(-12_000)).toEqual({ code: 0, signal: null });
+        const result = await captureIsolatedWorker(child, evidenceDir, { timeoutMs: 140_000, killGraceMs: 3_000 });
+        const cleanOutput = result.output.replace(/\u001b\[[0-9;]*m/g, '');
+        expect(result, cleanOutput.slice(-12_000)).toMatchObject({ code: 0, signal: null, timedOut: false, stdioDrainTimedOut: false });
         expect(cleanOutput).toMatch(/Test Files\s+2 passed\s+\(2\)/);
         expect(cleanOutput).toMatch(/Tests\s+22 passed\s+\(22\)/);
         const start = messages.find(message => message.kind === 'isolated-runtime-start');

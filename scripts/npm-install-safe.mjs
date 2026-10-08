@@ -1239,26 +1239,28 @@ async function runManifestOnlyInstall({
               );
               return 1;
             }
-            if (plan.packageLockOnly) {
-              const before = input.snapshot.get("package-lock.json");
-              if (
-                before !== null &&
-                workspaceSelectorsForNpmArgs(npmArgs).length > 0
-              ) {
-                const restore = restoreScopedFlagOnlyLockfileRewrite({
-                  repoRoot,
-                  beforeText: before.toString("utf8"),
-                });
-                if (restore.restored)
-                  console.log(
-                    "NPM_INSTALL_SAFE kept the pre-install package-lock.json: " +
-                      "this workspace-scoped command rewrote only npm dependency-type flags (" +
-                      restore.reason + ", " + restore.entries.length +
-                      " entries); a scoped install is not authoritative for them (WI-10003114)",
-                  );
-              }
-              return 0;
+            // The resolver can rewrite flags before reify starts. Preserve its
+            // original snapshot here, while holding the writer, so the later
+            // reify/repair snapshot cannot accept those rewritten flags as its
+            // baseline. Substantive dependency changes remain authoritative.
+            const before = input.snapshot.get("package-lock.json");
+            if (
+              before !== null &&
+              workspaceSelectorsForNpmArgs(npmArgs).length > 0
+            ) {
+              const restore = restoreScopedFlagOnlyLockfileRewrite({
+                repoRoot,
+                beforeText: before.toString("utf8"),
+              });
+              if (restore.restored)
+                console.log(
+                  "NPM_INSTALL_SAFE kept the pre-install package-lock.json: " +
+                    "this workspace-scoped command rewrote only npm dependency-type flags (" +
+                    restore.reason + ", " + restore.entries.length +
+                    " entries); a scoped install is not authoritative for them (WI-10003114)",
+                );
             }
+            if (plan.packageLockOnly) return 0;
             return withPackageCacheReadLease(async () => {
               console.log(
                 "NPM_INSTALL_SAFE reifying resolved lockfile: npm " +

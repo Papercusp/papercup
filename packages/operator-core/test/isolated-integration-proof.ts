@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import type { ChildProcess } from 'node:child_process';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync, readlinkSync } from 'node:fs';
+import { appendFileSync, closeSync, existsSync, openSync, readFileSync, readlinkSync, writeFileSync, writeSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import { hostname } from 'node:os';
 import { join } from 'node:path';
@@ -13,6 +13,72 @@ import { it } from 'vitest';
 
 /** Shared with the cheap context guard so the expensive fixture uses the tested API. */
 export const isolatedIntegrationCases = it.for([false, true]);
+
+/** Retain original output before termination can interrupt the fixture. A
+ * descendant holding stdio must not turn a completed supervisor into a wait
+ * without a deadline. Failure receipts never stand in for successful cleanup.
+ */
+export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, options: {
+  timeoutMs: number; killGraceMs?: number;
+}) {
+  const fd = openSync(join(evidenceDir, 'worker.log'), 'wx');
+  const grace = options.killGraceMs ?? 5_000;
+  let output = '';
+  let timedOut = false;
+  let stdioDrainTimedOut = false;
+  const capture = (chunk: Buffer) => { output += String(chunk); writeSync(fd, chunk); };
+  const message = (value: unknown) => appendFileSync(join(evidenceDir, 'runtime-events.ndjson'), JSON.stringify(value) + '\n');
+  child.stdout?.on('data', capture);
+  child.stderr?.on('data', capture);
+  child.on('message', message);
+  return new Promise<{ code: number | null; signal: NodeJS.Signals | null; timedOut: boolean;
+    stdioDrainTimedOut: boolean; output: string }>((resolve, reject) => {
+    let settled = false;
+    let forceTimer: ReturnType<typeof setTimeout> | undefined;
+    let drainTimer: ReturnType<typeof setTimeout> | undefined;
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      clearTimeout(forceTimer);
+      clearTimeout(drainTimer);
+      child.stdout?.off('data', capture);
+      child.stderr?.off('data', capture);
+      child.off('message', message);
+      child.off('exit', onExit);
+      child.off('close', onClose);
+      child.off('error', onError);
+      closeSync(fd);
+      const result = { code: child.exitCode, signal: child.signalCode, timedOut, stdioDrainTimedOut };
+      writeFileSync(join(evidenceDir, 'worker-result.json'), JSON.stringify({ ...result, error: error?.message ?? null }), { flag: 'wx' });
+      if (error) reject(error);
+      else resolve({ ...result, output });
+    };
+    const stopDraining = () => {
+      stdioDrainTimedOut = true;
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+      if (child.connected) child.disconnect();
+      finish();
+    };
+    const onExit = () => { drainTimer = setTimeout(stopDraining, grace); };
+    const onClose = () => finish();
+    const onError = (error: Error) => finish(error);
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      child.kill('SIGTERM');
+      forceTimer = setTimeout(() => {
+        if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+        // Also bound pipe drainage if a startup orphan retained the supervisor's
+        // descriptors. Its missing cleanup remains a failed proof.
+        drainTimer = setTimeout(stopDraining, grace);
+      }, grace);
+    }, options.timeoutMs);
+    child.once('exit', onExit);
+    child.once('close', onClose);
+    child.once('error', onError);
+  });
+}
 
 const hash = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
 function processPin(pid: number) {
@@ -90,6 +156,10 @@ export async function recordIsolatedIntegrationProof(options: {
                 ended = { ...message, observedAt: new Date().toISOString() };
               }
             } catch (error) { observationError = error; }
+            writeFileSync(join(ctx.evidenceDir, 'lifecycle-observation.json'), JSON.stringify({
+              lifecycle: lifecycle ?? null, ended: ended ?? null,
+              observationError: observationError instanceof Error ? observationError.message : observationError ? String(observationError) : null,
+            }));
           });
         }, ctx.evidenceDir);
         if (observationError) throw observationError;

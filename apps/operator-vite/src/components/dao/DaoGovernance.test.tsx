@@ -13,14 +13,20 @@ let current = inspection;
 let document = { title: 'Build the tool', raw: 'Exact proposal text', contentHash: 'reviewed-hash' };
 let actionResponse: Record<string, unknown>;
 let creationResponse: Record<string, unknown>;
+let readFailure = false;
 let fetchMock: ReturnType<typeof vi.fn>;
 beforeEach(() => {
   current = structuredClone(inspection); document = { title: 'Build the tool', raw: 'Exact proposal text', contentHash: 'reviewed-hash' };
   actionResponse = { ...inspection };
   creationResponse = { ok: true, slug: 'new-proposal-2026-10-08' };
-  fetchMock = vi.fn(async (url: string, init: RequestInit) => {
-    const args = JSON.parse(String(init.body));
-    return { ok: true, json: async () => url.endsWith('/get') ? document : url.endsWith('/new') ? creationResponse : args.op === 'inspect' ? current : actionResponse };
+  readFailure = false;
+  fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+    const path = new URL(url, 'http://localhost').pathname;
+    const args = init?.body ? JSON.parse(String(init.body)) : {};
+    // Match the maintained HTTP contract: get is a read verb, never a POST.
+    if (path.endsWith('/get') && (readFailure || (init?.method ?? 'GET') !== 'GET'))
+      return { ok: false, status: 404, text: async () => "plans write verb 'get' not found" };
+    return { ok: true, json: async () => path.endsWith('/get') ? document : path.endsWith('/new') ? creationResponse : args.op === 'inspect' ? current : actionResponse };
   });
   vi.stubGlobal('fetch', fetchMock);
 });
@@ -30,13 +36,37 @@ async function choose() {
   await screen.findByText('Exact proposal text');
 }
 describe('DAO member decision actions', () => {
+  it('loads the exact proposal through the maintained scoped GET reader', async () => {
+    render(<DaoGovernance view={view} />); await choose();
+    const call = fetchMock.mock.calls.find(([url]) => new URL(url, 'http://localhost').pathname.endsWith('/get'))!;
+    const url = new URL(call[0], 'http://localhost');
+    expect(call[1]?.method ?? 'GET').toBe('GET');
+    expect(call[1]?.body).toBeUndefined();
+    expect(call[1]?.signal).toBeInstanceOf(AbortSignal);
+    expect(Object.fromEntries(url.searchParams)).toEqual({ slug: 'proposal', mode: 'full', harness: 'project', includeEnrichments: 'false' });
+    expect(screen.getByText('Deciding as voter')).toBeTruthy();
+  });
+  it('keeps a failed proposal read ineligible even when the voting policy loads', async () => {
+    readFailure = true; render(<DaoGovernance view={view} />);
+    fireEvent.change(screen.getByLabelText('Review proposal'), { target: { value: 'project/proposal' } });
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain("plans write verb 'get' not found"));
+    expect(screen.queryByRole('button', { name: 'Approve' })).toBeNull();
+    expect(fetchMock.mock.calls.some(([, init]) => init?.body && JSON.parse(String(init.body)).op === 'local-action')).toBe(false);
+  });
+  it.each([undefined, ''])('refuses a proposal without an exact revision: %s', async contentHash => {
+    document.contentHash = contentHash as unknown as string;
+    render(<DaoGovernance view={view} />);
+    fireEvent.change(screen.getByLabelText('Review proposal'), { target: { value: 'project/proposal' } });
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('exact revision'));
+    expect(screen.queryByRole('button', { name: 'Approve' })).toBeNull();
+  });
   it('requires revision review and sends a scoped signed-device vote action', async () => {
     const onChanged = vi.fn(); render(<DaoGovernance view={view} onChanged={onChanged} />); await choose();
     expect((screen.getByRole('button', { name: 'Approve' }) as HTMLButtonElement).disabled).toBe(true);
     fireEvent.click(screen.getByRole('checkbox'));
     fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
     await screen.findByText('Your approve vote was recorded.');
-    const call = fetchMock.mock.calls.find(([, init]) => JSON.parse(String(init.body)).op === 'local-action')!;
+    const call = fetchMock.mock.calls.find(([, init]) => init?.body && JSON.parse(String(init.body)).op === 'local-action')!;
     expect(JSON.parse(String(call[1].body))).toEqual({ harness: 'project', slug: 'proposal', op: 'local-action',
       expectedRevisionHash: 'reviewed-hash', action: { kind: 'vote', roundId: 'round', choice: 'approve' } });
     expect(onChanged).toHaveBeenCalledOnce();

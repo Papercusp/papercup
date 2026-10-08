@@ -294,9 +294,18 @@ export interface KeyFireRow {
 }
 
 /** A delivery row joined with its await's wake handle + note (the pump's unit). */
+export interface HostDeliveryCancellation {
+  /** Existing host delivery IDs that are still pending behind the host's gates. */
+  deliveryIds: string[];
+  /** Every inbox msg_id represented by the pending wake text. */
+  handledMsgIds: string[];
+}
+
 export interface DeliveryWork extends DeliveryRow {
   wakeHandle: WakeHandle | null;
   note: string | null;
+  /** Ephemeral proof-gated cancellation request; never persisted to the delivery row. */
+  hostCancellation?: HostDeliveryCancellation;
   /** Ambient-push delivery rail (ambient-semantic-push P-003): a pre-rendered,
    *  already-injection-door-capped teaser block that rides THIS wake's injection.
    *  Populated ONLY when PAPERCUSP_AMBIENT_CURSOR is on (fail-soft, best-effort);

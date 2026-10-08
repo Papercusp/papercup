@@ -58,17 +58,13 @@ vi.mock("@papercusp/sync", () => ({
   useSyncMutate: () => H.mutate,
 }));
 
-vi.mock("nuqs", async () => {
+vi.mock("nuqs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("nuqs")>();
   const React = await import("react");
-  const parser = (defaultValue: unknown = null) => ({
-    defaultValue,
-    withDefault(value: unknown) {
-      return parser(value);
-    },
-  });
   return {
-    parseAsString: parser(),
-    parseAsStringEnum: () => parser(),
+    // Expanded host details compose collection parsers. Keep the real parser
+    // API so nested surfaces can add query types without breaking this fixture.
+    ...actual,
     useQueryState: (key: string, config?: { defaultValue?: unknown }) => {
       const [value, setValue] = React.useState(
         Object.prototype.hasOwnProperty.call(H.queryDefaults, key)

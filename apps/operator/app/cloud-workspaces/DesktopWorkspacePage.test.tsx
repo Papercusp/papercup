@@ -26,17 +26,11 @@ vi.mock("@papercusp/sync", () => ({
         },
   useSyncMutate: () => vi.fn(),
 }));
-vi.mock("nuqs", async () => {
+vi.mock("nuqs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("nuqs")>();
   const React = await import("react");
-  const parser = (defaultValue: unknown = null): any => ({
-    defaultValue,
-    withDefault: (value: unknown) => parser(value),
-    withOptions: () => parser(defaultValue),
-  });
   return {
-    parseAsString: parser(),
-    parseAsStringEnum: () => parser(),
-    parseAsArrayOf: () => parser(),
+    ...actual,
     useQueryState: (key: string, config?: { defaultValue?: unknown }) => {
       const [value, setValue] = React.useState<unknown>(
         H.params[key] ?? config?.defaultValue ?? null,

@@ -1,9 +1,9 @@
 import { fork } from 'node:child_process';
 import { resolve, join } from 'node:path';
-import { writeFile, symlink, rm, mkdir } from 'node:fs/promises';
+import { symlink, rm, mkdir } from 'node:fs/promises';
 import type {} from '../../../test/governance-http-fixture';
 import { expect, it } from 'vitest';
-import { recordIsolatedIntegrationProof } from '../../../test/isolated-integration-proof';
+import { captureIsolatedWorker, recordIsolatedIntegrationProof } from '../../../test/isolated-integration-proof';
 
 const root = resolve(import.meta.dirname, '../../../../..');
 
@@ -51,22 +51,15 @@ it('ratifies through the production HTTP plans door and executes only the signed
         resolve(root, 'packages/operator-core/test/governance-http-fixture.ts'),
       ], { cwd: root, env: environment, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
       observe(child);
-      let output = '';
       child.stdout!.on('data', chunk => {
-        output += String(chunk);
         for (const line of String(chunk).split('\n')) {
           if (line.startsWith('[with-test-pg] operator-api stage ') || line.startsWith('GOVERNANCE_HTTP_PHASE ')) console.info(line);
         }
       });
-      child.stderr!.on('data', chunk => { output += String(chunk); });
-      const result = await new Promise<{ code: number | null; signal: string | null }>((done, fail) => {
-        const timer = setTimeout(() => child.kill('SIGTERM'), 480_000);
-        child.once('error', error => { clearTimeout(timer); fail(error); });
-        child.once('close', (code, signal) => { clearTimeout(timer); done({ code, signal }); });
-      });
-      await writeFile(join(evidenceDir, 'worker.log'), output, { flag: 'wx' });
+      const result = await captureIsolatedWorker(child, evidenceDir, { timeoutMs: 480_000 });
+      const output = result.output;
       await rm(join(evidenceDir, 'node_modules'));
-      expect(result, output.slice(-12_000)).toEqual({ code: 0, signal: null });
+      expect(result, output.slice(-12_000)).toMatchObject({ code: 0, signal: null, timedOut: false, stdioDrainTimedOut: false });
       const line = output.split('\n').find(row => row.startsWith('GOVERNANCE_HTTP_RECEIPT '));
       expect(line, output.slice(-8_000)).toBeTruthy();
       const receipt = JSON.parse(line!.slice('GOVERNANCE_HTTP_RECEIPT '.length));

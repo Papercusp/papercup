@@ -32,6 +32,8 @@ import { CONSULT_QUESTIONS_CHUNK_SURFACE } from '../search/chunks/registry';
 import { runChunkSyncTick } from '../search/chunks/tick';
 import {
   DEFAULT_ARCHIVE_FLOOR,
+  acceptFeedbackRequestCore,
+  continueFeedbackRequestCore,
   getFeedbackCore,
   HARD_BLOCKED_EXPIRY_MS,
   MAX_CONSULT_DEPTH,
@@ -268,7 +270,7 @@ function makeDeps(
     open: async (input) => {
       opened.push(input);
       convSeq += 1;
-      const id = `conv-${convSeq}`;
+      const id = input.id ?? `conv-${convSeq}`;
       return { conversation_id: id, thread_id: `thr-${id}`, delivered: input.direct_to.length };
     },
     reach: async (o) => {
@@ -932,6 +934,116 @@ async function stateRow(conversationId: string, ws: string = WS) {
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────
+describe('recoverable interactive feedback requests', () => {
+  it('accepts one identity before routing and deduplicates concurrent transport retries', async () => {
+    const fixture = makeDeps(routeOf([cand('recoverable-expert')]));
+    const request = { ...baseReq, requestKey: 'recoverable-concurrent', question: 'recoverable concurrent request' };
+    const [a, b] = await Promise.all([
+      acceptFeedbackRequestCore(request, fixture.deps), acceptFeedbackRequestCore(request, fixture.deps),
+    ]);
+    expect(a).toMatchObject({ verdict: 'accepted', pending: true, state: 'routing' });
+    expect(b).toMatchObject({ conversation_id: a.conversation_id, request_key: request.requestKey });
+    expect(fixture.routeCalls).toHaveLength(0);
+    expect(fixture.reached).toHaveLength(0);
+    const rows = await rootSql`SELECT conversation_id FROM harness_shared.consult_state
+      WHERE workspace_id = ${WS} AND conversation_id = ${a.conversation_id}`;
+    expect(rows).toHaveLength(1);
+  });
+
+  it('refuses a changed payload under a key and partitions identity by requester and workspace', async () => {
+    const fixture = makeDeps(routeOf([]));
+    const request = { ...baseReq, requestKey: 'recoverable-conflict', question: 'original recoverable question' };
+    const accepted = await acceptFeedbackRequestCore(request, fixture.deps);
+    expect(await acceptFeedbackRequestCore({ ...request, question: 'changed question' }, fixture.deps))
+      .toMatchObject({ error: 'request_key_conflict', conversation_id: accepted.conversation_id });
+    const peer = await acceptFeedbackRequestCore({ ...request, requesterId: 'another-requester' }, fixture.deps);
+    const otherWorkspace = await acceptFeedbackRequestCore({ ...request, workspaceId: 'another-workspace' }, fixture.deps);
+    expect(peer.conversation_id).not.toBe(accepted.conversation_id);
+    expect(otherWorkspace.conversation_id).not.toBe(accepted.conversation_id);
+  });
+
+  it('resumes an accepted request after response loss and restart through the existing sweep exactly once', async () => {
+    const fixture = makeDeps(routeOf([cand('restart-expert')]));
+    const request = { ...baseReq, requestKey: 'recoverable-restart', question: 'response lost before routing starts' };
+    const accepted = await acceptFeedbackRequestCore(request, fixture.deps);
+    const execute = vi.fn(async (payload: GetFeedbackRequest, context: NonNullable<GetFeedbackDeps['acceptedRequest']>) =>
+      getFeedbackCore(payload, { ...fixture.deps, acceptedRequest: context }));
+    const resumeRequest = (workspace: string, id: string) => id === accepted.conversation_id
+      ? continueFeedbackRequestCore(workspace, id, { getSql: () => rootSql, now: () => NOW, execute })
+      : Promise.resolve(false);
+    await sweepExpiredConsults({ getSql: () => rootSql, now: () => NOW,
+      resumeRequest, emitReplyEvent: async () => {}, notifyRequester: async () => {} });
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(fixture.reached).toHaveLength(1);
+    expect(fixture.opened).toHaveLength(1);
+    expect(await resumeRequest(WS, accepted.conversation_id)).toBe(false);
+    const replay = await acceptFeedbackRequestCore(request, fixture.deps);
+    expect(replay).toMatchObject({ conversation_id: accepted.conversation_id, state: 'awaiting_responder', pending: false });
+    expect((await stateRow(accepted.conversation_id)).routing).toMatchObject({
+      request: { key: request.requestKey, result: { verdict: 'routed' } },
+      selection: { selected: [{ answeringOwnerId: 'restart-expert-fork' }] },
+    });
+  });
+
+  it('allows one preparation lease and recovers an expired lease without duplicate dispatch', async () => {
+    const fixture = makeDeps(routeOf([cand('lease-expert')]));
+    const request = { ...baseReq, requestKey: 'recoverable-lease', question: 'single worker lease' };
+    const accepted = await acceptFeedbackRequestCore(request, fixture.deps);
+    let release!: () => void;
+    const barrier = new Promise<void>(resolve => { release = resolve; });
+    let entered!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const execute = vi.fn(async (payload: GetFeedbackRequest, context: NonNullable<GetFeedbackDeps['acceptedRequest']>) => {
+      entered(); await barrier;
+      return getFeedbackCore(payload, { ...fixture.deps, acceptedRequest: context });
+    });
+    const deps = { getSql: () => rootSql, now: () => NOW, execute };
+    const first = continueFeedbackRequestCore(WS, accepted.conversation_id, deps);
+    await started;
+    expect(await continueFeedbackRequestCore(WS, accepted.conversation_id, deps)).toBe(false);
+    release();
+    expect(await first).toBe(true);
+    expect(fixture.reached).toHaveLength(1);
+
+    const abandoned = await acceptFeedbackRequestCore({ ...request, requestKey: 'recoverable-abandoned' }, fixture.deps);
+    await rootSql`UPDATE harness_shared.consult_state SET routing = jsonb_set(routing, '{request}',
+      (routing->'request') || ${rootSql.json({ leaseToken: 'dead-process', leaseUntil: NOW.toISOString() } as never)})
+      WHERE workspace_id = ${WS} AND conversation_id = ${abandoned.conversation_id}`;
+    expect(await continueFeedbackRequestCore(WS, abandoned.conversation_id, {
+      ...deps, execute: (payload, context) => getFeedbackCore(payload, { ...fixture.deps, acceptedRequest: context }),
+    })).toBe(true);
+    expect(fixture.reached).toHaveLength(2);
+  });
+
+  it('refuses a stale worker before dispatch after another lease won', async () => {
+    const fixture = makeDeps(routeOf([cand('stale-worker-expert')]));
+    const accepted = await acceptFeedbackRequestCore({ ...baseReq, requestKey: 'recoverable-stale-worker' }, fixture.deps);
+    await expect(continueFeedbackRequestCore(WS, accepted.conversation_id, {
+      getSql: () => rootSql, now: () => NOW,
+      execute: async (payload, context) => {
+        await rootSql`UPDATE harness_shared.consult_state SET routing = jsonb_set(routing, '{request,leaseToken}', '"new-worker"'::jsonb)
+          WHERE workspace_id = ${WS} AND conversation_id = ${accepted.conversation_id}`;
+        return getFeedbackCore(payload, { ...fixture.deps, acceptedRequest: context });
+      },
+    })).rejects.toThrow('consult-request-lease-lost');
+    expect(fixture.reached).toHaveLength(0);
+    expect((await stateRow(accepted.conversation_id)).routing).toMatchObject({ request: { leaseToken: 'new-worker' } });
+  });
+
+  it('does not replay dispatch after losing the response beyond the selected-row commit', async () => {
+    const fixture = makeDeps(routeOf([cand('post-commit-expert')]));
+    const accepted = await acceptFeedbackRequestCore({ ...baseReq, requestKey: 'recoverable-post-commit' }, fixture.deps);
+    const execute = vi.fn((payload: GetFeedbackRequest, context: NonNullable<GetFeedbackDeps['acceptedRequest']>) =>
+      getFeedbackCore(payload, { ...fixture.deps, acceptedRequest: context,
+        reach: async () => { throw new Error('process lost after selected row committed'); } }));
+    const deps = { getSql: () => rootSql, now: () => NOW, execute };
+    await expect(continueFeedbackRequestCore(WS, accepted.conversation_id, deps)).rejects.toThrow('process lost');
+    expect((await stateRow(accepted.conversation_id)).state).toBe('awaiting_responder');
+    expect(await continueFeedbackRequestCore(WS, accepted.conversation_id, deps)).toBe(false);
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('getFeedbackCore — routed', () => {
   it('persists the requested reviewer model with the consult for later cascades', async () => {
     const reviewerModel = { agent: 'codex', model: 'sol', effort: 'xhigh' } as const;

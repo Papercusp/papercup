@@ -63,7 +63,7 @@ export default defineTool({
   name: 'computer:provision_desktop',
   profile: 'engineer',
   description:
-    'Start a sandboxed GUI desktop (isolated X server + openbox, never host :0) that capability:computer drives. Omit `pot` to start one for YOURSELF — you may run many, each with its own `name`; an authorized pot manager may pass `pot` to equip a pot with its shared desktop. Optionally launches GUI apps. Idempotent per name. Tear down with computer:release_desktop.',
+    'Start a sandboxed GUI desktop (isolated X server + openbox, never host :0) that capability:computer drives. Omit `pot` to start one for YOURSELF — you may run many, each with its own `name`; an authorized pot manager may pass `pot` to equip a pot with its shared desktop. Optionally launches GUI apps; locally held caller-owned leases include bounded per-app launch diagnostics. Idempotent per name. Tear down with computer:release_desktop.',
   guidance: {
     when: 'You need a GUI to work in — a browser, a desktop app. Start one per parallel task (`name` each, e.g. "checkout-flow"); pass `apps` to pre-launch programs.',
     notWhen:
@@ -191,6 +191,8 @@ export default defineTool({
       name,
       desktopSessionId,
       ...geometry(d),
+      // The lease belongs to this caller and `stderrTail` is already byte-bounded.
+      appDiagnostics: d.appDiagnostics(),
       reused: !!already,
       note: already
         ? 'you already had a desktop with this name — returned it (apps NOT re-launched).'
