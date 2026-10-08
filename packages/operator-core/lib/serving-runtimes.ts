@@ -178,7 +178,7 @@ export const SERVING_RUNTIMES: Readonly<Record<ServingRuntimeId, ServingRuntimeS
  * before executing a test. A gap stays a gap until its runner exists; :3170
  * cannot stand in for bg-host, a desktop binary, or a second machine.
  */
-export const CURRENT_BUILD_TEST_CLASSES = [
+const CURRENT_BUILD_TEST_CLASS_TABLE = [
   {
     id: 'unit-integration',
     source: 'canonical staging tree',
@@ -293,11 +293,22 @@ export const CURRENT_BUILD_TEST_CLASSES = [
   isolation: string;
   prerequisites: readonly string[];
   verification: string;
-  readiness: 'ready' | 'requires-prerequisites' | 'gap' | 'release-only';
+  readiness: CurrentBuildRouteReadiness;
 }>;
 
-export type CurrentBuildTestClassId = (typeof CURRENT_BUILD_TEST_CLASSES)[number]['id'];
-export type CurrentBuildTestRoute = (typeof CURRENT_BUILD_TEST_CLASSES)[number];
+/**
+ * The readiness VOCABULARY is declared, not inferred from whichever values the table holds
+ * today. Inferring it (`typeof TABLE[number]`) erased 'gap' from every consumer's type the
+ * moment the last gap route was promoted, turning each `readiness === 'gap'` branch into a
+ * TS2367 error (WI-10007552) — and would erase any other value the same way.
+ */
+export type CurrentBuildRouteReadiness = 'ready' | 'requires-prerequisites' | 'gap' | 'release-only';
+type WithDeclaredReadiness<T> = T extends unknown
+  ? Omit<T, 'readiness'> & { readonly readiness: CurrentBuildRouteReadiness }
+  : never;
+export type CurrentBuildTestRoute = WithDeclaredReadiness<(typeof CURRENT_BUILD_TEST_CLASS_TABLE)[number]>;
+export type CurrentBuildTestClassId = CurrentBuildTestRoute['id'];
+export const CURRENT_BUILD_TEST_CLASSES: ReadonlyArray<CurrentBuildTestRoute> = CURRENT_BUILD_TEST_CLASS_TABLE;
 
 /** One maintained route, or null for a caller spelling we have not audited. */
 export function currentBuildTestRoute(id: string): CurrentBuildTestRoute | null {
