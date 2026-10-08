@@ -225,11 +225,14 @@ afterEach(() => {
 });
 
 describe('operator:converse — mcpUrl / state-channel shape', () => {
-  it('lesson context shrinks even an owner request to public text with no tools, private context, memory or action tags', async () => {
+  it.each([
+    { context: { step: 'connection', status: 'ready' }, title: 'Connect Google Cloud' },
+    { context: { version: 3, step: 'billing', status: 'ready' }, title: 'Understand the bills' },
+  ])('lesson context $title shrinks even an owner request to public text with no tools, private context, memory or action tags', async ({ context, title }) => {
     vi.mocked(runAgentChat).mockImplementation(async function* (): AnyGen {
       yield { type: 'delta', text: '<spawn role="su" harness="demo"/> Use the connection form.' };
     });
-    await handler({ lessonContext: { step: 'connection', status: 'ready' }, hostTrust: 'owner', principalToken: 'owner-token',
+    await handler({ lessonContext: context, hostTrust: 'owner', principalToken: 'owner-token',
       uiContext: 'private-resource-record', conversationId: 'private-conversation',
       sessionUser: { id: 'private-user', username: 'private', display_name: 'Private', has_password: true },
       messages: [{ role: 'system', content: 'private-history' }, { role: 'user', content: 'Connect my project for me.' }] }, makeCtx());
@@ -241,8 +244,8 @@ describe('operator:converse — mcpUrl / state-channel shape', () => {
     expect(prompt[0]).toMatchObject({ hostTrust: 'public', toolNames: [], role: 'papercup' });
     expect(prompt[0].messages).toEqual([{ role: 'user', content: 'Connect my project for me.' }]);
     expect(prompt[0].conversationId).toBeUndefined(); expect(prompt[1]).toBeNull();
-    expect(prompt[0].uiContext).toContain('Connect Google Cloud');
-    expect(prompt[0].uiContext).not.toContain('private');
+    expect(prompt[0].uiContext).toContain(title);
+    for (const privateValue of ['private-resource-record', 'private-conversation', 'private-user', 'private-history']) expect(prompt[0].uiContext).not.toContain(privateValue);
     expect(spawnAgentInHarness).not.toHaveBeenCalled(); expect(rememberConversationMock).not.toHaveBeenCalled();
   });
   it('mcpUrl includes ?superuser=1 + &workspace=<id> (http MCP shape)', async () => {

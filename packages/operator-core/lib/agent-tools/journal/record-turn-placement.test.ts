@@ -10,6 +10,7 @@ const h = vi.hoisted(() => ({
   latest: vi.fn(async () => null),
   ledger: vi.fn(async () => []),
   journal: vi.fn(async () => ({ id: 'journal-row', deduped: false })),
+  observeReport: vi.fn(async () => false),
 }));
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: () => ({ ownerId: 'holder', workspaceId: 'workspace' }), requireWorkspaceId: () => 'workspace',
@@ -31,6 +32,7 @@ vi.mock('../../turn-end-tracking-io', () => ({
   boundedOpenTaskReminderSweep: vi.fn(async () => null),
   boundedUnguardedHaltSweep: vi.fn(async () => null),
   boundedAutoCheckpoint: vi.fn(async () => []),
+  boundedUnpublishedReportTurn: h.observeReport,
   boundedCoordWatermarkSettle: vi.fn(async () => null),
 }));
 vi.mock('../../session-cursor-io', () => ({ boundedBuildAndPersistCursor: vi.fn(async () => false) }));
@@ -45,6 +47,7 @@ beforeEach(() => {
   h.latest.mockReset().mockResolvedValue(null);
   h.ledger.mockReset().mockResolvedValue([]);
   h.journal.mockReset().mockResolvedValue({ id: 'journal-row', deduped: false });
+  h.observeReport.mockReset().mockResolvedValue(false);
 });
 describe('journal native placement seam', () => {
   it('samples before journal prose extraction and does not require a journal note', async () => {
@@ -90,6 +93,46 @@ describe('journal native placement seam', () => {
     const result = await tool.handler({ owner: 'another-owner', session_id: 'native', source_kind: 'codex' }, {} as never);
     expect(h.record).not.toHaveBeenCalled();
     expect(result).toMatchObject({ data: { reason: 'no_assistant_turn', goalPlacementTurnEnd: null } });
+  });
+  it('returns the recorded turn while report observation remains pending', async () => {
+    h.turn.mockResolvedValueOnce({ text: '## Findings\nUnpublished report.', ts: new Date('2026-10-01T00:00:00.000Z') });
+    h.extract.mockReturnValueOnce({ note: 'journal note', source: 'agent', flagged: false });
+    h.observeReport.mockImplementationOnce(() => new Promise<boolean>(() => {}));
+    const result = await tool.handler({ owner: 'holder', session_id: 'native', source_kind: 'codex' }, {} as never);
+    expect(result).toMatchObject({ data: { ok: true, unpublishedReportObservationScheduled: true } });
+    expect(result.data).not.toHaveProperty('unpublishedReportObserved');
+    expect(h.observeReport).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      ownerId: 'holder', workspaceId: 'workspace', assistantText: '## Findings\nUnpublished report.',
+    }));
+  }, 1000);
+  it("does not persist the operator '*' auto-scope as report observation harness attribution", async () => {
+    h.turn.mockResolvedValueOnce({ text: 'Unpublished report.', ts: new Date('2026-10-01T00:00:00.000Z') });
+    h.extract.mockReturnValueOnce({ note: 'journal note', source: 'agent', flagged: false });
+    const result = await tool.handler(
+      { owner: 'holder', session_id: 'native', source_kind: 'codex' },
+      { harnessSlug: '*' } as never,
+    );
+    expect(result).toMatchObject({ data: { ok: true, unpublishedReportObservationScheduled: true } });
+    expect(h.observeReport).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ harnessSlug: null }));
+  });
+  it('isolates a report observer error from journal success', async () => {
+    h.turn.mockResolvedValueOnce({ text: 'Unpublished report.', ts: new Date('2026-10-01T00:00:00.000Z') });
+    h.extract.mockReturnValueOnce({ note: 'journal note', source: 'agent', flagged: false });
+    h.observeReport.mockImplementationOnce(() => { throw new Error('observer unavailable'); });
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await tool.handler({ owner: 'holder', session_id: 'native', source_kind: 'codex' }, {} as never);
+      expect(result).toMatchObject({ data: { ok: true, id: 'journal-row' } });
+      expect(warning).toHaveBeenCalledWith(expect.stringContaining('observer unavailable'));
+    } finally { warning.mockRestore(); }
+  });
+  it('does not schedule a second observation for a deduped journal turn', async () => {
+    h.turn.mockResolvedValueOnce({ text: 'Unpublished report.', ts: new Date('2026-10-01T00:00:00.000Z') });
+    h.extract.mockReturnValueOnce({ note: 'journal note', source: 'agent', flagged: false });
+    h.journal.mockResolvedValueOnce({ id: 'journal-row', deduped: true });
+    const result = await tool.handler({ owner: 'holder', session_id: 'native', source_kind: 'codex' }, {} as never);
+    expect(result.data).not.toHaveProperty('unpublishedReportObservationScheduled');
+    expect(h.observeReport).not.toHaveBeenCalled();
   });
   it('returns the native outcome even when journal transcript discovery fails', async () => {
     h.path.mockResolvedValue(null);

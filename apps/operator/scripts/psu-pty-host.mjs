@@ -10149,8 +10149,8 @@ export function hostThroughPty(o) {
       /* an unexpected inject error still falls through to the drop trace */
     }
     if (child !== injectChild) return { delivered: false, reason: 'superseded', attempts };
-    if (dropReason === 'codex-startup-still-starting') {
-      // WI-10004943 (b): capture what the stuck child was waiting on while it is
+    if (dropReason === 'codex-startup-still-starting' || dropReason === 'codex-backend-frame-not-observed') {
+      // WI-10004943 (b), WI-10007305: capture what the stuck child was waiting on while it is
       // still alive. The respawn this drop leads to starts a fresh codex-tui.log
       // in the same CODEX_HOME, so this is the last chance to see its log.
       try {
@@ -10160,7 +10160,7 @@ export function hostThroughPty(o) {
           startupOutput: childStartupOutput,
           screenDims: childScreenDims(),
         });
-        appendHostEvent(ownerId, 'codex-starting-stuck-snapshot', { label, ...snapshot });
+        appendHostEvent(ownerId, 'codex-starting-stuck-snapshot', { label, reason: dropReason, ...snapshot });
       } catch {
         /* diagnostic only */
       }
@@ -10223,6 +10223,21 @@ export function hostThroughPty(o) {
     appendHostEvent(ownerId, result.ok ? 'respawn-binding-confirmed' : 'respawn-binding-unconfirmed', {
       nativeId: result.nativeId, reason: result.reason,
     });
+    if (!result.ok && result.reason === 'successor-native-id-missing' &&
+        env.PAPERCUSP_AGENT === 'codex' && child === target && !hostCleanedUp && !shuttingDown) {
+      // WI-10007305: binding can time out before injectTurnAtPrompt reaches its
+      // Starting drop. Preserve this exact child's evidence before a replacement
+      // truncates its native log; identity remains a separate, fail-closed gate.
+      const snapshot = collectCodexStartingStuckSnapshot({
+        rootPid: target.pid,
+        codexHome: env.CODEX_HOME,
+        startupOutput: childStartupOutput,
+        screenDims: childScreenDims(),
+      });
+      appendHostEvent(ownerId, 'codex-starting-stuck-snapshot', {
+        label: 'respawn binding', reason: result.reason, ...snapshot,
+      });
+    }
     if (child === target && result.nativeId) carryBindingNativeId = result.nativeId;
     if (result.ok) {
       confirmedCarryChild = target;

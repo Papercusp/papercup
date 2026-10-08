@@ -101,6 +101,23 @@ async function read(now = new Date()) {
 }
 
 describe('plan closure observations (D-032)', () => {
+  it('keeps qualified same-slug verdicts distinct while the legacy bare slug stays ambiguous', async () => {
+    const secondHarness = 'second-harness';
+    await db.sql`INSERT INTO harness_shared.harness_plans
+      (workspace_id, harness_slug, plan_slug, version, acceptance_bar_epoch)
+      VALUES (${WORKSPACE}, ${secondHarness}, ${PLAN}, 2, 1)`;
+    const recording = await beginPlanClosureObservation(PLAN);
+    await recording.record(HARNESS, { satisfied: true });
+    await recording.record(secondHarness, VERDICT);
+    const observations = await readPlanClosureObservations({ workspaceId: WORKSPACE,
+      planSlugs: [PLAN], planRefs: [{ planSlug: PLAN, harnessSlug: HARNESS },
+        { planSlug: PLAN, harnessSlug: secondHarness }], sql: db.sql });
+    expect(observations.get(`plan:${HARNESS}/${PLAN}`)).toMatchObject({ status: 'fresh', gate: { satisfied: true } });
+    expect(observations.get(`plan:${secondHarness}/${PLAN}`)).toMatchObject({ status: 'fresh', gate: { satisfied: false } });
+    expect(observations.get(PLAN)?.status).toBe('ambiguous');
+    expect(observations.get(`plan:${HARNESS}/${PLAN}`)).not.toEqual(observations.get(`plan:${secondHarness}/${PLAN}`));
+  });
+
   it.each(['shipped-without-closure', 'satisfied-closure'])('outer control catches persisted closure verdict adapter: %s', async (scenario) => {
     const satisfied = scenario === 'satisfied-closure';
     const projected = async (verdictSatisfied: boolean) => {

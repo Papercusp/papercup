@@ -1160,6 +1160,8 @@ function codexAgentsPrompt(promptText: string, lockRuntime: CodexLockRuntimeVerd
  */
 export function writeRoleCodexHome(opts: {
   sessionKey: string | number;
+  /** Repair managed files in place without removing the native resume history. */
+  preserveExisting?: boolean;
   /** Already-signed, role-scoped MCP url (from buildRoleLaunchSpec). */
   mcpUrl: string;
   /** The role prompt — becomes AGENTS.md. */
@@ -1191,8 +1193,17 @@ export function writeRoleCodexHome(opts: {
   // (`codexHomeForAdvSession` → `codexHomeForSessionKey`). Previously the role
   // path wrote to a separate `role-codex-homes/` root the resume leg never
   // looked in, so a woken codex role session resumed from nothing.
-  const codexHome = freshCodexHome(codexHomeForSessionKey(opts.sessionKey));
-  const sqliteHome = freshCodexSqliteHome(opts.sessionKey);
+  const codexHome = opts.preserveExisting
+    ? codexHomeForSessionKey(opts.sessionKey)
+    : freshCodexHome(codexHomeForSessionKey(opts.sessionKey));
+  const sqliteHome = opts.preserveExisting
+    ? codexSqliteHomeForSessionKey(opts.sessionKey)
+    : freshCodexSqliteHome(opts.sessionKey);
+  if (opts.preserveExisting) {
+    mkdirSync(codexHome, { recursive: true, mode: 0o700 });
+    mkdirSync(sqliteHome, { recursive: true, mode: 0o700 });
+    inheritUserCodexHome(codexHome);
+  }
   const inheritedPromptsCopied = copyInheritedCodexPrompts(codexHome);
 
   // AGENTS.md = the role prompt. codex has no per-launch system-prompt

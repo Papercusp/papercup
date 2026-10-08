@@ -19,6 +19,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join, posix, relative } from 'node:path';
 
 import type { RunReport } from '@papercusp/testing-shell/llm';
+import { resolveTestRunHarnessSlug, resolveTestRunWorkspaceId } from '@papercusp/test-config/admin-test-runs-reporter';
 import {
   TEST_RUN_EXECUTION_DETAILS_SCHEMA_VERSION,
   type TestRunExecutionDetails,
@@ -204,8 +205,8 @@ export async function recordLlmScenarioTestRun(
     const worktreeDirty = before ? computeWorktreeDirty(before, after) : true;
     const { branch } = await resolveGitContext().catch(() => ({ branch: null as string | null }));
     const runGroupId = process.env.PAPERCUSP_TEST_RUN_GROUP ?? report.matrixGroupId ?? null;
-    const workspaceId = process.env.PAPERCUSP_WORKSPACE_ID ?? null;
-    const harnessSlug = process.env.PAPERCUSP_TEST_RUN_HARNESS ?? null;
+    const workspaceId = resolveTestRunWorkspaceId();
+    const harnessSlug = resolveTestRunHarnessSlug();
 
     const row = llmScenarioLedgerRow(report, {
       root, filePath, runGroupId, workspaceId, harnessSlug,

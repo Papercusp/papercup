@@ -127,6 +127,23 @@ function installOwnerRuntimeProof(owner: string) {
 }
 
 describe('writeRoleCodexHome', () => {
+  it('repairs a role home in place while preserving its exact native transcript and SQLite data', async () => {
+    const writer = await load();
+    const input = { sessionKey: 4242, mcpUrl: 'http://x/?role=researcher&sig=1', promptText: 'RESEARCH ROLE' };
+    const first = writer(input);
+    mkdirSync(join(first.codexHome, 'sessions'), { recursive: true });
+    const transcript = join(first.codexHome, 'sessions', 'native.jsonl');
+    const database = join(first.sqliteHome, 'state.sqlite');
+    writeFileSync(transcript, 'native history');
+    writeFileSync(database, 'native state');
+    const repaired = writer({ ...input, preserveExisting: true, promptText: 'CURRENT RESEARCH ROLE' });
+    expect(readFileSync(transcript, 'utf8')).toBe('native history');
+    expect(readFileSync(database, 'utf8')).toBe('native state');
+    expect(readFileSync(repaired.agentsPath, 'utf8')).toContain('CURRENT RESEARCH ROLE');
+    expect(readFileSync(repaired.configPath, 'utf8')).toContain('[mcp_servers.papercusp]');
+    expect(readFileSync(repaired.configPath, 'utf8')).not.toContain('[mcp_servers.papercusp-su]');
+  });
+
   it('prepends the exact 1M/900k root keys for an extended-window role model', async () => {
     installStaleExtendedWindowRecord('gpt-5.6-sol');
     const writeRoleCodexHome = await load();

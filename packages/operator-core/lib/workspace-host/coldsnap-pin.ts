@@ -28,11 +28,14 @@ export interface ColdsnapPin {
   readonly version: string;
   /** sha256 of the published .crate file, as listed in the crates.io index `cksum` field. */
   readonly crateSha256: string;
+  /** Versioned source instrumentation; leaves upstream and any running binary intact. */
+  readonly diagnosticsRevision?: 1;
 }
 
 export const COLDSNAP_PIN: ColdsnapPin = Object.freeze({
   version: '0.12.0',
   crateSha256: '731bf6e1fac9ccf757e67b1732f1eac1f253f14e4a8e85fb94b5bf326777e798',
+  diagnosticsRevision: 1,
 });
 
 export const COLDSNAP_EXECUTABLE_ENV = 'PAPERCUSP_AWS_COLDSNAP_EXECUTABLE';
@@ -45,7 +48,8 @@ export function coldsnapCrateUrl(pin: ColdsnapPin = COLDSNAP_PIN): string {
 }
 
 export function pinnedColdsnapRoot(home: string, pin: ColdsnapPin = COLDSNAP_PIN): string {
-  return join(home, '.papercusp', 'tools', 'coldsnap', pin.version);
+  const revision = pin.diagnosticsRevision ? `-diagnostics-${pin.diagnosticsRevision}` : '';
+  return join(home, '.papercusp', 'tools', 'coldsnap', `${pin.version}${revision}`);
 }
 
 export function pinnedColdsnapExecutable(home: string, pin: ColdsnapPin = COLDSNAP_PIN): string {
@@ -123,12 +127,14 @@ export interface ColdsnapInstallResult {
   version: string;
   executable: string;
   crateSha256: string;
+  diagnosticsRevision?: 1;
 }
 
 interface ColdsnapStamp {
   version: string;
   crateSha256: string;
   installedAt: string;
+  diagnosticsRevision?: 1;
 }
 
 function parseStamp(text: string | undefined): ColdsnapStamp | undefined {
@@ -137,7 +143,9 @@ function parseStamp(text: string | undefined): ColdsnapStamp | undefined {
     const value = JSON.parse(text) as Partial<ColdsnapStamp>;
     return typeof value.version === 'string' && typeof value.crateSha256 === 'string'
       && typeof value.installedAt === 'string' && Number.isFinite(Date.parse(value.installedAt))
-      ? { version: value.version, crateSha256: value.crateSha256, installedAt: value.installedAt }
+      && (value.diagnosticsRevision === undefined || value.diagnosticsRevision === 1)
+      ? { version: value.version, crateSha256: value.crateSha256, installedAt: value.installedAt,
+        ...(value.diagnosticsRevision ? { diagnosticsRevision: value.diagnosticsRevision } : {}) }
       : undefined;
   } catch {
     return undefined;
@@ -157,7 +165,32 @@ export async function inspectPinnedColdsnap(
   if (stamp.version !== pin.version || stamp.crateSha256 !== pin.crateSha256) {
     return { installed: false, executable, reason: `stamp records ${stamp.version}/${stamp.crateSha256}, pin is ${pin.version}/${pin.crateSha256}` };
   }
+  if (stamp.diagnosticsRevision !== pin.diagnosticsRevision) {
+    return { installed: false, executable, reason: 'install stamp does not match the diagnostic source revision' };
+  }
   return { installed: true, executable };
+}
+
+/**
+ * The pinned CLI prints only Error::Display, losing the connector/timeout source behind
+ * "dispatch failure". Reuse its existing Snafu Report formatter to retain the source chain,
+ * without enabling SDK request/header tracing. Exact anchors fail closed on upstream drift.
+ */
+export function patchColdsnapDiagnosticSource(source: string, file: 'main' | 'upload'): string {
+  const replacements: readonly (readonly [string, string])[] = file === 'main'
+    ? [['eprintln!("{e}");', 'eprintln!("{}", snafu::Report::from_error(&e));']]
+    : [
+      ['elapsed.as_secs_f64(),\n                            e\n', 'elapsed.as_secs_f64(),\n                            snafu::Report::from_error(&e)\n'],
+      ['block_errors.values().map(|e| e.to_string()).collect()', 'block_errors.values().map(|e| snafu::Report::from_error(e).to_string()).collect()'],
+    ];
+  let patched = source;
+  for (const [before, after] of replacements) {
+    if (patched.split(before).length !== 2) {
+      throw new Error(`coldsnap diagnostic patch ${file}: expected exactly one source anchor; refusing to build`);
+    }
+    patched = patched.replace(before, after);
+  }
+  return patched;
 }
 
 function runOrThrow(deps: ColdsnapInstallDeps, command: string, args: readonly string[], cwd?: string): void {
@@ -180,8 +213,9 @@ export async function installPinnedColdsnap(
 ): Promise<ColdsnapInstallResult> {
   const pin = options.pin ?? COLDSNAP_PIN;
   const current = await inspectPinnedColdsnap(home, deps, pin);
+  const diagnosticIdentity = pin.diagnosticsRevision ? { diagnosticsRevision: pin.diagnosticsRevision } : {};
   if (current.installed) {
-    return { status: 'already-installed', version: pin.version, executable: current.executable, crateSha256: pin.crateSha256 };
+    return { status: 'already-installed', version: pin.version, executable: current.executable, crateSha256: pin.crateSha256, ...diagnosticIdentity };
   }
   const bytes = await deps.fetchBytes(coldsnapCrateUrl(pin));
   assertCrateChecksum(bytes, pin);
@@ -190,6 +224,14 @@ export async function installPinnedColdsnap(
     const cratePath = join(work, `coldsnap-${pin.version}.crate`);
     await deps.writeFile(cratePath, bytes);
     runOrThrow(deps, 'tar', ['-xzf', cratePath, '-C', work]);
+    if (pin.diagnosticsRevision) {
+      for (const [file, relative] of [['main', 'src/bin/coldsnap/main.rs'], ['upload', 'src/upload.rs']] as const) {
+        const path = join(work, `coldsnap-${pin.version}`, relative);
+        const source = await deps.readFile(path);
+        if (!source) throw new Error(`coldsnap diagnostic patch: missing ${relative}; refusing to build`);
+        await deps.writeFile(path, patchColdsnapDiagnosticSource(source, file));
+      }
+    }
     const root = pinnedColdsnapRoot(home, pin);
     runOrThrow(deps, options.cargo ?? 'cargo', [
       'install',
@@ -202,9 +244,9 @@ export async function installPinnedColdsnap(
     ]);
     const executable = pinnedColdsnapExecutable(home, pin);
     if (!deps.isExecutable(executable)) throw new Error(`cargo install finished but ${executable} is not executable`);
-    const stamp: ColdsnapStamp = { version: pin.version, crateSha256: pin.crateSha256, installedAt: deps.now().toISOString() };
+    const stamp: ColdsnapStamp = { version: pin.version, crateSha256: pin.crateSha256, installedAt: deps.now().toISOString(), ...diagnosticIdentity };
     await deps.writeFile(join(root, STAMP_FILE), `${JSON.stringify(stamp, null, 2)}\n`);
-    return { status: 'installed', version: pin.version, executable, crateSha256: pin.crateSha256 };
+    return { status: 'installed', version: pin.version, executable, crateSha256: pin.crateSha256, ...diagnosticIdentity };
   } finally {
     await deps.removeDir(work);
   }

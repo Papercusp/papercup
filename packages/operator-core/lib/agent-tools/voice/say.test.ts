@@ -17,11 +17,15 @@ vi.mock('../../operator-conversations', () => ({
 vi.mock('../../sync-sse', () => ({
   notifySyncInvalidate: vi.fn(async () => {}),
 }));
+const destination = vi.hoisted(() => ({ workspace: 'reading-workspace' as string | null }));
+vi.mock('@papercusp/db-org', async importOriginal => ({ ...await importOriginal<typeof import('@papercusp/db-org')>(), getOrgPg: () => ({ sql: vi.fn(async () => destination.workspace ? [{ workspace_id: destination.workspace }] : []) }) }));
+vi.mock('../ui/dispatch', () => ({ default: { handler: vi.fn(async () => ({ content: [{ type: 'text', text: JSON.stringify({ status: 'done', result: { readingId: 'reading-1', status: 'starting' } }) }] })) } }));
 
 import sayTool from './say';
 import { pushSentinelSay } from '../../sentinel-output-buffer';
 import { getOrCreateActiveConversation, appendTurn } from '../../operator-conversations';
 import { notifySyncInvalidate } from '../../sync-sse';
+import uiDispatch from '../ui/dispatch';
 
 const push = vi.mocked(pushSentinelSay);
 const getConv = vi.mocked(getOrCreateActiveConversation);
@@ -32,11 +36,38 @@ const handler = (sayTool as unknown as { handler: (a: never, c: never) => Promis
 
 beforeEach(() => {
   vi.clearAllMocks();
+  destination.workspace = 'reading-workspace';
   getConv.mockResolvedValue({ id: 'conv-9' } as never);
   append.mockResolvedValue({ seq: 3 } as never);
 });
 
 describe('voice:say', () => {
+  const ctx = { workspaceId: 'reading-workspace', uiClientId: 'requesting-tab', role: 'operator', principal: { slug: 'reading-agent', workspaceId: 'reading-workspace', capabilities: new Set(['operator:read']) }, signal: new AbortController().signal };
+
+  it('reads authorized HTML into only the requesting output tab and reports source coverage', async () => {
+    const result = await handler({ operation: 'read', content: { kind: 'html', html: '<p>FIRST</p><p>FINAL TAIL</p>', ref: 'provided:article', partial: true } } as never, ctx as never) as { structuredContent: unknown };
+    expect(uiDispatch.handler).toHaveBeenCalledWith(expect.objectContaining({ client_id: 'requesting-tab', intent: 'voice_read', args: expect.objectContaining({ text: 'FIRST\n\nFINAL TAIL', allowCloud: false, sourceRefs: ['provided:article'], coverage: { complete: false, warnings: ['source-partial'] } }) }), ctx);
+    expect(result.structuredContent).toMatchObject({ destination: 'requesting-tab', source: { coverage: { complete: false } } });
+    expect(push).not.toHaveBeenCalled();
+  });
+
+  it('refuses absent or cross-workspace destinations before dispatching speech', async () => {
+    for (const workspace of [null, 'other-workspace']) {
+      destination.workspace = workspace;
+      const result = await handler({ operation: 'read', content: { kind: 'text', text: 'secret' } } as never, ctx as never) as { data: unknown };
+      expect(result.data).toMatchObject({ ok: false, error: 'destination_unavailable' });
+    }
+    expect(uiDispatch.handler).not.toHaveBeenCalled();
+    expect(push).not.toHaveBeenCalled();
+  });
+
+  it('needs a requesting tab and sends controls only to that tab', async () => {
+    const missing = await handler({ operation: 'control', readingId: 'reading-1', action: 'stop' } as never, {} as never) as { data: unknown };
+    expect(missing.data).toMatchObject({ ok: false, error: 'requesting_destination_required' });
+    await handler({ operation: 'control', readingId: 'reading-1', action: 'pause' } as never, ctx as never);
+    expect(uiDispatch.handler).toHaveBeenCalledWith(expect.objectContaining({ client_id: 'requesting-tab', intent: 'voice_read_control', args: { readingId: 'reading-1', action: 'pause' } }), ctx);
+  });
+
   it('pushes the line AND persists it as an assistant voice_tts turn', async () => {
     await handler({ text: 'Paris.' } as never, {} as never);
     expect(push).toHaveBeenCalledWith('Paris.');

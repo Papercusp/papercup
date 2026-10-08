@@ -1,8 +1,93 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
-import { PRODUCT_TUTORIAL_LESSONS, PRODUCT_TUTORIAL_TARGETS, productTutorialLessonIds, productTutorialTargetAvailability } from '@papercusp/operator-core/lib/onboarding/product-tutorial-lesson';
+import { PRODUCT_TUTORIAL_LESSONS, PRODUCT_TUTORIAL_TARGETS, productTutorialLessonIds, productTutorialTargetAvailability, type ProductTutorialLesson } from '@papercusp/operator-core/lib/onboarding/product-tutorial-lesson';
 import type { AccountTutorialProgressRecord } from '@papercusp/operator-core/lib/onboarding/cloud-tutorial-progress';
+import { captureBrowserTelemetry } from '../browser-telemetry';
+
+type GuideCapture = typeof captureBrowserTelemetry;
+/** Advisory text only. This component has no progress or product mutator. */
+export function ProductTutorialAssistance({ account, lesson, onQuestion }: {
+  account: ProductTutorialAccount; lesson: ProductTutorialLesson; onQuestion?: () => void;
+}) {
+  const [question, setQuestion] = useState('');
+  const [answer, setAnswer] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const pending = useRef<AbortController | null>(null);
+  const timeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const identity = `${account.tenantId}:${account.userId}:${account.sessionId}:${lesson.id}`;
+  useEffect(() => {
+    setQuestion(''); setAnswer(null); setError(null); setBusy(false);
+    return () => { pending.current?.abort(); pending.current = null; if (timeout.current) clearTimeout(timeout.current); timeout.current = null; };
+  }, [identity]);
+  const cancel = () => { pending.current?.abort(); pending.current = null; if (timeout.current) clearTimeout(timeout.current); timeout.current = null; setBusy(false); };
+  async function ask() {
+    if (pending.current || !question.trim()) return;
+    const controller = new AbortController(); pending.current = controller;
+    setBusy(true); setError(null); setAnswer(null); onQuestion?.();
+    const timer = setTimeout(() => {
+      if (pending.current !== controller) return;
+      controller.abort(); pending.current = null; setBusy(false);
+      setError('AI Help is taking too long. The lesson instructions remain available.');
+    }, 15_000);
+    timeout.current = timer;
+    try {
+      const response = await fetch('/api/hosted/browser/onboarding/tutorial-help', { method: 'POST', credentials: 'same-origin',
+        headers: { 'content-type': 'application/json' }, signal: controller.signal,
+        body: JSON.stringify({ expectedScope: { tenantId: account.tenantId, userId: account.userId },
+          context: { version: 3, step: lesson.id, status: 'ready' }, question: question.trim() }) });
+      if (!response.ok) throw new Error('unavailable');
+      const body: unknown = await response.json();
+      if (pending.current !== controller || controller.signal.aborted) return;
+      const value = (body as { answer?: unknown })?.answer;
+      if (typeof value !== 'string' || !value.trim()) throw new Error('empty');
+      setAnswer(value.trim().slice(0, 2000));
+    } catch {
+      if (pending.current === controller && !controller.signal.aborted) setError('AI Help is unavailable. You can continue with the lesson instructions.');
+    } finally {
+      clearTimeout(timer);
+      if (timeout.current === timer) timeout.current = null;
+      if (pending.current === controller) { pending.current = null; setBusy(false); }
+    }
+  }
+  return <section aria-label="Ask about this lesson">
+    <p>Ask about this lesson. Keep credentials and private workspace content out of your question.</p>
+    <form onSubmit={event => { event.preventDefault(); void ask(); }}>
+      <label>Lesson question<textarea value={question} maxLength={2000} disabled={busy} onChange={event => setQuestion(event.target.value)} /></label>
+      <button disabled={busy || !question.trim()} type="submit">Ask AI Help</button>
+      {busy && <button type="button" onClick={cancel}>Cancel AI Help</button>}
+    </form>
+    {busy && <p role="status">Asking about this lesson…</p>}
+    {answer && <p aria-live="polite">{answer}</p>}{error && <p role="alert">{error}</p>}
+  </section>;
+}
+/** Observe saved learning records. Explanation review is never domain success. */
+export function createProductTutorialAnalytics(capture: GuideCapture = captureBrowserTelemetry) {
+  let previous: AccountTutorialProgressRecord | null = null;
+  let failed = false;
+  const emit = (action: string, lesson?: string) => {
+    if (lesson && !productTutorialLessonIds.has(lesson)) return;
+    try { void Promise.resolve(capture('product_tutorial', { lesson_id: 'product-guide', lesson_version: 3,
+      action, ...(lesson ? { lesson } : {}) })).catch(() => {}); } catch { /* Optional diagnostics. */ }
+  };
+  return {
+    help(lesson: string) { emit('help_requested', lesson); },
+    update(record: AccountTutorialProgressRecord, error = false) {
+      if (!previous && record.disposition === 'active') emit('start');
+      if (previous && previous.disposition !== record.disposition) {
+        emit({ active: 'resume', paused: 'pause', skipped: 'skip', closed: 'guide_closed' }[record.disposition]);
+      }
+      if (record.disposition === 'active' && (!previous || previous.disposition !== 'active' || previous.currentLessonId !== record.currentLessonId)) emit('lesson_displayed', record.currentLessonId);
+      if (previous) for (const lesson of record.reviewedLessonIds) {
+        if (!previous.reviewedLessonIds.includes(lesson)) emit('explanation_reviewed', lesson);
+      }
+      if (error && !failed) emit('waiting', record.currentLessonId);
+      if (!error && failed) emit('recovery', record.currentLessonId);
+      failed = error; previous = record;
+    },
+  };
+}
 
 const endpoint = '/api/hosted/browser/onboarding/tutorial-progress?scope=account&version=3';
 export interface ProductTutorialAccount { tenantId: string; userId: string; sessionId: string; workspaceId: string | null }
@@ -51,6 +136,15 @@ export function AccountProductTutorial({ account, sessionSignal = 'valid', child
   const pending = useRef<{ body: string; patch: Pick<AccountTutorialProgressRecord, 'disposition' | 'currentLessonId' | 'reviewedLessonIds'>; href?: string } | null>(null);
   const identity = `${account.tenantId}:${account.userId}:${account.sessionId}`;
   const currentLesson = record ? PRODUCT_TUTORIAL_LESSONS.find(lesson => lesson.id === record.currentLessonId) : null;
+  const analytics = useRef<{ identity: string; observer: ReturnType<typeof createProductTutorialAnalytics> } | null>(null);
+  useEffect(() => {
+    if (!analytics.current || analytics.current.identity !== identity) analytics.current = { identity, observer: createProductTutorialAnalytics() };
+    // Starting a retry clears the visible error before it has succeeded. Keep
+    // the failed observation until the save/read has actually settled.
+    if (!busy && !loading && record && validProductTutorialRecord(record, account) && sessionSignal === 'valid') {
+      analytics.current.observer.update(record, Boolean(error));
+    }
+  }, [identity, record, error, sessionSignal, busy, loading]);
 
   useEffect(() => {
     mounted.current = true;
@@ -100,6 +194,9 @@ export function AccountProductTutorial({ account, sessionSignal = 'valid', child
       }
       if (!response.ok) throw new Error('unavailable');
       pending.current = null;
+      // Observe the acknowledged record before navigation can unmount this
+      // component. The later effect sees the same record and emits no duplicate.
+      analytics.current?.observer.update(body.record);
       if (!mutation.href) requestedFocus.current = mutation.patch.disposition === 'active' ? 'heading' : 'resume';
       setRecord(body.record);
       if (mutation.href) { window.location.assign(mutation.href); return; }
@@ -116,7 +213,7 @@ export function AccountProductTutorial({ account, sessionSignal = 'valid', child
     const guideControls = record && <aside className="product-guide-return" aria-label="Product guide">
     <style>{PRODUCT_GUIDE_CSS}</style>
     <button ref={attachResume} disabled={busy} onClick={() => save({ ...record, disposition: 'active' })}>{record.disposition === 'closed' ? 'Review product guide' : 'Resume product guide'}</button>
-    {currentLesson && <details><summary>Help with {currentLesson.title}</summary><p>{currentLesson.help}</p><a href="/docs">Read public Docs</a></details>}
+    {currentLesson && <details onToggle={event => { if (event.currentTarget.open) analytics.current?.observer.help(currentLesson.id); }}><summary>Help with {currentLesson.title}</summary><p>{currentLesson.help}</p><a href="/docs">Read public Docs</a><ProductTutorialAssistance key={identity + currentLesson.id} account={account} lesson={currentLesson} onQuestion={() => analytics.current?.observer.help(currentLesson.id)} /></details>}
     {error && <p role="alert">{error}</p>}</aside>;
     return typeof children === 'function' ? children(guideControls) : <>{guideControls}{children}</>;
   }
@@ -142,7 +239,7 @@ export function AccountProductTutorial({ account, sessionSignal = 'valid', child
           <a href={href} onClick={event => { event.preventDefault(); if (!busy) void save({ ...record, disposition: 'paused' }, href); }}>Open {target.id}</a>}</li>;
       })}</ul> : <p>You can read this lesson before selecting a workspace. The navigation lesson shows where the product controls live.</p>}
     </section>
-    <details><summary>Help with this lesson</summary><p>{lesson.help}</p><a href="/docs">Read public Docs</a>{' · '}<a href="/?app=support" onClick={event => { event.preventDefault(); if (!busy) void save({ ...record, disposition: 'paused' }, '/?app=support'); }}>Open Support</a></details>
+    <details onToggle={event => { if (event.currentTarget.open) analytics.current?.observer.help(lesson.id); }}><summary>Help with this lesson</summary><p>{lesson.help}</p><a href="/docs">Read public Docs</a>{' · '}<a href="/?app=support" onClick={event => { event.preventDefault(); if (!busy) void save({ ...record, disposition: 'paused' }, '/?app=support'); }}>Open Support</a><ProductTutorialAssistance key={identity + lesson.id} account={account} lesson={lesson} onQuestion={() => analytics.current?.observer.help(lesson.id)} /></details>
     <p role="status">{busy ? 'Saving your choice…' : `${record.reviewedLessonIds.length} explanations reviewed. Product tasks are verified separately.`}</p>
     {error && <p role="alert">{error}</p>}{pending.current && error && <button disabled={busy} onClick={() => save(pending.current!.patch, pending.current!.href)}>Retry saving choice</button>}
     <div className="product-guide-actions">

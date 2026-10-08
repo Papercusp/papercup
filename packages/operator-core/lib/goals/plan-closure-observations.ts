@@ -62,6 +62,12 @@ export type PlanClosureObservationRead =
   | { planSlug: string; status: 'fresh'; gate: PlanClosureGateFields; observedAt: string }
   | { planSlug: string; status: 'stale' | 'absent' | 'ambiguous'; detail: string };
 
+export interface QualifiedPlanClosureRef { planSlug: string; harnessSlug: string }
+type PlanClosureSubject = string | QualifiedPlanClosureRef;
+export function planClosureSubjectKey(subject: PlanClosureSubject): string {
+  return typeof subject === 'string' ? subject : `plan:${subject.harnessSlug}/${subject.planSlug}`;
+}
+
 /**
  * Whether a gate call answers the same question the closure read asks
  * (`evaluatePlanAcceptanceGate(planSlug)`). `force`, `gradingRecruitment` and caller
@@ -105,7 +111,7 @@ async function readFingerprintRows(sql: Sql, workspaceId: string, planSlugs: rea
        WHERE p.workspace_id = ${workspaceId}
          AND p.plan_slug = ANY(${slugs}::text[])
     ), rubric AS (
-      SELECT r.template_data ->> 'subjectPlan' AS subject_plan, r.plan_slug AS rubric_id, r.version
+      SELECT r.template_data ->> 'subjectPlan' AS subject_plan, r.harness_slug, r.plan_slug AS rubric_id, r.version
         FROM harness_shared.harness_plans AS r
        WHERE r.workspace_id = ${workspaceId}
          AND r.template = 'rubric'
@@ -126,6 +132,7 @@ async function readFingerprintRows(sql: Sql, workspaceId: string, planSlugs: rea
                  SELECT max(a.audit_seq)::text
                    FROM harness_shared.plan_audits AS a
                   WHERE a.workspace_id = ${workspaceId}
+                    AND a.harness_slug = s.harness_slug
                     AND a.plan_slug = s.plan_slug),
                'specBindings', (
                  SELECT max(b.id)::text || ':' || (count(*) FILTER (WHERE b.retracted_at IS NOT NULL))::text
@@ -136,20 +143,20 @@ async function readFingerprintRows(sql: Sql, workspaceId: string, planSlugs: rea
                'rubrics', COALESCE((
                  SELECT jsonb_agg(r.rubric_id || '@' || r.version::text ORDER BY r.rubric_id)
                    FROM rubric AS r
-                  WHERE r.subject_plan = s.plan_slug), '[]'::jsonb),
+                  WHERE r.subject_plan = s.plan_slug AND r.harness_slug = s.harness_slug), '[]'::jsonb),
                'scorecardWatermark', (
                  SELECT floor(extract(epoch FROM max(GREATEST(sc.created_at, sc.updated_at))) * 1000000)::bigint::text
                    FROM harness_shared.engineer_issues AS sc
                   WHERE sc.workspace_id = ${workspaceId}
                     AND sc.payload -> 'observation' ->> 'rubricRef' IN (
-                      SELECT r.rubric_id FROM rubric AS r WHERE r.subject_plan = s.plan_slug)),
+                      SELECT r.rubric_id FROM rubric AS r WHERE r.subject_plan = s.plan_slug AND r.harness_slug = s.harness_slug)),
                'metaScorecardWatermark', (
                  SELECT floor(extract(epoch FROM max(GREATEST(sc.created_at, sc.updated_at))) * 1000000)::bigint::text
                    FROM harness_shared.engineer_issues AS sc
                   WHERE sc.workspace_id = ${workspaceId}
                     AND sc.payload -> 'observation' ->> 'rubricRef' = ${META_ACCEPTANCE_RUBRIC_ID}
                     AND sc.payload -> 'observation' -> 'subject' ->> 'ref' IN (
-                      SELECT r.rubric_id FROM rubric AS r WHERE r.subject_plan = s.plan_slug))
+                      SELECT r.rubric_id FROM rubric AS r WHERE r.subject_plan = s.plan_slug AND r.harness_slug = s.harness_slug))
              ) AS fingerprint
         FROM subject AS s
     )
@@ -234,15 +241,23 @@ export function judgePlanClosureObservation(
 export async function readPlanClosureObservations(args: {
   workspaceId: string;
   planSlugs: readonly string[];
+  /** Explicit qualified refs do not inherit bare-slug ambiguity. */
+  planRefs?: readonly QualifiedPlanClosureRef[];
   sql?: Sql;
   now?: Date;
 }): Promise<Map<string, PlanClosureObservationRead>> {
   const sql = args.sql ?? getOrgPg().sql;
-  const rows = await readFingerprintRows(sql, args.workspaceId, args.planSlugs);
+  const rows = await readFingerprintRows(sql, args.workspaceId,
+    [...args.planSlugs, ...(args.planRefs ?? []).map((ref) => ref.planSlug)]);
   const now = args.now ?? new Date();
   const out = new Map<string, PlanClosureObservationRead>();
   for (const planSlug of new Set(args.planSlugs)) {
     out.set(planSlug, judgePlanClosureObservation(planSlug, rows.filter((row) => row.plan_slug === planSlug), now));
+  }
+  for (const ref of args.planRefs ?? []) {
+    const qualifiedRows = rows.filter((row) => row.plan_slug === ref.planSlug && row.harness_slug === ref.harnessSlug)
+      .map((row) => ({ ...row, matches: 1 }));
+    out.set(planClosureSubjectKey(ref), judgePlanClosureObservation(ref.planSlug, qualifiedRows, now));
   }
   return out;
 }
@@ -310,21 +325,24 @@ const refreshState = pinModuleState('@papercusp/operator-core.planClosureObserva
  * most one evaluation per plan runs per process; the gate's own write refreshes the row.
  */
 export function refreshPlanClosureObservations(
-  planSlugs: readonly string[],
-  evaluate: (planSlug: string) => Promise<unknown> = async (planSlug) => {
+  planSlugs: readonly PlanClosureSubject[],
+  evaluate: (planSlug: string, harnessSlug?: string) => Promise<unknown> = async (planSlug, harnessSlug) => {
     const { evaluatePlanAcceptanceGate } = await import('../plan-acceptance-gate');
-    return evaluatePlanAcceptanceGate(planSlug);
+    return evaluatePlanAcceptanceGate(planSlug, harnessSlug ? { harnessSlug } : {});
   },
 ): string[] {
   const started: string[] = [];
-  for (const planSlug of new Set(planSlugs)) {
-    if (refreshState.inFlight.has(planSlug)) continue;
-    refreshState.inFlight.add(planSlug);
-    started.push(planSlug);
+  for (const subject of planSlugs) {
+    const key = planClosureSubjectKey(subject);
+    const planSlug = typeof subject === 'string' ? subject : subject.planSlug;
+    const harnessSlug = typeof subject === 'string' ? undefined : subject.harnessSlug;
+    if (refreshState.inFlight.has(key)) continue;
+    refreshState.inFlight.add(key);
+    started.push(key);
     void Promise.resolve()
-      .then(() => evaluate(planSlug))
+      .then(() => evaluate(planSlug, harnessSlug))
       .catch(() => undefined)
-      .finally(() => refreshState.inFlight.delete(planSlug));
+      .finally(() => refreshState.inFlight.delete(key));
   }
   return started;
 }

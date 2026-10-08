@@ -178,11 +178,71 @@ describe('managed-pty integration evidence isolation', () => {
       await vi.waitFor(() => expect(readFileSync(inputFile, 'utf8')).toContain('BEGIN_ACCEPTED_OPERATION'));
       expect(onRespawn.mock.calls[0][0]).toBe(nativeId);
       expect(await done).toBe(0);
+      expect(readFileSync(eventLogPathForOwner(ownerId), 'utf8'))
+        .not.toContain('codex-starting-stuck-snapshot');
     } finally {
       await done.catch(() => undefined);
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it.each([
+    { phase: 'native binding', reason: 'successor-native-id-missing', label: 'respawn binding' },
+    { phase: 'backend frame', reason: 'codex-backend-frame-not-observed', label: 'launch kickoff' },
+  ])('preserves startup evidence when the $phase times out before first-turn injection (WI-10007305)', async ({ phase, reason, label }) => {
+    const root = mkdtempSync(join(tmpdir(), 'psu-missing-native-snapshot-'));
+    const codexHome = join(root, 'codex-home');
+    const inputFile = join(root, 'input.txt');
+    const ownerId = `su-missing-native-${process.pid}-${Math.floor(performance.now())}`;
+    mkdirSync(join(codexHome, 'log'), { recursive: true });
+    writeFileSync(join(codexHome, 'log', 'codex-tui.log'), 'isolated startup phase did not assign a native id\n');
+    const onRespawn = vi.fn();
+    const { io } = fakeIo();
+    const initialOutput = phase === 'native binding'
+      ? 'model: GPT-6.1-Sol medium\nReady · GPT-6.1-Sol medium · Context 100% left\n'
+      : '\x1b[6n│ >_ OpenAI Codex (v0.156.1) │\n│ model: loading /model to change │\n› Ask Codex to do anything\n';
+    const done = hostThroughPty({
+      command: execPath,
+      args: ['-e', "const fs=require('fs');process.stdin.setRawMode?.(true);process.stdin.setEncoding('utf8');process.stdout.write(process.env.INITIAL_OUTPUT);process.stdin.on('data',d=>fs.appendFileSync(process.env.INPUT_FILE,d));setTimeout(()=>process.exit(0),1500);"],
+      cwd: root,
+      env: {
+        ...hermeticEnv(), PAPERCUSP_AGENT: 'codex', CODEX_HOME: codexHome,
+        INPUT_FILE: inputFile, INITIAL_OUTPUT: initialOutput,
+        PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '500',
+        PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '50',
+        PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '10',
+      },
+      ownerId, io, bridgeTty: false,
+      kickoff: '⟦turn-origin:fleet-kickoff nonce:abcdef0123456789⟧\nMUST_REMAIN_UNSUBMITTED',
+      resolveRespawnNativeId: phase === 'native binding' ? () => null : undefined,
+      onRespawn, signalSource: new EventEmitter(), onExit: () => undefined,
+    });
+    try {
+      await vi.waitFor(() => {
+        const events = readFileSync(eventLogPathForOwner(ownerId), 'utf8')
+          .trim().split('\n').map(line => JSON.parse(line));
+        expect(events).toContainEqual(expect.objectContaining({
+          kind: phase === 'native binding' ? 'respawn-binding-unconfirmed' : 'startup-turn-dropped', reason,
+        }));
+        const snapshot = events.find(event => event.kind === 'codex-starting-stuck-snapshot');
+        expect(snapshot).toMatchObject({
+          label, reason,
+          log: { present: true, tail: ['isolated startup phase did not assign a native id'] },
+        });
+        expect(snapshot.rootPid).toBe(JSON.parse(readFileSync(metaPathFor(ownerId), 'utf8')).ptyPid);
+        if (process.platform === 'linux') {
+          expect(snapshot.procs).toContainEqual(expect.objectContaining({ pid: snapshot.rootPid }));
+        }
+      }, { timeout: 1000 });
+      expect(existsSync(inputFile) ? readFileSync(inputFile, 'utf8') : '')
+        .not.toContain('MUST_REMAIN_UNSUBMITTED');
+      expect(onRespawn).not.toHaveBeenCalled();
+      expect(await done).toBe(0);
+    } finally {
+      await done.catch(() => undefined);
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 5000);
 
   it('excludes caller launch state and native homes while preserving explicit fixture inputs', () => {
     const source = {

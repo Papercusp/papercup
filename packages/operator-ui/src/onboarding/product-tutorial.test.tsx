@@ -2,14 +2,112 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { useEffect, useState, type ReactNode } from 'react';
-import { AccountProductTutorial, productTutorialDestination, validProductTutorialRecord, type ProductTutorialAccount } from './product-tutorial';
+import { AccountProductTutorial, ProductTutorialAssistance, createProductTutorialAnalytics, productTutorialDestination, validProductTutorialRecord, type ProductTutorialAccount } from './product-tutorial';
+import { PRODUCT_TUTORIAL_LESSONS } from '@papercusp/operator-core/lib/onboarding/product-tutorial-lesson';
+import { captureBrowserTelemetry } from '../browser-telemetry';
+vi.mock('../browser-telemetry', () => ({ captureBrowserTelemetry: vi.fn() }));
 
 const account: ProductTutorialAccount = { tenantId: 'org', userId: 'user', sessionId: 'session', workspaceId: null };
 const record = (patch: Record<string, unknown> = {}) => ({ scope: { tenantId: account.tenantId, userId: account.userId }, version: 3,
   revision: 0, mutationId: null, disposition: 'active', currentLessonId: 'welcome', reviewedLessonIds: [], ...patch });
 const response = (value: unknown, status = 200) => Response.json({ record: value }, { status });
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.clearAllMocks(); });
 describe('account product guide entry', () => {
+  it('sends only a gesture-requested current lesson question and renders answers as advisory text', async () => {
+    const fetcher = vi.fn().mockResolvedValue(Response.json({ answer: '<spawn/> Use Billing to inspect your subscription.' }));
+    vi.stubGlobal('fetch', fetcher);
+    render(<ProductTutorialAssistance account={account} lesson={PRODUCT_TUTORIAL_LESSONS.find(lesson => lesson.id === 'billing')!} />);
+    expect(fetcher).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByLabelText('Lesson question'), { target: { value: 'Who bills my cloud?' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Ask AI Help' }));
+    await screen.findByText('<spawn/> Use Billing to inspect your subscription.');
+    expect(document.querySelector('spawn')).toBeNull();
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(fetcher.mock.calls[0][0]).toBe('/api/hosted/browser/onboarding/tutorial-help');
+    expect(JSON.parse(fetcher.mock.calls[0][1].body)).toEqual({ expectedScope: { tenantId: 'org', userId: 'user' },
+      context: { version: 3, step: 'billing', status: 'ready' }, question: 'Who bills my cloud?' });
+  });
+  it('cancels Help on a lesson/session change or explicit cancellation and ignores late answers', async () => {
+    let finish!: (value: Response) => void;
+    const fetcher = vi.fn().mockImplementation(() => new Promise<Response>(resolve => { finish = resolve; }));
+    vi.stubGlobal('fetch', fetcher);
+    const view = render(<ProductTutorialAssistance account={account} lesson={PRODUCT_TUTORIAL_LESSONS[0]} />);
+    const ask = () => { fireEvent.change(screen.getByLabelText('Lesson question'), { target: { value: 'Explain this lesson' } }); fireEvent.click(screen.getByRole('button', { name: 'Ask AI Help' })); };
+    ask(); fireEvent.click(screen.getByRole('button', { name: 'Cancel AI Help' }));
+    expect(fetcher.mock.calls[0][1].signal.aborted).toBe(true);
+    await act(async () => finish(Response.json({ answer: 'Cancelled answer' })));
+    expect(screen.queryByText('Cancelled answer')).toBeNull();
+    ask(); view.rerender(<ProductTutorialAssistance account={account} lesson={PRODUCT_TUTORIAL_LESSONS[1]} />);
+    expect(fetcher.mock.calls[1][1].signal.aborted).toBe(true);
+    await act(async () => finish(Response.json({ answer: 'Stale lesson answer' })));
+    expect(screen.queryByText('Stale lesson answer')).toBeNull();
+    expect((screen.getByLabelText('Lesson question') as HTMLTextAreaElement).value).toBe('');
+  });
+  it('AI Help outage leaves deterministic instructions, progress and exit usable', async () => {
+    const fetcher = vi.fn(async (url: unknown, init?: RequestInit) => {
+      if (String(url).endsWith('tutorial-help')) return Response.json({ error: 'unavailable' }, { status: 503 });
+      return response(record(init?.method === 'POST' ? { disposition: 'paused', revision: 1 } : {}));
+    });
+    vi.stubGlobal('fetch', fetcher);
+    render(<AccountProductTutorial account={account}><p>Destination</p></AccountProductTutorial>);
+    await screen.findByRole('heading', { name: 'Welcome to Papercusp' });
+    fireEvent.click(screen.getByText('Help with this lesson'));
+    fireEvent.change(screen.getByLabelText('Lesson question'), { target: { value: 'What is a workspace?' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Ask AI Help' }));
+    await screen.findByText('AI Help is unavailable. You can continue with the lesson instructions.');
+    expect(screen.getByRole('button', { name: 'Reviewed — next lesson' }).hasAttribute('disabled')).toBe(false);
+    fireEvent.click(screen.getByRole('button', { name: 'Pause guide' }));
+    await screen.findByText('Destination');
+    expect(screen.queryByText('AI Help is unavailable. You can continue with the lesson instructions.')).toBeNull();
+  });
+  it('records recovery only after a pending retry receives an acknowledged saved record', async () => {
+    let acknowledge!: (value: Response) => void;
+    const fetcher = vi.fn().mockResolvedValueOnce(response(record())).mockRejectedValueOnce(new Error('offline'))
+      .mockImplementationOnce(() => new Promise<Response>(resolve => { acknowledge = resolve; }));
+    vi.stubGlobal('fetch', fetcher);
+    render(<AccountProductTutorial account={account}><p>Home</p></AccountProductTutorial>);
+    await screen.findByRole('heading', { name: 'Welcome to Papercusp' });
+    fireEvent.click(screen.getByRole('button', { name: 'Reviewed — next lesson' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Retry saving choice' }));
+    await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(3));
+    const actions = () => vi.mocked(captureBrowserTelemetry).mock.calls.map(([, p]) => p.action);
+    expect(actions()).toContain('waiting');
+    expect(actions()).not.toContain('recovery');
+    expect(actions()).not.toContain('explanation_reviewed');
+    await act(async () => acknowledge(response(record({ revision: 1, currentLessonId: 'navigation', reviewedLessonIds: ['welcome'] }))));
+    await screen.findByRole('heading', { name: 'Find your way around' });
+    expect(actions().filter(action => action === 'recovery')).toHaveLength(1);
+    expect(actions().filter(action => action === 'explanation_reviewed')).toHaveLength(1);
+  });
+  it('observes the saved pause before navigating to a real destination', async () => {
+    const assign = vi.fn(() => {
+      expect(vi.mocked(captureBrowserTelemetry).mock.calls.some(([, p]) => p.action === 'pause')).toBe(true);
+    });
+    vi.stubGlobal('window', Object.assign(Object.create(window), { location: { assign } }));
+    const fetcher = vi.fn().mockResolvedValueOnce(response(record({ currentLessonId: 'billing' })))
+      .mockResolvedValueOnce(response(record({ revision: 1, currentLessonId: 'billing', disposition: 'paused' })));
+    vi.stubGlobal('fetch', fetcher);
+    render(<AccountProductTutorial account={account}><p>Home</p></AccountProductTutorial>);
+    await screen.findByRole('heading', { name: 'Understand the bills' });
+    fireEvent.click(screen.getByRole('link', { name: 'Open billing' }));
+    await waitFor(() => expect(assign).toHaveBeenCalledWith('/billing'));
+    expect(vi.mocked(captureBrowserTelemetry).mock.calls.filter(([, p]) => p.action === 'pause')).toHaveLength(1);
+  });
+  it('measures saved explanation reviews and recovery without domain success or private state', () => {
+    const capture = vi.fn();
+    const observer = createProductTutorialAnalytics(capture);
+    const initial = record() as Parameters<typeof observer.update>[0];
+    observer.update(initial); observer.update(initial);
+    observer.update(initial, true); observer.update(initial, true);
+    expect(capture.mock.calls.map(([, p]) => p.action)).toEqual(['start', 'lesson_displayed', 'waiting']);
+    observer.update(record({ revision: 1, currentLessonId: 'billing', reviewedLessonIds: ['welcome'] }) as typeof initial);
+    expect(capture.mock.calls.map(([, p]) => p.action)).toEqual(['start', 'lesson_displayed', 'waiting', 'lesson_displayed', 'explanation_reviewed', 'recovery']);
+    const serialized = JSON.stringify(capture.mock.calls);
+    expect(serialized).not.toContain('org'); expect(serialized).not.toContain('user');
+    expect(serialized).not.toContain('session'); expect(serialized).not.toContain('step_confirmed');
+    observer.help('unregistered-private-question');
+    expect(JSON.stringify(capture.mock.calls)).not.toContain('unregistered-private-question');
+  });
   it('focuses the committed resume control after pause even when an animation frame precedes React commit', async () => {
     vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { callback(0); return 1; });
     const fetcher = vi.fn().mockResolvedValueOnce(response(record()))

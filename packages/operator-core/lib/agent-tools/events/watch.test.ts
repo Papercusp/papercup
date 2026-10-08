@@ -312,6 +312,38 @@ describe('WI-4014 Part 2: targetKind routing (wake:false only)', () => {
   });
 });
 
+describe('EI-25370968486651341: payload-filter validation before registration', () => {
+  const validate = compileJsonSchema(toArgsJsonSchema('watch:create', watch.args as never));
+
+  it.each([
+    { all: [{ harness: 'papercusp' }, 'note', 'prose'] },
+    { any: [false] },
+    { all: [{ not: { some: { require: 1, of: [null] } } }] },
+    { some: { require: 0, of: [{ kind: 'bug' }] } },
+  ])('rejects malformed recursive filters in both the callable and published schemas: %j', (payload_filter) => {
+    const args = { pattern: 'work-item:claimable', wake: true, once: false, payload_filter };
+    expect(watch.args.safeParse(args).success).toBe(false);
+    expect(validate(args)).toBe(false);
+    expect(registerAwait).not.toHaveBeenCalled();
+  });
+
+  it('accepts and registers the scoped fleet filter without changing its contents', async () => {
+    const payload_filter = {
+      all: [
+        { harness: { equals: 'papercusp' } },
+        { any: [{ kind: { in: ['bug', 'change', 'task'] } }, { id: 'WI-1' }] },
+        { not: { state: 'done' } },
+      ],
+    };
+    const args = { pattern: 'work-item:claimable', wake: true, once: false, payload_filter };
+    expect(watch.args.safeParse(args).success).toBe(true);
+    expect(validate(args)).toBe(true);
+    const out = await call(args);
+    expect(out.watch.payload_filter).toEqual(payload_filter);
+    expect(vi.mocked(registerAwait).mock.calls[0][0].payloadFilter).toEqual(payload_filter);
+  });
+});
+
 describe('P-008 predicate watch routing', () => {
   const predicate = { tool: 'work_items:list', path: 'counts.open', op: 'gt', value: 5 };
 

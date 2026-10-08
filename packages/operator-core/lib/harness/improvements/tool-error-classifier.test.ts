@@ -232,6 +232,18 @@ describe('classifyToolError — real-corpus regression (P-011)', () => {
       'error',
       'Code-run script treated nested activity:recent typed output as an MCP content envelope and failed with structured_result_shape; the returned activity data is in the typed root.',
     )).toBe('caller');
+    const paraphrasedDiagnostic =
+      'A code:run script reading testing:runs assumed an MCP content/text envelope; testing:runs returned a typed structured root and the script failed before producing its distilled summary.';
+    expect(classifyToolError(
+      'structured_result_shape',
+      'error',
+      paraphrasedDiagnostic,
+    )).toBe('caller');
+    expect(classifyToolError(
+      'handler_error',
+      'error',
+      paraphrasedDiagnostic,
+    )).toBe('structural');
     expect(classifyToolError(
       'handler_error',
       'error',

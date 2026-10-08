@@ -355,6 +355,12 @@ export const TOOL_ERROR_CORPUS: readonly ToolErrorCorpusRow[] = [
     note: 'code:run typed-root output was read as an MCP content envelope; structured_result_shape is a caller read-shape diagnostic (EI-25223020018710222)',
   },
   {
+    n: 1, errorCode: 'structured_result_shape', status: 'error',
+    message: 'A code:run script reading testing:runs assumed an MCP content/text envelope; testing:runs returned a typed structured root and the script failed before producing its distilled summary.',
+    expectedClass: 'caller',
+    note: 'the diagnostic code identifies a typed-root field-access error even when the report wording omits the token (EI-25373728404775168)',
+  },
+  {
     n: 1, errorCode: 'compile_error', status: 'compile_error',
     message: 'compile_error: Invalid regular expression flags while compiling the submitted code:run script',
     expectedClass: 'caller',

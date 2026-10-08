@@ -11,6 +11,11 @@ beforeEach(() => {
   vi.resetModules(); for (const mock of Object.values(sdk)) mock.mockReset(); enabled = false;
   vi.stubGlobal('fetch', vi.fn(async () => Response.json({ enabled, host: 'https://telemetry.invalid', project_key: 'public-key', distinct_id: 'anonymous-install' })));
 });
+beforeEach(async () => {
+  const { pinModuleState } = await import('@papercusp/module-singleton');
+  const state = pinModuleState('@papercusp/operator-ui.browser-telemetry', () => ({ client: null, initializing: null }));
+  state.client = null; state.initializing = null;
+});
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 const scope = { tenantId: 'private-tenant', userId: 'private-user', workspaceId: 'private-workspace' };
 async function mountGuide() {
@@ -25,6 +30,42 @@ async function mountGuide() {
   return render(createElement(Fixture));
 }
 describe('Guide uses the existing PostHog consent boundary', () => {
+  it('measures saved full-product guide progress only through the existing consent boundary', async () => {
+    const { AccountProductTutorial } = await import('@papercusp/operator-ui/onboarding');
+    const account = { tenantId: 'private-tenant', userId: 'private-user', sessionId: 'private-session', workspaceId: null };
+    const progress = { scope: { tenantId: account.tenantId, userId: account.userId }, version: 3, revision: 0,
+      mutationId: null, disposition: 'active', currentLessonId: 'welcome', reviewedLessonIds: [] as string[] };
+    let failSave = false;
+    vi.mocked(fetch).mockImplementation(async (url, init) => {
+      if (String(url).includes('telemetry-config')) return Response.json({ enabled, host: 'https://telemetry.invalid', project_key: 'public-key' });
+      if (init?.method === 'POST') {
+        if (failSave) throw new Error('offline');
+        Object.assign(progress, JSON.parse(String(init.body)), { revision: progress.revision + 1 });
+      }
+      return Response.json({ record: { ...progress } });
+    });
+    render(createElement(AccountProductTutorial, { account, children: createElement('p', null, 'Destination') }));
+    await screen.findByRole('heading', { name: 'Welcome to Papercusp' });
+    await act(async () => { await Promise.resolve(); });
+    expect(sdk.init).not.toHaveBeenCalled(); expect(sdk.capture).not.toHaveBeenCalled();
+    enabled = true; failSave = true;
+    fireEvent.click(screen.getByRole('button', { name: 'Reviewed — next lesson' }));
+    await screen.findByRole('button', { name: 'Retry saving choice' });
+    await waitFor(() => expect(sdk.capture.mock.calls.some(([, p]) => p.action === 'waiting')).toBe(true));
+    expect(sdk.capture.mock.calls.some(([, p]) => p.action === 'explanation_reviewed')).toBe(false);
+    failSave = false; fireEvent.click(screen.getByRole('button', { name: 'Retry saving choice' }));
+    await screen.findByRole('heading', { name: 'Find your way around' });
+    await waitFor(() => expect(sdk.capture.mock.calls.some(([, p]) => p.action === 'explanation_reviewed' && p.lesson === 'welcome')).toBe(true));
+    expect(sdk.capture.mock.calls.some(([, p]) => p.action === 'recovery')).toBe(true);
+    expect(sdk.capture.mock.calls.every(([event]) => event === 'product_tutorial')).toBe(true);
+    for (const value of Object.values(account).filter(Boolean)) expect(JSON.stringify(sdk.capture.mock.calls)).not.toContain(value);
+    expect(sdk.startSessionRecording).not.toHaveBeenCalled(); expect(sdk.stopSessionRecording).not.toHaveBeenCalled();
+    enabled = false; sdk.capture.mockClear();
+    fireEvent.click(screen.getByRole('button', { name: 'Pause guide' }));
+    await screen.findByText('Destination');
+    await act(async () => { await Promise.resolve(); });
+    expect(sdk.capture).not.toHaveBeenCalled();
+  });
   it('sends no tutorial events or SDK initialization while telemetry is disabled, and keeps the Guide usable', async () => {
     await mountGuide(); fireEvent.click(screen.getByRole('button', { name: 'Confirm product connection' }));
     await act(async () => { await Promise.resolve(); });

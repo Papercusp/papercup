@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { authorizeTutorialHelp, tutorialHelpContext, publicTutorialRecovery, TUTORIAL_RECOVERY } from './cloud-tutorial-help';
+import { authorizeTutorialHelp, authorizeProductTutorialHelp, tutorialHelpContext, publicTutorialRecovery, TUTORIAL_RECOVERY } from './cloud-tutorial-help';
 const scope = { tenantId: 'tenant-a', userId: 'user-a', workspaceId: 'workspace-a' };
 const request = { expectedScope: scope, context: { step: 'workspace', status: 'waiting' }, question: 'Why is provisioning taking time?' };
 // Assemble credential shaped negative fixtures at runtime so git-sync's content guard
@@ -7,6 +7,24 @@ const request = { expectedScope: scope, context: { step: 'workspace', status: 'w
 const apiKeyQuestion = (): string => ['api_key=sk-', 'secretvalue123456'].join('');
 const privateKeyHeader = (): string => ['-----BEGIN RSA', 'PRIVATE KEY-----'].join(' ');
 describe('minimal authorized lesson help', () => {
+  it('grounds an account lesson without a selected workspace and rejects foreign or expanded context', () => {
+    const accountScope = { tenantId: scope.tenantId, userId: scope.userId };
+    const product = { expectedScope: accountScope, context: { version: 3, step: 'billing', status: 'ready' }, question: 'Who bills provider usage?' };
+    const accepted = authorizeProductTutorialHelp(accountScope, product);
+    const context = JSON.parse(tutorialHelpContext(accepted.context));
+    expect(context.title).toBe('Understand the bills');
+    expect(context.details).toContain('BYOC');
+    expect(context.instruction).toContain('learning progress only');
+    for (const id of Object.values(scope)) expect(JSON.stringify(context)).not.toContain(id);
+    for (const patch of [{ tenantId: 'foreign' }, { userId: 'foreign' }, { workspaceId: 'forged' }]) {
+      expect(() => authorizeProductTutorialHelp(accountScope, { ...product, expectedScope: { ...accountScope, ...patch } })).toThrow();
+    }
+    for (const patch of [{ step: 'unknown' }, { transcript: 'private' }, { complete: true }]) {
+      expect(() => authorizeProductTutorialHelp(accountScope, { ...product, context: { ...product.context, ...patch } })).toThrow();
+    }
+    expect(() => authorizeProductTutorialHelp(accountScope, { ...product, question: apiKeyQuestion() })).toThrow('tutorial_secret_rejected');
+    expect(() => authorizeTutorialHelp(scope, product)).toThrow();
+  });
   it('grounds v2 recovery in public allowlisted guidance without raw diagnostics or provider identity', () => {
     for (const category of Object.keys(TUTORIAL_RECOVERY)) {
       const accepted = authorizeTutorialHelp(scope, { ...request, context: { step: 'practice', status: 'error', version: 2, recoveryCategory: category } });

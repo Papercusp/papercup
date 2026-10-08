@@ -890,7 +890,7 @@ export interface GoalPortfolioBrief {
     /** Present only for an opted-in collection; omitted preserves legacy consumers. */
     selected?: boolean;
   }>;
-  collection?: { source: 'manual' | 'active-workspace-plans'; policyVersion: number;
+  collection?: { source: 'manual' | 'active-workspace-plans' | 'unknown'; policyVersion: number;
     available: boolean; reason?: string };
   pots: Array<{
     harness: string;
@@ -1457,7 +1457,7 @@ function parsePortfolioWorklist(
   raw: unknown,
   now: Date,
   /**
-   * Closure verdicts by plan SLUG, for the second pass. Absent on the first pass
+   * Closure verdicts by qualified plan ref, for the second pass. Absent on the first pass
    * by design: the parser cannot know which plans are administratively complete
    * until it has compiled them, and resolving closure for a plan that still has
    * open work would pay for the acceptance gate to tell us nothing.
@@ -1543,7 +1543,7 @@ function parsePortfolioWorklist(
           actionableItemId: laneRow ? (portfolioString(laneRow.id) ?? 'unknown') : null,
           source: row.placement,
           now,
-          closure: closures?.get(slug) ?? null,
+          closure: closures?.get(harness ? `plan:${harness}/${slug}` : slug) ?? null,
           ownerWalledItemIds,
         }),
       },
@@ -1663,12 +1663,16 @@ export function renderGoalPortfolioBrief(brief: GoalPortfolioBrief): string {
  * arrived at without recording that a measurement was attempted and failed.
  */
 async function resolveWorklistClosures(
-  slugs: readonly string[],
+  plans: readonly { slug: string; harness: string | null }[],
   degradedReasons: string[],
   scope: { workspaceId: string; sql: Sql; now?: Date },
 ): Promise<Map<string, PlanClosureVerdict>> {
   const closures = new Map<string, PlanClosureVerdict>();
-  if (slugs.length === 0) return closures;
+  if (plans.length === 0) return closures;
+  const subjects = plans.map((plan) => plan.harness
+    ? { planSlug: plan.slug, harnessSlug: plan.harness } : plan.slug);
+  const keyOf = (subject: typeof subjects[number]) => typeof subject === 'string'
+    ? subject : `plan:${subject.harnessSlug}/${subject.planSlug}`;
 
   const [{ readPlanClosureObservations, refreshPlanClosureObservations }, { resolvePlanClosure }] = await Promise.all([
     import('./goals/plan-closure-observations'),
@@ -1681,29 +1685,35 @@ async function resolveWorklistClosures(
   // re-evaluation refreshes it. That is an expected transition, not a degraded read.
   let observations: Awaited<ReturnType<typeof readPlanClosureObservations>>;
   try {
-    observations = await readPlanClosureObservations({ workspaceId: scope.workspaceId, planSlugs: slugs, sql: scope.sql, now: scope.now });
+    observations = await readPlanClosureObservations({ workspaceId: scope.workspaceId,
+      planSlugs: subjects.filter((subject): subject is string => typeof subject === 'string'),
+      planRefs: subjects.filter((subject): subject is { planSlug: string; harnessSlug: string } => typeof subject !== 'string'),
+      sql: scope.sql, now: scope.now });
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
-    for (const planSlug of slugs) {
+    for (const subject of subjects) {
+      const planSlug = typeof subject === 'string' ? subject : subject.planSlug;
       degradedReasons.push(`closure read failed for ${planSlug}: ${detail}`);
       closures.set(
-        planSlug,
+        keyOf(subject),
         resolvePlanClosure({ planSlug, status: 'unreadable', failure: { code: 'gate-unreadable', detail } }),
       );
     }
     return closures;
   }
-  const refresh: string[] = [];
-  for (const planSlug of slugs) {
-    const observation = observations.get(planSlug);
+  const refresh: typeof subjects = [];
+  for (const subject of subjects) {
+    const planSlug = typeof subject === 'string' ? subject : subject.planSlug;
+    const key = keyOf(subject);
+    const observation = observations.get(key);
     if (observation?.status === 'fresh') {
-      closures.set(planSlug, resolvePlanClosure({ planSlug, status: 'read', gate: observation.gate }));
+      closures.set(key, resolvePlanClosure({ planSlug, status: 'read', gate: observation.gate }));
       continue;
     }
     const detail = observation?.detail ?? `no closure observation was read for '${planSlug}'`;
-    if (observation?.status !== 'ambiguous') refresh.push(planSlug);
+    if (observation?.status !== 'ambiguous') refresh.push(subject);
     closures.set(
-      planSlug,
+      key,
       resolvePlanClosure({ planSlug, status: 'unreadable', failure: { code: 'gate-not-evaluated', detail } }),
     );
   }
@@ -1904,7 +1914,9 @@ async function assembleGoalPortfolioBrief(args: {
       ), explicit_refs AS (
         SELECT wr.ref, wr.ordinality
           FROM goal_row g,
-               jsonb_array_elements_text(COALESCE(g.properties->'worklist'->'value', '[]'::jsonb))
+               jsonb_array_elements_text(COALESCE(g.properties->'worklist'->'value',
+                 CASE WHEN g.property_schema->'worklist'->'collection' IS NOT NULL
+                   THEN g.property_schema->'worklist'->'default' ELSE NULL END, '[]'::jsonb))
                WITH ORDINALITY AS wr(ref, ordinality)
       ), worklist_refs AS (
         SELECT ref, ordinality FROM explicit_refs
@@ -1916,6 +1928,7 @@ async function assembleGoalPortfolioBrief(args: {
           JOIN harness_shared.harness_plans hp ON hp.workspace_id = g.workspace_id
          WHERE g.property_schema->'worklist'->'collection'->>'source' = 'active-workspace-plans'
            AND COALESCE(hp.op_status, hp.status) = 'active'
+           AND hp.archived = false
            AND NOT EXISTS (SELECT 1 FROM explicit_refs er
              WHERE er.ref = 'plan:' || hp.harness_slug || '/' || hp.plan_slug)
       )
@@ -2200,7 +2213,7 @@ async function assembleGoalPortfolioBrief(args: {
     // proportional to plans that CLAIM to be finished, not to the worklist.
     const firstPass = parsePortfolioWorklist(row.plans, assembledAt);
     const closures = await resolveWorklistClosures(
-      firstPass.filter((plan) => plan.placement.state === 'awaiting-closure').map((plan) => plan.slug),
+      firstPass.filter((plan) => plan.placement.state === 'awaiting-closure'),
       degradedReasons,
       { workspaceId: args.workspaceId, sql, now: args.now },
     );
@@ -2215,8 +2228,9 @@ async function assembleGoalPortfolioBrief(args: {
     const unresolved = worklist.filter((plan) => plan.harness === null && !plan.ref.includes('/'));
     const selection = readTypedPropertyCollection({ propertySchema, properties, property: 'worklist',
       source: { ok: true, items: resolvable.map(canonical) } });
-    const collectionDefinition = portfolioObject(portfolioObject(propertySchema.worklist)?.collection);
-    const configured = collectionDefinition?.source === 'manual' || collectionDefinition?.source === 'active-workspace-plans';
+    const worklistDefinition = portfolioObject(propertySchema.worklist);
+    const collectionDefinition = portfolioObject(worklistDefinition?.collection);
+    const configured = worklistDefinition !== null && Object.prototype.hasOwnProperty.call(worklistDefinition, 'collection');
     let collection: GoalPortfolioBrief['collection'];
     if (configured) {
       if (selection.ok && selection.configured) {
@@ -2235,12 +2249,13 @@ async function assembleGoalPortfolioBrief(args: {
           ordinal: resolvedCount + index + 1, selected: true })));
       } else {
         const reason = selection.ok ? 'collection declaration is unavailable' : selection.reason;
-        collection = { source: collectionDefinition.source as 'manual' | 'active-workspace-plans',
+        const source = collectionDefinition?.source;
+        collection = { source: source === 'manual' || source === 'active-workspace-plans' ? source : 'unknown',
           policyVersion: 0, available: false, reason };
         degradedReasons.push(`worklist selection unavailable: ${reason}`);
         worklist = worklist.map((plan) => ({ ...plan, selected: false }));
       }
-      const goalByRef = new Map(portfolioArray(row.plans).flatMap((value) => {
+      const goalByRef = new Map<string, string | null>(portfolioArray(row.plans).flatMap((value) => {
         const plan = portfolioObject(value);
         const harness = portfolioString(plan?.harness);
         const slug = portfolioString(plan?.slug);

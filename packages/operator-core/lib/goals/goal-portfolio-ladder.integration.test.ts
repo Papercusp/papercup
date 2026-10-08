@@ -3,15 +3,53 @@ import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { readGoalPortfolioBrief } from '../goal-launch-settings';
 import { GOAL_OWNER_REPORT_FIELD, GOAL_OWNER_REPORT_SCHEMA_VERSION } from '../goal-owner-report';
 import { applyGoalPropertyWrite } from '../typed-properties-db';
+import { resolveGoalHolders } from './holder';
+import { setupBaselineCoordFixture, type BaselineCoordFixture } from '../_baseline-coord-fixture';
 
 const WS = 'ws-goal-ladder-p019';
 const GOAL = 'goal-ladder-p019';
 let db: OrgTestDb;
+let globalPg: BaselineCoordFixture;
 
-beforeAll(async () => { db = await createOrgTestDb(); }, 300_000);
-afterAll(async () => { if (db) await db.cleanup(); }, 120_000);
+beforeAll(async () => {
+  db = await createOrgTestDb();
+  // Holder liveness also reads through getOrgPg(). Bind that maintained
+  // connection to this SAME private DB, never the live operator or shared fixture.
+  globalPg = await setupBaselineCoordFixture({ dsn: db.adminDsn });
+}, 300_000);
+afterAll(async () => {
+  await globalPg?.dispose();
+  if (db) await db.cleanup();
+}, 120_000);
 
 describe('canonical GOAL portfolio ladder (real Postgres)', () => {
+  it('uses the exact qualified closure for two terminal plans with the same slug', async () => {
+    const sql = db.adminSql;
+    const goal = 'qualified-closure-goal';
+    const slug = 'qualified-closure-plan';
+    const harnesses = ['closure-a', 'closure-b'];
+    await sql`INSERT INTO harness_shared.goals
+      (workspace_id, id, install_slug, title, status, properties)
+      VALUES (${WS}, ${goal}, 'papercusp', 'Qualified closure', 'active',
+        ${sql.json({ worklist: { value: harnesses.map((h) => `plan:${h}/${slug}`) } })})`;
+    for (const [index, harness] of harnesses.entries()) {
+      await sql`INSERT INTO harness_shared.harness_plans
+        (workspace_id, harness_slug, plan_slug, title, status)
+        VALUES (${WS}, ${harness}, ${slug}, ${harness}, 'shipped')`;
+      const [plan] = await sql`SELECT version, acceptance_bar_epoch FROM harness_shared.harness_plans
+        WHERE workspace_id = ${WS} AND harness_slug = ${harness} AND plan_slug = ${slug}`;
+      const fingerprint = { planVersion: String(plan.version), acceptanceBarEpoch: plan.acceptance_bar_epoch,
+        itemsWatermark: null, auditSeq: null, specBindings: null, rubrics: [],
+        scorecardWatermark: null, metaScorecardWatermark: null };
+      await sql`INSERT INTO harness_shared.plan_closure_observations
+        (workspace_id, harness_slug, plan_slug, satisfied, fingerprint, observed_at)
+        VALUES (${WS}, ${harness}, ${slug}, ${index === 0}, ${sql.json(fingerprint)}, now())`;
+    }
+    const brief = await readGoalPortfolioBrief({ workspaceId: WS, goalId: goal, sql });
+    expect(brief?.worklist.find((p) => p.harness === harnesses[0])?.placement.state).toBe('terminal');
+    expect(brief?.worklist.find((p) => p.harness === harnesses[1])?.placement.state).toBe('awaiting-closure');
+  }, 60_000);
+
   it('joins a live pot link, exact plan goal stamp and source-plan work item into one typed verdict', async () => {
     const sql = db.adminSql;
     await sql`
@@ -159,6 +197,9 @@ describe('canonical GOAL portfolio ladder (real Postgres)', () => {
       },
     });
     const unread = await read();
+    const elected = await resolveGoalHolders(sql, { workspaceId: WS, goalId: goal });
+    expect(elected.elected?.ownerId).toBe(owner);
+    expect(unread?.degradedReasons.filter((reason) => reason.includes('holder liveness read failed')).join('\n')).toBe('');
     expect(unread?.continuity.lastOwnerReportAt).toBe(t1);
     expect(unread?.reporting?.cadence?.lastReportAt).toBe(t1);
     expect(unread?.reporting?.draft.fields.cost).toContain('340c / 1000c; coverage=measured; source=goal-lineage-rollup');
@@ -188,7 +229,7 @@ describe('opt-in active workspace plan pool (P-003, real Postgres)', () => {
     } },
     worklist_policy: { datatype: 'ordered-selection-policy', default: { order: [], excluded: [] }, editable_by: 'owner' },
   };
-  const stored = (value: unknown) => ({ value, version: 7, edited_at: '2026-10-08T01:00:00.000Z',
+  const stored = (value: string[] | { order: string[]; excluded: string[] }) => ({ value, version: 7, edited_at: '2026-10-08T01:00:00.000Z',
     edited_by: 'original-owner', provenance: 'owner-edit' });
   async function fixture(name: string) {
     const workspace = `ws-p003-${name}`;
@@ -226,6 +267,9 @@ describe('opt-in active workspace plan pool (P-003, real Postgres)', () => {
   it('discovers newly active plans after saved order without changing any stored worklist or attribution', async () => {
     const fx = await fixture('append');
     await fx.plan('pending', 'draft');
+    await fx.plan('archived');
+    await fx.sql`UPDATE harness_shared.harness_plans SET archived = true
+      WHERE workspace_id = ${fx.workspace} AND plan_slug = 'archived'`;
     await fx.plan('foreign', 'active', 'p003', null, 'different-workspace');
     expect((await fx.read())?.worklist.map((p) => p.ref)).toEqual(['plan:p003/two', 'plan:p003/one']);
     await fx.sql`UPDATE harness_shared.harness_plans SET status = 'active'
@@ -301,5 +345,20 @@ describe('opt-in active workspace plan pool (P-003, real Postgres)', () => {
     expect(result?.worklist).toHaveLength(2);
     expect(result?.worklist.every((p) => p.selected === false && p.placement.reconciliation.toolCall === null)).toBe(true);
     expect(result?.degradedReasons).toEqual(expect.arrayContaining([expect.stringContaining('selection unavailable')]));
+  });
+
+  it('an unknown collection source stays unavailable and cannot fall back to unprotected manual placement', async () => {
+    const fx = await fixture('invalid-declaration');
+    expect(await fx.policy({ order: [], excluded: ['plan:p003/one'] })).toMatchObject({ ok: true });
+    await fx.sql`UPDATE harness_shared.goals SET property_schema =
+      jsonb_set(property_schema, '{worklist,collection,source}', '"unknown-provider"'::jsonb)
+      WHERE workspace_id = ${fx.workspace} AND id = ${fx.goal}`;
+    const result = await fx.read();
+    expect(result?.collection).toMatchObject({ source: 'unknown', available: false });
+    expect(result?.worklist).toHaveLength(2);
+    expect(result?.worklist.every((p) => p.selected === false && p.placement.reconciliation.toolCall === null)).toBe(true);
+    const [row] = await fx.sql`SELECT properties->'worklist_policy'->'value' AS policy
+      FROM harness_shared.goals WHERE workspace_id = ${fx.workspace} AND id = ${fx.goal}`;
+    expect(row.policy).toEqual({ order: [], excluded: ['plan:p003/one'] });
   });
 });

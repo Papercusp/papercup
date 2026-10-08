@@ -26,7 +26,7 @@ import orientTool from './orient';
 import { FLEET_DELTA_SCHEMA_VERSION, fingerprintFleet } from './fleet-monitor-delta';
 import type { InnerCall } from '../../_compound-dispatch';
 import type { GoalPortfolioBrief } from '../../../goal-launch-settings';
-import { lookupByMcpName } from '@papercusp/agent-mcp';
+import { lookupByMcpName, runToolOrchestration, type ProjectedTool, type UnifiedToolContext } from '@papercusp/agent-mcp';
 import { MCP_TRANSPORT_CAP_MS } from '../../capability/foreground-transport-cap';
 
 // Unit handler cases do not own an org PG pool. Keep the new root SU receipt's
@@ -478,6 +478,57 @@ describe('coord:orient args', () => {
       degradedReason: 'aggregate_timeout',
       partial: true,
     });
+  });
+
+  it.each([-1, 0, 500])('does not start recovery when the parent has no response headroom (%s)', async (remainingMs) => {
+    const fallback = createOrientAggregateFallback();
+    const work = vi.fn(async () => ({ data: { complete: true } }));
+    const timeout = vi.fn();
+    await expect(withOrientAggregateTimeout(work, fallback, timeout, Date.now() + remainingMs)).resolves.toBe(fallback);
+    expect(work).not.toHaveBeenCalled();
+    expect(timeout).toHaveBeenCalledWith(0);
+  });
+
+  it.each([undefined, NaN, Infinity, 60_000])('never widens the aggregate ceiling for an invalid or longer parent deadline (%s)', async (remainingMs) => {
+    vi.useFakeTimers();
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const fallback = createOrientAggregateFallback();
+    try {
+      const deadline = remainingMs === undefined ? undefined : Date.now() + remainingMs;
+      const result = withOrientAggregateTimeout(() => new Promise<typeof fallback>(() => {}), fallback, undefined, deadline);
+      await vi.advanceTimersByTimeAsync(ORIENT_AGGREGATE_TIMEOUT_MS);
+      await expect(result).resolves.toBe(fallback);
+    } finally {
+      warnSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('returns the bounded orient snapshot through a live orchestration worker before it expires', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const orient = {
+      pluginName: 'fix', description: 'bounded recovery', effect: 'read', capabilities: [],
+      inputSchema: { type: 'object' }, expose: { mcp: { name: 'coord:orient' } },
+      fn: async (_args: unknown, ctx: UnifiedToolContext) => {
+        const result = await withOrientAggregateTimeout(
+          () => new Promise<ReturnType<typeof createOrientAggregateFallback>>(() => {}),
+          createOrientAggregateFallback(), undefined, ctx.deadlineAtMs,
+        );
+        return { content: [{ type: 'text', text: JSON.stringify(result.data) }] };
+      },
+    } as ProjectedTool;
+    try {
+      const result = await runToolOrchestration('return await tools.coord.orient({});', {
+        ctx: { signal: new AbortController().signal, log: vi.fn(), progress: vi.fn(), emit: vi.fn(), role: 'su' } as UnifiedToolContext,
+        deps: {}, tools: [orient], timeoutMs: 3_000,
+      });
+      expect(result.ok).toBe(true);
+      expect(result.summary).toMatchObject({ status: 'unknown', partial: true, degradedReason: 'aggregate_timeout' });
+      expect(result.detachedCalls).toBeUndefined();
+      expect(result.intermediateBytes).toBeGreaterThan(0);
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
   it('returns the stable partial snapshot when the aggregate deadline fires', async () => {

@@ -157,6 +157,7 @@ export const TOOL_ERROR_RULES: readonly ToolErrorRule[] = [
       'invalid_args', 'invalid_input', 'role_not_allowed', 'missing_capability',
       'compile_error',
       'quota_exceeded', 'harness_required', 'checkpoint_replace_would_drop_rows',
+      'structured_result_shape',
       'flush-required', 'rubric-not-found', 'reviewer_model_not_allowed',
       'dynamic_import_unsupported', 'mcp_auth_failed', 'evidence_class_not_found',
       'tenant_scope_required', 'positive_control_tenant_scope_required',

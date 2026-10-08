@@ -123,6 +123,57 @@ describe('POST /agent-mcp/operator-stt', () => {
 
 // ─── operator-tts ────────────────────────────────────────────────────────────
 
+describe('POST /agent-mcp/operator-tts original reading', () => {
+  it('reads the complete long source using stored settings and emits honest progress/completion', async () => {
+    const mock = stubFetch(() => new Response(FAKE_WAV));
+    const source = 'A paragraph with exact symbols {name}. '.repeat(230) + 'FINAL 🐉 TAIL';
+    const res = await post(ttsRoute, 'operator-tts', { operation: 'read', text: source });
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toBe('application/x-ndjson');
+    const records = (await res.text()).trim().split('\n').map(line => JSON.parse(line));
+    const chunks = records.filter(record => record.type === 'chunk');
+    expect(chunks.map(chunk => chunk.text).join('')).toBe(source);
+    expect(chunks.at(-1).end).toBe(source.length);
+    expect(records.at(-1)).toEqual({ ok: true, type: 'completed', chunks: chunks.length });
+    expect(mock.mock.calls.map(call => JSON.parse(String(call[1]?.body)).input).join('')).toBe(source);
+    expect(loadVoicePrefs).toHaveBeenCalledTimes(1);
+  });
+
+  it('defaults to local-only and refuses selected cloud before synthesis', async () => {
+    (loadVoicePrefs as Mock).mockResolvedValue({ ...DEFAULT_VOICE_PREFS, ttsEngine: 'elevenlabs' });
+    const mock = stubFetch(() => new Response(FAKE_WAV));
+    const res = await post(ttsRoute, 'operator-tts', { operation: 'read', text: 'private words' });
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toContain('local speech');
+    expect(mock).not.toHaveBeenCalled();
+  });
+
+  it('does not emit completed when a later chunk fails', async () => {
+    let calls = 0;
+    stubFetch(() => ++calls === 1 ? new Response(FAKE_WAV) : new Response('unavailable', { status: 500 }));
+    const res = await post(ttsRoute, 'operator-tts', { operation: 'read', text: 'x'.repeat(9000) });
+    const records = (await res.text()).trim().split('\n').map(line => JSON.parse(line));
+    expect(records.map(record => record.type)).toEqual(['chunk', 'error']);
+    expect(records.at(-1)).toMatchObject({ ok: false, status: 502, chunks: 1 });
+    expect(calls).toBe(2);
+  });
+
+  it('stops synthesis when the response consumer cancels', async () => {
+    const mock = stubFetch(() => new Response(FAKE_WAV));
+    const res = await post(ttsRoute, 'operator-tts', { operation: 'read', text: 'x'.repeat(9000) });
+    const reader = res.body!.getReader();
+    await reader.read();
+    expect(mock).toHaveBeenCalledTimes(1);
+    await reader.cancel();
+    expect(mock).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects malformed option types instead of treating a string as cloud consent', async () => {
+    const res = await post(ttsRoute, 'operator-tts', { operation: 'read', text: 'words', allowCloud: 'true' });
+    expect(res.status).toBe(400);
+  });
+});
+
 describe('POST /agent-mcp/operator-tts', () => {
   it('synthesizes via the prefs default engine (kokoro) and returns base64 wav', async () => {
     const audio = Buffer.from('RIFF-fake-wav-bytes');
@@ -173,16 +224,24 @@ describe('POST /agent-mcp/operator-tts', () => {
     expect((await res.json()).error).toMatch(/key not configured/);
   });
 
-  it('uses the prefs elevenlabs voice and caps text at 4000 chars', async () => {
+  it('uses the prefs elevenlabs voice and preserves text at the 4000-character request limit', async () => {
     (readElevenLabsKey as Mock).mockResolvedValue('k-123');
     const mock = stubFetch(() => new Response(Buffer.from('mp3'), { status: 200 }));
-    const long = 'a'.repeat(5000);
+    const long = ' ' + 'a'.repeat(3998) + ' ';
     const res = await post(ttsRoute, 'operator-tts', { text: long, engine: 'elevenlabs' });
     expect(res.status).toBe(200);
     expect((await res.json()).contentType).toBe('audio/mpeg');
     const [url, init] = mock.mock.calls[0] as [string, RequestInit];
     expect(url).toContain(DEFAULT_VOICE_PREFS.elevenlabsVoiceId);
-    expect(JSON.parse(String(init.body)).text.length).toBe(4000);
+    expect(JSON.parse(String(init.body)).text).toBe(long);
+  });
+
+  it('413s over-limit text instead of silently truncating it', async () => {
+    const mock = stubFetch(() => new Response(Buffer.from('should not synthesize'), { status: 200 }));
+    const res = await post(ttsRoute, 'operator-tts', { text: 'a'.repeat(4001) });
+    expect(res.status).toBe(413);
+    expect((await res.json()).error).toMatch(/4000 characters per request/);
+    expect(mock).not.toHaveBeenCalled();
   });
 
   it('502s when the engine is unreachable', async () => {

@@ -12,6 +12,7 @@ import {
   inspectPinnedColdsnap,
   pinnedColdsnapExecutable,
   pinnedColdsnapRoot,
+  patchColdsnapDiagnosticSource,
   resolveColdsnapExecutable,
   sha256Hex,
   type ColdsnapInstallDeps,
@@ -97,6 +98,44 @@ describe('resolveColdsnapExecutable', () => {
 });
 
 describe('installPinnedColdsnap', () => {
+  const mainSource = 'async fn main() { if let Err(e) = run().await { eprintln!("{e}"); } }';
+  const uploadSource = 'elapsed.as_secs_f64(),\n                            e\n' +
+    'let error_report: String = block_errors.values().map(|e| e.to_string()).collect();';
+
+  it('keeps diagnostic binaries separate and refuses an uninstrumented stamp', async () => {
+    const pin: ColdsnapPin = { ...PIN, diagnosticsRevision: 1 };
+    const w = world();
+    const root = pinnedColdsnapRoot('/home/u', pin);
+    expect(root).not.toBe(pinnedColdsnapRoot('/home/u', PIN));
+    w.executables.add(pinnedColdsnapExecutable('/home/u', pin));
+    w.files.set(join(root, 'papercusp-coldsnap.json'), JSON.stringify({
+      version: pin.version, crateSha256: pin.crateSha256, installedAt: w.deps.now().toISOString(),
+    }));
+    expect((await inspectPinnedColdsnap('/home/u', w.deps, pin)).installed).toBe(false);
+    w.files.set('/tmp/work/coldsnap-9.9.9/src/bin/coldsnap/main.rs', mainSource);
+    w.files.set('/tmp/work/coldsnap-9.9.9/src/upload.rs', uploadSource);
+    await installPinnedColdsnap('/home/u', w.deps, { pin });
+    expect((await inspectPinnedColdsnap('/home/u', w.deps, pin)).installed).toBe(true);
+    expect(w.files.get('/tmp/work/coldsnap-9.9.9/src/bin/coldsnap/main.rs')).toContain('snafu::Report::from_error(&e)');
+    expect(w.files.get('/tmp/work/coldsnap-9.9.9/src/upload.rs')).toContain('snafu::Report::from_error(e).to_string()');
+    expect(w.commands[1]!.args).toContain(root);
+    expect((await installPinnedColdsnap('/home/u', w.deps, { pin })).status).toBe('already-installed');
+    expect(w.commands).toHaveLength(2);
+  });
+
+  it.each(['main', 'upload'] as const)('refuses missing or duplicated %s error sites before cargo runs', async (file) => {
+    const source = file === 'main' ? mainSource : uploadSource;
+    expect(() => patchColdsnapDiagnosticSource('', file)).toThrow(/exactly one source anchor/);
+    expect(() => patchColdsnapDiagnosticSource(source + source, file)).toThrow(/exactly one source anchor/);
+    const w = world();
+    w.files.set('/tmp/work/coldsnap-9.9.9/src/bin/coldsnap/main.rs', file === 'main' ? '' : mainSource);
+    w.files.set('/tmp/work/coldsnap-9.9.9/src/upload.rs', file === 'upload' ? '' : uploadSource);
+    await expect(installPinnedColdsnap('/home/u', w.deps, { pin: { ...PIN, diagnosticsRevision: 1 } })).rejects.toThrow(/refusing to build/);
+    expect(w.commands.map(c => c.command)).toEqual(['tar']);
+    expect([...w.files.keys()].some(path => path.endsWith('papercusp-coldsnap.json'))).toBe(false);
+    expect(w.removed).toEqual(['/tmp/work']);
+  });
+
   it('verifies the crate checksum, builds it --locked into the versioned root, and stamps it last', async () => {
     const w = world();
     const result = await installPinnedColdsnap('/home/u', w.deps, { pin: PIN });

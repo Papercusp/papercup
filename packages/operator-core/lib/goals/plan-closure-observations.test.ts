@@ -120,6 +120,22 @@ describe('isCanonicalClosureGateCall', () => {
 });
 
 describe('refreshPlanClosureObservations', () => {
+  it('refreshes equal slugs independently with their exact harness while de-duplicating each qualified ref', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const calls: Array<[string, string | undefined]> = [];
+    const evaluate = async (slug: string, harness?: string) => { calls.push([slug, harness]); await gate; };
+    const a = { planSlug: 'qualified-flight', harnessSlug: 'harness-a' };
+    const b = { planSlug: 'qualified-flight', harnessSlug: 'harness-b' };
+    expect(refreshPlanClosureObservations([a, b, a], evaluate))
+      .toEqual(['plan:harness-a/qualified-flight', 'plan:harness-b/qualified-flight']);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(calls).toEqual([['qualified-flight', 'harness-a'], ['qualified-flight', 'harness-b']]);
+    expect(refreshPlanClosureObservations([a, b], evaluate)).toEqual([]);
+    release();
+    await gate;
+  });
+
   it('runs at most one evaluation per plan at a time', async () => {
     let release!: () => void;
     const gate = new Promise<void>((resolve) => { release = resolve; });

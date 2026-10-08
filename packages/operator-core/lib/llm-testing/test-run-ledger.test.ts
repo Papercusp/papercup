@@ -7,13 +7,65 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { parseTestRunExecutionDetails, recordedTestLayer } from '@papercusp/test-config/execution-details';
 
 import { SCENARIOS } from './scenarios';
-import { llmScenarioLedgerRow, resolveScenarioSourceFile, scenarioLedgerPath } from './test-run-ledger';
+import { llmScenarioLedgerRow, recordLlmScenarioTestRun, resolveScenarioSourceFile, scenarioLedgerPath } from './test-run-ledger';
+
+const ledger = vi.hoisted(() => ({ sql: vi.fn(), root: '' }));
+vi.mock('../long-lived-admin-pool', () => ({ getLongLivedAdminPool: () => ledger.sql }));
+vi.mock('../agent-tools/capability/base-dir', () => ({ resolveAgentWorkspaceRoot: () => ledger.root }));
+vi.mock('../testing-branch-resolve', () => ({ resolveGitContext: async () => ({ branch: 'staging' }) }));
+vi.mock('../testing-worktree', () => ({
+  captureWorktreeSnapshot: () => ({ commit: 'abc123' }), computeWorktreeDirty: () => false,
+}));
 
 const SCENARIOS_ROOT = join(__dirname, 'scenarios');
+
+describe('recordLlmScenarioTestRun scope attribution', () => {
+  let dir: string;
+  let file: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'llm-ledger-scope-'));
+    file = join(dir, 'scenario.ts');
+    writeFileSync(file, '');
+    ledger.root = dir;
+    ledger.sql.mockReset().mockResolvedValue([{ id: 123 }]);
+    for (const key of ['PAPERCUSP_TEST_RUN_WORKSPACE', 'PAPERCUSP_WORKSPACE_ID',
+      'PAPERCUSP_WORKSPACE', 'PAPERCUSP_TEST_RUN_HARNESS', 'HARNESS_SLUG', 'PAPERCUSP_HARNESS_SLUG']) {
+      vi.stubEnv(key, '');
+    }
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  async function recordedScope() {
+    expect(await recordLlmScenarioTestRun(report([run('passed', '2026-10-08T00:00:00Z',
+      '2026-10-08T00:00:01Z')]), file, null)).toBe(123);
+    const values = ledger.sql.mock.calls[0]!.slice(1);
+    return { harness: values[10], workspace: values[11] };
+  }
+  it('records the interactive CLI workspace and harness on the actual insert', async () => {
+    vi.stubEnv('PAPERCUSP_WORKSPACE', 'papercusp-workspace');
+    vi.stubEnv('PAPERCUSP_HARNESS_SLUG', 'papercusp');
+    expect(await recordedScope()).toEqual({ harness: 'papercusp', workspace: 'papercusp-workspace' });
+  });
+  it('preserves explicit ledger scope over an isolated runtime scope', async () => {
+    vi.stubEnv('PAPERCUSP_TEST_RUN_WORKSPACE', 'caller-workspace');
+    vi.stubEnv('PAPERCUSP_WORKSPACE_ID', 'verify-tauri-isolated-90');
+    vi.stubEnv('PAPERCUSP_WORKSPACE', 'interactive-workspace');
+    vi.stubEnv('PAPERCUSP_TEST_RUN_HARNESS', 'caller-harness');
+    vi.stubEnv('HARNESS_SLUG', 'runtime-harness');
+    vi.stubEnv('PAPERCUSP_HARNESS_SLUG', 'interactive-harness');
+    expect(await recordedScope()).toEqual({ harness: 'caller-harness', workspace: 'caller-workspace' });
+  });
+  it('keeps absent scope and a wildcard harness unattributed', async () => {
+    vi.stubEnv('PAPERCUSP_TEST_RUN_HARNESS', '*');
+    expect(await recordedScope()).toEqual({ harness: null, workspace: null });
+  });
+});
 
 describe('resolveScenarioSourceFile', () => {
   // Recurrence guard: an id that fails to resolve silently drops the live run's

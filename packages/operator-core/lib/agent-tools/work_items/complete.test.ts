@@ -1188,7 +1188,10 @@ describe('work_items:complete (keyed-array)', () => {
 
     expect(r.ok).toBe(true);
     expect(r.finish).toMatchObject({ complete: true, planItem: 'wip' });
-    expect(dbMocks.planItemStatusRows).toHaveBeenCalledOnce();
+    const planStatusReads = dbMocks.planItemStatusRows.mock.calls.filter(([strings]) =>
+      strings.join('').includes('FROM harness_shared.plan_items'),
+    );
+    expect(planStatusReads).toHaveLength(1);
   });
 
   it('fails loudly after a partial finish and tells the caller the same call is retry-safe', async () => {
