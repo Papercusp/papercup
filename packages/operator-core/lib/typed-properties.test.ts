@@ -449,6 +449,67 @@ describe('opt-in typed collections and owner policies (P-002)', () => {
       .toMatchObject({ selected: ['mint', 'chamomile', 'rooibos'] });
   });
 
+  describe('only plans I pick: an unchecked registered source seeds picks from the stored list', () => {
+    const picked = { ...plans, worklist: { ...plans.worklist,
+      collection: { ...plans.worklist.collection, defaultSelected: false } } };
+    const stored = (value: unknown) => ({ worklist: { ...entry(value, 14), edited_by: 'steward', provenance: 'agent-edit' } });
+    const discovered = { ok: true as const, items: ['plan:one/c', 'plan:one/a', 'plan:one/b', 'plan:one/d'] };
+
+    it('selects exactly the stored list, in its order, and flags the policy as derived', () => {
+      const properties = stored(['plan:one/b', 'plan:one/a']);
+      const snapshot = structuredClone(properties);
+      const read = readTypedPropertyCollection({ propertySchema: picked, properties, property: 'worklist', source: discovered });
+      expect(read).toMatchObject({ ok: true, configured: true, policyVersion: 0, seededFromList: true,
+        policy: { order: ['plan:one/b', 'plan:one/a'], excluded: [], included: ['plan:one/b', 'plan:one/a'] },
+        items: [{ id: 'plan:one/b', selected: true }, { id: 'plan:one/a', selected: true },
+          { id: 'plan:one/c', selected: false }, { id: 'plan:one/d', selected: false }],
+        selected: ['plan:one/b', 'plan:one/a'] });
+      expect(properties).toEqual(snapshot);
+    });
+
+    it('the seeded policy is exactly what the owner can persist at expectedVersion 0', () => {
+      const properties = stored(['plan:one/b']);
+      const read = readTypedPropertyCollection({ propertySchema: picked, properties, property: 'worklist', source: discovered });
+      if (!read.ok || !read.configured) throw new Error('seed unavailable');
+      const write = prepareTypedPropertyMutation(base({ propertySchema: picked, properties,
+        property: 'worklist_policy', value: { ...read.policy, included: [...read.policy.included!, 'plan:one/d'] } }));
+      expect(write).toMatchObject({ ok: true, entry: { version: 1, provenance: 'owner-edit' } });
+      if (!write.ok) throw new Error('owner policy refused');
+      const after = readTypedPropertyCollection({ propertySchema: picked, properties: write.properties,
+        property: 'worklist', source: discovered });
+      expect(after).toMatchObject({ policyVersion: 1, selected: ['plan:one/b', 'plan:one/d'] });
+      expect(after).not.toHaveProperty('seededFromList');
+    });
+
+    it('a saved owner policy alone decides; the stored list no longer widens it', () => {
+      const properties = { ...stored(['plan:one/a', 'plan:one/b']),
+        worklist_policy: entry({ order: ['plan:one/c'], excluded: ['plan:one/a'], included: ['plan:one/c'] }, 2) };
+      expect(readTypedPropertyCollection({ propertySchema: picked, properties, property: 'worklist', source: discovered }))
+        .toMatchObject({ selected: ['plan:one/c'], policyVersion: 2 });
+    });
+
+    it('resolves a unique legacy shorthand and drops an ambiguous or unresolvable one', () => {
+      const properties = stored(['plan:a', 'plan:shared', 'plan:missing']);
+      const read = readTypedPropertyCollection({ propertySchema: picked, properties, property: 'worklist',
+        source: { ok: true, items: ['plan:one/a', 'plan:one/shared', 'plan:two/shared'] } });
+      expect(read).toMatchObject({ ok: true, selected: ['plan:one/a'], policy: { included: ['plan:one/a'] } });
+    });
+
+    it('never seeds a manual source, a default-selected source, or a declared default pick list', () => {
+      const properties = stored(['plan:one/b']);
+      expect(readTypedPropertyCollection({ propertySchema: plans, properties, property: 'worklist', source: discovered }))
+        .toMatchObject({ selected: discovered.items });
+      const declaredPicks = { ...picked, worklist_policy: { ...picked.worklist_policy,
+        default: { order: [], excluded: [], included: ['plan:one/d'] } } };
+      expect(readTypedPropertyCollection({ propertySchema: declaredPicks, properties, property: 'worklist', source: discovered }))
+        .toMatchObject({ selected: ['plan:one/d'] });
+      const unchecked = { ...portable, tea_choices: { ...portable.tea_choices,
+        collection: { ...portable.tea_choices.collection, defaultSelected: false } } };
+      expect(readTypedPropertyCollection({ propertySchema: unchecked, property: 'tea_choices',
+        properties: { tea_choices: entry(['mint']) } })).toMatchObject({ selected: [] });
+    });
+  });
+
   it('source failures and malformed/agent-authored policies stay unavailable without a write', () => {
     const properties = { worklist_policy: entry({ order: [], excluded: ['plan:one/a'] }) };
     const snapshot = structuredClone(properties);

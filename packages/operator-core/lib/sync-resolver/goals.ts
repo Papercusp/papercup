@@ -1038,6 +1038,22 @@ export async function resolveGoalDetail(args: {
        ORDER BY day ASC
     `) as unknown as Array<Record<string, unknown>>;
 
+    // Work finished per UTC day over a rolling 21 days (WI-10007603): the goal
+    // panel's progress-over-time chart. Counted here, not from `activity`,
+    // because that list is capped and would under-report a busy day. Days with
+    // nothing finished are absent; the client fills the gaps as zeros because
+    // the window itself is measured.
+    const completedByDay = (await tx`
+      SELECT to_char(to_timestamp(wi.closed_ts / 1000.0) AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS day,
+             COUNT(*)::int AS done
+        FROM harness_shared.work_items wi
+       WHERE wi.goal_id = ${goalId}
+         AND wi.status IN ('done', 'resolved')
+         AND wi.closed_ts >= (EXTRACT(EPOCH FROM now() - interval '21 days') * 1000)::bigint
+       GROUP BY day
+       ORDER BY day ASC
+    `) as unknown as Array<Record<string, unknown>>;
+
     /* SUBDIRECTIVES + the parent, for the popup's hierarchy section
        (goals-tab-improvement-2026-08-09 P-017).
 
@@ -1070,10 +1086,12 @@ export async function resolveGoalDetail(args: {
         `) as unknown as Array<{ id: string; title: string | null }>)
       : [];
 
-    return { goalRow, potRows, waiting, waitingTotalRow, activity, planRows, agentRows, spendByDay, childRows, parentRow };
+    return { goalRow, potRows, waiting, waitingTotalRow, activity, planRows, agentRows, spendByDay, completedByDay,
+      childRows, parentRow };
   });
   if (!rawDetail) return { goal: null };
-  const { goalRow, potRows, waiting, waitingTotalRow, activity, planRows, agentRows, spendByDay, childRows, parentRow } = rawDetail;
+  const { goalRow, potRows, waiting, waitingTotalRow, activity, planRows, agentRows, spendByDay, completedByDay,
+    childRows, parentRow } = rawDetail;
 
   // Holder liveness performs independent pool reads. Release the detail
   // transaction first so concurrent goal reads cannot each hold a connection
@@ -1263,6 +1281,7 @@ export async function resolveGoalDetail(args: {
       harnessSlug: (d.harness_slug as string | null) ?? null,
       costUsd: num(d.cost),
     })),
+    completedByDay: { windowDays: 21, days: completedByDay.map((d) => ({ day: String(d.day), done: num(d.done) })) },
     // Repeated on the detail payload because this is the page most likely to
     // be screenshotted into a report, and a spend number without this caveat
     // invites the wrong comparison.

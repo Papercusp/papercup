@@ -362,6 +362,9 @@ export interface GoalDetailInput {
   waitingOnYouTotal?: number | null;
   activity?: GoalDetailActivityInput[] | null;
   spendByDay?: GoalDetailSpendDayInput[] | null;
+  /** Work finished per UTC day over a measured rolling window. Absent = a
+   *  server from before WI-10007603 (not measured, never "nothing finished"). */
+  completedByDay?: { windowDays: number; days: Array<{ day: string; done: number }> } | null;
   spendLabel?: string | null;
   spendNote?: string | null;
 }

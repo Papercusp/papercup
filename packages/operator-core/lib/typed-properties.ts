@@ -137,6 +137,13 @@ export type TypedPropertyCollectionRead =
       policyVersion: number;
       items: Array<{ id: string; selected: boolean }>;
       selected: string[];
+      /**
+       * True when no owner policy is saved yet and the effective policy was
+       * derived from the stored collection list ("only plans I pick" starts
+       * from the saved worklist). Nothing was written; the first owner apply
+       * persists exactly this policy at expectedVersion 0.
+       */
+      seededFromList?: true;
     };
 
 /**
@@ -182,20 +189,57 @@ export function readTypedPropertyCollection(args: {
   const ids = z.array(collectionItemId).max(10_000).safeParse(args.source?.items ??
     (sourceEntry?.success ? sourceEntry.data.value : definition.default ?? []));
   if (!ids.success) return { ok: false, configured: true, reason: 'invalid collection item ids' };
+  const seed = seedPolicyFromStoredList({ collection, policy: policy.data, saved: policyEntry !== null,
+    stored: args.source && sourceEntry?.success ? sourceEntry.data.value : undefined, available: ids.data });
+  const effective = seed ?? policy.data;
   if (collection.source === 'active-workspace-plans' &&
-      [...ids.data, ...policy.data.order, ...policy.data.excluded, ...(policy.data.included ?? [])]
+      [...ids.data, ...effective.order, ...effective.excluded, ...(effective.included ?? [])]
         .some((id) => !QUALIFIED_COLLECTION_PLAN_REF.test(id))) {
     return { ok: false, configured: true, reason: 'active plan collections require qualified plan refs' };
   }
   const available = new Set(ids.data);
-  const ordered = [...new Set([...policy.data.order.filter((id) => available.has(id)), ...ids.data])];
-  const excluded = new Set(policy.data.excluded);
-  const included = new Set(policy.data.included ?? []);
+  const ordered = [...new Set([...effective.order.filter((id) => available.has(id)), ...ids.data])];
+  const excluded = new Set(effective.excluded);
+  const included = new Set(effective.included ?? []);
   const items = ordered.map((id) => ({ id, selected: !collection.selectable ||
     (!excluded.has(id) && (collection.defaultSelected || included.has(id))) }));
-  return { ok: true, configured: true, collection, policy: policy.data,
+  return { ok: true, configured: true, collection, policy: effective,
     policyVersion: policyEntry?.success ? policyEntry.data.version : 0,
-    items, selected: items.filter((item) => item.selected).map((item) => item.id) };
+    items, selected: items.filter((item) => item.selected).map((item) => item.id),
+    ...(seed ? { seededFromList: true as const } : {}) };
+}
+
+/**
+ * "Only plans I pick" for a registered-source collection: when it declares
+ * `defaultSelected:false`, no owner policy is saved yet, and the declaration's
+ * default policy names no explicit picks, the stored collection list (for a
+ * goal worklist, the saved `worklist` value) is the starting pick list. It is a
+ * DERIVATION, never a write: provenance stays honest, and the owner's first
+ * apply persists exactly this policy. Unqualified legacy refs resolve to the one
+ * available id with the same slug, otherwise they are dropped from the seed.
+ */
+function seedPolicyFromStoredList(args: {
+  collection: TypedPropertyCollection;
+  policy: OrderedSelectionPolicy;
+  saved: boolean;
+  stored: unknown;
+  available: readonly string[];
+}): OrderedSelectionPolicy | null {
+  const { collection, policy } = args;
+  if (args.saved || collection.source === 'manual' || collection.defaultSelected || !collection.selectable ||
+      policy.included !== undefined || !Array.isArray(args.stored)) return null;
+  const resolve = (ref: unknown): string | null => {
+    if (typeof ref !== 'string' || !ref) return null;
+    if (collection.source !== 'active-workspace-plans' || QUALIFIED_COLLECTION_PLAN_REF.test(ref)) return ref;
+    const slug = ref.startsWith('plan:') && !ref.includes('/') ? ref.slice('plan:'.length) : null;
+    const matches = slug ? args.available.filter((id) => id.endsWith(`/${slug}`)) : [];
+    return matches.length === 1 ? matches[0] : null;
+  };
+  const excluded = new Set(policy.excluded);
+  const picks = [...new Set(args.stored.map(resolve).filter((id): id is string => id !== null))]
+    .filter((id) => !excluded.has(id));
+  return { order: [...picks, ...policy.order.filter((id) => !picks.includes(id))],
+    excluded: [...policy.excluded], included: picks };
 }
 
 export type TypedPropertyMutationFailure =

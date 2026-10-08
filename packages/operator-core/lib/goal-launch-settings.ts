@@ -2264,10 +2264,17 @@ async function assembleGoalPortfolioBrief(args: {
         const slug = portfolioString(plan?.slug);
         return harness && slug ? [[`plan:${harness}/${slug}`, portfolioString(plan?.goalId)] as const] : [];
       }));
+      // "Excluded" is an owner act; "not picked" is the default for a collection
+      // that starts unchecked (only plans I pick). Saying "excluded" for the
+      // latter would claim an owner decision that was never made.
+      const ownerExcluded = new Set(selection.ok && selection.configured ? selection.policy.excluded : []);
       worklist = worklist.map((plan) => {
         const otherGoal = goalByRef.get(canonical(plan));
         const reason = plan.selected === false
-          ? collection?.available ? 'The owner excluded this plan from future work.' : collection?.reason
+          ? collection?.available
+            ? ownerExcluded.has(canonical(plan)) ? 'The owner excluded this plan from future work.'
+              : 'Not in the worklist: the owner has not picked this plan for this goal.'
+            : collection?.reason
           : otherGoal && otherGoal !== args.goalId ? `This plan belongs to another goal (${otherGoal}).` : null;
         if (!reason) return plan;
         return { ...plan, placement: { ...plan.placement,

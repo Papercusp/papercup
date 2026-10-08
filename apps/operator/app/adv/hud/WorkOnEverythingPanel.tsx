@@ -1,31 +1,47 @@
 'use client';
 
-import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { parseAsBoolean, parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
-import { ArrowDown, ArrowUp, ArrowUpRight, Check, CheckCircle2, Infinity as InfinityIcon,
-  Layers, ListOrdered, Plus, Search, Settings2, MessageSquare, X } from 'lucide-react';
+import { ArrowDown, ArrowUp, Check, Infinity as InfinityIcon, Plus, RefreshCw, Search, Settings2,
+  MessageSquare, X } from 'lucide-react';
 import { Modal } from '@/app/harness/Modal';
 import { TextInput, TextArea } from '@/app/harness/TextInput';
 import { Tooltip } from '@/app/harness/Tooltip';
 import GoalStatusControl from './GoalStatusControl';
 import GoalSettingsSection from './GoalSettingsSection';
-import { agoText, type GoalDetailInput } from './goal-detail-model';
+import { type GoalDetailInput } from './goal-detail-model';
 import { ongoingWorkView } from './ongoing-work-model';
-import { draftRows, moveDraft, toggleDraft, worklistChanges, type WorklistDraft,
-  type WorklistRow } from './ongoing-work-draft';
+import { draftRows, moveDraft, toggleDraft, worklistChanges, type WorklistDraft } from './ongoing-work-draft';
+import { STATE_KEYS, STATE_LABEL, completionSeries, filterAndSort, inScope, loadProblem, percent, progressRows,
+  sumCounts, total, type PlanStateKey, type ProgressCounts, type ProgressRow } from './woe-progress-model';
 import './WorkOnEverythingPanel.css';
 
-export default function WorkOnEverythingPanel({ data, nowMs, onClose, onOpenPlan, onOpenWorkItem,
-  onOpenAgent, refresh }: {
+const SCOPES = ['all', 'in', 'out'] as const;
+const SORTS = ['left', 'pct', 'rank', 'name'] as const;
+const SORT_LABEL = { left: 'Most work left', pct: 'Least finished', rank: 'Worklist order', name: 'Name' } as const;
+
+function ProgressBar({ counts, large }: { counts: ProgressCounts | null | undefined; large?: boolean }) {
+  if (!counts) return <span className="woe__muted">Not measured</span>;
+  const t = total(counts);
+  const seg = (n: number, key: string) => n ? <span className={'woe__seg woe__seg--' + key} style={{ width: `${(100 * n) / t}%` }} /> : null;
+  return <span className={'woe__bar' + (large ? ' woe__bar--lg' : '')} role="img"
+    aria-label={t ? `${counts.done} of ${t} items done` : 'No items'}
+    title={`${counts.done} done · ${counts.wip} in progress · ${counts.needsHuman} need you · ${counts.blocked} blocked · ${counts.todo} to do`}>
+    {seg(counts.done, 'done')}{seg(counts.wip, 'moving')}{seg(counts.needsHuman, 'you')}{seg(counts.blocked, 'stuck')}{seg(counts.todo, 'todo')}
+  </span>;
+}
+
+export default function WorkOnEverythingPanel({ data, nowMs, onClose, onOpenPlan, onOpenAgent, refresh }: {
   data: GoalDetailInput; nowMs: number; onClose: () => void; refresh: () => void;
   onOpenPlan?: (harness: string, plan: string) => void;
   onOpenWorkItem?: (id: string) => void; onOpenAgent?: (owner: string) => void;
 }) {
   const goal = data.goal!;
   const [query, setQuery] = useQueryState('hudwoesearch', parseAsString.withDefault(''));
-  const [selectedId, setSelectedId] = useQueryState('hudwoeplan', parseAsString);
-  const [inspectorTab, setInspectorTab] = useQueryState('hudwoeinspector',
-    parseAsStringEnum(['summary', 'evidence', 'history']).withDefault('summary'));
+  const [scope, setScope] = useQueryState('hudwoescope', parseAsStringEnum([...SCOPES]).withDefault('all'));
+  const [stateFilter, setStateFilter] = useQueryState('hudwoestate', parseAsStringEnum<PlanStateKey>([...STATE_KEYS]));
+  const [sort, setSort] = useQueryState('hudwoesort', parseAsStringEnum([...SORTS]).withDefault('left'));
+  const [showEmpty, setShowEmpty] = useQueryState('hudwoeempty', parseAsBoolean.withDefault(false));
   const [reviewOpen, setReviewOpen] = useQueryState('hudwoereview', parseAsBoolean.withDefault(false));
   const [settingsOpen, setSettingsOpen] = useQueryState('hudwoesettings', parseAsBoolean.withDefault(false));
   const [draft, setDraft] = useState<WorklistDraft | null>(null);
@@ -34,35 +50,37 @@ export default function WorkOnEverythingPanel({ data, nowMs, onClose, onOpenPlan
   const [awaitingVersion, setAwaitingVersion] = useState<number | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const busy = useRef(false), listRef = useRef<HTMLDivElement>(null);
+  const busy = useRef(false);
+  const unavailable = loadProblem(data);
   // Declared source identifies this collection; titles are freely editable.
-  const entry = Object.entries(data.goalData?.collections ?? {}).find(([, c]) =>
-    c.selection.ok && c.selection.configured &&
-    c.selection.collection.source === 'active-workspace-plans');
-  const collection = entry?.[1], selection = collection?.selection;
-  const configured = selection?.ok && selection.configured ? selection : null;
+  const collection = unavailable ? undefined : Object.values(data.goalData?.collections ?? {}).find((c) =>
+    c.selection.ok && c.selection.configured && c.selection.collection.source === 'active-workspace-plans');
+  const configured = collection?.selection.ok && collection.selection.configured ? collection.selection : null;
   const version = configured?.policyVersion ?? null;
-  const rows = collection ? draftRows(collection, draft) : [];
-  const included = rows.filter((r) => r.selected), excluded = rows.filter((r) => !r.selected);
-  const visible = [...included, ...excluded].filter((r) =>
-    (r.label + ' ' + (r.harness ?? '')).toLowerCase().includes(query.toLowerCase()));
-  const selected = visible.find((r) => r.id === selectedId) ?? visible[0] ?? null;
+  const rows = progressRows(collection ? draftRows(collection, draft) : []);
+  const included = rows.filter((r) => r.selected);
   const changes = collection ? worklistChanges(collection, draft) : [];
   const stale = !!draft && draft.version !== version && awaitingVersion === null;
   const locked = saving || awaitingVersion !== null;
   const view = ongoingWorkView(goal, data);
-  const history = (data.goalData?.worklistHistory ?? []).filter((h) => h.ref === selected?.id);
   const owner = data.agents?.find((a) => a.live === true);
   const before = collection?.rows.filter((r) => r.selected) ?? [];
-  const selectedTotal = selected?.counts ? Object.values(selected.counts).reduce((a, b) => a + b, 0) : null;
+  const countable = rows.filter((r) => showEmpty || r.st.key !== 'empty');
+  const scoped = countable.filter((r) => inScope(r, scope));
+  const totals = sumCounts(scoped);
+  const byState = (key: PlanStateKey) => scoped.filter((r) => r.st.key === key);
+  const visible = filterAndSort(rows, { scope, state: stateFilter, showEmpty, query, sort });
+  const series = completionSeries(data, nowMs);
+  const seriesMax = Math.max(1, ...(series ?? []).map((d) => d.done));
+  const emptyHidden = rows.filter((r) => r.st.key === 'empty').length;
 
   useEffect(() => {
     if (awaitingVersion !== null && version === awaitingVersion) {
       setDraft(null); setAwaitingVersion(null); setReason('');
-      setNotice('Worklist applied. The steward uses this policy for new work; existing tasks keep their owners.');
+      setNotice('Worklist applied. The steward uses it for new work; running tasks keep their owners.');
     } else if (awaitingVersion !== null && version !== null && version > awaitingVersion) {
       setAwaitingVersion(null);
-      setProblem('A newer edit arrived before confirmation. Your draft is retained; compare it with the current worklist before continuing.');
+      setProblem('A newer edit arrived before confirmation. Your draft is kept; compare it with the current worklist before continuing.');
     }
   }, [version, awaitingVersion]);
 
@@ -70,31 +88,6 @@ export default function WorkOnEverythingPanel({ data, nowMs, onClose, onOpenPlan
     if (!collection || locked) return;
     setDraft(worklistChanges(collection, next).length ? next : null);
     setProblem(null); setNotice(null);
-  }
-  function openPlan(row: WorklistRow) {
-    if (row.harness && row.planSlug) onOpenPlan?.(row.harness, row.planSlug);
-  }
-  function listKey(event: KeyboardEvent<HTMLDivElement>) {
-    if (collection && event.altKey && ['ArrowUp', 'ArrowDown'].includes(event.key)) {
-      const rowId = (event.target as HTMLElement).closest<HTMLElement>('[data-worklist-id]')?.dataset.worklistId;
-      const row = rowId ? visible.find((r) => r.id === rowId) : selected;
-      if (row) {
-        event.preventDefault(); event.stopPropagation();
-        stage(moveDraft(collection, draft, row.id, event.key === 'ArrowUp' ? -1 : 1));
-      }
-      return;
-    }
-    if (!selected || !collection || event.target !== event.currentTarget) return;
-    const key = event.key;
-    if (!['ArrowUp', 'ArrowDown', 'j', 'k', 'x', 'X', 'Enter', 'Home', 'End'].includes(key)) return;
-    event.preventDefault();
-    event.stopPropagation();
-    if (key === 'Enter') { openPlan(selected); return; }
-    if (key === 'x' || key === 'X') { stage(toggleDraft(collection, draft, selected.id)); return; }
-    const up = key === 'ArrowUp' || key === 'k';
-    const i = key === 'Home' ? 0 : key === 'End' ? visible.length - 1
-      : Math.max(0, Math.min(visible.length - 1, visible.indexOf(selected) + (up ? -1 : 1)));
-    void setSelectedId(visible[i]?.id ?? null);
   }
   async function apply() {
     if (!configured || !draft || !changes.length || stale || busy.current || locked) return;
@@ -110,7 +103,7 @@ export default function WorkOnEverythingPanel({ data, nowMs, onClose, onOpenPlan
           (typeof result.error === 'string' ? result.error : result.error?.message) ?? ('HTTP ' + response.status));
       }
       if (typeof result.version !== 'number') {
-        throw new Error('The save did not return a version. Refresh to check the outcome; your draft is retained.');
+        throw new Error('The save did not return a version. Refresh to check the outcome; your draft is kept.');
       }
       setAwaitingVersion(result.version); void setReviewOpen(false);
       setNotice('Saved. Waiting for the confirmed worklist…');
@@ -125,129 +118,117 @@ export default function WorkOnEverythingPanel({ data, nowMs, onClose, onOpenPlan
     setNotice('Draft discarded. The saved worklist is unchanged.');
   }
 
-  const renderRow = (row: WorklistRow) => {
-    const rank = included.findIndex((r) => r.id === row.id), change = changes.find((c) => c.id === row.id);
-    const latest = row.outcomes?.[0];
-    return <div key={row.id} id={'woe-' + encodeURIComponent(row.id)} role="option"
-      aria-selected={selected?.id === row.id} className={'woe__row' + (selected?.id === row.id ? ' woe__row--selected' : '') + (change ? ' woe__row--changed' : '') + (!row.selected ? ' woe__row--excluded' : '')}
-      onClick={() => { void setSelectedId(row.id); listRef.current?.focus(); }}
-      data-testid="ongoing-worklist-row" data-worklist-id={row.id}>
-      <span className="woe__rank">{row.selected ? String(rank + 1).padStart(2, '0') : '—'}</span>
-      <span className="woe__plan"><span className="woe__plan-title"><strong>{row.label}</strong>
-        {change ? <span className="woe__change">{change.label}</span> : null}</span>
-        <span className="woe__next">{row.nextStep ?? row.reason ?? 'Next step unavailable'}</span>
-        <span className="woe__plan-meta"><small>{row.harness ?? row.id}</small>
-          {row.liveLaneOwner ? <small className="woe__ownership">Lane owned</small> :
-            row.fleetMembers != null ? <small>{row.fleetMembers} fleet {row.fleetMembers === 1 ? 'member' : 'members'}</small> : null}
-          {latest?.closedAt ? <small>Last outcome {agoText(latest.closedAt, nowMs)}</small> : null}
-        </span></span>
-      <span className="woe__state" data-state={row.state ?? 'unknown'}><span aria-hidden />{row.state ?? 'Unavailable'}</span>
-      <span className="woe__row-tools">
-        {row.selected ? <span className="woe__reorder"><Tooltip label="Move up · Alt+↑"><button type="button" className="pc-ctl-act" disabled={locked || rank === 0}
-          aria-label={'Move ' + row.label + ' up'}
-          onClick={(e) => { e.stopPropagation(); stage(moveDraft(collection!, draft, row.id, -1)); }}><span><ArrowUp size={15} aria-hidden /></span></button></Tooltip>
-        <Tooltip label="Move down · Alt+↓"><button type="button" className="pc-ctl-act" disabled={locked || rank === included.length - 1}
-          aria-label={'Move ' + row.label + ' down'}
-          onClick={(e) => { e.stopPropagation(); stage(moveDraft(collection!, draft, row.id, 1)); }}><span><ArrowDown size={15} aria-hidden /></span></button></Tooltip></span> : null}
-        <button type="button" className="pc-ctl-act woe__scope-action" disabled={locked}
-          aria-label={(row.selected ? 'Remove ' : 'Add back ') + row.label}
-          onClick={(e) => { e.stopPropagation(); stage(toggleDraft(collection!, draft, row.id)); }}>
-          <span>{row.selected ? <X size={14} aria-hidden /> : <Plus size={14} aria-hidden />}{row.selected ? 'Exclude' : 'Include'}</span></button>
-      </span>
-    </div>;
+  const tiles: Array<{ key: PlanStateKey | null; label: string; value: string; unit: string; sub: string }> = [
+    { key: null, label: 'All work', value: totals.done.toLocaleString(), unit: `of ${total(totals).toLocaleString()} items done`,
+      sub: `${percent(totals)}% complete across ${scoped.filter((r) => r.counts && total(r.counts)).length} plans with items` },
+    { key: 'you', label: STATE_LABEL.you, value: String(totals.needsHuman), unit: 'items', sub: `in ${byState('you').length} plans` },
+    { key: 'stuck', label: STATE_LABEL.stuck, value: String(byState('stuck').length), unit: 'plans', sub: `${totals.blocked} items wait on other items` },
+    { key: 'moving', label: STATE_LABEL.moving, value: String(totals.wip), unit: 'items', sub: `in ${byState('moving').length} plans` },
+    { key: 'idle', label: STATE_LABEL.idle, value: String(byState('idle').length), unit: 'plans',
+      sub: `${byState('idle').reduce((n, r) => n + (r.counts?.todo ?? 0), 0)} items ready to start` },
+    { key: 'signoff', label: STATE_LABEL.signoff, value: String(byState('signoff').length), unit: 'plans', sub: 'all items done' },
+  ];
+
+  const renderRow = (row: ProgressRow) => {
+    const change = changes.find((c) => c.id === row.id);
+    return <tr key={row.id} data-testid="ongoing-worklist-row" data-worklist-id={row.id}
+      className={(row.selected ? '' : 'woe__row--out') + (change ? ' woe__row--changed' : '')}>
+      <td className="woe__scope-cell">{row.selected
+        ? <Tooltip label={`In the worklist (priority ${row.rank + 1}). Click to remove.`}>
+          <button type="button" className="woe__scope woe__scope--in" disabled={locked} aria-label={'Remove ' + row.label}
+            onClick={() => stage(toggleDraft(collection!, draft, row.id))}>#{row.rank + 1}</button></Tooltip>
+        : <Tooltip label="Not in the worklist. Click to add.">
+          <button type="button" className="woe__scope" disabled={locked} aria-label={'Add ' + row.label}
+            onClick={() => stage(toggleDraft(collection!, draft, row.id))}><Plus size={12} aria-hidden />Add</button></Tooltip>}
+        {row.selected && sort === 'rank' ? <span className="woe__reorder">
+          <button type="button" disabled={locked || row.rank === 0} aria-label={'Move ' + row.label + ' up'}
+            onClick={() => stage(moveDraft(collection!, draft, row.id, -1))}><ArrowUp size={12} aria-hidden /></button>
+          <button type="button" disabled={locked || row.rank === included.length - 1} aria-label={'Move ' + row.label + ' down'}
+            onClick={() => stage(moveDraft(collection!, draft, row.id, 1))}><ArrowDown size={12} aria-hidden /></button>
+        </span> : null}
+        {change ? <span className="woe__change">{change.label}</span> : null}</td>
+      <td className="woe__plan">{row.harness && row.planSlug && onOpenPlan
+        ? <button type="button" className="woe__plan-link" onClick={() => onOpenPlan(row.harness!, row.planSlug!)}>{row.label}</button>
+        : <strong>{row.label}</strong>}
+        <small>{[row.harness, row.planSlug].filter(Boolean).join(' · ') || row.id}</small></td>
+      <td><span className="woe__progress-cell"><ProgressBar counts={row.counts} />
+        {row.counts ? <span className="woe__num">{row.counts.done}/{total(row.counts)}</span> : null}</span></td>
+      <td><span className="woe__state" data-state={row.st.key}><span aria-hidden />{row.st.label}</span></td>
+      <td className="woe__why">{row.selected ? row.nextStep ?? row.st.why : row.st.why}</td>
+    </tr>;
   };
 
   return <Modal open onOpenChange={(open) => { if (!open) onClose(); }} title={goal.title}
-    description="Dedicated ongoing worklist" srOnlyTitle contentStyle={{ width: 'min(1540px, 96vw)',
+    description="Progress across every plan" srOnlyTitle contentStyle={{ width: 'min(1540px, 96vw)',
       maxWidth: 'none', height: 'min(940px, 94dvh)', padding: 0, display: 'flex', flexDirection: 'column' }}>
-    <section className="woe" data-testid="work-on-everything-console" aria-label="Work on everything worklist">
-      <header className="woe__header"><div className="woe__identity"><span className="woe__mark"><InfinityIcon size={28} aria-hidden /></span>
+    <section className="woe" data-testid="work-on-everything-console" aria-label="Work on everything progress">
+      <header className="woe__header"><div className="woe__identity"><span className="woe__mark"><InfinityIcon size={24} aria-hidden /></span>
         <div><div className="woe__title"><h2>{goal.title}</h2><span className={'hud__chip hud__chip--' + view.status.tone}>{view.status.label}</span></div>
-        <p>Choose what moves forward next.</p></div></div>
-        <div className="woe__actions"><GoalStatusControl goalId={goal.id} status={goal.status}
-          effectiveStatus={data.effectiveStatus} holderLiveness={data.holderLiveness} variant="card" />
+        <p>Progress across every plan. Pick which ones the steward works on.</p></div></div>
+        <div className="woe__actions"><span className="woe__budget">{view.spend ?? 'Spend unavailable'}{view.budget ? <small>Budget {view.budget}</small> : null}</span>
+          <GoalStatusControl goalId={goal.id} status={goal.status}
+            effectiveStatus={data.effectiveStatus} holderLiveness={data.holderLiveness} variant="card" />
           <button className="pc-ctl-act" type="button" onClick={() => void setSettingsOpen(true)}><span><Settings2 size={14} />Settings</span></button>
           {owner && onOpenAgent ? <button className="pc-ctl-act pc-ctl-act--primary" type="button"
             onClick={() => onOpenAgent(owner.ownerId)}><span><MessageSquare size={14} />Ask steward</span></button> : null}
           <button className="pc-ctl-act" type="button" aria-label="Close ongoing work" onClick={onClose}><X size={15} /></button>
         </div></header>
+      {unavailable || !collection ? <div className="woe__body"><div className="woe__unavailable" role="alert">
+        <h3>{unavailable?.title ?? 'Plans could not be loaded'}</h3><p>{unavailable?.detail ?? 'Retry; your saved worklist is unchanged.'}</p>
+        <button type="button" className="pc-ctl-act" onClick={refresh}><span><RefreshCw size={14} aria-hidden />Retry</span></button></div></div> :
       <div className="woe__body">
-        <div className="woe__intro"><div><span className="woe__eyebrow">Workspace priorities</span><h3>Make room for what matters.</h3>
-          <p>Set the order. Choose the scope. Review your changes before applying.</p></div>
-          <span className="woe__budget">{view.spend ?? 'Spend unavailable'}{view.budget ? <small>Budget {view.budget}</small> : null}</span></div>
-        {configured && collection ? <dl className="woe__overview" aria-label="Worklist overview">
-          <div><ListOrdered size={19} aria-hidden /><dt>Plans in scope</dt><dd>{included.length}</dd><small>Considered in priority order</small></div>
-          <div><Layers size={19} aria-hidden /><dt>Available to add</dt><dd>{excluded.length}</dd><small>Outside this goal’s scope</small></div>
-          <div className={changes.length ? 'woe__overview-draft' : ''}><CheckCircle2 size={19} aria-hidden /><dt>Pending changes</dt><dd>{changes.length}</dd>
-            <small>{changes.length ? 'Ready for your review' : 'Your worklist is up to date'}</small></div>
-        </dl> : null}
-        {data.goalData?.error ? <p role="alert">{data.goalData.error}</p> : null}
-        {!configured || !collection ? <div className="woe__empty" role="status">
-          <h3>Worklist unavailable</h3><p>{selection && !selection.ok ? selection.reason : 'The goal’s active-plan collection is not available yet.'}</p>
-          <button type="button" className="pc-ctl-act" onClick={refresh}>Refresh worklist</button></div> :
-        <div className="woe__layout"><div className="woe__list-column">
-          <div className="woe__toolbar"><div><h4>Worklist <span className="woe__count">{rows.length}</span></h4>
-            <p>{query ? `${visible.length} of ${rows.length} plans match` : 'Select a plan to explore its progress.'}</p></div>
-            <label className="woe__search"><TextInput leading={<Search size={16} />}
-            style={{ width: '100%' }}
-            aria-label="Search worklist" placeholder="Search plans…" value={query}
+        <div className="woe__kpis" role="group" aria-label="Totals">{tiles.map((t) =>
+          <button type="button" key={t.label} className="woe__kpi" aria-pressed={t.key !== null && stateFilter === t.key}
+            onClick={() => void setStateFilter(t.key === null || stateFilter === t.key ? null : t.key)}>
+            <span className="woe__kpi-label">{t.key ? <i className={'woe__dot woe__dot--' + t.key} aria-hidden /> : null}{t.label}</span>
+            <span className="woe__kpi-value">{t.value} <small>{t.unit}</small></span>
+            {t.key === null ? <ProgressBar counts={totals} large /> : null}
+            <span className="woe__kpi-sub">{t.sub}</span></button>)}</div>
+        <div className="woe__chart"><h3>Work finished per day for this goal{series ? ` (last ${series.length} days)` : ''}</h3>
+          {series ? <svg viewBox={`0 0 ${series.length * 36} 96`} preserveAspectRatio="none" role="img"
+            aria-label={`${series.reduce((n, d) => n + d.done, 0)} work items finished in the last ${series.length} days`}>
+            {series.map((d, i) => <rect key={d.day} x={i * 36 + 4} width={28} rx={3}
+              y={80 - (d.done / seriesMax) * 76} height={Math.max(1, (d.done / seriesMax) * 76)} className="woe__chart-bar">
+              <title>{`${d.day}: ${d.done} finished`}</title></rect>)}
+            {series.map((d, i) => i % 5 === 0 || i === series.length - 1 ? <text key={'t' + d.day} x={i * 36 + 18} y={94}
+              textAnchor="middle" className="woe__chart-label">{d.day.slice(5).replace('-', '/')}</text> : null)}
+          </svg> : <p className="woe__muted">Daily history needs a newer server build.</p>}</div>
+        {configured?.seededFromList ? <p className="woe__seeded" role="status">Your worklist starts from the {included.length} plans
+          saved on this goal. The first change you apply saves it as your own pick list.</p> : null}
+        <div className="woe__toolbar">
+          <div className="woe__seg-group" role="group" aria-label="Scope">{SCOPES.map((s) => {
+            const n = countable.filter((r) => inScope(r, s)).length;
+            return <button type="button" key={s} aria-pressed={scope === s} onClick={() => void setScope(s)}>
+              {s === 'all' ? `All plans · ${n}` : s === 'in' ? `In worklist · ${n}` : `Not in worklist · ${n}`}</button>;
+          })}</div>
+          <label className="woe__toggle"><input type="checkbox" checked={showEmpty}
+            onChange={(e) => void setShowEmpty(e.target.checked)} /> Show plans with no items</label>
+          <select aria-label="Sort plans" value={sort} onChange={(e) => void setSort(e.target.value as typeof sort)}>
+            {SORTS.map((s) => <option key={s} value={s}>{SORT_LABEL[s]}</option>)}</select>
+          <label className="woe__search"><TextInput leading={<Search size={15} />} style={{ width: '100%' }}
+            aria-label="Search plans" placeholder="Search plans…" value={query}
             onChange={(e) => void setQuery(e.target.value)} /></label>
-          </div>
-          <div className="woe__list" role="listbox" tabIndex={0} ref={listRef} onKeyDown={listKey}
-            aria-label="Worklist draft" aria-activedescendant={selected ? 'woe-' + encodeURIComponent(selected.id) : undefined}
-            aria-busy={locked}>
-            <div className="woe__columns" aria-hidden><span>#</span><span>Plan &amp; next step</span><span>Status</span><span>Scope &amp; order</span></div>
-            <div className="woe__group" role="presentation"><span>In this goal <span className="woe__count">{included.length}</span></span><small>Priority order</small></div>
-            {visible.filter((r) => r.selected).map(renderRow)}
-            {excluded.length ? <div className="woe__group" role="presentation"><span>Available to add <span className="woe__count">{excluded.length}</span></span><small>Excluded from new work</small></div> : null}
-            {visible.filter((r) => !r.selected).map(renderRow)}
-            {!visible.length ? <p className="woe__empty">No plans {query ? 'match your search.' : 'are available.'}</p> : null}
-          </div>
-          {stale ? <div className="woe__warning" role="alert">The worklist changed while you were editing. Your draft is retained. Discard it to start from the current worklist.</div> : null}
-          {problem ? <p className="woe__warning" role="alert">Could not apply: {problem}</p> : null}
-          {notice ? <p className="woe__notice" role="status">{notice}</p> : null}
-          {changes.length ? <div className="woe__draft-bar" role="region" aria-label="Pending changes">
-            <span className="woe__draft-count">{changes.length}</span><div><strong>{changes.length} {changes.length === 1 ? 'plan' : 'plans'} changed</strong>
-              <p>Draft only. Review before changing the worklist.</p></div>
-            <div className="woe__actions"><button type="button" className="pc-ctl-act" disabled={locked} onClick={discard}>Discard</button>
-              <button type="button" className="pc-ctl-act pc-ctl-act--primary" disabled={locked || stale}
-                onClick={() => void setReviewOpen(true)}>Review &amp; apply</button></div></div> :
-            <div className="woe__idle"><Check size={15} aria-hidden /><span>No pending changes. Your edits will be saved as a draft.</span></div>}
-          <p className="woe__shortcuts"><kbd>↑</kbd><kbd>↓</kbd> select <span>·</span> <kbd>Alt</kbd> + <kbd>↑</kbd><kbd>↓</kbd> reorder <span>·</span> <kbd>X</kbd> include / exclude <span>·</span> <kbd>Enter</kbd> open plan</p>
-        </div><aside className="woe__inspector" aria-label="Plan inspector">
-          <div className="woe__inspector-head"><span>Plan details</span>{selected ? <span className="woe__state" data-state={selected.state ?? 'unknown'}><span aria-hidden />{selected.state ?? 'Unavailable'}</span> : null}</div>
-          {selected ? <div className="woe__inspector-body"><small>{selected.harness ?? 'Workspace plan'}</small><h3>{selected.label}</h3>
-            <div className="woe__inspector-tabs" role="tablist" aria-label="Plan inspector sections">
-              {(['summary', 'evidence', 'history'] as const).map((tab) => <button type="button" role="tab" key={tab}
-                aria-selected={inspectorTab === tab} onClick={() => void setInspectorTab(tab)}>{tab[0].toUpperCase() + tab.slice(1)}</button>)}
-            </div>
-            <div role="tabpanel" aria-label={inspectorTab + ' for ' + selected.label}>
-            {inspectorTab === 'summary' ? <><div className="woe__next-card"><h4>Up next</h4><p>{selected.nextStep ?? 'Next step unavailable.'}</p></div>
-              <h4>Why it’s here</h4><p>{selected.reason ?? 'This plan is in the goal’s active-workspace plan collection.'}</p>
-              <h4>Progress</h4>{selected.counts && selectedTotal !== null ? <div className="woe__progress"><div>
-                <strong>{selected.counts.done} <span>/ {selectedTotal} tasks complete</span></strong></div>
-                {selectedTotal > 0 ? <progress aria-label="Plan completion" value={selected.counts.done} max={selectedTotal} /> : null}</div> : <p className="woe__muted">Task progress has not been measured.</p>}
-              <dl><dt>Lane ownership</dt><dd>{selected.liveLaneOwner ? 'Owned' : 'Unmeasured'}</dd>
-                <dt>Fleet members</dt><dd>{selected.fleetMembers ?? 'Unmeasured'}</dd>
-                <dt>Goal scope</dt><dd className={selected.selected ? 'woe__included' : ''}>{selected.selected ? 'Included' : 'Excluded'}</dd></dl>
-              <p className="woe__muted">Priority guides new work. Current tasks keep their owners.</p></> :
-            inspectorTab === 'evidence' ? <><h4>Recent completed outcomes</h4>
-              {selected.outcomes?.length ? selected.outcomes.map((a) => <div className="woe__history-entry" key={a.id}>
-                {onOpenWorkItem ? <button type="button" className="woe__link" onClick={() => onOpenWorkItem(a.id)}>{a.title}</button> : <strong>{a.title}</strong>}
-                <small>{agoText(a.closedAt, nowMs)} · {a.id}</small></div>) : <p>No completed outcome was read for this plan.</p>}
-              <p className="woe__muted">This is the bounded goal activity feed. Open the plan for its full evidence.</p></> :
-            <><h4>Scope &amp; priority history</h4>{data.goalData?.historyError ? <p role="alert">{data.goalData.historyError}</p> :
-              history.length ? history.map((h, i) => <div className="woe__history-entry" key={h.id + '-' + i}>
-                <small>{agoText(h.at, nowMs)} · {h.actor}</small><strong>{h.label}</strong>{h.detail ? <p>{h.detail}</p> : null}</div>) :
-                <p>No scope or priority change was read in the recent history window.</p>}
-              <p className="woe__muted">Recent changes from the shared goal history; reasons also appear in plan history.</p></>}
-            </div>
-            <div className="woe__inspector-actions">{selected.harness && selected.planSlug && onOpenPlan ?
-              <button type="button" className="pc-ctl-act pc-ctl-act--primary" onClick={() => openPlan(selected)}><span>Open plan<ArrowUpRight size={15} aria-hidden /></span></button> : null}
-              {owner && onOpenAgent ? <button type="button" className="pc-ctl-act" onClick={() => onOpenAgent(owner.ownerId)}><span>Ask steward</span></button> : null}</div>
-          </div> : <p className="woe__empty">Select a plan to inspect.</p>}
-        </aside></div>}
-      </div>
+        </div>
+        {stateFilter ? <p className="woe__filter-note">Showing only “{STATE_LABEL[stateFilter]}”.
+          <button type="button" className="woe__link" onClick={() => void setStateFilter(null)}>Clear filter</button></p> : null}
+        <div className="woe__table-wrap"><table className="woe__table" aria-label="Plans">
+          <thead><tr><th>Worklist</th><th>Plan</th><th>Progress</th><th>State</th><th>Why / next step</th></tr></thead>
+          <tbody>{visible.map(renderRow)}</tbody></table>
+          {!visible.length ? <p className="woe__empty">{rows.length ? 'No plans match these filters.' : 'No active plans are available.'}</p> : null}</div>
+        <div className="woe__table-foot"><span className="woe__legend">{(['done', 'moving', 'you', 'stuck', 'todo'] as const).map((k) =>
+          <span key={k}><i className={'woe__dot woe__dot--' + k} aria-hidden />{{ done: 'Done', moving: 'In progress', you: 'Needs you', stuck: 'Blocked', todo: 'To do' }[k]}</span>)}</span>
+          <span>Showing {visible.length} of {rows.length} plans{!showEmpty && emptyHidden ? ` · ${emptyHidden} with no items hidden` : ''}</span></div>
+        {stale ? <div className="woe__warning" role="alert">The worklist changed while you were editing. Your draft is kept. Discard it to start from the current worklist.</div> : null}
+        {problem ? <p className="woe__warning" role="alert">Could not apply: {problem}</p> : null}
+        {notice ? <p className="woe__notice" role="status">{notice}</p> : null}
+        {changes.length ? <div className="woe__draft-bar" role="region" aria-label="Pending changes">
+          <span className="woe__draft-count">{changes.length}</span><div><strong>{changes.length} {changes.length === 1 ? 'plan' : 'plans'} changed</strong>
+            <p>Draft only. Review before changing the worklist.</p></div>
+          <div className="woe__actions"><button type="button" className="pc-ctl-act" disabled={locked} onClick={discard}>Discard</button>
+            <button type="button" className="pc-ctl-act pc-ctl-act--primary" disabled={locked || stale}
+              onClick={() => void setReviewOpen(true)}>Review &amp; apply</button></div></div> :
+          <div className="woe__idle"><Check size={15} aria-hidden /><span>No pending changes. Add or remove plans to start a draft.</span></div>}
+      </div>}
       <footer className="woe__footer"><span><span className={'woe__live-dot' + (owner ? ' woe__live-dot--available' : '')} aria-hidden />{view.status.label} · {owner ? 'Steward available' : 'Live steward unavailable'}</span>
         <span>Changes apply to new work. Running tasks stay assigned.</span></footer>
     </section>
@@ -256,9 +237,9 @@ export default function WorkOnEverythingPanel({ data, nowMs, onClose, onOpenPlan
       <div className="woe__review"><p>The steward uses the new scope and priority for future work. Already running tasks keep their current owners.</p>
         <div className="woe__diff"><div><h4>Now</h4><ol>{before.map((r) => <li key={r.id}>{r.label}</li>)}</ol></div>
           <div><h4>After apply</h4><ol>{included.map((r) => <li key={r.id} className={changes.some((c) => c.id === r.id) ? 'woe__diff-change' : ''}>{r.label}</li>)}</ol></div></div>
-        <h4>Effect on agents</h4><p>Current owners are retained. Priority determines which ready work is considered next; future headcount is not measured.</p>
+        <h4>Effect on agents</h4><p>Only plans in the worklist get new work from this goal. Current owners are kept.</p>
         {changes.filter((c) => c.label === 'Removing').map((c) => <p key={c.id}>
-          {rows.find((r) => r.id === c.id)?.label}: excluded from new work by this goal.</p>)}
+          {rows.find((r) => r.id === c.id)?.label}: no new work from this goal.</p>)}
         <label className="woe__reason">Why? <small>Optional. Saved with this edit and shared in plan history.</small>
           <TextArea value={reason} onChange={(e) => setReason(e.target.value)} maxLength={2000} rows={3}
             placeholder="e.g. Desktop needs to ship before Friday’s demo" /></label>
