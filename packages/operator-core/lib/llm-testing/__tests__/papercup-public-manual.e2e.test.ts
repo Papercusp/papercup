@@ -1044,6 +1044,7 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
     let guideMutation: { status: number; errorCode: string | null } | undefined;
     let operatorCreation: { status: number; hasConversationId: boolean } | undefined;
     let creationPreflight: { status: number; errorCode: string | null; hasChatId: boolean; historyStatus?: number } | undefined;
+    let interceptedModelTurns = 0;
     let browserOrigin: string | undefined;
     let configuredPublicOrigin: string | undefined;
     const evidenceCredentials = [principalBearer!];
@@ -1146,51 +1147,46 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
       }
       expect(guideResponse.ok()).toBe(true);
       expect(guideBody).toMatchObject({ record: { disposition: 'skipped' } });
-      stage = 'portal-auto-create-preflight';
-      await expect.poll(() => conversationCreation!.responses().length, { timeout: 15_000, interval: 100 }).toBeGreaterThan(0);
-      const automaticCreation = conversationCreation!.responses()[0];
-      // Exercise the two creation boundaries without sending a model turn.
-      // Scope the direct control exactly as the Portal's dedicated-instance path.
-      // Additional force-create requests belong only to the zero-model case;
-      // a typed journey must retain the conversation its sidebar already owns.
-      if (preflightOnly) {
-      stage = 'operator-create-preflight';
-      const direct = await fetch(new URL('/api/operator/conversations', baseUrl!), {
-        method: 'POST', headers: { 'content-type': 'application/json', 'x-papercusp-workspace': workspaceId },
-        body: '{}', signal: AbortSignal.timeout(5000),
-      });
-      const directBody = await direct.json().catch(() => null);
-      operatorCreation = { status: direct.status, hasConversationId: typeof directBody?.conversation?.id === 'string' };
-      expect(operatorCreation, 'The selected operator must create a conversation before Portal ownership or a paid turn').toMatchObject({
-        status: 200, hasConversationId: true,
-      });
-      expect(automaticCreation, 'The first sidebar creation must pass; a later explicit request cannot erase its failure').toEqual({
-        status: 201, errorCode: null,
-      });
-      stage = 'portal-create-preflight';
-      const created = await page.evaluate(async () => {
-        const response = await fetch('/api/papercup-chat/conversations', {
-          method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' },
-          body: '{}', signal: AbortSignal.timeout(5000),
-        });
-        return { status: response.status, body: await response.json().catch(() => null) };
-      });
-      creationPreflight = { status: created.status, errorCode: safeHostedErrorCode(created.body),
-        hasChatId: typeof created.body?.chat?.id === 'string' && Boolean(created.body.chat.id) };
-      expect(creationPreflight, 'Portal must record ownership and return a usable chat before a paid turn').toMatchObject({
-        status: 201, errorCode: null, hasChatId: true,
-      });
-      const initialHistory = await readPortalJson(page, `/api/papercup-chat/conversations/${encodeURIComponent(created.body.chat.id)}/turns`);
-      creationPreflight.historyStatus = initialHistory.status;
-      expect(initialHistory.status).toBe(200);
-      expect(initialHistory.body.turns).toEqual([]);
-      stage = 'passed-create-preflight';
-      return;
-      }
-      expect(automaticCreation).toEqual({ status: 201, errorCode: null });
-      stage = 'typed-browser';
       const composer = page.getByRole('textbox', { name: 'Message Papercup', exact: true });
       await composer.waitFor({ state: 'visible', timeout: 30_000 });
+      if (preflightOnly) {
+        // The sidebar creates on Send, not on mount. Exercise its real creation
+        // request but stop the following model turn at the browser boundary.
+        await page.route(/\/api\/papercup-chat\/conversations\/[^/]+\/turns(?:\?.*)?$/, async (route) => {
+          if (route.request().method() !== 'POST') return route.continue();
+          interceptedModelTurns += 1;
+          await route.fulfill({ status: 200, contentType: 'text/event-stream', body: 'event: done\ndata: {}\n\n' });
+        });
+        stage = 'portal-create-preflight';
+        await composer.fill('Disposable conversation creation control');
+        let turnResponse: import('playwright').Response | undefined;
+        let creationFailure: unknown;
+        try {
+          turnResponse = await conversationCreation.waitForTurn(() => page.getByRole('button', { name: 'Send', exact: true }).click(), 15_000);
+        } catch (error) { creationFailure = error; }
+        const first = conversationCreation.responses()[0];
+        if (first) creationPreflight = { ...first, hasChatId: Boolean(turnResponse) };
+        // Even on a UI creation failure, retain an independent upstream control
+        // to distinguish operator creation from Portal ownership/transport.
+        const direct = await fetch(new URL('/api/operator/conversations', baseUrl!), {
+          method: 'POST', headers: { 'content-type': 'application/json', 'x-papercusp-workspace': workspaceId },
+          body: '{}', signal: AbortSignal.timeout(5000),
+        });
+        const directBody = await direct.json().catch(() => null);
+        operatorCreation = { status: direct.status, hasConversationId: typeof directBody?.conversation?.id === 'string' };
+        if (creationFailure) throw creationFailure;
+        expect(operatorCreation).toMatchObject({ status: 200, hasConversationId: true });
+        expect(creationPreflight).toMatchObject({ status: 201, errorCode: null, hasChatId: true });
+        expect(interceptedModelTurns).toBe(1);
+        const chatId = new URL(turnResponse!.url()).pathname.split('/').at(-2)!;
+        const initialHistory = await readPortalJson(page, `/api/papercup-chat/conversations/${encodeURIComponent(chatId)}/turns`);
+        creationPreflight!.historyStatus = initialHistory.status;
+        expect(initialHistory.status).toBe(200);
+        expect(initialHistory.body.turns).toEqual([]);
+        stage = 'passed-create-preflight';
+        return;
+      }
+      stage = 'typed-browser';
       await verifyFixtureBundle();
       writeFileSync(join(manualFixtureDir!, 'faq.mdx'), fixtureFaq(publicCanary));
       expect(JSON.stringify(await verifyFixtureBundle())).toContain(publicCanary);
@@ -1253,7 +1249,7 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
         recordedAt: new Date().toISOString(),
         frames: publicPortalFrames(stream), history, browserText, browserState, guideMutation,
         conversationCreation: conversationCreation?.snapshot(), creationResponses: conversationCreation?.responses(),
-        operatorCreation, creationPreflight }, caseFailure, evidenceCredentials);
+        operatorCreation, creationPreflight, interceptedModelTurns }, caseFailure, evidenceCredentials);
       writeFileSync(join(evidenceDir, 'case.json'), safeEvidence, { mode: 0o600 });
       try {
       try { await browser?.close(); }
