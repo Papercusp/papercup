@@ -6,7 +6,7 @@ vi.mock('../workspace-registry', () => ({
   readRegistry: () => ({ workspaces: [{ id: 'registered-project' }] }),
 }));
 import { databaseCensusEntries, secretCensusProducers, unitCensusEntries, unitCensusDeclarations, verifyHostStateCensus, workspaceRegistryCensusProducer } from './state-census-producers';
-import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, writeFile, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { CensusDeclaration } from '@papercusp/backup';
@@ -18,9 +18,10 @@ describe('secret census producer adapters', () => {
     const path = await mkdtemp(join(tmpdir(), 'unit-producer-'));
     try {
       await writeFile(join(path, 'app.service'), '[Service]');
+      await symlink('/dev/null', join(path, 'masked.service'));
       await writeFile(join(path, 'README.md'), 'not a unit');
       const declarations = await unitCensusDeclarations(path, 'user');
-      expect(declarations.map(entry => entry.name)).toEqual(['app.service']);
+      expect(declarations.map(entry => entry.name).sort()).toEqual(['app.service', 'masked.service']);
       expect(declarations[0].classification).toBe('config');
       expect(declarations[0].producer).toBe(`unit-installer:${path}`);
     } finally { await rm(path, { recursive: true, force: true }); }

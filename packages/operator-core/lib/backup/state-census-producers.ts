@@ -63,7 +63,9 @@ const execFileAsync = promisify(execFile);
 /** Unit definitions supplied by an installer source, independent of live inventory. */
 export async function unitCensusDeclarations(sourceDirectory: string, scope: 'user' | 'system') {
   const files = await readdir(sourceDirectory, { withFileTypes: true });
-  return files.filter(file => file.isFile() && /\.(service|timer|socket|target|path|slice|scope)$/.test(file.name))
+  // Unit aliases/masks are producer-owned configuration too; do not follow them
+  // (a masked unit points at /dev/null and a broken alias still needs transport).
+  return files.filter(file => (file.isFile() || file.isSymbolicLink()) && /\.(service|timer|socket|target|path|slice|scope)$/.test(file.name))
     .map(file => ({ kind: 'unit' as const, root: `systemd-${scope}`, name: file.name,
       classification: 'config' as const, producer: `unit-installer:${sourceDirectory}` }));
 }
