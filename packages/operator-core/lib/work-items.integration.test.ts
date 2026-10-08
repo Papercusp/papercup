@@ -2771,6 +2771,34 @@ describe('unified work_items surface (real PG)', () => {
     );
   });
 
+  it('an underfilled lexical search queries each work-item source once', async () => {
+    const lexicalCalls = { issues: 0, features: 0 };
+    const originalSql = h.sql;
+    h.sql = new Proxy(originalSql, {
+      apply(target, thisArg, args) {
+        const statement = Array.isArray(args[0]) ? args[0].join('') : '';
+        if (statement.includes('ts_rank(_search, websearch_to_tsquery')) {
+          if (statement.includes('FROM harness_shared.work_items')) lexicalCalls.issues += 1;
+          if (statement.includes('FROM harness_shared.harness_features_consolidated')) lexicalCalls.features += 1;
+        }
+        return Reflect.apply(target, thisArg, args);
+      },
+    }) as typeof h.sql;
+
+    try {
+      // An absent token under-fills both families. Before the caller opted out,
+      // the engine re-issued each identical lexical query in coverage-graded mode.
+      const result = await wi.searchWorkItems('nohit-cascade-regression-7f3c', {
+        limit: 3,
+        semantic: false,
+      });
+      expect(result.items).toEqual([]);
+      expect(lexicalCalls).toEqual({ issues: 1, features: 1 });
+    } finally {
+      h.sql = originalSql;
+    }
+  });
+
   it('search (cross-kind FTS): matches title/body across both kind-tables', async () => {
     await wi.createWorkItem({
       kind: 'bug',

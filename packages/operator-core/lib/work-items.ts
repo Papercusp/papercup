@@ -2465,6 +2465,10 @@ export async function searchWorkItems(
     limit,
     mode: 'hybrid',
     embedder,
+    // These family sources implement only the historical AND lexical query;
+    // neither consumes lexicalMode. The engine's second coverage-graded pass
+    // would therefore repeat the same SQL whenever a source under-fills.
+    lexicalCascade: false,
     // Bound the per-query embed the way every other interactive surface does:
     // a dedup-before-filing search must not be able to turn a ~20ms lexical
     // read into a multi-second wait on a cold or degraded embedder.
