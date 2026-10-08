@@ -335,28 +335,55 @@ describe('result-door deferred spill (WI-10004533)', () => {
     expect(text).not.toContain(scratchRunDir);
   });
 
-  it('keeps a full loop:checkpoint read diagnosable when its asynchronous spill rejects without an error code', async () => {
+  it('keeps an explicit-full result bounded and diagnosable when its asynchronous spill rejects without an error code', async () => {
     const scratchRoot = process.env.PAPERCUSP_SCRATCH_ROOT!;
     const failure = new Error(`writer rejected directory '${scratchRoot}'`);
     failure.name = 'ScratchWriteError';
     const writer = vi.spyOn(scratchGc, 'writeWithScratchQuota').mockRejectedValue(failure);
     try {
+      const original = JSON.stringify({
+        ok: true,
+        results: [{
+          id: 'EI-checkpoint-1',
+          ok: true,
+          availability: 'available',
+          checkpoint: 'resume this exact checkpoint',
+          workItem: { id: 'EI-checkpoint-1', title: 'Large record', state: 'open', summary: 's'.repeat(BUDGET_CHARS * 2) },
+        }],
+        counts: { ok: 1, failed: 0 },
+      });
+      expect(original.length).toBeGreaterThan(BUDGET_CHARS);
       const out = await applyResultDoorAsync({
-        ...oversized(),
+        content: [{ type: 'text' as const, text: original }],
         _meta: { explicitFullRequest: true },
-      }, { ...OPTS, toolName: 'loop:checkpoint' });
+      }, { ...OPTS, toolName: 'work_items:get' });
       const text = (out.content[0] as { text: string }).text;
-      const envelope = JSON.parse(text) as { state: string; content: unknown[]; error: { code: string; message: string } };
+      const envelope = JSON.parse(text) as {
+        results: Array<{ id: string; checkpoint: string }>;
+        _projection: { truncated: boolean; cursor: Record<string, unknown>; next: string };
+      };
 
       expect(writer).toHaveBeenCalledTimes(1);
-      expect(envelope).toMatchObject({ state: 'error', content: [], error: { code: 'output_spill_failed' } });
-      expect(envelope.error.message).toContain("ScratchWriteError: writer rejected directory '<scratch path>'");
+      expect(envelope._projection).toMatchObject({
+        truncated: true,
+        cursor: {
+          kind: 'unavailable',
+          reason: 'spill-write-failed',
+          errorDetail: "ScratchWriteError: writer rejected directory '<scratch path>'",
+        },
+      });
+      expect(envelope.results[0]).toMatchObject({
+        id: 'EI-checkpoint-1',
+        checkpoint: 'resume this exact checkpoint',
+      });
+      expect(text.length).toBeLessThan(original.length);
+      expect(envelope._projection.next).toContain('work_items:get');
+      expect(envelope._projection.next).toContain('ScratchWriteError: writer rejected directory');
       expect(text).not.toContain(scratchRoot);
       expect(out._meta?.resultDoor).toMatchObject({
         spillFailed: true,
         spillPath: null,
         spillUri: null,
-        reason: 'explicit-full-request-overflow',
       });
       expect(spillFiles()).toHaveLength(0);
     } finally {

@@ -1245,6 +1245,7 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
   nonTextBytes: number;
   doorTokens: number;
   aggregate?: ResultDoorAggregateReservation;
+  onSpillFailure?: (error: unknown) => void;
 }): T {
   const upstreamProjection = (
     input.result._meta as
@@ -1295,6 +1296,7 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
       bodyOffsetInPayload: 0,
     });
   } catch (err) {
+    input.onSpillFailure?.(err);
     spillError = err instanceof Error ? err.message : String(err);
     spillErrorCode = (err as NodeJS.ErrnoException | undefined)?.code ?? 'unknown error';
     if (err instanceof Error) {
@@ -2000,6 +2002,8 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
     const explicitFullRequest = Boolean(
       (result._meta as { explicitFullRequest?: unknown } | undefined)?.explicitFullRequest,
     );
+    let explicitFullSpillFailed = false;
+    let explicitFullSpillError: unknown;
     let totalChars = 0;
     let textBytes = 0;
     // D-021 activates the old WI-36613 detector: non-text content is now a live
@@ -2056,9 +2060,13 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
     // would have: worse than the tier the caller explicitly opted out of.
     // Spilling the untouched full body and pointing at it is honest about the
     // size and strictly recoverable in full, which the generic reprojection
-    // is not.
+    // is not. If persistence fails, continue into the existing bounded
+    // projector instead of replacing a readable result with an empty error
+    // envelope. That fallback keeps the door cap, preserves the tool-specific
+    // receipt/checkpoint paths below, and carries the failed writer's cause in
+    // the unavailable cursor; it does not retry the tool or the failed write.
     if (explicitFullRequest && sourceBytes > budgetChars) {
-      return spillResultAsReferenceEnvelope({
+      const spilled = spillResultAsReferenceEnvelope({
         result,
         opts,
         reason: 'explicit-full-request-overflow',
@@ -2066,7 +2074,12 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
         nonTextBytes: nonTextChars,
         doorTokens,
         aggregate,
+        onSpillFailure: (error) => {
+          explicitFullSpillFailed = true;
+          explicitFullSpillError = error;
+        },
       });
+      if (!explicitFullSpillFailed) return spilled;
     }
 
     if (sourceBytes <= budgetChars) {
@@ -2168,7 +2181,10 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
         let message = err.message.replace(/[\r\n\t]+/g, ' ').trim();
         // The complete message remains on private `_meta`; model-facing recovery
         // text may include the useful reason, but never the scratch filesystem path.
-        const scratchPaths = fsPath ? [fsPath, dirname(fsPath)] : [];
+        const scratchPaths = [
+          ...(fsPath ? [fsPath, dirname(fsPath)] : []),
+          process.env.PAPERCUSP_SCRATCH_ROOT,
+        ].filter((path): path is string => Boolean(path));
         for (const path of scratchPaths.sort((a, b) => b.length - a.length)) {
           if (path) message = message.replaceAll(path, '<scratch path>');
         }
@@ -2252,6 +2268,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
     const spillPrefix = header + spillBodyRecipe + spillAdvisoryPrefix + (spillIndex ? `${spillIndex}\n` : '');
     if (fsPath != null) {
       try {
+        if (explicitFullSpillFailed) throw explicitFullSpillError;
         if (opts.scratchWriteFailure) throw opts.scratchWriteFailure.error;
         const parts = scratchParts(opts);
         spillManifest = writeScratchReference({
