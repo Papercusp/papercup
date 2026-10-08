@@ -147,6 +147,7 @@ vi.mock('@papercusp/flags', () => ({
 }));
 vi.mock('../events/await/psu-pty-discovery', () => ({
   findLiveHost: findLiveHostMock,
+  findLiveHostAsync: async (ownerId: string) => findLiveHostMock(ownerId),
   hostSupports: hostSupportsMock,
   injectIntoHost: injectMock,
 }));

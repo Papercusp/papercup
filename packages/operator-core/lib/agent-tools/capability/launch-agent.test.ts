@@ -94,6 +94,7 @@ vi.mock('../coordination/liveness-oracle', async (orig) => ({
 vi.mock('../../events/await/psu-pty-discovery', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
   findLiveHost: (ownerId: string) => findLiveHostMock(ownerId),
+  findLiveHostAsync: async (ownerId: string) => findLiveHostMock(ownerId),
   shutdownViaPty: (ownerId: string, opts?: unknown) => shutdownViaPtyMock(ownerId, opts),
 }));
 

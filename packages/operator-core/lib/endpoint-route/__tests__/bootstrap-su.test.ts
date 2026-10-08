@@ -126,6 +126,9 @@ const writeSuCodexHomeMock = vi.fn((opts: any) => ({
   agentsPath: `/fake/.papercusp/su-codex-homes/session-${opts.sessionKey}/AGENTS.md`,
   configPath: `/fake/.papercusp/su-codex-homes/session-${opts.sessionKey}/config.toml`,
 }));
+const assertSuCodexHomeNotOwnedByLiveSessionMock = vi.fn(
+  async (_sessionKey: string | number, _sid: string, _isOwnerLive: (sid: string) => Promise<boolean>) => {},
+);
 const rekeyCodexHomeMock = vi.fn((_source: string | number, target: string | number) =>
   `/fake/.papercusp/su-codex-homes/session-${target}`,
 );
@@ -302,6 +305,8 @@ vi.mock('../../agent-launch-core', async (importOriginal) => ({
     releaseAgentLaunchClaimMock(...(args as [any])),
 }));
 vi.mock('../../role-codex-home', () => ({
+  assertSuCodexHomeNotOwnedByLiveSession: (...args: unknown[]) =>
+    assertSuCodexHomeNotOwnedByLiveSessionMock(...(args as any)),
   writeSuCodexHome: (...args: unknown[]) => writeSuCodexHomeMock(...(args as [any])),
   rekeyCodexHome: (...args: unknown[]) => rekeyCodexHomeMock(...(args as [any, any])),
 }));
@@ -546,6 +551,7 @@ type FakeOrgSql = (strings: TemplateStringsArray, ...values: unknown[]) => Promi
 vi.mock('../../events/await/psu-pty-discovery', async (orig) => ({
   ...((await orig()) as Record<string, unknown>),
   findLiveHost: () => null,
+  findLiveHostAsync: async () => null,
 }));
 // EI-21365235532676472: hermetic PG for the pre-pinned guard's two reads. Only
 // queries the guard itself issues are answered; everything else stays empty.
@@ -1523,6 +1529,11 @@ describe('bootstrap-su', () => {
     expect(json.codexHome).toMatch(/su-codex-homes\/session-42$/);
     expect(json.envelopeEnv.CODEX_HOME).toBe(json.codexHome);
     expect(json.promptFile).toMatch(/AGENTS\.md$/);
+    expect(assertSuCodexHomeNotOwnedByLiveSessionMock).toHaveBeenCalledWith(
+      42,
+      expect.stringMatching(/^su-/),
+      expect.any(Function),
+    );
     // writeSuCodexHome gets the spec's prompt + url + the minted sid.
     expect(writeSuCodexHomeMock).toHaveBeenCalledWith(
       expect.objectContaining({
