@@ -10,8 +10,64 @@
  * against the staging operator.
  */
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
+import { spawnSync } from 'node:child_process';
 import { DEFAULT_VOICE_PREFS } from '../../../voice-prefs';
 import { decodeWavPcm16 } from '../../../voice-node/wav';
+
+// This opt-in detector reaches the serving process, whose provider/settings
+// modules are independent of this file's unit-test mocks. Never count a skipped
+// unavailable provider or the controlled tests below as live synthesis proof.
+const liveFetch = globalThis.fetch;
+const liveBaseUrl = process.env.PAPERCUSP_TTS_LIVE_BASE_URL;
+it.runIf(!!liveBaseUrl)('LIVE selected available provider produces decodable non-silent original-reading audio', async ({ skip }) => {
+  const base = new URL(liveBaseUrl!);
+  expect(['127.0.0.1', 'localhost', '[::1]']).toContain(base.hostname);
+  const request = (path: string, init?: RequestInit) => liveFetch(new URL(`/api/agent-mcp/${path}`, base), {
+    ...init, signal: AbortSignal.timeout(45_000),
+  });
+  const prefsResponse = await request('operator-voice-prefs');
+  expect(prefsResponse.status).toBe(200);
+  const prefs = await prefsResponse.json();
+  const healthResponse = await request('operator-voice-engine-health');
+  expect(healthResponse.status).toBe(200);
+  const health = await healthResponse.json();
+  console.info('LIVE_SELECTED_SPEECH_AVAILABILITY', JSON.stringify({
+    base: base.origin, selected: prefs.ttsEngine,
+    providers: ['kokoro', 'elevenlabs', 'openai', 'cartesia'].map(engine => ({
+      engine, available: health[engine], error: health[`${engine}Error`] ?? null,
+    })),
+  }));
+  if (prefs.ttsEngine === 'browser') skip('Selected browser speech requires a real browser voice; server synthesis is not a substitute.');
+  expect(['kokoro', 'elevenlabs', 'openai', 'cartesia']).toContain(prefs.ttsEngine);
+  if (health[prefs.ttsEngine] === false) skip(`Selected ${prefs.ttsEngine} is unavailable: ${health[`${prefs.ttsEngine}Error`] ?? 'local engine not ready'}`);
+  expect(health[prefs.ttsEngine]).toBe(true);
+  const source = 'Public speech verification. The north count is twelve and the south count is thirty four. Exact final tail.';
+  const response = await request('operator-tts', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ operation: 'read', text: source, format: 'text', allowCloud: true }),
+  });
+  expect(response.status).toBe(200);
+  const records = (await response.text()).trim().split('\n').map(line => JSON.parse(line));
+  expect(records.filter(record => record.ok !== true)).toEqual([]);
+  expect(records.at(-1)).toMatchObject({ type: 'completed', ok: true });
+  const chunks = records.filter(record => record.type === 'chunk');
+  expect(chunks.length).toBeGreaterThan(0);
+  expect(chunks.map(chunk => chunk.text).join('')).toBe(source);
+  for (const chunk of chunks) {
+    expect(chunk.engine).toBe(prefs.ttsEngine);
+    // Decode both the providers' WAV and native MP3 containers, rather than
+    // treating a 200, a byte count, or a canned RIFF prefix as real audio.
+    const decoded = spawnSync('ffmpeg', ['-v', 'error', '-i', 'pipe:0', '-f', 's16le', '-ac', '1', '-ar', '24000', 'pipe:1'], {
+      input: Buffer.from(chunk.audioBase64, 'base64'), timeout: 10_000, maxBuffer: 8 * 1024 * 1024,
+    });
+    expect(decoded.error, 'Audio decoder must be installed and complete').toBeUndefined();
+    expect(decoded.status, decoded.stderr.toString().slice(0, 600)).toBe(0);
+    expect(decoded.stdout.length).toBeGreaterThan(16_000);
+    let peak = 0;
+    for (let offset = 0; offset + 1 < decoded.stdout.length; offset += 2) peak = Math.max(peak, Math.abs(decoded.stdout.readInt16LE(offset)));
+    expect(peak).toBeGreaterThan(500);
+  }
+}, 90_000);
 
 vi.mock('../../../voice-prefs', async (importOriginal) => {
   const orig = await importOriginal<typeof import('../../../voice-prefs')>();
