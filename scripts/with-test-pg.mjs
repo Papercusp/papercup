@@ -84,10 +84,21 @@ const sqlDir = resolveSqlDir();
 let pg = null;
 let profileProcess = null;
 let cleanedUp = false;
+let cleanupStartedAt = null;
+function cleanupStage(stage, detail = {}) {
+  if (!isolatedRuntime || process.env.PC_ISOLATED_RUNTIME_PROOF !== '1') return;
+  const message = { kind: 'isolated-runtime-cleanup', stage,
+    elapsedMs: Date.now() - cleanupStartedAt, ...detail };
+  console.log('[with-test-pg] cleanup ' + JSON.stringify(message));
+  if (process.connected && process.send) process.send(message, () => {});
+}
 async function cleanup() {
   if (cleanedUp) return;
   cleanedUp = true;
+  cleanupStartedAt = Date.now();
+  cleanupStage('start');
   if (profileProcess && profileProcess.exitCode === null && profileProcess.signalCode === null) {
+    cleanupStage('profile-stop', { pid: profileProcess.pid });
     const exited = new Promise((res) => profileProcess.once('exit', res));
     try { process.kill(-profileProcess.pid, 'SIGTERM'); } catch { /* already exited */ }
     await Promise.race([exited, new Promise((res) => setTimeout(res, 5000))]);
@@ -97,19 +108,29 @@ async function cleanup() {
     }
   }
   try {
+    cleanupStage('pg-stop', { health: pg?.health() ?? null });
     await pg?.stop();
-  } catch {
+    cleanupStage('pg-stopped');
+  } catch (error) {
+    cleanupStage('pg-stop-error', { error: error?.message ?? String(error) });
     /* best effort — we still want the datadir gone */
   }
+  cleanupStage('remove-private-state');
   await rm(dataDir, { recursive: true, force: true }).catch(() => {});
   if (runtimeRoot) await rm(runtimeRoot, { recursive: true, force: true }).catch(() => {});
+  cleanupStage('complete', { runtimeRemoved: !runtimeRoot || !existsSync(runtimeRoot), pgDataRemoved: !existsSync(dataDir) });
 }
 
 console.log(`[with-test-pg] booting throwaway PG on :${port} (datadir ${dataDir})`);
 console.log(`[with-test-pg] migrations: ${sqlDir}`);
 
 try {
-  pg = await startEmbeddedPostgresServer({ dataDir, port, dbSqlDir: sqlDir, onLog: () => {} });
+  pg = await startEmbeddedPostgresServer({ dataDir, port, dbSqlDir: sqlDir, onLog: message => {
+    // Preserve boot/migration progress as well as shutdown. A deadline before
+    // start() returns otherwise erases the stage that actually consumed it.
+    console.log('[with-test-pg] pg ' + String(message));
+    if (cleanupStartedAt !== null) cleanupStage('pg-log', { message });
+  } });
 } catch (e) {
   console.error(`[with-test-pg] failed to start postgres: ${e?.stack ?? e}`);
   await cleanup();
