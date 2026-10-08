@@ -21,7 +21,7 @@ export const PROFILE_OWNED_SPECS: RegExp[] = [/hosted-http1-acceptance\.spec\.ts
 
 export default defineConfig({
   testDir: './e2e',
-  testMatch: /.*\.spec\.ts$/,
+  testMatch: /.*\.spec\.(?:ts|mts)$/,
   testIgnore: PROFILE_OWNED_SPECS,
   // Warm the cold Vite dev server once before any worker starts, so no
   // worker's first test races dependency optimization (WI-10006792).
