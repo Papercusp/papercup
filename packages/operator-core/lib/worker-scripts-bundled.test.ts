@@ -211,12 +211,17 @@ describe('shared worker recipe executes in the bundled plain-node runtime', () =
   let output: string;
   let gateMeta: string;
   let compilerPath: string;
+  let buildOutput: string;
   const recipe = join(REPO_ROOT, 'apps/operator/bin/bundle-host-common.sh');
   const build = (extraEnv: NodeJS.ProcessEnv = {}, subject = recipe, destination = output) => spawnSync('bash', [
     '-c', 'set -euo pipefail; source "$1"; bundle_host_workers "$2" "$3" "${PAPERCUSP_EMBED_WORKER_SCRIPT:-}"', 'worker-recipe-test', subject, REPO_ROOT, destination,
   ], {
     cwd: REPO_ROOT,
-    env: { ...process.env, PATH: compilerPath, PAPERCUSP_EMBED_WORKER_SCRIPT: '', BUNDLE_HOST_GATE_META_DIR: gateMeta, ...extraEnv },
+    // The fixture compiler reads installed local bytes and never touches npm's
+    // real cache. Exercise the lease in a private domain, so real maintenance
+    // cannot delay this bounded unit build.
+    env: { ...process.env, PATH: compilerPath, PAPERCUSP_FS_MUTEX_LOCK_DIR: join(output, 'package-cache-locks'),
+      PAPERCUSP_EMBED_WORKER_SCRIPT: '', BUNDLE_HOST_GATE_META_DIR: join(destination, 'missing-gate-meta'), ...extraEnv },
     encoding: 'utf8',
     timeout: 30_000,
   });
@@ -230,11 +235,33 @@ describe('shared worker recipe executes in the bundled plain-node runtime', () =
     expect(existsSync(gateMeta)).toBe(false);
     symlinkSync(join(REPO_ROOT, 'node_modules'), join(output, 'node_modules'), 'dir');
     const result = build();
+    expect(result.error, `worker fixture signal=${result.signal}; ${result.stdout + result.stderr}`).toBeUndefined();
     expect(result.status, result.stdout + result.stderr).toBe(0);
+    buildOutput = result.stdout + result.stderr;
   }, 40_000);
 
   afterAll(() => {
     if (output) rmSync(output, { recursive: true, force: true });
+  });
+
+  it('holds the shared package-cache reader for every actual worker compiler invocation', () => {
+    expect((buildOutput.match(/NPM_INSTALL_SAFE guarding package-cache reader:/g) ?? []).length)
+      .toBe(ESBUILD_WORKERS.length);
+  });
+
+  it('control: successful compilation without the package-cache lease is detected', () => {
+    const original = readFileSync(recipe, 'utf8');
+    const guarded = '"${package_runner[@]}" npx --yes esbuild@0.25.0 "$source"';
+    expect(original.split(guarded)).toHaveLength(2);
+    const subject = join(output, 'recipe-without-cache-lease.sh');
+    writeFileSync(subject, original.replace(guarded, 'npx --yes esbuild@0.25.0 "$source"'));
+    const result = build({}, subject, join(output, 'cache-lease-control'));
+    expect(result.error, `worker control signal=${result.signal}; ${result.stdout + result.stderr}`).toBeUndefined();
+    expect(result.status, result.stdout + result.stderr).toBe(0);
+    // A build result alone used to hide the unprotected cache read. The same
+    // receipt assertion as the positive case distinguishes the regression.
+    expect((result.stdout + result.stderr).match(/NPM_INSTALL_SAFE guarding package-cache reader:/g) ?? [])
+      .toHaveLength(0);
   });
 
   it('creates missing gate metadata and records every copied and bundled worker input', () => {

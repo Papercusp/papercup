@@ -120,6 +120,103 @@ describe('rubric amend receipts in shared Postgres', () => {
     expect(await getAmendReceipt(rubric, key)).toMatchObject({ state: 'committed' });
   });
 
+  it.each([true, false])('retries an unstaffed review with an outer ok:true (fresh launch detail: %s)', async (withFresh) => {
+    const key = `unstaffed-review-${withFresh}`;
+    const rubric = 'acceptance-receipt-unstaffed';
+    let executions = 0;
+    const failedPreview = {
+      ok: true, dryRun: true, preview: { approvalRequired: true },
+      review: {
+        state: 'no-eligible-reviewer', reason: 'no_qualified_responder',
+        ...(withFresh ? { freshReviewer: { state: 'not-launched', reason: 'headless spawn failed spawn E2BIG' } } : {}),
+      },
+    };
+    expect(await trackAmendRun(key, rubric, async () => {
+      executions++;
+      return failedPreview;
+    })).toEqual(failedPreview);
+    expect(await getAmendReceipt(rubric, key)).toMatchObject({
+      state: 'failed', result: failedPreview,
+      error: withFresh ? 'headless spawn failed spawn E2BIG' : 'no eligible amendment reviewer was routed or launched',
+    });
+    const launched = {
+      ...failedPreview,
+      review: { state: 'no-eligible-reviewer', freshReviewer: { state: 'launched', taskId: 'fresh-1' } },
+    };
+    expect(await trackAmendRun(key, rubric, async () => {
+      executions++;
+      return launched;
+    })).toEqual(launched);
+    expect(await getAmendReceipt(rubric, key)).toMatchObject({ state: 'previewed', result: launched });
+    // A successful fresh fallback is kept even though routing found nobody.
+    expect(await trackAmendRun(key, rubric, async () => {
+      executions++;
+      return { ok: false, error: 'duplicate reviewer' };
+    })).toEqual(launched);
+    expect(executions).toBe(2);
+  });
+
+  it('atomically reclaims a legacy preview that started no reviewer across workers', async () => {
+    const key = 'legacy-unstaffed-preview';
+    const rubric = 'acceptance-receipt-legacy';
+    const legacy = {
+      ok: true, dryRun: true,
+      review: { state: 'no-eligible-reviewer', freshReviewer: { state: 'not-launched', reason: 'spawn E2BIG' } },
+    };
+    await db.adminSql`
+      INSERT INTO harness_shared.rubric_amend_receipts
+        (workspace_id, rubric_ref, idempotency_key, state, result_json, finished_at)
+      VALUES (${activeWorkspaceId()}, ${rubric}, ${key}, 'previewed', ${JSON.stringify(legacy)}::text::jsonb, now())
+    `;
+    let executions = 0;
+    let release!: (value: Record<string, unknown>) => void;
+    const work = new Promise<Record<string, unknown>>((resolve) => { release = resolve; });
+    let started!: () => void;
+    const startedWork = new Promise<void>((resolve) => { started = resolve; });
+    const first = trackAmendRun(key, rubric, () => {
+      executions++;
+      started();
+      return work;
+    });
+    await startedWork;
+    vi.resetModules();
+    const otherWorker = await import('./amend-receipts');
+    expect(await otherWorker.trackAmendRun(key, rubric, async () => {
+      executions++;
+      return { ok: true, duplicate: true };
+    })).toMatchObject({ pending: true, idempotencyKey: key });
+    const routed = { ok: true, dryRun: true, review: { state: 'routed', conversationId: 'review-1' } };
+    release(routed);
+    expect(await first).toEqual(routed);
+    expect(executions).toBe(1);
+    expect(await getAmendReceipt(rubric, key)).toMatchObject({ state: 'previewed', result: routed });
+    expect(await trackAmendRun(key, rubric, async () => {
+      executions++;
+      return { ok: false, error: 'duplicate routed reviewer' };
+    })).toEqual(routed);
+    expect(executions).toBe(1);
+  });
+
+  it('keeps preview-only and no-review-required results replayable', async () => {
+    let executions = 0;
+    for (const [key, result] of [
+      ['preview-only', { ok: true, dryRun: true, review: { state: 'not-requested' } }],
+      ['review-not-required', { ok: true, dryRun: true, review: { state: 'not-required' } }],
+    ] as const) {
+      const rubric = 'acceptance-receipt-preview-controls';
+      expect(await trackAmendRun(key, rubric, async () => {
+        executions++;
+        return result;
+      })).toEqual(result);
+      expect(await getAmendReceipt(rubric, key)).toMatchObject({ state: 'previewed' });
+      expect(await trackAmendRun(key, rubric, async () => {
+        executions++;
+        return { ok: false };
+      })).toEqual(result);
+    }
+    expect(executions).toBe(2);
+  });
+
   // WI-10006937: an operator restart killed the worker mid-run, so its receipt stayed
   // 'running' with no finished_at. The key is deterministic, so every retry answered
   // `pending` forever and the review request could never be re-sent.

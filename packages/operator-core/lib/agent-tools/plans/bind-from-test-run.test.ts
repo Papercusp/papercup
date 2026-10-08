@@ -136,6 +136,27 @@ describe('deriveBindingFromTestRun', () => {
       } } });
   });
 
+  it.each(['object', 'json'])('keeps an isolated %s counterexample on its source and test evidence plane', (encoding) => {
+    const snapshot = { schemaVersion: 1, units: ['bg-host'], fingerprint: 'a'.repeat(64),
+      observedAt: '2026-09-23T14:59:00Z' };
+    const execution = isolatedExecution({ runtimeEnvironmentBefore: snapshot, runtimeEnvironmentAfter: snapshot });
+    const out = deriveBindingFromTestRun(input({ evidenceKind: 'counterexample',
+      details: { evidencePlane: 'tree' } }),
+    run({ execution_details: encoding === 'json' ? JSON.stringify(execution) : execution }), root, 'run');
+    expect(out).toMatchObject({ ok: true, binding: { evidenceKind: 'counterexample', testRunId: 42,
+      measurement: { kind: 'repo-files', testPaths: [TEST], sourcePaths: expect.any(Array) },
+      details: { evidencePlane: 'tree', adequacy: { outcome: 'passed', executed: true } },
+    } });
+    expect(out.ok && out.binding.measurement).not.toHaveProperty('runtimeUnits');
+    expect(out.ok && out.binding.measurement).not.toHaveProperty('completedRuntime');
+  });
+
+  it('refuses an explicit isolated completed-runtime selector on counterexample evidence', () => {
+    expect(deriveBindingFromTestRun(input({ evidenceKind: 'counterexample',
+      completedRuntime: completedIsolated }), run({ execution_details: isolatedExecution() }), root, 'run'))
+      .toMatchObject({ ok: false, error: 'test_run_runtime_witness_missing' });
+  });
+
   it.each([
     ['nonintegration', { testLayer: 'unit' }],
     ['missing receipts', { isolatedRuntimeReceipts: undefined }],

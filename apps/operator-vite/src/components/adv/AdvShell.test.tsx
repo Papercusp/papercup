@@ -58,6 +58,11 @@ const nuqsState: Record<string, unknown> = {
 };
 const nuqsSetters: Record<string, ReturnType<typeof vi.fn>> = {};
 const routeState = { pathname: '/adv', search: '' };
+const routePush = vi.fn();
+let reportsLibraryOn = true;
+vi.mock('@papercusp/flags/client', () => ({
+  useFlag: (key: string) => key === 'papercusp-reports-library' ? reportsLibraryOn : true,
+}));
 vi.mock('nuqs', () => ({
   ...nuqsParsers,
   useQueryState: (key: string) => {
@@ -66,6 +71,7 @@ vi.mock('nuqs', () => ({
   },
 }));
 vi.mock('@/lib/router-compat/navigation', () => ({
+  useRouter: () => ({ push: routePush }),
   usePathname: () => routeState.pathname,
   useSearchParams: () => new URLSearchParams(routeState.search),
 }));
@@ -268,6 +274,8 @@ beforeEach(() => {
   nuqsState.max = 'off';
   routeState.pathname = '/adv';
   routeState.search = '';
+  routePush.mockClear();
+  reportsLibraryOn = true;
   // AdvShell reads the router compatibility hooks; the default test location
   // is the ordinary non-embedded operator route.
   fullscreenElement = null;
@@ -410,6 +418,29 @@ describe('AdvShell — strip + header', () => {
 });
 
 describe('AdvShell — "More" menu (D-001 mitigations: grouped, searchable, recents)', () => {
+  it.each(['expanded', 'all'])('opens the existing Reports library from More in %s scope', async (scope) => {
+    nuqsState.scope = scope;
+    await renderShell();
+    expect(screen.queryByText('Reports')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'More sections' }));
+    const reports = await screen.findByText('Reports');
+    expect(reports.closest('[cmdk-group]')?.textContent).toContain('Insights');
+    fireEvent.change(screen.getByLabelText('Filter sections'), { target: { value: 'reports' } });
+    await waitFor(() => expect(screen.queryByText('Git')).toBeNull());
+    fireEvent.click(reports);
+    expect(routePush).toHaveBeenCalledWith('/reports');
+    await waitFor(() => expect(screen.queryByText('Reports')).toBeNull());
+    expect(nuqsSetters.tab).not.toHaveBeenCalledWith('reports');
+  });
+
+  it('hides Reports from More when the existing reports library flag is disabled', async () => {
+    reportsLibraryOn = false;
+    await renderShell();
+    fireEvent.click(screen.getByRole('button', { name: 'More sections' }));
+    await screen.findByText('Git');
+    expect(screen.queryByText('Reports')).toBeNull();
+  });
+
   it('groups the secondary tabs under labelled headings', async () => {
     await renderShell();
     fireEvent.click(screen.getByRole('button', { name: 'More sections' }));

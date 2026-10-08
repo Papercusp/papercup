@@ -1868,6 +1868,7 @@ describe('spec-test-adequacy per-clause evaluator', () => {
           executed: true,
           outcome: 'survived',
           targeted: 'spec-003-01',
+          scenarioIds: ['reader-refuses-wrong-cached-edition'],
           testCases: [caseTitle],
         },
       },
@@ -2249,6 +2250,26 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(notSatisfiedByHistory.verdict).not.toBe('pass');
   });
 
+  it.each([
+    { rung: 'l3' as const, classRef: 'plan-class-feature-ship' as const },
+    { rung: 'l4' as const, classRef: 'plan-class-bugfix' as const },
+  ])('does not credit $rung from a generic test binding with self-attested rung metadata', ({ rung, classRef }) => {
+    const genericTestBinding = evidence({
+      evidenceKind: 'test',
+      evidenceRef: `test-run:generic-${rung}-rung`,
+      coverageEvidenceRef: null,
+      details: { adequacy: { coverageRungs: { [rung]: true } } },
+    });
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [genericTestBinding],
+      classRef,
+    });
+    expect(result.requiredProofFloor).toBe(rung);
+    expect(result.ratings['plan-class-risk-floor'].rating).toBe('unknown');
+    expect(result.verdict).not.toBe('pass');
+  });
+
   it('keeps omitted bindings in the graded population when current fingerprints are partial', () => {
     const selected = evidence({ evidenceRef: 'surface:selected' });
     const omitted = evidence({ evidenceRef: 'surface:omitted' });
@@ -2289,8 +2310,8 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(result.verdict).toBe('unknown');
   });
 
-  it('pins the evaluator revision for canonical LLM scenario reachability', () => {
-    expect(SPEC_TEST_ADEQUACY_EVALUATOR_REVISION).toBe(12);
+  it('pins the evaluator revision when an adequacy rule changes', () => {
+    expect(SPEC_TEST_ADEQUACY_EVALUATOR_REVISION).toBe(15);
   });
 
   it('requires an explicit fixture-free attestation for executable proof with a null fixture fingerprint', () => {
@@ -3225,6 +3246,28 @@ describe('disclosed-gap criterion (P-002: a disclosure cannot coexist with a mac
     expect(result.ratings['disclosed-gap'].rating).toBe('not-applicable');
     expect(result.wouldBlock).not.toContain('disclosed-gap');
   });
+
+  it.each([
+    ['scope', 'Mocked unit adapter calls pass; actual producer integration remains a separate requirement.'],
+    ['proofScope', 'Mocked unit adapter calls pass; actual producer integration remains a separate requirement.'],
+    ['notes', ['Mocked unit adapter calls pass; actual producer integration remains a separate requirement.']],
+  ] as const)(
+    'blocks a structured observations.%s disclosure that leaves producer integration as a separate requirement',
+    (field, disclosure) => {
+      const base = evidence();
+      const disclosureText = Array.isArray(disclosure) ? disclosure[0] : disclosure;
+      const result = evaluateSpecTestAdequacy({
+        clause: clause(),
+        evidence: [evidence({ details: { ...base.details, observations: { [field]: disclosure } } })],
+        classRef: 'plan-class-feature-ship',
+      });
+
+      expect(result.ratings['disclosed-gap'].rating).toBe('fail');
+      expect(result.ratings['disclosed-gap'].evidence).toContain(disclosureText);
+      expect(result.wouldBlock).toContain('disclosed-gap');
+      expect(result.verdict).toBe('fail');
+    },
+  );
 
   it('fails the clause and names the gap text when the disclosure is nested under adequacy', () => {
     const base = evidence();

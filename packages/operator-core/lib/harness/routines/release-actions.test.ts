@@ -2705,12 +2705,14 @@ describe('green-checkpoint scope isolation (2026-07-01 bg-host OOM blast-radius)
         repairHead: 'incumbent-repair', runId: 'incumbent-run',
         currentPhysicalRunner: { id: 'incumbent-runner', leaseExpiresAtMs: 1234, heartbeatAtMs: 1200 },
       },
+      repairQueueReconciliation: { status: 'blocked', reason: 'queue-not-safe-unstarted' },
     });
     await getSystemAction('green-checkpoint')!(ctx);
     const event = appendPipelineEvent.mock.calls.map((c) => c[0] as { status: string; detail: unknown })
       .find((e) => e.status === 'skipped-qualification-conflict');
     expect(event?.detail).toMatchObject({
       reason: 'conflict', stage: 'begin',
+      repairQueueReconciliation: { status: 'blocked', reason: 'queue-not-safe-unstarted' },
       requestedAttemptId: beginStoredQualification.mock.calls[0][1].attemptId,
       observedAttemptId: 'incumbent-attempt', observedRunnerId: 'incumbent-runner',
       candidate: 'incumbent-candidate', repairHead: 'incumbent-repair', runId: 'incumbent-run',

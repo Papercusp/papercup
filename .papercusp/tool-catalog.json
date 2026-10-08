@@ -6055,7 +6055,7 @@
           "POST"
         ]
       },
-      "description": "Request a consult (request/creation verb), not a reader for an existing conversation; use conversations:get { id }. The closed-consult archive serves matches first; otherwise transcript expertise routes to an isolated answer session and does not wake the expert’s live session. Below-floor outcomes are reported honestly.",
+      "description": "Accept a recoverable consult request and return its conversation identity before routing/launch completes. Read conversations:get { id } for current routing and replies. Reuse request_key and the same payload after a timeout; a new key asks for a fresh consult. Transcript expertise routes to an isolated answer session and does not wake the expert’s live session.",
       "capabilities": [
         "coord:write"
       ],

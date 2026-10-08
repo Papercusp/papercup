@@ -430,7 +430,8 @@ bundle_rc=0
   while :; do
     "${COMMITTED_NODE[@]}" "$REPO_ROOT/scripts/mutation-probe-window-gate.mjs" wait --root "$REPO_ROOT" \
       --stamp-file "$PROBE_STAMP" || exit 1
-    if ! npx --yes esbuild@0.25.0 "$ENTRY" \
+    if ! "${COMMITTED_NODE[@]}" "$REPO_ROOT/scripts/npm-install-safe.mjs" \
+      --repo-root "$REPO_ROOT" --exec-under-cache-lock -- npx --yes esbuild@0.25.0 "$ENTRY" \
       --bundle --platform=node --format=esm --target=node22 \
       --outfile="$TMPFILE" \
       --metafile="$METAFILE" \

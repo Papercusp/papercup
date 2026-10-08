@@ -139,6 +139,28 @@ describe('02C draft and apply', () => {
     expect(document.querySelector('dl[aria-label="Worklist overview"]')).toBeNull();
     expect(screen.getByText('Worklist unavailable')).toBeTruthy();
   });
+  it('renders a configured empty worklist without errors or writes', () => {
+    const fetch = vi.fn(); vi.stubGlobal('fetch', fetch);
+    const data = fixture(), collection = data.goalData!.collections.worklist;
+    if (!collection.selection.ok || !collection.selection.configured) throw new Error('fixture');
+    collection.rows = [];
+    collection.selection.items = [];
+    collection.selection.selected = [];
+    collection.selection.policy = { order: [], excluded: [] };
+    const open = vi.fn();
+    render(<WorkOnEverythingPanel data={data} nowMs={Date.now()} onClose={vi.fn()} refresh={vi.fn()} onOpenPlan={open} />);
+    expect(screen.getByText('No plans are available.')).toBeTruthy();
+    expect(screen.getByText('Select a plan to inspect.')).toBeTruthy();
+    expect(screen.queryByText('Worklist unavailable')).toBeNull();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryAllByRole('option')).toHaveLength(0);
+    for (const key of ['ArrowDown', 'ArrowUp', 'x', 'Enter']) {
+      fireEvent.keyDown(screen.getByRole('listbox'), { key });
+    }
+    expect(screen.queryByRole('region', { name: 'Pending changes' })).toBeNull();
+    expect(open).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+  });
   it('reorders from a focused row control without triggering global navigation', () => {
     render(<WorkOnEverythingPanel data={fixture()} nowMs={Date.now()} onClose={vi.fn()} refresh={vi.fn()} />);
     const control = screen.getByRole('button', { name: 'Move Search reliability up' });

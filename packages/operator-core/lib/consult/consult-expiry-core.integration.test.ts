@@ -29,12 +29,23 @@ import { sendMessage } from '../agent-tools/coordination/messages';
 
 // Execute the REAL message writer + REAL PG replay backend, but never resolve
 // synthetic requester ids against the live agent roster or use the live DB.
-const coordFixture = vi.hoisted(() => ({ log: null as PgCoordLog | null }));
+const coordFixture = vi.hoisted(() => ({
+  log: null as PgCoordLog | null,
+  sql: null as Sql | null,
+}));
 vi.mock('../agent-tools/coordination/recipient-resolve', () => ({
   resolveBestEffortAgainstRoster: async (to: string[]) => to,
 }));
 vi.mock('../agent-tools/coordination/log', async (original) => ({
   ...await original<typeof import('../agent-tools/coordination/log')>(),
+  // The message writer seals through this seam before appending. Both paths
+  // must use the same isolated PG; retaining the production SQL resolver here
+  // leaks to the live database even though coordLog itself is rebound.
+  coordSql: () => {
+    if (!coordFixture.sql) throw new Error('coord fixture SQL is not initialized');
+    return coordFixture.sql;
+  },
+  coordHasPgFastPath: () => true,
   coordLog: {
     appendLineIfAbsent: (...args: Parameters<PgCoordLog['appendLineIfAbsent']>) =>
       coordFixture.log!.appendLineIfAbsent(...args),
@@ -67,6 +78,9 @@ const MIGRATION_963 = existsSync(MIGRATION_963_ARMED) ? MIGRATION_963_ARMED : `$
 const MIGRATION_1225 = fileURLToPath(
   new URL('../../../../libs/papercusp/libs/db/sql/1225-consult-dispatch-attempts.sql', import.meta.url),
 );
+const MIGRATION_1302 = fileURLToPath(
+  new URL('../../../../libs/papercusp/libs/db/sql/1302-personal-disclosure-labels.sql', import.meta.url),
+);
 
 let rootSql: Sql;
 
@@ -98,7 +112,13 @@ beforeAll(async () => {
   await rootSql.unsafe(readFileSync(MIGRATION_834, 'utf8'));
   await rootSql.unsafe(readFileSync(MIGRATION_844, 'utf8'));
   await rootSql.unsafe(readFileSync(MIGRATION_1225, 'utf8'));
+  // Empty disclosure ledger for these synthetic requesters, using the real
+  // schema. Keep the production sealing check active rather than mocking it
+  // away; its FK needs only this parent identity table in the isolated fixture.
+  await rootSql.unsafe('CREATE TABLE harness_shared.users (id uuid PRIMARY KEY)');
+  await rootSql.unsafe(readFileSync(MIGRATION_1302, 'utf8'));
   await ensureCoordEventLogTable(rootSql);
+  coordFixture.sql = rootSql;
   coordFixture.log = new PgCoordLog({
     getSql: () => rootSql,
     ensureSchema: async () => {},
@@ -111,6 +131,8 @@ beforeAll(async () => {
 }, 120_000);
 
 afterAll(async () => {
+  coordFixture.sql = null;
+  coordFixture.log = null;
   await rootSql?.end({ timeout: 5 });
 });
 
@@ -940,12 +962,15 @@ describe('P-005 requester alert — real message writer and PG replay boundary',
     });
     const first = makeDeps({ withReach: true });
     first.deps.findSilentResponders = async () => new Set([id]);
+    let persistenceFailure: unknown;
     first.deps.notifyRequester = consultExpiryNotifyRequester(async (identity, opts) => {
-      await sendMessage(identity, mutate ? { ...opts, msgId: undefined } : opts);
+      try { await sendMessage(identity, mutate ? { ...opts, msgId: undefined } : opts); }
+      catch (error) { persistenceFailure = error; throw error; }
       throw new Error('transport acknowledgement lost AFTER commit');
     });
     const attempted = await sweepExpiredConsults(first.deps);
     expect(attempted.requesterAlertFailures).toContain(id);
+    expect(persistenceFailure, 'real requester-alert persistence must succeed before injecting acknowledgement loss').toBeUndefined();
     expect(await stateOf(id, ws)).toMatchObject({ state: 'awaiting_responder', closed_at: null });
     const original = (await durableAlerts(id))[0].body;
 

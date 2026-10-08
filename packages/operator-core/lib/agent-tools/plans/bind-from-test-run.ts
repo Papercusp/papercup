@@ -752,15 +752,21 @@ export function deriveBindingFromTestRun(
     ? recordedExecution.isolatedRuntimeReceipts.map(receipt => `isolated-integration:${receipt.runId}`)
     : undefined;
   const completedWitnessPresent = input.completedRuntime?.kind === 'isolated-integration'
-    ? isolatedRuntimeUnits && JSON.stringify([...isolatedRuntimeUnits].sort())
+    ? evidenceKind === 'test' && isolatedRuntimeUnits && JSON.stringify([...isolatedRuntimeUnits].sort())
       === JSON.stringify(input.completedRuntime.runIds.map(id => `isolated-integration:${id}`).sort())
     : runtimeWitness;
   if (input.completedRuntime && !completedWitnessPresent) {
     return { ok: false, error: 'test_run_runtime_witness_missing', testRunId,
       message: `test-run ${testRunId} has no stable execution-time runtime witness; completed certification cannot create one.` };
   }
-  const runtimeUnits = input.completedRuntime && input.completedRuntime.kind !== 'isolated-integration'
-    ? runtimeWitness?.units : isolatedRuntimeUnits ?? runtimeWitness?.units;
+  // Completed isolated lifetimes certify positive live tests. A negative
+  // counterexample retains its original source/test/ledger proof without
+  // inheriting a runtime selector that the completed-runtime reader cannot
+  // certify. Do not fall back to an unrelated serving-host snapshot either.
+  const runtimeUnits = isolatedRuntimeUnits && evidenceKind !== 'test' && !input.completedRuntime
+    ? undefined
+    : input.completedRuntime && input.completedRuntime.kind !== 'isolated-integration'
+      ? runtimeWitness?.units : isolatedRuntimeUnits ?? runtimeWitness?.units;
   const binding: DerivedTestRunBinding = {
     workItemId: input.workItemId,
     ...(input.specId ? { specId: input.specId } : {}),

@@ -123,9 +123,15 @@ bundle_host_spawner() { # <repo root> <out dir> [esbuild boundary args...]
   # WI-10005802: bundle-host.sh defines COMMITTED_NODE so these helpers run their committed
   # bytes before its restricted-hold gate; other callers (release packaging) keep plain node.
   local -a run_node=("${COMMITTED_NODE[@]:-node}")
+  local -a package_runner=("${run_node[@]}" "$repo_root/scripts/npm-install-safe.mjs" --repo-root "$repo_root" --exec-under-cache-lock --)
+  # Exact-source desktop cuts already carry an API-compatible cache runner for
+  # older target helpers. Preserve that route instead of sending a new CLI flag.
+  if declare -F run_sidecar_cached_package >/dev/null 2>&1; then
+    package_runner=(run_sidecar_cached_package)
+  fi
   if ! "${run_node[@]}" "$repo_root/scripts/mutation-probe-window-gate.mjs" wait --root "$repo_root" \
       --stamp-file "$stamp" ||
-     ! npx --yes esbuild@0.25.0 "$repo_root/apps/operator/bin/spawner-sidecar.ts" \
+     ! "${package_runner[@]}" npx --yes esbuild@0.25.0 "$repo_root/apps/operator/bin/spawner-sidecar.ts" \
       --bundle --platform=node --format=esm --target=node22 \
       --outfile="$tmp" --metafile="$meta" --banner:js="$HOST_BANNER" \
       "${HOST_BANNER_DEFINES[@]}" --define:__PAPERCUSP_BUNDLED_SIDECAR__=true "$@" ||
@@ -146,6 +152,13 @@ bundle_host_spawner() { # <repo root> <out dir> [esbuild boundary args...]
 
 bundle_host_workers() {
   local repo_root="$1" out_dir="$2" source output tmp
+  # A private dependency snapshot still shares npx's package cache with every
+  # checkout. The repo install lease cannot protect it from cache maintenance.
+  local -a run_node=("${COMMITTED_NODE[@]:-node}")
+  local -a package_runner=("${run_node[@]}" "$repo_root/scripts/npm-install-safe.mjs" --repo-root "$repo_root" --exec-under-cache-lock --)
+  if declare -F run_sidecar_cached_package >/dev/null 2>&1; then
+    package_runner=(run_sidecar_cached_package)
+  fi
   local -a sources=(
     "${3:-$repo_root/libs/generic/memory/src/local-embedder-worker.script.mjs}"
     "$repo_root/packages/operator-core/lib/cpu-task-worker.script.mjs"
@@ -208,7 +221,7 @@ bundle_host_workers() {
     tmp="$out_dir/$output.new.$$.mjs"
     meta_args=()
     [ -n "${BUNDLE_HOST_GATE_META_DIR:-}" ] && meta_args=(--metafile="$BUNDLE_HOST_GATE_META_DIR/$output.meta.json")
-    if ! npx --yes esbuild@0.25.0 "$source" \
+    if ! "${package_runner[@]}" npx --yes esbuild@0.25.0 "$source" \
       --bundle --platform=node --format=esm --target=node22 \
       "${worker_externals[@]}" \
       --external:sodium-native --external:esbuild --banner:js="$HOST_BANNER" "${HOST_BANNER_DEFINES[@]}" --outfile="$tmp" --log-limit=5 \

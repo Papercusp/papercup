@@ -40,6 +40,17 @@ function asEntry(row: ReceiptRow): AmendReceiptEntry {
   };
 }
 
+/** A valid preview is not a completed review request when nobody could start. */
+function reviewLaunchFailure(result: Record<string, unknown>): string | undefined {
+  const review = result.review;
+  if (result.ok !== true || result.dryRun !== true || !review || typeof review !== 'object'
+    || !('state' in review) || review.state !== 'no-eligible-reviewer') return undefined;
+  const fresh = 'freshReviewer' in review ? review.freshReviewer : undefined;
+  if (fresh && typeof fresh === 'object' && 'state' in fresh && fresh.state === 'launched') return undefined;
+  if (fresh && typeof fresh === 'object' && 'reason' in fresh && typeof fresh.reason === 'string') return fresh.reason;
+  return 'no eligible amendment reviewer was routed or launched';
+}
+
 /**
  * Reserve the key before invoking the amend. A same-key request on another
  * worker reads the shared row rather than starting duplicate work.
@@ -54,6 +65,9 @@ function asEntry(row: ReceiptRow): AmendReceiptEntry {
  * case where it committed and a later step threw is reconciled by amendRubric's
  * own Amendment-Id replay check, so running again is always safe. The claim is
  * an atomic `failed -> running` UPDATE, so concurrent retries still run once.
+ * EI-25444129715658415: an ok:true dry-run can still fail to start its review.
+ * Reclaim legacy previewed rows with that exact outcome as well; a routed or
+ * launched reviewer remains replayable and must never be duplicated.
  */
 export async function trackAmendRun(
   idempotencyKey: string,
@@ -87,6 +101,10 @@ export async function trackAmendRun(
      WHERE workspace_id = ${workspaceId} AND rubric_ref = ${rubricRef}
        AND idempotency_key = ${idempotencyKey}
        AND (state = 'failed'
+         OR (state = 'previewed'
+           AND result_json->>'ok' = 'true' AND result_json->>'dryRun' = 'true'
+           AND result_json #>> '{review,state}' = 'no-eligible-reviewer'
+           AND result_json #>> '{review,freshReviewer,state}' IS DISTINCT FROM 'launched')
          OR (state = 'running' AND started_at < now() - make_interval(secs => ${leaseSeconds})))
     RETURNING idempotency_key
   `;
@@ -112,10 +130,11 @@ export async function trackAmendRun(
   }
   // A persistence failure after the amend committed must never reclassify it as
   // failed. The atomic Decision remains the source of truth for applied BARs.
-  const state: AmendReceiptState = result.ok === true
+  const launchFailure = reviewLaunchFailure(result);
+  const state: AmendReceiptState = launchFailure ? 'failed' : result.ok === true
     ? (result.dryRun === true ? 'previewed' : 'committed') : 'failed';
   const error = state === 'failed'
-    ? (typeof result.error === 'string' ? result.error : 'amend returned ok:false') : null;
+    ? (launchFailure ?? (typeof result.error === 'string' ? result.error : 'amend returned ok:false')) : null;
   await sql`
     UPDATE harness_shared.rubric_amend_receipts
        SET state = ${state}, result_json = ${JSON.stringify(result)}::text::jsonb,

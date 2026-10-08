@@ -9,6 +9,7 @@ import type { HostedAuthFlow, HostedAuthFlowConsumeResult, HostedAuthFlowStore }
 import { assembleHostedControlPlane } from './hosted-control-plane';
 import { createHostedBrowserRoutes, HOSTED_BROWSER_TUTORIAL_PROGRESS_PATH, HOSTED_BROWSER_REST_QUERY_PATH } from './hosted-browser';
 import { HOSTED_CONTROL_PLANE_ROUTE_ALLOWLIST } from './hosted-profile';
+import { ALL_ROUTES } from './routes';
 
 const ORIGIN = 'https://app.papercusp.com';
 const NOW = new Date(FAKE_HOSTED_IDENTITY_NOW_MS);
@@ -119,7 +120,9 @@ describe('assembleHostedControlPlane', () => {
         resolveActive: async () => active ? membership : null,
         workspaceBelongsToOrganization: async () => false,
       },
-      routes: browser.routes,
+      // A custom registry replaces the default; retain the health leaves that
+      // the complete production allowlist requires.
+      routes: [...ALL_ROUTES, ...browser.routes],
       staticAllowlist: [...HOSTED_CONTROL_PLANE_ROUTE_ALLOWLIST, ...browser.allowlist],
     });
     const cookie = plane.components.sessionCookieCodec.serialize(SESSION_ID, new Date(NOW.getTime() + 60_000), NOW).split(';')[0];

@@ -672,6 +672,22 @@ describe('Cupboard ListingCard — D-002 pot-template badge (single Blueprints t
     expect(badge.getAttribute('data-identity')).toBe('true');
     expect(badge.getAttribute('data-pot-template')).toBeNull();
     expect(badge.textContent).toContain('identity');
+    // Neither listing activity nor installations establish verified outcomes.
+    expect(screen.getByLabelText('Identity outcome cost').textContent).toBe(
+      'Cost per accepted outcome: unavailable',
+    );
+  });
+
+  it.each(['harness', 'pot'] as const)('does not attach identity outcome economics to a %s blueprint', (blueprintKind) => {
+    render(
+      <ListingCard
+        listing={listing({ listing_kind: 'blueprint', blueprint_kind: blueprintKind, title: 'Other blueprint' })}
+        onAction={() => {}}
+        onDetail={() => {}}
+      />,
+    );
+    expect(screen.getByTestId('cupboard-kind-badge')).toBeTruthy();
+    expect(screen.queryByLabelText('Identity outcome cost')).toBeNull();
   });
 
   it('renders a repo slug derived from worker fields when github_repo is absent', () => {
