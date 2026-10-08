@@ -1120,7 +1120,13 @@ sandbox_vite_temp_dirs() {
       | while IFS= read -r -d '' cfg; do
           dir="$(dirname "$root/$cfg")"
           while :; do
-            if [ -d "$dir/node_modules" ]; then printf '%s\n' "$dir/node_modules/.vite-temp"; break; fi
+            if [ -d "$dir/node_modules" ]; then
+              # Committed-source clones can alias node_modules or .vite-temp
+              # into another checkout. Mount the physical target exactly once:
+              # bubblewrap cannot create mountpoints through those aliases.
+              realpath -m "$dir/node_modules/.vite-temp"
+              break
+            fi
             if [ "$dir" = "$root" ] || [ "$dir" = "/" ]; then break; fi
             dir="$(dirname "$dir")"
           done
