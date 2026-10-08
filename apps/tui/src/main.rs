@@ -2159,7 +2159,25 @@ async fn run<B: Backend>(
                 voice_stream::VoiceEvent::Disconnected
             ))
         );
+        let model_picker_key = matches!(
+            &ev,
+            Event::Key(key)
+                if key.code == crossterm::event::KeyCode::Char('m')
+                    && key.modifiers == crossterm::event::KeyModifiers::NONE
+        );
+        event::trace_input_event("reducer-dispatch", &ev);
         let action = app.update(ev);
+        if model_picker_key {
+            let picker = app
+                .session_picker
+                .as_ref()
+                .map(|picker| format!("{:?}", picker.axis))
+                .unwrap_or_else(|| "none".to_string());
+            event::trace_input_detail(
+                "reducer-state",
+                &format!("tab={:?} composing={} picker={picker}", app.tab, app.chat_composing),
+            );
+        }
         if app.harness != prior_harness {
             app.reset_agent_chat_binding();
             app.agent_chat_role = "operator".to_string();
@@ -6137,7 +6155,7 @@ async fn agent_chat_list_refresh(harness: String, tx: UnboundedSender<Event>) {
         let summaries = client
             .list_agent_chats(&harness, &agent_chat_list_options())
             .await?;
-        let inventory = probe_su_session_inventory(&client, &harness, &summaries).await;
+        let inventory = probe_su_session_inventory(&client, &harness, &summaries).await?;
         anyhow::Ok((summaries, inventory))
     }
     .await;
@@ -6189,9 +6207,18 @@ async fn agent_chat_load(
         }
     };
     // Probe each bounded chat summary against the canonical SU-session route.
-    // A 404 means this is a legacy chat; any successful snapshot is retained
-    // even when terminal so the picker can inspect it after a restart.
-    let inventory = probe_su_session_inventory(&client, &harness, &summaries).await;
+    // A failed probe for a stamped SU session leaves its cwd unknown, so fail
+    // the list visibly instead of letting /resume misreport it as out of scope.
+    let inventory = match probe_su_session_inventory(&client, &harness, &summaries).await {
+        Ok(inventory) => inventory,
+        Err(error) => {
+            let _ = tx.send(Event::AgentChatListFailed {
+                harness,
+                message: format!("{error:#}"),
+            });
+            return;
+        }
+    };
     let selected = if let Some(id) = selected_chat_id.as_deref() {
         match summaries.iter().find(|chat| chat.id == id).cloned() {
             Some(chat) => Some(chat),
@@ -6313,7 +6340,7 @@ async fn probe_su_session_inventory(
     client: &OperatorClient,
     harness: &str,
     summaries: &[agent_chats::AgentChatSummary],
-) -> Vec<crate::su_session::SuSessionInventoryEntry> {
+) -> Result<Vec<crate::su_session::SuSessionInventoryEntry>> {
     // One snapshot request per chat (up to the 100-row list limit). Issued
     // one-at-a-time this held the whole Agent Chat load — and with it the
     // /resume list — for seconds after launch (P-007). Bounded fan-out keeps
@@ -6321,30 +6348,89 @@ async fn probe_su_session_inventory(
     const PROBE_CONCURRENCY: usize = 8;
     let limit = std::sync::Arc::new(tokio::sync::Semaphore::new(PROBE_CONCURRENCY));
     let mut probes = tokio::task::JoinSet::new();
+    let required_probe_count = summaries
+        .iter()
+        .filter(|summary| summary.su_runtime_class.as_deref() == Some("su-session"))
+        .count();
+    let mut required_probe_successes = 0usize;
+    let mut required_probe_errors = Vec::new();
+    let mut probe_task_errors = Vec::new();
+    let launch_is_scoped = crate::su_session::launch_cwd().is_some();
     for summary in summaries {
         let client = client.clone();
         let harness = harness.to_string();
         let chat_id = summary.id.clone();
+        let required = summary.su_runtime_class.as_deref() == Some("su-session");
         let limit = limit.clone();
         probes.spawn(async move {
-            let _permit = limit.acquire_owned().await.ok()?;
-            client
-                .su_session_snapshot(&harness, &chat_id)
-                .await
-                .ok()
-                .map(|snapshot| {
-                    crate::su_session::SuSessionInventoryEntry::from_snapshot(&snapshot)
-                })
+            let result = match limit.acquire_owned().await {
+                Ok(_permit) => client.su_session_snapshot(&harness, &chat_id).await,
+                Err(error) => Err(anyhow::anyhow!("inventory probe admission: {error}")),
+            };
+            (required, chat_id, result)
         });
     }
     let mut entries = Vec::new();
     while let Some(joined) = probes.join_next().await {
-        if let Ok(Some(entry)) = joined {
-            entries.push(entry);
+        match joined {
+            Ok((required, _chat_id, Ok(snapshot))) => {
+                let entry = crate::su_session::SuSessionInventoryEntry::from_snapshot(&snapshot);
+                if required && launch_is_scoped && entry.cwd.is_none() {
+                    required_probe_errors.push(format!(
+                        "{}: SU-session snapshot has no launch directory",
+                        entry.agent_chat_id
+                    ));
+                } else if required {
+                    required_probe_successes += 1;
+                }
+                entries.push(entry);
+            }
+            Ok((true, chat_id, Err(error))) => {
+                required_probe_errors.push(format!("{chat_id}: {error:#}"));
+            }
+            Ok((false, _, Err(_))) => {}
+            Err(error) => probe_task_errors.push(error.to_string()),
         }
     }
+    if let Some(message) = su_inventory_probe_failure_message(
+        required_probe_count,
+        required_probe_successes,
+        &required_probe_errors,
+        &probe_task_errors,
+    ) {
+        anyhow::bail!("{message}");
+    }
     entries.sort_by_key(|entry| entry.adv_session_id);
-    entries
+    Ok(entries)
+}
+
+fn su_inventory_probe_failure_message(
+    required_probe_count: usize,
+    required_probe_successes: usize,
+    required_probe_errors: &[String],
+    probe_task_errors: &[String],
+) -> Option<String> {
+    if required_probe_errors.is_empty()
+        && required_probe_successes >= required_probe_count
+        && (probe_task_errors.is_empty() || required_probe_count == 0)
+    {
+        return None;
+    }
+    Some(format!(
+            "could not determine directory membership for SU session inventory; /resume to retry ({}; {}/{} required probes succeeded; task errors: {})",
+            if required_probe_errors.is_empty() {
+                "one or more probe tasks did not complete".to_string()
+            } else {
+                required_probe_errors.join("; ")
+            },
+            required_probe_successes,
+            required_probe_count,
+            if probe_task_errors.is_empty() {
+                "none".to_string()
+            } else {
+                probe_task_errors.join("; ")
+            }
+        ))
 }
 
 /// Open one PUI SU session and attach its canonical stream.  The first owner
@@ -8572,6 +8658,26 @@ async fn refetch_all(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn su_resume_does_not_treat_a_failed_directory_probe_as_an_empty_list() {
+        let failure = su_inventory_probe_failure_message(
+            1,
+            0,
+            &["codex-chat: connection reset".to_string()],
+            &[],
+        )
+        .expect("a missing required directory probe must fail the list");
+        assert!(failure.contains("could not determine directory membership"));
+        assert!(failure.contains("/resume to retry"));
+        assert!(failure.contains("0/1 required probes succeeded"));
+
+        assert_eq!(
+            su_inventory_probe_failure_message(1, 1, &[], &[]),
+            None,
+            "a complete successful probe keeps the list usable"
+        );
+    }
 
     fn startup_chat(
         id: &str,

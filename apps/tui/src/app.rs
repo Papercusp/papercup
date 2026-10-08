@@ -28976,11 +28976,15 @@ mod tests {
         let harness = a.harness.clone();
         a.update(Event::AgentChatListFailed {
             harness: harness.clone(),
-            message: "HTTP 500: column \"continued_from_chat_id\" does not exist".into(),
+            message: "could not determine directory membership for SU session inventory; /resume to retry (codex-chat: connection reset; 0/1 required probes succeeded; task errors: none)".into(),
         });
         assert_eq!(label(&a), "Could not load earlier conversations");
         let hint = a.session_picker.as_ref().unwrap().options[0].hint.clone().unwrap();
-        assert!(hint.contains("HTTP 500") && hint.contains("/resume"), "{hint}");
+        assert!(
+            hint.contains("could not determine directory membership")
+                && hint.contains("/resume"),
+            "{hint}"
+        );
 
         a.session_picker = None;
         assert!(matches!(
