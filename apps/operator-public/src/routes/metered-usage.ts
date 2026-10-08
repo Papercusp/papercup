@@ -39,6 +39,7 @@ import { getPaymentChannel } from '../payment-channel-store.ts';
 import {
   getUsageReceipt,
   listChannelUsageReceipts,
+  listPrincipalUsageReceipts,
   loadMicrochargeChannel,
   reserveUsageReceipt,
   readIdentityMarkupRemainder,
@@ -164,6 +165,37 @@ function receiptJson(receipt: StoredUsageReceipt) {
 
 export function meteredUsageRoute(): Hono<{ Bindings: Env }> {
   const route = new Hono<{ Bindings: Env }>();
+
+  // Statement source across channels. Caller arguments never select a party.
+  route.get('/commerce/metered-invocations', async (c) => {
+    const auth = await authenticate(c.req.raw);
+    if (!auth.ok) return c.json({ error: 'unauthorized', reason: auth.reason }, 401);
+    const limitText = c.req.query('limit') ?? '100';
+    if (!/^[1-9][0-9]{0,2}$/.test(limitText) || Number(limitText) > 200) {
+      return c.json({ error: 'invalid_usage_limit', detail: 'limit must be an integer from 1 to 200' }, 400);
+    }
+    const cursor = c.req.query('cursor');
+    let after: { channelId: string; usageNonce: string } | undefined;
+    if (cursor !== undefined) {
+      try {
+        if (cursor.length > 2000) throw new Error('oversized cursor');
+        const parsed: unknown = JSON.parse(cursor);
+        if (!Array.isArray(parsed) || parsed.length !== 2 || !parsed.every(value =>
+          typeof value === 'string' && value.length > 0 && value.length <= 300 && value.trim() === value)) {
+          throw new Error('invalid cursor');
+        }
+        after = { channelId: parsed[0], usageNonce: parsed[1] };
+      } catch {
+        return c.json({ error: 'invalid_usage_cursor' }, 400);
+      }
+    }
+    const page = await listPrincipalUsageReceipts(c.env.DB, auth.principalId, Number(limitText), after);
+    const receipts = page.receipts.map(receiptJson);
+    return c.json({ receipts, identityStatement: identityUsageStatement(receipts, auth.principalId),
+      nextCursor: page.next ? JSON.stringify([page.next.channelId, page.next.usageNonce]) : null,
+      coverage: { scope: 'authenticated-principal', population: 'live-page',
+        totals: 'page', hasMore: page.next !== null } });
+  });
 
   // ── RESERVE, before the seller executes the unit ─────────────────────────
   route.post('/commerce/metered-invocations', async (c) => {

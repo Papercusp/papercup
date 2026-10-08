@@ -72,6 +72,83 @@ function closure(body: Record<string, unknown> = {}) {
 
 describe('exact identity settlement through the hosted production handler and real migrated D1', () => {
   beforeEach(() => { auth.resolveGithubBearer.mockReset(); auth.resolveGithubBearer.mockResolvedValue({ id: 9 }); });
+
+  it('pages the authenticated buyer or seller across channels without exposing another party', async () => {
+    const h = harness();
+    for (const [channelId, nonce, cumulative] of [['c1', 'n1', 250n], ['c1', 'n2', 500n], ['c2', 'n1', 250n]] as const) {
+      expect(await reserveUsageReceipt(h.db, reservation(nonce, { channelId, cumulativeClaimMicros: cumulative,
+        releaseRef: 'tool-release:pages', meterUnit: 'tool-call', identityInferenceCeilingMicros: undefined }))).toMatchObject({ ok: true });
+    }
+    // Independently stored parties outside both the buyer and seller.
+    h.raw.prepare("UPDATE usage_receipts SET payer='gh:11',seller='gh:12' WHERE channel_id='c1' AND usage_nonce='n2'").run();
+    const read = async (id: number, query = '') => {
+      auth.resolveGithubBearer.mockResolvedValue({ id });
+      const response = await h.api.request('/commerce/metered-invocations' + query,
+        { headers: { Authorization: 'Bearer test' } }, h.env);
+      expect(response.status).toBe(200);
+      return await response.json() as { receipts: { channelId: string; usageNonce: string }[];
+        nextCursor: string | null; coverage: { hasMore: boolean } };
+    };
+    for (const id of [7, 9]) {
+      const first = await read(id, '?limit=1&principalId=gh%3A11');
+      expect(first.receipts).toMatchObject([{ channelId: 'c1', usageNonce: 'n1' }]);
+      expect(first.coverage).toMatchObject({ scope: 'authenticated-principal', population: 'live-page', totals: 'page', hasMore: true });
+      expect(first.nextCursor).not.toBeNull();
+      const second = await read(id, '?limit=1&cursor=' + encodeURIComponent(first.nextCursor!));
+      expect(second.receipts).toMatchObject([{ channelId: 'c2', usageNonce: 'n1' }]);
+      expect(second.nextCursor).toBeNull();
+      expect(second.coverage.hasMore).toBe(false);
+      const beyond = await read(id, '?cursor=' + encodeURIComponent(JSON.stringify(['c2', 'n1'])));
+      expect(beyond.receipts).toEqual([]);
+    }
+    expect((await read(17)).receipts).toEqual([]);
+    expect((await read(11)).receipts).toMatchObject([{ channelId: 'c1', usageNonce: 'n2' }]);
+  });
+
+  it('projects exact settled identity amounts across channels from recorded terms', async () => {
+    const h = harness();
+    for (const [channelId, nonce, prior] of [['c1', 'n1', '0'], ['c2', 'n2', '7500']]) {
+      expect(await reserveUsageReceipt(h.db, reservation(nonce, { channelId }))).toMatchObject({ ok: true });
+      auth.resolveGithubBearer.mockResolvedValue({ id: 9 });
+      expect((await h.api.request(`/commerce/metered-invocations/${nonce}/settle`,
+        post(closure({ channelId, priorRemainderNumerator: prior })), h.env)).status).toBe(200);
+    }
+    h.raw.prepare("UPDATE commerce_offers SET active=0,price_version='changed' WHERE offer_id='o1'").run();
+    auth.resolveGithubBearer.mockResolvedValue({ id: 7 });
+    const response = await h.api.request('/commerce/metered-invocations',
+      { headers: { Authorization: 'Bearer test' } }, h.env);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ nextCursor: null,
+      identityStatement: { markupMicros: '499', complete: true, lines: [
+        { channelId: 'c1', markupMicros: '249', billedInferenceMicros: '999' },
+        { channelId: 'c2', markupMicros: '250', billedInferenceMicros: '999' },
+      ] } });
+  });
+
+  it.each(['0', '201', '-1', '1.5', '01', 'NaN', ''])('refuses invalid receipt page limit %s', async limit => {
+    const h = harness();
+    const response = await h.api.request('/commerce/metered-invocations?limit=' + encodeURIComponent(limit),
+      { headers: { Authorization: 'Bearer test' } }, h.env);
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ error: 'invalid_usage_limit' });
+  });
+
+  it.each(['no-json', '{}', '[]', '["c1"]', '["c1",1]', '["c1"," "]', JSON.stringify(['x'.repeat(301), 'n1'])])(
+    'refuses invalid receipt page cursor %s', async cursor => {
+      const h = harness();
+      const response = await h.api.request('/commerce/metered-invocations?cursor=' + encodeURIComponent(cursor),
+        { headers: { Authorization: 'Bearer test' } }, h.env);
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({ error: 'invalid_usage_cursor' });
+    });
+
+  it('authenticates cross-channel reads before parsing page arguments', async () => {
+    const h = harness();
+    const { AuthError } = await import('../auth');
+    auth.resolveGithubBearer.mockRejectedValue(new AuthError('missing_bearer'));
+    const response = await h.api.request('/commerce/metered-invocations?limit=bad', {}, h.env);
+    expect(response.status).toBe(401);
+  });
   it.each([0, 3])('settles %i ordinary tool calls against the original voucher and safely replays closure', async quantity => {
     const h = harness();
     h.raw.prepare("UPDATE commerce_products SET sku_ref='tool-release:1' WHERE product_id='p1'").run();

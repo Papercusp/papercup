@@ -153,6 +153,30 @@ export async function listChannelUsageReceipts(
   return (rows.results ?? []).map(fromRow);
 }
 
+/** Live receipt page for the authenticated party, across all its channels.
+ * The unique receipt key orders pages; a page is not an account snapshot. */
+export async function listPrincipalUsageReceipts(
+  db: D1Database,
+  principalId: string,
+  limit: number,
+  after?: { channelId: string; usageNonce: string },
+): Promise<{ receipts: readonly StoredUsageReceipt[]; next: { channelId: string; usageNonce: string } | null }> {
+  if (!principalId.trim() || !Number.isInteger(limit) || limit < 1 || limit > 200) {
+    throw new Error('invalid principal receipt page');
+  }
+  const clause = after ? ' AND (channel_id > ? OR (channel_id = ? AND usage_nonce > ?))' : '';
+  const statement = db.prepare(`SELECT ${COLUMNS} FROM usage_receipts
+    WHERE (payer = ? OR seller = ?)${clause}
+    ORDER BY channel_id ASC, usage_nonce ASC LIMIT ?`);
+  const result = await statement.bind(principalId, principalId,
+    ...(after ? [after.channelId, after.channelId, after.usageNonce] : []), limit + 1).all<UsageReceiptRow>();
+  const rows = result.results ?? [];
+  const receipts = rows.slice(0, limit).map(fromRow);
+  const last = receipts[receipts.length - 1];
+  return { receipts, next: rows.length > limit && last
+    ? { channelId: last.channelId, usageNonce: last.usageNonce } : null };
+}
+
 /**
  * Rebuild the in-memory `MicrochargeChannel` the pure core expects from durable
  * state.
