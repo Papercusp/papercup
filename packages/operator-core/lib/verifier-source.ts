@@ -32,6 +32,13 @@ export function verifierSourceFiles(root: string, {
       const path = join(dir, entry.name);
       const rel = relative(root, path).split(sep).join('/');
       if (rel === '.verifier-source.json') continue;
+      // TanStack derives this file from the recorded routes/config on startup.
+      // A tracked tree remains source, and a redirect is never a build output.
+      if (runtimeArtifacts && rel === 'apps/operator-vite/src/routeTree.gen.ts'
+        && !recordedPaths.includes(rel)) {
+        if (!lstatSync(path).isFile()) throw new VerifierSourceError(`runtime artifact is not an independent file: ${rel}`);
+        continue;
+      }
       // Dependencies and build outputs are separately materialized and verified.
       // This option attests source only, with the full recorded population intact.
       const runtimeDirectory = entry.name === 'node_modules' || [

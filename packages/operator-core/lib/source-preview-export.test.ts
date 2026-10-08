@@ -250,6 +250,43 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     await expect(verifyVerifierSource(dest, receipt, { runtimeArtifacts: true })).rejects.toThrow('runtime artifact is not an independent directory');
   });
 
+  it('allows an unrecorded generated router tree only for runtime source attestation', async () => {
+    const fixture = makeSuperproject(join(tmp, 'verifier-router-runtime-fixture'));
+    const dest = join(tmp, 'verifier-router-runtime-export');
+    const input = SHIPPED.find(p => p.startsWith('apps/'))!;
+    const receipt = await prepareVerifierSource({ repo: fixture.repo, ref: fixture.commit, dest, inputs: [input] });
+    write(dest, 'apps/operator-vite/src/routeTree.gen.ts', 'generated from recorded routes');
+    await expect(verifyVerifierSource(dest, receipt)).rejects.toThrow('added apps/operator-vite/src/routeTree.gen.ts');
+    await expect(verifyVerifierSource(dest, receipt, { runtimeArtifacts: true })).resolves.toEqual(receipt);
+    writeFileSync(join(dest, input), 'changed recorded route source');
+    await expect(verifyVerifierSource(dest, receipt, { runtimeArtifacts: true })).rejects.toThrow(`changed ${input}`);
+  });
+
+  it('never excludes a recorded generated router tree', async () => {
+    const fixture = makeSuperproject(join(tmp, 'verifier-router-recorded-fixture'));
+    const input = 'apps/operator-vite/src/routeTree.gen.ts';
+    write(fixture.repo, input, 'recorded route tree');
+    git(fixture.repo, ['add', input]);
+    git(fixture.repo, ['commit', '-qm', 'recorded route tree fixture']);
+    const ref = git(fixture.repo, ['rev-parse', 'HEAD']).trim();
+    const dest = join(tmp, 'verifier-router-recorded-export');
+    const receipt = await prepareVerifierSource({ repo: fixture.repo, ref, dest, inputs: [input] });
+    await expect(verifyVerifierSource(dest, receipt, { runtimeArtifacts: true })).resolves.toEqual(receipt);
+    writeFileSync(join(dest, input), 'changed recorded route tree');
+    await expect(verifyVerifierSource(dest, receipt, { runtimeArtifacts: true })).rejects.toThrow(`changed ${input}`);
+  });
+
+  it('rejects a symlink posing as an unrecorded generated router tree', async () => {
+    const fixture = makeSuperproject(join(tmp, 'verifier-router-link-fixture'));
+    const dest = join(tmp, 'verifier-router-link-export');
+    const input = SHIPPED.find(p => p.startsWith('apps/'))!;
+    const receipt = await prepareVerifierSource({ repo: fixture.repo, ref: fixture.commit, dest, inputs: [input] });
+    write(dest, 'apps/operator-vite/src/routeTree.gen.ts', 'placeholder');
+    rmSync(join(dest, 'apps/operator-vite/src/routeTree.gen.ts'));
+    symlinkSync(join(dest, input), join(dest, 'apps/operator-vite/src/routeTree.gen.ts'));
+    await expect(verifyVerifierSource(dest, receipt, { runtimeArtifacts: true })).rejects.toThrow('runtime artifact is not an independent file');
+  });
+
   it('refuses tracked source symlinks that read outside the immutable export', async () => {
     const fixture = makeSuperproject(join(tmp, 'verifier-link-fixture'));
     symlinkSync('/tmp/live-peer-source.ts', join(fixture.repo, 'outside-source'));
