@@ -142,6 +142,16 @@ describe('plan-cleanup run store (real PG)', () => {
     expect(await getCleanupReviewRuns(`${h.ws}-other`)).toEqual({ runs: [], total: 0 });
   });
 
+  it('reports a supplementary inventory read failure instead of an authoritative empty list', async () => {
+    const original = h.sql;
+    try {
+      h.sql = vi.fn(async () => { throw new Error('database unavailable'); });
+      expect(await getCleanupReviewRuns()).toMatchObject({ runs: [], error: 'Older cleanup reviews could not be loaded.' });
+    } finally {
+      h.sql = original;
+    }
+  });
+
   async function reviewedRun() {
     const first = await createCleanupRun();
     const findings = scanFindings().map((finding) => ({ ...finding, evidenceBasis: ['cleanup-source:v1'] }));

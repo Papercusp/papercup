@@ -212,6 +212,29 @@ describe('bridgeCommerceEventsToLedger', () => {
 });
 
 describe('perUseRollup', () => {
+  it('states component authors and DAO allocations only after finality, without counting the claim twice', () => {
+    const payload = { channelId: 'authors', requestHash: 'author-batch', claimMicros: '3000', payer: 'acme', seller: 'seller',
+      allocationsMicros: { dao: '300', component: '151' }, componentAllocationsMicros: { alice: '76', bob: '75' } };
+    const claimed = event('settlement-proof', { ...payload, final: false });
+    expect(perUseRollup([claimed]).channels[0]?.settledAllocations).toBeUndefined();
+    const final = event('settlement-proof', { ...payload, final: true });
+    for (const events of [[claimed, final], [final, claimed]]) {
+      const rollup = perUseRollup(events);
+      expect(rollup.channels[0]?.settledAllocations).toEqual({ daoMicros: '300', componentAuthorsMicros: { alice: '76', bob: '75' } });
+      expect(perUseDashboard(rollup, 'acme').channels[0]?.settledAllocations?.daoMicros).toBe('300');
+      expect(perUseDashboard(rollup, 'stranger').channels).toEqual([]);
+    }
+  });
+
+  it('reports invalid component allocation sums and never invents payable statement lines', () => {
+    for (const authors of [{ alice: '150' }, { alice: '150.5' }, { alice: '-151' }, null]) {
+      const rollup = perUseRollup([event('settlement-proof', { channelId: 'authors', claimMicros: '3000', final: true,
+        allocationsMicros: { dao: '300', component: '151' }, componentAllocationsMicros: authors })]);
+      expect(rollup.channels[0]?.settledAllocations).toBeUndefined();
+      expect(rollup.unusable[0]?.reason).toContain('summing to the component share');
+    }
+  });
+
   it('counts sub-cent receipts exactly instead of rounding them away', () => {
     const rollup = perUseRollup(
       reduceCommerceEvents([

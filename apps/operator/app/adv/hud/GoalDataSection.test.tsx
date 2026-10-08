@@ -81,4 +81,30 @@ describe('generic declared goal collection controls', () => {
     expect(screen.queryByRole('checkbox')).toBeNull();
     expect(writes).not.toHaveBeenCalled();
   });
+
+  it.each(['plans', 'tea'] as const)('renders the refreshed canonical %s order after save acknowledgement', async (kind) => {
+    const writes = vi.fn(async () => ({ ok: true, json: async () => ({ ok: true, version: 5 }) }));
+    vi.stubGlobal('fetch', writes);
+    const data = fixture(kind);
+    const property = Object.keys(data.collections)[0];
+    const rows = data.collections[property].rows;
+    const view = render(<GoalDataSection goalId="arbitrary-goal" data={data} />);
+    fireEvent.click(screen.getByRole('button', { name: `Move ${rows[1].label} up` }));
+    await waitFor(() => expect(writes).toHaveBeenCalledOnce());
+    expect(screen.getAllByRole('listitem')[0].textContent).toContain(rows[0].label);
+    expect(screen.getByRole('checkbox', { name: `Include ${rows[0].label}` })).toHaveProperty('disabled', true);
+    const confirmed = structuredClone(data);
+    const collection = confirmed.collections[property];
+    if (!collection.selection.ok || !collection.selection.configured) throw new Error('Invalid fixture');
+    const dormant = kind === 'plans' ? 'plan:alpha/dormant' : 'rooibos';
+    collection.selection.policyVersion = 5;
+    collection.selection.policy.order = [rows[1].id, rows[0].id, dormant];
+    collection.selection.items = [collection.selection.items[1], collection.selection.items[0]];
+    collection.selection.selected = [rows[1].id, rows[0].id];
+    collection.rows = [collection.rows[1], collection.rows[0]];
+    view.rerender(<GoalDataSection goalId="arbitrary-goal" data={confirmed} />);
+    await waitFor(() => expect(screen.getByRole('checkbox', { name: `Include ${rows[0].label}` })).toHaveProperty('disabled', false));
+    expect(screen.getAllByRole('listitem')[0].textContent).toContain(rows[1].label);
+  });
+
 });

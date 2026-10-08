@@ -42,9 +42,11 @@ describe('identityPerUseOfferTerms', () => {
     const offered = identityPerUseOfferTerms({ identity: ENGINEER, componentBps: 3000, componentDependencies });
     if (!offered.ok) throw new Error(offered.detail);
     expect(offered.terms.priceVersion.length).toBeGreaterThan(200);
-    expect(meterInvocation.args.safeParse({ op: 'reserve', channelId: 'channel', workspaceId: 'workspace',
-      hiveSlug: 'buyer', offerId: 'offer', payer: 'buyer', seller: 'seller', releaseRef: offered.terms.skuRef,
-      usageNonce: 'one', quantity: 1, ...offered.terms }).success).toBe(true);
+    const { skuRef, ...meterTerms } = offered.terms;
+    const reserve = meterInvocation.args.safeParse({ op: 'reserve', channelId: 'channel', workspaceId: 'workspace',
+      hiveSlug: 'buyer', offerId: 'offer', payer: 'buyer', seller: 'seller', releaseRef: skuRef,
+      usageNonce: 'one', quantity: 1, ...meterTerms });
+    expect(reserve.success ? true : reserve.error.issues).toBe(true);
     const restored = verifyIdentityPerUseOffer(offered.terms);
     if (!restored.ok) throw new Error(restored.detail);
     expect(restored.manifest).toEqual(offered.manifest);

@@ -6,7 +6,7 @@
  * approximation (updated_at on state ∈ resolved/closed) are pinned here.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { agentReviewRoundComment, computeAgentReviewHistory, computeAgentReviewService, computeAgentReviewTiming, computeImprovementFlow, readFleetAgentReviewService,
+import { agentReviewRoundComment, computeAgentReviewHistory, computeAgentReviewService, computeAgentReviewTiming, computeQueueWaitingTimes, computeImprovementFlow, readFleetAgentReviewService,
   type AgentReviewServiceRow, type WatchdogFlowTick } from './flow-metrics';
 import type { PullLedgerRow } from '../../agent-tools/scheduler/pull_ledger';
 import type { ImprovementCandidate } from './policy';
@@ -22,6 +22,32 @@ function cand(p: Partial<ImprovementCandidate> & { id: string }): ImprovementCan
 }
 const daysAgo = (d: number): string => new Date(NOW - d * DAY_MS).toISOString();
 const tick = (d: number, captured = 0): WatchdogFlowTick => ({ tickAtMs: NOW - d * DAY_MS, capturedCount: captured });
+
+describe('P-032 stage clocks', () => {
+  const review = (enteredAt: string, round = 2) => ({ status: 'pending', submittedBy: 'su-author',
+    ledgerIdeaId: 'idea', round, timing: { round: 2, enteredAt } });
+  it('keeps creation age, the resubmitted round wait, admission wait and terminal delay distinct', () => {
+    const out = computeQueueWaitingTimes([
+      { createdAt: daysAgo(20), payload: { agentReview: review(daysAgo(0.1)) } },
+      { createdAt: daysAgo(10), payload: { admissionReview: { state: 'pending', enteredAt: daysAgo(2) } } },
+      { createdAt: daysAgo(5), payload: { admissionReview: { state: 'terminal', enteredAt: daysAgo(4), terminalAt: daysAgo(3) } } },
+    ], NOW);
+    expect(out.reportAge.oldestMs).toBe(20 * DAY_MS);
+    expect(out.reviewWait).toMatchObject({ population: 1, oldestMs: 0.1 * DAY_MS, unknown: 0 });
+    expect(out.admissionWait.oldestMs).toBe(2 * DAY_MS);
+    expect(out.admissionDelay.oldestMs).toBe(DAY_MS);
+  });
+  it('does not turn undated, future or mismatched rounds into zero/creation age', () => {
+    const out = computeQueueWaitingTimes([
+      { createdAt: daysAgo(20), payload: { agentReview: review(daysAgo(1)) } },
+      { createdAt: null, payload: { agentReview: review(daysAgo(-1)) } },
+      { createdAt: daysAgo(10), payload: { agentReview: review(daysAgo(1), 3), admissionReview: { state: 'pending' } } },
+    ], NOW);
+    expect(out.reviewWait).toEqual({ population: 3, known: 1, unknown: 2, oldestKnownMs: DAY_MS, oldestMs: null });
+    expect(out.reportAge.oldestMs).toBeNull();
+    expect(out.admissionWait).toMatchObject({ population: 1, unknown: 1, oldestMs: null });
+  });
+});
 
 describe('P-030 canonical fleet service population', () => {
   const input = { workspaceId: 'ws', harness: 'h', fleet: 'reviewers' };

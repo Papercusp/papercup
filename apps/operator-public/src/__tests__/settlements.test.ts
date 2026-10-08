@@ -240,11 +240,20 @@ describe('POST /commerce/payment-channels/:channelId/settlements', () => {
     await seedSettledReceipt(db, 'authors', 3000, split.manifestHash);
     const claimed = await claim(api, env);
     expect(claimed.status).toBe(201);
-    const { batch } = await claimed.json() as { batch: { batchId: string; componentAllocationsMicros: Record<string, string> } };
+    const { batch, proofEventId: claimProofId } = await claimed.json() as {
+      batch: { batchId: string; componentAllocationsMicros: Record<string, string> };
+      proofEventId: string;
+    };
     expect(batch.componentAllocationsMicros).toEqual({ alice: '75', bob: '75' });
     const final = await finality(api, env, batch.batchId);
     expect(final.status).toBe(200);
-    expect(await final.json()).toMatchObject({ batch: { state: 'final', componentAllocationsMicros: { alice: '75', bob: '75' } } });
+    const finalBody = await final.json() as { proofEventId: string };
+    expect(finalBody).toMatchObject({ batch: { state: 'final', componentAllocationsMicros: { alice: '75', bob: '75' } } });
+    for (const proofEventId of [claimProofId, finalBody.proofEventId]) {
+      const event = await db.prepare('SELECT payload FROM commerce_event_log WHERE event_id = ?')
+        .bind(proofEventId).first<{ payload: string }>();
+      expect(JSON.parse(event!.payload)).toMatchObject({ componentAllocationsMicros: { alice: '75', bob: '75' } });
+    }
     const row = await db.prepare('SELECT allocations_micros FROM settlement_batches WHERE batch_id = ?')
       .bind(batch.batchId).first<{ allocations_micros: string }>();
     expect(JSON.parse(row!.allocations_micros)).toMatchObject({ componentAuthors: { alice: '75', bob: '75' } });

@@ -31,12 +31,13 @@ export function PlanCleanupReviewSelector({ inventory, selectedRunId, onReview }
   selectedRunId: string | null;
   onReview: (runId: string) => void;
 }) {
+  if (inventory.error) return <p role="status">{inventory.error}</p>;
   if (inventory.total === 0) return null;
   return (
     <div className="plan-cleanup-review-inventory">
       <Select
         ariaLabel="Unresolved cleanup reviews"
-        value={inventory.runs.some((run) => run.runId === selectedRunId) ? selectedRunId! : ""}
+        value={inventory.runs.some((run) => run.runId === selectedRunId) ? selectedRunId ?? "" : ""}
         placeholder={`${inventory.total} unresolved cleanup reviews`}
         options={inventory.runs.map((run) => ({ value: run.runId,
           label: `${run.createdAt ? new Date(run.createdAt).toLocaleDateString() : "Earlier run"} · ${run.unresolved} need review`,

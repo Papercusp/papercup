@@ -173,7 +173,7 @@ import {
 import type { MemberIdleCause } from '../../fleet-member-idle-verdict';
 import { computePoolReservation } from '../../fleet-pool-reservation';
 import { buildPolicyParkedCapacity, resolveFleetParkResumePath } from '../../fleet-park-resume-path';
-import { listWorkItems, WORK_ITEMS_MAX_LIMIT, type WorkItem } from '../../work-items';
+import { listWorkItems, listAllWorkItemsForFileExport, WORK_ITEMS_MAX_LIMIT, type WorkItem } from '../../work-items';
 import { readPlanHistoryContext, type PlanHistoryContext } from '../../prior-attempt-context';
 import { readIssueOccurrenceCounts, type IssueOccurrenceCounts } from '../../issue-occurrence-ledger';
 import {
@@ -265,7 +265,7 @@ export interface LeaderBriefFleetMetricsDeps {
     fleet: string;
     flowMode: 'current-spec';
   }): Promise<FleetMetricScopeResolution>;
-  listItems(input: { harness: string; includeObservations: true; limit: number }): Promise<WorkItem[]>;
+  listItems(input: { harness: string; includeObservations: true }): Promise<WorkItem[]>;
   readOccurrences(input: { workspaceId: string; harnessSlug: string; since: string }): Promise<IssueOccurrenceCounts>;
   build(
     resolution: FleetMetricScopeResolution,
@@ -282,7 +282,7 @@ export interface LeaderBriefFleetMetricsDeps {
 
 const LEADER_BRIEF_FLEET_METRICS_DEPS: LeaderBriefFleetMetricsDeps = {
   resolveScope: resolveFleetMetricScope,
-  listItems: listWorkItems,
+  listItems: listAllWorkItemsForFileExport,
   readOccurrences: readIssueOccurrenceCounts,
   build: buildFleetMetricsResult,
 };
@@ -329,7 +329,6 @@ export async function readLeaderBriefFleetMetrics(
       deps.listItems({
         harness: input.harness,
         includeObservations: true,
-        limit: WORK_ITEMS_MAX_LIMIT,
       }),
     );
     // A failed item read must remain observed even when scope resolution fails
@@ -354,7 +353,7 @@ export async function readLeaderBriefFleetMetrics(
     const items = await itemsPromise;
     return await deps.build(resolution, items, {
       issueOccurrences,
-      sourceCapExhausted: items.length >= WORK_ITEMS_MAX_LIMIT,
+      sourceCapExhausted: false,
       assignee: input.assignee,
       workspaceId: input.workspaceId,
     });

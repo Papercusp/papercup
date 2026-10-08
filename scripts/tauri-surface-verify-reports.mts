@@ -60,6 +60,13 @@ async function verifyReports(evidenceDir: string) {
   const native = (...args: string[]) => execFileSync(process.env.VERIFY_TAURI_AGENT_TOOLS_BIN ?? 'tauri-agent-tools',
     [...args, '--pid', pid], { encoding: 'utf8', timeout: 60_000 });
   const save = (name: string, value: unknown) => writeFileSync(join(evidenceDir, name), JSON.stringify(value, null, 2));
+  const transportSnapshot = () => JSON.parse(native('eval', `JSON.stringify({
+    url: location.href,
+    sync: window.__sync_metrics__?.snapshot(),
+    ipc: window.__ipcInspector?.summary(),
+    resources: performance.getEntriesByType('resource').map(entry => entry.name)
+      .filter(name => /zero-harness|agent-mcp/.test(name)).slice(-30)
+  })`));
   const sourcePaths = ['apps/operator-vite/src/components/reports/ReportsRoute.tsx',
     'apps/operator-vite/src/components/reports/ReportsRoute.css',
     'apps/operator-vite/src/routes/reports.tsx', 'packages/operator-core/lib/sync-resolver/reports.ts',
@@ -103,11 +110,25 @@ async function verifyReports(evidenceDir: string) {
   };
   try {
     native('navigate', `/reports?ws=${encodeURIComponent(workspace)}`, '--json');
-    poll('!!document.querySelector(".reports-list")');
+    // A mounted list is not evidence that its first read or invalidation
+    // subscription is ready. Measure both before exercising push delivery.
+    poll(`(() => { const snapshot = window.__sync_metrics__?.snapshot();
+      const query = snapshot?.byQuery?.['reports.list'];
+      return !!document.querySelector('.reports-list')
+        && !document.querySelector('.reports-list [role="status"]')
+        && snapshot?.sse?.connectedSinceMs != null
+        && query?.requests > query?.failures; })()`);
+    const transportBefore = transportSnapshot();
+    save('transport-before.json', transportBefore);
     const original = publish({ title, body_md: body, kind: 'audit', subject,
       request_key: 'reports-native-original', tags: ['native-fixture'] });
     // No refresh/navigation between publish and this assertion: arrival exercises SSE.
     poll(`Array.from(document.querySelectorAll('.reports-list-item')).some(n => n.textContent.includes(${JSON.stringify(title)}))`);
+    const transportAfter = transportSnapshot();
+    save('transport-after-publish.json', transportAfter);
+    assert.ok((transportAfter.sync?.invalidations?.bySseName?.['reports.list'] ?? 0)
+      > (transportBefore.sync?.invalidations?.bySseName?.['reports.list'] ?? 0),
+    'Reports arrival must have a measured reports.list SSE invalidation');
     native('navigate', `${original.path}&ws=${encodeURIComponent(workspace)}`, '--json');
     poll(`document.querySelector('.reports-reader h2')?.textContent === ${JSON.stringify(title)}`);
     poll(`(() => { const rows = Array.from(document.querySelectorAll('.reports-metadata > div'));
@@ -222,13 +243,28 @@ async function verifyReports(evidenceDir: string) {
     assert.deepEqual(after, before, 'Relevant source changed during the verification window');
     save('manifest.json', { result: 'pass', original: original.report_id, correction: correction.report_id,
       privatePeer: privatePeer.reportId, sourceFingerprints: before, assertions: step,
+      sse: { before: transportBefore.sync, afterPublish: transportAfter.sync },
       checked: ['publish-tool', 'SSE-arrival', 'deep-link', 'metadata', 'Mermaid-render', 'copy-exact-Markdown',
         'lineage-collapse', 'immutable-citation', 'previous-version', 'history-URL', 'history-navigation',
         'filter-restoration', 'agent-tools-filter-state-roundtrip', 'agent-tools-reader-close-reopen',
         'filter-negative-control', 'clear-filters-preserves-citation', 'reader-width', 'human-owner-private-read'] });
   } catch (error) {
-    save('failure.json', { error: String(error), step, sourceFingerprints: before,
-      ui: native('eval', 'JSON.stringify({url:location.href, text:document.body.innerText})') });
+    // Keep the original failure even when the diagnostic transport is broken.
+    const failure: Record<string, unknown> = { error: String(error), step, sourceFingerprints: before };
+    try {
+      failure.transport = transportSnapshot();
+      failure.ui = native('eval', 'JSON.stringify({url:location.href, text:document.body.innerText})');
+      native('eval', `window.__reportsReadProbe = { done: false }; void (async () => {
+        try {
+          const url = '/api/zero-harness/rest-query?name=reports.list&args=' + encodeURIComponent(JSON.stringify({limit:200}));
+          const response = await fetch(url, { signal: AbortSignal.timeout(15000) });
+          window.__reportsReadProbe = { done:true, status:response.status, body:await response.json() };
+        } catch(cause) { window.__reportsReadProbe = { done:true, error:String(cause) }; }
+      })()`);
+      poll('window.__reportsReadProbe?.done === true');
+      failure.directRead = JSON.parse(native('eval', 'JSON.stringify(window.__reportsReadProbe)'));
+    } catch (cause) { failure.diagnosticError = String(cause); }
+    save('failure.json', failure);
     throw error;
   }
 }

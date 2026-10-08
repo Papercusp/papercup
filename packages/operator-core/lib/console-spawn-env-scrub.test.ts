@@ -245,4 +245,16 @@ describe('agent children inherit the canonical integration root, not the operato
       rmSync(repo.root, { recursive: true, force: true });
     }
   });
+
+  it('drops parent kickoff transports while preserving explicitly merged child values', () => {
+    const parent = { PATH: '/usr/bin', PAPERCUSP_KICKOFF_PROMPT: 'parent note',
+      PAPERCUSP_KICKOFF_PROMPT_FILE: '/parent/prompt', PAPERCUSP_KICKOFF_PROOF_PATH: '/parent/proof',
+      PAPERCUSP_KICKOFF_PROOF_TOKEN: 'parent-token' };
+    expect(agentInheritedOperatorEnv(parent)).toEqual({ PATH: '/usr/bin' });
+    expect(parent.PAPERCUSP_KICKOFF_PROMPT).toBe('parent note');
+    const child = { ...agentInheritedOperatorEnv(parent), PAPERCUSP_KICKOFF_PROMPT: 'child note',
+      PAPERCUSP_KICKOFF_PROOF_PATH: '/child/proof' };
+    expect(child.PAPERCUSP_KICKOFF_PROMPT).toBe('child note');
+    expect(child.PAPERCUSP_KICKOFF_PROOF_PATH).toBe('/child/proof');
+  });
 });

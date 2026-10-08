@@ -1457,9 +1457,8 @@ function createKickoffProofRequest(): KickoffProofRequest {
   return { path, token };
 }
 
-/** Remove a proof placeholder/receipt without turning cleanup into a launch
- * failure. The host checks the placeholder before replacing it, so a timed-out
- * parent cleanup also prevents a late host from creating a new file. */
+/** Remove a settled proof placeholder/receipt without turning cleanup into a
+ * launch failure. An uncertain live child still owns its rendezvous. */
 function cleanupKickoffProofRequest(request: KickoffProofRequest | null): void {
   if (!request) return;
   try { unlinkSync(request.path); } catch { /* already consumed / never created */ }
@@ -2876,7 +2875,17 @@ async function spawnHeadlessPrepared(opts: SpawnHeadlessOpts): Promise<SpawnCons
     const kickoffProof = kickoffProofRequest
       ? await waitForKickoffProof(kickoffProofRequest, opts.kickoffProofProbes)
       : undefined;
-    cleanupKickoffProofRequest(kickoffProofRequest);
+    if (kickoffProof?.reason === 'kickoff-proof-timeout' && kickoffProofRequest) {
+      // The timeout bounds this caller's observation, not the live child's
+      // right to publish. Deleting the secure placeholder here made a late
+      // host's proof/refusal fail with ENOENT and killed that otherwise retained
+      // process. Reuse the existing exit observer as the cleanup boundary.
+      const retainedRequest = kickoffProofRequest;
+      void childExit.then(() => cleanupKickoffProofRequest(retainedRequest));
+      kickoffProofRequest = null;
+    } else {
+      cleanupKickoffProofRequest(kickoffProofRequest);
+    }
 
     // A host receipt saying the kickoff was never submitted is conclusive: this
     // child cannot become the requested agent. Reap the enrolled task now so a

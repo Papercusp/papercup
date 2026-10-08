@@ -105,6 +105,7 @@ export interface PlanCleanupRunState {
 export interface PlanCleanupReviewInventory {
   runs: Array<{ runId: string; createdAt: string | null; unresolved: number }>;
   total: number;
+  error?: string;
 }
 
 export interface PlanCleanupStartResult {

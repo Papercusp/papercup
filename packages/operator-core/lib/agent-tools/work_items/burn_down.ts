@@ -14,6 +14,7 @@ import { listPresence, PRESENCE_STALE_MS } from '../coordination/presence';
 import {
   explainIssueClaimFloors,
   listWorkItems,
+  listAllWorkItemsForFileExport,
   getWorkItem,
   readWorkItemClaimHoldProvenance,
   WORK_ITEMS_MAX_LIMIT,
@@ -32,10 +33,12 @@ import { getModes } from '../../modes/store';
 import { readDrainFlow, type DrainFlowReport } from './drain-flow';
 import { readIssueOccurrenceCounts, type IssueOccurrenceCounts } from '../../issue-occurrence-ledger';
 import { readAgentReviewState, countWorkItemPresentationStages } from '../../harness/improvements/agent-review-policy';
+import { computeQueueWaitingTimes, readAgentReviewService } from '../../harness/improvements/flow-metrics';
 import {
   classifyAuditAge,
   classifyDurableParkReleaseLiveness,
   classifyUnparkCondition,
+  buildDurableParkAuditReport,
   type AuditAge,
   type DurableParkReleaseLiveness,
   type UnparkConditionStatus,
@@ -1175,6 +1178,7 @@ export async function buildFleetMetricsResult(
     workspaceId?: string | null;
     readHistory?: FleetMetricHistoryReader;
     readPauseSource?: FleetMetricPauseReader;
+    readReviewService?: typeof readAgentReviewService;
   },
 ): Promise<FleetMetricsResult> {
   if (!resolution.ok) return parseFleetMetricsResult(resolution);
@@ -1325,6 +1329,46 @@ export async function buildFleetMetricsResult(
       : priorExactness,
   };
 
+  // Reuse the durable-park detector, including its overlapping control axes.
+  // This is the full current-spec stock, before examples or transport are capped.
+  const parks = buildDurableParkAuditReport({ rows: remainingItems.map(item => ({
+    id: item.id, title: item.title, state: item.state, takenBy: item.assignee, takenAt: item.takenAt,
+    updatedAtMs: null, payload: item.payload, reviewRoutedAtMs: null,
+  })), runId: 'fleet-metrics-read-only', workspaceId: workspaceId ?? '(unresolved)',
+    harnessSlug: resolution.scope.harness, nowMs: windowEnd });
+  const verificationService = await (async () => {
+    if (resolution.claimSpec.current.lane !== 'verification') return {
+      status: 'not-applicable' as const, reason: 'fleet-spec-is-not-verification' };
+    const recoverVia = 'retry fleet:leader-brief with the verification fleet and harness';
+    if (!workspaceId) return { status: 'unknown' as const, reason: 'workspace identity unavailable', recoverVia };
+    try {
+      const verifierIds = resolution.populationLifecycle.currentRunnableRoster.ownerIds;
+      const service = await (opts.readReviewService ?? readAgentReviewService)({ workspaceId,
+        harnessSlug: resolution.scope.harness, sinceMs: windowStart, nowMs: windowEnd, verifierIds,
+        verificationSpecs: [{ specId: resolution.claimSpec.current.specId, revision: resolution.scope.stock.revision }] },
+      { itemIds: currentCanonical.map(item => item.id) });
+      if (service.status !== 'known') return { status: 'unknown' as const, reason: service.reason, recoverVia };
+      const history = service.history;
+      const pickupReasons = Object.entries(service.pickups?.noClaimReasons ?? {})
+        .map(([reason, count]) => ({ reason, count })).sort((a, b) => b.count - a.count || a.reason.localeCompare(b.reason));
+      return { status: 'known' as const, workers: verifierIds.length,
+        arrivals: service.arrivals + history.arrivals, arrivalsUnknown: service.arrivalsUnknown,
+        priorRoundsUnmeasured: service.priorRoundsUnmeasured,
+        outcomes: service.outcomes && history.outcomes ? {
+          approved: service.outcomes.approved + history.outcomes.approved,
+          revisionRequested: service.outcomes.revisionRequested + history.outcomes.revisionRequested,
+        } : null,
+        outcomesUnknown: service.outcomesUnknown + history.outcomesUnknown,
+        pickups: service.pickups, unscopedPickupAttempts: service.unscopedPickupAttempts,
+        pickupFailureReasons: { rows: pickupReasons.slice(0, 10), omittedReasons: Math.max(0, pickupReasons.length - 10),
+          recoverVia: 'scheduler:pull_ledger for this fleet spec, runnable verifier roster and time window' },
+        since: resolution.scope.window.startAt, until: resolution.scope.window.endAt,
+        specId: resolution.claimSpec.current.specId, specRevision: resolution.scope.stock.revision,
+        basis: 'dated-review-rounds-and-scheduler-dispositions' as const,
+        snapshot: 'selection-then-service-read' as const };
+    } catch (error) { return { status: 'unknown' as const, reason: errorReason(error), recoverVia }; }
+  })();
+
   return parseFleetMetricsResult({
     ok: true,
     snapshot: {
@@ -1382,6 +1426,21 @@ export async function buildFleetMetricsResult(
       populationLifecycle: resolution.populationLifecycle,
       featureOutcomes,
       pausedTime,
+      queueHealth: {
+        population: remainingItems.length, scope: 'current-spec non-terminal canonical issue rows',
+        waiting: computeQueueWaitingTimes(remainingItems, windowEnd),
+        controls: parks.population.axes, controlsOverlap: true, parkAgeBuckets: parks.parkAgeBuckets,
+        missingMetadata: parks.missingMetadata,
+        releaseConditions: { statusCounts: parks.releaseConditionHealth.statusCounts,
+          findingCounts: parks.releaseConditionHealth.findingCounts, flagged: parks.releaseConditionHealth.flagged,
+          nextAction: parks.releaseConditionHealth.flagged || parks.missingMetadata.unattributedClaimHolds
+            ? 'Inspect flagged durable parks with the existing durable-park audit; reconcile only with condition evidence.' : null },
+        overdueReview: { thresholdHours: 24, known: parks.overdueReviews.rows.length,
+          timingUnknown: parks.missingMetadata.pendingReviewTimestamp,
+          nextAction: parks.overdueReviews.rows.length
+            ? 'Assign independent review or escalate the named review condition; age never approves a review.' : null },
+        verificationService,
+      },
       admissionParity: FLEET_METRIC_ADMISSION_PARITY,
     },
   });
@@ -2102,10 +2161,9 @@ export default defineTool({
           }),
       listPresence({ workspaceId }).catch(() => []),
       wantsFleetMetrics
-        ? listWorkItems({
+        ? listAllWorkItemsForFileExport({
             harness: args.harness,
             includeObservations: true,
-            limit: WORK_ITEMS_MAX_LIMIT,
           })
         : Promise.resolve(null),
     ]);
@@ -2196,7 +2254,7 @@ export default defineTool({
       });
       return buildFleetMetricsResult(fleetMetricResolution, fleetMetricSourceItems, {
         issueOccurrences: metricOccurrences,
-        sourceCapExhausted: fleetMetricSourceItems.length >= WORK_ITEMS_MAX_LIMIT,
+        sourceCapExhausted: false,
         assignee: self?.ownerId,
         workspaceId,
       });

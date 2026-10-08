@@ -39,7 +39,11 @@ describe('02C draft and apply', () => {
     const data = fixture(), refresh = vi.fn();
     const view = render(<WorkOnEverythingPanel data={data} nowMs={Date.now()} onClose={vi.fn()} refresh={refresh} />);
     fireEvent.keyDown(screen.getByRole('listbox'), { key: 'ArrowDown' });
+    const globalNavigation = vi.fn();
+    document.addEventListener('keydown', globalNavigation);
     fireEvent.keyDown(screen.getByRole('listbox'), { key: 'ArrowUp', altKey: true });
+    document.removeEventListener('keydown', globalNavigation);
+    expect(globalNavigation).not.toHaveBeenCalled();
     expect(fetch).not.toHaveBeenCalled();
     expect(screen.getByRole('region', { name: 'Pending changes' })).toBeTruthy();
     fireEvent.click(screen.getByText('Review & apply'));

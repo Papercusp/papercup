@@ -183,6 +183,15 @@ describe("plan clean-up derivation", () => {
 });
 
 describe("usePlanCleanupRun", () => {
+  it("keeps the selected run usable and discloses an unavailable older-review inventory", () => {
+    const inventory = { runs: [], total: 0, error: "Older cleanup reviews could not be loaded." };
+    H.syncData.value = [{ run: run({ phase: "review" }), findings: [], reviewInventory: inventory }];
+    const { result } = renderHook(() => usePlanCleanupRun("run-1"));
+    expect(result.current.run?.runId).toBe("run-1");
+    render(<PlanCleanupReviewSelector inventory={result.current.reviewInventory} selectedRunId="run-1" onReview={vi.fn()} />);
+    expect(screen.getByRole("status").textContent).toContain("could not be loaded");
+  });
+
   it("preserves older unresolved runs and opens their exact existing report id", () => {
     const inventory = { total: 2, runs: [
       { runId: "new-review", createdAt: "2026-10-07T12:00:00Z", unresolved: 77 },

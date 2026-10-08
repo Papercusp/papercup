@@ -30,6 +30,7 @@ import {
   buildConsoleScopedSpawnCommand,
   normalizeHeadlessAgentEnv,
   normalizeHeadlessAgentTerm,
+  KICKOFF_PROOF_PATH_ENV,
   KICKOFF_PROOF_TOKEN_ENV,
   _resetTerminalCacheForTests,
   pickLinuxTerminal,
@@ -43,6 +44,7 @@ import type { ConsoleEnvelope } from './console-launcher';
 import { consumeKickoffPromptFile, KICKOFF_PROMPT_FILE_ENV } from './agent-kickoff/prompt-transport.mjs';
 import { isWindowsDesktopHost } from './windows-desktop-windows';
 import { requestDesktopConsoleLaunch } from './console-launch-bridge';
+import { publishKickoffProofReceipt } from '../../../apps/operator/scripts/psu-pty-host.mjs';
 
 // WI-1882: make the WSL2/Windows-desktop signal deterministic on the Linux CI
 // host (where process.platform is already 'linux'). console-spawn consumes only
@@ -651,6 +653,47 @@ describe('spawnHeadless — no-window managed-pty launch (headless-fleet-launch 
     });
     expect(taskControl.kill).not.toHaveBeenCalled();
     expect(r).toMatchObject({ status: 'ok', kickoffProof: { persisted: false, reason: 'kickoff-proof-timeout' } });
+    // The retained child owns the placeholder until its exit; do not leak it
+    // from the fixture now that the parent's timeout correctly preserves it.
+    (r as { child: EventEmitter }).child.emit('exit', 0, null);
+    await (r as { childExit: Promise<unknown> }).childExit;
+  });
+
+  it.each([
+    { label: 'late proof', proof: { persisted: true, nativeRef: 'native:late', reason: null } },
+    { label: 'late refusal', proof: { persisted: false, nativeRef: null, reason: 'kickoff-not-submitted:successor-reanchor-unconfirmed' } },
+  ])('preserves the secure rendezvous for $label after the parent deadline', async ({ proof }) => {
+    const child = fakeChild(7793);
+    spawnMock.mockImplementation(() => child);
+    let receiptPath = '';
+    let receiptToken = '';
+    try {
+      const r = await spawnHeadless({
+        envelope, label: 'late-kickoff', kickoffProof: true,
+        kickoffProofProbes: {
+          windowMs: 0,
+          readReceipt: (path, token) => { receiptPath = path; receiptToken = token; return ''; },
+        },
+        bootProbes: { readLog: () => '', sleep: async () => {}, windowMs: 0 },
+        ...noSystemdRun,
+      });
+      expect(r).toMatchObject({ status: 'ok', kickoffProof: { persisted: false, reason: 'kickoff-proof-timeout' } });
+      expect(readFileSync(receiptPath, 'utf8')).toBe('');
+      // Use the real host writer, including its same-UID/0600/no-symlink and
+      // atomic-replacement checks, after the parent has returned uncertainty.
+      expect(publishKickoffProofReceipt(proof, {
+        [KICKOFF_PROOF_PATH_ENV]: receiptPath,
+        [KICKOFF_PROOF_TOKEN_ENV]: receiptToken,
+      })).toEqual({ published: true });
+      expect(JSON.parse(readFileSync(receiptPath, 'utf8'))).toMatchObject({ token: receiptToken, ...proof });
+      expect(taskControl.kill).not.toHaveBeenCalled();
+      child.emit('exit', 0, null);
+      await (r as { childExit: Promise<unknown> }).childExit;
+      expect(existsSync(receiptPath)).toBe(false);
+    } finally {
+      child.emit('exit', 0, null);
+      if (receiptPath) rmSync(receiptPath, { force: true });
+    }
   });
 
   it('preserves a partial launch when cleanup of an unsubmitted kickoff fails', async () => {
@@ -899,20 +942,23 @@ describe('spawnHeadless — no-window managed-pty launch (headless-fleet-launch 
   });
 
   it('keeps a large kickoff out of both headless shell argv and inherited env', async () => {
+    vi.stubEnv('PAPERCUSP_KICKOFF_PROMPT', 'parent recovery note must never be inherited');
     spawnMock.mockImplementation(() => fakeChild(7789));
     const prompt = 'Full independent review — preserve every condition.\n'.repeat(6000);
-    const result = await spawnHeadless({
-      envelope: { ...envelope, env: { ...envelope.env, PAPERCUSP_KICKOFF_PROMPT: prompt } },
-      label: 'large-kickoff',
-      logDir: null,
-      ...noSystemdRun,
-    });
-    expect(result.status).toBe('ok');
-    const [, argv, options] = spawnMock.mock.calls[0];
-    expect(argv.every((arg: string) => Buffer.byteLength(arg) < 32 * 1024)).toBe(true);
-    expect(options.env.PAPERCUSP_KICKOFF_PROMPT).toBeUndefined();
-    expect(argv.join(' ')).not.toContain('Full independent review');
-    expect(consumeKickoffPromptFile(options.env[KICKOFF_PROMPT_FILE_ENV])).toBe(prompt);
+    try {
+      const result = await spawnHeadless({
+        envelope: { ...envelope, env: { ...envelope.env, PAPERCUSP_KICKOFF_PROMPT: prompt } },
+        label: 'large-kickoff',
+        logDir: null,
+        ...noSystemdRun,
+      });
+      expect(result.status).toBe('ok');
+      const [, argv, options] = spawnMock.mock.calls[0];
+      expect(argv.every((arg: string) => Buffer.byteLength(arg) < 32 * 1024)).toBe(true);
+      expect(options.env.PAPERCUSP_KICKOFF_PROMPT).toBeUndefined();
+      expect(argv.join(' ')).not.toContain('Full independent review');
+      expect(consumeKickoffPromptFile(options.env[KICKOFF_PROMPT_FILE_ENV])).toBe(prompt);
+    } finally { vi.unstubAllEnvs(); }
   }, 10_000);
 
   it('EI-9748: installs a TERM trap ahead of the greeting so a cgroup-restart kill logs a diagnostic instead of dying silently', async () => {

@@ -252,6 +252,14 @@ export function agentInheritedOperatorEnv(
   readGitPointer?: (path: string) => string,
 ): NodeJS.ProcessEnv {
   const out = { ...env };
+  // A parent's first turn and proof rendezvous belong to that launch only.
+  // Scrub the inherited base BEFORE merging the child envelope, so moving a
+  // large child prompt to its private file cannot resurrect the parent's text
+  // (or let a child overwrite the parent's proof).
+  delete out.PAPERCUSP_KICKOFF_PROMPT;
+  delete out.PAPERCUSP_KICKOFF_PROMPT_FILE;
+  delete out.PAPERCUSP_KICKOFF_PROOF_PATH;
+  delete out.PAPERCUSP_KICKOFF_PROOF_TOKEN;
   const root = out.PAPERCUSP_INTEGRATION_ROOT?.trim();
   if (root) out.PAPERCUSP_INTEGRATION_ROOT = mainWorktreeOf(root, readGitPointer);
   return out;

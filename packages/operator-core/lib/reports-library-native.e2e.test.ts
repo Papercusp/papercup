@@ -68,6 +68,9 @@ describe.skipIf(!isolated)('Reports library in the isolated native desktop', () 
     expect(manifest.result).toBe('pass');
     expect(manifest.original).not.toBe(manifest.correction);
     expect(manifest.privatePeer).toBeTruthy();
+    expect(manifest.sse.before.sse.connectedSinceMs).not.toBeNull();
+    expect(manifest.sse.afterPublish.invalidations.bySseName['reports.list'])
+      .toBeGreaterThan(manifest.sse.before.invalidations.bySseName['reports.list'] ?? 0);
     expect(manifest.checked).toEqual(expect.arrayContaining([
       'publish-tool', 'SSE-arrival', 'deep-link', 'metadata', 'Mermaid-render',
       'copy-exact-Markdown', 'immutable-citation', 'history-navigation',

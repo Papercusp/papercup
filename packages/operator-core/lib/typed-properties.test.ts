@@ -399,6 +399,26 @@ describe('opt-in typed collections and owner policies (P-002)', () => {
     expect(properties).toEqual(snapshot);
   });
 
+  it('discovers scheduled plan runs and persists their owner exclusions without poisoning ordinary plans', () => {
+    const run = 'plan:one/nightly@run-1786557604333';
+    const first = prepareTypedPropertyMutation(base({ propertySchema: plans, property: 'worklist_policy',
+      value: { order: [run, 'plan:one/a'], excluded: [run] } }));
+    expect(first).toMatchObject({ ok: true, entry: { version: 1, provenance: 'owner-edit' } });
+    if (!first.ok) throw new Error('scheduled plan policy refused');
+    expect(readTypedPropertyCollection({ propertySchema: plans, property: 'worklist', properties: first.properties,
+      source: { ok: true, items: ['plan:one/a', run, 'plan:one/b'] } }))
+      .toMatchObject({ ok: true, selected: ['plan:one/a', 'plan:one/b'], items: [
+        { id: run, selected: false }, { id: 'plan:one/a', selected: true }, { id: 'plan:one/b', selected: true },
+      ] });
+    expect(prepareTypedPropertyMutation(base({ propertySchema: plans, property: 'worklist_policy',
+      properties: first.properties, expectedVersion: 0, value: { order: [run], excluded: [] } })))
+      .toMatchObject({ ok: false, code: 'stale', actualVersion: 1 });
+    for (const invalid of ['plan:nightly@run-123', 'plan:one/nightly@run-token', 'plan:one/nightly@run-123/extra']) {
+      expect(readTypedPropertyCollection({ propertySchema: plans, property: 'worklist', properties: {},
+        source: { ok: true, items: ['plan:one/a', invalid] } })).toMatchObject({ ok: false });
+    }
+  });
+
   it('an initially unchecked collection uses explicit inclusions, and exclusion always wins', () => {
     const unchecked = { ...portable, tea_choices: { ...portable.tea_choices,
       collection: { ...portable.tea_choices.collection, defaultSelected: false } } };

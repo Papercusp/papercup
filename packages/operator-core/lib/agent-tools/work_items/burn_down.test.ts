@@ -7,6 +7,7 @@ vi.mock('../../work-items', async (importOriginal) => ({
   // leaves it `undefined`, TypeErroring on the very row this fix is about.
   ...(await importOriginal<object>()),
   listWorkItems: vi.fn(),
+  listAllWorkItemsForFileExport: vi.fn(),
   getWorkItem: vi.fn(),
   explainIssueClaimFloors: vi.fn(),
 }));
@@ -25,7 +26,7 @@ vi.mock('../fleet/fleet-metrics-scope', async (importOriginal) => ({
   resolveFleetMetricScope: vi.fn(),
 }));
 
-import { explainIssueClaimFloors, getWorkItem, listWorkItems, WORK_ITEMS_MAX_LIMIT } from '../../work-items';
+import { explainIssueClaimFloors, getWorkItem, listWorkItems, listAllWorkItemsForFileExport, WORK_ITEMS_MAX_LIMIT } from '../../work-items';
 import { listPresence } from '../coordination/presence';
 import { getModes } from '../../modes/store';
 import { readDrainFlow, type DrainFlowReport } from './drain-flow';
@@ -38,12 +39,15 @@ import {
   applyLaneFence,
 } from './burn_down';
 import { shapeBurnDown } from './burn_down-shape';
+import { shapeLeaderBrief } from '../fleet/leader-brief-shape';
+import { computeAgentReviewService } from '../../harness/improvements/flow-metrics';
 import { P2P_LANE_EXCLUSION_TERMS, P2P_LANE_REJECTED_ANTI_TERMS } from '../../scheduler/p2p-lane-fence';
 import { DEFAULT_CLAIM_SPEC, type ClaimSpec } from '../../scheduler/claim-spec';
 import {
   FLEET_METRIC_COMPARISON_RULE,
   FLEET_METRIC_POPULATIONS,
   FLEET_METRICS_SCHEMA_VERSION,
+  fleetMetricsResultSchema,
 } from '../fleet/fleet-metrics-contract';
 import {
   resolveFleetMetricScope,
@@ -54,6 +58,7 @@ import { buildFleetPopulationLifecycle } from '../fleet/fleet-population';
 import { compareCountEvidence, materializeCountEvidence } from '../../count-evidence-contract';
 
 const mockListWorkItems = vi.mocked(listWorkItems);
+const mockListAllWorkItems = vi.mocked(listAllWorkItemsForFileExport);
 const mockGetWorkItem = vi.mocked(getWorkItem);
 const mockExplainIssueClaimFloors = vi.mocked(explainIssueClaimFloors);
 const mockListPresence = vi.mocked(listPresence);
@@ -851,6 +856,62 @@ describe('work_items:burn_down', () => {
     }));
   });
 
+  it('keeps full-population stage waits, overlapping controls and release actions through leader shaping', async () => {
+    const resolution = fleetResolution('current-spec');
+    resolution.claimSpec.current.view.filter = { field: 'kind', op: '=', value: 'bug' };
+    const rows = Array.from({ length: 2002 }, (_, n) => item({ id: `WI-health-${n}`, kind: 'bug',
+      assignee: 'member-live', createdAt: FLEET_START, payload: {
+        _claimHold: true, claim_hold_by: 'su-parker', claim_hold_reason: 'until key supplied', claim_hold_at: FLEET_START,
+        held_open_by: 'member-live', held_open_at: FLEET_START,
+        agentReview: { status: 'pending', submittedBy: 'su-author', ledgerIdeaId: `idea-${n}`, round: 2,
+          timing: { round: 2, enteredAt: FLEET_REVISION_AT } },
+      } }));
+    // A late, legacy row makes the oldest review wait unknown even after 2000 valid rows.
+    (rows[2001].payload as Record<string, unknown>).agentReview = {
+      status: 'pending', submittedBy: 'su-author', ledgerIdeaId: 'legacy', round: 1 };
+    const result = await buildFleetMetricsResult(resolution, rows, {
+      sourceCapExhausted: false, issueOccurrences: issueOccurrenceCounts,
+      explainFloors: async (_h, ids) => ids.map(id => ({ id, admissible: false, refusedBy: 'claim-hold', detail: null })),
+    });
+    expect(result.ok).toBe(true); if (!result.ok) return;
+    const health = result.snapshot.queueHealth!;
+    expect(health.population).toBe(2002);
+    expect(health.waiting.reviewWait).toMatchObject({ population: 2002, known: 2001, unknown: 1, oldestMs: null,
+      oldestKnownMs: Date.parse(FLEET_END) - Date.parse(FLEET_REVISION_AT) });
+    expect(health.controls).toMatchObject({ activeClaims: 2002, durableParks: 2002, holdOpenLeases: 2002 });
+    expect(health.controlsOverlap).toBe(true);
+    expect(health.releaseConditions.flagged).toBe(2002);
+    expect(health.releaseConditions.nextAction).toBeTruthy();
+    const shaped = shapeLeaderBrief({ ok: true, fleetMetrics: result }, 'trimmed') as { fleetMetrics: typeof result };
+    expect(shaped.fleetMetrics.snapshot.queueHealth).toEqual(health);
+    expect(Object.values(result.snapshot.remaining.buckets).reduce((a, b) => a + b, 0)).toBe(2002);
+    expect(fleetMetricsResultSchema.safeParse({ ...result, snapshot: { ...result.snapshot,
+      queueHealth: { ...health, population: 2000 } } }).success).toBe(false);
+    expect(fleetMetricsResultSchema.safeParse({ ...result, snapshot: { ...result.snapshot,
+      queueHealth: { ...health, waiting: { ...health.waiting,
+        reviewWait: { ...health.waiting.reviewWait, oldestMs: 0 } } } } }).success).toBe(false);
+  });
+
+  it('reads review service with the same current spec, runnable workers, window and complete selected ids', async () => {
+    const resolution = fleetResolution('current-spec'); resolution.claimSpec.current.lane = 'verification';
+    const reader = vi.fn(async (scope) => ({ status: 'known' as const, ...computeAgentReviewService(scope, [], []) }));
+    const result = await buildFleetMetricsResult(resolution, fleetMetricItems(), {
+      sourceCapExhausted: false, issueOccurrences: issueOccurrenceCounts, workspaceId: 'ws-test',
+      explainFloors: async () => [], readReviewService: reader,
+    });
+    expect(reader).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: 'ws-test', harnessSlug: 'papercusp',
+      verifierIds: ['member-live'], sinceMs: Date.parse(FLEET_START), nowMs: Date.parse(FLEET_END),
+      verificationSpecs: [{ specId: 'fleet-lane', revision: 2 }] }), { itemIds: ['WI-new', 'WI-remaining'] });
+    expect(result.ok && result.snapshot.queueHealth?.verificationService).toMatchObject({ status: 'known', workers: 1 });
+    reader.mockRejectedValueOnce(new Error('service ledger unavailable'));
+    const unknown = await buildFleetMetricsResult(resolution, fleetMetricItems(), {
+      sourceCapExhausted: false, issueOccurrences: issueOccurrenceCounts, workspaceId: 'ws-test',
+      explainFloors: async () => [], readReviewService: reader,
+    });
+    expect(unknown.ok && unknown.snapshot.queueHealth?.verificationService).toEqual({ status: 'unknown',
+      reason: 'service ledger unavailable', recoverVia: expect.any(String) });
+  });
+
   it('builds an exact current-spec fleet snapshot and keeps observations, occurrences, and canonical bugs separate', async () => {
     const result = await buildFleetMetricsResult(fleetResolution('current-spec'), fleetMetricItems(), {
       issueOccurrences: issueOccurrenceCounts,
@@ -976,9 +1037,9 @@ describe('work_items:burn_down', () => {
     expect(result.snapshot.issueUnits).toMatchObject({ canonicalBugs: 2, observations: 1 });
   });
 
-  it('detects the raw work-item source cap before current-spec filtering can shrink the measured population', async () => {
+  it('reads the complete fleet census before filtering and keeps a matching row beyond 2000', async () => {
     const sourceRows = [
-      ...Array.from({ length: WORK_ITEMS_MAX_LIMIT - 1 }, (_, index) =>
+      ...Array.from({ length: WORK_ITEMS_MAX_LIMIT + 1 }, (_, index) =>
         item({
           id: `WI-excluded-${index}`,
           kind: 'bug',
@@ -998,7 +1059,10 @@ describe('work_items:burn_down', () => {
         closedAt: '2026-08-21T08:00:00.000Z',
       }),
     ];
-    mockListWorkItems.mockImplementation(async (args) => (args?.includeObservations ? sourceRows : []));
+    // The ordinary display census cannot see the last matching row. Fleet metrics
+    // must still include it through the uncapped internal reader.
+    mockListWorkItems.mockResolvedValue(sourceRows.slice(0, WORK_ITEMS_MAX_LIMIT));
+    mockListAllWorkItems.mockResolvedValue(sourceRows);
     mockListPresence.mockResolvedValue([]);
     mockResolveFleetMetricScope.mockResolvedValue(fleetResolution('current-spec'));
 
@@ -1016,25 +1080,19 @@ describe('work_items:burn_down', () => {
       fleet: 'fleet-a',
       flowMode: 'current-spec',
     });
-    expect(mockListWorkItems).toHaveBeenCalledWith({
+    expect(mockListAllWorkItems).toHaveBeenCalledWith({
       harness: 'papercusp',
       includeObservations: true,
-      limit: WORK_ITEMS_MAX_LIMIT,
     });
     expect(data.fleetMetrics.ok).toBe(true);
     if (!data.fleetMetrics.ok) return;
     expect(data.fleetMetrics.snapshot.flow).toMatchObject({ opened: 1, terminalLifecycle: 1 });
-    expect(data.fleetMetrics.snapshot.quality.exactness).toMatchObject({
-      status: 'truncated',
-      sourceCap: WORK_ITEMS_MAX_LIMIT,
-      fetched: WORK_ITEMS_MAX_LIMIT,
-      reason: expect.stringContaining('before fleet-spec filtering'),
-    });
+    expect(data.fleetMetrics.snapshot.quality.exactness).toEqual({ status: 'exact', sourceCap: null });
     expect(shapeBurnDown(res.data, 'trimmed')).toMatchObject({
       fleetMetrics: {
         ok: true,
         snapshot: {
-          quality: { exactness: { status: 'truncated' } },
+          quality: { exactness: { status: 'exact' } },
           intakeStages: data.fleetMetrics.snapshot.intakeStages,
         },
       },

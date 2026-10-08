@@ -381,7 +381,7 @@ describe('fleet:leader-brief canonical fleet metrics hydration (P-005)', () => {
       harness: 'papercusp',
       flowMode: 'current-spec',
     });
-    expect(listItems).toHaveBeenCalledWith({ harness: 'papercusp', includeObservations: true, limit: 2_000 });
+    expect(listItems).toHaveBeenCalledWith({ harness: 'papercusp', includeObservations: true });
     expect(readOccurrences).toHaveBeenCalledWith({
       workspaceId: 'ws',
       harnessSlug: 'papercusp',

@@ -360,6 +360,11 @@ export interface PerUseChannelPosition {
   readonly reversedMicros: string;
   /** `settledMicros - reversedMicros`, floored at zero. */
   readonly netSettledMicros: string;
+  /** Shares of final settlement proceeds, not proof that a payee was paid. */
+  readonly settledAllocations?: {
+    readonly daoMicros: string;
+    readonly componentAuthorsMicros: Readonly<Record<string, string>>;
+  };
   readonly lastEventAtMs: number;
 }
 
@@ -385,6 +390,7 @@ interface ChannelAccumulator {
   settledMicros: bigint;
   pendingSettlementMicros: bigint;
   reversedMicros: bigint;
+  settledAllocations?: { daoMicros: bigint; componentAuthorsMicros: Map<string, bigint> };
   lastEventAtMs: number;
 }
 
@@ -491,6 +497,27 @@ export function perUseRollup(accepted: readonly CommerceEvent[]): PerUseRollup {
         // arrival of the claimed proof cannot resurrect the pending amount.
         settledRequestHashes.add(requestHash ?? event.eventId);
         channel.settledMicros += micros;
+        if (Object.hasOwn(p, 'componentAllocationsMicros')) {
+          const authors = p.componentAllocationsMicros;
+          const shares = p.allocationsMicros;
+          const validObject = (value: unknown): value is Record<string, unknown> =>
+            value !== null && typeof value === 'object' && !Array.isArray(value);
+          const entries = validObject(authors) ? Object.entries(authors) : [];
+          const component = validObject(shares) ? readMicros(shares.component) : null;
+          const dao = validObject(shares) ? readMicros(shares.dao) : null;
+          const parsed = entries.map(([author, amount]) => [author, readMicros(amount)] as const);
+          if (!validObject(authors) || component === null || dao === null ||
+              parsed.some(([author, amount]) => !author.trim() || amount === null) ||
+              parsed.reduce((sum, [, amount]) => sum + (amount ?? 0n), 0n) !== component) {
+            unusable.push({ eventId: event.eventId, reason: 'settlement component author allocations must be integer micros summing to the component share, with a DAO share' });
+          } else {
+            const allocation = channel.settledAllocations ??= { daoMicros: 0n, componentAuthorsMicros: new Map() };
+            allocation.daoMicros += dao;
+            for (const [author, amount] of parsed) {
+              allocation.componentAuthorsMicros.set(author, (allocation.componentAuthorsMicros.get(author) ?? 0n) + amount!);
+            }
+          }
+        }
       } else if (!settledRequestHashes.has(requestHash ?? event.eventId)) {
         channel.pendingSettlementMicros += micros;
       }
@@ -542,6 +569,12 @@ export function perUseRollup(accepted: readonly CommerceEvent[]): PerUseRollup {
       pendingSettlementMicros: channel.pendingSettlementMicros.toString(),
       reversedMicros: channel.reversedMicros.toString(),
       netSettledMicros: net.toString(),
+      ...(channel.settledAllocations ? { settledAllocations: {
+        daoMicros: channel.settledAllocations.daoMicros.toString(),
+        componentAuthorsMicros: Object.fromEntries([...channel.settledAllocations.componentAuthorsMicros]
+          .sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)
+          .map(([author, amount]) => [author, amount.toString()])),
+      } } : {}),
       lastEventAtMs: channel.lastEventAtMs,
     } satisfies PerUseChannelPosition;
   });

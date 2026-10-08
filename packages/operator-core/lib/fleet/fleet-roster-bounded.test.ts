@@ -21,6 +21,8 @@ const {
   recordedLiveOwnerIdsMock,
   endedRecordedOwnerIdsMock,
   fetchSelfWakeMock,
+  findLiveHostMock,
+  findLiveHostAsyncMock,
 } = vi.hoisted(() => ({
   fetchPresenceTier1Mock: vi.fn(),
   fetchWakeabilityMock: vi.fn(),
@@ -28,6 +30,8 @@ const {
   recordedLiveOwnerIdsMock: vi.fn(),
   endedRecordedOwnerIdsMock: vi.fn(),
   fetchSelfWakeMock: vi.fn(),
+  findLiveHostMock: vi.fn(),
+  findLiveHostAsyncMock: vi.fn(),
 }));
 
 vi.mock('../agent-tools/coordination/presence-tier1', async (importOriginal) => {
@@ -53,6 +57,14 @@ vi.mock('../adv-sessions', async (importOriginal) => {
 vi.mock('../agent-tools/coordination/presence-selfwake', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../agent-tools/coordination/presence-selfwake')>();
   return { ...actual, fetchSelfWake: fetchSelfWakeMock };
+});
+vi.mock('../events/await/psu-pty-discovery', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../events/await/psu-pty-discovery')>();
+  return {
+    ...actual,
+    findLiveHost: findLiveHostMock,
+    findLiveHostAsync: findLiveHostAsyncMock,
+  };
 });
 
 // Imported AFTER the mocks so the mocked bindings are the ones wired in.
@@ -90,6 +102,8 @@ describe('listFleetRosterDiagnosed (WI-3818 bounded fan-out)', () => {
     recordedLiveOwnerIdsMock.mockReset();
     endedRecordedOwnerIdsMock.mockReset();
     fetchSelfWakeMock.mockReset();
+    findLiveHostMock.mockReset();
+    findLiveHostAsyncMock.mockReset().mockResolvedValue(null);
     // Default: the recorded leg answers promptly with "nobody recorded-live" —
     // the pre-existing tests' degradedLegs expectations stay exact.
     recordedLiveOwnerIdsMock.mockResolvedValue(new Set<string>());
@@ -117,6 +131,26 @@ describe('listFleetRosterDiagnosed (WI-3818 bounded fan-out)', () => {
     expect(result.degradedLegs).toEqual([]);
     expect(result.entries).toHaveLength(1);
     expect(result.entries[0].agentId).toBe('su-1');
+  });
+
+  it('uses async psu-host discovery in the request path without calling the sync lookup', async () => {
+    fetchPresenceTier1Mock.mockResolvedValue(new Map<string, PresenceTier1Joins>());
+    fetchWakeabilityMock.mockResolvedValue(new Map([
+      ['su-1', { wakeable: true, liveTurn: true }],
+    ]));
+    listFleetAssignmentsMock.mockResolvedValue([] as FleetAssignmentRow[]);
+    findLiveHostAsyncMock.mockResolvedValue({ ownerId: 'su-1', pid: 12345 });
+
+    const resultPromise = listFleetRosterDiagnosed({
+      fleetSlug: 'p2p-parity-lanes',
+      readPresence: async () => [{ ...pres('su-1'), agentRole: 'su', tty: '/dev/pts/1' }],
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    const result = await resultPromise;
+
+    expect(result.degradedLegs).toEqual([]);
+    expect(findLiveHostAsyncMock).toHaveBeenCalledWith('su-1');
+    expect(findLiveHostMock).not.toHaveBeenCalled();
   });
 
   it('reads the durable leader through the liveness legs even when it has no presence row', async () => {
