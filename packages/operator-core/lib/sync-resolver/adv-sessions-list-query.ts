@@ -149,7 +149,11 @@ function sessionCorpusCtes(
        GROUP BY hp.plan_slug
     ),
     session_corpus AS ${materializeCorpus ? sql`MATERIALIZED` : sql`NOT MATERIALIZED`} (
-      SELECT coalesce(a.launch_harness_slug, ph.harness_slug) AS harness_slug,
+      SELECT coalesce(
+               CASE WHEN a.launch_harness_projection IS NULL
+                 THEN a.launch_spec ->> 'harnessSlug'
+                 ELSE a.launch_harness_projection #>> '{}'
+               END, ph.harness_slug) AS harness_slug,
              a.plan_slug,
              a.ended_at
              ${materializeCorpus ? sql`` : sql`,
