@@ -6,7 +6,9 @@
  * approximation (updated_at on state ∈ resolved/closed) are pinned here.
  */
 import { describe, it, expect } from 'vitest';
-import { computeAgentReviewTiming, computeImprovementFlow, type WatchdogFlowTick } from './flow-metrics';
+import { computeAgentReviewService, computeAgentReviewTiming, computeImprovementFlow,
+  type AgentReviewServiceRow, type WatchdogFlowTick } from './flow-metrics';
+import type { PullLedgerRow } from '../../agent-tools/scheduler/pull_ledger';
 import type { ImprovementCandidate } from './policy';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -17,6 +19,53 @@ function cand(p: Partial<ImprovementCandidate> & { id: string }): ImprovementCan
 }
 const daysAgo = (d: number): string => new Date(NOW - d * DAY_MS).toISOString();
 const tick = (d: number, captured = 0): WatchdogFlowTick => ({ tickAtMs: NOW - d * DAY_MS, capturedCount: captured });
+
+describe('P-030 scoped current-round service', () => {
+  const scope = { workspaceId: 'ws', harnessSlug: 'h', sinceMs: NOW - DAY_MS, nowMs: NOW,
+    verifierIds: ['su-verifier'], verificationSpecs: [{ specId: 'verify', revision: 2 }] };
+  const row = (id: string, status = 'pending', age = 0.5): AgentReviewServiceRow => ({
+    id, workspaceId: 'ws', harnessSlug: 'h', state: 'open', createdAt: daysAgo(20), reviewRoutedAtMs: NOW - 10 * DAY_MS,
+    payload: { agentReview: { status, submittedBy: 'su-author', ledgerIdeaId: id, round: 2,
+      timing: { round: 2, enteredAt: daysAgo(age), ...(status === 'pending' ? {} : { decidedAt: daysAgo(0.1) }) } } },
+    ledger: { ideaId: id, routedRef: `wi:${id}`, grade: status === 'approved' ? 5 : 2, gradedBy: 'su-verifier' },
+  });
+  const pull = (overrides: Partial<PullLedgerRow> = {}): PullLedgerRow & { workspaceId: string } => ({
+    workspaceId: 'ws', at: daysAgo(0.1), bee: 'su-verifier', harness: 'h', disposition: 'no-claim', item: null,
+    specId: 'verify', revision: 2, specRef: 'verify@2', reason: 'no-eligible-work', status: 'ok', durationMs: 20,
+    lateSettlement: null, ...overrides,
+  });
+  it('measures one scope/window, exposes older rounds and keeps an unknown oldest wait unknown', () => {
+    const undated = row('legacy');
+    undated.payload = { agentReview: { status: 'pending', submittedBy: 'su-author', ledgerIdeaId: 'legacy', round: 1 } };
+    const out = computeAgentReviewService(scope, [row('approved', 'approved'), row('revision', 'revision-requested'),
+      row('overdue', 'pending', 2), undated, { ...row('other'), harnessSlug: 'other' },
+      { ...row('foreign'), workspaceId: 'foreign' }], []);
+    expect(out).toMatchObject({ currentRounds: 4, arrivals: 2, arrivalsUnknown: 1, priorRoundsUnmeasured: 3,
+      pending: 2, pendingTimingUnknown: 1, overdueKnown: 1, oldestKnownPendingWaitMs: 2 * DAY_MS,
+      oldestPendingWaitMs: null, outcomes: { approved: 1, revisionRequested: 1 } });
+  });
+  it('refuses human/manual, mismatched-ledger and self-review grades as worker service', () => {
+    const human = row('human', 'approved'); human.ledger!.gradedBy = 'owner';
+    const unrelated = row('manual', 'approved'); unrelated.ledger!.routedRef = 'plan:manual';
+    const self = row('self', 'approved');
+    self.payload = { agentReview: { status: 'approved', submittedBy: 'su-verifier', ledgerIdeaId: 'self', round: 1,
+      timing: { round: 1, enteredAt: daysAgo(0.5), decidedAt: daysAgo(0.1) } } };
+    expect(computeAgentReviewService(scope, [human, unrelated, self], [])).toMatchObject({
+      outcomes: { approved: 0, revisionRequested: 0 }, outcomesUnknown: 3,
+    });
+    expect(computeAgentReviewService({ ...scope, verifierIds: [] }, [], []).outcomes).toBeNull();
+  });
+  it('counts exact verification-spec pickups and lets late claims supersede timeout misses', () => {
+    const out = computeAgentReviewService(scope, [], [pull(),
+      pull({ status: 'timeout', lateSettlement: { kind: 'claimed', workItemId: 'WI-A', settledAt: daysAgo(0.05) } }),
+      pull({ disposition: 'unrecorded' }), pull({ specId: 'implementation' }),
+      pull({ bee: 'unrelated' }), pull({ revision: 1 }), pull({ at: daysAgo(2) }),
+      pull({ specId: null, revision: null }),
+      pull({ lateSettlement: { kind: 'rejected-unknown', settledAt: daysAgo(0.05) } })]);
+    expect(out).toMatchObject({ pickups: { attempts: 4, claimed: 1, noClaim: 1, unknown: 2,
+      noClaimReasons: { 'no-eligible-work': 1 } }, unscopedPickupAttempts: 1 });
+  });
+});
 
 describe('P-030 round-aware review timing', () => {
   const review = { status: 'pending', submittedBy: 'su-filer', ledgerIdeaId: 'WI-A', round: 2 };

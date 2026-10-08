@@ -20,8 +20,10 @@ export function createBlenderAdmission(capUsd: number, models: readonly string[]
     const bytes = Buffer.byteLength(JSON.stringify({ system: opts.system, messages: opts.messages }), 'utf8');
     if (bytes > 512_000 || !Number.isInteger(opts.maxTokens) || opts.maxTokens! <= 0 || opts.maxTokens! > 65_536)
       throw new Error('Blender study call lacks bounded input/output');
-    const reservedUsd = costFromTokens(opts.model, { inputTokens: bytes + 4096, outputTokens: opts.maxTokens! }).usd;
-    if (!Number.isFinite(reservedUsd) || reservedUsd <= 0 || accounted() + reservedUsd > capUsd)
+    const inputTokens = bytes + 4096;
+    const estimate = costFromTokens(opts.model, { requestInputTokens: inputTokens, inputTokens, outputTokens: opts.maxTokens! });
+    const reservedUsd = estimate.usd;
+    if (!estimate.priced || !Number.isFinite(reservedUsd) || reservedUsd <= 0 || accounted() + reservedUsd > capUsd)
       throw new Error('Blender study hard per-cycle cost admission refused');
     // Synchronous reservation before the first await serializes concurrent critics.
     const call: StudyCall = { id: calls.length, model: opts.model, reservedUsd, status: 'reserved' };

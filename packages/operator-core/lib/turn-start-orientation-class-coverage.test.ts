@@ -1648,19 +1648,15 @@ const SINK_COVERAGE: Record<string, SinkCoverage> = {
           're-injected checkpoint. So this entry covers the carry-note half only, and says so.',
       },
 
-      // ── Reaches this sink from a SEPARATE derivation — DEBT, owned ─────────
+      // ── Reaches this sink from the shared owner-scoped loop reader ─────────
       loopArmed: {
-        kind: 'second-derivation',
-        collapsedBy: 'WI-10002403',
+        kind: 'other-shared-mechanism',
+        mechanism: 'getLoopStatus (harness/routines/loop.ts) — shared with carry-brief.ts',
         reason:
-          'The class DOES reach this sink, from a DIFFERENT reader than turn-start uses — measured, not ' +
-          'assumed: turn-start\'s `loopArmed` dep calls `activeLoopOwners()` (adv-roster), while carry-brief\'s ' +
-          '`loopPromise` calls `getLoopStatus(ownerId)` and consumes `loop.active` for the "armed loop @<harness>" ' +
-          'pointer and the "the loop is not armed" stale-note warning. Two readers of one truth is drift-prone ' +
-          'by the derived-truth ladder, and the disagreement is asymmetric-and-bad in both directions: a false ' +
-          'ARMED in this document asserts a wake guarantee that does not exist and the successor silently halts; ' +
-          'a false NOT-ARMED in turn-start trains agents to ignore the highest-priority warning it emits. ' +
-          'Recorded as DEBT rather than not-applicable precisely because the class is not absent here.',
+          'Turn-start reads one getLoopStatus(ownerId) promise per owner and derives both loopArmed and ' +
+          'loopFireWithheld from that same snapshot. Carry-brief also uses getLoopStatus(ownerId), so these ' +
+          'sinks now share the per-owner authority instead of comparing the roster-wide activeLoopOwners set ' +
+          'with an owner row. This closes the derivation drift recorded by WI-10002403.',
       },
 
       // ── LIVE SESSION STATE: the successor's own turn-start re-derives it ───

@@ -328,6 +328,61 @@ describe('result-door deferred spill (WI-10004533)', () => {
     expect(spillFiles()).toHaveLength(0);
   });
 
+  it('preserves a committed peer-review claim receipt when scratch quota prevents paging', async () => {
+    const root = join(process.env.PAPERCUSP_SCRATCH_ROOT!, 'ws-1');
+    mkdirSync(root, { recursive: true });
+    writeFileSync(join(root, 'unmanaged'), '');
+    truncateSync(join(root, 'unmanaged'), WORKSPACE_QUOTA_BYTES);
+    await refreshScratchUsage('ws-1');
+
+    const claim = {
+      ok: true,
+      mode: 'claim-next',
+      claimed: true,
+      workItem: {
+        id: 'WI-review-claim-1',
+        title: 'review a large submission',
+        harness: 'papercusp',
+        payload: { largeSubmission: 'P'.repeat(BUDGET_CHARS * 3) },
+      },
+      ledgerIdeaId: 'agent-review:WI-review-claim-1',
+      gradeWith: { ideaId: 'agent-review:WI-review-claim-1' },
+    };
+    const out = await applyResultDoorAsync({
+      content: [{ type: 'text' as const, text: JSON.stringify(claim) }],
+    }, {
+      ...OPTS,
+      toolName: 'tools:invoke',
+      nestedTargetToolName: 'improvements:agent-review',
+    });
+    const receipt = JSON.parse((out.content[0] as { text: string }).text) as {
+      claimed: boolean;
+      workItem: { id: string; title: string; payload?: unknown };
+      ledgerIdeaId: string;
+      gradeWith: { ideaId: string };
+      _projection: { cursor: Record<string, unknown>; next: string };
+    };
+
+    expect((out._meta?.resultDoor as { spillFailed?: boolean; spillErrorCode?: string }) ?? {})
+      .toMatchObject({ spillFailed: true, spillErrorCode: 'SCRATCH_QUOTA_EXCEEDED' });
+    expect(receipt).toMatchObject({
+      claimed: true,
+      workItem: { id: 'WI-review-claim-1', title: 'review a large submission' },
+      ledgerIdeaId: 'agent-review:WI-review-claim-1',
+      gradeWith: { ideaId: 'agent-review:WI-review-claim-1' },
+      _projection: {
+        cursor: {
+          kind: 'committed-review-claim',
+          tool: 'work_items:get',
+          args: { id: 'WI-review-claim-1', harness: 'papercusp' },
+        },
+      },
+    });
+    expect(receipt.workItem.payload?.largeSubmission).toContain('TRUNCATED');
+    expect(receipt._projection.next).toContain('Do not retry improvements:agent-review');
+    expect(receipt._projection.next).toContain('blender:grade-idea');
+  });
+
   it('writeScratchReference with deferredWrites reserves and writes through the asynchronous path', async () => {
     const filePath = join(process.env.PAPERCUSP_SCRATCH_ROOT!, 'ws-1', 'x:y', RUN_ID, 'ref.spill');
     const deferred: Promise<void>[] = [];

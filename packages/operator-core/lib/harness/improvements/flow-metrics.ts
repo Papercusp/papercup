@@ -23,7 +23,9 @@
 import { getOrgPg } from '@papercusp/db-org';
 import type { ImprovementCandidate } from './policy';
 import type { DispatchStats } from './dispatch-ledger';
-import { readAgentReviewState } from './agent-review-policy';
+import { readAgentReviewState, verificationConflict, verificationParties } from './agent-review-policy';
+import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
+import type { PullLedgerRow } from '../../agent-tools/scheduler/pull_ledger';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -83,6 +85,150 @@ export function computeAgentReviewTiming(input: {
     round: review?.round ?? null,
     reviewTimeUnknown,
   };
+}
+
+export interface AgentReviewServiceScope {
+  workspaceId: string;
+  harnessSlug: string;
+  sinceMs: number;
+  nowMs: number;
+  /** The measured worker roster, not every agent or human who happened to grade an idea. */
+  verifierIds: readonly string[];
+  verificationSpecs: readonly { specId: string; revision: number }[];
+}
+
+export interface AgentReviewServiceRow {
+  id: string;
+  workspaceId: string;
+  harnessSlug: string;
+  state: string;
+  payload: unknown;
+  createdAt: string | null;
+  reviewRoutedAtMs: number | null;
+  ledger: { ideaId: string; routedRef: string; grade: number | null; gradedBy: string | null } | null;
+}
+
+/** A census of CURRENT review rounds. Overwritten earlier rounds are explicitly unmeasured.
+ * A dispatch's status=ok is never an outcome: use the scheduler's recorded disposition,
+ * including a late settlement, and the lifecycle decision corroborated by its grade ledger.
+ */
+export function computeAgentReviewService(
+  scope: AgentReviewServiceScope,
+  rows: readonly AgentReviewServiceRow[],
+  pulls: readonly (PullLedgerRow & { workspaceId: string })[],
+) {
+  if (!Number.isFinite(scope.sinceMs) || !Number.isFinite(scope.nowMs) || scope.sinceMs > scope.nowMs) {
+    throw new Error('Invalid review service window');
+  }
+  const inWindow = (ms: number) => Number.isFinite(ms) && ms >= scope.sinceMs && ms <= scope.nowMs;
+  const workers = new Set(scope.verifierIds);
+  const specs = new Set(scope.verificationSpecs.map(s => `${s.specId}@${s.revision}`));
+  let currentRounds = 0, arrivals = 0, arrivalsUnknown = 0, priorRoundsUnmeasured = 0;
+  let pending = 0, pendingTimingUnknown = 0, overdueKnown = 0, outcomesUnknown = 0;
+  let oldestKnownPendingWaitMs: number | null = null;
+  const outcomes = { approved: 0, revisionRequested: 0 };
+  for (const row of rows) {
+    if (row.workspaceId !== scope.workspaceId || row.harnessSlug !== scope.harnessSlug) continue;
+    const review = readAgentReviewState(row.payload);
+    if (!review) continue;
+    currentRounds++;
+    priorRoundsUnmeasured += review.round - 1;
+    const timing = computeAgentReviewTiming({ ...row, nowMs: scope.nowMs });
+    if (timing.enteredAt === null) arrivalsUnknown++;
+    else if (inWindow(Date.parse(timing.enteredAt))) arrivals++;
+    if (review.status === 'pending' && !ANY_FAMILY_TERMINAL_STATES.includes(row.state)) {
+      pending++;
+      if (timing.reviewWaitMs === null) pendingTimingUnknown++;
+      else {
+        oldestKnownPendingWaitMs = Math.max(oldestKnownPendingWaitMs ?? 0, timing.reviewWaitMs);
+        if (timing.reviewWaitMs >= DAY_MS) overdueKnown++;
+      }
+    }
+    if (review.status === 'pending') continue;
+    if (timing.reviewWaitMs === null) { outcomesUnknown++; continue; }
+    if (!inWindow(Date.parse(review.timing!.decidedAt!))) continue;
+    const ledger = row.ledger;
+    if (!ledger || ledger.ideaId !== review.ledgerIdeaId || ledger.routedRef !== `wi:${row.id}` ||
+        ledger.grade === null || !Number.isInteger(ledger.grade) || ledger.grade < 1 || ledger.grade > 5 ||
+        !ledger.gradedBy || !workers.has(ledger.gradedBy) ||
+        verificationConflict(verificationParties({ payload: row.payload }), ledger.gradedBy) !== null ||
+        (review.status === 'approved' ? ledger.grade < 4 : ledger.grade > 3)) {
+      outcomesUnknown++;
+      continue;
+    }
+    if (review.status === 'approved') outcomes.approved++;
+    else outcomes.revisionRequested++;
+  }
+  let attempts = 0, claimed = 0, noClaim = 0, pickupUnknown = 0, unscopedPickupAttempts = 0;
+  const noClaimReasons: Record<string, number> = {};
+  for (const pull of pulls) {
+    if (pull.workspaceId !== scope.workspaceId || pull.harness !== scope.harnessSlug ||
+        !pull.bee || !workers.has(pull.bee) || !inWindow(Date.parse(pull.at))) continue;
+    if (!pull.specId || pull.revision === null) { unscopedPickupAttempts++; continue; }
+    if (!specs.has(`${pull.specId}@${pull.revision}`)) continue;
+    attempts++;
+    const late = pull.lateSettlement;
+    if (late) {
+      if (!inWindow(Date.parse(late.settledAt)) || late.kind === 'rejected-unknown') pickupUnknown++;
+      else if (late.kind === 'claimed') claimed++;
+      else { noClaim++; noClaimReasons['late-no-claim'] = (noClaimReasons['late-no-claim'] ?? 0) + 1; }
+    } else if (pull.disposition === 'claimed' && pull.item) claimed++;
+    else if (pull.disposition === 'no-claim') {
+      noClaim++;
+      const reason = pull.reason ?? 'reason-unrecorded';
+      noClaimReasons[reason] = (noClaimReasons[reason] ?? 0) + 1;
+    } else pickupUnknown++;
+  }
+  return { scope, basis: 'current-review-rounds' as const, currentRounds, arrivals, arrivalsUnknown,
+    priorRoundsUnmeasured, pending, pendingTimingUnknown, overdueKnown,
+    oldestKnownPendingWaitMs,
+    oldestPendingWaitMs: pendingTimingUnknown ? null : oldestKnownPendingWaitMs,
+    outcomes: workers.size ? outcomes : null, outcomesUnknown,
+    pickups: workers.size && specs.size ? { attempts, claimed, noClaim, unknown: pickupUnknown, noClaimReasons } : null,
+    unscopedPickupAttempts };
+}
+
+/** Complete scoped census before serialization; no display LIMIT can change these totals. */
+export async function readAgentReviewService(scope: AgentReviewServiceScope) {
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql<{
+      id: string; state: string; payload: unknown; created_ts: number | null;
+      idea_id: string | null; routed_ref: string | null; routed_at: number | null;
+      human_grade: number | null; graded_by: string | null;
+    }[]>`
+      SELECT wi.feature_id AS id, wi.status AS state, wi.payload, wi.created_ts,
+             l.idea_id, l.routed_ref, l.routed_at, l.human_grade, l.graded_by
+        FROM harness_shared.work_items wi
+        LEFT JOIN harness_shared.scout_routed_ideas l
+          ON l.workspace_id = wi.workspace_id AND l.harness_slug = wi.harness_slug
+         AND l.idea_id = wi.payload #>> '{agentReview,ledgerIdeaId}'
+       WHERE wi.workspace_id = ${scope.workspaceId} AND wi.harness_slug = ${scope.harnessSlug}
+         AND jsonb_typeof(wi.payload -> 'agentReview') = 'object'`;
+    const pulls = await sql<{
+      invoked_at: Date; coord_owner_id: string | null; harness_slug: string; status: string;
+      duration_ms: number | null; disposition: unknown; late_settlement: unknown;
+    }[]>`
+      SELECT invoked_at, coord_owner_id, harness_slug, status, duration_ms,
+             metadata_json -> 'schedulerDisposition' AS disposition,
+             metadata_json -> 'schedulerLateSettlement' AS late_settlement
+        FROM harness_shared.tool_invocations
+       WHERE workspace_id = ${scope.workspaceId} AND harness_slug = ${scope.harnessSlug}
+         AND tool_name = 'scheduler:get_next' AND coord_owner_id = ANY(${[...scope.verifierIds]}::text[])
+         AND invoked_at >= ${new Date(scope.sinceMs)} AND invoked_at <= ${new Date(scope.nowMs)}`;
+    const { pullLedgerRowFromInvocation } = await import('../../agent-tools/scheduler/pull_ledger');
+    return { status: 'known' as const, ...computeAgentReviewService(scope, rows.map(row => ({
+      id: row.id, state: row.state, payload: row.payload, workspaceId: scope.workspaceId, harnessSlug: scope.harnessSlug,
+      createdAt: row.created_ts === null ? null : new Date(Number(row.created_ts)).toISOString(),
+      reviewRoutedAtMs: row.routed_at === null ? null : Number(row.routed_at),
+      ledger: row.idea_id && row.routed_ref ? { ideaId: row.idea_id, routedRef: row.routed_ref,
+        grade: row.human_grade === null ? null : Number(row.human_grade), gradedBy: row.graded_by } : null,
+    })), pulls.map(pull => ({ workspaceId: scope.workspaceId,
+      ...pullLedgerRowFromInvocation({ ...pull, invoked_at: new Date(pull.invoked_at).toISOString() }),
+    }))) };
+  } catch {
+    return { status: 'unknown' as const, scope, reason: 'service-read-failed' as const };
+  }
 }
 
 /** Minimal watchdog tick row the flow rollup needs (injected — see readWatchdogFlowTicks). */

@@ -89,6 +89,24 @@ describe('typed-properties-db (real PG, migration 923)', () => {
     await db?.cleanup();
   });
 
+  it('persists draft-apply reasons in the same CAS write and rejects an obsolete edit', async () => {
+    const schema = { plans: { datatype: 'list', default: ['plan:h/a', 'plan:h/b'], editable_by: 'both',
+      collection: { source: 'manual', policy: 'policy', order: 'priority', selectable: true, defaultSelected: true } },
+      policy: { datatype: 'ordered-selection-policy', editable_by: 'owner', default: { order: [], excluded: [] } } };
+    await db.adminSql.unsafe("INSERT INTO harness_shared.goals (id,install_slug,workspace_id,title,status,property_schema) VALUES ('g-draft-reason',$1,$2,'Draft reason','active',$3::jsonb)",
+      [HARNESS, WS, JSON.stringify(schema)]);
+    const args = { workspaceId: WS, goalId: 'g-draft-reason', property: 'policy', expectedVersion: 0,
+      provenance: 'owner-edit' as const, actorId: 'human', reason: 'Friday demo',
+      value: { order: ['plan:h/b', 'plan:h/a'], excluded: [] } };
+    const result = await applyGoalPropertyWrite(db.adminSql, args);
+    expect(result).toMatchObject({ ok: true, entry: { version: 1, reason: 'Friday demo' } });
+    expect(await applyGoalPropertyWrite(db.adminSql, { ...args, reason: 'stale reason' }))
+      .toMatchObject({ ok: false, code: 'stale', actualVersion: 1 });
+    const [row] = await db.adminSql.unsafe("SELECT properties FROM harness_shared.goals WHERE id='g-draft-reason' AND workspace_id=$1", [WS]);
+    expect(row.properties.policy).toMatchObject({ reason: 'Friday demo', version: 1,
+      value: { order: ['plan:h/b', 'plan:h/a'], excluded: [] } });
+  });
+
   it('declaration validation: unknown datatype ref and invalid default are refused; a valid doc passes', async () => {
     const unknownRef = await validatePropertySchemaDeclaration(db.adminSql, WS, {
       x: { datatype: 'no-such-datatype', editable_by: 'both' },

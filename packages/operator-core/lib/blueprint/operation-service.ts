@@ -89,7 +89,9 @@ export interface SubmitBlueprintOperationInput {
 /** Only the durable program executor supplies this option. It stays outside the
  * public operation input so a caller cannot select an older definition. */
 export interface InternalBlueprintOperationSubmission {
-  expectedSpecificationRevision: string;
+  expectedSpecificationRevision?: string;
+  /** Trusted routine caller only; never exposed in the public submission schema. */
+  beforeNewAdmission?: (tx: TransactionSql) => Promise<void>;
 }
 
 type InvocationRow = {
@@ -188,6 +190,7 @@ export function submitBlueprintOperation(
         title: input.title?.trim() || operation.description?.trim() || operation.id,
         summary: input.summary,
         expectedSpecificationRevision: internal?.expectedSpecificationRevision,
+        beforeNewAdmission: internal?.beforeNewAdmission,
         createdBy: callerId,
       });
       target = { kind: 'work-item', id: item.id };
@@ -196,6 +199,7 @@ export function submitBlueprintOperation(
         workspaceId: input.workspaceId, harnessSlug: input.harnessSlug,
         callerId, requestKey, operationId: input.operationId, input: input.input,
         expectedSpecificationRevision: internal?.expectedSpecificationRevision,
+        beforeNewAdmission: internal?.beforeNewAdmission,
       });
       target = { kind: 'plan', runId: run.runId, instanceSlug: run.instanceSlug };
     }

@@ -48,12 +48,16 @@ describe('explicit authorized content summaries', () => {
     expect(h.requests[0]!.systemPromptText).toContain('untrusted material');
     expect(JSON.parse(h.requests[0]!.promptText)).toMatchObject({ audience: 'engineers', focus: 'costs', format: 'bullets', language: 'Spanish', quotedSource: original.text });
   });
-  it('requires cloud consent and permits an explicitly selected registered local model', async () => {
+  it('requires cloud consent and keeps a registered local selection off the cloud transport', async () => {
     const h = harness();
     await expect(summarizeContent(await source(), {}, undefined, h.deps)).rejects.toMatchObject({ code: 'cloud-consent-required' });
     expect(h.requests).toHaveLength(0);
     h.deps.isLocalModel = vi.fn(async () => true);
-    await expect(summarizeContent(await source(), { model: 'registered-local' }, undefined, h.deps)).resolves.toMatchObject({ model: 'registered-local' });
+    await expect(summarizeContent(await source(), { model: 'registered-local' }, undefined, h.deps)).rejects.toMatchObject({ code: 'local-route-unavailable' });
+    await expect(summarizeContent(await source(), { model: 'registered-local', allowCloud: true }, undefined, h.deps)).rejects.toMatchObject({ code: 'local-route-unavailable' });
+    expect(h.requests).toHaveLength(0);
+    expect(h.deps.checkBudget).not.toHaveBeenCalled();
+    expect(h.deps.recordSpend).not.toHaveBeenCalled();
   });
   it('isolates reuse by reader, workspace, source version, coverage, options, model and account', async () => {
     const h = harness(); const original = await source(); const options = { allowCloud: true };

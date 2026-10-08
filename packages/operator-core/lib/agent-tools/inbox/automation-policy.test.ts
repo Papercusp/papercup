@@ -66,6 +66,16 @@ describe('inbox:automation-policy', () => {
   it('get returns the standing policy', async () => {
     const result = body(await tool.handler({ op: 'get' } as never, { role: 'su' } as never));
     expect(result).toEqual({ policy: { level: 'L0', minConfidence: 'high' } });
+    expect(readM).toHaveBeenCalledWith(undefined, { strict: true });
+  });
+
+  it('surfaces an unreadable saved policy and does not allow a write using synthetic defaults', async () => {
+    readM.mockRejectedValue(new Error('policy storage unavailable'));
+    await expect(tool.handler({ op: 'get' } as never, { role: 'operator' } as never))
+      .rejects.toThrow('policy storage unavailable');
+    await expect(tool.handler({ op: 'set', minConfidence: 'medium' } as never, { role: 'operator' } as never))
+      .rejects.toThrow('policy storage unavailable');
+    expect(writeM).not.toHaveBeenCalled();
   });
 
   it('set rejects a role without operator-config write authority', async () => {

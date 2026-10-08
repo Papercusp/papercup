@@ -59,14 +59,16 @@ export function standingAutomationEligibility(
   return { allowed: true, reason: null };
 }
 
-/** Missing/unreadable storage fails closed to L0 review-all. */
+/** Runtime reads fail closed; settings must distinguish unavailable storage from a missing policy. */
 export async function readStandingBulkAutomationPolicy(
   workspaceId: string = activeWorkspaceId(),
+  options: { strict?: boolean } = {},
 ): Promise<StandingBulkAutomationPolicy> {
   try {
     const stored = await readOperatorState<Partial<StandingBulkAutomationPolicy>>(STORE, workspaceId);
     return normalizeStandingBulkAutomationPolicy(stored);
-  } catch {
+  } catch (error) {
+    if (options.strict) throw error;
     return { ...DEFAULT_STANDING_BULK_AUTOMATION_POLICY };
   }
 }
@@ -85,7 +87,7 @@ export async function writeStandingBulkAutomationPolicy(
   if (patch.minConfidence !== undefined && !isBulkConfidence(patch.minConfidence)) {
     throw new Error(`invalid attention confidence floor ${JSON.stringify(patch.minConfidence)}`);
   }
-  const next = { ...(await readStandingBulkAutomationPolicy(workspaceId)), ...patch };
+  const next = { ...(await readStandingBulkAutomationPolicy(workspaceId, { strict: true })), ...patch };
   // A legacy level change replaces the per-risk override rather than retaining a hidden grant.
   if (patch.level !== undefined && patch.riskLevels === undefined) delete next.riskLevels;
   await writeOperatorState<StandingBulkAutomationPolicy>(STORE, next, workspaceId);

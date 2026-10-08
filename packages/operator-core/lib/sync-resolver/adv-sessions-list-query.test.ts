@@ -59,7 +59,7 @@ describe('adv sessions list predicate', () => {
 });
 
 describe('advSessions summary payload-growth guard', () => {
-  it('materializes only facet scalars without decoding launch JSON or a whole row', async () => {
+  it('materializes only facet scalars and reads launch JSON only while projection is pending', async () => {
     type Fragment = { strings: readonly string[]; values: unknown[]; then: (resolve: (rows: never[]) => unknown) => unknown };
     let query: Fragment | undefined;
     const sql = (strings: TemplateStringsArray, ...values: unknown[]) => {
@@ -78,9 +78,10 @@ describe('advSessions summary payload-growth guard', () => {
     await readAdvSessionsSummaryFromStore(sql as never,
       buildAdvSessionsPredicate(normalizeAdvSessionsListArgs({ workspaceId: 'ws-1' })));
     const text = render(query!);
-    expect(text).toContain('a.launch_harness_slug');
+    expect(text).toContain('CASE WHEN a.launch_harness_projection IS NULL');
+    expect(text).toContain("ELSE a.launch_harness_projection #>> '{}'");
     expect(text).toContain('session_corpus AS MATERIALIZED');
-    for (const unused of ['to_jsonb(a)', 'a.launch_spec', 'a.port_metadata', 'a.cwd', 'a.label']) {
+    for (const unused of ['to_jsonb(a)', 'a.port_metadata', 'a.cwd', 'a.label']) {
       expect(text).not.toContain(unused);
     }
   });

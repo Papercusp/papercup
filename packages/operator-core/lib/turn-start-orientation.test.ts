@@ -700,6 +700,25 @@ describe('turn-start-orientation — what it says', () => {
     expect(getLoopStatusMock).toHaveBeenCalledWith('su-1');
   });
 
+  it('derives armed and withheld loop fields from one owner-status snapshot', async () => {
+    getLoopStatusMock.mockClear();
+    getLoopStatusMock.mockResolvedValue({
+      active: true,
+      lastFiredAt: '2026-08-24T04:00:00.000Z',
+      lastWithheldAt: '2026-08-24T04:00:01.000Z',
+    });
+    const deps = defaultOrientationDeps();
+    const [armed, withheld] = await Promise.all([
+      deps.loopArmed('su-1'),
+      deps.loopFireWithheld('su-1'),
+    ]);
+
+    expect(armed).toBe(true);
+    expect(withheld).toBe(true);
+    expect(getLoopStatusMock).toHaveBeenCalledTimes(1);
+    expect(getLoopStatusMock).toHaveBeenCalledWith('su-1');
+  });
+
   it('tells an agent holding nothing to claim before editing', () => {
     const out = composeOrientationBlock({
       state: { ...base, unansweredDirected: 1 },

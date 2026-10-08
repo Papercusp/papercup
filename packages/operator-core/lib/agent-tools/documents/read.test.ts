@@ -7,6 +7,7 @@ vi.mock('../../agent-chat-stream', () => ({ runAgentChat: async function* (reque
   yield { type: 'result', finalText: 'A concise report.', costUsd: 0, tokensIn: 10, tokensOut: 4, stopReason: 'end_turn' };
 } }));
 vi.mock('../../operator-budget', () => ({ checkBudget: async () => ({ exceeded: false }), recordSpend: async () => {} }));
+vi.mock('../../inference-gateway/local-backend-store', () => ({ listLocalBackends: async () => [] }));
 vi.mock('../../cache/instance', () => ({ getOperatorCache: () => ({ getOrSet: async (_workspace: string, _key: string, factory: () => Promise<unknown>) => factory() }) }));
 import tool from './read';
 const ctx = { workspaceId: 'workspace-one' } as never;

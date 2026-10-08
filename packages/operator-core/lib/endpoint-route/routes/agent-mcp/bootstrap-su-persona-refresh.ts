@@ -23,9 +23,9 @@
  * assembly that drifted would make a "refreshed" prompt quietly differ from a fresh
  * one, which is worse than staleness because nothing would report it.
  *
- * FAIL-SOFT IS THE CONTRACT. Every failure returns 200 `{ ok: false, reason }`
- * rather than an error status, because the only correct caller behaviour is
- * identical in all of them: keep the inherited render and respawn anyway. A respawn
+ * Render failures return 200 `{ ok: false, reason }` so the caller can keep the
+ * inherited render and respawn. A funding refusal is a separate typed reason:
+ * the caller must stop instead of reusing an unfunded identity. A respawn
  * that died because the operator was briefly unreachable would lose the whole
  * session, which is strictly worse than running a stale prompt. The `reason` exists
  * so the failure is diagnosable instead of silent.
@@ -84,7 +84,8 @@ const personaRefresh = defineTool({
         return jsonRes({ ok: false, reason: 'unsupported-agent', agent: record.agent });
       }
 
-      const rebuilt = await rebuildSuLaunchArtifact({
+      const { rebuildSuLaunchArtifactFunded } = await import('../../../cupboard/identity-activation-restart');
+      const funded = await rebuildSuLaunchArtifactFunded({
         ownerId: coordOwnerId,
         operatorBaseUrl: new URL(req.url).origin,
         record,
@@ -93,8 +94,8 @@ const personaRefresh = defineTool({
           drainMode: record.drainMode,
           loopArmed: record.loopArmed,
         }),
-      });
-      const { artifact, promptText, spec } = rebuilt;
+      }, { rebuild: rebuildSuLaunchArtifact });
+      const { artifact, promptText, spec } = funded.rebuilt;
 
       // Write atomically to a path that is NOT the inherited one. The caller's
       // fallback is the file it already has, so that file must stay intact and
@@ -146,8 +147,21 @@ const personaRefresh = defineTool({
         specificationRevision: artifact.specificationRevision,
         stateRevision: artifact.stateRevision,
         compositionSource: artifact.compositionSource,
+        identityActivationRefusal: funded.identityActivationRefusal,
+        removedLayerRefs: funded.removedLayerRefs,
       });
     } catch (err) {
+      const { isIdentityActivationRefusedError } = await import('../../../cupboard/identity-activation-gate');
+      if (isIdentityActivationRefusedError(err)) {
+        const { IDENTITY_ACTIVATION_REFUSED_REASON } = await import('../../../cupboard/identity-activation-restart');
+        return jsonRes({
+          ok: false,
+          reason: IDENTITY_ACTIVATION_REFUSED_REASON,
+          error: err.code,
+          detail: err.message,
+          refused: err.refused,
+        });
+      }
       return jsonRes({
         ok: false,
         reason: 'render-failed',

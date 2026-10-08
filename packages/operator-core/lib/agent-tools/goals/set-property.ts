@@ -65,6 +65,8 @@ export default defineTool({
       .describe(
         'CAS guard: the per-property version you last read; 0 = the property has no explicit value yet. A mismatch refuses as stale with the actual version.',
       ),
+    reason: z.string().trim().max(2000).optional()
+      .describe('Optional explanation saved with the value and its change history.'),
     confirmShrink: z
       .boolean()
       .optional()
@@ -114,6 +116,7 @@ export default defineTool({
       confirmShrink: args.confirmShrink,
       provenance,
       actorId,
+      reason: args.reason,
     });
     if (!result.ok) {
       const { ok: _ok, code, ...detail } = result;
@@ -151,8 +154,22 @@ export default defineTool({
       event: 'property_changed',
       before: result.priorValue,
       after: result.entry.value,
-      detail: `[${provenance === 'owner-edit' ? 'owner' : actorId}] ${delta}`,
+      detail: `[${provenance === 'owner-edit' ? 'owner' : actorId}] ${delta}${args.reason ? ` — ${args.reason}` : ''}`,
     });
+
+    // Reuse the existing plan history rail for plans whose scope or rank changed.
+    // The property value/reason above remain the transactional source of truth.
+    if (result.definition.datatype === 'ordered-selection-policy') {
+      const { changedWorklistPlans } = await import('../../goals/worklist-console');
+      for (const change of changedWorklistPlans(result.priorValue, result.entry.value)) {
+        await emitPlanEventForCaller(ctx, {
+          planSlug: change.ref.slice(change.ref.indexOf('/') + 1), event: 'property_changed',
+          before: { goalId: args.goalId, ...change.before },
+          after: { goalId: args.goalId, ...change.after },
+          detail: `Goal worklist: ${change.ref} — ${change.label}${args.reason ? ` — ${args.reason}` : ''}`,
+        });
+      }
+    }
 
     return text({
       ok: true,

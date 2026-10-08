@@ -43,6 +43,8 @@ const { createOrgTestDb } = await import('../../test/_org-test-db');
 
 const WS = 'ws-dream-run-store';
 const POT = 'papercusp';
+const DATABASE_ENV_KEYS = ['HARNESS_ADMIN_DATABASE_URL', 'HARNESS_DATABASE_URL', 'DATABASE_URL'] as const;
+const savedDatabaseEnv = Object.fromEntries(DATABASE_ENV_KEYS.map(key => [key, process.env[key]]));
 const PAIR: DreamFragmentPair = {
   anchor: {
     id: 'recent-observation',
@@ -69,14 +71,30 @@ describe('migration 862 + dream run accounting (real PG)', () => {
 
   beforeAll(async () => {
     db = await createOrgTestDb();
+    // The canonical plan and Scout readers resolve their own db-org pools.
+    // Pin them to the same disposable database as the injected Dream readers.
+    process.env.HARNESS_ADMIN_DATABASE_URL = db.adminDsn;
+    process.env.HARNESS_DATABASE_URL = db.appDsn;
+    process.env.DATABASE_URL = db.adminDsn;
+    const { _resetForTests } = await import('@papercusp/db-org');
+    await _resetForTests();
     // Before arming, the normal fixture deliberately ignores *.DRAFT. After
     // arming, this is an idempotency replay over the already-migrated template.
     await db.adminSql.unsafe(MIGRATION_SQL);
   }, 180_000);
 
   afterAll(async () => {
-    await db?.cleanup();
-    if (!process.env.KEEP_TEST_PG) await teardownTestPg();
+    try {
+      const { _resetForTests } = await import('@papercusp/db-org');
+      await _resetForTests();
+    } finally {
+      for (const key of DATABASE_ENV_KEYS) {
+        if (savedDatabaseEnv[key] === undefined) delete process.env[key];
+        else process.env[key] = savedDatabaseEnv[key];
+      }
+      await db?.cleanup();
+      if (!process.env.KEEP_TEST_PG) await teardownTestPg();
+    }
   });
 
   it('DREAM-REVIEW-PREFLIGHT: persists a no-spend refusal through real source readers, phase ledger and detail projection', async () => {
@@ -86,6 +104,7 @@ describe('migration 862 + dream run accounting (real PG)', () => {
     try {
       const llmCall = vi.fn<DreamCycleDeps['llmCall']>(async () => { throw new Error('Must not pay for generation'); });
       const sink = vi.fn<DreamCycleDeps['sink']>(async () => { throw new Error('Must not route an unreviewed proposal'); });
+      const rerank = vi.fn<NonNullable<DreamCycleDeps['rerank']>>(async (_query, priors) => ({ priors, outcome: { attempted: false, reason: 'Scorer offline' } }));
       const result = await runDreamCycle({ ...f.scope, rootPath: f.root, manifest: f.manifest, mode: 'manual', cycleId: 'preflight-pg', cycle: { maxDreamsPerCycle: 3 }, pass: { model: 'generator' }, review: { model: 'reviewer' } }, {
         llmCall, sink,
         preflight: async () => ({ allow: true, loopId: 'test', cycleRemainingUsd: 1, rollingSpentUsd: 0, rollingRemainingUsd: 5, rollingLoopCount: 0 }),
@@ -100,16 +119,17 @@ describe('migration 862 + dream run accounting (real PG)', () => {
         recordReview: input => recordDreamRunReview(sql, { ...input, workspaceId }),
         finalizeRun: input => finalizeDreamRun(sql, { ...input, workspaceId }),
         recordSpend: run => recordDreamRunSpend(sql, { workspaceId, potSlug: POT, runId: run.runId }),
-        rerank: async (_query, priors) => ({ priors, outcome: { attempted: false, reason: 'Scorer offline' } }),
+        rerank,
       });
       expect(result).toMatchObject({ reason: 'review-unavailable', attempts: 1, accepted: 0, costUsd: 0 });
       const detail = await readDreamDetail(sql, { workspaceId, potSlug: POT, runId: result.runs[0]!.runId });
-      expect(detail?.run.review).toMatchObject({ verdict: 'unverified', reason: 'rerank-unavailable' });
+      expect(detail?.run.review, JSON.stringify(detail?.run.review)).toMatchObject({ verdict: 'unverified', reason: 'rerank-unavailable' });
       expect(detail?.run.outcome).toMatchObject({ generationSkipped: true });
       expect(detail?.nextCheck).toMatchObject({ kind: 'dependency', maxSourceQueries: 2 });
       expect(detail?.proposal).toBeNull();
       expect(detail?.provenance!.calls.map(c => c.callId)).toContain('rerank:preflight');
       expect(detail?.provenance!.calls.every(c => c.reservedUsd === 0 && c.status === 'settled')).toBe(true);
+      expect(rerank).toHaveBeenCalledOnce();
       expect(llmCall).not.toHaveBeenCalled(); expect(sink).not.toHaveBeenCalled();
     } finally {
       await rm(f.root, { recursive: true, force: true });

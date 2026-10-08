@@ -3617,6 +3617,18 @@ export async function resolveOrientationState(
 /** Default readers — each one is an EXISTING shared primitive, never a new query.
  *  Dynamic imports keep them off the module graph until a turn actually needs them. */
 export function defaultOrientationDeps(): OrientationDeps {
+  // Both orientation loop facts describe one owner's current loop. Share one
+  // owner-scoped status read per resolution so the ARMED line and withheld-fire
+  // variant cannot be derived from separate readers or different snapshots.
+  const loopStatusReads = new Map<string, Promise<import('./harness/routines/loop').LoopStatus | null>>();
+  const loopStatusFor = (ownerId: string) => {
+    let pending = loopStatusReads.get(ownerId);
+    if (!pending) {
+      pending = import('./harness/routines/loop').then(({ getLoopStatus }) => getLoopStatus(ownerId));
+      loopStatusReads.set(ownerId, pending);
+    }
+    return pending;
+  };
   return {
     /**
      * P-014. Reuse-first: the decisions themselves come from
@@ -4405,12 +4417,10 @@ export function defaultOrientationDeps(): OrientationDeps {
       };
     },
     loopArmed: async (ownerId) => {
-      const { activeLoopOwners } = await import('./adv-roster');
-      return (await activeLoopOwners()).has(ownerId);
+      return Boolean((await loopStatusFor(ownerId))?.active);
     },
     loopFireWithheld: async (ownerId) => {
-      const { getLoopStatus } = await import('./harness/routines/loop');
-      return isLoopFireWithheld(await getLoopStatus(ownerId));
+      return isLoopFireWithheld(await loopStatusFor(ownerId));
     },
     // P-013: filing already works; consumption did not. Reuse the exact bounded
     // triage window, policy split, and ONE human-queue ranker rather than adding

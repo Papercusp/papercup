@@ -43,7 +43,7 @@ async function summaryResponse(req: Request, body: Record<string, unknown>): Pro
     return Response.json({ ok: true, ...await summarizeContent(source, options.data, req.signal) }, { headers: { 'cache-control': 'no-store' } });
   } catch (error) {
     if (error instanceof ContentIntakeError || error instanceof ContentSummaryError) {
-      const status = error.code === 'cancelled' ? 499 : error.code === 'cloud-consent-required' ? 403 : error.code === 'budget-exceeded' ? 429 : error instanceof ContentIntakeError ? 422 : 502;
+      const status = error.code === 'cancelled' ? 499 : error.code === 'cloud-consent-required' ? 403 : error.code === 'budget-exceeded' ? 429 : error.code === 'local-route-unavailable' ? 503 : error instanceof ContentIntakeError ? 422 : 502;
       return Response.json({ ok: false, code: error.code, error: error.message }, { status });
     }
     throw error;

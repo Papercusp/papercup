@@ -75,6 +75,12 @@ vi.mock('../../../role-launch-spec', () => ({
 vi.mock('../../../agent-tools/coordination/control-anchor', () => ({
   requestSessionIdentityActivation: (input: unknown) => requestSessionIdentityActivationMock(input),
 }));
+const admitMock = vi.hoisted(() =>
+  vi.fn(async (_request: unknown): Promise<unknown> => ({ ok: true, charged: [] })),
+);
+vi.mock('../../../cupboard/identity-activation-gate-io', () => ({
+  admitIdentityActivation: (request: unknown) => admitMock(request),
+}));
 vi.mock('../../../agent-tools/coordination/presence', async (orig) => ({
   ...(await orig<typeof import('../../../agent-tools/coordination/presence')>()),
   touchHeartbeat: vi.fn(async () => {}),
@@ -126,6 +132,7 @@ async function refresh(body: unknown): Promise<Response> {
 beforeEach(() => {
   vi.clearAllMocks();
   readLaunchSpecMock.mockResolvedValue(null);
+  admitMock.mockResolvedValue({ ok: true, charged: [] });
 });
 afterEach(() => {
   vi.clearAllMocks();
@@ -416,6 +423,54 @@ describe('persona-refresh write path stays off the event loop (WI-10005227)', ()
     expect(src).toMatch(/\bawait rename\(tmp, promptFile\)/);
     expect(src).toMatch(/\bawait writeFile\(tmp, promptText/);
     expect(src).not.toMatch(/\b(?:mkdirSync|writeFileSync|chmodSync|renameSync)\(/);
+  });
+});
+
+describe('POST bootstrap-su/persona-refresh — priced identity funding', () => {
+  function unfunded(layerRef: string) {
+    const refused = {
+      layerRef,
+      skuRef: 'identity-release:acme-reviewer@1.0.0',
+      code: 'identity-activation-unfunded',
+      detail: 'no funded channel or prepaid credits',
+    };
+    return { ok: false, code: refused.code, detail: refused.detail, refused: [refused], charged: [] };
+  }
+
+  it('removes a revoked paid identity from the refreshed artifact and launch receipt', async () => {
+    readLaunchSpecMock.mockResolvedValue(spec({ stack: ['practice:citations', 'domain:acme-reviewer'] }));
+    admitMock.mockResolvedValueOnce(unfunded('domain:acme-reviewer'))
+      .mockResolvedValueOnce({ ok: true, charged: [] });
+    const response = await refresh({ coordOwnerId: OWNER });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      ok: true,
+      removedLayerRefs: ['domain:acme-reviewer'],
+      identityActivationRefusal: { code: 'identity-activation-unfunded' },
+    });
+    expect(buildLaunchSpecMock).toHaveBeenCalledTimes(2);
+    expect(buildLaunchSpecMock).toHaveBeenLastCalledWith(expect.objectContaining({ stack: ['practice:citations'] }));
+    const { recordSuLaunchSpec } = await import('../../../adv-sessions');
+    expect(vi.mocked(recordSuLaunchSpec)).toHaveBeenCalledWith(null, OWNER,
+      expect.objectContaining({ stack: ['practice:citations'] }));
+  });
+
+  it('returns the host stop reason without writing or activating when refusal cannot be cured', async () => {
+    const owner = 'su-priced-refused';
+    readLaunchSpecMock.mockResolvedValue(spec({ stack: ['practice:citations'] }));
+    admitMock.mockResolvedValue(unfunded('fleet:derived-paid-layer'));
+    const response = await refresh({ coordOwnerId: owner });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      ok: false,
+      reason: 'identity-activation-refused',
+      error: 'identity-activation-unfunded',
+      refused: [expect.objectContaining({ layerRef: 'fleet:derived-paid-layer' })],
+    });
+    expect(existsSync(join(dir, `session-refresh-${owner}.md`))).toBe(false);
+    expect(requestSessionIdentityActivationMock).not.toHaveBeenCalled();
+    const { recordSuLaunchSpec } = await import('../../../adv-sessions');
+    expect(vi.mocked(recordSuLaunchSpec)).not.toHaveBeenCalled();
   });
 });
 

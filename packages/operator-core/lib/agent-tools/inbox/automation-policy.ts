@@ -56,7 +56,7 @@ export default defineTool({
     z.object({ op: z.literal('reset'), dryRun: z.boolean().optional() }),
   ]),
   async handler(args, ctx) {
-    if (args.op === 'get') return json({ policy: await readStandingBulkAutomationPolicy() });
+    if (args.op === 'get') return json({ policy: await readStandingBulkAutomationPolicy(undefined, { strict: true }) });
     if (!isOperatorConfigWriteRole(ctx.role)) {
       throw new Error('inbox:automation-policy writes require operator, architect, or mug role');
     }
@@ -75,7 +75,7 @@ export default defineTool({
         action: 'inbox:automation-policy',
         subject: 'workspace-standing-policy',
         actor: `role:${ctx.role}`,
-        capturePrev: () => readStandingBulkAutomationPolicy(),
+        capturePrev: () => readStandingBulkAutomationPolicy(undefined, { strict: true }),
         apply: () => args.op === 'reset'
           ? resetStandingBulkAutomationPolicy()
           : writeStandingBulkAutomationPolicy(patch!),

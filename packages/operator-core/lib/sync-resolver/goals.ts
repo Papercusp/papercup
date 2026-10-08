@@ -915,7 +915,7 @@ export async function resolveGoalDetail(args: {
     `) as unknown as Array<Record<string, unknown>>;
 
     const activity = (await tx`
-      SELECT wi.feature_id AS id, wi.title, wi.harness_slug, wi.status,
+      SELECT wi.feature_id AS id, wi.title, wi.harness_slug, wi.status, wi.source_plan_slug,
              to_timestamp(wi.closed_ts / 1000.0) AS closed_at,
              to_timestamp(wi.updated_ts / 1000.0) AS updated_at
         FROM harness_shared.work_items wi
@@ -1245,6 +1245,7 @@ export async function resolveGoalDetail(args: {
         id: String(a.id),
         title: String(a.title),
         harnessSlug: (a.harness_slug as string | null) ?? null,
+        planSlug: (a.source_plan_slug as string | null) ?? null,
         status: (a.status as string | null) ?? null,
         closedAt: iso(a.closed_at as string | Date | null),
         updatedAt: iso(a.updated_at as string | Date | null),
@@ -1308,11 +1309,30 @@ export async function resolveGoalDetail(args: {
       const rows = selection.ok && selection.configured ? selection.items.map((item) => {
         const plan = definition.collection!.source === 'active-workspace-plans'
           ? portfolio?.worklist.find((p) => (p.harness ? `plan:${p.harness}/${p.slug}` : p.ref) === item.id) : undefined;
+        const outcomes = (shaped.activity as Array<{ status?: string; planSlug?: string; harnessSlug?: string;
+          closedAt?: string; id: string; title: string }> | undefined)?.filter((a) =>
+          a.status === 'done' && a.closedAt && a.planSlug === plan?.slug && a.harnessSlug === plan?.harness) ?? [];
         return { ...item, label: plan?.title ?? item.id, state: plan?.placement.state ?? null,
-          reason: plan?.placement.reconciliation.reason ?? null };
+          reason: plan?.placement.reconciliation.reason ?? null,
+          harness: plan?.harness ?? null, planSlug: plan?.slug ?? null,
+          nextStep: plan?.next?.text ?? null, counts: plan?.counts ?? null,
+          liveLaneOwner: plan?.placement.activeLane?.holderLive ? plan.placement.activeLane.ownerId : null,
+          fleetMembers: plan?.placement.fleet?.planScoped ? plan.placement.fleet.liveMembers : null,
+          outcomes: outcomes.sort((a, b) => Date.parse(b.closedAt!) - Date.parse(a.closedAt!)),
+        };
       }) : [];
       return [property, { selection, rows }];
     }));
-  return { ...shaped, goalModeState, goalData: { ...rawData, collections,
+  let worklistHistory: unknown[] = [], historyError: string | null = null;
+  if (shaped.goal.goalPackage?.ref === 'work-on-everything') {
+    try {
+      const [{ readPlanEvents }, { projectWorklistHistory }] = await Promise.all([
+        import('../agent-tools/coordination/plan-events'), import('../goals/worklist-console'),
+      ]);
+      worklistHistory = projectWorklistHistory(await readPlanEvents({ planSlugs: [goalId],
+        events: ['property_changed'], limit: 40 }));
+    } catch { historyError = 'Worklist change history could not be read.'; }
+  }
+  return { ...shaped, goalModeState, goalData: { ...rawData, collections, worklistHistory, historyError,
     error: declaration.success ? null : 'Goal data declarations could not be read.' } };
 }

@@ -1,5 +1,6 @@
 import { test, expect, type Page } from './_egress';
 import { stubSyncQueries } from './_sync-stub';
+import { readTypedPropertyCollection, type OrderedSelectionPolicy } from '../../../packages/operator-core/lib/typed-properties';
 
 const current = {
   id: 'ongoing-current', title: 'Renamed workspace steward', status: 'active', standing: true,
@@ -29,6 +30,114 @@ async function scopeFixture(page: Page) {
   await page.route('**/api/harness/projects/lite', (route) => route.fulfill({ status: 200,
     contentType: 'application/json', body: JSON.stringify({ projects }) }));
   return projects;
+}
+
+for (const kind of ['plans', 'tea'] as const) {
+  test(`declared ${kind} collection preserves owner order and selection through reload`, async ({ page }) => {
+    const projects = await scopeFixture(page);
+    const goal = { id: `collection-${kind}`, title: `${kind} collection`, status: 'active', standing: kind === 'plans' };
+    const property = kind === 'plans' ? 'worklist' : 'tea_choices';
+    const policyName = kind === 'plans' ? 'worklist_policy' : 'tea_policy';
+    const ids = kind === 'plans' ? ['plan:papercusp/alpha', 'plan:papercusp/beta', 'plan:papercusp/blocked'] : ['mint', 'chamomile', 'rooibos'];
+    const dormant = kind === 'plans' ? 'plan:papercusp/dormant' : 'lavender';
+    const labels = ['First choice', 'Second choice', 'Blocked choice'];
+    const schema = {
+      [property]: { datatype: kind === 'plans' ? 'plan-ref-list' : 'string-list', default: [], editable_by: 'both',
+        collection: { source: kind === 'plans' ? 'active-workspace-plans' : 'manual', policy: policyName,
+          order: kind === 'plans' ? 'priority' : 'display', selectable: true, defaultSelected: true } },
+      [policyName]: { datatype: 'ordered-selection-policy', default: { order: [], excluded: [] }, editable_by: 'owner' },
+    };
+    let policy: OrderedSelectionPolicy = { order: [ids[0], dormant], excluded: [dormant] };
+    let version = 4;
+    let refuseSave = false;
+    const writes: Array<{ value: OrderedSelectionPolicy; expectedVersion: number }> = [];
+    const reads: Array<{ version: number; order: string[] }> = [];
+    const selection = () => readTypedPropertyCollection({ propertySchema: schema, property,
+      properties: { [property]: { value: ids, version: 2, edited_by: 'agent', provenance: 'agent-edit', edited_at: '2026-10-07T00:00:00Z' },
+        [policyName]: { value: policy, version, edited_by: 'owner', provenance: 'owner-edit', edited_at: '2026-10-07T00:00:00Z' } },
+      ...(kind === 'plans' ? { source: { ok: true as const, items: ids } } : {}) });
+    const sync = await stubSyncQueries(page, (name) => {
+      if (name === 'harnessProjects.lite') return projects;
+      if (name === 'advRoster.list') return [{ active: [], pending: [] }];
+      if (name === 'goals.list') return [{ goals: [goal], totalGoals: 1, goalPackages: [] }];
+      if (name === 'goals.detail') {
+        const selected = selection();
+        if (!selected.ok || !selected.configured) throw new Error(JSON.stringify(selected));
+        reads.push({ version: selected.policyVersion, order: selected.items.map((row) => row.id) });
+        return [{ goal, goalData: { collections: { [property]: { selection: selected,
+          rows: selected.items.map((row) => ({ ...row, label: labels[ids.indexOf(row.id)],
+            state: row.id === ids[2] ? 'blocked' : 'ready', reason: row.id === ids[2] ? 'Waiting for dependency' : null })) } } } }];
+      }
+      return headerRows(name);
+    });
+    await page.route('**/api/admin/goals/set-property', async (route) => {
+      const posted = route.request().postDataJSON();
+      expect(posted.goalId).toBe(goal.id);
+      expect(posted.property).toBe(policyName);
+      expect(posted).not.toHaveProperty('provenance');
+      if (refuseSave || posted.expectedVersion !== version) {
+        await route.fulfill({ status: 409, contentType: 'application/json', body: JSON.stringify({ error: 'stale', actualVersion: version }) });
+        return;
+      }
+      writes.push(posted);
+      policy = posted.value;
+      version++;
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, version, provenance: 'owner-edit' }) });
+    });
+    await page.goto(`/adv?tab=hud&scope=all&hudtab=goals&hudgoal=${goal.id}&welcome=0`);
+    await sync.waitForServed(['goals.detail']);
+    const editor = page.getByTestId('goal-data');
+    async function reloadWithReadback() {
+      const readback = page.waitForResponse((response) => {
+        const url = new URL(response.url());
+        return url.pathname.endsWith('/rest-query') && url.searchParams.get('name') === 'goals.detail';
+      });
+      await page.reload();
+      try {
+        const payload = await (await readback).json();
+        expect(payload.rows[0].goalData.collections[property].selection.policyVersion).toBe(version);
+        const expected = selection();
+        if (!expected.ok || !expected.configured) throw new Error('collection unavailable');
+        expect(payload.rows[0].goalData.collections[property].rows.map((row: { id: string }) => row.id))
+          .toEqual(expected.items.map((row) => row.id));
+      } finally {
+        await test.info().attach(`collection-${kind}-readback-v${version}`, {
+          body: JSON.stringify({ reads, writes, policy, version }), contentType: 'application/json',
+        });
+      }
+    }
+    await expect(editor.getByText('Waiting for dependency')).toBeVisible();
+    const saved = page.waitForResponse('**/api/admin/goals/set-property');
+    await editor.getByRole('button', { name: 'Move Second choice up' }).click();
+    expect((await saved).status()).toBe(200);
+    expect(policy.order).toEqual([ids[1], ids[0], ids[2], dormant]);
+    await reloadWithReadback();
+    await expect(editor.locator('li').first()).toContainText('Second choice');
+    const excluded = page.waitForResponse('**/api/admin/goals/set-property');
+    await editor.getByRole('checkbox', { name: 'Include Second choice' }).click();
+    expect((await excluded).status()).toBe(200);
+    expect(policy.excluded).toEqual([dormant, ids[1]]);
+    await reloadWithReadback();
+    await expect(editor.getByRole('checkbox', { name: 'Include Second choice' })).not.toBeChecked();
+    await expect(editor.locator('li').first()).toContainText('Excluded');
+    const afterExclusion = selection();
+    if (!afterExclusion.ok || !afterExclusion.configured) throw new Error('collection unavailable');
+    expect(afterExclusion.items.filter((row) => row.selected).map((row) => row.id)).toEqual([ids[0], ids[2]]);
+    const reselected = page.waitForResponse('**/api/admin/goals/set-property');
+    await editor.getByRole('checkbox', { name: 'Include Second choice' }).click();
+    expect((await reselected).status()).toBe(200);
+    await reloadWithReadback();
+    await expect(editor.getByRole('checkbox', { name: 'Include Second choice' })).toBeChecked();
+    expect(policy.excluded).toEqual([dormant]);
+    expect(writes.map((write) => write.expectedVersion)).toEqual([4, 5, 6]);
+    refuseSave = true;
+    await editor.getByRole('checkbox', { name: 'Include First choice' }).click();
+    await expect(editor.getByRole('alert')).toContainText('stale');
+    await expect(editor.getByRole('checkbox', { name: 'Include First choice' })).toBeChecked();
+    expect(version).toBe(7);
+    await page.screenshot({ path: test.info().outputPath(`collection-${kind}.png`) });
+    sync.assertServed('goals.list', 'goals.detail');
+  });
 }
 
 test('ongoing work stays visible across tabs, keeps ordinary goals, and opens the same detail', async ({ page }) => {

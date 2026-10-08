@@ -30,13 +30,16 @@ describe('existing output endpoint explicit summary operation', () => {
     expect(leaves[0]).toMatchObject({ length: 'short', focus: 'numbers', language: 'French' });
     expect(h.synth).not.toHaveBeenCalled(); expect(h.prefs).not.toHaveBeenCalled();
   });
-  it('refuses cloud disclosure unless consent is explicit, and supports a local model choice', async () => {
+  it('refuses unconsented cloud disclosure and never routes a local selection through the cloud runner', async () => {
     const body = { operation: 'summarize', content: { kind: 'text', text: 'Source.' } };
     const denied = await post(body);
     expect(denied.status).toBe(403);
     expect(await denied.json()).toMatchObject({ ok: false, code: 'cloud-consent-required' });
     expect(h.prompts).toHaveLength(0);
-    expect((await post({ ...body, summary: { model: 'fixture-local' } })).status).toBe(200);
+    const local = await post({ ...body, summary: { model: 'fixture-local' } });
+    expect(local.status).toBe(503);
+    expect(await local.json()).toMatchObject({ ok: false, code: 'local-route-unavailable' });
+    expect(h.prompts).toHaveLength(0);
   });
   it('rejects reference-only input and malformed options before any model call', async () => {
     expect((await post({ operation: 'summarize', content: { kind: 'reference', ref: 'private:elsewhere' } })).status).toBe(400);

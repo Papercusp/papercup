@@ -13,6 +13,7 @@ import workItemsCreate from './work_items/create';
 import codeRun from './code/run';
 import docsAuthor from './docs/author';
 import coordSend from './coordination/tools/send';
+import agentReview from './improvements/agent-review';
 
 /**
  * WI-10005670 recurrence guard — the commit-unknown window.
@@ -50,6 +51,8 @@ const LATE_RETURN_MUTATORS = {
   'work_items:create': workItemsCreate,
   // EI-25288245178425318: a delivered coord:send must expose its persisted message id after a late return.
   'coord:send': coordSend,
+  // EI-25374615774698673: a late review claim/resubmission must name its completed effect.
+  'improvements:agent-review': agentReview,
 } as const;
 
 /** The population check, factored so the calibration control below can run the same code. */

@@ -17,6 +17,9 @@ vi.mock('@papercusp/db-org', async (orig) => ({
   getOrgPg: () => ({ sql: h.sql }),
 }));
 vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: vi.fn(async () => {}) }));
+// Keep revision notifications inside this isolated fixture; lifecycle/ledger writes are real PG.
+vi.mock('../../agent-tools/coordination/messages', () => ({ sendMessage: vi.fn(async () => ({ ok: true })) }));
+vi.mock('../../agent-tools/coordination/inbox-wake', () => ({ wakeRecipients: vi.fn(async () => ({ woken: 0 })) }));
 
 const { createOrgTestDb } = await import('../../../test/_org-test-db');
 const { getIssue, linkIssue } = await import('../../issues-engineer');
@@ -26,8 +29,12 @@ const { runRouteIdea } = await import('../../agent-tools/scout/route-idea');
 const { runGradeIdea } = await import('../../agent-tools/scout/grade-idea');
 const {
   claimAgentReview,
+  enterAgentReview,
   preserveAgentReviewAuthorityBeforePlanRoute,
+  resubmitAgentReview,
 } = await import('./agent-review');
+const { computeAgentReviewTiming } = await import('./flow-metrics');
+const { readAgentReviewState } = await import('./agent-review-policy');
 
 const WS = 'ws-agent-review-plan-route';
 const HARNESS = 'papercusp';
@@ -77,6 +84,65 @@ describe('agent-review authority survives a later plan route (EI-218490, real PG
     await db?.cleanup();
     if (!process.env.KEEP_TEST_PG) await teardownTestPg();
   });
+
+  it('P-030 persists round entry/reset independently of report creation and first ledger routing', async () => {
+    const id = 'EI-P030-PERSISTED-TIMING';
+    const old = new Date('2026-01-01T00:00:00.000Z');
+    await db.adminSql`
+      INSERT INTO harness_shared.engineer_issues
+        (workspace_id, issue_id, kind, scope, title, body, severity, source, state,
+         payload, created_by, signal_origin, created_at, updated_at, admission)
+      VALUES (${WS}, ${id}, 'change', ${`harness:${HARNESS}`},
+        'Persisted review timing', 'Independent round timing regression', 'minor', 'engineer', 'open',
+        '{}'::jsonb, 'su-filer', 'organic', ${old}, ${old}, 'pending')`;
+
+    const before = Date.now();
+    expect(await enterAgentReview({ id, submittedBy: 'su-filer', harnessSlug: HARNESS, workspaceId: WS }))
+      .toMatchObject({ entered: true });
+    const first = readAgentReviewState((await getWorkItem(id, HARNESS))!.payload)!;
+    expect(first.timing?.round).toBe(1);
+    expect(Date.parse(first.timing!.enteredAt)).toBeGreaterThanOrEqual(before);
+    expect(Date.parse(first.timing!.enteredAt)).toBeLessThanOrEqual(Date.now());
+    await db.adminSql`UPDATE harness_shared.scout_routed_ideas
+      SET routed_at = ${old.getTime()} WHERE idea_id = ${first.ledgerIdeaId}`;
+    await enterAgentReview({ id, submittedBy: 'su-filer', harnessSlug: HARNESS, workspaceId: WS });
+    expect(readAgentReviewState((await getWorkItem(id, HARNESS))!.payload)!.timing).toEqual(first.timing);
+
+    expect((await claimAgentReview({ id, reviewer: 'su-reviewer', harnessSlug: HARNESS })).claimed).toBe(true);
+    expect(await runGradeIdea({ ideaId: first.ledgerIdeaId, grade: 2, feedback: 'Supply the missing reproduction.' },
+      { ownerId: 'su-reviewer', role: 'operator' })).toMatchObject({ applied: true,
+      agentReview: { status: 'revision-requested' } });
+    const revision = readAgentReviewState((await getWorkItem(id, HARNESS))!.payload)!;
+    expect(Date.parse(revision.timing!.decidedAt!)).toBeGreaterThanOrEqual(Date.parse(first.timing!.enteredAt));
+
+    const resetBefore = Date.now();
+    expect(await resubmitAgentReview({ id, submittedBy: 'su-filer' })).toMatchObject({ resubmitted: true });
+    const pending = (await getWorkItem(id, HARNESS))!;
+    const second = readAgentReviewState(pending.payload)!;
+    expect(second.timing).toEqual({ round: 2, enteredAt: expect.any(String) });
+    expect(Date.parse(second.timing!.enteredAt)).toBeGreaterThanOrEqual(resetBefore);
+    const nowMs = Date.now();
+    const measured = computeAgentReviewTiming({ payload: pending.payload, createdAt: old.toISOString(),
+      reviewRoutedAtMs: old.getTime(), nowMs });
+    expect(measured).toMatchObject({ round: 2, reviewTimeUnknown: null, revisionAgeMs: null,
+      reportAgeMs: nowMs - old.getTime(), ledgerRouteAgeMs: nowMs - old.getTime(),
+      reviewWaitMs: nowMs - Date.parse(second.timing!.enteredAt) });
+    expect(measured.reviewWaitMs).toBeLessThan(measured.ledgerRouteAgeMs!);
+    const [ledger] = await db.adminSql<{ routed_at: number }[]>`
+      SELECT routed_at FROM harness_shared.scout_routed_ideas WHERE idea_id = ${first.ledgerIdeaId}`;
+    expect(Number(ledger.routed_at)).toBe(old.getTime());
+
+    expect((await claimAgentReview({ id, reviewer: 'su-reviewer', harnessSlug: HARNESS })).claimed).toBe(true);
+    expect(await runGradeIdea({ ideaId: first.ledgerIdeaId, grade: 5, feedback: 'The revision is ready.' },
+      { ownerId: 'su-reviewer', role: 'operator' })).toMatchObject({ applied: true,
+      agentReview: { status: 'approved' } });
+    const approved = (await getWorkItem(id, HARNESS))!;
+    const terminal = readAgentReviewState(approved.payload)!;
+    expect(terminal.timing!.enteredAt).toBe(second.timing!.enteredAt);
+    expect(computeAgentReviewTiming({ payload: approved.payload, createdAt: old.toISOString(),
+      reviewRoutedAtMs: old.getTime(), nowMs: Date.parse(terminal.timing!.decidedAt!) + 1000 }).reviewWaitMs)
+      .toBe(Date.parse(terminal.timing!.decidedAt!) - Date.parse(second.timing!.enteredAt));
+  }, 120_000);
 
   it('moves review authority before the plan upsert, refuses the colliding bare key, then grades the fallback', async () => {
     const out = await runRouteIdea(

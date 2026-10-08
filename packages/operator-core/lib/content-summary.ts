@@ -21,7 +21,7 @@ export const summaryOptionsSchema = z.object({
 });
 export type SummaryOptions = z.input<typeof summaryOptionsSchema>;
 export class ContentSummaryError extends Error {
-  constructor(readonly code: 'cancelled' | 'budget-exceeded' | 'cloud-consent-required' | 'model-failed' | 'output-incomplete', message: string) {
+  constructor(readonly code: 'cancelled' | 'budget-exceeded' | 'cloud-consent-required' | 'local-route-unavailable' | 'model-failed' | 'output-incomplete', message: string) {
     super(message); this.name = 'ContentSummaryError';
   }
 }
@@ -75,7 +75,14 @@ export async function summarizeContent(source: ReadableContent, input: SummaryOp
   cancelled(signal);
   const options = summaryOptionsSchema.parse(input);
   const model = options.model ?? process.env.PAPERCUSP_HAIKU_MODEL ?? 'claude-haiku-4-5';
-  if (!options.allowCloud && !await awaitWithCancellation(deps.isLocalModel(model, source.access.workspaceId), signal)) {
+  const localModel = await awaitWithCancellation(deps.isLocalModel(model, source.access.workspaceId), signal);
+  // TEMPORARY MITIGATION (EI-25381558498899737): the current stateless runner
+  // speaks Anthropic, while registered local models require OpenAI chat. Never
+  // let a local selection enter that cloud transport, including with consent.
+  if (localModel) {
+    throw new ContentSummaryError('local-route-unavailable', 'The local summary route is unavailable. No source was sent. Choose a supported cloud model with explicit consent.');
+  }
+  if (!options.allowCloud) {
     throw new ContentSummaryError('cloud-consent-required', 'The selected summary model may receive this content in the cloud. Explicitly allow cloud summarization or select a registered local model.');
   }
   cancelled(signal);

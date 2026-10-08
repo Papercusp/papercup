@@ -2971,6 +2971,13 @@ async function buildMcpToolContext(
 const PAPERCUSP_MCP_INSTRUCTIONS = `Get oriented ONCE per session-with-context (a user task you have
 not seen this run) — by whichever of these two routes your host gave you:
 
+  **ROLE-SCOPED OVERRIDE:** The routes below assume a role permitted to use coordination
+  writes. The evidence-only judge role is intentionally excluded from coordination-write
+  tools, so it must not call coord:declare-intent, claim plan lanes, or pass intent to
+  coord:orient (that causes an internal declaration attempt). Judges may call coord:orient
+  {} without intent for omitted read context, then work only the item already routed to
+  them. This omits memory recall and intent declaration by design.
+
   **ROUTE A — an \`## Orientation\` block already arrived in this turn.** Your held
   work-items, unanswered directed messages, and whether a wake source (armed loop)
   exists came WITH it: the server read them for you. Do NOT spend a

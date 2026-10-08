@@ -49,6 +49,8 @@ export interface AcceptBlueprintDirectItemInput {
   requestKey?: string;
   /** Internal program-child call: use the parent's immutable specification. */
   expectedSpecificationRevision?: string;
+  /** Internal schedule guard, run in the acceptance transaction only for NEW work. */
+  beforeNewAdmission?: (tx: TransactionSql) => Promise<void>;
 }
 
 /** A child invocation must keep its parent's definition even if the mutable
@@ -375,6 +377,7 @@ async function acceptBlueprintDirectWorkItemScoped(
             }
             return recovered;
           }
+          await request.beforeNewAdmission?.(tx);
           const revision = selectOperationSpecificationRevision(
             request.expectedSpecificationRevision,
             receipt?.specification_revision,
@@ -486,6 +489,7 @@ export interface AcceptBlueprintPlanRunInput {
   input: Record<string, unknown>;
   /** Internal program-child call: use the parent's immutable specification. */
   expectedSpecificationRevision?: string;
+  beforeNewAdmission?: (tx: TransactionSql) => Promise<void>;
 }
 
 export interface AcceptedBlueprintPlanRun {
@@ -597,6 +601,7 @@ async function acceptBlueprintPlanRunScoped(
         }
         validateOperationInput(operation.inputSchema, input);
         if (receipt) return { receipt, revision, template: operation.target.template };
+        await request.beforeNewAdmission?.(tx);
         const inserted = await tx<PlanInvocationReceiptRow[]>`
       INSERT INTO harness_shared.blueprint_operation_invocations
         (workspace_id, harness_slug, caller_id, operation_id, request_key, request_fingerprint,

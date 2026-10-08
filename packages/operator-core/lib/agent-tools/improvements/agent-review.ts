@@ -7,6 +7,7 @@
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
+import type { AbortCompletionContext, AbortCompletionReceipt, ToolResult } from '@papercusp/tooldef';
 import {
   claimAgentReview,
   claimNextAgentReview,
@@ -14,6 +15,7 @@ import {
 } from '../../harness/improvements/agent-review';
 import { readAgentReviewState } from '../../harness/improvements/agent-review-policy';
 import type { WorkItem } from '../../work-items';
+import { asRecord, completedResultPayload } from '../abort-completion-payload';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { harnessRequiredResult, resolveConcreteHarnessSlug } from '../_harness-scope';
@@ -27,9 +29,93 @@ function gradeHandoff(workItem: WorkItem | null) {
   };
 }
 
+/**
+ * A review pickup/resubmission can commit before its handler returns past the dispatch
+ * deadline. Name the returned work-item/round so callers do not retry an already-landed
+ * mutation. Claim misses fail closed: claim-next may heal or reconcile rows while scanning,
+ * and a directed claim can heal an own-node origin before a later refusal.
+ */
+export function agentReviewAbortCompletionReceipt(
+  args: unknown,
+  result: ToolResult,
+  _context: AbortCompletionContext,
+): AbortCompletionReceipt {
+  const input = asRecord(args);
+  const payload = completedResultPayload(result);
+  const mode = input?.mode;
+  if (!payload || payload.ok !== true || payload.mode !== mode) {
+    return {
+      status: 'recovery-incomplete',
+      reason: 'improvements:agent-review result did not confirm the requested mode and success envelope',
+      failures: ['missing-success-envelope'],
+    };
+  }
+
+  if (mode === 'claim' || mode === 'claim-next') {
+    const workItem = asRecord(payload.workItem);
+    const workItemId = workItem?.id;
+    if (
+      payload.claimed === true &&
+      typeof workItemId === 'string' &&
+      workItemId.trim().length > 0 &&
+      (mode !== 'claim' || input?.id === workItemId)
+    ) {
+      return {
+        status: 'recorded',
+        effectRef: `improvements-agent-review:${mode}:${workItemId}`,
+      };
+    }
+
+    // These two directed-claim exits happen before origin healing or any claim attempt.
+    if (
+      mode === 'claim' &&
+      payload.claimed === false &&
+      (payload.reason === 'not-found' || payload.reason === 'not-open')
+    ) {
+      return { status: 'not-recorded', reason: payload.reason };
+    }
+
+    return {
+      status: 'recovery-incomplete',
+      reason: 'claim refusal or queue miss may include lifecycle repair side effects and cannot safely invite a retry',
+      failures: ['ambiguous-claim-outcome'],
+    };
+  }
+
+  if (mode === 'resubmit') {
+    const state = asRecord(payload.state);
+    const itemId = input?.id;
+    const round = state?.round;
+    if (
+      payload.resubmitted === true &&
+      typeof itemId === 'string' &&
+      itemId.trim().length > 0 &&
+      state?.status === 'pending' &&
+      typeof round === 'number' &&
+      Number.isSafeInteger(round) &&
+      round > 0
+    ) {
+      return {
+        status: 'recorded',
+        effectRef: `improvements-agent-review:resubmit:${itemId}:round:${round}`,
+      };
+    }
+    if (payload.resubmitted === false && typeof payload.reason === 'string' && payload.reason.trim()) {
+      return { status: 'not-recorded', reason: payload.reason };
+    }
+  }
+
+  return {
+    status: 'recovery-incomplete',
+    reason: 'improvements:agent-review result did not identify its completed effect',
+    failures: ['missing-effect-identity'],
+  };
+}
+
 export default defineTool({
   name: 'improvements:agent-review',
   profile: 'engineer',
+  abortCompletionReceipt: agentReviewAbortCompletionReceipt,
   description:
     'Claim a specific or the next peer-review item in one concrete harness, or resubmit a revision-requested item. Review grades still go through blender:grade-idea; this door only owns reviewer pickup and submitter resubmission.',
   guidance: {

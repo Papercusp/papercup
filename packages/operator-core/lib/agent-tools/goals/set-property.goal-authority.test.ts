@@ -45,6 +45,7 @@ beforeEach(() => {
   mocks.apply.mockResolvedValue({
     ok: true,
     priorValue: ['tests'],
+    definition: { datatype: 'list', editable_by: 'both' },
     entry: { value: ['docs'], version: 2 },
   });
   mocks.backfill.mockResolvedValue({ refs: 1, plansStamped: ['docs'], workItemsStamped: ['WI-1'] });
@@ -89,6 +90,19 @@ describe('goals:set-property effective-holder fence', () => {
 });
 
 describe('goals:set-property worklist attribution backfill (WI-10005246)', () => {
+  it('forwards the reason and records affected plans on the existing history rail', async () => {
+    mocks.apply.mockResolvedValue({ ok: true,
+      definition: { datatype: 'ordered-selection-policy', editable_by: 'owner' },
+      priorValue: { order: ['plan:h/a', 'plan:h/b'], excluded: [] },
+      entry: { value: { order: ['plan:h/b', 'plan:h/a'], excluded: [] }, version: 2 } });
+    await tool.handler({ ...args, property: 'worklist_policy', reason: 'Friday demo',
+      value: { order: ['plan:h/b', 'plan:h/a'], excluded: [] } } as never, ctx as never);
+    expect(mocks.apply).toHaveBeenCalledWith(ctx.tx, expect.objectContaining({ reason: 'Friday demo' }));
+    expect(mocks.emit).toHaveBeenCalledWith(ctx, expect.objectContaining({
+      planSlug: 'a', event: 'property_changed', detail: expect.stringContaining('Friday demo') }));
+    expect(mocks.emit).toHaveBeenCalledWith(ctx, expect.objectContaining({
+      planSlug: 'b', event: 'property_changed', detail: expect.stringContaining('Priority 2 → 1') }));
+  });
   it('stamps the goal on rows of the worklist plans after a successful worklist write', async () => {
     const out = (await tool.handler(args as never, ctx as never)) as Out;
     expect(out.isError).toBeUndefined();
@@ -108,6 +122,7 @@ describe('goals:set-property worklist attribution backfill (WI-10005246)', () =>
     mocks.apply.mockResolvedValue({
       ok: true,
       priorValue: 'a',
+      definition: { datatype: 'text', editable_by: 'both' },
       entry: { value: 'b', version: 2 },
     });
     const out = (await tool.handler({ ...args, property: 'brief', value: 'b' } as never, ctx as never)) as Out;
