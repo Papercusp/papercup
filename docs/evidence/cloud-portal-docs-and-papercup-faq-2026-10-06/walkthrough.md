@@ -193,3 +193,86 @@ entry and search focus, theme persistence, FAQ bookmarks and alternate-wording
 search. This is current built-manual browser evidence. It does not discharge
 the seven actual product journeys, model answers, real novice observations,
 independent acceptance or production shipment.
+
+## Account destination correction, 2026-10-08
+
+EI-25434300348600597 originated in the canonical account guide: its source
+blob `606450d395aba54eee74b7af0500f6b44b9c2e27` directed identity and organization
+checks to **Accounts**. Source review of the configured Portal checkout found
+two distinct destinations. `packages/ui/src/shell.tsx` places the **Portal
+account** button in the navigation rail and renders identity, **Status**, and
+the signed-in **Billing** link in `AccountPanel`.
+`packages/ui/src/accounts-dock.tsx` mounts the selected workspace's model
+account pool in **Accounts sidebar**. The account panel source does not render
+an organization selector; that source observation is not a deployed UI verdict.
+
+The existing account guide now names those destinations separately, gives the
+organization administrator fallback when no organization name or selector is
+shown, and locates Billing inside Portal account. This corrects the documented
+route without adding or promising an organization picker.
+
+The maintained browser regression failed against the previous built manual
+at the missing **Portal account** instruction: one failure, exit 1, retained
+in `/tmp/su73-account-guide-red-1800.log`. After the correction:
+
+- `PAPERCUSP_TEST_RUN_HARNESS=papercusp scripts/pc-heavy.sh npm --prefix apps/papercusp-docs run build`
+  exited 0; retained log `/tmp/su73-account-guide-build-1802.log`.
+- `PAPERCUSP_TEST_RUN_HARNESS=papercusp scripts/pc-heavy.sh npm --prefix apps/papercusp-docs run test`
+  exited 0: seven maintained tests passed, no skips, and Astro reported zero
+  diagnostics; retained log `/tmp/su73-account-guide-docs-test-1804.log`.
+- `OPERATOR_E2E_BASE_URL=http://127.0.0.1:32124 OPERATOR_E2E_REUSE_SERVER=1 OPERATOR_E2E_SKIP_WARMUP=1 PAPERCUSP_TEST_RUN_HARNESS=papercusp scripts/pc-heavy.sh npx playwright test --config apps/operator/playwright.config.ts apps/operator/e2e/public-manual.spec.ts --grep 'account guide separates|new public guide.*accounts-and-billing' --workers=1 --output=/tmp/su73-account-guide-green-1805-artifacts`
+  drove the rebuilt Astro manual: two passed, no skips, exit 0, including the
+  account-guide distinction/fallback and its navigation, reload and mobile
+  readability. Retained log `/tmp/su73-account-guide-green-1805.log`.
+
+The canonical guide and packaged retrieval copy have identical SHA-256
+`6057fa08a0beb6b9575435a253188cb9a0a1ed25491fea18aa6cd363536754b4`.
+The built account HTML and its operator public copy have identical SHA-256
+`8f5c9c759913b1592eaa38e1d9885cfe8ac4a01e3ca83d31a78aeb5e71a925e7`.
+Build output locks were acquired before the build and released after the
+maintained docs checks; the disposable preview was stopped after the browser
+run. These are local working-build proofs. Actual Portal account access,
+the seven product journey outcomes, novice observations, independent acceptance
+and exact shipment remain open.
+
+## Served Portal public reader, 2026-10-08 18:30Z
+
+The Portal's maintained `e2e/portal-public-docs.spec.ts` was run against the
+actual served origin `http://127.0.0.1:3801`. Setting `PORTAL_DOCS_BASE_URL`
+selects that origin and bypasses the test's local SSR fixture and bundle
+preparation. No operator or Portal build, account creation, model request or
+domain write was performed. From the configured Portal checkout, the command
+was:
+
+```sh
+PORTAL_DOCS_BASE_URL=http://127.0.0.1:3801 PAPERCUSP_TEST_RUN_HARNESS=papercusp /home/marsh-office/papercupai-workspace/papercusp/scripts/pc-heavy.sh npx playwright test --config playwright.config.ts e2e/portal-public-docs.spec.ts --workers=1 --output=/tmp/su73-served-portal-docs-1830-artifacts
+```
+
+The command exited 0: **four passed**, no skipped tests. The retained log is
+`/tmp/su73-served-portal-docs-1830.log`; browser attachments are in the output
+directory above. Observations cover anonymous asset/HEAD/error/private-route
+boundaries, the rendered public Docs entry and article deep-link reload,
+Pagefind results and no-match recovery, and mobile/keyboard access without
+page overflow. These are reader journeys, not implemented project tasks.
+
+Before and after the run, the root document identified build
+`n0tBVNS1PmJI34ZOn_R_r`. Its immutable release metadata records publication at
+`2026-10-08T11:33:56.626Z` and source-root digest
+`60b846a78a22708b766840d4662a71c568f4615516b254437882f436623265fe`.
+The following served responses returned HTTP 200 with unchanged SHA-256:
+
+| Route | SHA-256 |
+| --- | --- |
+| `/` | `fae3ebdb53006cb27899274421c088a6e3d663e7467e6336d137bb8b663c5acd` |
+| `/docs` | `960548290bf2b02698db0e3a367076d0a6738b6ae40f71ea81361d3a57680b9f` |
+| `/docs/accounts-and-billing.html` | `9aa1ca83f97327cf8b6184f9b278e094a18ffc7b2477fe78be586f04319e5575` |
+
+The served account page does **not** contain the newly corrected `Portal
+account` instruction; its bytes differ from the local corrected HTML hash in
+the preceding account-correction record. Thus this older served release does
+not establish delivery of that correction or shipment of the accepted manual.
+The test's full imported-source provenance was not captured and remains
+`unknown`. No full R-1/R-2 pass is bound from this run. Signed-in account and
+workspace readiness, README implementation/result, approval, the remaining
+product outcomes, real novice observations, independent acceptance and exact
+shipment remain open.
