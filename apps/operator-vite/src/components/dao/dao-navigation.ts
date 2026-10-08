@@ -34,6 +34,7 @@ export interface DaoDirectoryEntry {
   memberLinks: string[];
   memberTopics: string[];
   memberCount: number;
+  source?: 'local';
 }
 
 /** Discovery's count is linked projects, not people, votes, assets or equity. */
