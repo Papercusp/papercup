@@ -1,3 +1,4 @@
+import { homedir } from 'node:os';
 import { describe, expect, it, vi } from 'vitest';
 import { currentBuildTestRoute } from '../serving-runtimes';
 import {
@@ -494,6 +495,28 @@ describe('frozen lineage shell-command policy', () => {
     expect(readMarker).not.toHaveBeenCalled();
   });
 
+  // EI-25213458345089181: `cd ~/.papercusp-workspaces/clones/<pot> && npm test` failed
+  // closed because `~` was treated as unknowable. The command's shell runs as the same
+  // user, so `~/…` and `$HOME/…` are the operator user's home.
+  it.each([
+    'cd ~/.papercusp-workspaces/clones/pot-review-pilot && npm test',
+    'cd "$HOME/.papercusp-workspaces/clones/pot-review-pilot" || exit 1; npm test',
+  ])('resolves a home-relative cd target: %s', (command) => {
+    expect(classifyFrozenLineageShellCommand({ command, cwd: ROOT })).toMatchObject({
+      kind: 'canonical-root-test',
+      checkoutCwd: `${homedir()}/.papercusp-workspaces/clones/pot-review-pilot`,
+    });
+  });
+
+  it('keeps ~user and a reassigned HOME unknowable', () => {
+    expect(classifyFrozenLineageShellCommand({ command: 'cd ~other/x && npm test', cwd: ROOT })).toMatchObject({
+      checkoutCwd: null,
+    });
+    expect(
+      classifyFrozenLineageShellCommand({ command: 'HOME=$(mktemp -d); cd "$HOME" && npm test', cwd: ROOT }),
+    ).toMatchObject({ checkoutCwd: null });
+  });
+
   it('resolves a known literal variable in a cd target, governing the root when it names the root', () => {
     expect(
       classifyFrozenLineageShellCommand({ command: 'D=/tmp/crm; cd "$D" || exit 1; npm test', cwd: ROOT }),
@@ -700,6 +723,21 @@ describe('frozen lineage carry policy', () => {
     // a member checkout, not the judged release worktree.
     'Visible now: when the catch-up sweep finds the worktree diverged from the accepted staging, git-sync computes the conflicting paths with `git merge-tree` (no worktree change), persists them in routines.metadata.worktree_divergence {since, localHead, stagingSha, paths}, logs one warning when a divergence starts or its path set changes, and clears the key when the worktree contains staging again.',
     'when the catch-up sweep finds the worktree diverged from refs/hive/staging',
+    // P-015 measured false positives (plan green-main-cycle-time-2026-10-08). Each is a
+    // declarative observation with a bare "candidate" and no directive.
+    // EI-25339412982747887 — runtime containment evidence on the staging operator.
+    'Own maintained operator-api measurements verified staging-operator 7f880aeffb containsChange=true by blob for canonical scratch-gc.ts (b627354f).',
+    // EI-25265950105082123 — "candidate" for an unrelated proof-measurement concept.
+    'The candidate C is the canonical checkout superproject HEAD (always `staging`).',
+    // EI-25241841627586793 — an observation echoing the cell's nextCandidateSha field…
+    'The next candidate is now 9548d219 (staging 14:39Z), and it DOES descend from da36b814.',
+    // …and a sentence that only DESCRIBES the guard (the relation must end at the nearest
+    // "candidate", not run on to the one inside the quoted error code).
+    "Carry text naming a staging sha as a 'candidate' is refused with frozen_candidate_lineage_violation.",
+    // EI-25229988811743001 — "checkout" as a noun, in prose about the :3170 build directory.
+    'It serves a candidate checkout (~/papercupai-workspace/papercusp-staging.generations/.candidate-<sha>) built from a LOCAL staging commit, so a locally committed fix reaches :3170 on the next staging-sync or dev:restart staging.',
+    // EI-25198229614999965 — historical deletion correlation.
+    'Root cause of candidate disappearance correlated to staging-sync prune 08:07:17Z, failed native precheck 08:07:14Z.',
   ])('allows descriptive checkpoint forensics without selecting a moving candidate: %s', (text) => {
     expect(detectUnsafeFrozenCarryInstruction(text)).toBeNull();
   });
@@ -762,6 +800,13 @@ describe('frozen lineage carry policy', () => {
     'Pin staging as the candidate for the next verdict.',
     'Cut staging as the judged candidate for the next canonical verdict.',
     'The judged worktree is on staging for the next canonical verdict.',
+    // P-015: narrowing to directives must not lose directive forms with a bare "candidate".
+    'Re-run the gate with the candidate cut from staging.',
+    'Next: use staging as the candidate.',
+    'If the gate is red again, run the candidate verification on staging.',
+    'The successor should treat staging as the candidate.',
+    'The runner will select staging for the candidate.',
+    'We judge the judged candidate at staging.',
   ])('still detects an explicit selection or execution instruction: %s', (text) => {
     expect(detectUnsafeFrozenCarryInstruction(text)).toMatchObject({ unsafeSource: 'staging' });
   });

@@ -582,6 +582,12 @@ describe('plans:add-decision — exact-slug harness recovery', () => {
       error: 'frozen_candidate_lineage_violation',
       surface: 'plan-decision',
       unsafeSource: 'staging',
+      // EI-23932308290913305: the refusal once arrived as a bare error code, and an
+      // agent spent six calls bisecting a 5,000-char body to find the trigger. The
+      // matched span and the clearing route are what make it actionable.
+      matchedText: expect.stringContaining('pin whatever staging resolves to'),
+      sanctionedRoute: expect.stringContaining('REWORD the carry text'),
+      message: expect.stringContaining('Detected instruction'),
       liveIdentity: {
         candidate: 'c'.repeat(40),
         repairHead: 'r'.repeat(40),

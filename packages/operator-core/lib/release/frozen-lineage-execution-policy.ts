@@ -8,6 +8,7 @@
  * launch. Ordinary staging edits, focused tests, and explicit repair admission
  * are outside the governed operation set by design.
  */
+import { homedir } from 'node:os';
 import { basename, isAbsolute, relative, resolve } from 'node:path';
 import { atomizePipeline } from '../bash-substitution/atomize';
 import { readFrozenRepairMarker, type FrozenRepairEditMarker } from './frozen-repair-edit-marker';
@@ -402,6 +403,11 @@ function shellWords(atom: string, vars: KnownShellVars = new Map()): string[] | 
 }
 
 function literalPath(token: string | undefined, from: string | null): string | null {
+  // `~` and `~/…` expand to the invoking user's home — the same user whose shell
+  // runs the command (EI-25213458345089181: `cd ~/.papercusp-workspaces/clones/<pot>`).
+  // `~user` stays unknowable.
+  if (token === '~') return homedir();
+  if (token?.startsWith('~/')) return resolve(homedir(), token.slice(2));
   if (!token || token === '-' || token.startsWith('~') || /[$`*?[\]{}()]/.test(token)) return null;
   if (isAbsolute(token)) return resolve(token);
   return from ? resolve(from, token) : null;
@@ -598,7 +604,8 @@ export function classifyFrozenLineageShellCommand(
   // be running because the cd succeeded, i.e. in X. (The closing `}` is dropped
   // by the atomizer as shell syntax, so the group's exit is the observable end.)
   let fallbackGroupTarget: { target: string | null } | null = null;
-  const vars = new Map<string, string>();
+  // HOME is inherited by the command's shell; anything else starts unknown.
+  const vars = new Map<string, string>([['HOME', homedir()]]);
 
   for (const part of parts) {
     if (pendingCd) {
@@ -833,6 +840,32 @@ const CARRY_CLASSIFICATION_DIAGNOSTIC_BEFORE =
 const CARRY_COMPARATIVE_SOURCE_BEFORE =
   /\b(?:behind|ahead\s+of|vs\.?|versus|relative\s+to|compared\s+(?:with|to))\s*$/i;
 
+// P-015: a copular relation ("the candidate is …/at …/from … staging") is the
+// shape of an OBSERVATION as often as of an instruction. Measured false positives
+// all took this path with a bare "candidate" and no directive — "the next
+// candidate is now 9548d219 (staging 14:39Z)", "it serves a candidate checkout
+// built from a LOCAL staging commit", "the candidate C is the canonical checkout
+// superproject HEAD (always staging)". The relation therefore governs only when it
+// names the judged thing explicitly, or the clause is phrased as a directive.
+const CARRY_JUDGED_EXPLICIT =
+  /\bjudged\s+(?:candidate|worktree)\b|\bcanonical\s+(?:test|verification|verdict|run)\b/i;
+const CARRY_DIRECTIVE_VERBS = String.raw`(?:re-?)?(?:use|select|choose|take|derive|pin|cut|base|set|treat|resolve|create|check\s*out|checkout|launch|run|test|verify|judge|evaluate|fire|point|switch|make|move|advance|reset|retarget|promote|trigger)\b`;
+const CARRY_IMPERATIVE_LEAD = new RegExp(
+  String.raw`^(?:[-+•]\s*|\d+[.)]\s*)?(?:(?:next(?:\s+action)?|then|now|todo|action|step\s*\d+)\s*[:—–-]\s*)?` +
+    // A leading condition/purpose phrase: "If the gate is red, run …", "To re-judge, use …".
+    String.raw`(?:(?:if|when|once|after|before|to|for|on|until)\b[^,]{0,80},\s*)?` +
+    String.raw`(?:(?:and\s+)?(?:then|now|please|also|first|next)\s+)*${CARRY_DIRECTIVE_VERBS}`,
+  'i',
+);
+const CARRY_DIRECTIVE_MODAL = new RegExp(
+  String.raw`\b(?:should|must|needs?\s+to|ha(?:ve|s)\s+to|shall|ought\s+to|going\s+to|let's|let\s+us)\b|\bwill\s+${CARRY_DIRECTIVE_VERBS}`,
+  'i',
+);
+
+function carryClauseIsDirective(clause: string): boolean {
+  return CARRY_IMPERATIVE_LEAD.test(clause) || CARRY_DIRECTIVE_MODAL.test(clause);
+}
+
 function normalizedCarryClause(clause: string): string {
   return clause
     .replace(/[`*_>#\[\](){}]/g, ' ')
@@ -897,8 +930,12 @@ export function detectUnsafeFrozenCarryInstruction(text: string): UnsafeFrozenCa
           String.raw`\b(?:candidate|judged\s+candidate|judged\s+worktree|canonical(?:\s+(?:test|verification|verdict|run)))\b${CARRY_RELATION_GAP}{0,140}\b(?:from|at|on|to|is|equals?)\b${CARRY_RELATION_GAP}{0,70}${pattern}\s*$`,
           'i',
         ).exec(throughSource);
+        // Lazy gaps: end the relation at the NEAREST candidate term. A greedy gap
+        // skipped past "a 'candidate' is refused" to the "candidate" inside the
+        // quoted frozen_candidate_lineage_violation code, so the retraction that
+        // follows the real relation was never seen (EI-25241841627586793).
         const directRelationAfter = new RegExp(
-          String.raw`^${pattern}${CARRY_RELATION_GAP}{0,100}\b(?:as|for)\b${CARRY_RELATION_GAP}{0,60}\b(?:the\s+)?(?:judged\s+)?(?:candidate|canonical(?:\s+(?:test|verification|verdict|run))?|worktree)\b`,
+          String.raw`^${pattern}${CARRY_RELATION_GAP}{0,100}?\b(?:as|for)\b${CARRY_RELATION_GAP}{0,60}?\b(?:the\s+)?(?:judged\s+)?(?:candidate|canonical(?:\s+(?:test|verification|verdict|run))?|worktree)\b`,
           'i',
         ).exec(sourceThroughNext);
         const strongAction = new RegExp(
@@ -909,16 +946,32 @@ export function detectUnsafeFrozenCarryInstruction(text: string): UnsafeFrozenCa
           String.raw`\b(${CARRY_EXECUTION_ACTIONS})\b${CARRY_RELATION_GAP}{0,160}${pattern}\s*$`,
           'i',
         ).exec(throughSource);
+        // P-015: a selection/execution word governs only as an instruction — in a
+        // directive clause, or naming the judged thing explicitly. As a noun or in
+        // narrative ("it serves a candidate checkout built from a LOCAL staging
+        // commit", EI-25229988811743001) it describes state, not a selection.
+        const clauseIsDirective = carryClauseIsDirective(clause);
+        const actionGoverns = (index: number) =>
+          clauseIsDirective || CARRY_JUDGED_EXPLICIT.test(clause.slice(index, sourceEnd));
         const strongActionHasJudgedContext =
-          strongAction !== null && CARRY_JUDGED_CONTEXT.test(clause.slice(strongAction.index, sourceEnd));
+          strongAction !== null &&
+          CARRY_JUDGED_CONTEXT.test(clause.slice(strongAction.index, sourceEnd)) &&
+          actionGoverns(strongAction.index);
         const executionActionHasJudgedContext =
-          executionAction !== null && CARRY_JUDGED_CONTEXT.test(clause.slice(executionAction.index, sourceEnd));
-        const relation = directRelationBefore
+          executionAction !== null &&
+          CARRY_JUDGED_CONTEXT.test(clause.slice(executionAction.index, sourceEnd)) &&
+          actionGoverns(executionAction.index);
+        const relationSpan = directRelationBefore
           ? comparativeSourceRelation
             ? null
             : { index: directRelationBefore.index, end: sourceEnd }
           : directRelationAfter
             ? { index: sourceStart, end: sourceStart + directRelationAfter[0].length }
+            : null;
+        const relation =
+          relationSpan &&
+          (CARRY_JUDGED_EXPLICIT.test(clause.slice(relationSpan.index, relationSpan.end)) || clauseIsDirective)
+            ? relationSpan
             : null;
         const strongActionName = strongAction?.[1]?.toLowerCase() ?? '';
         const pinInstructionPrefix = clause
