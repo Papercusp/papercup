@@ -31,6 +31,14 @@ if [ -n "${VERIFY_TAURI_SPA_DIST:-}" ] && [ -f "$VERIFY_TAURI_SPA_DIST/../verifi
   cp "$VERIFY_TAURI_SPA_DIST/../verifier-source-receipt.json" "$OUT_DIR/backend-source-receipt.json"
 fi
 trap 'status=$?; if [ "$SYNTAX_ONLY" = 1 ]; then rm -rf -- "$OUT_DIR"; elif [ "$status" -ne 0 ]; then echo "P009_TAURI_SURFACE_VERIFY_FAIL leg=dao-launch output=$OUT_DIR" >&2; fi' EXIT
+if [ "$SYNTAX_ONLY" != 1 ]; then
+  DAO_VERIFY_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+  source "$DAO_VERIFY_ROOT/libs/generic/verification-harness/bin/vh.sh"
+  vh_phase native-assertions ""
+  vh_init dao-launch "$OUT_DIR/harness"
+  vh_bracket_trap
+  vh_begin native-assertions
+fi
 native() {
   if [ "$1" = eval ]; then check_js "$2"; fi
   if [ "$SYNTAX_ONLY" = 1 ]; then
