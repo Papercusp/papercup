@@ -1132,22 +1132,28 @@ export function repairSuCodexHomeIdentity(
   // comparison above calls it current, so a resumed codex session would keep
   // emitting no journal:record-turn rows forever. Gated on the script being
   // installed, exactly like the writer, so a host without it never repair-loops.
-  const turnJournalHookMatches = (() => {
+  // EI-25438656045891094: old same-owner homes also lack prompt provenance.
+  // Without checking enrollment, their genuine owner turns stay unenrolled
+  // forever even after the canonical writer gains the hook.
+  const managedTurnHooksMatch = (() => {
     if (!hooksExpected) return true;
-    if (!existsSync(join(homedir(), '.papercusp', 'hooks', 'cc', CODEX_TURN_JOURNAL_HOOK))) return true;
     try {
       const parsed = JSON.parse(hooksText) as {
         hooks?: Record<string, Array<{ hooks?: Array<{ command?: string }> }>>;
       };
-      return (
-        parsed.hooks?.Stop?.some((group) =>
+      return [
+        ['Stop', CODEX_TURN_JOURNAL_HOOK],
+        ['UserPromptSubmit', 'userpromptsubmit-provenance.sh'],
+      ].every(([event, script]) =>
+        !existsSync(join(homedir(), '.papercusp', 'hooks', 'cc', script)) ||
+        parsed.hooks?.[event]?.some((group) =>
           group.hooks?.some(
             (hook) =>
-              hook.command?.includes(CODEX_TURN_JOURNAL_HOOK) &&
+              hook.command?.includes(script) &&
               hook.command.includes(`PAPERCUSP_SID='${sid}'`) &&
               hook.command.includes('PAPERCUSP_AGENT=codex'),
           ),
-        ) === true
+        ) === true,
       );
     } catch {
       return false;
@@ -1159,7 +1165,7 @@ export function repairSuCodexHomeIdentity(
     sentinelMatches &&
     lifecycleHooksMatch &&
     preCompactHookMatches &&
-    turnJournalHookMatches
+    managedTurnHooksMatch
   ) {
     return { repaired: false, hooksInstalled: hooksExpected };
   }
