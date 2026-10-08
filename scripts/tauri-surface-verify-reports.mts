@@ -10,7 +10,9 @@ import { bridgeEval } from '../libs/generic/tauri-verify/src/bridge-client';
 import { isCliEntry } from '../packages/operator-core/lib/util/cli-entry';
 
 /** Run with --e2e inside verify-tauri-headless, before Vitest relocates TMPDIR. */
-export async function runNativeE2e() {
+export async function runNativeE2e(testFiles = ['packages/operator-core/lib/reports-library-native.e2e.test.ts']) {
+  assert.ok(testFiles.length > 0 && testFiles.every(file => /^packages\/operator-core\/lib\/(?:[\w-]+\/)*[\w-]+(?:\.[\w-]+)*\.e2e\.test\.ts$/.test(file)),
+    'Use maintained operator-core native E2E test files');
   assert.equal(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED, '1', 'Use the isolated native verifier');
   assert.ok(process.env.PAPERCUSP_TEST_RUNS_DB_URL, 'Keep native results in the shared test ledger');
   const receipt = JSON.parse(readFileSync(process.env.VERIFY_TAURI_SOURCE_RECEIPT!, 'utf8'));
@@ -44,7 +46,7 @@ export async function runNativeE2e() {
   try {
     // Both the test and its dependencies come from the source receipt's commit.
     execFileSync('npm', ['run', 'lint:as-committed', '--', 'test:file', '--any',
-      `--ref=${receipt.sourceCommit}`, '--', 'packages/operator-core/lib/reports-library-native.e2e.test.ts'],
+      `--ref=${receipt.sourceCommit}`, '--', ...testFiles],
     { stdio: 'inherit', env: { ...process.env, PAPERCUSP_APP_OPERATION_LIVE_PROFILE: profilePath } });
   } finally { rmSync(profileDir, { recursive: true, force: true }); }
 }
@@ -157,7 +159,7 @@ async function verifyReports(evidenceDir: string) {
     poll(`document.querySelectorAll('.reports-list-item').length === ${original.origin.harness_slug ? 1 : 0}
       && document.querySelector('.reports-reader h2')?.textContent === ${JSON.stringify(title)}
       && document.querySelectorAll('.reports-history-item').length === 2`);
-    let drivenState;
+    let drivenState: ReturnType<typeof runTool> = {};
     for (let attempt = 0; attempt < 20; attempt++) {
       drivenState = runTool('ui:get_state', { client_id: clientId });
       if (Object.entries(drivenParams).every(([key, value]) => drivenState.params?.[key] === value)) break;

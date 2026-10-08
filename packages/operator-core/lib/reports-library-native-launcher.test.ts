@@ -18,7 +18,7 @@ describe('Reports native launcher at the Vitest temp-directory boundary', () => 
   let runnerRoot: string;
   let profilePath: string;
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
     seams.authenticate.mockResolvedValue({ ok: true, value: true });
     seams.reportRuntime.mockResolvedValue(undefined);
     seams.end.mockResolvedValue(undefined);
@@ -58,6 +58,7 @@ describe('Reports native launcher at the Vitest temp-directory boundary', () => 
       expect(JSON.parse(readFileSync(join(profile.nativeTmpDir,
         `tauri-dev-bridge-${profile.tauriPID}.token`), 'utf8')).pid).toBe(process.pid);
       expect(args).toContain(`--ref=${'a'.repeat(40)}`);
+      expect(args.at(-1)).toBe('packages/operator-core/lib/reports-library-native.e2e.test.ts');
       if (fail) throw new Error('native test failed');
       return '';
     });
@@ -65,6 +66,24 @@ describe('Reports native launcher at the Vitest temp-directory boundary', () => 
     else await runNativeE2e();
     expect(seams.execute).toHaveBeenCalledTimes(1);
     expect(existsSync(profilePath)).toBe(false);
+  });
+
+  it('runs the AI consumer through the same committed-source and native runtime boundary', async () => {
+    const file = 'packages/operator-core/lib/blueprint/morning-ai-intelligence.native.e2e.test.ts';
+    await runNativeE2e([file]);
+    const [command, args, options] = seams.execute.mock.calls[0];
+    expect(command).toBe('npm');
+    expect(args).toEqual(expect.arrayContaining(['test:file', `--ref=${'a'.repeat(40)}`, file]));
+    expect(seams.reportRuntime).toHaveBeenCalledTimes(1);
+    expect(existsSync(options.env.PAPERCUSP_APP_OPERATION_LIVE_PROFILE)).toBe(false);
+  });
+
+  it.each([{ files: [] }, { files: ['../foreign.e2e.test.ts'] }, { files: ['--ref=other'] }])(
+    'refuses invalid native test selection $files', async ({ files }) => {
+    await expect(runNativeE2e(files)).rejects.toThrow('Use maintained operator-core native E2E test files');
+    expect(seams.authenticate).not.toHaveBeenCalled();
+    expect(seams.reportRuntime).not.toHaveBeenCalled();
+    expect(seams.execute).not.toHaveBeenCalled();
   });
 
   it('refuses a shared live desktop before authentication, runtime writes or test launch', async () => {

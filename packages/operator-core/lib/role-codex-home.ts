@@ -217,14 +217,20 @@ function freshCodexSqliteHome(sessionKey: string | number): string {
 
 /** A resume must retain its recorded state location even when the serving
  * operator has a different TMPDIR or SQLite-root override from the launch. */
-function preservedCodexSqliteHome(codexHome: string, sessionKey: string | number): string {
+function preservedCodexSqliteHome(codexHome: string, sessionKey: string | number, recordedHome?: string | null): string {
+  if (recordedHome && (!isAbsolute(recordedHome) || recordedHome.includes('\0'))) {
+    throw new Error('Cannot repair Codex home: recorded sqlite_home must be an absolute path');
+  }
   const configPath = join(codexHome, 'config.toml');
-  if (!existsSync(configPath)) return codexSqliteHomeForSessionKey(sessionKey);
+  if (!existsSync(configPath)) return recordedHome || codexSqliteHomeForSessionKey(sessionKey);
   const text = readFileSync(configPath, 'utf8');
-  if (!/^sqlite_home\s*=/m.test(text)) return codexSqliteHomeForSessionKey(sessionKey);
+  if (!/^sqlite_home\s*=/m.test(text)) return recordedHome || codexSqliteHomeForSessionKey(sessionKey);
   const sqliteHome = parseToml(text).sqlite_home;
   if (typeof sqliteHome !== 'string' || !isAbsolute(sqliteHome) || sqliteHome.includes('\0')) {
     throw new Error('Cannot repair Codex home: recorded sqlite_home must be an absolute path');
+  }
+  if (recordedHome && recordedHome !== sqliteHome) {
+    throw new Error('Cannot repair Codex home: launch receipt and configured sqlite_home disagree');
   }
   return sqliteHome;
 }
@@ -1177,6 +1183,8 @@ export function writeRoleCodexHome(opts: {
   sessionKey: string | number;
   /** Repair managed files in place without removing the native resume history. */
   preserveExisting?: boolean;
+  /** Persisted native-state binding, used when archive/GC removed config.toml. */
+  recordedSqliteHome?: string | null;
   /** Already-signed, role-scoped MCP url (from buildRoleLaunchSpec). */
   mcpUrl: string;
   /** The role prompt — becomes AGENTS.md. */
@@ -1212,7 +1220,7 @@ export function writeRoleCodexHome(opts: {
     ? codexHomeForSessionKey(opts.sessionKey)
     : freshCodexHome(codexHomeForSessionKey(opts.sessionKey));
   const sqliteHome = opts.preserveExisting
-    ? preservedCodexSqliteHome(codexHome, opts.sessionKey)
+    ? preservedCodexSqliteHome(codexHome, opts.sessionKey, opts.recordedSqliteHome)
     : freshCodexSqliteHome(opts.sessionKey);
   if (opts.preserveExisting) {
     mkdirSync(codexHome, { recursive: true, mode: 0o700 });

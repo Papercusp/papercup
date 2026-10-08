@@ -971,6 +971,26 @@ describe('writeSuCodexHome', () => {
     expect(readFileSync(repaired.configPath, 'utf8')).toContain('client=su-gc-removed-home');
   });
 
+  it('recovers a role config from its recorded SQLite binding without replacing native state', async () => {
+    const { writeRoleCodexHome } = await loadMod();
+    const input = { sessionKey: 'archived-role-state', mcpUrl: 'http://x/api/mcp?role=judge',
+      sid: 'su-archived-role-state', promptText: 'RESTRICTED JUDGE' };
+    const first = writeRoleCodexHome(input);
+    const database = join(first.sqliteHome, 'state_5.sqlite');
+    writeFileSync(database, 'original native state');
+    rmSync(first.configPath);
+    const replacementRoot = join(fakeHome, 'different-archive-serving-root');
+    process.env.PAPERCUSP_CODEX_SQLITE_HOMES_DIR = replacementRoot;
+    const repaired = writeRoleCodexHome({ ...input, preserveExisting: true, recordedSqliteHome: first.sqliteHome });
+    expect(parseToml(readFileSync(repaired.configPath, 'utf8')).sqlite_home).toBe(first.sqliteHome);
+    expect(readFileSync(database, 'utf8')).toBe('original native state');
+    expect(existsSync(replacementRoot)).toBe(false);
+    const before = readFileSync(repaired.configPath, 'utf8');
+    expect(() => writeRoleCodexHome({ ...input, preserveExisting: true,
+      recordedSqliteHome: replacementRoot })).toThrow('launch receipt and configured sqlite_home disagree');
+    expect(readFileSync(repaired.configPath, 'utf8')).toBe(before);
+  });
+
   it('keeps an SU session on its native SQLite companion after the serving root changes', async () => {
     const { writeSuCodexHome, ensureSuCodexHomeConfig } = await loadMod();
     const input = { sessionKey: 'stable-sqlite', mcpUrl: 'http://x/api/mcp?superuser=1',
