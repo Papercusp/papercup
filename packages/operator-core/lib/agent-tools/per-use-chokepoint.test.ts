@@ -175,6 +175,84 @@ describe('trusted observed native call lookup', () => {
     release(); await withdrawing;
   });
 
+  it.each(['channel', 'product', 'installation', 'principal'] as const)(
+    'host revocation by %s refuses the next tool without erasing served usage', async kind => {
+      const f = nativeFixture(); await f.observe();
+      const target = tool();
+      await execute(target, f.aroundInvoke, {}, f.context);
+      const units = f.turn.snapshot().units;
+      await f.observe({ callId: 'next-call' });
+      f.context.requestOrigin!.nativeSession!.callIdFingerprint = fp('next-call');
+      const binding = f.input.admissions[0]!.binding;
+      const selection = kind === 'principal' ? { kind } : kind === 'installation'
+        ? { kind, provenanceHash: binding.provenanceHash }
+        : { kind, id: kind === 'channel' ? binding.channelId : f.input.admissions[0]!.admission.offer.productId };
+      expect(await f.registry.revoke({ workspaceId: 'workspace', principalId: 'target-agent', target: selection }))
+        .toEqual([{ nativeSessionId: 'native-session', ownerTurnId: 'owner-turn', turnIds: ['host-turn'] }]);
+      expect(f.turn.snapshot().admissionClosed).toBe(true);
+      expect(f.turn.snapshot().units).toEqual(units);
+      expect((await execute(target, f.aroundInvoke, {}, f.context)).result?.isError).toBe(true);
+      expect(target.fn).toHaveBeenCalledOnce();
+      await expect(f.hooks.observeToolCall!(f.observation)).rejects.toThrow('original active bound turn');
+      await expect(f.hooks.bindNativeTurn('native-turn')).rejects.toThrow('original bound turn');
+    });
+
+  it.each(['workspace', 'principal', 'target'])(
+    'host revocation does not cross another %s scope', async kind => {
+      const f = nativeFixture(); await f.observe();
+      const input = { workspaceId: 'workspace', principalId: 'target-agent',
+        target: { kind: 'channel' as const, id: 'funded-channel' } };
+      if (kind === 'workspace') input.workspaceId = 'other-workspace';
+      if (kind === 'principal') input.principalId = 'other-agent';
+      if (kind === 'target') input.target.id = 'other-channel';
+      expect(await f.registry.revoke(input)).toEqual([]);
+      const target = tool();
+      expect((await execute(target, f.aroundInvoke, {}, f.context)).result?.isError).not.toBe(true);
+      expect(target.fn).toHaveBeenCalledOnce();
+      await f.hooks.withdraw();
+    });
+
+  it('retains revoked tombstones through failed persistence and retries the same host notification', async () => {
+    const f = nativeFixture(); await f.observe();
+    let release!: () => void;
+    const stopping = new Promise<void>(resolve => { release = resolve; });
+    const stop = vi.spyOn(f.turn, 'stopAdmission').mockImplementationOnce(async () => {
+      await stopping;
+      throw new Error('durable stop failed');
+    });
+    const input = { workspaceId: 'workspace', principalId: 'target-agent', target: { kind: 'principal' as const } };
+    const pending = f.registry.revoke(input), target = tool();
+    expect((await execute(target, f.aroundInvoke, {}, f.context)).result?.isError).toBe(true);
+    expect(() => f.registry.register(f.input)).toThrow('already has a host admission');
+    await expect(f.hooks.observeToolCall!(f.observation)).rejects.toThrow('original active bound turn');
+    release(); await expect(pending).rejects.toThrow('durable stop failed');
+    expect(() => f.registry.register(f.input)).toThrow('already has a host admission');
+    stop.mockRestore();
+    expect(await f.registry.revoke(input)).toEqual([
+      { nativeSessionId: 'native-session', ownerTurnId: 'owner-turn', turnIds: ['host-turn'] },
+    ]);
+    expect(f.turn.snapshot().admissionClosed).toBe(true);
+    expect(await f.registry.revoke(input)).toEqual([]);
+    expect(target.fn).not.toHaveBeenCalled();
+  });
+
+  it('withdraws every matching turn before the first persistence callback runs', async () => {
+    const registry = new NativeInstalledPerUseTurns(), first = nativeFixture(registry);
+    const second = nativeFixture(); await first.observe(); await second.observe();
+    const secondInput = { ...second.input, nativeSessionId: 'second-session',
+      admissions: [{ ...second.input.admissions[0]!, binding: { ...second.input.admissions[0]!.binding, executionId: 'second-session' } }] };
+    const hooks = registry.register(secondInput);
+    await hooks.bindNativeTurn('native-turn'); await hooks.observeToolCall!(second.observation);
+    const secondContext = { ...second.context, requestOrigin: { ...second.context.requestOrigin!, nativeSession: {
+      ...second.context.requestOrigin!.nativeSession!, valueFingerprint: fp('second-session') } } };
+    const stopped = vi.spyOn(first.turn, 'stopAdmission').mockImplementation(async () => {
+      expect((await execute(tool(), first.aroundInvoke, {}, secondContext)).result?.isError).toBe(true);
+    });
+    expect(await registry.revoke({ workspaceId: 'workspace', principalId: 'target-agent', target: { kind: 'principal' } }))
+      .toHaveLength(2);
+    stopped.mockRestore(); await second.hooks.withdraw();
+  });
+
   it('failed durable revocation does not restore lookup authority', async () => {
     const f = nativeFixture(); await f.observe();
     vi.spyOn(f.turn, 'stopAdmission').mockRejectedValue(new Error('storage unavailable'));
@@ -397,7 +475,7 @@ describe('host-owned installed tool admission composition', () => {
     expect(target.fn).toHaveBeenCalledOnce(); await lease.complete(f.closure);
   });
 
-  it.each(['completion', 'reconciliation'] as const)(
+  it.each(['completion', 'reconciliation', 'installation-revocation', 'principal-revocation'] as const)(
     'admits a hosted-verified free installation without reserves and withdraws it on %s', async phase => {
       const f = catalogFixture(), free = { ...provenance, listing: { ...provenance.listing, priceModel: 'free' as const } };
       f.readProvenance.mockResolvedValue(free);
@@ -411,8 +489,14 @@ describe('host-owned installed tool admission composition', () => {
       expect((await execute(target, aroundInvoke, {}, f.requestContext)).result?.isError).not.toBe(true);
       expect(target.fn).toHaveBeenCalledOnce();
       expect((await execute(target, aroundInvoke, {}, f.requestContext)).result?.isError).toBe(true);
+      await lease.observeToolCall!({ ...f.observation, callId: 'next-free-call' });
+      f.requestContext.requestOrigin!.nativeSession!.callIdFingerprint = createHash('sha256').update('next-free-call').digest('hex');
       if (phase === 'completion') await lease.complete(f.closure);
-      else await lease.reconcile({ phase: 'delivery', message: 'withdraw free admission' });
+      else if (phase === 'reconciliation') await lease.reconcile({ phase: 'delivery', message: 'withdraw free admission' });
+      else expect(await f.registry.revoke({ workspaceId: f.context.workspaceId, principalId: 'target-agent', target:
+        phase === 'principal-revocation' ? { kind: 'principal' } :
+          { kind: 'installation', provenanceHash: createHash('sha256').update(canonicalJson(free)).digest('hex') },
+      })).toEqual([{ nativeSessionId: 'native-session', ownerTurnId: 'owner-turn', turnIds: [] }]);
       expect(f.complete).not.toHaveBeenCalled();
       expect((await execute(target, aroundInvoke, {}, f.requestContext)).result?.isError).toBe(true);
       expect(target.fn).toHaveBeenCalledOnce();

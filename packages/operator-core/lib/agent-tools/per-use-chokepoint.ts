@@ -100,14 +100,39 @@ export async function admitInstalledPerUseToolTurn(input: {
  * Keep call tombstones until withdrawal so a new dispatch nonce cannot replay an
  * observed native call. Restart loses lookup authority and retains durable holds. */
 export class NativeInstalledPerUseTurns {
-  private readonly turns = new Map<string, {
-    context: NativeInstalledTurnContext;
-    nativeTurnId: string | null;
-    withdrawn: boolean;
-    admissions: readonly FundedInstalledAdmission[];
-    freeAdmissions: readonly VerifiedFreeToolAdmission[];
-    observations: Map<string, { toolName: string; consumed: boolean }>;
-  }>();
+  private readonly turns = new Map<string, NativeInstalledTurnEntry>();
+
+  /** Authenticated host notification capability, never a dispatch argument.
+   * Revocation stops the entire affected native turn's installed population;
+   * its original monetary holds remain available for completion/recovery. */
+  revoke(input: { workspaceId: string; principalId: string; target:
+    { kind: 'principal' } | { kind: 'channel' | 'product'; id: string } |
+    { kind: 'installation'; provenanceHash: string };
+  }): Promise<readonly { nativeSessionId: string; ownerTurnId: string; turnIds: readonly string[] }[]> {
+    const boundedId = (value: string) => /^[A-Za-z0-9._:-]{1,256}$/.test(value);
+    if (!boundedId(input.workspaceId) || !boundedId(input.principalId) ||
+      !['principal', 'channel', 'product', 'installation'].includes(input.target.kind) ||
+      (input.target.kind === 'installation' ? !/^[a-f0-9]{64}$/.test(input.target.provenanceHash) :
+        input.target.kind !== 'principal' && !boundedId(input.target.id))) {
+      throw new Error('Revocation requires an exact authenticated scope and target');
+    }
+    const affected = [...this.turns.entries()].filter(([, entry]) => {
+      if (entry.context.workspaceId !== input.workspaceId || entry.context.principalId !== input.principalId) return false;
+      const target = input.target;
+      if (target.kind === 'principal') return true;
+      if (target.kind === 'channel') return entry.admissions.some(value => value.binding.channelId === target.id);
+      if (target.kind === 'product') return entry.admissions.some(value => value.admission.offer.productId === target.id);
+      if (target.kind !== 'installation') return false;
+      return entry.admissions.some(value => value.binding.provenanceHash === target.provenanceHash) ||
+        entry.freeAdmissions.some(value => fingerprint(canonicalJson(value.provenance)) === target.provenanceHash);
+    });
+    const lineage = affected.map(([, entry]) => ({ nativeSessionId: entry.context.nativeSessionId,
+      ownerTurnId: entry.context.ownerTurnId, turnIds: entry.admissions.map(value => value.turnId) }));
+    // Revoke the whole cohort before calling any persistence capability: even
+    // synchronous callbacks from one stop cannot enter another affected turn.
+    for (const [, entry] of affected) entry.withdrawn = true;
+    return Promise.all(affected.map(([key, entry]) => this.withdrawEntry(key, entry))).then(() => lineage);
+  }
 
   /** Production population supplier over the existing loaded registry. The
    * authenticated host selects the exact allowed target cohort and financial
@@ -330,16 +355,15 @@ export class NativeInstalledPerUseTurns {
     const entry = { context, admissions, freeAdmissions, nativeTurnId: null as string | null, withdrawn: false,
       observations: new Map<string, { toolName: string; consumed: boolean }>() };
     this.turns.set(key, entry);
-    let withdrawn = false;
     return {
       bindNativeTurn: async nativeTurnId => {
-        if (withdrawn || !boundedId(nativeTurnId) || (entry.nativeTurnId !== null && entry.nativeTurnId !== nativeTurnId)) {
+        if (entry.withdrawn || !boundedId(nativeTurnId) || (entry.nativeTurnId !== null && entry.nativeTurnId !== nativeTurnId)) {
           throw new Error('Native lookup retains its original bound turn');
         }
         entry.nativeTurnId = nativeTurnId;
       },
       observeToolCall: async ({ nativeTurnId, callId, server, tool }) => {
-        if (withdrawn || entry.nativeTurnId === null || entry.nativeTurnId !== nativeTurnId || !boundedId(callId)) {
+        if (entry.withdrawn || entry.nativeTurnId === null || entry.nativeTurnId !== nativeTurnId || !boundedId(callId)) {
           throw new Error('Native call observation requires its original active bound turn');
         }
         if (server !== context.mcpServer || !Object.hasOwn(context.nativeTools, tool)) return;
@@ -352,16 +376,7 @@ export class NativeInstalledPerUseTurns {
         if (entry.observations.size >= 1000) throw new Error('Native turn call population exceeds the admission bound');
         entry.observations.set(callKey, { toolName, consumed: false });
       },
-      withdraw: () => {
-        // Remove lookup authority BEFORE the first await. Retain a tombstone
-        // until durable stop succeeds so a host cannot re-register the same
-        // still-open meter during a slow or failed revocation.
-        withdrawn = true;
-        entry.withdrawn = true;
-        return Promise.all(admissions.map(value => value.admission.turn.stopAdmission())).then(() => {
-          if (this.turns.get(key) === entry) this.turns.delete(key);
-        });
-      },
+      withdraw: () => this.withdrawEntry(key, entry),
     };
   }
 
@@ -403,6 +418,26 @@ export class NativeInstalledPerUseTurns {
   private key(workspaceId: string, advSessionId: number, nativeFingerprint: string): string {
     return canonicalJson([workspaceId, advSessionId, nativeFingerprint]);
   }
+
+  private withdrawEntry(key: string, entry: NativeInstalledTurnEntry): Promise<void> {
+    // Retain the tombstone on any failed stop. Revocation never proves that a
+    // served unit is absent and never closes/refunds the durable funded row.
+    entry.withdrawn = true;
+    return Promise.all(entry.admissions.map(async value => {
+      await value.admission.turn.stopAdmission();
+    })).then(() => {
+      if (this.turns.get(key) === entry) this.turns.delete(key);
+    });
+  }
+}
+
+interface NativeInstalledTurnEntry {
+  context: NativeInstalledTurnContext;
+  nativeTurnId: string | null;
+  withdrawn: boolean;
+  admissions: readonly FundedInstalledAdmission[];
+  freeAdmissions: readonly VerifiedFreeToolAdmission[];
+  observations: Map<string, { toolName: string; consumed: boolean }>;
 }
 
 interface NativeInstalledTurnContext {
