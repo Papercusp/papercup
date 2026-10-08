@@ -549,6 +549,9 @@ export async function runCommandViaSpawnerSidecar(
   let requestId: number | undefined;
   let clientConnectionId: string | undefined;
   let cancelSent = false;
+  let execStartedAt = 0;
+  let childPid: number | null = null;
+  const rpcTimeoutMs = opts.rpcTimeoutMs ?? (opts.timeoutMs + 35_000);
   const onAbort = (): void => {
     if (requestId === undefined || cancelSent) return;
     cancelSent = true;
@@ -570,7 +573,7 @@ export async function runCommandViaSpawnerSidecar(
       }
       if (opts.signal?.aborted) return aborted();
     }
-    const execStartedAt = performance.now();
+    execStartedAt = performance.now();
     const res = await client.call<GitRunResult>(
       'process:exec',
       {
@@ -584,7 +587,8 @@ export async function runCommandViaSpawnerSidecar(
         ...(fence ? { fence } : {}),
       },
       {
-        timeoutMs: opts.rpcTimeoutMs ?? (opts.timeoutMs + 35_000),
+        timeoutMs: rpcTimeoutMs,
+        onPid: (pid) => { childPid = pid; },
         onOutputActivity: opts.onProgress,
         onRequestId: (id, connectionId) => {
           requestId = id;
@@ -619,6 +623,11 @@ export async function runCommandViaSpawnerSidecar(
         method: 'process:exec',
         errorCode: errorCode ?? null,
         errorName: error instanceof Error ? error.name : null,
+        childPid,
+        elapsedMs: Math.max(0, Math.round(performance.now() - execStartedAt)),
+        childTimeoutMs: opts.timeoutMs,
+        childIdleTimeoutMs: opts.idleTimeoutMs ?? null,
+        rpcTimeoutMs,
       });
     }
     // Before dispatch a rejection is safe for local fallback. Afterwards keep

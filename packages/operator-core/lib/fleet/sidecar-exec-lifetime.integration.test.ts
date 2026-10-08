@@ -167,6 +167,9 @@ it.runIf(process.platform === 'linux')(
           event: 'transport-error', clientConnectionId: execution.clientConnectionId,
           serverGeneration: execution.serverGeneration, connectionId: execution.connectionId,
           requestId: execution.requestId, method: 'process:exec', errorCode: null, errorName: 'Error',
+          childPid: phase === 'after-mutation' ? expect.any(Number) : null,
+          elapsedMs: expect.any(Number),
+          childTimeoutMs: 5000, childIdleTimeoutMs: null, rpcTimeoutMs: 40000,
         }],
         ['[spawner-ipc-client-fault]', {
           event: 'socket-error', clientConnectionId: expect.any(String),

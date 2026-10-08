@@ -172,6 +172,7 @@ describe('SpawnerIpcClient — id-correlated request/response', () => {
     try {
       await expect(stalledClient.call('process:exec', {
         command: 'private-command', args: ['private-argument'], env: { TOKEN: 'private-value' },
+        callerLabel: 'git-via-sidecar.runCommandViaSpawnerSidecar',
       }, { timeoutMs: 50 })).rejects.toThrow('RPC request timeout: process:exec');
       expect(received).toBeDefined();
       const fault = warning.mock.calls.find(([tag, details]) =>
@@ -182,7 +183,14 @@ describe('SpawnerIpcClient — id-correlated request/response', () => {
       expect(fault).toMatchObject({
         event: 'rpc-timeout', method: 'process:exec', requestId: received?.id,
         clientConnectionId: received?.clientConnectionId,
+        activeRequests: [{
+          requestId: received?.id, method: 'process:exec',
+          callerLabel: 'git-via-sidecar.runCommandViaSpawnerSidecar',
+        }],
+        rpcTimeoutMs: 50,
       });
+      expect(fault?.elapsedMs).toEqual(expect.any(Number));
+      expect(fault?.elapsedMs).toBeGreaterThanOrEqual(0);
       expect(fault).not.toHaveProperty('command');
       expect(fault).not.toHaveProperty('args');
       expect(fault).not.toHaveProperty('env');

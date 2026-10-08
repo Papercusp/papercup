@@ -113,6 +113,8 @@ export class SpawnerIpcClient {
       relatedRequestId?: number | string;
       error?: Error;
       activeRequests?: Array<{ requestId: number; method: string; callerLabel?: ProcessExecCallerLabel }>;
+      rpcTimeoutMs?: number;
+      elapsedMs?: number;
     } = {},
   ): void {
     const code = (details.error as NodeJS.ErrnoException | undefined)?.code;
@@ -128,6 +130,8 @@ export class SpawnerIpcClient {
       errorCode: code ?? null,
       errorName: details.error?.name ?? null,
       activeRequests: details.activeRequests ?? [],
+      ...(details.rpcTimeoutMs !== undefined ? { rpcTimeoutMs: details.rpcTimeoutMs } : {}),
+      ...(details.elapsedMs !== undefined ? { elapsedMs: details.elapsedMs } : {}),
     });
   }
 
@@ -326,11 +330,25 @@ export class SpawnerIpcClient {
       // sidecar's own spawn timeout bounds it). A fixed 30s here spuriously timed
       // out every real spawn → fallback → double-spawn (WI-344 ③ bug).
       const timeoutMs = opts?.timeoutMs ?? 30000;
+      const requestStartedAt = performance.now();
       const timeout =
         timeoutMs > 0
           ? setTimeout(() => {
               if (!this.pending.has(id)) return;
-              this.logFault('rpc-timeout', { requestId: id, method, callerLabel, relatedRequestId });
+              const activeRequests = Array.from(this.pending, ([requestId, active]) => ({
+                requestId,
+                method: active.method,
+                ...(active.callerLabel ? { callerLabel: active.callerLabel } : {}),
+              }));
+              this.logFault('rpc-timeout', {
+                requestId: id,
+                method,
+                callerLabel,
+                relatedRequestId,
+                activeRequests,
+                rpcTimeoutMs: timeoutMs,
+                elapsedMs: Math.max(0, Math.round(performance.now() - requestStartedAt)),
+              });
               this.pending.delete(id);
               this.callbacks.delete(id);
               reject(new Error(`RPC request timeout: ${method}`));

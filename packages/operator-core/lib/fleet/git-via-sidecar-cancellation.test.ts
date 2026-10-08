@@ -74,6 +74,48 @@ describe('cancellable process:exec caller', () => {
     }), expect.anything());
   });
 
+  it('logs the child PID, elapsed time and timeout limits on a post-dispatch RPC timeout', async () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    mock.call.mockImplementation((method: string, _params: unknown, opts?: {
+      onRequestId?: (id: number, connectionId: string) => void;
+      onPid?: (pid: number) => void;
+    }) => {
+      if (method === 'spawn:cancel') return Promise.resolve(capabilities);
+      if (method === 'process:exec') {
+        opts?.onRequestId?.(17, 'client-connection-17');
+        opts?.onPid?.(4242);
+        return Promise.reject(new Error('RPC request timeout: process:exec'));
+      }
+      if (method === 'process:drain') return Promise.resolve({ exitConfirmed: true, result: null });
+      throw new Error(`unexpected RPC ${method}`);
+    });
+
+    const result = await runCommandViaSpawnerSidecar('git', ['gc', '--prune=now'], {
+      timeoutMs: 5000,
+      idleTimeoutMs: 1000,
+      rpcTimeoutMs: 9000,
+      signal: new AbortController().signal,
+    });
+
+    expect(result.stderr).toContain('not replayed');
+    const fault = warning.mock.calls.find(([tag]) => tag === '[spawner-process-exec-fault]')?.[1] as
+      Record<string, unknown> | undefined;
+    expect(fault).toMatchObject({
+      event: 'rpc-timeout',
+      clientConnectionId: 'client-connection-17',
+      serverGeneration: fence.serverGeneration,
+      connectionId: fence.connectionId,
+      requestId: 17,
+      method: 'process:exec',
+      childPid: 4242,
+      childTimeoutMs: 5000,
+      childIdleTimeoutMs: 1000,
+      rpcTimeoutMs: 9000,
+    });
+    expect(fault?.elapsedMs).toEqual(expect.any(Number));
+    expect(fault?.elapsedMs).toBeGreaterThanOrEqual(0);
+  });
+
   it('refuses dispatch without verified containment, so fallback cannot duplicate work', async () => {
     mock.call.mockResolvedValue(capabilities);
     mock.preflight.mockReturnValue(false);
