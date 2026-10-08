@@ -120,6 +120,40 @@ describe('Playwright isolated webServer contract', () => {
   });
 });
 
+describe('ongoing-work artifact acceptance profile', () => {
+  it('requires an explicit supported artifact and never starts an unrelated Vite server', async () => {
+    const previousBaseURL = process.env.OPERATOR_E2E_BASE_URL;
+    const previousSha = process.env.PAPERCUSP_ONGOING_ACCEPTANCE_SHA;
+
+    try {
+      process.env.PAPERCUSP_ONGOING_ACCEPTANCE_SHA = '0123456789';
+      delete process.env.OPERATOR_E2E_BASE_URL;
+      vi.resetModules();
+      await expect(import('../../playwright.ongoing-work.config')).rejects.toThrow(/OPERATOR_E2E_BASE_URL/);
+
+      process.env.OPERATOR_E2E_BASE_URL = 'http://127.0.0.1:3170';
+      delete process.env.PAPERCUSP_ONGOING_ACCEPTANCE_SHA;
+      vi.resetModules();
+      await expect(import('../../playwright.ongoing-work.config')).rejects.toThrow(/PAPERCUSP_ONGOING_ACCEPTANCE_SHA/);
+
+      process.env.OPERATOR_E2E_BASE_URL = 'http://localhost:3424';
+      process.env.PAPERCUSP_ONGOING_ACCEPTANCE_SHA = '0123456789';
+      vi.resetModules();
+      await expect(import('../../playwright.ongoing-work.config')).rejects.toThrow(/:3170.*:3070/);
+
+      process.env.OPERATOR_E2E_BASE_URL = 'http://127.0.0.1:3170';
+      vi.resetModules();
+      const { default: config } = await import('../../playwright.ongoing-work.config');
+      expect(config.use?.baseURL).toBe('http://127.0.0.1:3170');
+      expect(config.webServer).toBeUndefined();
+    } finally {
+      restoreEnv('OPERATOR_E2E_BASE_URL', previousBaseURL);
+      restoreEnv('PAPERCUSP_ONGOING_ACCEPTANCE_SHA', previousSha);
+      vi.resetModules();
+    }
+  });
+});
+
 function listFiles(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) =>
     entry.isDirectory() ? listFiles(join(dir, entry.name)) : [join(dir, entry.name)],
