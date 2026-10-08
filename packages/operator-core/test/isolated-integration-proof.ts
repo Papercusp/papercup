@@ -108,6 +108,12 @@ export async function recordIsolatedIntegrationProof(options: {
       return { ok: true };
     },
   });
-  assert.equal(result.verdict, 'pass', JSON.stringify(result.firstFailure));
+  assert.equal(result.verdict, 'pass', JSON.stringify({
+    runId: result.runId,
+    firstFailure: result.firstFailure,
+    phaseFailures: result.phases
+      .filter((phase) => phase.status === 'failed' || phase.status === 'blocked')
+      .map(({ phase, step, reasonCode, detail }) => ({ phase, step, reasonCode, detail })),
+  }));
   return result.runId;
 }
