@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createFrozenCandidateRepairQueue, type FrozenCandidateRepairQueue, type FrozenRepairAdmission } from './frozen-candidate-repair-queue';
 import {
+  classifyFixerDeath,
   DEFAULT_GATE_INVARIANT_THRESHOLDS as T,
   evaluateGateLiveInvariants,
   foldGateInvariants,
@@ -33,6 +34,7 @@ function snap(over: Partial<GateInvariantSnapshot> = {}): GateInvariantSnapshot 
     fireIntervalsMs: [TICK, TICK, TICK],
     checkpointStatuses: ['unchanged-since-verdict', 'advanced'],
     executor: { treeSha: 'abc1234567', driftPaths: [], oldestDriftCommitMs: null },
+    fixerOutcomes: [{ status: 'done', reason: null }],
     ...over,
   };
 }
@@ -64,8 +66,59 @@ describe('healthy gate: every invariant that has evidence passes', () => {
       ['no-verdict-rate', 'pass'],
       ['round-idle-time', 'pass'],
       ['executor-freshness', 'pass'],
+      ['fixer-outcome-mix', 'pass'],
     ]);
     expect(overallGateInvariantStatus(results)).toBe('pass');
+  });
+});
+
+describe('fixer-outcome-mix (WI-10007488)', () => {
+  // Reason strings copied verbatim (prefixes) from live spawned_agents rows, 2026-08..09.
+  const BOOT_ID = 'reclaimed: launched by a prior operator incarnation (boot-id mismatch on main-server) — host restarted';
+  const BOOT = 'reclaimed at operator boot: launched by a prior incarnation on main-server (host/process restarted';
+  const DEAD = 'reclaimed: child process (pid 205258) confirmed dead on main-server — concurrency ceiling freed';
+  const STALE = 'reclaimed: spawn heartbeat stale > 300s (launching operator host presumed dead)';
+  const JAM = 'reclaimed: spawn-ceiling-jam — no stream activity for > 15min despite an apparently-fresh heartbeat';
+  const INFRA = 'infra_loss: papercusp/release-fixer timed out before producing a turn';
+  const failed = (reason: string | null) => ({ status: 'failed', reason });
+  const done = { status: 'done', reason: null };
+  const mix = (fixerOutcomes: GateInvariantSnapshot['fixerOutcomes']) => status(snap({ fixerOutcomes }), 'fixer-outcome-mix');
+
+  it('classifies each recorded death by what was observed, never by a presumed killer', () => {
+    expect(
+      [BOOT_ID, BOOT, DEAD, STALE, JAM, INFRA, 'fetch failed (ECONNREFUSED)', null].map((r) => classifyFixerDeath(r)),
+    ).toEqual(['launcher-restarted', 'launcher-restarted', 'child-dead', 'heartbeat-stale', 'silent-no-stream', 'infra-loss', 'other', 'no-reason']);
+  });
+
+  it('breaches on the live 2026-09 shape: most fixers die, and it names the dominant classes', () => {
+    const r = mix([failed(DEAD), failed(DEAD), failed(BOOT), failed(JAM), done]);
+    expect(r.status).toBe('breach');
+    expect(r.observed).toMatch(/^4\/5 release-fixers that ended in \d+m died \(1 finished\)/);
+    expect(r.observed).toContain('child-dead×2');
+  });
+
+  it('does not page below the minimum death count, however bad the rate', () => {
+    expect(mix([failed(DEAD), failed(DEAD)]).status).toBe('pass');
+  });
+
+  it('a rate of exactly the limit passes; one more death breaches', () => {
+    expect(mix([failed(DEAD), failed(DEAD), failed(DEAD), done, done, done]).status).toBe('pass');
+    expect(mix([failed(DEAD), failed(DEAD), failed(DEAD), failed(DEAD), done, done, done]).status).toBe('breach');
+  });
+
+  it('a deliberate cancel is an outcome but never a death', () => {
+    const r = mix([failed(DEAD), failed(DEAD), failed(DEAD), { status: 'cancelled', reason: 'superseded' }, { status: 'cancelled', reason: 'x' }, done]);
+    expect(r.status).toBe('pass');
+    expect(r.observed).toMatch(/^3\/6 /);
+  });
+
+  it('an unrecognised failure reason still counts as a death', () => {
+    expect(mix([failed('something new'), failed(null), failed('also new')]).status).toBe('breach');
+  });
+
+  it('an unreadable ledger is unknown, and an empty window passes with nothing to judge', () => {
+    expect(mix(null)).toMatchObject({ status: 'unknown', observed: expect.stringMatching(/could not be read/) });
+    expect(mix([])).toMatchObject({ status: 'pass', observed: expect.stringMatching(/no deaths to judge/) });
   });
 });
 
@@ -221,7 +274,7 @@ describe('fold: transitions, counters, heartbeat', () => {
 
   it('the first evaluation is all transitions and emits', () => {
     const out = foldGateInvariants(null, pass, T0);
-    expect(out.transitions).toHaveLength(6);
+    expect(out.transitions).toHaveLength(7);
     expect(out.emit).toBe(true);
     expect(out.next.invariants['no-verdict-rate']).toMatchObject({ status: 'pass', sinceMs: T0, passes: 1, evaluations: 1 });
   });

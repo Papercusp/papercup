@@ -7,13 +7,14 @@
  * record, a gate tick refused at begin for hours) while every unit test stayed green. A test
  * proves the code once; an invariant proves the RUNNING system every tick.
  *
- * Six invariants, each a pure evaluator over one {@link GateInvariantSnapshot}:
+ * Seven invariants, each a pure evaluator over one {@link GateInvariantSnapshot}:
  *   fixer-spawn-latency  a red queue gets a live fixer within one gate tick
  *   targeted-radius      repair rounds run only their targeted radius (no ledger yet ⇒ unknown)
  *   admission-precheck   the newest admission on the lineage ran its pre-check and it passed
  *   no-verdict-rate      gate outcomes that end with no verdict stay a minority
  *   round-idle-time      an admitted head starts its verification run within one tick
  *   executor-freshness   the process running the gate runs the gate code that is committed
+ *   fixer-outcome-mix    dispatched release-fixers mostly FINISH; deaths stay a minority (WI-10007488)
  *
  * `unknown` is a first-class status, never folded into pass: an invariant whose evidence cannot be
  * read is not passing, and the plan's 7-day acceptance counts passes only.
@@ -34,6 +35,7 @@ export const GATE_INVARIANT_NAMES = [
   'no-verdict-rate',
   'round-idle-time',
   'executor-freshness',
+  'fixer-outcome-mix',
 ] as const;
 export type GateInvariantName = (typeof GATE_INVARIANT_NAMES)[number];
 export type GateInvariantStatus = 'pass' | 'breach' | 'unknown';
@@ -59,6 +61,12 @@ export interface GateInvariantThresholds {
   noVerdictMinFailures: number;
   /** How long committed gate code may wait for the executor to load it (a restart window). */
   executorGraceMs: number;
+  /** Window of ended release-fixer spawns the outcome mix is judged over. */
+  fixerOutcomeWindowMs: number;
+  /** Breach when more than this fraction of ended fixers DIED (status failed)… */
+  fixerDeathMaxRate: number;
+  /** …and at least this many did (one unlucky fixer in a quiet week does not page). */
+  fixerDeathMinDeaths: number;
 }
 
 export const DEFAULT_GATE_INVARIANT_THRESHOLDS: GateInvariantThresholds = {
@@ -68,6 +76,9 @@ export const DEFAULT_GATE_INVARIANT_THRESHOLDS: GateInvariantThresholds = {
   noVerdictMaxRate: 0.5,
   noVerdictMinFailures: 3,
   executorGraceMs: 30 * 60_000,
+  fixerOutcomeWindowMs: 7 * 24 * 60 * 60_000,
+  fixerDeathMaxRate: 0.5,
+  fixerDeathMinDeaths: 3,
 };
 
 /** green_checkpoint statuses that ARE a verdict on a candidate. */
@@ -120,6 +131,32 @@ export interface GateInvariantSnapshot {
   checkpointStatuses: string[] | null;
   /** Null when no gate fire has been recorded. */
   executor: GateExecutorEvidence | null;
+  /** Release-fixer spawns for this install that ENDED inside the outcome window; null when unreadable. */
+  fixerOutcomes: FixerOutcome[] | null;
+}
+
+/** One ended release-fixer spawn: its terminal status and the reason the row carries, if any. */
+export interface FixerOutcome {
+  status: string;
+  reason: string | null;
+}
+
+/**
+ * Why a release-fixer DIED, from the reason its row carries. The reclaim sweeps that write most of
+ * these reasons RECORD a death the /proc check already observed; they do not cause it, so the
+ * class names the observation (whose launcher restarted, whose child was found dead), never a
+ * presumed killer. Unrecognised text is `other`, so a new failure mode still counts as a death.
+ */
+export function classifyFixerDeath(reason: string | null | undefined): string {
+  const r = (reason ?? '').toLowerCase();
+  if (r.includes('boot-id mismatch')) return 'launcher-restarted';
+  if (r.startsWith('reclaimed at operator boot')) return 'launcher-restarted';
+  if (r.includes('confirmed dead')) return 'child-dead';
+  if (r.includes('heartbeat stale')) return 'heartbeat-stale';
+  if (r.includes('spawn-ceiling-jam')) return 'silent-no-stream';
+  if (r.startsWith('infra_loss')) return 'infra-loss';
+  if (r.length === 0) return 'no-reason';
+  return 'other';
 }
 
 const minutes = (ms: number): string => `${Math.round(ms / 60_000)}m`;
@@ -251,6 +288,39 @@ export const evaluateExecutorFreshness: Evaluator = (s, t) => {
   };
 };
 
+/**
+ * WI-10007488: a fixer that dies cannot repair anything, and a death after real work burns an
+ * attempt (the P-005 refund covers only zero-work deaths). Of the 225 papercusp release-fixers
+ * spawned 2026-08-15..10-08, 215 ended `failed` and 8 finished (measured 2026-10-08) while every
+ * survivability unit test stayed green — nothing watched the live outcome mix. Deaths are counted by the row's terminal status; the
+ * reason only names the class. `cancelled` (a deliberate stop) is in the denominator, never a death.
+ */
+export const evaluateFixerOutcomeMix: Evaluator = (s, t) => {
+  const outcomes = s.fixerOutcomes;
+  const window = minutes(t.fixerOutcomeWindowMs);
+  if (outcomes === null) return { status: 'unknown', observed: 'release-fixer outcome ledger could not be read' };
+  if (outcomes.length === 0) return { status: 'pass', observed: `no release-fixer ended in the last ${window} — no deaths to judge` };
+  const deaths = new Map<string, number>();
+  let done = 0;
+  for (const o of outcomes) {
+    if (o.status === 'done') done += 1;
+    else if (o.status === 'failed') {
+      const cls = classifyFixerDeath(o.reason);
+      deaths.set(cls, (deaths.get(cls) ?? 0) + 1);
+    }
+  }
+  const died = [...deaths.values()].reduce((a, b) => a + b, 0);
+  const rate = died / outcomes.length;
+  const top = [...deaths.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([k, n]) => `${k}×${n}`).join(', ');
+  const breach = died >= t.fixerDeathMinDeaths && rate > t.fixerDeathMaxRate;
+  return {
+    status: breach ? 'breach' : 'pass',
+    observed:
+      `${died}/${outcomes.length} release-fixers that ended in ${window} died (${done} finished)` +
+      `${top ? `; ${top}` : ''} (limit: >${Math.round(t.fixerDeathMaxRate * 100)}% with ≥${t.fixerDeathMinDeaths} deaths)`,
+  };
+};
+
 const EVALUATORS: Record<GateInvariantName, Evaluator> = {
   'fixer-spawn-latency': evaluateFixerSpawnLatency,
   'targeted-radius': evaluateTargetedRadius,
@@ -258,6 +328,7 @@ const EVALUATORS: Record<GateInvariantName, Evaluator> = {
   'no-verdict-rate': evaluateNoVerdictRate,
   'round-idle-time': evaluateRoundIdleTime,
   'executor-freshness': evaluateExecutorFreshness,
+  'fixer-outcome-mix': evaluateFixerOutcomeMix,
 };
 
 /** PURE: every invariant against one snapshot. An evaluator that throws reports `unknown`. */
@@ -443,6 +514,16 @@ export async function readGateInvariantSnapshot(deps: GateInvariantReadDeps): Pr
      WHERE workspace_id = ${workspaceId} AND install_slug = ${installSlug} AND kind = 'green_checkpoint'
        AND created_at > ${since}`.catch(() => null);
 
+  // Ended fixers only: a running row has no outcome yet. Scoped to this install's harness, so a
+  // sibling pot's fixer deaths never page this gate.
+  const fixerSince = new Date(nowMs - deps.thresholds.fixerOutcomeWindowMs);
+  const fixerRows = await sql<{ status: string; reason: string | null }[]>`
+    SELECT status, COALESCE(error_message, cancel_reason) AS reason
+      FROM harness_shared.spawned_agents
+     WHERE workspace_id = ${workspaceId} AND harness_slug = ${installSlug} AND child_role = 'release-fixer'
+       AND status NOT IN ('running', 'restarting')
+       AND COALESCE(finished_at, started_at) > ${fixerSince}`.catch(() => null);
+
   let executor: GateExecutorEvidence | null = null;
   if (fires && fires.length > 0) {
     const treeSha = fires[0]?.tree ?? null;
@@ -459,6 +540,7 @@ export async function readGateInvariantSnapshot(deps: GateInvariantReadDeps): Pr
     fireIntervalsMs,
     checkpointStatuses: outcomes ? outcomes.map((o) => o.status) : null,
     executor,
+    fixerOutcomes: fixerRows ? fixerRows.map((r) => ({ status: r.status, reason: r.reason })) : null,
   };
 }
 
