@@ -40,6 +40,7 @@ import { LEARNING_PRODUCERS, type LearningProducer } from '../../experiment/life
 import type { LearningLoopRegistration } from '../../learning-governor/core';
 import { isDeliberatePause, pauseReviewOverdue, type PotLearningScope } from '../../learning/pot-gate/core';
 import type { WatchdogSignal } from './watchdog';
+import { pgTimestampToIsoOrNull } from '../../pg-timestamp';
 
 /** Key for a workspace-level producer's single output reading (not per pot). */
 export const ANY_POT = '*';
@@ -67,10 +68,24 @@ function namedLoop(id: string) {
   return (loopId: string, loopPotSlug: string | null): string | null => (loopId === id ? loopPotSlug ?? ANY_POT : null);
 }
 
-function msOf(v: unknown): number | null {
+/**
+ * A probe's `max(<timestamptz>)` to epoch ms. The SQL transport can return the timestamp as a
+ * `Date` OR as Postgres text ("2026-10-08 12:00:00.123-04"); `Number()` of the text is NaN, which
+ * read every real output as "never produced" and fired a false silence alarm for all five
+ * producers on live data (2026-10-08). Text goes through the shared pg-timestamp normaliser.
+ */
+export function msOf(v: unknown): number | null {
   if (v == null) return null;
-  const n = v instanceof Date ? v.getTime() : Number(v);
-  return Number.isFinite(n) ? n : null;
+  if (v instanceof Date) return Number.isFinite(v.getTime()) ? v.getTime() : null;
+  if (typeof v === 'number' || typeof v === 'bigint') {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  }
+  const text = String(v).trim();
+  if (/^\d+$/.test(text)) return Number(text);
+  const iso = pgTimestampToIsoOrNull(text);
+  const ms = iso === null ? NaN : Date.parse(iso);
+  return Number.isFinite(ms) ? ms : null;
 }
 
 async function perPotMax(rows: Array<{ pot: string | null; last: unknown }>): Promise<Map<string, number>> {

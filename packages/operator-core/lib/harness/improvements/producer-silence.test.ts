@@ -2,11 +2,35 @@ import { describe, expect, it } from 'vitest';
 import { LEARNING_PRODUCERS } from '../../experiment/lifecycle-adapter';
 import {
   ANY_POT,
+  msOf,
   PRODUCER_SILENCE_PROBES,
   producerSilenceNote,
   producerSilenceVerdict,
   type ProducerSilenceFacts,
 } from './producer-silence';
+
+describe('msOf — a probe max(timestamptz) in every shape the transport returns', () => {
+  // Regression 2026-10-08: Number('<pg text timestamp>') is NaN, so every real producer output
+  // read as "never produced" and all five learning producers raised a false silence alarm.
+  const at = Date.UTC(2026, 9, 8, 16, 0, 0, 123);
+  it('parses a Postgres text timestamptz with a session offset to the right instant', () => {
+    expect(msOf('2026-10-08 12:00:00.123-04')).toBe(at);
+    expect(msOf('2026-10-08 16:00:00.123+00')).toBe(at);
+  });
+  it('parses Date, ISO text, epoch numbers, bigint and numeric text', () => {
+    expect(msOf(new Date(at))).toBe(at);
+    expect(msOf(new Date(at).toISOString())).toBe(at);
+    expect(msOf(at)).toBe(at);
+    expect(msOf(BigInt(at))).toBe(at);
+    expect(msOf(String(at))).toBe(at);
+  });
+  it('returns null for absent or unparseable values, never a fake instant', () => {
+    expect(msOf(null)).toBeNull();
+    expect(msOf(undefined)).toBeNull();
+    expect(msOf('not a time')).toBeNull();
+    expect(msOf(new Date(NaN))).toBeNull();
+  });
+});
 
 const NOW = Date.parse('2026-10-08T15:00:00Z');
 const H = 3_600_000;
