@@ -574,6 +574,7 @@ interface PersistedTestRunRow {
   status: string;
   finished_at: Date | string | number | null;
   output_tail: string | null;
+  execution_details?: unknown;
 }
 
 type TestRunLedgerFileStatus = 'pass' | 'fail' | 'skip' | 'cancelled' | 'error';
@@ -588,6 +589,7 @@ export interface DetachedRunLedgerRecovery {
     filePath: string;
     status: TestRunLedgerFileStatus;
     finishedAt: number;
+    executionDetails: TestRunExecutionDetails | null;
   }>;
   message: string;
 }
@@ -601,8 +603,15 @@ function hasExactPassedFileCoverage(
   if (!requestedFiles || requestedFiles.length === 0
     || new Set(requestedFiles).size !== requestedFiles.length
     || files.length !== requestedFiles.length) return false;
-  const outcomes = new Map(files.map((file) => [file.filePath, file.status]));
-  return requestedFiles.every((filePath) => outcomes.get(filePath) === 'pass');
+  const outcomes = new Map(files.map((file) => [file.filePath, file]));
+  return requestedFiles.every((filePath) => {
+    const file = outcomes.get(filePath);
+    const details = file?.executionDetails;
+    // A reporter status or process exit alone does not prove an assertion ran.
+    // Legacy, zero-match and collection-only rows remain unverified.
+    return file?.status === 'pass' && details !== null && details !== undefined
+      && details.passed > 0 && details.failed === 0 && !details.collectionFailed;
+  });
 }
 
 interface PersistedDetachedTaskRow {
@@ -656,7 +665,7 @@ async function readPersistedTestRunLedgerRows(runId: string, sql: SqlLike): Prom
   let query: PromiseLike<unknown>;
   try {
     query = sql`
-      SELECT DISTINCT ON (file_path) file_path, status, finished_at, output_tail
+      SELECT DISTINCT ON (file_path) file_path, status, finished_at, output_tail, execution_details
         FROM harness_shared.test_runs
        WHERE run_group_id = ${runId}
        ORDER BY file_path, finished_at DESC NULLS LAST, id DESC
@@ -689,10 +698,12 @@ function deriveDetachedRunLedgerRecovery(
       // reporter has not supplied a terminal per-file outcome yet.
       return null;
     }
+    const details = parseTestRunExecutionDetails(row.execution_details);
     files.push({
       filePath: row.file_path,
       status: row.status as TestRunLedgerFileStatus,
       finishedAt,
+      executionDetails: details?.filePath === row.file_path && details.runGroupId === runId ? details : null,
     });
   }
 

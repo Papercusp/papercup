@@ -79,6 +79,14 @@ vi.mock('./task-manager/enroll-sync', () => ({
 }));
 
 type Store = typeof import('./testing-run-store');
+function measuredPass(filePath: string, runGroupId: string | null) {
+  return {
+    schemaVersion: 1, root: '/tmp', filePath, runGroupId,
+    workspaceId: null, harnessSlug: null, testNamePattern: 'selected assertion',
+    passed: 7, failed: 0, skipped: 118, collectionFailed: false,
+    mutationPhase: null, commitSha: null, worktreeDirty: false,
+  };
+}
 const req = (over: Partial<Parameters<Store['startRun']>[0]> = {}) =>
   ({ kind: 'vitest' as const, label: 'L', command: 'npx', args: ['vitest', 'run'], cwd: '/tmp', ...over });
 
@@ -706,7 +714,8 @@ describe('durable detached snapshot lifecycle', () => {
         if (statement.includes('INSERT INTO harness_shared.test_runs')) {
           if (options.writeFailure) throw new Error('ledger unavailable');
           writes.push(values);
-          ledger.push({ file_path: values[0], status: values[2], finished_at: values[5], output_tail: values[6] });
+          ledger.push({ file_path: values[0], status: values[2], finished_at: values[5], output_tail: values[6],
+            execution_details: values.at(-1) });
           return [{ id: 42 }];
         }
         if (statement.includes('UPDATE harness_shared.testing_run_snapshots')) return options.casLost ? [] : [{ run_id: snapshot.runId }];
@@ -1013,6 +1022,7 @@ describe('durable detached snapshot lifecycle', () => {
       status: 'pass',
       finished_at: new Date(1_700_000_001_000 + index * 1_000),
       output_tail: null,
+      execution_details: measuredPass(`lib/file-${index + 1}.test.ts`, runId),
     }));
     const sql = vi.fn(async (strings: TemplateStringsArray, ..._values: unknown[]) => {
       const statement = strings.join(' ');
@@ -1057,6 +1067,7 @@ describe('durable detached snapshot lifecycle', () => {
         status: 'pass',
         finished_at: new Date(1_700_000_001_000 + index * 1_000),
         output_tail: null,
+        execution_details: measuredPass(`lib/workspace-one-${index + 1}.test.ts`, runId),
       }));
       const sql = vi.fn(async (strings: TemplateStringsArray) => {
         const statement = strings.join(' ');
@@ -1083,6 +1094,61 @@ describe('durable detached snapshot lifecycle', () => {
       expect(ledgerRead).toBe(scenario.taskState !== 'running');
     },
   );
+
+  it.each([
+    { name: 'measured cases', change: {}, expected: 'pass' },
+    { name: 'zero matches', change: { passed: 0, skipped: 0 }, expected: null },
+    { name: 'all skipped', change: { passed: 0 }, expected: null },
+    { name: 'failed cases', change: { failed: 1 }, expected: null },
+    { name: 'collection failure', change: { collectionFailed: true }, expected: null },
+    { name: 'wrong file', change: { filePath: 'other.test.ts' }, expected: null },
+    { name: 'wrong group', change: { runGroupId: 'other-run' }, expected: null },
+    { name: 'missing details', change: null, expected: null },
+    { name: 'malformed details', change: { passed: -1 }, expected: null },
+  ])('requires measured executed cases in every requested file: $name', async ({ change, expected }) => {
+    const runId = 'measured-coverage-run';
+    const requestedFiles = ['first.test.ts', 'second.test.ts'];
+    const rows = requestedFiles.map((file_path, index) => ({
+      file_path, status: 'pass', finished_at: new Date(1_700_000_001_000 + index), output_tail: null,
+      execution_details: index === 1 && change === null ? null : {
+        ...measuredPass(file_path, runId), ...(index === 1 ? change : {}),
+      },
+    }));
+    const updates: unknown[][] = [];
+    const sql = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const statement = strings.join(' ');
+      if (statement.includes('FROM harness_shared.testing_run_snapshots AS snapshot')) return [{
+        run_id: runId, task_id: 'measured-task', kind: 'vitest', label: 'measured', file_path: null,
+        command: ['node', 'scripts/test-files.mjs'], status: 'pass', exit_code: 0,
+        started_at: new Date(1_700_000_000_000), finished_at: new Date(1_700_000_010_000),
+        output: '', truncated: false, task_state: 'exited', task_exit_code: 0,
+        task_ended_at: new Date(1_700_000_010_000), task_detail: { requestedFiles },
+      }];
+      if (statement.includes('FROM harness_shared.task_ledger')) return [{
+        state: 'exited', exit_code: 0, requested_files: requestedFiles,
+      }];
+      if (statement.includes('FROM harness_shared.test_runs')) return rows;
+      if (statement.includes('UPDATE harness_shared.testing_run_snapshots')) {
+        updates.push(values);
+        return [{ run_id: runId }];
+      }
+      return [];
+    }) as unknown as Sql;
+
+    const recovery = await store.getTestRunLedgerRecoveryAsync(runId, sql);
+    const snapshot = await store.getRunAsync(runId, sql);
+    if (expected === 'pass') {
+      expect(recovery).toMatchObject({ status: 'pass', files: rows.map(row => ({
+        filePath: row.file_path, executionDetails: row.execution_details,
+      })) });
+      expect(snapshot?.status).toBe('pass');
+      expect(updates).toHaveLength(0);
+    } else {
+      expect(recovery).toBeNull();
+      expect(snapshot?.status).toBe('error');
+      expect(updates).toHaveLength(1);
+    }
+  });
 
   it('does not recover an unmanifested all-pass detached ledger as a pass', async () => {
     const ledgerRows = [{
@@ -1395,6 +1461,7 @@ describe('durable detached snapshot lifecycle', () => {
       status: 'pass',
       finished_at: new Date(1_700_000_001_000 + index * 1_000),
       output_tail: null,
+      execution_details: measuredPass(file_path, runId),
     }));
     const updates: unknown[][] = [];
     const sql = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
@@ -1492,7 +1559,8 @@ describe('durable detached snapshot lifecycle', () => {
     const runId = 'terminal-pass-ledger-late';
     const requestedFiles = ['lib/first.test.ts', 'lib/second.test.ts'];
     let ledgerRows = [
-      { file_path: requestedFiles[0], status: 'pass', finished_at: new Date(1_700_000_001_000), output_tail: null },
+      { file_path: requestedFiles[0], status: 'pass', finished_at: new Date(1_700_000_001_000), output_tail: null,
+        execution_details: measuredPass(requestedFiles[0]!, runId) },
     ];
     const durableRow: Record<string, unknown> = {
       run_id: runId,
@@ -1544,6 +1612,7 @@ describe('durable detached snapshot lifecycle', () => {
       status: 'pass',
       finished_at: new Date(1_700_000_011_000 + index * 1_000),
       output_tail: null,
+      execution_details: measuredPass(file_path, runId),
     }));
     const recovered = await store.getRunAsync(runId, sql);
 
@@ -1567,13 +1636,14 @@ describe('durable detached snapshot lifecycle', () => {
       }
       return [];
     });
-    const sql = vi.fn(async (strings: TemplateStringsArray) => {
+    const sql = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
       if (strings.join(' ').includes('FROM harness_shared.test_runs')) {
         return [{
           file_path: 'lib/local-pass.test.ts',
           status: 'pass',
           finished_at: new Date(1_700_000_001_000),
           output_tail: null,
+          execution_details: measuredPass('lib/local-pass.test.ts', values[0] as string),
         }];
       }
       return [];
