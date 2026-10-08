@@ -6,8 +6,8 @@
   "population": {
     "failedFiles": 124,
     "repairedFocused": 33,
-    "repairedPeerFocused": 18,
-    "openUnknown": 73
+    "repairedPeerFocused": 19,
+    "openUnknown": 72
   },
   "classes": {
     "assertion": 55,
@@ -1054,7 +1054,48 @@
         "EI-24890385770678975",
         "EI-24153986934343683"
       ],
-      "diagnosis": "Archived empty native hook payload matches existing recurrent defect records; causal root repair remains unproved, so this disposition stays UNKNOWN."
+      "diagnosis": "Both archived native clients reached the fixture server, then returned empty output while a request remained incomplete. The hook uses a 2500ms hard abort. The originating inner stage is unproved; existing recurrent defects remain open, so this disposition stays UNKNOWN.",
+      "originalFailureRef": "local-state:verification-harness/goal-report-d006/1307302-b9c3dd76/affected-tests.log",
+      "originalFailureSha256": "43cf66489baf7cf665a9746d097375cffc7cdc6262014929c3cc398155b579f4",
+      "archivedRequestDiagnostics": [
+        {
+          "client": "codex",
+          "failHeaderLine": 12381,
+          "diagnosticLine": 12382,
+          "startedRequests": 6,
+          "completedReceipts": 5,
+          "completedElapsedMs": [22, 51, 52, 509, 532],
+          "activeRequestAgeMs": 2467,
+          "serverErrors": [],
+          "cursorObservation": "Previous delivery committed; pending null."
+        },
+        {
+          "client": "claude",
+          "failHeaderLine": 12394,
+          "diagnosticLine": 12395,
+          "startedRequests": 2,
+          "completedReceipts": 1,
+          "completedElapsedMs": [1516],
+          "activeRequestAgeMs": 3147,
+          "serverErrors": [],
+          "cursorObservation": "Previous delivery committed; pending null."
+        }
+      ],
+      "diagnosticScope": "Request-start and incomplete-response observations rule out failure to reach the fixture server for these archived requests. They do not establish which inner stage delayed, concurrent-run interference, a resource bottleneck, or a durable repair.",
+      "currentNamedTestSha256AtReview": "ff6d52d70f70b9dcc96e3a427de9c1d618491f480f20c1992fa966f6f23ae7e6",
+      "laterRecurrenceTestRun": 20866105,
+      "passingRetryTestRun": 20866141,
+      "retryScope": "The clean later recurrence records three started requests, two completed receipts and a 2429ms active request. Its clean solo retry passes at the same commit. Neither receipt proves a causal fix or current full-source assurance.",
+      "existingDefectEvidenceRef": "EI-24890385770678975#comment:1164379",
+      "repairAdmissionAtReview": {
+        "observedAt": "2026-10-08T07:32:16.391Z",
+        "requestedItem": "EI-24890385770678975",
+        "claimResult": "fleet_scope_violation before mutation; spec revision 14",
+        "leaderRequestRef": "coord-send-cb51c77ed352d0390c735af9bff7f4ec620a5f3efbee8e2adac2d093f8fde748",
+        "placementOwner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
+        "next": "Admit or place the existing defect for stage-level request, cursor and identity diagnosis with a conventional recurrence guard. Preserve UNKNOWN pending verified causal repair; no timeout increase or passing-retry closure."
+      },
+      "completeImportGraphCurrentness": "unknown"
     },
     {
       "path": "packages/operator-core/lib/work-item-claim-lease-issue-cleanup.integration.test.ts",
@@ -2271,11 +2312,73 @@
     {
       "path": "packages/operator-core/lib/agent-tools/harness/__tests__/create-atomic-registry.integration.test.ts",
       "class": "unclassified",
-      "state": "open-unknown",
-      "item": "WI-10006170",
+      "state": "repaired-peer-focused",
+      "item": "WI-10006502",
       "lines": [
         15468
-      ]
+      ],
+      "registeredRepairItem": "WI-10006502",
+      "terminalRepairOwner": "su-7a94555d-4fbb-42b8-a39d-ff28fade9e0f",
+      "completionAuthority": "committed",
+      "repairStage": "inherited-committed-fixture-repair-qualified-historical-focused",
+      "diagnosis": "The archived original interleaved-create case timed out waiting for the registry write barrier. Existing WI-10006502 exposed the competing early create result: blueprint tool dependencies unmet because this isolated fixture omitted inherited coding providers. It supplies those providers through the maintained real catalog assembler, retains create/resolver/validator and both-slug assertions, and reports early refusals instead of waiting on an unreachable write.",
+      "originalAttribution": "The immutable D006 archive proves the timeout at line15468. Its underlying refusal is inferred from the same run-start committed fixture and the later owner's distinguishing reproduction; the archive itself contains no early-refusal diagnostic. Complete original loaded-source identity remains unknown.",
+      "peerTestRun": 20831098,
+      "passed": 4,
+      "skipped": 0,
+      "receiptExitCode": 0,
+      "receiptCommit": "202743ceba73f6107991c915144d47787a2e95f5",
+      "receiptTestBlob": "07cf045437d403fad164b281dac4d2c1f5c76d32",
+      "currentTestBlob": "07cf045437d403fad164b281dac4d2c1f5c76d32",
+      "testSha256": "44124fd08e097e6463700458904f94b2d6aadf64448d6330ec7321ad23802900",
+      "runStartCommittedTestSha256": "caaa63b330baef245c3a39b5dcd9daa0a5fc0fd57bc7d620ae45cf4447848e7b",
+      "namedTestEquality": "Current named bytes equal committed202743ceba and the terminal repair tree stamp for20831098. The run-start committed fixture differs; its diff adds provider bootstrap, competing early-result observation, cleanup and two refusal controls. This is not full original/current loaded-source equality.",
+      "latestLocalReceipt": {
+        "id": 20831098,
+        "filePath": "packages/operator-core/lib/agent-tools/harness/__tests__/create-atomic-registry.integration.test.ts",
+        "status": "pass",
+        "source": "local",
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": "papercusp",
+        "commitSha": "202743ceba73f6107991c915144d47787a2e95f5",
+        "worktreeDirty": false,
+        "isScratchConfig": false,
+        "root": "/tmp/papercusp-lint-as-committed-202743ceba-KPdLZ6",
+        "startedAt": "2026-10-06T08:06:17.532Z",
+        "finishedAt": "2026-10-06T08:06:53.626Z"
+      },
+      "focusedLog": "/tmp/cloud-tutorial-wi6502-6514-clean-202743ce.log",
+      "focusedLogSha256": "05809e1b801ff1056270d825a611dfbb63b55af11018c99b7c582cf16f4f804b",
+      "refusalLog": "/tmp/cloud-tutorial-wi6502-working-v2.log",
+      "refusalLogSha256": "d370bc04f58eb03f15e827a3c135df49220037aaad267211cdefc00b4f753bfb",
+      "workingPassLog": "/tmp/cloud-tutorial-wi6502-working-v3.log",
+      "workingPassLogSha256": "6a4185ce7edcadcb071b31bdfcfc4232b872554c75d373af3f8215a452da32e7",
+      "originalFailureRef": "local-state:verification-harness/goal-report-d006/1307302-b9c3dd76/affected-tests.log",
+      "originalFailureSha256": "43cf66489baf7cf665a9746d097375cffc7cdc6262014929c3cc398155b579f4",
+      "recurrenceGuard": "Conventional fixture tests race the registry-write signal against create completion, report duplicate-slug and unknown-child refusals, assert the exact missing child and unchanged registry/destination, and retain the original two interleaved creates plus duplicate protection. Cleanup releases and settles the parked create.",
+      "causalVerification": {
+        "hypothesis": "The isolated fixture lacks inherited coding blueprint tool providers; child empty arrays union with parent declarations. Create refuses before its write seam, while the test waits only for the unreachable write barrier.",
+        "alternativeHypothesis": "The production atomic registry write loses interleaved creates despite valid fixture prerequisites.",
+        "distinguishingTest": "Expose create completion as a competing first-write barrier outcome, retain the unmet-dependency baseline, then supply parent providers through the maintained real assembler and run the full suite including original interleaved creates and unknown-child refusal controls.",
+        "predictedObservations": {
+          "hypothesis": "Barrier race reports blueprint tool dependencies unmet before any registry write; maintained parent catalog permits original race and both new refusal controls.",
+          "alternativeHypothesis": "Valid parent catalog still reaches a write that loses one registry slug; the original interleaved-create case remains red."
+        },
+        "actualObservation": "Working-v2 exposed early blueprint dependency refusal with2PASS1FAIL. After real parent catalog bootstrap, working-v3 and exact clean committed suite each pass4/4, including both slugs surviving interleaving and exact unknown child refusal.",
+        "testResult": "Atomic4PASS/0skip, clean local non-scratch committed202743ceba. Combined four-suite log records18PASS/0skip and exit0. Historical focused fixture proof only.",
+        "testProcedure": "PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run lint:as-committed -- test:file --any --ref=202743ceba73f6107991c915144d47787a2e95f5 -- packages/operator-core/lib/agent-tools/harness/__tests__/create-atomic-registry.integration.test.ts packages/operator-core/lib/agent-tools/harness/__tests__/create-dep-gate.integration.test.ts packages/operator-core/lib/agent-tools/harness/__tests__/create-auto-install-deps.integration.test.ts packages/operator-core/lib/agent-tools/harness/__tests__/create-git-sync-seed.integration.test.ts",
+        "evidenceRefs": [
+          "WI-10006502#completion.rootCauseVerification",
+          "test-run:20829343",
+          "test-run:20829421",
+          "test-run:20831098",
+          "/tmp/cloud-tutorial-wi6502-working-v2.log",
+          "/tmp/cloud-tutorial-wi6502-working-v3.log",
+          "/tmp/cloud-tutorial-wi6502-6514-clean-202743ce.log"
+        ]
+      },
+      "completeImportGraphCurrentness": "unknown",
+      "receiptScope": "Stored clean as-committed local PASS, non-scratch, runGroupId null; exact current named test bytes match. Full current imports/environment and final D006 remain unverified. No terminal repair rerun or reclose."
     },
     {
       "path": "packages/operator-core/lib/code-intelligence/lsp-admission.integration.test.ts",
@@ -2755,7 +2858,7 @@
       "status": "partially-repaired-focused",
       "stateCounts": {
         "repaired-focused": 3,
-        "open-unknown": 1
+        "repaired-peer-focused": 1
       },
       "item": "WI-10006170",
       "owner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
@@ -2893,21 +2996,21 @@
         "causalVerification": "not-run; no controlled failed/passing fixture-lifecycle execution or source repair in this lane",
         "disposition": "Existing open federation issue includes this warning. Legacy EI-10726 is resolved without committed completion authority and describes hook/store errors, so it is not closure evidence for the pool-rebind warning. One of ten console-guard files investigated; no census state or population count changed."
       },
-      "countCorrection": "Four original console-guard rows retained: delegated-tasks, dock-layouts and sidecar-exec-lifetime are qualified historical repaired-focused; join-hive is repaired-peer-focused. Delegated schema controls are recorded on its row, and full original/import/environment equality remains unverified. Population33 focused,18 peer focused,73 UNKNOWN classifies historical dispositions, not current full-source readiness."
+      "countCorrection": "Four original console-guard rows retained: delegated-tasks, dock-layouts and sidecar-exec-lifetime are qualified historical repaired-focused; join-hive is repaired-peer-focused. Delegated schema controls are recorded on its row, and full original/import/environment equality remains unverified. Population33 focused,19 peer focused,72 UNKNOWN classifies historical dispositions, not current full-source readiness."
     },
     {
       "class": "unclassified",
       "count": 6,
       "status": "partially-repaired-focused",
       "stateCounts": {
-        "repaired-peer-focused": 1,
-        "open-unknown": 5
+        "repaired-peer-focused": 2,
+        "open-unknown": 4
       },
       "item": "WI-10006170",
       "owner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
       "scope": "diagnosis-and-placement",
-      "rootCause": "Hive-roster's historical demo/default membership rejection is covered by committed WI-10006194, real registered-Pot fixtures and a retained invalid-Pot guard. Five other original unclassified files remain unproved; original class membership is preserved.",
-      "next": "Retain roster20793752 clean focused5PASS/0skip and named-byte equality only. Diagnose the five remaining unclassified files from their exact archived errors and existing repair records; complete source/import/environment and final D006 assurance remain unverified."
+      "rootCause": "Hive-roster's historical membership fixture is covered by committed WI-10006194 and real Pot controls. Atomic-registry's unreachable barrier and missing inherited-provider fixture are covered by committed WI-10006502, retained interleaving assertions and early-refusal controls; attribution of the archived timeout is explicitly inferred. Four other original unclassified files remain unproved; original class membership is preserved.",
+      "next": "Retain roster20793752 clean focused5PASS/0skip and atomic20831098 clean focused4PASS/0skip with named-byte equality only. Diagnose the four remaining unclassified files from exact archived errors and existing repair records; complete source/import/environment and final D006 assurance remain unverified."
     },
     {
       "class": "plan-observation-fixture",
