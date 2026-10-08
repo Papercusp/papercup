@@ -44,6 +44,17 @@ beforeEach(() => {
 describe('voice:say', () => {
   const ctx = { workspaceId: 'reading-workspace', uiClientId: 'requesting-tab', role: 'operator', principal: { slug: 'reading-agent', workspaceId: 'reading-workspace', capabilities: new Set(['operator:read']) }, signal: new AbortController().signal };
 
+  it('documents the discoverable original-reading operation for ordinary agents', () => {
+    expect(sayTool.agentRoles).toContain('papercup');
+    expect(sayTool.agentRoles).toContain('papercup-deep');
+    expect(sayTool.description).toContain('read original authorized content');
+    expect(sayTool.guidance?.when).toContain("operation:'read'");
+    expect(sayTool.guidance?.when).toContain('content from an authorized reader');
+    expect(sayTool.guidance?.when).toContain('Read is lossless, not summarize');
+    expect(sayTool.guidance?.when).toContain("operation:'control'");
+    expect(sayTool.guidance?.notWhen).toContain('documents:read operation:summarize');
+  });
+
   it('reads authorized HTML into only the requesting output tab and reports source coverage', async () => {
     const result = await handler({ operation: 'read', content: { kind: 'html', html: '<p>FIRST</p><p>FINAL TAIL</p>', ref: 'provided:article', partial: true } } as never, ctx as never) as { structuredContent: unknown };
     expect(uiDispatch.handler).toHaveBeenCalledWith(expect.objectContaining({ client_id: 'requesting-tab', intent: 'voice_read', args: expect.objectContaining({ text: 'FIRST\n\nFINAL TAIL', allowCloud: false, sourceRefs: ['provided:article'], coverage: { complete: false, warnings: ['source-partial'] } }) }), ctx);
