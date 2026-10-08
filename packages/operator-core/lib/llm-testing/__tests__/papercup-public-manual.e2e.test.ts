@@ -2,21 +2,22 @@
  * Does the real public Papercup brain retrieve the manual for conceptual help,
  * and avoid presenting static documentation as current workspace evidence?
  * Uses the maintained HTTP/SSE target and the production PI provisioning seam.
- * Run explicitly on a verified current-build operator with OPERATOR_BASE_URL
- * and PAPERCUSP_TEST_PUBLIC_CHAT=1. Ordinary CI runs the transport/policy units.
+ * Run explicitly with OPERATOR_BASE_URL and PAPERCUSP_TEST_PUBLIC_CHAT=1.
+ * A disposable manual seed makes the suite own a current-source request host;
+ * without a seed, OPERATOR_BASE_URL selects an existing verified host.
  * The optional PAPERCUSP_TEST_PUBLIC_PORTAL=1 case also exercises typed input
  * on an isolated, immutable Portal candidate. Novice and final shipment
  * acceptance remain separate.
  */
 import { randomUUID } from 'node:crypto';
 import { execFile, spawn } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { closeSync, cpSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve, sep } from 'node:path';
 import { createServer } from 'node:net';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { endPiSession, startPiSession } from '@papercusp/agent-mcp/provisioning';
@@ -32,8 +33,9 @@ import { upsertWorkspaceHost, upsertWorkspaceHostConnection } from '../../worksp
 import { HostedSessionCookieCodec, HOSTED_SESSION_COOKIE, resolveHostedSession, revokeHostedSession, rotateHostedSession } from '../../auth/hosted-session';
 import { resolveHostedSecretRef } from '../../auth/hosted/secret-ref';
 import { withWorkspace } from '@papercusp/db-org';
+import { parseEnvFile } from '../../../../../apps/operator/scripts/systemd/portal-hosted-launcher';
 
-const baseUrl = process.env.OPERATOR_BASE_URL;
+let baseUrl = process.env.OPERATOR_BASE_URL;
 const enabled = Boolean(baseUrl) && process.env.PAPERCUSP_TEST_PUBLIC_CHAT === '1';
 let workspaceId: string;
 let principalSessionId: string | undefined;
@@ -44,7 +46,8 @@ let runtimeBuild: { sha: string; measuredAt: string };
 const runPtool = promisify(execFile);
 // Optional isolated bundle host: production's existing cwd/bundled-source resolver
 // reads this disposable directory. Never change the canonical or served manual.
-const manualFixtureDir = process.env.PAPERCUSP_TEST_PUBLIC_MANUAL_FIXTURE_DIR;
+let manualFixtureDir = process.env.PAPERCUSP_TEST_PUBLIC_MANUAL_FIXTURE_DIR;
+let ownedOperator: Awaited<ReturnType<typeof ownFixtureOperator>> | undefined;
 let originalFixtureFaq: string | undefined;
 // Hyphens survive the rendered Markdown boundary without backslash escaping.
 const publicCanary = 'PUBLIC-ORCHARD-CONTROL-7391';
@@ -190,6 +193,166 @@ async function freeLoopbackPort(): Promise<number> {
   return address.port;
 }
 
+async function stopFixtureChild(child: ReturnType<typeof spawn>) {
+  if (!child.pid || child.exitCode !== null || child.signalCode !== null) return;
+  await new Promise<void>((resolve) => {
+    const force = setTimeout(() => child.kill('SIGKILL'), 5000);
+    child.once('exit', () => { clearTimeout(force); resolve(); });
+    child.kill('SIGTERM');
+  });
+}
+
+/** The suite owns both the disposable cwd and its request host, in that order. */
+async function ownFixtureOperator(seedDir: string,
+  launch?: (root: string, port: number, logFd: number) => ReturnType<typeof spawn>) {
+  const seed = realpathSync(seedDir);
+  expect(seed.startsWith(`${realpathSync(tmpdir())}${sep}`), 'Fixture seed must be disposable').toBe(true);
+  // Validate before starting anything; a missing seed is not a reason to serve
+  // the canonical manual and accidentally pass the public/private controls.
+  await createPublicManualSource(seed).revision();
+  const root = mkdtempSync(join(tmpdir(), 'public-manual-owned-host-'));
+  const contentRoot = join(root, 'apps/papercusp-docs/src/content/docs');
+  const evidence = join(llmBatteryEvidenceRoot(), `public-manual-host-${randomUUID()}`);
+  mkdirSync(evidence, { recursive: true });
+  const logFile = join(evidence, 'operator.log');
+  const logFd = openSync(logFile, 'a', 0o600);
+  let child: ReturnType<typeof spawn> | undefined;
+  let closed = false;
+  let spawnError: Error | undefined;
+  const close = async () => {
+    if (closed) return;
+    closed = true;
+    try { if (child) await stopFixtureChild(child); }
+    finally { closeSync(logFd); rmSync(root, { recursive: true, force: true }); }
+  };
+  try {
+    cpSync(seed, contentRoot, { recursive: true });
+    const port = await freeLoopbackPort();
+    const origin = `http://127.0.0.1:${port}`;
+    if (launch) child = launch(root, port, logFd);
+    else {
+      const repoRoot = resolve(import.meta.dirname, '../../../../..');
+      const config = parseEnvFile(readFileSync(join(repoRoot, 'apps/operator/.env.local'), 'utf8'));
+      const env: NodeJS.ProcessEnv = { ...config, ...process.env,
+        PAPERCUSP_PG_SQL_DIR: join(repoRoot, 'libs/papercusp/libs/db/sql'),
+        PAPERCUSP_INTEGRATION_ROOT: repoRoot, PAPERCUSP_HONO_PORT: String(port),
+        PAPERCUSP_BIND_HOST: '127.0.0.1', PAPERCUSP_BACKGROUND_WORKERS: '0',
+        PAPERCUSP_UTILITY_HOST: '1', PAPERCUSP_CODEX_GATEWAY: '1', PAPERCUSP_API_CLUSTER_WORKERS: '1',
+        PAPERCUSP_OPERATOR_URL: origin, MALLOC_ARENA_MAX: '2' };
+      // This is a real request host, not a Vitest worker. Keep its maintained
+      // shutdown/watchdog behavior and suppress only the test-worker markers.
+      for (const key of Object.keys(env)) if (/^VITEST(?:_|$)/.test(key)) delete env[key];
+      const entry = pathToFileURL(join(repoRoot, 'apps/operator/bin/hono-host.ts')).href;
+      // Record only non-secret startup controls. The first marker executes before
+      // the operator import graph, so a silent readiness failure has a measured
+      // boundary between the launcher and the application bootstrap.
+      writeFileSync(join(evidence, 'launch.json'), JSON.stringify({
+        pid: process.pid, root, origin, entry,
+        controls: Object.fromEntries(['NODE_OPTIONS', 'NODE_ENV', 'TMPDIR', 'TSX_TSCONFIG_PATH',
+          'PAPERCUSP_CLUSTER_WORKERS', 'PAPERCUSP_API_CLUSTER_WORKERS',
+          'PAPERCUSP_PGBOUNCER', 'PAPERCUSP_SKIP_PG_DISCOVERY'].map(key => [key, env[key] ?? null])),
+      }, null, 2), { mode: 0o600 });
+      child = spawn(join(repoRoot, 'node_modules/.bin/tsx'), ['--tsconfig',
+        join(repoRoot, 'apps/operator/tsconfig.json'), '--eval',
+        `console.error('MANUAL_FIXTURE_IMPORT_START'); import(${JSON.stringify(entry)}).then(() => console.error('MANUAL_FIXTURE_IMPORT_DONE')).catch(error => { console.error(error); process.exitCode = 1; });`],
+      { cwd: root, env, stdio: ['ignore', logFd, logFd] });
+    }
+    child.on('error', (error) => { spawnError = error; });
+    const assertAlive = () => {
+      if (spawnError) throw new Error(`manual_fixture_spawn_failed:${spawnError.message}; see ${logFile}`);
+      if (child!.exitCode !== null || child!.signalCode !== null)
+        throw new Error(`manual_fixture_exited:${child!.exitCode ?? child!.signalCode}; see ${logFile}`);
+      // Detect a deleted cwd before sending a paid/model/browser request.
+      realpathSync(contentRoot);
+      readFileSync(join(contentRoot, 'faq.mdx'));
+    };
+    child.once('exit', (code, signal) => {
+      writeFileSync(join(evidence, 'exit.json'), JSON.stringify({ code, signal, pid: child!.pid,
+        root, stoppedBySuite: closed, measuredAt: new Date().toISOString() }), { mode: 0o600 });
+    });
+    const deadline = Date.now() + 45_000;
+    let ready = false;
+    // expect.poll is test-only in Vitest. This helper also runs from beforeAll,
+    // and a dead child must fail immediately rather than retry until a timeout.
+    while (Date.now() < deadline) {
+      assertAlive();
+      try { ready = (await fetch(new URL('/api/health', origin), { signal: AbortSignal.timeout(2000) })).ok; }
+      catch { /* the child may still be starting */ }
+      if (ready) break;
+      await new Promise<void>((resolve) => setTimeout(resolve, 500));
+    }
+    assertAlive();
+    if (!ready) throw new Error(`manual_fixture_readiness_timeout; see ${logFile}`);
+    return { baseUrl: origin, manualDir: contentRoot, root, child, assertAlive, close };
+  } catch (error) { await close(); throw error; }
+}
+
+describe('public manual owned host lifecycle', () => {
+  const launch = (root: string, port: number, logFd: number) => spawn(process.execPath, ['-e',
+    "require('node:http').createServer((req,res)=>res.end(JSON.stringify({sha:'1234567'}))).listen(Number(process.env.FIXTURE_PORT),'127.0.0.1')"],
+  { cwd: root, env: { ...process.env, FIXTURE_PORT: String(port) }, stdio: ['ignore', logFd, logFd] });
+
+  it('keeps its copied fixture alive through readiness and reaps the host before removing it', async () => {
+    const seed = mkdtempSync(join(tmpdir(), 'public-manual-lifetime-control-'));
+    writeFileSync(join(seed, 'faq.mdx'), fixtureFaq(publicCanary));
+    const host = await ownFixtureOperator(seed, launch);
+    try {
+      rmSync(seed, { recursive: true, force: true });
+      host.assertAlive();
+      expect(readFileSync(join(host.manualDir, 'faq.mdx'), 'utf8')).toContain(publicCanary);
+      expect((await fetch(new URL('/api/health', host.baseUrl))).ok).toBe(true);
+    } finally { await host.close(); rmSync(seed, { recursive: true, force: true }); }
+    expect(host.child.exitCode !== null || host.child.signalCode !== null).toBe(true);
+    expect(() => realpathSync(host.root)).toThrow();
+    await host.close(); // teardown may also run after a failed suite hook
+  }, 15_000);
+
+  it('fails the pre-request check if its host exits or its copied cwd disappears', async () => {
+    const seed = mkdtempSync(join(tmpdir(), 'public-manual-lifetime-control-'));
+    writeFileSync(join(seed, 'faq.mdx'), fixtureFaq(publicCanary));
+    const host = await ownFixtureOperator(seed, launch);
+    try {
+      rmSync(host.root, { recursive: true, force: true });
+      expect(() => host.assertAlive()).toThrow();
+      await stopFixtureChild(host.child);
+      expect(() => host.assertAlive()).toThrow(/manual_fixture_exited/);
+    } finally { await host.close(); rmSync(seed, { recursive: true, force: true }); }
+  }, 15_000);
+
+  it('rejects a startup exit and removes its owned cwd instead of waiting for health', async () => {
+    const seed = mkdtempSync(join(tmpdir(), 'public-manual-lifetime-control-'));
+    writeFileSync(join(seed, 'faq.mdx'), fixtureFaq(publicCanary));
+    let failedRoot: string | undefined;
+    try {
+      await expect(ownFixtureOperator(seed, (root, _port, logFd) => {
+        failedRoot = root;
+        return spawn(process.execPath, ['-e', 'process.exit(9)'],
+          { cwd: root, stdio: ['ignore', logFd, logFd] });
+      })).rejects.toThrow(/manual_fixture_exited:9/);
+      expect(failedRoot).toBeTruthy();
+      expect(() => realpathSync(failedRoot!)).toThrow();
+    } finally { rmSync(seed, { recursive: true, force: true }); }
+  }, 5000);
+
+  describe('readiness from the real suite-hook lifecycle', () => {
+    let seed: string;
+    let host: Awaited<ReturnType<typeof ownFixtureOperator>> | undefined;
+    beforeAll(async () => {
+      seed = mkdtempSync(join(tmpdir(), 'public-manual-hook-control-'));
+      writeFileSync(join(seed, 'faq.mdx'), fixtureFaq(publicCanary));
+      host = await ownFixtureOperator(seed, launch);
+    });
+    afterAll(async () => {
+      try { await host?.close(); }
+      finally { if (seed) rmSync(seed, { recursive: true, force: true }); }
+    });
+    it('starts and checks the fixture before the test body runs', async () => {
+      host!.assertAlive();
+      expect((await fetch(new URL('/api/health', host!.baseUrl))).ok).toBe(true);
+    });
+  });
+});
+
 function publicPortalFrames(stream: string): Array<{ event: string; data: Record<string, unknown> }> {
   return stream.replaceAll('\r\n', '\n').split('\n\n').filter(Boolean).map((frame) => {
     const lines = frame.split('\n');
@@ -220,6 +383,11 @@ async function recordedCase(id: string, question: string) {
 
 describe.runIf(enabled)('real public Papercup manual behavior', () => {
   beforeAll(async () => {
+    if (manualFixtureDir) {
+      ownedOperator = await ownFixtureOperator(manualFixtureDir);
+      baseUrl = ownedOperator.baseUrl;
+      manualFixtureDir = ownedOperator.manualDir;
+    }
     const health = await fetch(new URL('/api/health', baseUrl), { signal: AbortSignal.timeout(10_000) });
     expect(health.ok).toBe(true);
     const { sha } = await health.json();
@@ -231,9 +399,12 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
         'Only a disposable temporary bundle may be mutated').toBe(true);
       originalFixtureFaq = readFileSync(join(manualFixtureDir, 'faq.mdx'), 'utf8');
     }
-  });
+  }, 60_000);
+
+  afterAll(async () => { await ownedOperator?.close(); });
 
   beforeEach(async () => {
+    ownedOperator?.assertAlive();
     workspaceId = `public-chat-manual-${randomUUID()}`;
     await mutateFixtureRegistry(() => {
       const before = readRegistry();
@@ -250,6 +421,7 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
       expiresAt: new Date(Date.now() + 15 * 60_000),
     });
     principalBearer = principal.bearer;
+    if (manualFixtureDir) await verifyFixtureBundle();
     const conversation = await getOrCreateActiveConversation(workspaceId);
     chat = await new OperatorTarget({
       baseUrl, role: 'papercup', hostTrust: 'public', workspaceId,
