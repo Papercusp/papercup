@@ -904,6 +904,42 @@ describe('gitPipelinePosition (P-002)', () => {
       expect(res.positions.committedLocal).toBe(true);
     });
 
+    it('reads eligible marker refs concurrently while preserving each correction', async () => {
+      const refs = ['origin/main', 'deployedsha0'] as const;
+      const base = fakeGit({
+        pathCommit: PEER,
+        contains: { HEAD: [PEER], 'origin/staging': [PEER], 'origin/main': [], deployedsha0: [] },
+        newestInRef: { 'origin/main': MINE, deployedsha0: MINE },
+        blobAtRef: Object.fromEntries(refs.map((ref) => [ref, 'function exactlyOnceHere() {}\n'])),
+        parentBlobAtTarget: 'empty baseline\n',
+        parentBlobs: { [`${MINE}~1`]: 'empty baseline\n' },
+      });
+      let activeMarkerRefReads = 0;
+      let maxConcurrentMarkerRefReads = 0;
+      const git: GitRunner = async (repo, args) => {
+        const markerRef = args[0] === 'rev-parse' ? args[2]?.replace(/\^\{commit\}$/, '') : undefined;
+        if (markerRef && refs.includes(markerRef as (typeof refs)[number])) {
+          activeMarkerRefReads += 1;
+          maxConcurrentMarkerRefReads = Math.max(maxConcurrentMarkerRefReads, activeMarkerRefReads);
+          await new Promise((resolve) => setTimeout(resolve, 5));
+          activeMarkerRefReads -= 1;
+        }
+        return base(repo, args);
+      };
+
+      const res = await gitPipelinePosition(
+        { path: P, marker: 'exactlyOnceHere' },
+        { git, loadDeploy: async () => deploy(), loadSnapshot: async () => snap() },
+      );
+
+      expect(maxConcurrentMarkerRefReads).toBe(2);
+      expect(res.positions).toMatchObject({ onStaging: true, inMain: true, deployed: true });
+      expect(res.positionsMarker).toMatchObject({
+        inMain: { present: true, count: 1 },
+        deployed: { present: true, count: 1 },
+      });
+    });
+
     it('a MARKER present in the ref CORRECTS the leg to true, in the result and the summary', async () => {
       const git = fakeGit({
         pathCommit: PEER,

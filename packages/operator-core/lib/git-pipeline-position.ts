@@ -5910,9 +5910,43 @@ export async function gitPipelinePosition(
         // before the current path tip. A later same-path commit may make that
         // baseline already contain the caller's marker; each ref can then fall back
         // to its own earlier path commit's parent below.
-        const targetMarkerBaseline = marker
-          ? await markerAtCommit(gitReadForMarker, `${targetSha}~1`, relPath, marker)
-          : null;
+        type MarkerLeg = 'onStaging' | 'inMain' | 'deployed';
+        type MarkerLegRead = {
+          earlier: Awaited<ReturnType<typeof newestTouchingInRef>>;
+          verdict: MarkerContainment;
+          refInternalBaselineSha: string | null;
+          refInternalBaseline: MarkerContainment | null;
+        };
+        const markerLegsToRead = legs.flatMap(([leg, ref]) =>
+          ref && !positions[leg] && !positionsUnknown.includes(leg) ? [{ leg, ref }] : [],
+        );
+        const markerReadByLeg = new Map<MarkerLeg, MarkerLegRead>();
+        let targetMarkerBaseline: MarkerContainment | null = null;
+        if (marker && markerLegsToRead.length > 0) {
+          // EI-25387349658325956: these are at most three fixed release refs. Read each
+          // ref's marker verdict and path tip together, then its ref-local baseline,
+          // concurrently across refs. The old loop serialized those independent chains;
+          // a marker-aware call measured 55s while the same call without a marker took 17s.
+          const [baseline, markerReadEntries] = await Promise.all([
+            markerAtCommit(gitReadForMarker, `${targetSha}~1`, relPath, marker),
+            Promise.all(
+              markerLegsToRead.map(async ({ leg, ref }) => {
+                const [earlier, verdict] = await Promise.all([
+                  newestTouchingInRef(git, root, ref, relPath),
+                  markerAtCommit(gitReadForMarker, ref, relPath, marker),
+                ]);
+                const refInternalBaselineSha =
+                  earlier?.sha && earlier.sha !== targetSha ? `${earlier.sha}~1` : null;
+                const refInternalBaseline: MarkerContainment | null = refInternalBaselineSha
+                  ? await markerAtCommit(gitReadForMarker, refInternalBaselineSha, relPath, marker)
+                  : null;
+                return [leg, { earlier, verdict, refInternalBaselineSha, refInternalBaseline }] as const;
+              }),
+            ),
+          ]);
+          targetMarkerBaseline = baseline;
+          for (const [leg, read] of markerReadEntries) markerReadByLeg.set(leg, read);
+        }
         const targetMarkerBaselineCount =
           typeof targetMarkerBaseline?.count === 'number' ? targetMarkerBaseline.count : null;
 
@@ -5926,14 +5960,17 @@ export async function gitPipelinePosition(
           // with a confident wrong story about why.
           if (positionsUnknown.includes(leg)) continue;
 
-          // Read this before the marker branch so a later same-path commit can supply
-          // the candidate's own parent as a second, change-specific baseline. The
-          // target's parent is no longer the caller's pre-change state once a peer has
-          // committed to the path after the caller's change.
-          const earlier = await newestTouchingInRef(git, root, ref, relPath);
+          const markerRead = marker ? markerReadByLeg.get(leg) : undefined;
+          if (marker && !markerRead) {
+            notes.push(`${leg}: marker reads did not settle; no marker correction was applied.`);
+            continue;
+          }
+          // The marker path pre-read this with its other ref reads. Without a marker,
+          // keep the original single read here.
+          const earlier = markerRead ? markerRead.earlier : await newestTouchingInRef(git, root, ref, relPath);
 
-          if (marker) {
-            const verdict = await markerAtCommit(gitReadForMarker, ref, relPath, marker);
+          if (marker && markerRead) {
+            const verdict = markerRead.verdict;
             markerLegs[leg] = verdict;
             /* ------------------------------------------------------------------ *
              * EI-21443291930356119 — the two available baselines answer DIFFERENT
@@ -5959,11 +5996,7 @@ export async function gitPipelinePosition(
              * So: measure the ref-internal baseline whenever one exists and prefer
              * it; let the target-parent baseline settle the ADDED direction alone.
              * ------------------------------------------------------------------ */
-            const refInternalBaselineSha =
-              earlier?.sha && earlier.sha !== targetSha ? `${earlier.sha}~1` : null;
-            const refInternalBaseline: MarkerContainment | null = refInternalBaselineSha
-              ? await markerAtCommit(gitReadForMarker, refInternalBaselineSha, relPath, marker)
-              : null;
+            const { refInternalBaselineSha, refInternalBaseline } = markerRead;
             // `markerNetChange` owns the two rules a strict count comparison needs —
             // never bare presence, and never a count from a tree that does not have
             // the file at all. It is unit-tested against a deliberately-wrong control;
