@@ -277,6 +277,7 @@ async function validateValueForDatatype(
 export type TypedPropertyWriteResult = { ok: false; code: 'not_found' } | TypedPropertyMutationResult;
 
 export interface TypedPropertyWriteArgs {
+  reason?: string;
   workspaceId: string;
   property: string;
   value: unknown;
@@ -317,6 +318,7 @@ async function runPreparedMutation(
     confirmShrink: args.confirmShrink,
     provenance: args.provenance,
     actorId: args.actorId,
+    reason: args.reason,
     validate: () => (resolved === null || resolved.ok ? { ok: true } : { ok: false, issues: resolved.issues }),
   });
 }
