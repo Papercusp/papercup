@@ -28,11 +28,13 @@ import {
   closeMeteredInvocation,
   declareMeter,
   openMeteredInvocation,
+  verifySellerReceiptAuthority,
   type BillableUnit,
   type MeterDeclaration,
   type MeteredRefusalCode,
   type PerUseTermsInput,
   type CloseMeteredInvocationInput,
+  type SellerReceiptAuthority,
 } from '../p2p/metered-invocation';
 import type { CumulativePaymentVoucher, MicrochargeChannel } from '../p2p/microcharge';
 import { resolveCupboardBaseUrl } from './base-url';
@@ -209,6 +211,7 @@ export interface HostedPerUseOffer {
   readonly active: boolean;
   readonly productActive: boolean;
   readonly terms: PerUseTermsInput;
+  readonly receiptAuthority?: SellerReceiptAuthority;
 }
 
 export async function readHostedPerUseOffers(
@@ -231,8 +234,14 @@ export async function readHostedPerUseOffers(
         typeof terms.splitManifestHash !== 'string' || !declareMeter(terms).ok) {
       return fail('invalid_catalog', 'hosted per-use identity or terms are malformed', 200, 'hosted-door');
     }
+    const authority = o.receiptAuthority as SellerReceiptAuthority | undefined;
+    if (authority !== undefined && !verifySellerReceiptAuthority({ seller: o.creatorId as string,
+        offerId: o.offerId as string, productId: o.productId as string, skuRef: o.skuRef as string }, authority)) {
+      return fail('invalid_catalog', 'hosted seller receipt authority does not bind this exact offer', 200, 'hosted-door');
+    }
     offers.push({ offerId: o.offerId as string, productId: o.productId as string, skuRef: o.skuRef as string,
-      creatorId: o.creatorId as string, active: o.active, productActive: o.productActive, terms: { ...terms } });
+      creatorId: o.creatorId as string, active: o.active, productActive: o.productActive, terms: { ...terms },
+      ...(authority ? { receiptAuthority: { pubkeyBase64: authority.pubkeyBase64, proof: authority.proof } } : {}) });
   }
   return { ok: true, offers };
 }
