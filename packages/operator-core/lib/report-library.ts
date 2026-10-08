@@ -92,11 +92,13 @@ export interface ReportOrigin {
   authorOwnerId?: string | null;
   /** A session/turn reference for the write. */
   authorSessionRef?: string | null;
+  /** Server-verified retry namespace. Never accepted from publication args. */
+  requestScope?: string | null;
 }
 
 export interface PublishReportInput {
   workspaceId: string;
-  /** Retry identity scoped to workspace and server-stamped author. */
+  /** Retry identity scoped to workspace and server-verified publication origin. */
   requestKey?: string;
   title: string;
   summary?: string;
@@ -338,6 +340,7 @@ export async function publishReport(
   if (requestKey !== null && (!requestKey || requestKey.length > 200)) {
     throw new Error('invalid report request_key: expected 1–200 characters');
   }
+  const requestScope = origin.requestScope ?? `author:${origin.authorOwnerId ?? ''}`;
   const contentIdentity = (r: ReportRecord) => JSON.stringify([
     r.title, r.summary, r.bodyMd, r.kind, r.visibility, r.subject,
     r.supersedesReportId, r.source, [...r.tags].sort(), r.goalOwnerReport,
@@ -347,12 +350,12 @@ export async function publishReport(
     if (requestKey !== null) {
       // Serialize check+insert before inspecting the key. The unique index also
       // guards writers outside this function; a retry never becomes a new row.
-      const namespace = JSON.stringify([input.workspaceId, origin.authorOwnerId ?? '', requestKey]);
+      const namespace = JSON.stringify([input.workspaceId, origin.requestScope ?? origin.authorOwnerId ?? '', requestKey]);
       await connection`SELECT pg_advisory_xact_lock(hashtextextended(${namespace}, 0))`;
       const [existing] = await connection<DbRow[]>`
         SELECT ${connection.unsafe(SELECT_COLS)} FROM harness_shared.report_library
         WHERE workspace_id = ${input.workspaceId}
-          AND COALESCE(author_owner_id, '') = ${origin.authorOwnerId ?? ''}
+          AND COALESCE(request_scope, 'author:' || COALESCE(author_owner_id, '')) = ${requestScope}
           AND request_key = ${requestKey}`;
       if (existing) {
         const saved = mapRow(existing);
@@ -377,13 +380,14 @@ export async function publishReport(
         workspace_id, report_id, title, summary, body_md, kind,
         subject_kind, subject_ref, subject_label,
         origin_harness_slug, author_owner_id, author_session_ref,
-        visibility, supersedes_report_id, lineage_id, source, tags, goal_owner_report, request_key
+        visibility, supersedes_report_id, lineage_id, source, tags, goal_owner_report, request_key, request_scope
       ) VALUES (
         ${input.workspaceId}, ${reportId}, ${title}, ${input.summary?.trim() ?? ''}, ${bodyMd}, ${kind},
         ${subject.kind}, ${subject.ref}, ${subject.label},
         ${origin.harnessSlug ?? null}, ${origin.authorOwnerId ?? null}, ${origin.authorSessionRef ?? null},
         ${visibility}, ${supersedesId}, ${lineageId}, ${input.source ?? 'agent'}, ${input.tags ?? []}::text[],
-        ${snapshot === null ? null : connection.json(snapshot as unknown as postgres.JSONValue)}, ${requestKey}
+        ${snapshot === null ? null : connection.json(snapshot as unknown as postgres.JSONValue)}, ${requestKey},
+        ${origin.requestScope ?? null}
       ) RETURNING ${connection.unsafe(SELECT_COLS)}`;
     return mapRow(row);
   }

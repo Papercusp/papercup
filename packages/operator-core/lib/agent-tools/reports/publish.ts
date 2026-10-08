@@ -14,9 +14,12 @@
  * Server-only.
  */
 import { z } from 'zod';
+import { createHash } from 'node:crypto';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { publishReportWithEffects } from '../../report-publication';
+import { readActiveOperationWorkerClaimBinding, matchOperationWorkerClaim } from '../../blueprint/operation-worker-binding';
+import { getWorkItem } from '../../work-items';
 import {
   reportsLibraryDisabled,
   resolveWorkspaceId,
@@ -78,7 +81,7 @@ export default defineTool({
   // Any agent session may publish — the library is the fleet's shared output surface.
   agentRoles: [...AGENT_ROLES],
   args: z.object({
-    request_key: z.string().trim().min(1).max(200).optional().describe('Retry key within your workspace and author identity. Identical retries return the original report; changed content is request_key_conflict.'),
+    request_key: z.string().trim().min(1).max(200).optional().describe('Retry key within your workspace and author identity, or your host-verified accepted operation across worker retries. Identical retries return the original report; changed content is request_key_conflict.'),
     title: z.string().min(1).max(500).describe('one line; this is what the library list shows'),
     summary: z.string().max(4000).optional().describe('a short abstract shown under the title'),
     body_md: z.string().optional().describe('the report itself, markdown; mermaid fences allowed; ≤512KB'),
@@ -103,6 +106,27 @@ export default defineTool({
 
     let publication;
     try {
+      const origin = stampOrigin(ctx);
+      if (args.request_key !== undefined && origin.authorOwnerId) {
+        const active = await readActiveOperationWorkerClaimBinding(workspaceId, origin.authorOwnerId);
+        if (active.status === 'unavailable') {
+          return { data: { ok: false, error: 'operation_binding_unavailable', message: active.reason } };
+        }
+        if (active.status === 'bound') {
+          const item = await getWorkItem(active.binding.workItemId, active.binding.storageHarnessSlug);
+          const match = item ? matchOperationWorkerClaim(active, item) : null;
+          if (!match?.allowed || item?.assignee !== origin.authorOwnerId) {
+            return { data: { ok: false, error: 'operation_binding_mismatch',
+              message: match && !match.allowed ? match.reason : 'operation worker must hold its accepted work item' } };
+          }
+          // The canonical work-item plus immutable accepted pin survives worker
+          // retries. The returned report retains the FIRST author's provenance.
+          origin.requestScope = `operation:${createHash('sha256').update(JSON.stringify([
+            active.binding.harnessSlug, active.binding.workItemId, active.binding.operationId,
+            active.binding.specificationRevision, active.binding.pin,
+          ])).digest('hex')}`;
+        }
+      }
       publication = await publishReportWithEffects(
         sql,
         {
@@ -119,7 +143,7 @@ export default defineTool({
           tags: args.tags,
         },
         // Axis 1, server-side. Never from `args` — see stampOrigin.
-        stampOrigin(ctx),
+        origin,
         message => ctx.log(message),
       );
     } catch (err) {

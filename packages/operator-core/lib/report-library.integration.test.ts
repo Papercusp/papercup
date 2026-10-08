@@ -61,6 +61,7 @@ const reportMigration = join(
 );
 const snapshotMigration = join(dirname(reportMigration), '1353-report-library-goal-snapshot.sql');
 const requestKeyMigration = join(dirname(reportMigration), '1419-report-library-request-key.sql');
+const requestScopeMigration = join(dirname(reportMigration), '1420-report-library-operation-request-scope.sql');
 
 // Keep the actual presence store, election and liveness oracle. Only route its
 // connection to this suite's disposable migrated database, like the store reads.
@@ -129,6 +130,7 @@ describe('report_library store (real PG)', () => {
     // Exercise the draft before arming, and the armed production file afterward.
     await db.adminSql.unsafe(readFileSync(existsSync(snapshotMigration) ? snapshotMigration : `${snapshotMigration}.DRAFT`, 'utf8')).simple();
     await db.adminSql.unsafe(readFileSync(existsSync(requestKeyMigration) ? requestKeyMigration : `${requestKeyMigration}.DRAFT`, 'utf8')).simple();
+    await db.adminSql.unsafe(readFileSync(existsSync(requestScopeMigration) ? requestScopeMigration : `${requestScopeMigration}.DRAFT`, 'utf8')).simple();
   }, 180_000);
 
   afterAll(async () => {
@@ -158,6 +160,46 @@ describe('report_library store (real PG)', () => {
     }
     expect((await getReport(db.adminSql, workspaceId, original.reportId))?.bodyMd).toBe('original');
     expect(await listReportLineage(db.adminSql, workspaceId, original.lineageId)).toHaveLength(1);
+  });
+
+  it('deduplicates concurrent operation retries across authors without changing provenance or ordinary key isolation', async () => {
+    const workspaceId = nextWs();
+    const input = { workspaceId, title: 'Native edition', bodyMd: 'verified findings', requestKey: 'edition' };
+    const first = await publishReport(db.adminSql, input, { ...AGENT_1, requestScope: 'operation:receipt-1' });
+    const retries = await Promise.all(['retry-a', 'retry-b'].map(authorOwnerId =>
+      publishReport(db.adminSql, input, { ...AGENT_1, authorOwnerId, authorSessionRef: authorOwnerId,
+        requestScope: 'operation:receipt-1' })));
+    expect(retries.map(r => r.reportId)).toEqual([first.reportId, first.reportId]);
+    expect(retries.map(r => r.origin)).toEqual([first.origin, first.origin]);
+    const ordinary = await publishReport(db.adminSql, input, AGENT_1);
+    const anotherOperation = await publishReport(db.adminSql, input, { ...AGENT_1, requestScope: 'operation:receipt-2' });
+    const anotherWorkspace = await publishReport(db.adminSql, { ...input, workspaceId: nextWs() },
+      { ...AGENT_1, requestScope: 'operation:receipt-1' });
+    expect(new Set([first, ordinary, anotherOperation, anotherWorkspace].map(r => r.reportId)).size).toBe(4);
+    await expect(publishReport(db.adminSql, { ...input, bodyMd: 'changed findings' },
+      { ...AGENT_1, authorOwnerId: 'retry-c', requestScope: 'operation:receipt-1' }))
+      .rejects.toBeInstanceOf(ReportRequestConflictError);
+    expect(await getReport(db.adminSql, workspaceId, first.reportId, { ownerId: 'unrelated-agent' })).toBeNull();
+  });
+
+  it('serializes first publication across different native workers and preserves legacy writer uniqueness after migration', async () => {
+    const workspaceId = nextWs();
+    const input = { workspaceId, title: 'Native first edition', requestKey: 'one-run' };
+    const reports = await Promise.all(['native-a', 'native-b'].map(authorOwnerId =>
+      publishReport(db.adminSql, input, { ...AGENT_1, authorOwnerId, authorSessionRef: authorOwnerId,
+        requestScope: 'operation:accepted-receipt' })));
+    expect(reports[1].reportId).toBe(reports[0].reportId);
+    expect(reports[1].origin).toEqual(reports[0].origin);
+    const legacy = await publishReport(db.adminSql, input, AGENT_1);
+    // This is the exact old INSERT shape: request_scope is omitted. It must
+    // still be covered by the replacement index, without rewriting old rows.
+    await expect(db.adminSql`INSERT INTO harness_shared.report_library
+      (workspace_id, report_id, title, lineage_id, author_owner_id, request_key)
+      VALUES (${workspaceId}, 'rpt_legacy_collision', 'Legacy retry', 'rpt_legacy_collision',
+        ${AGENT_1.authorOwnerId ?? null}, ${input.requestKey})`).rejects.toMatchObject({ code: '23505' });
+    expect((await publishReport(db.adminSql, input, AGENT_1)).reportId).toBe(legacy.reportId);
+    await db.adminSql.unsafe(readFileSync(existsSync(requestScopeMigration) ? requestScopeMigration : `${requestScopeMigration}.DRAFT`, 'utf8')).simple();
+    expect((await getReport(db.adminSql, workspaceId, legacy.reportId))?.origin).toEqual(legacy.origin);
   });
 
   it('scopes retry keys to author and workspace and keeps dated editions out of correction lineage', async () => {
