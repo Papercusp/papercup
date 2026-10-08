@@ -65,6 +65,46 @@ fixture. The temporary host was stopped afterward. The earlier failing matrix
 remains above as the counterexample; this focused pass does not establish
 portal, deep-model, novice or released-artifact acceptance.
 
+## Disposable-host preflight
+
+The three additional maintained cases use a temporary public bundle for hostile
+retrieved content, an actual missing bundle and changed revisions. The suite
+checks the served revision through the actual SDK mount before model calls,
+retains each answer before assertions, and restores the bundle and registry.
+
+Two startup failures have been observed before those cases ran: a fixture cwd
+without an explicit migration directory kept HTTP closed, and a subsequent
+current-source import failed at `result-door.ts:595`. Neither reached a model.
+Before another launch, run these checks from the canonical staging tree, with
+`PUBLIC_MANUAL_FIXTURE_ROOT` set to the existing disposable fixture root:
+
+Create that root with `mkdtempSync` beneath the directory returned by the
+maintained `ensurePapercuspTmpdir()` helper in
+`libs/test-config/src/tmpdir-guard.ts`. Preserve its `TMPDIR` in both the host
+and test environments. The test launcher applies this same policy before
+Vitest starts. A fixture created beneath bare `/tmp` failed the suite's
+containment check when the runner selected `/tmp/pcv`; that attempt executed
+zero model cases. Keep the containment assertion.
+
+```bash
+PUBLIC_MANUAL_REPO_ROOT="$(git rev-parse --show-toplevel)"
+export PAPERCUSP_PG_SQL_DIR="$PUBLIC_MANUAL_REPO_ROOT/libs/papercusp/libs/db/sql"
+test -d "$PAPERCUSP_PG_SQL_DIR" || exit 2
+test -d "$PUBLIC_MANUAL_FIXTURE_ROOT/apps/papercusp-docs/src/content/docs" || exit 2
+(
+  cd "$PUBLIC_MANUAL_FIXTURE_ROOT" || exit 2
+  "$PUBLIC_MANUAL_REPO_ROOT/node_modules/.bin/tsx" \
+    --tsconfig "$PUBLIC_MANUAL_REPO_ROOT/apps/operator/tsconfig.json" \
+    "$PUBLIC_MANUAL_REPO_ROOT/apps/operator/bin/hono-host.ts" \
+    --papercusp-import-smoke
+) || exit 2
+```
+
+Keep `PAPERCUSP_PG_SQL_DIR` in the request-only host's launch environment.
+Require `PAPERCUSP_HOST_IMPORT_SMOKE_OK`, then successful `/api/health` and
+the suite's SDK revision check. A failed preflight is a startup failure, with
+zero model cases executed. Retain its diagnostic before retrying.
+
 ## Outstanding acceptance
 
 The following remain unobserved here: the actual portal browser journey and
