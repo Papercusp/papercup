@@ -2192,14 +2192,14 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
                         `so those fields were never serialized either.`
                       : '')
                   : `The result was structurally bounded, but its spill write failed ` +
-                  `(${spillErrorCode && spillErrorCode !== 'unknown error' ? spillErrorCode : spillErrorSummary ?? 'unknown error'}), ` +
-                  `so the omitted bytes are NOT recoverable and no ` +
-                  `spill path exists. Re-call ${opts.toolName} with narrower arguments or a projection.` +
-                  (upstreamProjection
-                    ? ` It was ALSO tier-projected upstream (omittedCount=${upstreamProjection.omittedCount}), ` +
-                      `so those fields were never serialized either.`
-                    : '') +
-                  buildProjectionHint(textItems, opts.toolName, bodyShape),
+                    `(${spillErrorCode && spillErrorCode !== 'unknown error' ? spillErrorCode : spillErrorSummary ?? 'unknown error'}), ` +
+                    `so the omitted bytes are NOT recoverable and no ` +
+                    `spill path exists. Re-call ${opts.toolName} with narrower arguments or a projection.` +
+                    (upstreamProjection
+                      ? ` It was ALSO tier-projected upstream (omittedCount=${upstreamProjection.omittedCount}), ` +
+                        `so those fields were never serialized either.`
+                      : '') +
+                    buildProjectionHint(textItems, opts.toolName, bodyShape),
           };
     // plans:get's item text is the semantic payload of the detail read, not an
     // optional identity field. Promote it through the generic fallback so a
