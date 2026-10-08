@@ -29,7 +29,7 @@ vi.mock('../../context-doors-config', () => ({ getDoorConstantsSync: doorConstan
 
 import { applyResultDoor } from '../../result-door';
 import type { DoorableResult } from '../../result-door';
-import { writeScratchReference } from '../../scratch-reference';
+import { storeVolatileScratchReference, writeScratchReference } from '../../scratch-reference';
 import readTool, { MAX_BYTE_PAGE, MIN_PAGE_BYTES, doorSafePageBytes } from './read';
 
 let sandbox: string;
@@ -180,6 +180,64 @@ describe('WI-39670: byte-window pages survive the result door intact', () => {
     expect(decoded.toString('base64')).toBe(data);
     expect(decoded.equals(original.subarray(0, decoded.length))).toBe(true);
     expect((parsed.next_cursor as { args: { byte_offset: number } }).args.byte_offset).toBe(decoded.length);
+  });
+
+  it('pages a volatile scratch fallback losslessly through capability:read and tools:invoke', async () => {
+    const original = payload(40_000);
+    const fallback = storeVolatileScratchReference({
+      payload: original,
+      workspaceId: 'ws-1',
+      audience: 'workspace',
+      mediaType: 'application/octet-stream',
+      content: [{ index: 0, type: 'text', byteCount: original.length }],
+    });
+    expect(fallback).not.toBeNull();
+
+    const chunks: Buffer[] = [];
+    let args: Record<string, unknown> = {
+      file_path: fallback!.uri,
+      byte_offset: 0,
+      byte_limit: MAX_BYTE_PAGE,
+    };
+    for (let hop = 0; hop < 200; hop++) {
+      const { parsed } = await readThroughNestedInvokeDoor(args, { workspaceId: 'ws-1' });
+      expect(parsed).not.toHaveProperty('_projection');
+      expect(parsed).toMatchObject({ ok: true, total_bytes: original.length });
+      const data = parsed.data as string;
+      const decoded = Buffer.from(data, 'base64');
+      expect(decoded.length).toBe(parsed.byte_length);
+      expect(decoded.toString('base64')).toBe(data);
+      chunks.push(decoded);
+
+      const next = parsed.next_cursor as { args: Record<string, unknown> } | null;
+      if (next === null) {
+        expect(parsed.eof).toBe(true);
+        break;
+      }
+      expect(next.args.file_path).toBe(fallback!.uri);
+      args = next.args;
+    }
+
+    expect(Buffer.concat(chunks).equals(original)).toBe(true);
+  });
+
+  it('requires byte windows and enforces workspace scope for volatile scratch fallbacks', async () => {
+    const fallback = storeVolatileScratchReference({
+      payload: 'small fallback',
+      workspaceId: 'ws-1',
+      audience: 'workspace',
+      mediaType: 'text/plain',
+    });
+    expect(fallback).not.toBeNull();
+
+    const noWindow = await readThroughDoor({ file_path: fallback!.uri });
+    expect(noWindow.parsed).toMatchObject({ ok: false, reason: 'volatile_reference_requires_byte_window' });
+
+    const wrongWorkspace = await readThroughDoor(
+      { file_path: fallback!.uri, byte_offset: 0, byte_limit: 256 },
+      { workspaceId: 'ws-2' },
+    );
+    expect(wrongWorkspace.parsed).toMatchObject({ ok: false, reason: 'workspace_mismatch' });
   });
 
   it('refuses oversized scratch-reference line and raw windows before they spill recursively', async () => {

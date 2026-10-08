@@ -227,6 +227,10 @@ function requestOutcome(row: RoutingHealthConsultRow, nowMs: number): keyof Requ
   // A typed receipt outranks expiry, decline and recovered launch failures.
   if (row.has_feedback === true || (typeof answer === 'string' && answer.trim())) return 'received';
   if (row.has_decline === true || row.state === 'closed_cant_help' || row.state === 'declined') return 'declined';
+  const request = jsonObject(jsonObject(row.routing).request);
+  // The recoverable acceptance phase is pending work before any launch. A
+  // legacy routing label or an already recorded result does not prove that.
+  if (row.state === 'routing' && request.version === 1 && request.result == null) return 'pending';
   const walks = parseWalks(row.dispatch_attempts);
   const expiresMs = toMs(row.expires_at);
   const open = ['awaiting_responder', 'active', 'budget_exhausted'].includes(row.state);

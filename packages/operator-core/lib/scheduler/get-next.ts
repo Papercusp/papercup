@@ -2464,10 +2464,19 @@ export async function readClaimSpecDelta(
     // failing it is false on both sides and can reach no count and neither row list. Unlike the
     // claim_candidate_snapshot path above, this path measures nothing over the pre-floor
     // population, so there is no laneScopedPopulation-style count to restore.
+    //
+    // WI-10007576 follow-up: the same argument covers EVERY floor, not just the observation
+    // one, so the snapshot keeps only rows passing ALL_ISSUE_CLAIM_FLOORS_PASS. Once an
+    // unfiltered side made the candidate union unbounded (the WI-10007576 correctness fix),
+    // the default lane's preview materialized the whole floor-decorated open pool (~9.7k
+    // rows at full payload width on the live papercusp lane, of which ~420 pass the floors)
+    // and failed on :3170 with either `no empty local buffer available` or the 15s
+    // statement timeout. Only floor-passing rows can reach a count or a row list, because
+    // in_current and in_proposed both AND `floors`; a row failing one is dead weight.
     await client`
       CREATE TEMP TABLE ${client.unsafe(table)} ON COMMIT DROP AS
       SELECT c.*, (${proposedMatch}) AS proposed_match FROM (${sub}) c
-      WHERE (${candidateMatch}) AND c.ok_observation
+      WHERE (${candidateMatch}) AND (${client.unsafe(ALL_ISSUE_CLAIM_FLOORS_PASS)})
     `;
 
     // in_current / in_proposed are the FULL claimability predicate per side: that side's

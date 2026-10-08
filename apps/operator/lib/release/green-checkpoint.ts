@@ -19515,6 +19515,28 @@ export function realCheckpointDeps(
               checkpointEvidence,
             );
           },
+          // WI-10007408: the fixer LIVENESS probe and the dead-fixer CLASSIFIER, deleted by
+          // the same sweep c076b0dd95 and never restored with the dispatcher above. Both are
+          // optional-chained by the gate, so their absence failed silently and in the worst
+          // direction: `fixerAlive` read `undefined`, `decideFrozenCandidateRepairQueue` only
+          // re-dispatches on `fixerAlive === false`, so a DEAD fixer became `wait-for-fixer`
+          // (liveness "unknown") on every tick, forever — candidate ad82b273 sat 13h behind
+          // a dead release-fixer while P-018's invariant (same `releaseFixerSpawnAlive`)
+          // reported it dead. Without the classifier, an infrastructure death was never
+          // refunded its attempt. Pinned with the dispatcher by
+          // green-checkpoint-frozen-repair-dispatcher-wiring.test.ts.
+          async frozenRepairFixerAlive(spawnId: string) {
+            const { getOrgPg } = await import("@papercusp/db-org");
+            const { releaseFixerSpawnAlive } =
+              await import("@papercusp/operator-core/lib/release/fixer-liveness");
+            return releaseFixerSpawnAlive(getOrgPg().sql, spawnId);
+          },
+          async classifyDeadFrozenRepairFixer(spawnId: string) {
+            const { getOrgPg } = await import("@papercusp/db-org");
+            const { classifyDeadReleaseFixerSpawn } =
+              await import("@papercusp/operator-core/lib/release/fixer-liveness");
+            return classifyDeadReleaseFixerSpawn(getOrgPg().sql, spawnId);
+          },
           // WI-10003213: the same no-measured-failures verdict the dispatcher refuses on,
           // read from the same live row, so the retest and the refusal cannot disagree.
           async frozenRepairRedUnmeasured(queue: FrozenCandidateRepairQueue) {

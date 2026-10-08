@@ -2957,6 +2957,66 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     }
   });
 
+  it('EI-25452296370086757: a hung lease refresh is abandoned at its deadline so the next heartbeat refreshes again', async () => {
+    resetScheduledRegistry();
+    const timers: Array<{ cb: () => void; ms: number }> = [];
+    configureScheduledRegistry({
+      setIntervalImpl: (cb, ms) => {
+        timers.push({ cb, ms });
+        return { unref: () => undefined };
+      },
+      clearIntervalImpl: () => undefined,
+    });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      let runStarted!: () => void;
+      const runStartedPromise = new Promise<void>((resolve) => {
+        runStarted = resolve;
+      });
+      let finishRun!: () => void;
+      const finishRunPromise = new Promise<void>((resolve) => {
+        finishRun = resolve;
+      });
+      runGitSyncMock.mockImplementationOnce(async () => {
+        runStarted();
+        await finishRunPromise;
+        return syncedOutcome;
+      });
+      const running = action(ctx);
+      await runStartedPromise;
+      const initialCalls = tryAcquireResourceMock.mock.calls.length;
+      const heartbeat = timers.find((timer) => timer.ms === 60_000);
+      expect(heartbeat).toBeDefined();
+
+      // The first refresh's lock-store call never settles.
+      tryAcquireResourceMock.mockImplementationOnce(() => new Promise(() => undefined));
+      heartbeat!.cb();
+      await vi.advanceTimersByTimeAsync(0);
+      const afterHungStart = tryAcquireResourceMock.mock.calls.length;
+      expect(afterHungStart).toBe(initialCalls + 1);
+
+      // Before the deadline the hung pass still blocks a new one (one refresh in flight).
+      heartbeat!.cb();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(tryAcquireResourceMock.mock.calls.length).toBe(afterHungStart);
+
+      // Past the deadline the pass is abandoned and logged; the next tick refreshes again.
+      await vi.advanceTimersByTimeAsync(45_000);
+      expect(warn.mock.calls.some(([line]) => String(line).includes('lease refresh still unsettled'))).toBe(true);
+      heartbeat!.cb();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(tryAcquireResourceMock.mock.calls.length).toBeGreaterThan(afterHungStart);
+
+      finishRun();
+      await running;
+    } finally {
+      warn.mockRestore();
+      vi.useRealTimers();
+      resetScheduledRegistry();
+    }
+  });
+
   it('EI-217286: bounds a stalled pre-runGitSync await, stops the heartbeat, releases leases, and ignores its late settlement', async () => {
     const savedIdle = process.env.PAPERCUSP_GIT_SYNC_ACTION_IDLE_TIMEOUT_MS;
     const savedHard = process.env.PAPERCUSP_GIT_SYNC_ACTION_HARD_TIMEOUT_MS;
@@ -3232,6 +3292,71 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
       expect(heartbeatStopped).toBe(true);
       expect(gitSyncActivityPatches().at(-1)).toMatchObject({ active: false, phase: 'error' });
       expect(gitSyncActivityPatches().at(-1)?.completed_at).toBeTypeOf('number');
+    } finally {
+      finishChild?.();
+      await running;
+      resetScheduledRegistry();
+      vi.useRealTimers();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it.each(['resolve', 'reject'] as const)('keeps generic-error activity active until parallel Git settles (%s)', async (settlement) => {
+    const { classifyProtectedPathExclusions } = await vi.importActual<typeof import('./run-git-sync')>('./run-git-sync');
+    vi.useFakeTimers();
+    vi.stubEnv('PAPERCUSP_GIT_SYNC_ACTION_IDLE_TIMEOUT_MS', '60000');
+    vi.stubEnv('PAPERCUSP_GIT_SYNC_ACTION_HARD_TIMEOUT_MS', '120000');
+    resetScheduledRegistry();
+    let heartbeat!: () => void;
+    let heartbeatStopped = false;
+    const handle: TimerHandle = { unref: () => undefined };
+    configureScheduledRegistry({
+      setIntervalImpl: (cb) => { heartbeat = cb; return handle; },
+      clearIntervalImpl: () => { heartbeatStopped = true; },
+    });
+    const failure = new Error('parallel check-ignore failed');
+    let failFirst!: (error: Error) => void;
+    const first = new Promise<never>((_resolve, reject) => { failFirst = reject; });
+    let childStarted!: () => void;
+    const started = new Promise<void>((resolve) => { childStarted = resolve; });
+    let finishChild!: () => void;
+    runGitBoundedMock.mockImplementation(async (...args) => {
+      if ((args[0] as string[]).at(-1) === 'first') return first;
+      childStarted();
+      await new Promise<void>((resolve) => { finishChild = resolve; });
+      if (settlement === 'reject') throw new Error('second check-ignore failed');
+      return { code: 1, stdout: '', stderr: '' };
+    });
+    runGitSyncMock.mockImplementationOnce(async (_slug, raw) => {
+      const opts = raw as unknown as RunGitSyncOpts;
+      // Exercise the maintained concurrent Git preflight: Promise.all rejects
+      // on one command while another tracked command can still be running.
+      await classifyProtectedPathExclusions(opts.runGit!, repoDir, ['first', 'second']);
+      return syncedOutcome;
+    });
+    let returned = false;
+    const running = action(ctx).then(
+      () => { returned = true; return null; },
+      (error: unknown) => { returned = true; return error; },
+    );
+    try {
+      await started;
+      failFirst(failure);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(returned).toBe(false);
+      expect(releasedResources()).toEqual([]);
+      expect(heartbeatStopped).toBe(false);
+      expect(gitSyncActivityPatches().at(-1)).toMatchObject({ active: true, phase: 'error', completed_at: null });
+      const acquisitions = acquiredResources().length;
+      heartbeat();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(acquiredResources().length).toBeGreaterThan(acquisitions);
+      finishChild();
+      expect(await running).toBe(failure);
+      expect(releasedResources()).toEqual(['libs-papercusp-submodule', 'git-sync:papercup', 'git-sync']);
+      expect(heartbeatStopped).toBe(true);
+      expect(gitSyncActivityPatches().at(-1)).toMatchObject({ active: false, phase: 'error', completed_at: expect.any(Number) });
     } finally {
       finishChild?.();
       await running;

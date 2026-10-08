@@ -24,6 +24,7 @@ import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { register } from "tsx/esm/api";
 import {
   E2E_WORKSPACE_DIR,
   fixtureSpecClosures,
@@ -31,6 +32,10 @@ import {
 } from "./lib/e2e-fixture-specs.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+// This entry is called by plain node; register TS resolution before loading the
+// maintained runner's source exports (which use .js specifiers for TS files).
+register();
+const { defaultEvidenceRoot, runHarness } = await import("@papercusp/verification-harness");
 
 function parseArgs(argv) {
   const files = [];
@@ -48,7 +53,7 @@ function parseArgs(argv) {
   return { files, print };
 }
 
-function main() {
+async function main() {
   let args;
   try {
     args = parseArgs(process.argv.slice(2));
@@ -71,26 +76,31 @@ function main() {
     console.log(`  ${spec} <- ${hits.slice(0, 5).join(", ")}${hits.length > 5 ? ` (+${hits.length - 5})` : ""}`);
   if (args.print || selection.selected.length === 0) return 0;
 
-  const ensure = spawnSync(process.execPath, [path.join(ROOT, "scripts/ensure-playwright-browsers.mjs")], {
-    cwd: ROOT,
-    stdio: "inherit",
-  });
-  if (ensure.status !== 0) {
-    console.error(`E2E_FIXTURE_BROWSERS_MISSING exit=${ensure.status ?? ensure.signal}`);
-    return 2;
-  }
   const wsDir = path.join(ROOT, E2E_WORKSPACE_DIR);
   const specArgs = selection.selected.map((s) => path.relative(wsDir, path.join(ROOT, s)));
-  const run = spawnSync("npx", ["--no-install", "playwright", "test", ...specArgs, "--workers=1"], {
-    cwd: wsDir,
-    stdio: "inherit",
-    env: { ...process.env, OPERATOR_E2E_REUSE_SERVER: "1" },
+  let exitCode = 0;
+  const result = await runHarness({
+    contract: { name: "e2e-fixture-affected", phases: [
+      { id: "browsers" },
+      { id: "playwright", dependsOn: ["browsers"] },
+    ] },
+    evidenceRoot: defaultEvidenceRoot("e2e-fixture-affected"),
+    runPhase: async (ctx) => {
+      const browsers = ctx.phase === "browsers";
+      ctx.markStep(browsers ? "ensure-playwright-browsers" : "selected-fixture-specs");
+      const run = browsers
+        ? spawnSync(process.execPath, [path.join(ROOT, "scripts/ensure-playwright-browsers.mjs")], { cwd: ROOT, stdio: "inherit" })
+        : spawnSync("npx", ["--no-install", "playwright", "test", ...specArgs, "--workers=1"], {
+          cwd: wsDir, stdio: "inherit", env: { ...process.env, OPERATOR_E2E_REUSE_SERVER: "1" },
+        });
+      if (run.status === 0 && !run.error) return { ok: true };
+      exitCode = browsers || run.error ? 2 : (run.status ?? 1);
+      const detail = run.error?.message ?? `exit=${run.status ?? run.signal}`;
+      console.error(`${browsers ? "E2E_FIXTURE_BROWSERS_MISSING" : "E2E_FIXTURE_SPAWN_ERROR"} ${detail}`);
+      return { ok: false, reasonCode: browsers ? "browsers-unavailable" : "playwright-failed", detail };
+    },
   });
-  if (run.error) {
-    console.error(`E2E_FIXTURE_SPAWN_ERROR ${run.error.message}`);
-    return 2;
-  }
-  return run.status ?? 1;
+  return result.verdict === "pass" ? 0 : (exitCode || 1);
 }
 
-process.exitCode = main();
+process.exitCode = await main();

@@ -32,7 +32,8 @@ export default defineTool({
     }
     catch (error) {
       if (!(error instanceof ContentIntakeError) && !(error instanceof ContentSummaryError)) throw error;
-      return { data: { ok: false, error: error.code, message: error.message } };
+      return { data: { ok: false, error: error.code, message: error.message,
+        ...(error instanceof ContentSummaryError && error.diagnostics ? { diagnostics: error.diagnostics } : {}) } };
     }
   },
   timeoutSec: 190,

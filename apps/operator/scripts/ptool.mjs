@@ -680,6 +680,22 @@ export function coerceArg(kind, raw) {
   }
 }
 
+// The MCP-facing OpenAI schema flattens root unions into one `properties`
+// object, so a scope arg may appear at the root even when one selected variant
+// forbids it. Keep the safe variants explicit here; the session URL already
+// carries the ambient scope for the excluded variants.
+const CONVENIENCE_SCOPE_VARIANT_POLICIES = Object.freeze({
+  'work_items:rehome': { arg: 'harness', discriminator: 'op', allowed: ['move'] },
+  'workspace:work_scope': { arg: 'harness', discriminator: 'op', allowed: ['check'] },
+  'improvements:agent-review': { arg: 'harness', discriminator: 'mode', allowed: ['claim', 'claim-next'] },
+});
+
+function convenienceScopeArgAllowed(toolName, args, argName) {
+  const policy = CONVENIENCE_SCOPE_VARIANT_POLICIES[toolName];
+  if (!policy || policy.arg !== argName) return true;
+  return policy.allowed.includes(args[policy.discriminator]);
+}
+
 /**
  * Merge `--workspace`/`--harness` convenience flags into an args object,
  * but ONLY for properties the tool's schema actually declares (so we never
@@ -699,19 +715,16 @@ export function mergeConvenienceArgs(args, { workspace, harness }, inputSchema, 
   // scope into this tool's args silently filters every CI row out. Callers that
   // need a ledger filter can provide it explicitly in the JSON payload.
   const injectScopeFilters = toolName !== 'testing:runs';
-  // `work_items:rehome` exposes a flattened union schema: `harness` belongs to
-  // the move variant, while classify accepts only its discriminator and id.
-  // Ambient session scope must not select a variant-incompatible key. Keep an
-  // explicitly supplied value untouched so this helper preserves its existing
-  // caller-owned-args semantics.
-  const rehomeClassify = toolName === 'work_items:rehome' && out.op === 'classify';
-  // `workspace:work_scope` is another flattened discriminated union: only the
-  // check variant accepts `harness`; get/set/clear intentionally reject it.
-  // The ambient harness still scopes the MCP session URL, so do not copy it
-  // into those variant payloads.
-  const workScopeNonCheck = toolName === 'workspace:work_scope' && out.op !== 'check';
   if (injectScopeFilters && workspace != null && 'workspace' in props && !('workspace' in out)) out.workspace = workspace;
-  if (injectScopeFilters && !rehomeClassify && !workScopeNonCheck && harness != null && 'harness' in props && !('harness' in out)) out.harness = harness;
+  if (
+    injectScopeFilters &&
+    convenienceScopeArgAllowed(toolName, out, 'harness') &&
+    harness != null &&
+    'harness' in props &&
+    !('harness' in out)
+  ) {
+    out.harness = harness;
+  }
   return out;
 }
 
@@ -1800,6 +1813,12 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   // was still settling. Keep both direct and tools:invoke calls above that
   // floor so the typed wake result wins instead of inviting a blind replay.
   ['coord:wake', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
+  // coord:thread has no shorter tool-specific timeout and is bounded by the
+  // read-only MCP deadline (~55s). Keep ptool's direct and tools:invoke routes
+  // at 60s so its generic 30s cutoff does not preempt the server result. The
+  // reported historical timeout remains unconfirmed; this aligns the client
+  // with the server contract for future calls.
+  ['coord:thread', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   // EI-25380603241293913: a directed coord:inbox read can spend most of its
   // bounded server window rebuilding the presence snapshot. One measured call
   // took 58.7s (46.6s in that rebootstrap), leaving too little margin under
@@ -1854,6 +1873,12 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   // even though the server-side write may have landed. Keep both direct and
   // tools:invoke-wrapped claims beyond the transport cap.
   ['work_items:claim', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
+  // EI-25420975795006444: set_state has no tool-specific server timeout, so MCP
+  // applies its 55s default. The flat 30s client deadline can preempt that
+  // structured timeout after the write landed, surfacing an unknown outcome.
+  // Keep direct and tools:invoke calls at 60s so the server result wins; callers
+  // must still reconcile state before replaying a timed-out mutation.
+  ['work_items:set_state', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   // `release:trace` composes candidate, gate, deploy, and await reads. Under
   // operator pressure that read-only bundle can outlive the ordinary 30s
   // client budget even though it is still progressing; keep the typed trace

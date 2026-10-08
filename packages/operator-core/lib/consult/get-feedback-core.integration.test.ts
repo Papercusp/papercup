@@ -24,6 +24,7 @@ import { fileURLToPath } from 'node:url';
 import { getTestPg } from '@papercusp/test-config/pg';
 import { EMBEDDER_DIM_SPECS } from '@papercusp/memory';
 import type { RouteResult, RoutingCandidate, RoutingSnapshot } from './relevance-router';
+import { routingHealthFromRows, type RoutingHealthConsultRow } from './consult-routing-health';
 import {
   resolveProseProfileSelection,
   type ProseProfileSelection,
@@ -935,6 +936,48 @@ async function stateRow(conversationId: string, ws: string = WS) {
 
 // ── Tests ────────────────────────────────────────────────────────────────
 describe('recoverable interactive feedback requests', () => {
+  it.each([undefined, false] as const)('records request intent and pending classification before routing (%s)', async (allowDispatch) => {
+    const fixture = makeDeps(routeOf([cand('accepted-expert')]));
+    const request = { ...baseReq, requestKey: `accepted-cohort-${allowDispatch ?? 'default'}`, allowDispatch };
+    const accepted = await acceptFeedbackRequestCore(request, fixture.deps);
+    if ('error' in accepted) throw new Error(accepted.error);
+    const stored = await stateRow(accepted.conversation_id);
+    expect(stored.routing).toMatchObject({ deliveryIntent: allowDispatch === false ? 'retrieval-only' : 'dispatch' });
+    const health = routingHealthFromRows([stored as unknown as RoutingHealthConsultRow], {
+      sinceMs: 0, untilMs: Date.parse('2100-01-01T00:00:00Z'), nowMs: Date.now(),
+    });
+    expect(health.requestCohort.totals).toMatchObject({ requests: 1, legacyIntentUnknown: 0,
+      dispatchRequested: allowDispatch === false ? 0 : 1, retrievalOnly: allowDispatch === false ? 1 : 0,
+      outcomes: { pending: allowDispatch === false ? 0 : 1 } });
+    expect(accepted).toMatchObject({ state: 'routing', pending: true });
+    expect(health.totals.launched).toBe(0);
+    expect(fixture.routeCalls).toHaveLength(0);
+    expect(fixture.reached).toHaveLength(0);
+  });
+
+  it.each(['embed-unavailable', 'evidence-unavailable', undefined] as const)(
+    'preserves the recorded routing outcome on retry instead of inferring it from lifecycle state (%s)', async (degraded) => {
+      const fixture = makeDeps(routeOf([], { degraded }));
+      const request = { ...baseReq, requestKey: `recoverable-result-${degraded ?? 'measured'}`, minResponders: 0 };
+      const accepted = await acceptFeedbackRequestCore(request, fixture.deps);
+      expect(accepted).not.toHaveProperty('result');
+      await continueFeedbackRequestCore(WS, accepted.conversation_id, {
+        getSql: () => rootSql, now: () => NOW,
+        execute: (payload, context) => getFeedbackCore(payload, { ...fixture.deps, acceptedRequest: context }),
+      });
+      const retry = await acceptFeedbackRequestCore(request, fixture.deps);
+      if ('error' in retry) throw new Error(retry.error);
+      expect(retry).toMatchObject({ conversation_id: accepted.conversation_id, pending: false,
+        state: 'no_qualified_responder', result: { verdict: degraded ? 'relevance_unmeasured' : 'no_qualified_responder',
+          reason: degraded === 'embed-unavailable' ? 'embed_unavailable'
+            : degraded === 'evidence-unavailable' ? 'evidence_unavailable' : 'below_floor' } });
+      if (degraded === 'evidence-unavailable') expect(retry.hint).toContain('does not prove no expert exists');
+      expect((await stateRow(accepted.conversation_id)).routing).toMatchObject({ request: { result: retry.result } });
+      expect(fixture.routeCalls).toHaveLength(1);
+      expect(fixture.reached).toHaveLength(0);
+    },
+  );
+
   it('accepts one identity before routing and deduplicates concurrent transport retries', async () => {
     const fixture = makeDeps(routeOf([cand('recoverable-expert')]));
     const request = { ...baseReq, requestKey: 'recoverable-concurrent', question: 'recoverable concurrent request' };

@@ -51,6 +51,14 @@ describe('cleared dependency status reconciliation', () => {
     expect(planDependencyBlockedClear(held, held, { ...clear, hasActiveExternalBlocker: outcome === 'external-blocker' }).outcome).toBe(outcome);
   });
 
+  // WI-10007634: `origin` records how a row ARRIVED, not who wrote it (WI-10003565).
+  it('reserves a true peer row but clears our own row stranded at origin=remote', () => {
+    const remote = { ...row({ _claimHold: true, held_open_reason: 'blocked' }), origin: 'remote' };
+    expect(planDependencyBlockedClear(remote, remote, clear).outcome).toBe('reserved');
+    expect(planDependencyBlockedClear(remote, remote, { ...clear, ownNodeAuthored: false }).outcome).toBe('reserved');
+    expect(planDependencyBlockedClear(remote, remote, { ...clear, ownNodeAuthored: true }).outcome).toBe('cleared');
+  });
+
   it('retains live dependencies and refuses assignment, payload or time drift', () => {
     const held = row();
     expect(planDependencyBlockedClear(held, held, { ...clear, hasLiveDependency: true }).outcome).toBe('live-dependency');

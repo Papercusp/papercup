@@ -24,6 +24,13 @@ command -v "$T" >/dev/null 2>&1 || T=tauri-agent-tools
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 OUT_DIR="${TAURI_SURFACE_VERIFY_TICKET_INTEGRATIONS_OUT:-/tmp/pcv-ticket-integrations-$STAMP}"
 mkdir -p "$OUT_DIR"
+TICKET_VERIFY_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$TICKET_VERIFY_ROOT/libs/generic/verification-harness/bin/vh.sh"
+vh_phase preflight ""
+vh_phase native-assertions preflight
+vh_init ticket-integrations "$OUT_DIR/harness"
+vh_bracket_trap
+vh_begin preflight
 
 fail() {
   echo "VERIFY_FAIL: $*"
@@ -50,6 +57,7 @@ psql_iso() { psql "$HARNESS_ADMIN_DATABASE_URL" -v ON_ERROR_STOP=1 -At -c "$1"; 
 
 # 1. The page renders from the live provider registry, reached from the settings nav, and every
 #    registered ticket provider is offered as connectable.
+vh_begin native-assertions
 nav /settings/integrations
 waitjs "!!document.querySelector('h1') && document.querySelector('h1').textContent === 'Integrations' && !document.body.innerText.includes('Loading integrations')" 90000
 step "page rendered at $(ev 'location.pathname')"

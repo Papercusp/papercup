@@ -43,6 +43,22 @@ const result = await runHarness({ contract: { name: harnessName, phases: [{ id: 
       writeFileSync(join(ctx.evidenceDir, name + '.json'), ev('JSON.stringify({url:location.href,text:document.body.innerText})'));
       native('screenshot', '--output', join(ctx.evidenceDir, name + '.png'));
     };
+    const workControlLayout = () => {
+      const controls = JSON.parse(ev(`JSON.stringify([...document.querySelectorAll('.dao-execution label')].map(label=>{
+        const field=label.querySelector('input,select,textarea');
+        const range=document.createRange();range.selectNodeContents(label.firstChild);
+        const title=range.getBoundingClientRect(),box=field.getBoundingClientRect(),container=label.getBoundingClientRect();
+        return {name:label.firstChild.textContent.trim(),titleBottom:title.bottom,fieldTop:box.top,
+          fieldLeft:box.left,fieldRight:box.right,fieldWidth:box.width,left:container.left,right:container.right,width:container.width};
+      }))`));
+      assert.deepEqual(controls.map((control: { name: string }) => control.name), ['Project scope', 'Find work', 'Work title', 'Work brief']);
+      for (const control of controls) {
+        assert.ok(control.fieldTop >= control.titleBottom + 3, control.name + ' label must sit above its field');
+        assert.ok(control.fieldLeft >= control.left - 1 && control.fieldRight <= control.right + 1, control.name + ' field must fit its container');
+        assert.ok(control.fieldWidth >= Math.min(240, control.width * .75), control.name + ' field must remain usable');
+      }
+      return controls;
+    };
     try {
       ctx.markStep('frozen-host-source-identity');
       const receipt = JSON.parse(readFileSync(process.env.VERIFY_TAURI_SOURCE_RECEIPT!, 'utf8'));
@@ -118,6 +134,14 @@ const result = await runHarness({ contract: { name: harnessName, phases: [{ id: 
       for (const [id, heading] of sections) {
         ev(`window.__TSR_ROUTER__.navigate({to:'/daos',search:{dao:${JSON.stringify(slug)},daoSection:${JSON.stringify(id)}}})`);
         wait(`new URLSearchParams(location.search).get('daoSection')===${JSON.stringify(id)} && document.querySelector('.dao-page-header h1')?.textContent===${JSON.stringify(heading)}`);
+        if (id === 'work') {
+          writeFileSync(join(ctx.evidenceDir, 'work-control-layout.json'), JSON.stringify(workControlLayout(), null, 2));
+          // Prove the detector catches the original unformatted controls.
+          ev("window.__DAO_FORMATTED_FORMS__=[...document.querySelectorAll('.dao-execution .dao-form')];window.__DAO_FORMATTED_FORMS__.forEach(form=>form.classList.remove('dao-form'));true");
+          try { assert.throws(workControlLayout, /label must sit above its field/); }
+          finally { ev("window.__DAO_FORMATTED_FORMS__.forEach(form=>form.classList.add('dao-form'));delete window.__DAO_FORMATTED_FORMS__;true"); }
+          workControlLayout();
+        }
         capture('section-' + id);
       }
       const expectedWidth = Number(process.env.DAO_WORKBENCH_VIEWPORT?.split('x')[0]);

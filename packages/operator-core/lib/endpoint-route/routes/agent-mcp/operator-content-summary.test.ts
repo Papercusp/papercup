@@ -31,6 +31,21 @@ async function post(body: unknown, signal?: AbortSignal, routeSignal?: AbortSign
 beforeEach(() => { h.user = 'user-one'; h.workspace = 'ws-one'; h.fail = false; h.localDelayMs = 0; h.prompts.length = 0; h.localPrompts.length = 0; vi.clearAllMocks(); });
 afterEach(() => { vi.useRealTimers(); });
 describe('existing output endpoint explicit summary operation', () => {
+  it('returns phase evidence for a bounded local-model timeout without source or partial output', async () => {
+    vi.useFakeTimers(); h.localDelayMs = 1000;
+    const pending = post({ operation: 'summarize', content: { kind: 'text', text: 'PRIVATE SOURCE-938' },
+      summary: { model: 'fixture-local', timeoutMs: 100 } });
+    await vi.waitFor(() => expect(h.localPrompts).toHaveLength(1));
+    await vi.advanceTimersByTimeAsync(100);
+    const response = await pending;
+    expect(response.status).toBe(429);
+    const body = await response.json();
+    expect(body).toMatchObject({ ok: false, code: 'budget-exceeded', diagnostics: { stage: 'model-wait', calls: 1 } });
+    expect(JSON.stringify(body)).not.toMatch(/PRIVATE SOURCE-938|Local explicit summary/);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(h.localPrompts[0].signal?.aborted).toBe(true);
+    expect(h.synth).not.toHaveBeenCalled();
+  });
   it('honors a bounded summary longer than the default route watchdog', async () => {
     vi.useFakeTimers(); h.localDelayMs = 45_000;
     const app = new Hono();

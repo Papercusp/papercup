@@ -1,9 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { dispatchProjectedTool, lookupByMcpName, type UnifiedToolContext } from '@papercusp/agent-mcp';
-const summaryTransport = vi.hoisted(() => ({ requests: [] as Record<string, unknown>[] }));
+const summaryTransport = vi.hoisted(() => ({ requests: [] as Record<string, unknown>[], stalled: false }));
 vi.mock('../../agent-chat-stream', () => ({
   runAgentChat: async function* (request: Record<string, unknown>) {
     summaryTransport.requests.push(request);
+    if (summaryTransport.stalled) await new Promise(() => {});
     const input = JSON.parse(request.promptText as string);
     yield { type: 'result', finalText: input.quotedSource.includes('TAIL-942') ? 'Includes TAIL-942.' : 'Intermediate report.',
       costUsd: 0, tokensIn: 10, tokensOut: 4, stopReason: 'end_turn', servedAccount: 'integration-account' };
@@ -29,9 +30,18 @@ function context(overrides: Partial<UnifiedToolContext> = {}): UnifiedToolContex
 const projected = lookupByMcpName('documents:read');
 if (!projected) throw new Error('documents:read must be registered');
 const dispatch = (args: unknown, ctx = context()) => dispatchProjectedTool(projected, 'documents:read', args, ctx, {});
-beforeEach(() => { summaryTransport.requests.length = 0; });
+beforeEach(() => { summaryTransport.requests.length = 0; summaryTransport.stalled = false; });
 
 describe('documents:read projection and intake integration', () => {
+  it('preserves bounded summary failure diagnostics through the real projection', async () => {
+    summaryTransport.stalled = true;
+    const response = await dispatch({ operation: 'summarize', content: { kind: 'text', text: 'PRIVATE SOURCE-938' },
+      summary: { allowCloud: true, timeoutMs: 100 } });
+    expect(response.ok, JSON.stringify(response)).toBe(true);
+    expect(response.result?.structuredContent).toMatchObject({ ok: false, error: 'budget-exceeded',
+      diagnostics: { stage: 'model-wait', phase: 'source chunk 1/1', calls: 1 } });
+    expect(JSON.stringify(response.result?.structuredContent)).not.toContain('PRIVATE SOURCE-938');
+  });
   it('runs the real registry, input schema, identity and HTML reader together', async () => {
     const response = await dispatch({ content: { kind: 'html', html: '<title>Source title</title><p>FIRST</p><p>TAIL</p>', ref: 'already-read:article' } });
     expect(response.ok, JSON.stringify(response)).toBe(true);

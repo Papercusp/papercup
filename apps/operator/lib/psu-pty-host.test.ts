@@ -739,6 +739,85 @@ describe('deliveryDedupSettlement', () => {
     expect(realHost.deliveryDedupSettlement({ ok: false, reason: 'turn-rearm-duplicate' }, true)).toBe('clear');
     expect(realHost.deliveryDedupSettlement({ ok: false, reason: 'error' }, false)).toBe('clear');
   });
+
+  it('preserves a host-confirmed cancellation as a terminal dedup state', () => {
+    expect(realHost.deliveryDedupSettlement({ ok: true, reason: 'cancelled-before-write' })).toBe('cancelled');
+  });
+});
+
+describe('EI-16685 pending inbox-wake cancellation', () => {
+  it('keeps legacy turn envelopes unchanged and decodes complete additive cancellation metadata', () => {
+    expect(decodeControl(encodeControl({
+      mode: 'turn', data: 'legacy retry', ownerId: 'su-a', deliveryId: '81',
+    }))).toEqual({
+      mode: 'turn', data: 'legacy retry', gated: true, ownerId: 'su-a', deliveryId: '81',
+    });
+
+    expect(decodeControl(encodeControl({
+      mode: 'turn', data: 'handled retry', ownerId: 'su-a', deliveryId: '81',
+      cancelDeliveryIds: ['81', '80'], handledMsgIds: ['m-a', 'm-b'],
+    }))).toMatchObject({
+      mode: 'turn', ownerId: 'su-a', deliveryId: '81',
+      cancelDeliveryIds: ['81', '80'], handledMsgIds: ['m-a', 'm-b'],
+    });
+
+    expect(decodeControl(JSON.stringify({
+      v: 1, mode: 'turn', data: 'bad request', deliveryId: '81', cancelDeliveryIds: ['81'],
+    }))).toMatchObject({ cancelEnvelopeInvalid: true });
+  });
+
+  it('cancels only when every coalesced delivery is pending and requested before write', () => {
+    const d = makeDeliveryDedup();
+    d.markPending('81');
+    d.markPending('82');
+
+    expect(d.requestCancel(['81', '82'], ['m-a', 'm-b'])).toEqual({
+      status: 'requested', deliveryIds: ['81', '82'], handledMsgIds: ['m-a', 'm-b'],
+    });
+    expect(d.beginWrite(['81', '82'])).toEqual({
+      status: 'cancelled', deliveryIds: ['81', '82'], handledMsgIds: ['m-a', 'm-b'],
+    });
+    expect(d.state('81')).toBe('cancelled');
+    expect(d.state('82')).toBe('cancelled');
+
+    // A late retry or pipeline settlement cannot resurrect a zero-byte cancel.
+    d.markPending('81');
+    d.markCompleted('81');
+    expect(d.state('81')).toBe('cancelled');
+    expect(d.requestCancel(['81', '82'], ['m-other'])).toMatchObject({
+      status: 'cancelled', handledMsgIds: ['m-a', 'm-b'],
+    });
+  });
+
+  it('fails open for a partially requested coalesced write and refuses cancellation after writing starts', () => {
+    const d = makeDeliveryDedup();
+    d.markPending('81');
+    d.markPending('82');
+    expect(d.requestCancel(['81'], ['m-a']).status).toBe('requested');
+
+    expect(d.beginWrite(['81', '82'])).toEqual({ status: 'write' });
+    expect(d.state('81')).toBe('pending');
+    expect(d.requestCancel(['81'], ['m-a']).status).toBe('writing');
+  });
+
+  it('refuses unknown or completed IDs, and places the host cancellation check before the first PTY write', () => {
+    const d = makeDeliveryDedup();
+    d.markPending('81');
+    d.markCompleted('82');
+    expect(d.requestCancel(['missing'], ['m-a']).status).toBe('unknown');
+    expect(d.requestCancel(['82'], ['m-a']).status).toBe('completed');
+
+    const source = readFileSync(new URL('../scripts/psu-pty-host.mjs', import.meta.url), 'utf8');
+    const requestCancel = source.indexOf('deliveryDedup.requestCancel(msg.cancelDeliveryIds, msg.handledMsgIds)');
+    const writeGate = source.indexOf('const writeCommit = deliveryDedup.beginWrite([...coalescedDeliveryIds]);');
+    const firstPtyWrite = source.indexOf('sink.write(step.data);', writeGate);
+    expect(requestCancel).toBeGreaterThan(-1);
+    expect(writeGate).toBeGreaterThan(-1);
+    expect(firstPtyWrite).toBeGreaterThan(writeGate);
+    expect(source.slice(writeGate, firstPtyWrite)).toContain("writeCommit.status === 'cancelled'");
+    expect(source.slice(writeGate, firstPtyWrite)).toContain('bytesWritten: 0');
+    expect(source.slice(writeGate, firstPtyWrite)).toContain("reason: 'cancelled-before-write'");
+  });
 });
 
 describe('quota recovery envelope identity (measured-agent-productivity P-004)', () => {

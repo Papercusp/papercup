@@ -283,7 +283,9 @@ import {
 import { parsePapercuspTrailers, recordCommitAttribution, type CommitAttributionRow } from '../../edit-attribution';
 import { pinModuleState } from '@papercusp/module-singleton';
 import {
+  boundLeaseRefresh,
   createGitSyncLeaseFence,
+  GIT_SYNC_LEASE_REFRESH_DEADLINE_MS,
   GitSyncLeaseLostError,
   type GitSyncLeaseFence,
   type GitSyncLeaseLossCause,
@@ -1120,7 +1122,14 @@ function startLockHeartbeat(
     LOCK_HEARTBEAT_INTERVAL_MS,
     () => {
       if (inFlight) return;
-      inFlight = refresh().finally(() => {
+      // EI-25452296370086757: bound each pass so a hung refresh cannot starve every later
+      // one (and the stop function) until the fence trips a progressing fire.
+      inFlight = boundLeaseRefresh(refresh(), GIT_SYNC_LEASE_REFRESH_DEADLINE_MS, () => {
+        console.warn(
+          `[git-sync] ${slug}: lease refresh still unsettled after ${GIT_SYNC_LEASE_REFRESH_DEADLINE_MS} ms — ` +
+            'abandoning it so the next heartbeat retries (the lease fence still trips if none confirms)',
+        );
+      }).finally(() => {
         inFlight = null;
       });
     },
@@ -3683,11 +3692,11 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
   // Reuse runGitSync's runner seam to track actual Git work independently of
   // the pipeline promise, which can be rejected by that race before child exit.
   const activeGitExecutions = new Set<Promise<unknown>>();
-  // Timeout cleanup is single-flight. The timer callback and the owning finally
+  // Error cleanup is single-flight. The timer callback and the owning finally
   // block can race: whichever notices expiry first must stop the heartbeat before
   // releasing the leases, while a late callback must never release a second time.
   let lockCleanup: Promise<void> | null = null;
-  let timeoutAwaitingGitExit = false;
+  let errorAwaitingGitExit = false;
   const cleanupLocks = (): Promise<void> => {
     if (lockCleanup) return lockCleanup;
     lockCleanup = (async () => {
@@ -3720,12 +3729,12 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
               }`,
             );
           }
-          if (timeoutAwaitingGitExit) {
-            // EI-25430105870893148: the timeout is an abort request, not a
-            // child-exit receipt. Publish terminal activity only after the
+          if (errorAwaitingGitExit) {
+            // EI-25430105870893148: an action error is not a child-exit
+            // receipt. Publish terminal activity only after the
             // tracked Git work settles, while this fire still owns its leases.
-            // The activity queue keeps this after the initial timeout marker.
-            timeoutAwaitingGitExit = false;
+            // The activity queue keeps this after the initial error marker.
+            errorAwaitingGitExit = false;
             const completedAt = Date.now();
             await writeActivity({
               active: false,
@@ -3735,7 +3744,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
               completed_at: completedAt,
               outcome_status: null,
             }).catch((error) => {
-              console.warn(`[git-sync] ${slug}: could not record Git exit after timeout: ${String(error)}`);
+              console.warn(`[git-sync] ${slug}: could not record Git exit after error: ${String(error)}`);
             });
           }
           if (lock.state === 'acquired') {
@@ -3762,8 +3771,8 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
     // The marker writer shares the same queue, so an already-started heartbeat
     // lands first and a queued-but-not-started heartbeat sees the terminal fence.
     activityTerminal = true;
-    timeoutAwaitingGitExit = activeGitExecutions.size > 0;
-    const awaitingGitExit = timeoutAwaitingGitExit;
+    errorAwaitingGitExit = activeGitExecutions.size > 0;
+    const awaitingGitExit = errorAwaitingGitExit;
     const failedAt = Date.now();
     timeoutActivity = enqueueActivityWrite(() =>
       patchRoutineMetadata(slug, workspaceId, {
@@ -4165,12 +4174,16 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
     } else {
       activityTerminal = true;
       await activityHeartbeatWrite.catch(() => {});
+      // Concurrent preflights can reject before their remaining Git commands
+      // settle. Preserve active ownership until cleanup observes their exit.
+      errorAwaitingGitExit = activeGitExecutions.size > 0;
+      const failedAt = Date.now();
       await writeActivity({
-        active: false,
+        active: errorAwaitingGitExit,
         phase: 'error',
         started_at: activityStartedAt,
-        updated_at: Date.now(),
-        completed_at: Date.now(),
+        updated_at: failedAt,
+        completed_at: errorAwaitingGitExit ? null : failedAt,
         outcome_status: null,
       }).catch(() => {});
     }

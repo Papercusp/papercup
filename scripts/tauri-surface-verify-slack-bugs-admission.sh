@@ -34,6 +34,14 @@ command -v "$TOOL" >/dev/null 2>&1 || TOOL="tauri-agent-tools"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 OUT="${SLACKBUGS_OUT:-/tmp/slack-bugs-admission-$STAMP}"
 mkdir -p "$OUT"
+SLACK_VERIFY_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$SLACK_VERIFY_ROOT/libs/generic/verification-harness/bin/vh.sh"
+vh_phase seed ""
+vh_phase initial seed
+vh_phase live-update initial
+vh_init slack-bugs-admission "$OUT/harness"
+vh_bracket_trap
+vh_begin seed
 WS="$PAPERCUSP_WORKSPACE_ID"
 
 q() { psql "$HARNESS_ADMIN_DATABASE_URL" -v ON_ERROR_STOP=1 -At -c "$1"; }
@@ -79,9 +87,11 @@ wait_for() { # expected-json label
 }
 
 EXPECT='[["T-E2E","CE2EBUGS","2","1","0","0","—","—"],["T-E2E","CE2EQUIET","0","0","0","0","—","—"],["T-E2E","CE2ENORULE (no rule)","1","0","0","0","—","—"]]'
+vh_begin initial
 wait_for "$EXPECT" initial || exit 1
 "$TOOL" screenshot --pid "$VERIFY_TAURI_PID" --output "$OUT/admission-initial.png" >/dev/null 2>&1 || echo "SLACKBUGS note: screenshot not captured"
 
+vh_begin live-update
 adm CE2EBUGS 4 created
 EXPECT2='[["T-E2E","CE2EBUGS","3","1","0","0","—","—"],["T-E2E","CE2EQUIET","0","0","0","0","—","—"],["T-E2E","CE2ENORULE (no rule)","1","0","0","0","—","—"]]'
 wait_for "$EXPECT2" live-update || exit 1

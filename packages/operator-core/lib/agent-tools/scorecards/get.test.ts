@@ -49,6 +49,32 @@ const makeDispatchContext = (): UnifiedToolContext => ({
   tx: {},
 });
 
+const rerunRecipe = {
+  schemaVersion: 1,
+  evaluator: 'plans:evaluate-spec-test-adequacy',
+  classRef: 'plan-class-risk-floor',
+  args: {
+    harness: 'papercusp',
+    slug: 'reconnect-plan',
+    classRef: 'plan-class-risk-floor',
+    specIds: ['SPEC-003-01'],
+    includeDraft: true,
+  },
+  selection: {
+    planSlug: 'reconnect-plan',
+    specId: 'SPEC-003-01',
+    specRevision: 1,
+    specFingerprint: 'sha256:spec-v1',
+    evidence: [{ evidenceKind: 'integration fixture', evidenceRef: 'surface:reconnect' }],
+  },
+  current: { supplied: false, fingerprints: [] },
+  derivation: {
+    kind: 'listSpecEvidence.currentness',
+    classifier: 'classifySpecEvidenceCurrentness',
+    unknownWhenMissing: true,
+  },
+} as const;
+
 const scorecard = {
   issueId: 'EI-audited-card',
   createdAt: '2026-09-08T19:00:00.000Z',
@@ -61,6 +87,7 @@ const scorecard = {
     recordedCriteriaHash: 'criteria-hash-v2', currentCriteriaHash: 'criteria-hash-v2',
   },
   evidenceFingerprint: 'evidence-fingerprint-v2',
+  rerunRecipe,
   subject: { kind: 'scorecard' as const, ref: 'EI-subject' },
   criteria: Array.from({ length: 8 }, (_, i) => ({
     key: `criterion-${i + 1}`,
@@ -468,6 +495,7 @@ describe('scorecards:get evidence-first projection', () => {
       expect(JSON.stringify(result).length).toBeLessThan(PAYLOAD_TIER_HARD_CEILING_CHARS);
       expect(result.scorecard.criteria).toEqual([]);
       expect(result.scorecard.gradingAudit).toEqual(gradingAudit);
+      expect(result.scorecard.rerunRecipe).toEqual(rerunRecipe);
       expect(result.scorecard.auditTarget).toEqual(scorecard.auditTarget);
       expect(result.evidenceRead).toMatchObject({
         complete: false,
@@ -480,6 +508,9 @@ describe('scorecards:get evidence-first projection', () => {
     }
     expect(pages).toBeGreaterThan(1);
     expect(indexedKeys).toEqual(largeIndex.criteria.map(({ key }) => key));
+
+    const criterionPage = await read({ issueId: largeIndex.issueId, criterionKey: 'criterion-0' });
+    expect(criterionPage.scorecard.rerunRecipe).toEqual(rerunRecipe);
   });
 
   it('preserves typed transient contention failures', async () => {

@@ -28,6 +28,7 @@
 .dao-card dt { color:var(--fg-mute); margin-bottom:5px; }
 .dao-card dd { margin:0; overflow-wrap:anywhere; }
 .dao-overview-grid { display:grid; grid-template-columns:2fr 1fr 1fr; gap:16px; }
+.dao-execution { grid-template-columns:minmax(0,2fr) minmax(0,1fr); }
 .dao-stat { display:block; font-size:36px; margin:16px 0; }
 .dao-meta { color:var(--fg-mute); font-size:11px; }
 .dao-actions { display:flex; flex-wrap:wrap; gap:8px; }

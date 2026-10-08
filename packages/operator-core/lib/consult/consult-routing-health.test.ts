@@ -197,6 +197,23 @@ describe('routingHealthFromRows — seeded attempts in and out of the window', (
 });
 
 describe('routingHealthFromRows request cohort', () => {
+  it('counts accepted preparation as pending while preserving legacy and terminal unknown controls', () => {
+    const make = (id: string, partial: Partial<RoutingHealthConsultRow>) => row({
+      conversation_id: id, created_at: iso(T0 + H), routing: { deliveryIntent: 'dispatch' }, ...partial,
+    });
+    const health = routingHealthFromRows([
+      make('accepted', { state: 'routing', routing: { deliveryIntent: 'dispatch', request: { version: 1 } } }),
+      make('legacy-routing', { state: 'routing' }),
+      make('recorded-result', { state: 'routing', routing: {
+        deliveryIntent: 'dispatch', request: { version: 1, result: { verdict: 'relevance_unmeasured' } },
+      } }),
+      make('terminal', { state: 'no_qualified_responder' }),
+    ], { sinceMs: SINCE, untilMs: UNTIL, nowMs: NOW });
+    expect(health.requestCohort.totals).toMatchObject({ requests: 4, dispatchRequested: 4,
+      legacyIntentUnknown: 0, outcomes: { pending: 1, unavailable: 1, unmeasured: 2 } });
+    expect(health.totals.launched).toBe(0);
+  });
+
   it('partitions explicit intents and terminal receipts without confusing lifecycle or launch attempts', () => {
     const make = (id: string, partial: Partial<RoutingHealthConsultRow> = {}) => row({
       conversation_id: id, created_at: iso(T0 + H), routing: { deliveryIntent: 'dispatch' }, ...partial,

@@ -1,5 +1,11 @@
-import { describe, expect, it } from 'vitest';
-import { createGitSyncLeaseFence, GitSyncLeaseLostError } from './git-sync-lease-fence';
+import { describe, expect, it, vi } from 'vitest';
+import {
+  boundLeaseRefresh,
+  createGitSyncLeaseFence,
+  GIT_SYNC_LEASE_REFRESH_DEADLINE_MS,
+  GitSyncLeaseLostError,
+  type LeaseRefreshTimers,
+} from './git-sync-lease-fence';
 
 const LIMIT = 480_000;
 
@@ -71,6 +77,89 @@ describe('git-sync lease fence (WI-10006724)', () => {
     fence.confirm(t1);
     fence.confirm(t1 - 30_000);
     advance(LIMIT - 1);
+    expect(() => fence.assertHeld()).not.toThrow();
+  });
+});
+
+describe('boundLeaseRefresh (EI-25452296370086757)', () => {
+  /** A manual timer seam: the test decides when the deadline elapses. */
+  function manualTimers() {
+    const pending = new Map<number, () => void>();
+    let next = 0;
+    const timers: LeaseRefreshTimers = {
+      set: (cb) => {
+        const id = ++next;
+        pending.set(id, cb);
+        return id;
+      },
+      clear: (handle) => {
+        pending.delete(handle as number);
+      },
+    };
+    return {
+      timers,
+      pendingCount: () => pending.size,
+      fireAll: () => {
+        for (const [id, cb] of [...pending]) {
+          pending.delete(id);
+          cb();
+        }
+      },
+    };
+  }
+
+  it('the deadline sits below the 60 s heartbeat interval so the next tick can retry', () => {
+    expect(GIT_SYNC_LEASE_REFRESH_DEADLINE_MS).toBeLessThan(60_000);
+  });
+
+  it('settles at the deadline when the refresh never does, and reports it', async () => {
+    const t = manualTimers();
+    const onDeadline = vi.fn();
+    let settled = false;
+    const bounded = boundLeaseRefresh(new Promise<void>(() => undefined), 1_000, onDeadline, t.timers).then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    t.fireAll();
+    await bounded;
+    expect(settled).toBe(true);
+    expect(onDeadline).toHaveBeenCalledOnce();
+  });
+
+  it('a prompt refresh settles the pass, clears the timer and never reports a deadline', async () => {
+    const t = manualTimers();
+    const onDeadline = vi.fn();
+    await boundLeaseRefresh(Promise.resolve(), 1_000, onDeadline, t.timers);
+    expect(t.pendingCount()).toBe(0);
+    expect(onDeadline).not.toHaveBeenCalled();
+  });
+
+  it('a rejected refresh still settles the pass (no unhandled rejection)', async () => {
+    const t = manualTimers();
+    await expect(boundLeaseRefresh(Promise.reject(new Error('pool closed')), 1_000, vi.fn(), t.timers)).resolves.toBeUndefined();
+    expect(t.pendingCount()).toBe(0);
+  });
+
+  it('an abandoned refresh that confirms late still moves the fence forward', async () => {
+    const { fence, advance } = fenceAt(0);
+    const t = manualTimers();
+    let finishHung!: () => void;
+    const sentAt = advance(60_000);
+    const hung = new Promise<void>((resolve) => {
+      finishHung = () => {
+        fence.confirm(sentAt);
+        resolve();
+      };
+    });
+    const pass = boundLeaseRefresh(hung, 1_000, vi.fn(), t.timers);
+    t.fireAll();
+    await pass;
+    // The next heartbeat's fresh refresh confirms; then the abandoned one lands late.
+    fence.confirm(advance(60_000));
+    finishHung();
+    await hung;
+    advance(LIMIT - 60_001);
     expect(() => fence.assertHeld()).not.toThrow();
   });
 });

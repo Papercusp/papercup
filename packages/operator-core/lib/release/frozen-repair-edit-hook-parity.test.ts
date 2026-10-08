@@ -1,4 +1,4 @@
-import { mkdtempSync, existsSync, rmSync } from 'node:fs';
+import { mkdtempSync, existsSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -24,6 +24,9 @@ import {
   parseMcpToolResult,
   recordOneHunk,
   scratchUriToPath,
+  markersDir as hookMarkersDir,
+  readMarkers as hookReadMarkers,
+  selectMarker as hookSelectMarker,
 } from '../../../../apps/operator/scripts/hooks/cc/posttooluse-frozen-candidate-edit-nudge.mjs';
 import { hunksFromToolCall } from './frozen-repair-edit-ledger';
 
@@ -197,6 +200,83 @@ describe('marker projection round-trip', () => {
 
   it('reads a corrupt marker as absent rather than crashing the hook', () => {
     expect(readFrozenRepairMarker('/definitely/not/a/marker.json')).toBeNull();
+  });
+});
+
+/**
+ * EI-24313562050732849 — the round-trip suite above passes ONE explicit path to both the writer
+ * and the reader, so it pinned the marker FORMAT while the two DEFAULT locations drifted apart:
+ * the writer moved to per-install `frozen-repair-edit-markers/<scope>.json` and the hook kept
+ * reading a global file nothing wrote, silently dropping every repair hunk. These cases use
+ * each side's default location, so that split fails here instead of at admission time.
+ */
+describe('marker LOCATION parity — the hook reads where the writer writes', () => {
+  type Target = Parameters<typeof projectFrozenRepairMarker>[1];
+  const target = (installSlug: string): Target => ({ workspaceId: 'ws-parity', installSlug }) as unknown as Target;
+  const queue = (phase: string, candidate = 'c'.repeat(40)): FrozenCandidateRepairQueue =>
+    ({
+      candidate,
+      repairHead: 'r'.repeat(40),
+      phase,
+      failingTests: ['a/b.test.ts'],
+      updatedAtMs: 7,
+    }) as unknown as FrozenCandidateRepairQueue;
+  const withStateDir = (fn: () => void) => {
+    const dir = mkdtempSync(join(tmpdir(), 'frozen-marker-location-'));
+    const prev = process.env.PAPERCUSP_STATE_DIR;
+    process.env.PAPERCUSP_STATE_DIR = dir;
+    try {
+      fn();
+    } finally {
+      if (prev === undefined) delete process.env.PAPERCUSP_STATE_DIR;
+      else process.env.PAPERCUSP_STATE_DIR = prev;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+
+  it('finds the marker the writer projects at its DEFAULT location', () => {
+    withStateDir(() => {
+      projectFrozenRepairMarker(queue('repair-in-progress'), target('papercusp'));
+      const markers = hookReadMarkers();
+      expect(markers).toHaveLength(1);
+      expect(markers[0].candidate).toBe('c'.repeat(40));
+      expect(hookSelectMarker(markers, '/w/papercusp')?.candidate).toBe('c'.repeat(40));
+    });
+  });
+
+  it('reads nothing once the writer clears the marker', () => {
+    withStateDir(() => {
+      projectFrozenRepairMarker(queue('repair-in-progress'), target('papercusp'));
+      projectFrozenRepairMarker(queue('ready-to-test'), target('papercusp'));
+      expect(hookReadMarkers()).toEqual([]);
+    });
+  });
+
+  it('picks the edited install among several frozen installs and refuses to guess otherwise', () => {
+    withStateDir(() => {
+      projectFrozenRepairMarker(queue('repair-in-progress', 'a'.repeat(40)), target('papercusp'));
+      projectFrozenRepairMarker(queue('repair-in-progress', 'b'.repeat(40)), target('crm'));
+      const markers = hookReadMarkers();
+      expect(markers).toHaveLength(2);
+      expect(hookSelectMarker(markers, '/w/papercusp')?.candidate).toBe('a'.repeat(40));
+      expect(hookSelectMarker(markers, '/w/crm')?.candidate).toBe('b'.repeat(40));
+      expect(hookSelectMarker(markers, '/w/portal')).toBeNull();
+      expect(hookSelectMarker(markers, null)).toBeNull();
+      const crmOnly = markers.filter((m: { candidate: string }) => m.candidate === 'b'.repeat(40));
+      expect(hookSelectMarker(crmOnly, '/w/papercusp')).toBeNull();
+    });
+  });
+
+  it('a corrupt marker file reads as absent without hiding the valid ones', () => {
+    withStateDir(() => {
+      projectFrozenRepairMarker(queue('repair-in-progress'), target('papercusp'));
+      writeFileSync(join(hookMarkersDir(), 'zz-corrupt.json'), '{not json', 'utf8');
+      expect(hookReadMarkers()).toHaveLength(1);
+    });
+  });
+
+  it('a missing marker directory reads as no markers', () => {
+    expect(hookReadMarkers('/definitely/not/a/marker-dir')).toEqual([]);
   });
 });
 

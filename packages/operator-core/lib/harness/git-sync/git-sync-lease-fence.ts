@@ -87,3 +87,53 @@ export function createGitSyncLeaseFence(opts: {
     },
   };
 }
+
+/**
+ * EI-25452296370086757: the longest ONE lease-refresh pass may stay unsettled before
+ * the heartbeat abandons it. Below the 60 s heartbeat interval, so the very next tick
+ * can start a fresh refresh instead of skipping behind the hung one.
+ */
+export const GIT_SYNC_LEASE_REFRESH_DEADLINE_MS = 45_000;
+
+export interface LeaseRefreshTimers {
+  set: (cb: () => void, ms: number) => unknown;
+  clear: (handle: unknown) => void;
+}
+
+const realLeaseRefreshTimers: LeaseRefreshTimers = {
+  set: (cb, ms) => {
+    const handle = setTimeout(cb, ms);
+    handle.unref?.();
+    return handle;
+  },
+  clear: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+};
+
+/**
+ * Bound one lease-refresh pass by `deadlineMs`.
+ *
+ * The heartbeat allows only one refresh in flight, so a refresh that never settles (a
+ * pool or lock wait with no timeout) used to block every later refresh until the fence
+ * tripped `unconfirmed` and aborted a progressing fire (2026-10-08: 12 minutes of work
+ * lost with no heartbeat error logged). It also made the stop function wait forever.
+ * The returned promise settles at the earlier of the attempt or the deadline; on the
+ * deadline `onDeadline` runs (so a hung refresh is now LOGGED, which distinguishes it
+ * from a heartbeat that never fired) and the attempt keeps running unobserved. A late
+ * confirmation from it still reaches the fence, which only moves forward.
+ */
+export function boundLeaseRefresh(
+  attempt: Promise<void>,
+  deadlineMs: number,
+  onDeadline: () => void,
+  timers: LeaseRefreshTimers = realLeaseRefreshTimers,
+): Promise<void> {
+  let handle: unknown;
+  const settledAttempt = attempt.catch(() => undefined);
+  const deadline = new Promise<void>((resolve) => {
+    handle = timers.set(() => {
+      onDeadline();
+      resolve();
+    }, deadlineMs);
+  });
+  return Promise.race([settledAttempt, deadline]).finally(() => timers.clear(handle));
+}

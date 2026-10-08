@@ -23,6 +23,7 @@ import { activeWorkspaceId } from './workspace-registry';
 import { isDeepStrictEqual } from 'node:util';
 import { randomUUID } from 'node:crypto';
 import { activeWorkItemDependencyRefsSql } from './dbos/work-item-deps-store';
+import { issueOwnAuthorWhereSql } from './work-items-admission';
 import type { WorkItem } from './work-items';
 
 /** Issue-family terminal statuses (work-items.ts ISSUE_FAMILY_STATES: open/resolved/closed).
@@ -81,7 +82,12 @@ export type DependencyBlockedClearPlan = {
 export function planDependencyBlockedClear(
   expected: DependencyBlockedRow,
   current: DependencyBlockedRow,
-  conditions: { hasLiveDependency: boolean; hasActiveExternalBlocker: boolean },
+  conditions: {
+    hasLiveDependency: boolean; hasActiveExternalBlocker: boolean;
+    /** The row is at origin='remote' but authored by THIS node's own key (WI-10003565): ours to
+     *  clear, and the clear heals the origin. Absent ⇒ a remote row stays reserved for its peer. */
+    ownNodeAuthored?: boolean;
+  },
 ): DependencyBlockedClearPlan {
   if (current.state !== 'blocked') return { outcome: 'not-blocked' };
   if (expected.state !== current.state || expected.takenBy !== current.takenBy ||
@@ -92,7 +98,8 @@ export function planDependencyBlockedClear(
   const payload = current.payload && typeof current.payload === 'object' && !Array.isArray(current.payload)
     ? current.payload as Record<string, unknown> : {};
   if (conditions.hasActiveExternalBlocker) return { outcome: 'external-blocker' };
-  if (current.origin === 'remote' || payload.needsOwnerAction === true || payload.needsHuman === true) {
+  if ((current.origin === 'remote' && !conditions.ownNodeAuthored)
+      || payload.needsOwnerAction === true || payload.needsHuman === true) {
     return { outcome: 'reserved' };
   }
   const generatedLease = payload.held_open_reason === 'blocked';
@@ -130,11 +137,13 @@ export async function reconcileClearedDependencyBlockedState(
   return sql.begin(async (tx) => {
     const rows = await tx<Array<{
       state: string; taken_by: string | null; updated_ts: number | string; payload: unknown; origin: string;
+      own_node: boolean | null;
     }>>`
-      SELECT status AS state, taken_by, updated_ts, payload, origin
-        FROM harness_shared.work_items
-       WHERE workspace_id = ${workspaceId} AND harness_slug = ${item.harness} AND feature_id = ${item.id}
-       FOR UPDATE`;
+      SELECT wi.status AS state, wi.taken_by, wi.updated_ts, wi.payload, wi.origin,
+             (wi.origin = 'remote' AND ${issueOwnAuthorWhereSql(tx as unknown as typeof sql, workspaceId)}) AS own_node
+        FROM harness_shared.work_items wi
+       WHERE wi.workspace_id = ${workspaceId} AND wi.harness_slug = ${item.harness} AND wi.feature_id = ${item.id}
+       FOR UPDATE OF wi`;
     const row = rows[0];
     if (!row) return 'stale-control';
     const current: DependencyBlockedRow = {
@@ -149,11 +158,15 @@ export async function reconcileClearedDependencyBlockedState(
     const { activeExternalBlockers } = await import('./external-blockers');
     const plan = planDependencyBlockedClear(expected, current, {
       hasLiveDependency: live.length > 0, hasActiveExternalBlocker: activeExternalBlockers(current.payload).length > 0,
+      ownNodeAuthored: row.own_node === true,
     });
     if (plan.outcome !== 'cleared') return plan.outcome;
+    // An own-node row stranded at origin='remote' is healed in the same write that clears it:
+    // a separate heal would wait on the FOR UPDATE lock this transaction holds.
     await tx`
       UPDATE harness_shared.work_items
          SET status = 'open', payload = ${JSON.stringify(plan.nextPayload)}::text::jsonb, updated_ts = ${Date.now()}
+             ${row.own_node === true ? tx`, origin = 'local'` : tx``}
        WHERE workspace_id = ${workspaceId} AND harness_slug = ${item.harness} AND feature_id = ${item.id}`;
     await tx`
       INSERT INTO harness_shared.audit_log (id, ts, actor, action, subject, details, workspace_id)

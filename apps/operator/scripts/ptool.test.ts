@@ -28,6 +28,7 @@ import {
   resolveContextTier,
   resolvePayloadHarnessScope,
   resolveHarnessScope,
+  mergeConvenienceArgs,
   resolveWorkspaceScope,
   resolvePtoolOperatorBase,
   resolvePtoolOperatorCandidates,
@@ -326,6 +327,71 @@ describe('ptool MCP identity binding', () => {
 
     expect(resolvePayloadHarnessScope(payload, { toolName: 'tools:invoke' })).toBe('papercusp');
     expect(resolveHarnessScope({ payload, toolName: 'tools:invoke', env })).toBe('papercusp');
+  });
+
+  it('injects ambient harness only on variants that accept the scope argument', () => {
+    const scope = { workspace: null, harness: 'papercusp' };
+    const flattenedReviewSchema = {
+      type: 'object',
+      properties: {
+        mode: { type: 'string', enum: ['claim', 'claim-next', 'resubmit'] },
+        id: { type: 'string' },
+        harness: { type: 'string' },
+      },
+      required: ['mode'],
+      additionalProperties: false,
+    };
+
+    expect(mergeConvenienceArgs(
+      { mode: 'resubmit', id: 'WI-7' },
+      scope,
+      flattenedReviewSchema,
+      { toolName: 'improvements:agent-review' },
+    )).toEqual({ mode: 'resubmit', id: 'WI-7' });
+    expect(mergeConvenienceArgs(
+      { mode: 'claim', id: 'WI-8' },
+      scope,
+      flattenedReviewSchema,
+      { toolName: 'improvements:agent-review' },
+    )).toEqual({ mode: 'claim', id: 'WI-8', harness: 'papercusp' });
+    expect(mergeConvenienceArgs(
+      { mode: 'claim-next' },
+      scope,
+      flattenedReviewSchema,
+      { toolName: 'improvements:agent-review' },
+    )).toEqual({ mode: 'claim-next', harness: 'papercusp' });
+
+    const flattenedRehomeSchema = {
+      type: 'object',
+      properties: { op: { type: 'string', enum: ['classify', 'move'] }, id: { type: 'string' }, harness: { type: 'string' } },
+      required: ['op', 'id'],
+      additionalProperties: false,
+    };
+    expect(mergeConvenienceArgs(
+      { op: 'classify', id: 'WI-9' },
+      scope,
+      flattenedRehomeSchema,
+      { toolName: 'work_items:rehome' },
+    )).toEqual({ op: 'classify', id: 'WI-9' });
+
+    const flattenedWorkScopeSchema = {
+      type: 'object',
+      properties: { op: { type: 'string', enum: ['get', 'check', 'set', 'clear'] }, harness: { type: 'string' } },
+      required: ['op'],
+      additionalProperties: false,
+    };
+    expect(mergeConvenienceArgs(
+      { op: 'get' },
+      scope,
+      flattenedWorkScopeSchema,
+      { toolName: 'workspace:work_scope' },
+    )).toEqual({ op: 'get' });
+    expect(mergeConvenienceArgs(
+      { op: 'check' },
+      scope,
+      flattenedWorkScopeSchema,
+      { toolName: 'workspace:work_scope' },
+    )).toEqual({ op: 'check', harness: 'papercusp' });
   });
 
   it('rejects unsupported tool-specific flags instead of silently dropping them', () => {
@@ -657,6 +723,15 @@ describe('ptool call deadlines', () => {
       name: 'coord:wake',
       args: { to: 'su-parked-agent', note: 'timeout mapping regression' },
     })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    // coord:thread has no shorter tool timeout than the read-only MCP deadline;
+    // preserve the 60s client budget on direct and deferred calls. This is a
+    // client/server contract guard, not proof of the historical report's cause.
+    expect(timeoutForTool('coord:thread')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', {
+      name: 'coord:thread',
+      args: { root_msg_id: 'coord-thread-timeout-regression' },
+    })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS).toBe(60_000);
     // EI-21863905839650704: coord:declare-intent declares no timeoutSec (bound
     // only by the flat 55s MCP_DEADLINE_MS floor), and a reporter observed the
     // flat 30s client cutoff abort the call with "mutation may have executed"
@@ -958,6 +1033,14 @@ describe('ptool call deadlines', () => {
     expect(timeoutForTool('tools:invoke', {
       name: 'scheduler:get_next',
       args: { harness: 'papercusp' },
+    })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    // EI-25420975795006444: set_state inherits MCP's 55s server deadline;
+    // keep both transports above it so a committed write returns its receipt.
+    const setStateArgs = { id: 'WI-123', state: 'open' };
+    expect(timeoutForTool('work_items:set_state', setStateArgs)).toBeGreaterThan(55_000);
+    expect(timeoutForTool('tools:invoke', {
+      name: 'work_items:set_state',
+      args: setStateArgs,
     })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     // EI-21574172453638335: locks:acquire's bounded blocking wait must not
     // fall through to the flat 30s client deadline, including via tools:invoke.

@@ -6,7 +6,9 @@ import {
   authorizeScratchReference,
   parseScratchReference,
   ScratchReferenceError,
+  readVolatileScratchReference,
   scratchReferenceBodyByteOffset,
+  storeVolatileScratchReference,
   writeScratchReference,
 } from './scratch-reference';
 
@@ -128,5 +130,66 @@ describe('stable scratch references', () => {
 
   it('returns null for legacy scratch files', () => {
     expect(parseScratchReference(Buffer.from('legacy payload'))).toBeNull();
+  });
+
+  it('keeps volatile recovery bytes exact and enforces workspace, owner, and expiry', () => {
+    const payload = Buffer.from('volatile result with exact bytes: \u2603', 'utf8');
+    const stored = storeVolatileScratchReference({
+      payload,
+      workspaceId: 'ws',
+      ownerId: 'su-1',
+      audience: 'owner',
+      mediaType: 'text/plain',
+      content: [{ index: 0, type: 'text', byteCount: payload.length }],
+      bodyOffsetInPayload: 0,
+    });
+
+    expect(stored).not.toBeNull();
+    expect(stored!.uri).toMatch(/^papercusp:\/\/scratch-memory\/[0-9a-f-]{36}$/);
+    expect(stored!.manifest).toMatchObject({
+      workspaceId: 'ws',
+      ownerId: 'su-1',
+      audience: 'owner',
+      byteCount: payload.length,
+      bodyOffsetInPayload: 0,
+    });
+    expect(readVolatileScratchReference(stored!.uri, {
+      workspaceId: 'ws', ownerId: 'su-1',
+    }).payload).toEqual(payload);
+
+    expect(() => readVolatileScratchReference(stored!.uri, {
+      workspaceId: 'other', ownerId: 'su-1',
+    })).toThrowError(/different workspace/);
+    expect(() => readVolatileScratchReference(stored!.uri, {
+      workspaceId: 'ws', ownerId: 'su-2',
+    })).toThrowError(/restricted to its creating owner/);
+    expect(() => readVolatileScratchReference(stored!.uri, {
+      workspaceId: 'ws', ownerId: 'su-1', nowMs: Date.parse(stored!.manifest.expiresAt),
+    })).toThrowError(/expired/);
+    expect(() => readVolatileScratchReference(stored!.uri, {
+      workspaceId: 'ws', ownerId: 'su-1',
+    })).toThrowError(/no longer available/);
+  });
+
+  it('enforces the volatile entry and cache-count bounds', () => {
+    const tooLarge = storeVolatileScratchReference({
+      payload: Buffer.alloc(16 * 1024 * 1024 + 1),
+      workspaceId: 'ws',
+      audience: 'workspace',
+      mediaType: 'application/octet-stream',
+    });
+    expect(tooLarge).toBeNull();
+
+    const refs = Array.from({ length: 65 }, (_, index) => storeVolatileScratchReference({
+      payload: `entry-${index}`,
+      workspaceId: 'ws',
+      audience: 'workspace',
+      mediaType: 'text/plain',
+    }));
+    expect(refs.every((entry) => entry !== null)).toBe(true);
+    expect(() => readVolatileScratchReference(refs[0]!.uri, { workspaceId: 'ws' }))
+      .toThrowError(/no longer available/);
+    expect(readVolatileScratchReference(refs.at(-1)!.uri, { workspaceId: 'ws' }).payload.toString())
+      .toBe('entry-64');
   });
 });
