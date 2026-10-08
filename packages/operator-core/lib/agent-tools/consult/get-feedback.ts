@@ -33,6 +33,7 @@ import { hardText, LIMITS } from '../limits';
 // registry, never typed: a tool description is prose that describes code, and P-006
 // found five hand-maintained copies of this same bound already stale in the tree.
 import { DEFAULT_MIN_RESPONDERS, DEFAULT_MAX_RESPONDERS } from '../../consult/selection-policies';
+import { AGENT_LAUNCH_HANDLER_TIMEOUT_SEC } from '../../agent-kickoff/launch-budgets.mjs';
 import { reconcileInterestEventAwaits } from '../../interest-auto-arm';
 import { consultFeedbackAbortCompletionReceipt } from './abort-completion';
 
@@ -54,6 +55,9 @@ export default defineTool({
   },
   capability: 'coord:write',
   requirePrincipal: false,
+  // Dispatch can wait through the shared kickoff and first-turn proof budget;
+  // keep the caller deadline beyond those synchronous launch steps.
+  timeoutSec: AGENT_LAUNCH_HANDLER_TIMEOUT_SEC,
   abortCompletionReceipt: consultFeedbackAbortCompletionReceipt,
   agentRoles: [...COORD_ROLES],
   args: z.object({

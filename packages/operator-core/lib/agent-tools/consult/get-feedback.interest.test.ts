@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
+import { AGENT_LAUNCH_HANDLER_TIMEOUT_SEC } from '../../agent-kickoff/launch-budgets.mjs';
 
 const h = vi.hoisted(() => ({
   getFeedbackCore: vi.fn(),
@@ -170,6 +171,15 @@ describe('consult:get_feedback requester interest handle (P-024)', () => {
 });
 
 describe('consult:get_feedback requester guidance', () => {
+  it('uses the shared handler timeout budget for synchronous consult dispatch', () => {
+    const projected = lookupByMcpName('consult:get_feedback');
+    expect(projected).toBeDefined();
+    if (!projected) throw new Error('consult:get_feedback was not projected');
+    const timeoutSec = (projected as unknown as { timeoutSec?: number }).timeoutSec;
+    expect(timeoutSec).toBe(AGENT_LAUNCH_HANDLER_TIMEOUT_SEC);
+    expect(timeoutSec).toBeGreaterThan(55);
+  });
+
   it('keeps the retired reporting verb out of the production registration entrypoint', () => {
     const entrypoint = readFileSync(new URL('../index.ts', import.meta.url), 'utf8');
     expect(entrypoint).not.toMatch(/import\s+['"]\.\/consult\/reconcile['"]/);
