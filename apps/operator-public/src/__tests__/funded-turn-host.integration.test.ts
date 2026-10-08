@@ -9,7 +9,8 @@ import { meteredUsageRoute } from '../routes/metered-usage';
 import { makeSqliteDb } from './sqlite-d1';
 import { makeEnv } from './fake-d1';
 import { FundedIdentityTurnStore, fundedIdentityTurnId, type FundedIdentityTurnBinding } from '@papercusp/operator-core/lib/cupboard/funded-turn-store';
-import { FundedIdentityTurnHost } from '@papercusp/operator-core/lib/cupboard/funded-turn-host';
+import { FundedIdentityTurnHost, FundedToolTurnHost } from '@papercusp/operator-core/lib/cupboard/funded-turn-host';
+import { FundedToolTurnStore, type FundedToolTurnBinding, type FundedToolTurnResult } from '@papercusp/operator-core/lib/cupboard/funded-tool-turn-store';
 import { identityPerUseOfferTerms } from '@papercusp/operator-core/lib/cupboard/identity-per-use-offer';
 import type { IdentityTurnBilledCost } from '@papercusp/operator-core/lib/cupboard/shadow-metering-reader';
 
@@ -24,6 +25,8 @@ beforeAll(async () => {
   await applyMigrationForTest(db.sql, resolve('../../libs/papercusp/libs/db/sql/1423-cupboard-funded-turn-ledger.sql'));
   const nativeMigration = resolve('../../libs/papercusp/libs/db/sql/1424-funded-turn-native-binding.sql');
   await applyMigrationForTest(db.sql, existsSync(nativeMigration) ? nativeMigration : nativeMigration + '.DRAFT');
+  const toolMigration = resolve('../../libs/papercusp/libs/db/sql/1426-funded-tool-turn-state.sql');
+  await applyMigrationForTest(db.sql, existsSync(toolMigration) ? toolMigration : toolMigration + '.DRAFT');
   peerSql = postgres(db.url, { prepare: false });
 });
 afterAll(async () => { await peerSql?.end({ timeout: 1 }); await db?.cleanup(); });
@@ -93,12 +96,144 @@ function harness() {
   const binding: FundedIdentityTurnBinding = { workspaceId: 'host-ws-' + ++seq, ownerId: 'su-buyer', principalId: 'system:superuser',
     nativeSessionId: 'native-session', nativeTurnId: 'turn-1', specificationRevision: 'spec-1', stateRevision: 'state-1',
     payer: 'gh:7', seller: 'gh:9', offerId: 'o1', channelId: 'c1', offer, inferenceCeilingMicros: 1000n, expiresAtMs: now + 100000 };
-  return { raw, requests, binding, host, signReceipt, signVoucher, loseReserve: (readbackFails = false) => { loseReserve = true; failReadback = readbackFails; },
+  return { raw, requests, binding, host, payerTransport, sellerTransport, signReceipt, signVoucher, loseReserve: (readbackFails = false) => { loseReserve = true; failReadback = readbackFails; },
     loseSettlement: (readbackFails = false) => { loseSettlement = true; failReadback = readbackFails; }, unavailable: () => { unavailable = true; },
     rejectSettlement: () => { rejectSettlement = true; }, changedOrigin: () => { changedOrigin = true; },
     recover: () => { unavailable = false; loseReserve = false; loseSettlement = false; rejectSettlement = false; changedOrigin = false; },
     setCost: (value: bigint) => { cost = value; } };
 }
+
+function toolHarness() {
+  const h = harness();
+  const terms = { unitPriceMicros: 250, meterUnit: 'tool-call', priceVersion: 'tool-v1', splitManifestHash: 'sha256:' + 'b'.repeat(64) };
+  h.raw.prepare('UPDATE commerce_products SET sku_ref=? WHERE product_id=?').run('sku:tool@1.0.0', 'p1');
+  h.raw.prepare('UPDATE commerce_offers SET unit_price_micros=?,meter_unit=?,price_version=?,split_manifest_hash=? WHERE offer_id=?')
+    .run(terms.unitPriceMicros, terms.meterUnit, terms.priceVersion, terms.splitManifestHash, 'o1');
+  const binding: FundedToolTurnBinding = { kind: 'tool', workspaceId: h.binding.workspaceId, ownerId: 'su-buyer',
+    principalId: 'system:superuser', executionId: 'authenticated-native-session', admissionId: 'owner-command',
+    provenanceHash: 'c'.repeat(64), payer: 'gh:7', seller: 'gh:9', channelId: 'c1', quantityCeiling: 4n,
+    expiresAtMs: h.binding.expiresAtMs, offer: { offerId: 'o1', productId: 'p1', skuRef: 'sku:tool@1.0.0',
+      creatorId: 'gh:9', active: true, productActive: true, terms } };
+  const store = new FundedToolTurnStore(db.sql);
+  const host = (sql = db.sql) => new FundedToolTurnHost({ store: new FundedToolTurnStore(sql),
+    payerTransport: h.payerTransport, sellerTransport: h.sellerTransport, signVoucher: h.signVoucher, signReceipt: h.signReceipt });
+  const accepted = (result: FundedToolTurnResult) => { if (!result.ok) throw new Error(result.code + ': ' + result.detail); return result.turn; };
+  const call = (usageNonce: string) => ({ usageNonce, payer: binding.payer, releaseRef: binding.offer.skuRef, quantity: 1n });
+  return { ...h, binding, store, host, accepted, call };
+}
+
+describe('aggregate funded tool host with real PG CAS and migrated hosted D1', () => {
+  it('preserves identity nonempty population constraints and requires a durable running tool snapshot', async () => {
+    const identity = harness();
+    const admittedIdentity = await identity.host().admit(identity.binding);
+    if (!admittedIdentity.ok) throw new Error(admittedIdentity.detail);
+    await expect(db.sql`UPDATE harness_shared.cupboard_funded_turns SET state = 'closed',
+      usage_event_keys = '[]'::jsonb, closed_at_ms = ${Date.now()}
+      WHERE workspace_id = ${identity.binding.workspaceId} AND turn_id = ${admittedIdentity.turn.turnId}`)
+      .rejects.toMatchObject({ code: '23514', constraint_name: 'cupboard_funded_turns_closed_population' });
+    const tool = toolHarness(), admittedTool = tool.accepted(await tool.host().admit(tool.binding));
+    await expect(db.sql`UPDATE harness_shared.cupboard_funded_turns SET local_meter_state = NULL
+      WHERE workspace_id = ${tool.binding.workspaceId} AND turn_id = ${admittedTool.turnId}`)
+      .rejects.toMatchObject({ code: '23514', constraint_name: 'cupboard_funded_turns_tool_snapshot' });
+  });
+
+  it.each([0, 2, 4])('reserves once, settles %i served calls and releases the unused ceiling', async count => {
+    const h = toolHarness(), host = h.host(), admitted = h.accepted(await host.admit(h.binding)), meter = host.localTurn(admitted);
+    const posts = () => h.requests.filter(request => request.body !== null);
+    expect(posts()).toHaveLength(1);
+    for (let index = 0; index < count; index++) expect(await meter.invoke(h.call('call-' + index), () => 'served')).toBe('served');
+    expect(posts()).toHaveLength(1); // local SQL/signing only on dispatch
+    expect(h.accepted(await host.complete(h.binding.workspaceId, admitted.turnId, meter, Date.now())).state).toBe('settled');
+    expect(posts()).toHaveLength(2);
+    expect(h.raw.prepare('SELECT reserved_micros,amount_micros,meter_quantity,settled_meter_quantity,state FROM usage_receipts').get())
+      .toMatchObject({ reserved_micros: 1000, amount_micros: count * 250, meter_quantity: 4, settled_meter_quantity: count, state: 'settled' });
+    expect(await h.store.readActive(h.binding)).toEqual({ ok: true, turn: null });
+    expect(h.accepted(await host.reconcileCompletion(h.binding.workspaceId, admitted.turnId)).state).toBe('settled');
+    expect(posts()).toHaveLength(2);
+    await expect(meter.invoke(h.call('late'), () => { throw new Error('must not enter'); })).rejects.toMatchObject({ code: 'turn-admission-closed' });
+  });
+
+  it('charges a thrown handler and refuses cap exhaustion before entering another handler', async () => {
+    const h = toolHarness(), b = { ...h.binding, quantityCeiling: 1n }, host = h.host();
+    const admitted = h.accepted(await host.admit(b)), meter = host.localTurn(admitted);
+    await expect(meter.invoke(h.call('failed'), () => { throw new Error('handler failed'); })).rejects.toThrow('handler failed');
+    const extra = vi.fn();
+    await expect(meter.invoke(h.call('extra'), extra)).rejects.toMatchObject({ code: 'cap-exhausted' });
+    expect(extra).not.toHaveBeenCalled();
+    expect(h.accepted(await host.complete(b.workspaceId, admitted.turnId, meter, Date.now())).settlementOutbox)
+      .toMatchObject({ meterQuantity: '1', amountMicros: '250' });
+  });
+
+  it('confirms a lost reservation acknowledgement without electing the same admission twice', async () => {
+    const h = toolHarness(); h.loseReserve();
+    const admitted = h.accepted(await h.host().admit(h.binding));
+    expect(admitted.state).toBe('running');
+    expect(await h.host(peerSql).admit(h.binding)).toMatchObject({ ok: false, code: 'turn-already-entered' });
+    expect(h.raw.prepare('SELECT COUNT(*) AS n FROM usage_receipts').get()).toMatchObject({ n: 1 });
+  });
+
+  it('retains uncertain funding until authoritative readback and refuses local serving before entry', async () => {
+    const h = toolHarness(); h.loseReserve(true);
+    expect(await h.host().admit(h.binding)).toMatchObject({ ok: false });
+    const active = await h.store.readActive(h.binding); if (!active.ok || !active.turn) throw new Error('missing hold');
+    expect(active.turn.state).toBe('prepared');
+    expect(() => h.host().localTurn(active.turn!)).toThrow('entered funded tool snapshot');
+    h.recover();
+    const funded = h.accepted(await h.host(peerSql).reconcileFunding(h.binding.workspaceId, active.turn.turnId));
+    expect(funded.state).toBe('funded');
+    expect(h.accepted(await h.host().admit(h.binding)).state).toBe('running');
+    expect(h.raw.prepare('SELECT COUNT(*) AS n FROM usage_receipts').get()).toMatchObject({ n: 1 });
+  });
+
+  it('elects one local handler across two processes restoring the same funded snapshot', async () => {
+    const h = toolHarness(), host = h.host(), admitted = h.accepted(await host.admit(h.binding));
+    const first = host.localTurn(admitted), second = h.host(peerSql).localTurn(admitted), execute = vi.fn(() => 'served');
+    const outcomes = await Promise.allSettled([first.invoke(h.call('a'), execute), second.invoke(h.call('b'), execute)]);
+    expect(outcomes.filter(result => result.status === 'fulfilled')).toHaveLength(1);
+    expect(execute).toHaveBeenCalledOnce();
+    const failed = outcomes.find(result => result.status === 'rejected');
+    expect(failed?.status === 'rejected' && failed.reason.code).toBe('stale-turn');
+    const latest = (await h.store.read(h.binding.workspaceId, admitted.turnId))!;
+    expect(Object.keys(latest.meterState!.units)).toHaveLength(1);
+    expect(h.accepted(await host.complete(h.binding.workspaceId, admitted.turnId, host.localTurn(latest), Date.now())).state).toBe('settled');
+  });
+
+  it('withdraws admission while a handler is in flight and retains its hold until completed', async () => {
+    const h = toolHarness(), host = h.host(), admitted = h.accepted(await host.admit(h.binding)), meter = host.localTurn(admitted);
+    let entered!: () => void, finish!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const running = meter.invoke(h.call('in-flight'), async () => { entered(); await new Promise<void>(resolve => { finish = resolve; }); });
+    await started;
+    expect(await host.complete(h.binding.workspaceId, admitted.turnId, meter, Date.now())).toMatchObject({ ok: false, code: 'tool-completion-unconfirmed' });
+    const late = vi.fn();
+    await expect(meter.invoke(h.call('revoked'), late)).rejects.toMatchObject({ code: 'turn-admission-closed' });
+    expect(late).not.toHaveBeenCalled();
+    expect(await h.store.read(h.binding.workspaceId, admitted.turnId)).toMatchObject({ state: 'running', meterState: { admissionClosed: true } });
+    finish(); await running;
+    expect(h.accepted(await host.complete(h.binding.workspaceId, admitted.turnId, meter, Date.now())).state).toBe('settled');
+  });
+
+  it('recovers a lost settlement acknowledgement from the durable signed outbox without signing again', async () => {
+    const h = toolHarness(), host = h.host(), admitted = h.accepted(await host.admit(h.binding)), meter = host.localTurn(admitted);
+    await meter.invoke(h.call('one'), () => 'served'); h.loseSettlement(true);
+    expect(await host.complete(h.binding.workspaceId, admitted.turnId, meter, Date.now())).toMatchObject({ ok: false });
+    const pending = (await h.store.read(h.binding.workspaceId, admitted.turnId))!;
+    expect(pending.state).toBe('settlement-pending');
+    const signatures = h.signReceipt.mock.calls.length; h.recover();
+    const recovered = h.accepted(await h.host(peerSql).reconcileCompletion(h.binding.workspaceId, admitted.turnId));
+    expect(recovered.settlementOutbox).toEqual(pending.settlementOutbox);
+    expect(h.signReceipt).toHaveBeenCalledTimes(signatures);
+    expect(recovered.state).toBe('settled');
+    expect(h.raw.prepare('SELECT committed_micros FROM payment_channels WHERE channel_id=?').get('c1')).toMatchObject({ committed_micros: 250 });
+  });
+
+  it('refuses changed provenance or principal and keeps tool rows out of the identity reader', async () => {
+    const h = toolHarness(), admitted = h.accepted(await h.host().admit(h.binding));
+    for (const changed of [{ provenanceHash: 'd'.repeat(64) }, { principalId: 'other-principal' }, { channelId: 'c2' }, { quantityCeiling: 3n }])
+      expect(await h.store.prepare({ ...h.binding, ...changed })).toMatchObject({ ok: false, code: 'turn-binding-changed' });
+    expect(await new FundedIdentityTurnStore(db.sql).read(h.binding.workspaceId, admitted.turnId)).toBeNull();
+  });
+});
 
 describe('trusted funded turn host with real PG CAS and migrated hosted D1', () => {
   it('composes pre-inference funding, exact native binding and hosted settlement through the awaited lifecycle', async () => {

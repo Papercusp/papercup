@@ -126,7 +126,8 @@ export class FundedIdentityTurnStore {
 
   async read(workspaceId: string, turnId: string): Promise<FundedIdentityTurn | null> {
     const [row] = await this.sql<TurnRow[]>`SELECT * FROM harness_shared.cupboard_funded_turns
-      WHERE workspace_id = ${workspaceId} AND turn_id = ${turnId}`;
+      WHERE workspace_id = ${workspaceId} AND turn_id = ${turnId}
+        AND binding->>'kind' IS DISTINCT FROM 'tool'`;
     return row ? fromRow(row) : null;
   }
 
