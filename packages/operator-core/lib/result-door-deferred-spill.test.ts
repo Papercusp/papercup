@@ -236,6 +236,52 @@ describe('result-door deferred spill (WI-10004533)', () => {
     expect(JSON.stringify(out.content)).toContain('SCRATCH_QUOTA_EXCEEDED');
     expect(spillFiles()).toHaveLength(0);
 
+    const completionPayload = {
+      ok: true,
+      results: [{
+        ok: true,
+        id: 'EI-completion-quota-1',
+        completionAuthority: 'committed',
+        countsTowardBurnDown: true,
+        workItem: { id: 'EI-completion-quota-1', state: 'resolved' },
+        completion: { summary: 'C'.repeat(BUDGET_CHARS * 3) },
+      }],
+      counts: { ok: 1, failed: 0 },
+    };
+    const completionOriginal = JSON.stringify(completionPayload);
+    const completionOut = await applyResultDoorAsync(
+      { content: [{ type: 'text' as const, text: completionOriginal }] },
+      { ...OPTS, toolName: 'work_items:complete' },
+    );
+    const completionMeta = (completionOut as { _meta?: { resultDoor?: Record<string, unknown> } })._meta?.resultDoor;
+    const completionReceipt = JSON.parse((completionOut.content[0] as { text: string }).text) as {
+      results: Array<Record<string, any>>;
+      _projection: { truncated: boolean; cursor: Record<string, unknown>; next: string };
+    };
+    expect(completionMeta).toMatchObject({
+      spillFailed: true,
+      spillErrorCode: 'SCRATCH_QUOTA_EXCEEDED',
+      spillPath: null,
+      spillUri: null,
+    });
+    expect(completionReceipt.results[0]).toMatchObject({
+      ok: true,
+      id: 'EI-completion-quota-1',
+      completionAuthority: 'committed',
+      countsTowardBurnDown: true,
+      workItem: { id: 'EI-completion-quota-1', state: 'resolved' },
+    });
+    expect(completionReceipt.results[0].completion.summary).toContain('TRUNCATED');
+    expect(completionReceipt.results[0].completion.summary.length).toBeLessThan(1_200);
+    expect(completionReceipt._projection).toMatchObject({
+      truncated: true,
+      cursor: { kind: 'unavailable', reason: 'spill-write-failed', errorCode: 'SCRATCH_QUOTA_EXCEEDED' },
+    });
+    expect(completionReceipt._projection.next).toContain('Do NOT repeat this call');
+    expect(completionReceipt._projection.next).toContain('work_items:get');
+    expect(JSON.stringify(completionOut.content).length).toBeLessThan(completionOriginal.length);
+    expect(spillFiles()).toHaveLength(0);
+
     // Non-text overflow uses the hard-envelope branch; its error must retain the same cause.
     const hard = await applyResultDoorAsync({ content: [{ type: 'image' as const,
       mimeType: 'image/png', data: 'A'.repeat(BUDGET_CHARS * 3) }] }, OPTS);

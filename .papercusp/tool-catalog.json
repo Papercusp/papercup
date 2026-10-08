@@ -29612,7 +29612,7 @@
           "POST"
         ]
       },
-      "description": "Repair first-party rubric revision snapshots. Without rubricRevision, only repairs a complete chain whose every row is the exact current body, preserving each row identity and provenance. With rubricRevision, appends one explicit snapshot only when that value equals the current plan version and the structured rubric still matches its bundled first-party source; it never reconstructs older history from current data. Dry-run by default; pass dryRun:false to apply the CAS-guarded repair.",
+      "description": "Repair rubric revision snapshots. Without rubricRevision, only repairs a first-party standard rubric chain whose every row is the exact current body, preserving each row identity and provenance. With rubricRevision, appends one explicit snapshot only for that exact current standard, non-delegated rubric version; acceptance rubrics and older versions remain fail-closed. The append is CAS-guarded and never reconstructs historical versions from current data. Dry-run by default; pass dryRun:false to apply.",
       "capabilities": [
         "plans:write"
       ],
@@ -29673,8 +29673,8 @@
         "foreign-session"
       ],
       "guidance": {
-        "when": "rubrics:get reports an immutable first-party revision cannot be projected. For a missing current version, pass rubricRevision; for a whole legacy chain repair, omit it and require every revision to be the exact current body.",
-        "notWhen": "The requested rubricRevision is not the live plan version, the current structured rubric differs from the bundled source, a snapshot already claims that version inconsistently, or the rubric is acceptance/delegated-class history. Those cases remain fail-closed.",
+        "when": "rubrics:get reports an immutable rubric revision cannot be projected. For a missing current standard version, pass rubricRevision; for a whole legacy chain repair, omit it and require every revision to be the exact current body.",
+        "notWhen": "The requested rubricRevision is not the live plan version, a snapshot already claims that version inconsistently, or the rubric is acceptance/delegated-class history. Those cases remain fail-closed.",
         "chaining": "Current-version path: rubrics:repair { rubricRef, rubricRevision, dryRun:true } → inspect the candidate → snapshot_create if a persistent backfill will be applied → rubrics:repair { rubricRef, rubricRevision, dryRun:false } → rubrics:get { rubricRef, revision: rubricRevision }. Legacy whole-chain path: omit rubricRevision and apply only when the complete history is exact-current-body."
       }
     },

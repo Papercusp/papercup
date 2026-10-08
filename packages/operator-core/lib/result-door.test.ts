@@ -1797,6 +1797,94 @@ describe('applyResultDoor', () => {
       expect((doored.content[0] as { text: string }).text.length).toBeLessThan(JSON.stringify(receipt).length);
     });
 
+    it('retains a nested work_items:complete write receipt when the aggregate spill fails', () => {
+      const scope = () => beginResultDoorAggregate({ sessionKey: 'owner-completion-receipt', outputGroupId: 'turn-1' });
+      applyResultDoor(medium(), { toolName: 'tools:invoke', workspaceId: 'ws-1', runId: RUN_ID, aggregateScope: scope() });
+      applyResultDoor(medium(), { toolName: 'tools:invoke', workspaceId: 'ws-1', runId: RUN_ID, aggregateScope: scope() });
+
+      const completion = {
+        ok: true,
+        results: [{
+          ok: true,
+          id: 'EI-completion-receipt-1',
+          completionAuthority: 'committed',
+          countsTowardBurnDown: true,
+          workItem: { id: 'EI-completion-receipt-1', state: 'resolved' },
+          completion: { summary: 'C'.repeat(4_500) },
+        }],
+        counts: { ok: 1, failed: 0 },
+      };
+      const original = JSON.stringify(completion);
+      expect(original.length).toBeGreaterThan(4_500);
+
+      const failure = Object.assign(new Error('workspace quota exhausted'), { code: 'SCRATCH_QUOTA_EXCEEDED' });
+      const doored = applyResultDoor(
+        { content: [{ type: 'text' as const, text: original }] },
+        {
+          toolName: 'tools:invoke',
+          nestedTargetToolName: 'work_items:complete',
+          workspaceId: 'ws-1',
+          runId: RUN_ID,
+          aggregateScope: scope(),
+          scratchWriteFailure: { error: failure },
+        },
+      ) as DoorableResult;
+      const output = JSON.parse((doored.content[0] as { text: string }).text) as {
+        results: Array<Record<string, any>>;
+        _projection: { truncated: boolean; cursor: Record<string, unknown>; next: string };
+      };
+
+      expect(output.results[0]).toMatchObject({
+        ok: true,
+        id: 'EI-completion-receipt-1',
+        completionAuthority: 'committed',
+        countsTowardBurnDown: true,
+        workItem: { id: 'EI-completion-receipt-1', state: 'resolved' },
+      });
+      expect(output.results[0].completion.summary).toContain('TRUNCATED');
+      expect(output.results[0].completion.summary.length).toBeLessThan(1_200);
+      expect(output._projection).toMatchObject({
+        truncated: true,
+        cursor: { kind: 'unavailable', reason: 'spill-write-failed', errorCode: 'SCRATCH_QUOTA_EXCEEDED' },
+      });
+      expect(output._projection.next).toContain('Do NOT repeat this call');
+      expect(output._projection.next).toContain('work_items:get');
+      expect((doored._meta as { resultDoor?: Record<string, unknown> }).resultDoor).toMatchObject({
+        spillFailed: true,
+        spillPath: null,
+        spillUri: null,
+        spillErrorCode: 'SCRATCH_QUOTA_EXCEEDED',
+      });
+      expect((doored.content[0] as { text: string }).text.length).toBeLessThan(original.length);
+    });
+
+    it('makes a nested work_items:complete hard-spill failure non-retryable when no receipt parses', () => {
+      const scope = () => beginResultDoorAggregate({ sessionKey: 'owner-completion-no-receipt', outputGroupId: 'turn-1' });
+      applyResultDoor(medium(), { toolName: 'tools:invoke', workspaceId: 'ws-1', runId: RUN_ID, aggregateScope: scope() });
+      applyResultDoor(medium(), { toolName: 'tools:invoke', workspaceId: 'ws-1', runId: RUN_ID, aggregateScope: scope() });
+
+      const failure = Object.assign(new Error('workspace quota exhausted'), { code: 'SCRATCH_QUOTA_EXCEEDED' });
+      const doored = applyResultDoor(
+        { content: [{ type: 'text' as const, text: 'x'.repeat(4_800) }] },
+        {
+          toolName: 'tools:invoke',
+          nestedTargetToolName: 'work_items:complete',
+          workspaceId: 'ws-1',
+          runId: RUN_ID,
+          aggregateScope: scope(),
+          scratchWriteFailure: { error: failure },
+        },
+      ) as DoorableResult;
+      const envelope = JSON.parse((doored.content[0] as { text: string }).text) as {
+        error?: { code?: string; message?: string; retryable?: boolean };
+      };
+
+      expect(envelope.error).toMatchObject({ code: 'output_spill_failed', retryable: false });
+      expect(envelope.error?.message).toContain('work_items:complete write may already have committed');
+      expect(envelope.error?.message).toContain('do NOT repeat it');
+      expect(envelope.error?.message).toContain('work_items:get');
+    });
+
     it('marks a nested coord:send hard-spill failure non-retryable when no receipt can be recovered', () => {
       const failure = Object.assign(new Error('scratch filesystem full'), { code: 'ENOSPC' });
       const doored = applyResultDoor(

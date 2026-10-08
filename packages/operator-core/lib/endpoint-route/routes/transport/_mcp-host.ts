@@ -4740,6 +4740,12 @@ export function registerMcpHost(server: McpServer): void {
                   nestedTargetToolName,
                   workspaceId: dispatchSpawnCtx.workspaceId,
                   onScratchWriteTiming: (timings) => {
+                    if (timings.progress) {
+                      trace('scratch_write_progress', {
+                        scratchWriteProgress: timings.progress,
+                      });
+                      return;
+                    }
                     const total = raced.phaseTimingsMs.scratchWrites ??= {
                       count: 0, quotaWaitMs: 0, refreshWaitMs: 0,
                       quotaRecoveryMs: 0, writeMs: 0, totalMs: 0,

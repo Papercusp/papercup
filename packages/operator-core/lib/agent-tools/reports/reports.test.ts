@@ -38,6 +38,9 @@ const {
   notifySyncInvalidateM,
   getFlagM,
   indexReportM,
+  operationBindingM,
+  operationMatchM,
+  getWorkItemM,
 } = vi.hoisted(() => ({
   publishReportM: vi.fn(),
   getReportM: vi.fn(),
@@ -49,6 +52,9 @@ const {
   notifySyncInvalidateM: vi.fn(),
   getFlagM: vi.fn(),
   indexReportM: vi.fn(),
+  operationBindingM: vi.fn(),
+  operationMatchM: vi.fn(),
+  getWorkItemM: vi.fn(),
 }));
 
 // Partial mock: the real enums + the real error CLASS are kept, because the tool
@@ -78,6 +84,11 @@ vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-fallba
 vi.mock('../../detached-imports', () => ({ trackDetached: (p: unknown) => p }));
 vi.mock('../../search/report-index', () => ({ indexReport: indexReportM }));
 vi.mock('@papercusp/flags/server', () => ({ getFlag: getFlagM }));
+vi.mock('../../blueprint/operation-worker-binding', () => ({
+  readActiveOperationWorkerClaimBinding: operationBindingM,
+  matchOperationWorkerClaim: operationMatchM,
+}));
+vi.mock('../../work-items', () => ({ getWorkItem: getWorkItemM }));
 
 const publishTool = (await import('./publish')).default;
 const getTool = (await import('./get')).default;
@@ -127,6 +138,8 @@ beforeEach(() => {
   retireReportM.mockResolvedValue(record({ retiredAt: '2026-09-15T01:00:00.000Z' }));
   listReportLineageM.mockResolvedValue([record()]);
   emitAwaitedEventM.mockResolvedValue(undefined);
+  operationBindingM.mockResolvedValue({ status: 'none' });
+  operationMatchM.mockReturnValue({ allowed: true });
 });
 
 // ── R-2: origin is stamped, never accepted ───────────────────────────────────
@@ -167,7 +180,7 @@ describe('reports:publish — origin is server-stamped (R-2)', () => {
   it('the args schema REFUSES caller-supplied provenance rather than silently dropping it', () => {
     const schema = publishTool.args as { safeParse: (v: unknown) => { success: boolean } };
     expect(schema.safeParse({ title: 'A' }).success).toBe(true);
-    for (const forged of ['origin', 'author_owner_id', 'authorOwnerId', 'origin_harness_slug']) {
+    for (const forged of ['origin', 'author_owner_id', 'authorOwnerId', 'origin_harness_slug', 'requestScope', 'request_scope']) {
       expect(schema.safeParse({ title: 'A', [forged]: 'su-someone-else' }).success).toBe(false);
     }
   });
@@ -185,6 +198,45 @@ describe('reports:publish — origin is server-stamped (R-2)', () => {
 
 // ── R-1: validation + the body cap ───────────────────────────────────────────
 describe('reports:publish — validation (R-1)', () => {
+  it('binds native retry scope to the applied operation while retaining the actual author', async () => {
+    const binding = { harnessSlug: 'app', storageHarnessSlug: 'pot-home', workItemId: 'WI-native',
+      operationId: 'daily-report', specificationRevision: 'rev-1', pin: { requestKey: 'accepted-run' } };
+    operationBindingM.mockResolvedValue({ status: 'bound', binding });
+    getWorkItemM.mockResolvedValue({ id: 'WI-native', harness: 'pot-home', assignee: 'su-author', payload: {} });
+    await publishTool.handler({ title: 'Edition', request_key: 'daily' } as never, CTX as never);
+    const scope = publishReportM.mock.calls[0][2].requestScope;
+    expect(scope).toMatch(/^operation:[a-f0-9]{64}$/);
+    expect(publishReportM.mock.calls[0][2]).toMatchObject({ authorOwnerId: 'su-author', authorSessionRef: 'run-abc' });
+    expect(operationBindingM).toHaveBeenCalledWith('ws1', 'su-author');
+    expect(getWorkItemM).toHaveBeenCalledWith('WI-native', 'pot-home');
+    expect(operationMatchM).toHaveBeenCalledWith({ status: 'bound', binding }, expect.objectContaining({ id: 'WI-native' }));
+    getWorkItemM.mockResolvedValue({ id: 'WI-native', harness: 'pot-home', assignee: 'retry-author', payload: {} });
+    await publishTool.handler({ title: 'Edition', request_key: 'daily' } as never,
+      { ...CTX, ownerId: 'retry-author', runId: 'retry-session' } as never);
+    expect(publishReportM.mock.calls[1][2]).toMatchObject({ requestScope: scope, authorOwnerId: 'retry-author' });
+    operationBindingM.mockResolvedValue({ status: 'bound', binding: { ...binding, workItemId: 'WI-other' } });
+    getWorkItemM.mockResolvedValue({ id: 'WI-other', assignee: 'su-author' });
+    await publishTool.handler({ title: 'Edition', request_key: 'daily' } as never, CTX as never);
+    expect(publishReportM.mock.calls[2][2].requestScope).not.toBe(scope);
+  });
+  it('refuses unavailable, mismatched, missing and unheld operation bindings before publication', async () => {
+    operationBindingM.mockResolvedValue({ status: 'unavailable', reason: 'activation cannot be verified' });
+    expect(body(await publishTool.handler({ title: 'A', request_key: 'daily' } as never, CTX as never) as Out))
+      .toMatchObject({ ok: false, error: 'operation_binding_unavailable' });
+    operationBindingM.mockResolvedValue({ status: 'bound', binding: { workItemId: 'WI-native', storageHarnessSlug: 'pot' } });
+    for (const item of [null, { id: 'WI-native', assignee: 'peer' }, { id: 'WI-native', assignee: 'su-author' }]) {
+      getWorkItemM.mockResolvedValue(item);
+      operationMatchM.mockReturnValue({ allowed: false, reason: 'canonical pin differs' });
+      expect(body(await publishTool.handler({ title: 'A', request_key: 'daily' } as never, CTX as never) as Out))
+        .toMatchObject({ ok: false, error: 'operation_binding_mismatch' });
+    }
+    operationMatchM.mockReturnValue({ allowed: true });
+    getWorkItemM.mockResolvedValue({ id: 'WI-native', assignee: 'peer' });
+    expect(body(await publishTool.handler({ title: 'A', request_key: 'daily' } as never, CTX as never) as Out))
+      .toMatchObject({ ok: false, error: 'operation_binding_mismatch' });
+    expect(publishReportM).not.toHaveBeenCalled();
+    expect(emitAwaitedEventM).not.toHaveBeenCalled();
+  });
   it('passes a retry key separately from server-stamped origin and reports content conflicts', async () => {
     await publishTool.handler({ title: 'Edition', request_key: 'daily-2026-10-07' } as never, CTX as never);
     expect(publishReportM.mock.calls[0][1].requestKey).toBe('daily-2026-10-07');

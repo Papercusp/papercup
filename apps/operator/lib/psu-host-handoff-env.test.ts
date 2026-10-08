@@ -16,7 +16,41 @@ import {
   applyLauncherOperatorUrlEnv,
   resolveOperatorTarget,
 } from '../scripts/psu-launcher.mjs';
-import { HOST_HANDOFF_ENV_KEYS } from '../scripts/psu-pty-host.mjs';
+import { HOST_HANDOFF_ENV_KEYS, shutdownRefusalReason } from '../scripts/psu-pty-host.mjs';
+
+describe('host-code handoff launch provenance (EI-25370180511092356)', () => {
+  const carryEnv = (env: Record<string, string>) => Object.fromEntries(
+    Object.entries(env).filter(([key, value]) => HOST_HANDOFF_ENV_KEYS.includes(key) && value.length > 0),
+  );
+
+  it('retains the original launching actor for a fleetless headless successor', () => {
+    const carried = carryEnv({
+      PAPERCUSP_SID: 'su-original',
+      PAPERCUSP_AGENT: 'codex',
+      PAPERCUSP_LAUNCHED_BY: 'su-launching-agent',
+      UNRELATED_SECRET: 'must-not-cross-the-handoff',
+    });
+    expect(carried.PAPERCUSP_LAUNCHED_BY).toBe('su-launching-agent');
+    expect(carried.UNRELATED_SECRET).toBeUndefined();
+    expect(shutdownRefusalReason({
+      launchedBy: carried.PAPERCUSP_LAUNCHED_BY,
+      headless: true,
+      fleetSlug: '',
+      agentQuietMs: 60_000,
+    })).toBeNull();
+  });
+
+  it.each([{}, { PAPERCUSP_LAUNCHED_BY: '' }])('does not invent agent provenance for an unmarked host (%j)', (env) => {
+    const carried = carryEnv(env);
+    expect(carried.PAPERCUSP_LAUNCHED_BY).toBeUndefined();
+    expect(shutdownRefusalReason({
+      launchedBy: carried.PAPERCUSP_LAUNCHED_BY,
+      headless: true,
+      fleetSlug: '',
+      agentQuietMs: 60_000,
+    })).toBe('not-agent-launched');
+  });
+});
 
 describe('host-code handoff operator target provenance', () => {
   it.each(['discovery', 'env'])('retains the %s target policy through the handoff allowlist', (source) => {

@@ -2,12 +2,9 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import postgres from 'postgres';
-import { resolveScriptPgUrl } from './lib/pg-url.mjs';
 import { makeReportBackfill } from '../packages/operator-core/lib/report-backfill';
-import { publishReportWithEffects } from '../packages/operator-core/lib/report-publication';
-import { getReport } from '../packages/operator-core/lib/report-library';
 
+async function main() {
 const workspaceId = process.env.PAPERCUSP_WORKSPACE;
 const ownerId = process.env.PAPERCUSP_SID;
 assert.ok(workspaceId && workspaceId !== '*' && ownerId, 'Run in the attributed, concrete workspace');
@@ -24,6 +21,10 @@ if (!process.argv.includes('--confirm')) {
   console.log(JSON.stringify({ dryRun: true, reports: reports.map(report => ({ title: report.title,
     source: report.source, requestKey: report.requestKey, bodyBytes: Buffer.byteLength(report.bodyMd!, 'utf8') })) }, null, 2));
 } else {
+  const [{ default: postgres }, { resolveScriptPgUrl }, { publishReportWithEffects }, { getReport }] = await Promise.all([
+    import('postgres'), import('./lib/pg-url.mjs'),
+    import('../packages/operator-core/lib/report-publication'), import('../packages/operator-core/lib/report-library'),
+  ]);
   const sql = postgres(resolveScriptPgUrl().url, { max: 2 });
   try {
     for (const input of reports) {
@@ -36,3 +37,6 @@ if (!process.argv.includes('--confirm')) {
     }
   } finally { await sql.end(); }
 }
+}
+
+void main().catch(error => { console.error(error); process.exitCode = 1; });

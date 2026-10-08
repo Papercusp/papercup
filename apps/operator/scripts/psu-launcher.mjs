@@ -12090,6 +12090,10 @@ export function runWrapper(options) {
   // launches keep the guard.
   if (!preserveCwd) cwd = repoCwdOrRedirect(cwd);
   const env = { ...sanitizeInheritedEnv(process.env), ...envelopeEnv };
+  const backend = resolveBackendLaunch(wrapperBin, { env });
+  if (!backend)
+    throw new Error(`psu: no native executable found for ${wrapperBin}; install the backend and retry.`);
+  wrapperBin = backend.bin;
   args = codexManagedDaemonArgs(wrapperBin, args);
   applyHeadlessCodexBrowserPolicy(env);
   const reportPreSpawnFailure = () =>
@@ -15687,10 +15691,7 @@ async function launchResolvedResume(source, args, { tracked }) {
       "cross-backend resume requires a psu-tracked source session; raw native sessions can only resume/fork in place",
     );
   }
-  if (
-    target.operation === "port" &&
-    !(await ensureBackendInstalled(target.targetAgent))
-  ) {
+  if (!(await ensureBackendInstalled(target.targetAgent))) {
     process.exitCode = 1;
     return;
   }

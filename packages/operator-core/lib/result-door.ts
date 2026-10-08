@@ -39,9 +39,9 @@
  * rollback, mirrors PAPERCUSP_INJECTION_DOOR_OFF). Unexpected errors while
  * capping/spilling remain fail-soft and return the ORIGINAL result untouched.
  * A recognized spill-write failure instead returns a bounded
- * `output_spill_failed` error, or the existing receipt-preserving projection
- * for `scheduler:get_next` and `coord:send`; it never re-exposes an over-budget
- * result.
+ * `output_spill_failed` error, or a receipt-preserving projection for committed
+ * writes (`scheduler:get_next`, `coord:send`, and `work_items:complete`); it
+ * never re-exposes an over-budget result.
  */
 
 import { createHash, randomUUID } from 'node:crypto';
@@ -541,6 +541,59 @@ const COORD_SEND_DELIVERY_PRESERVE_PATHS = [
   'results[].wake.pickupConfirmed',
   'results[].wake.recipient_absent',
 ] as const;
+
+/**
+ * `work_items:complete` is a write. If its oversized response cannot be saved,
+ * callers still need the per-item write verdicts so they can inspect persisted
+ * state instead of replaying the close. Keep these ahead of the echoed workItem
+ * and completion records, which are the bulk that caused the spill.
+ */
+const WORK_ITEMS_COMPLETE_RECEIPT_PRESERVE_PATHS = [
+  'ok',
+  'counts.ok',
+  'counts.failed',
+  'results[].ok',
+  'results[].id',
+  'results[].error',
+  'results[].stateError',
+  'results[].stateWarning',
+  'results[].aliased',
+  'results[].requestedState',
+  'results[].appliedState',
+  'results[].completionAuthority',
+  'results[].countsTowardBurnDown',
+  'results[].authorityWarning',
+  'results[].requirementShortfallWarning',
+  'results[].terminalConflictWarning',
+  'results[].workItem.id',
+  'results[].workItem.state',
+  'results[].workItem.terminalCompletionRef',
+  'results[].finish.complete',
+  'results[].finishFailed',
+] as const;
+
+function isWorkItemsCompleteCall(input: { toolName: string; nestedTargetToolName?: string }): boolean {
+  return input.toolName === 'work_items:complete' ||
+    (input.toolName === 'tools:invoke' && input.nestedTargetToolName === 'work_items:complete');
+}
+
+const WORK_ITEMS_COMPLETE_SPILL_RECOVERY =
+  'The work_items:complete write may already have committed before its response spill failed. Do NOT repeat this call. ' +
+  'Read each preserved results[].id with work_items:get and inspect the current item state and completionAuthority ' +
+  'before deciding any follow-up; the omitted echo cannot be recovered.';
+
+function workItemsCompleteReceipt(result: DoorableResult): Record<string, unknown> | undefined {
+  const candidates = [result.structuredContent, ...result.content.filter(isTextItem).map((item) => {
+    try {
+      return JSON.parse(item.text) as unknown;
+    } catch {
+      return null;
+    }
+  })];
+  return candidates.find((value): value is Record<string, unknown> =>
+    isJsonObject(value) && Array.isArray(value.results));
+}
+
 /**
  * `dev:pipeline_position`'s marker argument exists to settle these verdicts,
  * but the handler's compact response places them after the verbose gate/queue
@@ -848,6 +901,14 @@ function spillRecoveryNote(
     'Nothing was lost: the complete result was written to the reference in `content` — page it to read it. ' +
     referenceReader;
   const innerTruncationMarkers = input.innerTruncationMarkers ?? [];
+  if (isWorkItemsCompleteCall(input)) {
+    return (
+      (input.upstreamProjection || innerTruncationMarkers.length > 0
+        ? 'The reference preserves only the completion response emitted by the tool; already-omitted fields cannot be recovered by paging. ' + referenceReader
+        : recoverable) +
+      WORK_ITEMS_COMPLETE_SPILL_RECOVERY
+    );
+  }
   if (input.toolName === 'coord:send' ||
     (input.toolName === 'tools:invoke' && input.nestedTargetToolName === 'coord:send')) {
     return (
@@ -1166,6 +1227,57 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
       },
     } as T;
   }
+  const completionReceipt = !reference && isWorkItemsCompleteCall(input.opts)
+    ? workItemsCompleteReceipt(input.result)
+    : undefined;
+  const boundedCompletionReceipt = completionReceipt
+    ? projectBoundedPayload(completionReceipt, {
+        toolName: 'work_items:complete',
+        tier: 'trimmed',
+        forced: true,
+        originalChars: input.sourceBytes,
+        targetChars: Math.min(input.doorTokens * CHARS_PER_TOKEN_ESTIMATE, 1_200),
+        preservePaths: WORK_ITEMS_COMPLETE_RECEIPT_PRESERVE_PATHS,
+        preserveTopLevelKeys: ['ok', 'counts', 'results'],
+        recovery: {
+          cursor: {
+            kind: 'unavailable',
+            tool: 'work_items:complete',
+            args: {},
+            reason: 'spill-write-failed',
+            ...(spillErrorCode && spillErrorCode !== 'unknown error' ? { errorCode: spillErrorCode } : {}),
+          },
+          next: WORK_ITEMS_COMPLETE_SPILL_RECOVERY,
+        },
+      })
+    : undefined;
+  if (boundedCompletionReceipt) {
+    return {
+      ...input.result,
+      content: [{ type: 'text' as const, text: JSON.stringify(boundedCompletionReceipt) }],
+      _meta: {
+        ...(input.result._meta ?? {}),
+        resultDoor: {
+          truncated: true,
+          structural: true,
+          spillPath: null,
+          spillUri: null,
+          spillFailed: true,
+          spillError,
+          spillErrorCode,
+          originalChars: input.sourceBytes,
+          originalBytes: input.sourceBytes,
+          nonTextChars: input.nonTextBytes,
+          nonTextBytes: input.nonTextBytes,
+          doorTokens: input.doorTokens,
+          reason: input.reason,
+          upstreamProjected: Boolean(upstreamProjection?.truncated),
+          innerTruncationMarkers,
+          ...(input.aggregate ? { aggregate: input.aggregate } : {}),
+        },
+      },
+    } as T;
+  }
   const spillDiagnostic = [spillErrorCode, spillErrorSummary].filter(Boolean).join('; ') || 'unknown error';
   const envelope = reference
     ? buildOutputEnvelope(
@@ -1199,10 +1311,14 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
               (input.opts.toolName === 'tools:invoke' && input.opts.nestedTargetToolName === 'coord:send')
                 ? `Output exceeded its hard budget and the spill write failed (${spillDiagnostic}). ` +
                   'The coord:send delivery outcome is unknown; do not repeat the send until you check coordination state.'
+                : isWorkItemsCompleteCall(input.opts)
+                  ? `Output exceeded its hard budget and the spill write failed (${spillDiagnostic}). ` +
+                    'The work_items:complete write may already have committed; do NOT repeat it. Read the requested items with work_items:get before deciding any follow-up.'
                 : `Output exceeded its hard budget and the spill write failed (${spillDiagnostic}).`,
             retryable: !(
               input.opts.toolName === 'coord:send' ||
-              (input.opts.toolName === 'tools:invoke' && input.opts.nestedTargetToolName === 'coord:send')
+              (input.opts.toolName === 'tools:invoke' && input.opts.nestedTargetToolName === 'coord:send') ||
+              isWorkItemsCompleteCall(input.opts)
             ),
           },
         },
@@ -1894,15 +2010,21 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
               ...(spillErrorSummary ? { errorDetail: spillErrorSummary } : {}),
             },
             next:
-              `The result was structurally bounded, but its spill write failed ` +
-              `(${spillErrorCode && spillErrorCode !== 'unknown error' ? spillErrorCode : spillErrorSummary ?? 'unknown error'}), ` +
-              `so the omitted bytes are NOT recoverable and no ` +
-              `spill path exists. Re-call ${opts.toolName} with narrower arguments or a projection.` +
-              (upstreamProjection
-                ? ` It was ALSO tier-projected upstream (omittedCount=${upstreamProjection.omittedCount}), ` +
-                  `so those fields were never serialized either.`
-                : '') +
-              buildProjectionHint(textItems, opts.toolName, bodyShape),
+              isWorkItemsCompleteCall(opts)
+                ? WORK_ITEMS_COMPLETE_SPILL_RECOVERY +
+                  (upstreamProjection
+                    ? ` The tool also tier-projected upstream (omittedCount=${upstreamProjection.omittedCount}), ` +
+                      `so those fields were never serialized either.`
+                    : '')
+                : `The result was structurally bounded, but its spill write failed ` +
+                  `(${spillErrorCode && spillErrorCode !== 'unknown error' ? spillErrorCode : spillErrorSummary ?? 'unknown error'}), ` +
+                  `so the omitted bytes are NOT recoverable and no ` +
+                  `spill path exists. Re-call ${opts.toolName} with narrower arguments or a projection.` +
+                  (upstreamProjection
+                    ? ` It was ALSO tier-projected upstream (omittedCount=${upstreamProjection.omittedCount}), ` +
+                      `so those fields were never serialized either.`
+                    : '') +
+                  buildProjectionHint(textItems, opts.toolName, bodyShape),
           };
     // plans:get's item text is the semantic payload of the detail read, not an
     // optional identity field. Promote it through the generic fallback so a
@@ -2010,15 +2132,8 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
       // the evidence that it is not counted and why. Keep correlation first,
       // then the authority/count verdict, then the explanatory warnings; values
       // still obey the projector's normal string and transport budgets.
-      ...(opts.toolName === 'work_items:complete'
-        ? [
-            'results[].ok',
-            'results[].id',
-            'results[].completionAuthority',
-            'results[].countsTowardBurnDown',
-            'results[].authorityWarning',
-            'results[].requirementShortfallWarning',
-          ]
+      ...(isWorkItemsCompleteCall(opts)
+        ? WORK_ITEMS_COMPLETE_RECEIPT_PRESERVE_PATHS
         : []),
       ...(opts.preservePaths ?? []),
     ];
@@ -2065,6 +2180,9 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
         : opts.toolName === 'events:status'
           ? { preserveTopLevelKeys: ['event_inspection'] as const }
           : {}),
+      ...(isWorkItemsCompleteCall(opts)
+        ? { preserveTopLevelKeys: ['ok', 'counts', 'results'] as const }
+        : {}),
       ...(evaluatorCompactBody == null && preservePaths.length > 0 ? { preservePaths } : {}),
       bulkEnvelope: opts.bulkEnvelope,
     });

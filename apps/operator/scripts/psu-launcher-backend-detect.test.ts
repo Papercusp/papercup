@@ -27,6 +27,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
 import { codexManagedDaemonArgs, detectBackendBin, ensureBackendInstalled, wellKnownBackendBin } from './psu-launcher.mjs';
 
 /**
@@ -82,6 +83,49 @@ describe('wellKnownBackendBin — PATH-independent backend detection (WI-37920)'
 });
 
 describe('packaged backend launchers cannot recursively launch psu', () => {
+  it.each([
+    { operation: 'launch', args: ['--help'] },
+    { operation: 'resume', args: ['resume', 'test-thread'] },
+  ])('spawns the native executable for $operation without an earlier install check', ({ args }) => {
+    const root = mkdtempSync(join(tmpdir(), 'psu-native-spawn-'));
+    try {
+      const wrapperDir = join(root, 'sidecar/bin');
+      const nativeDir = join(root, 'native');
+      mkdirSync(wrapperDir, { recursive: true });
+      mkdirSync(nativeDir, { recursive: true });
+      const packagedLauncher = join(root, 'psu.mjs');
+      writeFileSync(packagedLauncher, "console.log('PACKAGED_LAUNCHER');\n");
+      writeFileSync(
+        join(wrapperDir, 'codex'),
+        `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(packagedLauncher)} "$@"\n`,
+        { mode: 0o755 },
+      );
+      writeFileSync(join(nativeDir, 'codex'), '#!/bin/sh\nprintf "NATIVE_ARG:%s\\n" "$@"\n', { mode: 0o755 });
+      const launcherUrl = new URL('./psu-launcher.mjs', import.meta.url).href;
+      const result = spawnSync(process.execPath, ['--input-type=module', '-e', `
+        import { runWrapper } from ${JSON.stringify(launcherUrl)};
+        runWrapper({
+          wrapperBin: 'codex',
+          args: ${JSON.stringify(args)},
+          cwd: ${JSON.stringify(root)},
+          preserveCwd: true,
+          envelopeEnv: { PAPERCUSP_AGENT: 'codex', PAPERCUSP_PSU_NO_PTY: '1' },
+          reportSessionEndedImpl: async () => {},
+        });
+      `], {
+        encoding: 'utf8',
+        timeout: 15_000,
+        env: { HOME: root, NODE_ENV: 'test', PATH: [wrapperDir, nativeDir, process.env.PATH].join(':') },
+      });
+      expect(result.error).toBeUndefined();
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).not.toContain('PACKAGED_LAUNCHER');
+      expect(result.stdout).toBe(['--no-daemon', ...args].map(argument => `NATIVE_ARG:${argument}\n`).join(''));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('isolates managed Codex feature settings from the shared background daemon on launch and resume', () => {
     expect(codexManagedDaemonArgs('codex', ['--no-alt-screen'])).toEqual(['--no-daemon', '--no-alt-screen']);
     expect(codexManagedDaemonArgs('/opt/bin/codex', ['resume', 'thread'])).toEqual(['--no-daemon', 'resume', 'thread']);

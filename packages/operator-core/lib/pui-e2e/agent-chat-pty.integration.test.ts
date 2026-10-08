@@ -8350,6 +8350,11 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         test: "const test = require('node:test');\nconst assert = require('node:assert');\nconst { add, mul } = require('./calc');\n\ntest('add', () => assert.strictEqual(add(2, 3), 5));\ntest('mul', () => assert.strictEqual(mul(2, 3), 6));\n",
         packageJson: JSON.stringify({ name: 'p005-proj', version: '1.0.0', scripts: { test: 'node --test' } }, null, 2) + '\n',
       });
+      const relativeLaunchDir = path.relative(home, launchDir);
+      const visibleLaunchDir = relativeLaunchDir === '..' || relativeLaunchDir.startsWith(`..${path.sep}`)
+        || path.isAbsolute(relativeLaunchDir)
+        ? launchDir
+        : `~/${relativeLaunchDir.split(path.sep).join('/')}`;
       const frame = (label: string, screen: string) => writeFileSync(path.join(out, `${label}.txt`), screen);
       const log: Array<Record<string, unknown>> = [];
       const approvals: string[] = [];
@@ -8462,7 +8467,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         }
       };
       try {
-        await pane.waitFor(`${backendLabel} · ${launchDir}`, { timeoutMs: 60_000 });
+        await pane.waitFor(`${backendLabel} · ${visibleLaunchDir}`, { timeoutMs: 60_000 });
         frame('00-ready', pane.screen());
         const greeting = await turn('01-greeting', 'hi');
         expect(scriptedEngine.engines.at(-1)?.adapter.host.descriptor().identity.backend,
@@ -8488,7 +8493,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         // the selected model. The composer still names the backend; require
         // that and the directory independently rather than a pre-model footer.
         await pane.waitFor(`Message ${backendLabel}`, { timeoutMs: 60_000 });
-        await pane.waitFor(launchDir, { timeoutMs: 60_000 });
+        await pane.waitFor(visibleLaunchDir, { timeoutMs: 60_000 });
         // WI-10004162: the owner's own turns contain 'calc.js', so waiting for
         // that passed over a pane with every agent reply missing. An agent
         // block header is what proves the saved conversation was restored.

@@ -2903,6 +2903,9 @@ export const HOST_HANDOFF_ENV_KEYS = Object.freeze([
   'PAPERCUSP_SID',
   'PAPERCUSP_AGENT',
   'PAPERCUSP_ADV_SESSION_ID',
+  // Keep the proven launcher actor through host-code adoption. Without it,
+  // the successor advertises human-owned provenance and quota recovery refuses.
+  'PAPERCUSP_LAUNCHED_BY',
   HEADLESS_NORMALIZED_LOG_ENV,
   'PAPERCUSP_WORKSPACE',
   'PAPERCUSP_HARNESS_SLUG',

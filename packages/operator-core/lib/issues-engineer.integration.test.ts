@@ -1319,6 +1319,52 @@ describe('engineer issues surface (real PG)', () => {
     expect(await issues.mergeIssuePayload('EI-404', { x: 1 })).toBeNull();
   });
 
+  it('WI-10007310: payload enrichment repairs own-node origin while preserving history and lifecycle', async () => {
+    const own = await issues.createIssue({ kind: 'bug', title: 'own-key witness', createdBy: 'agA' });
+    const item = await issues.createIssue({ kind: 'bug', title: 'own-key remote hold', createdBy: 'agA' });
+    const history = [{ ref: 'owner:existing', status: 'active', legacyField: 'preserve' }];
+    await issues.mergeIssuePayload(item.id, { externalBlockers: history, sibling: 'preserve' });
+    await db.sql`UPDATE harness_shared.work_items SET author_pubkey = 'own-key-payload-test'
+                  WHERE workspace_id = ${PINNED_WS} AND feature_id = ${own.id}`;
+    await db.sql`UPDATE harness_shared.work_items
+                    SET origin = 'remote', author_pubkey = 'own-key-payload-test'
+                  WHERE workspace_id = ${PINNED_WS} AND feature_id = ${item.id}`;
+    const [before] = await db.sql`SELECT status, taken_by FROM harness_shared.work_items
+                                 WHERE workspace_id = ${PINNED_WS} AND feature_id = ${item.id}`;
+
+    const updated = await issues.mergeIssuePayload(item.id, { externalBlockers: history, note: 'enriched' }, {
+      expectedExternalBlockers: history, requireNonTerminal: true,
+    });
+
+    expect(updated?.payload).toMatchObject({ externalBlockers: history, sibling: 'preserve', note: 'enriched' });
+    const [after] = await db.sql`SELECT origin, status, taken_by FROM harness_shared.work_items
+                                WHERE workspace_id = ${PINNED_WS} AND feature_id = ${item.id}`;
+    expect(after).toEqual({ ...before, origin: 'local' });
+    expect(await issues.mergeIssuePayload(item.id, { externalBlockers: [] }, {
+      expectedExternalBlockers: [{ ref: 'stale' }],
+    })).toBeNull();
+    expect((await issues.getIssue(item.id))?.payload?.externalBlockers).toEqual(history);
+  });
+
+  it('WI-10007310: payload enrichment keeps a genuinely foreign publisher immutable', async () => {
+    const own = await issues.createIssue({ kind: 'bug', title: 'own-key witness', createdBy: 'agA' });
+    const item = await issues.createIssue({ kind: 'bug', title: 'foreign-key hold', createdBy: 'agA' });
+    await issues.mergeIssuePayload(item.id, { sibling: 'preserve' });
+    await db.sql`UPDATE harness_shared.work_items SET author_pubkey = 'own-key-payload-test'
+                  WHERE workspace_id = ${PINNED_WS} AND feature_id = ${own.id}`;
+    await db.sql`UPDATE harness_shared.work_items
+                    SET origin = 'remote', author_pubkey = 'foreign-key-payload-test'
+                  WHERE workspace_id = ${PINNED_WS} AND feature_id = ${item.id}`;
+    const [before] = await db.sql`SELECT origin, status, taken_by, payload FROM harness_shared.work_items
+                                 WHERE workspace_id = ${PINNED_WS} AND feature_id = ${item.id}`;
+
+    expect(await issues.mergeIssuePayload(item.id, { note: 'must not write' })).toBeNull();
+
+    const [after] = await db.sql`SELECT origin, status, taken_by, payload FROM harness_shared.work_items
+                                WHERE workspace_id = ${PINNED_WS} AND feature_id = ${item.id}`;
+    expect(after).toEqual(before);
+  });
+
   it('updateIssue corrects a mislabeled kind (bug↔change — the auto-lane selector, close-loop D-002)', async () => {
     const a = await issues.createIssue({
       title: 'design follow-on mislabeled by the column default',
