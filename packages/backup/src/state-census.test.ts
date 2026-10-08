@@ -10,6 +10,19 @@ const declaration: CensusDeclaration = {
 };
 
 describe('producer-derived state census', () => {
+  it('preserves explicitly measured git metadata rather than labeling local history cache', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'git-census-'));
+    try {
+      await mkdir(join(root, '.git'));
+      await writeFile(join(root, '.git', 'local-history'), 'fixture');
+      const census = await collectStateCensus({ roots: [{ id: 'repo', path: root }],
+        declarations: [{ kind: 'path', root: 'repo', name: '.git', classification: 'state', producer: 'git',
+          descendants: true, gitStorage: { head: 'a'.repeat(40), evidenceRef: 'fixture:git-head' } }],
+        maxEntries: 1, readCatalogs: async () => [], });
+      expect(census.representedGit[0].disposition).toBe('preserve-state-subtree');
+      expect(census.ok).toBe(true);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
   it('represents measured database storage as preserved state, not a disposable cache', async () => {
     const root = await mkdtemp(join(tmpdir(), 'pg-census-'));
     try {

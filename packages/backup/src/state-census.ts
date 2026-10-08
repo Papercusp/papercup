@@ -23,6 +23,7 @@ export interface CensusDeclaration extends CensusEntry {
   anyDepth?: boolean;
   /** Preserve the whole owned DB storage root; this never marks it disposable. */
   databaseStorage?: { systemIdentifier: string; evidenceRef: string };
+  gitStorage?: { head: string; evidenceRef: string };
 }
 
 /** Snapshot coverage is separate evidence, never a substitute for state ownership. */
@@ -122,6 +123,11 @@ export async function collectStateCensus(input: {
   const maxEntries = input.maxEntries ?? 100_000;
   if (!Number.isSafeInteger(maxEntries) || maxEntries < 1) throw new Error('Invalid census entry bound');
   for (const declaration of input.declarations) {
+    if (declaration.gitStorage && (declaration.kind !== 'path' || declaration.classification !== 'state' ||
+      !declaration.descendants || declaration.anyDepth || declaration.prune ||
+      !/^[0-9a-f]{40,64}$/.test(declaration.gitStorage.head) || !declaration.gitStorage.evidenceRef.trim())) {
+      throw new Error('Git storage requires exact preserved state ownership');
+    }
     if (declaration.databaseStorage && (declaration.kind !== 'path' ||
       declaration.classification !== 'state' || declaration.descendants !== true ||
       declaration.anyDepth || declaration.prune ||
@@ -139,6 +145,7 @@ export async function collectStateCensus(input: {
   if (new Set(ids).size !== ids.length) throw new Error('Duplicate census root identity');
   const entries: CensusEntry[] = [];
   const representedStorage: Array<CensusEntry & { systemIdentifier: string; evidenceRef: string; disposition: 'preserve-state-subtree' }> = [];
+  const representedGit: Array<CensusEntry & { head: string; evidenceRef: string; disposition: 'preserve-state-subtree' }> = [];
   async function walk(root: CensusRoot, parent: string): Promise<void> {
     const children = await readdir(join(root.path, parent), { withFileTypes: true });
     for (const child of children) {
@@ -159,13 +166,18 @@ export async function collectStateCensus(input: {
         representedStorage.push({ kind: 'path', root: root.id, name, ...storage.databaseStorage,
           disposition: 'preserve-state-subtree' });
       }
-      if (child.isDirectory() && !prune && !represented) await walk(root, name);
+      const git = owners.find(owner => owner.name === name && owner.gitStorage);
+      const representedRepo = child.isDirectory() && git?.gitStorage && !nestedOverride &&
+        owners.every(owner => owner.classification === 'state');
+      if (representedRepo && git?.gitStorage) representedGit.push({ kind: 'path', root: root.id, name,
+        ...git.gitStorage, disposition: 'preserve-state-subtree' });
+      if (child.isDirectory() && !prune && !represented && !representedRepo) await walk(root, name);
     }
   }
   for (const root of input.roots) await walk(root, '');
   entries.push(...await input.readCatalogs());
   if (entries.length > maxEntries) throw new Error(`Census entry bound exceeded: ${maxEntries}`);
-  return { ...generateStateCensus(entries, input.declarations), representedStorage };
+  return { ...generateStateCensus(entries, input.declarations), representedStorage, representedGit };
 }
 
 /** Collect and validate in one call; consumers cannot accidentally ignore residue. */
