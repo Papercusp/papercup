@@ -35,6 +35,7 @@
  */
 
 import type { ChangeFeedEntry } from '../curation/change-feed';
+import { CHANGE_FEED_COMPLETION_STATUSES } from '../curation/change-feed-deps';
 import { CREATIVE_LENSES, type CreativeLens } from './types';
 
 /**
@@ -277,7 +278,10 @@ export function classifyIdeaOutcome(
   // `winRate = won / (won + lost)` could not fall for any ungraded filing.
   // Human grading masked this for su-ideate (88% graded) but not for scout
   // (9% graded), which is where the 56 of those 63 rows sit.
-  if (entry.kind === 'completion' && isWorkItemLossStatus(gymStatusOf(entry))) return 'lost';
+  // WI-10007390: `rejected` is the tag workItemOutcomeTag emits for a winning
+  // STATUS that is not a winning OUTCOME (an improvement-hygiene close of a
+  // duplicate / aged-out filing) — a loss, like the true loss terminals.
+  if (entry.kind === 'completion' && isWorkItemLossTag(gymStatusOf(entry))) return 'lost';
   // plan-run: SPOF 5 / P-006 (autonomous-loop-prod-audit-2026-07-02) — a plan
   // routed by Scout that reaches the ABANDONED terminal (harness_plans
   // op_status='dropped', isTerminalStatus) must resolve 'lost', not sit
@@ -321,6 +325,72 @@ export const WORK_ITEM_LOSS_STATUSES = ['deprecated', 'dropped'] as const;
 /** True when a status label read off a completion entry is a losing wi terminal. */
 function isWorkItemLossStatus(status: string): boolean {
   return (WORK_ITEM_LOSS_STATUSES as readonly string[]).includes(status);
+}
+
+/**
+ * WI-10007390 — the completion-entry tag for a work item that reached a WINNING
+ * status without a winning OUTCOME: the improvement-hygiene sweep (hygiene.ts)
+ * closes duplicates and aged-out, never-claimed minor filings as `closed` and
+ * stamps `ideaLifecycle.triageDecision = 'reject'`. `closed` is in
+ * {@link CHANGE_FEED_COMPLETION_STATUSES}, so without this tag a rejected idea
+ * scored as a landed one (su-ideate) or sat pending (scout). One word, so
+ * {@link gymStatusOf}'s `Status: <word>` parse reads it back.
+ */
+export const WORK_ITEM_REJECTED_TAG = 'rejected';
+
+/** The `terminal_owner` the improvement-hygiene sweep stamps on its closes (hygiene.ts). */
+export const IMPROVEMENT_HYGIENE_OWNER = 'improvement-hygiene';
+
+/** True when a completion entry's status tag means the idea LOST. */
+function isWorkItemLossTag(tag: string): boolean {
+  return isWorkItemLossStatus(tag) || tag === WORK_ITEM_REJECTED_TAG;
+}
+
+/** The facts a ref-scoped work-item read needs to decide a `wi:` idea's fate. */
+export interface WorkItemTerminalFacts {
+  status: string | null | undefined;
+  terminalOwner?: string | null;
+  /**
+   * A completion record exists on EITHER surface. The close routes write
+   * different columns — `work_items:complete` writes
+   * `payload._completionEvidence`, a dropped/administrative close writes
+   * `terminal_completion_ref` — and none writes both, so a read that requires
+   * one surface misses every close made through the other.
+   */
+  hasCompletionEvidence: boolean;
+  /** `payload.ideaLifecycle.triageDecision === 'reject'`. */
+  triageRejected?: boolean;
+}
+
+/**
+ * WI-10007390 — the ONE rule for what a routed `wi:` idea's work-item terminal
+ * means for the idea. Returns the `Status: <tag>` a ref-scoped read emits, or
+ * `null` for "emit no entry" (the idea stays pending).
+ *
+ * - a loss status (`dropped` / `deprecated`) → that status (lost);
+ * - a winning status closed by the hygiene sweep, or triage-rejected →
+ *   {@link WORK_ITEM_REJECTED_TAG} (lost);
+ * - a winning status WITH a completion record on either surface → the status (won);
+ * - a winning status with no completion record → `null`: nothing proves the
+ *   filed work shipped, so the idea is not scored.
+ *
+ * Before this rule the scout read required `terminal_completion_ref`, which a
+ * `work_items:complete` close never writes, so 340 scout ideas on terminal
+ * items read pending (205 done, 135 hygiene-closed) and scout recorded 2 wins
+ * in total; the su-ideate read required nothing, so hygiene closes counted as wins.
+ */
+export function workItemOutcomeTag(facts: WorkItemTerminalFacts): string | null {
+  const status = (facts.status ?? '').trim().toLowerCase();
+  if (isWorkItemLossStatus(status)) return status;
+  if (!(CHANGE_FEED_COMPLETION_STATUSES as readonly string[]).includes(status)) return null;
+  if (facts.terminalOwner === IMPROVEMENT_HYGIENE_OWNER || facts.triageRejected) return WORK_ITEM_REJECTED_TAG;
+  return facts.hasCompletionEvidence ? status : null;
+}
+
+/** The idea outcome a {@link workItemOutcomeTag} result settles, or null when it settles nothing. */
+export function outcomeOfWorkItemTag(tag: string | null): Exclude<IdeaOutcome, 'pending'> | null {
+  if (tag === null) return null;
+  return isWorkItemLossTag(tag) ? 'lost' : 'won';
 }
 
 /** Extract a status/decision label from a change-feed entry's detail ("Status: <x>") or title. */

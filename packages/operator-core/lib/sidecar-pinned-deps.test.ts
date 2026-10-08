@@ -161,6 +161,23 @@ describe('EI-21832562420831737 — a pinned cut owns its dependencies', () => {
   });
 
   describe('papercusp_pinned_deps_snapshot — the floor the overlay stands on', () => {
+    it('preserves the failed copy diagnostic and refuses both fresh and stale success receipts', () => {
+      const t = fixture();
+      const donor = join(t, 'donor');
+      const snapshot = join(t, 'snapshot');
+      write(join(donor, 'node_modules', 'dep', 'index.js'), 'donor');
+      write(join(snapshot, '.papercusp-pinned-deps'), 'stale success');
+      const shim = join(t, 'bin', 'cp');
+      write(shim, '#!/usr/bin/env bash\necho "cp: fixture hardlink path: Permission denied" >&2\nexit 17\n');
+      chmodSync(shim, 0o755);
+      const result = runLib(['snapshot', donor, snapshot], { PATH: `${dirname(shim)}:${process.env.PATH}` });
+      expect(result.code).toBe(1);
+      expect(result.err).toContain('cp: fixture hardlink path: Permission denied');
+      expect(result.err).toContain('FAILED to snapshot node_modules (exit=17)');
+      expect(existsSync(join(snapshot, '.papercusp-pinned-deps'))).toBe(false);
+      expect(existsSync(join(snapshot, 'node_modules'))).toBe(false);
+    });
+
     it('survives an npm-style REPLACE of a donor package (the r14 killer)', () => {
       const t = fixture();
       write(join(t, 'donor', 'node_modules', 'left', 'index.js'), 'v1');

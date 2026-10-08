@@ -2742,7 +2742,11 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
   );
   const conflictDetail = (
     stage: 'begin' | 'scheduled-fire' | 'reserve-runner',
-    result: { status: string; transaction?: Parameters<typeof projectCheckpointQualificationState>[0] },
+    result: {
+      status: string;
+      transaction?: Parameters<typeof projectCheckpointQualificationState>[0];
+      repairQueueReconciliation?: { status: string; reason: string };
+    },
     requestedAttemptId: string,
     requestedRunnerId?: string,
   ): Record<string, unknown> => {
@@ -2751,6 +2755,12 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
     const incumbent = current?.currentPhysicalRunner;
     return {
       reason: result.status,
+      // WI-10007398: a begin-stage `conflict` is usually a frozen-queue reconciliation refusal,
+      // and without its reason the event could not say WHICH guard fired — a 12h stall had to be
+      // re-derived from source. Null when the conflict did not come from reconciliation.
+      repairQueueReconciliation: result.repairQueueReconciliation
+        ? { status: result.repairQueueReconciliation.status, reason: result.repairQueueReconciliation.reason }
+        : null,
       stage,
       requestedAttemptId,
       requestedRunnerId: requestedRunnerId ?? null,

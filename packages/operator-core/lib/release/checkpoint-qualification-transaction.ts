@@ -1511,6 +1511,7 @@ export type RepairQueueReconciliation = {
     | 'queue-not-safe-unstarted'
     | 'matching-untested-repair-head'
     | 'promoted-awaiting-staging-bridge'
+    | 'awaiting-unassigned-fixer'
     | 'exact-safe-unstarted'
     | 'cas-miss';
   predecessorAttemptId: string;
@@ -1637,6 +1638,37 @@ export function assessTerminalRepairQueueReconciliation(
     return {
       status: 'preserved',
       reason: 'matching-untested-repair-head',
+      candidate: queue.candidate,
+      ...base,
+    };
+  }
+  // WI-10007398: an `awaiting-fixer` queue that NO fixer owns can only leave that phase through
+  // the gate run's own `decideFrozenCandidateRepairQueue` -> `dispatch-fixer` branch (or an
+  // agent admission). The run that measured the red moves the queue to awaiting-fixer and exits;
+  // dispatch is left to the NEXT scheduled run. Blocking that successor here therefore closed the
+  // only automatic path: measured 2026-10-07 16:00Z -> 2026-10-08 04:23Z, every hourly tick on
+  // papercusp refused `skipped-qualification-conflict` at stage begin (queue-not-safe-unstarted)
+  // with attempts=0 and fixerSpawnId=null, so the fixer the queue was waiting on was never
+  // launched. Third instance of the class after EI-24610407938327281 (ready-to-promote) and
+  // WI-10000288 (ready-to-verify).
+  // Preserving is a HANDOFF (the queue is retained and re-stamped to the successor), never a
+  // retire, so the red signature survives. It stays deliberately narrow: provenance must name
+  // the terminal attempt or its immediate predecessor, no fixer may be assigned (a live fixer
+  // advances the queue itself by admission, and a dead one needs liveness this pure check does
+  // not have), and no unexpired dispatch reservation may be held (a launch is in flight). An
+  // expired reservation is abandoned: `decideFrozenCandidateRepairQueue` already treats it as
+  // dispatchable, so refusing on it here would recreate the same deadlock one field over.
+  const reservationLive =
+    queue.dispatchReservation != null && queue.dispatchReservation.expiresAtMs > successor.nowMs;
+  if (
+    (originMatchesTerminal || originMatchesImmediatePredecessor) &&
+    queue.phase === 'awaiting-fixer' &&
+    queue.fixerSpawnId === null &&
+    !reservationLive
+  ) {
+    return {
+      status: 'preserved',
+      reason: 'awaiting-unassigned-fixer',
       candidate: queue.candidate,
       ...base,
     };

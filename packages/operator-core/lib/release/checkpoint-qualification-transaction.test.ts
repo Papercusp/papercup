@@ -949,6 +949,9 @@ describe('logical checkpoint qualification transaction', () => {
         qualificationAttemptId: 'another-attempt',
       }),
     ).toMatchObject({ status: 'blocked', reason: 'queue-origin-mismatch' });
+    // A measured red is never RETIRED. Since WI-10007398 the unassigned awaiting-fixer queue it
+    // leaves is handed to the successor (preserved) rather than blocking it; see the dedicated
+    // test below for why a block here deadlocked the gate.
     expect(
       assessTerminalRepairQueueReconciliation(
         terminal,
@@ -958,7 +961,79 @@ describe('logical checkpoint qualification transaction', () => {
           nowMs: 300,
         }),
       ),
+    ).toMatchObject({ status: 'preserved', reason: 'awaiting-unassigned-fixer' });
+  });
+
+  // WI-10007398: the run that measures a red moves the queue to awaiting-fixer and exits; the
+  // fixer is dispatched by the NEXT run's `dispatch-fixer` decision. Refusing that successor at
+  // begin (queue-not-safe-unstarted) closed the only automatic path — measured 2026-10-07/08:
+  // 13 consecutive hourly ticks refused with attempts=0, fixerSpawnId=null, nobody dispatched.
+  it('hands an unassigned awaiting-fixer queue to the successor so its run can dispatch the fixer', () => {
+    const awaitingFixer = markFrozenCandidateVerificationRed(
+      createFrozenCandidateQueue({ candidate: 'candidate-1', qualificationAttemptId: 'attempt-1', base: null, nowMs: 200 }),
+      { failingTests: ['broken.test.ts'], nowMs: 300 },
+    );
+    expect(awaitingFixer.phase).toBe('awaiting-fixer');
+    expect(awaitingFixer.fixerSpawnId).toBeNull();
+    const successor = { attemptId: 'attempt-2', declaredPaths: [], candidate: 'candidate-2', nowMs: 500 };
+    // The live shape: a terminal code-inconclusive attempt owns the queue.
+    const inconclusive = settleQualificationTransaction(begin(), {
+      attemptId: 'attempt-1',
+      reason: 'error',
+      green: null,
+      nowMs: 400,
+    }).transaction;
+    expect(inconclusive.outcome.kind).toBe('code-inconclusive');
+    const red = settleQualificationTransaction(begin(), {
+      attemptId: 'attempt-1',
+      reason: 'not-green',
+      green: false,
+      nowMs: 400,
+    }).transaction;
+
+    for (const terminal of [inconclusive, red]) {
+      expect(assessTerminalRepairQueueReconciliation(terminal, successor, awaitingFixer)).toMatchObject({
+        status: 'preserved',
+        reason: 'awaiting-unassigned-fixer',
+        predecessorAttemptId: 'attempt-1',
+        successorAttemptId: 'attempt-2',
+        candidate: 'candidate-1',
+      });
+    }
+    // An EXPIRED reservation is abandoned — the queue policy dispatches past it, so must begin.
+    expect(
+      assessTerminalRepairQueueReconciliation(inconclusive, successor, {
+        ...awaitingFixer,
+        dispatchReservation: { token: 'stale', claimedAtMs: 100, expiresAtMs: 499 },
+      }),
+    ).toMatchObject({ status: 'preserved', reason: 'awaiting-unassigned-fixer' });
+
+    // Negative controls — each keeps the fail-closed verdict.
+    // A fixer is assigned: it advances the queue itself by admission.
+    expect(
+      assessTerminalRepairQueueReconciliation(inconclusive, successor, { ...awaitingFixer, fixerSpawnId: 's-live' }),
     ).toMatchObject({ status: 'blocked', reason: 'queue-not-safe-unstarted' });
+    // A launch is in flight under an unexpired reservation.
+    expect(
+      assessTerminalRepairQueueReconciliation(inconclusive, successor, {
+        ...awaitingFixer,
+        dispatchReservation: { token: 'live', claimedAtMs: 450, expiresAtMs: 9_999_999 },
+      }),
+    ).toMatchObject({ status: 'blocked', reason: 'queue-not-safe-unstarted' });
+    // Someone else's queue.
+    expect(
+      assessTerminalRepairQueueReconciliation(inconclusive, successor, {
+        ...awaitingFixer,
+        qualificationAttemptId: 'someone-else',
+      }),
+    ).toMatchObject({ status: 'blocked', reason: 'queue-origin-mismatch' });
+    // Unknown origin is not enough on its own for this handoff.
+    expect(
+      assessTerminalRepairQueueReconciliation(inconclusive, successor, {
+        ...awaitingFixer,
+        qualificationAttemptId: null,
+      }),
+    ).toMatchObject({ status: 'blocked', reason: 'queue-origin-unknown' });
   });
 
   // EI-24610407938327281: a green advance whose P-008 staging bridge lost the git-sync lock

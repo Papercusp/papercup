@@ -6,9 +6,75 @@ import {
   validateRevenueSplit,
   type RevenueSplitManifest,
   type SettlementReceipt,
+  type ComponentRevenueDependency,
 } from './revenue-settlement';
 
 const split: RevenueSplitManifest = { version: 'v1', manifestHash: 'sha256:split', sharesBps: { creator: 2_000, host: 2_000, component: 1_000, dao: 3_000, reserve: 500, tax: 500, operating: 500 } };
+
+describe('identity dependency author split (P-019)', () => {
+  const dependency = (ref: string, author: string): ComponentRevenueDependency => ({
+    packageKind: 'blueprint', ref, revision: '1.0.0', contentHash: 'a'.repeat(64), author,
+  });
+  const dependencies = [dependency('base', 'alice'), dependency('reviewer', 'bob'), dependency('research', 'alice')];
+  const manifest = revenueSplitManifest({ version: 'identity-v1',
+    sharesBps: { creator: 0, host: 0, component: 9000, dao: 1000, reserve: 0, tax: 0, operating: 0 },
+    componentDependencies: dependencies,
+  });
+  const settle = (grossMicros: bigint, splitManifest = manifest) => settleRevenue({
+    settlementId: 'identity-payment', grossMicros, providerCostMicros: 0n, splitManifest, daoTreasury: 'dao',
+  });
+
+  it('coalesces dependency authors, preserves all component micros, and keeps the DAO share', () => {
+    const result = settle(100n);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.receipt.componentAllocationsMicros).toEqual({ alice: 60n, bob: 30n });
+    expect(result.receipt.allocationsMicros.dao).toBe(10n);
+    expect(reconcileSettlement({ receipt: result.receipt, splitManifest: manifest }).ok).toBe(true);
+  });
+
+  it('allocates tiny and large amounts without losing integer micros', () => {
+    for (const gross of [0n, 1n, 2n, 3n, 19n, 900719925474099399n]) {
+      const result = settle(gross);
+      if (!result.ok) throw new Error(result.detail);
+      expect(Object.values(result.receipt.componentAllocationsMicros!).reduce((a, b) => a + b, 0n))
+        .toBe(result.receipt.allocationsMicros.component);
+      expect(Object.values(result.receipt.allocationsMicros).reduce((a, b) => a + b, 0n)).toBe(gross);
+    }
+  });
+
+  it('pins exact dependency versions and authors while ignoring enumeration order', () => {
+    const reversed = revenueSplitManifest({ ...manifest, componentDependencies: [...dependencies].reverse() });
+    expect(reversed.manifestHash).toBe(manifest.manifestHash);
+    expect(settle(19n, reversed)).toEqual(settle(19n));
+    for (const changed of [{ ...dependencies[0], revision: '2.0.0' },
+      { ...dependencies[0], contentHash: 'b'.repeat(64) }, { ...dependencies[0], author: 'mallory' }]) {
+      expect(revenueSplitManifest({ ...manifest, componentDependencies: [changed, ...dependencies.slice(1)] }).manifestHash)
+        .not.toBe(manifest.manifestHash);
+    }
+  });
+
+  it('refuses duplicate dependency paths and missing or invalid authorship pins', () => {
+    for (const componentDependencies of [[...dependencies, dependencies[0]], [],
+      [{ ...dependencies[0], author: '' }], [{ ...dependencies[0], contentHash: 'invalid' }]]) {
+      expect(settle(100n, { ...manifest, componentDependencies })).toMatchObject({ ok: false, code: 'invalid-split' });
+    }
+  });
+
+  it('refuses author tampering even when the component total is unchanged', () => {
+    const result = settle(100n);
+    if (!result.ok) throw new Error(result.detail);
+    const tampered: Readonly<Record<string, bigint>>[] = [{ alice: 59n, bob: 31n }, { alice: 60n, mallory: 30n },
+      { alice: 60n, bob: 30n, mallory: 0n },
+      Object.assign(Object.create({ alice: 60n }), { bob: 30n, mallory: 0n })];
+    for (const componentAllocationsMicros of tampered) {
+      expect(reconcileSettlement({ receipt: { ...result.receipt, componentAllocationsMicros }, splitManifest: manifest }))
+        .toMatchObject({ ok: false, code: 'allocation-mismatch' });
+    }
+    const { componentAllocationsMicros: _removed, ...missing } = result.receipt;
+    expect(reconcileSettlement({ receipt: missing, splitManifest: manifest })).toMatchObject({ ok: false, code: 'allocation-mismatch' });
+  });
+});
 
 describe('DAO revenue settlement', () => {
   it('allocates integer stablecoin micros after provider cost and assigns rounding remainder to DAO', () => {
