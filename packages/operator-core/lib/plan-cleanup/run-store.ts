@@ -292,7 +292,9 @@ const RUN_COLUMNS = `run_id, workspace_id, harness_slug, requested_by, resolver_
 export async function getCleanupReviewRuns(workspaceId?: string): Promise<{
   runs: Array<{ runId: string; createdAt: string | null; unresolved: number }>;
   total: number;
+  error?: string;
 }> {
+  try {
   const { sql } = getOrgPg();
   const ws = workspaceId ?? activeWorkspaceId();
   const rows = await sql<{ run_id: string; created_at: Date | string; unresolved: number; total: number }[]>`
@@ -313,6 +315,10 @@ export async function getCleanupReviewRuns(workspaceId?: string): Promise<{
   `;
   return { runs: rows.map((row) => ({ runId: row.run_id, createdAt: iso(row.created_at),
     unresolved: Number(row.unresolved) })), total: Number(rows[0]?.total ?? 0) };
+  } catch {
+    // This supplementary read must not hide the selected run's existing report.
+    return { runs: [], total: 0, error: 'Older cleanup reviews could not be loaded.' };
+  }
 }
 
 type StoreSql = Sql | TransactionSql;
