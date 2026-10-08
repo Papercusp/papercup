@@ -518,6 +518,13 @@ export async function markSettlementDisputeDismissed(
   return batch;
 }
 
+/** Exact retained usage membership of one batch, for payout re-verification. */
+export async function retainedBatchUsageNonces(db: D1Database, batchId: string): Promise<readonly string[]> {
+  const { results } = await db.prepare('SELECT usage_nonce FROM settlement_batch_vouchers WHERE batch_id = ?')
+    .bind(batchId).all<{ usage_nonce: string }>();
+  return (results ?? []).map((row) => row.usage_nonce);
+}
+
 /** Usage nonces already consumed by a live batch on this channel. */
 export async function claimedUsageNonces(
   db: D1Database,
