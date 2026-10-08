@@ -62,24 +62,26 @@ test('real ongoing goal data reaches featured, compact and standing detail on th
     ].join('\n'));
   }
 
-  const featured = page.locator('section.hud-ongoing--featured[data-testid="ongoing-work-overview"]').filter({ has: page.getByRole('heading', { name: entry!.title, exact: true }) });
-  await expect(featured).toBeVisible();
+  // The HUD shell can mount before its separate goals.list subscription supplies
+  // the package row; wait on that real-data landmark, not the shell's tablist.
+  const featured = page.getByRole('region', { name: `Ongoing work: ${entry!.title}`, exact: true });
+  await expect(featured).toBeVisible({ timeout: 15_000 });
   await expect(featured.locator('svg.lucide-infinity')).toHaveCount(1);
   await expect(featured.getByRole('button', { name: 'View ongoing work', exact: true })).toBeVisible();
   await page.screenshot({ path: info.outputPath('real-ongoing-featured.png') });
 
   for (const tab of ['Sessions', 'Plans', 'Work items']) {
     await page.getByRole('tablist', { name: 'HUD board' }).getByRole('tab', { name: tab, exact: true }).click();
-    const compact = page.locator('section.hud-ongoing--compact[data-testid="ongoing-work-overview"]').filter({ has: page.getByRole('heading', { name: entry!.title, exact: true }) });
+    const compact = page.getByRole('region', { name: `Ongoing work: ${entry!.title}`, exact: true });
     await expect(compact).toBeVisible();
     await expect(compact.getByRole('button', { name: 'View work', exact: true })).toBeVisible();
   }
   await page.screenshot({ path: info.outputPath('real-ongoing-compact.png') });
-  const open = page.locator('section.hud-ongoing--compact[data-testid="ongoing-work-overview"]').filter({ has: page.getByRole('heading', { name: entry!.title, exact: true }) }).getByRole('button', { name: 'View work', exact: true });
+  const open = page.getByRole('region', { name: `Ongoing work: ${entry!.title}`, exact: true }).getByRole('button', { name: 'View work', exact: true });
   await open.focus();
   await open.press('Enter');
   await expect.poll(() => new URL(page.url()).searchParams.get('hudgoal')).toBe(goal!.id);
-  const detail = page.locator('section.hud-ongoing--detail[data-testid="ongoing-work-overview"]');
+  const detail = page.getByRole('region', { name: `Ongoing work: ${goal!.title}`, exact: true });
   await expect(detail).toBeVisible();
   await expect(detail.getByRole('heading', { name: 'Where work is moving', exact: true })).toBeVisible();
   expect(await detail.evaluate((node) => {
