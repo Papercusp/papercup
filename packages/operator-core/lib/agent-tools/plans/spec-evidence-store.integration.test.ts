@@ -9,6 +9,8 @@ import { applyMigrationForTest, createFreshPgDb, type FreshPgDb } from '../../..
 import type { SpecClauseWrite } from './spec-clauses-store';
 import { carryUnchangedBarEvidenceBindings } from '../../acceptance-bar-amendment';
 import { hashPlanContent } from '@papercusp/plan-parser/content-hash';
+import { configureRuntimeVintageStore, resetRuntimeVintageStore, InMemoryRuntimeVintageStore,
+  reportRuntimeVintage, listRuntimeVintage, measureRuntimeVintageEnvironment } from '../../runtime-vintage';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql, repoRoot: '', siblingRoot: '' }));
 vi.mock('@papercusp/db-org', async (orig) => {
@@ -669,6 +671,48 @@ describe('exact spec evidence bindings', () => {
     const [historical] = await db.sql`SELECT environment_fingerprint FROM harness_shared.spec_evidence_bindings
       WHERE evidence_ref = 'test/reconnect.test.ts#historical'`;
     expect(historical.environment_fingerprint).toBeNull();
+  });
+
+  it('binds and remeasures a work-items live runtime from the server witness', async () => {
+    await specs.setSpecClause(clause({ mutationRequired: false }));
+    const { testRunId } = await seedExternalEvidence('test/reconnect.test.ts');
+    configureRuntimeVintageStore(new InMemoryRuntimeVintageStore());
+    try {
+      await reportRuntimeVintage({ workspaceId: WORKSPACE, unit: 'bg-host',
+        treeSha: 'a'.repeat(40), pid: process.pid });
+      const runtimeRows = await listRuntimeVintage(WORKSPACE);
+      const fingerprint = measureRuntimeVintageEnvironment(runtimeRows, ['bg-host']);
+      expect(fingerprint).toMatch(/^[a-f0-9]{64}$/);
+
+      const witness = { schemaVersion: 1, units: ['bg-host'], fingerprint: fingerprint!,
+        observedAt: '2026-10-07T00:00:00Z' };
+      const execution = { schemaVersion: 1, root: h.repoRoot, filePath: 'test/reconnect.test.ts',
+        runGroupId: null, workspaceId: WORKSPACE, harnessSlug: HARNESS, testNamePattern: null,
+        passed: 1, failed: 0, skipped: 0, collectionFailed: false, mutationPhase: null,
+        commitSha: null, worktreeDirty: true, runtimeEnvironmentBefore: witness,
+        runtimeEnvironmentAfter: { ...witness, observedAt: '2026-10-07T00:01:00Z' } };
+      await db.sql`UPDATE harness_shared.test_runs SET execution_details = ${JSON.stringify(execution)}::jsonb
+        WHERE id = ${testRunId}`;
+
+      const measurement = { schemaVersion: 1 as const, kind: 'work-items' as const,
+        workItemIds: ['WI-101'], runtimeUnits: ['bg-host'] };
+      const input = { workItemId: 'WI-101', specId: 'SPEC-003-01', harnessSlug: HARNESS,
+        planSlug: 'reconnect-plan', actorId: 'su-test', evidenceKind: 'test' as const,
+        evidenceRef: 'test/reconnect-work-items.test.ts', testRunId, sourceFingerprint: 'source',
+        environmentFingerprint: 'caller-current-runtime', details: { evidencePlane: 'live', currentMeasurement: measurement } };
+      expect(await evidenceStore.bindSpecEvidence(input)).toMatchObject({ status: 'created' });
+
+      const [pinned] = await db.sql`SELECT environment_fingerprint FROM harness_shared.spec_evidence_bindings
+        WHERE evidence_ref = 'test/reconnect-work-items.test.ts'`;
+      expect(pinned.environment_fingerprint).toBe(fingerprint);
+      const measured = await evidenceStore.measureWorkItemsEvidenceForScope(WORKSPACE, HARNESS, measurement, runtimeRows);
+      expect(measured.environmentFingerprint).toBe(fingerprint);
+      const absent = await evidenceStore.measureWorkItemsEvidenceForScope(WORKSPACE, HARNESS,
+        { ...measurement, runtimeUnits: ['missing-runtime'] }, runtimeRows);
+      expect(absent.environmentFingerprint).toBeNull();
+    } finally {
+      resetRuntimeVintageStore();
+    }
   });
   it('keeps one shared proof reference for distinct spec clauses', async () => {
     await specs.setSpecClause(clause());
