@@ -1044,7 +1044,7 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
     expect(revision.revision).toMatch(/^[a-f0-9]{64}$/);
   }, 30_000);
 
-  const actualPortalAcceptance = async (mismatchedOrigin: boolean, preflightOnly = false) => {
+  const actualPortalAcceptance = async (mismatchedOrigin: boolean, preflightOnly = false, canonicalQuestion?: string) => {
     // Explicit roots prevent this acceptance case from silently testing a mutable
     // development server or a different installed app. It never promotes a build.
     const portalRoot = process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT;
@@ -1053,7 +1053,7 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
     expect(portalRoot, 'Select the maintained Portal checkout').toBeTruthy();
     expect(candidateRoot, 'Select an immutable, unpromoted Portal release').toBeTruthy();
     expect(hostedFile, 'Select the hosted control-plane secret references').toBeTruthy();
-    expect(manualFixtureDir, 'Use the verified disposable public/private canary bundle').toBeTruthy();
+    if (!canonicalQuestion) expect(manualFixtureDir, 'Use the verified disposable public/private canary bundle').toBeTruthy();
     expect(principalBearer).toBeTruthy();
     expect(['127.0.0.1', 'localhost']).toContain(new URL(baseUrl!).hostname);
     const { entry: portalEntry, metadata } = await verifyPortalRuntimePreconditions(candidateRoot!);
@@ -1088,9 +1088,10 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
     let interceptedModelTurns = 0;
     let browserOrigin: string | undefined;
     let configuredPublicOrigin: string | undefined;
+    let loadedContentRevision: string | undefined;
     const evidenceCredentials = [principalBearer!];
     let caseFailure: unknown;
-    const question = 'How do I check the orchard workspace? Search the public manual, read the FAQ section, give its recovery marker, and cite the section. Do not perform a recovery.';
+    const question = canonicalQuestion ?? 'How do I check the orchard workspace? Search the public manual, read the FAQ section, give its recovery marker, and cite the section. Do not perform a recovery.';
     try {
       stage = 'tls-preflight';
       const port = await freeLoopbackPort();
@@ -1228,9 +1229,24 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
         return;
       }
       stage = 'typed-browser';
-      await verifyFixtureBundle();
-      writeFileSync(join(manualFixtureDir!, 'faq.mdx'), fixtureFaq(publicCanary));
-      expect(JSON.stringify(await verifyFixtureBundle())).toContain(publicCanary);
+      if (canonicalQuestion) {
+        // Read the existing canonical public scope through this session's real
+        // docs-only mount. Do not substitute the canary FAQ or mutate a served
+        // manual to make a natural question pass.
+        expect(manualFixtureDir, 'Canonical Portal acceptance uses the selected existing runtime').toBeUndefined();
+        const loaded = await fixtureRead('docs:get', { slugs: ['faq'],
+          heading: 'Does closing the browser stop my agents?' });
+        expect(loaded.surface).toBe('public');
+        expect(loaded.revision).toMatch(/^[a-f0-9]{64}$/);
+        expect(JSON.stringify(loaded)).toContain('Closing a browser tab does not itself stop work running on another machine.');
+        loadedContentRevision = String(loaded.revision);
+      } else {
+        await verifyFixtureBundle();
+        writeFileSync(join(manualFixtureDir!, 'faq.mdx'), fixtureFaq(publicCanary));
+        const loaded = await verifyFixtureBundle();
+        expect(JSON.stringify(loaded)).toContain(publicCanary);
+        loadedContentRevision = String(loaded.revision);
+      }
       await composer.fill(question);
       const response = await conversationCreation.waitForTurn(() => page.getByRole('button', { name: 'Send', exact: true }).click());
       expect(response.ok()).toBe(true);
@@ -1246,14 +1262,29 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
         const saved = await readPortalJson(page, historyPath);
         expect(saved.status).toBe(200);
         history = saved.body;
-        return history!.turns?.some((turn) => turn.role === 'assistant' && turn.text.includes(publicCanary)) ?? false;
+        return history!.turns?.some((turn) => turn.role === 'assistant'
+          && (canonicalQuestion ? Boolean(turn.text.trim()) : turn.text.includes(publicCanary))) ?? false;
       }, { timeout: 15_000, interval: 250 }).toBe(true);
       expect(history!.turns?.find((turn) => turn.role === 'user')).toMatchObject({ text: question, source: 'text_typed' });
       const answer = history!.turns?.find((turn) => turn.role === 'assistant')!;
       expect(answer.source).toBe('text_typed');
-      expect(answer.text).toContain(publicCanary);
       expect(answer.text).toMatch(/\/docs\/faq/);
-      await page.getByText(publicCanary, { exact: false }).first().waitFor({ state: 'visible', timeout: 15_000 });
+      if (canonicalQuestion) {
+        expect(answer.text).toMatch(/browser|tab/i);
+        expect(answer.text).toMatch(/not\b.{0,45}\bstop|continue|keep\b.{0,30}\b(?:work|run)|doesn.t\b.{0,30}\bstop/i);
+        expect(answer.text).toMatch(/ask\b.{0,70}\b(?:pause|stop)|computer\b.{0,70}\b(?:on|connect)|check\b.{0,70}\b(?:status|state)/i);
+        await page.locator('a[href*="/docs/faq"]').first().waitFor({ state: 'visible', timeout: 15_000 });
+        // Content and runtime identity must still match after the paid turn.
+        const after = await fixtureRead('docs:get', { slugs: ['faq'],
+          heading: 'Does closing the browser stop my agents?' });
+        expect(after.revision).toBe(loadedContentRevision);
+        const health = await fetch(new URL('/api/health', baseUrl!), { signal: AbortSignal.timeout(10_000) });
+        expect(health.ok).toBe(true);
+        expect((await health.json()).sha).toBe(runtimeBuild.sha);
+      } else {
+        expect(answer.text).toContain(publicCanary);
+        await page.getByText(publicCanary, { exact: false }).first().waitFor({ state: 'visible', timeout: 15_000 });
+      }
       browserText = await page.locator('body').innerText();
       const visibleData = JSON.stringify({ stream, history, browserText, html });
       // Boolean assertions keep the credential out of Vitest failure diffs.
@@ -1278,8 +1309,8 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
       // Only the public projected stream/history is retained. Failure stage and
       // runtime log let a continuation diagnose without replaying a paid turn.
       const safeEvidence = serializePortalEvidence({ id: mismatchedOrigin ? 'actual-portal-origin-negative'
-        : preflightOnly ? 'actual-portal-create-preflight' : 'actual-portal-typed', stage,
-        question, runtimeBuild, candidateRoot, servedRelease, workspaceId, browserOrigin, configuredPublicOrigin,
+        : preflightOnly ? 'actual-portal-create-preflight' : canonicalQuestion ? 'actual-portal-canonical-faq' : 'actual-portal-typed', stage,
+        question, loadedContentRevision, runtimeBuild, candidateRoot, servedRelease, workspaceId, browserOrigin, configuredPublicOrigin,
         recordedAt: new Date().toISOString(),
         frames: publicPortalFrames(stream), history, browserText, browserState, guideMutation,
         conversationCreation: conversationCreation?.snapshot(), creationResponses: conversationCreation?.responses(),
@@ -1328,6 +1359,12 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
   it.runIf(process.env.PAPERCUSP_TEST_PUBLIC_PORTAL === '1')(
     'answers typed input on the actual hosted Portal with docs-only tools and persisted history',
     () => actualPortalAcceptance(false), 240_000);
+
+  it.runIf(process.env.PAPERCUSP_TEST_PUBLIC_PORTAL === '1' && !manualFixtureDir).each([
+    'Can I close this tab?',
+    'Will agents on my remote workspace stop if I close this browesr tab?',
+  ])('answers a natural canonical FAQ question in a fresh hosted Portal: %s',
+    (question) => actualPortalAcceptance(false, false, question), 240_000);
 
   it('retrieves the canonical FAQ for a natural question with a misspelling', async () => {
     const result = await recordedCase('conceptual-misspelling',
