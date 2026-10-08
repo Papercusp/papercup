@@ -303,19 +303,27 @@ export async function recordSuSessionHostOwner(
   }
 }
 
-/** Read the recorded owning worker for one chat; null when unknown or unreadable. */
+/** Read one exact incarnation when advSessionId is supplied, otherwise the
+ * latest chat incarnation. Never let a chat selector widen an exact row read. */
 export async function readSuSessionHostOwner(input: {
-  agentChatId: string;
+  advSessionId?: number;
+  agentChatId?: string;
   workspaceId?: string;
 }): Promise<SuSessionHostOwner | null> {
-  if (!input.agentChatId) return null;
+  if (input.advSessionId != null
+    ? !Number.isSafeInteger(input.advSessionId) || input.advSessionId <= 0
+    : !input.agentChatId) return null;
   try {
     const { sql } = getOrgPg();
     const workspaceId = input.workspaceId ?? activeWorkspaceId();
     const rows = await sql<{ su_host_owner: unknown }[]>`
       SELECT su_host_owner
         FROM harness_shared.adv_sessions
-       WHERE workspace_id = ${workspaceId} AND su_agent_chat_id = ${input.agentChatId}
+       WHERE workspace_id = ${workspaceId}
+         AND (
+           (${input.advSessionId ?? null}::bigint IS NOT NULL AND id = ${input.advSessionId ?? null})
+           OR (${input.advSessionId ?? null}::bigint IS NULL AND su_agent_chat_id = ${input.agentChatId ?? null})
+         )
        ORDER BY started_at DESC
        LIMIT 1`;
     const owner = rows[0]?.su_host_owner;

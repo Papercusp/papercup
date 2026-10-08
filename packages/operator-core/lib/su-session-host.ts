@@ -927,11 +927,19 @@ export function registerSuSessionHost<B extends SuSessionBackend>(host: SuSessio
   };
 }
 
-export function getRegisteredSuSessionHost(input: {
+export function getRegisteredSuSessionHost(input: { workspaceId: string; advSessionId: number } | {
   workspaceId: string;
   harnessSlug: string | null;
   agentChatId: string;
 }): RegisteredHost | null {
+  if ('advSessionId' in input) {
+    if (!Number.isSafeInteger(input.advSessionId) || input.advSessionId <= 0) return null;
+    for (const host of registry().values()) {
+      const identity = host.descriptor().identity;
+      if (identity.workspaceId === input.workspaceId && identity.advSessionId === input.advSessionId) return host;
+    }
+    return null;
+  }
   const key = hostChannelKey({
     workspaceId: input.workspaceId,
     harnessSlug: input.harnessSlug,

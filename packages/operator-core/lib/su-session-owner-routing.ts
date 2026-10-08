@@ -25,7 +25,7 @@
  * recorded nonce. Only a live owner that fails to answer surfaces as an error
  * (`su_session_owner_unreachable`, retryable) — never a silent wrong answer.
  */
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { parseLastEventId, sseResponse } from '@papercusp/sse';
 import type { SuSessionEvent } from '@papercusp/chat-protocol';
@@ -76,6 +76,7 @@ const routing = pinModuleState('@papercusp/operator-core.su-session-owner-routin
   /** Minted once per process: a recycled pid never carries the recorded nonce. */
   nonce: randomUUID(),
   deps: { ...PRODUCTION_DEPS } as RoutingDeps,
+  nativeToolDispatch: null as ((request: unknown, address: SuNativeToolAddress) => Promise<unknown>) | null,
 }));
 
 /**
@@ -257,7 +258,7 @@ interface ForwardedSuSessionRequest {
 }
 
 type ForwardedSuSessionReply =
-  | { status: 'ok'; result: SuSessionOpResult | SuSessionEventsBatch }
+  | { status: 'ok'; result: unknown }
   | { status: 'not_owner' }
   | { status: 'absent' };
 
@@ -288,6 +289,9 @@ function parseForwarded(payload: unknown): ForwardedSuSessionRequest | null {
  * nonce, and never forwards again, so a request cannot bounce between workers.
  */
 export async function serveForwardedSuSessionOp(payload: unknown): Promise<ForwardedSuSessionReply> {
+  if ((payload as { request?: { op?: string } } | null)?.request?.op === 'native-tool') {
+    return serveForwardedNativeTool(payload);
+  }
   const forwarded = parseForwarded(payload);
   if (!forwarded) throw new Error('malformed su-session owner request');
   if (!isLocalSuSessionOwner(forwarded.hostId, forwarded.nonce)) return { status: 'not_owner' };
@@ -301,6 +305,98 @@ export async function serveForwardedSuSessionOp(payload: unknown): Promise<Forwa
 }
 
 registerOwnerRpcHandler(SU_SESSION_HOST_RPC_KIND, serveForwardedSuSessionOp);
+
+/** Host-authenticated native lineage. Tool arguments cannot author this address. */
+export interface SuNativeToolAddress {
+  workspaceId: string;
+  advSessionId: number;
+  ownerId: string;
+  nativeSessionIdFingerprint: string;
+}
+
+interface ForwardedNativeToolRequest {
+  address: SuNativeToolAddress;
+  hostId: string;
+  nonce: string;
+  request: { op: 'native-tool'; body: unknown };
+}
+
+export class SuNativeToolOwnerError extends Error {
+  constructor(readonly code: string, readonly outcomeUnknown: boolean) {
+    super(`su_native_tool_owner_${code}: ${outcomeUnknown ? 'execution outcome is UNKNOWN' : 'owning attached runtime is unavailable'}; no local fallback; funded holds remain retained`);
+    this.name = 'SuNativeToolOwnerError';
+  }
+}
+
+function validNativeToolAddress(value: unknown): value is SuNativeToolAddress {
+  const a = value as Partial<SuNativeToolAddress> | null;
+  return !!a && typeof a.workspaceId === 'string' && a.workspaceId.length > 0 && a.workspaceId !== '*' &&
+    Number.isSafeInteger(a.advSessionId) && a.advSessionId! > 0 &&
+    typeof a.ownerId === 'string' && a.ownerId.length > 0 &&
+    typeof a.nativeSessionIdFingerprint === 'string' && /^[a-f0-9]{64}$/.test(a.nativeSessionIdFingerprint);
+}
+
+/** No descriptor-only rehydration: the process-local admitted turn belongs to
+ * this exact live Codex runtime, never another incarnation of its chat. */
+function hasLocalNativeToolHost(address: SuNativeToolAddress): boolean {
+  const host = getRegisteredSuSessionHost({ workspaceId: address.workspaceId, advSessionId: address.advSessionId });
+  if (!host?.hasRuntime()) return false;
+  const descriptor = host.descriptor(), identity = descriptor.identity;
+  return !TERMINAL_STATES.has(descriptor.lifecycle) && identity.backend === 'codex' &&
+    identity.workspaceId === address.workspaceId && identity.advSessionId === address.advSessionId &&
+    identity.ownerId === address.ownerId &&
+    createHash('sha256').update(identity.nativeSessionId, 'utf8').digest('hex') === address.nativeSessionIdFingerprint;
+}
+
+/** The MCP host installs its existing dispatcher; no meter, transaction or
+ * function capability crosses the cluster RPC. */
+export function registerSuNativeToolDispatcher(
+  dispatch: (request: unknown, address: SuNativeToolAddress) => Promise<unknown>,
+): void {
+  routing.nativeToolDispatch = dispatch;
+}
+
+async function serveForwardedNativeTool(payload: unknown): Promise<ForwardedSuSessionReply> {
+  const p = payload as Partial<ForwardedNativeToolRequest> | null;
+  if (!p || !validNativeToolAddress(p.address) || typeof p.hostId !== 'string' || typeof p.nonce !== 'string' ||
+      p.request?.op !== 'native-tool') throw new Error('malformed native tool owner request');
+  if (!isLocalSuSessionOwner(p.hostId, p.nonce)) return { status: 'not_owner' };
+  if (!hasLocalNativeToolHost(p.address)) return { status: 'absent' };
+  if (!routing.nativeToolDispatch) throw new SuNativeToolOwnerError('no_dispatcher', false);
+  // Deliberately bypass the routing entry point here: an owner never forwards
+  // again. Its dispatcher still runs all ordinary admission gates locally.
+  return { status: 'ok', result: await routing.nativeToolDispatch(p.request.body, p.address) };
+}
+
+/** Run the whole native target where its trusted observation and meter live.
+ * An unknown owner keeps ordinary admission; once recorded, no failed remote
+ * attempt can become a second execution in the receiving worker. */
+export async function runOnSuNativeToolOwner<T>(
+  address: SuNativeToolAddress,
+  request: unknown,
+  local: () => Promise<T>,
+  timeoutMs?: number,
+): Promise<T> {
+  if (!validNativeToolAddress(address)) throw new SuNativeToolOwnerError('invalid_address', false);
+  const owner = await routing.deps.readOwner({ workspaceId: address.workspaceId, advSessionId: address.advSessionId });
+  if (!owner) return local();
+  if (owner.pid === process.pid) {
+    if (!isLocalSuSessionOwner(owner.hostId, owner.nonce) || !hasLocalNativeToolHost(address))
+      throw new SuNativeToolOwnerError('not_owner', false);
+    return local();
+  }
+  if (!isForwardableOwner(owner)) throw new SuNativeToolOwnerError('unreachable', false);
+  const payload: ForwardedNativeToolRequest = {
+    address, hostId: owner.hostId, nonce: owner.nonce, request: { op: 'native-tool', body: request },
+  };
+  const outcome = await callOwnerProcess({ targetPid: owner.pid, kind: SU_SESSION_HOST_RPC_KIND, payload, timeoutMs });
+  if (!outcome.ok) throw new SuNativeToolOwnerError(outcome.code,
+    outcome.code === 'timeout' || outcome.code === 'handler_error' || outcome.code === 'send_failed');
+  const reply = outcome.result as ForwardedSuSessionReply | null;
+  if (reply?.status === 'ok') return reply.result as T;
+  if (reply?.status === 'not_owner' || reply?.status === 'absent') throw new SuNativeToolOwnerError(reply.status, false);
+  throw new SuNativeToolOwnerError('protocol_error', true);
+}
 
 export type SuSessionForwardOutcome<T> =
   | { kind: 'ok'; result: T }
