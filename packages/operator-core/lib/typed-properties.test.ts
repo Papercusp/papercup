@@ -296,6 +296,23 @@ describe('opt-in typed collections and owner policies (P-002)', () => {
     expect(TypedPropertySchemaDocumentSchema.parse(SCHEMA)).toEqual(SCHEMA);
   });
 
+  it('leaves an unconfigured legacy collection and its saved plan order outside automatic enrollment', () => {
+    const legacy = {
+      worklist: { datatype: 'plan-ref-list', editable_by: 'both',
+        default: ['plan:legacy/default'] },
+    };
+    const properties = { worklist: { value: ['plan:legacy/beta', 'plan:legacy/alpha'],
+      version: 7, edited_by: 'legacy-owner', provenance: 'owner-edit',
+      edited_at: '2026-10-07T00:00:00Z' } };
+    const before = structuredClone({ legacy, properties });
+    for (const source of [undefined, { ok: true as const, items: ['plan:discovered/new'] },
+      { ok: false as const, reason: 'discovery unavailable' }]) {
+      expect(readTypedPropertyCollection({ propertySchema: legacy, properties,
+        property: 'worklist', source })).toEqual({ ok: true, configured: false });
+    }
+    expect({ legacy, properties }).toEqual(before);
+  });
+
   it('refuses a missing, self-referencing, agent-editable or wrong-datatype policy', () => {
     const { tea_policy: _policy, ...missing } = portable;
     const invalid = [missing,
