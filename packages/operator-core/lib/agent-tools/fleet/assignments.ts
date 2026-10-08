@@ -30,7 +30,7 @@ import {
   type SelfWakeSource,
 } from '../coordination/presence-selfwake';
 import { deriveVerdict } from '../coordination/liveness-oracle';
-import { findLiveHost } from '../../events/await/psu-pty-discovery';
+import { findLiveHostAsync } from '../../events/await/psu-pty-discovery';
 import { endedRecordedOwnerIds, recordedLiveOwnerIds } from '../../adv-sessions';
 import {
   groupByAgent,
@@ -295,8 +295,10 @@ export interface ReconcileWakeabilityOptions {
   psuHostPositiveAuthority?: boolean;
   /** Injectable batch presence read for PG-free tests and bounded callers. */
   fetchPresenceFn?: (ownerIds: string[]) => Promise<Map<string, ReconcilePresence>>;
-  /** Injectable local psu-host lookup for PG-free tests. */
+  /** Injectable synchronous psu-host lookup for existing PG-free tests. */
   findHostFn?: (ownerId: string) => unknown | null;
+  /** Injectable async lookup; production request paths use this to keep filesystem waits off the event loop. */
+  findHostAsyncFn?: (ownerId: string) => Promise<unknown | null>;
 }
 
 /** Production roster readers all need the same presence-backed psu-host leg. */
@@ -347,6 +349,20 @@ export async function reconcileWakeability<T extends AgentAssignment & { session
     fetchSelfWakeFn(ownerIds).catch(() => new Map<string, SelfWakeSignals>()),
     fetchEndedRecordedFn(ownerIds).catch(() => new Set<string>()),
   ]);
+  const liveHostsByOwner = new Map<string, unknown | null>();
+  if (options.psuHostPositiveAuthority && !options.findHostFn) {
+    const findHostAsync = options.findHostAsyncFn ?? findLiveHostAsync;
+    const hostOwnerIds = ownerIds.filter((ownerId) => wakeability.has(ownerId));
+    // Keep the request event loop free even if a metadata lookup is held behind
+    // a slow psu-pty directory operation. Bound in-flight filesystem work so a
+    // large roster does not flood libuv's worker pool.
+    for (let i = 0; i < hostOwnerIds.length; i += 16) {
+      await Promise.all(hostOwnerIds.slice(i, i + 16).map(async (ownerId) => {
+        liveHostsByOwner.set(ownerId, await findHostAsync(ownerId).catch(() => null));
+      }));
+    }
+  }
+  const findHostForVerdict = options.findHostFn ?? ((ownerId: string) => liveHostsByOwner.get(ownerId) ?? null);
   const nowMs = Date.now();
   for (const a of agents) {
     const w = wakeability.get(a.agentId);
@@ -375,7 +391,7 @@ export async function reconcileWakeability<T extends AgentAssignment & { session
         enabled: options.psuHostPositiveAuthority === true,
         negative: false,
         positive: options.psuHostPositiveAuthority === true,
-        findHostFn: options.findHostFn ?? findLiveHost,
+        findHostFn: findHostForVerdict,
       },
       selfWake.get(a.agentId),
       recordedEnded,
