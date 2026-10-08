@@ -186,6 +186,9 @@ vi.mock('../../events/await/psu-pty-discovery', async (importOriginal) => ({
   selfCompactionAvailability: (
     ...a: Parameters<typeof import('../../events/await/psu-pty-discovery').selfCompactionAvailability>
   ) => selfCompactionAvailability(...a),
+  selfCompactionAvailabilityAsync: async (
+    ...a: Parameters<typeof import('../../events/await/psu-pty-discovery').selfCompactionAvailabilityAsync>
+  ) => selfCompactionAvailability(...a),
 }));
 vi.mock('../coordination/tools/continuation-gate', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
@@ -412,6 +415,9 @@ describe('loopGuaranteesNextWake — dead-man-aware continuation evidence', () =
       nextFireAt: '2026-08-25T04:05:00.000Z',
       lastWakeChannel: 'suppressed-redundant',
       lastWakeStatus: 'delivered',
+      lastWakeAt: '2026-08-25T04:18:00.000Z',
+      lastFiredAt: '2026-08-25T04:17:00.000Z',
+      lastLoopTurnAt: '2026-08-25T04:19:00.000Z',
       lastRealTurnAt: '2026-08-25T04:19:00.000Z',
     });
 
@@ -477,6 +483,55 @@ describe('loopGuaranteesNextWake — dead-man-aware continuation evidence', () =
         loop({ lastDeliveryOutcome: 'loop-delivered-wake-no-loop-turn', turnsStalled: false }),
       ),
     ).toBe(false);
+  });
+
+  it.each(['queued', 'loop-armed'])('EI-25407823334233635: %s cannot erase a suppressed loop delivery', (lastDeliveryOutcome) => {
+    expect(classifyLoopNextWake(loop({
+      lastDeliveryOutcome,
+      lastWakeStatus: 'delivered',
+      lastWakeChannel: 'suppressed-redundant',
+      lastWakeAt: '2026-10-08T10:57:26.612Z',
+      lastFiredAt: '2026-10-08T10:19:34.899Z',
+      lastLoopTurnAt: '2026-10-08T04:27:17.205Z',
+      lastRealTurnAt: '2026-10-08T10:58:00.000Z',
+    }))).toEqual({ guaranteed: false, reason: 'last-fire-no-loop-turn' });
+  });
+
+  it.each([null, 'invalid', '2026-10-08T10:57:26.611Z', '2026-10-08T10:57:26.612Z'])(
+    'EI-25407823334233635: suppressed delivery needs a strictly later loop turn (%s)',
+    (lastLoopTurnAt) => {
+      expect(classifyLoopNextWake(loop({
+        lastDeliveryOutcome: 'queued',
+        lastWakeStatus: 'delivered',
+        lastWakeChannel: 'suppressed-redundant',
+        lastWakeAt: '2026-10-08T10:57:26.612Z',
+        lastFiredAt: '2026-10-08T10:19:34.899Z',
+        lastLoopTurnAt,
+      })).guaranteed).toBe(false);
+    },
+  );
+
+  it('EI-25407823334233635: clears suppression only after the latest delivery and fire', () => {
+    const suppressed = {
+      lastDeliveryOutcome: 'queued',
+      lastWakeStatus: 'delivered',
+      lastWakeChannel: 'suppressed-redundant',
+      lastWakeAt: '2026-10-08T10:57:26.612Z',
+      lastFiredAt: '2026-10-08T10:58:00.000Z',
+    };
+    expect(classifyLoopNextWake(loop({
+      ...suppressed,
+      lastLoopTurnAt: '2026-10-08T10:57:30.000Z',
+    })).guaranteed).toBe(false);
+    expect(classifyLoopNextWake(loop({
+      ...suppressed,
+      lastLoopTurnAt: '2026-10-08T10:58:00.001Z',
+    }))).toEqual({ guaranteed: true, reason: null });
+    expect(classifyLoopNextWake(loop({
+      ...suppressed,
+      lastWakeAt: null,
+      lastLoopTurnAt: '2026-10-08T10:58:00.001Z',
+    })).guaranteed).toBe(false);
   });
 
   it('clears the no-loop-turn failure only with a strictly later per-fire completion proof', () => {
