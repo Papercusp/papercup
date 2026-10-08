@@ -932,8 +932,8 @@ describe('Codex OAuth quota errors inside successful HTTP streams', () => {
   });
 
   it.each(['response.failed', 'response.incomplete', 'error'])('preserves an explicit %s terminal instead of misclassifying it as bare EOF', async (type) => {
-    const wire = frame({ type, error: { code: 'server_error', message: 'original failure' },
-      response: { status: type === 'response.incomplete' ? 'incomplete' : 'failed', error: { code: 'server_error' } } });
+    const wire = frame({ type, error: { code: 'context_length_exceeded', message: 'original failure' },
+      response: { status: type === 'response.incomplete' ? 'incomplete' : 'failed', error: { code: 'context_length_exceeded' } } });
     const h = harness(async () => upstream(200, {}, sseBody(wire)));
     await executeGatewayRequestKernel(h.options);
     expect(h.prepared).toHaveLength(1);
@@ -944,6 +944,50 @@ describe('Codex OAuth quota errors inside successful HTTP streams', () => {
     const wire = `data: ${JSON.stringify({ type: 'response.completed', response: { id: 'truncated' } })}`;
     const h = harness(async () => upstream(200, {}, sseBody(wire)));
     await expect(executeGatewayRequestKernel(h.options)).rejects.toMatchObject({ code: 'upstream-error', status: 502 });
+  });
+
+  it.each(['error', 'response.failed'])('fails over a %s overload inside HTTP 200 before exposing a failed response', async (type) => {
+    const accounts = [cli('chatgpt-a'), cli('chatgpt-b')];
+    const pool = makePool([{ accountId: 'chatgpt-b' }]);
+    const error = { code: 'server_error', message: 'We are currently experiencing high demand' };
+    const failure = frame(type === 'error' ? { type, error } : { type, response: { error } });
+    const success = frame({ type: 'response.completed', response: { id: 'healthy', status: 'completed' } });
+    const h = harness(async (_url, init) => upstream(200, { 'content-type': 'text/event-stream' },
+      sseBody(init.diagnosticAccountId === 'chatgpt-a' ? failure : success)), { accounts, pool });
+    await executeGatewayRequestKernel(h.options);
+    expect(h.prepared.map((p) => p.accountId)).toEqual(['chatgpt-a', 'chatgpt-b']);
+    expect(h.started.map((s) => s.metadata.accountId)).toEqual(['chatgpt-b']);
+    expect(h.written.join('')).toBe(success);
+    expect(pool.exhaustedCalls.map((p) => p.id)).toEqual(['chatgpt-a']);
+  });
+
+  it('benches a late overload briefly without replaying visible output or adopting a quota reset', async () => {
+    const accounts = [cli('chatgpt-a'), cli('chatgpt-b')];
+    const pool = makePool([{ accountId: 'chatgpt-b' }]);
+    const output = frame({ type: 'response.output_text.delta', delta: 'already visible' });
+    const failure = frame({ type: 'response.failed', response: {
+      error: { code: 'server_error', message: 'high demand', resets_at: 2_000_000_000 },
+    } });
+    const now = Date.now();
+    const h = harness(async () => upstream(200, { 'content-type': 'text/event-stream' }, sseBody(output, failure)),
+      { accounts, pool, extra: { now: () => now } });
+    await executeGatewayRequestKernel(h.options);
+    expect(h.prepared).toHaveLength(1);
+    expect(h.written.join('')).toBe(output + failure);
+    expect(pool.exhaustedCalls).toEqual([{ id: 'chatgpt-a', resetAt: now + 5000 }]);
+  });
+
+  it('keeps a hard-pinned account on an overload and returns the truthful failure', async () => {
+    const accounts = [cli('chatgpt-a'), cli('chatgpt-b')];
+    const pool = makePool([{ accountId: 'chatgpt-b' }]);
+    const failure = frame({ type: 'error', error: { code: 'server_error', message: 'high demand' } });
+    const h = harness(async () => upstream(200, { 'content-type': 'text/event-stream' }, sseBody(failure)),
+      { accounts, pool, pin: { accountId: 'chatgpt-a', mode: 'hard' } });
+    await executeGatewayRequestKernel(h.options);
+    expect(h.prepared).toHaveLength(1);
+    expect(h.started[0]?.status).toBe(503);
+    expect(h.written.join('')).toContain('high demand');
+    expect(pool.exhaustedCalls).toEqual([]);
   });
 
   it('preserves an oversized valid terminal frame split across chunks without widening the quota buffer', async () => {

@@ -284,11 +284,12 @@ function egressView(account: CodexCliAccount, token: () => Promise<string>): Act
   };
 }
 
-type StreamQuota = { error: Record<string, unknown>; resetAt: number | null; accountWide: boolean };
+type StreamQuota = { error: Record<string, unknown>; status: 429 | 503; resetAt: number | null; accountWide: boolean };
 type QuotaFrame = StreamQuota | 'prelude' | null;
 const QUOTA_FRAME_MAX_BYTES = 64 * 1024;
 const QUOTA_PRELUDE_PEEK_MS = 200;
 const CODEX_QUOTA_CODES = new Set(['usage_limit_reached', 'usage_limit_exceeded', 'rate_limit_exceeded', 'insufficient_quota']);
+const CODEX_OVERLOAD_CODES = new Set(['server_error', 'overloaded_error', 'service_unavailable']);
 
 /** Inspect protocol error events, never model output containing quota-looking prose. */
 function quotaFrame(frame: string): QuotaFrame {
@@ -299,12 +300,16 @@ function quotaFrame(frame: string): QuotaFrame {
   if (!event || typeof event !== 'object') return null;
   if (event.type === 'response.created' || event.type === 'response.in_progress') return 'prelude';
   const error = event.type === 'error' ? event.error : event.type === 'response.failed' ? event.response?.error : null;
-  if (!error || typeof error !== 'object' || !CODEX_QUOTA_CODES.has(String(error.code ?? error.type))) return null;
+  if (!error || typeof error !== 'object') return null;
+  const code = String(error.code ?? error.type);
+  const overloaded = CODEX_OVERLOAD_CODES.has(code);
+  if (!overloaded && !CODEX_QUOTA_CODES.has(code)) return null;
   const reset = error.resets_at;
   return {
     error,
+    status: overloaded ? 503 : 429,
     resetAt: typeof reset === 'number' && Number.isFinite(reset) && reset > 0 ? reset * 1000 : null,
-    accountWide: String(error.code ?? error.type) !== 'rate_limit_exceeded',
+    accountWide: overloaded || code !== 'rate_limit_exceeded',
   };
 }
 
@@ -776,18 +781,18 @@ export function createCodexOAuthKernelAdapter(opts: CodexOAuthAdapterOptions): C
           const reset = opts.rateReset(headers);
           if (quota.accountWide || reset.transient === false) {
             if (!hardPinned) opts.pool?.onExhausted(account.accountId,
-              quota.resetAt && quota.resetAt > now() ? quota.resetAt : now() + opts.failoverBackoffMs);
+              quota.status === 429 && quota.resetAt && quota.resetAt > now() ? quota.resetAt : now() + opts.failoverBackoffMs);
           } else {
             opts.coolIp(egress.key, Math.min(reset.retryAfterMs ?? opts.failoverBackoffMs, opts.ipCooldownMaxMs));
           }
         });
         body = inspected.body;
         if (inspected.quota) {
-          status = 429;
-          quotaExhausted = inspected.quota.accountWide || opts.rateReset(headers).transient === false;
+          status = inspected.quota.status;
+          quotaExhausted = status === 429 && (inspected.quota.accountWide || opts.rateReset(headers).transient === false);
           headers['content-type'] = 'application/json';
           delete headers['content-length'];
-          if (inspected.quota.resetAt && inspected.quota.resetAt > now()) {
+          if (status === 429 && inspected.quota.resetAt && inspected.quota.resetAt > now()) {
             headers['retry-after'] = String(Math.ceil((inspected.quota.resetAt - now()) / 1000));
           }
         }
