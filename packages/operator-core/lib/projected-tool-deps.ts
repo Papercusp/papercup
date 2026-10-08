@@ -752,8 +752,25 @@ function auditLaunchRowSelection(
   state: OperatorKernelState | null,
 ): KernelEnforcementResult {
   const record = verdict.serverAudit?.identityLaunchRecord;
-  if (!state?.identityLaunchRecordSelection || !record || typeof record !== 'object' || Array.isArray(record)) {
+  if (!state?.identityLaunchRecordSelection) {
     return verdict;
+  }
+  if (!record || typeof record !== 'object' || Array.isArray(record)) {
+    const selected = state.identityLaunchRecordVersion;
+    if (!selected) return verdict;
+    // Keep the selected control-anchor row visible on refusals that have no
+    // loaded-record stamp. Its header xmin must not masquerade as a body version.
+    return {
+      ...verdict,
+      serverAudit: {
+        ...verdict.serverAudit,
+        identityLaunchRecordSelection: {
+          advSessionId: selected.sessionId,
+          rowVersion: selected.rowVersion,
+          selection: state.identityLaunchRecordSelection,
+        },
+      },
+    };
   }
   // Extend the stamp for the record actually evaluated (including its loaded
   // xmin). Never substitute a presented owner or tool argument for this source.
