@@ -29,11 +29,15 @@ function headerRows(name: string): readonly unknown[] | undefined {
   return undefined;
 }
 
-async function openHud(page: Page, path: string, ready: Locator = page.getByRole('tablist', { name: 'HUD board' })) {
-  await page.goto(path);
+async function waitForHud(ready: Locator) {
   // Deep-linked goal dialogs hide the background HUD from accessibility queries.
   // Wait on the visible caller being exercised, with the same readiness deadline.
   await ready.waitFor({ state: 'visible', timeout: 30_000 });
+}
+
+async function openHud(page: Page, path: string, ready: Locator = page.getByRole('tablist', { name: 'HUD board' })) {
+  await page.goto(path);
+  await waitForHud(ready);
 }
 
 async function scopeFixture(page: Page) {
@@ -272,7 +276,7 @@ for (const kind of ['plans', 'tea'] as const) {
         return query?.state?.data?.rows?.[0]?.goalData?.collections?.[property]?.selection;
       }, { goalId: goal.id, property })).toMatchObject({ policyVersion: version, policy });
       await page.reload();
-      await editor.waitFor({ state: 'visible' });
+      await waitForHud(editor);
     }
     await expect(editor.getByText('Waiting for dependency')).toBeVisible();
     await saveWithReadback(() => editor.getByRole('button', { name: 'Move Second choice up' }).click());
