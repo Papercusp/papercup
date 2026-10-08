@@ -13,7 +13,7 @@ import { mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSyn
 import { tmpdir } from 'node:os';
 import { join, sep } from 'node:path';
 import { promisify } from 'node:util';
-import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { endPiSession, startPiSession } from '@papercusp/agent-mcp/provisioning';
@@ -75,11 +75,20 @@ async function verifyFixtureBundle() {
   return result;
 }
 
-async function mutateFixtureRegistry(mutate: () => void) {
+async function mutateFixtureRegistry(
+  mutate: () => void,
+  operatorUrl = baseUrl,
+  runCommand: (file: string, args: string[]) => Promise<{ stdout: string }> = runPtool,
+) {
   // The operator-api route shares the real registry with this test host. Use
   // the maintained cross-session lock and preserve unrelated/current entries.
   expect(process.env.PAPERCUSP_SID, 'Run from an attributed Papercusp session').toBeTruthy();
-  const { stdout } = await runPtool('ptool', ['locks:acquire', '--json', JSON.stringify({
+  expect(operatorUrl, 'Fixture locks must use the selected operator host').toBeTruthy();
+  // Hermetic setup removes inherited operator discovery pins. OPERATOR_BASE_URL
+  // is the target's address, but ptool does not use it for discovery: pin both
+  // halves explicitly so a fallback host cannot own this fixture's lock.
+  const hostArgs = ['--url', operatorUrl!];
+  const { stdout } = await runCommand('ptool', ['locks:acquire', ...hostArgs, '--json', JSON.stringify({
     external_paths: [join(workspacesRoot(), 'registry.json')],
     intent: 'Public manual chat acceptance: register or remove its private fixture workspace',
     ttl_sec: 60,
@@ -89,10 +98,59 @@ async function mutateFixtureRegistry(mutate: () => void) {
   expect(acquired.lock_id).toBeTruthy();
   try { mutate(); }
   finally {
-    const { stdout: released } = await runPtool('ptool', ['locks:release', '--json', JSON.stringify({ lock_id: acquired.lock_id })]);
+    const { stdout: released } = await runCommand('ptool', ['locks:release', ...hostArgs, '--json', JSON.stringify({ lock_id: acquired.lock_id })]);
     expect(JSON.parse(released).ok).toBe(true);
   }
 }
+
+describe('public manual fixture registry coordination', () => {
+  afterEach(() => { vi.unstubAllEnvs(); });
+
+  it('pins acquisition and release to the selected host after inherited discovery pins are scrubbed', async () => {
+    vi.stubEnv('PAPERCUSP_SID', 'attributed-fixture-session');
+    vi.stubEnv('PAPERCUSP_OPERATOR_URL', undefined);
+    vi.stubEnv('PAPERCUSP_HONO_PORT', undefined);
+    const selectedUrl = 'http://127.0.0.1:3397';
+    const steps: string[] = [];
+    const runCommand = async (file: string, args: string[]) => {
+      expect(file).toBe('ptool');
+      expect(args[args.indexOf('--url') + 1]).toBe(selectedUrl);
+      expect(process.env.PAPERCUSP_SID).toBe('attributed-fixture-session');
+      steps.push(args[0]);
+      const payload = JSON.parse(args[args.indexOf('--json') + 1]);
+      if (args[0] === 'locks:acquire') {
+        expect(payload.external_paths).toEqual([join(workspacesRoot(), 'registry.json')]);
+        return { stdout: JSON.stringify({ ok: true, lock_id: 'fixture-lock' }) };
+      }
+      expect(payload).toEqual({ lock_id: 'fixture-lock' });
+      return { stdout: JSON.stringify({ ok: true }) };
+    };
+    await mutateFixtureRegistry(() => { steps.push('mutate'); }, selectedUrl, runCommand);
+    expect(steps).toEqual(['locks:acquire', 'mutate', 'locks:release']);
+  });
+
+  it('releases on the selected host when the fixture mutation fails', async () => {
+    vi.stubEnv('PAPERCUSP_SID', 'attributed-fixture-session');
+    const calls: string[][] = [];
+    const runCommand = async (_file: string, args: string[]) => {
+      calls.push(args);
+      return { stdout: JSON.stringify({ ok: true, lock_id: 'fixture-lock' }) };
+    };
+    await expect(mutateFixtureRegistry(() => { throw new Error('fixture failed'); },
+      'http://127.0.0.1:3397', runCommand)).rejects.toThrow('fixture failed');
+    expect(calls.map((args) => [args[0], args[args.indexOf('--url') + 1]]))
+      .toEqual([['locks:acquire', 'http://127.0.0.1:3397'], ['locks:release', 'http://127.0.0.1:3397']]);
+  });
+
+  it('never mutates the registry when lock acquisition is refused', async () => {
+    vi.stubEnv('PAPERCUSP_SID', 'attributed-fixture-session');
+    const mutate = vi.fn();
+    const runCommand = vi.fn(async () => ({ stdout: JSON.stringify({ ok: false }) }));
+    await expect(mutateFixtureRegistry(mutate, 'http://127.0.0.1:3397', runCommand)).rejects.toThrow();
+    expect(mutate).not.toHaveBeenCalled();
+    expect(runCommand).toHaveBeenCalledTimes(1);
+  });
+});
 
 function successful(result: TurnResult) {
   expect(result.finishReason, JSON.stringify({ error: result.error, answer: result.assistantText })).toBe('done');
@@ -183,6 +241,14 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
       }
     }
   });
+
+  it.runIf(Boolean(manualFixtureDir))('validates registry coordination and the served fixture revision before model calls', async () => {
+    // beforeEach/afterEach exercise the real attributed lock and principal
+    // lifecycle under the same hermetic setup as the model cases. No send()
+    // occurs here: routing, database and bundle failures stop at preflight.
+    const revision = await verifyFixtureBundle();
+    expect(revision.revision).toMatch(/^[a-f0-9]{64}$/);
+  }, 30_000);
 
   it('retrieves the canonical FAQ for a natural question with a misspelling', async () => {
     const result = await recordedCase('conceptual-misspelling',
