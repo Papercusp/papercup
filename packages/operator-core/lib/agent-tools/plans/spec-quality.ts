@@ -45,6 +45,12 @@ export interface PlanSpecQualityResult {
     invalidExemptionSpecIds: string[];
     draftSpecIds: string[];
     atomicityClauseDiagnostics: SpecQualityAtomicityClauseDiagnostic[];
+    prerequisiteRuntimeBarMismatches: Array<{
+      prerequisiteItemId: string;
+      barKey: string;
+      projectionSpecId: string;
+      dependentImplementationItemIds: string[];
+    }>;
   };
   scorecardDraft: {
     rubricRef: typeof SPEC_QUALITY_RUBRIC_REF;
@@ -54,6 +60,12 @@ export interface PlanSpecQualityResult {
     ratings: Record<SpecQualityCriterion, SpecQualityRatingEntry>;
     terminal: true;
   };
+}
+
+/** The dependency slice needed to validate BAR ownership during plan activation. */
+export interface SpecQualityPlanItem {
+  id: string;
+  blockedBy?: readonly string[];
 }
 
 export type SpecQualityAtomicityClauseDiagnostic =
@@ -127,6 +139,112 @@ function validExplicitExemption(clause: SpecClauseRevision): boolean {
   const exemption = clause.exemption;
   if (!exemption || typeof exemption !== 'object' || Array.isArray(exemption)) return false;
   return Boolean(trimmedField(exemption.justification) && trimmedField(exemption.provenance));
+}
+
+function sourceBarIdentity(clause: SpecClauseRevision): string | null {
+  const pin = clause.sourceBar;
+  if (!pin) return null;
+  return JSON.stringify([
+    pin.rubricSlug,
+    pin.barKey,
+    pin.barHash,
+    pin.barSetHash,
+    pin.rubricRevision,
+    pin.evidencePlane,
+  ]);
+}
+
+function requiresRuntimeEvidence(clause: SpecClauseRevision): boolean {
+  return clause.requiredTestLayers.length > 0 || clause.requiredEvidence.length > 0 || clause.mutationRequired;
+}
+
+function dependentItemIdsOf(
+  prerequisiteItemId: string,
+  planItemIds: readonly string[],
+  planItems: readonly SpecQualityPlanItem[],
+): string[] {
+  const inPlan = new Set(planItemIds);
+  const descendants = new Set<string>();
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const item of planItems) {
+      if (!inPlan.has(item.id) || item.id === prerequisiteItemId || descendants.has(item.id)) continue;
+      if ((item.blockedBy ?? []).some((blocker) => blocker === prerequisiteItemId || descendants.has(blocker))) {
+        descendants.add(item.id);
+        changed = true;
+      }
+    }
+  }
+  return [...descendants].sort();
+}
+
+function prerequisiteRuntimeBarMismatches(input: {
+  planItemIds: readonly string[];
+  planItems?: readonly SpecQualityPlanItem[];
+  behavioralClauses: readonly SpecClauseRevision[];
+  validExemptions: readonly SpecClauseRevision[];
+}): PlanSpecQualityResult['details']['prerequisiteRuntimeBarMismatches'] {
+  if (!input.planItems?.length) return [];
+
+  const explicitlyNonCode = new Set(
+    input.validExemptions
+      .filter((clause) => clause.requiredTestLayers.length === 0 && !clause.mutationRequired)
+      .map((clause) => clause.planItemId),
+  );
+  const runtimeProjections = input.behavioralClauses.filter(
+    (clause) => clause.sourceBar && requiresRuntimeEvidence(clause),
+  );
+  const runtimeImplementations = input.behavioralClauses.filter(
+    (clause) =>
+      !clause.sourceBar &&
+      clause.behaviorClass !== 'non-automated' &&
+      requiresRuntimeEvidence(clause),
+  );
+  const mismatches: PlanSpecQualityResult['details']['prerequisiteRuntimeBarMismatches'] = [];
+
+  for (const prerequisiteItemId of explicitlyNonCode) {
+    // An active independent behavior contract makes this a mixed/code item, not a
+    // purely non-code prerequisite. Do not use the exemption to classify it away.
+    if (input.behavioralClauses.some(
+      (clause) =>
+        clause.planItemId === prerequisiteItemId &&
+        !clause.sourceBar &&
+        clause.behaviorClass !== 'non-automated',
+    )) continue;
+
+    const descendants = dependentItemIdsOf(prerequisiteItemId, input.planItemIds, input.planItems);
+    if (descendants.length === 0) continue;
+    const descendantSet = new Set(descendants);
+    const ownProjections = runtimeProjections.filter((clause) => clause.planItemId === prerequisiteItemId);
+    for (const projection of ownProjections) {
+      const identity = sourceBarIdentity(projection);
+      if (!identity) continue;
+      const dependentImplementationItemIds = [...new Set(
+        runtimeProjections
+          .filter((candidate) =>
+            descendantSet.has(candidate.planItemId) &&
+            sourceBarIdentity(candidate) === identity &&
+            !explicitlyNonCode.has(candidate.planItemId) &&
+            runtimeImplementations.some((contract) => contract.planItemId === candidate.planItemId),
+          )
+          .map((candidate) => candidate.planItemId),
+      )].sort();
+      if (dependentImplementationItemIds.length === 0) continue;
+      mismatches.push({
+        prerequisiteItemId,
+        barKey: projection.sourceBar!.barKey,
+        projectionSpecId: projection.specId,
+        dependentImplementationItemIds,
+      });
+    }
+  }
+
+  return mismatches.sort((a, b) =>
+    a.prerequisiteItemId.localeCompare(b.prerequisiteItemId) ||
+    a.barKey.localeCompare(b.barKey) ||
+    a.projectionSpecId.localeCompare(b.projectionSpecId),
+  );
 }
 
 function implementationCouplingReason(behavior: string): string | null {
@@ -225,6 +343,7 @@ export function evaluatePlanSpecQuality(input: {
   planSlug: string;
   harnessSlug: string;
   planItemIds: readonly string[];
+  planItems?: readonly SpecQualityPlanItem[];
   clauses: readonly SpecClauseRevision[];
   classRef: PlanClassRubricRef;
   expectedSpecSetHash?: string;
@@ -334,6 +453,12 @@ export function evaluatePlanSpecQuality(input: {
   const unpinnedAutoBarIds = itemBehavioral.filter(isUnpinnedAutoBar).map((clause) => clause.specId).sort();
   const coveredItems = new Set([...independentItemBehavioral, ...validExemptions].map((clause) => clause.planItemId));
   const uncoveredPlanItemIds = planItemIds.filter((itemId) => !coveredItems.has(itemId));
+  const runtimeBarMismatches = prerequisiteRuntimeBarMismatches({
+    planItemIds,
+    planItems: input.planItems,
+    behavioralClauses: behavioral,
+    validExemptions,
+  });
   const projectionEvidence = behavioral.some((clause) => clause.sourceBar)
     ? ` ${behavioral.filter((clause) => clause.sourceBar).length} sourceBar-pinned projection(s) are excluded as copies of canonical acceptance BARs; added or meaning-changed BAR projections are checked on rubric writes, while unchanged legacy BARs are not re-certified here.`
     : '';
@@ -342,7 +467,16 @@ export function evaluatePlanSpecQuality(input: {
         `Plan item(s) lack an active clause or valid explicit exemption: ${uncoveredPlanItemIds.join(', ')}.`,
         'Add at least one active behavioral clause per item, or an explicit non-automated exemption with justification and provenance.',
       )
-    : barPinMismatches.length || duplicateBehaviorReuse.length || unpinnedAutoBarIds.length
+    : runtimeBarMismatches.length
+      ? fail(
+          'Runtime BAR projection(s) are assigned to explicitly non-code prerequisite item(s) even though dependent implementation item(s) carry the same BAR: ' +
+            runtimeBarMismatches.map((entry) =>
+              `${entry.projectionSpecId} on ${entry.prerequisiteItemId} -> ${entry.dependentImplementationItemIds.join(', ')}`,
+            ).join('; ') +
+            '.',
+          'Move runtime BAR mappings off non-code prerequisites and onto the dependent implementation item(s), then regenerate the exact spec-quality card. Keep the canonical shipment BAR contract unchanged.',
+        )
+      : barPinMismatches.length || duplicateBehaviorReuse.length || unpinnedAutoBarIds.length
       ? unknown(
         'Potential contract coverage issue: ' +
             [
@@ -546,6 +680,7 @@ export function evaluatePlanSpecQuality(input: {
       invalidExemptionSpecIds,
       draftSpecIds,
       atomicityClauseDiagnostics,
+      prerequisiteRuntimeBarMismatches: runtimeBarMismatches,
     },
     scorecardDraft: {
       rubricRef: SPEC_QUALITY_RUBRIC_REF,
