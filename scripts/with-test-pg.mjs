@@ -205,7 +205,7 @@ if (operatorApi) {
   while ([port, Number(runtimeEnv.PAPERCUSP_HONO_PORT), Number(runtimeEnv.OPERATOR_DEV_PTY_PORT)].includes(ingressPort));
   runtimeEnv.PAPERCUSP_EXTERNAL_INGRESS_PORT = String(ingressPort);
   const profileSource = `
-    const stage = (name) => process.send({ stage: name });
+    const stage = (name, detail = {}) => process.send({ stage: name, ...detail });
     stage('imports:harness-registry');
     import { mkdir } from 'node:fs/promises';
     import { join } from 'node:path';
@@ -237,7 +237,20 @@ if (operatorApi) {
     await sql\`UPDATE harness_shared.routines SET metadata = \${sql.json({ pause })}
       WHERE workspace_id = \${id} AND install_slug = \${id} AND name = 'green-checkpoint'\`;
     stage('measure-private-gate');
-    const gate = await releaseGateTile(id);
+    const { fetchOrientPipeline } = await import('./packages/operator-core/lib/agent-tools/coordination/pipeline-health.ts');
+    const { computePipelineHealth } = await import('./packages/operator-core/lib/why-chain.ts');
+    const { gitPipelineSnapshot } = await import('./packages/operator-core/lib/git-pipeline-stats.ts');
+    const pendingGateSources = new Set();
+    const gate = await releaseGateTile(id, { fetch: (slug) => fetchOrientPipeline(slug, {
+      compute: (slug) => computePipelineHealth({ slug, harnessSlug: slug,
+        loadSnapshot: () => gitPipelineSnapshot(slug, { useSpawnerSidecar: false,
+          onProgress: (name) => {
+            const [source, state] = name.split(':');
+            if (state === 'start') pendingGateSources.add(source);
+            else pendingGateSources.delete(source);
+            stage('measure-private-gate:' + name, { pendingGateSources: [...pendingGateSources] });
+          } }) }),
+    }) });
     if (!gate || gate.gate !== 'wedged' || !gate.red) {
       throw new Error('private paused pipeline was not measured; refusing request journey');
     }
@@ -258,15 +271,19 @@ if (operatorApi) {
     }
     const ready = await new Promise((res, rej) => {
       let lastStage = 'process-start';
+      let pendingGateSources = [];
       const started = Date.now();
-      const timer = setTimeout(() => rej(new Error('operator-api profile preflight timed out at ' + lastStage + ': ' + errors)), 45000);
+      const timer = setTimeout(() => rej(new Error('operator-api profile preflight timed out at ' + lastStage +
+        '; pending gate sources=' + pendingGateSources.join(',') + ': ' + errors)), 45000);
       const failed = (error) => { clearTimeout(timer); rej(error); };
       profileProcess.once('error', failed);
       profileProcess.once('exit', (code, signal) => failed(new Error('operator-api profile exited ' + code + '/' + signal + ': ' + errors)));
       profileProcess.on('message', (message) => {
         if (typeof message?.stage === 'string') {
           lastStage = message.stage;
-          console.log('[with-test-pg] operator-api stage ' + lastStage + ' +' + (Date.now() - started) + 'ms');
+          if (Array.isArray(message.pendingGateSources)) pendingGateSources = message.pendingGateSources;
+          console.log('[with-test-pg] operator-api stage ' + lastStage + ' +' + (Date.now() - started) + 'ms' +
+            (Array.isArray(message.pendingGateSources) ? ' pending=' + JSON.stringify(pendingGateSources) : ''));
           return;
         }
         clearTimeout(timer);
@@ -336,6 +353,9 @@ child.on('error', async (error) => {
 });
 
 child.on('exit', async (code, signal) => {
+  if (isolatedRuntime && process.env.PC_ISOLATED_RUNTIME_PROOF === '1' && process.send) {
+    process.send({ kind: 'isolated-runtime-stopping', childPid: child.pid, exitCode: code, signal });
+  }
   if (isolatedRuntime && child.pid) {
     // A short-lived assertion can spawn a long-lived test host. Reap its owned
     // process group before deleting the private DB/identity it was using.
@@ -346,6 +366,11 @@ child.on('exit', async (code, signal) => {
     await new Promise(done => process.send({ kind: 'isolated-runtime-end', childPid: child.pid,
       exitCode: code, signal, runtimeRemoved: !existsSync(runtimeRoot), pgDataRemoved: !existsSync(dataDir) }, done));
   }
-  if (signal) process.kill(process.pid, signal);
+  if (signal) {
+    // The forwarding handler has already run. Restore the native signal exit
+    // after cleanup rather than forwarding the signal back to a dead child.
+    process.removeAllListeners(signal);
+    process.kill(process.pid, signal);
+  }
   else process.exit(code ?? 1);
 });

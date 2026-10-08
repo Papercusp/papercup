@@ -40,6 +40,14 @@ describe('disposable operator-api monitoring sources', () => {
       'paused-routine', 'measure-private-gate', 'sidecar-listen']) {
       expect(result.stdout).toContain('operator-api stage ' + stage + ' +');
     }
+    for (const source of ['routines', 'conflicts', 'day', 'week', 'recent',
+      'deploy', 'fire-history', 'config-import', 'config-ready']) {
+      expect(result.stdout).toContain('measure-private-gate:' + source + ':start');
+      expect(result.stdout).toContain('measure-private-gate:' + source + ':ready');
+    }
+    const gateStages = result.stdout.split('\n').filter(line => line.includes('measure-private-gate:'));
+    expect(gateStages.some(line => line.includes('pending=["routines"]'))).toBe(true);
+    expect(gateStages.at(-1)).toContain('pending=[]');
     const line = result.stdout.split('\n').find(row => row.startsWith('PRIVATE_GATE_PROOF='));
     expect(line, 'Private gate proof must execute').toBeDefined();
     const proof = JSON.parse(line!.slice('PRIVATE_GATE_PROOF='.length));
