@@ -1,11 +1,15 @@
 // @vitest-environment node
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
+import { existsSync, readFileSync } from 'node:fs';
+import { basename, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   composeCompanionSummary,
   type CompanionListSummary,
 } from '@papercusp/facets';
-import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
+import { applyMigrationForTest, createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
+import { assertMigrationPassesPreApplyLints } from '../migration-preapply-lint';
 import {
   NO_SESSION_HARNESS,
   advSessionsSummarySelection,
@@ -23,6 +27,8 @@ const deepPlan = 'p10-deep-plan';
 const deepHarness = 'p10-deep-harness';
 const deepId = 15_025;
 const BASE_TS = 1_900_000_000_000;
+const migration = fileURLToPath(new URL('../../../../libs/papercusp/libs/db/sql/1422-adv-sessions-launch-harness-projection.sql', import.meta.url));
+const migrationPath = () => existsSync(migration) ? migration : `${migration}.DRAFT`;
 let db: FreshPgDb;
 let sql: Sql;
 
@@ -84,6 +90,15 @@ beforeAll(async () => {
     CREATE INDEX adv_sessions_workspace_first_seen_idx
       ON harness_shared.adv_sessions (workspace_id, first_seen_at DESC, id DESC)`);
   await sql`
+    INSERT INTO harness_shared.adv_sessions
+      (id, workspace_id, mode, launch_spec, started_at, first_seen_at)
+    VALUES
+      (-3, 'p10-projection-backfill', 'console', NULL, now(), now()),
+      (-2, 'p10-projection-backfill', 'console', '{"label":"preserved"}'::jsonb, now(), now()),
+      (-1, 'p10-projection-backfill', 'console',
+       '{"harnessSlug":"legacy-harness","label":"preserved"}'::jsonb, now(), now())`;
+  await applyMigrationForTest(sql, migrationPath());
+  await sql`
     INSERT INTO harness_shared.harness_plans
       (workspace_id, harness_slug, plan_slug)
     VALUES
@@ -140,6 +155,54 @@ afterAll(async () => {
 }, 300_000);
 
 describe('advSessions list + summary real-PG P-010 contract', () => {
+  it('passes the production migration safety checks before arming or applying', () => {
+    expect(() => assertMigrationPassesPreApplyLints({
+      filename: basename(migration),
+      sqlText: readFileSync(migrationPath(), 'utf8'),
+      sqlDir: dirname(migration),
+    })).not.toThrow();
+  });
+
+  it('backfills existing launch JSON and permits migration replay without changing it', async () => {
+    const before = await sql`
+      SELECT id, launch_spec, launch_harness_slug
+      FROM harness_shared.adv_sessions
+      WHERE workspace_id = 'p10-projection-backfill' ORDER BY id`;
+    expect(before).toEqual([
+      { id: -3, launch_spec: null, launch_harness_slug: null },
+      { id: -2, launch_spec: { label: 'preserved' }, launch_harness_slug: null },
+      { id: -1, launch_spec: { harnessSlug: 'legacy-harness', label: 'preserved' }, launch_harness_slug: 'legacy-harness' },
+    ]);
+    await applyMigrationForTest(sql, migrationPath());
+    const after = await sql`
+      SELECT id, launch_spec, launch_harness_slug
+      FROM harness_shared.adv_sessions
+      WHERE workspace_id = 'p10-projection-backfill' ORDER BY id`;
+    expect(after).toEqual(before);
+  });
+
+  it('keeps launch harness exact across large payload updates and removal', async () => {
+    const id = 1;
+    const before = await summaryFor({ workspaceId });
+    const original = await sql`SELECT launch_spec FROM harness_shared.adv_sessions WHERE id = ${id}`;
+    try {
+      await sql`UPDATE harness_shared.adv_sessions
+        SET launch_spec = jsonb_build_object('harnessSlug', 'large-payload-harness', 'identityHistory', repeat('payload-', 100_000))
+        WHERE id = ${id}`;
+      const projection = await sql`SELECT launch_harness_slug FROM harness_shared.adv_sessions WHERE id = ${id}`;
+      expect(projection[0].launch_harness_slug).toBe('large-payload-harness');
+      expect(await summaryFor({ workspaceId, harnessSlugs: ['large-payload-harness'] }))
+        .toMatchObject({ total: before.total, matched: 1 });
+      await sql`UPDATE harness_shared.adv_sessions SET launch_spec = NULL WHERE id = ${id}`;
+      const cleared = await sql`SELECT launch_harness_slug FROM harness_shared.adv_sessions WHERE id = ${id}`;
+      expect(cleared[0].launch_harness_slug).toBeNull();
+      const fallback = await pageFor({ workspaceId, planSlugs: ['p10-bulk-plan'], limit: 25 });
+      expect(fallback.rows.find((row) => row.id === id)?.harnessSlug).toBe('p10-bulk-harness');
+    } finally {
+      await sql`UPDATE harness_shared.adv_sessions SET launch_spec = ${original[0].launch_spec}::jsonb WHERE id = ${id}`;
+    }
+  });
+
   it('finds a plan/harness match beyond the old page-200 ceiling with exact facets', async () => {
     const args: AdvSessionsListWireArgs = {
       workspaceId,

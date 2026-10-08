@@ -229,6 +229,40 @@ describe('the parked-migration dependency guard (EI-20208711931756460)', () => {
     ]);
   });
 
+  it('ignores SQL projection aliases and their result fields without requiring the projected column', () => {
+    const sql = 'ALTER TABLE harness_shared.fc_alias_sessions ADD COLUMN fc_alias_probe text;';
+    const result = findDraftColumnReferences(sql, [
+      {
+        file: 'packages/operator-core/lib/operation-binding.ts',
+        text: [
+          'type Row = { fc_alias_probe: string | null };',
+          "const query = sql`SELECT s.launch_spec->>'harnessSlug' AS fc_alias_probe FROM harness_shared.fc_alias_sessions s`;",
+          'const harness = row.fc_alias_probe;',
+        ].join('\n'),
+      },
+      {
+        file: 'packages/operator-core/lib/operation-binding.test.ts',
+        text: "const table = 'harness_shared.fc_alias_sessions'; const row = { fc_alias_probe: 'harness-a' };",
+      },
+    ]);
+    expect(result.references).toEqual([]);
+  });
+
+  it('still detects a real column read when the same file also projects an alias with that name', () => {
+    const sql = 'ALTER TABLE harness_shared.fc_alias_sessions ADD COLUMN fc_alias_probe text;';
+    const result = findDraftColumnReferences(sql, [{
+      file: 'packages/operator-core/lib/operation-binding.ts',
+      text: [
+        'type Row = { fc_alias_probe: string | null };',
+        "const alias = sql`SELECT s.launch_spec->>'harnessSlug' AS fc_alias_probe FROM fc_alias_sessions s`;",
+        'const real = sql`SELECT s.fc_alias_probe FROM fc_alias_sessions s`;',
+      ].join('\n'),
+    }]);
+    expect(result.references).toEqual([{
+      column: 'fc_alias_probe', file: 'packages/operator-core/lib/operation-binding.ts', line: 3,
+    }]);
+  });
+
   it('extracts the altered table without its schema qualifier', () => {
     expect(
       alteredTablesFor('ALTER TABLE harness_shared.fc_probe_backends ADD COLUMN IF NOT EXISTS fc_probe_mode text;'),

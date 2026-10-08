@@ -201,17 +201,33 @@ export async function reconcilePortal(config, deps = {}) {
   const sameSource = receipt?.sourceDigest === before.digest
     && receipt?.sourceRootDigest === before.rootDigest;
   const samePublicLinks = receipt?.publicLinksDigest === beforePublicLinksDigest;
-  if (sameRelease && sameSource && samePublicLinks) {
-    if (await checkHealth(config.port)) {
-      await clearCandidate(candidatePath);
-      return { status: 'fresh', releasePath: current.path };
-    }
+  // Availability is independent of source stability. Recover the already-selected
+  // immutable release before a changing source tree can defer a rebuild forever.
+  // --install-only refreshes the credential boot launcher without promoting any
+  // candidate, bypassing freshness checks, or claiming that new source is served.
+  if (!(await checkHealth(config.port))) {
     await withHandoffLock(async () => {
-      await runCommand('bash', [config.deployScript, '--handoff'], config.integrationRoot, config.env);
-      if (!(await checkHealth(config.port))) throw new Error('portal_handoff_health_failed');
+      const selected = await getRelease(runtimeRoot);
+      if (resolve(selected.path) !== resolve(current.path)) {
+        throw new Error('portal_current_changed_before_recovery');
+      }
+      await runCommand('bash', [config.deployScript, '--install-only'], config.integrationRoot, config.env);
+      const systemctl = config.env.PAPERCUSP_CLOUD_PORTAL_SYSTEMCTL || 'systemctl';
+      const unit = config.env.PAPERCUSP_CLOUD_PORTAL_UNIT || 'papercusp-cloud-portal.service';
+      await runCommand(systemctl, ['--user', 'reset-failed', unit], config.integrationRoot, config.env);
+      await runCommand(systemctl, ['--user', 'restart', unit], config.integrationRoot, config.env);
+      if (!(await checkHealth(config.port))) throw new Error('portal_recovery_health_failed');
+      const recovered = await getRelease(runtimeRoot);
+      if (resolve(recovered.path) !== resolve(current.path)) {
+        throw new Error('portal_current_changed_during_recovery');
+      }
     });
-    await clearCandidate(candidatePath);
+    if (sameRelease && sameSource && samePublicLinks) await clearCandidate(candidatePath);
     return { status: 'recovered', releasePath: current.path };
+  }
+  if (sameRelease && sameSource && samePublicLinks) {
+    await clearCandidate(candidatePath);
+    return { status: 'fresh', releasePath: current.path };
   }
 
   const snapshot = (fingerprintResult, linksDigest, firstSeenAtMs) => ({

@@ -312,6 +312,7 @@ import './personal/privacy-rules';
 import './personal/declassify';
 import './personal/open-sealed';
 import './documents/search';
+import './documents/read';
 import './documents/subscriptions';
 // external-triggers P-008: reply only to the Slack thread anchored by a durable plan run.
 import './slack/respond-in-thread';

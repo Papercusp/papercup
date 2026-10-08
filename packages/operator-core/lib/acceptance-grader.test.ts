@@ -916,7 +916,7 @@ describe('launchAcceptanceGrader', () => {
     expect(launch).not.toHaveBeenCalled();
   });
 
-  it('allows a fresh judge launch for an unrelated caller', async () => {
+  it('launches an unrelated judge on the recruiting host with its restricted role intact', async () => {
     const launch = vi.fn(async () => ({
       content: [{ type: 'text', text: 'launched' }],
       data: { deduped: false, launch: { tasks: [{ taskId: 'task-independent' }] } },
@@ -931,6 +931,9 @@ describe('launchAcceptanceGrader', () => {
     expect(result.state).toBe('launched');
     expect(lineageRelated).toHaveBeenCalledWith('su-implementer', 'su-independent', { workspaceId: 'ws-test' });
     expect(launch).toHaveBeenCalledTimes(1);
+    expect(launch.mock.calls[0]?.[0]).toMatchObject({
+      mcpTarget: 'spawn-host', account: 'auto', independent: true, members: [{ role: 'judge' }],
+    });
   });
 
   it('uses createdBy when a legacy rubric has no proposedBy author', async () => {
@@ -1219,7 +1222,11 @@ describe('launchAcceptanceGrader', () => {
     expect(kill).toHaveBeenCalledTimes(1);
     expect(kill).toHaveBeenCalledWith('task-quota', { includeSubtree: true, escalateAfterMs: 5_000 });
     expect(launch).toHaveBeenCalledTimes(2);
+    expect(launch.mock.calls[0][0]).toMatchObject({
+      mcpTarget: 'spawn-host', agent: 'claude', independent: true, members: [{ role: 'judge' }],
+    });
     expect(launch.mock.calls[1][0]).toMatchObject({
+      mcpTarget: 'spawn-host',
       account: 'auto',
       agent: 'codex',
       members: [{ role: 'judge', agent: 'codex', model: 'gpt-5.6-sol', effort: 'high' }],

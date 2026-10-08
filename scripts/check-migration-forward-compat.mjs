@@ -46,7 +46,7 @@ import { join, dirname, extname, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
-import { stripCommentsOnly, stripSqlComments } from './lib/strip-comments-and-strings.mjs';
+import { stripCommentsAndStrings, stripCommentsOnly, stripSqlComments } from './lib/strip-comments-and-strings.mjs';
 import { selectExplicitBasenames } from './lib/explicit-files.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -919,14 +919,39 @@ export function findDraftColumnReferences(sqlText, sourceFiles = []) {
   const qualifyingTables = unresolved.length > 0 ? [] : tables;
   const tableTokens = qualifyingTables.map((t) => new RegExp(`(?<![A-Za-z0-9_$])${escapeRe(t)}(?![A-Za-z0-9_$])`, 'i'));
   const references = [];
+  const sourceMasks = new Map();
   for (const column of columns) {
-    const token = new RegExp(`(?<![A-Za-z0-9_$])${escapeRe(column)}(?![A-Za-z0-9_$])`, 'i');
+    const token = new RegExp(`(?<![A-Za-z0-9_$])${escapeRe(column)}(?![A-Za-z0-9_$])`, 'ig');
     for (const source of sourceFiles) {
       if (source.file.startsWith(`${SQL_DIR_REL}/`)) continue;
-      const masked = sourceCommentsMasked(source.text, source.file);
-      const match = token.exec(masked);
-      if (!match || match.index === undefined) continue;
+      let masks = sourceMasks.get(source);
+      if (!masks) {
+        masks = { comments: sourceCommentsMasked(source.text, source.file), code: null };
+        sourceMasks.set(source, masks);
+      }
+      const masked = masks.comments;
+      const matches = [...masked.matchAll(token)];
+      if (!matches.length) continue;
       if (tableTokens.length && !tableTokens.some((t) => t.test(masked))) continue;
+      const isSql = sourceFileExtension(source.file) === '.sql';
+      // Reuse the canonical parser's offset-preserving masks to distinguish SQL
+      // in literals from TypeScript result types, fixture keys and row access.
+      // An AS alias names a result, not a column on the altered table. Never
+      // exempt the whole file: another query can still read the real column.
+      if (!isSql && masks.code === null) masks.code = stripCommentsAndStrings(source.text, source.file);
+      const inLiteral = (match) => !isSql &&
+        masks.code.slice(match.index, match.index + match[0].length).trim() === '';
+      const isAlias = (match) => (isSql || inLiteral(match)) &&
+        /\bAS\s+"?$/i.test(masked.slice(0, match.index));
+      const hasAlias = matches.some(isAlias);
+      const match = matches.find((candidate) => {
+        if (isAlias(candidate)) return false;
+        if (isSql || inLiteral(candidate)) return true;
+        const after = masked.slice(candidate.index + candidate[0].length);
+        if (/^\s*:(?!:)/.test(after)) return false;
+        return !(hasAlias && /\.\s*$/.test(masked.slice(0, candidate.index)));
+      });
+      if (!match) continue;
       references.push({
         column,
         file: source.file,

@@ -25,6 +25,10 @@ vi.mock('@papercusp/db-org', async (orig) => {
 
 const { captureImprovement } = await import('../../../harness/improvements/capture-core');
 const { createIssue, claimIssue } = await import('../../../issues-engineer');
+const { setWorkItemState } = await import('../../../work-items');
+const { runWorkItemAdmissionPromoter } = await import('../../../work-items-admission-promoter');
+const { readIssueClaimability } = await import('../../../scheduler/get-next');
+const { IMPLEMENTATION_ACCEPTANCE_ENFORCEMENT_CUTOVER_MS } = await import('../../../harness/improvements/agent-review-policy');
 const { recordIssueOccurrence } = await import('../../../issue-occurrence-ledger');
 const { intakeEndUserReport } = await import('../../../harness/improvements/end-user-intake');
 const { putReportAttachment } = await import('../../../harness/improvements/report-attachments');
@@ -65,6 +69,7 @@ afterAll(async () => {
   if (!process.env.KEEP_TEST_PG) await teardownTestPg();
 });
 afterEach(rigAfterEach);
+afterEach(() => vi.unstubAllEnvs());
 
 // No similarity search: this pins the error-signature fold, which needs no search.
 const capture = (input: Parameters<typeof captureImprovement>[0]) =>
@@ -395,7 +400,10 @@ describe('desktop Report a problem door, end to end', () => {
     // Scope: real PG CDC -> real PG projection. No live swarm delivery claim.
   });
 
-  it("folds the desktop report and an agent's report of the same error into one bug", async () => {
+  it('P-023: one desktop, agent and watchdog identity survives verification, claim, completion and publication', async () => {
+    // The filing timer has its own scheduler controls. Isolate wall-clock delay
+    // here while keeping duplicate admission and verification on their real paths.
+    vi.stubEnv('PAPERCUSP_FILING_GRACE_SEC', '0');
     const s = suffix();
     const payload = buildProblemReport({
       text: `Export to CSV does nothing on board ${s}`,
@@ -435,13 +443,27 @@ describe('desktop Report a problem door, end to end', () => {
     expect(agent.created, `agent report did not fold onto the desktop report: ${JSON.stringify(keys)}`).toBe(false);
     expect(agent.issue?.id ?? agent.coalescedOnto?.id).toBe(id);
 
+    const watchdog = await capture({
+      title: `Watchdog observed CSV export failure (${s})`,
+      kind: 'bug',
+      scope: 'harness:papercusp',
+      workspaceId: WORKSPACE,
+      createdBy: 'system:p023-watchdog',
+      reporterKind: 'watchdog',
+      reportContext: { recentErrors: [{
+        source: 'renderer', message: `TypeError: Cannot read properties of undefined (reading 'csvRows${s}') at 92:8`,
+      }] },
+    });
+    expect(watchdog.created).toBe(false);
+    expect(watchdog.issue?.id ?? watchdog.coalescedOnto?.id).toBe(id);
+
     const rows = await rowsMentioning(`csvRows${s}`);
     expect(rows).toHaveLength(1);
     const row = rows[0]!;
     expect(row.feature_id).toBe(id);
     expect(row.title).toContain('Export to CSV does nothing');
     expect(row.payload.reporter).toMatchObject({ kind: 'end-user' });
-    expect(row.payload.reporterKinds).toEqual(expect.arrayContaining(['agent', 'end-user']));
+    expect(row.payload.reporterKinds).toEqual(expect.arrayContaining(['agent', 'end-user', 'watchdog']));
     // The captured screen context rides on the row: the route and the user-meaningful params, not the dialog's own.
     const context = JSON.stringify(row.payload.reportContext ?? row.payload);
     expect(context).toContain('/harness/papercusp/board');
@@ -453,6 +475,89 @@ describe('desktop Report a problem door, end to end', () => {
     const atts = await db.adminSql<{ door: string; kind: string; redaction: string }[]>`
       SELECT door, kind, redaction FROM harness_shared.report_attachments WHERE work_item_id = ${id!}`;
     expect(atts).toEqual([{ door: 'desktop', kind: 'log', redaction: 'redacted' }]);
+
+    // Exercise the real scheduler and acceptance writer. Duplicate admission is
+    // an independent stage: run its existing no-model routine rather than stamp
+    // the database or assume acceptance silently releases a different hold.
+    if (!id) throw new Error('desktop intake returned no source identity');
+    // D-018 currently retains the legacy rollout exception. Like the canonical
+    // intake journey, pin only the creation-date boundary so this fixture tests
+    // the enforced contract; this is not evidence that the rollout has shipped.
+    await db.adminSql`UPDATE harness_shared.work_items
+      SET created_ts = ${IMPLEMENTATION_ACCEPTANCE_ENFORCEMENT_CUTOVER_MS + 60_000}
+      WHERE feature_id = ${id}`;
+    const claimable = () => readIssueClaimability({ field: 'id', op: 'in', value: [id] }, {
+      harness: 'papercusp', workspaceId: WORKSPACE, states: ['open'],
+      assignee: 'su-p023-fixer', client: db.adminSql,
+    }, { limit: 10, sampleLimit: 1 });
+    expect((await claimable()).rows).toEqual([]);
+    const llmCall = vi.fn(async () => { throw new Error('unexpected duplicate pair in single-report journey'); });
+    expect(await runWorkItemAdmissionPromoter({ workspaceId: WORKSPACE, harnessSlug: 'papercusp',
+      sql: db.adminSql, runId: `p023-admission-${s}`, targetItemIds: [id],
+      noModel: true, llmCall })).toMatchObject({ promoted: 1, held: 0, modelCalled: false });
+    expect(llmCall).not.toHaveBeenCalled();
+    const beforeVerification = await claimable();
+    expect(beforeVerification.breakdown.excluded.admissionPending).toBe(0);
+    expect(beforeVerification.rows).toEqual([]);
+    expect(await readReporterStatus({ id, harness: 'papercusp', workspaceId: WORKSPACE }, db.adminSql))
+      .toMatchObject({ sourceId: id, canonicalId: id, status: 'received' });
+    const parsed = parseIntakeDecision({ disposition: 'promote', reason: 'CSV export failure independently reproduced',
+      reproduction: { kind: 'failing-test', ref: 'report-problem.integration.test.ts CSV reproduction', buildSha: 'abc1234def' },
+      acceptance: { problem: 'CSV export crashes', evidence: ['CSV reproduction fails'],
+        outcome: 'CSV export completes', scope: 'CSV export on board', completionCheck: 'CSV reproduction passes' } },
+    { decidedBy: 'su-p023-verifier', sourceRevision: await currentIntakeSourceRevision(id) });
+    if (!parsed.ok) throw new Error(parsed.error);
+    const accepted = await executeIntakeDecision({ sourceId: id, decision: parsed.decision,
+      runId: `p023-${s}`, itemId: `report-${s}` });
+    expect(accepted).toMatchObject({ ok: true, mode: 'in-place', workItemId: id });
+    const admitted = await claimable();
+    const [afterAcceptance] = await db.adminSql`
+      SELECT status, item_kind, taken_by, payload->'agentReview' AS review,
+             payload->'implementationReadiness' AS readiness
+        FROM harness_shared.work_items WHERE feature_id = ${id}`;
+    expect(admitted.rows.map(item => item.id),
+      `accepted report excluded: ${JSON.stringify({ breakdown: admitted.breakdown, sample: admitted.sample, afterAcceptance })}`)
+      .toEqual([id]);
+    expect(await readReporterStatus({ id, harness: 'papercusp', workspaceId: WORKSPACE }, db.adminSql))
+      .toMatchObject({ sourceId: id, canonicalId: id, status: 'awaiting-fix' });
+    expect(await claimIssue(id, 'su-p023-fixer')).toMatchObject({ assignee: 'su-p023-fixer' });
+    expect(await readReporterStatus({ id, harness: 'papercusp', workspaceId: WORKSPACE }, db.adminSql))
+      .toMatchObject({ sourceId: id, canonicalId: id, status: 'being-fixed' });
+
+    // This is a publication fixture, not a claim that a real release shipped.
+    // The completion still goes through the canonical writer, and notification
+    // still requires the published artifact's matching content identity.
+    const fixBlob = 'b'.repeat(40);
+    const completionRef = `p023-completion-${s}`;
+    await setWorkItemState(id, 'done', { harness: 'papercusp', by: 'su-p023-fixer',
+      completionRef, completionAuthority: 'committed', completionEvidence: {
+        verifiedHow: 'integration', testsRun: 'CSV reproduction fixture', testResult: 'passed',
+        settlementManifest: { repositoryRoot: '/p023-fixture', contentIdentity: [
+          { path: 'src/export.ts', headBlobSha: fixBlob, workingTreeBlobSha: fixBlob },
+        ] },
+      } });
+    expect(await readReporterStatus({ id, harness: 'papercusp', workspaceId: WORKSPACE }, db.adminSql))
+      .toMatchObject({ sourceId: id, canonicalId: id, status: 'awaiting-release', release: null });
+    const release = { version: '0.9.6', channel: 'alpha', cutAt: new Date(), publishedAt: null as Date | null,
+      changelogMd: null, workItemIds: [id], planSlugs: [], artifacts: [],
+      gitSha: 'a'.repeat(40), cutBy: null, notes: null };
+    const publicationDeps = { ...defaultReporterReleaseDeps(db.adminSql, WORKSPACE, release),
+      repositoryRoot: '/p023-fixture',
+      readBlobs: async () => new Map([['src/export.ts', { status: 'resolved', sha: fixBlob }]]),
+    };
+    expect(await publishReporterRelease(release, publicationDeps)).toEqual({ notified: [], unconfirmed: [] });
+    release.publishedAt = new Date();
+    expect(await publishReporterRelease(release, { ...publicationDeps,
+      readBlobs: async () => new Map([['src/export.ts', { status: 'resolved', sha: 'c'.repeat(40) }]]),
+    })).toEqual({ notified: [], unconfirmed: [id] });
+    expect(await publishReporterRelease(release, publicationDeps)).toEqual({ notified: [id], unconfirmed: [] });
+    expect(await publishReporterRelease(release, publicationDeps)).toEqual({ notified: [], unconfirmed: [] });
+    expect(await readReporterStatus({ id, harness: 'papercusp', workspaceId: WORKSPACE }, db.adminSql))
+      .toMatchObject({ sourceId: id, canonicalId: id, status: 'fixed', label: 'Fixed in v0.9.6' });
+    const finalRows = await rowsMentioning(`csvRows${s}`);
+    expect(finalRows).toHaveLength(1);
+    expect(finalRows[0]!.feature_id).toBe(id);
+    expect(finalRows[0]!.payload.reporterKinds).toEqual(expect.arrayContaining(['agent', 'end-user', 'watchdog']));
   });
 
   it('files nothing when the payload was changed after the preview', async () => {

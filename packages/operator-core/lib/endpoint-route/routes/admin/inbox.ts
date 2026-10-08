@@ -25,7 +25,7 @@ import { ADMIN_COORD_UI_OWNER } from '../../../agent-tools/coordination/identity
 // The human triages AS the admin UI owner — same identity the coord proxy
 // uses, so triage audit rows (`triaged_by`) attribute consistently.
 const ADMIN_UI_CLIENT_ID = ADMIN_COORD_UI_OWNER;
-const WRITE_VERBS = new Set(['triage']);
+const WRITE_VERBS = new Set(['triage', 'automation-policy']);
 
 function unwrap(toolResult: { status: number; body: unknown }): Response {
   if (toolResult.status === 200) {

@@ -149,13 +149,12 @@ function sessionCorpusCtes(
        GROUP BY hp.plan_slug
     ),
     session_corpus AS ${materializeCorpus ? sql`MATERIALIZED` : sql`NOT MATERIALIZED`} (
-      SELECT a.id,
-             a.workspace_id,
-             coalesce(
-               to_jsonb(a)->'launch_spec'->>'harnessSlug',
-               ph.harness_slug
-             ) AS harness_slug,
+      SELECT coalesce(a.launch_harness_slug, ph.harness_slug) AS harness_slug,
              a.plan_slug,
+             a.ended_at
+             ${materializeCorpus ? sql`` : sql`,
+             a.id,
+             a.workspace_id,
              a.agent,
              a.role,
              a.feature,
@@ -170,14 +169,13 @@ function sessionCorpusCtes(
              a.session_id,
              a.started_at,
              a.first_seen_at,
-             a.ended_at,
              a.exit_code,
              a.ended_by,
              a.ended_signal,
              to_jsonb(a)->>'port_id' AS port_id,
              to_jsonb(a)->>'port_source_adv_session_id' AS port_source_adv_session_id,
              to_jsonb(a)->>'port_status' AS port_status,
-             to_jsonb(a)->'port_metadata' AS port_metadata
+             to_jsonb(a)->'port_metadata' AS port_metadata`}
         FROM harness_shared.adv_sessions a
         LEFT JOIN plan_harness ph ON ph.plan_slug = a.plan_slug
        WHERE ${args.workspaceId ? sql`a.workspace_id = ${args.workspaceId}` : sql`TRUE`}

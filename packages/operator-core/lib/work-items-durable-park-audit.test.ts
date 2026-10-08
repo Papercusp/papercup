@@ -49,6 +49,7 @@ describe('durable park audit classification', () => {
             submittedBy: 'su-reviewer',
             ledgerIdeaId: 'WI-B',
             round: 2,
+            timing: { round: 2, enteredAt: new Date(NOW_MS - 25 * 60 * 60 * 1_000).toISOString() },
           },
         },
         {
@@ -145,6 +146,23 @@ describe('durable park audit classification', () => {
     ]);
     expect(report.reasons).toEqual([{ reason: 'UNPARK when dependency WI-1 is done', count: 1 }]);
     expect(report.overdueReviews.rows).toEqual([expect.objectContaining({ id: 'WI-B', ageMs: 25 * 60 * 60 * 1_000 })]);
+  });
+
+  it('uses only a matching current-round start for overdue review and leaves ambiguous legacy ages unknown', () => {
+    const review = { status: 'pending', submittedBy: 'su-author', ledgerIdeaId: 'WI-X', round: 2 };
+    const rows = [
+      row('WI-reset', { agentReview: { ...review, timing: { round: 2, enteredAt: new Date(NOW_MS - 1_000).toISOString() } } },
+        { reviewRoutedAtMs: NOW_MS - 30 * 24 * 60 * 60 * 1_000 }),
+      row('WI-legacy', { agentReview: review }, { reviewRoutedAtMs: NOW_MS - 30 * 24 * 60 * 60 * 1_000 }),
+      row('WI-mismatch', { agentReview: { ...review, timing: { round: 1, enteredAt: '2026-07-01T00:00:00Z' } } }),
+      row('WI-invalid', { agentReview: { ...review, timing: { round: 2, enteredAt: 'invalid' } } }),
+      row('WI-overdue', { agentReview: { ...review, timing: { round: 2, enteredAt: '2026-08-25T00:00:00Z' } } }),
+    ];
+    const report = buildDurableParkAuditReport({ rows, runId: 'round-reset', workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp', nowMs: NOW_MS });
+    expect(report.overdueReviews.timestampBasis).toBe('agentReview.timing.enteredAt (matching round)');
+    expect(report.overdueReviews.rows.map(x => x.id)).toEqual(['WI-overdue']);
+    expect(report.missingMetadata.pendingReviewTimestamp).toBe(3);
+    expect(report.population.axes.pendingAgentReview).toBe(5);
   });
 
   it('classifies age and condition text without treating vague prose as a release condition', () => {

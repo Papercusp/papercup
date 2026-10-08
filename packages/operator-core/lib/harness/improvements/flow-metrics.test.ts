@@ -6,7 +6,7 @@
  * approximation (updated_at on state ∈ resolved/closed) are pinned here.
  */
 import { describe, it, expect } from 'vitest';
-import { computeImprovementFlow, type WatchdogFlowTick } from './flow-metrics';
+import { computeAgentReviewTiming, computeImprovementFlow, type WatchdogFlowTick } from './flow-metrics';
 import type { ImprovementCandidate } from './policy';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -17,6 +17,41 @@ function cand(p: Partial<ImprovementCandidate> & { id: string }): ImprovementCan
 }
 const daysAgo = (d: number): string => new Date(NOW - d * DAY_MS).toISOString();
 const tick = (d: number, captured = 0): WatchdogFlowTick => ({ tickAtMs: NOW - d * DAY_MS, capturedCount: captured });
+
+describe('P-030 round-aware review timing', () => {
+  const review = { status: 'pending', submittedBy: 'su-filer', ledgerIdeaId: 'WI-A', round: 2 };
+  const measure = (agentReview: unknown, extra: Record<string, unknown> = {}) => computeAgentReviewTiming({
+    payload: { agentReview, ...extra }, createdAt: daysAgo(20), reviewRoutedAtMs: NOW - 10 * DAY_MS, nowMs: NOW,
+  });
+
+  it('separates report age, first ledger routing, current-round wait and admission delay', () => {
+    expect(measure({ ...review, timing: { round: 2, enteredAt: daysAgo(0.5) } }, {
+      admissionReview: { enteredAt: daysAgo(2), terminalAt: daysAgo(1.5) },
+    })).toMatchObject({ reportAgeMs: 20 * DAY_MS, ledgerRouteAgeMs: 10 * DAY_MS,
+      reviewWaitMs: 0.5 * DAY_MS, revisionAgeMs: null, admissionDelayMs: 0.5 * DAY_MS, reviewTimeUnknown: null });
+  });
+
+  it('never substitutes an old routing time for absent or mismatched review-round timing', () => {
+    expect(measure(review)).toMatchObject({ reviewWaitMs: null, reviewTimeUnknown: 'missing-round-time' });
+    expect(measure({ ...review, timing: { round: 1, enteredAt: daysAgo(10) } }))
+      .toMatchObject({ reviewWaitMs: null, reviewTimeUnknown: 'round-mismatch' });
+    expect(measure({ ...review, round: 1 })).toMatchObject({ reviewWaitMs: null });
+  });
+
+  it.each(['invalid', '', daysAgo(-1)])('keeps malformed or future entry %s unknown', enteredAt => {
+    expect(measure({ ...review, timing: { round: 2, enteredAt } }))
+      .toMatchObject({ reviewWaitMs: null, reviewTimeUnknown: 'invalid-round-time' });
+  });
+
+  it('measures decision latency separately from time spent revising and refuses reversed dates', () => {
+    const decided = { ...review, status: 'revision-requested', timing: {
+      round: 2, enteredAt: daysAgo(2), decidedAt: daysAgo(1),
+    } };
+    expect(measure(decided)).toMatchObject({ reviewWaitMs: DAY_MS, revisionAgeMs: DAY_MS });
+    expect(measure({ ...decided, timing: { ...decided.timing, decidedAt: daysAgo(3) } }))
+      .toMatchObject({ reviewWaitMs: null, revisionAgeMs: null, reviewTimeUnknown: 'invalid-round-time' });
+  });
+});
 
 describe('computeImprovementFlow — captured/resolved 7d windows', () => {
   it('counts creates inside the trailing 7 days; older ones fall out', () => {

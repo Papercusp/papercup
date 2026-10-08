@@ -1,6 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { WorkItem } from '../../work-items';
+import { readAgentReviewState } from './agent-review-policy';
 import { REBIND_BLOCKING_SESSION_STATES } from '../../agent-tools/coordination/rebind-identity';
 import {
   acceptanceSourceRevision,
@@ -186,6 +187,56 @@ describe('approvalAcceptance — one verification stage, kind-specific checks (P
   });
 });
 
+describe('P-030 review timing lifecycle', () => {
+  afterEach(() => vi.useRealTimers());
+
+  it('preserves enrollment time on retry and resets only when a new review round starts', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-10-08T00:00:00Z'));
+    const h = harness();
+    await enterAgentReview({ id: 'WI-7', submittedBy: 'su-filer' }, h.deps);
+    expect(readAgentReviewState(h.state.issue.payload)?.timing).toEqual({
+      round: 1, enteredAt: '2026-10-08T00:00:00.000Z',
+    });
+    vi.setSystemTime(new Date('2026-10-08T01:00:00Z'));
+    await enterAgentReview({ id: 'WI-7', submittedBy: 'su-filer' }, h.deps);
+    expect(readAgentReviewState(h.state.issue.payload)?.timing?.enteredAt).toBe('2026-10-08T00:00:00.000Z');
+    h.state.ledger = { ideaId: 'WI-7', routedRef: 'wi:WI-7', grade: 2, feedback: 'Provide evidence', gradedBy: 'su-reviewer' };
+    await reconcileAgentReviewGrade({ ideaId: 'WI-7', gradedBy: 'su-reviewer' }, h.deps);
+    expect(readAgentReviewState(h.state.issue.payload)?.timing?.decidedAt).toBe('2026-10-08T01:00:00.000Z');
+    vi.setSystemTime(new Date('2026-10-08T02:00:00Z'));
+    await reconcileAgentReviewGrade({ ideaId: 'WI-7', gradedBy: 'su-reviewer' }, h.deps);
+    expect(readAgentReviewState(h.state.issue.payload)?.timing?.decidedAt).toBe('2026-10-08T01:00:00.000Z');
+    await resubmitAgentReview({ id: 'WI-7', submittedBy: 'su-filer' }, h.deps);
+    expect(readAgentReviewState(h.state.issue.payload)?.timing).toEqual({
+      round: 2, enteredAt: '2026-10-08T02:00:00.000Z',
+    });
+  });
+
+  it('keeps a legacy pending round undated instead of inventing its start on retry', async () => {
+    const h = harness(issue({ payload: {
+      agentReview: { status: 'pending', submittedBy: 'su-filer', ledgerIdeaId: 'WI-7', round: 2 },
+    } }));
+    await enterAgentReview({ id: 'WI-7', submittedBy: 'su-filer' }, h.deps);
+    expect(readAgentReviewState(h.state.issue.payload)?.timing).toBeUndefined();
+  });
+
+  it('writes an approval decision time once, without turning repeated reconciliation into new service', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-10-08T00:00:00Z'));
+    const h = harness();
+    await enterAgentReview({ id: 'WI-7', submittedBy: 'su-filer' }, h.deps);
+    h.state.ledger = { ideaId: 'WI-7', routedRef: 'wi:WI-7', grade: 4, feedback: null, gradedBy: 'su-reviewer' };
+    vi.setSystemTime(new Date('2026-10-08T01:00:00Z'));
+    await reconcileAgentReviewGrade({ ideaId: 'WI-7', gradedBy: 'su-reviewer' }, h.deps);
+    vi.setSystemTime(new Date('2026-10-08T02:00:00Z'));
+    await reconcileAgentReviewGrade({ ideaId: 'WI-7', gradedBy: 'su-reviewer' }, h.deps);
+    expect(readAgentReviewState(h.state.issue.payload)?.timing).toEqual({
+      round: 1, enteredAt: '2026-10-08T00:00:00.000Z', decidedAt: '2026-10-08T01:00:00.000Z',
+    });
+  });
+});
+
 describe('enterAgentReview (abolish-human-review D-003)', () => {
   it('enrolls on the existing ledger without overwriting richer SU provenance', async () => {
     const h = harness(issue({ payload: { improvementKind: 'feature', needsHuman: true } }));
@@ -194,7 +245,8 @@ describe('enterAgentReview (abolish-human-review D-003)', () => {
 
     expect(result).toEqual({
       entered: true,
-      state: { status: 'pending', submittedBy: 'su-filer', ledgerIdeaId: 'WI-7', round: 1 },
+      state: { status: 'pending', submittedBy: 'su-filer', ledgerIdeaId: 'WI-7', round: 1,
+        timing: { round: 1, enteredAt: expect.any(String) } },
     });
     expect(h.recordRoutedIdea).toHaveBeenCalledWith(expect.objectContaining({
       ideaId: 'WI-7',
@@ -714,7 +766,8 @@ describe('agent-review grading lifecycle', () => {
 
     await expect(resubmitAgentReview({ id: 'WI-7', submittedBy: 'su-filer' }, h.deps)).resolves.toEqual({
       resubmitted: true,
-      state: { status: 'pending', submittedBy: 'su-filer', ledgerIdeaId: 'WI-7', round: 2 },
+      state: { status: 'pending', submittedBy: 'su-filer', ledgerIdeaId: 'WI-7', round: 2,
+        timing: { round: 2, enteredAt: expect.any(String) } },
     });
     expect(h.state.issue.assignee).toBeNull();
     expect(h.state.issue.payload).toMatchObject({
@@ -751,6 +804,7 @@ describe('agent-review grading lifecycle', () => {
         submittedBy: 'su-reviser',
         ledgerIdeaId: 'agent-review:WI-7',
         round: 2,
+        timing: { round: 2, enteredAt: expect.any(String) },
       },
     });
     expect(h.state.issue.assignee).toBeNull();
@@ -1055,7 +1109,8 @@ describe('resubmitAgentReview adopts a row whose submitter is provably gone (WI-
 
       await expect(resubmitAgentReview({ id: 'WI-7', submittedBy: 'su-newcomer' }, h.deps)).resolves.toEqual({
         resubmitted: true,
-        state: { status: 'pending', submittedBy: 'su-newcomer', ledgerIdeaId: 'WI-7', round: 2 },
+        state: { status: 'pending', submittedBy: 'su-newcomer', ledgerIdeaId: 'WI-7', round: 2,
+          timing: { round: 2, enteredAt: expect.any(String) } },
       });
       expect(h.state.issue.payload).toMatchObject({
         agentReview: { status: 'pending', submittedBy: 'su-newcomer', ledgerIdeaId: 'WI-7', round: 2 },
@@ -1074,7 +1129,8 @@ describe('resubmitAgentReview adopts a row whose submitter is provably gone (WI-
 
     await expect(resubmitAgentReview({ id: 'WI-7', submittedBy: 'su-newcomer' }, h.deps)).resolves.toEqual({
       resubmitted: true,
-      state: { status: 'pending', submittedBy: 'su-newcomer', ledgerIdeaId: 'WI-7', round: 2 },
+      state: { status: 'pending', submittedBy: 'su-newcomer', ledgerIdeaId: 'WI-7', round: 2,
+        timing: { round: 2, enteredAt: expect.any(String) } },
     });
     // submittedBy is rebound to the adopter, so the NEXT round's revision reaches someone alive.
     expect(h.state.issue.payload).toMatchObject({
@@ -1141,7 +1197,8 @@ describe('resubmitAgentReview adopts a row whose submitter is provably gone (WI-
 
     await expect(resubmitAgentReview({ id: 'WI-7', submittedBy: 'su-original' }, h.deps)).resolves.toEqual({
       resubmitted: true,
-      state: { status: 'pending', submittedBy: 'su-original', ledgerIdeaId: 'WI-7', round: 2 },
+      state: { status: 'pending', submittedBy: 'su-original', ledgerIdeaId: 'WI-7', round: 2,
+        timing: { round: 2, enteredAt: expect.any(String) } },
     });
     expect(h.resolveSubmitterLiveness).not.toHaveBeenCalled();
     expect(h.state.issue.payload).toMatchObject({
@@ -1172,7 +1229,8 @@ describe('resubmitAgentReview adopts a row whose submitter is provably gone (WI-
 
     await expect(resubmitAgentReview({ id: 'WI-7', submittedBy: 'su-newcomer' }, h.deps)).resolves.toEqual({
       resubmitted: true,
-      state: { status: 'pending', submittedBy: 'su-newcomer', ledgerIdeaId: 'WI-7', round: 2 },
+      state: { status: 'pending', submittedBy: 'su-newcomer', ledgerIdeaId: 'WI-7', round: 2,
+        timing: { round: 2, enteredAt: expect.any(String) } },
     });
     expect(h.resolveSubmitterLiveness).toHaveBeenCalledWith('su-gone', { claimsHeld: true });
     expect(h.releaseWorkItem).toHaveBeenCalledWith('WI-7', {

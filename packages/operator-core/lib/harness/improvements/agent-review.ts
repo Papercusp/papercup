@@ -546,6 +546,7 @@ export async function enterAgentReview(
         submittedBy: existing?.submittedBy ?? input.submittedBy,
         ledgerIdeaId,
         round: existing ? existing.round + 1 : 1,
+        timing: { round: existing ? existing.round + 1 : 1, enteredAt: new Date().toISOString() },
       };
 
   const harnessSlug = input.harnessSlug ?? workItem.harness;
@@ -665,6 +666,7 @@ export async function resubmitAgentReview(
     status: 'pending',
     submittedBy: isLegacyRebind || isOrphanRebind || isLegacySweepRepair ? input.submittedBy : current.submittedBy,
     round: current.round + 1,
+    timing: { round: current.round + 1, enteredAt: new Date().toISOString() },
   };
   const merged = await deps.mergeWorkItemPayload(
     workItem.id,
@@ -823,7 +825,14 @@ export async function reconcileAgentReviewGrade(
   if (grade <= AGENT_REVIEW_MAX_REVISION_GRADE) {
     const feedback = ledger.feedback?.trim();
     if (!feedback) throw new Error('agent-review-feedback-required');
-    const next: AgentReviewState = { ...current, status: 'revision-requested' };
+    const next: AgentReviewState = {
+      ...current,
+      status: 'revision-requested',
+      ...(current.timing ? { timing: {
+        ...current.timing,
+        decidedAt: current.status === 'revision-requested' ? current.timing.decidedAt : new Date().toISOString(),
+      } } : {}),
+    };
     const changed = current.status !== next.status;
     const merged = await deps.mergeWorkItemPayload(
       workItem.id,
@@ -908,7 +917,14 @@ export async function reconcileAgentReviewGrade(
     return { workItemId: workItem.id, status: 'revision-requested', round: current.round, changed, returnedToSubmitter, ...(woken === undefined ? {} : { woken }) };
   }
 
-  const next: AgentReviewState = { ...current, status: 'approved' };
+  const next: AgentReviewState = {
+    ...current,
+    status: 'approved',
+    ...(current.timing ? { timing: {
+      ...current.timing,
+      decidedAt: current.status === 'approved' ? current.timing.decidedAt : new Date().toISOString(),
+    } } : {}),
+  };
   const changed = current.status !== next.status;
   const merged = await deps.mergeWorkItemPayload(
     workItem.id,

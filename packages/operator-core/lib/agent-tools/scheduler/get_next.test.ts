@@ -1297,7 +1297,23 @@ describe('scheduler:get_next bounds every pre-claim await (EI-20228674494907304)
       phase: 'preflight',
       budgetMs: GET_NEXT_BUDGET_MS,
       lastPreflightStep,
+      preflightTiming: {
+        totalElapsedMs: expect.any(Number),
+        completedSteps: expect.any(Array),
+        activeStep: {
+          step: lastPreflightStep,
+          elapsedMs: expect.any(Number),
+        },
+      },
     });
+    expect(body.preflightTiming.totalElapsedMs).toBeGreaterThanOrEqual(GET_NEXT_BUDGET_MS);
+    expect(body.preflightTiming.activeStep.elapsedMs).toBeGreaterThan(0);
+    expect(body.preflightTiming.completedSteps).toEqual(
+      expect.arrayContaining([expect.objectContaining({ step: 'work-scope-policy' })]),
+    );
+    expect(body.preflightTiming.completedSteps.every((step: { elapsedMs: unknown }) =>
+      typeof step.elapsedMs === 'number' && Number.isFinite(step.elapsedMs) && step.elapsedMs >= 0,
+    )).toBe(true);
     expect(body.message).toContain('No claim was attempted');
     expect(getNextM).not.toHaveBeenCalled();
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('scheduler:get_next:preflight exceeded'));

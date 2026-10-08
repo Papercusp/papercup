@@ -3035,6 +3035,8 @@ export default defineTool({
         // fleet keeps its stored type, which is why launchType below reads the
         // RECORD rather than the argument.
         fleetType: launchOptions.type,
+        ...(planSlug ? { planSelection: { harness: planHarnessSlug, planSlug,
+          goalId: goalSettings.goalId, actorId: ownerId } } : {}),
       });
       // The authoritative type for the rest of this launch is the one on the
       // durable row — not what the caller asked for. On a top-up of an existing
@@ -3672,6 +3674,8 @@ export default defineTool({
           fleetSlug,
           count,
           windowMs: RELAUNCH_SUPPRESS_MS,
+          ...(planSlug ? { planSelection: { harness: planHarnessSlug, planSlug,
+            goalId: goalSettings.goalId, actorId: ownerId } } : {}),
           allowCountIncreaseWithinWindow: leaderRole === 'leader' && liveMembers > 0,
         });
       } catch (e: any) {
@@ -4056,6 +4060,8 @@ export default defineTool({
         fleetSlug,
         count,
         windowMs: RELAUNCH_SUPPRESS_MS,
+        ...(planSlug ? { planSelection: { harness: planHarnessSlug, planSlug,
+          goalId: goalSettings.goalId, actorId: ownerId } } : {}),
         allowCountIncreaseWithinWindow: leaderRole === 'leader' && liveMembers > 0,
       });
     } catch (e: any) {
@@ -4074,6 +4080,8 @@ export default defineTool({
           fleetSlug,
           count,
           windowMs: RELAUNCH_SUPPRESS_MS,
+          ...(planSlug ? { planSelection: { harness: planHarnessSlug, planSlug,
+            goalId: goalSettings.goalId, actorId: ownerId } } : {}),
           allowCountIncreaseWithinWindow: leaderRole === 'leader' && liveMembers > 0,
         });
       } catch {
@@ -4105,6 +4113,8 @@ export default defineTool({
               fleetSlug,
               count,
               windowMs: RELAUNCH_SUPPRESS_MS,
+              ...(planSlug ? { planSelection: { harness: planHarnessSlug, planSlug,
+                goalId: goalSettings.goalId, actorId: ownerId } } : {}),
               allowCountIncreaseWithinWindow: leaderRole === 'leader' && liveMembers > 0,
             });
           } catch {

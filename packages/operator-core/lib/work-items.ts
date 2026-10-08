@@ -28,6 +28,7 @@
  * trigger (already wired) — so neither path needs an extra fan-out call here.
  */
 import { getOrgPg } from '@papercusp/db-org';
+import { lockGoalPlanClaimSelections, goalPlanClaimFragments, assertGoalPlanClaimSelection } from './typed-properties-db';
 import type { GoalSqlTag } from '@papercusp/agent-mcp/goals';
 import { healOrphanedRemoteOriginIfAuthorEnded } from './work-items-orphan-author';
 import { selfHealTerminalOwnerOriginIfStranded } from './work-items-terminal-owner-origin-heal';
@@ -3007,7 +3008,16 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
   let inserted: Array<{ feature_id: string }> = [];
   for (let attempt = 1; ; attempt += 1) {
     params[1] = id;
-    inserted = await sql.unsafe<Array<{ feature_id: string }>>(insertSql, params);
+    const payload = input.payload as Record<string, unknown> | null | undefined;
+    const stamp = payload?.plan_item as Record<string, unknown> | undefined;
+    const selectionPlan = typeof stamp?.plan_slug === 'string' ? stamp.plan_slug : input.sourcePlanSlug;
+    inserted = selectionPlan && (assignTo || payload?.fleet_slug)
+      ? await boundedOrgTxn(async (tx) => {
+          const selections = await lockGoalPlanClaimSelections(tx, resolvedWs, assignTo ?? input.createdBy);
+          assertGoalPlanClaimSelection(selections, { harness: featureHarness, planSlug: selectionPlan });
+          return tx.unsafe<Array<{ feature_id: string }>>(insertSql, params);
+        }, { client: sql })
+      : await sql.unsafe<Array<{ feature_id: string }>>(insertSql, params);
     if (inserted.length > 0) {
       id = inserted[0].feature_id;
       break;
@@ -5441,7 +5451,13 @@ export async function rebindOrphanedPlanFleetReservation(input: {
   const fleetSlug = input.fleetSlug.trim();
   if (!fleetSlug) throw new Error('rebindOrphanedPlanFleetReservation: empty fleetSlug');
   const { sql } = getOrgPg();
-  const rows = await sql<{ feature_id: string }[]>`
+  const rows = await boundedOrgTxn(async (tx) => {
+    const sql = tx;
+    const selection = goalPlanClaimFragments(sql, await lockGoalPlanClaimSelections(sql, input.workspaceId), {
+      harness: 'feature.harness_slug', goal: 'feature.goal_id', payload: 'feature.payload',
+      sourcePlan: 'feature.source_plan_slug',
+    });
+    return sql<{ feature_id: string }[]>`
     UPDATE harness_shared.harness_features_consolidated AS feature
        SET payload = jsonb_set(
              COALESCE(feature.payload, '{}'::jsonb),
@@ -5451,6 +5467,7 @@ export async function rebindOrphanedPlanFleetReservation(input: {
            ),
            updated_ts = ${Date.now()}
      WHERE feature.workspace_id = ${input.workspaceId}
+       AND ${selection.where}
        AND feature.harness_slug = ${input.harness}
        AND feature.feature_id = ${input.id}
        AND (CASE WHEN feature.status = 'todo' THEN 'open' ELSE feature.status END) = 'open'
@@ -5465,6 +5482,7 @@ export async function rebindOrphanedPlanFleetReservation(input: {
             AND registered.fleet_slug = feature.payload ->> 'fleet_slug'
        )
     RETURNING feature.feature_id`;
+  }, { client: sql });
   return rows.length > 0;
 }
 
@@ -5629,7 +5647,13 @@ export async function claimWorkItem(
           })}
         )`
       : admittedWhereSql(sql);
-    const rows = await withPgContentionRetry(() => sql<FeatureRowDb[]>`
+    const rows = await withPgContentionRetry(() => boundedOrgTxn(async (tx) => {
+      const sql = tx as OrgSql;
+      const selection = goalPlanClaimFragments(sql, await lockGoalPlanClaimSelections(sql, ws, assignee), {
+        harness: 'target.harness_slug', goal: 'target.goal_id', payload: 'target.payload',
+        sourcePlan: 'target.source_plan_slug', holder: 'target.taken_by',
+      }, assignee);
+      return sql<FeatureRowDb[]>`
       UPDATE harness_shared.harness_features_consolidated AS target
          SET payload = CASE
                WHEN target.taken_by = ${assignee}
@@ -5657,6 +5681,7 @@ export async function claimWorkItem(
                THEN last_progress_at ELSE NULL END,
              updated_ts = ${Date.now()}
        WHERE harness_slug = ${wi.harness} AND feature_id = ${id}
+         AND ${selection.where}
          AND ${operationClaims.operationWorkerClaimWhereSql(sql, operationClaimRead, {
            payload: 'target.payload', id: 'target.feature_id', harness: 'target.harness_slug',
          })}
@@ -5704,7 +5729,8 @@ export async function claimWorkItem(
                 )`
              : admissionFloor;
          })()}
-      RETURNING ${sql.unsafe(FEATURE_COLS)}`);
+      RETURNING ${sql.unsafe(FEATURE_COLS)}`;
+    }, { client: sql }));
     claimed = rows[0] ? featureRowToWorkItem(rows[0]) : null;
   }
   // plugin-system-hive-port P-004: a successful claim fires `work-item:claimed:<id>`
@@ -7928,7 +7954,13 @@ export async function claimNextWorkItem(filter: ClaimNextFilter): Promise<WorkIt
     // only under the per-Hive claim lease, default OFF). Skip work affined to ANOTHER Swarm
     // and prefer work affined to THIS one over unaffined work. Omitted ⇒ affinity-blind,
     // byte-identical to the pre-P-002 claim.
-    const rows = await sql<FeatureRowDb[]>`
+    const rows = await boundedOrgTxn(async (tx) => {
+      const sql = tx as OrgSql;
+      const selections = await lockGoalPlanClaimSelections(sql, ws, filter.assignee);
+      const selection = goalPlanClaimFragments(sql, selections, {
+        harness: 'harness_slug', goal: 'goal_id', payload: 'payload', sourcePlan: 'source_plan_slug',
+      });
+      return sql<FeatureRowDb[]>`
       UPDATE harness_shared.harness_features_consolidated AS target
          -- P-001: self-select only ever grabs an UNCLAIMED row (the inner WHERE pins
          -- taken_by IS NULL/''), so a fresh holder always starts with a clean progress slate.
@@ -7960,6 +7992,7 @@ export async function claimNextWorkItem(filter: ClaimNextFilter): Promise<WorkIt
             claimSpecReferencesFleet: filter.claimSpecReferencesFleet,
             claimSpecReferencesGoal: filter.claimSpecReferencesGoal,
           })}
+            AND ${selection.where}
             AND ${operationClaims.operationWorkerClaimWhereSql(sql, operationClaimRead, {
               payload: 'payload', id: 'feature_id', harness: 'harness_slug',
             })}
@@ -7969,11 +8002,12 @@ export async function claimNextWorkItem(filter: ClaimNextFilter): Promise<WorkIt
           -- RESPECTS the Mug's priority — affinity match first, then lower feature_order (the
           -- per-harness wave/plan order the Mug steers, D-003/D-009), then oldest-first
           -- (anti-starvation). Flag OFF ⇒ plain oldest-first, byte-identical to before.
-          ORDER BY ${filter.swarmId ? sql`(swarm_affinity = ${filter.swarmId}) DESC NULLS LAST, feature_order ASC NULLS LAST,` : sql``} created_ts ASC
+          ORDER BY ${selection.order} ${filter.swarmId ? sql`(swarm_affinity = ${filter.swarmId}) DESC NULLS LAST, feature_order ASC NULLS LAST,` : sql``} created_ts ASC
           LIMIT 1
           FOR UPDATE SKIP LOCKED
        )
       RETURNING ${sql.unsafe(FEATURE_COLS)}`;
+    }, { client: sql });
     return rows[0] ? featureRowToWorkItem(rows[0]) : null;
   };
 
@@ -8810,6 +8844,10 @@ export async function claimNextIssueWorkItem(
       // feature with an equal-or-better (lower) feature_order exists. Build the feature side
       // from the SAME claimFloorsWhereSql fragment used by the real feature claim path, and
       // evaluate it inside this UPDATE so the comparison and issue claim share one snapshot.
+      const selections = await lockGoalPlanClaimSelections(tx as OrgSql, explicitActiveWorkspaceId, filter.assignee);
+      const selection = goalPlanClaimFragments(tx as OrgSql, selections, {
+        harness: 'wi.harness_slug', goal: 'wi.goal_id', payload: 'wi.payload', sourcePlan: 'wi.source_plan_slug',
+      });
       const priorityBeforeFeature = opts.priorityBeforeFeature
         ? claimFloorsWhereSql(tx, {
             harness: filter.harness,
@@ -8843,6 +8881,7 @@ export async function claimNextIssueWorkItem(
          FROM harness_shared.work_items wi
         WHERE wi.item_kind = ANY(${issueKinds}::text[])
           AND wi.workspace_id = ${issueWs}
+          AND ${selection.where}
           AND ${operationClaims.operationWorkerClaimWhereSql(tx, operationClaimRead, {
             payload: 'wi.payload', id: 'wi.feature_id', harness: 'wi.harness_slug',
           })}
@@ -8979,7 +9018,7 @@ export async function claimNextIssueWorkItem(
         -- AUTHORITATIVE here (see opts.specOrderSql) — this ORDER BY used to be hardcoded, so
         -- the whole issue family honored a spec's FILTER while silently discarding its RANK.
         -- Undefined ⇒ the legacy ordering below, byte-identical for the no-spec caller.
-        ORDER BY ${filter.swarmId ? tx`(wi.swarm_affinity = ${filter.swarmId}) DESC NULLS LAST,` : tx``} ${specOrderSql ?? tx`wi.feature_order ASC NULLS LAST, wi.created_ts ASC`}
+        ORDER BY ${selection.order} ${filter.swarmId ? tx`(wi.swarm_affinity = ${filter.swarmId}) DESC NULLS LAST,` : tx``} ${specOrderSql ?? tx`wi.feature_order ASC NULLS LAST, wi.created_ts ASC`}
         LIMIT 1
         FOR UPDATE SKIP LOCKED
      )

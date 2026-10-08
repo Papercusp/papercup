@@ -23,8 +23,67 @@
 import { getOrgPg } from '@papercusp/db-org';
 import type { ImprovementCandidate } from './policy';
 import type { DispatchStats } from './dispatch-ledger';
+import { readAgentReviewState } from './agent-review-policy';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+
+export interface AgentReviewTiming {
+  /** Each age has its own writer/basis; null means missing, invalid or ambiguous. */
+  reportAgeMs: number | null;
+  ledgerRouteAgeMs: number | null;
+  reviewWaitMs: number | null;
+  revisionAgeMs: number | null;
+  admissionDelayMs: number | null;
+  enteredAt: string | null;
+  round: number | null;
+  reviewTimeUnknown: 'no-review' | 'missing-round-time' | 'round-mismatch' | 'invalid-round-time' | null;
+}
+
+/** P-030: first routing time is NOT current-round review entry, even on round one. */
+export function computeAgentReviewTiming(input: {
+  payload: unknown;
+  createdAt?: string | null;
+  reviewRoutedAtMs: number | null;
+  nowMs: number;
+}): AgentReviewTiming {
+  const object = (x: unknown): Record<string, unknown> =>
+    x && typeof x === 'object' && !Array.isArray(x) ? x as Record<string, unknown> : {};
+  const payload = object(input.payload);
+  const instant = (x: unknown): number | null => {
+    if (typeof x !== 'string' || !x.trim()) return null;
+    const ms = Date.parse(x);
+    return Number.isFinite(ms) && ms >= 0 && ms <= input.nowMs ? ms : null;
+  };
+  const age = (ms: number | null): number | null => ms == null ? null : input.nowMs - ms;
+  const admission = object(payload.admissionReview);
+  const admissionEntry = instant(admission.enteredAt);
+  const admissionEnd = instant(admission.terminalAt);
+  const review = readAgentReviewState(payload);
+  const timing = object(object(payload.agentReview).timing);
+  const enteredMs = instant(timing.enteredAt);
+  const decidedMs = instant(timing.decidedAt);
+  const decisionValid = decidedMs != null && enteredMs != null && decidedMs >= enteredMs;
+  const reviewTimeUnknown = !review ? 'no-review'
+    : !Object.keys(timing).length ? 'missing-round-time'
+    : timing.round !== review.round ? 'round-mismatch'
+    : enteredMs == null || (review.status === 'pending'
+        ? timing.decidedAt !== undefined
+        : !decisionValid) ? 'invalid-round-time'
+    : null;
+  const valid = reviewTimeUnknown === null;
+  const routed = input.reviewRoutedAtMs;
+  return {
+    reportAgeMs: age(instant(input.createdAt)),
+    ledgerRouteAgeMs: age(typeof routed === 'number' && Number.isFinite(routed) && routed >= 0 && routed <= input.nowMs ? routed : null),
+    reviewWaitMs: valid ? (review!.status === 'pending' ? input.nowMs : decidedMs!) - enteredMs! : null,
+    revisionAgeMs: valid && review!.status === 'revision-requested' ? age(decidedMs) : null,
+    admissionDelayMs: admissionEntry != null && admissionEnd != null && admissionEnd >= admissionEntry
+      ? admissionEnd - admissionEntry : null,
+    enteredAt: valid ? new Date(enteredMs!).toISOString() : null,
+    round: review?.round ?? null,
+    reviewTimeUnknown,
+  };
+}
 
 /** Minimal watchdog tick row the flow rollup needs (injected — see readWatchdogFlowTicks). */
 export interface WatchdogFlowTick {

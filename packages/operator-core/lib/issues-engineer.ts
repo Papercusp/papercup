@@ -47,6 +47,7 @@ import { type InjectEvent } from './agent-tools/coordination/fanout-delivery';
 import { coordScopeWorkspace } from './agent-tools/coordination/log';
 import { fanoutForObject } from './sync/hyperbee/fanout-projection';
 import { boundedOrgTxn } from './pg-bounded-txn';
+import { lockGoalPlanClaimSelections, goalPlanClaimFragments, assertGoalPlanClaimSelection } from './typed-properties-db';
 import { sealSharedTextInTxOrRefuse } from './personal-vault/shared-store-seal';
 import { boundedPgReadTxn } from './pg-read-query';
 import { getBuildInfo } from './build-info';
@@ -1211,6 +1212,12 @@ export async function createIssue(input: CreateIssueInput): Promise<EngineerIssu
       ? input.directiveRef
       : null;
   const issue = await boundedOrgTxn(async (tx) => {
+    const stamp = inputPayload.plan_item as Record<string, unknown> | undefined;
+    const selectionPlan = typeof stamp?.plan_slug === 'string' ? stamp.plan_slug : sourcePlanSlug;
+    if (selectionPlan && (input.assignee || inputPayload.fleet_slug)) {
+      const selections = await lockGoalPlanClaimSelections(tx, issuesScopeWorkspace(), input.assignee ?? input.createdBy);
+      assertGoalPlanClaimSelection(selections, { harness: harnessOfScope(scope) ?? scope, planSlug: selectionPlan });
+    }
     const id = input.id ?? (await nextIssueId(tx));
     const rows = await tx<IssueRowDb[]>`
       INSERT INTO harness_shared.engineer_issues
@@ -3150,7 +3157,14 @@ export async function claimIssue(
       ), 0)),
       true
     )`;
-  const rows = await withPgContentionRetry(() => sql<IssueRowDb[]>`
+  const rows = await withPgContentionRetry(() => boundedOrgTxn(async (tx) => {
+    const sql = tx;
+    const selection = goalPlanClaimFragments(sql,
+      await lockGoalPlanClaimSelections(sql, ws, assignee), {
+        harness: "regexp_replace(target.scope, '^harness:', '')", goal: 'target.goal_id', payload: 'target.payload',
+        sourcePlan: 'target.source_plan_slug', holder: 'target.assignee',
+      }, assignee);
+    return sql<IssueRowDb[]>`
     UPDATE harness_shared.engineer_issues AS target SET
       payload = CASE
         WHEN ${sameHolderPredicate}
@@ -3162,6 +3176,7 @@ export async function claimIssue(
       assignee = ${assignee}, assigned_by = COALESCE(${opts.assignedBy ?? null}, assigned_by),
       assigned_at = now(), origin = 'local', updated_at = now()
      WHERE workspace_id = ${ws} AND issue_id = ${id}
+       AND ${selection.where}
        AND ${operationClaims.operationWorkerClaimWhereSql(sql, operationClaimRead, {
          payload: 'target.payload', id: 'target.issue_id', harness: 'target.scope',
        })}
@@ -3272,7 +3287,8 @@ export async function claimIssue(
        -- returned a bare ok:true on a state='done' row, so an agent could not tell fresh
        -- work from finished work. That is fixed where it belongs, in the claim TOOL's
        -- success path (a loud terminalWarning), not by removing this escape hatch.
-    RETURNING ${sql.unsafe(ISSUE_COLS)}`);
+    RETURNING ${sql.unsafe(ISSUE_COLS)}`;
+  }, { client: sql }));
   if (!rows[0]) return null;
   const issue = toIssue(rows[0]);
   // The claimer follows the issue.

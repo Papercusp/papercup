@@ -2848,6 +2848,10 @@ export async function launchAcceptanceGrader(
           brief,
           harness: plan.row.harnessSlug,
           headless: true,
+          // The judge must evaluate and emit through the same code/proof plane
+          // that recruited it. The stable proxy may still serve an older green
+          // reader that cannot consume this plan's current evidence contract.
+          mcpTarget: 'spawn-host',
           // WI-10002152: an unattended headless judge MUST route through the
           // inference gateway (`auto`), never the single system credential
           // (`default`). `default` skips the gateway and therefore cannot fail

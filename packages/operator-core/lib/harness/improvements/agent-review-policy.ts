@@ -53,6 +53,8 @@ export interface AgentReviewState {
   submittedBy: string;
   ledgerIdeaId: string;
   round: number;
+  /** Current-round timing, written by the lifecycle; ledger routing may predate review. */
+  timing?: { round: number; enteredAt: string; decidedAt?: string };
 }
 
 /**
@@ -1122,11 +1124,19 @@ export function readAgentReviewState(payload: unknown): AgentReviewState | null 
   if (typeof row.submittedBy !== 'string' || !row.submittedBy.trim()) return null;
   if (typeof row.ledgerIdeaId !== 'string' || !row.ledgerIdeaId.trim()) return null;
   if (!Number.isInteger(row.round) || Number(row.round) < 1) return null;
+  const timing = record(row.timing);
   return {
     status: row.status as AgentReviewStatus,
     submittedBy: row.submittedBy,
     ledgerIdeaId: row.ledgerIdeaId,
     round: Number(row.round),
+    ...(timing.round === row.round && typeof timing.enteredAt === 'string'
+      ? { timing: {
+          round: Number(timing.round),
+          enteredAt: timing.enteredAt,
+          ...(typeof timing.decidedAt === 'string' ? { decidedAt: timing.decidedAt } : {}),
+        } }
+      : {}),
   };
 }
 

@@ -216,6 +216,37 @@ describe('cloud portal source reconciliation', () => {
     expect(deps.writeReceipt).not.toHaveBeenCalled();
   });
 
+  it('recovers the existing unhealthy release without waiting for changing source to settle or promoting it', async () => {
+    const { config, release } = fixture();
+    const candidate = { schemaVersion: 1, sourceDigest: 'linked-before', sourceRootDigest: 'root-1', publicLinksDigest: 'links-1', firstSeenAtMs: 1_000 };
+    const deps = makeDeps(config, release, {
+      now: () => 2_000,
+      fingerprint: vi.fn().mockResolvedValue({ digest: 'linked-changing', rootDigest: 'root-changing' }),
+      candidateAt: vi.fn().mockResolvedValue(candidate),
+      healthy: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
+    });
+
+    expect(await reconcilePortal(config, deps)).toEqual({ status: 'recovered', releasePath: release.path });
+    expect(deps.run.mock.calls.map((call: unknown[]) => call.slice(0, 2))).toEqual([
+      ['bash', [config.deployScript, '--install-only']],
+      ['systemctl', ['--user', 'reset-failed', 'papercusp-cloud-portal.service']],
+      ['systemctl', ['--user', 'restart', 'papercusp-cloud-portal.service']],
+    ]);
+    expect(deps.withHandoffLock).toHaveBeenCalledTimes(1);
+    expect(deps.promoteRelease).not.toHaveBeenCalled();
+    expect(deps.writeReceipt).not.toHaveBeenCalled();
+    expect(deps.clearCandidate).not.toHaveBeenCalled();
+    expect(realpathSync(join(config.runtimeRoot, 'current'))).toBe(release.path);
+  });
+
+  it('raises failed existing-release recovery instead of reporting a healthy source deferral', async () => {
+    const { config, release } = fixture();
+    const deps = makeDeps(config, release, { healthy: vi.fn().mockResolvedValue(false) });
+    await expect(reconcilePortal(config, deps)).rejects.toThrow('portal_recovery_health_failed');
+    expect(deps.promoteRelease).not.toHaveBeenCalled();
+    expect(deps.writeReceipt).not.toHaveBeenCalled();
+  });
+
   it('waits for a whole-source digest to remain stable for ten minutes before building', async () => {
     const { config, release } = fixture();
     let time = 1_000;

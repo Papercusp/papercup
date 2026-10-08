@@ -11,6 +11,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { TransactionSql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { readAgentReviewState } from './harness/improvements/agent-review-policy';
+import { computeAgentReviewTiming } from './harness/improvements/flow-metrics';
 import { saveTextArtifact } from './text-artifacts';
 import { ANY_FAMILY_TERMINAL_STATES } from './work-item-dispatch-states';
 import type { AdmissionRunOutcome } from './work-items-admission-promoter';
@@ -172,7 +173,7 @@ export interface DurableParkAuditReport {
   holdOpenLeases: DurableParkAuditLeaseRow[];
   overdueReviews: {
     thresholdHours: number;
-    timestampBasis: 'scout_routed_ideas.routed_at';
+    timestampBasis: 'agentReview.timing.enteredAt (matching round)';
     rows: DurableParkAuditReviewRow[];
   };
 }
@@ -725,11 +726,13 @@ export function buildDurableParkAuditReport(input: {
     const review = readAgentReviewState(payload);
     if (review?.status === 'pending') {
       axes.pendingAgentReview += 1;
-      const routedAtMs = numberOrNull(row.reviewRoutedAtMs);
-      if (routedAtMs == null) {
+      const timing = computeAgentReviewTiming({
+        payload, reviewRoutedAtMs: row.reviewRoutedAtMs, nowMs: input.nowMs,
+      });
+      if (timing.reviewWaitMs == null) {
         missingMetadata.pendingReviewTimestamp += 1;
       } else {
-        const reviewAgeMs = Math.max(0, input.nowMs - routedAtMs);
+        const reviewAgeMs = timing.reviewWaitMs;
         if (reviewAgeMs >= reviewOverdueMs) {
           overdueRows.push({
             id: row.id,
@@ -737,7 +740,7 @@ export function buildDurableParkAuditReport(input: {
             submittedBy: review.submittedBy,
             ledgerIdeaId: review.ledgerIdeaId,
             round: review.round,
-            routedAt: new Date(routedAtMs).toISOString(),
+            routedAt: timing.enteredAt!,
             ageMs: reviewAgeMs,
           });
         }
@@ -785,7 +788,7 @@ export function buildDurableParkAuditReport(input: {
     holdOpenLeases,
     overdueReviews: {
       thresholdHours: reviewOverdueHours,
-      timestampBasis: 'scout_routed_ideas.routed_at',
+      timestampBasis: 'agentReview.timing.enteredAt (matching round)',
       rows: overdueRows,
     },
   };

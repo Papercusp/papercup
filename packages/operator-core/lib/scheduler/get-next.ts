@@ -54,6 +54,7 @@ import {
   claimSpecReferencesField,
 } from './claim-spec';
 import { getOrgPg } from '@papercusp/db-org';
+import { lockGoalPlanClaimSelections, goalPlanClaimFragments } from '../typed-properties-db';
 import { boundedOrgTxn, OrgTxnTimeoutError } from '../pg-bounded-txn';
 import { activeWorkspaceId } from '../workspace-registry';
 import {
@@ -3005,6 +3006,10 @@ export async function getNextWorkItem(
         // Compile against the TRANSACTION client so the fragments belong to the connection
         // that carries the SET LOCAL statement_timeout.
         const floors = claimFloorsWhereSql(tx, floorOpts);
+        const selection = goalPlanClaimFragments(tx as OrgSql,
+          await lockGoalPlanClaimSelections(tx as OrgSql, ws, bee.assignee), {
+            harness: 'harness_slug', goal: 'goal_id', payload: 'payload', sourcePlan: 'source_plan_slug',
+          });
         const order = compileRank(tx, spec, bee);
         const filter = compileFilter(tx, filterNode);
         const rows = await tx<FeatureRowDb[]>`
@@ -3014,11 +3019,12 @@ export async function getNextWorkItem(
          SELECT harness_slug, feature_id
            FROM harness_shared.harness_features_consolidated
           WHERE ${floors}
+            AND ${selection.where}
             AND ${operationClaims.operationWorkerClaimWhereSql(tx, operationClaimRead, {
               payload: 'payload', id: 'feature_id', harness: 'harness_slug',
             })}
             AND ${filter}
-          ORDER BY ${order}
+          ORDER BY ${selection.order} ${order}
           LIMIT 1
           FOR UPDATE SKIP LOCKED
        )
