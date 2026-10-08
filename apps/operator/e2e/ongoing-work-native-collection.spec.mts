@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test';
 import type { OrderedSelectionPolicy } from '../../../packages/operator-core/lib/typed-properties';
 import { execFile } from 'node:child_process';
+import { readFile } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import { insertNativeCollectionGoal, insertNativeCollectionPlan, setNativeCollectionPlanArchived } from './_ongoing-work-native-fixture';
 
@@ -44,7 +45,11 @@ test('Work on Everything design stays readable and draft controls work in the na
   const sql = postgres(process.env.HARNESS_ADMIN_DATABASE_URL!, { max: 1, connect_timeout: 5 });
   const run = promisify(execFile), bridge = process.env.VERIFY_TAURI_AGENT_TOOLS_BIN!;
   expect(bridge).toBeTruthy();
+  const sourceReceiptPath = process.env.VERIFY_TAURI_SOURCE_RECEIPT;
+  expect(sourceReceiptPath, 'Native acceptance must identify its immutable source').toBeTruthy();
+  const sourceReceipt = JSON.parse(await readFile(sourceReceiptPath!, 'utf8'));
   async function native(command: string, ...args: string[]) {
+    await run('bash', [process.env.VERIFY_TAURI_LIVENESS_CHECK!], { timeout: 10_000 });
     const result = await run(bridge, [command, '--pid', process.env.VERIFY_TAURI_PID!, ...args], { timeout: 20_000 });
     if (command === 'screenshot') return result.stdout.trim();
     const value = JSON.parse(result.stdout);
@@ -106,8 +111,21 @@ test('Work on Everything design stays readable and draft controls work in the na
     }
     if (expectedWidth <= 650) expect(layout.layoutColumns.trim().split(/\s+/)).toHaveLength(1);
     await native('screenshot', '--output', info.outputPath(`worklist-${expectedWidth}.png`));
-    await native('click', 'button[aria-label="Move Design search reliability up"]', '--json');
+    // Drive the actual native keyboard path on the owned isolated display.
+    // The old Alt+Up propagation bug switched the global tab and lost this draft.
+    const reorder = 'button[aria-label="Move Design search reliability up"]';
+    await native('focus', reorder, '--json');
+    const xEnv = { ...process.env, DISPLAY: process.env.VERIFY_TAURI_DISPLAY! };
+    expect(xEnv.DISPLAY).toMatch(/^:\d+$/);
+    const windows = await run('xdotool', ['search', '--onlyvisible', '--pid', process.env.VERIFY_TAURI_PID!],
+      { timeout: 10_000, env: xEnv });
+    const windowIds = windows.stdout.trim().split(/\s+/);
+    expect(windowIds).toHaveLength(1);
+    await run('xdotool', ['key', '--window', windowIds[0], '--clearmodifiers', 'alt+Up'],
+      { timeout: 10_000, env: xEnv });
     await ready(`document.querySelector('${panel} [role="option"] strong')?.textContent === ${JSON.stringify(labels[1])}`);
+    expect(await measure(`new URL(location.href).searchParams.get('tab')`)).toBe('hud');
+    await ready(`!!document.querySelector('${panel} .woe__draft-bar')`);
     await native('click', 'button[aria-label="Remove Design desktop release"]', '--json');
     await ready(`document.querySelector('${panel} .woe__overview dd')?.textContent === '1'`);
     await native('eval', `(() => { const body = document.querySelector('${panel} .woe__body'); body.scrollTop = body.scrollHeight; return true; })()`);
@@ -122,7 +140,8 @@ test('Work on Everything design stays readable and draft controls work in the na
     await ready(`!document.querySelector('.woe__draft-bar') && document.querySelector('${panel} .woe__overview dd')?.textContent === '2'`);
     const [saved] = await sql`SELECT properties FROM harness_shared.goals WHERE workspace_id=${workspaceId} AND id=${goalId}`;
     expect(saved.properties?.worklist_policy).toBeUndefined();
-    await info.attach('native-design-layout', { body: JSON.stringify({ layout, fixture: { goalId, labels },
+    await info.attach('native-design-layout', { body: JSON.stringify({ layout, sourceReceipt,
+      fixture: { goalId, labels }, nativeKeyboardReorder: true, globalHudTabRetained: true,
       draftReordered: true, scopeStaged: true, reviewOpened: true, discardRestored: true, applyClicked: false }), contentType: 'application/json' });
   } finally {
     await sql.end();
