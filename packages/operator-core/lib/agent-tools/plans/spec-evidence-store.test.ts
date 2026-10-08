@@ -1039,6 +1039,36 @@ describe('listSpecEvidence timestamp normalization', () => {
     expect(explicit.testRunExecution?.testLayer).toBe('integration');
   });
 
+  it('retains the canonical LLM scenario and executed file without manufacturing passed titles', async () => {
+    const filePath = 'packages/operator-core/lib/llm-testing/scenarios/su/S38-reports-capture.ts';
+    h.rows = [{
+      id: 3, work_item_id: 'WI-3', plan_slug: 'plan-one', spec_id: 'SPEC-3',
+      spec_revision: 1, current_revision: 1, spec_fingerprint: 'spec', spec_is_current: true,
+      evidence_kind: 'test', evidence_ref: 'test-run:45', details: {},
+      source_fingerprint: null, test_fingerprint: null, fixture_fingerprint: null,
+      rubric_fingerprint: null, environment_fingerprint: null, coverage_evidence_ref: null,
+      test_run_id: 45, test_run_present: true, test_run_file_path: filePath,
+      test_run_framework: 'llm-test', test_run_commit_sha: 'abc123', test_run_worktree_dirty: false,
+      test_run_status: 'pass', test_run_execution_details: {
+        schemaVersion: 1, root: '/repo', filePath, runGroupId: null,
+        workspaceId: 'workspace-test', harnessSlug: 'papercusp', testNamePattern: null,
+        scenarioId: 'su-S38-reports-capture', testLayer: 'llm',
+        passed: 1, failed: 0, skipped: 0, collectionFailed: false, mutationPhase: null,
+        commitSha: 'abc123', worktreeDirty: false,
+      },
+      mutation_failure_tail: null, mutation_execution_details: null,
+      observed_at: '2026-10-08T11:00:00.000Z', created_at: '2026-10-08T11:01:00.000Z',
+    }];
+    const [row] = await listSpecEvidence({ harnessSlug: 'papercusp', planSlugs: ['plan-one'] });
+    expect(row.testRunProvenance).toMatchObject({ framework: 'llm-test', filePath });
+    expect(row.testRunExecution).toMatchObject({ scenarioId: 'su-S38-reports-capture', filePath, testLayer: 'llm' });
+    expect(row.testRunExecution).not.toHaveProperty('passedCaseTitles');
+
+    h.rows[0].test_run_execution_details = { ...(h.rows[0].test_run_execution_details as object), scenarioId: '' };
+    const [invalid] = await listSpecEvidence({ harnessSlug: 'papercusp', planSlugs: ['plan-one'] });
+    expect(invalid.testRunExecution).toBeNull();
+  });
+
   it('accepts PostgreSQL timestamp strings instead of assuming Date instances', async () => {
     h.rows = [
       {

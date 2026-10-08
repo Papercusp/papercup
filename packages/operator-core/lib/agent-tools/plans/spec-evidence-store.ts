@@ -2927,6 +2927,10 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
                   failed: parsedTestRunExecution.failed,
                   skipped: parsedTestRunExecution.skipped,
                   collectionFailed: parsedTestRunExecution.collectionFailed,
+                  filePath: parsedTestRunExecution.filePath,
+                  ...(parsedTestRunExecution.scenarioId !== undefined
+                    ? { scenarioId: parsedTestRunExecution.scenarioId }
+                    : {}),
                   ...(parsedTestRunExecution.passedCaseTitles !== undefined
                     ? { passedCaseTitles: [...parsedTestRunExecution.passedCaseTitles] }
                     : {}),
@@ -2944,6 +2948,7 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
         ? null
         : {
             filePath: row.test_run_file_path,
+            framework: row.test_run_framework ?? null,
             commitSha: row.test_run_commit_sha,
             worktreeDirty: row.test_run_worktree_dirty,
             ...(row.mutation_failure_tail || row.mutation_execution_details != null
