@@ -29,7 +29,7 @@
  *
  * Pure + cached; unit-testable with no DB.
  */
-import Ajv2020 from 'ajv/dist/2020';
+import Ajv2020 from 'ajv/dist/2020.js';
 import type { ErrorObject, ValidateFunction } from 'ajv';
 
 // One instance; compiled validators cached by serialized schema. A workspace's
