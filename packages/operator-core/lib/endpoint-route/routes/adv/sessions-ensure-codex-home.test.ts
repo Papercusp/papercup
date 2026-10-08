@@ -8,6 +8,11 @@ const mocks = vi.hoisted(() => ({
   recordLaunchSpec: vi.fn(),
   requestActivation: vi.fn(),
   sessionRow: vi.fn(),
+  readRecord: vi.fn(),
+  roleBinding: vi.fn(),
+  buildRole: vi.fn(),
+  roleHome: vi.fn(),
+  funding: vi.fn(),
 }));
 
 const OWNER = 'su-p006-pinned-codex';
@@ -25,7 +30,7 @@ const savedRecord = {
 
 vi.mock('../../../adv-sessions', async (original) => ({
   ...(await original<typeof import('../../../adv-sessions')>()),
-  readSuLaunchSpecByOwner: vi.fn(async () => savedRecord),
+  readSuLaunchSpecByOwner: mocks.readRecord,
   getAdvSession: mocks.sessionRow,
   recordSuLaunchSpec: mocks.recordLaunchSpec,
 }));
@@ -37,11 +42,22 @@ vi.mock('../../../su-persona-render', async (original) => ({
 vi.mock('../../../role-launch-spec', async (original) => ({
   ...(await original<typeof import('../../../role-launch-spec')>()),
   buildLaunchSpec: mocks.buildLaunchSpec,
+  buildRoleLaunchSpec: mocks.buildRole,
 }));
 vi.mock('../../../role-codex-home', async (original) => ({
   ...(await original<typeof import('../../../role-codex-home')>()),
   ensureSuCodexHomeConfig: mocks.ensureHome,
+  writeRoleCodexHome: mocks.roleHome,
 }));
+vi.mock('../../../blueprint/operation-worker-binding', async (original) => ({
+  ...(await original<typeof import('../../../blueprint/operation-worker-binding')>()),
+  resolveAcceptedOperationWorkerBinding: mocks.roleBinding,
+}));
+vi.mock('../../../spawn-config', async (original) => ({
+  ...(await original<typeof import('../../../spawn-config')>()),
+  resolveProjectDir: vi.fn(async () => '/fixture/research'),
+}));
+vi.mock('../../../cupboard/identity-activation-gate-io', () => ({ admitIdentityActivation: mocks.funding }));
 vi.mock('../../../agent-tools/coordination/control-anchor', async (original) => ({
   ...(await original<typeof import('../../../agent-tools/coordination/control-anchor')>()),
   requestSessionIdentityActivation: mocks.requestActivation,
@@ -57,6 +73,8 @@ vi.mock('../../../cupboard/identity-activation-restart', () => ({
 let ensureCodexHome: (req: Request) => Promise<Response>;
 beforeAll(async () => {
   const routes = (await import('./sessions')).default;
+  const db = await import('@papercusp/db-org');
+  vi.spyOn(db, 'getOrgPg').mockReturnValue({ sql: {} } as never);
   const route = routes.find((entry) => entry.path === '/adv/sessions/ensure-codex-home');
   if (!route) throw new Error('ensure-codex-home route is absent');
   ensureCodexHome = route.handler as typeof ensureCodexHome;
@@ -65,6 +83,8 @@ beforeAll(async () => {
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.sessionRow.mockResolvedValue({ coordOwnerId: OWNER, agent: 'codex' });
+  mocks.readRecord.mockResolvedValue(savedRecord);
+  mocks.funding.mockResolvedValue({ ok: true });
   mocks.recordLaunchSpec.mockResolvedValue(true);
   mocks.pinnedPrompt.mockReturnValue({ promptText: 'PINNED V1 INSTRUCTIONS', specificationRevision: REVISION });
   mocks.buildLaunchSpec.mockResolvedValue({ mcpUrl: 'http://localhost:3170/api/mcp?superuser=1' });
@@ -79,6 +99,84 @@ async function call(model?: string, extra: { requireGatewayProvider?: boolean } 
 }
 
 describe('ensure-codex-home pinned-source recovery', () => {
+  it('rebuilds an accepted role through its pinned operation instead of replacing it with SU grants', async () => {
+    const accepted = {
+      workItemId: 'WI-50', harnessSlug: 'research', operationId: 'daily-brief',
+      specificationRevision: REVISION, stack: ['domain:blueprint-operation-worker'],
+      pin: { kind: 'blueprint-operation' }, identity: { ref: 'blueprint-operation-worker' },
+      requiredTools: ['reports:publish'],
+      modelPolicy: { mode: 'exact', models: ['gpt-6.1-sol'], effort: 'medium', onUnavailable: 'fail' },
+    };
+    mocks.readRecord.mockResolvedValue({ ...savedRecord, harnessSlug: 'research', role: 'researcher' });
+    mocks.sessionRow.mockResolvedValue({ coordOwnerId: OWNER, agent: 'codex', role: 'researcher',
+      feature: 'WI-50', workspaceId: 'papercusp-workspace', sessionId: 'original-native',
+      launchArgv: ['psu', '--account=auto'] });
+    mocks.roleBinding.mockResolvedValue(accepted);
+    mocks.buildRole.mockResolvedValue({ sid: OWNER, nativeSessionId: 'original-native',
+      stack: accepted.stack, mcpUrl: 'http://localhost:3170/api/mcp?role=researcher&sig=valid',
+      promptText: 'RESTRICTED RESEARCH', cwd: '/fixture/research',
+      specificationRevision: REVISION, stateRevision: 'role-state',
+      specificationArtifact: { configuration: { grants: { tools: ['reports:publish'] } } } });
+    expect((await call('gpt-6.1-sol:medium')).status).toBe(200);
+    expect(mocks.rebuild).not.toHaveBeenCalled();
+    expect(mocks.ensureHome).not.toHaveBeenCalled();
+    expect(mocks.buildRole).toHaveBeenCalledWith(expect.objectContaining({
+      role: 'researcher', featureId: 'WI-50',
+      launchIdentity: { sid: OWNER, nativeSessionId: 'original-native' },
+      acceptedOperation: expect.objectContaining({ modelSelection: expect.objectContaining({ model: 'gpt-6.1-sol:medium' }) }),
+    }));
+    expect(mocks.roleHome).toHaveBeenCalledWith(expect.objectContaining({ preserveExisting: true,
+      sid: OWNER, sessionKey: 123, codexGatewayAuto: true,
+      mcpUrl: 'http://localhost:3170/api/mcp?role=researcher&sig=valid' }));
+    expect(mocks.recordLaunchSpec).toHaveBeenCalledWith(123, OWNER, expect.objectContaining({
+      role: 'researcher', acceptedOperation: expect.objectContaining({ workItemId: 'WI-50' }),
+    }));
+    expect(mocks.requestActivation).toHaveBeenCalledWith(expect.objectContaining({
+      ownerId: OWNER, revision: { specificationRevision: REVISION, stateRevision: 'role-state' },
+    }));
+  });
+
+  it('preserves an ordinary role home instead of compiling an SU fallback', async () => {
+    mocks.readRecord.mockResolvedValue(null);
+    mocks.sessionRow.mockResolvedValue({ coordOwnerId: OWNER, agent: 'codex', role: 'researcher' });
+    const response = await call();
+    expect(await response.json()).toMatchObject({ ok: true, repaired: false, reason: 'role-home-preserved' });
+    expect(mocks.rebuild).not.toHaveBeenCalled();
+    expect(mocks.ensureHome).not.toHaveBeenCalled();
+    expect(mocks.recordLaunchSpec).not.toHaveBeenCalled();
+  });
+
+  it('refuses an incompatible accepted model before changing the role home or receipt', async () => {
+    mocks.readRecord.mockResolvedValue({ ...savedRecord, harnessSlug: 'research', role: 'researcher' });
+    mocks.sessionRow.mockResolvedValue({ coordOwnerId: OWNER, agent: 'codex', role: 'researcher',
+      feature: 'WI-50', workspaceId: 'papercusp-workspace', sessionId: 'original-native' });
+    mocks.roleBinding.mockResolvedValue({ modelPolicy: {
+      mode: 'exact', models: ['gpt-6.1-sol'], effort: 'medium', onUnavailable: 'fail',
+    } });
+    await expect(call('gpt-6-astra:medium')).rejects.toThrow('outside the accepted exact model policy');
+    expect(mocks.roleHome).not.toHaveBeenCalled();
+    expect(mocks.ensureHome).not.toHaveBeenCalled();
+    expect(mocks.recordLaunchSpec).not.toHaveBeenCalled();
+  });
+
+  it('does not drop an unfunded accepted identity or rewrite its home as SU', async () => {
+    mocks.readRecord.mockResolvedValue({ ...savedRecord, harnessSlug: 'research', role: 'researcher' });
+    mocks.sessionRow.mockResolvedValue({ coordOwnerId: OWNER, agent: 'codex', role: 'researcher',
+      feature: 'WI-50', workspaceId: 'papercusp-workspace', sessionId: 'original-native' });
+    mocks.roleBinding.mockResolvedValue({ modelPolicy: {
+      mode: 'exact', models: ['gpt-6.1-sol'], effort: 'medium', onUnavailable: 'fail',
+    } });
+    mocks.buildRole.mockResolvedValue({ stack: ['domain:blueprint-operation-worker'], cwd: '/fixture/research' });
+    mocks.funding.mockResolvedValue({ ok: false, refused: [{ layerRef: 'domain:blueprint-operation-worker' }] });
+    const response = await call('gpt-6.1-sol:medium');
+    expect(response.status).toBe(402);
+    expect(await response.json()).toMatchObject({ ok: false, error: 'identity_activation_refused' });
+    expect(mocks.roleHome).not.toHaveBeenCalled();
+    expect(mocks.ensureHome).not.toHaveBeenCalled();
+    expect(mocks.recordLaunchSpec).not.toHaveBeenCalled();
+    expect(mocks.requestActivation).not.toHaveBeenCalled();
+  });
+
   it.each([
     { name: 'auto', launchArgv: ['psu', '--account=auto'], auto: true, accountId: null },
     { name: 'pin', launchArgv: ['psu', '--account', 'pool-a'], auto: false, accountId: 'pool-a' },
