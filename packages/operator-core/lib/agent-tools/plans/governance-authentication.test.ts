@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { generateEd25519KeypairDer, signWithPrivateKeyDer } from '../../identity/ed25519';
 import type { FederatedGovernanceEvent, GovernanceEventBody } from './governance-federation';
+import { ingestGovernanceEvents } from './governance-federation';
 import { createGovernanceRound, type GovernanceRound, type GovernanceVoteEvent } from './governance-round';
 import { DEFAULT_PLAN_ADMISSION_POLICY } from './plan-admission-policy';
 import { authenticateGovernanceEvent, governanceAuthorityHash, governanceEventSigningBytes,
@@ -38,6 +39,30 @@ describe('eligible governance keys and signed domains', () => {
     expect(f.verify(f.sign({ kind: 'round-open', round: f.round }))).toEqual({ ok: true });
     expect(f.verify(f.sign({ kind: 'pause' }))).toEqual({ ok: true });
     expect(f.verify(f.sign({ kind: 'vote', vote: f.vote }))).toEqual({ ok: true });
+  });
+
+  it('admits authentic federation records and refuses forged inner/outer or wrong-epoch authority', () => {
+    const f = fixture();
+    const opened = f.sign({ kind: 'round-open', round: f.round }, { eventId: 'opened' });
+    const ballot = f.sign({ kind: 'vote', vote: f.vote }, { eventId: 'ballot-envelope' });
+    const boundary = { potId: 'pot', visibility: 'shared' as const, memberPeerIds: ['peer-a', 'peer-b'] };
+    const ingest = (incoming: readonly FederatedGovernanceEvent[]) => ingestGovernanceEvents({
+      boundary, known: [], incoming, verifySignature: event => f.verify(event).ok,
+    });
+    const accepted = ingest([ballot, opened]);
+    expect(accepted.accepted).toHaveLength(2);
+    expect(accepted.dropped).toEqual([]);
+    for (const forged of [
+      { ...ballot, signature: 'forged' },
+      f.sign({ kind: 'vote', vote: { ...f.vote, signature: 'forged' } }, { eventId: 'inner-forgery' }),
+      f.sign({ kind: 'vote', vote: f.vote }, { eventId: 'wrong-epoch', authorization: { memberId: 'a', keyEpoch: 2 } }),
+      f.sign({ kind: 'vote', vote: f.vote }, { eventId: 'wrong-key' }, f.b),
+    ]) {
+      const refused = ingest([opened, forged]);
+      expect(refused.accepted).toEqual([opened]);
+      expect(refused.dropped).toMatchObject([{ reason: 'unverified-signature' }]);
+    }
+    expect(ingestGovernanceEvents({ boundary, known: [], incoming: [opened, ballot] }).accepted).toEqual([]);
   });
 
   it('refuses legacy and forged nonempty signatures', () => {
