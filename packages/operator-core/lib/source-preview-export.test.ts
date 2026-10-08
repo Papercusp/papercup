@@ -203,7 +203,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     expect(existsSync(join(dest, 'unrelated-untracked.ts'))).toBe(false);
     await expect(verifyVerifierSource(dest, receipt)).resolves.toEqual(receipt);
     writeFileSync(join(dest, input), 'tampered');
-    await expect(verifyVerifierSource(dest, receipt)).rejects.toThrow('tampered verification source archive');
+    await expect(verifyVerifierSource(dest, receipt)).rejects.toThrow(`tampered verification source archive: changed ${input}`);
   });
 
   it('refuses an older committed tested input and cleans the incomplete export', async () => {
@@ -226,7 +226,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     await expect(verifyVerifierSource(dest, receipt)).rejects.toThrow('tampered verification source provenance');
     writeFileSync(join(dest, '.verifier-source.json'), JSON.stringify(receipt));
     writeFileSync(join(dest, 'extra.ts'), 'unexpected');
-    await expect(verifyVerifierSource(dest, receipt)).rejects.toThrow('tampered verification source archive');
+    await expect(verifyVerifierSource(dest, receipt)).rejects.toThrow('tampered verification source archive: added extra.ts');
   });
 
   it('never excludes recorded files under runtime directories from the source verdict', async () => {

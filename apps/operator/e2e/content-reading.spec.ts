@@ -6,7 +6,7 @@ import { expect, test } from './_egress';
  * microphone independence and explicit composition without a device or paid call. */
 type OutputProbe = {
   created: number; plays: number; pauses: number; resumes: number; mic: number;
-  utterances: string[]; finish(): void;
+  utterances: string[]; cancellations: string[]; finish(): void;
 };
 type ProbeWindow = Window & { __contentOutput: OutputProbe };
 
@@ -15,7 +15,7 @@ async function openReading(page: Page) {
     sessionStorage.setItem('oracle-tutorial-complete', 'true');
     let finish: (() => void) | undefined;
     const probe: OutputProbe = {
-      created: 0, plays: 0, pauses: 0, resumes: 0, mic: 0, utterances: [],
+      created: 0, plays: 0, pauses: 0, resumes: 0, mic: 0, utterances: [], cancellations: [],
       finish() { const callback = finish; finish = undefined; callback?.(); },
     };
     (window as unknown as ProbeWindow).__contentOutput = probe;
@@ -36,7 +36,7 @@ async function openReading(page: Page) {
         finish = () => utterance.onend?.(new Event('end') as SpeechSynthesisEvent);
       },
       pause() { probe.pauses++; }, resume() { probe.resumes++; },
-      cancel() { probe.pauses++; finish = undefined; },
+      cancel() { probe.cancellations.push(new Error('Speech cancelled').stack ?? 'unknown caller'); probe.pauses++; finish = undefined; },
     } });
     if (navigator.mediaDevices) navigator.mediaDevices.getUserMedia = async () => {
       probe.mic++;
@@ -54,6 +54,15 @@ async function openReading(page: Page) {
   await expect(page.getByRole('textbox', { name: 'Text to read or summarize' })).toBeVisible();
   return turnPosts;
 }
+
+test.afterEach(async ({ page }, testInfo) => {
+  if (testInfo.status === testInfo.expectedStatus || page.isClosed()) return;
+  const evidence = await page.evaluate(() => {
+    const probe = (window as unknown as ProbeWindow).__contentOutput;
+    return { ...probe, readingStatus: document.querySelector('[aria-label="Original reading controls"] [role="status"]')?.textContent };
+  });
+  await testInfo.attach('controlled-output-diagnostics', { body: JSON.stringify(evidence, null, 2), contentType: 'application/json' });
+});
 
 async function output(page: Page) {
   return page.evaluate(() => {

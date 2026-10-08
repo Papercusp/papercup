@@ -74,8 +74,20 @@ export function verifyVerifierSourceSync<T extends VerifierSourceReceipt>(dest: 
   if (!/^[0-9a-f]{40}$/.test(expected.sourceCommit) || !Array.isArray(expected.files) || !expected.files.length) {
     throw new VerifierSourceError('invalid verification source provenance');
   }
-  if (JSON.stringify(verifierSourceFiles(dest, { ...options, recordedPaths: expected.files.map(file => file.path) })) !== JSON.stringify(expected.files)) {
-    throw new VerifierSourceError('tampered verification source archive');
+  const actual = verifierSourceFiles(dest, { ...options, recordedPaths: expected.files.map(file => file.path) });
+  if (JSON.stringify(actual) !== JSON.stringify(expected.files)) {
+    const recorded = new Map(expected.files.map(file => [file.path, file]));
+    const observed = new Map(actual.map(file => [file.path, file]));
+    const differences: string[] = [];
+    for (const file of expected.files) {
+      const current = observed.get(file.path);
+      if (!current) differences.push(`missing ${file.path}`);
+      else if (JSON.stringify(current) !== JSON.stringify(file)) differences.push(`changed ${file.path}`);
+    }
+    for (const file of actual) {
+      if (!recorded.has(file.path)) differences.push(`added ${file.path}`);
+    }
+    throw new VerifierSourceError(`tampered verification source archive: ${differences.slice(0, 10).join('; ')}${differences.length > 10 ? '; further differences omitted' : ''}`);
   }
   return expected;
 }
