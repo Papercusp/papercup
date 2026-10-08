@@ -652,12 +652,16 @@ function render(){
   document.getElementById('concept-title').textContent=concepts[concept].title;
   document.getElementById('concept-description').textContent=concepts[concept].description;
   document.getElementById('concept-tag').textContent=concepts[concept].tag;
+  const changes=concepts[concept].changes;document.getElementById('concept-changes').hidden=!changes;document.getElementById('concept-change-list').innerHTML=changes?changes.map(function(c){return '<li>'+c+'</li>';}).join(''):'';
   document.querySelectorAll('[data-concept]').forEach(function(b){const active=b.dataset.concept===concept;b.setAttribute('aria-selected',String(active));b.tabIndex=active?0:-1;});
   document.getElementById('concept-view').setAttribute('aria-labelledby','tab-'+concept);
-  document.querySelectorAll('[data-view]').forEach(function(b){if(b.closest('.subnav')){b.classList.toggle('active',b.dataset.view===concept);if(b.dataset.view===concept)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current');}});
+  const view=viewOf(concept);
+  document.querySelectorAll('[data-view]').forEach(function(b){if(b.closest('.subnav')){b.classList.toggle('active',b.dataset.view===view);if(b.dataset.view===view)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current');}});
   document.getElementById('review-count').textContent=reviewResolved?'1':'2';
-  document.getElementById('content').innerHTML=concept==='overview'?overviewHTML():concept==='worklist'?worklistHTML():reviewHTML();
+  const renderers={overview:overviewHTML,worklist:worklistHTML,review:reviewHTML,'worklist-tiers':tiersHTML,'worklist-capacity':capacityHTML,'worklist-draft':draftHTML};
+  document.getElementById('content').innerHTML=renderers[concept]();
   if(concept==='worklist')document.getElementById('worklist-filter').value=filter;
+  if(restoreFocus){const el=document.querySelector(restoreFocus);restoreFocus=null;if(el)el.focus({preventScroll:true});}
 }
 function setConcept(next){if(!concepts[next])return;concept=next;render();if(location.hash!=='#'+next)history.replaceState(null,'','#'+next);}
 function showToast(message){const t=document.getElementById('toast');t.textContent=message;t.hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(function(){t.hidden=true;},4000);}
@@ -665,7 +669,7 @@ function openPlan(id){selectedPlan=id;const p=getPlan(id);document.getElementByI
 function resolveReview(include){reviewResolved=true;const mobile=getPlan('mobile');mobile.included=include;mobile.status=include?'Ready':'Excluded';mobile.last=include?'Included by Avi':'Excluded by Avi';mobile.reason=include?'Avi included this plan in the goal’s scope.':'An explicit scope choice; no agent is allocated by this goal.';render();showToast(include?'Preview: mobile added to the worklist.':'Preview: mobile stays on hold; decision recorded.');}
 document.addEventListener('click',function(e){
   const conceptButton=e.target.closest('[data-concept]');if(conceptButton){setConcept(conceptButton.dataset.concept);return;}
-  const viewButton=e.target.closest('[data-view]');if(viewButton){if(viewButton.dataset.select)selectedPlan=viewButton.dataset.select;setConcept(viewButton.dataset.view);return;}
+  const viewButton=e.target.closest('[data-view]');if(viewButton){if(viewButton.dataset.select)selectedPlan=viewButton.dataset.select;setConcept(viewButton.dataset.view==='worklist'&&viewOf(concept)==='worklist'?concept:viewButton.dataset.view);return;}
   const open=e.target.closest('[data-dialog]');if(open){document.getElementById(open.dataset.dialog).showModal();return;}
   const close=e.target.closest('[data-close]');if(close){close.closest('dialog').close();return;}
   const planButton=e.target.closest('[data-plan]');if(planButton){openPlan(planButton.dataset.plan);return;}
@@ -675,14 +679,35 @@ document.addEventListener('click',function(e){
   if(e.target.closest('#accept-review'))resolveReview(false);
   if(e.target.closest('#include-mobile'))resolveReview(true);
   if(e.target.closest('#undo-review')){reviewResolved=false;render();showToast('Preview decision reopened.');}
-  if(e.target.closest('#preview-account-setup')){credentialAcknowledged=true;document.getElementById('plan-dialog-title').textContent='Secure API account setup';document.getElementById('plan-dialog-body').innerHTML='<p>In the product, this opens the existing Accounts setup flow.</p><ol class="small dim"><li>Connect a valid, funded provider account using the secure credential store.</li><li>Register the API account in the inference pool.</li><li>Run a live request and verify usage is recorded.</li></ol><div class="explainer">Mockup only. Do not enter credentials in this gallery.</div>';selectedPlan='api';document.getElementById('plan-dialog').showModal();render();}
+  if(e.target.closest('#preview-account-setup'))openAccountSetup();
+});
+function openAccountSetup(){credentialAcknowledged=true;document.getElementById('plan-dialog-title').textContent='Secure API account setup';document.getElementById('plan-dialog-body').innerHTML='<p>In the product, this opens the existing Accounts setup flow.</p><ol class="small dim"><li>Connect a valid, funded provider account using the secure credential store.</li><li>Register the API account in the inference pool.</li><li>Run a live request and verify usage is recorded.</li></ol><div class="explainer">Mockup only. Do not enter credentials in this gallery.</div>';selectedPlan='api';document.getElementById('plan-dialog').showModal();render();}
+/* Worklist iteration events: buttons carry data-v; rows carry data-vrow. */
+document.addEventListener('click',function(e){
+  const v=e.target.closest('[data-v]');if(v){if(!v.disabled)handleV(v);return;}
+  const row=e.target.closest('[data-vrow]');
+  if(row&&!e.target.closest('button,select,input,a,label')){selectedPlan=row.dataset.vrow;if(concept==='worklist-draft')restoreFocus='#draft-list';render();}
+});
+document.addEventListener('change',function(e){if(e.target.matches('[data-tier-move]')&&e.target.value)moveToTier(e.target.dataset.tierMove,e.target.value,null);});
+function clearDrop(){document.querySelectorAll('.drop-target,.drop-before').forEach(function(el){el.classList.remove('drop-target','drop-before');});}
+document.addEventListener('dragstart',function(e){const r=e.target.closest&&e.target.closest('[data-vrow][draggable=true]');if(!r||concept!=='worklist-tiers')return;dragId=r.dataset.vrow;e.dataTransfer.effectAllowed='move';e.dataTransfer.setData('text/plain',dragId);requestAnimationFrame(function(){r.classList.add('dragging');});});
+document.addEventListener('dragover',function(e){if(!dragId)return;const zone=e.target.closest('[data-drop-tier]');if(!zone)return;e.preventDefault();e.dataTransfer.dropEffect='move';const row=e.target.closest('.t-row');clearDrop();zone.classList.add('drop-target');if(row&&row.dataset.vrow!==dragId)row.classList.add('drop-before');});
+document.addEventListener('drop',function(e){if(!dragId)return;const zone=e.target.closest('[data-drop-tier]');if(!zone)return;e.preventDefault();const row=e.target.closest('.t-row'),id=dragId;dragId=null;clearDrop();moveToTier(id,zone.dataset.dropTier,row&&row.dataset.vrow!==id?row.dataset.vrow:null);});
+document.addEventListener('dragend',function(){dragId=null;clearDrop();document.querySelectorAll('.dragging').forEach(function(el){el.classList.remove('dragging');});});
+document.addEventListener('keydown',function(e){
+  const t=e.target;if(!t||!t.classList)return;
+  if(concept==='worklist-tiers'&&t.classList.contains('t-row')){
+    if(e.altKey&&(e.key==='ArrowUp'||e.key==='ArrowDown')){e.preventDefault();const id=t.dataset.vrow;reorderInTier(id,e.key==='ArrowUp'?-1:1);selectedPlan=id;restoreFocus='.t-row[data-vrow="'+id+'"]';render();return;}
+    if(e.key==='Enter'||e.key===' '){e.preventDefault();selectedPlan=t.dataset.vrow;restoreFocus='.t-row[data-vrow="'+selectedPlan+'"]';render();return;}
+  }
+  if(concept==='worklist-draft'&&t.id==='draft-list')draftKey(e);
 });
 document.addEventListener('change',function(e){if(e.target.matches('[data-include]')){const p=getPlan(e.target.dataset.include);p.included=e.target.checked;if(p.id==='mobile'){p.status=p.included?'Ready':'Excluded';p.last=p.included?'Included by Avi':'Excluded by Avi';p.reason=p.included?'Avi included this plan in the goal’s scope.':'An explicit scope choice; no agent is allocated by this goal.';}render();showToast('Preview: '+p.title+(p.included?' included.':' excluded.'));}if(e.target.id==='worklist-filter'){filter=e.target.value;render();}});
 document.addEventListener('input',function(e){if(e.target.id==='worklist-search'){query=e.target.value;const position=e.target.selectionStart;render();const input=document.getElementById('worklist-search');input.focus();input.setSelectionRange(position,position);}});
 document.getElementById('pause-toggle').addEventListener('click',function(){paused=!paused;document.getElementById('goal-status').className='pill '+(paused?'warn':'good');document.getElementById('goal-status').innerHTML='<i class="dot"></i>'+(paused?'Paused':'Running');this.innerHTML=icon(paused?'play':'pause')+'<span>'+(paused?'Resume goal':'Pause goal')+'</span>';document.getElementById('pause-notice').hidden=!paused;document.getElementById('footer-status').textContent=paused?'Goal paused · no new work allocated':'Steward checking plan coverage · next pass in 4 min';document.getElementById('footer-dot').style.color=paused?'var(--amber)':'var(--green)';render();showToast(paused?'Preview: goal paused.':'Preview: goal resumed.');});
 document.getElementById('theme-toggle').addEventListener('click',function(){const light=document.documentElement.dataset.theme!=='light';document.documentElement.dataset.theme=light?'light':'dark';document.getElementById('theme-label').textContent=light?'Dark':'Light';this.setAttribute('aria-label',light?'Switch to dark theme':'Switch to light theme');});
 document.getElementById('settings-form').addEventListener('submit',function(e){e.preventDefault();budget=Number(document.getElementById('weekly-budget').value);document.getElementById('settings-dialog').close();render();showToast('Preview: rolling 7-day budget updated to $'+budget+'.');});
-document.getElementById('plan-to-worklist').addEventListener('click',function(){document.getElementById('plan-dialog').close();setConcept('worklist');});
+document.getElementById('plan-to-worklist').addEventListener('click',function(){document.getElementById('plan-dialog').close();setConcept(viewOf(concept)==='worklist'?concept:'worklist');});
 function answerQuestion(question){const log=document.getElementById('chat-log');const user=document.createElement('div');user.className='chat-response';const label=document.createElement('strong');label.textContent='Avi · preview';user.append(label,document.createTextNode(question));log.appendChild(user);const response=document.createElement('div');response.className='chat-response';const heading=document.createElement('strong');heading.textContent='Steward · sample reply';response.appendChild(heading);const lower=question.toLowerCase();const reply=lower.includes('block')?'API account verification is waiting for a funded provider key. Search and desktop work can proceed; I am keeping their next steps separate from that blocker.':lower.includes('chang')?'Search acceptance passed and the account connection journey was verified. The review desk links each outcome to its evidence.':lower.includes('priority')?'Cloud setup comes first because it prevents new users from reaching a useful workspace. Search is a shared dependency; desktop and help tasks use independent capacity.':'I would check this against the selected plans, their latest verified progress, and your scope policy. In the product, this conversation stays attached to the ongoing-work goal.';response.appendChild(document.createTextNode(reply));log.appendChild(response);log.scrollTop=log.scrollHeight;}
 document.getElementById('chat-form').addEventListener('submit',function(e){e.preventDefault();const input=document.getElementById('chat-input');const question=input.value.trim();if(question)answerQuestion(question);input.value='';});
 document.querySelector('.tabs').addEventListener('keydown',function(e){if(!['ArrowRight','ArrowLeft','Home','End'].includes(e.key))return;e.preventDefault();const buttons=Array.from(document.querySelectorAll('[data-concept]'));const current=buttons.indexOf(e.target.closest('[data-concept]'));const next=e.key==='Home'?0:e.key==='End'?buttons.length-1:(current+(e.key==='ArrowRight'?1:-1)+buttons.length)%buttons.length;setConcept(buttons[next].dataset.concept);buttons[next].focus();});
