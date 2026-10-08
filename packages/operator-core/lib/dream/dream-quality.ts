@@ -85,6 +85,7 @@ export function reportDreamQuality(
   }
   const valid: DreamRun[] = [];
   const observed: DreamRun[] = [];
+  const unknownAccountingRunIds = new Set<string>();
   let inspected = 0;
   for (const run of unique.values()) {
     const started = Date.parse(run.startedAt);
@@ -114,7 +115,9 @@ export function reportDreamQuality(
           throw new Error('Assessment is stale against its frozen review');
       }
       // A broken row is diagnosed without hiding the remaining rows in this window.
-      computeDreamMetrics([{ run, routed: null, experiments: [] }], scope);
+      const runMetrics = computeDreamMetrics([{ run, routed: null, experiments: [] }], scope);
+      if (runMetrics.cost.unknownUsageCount || runMetrics.cost.unknownPacketUses)
+        unknownAccountingRunIds.add(run.runId);
       valid.push(run);
     } catch (error) {
       fault('invalid-provenance', 'major', error instanceof Error ? error.message : String(error), run.runId);
@@ -125,8 +128,12 @@ export function reportDreamQuality(
   catch (error) { fault('invalid-provenance', 'major', error instanceof Error ? error.message : String(error)); }
   if (metrics) {
     for (const error of metrics.cost.reconciliationErrors) fault('accounting-mismatch', 'major', error);
-    if (metrics.cost.unknownUsageCount || metrics.cost.unknownPacketUses)
-      fault('unknown-accounting', 'minor', `${metrics.cost.unknownUsageCount} unknown calls; ${metrics.cost.unknownPacketUses} packet uses with unknown cost`);
+    if (metrics.cost.unknownUsageCount || metrics.cost.unknownPacketUses) {
+      const evidence = `${metrics.cost.unknownUsageCount} unknown calls; ${metrics.cost.unknownPacketUses} packet uses with unknown cost`;
+      if (unknownAccountingRunIds.size) {
+        for (const runId of unknownAccountingRunIds) fault('unknown-accounting', 'minor', evidence, runId);
+      } else fault('unknown-accounting', 'minor', evidence);
+    }
     const family = metrics.novelty.largestFamilyShare;
     if (family.denominator >= DREAM_QUALITY_POLICY.familyMinimum && family.value !== null && family.value >= DREAM_QUALITY_POLICY.largestFamilyShare)
       fault('family-concentration', 'minor', `${family.numerator}/${family.denominator} identified proposals share one assessed family; inspect diversity`);

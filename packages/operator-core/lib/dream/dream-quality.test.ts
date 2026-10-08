@@ -92,7 +92,12 @@ describe('Dream quality calibration and watchdog evidence', () => {
     const unknown = run('unknown'); const p = dreamCapabilityRun(unknown)!;
     p.calls[1] = { ...p.calls[1]!, status: 'unknown', usage: null, error: 'lost reply' };
     unknown.outcome!.capabilityRun = p; unknown.costUsd = 0.15;
-    expect(codes(reportDreamQuality([unknown], scope))).toContain('unknown-accounting');
+    const unknownReport = reportDreamQuality([unknown], scope);
+    expect(codes(unknownReport)).toContain('unknown-accounting');
+    expect(unknownReport.faults.find(f => f.code === 'unknown-accounting')).toMatchObject({
+      identifiedRunCount: 1,
+      runIds: ['unknown'],
+    });
     const tooMuch = run('over-cap'); tooMuch.costUsd = 6;
     expect(codes(reportDreamQuality([tooMuch], scope))).toContain('budget-breach');
   });

@@ -187,7 +187,10 @@ class DreamMetricsFold {
           actual += e.usage.costUsd;
           this.phases[e.phase]!.knownUsd += e.usage.costUsd;
           (this.models[e.usage.model] ??= cost()).knownUsd += e.usage.costUsd;
-        } else if (e.required) { this.missingUsage++; this.phases[e.phase]!.unknownCalls++; }
+        } else if (e.required) {
+          this.missingUsage++;
+          this.phases[e.phase]!.unknownCalls++;
+        }
       }
       this.knownUsd += actual;
       if (Math.abs(actual - run.costUsd) > 1e-8) this.errors.push(`${run.runId}: legacy summaries do not reconcile`);
