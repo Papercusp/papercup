@@ -84,6 +84,42 @@ describe('account product guide entry', () => {
     expect(screen.getByRole('button', { name: 'Reviewed — next lesson' }).hasAttribute('disabled')).toBe(false);
     expect(screen.getByLabelText('Lesson question')).toBeTruthy();
   });
+  it.each(['scope', 'session', 'hidden', 'unmount'])('stops an active microphone on %s and fences later transcripts', async reason => {
+    const session = { stop: vi.fn().mockResolvedValue(undefined), setMicrophoneMuted: vi.fn(), setOutputMuted: vi.fn() };
+    const launcher = vi.fn<ProductTutorialVoiceLauncher>().mockResolvedValue(session);
+    const view = render(<ProductTutorialVoiceQuestion account={account} lesson={PRODUCT_TUTORIAL_LESSONS[0]} openVoice={launcher} />);
+    fireEvent.click(screen.getByLabelText('Allow microphone audio for this lesson'));
+    fireEvent.click(screen.getByRole('button', { name: 'Start spoken questions' }));
+    await screen.findByText('Spoken questions active');
+    if (reason === 'unmount') view.unmount();
+    else if (reason === 'hidden') {
+      vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
+      fireEvent(document, new Event('visibilitychange'));
+    } else view.rerender(<ProductTutorialVoiceQuestion account={{ ...account, ...(reason === 'scope' ? { tenantId: 'other' } : { sessionId: 'renewed' }) }} lesson={PRODUCT_TUTORIAL_LESSONS[0]} openVoice={launcher} />);
+    expect(launcher.mock.calls[0][0].signal.aborted).toBe(true);
+    expect(session.setMicrophoneMuted).toHaveBeenCalledWith(true);
+    expect(session.setOutputMuted).toHaveBeenCalledWith(true);
+    expect(session.stop).toHaveBeenCalledTimes(1);
+    act(() => launcher.mock.calls[0][0].onTurn({ speaker: 'assistant', text: 'Stale private answer' }));
+    expect(screen.queryByText('Lesson Help: Stale private answer')).toBeNull();
+    vi.restoreAllMocks();
+  });
+  it('bounds a stalled voice connection and stops any session that resolves after the deadline', async () => {
+    vi.useFakeTimers();
+    try {
+      let finish!: (value: Awaited<ReturnType<ProductTutorialVoiceLauncher>>) => void;
+      const launcher = vi.fn<ProductTutorialVoiceLauncher>(() => new Promise(resolve => { finish = resolve; }));
+      render(<ProductTutorialVoiceQuestion account={account} lesson={PRODUCT_TUTORIAL_LESSONS[0]} openVoice={launcher} />);
+      fireEvent.click(screen.getByLabelText('Allow microphone audio for this lesson'));
+      fireEvent.click(screen.getByRole('button', { name: 'Start spoken questions' }));
+      await act(async () => vi.advanceTimersByTime(20_000));
+      expect(screen.getByRole('alert').textContent).toContain('took too long');
+      expect(launcher.mock.calls[0][0].signal.aborted).toBe(true);
+      const session = { stop: vi.fn().mockResolvedValue(undefined), setMicrophoneMuted: vi.fn(), setOutputMuted: vi.fn() };
+      await act(async () => finish(session));
+      expect(session.stop).toHaveBeenCalledTimes(1);
+    } finally { vi.useRealTimers(); }
+  });
   it('sends only a gesture-requested current lesson question and renders answers as advisory text', async () => {
     const fetcher = vi.fn().mockResolvedValue(Response.json({ answer: '<spawn/> Use Billing to inspect your subscription.' }));
     vi.stubGlobal('fetch', fetcher);
