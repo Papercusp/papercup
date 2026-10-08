@@ -1826,7 +1826,63 @@
       "item": "WI-10006170",
       "lines": [
         16270
-      ]
+      ],
+      "historicalQualification": {
+        "observedOn": "2026-10-08",
+        "scope": "Read-only archive, source-baseline and existing-record qualification; no new test execution, source repair, terminal-item replay, final acceptance or shipment.",
+        "archiveSha256": "43cf66489baf7cf665a9746d097375cffc7cdc6262014929c3cc398155b579f4",
+        "archivedCensus": {
+          "collected": 2,
+          "executed": 2,
+          "failed": 1,
+          "skipped": 0
+        },
+        "archivedFailure": "The feature-written-after-wiring case reaches its capture/enqueue scope assertions, then pollUntil returns undefined for drained_at and the test268 assertion fails. The failure does not distinguish timer/LISTEN delivery, admission, PG progress, fanout, mapping or append failure. The other scoped-row case is not the failed case.",
+        "existingTerminalItems": [
+          {
+            "id": "WI-3192",
+            "state": "done",
+            "completionAuthority": null,
+            "repairCommit": "312098de992bc5a82eabef38e01ae1e84bcb5161",
+            "repairMechanism": "July fixture correction adds substrate_outbox.drained_log_key after replaying migration102. The stored checkpoint reports reproducing the missing-column error in this file and plan-item-assignment-two-peer before adding the column, then31/31 passes across eight target files. The surviving completion reports55 passing tests across16 files; its attribution-loss marker explains the missing terminal owner.",
+            "qualification": "This is historical missing-column repair evidence. The correction is already present in the run-start and current named test; the later October canonical and clean isolated receipts fail the online-drain assertion. No receipt IDs, loaded-byte evidence or later causal correction for the October symptom are established by this terminal record."
+          },
+          {
+            "id": "EI-11530",
+            "state": "resolved",
+            "completionAuthority": null,
+            "repairMechanism": "Stored completion covers substrate-circuit-breaker.ts, its unit tests and pg-container.ts:8/8 unit plus1/1 real-Docker happy-path integration, typecheck and test lint. The original report leaves its proposed testcontainer crash/recovery mechanism unconfirmed and describes two July online-drain test timeouts as a possible related symptom.",
+            "qualification": "Failure detection and substrate diagnostics are the verified completion scope; no passing online-drain receipt or causal repair of the October undefined drained-row assertion is supplied. The proposed substrate flap is not adopted as the October cause."
+          }
+        ],
+        "runStartCommit": "d2a53e115436fe5b2a72c261abbc66f337642672",
+        "runStartAndCurrentTestSha256": "cc8ac107e5cc6c78a606b813733f42296d78b0c4a9c76ae1f1825026d13755cf",
+        "runStartAndCurrentWireSourceSha256": "19886ddc8e0746f69fa0cbfb73c5a9821f6e441aa19dac1f8e996b7000ed3347",
+        "runStartAndCurrentDrainSourceSha256": "71d5d61969a60a54dfca9cbbfd04632e8fe563b09d921c47a41673021cd9aa72",
+        "sourceComparison": "The named test, wire-outbox.ts and outbox-drain.ts are clean and equal HEAD, run-start and both October failure-receipt commit blobs. Run-start blobs are483d17677c679623da59f5be2a2d300123aecb52/af357f57701d4b02f4295e117814a43913f88e27/f6b83939344e3ebe36e641d0f7f6f58b0a68c062. Static wiring starts the real drain with fanout, epoch refresh and an optional shared LISTEN hub, but no measured original timer/admission/PG/fanout/append trace is available. Equal repository blobs do not prove actually loaded bytes, transitive imports, configuration or environment.",
+        "existingFailureReceipts": [
+          {
+            "id": 20766412,
+            "status": "fail",
+            "commit": "0d0655c7909ce8c170a5aae58e56ece24d592a49",
+            "meaning": "2026-10-05 local canonical dirty staging/non-scratch-config row; outputTail records the same expected truthy/actual undefined online-drain assertion."
+          },
+          {
+            "id": 20816120,
+            "status": "fail",
+            "commit": "81c7be521adb885de5ec230c8511424ec63804d3",
+            "meaning": "2026-10-06 local clean isolated as-committed checkout/non-scratch-config row; same assertion. This is existing failure evidence, not a current-HEAD reproduction."
+          }
+        ],
+        "historicalPassingReceipt": {
+          "id": 13168510,
+          "status": "pass",
+          "commit": "273923b00c359a5d7f21f0e19afcf4ace85b8684",
+          "meaning": "2026-08-16 local clean-repository/non-scratch-config row with legacy root null. It predates the archived October failure and does not qualify current loaded source or a later repair."
+        },
+        "receiptLookupScope": "The exact-path latest-six query is bounded over53 stored rows; the separate pass-only latest-two query is bounded over32 stored rows and returns August receipts. Exact20766412/20816120 lookups recover the October failure messages. These windows do not establish complete historical coverage or the absence of unrecorded later testing.",
+        "assurance": "UNKNOWN retained: no later causal repair or current passing receipt established in the recovered evidence. Root cause, original/current loaded source, transitive imports, config, main/subprocess/native environment, final D006/P004 acceptance and shipment remain unverified. Specific fleet admission is required before new source implementation."
+      }
     },
     {
       "path": "packages/operator-core/lib/agent-tools/harness/__tests__/create-dep-gate.integration.test.ts",
@@ -1878,6 +1934,52 @@
     },
     {
       "path": "packages/operator-core/lib/sync/hyperbee/projections/__tests__/fed-ts-lww-guard.integration.test.ts",
+      "historicalQualification": {
+        "measuredAt": "2026-10-08T10:52:06Z",
+        "scope": "Read-only source/history/terminal-record recovery under WI-10006170; no implementation admission, new test run, final acceptance or shipment proof.",
+        "originalArchiveLine": 16289,
+        "originalCensus": {
+          "collected": 9,
+          "executed": 9,
+          "failed": 1,
+          "skipped": 0
+        },
+        "originalSymptom": "The equal-ts same-writer deterministic content tie-break case observes second while expecting first at test167. This observation alone does not distinguish a stale fixed-winner expectation from a projection, normalized-content, migration or environment defect.",
+        "existingTerminalRecords": [
+          {
+            "item": "WI-2923",
+            "state": "done",
+            "exactRecords": ["WI-2923#checkpoint", "WI-2923#completion"],
+            "scope": "Historical repair replaced unconditional equal-key apply with symmetric content-digest comparison when writers are equal or unknown. Stored completion covers composition-chaos, rig consumers and engineer-issues; it supplies no later passing receipt for this October same-writer fixture. Its July5 checkpoint is historical, not a pending instruction."
+          },
+          {
+            "item": "EI-16756",
+            "state": "done",
+            "exactRecords": ["EI-16756#completion"],
+            "scope": "Stored engineer-issues integration completion reports12 passed including both apply orders for racing terminal-owner/completion-ref values. It does not establish the winner or current assurance for this distinct fed-ts fixture. No checkpoint record exists in the recovered response."
+          }
+        ],
+        "existingReceiptEvidence": {
+          "octoberCanonicalDirtyFailure": 20766425,
+          "octoberCleanIsolatedFailure": 20816170,
+          "earlierCleanIsolatedFailure": 20746883,
+          "sameOctoberAssertion": "expected second to be first; local, non-scratch receipts, with isolated receipts explicitly worktreeDirty:false",
+          "latestOlderPass": 14650561,
+          "latestOlderPassScope": "August22 local receipt has root:null and worktreeDirty:true; it predates October and cannot identify the bytes actually loaded.",
+          "olderCleanPass": 13168493,
+          "olderCleanPassScope": "August16 local receipt has root:null and worktreeDirty:false; named repository bytes can be compared, but loaded imports and database environment remain unknown.",
+          "lookupScope": "Exact four-row reads resolved20766425/20816170/14650561/13168493. Literal file-path ledger lookup returned53/53 recorded rows, no limit truncation, with mutation-probe rows excluded by the default filter; its newest recorded row is20816170. Lexical repair searches returned no filename match; the semantic filename search was degraded by embedder cold start. Neither lookup establishes absence of other differently named work or unrecorded executions."
+        },
+        "namedSourceComparison": {
+          "testSha256": "cab3e682e30ed029f97f379b7768f3111b3c2e4cdeef4706ff9cb2336d7ab157",
+          "currentAndOctoberProjectionSha256": "0a84603bc9cb0722e7785d089b310e3955b66d0ce34afc60e3ef01eedc9c164b",
+          "olderPassProjectionSha256": "542b4074c9d33a5ac6b1641cacd1ac1d1e6c343d84b46d124b0f7746cd3408d7",
+          "migration504Sha256": "bb13c67da9305856b101b0f86581265d279ea3d9773a319613dbf6f64e81846e",
+          "scope": "Working test and harness-features projection match HEAD, run-start d2a53e and both October receipt commits0d0655c7/81c7be52; named files are clean. The test also equals both older passing receipt commitscc582c07/273923b0, while their whole projection differs. The fed_apply_wins predicate text is exactly equal between August22 and current projection. Migration504 is identical across these six recorded superproject submodule pins and working bytes; pins were resolved within libs/papercusp, not read as superproject files. Repository equality does not prove loaded source or installed SQL definitions."
+        },
+        "rootCauseStatus": "UNKNOWN: the changed whole projection, unchanged digest predicate and older PASS do not isolate the October cause. Original/current loaded transitive imports, normalized row content, schema/functions/config and process environments are unverified. A future admitted investigation must bind those inputs and distinguish both apply orders before changing the fixed-winner assertion or product guard.",
+        "assurance": "UNKNOWN retained; original nine-case population and final D006/P004 acceptance remain unverified. Existing terminal repairs were not replayed; no D011 original-source/native, LIVE_GATE_OPS or shipment claim."
+      },
       "class": "assertion",
       "state": "open-unknown",
       "item": "WI-10006170",
@@ -1908,6 +2010,50 @@
     },
     {
       "path": "packages/operator-core/lib/deployment/p2p-perf-tier3/p2p-perf-tier3.integration.test.ts",
+      "historicalQualification": {
+        "measuredAt": "2026-10-08T11:09:20Z",
+        "scope": "Read-only source/history/terminal-record recovery under WI-10006170; no source implementation admission, new scenario run, final acceptance or shipment proof.",
+        "originalArchiveLine": 15041,
+        "originalCensus": {
+          "collected": 3,
+          "executed": 1,
+          "failed": 1,
+          "skipped": 2
+        },
+        "originalSymptom": "The local parity case reaches assertTier3Artifact at test41, where schema is2 and the unchanged assertion expects1. Both credential-gated provider cases are named skips in the immutable census; this failure is not evidence of a provider outage.",
+        "existingTerminalRecords": [
+          {
+            "item": "WI-40454",
+            "state": "done",
+            "exactRecords": [
+              "WI-40454#summary",
+              "WI-40454#completion"
+            ],
+            "scope": "P-013/D-026 explicitly admitted a breaking artifact schema bump for required-and-nullable provenance. Stored completion reports focused provenance, report, runner and baseline-safety verification without firing a mesh. It does not claim this Tier-3 integration test passed or that its schema1 assertion was repaired. No checkpoint exists in the recovered response."
+          }
+        ],
+        "existingReceiptEvidence": {
+          "octoberCanonicalDirtyFailure": 20766454,
+          "octoberCleanIsolatedFailure": 20746998,
+          "olderSameAssertionFailure": 16123451,
+          "sameAssertion": "expected2 to be1 in the local parity case; October rows are local/non-scratch, and the isolated row explicitly records worktreeDirty:false",
+          "latestOlderPass": 13175841,
+          "latestOlderPassScope": "August16 local receipt records worktreeDirty:false but root:null. Its repository artifact type and meter writer still use schema1; this pass predates the August22 schema2 change and cannot establish October or current assurance.",
+          "lookupScope": "Literal file-path ledger read returned52/52 recorded rows with no limit truncation and default exclusion of mutation-probe rows; newest recorded row is20766454. Filename and contract searches do not establish absence of differently named repairs or unrecorded executions."
+        },
+        "namedSourceComparison": {
+          "testSha256": "a8f897a0188388020ac30ccb6115ebed4396b040b114291d6fa7aee7c4f98e59",
+          "artifactSha256": "0c6dbcdcf1f3ff6c803988bfcaf4d1a03009def9d7a665611e327cd0413f5952",
+          "meterSha256": "9eca925348ddf09b143dcbd98a1887a83afd5c5493e65bee3b427c4019111418",
+          "scenariosSha256": "d00d011e6f30674f70dc49e8a3d35634ede38a8dbc09d35065ce95ffd8676aa8",
+          "orchestratorSha256": "6f99d144895b6905c7689c2a7a38fa63bc0916d7b3f9f27dae67d3375ca25463",
+          "schemaChangeCommit": "14e07b412727121cbc5d70e81ea842027094b18c",
+          "scope": "All five working named files are clean and equal HEAD, run-start d2a53e115436 and both October receipt commits0d0655c7909c/159fa07eba89. The test, scenarios and orchestrator also equal the August16 passing receipt commit1a7cf1e7b558. Commit14e07b412727 changes the artifact type and ScenarioMeter result from schema1 to schema2 while leaving the test unchanged; the current meter exactly equals that commit. Whole artifact bytes later changed, so the schema-change commit is not a current whole-source pin."
+        },
+        "sourceContractFinding": "The compared repository bytes contain a stale schema1 test assertion against the intentional shared schema2 contract. run-tier3 imports scenarios, which imports ScenarioMeter; the meter result writes schema2 and provenance:null, and run-tier3 serializes the returned artifacts directly. Null provenance is explicit unknown attribution, not proof that run-start source or subprocess code was captured. The writer history and scoped terminal record distinguish an intentional schema change from an unexplained provider symptom.",
+        "rootCauseStatus": "Historical loaded-runtime causal assurance remains UNKNOWN: no new control or local parity execution was admitted or run. Repository equality and the archived expected2/expected1 observation support the stale-contract diagnosis but do not bind loaded transitive imports, child source, configuration or environments, or verify every original assertion. A future specifically admitted repair should align the conventional integration contract with schema2 and required nullable provenance, retain the original local topology/metric/report assertions and both provider skips, and verify the real local parity path.",
+        "assurance": "UNKNOWN retained; original three-case population, provider execution and final D006/P004 acceptance remain unverified. Terminal WI-40454 was not replayed. Fleet refusal EI-24890385770678975 remains binding; no parallel repair, D011 original-source/native, LIVE_GATE_OPS or shipment claim."
+      },
       "class": "assertion",
       "state": "open-unknown",
       "item": "WI-10006170",
