@@ -4,6 +4,7 @@ import { collectStateCensus, assertStateCensusComplete } from '@papercusp/backup
 import type { Sql } from 'postgres';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { readdir } from 'node:fs/promises';
 import { dbEncryptionKeyFilePath } from '../db-encryption';
 import { superuserTokenPath } from '../superuser-token';
 import { workspacesRoot, readRegistry } from '../workspace-registry';
@@ -59,6 +60,13 @@ export async function databaseCensusEntries(sql: Sql, clusterIdentity: string): 
 }
 
 const execFileAsync = promisify(execFile);
+/** Unit definitions supplied by an installer source, independent of live inventory. */
+export async function unitCensusDeclarations(sourceDirectory: string, scope: 'user' | 'system') {
+  const files = await readdir(sourceDirectory, { withFileTypes: true });
+  return files.filter(file => file.isFile() && /\.(service|timer|socket|target|path|slice|scope)$/.test(file.name))
+    .map(file => ({ kind: 'unit' as const, root: `systemd-${scope}`, name: file.name,
+      classification: 'config' as const, producer: `unit-installer:${sourceDirectory}` }));
+}
 /** Installed units, not just currently running services; no shell parsing. */
 export async function unitCensusEntries(
   scope: 'user' | 'system',

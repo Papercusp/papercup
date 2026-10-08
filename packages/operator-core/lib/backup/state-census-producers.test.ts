@@ -5,7 +5,7 @@ vi.mock('../workspace-registry', () => ({
   workspacesRoot: () => '/relocated/workspaces',
   readRegistry: () => ({ workspaces: [{ id: 'registered-project' }] }),
 }));
-import { databaseCensusEntries, secretCensusProducers, unitCensusEntries, verifyHostStateCensus, workspaceRegistryCensusProducer } from './state-census-producers';
+import { databaseCensusEntries, secretCensusProducers, unitCensusEntries, unitCensusDeclarations, verifyHostStateCensus, workspaceRegistryCensusProducer } from './state-census-producers';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -14,6 +14,17 @@ import type { Sql } from 'postgres';
 
 afterEach(() => vi.clearAllMocks());
 describe('secret census producer adapters', () => {
+  it('derives unit classification from installer sources, not installed-unit observations', async () => {
+    const path = await mkdtemp(join(tmpdir(), 'unit-producer-'));
+    try {
+      await writeFile(join(path, 'app.service'), '[Service]');
+      await writeFile(join(path, 'README.md'), 'not a unit');
+      const declarations = await unitCensusDeclarations(path, 'user');
+      expect(declarations.map(entry => entry.name)).toEqual(['app.service']);
+      expect(declarations[0].classification).toBe('config');
+      expect(declarations[0].producer).toBe(`unit-installer:${path}`);
+    } finally { await rm(path, { recursive: true, force: true }); }
+  });
   it('uses the registry writer root without blanket-classifying sibling workspaces', () => {
     const producer = workspaceRegistryCensusProducer();
     expect(producer.roots).toEqual([{ id: 'workspace-registry', path: '/relocated/workspaces' }]);
