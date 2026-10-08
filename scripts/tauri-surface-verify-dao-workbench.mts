@@ -18,10 +18,12 @@ if (process.argv.includes('--check-imports')) {
   assert.equal(typeof authorHivePolicy, 'function'); assert.equal(typeof getPlanRow, 'function');
   console.log('DAO_WORKBENCH_IMPORTS_OK'); process.exit(0);
 }
-const selection = parseSelectionArgs(process.argv.slice(2));
-const result = await runHarness({ contract: { name: 'dao-workbench-tauri', phases: [{ id: 'native',
+const viewportOnly = process.argv.includes('--viewport-only');
+const harnessName = viewportOnly ? 'dao-workbench-viewport-tauri' : 'dao-workbench-tauri';
+const selection = parseSelectionArgs(process.argv.slice(2).filter(arg => arg !== '--viewport-only'));
+const result = await runHarness({ contract: { name: harnessName, phases: [{ id: 'native',
   description: 'Product switch, persisted proposal, real signed member decision and responsive workspaces' }] },
-  evidenceRoot: defaultEvidenceRoot('dao-workbench-tauri'), selection, reuseFrom: selection.reuse,
+  evidenceRoot: defaultEvidenceRoot(harnessName), selection, reuseFrom: selection.reuse,
   async runPhase(ctx) {
     assert.equal(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED, '1');
     const pg = resolveScriptPgUrl();
@@ -61,6 +63,9 @@ const result = await runHarness({ contract: { name: 'dao-workbench-tauri', phase
       click('Refresh'); wait("[...document.querySelectorAll('.dao-card h2')].some(e=>e.textContent==='Native Workbench DAO')");
       click('Open workspace →'); wait("document.querySelector('.dao-page-header h1')?.textContent==='Overview'");
       click('Proposals'); wait("!!document.querySelector('.dao-governance')");
+      let proposalHash: string | undefined;
+      let authenticatedEventKinds: string[] = [];
+      if (!viewportOnly) {
       ctx.markStep('create-real-proposal-through-native-form');
       ev("(()=>{const original=window.fetch;window.__WORKBENCH_PROPOSAL_RESPONSE__=null;window.fetch=async(...args)=>{const response=await original(...args);if(String(args[0]).includes('/api/admin/plans/new'))window.__WORKBENCH_PROPOSAL_RESPONSE__={request:args[1]?.body,status:response.status,body:await response.clone().text()};return response};return true})()");
       ev("document.querySelector('.dao-governance details').open=true");
@@ -86,6 +91,8 @@ const result = await runHarness({ contract: { name: 'dao-workbench-tauri', phase
       assert.deepEqual(snapshot.integrityErrors, []);
       assert.deepEqual(snapshot.events.map(e => e.body.kind).sort(), ['finalize', 'round-open', 'vote']);
       assert.equal(snapshot.events.find(e => e.body.kind === 'finalize')?.body.kind, 'finalize');
+      proposalHash = row.contentHash;
+      authenticatedEventKinds = snapshot.events.map(e => e.body.kind);
       capture('signed-decision');
       ctx.markStep('reload-and-independent-product-selections');
       ev('location.reload()'); wait("!!document.querySelector('.dao-governance')");
@@ -93,24 +100,19 @@ const result = await runHarness({ contract: { name: 'dao-workbench-tauri', phase
       ev("document.querySelector('a[aria-label=Ops]').click()"); wait("!location.pathname.startsWith('/daos')");
       ev("document.querySelector('a[aria-label=\"DAO Management\"]').click()");
       wait("location.pathname==='/daos' && new URLSearchParams(location.search).get('dao')==='workbench-native' && !!document.querySelector('.dao-governance')");
+      }
       ctx.markStep('nineteen-sections-and-responsive-layout');
       const ids = ['directory','overview','join','members','proposals','vote','delegation','work','jobs','treasury','funding','billing','ownership','returns','reputation','marketplace','records','settings','inbox'];
       for (const id of ids) {
         ev(`window.__TSR_ROUTER__.navigate({to:'/daos',search:{dao:${JSON.stringify(slug)},daoSection:${JSON.stringify(id)}}})`);
         wait(`new URLSearchParams(location.search).get('daoSection')===${JSON.stringify(id)} && !!document.querySelector('.dao-page-header h1')`);
       }
-      // Resize the actual native window through the maintained Tauri bridge.
-      // Desktop's normal minimum is 800px; remove only this fixture window's
-      // constraint to exercise the approved responsive web interface.
-      ev("window.__TAURI__.window.getCurrentWindow().setMinSize(null)");
-      ev("window.__TAURI__.window.getCurrentWindow().setSize(new window.__TAURI__.window.LogicalSize(390,844))");
-      wait("innerWidth<=420 && document.documentElement.scrollWidth<=innerWidth+2");
-      capture('mobile-inbox');
-      ev("window.__TAURI__.window.getCurrentWindow().setSize(new window.__TAURI__.window.LogicalSize(1440,1000))");
-      wait("innerWidth>=1300 && document.documentElement.scrollWidth<=innerWidth+2");
-      capture('desktop-inbox');
+      const expectedWidth = Number(process.env.DAO_WORKBENCH_VIEWPORT?.split('x')[0]);
+      assert.equal(expectedWidth, viewportOnly ? 390 : 1440, 'Native viewport must be selected before boot');
+      wait(`Math.abs(innerWidth-${expectedWidth})<=4 && document.documentElement.scrollWidth<=innerWidth+2`);
+      capture(viewportOnly ? 'mobile-inbox' : 'desktop-inbox');
       assert.throws(() => native('check', '--selector', '.dao-intentionally-missing', '--json'), 'Missing selector negative control must fail');
-      return { ok: true, proposalHash: row.contentHash, authenticatedEventKinds: snapshot.events.map(e => e.body.kind), sectionIds: ids };
+      return { ok: true, proposalHash, authenticatedEventKinds, sectionIds: ids, viewportWidth: expectedWidth };
     } catch (error) {
       try { writeFileSync(join(ctx.evidenceDir, 'proposal-response.json'), ev('JSON.stringify(window.__WORKBENCH_PROPOSAL_RESPONSE__ ?? null)')); } catch {}
       try {
