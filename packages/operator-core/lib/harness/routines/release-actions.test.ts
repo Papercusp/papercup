@@ -4754,6 +4754,11 @@ describe('EI-13723: recordCheckpointVerdict also dispatches the release-fixer (n
       failingTests: repairQueue.failingTests,
       repairQueue,
       flakeAnnotation: 'historical flake: none',
+      checkpointEvidence: {
+        logPath: '/var/lib/papercusp/checkpoint-logs/exact-run.log',
+        runId: 'exact-run-42',
+        integrationRoot: '/srv/papercusp',
+      },
     });
 
     expect(brief).toContain('AUTHORIZED delegated repair child, not a second LIVE_GATE_OPS owner');
@@ -4769,6 +4774,10 @@ describe('EI-13723: recordCheckpointVerdict also dispatches the release-fixer (n
     expect(brief).toContain('there is NO repair worktree');
     expect(brief).not.toMatch(/\/\.papercusp\/worktrees\//);
     expect(brief).toContain('historical flake: none');
+    expect(brief).toContain(
+      'Authoritative checkpoint run evidence: {"logPath":"/var/lib/papercusp/checkpoint-logs/exact-run.log","runId":"exact-run-42","integrationRoot":"/srv/papercusp"}',
+    );
+    expect(brief).toContain('Read this exact checkpoint artifact and use its failure tail');
   });
 
   it('keeps the legacy moving-tip brief free of frozen-child authorization instructions', () => {
@@ -4902,7 +4911,17 @@ describe('EI-13723: recordCheckpointVerdict also dispatches the release-fixer (n
 
     const recorded = await recordCheckpointVerdict(
       { workspaceId: 'ws-42', installSlug: 'my-harness' },
-      { reason: 'not-green', green: false, candidate: 'deadbeefcafe0123', failingTests: ['lib/y.test.ts'] },
+      {
+        reason: 'not-green',
+        green: false,
+        candidate: 'deadbeefcafe0123',
+        failingTests: ['lib/y.test.ts'],
+        checkpointEvidence: {
+          logPath: '/var/lib/papercusp/checkpoint-logs/manual-red.log',
+          runId: 'manual-red-run',
+          integrationRoot: '/srv/papercusp',
+        },
+      },
     );
 
     expect(recorded).toBe(true);
@@ -4920,6 +4939,15 @@ describe('EI-13723: recordCheckpointVerdict also dispatches the release-fixer (n
       expect.objectContaining({
         installSlug: 'my-harness',
         workspaceId: 'ws-42',
+        bodyExtra: {
+          releaseFixerContext: expect.objectContaining({
+            checkpointEvidence: {
+              logPath: '/var/lib/papercusp/checkpoint-logs/manual-red.log',
+              runId: 'manual-red-run',
+              integrationRoot: '/srv/papercusp',
+            },
+          }),
+        },
         // EI-20978485106613438: the fixer must receive the full invoke budget; the old
         // 900_000ms value killed it at exactly 15 minutes before it could repair the gate.
         timeoutMs: 2_700_000,

@@ -2448,7 +2448,13 @@ export async function recordCheckpointVerdict(target: GateVerdictTarget, verdict
     !verdict.repairQueue &&
     shouldDispatchReleaseFixer(verdict.reason, verdict.candidate, verdict.failingTests, verdict.retriage)
   ) {
-    await dispatchReleaseFixer(target, verdict.candidate, verdict.failingTests).catch((e) =>
+    await dispatchReleaseFixer(
+      target,
+      verdict.candidate,
+      verdict.failingTests,
+      undefined,
+      verdict.checkpointEvidence,
+    ).catch((e) =>
       console.warn(`${orchestratorStdoutTag()} release-fixer dispatch failed: ${e instanceof Error ? e.message : e}`),
     );
   }
@@ -3098,7 +3104,13 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
     !parsed?.repairQueue &&
     shouldDispatchReleaseFixer(status, candidate, failingTests, parsed?.retriage)
   ) {
-    await dispatchReleaseFixer(ctx, candidate as string, failingTests).catch((e) =>
+    await dispatchReleaseFixer(
+      ctx,
+      candidate as string,
+      failingTests,
+      undefined,
+      parsed?.checkpointEvidence,
+    ).catch((e) =>
       console.warn(`${orchestratorStdoutTag()} release-fixer dispatch failed: ${e instanceof Error ? e.message : e}`),
     );
   }
@@ -5909,11 +5921,13 @@ export function buildReleaseFixerKickoff(input: {
   failingTests?: readonly string[];
   repairQueue?: FrozenCandidateRepairQueue | null;
   flakeAnnotation?: string;
+  checkpointEvidence?: CheckpointEvidence;
   /** WI-10007494: queue entries the latest repair tick passed at this same repairHead. When
    *  non-empty, `failingTests` holds only the remaining real reds. */
   sameHeadContradicted?: readonly string[];
 }): string {
   const queue = input.repairQueue;
+  const checkpointEvidence = boundedCheckpointEvidence(input.checkpointEvidence);
   const contradicted = input.sameHeadContradicted ?? [];
   // The fixer reads the full signature from `release:repair-queue { op: 'get' }`, which keeps
   // the contradicted entries on purpose, so the brief must say which entries to leave alone.
@@ -5949,10 +5963,17 @@ export function buildReleaseFixerKickoff(input: {
       `to the gate. Do NOT claim the gate, launch a checkpoint, mutate deployment, commit, or push — ` +
       `git-sync and the gate finalizer own those steps.`
     : `green-checkpoint held \`main\`: candidate ${input.candidate.slice(0, 8)} failed the gate suite. ` +
-      `Read the exact supplied checkpoint artifact, reproduce the failing test(s) locally to classify ` +
+      `Reproduce the failing test(s) locally to classify ` +
       `regression-vs-flake, then fix the code or de-flake (hermetic > tier-out > accountable quarantine). ` +
       `Do NOT push — the next checkpoint re-verifies.`;
-  return kickoff + contradictionNote + (input.flakeAnnotation ? `\n\n${input.flakeAnnotation}` : '');
+  const checkpointNote = checkpointEvidence
+    ? `\n\nAuthoritative checkpoint run evidence: ${JSON.stringify(checkpointEvidence)}. ` +
+      `Read this exact checkpoint artifact and use its failure tail; keep its runId and integrationRoot ` +
+      `attached to your diagnosis. Do not search logs by candidate SHA.`
+    : `\n\nNo exact producing-run checkpoint artifact reference was captured for this dispatch. ` +
+      `Do not search logs by candidate SHA; reproduce the listed failure and disclose that the original ` +
+      `run artifact was unavailable.`;
+  return kickoff + contradictionNote + checkpointNote + (input.flakeAnnotation ? `\n\n${input.flakeAnnotation}` : '');
 }
 
 /** Live-compute {@link ReleaseFixerCandidateStaleCheck} for `candidate` in `root`. */
@@ -6882,6 +6903,7 @@ export async function dispatchReleaseFixer(
   candidate: string,
   failingTests?: string[],
   repairQueue?: FrozenCandidateRepairQueue,
+  checkpointEvidence?: CheckpointEvidence,
 ): Promise<{ spawnId: string | null; runId: string | null } | null> {
   // workspace-work-scope-policy-2026-09-04 P-008: an out-of-scope install's gate still runs
   // (verdict-only) but never SPAWNS a release-fixer for it. Denials land on the policy
@@ -7169,6 +7191,7 @@ export async function dispatchReleaseFixer(
       repairQueue,
       flakeAnnotation,
       sameHeadContradicted,
+      checkpointEvidence,
     });
     fired = await fireLaunchBlueprintForEvent('green-checkpoint:red', {
       installSlug: ctx.installSlug,
@@ -7186,6 +7209,9 @@ export async function dispatchReleaseFixer(
                 repairHead: repairQueue.repairHead,
                 repairAttempt: repairQueue.attempts + 1,
               }
+            : {}),
+          ...(boundedCheckpointEvidence(checkpointEvidence)
+            ? { checkpointEvidence: boundedCheckpointEvidence(checkpointEvidence) }
             : {}),
         },
       },
