@@ -16,7 +16,7 @@ import {
  * (voice-final-public-release-2026-10-01 D-006). Kokoro speech is played into
  * Chrome's fake microphone and driven through the REAL push-to-talk code
  * (backtick hold → startPttRawCapture → local Whisper → voice state), and the
- * REAL reply-playback code (speak → operator-tts-preview → Audio) is captured
+ * REAL reply-playback code (speak → bounded operator-tts chunks → Audio) is captured
  * and transcribed back. Covered: STT, TTS playback per keyed engine,
  * stop/barge-in cleanup, microphone denial, and STT failure-then-retry.
  *
@@ -125,11 +125,11 @@ const liveMicTracks = (page: Page) => page.evaluate(() =>
     .flatMap((s) => s.getAudioTracks())
     .filter((t) => t.readyState === 'live').length);
 
-/** Count operator-tts-preview POSTs from now on (one per synthesized utterance). */
+/** Count bounded operator-tts POSTs from now on (one per synthesized chunk). */
 function countTtsPosts(page: Page): { readonly n: number } {
   const counter = { n: 0 };
   page.on('request', (r) => {
-    if (r.method() === 'POST' && r.url().includes('/api/agent-mcp/operator-tts-preview')) counter.n += 1;
+    if (r.method() === 'POST' && r.url().endsWith('/api/agent-mcp/operator-tts')) counter.n += 1;
   });
   return counter;
 }
@@ -154,28 +154,31 @@ const events = (page: Page) => page.evaluate(() => (window as VoiceWindow).__voi
 interface CapturedTts { status: number; engine: unknown; text: string; body: Buffer }
 
 /**
- * Capture the exact TTS bytes the reply player receives. `response.body()` from
- * waitForResponse is NOT usable for this route: the reply plays as a streamed
- * media resource and Playwright hands back an EMPTY body (also documented in
- * voice-live-e2e.spec.ts). Rig run 3 on 2026-10-06 decoded those 0 bytes and
- * failed with "EncodingError: Unable to decode audio data". Fulfilling the
- * request from route.fetch() gives the page the same bytes this test keeps.
+ * Capture the exact TTS bytes the reply player decodes from operator-tts JSON.
+ * The endpoint uses base64 audio for its UTF-8-safe IPC contract; decode that
+ * field here so the same audio can be transcribed back through STT.
  */
 async function captureNextTtsReply(page: Page, timeoutMs = 60_000): Promise<() => Promise<CapturedTts>> {
   let resolve!: (c: CapturedTts) => void;
   const captured = new Promise<CapturedTts>((r) => { resolve = r; });
-  await page.route('**/api/agent-mcp/operator-tts-preview', async (route) => {
+  await page.route('**/api/agent-mcp/operator-tts', async (route) => {
     if (route.request().method() !== 'POST') return route.continue();
     const response = await route.fetch();
     const body = await response.body();
+    const audioResponse = JSON.parse(body.toString('utf8')) as { audioBase64?: string };
     const sent = JSON.parse(route.request().postData() ?? '{}') as { engine?: unknown; text?: unknown };
-    resolve({ status: response.status(), engine: sent.engine, text: String(sent.text ?? ''), body });
+    resolve({
+      status: response.status(),
+      engine: sent.engine,
+      text: String(sent.text ?? ''),
+      body: Buffer.from(audioResponse.audioBase64 ?? '', 'base64'),
+    });
     await route.fulfill({ response, body });
   });
   return () => Promise.race([
     captured,
     new Promise<never>((_, reject) => setTimeout(
-      () => reject(new Error(`no operator-tts-preview POST within ${timeoutMs}ms`)), timeoutMs,
+      () => reject(new Error('no operator-tts POST within ' + timeoutMs + 'ms')), timeoutMs,
     )),
   ]);
 }
@@ -472,7 +475,7 @@ async function transcribeInPage(page: Page, audio: Buffer): Promise<{ status: nu
     await withLocalEnginePrefs(page, async () => {
       const sent: Array<{ engine: unknown; status: number }> = [];
       let failNext = true;
-      await page.route('**/api/agent-mcp/operator-tts-preview', async (route) => {
+      await page.route('**/api/agent-mcp/operator-tts', async (route) => {
         if (route.request().method() !== 'POST') return route.continue();
         const { engine } = JSON.parse(route.request().postData() ?? '{}') as { engine?: unknown };
         if (failNext) {
