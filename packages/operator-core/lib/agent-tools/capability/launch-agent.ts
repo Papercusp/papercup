@@ -966,6 +966,7 @@ export default defineTool({
           } as Parameters<typeof nativeSessionHandleForAdvSession>[0], { findCodexRolloutId: () => null });
           assertOriginalCodexRouting({ id: current.advSessionId, agent: current.agent,
             coordOwnerId: current.ownerId, sessionId: current.sessionId, endedAt: current.endedAt,
+            role: current.role,
             account: current.account, codexHome: native?.backend === 'codex' ? native.codexHome : null,
           }, pin);
         };

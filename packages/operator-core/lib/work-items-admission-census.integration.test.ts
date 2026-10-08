@@ -34,6 +34,7 @@ const DDL = `
     lane text,
     payload jsonb,
     item_kind text NOT NULL DEFAULT 'task',
+    nature text NOT NULL DEFAULT 'work',
     origin text NOT NULL DEFAULT 'local',
     condition_key text,
     created_ts bigint,
@@ -202,6 +203,38 @@ async function seed(): Promise<void> {
 }
 
 describe('runWorkItemAdmissionCensus (real Postgres)', () => {
+  it('excludes data records, events and documents from the work corpus and pinned shards', async () => {
+    await seed();
+    for (const nature of ['record', 'event', 'document']) {
+      await db.sql`
+        INSERT INTO harness_shared.work_items
+          (workspace_id, harness_slug, feature_id, title, summary, status, nature,
+           payload, created_ts, embedding, embedding_mode)
+        VALUES (${WS}, ${HARNESS}, ${`data-${nature}`}, 'Alpha', '', 'open', ${nature},
+                '{"admissionIdentity":{"titleKey":"alpha"}}'::jsonb, 1,
+                '[1,0,0]'::vector, 'gemma')`;
+    }
+
+    const result = await runWorkItemAdmissionCensus({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId: 'work-only-census',
+      sql: db.sql,
+      chunkCount: 2,
+      targetTokens: 100,
+    });
+
+    expect(result.corpusSize).toBe(4);
+    const members = await db.sql<Array<{ item_id: string }>>`
+      SELECT item_id FROM harness_shared.dedup_shard_map
+       WHERE run_id = 'work-only-census' AND role = 'member'
+       ORDER BY item_id`;
+    expect(members.map((row) => row.item_id)).toEqual(['a', 'b', 'c', 'd']);
+    expect(await db.sql`
+      SELECT a, b FROM harness_shared.dedup_edges
+       WHERE a LIKE 'data-%' OR b LIKE 'data-%'`).toHaveLength(0);
+  }, 60_000);
+
   it('writes reproducible census runs and exact member coverage, including text-only context', async () => {
     await seed();
     let tick = 1_000;
@@ -737,6 +770,24 @@ describe('runWorkItemAdmissionCensus resume after interruption (WI-10004965, rea
       resumedChunks: 1,
       anchorsMissingEmbedding: 1,
     });
+  }, 60_000);
+
+  it('restarts legacy corpus pins instead of reusing their completed chunks', async () => {
+    await seed();
+    await interruptedAttempt('resume-legacy-corpus', 5_000);
+    await db.sql`
+      UPDATE harness_shared.admission_runs
+         SET detail = jsonb_set(detail, '{resume,schemaVersion}',
+                                '"work-item-admission-census-resume-v1"'::jsonb)
+       WHERE id = 'resume-legacy-corpus'`;
+
+    const result = await runWorkItemAdmissionCensus({
+      ...base, sql: db.sql, runId: 'resume-legacy-corpus', now: () => 9_000,
+    });
+    const row = await runRow('resume-legacy-corpus');
+    expect(row.started_at).toBe(new Date(9_000).toISOString());
+    expect(row.detail.resume).toMatchObject({ attempts: 1, resumedChunks: 0 });
+    expect(result.corpusSize).toBe(4);
   }, 60_000);
 
   it('refuses to resume a complete run, a different chunking, or a pin past its age bound', () => {

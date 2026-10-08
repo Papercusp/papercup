@@ -484,16 +484,34 @@ export const fleetQueueHealthSchema = z.object({
     parkTimestamp: nonNegativeInt, invalidParkTimestamp: nonNegativeInt, pendingReviewTimestamp: nonNegativeInt }),
   parkAgeBuckets: z.record(z.string(), nonNegativeInt),
   releaseConditions: z.object({ statusCounts: z.record(z.string(), nonNegativeInt),
-    findingCounts: z.record(z.string(), nonNegativeInt), flagged: nonNegativeInt, nextAction: nonEmpty.nullable() }),
+    findingCounts: z.record(z.string(), nonNegativeInt), flagged: nonNegativeInt, nextAction: nonEmpty.nullable(),
+    examples: z.object({ rows: z.array(z.object({
+      id: nonEmpty, parker: nonEmpty, condition: nonEmpty.nullable(), clearer: nonEmpty.nullable(),
+      trigger: nonEmpty.nullable(), reachability: z.enum(['reachable', 'blocked', 'unreachable', 'satisfied']).nullable(),
+      findings: z.array(nonEmpty), ageMs: z.number().nonnegative().nullable(),
+      ageSource: z.literal('payload.claim_hold_at'), nextAction: nonEmpty, recheck: nonEmpty,
+    })).max(10), total: nonNegativeInt, omitted: nonNegativeInt, recoverVia: nonEmpty }),
+  }),
   overdueReview: z.object({ thresholdHours: z.literal(24), known: nonNegativeInt,
-    timingUnknown: nonNegativeInt, nextAction: nonEmpty.nullable() }),
+    timingUnknown: nonNegativeInt, nextAction: nonEmpty.nullable(),
+    examples: z.object({ rows: z.array(z.object({
+      id: nonEmpty, submittedBy: nonEmpty, ledgerIdeaId: nonEmpty, round: z.number().int().positive(),
+      clearer: nonEmpty.nullable(), ageMs: z.number().nonnegative(),
+      ageSource: z.literal('payload.agentReview.timing.enteredAt (matching round)'),
+      nextAction: nonEmpty, recheck: nonEmpty,
+    })).max(10), total: nonNegativeInt, omitted: nonNegativeInt, recoverVia: nonEmpty }),
+  }),
   verificationService: fleetVerificationServiceSchema,
 }).superRefine((health, ctx) => {
   if (health.waiting.reportAge.population !== health.population ||
       health.waiting.reviewWait.population !== health.controls.pendingAgentReview ||
       health.waiting.revisionAge.population !== health.controls.revisionRequestedAgentReview ||
       Object.values(health.parkAgeBuckets).reduce((a, b) => a + b, 0) !== health.controls.durableParks ||
-      Object.values(health.releaseConditions.statusCounts).reduce((a, b) => a + b, 0) !== health.controls.durableParks) {
+      Object.values(health.releaseConditions.statusCounts).reduce((a, b) => a + b, 0) !== health.controls.durableParks ||
+      health.releaseConditions.examples.total !== health.controls.durableParks ||
+      health.releaseConditions.examples.rows.length + health.releaseConditions.examples.omitted !== health.releaseConditions.examples.total ||
+      health.overdueReview.examples.total !== health.overdueReview.known ||
+      health.overdueReview.examples.rows.length + health.overdueReview.examples.omitted !== health.overdueReview.examples.total) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'queue health must retain its complete clock and park populations' });
   }
 });

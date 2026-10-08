@@ -4331,13 +4331,12 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         // No deep link: an open run (pending/running/review) outranks a newer
         // terminal one, so a failed run can't hide owner-waiting review work
         // (WI-10004730).
-        const run = runId
+        const [run, reviewInventory] = await Promise.all([runId
           ? await getRun(runId)
           : await selectPlanCleanupPaneRun({
               getActive: () => getActiveRun(undefined, 'plan-cleanup'),
               getLatest: () => getLatestRun(undefined, 'plan-cleanup'),
-            });
-        const reviewInventory = await getCleanupReviewRuns();
+            }), getCleanupReviewRuns()]);
         if (!run || run.runKind !== 'plan-cleanup') return [{ run: null, findings: [], reviewInventory }];
         return [
           {

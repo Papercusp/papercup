@@ -1616,6 +1616,14 @@ describe('resume + fork (D-004/D-007)', () => {
       expect(shutdownViaPtyMock).not.toHaveBeenCalled();
     });
 
+    it('retains the recorded restricted role in every original profile validation', async () => {
+      resolveResumeTargetMock.mockResolvedValue({ ...source, role: 'judge' });
+      const result = await launchAgent.handler(request, ctx);
+      expect(isError(result)).toBe(false);
+      expect(originalRoutingGuardMock).toHaveBeenCalledTimes(3);
+      for (const [record] of originalRoutingGuardMock.mock.calls) expect(record).toMatchObject({ role: 'judge' });
+    });
+
     it.each([{ fork: true }, { successor: { agentId: 'su-other' } }, { agent: 'claude' },
       { model: 'gpt-6' }, { account: 'default' }, { extraArgs: ['--force'] }])(
       'refuses request overrides before opening a process: %j', async (override) => {

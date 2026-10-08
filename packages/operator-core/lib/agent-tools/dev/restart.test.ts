@@ -742,6 +742,7 @@ describe('dev:restart dry run', () => {
     ['embed-sidecar', 'papercup-embed-sidecar.service', true],
     ['mcp-proxy', 'papercup-mcp-proxy.service', true],
     ['mcp-proxy-staging', 'papercup-mcp-proxy-staging.service', false],
+    ['mcp-proxy-bg-host', 'papercup-mcp-proxy-bg-host.service', false],
     // WI-10001633: app sidecars run tsx from the tree with no restart-on-change —
     // without a sanctioned target the only way to load an edit was raw systemctl.
     ['email-sidecar', 'papercusp-email-sidecar.service', true],
@@ -2750,6 +2751,12 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:bg-host
     expect(hint).toContain('MainPID=0 with ActiveState=activating means still starting, NOT failed');
     expect(hint).toContain('differs from 7777');
     expect(hint).not.toContain('dev:listening_ports');
+  });
+
+  it('verifies the BG-host MCP proxy through its listener on port 9271', () => {
+    const hint = restartVerificationHint('mcp-proxy-bg-host', 'papercup-mcp-proxy-bg-host.service', 8908);
+    expect(hint).toContain('dev:listening_ports { port: 9271 }');
+    expect(hint).toContain('different from 8908');
   });
 
   // EI-24790218658923698: a crash at module import yields a fresh nonzero MainPID that dies

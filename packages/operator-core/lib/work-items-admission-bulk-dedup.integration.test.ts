@@ -58,6 +58,7 @@ const DDL = `
     lane text,
     payload jsonb,
     item_kind text NOT NULL DEFAULT 'task',
+    nature text NOT NULL DEFAULT 'work',
     origin text NOT NULL DEFAULT 'local',
     condition_key text,
     created_ts bigint,

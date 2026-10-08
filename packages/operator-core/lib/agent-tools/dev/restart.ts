@@ -705,6 +705,7 @@ type RestartTarget =
   | 'embed-sidecar'
   | 'mcp-proxy'
   | 'mcp-proxy-staging'
+  | 'mcp-proxy-bg-host'
   | 'email-sidecar'
   | 'calendar-sidecar'
   | 'desktop-dev';
@@ -724,6 +725,7 @@ const RESTART_TARGET_PORTS: Partial<Record<RestartTarget, number>> = {
   'embed-sidecar': 3384,
   'mcp-proxy': 9071,
   'mcp-proxy-staging': 9171,
+  'mcp-proxy-bg-host': 9271,
   'email-sidecar': 8791,
   'calendar-sidecar': 8792,
 };
@@ -834,6 +836,13 @@ export const RESTART_TARGETS: Record<
     resource: 'mcp-proxy',
     blastRadius: 'the staging MCP proxy (:9171 → :3170) — pinned staging tool calls fail until it is back',
   },
+  'mcp-proxy-bg-host': {
+    unit: RESTART_TARGET_UNITS['mcp-proxy-bg-host'],
+    // All MCP proxy instances share one lock so clients drain before any front door is recycled.
+    // No shared cooldown: restarting one profile must not coalesce another profile's activation.
+    resource: 'mcp-proxy',
+    blastRadius: 'the BG-host MCP proxy (:9271 → :3271) — pinned BG-host tool calls fail until it is back',
+  },
   // WI-10001633: app sidecars run tsx from their own checkout with no
   // restart-on-change; this is the sanctioned way to load an edit into them.
   'email-sidecar': {
@@ -886,6 +895,7 @@ const INTEGRATION_TREE_RESTART_TARGETS: ReadonlySet<RestartTarget> = new Set([
   'embed-sidecar',
   'mcp-proxy',
   'mcp-proxy-staging',
+  'mcp-proxy-bg-host',
 ]);
 
 type RestartRestrictedHoldCheck = {
@@ -1481,9 +1491,9 @@ function gitSyncPreflightBlocks(blocked: boolean, drainSec: number): boolean {
 export default defineTool({
   name: 'dev:restart',
   description:
-    'Coordinated restart with drain/coalesce/audit. Targets: "dev" :3070 (default), "staging" :3170, "desktop-dev" :3270, "gateway" :8788, "bg-host" routines/git-sync, "embed-sidecar" :3384, "mcp-proxy" :9071, "mcp-proxy-staging" :9171→:3170, "email-sidecar", "calendar-sidecar". Dry-run unless confirm:true; restart needs PAPERCUSP_ALLOW_DEV_RESTART=1 or audited authorize:true. Cooldown ~2m; bg-host ~13m.',
+    'Coordinated restart with drain/coalesce/audit. Targets: "dev" :3070 (default), "staging" :3170, "desktop-dev" :3270, "gateway" :8788, "bg-host" routines/git-sync, "embed-sidecar" :3384, "mcp-proxy" :9071, "mcp-proxy-staging" :9171→:3170, "mcp-proxy-bg-host" :9271→:3271, "email-sidecar", "calendar-sidecar". Dry-run unless confirm:true; restart needs PAPERCUSP_ALLOW_DEV_RESTART=1 or audited authorize:true. Cooldown ~2m; bg-host ~13m.',
   guidance: {
-    when: 'Load integration-tree edits into long-running hosts (no deploy). desktop-dev recycles the wrapper-owned :3270 listener and waits for a new one. Route desktop→"desktop-dev"; inference-gateway→"gateway"; routines/git-sync→"bg-host"; embeddings→"embed-sidecar"; MCP proxy/transport→"mcp-proxy" (:9071) or "mcp-proxy-staging" (:9171→:3170); shared server→"staging" (probe :3170).',
+    when: 'Load integration-tree edits into long-running hosts (no deploy). desktop-dev recycles the wrapper-owned :3270 listener and waits for a new one. Route desktop→"desktop-dev"; inference-gateway→"gateway"; routines/git-sync→"bg-host"; embeddings→"embed-sidecar"; MCP proxy/transport→"mcp-proxy" (:9071), "mcp-proxy-staging" (:9171→:3170), or "mcp-proxy-bg-host" (:9271→:3271); shared server→"staging" (probe :3170).',
     notWhen:
       'Probe: service_health. desktop-dev: :3270 only. Gateway restart drops fleet LLM calls. bg-host kills cgroup (spawner, sidecars, pg_dump); drain cannot reach children. No raw systemctl (skips drain/debounce). dev/bg-host refuse git-sync; staging refuses the staging-sync exclusive lock. override_git_sync_collision:true only if wedged. gateway/bg-host/embed-sidecar refuse green-checkpoint; override_gate_collision:true only if blocked.',
     chaining:
@@ -1517,6 +1527,7 @@ export default defineTool({
         'embed-sidecar',
         'mcp-proxy',
         'mcp-proxy-staging',
+        'mcp-proxy-bg-host',
         'email-sidecar',
         'calendar-sidecar',
         'desktop-dev',

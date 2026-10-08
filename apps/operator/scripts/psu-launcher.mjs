@@ -13267,7 +13267,7 @@ export function assertOriginalCodexRouting(session, pin, {
   if (liveHost(pin.ownerId)) refuse("original host is live");
   const writer = writerHolder(pin.codexHome, pin.sessionId);
   if (writer.held || !["free", "no-lock-file"].includes(writer.reason)) refuse("writer is live or unknown");
-  const readiness = codexHomeLaunchReadiness(pin.codexHome, pin.ownerId);
+  const readiness = codexHomeLaunchReadiness(pin.codexHome, pin.ownerId, session.role);
   if (readiness) refuse(readiness);
   const fingerprint = codexOriginalRoutingFingerprint(pin.codexHome, pin.sessionId);
   if (!fingerprint || fingerprint !== pin.profileFingerprint) refuse("profile or transcript changed or missing");
@@ -15395,9 +15395,10 @@ export function isCodexHomeLaunchReady(codexHome, expectedOwner = null) {
  *
  * @param {string | null | undefined} codexHome
  * @param {string | null} [expectedOwner]
+ * @param {string | null} [recordedRole]
  * @returns {string | null}
  */
-export function codexHomeLaunchReadiness(codexHome, expectedOwner = null) {
+export function codexHomeLaunchReadiness(codexHome, expectedOwner = null, recordedRole = null) {
   if (!codexHome) return "no Codex home recorded";
   const read = (name) => {
     try {
@@ -15420,7 +15421,22 @@ export function codexHomeLaunchReadiness(codexHome, expectedOwner = null) {
     ) return "the carry base AGENTS.md is empty";
     const text = read("config.toml");
     if (text === null) return "config.toml is missing";
-    if (!text.includes("[mcp_servers.papercusp-su]")) return "config.toml has no papercusp-su MCP server";
+    if (recordedRole && recordedRole !== "su") {
+      // Role homes use the restricted, signed papercusp server. Accept only
+      // the recorded role and owner; an SU profile is never a role repair.
+      const config = nativeMcpRequire("@iarna/toml").parse(text);
+      const server = config.mcp_servers?.papercusp;
+      if (!server || typeof server.url !== "string" || config.mcp_servers?.["papercusp-su"] ||
+          server.bearer_token_env_var || !expectedOwner)
+        return "config.toml has no matching restricted role MCP profile";
+      const params = new URL(server.url).searchParams;
+      if (params.getAll("role").length !== 1 || params.get("role") !== recordedRole ||
+          params.getAll("client").length !== 1 || params.get("client") !== expectedOwner ||
+          params.getAll("sig").length !== 1 || !params.get("sig")?.trim() || params.has("superuser"))
+        return "config.toml's restricted role MCP authority differs from the recorded role or owner";
+    } else if (!text.includes("[mcp_servers.papercusp-su]")) {
+      return "config.toml has no papercusp-su MCP server";
+    }
     // Codex 0.157 captures GNOME Terminal right-clicks in alternate-screen
     // mode. A healthy pre-0.157 home needs an in-place config repair on resume
     // so the terminal's Paste menu remains usable (WI-10003121).

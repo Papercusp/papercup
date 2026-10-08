@@ -4080,9 +4080,10 @@ export function isCodexHomeLaunchReady(codexHome: string | null | undefined, exp
  *
  * @param {string | null | undefined} codexHome
  * @param {string | null} [expectedOwner]
+ * @param {string | null} [recordedRole]
  * @returns {string | null}
  */
-export function codexHomeLaunchReadiness(codexHome: string | null | undefined, expectedOwner?: string | null): string | null;
+export function codexHomeLaunchReadiness(codexHome: string | null | undefined, expectedOwner?: string | null, recordedRole?: string | null): string | null;
 /**
  * WI-38706 — the codex twin of `ensureInteractiveConfigViaOperator`, and for the
  * same structural reason: a FRESH psu launch has its CODEX_HOME materialized

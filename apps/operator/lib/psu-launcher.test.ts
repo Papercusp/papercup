@@ -11723,6 +11723,38 @@ describe("original Codex routing — existing profile only", () => {
     expect(JSON.stringify(source)).toBe(before.session);
   });
 
+  it("preserves a restricted judge MCP profile during original routing recovery", async () => {
+    source.role = "judge";
+    writeFileSync(join(home, "config.toml"), config().replace("[mcp_servers.papercusp-su]", "[mcp_servers.papercusp]")
+      .replace("?client=su-original", "?client=su-original&role=judge&sig=original-signature&exp=0"));
+    pin.profileFingerprint = codexOriginalRoutingFingerprint(home, uuid);
+    const before = { agents: readFileSync(join(home, "AGENTS.md")), hooks: readFileSync(join(home, "hooks.json")),
+      transcript: readFileSync(join(home, "sessions", `rollout-${uuid}.jsonl`)) };
+    await applyOriginalCodexRouting(source, pin, { mode: "auto" }, { ...deps, apiImpl: async () => ({ sessions: [source] }) });
+    expect(config()).toContain("[mcp_servers.papercusp]");
+    expect(config()).not.toContain("papercusp-su");
+    expect(config()).toContain("client=su-original&role=judge&sig=original-signature&exp=0");
+    expect(readFileSync(join(home, "AGENTS.md"))).toEqual(before.agents);
+    expect(readFileSync(join(home, "hooks.json"))).toEqual(before.hooks);
+    expect(readFileSync(join(home, "sessions", `rollout-${uuid}.jsonl`))).toEqual(before.transcript);
+  });
+
+  it.each(["role=worker", "role=judge&superuser=1", "role=judge&client=su-other", "role=judge&sig="])(
+    "refuses a restricted role profile with mismatched authority (%s)", (query) => {
+      source.role = "judge";
+      writeFileSync(join(home, "config.toml"), config().replace("[mcp_servers.papercusp-su]", "[mcp_servers.papercusp]")
+        .replace("?client=su-original", `?client=su-original&sig=original-signature&${query}`));
+      pin.profileFingerprint = codexOriginalRoutingFingerprint(home, uuid);
+      const before = config();
+      expect(() => assertOriginalCodexRouting(source, pin, deps)).toThrow("restricted role");
+      expect(config()).toBe(before);
+    });
+
+  it("refuses an SU profile for a recorded restricted role", () => {
+    source.role = "judge";
+    expect(() => assertOriginalCodexRouting(source, pin, deps)).toThrow("restricted role");
+  });
+
   it.each([{ coordOwnerId: "su-other" }, { id: 43 }, { sessionId: "another-thread" },
     { agent: "claude" }, { endedAt: null }, { launchArgv: ["--account=default"] }])(
     "refuses wrong custody/prerequisites before provider writes: %j", async (change) => {

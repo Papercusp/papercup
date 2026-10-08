@@ -882,6 +882,12 @@ describe('work_items:burn_down', () => {
     expect(health.controlsOverlap).toBe(true);
     expect(health.releaseConditions.flagged).toBe(2002);
     expect(health.releaseConditions.nextAction).toBeTruthy();
+    expect(health.releaseConditions.examples).toMatchObject({ total: 2002, omitted: 1992 });
+    expect(health.releaseConditions.examples.rows).toHaveLength(10);
+    expect(health.releaseConditions.examples.rows[0]).toMatchObject({
+      parker: 'su-parker', clearer: null, trigger: null, ageSource: 'payload.claim_hold_at',
+      recheck: expect.stringContaining('No recheck trigger recorded'),
+    });
     const shaped = shapeLeaderBrief({ ok: true, fleetMetrics: result }, 'trimmed') as { fleetMetrics: typeof result };
     expect(shaped.fleetMetrics.snapshot.queueHealth).toEqual(health);
     expect(Object.values(result.snapshot.remaining.buckets).reduce((a, b) => a + b, 0)).toBe(2002);
@@ -890,6 +896,61 @@ describe('work_items:burn_down', () => {
     expect(fleetMetricsResultSchema.safeParse({ ...result, snapshot: { ...result.snapshot,
       queueHealth: { ...health, waiting: { ...health.waiting,
         reviewWait: { ...health.waiting.reviewWait, oldestMs: 0 } } } } }).success).toBe(false);
+    expect(fleetMetricsResultSchema.safeParse({ ...result, snapshot: { ...result.snapshot,
+      queueHealth: { ...health, releaseConditions: { ...health.releaseConditions,
+        examples: { ...health.releaseConditions.examples, omitted: 0 } } } } }).success).toBe(false);
+  });
+
+  it('names only a runnable independent verifier as the clearer of an overdue round', async () => {
+    const resolution = fleetResolution('current-spec');
+    resolution.claimSpec.current.lane = 'verification';
+    resolution.claimSpec.current.view.filter = { field: 'kind', op: '=', value: 'bug' };
+    const rows = ['su-author', 'member-live'].map((submittedBy, n) => item({
+      id: `WI-review-action-${n}`, kind: 'bug', assignee: 'member-live', payload: {
+        agentReview: { status: 'pending', submittedBy, ledgerIdeaId: `idea-${n}`, round: 1,
+          timing: { round: 1, enteredAt: FLEET_START } },
+      },
+    }));
+    const result = await buildFleetMetricsResult(resolution, rows, {
+      sourceCapExhausted: false, issueOccurrences: issueOccurrenceCounts,
+      explainFloors: async (_h, ids) => ids.map(id => ({ id, admissible: false, refusedBy: 'agent-review', detail: null })),
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.reason);
+    expect(result.snapshot.queueHealth?.overdueReview.examples).toMatchObject({ total: 2, omitted: 0,
+      rows: [
+        { id: rows[0].id, clearer: 'member-live', nextAction: expect.stringContaining('record a review outcome') },
+        { id: rows[1].id, clearer: null, nextAction: expect.stringContaining('author cannot approve') },
+      ],
+    });
+  });
+
+  it('applies report precedence to concurrent floors beyond the primary claim refusal', async () => {
+    const resolution = fleetResolution('current-spec');
+    resolution.claimSpec.current.view.filter = { field: 'kind', op: '=', value: 'bug' };
+    const rows = [
+      item({ id: 'WI-mixed-dependency', kind: 'bug', payload: { _claimHold: true } }),
+      item({ id: 'WI-mixed-owner', kind: 'bug', assignee: 'member-live' }),
+      item({ id: 'WI-mixed-review', kind: 'bug', payload: { _claimHold: true } }),
+    ];
+    const explainFloors = vi.fn(async () => [
+      { id: rows[0].id, admissible: false, refusedBy: 'claim-hold', detail: null,
+        failedFloors: ['claim-hold', 'blocked-dep'] },
+      { id: rows[1].id, admissible: false, refusedBy: 'already-taken', detail: null,
+        failedFloors: ['already-taken', 'needs-owner-action'] },
+      { id: rows[2].id, admissible: false, refusedBy: 'agent-review', detail: null,
+        failedFloors: ['agent-review', 'claim-hold'] },
+    ]);
+    const result = await buildFleetMetricsResult(resolution, rows, {
+      sourceCapExhausted: false, issueOccurrences: issueOccurrenceCounts, explainFloors,
+    });
+    expect(explainFloors).toHaveBeenCalledWith('papercusp', rows.map(row => row.id),
+      { assignee: undefined, includeAllFloors: true });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.reason);
+    expect(result.snapshot.remaining.buckets).toEqual({
+      needsHuman: 1, blocked: 1, claimHeld: 1, inFlight: 0, claimable: 0, otherUnclaimable: 0,
+    });
   });
 
   it('reads review service with the same current spec, runnable workers, window and complete selected ids', async () => {

@@ -377,6 +377,112 @@ describe('applyResultDoor', () => {
     expect((doored as any)._meta?.resultDoor).toMatchObject({ truncated: true, spillUri: expect.any(String) });
   });
 
+  it('work_items:get preserves explicitly selected bounded thread bodies ahead of checkpoint detail', () => {
+    const selectedBody = 'The reviewer objected that the acceptance evidence is incomplete.';
+    const source = {
+      ok: true,
+      results: [{
+        ok: true,
+        id: 'WI-thread-body',
+        availability: 'available',
+        checkpoint: 'C'.repeat(10_000),
+        checkpointContentHash: 'checkpoint-sha',
+        checkpointUpdatedAtMs: 123,
+        checkpointBody: {
+          notes: Array.from({ length: 20 }, (_, i) => `checkpoint note ${i}: ${'N'.repeat(1_200)}`),
+        },
+        threadWindow: {
+          posts: [{
+            id: 37,
+            thread_id: 'thread-37',
+            author_id: 'su-reviewer',
+            body: selectedBody,
+            created_ts: '2026-10-08T05:00:00.000Z',
+          }],
+          shown: 1,
+          total: 5,
+          topics: [],
+          createdAt: '2026-10-08T04:00:00.000Z',
+        },
+      }],
+      counts: { ok: 1, failed: 0 },
+      read: {
+        schemaVersion: 'work-items-get-read-v1',
+        mode: 'complete',
+        requested: 1,
+        available: 1,
+        absent: 0,
+        unavailable: 0,
+        detailRows: 1,
+        stubbedRows: 0,
+      },
+      _shapeNote: { tier: 'standard', dropped: [] },
+    };
+    const text = JSON.stringify(source);
+    expect(text.length).toBeGreaterThan(BUDGET_CHARS);
+
+    const doored = applyResultDoor(
+      { content: [{ type: 'text' as const, text }] },
+      {
+        toolName: 'work_items:get',
+        workspaceId: 'ws-1',
+        runId: '22222222-3333-4444-8555-666666666667',
+        preservePaths: ['results[].threadWindow.total', 'results[].threadWindow.posts[].body'],
+      },
+    );
+    const projected = JSON.parse((doored.content[0] as { text: string }).text) as {
+      results: Array<{ threadWindow?: { total?: number; posts?: Array<{ body?: string }> } }>;
+    };
+
+    expect(projected.results[0]?.threadWindow?.total).toBe(5);
+    expect(projected.results[0]?.threadWindow?.posts?.[0]?.body).toBe(selectedBody);
+  });
+
+  it('tools:invoke work_items:get preserves bounded thread bodies through its outer depth-limited door', () => {
+    const selectedBody = 'The latest approval objection remains unresolved.';
+    const source = {
+      ok: true,
+      results: [{
+        ok: true,
+        id: 'WI-nested-thread-body',
+        checkpoint: 'C'.repeat(10_000),
+        checkpointBody: { notes: Array.from({ length: 20 }, () => 'N'.repeat(350)) },
+        threadWindow: {
+          posts: [{
+            id: 41,
+            thread_id: 'thread-41',
+            author_id: 'su-reviewer',
+            body: selectedBody,
+            created_ts: '2026-10-08T05:00:00.000Z',
+          }],
+          shown: 1,
+          total: 3,
+          topics: [],
+          createdAt: null,
+        },
+      }],
+      counts: { ok: 1, failed: 0 },
+    };
+    const text = JSON.stringify(source);
+    expect(text.length).toBeGreaterThan(BUDGET_CHARS);
+
+    const doored = applyResultDoor(
+      { content: [{ type: 'text' as const, text }] },
+      {
+        toolName: 'tools:invoke',
+        nestedTargetToolName: 'work_items:get',
+        workspaceId: 'ws-1',
+        runId: '22222222-3333-4444-8555-666666666668',
+      },
+    );
+    const projected = JSON.parse((doored.content[0] as { text: string }).text) as {
+      results: Array<{ threadWindow?: { total?: number; posts?: Array<{ id?: number; body?: string }> } }>;
+    };
+
+    expect(projected.results[0]?.threadWindow?.total).toBe(3);
+    expect(projected.results[0]?.threadWindow?.posts?.[0]).toMatchObject({ id: 41, body: selectedBody });
+  });
+
   it('recipes:run nested work-item rows retain identity, state, and full-detail recovery through both shapers', () => {
     const recipeId = 'read-existing-agent-operability-work-items';
     const expectedIds = Array.from({ length: 10 }, (_, i) => 'WI-' + (4600 + i));

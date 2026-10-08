@@ -23,6 +23,7 @@ const h = vi.hoisted(() => {
     markCleanupFindingAccepted: vi.fn(),
     markCleanupFindingDismissed: vi.fn(),
     getRunFindings: vi.fn(),
+    getCleanupReviewRuns: vi.fn(),
     notifyPlanCleanupRunChanged: vi.fn(),
     requireAllowedOriginOr403: vi.fn(),
     gateApiRoute: vi.fn(),
@@ -51,6 +52,7 @@ vi.mock('./run-store', () => ({
   markCleanupFindingAccepted: h.markCleanupFindingAccepted,
   markCleanupFindingDismissed: h.markCleanupFindingDismissed,
   getRunFindings: h.getRunFindings,
+  getCleanupReviewRuns: h.getCleanupReviewRuns,
 }));
 vi.mock('./deterministic-runner', () => ({
   runDeterministicPlanCleanup: h.runDeterministicPlanCleanup,
@@ -144,6 +146,7 @@ beforeEach(() => {
   h.spawnHeadless.mockResolvedValue({ status: 'ok', child: h.child });
   h.resolverSpawnOutcome.mockReturnValue({ ok: true, sessionId: 'su-resolver', child: h.child });
   h.getRunFindings.mockResolvedValue([{ findingId: 'f-1' }]);
+  h.getCleanupReviewRuns.mockResolvedValue({ runs: [], total: 0 });
   h.scanCleanupRun.mockResolvedValue([]);
 });
 
@@ -335,10 +338,16 @@ describe('plans.cleanupRun sync resolver', () => {
     // WI-10004730: an open run outranks a newer terminal one — active first.
     expect(h.getActiveRun).toHaveBeenCalledWith(undefined, 'plan-cleanup');
     expect(h.getLatestRun).toHaveBeenCalledWith(undefined, 'plan-cleanup');
-    expect(rows).toEqual([{ run: null, findings: [] }]);
+    expect(rows).toEqual([{ run: null, findings: [], reviewInventory: { runs: [], total: 0 } }]);
+    expect(h.getCleanupReviewRuns).toHaveBeenCalledOnce();
   });
 
   it('returns one run with its findings and rejects an explicit inbox-kind run', async () => {
+    const reviewInventory = {
+      runs: [{ runId: 'older-review', createdAt: '2026-10-06T12:00:00Z', unresolved: 2 }],
+      total: 1,
+    };
+    h.getCleanupReviewRuns.mockResolvedValue(reviewInventory);
     h.getRun.mockResolvedValue({ ...run, phase: 'review' });
     expect(await getRegistryEntryV2('plans.cleanupRun')!.resolve!({ runId: run.runId } as never)).toEqual([
       {
@@ -348,12 +357,14 @@ describe('plans.cleanupRun sync resolver', () => {
           liveness: { state: 'not-executing', phase: 'review' },
         },
         findings: [{ findingId: 'f-1' }],
+        reviewInventory,
       },
     ]);
 
     h.getRun.mockResolvedValue({ ...run, runKind: 'inbox-resolve' });
     expect(await getRegistryEntryV2('plans.cleanupRun')!.resolve!({ runId: 'inbox-1' } as never)).toEqual([
-      { run: null, findings: [] },
+      { run: null, findings: [], reviewInventory },
     ]);
+    expect(h.getCleanupReviewRuns).toHaveBeenCalledTimes(2);
   });
 });

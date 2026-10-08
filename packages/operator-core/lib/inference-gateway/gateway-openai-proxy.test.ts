@@ -351,6 +351,40 @@ describe('accepted Codex provider attestation', () => {
     expect(record).toHaveBeenCalledOnce();
   });
 
+  it.each([true, false])('attests headerless OAuth SSE before exposing stream=%s success', async (stream) => {
+    const home = await makeCodexHome('chatgpt-headerless');
+    const cliAccounts = [{ accountId: 'chatgpt-headerless', home }];
+    const record = vi.fn(async (..._args: unknown[]) => undefined);
+    const completion = completedCodexResponse();
+    const wire = `event: response.completed\ndata: ${JSON.stringify(completion)}\n\ndata: [DONE]\n\n`;
+    const cliRun = vi.fn(async () => ({ text: 'synthetic', inputTokens: 1, outputTokens: 1 }));
+    // A byte body avoids Fetch adding text/plain to a string Response: the real
+    // ChatGPT transport can omit Content-Type entirely (WI-284159).
+    const fetchImpl = vi.fn(async () => new Response(new Uint8Array(Buffer.from(wire)),
+      { status: 200 })) as typeof fetch;
+    gw = createInferenceGateway({
+      accountId: 'claude-acct', token: async () => 'claude-tok',
+      codexCliAccounts: () => cliAccounts,
+      codexCliPool: createFailoverPool(cliAccounts.map(account => ({
+        accountId: account.accountId, token: async () => '',
+      }))),
+      codexCliRun: cliRun, codexOAuthProxy: true, fetchImpl,
+      readAcceptedOperationModelPolicy: boundCodexRead,
+      recordAcceptedOperationModelAttestation: record,
+      selfHeal: { enabled: false },
+    });
+    port = await gw.listen(0);
+    const response = await postResponses({ ...boundCodexRequest, stream }, { [OWNER_HEADER]: 'operation-worker' });
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toContain(stream ? 'text/event-stream' : 'application/json');
+    if (stream) expect(await response.text()).toBe(wire);
+    else expect(await response.json()).toEqual(completion.response);
+    expect(record).toHaveBeenCalledOnce();
+    expect(record.mock.calls[0]?.[1]).toMatchObject({ actualModel: 'gpt-5.6-sol',
+      providerResponseId: 'resp_bound_codex', usage: { inputTokens: 12, outputTokens: 3 } });
+    expect(cliRun).not.toHaveBeenCalled();
+  });
+
   it.each([
     ['wait', 429, '30'],
     ['fail', 503, null],

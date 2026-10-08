@@ -1237,7 +1237,7 @@ export async function buildFleetMetricsResult(
     explainFloors(
       resolution.scope.harness,
       remainingItems.map((item) => item.id),
-      { assignee: opts.assignee },
+      { assignee: opts.assignee, includeAllFloors: true },
     ),
     Promise.resolve(opts.issueOccurrences),
     buildFleetFeatureOutcomes({
@@ -1283,21 +1283,22 @@ export async function buildFleetMetricsResult(
   };
   for (const item of remainingItems) {
     const floor = floorById.get(item.id);
+    const failsFloor = (label: string) => floor?.refusedBy === label || floor?.failedFloors?.includes(label);
     if (
       hasNeedsHuman(item) ||
       item.state === 'needs-human' ||
       item.state === 'needs_human' ||
-      floor?.refusedBy === 'needs-owner-action'
+      failsFloor('needs-owner-action')
     ) {
       buckets.needsHuman += 1;
     } else if (
       item.state === 'blocked' ||
       hasActiveExternalBlocker(item) ||
-      floor?.refusedBy === 'blocked-dep' ||
-      floor?.refusedBy === 'external-blocker'
+      failsFloor('blocked-dep') ||
+      failsFloor('external-blocker')
     ) {
       buckets.blocked += 1;
-    } else if (hasClaimHold(item) || floor?.refusedBy === 'claim-hold') {
+    } else if (hasClaimHold(item) || failsFloor('claim-hold')) {
       buckets.claimHeld += 1;
     } else if (item.assignee) {
       buckets.inFlight += 1;
@@ -1336,6 +1337,40 @@ export async function buildFleetMetricsResult(
     updatedAtMs: null, payload: item.payload, reviewRoutedAtMs: null,
   })), runId: 'fleet-metrics-read-only', workspaceId: workspaceId ?? '(unresolved)',
     harnessSlug: resolution.scope.harness, nowMs: windowEnd });
+  // Use the existing park detector's sorted rows, after its complete census.
+  // A parker is provenance; only the typed release owner is an accountable clearer.
+  const parkExamples = parks.durableParks.slice(0, 10).map(park => {
+    const release = park.releaseLiveness;
+    return { id: park.id, parker: park.parker, condition: release.condition,
+      clearer: release.owner, trigger: release.trigger, reachability: release.reachability,
+      findings: release.findings, ageMs: park.age.ageMs, ageSource: 'payload.claim_hold_at' as const,
+      nextAction: release.status === 'satisfied-still-parked'
+        ? 'Reconcile this park with condition evidence and its current control fingerprint; preserve other floors.'
+        : release.status === 'unreachable'
+          ? 'Escalate or reframe this release condition with its accountable owner; retain the park until explicitly resolved.'
+          : release.status === 'tracked'
+            ? 'Retain the park until its exact release condition is evidenced.'
+            : 'Repair the missing or unverified release contract before attempting release.',
+      recheck: release.trigger
+        ? `Re-evaluate on ${release.trigger}; verify condition evidence before clearing this park.`
+        : 'No recheck trigger recorded; establish an accountable release condition and trigger.',
+    };
+  });
+  const remainingById = new Map(remainingItems.map(item => [item.id, item]));
+  const runnableVerifiers = new Set(resolution.claimSpec.current.lane === 'verification'
+    ? resolution.populationLifecycle.currentRunnableRoster.ownerIds : []);
+  const reviewExamples = parks.overdueReviews.rows.slice(0, 10).map(review => {
+    const assignee = remainingById.get(review.id)?.assignee;
+    const clearer = assignee && assignee !== review.submittedBy && runnableVerifiers.has(assignee) ? assignee : null;
+    return { id: review.id, submittedBy: review.submittedBy, ledgerIdeaId: review.ledgerIdeaId,
+      round: review.round, clearer, ageMs: review.ageMs,
+      ageSource: 'payload.agentReview.timing.enteredAt (matching round)' as const,
+      nextAction: clearer
+        ? 'The assigned independent verifier must record a review outcome for this round.'
+        : 'Assign a runnable independent verifier for this review round; its author cannot approve it.',
+      recheck: `Re-read ${review.id} after its current review round records a decision; elapsed time never approves it.`,
+    };
+  });
   const verificationService = await (async () => {
     if (resolution.claimSpec.current.lane !== 'verification') return {
       status: 'not-applicable' as const, reason: 'fleet-spec-is-not-verification' };
@@ -1434,11 +1469,17 @@ export async function buildFleetMetricsResult(
         releaseConditions: { statusCounts: parks.releaseConditionHealth.statusCounts,
           findingCounts: parks.releaseConditionHealth.findingCounts, flagged: parks.releaseConditionHealth.flagged,
           nextAction: parks.releaseConditionHealth.flagged || parks.missingMetadata.unattributedClaimHolds
-            ? 'Inspect flagged durable parks with the existing durable-park audit; reconcile only with condition evidence.' : null },
+            ? 'Inspect flagged durable parks with the existing durable-park audit; reconcile only with condition evidence.' : null,
+          examples: { rows: parkExamples, total: parks.durableParks.length,
+            omitted: parks.durableParks.length - parkExamples.length,
+            recoverVia: 'Existing durable-park audit report for this harness; work_items:get for a named park' } },
         overdueReview: { thresholdHours: 24, known: parks.overdueReviews.rows.length,
           timingUnknown: parks.missingMetadata.pendingReviewTimestamp,
           nextAction: parks.overdueReviews.rows.length
-            ? 'Assign independent review or escalate the named review condition; age never approves a review.' : null },
+            ? 'Assign independent review or escalate the named review condition; age never approves a review.' : null,
+          examples: { rows: reviewExamples, total: parks.overdueReviews.rows.length,
+            omitted: parks.overdueReviews.rows.length - reviewExamples.length,
+            recoverVia: 'Existing durable-park audit overdueReviews for this harness; work_items:get for a named review' } },
         verificationService,
       },
       admissionParity: FLEET_METRIC_ADMISSION_PARITY,
