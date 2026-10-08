@@ -118,6 +118,7 @@
     "@papercusp/chat-protocol": "file:../../libs/generic/chat-protocol",
     "@papercusp/grid-core": "file:../../libs/generic/papergrid/grid-core",
     "@papercusp/module-singleton": "file:../../libs/generic/module-singleton",
+    "@papercusp/operator-core": "*",
     "@papercusp/sync": "file:../../libs/generic/sync",
     "@radix-ui/react-collapsible": "^1.1.12",
     "@tanstack/react-virtual": "^3.13.23",

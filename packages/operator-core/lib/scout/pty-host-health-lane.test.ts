@@ -141,6 +141,21 @@ describe('PTY host event classification for Blender', () => {
     expect(patterns.map(pattern => pattern.ref)).toEqual(['pty-host:kind:codex-starting-stuck-early-drop']);
   });
 
+  it('retains abandoned resumes, rejected provenance and forced predecessor stops without counting stop diagnostics', () => {
+    const failures = ['child-unpark-abandoned', 'wake-provenance-rejected', 'respawn-predecessor-force-kill'];
+    for (const kind of failures) expect(classifyPtyHostEvent(kind), kind).toBe('failure');
+    expect(classifyPtyHostEvent('respawn-predecessor-stop-started')).toBe('routine');
+    expect(classifyPtyHostEvent('respawn-predecessor-stop-finished')).toBe('routine');
+    const patterns = buildPtyHostHealthPatterns([
+      row('respawn-predecessor-stop-started', 20),
+      row('respawn-predecessor-stop-finished', 20),
+      ...failures.map(kind => row(kind, 1)),
+    ]);
+    expect(patterns.map(pattern => pattern.ref).sort()).toEqual(failures.map(kind => `pty-host:kind:${kind}`).sort());
+    for (const pattern of patterns) expect(pattern.detail).toContain('Failure signal');
+    expect(classifyPtyHostEvent('respawn-predecessor-future-outcome')).toBe('unclassified');
+  });
+
   it('keeps failed role MCP readiness while omitting a ready connection', () => {
     const patterns = buildPtyHostHealthPatterns([
       row('launch-role-mcp-ready', 20),
@@ -152,6 +167,14 @@ describe('PTY host event classification for Blender', () => {
       'pty-host:kind:launch-role-mcp-unavailable',
     ]);
     expect(patterns[0]?.detail).toContain('Failure signal');
+  });
+
+  it('keeps intentional delivery cancellation and duplicate suppression routine', () => {
+    const cancellations = ['delivery-cancellation-requested', 'delivery-cancelled-before-write', 'duplicate-cancelled-delivery-id'];
+    for (const kind of cancellations) expect(classifyPtyHostEvent(kind), kind).toBe('routine');
+    expect(buildPtyHostHealthPatterns(cancellations.map(kind => row(kind, 3)))).toEqual([]);
+    expect(classifyPtyHostEvent('delivery-cancellation-failed')).toBe('failure');
+    expect(classifyPtyHostEvent('delivery-cancellation-new-outcome')).toBe('unclassified');
   });
 
   it('classifies every kind observed in the production 24-hour host-event census', () => {

@@ -60,12 +60,20 @@ export function classifyPtyHostEvent(kind: string): PtyHostEventClass {
     kind === 'wake-turn-deferred-for-pending-respawn' ||
     kind === 'turn-deferred-for-owner-input' ||
     kind === 'duplicate-delivery-id' ||
+    // An explicit cancellation fences the pending delivery before PTY write;
+    // duplicates remain suppressed rather than resurrecting a cancelled turn.
+    kind === 'delivery-cancellation-requested' ||
+    kind === 'delivery-cancelled-before-write' ||
+    kind === 'duplicate-cancelled-delivery-id' ||
     // Idle parking, successful resume, and retained delivery waits are lifecycle
     // state. Their failed/refused outcomes are separate events below.
     kind === 'child-parked' ||
     kind === 'child-park-deferred' ||
     kind === 'child-unparked' ||
     kind === 'parked-delivery-held' ||
+    // Completion records exit/force-kill diagnostics; the separate force-kill
+    // event carries escalation, so this event does not assert successful stop.
+    kind === 'respawn-predecessor-stop-finished' ||
     // The first model turn began while its retry was queued; suppressing that
     // second kickoff is successful duplicate prevention, not a host failure.
     kind === 'launch-kickoff-model-turn-retry-skipped' ||
@@ -96,6 +104,11 @@ export function classifyPtyHostEvent(kind: string): PtyHostEventClass {
     kind === 'orphan-teardown' ||
     kind === 'control-payload-unaddressed' ||
     kind === 'control-payload-rejected' ||
+    kind === 'wake-provenance-rejected' ||
+    // Resume was abandoned after repeated exits; no live child was restored.
+    kind === 'child-unpark-abandoned' ||
+    // The predecessor did not exit within the graceful stop deadline.
+    kind === 'respawn-predecessor-force-kill' ||
     // The kickoff was refused and publishing its refusal receipt failed; the
     // headless host terminates with an error rather than hiding the refusal.
     kind === 'kickoff-refusal-unreported-terminating' ||
