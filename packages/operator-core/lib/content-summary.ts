@@ -89,7 +89,10 @@ const defaults: SummaryDeps = {
   runLocal: runLocalSummary,
   async isLocalModel(model, workspaceId) {
     const { listLocalBackends } = await import('./inference-gateway/local-backend-store');
-    return (await listLocalBackends({ workspaceId })).some(backend => backend.enabled && backend.models.includes(model));
+    // Inventory establishes privacy identity; enabled state only controls
+    // availability in the local gateway. Disabling a model must not send its
+    // source through the cloud runner, even when cloud consent is present.
+    return (await listLocalBackends({ workspaceId })).some(backend => backend.models.includes(model));
   },
   async checkBudget() { const { checkBudget } = await import('./operator-budget'); return checkBudget(); },
   async recordSpend(usd) { const { recordSpend } = await import('./operator-budget'); await recordSpend(usd); },
