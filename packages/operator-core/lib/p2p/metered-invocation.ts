@@ -20,6 +20,7 @@
  */
 import { createHash } from 'node:crypto';
 import { canonicalJson } from '../authority/authority-rpc-envelope';
+import { verifyEd25519 } from '../identity/ed25519';
 import {
   paymentVoucherDigest,
   paymentVoucherSigningBytes,
@@ -178,6 +179,37 @@ function receiptJson(receipt: Omit<SignedUsageReceipt, 'signature'>): Record<str
 /** Canonical signing bytes for a usage receipt, mirroring the voucher's own scheme. */
 export function usageReceiptSigningBytes(receipt: Omit<SignedUsageReceipt, 'signature'>): Buffer {
   return Buffer.from(canonicalJson(receiptJson(receipt)), 'utf8');
+}
+
+export interface SellerReceiptAuthority {
+  readonly pubkeyBase64: string;
+  readonly proof: string;
+}
+
+/** The authenticated publisher proves possession for this exact offer. */
+export function sellerReceiptAuthoritySigningBytes(binding: {
+  seller: string; offerId: string; productId: string; skuRef: string; pubkeyBase64: string;
+}): Buffer {
+  return Buffer.from(canonicalJson({ schema: 'papercusp.seller-receipt-authority/v1', seller: binding.seller,
+    offerId: binding.offerId, productId: binding.productId, skuRef: binding.skuRef,
+    pubkeyBase64: binding.pubkeyBase64 }), 'utf8');
+}
+
+function verifySignature(bytes: Buffer, pubkeyBase64: string, signature: string): boolean {
+  if (!/^[A-Za-z0-9+/]{43}=$/.test(pubkeyBase64) || !/^[A-Za-z0-9+/]{86}==$/.test(signature)) return false;
+  try { return verifyEd25519(bytes, pubkeyBase64, Buffer.from(signature, 'base64')); } catch { return false; }
+}
+
+export function verifySellerReceiptAuthority(binding: {
+  seller: string; offerId: string; productId: string; skuRef: string;
+}, authority: SellerReceiptAuthority): boolean {
+  if (!authority || typeof authority.pubkeyBase64 !== 'string' || typeof authority.proof !== 'string') return false;
+  return verifySignature(sellerReceiptAuthoritySigningBytes({ ...binding, pubkeyBase64: authority.pubkeyBase64 }),
+    authority.pubkeyBase64, authority.proof);
+}
+
+export function verifyUsageReceiptSignature(receipt: SignedUsageReceipt, pubkeyBase64: string): boolean {
+  return verifySignature(usageReceiptSigningBytes(receipt), pubkeyBase64, receipt.signature);
 }
 
 export function usageReceiptDigest(receipt: Omit<SignedUsageReceipt, 'signature'>): string {
