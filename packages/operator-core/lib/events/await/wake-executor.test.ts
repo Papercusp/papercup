@@ -4033,10 +4033,10 @@ describe('codex home + rollout recovery (P-009/P-010)', () => {
 describe('executeWake — turn-provenance tagging (turn-provenance-owner-vs-agent-2026-07-11 P-002)', () => {
   // A spy tagger with the REAL TaggedTurn shape — marks the text so each
   // delivery channel's assertion can see exactly what was tagged, and captures
-  // {sid, origin} so the origin-derivation rule is verifiable.
+  // {sid, origin, nowMs} so the origin and ledger timestamp are verifiable.
   function spyTagger() {
-    const calls: { sid: string; origin: string; text: string }[] = [];
-    const tag = ((args: { sid: string; origin: string; text: string }) => {
+    const calls: { sid: string; origin: string; text: string; nowMs?: number }[] = [];
+    const tag = ((args: { sid: string; origin: string; text: string; nowMs?: number }) => {
       calls.push(args);
       return {
         taggedText: `⟦tagged:${args.origin}⟧\n${args.text}`,
@@ -4061,9 +4061,13 @@ describe('executeWake — turn-provenance tagging (turn-provenance-owner-vs-agen
       }),
     );
     expect(out).toEqual({ kind: 'delivered', channel: 'psu-socket-inject' });
-    const [, msg] = injectPsuHost.mock.calls[0] as unknown as [string, { data: string }];
+    const [, msg] = injectPsuHost.mock.calls[0] as unknown as [
+      string,
+      { data: string; provenanceIssuedAtMs: number },
+    ];
     expect(msg.data).toMatch(/^⟦tagged:wake-pump⟧\n\[await-event\]/);
     expect(calls).toEqual([expect.objectContaining({ sid: 'su-abc', origin: 'wake-pump' })]);
+    expect(msg.provenanceIssuedAtMs).toBe(calls[0]?.nowMs);
   });
 
   it('a loop wake (cold-loop marker on the payload) tags origin loop-fire — even on the warm path', async () => {
@@ -4133,7 +4137,7 @@ describe('executeWake — turn-provenance tagging (turn-provenance-owner-vs-agen
 
   it('the COLD injection is tagged too (origin loop-fire wraps renderColdWakeInjection)', async () => {
     const injectPsuHost = vi.fn(async () => true);
-    const { tag } = spyTagger();
+    const { calls, tag } = spyTagger();
     await executeWake(
       work({ wakeHandle: advHandle(), payload: { carry: 'cold', wakeCount: 1, harness: 'papercusp' } }),
       deps({
@@ -4144,10 +4148,16 @@ describe('executeWake — turn-provenance tagging (turn-provenance-owner-vs-agen
         tagTurn: tag,
       }),
     );
-    const [, msg] = injectPsuHost.mock.calls[0] as unknown as [string, { mode: string; data: string }];
+    const [, msg] = injectPsuHost.mock.calls[0] as unknown as [
+      string,
+      { mode: string; data: string; provenanceIssuedAtMs: number },
+    ];
     expect(msg.mode).toBe('reset');
     expect(msg.data).toMatch(/^⟦tagged:loop-fire⟧\n/);
     expect(msg.data).toContain('## Next action\nresume');
+    const coldTagCall = calls.find((call) => call.text.includes('## Next action\nresume'));
+    expect(coldTagCall).toBeDefined();
+    expect(msg.provenanceIssuedAtMs).toBe(coldTagCall?.nowMs);
   });
 
   /**
