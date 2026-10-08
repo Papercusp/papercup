@@ -92,7 +92,7 @@ export default defineTool({
     level: z.enum(JOURNAL_LEVELS).optional()
       .describe("Minimum severity: this level AND MORE SEVERE (journalctl `-p` semantics), so level:'err' also returns crit/alert/emerg."),
     limit: z.number().int().min(1).max(JOURNAL_READ_MAX_LIMIT).optional()
-      .describe(`Max rows returned, newest kept (default ${JOURNAL_READ_DEFAULT_LIMIT}). Collapsed repeats count as ONE row.`),
+      .describe(`Max rows returned (up to ${JOURNAL_READ_MAX_LIMIT}; default ${JOURNAL_READ_DEFAULT_LIMIT}), newest kept. Collapsed repeats count as ONE row.`),
     scope: z.enum(JOURNAL_SCOPES).optional()
       .describe("Which journal: 'user' (default, the papercusp-* units), 'system' (kernel/OOM records, pgbouncer, systemd-oomd — a DIFFERENT journal, not a filter), or 'all' (everything you can see). If a unit you know exists comes back with unitsUnknown naming it, you are reading the wrong journal."),
   }),
