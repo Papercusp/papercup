@@ -324,9 +324,9 @@ test('native declared collections persist controls and reject a barrier-controll
         await setNativeCollectionPlanArchived(sql, { workspaceId, harness, slug: 'beta', archived: true });
         const sourceWrite = await sql.begin(tx => applyGoalPropertyWrite(tx as unknown as typeof sql, {
           workspaceId, goalId, property, value: [ids[0], ids[2]], expectedVersion: 0,
-          provenance: 'agent-edit', actorId: 'native-fixture-agent',
+          provenance: 'agent-edit', actorId: 'native-fixture-agent', confirmShrink: true,
         }));
-        expect(sourceWrite.ok).toBe(true);
+        expect(sourceWrite).toMatchObject({ ok: true });
         await reload();
         expect((await readback()).rows.map((row: { id: string }) => row.id)).not.toContain(ids[1]);
         expect((await policy())?.value.excluded).toEqual([dormant, ids[1]]);

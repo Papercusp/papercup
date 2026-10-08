@@ -1,15 +1,16 @@
 import type { Sql } from 'postgres';
 
-/** Exercise disappearance/rediscovery with canonical PLAN lifecycle values. */
+/** Exercise archival disappearance/rediscovery without requesting shipment. */
 export async function setNativeCollectionPlanArchived(sql: Sql, input: {
   workspaceId: string;
   harness: string;
   slug: string;
   archived: boolean;
 }) {
-  // `done` is an item status and a tool alias; raw plan SQL must use `shipped`.
+  // Archiving is independent of lifecycle status. `done` is an item alias,
+  // while `shipped` requires an acceptance receipt; neither belongs in this fixture.
   await sql`UPDATE harness_shared.harness_plans
-    SET archived=${input.archived},status=${input.archived ? 'shipped' : 'active'},op_status=NULL
+    SET archived=${input.archived}
     WHERE workspace_id=${input.workspaceId} AND harness_slug=${input.harness} AND plan_slug=${input.slug}`;
 }
 

@@ -102,10 +102,10 @@ describe('native collection fixture against migrated private PG', () => {
       await insertNativeCollectionPlan(sql, { workspaceId, harness, slug, title: slug,
         status: slug === 'blocked' ? 'draft' : 'active' });
     }
-    const write = (property: string, value: unknown, provenance: 'owner-edit' | 'agent-edit') =>
+    const write = (property: string, value: unknown, provenance: 'owner-edit' | 'agent-edit', confirmShrink = false) =>
       sql.begin(tx => applyGoalPropertyWrite(tx as unknown as typeof sql, { workspaceId, goalId,
-        property, value, expectedVersion: 0, provenance, actorId: `native-fixture-${provenance}` }));
-    expect((await write('worklist_policy', { order, excluded: [dormant, ids[1]] }, 'owner-edit')).ok).toBe(true);
+        property, value, expectedVersion: 0, provenance, confirmShrink, actorId: `native-fixture-${provenance}` }));
+    expect(await write('worklist_policy', { order, excluded: [dormant, ids[1]] }, 'owner-edit')).toMatchObject({ ok: true });
     const policy = async () => (await sql`SELECT properties->'worklist_policy' AS policy
       FROM harness_shared.goals WHERE workspace_id=${workspaceId} AND id=${goalId}`)[0].policy;
     const savedPolicy = await policy();
@@ -114,11 +114,19 @@ describe('native collection fixture against migrated private PG', () => {
     expect((await read())?.worklist.find(plan => plan.slug === 'beta')?.selected).toBe(false);
 
     await setNativeCollectionPlanArchived(sql, { workspaceId, harness, slug: 'beta', archived: true });
-    expect((await write('worklist', [ids[0], ids[2]], 'agent-edit')).ok).toBe(true);
+    const lifecycle = async () => (await sql`SELECT status,archived FROM harness_shared.harness_plans
+      WHERE workspace_id=${workspaceId} AND harness_slug=${harness} AND plan_slug='beta'`)[0];
+    expect(await lifecycle()).toMatchObject({ status: 'active', archived: true });
+    expect(await write('worklist', [ids[0], ids[2]], 'agent-edit')).toMatchObject({
+      ok: false, code: 'shrink_blocked', priorLength: 3, proposedLength: 2, actualVersion: 0,
+    });
+    expect(await policy()).toEqual(savedPolicy);
+    expect(await write('worklist', [ids[0], ids[2]], 'agent-edit', true)).toMatchObject({ ok: true });
     expect((await read())?.worklist.map(plan => plan.ref)).toEqual([ids[0], ids[2]]);
     expect(await policy()).toEqual(savedPolicy);
 
     await setNativeCollectionPlanArchived(sql, { workspaceId, harness, slug: 'beta', archived: false });
+    expect(await lifecycle()).toMatchObject({ status: 'active', archived: false });
     const rediscovered = await read();
     expect(rediscovered?.worklist.map(plan => plan.ref)).toEqual(order.slice(0, 3));
     expect(rediscovered?.worklist.find(plan => plan.slug === 'beta')).toMatchObject({ selected: false, next: { id: 'P-001' } });
@@ -135,5 +143,8 @@ describe('native collection fixture against migrated private PG', () => {
     const [row] = await sql`SELECT status,archived FROM harness_shared.harness_plans
       WHERE workspace_id=${workspaceId} AND harness_slug=${harness} AND plan_slug='beta'`;
     expect(row).toMatchObject({ status: 'active', archived: false });
+    await expect(sql`UPDATE harness_shared.harness_plans SET status='shipped'
+      WHERE workspace_id=${workspaceId} AND harness_slug=${harness} AND plan_slug='beta'`)
+      .rejects.toThrow(/requires a matching acceptance gate receipt/);
   });
 });
