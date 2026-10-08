@@ -7629,7 +7629,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
         maxInFlight: 10,
         controlPlaneReserve: 1,
         maxCriticalContinuationQueue: 1,
-        maxImprovementsCaptureQueue: 1,
+        maxImprovementsCaptureQueue: 200,
         improvementsCaptureQueueWaitMs: 100,
         criticalContinuationQueueWaitLogMs: 10,
         log: (line) => logs.push(line),
@@ -7719,9 +7719,33 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
       expect(health.inFlight.improvementsCaptureQueue.toolFailureMax).toBe(1);
       expect(health.inFlight.improvementsCaptureToolFailureMax).toBe(1);
 
+      const overflowFailure = await request(
+        port(proxy),
+        body(4, {
+          toolFailure: {
+            toolName: "dev:pg_query",
+            message: "Another native-session-verifier auth failure needs a record.",
+          },
+        }),
+        "/api/mcp?client=overflow-tool-failure",
+      );
+      expect(overflowFailure.status).toBe(429);
+      const overflowBody = JSON.parse(overflowFailure.body) as {
+        error: string;
+        detail: string;
+        forwardingResult: string;
+      };
+      expect(overflowBody).toMatchObject({
+        error: "mcp_proxy_improvements_capture_queue_full",
+        forwardingResult: "not_forwarded",
+      });
+      expect(overflowBody.detail).toContain(
+        "tool-failure FIFO already has 1 waiter(s) (queue max 1)",
+      );
+      expect(hits).toEqual(["held-normal", "held-tool-failure"]);
+
       await new Promise((resolve) => setTimeout(resolve, 150));
       expect(queuedFailureSettled).toBe(false);
-      expect(hits).toEqual(["held-normal", "held-tool-failure"]);
 
       releaseFailure();
       await waitFor(() => hits.includes("queued-tool-failure"));

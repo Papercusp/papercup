@@ -3938,9 +3938,14 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           ).length;
           const queuedNormalCaptures =
             improvementsCaptureQueueLength() - queuedToolFailureCaptures;
-          const queueFull = toolFailureCapture
-            ? queuedToolFailureCaptures >= 1
-            : queuedNormalCaptures >= maxImprovementsCaptureQueue;
+          const queueClass = toolFailureCapture ? "tool-failure" : "normal";
+          const queueWaiters = toolFailureCapture
+            ? queuedToolFailureCaptures
+            : queuedNormalCaptures;
+          const queueCapacity = toolFailureCapture
+            ? 1
+            : maxImprovementsCaptureQueue;
+          const queueFull = queueWaiters >= queueCapacity;
           if (queueFull) {
             const blocker = improvementsCaptureBlocker();
             const blockedByDetail = blocker
@@ -3962,7 +3967,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                 error: "mcp_proxy_improvements_capture_queue_full",
                 retryable: true,
                 forwardingResult: "not_forwarded" satisfies McpProxyForwardingResult,
-                detail: `proxy improvements:capture FIFO already has ${improvementsCaptureQueueLength()} waiter(s) (queue max ${maxImprovementsCaptureQueue})${blockedByDetail}`,
+                detail: `proxy improvements:capture ${queueClass} FIFO already has ${queueWaiters} waiter(s) (queue max ${queueCapacity})${blockedByDetail}`,
                 retryAfterSec,
                 traceId: requestTraceId,
                 ...(blocker ? { blockedBy: blocker } : {}),
@@ -3970,7 +3975,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             );
             log(
               `shed improvements:capture request ${requestTraceId} — ` +
-                `${improvementsCaptureQueueLength()}/${maxImprovementsCaptureQueue} waiters`,
+                `${queueWaiters}/${queueCapacity} ${queueClass} waiters`,
             );
             record({
               kind: "shed_improvements_capture_queue_full",
@@ -3978,6 +3983,9 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               path: req.url,
               traceId: requestTraceId,
               tools: improvementsCaptureTools,
+              queueClass,
+              queueWaiters,
+              queueCapacity,
               improvementsCaptureInFlight,
               queueLength: improvementsCaptureQueueLength(),
               maxImprovementsCaptureQueue,
