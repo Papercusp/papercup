@@ -121,9 +121,35 @@ test('Work on Everything design stays readable and draft controls work in the na
       { timeout: 10_000, env: xEnv });
     const windowIds = windows.stdout.trim().split(/\s+/);
     expect(windowIds).toHaveLength(1);
-    await run('xdotool', ['key', '--window', windowIds[0], '--clearmodifiers', 'alt+Up'],
-      { timeout: 10_000, env: xEnv });
-    await ready(`document.querySelector('${panel} [role="option"] strong')?.textContent === ${JSON.stringify(labels[1])}`);
+    await run('xdotool', ['windowfocus', '--sync', windowIds[0]], { timeout: 10_000, env: xEnv });
+    const focused = await run('xdotool', ['getwindowfocus'], { timeout: 10_000, env: xEnv });
+    expect(focused.stdout.trim(), 'Keyboard input must stay on the owned native window').toBe(windowIds[0]);
+    await native('focus', reorder, '--json');
+    await native('eval', `(() => {
+      window.__nativeWorklistKeys = [];
+      document.addEventListener('keydown', e => window.__nativeWorklistKeys.push({
+        key: e.key, altKey: e.altKey, trusted: e.isTrusted,
+        target: e.target?.getAttribute?.('aria-label'),
+      }), true);
+      return true;
+    })()`);
+    try {
+      // Without --window, xdotool uses XTest delivery to the verified focus;
+      // --window uses XSendEvent, which is not an equivalent WebKit input path.
+      await run('xdotool', ['key', '--clearmodifiers', 'F23'], { timeout: 10_000, env: xEnv });
+      await ready(`window.__nativeWorklistKeys.some(e => e.key === 'F23' && e.trusted)`);
+      await run('xdotool', ['key', '--clearmodifiers', 'alt+Up'], { timeout: 10_000, env: xEnv });
+      await ready(`window.__nativeWorklistKeys.some(e => e.key === 'ArrowUp' && e.altKey && e.trusted)`);
+      await ready(`document.querySelector('${panel} [role="option"] strong')?.textContent === ${JSON.stringify(labels[1])}`);
+    } catch (error) {
+      await info.attach('native-key-delivery', { body: JSON.stringify(await measure(`({
+        keys: window.__nativeWorklistKeys, tab: new URL(location.href).searchParams.get('tab'),
+        focusedControl: document.activeElement?.getAttribute('aria-label'),
+        order: Array.from(document.querySelectorAll('${panel} [role="option"] strong')).map(e => e.textContent),
+      })`)), contentType: 'application/json' });
+      await native('screenshot', '--output', info.outputPath('keyboard-failure.png'));
+      throw error;
+    }
     expect(await measure(`new URL(location.href).searchParams.get('tab')`)).toBe('hud');
     await ready(`!!document.querySelector('${panel} .woe__draft-bar')`);
     await native('click', 'button[aria-label="Remove Design desktop release"]', '--json');
