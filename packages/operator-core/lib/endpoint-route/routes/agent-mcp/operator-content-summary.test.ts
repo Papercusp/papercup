@@ -1,12 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-const h = vi.hoisted(() => ({ user: 'user-one', workspace: 'ws-one', prompts: [] as { promptText: string }[], fail: false, synth: vi.fn(), prefs: vi.fn() }));
+const h = vi.hoisted(() => ({ user: 'user-one', workspace: 'ws-one', prompts: [] as { promptText: string }[], localPrompts: [] as unknown[], fail: false, synth: vi.fn(), prefs: vi.fn() }));
 vi.mock('../../../auth', () => ({ getSessionUserOrDefault: async () => h.user ? { id: h.user } : null }));
 vi.mock('../../../workspace-registry', () => ({ activeWorkspaceId: () => h.workspace }));
 vi.mock('../../../agent-chat-stream', () => ({ runAgentChat: async function* (request: { promptText: string }) {
   h.prompts.push(request);
   if (h.fail) { yield { type: 'error', message: 'Model unavailable.' }; return; }
   yield { type: 'result', finalText: 'Requested explicit summary.', costUsd: 0, tokensIn: 10, tokensOut: 10, stopReason: 'end_turn' };
-} }));
+}, ownerHeaders: () => ({}), priorityTierHeaders: () => ({}) }));
+vi.mock('../../../agent-loop/ai-sdk-port', () => ({ createAiSdkPort: () => ({ stream: async function* (request: unknown) {
+  h.localPrompts.push(request);
+  yield { type: 'text_delta', text: 'Local explicit summary.' };
+  yield { type: 'stop', reason: 'end_turn', usage: { inputTokens: 10, outputTokens: 5 } };
+} }) }));
 vi.mock('../../../inference-gateway/local-backend-store', () => ({ listLocalBackends: async () => [{ enabled: true, models: ['fixture-local'] }] }));
 vi.mock('../../../operator-budget', () => ({ checkBudget: async () => ({ exceeded: false }), recordSpend: async () => {} }));
 vi.mock('../../../cache/instance', () => ({ getOperatorCache: () => ({ getOrSet: async (_workspace: string, _key: string, factory: () => Promise<unknown>) => factory() }) }));
@@ -18,7 +23,7 @@ type Route = { handler(req: Request): Promise<Response> };
 async function post(body: unknown, signal?: AbortSignal) {
   return (tool as unknown as Route).handler(new Request('http://localhost/api/agent-mcp/operator-tts', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal }));
 }
-beforeEach(() => { h.user = 'user-one'; h.workspace = 'ws-one'; h.fail = false; h.prompts.length = 0; vi.clearAllMocks(); });
+beforeEach(() => { h.user = 'user-one'; h.workspace = 'ws-one'; h.fail = false; h.prompts.length = 0; h.localPrompts.length = 0; vi.clearAllMocks(); });
 describe('existing output endpoint explicit summary operation', () => {
   it('processes the full supplied selection, forwards options and never synthesizes speech', async () => {
     const text = 'Authorized selection. '.repeat(1800) + 'EXACT FINAL TAIL';
@@ -37,9 +42,13 @@ describe('existing output endpoint explicit summary operation', () => {
     expect(await denied.json()).toMatchObject({ ok: false, code: 'cloud-consent-required' });
     expect(h.prompts).toHaveLength(0);
     const local = await post({ ...body, summary: { model: 'fixture-local' } });
-    expect(local.status).toBe(503);
-    expect(await local.json()).toMatchObject({ ok: false, code: 'local-route-unavailable' });
+    expect(local.status).toBe(200);
+    expect(await local.json()).toMatchObject({ ok: true, summary: 'Local explicit summary.', usage: { costUsd: 0 } });
+    expect(h.localPrompts).toHaveLength(1);
     expect(h.prompts).toHaveLength(0);
+    const pin = await post({ ...body, summary: { model: 'fixture-local', account: 'cloud-pin', allowCloud: true } });
+    expect(pin.status).toBe(503); expect(await pin.json()).toMatchObject({ code: 'local-route-unavailable' });
+    expect(h.localPrompts).toHaveLength(1); expect(h.prompts).toHaveLength(0);
   });
   it('rejects reference-only input and malformed options before any model call', async () => {
     expect((await post({ operation: 'summarize', content: { kind: 'reference', ref: 'private:elsewhere' } })).status).toBe(400);
