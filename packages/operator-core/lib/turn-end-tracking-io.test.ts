@@ -17,7 +17,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const getWorkItemCheckpointWithMeta = vi.fn();
-const setWorkItemCheckpoint = vi.fn();
+const setWorkItemCheckpointWithPrior = vi.fn();
+const readHeldWorkItems = vi.fn();
 const toolCallRowsFor = vi.fn();
 const renderToolCallLog = vi.fn();
 const applySessionTaskOp = vi.fn();
@@ -35,8 +36,9 @@ vi.mock('./harness/improvements/capture-core', () => ({ captureImprovement: (...
 
 vi.mock('./work-item-checkpoint', () => ({
   getWorkItemCheckpointWithMeta: (...a: unknown[]) => getWorkItemCheckpointWithMeta(...a),
-  setWorkItemCheckpoint: (...a: unknown[]) => setWorkItemCheckpoint(...a),
+  setWorkItemCheckpointWithPrior: (...a: unknown[]) => setWorkItemCheckpointWithPrior(...a),
 }));
+vi.mock('./carry-brief', () => ({ readHeldWorkItems: (...a: unknown[]) => readHeldWorkItems(...a) }));
 vi.mock('./tool-call-log-store', () => ({
   toolCallRowsFor: (...a: unknown[]) => toolCallRowsFor(...a),
 }));
@@ -65,7 +67,7 @@ vi.mock('./agent-tools/coordination/inbox-wake', () => ({
   wakeRecipients: (...a: unknown[]) => wakeRecipients(...a),
 }));
 
-const { checkpointOnRelease, sweepOpenTaskReminder, wakeOpenTaskReminder, observeUnpublishedReportTurn } = await import('./turn-end-tracking-io');
+const { autoCheckpointStaleHeldItems, checkpointOnRelease, sweepOpenTaskReminder, wakeOpenTaskReminder, observeUnpublishedReportTurn } = await import('./turn-end-tracking-io');
 
 const REF = { releasingOwnerId: 'su-holder-1', workspaceId: 'ws-1', harness: 'papercusp', workItemId: 'WI-1' };
 
@@ -104,20 +106,20 @@ describe('checkpointOnRelease (EI-18734870651452334)', () => {
     const result = await checkpointOnRelease(REF);
 
     expect(result).toEqual({ written: false });
-    expect(setWorkItemCheckpoint).not.toHaveBeenCalled();
+    expect(setWorkItemCheckpointWithPrior).not.toHaveBeenCalled();
   });
 
   it('writes a mechanical checkpoint when the checkpoint is missing (null)', async () => {
     getWorkItemCheckpointWithMeta.mockResolvedValue({ checkpoint: null, updatedAtMs: null });
     toolCallRowsFor.mockResolvedValue([{ tool: 'Edit' }]);
     renderToolCallLog.mockReturnValue('Edit x3, Bash x1');
-    setWorkItemCheckpoint.mockResolvedValue('written');
+    setWorkItemCheckpointWithPrior.mockResolvedValue({ stored: 'written', priorLength: 0 });
 
     const result = await checkpointOnRelease(REF);
 
     expect(result).toEqual({ written: true });
-    expect(setWorkItemCheckpoint).toHaveBeenCalledTimes(1);
-    const [ref, block] = setWorkItemCheckpoint.mock.calls[0] as [typeof REF, string];
+    expect(setWorkItemCheckpointWithPrior).toHaveBeenCalledTimes(1);
+    const [ref, block] = setWorkItemCheckpointWithPrior.mock.calls[0] as [typeof REF, string];
     expect(ref).toEqual({ harness: REF.harness, workItemId: REF.workItemId, workspaceId: REF.workspaceId });
     expect(block).toContain('auto-checkpoint mechanical');
     expect(block).toContain(REF.releasingOwnerId);
@@ -129,24 +131,24 @@ describe('checkpointOnRelease (EI-18734870651452334)', () => {
     getWorkItemCheckpointWithMeta.mockResolvedValue({ checkpoint: '   ', updatedAtMs: Date.now() });
     toolCallRowsFor.mockResolvedValue([]);
     renderToolCallLog.mockReturnValue('');
-    setWorkItemCheckpoint.mockResolvedValue('written');
+    setWorkItemCheckpointWithPrior.mockResolvedValue({ stored: 'written', priorLength: 0 });
 
     const result = await checkpointOnRelease(REF);
 
     expect(result).toEqual({ written: true });
-    expect(setWorkItemCheckpoint).toHaveBeenCalledTimes(1);
+    expect(setWorkItemCheckpointWithPrior).toHaveBeenCalledTimes(1);
   });
 
   it('still writes the mechanical checkpoint (journal note alone) when the tool-log fetch throws', async () => {
     getWorkItemCheckpointWithMeta.mockResolvedValue({ checkpoint: null, updatedAtMs: null });
     toolCallRowsFor.mockRejectedValue(new Error('ledger unavailable'));
-    setWorkItemCheckpoint.mockResolvedValue('written');
+    setWorkItemCheckpointWithPrior.mockResolvedValue({ stored: 'written', priorLength: 0 });
 
     const result = await checkpointOnRelease(REF);
 
     expect(result).toEqual({ written: true });
-    expect(setWorkItemCheckpoint).toHaveBeenCalledTimes(1);
-    const [, block] = setWorkItemCheckpoint.mock.calls[0] as [typeof REF, string];
+    expect(setWorkItemCheckpointWithPrior).toHaveBeenCalledTimes(1);
+    const [, block] = setWorkItemCheckpointWithPrior.mock.calls[0] as [typeof REF, string];
     expect(block).toContain('EI-18734870651452334');
   });
 
@@ -156,18 +158,97 @@ describe('checkpointOnRelease (EI-18734870651452334)', () => {
     const result = await checkpointOnRelease(REF);
 
     expect(result).toEqual({ written: false });
-    expect(setWorkItemCheckpoint).not.toHaveBeenCalled();
+    expect(setWorkItemCheckpointWithPrior).not.toHaveBeenCalled();
   });
 
   it('fails soft (never throws, returns written:false) when the checkpoint write itself throws', async () => {
     getWorkItemCheckpointWithMeta.mockResolvedValue({ checkpoint: null, updatedAtMs: null });
     toolCallRowsFor.mockResolvedValue([]);
     renderToolCallLog.mockReturnValue('');
-    setWorkItemCheckpoint.mockRejectedValue(new Error('write failed'));
+    setWorkItemCheckpointWithPrior.mockRejectedValue(new Error('write failed'));
 
     const result = await checkpointOnRelease(REF);
 
     expect(result).toEqual({ written: false });
+  });
+
+  it('preserves a checkpoint authored after the missing-checkpoint read', async () => {
+    const authored = '## Did\nThe holder checkpointed before the release snapshot committed.';
+    getWorkItemCheckpointWithMeta.mockResolvedValue({ checkpoint: null, updatedAtMs: null });
+    toolCallRowsFor.mockResolvedValue([]);
+    setWorkItemCheckpointWithPrior.mockImplementation(async (_ref, _note, opts) => {
+      const blockedReason = opts.guard(authored, authored.length);
+      return { stored: authored, priorLength: authored.length, blockedReason };
+    });
+
+    expect(await checkpointOnRelease(REF)).toEqual({ written: false });
+    await expect(setWorkItemCheckpointWithPrior.mock.results[0].value).resolves.toMatchObject({
+      stored: authored, blockedReason: 'checkpoint-written-before-release-snapshot',
+    });
+  });
+});
+
+describe('automatic stale-held checkpoint preservation (EI-25379632433059487)', () => {
+  const nowMs = 1_784_000_000_000;
+  const input = { ownerId: 'su-holder-1', workspaceId: 'ws-1', sessionId: 'session-1',
+    sinceIso: '2026-07-14T18:00:00Z', journalNote: 'Holder-session activity.', nowMs };
+  const ref = { harness: 'papercusp', id: 'WI-1', checkpointUpdatedAtMs: 1 };
+  type WriteOptions = NonNullable<Parameters<typeof import('./work-item-checkpoint').setWorkItemCheckpointWithPrior>[2]>;
+
+  function lockedStore(initial: string | null) {
+    const state = { note: initial };
+    setWorkItemCheckpointWithPrior.mockImplementation(async (_ref, note: string | null | undefined, opts: WriteOptions) => {
+      const priorLength = state.note?.length ?? 0;
+      const blockedReason = opts.guard?.(state.note, priorLength);
+      if (blockedReason) return { stored: state.note, priorLength, blockedReason };
+      state.note = (opts.transform ? opts.transform(state.note, note) : note) ?? null;
+      return { stored: state.note, priorLength };
+    });
+    toolCallRowsFor.mockResolvedValue([]);
+    renderToolCallLog.mockReturnValue('');
+    return state;
+  }
+
+  it('keeps the three-check ledger and walls through successive locked snapshots', async () => {
+    const { splitCarryNoteChecks, splitCarryNoteWalls, withCarryNoteChecks, withCarryNoteWalls } = await import('./carry-note');
+    const initial = withCarryNoteWalls(withCarryNoteChecks('## Did\nAuthored progress.', [
+      { id: 'check-a', claim: 'Spill evidence.', sinceMs: 1, verified: 'Saved fixture.' },
+      { id: 'check-b', claim: 'Quota evidence.', sinceMs: 2, falsifier: 'Repeated scan.' },
+      { id: 'check-c', claim: 'Diagnostic evidence.', sinceMs: 3, sampleAdequate: true },
+    ]), [{ id: 'custody', claim: 'Keep source custody.', sinceMs: 4 }]);
+    const state = lockedStore(initial);
+    readHeldWorkItems.mockImplementation(async () => [{ ...ref, checkpoint: state.note }]);
+
+    expect(await autoCheckpointStaleHeldItems(input)).toEqual([{ id: ref.id, mechanical: true }]);
+    expect(await autoCheckpointStaleHeldItems({ ...input, journalNote: 'Later activity.' }))
+      .toEqual([{ id: ref.id, mechanical: true }]);
+    expect(splitCarryNoteChecks(state.note!).checks).toEqual(splitCarryNoteChecks(initial).checks);
+    expect(splitCarryNoteWalls(state.note!).walls).toEqual(splitCarryNoteWalls(initial).walls);
+    expect(state.note).toContain('Authored progress.');
+    expect(state.note).toContain('Later activity.');
+    expect(state.note).not.toContain('Holder-session activity.');
+  });
+
+  it.each([null, '## Did\nOld stale progress.'])('skips a snapshot when newer authored evidence replaces %s during tool-log IO', async (stale) => {
+    const { withCarryNoteChecks } = await import('./carry-note');
+    const state = lockedStore(stale);
+    const authored = withCarryNoteChecks('## Did\nNew authored progress.', [
+      { id: 'new-evidence', claim: 'The latest probe passed.', sinceMs: 2, verified: 'New proof.' },
+    ]);
+    readHeldWorkItems.mockResolvedValue([{ ...ref, checkpoint: stale }]);
+    toolCallRowsFor.mockImplementation(async () => { state.note = authored; return []; });
+
+    expect(await autoCheckpointStaleHeldItems(input)).toEqual([]);
+    expect(state.note).toBe(authored);
+  });
+
+  it('reports only committed snapshots when the store refuses an older write', async () => {
+    readHeldWorkItems.mockResolvedValue([{ ...ref, checkpoint: null }]);
+    toolCallRowsFor.mockResolvedValue([]);
+    setWorkItemCheckpointWithPrior.mockResolvedValue({ stored: 'Newer progress.', priorLength: 15,
+      blockedReason: 'stale_write_older_than_current' });
+
+    expect(await autoCheckpointStaleHeldItems(input)).toEqual([]);
   });
 });
 

@@ -120,6 +120,51 @@ describe('composeMechanicalCheckpoint / mergeMechanicalCheckpoint', () => {
     expect(body).toContain(MECHANICAL_CHECKPOINT_MARKER);
     expect(merged.indexOf(MECHANICAL_CHECKPOINT_MARKER)).toBeLessThan(merged.indexOf('## Checks'));
   });
+
+  it('preserves check evidence and walls through repeated snapshots and a successor checkpoint', async () => {
+    const { mergeCarryRows, splitCarryNoteChecks, splitCarryNoteWalls, withCarryNoteChecks, withCarryNoteWalls } =
+      await import('./carry-note');
+    const prior = withCarryNoteWalls(withCarryNoteChecks('## Did\nAuthored progress.\n\n## Next action\nVerify the source.', [
+      { id: 'real-mcp-spill-attribution', claim: 'The spill remains readable.', sinceMs: 1, verified: 'Passing fixture.', recheck: 'Run the spill fixture.' },
+      { id: 'quota-scan-reuse', claim: 'Quota waiters share one scan.', sinceMs: 2, verified: 'One scan observed.', falsifier: 'More than one scan.' },
+      { id: 'scratch-phase-attribution', claim: 'The diagnostic retains the original error.', sinceMs: 3, observed: 'Original error retained.', sampleAdequate: true },
+    ]), [{ id: 'source-custody', claim: 'Preserve the source lane.', sinceMs: 4, recheck: 'Read the governing decision.' }]);
+    const originalChecks = splitCarryNoteChecks(prior).checks;
+    const originalWalls = splitCarryNoteWalls(prior).walls;
+    const first = mergeMechanicalCheckpoint(prior, block);
+    const later = composeMechanicalCheckpoint({ atIso: '2026-07-14T19:30:00.000Z', journalNote: 'Later snapshot.' });
+    const second = mergeMechanicalCheckpoint(first, later);
+
+    expect(splitCarryNoteChecks(second).checks).toEqual(originalChecks);
+    expect(splitCarryNoteWalls(second).walls).toEqual(originalWalls);
+    expect(second).toContain('Authored progress.');
+    expect(second.match(new RegExp(MECHANICAL_CHECKPOINT_MARKER, 'g'))).toHaveLength(1);
+    expect(second).not.toContain('P-015 legs 1-2 landed');
+
+    const successor = mergeCarryRows({
+      priorNote: second, baseNote: '## Did\nSuccessor resumed.', hasNoteWrite: true, mode: 'merge',
+    });
+    expect(successor.checks).toEqual(originalChecks);
+    expect(successor.walls).toEqual(originalWalls);
+    expect(successor.droppedChecks).toEqual([]);
+    expect(successor.droppedWalls).toEqual([]);
+  });
+
+  it('replaces a legacy mechanical tail without losing the preceding protected rows', async () => {
+    const { splitCarryNoteChecks, splitCarryNoteWalls, withCarryNoteChecks, withCarryNoteWalls } = await import('./carry-note');
+    const prior = withCarryNoteWalls(withCarryNoteChecks('Authored progress.', [
+      { id: 'verified-check', claim: 'Keep this verified check.', sinceMs: 1, verified: 'Saved evidence.' },
+    ]), [{ id: 'source-wall', claim: 'Keep source custody.', sinceMs: 2 }]);
+    const legacy = `${prior}\n\n---\n${block}`;
+    const later = composeMechanicalCheckpoint({ atIso: '2026-07-14T19:30:00.000Z', journalNote: 'New snapshot.' });
+    const merged = mergeMechanicalCheckpoint(legacy, later);
+
+    expect(splitCarryNoteChecks(merged).checks).toEqual(splitCarryNoteChecks(prior).checks);
+    expect(splitCarryNoteWalls(merged).walls).toEqual(splitCarryNoteWalls(prior).walls);
+    expect(merged.match(new RegExp(MECHANICAL_CHECKPOINT_MARKER, 'g'))).toHaveLength(1);
+    expect(merged.indexOf(MECHANICAL_CHECKPOINT_MARKER)).toBeLessThan(merged.indexOf('## Checks'));
+    expect(merged).not.toContain('P-015 legs 1-2 landed');
+  });
 });
 
 describe('deliverable detection', () => {

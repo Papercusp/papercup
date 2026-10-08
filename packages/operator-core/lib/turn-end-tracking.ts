@@ -106,15 +106,23 @@ export function composeMechanicalCheckpoint(input: MechanicalCheckpointInput): s
 
 /**
  * Merge the mechanical block into an existing checkpoint: agent-authored prose
- * is PRESERVED verbatim; a previous mechanical block (always the tail — this
- * function only ever appends one at the end) is replaced, so repeated sweeps
- * never stack blocks.
+ * is preserved; a previous mechanical block is replaced, so repeated sweeps
+ * never stack blocks. Structured Checks/Walls following that block belong to
+ * the agent, and must survive replacement just like a legacy block's prefix.
  */
 export function mergeMechanicalCheckpoint(existing: string | null | undefined, block: string): string {
   const prior = (existing ?? '').trimEnd();
   if (!prior) return block;
   const markerAt = prior.indexOf(MECHANICAL_CHECKPOINT_MARKER);
-  const agentPart = (markerAt >= 0 ? prior.slice(0, markerAt) : prior).replace(/(\n\s*---\s*)+$/, '').trimEnd();
+  let agentPart = prior;
+  if (markerAt >= 0) {
+    const tail = prior.slice(markerAt);
+    const suffixAt = STRUCTURED_CARRY_SECTION_RE.exec(tail)?.index;
+    const prefix = prior.slice(0, markerAt).replace(/(\n\s*---\s*)+$/, '').trimEnd();
+    const suffix = suffixAt === undefined ? '' : tail.slice(suffixAt);
+    agentPart = [prefix, suffix].filter(Boolean).join('\n\n');
+  }
+  agentPart = agentPart.replace(/(\n\s*---\s*)+$/, '').trimEnd();
   if (!agentPart) return block;
 
   // Mechanical tool-log lines are ordinary prose, but carry-note parsing treats

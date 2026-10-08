@@ -92,7 +92,7 @@ export async function autoCheckpointStaleHeldItems(input: {
   nowMs?: number;
 }): Promise<AutoCheckpointResult[]> {
   try {
-    const [{ readHeldWorkItems }, { setWorkItemCheckpoint }, { toolCallRowsFor }, { renderToolCallLog }] =
+    const [{ readHeldWorkItems }, { setWorkItemCheckpointWithPrior }, { toolCallRowsFor }, { renderToolCallLog }] =
       await Promise.all([
         import('./carry-brief'),
         import('./work-item-checkpoint'),
@@ -128,11 +128,18 @@ export async function autoCheckpointStaleHeldItems(input: {
     const written: AutoCheckpointResult[] = [];
     for (const item of stale) {
       try {
-        await setWorkItemCheckpoint(
+        const result = await setWorkItemCheckpointWithPrior(
           { harness: item.harness, workItemId: item.id, workspaceId: input.workspaceId },
-          mergeMechanicalCheckpoint(item.checkpoint, block),
+          undefined,
+          {
+            // The held-item read precedes tool-log IO. A newer authored update
+            // must win; test this against the locked row, not another pre-read.
+            guard: (prior) => (prior ?? '').trim() === (item.checkpoint ?? '').trim()
+              ? null : 'checkpoint-changed-before-auto-snapshot',
+            transform: (prior) => mergeMechanicalCheckpoint(prior, block),
+          },
         );
-        written.push({ id: item.id, mechanical: true });
+        if (!result.blockedReason) written.push({ id: item.id, mechanical: true });
       } catch {
         /* per-item fail-soft */
       }
@@ -234,7 +241,7 @@ async function checkpointOnReleaseImpl(input: {
   workItemId: string;
 }): Promise<{ written: boolean }> {
   try {
-    const [{ getWorkItemCheckpointWithMeta, setWorkItemCheckpoint }, { toolCallRowsFor }, { renderToolCallLog }] =
+    const [{ getWorkItemCheckpointWithMeta, setWorkItemCheckpointWithPrior }, { toolCallRowsFor }, { renderToolCallLog }] =
       await Promise.all([import('./work-item-checkpoint'), import('./tool-call-log-store'), import('./tool-call-log')]);
     const ref = { harness: input.harness, workItemId: input.workItemId, workspaceId: input.workspaceId };
     const existing = await getWorkItemCheckpointWithMeta(ref);
@@ -260,8 +267,11 @@ async function checkpointOnReleaseImpl(input: {
         `— look for already-completed work before rebuilding (EI-18734870651452334).`,
       toolLog,
     });
-    await setWorkItemCheckpoint(ref, block);
-    return { written: true };
+    const result = await setWorkItemCheckpointWithPrior(ref, block, {
+      // A holder may checkpoint while the release snapshot's log is fetched.
+      guard: (prior) => prior?.trim() ? 'checkpoint-written-before-release-snapshot' : null,
+    });
+    return { written: !result.blockedReason };
   } catch {
     return { written: false };
   }
