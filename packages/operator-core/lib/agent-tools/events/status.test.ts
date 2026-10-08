@@ -436,6 +436,103 @@ describe('events:status projection', () => {
     expect(listMyEventKeySubscriptions).not.toHaveBeenCalled();
   });
 
+  it('bounds hot exact-key history, keeps the newest rows, and reports omitted rows within the response budget', async () => {
+    const longValue = 'x'.repeat(8_000);
+    const announcements = Array.from({ length: 50 }, (_, index) => ({
+      id: 50 - index,
+      causalGeneration: 50 - index,
+      subscriberId: `su-announcer-${index}`,
+      createdAt: `2026-07-${String(13 - Math.floor(index / 24)).padStart(2, '0')}T12:00:00.000Z`,
+      note: longValue,
+      expectedCondition: { kind: 'predicate', predicate: { summary: longValue } },
+      firedPayload: null,
+      firedAt: null,
+      firedReason: null,
+      firedBy: null,
+      cancelledAt: null,
+      supersededAt: '2026-07-13T12:10:00.000Z',
+    }));
+    const waiters = Array.from({ length: 200 }, (_, index) => ({
+      ...AWAIT_ROW,
+      id: 300 - index,
+      eventKey: 'git-sync:committed',
+      subscriberId: `su-waiter-${index}`,
+      policy: 'wake',
+      createdAt: '2026-07-13T12:01:00.000Z',
+      firedAt: null,
+      firedReason: null,
+      cancelledAt: null,
+      expiresTs: null,
+      rootId: null,
+    }));
+    const deliveries = Array.from({ length: 200 }, (_, index) => ({
+      ...DELIVERY_ROW,
+      id: 500 - index,
+      eventKey: 'git-sync:committed',
+      subscriberId: `su-delivery-${index}`,
+      lastError: longValue,
+      createdAt: '2026-07-13T12:05:00.000Z',
+      deliveredAt: null,
+    }));
+    vi.mocked(inspectEventKey).mockResolvedValueOnce({
+      announcements,
+      waiters,
+      deliveries,
+      fireLatch: null,
+    } as never);
+
+    const out = await call({ event: 'git-sync:committed' });
+
+    expect(inspectEventKey).toHaveBeenCalledWith('git-sync:committed');
+    expect(out.event_inspection.history_window.limit).toBe(10);
+    expect(out.event_inspection.history_window.declarations).toMatchObject({ loaded_rows: 50, more_available: true });
+    expect(out.event_inspection.history_window.waiters).toMatchObject({ loaded_rows: 200, more_available: true });
+    expect(out.event_inspection.history_window.wake_outcomes).toMatchObject({ loaded_rows: 200, more_available: true });
+    expect(out.event_inspection.waiters.map((row: { await_id: number }) => row.await_id))
+      .toEqual([...out.event_inspection.waiters.map((row: { await_id: number }) => row.await_id)].sort((a, b) => b - a));
+    if (out.event_inspection.waiters.length > 0) expect(out.event_inspection.waiters[0].await_id).toBe(300);
+    if (out.event_inspection.wake_outcomes.length > 0) expect(out.event_inspection.wake_outcomes[0].delivery_id).toBe(500);
+    expect(out.event_inspection.wake_outcomes.every((row: { last_error?: string; last_error_truncated?: boolean }) =>
+      row.last_error_truncated === true && (row.last_error?.length ?? 0) <= 257,
+    )).toBe(true);
+    expect(out.event_inspection.history_window.waiters.shown).toBe(out.event_inspection.waiters.length);
+    expect(out.event_inspection.history_window.wake_outcomes.shown).toBe(out.event_inspection.wake_outcomes.length);
+    expect(JSON.stringify(out).length).toBeLessThanOrEqual(5_000);
+  });
+
+  it('previews a single oversized announcement instead of letting one row exceed the exact-key response budget', async () => {
+    const longValue = 'x'.repeat(8_000);
+    vi.mocked(inspectEventKey).mockResolvedValueOnce({
+      announcements: [{
+        id: 1,
+        causalGeneration: 1,
+        subscriberId: 'su-emitter',
+        createdAt: '2026-07-13T12:00:00.000Z',
+        note: longValue,
+        expectedCondition: { kind: 'predicate', predicate: { summary: longValue } },
+        firedPayload: null,
+        firedAt: null,
+        firedReason: null,
+        cancelledAt: null,
+        supersededAt: '2026-07-13T12:10:00.000Z',
+      }],
+      waiters: [],
+      deliveries: [],
+      fireLatch: null,
+    } as never);
+
+    const out = await call({ event: 'gate:large-expected-condition' });
+    const declaration = out.event_inspection.declarations[0];
+
+    expect(declaration.note_truncated).toBe(true);
+    expect(declaration.note_chars).toBe(8_000);
+    expect(declaration.note.length).toBeLessThanOrEqual(257);
+    expect(declaration.expected_truncated).toBe(true);
+    expect(declaration.expected.original_chars).toBeGreaterThan(512);
+    expect(declaration.expected.preview.length).toBe(512);
+    expect(JSON.stringify(out).length).toBeLessThanOrEqual(5_000);
+  });
+
   it('maps an expired current declaration to expired and preserves superseded precedence', async () => {
     vi.mocked(inspectEventKey).mockResolvedValueOnce({
       announcements: [
