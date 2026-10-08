@@ -3260,7 +3260,10 @@ async function synthViaAdapter(text: string, role: string, playbackGeneration: n
  * Cancel any in-progress speech and clear the queue. Used for barge-in
  * and when voice mode is turned off.
  */
-export function cancelAllSpeech(): void {
+export function cancelAllSpeech(options: { preserveReading?: boolean } = {}): void {
+  // A React bridge subscription can disconnect while Suspense hides its tree.
+  // Original narration belongs to the shared player, not that subscription.
+  if (options.preserveReading && readingRuntime) return;
   // Barge-in / mode-off terminates any local canonical turn still awaiting a
   // substantive answer. The existing audio cancellation semantics are kept.
   if (localCanonicalAdapter.activeTurnId) localCanonicalAdapter.interrupt('user');
