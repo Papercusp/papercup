@@ -103,7 +103,7 @@ describe('first required suite after named pure capture', () => {
       if (condition === 'conflicting-archive') {
         const other = structuredClone(input.read.rows[index]!);
         other.id = 'conflicting-outcome'; other.detail.repairHead = 'c'.repeat(12);
-        input.read.rows.push(other); input.read.total++;
+        input.read.rows.push(other); input.read.total = (input.read.total ?? 0) + 1;
       }
       expect(evaluateFirstPostCaptureGateReuse(input).verdict).toBe('unknown');
     });
