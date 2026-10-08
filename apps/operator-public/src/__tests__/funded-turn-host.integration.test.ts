@@ -3,18 +3,18 @@ import { resolve } from 'node:path';
 import { createHash, generateKeyPairSync, sign as cryptoSign } from 'node:crypto';
 import postgres from 'postgres';
 import { Hono } from 'hono';
-import { createFreshPgDb, applyMigrationForTest, type FreshPgDb } from '../../test/_pg-helpers';
-import { meteredUsageRoute } from '../../../../apps/operator-public/src/routes/metered-usage';
-import { makeSqliteDb } from '../../../../apps/operator-public/src/__tests__/sqlite-d1';
-import { makeEnv } from '../../../../apps/operator-public/src/__tests__/fake-d1';
-import { FundedIdentityTurnStore, fundedIdentityTurnId, type FundedIdentityTurnBinding } from './funded-turn-store';
-import { FundedIdentityTurnHost } from './funded-turn-host';
-import { identityPerUseOfferTerms } from './identity-per-use-offer';
-import type { IdentityTurnBilledCost } from './shadow-metering-reader';
+import { createFreshPgDb, applyMigrationForTest, type FreshPgDb } from '../../../../packages/operator-core/test/_pg-helpers';
+import { meteredUsageRoute } from '../routes/metered-usage';
+import { makeSqliteDb } from './sqlite-d1';
+import { makeEnv } from './fake-d1';
+import { FundedIdentityTurnStore, fundedIdentityTurnId, type FundedIdentityTurnBinding } from '@papercusp/operator-core/lib/cupboard/funded-turn-store';
+import { FundedIdentityTurnHost } from '@papercusp/operator-core/lib/cupboard/funded-turn-host';
+import { identityPerUseOfferTerms } from '@papercusp/operator-core/lib/cupboard/identity-per-use-offer';
+import type { IdentityTurnBilledCost } from '@papercusp/operator-core/lib/cupboard/shadow-metering-reader';
 
 const auth = vi.hoisted(() => ({ resolveGithubBearer: vi.fn() }));
-vi.mock('../../../../apps/operator-public/src/auth.ts', async (original) => ({
-  ...await original<typeof import('../../../../apps/operator-public/src/auth.ts')>(),
+vi.mock('../auth.ts', async (original) => ({
+  ...await original<typeof import('../auth.ts')>(),
   resolveGithubBearer: auth.resolveGithubBearer,
 }));
 let db: FreshPgDb, peerSql: postgres.Sql, seq = 0;
@@ -73,7 +73,8 @@ function harness() {
         throw new Error('lost reserve ack');
       }
       if (changedOrigin && new URL(String(url)).searchParams.has('identityOfferId') && response.status === 200) {
-        const payload = await response.json(); payload.identityMarkupOrigin.payer = 'gh:someone-else';
+        const payload = await response.json() as { identityMarkupOrigin: { payer: string } };
+        payload.identityMarkupOrigin.payer = 'gh:someone-else';
         return Response.json(payload);
       }
       return response;

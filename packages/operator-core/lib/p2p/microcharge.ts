@@ -115,7 +115,9 @@ export type MicrochargeOpenResult =
 export function reserveMicrocharge(channel: MicrochargeChannel, voucher: CumulativePaymentVoucher, nowMs: number): MicrochargeOpenResult {
   if (voucher.channelId !== channel.channelId) return { ok: false, code: 'channel-mismatch', detail: 'voucher channel does not match the local payment channel' };
   if (!voucher.payer.trim() || !voucher.seller.trim() || !voucher.releaseRef.trim() || !voucher.usageNonce.trim() || !voucher.priceVersion.trim() || !voucher.splitManifestHash.trim() || voucher.signature.trim() === '') return { ok: false, code: 'invalid-voucher', detail: 'voucher identity, price, split, and signature fields are required' };
-  if (voucher.meterQuantity <= 0n || voucher.pricePerUnitMicros < 0n || voucher.cumulativeClaimMicros < 0n || !Number.isFinite(nowMs) || nowMs > voucher.expiresAtMs) return { ok: false, code: nowMs > voucher.expiresAtMs ? 'expired' : 'invalid-voucher', detail: 'voucher amount fields must be valid and the voucher must not be expired' };
+  if (voucher.meterQuantity <= 0n || voucher.pricePerUnitMicros < 0n || voucher.cumulativeClaimMicros < 0n ||
+      !Number.isSafeInteger(nowMs) || nowMs < 0 || !Number.isSafeInteger(voucher.expiresAtMs) ||
+      voucher.expiresAtMs < 0 || nowMs > voucher.expiresAtMs) return { ok: false, code: nowMs > voucher.expiresAtMs ? 'expired' : 'invalid-voucher', detail: 'voucher amount fields and expiry must be valid and the voucher must not be expired' };
   if (voucher.usageNonce in channel.receipts || voucher.usageNonce in channel.reservations) return { ok: false, code: 'duplicate-nonce', detail: `usage nonce '${voucher.usageNonce}' was already observed` };
   if (voucher.cumulativeClaimMicros <= channel.lastCumulativeMicros) return { ok: false, code: 'cumulative-regression', detail: 'cumulative claim must advance monotonically' };
   const deltaMicros = voucher.cumulativeClaimMicros - channel.lastCumulativeMicros;

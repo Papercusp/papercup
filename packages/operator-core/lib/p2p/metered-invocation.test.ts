@@ -406,10 +406,10 @@ describe('metering interception on a billable unit', () => {
 
     // The payer signs a SECOND unit against its stale pre-reservation view, so
     // the claim repeats a cumulative total the channel has already advanced past.
-    const replayed = {
+    const replayed = signPaymentTestVoucher({
       ...buildUsageVoucher(stale, meter(), unit({ usageNonce: 'n-2' })),
-      signature: 'payer-signature',
-    };
+      signature: '',
+    });
     expect(replayed.cumulativeClaimMicros).toBe(first.voucher.cumulativeClaimMicros);
 
     expect(
@@ -459,14 +459,12 @@ describe('metering interception on a billable unit', () => {
 
     expect(
       acceptMeteredVoucher({
-        verifySignature: paymentTestVerifier('ch_1', 'org_buyer'),
         channel,
         meter: meter(),
         unit: unit(),
         voucher: honest,
         nowMs: 1_000,
-        // Replace the trusted verifier with a refusal for this negative control.
-        ...{ verifySignature: () => false },
+        verifySignature: () => false,
       }),
     ).toMatchObject({ ok: false, code: 'invalid-voucher' });
   });

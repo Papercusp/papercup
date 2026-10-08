@@ -1,3 +1,4 @@
+import { paymentTestOpening, signPaymentTestVoucher } from '@papercusp/operator-core/lib/p2p/_payment-voucher-fixture';
 /**
  * P-033 batch settlement execution through the shipped Worker production door.
  *
@@ -124,12 +125,12 @@ function bearer(body?: unknown): RequestInit {
   return {
     method: 'POST',
     headers: { Authorization: 'Bearer test-token', 'Content-Type': 'application/json' },
-    body: body === undefined ? undefined : JSON.stringify(body),
+    body: body === undefined ? undefined : JSON.stringify(paymentTestOpening(body, { payer: 'gh:7', chainId: CHAIN_ID, stablecoinAddress: STABLECOIN, settlementContractAddress: SETTLEMENT_CONTRACT, walletAddress: SIGNER })),
   };
 }
 
 function voucher(nonce: string, cumulative: number): CumulativePaymentVoucher {
-  return {
+  return signPaymentTestVoucher({
     channelId: CHANNEL,
     payer: 'gh:7',
     seller: 'gh:9',
@@ -142,7 +143,7 @@ function voucher(nonce: string, cumulative: number): CumulativePaymentVoucher {
     expiresAtMs: 4_000_000_000_000,
     cumulativeClaimMicros: BigInt(cumulative),
     signature: `sig-${nonce}`,
-  };
+  });
 }
 
 async function bindWallet(db: D1Database): Promise<void> {
@@ -163,7 +164,7 @@ async function seedSettledReceipt(
   cumulative: number,
   splitManifestHash = SPLIT.manifestHash,
 ): Promise<void> {
-  const v: CumulativePaymentVoucher = { ...voucher(nonce, cumulative), splitManifestHash };
+  const v: CumulativePaymentVoucher = signPaymentTestVoucher({ ...voucher(nonce, cumulative), splitManifestHash });
   await db
     .prepare(
       `INSERT INTO usage_receipts
