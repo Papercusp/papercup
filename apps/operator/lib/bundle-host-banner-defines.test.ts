@@ -75,6 +75,43 @@ interface BannerCall {
   command: string;
 }
 
+describe('WI-10007376 — helper-only host bundles avoid eager PTY script hashing', () => {
+  it('runs launcher helpers without reading the generated bundle as a PTY script', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'host-helper-digest-'));
+    try {
+      const { banner, defines } = loadSharedBanner();
+      const entry = join(dir, 'entry.mjs');
+      const out = join(dir, 'host.mjs');
+      writeFileSync(entry, [
+        `import { operatorPinEvidence } from ${JSON.stringify(join(REPO_ROOT, 'apps/operator/scripts/psu-pty-host.mjs'))};`,
+        `import { normalizeModelSpecForAgent } from ${JSON.stringify(join(REPO_ROOT, 'apps/operator/scripts/psu-launcher.mjs'))};`,
+        `console.log(operatorPinEvidence({ PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:3170' }));`,
+        `console.log(normalizeModelSpecForAgent('codex', 'gpt-5.5:high'));`,
+      ].join('\n'));
+      await build({ entryPoints: [entry], outfile: out, bundle: true, platform: 'node',
+        format: 'esm', target: 'node22', banner: { js: banner },
+        define: { ...defines, __PAPERCUSP_BUNDLED_SIDECAR__: 'true' },
+        treeShaking: true, logLevel: 'silent' });
+      // Allow Node's own loader reads, but fail if a bundled PTY initializer
+      // performs the extra filesystem read observed in the frozen-host profile.
+      const preload = [
+        "import fs from 'node:fs'; import { syncBuiltinESMExports } from 'node:module';",
+        'const read = fs.readFileSync;',
+        "fs.readFileSync = function(...args) { if (new Error().stack.includes('hashHostScript')) process.stderr.write('EAGER_PTY_DIGEST_ATTEMPT\\n'); return read.apply(this, args); };",
+        'syncBuiltinESMExports();',
+      ].join('\n');
+      const run = spawnSync(process.execPath, ['--import', `data:text/javascript,${encodeURIComponent(preload)}`, out], { encoding: 'utf8' });
+      expect(run.status, run.stderr).toBe(0);
+      expect(run.stdout.trim()).toBe('direct-3170\ngpt-5.5:high');
+      // hashHostScript deliberately degrades read errors to null, so detect
+      // attempted reads independently of its return value or process status.
+      expect(run.stderr).not.toContain('EAGER_PTY_DIGEST_ATTEMPT');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 /**
  * Find every esbuild `--banner:js=` argument that injects HOST_BANNER (directly or through a
  * variable built from it, such as STAMP_BANNER), and report whether the same logical shell
