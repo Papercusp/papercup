@@ -25,6 +25,7 @@ import {
   type RepairManifest,
   type RepairManifestSummary,
 } from './repair-manifest';
+import { createHash } from 'node:crypto';
 import type { FixPrecheckVerdict } from './admission-fix-precheck';
 
 /**
@@ -218,6 +219,8 @@ export interface RepairSignatureRedInput {
   /** Kinds this run MEASURED. Prior entries of any OTHER kind carry forward unchanged. */
   measuredKinds?: readonly RepairSignatureKind[];
   signatureContext?: RepairSignatureContext;
+  /** WI-10007489: the radius this run actually EXECUTED, recorded on the round it produces. */
+  executed?: FrozenRepairRoundExecution;
 }
 
 function boundedSignature(entries: readonly RepairSignatureEntry[]): RepairSignatureEntry[] {
@@ -913,6 +916,77 @@ export interface FrozenRepairConvergenceRound {
   /** Size of the failing set observed at this round. */
   failingCount: number;
   atMs: number;
+  /** WI-10007489: the radius this round executed. Absent on legacy rows and on reds whose
+   *  runner did not report it, which is "not recorded", never "nothing ran". */
+  executed?: FrozenRepairRoundExecution;
+}
+
+/**
+ * WI-10007489: what a red round actually EXECUTED. Without it the zero-wait-convergence
+ * promise (a repair round re-runs only the failing radius, never the full gate) could not be
+ * checked from history: rounds recorded verdicts but not the leg/test set behind them.
+ * `mode:'full'` is the full-gate fallthrough; `mode:'targeted'` is verifyRepairHead's
+ * selective run. Bounded like the rest of the row: a COUNT plus a digest of the file set,
+ * never the set itself, and at most FROZEN_REPAIR_ROUND_GATE_ID_CAP gate ids.
+ */
+export interface FrozenRepairRoundExecution {
+  mode: 'targeted' | 'full';
+  /** Test files executed. Absent when the runner did not count them (a full suite run). */
+  fileCount?: number;
+  /** sha256 (first 16 hex) over the sorted, de-duplicated file keys; absent when none ran. */
+  filesDigest?: string;
+  /** Targeted gate/task ids executed (bounded). */
+  gateIds: string[];
+  /** `selectFrozenRepairAdmissionPaths().mode` for a targeted round. */
+  radiusMode?: string;
+}
+
+export const FROZEN_REPAIR_ROUND_GATE_ID_CAP = 32;
+const FROZEN_REPAIR_ROUND_GATE_ID_CHARS = 128;
+const FROZEN_REPAIR_ROUND_RADIUS_MODE_CHARS = 64;
+
+/** Build the bounded execution record for a round from the raw executed sets. */
+export function frozenRepairRoundExecution(input: {
+  mode: 'targeted' | 'full';
+  fileKeys?: readonly string[];
+  gateIds?: readonly string[];
+  radiusMode?: string;
+}): FrozenRepairRoundExecution {
+  const keys = input.fileKeys ? [...new Set(input.fileKeys)].sort() : null;
+  return normalizeRoundExecution({
+    mode: input.mode,
+    ...(keys ? { fileCount: keys.length } : {}),
+    ...(keys && keys.length > 0
+      ? { filesDigest: createHash('sha256').update(keys.join('\n')).digest('hex').slice(0, 16) }
+      : {}),
+    gateIds: [...(input.gateIds ?? [])],
+    ...(input.radiusMode ? { radiusMode: input.radiusMode } : {}),
+  }) as FrozenRepairRoundExecution;
+}
+
+/** Tolerant parse: a malformed record is dropped (the round stays), never thrown on. */
+function normalizeRoundExecution(value: unknown): FrozenRepairRoundExecution | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const row = value as Record<string, unknown>;
+  if (row.mode !== 'targeted' && row.mode !== 'full') return undefined;
+  if (row.fileCount !== undefined && (!Number.isInteger(row.fileCount) || (row.fileCount as number) < 0)) {
+    return undefined;
+  }
+  if (!Array.isArray(row.gateIds)) return undefined;
+  const gateIds = [...new Set(row.gateIds.filter((id): id is string => typeof id === 'string' && id.trim() !== ''))]
+    .slice(0, FROZEN_REPAIR_ROUND_GATE_ID_CAP)
+    .map((id) => id.slice(0, FROZEN_REPAIR_ROUND_GATE_ID_CHARS));
+  return {
+    mode: row.mode,
+    ...(row.fileCount !== undefined ? { fileCount: row.fileCount as number } : {}),
+    ...(typeof row.filesDigest === 'string' && /^[0-9a-f]{16}$/.test(row.filesDigest)
+      ? { filesDigest: row.filesDigest }
+      : {}),
+    gateIds,
+    ...(typeof row.radiusMode === 'string' && row.radiusMode !== ''
+      ? { radiusMode: row.radiusMode.slice(0, FROZEN_REPAIR_ROUND_RADIUS_MODE_CHARS) }
+      : {}),
+  };
 }
 
 /**
@@ -1562,11 +1636,13 @@ function parseConvergenceRounds(value: unknown): FrozenRepairConvergenceRound[] 
     if (!nonBlank(row.head)) continue;
     if (!Number.isInteger(row.failingCount) || (row.failingCount as number) < 0) continue;
     if (!validTimestamp(row.atMs)) continue;
+    const executed = normalizeRoundExecution(row.executed);
     rounds.push({
       round: row.round as number,
       head: row.head,
       failingCount: row.failingCount as number,
       atMs: row.atMs as number,
+      ...(executed ? { executed } : {}),
     });
   }
   return capConvergenceRounds(rounds);
@@ -1590,10 +1666,11 @@ function capConvergenceRounds(rounds: readonly FrozenRepairConvergenceRound[]): 
  */
 function appendConvergenceRound(
   queue: FrozenCandidateRepairQueue,
-  input: { head: string; failingTests: readonly string[]; nowMs: number },
+  input: { head: string; failingTests: readonly string[]; nowMs: number; executed?: FrozenRepairRoundExecution },
 ): FrozenRepairConvergenceRound[] {
   const existing = queue.convergenceRounds ?? [];
   const highest = existing.reduce((max, entry) => (entry.round > max ? entry.round : max), 0);
+  const executed = normalizeRoundExecution(input.executed);
   return capConvergenceRounds([
     ...existing,
     {
@@ -1601,6 +1678,7 @@ function appendConvergenceRound(
       head: input.head,
       failingCount: boundedFailures(input.failingTests).length,
       atMs: input.nowMs,
+      ...(executed ? { executed } : {}),
     },
   ]);
 }
@@ -2345,6 +2423,7 @@ export function markFrozenCandidateVerificationRed(
       head: queue.repairHead,
       failingTests,
       nowMs: input.nowMs,
+      executed: input.executed,
     }),
     failingTests: boundedFailures(failingTests),
     signature,
@@ -2779,6 +2858,7 @@ export function markFrozenRepairVerificationRed(
       head: input.repairHead,
       failingTests,
       nowMs: input.nowMs,
+      executed: input.executed,
     }),
     failingTests: boundedFailures(failingTests),
     signature,
@@ -2838,6 +2918,7 @@ export function recordFrozenRepairSupersededRed(
       head: input.measuredHead,
       failingTests,
       nowMs: input.nowMs,
+      executed: input.executed,
     }),
     failingTests: boundedFailures(failingTests),
     signature,
