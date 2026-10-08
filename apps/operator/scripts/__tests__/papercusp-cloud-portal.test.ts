@@ -165,6 +165,88 @@ describe("hosted Portal boot launcher", () => {
     }
   });
 
+  it("configures the launcher's own secret reader before importing it, not only the Portal child", () => {
+    const dir = mkdtempSync(join(tmpdir(), "papercusp-cloud-portal-parent-secrets-"));
+    try {
+      const installedLauncher = join(dir, "papercusp-cloud-portal-launcher.ts");
+      const hostedEnv = join(dir, "hosted.env");
+      const operatorEnv = join(dir, "operator.env");
+      const startWeb = join(dir, "start-web.mjs");
+      const resolverDir = join(dir, "packages/operator-core/lib/auth/hosted");
+      const adminUrl = "postgresql://portal_fixture@127.0.0.1/portal_fixture";
+      mkdirSync(resolverDir, { recursive: true });
+      writeFileSync(installedLauncher, readFileSync(LAUNCHER_SCRIPT, "utf8"));
+      writeFileSync(hostedEnv, "SESSION_REF=integration:TEST_SESSION_COOKIE_SECRET\n");
+      writeFileSync(operatorEnv, `HARNESS_ADMIN_DATABASE_URL=${adminUrl}\n`);
+      writeFileSync(join(resolverDir, "secret-ref.ts"), `
+        const parentAdminUrlAtImport = process.env.HARNESS_ADMIN_DATABASE_URL;
+        export async function resolveHostedSecretRef(reference: string) {
+          if (parentAdminUrlAtImport !== ${JSON.stringify(adminUrl)}) throw new Error('wrong_parent_credential_store');
+          if (reference !== 'integration:TEST_SESSION_COOKIE_SECRET') throw new Error('wrong_secret_reference');
+          return 'SESSION_SENTINEL';
+        }
+      `);
+      writeFileSync(startWeb, `
+        if (process.env.HARNESS_ADMIN_DATABASE_URL !== ${JSON.stringify(adminUrl)}) throw new Error('wrong_child_credential_store');
+        if (process.env.SESSION_REF !== 'env:PAPERCUSP_CLOUD_PORTAL_SECRET_TEST_SESSION_COOKIE_SECRET') throw new Error('unresolved_child_reference');
+        if (process.env.PAPERCUSP_CLOUD_PORTAL_SECRET_TEST_SESSION_COOKIE_SECRET !== 'SESSION_SENTINEL') throw new Error('missing_child_secret');
+        process.stdout.write('hosted_child_started');
+      `);
+      const env = { ...process.env };
+      delete env.HARNESS_ADMIN_DATABASE_URL;
+      delete env.DATABASE_URL;
+      const result = spawnSync(join(ROOT, "node_modules/.bin/tsx"), [installedLauncher], {
+        cwd: ROOT,
+        encoding: "utf8",
+        env: {
+          ...env,
+          PAPERCUSP_PORTAL_ROOT: dir,
+          PAPERCUSP_PORTAL_START_WEB: startWeb,
+          PAPERCUSP_PORTAL_HOSTED_ENV_FILE: hostedEnv,
+          PAPERCUSP_PORTAL_OPERATOR_ENV_FILE: operatorEnv,
+          PAPERCUSP_INTEGRATION_ROOT: dir,
+        },
+      });
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toBe("hosted_child_started");
+      expect(result.stdout + result.stderr).not.toContain("SESSION_SENTINEL");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("fails clearly before importing the secret reader when no admin database URL is configured", () => {
+    const dir = mkdtempSync(join(tmpdir(), "papercusp-cloud-portal-missing-admin-"));
+    try {
+      const installedLauncher = join(dir, "papercusp-cloud-portal-launcher.ts");
+      const hostedEnv = join(dir, "hosted.env");
+      const operatorEnv = join(dir, "operator.env");
+      writeFileSync(installedLauncher, readFileSync(LAUNCHER_SCRIPT, "utf8"));
+      writeFileSync(hostedEnv, "SESSION_REF=integration:TEST_SESSION_COOKIE_SECRET\n");
+      writeFileSync(operatorEnv, "");
+      const env = { ...process.env };
+      delete env.HARNESS_ADMIN_DATABASE_URL;
+      delete env.DATABASE_URL;
+      const result = spawnSync(join(ROOT, "node_modules/.bin/tsx"), [installedLauncher], {
+        cwd: ROOT,
+        encoding: "utf8",
+        env: {
+          ...env,
+          PAPERCUSP_PORTAL_ROOT: dir,
+          PAPERCUSP_PORTAL_START_WEB: join(dir, "start-web.mjs"),
+          PAPERCUSP_PORTAL_HOSTED_ENV_FILE: hostedEnv,
+          PAPERCUSP_PORTAL_OPERATOR_ENV_FILE: operatorEnv,
+          PAPERCUSP_INTEGRATION_ROOT: dir,
+        },
+      });
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("portal_hosted_admin_database_url_missing");
+      expect(result.stderr).not.toContain("Cannot find module");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("rewrites encrypted integration references to ephemeral env references", async () => {
     const source = parseEnvFile("# comment\nWORKOS_API_KEY_REF=integration:WORKOS_API_KEY\nWORKOS_CLIENT_ID=client_test\n");
     const rewritten = await resolveIntegrationReferences(source, async (reference) => {
