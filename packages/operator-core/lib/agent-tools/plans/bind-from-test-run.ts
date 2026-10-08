@@ -742,10 +742,25 @@ export function deriveBindingFromTestRun(
   const recordedExecution = parseTestRunExecutionDetails(row.execution_details);
   const runtimeWitness = stableRecordedRuntimeEnvironment(
     recordedExecution?.runtimeEnvironmentBefore, recordedExecution?.runtimeEnvironmentAfter);
-  if (input.completedRuntime && !runtimeWitness) {
+  // Isolated workers finish inside the test, so their original ledger receipts
+  // identify the execution instead of snapshots of the current serving host.
+  // The store derives the receipt fingerprint and certifies the retained artifacts.
+  const isolatedRuntimeUnits = recordedExecution?.testLayer === 'integration'
+    && recordedExecution.workspaceId === row.workspace_id
+    && recordedExecution.harnessSlug === row.harness_slug
+    && recordedExecution.isolatedRuntimeReceipts
+    ? recordedExecution.isolatedRuntimeReceipts.map(receipt => `isolated-integration:${receipt.runId}`)
+    : undefined;
+  const completedWitnessPresent = input.completedRuntime?.kind === 'isolated-integration'
+    ? isolatedRuntimeUnits && JSON.stringify([...isolatedRuntimeUnits].sort())
+      === JSON.stringify(input.completedRuntime.runIds.map(id => `isolated-integration:${id}`).sort())
+    : runtimeWitness;
+  if (input.completedRuntime && !completedWitnessPresent) {
     return { ok: false, error: 'test_run_runtime_witness_missing', testRunId,
       message: `test-run ${testRunId} has no stable execution-time runtime witness; completed certification cannot create one.` };
   }
+  const runtimeUnits = input.completedRuntime && input.completedRuntime.kind !== 'isolated-integration'
+    ? runtimeWitness?.units : isolatedRuntimeUnits ?? runtimeWitness?.units;
   const binding: DerivedTestRunBinding = {
     workItemId: input.workItemId,
     ...(input.specId ? { specId: input.specId } : {}),
@@ -763,7 +778,7 @@ export function deriveBindingFromTestRun(
       ...(input.fixturePaths ? { fixturePaths: input.fixturePaths } : {}),
       ...(input.fixtureGlobs ? { fixtureGlobs: input.fixtureGlobs } : {}),
       ...(input.fixtureRootHarnessSlug ? { fixtureRootHarnessSlug: input.fixtureRootHarnessSlug } : {}),
-      ...(runtimeWitness ? { runtimeUnits: [...runtimeWitness.units] } : {}),
+      ...(runtimeUnits ? { runtimeUnits: [...runtimeUnits] } : {}),
       ...(input.completedRuntime ? { completedRuntime: input.completedRuntime } : {}),
     },
     details: {

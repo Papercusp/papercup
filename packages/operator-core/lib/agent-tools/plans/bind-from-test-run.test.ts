@@ -106,6 +106,69 @@ describe('subject files are the first ring of relative runtime imports', () => {
 });
 
 describe('deriveBindingFromTestRun', () => {
+  const isolatedReceipts = [
+    { runId: '20261008T164557Z-3031268', resultSha256: 'a'.repeat(64),
+      sourceSha256: 'b'.repeat(64), lifecycleSha256: 'c'.repeat(64) },
+    { runId: '20261008T164439Z-3031268', resultSha256: 'd'.repeat(64),
+      sourceSha256: 'e'.repeat(64), lifecycleSha256: 'f'.repeat(64) },
+  ];
+  const isolatedExecution = (over: Record<string, unknown> = {}) => ({
+    schemaVersion: 1, root, filePath: TEST, runGroupId: null, workspaceId: 'ws-1',
+    harnessSlug: 'web', testNamePattern: null, testLayer: 'integration', passed: 2,
+    failed: 0, skipped: 0, collectionFailed: false, mutationPhase: null,
+    commitSha: 'abcdef0123456789', worktreeDirty: false,
+    isolatedRuntimeReceipts: isolatedReceipts, ...over,
+  });
+  const completedIsolated = { kind: 'isolated-integration',
+    runIds: isolatedReceipts.map(receipt => receipt.runId).sort() };
+
+  it.each(['object', 'json'])('derives isolated integration selectors from original %s ledger receipts', (encoding) => {
+    const execution = isolatedExecution();
+    const out = deriveBindingFromTestRun(input({ completedRuntime: completedIsolated }),
+      run({ execution_details: encoding === 'json' ? JSON.stringify(execution) : execution }), root, 'run');
+    expect(out).toMatchObject({ ok: true, binding: { measurement: {
+      runtimeUnits: isolatedReceipts.map(receipt => `isolated-integration:${receipt.runId}`),
+      completedRuntime: completedIsolated,
+    } } });
+    expect(deriveBindingFromTestRun(input(), run({ execution_details: execution }), root, 'run'))
+      .toMatchObject({ ok: true, binding: { measurement: {
+        runtimeUnits: isolatedReceipts.map(receipt => `isolated-integration:${receipt.runId}`),
+      } } });
+  });
+
+  it.each([
+    ['nonintegration', { testLayer: 'unit' }],
+    ['missing receipts', { isolatedRuntimeReceipts: undefined }],
+    ['duplicate receipts', { isolatedRuntimeReceipts: [isolatedReceipts[0], isolatedReceipts[0]] }],
+    ['malformed receipt', { isolatedRuntimeReceipts: [{ ...isolatedReceipts[0], resultSha256: 'invalid' }] }],
+    ['different workspace', { workspaceId: 'ws-other' }],
+    ['different harness', { harnessSlug: 'other' }],
+  ])('refuses completed isolated certification with %s', (_label, over) => {
+    const row = run({ execution_details: isolatedExecution(over as Record<string, unknown>) });
+    expect(deriveBindingFromTestRun(input({ completedRuntime: completedIsolated }), row, root, 'run'))
+      .toMatchObject({ ok: false, error: 'test_run_runtime_witness_missing' });
+    expect(deriveBindingFromTestRun(input(), row, root, 'run'))
+      .not.toMatchObject({ binding: { measurement: { runtimeUnits: expect.anything() } } });
+  });
+
+  it('refuses requested lifetime mismatches and receipts offered as a different completed runtime kind', () => {
+    const row = run({ execution_details: isolatedExecution() });
+    for (const completedRuntime of [
+      { kind: 'isolated-integration', runIds: [isolatedReceipts[0].runId] },
+      { kind: 'isolated-integration', runIds: ['20261008T170000Z-3031268'] },
+      { kind: 'llm-in-process' },
+    ]) {
+      expect(deriveBindingFromTestRun(input({ completedRuntime }), row, root, 'run'))
+        .toMatchObject({ ok: false, error: 'test_run_runtime_witness_missing' });
+    }
+    const snapshot = { schemaVersion: 1, units: ['bg-host'], fingerprint: 'a'.repeat(64),
+      observedAt: '2026-09-23T14:59:00Z' };
+    expect(deriveBindingFromTestRun(input({ completedRuntime: completedIsolated }), run({
+      execution_details: { ...isolatedExecution({ isolatedRuntimeReceipts: undefined }),
+        runtimeEnvironmentBefore: snapshot, runtimeEnvironmentAfter: snapshot },
+    }), root, 'run')).toMatchObject({ ok: false, error: 'test_run_runtime_witness_missing' });
+  });
+
   it('derives runtime selectors only from matching execution-time ledger witnesses', () => {
     const witness = { schemaVersion: 1, units: ['bg-host'], fingerprint: 'a'.repeat(64),
       observedAt: '2026-09-23T14:59:00Z' };
