@@ -195,6 +195,7 @@ import {
   readShebangInterpreter,
   resolveOnPath,
   resolveInWellKnownDirs,
+  resolveBackendLaunch,
 } from "../../../packages/operator-core/lib/backend-bin-resolve.mjs";
 // WI-37841: the ONE derivation of a launch's boot-log path, shared with
 // launch-su.ts (which points the keep-window-open receipt at the same file) and
@@ -12089,6 +12090,7 @@ export function runWrapper(options) {
   // launches keep the guard.
   if (!preserveCwd) cwd = repoCwdOrRedirect(cwd);
   const env = { ...sanitizeInheritedEnv(process.env), ...envelopeEnv };
+  args = codexManagedDaemonArgs(wrapperBin, args);
   applyHeadlessCodexBrowserPolicy(env);
   const reportPreSpawnFailure = () =>
     onSpawnFailure
@@ -16428,11 +16430,14 @@ export function wellKnownBackendBin(agent, opts = {}) {
 }
 
 /** Detect a backend bin: PATH first, then well-known. `{ path, onPath } | null`. */
-export function detectBackendBin(agent) {
-  const onPath = whichBin(agent);
-  if (onPath) return { path: onPath, onPath: true };
-  const wk = wellKnownBackendBin(agent);
-  return wk ? { path: wk, onPath: false } : null;
+export function detectBackendBin(agent, opts = {}) {
+  const resolved = resolveBackendLaunch(agent, opts);
+  return resolved ? { path: resolved.bin, onPath: resolved.onPath } : null;
+}
+
+export function codexManagedDaemonArgs(bin, args) {
+  if (!/(^|[\\/])codex(?:\.exe|\.cmd)?$/.test(bin) || args.includes("--no-daemon")) return args;
+  return ["--no-daemon", ...args];
 }
 
 /** Prepend a bin's dir to THIS process's PATH so the bare-name launch (runWrapper
@@ -16454,10 +16459,9 @@ function ensureDirOnPath(binPath) {
   } catch {
     /* a shebang we cannot read is not a reason to skip the bin's own dir */
   }
-  for (const dir of dirs) {
+  for (const dir of dirs.reverse()) {
     const parts = String(process.env.PATH ?? "").split(delimiter);
-    if (!parts.includes(dir))
-      process.env.PATH = dir + delimiter + (process.env.PATH ?? "");
+    process.env.PATH = [dir, ...parts.filter((part) => part !== dir)].join(delimiter);
   }
 }
 
@@ -16487,7 +16491,7 @@ export async function ensureBackendInstalled(
 ) {
   const present = detect(agent);
   if (present) {
-    if (!present.onPath) ensureDirOnPath(present.path);
+    ensureDirOnPath(present.path);
     return true;
   }
   const label = AGENT_LABELS[agent] ?? agent;
@@ -16544,8 +16548,8 @@ export async function ensureBackendInstalled(
     );
     return false;
   }
+  ensureDirOnPath(after.path);
   if (!after.onPath) {
-    ensureDirOnPath(after.path);
     console.error(
       `psu: using ${after.path} (added its dir to PATH for this launch; restart your shell to make it permanent).`,
     );

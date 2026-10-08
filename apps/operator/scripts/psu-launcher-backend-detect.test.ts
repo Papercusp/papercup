@@ -27,7 +27,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { wellKnownBackendBin } from './psu-launcher.mjs';
+import { codexManagedDaemonArgs, detectBackendBin, ensureBackendInstalled, wellKnownBackendBin } from './psu-launcher.mjs';
 
 /**
  * Install locations a backend can legitimately land in, that a desktop-spawned
@@ -77,6 +77,37 @@ describe('wellKnownBackendBin — PATH-independent backend detection (WI-37920)'
       expect(wellKnownBackendBin('omp', { home: empty, env: { NODE_ENV: 'test', PATH: '' } })).toBeNull();
     } finally {
       rmSync(empty, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('packaged backend launchers cannot recursively launch psu', () => {
+  it('isolates managed Codex feature settings from the shared background daemon on launch and resume', () => {
+    expect(codexManagedDaemonArgs('codex', ['--no-alt-screen'])).toEqual(['--no-daemon', '--no-alt-screen']);
+    expect(codexManagedDaemonArgs('/opt/bin/codex', ['resume', 'thread'])).toEqual(['--no-daemon', 'resume', 'thread']);
+    expect(codexManagedDaemonArgs('codex', ['--no-daemon'])).toEqual(['--no-daemon']);
+    expect(codexManagedDaemonArgs('claude', [])).toEqual([]);
+  });
+  it('detects and promotes the native backend even when its directory is already later on PATH', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'psu-native-backend-'));
+    const originalPath = process.env.PATH;
+    try {
+      const wrapperDir = join(root, 'sidecar/bin');
+      const nativeDir = join(root, 'native');
+      mkdirSync(wrapperDir, { recursive: true });
+      mkdirSync(nativeDir, { recursive: true });
+      writeFileSync(join(wrapperDir, 'codex'), '#!/bin/sh\nexec node "$ROOT/scripts/psu.mjs" --agent=codex "$@"\n');
+      const native = join(nativeDir, 'codex');
+      writeFileSync(native, '#!/bin/sh\nexit 0\n');
+      process.env.PATH = [wrapperDir, nativeDir, originalPath].join(':');
+      expect(detectBackendBin('codex')).toEqual({ path: native, onPath: true });
+      expect(await ensureBackendInstalled('codex', { interactive: false })).toBe(true);
+      expect(process.env.PATH?.split(':')[0]).toBe(nativeDir);
+      expect(detectBackendBin('codex')?.path).toBe(native);
+    } finally {
+      if (originalPath === undefined) delete process.env.PATH;
+      else process.env.PATH = originalPath;
+      rmSync(root, { recursive: true, force: true });
     }
   });
 });

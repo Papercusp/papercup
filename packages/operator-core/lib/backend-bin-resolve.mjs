@@ -53,7 +53,7 @@
  */
 import { existsSync, readdirSync, statSync, openSync, readSync, closeSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, dirname, delimiter, isAbsolute } from 'node:path';
+import { join, dirname, delimiter, isAbsolute, basename } from 'node:path';
 
 /** The agent CLIs psu can launch. Adding one means adding it here, once. */
 export const BACKEND_AGENTS = /** @type {const} */ (['claude', 'codex', 'omp']);
@@ -77,6 +77,21 @@ function safeIsDir(p) {
     return statSync(p).isDirectory();
   } catch {
     return false;
+  }
+}
+
+function isBackendLauncher(bin, candidate) {
+  if (!BACKEND_AGENTS.includes(basename(bin).replace(/\.(?:cmd|bat|exe)$/i, ''))) return false;
+  let fd;
+  try {
+    fd = openSync(candidate, 'r');
+    const head = Buffer.alloc(4096);
+    const n = readSync(fd, head, 0, head.length, 0);
+    return /\b(?:psu-launcher|psu)\.mjs\b|\bexec[^\r\n]*\bpsu(?:\s|["'])/.test(head.subarray(0, n).toString('utf8'));
+  } catch {
+    return false;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
   }
 }
 
@@ -196,14 +211,14 @@ export function resolveOnPath(bin, { env = process.env, platform = process.platf
   if (!bin) return null;
   // An interpreter given as an absolute path is already resolved.
   if (isAbsolute(bin) || bin.includes('/') || (platform === 'win32' && bin.includes('\\'))) {
-    return safeExists(bin) ? bin : null;
+    return safeExists(bin) && !isBackendLauncher(bin, bin) ? bin : null;
   }
   const parts = String(env.PATH ?? env.Path ?? '').split(delimiter).filter(Boolean);
   const names = executableNames(bin, { env, platform });
   for (const dir of parts) {
     for (const name of names) {
       const p = join(dir, name);
-      if (safeExists(p)) return p;
+      if (safeExists(p) && !isBackendLauncher(bin, p)) return p;
     }
   }
   return null;
@@ -218,7 +233,7 @@ export function resolveInWellKnownDirs(bin, opts = {}) {
   for (const dir of backendSearchDirs(opts)) {
     for (const name of names) {
       const p = join(dir, name);
-      if (safeExists(p)) return p;
+      if (safeExists(p) && !isBackendLauncher(bin, p)) return p;
     }
   }
   return null;
