@@ -7849,6 +7849,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     const chunks: Buffer[] = [];
     let bufferedBytes = 0;
     return {
+      get contentType() { return decoder.contentType(); },
       push(chunk: Uint8Array) {
         decoder.push(chunk);
         if (!bufferBody) return;
@@ -9050,6 +9051,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
               endCacheProbe();
               if (acceptedRelay && pendingAcceptedHead) {
                 const chunks = await acceptedRelay.finish();
+                pendingAcceptedHead.headers['content-type'] ??= acceptedRelay.contentType;
                 res.setTimeout(downstreamIdleMs);
                 res.writeHead(pendingAcceptedHead.status, pendingAcceptedHead.headers);
                 await flushAcceptedCodexChunks(res, chunks);
@@ -10081,6 +10083,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
               endCacheProbe();
               if (acceptedRelay && pendingAcceptedHead) {
                 const chunks = await acceptedRelay.finish();
+                pendingAcceptedHead.headers['content-type'] ??= acceptedRelay.contentType;
                 res.setTimeout(downstreamIdleMs);
                 res.writeHead(pendingAcceptedHead.status, pendingAcceptedHead.headers);
                 await flushAcceptedCodexChunks(res, chunks);
