@@ -4,14 +4,16 @@
  * Uses the maintained HTTP/SSE target and the production PI provisioning seam.
  * Run explicitly with OPERATOR_BASE_URL and PAPERCUSP_TEST_PUBLIC_CHAT=1.
  * A disposable manual seed makes the suite own a current-source request host;
+ * prepare its runtime with apps/operator/bin/bundle-host.sh and select its
+ * output directory with PAPERCUSP_TEST_PUBLIC_OPERATOR_BUNDLE_DIR.
  * without a seed, OPERATOR_BASE_URL selects an existing verified host.
  * The optional PAPERCUSP_TEST_PUBLIC_PORTAL=1 case also exercises typed input
  * on an isolated, immutable Portal candidate. Novice and final shipment
  * acceptance remain separate.
  */
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { execFile, spawn } from 'node:child_process';
-import { closeSync, cpSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { closeSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve, sep } from 'node:path';
 import { createServer } from 'node:net';
@@ -232,6 +234,16 @@ async function ownFixtureOperator(seedDir: string,
     if (launch) child = launch(root, port, logFd);
     else {
       const repoRoot = resolve(import.meta.dirname, '../../../../..');
+      const prepared = process.env.PAPERCUSP_TEST_PUBLIC_OPERATOR_BUNDLE_DIR;
+      if (!prepared || !existsSync(join(prepared, 'hono-host.mjs')))
+        throw new Error('manual_fixture_bundle_missing: prepare the current-source runtime with apps/operator/bin/bundle-host.sh');
+      if (existsSync(join(prepared, '.bundle-stale.json')))
+        throw new Error('manual_fixture_bundle_stale: rebuild the current-source runtime before acceptance');
+      // Reuse the production bundle and its runtime siblings. Compiling belongs
+      // to artifact preparation; request-host health keeps its bounded deadline.
+      const bundleDir = join(root, 'operator');
+      cpSync(realpathSync(prepared), bundleDir, { recursive: true });
+      symlinkSync(join(repoRoot, 'node_modules'), join(root, 'node_modules'), 'dir');
       const config = parseEnvFile(readFileSync(join(repoRoot, 'apps/operator/.env.local'), 'utf8'));
       const env: NodeJS.ProcessEnv = { ...config, ...process.env,
         PAPERCUSP_PG_SQL_DIR: join(repoRoot, 'libs/papercusp/libs/db/sql'),
@@ -242,18 +254,18 @@ async function ownFixtureOperator(seedDir: string,
       // This is a real request host, not a Vitest worker. Keep its maintained
       // shutdown/watchdog behavior and suppress only the test-worker markers.
       for (const key of Object.keys(env)) if (/^VITEST(?:_|$)/.test(key)) delete env[key];
-      const entry = pathToFileURL(join(repoRoot, 'apps/operator/bin/hono-host.ts')).href;
+      const entry = pathToFileURL(join(bundleDir, 'hono-host.mjs')).href;
       // Record only non-secret startup controls. The first marker executes before
       // the operator import graph, so a silent readiness failure has a measured
       // boundary between the launcher and the application bootstrap.
       writeFileSync(join(evidence, 'launch.json'), JSON.stringify({
         pid: process.pid, root, origin, entry,
+        bundleSha256: createHash('sha256').update(readFileSync(join(bundleDir, 'hono-host.mjs'))).digest('hex'),
         controls: Object.fromEntries(['NODE_OPTIONS', 'NODE_ENV', 'TMPDIR', 'TSX_TSCONFIG_PATH',
           'PAPERCUSP_CLUSTER_WORKERS', 'PAPERCUSP_API_CLUSTER_WORKERS',
           'PAPERCUSP_PGBOUNCER', 'PAPERCUSP_SKIP_PG_DISCOVERY'].map(key => [key, env[key] ?? null])),
       }, null, 2), { mode: 0o600 });
-      child = spawn(join(repoRoot, 'node_modules/.bin/tsx'), ['--tsconfig',
-        join(repoRoot, 'apps/operator/tsconfig.json'), '--eval',
+      child = spawn(process.execPath, ['--input-type=module', '--eval',
         `console.error('MANUAL_FIXTURE_IMPORT_START'); import(${JSON.stringify(entry)}).then(() => console.error('MANUAL_FIXTURE_IMPORT_DONE')).catch(error => { console.error(error); process.exitCode = 1; });`],
       { cwd: root, env, stdio: ['ignore', logFd, logFd] });
     }
@@ -333,6 +345,23 @@ describe('public manual owned host lifecycle', () => {
       expect(() => realpathSync(failedRoot!)).toThrow();
     } finally { rmSync(seed, { recursive: true, force: true }); }
   }, 5000);
+
+  it('refuses a missing or stale runtime before starting an acceptance host', async () => {
+    const seed = mkdtempSync(join(tmpdir(), 'public-manual-lifetime-control-'));
+    const prepared = mkdtempSync(join(tmpdir(), 'public-manual-bundle-control-'));
+    writeFileSync(join(seed, 'faq.mdx'), fixtureFaq(publicCanary));
+    vi.stubEnv('PAPERCUSP_TEST_PUBLIC_OPERATOR_BUNDLE_DIR', prepared);
+    try {
+      await expect(ownFixtureOperator(seed)).rejects.toThrow(/manual_fixture_bundle_missing/);
+      writeFileSync(join(prepared, 'hono-host.mjs'), 'throw new Error("must not execute");');
+      writeFileSync(join(prepared, '.bundle-stale.json'), '{}');
+      await expect(ownFixtureOperator(seed)).rejects.toThrow(/manual_fixture_bundle_stale/);
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(seed, { recursive: true, force: true });
+      rmSync(prepared, { recursive: true, force: true });
+    }
+  });
 
   describe('readiness from the real suite-hook lifecycle', () => {
     let seed: string;
