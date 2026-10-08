@@ -391,6 +391,35 @@ describe('migration 862 + dream run accounting (real PG)', () => {
     }
   });
 
+  it('bounds legacy tiered zero settlements before and after spend recording without changing history', async () => {
+    const workspaceId = 'ws-dream-legacy-tiered-cost';
+    const fixture = await createDreamCapabilityFixture(workspaceId, POT);
+    const key = { workspaceId, runId: 'legacy-tiered:dream:1' };
+    try {
+      await registerLearningLoop(db.adminSql, dreamRegistrationInput({ workspaceId, potSlug: POT }));
+      await beginDreamRun(db.adminSql, { ...key, potSlug: POT, cycleId: 'legacy-tiered', mode: 'manual',
+        capability: { ...fixture.header, dreamerModel: 'gpt-6.1-sol', reviewerModel: 'gpt-6.1-sol' } });
+      await beginDreamRunCall(db.adminSql, { ...key, call: { callId: 'generation', phase: 'generation',
+        model: 'gpt-6.1-sol', reservedUsd: 0.1 } });
+      await settleDreamRunCall(db.adminSql, { ...key, callId: 'generation',
+        usage: { model: 'gpt-6.1-sol', costUsd: 0, inputTokens: 6670, outputTokens: 446 } });
+      await finalizeDreamRun(db.adminSql, { ...key, status: 'abstained' });
+      const window = { workspaceId, sinceMs: Date.now() - 86400000 };
+      const before = await sumDreamSpendSince(db.adminSql, window);
+      expect(before.totalUsd).toBeGreaterThan(0);
+      expect(before.totalUsd).toBeLessThanOrEqual(0.1);
+      expect(before.loopCount).toBe(1);
+      await recordDreamRunSpend(db.adminSql, { ...key, potSlug: POT });
+      expect(await sumDreamSpendSince(db.adminSql, window)).toEqual(before);
+      const stored = await getDreamRun(db.adminSql, key);
+      expect(stored?.costUsd).toBe(0);
+      expect(dreamCapabilityRun(stored!)?.calls[0]?.usage?.costUsd).toBe(0);
+      await db.adminSql`UPDATE harness_shared.dream_runs SET completed_at = now() - interval '25 hours'
+        WHERE workspace_id = ${workspaceId} AND run_id = ${key.runId}`;
+      expect((await sumDreamSpendSince(db.adminSql, window)).totalUsd).toBe(0);
+    } finally { await rm(fixture.root, { recursive: true, force: true }); }
+  });
+
   it.each([1, 10])(
     'AUTO-REQ-M-002-P-005-admission: concurrent pots share a $%s rolling cap and settlement never double counts',
     async (cap) => {
