@@ -7,7 +7,7 @@
  * mock only I/O seams (DB rows, harness root, rubric/ledger persistence) and run the real
  * evaluator, real listSpecEvidence measurement over a temp checkout, and real emitScorecard.
  */
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -16,6 +16,7 @@ const h = vi.hoisted(() => ({
   rows: [] as Array<Record<string, unknown>>,
   measurementRoot: '',
   planSlug: 'reconnect-plan',
+  orgQueries: [] as string[],
 }));
 
 vi.mock('../../work-items', async (original) => ({
@@ -33,6 +34,16 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@papercusp/db-org')>();
   return {
     ...actual,
+    getOrgPg: () => ({
+      sql: (strings: TemplateStringsArray) => {
+        const query = Array.from(strings).join(' ');
+        // The SQL tag also constructs predicates; those are interpolated into the
+        // SELECT, never executed as separate queries.
+        if (query.trim() === 'TRUE' || query.trim() === "(template_data->>'kind' IS DISTINCT FROM 'acceptance')") return query;
+        h.orgQueries.push(query);
+        return Promise.resolve([]);
+      },
+    }),
     withWorkspace: async <T>(_workspaceId: string, fn: (tx: unknown) => Promise<T>) => {
       const tx = ((strings: TemplateStringsArray | string[]) => {
         const sql = Array.from(strings).join(' ');
@@ -96,10 +107,6 @@ vi.mock('../../scout/generation-watermark', () => ({ readRunningGeneration: asyn
 vi.mock('../../issues-engineer', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../issues-engineer')>()),
   getIssue: async () => null,
-}));
-vi.mock('../../grading-integrity', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../grading-integrity')>()),
-  readGradingAuditDispatchSuppression: async () => null,
 }));
 vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: () => {} }));
 vi.mock('../../scorecard-emitted-events', () => ({ emitScorecardEmitted: async () => {} }));
@@ -272,6 +279,7 @@ afterAll(async () => {
 beforeEach(async () => {
   vi.clearAllMocks();
   h.planSlug = PLAN;
+  h.orgQueries = [];
   await writeSubject('export const ackedEventsReplayed = false;\n');
   bound = await measureRepoFilesEvidenceAtRoot(root, MEASUREMENT);
   fixtureBound = await measureRepoFilesEvidenceAtRoot(root, FIXTURE_MEASUREMENT);
@@ -319,6 +327,17 @@ beforeEach(async () => {
   listScorecards.mockResolvedValue([]);
   let seq = 0;
   captureImprovement.mockImplementation(async () => ({ ok: true, created: true, issue: { id: `EI-CERT-${++seq}` } }));
+});
+
+afterEach(() => {
+  // Audit stand-down and scorecard plan-template lookup are the modeled direct
+  // org-PG reads. No plan template exists in this fixture; its rubric is mocked above.
+  // A new query cannot silently succeed against an empty fake database.
+  const unexpected = h.orgQueries.filter((query) =>
+    !/^\s*SELECT target_owner_id, metadata->'pause' AS pause\s+FROM harness_shared\.routines\b/.test(query) &&
+    !/^\s*SELECT plan_slug, workspace_id, harness_slug,[\s\S]*?FROM harness_shared\.harness_plans\b/.test(query),
+  );
+  expect(unexpected).toEqual([]);
 });
 
 describe('plans:certify-spec-clauses', () => {
