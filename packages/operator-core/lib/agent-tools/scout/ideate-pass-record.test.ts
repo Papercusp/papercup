@@ -135,6 +135,61 @@ const reviewContext = {
   observedAt: '2026-09-23T06:00:00.000Z',
 };
 
+/**
+ * EI-24428150977170134 / plan scout-su-ideate-pipeline-gaps-2026-10-08 P-007 (R-15).
+ * The three refusal shapes measured on live tool_invocations 2026-09-27..10-08
+ * (23 of 120 calls): an undeclared pass `lens`, a bare plan slug in planRefs, and
+ * a coverage need with no work-items yet. Each fixture is the measured shape.
+ */
+describe('ideate-pass-record invalid_input regressions (R-15)', () => {
+  it('accepts the pass lens, stores it on the tick detail and echoes it', async () => {
+    expect(ideatePassRecordArgs.safeParse({ ideasFiled: 2, lens: 'risk-first' }).success).toBe(true);
+    const { deps, recordTick } = makeDeps();
+    const out = await runIdeatePassRecord({ ideasFiled: 2, lens: ' cost-leverage ' }, { harnessSlug: 'papercusp' }, deps);
+    expect(recordTick).toHaveBeenCalledWith(
+      expect.objectContaining({ detail: { owner: 'su-caller', lens: 'cost-leverage' } }),
+    );
+    expect(out).toMatchObject({ ok: true, lens: 'cost-leverage' });
+  });
+
+  it('canonicalizes a bare plan slug in goalReview.planRefs instead of refusing it', () => {
+    const parsed = ideatePassRecordArgs.safeParse({
+      ideasFiled: 0,
+      goalReview: { ...goalReview, planRefs: ['fuzzy-tool-name-resolution-2026-07-02', 'papercusp/existing-plan'] },
+    });
+    expect(parsed.success).toBe(true);
+    expect(parsed.success && parsed.data.goalReview?.planRefs).toEqual([
+      'plan:fuzzy-tool-name-resolution-2026-07-02',
+      'plan:papercusp/existing-plan',
+    ]);
+  });
+
+  it('still refuses a malformed plan ref (normalization only rescues bare slugs)', () => {
+    expect(
+      ideatePassRecordArgs.safeParse({ ideasFiled: 0, goalReview: { ...goalReview, planRefs: ['two words'] } }).success,
+    ).toBe(false);
+  });
+
+  it('accepts a coverage need with no work-items yet when it is justified or plan-covered', () => {
+    const blocked = {
+      ...goalReview,
+      disposition: 'blocked' as const,
+      coverage: [
+        { need: 'Fresh independent stewardship grade', itemRefs: [], justification: 'Rubric trend is stale; no item exists yet.' },
+        { need: 'Custody routing rubric read', itemRefs: [], planRef: 'plan:papercusp/existing-plan' },
+      ],
+    };
+    expect(ideatePassRecordArgs.safeParse({ ideasFiled: 0, goalReview: blocked }).success).toBe(true);
+  });
+
+  it('refuses an empty coverage need that carries neither a justification nor a planRef', () => {
+    const bare = { ...goalReview, disposition: 'blocked' as const, coverage: [{ need: 'Unexplained need', itemRefs: [] }] };
+    const parsed = ideatePassRecordArgs.safeParse({ ideasFiled: 0, goalReview: bare });
+    expect(parsed.success).toBe(false);
+    expect(JSON.stringify(parsed.error?.issues)).toContain('itemRefs');
+  });
+});
+
 describe('goal-local planning review', () => {
   it('accepts an evidence-backed sufficient-plan review with zero new ideas', () => {
     expect(ideatePassRecordArgs.safeParse({ ideasFiled: 0, goalReview }).success).toBe(true);

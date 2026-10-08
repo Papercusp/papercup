@@ -69,13 +69,34 @@ export function goalDayIdeationYield(input: {
   return { goalId: input.goalId, since: input.since, plansNew, ideasFiled, candidates, owed, message };
 }
 const PLAN_REF = /^plan:[^/\s]+\/\S+$/;
+/** A bare plan slug, optionally harness-qualified (`<slug>` or `<harness>/<slug>`). */
+const BARE_PLAN_SLUG = /^[a-z0-9][a-z0-9-]*(?:\/[a-z0-9][a-z0-9-]*)?$/i;
+
+/**
+ * Canonicalize a plan reference to the `plan:` form every reader parses
+ * (scout/goal-feedback.ts parsePlanRef accepts `plan:<slug>` and
+ * `plan:<harness>/<slug>`). Callers routinely cite a plan by its bare slug, and
+ * that was refused with invalid_input (9 of 23 ideate-pass-record refusals,
+ * 2026-09-27..10-06, EI-24428150977170134) although the slug is unambiguous.
+ * Anything that is not a bare slug is left untouched so the pattern check
+ * still refuses genuinely malformed refs.
+ */
+export function canonicalPlanRef(ref: string): string {
+  return !ref.startsWith('plan:') && BARE_PLAN_SLUG.test(ref) ? `plan:${ref}` : ref;
+}
 
 export const goalReviewCoverageEntrySchema = z.object({
   need: z.string().trim().min(1).max(1000),
-  itemRefs: z.array(z.string().trim().min(1).max(120)).min(1).max(100),
-  planRef: z.string().trim().max(500).regex(PLAN_REF).optional(),
+  // A need may not have a goal work-item yet (e.g. "a fresh independent grade is
+  // needed"): itemRefs [] is allowed, but only with a justification or a covering
+  // planRef, so an empty entry can never stand in for coverage on its own.
+  itemRefs: z.array(z.string().trim().min(1).max(120)).max(100),
+  planRef: z.string().trim().overwrite(canonicalPlanRef).max(500).regex(PLAN_REF).optional(),
   justification: z.string().trim().min(1).max(2000).optional(),
-}).strict();
+}).strict().refine((entry) => entry.itemRefs.length > 0 || Boolean(entry.justification) || Boolean(entry.planRef), {
+  path: ['itemRefs'],
+  message: 'A need with no goal work-items yet (itemRefs: []) must carry a justification or a covering planRef.',
+});
 export type GoalReviewCoverageEntry = z.infer<typeof goalReviewCoverageEntrySchema>;
 
 export interface GoalReviewCoverageGap {
@@ -107,7 +128,7 @@ const reviewFields = z.object({
   disposition: z.enum(GOAL_PLANNING_DISPOSITIONS),
   rationale: z.string().trim().min(1).max(4000),
   evidenceRefs: z.array(z.string().trim().min(1).max(500)).min(1).max(20),
-  planRefs: z.array(z.string().trim().max(500).regex(/^plan:\S+$/)).max(20).default([]),
+  planRefs: z.array(z.string().trim().overwrite(canonicalPlanRef).max(500).regex(/^plan:\S+$/)).max(20).default([]),
   uncoveredOutcome: z.string().trim().min(1).max(4000).optional(),
   /** Required for a no-new-plan disposition at write time; optional in storage so older reviews still parse. */
   coverage: z.array(goalReviewCoverageEntrySchema).max(50).optional(),

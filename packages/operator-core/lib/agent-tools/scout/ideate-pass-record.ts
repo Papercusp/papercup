@@ -50,6 +50,15 @@ export const ideatePassRecordArgs = z
     notes: softText(LIMITS.ANNOTATION)
       .optional()
       .describe('a short free-form note on the pass (theme, corpus, what was skipped) — stored on the tick detail'),
+    lens: z
+      .string()
+      .trim()
+      .min(1)
+      .max(60)
+      .optional()
+      .describe(
+        'the ONE ideation lens this pass ran under (e.g. risk-first, user-value-first, cost-leverage) — stored on the tick so lens rotation across passes is measurable. Per-idea lens tags still go in improvements:capture { ideation:{ lens } }.',
+      ),
     goalReview: goalPlanningReviewInputSchema.optional().describe(
       'Evidence-backed review of your current GOAL: adopt/revise/create a necessary plan, route work, report a blocker, or explain why existing plans suffice. existing-plans-sufficient/no-eligible-work need coverage: each recurring need, its itemRefs and its live planRef; a 3+ item need with no plan is refused. The server measures scope and portfolio fingerprint; this is not execution authority or a worker claim.',
     ),
@@ -65,6 +74,8 @@ export interface IdeatePassRecordSuccess {
   ideasFiled: number;
   observationsMined?: number;
   notes?: string;
+  /** The ideation lens the pass ran under (stored on detail.lens). */
+  lens?: string;
   /** The ownerId the tick is attributed to (stored on detail.owner). */
   owner: string;
   /** The harness the pass ran for (the tick's install_slug). */
@@ -157,6 +168,7 @@ export async function runIdeatePassRecord(
   const installSlug =
     typeof ctxHarnessRaw === 'string' && ctxHarnessRaw && ctxHarnessRaw !== '*' ? ctxHarnessRaw : 'papercusp';
   const notes = typeof args.notes === 'string' && args.notes.trim() ? args.notes.trim() : undefined;
+  const lens = typeof args.lens === 'string' && args.lens.trim() ? args.lens.trim() : undefined;
   const workspaceId = identity.workspaceId?.trim();
   let goalReview: GoalPlanningReview | undefined;
   if (args.goalReview) {
@@ -196,7 +208,12 @@ export async function runIdeatePassRecord(
     installSlug,
     ideasRouted: args.ideasFiled,
     ideasGenerated: args.observationsMined ?? 0,
-    detail: { owner: identity.ownerId, ...(notes ? { notes } : {}), ...(goalReview ? { goalReview } : {}) },
+    detail: {
+      owner: identity.ownerId,
+      ...(notes ? { notes } : {}),
+      ...(lens ? { lens } : {}),
+      ...(goalReview ? { goalReview } : {}),
+    },
   });
 
   // Best-effort AFTER the review is durable: ledger feedback is derived metadata,
@@ -233,6 +250,7 @@ export async function runIdeatePassRecord(
     ideasFiled: args.ideasFiled,
     ...(args.observationsMined != null ? { observationsMined: args.observationsMined } : {}),
     ...(notes ? { notes } : {}),
+    ...(lens ? { lens } : {}),
     owner: identity.ownerId,
     installSlug,
     ...(goalReview ? { goalReview } : {}),
@@ -262,7 +280,7 @@ export default defineTool({
     notWhen:
       'Filing an individual idea (improvements:capture) or routing one to a plan (blender:route-idea) — this records the PASS, not an idea. Recording a Scout-cycle tick — that is the scout-cycle routine, not this tool.',
     chaining:
-      'improvements:capture / blender:route-idea (file the ideas) → blender:ideate-pass-record { ideasFiled, observationsMined?, notes? } (record the pass). The su-partition pacing/observability reads (Phase 3) aggregate these origin=su-ideate ticks.',
+      'improvements:capture / blender:route-idea (file the ideas) → blender:ideate-pass-record { ideasFiled, observationsMined?, lens?, notes? } (record the pass). The su-partition pacing/observability reads (Phase 3) aggregate these origin=su-ideate ticks.',
     seeAlso: [
       'blender:route-idea (route one idea onto the plan rail)',
       'improvements:capture (file one idea/improvement)',
