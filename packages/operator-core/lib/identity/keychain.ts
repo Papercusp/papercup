@@ -82,7 +82,8 @@ export function identityWritesAllowed(env: NodeJS.ProcessEnv = process.env): boo
   return !isRequestOnlyIdentityProcess(env);
 }
 
-function identityDir(): string {
+/** Read-only producer path, also used by whole-install census/export. */
+export function identityDir(): string {
   return process.env.PAPERCUSP_IDENTITY_DIR || join(homedir(), '.papercusp', 'identity');
 }
 

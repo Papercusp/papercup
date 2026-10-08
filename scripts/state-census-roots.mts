@@ -12,6 +12,7 @@ import { getHarnessAdminUrl } from '../packages/operator-core/lib/embedded-pg-di
 import { physicalDatabaseCensusEntries, integrationBaselineCensusDeclarations, templateDatabaseCensusDeclarations, unitCensusEntries, installedUnitCensusDeclarations } from '../packages/operator-core/lib/backup/state-census-producers';
 import type { CensusEntry } from '../packages/backup/src/state-census';
 import { configuredOperatorDatabaseCensusDeclarations, unitDatabaseCensusDeclarations } from '../packages/operator-core/lib/backup/state-census-producers';
+import { migrationProducerTables, migrationDatabaseCensusDeclarations } from '../packages/operator-core/lib/backup/state-census-producers';
 
 const installed = installedRootCensusProducers();
 const checkpointLogDir = releaseConfig().checkpointLogDir;
@@ -25,6 +26,7 @@ const declarations = [...producers.declarations,
   ...producers.roots.flatMap(root => backupCacheCensusDeclarations(root.id))];
 const hostCatalogs = process.argv.includes('--host-catalogs');
 const catalogEntries: CensusEntry[] = [];
+const migrationSources: Array<{ producer: string; tables: string[] }> = [];
 if (process.argv.includes('--restore-events') || hostCatalogs) {
   const sql = postgres(getHarnessAdminUrl(), { max: 1, connect_timeout: 5 });
   try {
@@ -42,7 +44,7 @@ if (process.argv.includes('--restore-events') || hostCatalogs) {
         catalogEntries.push(...await unitCensusEntries(scope));
         unitDeclarations.push(...await installedUnitCensusDeclarations(scope));
       }
-      declarations.push(...unitDeclarations, ...await unitDatabaseCensusDeclarations(unitDeclarations, databases, getHarnessAdminUrl()));
+      declarations.push(...unitDeclarations, ...await unitDatabaseCensusDeclarations(unitDeclarations, databases, getHarnessAdminUrl(), producers.roots.map(root => root.path)));
       // Catalog only declared secret paths that exist; never read their values.
       // Unknown secret locations still appear as filesystem residue.
       const secretPaths = installed.declarations.filter(entry => entry.classification === 'secret');
@@ -122,6 +124,11 @@ for (const root of producers.roots) {
     for (const app of apps ?? []) {
       if (!app.isDirectory() || app.name.startsWith('.')) continue;
       const appName = `${appsPrefix}/${app.name}`;
+      try {
+        const source = await readFile(join(root.path, appName, 'packages', 'data', 'src', 'migrations.ts'), 'utf8');
+        const tables = migrationProducerTables(source);
+        if (tables.length >= 2) migrationSources.push({ producer: `app-migrations:${root.id}:${appName}`, tables });
+      } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
       let hasGit = false;
       try { await lstat(join(root.path, appName, '.git')); hasGit = true; }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
@@ -194,6 +201,20 @@ for (const root of producers.roots) {
     if (child.isDirectory() && child.name.startsWith('embedded-pg-data')) {
       declarations.push(await postgresStorageDeclaration(root, `.shared/${child.name}`));
     }
+  }
+}
+if (hostCatalogs && migrationSources.length) {
+  const operatorUrl = getHarnessAdminUrl();
+  for (const database of catalogEntries.filter(entry => entry.kind === 'database' &&
+    !declarations.some(declaration => declaration.kind === 'database' && declaration.root === entry.root && declaration.name === entry.name))) {
+    const url = new URL(operatorUrl);
+    url.pathname = `/${encodeURIComponent(database.name)}`;
+    const sql = postgres(url.toString(), { max: 1, connect_timeout: 5 });
+    try {
+      const rows = await sql<{ table_name: string }[]>`SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' ORDER BY table_name LIMIT 1001`;
+      if (rows.length > 1000) throw new Error('Database schema census bound exceeded');
+      declarations.push(...migrationDatabaseCensusDeclarations(database, rows.map(row => `public.${row.table_name}`), migrationSources));
+    } finally { await sql.end(); }
   }
 }
 const census = await collectStateCensus({
