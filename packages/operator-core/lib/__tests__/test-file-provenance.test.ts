@@ -241,7 +241,10 @@ describe('mid-run drift', () => {
     expect(marker).toContain('TEST_FILE_PROVENANCE_HEAD_MOVED from=aaa to=bbb');
     expect(marker).toContain('imported source/change radius was not measured');
     expect(marker).toContain('provenance is UNKNOWN');
-    expect(marker).toContain('re-run at settled HEAD');
+    expect(marker).toContain('Inspect existing PC_EXECUTED_SOURCE_MAP_OUT evidence');
+    expect(marker).toContain('arm original-source capture BEFORE a new run');
+    expect(marker).toContain('does not stamp a commit');
+    expect(marker).not.toContain('re-run at settled HEAD');
     expect(marker).not.toContain('still describes the files it measured');
     expect(marker).not.toContain('TEST_FILE_PROVENANCE_DRIFT');
     expect(provenanceResultFields(before, diff)).toContain('provenance=unknown');

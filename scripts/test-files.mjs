@@ -1950,12 +1950,15 @@ export function formatProvenanceDrift(diff) {
   } else {
     // HEAD moved but no NAMED test path changed. That is not direct evidence of drift, but neither
     // is it evidence that the measurement still stands: an imported production module may be the
-    // content git-sync committed. Until this runner measures the import graph/change radius, the
-    // only honest verdict is UNKNOWN and a settled-HEAD rerun.
+    // content git-sync committed. Retain UNKNOWN; the existing optional original-source OUT
+    // capture can qualify a new run independently of HEAD. Repeating this shallow measurement
+    // cannot recover the original import inputs or guarantee a settled shared HEAD.
     lines.push(
       `TEST_FILE_PROVENANCE_HEAD_MOVED from=${diff.headMoved.from} to=${diff.headMoved.to}; ` +
         'the named test paths did not change, but their imported source/change radius was not measured. ' +
-        'Result provenance is UNKNOWN; re-run at settled HEAD before citing it as evidence.',
+        'Result provenance is UNKNOWN. Inspect existing PC_EXECUTED_SOURCE_MAP_OUT evidence; if absent, ' +
+        'arm original-source capture BEFORE a new run. Do not repeat shallow runs solely waiting for settled HEAD ' +
+        'or attach the current HEAD retroactively. Captured evidence has its own measured scope and does not stamp a commit.',
     );
   }
   return lines.join('\n');
