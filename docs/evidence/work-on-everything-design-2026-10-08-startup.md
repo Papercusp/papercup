@@ -25,4 +25,4 @@ The fix is committed in source `09230d015b396ead76122763142db64489b6f441`. Owned
 {"exitCode":0,"elapsedMs":7103,"timeoutSec":60,"bundleBytes":74358676,"bundleSha256":"075d7a7a23b5b4471dbc270132b3155f0d2af4b1f2e3d711e5299f903f55c671","outcome":"passed"}
 ```
 
-The authoritative receipt is `/home/marsh-office/.local/state/verification-harness/verify-tauri-headless/20261008T165829Z-3799210/phases/prepare/host-import-smoke/result.json`. This verifies the startup fix. The GUI's wide/narrow native assertions and release shipment are separate acceptance steps.
+The authoritative receipt is `$HOME/.local/state/verification-harness/verify-tauri-headless/20261008T165829Z-3799210/phases/prepare/host-import-smoke/result.json` (expand `$HOME` for the verifying account). This verifies the startup fix. The GUI's wide/narrow native assertions and release shipment are separate acceptance steps.
