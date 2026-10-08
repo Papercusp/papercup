@@ -358,6 +358,7 @@ export function classifyDurableParkReleaseLiveness(
  */
 export function durableParkFingerprint(input: { state: string; takenBy: string | null; payload: unknown }): string {
   const payload = record(input.payload);
+  const release = record(payload.claim_hold_release);
   const control = {
     state: input.state,
     takenBy: textOrNull(input.takenBy),
@@ -366,6 +367,13 @@ export function durableParkFingerprint(input: { state: string; takenBy: string |
       by: textOrNull(payload.claim_hold_by),
       reason: textOrNull(payload.claim_hold_reason),
       at: textOrNull(payload.claim_hold_at),
+    },
+    // A new condition, responsible owner, or trigger requires new evidence.
+    // Refreshed reachability/evidence are observations of that same condition.
+    releaseCondition: {
+      condition: textOrNull(release.condition),
+      owner: textOrNull(release.owner),
+      trigger: textOrNull(release.trigger),
     },
     holdOpenLease: {
       by: textOrNull(payload.held_open_by),
@@ -493,6 +501,7 @@ type EventDurableParkSql = OrgSql | TransactionSql;
 
 type EventDurableParkRow = {
   workspace_id: string;
+  harness_slug: string;
   feature_id: string;
   state: string;
   taken_by: string | null;
@@ -526,7 +535,7 @@ export async function reconcileEventDurableParks(
   const updatedTs = Number.isFinite(parsedNow) ? parsedNow : Date.now();
   const settledBy = actor?.trim() || 'system:event-settlement';
   const rows = await tx<EventDurableParkRow[]>`
-    SELECT workspace_id, feature_id, status AS state, taken_by, payload
+    SELECT workspace_id, harness_slug, feature_id, status AS state, taken_by, payload
       FROM harness_shared.work_items
      WHERE COALESCE(payload, '{}'::jsonb) ->> '_claimHold' = 'true'
        AND NULLIF(COALESCE(payload, '{}'::jsonb) ->> 'claim_hold_by', '') IS NOT NULL
@@ -592,11 +601,43 @@ export async function reconcileEventDurableParks(
       skipped += 1;
       continue;
     }
+    await writeDurableParkClearReceipt(tx, {
+      workspaceId: row.workspace_id, harnessSlug: row.harness_slug,
+      actor: settledBy, trigger, decision: plan, plan,
+      priorPark: readWorkItemClaimHoldProvenance(row.payload).parked,
+    }, updatedTs);
     cleared += 1;
     if (plan.preservedLease) preservedLeases += 1;
   }
 
   return { matched: rows.length, cleared, skipped, preservedLeases };
+}
+
+/** The same atomic receipt for explicit reconciliation and announced-event settlement. */
+async function writeDurableParkClearReceipt(tx: EventDurableParkSql, input: {
+  workspaceId: string;
+  harnessSlug: string;
+  actor: string;
+  runId?: string;
+  trigger?: string;
+  decision: DurableParkReconcileDecision;
+  plan: DurableParkClearPlan;
+  priorPark: ReturnType<typeof readWorkItemClaimHoldProvenance>['parked'];
+}, nowMs: number): Promise<void> {
+  await tx`
+    INSERT INTO harness_shared.audit_log
+      (id, ts, actor, action, subject, details, workspace_id)
+    VALUES
+      (${`durable-park-clear-${randomUUID()}`}, ${nowMs}, ${input.actor},
+       ${DURABLE_PARK_CLEAR_AUDIT_ACTION}, ${input.decision.id},
+       ${JSON.stringify({
+         runId: input.runId, trigger: input.trigger, harness: input.harnessSlug,
+         reasonCode: input.decision.reasonCode, evidence: input.decision.evidence,
+         expectedParkFingerprint: input.decision.expectedParkFingerprint,
+         observedParkFingerprint: input.plan.observedParkFingerprint,
+         preservedLease: input.plan.preservedLease, priorPark: input.priorPark,
+       })}::text::jsonb,
+       ${input.workspaceId})`;
 }
 
 function ageBucket(ageMs: number): AuditAgeBucket {
@@ -1181,6 +1222,7 @@ export async function runWorkItemDurableParkReconciliation(opts: {
         if (plan.outcome !== 'cleared' || !nextPayload) return outcome;
 
         const priorPayload = record(row.payload);
+        const priorRelease = record(priorPayload.claim_hold_release);
         const updated = await tx<Array<{ payload: unknown }>>`
           UPDATE harness_shared.work_items
              SET payload = CASE
@@ -1204,6 +1246,12 @@ export async function runWorkItemDurableParkReconciliation(opts: {
                    IS NOT DISTINCT FROM ${textOrNull(priorPayload.claim_hold_reason)}
              AND (COALESCE(payload, '{}'::jsonb) ->> 'claim_hold_at')
                    IS NOT DISTINCT FROM ${textOrNull(priorPayload.claim_hold_at)}
+             AND (COALESCE(payload, '{}'::jsonb) -> 'claim_hold_release' ->> 'condition')
+                   IS NOT DISTINCT FROM ${textOrNull(priorRelease.condition)}
+             AND (COALESCE(payload, '{}'::jsonb) -> 'claim_hold_release' ->> 'owner')
+                   IS NOT DISTINCT FROM ${textOrNull(priorRelease.owner)}
+             AND (COALESCE(payload, '{}'::jsonb) -> 'claim_hold_release' ->> 'trigger')
+                   IS NOT DISTINCT FROM ${textOrNull(priorRelease.trigger)}
              AND (COALESCE(payload, '{}'::jsonb) ->> 'held_open_by')
                    IS NOT DISTINCT FROM ${textOrNull(priorPayload.held_open_by)}
              AND (COALESCE(payload, '{}'::jsonb) ->> 'held_open_reason')
@@ -1232,23 +1280,10 @@ export async function runWorkItemDurableParkReconciliation(opts: {
           return retryOutcome;
         }
         const before = readWorkItemClaimHoldProvenance(row.payload);
-        await tx`
-          INSERT INTO harness_shared.audit_log
-            (id, ts, actor, action, subject, details, workspace_id)
-          VALUES
-            (${`durable-park-clear-${randomUUID()}`}, ${now()}, ${opts.actor},
-             ${DURABLE_PARK_CLEAR_AUDIT_ACTION}, ${decision.id},
-             ${JSON.stringify({
-               runId,
-               harness: opts.harnessSlug,
-               reasonCode: decision.reasonCode,
-               evidence: decision.evidence,
-               expectedParkFingerprint: decision.expectedParkFingerprint,
-               observedParkFingerprint: plan.observedParkFingerprint,
-               preservedLease: plan.preservedLease,
-               priorPark: before.parked,
-             })}::text::jsonb,
-             ${opts.workspaceId})`;
+        await writeDurableParkClearReceipt(tx, {
+          workspaceId: opts.workspaceId, harnessSlug: opts.harnessSlug,
+          actor: opts.actor, runId, decision, plan, priorPark: before.parked,
+        }, now());
         return outcome;
       });
       rowResults.push(result);

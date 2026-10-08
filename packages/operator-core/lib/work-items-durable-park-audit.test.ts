@@ -365,6 +365,30 @@ describe('durable park evidence matrix and reconciliation CAS', () => {
     ).toBe('already-cleared');
   });
 
+  it.each(['condition', 'owner', 'trigger'])('refuses stale clearing after the release contract %s changes', (field) => {
+    const release = { condition: 'WI-1 completes', owner: 'condition-owner',
+      trigger: 'work-item:done:WI-1', reachability: 'reachable', evidence: 'specific resolver' };
+    const payload = { ...parkedPayload, claim_hold_release: release };
+    const expectedParkFingerprint = durableParkFingerprint({ state: 'open', takenBy: null, payload });
+    const changed = { ...payload, claim_hold_release: { ...release, [field]: 'new unsatisfied condition' } };
+    const plan = planDurableParkClear({ id: 'WI-park', state: 'open', takenBy: null, payload: changed }, {
+      id: 'WI-park', expectedParkFingerprint, reasonCode: 'condition-satisfied', evidence: 'WI-1 completed',
+    });
+    expect(plan.outcome).toBe('stale-fingerprint');
+    expect(plan.nextPayload).toBeNull();
+  });
+
+  it('keeps live condition observations out of the semantic control fingerprint', () => {
+    const release = { condition: 'WI-1 completes', owner: 'condition-owner',
+      trigger: 'work-item:done:WI-1', reachability: 'reachable', evidence: 'specific resolver' };
+    const payload = { ...parkedPayload, claim_hold_release: release };
+    const refreshed = { ...payload, claim_hold_release: { ...release,
+      reachability: 'satisfied', evidence: 'specific event fired now' } };
+    expect(durableParkFingerprint({ state: 'open', takenBy: null, payload })).toBe(
+      durableParkFingerprint({ state: 'open', takenBy: null, payload: refreshed }),
+    );
+  });
+
   it('does not invalidate a park fingerprint for unrelated payload churn', () => {
     expect(durableParkFingerprint({ state: 'open', takenBy: null, payload: parkedPayload })).toBe(
       durableParkFingerprint({ state: 'open', takenBy: null, payload: { ...parkedPayload, checkpointMirror: 'new' } }),
