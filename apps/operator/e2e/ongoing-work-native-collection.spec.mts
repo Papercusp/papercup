@@ -51,6 +51,43 @@ test('native declared collections persist controls and reject a barrier-controll
   async function ready(expression: string) {
     await expect.poll(() => measure(expression), { timeout: 30_000, intervals: [200, 500, 1000] }).toBe(true);
   }
+  async function clickControl(selector: string) {
+    // The native click bridge does not provide Playwright's enabled check.
+    await ready(`(() => { const control = document.querySelector(${JSON.stringify(selector)}); return !!control && !control.disabled && control.getAttribute('aria-disabled') !== 'true'; })()`);
+    await native('click', selector, '--json');
+  }
+  async function observeWrites() {
+    await native('eval', `(() => {
+      if (window.__nativeCollectionWrites) return true;
+      window.__nativeCollectionWrites = [];
+      const original = window.fetch;
+      window.fetch = async (input, init) => {
+        if (!String(input).includes('/api/admin/goals/set-property')) return original(input, init);
+        const entry = { body: JSON.parse(init.body), startedAt: Date.now(), settled: false };
+        window.__nativeCollectionWrites.push(entry);
+        try {
+          const response = await original(input, init);
+          entry.status = response.status;
+          entry.response = await response.clone().json();
+          return response;
+        } catch (error) { entry.error = String(error); throw error; }
+        finally { entry.settled = true; entry.elapsedMs = Date.now() - entry.startedAt; }
+      };
+      return true;
+    })()`);
+  }
+  async function clickAndSave(selector: string, expectedVersion: number) {
+    const count = await measure('window.__nativeCollectionWrites.length');
+    await clickControl(selector);
+    await ready(`window.__nativeCollectionWrites.length === ${count + 1}`);
+    await ready(`window.__nativeCollectionWrites[${count}].settled === true`);
+    const receipt = await measure(`window.__nativeCollectionWrites[${count}]`);
+    evidence.push({ writeReceipt: receipt });
+    expect(receipt.body.expectedVersion).toBe(expectedVersion);
+    expect(receipt.error).toBeUndefined();
+    expect(receipt.status).toBe(200);
+    expect(receipt.response.ok).toBe(true);
+  }
   try {
     await ensureOrderedSelectionPolicyDatatype(sql, workspaceId);
     await ensurePlanRefListDatatype(sql, workspaceId);
@@ -84,8 +121,10 @@ test('native declared collections persist controls and reject a barrier-controll
         return row.properties[policyName] as { value: OrderedSelectionPolicy; version: number; provenance: string } | undefined;
       };
       async function reload() {
+        evidence.push({ writesBeforeNavigation: await measure('window.__nativeCollectionWrites ?? []') });
         await native('navigate', url, '--json');
         await ready(`!!document.querySelector(${JSON.stringify(editor)}) && document.querySelector(${JSON.stringify(editor)})?.getBoundingClientRect().height > 0`);
+        await observeWrites();
       }
       async function readback() {
         const response = await request.get(`${process.env.VERIFY_TAURI_DEV_URL}/api/zero-harness/rest-query`, {
@@ -111,28 +150,28 @@ test('native declared collections persist controls and reject a barrier-controll
         await ready(`document.querySelector(${JSON.stringify(editor)})?.textContent.includes(${JSON.stringify(initial.rows[2].reason)}) === true`);
       } else expect(initialIds).toEqual(ids);
       const reorderedIds = [initialIds[1], initialIds[0], ...initialIds.slice(2)];
-      await native('click', `${editor} button[aria-label=${JSON.stringify(`Move ${labels[1]} up`)}]`, '--json');
+      await clickAndSave(`${editor} button[aria-label=${JSON.stringify(`Move ${labels[1]} up`)}]`, 0);
       await expect.poll(async () => (await policy())?.version).toBe(1);
       expect((await policy())?.value.order).toEqual([...reorderedIds, dormant]);
       expect((await policy())?.provenance).toBe('owner-edit');
       await reload();
       await ready(`document.querySelector(${JSON.stringify(`${editor} li`)})?.textContent.includes(${JSON.stringify(labels[1])}) === true`);
       expect((await readback()).rows.map((row: { id: string }) => row.id)).toEqual(reorderedIds);
-      await native('click', checkbox(labels[1]), '--json');
+      await clickAndSave(checkbox(labels[1]), 1);
       await expect.poll(async () => (await policy())?.version).toBe(2);
       expect((await policy())?.value.excluded).toEqual([dormant, ids[1]]);
       await reload();
       await ready(`document.querySelector(${JSON.stringify(checkbox(labels[1]))})?.getAttribute('aria-checked') === 'false' && document.querySelector(${JSON.stringify(`${editor} li`)})?.textContent.includes('Excluded') === true`);
       expect((await readback()).rows.filter((row: { selected: boolean }) => row.selected).map((row: { id: string }) => row.id))
         .toEqual(initialIds.filter((id) => id !== ids[1]));
-      await native('click', checkbox(labels[1]), '--json');
+      await clickAndSave(checkbox(labels[1]), 2);
       await expect.poll(async () => (await policy())?.version).toBe(3);
       await reload();
       await ready(`document.querySelector(${JSON.stringify(checkbox(labels[1]))})?.getAttribute('aria-checked') === 'true'`);
       // Hold the actual UI request, advance the canonical owner revision, then
       // release the original body. A synthetic 409 cannot satisfy this test.
       await native('eval', `(() => { const original = window.fetch; window.__nativeCollectionBarrier = { release: null, body: null }; window.fetch = async (input, init) => { if (String(input).includes('/api/admin/goals/set-property')) { window.__nativeCollectionBarrier.body = JSON.parse(init.body); await new Promise(resolve => { window.__nativeCollectionBarrier.release = resolve; }); } return original(input, init); }; return true; })()`);
-      await native('click', checkbox(labels[0]), '--json');
+      await clickControl(checkbox(labels[0]));
       await ready('window.__nativeCollectionBarrier?.body?.expectedVersion === 3');
       const currentPolicy = (await policy())!;
       const competing = await sql.begin((tx) => applyGoalPropertyWrite(tx as unknown as typeof sql, {
@@ -153,6 +192,10 @@ test('native declared collections persist controls and reject a barrier-controll
       await expect(run(bridge, ['check', '--pid', process.env.VERIFY_TAURI_PID!, '--selector', `${editor} .native-missing-control`, '--json'], { timeout: 15_000 })).rejects.toThrow();
     }
   } finally {
+    try {
+      evidence.push({ finalWrites: await measure('window.__nativeCollectionWrites ?? []'),
+        controls: await measure(`Array.from(document.querySelectorAll(${JSON.stringify(`${editor} [role="checkbox"]`)})).map(control => ({ label: control.getAttribute('aria-label'), disabled: control.disabled, checked: control.getAttribute('aria-checked') }))`) });
+    } catch (error) { evidence.push({ writeDiagnosticsError: String(error) }); }
     const screenshot = info.outputPath('native-collection-final.png');
     try {
       await native('screenshot', '--output', screenshot);
