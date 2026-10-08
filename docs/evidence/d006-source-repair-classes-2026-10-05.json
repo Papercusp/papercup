@@ -128,7 +128,59 @@
       "item": "WI-10006170",
       "lines": [
         17324
-      ]
+      ],
+      "historicalQualification": {
+        "kind": "historical-source-and-stored-receipt-scope",
+        "archive": {
+          "collected": 6,
+          "executed": 6,
+          "passed": 5,
+          "failed": 1,
+          "skipped": 0,
+          "observedMismatch": "The migration-built reference contains documents_user_datatype_cursor_idx and lsp_capabilities_pkey, absent from the committed manifest. This assertion compares a fresh migration-built database with the manifest; it does not compare the live operator database.",
+          "originalTestSha256": "f064f1fc61ee371c98ffebe5ca00e05c88e82e1d32f8f9d15ae09a27ba2bbc8c",
+          "originalCensusSourceSha256": "c0c0377b4c2a5ce2fa195bbed8e5b29cfb6d84de8954fd7aa8fef7de2f15f35a",
+          "originalManifestSha256": "45b978fc72b54f7fc895c7e499ed27b34a6d550458fbbe6aefbc4a6e9fde9cee",
+          "repositoryComparison": "Named test/census bytes match run-start d2a53e and the sampled October failure and pass commits. The run-start manifest and October 5/early October 6 manifests omit both indexes. The run-start submodule gitlink lacks migration1361 even though the archived reference contains its primary key; the gitlink therefore does not establish the migration bytes actually loaded by the dirty archived process."
+        },
+        "sourceContract": {
+          "currentTestAndCensusUnchanged": true,
+          "currentManifestSha256": "b8941a34d21c06e98ff6fa0b96a40aa681c91bd112f123193a351886f868b267",
+          "manifestMovement": "The October 6 07:13 generation adds both original missing indexes; clean receipt20839765 later fails on hosted_usage_openrouter_budget_binding_uidx. The 17:32 generation also includes that later index, as committed in fa130511d7. Original regeneration/repair work-item attribution remains unknown.",
+          "existingTerminalScope": "WI-10005064 is done/committed with causal foreign-key census controls: legacy conindid join duplicates indexes and mislabels plain unique indexes; the filtered EXISTS repair restores uniqueness. Its October 1 guard/regeneration proof predates this archive and addresses a different defect. It was not replayed.",
+          "existingWorkflowItems": [
+            "EI-21856926609610025",
+            "EI-21857009379287004"
+          ],
+          "workflowScope": "Both existing manifest-authoring/reachability items remain open/unassigned from the authoritative read. Their August/September app_owner_mappings and routing observations are historical and do not prove repair of these October indexes. No new claim, admission, source repair or test execution was performed."
+        },
+        "storedReceiptScope": {
+          "literalFileLocalLedger": "40/40 id/status rows returned, truncatedByLimit=false, explicit source=local, omittedBySourceFilter=1. An earlier code:run summary retained only8/40 rows and was not used as a complete history claim.",
+          "exactFailReceipts": [
+            20753237,
+            20767128,
+            20818993,
+            20839765
+          ],
+          "exactFailReceiptMeaning": "Each stored schemaVersion=1 receipt reports 5 pass, 1 fail, 0 skip, collectionFailed=false and no testNamePattern. The original two-index mismatch is retained in20767128; other receipts name one, seven, and a later different single missing index. These are distinct manifest snapshots.",
+          "passReceipts": [
+            20829326,
+            20845989
+          ],
+          "passReceiptMeaning": "Both stored receipts report6 pass/0 fail/0 skip, no pattern, dirty canonical roots and non-scratch configs. Manifest generation timestamps fall inside their respective run intervals. This is compatible with regeneration mode, whose UPDATE branch returns before comparing the imported manifest. Stored receipts do not record PAPERCUSP_UPDATE_INDEX_MANIFEST or loaded-source fingerprints, so neither establishes a subsequent clean, non-regeneration verification. Latest literal local receipt is20845989 on October6.",
+          "otherDiagnostic": "20712590 reports collectionFailed=true with0 pass/0 fail/0 skip; it supplies no executed assertion evidence. Older20700606 is an October3 dirty pass preceding this archive."
+        },
+        "evidenceRefs": [
+          "/tmp/wi-10006170-fire90-schema-ledger-ids.json",
+          "/tmp/wi-10006170-fire90-schema-selected-runs.json",
+          "/tmp/wi-10006170-fire90-schema-exact-counts2.json",
+          "/tmp/wi-10006170-fire90-schema-pass-intervals.json",
+          "/tmp/wi-10006170-fire90-schema-source-compare.json",
+          "/tmp/wi-10006170-fire90-wi10005064.json",
+          "/tmp/wi-10006170-fire90-schema-workflow.json"
+        ],
+        "limits": "Historical source and stored-receipt qualification only. Preserve this row UNKNOWN, the33 focused/20 peer/71 unknown census, independent D006/P004 final TEST custody, D011/P003 STOP, acceptance=false and shipment=false. Actual loaded source, full migration/import/config/schema/environment, current whole-consumer and final assurance remain unverified."
+      }
     },
     {
       "path": "apps/operator/test/user-protection-gate.integration.test.ts",
@@ -190,7 +242,8 @@
         "casesPassed": 7,
         "casesSkipped": 0,
         "wrapperProvenance": "unknown-head-moved"
-      }
+      },
+      "historicalQualification": "Read-only archive17350/17351 qualification: the immutable affected43cf file census records6 collected/6 executed/4 passed/2 failed/0 skipped. Both live-frontier cases fail column admission does not exist at readFrontierFeatures; the other provenance calibration/framing/least-privilege cases pass. Run-start d2a53e and precondition a879 retain the same private fixture8bac2348, which omits admission and exposes SELECT * through a work_items view; frontier9ecdfdc1 reads admission. Exact stored20767135 canonicaldirty and20753233 cleanisolated, plus precondition20801412, repeat4pass2fail0skip. Repository bytes explain this source-contract mismatch, while original loaded imports/config/schema/environment remain unproved. Existing EI-25190283357755519 is DONE/committed with terminalOwnera20d and was not replayed. Its stored causal procedure preserves the production frontier/shared schema, replaces private DDL with maintained HARNESS_FEATURES_CONSOLIDATED_DDL, removes the duplicate harness_plans creation, retains the original six controls and adds an identical-row pending-to-admitted control. Intermediate20801479 remains red: versioned execution_details records3 passed/0 failed test cases/4 skipped and collectionFailed:true; the legacy casesFailed:1 field above describes the setup/collection error, not one failed case. Stored final20802892 and native20802855 each record7pass0fail0skip/collectionFailed:false; the preserved native log3e76fc14 explicitly reports HEAD movement/import provenanceUNKNOWN. Later20818989 and latest20839762 are clean isolated local/non-scratch7pass0fail0skip with no test-name filter. The literal-file explicit-local ledger returned57/57 rows without limit truncation, omittedBySourceFilter0; this is recorded history, not proof of an unrecorded run or current runtime. Current named fixture7b0bfa30 equals focuseda1109d57 and both clean-pass commits81c7be52/c6b4a37f; current frontier9ecdfdc1 equals run-start/precondition/focused/latest clean-pass pins. Whole current shared-schemaf85a71a6 differs from focused15f690ed and latest2397f587, while the exact exported DDL source region(lines42-820,47061bytes,caef99bd) matches run-start/focused/latest/current. These three scoped repository comparisons do not establish actually loaded transitive imports, config, schema, environment, current full consumer assurance, finalD006/P004 acceptance or shipment. Full evidence: /tmp/wi-10006170-fire91-user-ledger.json SHAeef85ca8; user-exact.json SHAa8f20551; user-counts-exact.json SHA227dc3fd; user-source-compare.json SHA61d9cb33; user-terminal.json SHA57129871 (all fire91-prefixed). No source/test/native/final/gate/git-write/new-admission action."
     },
     {
       "path": "apps/operator/lib/release/deploy.integration.test.ts",
@@ -236,7 +289,51 @@
         "root": "<repo-root>",
         "startedAt": "2026-10-06T00:14:02.830Z"
       },
-      "latestReceiptMeaning": "Observed focused result only; causal repair attribution and complete current source/import/environment assurance remain unknown."
+      "latestReceiptMeaning": "Observed focused result only; causal repair attribution and complete current source/import/environment assurance remain unknown.",
+      "historicalQualification": {
+        "kind": "historical-source-and-stored-receipt-scope",
+        "archive": {
+          "collected": 37,
+          "executed": 37,
+          "passed": 34,
+          "failed": 3,
+          "skipped": 0,
+          "observedFailures": "At17369 terminal-reply carry is dropped with turnStartVerified=false; at17393 quota recovery lacks quota-recovery-ready and records native-turn-marker-timeout/turn-start-unverified before dropping; at17588 mid-turn RESET lacks the expected carry echo within the assertion window.",
+          "runStartNamedTestSha256": "5b8579159b29c9d9a1a878f50835802e2cc6db195e726397d839a535140ffd23",
+          "runStartNamedHostSha256": "3761a5ba1e792702e69befb9ee774351724e3829f2bccf4940266841bed17b66",
+          "repositoryScope": "Named test and host match run-start d2a53e115436 and clean failure snapshot159fa07eba. Git equality does not identify the bytes actually loaded by the archived process."
+        },
+        "sourceHistory": {
+          "observations": "Run-start fake composer treats cursor-position replies as typed input; later54c6f7604a strips ESC[row;colR. Run-start quota fixture writes {prompt,marker}; later54c6f7604a writes a response_item/user message, and current fixture appends timestamped native-shaped messages. These are source differences, not independently isolated causal proof for all three archived failures.",
+          "existingHypothesis": "EI-25186492108815874 remains OPEN and explicitly labels the terminal-control sanitizer as a hypothesis. EI-25155552207044969 remains OPEN and reports the same three filtered failures with root cause undetermined. No claim, repair or replay was performed.",
+          "olderTerminalScopes": "WI-785151 and EI-24344710545564179 cover earlier PTY fixture timing classes; EI-22806311344295685 covers queued-output busy-gate confirmation; WI-3060 covers idle deferral; WI-10002372 covers selected-model capacity classification. Their terminal scopes do not establish a causal repair of this original three-failure population; none was replayed.",
+          "originalRepairItemAttribution": "UNKNOWN"
+        },
+        "storedReceiptScope": {
+          "literalFileLocalLedger": "62/62 id/status rows read, truncatedByLimit=false, explicit source=local, omittedBySourceFilter=15. Initial wider projection exposed only12 rows with an unavailable spill; the complete reduced id/status read was used instead.",
+          "originalWholeFailures": "20753217 clean isolated and20767190 canonical dirty each34pass/3fail/0skip, no selector or collection failure.",
+          "filteredFailure": "20779548 records0pass/3fail/35skip under the selector naming terminal-reply, quota recovery and mid-turn RESET.",
+          "previousMapReceipt": "20793735 is1pass/0fail/37skip selected only by terminal-reply: requires startup proof. It does not cover quota recovery or RESET.",
+          "laterWholePasses": "20818973 clean isolated38pass/0fail/0skip;20839744 clean isolated40pass/0fail/0skip;20905912 canonical dirty42pass/0fail/0skip. All three are non-scratch and have no selector or collection failure. Raw stored roots were recovered even where the serving parser returned root=null.",
+          "laterSelectedPasses": "20905342 is11pass/0fail/31skip for carry/native-binding groups. Latest literal20906617 is8pass/0fail/36skip for late-native-binding groups, following20906605 with7pass/1fail/36skip. The latest selected pattern does not include the original terminal-reply, quota or RESET groups.",
+          "receiptMeaning": "Stored whole-file passes establish historical execution outcomes. Selected passes, snapshot equality and older terminal repairs do not establish original causal attribution, actually loaded imports or current whole-file assurance."
+        },
+        "currentNamedSourceScope": {
+          "testSha256": "389f86018d5f03dbf4e4f6573dff6d88c9dfcae75dee62e8be72e057076bb384",
+          "hostSha256": "4c27f2ae2056236d8d44db782a9f034e39d56dd66e032aaf34607322aa253165",
+          "clean40TestSha256": "f6db85ce49e61f742318c49fa47cf4b1cf4630523e3fef8e70b944cf985dbc16",
+          "clean40HostSha256": "ac6985faeeea45927f6f2397025bbb1e02cbbdfe8789bd3eaa369d74dcfb083e",
+          "scope": "Current named files equal the sampled HEAD but differ from both clean whole-file pass snapshots, the later dirty42-pass snapshot and latest selected-pass snapshot. Original/current loaded source, transitive imports, config, environment, whole consumer, final D006/P004 acceptance and shipment remain UNKNOWN. No test or source repair was admitted or run."
+        },
+        "evidenceRefs": [
+          "/tmp/wi-10006170-fire92-pty-ledger-ids.json",
+          "/tmp/wi-10006170-fire92-pty-selected-runs.json",
+          "/tmp/wi-10006170-fire92-pty-counts-exact.json",
+          "/tmp/wi-10006170-fire92-pty-source-compare.json",
+          "/tmp/wi-10006170-fire92-pty-terminal.json",
+          "/tmp/wi-10006170-fire92-pty-hypothesis.json"
+        ]
+      }
     },
     {
       "path": "packages/operator-core/lib/work-items-stale-claims.integration.test.ts",
