@@ -245,9 +245,10 @@ describe('public manual isolated HTTPS transport', () => {
   }, 20_000);
 
   it.runIf(process.env.PAPERCUSP_TEST_PUBLIC_PORTAL === '1')('opens the isolated HTTPS origin and reads authenticated history with certificate-specific Chromium trust', async () => {
+    const { createServer: createHttpServer } = await import('node:http');
     const cookieValue = 'disposable-history-control';
-    const upstream = createServer((request, response) => {
-      const authorized = request.headers.cookie?.includes(`__Host-papercusp_session=${cookieValue}`);
+    const upstream = createHttpServer((request, response) => {
+      const authorized = request.headers.cookie?.includes(`${HOSTED_SESSION_COOKIE}=${cookieValue}`);
       response.writeHead(authorized ? 200 : 401, { 'content-type': 'application/json' });
       response.end(JSON.stringify(authorized ? { turns: [{ role: 'assistant', text: 'saved-history-control' }] } : { error: 'unauthorized' }));
     });
