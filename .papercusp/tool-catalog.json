@@ -4058,7 +4058,7 @@
           "POST"
         ]
       },
-      "description": "Read a file with line-numbered text windows, exact undecorated text windows (raw:true), or exact resumable byte pages. offset/limit window lines; tail:N reads the last N lines. byte_offset+byte_limit returns base64 bytes with a next cursor, including for a single very long line. Credential-bearing config/auth files are redacted for ordinary line reads and refuse exact/raw/byte/structured modes. Path is absolute, ~/-relative, relative to the project dir, or a papercusp://scratch URI.",
+      "description": "Read a file with line-numbered text windows, exact undecorated text windows (raw:true), or exact resumable byte pages. offset/limit window lines; tail:N reads the last N lines. byte_offset+byte_limit returns base64 bytes with a next cursor, including for a single very long line. Credential-bearing config/auth files are redacted for ordinary line reads and refuse exact/raw/byte/structured modes. Path is absolute, ~/-relative, relative to the project dir, a papercusp://scratch URI, or a short-lived in-memory scratch fallback URI.",
       "capabilities": [
         "capability:fs-read"
       ],

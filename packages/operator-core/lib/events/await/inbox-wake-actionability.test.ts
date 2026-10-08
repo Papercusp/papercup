@@ -3,6 +3,8 @@ import {
   classifyInboxWakeGroup,
   classifyInboxWakeMessage,
   inboxWakeDeliveryMsgId,
+  inboxWakeGroupHandled,
+  inboxWakeMessageComponents,
 } from './inbox-wake-actionability';
 
 // review-system-rework-reduction-2026-09-23 P-024: "a wake with nothing to act on costs no turn".
@@ -71,6 +73,55 @@ describe('RSR-P-024-B — a non-actionable inbox event does not start a turn', (
     expect(inboxWakeDeliveryMsgId({ msg_id: '' })).toBeNull();
     expect(inboxWakeDeliveryMsgId({ coalesced: true })).toBeNull();
     expect(inboxWakeDeliveryMsgId(null)).toBeNull();
+  });
+});
+
+describe('EI-16685 — exact handled-state proof for a pending host wake', () => {
+  it('requires a shown receipt for known non-actionable mail', () => {
+    const group = [{ eventKey: KEY, urgent: false, payload: { msg_id: 'm-fyi' } }];
+    const envelopes = new Map<string, unknown>([['m-fyi', msg({ msg_id: 'm-fyi', expects: 'none' })]]);
+    expect(inboxWakeGroupHandled(group, envelopes, '2026-09-23T14:01:00.000Z')).toBe(true);
+    expect(inboxWakeGroupHandled(group, envelopes, null)).toBe(false);
+  });
+
+  it('does not cancel a merely shown actionable message, but exact recipient reply linkage is handled', () => {
+    const group = [{ eventKey: KEY, urgent: false, payload: { msg_id: 'm-ask' } }];
+    const envelopes = new Map<string, unknown>([['m-ask', msg({ msg_id: 'm-ask', expects: 'action' })]]);
+    expect(inboxWakeGroupHandled(group, envelopes, '2026-09-23T14:01:00.000Z')).toBe(false);
+    expect(inboxWakeGroupHandled(group, envelopes, null, new Set(['m-ask']))).toBe(true);
+    expect(inboxWakeGroupHandled(group, envelopes, null, new Set(['m-other']))).toBe(false);
+  });
+
+  it('expands every component of a coalesced inbox-only group and fails open on one unhandled component', () => {
+    const group = [{
+      eventKey: KEY,
+      urgent: false,
+      payload: {
+        coalesced: true,
+        events: [
+          { event: KEY, urgent: false, payload: { msg_id: 'm-a' } },
+          { event: KEY, urgent: false, payload: { msg_id: 'm-b' } },
+        ],
+      },
+    }];
+    const envelopes = new Map<string, unknown>([
+      ['m-a', msg({ msg_id: 'm-a', expects: 'none' })],
+      ['m-b', msg({ msg_id: 'm-b', expects: 'none' })],
+    ]);
+    expect(inboxWakeMessageComponents(group)?.map((component) => component.msgId)).toEqual(['m-a', 'm-b']);
+    expect(inboxWakeGroupHandled(group, envelopes, '2026-09-23T14:01:00.000Z')).toBe(true);
+    envelopes.set('m-b', msg({ msg_id: 'm-b', expects: 'action' }));
+    expect(inboxWakeGroupHandled(group, envelopes, '2026-09-23T14:01:00.000Z')).toBe(false);
+  });
+
+  it('fails open on mixed, urgent, unresolved, mismatched, or timestamp-less components', () => {
+    const good = new Map<string, unknown>([['m-1', msg({ msg_id: 'm-1', expects: 'none' })]]);
+    const direct = [{ eventKey: KEY, urgent: false, payload: { msg_id: 'm-1' } }];
+    expect(inboxWakeGroupHandled([{ ...direct[0], eventKey: 'release:green:x' }], good, '2026-09-23T14:01:00.000Z')).toBe(false);
+    expect(inboxWakeGroupHandled([{ ...direct[0], urgent: true }], good, '2026-09-23T14:01:00.000Z')).toBe(false);
+    expect(inboxWakeGroupHandled(direct, new Map(), '2026-09-23T14:01:00.000Z')).toBe(false);
+    expect(inboxWakeGroupHandled(direct, new Map([['m-1', msg({ msg_id: 'm-other', expects: 'none' })]]), '2026-09-23T14:01:00.000Z')).toBe(false);
+    expect(inboxWakeGroupHandled(direct, new Map([['m-1', { msg_id: 'm-1', expects: 'none' }]]), '2026-09-23T14:01:00.000Z')).toBe(false);
   });
 });
 

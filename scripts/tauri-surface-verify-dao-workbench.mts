@@ -43,6 +43,13 @@ const result = await runHarness({ contract: { name: harnessName, phases: [{ id: 
       native('screenshot', '--output', join(ctx.evidenceDir, name + '.png'));
     };
     try {
+      ctx.markStep('frozen-host-source-identity');
+      const receipt = JSON.parse(readFileSync(process.env.VERIFY_TAURI_SOURCE_RECEIPT!, 'utf8'));
+      const healthResponse = await fetch(process.env.PAPERCUSP_OPERATOR_URL + '/api/health', { signal: AbortSignal.timeout(10_000) });
+      assert.equal(healthResponse.status, 200, 'Frozen host health read must succeed');
+      const health = await healthResponse.json();
+      writeFileSync(join(ctx.evidenceDir, 'host-source-identity.json'), JSON.stringify({ sourceCommit: receipt.sourceCommit, health }, null, 2));
+      assert.equal(health.sha, receipt.sourceCommit.slice(0, 12), 'Frozen host must report the validated archive commit');
       ctx.markStep('isolated-owner-policy-and-member-fixture');
       const slug = 'workbench-native';
       const home = join(process.env.PAPERCUSP_HOME!, slug); mkdirSync(home, { recursive: true });
@@ -102,17 +109,24 @@ const result = await runHarness({ contract: { name: harnessName, phases: [{ id: 
       wait("location.pathname==='/daos' && new URLSearchParams(location.search).get('dao')==='workbench-native' && !!document.querySelector('.dao-governance')");
       }
       ctx.markStep('nineteen-sections-and-responsive-layout');
-      const ids = ['directory','overview','join','members','proposals','vote','delegation','work','jobs','treasury','funding','billing','ownership','returns','reputation','marketplace','records','settings','inbox'];
-      for (const id of ids) {
+      const sections = [
+        ['directory', 'Discover DAOs'], ['overview', 'Overview'], ['join', 'Membership'], ['members', 'Members'],
+        ['proposals', 'Proposals'], ['vote', 'Voting'], ['delegation', 'Delegation'], ['work', 'Projects'],
+        ['jobs', 'Jobs & agents'], ['treasury', 'Treasury'], ['funding', 'Funding'], ['billing', 'Billing'],
+        ['ownership', 'Ownership'], ['returns', 'Returns'], ['reputation', 'Contributions'],
+        ['marketplace', 'Marketplace'], ['records', 'Records'], ['settings', 'Settings'], ['inbox', 'Inbox'],
+      ];
+      for (const [id, heading] of sections) {
         ev(`window.__TSR_ROUTER__.navigate({to:'/daos',search:{dao:${JSON.stringify(slug)},daoSection:${JSON.stringify(id)}}})`);
-        wait(`new URLSearchParams(location.search).get('daoSection')===${JSON.stringify(id)} && !!document.querySelector('.dao-page-header h1')`);
+        wait(`new URLSearchParams(location.search).get('daoSection')===${JSON.stringify(id)} && document.querySelector('.dao-page-header h1')?.textContent===${JSON.stringify(heading)}`);
+        capture('section-' + id);
       }
       const expectedWidth = Number(process.env.DAO_WORKBENCH_VIEWPORT?.split('x')[0]);
       assert.equal(expectedWidth, viewportOnly ? 390 : 1440, 'Native viewport must be selected before boot');
       wait(`Math.abs(innerWidth-${expectedWidth})<=4 && document.documentElement.scrollWidth<=innerWidth+2`);
       capture(viewportOnly ? 'mobile-inbox' : 'desktop-inbox');
       assert.throws(() => native('check', '--selector', '.dao-intentionally-missing', '--json'), 'Missing selector negative control must fail');
-      return { ok: true, proposalHash, authenticatedEventKinds, sectionIds: ids, viewportWidth: expectedWidth };
+      return { ok: true, proposalHash, authenticatedEventKinds, sectionIds: sections.map(([id]) => id), viewportWidth: expectedWidth };
     } catch (error) {
       try { writeFileSync(join(ctx.evidenceDir, 'proposal-response.json'), ev('JSON.stringify(window.__WORKBENCH_PROPOSAL_RESPONSE__ ?? null)')); } catch {}
       try {
