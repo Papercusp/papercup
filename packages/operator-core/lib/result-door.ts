@@ -620,6 +620,43 @@ function isJsonObject(value: unknown): value is JsonObject {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
+function schedulerClaimReceipt(
+  result: DoorableResult,
+  opts: { toolName: string; nestedTargetToolName?: string },
+): { body: JsonObject; readArgs: { id: string; harness?: string } } | undefined {
+  if (opts.toolName !== 'scheduler:get_next' &&
+      !(opts.toolName === 'tools:invoke' && opts.nestedTargetToolName === 'scheduler:get_next')) {
+    return undefined;
+  }
+  const body = [result.structuredContent, ...result.content.filter(isTextItem).map((item) => {
+    try {
+      return JSON.parse(item.text) as unknown;
+    } catch {
+      return null;
+    }
+  })].find((value): value is JsonObject => {
+    if (!isJsonObject(value) || !isJsonObject(value.claimReceipt)) return false;
+    return value.claimReceipt.committed === true && typeof value.claimReceipt.workItemId === 'string';
+  });
+  if (!body || !isJsonObject(body.claimReceipt)) return undefined;
+  const id = body.claimReceipt.workItemId as string;
+  if (!id) return undefined;
+  const harness = isJsonObject(body.workItem) && typeof body.workItem.harness === 'string'
+    ? body.workItem.harness
+    : undefined;
+  return { body, readArgs: { id, ...(harness ? { harness } : {}) } };
+}
+
+function schedulerClaimRecovery(claim: NonNullable<ReturnType<typeof schedulerClaimReceipt>>) {
+  return {
+    cursor: { kind: 'committed-claim', tool: 'work_items:get', args: claim.readArgs },
+    next:
+      `The scheduler claim for ${claim.readArgs.id} is committed. Do not retry scheduler:get_next. ` +
+      `Read work_items:get ${JSON.stringify(claim.readArgs)} ` +
+      'for the current item details, then check its governing plan decisions before acting.',
+  };
+}
+
 type AgentReviewClaimReceipt = {
   body: JsonObject;
   readArgs: { id: string; harness?: string };
@@ -1153,32 +1190,9 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
         preview: `${evidenceClass} evidence`,
       }))
     : [];
-  const schedulerClaimResult =
-    input.opts.toolName === 'scheduler:get_next' ||
-    (input.opts.toolName === 'tools:invoke' && input.opts.nestedTargetToolName === 'scheduler:get_next')
-      ? [input.result.structuredContent, ...input.result.content.filter(isTextItem).map((item) => {
-          try {
-            return JSON.parse(item.text) as unknown;
-          } catch {
-            return null;
-          }
-        })].find((value): value is Record<string, unknown> => {
-          if (!isJsonObject(value) || !isJsonObject(value.claimReceipt)) return false;
-          return value.claimReceipt.committed === true && typeof value.claimReceipt.workItemId === 'string';
-        })
-      : undefined;
-  const schedulerClaimReceipt = schedulerClaimResult?.claimReceipt as Record<string, unknown> | undefined;
-  const schedulerClaimId =
-    typeof schedulerClaimReceipt?.workItemId === 'string' ? schedulerClaimReceipt.workItemId : undefined;
-  const schedulerClaimWorkItem =
-    schedulerClaimResult && isJsonObject(schedulerClaimResult.workItem) ? schedulerClaimResult.workItem : undefined;
-  const schedulerClaimHarness =
-    typeof schedulerClaimWorkItem?.harness === 'string' ? schedulerClaimWorkItem.harness : undefined;
-  const schedulerClaimReadArgs = schedulerClaimId
-    ? { id: schedulerClaimId, ...(schedulerClaimHarness ? { harness: schedulerClaimHarness } : {}) }
-    : undefined;
-  const boundedSchedulerClaim = schedulerClaimResult && schedulerClaimId && schedulerClaimReadArgs
-    ? projectBoundedPayload(schedulerClaimResult, {
+  const schedulerClaim = schedulerClaimReceipt(input.result, input.opts);
+  const boundedSchedulerClaim = schedulerClaim
+    ? projectBoundedPayload(schedulerClaim.body, {
         toolName: 'scheduler:get_next',
         tier: 'trimmed',
         forced: true,
@@ -1186,13 +1200,7 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
         targetChars: Math.min(input.doorTokens * CHARS_PER_TOKEN_ESTIMATE, 1_200),
         preservePaths: ['ok', 'claimReceipt', 'claimReceipt.committed', 'claimReceipt.workItemId'],
         preserveTopLevelKeys: ['ok', 'claimReceipt'],
-        recovery: {
-          cursor: { kind: 'committed-claim', tool: 'work_items:get', args: schedulerClaimReadArgs },
-          next:
-            `The scheduler claim for ${schedulerClaimId} is committed. Do not retry scheduler:get_next. ` +
-            `Read work_items:get { id: '${schedulerClaimId}'${schedulerClaimHarness ? `, harness: '${schedulerClaimHarness}'` : ''} } ` +
-            'for the current item details, then check its governing plan decisions before acting.',
-        },
+        recovery: schedulerClaimRecovery(schedulerClaim),
       })
     : undefined;
   if (boundedSchedulerClaim) {
@@ -2009,6 +2017,9 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
       ? upstreamProjectionRecoveryInstruction(opts.toolName, opts.nestedTargetToolName)
       : innerTruncationRecoveryInstruction(opts.toolName, innerTruncationMarkers, opts.nestedTargetToolName);
     const agentReviewClaim = fsPath == null ? agentReviewClaimReceipt(result, opts) : undefined;
+    // The claim committed before the optional scratch write. Recover the item
+    // through a read, using the same receipt contract as the hard-spill path.
+    const schedulerClaim = fsPath == null ? schedulerClaimReceipt(result, opts) : undefined;
     // TWO different byte streams reach a caller here, and ONE offset cannot
     // serve both — EI-21239097430071791 followed this cursor exactly as written
     // and landed mid-body, because the offset was measured against a stream the
@@ -2030,8 +2041,10 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
     const bodyOffsetInFile = spillManifest == null
       ? null
       : scratchReferencePayloadByteOffset(spillManifest) + spillPrefixBytes;
-    const recovery = agentReviewClaim
-      ? agentReviewClaimRecovery(agentReviewClaim)
+    const recovery = schedulerClaim
+      ? schedulerClaimRecovery(schedulerClaim)
+      : agentReviewClaim
+        ? agentReviewClaimRecovery(agentReviewClaim)
       : fsPath != null && uri != null
         ? {
             cursor: {
@@ -2161,6 +2174,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
     // (EI-22186855527494865). `items[].text` follows: also load-bearing, but an
     // items array announces its own truncation in band, so a cut there is visible.
     const preservePaths = [
+      ...(schedulerClaim ? ['ok', 'claimReceipt', 'claimReceipt.committed', 'claimReceipt.workItemId'] : []),
       ...(opts.toolName === 'rubrics:amend'
         ? ['review.state', 'review.conversationId', 'review.previewPostRef', 'review.next', 'ok', 'dryRun']
         : []),
@@ -2306,9 +2320,11 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
         ? { preserveTopLevelKeys: ['self', 'recovery'] as const }
         : opts.toolName === 'events:status'
           ? { preserveTopLevelKeys: ['event_inspection'] as const }
-          : agentReviewClaim
-            ? { preserveTopLevelKeys: ['ok', 'mode', 'claimed', 'workItem', 'ledgerIdeaId', 'gradeWith'] as const }
-            : {}),
+          : schedulerClaim
+            ? { preserveTopLevelKeys: ['ok', 'claimReceipt'] as const }
+            : agentReviewClaim
+              ? { preserveTopLevelKeys: ['ok', 'mode', 'claimed', 'workItem', 'ledgerIdeaId', 'gradeWith'] as const }
+              : {}),
       ...(isWorkItemsCompleteCall(opts)
         ? { preserveTopLevelKeys: ['ok', 'counts', 'results'] as const }
         : {}),
