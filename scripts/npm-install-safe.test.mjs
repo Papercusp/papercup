@@ -47,6 +47,15 @@ import {
   withFsMutex,
 } from "./lib/fs-mutex.mjs";
 
+// npm run exports its own prefix and can carry user config. These fixtures
+// model local installs in a disposable repo; each case sets its routing options.
+const NPM_FIXTURE_CONFIG_RESET = Object.fromEntries(
+  ["prefix", "save", "package_lock", "package_lock_only", "global"].flatMap(name => [
+    ["npm_config_" + name, undefined],
+    ["NPM_CONFIG_" + name.toUpperCase(), undefined],
+  ]),
+);
+
 function createManifestResolutionFixture({
   staleDuringResolve = false,
   expectFallback = false,
@@ -206,6 +215,7 @@ function createManifestResolutionFixture({
     ],
     env: {
       ...process.env,
+      ...NPM_FIXTURE_CONFIG_RESET,
       PATH: binDir + delimiter + (process.env.PATH ?? ""),
       PAPERCUSP_FS_MUTEX_LOCK_DIR: lockDir,
       PAPERCUSP_FS_MUTEX_TIMEOUT_MS: "10000",
@@ -225,6 +235,32 @@ function createManifestResolutionFixture({
     },
   };
 }
+
+test("manifest resolution fixtures ignore inherited npm routing config", {
+  skip: process.platform === "win32",
+}, () => {
+  const restoreEnv = setEnv({
+    npm_config_prefix: "/inherited-prefix",
+    NPM_CONFIG_SAVE: "false",
+    npm_config_package_lock: "false",
+    NPM_CONFIG_PACKAGE_LOCK_ONLY: "true",
+    npm_config_global: "true",
+  });
+  const fixture = createManifestResolutionFixture();
+  try {
+    const result = spawnSync(process.execPath, [fixture.cli, ...fixture.args], {
+      encoding: "utf8", timeout: 15_000, env: fixture.env,
+    });
+    assert.ifError(result.error);
+    assert.equal(result.status, 0, result.stderr + result.stdout);
+    assert.deepEqual(readFileSync(fixture.tracePath, "utf8").trim().split("\n"),
+      ["cache-verify", "resolve", "reify", "repair"]);
+    assert.equal(process.env.npm_config_prefix, "/inherited-prefix");
+  } finally {
+    restoreEnv();
+    rmSync(fixture.tempRoot, { recursive: true, force: true });
+  }
+});
 
 test("lock-only resolution does not publish unchanged installed dependencies", {
   skip: process.platform === "win32",
@@ -1197,7 +1233,8 @@ function setEnv(values) {
   const previous = {};
   for (const [key, value] of Object.entries(values)) {
     previous[key] = process.env[key];
-    process.env[key] = value;
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
   }
   return () => {
     for (const [key, value] of Object.entries(previous)) {
@@ -1246,6 +1283,7 @@ test("install:safe verifies the npm cache exclusively, then resolves and reifies
     { mode: 0o755 },
   );
   const restoreEnv = setEnv({
+    ...NPM_FIXTURE_CONFIG_RESET,
     PAPERCUSP_FS_MUTEX_LOCK_DIR: join(root, "locks"),
     PATH: `${binDir}:${process.env.PATH ?? ""}`,
     FAKE_NPM_LOG: npmLog,
