@@ -226,16 +226,34 @@ describe('default Playwright run never collects a profile-owned spec (WI-1000673
     expect(names(unnavigated)).toEqual([]);
   });
 
-  it('every spec that reads the superuser token resolves PAPERCUSP_HOME first', () => {
+  it('every spec that reads the superuser token resolves PAPERCUSP_HOME first', async () => {
     // An isolated operator (VERIFY_TAURI_ISOLATED_DB=1) has its own PAPERCUSP_HOME,
     // so a spec that hard-codes ~/.papercusp sends a foreign bearer and the
     // verified-only routes answer 403 (WI-10006736, admin-routes.spec.ts).
     const readsSuToken = (source: string) => /['"]superuser-token['"]/.test(source);
-    const resolvesHome = (source: string) => /process\.env\.PAPERCUSP_HOME/.test(source);
+    const { readPlanAuditReleaseConfig } = await import('../../e2e/_plan-audit-release-config');
+    const release = readPlanAuditReleaseConfig({
+      PAPERCUSP_PLAN_AUDIT_RELEASE_SHA: 'a'.repeat(40),
+      PAPERCUSP_PLAN_AUDIT_RELEASE_RECEIPT: 'fixture-receipt',
+      PAPERCUSP_WORKSPACE: 'fixture-workspace', PAPERCUSP_SID: 'fixture-client',
+      PAPERCUSP_HOME: '/fixture/isolated-home',
+    });
+    // Verify the maintained helper's behavior before accepting a reader that
+    // delegates to it. Merely importing it cannot excuse a hard-coded path.
+    expect(release.home).toBe('/fixture/isolated-home');
+    const resolvesHome = (source: string) => {
+      if (/process\.env\.PAPERCUSP_HOME/.test(source)) return true;
+      const imported = /import\s*\{[^}]*\breadPlanAuditReleaseConfig\b[^}]*\}\s*from\s*['"]\.\/_plan-audit-release-config['"]/.test(source);
+      const binding = /const\s+([A-Za-z_$][\w$]*)\s*=\s*readPlanAuditReleaseConfig\(\)/.exec(source);
+      return !!(imported && binding && new RegExp(`join\\(\\s*${binding[1].replace(/\$/g, '\\$')}\\.home\\s*,\\s*['"]superuser-token['"]`).test(source));
+    };
 
     // Control: the predicate flags the exact shape that was broken.
     const brokenShape = "readFileSync(join(homedir(), '.papercusp', 'superuser-token'), 'utf8')";
     expect(readsSuToken(brokenShape) && !resolvesHome(brokenShape)).toBe(true);
+    const delegatedShape = "import { readPlanAuditReleaseConfig } from './_plan-audit-release-config'; const release = readPlanAuditReleaseConfig(); readFileSync(join(release.home, 'superuser-token'), 'utf8');";
+    expect(readsSuToken(delegatedShape) && resolvesHome(delegatedShape)).toBe(true);
+    expect(resolvesHome(delegatedShape.replace('join(release.home,', "join('/hard-coded',"))).toBe(false);
 
     const specs = listFiles(E2E_DIR).filter((file) => file.endsWith('.ts'));
     const names = (list: string[]) => list.map((file) => file.slice(E2E_DIR.length + 1)).sort();
