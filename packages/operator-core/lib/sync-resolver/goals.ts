@@ -321,6 +321,8 @@ interface RawGoal {
   last_activity_at: string | Date | null;
   /** Raw jsonb — parsed by `parseGoalLaunchSettings`, never trusted here. */
   launch_settings?: unknown;
+  property_schema?: unknown;
+  properties?: unknown;
   pot_count: string | null;
   /** json_agg of the sampled pots — shape validated by parsePotChips, not here. */
   pots: unknown;
@@ -834,6 +836,7 @@ export async function resolveGoalDetail(args: {
     const [goalRow] = (await tx`
       SELECT g.id, g.title, g.body, g.status, g.standing, g.parent_id, g.kill_criterion, g.tripwires,
              g.budget_cents, g.budget_window_sec, g.metadata, g.launch_settings, g.created_at, g.updated_at,
+             g.property_schema, g.properties,
              0 AS pot_count, '[]'::json AS pots, 0 AS open_work_items, 0 AS needs_human,
              -- The goal-attributed stream, identical to the list query's, so the
              -- popup and the card it opened from report one figure.
@@ -1159,6 +1162,7 @@ export async function resolveGoalDetail(args: {
 
     return {
       goal,
+      goalData: { propertySchema: goalRow.property_schema ?? {}, properties: goalRow.properties ?? {} },
       /** Null = none declared, and NOT an error. Since D-015 that means the
        *  SYSTEM DEFAULT ceilings (shipped below), not no ceiling — a goal that is
        *  deliberately ungoverned says so with an explicit 'unlimited'. */
@@ -1288,5 +1292,27 @@ export async function resolveGoalDetail(args: {
     ownerId: shaped.agents?.[0]?.ownerId ?? null,
     planSlugs: [...new Set((shaped.plans ?? []).map((plan) => plan.planSlug).filter(Boolean))],
   });
-  return { ...shaped, goalModeState };
+  const { readTypedPropertyCollection, TypedPropertySchemaDocumentSchema } = await import('../typed-properties');
+  const rawData = shaped.goalData as { propertySchema: unknown; properties: unknown };
+  const declaration = TypedPropertySchemaDocumentSchema.safeParse(rawData.propertySchema);
+  const portfolio = goalModeState.portfolio;
+  const collections = Object.fromEntries(Object.entries(declaration.success ? declaration.data : {})
+    .filter(([, definition]) => definition.collection)
+    .map(([property, definition]) => {
+      const source = definition.collection!.source === 'active-workspace-plans'
+        ? portfolio?.collection?.available
+          ? { ok: true as const, items: portfolio.worklist.map((p) => p.harness ? `plan:${p.harness}/${p.slug}` : p.ref) }
+          : { ok: false as const, reason: portfolio?.collection?.reason ?? 'Active plans could not be read.' }
+        : undefined;
+      const selection = readTypedPropertyCollection({ ...rawData, property, source });
+      const rows = selection.ok && selection.configured ? selection.items.map((item) => {
+        const plan = definition.collection!.source === 'active-workspace-plans'
+          ? portfolio?.worklist.find((p) => (p.harness ? `plan:${p.harness}/${p.slug}` : p.ref) === item.id) : undefined;
+        return { ...item, label: plan?.title ?? item.id, state: plan?.placement.state ?? null,
+          reason: plan?.placement.reconciliation.reason ?? null };
+      }) : [];
+      return [property, { selection, rows }];
+    }));
+  return { ...shaped, goalModeState, goalData: { ...rawData, collections,
+    error: declaration.success ? null : 'Goal data declarations could not be read.' } };
 }

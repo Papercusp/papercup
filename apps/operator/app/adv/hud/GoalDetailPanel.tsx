@@ -100,6 +100,7 @@ import GoalSettingsSection from './GoalSettingsSection';
 import GoalEndsSection from './GoalEndsSection';
 import OngoingWorkOverview from './OngoingWorkOverview';
 import GoalModeStateSection from './GoalModeStateSection';
+import GoalDataSection from './GoalDataSection';
 /* D-011: the goal popup hosts the SAME conversation the sessions popup does —
    the same renderer, fed by the same extracted wiring. Not a second chat. */
 import { LiveSessionChat } from '@/app/_components/chat/SessionChatModal';
@@ -1104,6 +1105,7 @@ export default function GoalDetailPanel({
 
         {goal ? (
           <>
+            <GoalDataSection goalId={goal.id} data={data?.goalData} />
             {goal.standing ? <OngoingWorkOverview goal={goal} detail={data} title={goal.title}
               description={goal.body ?? undefined} variant="detail" nowMs={nowMs}
               onOpenWorkItem={onOpenWorkItem} onOpenPlan={onOpenPlan} /> : null}

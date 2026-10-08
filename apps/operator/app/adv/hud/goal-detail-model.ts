@@ -309,6 +309,13 @@ export interface GoalModeStateInput {
 }
 
 export interface GoalDetailInput {
+  goalData?: {
+    error?: string | null;
+    collections: Record<string, {
+      selection: import('@papercusp/operator-core/lib/typed-properties').TypedPropertyCollectionRead;
+      rows: Array<{ id: string; selected: boolean; label: string; state: string | null; reason: string | null }>;
+    }>;
+  } | null;
   goal: GoalDetailGoalInput | null;
   /** The read-only server projection shared with the goal holder's turn-start
    *  brief. Absent means wire skew/unmeasured, never an all-clear. */
