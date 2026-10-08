@@ -848,6 +848,7 @@ function parseAdmissions(raw: unknown): FrozenRepairAdmission[] {
       typeof patch.commit === 'string' && /^[0-9a-f]{40,64}$/.test(patch.commit) &&
       typeof patch.parent === 'string' && /^[0-9a-f]{40,64}$/.test(patch.parent) &&
       typeof patch.sha256 === 'string' && /^[0-9a-f]{64}$/.test(patch.sha256);
+    const precheck = parseAdmissionPrecheckRecord(e.precheck);
     out.push({
       atMs: e.atMs as number,
       actor: e.actor as string,
@@ -868,9 +869,35 @@ function parseAdmissions(raw: unknown): FrozenRepairAdmission[] {
         : {}),
       ...(foreignAgents ? { foreignAgents } : {}),
       ...(e.provenance === 'reconciled-from-ref' ? { provenance: e.provenance } : {}),
+      ...(precheck ? { precheck } : {}),
     });
   }
   return out.slice(-FROZEN_REPAIR_ADMISSION_CAP);
+}
+
+/**
+ * The admission door's pre-check record (`precheckRecordOf` in `release:repair-queue`). It is the
+ * only durable evidence that an admission's pre-check RAN and what it measured, so it must survive
+ * every read-modify-write of the queue. Until 2026-10-08 `parseAdmissions` rebuilt each admission
+ * field by field without it, so the first rewrite after an admission erased it (0 of 25 live
+ * admissions carried one). An unrecognisable record is dropped rather than guessed at.
+ */
+export function parseAdmissionPrecheckRecord(
+  value: unknown,
+): NonNullable<FrozenRepairAdmission['precheck']> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const v = value as Record<string, unknown>;
+  if (typeof v.ran !== 'boolean') return undefined;
+  const out: NonNullable<FrozenRepairAdmission['precheck']> = { ran: v.ran };
+  for (const key of ['reason', 'detail', 'precheckReason', 'commit'] as const) {
+    const text = v[key];
+    if (typeof text === 'string' && text.length > 0) out[key] = text;
+  }
+  for (const key of ['wouldRun', 'fixes', 'passing', 'failing', 'unmeasured'] as const) {
+    const list = v[key];
+    if (Array.isArray(list) && list.every((item) => typeof item === 'string')) out[key] = [...(list as string[])];
+  }
+  return out;
 }
 
 /**

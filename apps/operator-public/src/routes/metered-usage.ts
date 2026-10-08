@@ -112,7 +112,7 @@ function voucherFromReceipt(receipt: StoredUsageReceipt): CumulativePaymentVouch
     seller: receipt.seller,
     releaseRef: receipt.releaseRef,
     usageNonce: receipt.usageNonce,
-    meterQuantity: BigInt(receipt.meterQuantity),
+    meterQuantity: BigInt(receipt.reservedMeterQuantity),
     pricePerUnitMicros: BigInt(receipt.unitPriceMicros),
     priceVersion: receipt.priceVersion,
     splitManifestHash: receipt.splitManifestHash,

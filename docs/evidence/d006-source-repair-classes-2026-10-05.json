@@ -2258,7 +2258,19 @@
       "lines": [
         12407,
         12426
-      ]
+      ],
+      "historicalQualification": {
+        "scope": "Read-only archive/source-history qualification under WI-10006170; no new test, source repair, admission, terminal-item replay or final acceptance. The original UNKNOWN disposition and inventory partition are retained.",
+        "originalMeasured": "Immutable affected43cf lines12407/12426 record handler null instead of F-A1/F-B1. Census records4collected/4executed/2failed/0skipped. The original helper converted any non-ok handler payload into null, so the archive does not itself identify the refusal. The run-startd2a53e test blob6d0a9cd8 also occurs at clean October failure159fa07eba and canonical failure0d0655c790; repository equality alone does not bind loaded imports.",
+        "existingRepair": "WI-10006532 is DONE/committed with stored causal verification: direct affinity cases pass; exposing the real handler response shows assignee_unknown when fixture caller agent requests a. Correcting the caller exposes missing fleet_assignment and memory_recall_stats. Existing applyClaimPathReadDeps was extended; maintained tests retain real handler/resolver/telemetry paths, visible refusal diagnostics, an unknown-assignee/no-claim control and persisted recall telemetry. Reuse this terminal repair; earlier WI-10005130's shared authority bootstrap and EI-8189/EI-527/EI-1532/WI-3200 historical closures do not independently prove the later archive is repaired.",
+        "storedReceipts": {
+          "ledgerScope": "Literal-file explicit-local history returned53/53 rows, truncatedByLimit=false, omittedBySourceFilter=0; eight rows start on or after2026-10-05. This is one file's local ledger, not CI or final D006 coverage.",
+          "causalSequence": "20747059 clean and20766497 canonicaldirty repeat original null failures;20831075 repeats null;20831091 exposes assignee_unknown;20831118 exposes fleet_assignment and assignee-column omissions;20831214 exposes memory_recall_stats;20831263 canonicaldirtyPASS precedes the clean committed proof. Diagnostic dirty runs do not establish their complete tested source fingerprint.",
+          "cleanCommitted": "20834347 co-location and20834351 bootstrap guard PASS at exact2763fadb52a970259c177fd680cf76d75147be32, clean LOCAL/non-scratch root/tmp/papercusp-lint-as-committed-2763fadb52-qu9j52. Preserved /tmp/cloud-tutorial-wi6532-6537-clean-2763fadb.log SHAe1c196404f4e7e724fbfeedb6ec2dd742e8bb0e35e5d6a4ad5cb0fd44453b10d shows6+17PASS/0skip, plus separate issue-scope14: requested3/executed3/matched3, uncommittedPaths0/3, pre/post provenance and terminal exit0. This is the existing focused historical proof, not a new run."
+        },
+        "sourceHistory": "Commit2763fadb52 changes the fixture actor, retains refusal payloads and adds no-claim/telemetry guards. Current named test SHA68e765387183c8319653cfb4b2532acc1a90b08676d311e09f9a62fd16d2d2c3/blob ea3f96477effbca3b123b1e14ef867146d68a8de equals HEAD and the clean receipt commit; bootstrap guard and claim_next.ts also equal receipt bytes. Current whole _work-items-schema.ts SHA f85a71a6 differs from receipt2397f587; no complete current imported-runtime/config/schema/environment fingerprint was recovered.",
+        "remaining": "Archived refusal attribution is inferred from the later causal reproduction and matching historical fixture source, not directly logged in the archive. Original/current loaded source, transitive imports, schema/config/native environment, whole-consumer proof and final D006/P004 acceptance/shipment remain UNKNOWN. Preserve D011/P003 STOP, the fleet admission refusal, sole independent final TEST and original124failed/298skipped population."
+      }
     },
     {
       "path": "packages/operator-core/lib/sync/hyperbee/substrate-compaction.integration.test.ts",

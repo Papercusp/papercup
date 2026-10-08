@@ -79,6 +79,7 @@ vi.mock('../../agent-fleets-store', async (importOriginal) => {
 });
 vi.mock('../../events/await/psu-pty-discovery', () => ({
   findLiveHost: (...a: unknown[]) => findLiveHost(...a),
+  findLiveHostAsync: async (...a: unknown[]) => findLiveHost(...a),
 }));
 // EI-24909345582884838: the goal-ceiling preflight that now runs BEFORE the destructive drain.
 // Mocked so the test controls the verdict and ASSERTS the call (the real resolver reads the DB).

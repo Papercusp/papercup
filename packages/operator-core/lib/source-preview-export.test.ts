@@ -199,8 +199,13 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     expect(statSync(receipt).mode & 0o777).toBe(0o600);
     expect(JSON.parse(readFileSync(receipt, 'utf8')).sourceCommit).toBe(fixture.commit);
     expect(await runCli(['verifier-verify', '--out', dest, '--receipt', receipt])).toBe(0);
-    writeFileSync(join(dest, input), 'changed after preparation');
+    for (const artifact of NATIVE_RUNTIME_FILES) write(dest, artifact, 'native runtime output');
     await expect(runCli(['verifier-verify', '--out', dest, '--receipt', receipt]))
+      .rejects.toThrow('tampered verification source archive');
+    expect(await runCli(['verifier-verify', '--out', dest, '--receipt', receipt,
+      '--runtime-artifacts'])).toBe(0);
+    writeFileSync(join(dest, input), 'changed after preparation');
+    await expect(runCli(['verifier-verify', '--out', dest, '--receipt', receipt, '--runtime-artifacts']))
       .rejects.toThrow('tampered verification source archive');
   });
 

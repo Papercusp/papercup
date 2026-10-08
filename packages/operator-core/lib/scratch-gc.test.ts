@@ -311,6 +311,92 @@ describe('reserveScratchSpace — no synchronous walk on the hot path (WI-100045
     expect(scratchUsageBytes('ws-B')).toBe(12000 + markerBytes('ws-B'));
   });
 
+  it('overlaps one exact scan and caps filesystem work across concurrent workspaces', async () => {
+    for (let i = 0; i < 6; i++) {
+      makeRunDir('ws-Q', `tool-${i}`, UUID(10 + i), 128);
+      makeRunDir('ws-R', `tool-${i}`, UUID(20 + i), 256);
+    }
+    const readdirMock = vi.mocked(readdirAsync);
+    const statMock = vi.mocked(statAsync);
+    const originalRead = readdirMock.getMockImplementation();
+    const originalStat = statMock.getMockImplementation();
+    if (!originalRead || !originalStat) throw new Error('async fs mocks have no original implementation');
+    const read = originalRead as unknown as (path: unknown, options?: unknown) => Promise<unknown>;
+    const stat = originalStat as unknown as (path: unknown, options?: unknown) => Promise<unknown>;
+    const qTools = new Set(Array.from({ length: 6 }, (_, i) => join(scratchRootForWorkspace('ws-Q'), `tool-${i}`)));
+    const rTools = new Set(Array.from({ length: 6 }, (_, i) => join(scratchRootForWorkspace('ws-R'), `tool-${i}`)));
+    const installGate = (toolDirs: Set<string>) => {
+      let release!: () => void;
+      let reachedTwo!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const twoReads = new Promise<void>((resolve) => { reachedTwo = resolve; });
+      let activeFs = 0;
+      let maxFs = 0;
+      let activeToolReads = 0;
+      let maxToolReads = 0;
+      const trackStart = () => {
+        activeFs += 1;
+        maxFs = Math.max(maxFs, activeFs);
+      };
+      readdirMock.mockImplementation((async (path: unknown, options?: unknown) => {
+        trackStart();
+        const isToolDir = toolDirs.has(String(path));
+        if (isToolDir) {
+          activeToolReads += 1;
+          maxToolReads = Math.max(maxToolReads, activeToolReads);
+          if (activeToolReads >= 2) reachedTwo();
+        }
+        try {
+          if (isToolDir) await gate;
+          return await read(path, options);
+        } finally {
+          if (isToolDir) activeToolReads -= 1;
+          activeFs -= 1;
+        }
+      }) as typeof readdirAsync);
+      statMock.mockImplementation((async (path: unknown, options?: unknown) => {
+        trackStart();
+        try { return await stat(path, options); }
+        finally { activeFs -= 1; }
+      }) as typeof statAsync);
+      return { twoReads, release, get maxFs() { return maxFs; }, get maxToolReads() { return maxToolReads; } };
+    };
+    const waitForTwoOrTimeout = async (twoReads: Promise<void>) => {
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([twoReads, new Promise<void>((resolve) => { timeout = setTimeout(resolve, 1000); })]);
+      if (timeout) clearTimeout(timeout);
+    };
+    try {
+      const oneScan = installGate(qTools);
+      const qScan = refreshScratchUsage('ws-Q');
+      try {
+        await waitForTwoOrTimeout(oneScan.twoReads);
+        expect(oneScan.maxToolReads).toBe(2);
+        expect(oneScan.maxFs).toBe(2);
+      } finally {
+        oneScan.release();
+        await qScan;
+      }
+      expect(scratchUsageBytes('ws-Q')).toBe(6 * 128 + markerBytes('ws-Q'));
+
+      const twoScans = installGate(new Set([...qTools, ...rTools]));
+      const bothScans = Promise.all([refreshScratchUsage('ws-Q'), refreshScratchUsage('ws-R')]);
+      try {
+        await waitForTwoOrTimeout(twoScans.twoReads);
+        await new Promise<void>((resolve) => setTimeout(resolve, 20));
+        expect(twoScans.maxToolReads).toBe(2);
+        expect(twoScans.maxFs).toBe(2);
+      } finally {
+        twoScans.release();
+        await bothScans;
+      }
+      expect(scratchUsageBytes('ws-R')).toBe(6 * 256 + markerBytes('ws-R'));
+    } finally {
+      readdirMock.mockImplementation(originalRead);
+      statMock.mockImplementation(originalStat);
+    }
+  });
+
   it('still enforces the workspace quota against the cached total', () => {
     _setScratchUsageForTests('ws-A', WORKSPACE_QUOTA_BYTES - 1000);
     expect(() => reserveScratchSpace({ workspaceId: 'ws-A', bytes: 600 })).not.toThrow();
@@ -675,10 +761,30 @@ describe('deferred scratch quota recovery', () => {
       writes.push(writeWithScratchQuota({ workspaceId: 'ws-Q', filePath: join(scratchRootForWorkspace('ws-Q'), 'second'), bytes: 16,
         onTiming: (row) => { phases[1] = row; } }, async () => {}));
       clock = 40; release(); await Promise.all(writes);
-      expect(phases).toEqual([
-        { quotaWaitMs: 0, refreshWaitMs: 0, quotaRecoveryMs: 40, writeMs: 0, totalMs: 40 },
-        { quotaWaitMs: 40, refreshWaitMs: 0, quotaRecoveryMs: 0, writeMs: 0, totalMs: 40 },
-      ]);
+      expect(phases[0]).toMatchObject({
+        quotaWaitMs: 0, refreshWaitMs: 0, quotaRecoveryMs: 40, writeMs: 0, totalMs: 40,
+        quotaRecoveryDiagnostics: {
+          sizeWalkMs: 40,
+          sizeWalkDirectories: expect.any(Number),
+          sizeWalkEntries: expect.any(Number),
+          sizeWalkFiles: expect.any(Number),
+          directoryReadErrors: 0,
+          fileStatErrors: 0,
+          runListingMs: 0,
+          runsListed: 1,
+          selectedRunSizingMs: 0,
+          runsConsidered: 1,
+          fallbackRunSizes: 0,
+          deletionMs: 0,
+          deleteAttempts: 1,
+          runsDeleted: 1,
+          deletedBytes: expect.any(Number),
+        },
+      });
+      expect(phases[0].quotaRecoveryDiagnostics?.sizeWalkDirectories).toBeGreaterThan(0);
+      expect(phases[0].quotaRecoveryDiagnostics?.sizeWalkEntries).toBeGreaterThan(0);
+      expect(phases[0].quotaRecoveryDiagnostics?.sizeWalkFiles).toBeGreaterThan(0);
+      expect(phases[1]).toEqual({ quotaWaitMs: 40, refreshWaitMs: 0, quotaRecoveryMs: 0, writeMs: 0, totalMs: 40 });
     } finally {
       release(); await Promise.allSettled(writes);
       readdirMock.mockImplementation(originalRead); now.mockRestore();
@@ -723,6 +829,10 @@ describe('deferred scratch quota recovery', () => {
         pendingWrites: 1,
         recoveryActive: true,
         refreshActive: false,
+        quotaRecoveryDiagnostics: {
+          sizeWalkDirectories: 1,
+          sizeWalkEntries: 0,
+        },
       });
       releaseScan();
       await write;

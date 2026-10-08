@@ -2,12 +2,12 @@
  * GENERATED FILE — do not edit by hand.
  *
  * Source: apps/operator-public/migrations/*.sql applied in filename order
- * Migration digest: 62b190b1268d6088c667d13db8bd430521aa62dc62f8b9a8a91653209be658be
+ * Migration digest: 798bc39d07da29422359a17eb97c0e44bf0d5b50df8b17e01df3095c7472dea7
  * Regenerate with: npm run db:types:generate --workspace @papercusp/cupboard-worker
  */
 
 export const GENERATED_MIGRATION_DIGEST =
-  "62b190b1268d6088c667d13db8bd430521aa62dc62f8b9a8a91653209be658be";
+  "798bc39d07da29422359a17eb97c0e44bf0d5b50df8b17e01df3095c7472dea7";
 export const GENERATED_TABLES = [
   "audit",
   "banned_publisher_pubkeys",
@@ -528,6 +528,7 @@ export interface UsageReceiptsRow {
   billed_inference_micros: number | null;
   prior_markup_remainder: number | null;
   markup_remainder: number | null;
+  settled_meter_quantity: number | null;
 }
 
 export interface WalletBindingChallengesRow {

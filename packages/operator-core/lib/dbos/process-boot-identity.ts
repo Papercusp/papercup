@@ -40,7 +40,7 @@ const gitReadLocal: GitRead = async (args) => {
  * sidecar falls back to a counted local fork. `cwd` is explicit because the
  * sidecar's own working directory is not this process's checkout.
  */
-const gitReadViaSidecar: GitRead = async (args) => {
+export const gitReadViaSidecar: GitRead = async (args) => {
   const { stdout } = await execFileViaSidecar('git', args, {
     timeoutMs: 5_000,
     subsystem: 'process-boot-identity',

@@ -27,6 +27,7 @@ import {
   computeScoutRewardReport,
   lensWeightRowsFromReport,
   samplingWeightsWithFloor,
+  type IdeaOutcome,
   type LensOutcomeReport,
   type LensWeightOptions,
   type LensWeightRow,
@@ -40,6 +41,7 @@ import {
   workItemOutcomeTag,
 } from './outcome-feedback';
 import { CREATIVE_LENSES, type CreativeLens, type SuIdeationLens } from './types';
+import { readPausedRails } from './paused-rails';
 import { SHADOW_VARIANT_ORIGIN, type ShadowVariantOrigin } from './shadow-variant-origin';
 import { trackDetached } from '../detached-imports';
 import type { PortfolioOutcomeCandidate } from './portfolio-frontier';
@@ -204,7 +206,11 @@ interface LedgerRow {
   graded_by: string | null;
   graded_at: Date | string | null;
   created_by: string | null;
+  /** Cached outcome (refreshScoutOutcomes); NULL until first checked. */
+  outcome: string | null;
 }
+
+const IDEA_OUTCOMES: ReadonlySet<string> = new Set<IdeaOutcome>(['won', 'lost', 'pending', 'unresolvable']);
 
 interface FeedbackRevisionRow {
   original_ref: string;
@@ -773,7 +779,7 @@ export async function readRoutedIdeas(opts: ScoutLedgerOpts = {}): Promise<Route
   const rows = await sql<LedgerRow[]>`
     SELECT idea_id, lens, cycle_id, rail, routed_ref, source_hive, target_hive, title,
            addresses_pattern_refs, routed_at,
-           human_grade, human_feedback, graded_by, graded_at, created_by
+           human_grade, human_feedback, graded_by, graded_at, created_by, outcome
      FROM harness_shared.scout_routed_ideas
      WHERE workspace_id = ${ws}
        ${originClause(sql, opts.origin)}
@@ -848,6 +854,9 @@ export async function readRoutedIdeas(opts: ScoutLedgerOpts = {}): Promise<Route
       ...(r.graded_by ? { gradedBy: r.graded_by } : {}),
       ...(gradedAt ? { gradedAt } : {}),
       ...(r.created_by ? { createdBy: r.created_by } : {}),
+      // P-002 (scout-su-ideate-pipeline-gaps-2026-10-08): the cached outcome feeds the
+      // success-metrics outcome tally. An unknown label is dropped, not guessed.
+      ...(r.outcome && IDEA_OUTCOMES.has(r.outcome) ? { outcome: r.outcome as IdeaOutcome } : {}),
       ...(feedbackRevisions.length > 0
         ? {
             feedbackRevisions: feedbackRevisions.map((revision) => ({
@@ -1341,11 +1350,12 @@ export function buildScoutOutcomeReaders(opts: ScoutLedgerOpts = {}): ScoutOutco
 export async function getScoutLensOutcomes(
   opts: ScoutLedgerOpts & { weights?: LensWeightOptions } = {},
 ): Promise<LensOutcomeReport> {
-  const [provenance, completions] = await Promise.all([
+  const [provenance, completions, pausedRails] = await Promise.all([
     readRoutedIdeas(opts),
     gatherCompletionsForOrigin(opts.origin, opts),
+    readPausedRails(getOrgPg().sql, opts.workspaceId ?? activeWorkspaceId()),
   ]);
-  const report = computeLensOutcomes(provenance, completions, opts.weights);
+  const report = computeLensOutcomes(provenance, completions, { ...opts.weights, pausedRails });
   return { ...report, generatedAt: new Date().toISOString() };
 }
 
@@ -1358,18 +1368,20 @@ export async function getScoutLensOutcomes(
  * {@link computeScoutRewardReport} collapses fused source rows before attribution.
  */
 export async function getScoutRewardReport(opts: ScoutLedgerOpts = {}): Promise<ScoutRewardReport> {
-  const [provenance, completions] = await Promise.all([
+  const [provenance, completions, pausedRails] = await Promise.all([
     readRoutedIdeas(opts),
     gatherCompletionsForOrigin(opts.origin, opts),
+    readPausedRails(getOrgPg().sql, opts.workspaceId ?? activeWorkspaceId()),
   ]);
   const byRef = new Map(completions.map((entry) => [entry.ref, entry]));
-  const rewardInput: ScoutRewardInput[] = provenance.map((idea) => {
-    const outcome = classifyIdeaOutcome(idea, byRef);
-    return {
-      ...idea,
-      outcome: outcome === 'won' || outcome === 'lost' ? outcome : 'pending',
-    };
-  });
+  const rewardInput: ScoutRewardInput[] = [];
+  for (const idea of provenance) {
+    const outcome = classifyIdeaOutcome(idea, byRef, { pausedRails });
+    // P-002: an idea that can never decide carries no reward signal; keep it out of
+    // every reward denominator rather than parking it in 'pending' forever.
+    if (outcome === 'unresolvable') continue;
+    rewardInput.push({ ...idea, outcome: outcome === 'won' || outcome === 'lost' ? outcome : 'pending' });
+  }
   return computeScoutRewardReport(rewardInput);
 }
 
@@ -1572,7 +1584,9 @@ export async function refreshScoutOutcomes(
     // cannot disappear behind this newest-first report's ordinary limit.
     ideaIds: undefined,
   };
-  const [provenance, completions, boundedProvenance] = await Promise.all([
+  // P-002 (scout-su-ideate-pipeline-gaps-2026-10-08): ideas on a paused rail classify
+  // 'unresolvable'. Read once per refresh; fail-open (nothing paused) on error.
+  const [provenance, completions, boundedProvenance, pausedRails] = await Promise.all([
     readRoutedIdeas(corpusOpts),
     gatherCompletionsForOrigin(opts.origin, corpusOpts),
     opts.ideaIds
@@ -1582,6 +1596,7 @@ export async function refreshScoutOutcomes(
           limit: Math.max(1, opts.ideaIds.length),
         })
       : Promise.resolve(null),
+    readPausedRails(sql, ws),
   ]);
 
   const selectedProvenance = boundedProvenance ?? provenance;
@@ -1590,7 +1605,7 @@ export async function refreshScoutOutcomes(
   if (selectedProvenance.length > 0) {
     const byRef = new Map(completions.map((e) => [e.ref, e]));
     const ids = selectedProvenance.map((p) => p.ideaId);
-    const outcomes = selectedProvenance.map((p) => classifyIdeaOutcome(p, byRef) as string);
+    const outcomes = selectedProvenance.map((p) => classifyIdeaOutcome(p, byRef, { pausedRails }) as string);
     const now = Date.now();
     // One batched UPDATE … FROM unnest(…) — no per-row serial loop.
     await withProducerLifecycleWrite(sql, async (sql) => {
@@ -1626,7 +1641,7 @@ export async function refreshScoutOutcomes(
     }
   }
 
-  const report = computeLensOutcomes(provenance, completions, opts.weights);
+  const report = computeLensOutcomes(provenance, completions, { ...opts.weights, pausedRails });
 
   // D-003 guard (P-003): only the scout origin closes the lens-weight loop.
   // A su-ideate / 'all' refresh stops here — outcome cache written, weights

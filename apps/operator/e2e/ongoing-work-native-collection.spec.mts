@@ -2,6 +2,7 @@ import { test, expect } from '@playwright/test';
 import type { OrderedSelectionPolicy } from '../../../packages/operator-core/lib/typed-properties';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { insertNativeCollectionGoal } from './_ongoing-work-native-fixture';
 
 // An explicit ESM entry keeps the backend writer graph on Playwright's ESM loader.
 async function loadNativeCollectionWriter() {
@@ -68,8 +69,7 @@ test('native declared collections persist controls and reject a barrier-controll
         [policyName]: { datatype: 'ordered-selection-policy', editable_by: 'owner', default: { order: [ids[0], dormant], excluded: [dormant] } },
       };
       // These real records live only in the rig's verified throwaway database.
-      await sql`INSERT INTO harness_shared.goals (workspace_id,id,install_slug,title,status,property_schema)
-        VALUES (${workspaceId},${goalId},${goalId},${`Native ${kind} collection`},'active',${JSON.stringify(schema)}::jsonb)`;
+      await insertNativeCollectionGoal(sql, { workspaceId, goalId, title: `Native ${kind} collection`, schema });
       if (kind === 'plans') {
         for (const [index, slug] of ['alpha', 'beta', 'blocked'].entries()) {
           await sql`INSERT INTO harness_shared.harness_plans (workspace_id,harness_slug,plan_slug,title,status,op_status)

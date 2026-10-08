@@ -52,7 +52,11 @@ export type PipelineEventKind =
    *  warn-and-noop. */
   | 'green_checkpoint_repair_latency'
   | 'deploy'
-  | 'release_fixer';
+  | 'release_fixer'
+  /** P-018 (green-main-cycle-time-2026-10-08): one standing gate-invariant evaluation, appended
+   *  on any status transition and at least hourly (migration 1425). A distinct kind so no
+   *  consumer of green_checkpoint / green_checkpoint_fire mistakes it for a gate outcome or fire. */
+  | 'gate_invariants';
 
 function db(sql?: Sql): Sql {
   return sql ?? (getOrgPg().sql as unknown as Sql);

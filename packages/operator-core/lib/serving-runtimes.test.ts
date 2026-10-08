@@ -69,6 +69,11 @@ describe('runtime selection', () => {
     ]);
     expect(currentBuildRoutesForRuntime('desktop-shell').map(({ id }) => id))
       .toEqual(['migration', 'desktop-native', 'candidate-install-upgrade']);
+    expect(currentBuildTestRoute('candidate-install-upgrade')).toMatchObject({
+      routeFile: 'papercusp-desktop/bin/candidate-install-upgrade-rollback.sh',
+      readiness: 'requires-prerequisites',
+      verification: expect.stringContaining('SHA-256'),
+    });
     expect(currentBuildRoutesForRuntime('release-operator')).toEqual([]);
     expect(currentBuildTestRoute('unrecognized')).toBeNull();
   });
@@ -79,7 +84,7 @@ describe('runtime selection', () => {
       'desktop-native', 'multi-machine-p2p-git', 'aws-ami-candidate', 'candidate-install-upgrade', 'final-release',
     ]);
     expect(CURRENT_BUILD_TEST_CLASSES.filter(({ readiness }) => readiness === 'gap').map(({ id }) => id))
-      .toEqual(['candidate-install-upgrade']);
+      .toEqual([]);
     expect(CURRENT_BUILD_TEST_CLASSES.find(({ id }) => id === 'final-release')?.readiness).toBe('release-only');
   });
 

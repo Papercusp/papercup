@@ -72,9 +72,9 @@ const args = z
     actualQuantity: z
       .number()
       .int()
-      .positive()
+      .nonnegative()
       .optional()
-      .describe('settle: units ACTUALLY served. Defaults to the reserved quantity; never more.'),
+      .describe('settle: units ACTUALLY served, including zero for an unused reservation. Defaults to the reserved quantity; never more.'),
   })
   .superRefine((value, ctx) => {
     const need = (field: string) =>

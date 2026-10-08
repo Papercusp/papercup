@@ -267,9 +267,14 @@ async function llmCallViaCodexGateway(
       typeof outputTokens !== 'number' || !Number.isSafeInteger(outputTokens) || outputTokens < 0 ||
       !Number.isSafeInteger(cachedInput) || cachedInput < 0 || cachedInput > inputTokens)
     throw new Error('Codex response has missing or invalid usage; retain the admitted cost reservation');
-  const costUsd = costFromTokens(pricedModel, {
+  const cost = costFromTokens(pricedModel, {
+    // The context tier includes cached input, not just its uncached subtotal.
+    requestInputTokens: inputTokens,
     inputTokens: inputTokens - cachedInput, outputTokens, cacheReadTokens: cachedInput,
-  }).usd;
+  });
+  if (!cost.priced || !Number.isFinite(cost.usd) || cost.usd < 0)
+    throw new Error('Codex response usage cannot be priced; retain the admitted cost reservation');
+  const costUsd = cost.usd;
   const json = opts.responseFormat === 'json' ? tryParseJson(finalText) : undefined;
 
   const servedAccount = res.headers.get(ROUTED_ACCOUNT_HEADER)?.trim() || undefined;

@@ -2017,6 +2017,20 @@ export function decodeDeliveryId(o: any): {
 } | {
     deliveryId?: undefined;
 };
+/** Pure + injectable clock so the receipt and pre-write fences can be tested
+ *  at the exact 600s ledger boundary. Legacy messages without a timestamp pass. */
+export function checkWakeProvenanceAge(message: any, { maxAgeMs, nowMs, }?: {
+    maxAgeMs?: number | undefined;
+    nowMs?: number | undefined;
+}): {
+    checked: boolean;
+    expired: boolean;
+    ageMs: null;
+} | {
+    checked: boolean;
+    expired: boolean;
+    ageMs: number;
+};
 /** Parse the additive quota-recovery descriptor carried only by a durable
  * mode:recycle wake. Every identity is repeated and cross-checked here: a
  * mutated operation id or owner must degrade to an ordinary recycle, never
@@ -2056,6 +2070,8 @@ export function decodeControl(payload: any): {
     gated: boolean;
 } | {
     quotaRecovery?: undefined;
+    provenanceIssuedAtMs?: undefined;
+    provenanceTimestampInvalid?: undefined;
     deliveryId: any;
     ownerId: any;
     fireNumber: any;
@@ -2069,6 +2085,8 @@ export function decodeControl(payload: any): {
         ownerId: any;
         startedAtMs: any;
     };
+    provenanceIssuedAtMs?: undefined;
+    provenanceTimestampInvalid?: undefined;
     deliveryId: any;
     ownerId: any;
     fireNumber: any;
@@ -2078,6 +2096,60 @@ export function decodeControl(payload: any): {
     gated: boolean;
 } | {
     quotaRecovery?: undefined;
+    provenanceIssuedAtMs: number;
+    provenanceTimestampInvalid?: undefined;
+    deliveryId: any;
+    ownerId: any;
+    fireNumber: any;
+    routineId: any;
+    mode: string;
+    data: string;
+    gated: boolean;
+} | {
+    quotaRecovery: {
+        operationId: any;
+        ownerId: any;
+        startedAtMs: any;
+    };
+    provenanceIssuedAtMs: number;
+    provenanceTimestampInvalid?: undefined;
+    deliveryId: any;
+    ownerId: any;
+    fireNumber: any;
+    routineId: any;
+    mode: string;
+    data: string;
+    gated: boolean;
+} | {
+    quotaRecovery?: undefined;
+    provenanceTimestampInvalid: boolean;
+    provenanceIssuedAtMs?: undefined;
+    deliveryId: any;
+    ownerId: any;
+    fireNumber: any;
+    routineId: any;
+    mode: string;
+    data: string;
+    gated: boolean;
+} | {
+    quotaRecovery: {
+        operationId: any;
+        ownerId: any;
+        startedAtMs: any;
+    };
+    provenanceTimestampInvalid: boolean;
+    provenanceIssuedAtMs?: undefined;
+    deliveryId: any;
+    ownerId: any;
+    fireNumber: any;
+    routineId: any;
+    mode: string;
+    data: string;
+    gated: boolean;
+} | {
+    quotaRecovery?: undefined;
+    provenanceIssuedAtMs?: undefined;
+    provenanceTimestampInvalid?: undefined;
     deliveryId?: undefined;
     ownerId: any;
     fireNumber: any;
@@ -2091,6 +2163,8 @@ export function decodeControl(payload: any): {
         ownerId: any;
         startedAtMs: any;
     };
+    provenanceIssuedAtMs?: undefined;
+    provenanceTimestampInvalid?: undefined;
     deliveryId?: undefined;
     ownerId: any;
     fireNumber: any;
@@ -2100,6 +2174,60 @@ export function decodeControl(payload: any): {
     gated: boolean;
 } | {
     quotaRecovery?: undefined;
+    provenanceIssuedAtMs: number;
+    provenanceTimestampInvalid?: undefined;
+    deliveryId?: undefined;
+    ownerId: any;
+    fireNumber: any;
+    routineId: any;
+    mode: string;
+    data: string;
+    gated: boolean;
+} | {
+    quotaRecovery: {
+        operationId: any;
+        ownerId: any;
+        startedAtMs: any;
+    };
+    provenanceIssuedAtMs: number;
+    provenanceTimestampInvalid?: undefined;
+    deliveryId?: undefined;
+    ownerId: any;
+    fireNumber: any;
+    routineId: any;
+    mode: string;
+    data: string;
+    gated: boolean;
+} | {
+    quotaRecovery?: undefined;
+    provenanceTimestampInvalid: boolean;
+    provenanceIssuedAtMs?: undefined;
+    deliveryId?: undefined;
+    ownerId: any;
+    fireNumber: any;
+    routineId: any;
+    mode: string;
+    data: string;
+    gated: boolean;
+} | {
+    quotaRecovery: {
+        operationId: any;
+        ownerId: any;
+        startedAtMs: any;
+    };
+    provenanceTimestampInvalid: boolean;
+    provenanceIssuedAtMs?: undefined;
+    deliveryId?: undefined;
+    ownerId: any;
+    fireNumber: any;
+    routineId: any;
+    mode: string;
+    data: string;
+    gated: boolean;
+} | {
+    quotaRecovery?: undefined;
+    provenanceIssuedAtMs?: undefined;
+    provenanceTimestampInvalid?: undefined;
     deliveryId: any;
     ownerId?: undefined;
     fireNumber: any;
@@ -2113,6 +2241,8 @@ export function decodeControl(payload: any): {
         ownerId: any;
         startedAtMs: any;
     };
+    provenanceIssuedAtMs?: undefined;
+    provenanceTimestampInvalid?: undefined;
     deliveryId: any;
     ownerId?: undefined;
     fireNumber: any;
@@ -2122,6 +2252,60 @@ export function decodeControl(payload: any): {
     gated: boolean;
 } | {
     quotaRecovery?: undefined;
+    provenanceIssuedAtMs: number;
+    provenanceTimestampInvalid?: undefined;
+    deliveryId: any;
+    ownerId?: undefined;
+    fireNumber: any;
+    routineId: any;
+    mode: string;
+    data: string;
+    gated: boolean;
+} | {
+    quotaRecovery: {
+        operationId: any;
+        ownerId: any;
+        startedAtMs: any;
+    };
+    provenanceIssuedAtMs: number;
+    provenanceTimestampInvalid?: undefined;
+    deliveryId: any;
+    ownerId?: undefined;
+    fireNumber: any;
+    routineId: any;
+    mode: string;
+    data: string;
+    gated: boolean;
+} | {
+    quotaRecovery?: undefined;
+    provenanceTimestampInvalid: boolean;
+    provenanceIssuedAtMs?: undefined;
+    deliveryId: any;
+    ownerId?: undefined;
+    fireNumber: any;
+    routineId: any;
+    mode: string;
+    data: string;
+    gated: boolean;
+} | {
+    quotaRecovery: {
+        operationId: any;
+        ownerId: any;
+        startedAtMs: any;
+    };
+    provenanceTimestampInvalid: boolean;
+    provenanceIssuedAtMs?: undefined;
+    deliveryId: any;
+    ownerId?: undefined;
+    fireNumber: any;
+    routineId: any;
+    mode: string;
+    data: string;
+    gated: boolean;
+} | {
+    quotaRecovery?: undefined;
+    provenanceIssuedAtMs?: undefined;
+    provenanceTimestampInvalid?: undefined;
     deliveryId?: undefined;
     ownerId?: undefined;
     fireNumber: any;
@@ -2135,6 +2319,8 @@ export function decodeControl(payload: any): {
         ownerId: any;
         startedAtMs: any;
     };
+    provenanceIssuedAtMs?: undefined;
+    provenanceTimestampInvalid?: undefined;
     deliveryId?: undefined;
     ownerId?: undefined;
     fireNumber: any;
@@ -2143,6 +2329,60 @@ export function decodeControl(payload: any): {
     data: string;
     gated: boolean;
 } | {
+    quotaRecovery?: undefined;
+    provenanceIssuedAtMs: number;
+    provenanceTimestampInvalid?: undefined;
+    deliveryId?: undefined;
+    ownerId?: undefined;
+    fireNumber: any;
+    routineId: any;
+    mode: string;
+    data: string;
+    gated: boolean;
+} | {
+    quotaRecovery: {
+        operationId: any;
+        ownerId: any;
+        startedAtMs: any;
+    };
+    provenanceIssuedAtMs: number;
+    provenanceTimestampInvalid?: undefined;
+    deliveryId?: undefined;
+    ownerId?: undefined;
+    fireNumber: any;
+    routineId: any;
+    mode: string;
+    data: string;
+    gated: boolean;
+} | {
+    quotaRecovery?: undefined;
+    provenanceTimestampInvalid: boolean;
+    provenanceIssuedAtMs?: undefined;
+    deliveryId?: undefined;
+    ownerId?: undefined;
+    fireNumber: any;
+    routineId: any;
+    mode: string;
+    data: string;
+    gated: boolean;
+} | {
+    quotaRecovery: {
+        operationId: any;
+        ownerId: any;
+        startedAtMs: any;
+    };
+    provenanceTimestampInvalid: boolean;
+    provenanceIssuedAtMs?: undefined;
+    deliveryId?: undefined;
+    ownerId?: undefined;
+    fireNumber: any;
+    routineId: any;
+    mode: string;
+    data: string;
+    gated: boolean;
+} | {
+    provenanceIssuedAtMs?: undefined;
+    provenanceTimestampInvalid?: undefined;
     deliveryId: any;
     ownerId: any;
     fireNumber: any;
@@ -2155,6 +2395,36 @@ export function decodeControl(payload: any): {
     data: string;
     systemPromptAddendum: string;
 } | {
+    provenanceIssuedAtMs: number;
+    provenanceTimestampInvalid?: undefined;
+    deliveryId: any;
+    ownerId: any;
+    fireNumber: any;
+    routineId: any;
+    drillId: string;
+    sessionClass: string;
+    gated: boolean;
+    sourceTranscriptPath?: any;
+    mode: string;
+    data: string;
+    systemPromptAddendum: string;
+} | {
+    provenanceTimestampInvalid: boolean;
+    provenanceIssuedAtMs?: undefined;
+    deliveryId: any;
+    ownerId: any;
+    fireNumber: any;
+    routineId: any;
+    drillId: string;
+    sessionClass: string;
+    gated: boolean;
+    sourceTranscriptPath?: any;
+    mode: string;
+    data: string;
+    systemPromptAddendum: string;
+} | {
+    provenanceIssuedAtMs?: undefined;
+    provenanceTimestampInvalid?: undefined;
     deliveryId?: undefined;
     ownerId: any;
     fireNumber: any;
@@ -2167,6 +2437,36 @@ export function decodeControl(payload: any): {
     data: string;
     systemPromptAddendum: string;
 } | {
+    provenanceIssuedAtMs: number;
+    provenanceTimestampInvalid?: undefined;
+    deliveryId?: undefined;
+    ownerId: any;
+    fireNumber: any;
+    routineId: any;
+    drillId: string;
+    sessionClass: string;
+    gated: boolean;
+    sourceTranscriptPath?: any;
+    mode: string;
+    data: string;
+    systemPromptAddendum: string;
+} | {
+    provenanceTimestampInvalid: boolean;
+    provenanceIssuedAtMs?: undefined;
+    deliveryId?: undefined;
+    ownerId: any;
+    fireNumber: any;
+    routineId: any;
+    drillId: string;
+    sessionClass: string;
+    gated: boolean;
+    sourceTranscriptPath?: any;
+    mode: string;
+    data: string;
+    systemPromptAddendum: string;
+} | {
+    provenanceIssuedAtMs?: undefined;
+    provenanceTimestampInvalid?: undefined;
     deliveryId: any;
     ownerId?: undefined;
     fireNumber: any;
@@ -2179,6 +2479,64 @@ export function decodeControl(payload: any): {
     data: string;
     systemPromptAddendum: string;
 } | {
+    provenanceIssuedAtMs: number;
+    provenanceTimestampInvalid?: undefined;
+    deliveryId: any;
+    ownerId?: undefined;
+    fireNumber: any;
+    routineId: any;
+    drillId: string;
+    sessionClass: string;
+    gated: boolean;
+    sourceTranscriptPath?: any;
+    mode: string;
+    data: string;
+    systemPromptAddendum: string;
+} | {
+    provenanceTimestampInvalid: boolean;
+    provenanceIssuedAtMs?: undefined;
+    deliveryId: any;
+    ownerId?: undefined;
+    fireNumber: any;
+    routineId: any;
+    drillId: string;
+    sessionClass: string;
+    gated: boolean;
+    sourceTranscriptPath?: any;
+    mode: string;
+    data: string;
+    systemPromptAddendum: string;
+} | {
+    provenanceIssuedAtMs?: undefined;
+    provenanceTimestampInvalid?: undefined;
+    deliveryId?: undefined;
+    ownerId?: undefined;
+    fireNumber: any;
+    routineId: any;
+    drillId: string;
+    sessionClass: string;
+    gated: boolean;
+    sourceTranscriptPath?: any;
+    mode: string;
+    data: string;
+    systemPromptAddendum: string;
+} | {
+    provenanceIssuedAtMs: number;
+    provenanceTimestampInvalid?: undefined;
+    deliveryId?: undefined;
+    ownerId?: undefined;
+    fireNumber: any;
+    routineId: any;
+    drillId: string;
+    sessionClass: string;
+    gated: boolean;
+    sourceTranscriptPath?: any;
+    mode: string;
+    data: string;
+    systemPromptAddendum: string;
+} | {
+    provenanceTimestampInvalid: boolean;
+    provenanceIssuedAtMs?: undefined;
     deliveryId?: undefined;
     ownerId?: undefined;
     fireNumber: any;
@@ -3490,6 +3848,9 @@ export const QUOTA_CORROBORATE_TTL_MS: 15000;
  *  purpose — the consumer question is "active or idle for minutes?", and a
  *  per-byte rewrite would turn the pty bridge into an fs hot loop. */
 export const ACTIVITY_PERSIST_MS: 15000;
+/** The turn-provenance ledger's default TTL; delayed wake prompts must not
+ *  reach a live TUI after the nonce can no longer be verified. */
+export const WAKE_PROVENANCE_MAX_AGE_MS: 600000;
 /**
  * Bounds for the diagnostic companion log. A PTY frame can contain an
  * arbitrarily long carriage-return redraw, so line boundaries alone are not

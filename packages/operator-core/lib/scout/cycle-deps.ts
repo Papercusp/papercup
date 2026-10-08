@@ -924,18 +924,13 @@ export function buildScoutCycleDeps(
       // gate the rail — a disabled autoloop must not receive routed ideas (its
       // frozen archive verdicts poisoned 80.4% of decided outcomes). Fail-open
       // to enabled: a broken liveness read must not silently divert routing.
-      let gymEnabled = true;
-      try {
-        const { sql } = getOrgPg();
-        const { listAutoloopsForWorkspace } = await import('../gym/control-plane');
-        const loops = await listAutoloopsForWorkspace(sql, { workspaceId: activeWorkspaceId() });
-        gymEnabled = loops.some((l) => l.enabled === true);
-      } catch (err) {
-        console.warn(
-          '[scout/cycle-deps] gym-liveness read failed — gym rail stays enabled (fail-open):',
-          err instanceof Error ? err.message : err,
-        );
-      }
+      // scout-su-ideate-pipeline-gaps-2026-10-08 P-002: the gym is live only when an
+      // enabled autoloop ALSO has an active gym-cycle routine (paused-rails.ts). The
+      // owner's 2026-10-08 pause deactivated the routine and left the autoloop flag on,
+      // which the old autoloop-only read still saw as live. readPausedRails fails open.
+      const { readPausedRails } = await import('./paused-rails');
+      const pausedRails = await readPausedRails(getOrgPg().sql, activeWorkspaceId());
+      const gymEnabled = !pausedRails.has('gym');
       // P-013 / D-005: the goal rail's gate — the BLENDER_GOAL_RAIL flag (default ON,
       // the cuttable kill-switch). Fail-open to ON like the gym read above: a broken
       // flag read must not silently divert routing off the default.

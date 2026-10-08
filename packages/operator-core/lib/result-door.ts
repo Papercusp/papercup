@@ -38,11 +38,12 @@
  * Kill-switch: PAPERCUSP_RESULT_DOOR_OFF=1 bypasses entirely (operational
  * rollback, mirrors PAPERCUSP_INJECTION_DOOR_OFF). Unexpected errors while
  * capping/spilling remain fail-soft and return the ORIGINAL result untouched.
- * A recognized spill-write failure instead returns a bounded
+ * A recognized hard spill-write failure instead returns a bounded
  * `output_spill_failed` error, or a receipt-preserving projection for committed
  * writes (`scheduler:get_next`, `improvements:agent-review`, `coord:send`,
- * `work_items:complete`, and `work_items:set_blocker`); it never re-exposes an
- * over-budget result.
+ * `work_items:complete`, and `work_items:set_blocker`). A bounded timeout keeps
+ * a typed pending cursor while its already-started writer continues; neither
+ * path re-exposes an over-budget result.
  */
 
 import { createHash, randomUUID } from 'node:crypto';
@@ -125,13 +126,28 @@ export interface ResultDoorOpts {
    * Collector for spill writes deferred off the main thread (WI-10004533). When given,
    * every spill file is written with fs.promises and its promise lands here; the result
    * names files that are NOT on disk yet. Use applyResultDoorAsync rather than passing
-   * this by hand — it awaits the writes and never returns a dangling cursor.
+   * this by hand — it waits boundedly and returns a typed pending cursor if a write runs
+   * past its deadline.
    */
   deferredScratchWrites?: Promise<void>[];
+  /** A spill that outlives the bounded request wait may finish after the response.
+   *  The transport uses this callback to backfill its invocation row on late settlement. */
+  onLateScratchWriteSettled?: (settlement: ResultDoorLateScratchWriteSettlement) => void | Promise<void>;
   /** Phase attribution for awaited spill writes, including failed writes. */
   onScratchWriteTiming?: (timings: ScratchWriteTimings) => void;
   /** Internal replay of a deferred failure: cap honestly without retrying filesystem I/O. */
   scratchWriteFailure?: { error: unknown };
+}
+
+export interface ResultDoorLateScratchWriteSettlement {
+  status: 'persisted' | 'failed';
+  spillPath: string;
+  spillUri: string;
+  originalBytes: number;
+  returnedContextBytes: number;
+  reason: string;
+  aggregateOutputEscape: boolean;
+  errorCode?: string;
 }
 
 export interface ResultDoorAggregateScope {
@@ -1640,11 +1656,10 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
 /**
  * applyResultDoor for request handlers: identical output, but any spill file is written
  * with fs.promises instead of blocking the event loop, and awaited before this resolves —
- * so a returned cursor always names a file that exists (WI-10004533). The wait is bounded:
- * a stuck spill returns an honest failure before the MCP client's idle timeout, while the
- * background writer retains its quota reservation and normal cleanup path. A deferred write
- * that fails or times out is re-doored without a filesystem retry. The replay reserves the
- * aggregate cohort a second time; it can only tighten the budget.
+ * so a returned cursor normally names a file that exists (WI-10004533). The wait is bounded:
+ * a hard write failure is re-doored without a filesystem retry, while a deadline timeout
+ * keeps a typed pending cursor because the background writer still owns its quota reservation
+ * and may finish later. Late settlement is reported to the transport for telemetry backfill.
  */
 export async function applyResultDoorAsync<T extends DoorableResult>(
   result: T,
@@ -1653,7 +1668,8 @@ export async function applyResultDoorAsync<T extends DoorableResult>(
   const deferred: Promise<void>[] = [];
   const doored = applyResultDoor(result, { ...opts, deferredScratchWrites: deferred });
   if (deferred.length === 0) return doored;
-  const boundedWrites = await withBoundedTimeout(Promise.allSettled(deferred), {
+  const writeSettlements = Promise.allSettled(deferred);
+  const boundedWrites = await withBoundedTimeout(writeSettlements, {
     fallback: null,
     timeoutMs: RESULT_DOOR_SCRATCH_WRITE_WAIT_MS,
     label: 'result-door scratch spill write',
@@ -1665,6 +1681,13 @@ export async function applyResultDoorAsync<T extends DoorableResult>(
           { code: 'ETIMEDOUT' },
         )
       : boundedWrites.error ?? new Error('result-door scratch spill write did not settle');
+    if (boundedWrites.reason === 'timeout') {
+      const pendingResult = markPendingScratchWrite(doored, error, opts);
+      if (pendingResult) {
+        observeLateScratchWrite(writeSettlements, pendingResult, opts);
+        return pendingResult;
+      }
+    }
     return applyResultDoor(result, {
       ...opts,
       deferredScratchWrites: undefined,
@@ -1676,6 +1699,133 @@ export async function applyResultDoorAsync<T extends DoorableResult>(
   if (!failure || failure.status !== 'rejected') return doored;
   return applyResultDoor(result, { ...opts, deferredScratchWrites: undefined,
     scratchWriteFailure: { error: failure.reason } });
+}
+
+function markPendingScratchWrite<T extends DoorableResult>(
+  result: T,
+  error: unknown,
+  opts: ResultDoorOpts,
+): T | null {
+  const meta = result._meta ?? {};
+  const sourceDoorMeta = recordAt(meta.resultDoor);
+  const spillPath = typeof sourceDoorMeta?.spillPath === 'string' ? sourceDoorMeta.spillPath : null;
+  const spillUri = typeof sourceDoorMeta?.spillUri === 'string' ? sourceDoorMeta.spillUri : null;
+  if (!sourceDoorMeta || !spillPath || !spillUri) return null;
+
+  const sourceCursor = recordAt(sourceDoorMeta.recoveryCursor);
+  const pendingCursor = {
+    ...(sourceCursor ?? {}),
+    kind: 'pending-spill',
+    tool: 'capability:read',
+    args: {
+      ...(recordAt(sourceCursor?.args) ?? {}),
+      file_path: spillPath,
+    },
+    path: spillPath,
+    uri: spillUri,
+    reason: 'spill-write-pending',
+    errorCode: 'ETIMEDOUT',
+    retryAfterMs: 1_000,
+  };
+  const pendingNext =
+    `The spill write exceeded ${RESULT_DOOR_SCRATCH_WRITE_WAIT_MS}ms and is still running. ` +
+    `Do NOT repeat ${opts.toolName}; the original result is preserved at the pending URI/path ` +
+    `in _projection.cursor. Retry capability:read only after that pending spill becomes readable.`;
+
+  let outputEnvelope = recordAt(sourceDoorMeta.outputEnvelope);
+  const sourceIncomplete = recordAt(outputEnvelope?.incomplete);
+  if (outputEnvelope && sourceIncomplete) {
+    outputEnvelope = {
+      ...outputEnvelope,
+      incomplete: { ...sourceIncomplete, note: pendingNext },
+    };
+  }
+
+  const content = result.content.map((item) => {
+    if (!isTextItem(item)) return item;
+    try {
+      const body = recordAt(JSON.parse(item.text));
+      if (!body) return item;
+      const projection = recordAt(body._projection);
+      const incomplete = recordAt(body.incomplete);
+      if (!projection && !incomplete) return item;
+      return {
+        ...item,
+        text: JSON.stringify({
+          ...body,
+          ...(incomplete ? { incomplete: { ...incomplete, note: pendingNext } } : {}),
+          _projection: {
+            ...(projection ?? {}),
+            kind: projection?.kind ?? 'bounded-payload',
+            truncated: true,
+            cursor: pendingCursor,
+            next: pendingNext,
+          },
+        }),
+      };
+    } catch {
+      return item;
+    }
+  });
+
+  const errorMessage = error instanceof Error ? error.message : String(error);
+  return {
+    ...result,
+    content,
+    _meta: {
+      ...meta,
+      resultDoor: {
+        ...sourceDoorMeta,
+        spillPending: true,
+        spillFailed: false,
+        spillError: errorMessage.slice(0, 240),
+        spillErrorCode: 'ETIMEDOUT',
+        recoveryCursor: pendingCursor,
+        ...(outputEnvelope ? { outputEnvelope } : {}),
+      },
+    },
+  } as T;
+}
+
+function observeLateScratchWrite<T extends DoorableResult>(
+  writeSettlements: Promise<PromiseSettledResult<void>[]>,
+  pendingResult: T,
+  opts: ResultDoorOpts,
+): void {
+  const callback = opts.onLateScratchWriteSettled;
+  const meta = recordAt(pendingResult._meta?.resultDoor);
+  const spillPath = typeof meta?.spillPath === 'string' ? meta.spillPath : null;
+  const spillUri = typeof meta?.spillUri === 'string' ? meta.spillUri : null;
+  if (!callback || !meta || !spillPath || !spillUri) return;
+
+  const aggregate = recordAt(meta.aggregate);
+  const settlementBase = {
+    spillPath,
+    spillUri,
+    originalBytes: typeof meta.originalBytes === 'number' ? meta.originalBytes : 0,
+    returnedContextBytes: measureResultContextBytes(pendingResult),
+    reason: typeof meta.reason === 'string' ? meta.reason : 'per-result-budget-exceeded',
+    aggregateOutputEscape:
+      meta.reason === 'aggregate-output-budget-exceeded' || aggregate?.exceeded === true,
+  };
+  void writeSettlements.then(async (settled) => {
+    const failure = settled.find((entry): entry is PromiseRejectedResult => entry.status === 'rejected');
+    const errorCode = failure && failure.reason && typeof failure.reason === 'object' &&
+      'code' in failure.reason && typeof failure.reason.code === 'string'
+      ? failure.reason.code
+      : undefined;
+    try {
+      await callback({
+        ...settlementBase,
+        status: failure ? 'failed' : 'persisted',
+        ...(errorCode ? { errorCode } : {}),
+      });
+    } catch (callbackError) {
+      console.warn(
+        `[result-door] late scratch-write settlement callback failed: ${callbackError instanceof Error ? callbackError.message : String(callbackError)}`,
+      );
+    }
+  });
 }
 
 function isScorecardsGetResult(opts: ResultDoorOpts): boolean {

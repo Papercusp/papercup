@@ -565,6 +565,18 @@ describe('scout routed-ledger (real PG, migration 194)', () => {
 
     beforeAll(async () => {
       const sql = db.adminSql;
+      // A LIVE gym (plan scout-su-ideate-pipeline-gaps-2026-10-08 P-002): an enabled
+      // autoloop AND an active gym-cycle routine on this harness. Without both, the gym
+      // rail is paused (paused-rails.ts) and a non-terminal gym idea is 'unresolvable',
+      // not 'pending' — the paused case is asserted explicitly at the end of this block.
+      await sql`
+        INSERT INTO harness_shared.gym_autoloop_config (workspace_id, harness_slug, enabled, updated_at)
+        VALUES (${WS}, ${HARNESS}, true, ${Date.now()})
+        ON CONFLICT (workspace_id, harness_slug) DO UPDATE SET enabled = true`;
+      await sql`
+        INSERT INTO harness_shared.routines (id, install_slug, name, trigger_kind, trigger_config, target_role, active, workspace_id)
+        VALUES ('gym3-gym-cycle', ${HARNESS}, 'gym-cycle', 'schedule', '{}'::jsonb, 'worker', true, ${WS})
+        ON CONFLICT (id) DO UPDATE SET active = true`;
       // A Scout-seeded candidate that STILL holds its QD niche (the reigning
       // elite) — router.ts always writes routedRef = `gym:<candidateId>`,
       // which is NEVER a gym_proposals.id (a compound `${variantId}__${role}`
@@ -617,6 +629,29 @@ describe('scout routed-ledger (real PG, migration 194)', () => {
       });
       const report = await getScoutLensOutcomes({ workspaceId: WS, harnessSlug: HARNESS, cycleId: CYCLE });
       expect(report.byLens['first-principles']).toMatchObject({ won: 0, lost: 0, pending: 1 });
+    });
+
+    it('P-002: with the gym-cycle routine paused, the still-undecided gym idea is unresolvable and leaves pending; decided ones keep their verdict', async () => {
+      await db.adminSql`
+        UPDATE harness_shared.routines SET active = false
+         WHERE workspace_id = ${WS} AND install_slug = ${HARNESS} AND name = 'gym-cycle'`;
+      try {
+        const report = await getScoutLensOutcomes({ workspaceId: WS, harnessSlug: HARNESS, cycleId: CYCLE });
+        expect(report.byLens['first-principles']).toMatchObject({ won: 0, lost: 0, pending: 0, unresolvable: 1 });
+        // A verdict reached before the pause still decides (not reclassified).
+        expect(report.byLens.analogical).toMatchObject({ won: 1, lost: 0, pending: 0, unresolvable: 0 });
+        expect(report.byLens.reframing).toMatchObject({ won: 0, lost: 1, pending: 0, unresolvable: 0 });
+
+        await refreshScoutOutcomes({ workspaceId: WS, harnessSlug: HARNESS });
+        const [row] = await db.adminSql<{ outcome: string | null }[]>`
+          SELECT outcome FROM harness_shared.scout_routed_ideas
+           WHERE workspace_id = ${WS} AND idea_id = 'i-qd-underreview'`;
+        expect(row.outcome).toBe('unresolvable');
+      } finally {
+        await db.adminSql`
+          UPDATE harness_shared.routines SET active = true
+           WHERE workspace_id = ${WS} AND install_slug = ${HARNESS} AND name = 'gym-cycle'`;
+      }
     });
   });
 

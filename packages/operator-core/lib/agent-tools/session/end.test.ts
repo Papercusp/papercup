@@ -23,6 +23,7 @@ vi.mock('../coordination/identity', () => ({
 }));
 vi.mock('../../events/await/psu-pty-discovery', () => ({
   findLiveHost: vi.fn(() => null),
+  findLiveHostAsync: vi.fn(async () => null),
   hostSupports: vi.fn(() => true),
   shutdownViaPty: vi.fn(async () => 'sent'),
 }));

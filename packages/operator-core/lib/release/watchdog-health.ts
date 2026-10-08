@@ -82,7 +82,9 @@ export type WatchdogPassName =
   | 'release-trigger-freeze'
   | 'release-trigger-fire-stale'
   | 'stranded-repair-fixer-silence'
-  | 'stranded-repair-queue';
+  | 'stranded-repair-queue'
+  | 'idle-repair-queue'
+  | 'gate-live-invariants';
 
 export interface WatchdogPassScope {
   /** `routines.name` of the routine this pass watches. */

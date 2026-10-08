@@ -47,7 +47,12 @@ import type { ScoutTickRecord } from './tick-ledger';
 // only the safety-net used when that rubric read is unavailable.
 import { DEFAULT_CRITERION_WINDOW_MS } from '../agent-tools/plans/rubric-template';
 import { hasForcedDiversity } from './invariants';
-import type { RoutedIdeaProvenance } from './outcome-feedback';
+import {
+  tallyRoutedOutcomes,
+  type RoutedIdeaProvenance,
+  type RoutedOutcomeTally,
+  type RoutedRail,
+} from './outcome-feedback';
 import type { CreativeLens, SuIdeationLens } from './types';
 import { SU_IDEATION_LENSES } from './types';
 import { cellUnknown, type CellUnknown } from '../cell-contract';
@@ -85,6 +90,13 @@ export const LENS_DIVERSITY_SAMPLE = 20;
 export interface ProgramSuccessInputs {
   cadence: ScoutQualityInputs<CreativeLens>;
   ideas: readonly RoutedIdeaProvenance[];
+  /**
+   * Rails paused right now (paused-rails.ts). An idea on a paused rail that has not
+   * decided counts as unresolvable in {@link ProgramSuccessReport.outcomes}, never in a
+   * win-rate denominator (scout-su-ideate-pipeline-gaps-2026-10-08 P-002 / R-3).
+   * Absent ⇒ no rail is treated as paused (cached 'unresolvable' rows still count).
+   */
+  pausedRails?: readonly RoutedRail[];
   /**
    * WI-5397 soak-method fix: ticks sharing the CURRENTLY RUNNING scout code's content
    * hash, spanning any number of bg-host restarts that happened to load byte-identical
@@ -176,6 +188,19 @@ export interface ProgramSuccessReport {
    * is unknown (not enough evidence yet). Only 'pass' closes the program.
    */
   verdict: 'pass' | 'fail' | 'incomplete';
+  /**
+   * Routed-idea outcome tallies (scout-su-ideate-pipeline-gaps-2026-10-08 P-002 / R-3).
+   * `winRate = won / (won + lost)`; ideas that can never decide (paused rail, legacy
+   * gym ref) are counted only in `unresolvable` and are in NO denominator.
+   */
+  outcomes: {
+    /** Scout-origin routed ideas (the cadence partition). */
+    scout: RoutedOutcomeTally;
+    /** Every routed idea in the window, both origins. */
+    all: RoutedOutcomeTally;
+    /** The rails treated as paused for this tally. */
+    pausedRails: RoutedRail[];
+  };
   /** Window provenance, so a verdict is never read without knowing what it saw. */
   window: {
     ticks: number;
@@ -784,12 +809,19 @@ export function evaluateProgramSuccess(
   const passed = criteria.filter((c) => c.status === 'pass').length;
   const failed = criteria.filter((c) => c.status === 'fail').length;
   const unknown = criteria.filter((c) => c.status === 'unknown').length;
+  const pausedRails = [...(inputs.pausedRails ?? [])];
+  const tallyOpts = { pausedRails: new Set<RoutedRail>(pausedRails) };
   return {
     criteria,
     passed,
     failed,
     unknown,
     verdict: failed > 0 ? 'fail' : unknown > 0 ? 'incomplete' : 'pass',
+    outcomes: {
+      scout: tallyRoutedOutcomes(inputs.cadence.routedIdeas, tallyOpts),
+      all: tallyRoutedOutcomes(inputs.ideas, tallyOpts),
+      pausedRails,
+    },
     window: {
       ticks: inputs.cadence.ticks.length,
       ranCycles: ranTicks.length,
@@ -1026,8 +1058,29 @@ export async function buildProgramSuccessReport(opts: BuildProgramSuccessOptions
       return undefined;
     }
   })();
+  // scout-su-ideate-pipeline-gaps-2026-10-08 P-002 / R-3: the outcome tally keeps
+  // paused-rail ideas out of every win-rate denominator. readPausedRails fails open
+  // (nothing paused) and is lazily imported like the other PG reads in this builder.
+  const pausedRails = await (async (): Promise<RoutedRail[]> => {
+    try {
+      const [{ getOrgPg }, { readPausedRails }, { activeWorkspaceId }] = await Promise.all([
+        import('@papercusp/db-org'),
+        import('./paused-rails'),
+        import('../workspace-registry'),
+      ]);
+      return [...(await readPausedRails(getOrgPg().sql, opts.workspaceId ?? activeWorkspaceId()))];
+    } catch {
+      return [];
+    }
+  })();
   const report = evaluateProgramSuccess(
-    { cadence, ideas, ...(cadenceByCodeHash ? { cadenceByCodeHash } : {}), ...(gymCorpus ? { gymCorpus } : {}) },
+    {
+      cadence,
+      ideas,
+      pausedRails,
+      ...(cadenceByCodeHash ? { cadenceByCodeHash } : {}),
+      ...(gymCorpus ? { gymCorpus } : {}),
+    },
     {
       ...(opts.maxErrorRate != null ? { maxErrorRate: opts.maxErrorRate } : {}),
       // A full page back on EITHER partition means the read almost certainly hit the cap and

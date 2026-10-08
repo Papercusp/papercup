@@ -4,6 +4,7 @@ import { generateKeyPairSync, sign } from 'node:crypto';
 import { identityPerUseOfferTerms } from '@papercusp/operator-core/lib/cupboard/identity-per-use-offer';
 import { paymentVoucherDigest, paymentVoucherSigningBytes, unsignedVoucher, type CumulativePaymentVoucher } from '@papercusp/operator-core/lib/p2p/microcharge';
 import { meteredUsageRoute } from '../routes/metered-usage';
+import { resolveUsageSplitManifest } from '../routes/settlements';
 import { getUsageReceipt, reserveUsageReceipt, settleUsageReceipt, readIdentityMarkupRemainder,
   type ReserveUsageReceiptInput } from '../usage-receipt-store';
 import { makeEnv } from './fake-d1';
@@ -55,6 +56,51 @@ function closure(body: Record<string, unknown> = {}) {
 
 describe('exact identity settlement through the hosted production handler and real migrated D1', () => {
   beforeEach(() => { auth.resolveGithubBearer.mockReset(); auth.resolveGithubBearer.mockResolvedValue({ id: 9 }); });
+  it.each([0, 3])('settles %i ordinary tool calls against the original voucher and safely replays closure', async quantity => {
+    const h = harness();
+    h.raw.prepare("UPDATE commerce_products SET sku_ref='tool-release:1' WHERE product_id='p1'").run();
+    h.raw.prepare("UPDATE commerce_offers SET meter_unit='tool-call' WHERE offer_id='o1'").run();
+    const original = { ...unsignedVoucher(signPaymentTestVoucher({ channelId: 'c1', usageNonce: 'tools',
+      payer: 'gh:7', seller: 'gh:9', releaseRef: 'tool-release:1', meterQuantity: 5n,
+      pricePerUnitMicros: 250n, priceVersion: offer.priceVersion, splitManifestHash: offer.splitManifestHash,
+      cumulativeClaimMicros: 1250n, expiresAtMs: at + 1000000, signature: '' })) };
+    expect(await reserveUsageReceipt(h.db, reservation('tools', { releaseRef: original.releaseRef,
+      meterUnit: 'tool-call', meterQuantity: 5n, reservedMicros: 1250n, cumulativeClaimMicros: 1250n,
+      voucherDigest: paymentVoucherDigest(original), voucherSignature: signVoucher(paymentVoucherSigningBytes(original)),
+      identityInferenceCeilingMicros: undefined }))).toMatchObject({ ok: true });
+    const body = { channelId: 'c1', actualQuantity: String(quantity), occurredAtMs: at + 500, receiptSignature: 'signed-closure' };
+    for (let i = 0; i < 2; i++) {
+      const response = await h.api.request('/commerce/metered-invocations/tools/settle', post(body), h.env);
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({ receipt: { meterQuantity: String(quantity),
+        amountMicros: String(quantity * 250), voucherDigest: paymentVoucherDigest(original) } });
+    }
+    expect(h.raw.prepare('SELECT meter_quantity, settled_meter_quantity FROM usage_receipts WHERE usage_nonce=?').get('tools'))
+      .toMatchObject({ meter_quantity: 5, settled_meter_quantity: quantity });
+    expect(h.raw.prepare('SELECT committed_micros FROM payment_channels WHERE channel_id=?').get('c1'))
+      .toMatchObject({ committed_micros: quantity * 250 });
+    const stored = await getUsageReceipt(h.db, 'c1', 'tools');
+    if (!stored) throw new Error('settled tool receipt must be durable');
+    expect(resolveUsageSplitManifest([stored], derived.manifest)).toMatchObject({ ok: true });
+    if (quantity === 3) {
+      // Before migration047 a partial settlement overwrote the original units.
+      // Its exact reservation money still reconstructs the signed five units.
+      h.raw.prepare('UPDATE usage_receipts SET meter_quantity=3, settled_meter_quantity=NULL WHERE usage_nonce=?').run('tools');
+      expect((await h.api.request('/commerce/metered-invocations/tools/settle', post(body), h.env)).status).toBe(200);
+      const legacy = await getUsageReceipt(h.db, 'c1', 'tools');
+      if (!legacy) throw new Error('legacy receipt must be durable');
+      expect(resolveUsageSplitManifest([legacy], derived.manifest)).toMatchObject({ ok: true });
+    }
+    expect(await settleUsageReceipt(h.db, { channelId: 'c1', usageNonce: 'tools', meterQuantity: 0n,
+      amountMicros: 1n, receiptSignature: 'changed', nowMs: at + 500 })).toMatchObject({ ok: false });
+    expect(() => h.raw.prepare('UPDATE usage_receipts SET settled_meter_quantity=-1 WHERE usage_nonce=?').run('tools')).toThrow();
+    auth.resolveGithubBearer.mockResolvedValue({ id: 7 });
+    expect((await h.api.request('/commerce/metered-invocations/tools/settle', post(body), h.env)).status).toBe(403);
+    auth.resolveGithubBearer.mockResolvedValue({ id: 9 });
+    expect((await h.api.request('/commerce/metered-invocations/tools/settle', post({ ...body, actualQuantity: '6' }), h.env)).status)
+      .toBe(422);
+  });
+
   it('reads immutable receipt costs through the authenticated channel route for both parties, without writes', async () => {
     const h = harness(); await reserveUsageReceipt(h.db, reservation());
     expect((await h.api.request('/commerce/metered-invocations/n1/settle', post(closure()), h.env)).status).toBe(200);
@@ -253,10 +299,10 @@ describe('exact identity settlement through the hosted production handler and re
       };
     }});
     expect(snapshot!.state).toBe('reserved');
-    const input={channelId:'c1',usageNonce:'ordinary',amountMicros:200n,meterQuantity:1n,receiptSignature:'same',nowMs:at+500};
+    const input={channelId:'c1',usageNonce:'ordinary',amountMicros:250n,meterQuantity:1n,receiptSignature:'same',nowMs:at+500};
     const results=await Promise.all([settleUsageReceipt(db,input),settleUsageReceipt(db,input)]);
     expect(results.every(r=>r.ok)).toBe(true);
     expect(h.raw.prepare('SELECT committed_micros FROM payment_channels WHERE channel_id=?').get('c1'))
-      .toMatchObject({committed_micros:mutant ? 400 : 200});
+      .toMatchObject({committed_micros:mutant ? 500 : 250});
   });
 });

@@ -1336,6 +1336,7 @@ function parseArgs(argv) {
   for (let i = 0; i < rest.length; i += 1) {
     const a = rest[i];
     if (a === '--confirm') opts.confirm = true;
+    else if (a === '--runtime-artifacts') opts.runtimeArtifacts = true;
     else if (a === '--co-author') opts.coAuthors.push(rest[++i]);
     else if (a === '--inputs-file') {
       const path = rest[++i];
@@ -1369,7 +1370,8 @@ async function main(argv) {
         inputs: opts.inputs?.split(',').filter(Boolean) ?? [], inputsFile: opts['inputs-file'] });
       await fs.writeFile(opts.receipt, `${JSON.stringify(receipt)}\n`, { flag: 'wx', mode: 0o600 });
     }
-    await verifyVerifierSource(opts.out, JSON.parse(await fs.readFile(opts.receipt, 'utf8')));
+    await verifyVerifierSource(opts.out, JSON.parse(await fs.readFile(opts.receipt, 'utf8')),
+      { runtimeArtifacts: opts.runtimeArtifacts === true });
     return 0;
   }
   if (cmd === 'licenses') {

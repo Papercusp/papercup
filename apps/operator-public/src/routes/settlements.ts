@@ -181,7 +181,7 @@ function voucherFromReceipt(receipt: StoredUsageReceipt): CumulativePaymentVouch
     seller: receipt.seller,
     releaseRef: receipt.releaseRef,
     usageNonce: receipt.usageNonce,
-    meterQuantity: BigInt(receipt.meterQuantity),
+    meterQuantity: BigInt(receipt.reservedMeterQuantity),
     pricePerUnitMicros: BigInt(receipt.unitPriceMicros),
     priceVersion: receipt.priceVersion,
     splitManifestHash: receipt.splitManifestHash,
@@ -331,7 +331,9 @@ export function settlementsRoute(
 
     const consumed = await claimedUsageNonces(c.env.DB, channelId);
     let pending = (await listChannelUsageReceipts(c.env.DB, channelId))
-      .filter((receipt) => receipt.state === 'settled' && !consumed.has(receipt.usageNonce))
+      // A signed unused-turn closure releases escrow and retains history, but
+      // carries no proceeds for an on-chain payment claim.
+      .filter((receipt) => receipt.state === 'settled' && (receipt.amountMicros ?? 0) > 0 && !consumed.has(receipt.usageNonce))
       .slice()
       .sort((a, b) => a.cumulativeClaimMicros - b.cumulativeClaimMicros)
       .slice(0, MAX_BATCH_SIZE);

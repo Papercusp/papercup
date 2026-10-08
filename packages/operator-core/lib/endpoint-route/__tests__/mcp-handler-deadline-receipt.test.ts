@@ -242,7 +242,9 @@ delete process.env.PAPERCUSP_REQUIRE_SPAWN_SIG;
 // MCP_DEADLINE_MS is read ONCE at module load, so this must be set before the
 // import below — and setting it here applies ONLY to this file's own module
 // instance, never to gating-matrix's other 96 cases.
-const TEST_DEADLINE_MS = 25;
+// The progress path measured 32ms on this runner with a 25ms budget, so leave
+// headroom for ordinary filesystem work while keeping the deadline below the slow fixture.
+const TEST_DEADLINE_MS = 100;
 process.env.PAPERCUSP_MCP_DEADLINE_MS = String(TEST_DEADLINE_MS);
 
 const { mcpHandler } = await import('../routes/transport/_mcp-handler');
@@ -262,7 +264,7 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-const SLOW_TOOL_MS = 150; // several multiples of TEST_DEADLINE_MS
+const SLOW_TOOL_MS = 500; // five multiples of TEST_DEADLINE_MS
 const REAL_OUTCOME_TEXT = 'deadlinetest-real-outcome-not-a-timeout';
 let slowCalls = 0;
 
@@ -406,8 +408,24 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
     const resultDoorDelayMs = 45;
     h.resultDoorDelayMs = resultDoorDelayMs;
     h.scratchWriteTimings = [
-      { quotaWaitMs: 25, refreshWaitMs: 0, quotaRecoveryMs: 0, writeMs: 4, totalMs: 29 },
-      { quotaWaitMs: 0, refreshWaitMs: 3, quotaRecoveryMs: 10, writeMs: 2, totalMs: 15 },
+      {
+        quotaWaitMs: 25, refreshWaitMs: 0, quotaRecoveryMs: 0, writeMs: 4, totalMs: 29,
+        quotaRecoveryDiagnostics: {
+          sizeWalkMs: 4, sizeWalkDirectories: 2, sizeWalkEntries: 5, sizeWalkFiles: 3,
+          directoryReadErrors: 0, fileStatErrors: 1, runListingMs: 2, runsListed: 3,
+          selectedRunSizingMs: 1, runsConsidered: 1, fallbackRunSizes: 1, deletionMs: 1,
+          deleteAttempts: 1, runsDeleted: 1, deletedBytes: 100,
+        },
+      },
+      {
+        quotaWaitMs: 0, refreshWaitMs: 3, quotaRecoveryMs: 10, writeMs: 2, totalMs: 15,
+        quotaRecoveryDiagnostics: {
+          sizeWalkMs: 9, sizeWalkDirectories: 4, sizeWalkEntries: 8, sizeWalkFiles: 5,
+          directoryReadErrors: 1, fileStatErrors: 0, runListingMs: 5, runsListed: 6,
+          selectedRunSizingMs: 2, runsConsidered: 2, fallbackRunSizes: 0, deletionMs: 3,
+          deleteAttempts: 2, runsDeleted: 2, deletedBytes: 200,
+        },
+      },
     ];
     try {
       const res = await callTool(
@@ -452,7 +470,15 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
             resultDoor: expect.any(Number),
             advisory: expect.any(Number),
             advisoryFlagReads: expect.any(Number),
-            scratchWrites: { count: 2, quotaWaitMs: 25, refreshWaitMs: 3, quotaRecoveryMs: 10, writeMs: 6, totalMs: 44 },
+            scratchWrites: {
+              count: 2, quotaWaitMs: 25, refreshWaitMs: 3, quotaRecoveryMs: 10, writeMs: 6, totalMs: 44,
+              quotaRecoveryDiagnostics: {
+                sizeWalkMs: 13, sizeWalkDirectories: 6, sizeWalkEntries: 13, sizeWalkFiles: 8,
+                directoryReadErrors: 1, fileStatErrors: 1, runListingMs: 7, runsListed: 9,
+                selectedRunSizingMs: 3, runsConsidered: 3, fallbackRunSizes: 1, deletionMs: 4,
+                deleteAttempts: 3, runsDeleted: 3, deletedBytes: 300,
+              },
+            },
           }),
         }),
       );

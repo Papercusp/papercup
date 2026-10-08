@@ -437,6 +437,59 @@ describe('llmCall backend selection', () => {
     } finally { vi.unstubAllGlobals(); }
   });
 
+  it.each(['gpt-5.4:medium', 'gpt-6-sol:high', 'gpt-6.1-sol:xhigh'])(
+    'prices completed tiered %s usage instead of reporting a free response', async model => {
+      const { priceFor } = await import('@papercusp/model-pricing');
+      const price = priceFor(model)!;
+      expect(price.longContext).toBeDefined();
+      const expected = (688 * price.in + 1922 * price.out + 3840 * (price.cacheRead ?? price.in * 0.1)) / 1_000_000;
+      vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ output_text: '{}',
+        usage: { input_tokens: 4528, output_tokens: 1922, input_tokens_details: { cached_tokens: 3840 } },
+      }))));
+      try {
+        const { llmCall } = await import('../llm-client');
+        const result = await llmCall({ model, messages: [{ role: 'user', content: 'fixture' }] });
+        expect(result.costUsd).toBeGreaterThan(0);
+        expect(result.costUsd).toBeCloseTo(expected, 8);
+      } finally { vi.unstubAllGlobals(); }
+    },
+  );
+
+  it('counts cached input toward the completed request long-context tier', async () => {
+    const model = 'gpt-6.1-sol:xhigh';
+    const { priceFor, costFromTokens } = await import('@papercusp/model-pricing');
+    const price = priceFor(model)!;
+    const cached = price.longContext!.above;
+    const input = cached + 1000;
+    const baseCost = (1000 * price.in + cached * (price.cacheRead ?? price.in * 0.1) + 100 * price.out) / 1_000_000;
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ output_text: '{}',
+      usage: { input_tokens: input, output_tokens: 100, input_tokens_details: { cached_tokens: cached } },
+    }))));
+    try {
+      const { llmCall } = await import('../llm-client');
+      const result = await llmCall({ model, messages: [{ role: 'user', content: 'fixture' }] });
+      expect(result.costUsd).toBeGreaterThan(baseCost);
+      expect(result.costUsd).toBeCloseTo(costFromTokens(model, {
+        requestInputTokens: input, inputTokens: 1000, cacheReadTokens: cached, outputTokens: 100,
+      }).usd, 8);
+    } finally { vi.unstubAllGlobals(); }
+  });
+
+  it('retains unknown cost when completed Codex usage cannot be priced', async () => {
+    const pricing = await import('@papercusp/model-pricing');
+    const unpriced = vi.spyOn(pricing, 'costFromTokens').mockReturnValue({ usd: 0, priced: false });
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ output_text: '{}',
+      usage: { input_tokens: 10, output_tokens: 4 },
+    }))));
+    try {
+      const { llmCall } = await import('../llm-client');
+      const error = await llmCall({ model: 'gpt-6.1-sol', messages: [{ role: 'user', content: 'fixture' }] })
+        .then(() => null, error => error);
+      expect(error).toMatchObject({ message: expect.stringMatching(/cannot be priced.*retain the admitted cost reservation/) });
+      expect(error).not.toHaveProperty('costUsd');
+    } finally { unpriced.mockRestore(); vi.unstubAllGlobals(); }
+  });
+
   it('refuses an unpriced model before sending a request', async () => {
     const fetchMock = vi.fn(); vi.stubGlobal('fetch', fetchMock);
     try {

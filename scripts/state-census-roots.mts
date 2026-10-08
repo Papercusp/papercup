@@ -16,7 +16,8 @@ for (const root of producers.roots) {
     if (!clone.isDirectory()) continue;
     try { await lstat(join(root.path, 'clones', clone.name, '.git')); }
     catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error; }
-    declarations.push(await gitStorageDeclaration(root, `clones/${clone.name}`));
+    // Entire worktree is carried, including untracked files and linked pointers.
+    declarations.push(await gitStorageDeclaration(root, `clones/${clone.name}`, true));
   }
   let children;
   try { children = await readdir(join(root.path, '.shared'), { withFileTypes: true }); }

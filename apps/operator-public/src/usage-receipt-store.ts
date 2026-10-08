@@ -30,6 +30,7 @@ interface UsageReceiptRow {
   release_ref: string;
   meter_unit: string;
   meter_quantity: number;
+  settled_meter_quantity: number | null;
   unit_price_micros: number;
   price_version: string;
   split_manifest_hash: string;
@@ -59,6 +60,8 @@ export interface StoredUsageReceipt {
   readonly releaseRef: string;
   readonly meterUnit: string;
   readonly meterQuantity: number;
+  /** Positive quantity in the original payer-signed reservation. */
+  readonly reservedMeterQuantity: number;
   readonly unitPriceMicros: number;
   readonly priceVersion: string;
   readonly splitManifestHash: string;
@@ -85,7 +88,8 @@ const COLUMNS = `channel_id, usage_nonce, principal_id, offer_id, payer, seller,
        split_manifest_hash, reserved_micros, amount_micros,
        cumulative_claim_micros, expires_at_ms, voucher_digest, voucher_signature,
        receipt_signature, state, reserved_at_ms, settled_at_ms,
-       identity_ceiling_micros, billed_inference_micros, prior_markup_remainder, markup_remainder`;
+       identity_ceiling_micros, billed_inference_micros, prior_markup_remainder, markup_remainder,
+       settled_meter_quantity`;
 
 function fromRow(row: UsageReceiptRow): StoredUsageReceipt {
   return {
@@ -97,7 +101,10 @@ function fromRow(row: UsageReceiptRow): StoredUsageReceipt {
     seller: row.seller,
     releaseRef: row.release_ref,
     meterUnit: row.meter_unit,
-    meterQuantity: Number(row.meter_quantity),
+    meterQuantity: Number(row.settled_meter_quantity ?? row.meter_quantity),
+    // Legacy partial settlements overwrote meter_quantity. Reservation money
+    // retains the original positive priced quantity, including on those rows.
+    reservedMeterQuantity: Number(row.reserved_micros) / Number(row.unit_price_micros),
     unitPriceMicros: Number(row.unit_price_micros),
     priceVersion: row.price_version,
     splitManifestHash: row.split_manifest_hash,
@@ -234,6 +241,8 @@ export async function reserveUsageReceipt(
   input: ReserveUsageReceiptInput,
 ): Promise<ReserveUsageReceiptResult> {
   if (![input.meterQuantity, input.unitPriceMicros, input.reservedMicros, input.cumulativeClaimMicros].every(safeMicros) ||
+      input.meterQuantity <= 0n || input.unitPriceMicros <= 0n ||
+      input.reservedMicros !== input.meterQuantity * input.unitPriceMicros ||
       !Number.isSafeInteger(input.nowMs) || !Number.isSafeInteger(input.expiresAtMs)) {
     return { ok: false, code: 'invalid-ledger-range', receipt: null };
   }
@@ -321,7 +330,7 @@ export type SettleUsageReceiptResult =
   | { readonly ok: true; readonly receipt: StoredUsageReceipt }
   | {
       readonly ok: false;
-      readonly code: 'unknown-reservation' | 'already-settled' | 'cap-exhausted' | 'identity-settlement-mismatch' | 'invalid-ledger-range';
+      readonly code: 'unknown-reservation' | 'already-settled' | 'cap-exhausted' | 'actual-exceeds-reservation' | 'identity-settlement-mismatch' | 'invalid-ledger-range';
       readonly detail: string;
     };
 
@@ -342,7 +351,7 @@ export async function settleUsageReceipt(
   if (!existing) {
     return { ok: false, code: 'unknown-reservation', detail: `no reservation for usage nonce '${input.usageNonce}'` };
   }
-  if (![input.amountMicros, input.meterQuantity].every(safeMicros) || input.meterQuantity <= 0n ||
+  if (![input.amountMicros, input.meterQuantity].every(safeMicros) || input.meterQuantity < 0n ||
       !input.receiptSignature.trim() || !Number.isSafeInteger(input.nowMs) || input.nowMs < existing.reservedAtMs) {
     return { ok: false, code: 'invalid-ledger-range', detail: 'exact safe-integer ledger amounts and a signed completion time after admission are required' };
   }
@@ -368,6 +377,10 @@ export async function settleUsageReceipt(
     }
   } else if (input.identityInference) {
     return { ok: false, code: 'identity-settlement-mismatch', detail: 'reservation is not an exact identity turn' };
+  } else if (!Number.isSafeInteger(existing.reservedMeterQuantity) || existing.reservedMeterQuantity <= 0 ||
+      input.meterQuantity > BigInt(existing.reservedMeterQuantity) ||
+      input.amountMicros !== input.meterQuantity * BigInt(existing.unitPriceMicros)) {
+    return { ok: false, code: 'actual-exceeds-reservation', detail: 'actual units and amount must match the original priced reservation' };
   }
   try {
     await db.batch([
@@ -380,7 +393,7 @@ export async function settleUsageReceipt(
       db
         .prepare(
           `UPDATE usage_receipts
-              SET state = 'settled', amount_micros = ?, meter_quantity = ?,
+              SET state = 'settled', amount_micros = ?, settled_meter_quantity = ?,
                   receipt_signature = ?, settled_at_ms = ?, billed_inference_micros = ?,
                   prior_markup_remainder = ?, markup_remainder = ?
             WHERE channel_id = ? AND usage_nonce = ? AND state = 'reserved'`,

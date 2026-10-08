@@ -295,6 +295,11 @@ export interface ScoutTickResult {
     | 'claim-lost'
     | 'cycle-error'
     | 'workspace-ceiling'
+    /** 'generation-preflight' (WI-10007380 / P-003): paid generation was skipped
+     *  before the tick — a deep admission throttle or dedup saturation that the
+     *  novelty widening could not break. The specific cause is on the gated tick
+     *  record (detail.reason). A GATE, not a failure. */
+    | 'generation-preflight'
     | 'not-hive-runner'
     | 'no-capacity'
     /** 'pot-disabled' (learning-pot-scope-gate-2026-08-30 D-001): the POT this

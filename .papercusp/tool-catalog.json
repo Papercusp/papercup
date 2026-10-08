@@ -20047,7 +20047,7 @@
           "POST"
         ]
       },
-      "description": "Build the operator scanner prompt for a request without running it. Useful for debug + plugin-author validation.",
+      "description": "Build a scanner or converse prompt without running a model. Converse previews use the actual chat prompt builder with explicit role, trust and tool-catalog inputs.",
       "capabilities": [
         "operator:read"
       ],

@@ -4284,5 +4284,19 @@ vh_begin assert
 # Assertions write diagnostics outside the disposable operator source. Export
 # after vh_begin so children receive the current phase, not the boot directory.
 export VH_PHASE_DIR
+if [ -n "${VERIFY_TAURI_SOURCE_RECEIPT:-}" ]; then
+  # Native builds generate schemas/placeholders before the browser starts.
+  # Validate the recorded source population now, so a provenance failure cannot
+  # spend a full browser run and only surface in its final ledger receipt.
+  source_preflight_log="$VH_PHASE_DIR/verifier-source-preflight.log"
+  if ! node "$OPERATOR_SOURCE_ROOT/scripts/source-preview.mjs" verifier-verify \
+    --out "$OPERATOR_SOURCE_ROOT" --receipt "$VERIFY_TAURI_SOURCE_RECEIPT" \
+    --runtime-artifacts >"$source_preflight_log" 2>&1; then
+    cat "$source_preflight_log" >&2
+    echo 'FATAL: committed verifier source changed before assertions; browser acceptance was not run' >&2
+    exit 1
+  fi
+  log "committed verifier source preflight passed before assertions"
+fi
 log "running assertion command: $*"
 "$@"

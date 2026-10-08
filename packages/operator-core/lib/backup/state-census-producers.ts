@@ -132,7 +132,7 @@ export function integrationBaselineCensusDeclarations(entries: readonly CensusEn
 
 const execFileAsync = promisify(execFile);
 /** Preserve metadata only after Git confirms this exact directory owns it. */
-export async function gitStorageDeclaration(root: CensusRoot, repositoryName: string): Promise<CensusDeclaration> {
+export async function gitStorageDeclaration(root: CensusRoot, repositoryName: string, preserveWorktree = false): Promise<CensusDeclaration> {
   if (repositoryName.startsWith('/') || repositoryName.split('/').some(segment => segment === '..')) throw new Error('Invalid repository path');
   const repository = join(root.path, repositoryName);
   const options = { timeout: 5000, maxBuffer: 64 * 1024, env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' } };
@@ -147,13 +147,14 @@ export async function gitStorageDeclaration(root: CensusRoot, repositoryName: st
     }
     // Pointer is state, common metadata is owned by its primary repository.
     // Never collapse the pointer as though it contained that external subtree.
-    return { kind: 'path', root: root.id, name: `${repositoryName}/.git`, classification: 'state', producer: 'git-worktree-pointer' };
+    if (!preserveWorktree) return { kind: 'path', root: root.id, name: `${repositoryName}/.git`, classification: 'state', producer: 'git-worktree-pointer' };
   }
   const { stdout } = await execFileAsync('git', ['-C', repository, 'rev-parse', '--verify', 'HEAD'], options);
   const head = stdout.trim();
   if (!/^[0-9a-f]{40,64}$/.test(head)) throw new Error('Repository HEAD unavailable');
-  return { kind: 'path', root: root.id, name: `${repositoryName}/.git`, classification: 'state',
-    producer: 'git-control', descendants: true, gitStorage: { head, evidenceRef: `git-head:${root.id}:${repositoryName}` } };
+  return { kind: 'path', root: root.id, name: preserveWorktree ? repositoryName : `${repositoryName}/.git`, classification: 'state',
+    producer: preserveWorktree ? 'clone-github-preserved-worktree' : 'git-control', descendants: true,
+    gitStorage: { head, evidenceRef: `git-head:${root.id}:${repositoryName}` } };
 }
 /** Recognized PG storage is retained state with a measured control-file identity. */
 export async function postgresStorageDeclaration(root: CensusRoot, name: string): Promise<CensusDeclaration> {

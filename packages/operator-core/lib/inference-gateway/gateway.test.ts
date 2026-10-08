@@ -5277,6 +5277,63 @@ test('[EI-19962845612125031] a zero-proxy-entry pool reports configured:false, n
   resetGovernorRegistry();
 }, 20_000);
 
+test('[WI-10007474] measures one shared direct exit IP for a completely sampled box-direct pool', async () => {
+  resetGovernorRegistry();
+  enableRealManagedTimersForTest();
+  const acctA: ActiveAccount = { accountId: 'A', token: async () => 'A-tok' };
+  const acctB: ActiveAccount = { accountId: 'B', token: async () => 'B-tok' };
+  const pool: AccountPool = {
+    active: () => acctA,
+    onExhausted: () => null,
+    select: (id) => (id === 'A' ? acctA : id === 'B' ? acctB : null),
+    entries: () => [acctA, acctB],
+  };
+  let probeCount = 0;
+  gw = createInferenceGateway({
+    pool,
+    upstreamBase: 'http://upstream.invalid',
+    fetchImpl: (async () => new Response('{}', { status: 200 })) as unknown as typeof fetch,
+    probeEgressImpl: async (account) => {
+      probeCount++;
+      return {
+        accountId: account.id,
+        egress: account.egress,
+        hasEgress: false,
+        exitIp: '203.0.113.7',
+        reputation: null,
+        asn: null,
+      };
+    },
+    proactiveEgressProbeMs: 5,
+    governorFor: () => new RateLimitGovernor({ maxConcurrent: 20 }),
+    maxQueueWaitMs: 2000,
+    log: () => {},
+  });
+  port = await gw.listen(0);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+
+  const stats = (await (await ask('/stats')).json()) as {
+    egressExitIpHealth?: {
+      accountCount: number;
+      directAccountCount: number;
+      directRouteCount: number;
+      sampledDirectRouteCount: number;
+      distinctDirectExitIpCount: number;
+      sameDirectExitIp: boolean;
+    };
+  };
+  assert.ok(probeCount > 0, 'the common default route receives a live identity probe');
+  assert.deepEqual(stats.egressExitIpHealth, {
+    accountCount: 2,
+    directAccountCount: 2,
+    directRouteCount: 1,
+    sampledDirectRouteCount: 1,
+    distinctDirectExitIpCount: 1,
+    sameDirectExitIp: true,
+  });
+  resetGovernorRegistry();
+}, 20_000);
+
 // ───────────────────────────────────────────────────────────────────────────────
 // Codex-CLI bridge (ChatGPT subscription) — codex-cli-bridge.ts + proxyOpenAi
 // resolution: CLI accounts serve /v1/responses when pinned, or as the fallback

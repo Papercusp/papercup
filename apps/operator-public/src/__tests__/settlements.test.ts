@@ -227,6 +227,21 @@ describe('POST /commerce/payment-channels/:channelId/settlements', () => {
     auth.resolveGithubBearer.mockResolvedValue({ id: 7, login: 'buyer' });
   });
 
+  it('retains an unused signed closure without submitting a zero payment claim', async () => {
+    const { facilitator, submitBatchClaim } = fakeFacilitator();
+    const { api, db, env } = harness(facilitator);
+    await bindWallet(db);
+    await openChannel(api, env);
+    await seedSettledReceipt(db, 'unused', 1000);
+    await db.prepare('UPDATE usage_receipts SET amount_micros=0, settled_meter_quantity=0 WHERE usage_nonce=?').bind('unused').run();
+    const response = await claim(api, env);
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error: 'no_settled_usage' });
+    expect(submitBatchClaim).not.toHaveBeenCalled();
+    expect(await db.prepare('SELECT state, amount_micros FROM usage_receipts WHERE usage_nonce=?').bind('unused').first())
+      .toMatchObject({ state: 'settled', amount_micros: 0 });
+  });
+
   it('preserves exact component author amounts through the claim, D1 reload and finality response', async () => {
     const { facilitator } = fakeFacilitator({ requiredConfirmations: 1 });
     const { api, db, env } = harness(facilitator);

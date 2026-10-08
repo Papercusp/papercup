@@ -3512,6 +3512,22 @@ export interface StrandedRepairQueueVerdict {
   reason: string | null;
 }
 
+/**
+ * PURE. `harness_escalations.escalation` is TEXT: a row written with `JSON.stringify` reads back
+ * as a STRING. Accept either shape; a string that is not a JSON object is `null`, never a guess.
+ */
+export function parseEscalationRecord<T extends object>(raw: unknown): T | null {
+  let value: unknown = raw;
+  if (typeof value === 'string') {
+    try {
+      value = JSON.parse(value);
+    } catch {
+      return null;
+    }
+  }
+  return value && typeof value === 'object' && !Array.isArray(value) ? (value as T) : null;
+}
+
 /** PURE. Alarm on any open frozen queue that has crossed an 8h age rung (P-010's contract). */
 export function evaluateStrandedRepairQueue(s: StrandedRepairQueueSnapshot | null): StrandedRepairQueueVerdict {
   if (!s || !Number.isFinite(s.ageEscalationRung) || s.ageEscalationRung < 1) {
@@ -3646,7 +3662,9 @@ export async function checkStrandedRepairQueue(
       }[]>`
         SELECT escalation FROM harness_shared.harness_escalations
          WHERE harness_slug = ${installSlug} AND phase = ${STRANDED_REPAIR_FIXER_SILENCE_PHASE}`;
-      const priorQuiet = quietRows[0]?.escalation ?? null;
+      const priorQuiet = parseEscalationRecord<{ candidate?: string; fixerSpawnId?: string | null }>(
+        quietRows[0]?.escalation,
+      );
       const sameQuietFixer = Boolean(
         priorQuiet &&
         diag &&
@@ -3734,7 +3752,13 @@ export async function checkStrandedRepairQueue(
     const existing = await sql<{ escalation: { candidate?: string; rung?: number; stranded?: boolean } | null }[]>`
       SELECT escalation FROM harness_shared.harness_escalations
        WHERE harness_slug = ${installSlug} AND phase = ${STRANDED_REPAIR_QUEUE_PHASE}`;
-    const prior = existing[0]?.escalation ?? null;
+    // `escalation` is a TEXT column, so the driver hands back the JSON as a STRING. Reading it raw
+    // made `prior.candidate` always undefined, so the per-(candidate, rung) one-shot never matched
+    // and the same rung re-alarmed on later ticks (observed 2026-10-06: rung 4 at 21:15:48 and
+    // again at 21:30:39 -04:00). WI-10007476.
+    const prior = parseEscalationRecord<{ candidate?: string; rung?: number; stranded?: boolean }>(
+      existing[0]?.escalation,
+    );
     const conditionKey = `stranded-repair-queue:${installSlug}`;
 
     if (verdict.alarm && diag) {
@@ -3767,13 +3791,13 @@ export async function checkStrandedRepairQueue(
       } catch (e) {
         console.warn(`[stranded-repair-queue-watchdog] notify failed: ${e instanceof Error ? e.message : e}`);
       }
-      await broadcastSevereEvent({
-        summary: `${title} on ${installSlug}.`,
-        body: verdict.reason ?? '',
-        category: 'severe-event',
-        conditionKey,
-        oneShot: true,
-      });
+      // P-002 (WI-10007476): NO fleet-wide broadcast here any more. Every 8h rung used to inject
+      // "Frozen repair queue has held main ~Nh" into every agent's inbox; on 2026-10-08 the 65h
+      // alarm cost at least four agents a turn each while the gate already had a live owner, and
+      // none of them could act on it. The age record above and the owner's attention item stay;
+      // the ACTION half is idle-repair-queue-actuator.ts (dispatch, wake the gate holder alone,
+      // escalate to the owner). The resolved-branch broadcast below is kept so a condition opened
+      // by an earlier build still closes.
       try {
         await sql`
           INSERT INTO harness_shared.harness_escalations (harness_slug, phase, escalation, mtime_ms, workspace_id)
@@ -3866,6 +3890,14 @@ export function startGreenStallWatchdog(
     // nothing fired it — a queue sat awaiting-fixer ~40h silently. Independent for the same
     // reason as the checks above: a stranded queue produces no verdict for the gate to react to.
     void checkStrandedRepairQueue(sql);
+    // P-002 (WI-10007476): the ACTION half of a stalled queue — dispatch, then wake the gate
+    // holder, then escalate to the owner. Replaces the fleet-wide age broadcast above.
+    void import('./idle-repair-queue-actuator').then(({ checkIdleRepairQueue }) => checkIdleRepairQueue(sql));
+    // P-018 (WI-10007479): standing live invariants for the gate mechanisms earlier plans shipped.
+    // The pass records its own failure in watchdog_health; the catch only covers a failed import.
+    void import('./gate-live-invariants')
+      .then(({ checkGateLiveInvariants }) => checkGateLiveInvariants(sql))
+      .catch((err: unknown) => console.warn('[gate-live-invariants] import failed:', err));
   };
 
   run(); // boot check

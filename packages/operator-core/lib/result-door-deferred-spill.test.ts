@@ -144,10 +144,17 @@ describe('result-door deferred spill (WI-10004533)', () => {
       // ...and it carries the honest spill-failure shape: no cursor/path, flagged failed.
       // (`_meta.resultDoor.spillError` legitimately names the failing path for operators;
       // the MODEL-FACING content must not advertise a file that is not there.)
-      const meta = (out as { _meta?: { resultDoor?: { spillPath?: unknown; spillFailed?: unknown } } })._meta
+      const meta = (out as { _meta?: { resultDoor?: {
+        spillPath?: unknown;
+        spillUri?: unknown;
+        spillFailed?: unknown;
+        spillPending?: unknown;
+      } } })._meta
         ?.resultDoor;
       expect(meta?.spillFailed).toBe(true);
+      expect(meta?.spillPending).not.toBe(true);
       expect(meta?.spillPath ?? null).toBeNull();
+      expect(meta?.spillUri ?? null).toBeNull();
       expect(JSON.stringify(out.content)).not.toContain(blocker);
       await new Promise((r) => setTimeout(r, 20));
       expect(unhandled).toEqual([]);
@@ -156,36 +163,150 @@ describe('result-door deferred spill (WI-10004533)', () => {
     }
   });
 
-  it('re-doors a stalled deferred write after its deadline without returning a dangling cursor', async () => {
+  it('keeps a pending cursor after the bounded timeout and reports late spill success', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.useFakeTimers();
     let releaseWrite!: () => void;
     let signalStarted!: () => void;
+    let resolveLateSettlement!: (settlement: {
+      status: 'persisted' | 'failed';
+      spillPath: string;
+      spillUri: string;
+      originalBytes: number;
+      returnedContextBytes: number;
+      reason: string;
+      aggregateOutputEscape: boolean;
+      errorCode?: string;
+    }) => void;
     const writeStarted = new Promise<void>((resolve) => { signalStarted = resolve; });
     const stalledWrite = new Promise<void>((resolve) => { releaseWrite = resolve; });
-    const writer = vi.spyOn(scratchGc, 'writeWithScratchQuota').mockImplementation(() => {
+    const lateSettlement = new Promise<{
+      status: 'persisted' | 'failed';
+      spillPath: string;
+      spillUri: string;
+      originalBytes: number;
+      returnedContextBytes: number;
+      reason: string;
+      aggregateOutputEscape: boolean;
+      errorCode?: string;
+    }>((resolve) => { resolveLateSettlement = resolve; });
+    const writer = vi.spyOn(scratchGc, 'writeWithScratchQuota').mockImplementation((_opts, write) => {
       signalStarted();
-      return stalledWrite;
+      return stalledWrite.then(write);
     });
     let resultPromise: Promise<DoorableResult> | undefined;
     try {
-      resultPromise = applyResultDoorAsync(oversized(), OPTS);
+      resultPromise = applyResultDoorAsync(oversized(), {
+        ...OPTS,
+        onLateScratchWriteSettled: resolveLateSettlement,
+      });
       await writeStarted;
       await vi.advanceTimersByTimeAsync(30_000);
       const result = await resultPromise;
       const meta = (result._meta?.resultDoor as {
         spillFailed?: unknown;
+        spillPending?: unknown;
         spillPath?: unknown;
+        spillUri?: unknown;
         spillErrorCode?: unknown;
+        recoveryCursor?: Record<string, unknown>;
       } | undefined);
 
       expect(writer).toHaveBeenCalledTimes(1);
       expect(warn).toHaveBeenCalledWith(expect.stringContaining('result-door scratch spill write exceeded 30000ms'));
-      expect(meta).toMatchObject({ spillFailed: true, spillPath: null, spillErrorCode: 'ETIMEDOUT' });
-      expect(JSON.stringify(result.content)).not.toContain('file_path');
+      expect(meta).toMatchObject({ spillPending: true, spillFailed: false, spillErrorCode: 'ETIMEDOUT' });
+      expect(meta?.spillPath).toEqual(expect.any(String));
+      expect(meta?.spillUri).toEqual(expect.any(String));
+      expect(meta?.recoveryCursor).toMatchObject({
+        kind: 'pending-spill',
+        path: meta?.spillPath,
+        uri: meta?.spillUri,
+        args: { file_path: meta?.spillPath },
+      });
+      const body = JSON.parse(result.content.find((item) => item.type === 'text')?.text ?? '{}') as {
+        incomplete?: { note?: string };
+        _projection?: { cursor?: Record<string, unknown>; next?: string };
+      };
+      expect(body.incomplete?.note ?? body._projection?.next).toContain('still running');
+      expect(body._projection?.cursor).toMatchObject({ kind: 'pending-spill', uri: meta?.spillUri });
+      expect(body._projection?.next).toContain('Do NOT repeat');
       expect(spillFiles()).toHaveLength(0);
+
+      releaseWrite();
+      await expect(lateSettlement).resolves.toMatchObject({
+        status: 'persisted',
+        spillPath: meta?.spillPath,
+        spillUri: meta?.spillUri,
+        originalBytes: expect.any(Number),
+        returnedContextBytes: expect.any(Number),
+        reason: expect.any(String),
+        aggregateOutputEscape: false,
+      });
+      expect(spillFiles()).toHaveLength(1);
     } finally {
       releaseWrite();
+      await resultPromise?.catch(() => undefined);
+      writer.mockRestore();
+      vi.useRealTimers();
+      warn.mockRestore();
+    }
+  });
+
+  it('reports late spill failure while retaining its reserved URI and path', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.useFakeTimers();
+    let rejectWrite!: (error: Error) => void;
+    let signalStarted!: () => void;
+    let resolveLateSettlement!: (settlement: {
+      status: 'persisted' | 'failed';
+      spillPath: string;
+      spillUri: string;
+      originalBytes: number;
+      returnedContextBytes: number;
+      reason: string;
+      aggregateOutputEscape: boolean;
+      errorCode?: string;
+    }) => void;
+    const writeStarted = new Promise<void>((resolve) => { signalStarted = resolve; });
+    const stalledWrite = new Promise<void>((_resolve, reject) => { rejectWrite = reject; });
+    const lateSettlement = new Promise<{
+      status: 'persisted' | 'failed';
+      spillPath: string;
+      spillUri: string;
+      originalBytes: number;
+      returnedContextBytes: number;
+      reason: string;
+      aggregateOutputEscape: boolean;
+      errorCode?: string;
+    }>((resolve) => { resolveLateSettlement = resolve; });
+    const writer = vi.spyOn(scratchGc, 'writeWithScratchQuota').mockImplementation((_opts, write) => {
+      signalStarted();
+      return stalledWrite.then(write);
+    });
+    let resultPromise: Promise<DoorableResult> | undefined;
+    try {
+      resultPromise = applyResultDoorAsync(oversized(), {
+        ...OPTS,
+        onLateScratchWriteSettled: resolveLateSettlement,
+      });
+      await writeStarted;
+      await vi.advanceTimersByTimeAsync(30_000);
+      const result = await resultPromise;
+      const meta = result._meta?.resultDoor as { spillPath?: string; spillUri?: string } | undefined;
+      expect(meta?.spillPath).toEqual(expect.any(String));
+      expect(meta?.spillUri).toEqual(expect.any(String));
+
+      const failure = Object.assign(new Error('disk write rejected'), { code: 'EIO' });
+      rejectWrite(failure);
+      await expect(lateSettlement).resolves.toMatchObject({
+        status: 'failed',
+        spillPath: meta?.spillPath,
+        spillUri: meta?.spillUri,
+        errorCode: 'EIO',
+      });
+      expect(spillFiles()).toHaveLength(0);
+    } finally {
+      rejectWrite(new Error('test cleanup'));
       await resultPromise?.catch(() => undefined);
       writer.mockRestore();
       vi.useRealTimers();

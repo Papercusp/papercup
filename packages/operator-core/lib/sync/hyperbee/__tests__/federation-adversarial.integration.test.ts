@@ -57,7 +57,11 @@ import { join } from 'node:path';
 import type postgres from 'postgres';
 import createTestnet from 'hyperdht/testnet.js';
 import Hyperswarm from 'hyperswarm';
-import { bootHarnessSubstrate, type BootedHarnessHandle } from '../boot';
+import {
+  bootHarnessSubstrate as bootHarnessSubstrateImpl,
+  type BootedHarnessHandle,
+  type BootHarnessOpts,
+} from '../boot';
 import { type HyperswarmLike } from '../swarm';
 import type { OpEnvelope } from '../op-envelope-types';
 import { _resetCacheForTests, closeHarnessStore } from '../corestore';
@@ -71,6 +75,24 @@ import { buildHarnessFeaturesProjection } from '../projections/harness-features'
 import { createFreshPgDb, type FreshPgDb } from '../../../../test/_pg-helpers';
 import { HARNESS_FEATURES_CONSOLIDATED_DDL, SUBSTRATE_OUTBOX_DDL } from '../../../../test/_work-items-schema';
 
+// These unregistered local peers have no owner Hive policy. Inject that
+// definitive result at the existing policy-store seam for EVERY merge pass.
+// The real projection clients below still use their per-peer throwaway DBs;
+// production policy lookup and the protected-live-PG guard remain fail-closed.
+vi.mock('../../../hive-policy-store', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../../hive-policy-store')>(),
+  getHivePolicyCached: vi.fn(async () => null),
+}));
+
+/**
+ * These fake local peers exercise transport, admission and explicit projection
+ * clients, without a registered Hive or epoch-key source. Use the existing boot
+ * seam so every peer stays independent of the production Hive registry/PG pool.
+ * Production re-key lookup still fails closed; epoch encryption has its own suite.
+ */
+function bootHarnessSubstrate(opts: BootHarnessOpts) {
+  return bootHarnessSubstrateImpl({ rekeyDepsOverride: null, ...opts });
+}
 
 // ── Shared identity / swarm constants. Same binding on both peers → same topic. ──
 const WORKSPACE_ID = 'ws-fed-adversarial';

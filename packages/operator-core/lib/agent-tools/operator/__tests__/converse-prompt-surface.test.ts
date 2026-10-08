@@ -52,6 +52,7 @@ vi.mock('../../../papercup/papercup-context', () => ({
 
 import { buildOperatorPrompt } from '../converse-prompt';
 import { loadRoleToolsMd } from '../../../prompt-assembly';
+import previewPrompt from '../preview_prompt';
 
 describe('buildOperatorPrompt — per-surface affordances', () => {
   it('injects the pui control affordance + client_id only on surface="tui"', async () => {
@@ -146,6 +147,22 @@ describe('buildOperatorPrompt — per-surface affordances', () => {
 });
 
 describe('buildOperatorPrompt — role re-home seam (Sentinel)', () => {
+  it('previews the real public Papercup FAQ policy rather than the scanner prompt', async () => {
+    const result = await previewPrompt.handler({
+      brain: 'converse', request: 'What is Papercusp?',
+      role: 'papercup', hostTrust: 'public', toolNames: [],
+    }, {} as never);
+    const prompt = result.data as { systemPromptText: string; userPromptText: string; provenance: { builder: string; role: string; hostTrust: string; toolNames: string[] } };
+    expect(prompt.systemPromptText).toContain('# Papercup persona');
+    expect(prompt.systemPromptText).toContain('This is a PUBLIC surface');
+    expect(prompt.systemPromptText).toContain('Explain the product from the public FAQ first');
+    expect(prompt.systemPromptText).toContain('Omit `harness` on both owner and public Papercup sessions');
+    expect(prompt.systemPromptText).not.toContain('## Available tools');
+    expect(prompt.systemPromptText).not.toContain('## Fleet status');
+    expect(prompt.userPromptText).toContain('What is Papercusp?');
+    expect(prompt.provenance).toMatchObject({ builder: 'operator/converse-prompt', role: 'papercup', hostTrust: 'public', toolNames: [] });
+  });
+
   it("role:'operator' (default) loads the operator persona — backward-compatible", async () => {
     // No role passed → defaults to 'operator'; the operator persona's signature
     // line is present and the sentinel's is not.
