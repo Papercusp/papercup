@@ -144,6 +144,54 @@ describe('output-only original reading', () => {
     });
   });
 
+  it('keeps a paused provider response silent and starts its audio exactly once on resume', async () => {
+    await fixture(async (mod, audio, setFetch) => {
+      let stream!: ReadableStreamDefaultController<Uint8Array>;
+      setFetch(async () => new Response(new ReadableStream<Uint8Array>({ start(controller) { stream = controller; } })));
+      const started = mod.startReading('FIRSTTAIL');
+      await new Promise(done => setTimeout(done, 0));
+      mod.controlReading(started.readingId!, 'pause');
+      stream.enqueue(new TextEncoder().encode(JSON.stringify({ ok: true, type: 'chunk', text: 'FIRST', start: 0, end: 5, audioBase64: 'AQ==', contentType: 'audio/wav' }) + '\n'));
+      await vi.waitFor(() => expect(audio).toHaveLength(1));
+      expect(audio[0].play).not.toHaveBeenCalled();
+      expect(mod.getReadingState().status).toBe('paused');
+      mod.controlReading(started.readingId!, 'resume');
+      await vi.waitFor(() => expect(audio[0].onended).toBeTypeOf('function'));
+      expect(audio[0].play).toHaveBeenCalledTimes(1);
+      expect(mod.getReadingState().position).toBe(0);
+    });
+  });
+
+  it('ignores a delayed resume playback failure from a replaced reading', async () => {
+    await fixture(async (mod, audio) => {
+      const first = mod.startReading('FIRSTTAIL');
+      await vi.waitFor(() => expect(audio).toHaveLength(1));
+      let reject!: (error: Error) => void;
+      audio[0].play.mockImplementationOnce(() => new Promise<void>((_, fail) => { reject = fail; }));
+      mod.controlReading(first.readingId!, 'pause');
+      mod.controlReading(first.readingId!, 'resume');
+      mod.stopReading();
+      const second = mod.startReading('FIRSTTAIL');
+      await vi.waitFor(() => expect(audio).toHaveLength(2));
+      reject(new Error('Obsolete output failed'));
+      await new Promise(done => setTimeout(done, 0));
+      expect(mod.getReadingState()).toMatchObject({ readingId: second.readingId, status: 'playing', position: 0 });
+      expect(audio[1].pause).not.toHaveBeenCalled();
+    });
+  });
+
+  it('reports a truncated stream after its played prefix without marking the source completed', async () => {
+    await fixture(async (mod, audio, setFetch) => {
+      setFetch(async () => new Response(JSON.stringify({ ok: true, type: 'chunk', text: 'FIRST', start: 0, end: 5, audioBase64: 'AQ==', contentType: 'audio/wav' }) + '\n'));
+      mod.startReading('FIRSTTAIL');
+      await vi.waitFor(() => expect(audio).toHaveLength(1));
+      audio[0].onended!();
+      await vi.waitFor(() => expect(mod.getReadingState().status).toBe('error'));
+      expect(mod.getReadingState()).toMatchObject({ position: 5, total: 9, error: 'Reading ended before the source was complete.' });
+      expect(audio).toHaveLength(1);
+    });
+  });
+
   it('stops a pending provider response before late audio can become audible', async () => {
     await fixture(async (mod, audio, setFetch) => {
       let resolve!: (response: Response) => void;
