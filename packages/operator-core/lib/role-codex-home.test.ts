@@ -252,6 +252,36 @@ describe('writeRoleCodexHome', () => {
   // three cases pin the routing contract on the INTERACTIVE path, which previously had NO
   // gateway assertions at all (which is exactly how its local copy drifted pin-required while
   // the spawned copy learned auto).
+  it('managed role and SU homes disable startup update dialogs, including resume repair', async () => {
+    const mod = await import('./role-codex-home');
+    const role = mod.writeRoleCodexHome({
+      sessionKey: 'no-update-role',
+      model: RESOLVED_CODEX_DEFAULT,
+      mcpUrl: 'http://x/api/mcp?role=worker&sig=z',
+      promptText: 'P',
+    });
+    expect(parseToml(readFileSync(role.configPath, 'utf8')).check_for_update_on_startup).toBe(false);
+    const opts = {
+      sessionKey: 'no-update-su',
+      model: RESOLVED_CODEX_DEFAULT,
+      sid: 'su-no-update',
+      mcpUrl: 'http://x/api/mcp?superuser=1',
+      token: 'fixture-token',
+      promptText: 'P',
+    };
+    const su = mod.writeSuCodexHome(opts);
+    expect(parseToml(readFileSync(su.configPath, 'utf8')).check_for_update_on_startup).toBe(false);
+    const history = join(su.codexHome, 'sessions', 'retained.jsonl');
+    mkdirSync(join(su.codexHome, 'sessions'), { recursive: true });
+    writeFileSync(history, 'retained transcript');
+    writeFileSync(su.configPath,
+      readFileSync(su.configPath, 'utf8').replace('check_for_update_on_startup = false', 'check_for_update_on_startup = true'));
+    const repaired = mod.ensureSuCodexHomeConfig(opts);
+    expect(repaired.repaired).toBe(true);
+    expect(parseToml(readFileSync(repaired.configPath, 'utf8')).check_for_update_on_startup).toBe(false);
+    expect(readFileSync(history, 'utf8')).toBe('retained transcript');
+  });
+
   it('codexGatewayAccountId → gateway provider block WITH the x-papercusp-account pin header', async () => {
     const writeRoleCodexHome = await load();
     const out = writeRoleCodexHome({

@@ -1293,6 +1293,10 @@ export function injectIntoHostWithConfirmation(
      * corresponds to a durable delivery row.
      */
     deliveryId?: string;
+    /** EI-16685: additive mode:'turn' cancellation metadata. Older hosts ignore
+     * these fields and their delivery-id dedup still prevents a duplicate write. */
+    cancelDeliveryIds?: string[];
+    handledMsgIds?: string[];
     /** P-004 measured quota recovery: an operator-authorized conversion of this
      * durable wake into the existing same-owner recycle path. The descriptor is
      * deliberately redundant with ownerId/deliveryId so the receiving host can
@@ -1321,6 +1325,8 @@ export function injectIntoHostWithConfirmation(
     routineId?: string;
     ownerId?: string;
     deliveryId?: string;
+    cancelDeliveryIds?: string[];
+    handledMsgIds?: string[];
     quotaRecovery?: {
       operationId: string;
       ownerId: string;
@@ -1341,6 +1347,8 @@ export function injectIntoHostWithConfirmation(
   if (msg.routineId !== undefined) envelope.routineId = msg.routineId;
   if (msg.ownerId !== undefined) envelope.ownerId = msg.ownerId;
   if (msg.deliveryId !== undefined) envelope.deliveryId = msg.deliveryId;
+  if (msg.cancelDeliveryIds !== undefined) envelope.cancelDeliveryIds = msg.cancelDeliveryIds;
+  if (msg.handledMsgIds !== undefined) envelope.handledMsgIds = msg.handledMsgIds;
   if (msg.quotaRecovery !== undefined) envelope.quotaRecovery = msg.quotaRecovery;
   const payload = JSON.stringify(envelope);
 
