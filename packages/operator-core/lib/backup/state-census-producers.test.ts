@@ -1,7 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 vi.mock('../db-encryption', () => ({ dbEncryptionKeyFilePath: () => '/mounted/secrets/db-key' }));
 vi.mock('../superuser-token', () => ({ superuserTokenPath: () => '/scoped/home/superuser-token' }));
-vi.mock('../workspace-registry', () => ({ workspacesRoot: () => '/relocated/workspaces' }));
+vi.mock('../workspace-registry', () => ({
+  workspacesRoot: () => '/relocated/workspaces',
+  readRegistry: () => ({ workspaces: [{ id: 'registered-project' }] }),
+}));
 import { databaseCensusEntries, secretCensusProducers, unitCensusEntries, verifyHostStateCensus, workspaceRegistryCensusProducer } from './state-census-producers';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -17,6 +20,9 @@ describe('secret census producer adapters', () => {
     expect(producer.declarations).toEqual([{
       kind: 'path', root: 'workspace-registry', name: 'registry.json',
       classification: 'config', producer: 'workspace-registry',
+    }, {
+      kind: 'path', root: 'workspace-registry', name: 'registered-project',
+      classification: 'state', producer: 'workspace-registry',
     }]);
   });
   it('verifies filesystem and all catalogs together and fails on a new host entry', async () => {

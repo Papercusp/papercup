@@ -6,7 +6,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { dbEncryptionKeyFilePath } from '../db-encryption';
 import { superuserTokenPath } from '../superuser-token';
-import { workspacesRoot } from '../workspace-registry';
+import { workspacesRoot, readRegistry } from '../workspace-registry';
 
 /** Registry producer's real relocated root, not the operator's remapped HOME. */
 export function workspaceRegistryCensusProducer() {
@@ -15,7 +15,13 @@ export function workspaceRegistryCensusProducer() {
     kind: 'path', root: root.id, name: 'registry.json',
     classification: 'config', producer: 'workspace-registry',
   };
-  return { roots: [root], declarations: [declaration] };
+  // The registry is the producer authority for directory names. Classify only
+  // directory entries here: their contents still require their own producers.
+  const workspaceDirectories: CensusDeclaration[] = readRegistry().workspaces.map(workspace => ({
+    kind: 'path', root: root.id, name: workspace.id,
+    classification: 'state', producer: 'workspace-registry',
+  }));
+  return { roots: [root], declarations: [declaration, ...workspaceDirectories] };
 }
 
 /** Derive secret locations from their writers, including relocated mounted keys. */
