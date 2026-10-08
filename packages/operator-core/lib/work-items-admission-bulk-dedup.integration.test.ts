@@ -1291,6 +1291,81 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
     });
   }, 60_000);
 
+  it.each([false, true])('commits a safe sibling despite snapshot drift and preserves refusals through recovery=%s', async (recover) => {
+    await seed();
+    await db.sql`
+      UPDATE harness_shared.work_items
+         SET condition_key = NULL, embedding = '[0,1,0]'::vector
+       WHERE feature_id = 'c'`;
+    await db.sql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, title, summary, status, lane, payload,
+         item_kind, created_ts, updated_ts, embedding, embedding_mode, admission, admitted_at, admitted_by)
+      VALUES (${WS}, ${HARNESS}, 'd', 'Safe sibling', 'Same independent finding as c', 'open', NULL,
+              '{}'::jsonb, 'change', 4, 4, '[0,0.999,0.04]'::vector, 'gemma', 'admitted', now(), 'test')`;
+    let mutated = false;
+    let interrupted = false;
+    let calls = 0;
+    const options: BulkOptions = {
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId: `bulk-safe-sibling-${recover}`,
+      sql: db.sql,
+      maxStages: 1,
+      census: { chunkCount: 2, targetTokens: 1_000, fullCorpusPairThreshold: 0 },
+      llmCall: async (input) => {
+        calls += 1;
+        if (!mutated) {
+          mutated = true;
+          await db.sql`
+            UPDATE harness_shared.work_items
+               SET summary = 'Changed after the captured judgment snapshot', updated_ts = updated_ts + 1
+             WHERE feature_id = 'b'`;
+        }
+        const keys = [...input.messages[0]!.content.matchAll(/^([^\s]+::[^\s]+) \|/gm)].map((match) => match[1]!);
+        return {
+          text: '',
+          json: { judgements: keys.map((pairKey) => ({ pairKey, verdict: 'r-finding-merge', reason: 'same failure and remedy' })) },
+          inputTokens: 100,
+          outputTokens: 20,
+        };
+      },
+      beforePostStageCensus: async () => {
+        if (recover && !interrupted) {
+          interrupted = true;
+          throw new Error('post-commit census interrupted');
+        }
+      },
+    };
+    if (recover) await expect(runBulk(options)).rejects.toThrow('post-commit census interrupted');
+    const callsBeforeRecovery = calls;
+    const result = await runBulk(recover ? {
+      ...options,
+      llmCall: async () => { throw new Error('committed stage must not be judged again'); },
+    } : options);
+    if (recover) expect(calls).toBe(callsBeforeRecovery);
+    expect(result).toMatchObject({ converged: false, convergenceReason: 'stage-budget', finalScopedPairs: 1 });
+    const stage = result.stages[0]!;
+    expect(stage).toMatchObject({ pairs: 2, merged: 1 });
+    expect(stage.guardRefusals).toEqual([expect.objectContaining({ itemId: 'b', reason: 'snapshot-drift' })]);
+    expect(await db.sql`
+      SELECT feature_id, status, payload #>> '{admissionMerge,canonicalId}' AS canonical
+        FROM harness_shared.work_items ORDER BY feature_id`).toEqual([
+      { feature_id: 'a', status: 'open', canonical: null },
+      { feature_id: 'b', status: 'open', canonical: null },
+      { feature_id: 'c', status: 'open', canonical: null },
+      { feature_id: 'd', status: 'dropped', canonical: 'c' },
+    ]);
+    expect(await db.sql`SELECT a, b FROM harness_shared.dedup_adjudications ORDER BY a, b`)
+      .toEqual([{ a: 'c', b: 'd' }]);
+    const [ledger] = await db.sql<Array<{ status: string; refusals: unknown; receipt_refusals: unknown; outcome: unknown }>>`
+      SELECT detail->>'status' AS status, detail->'guardRefusals' AS refusals,
+             detail #> '{mergeReceipt,guardRefusals}' AS receipt_refusals, detail->'outcome' AS outcome
+        FROM harness_shared.admission_runs WHERE id = ${`${options.runId}-stage-1`}`;
+    expect(ledger).toMatchObject({ status: 'complete', refusals: stage.guardRefusals, receipt_refusals: stage.guardRefusals });
+    expect(ledger!.outcome).toMatchObject({ attempted: 2, successful: 1, rolledBack: 0, unchanged: 1 });
+  }, 60_000);
+
   // WI-10006491: the ratchet runs after the merge commit. A rise still fails the
   // stage and stops the pass. The judged, guarded verdicts stay committed and the
   // failure reports them; it no longer claims an unknown rollback.
