@@ -1,7 +1,7 @@
 /** Shared, bounded correlation contract for the local MCP proxy → operator hop. */
 import { createHash } from 'node:crypto';
 import { headersFromExtra, urlFromExtra } from '@papercusp/tooldef-mcp';
-import type { ScratchWriteTimings } from './scratch-gc';
+import type { ScratchWriteProgress, ScratchWriteTimings } from './scratch-gc';
 
 export const MCP_REQUEST_TRACE_HEADER = 'x-papercusp-mcp-trace-id';
 export const MAX_MCP_REQUEST_TRACE_ID_CHARS = 36;
@@ -18,6 +18,7 @@ export type McpRequestTraceStage =
   | 'inner_dispatch_started'
   | 'inner_dispatch_settled'
   | 'deadline'
+  | 'scratch_write_progress'
   | 'tools_list_completed'
   | 'proxy_response_finished'
   | 'stale_contract_rejected';
@@ -35,6 +36,8 @@ export interface McpRequestTraceEvent {
   /** HTTP status when the proxy has finished flushing the response; not client receipt. */
   httpStatus?: number;
   afterDeadline?: boolean;
+  /** One-shot phase snapshot when a result-door scratch spill exceeds five seconds. */
+  scratchWriteProgress?: ScratchWriteProgress;
   /** Hashes only; never persist the protocol/native session identifiers themselves. */
   mcpSessionKeyFingerprint?: string | null;
   wireMcpSessionIdFingerprint?: string | null;

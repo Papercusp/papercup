@@ -648,7 +648,21 @@ export interface ScratchWriteTimings {
   quotaRecoveryMs: number;
   writeMs: number;
   totalMs: number;
+  /** Present only for the one-shot progress notification while a phase is still pending. */
+  progress?: ScratchWriteProgress;
 }
+
+export interface ScratchWriteProgress {
+  phase: 'quota-wait' | 'usage-refresh-wait' | 'quota-recovery' | 'file-write';
+  phaseElapsedMs: number;
+  totalElapsedMs: number;
+  bytes: number;
+  pendingWrites: number;
+  recoveryActive: boolean;
+  refreshActive: boolean;
+}
+
+const SCRATCH_WRITE_PROGRESS_AFTER_MS = 5_000;
 
 export async function writeWithScratchQuota(
   opts: { workspaceId: string; filePath: string; bytes: number;
@@ -666,9 +680,45 @@ export async function writeWithScratchQuota(
   const timings: ScratchWriteTimings = {
     quotaWaitMs: 0, refreshWaitMs: 0, quotaRecoveryMs: 0, writeMs: 0, totalMs: 0,
   };
-  const timed = async (phase: Exclude<keyof ScratchWriteTimings, 'totalMs'>, run: () => Promise<void>) => {
+  const timed = async (
+    phase: 'quotaWaitMs' | 'refreshWaitMs' | 'quotaRecoveryMs' | 'writeMs',
+    run: () => Promise<void>,
+  ) => {
     const start = performance.now();
-    try { await run(); } finally { timings[phase] += Math.max(0, performance.now() - start); }
+    const progressPhase = {
+      quotaWaitMs: 'quota-wait',
+      refreshWaitMs: 'usage-refresh-wait',
+      quotaRecoveryMs: 'quota-recovery',
+      writeMs: 'file-write',
+    }[phase] as ScratchWriteProgress['phase'];
+    const progressTimer = opts.onTiming
+      ? setTimeout(() => {
+          const phaseElapsedMs = Math.max(0, performance.now() - start);
+          try {
+            opts.onTiming?.({
+              ...timings,
+              progress: {
+                phase: progressPhase,
+                phaseElapsedMs,
+                totalElapsedMs: Math.max(0, performance.now() - startedAt),
+                bytes: opts.bytes,
+                pendingWrites: entry.writes.size,
+                recoveryActive: Boolean(entry.recovering),
+                refreshActive: Boolean(entry.refreshing),
+              },
+            });
+          } catch {
+            // Diagnostics must never replace a write failure or invalidate a cursor.
+          }
+        }, SCRATCH_WRITE_PROGRESS_AFTER_MS)
+      : undefined;
+    (progressTimer as { unref?: () => void } | undefined)?.unref?.();
+    try {
+      await run();
+    } finally {
+      if (progressTimer) clearTimeout(progressTimer);
+      timings[phase] += Math.max(0, performance.now() - start);
+    }
   };
   let succeeded = false;
   try {
