@@ -1071,7 +1071,76 @@
       "item": "WI-10006170",
       "lines": [
         15444
-      ]
+      ],
+      "historicalQualification": {
+        "observedOn": "2026-10-08",
+        "scope": "Read-only archive, source-baseline and existing-record qualification; no new test execution, source repair, terminal-item replay, final acceptance or shipment.",
+        "archiveSha256": "43cf66489baf7cf665a9746d097375cffc7cdc6262014929c3cc398155b579f4",
+        "archivedCensus": {
+          "collected": 16,
+          "executed": 16,
+          "failed": 1,
+          "skipped": 0
+        },
+        "archivedFailure": "The poll-fallback case seeds F-POLL after startOutboxDrain with pollMs50 and no explicit NOTIFY; its waitFor assertion at test468 receives an empty append list. This observation does not distinguish timer dispatch, drain admission, PG progress, mapping or append failure.",
+        "existingTerminalItem": {
+          "id": "EI-22138988923269437",
+          "state": "done",
+          "completionAuthority": "committed",
+          "completedAt": "2026-09-02T15:49:48.050Z",
+          "repairCommit": "b870d4e9100e5c6318fc7777c749928384e3816f",
+          "fixtureCorrectionCommit": "84fe042a59c74787c890d1b966b42d7e312773b2",
+          "repairMechanism": "Independent priority/rest selection scans prevent a bulk non-priority backfill from starving coordination rows. The later fixture correction asserts a full batch of three priority plus two backlog rows; neither edit changes the F-POLL case.",
+          "reportedVerification": "Stored completion reports42/42 unit,28/29 integration and7/7 shared-listen passes, with the F-POLL failure explicitly excluded as a claimed pre-existing flake. This is historical priority-lane proof, not a repair or passing receipt for the archived poll-fallback failure.",
+          "qualification": "The completion's confirmed-flake/host-latency claim exceeds its two cited defect records: EI-21841970390818841 leaves cross-file interaction unresolved; EI-21842031907605273 reproduces the timeout in isolation and leaves host/testcontainer latency unproved. No resource cause is adopted."
+        },
+        "existingNonterminalItems": [
+          {
+            "id": "EI-24099631804056975",
+            "state": "open",
+            "assigneeAtRead": null,
+            "meaning": "Existing six-file federation defect records the identical missing F-POLL append at September HEAD40d535b1. Its pre-P008 redirect control concerns restart-durability, not this poll case. Read only; specific fleet admission is required before claiming or implementing."
+          },
+          {
+            "id": "EI-21841970390818841",
+            "state": "open",
+            "assigneeAtRead": null,
+            "meaning": "Historical combined-run timeout report; its summary explicitly leaves the cause unresolved. No repair or terminal completion evidence is stored."
+          },
+          {
+            "id": "EI-21842031907605273",
+            "state": "open",
+            "assigneeAtRead": null,
+            "meaning": "Historical isolated timeout report1 failed/14 skipped; cross-file contention is excluded for that reproduction, but the proposed longer diagnostic and host/testcontainer-latency cause are not established by its summary. No repair or terminal completion evidence is stored."
+          }
+        ],
+        "runStartCommit": "d2a53e115436fe5b2a72c261abbc66f337642672",
+        "runStartAndCurrentTestSha256": "4f954982664bf959af5a1a4710ced10dcdf4b1ea8869381f20232bdc6319368c",
+        "runStartAndCurrentSourceSha256": "71d5d61969a60a54dfca9cbbfd04632e8fe563b09d921c47a41673021cd9aa72",
+        "sourceComparison": "The current named test and outbox-drain.ts are clean and equal their run-start commit blobs8780143abd91aeb77c670d7cb796076d8336e132/f6b83939344e3ebe36e641d0f7f6f58b0a68c062. Static source wires the managed poll callback into a serialized/admitted drain; the archive provides no measured timer/admission/PG/append trace. Equal baseline files do not prove original/current actually loaded bytes, transitive imports, configuration or environment.",
+        "existingFailureReceipts": [
+          {
+            "id": 20766099,
+            "status": "fail",
+            "commit": "0d0655c7909ce8c170a5aae58e56ece24d592a49",
+            "meaning": "2026-10-05 local canonical dirty staging/non-scratch-config row; outputTail records the same expected F-POLL/actual empty list assertion."
+          },
+          {
+            "id": 20815851,
+            "status": "fail",
+            "commit": "81c7be521adb885de5ec230c8511424ec63804d3",
+            "meaning": "2026-10-06 local clean isolated as-committed checkout/non-scratch-config row; same assertion. This is existing failure evidence, not a current-HEAD reproduction."
+          }
+        ],
+        "historicalPassingReceipt": {
+          "id": 17017945,
+          "status": "pass",
+          "commit": "add23bad3a605b900925daefa2b04c21806f82a0",
+          "meaning": "2026-09-02 local dirty-repository/non-scratch-config row with legacy root null; adjacent records at the same commit fail. It predates the archived October failure and does not qualify current loaded source."
+        },
+        "receiptLookupScope": "Exact file-path ledger listing retained the latest12 of53 recorded rows. A separate exact-path query since2026-10-06T03:10:00Z returned no_runs_recorded with no omitted source-filter rows; this is a ledger absence, not proof that no tests ran or that any test passed.",
+        "assurance": "UNKNOWN retained: no later causal repair or current passing receipt established. Root cause, original/current loaded source, transitive imports, config, main/subprocess/native environment, final D006/P004 acceptance and shipment remain unverified."
+      }
     },
     {
       "path": "packages/operator-core/lib/harness/routines/reconcile-loop-routines.integration.test.ts",
