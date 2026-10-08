@@ -84,6 +84,7 @@ import {
   type DependencyGenerationPrediction,
 } from '../../release/dependency-admission-prediction';
 import { claimRepairManifestLeg, renderAdmitCommand } from '../../release/repair-manifest';
+import { parseRepairTickLegs, sameHeadContradictionAnnotation } from '../../release/repair-tick-legs-snapshot';
 import { readIdentity } from '../locks/identity';
 import { readGateOwnership, shouldStandDownForLivePeer } from '../../coord/gate-ownership';
 import { executeWithGateActionReceipt } from '../../release/gate-action-receipt';
@@ -574,6 +575,31 @@ async function reconcileQueueRowWithLineage(
   }
 }
 
+/**
+ * WI-10007509: mark the queue entries the latest repair tick passed at the live repairHead.
+ * Same routine-row read as release-actions.ts's fixer dispatch (`gate_health.repairTickLegs`).
+ * A failed read returns `unknown`, never "no contradiction".
+ */
+async function readSameHeadContradiction(
+  installSlug: string,
+  queue: { repairHead: string; failingTests?: readonly string[] | null },
+): Promise<
+  | ReturnType<typeof sameHeadContradictionAnnotation>
+  | { status: 'unknown'; reason: 'repair-tick-legs-read-failed'; detail: string }
+> {
+  try {
+    const rows = (await getOrgPg().sql.unsafe(
+      `SELECT metadata->'gate_health'->'repairTickLegs' AS legs
+         FROM harness_shared.routines
+        WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'`,
+      [installSlug],
+    )) as Array<{ legs: unknown }>;
+    return sameHeadContradictionAnnotation(queue.failingTests, parseRepairTickLegs(rows[0]?.legs), queue.repairHead);
+  } catch (err) {
+    return { status: 'unknown', reason: 'repair-tick-legs-read-failed', detail: String(err) };
+  }
+}
+
 async function inspectQueue() {
   const queueTarget = target();
   const read = await readFrozenCandidateRepairQueueState(queueTarget);
@@ -869,6 +895,9 @@ export default defineTool({
             isSuperuser: ctx.isSuperuser,
           });
     if (args.op === 'get') {
+      const sameHeadContradicted = inspected.queue
+        ? await readSameHeadContradiction(inspected.target.installSlug, inspected.queue)
+        : null;
       return json({
         ok: true,
         op: 'get',
@@ -876,6 +905,9 @@ export default defineTool({
         repairQueue: renderedQueue,
         repairQueueRead: compactRead,
         callerAuthorization,
+        // WI-10007509: signature entries the latest repair tick passed at this exact repairHead.
+        // Absent ⇒ no such contradiction was measured; `unknown` ⇒ the measurement was unreadable.
+        ...(sameHeadContradicted ? { sameHeadContradicted } : {}),
         // P-027 (D-014): ledger/ref agreement. Absent ⇒ in sync on this read; `reconciled` ⇒ the
         // row was rebuilt from the lineage ref just now; any other status ⇒ a disagreement this
         // read refused to repair, with the reason.

@@ -473,6 +473,65 @@ describe('release:repair-queue', () => {
     });
   });
 
+  describe('WI-10007509: get marks same-head-contradicted signature entries', () => {
+    const leg = '@papercusp/operator-core :: test:lane-stateful';
+    const mixedQueue = { ...queue, failingTests: [leg, 'lib/red.test.ts'] };
+    const legsAt = (head: string, status: 'pass' | 'fail') => [{
+      legs: {
+        head: head.slice(0, 12),
+        atMs: 1_791_000_000_000,
+        ok: status === 'pass',
+        failingSignatures: status === 'pass' ? [] : [leg],
+        legs: [{ id: leg, status, durationMs: 1_159_000 }],
+      },
+    }];
+
+    it('marks a leg the tick passed at the live repairHead and keeps the signature whole', async () => {
+      mocks.readState.mockResolvedValue({ status: 'value', queue: mixedQueue });
+      mocks.audit.mockResolvedValueOnce(legsAt(queue.repairHead, 'pass'));
+      const result = body(await tool.handler({ op: 'get' } as never, { role: 'su' } as never));
+      expect(result.sameHeadContradicted).toMatchObject({
+        status: 'contradicted',
+        entries: [leg],
+        allContradicted: false,
+        measuredAtHead: queue.repairHead.slice(0, 12),
+      });
+      expect(result.sameHeadContradicted.note).toContain('fix the remaining entries');
+      const [sqlText, params] = mocks.audit.mock.calls[0]! as [string, unknown[]];
+      expect(sqlText).toContain("'repairTickLegs'");
+      expect(params).toEqual(['papercusp']);
+    });
+
+    it('says re-verify, not fix, when every entry is contradicted', async () => {
+      mocks.readState.mockResolvedValue({ status: 'value', queue: { ...queue, failingTests: [leg] } });
+      mocks.audit.mockResolvedValueOnce(legsAt(queue.repairHead, 'pass'));
+      const result = body(await tool.handler({ op: 'get' } as never, { role: 'su' } as never));
+      expect(result.sameHeadContradicted).toMatchObject({ entries: [leg], allContradicted: true });
+      expect(result.sameHeadContradicted.note).toContain('needs a re-verification, not a fix');
+    });
+
+    it.each([
+      ['a tick from an earlier head', () => legsAt('d'.repeat(40), 'pass')],
+      ['a tick that failed the leg', () => legsAt(queue.repairHead, 'fail')],
+      ['no tick measurement', () => []],
+    ])('omits the field for %s', async (_label, rows) => {
+      mocks.readState.mockResolvedValue({ status: 'value', queue: mixedQueue });
+      mocks.audit.mockResolvedValueOnce(rows());
+      const result = body(await tool.handler({ op: 'get' } as never, { role: 'su' } as never));
+      expect(result).not.toHaveProperty('sameHeadContradicted');
+    });
+
+    it('reports unknown, never "no contradiction", when the measurement read fails', async () => {
+      mocks.readState.mockResolvedValue({ status: 'value', queue: mixedQueue });
+      mocks.audit.mockRejectedValueOnce(new Error('pg down'));
+      const result = body(await tool.handler({ op: 'get' } as never, { role: 'su' } as never));
+      expect(result.sameHeadContradicted).toMatchObject({
+        status: 'unknown',
+        reason: 'repair-tick-legs-read-failed',
+      });
+    });
+  });
+
   it('P-025: get renders a newer-schema queue as unreadable instead of null/none', async () => {
     mocks.readState.mockResolvedValue({
       status: 'unreadable',
