@@ -749,7 +749,9 @@ export function commerceRoute(
       throw err;
     }
 
-    const buyer = c.req.query('buyer');
+    // A turn host discovers its payer from this authenticated self read. An
+    // explicit organization still goes through the same membership check.
+    const buyer = c.req.query('buyer') ?? actingUserId;
     if (!buyer) return c.json({ error: 'buyer_required' }, 400);
 
     // Same rule as checkout, same single copy of it: you may read yourself, or

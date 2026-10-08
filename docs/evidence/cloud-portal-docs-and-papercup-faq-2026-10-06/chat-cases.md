@@ -181,6 +181,44 @@ prove that every advertised call shape is valid on the public mount.
 
 ## Outstanding acceptance
 
+### Later canonical Portal failures and prompt diagnostic, 2026-10-08
+
+After correcting the public SDK preflight's explicit harness argument, the
+two canonical-FAQ cases reached the actual hosted Portal at 11:16–11:17Z
+on runtime `795fbba159`. Both failed the required first `docs:search` call:
+their retained SSE contains provenance, answer text and completion, with no
+docs tool frames. The questions were “Can I close this tab?” and “Will agents
+on my remote workspace stop if I close this browesr tab?” The former answered
+that the conversation and queued work would persist; the latter answered
+that remote agents would continue. Neither answer was grounded in a retrieved
+FAQ or included a source citation. These failures supersede the earlier
+“has not been rerun” status for the corrected preflight, while preserving
+the 10:52Z preflight failures as separate attempts.
+
+Original records remain in `/tmp/su73-canonical-portal-evidence-1117`, in
+`public-manual-portal-4f1b9894-3698-4f88-9493-455075fc5f71/case.json` and
+`public-manual-portal-39520e1d-6c5e-4962-aa3a-2f74180daf39/case.json`.
+The exact loaded prompt/request is unproven; do not name a prompt-routing or
+provider root cause from these answers alone. The unchanged runtime cases
+have not been replayed.
+
+The existing `operator:preview_prompt` diagnostic now has a source-tested
+`brain: "converse"` option, using the actual converse builder with explicit
+role, public/owner trust and exact tool names. Its maintained operator tests
+passed 24 cases with no skips at 12:28Z; retained log:
+`/tmp/su73-converse-preview-1228.log`. This is source-level prompt evidence.
+The serving schema checked afterward still exposed the older scanner-only
+arguments, so no loaded-runtime converse preview is claimed. This diagnostic
+does not resolve a principal or prove which prompt the historical Portal
+turns received.
+
+The 10:23Z functional Portal archive was subsequently sanitized using the
+existing identity-safe JSON serializer. The maintained failure-evidence
+group passed three cases, with 37 filter-excluded, and the archive retained
+its result, raw case/log hashes and `unknown` source provenance. This repair
+is `WI-10007484`; it does not turn the earlier functional pass into canonical
+FAQ or production evidence.
+
 The following remain unobserved here: the deep-delegation route; the full
 canonical seed/paraphrase matrix; fresh installed
 artifact behavior; live authorized account facts; stale, conflicting, missing

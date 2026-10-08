@@ -19,6 +19,7 @@ import {
 } from './checkpoint-qualification-transaction';
 import {
   createFrozenCandidateQueue,
+  decideFrozenCandidateRepairQueue,
   markFrozenCandidateVerificationRed,
   markFrozenRepairAdmitted,
   markFrozenRepairVerificationGreen,
@@ -1034,6 +1035,84 @@ describe('logical checkpoint qualification transaction', () => {
         qualificationAttemptId: null,
       }),
     ).toMatchObject({ status: 'blocked', reason: 'queue-origin-unknown' });
+  });
+
+  // WI-10007408: the same deadlock with a fixer ASSIGNED but dead. Observed 2026-10-08: the
+  // papercusp fixer reached spawned_agents 'done' at 10:43Z with no admission and the queue
+  // stayed awaiting-fixer naming it. Only the run's `recover-dead-fixer` branch clears that row,
+  // and the run cannot start while begin refuses its successor.
+  it('hands an awaiting-fixer queue whose assigned fixer is PROVABLY dead to the successor', () => {
+    const awaitingDeadFixer = {
+      ...markFrozenCandidateVerificationRed(
+        createFrozenCandidateQueue({ candidate: 'candidate-1', qualificationAttemptId: 'attempt-1', base: null, nowMs: 200 }),
+        { failingTests: ['broken.test.ts'], nowMs: 300 },
+      ),
+      fixerSpawnId: 's-dead',
+      attempts: 1,
+    };
+    const inconclusive = settleQualificationTransaction(begin(), {
+      attemptId: 'attempt-1',
+      reason: 'error',
+      green: null,
+      nowMs: 400,
+    }).transaction;
+    const successorWith = (assignedFixerLiveness: { spawnId: string; liveness: 'live' | 'dead' | 'unknown' } | null) => ({
+      attemptId: 'attempt-2',
+      declaredPaths: [],
+      candidate: 'candidate-2',
+      nowMs: 500,
+      assignedFixerLiveness,
+    });
+
+    const preserved = assessTerminalRepairQueueReconciliation(
+      inconclusive,
+      successorWith({ spawnId: 's-dead', liveness: 'dead' }),
+      awaitingDeadFixer,
+    );
+    expect(preserved).toMatchObject({
+      status: 'preserved',
+      reason: 'awaiting-dead-fixer',
+      predecessorAttemptId: 'attempt-1',
+      successorAttemptId: 'attempt-2',
+      candidate: 'candidate-1',
+    });
+    // The handoff only helps if the successor's run can ACT on it: the run's own policy, fed
+    // the same verdict (dead = fixerAlive false), must take the recovery exit. A preserve
+    // with no matching exit would just move the deadlock one stage later.
+    expect(decideFrozenCandidateRepairQueue(awaitingDeadFixer, { nowMs: 600, fixerAlive: false }).kind).toBe(
+      'recover-dead-fixer',
+    );
+
+    // Negative controls — each keeps the old fail-closed verdict.
+    const blocked = { status: 'blocked', reason: 'queue-not-safe-unstarted' };
+    // A live fixer advances the queue itself by admission.
+    expect(
+      assessTerminalRepairQueueReconciliation(inconclusive, successorWith({ spawnId: 's-dead', liveness: 'live' }), awaitingDeadFixer),
+    ).toMatchObject(blocked);
+    // An unmeasurable fixer must not be raced.
+    expect(
+      assessTerminalRepairQueueReconciliation(inconclusive, successorWith({ spawnId: 's-dead', liveness: 'unknown' }), awaitingDeadFixer),
+    ).toMatchObject(blocked);
+    // No probe at all (every pre-WI-10007408 caller).
+    expect(assessTerminalRepairQueueReconciliation(inconclusive, successorWith(null), awaitingDeadFixer)).toMatchObject(blocked);
+    // A probe of a DIFFERENT (superseded) spawn cannot vouch for the fixer the row names now.
+    expect(
+      assessTerminalRepairQueueReconciliation(inconclusive, successorWith({ spawnId: 's-older', liveness: 'dead' }), awaitingDeadFixer),
+    ).toMatchObject(blocked);
+    // A launch is in flight under an unexpired reservation.
+    expect(
+      assessTerminalRepairQueueReconciliation(inconclusive, successorWith({ spawnId: 's-dead', liveness: 'dead' }), {
+        ...awaitingDeadFixer,
+        dispatchReservation: { token: 'live', claimedAtMs: 450, expiresAtMs: 9_999_999 },
+      }),
+    ).toMatchObject(blocked);
+    // Someone else's queue stays theirs even with a dead fixer.
+    expect(
+      assessTerminalRepairQueueReconciliation(inconclusive, successorWith({ spawnId: 's-dead', liveness: 'dead' }), {
+        ...awaitingDeadFixer,
+        qualificationAttemptId: 'someone-else',
+      }),
+    ).toMatchObject({ status: 'blocked', reason: 'queue-origin-mismatch' });
   });
 
   // EI-24610407938327281: a green advance whose P-008 staging bridge lost the git-sync lock

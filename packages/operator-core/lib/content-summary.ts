@@ -54,7 +54,15 @@ export async function* runLocalSummary(options: RunAgentChatOptions): AsyncItera
   const port = Number.isInteger(configuredPort) && configuredPort > 0 && configuredPort <= 65535 ? configuredPort : 8788;
   const model = options.model!;
   const provider = createOpenAI({ baseURL: `http://127.0.0.1:${port}/v1`, apiKey: 'local-gateway',
-    fetch: (url, init) => fetch(url, { ...init, redirect: 'error' }) });
+    fetch: (url, init) => {
+      // Local chat templates can spend the entire bounded output on reasoning.
+      // Request a visible answer through their existing llama-server/vLLM seam;
+      // unsupported engines still fail within the same explicit budgets.
+      const body = typeof init?.body === 'string'
+        ? JSON.stringify({ ...JSON.parse(init.body), chat_template_kwargs: { enable_thinking: false } })
+        : init?.body;
+      return fetch(url, { ...init, body, redirect: 'error' });
+    } });
   const adapter = createAiSdkPort({ resolveModel: () => ({ model: provider.chat(model), provider: 'openai', modelId: model,
     headers: { ...ownerHeaders(options.ownerId), ...priorityTierHeaders(options.priority) } }) });
   let text = '';
@@ -170,8 +178,9 @@ export async function summarizeContent(source: ReadableContent, input: SummaryOp
         }
         cancelled(signal);
         if (controller.signal.aborted) throw abortError();
-        if (fail || !terminal?.finalText.trim()) throw new ContentSummaryError('model-failed', fail ?? 'The model returned no completed summary.');
+        if (fail || !terminal) throw new ContentSummaryError('model-failed', fail ?? 'The model returned no completed summary.');
         if (terminal.stopReason === 'max_tokens') throw new ContentSummaryError('output-incomplete', 'The summary hit its output limit. Increase maxOutputTokens or request a shorter summary.');
+        if (!terminal.finalText.trim()) throw new ContentSummaryError('model-failed', 'The model returned no completed summary.');
         if (Buffer.byteLength(terminal.finalText, 'utf8') > maxTokens * 16) throw new ContentSummaryError('output-incomplete', 'The model returned an oversized summary.');
         return terminal.finalText.trim();
       };

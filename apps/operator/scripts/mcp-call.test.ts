@@ -675,6 +675,34 @@ describe('mcp-call shell-safe JSON input', () => {
 
 const MCP_CALL_SCRIPT = fileURLToPath(new URL('../../../scripts/mcp-call.mjs', import.meta.url));
 
+describe('mcp-call standalone deployment', () => {
+  it('runs when deployed as the only file in /tmp', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'mcp-call-standalone-'));
+    const standaloneScript = join(root, 'mcp-call.mjs');
+    try {
+      await writeFile(standaloneScript, await readFile(MCP_CALL_SCRIPT, 'utf8'));
+      const result = await new Promise<{ code: number | null; stdout: string; stderr: string }>((done, fail) => {
+        const child = spawn(process.execPath, [standaloneScript, '--help'], {
+          env: { ...process.env, PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:3170/api/mcp' },
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+        let stdout = '';
+        let stderr = '';
+        child.stdout.setEncoding('utf8').on('data', (chunk: string) => { stdout += chunk; });
+        child.stderr.setEncoding('utf8').on('data', (chunk: string) => { stderr += chunk; });
+        child.on('error', fail);
+        child.on('close', (code) => done({ code, stdout, stderr }));
+      });
+
+      expect(result.code, result.stderr).toBe(0);
+      expect(result.stderr).toContain('usage: node scripts/mcp-call.mjs');
+      expect(result.stderr).not.toContain('ERR_MODULE_NOT_FOUND');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
 type McpCallFetchFixture = {
   home: string;
   isolatedHome: string;

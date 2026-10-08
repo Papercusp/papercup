@@ -4,6 +4,7 @@ import { compileAgentSpecification } from '@papercusp/orchestrator/blueprint';
 import { dispatchProjectedTool, type ProjectedTool } from '@papercusp/agent-mcp';
 import type { IdentityGrantPolicy } from './capability-envelope/identity-grants-port';
 import { isLazyIdentityLaunchRecord } from './capability-envelope/lazy-launch-record';
+import * as servingIdentity from './serving-host-identity';
 
 const db = vi.hoisted(() => {
   const rows: unknown[][] = [];
@@ -685,6 +686,7 @@ describe('control-anchor kernel resolver (D-030)', () => {
   it.each(['55P03', '57014', '08006'])('retains SQLSTATE %s on the failed authority read without exposing SQL or parameters', async (pgCode) => {
     db.sql.mockRejectedValueOnce(Object.assign(new Error('private SQL and credential'), {
       code: pgCode, query: 'SELECT private_value', parameters: ['secret'], detail: 'private detail',
+      servingPid: -1, servingProcessId: 'untrusted-error-identity',
     }));
     const verdict = await controlAnchorKernelResolver(request());
     expect(verdict).toMatchObject({
@@ -693,10 +695,30 @@ describe('control-anchor kernel resolver (D-030)', () => {
     });
     const failures = verdict?.serverAudit?.authorityReadFailures as Array<Record<string, unknown>>;
     expect(failures).toHaveLength(1);
-    expect(Object.keys(failures[0]).sort()).toEqual(['elapsedMs', 'pgCode', 'source']);
+    expect(Object.keys(failures[0]).sort()).toEqual(['elapsedMs', 'pgCode', 'servingPid', 'servingProcessId', 'source']);
+    expect(failures[0].servingPid).toBe(process.pid);
+    expect(failures[0].servingProcessId).toBe(servingIdentity.getServingHostIdentity().processId);
     expect(failures[0].elapsedMs).toEqual(expect.any(Number));
     expect(failures[0].elapsedMs).toBeGreaterThanOrEqual(0);
     expect(JSON.stringify(verdict?.serverAudit)).not.toMatch(/private|secret|SELECT/);
+  });
+
+  it.each(['missing', 'throws'])('preserves denial when the serving process identity %s', async (mode) => {
+    const identity = vi.spyOn(servingIdentity, 'getServingHostIdentity');
+    if (mode === 'throws') identity.mockImplementation(() => { throw new Error('identity unavailable'); });
+    else identity.mockReturnValue({ host: 'fixture', processId: null, buildSha: null });
+    try {
+      db.sql.mockRejectedValueOnce(Object.assign(new Error('private lock error'), { code: '55P03' }));
+      await expect(controlAnchorKernelResolver(request())).resolves.toMatchObject({
+        decision: 'deny', code: 'policy-unavailable',
+        serverAudit: { authorityReadFailures: [{
+          source: 'control-anchor-query-failed', pgCode: '55P03',
+          servingPid: process.pid, servingProcessId: null,
+        }] },
+      });
+    } finally {
+      identity.mockRestore();
+    }
   });
 
   it.each([undefined, 55_003, 'ERR_CONNECTION_RESET', '55P03 private'])('keeps an unclassified authority failure explicit for code %s', async (code) => {
@@ -746,7 +768,10 @@ describe('control-anchor kernel resolver (D-030)', () => {
       kernelPreflight: expect.objectContaining({
         decision: 'deny',
         serverAudit: expect.objectContaining({
-          authorityReadFailures: [{ source: 'control-anchor-query-failed', pgCode: '55P03', elapsedMs: expect.any(Number) }],
+          authorityReadFailures: [{
+            source: 'control-anchor-query-failed', pgCode: '55P03', elapsedMs: expect.any(Number),
+            servingPid: process.pid, servingProcessId: servingIdentity.getServingHostIdentity().processId,
+          }],
         }),
       }),
     }));

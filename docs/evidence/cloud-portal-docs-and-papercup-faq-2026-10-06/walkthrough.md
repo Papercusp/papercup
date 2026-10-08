@@ -122,3 +122,48 @@ tenant isolation, live answer policy or production disclosure.
 
 The seven actual product journeys, real novice study, live Papercup/security
 matrix, independent acceptance and exact production shipment remain open.
+
+## R-1 source review and goal/result openings, 2026-10-08
+
+The current `AUTO-BAR-R-1-P-003@3` requires changed pages to open with the
+reader's goal and expected result. A source read found that the following
+guides instead began with definitions or a symptom heading. Their openings
+now name the action and the result to check before advanced details:
+
+| Existing guide | Goal and expected result at the opening |
+| --- | --- |
+| `accounts-and-billing.mdx` | Confirm account access and cost responsibility; identify the organization and distinguish pending payment from confirmed subscription. |
+| `cloud-workspaces.mdx` | Choose hosting and connect a host; verify provisioning, connection, intended account and payer before work. |
+| `workspaces-and-agents.mdx` | Select the task's place and direct an agent; identify workspace, project, executing agent and completion evidence. |
+| `plans-and-work.mdx` | Turn a request into reviewable work; inspect approved scope, assignments and completion or delivery evidence. |
+| `agent-modes-and-fleets.mdx` | Choose execution and approval; record route and scope, follow assignments and confirm a requested pause or stop. |
+| `remote-access.mdx` | Connect an app with limited access; check an authorized action and know how to pause or revoke access. |
+| `harness-snapshots.mdx` | Protect work and prepare recovery; establish completed backup scope and observed recovery before replacing live data. |
+| `harness-templates.mdx` | Choose a fitting project template; identify its current guides and verification plan before sharing. |
+| `plugins.mdx` | Add an integration to the intended account; verify limited authorization, a small action and disconnection. |
+| `troubleshooting.mdx` | Recover from the identified problem; check restored behavior or retain redacted evidence for support. |
+
+`quickstart.mdx` and `using-the-app.mdx` already open with the first task and
+inspectable result. Existing procedures, UI labels, permission boundaries,
+cost explanations and destructive-action warnings remain in the guides.
+This is a source-content repair; it does not establish that a novice can
+complete a journey or that current Portal controls match every instruction.
+
+The retained actual Portal typed/history observation at 10:23Z is available
+in `portal-typed-history-20261008.json`: one case passed, with paired public
+docs calls and two saved `text_typed` turns. Imported-source provenance is
+`unknown`. Its docs-only fixture does not implement or approve a README task,
+so it cannot fill the first-task/result or approval cells in the table above.
+Its full-machine access notice is under investigation as
+`EI-25406461543795897`; normal production restrictions have not been measured.
+
+After the opening changes, `scripts/pc-heavy.sh npm --prefix
+apps/papercusp-docs run build` exited successfully at 13:04Z, rebuilding the
+static manual and Pagefind index and copying the canonical retrieval bundle.
+`PAPERCUSP_TEST_RUN_HARNESS=papercusp scripts/pc-heavy.sh npm --prefix
+apps/papercusp-docs run test` then exited successfully: Astro reported zero
+diagnostics, and the existing first-task and public-build parity files passed
+seven tests with no skips. Retained logs are `/tmp/su73-docs-r1-build-1304.log`
+and `/tmp/su73-docs-r1-test-1306.log`. `git diff --check` passed for the changed
+manual and evidence paths. This verifies local source/build parity, not a
+browser or novice rerun, loaded Portal behavior, clause acceptance or shipment.

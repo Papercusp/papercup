@@ -57,7 +57,53 @@
         17242,
         17267,
         17299
-      ]
+      ],
+      "historicalQualification": {
+        "kind": "historical-source-and-stored-receipt-scope",
+        "archive": {
+          "collected": 9,
+          "executed": 9,
+          "passed": 5,
+          "failed": 4,
+          "skipped": 0,
+          "observedMismatch": "The two operator and two worker equality assertions receive capability:bash, capability:fs-read, capability:fs-write, capability:git and capability:net beyond their expected sets.",
+          "originalTestSha256": "a2549ccfeff58fc6ccfcc88d27eadcc298ae9e9205687c1a97cfdcb8d7793fb9",
+          "originalLoaderSha256": "69cf911213182b88eda941d93385a9456d1596aa9ecb6a239e48389e50c50706",
+          "repositoryComparison": "The named test and loader match run-start d2a53e and October failure commits 159fa07eba, 26b93be0ec and c6b4a37fc6. This does not identify the imports actually loaded by the archived process."
+        },
+        "sourceContract": {
+          "replacementGrantCommit": "db7a78463206f0bab52bc052a661abb8f8fd8d07",
+          "replacementGrantCommitDate": "2026-08-24T20:40:21Z",
+          "observedSource": "The native-tool cutover adds exactly those five grants for CAPABILITY_REPLACEMENT_PRINCIPAL_ROLES, including operator and worker. The original integration test still omits them. This source/expectation mismatch is distinct from the later app-declared worker-role repair.",
+          "currentOriginalTestUnchanged": true,
+          "currentLoaderSha256": "054711c4eee3cb13d615fdd5f50eb2654207d36424e05812e74827765a2ac862",
+          "replacementDeclarationsSha256": "adad4f84025b95c3f051c110261777346276325f4f1a4a566f5f3926534d9d1e",
+          "replacementBranchSha256": "89550b1839992449584937049101408ffa38aec78b40197b236614ebe5f2b114",
+          "currentSourceScope": "The replacement declarations and additive branch match run-start bytes. The whole loader has changed, and loaded imports, config, schema and environment remain unknown. No source repair or retest was admitted or performed. Original cutover/repair work-item attribution remains unknown."
+        },
+        "storedReceiptScope": {
+          "literalFileLocalLedger": "56/56 returned, truncatedByLimit=false, explicit source=local, omittedBySourceFilter=0; the complete projected ledger was recovered from its validated scratch container.",
+          "exactFailReceipts": [
+            20753260,
+            20767123,
+            20819017,
+            20839790
+          ],
+          "exactFailReceiptMeaning": "Each stored schemaVersion=1 receipt reports 5 pass, 4 fail, 0 skip, collectionFailed=false and no testNamePattern. 20753260, 20819017 and 20839790 use clean as-committed roots; 20767123 uses the dirty canonical tree. The latest literal-file local receipt is the October 6 failure 20839790.",
+          "earlierPassReceipts": [
+            13172054,
+            14249382
+          ],
+          "earlierPassMeaning": "August 16/21 passes precede the August 24 replacement-grant commit. Their stored execution_details counts, root and schema are absent, so no case-count or loaded-source assurance is inferred. The named integration test matches the August 16 commit, while its loader differs and lacks the replacement grants.",
+          "differentFilePassReceipts": [
+            20905437,
+            20925761
+          ],
+          "differentFilePassMeaning": "Stored dirty canonical, non-scratch, unfiltered unit receipts report 62/0/0 for role-principal-caps.test.ts and 8/0/0 for role-principal-caps.app-worker-roles.test.ts. Neither executes the original integration file; both current named test files differ from their receipt commits.",
+          "existingTerminalScope": "WI-10007010 is done/committed and covers accepted-operation grants plus app-declared worker capabilities: 10 selected tests pass with 63 unselected cases skipped, including app-worker receipt 20888264 (7/0/0). WI-10002961 is done/committed generic identity launch evidence. Neither terminal record establishes a repair of these four archived integration assertions; neither was replayed."
+        },
+        "limits": "Historical source and stored-receipt qualification only. Preserve this row UNKNOWN, the 33 focused / 20 peer / 71 unknown census, independent D006/P004 final TEST custody, D011/P003 STOP, acceptance=false and shipment=false. Current whole-consumer, actual loaded source/import/config/schema/environment and final assurance remain unverified."
+      }
     },
     {
       "path": "apps/operator/test/migration-649-pot-backfill.integration.test.ts",

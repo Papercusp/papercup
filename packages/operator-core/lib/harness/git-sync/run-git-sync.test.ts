@@ -896,6 +896,43 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(git(repo, 'status', '--porcelain')).toBe('');
   });
 
+  it('includes harness identity in equivalent superproject guard logs across hives', async () => {
+    const secondRepo = join(root, 'repo-second-hive');
+    git(root, 'clone', originDir, secondRepo);
+    configUser(secondRepo);
+
+    for (const checkout of [repo, secondRepo]) {
+      writeFileSync(join(checkout, 'package.json'), '{"name":"hive-app"}\n');
+      writeFileSync(join(checkout, 'package-lock.json'), '{"name":"hive-app","lockfileVersion":3}\n');
+      writeFileSync(join(checkout, 'unrelated.txt'), 'ordinary work\n');
+    }
+
+    const papercuspLogs: string[] = [];
+    const phoneAppLogs: string[] = [];
+    const papercusp = await runGitSync('papercusp', {
+      repoPath: repo,
+      config: cfg,
+      excludePaths: ['package.json'],
+      log: (message) => papercuspLogs.push(message),
+    });
+    const phoneApp = await runGitSync('phone-app', {
+      repoPath: secondRepo,
+      config: cfg,
+      excludePaths: ['package.json'],
+      log: (message) => phoneAppLogs.push(message),
+    });
+
+    expect(papercusp.status).toBe('synced');
+    expect(phoneApp.status).toBe('synced');
+    expect(papercuspLogs.join('\n')).toContain('[git-sync] papercusp/superproject: keeping npm manifests atomic');
+    expect(phoneAppLogs.join('\n')).toContain('[git-sync] phone-app/superproject: keeping npm manifests atomic');
+    expect(git(repo, 'status', '--porcelain', '--', 'package.json', 'package-lock.json')).toMatch(/package\.json/);
+    expect(git(secondRepo, 'status', '--porcelain', '--', 'package.json', 'package-lock.json')).toMatch(/package\.json/);
+    expect(git(originDir, 'show', 'main:unrelated.txt')).toBe('ordinary work');
+    expect(() => git(originDir, 'show', 'main:package.json')).toThrow();
+    expect(() => git(originDir, 'show', 'main:package-lock.json')).toThrow();
+  });
+
   it('reports a sidecar admission refusal during merge without treating it as a Git conflict or aborting an unstarted merge', async () => {
     const calls: string[][] = [];
     const runGit: RunGit = async (args, cwd) => {

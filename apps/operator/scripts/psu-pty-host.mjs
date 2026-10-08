@@ -5444,6 +5444,38 @@ export function decodeDeliveryId(o) {
   return deliveryId !== undefined ? { deliveryId } : {};
 }
 
+/** The turn-provenance ledger's default TTL; delayed wake prompts must not
+ *  reach a live TUI after the nonce can no longer be verified. */
+export const WAKE_PROVENANCE_MAX_AGE_MS = 600_000;
+
+/** Parse the ledger issue time off a v1 envelope. Missing is the legacy sender
+ *  path and stays backward-compatible; a present but malformed value is kept
+ *  explicit so a new sender cannot accidentally bypass the age fence. */
+function decodeProvenanceIssueTime(o) {
+  if (!Object.prototype.hasOwnProperty.call(o ?? {}, 'provenanceIssuedAtMs')) return {};
+  const provenanceIssuedAtMs = o.provenanceIssuedAtMs;
+  if (
+    typeof provenanceIssuedAtMs === 'number' &&
+    Number.isFinite(provenanceIssuedAtMs) &&
+    provenanceIssuedAtMs > 0
+  ) return { provenanceIssuedAtMs };
+  return { provenanceTimestampInvalid: true };
+}
+
+/** Pure + injectable clock so the receipt and pre-write fences can be tested
+ *  at the exact 600s ledger boundary. Legacy messages without a timestamp pass. */
+export function checkWakeProvenanceAge(message, {
+  maxAgeMs = WAKE_PROVENANCE_MAX_AGE_MS,
+  nowMs = Date.now(),
+} = {}) {
+  if (message?.provenanceTimestampInvalid) return { checked: true, expired: true, ageMs: null };
+  const issuedAtMs = message?.provenanceIssuedAtMs;
+  if (issuedAtMs == null) return { checked: false, expired: false, ageMs: null };
+  if (!Number.isFinite(issuedAtMs) || issuedAtMs <= 0) return { checked: true, expired: true, ageMs: null };
+  const ageMs = nowMs - issuedAtMs;
+  return { checked: true, expired: ageMs < 0 || ageMs > maxAgeMs, ageMs };
+}
+
 /** Parse the additive quota-recovery descriptor carried only by a durable
  * mode:recycle wake. Every identity is repeated and cross-checked here: a
  * mutated operation id or owner must degrade to an ordinary recycle, never
@@ -5533,6 +5565,7 @@ export function decodeControl(payload) {
           ...decodeFireIdentity(o),
           ...decodeOwnerIdentity(o),
           ...decodeDeliveryId(o),
+          ...decodeProvenanceIssueTime(o),
         };
       if (o.mode === 'recycle')
         return {
@@ -5542,6 +5575,7 @@ export function decodeControl(payload) {
           ...decodeFireIdentity(o),
           ...decodeOwnerIdentity(o),
           ...decodeDeliveryId(o),
+          ...decodeProvenanceIssueTime(o),
           ...decodeQuotaRecovery(o),
         };
       // carry-respawn (deterministic-context-carry P-018): a clean-boundary
@@ -5562,6 +5596,7 @@ export function decodeControl(payload) {
           ...decodeFireIdentity(o),
           ...decodeOwnerIdentity(o),
           ...decodeDeliveryId(o),
+          ...decodeProvenanceIssueTime(o),
         };
       // compact — RETIRED (P-022): still DECODED so a stale pre-cutover sender's
       // message reaches the handler's loud drop instead of falling through to the
@@ -5589,6 +5624,7 @@ export function decodeControl(payload) {
         ...decodeFireIdentity(o),
         ...decodeOwnerIdentity(o),
         ...decodeDeliveryId(o),
+        ...decodeProvenanceIssueTime(o),
       };
     }
   } catch {
@@ -7465,6 +7501,19 @@ export function turnCoalesceKey(data, routineId, ownerId) {
     .split('\n')
     .find((l) => l.trim().length > 0);
   return `${ownerPrefix}${(first ?? '').trim().slice(0, 300)}`;
+}
+
+function turnCoalesceMetadata(message) {
+  return {
+    ...(message.routineId && message.fireNumber != null
+      ? { routineId: message.routineId, fireNumber: message.fireNumber }
+      : {}),
+    // Keep the freshness proof bound to the text when a later wake folds into
+    // this waiter. Null explicitly clears a prior sender's timestamp for legacy
+    // messages, which remain compatible and are not freshness-checked.
+    provenanceIssuedAtMs: message.provenanceIssuedAtMs ?? null,
+    ...(message.provenanceTimestampInvalid ? { provenanceTimestampInvalid: true } : {}),
+  };
 }
 
 /** Render the delivered turn text, annotating how many duplicates folded in.
@@ -10763,6 +10812,28 @@ export function hostThroughPty(o) {
   // for its whole lifetime (D-006), so it needs no owner-keyed map, only a
   // loop-instance-keyed (routineId) one.
   const staleFireGuard = makeStaleFireGuard();
+  const rejectWakeProvenance = (message, phase) => {
+    const freshness = checkWakeProvenanceAge(message);
+    if (!freshness.checked || !freshness.expired) return null;
+    const reason = message?.provenanceTimestampInvalid || freshness.ageMs == null
+      ? 'invalid-timestamp'
+      : freshness.ageMs < 0
+        ? 'future-timestamp'
+        : 'expired';
+    appendHostEvent(ownerId, 'wake-provenance-rejected', {
+      phase,
+      reason,
+      mode: message?.mode ?? null,
+      addressedOwnerId: message?.ownerId ?? null,
+      deliveryId: message?.deliveryId ?? null,
+      routineId: message?.routineId ?? null,
+      fireNumber: message?.fireNumber ?? null,
+      provenanceIssuedAtMs: message?.provenanceIssuedAtMs ?? null,
+      ageMs: freshness.ageMs,
+      maxAgeMs: WAKE_PROVENANCE_MAX_AGE_MS,
+    });
+    return 'provenance-' + reason;
+  };
   // EI-12754: one-shot deferred retry for busy-gate-refused carry-respawn
   // drills. The retry window defaults to 2× the live-inject cap (a busy turn
   // that outran the first 3-minute wait gets one more, longer chance to settle);
@@ -11509,6 +11580,8 @@ export function hostThroughPty(o) {
           /* a detector must never be able to affect delivery */
         }
       }
+      const receiveProvenanceRejection = rejectWakeProvenance(msg, 'receive');
+      if (receiveProvenanceRejection) return { ok: false, reason: receiveProvenanceRejection };
       // EI-19311270129974785: a RETRY of a delivery this host has already accepted
       // is short-circuited before any mode-specific state mutation. Pending means
       // the detached pipeline has not committed a write yet; completed means the
@@ -11532,9 +11605,7 @@ export function hostThroughPty(o) {
             ? turnCoalesceKey(msg.data, msg.routineId, ownerId)
             : null;
         const pendingLoopMetadata =
-          msg.routineId && msg.fireNumber != null
-            ? { routineId: msg.routineId, fireNumber: msg.fireNumber }
-            : undefined;
+          msg.mode === 'turn' ? turnCoalesceMetadata(msg) : undefined;
         const refreshedPendingTurn =
           pendingLoopKey != null
             ? turnCoalescer.refresh(pendingLoopKey, msg.data, pendingLoopMetadata)
@@ -11671,10 +11742,7 @@ export function hostThroughPty(o) {
       // newest text wins, the waiter delivers ONE annotated turn. Only mode:'turn'
       // (never reset/recycle/compact — lifecycle verbs are not duplicates of work).
       const coalesceKey = msg.mode === 'turn' ? turnCoalesceKey(msg.data, msg.routineId, ownerId) : null;
-      const coalesceMetadata =
-        msg.routineId && msg.fireNumber != null
-          ? { routineId: msg.routineId, fireNumber: msg.fireNumber }
-          : undefined;
+        const coalesceMetadata = msg.mode === 'turn' ? turnCoalesceMetadata(msg) : undefined;
       const coalescedDeliveryIds = new Set(msg.deliveryId ? [msg.deliveryId] : []);
       const claimCoalesced = () => {
         const claimed = coalesceKey != null ? turnCoalescer.claim(coalesceKey) : null;
@@ -12005,43 +12073,6 @@ export function hostThroughPty(o) {
             }
           }
         }
-        // WI-5510: STALE-FIRE GUARD. Once a message has passed every gate above
-        // and is ABOUT to be delivered, check + commit it against the last fire
-        // number this host has delivered for its loop instance (routineId).
-        // Placed here — after the busy-gate wait, before any write/recycle —
-        // because this is the true "about to deliver" moment: a message that was
-        // still gate-waiting while a LATER fire for the same loop already cleared
-        // its own wait and delivered is exactly the stale-mid-turn-flush race
-        // this guard exists to close (see makeStaleFireGuard's doc block). Only
-        // messages carrying BOTH `routineId` + `fireNumber` (a loop-fire wake
-        // from a WI-5510-aware sender) are guarded; an ordinary coord wake or
-        // owner-typed injection (neither field set) always admits, unaffected.
-        if (msg.fireNumber != null && msg.routineId) {
-          const verdict = staleFireGuard.admit(msg.routineId, msg.fireNumber);
-          if (!verdict.admit) {
-            const dropExtra = {
-              routineId: msg.routineId,
-              fireNumber: msg.fireNumber,
-              lastDelivered: verdict.lastDelivered,
-              mode: msg.mode,
-            };
-            appendHostEvent(ownerId, 'stale-fire-dropped', dropExtra);
-            try {
-              process.stderr.write(
-                `psu-pty-host: STALE fire #${msg.fireNumber} DROPPED for ${ownerId} ` +
-                  `(routine ${msg.routineId} already delivered fire #${verdict.lastDelivered}; ` +
-                  `mode:${msg.mode}) — superseded by a later fire, never written\n`,
-              );
-            } catch {
-              /* diagnostic only */
-            }
-            // Same coalesce-slot hygiene as the busy-gate defer path just above —
-            // a dropped waiter must release any same-source turn folded into it,
-            // never black-hole it; a later arrival starts a fresh cycle.
-            claimCoalesced();
-            return { ok: false, reason: 'stale-fire-dropped' };
-          }
-        }
         // EI-18109211232286833: CARRY-RESPAWN STALENESS GUARD. Placed here —
         // after every gate wait, immediately before the delivery it would
         // otherwise perform — because this is the true "about to deliver"
@@ -12254,13 +12285,11 @@ export function hostThroughPty(o) {
             return { ok: false, reason: binding.reason };
           }
         }
-        if (machineTurn) {
-          machineTurnActive = true;
-          queuedOwnerInput = [];
-        }
         // P-001a: claim the coalesce slot at delivery — later same-key arrivals
         // start a fresh cycle (they'll gate on the turn this write starts). The
         // claimed newest text replaces this waiter's own, annotated with the count.
+        // Claim before the freshness and stale-fire fences so both inspect the
+        // exact text + issue time that will be written.
         let deliver = msg;
         if (coalesceKey != null) {
           const claimed = claimCoalesced();
@@ -12274,6 +12303,39 @@ export function hostThroughPty(o) {
               data: renderCoalescedTurn(claimed.data, claimed.folded),
             };
           }
+        }
+        const preWriteProvenanceRejection = rejectWakeProvenance(deliver, 'pre-write');
+        if (preWriteProvenanceRejection) {
+          return { ok: false, reason: preWriteProvenanceRejection };
+        }
+        // WI-5510: commit the latest coalesced fire only after the provenance
+        // fence, immediately before the pty write. An expired text cannot move
+        // the high-water mark and block its fresh retry.
+        if (deliver.fireNumber != null && deliver.routineId) {
+          const verdict = staleFireGuard.admit(deliver.routineId, deliver.fireNumber);
+          if (!verdict.admit) {
+            const dropExtra = {
+              routineId: deliver.routineId,
+              fireNumber: deliver.fireNumber,
+              lastDelivered: verdict.lastDelivered,
+              mode: deliver.mode,
+            };
+            appendHostEvent(ownerId, 'stale-fire-dropped', dropExtra);
+            try {
+              process.stderr.write(
+                `psu-pty-host: STALE fire #${deliver.fireNumber} DROPPED for ${ownerId} ` +
+                  `(routine ${deliver.routineId} already delivered fire #${verdict.lastDelivered}; ` +
+                  `mode:${deliver.mode}) — superseded by a later fire, never written\n`,
+              );
+            } catch {
+              /* diagnostic only */
+            }
+            return { ok: false, reason: 'stale-fire-dropped' };
+          }
+        }
+        if (machineTurn) {
+          machineTurnActive = true;
+          queuedOwnerInput = [];
         }
         // Deliver as ordered steps: a turn writes its text, THEN the submit CR as
         // a separate keystroke after a settle (controlWrites). A one-shot text+CR

@@ -157,9 +157,17 @@ test.each([false, true])('local chat namespace never reaches cloud when the pool
 });
 
 test('summary uses the real SDK and local gateway, then fails closed after a registry reload', async () => {
-  const local = await startFakeBackend('local', (_req, res) => {
+  const local = await startFakeBackend('local', (_req, res, body) => {
     res.writeHead(200, { 'content-type': 'text/event-stream' });
     const chunk = { id: 'chatcmpl-local', object: 'chat.completion.chunk', created: 0, model: 'fixture-local' };
+    // Reproduce the measured engine default: reasoning consumes the output
+    // budget without a visible summary unless its chat template disables it.
+    if (JSON.parse(body).chat_template_kwargs?.enable_thinking !== false) {
+      res.write(`data: ${JSON.stringify({ ...chunk, choices: [{ index: 0, delta: { reasoning_content: 'Analyze the source.' }, finish_reason: null }] })}\n\n`);
+      res.write(`data: ${JSON.stringify({ ...chunk, choices: [{ index: 0, delta: {}, finish_reason: 'length' }], usage: { prompt_tokens: 18, completion_tokens: 128, total_tokens: 146 } })}\n\n`);
+      res.end('data: [DONE]\n\n');
+      return;
+    }
     res.write(`data: ${JSON.stringify({ ...chunk, choices: [{ index: 0, delta: { role: 'assistant', content: 'Alpha: 12. Final tail: 56.' }, finish_reason: null }] })}\n\n`);
     res.write(`data: ${JSON.stringify({ ...chunk, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 18, completion_tokens: 8, total_tokens: 26 } })}\n\n`);
     res.end('data: [DONE]\n\n');

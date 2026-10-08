@@ -94,6 +94,7 @@ import {
   mcpDataPlaneDegradedAtFromExtra,
   mcpTraceIdFromExtra,
 } from '../../../mcp-request-trace';
+import type { ScratchWriteTimings } from '../../../scratch-gc';
 import { getOrgPg, retryOnRetryableDbDeadline, withWorkspace } from '@papercusp/db-org';
 import { applyResultDoorAsync, beginResultDoorAggregate, measureResultContextBytes } from '../../../result-door';
 import { annotateStoreIdentitySuspectResult, mayAnnotateResultText } from './store-identity-suspect';
@@ -1743,6 +1744,15 @@ export async function tryBuildSpawnContext(
         const observation = nativeSessionFailure(binding.advSessionId);
         if (observation) {
           nativeSessionAudit = { ...observation, binding: binding.binding };
+          // Codex supplies callId alongside threadId in each MCP request.
+          // An inherited header or output cohort cannot identify a native
+          // call. Keep only the fingerprint; this observation grants no
+          // funding authority until the trusted host matches its exact call.
+          const nativeCallId = requestMeta?.callId;
+          if (binding.binding === 'bound' && nativeThread &&
+              typeof nativeCallId === 'string' && /^[A-Za-z0-9._:-]{1,256}$/.test(nativeCallId)) {
+            nativeSessionAudit.callIdFingerprint = createHash('sha256').update(nativeCallId, 'utf8').digest('hex');
+          }
         }
         if (
           binding.binding === 'bound' &&
@@ -4613,18 +4623,19 @@ export function registerMcpHost(server: McpServer): void {
           */
           deadlineFired: boolean;
           innerDispatchStarted: boolean;
+          innerDispatchSettled: boolean;
           postDispatchStartedAtMs: number | null;
           phaseTimingsMs: {
             resultDoor: number | null;
             advisory: number | null;
             advisoryFlagReads: number;
-            scratchWrites?: { count: number; quotaWaitMs: number; refreshWaitMs: number;
-              quotaRecoveryMs: number; writeMs: number; totalMs: number };
+            scratchWrites?: { count: number } & ScratchWriteTimings;
           };
         } = {
           toolOutcome: null,
           deadlineFired: false,
           innerDispatchStarted: false,
+          innerDispatchSettled: false,
           postDispatchStartedAtMs: null,
           phaseTimingsMs: { resultDoor: null, advisory: null, advisoryFlagReads: 0 },
         };
@@ -4795,6 +4806,32 @@ export function registerMcpHost(server: McpServer): void {
                   toolName,
                   nestedTargetToolName,
                   workspaceId: dispatchSpawnCtx.workspaceId,
+                  onLateScratchWriteSettled: (settlement) => {
+                    const settledAt = new Date().toISOString();
+                    return backfillResultDoorOutputRef({
+                      workspaceId: dispatchSpawnCtx.workspaceId,
+                      spawnId: dispatchSpawnCtx.spawnId,
+                      toolName,
+                      runId: dispatchSpawnCtx.runId ?? null,
+                      outputRef: settlement.spillUri,
+                      outputSize: settlement.status === 'persisted' ? settlement.originalBytes : null,
+                      matchOutputRef: settlement.spillUri,
+                      metadataJson: {
+                        returnedContextBytes: settlement.returnedContextBytes,
+                        spilledBytes: settlement.status === 'persisted' ? settlement.originalBytes : 0,
+                        spillPath: settlement.spillPath,
+                        spillUri: settlement.spillUri,
+                        spillPending: false,
+                        spillFailed: settlement.status === 'failed',
+                        spillError: settlement.status === 'failed' ? 'spill write failed after timeout' : null,
+                        spillErrorCode: settlement.errorCode ?? null,
+                        spillSettlementStatus: settlement.status,
+                        spillSettledAt: settledAt,
+                        resultDoorReason: settlement.reason,
+                        aggregateOutputEscape: settlement.aggregateOutputEscape,
+                      },
+                    });
+                  },
                   onScratchWriteTiming: (timings) => {
                     if (timings.progress) {
                       trace('scratch_write_progress', {
@@ -4814,6 +4851,51 @@ export function registerMcpHost(server: McpServer): void {
                     total.count += 1;
                     for (const phase of ['quotaWaitMs', 'refreshWaitMs', 'quotaRecoveryMs', 'writeMs', 'totalMs'] as const) {
                       total[phase] += timings[phase];
+                    }
+                    const recovery = timings.quotaRecoveryDiagnostics;
+                    if (recovery) {
+                      const recoveryTotal = total.quotaRecoveryDiagnostics ??= {
+                        sizeWalkMs: 0,
+                        sizeWalkDirectories: 0,
+                        sizeWalkEntries: 0,
+                        sizeWalkFiles: 0,
+                        directoryReadErrors: 0,
+                        fileStatErrors: 0,
+                        runListingMs: 0,
+                        runsListed: 0,
+                        selectedRunSizingMs: 0,
+                        runsConsidered: 0,
+                        fallbackRunSizes: 0,
+                        deletionMs: 0,
+                        deleteAttempts: 0,
+                        runsDeleted: 0,
+                        deletedBytes: 0,
+                      };
+                      for (const field of [
+                        'sizeWalkMs',
+                        'sizeWalkDirectories',
+                        'sizeWalkEntries',
+                        'sizeWalkFiles',
+                        'directoryReadErrors',
+                        'fileStatErrors',
+                        'runListingMs',
+                        'runsListed',
+                        'selectedRunSizingMs',
+                        'runsConsidered',
+                        'fallbackRunSizes',
+                        'deletionMs',
+                        'deleteAttempts',
+                        'runsDeleted',
+                        'deletedBytes',
+                      ] as const) {
+                        recoveryTotal[field] += recovery[field];
+                      }
+                    }
+                    if (raced.innerDispatchSettled) {
+                      trace('scratch_write_settled', {
+                        afterDeadline: raced.deadlineFired,
+                        scratchWriteTimings: { ...timings },
+                      });
                     }
                   },
                   runId: dispatchSpawnCtx.runId ?? null,
@@ -4884,6 +4966,7 @@ export function registerMcpHost(server: McpServer): void {
                   // failed to write the overflow anywhere, so those bytes are simply GONE —
                   // strictly worse than an unread spill, and previously unstamped.
                   spillFailed?: boolean;
+                  spillPending?: boolean;
                   spillError?: string | null;
                   spillErrorCode?: string | null;
                   originalChars?: number;
@@ -4901,7 +4984,7 @@ export function registerMcpHost(server: McpServer): void {
                 toolName,
                 runId: dispatchSpawnCtx.runId ?? null,
                 outputRef: doorMeta.spillUri ?? null,
-                outputSize: doorMeta.spillUri ? originalBytes : null,
+                outputSize: doorMeta.spillUri && doorMeta.spillPending !== true ? originalBytes : null,
                 // WI-40720 gap 3: this branch was `toolName === 'code:run'`, so a recipes:run or
                 // orchestrate:run call could spill real bytes and record NO telemetry for them —
                 // the rollout gates then graded a default-on orchestration suite on code:run
@@ -4910,7 +4993,7 @@ export function registerMcpHost(server: McpServer): void {
                   ? {
                       metadataJson: {
                         returnedContextBytes: measureResultContextBytes(result),
-                        spilledBytes: doorMeta.spillUri ? originalBytes : 0,
+                        spilledBytes: doorMeta.spillUri && doorMeta.spillPending !== true ? originalBytes : 0,
                         // BOTH spill addresses, because a later capability:read may name
                         // either one — the scratch FILE path (args_json.file_path) or the
                         // papercusp:// URI (args_json.uri). Stamping both is what makes
@@ -4928,6 +5011,7 @@ export function registerMcpHost(server: McpServer): void {
                         // on the healthy path is indistinguishable from one never measured,
                         // which is how a rollback trigger silently reads as "no breaches".
                         spillFailed: doorMeta.spillFailed === true,
+                        spillPending: doorMeta.spillPending === true,
                         spillError: doorMeta.spillError ?? null,
                         spillErrorCode: doorMeta.spillErrorCode ?? null,
                         resultDoorReason: doorMeta.reason ?? 'per-result-budget-exceeded',
@@ -5163,18 +5247,22 @@ export function registerMcpHost(server: McpServer): void {
               const outcome = execute();
               raced.toolOutcome = outcome;
               void outcome.then(
-                (result) =>
+                (result) => {
+                  raced.innerDispatchSettled = true;
                   trace('inner_dispatch_settled', {
                     outcome: result.isError ? 'tool_error' : 'success',
                     afterDeadline: raced.deadlineFired,
                     ...settlementPhaseTimings(),
-                  }),
-                () =>
+                  });
+                },
+                () => {
+                  raced.innerDispatchSettled = true;
                   trace('inner_dispatch_settled', {
                     outcome: 'rejected',
                     afterDeadline: raced.deadlineFired,
                     ...settlementPhaseTimings(),
-                  }),
+                  });
+                },
               );
               return outcome;
             },

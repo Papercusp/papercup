@@ -3880,6 +3880,7 @@ export type PostStageGuardResult =
 export async function guardStagedIndexBeforeCommit(opts: {
   runGit: RunGit;
   repoPath: string;
+  /** Log-only label; structured scope remains the caller's public diagnostic coordinate. */
   scope: string;
   refreshLiveLockHoldings?: () => Promise<GitSyncLockHolding[]>;
   readText: (relPath: string) => Promise<string | null>;
@@ -4519,6 +4520,8 @@ export async function commitAttributedGroups(
 interface CommitRepoOpts {
   /** Public scope name used in skipped-path diagnostics. */
   scope: string;
+  /** Harness identity for log labels; `scope` remains the repo-relative diagnostic coordinate. */
+  harnessSlug: string;
   remote: string;
   defaultBranch: string;
   message: string;
@@ -4607,6 +4610,7 @@ function migrationReservationSkips(
   refusals: readonly MigrationReservationRefusal[],
   skippedPaths: GitSyncSkippedPath[],
   log: (message: string) => void,
+  logScope = scope,
 ): string[] {
   const paths: string[] = [];
   for (const refusal of refusals) {
@@ -4624,7 +4628,7 @@ function migrationReservationSkips(
         detail: refusal.reason,
       });
     }
-    log(`[git-sync] ${scope}: deferring migration ${refusal.path} — ${refusal.reason}`);
+    log(`[git-sync] ${logScope}: deferring migration ${refusal.path} — ${refusal.reason}`);
   }
   return paths;
 }
@@ -4844,13 +4848,14 @@ async function commitOneRepoWithScratch(
   scratch: string[],
 ): Promise<CommitRepoResult> {
   const { message } = o;
+  const logScope = `${o.harnessSlug}/${o.scope}`;
   // A routine heartbeat says only that a git call settled. Name slow pre-stage
   // phases so a live lease can be diagnosed without guessing from its age.
   let phaseStartedAt = performance.now();
   const noteSlowPhase = (phase: string): void => {
     const now = performance.now();
     const elapsedMs = Math.round(now - phaseStartedAt);
-    if (elapsedMs >= 10_000) o.log(`[git-sync] ${o.scope}: slow commit pre-stage ${phase} (${elapsedMs}ms)`);
+    if (elapsedMs >= 10_000) o.log(`[git-sync] ${logScope}: slow commit pre-stage ${phase} (${elapsedMs}ms)`);
     phaseStartedAt = now;
   };
   let committedLocal = false;
@@ -4917,7 +4922,7 @@ async function commitOneRepoWithScratch(
       }));
   if (!preStageMigrationCheck.ok) {
     o.log(
-      `[git-sync] ${o.scope}: migration reservation check failed; deferring candidate migrations fail-closed: ` +
+      `[git-sync] ${logScope}: migration reservation check failed; deferring candidate migrations fail-closed: ` +
         `${preStageMigrationCheck.error}`,
     );
   }
@@ -4926,11 +4931,17 @@ async function commitOneRepoWithScratch(
     // reservation check. Quarantine only refused paths; leave unrelated staged
     // entries and every working-tree byte recoverable while the rest of the repo
     // continues through this tick.
-    migrationQuarantinedPaths = migrationReservationSkips(o.scope, preStageMigrationRefusals, skippedPaths, o.log);
+    migrationQuarantinedPaths = migrationReservationSkips(
+      o.scope,
+      preStageMigrationRefusals,
+      skippedPaths,
+      o.log,
+      logScope,
+    );
     const unstage = await unstagePreStagedProtectedPaths(runGit, repoPath, migrationQuarantinedPaths, o.log);
     const unstageError = unstage.ok ? '' : `; could not unstage refused migration paths: ${unstage.error}`;
     if (!unstage.ok) {
-      o.log(`[git-sync] ${o.scope}: migration quarantine could not remove refused paths from the index${unstageError}`);
+      o.log(`[git-sync] ${logScope}: migration quarantine could not remove refused paths from the index${unstageError}`);
       return {
         committedLocal: false,
         dirtyPathCount,
@@ -5109,7 +5120,7 @@ async function commitOneRepoWithScratch(
         noteSlowPhase('live lock refresh');
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error);
-        o.log(`[git-sync] ${o.scope}: live lock refresh failed (fail-closed) — ${detail}`);
+        o.log(`[git-sync] ${logScope}: live lock refresh failed (fail-closed) — ${detail}`);
         return {
           committedLocal: false,
           dirtyPathCount,
@@ -5151,12 +5162,12 @@ async function commitOneRepoWithScratch(
     skippedPaths.push(...directSkippedPaths);
     if (directSkippedPaths.length > 0) {
       o.log(
-        `[git-sync] ${o.scope}: excluding live-locked dirty path(s) while committing the unlocked remainder: ` +
+        `[git-sync] ${logScope}: excluding live-locked dirty path(s) while committing the unlocked remainder: ` +
           directSkippedPaths.map((p) => `${p.path} (${p.owner}: ${p.intent})`).join('; '),
       );
       if (atomicExclusions.groups.some((group) => group.paths.length > 1)) {
         o.log(
-          `[git-sync] ${o.scope}: keeping ${atomicExclusions.groups.length} live edit cohort(s) atomic ` +
+          `[git-sync] ${logScope}: keeping ${atomicExclusions.groups.length} live edit cohort(s) atomic ` +
             `(owner + goal_ref); deferring grouped dirty path(s): ` +
             atomicExclusions.groups
               .filter((group) => group.paths.length > 1)
@@ -5207,7 +5218,7 @@ async function commitOneRepoWithScratch(
     );
     if (cargoPackageClosure.paths.length > 0) {
       o.log(
-        `[git-sync] ${o.scope}: keeping dirty Rust package(s) atomic — ` +
+        `[git-sync] ${logScope}: keeping dirty Rust package(s) atomic — ` +
           cargoPackageClosure.packages
             .map((pkg) => `${pkg.root} [${pkg.paths.join(', ')}]`)
             .join('; '),
@@ -5219,7 +5230,7 @@ async function commitOneRepoWithScratch(
     const manifestClosure = expandNpmManifestClosure(dirty, packageSafeBaseExcludePaths);
     if (manifestClosure.paths.length > 0) {
       o.log(
-        `[git-sync] ${o.scope}: keeping npm manifests atomic — ${manifestClosure.triggers.join(', ')} ` +
+        `[git-sync] ${logScope}: keeping npm manifests atomic — ${manifestClosure.triggers.join(', ')} ` +
           `withheld this pass, so also deferring ${manifestClosure.paths.join(', ')}`,
       );
     }
@@ -5270,7 +5281,7 @@ async function commitOneRepoWithScratch(
       const guard = await guardStagedIndexBeforeCommit({
         runGit: indexRunGit,
         repoPath,
-        scope: o.scope,
+        scope: logScope,
         refreshLiveLockHoldings: o.refreshLiveLockHoldings,
         readText: (rel) => o.readText(repoPath, rel),
         excludedDependencies: excludePaths,
@@ -5453,18 +5464,24 @@ async function commitOneRepoWithScratch(
           }));
       if (!postStageMigrationCheck.ok) {
         o.log(
-          `[git-sync] ${o.scope}: post-stage migration reservation check failed; deferring staged migrations fail-closed: ` +
+          `[git-sync] ${logScope}: post-stage migration reservation check failed; deferring staged migrations fail-closed: ` +
             `${postStageMigrationCheck.error}`,
         );
       }
       if (postStageMigrationRefusals.length > 0) {
-        const refused = migrationReservationSkips(o.scope, postStageMigrationRefusals, skippedPaths, o.log);
+        const refused = migrationReservationSkips(
+          o.scope,
+          postStageMigrationRefusals,
+          skippedPaths,
+          o.log,
+          logScope,
+        );
         migrationQuarantinedPaths = [...new Set([...migrationQuarantinedPaths, ...refused])];
         stagingExcludePaths = [...new Set([...stagingExcludePaths, ...refused])];
         const unstage = await unstagePreStagedProtectedPaths(stageGit, repoPath, refused, o.log);
         const unstageError = unstage.ok ? '' : `; could not unstage refused migration paths: ${unstage.error}`;
         if (!unstage.ok) {
-          o.log(`[git-sync] ${o.scope}: post-stage migration quarantine could not remove refused paths${unstageError}`);
+          o.log(`[git-sync] ${logScope}: post-stage migration quarantine could not remove refused paths${unstageError}`);
           return {
             committedLocal: committedAny,
             dirtyPathCount,
@@ -6213,7 +6230,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
       const elapsedMs = Math.round(performance.now() - startedAt);
       if (elapsedMs >= 10_000) {
         const scope = repo && cwd.startsWith(`${repo}/`) ? cwd.slice(repo.length + 1) : 'superproject';
-        log(`[git-sync] ${scope}: slow git ${gitSubcommand(args)} call (${elapsedMs}ms, includes dispatch/admission/child/transport)`);
+        log(`[git-sync] ${slug}/${scope}: slow git ${gitSubcommand(args)} call (${elapsedMs}ms, includes dispatch/admission/child/transport)`);
       }
     }
   };
@@ -6278,6 +6295,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
         mapLiveLockHoldingsForRepo(await opts.refreshLiveLockHoldings!(), repoRelPrefix, knownSubmodulePaths)
     : undefined;
   const repoO = {
+    harnessSlug: slug,
     remote,
     defaultBranch: branch,
     message,
@@ -6391,7 +6409,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
     if (r.oversized.length > 0) {
       into.oversized.push(...r.oversized.map((f) => ({ scope, ...f })));
       log(
-        `[git-sync] ${scope}: EXCLUDED ${r.oversized.length} oversized file(s) from the auto-commit (${r.oversized.map((f) => `${f.path} ${(f.sizeBytes / 1048576).toFixed(1)}MB`).join(', ')}) — gitignore or remove them (${slug})`,
+        `[git-sync] ${slug}/${scope}: EXCLUDED ${r.oversized.length} oversized file(s) from the auto-commit (${r.oversized.map((f) => `${f.path} ${(f.sizeBytes / 1048576).toFixed(1)}MB`).join(', ')}) — gitignore or remove them (${slug})`,
       );
     }
     if (r.contentErrors.length > 0) {
@@ -6401,18 +6419,18 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
       // its origin, so the parent gitlink resolves).
       into.contentErrors.push(...r.contentErrors.map((c) => ({ scope, ...c })));
       log(
-        `[git-sync] ${scope}: QUARANTINED ${r.contentErrors.length} broken file(s) from the auto-commit (${r.contentErrors.map((c) => `${c.file} [${c.detectorKey}]`).join(', ')}) — content-fixer dispatched (${slug})`,
+        `[git-sync] ${slug}/${scope}: QUARANTINED ${r.contentErrors.length} broken file(s) from the auto-commit (${r.contentErrors.map((c) => `${c.file} [${c.detectorKey}]`).join(', ')}) — content-fixer dispatched (${slug})`,
       );
     }
     if (r.skippedPaths && r.skippedPaths.length > 0) into.skippedPaths.push(...r.skippedPaths);
     if (r.status === 'conflict') {
       into.conflicts.push({ scope, conflictedFiles: r.conflictedFiles });
       log(
-        `[git-sync] ${scope}: merge conflict (${r.conflictedFiles.join(', ')}) — aborted clean, continuing (${slug})`,
+        `[git-sync] ${slug}/${scope}: merge conflict (${r.conflictedFiles.join(', ')}) — aborted clean, continuing (${slug})`,
       );
     } else if (r.status === 'error') {
       into.errors.push({ scope, message: r.message });
-      log(`[git-sync] ${scope}: ${r.message} — continuing (${slug})`);
+      log(`[git-sync] ${slug}/${scope}: ${r.message} — continuing (${slug})`);
     } else if (r.status === 'synced') {
       into.didSomething = true;
       if (r.pushed) into.pushed.push(scope);

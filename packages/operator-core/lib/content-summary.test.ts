@@ -125,15 +125,18 @@ describe('explicit authorized content summaries', () => {
     await expect(summarizeContent(await source(), { allowCloud: true }, undefined, h.deps)).rejects.toMatchObject({ code: 'budget-exceeded' });
     expect(h.requests).toHaveLength(0);
   });
-  it.each(['provider-error', 'max_tokens', 'empty'] as const)('never caches %s as a completed summary', async mode => {
+  it.each(['provider-error', 'max_tokens', 'max_tokens-empty', 'empty'] as const)('never caches %s as a completed summary', async mode => {
     const h = harness(); let calls = 0;
     h.deps.run = async function* (): AsyncIterable<ChatEvent> {
       calls++;
       if (mode === 'provider-error') { yield { type: 'error', message: 'Provider denied.' }; return; }
-      yield { type: 'result', finalText: mode === 'empty' ? '' : 'incomplete output', stopReason: mode, costUsd: 0.01, tokensIn: 10, tokensOut: 10 };
+      yield { type: 'result', finalText: mode === 'empty' || mode === 'max_tokens-empty' ? '' : 'incomplete output',
+        stopReason: mode === 'max_tokens-empty' ? 'max_tokens' : mode, costUsd: 0.01, tokensIn: 10, tokensOut: 10 };
     };
     const original = await source();
-    await expect(summarizeContent(original, { allowCloud: true }, undefined, h.deps)).rejects.toMatchObject({ code: mode === 'max_tokens' ? 'output-incomplete' : 'model-failed' });
+    await expect(summarizeContent(original, { allowCloud: true }, undefined, h.deps)).rejects.toMatchObject({
+      code: mode === 'max_tokens' || mode === 'max_tokens-empty' ? 'output-incomplete' : 'model-failed',
+    });
     await expect(summarizeContent(original, { allowCloud: true }, undefined, h.deps)).rejects.toBeInstanceOf(Error);
     expect(calls).toBe(2);
   });

@@ -191,8 +191,10 @@ const {
   makeStaleFireGuard,
   isCarryRespawnStale,
   isCarryRespawnSuperseded,
+  checkWakeProvenanceAge,
   shouldDeferWakeForPendingRespawn,
   ACTIVITY_PERSIST_MS,
+  WAKE_PROVENANCE_MAX_AGE_MS,
   MAX_CONTROL_PAYLOAD_BYTES,
   controlPayloadWithinLimit,
   KICKOFF_PROOF_PATH_ENV,
@@ -814,6 +816,48 @@ describe('makeStaleFireGuard (WI-5510 — delivery-side dead-man switch against 
     // and would otherwise flush a stale, already-superseded wake mid-turn.
     const verdict = g.admit('r-1', 1);
     expect(verdict).toEqual({ admit: false, lastDelivered: 2 });
+  });
+});
+
+describe('wake provenance TTL guard (EI-18126834395314388)', () => {
+  it('accepts the exact TTL boundary, rejects older and future timestamps, and preserves legacy senders', () => {
+    const nowMs = 1_000_000;
+    const ttl = WAKE_PROVENANCE_MAX_AGE_MS;
+    expect(checkWakeProvenanceAge({ provenanceIssuedAtMs: nowMs - ttl }, { nowMs }))
+      .toEqual({ checked: true, expired: false, ageMs: ttl });
+    expect(checkWakeProvenanceAge({ provenanceIssuedAtMs: nowMs - ttl - 1 }, { nowMs }))
+      .toEqual({ checked: true, expired: true, ageMs: ttl + 1 });
+    expect(checkWakeProvenanceAge({ provenanceIssuedAtMs: nowMs + 1 }, { nowMs }))
+      .toEqual({ checked: true, expired: true, ageMs: -1 });
+    expect(checkWakeProvenanceAge({ provenanceTimestampInvalid: true }, { nowMs }))
+      .toEqual({ checked: true, expired: true, ageMs: null });
+    expect(checkWakeProvenanceAge({}, { nowMs }))
+      .toEqual({ checked: false, expired: false, ageMs: null });
+  });
+
+  it('decodes valid timestamps, flags malformed new envelopes, and leaves old envelopes unchecked', () => {
+    const issuedAtMs = 1_700_000_000_000;
+    expect(decodeControl(encodeControl({
+      mode: 'turn', data: 'wake', provenanceIssuedAtMs: issuedAtMs,
+    }))).toMatchObject({ provenanceIssuedAtMs: issuedAtMs });
+    expect(decodeControl(JSON.stringify({
+      v: 1, mode: 'turn', data: 'wake', provenanceIssuedAtMs: 'bad',
+    }))).toMatchObject({ provenanceTimestampInvalid: true });
+    expect(decodeControl(encodeControl({ mode: 'turn', data: 'legacy wake' })))
+      .not.toHaveProperty('provenanceIssuedAtMs');
+  });
+
+  it('runs receipt and final coalesced-text checks before dedup and stale-fire commit', () => {
+    const src = readFileSync(new URL('../scripts/psu-pty-host.mjs', import.meta.url), 'utf8');
+    const receiveGuard = src.indexOf("rejectWakeProvenance(msg, 'receive')");
+    const dedup = src.indexOf('const duplicateState = deliveryDedup.state(msg.deliveryId)');
+    const writeGuard = src.indexOf("rejectWakeProvenance(deliver, 'pre-write')");
+    const staleFireCommit = src.indexOf('staleFireGuard.admit(deliver.routineId, deliver.fireNumber)');
+    expect(receiveGuard).toBeGreaterThan(-1);
+    expect(receiveGuard).toBeLessThan(dedup);
+    expect(writeGuard).toBeGreaterThan(-1);
+    expect(writeGuard).toBeLessThan(staleFireCommit);
+    expect(src).toContain('provenanceIssuedAtMs: message.provenanceIssuedAtMs ?? null');
   });
 });
 
@@ -4099,6 +4143,23 @@ describe('same-source turn coalescing (compaction-continuity-hardening P-001a)',
         data: 'Loop wake #9',
         folded: 1,
         metadata: { routineId: 'r-1', fireNumber: 9 },
+      });
+    });
+
+    it('keeps the issue time paired with newest text and clears it when legacy text replaces it', () => {
+      const c = makeTurnCoalescer();
+      expect(c.admit('k', 'old wake', { fireNumber: 1, routineId: 'r-1', provenanceIssuedAtMs: 100 })).toBe(false);
+      expect(c.admit('k', 'new wake', { fireNumber: 2, routineId: 'r-1', provenanceIssuedAtMs: 200 })).toBe(true);
+      expect(c.claim('k')).toMatchObject({
+        data: 'new wake',
+        metadata: { fireNumber: 2, routineId: 'r-1', provenanceIssuedAtMs: 200 },
+      });
+
+      expect(c.admit('legacy', 'old stamped wake', { provenanceIssuedAtMs: 100 })).toBe(false);
+      expect(c.admit('legacy', 'new legacy wake', { provenanceIssuedAtMs: null })).toBe(true);
+      expect(c.claim('legacy')).toMatchObject({
+        data: 'new legacy wake',
+        metadata: { provenanceIssuedAtMs: null },
       });
     });
 

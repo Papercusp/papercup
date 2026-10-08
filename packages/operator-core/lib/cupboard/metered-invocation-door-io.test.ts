@@ -28,6 +28,7 @@ import {
   settleMeteredUnit,
   readHostedPerUseOffers,
   bindInstalledPerUseOffer,
+  readHostedToolEntitlements,
   readHostedToolEntitlement,
   readHostedToolChannel,
   type HostedPerUseOffer,
@@ -94,6 +95,27 @@ describe('P-007 exact hosted paid-tool binding', () => {
     expect(await readHostedPerUseOffers(transport({ offers: [wireOffer, bad] }).deps))
       .toMatchObject({ ok: false, code: 'invalid_catalog' });
   });
+  it('derives the default payer only from the authenticated hosted self read', async () => {
+    const t = transport({ buyer: PAYER, entitlements: [{ buyer_id: PAYER, product_id: offer.productId,
+      state: 'active', revoked_at_ms: null }] });
+    expect(await readHostedToolEntitlements(undefined, t.deps)).toEqual({ ok: true, payer: PAYER, productIds: [offer.productId] });
+    expect(t.requests[0]?.url).toBe('https://cupboard.test/commerce/entitlements');
+    expect(t.requests[0]?.init?.headers).toMatchObject({ Authorization: 'Bearer test-token' });
+    expect(await readHostedToolEntitlements(undefined, transport({ buyer: PAYER, entitlements: [] }).deps))
+      .toEqual({ ok: true, payer: PAYER, productIds: [] });
+    expect(await readHostedToolEntitlements(undefined, transport({ error: 'unauthorized' }, 401).deps))
+      .toMatchObject({ ok: false, code: 'unauthorized', status: 401 });
+  });
+
+  it.each([
+    { buyer: 'local-agent', entitlements: [] }, { buyer: PAYER, entitlements: null },
+    { buyer: PAYER, entitlements: [{ buyer_id: SELLER, product_id: 'product', state: 'active', revoked_at_ms: null }] },
+    { buyer: PAYER, entitlements: [{ buyer_id: PAYER, product_id: 'product', state: 'revoked', revoked_at_ms: 100 }] },
+    { buyer: PAYER, entitlements: [{ buyer_id: PAYER, product_id: '', state: 'active', revoked_at_ms: null }] },
+  ])('refuses an unverifiable self principal or entitlement population (%j)', async body => {
+    expect(await readHostedToolEntitlements(undefined, transport(body).deps)).toMatchObject({ ok: false, code: 'invalid_entitlements' });
+  });
+
   it('reads only the target buyer entitlement and distinguishes missing access from unreadable authority', async () => {
     const entitlement = { buyer_id: PAYER, product_id: offer.productId, state: 'active', revoked_at_ms: null };
     const t = transport({ buyer: PAYER, entitlements: [entitlement] });

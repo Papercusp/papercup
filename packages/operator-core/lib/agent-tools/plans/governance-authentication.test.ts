@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { generateEd25519KeypairDer, signWithPrivateKeyDer } from '../../identity/ed25519';
 import type { FederatedGovernanceEvent, GovernanceEventBody } from './governance-federation';
-import { ingestGovernanceEvents } from './governance-federation';
-import { createGovernanceRound, type GovernanceRound, type GovernanceVoteEvent } from './governance-round';
+import { admissibleCertificate, ingestGovernanceEvents } from './governance-federation';
+import { createGovernanceRound, finalizeGovernanceRound, type GovernanceRound, type GovernanceVoteEvent } from './governance-round';
 import { DEFAULT_PLAN_ADMISSION_POLICY } from './plan-admission-policy';
 import { authenticateGovernanceEvent, governanceAuthorityHash, governanceEventSigningBytes,
   governanceVoteSigningBytes, validGovernanceSigningAuthority, type GovernanceSigningAuthority } from './governance-authentication';
@@ -63,6 +63,55 @@ describe('eligible governance keys and signed domains', () => {
       expect(refused.dropped).toMatchObject([{ reason: 'unverified-signature' }]);
     }
     expect(ingestGovernanceEvents({ boundary, known: [], incoming: [opened, ballot] }).accepted).toEqual([]);
+  });
+
+  it('quarantines real signed conflicting finalizations in either arrival order while preserving valid and forged controls', () => {
+    const f = fixture();
+    const voteForB = (choice: GovernanceVoteEvent['choice'], sequence: number): GovernanceVoteEvent => {
+      const unsigned = { eventId: `ballot-b-${sequence}`, roundId: f.round.roundId,
+        memberId: 'b', choice, sequence, keyEpoch: 1 };
+      return { ...unsigned, signature: signWithPrivateKeyDer(f.b.privateKeyDer,
+        governanceVoteSigningBytes(f.authority, f.round, unsigned)).toString('base64') };
+    };
+    const approved = voteForB('approve', 1), replacement = voteForB('reject', 2);
+    const finalize = (events: GovernanceVoteEvent[]) => {
+      const result = finalizeGovernanceRound({ round: f.round, events,
+        members: f.authority.members, policy: f.authority.policy, nowMs: 1200 });
+      if (!result.ok) throw new Error(result.detail);
+      return result.value;
+    };
+    const certificate = finalize([f.vote, approved]);
+    const rival = finalize([f.vote, approved, replacement]);
+    expect(certificate.admitted).toBe(true);
+    expect(rival.admitted).toBe(false);
+    expect(rival.certificateHash).not.toBe(certificate.certificateHash);
+    const opened = f.sign({ kind: 'round-open', round: f.round }, { eventId: 'opened' });
+    const ballotA = f.sign({ kind: 'vote', vote: f.vote }, { eventId: 'ballot-a-envelope' });
+    const ballotB = (vote: GovernanceVoteEvent) => f.sign({ kind: 'vote', vote }, {
+      eventId: `${vote.eventId}-envelope`, originPeerId: 'peer-b',
+      authorization: { memberId: 'b', keyEpoch: 1 },
+    }, f.b);
+    const first = f.sign({ kind: 'finalize', certificate }, { eventId: 'finalize-first' });
+    const second = f.sign({ kind: 'finalize', certificate: rival }, { eventId: 'finalize-rival' });
+    const boundary = { potId: 'pot', visibility: 'shared' as const, memberPeerIds: ['peer-a', 'peer-b'] };
+    const ingest = (incoming: readonly FederatedGovernanceEvent[]) => ingestGovernanceEvents({
+      boundary, known: [], incoming, verifySignature: event => f.verify(event).ok,
+    });
+    const valid = [opened, ballotA, ballotB(approved), first];
+    const control = ingest(valid);
+    expect(control.dropped).toEqual([]);
+    expect(admissibleCertificate(control.projection, f.round.roundId)).toEqual(certificate);
+    const forged = ingest([...valid, { ...second, signature: 'forged' }]);
+    expect(forged.dropped).toMatchObject([{ reason: 'unverified-signature' }]);
+    expect(admissibleCertificate(forged.projection, f.round.roundId)).toEqual(certificate);
+    const forked = [...valid, ballotB(replacement), second];
+    for (const order of [forked, [...forked].reverse()]) {
+      const result = ingest(order);
+      expect(result.dropped).toEqual([]);
+      expect(result.projection.rounds.get(f.round.roundId)?.status).toBe('quarantined');
+      expect(result.projection.rounds.get(f.round.roundId)?.certificates).toHaveLength(2);
+      expect(admissibleCertificate(result.projection, f.round.roundId)).toBeNull();
+    }
   });
 
   it('refuses legacy and forged nonempty signatures', () => {

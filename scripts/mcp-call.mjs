@@ -45,7 +45,6 @@ import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { resolveOperatorBase } from '../apps/operator/scripts/operator-discovery.mjs';
 
 /** The JSON-RPC id we send; parseSse selects the frame that answers it. */
 const REQUEST_ID = 1;
@@ -453,7 +452,10 @@ export function resolveOperatorUrlPort(env = process.env) {
 
   let parsed;
   try {
-    const base = resolveOperatorBase({}, { PAPERCUSP_OPERATOR_URL: configuredUrl });
+    // The VM-rig deploy copies this CLI by itself to /tmp. Keep the endpoint
+    // normalization local so that a repo-relative import cannot break that
+    // standalone copy before argument handling starts.
+    const base = configuredUrl.replace(/\/api\/mcp\/?$/, '').replace(/\/$/, '');
     parsed = new URL(base);
   } catch {
     throw new Error('PAPERCUSP_OPERATOR_URL must be a valid local operator base URL.');

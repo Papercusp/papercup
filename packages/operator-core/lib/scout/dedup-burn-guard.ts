@@ -33,11 +33,32 @@ import type { ScoutConfig } from './config';
 /** The per-tick fields the guard assesses (a {@link ScoutTickRecord} satisfies it). */
 export type DedupBurnTick = Pick<
   ScoutTickRecord,
-  'status' | 'ideasGenerated' | 'ideasRouted' | 'ideasDeduped'
+  'status' | 'ideasGenerated' | 'ideasRouted' | 'ideasDeduped' | 'detail'
 >;
 
+/**
+ * WI-10007486: the rejects that are actually corpus SATURATION — novelty + duplicate.
+ * `ideasDeduped` counts EVERY non-survivor (mostly feasibility rejects, which a wider
+ * novelty band cannot help), so a tick carrying `detail.rejectCauses` (scheduler,
+ * from `countRejectCauses`) is read by cause. A legacy tick without causes falls back
+ * to `ideasDeduped`, so the streak stays continuous across the deploy.
+ */
+export function saturationRejects(tick: DedupBurnTick): { count: number; source: 'causes' | 'ideasDeduped' } {
+  const causes = tick.detail?.rejectCauses as { novelty?: unknown; duplicate?: unknown } | undefined;
+  if (
+    causes &&
+    typeof causes === 'object' &&
+    typeof causes.novelty === 'number' &&
+    typeof causes.duplicate === 'number'
+  ) {
+    return { count: causes.novelty + causes.duplicate, source: 'causes' };
+  }
+  return { count: tick.ideasDeduped ?? 0, source: 'ideasDeduped' };
+}
+
 export interface DedupBurnOptions {
-  /** ideasDeduped / ideasGenerated at/above which a ran-cycle counts as saturated (default 0.8). */
+  /** Saturation rejects ({@link saturationRejects}) / ideasGenerated at/above which a
+   *  ran-cycle counts as saturated (default 0.8). */
   dedupRatioThreshold?: number;
   /** Consecutive saturated ran-cycles that trigger the guard (default 2). */
   consecutiveCycles?: number;
@@ -105,7 +126,7 @@ export function assessDedupBurn(
     if (tick.status !== 'ran') continue;
     const generated = tick.ideasGenerated ?? 0;
     if (generated < o.minIdeasPerCycle) continue;
-    const ratio = (tick.ideasDeduped ?? 0) / generated;
+    const ratio = saturationRejects(tick).count / generated;
     if (ratio < o.dedupRatioThreshold) break;
     if (streak === 0) lastRatio = ratio;
     streak += 1;

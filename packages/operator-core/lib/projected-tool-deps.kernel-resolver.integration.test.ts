@@ -13,6 +13,7 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
 }));
 
 import { controlAnchorKernelResolver } from './projected-tool-deps';
+import { getServingHostIdentity } from './serving-host-identity';
 
 describe('authority SQL lock failures (real PostgreSQL, EI-25380637492003672)', () => {
   let db: FreshPgDb;
@@ -92,12 +93,13 @@ describe('authority SQL lock failures (real PostgreSQL, EI-25380637492003672)', 
             authorityUnavailableSources: ['control-anchor-query-failed'],
             authorityReadFailures: [{
               source: 'control-anchor-query-failed', pgCode: '55P03', elapsedMs: expect.any(Number),
+              servingPid: process.pid, servingProcessId: getServingHostIdentity().processId,
             }],
           },
         });
         const failures = verdict?.serverAudit?.authorityReadFailures as Array<Record<string, unknown>>;
         expect(failures).toHaveLength(1);
-        expect(Object.keys(failures[0]).sort()).toEqual(['elapsedMs', 'pgCode', 'source']);
+        expect(Object.keys(failures[0]).sort()).toEqual(['elapsedMs', 'pgCode', 'servingPid', 'servingProcessId', 'source']);
         expect(failures[0].elapsedMs).toBeGreaterThanOrEqual(0);
         expect(JSON.stringify(verdict?.serverAudit)).not.toMatch(/private-authority|SELECT|LOCK TABLE/);
       } finally {

@@ -301,6 +301,14 @@ export interface BeginQualificationInput {
   evidenceRefs?: readonly string[];
   /** What the caller proved about the INCUMBENT attempt's runner. Default 'unknown' = old behaviour. */
   incumbentLiveness?: RunnerLiveness;
+  /**
+   * WI-10007408: what the caller measured about the fixer an `awaiting-fixer` frozen queue
+   * names, keyed by the EXACT spawn id it probed. Successor reconciliation is pure and cannot
+   * probe, and the probe necessarily runs before the locked row is read, so the spawn id is the
+   * binding: a verdict about a superseded fixer can never vouch for whichever fixer the locked
+   * row names now. Absent / 'unknown' / mismatched = old fail-closed behaviour.
+   */
+  assignedFixerLiveness?: { spawnId: string; liveness: RunnerLiveness } | null;
   nowMs?: number;
   /**
    * Same-row proof that an unowned `repair-in-progress` wait now has an exact,
@@ -1512,6 +1520,7 @@ export type RepairQueueReconciliation = {
     | 'matching-untested-repair-head'
     | 'promoted-awaiting-staging-bridge'
     | 'awaiting-unassigned-fixer'
+    | 'awaiting-dead-fixer'
     | 'exact-safe-unstarted'
     | 'cas-miss';
   predecessorAttemptId: string;
@@ -1671,6 +1680,33 @@ export function assessTerminalRepairQueueReconciliation(
     return {
       status: 'preserved',
       reason: 'awaiting-unassigned-fixer',
+      candidate: queue.candidate,
+      ...base,
+    };
+  }
+  // WI-10007408: the same deadlock with a fixer ASSIGNED but dead. Only the gate run's own
+  // `decideFrozenCandidateRepairQueue` -> `recover-dead-fixer` branch clears a dead fixer from
+  // an awaiting-fixer row, and that run needs a successor qualification to start, so blocking
+  // here again closes the only automatic exit. Observed 2026-10-08: papercusp fixer
+  // durable-spawn:...:1791455553983 reached spawned_agents status 'done' at 10:43Z with no
+  // admission, and the queue stayed awaiting-fixer naming it. Fourth instance of the class.
+  // Narrow on purpose: the caller's probe must name THIS row's fixerSpawnId and must have
+  // CONFIRMED it gone ('dead' = releaseFixerSpawnAlive === false, the exact predicate the
+  // recovery branch acts on). Live and unknown liveness stay blocked: a live fixer advances the
+  // queue itself by admission, and an unmeasurable one must not be raced.
+  const assignedFixerProvablyDead =
+    queue.fixerSpawnId !== null &&
+    successor.assignedFixerLiveness?.spawnId === queue.fixerSpawnId &&
+    successor.assignedFixerLiveness.liveness === 'dead';
+  if (
+    (originMatchesTerminal || originMatchesImmediatePredecessor) &&
+    queue.phase === 'awaiting-fixer' &&
+    assignedFixerProvablyDead &&
+    !reservationLive
+  ) {
+    return {
+      status: 'preserved',
+      reason: 'awaiting-dead-fixer',
       candidate: queue.candidate,
       ...base,
     };

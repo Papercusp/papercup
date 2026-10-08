@@ -112,6 +112,7 @@ import {
   recordStoredQualificationVerdict,
   reserveStoredQualificationRunner,
   type CheckpointQualificationTransaction,
+  type RunnerLiveness,
 } from '../../release/checkpoint-qualification-transaction';
 import { readLiveReleaseCertification, type LiveReleaseCertification } from '../../release/live-release-certification';
 import { createTextCollector } from '../../child-output';
@@ -2729,6 +2730,11 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
     qualificationAtLaunch.status === 'present' && qualificationAtLaunch.transaction.phase !== 'terminal'
       ? qualificationAtLaunch.transaction
       : null;
+  // WI-10007408: successor reconciliation is pure, so a dead ASSIGNED fixer is only provable by
+  // a probe taken here. Bound to the exact spawn id read, so a fixer swapped in between this
+  // read and the locked mutation is never vouched for; any read/probe failure stays 'unknown'
+  // (old fail-closed behaviour).
+  const assignedFixerLiveness = await probeAssignedFrozenRepairFixer(ctx).catch(() => null);
   // Route active attempts through the same locked-row reconciliation as fresh ones. It is
   // idempotent for a live runner, while a dead unstarted placeholder can safely adopt a newly
   // admitted, never-judged repairHead before this fire reserves its physical slot.
@@ -2737,6 +2743,7 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
     {
       attemptId: activeAttempt?.attemptId ?? gateFireId,
       evidenceRefs: [`gate-fire:${gateFireId}`],
+      assignedFixerLiveness,
     },
     { reconcileTerminalRepairQueueForSuccessor: true },
   );
@@ -5944,6 +5951,33 @@ export async function readFrozenCandidateRepairQueueState(
     [target.workspaceId, target.installSlug],
   )) as Array<{ repair_queue: unknown }>;
   return parseFrozenCandidateRepairQueueRead(rows[0]?.repair_queue);
+}
+
+/**
+ * WI-10007408: the liveness of the fixer an `awaiting-fixer` frozen queue names, keyed by the
+ * spawn id that was actually probed, for successor reconciliation at gate begin. Null when the
+ * queue is absent, unreadable, in another phase, or names no fixer (nothing to judge). A probe
+ * that cannot decide reports 'unknown', which reconciliation treats as fail-closed.
+ */
+export async function probeAssignedFrozenRepairFixer(
+  target: GateVerdictTarget,
+  deps: {
+    readQueue?: (target: GateVerdictTarget) => Promise<FrozenCandidateRepairQueueRead>;
+    fixerAlive?: (spawnId: string) => Promise<boolean | null>;
+  } = {},
+): Promise<{ spawnId: string; liveness: RunnerLiveness } | null> {
+  const read = await (deps.readQueue ?? readFrozenCandidateRepairQueueState)(target);
+  if (read.status !== 'value') return null;
+  const { phase, fixerSpawnId } = read.queue;
+  if (phase !== 'awaiting-fixer' || !fixerSpawnId) return null;
+  const fixerAlive =
+    deps.fixerAlive ??
+    (async (spawnId: string) => {
+      const { getOrgPg } = await import('@papercusp/db-org');
+      return releaseFixerSpawnAlive(getOrgPg().sql, spawnId);
+    });
+  const alive = await fixerAlive(fixerSpawnId).catch(() => null);
+  return { spawnId: fixerSpawnId, liveness: alive === true ? 'live' : alive === false ? 'dead' : 'unknown' };
 }
 
 /**

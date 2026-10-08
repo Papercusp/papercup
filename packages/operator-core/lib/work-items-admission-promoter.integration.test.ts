@@ -1264,6 +1264,7 @@ describe('work-item admission promoter (real Postgres)', () => {
       schemaVersion: 2,
       state: 'complete',
       canonicalId: keyedId,
+      mergedAtMs: NOW,
       prior: {
         status: 'open',
         admission: 'admitted',

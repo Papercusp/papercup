@@ -84,6 +84,7 @@ import { normalizeSessionActivation } from './session-activation';
 import type { InvocationFrictionRef } from './harness/improvements/invocation-friction';
 import { trackDetached } from './detached-imports';
 import { pinModuleState } from '@papercusp/module-singleton';
+import { installedPerUseChokepoint } from './agent-tools/per-use-chokepoint';
 
 /**
  * The role-scoped `papercusp` MCP surface can be discovered alongside the
@@ -252,6 +253,9 @@ interface AuthorityReadFailure {
   /** SQLSTATE only; never retain the error message, SQL, parameters, or stack. */
   pgCode: string | null;
   elapsedMs: number;
+  /** Bind PostgreSQL's application_name PID to this invocation's kernel identity. */
+  servingPid: number;
+  servingProcessId: string | null;
 }
 
 function authorityReadFailure(
@@ -267,7 +271,16 @@ function authorityReadFailure(
   } catch {
     // Diagnostic access must not replace the original fail-closed verdict.
   }
-  return { source, pgCode, elapsedMs: Math.max(0, Math.round(performance.now() - startedAt)) };
+  let servingProcessId: string | null = null;
+  try {
+    servingProcessId = getServingHostIdentity().processId;
+  } catch {
+    // Missing process attribution must never weaken or replace the denial.
+  }
+  return {
+    source, pgCode, elapsedMs: Math.max(0, Math.round(performance.now() - startedAt)),
+    servingPid: process.pid, servingProcessId,
+  };
 }
 
 /**
@@ -1922,6 +1935,7 @@ const overrideToolImpl: ToolDispatchOverrideFn = async (toolName, args, ctx) => 
 /** Shared deps singleton. Same object reference is safe to pass to
  *  multiple dispatchers — the impls are stateless. */
 export const PROJECTED_DEPS: DispatchProjectedDeps = {
+  aroundInvoke: installedPerUseChokepoint,
   // D-030 kernel seat: the generic dispatcher invokes this before any
   // decorators and immediately before handler execution. The resolver is
   // replaceable by the activation/control owner without changing the shared

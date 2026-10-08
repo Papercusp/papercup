@@ -254,6 +254,32 @@ export function bindInstalledPerUseOffer(
   return { ok: true, offer: structuredClone(active[0]!) };
 }
 
+/** Omit payer to discover the authenticated bearer principal, never a local
+ * workspace alias. Explicit buyers retain hosted organization authorization. */
+export async function readHostedToolEntitlements(
+  payer: string | undefined,
+  deps: MeteredTransportDeps = {},
+): Promise<{ ok: true; payer: string; productIds: readonly string[] } | MeteredDoorFailure> {
+  if (payer !== undefined && !payer.trim()) return fail('invalid_request', 'a named payer must be nonempty', 0, 'local-interception');
+  const called = await callHostedDoor({ path: '/commerce/entitlements' +
+    (payer === undefined ? '' : `?buyer=${encodeURIComponent(payer)}`),
+    method: 'GET', expect: [200] }, deps);
+  if (!called.ok) return called;
+  const buyer = called.payload.buyer;
+  if (typeof buyer !== 'string' || !buyer.trim() ||
+      (payer === undefined ? !/^gh:\d+$/.test(buyer) : buyer !== payer) ||
+      !Array.isArray(called.payload.entitlements)) {
+    return fail('invalid_entitlements', 'hosted entitlements differ from the target buyer', 200, 'hosted-door');
+  }
+  for (const row of called.payload.entitlements) {
+    if (!row || typeof row !== 'object' || row.buyer_id !== buyer || typeof row.product_id !== 'string' || !row.product_id.trim() ||
+        row.state !== 'active' || row.revoked_at_ms !== null) {
+      return fail('invalid_entitlements', 'hosted active entitlement is malformed or belongs to another buyer', 200, 'hosted-door');
+    }
+  }
+  return { ok: true, payer: buyer, productIds: called.payload.entitlements.map(row => row.product_id as string) };
+}
+
 /** Owner-authorized buyer read. A token for another principal cannot grant this target access. */
 export async function readHostedToolEntitlement(
   payer: string,
@@ -261,19 +287,8 @@ export async function readHostedToolEntitlement(
   deps: MeteredTransportDeps = {},
 ): Promise<{ ok: true; entitled: boolean } | MeteredDoorFailure> {
   if (!payer.trim() || !productId.trim()) return fail('invalid_request', 'payer and product are required', 0, 'local-interception');
-  const called = await callHostedDoor({ path: `/commerce/entitlements?buyer=${encodeURIComponent(payer)}`,
-    method: 'GET', expect: [200] }, deps);
-  if (!called.ok) return called;
-  if (called.payload.buyer !== payer || !Array.isArray(called.payload.entitlements)) {
-    return fail('invalid_entitlements', 'hosted entitlements differ from the target buyer', 200, 'hosted-door');
-  }
-  for (const row of called.payload.entitlements) {
-    if (!row || typeof row !== 'object' || row.buyer_id !== payer || typeof row.product_id !== 'string' ||
-        row.state !== 'active' || row.revoked_at_ms !== null) {
-      return fail('invalid_entitlements', 'hosted active entitlement is malformed or belongs to another buyer', 200, 'hosted-door');
-    }
-  }
-  return { ok: true, entitled: called.payload.entitlements.some((row) => row.product_id === productId) };
+  const read = await readHostedToolEntitlements(payer, deps);
+  return read.ok ? { ok: true, entitled: read.productIds.includes(productId) } : read;
 }
 
 /** Re-read the durable channel's authenticated funder before turn admission. */

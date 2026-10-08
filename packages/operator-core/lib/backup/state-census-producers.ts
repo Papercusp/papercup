@@ -1,10 +1,12 @@
-import { dirname, basename, relative, resolve, sep, join } from 'node:path';
+import { dirname, basename, relative, resolve, sep, join, isAbsolute, win32 } from 'node:path';
 import type { CensusDeclaration, CensusRoot, CensusEntry } from '@papercusp/backup';
 import { collectStateCensus, assertStateCensusComplete } from '@papercusp/backup';
 import type { Sql } from 'postgres';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { readdir, readFile, lstat } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { constants } from 'node:fs';
+import { readdir, readFile, lstat, open } from 'node:fs/promises';
 import { dbEncryptionKeyFilePath } from '../db-encryption';
 import { superuserTokenPath } from '../superuser-token';
 import { workspacesRoot, readRegistry } from '../workspace-registry';
@@ -131,6 +133,67 @@ export function integrationBaselineCensusDeclarations(entries: readonly CensusEn
 }
 
 const execFileAsync = promisify(execFile);
+/** Published generations are retained install state, including rollback artifacts.
+ * Build provenance does not certify the bytes of a running or exported snapshot.
+ */
+export async function portalReleaseStorageDeclaration(root: CensusRoot, name: string): Promise<CensusDeclaration> {
+  if (name.startsWith('/') || name.includes('\\') || name.split('/').some(part => !part || part === '.' || part === '..')) {
+    throw new Error('Invalid release storage path');
+  }
+  const path = join(root.path, name);
+  if (!(await lstat(path)).isDirectory()) throw new Error('Invalid release storage directory');
+  const handle = await open(join(path, '.papercusp-release.json'), constants.O_RDONLY | constants.O_NOFOLLOW);
+  let text: string;
+  try {
+    const stat = await handle.stat();
+    if (!stat.isFile() || stat.size > 16_384) throw new Error('Invalid release manifest');
+    text = await handle.readFile('utf8');
+  } finally { await handle.close(); }
+  const manifest = JSON.parse(text);
+  if (![1, 2].includes(manifest.schemaVersion) || manifest.release !== basename(name) ||
+    typeof manifest.buildId !== 'string' || !manifest.buildId.trim() ||
+    (manifest.schemaVersion === 2 && (typeof manifest.sourceRoot !== 'string' ||
+      !(isAbsolute(manifest.sourceRoot) || win32.isAbsolute(manifest.sourceRoot)))) ||
+    typeof manifest.publishedAt !== 'string' || !Number.isFinite(Date.parse(manifest.publishedAt))) {
+    throw new Error(`Invalid release manifest: ${name}`);
+  }
+  if (!(await lstat(join(path, 'standalone-entry.mjs'))).isFile()) throw new Error('Missing release entry');
+  return { kind: 'path', root: root.id, name, classification: 'state', producer: 'portal-standalone-publish',
+    descendants: true, releaseStorage: { manifestSha256: createHash('sha256').update(text).digest('hex'),
+      evidenceRef: `portal-release-manifest:${root.id}:${name}` } };
+}
+/** Read producer evidence without booting Corestore, acquiring its lock, or healing it.
+ * The marker hash identifies this observation, not database contents or a portable key.
+ */
+export async function peerStorageDeclaration(root: CensusRoot, name: string): Promise<CensusDeclaration> {
+  if (name.startsWith('/') || name.includes('\\') || name.split('/').some(part => !part || part === '.' || part === '..')) {
+    throw new Error('Invalid peer storage path');
+  }
+  const path = join(root.path, name);
+  if (!(await lstat(path)).isDirectory() || !(await lstat(join(path, 'db'))).isDirectory()) {
+    throw new Error('Invalid peer storage directory');
+  }
+  const handle = await open(join(path, 'CORESTORE'), constants.O_RDONLY | constants.O_NOFOLLOW);
+  let marker: string;
+  try {
+    const stat = await handle.stat();
+    if (!stat.isFile() || stat.size > 4096) throw new Error('Invalid peer storage marker');
+    marker = await handle.readFile('utf8');
+  } finally { await handle.close(); }
+  const fields = new Map<string, string>();
+  for (const line of marker.trim().split(/\r?\n/)) {
+    const separator = line.indexOf('=');
+    if (separator < 1 || fields.has(line.slice(0, separator))) throw new Error('Invalid peer storage marker');
+    fields.set(line.slice(0, separator), line.slice(separator + 1));
+  }
+  if (!['linux', 'darwin', 'win32'].includes(fields.get('device/platform') ?? '') ||
+    !/^\d+$/.test(fields.get('device/inode') ?? '') || !/^\d+$/.test(fields.get('device/created') ?? '')) {
+    throw new Error('Invalid peer storage marker');
+  }
+  return { kind: 'path', root: root.id, name, classification: 'state', producer: 'corestore-device-file',
+    descendants: true, peerStorage: { markerSha256: createHash('sha256').update(marker).digest('hex'),
+      evidenceRef: `corestore-marker:${root.id}:${name}` } };
+}
 /** Preserve metadata only after Git confirms this exact directory owns it. */
 export async function gitStorageDeclaration(root: CensusRoot, repositoryName: string, preserveWorktree = false): Promise<CensusDeclaration> {
   if (repositoryName.startsWith('/') || repositoryName.split('/').some(segment => segment === '..')) throw new Error('Invalid repository path');

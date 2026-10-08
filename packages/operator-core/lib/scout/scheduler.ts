@@ -48,6 +48,7 @@ import type { CreativeLens } from './types';
 import type { RoutedRail } from './outcome-feedback';
 import type { ScoutCyclePhase } from './cycle';
 import { currentScoutCodeHash } from './scout-code-identity';
+import { countRejectCauses } from './critique-core';
 
 /** The provenance the scheduler persists per routed idea (subset of RecordRoutedIdeaInput). */
 export interface ScoutRoutedRecord {
@@ -508,6 +509,7 @@ export async function runScoutTick(deps: ScoutTickDeps, opts: ScoutTickOptions =
       }
     }
     await deps.recordFire?.('ok');
+    const rejectCauses = countRejectCauses(cycle.scored);
     await note({
       status: 'ran',
       ideasGenerated: cycle.ideas?.length ?? 0,
@@ -517,6 +519,15 @@ export async function runScoutTick(deps: ScoutTickDeps, opts: ScoutTickOptions =
       detail: {
         cycleId,
         reason: verdict.reason,
+        // D-002 point 5: ideas the critic ADJUDICATED as restatements of a shortlisted
+        // prior. Distinct from ideasDeduped above, which counts every non-survivor
+        // (mostly feasibility rejects — WI-10007486) and stays as-is because the P-003
+        // generation-preflight guard reads it as its waste signal.
+        ideasDuplicate: rejectCauses.duplicate,
+        // WI-10007486: WHY each non-survivor was rejected. dedup-burn-guard reads this so
+        // it widens the novelty band only for novelty/duplicate saturation, never for
+        // feasibility rejects (35 of the 53 rejects in the 2026-10-07/08 window).
+        rejectCauses,
         ...(cycle.stop ? { stop: cycle.stop } : {}),
         ...(revisionRequests.length > 0 ? { revisionRequestCount: revisionRequests.length } : {}),
         // P-006 (blender-self-learning-2026-07-12): per-lane grounding histogram

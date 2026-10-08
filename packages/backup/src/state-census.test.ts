@@ -10,6 +10,42 @@ const declaration: CensusDeclaration = {
 };
 
 describe('producer-derived state census', () => {
+  it('retains published runtime artifacts as state and refuses nested cache overrides', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'release-census-'));
+    try {
+      await mkdir(join(root, 'release'));
+      await writeFile(join(root, 'release', 'chunk'), 'runtime');
+      const owner: CensusDeclaration = { kind: 'path', root: 'home', name: 'release', classification: 'state',
+        producer: 'portal', descendants: true,
+        releaseStorage: { manifestSha256: 'a'.repeat(64), evidenceRef: 'fixture:release' } };
+      const input = { roots: [{ id: 'home', path: root }], declarations: [owner], readCatalogs: async () => [] };
+      expect((await collectStateCensus({ ...input, maxEntries: 1 })).representedReleases[0].disposition).toBe('preserve-state-subtree');
+      const conflicting = await collectStateCensus({ ...input, declarations: [owner,
+        { ...owner, name: 'release/chunk', classification: 'cache', releaseStorage: undefined, descendants: false }] });
+      expect(conflicting.representedReleases).toEqual([]);
+      expect(conflicting.ok).toBe(false);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+  it('preserves peer storage while keeping nested conflicting ownership visible', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'peer-census-'));
+    try {
+      await mkdir(join(root, 'peer'));
+      await writeFile(join(root, 'peer', 'log'), 'persistent');
+      const owner: CensusDeclaration = { kind: 'path', root: 'home', name: 'peer', classification: 'state',
+        producer: 'corestore', descendants: true,
+        peerStorage: { markerSha256: 'a'.repeat(64), evidenceRef: 'fixture:marker' } };
+      const input = { roots: [{ id: 'home', path: root }], declarations: [owner], readCatalogs: async () => [] };
+      const census = await collectStateCensus({ ...input, maxEntries: 1 });
+      expect(census.ok).toBe(true);
+      expect(census.representedPeers[0]).toMatchObject({ name: 'peer', disposition: 'preserve-state-subtree' });
+      const conflict = await collectStateCensus({ ...input, declarations: [owner,
+        { ...owner, name: 'peer/log', classification: 'cache', peerStorage: undefined, descendants: false }] });
+      expect(conflict.representedPeers).toEqual([]);
+      expect(conflict.residue[0].name).toBe('peer/log');
+      await expect(collectStateCensus({ ...input, declarations: [{ ...owner, classification: 'cache' }] }))
+        .rejects.toThrow('Peer storage');
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
   it('preserves explicitly measured git metadata rather than labeling local history cache', async () => {
     const root = await mkdtemp(join(tmpdir(), 'git-census-'));
     try {

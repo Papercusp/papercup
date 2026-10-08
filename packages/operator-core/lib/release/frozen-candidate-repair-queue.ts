@@ -2880,7 +2880,60 @@ export function recordFrozenRepairLegMeasurement(
     signatureIds: (queue.signature ?? []).map((entry) => entry.id),
   });
   if (legs.length === 0) return queue;
-  return { ...queue, legs, updatedAtMs: input.nowMs };
+  const retained = retireRepairSignatureOnLegPass(queue.signature, {
+    measurements: input.measurements,
+    head: input.head,
+    repairHead: queue.repairHead,
+  });
+  return {
+    ...queue,
+    legs,
+    updatedAtMs: input.nowMs,
+    ...(retained
+      ? { signature: retained, failingTests: boundedFailures(retained.map((entry) => entry.id)) }
+      : {}),
+  };
+}
+
+/**
+ * WI-10007409 — PURE: the signature after a repair tick, retiring every entry the leg's OWN
+ * re-run measured passing at the queue's CURRENT repairHead when that entry's failure was
+ * measured at a DIFFERENT head. Returns null when nothing retires (the caller keeps the row's
+ * signature object untouched).
+ *
+ * The gap it closes: `nextRepairSignature` carries forward an entry whose KIND a red round did
+ * not measure, so the entry keeps an older `measuredHead`. A later tick re-runs it at the
+ * repairHead (WI-10001529: "re-running the signature is the only thing that can retire it") and
+ * `legs[]` marks it fixed — but nothing retired it from the signature, so the queue went on
+ * naming a fixed leg as failing and handing it to the fixer. That is the leg's own re-run result
+ * at a later head, exactly the signal D-005 says moves a leg out of the failing set.
+ *
+ * Deliberately NOT retired:
+ *  - a pass at any head other than the repairHead (it says nothing about the head being fixed);
+ *  - an entry measured failing at THIS SAME head (verification red, tick pass, one head): two
+ *    measurements of one tree disagree. That is an environment/flake signal (plan P-009), not a
+ *    fix, and the all-pass case already routes it to a retest via `frozenRepairRedIsUnmeasured`;
+ *  - an id the same batch also reports failing or errored (fail wins: never infer a pass).
+ */
+export function retireRepairSignatureOnLegPass(
+  signature: readonly RepairSignatureEntry[] | undefined,
+  input: { measurements: readonly RepairLegMeasurement[]; head: string; repairHead: string | null | undefined },
+): RepairSignatureEntry[] | null {
+  if (!signature || signature.length === 0) return null;
+  if (!nonBlank(input.head) || !nonBlank(input.repairHead) || input.head.trim() !== input.repairHead.trim()) {
+    return null;
+  }
+  const head = input.head.trim();
+  const passed = new Set<string>();
+  const notPassed = new Set<string>();
+  for (const measurement of input.measurements) {
+    if (!nonBlank(measurement.id)) continue;
+    (measurement.status === 'pass' ? passed : notPassed).add(measurement.id.trim());
+  }
+  const kept = signature.filter(
+    (entry) => !(passed.has(entry.id) && !notPassed.has(entry.id) && entry.measuredHead.trim() !== head),
+  );
+  return kept.length === signature.length ? null : kept;
 }
 
 /**

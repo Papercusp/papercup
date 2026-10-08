@@ -4,7 +4,8 @@
  */
 import { canonicalJson } from '../authority/authority-rpc-envelope';
 import type { SuCodexTurnAdmission, SuCodexTurnLifecycle } from '../su-session-usage';
-import { usageReceiptSigningBytes } from '../p2p/metered-invocation';
+import { LocalMeteredTurn, LocalMeteredTurnRefusedError, usageReceiptSigningBytes } from '../p2p/metered-invocation';
+import { FundedToolTurnStore, type FundedToolTurnBinding, type FundedToolTurnResult } from './funded-tool-turn-store';
 import { FundedIdentityTurnStore, type FundedIdentityTurn, type FundedIdentityTurnBinding } from './funded-turn-store';
 import { quoteIdentityInferenceTurn } from './identity-per-use-offer';
 import { readChannelUsage, readHostedToolChannel, reserveMeteredUnit, settleMeteredUnit,
@@ -25,6 +26,117 @@ export interface FundedIdentityTurnHostDeps {
   readonly nowMs?: () => number;
   /** Trusted billing-reader seam; production uses the store's canonical reader. */
   readonly readUsage?: Parameters<FundedIdentityTurnStore['stageSettlement']>[3]['readUsage'];
+}
+
+/** Tool-turn host composition uses the same hosted doors as native identity
+ * funding. Transport credentials and signing capabilities are host-owned.
+ * This class is not a tool, nor may a dispatch argument construct its inputs. */
+export class FundedToolTurnHost {
+  constructor(private readonly deps: {
+    store: FundedToolTurnStore;
+    payerTransport: MeteredTransportDeps;
+    sellerTransport: MeteredTransportDeps;
+    signVoucher: MeteredByteSigner;
+    signReceipt: MeteredByteSigner;
+    nowMs?: () => number;
+  }) {}
+
+  /** Hosted acknowledgement, including after a lost POST response, precedes
+   * durable local entry. A running admission cannot be elected a second time. */
+  async admit(input: FundedToolTurnBinding): Promise<FundedToolTurnResult> {
+    const binding = structuredClone(input), deps = this.deps;
+    const active = await deps.store.readActive(binding);
+    if (!active.ok) return active;
+    if (active.turn?.state === 'closed' || active.turn?.state === 'settlement-pending') {
+      const recovered = await this.reconcileCompletion(binding.workspaceId, active.turn.turnId);
+      if (!recovered.ok) return recovered;
+    }
+    const prepared = await deps.store.prepare(binding);
+    if (!prepared.ok) return prepared;
+    if (!['prepared', 'funded'].includes(prepared.turn.state)) return { ok: false, code: 'turn-already-entered', detail: 'tool admission history forbids re-entry' };
+    const channel = await readHostedToolChannel(binding.channelId, binding.payer, deps.payerTransport);
+    if (!channel.ok) return channel;
+    let reserveFailure: Extract<FundedToolTurnResult, { ok: false }> | null = null;
+    if (prepared.turn.state === 'prepared') {
+      const reserved = await reserveMeteredUnit({ channelId: binding.channelId, offerId: binding.offer.offerId,
+        terms: binding.offer.terms, payer: binding.payer, seller: binding.seller, releaseRef: binding.offer.skuRef,
+        usageNonce: prepared.turn.turnId, quantity: binding.quantityCeiling, expiresAtMs: binding.expiresAtMs,
+        nowMs: (deps.nowMs ?? Date.now)(), signVoucher: deps.signVoucher }, deps.payerTransport);
+      if (!reserved.ok) reserveFailure = reserved;
+    }
+    const confirmed = await this.reconcileFunding(binding.workspaceId, prepared.turn.turnId);
+    if (!confirmed.ok) return confirmed.code === 'funding-not-confirmed' && reserveFailure ? reserveFailure : confirmed;
+    return deps.store.enter(binding.workspaceId, confirmed.turn.turnId, confirmed.turn.revision, binding, (deps.nowMs ?? Date.now)());
+  }
+
+  async reconcileFunding(workspaceId: string, turnId: string): Promise<FundedToolTurnResult> {
+    const deps = this.deps, turn = await deps.store.read(workspaceId, turnId);
+    if (!turn) return { ok: false, code: 'unknown-turn', detail: 'no durable tool admission exists' };
+    if (!['prepared', 'funded'].includes(turn.state)) return { ok: false, code: 'invalid-turn-state', detail: 'funding recovery cannot re-enter tools' };
+    const current = await readChannelUsage(turn.binding.channelId, deps.payerTransport);
+    if (!current.ok) return current;
+    if (current.usage.channelId !== turn.binding.channelId || !Array.isArray(current.usage.receipts))
+      return { ok: false, code: 'invalid-hosted-usage', detail: 'hosted channel history is unreadable' };
+    const receipt = current.usage.receipts.find(row => row.usageNonce === turnId);
+    if (!receipt) return { ok: false, code: 'funding-not-confirmed', detail: 'reservation remains unconfirmed; retain its hold' };
+    return deps.store.confirmFunding(workspaceId, turnId, turn.revision, receipt);
+  }
+
+  /** The caller must hold the authenticated original admission. Restoring a
+   * local meter does not restore entitlement or grant hosted funding authority.
+   * Multiple processes restoring the same snapshot compete at each SQL CAS;
+   * a losing/uncertain write stops that handle before a handler can enter. */
+  localTurn(turn: Extract<FundedToolTurnResult, { ok: true }>['turn']): LocalMeteredTurn {
+    if (turn.state !== 'running' || !turn.meterState) throw new LocalMeteredTurnRefusedError('invalid-turn-state', 'an entered funded tool snapshot is required');
+    let revision = turn.revision;
+    return new LocalMeteredTurn({ state: turn.meterState, nowMs: this.deps.nowMs ?? Date.now,
+      signVoucher: this.deps.signVoucher, signReceipt: this.deps.signReceipt,
+      persist: async state => {
+        const saved = await this.deps.store.persistMeter(turn.binding.workspaceId, turn.turnId, revision, state);
+        if (!saved.ok) throw new LocalMeteredTurnRefusedError(saved.code, saved.detail);
+        revision = saved.turn.revision;
+      } });
+  }
+
+  async complete(workspaceId: string, turnId: string, meter: LocalMeteredTurn, closedAtMs: number): Promise<FundedToolTurnResult> {
+    if (meter.snapshot().turnId !== turnId) return { ok: false, code: 'turn-binding-changed', detail: 'closure must retain its original local meter' };
+    await meter.stopAdmission();
+    const turn = await this.deps.store.read(workspaceId, turnId);
+    if (!turn) return { ok: false, code: 'unknown-turn', detail: 'no durable tool admission exists' };
+    if (turn.state === 'running') {
+      const closed = await this.deps.store.close(workspaceId, turnId, turn.revision, closedAtMs);
+      if (!closed.ok) return closed;
+    } else if (turn.closedAtMs !== closedAtMs) return { ok: false, code: 'turn-closure-changed', detail: 'completion retries retain the original closure time' };
+    return this.reconcileCompletion(workspaceId, turnId);
+  }
+
+  /** Recovery uses durable usage/time/outbox, never today's installation or an
+   * inferred zero completion. Unfinished calls keep their monetary hold. */
+  async reconcileCompletion(workspaceId: string, turnId: string): Promise<FundedToolTurnResult> {
+    let turn = await this.deps.store.read(workspaceId, turnId);
+    if (!turn) return { ok: false, code: 'unknown-turn', detail: 'no durable tool admission exists' };
+    if (turn.state === 'settled') return { ok: true, turn };
+    if (turn.state === 'closed') {
+      const staged = await this.deps.store.stageSettlement(workspaceId, turnId, turn.revision, this.deps.signReceipt);
+      if (!staged.ok) return staged;
+      turn = staged.turn;
+    }
+    if (turn.state !== 'settlement-pending' || !turn.settlementOutbox)
+      return { ok: false, code: 'tool-completion-unconfirmed', detail: 'retain the hold until the exact durable population closes' };
+    const outbox = turn.settlementOutbox;
+    const bytes = usageReceiptSigningBytes({ ...outbox, meterQuantity: BigInt(outbox.meterQuantity), amountMicros: BigInt(outbox.amountMicros) });
+    const settled = await settleMeteredUnit({ channelId: turn.binding.channelId, usageNonce: turnId,
+      actualQuantity: BigInt(outbox.meterQuantity), occurredAtMs: outbox.occurredAtMs,
+      signReceipt: candidate => { if (!candidate.equals(bytes)) throw new Error('hosted reservation differs from the durable tool outbox'); return outbox.signature; } }, this.deps.sellerTransport);
+    const current = await readChannelUsage(turn.binding.channelId, this.deps.sellerTransport);
+    if (!current.ok) return current;
+    if (current.usage.channelId !== turn.binding.channelId || !Array.isArray(current.usage.receipts))
+      return { ok: false, code: 'invalid-hosted-usage', detail: 'hosted settlement history is unreadable' };
+    const receipt = current.usage.receipts.find(row => row.usageNonce === turnId);
+    if (!receipt || receipt.state !== 'settled') return settled.ok
+      ? { ok: false, code: 'settlement-not-confirmed', detail: 'hosted acknowledgement is missing' } : settled;
+    return this.deps.store.acknowledgeSettlement(workspaceId, turnId, turn.revision, receipt);
+  }
 }
 
 export class FundedIdentityTurnHost {

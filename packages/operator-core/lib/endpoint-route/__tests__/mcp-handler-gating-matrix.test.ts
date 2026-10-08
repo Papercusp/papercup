@@ -5416,6 +5416,43 @@ describe('su identity precedence (EI-7066: explicit SID before Mcp-Session-Id)',
 });
 
 describe('successful native-session audit (get-feedback D-006)', () => {
+  it('retains exact native call correlation only with a bound per-call thread', async () => {
+    const native = 'native-owner-session', callId = 'call_exact-native-item';
+    h.nativeSessionRows = new Map([['su-owner', [{ id: 541, session_id: native, active: true }]]]);
+    const meta = { threadId: native, callId };
+    const extra = { ...(superuserExtra('&client=su-owner') as Record<string, unknown>), _meta: meta };
+    const res = await callTool('gatingtest:scoped', {}, extra, meta);
+    expect(res.isError, textOf(res)).toBeUndefined();
+    expect(h.invocations[0]?.ctx.requestOrigin).toMatchObject({ nativeSession: {
+      carrier: 'meta:threadId', binding: 'bound', candidateAdvSessionId: 541,
+      callIdFingerprint: createHash('sha256').update(callId, 'utf8').digest('hex'),
+    } });
+    expect(JSON.stringify(h.invocations[0]?.ctx.requestOrigin)).not.toContain(callId);
+    expect(JSON.stringify(h.invocations[0]?.ctx.requestOrigin)).not.toContain(native);
+  });
+
+  it.each([undefined, '', ' leading-space', 'trailing-space ', 'a/b', 'x'.repeat(257), 7, { callId: 'nested' }])(
+    'omits malformed native call correlation %j without changing ordinary authorization', async (callId) => {
+      const native = 'native-owner-session';
+      h.nativeSessionRows = new Map([['su-owner', [{ id: 541, session_id: native, active: true }]]]);
+      const meta = { threadId: native, callId };
+      const extra = { ...(superuserExtra('&client=su-owner') as Record<string, unknown>), _meta: meta };
+      const res = await callTool('gatingtest:scoped', {}, extra, meta);
+      expect(res.isError, textOf(res)).toBeUndefined();
+      expect(h.invocations[0]?.ctx.requestOrigin?.nativeSession).not.toHaveProperty('callIdFingerprint');
+    },
+  );
+
+  it.each(['header', 'unbound'])('cannot borrow native call correlation from a %s session carrier', async (kind) => {
+    const native = 'native-owner-session';
+    h.nativeSessionRows = new Map([['su-owner', [{ id: 541, session_id: kind === 'unbound' ? null : native, active: true }]]]);
+    const meta = { ...(kind === 'unbound' ? { threadId: native } : {}), callId: 'call_unproven' };
+    const extra = { ...(superuserExtra('&client=su-owner', { 'x-papercusp-native-session': native }) as Record<string, unknown>), _meta: meta };
+    const res = await callTool('gatingtest:scoped', {}, extra, meta);
+    expect(res.isError, textOf(res)).toBeUndefined();
+    expect(h.invocations[0]?.ctx.requestOrigin?.nativeSession).not.toHaveProperty('callIdFingerprint');
+  });
+
   it.each([
     { carrier: 'header:x-papercusp-native-session', query: '&client=su-owner', headers: { 'x-papercusp-native-session': 'native-owner-session' } },
     { carrier: 'query:native_session', query: '&client=su-owner&native_session=native-owner-session', headers: {} as Record<string, string> },
