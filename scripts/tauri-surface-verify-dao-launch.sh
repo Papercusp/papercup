@@ -8,6 +8,10 @@ set -euo pipefail
 [ "${VERIFY_TAURI_ISOLATED_DB:-0}" = 1 ] || { echo 'DAO verification requires an isolated DB' >&2; exit 2; }
 OUT_DIR="${TAURI_SURFACE_VERIFY_DAO_LAUNCH_OUT:-/tmp/pcv-dao-launch-$(date -u +%Y%m%dT%H%M%SZ)}"
 mkdir -p "$OUT_DIR"
+cp "$0" "$OUT_DIR/assertions.sh"
+if [ -n "${VERIFY_TAURI_SPA_DIST:-}" ] && [ -f "$VERIFY_TAURI_SPA_DIST/../verifier-source-receipt.json" ]; then
+  cp "$VERIFY_TAURI_SPA_DIST/../verifier-source-receipt.json" "$OUT_DIR/backend-source-receipt.json"
+fi
 trap 'status=$?; if [ "$status" -ne 0 ]; then echo "P009_TAURI_SURFACE_VERIFY_FAIL leg=dao-launch output=$OUT_DIR" >&2; fi' EXIT
 native() { bash "$VERIFY_TAURI_LIVENESS_CHECK" >/dev/null; tauri-agent-tools "$@" --pid "$VERIFY_TAURI_PID"; }
 native eval 'window.__TSR_ROUTER__.navigate({to:"/dao"})' >/dev/null
@@ -39,6 +43,7 @@ native eval 'document.querySelector(".dao-workspace-container").style.width="560
 "$VERIFY_TAURI_POLL" --require '.dao-task' --require-min 5 --eval '__daoLayoutFits()'
 native eval 'document.querySelector(".dao-workspace-container").style.width=""' >/dev/null
 "$VERIFY_TAURI_POLL" --require '.dao-task' --require-min 5 --eval '__daoLayoutFits() && document.querySelector(".dao-summary").textContent.includes("Not connected")'
+native eval 'JSON.stringify({viewport:{width:innerWidth,height:innerHeight},containerWidth:document.querySelector(".dao-workspace-container").getBoundingClientRect().width,checklistWidth:document.querySelector(".dao-checklist").getBoundingClientRect().width,steps:document.querySelectorAll(".dao-task").length,organization:document.querySelector(".dao-org-select").textContent})' >"$OUT_DIR/layout.json"
 native screenshot --selector '[data-testid="dao-launch-workspace"]' --output "$OUT_DIR/checklist.png" >/dev/null
 if native check --selector '.dao-task-intentionally-missing' --json >"$OUT_DIR/negative-control.json" 2>&1; then
   echo 'Missing-selector negative control unexpectedly passed' >&2; exit 1
