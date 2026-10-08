@@ -177,10 +177,13 @@ describe('resolveScriptPgUrl', () => {
   });
 });
 
-describe('isolated GOAL Tauri driver database prerequisite', () => {
-  const driver = readFileSync(join(SCRIPTS_DIR, 'tauri-surface-verify-goal-report.mts'), 'utf8');
+describe.each([
+  ['GOAL', 'tauri-surface-verify-goal-report.mts', 'const out ='],
+  ['reporter', 'tauri-surface-verify-reporter-status.mts', 'assert.ok(process.env.VERIFY_TAURI_PID)'],
+])('isolated %s Tauri driver database prerequisite', (_name, file, endMarker) => {
+  const driver = readFileSync(join(SCRIPTS_DIR, file), 'utf8');
   // Execute the real caller's prerequisite before any database or native writes.
-  const guard = driver.slice(driver.indexOf('const isolatedPg ='), driver.indexOf('const out ='));
+  const guard = driver.slice(driver.indexOf('const isolatedPg ='), driver.indexOf(endMarker));
   const check = (root: string) => runInNewContext(guard, {
     pid: 'isolated-test-pid', origin: 'http://isolated-test.invalid', workspaceId: 'isolated-test', assert,
     resolveScriptPgUrl: () => resolveScriptPgUrl({ root, env: process.env }),
@@ -203,6 +206,7 @@ describe('isolated GOAL Tauri driver database prerequisite', () => {
       else expect(() => check(root)).toThrow('Requires an explicitly supplied isolated admin database URL');
     } finally {
       vi.unstubAllEnvs();
+      _resetHarnessAdminUrlCacheForTests();
     }
   });
 });
