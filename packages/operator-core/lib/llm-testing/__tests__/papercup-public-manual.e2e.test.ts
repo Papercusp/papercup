@@ -299,9 +299,41 @@ function safeHostedErrorCode(body: unknown): string | null {
   const code = typeof error === 'string' ? error
     : error && typeof error === 'object' ? (error as { code?: unknown }).code : undefined;
   // Retain only documented refusal codes, never arbitrary response content.
+  if (typeof code === 'string' && /^portal_operator_status_[1-5]\d{2}$/.test(code)) return code;
   return typeof code === 'string' && ['cross_origin_blocked', 'control_plane_binding_mismatch',
     'workspace_binding_mismatch', 'tutorial_scope_changed', 'hosted_principal_required',
     'permission_missing', 'forbidden', 'unauthorized', 'authority_unavailable'].includes(code) ? code : null;
+}
+
+function observePortalConversationCreation(page: import('playwright').Page) {
+  let creation: { status: number; errorCode: string | null } | undefined;
+  let refuse!: (error: Error) => void;
+  // Resolve with the failure instead of rejecting in an event listener. Creation
+  // can fail during navigation, before the test begins awaiting a typed turn.
+  const failure = new Promise<Error>((resolve) => { refuse = resolve; });
+  page.on('response', (response) => {
+    if (response.request().method() !== 'POST'
+      || new URL(response.url()).pathname !== '/api/papercup-chat/conversations') return;
+    void (async () => {
+      const body = await response.json().catch(() => null);
+      creation = { status: response.status(), errorCode: safeHostedErrorCode(body) };
+      if (!response.ok() || typeof body?.chat?.id !== 'string' || !body.chat.id) {
+        refuse(new Error(`public_manual_portal_create_failed:${creation.status}; code=${creation.errorCode ?? 'unreported'}`));
+      }
+    })().catch(() => refuse(new Error('public_manual_portal_create_response_unreadable')));
+  });
+  return {
+    snapshot: () => creation,
+    waitForTurn: async (send: () => Promise<unknown>, timeout = 150_000) => {
+      const response = page.waitForResponse((response) => response.request().method() === 'POST'
+        && /\/api\/papercup-chat\/conversations\/[^/]+\/turns$/.test(new URL(response.url()).pathname), { timeout });
+      const pending = Promise.race([response, failure.then((error) => { throw error; })]);
+      // A failed click must not leave an unhandled response timeout behind.
+      void pending.catch(() => {});
+      await send();
+      return pending;
+    },
+  };
 }
 
 function observePortalBrowser(page: import('playwright').Page) {
@@ -341,9 +373,58 @@ function observePortalBrowser(page: import('playwright').Page) {
 }
 
 describe('public manual Portal failure evidence', () => {
+  it.runIf(process.env.PAPERCUSP_TEST_PUBLIC_PORTAL === '1')('fails immediately on conversation creation before a typed response or model call', async () => {
+    const { chromium } = await import('playwright');
+    const browser = await chromium.launch({ headless: true });
+    let turns = 0;
+    try {
+      const page = await browser.newPage();
+      const creation = observePortalConversationCreation(page);
+      await page.route('http://portal.test/**', (route) => {
+        const path = new URL(route.request().url()).pathname;
+        if (path === '/api/papercup-chat/conversations') return route.fulfill({ status: 500,
+          contentType: 'application/json', body: JSON.stringify({ error: 'private-upstream-detail' }) });
+        if (path.endsWith('/turns')) turns += 1;
+        return route.fulfill({ contentType: 'text/html', body: '<script>fetch("/api/papercup-chat/conversations", {method:"POST"})</script>' });
+      });
+      await page.goto('http://portal.test/');
+      await expect.poll(() => creation.snapshot()?.status).toBe(500);
+      // The collection failure already happened during navigation. No typed
+      // response will arrive; the guard must report that failure promptly.
+      await expect(creation.waitForTurn(async () => {}, 1000)).rejects.toThrow('public_manual_portal_create_failed:500');
+      expect(creation.snapshot()).toEqual({ status: 500, errorCode: null });
+      expect(JSON.stringify(creation.snapshot())).not.toContain('private-upstream-detail');
+      expect(turns).toBe(0);
+    } finally { await browser.close(); }
+  }, 30_000);
+
+  it.runIf(process.env.PAPERCUSP_TEST_PUBLIC_PORTAL === '1')('continues to the typed stream after successful conversation creation', async () => {
+    const { chromium } = await import('playwright');
+    const browser = await chromium.launch({ headless: true });
+    try {
+      const page = await browser.newPage();
+      const creation = observePortalConversationCreation(page);
+      await page.route('http://portal.test/**', (route) => {
+        const path = new URL(route.request().url()).pathname;
+        if (path === '/api/papercup-chat/conversations') return route.fulfill({ status: 201,
+          contentType: 'application/json', body: JSON.stringify({ chat: { id: 'fixture-chat' } }) });
+        if (path.endsWith('/turns')) return route.fulfill({ contentType: 'text/event-stream', body: 'event: done\ndata: {}\n\n' });
+        return route.fulfill({ contentType: 'text/html', body: '<button onclick="fetch(\'/api/papercup-chat/conversations\', {method:\'POST\'}).then(r => r.json()).then(body => fetch(\'/api/papercup-chat/conversations/\'+body.chat.id+\'/turns\', {method:\'POST\'}))">Send</button>' });
+      });
+      await page.goto('http://portal.test/');
+      const response = await creation.waitForTurn(() => page.getByRole('button', { name: 'Send' }).click(), 5000);
+      expect(response.ok()).toBe(true);
+      expect(await response.text()).toContain('event: done');
+      expect(creation.snapshot()).toEqual({ status: 201, errorCode: null });
+    } finally { await browser.close(); }
+  }, 30_000);
+
   it('retains documented hosted refusal codes without retaining arbitrary response content', () => {
     expect(safeHostedErrorCode({ error: 'cross_origin_blocked', session: 'private-response' })).toBe('cross_origin_blocked');
     expect(safeHostedErrorCode({ error: { code: 'forbidden', message: 'private-response' } })).toBe('forbidden');
+    expect(safeHostedErrorCode({ error: 'portal_operator_status_500', detail: 'private-response' })).toBe('portal_operator_status_500');
+    expect(safeHostedErrorCode({ error: 'portal_operator_status_500_private-response' })).toBeNull();
+    expect(safeHostedErrorCode({ error: 'portal_operator_status_999' })).toBeNull();
     expect(safeHostedErrorCode({ error: 'private-response' })).toBeNull();
     expect(safeHostedErrorCode(null)).toBeNull();
   });
@@ -919,7 +1000,7 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
     expect(revision.revision).toMatch(/^[a-f0-9]{64}$/);
   }, 30_000);
 
-  const actualPortalAcceptance = async (mismatchedOrigin: boolean) => {
+  const actualPortalAcceptance = async (mismatchedOrigin: boolean, preflightOnly = false) => {
     // Explicit roots prevent this acceptance case from silently testing a mutable
     // development server or a different installed app. It never promotes a build.
     const portalRoot = process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT;
@@ -955,8 +1036,11 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
     let history: { turns?: Array<{ role: string; text: string; source?: string }> } | undefined;
     let browserText = '';
     let captureBrowser: ReturnType<typeof observePortalBrowser> | undefined;
+    let conversationCreation: ReturnType<typeof observePortalConversationCreation> | undefined;
     let browserState: Awaited<ReturnType<ReturnType<typeof observePortalBrowser>>> | undefined;
     let guideMutation: { status: number; errorCode: string | null } | undefined;
+    let operatorCreation: { status: number; hasConversationId: boolean } | undefined;
+    let creationPreflight: { status: number; errorCode: string | null; hasChatId: boolean; historyStatus?: number } | undefined;
     let browserOrigin: string | undefined;
     let configuredPublicOrigin: string | undefined;
     const evidenceCredentials = [principalBearer!];
@@ -1029,6 +1113,7 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
       await context.addCookies([publicManualHostedCookie(origin, cookieValue)]);
       const page = await context.newPage();
       captureBrowser = observePortalBrowser(page);
+      conversationCreation = observePortalConversationCreation(page);
       stage = 'authenticated-navigation';
       const journeyStartedAt = new Date();
       // Papercup is the shell's persistent sidebar, not a rail app. Both
@@ -1058,17 +1143,47 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
       }
       expect(guideResponse.ok()).toBe(true);
       expect(guideBody).toMatchObject({ record: { disposition: 'skipped' } });
+      // Exercise the two creation boundaries without sending a model turn.
+      // Scope the direct control exactly as the Portal's dedicated-instance path.
+      stage = 'operator-create-preflight';
+      const direct = await fetch(new URL('/api/operator/conversations', baseUrl!), {
+        method: 'POST', headers: { 'content-type': 'application/json', 'x-papercusp-workspace': workspaceId },
+        body: '{}', signal: AbortSignal.timeout(5000),
+      });
+      const directBody = await direct.json().catch(() => null);
+      operatorCreation = { status: direct.status, hasConversationId: typeof directBody?.conversation?.id === 'string' };
+      expect(operatorCreation, 'The selected operator must create a conversation before Portal ownership or a paid turn').toMatchObject({
+        status: 200, hasConversationId: true,
+      });
+      stage = 'portal-create-preflight';
+      const created = await page.evaluate(async () => {
+        const response = await fetch('/api/papercup-chat/conversations', {
+          method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' },
+          body: '{}', signal: AbortSignal.timeout(5000),
+        });
+        return { status: response.status, body: await response.json().catch(() => null) };
+      });
+      creationPreflight = { status: created.status, errorCode: safeHostedErrorCode(created.body),
+        hasChatId: typeof created.body?.chat?.id === 'string' && Boolean(created.body.chat.id) };
+      expect(creationPreflight, 'Portal must record ownership and return a usable chat before a paid turn').toMatchObject({
+        status: 201, errorCode: null, hasChatId: true,
+      });
+      const initialHistory = await readPortalJson(page, `/api/papercup-chat/conversations/${encodeURIComponent(created.body.chat.id)}/turns`);
+      creationPreflight.historyStatus = initialHistory.status;
+      expect(initialHistory.status).toBe(200);
+      expect(initialHistory.body.turns).toEqual([]);
+      if (preflightOnly) {
+        stage = 'passed-create-preflight';
+        return;
+      }
       stage = 'typed-browser';
       const composer = page.getByRole('textbox', { name: 'Message Papercup', exact: true });
       await composer.waitFor({ state: 'visible', timeout: 30_000 });
       await verifyFixtureBundle();
       writeFileSync(join(manualFixtureDir!, 'faq.mdx'), fixtureFaq(publicCanary));
       expect(JSON.stringify(await verifyFixtureBundle())).toContain(publicCanary);
-      const streamedResponse = page.waitForResponse((response) => response.request().method() === 'POST'
-        && /\/api\/papercup-chat\/conversations\/[^/]+\/turns$/.test(new URL(response.url()).pathname), { timeout: 150_000 });
       await composer.fill(question);
-      await page.getByRole('button', { name: 'Send', exact: true }).click();
-      const response = await streamedResponse;
+      const response = await conversationCreation.waitForTurn(() => page.getByRole('button', { name: 'Send', exact: true }).click());
       expect(response.ok()).toBe(true);
       expect(response.headers()['content-type']).toContain('text/event-stream');
       stream = await response.text();
@@ -1120,10 +1235,12 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
     } finally {
       // Only the public projected stream/history is retained. Failure stage and
       // runtime log let a continuation diagnose without replaying a paid turn.
-      const safeEvidence = serializePortalEvidence({ id: mismatchedOrigin ? 'actual-portal-origin-negative' : 'actual-portal-typed', stage,
+      const safeEvidence = serializePortalEvidence({ id: mismatchedOrigin ? 'actual-portal-origin-negative'
+        : preflightOnly ? 'actual-portal-create-preflight' : 'actual-portal-typed', stage,
         question, runtimeBuild, candidateRoot, servedRelease, workspaceId, browserOrigin, configuredPublicOrigin,
         recordedAt: new Date().toISOString(),
-        frames: publicPortalFrames(stream), history, browserText, browserState, guideMutation }, caseFailure, evidenceCredentials);
+        frames: publicPortalFrames(stream), history, browserText, browserState, guideMutation,
+        conversationCreation: conversationCreation?.snapshot(), operatorCreation, creationPreflight }, caseFailure, evidenceCredentials);
       writeFileSync(join(evidenceDir, 'case.json'), safeEvidence, { mode: 0o600 });
       try {
       try { await browser?.close(); }
@@ -1160,6 +1277,10 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
   it.runIf(process.env.PAPERCUSP_TEST_PUBLIC_PORTAL === '1')(
     'rejects the mismatched hosted tutorial origin before any model call',
     () => actualPortalAcceptance(true), 240_000);
+
+  it.runIf(process.env.PAPERCUSP_TEST_PUBLIC_PORTAL === '1')(
+    'creates an owned chat and reads its empty history on the actual hosted Portal without a model call',
+    () => actualPortalAcceptance(false, true), 120_000);
 
   it.runIf(process.env.PAPERCUSP_TEST_PUBLIC_PORTAL === '1')(
     'answers typed input on the actual hosted Portal with docs-only tools and persisted history',
