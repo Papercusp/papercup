@@ -57,7 +57,22 @@ export type IdeaOutcome =
   /** The routed artifact reached a losing terminal state (gym rejected / superseded). */
   | 'lost'
   /** Not yet terminal in the change feed — outcome still unknown. */
-  | 'pending';
+  | 'pending'
+  /**
+   * Can never reach a terminal verdict (plan scout-su-ideate-pipeline-gaps-2026-10-08
+   * P-002): the idea's rail is PAUSED (paused-rails.ts) and the artifact has no
+   * terminal record, or the ref is a legacy shared gym ref whose per-idea verdict is
+   * unknowable. Excluded from `routed`, `pending` and every win-rate denominator.
+   * Reversible: the refresh sweep re-classifies the whole corpus, so an idea on a
+   * rail that resumes reads 'pending' again on the next refresh.
+   */
+  | 'unresolvable';
+
+/** Options for {@link classifyIdeaOutcome}. */
+export interface ClassifyIdeaOutcomeOptions {
+  /** Rails that are paused right now ({@link readPausedRails} in paused-rails.ts). */
+  pausedRails?: ReadonlySet<RoutedRail>;
+}
 
 /** A typed feedback-driven successor filing. `readRoutedIdeas` derives these from
  * coord_links `revises` edges; release scoring still validates origin + chronology. */
@@ -133,6 +148,12 @@ export interface RoutedIdeaProvenance {
   createdBy?: string;
   /** Typed successor filings pointing back to this routed idea via rel='revises'. */
   feedbackRevisions?: FeedbackRevision[];
+  /**
+   * The ledger's CACHED outcome (column `outcome`, written by refreshScoutOutcomes).
+   * Absent when the row was never checked. Read by {@link tallyRoutedOutcomes} for the
+   * success-metrics outcome tally; the lens-weight math re-classifies from the feed.
+   */
+  outcome?: IdeaOutcome;
 }
 
 /**
@@ -154,6 +175,12 @@ export interface LensOutcomeStat<L extends string = CreativeLens> {
   /** Loss mass — fractional under grading, see {@link LensOutcomeStat.won}. */
   lost: number;
   pending: number;
+  /**
+   * Ungraded ideas from this lens whose outcome is 'unresolvable' (paused rail or a
+   * legacy shared gym ref, P-002). NOT part of `routed`: they can never decide, so
+   * they are kept out of every denominator and only reported here.
+   */
+  unresolvable: number;
   /** won / (won + lost) over DECIDED ideas only; null when nothing decided yet. */
   winRate: number | null;
   /**
@@ -227,18 +254,23 @@ export interface LensWeightOptions {
 export function classifyIdeaOutcome(
   prov: RoutedIdeaProvenance,
   completionByRef: ReadonlyMap<string, ChangeFeedEntry>,
+  opts: ClassifyIdeaOutcomeOptions = {},
 ): IdeaOutcome {
   // D-003 / P-002 (blender-loop-repair-2026-08-16, EI-20597534704604481): a
   // LEGACY shared gym ref (`gym:SP-NNN` — the pre-batch-stamp per-cycle counter
   // ids) joined MANY ideas onto ONE frozen niche verdict: 600 of 746 decided
   // outcomes were copies of 4 dead July verdicts, flattening lens weights to
-  // near-uniform. Their true per-idea outcomes are unknowable, so they classify
-  // 'pending' permanently — which also makes the next refreshScoutOutcomes
-  // batch-UPDATE repair the 600 poisoned cached rows in place. Batch-stamped
-  // ids (`gym:SP-<stamp>-NNN`, recombine.ts) do not match.
-  if (prov.rail === 'gym' && /^gym:SP-\d+$/.test(prov.routedRef)) return 'pending';
+  // near-uniform. Their true per-idea outcomes are unknowable. They classified
+  // 'pending' until scout-su-ideate-pipeline-gaps-2026-10-08 P-002, which made
+  // them 'unresolvable': 'pending' claimed they were still deciding, and kept
+  // 607 of them in every pending count. Batch-stamped ids
+  // (`gym:SP-<stamp>-NNN`, recombine.ts) do not match.
+  if (prov.rail === 'gym' && /^gym:SP-\d+$/.test(prov.routedRef)) return 'unresolvable';
   const entry = completionByRef.get(prov.routedRef);
-  if (!entry) return 'pending';
+  // P-002: an idea on a PAUSED rail with no terminal record can never decide. A
+  // terminal record that already exists still decides it (below): pausing a rail
+  // does not erase verdicts it reached before the pause.
+  if (!entry) return opts.pausedRails?.has(prov.rail) ? 'unresolvable' : 'pending';
   // instance (InstanceSubject / apiary) eval — reconciliation P-006: a genome variant
   // that the battery PROMOTED (beat the champion beyond the noise band + held the
   // meta-eval) won; any other decided verdict lost. Both eval subjects feed lens
@@ -399,7 +431,59 @@ function gymStatusOf(entry: ChangeFeedEntry): string {
 
 /** Empty stat for a lens with no routed ideas (neutral, floor-eligible). */
 function emptyStat<L extends string>(lens: L): LensOutcomeStat<L> {
-  return { lens, routed: 0, won: 0, lost: 0, pending: 0, winRate: null, weight: 0 };
+  return { lens, routed: 0, won: 0, lost: 0, pending: 0, unresolvable: 0, winRate: null, weight: 0 };
+}
+
+/**
+ * Outcome tally over a set of routed ideas, read from each idea's CACHED ledger
+ * outcome (plan scout-su-ideate-pipeline-gaps-2026-10-08 P-002 / R-3). An
+ * 'unresolvable' idea, or an unchecked/pending idea on a PAUSED rail, is counted in
+ * `unresolvable` only: never in `routed`, `pending`, `decided` or the win-rate
+ * denominator. Grade-blind on purpose, like the ledger `outcome` column it reads.
+ */
+export interface RoutedOutcomeTally {
+  /** Ideas that can still decide: won + lost + pending. */
+  routed: number;
+  won: number;
+  lost: number;
+  pending: number;
+  /** Ideas that can never decide (paused rail / legacy gym ref). Excluded from every denominator. */
+  unresolvable: number;
+  /** won + lost. */
+  decided: number;
+  /** won / decided; null when nothing is decided. */
+  winRate: number | null;
+}
+
+/** Pure tally of cached outcomes; see {@link RoutedOutcomeTally}. */
+export function tallyRoutedOutcomes(
+  ideas: readonly RoutedIdeaProvenance[],
+  opts: ClassifyIdeaOutcomeOptions = {},
+): RoutedOutcomeTally {
+  let won = 0;
+  let lost = 0;
+  let pending = 0;
+  let unresolvable = 0;
+  for (const idea of ideas) {
+    const cached = idea.outcome ?? 'pending';
+    if (cached === 'won') won += 1;
+    else if (cached === 'lost') lost += 1;
+    else if (cached === 'unresolvable') unresolvable += 1;
+    // A pending/unchecked row on a paused rail is unresolvable even before the next
+    // refresh re-stamps the cached column — the tally must not lag the pause.
+    else if (opts.pausedRails?.has(idea.rail)) unresolvable += 1;
+    else pending += 1;
+  }
+  const decided = won + lost;
+  return {
+    routed: won + lost + pending,
+    won,
+    lost,
+    pending,
+    unresolvable,
+    decided,
+    winRate: decided > 0 ? won / decided : null,
+  };
 }
 
 /**
@@ -439,7 +523,7 @@ function validGradeOf(prov: RoutedIdeaProvenance): number | null {
 export function computeLensOutcomes<L extends string = CreativeLens>(
   provenance: readonly RoutedIdeaProvenance[],
   completions: readonly ChangeFeedEntry[],
-  opts: LensWeightOptions & { lenses?: readonly L[] } = {},
+  opts: LensWeightOptions & { lenses?: readonly L[] } & ClassifyIdeaOutcomeOptions = {},
 ): LensOutcomeReport<L> {
   const lenses = opts.lenses ?? (CREATIVE_LENSES as readonly string[] as readonly L[]);
   const completionByRef = new Map<string, ChangeFeedEntry>();
@@ -457,8 +541,15 @@ export function computeLensOutcomes<L extends string = CreativeLens>(
     // lens outside the roster falls through to the skip, never a type hole.
     const stat = (byLens as Record<string, LensOutcomeStat<L> | undefined>)[prov.lens];
     if (!stat) continue; // ignore an unknown/sentinel lens rather than throwing
-    stat.routed += 1;
     const grade = validGradeOf(prov);
+    // P-002: an ungraded idea that can never decide stays out of `routed` and every
+    // denominator. A graded one still counts: the grade decides it (C-5 / D-002).
+    const feedOutcome = grade === null ? classifyIdeaOutcome(prov, completionByRef, opts) : null;
+    if (feedOutcome === 'unresolvable') {
+      stat.unresolvable += 1;
+      continue;
+    }
+    stat.routed += 1;
     if (grade !== null) {
       // C-5 / D-002: a grade DOMINATES the change-feed outcome — the graded
       // idea is decided by the grader regardless of feed state (a graded
@@ -467,12 +558,9 @@ export function computeLensOutcomes<L extends string = CreativeLens>(
       const credit = winCredit(grade);
       stat.won += credit;
       stat.lost += 1 - credit;
-    } else {
-      const outcome = classifyIdeaOutcome(prov, completionByRef);
-      if (outcome === 'won') stat.won += 1;
-      else if (outcome === 'lost') stat.lost += 1;
-      else stat.pending += 1;
-    }
+    } else if (feedOutcome === 'won') stat.won += 1;
+    else if (feedOutcome === 'lost') stat.lost += 1;
+    else stat.pending += 1;
   }
 
   for (const lens of lenses) {
