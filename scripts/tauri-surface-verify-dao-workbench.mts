@@ -13,6 +13,7 @@ import { authorHivePolicy } from '../packages/operator-core/lib/hive-policy-auth
 import { DEFAULT_PLAN_ADMISSION_POLICY } from '../packages/operator-core/lib/agent-tools/plans/plan-admission-policy.ts';
 import { readPlanAdmissionGovernanceSnapshot } from '../packages/operator-core/lib/agent-tools/plans/plan-admission-governance-store.ts';
 import { getPlanRow } from '../packages/operator-core/lib/agent-tools/plans/source.ts';
+import { readNativeHostHealth } from './fixtures/dao-workbench-identity.mjs';
 
 if (process.argv.includes('--check-imports')) {
   assert.equal(typeof authorHivePolicy, 'function'); assert.equal(typeof getPlanRow, 'function');
@@ -45,10 +46,8 @@ const result = await runHarness({ contract: { name: harnessName, phases: [{ id: 
     try {
       ctx.markStep('frozen-host-source-identity');
       const receipt = JSON.parse(readFileSync(process.env.VERIFY_TAURI_SOURCE_RECEIPT!, 'utf8'));
-      const healthResponse = await fetch(process.env.PAPERCUSP_OPERATOR_URL + '/api/health', { signal: AbortSignal.timeout(10_000) });
-      assert.equal(healthResponse.status, 200, 'Frozen host health read must succeed');
-      const health = await healthResponse.json();
-      writeFileSync(join(ctx.evidenceDir, 'host-source-identity.json'), JSON.stringify({ sourceCommit: receipt.sourceCommit, health }, null, 2));
+      const { origin, health } = await readNativeHostHealth();
+      writeFileSync(join(ctx.evidenceDir, 'host-source-identity.json'), JSON.stringify({ sourceCommit: receipt.sourceCommit, origin, health }, null, 2));
       assert.equal(health.sha, receipt.sourceCommit.slice(0, 12), 'Frozen host must report the validated archive commit');
       ctx.markStep('isolated-owner-policy-and-member-fixture');
       const slug = 'workbench-native';

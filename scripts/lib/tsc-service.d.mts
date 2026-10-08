@@ -323,12 +323,21 @@ export function typecheckViaService({ root, project, files, label, log, env }: {
  * The line a service-served run prints, so a reader knows this verdict came from the service and
  * how far it reached.
  *
+ * WI-10007624: a named file this leg ROUTED to its owning leg is also, necessarily, outside this
+ * project's program. Printing it under "not in this project's program" beside a `status=clean`
+ * reads as a false green (a reader concluded the operator files went unchecked when the operator
+ * leg had judged them). Pass the routed set, and those files get their own line saying where they
+ * were judged; only files nobody judged stay on the not-in-program line.
+ *
  * @param {Extract<TscServiceResponse, { ok: true }>} response
+ * @param {{ routedAway?: Iterable<string> }} [opts] repo-relative files a delegate leg already judged
  * @returns {string[]}
  */
 export function formatTscServiceBanner(response: Extract<TscServiceResponse, {
     ok: true;
-}>): string[];
+}>, { routedAway }?: {
+    routedAway?: Iterable<string>;
+}): string[];
 /**
  * Read a file's text, or null when it cannot be read. The server's cached reader wraps this.
  *

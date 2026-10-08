@@ -29,7 +29,8 @@
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:net';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+import AsyncExitHook from 'async-exit-hook';
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -83,18 +84,23 @@ const sqlDir = resolveSqlDir();
 
 let pg = null;
 let profileProcess = null;
-let cleanedUp = false;
+let child = null;
+let cleanupPromise = null;
+let terminatingSignal = null;
 let cleanupStartedAt = null;
 function cleanupStage(stage, detail = {}) {
   if (!isolatedRuntime || process.env.PC_ISOLATED_RUNTIME_PROOF !== '1') return;
   const message = { kind: 'isolated-runtime-cleanup', stage,
     elapsedMs: Date.now() - cleanupStartedAt, ...detail };
   console.log('[with-test-pg] cleanup ' + JSON.stringify(message));
-  if (process.connected && process.send) process.send(message, () => {});
+  if (process.connected && process.send) return new Promise(done => process.send(message, done));
 }
 async function cleanup() {
-  if (cleanedUp) return;
-  cleanedUp = true;
+  // Signals and failed bootstrap may converge here. Every caller waits for
+  // the same cleanup rather than mistaking "started" for "finished".
+  return cleanupPromise ??= cleanupOwnedState();
+}
+async function cleanupOwnedState() {
   cleanupStartedAt = Date.now();
   cleanupStage('start');
   if (profileProcess && profileProcess.exitCode === null && profileProcess.signalCode === null) {
@@ -118,24 +124,53 @@ async function cleanup() {
   cleanupStage('remove-private-state');
   await rm(dataDir, { recursive: true, force: true }).catch(() => {});
   if (runtimeRoot) await rm(runtimeRoot, { recursive: true, force: true }).catch(() => {});
-  cleanupStage('complete', { runtimeRemoved: !runtimeRoot || !existsSync(runtimeRoot), pgDataRemoved: !existsSync(dataDir) });
+  await cleanupStage('complete', { runtimeRemoved: !runtimeRoot || !existsSync(runtimeRoot), pgDataRemoved: !existsSync(dataDir) });
 }
 
+// Maintained integration callers fork a dedicated process group. That group
+// includes initdb, whose dependency does not expose a process handle. Verify
+// ownership before signalling it; an ordinary CLI never targets its parent's
+// group. Replace the dependency's ten-second signal-exit hook only here: it
+// otherwise exits while our startup/cleanup is still pending.
+const ownProcessGroup = isolatedRuntime && process.platform === 'linux' &&
+  Number(readFileSync('/proc/self/stat', 'utf8').split(')').slice(1).join(')').trim().split(/\s+/)[2]) === process.pid;
+if (ownProcessGroup) {
+  for (const sig of ['SIGINT', 'SIGTERM']) AsyncExitHook.unhookEvent(sig);
+}
+for (const sig of ['SIGINT', 'SIGTERM']) {
+  process.on(sig, () => {
+    if (terminatingSignal) return;
+    terminatingSignal = sig;
+    if (ownProcessGroup) {
+      // The repeated signal to this supervisor is ignored by the guard above;
+      // its exact owned initdb/postmaster descendants receive it as well.
+      try { process.kill(-process.pid, sig); } catch { /* group already exited */ }
+    }
+    if (profileProcess?.pid) {
+      try { process.kill(-profileProcess.pid, sig); } catch { /* already exited */ }
+    }
+    if (child?.pid) {
+      if (isolatedRuntime) {
+        try { process.kill(-child.pid, sig); } catch { /* already exited */ }
+      } else child.kill(sig);
+    }
+  });
+}
+function assertNotTerminating() {
+  if (terminatingSignal) throw new Error(`private runtime cancelled during bootstrap: ${terminatingSignal}`);
+}
+
+async function main() {
 console.log(`[with-test-pg] booting throwaway PG on :${port} (datadir ${dataDir})`);
 console.log(`[with-test-pg] migrations: ${sqlDir}`);
 
-try {
-  pg = await startEmbeddedPostgresServer({ dataDir, port, dbSqlDir: sqlDir, onLog: message => {
+pg = await startEmbeddedPostgresServer({ dataDir, port, dbSqlDir: sqlDir, onLog: message => {
     // Preserve boot/migration progress as well as shutdown. A deadline before
     // start() returns otherwise erases the stage that actually consumed it.
     console.log('[with-test-pg] pg ' + String(message));
     if (cleanupStartedAt !== null) cleanupStage('pg-log', { message });
-  } });
-} catch (e) {
-  console.error(`[with-test-pg] failed to start postgres: ${e?.stack ?? e}`);
-  await cleanup();
-  process.exit(1);
-}
+} });
+assertNotTerminating();
 console.log(`[with-test-pg] ready — ${pg.urls.admin.replace(/:[^:@]*@/, ':***@')}`);
 
 let runtimeEnv = {};
@@ -149,12 +184,14 @@ if (runtimeRoot && runtimeId) {
     mkdir(join(runtimeRoot, 'xdg-runtime'), { recursive: true, mode: 0o700 }),
     mkdir(join(runtimeRoot, 'tmp'), { recursive: true }),
   ]);
+  assertNotTerminating();
   await writeFile(join(workspacesRoot, 'registry.json'), JSON.stringify({
     current: runtimeId,
     workspaces: [{ id: runtimeId, name: 'Disposable background test', createdAt: Date.now() }],
   }), { mode: 0o600 });
   const httpPort = await freePort();
   const ptyPort = await freePort();
+  assertNotTerminating();
   if (httpPort === ptyPort || httpPort === port || ptyPort === port) {
     console.error('[with-test-pg] isolated runtime port collision — refusing to launch');
     await cleanup();
@@ -224,6 +261,7 @@ if (operatorApi) {
   let ingressPort;
   do { ingressPort = await freePort(); }
   while ([port, Number(runtimeEnv.PAPERCUSP_HONO_PORT), Number(runtimeEnv.OPERATOR_DEV_PTY_PORT)].includes(ingressPort));
+  assertNotTerminating();
   runtimeEnv.PAPERCUSP_EXTERNAL_INGRESS_PORT = String(ingressPort);
   const profileSource = `
     const stage = (name, detail = {}) => process.send({ stage: name, ...detail });
@@ -311,6 +349,7 @@ if (operatorApi) {
         res(message);
       });
     });
+    assertNotTerminating();
     if (!ready?.ready || ready.homeHarness !== runtimeId || !/^http:\/\/127\.0\.0\.1:\d+$/.test(ready.url)) {
       throw new Error('operator-api profile returned an invalid private identity');
     }
@@ -327,7 +366,8 @@ if (operatorApi) {
     process.exit(1);
   }
 }
-const child = spawn(cmd[0], cmd.slice(1), {
+assertNotTerminating();
+child = spawn(cmd[0], cmd.slice(1), {
   cwd: ROOT,
   stdio: 'inherit',
   env: {
@@ -359,14 +399,6 @@ if (isolatedRuntime && process.env.PC_ISOLATED_RUNTIME_PROOF === '1' && process.
     workspace: runtimeId, runtimeRoot, dataDir, pgPort: port, root: ROOT });
 }
 
-for (const sig of ['SIGINT', 'SIGTERM']) {
-  process.on(sig, () => {
-    if (isolatedRuntime && child.pid) {
-      try { process.kill(-child.pid, sig); } catch { /* already exited */ }
-    } else child.kill(sig);
-  });
-}
-
 child.on('error', async (error) => {
   console.error(`[with-test-pg] child failed to start: ${error.message}`);
   await cleanup();
@@ -394,4 +426,11 @@ child.on('exit', async (code, signal) => {
     process.kill(process.pid, signal);
   }
   else process.exit(code ?? 1);
+});
+}
+
+main().catch(async error => {
+  console.error(`[with-test-pg] bootstrap failed: ${error?.stack ?? error}`);
+  await cleanup();
+  process.exit(terminatingSignal === 'SIGTERM' ? 143 : terminatingSignal === 'SIGINT' ? 130 : 1);
 });

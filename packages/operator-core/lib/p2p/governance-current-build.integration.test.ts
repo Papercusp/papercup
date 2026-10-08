@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { captureIsolatedWorker, recordIsolatedIntegrationProof } from '../../test/isolated-integration-proof';
+import { captureIsolatedWorker, isolatedTestFileWorkerOptions, recordIsolatedIntegrationProof } from '../../test/isolated-integration-proof';
 
 const root = resolve(import.meta.dirname, '../../../..');
 const journeys = [
@@ -14,6 +14,8 @@ const journeys = [
 const sources = [
   ...journeys,
   'scripts/with-test-pg.mjs',
+  'scripts/test-files.mjs',
+  'scripts/lib/batch-watchdog.mjs',
   'packages/operator-core/test/isolated-integration-proof.ts',
   'packages/operator-core/lib/process-identity.ts',
   'packages/operator-core/lib/agent-tools/plans/governance-authentication.ts',
@@ -29,6 +31,7 @@ const sources = [
   'packages/operator-core/lib/hive-membership-store.ts',
   'packages/operator-core/lib/sync/hyperbee/pending-membership-content.ts',
 ];
+const workerOptions = isolatedTestFileWorkerOptions(process.env, journeys.length);
 
 function sourceFingerprint() {
   return createHash('sha256').update(JSON.stringify(sources.map(path => [
@@ -65,6 +68,7 @@ describe('isolated current-build governance and P2P journeys', () => {
           resolve(root, 'scripts/test-files.mjs'), ...journeys,
         ], {
           cwd: root,
+          detached: true,
           execArgv: [],
           env: environment,
           stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
@@ -73,7 +77,7 @@ describe('isolated current-build governance and P2P journeys', () => {
         child.on('message', message => {
           if (message && typeof message === 'object') messages.push(message as Record<string, unknown>);
         });
-        const result = await captureIsolatedWorker(child, evidenceDir, { timeoutMs: 140_000, killGraceMs: 3_000 });
+        const result = await captureIsolatedWorker(child, evidenceDir, workerOptions);
         const cleanOutput = result.output.replace(/\u001b\[[0-9;]*m/g, '');
         expect(result, cleanOutput.slice(-12_000)).toMatchObject({ code: 0, signal: null, timedOut: false, stdioDrainTimedOut: false });
         expect(cleanOutput).toMatch(/Test Files\s+2 passed\s+\(2\)/);
@@ -102,5 +106,5 @@ describe('isolated current-build governance and P2P journeys', () => {
     });
     Object.assign(context.task.meta, { papercuspIsolatedRuntimeRunId: runId });
     console.info('GOVERNANCE_P2P_CURRENT_BUILD_PROOF_RUN ' + runId);
-  }, 150_000);
+  }, workerOptions.testTimeoutMs);
 });

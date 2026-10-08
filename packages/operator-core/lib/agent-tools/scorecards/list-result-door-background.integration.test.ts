@@ -46,6 +46,7 @@ it('spills and reads back a real 100-row scorecards:list result in a private iso
         resolve(root, 'packages/operator-core/test/_scorecards-list-result-door-child.ts'),
       ], {
         cwd: root,
+        detached: true,
         env: {
           ...process.env,
           PC_ISOLATED_RUNTIME_PROOF: '1',

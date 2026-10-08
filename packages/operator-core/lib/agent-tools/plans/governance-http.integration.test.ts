@@ -3,14 +3,16 @@ import { resolve, join } from 'node:path';
 import { symlink, rm, mkdir } from 'node:fs/promises';
 import type {} from '../../../test/governance-http-fixture';
 import { expect, it } from 'vitest';
-import { captureIsolatedWorker, recordIsolatedIntegrationProof } from '../../../test/isolated-integration-proof';
+import { captureIsolatedWorker, isolatedWorkerOptions, recordIsolatedIntegrationProof } from '../../../test/isolated-integration-proof';
 
 const root = resolve(import.meta.dirname, '../../../../..');
+const workerOptions = isolatedWorkerOptions(480_000);
 
 it('ratifies through the production HTTP plans door and executes only the signed bounded action in a private runtime', async context => {
   const runId = await recordIsolatedIntegrationProof({ root,
     filePath: 'packages/operator-core/lib/agent-tools/plans/governance-http.integration.test.ts',
     sourcePaths: ['scripts/with-test-pg.mjs', 'packages/operator-core/test/governance-http-fixture.ts',
+      'scripts/test-files.mjs', 'scripts/lib/batch-watchdog.mjs',
       'packages/operator-core/test/isolated-integration-proof.ts',
       'packages/operator-core/lib/agent-tools/plans/governance-event.ts',
       'packages/operator-core/lib/agent-tools/plans/governance-local-action.ts',
@@ -49,17 +51,17 @@ it('ratifies through the production HTTP plans door and executes only the signed
       const child = fork(resolve(root, 'scripts/with-test-pg.mjs'), [
         '--isolated-runtime=operator-api', '--', process.execPath, '--import', 'tsx',
         resolve(root, 'packages/operator-core/test/governance-http-fixture.ts'),
-      ], { cwd: root, env: environment, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
+      ], { cwd: root, detached: true, env: environment, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
       observe(child);
       child.stdout!.on('data', chunk => {
         for (const line of String(chunk).split('\n')) {
           if (line.startsWith('[with-test-pg] operator-api stage ') || line.startsWith('GOVERNANCE_HTTP_PHASE ')) console.info(line);
         }
       });
-      const result = await captureIsolatedWorker(child, evidenceDir, { timeoutMs: 480_000 });
+      const result = await captureIsolatedWorker(child, evidenceDir, workerOptions);
       const output = result.output;
       await rm(join(evidenceDir, 'node_modules'));
-      expect(result, output.slice(-12_000)).toMatchObject({ code: 0, signal: null, timedOut: false, stdioDrainTimedOut: false });
+      expect(result, output.slice(-12_000)).toMatchObject({ code: 0, signal: null, timedOut: false, exitWaitTimedOut: false, stdioDrainTimedOut: false });
       const line = output.split('\n').find(row => row.startsWith('GOVERNANCE_HTTP_RECEIPT '));
       expect(line, output.slice(-8_000)).toBeTruthy();
       const receipt = JSON.parse(line!.slice('GOVERNANCE_HTTP_RECEIPT '.length));
@@ -73,4 +75,4 @@ it('ratifies through the production HTTP plans door and executes only the signed
   });
   Object.assign(context.task.meta, { papercuspIsolatedRuntimeRunId: runId });
   console.info('GOVERNANCE_HTTP_PROOF_RUN ' + runId);
-}, 510_000);
+}, workerOptions.testTimeoutMs);

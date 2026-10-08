@@ -84,6 +84,28 @@ describe('analyzeForExplicitPresence (WI-6004)', () => {
     expect(hits[0].reason).toMatch(/DB row/);
   });
 
+  it('distinguishes postgres.js affected-row metadata from nullable count columns', () => {
+    const hits = analyzeForExplicitPresence({
+      path: 'packages/operator-core/lib/x/result-count.ts',
+      text: 'const result = await sql`UPDATE t SET active = true`;\n'
+        + 'const affected = result.count ?? 0;\n'
+        + 'const column = result[0].count ?? 0;\n'
+        + 'const namedColumn = result["0"].count || 0;\n'
+        + 'const other = result.active ?? false;\n',
+    });
+    expect(hits.map(hit => hit.line)).toEqual([3, 4, 5]);
+  });
+
+  it('still flags absent JSON counts even when the same identifier was a SQL result', () => {
+    const hits = analyzeForExplicitPresence({
+      path: 'packages/operator-core/lib/x/parsed-count.ts',
+      text: 'const result = await sql`DELETE FROM t`;\n'
+        + 'const result = JSON.parse(raw);\nconst affected = result.count ?? 0;\n',
+    });
+    expect(hits).toHaveLength(1);
+    expect(hits[0].reason).toMatch(/JSON.parse/);
+  });
+
   it('flags an IPC/event-payload field defaulted with `||`', () => {
     const hits = analyzeForExplicitPresence({
       path: 'packages/operator-core/lib/x/e.ts',

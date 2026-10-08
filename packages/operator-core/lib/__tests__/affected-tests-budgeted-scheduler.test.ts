@@ -10,12 +10,14 @@ import { parseTaskBudgetRefusal } from '../../../../scripts/lib/task-exit-class.
 import {
   admissionMutexName,
   classifyAffectedBlastRadius,
+  createCgroupMemoryObserver,
   durationEstimate,
   emptyDurationHistory,
   estimateBudgetedTaskWallMs,
   formatAdmissionHolder,
   formatAdmissionProspect,
   formatAffectedTaskShardMarker,
+  formatCgroupMemoryObservedMarker,
   formatTaskBudgetMarker,
   formatTaskBudgetObservedMarker,
   isSharedAdmissionTimeout,
@@ -24,6 +26,7 @@ import {
   planAffectedTaskShards,
   readDurationHistory,
   readTaskCgroupMemoryMaxMb,
+  readTaskCgroupMemoryUsage,
   readTaskCgroupPidsEventMax,
   readTaskCgroupPidsMax,
   resolveGlobalWorkerBudget,
@@ -1008,6 +1011,99 @@ describe('resolveMemoryBudgetMb', () => {
     expect(readTaskCgroupPidsEventMax({ readFile })).toBe(121);
     files.set('/sys/fs/cgroup/user.slice/test.scope/pids.events', 'max not-a-number');
     expect(readTaskCgroupPidsEventMax({ readFile })).toBeNull();
+  });
+
+  describe('cgroup memory usage evidence (WI-10007629, P-006)', () => {
+    const MB = 1024 * 1024;
+    const scope = '/sys/fs/cgroup/user.slice/test.scope';
+    const cgroupFiles = (entries: Record<string, string>) => {
+      const files = new Map<string, string>([['/proc/self/cgroup', '0::/user.slice/test.scope\n']]);
+      for (const [name, body] of Object.entries(entries)) files.set(`${scope}/${name}`, body);
+      const readFile = (path: string) => {
+        if (!files.has(path)) throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+        return files.get(path)!;
+      };
+      return { files, readFile };
+    };
+
+    it('reads anon (not file cache), the cumulative peak and the oom_kill counter', () => {
+      const { readFile } = cgroupFiles({
+        // `file` is page cache and must NOT be counted as worker demand.
+        'memory.stat': `anon ${9000 * MB}\nfile ${20000 * MB}\nanon_thp 0\n`,
+        'memory.peak': `${31000 * MB}\n`,
+        'memory.events': 'low 0\nhigh 0\nmax 4\noom 1\noom_kill 1\n',
+      });
+      expect(readTaskCgroupMemoryUsage({ readFile })).toEqual({
+        anonMb: 9000,
+        peakMb: 31000,
+        oomKills: 1,
+      });
+    });
+
+    it('keeps each field independent and returns null only when nothing is readable', () => {
+      // memory.peak needs a recent kernel; its absence must not hide the anon reading.
+      const partial = cgroupFiles({ 'memory.stat': `anon ${512 * MB}\n` });
+      expect(readTaskCgroupMemoryUsage({ readFile: partial.readFile })).toEqual({
+        anonMb: 512,
+        peakMb: null,
+        oomKills: null,
+      });
+      // `anon_thp` must not be mistaken for `anon`, and a malformed counter is unreadable.
+      const malformed = cgroupFiles({ 'memory.stat': 'anon_thp 77\nanon nope\n' });
+      expect(readTaskCgroupMemoryUsage({ readFile: malformed.readFile })).toBeNull();
+      expect(readTaskCgroupMemoryUsage({ readFile: cgroupFiles({}).readFile })).toBeNull();
+    });
+
+    it('tracks the sampled anon maximum and reports oom kills as a delta over the run', () => {
+      const readings = [
+        { anonMb: 4000, peakMb: 20000, oomKills: 3 },
+        null,
+        { anonMb: 11000, peakMb: 26000, oomKills: 3 },
+        { anonMb: 6000, peakMb: 26000, oomKills: 5 },
+      ];
+      const observer = createCgroupMemoryObserver({ read: () => readings.shift() ?? null });
+      for (let i = 0; i < 4; i++) observer.sample();
+      // The cgroup carried 3 kills from before the run; only the 2 during it count.
+      expect(observer.summary()).toEqual({ samples: 3, maxAnonMb: 11000, peakMb: 26000, oomKills: 2 });
+    });
+
+    it('reports every field as unknown, never zero, when nothing was measured', () => {
+      const observer = createCgroupMemoryObserver({ read: () => null });
+      observer.sample();
+      const line = formatCgroupMemoryObservedMarker(observer.summary(), { observedMaxWorkers: 7 });
+      expect(line).toBe(
+        'AFFECTED_TESTS_CGROUP_MEMORY_OBSERVED samples=0 anonMaxMb=unknown peakMb=unknown ' +
+          'oomKills=unknown maxWorkers=7 anonPerWorkerMb=unknown',
+      );
+    });
+
+    it('divides the anon maximum by the observed worker peak, rounding UP', () => {
+      const line = formatCgroupMemoryObservedMarker(
+        { samples: 12, maxAnonMb: 10001, peakMb: 29000, oomKills: 0 },
+        { observedMaxWorkers: 7 },
+      );
+      expect(line).toContain('anonMaxMb=10001 peakMb=29000 oomKills=0 maxWorkers=7 anonPerWorkerMb=1429');
+      expect(
+        formatCgroupMemoryObservedMarker(
+          { samples: 1, maxAnonMb: 100, peakMb: null, oomKills: 0 },
+          { observedMaxWorkers: 0 },
+        ),
+      ).toContain('anonPerWorkerMb=unknown');
+    });
+
+    it('is wired into affected-tests: sampled on every progress beat and printed once beside OBSERVED', () => {
+      expect(AFFECTED_TESTS_SRC).toContain('const cgroupMemoryObserver = createCgroupMemoryObserver();');
+      const emitProgress = AFFECTED_TESTS_SRC.slice(AFFECTED_TESTS_SRC.indexOf('const emitProgress = ('));
+      expect(emitProgress.slice(0, emitProgress.indexOf('AFFECTED_TASK_PROGRESS state=${state}'))).toContain(
+        'cgroupMemoryObserver.sample();',
+      );
+      expect(AFFECTED_TESTS_SRC.indexOf('const cgroupMemoryObserver')).toBeLessThan(
+        AFFECTED_TESTS_SRC.indexOf('const emitProgress = ('),
+      );
+      const observed = AFFECTED_TESTS_SRC.indexOf('outSync(formatTaskBudgetObservedMarker(initialPool.stats));');
+      expect(observed).toBeGreaterThan(-1);
+      expect(AFFECTED_TESTS_SRC.slice(observed, observed + 400)).toContain('formatCgroupMemoryObservedMarker(');
+    });
   });
 
   it('invalidates only red runs when the cgroup refused forks during the run', () => {

@@ -75,6 +75,7 @@ import {
   writeSync,
 } from 'node:fs';
 import net from 'node:net';
+import { createTerminalOutput } from './psu-terminal-output.mjs';
 
 /** Environment fragments injected by launchers and tests need not carry every
  * ambient key that an application framework merges into NodeJS.ProcessEnv.
@@ -5481,6 +5482,23 @@ export function decodeDeliveryId(o) {
   return deliveryId !== undefined ? { deliveryId } : {};
 }
 
+/** Decode additive cancellation metadata on an existing `turn` envelope. Old
+ * hosts ignore these fields and still deduplicate the original deliveryId. */
+function decodeInboxWakeCancellation(o) {
+  const hasDeliveryIds = Object.prototype.hasOwnProperty.call(o ?? {}, 'cancelDeliveryIds');
+  const hasHandledIds = Object.prototype.hasOwnProperty.call(o ?? {}, 'handledMsgIds');
+  if (!hasDeliveryIds && !hasHandledIds) return {};
+  const validIds = (value) =>
+    Array.isArray(value) && value.length > 0 && value.length <= 64 &&
+    value.every((id) => typeof id === 'string' && id.length > 0 && id.length <= 200) &&
+    new Set(value).size === value.length;
+  if (!validIds(o.cancelDeliveryIds) || !validIds(o.handledMsgIds)) return { cancelEnvelopeInvalid: true };
+  return {
+    cancelDeliveryIds: o.cancelDeliveryIds.map((id) => id.slice(0, 200)),
+    handledMsgIds: o.handledMsgIds.map((id) => id.slice(0, 200)),
+  };
+}
+
 /** The turn-provenance ledger's default TTL; delayed wake prompts must not
  *  reach a live TUI after the nonce can no longer be verified. */
 export const WAKE_PROVENANCE_MAX_AGE_MS = 600_000;
@@ -5662,6 +5680,7 @@ export function decodeControl(payload) {
         ...decodeOwnerIdentity(o),
         ...decodeDeliveryId(o),
         ...decodeProvenanceIssueTime(o),
+        ...decodeInboxWakeCancellation(o),
       };
     }
   } catch {
@@ -7652,7 +7671,7 @@ export const DELIVERY_DEDUP_TTL_MS = 30 * 60_000;
  * `isDuplicate` opportunistically sweeps expired entries on every call (bounded cost —
  * only iterates while there is something to evict); pure factory, exported for tests. */
 export function makeDeliveryDedup({ ttlMs = DELIVERY_DEDUP_TTL_MS, now = Date.now } = {}) {
-  const entries = new Map(); // deliveryId -> { state: 'pending'|'completed', at }
+  const entries = new Map(); // deliveryId -> { state, at, cancelRequested?, writeStarted?, handledMsgIds? }
   const sweep = (t) => {
     for (const [k, entry] of entries) {
       if (t - entry.at > ttlMs) entries.delete(k);
@@ -7679,13 +7698,86 @@ export function makeDeliveryDedup({ ttlMs = DELIVERY_DEDUP_TTL_MS, now = Date.no
     markPending(id) {
       if (!id) return;
       const current = entries.get(id);
-      if (current?.state === 'completed') return;
-      entries.set(id, { state: 'pending', at: now() });
+      if (current?.state === 'completed' || current?.state === 'cancelled' || current?.writeStarted) return;
+      entries.set(id, { ...current, state: 'pending', at: now() });
     },
     /** Record the point at which the gated pipeline committed its delivery. */
     markCompleted(id) {
       if (!id) return;
+      if (entries.get(id)?.state === 'cancelled') return;
       entries.set(id, { state: 'completed', at: now() });
+    },
+    /** Request cancellation for exact pending IDs. This is not a receipt: the
+     *  gate pipeline must still observe the request at its atomic first-write
+     *  boundary before the caller may settle the durable wake as suppressed. */
+    requestCancel(ids, handledMsgIds) {
+      const deliveryIds = Array.isArray(ids) ? [...new Set(ids)] : [];
+      const messageIds = Array.isArray(handledMsgIds) ? [...new Set(handledMsgIds)] : [];
+      if (!deliveryIds.length || !messageIds.length || deliveryIds.some((id) => typeof id !== 'string' || !id)) {
+        return { status: 'invalid' };
+      }
+      const t = now();
+      sweep(t);
+      const current = deliveryIds.map((id) => entries.get(id));
+      if (current.some((entry) => !entry)) return { status: 'unknown' };
+      if (current.every((entry) => entry.state === 'cancelled')) {
+        return { status: 'cancelled', deliveryIds, handledMsgIds: [...new Set(current.flatMap((entry) => entry.handledMsgIds ?? []))] };
+      }
+      if (current.some((entry) => entry.state === 'cancelled')) return { status: 'conflict' };
+      if (current.some((entry) => entry.state === 'completed')) return { status: 'completed' };
+      if (current.some((entry) => entry.writeStarted)) return { status: 'writing' };
+      for (const entry of current) {
+        entry.cancelRequested = true;
+        entry.handledMsgIds = [...new Set([...(entry.handledMsgIds ?? []), ...messageIds])];
+        entry.at = t;
+      }
+      return { status: 'requested', deliveryIds, handledMsgIds: messageIds };
+    },
+    /** Atomic last check immediately before the first PTY byte. If every ID in
+     *  this coalesced turn has an outstanding cancel request, none of its text
+     *  is written. A partial request fails open and commits the whole turn. */
+    beginWrite(ids) {
+      const deliveryIds = Array.isArray(ids) ? [...new Set(ids)] : [];
+      const current = deliveryIds.map((id) => entries.get(id));
+      if (current.length > 0 && current.every((entry) => entry?.state === 'cancelled')) {
+        return {
+          status: 'cancelled',
+          deliveryIds,
+          handledMsgIds: [...new Set(current.flatMap((entry) => entry.handledMsgIds ?? []))],
+        };
+      }
+      if (
+        current.length > 0 &&
+        current.every((entry) => entry?.state === 'pending' && !entry.writeStarted && entry.cancelRequested)
+      ) {
+        const handledMsgIds = [...new Set(current.flatMap((entry) => entry.handledMsgIds ?? []))];
+        const t = now();
+        for (const id of deliveryIds) {
+          entries.set(id, { state: 'cancelled', at: t, writeStarted: true, handledMsgIds });
+        }
+        return { status: 'cancelled', deliveryIds, handledMsgIds };
+      }
+      const t = now();
+      for (const entry of current) {
+        if (entry?.state !== 'pending') continue;
+        entry.writeStarted = true;
+        entry.cancelRequested = false;
+        entry.at = t;
+      }
+      return { status: 'write' };
+    },
+    markCancelled(id, handledMsgIds) {
+      if (!id) return;
+      const current = entries.get(id);
+      if (current?.state === 'completed') return;
+      entries.set(id, {
+        ...current,
+        state: 'cancelled',
+        at: now(),
+        writeStarted: true,
+        cancelRequested: false,
+        handledMsgIds: [...new Set(handledMsgIds ?? current?.handledMsgIds ?? [])],
+      });
     },
     /** A terminal failed/deferred pipeline is eligible for a later retry. */
     clearPending(id) {
@@ -7708,6 +7800,7 @@ export function makeDeliveryDedup({ ttlMs = DELIVERY_DEDUP_TTL_MS, now = Date.no
  * owns that exact delivery; folded IDs that the re-arm does not own stay
  * retryable. */
 export function deliveryDedupSettlement(deliveryOutcome, rearmOwnsDelivery = false) {
+  if (deliveryOutcome?.reason === 'cancelled-before-write') return 'cancelled';
   if (
     deliveryOutcome?.ok === true &&
     (deliveryOutcome.reason === 'delivered' || deliveryOutcome.reason === 'quota-recovery-delivered')
@@ -8918,6 +9011,18 @@ export function hostThroughPty(o) {
     process.stderr.write(`psu: failed to spawn '${command}' under a pty: ${e.message}\n`);
     throw e;
   }
+  let terminalOutputError = null;
+  let terminateTerminalOutput = null;
+  const terminalOutput = createTerminalOutput({
+    stdout,
+    pause: () => child.pause?.(),
+    resume: () => child.resume?.(),
+    onError: (error) => {
+      terminalOutputError = error;
+      appendHostEvent(ownerId, 'terminal-output-failed', hostErrorEvidence(error));
+      terminateTerminalOutput?.();
+    },
+  });
   if (adoptedCarryRespawn) {
     appendHostEvent(ownerId, 'host-code-adoption-child-started', {
       mode: 'carry-respawn',
@@ -9218,7 +9323,7 @@ export function hostThroughPty(o) {
   const launchOsc = fleetOscFromEnv(env);
   if (launchOsc) {
     try {
-      stdout.write(launchOsc);
+      terminalOutput.write(launchOsc);
     } catch {
       /* best-effort — a recolor must never break the session */
     }
@@ -11191,9 +11296,9 @@ export function hostThroughPty(o) {
             rows: sanePtyDim(stdout.rows, 0, 500) || undefined,
             separator: false,
           });
-          if (handoff) stdout.write(handoff);
+          if (handoff) terminalOutput.write(handoff);
         }
-        stdout.write(
+        terminalOutput.write(
           `\r\n[psu] Agent parked after ${Math.round((verdict.idleForMs ?? parkIdleMs) / 60_000)} min idle ` +
             `to free memory. Type, or send it a message, to resume the same conversation.\r\n`,
         );
@@ -11311,7 +11416,7 @@ export function hostThroughPty(o) {
     if (resumedChildExitStreak >= parkResumeExitMax) {
       appendHostEvent(ownerId, 'child-unpark-abandoned', { ...evidence, max: parkResumeExitMax });
       try {
-        stdout.write(
+        terminalOutput.write(
           `\r\n[psu] The agent exited ${resumedChildExitStreak} times in a row while resuming; ending the session.\r\n`,
         );
       } catch {
@@ -11327,7 +11432,7 @@ export function hostThroughPty(o) {
     installParkedStandIn(pending.resume);
     appendHostEvent(ownerId, 'child-unpark-failed', { ...evidence, attempt: unparkRetryAttempt });
     try {
-      stdout.write(
+      terminalOutput.write(
         `\r\n[psu] The agent exited while resuming (exit ${evidence.exitCode ?? evidence.signal ?? '?'}); ` +
           `still parked, will retry.\r\n`,
       );
@@ -11456,7 +11561,7 @@ export function hostThroughPty(o) {
     }
     if (!unparkPromise) {
       try {
-        stdout.write('\r\n[psu] Resuming the agent…\r\n');
+        terminalOutput.write('\r\n[psu] Resuming the agent…\r\n');
       } catch {
         /* advisory */
       }
@@ -11618,6 +11723,51 @@ export function hostThroughPty(o) {
           /* a detector must never be able to affect delivery */
         }
       }
+      // EI-16685: a handled inbox wake may ask to cancel the exact durable
+      // delivery while it is still behind the host's gates. This stays on the
+      // existing mode:'turn' envelope so older hosts ignore the additive fields
+      // and their deliveryId dedup remains the fail-open behavior.
+      if (msg.mode === 'turn' && (msg.cancelEnvelopeInvalid || msg.cancelDeliveryIds)) {
+        if (
+          msg.cancelEnvelopeInvalid ||
+          msg.ownerId !== ownerId ||
+          !msg.deliveryId ||
+          !Array.isArray(msg.cancelDeliveryIds) ||
+          !msg.cancelDeliveryIds.includes(msg.deliveryId) ||
+          !Array.isArray(msg.handledMsgIds) ||
+          msg.handledMsgIds.length === 0
+        ) {
+          appendHostEvent(ownerId, 'delivery-cancellation-refused', {
+            reason: 'invalid-cancellation-envelope',
+            deliveryId: msg.deliveryId ?? null,
+          });
+          return { ok: false, reason: 'cancel-envelope-invalid' };
+        }
+        const cancellation = deliveryDedup.requestCancel(msg.cancelDeliveryIds, msg.handledMsgIds);
+        if (cancellation.status === 'requested') {
+          appendHostEvent(ownerId, 'delivery-cancellation-requested', {
+            deliveryIds: cancellation.deliveryIds,
+            handledMsgIds: cancellation.handledMsgIds,
+          });
+          return { ok: true, reason: 'cancel-requested' };
+        }
+        if (cancellation.status === 'cancelled') {
+          return { ok: true, reason: 'cancelled-before-write' };
+        }
+        const refusalReason = {
+          invalid: 'cancel-envelope-invalid',
+          unknown: 'delivery-unknown',
+          conflict: 'delivery-cancellation-conflict',
+          completed: 'delivery-already-committed',
+          writing: 'delivery-already-writing',
+        }[cancellation.status] ?? 'delivery-cancellation-refused';
+        appendHostEvent(ownerId, 'delivery-cancellation-refused', {
+          reason: refusalReason,
+          deliveryIds: msg.cancelDeliveryIds,
+          handledMsgIds: msg.handledMsgIds,
+        });
+        return { ok: false, reason: refusalReason };
+      }
       const receiveProvenanceRejection = rejectWakeProvenance(msg, 'receive');
       if (receiveProvenanceRejection) return { ok: false, reason: receiveProvenanceRejection };
       // EI-19311270129974785: a RETRY of a delivery this host has already accepted
@@ -11629,6 +11779,10 @@ export function hostThroughPty(o) {
       // pre-fix sender) makes this a no-op — unchanged behavior.
       const duplicateState = deliveryDedup.state(msg.deliveryId);
       if (duplicateState) {
+        if (duplicateState === 'cancelled') {
+          appendHostEvent(ownerId, 'duplicate-cancelled-delivery-id', { deliveryId: msg.deliveryId });
+          return { ok: true, reason: 'cancelled-before-write' };
+        }
         // EI-21428742689578243: `accepted` means the FIRST copy can wait behind
         // the host's busy/composer gates for minutes. During that wait the durable
         // pump retries the SAME delivery id, and executeWake rehydrates its text
@@ -12381,6 +12535,7 @@ export function hostThroughPty(o) {
         // burst is swallowed by the TUI's paste detector — the turn never submits
         // and the human has to press Enter.
         let machineTurnSubmitted = false;
+        let firstInputWrite = true;
         const turnWriteStartedAt = Date.now();
         // WI-10004943: snapshot BEFORE the first byte, so a frame the write
         // provokes cannot be mistaken for readiness that preceded it.
@@ -12393,6 +12548,23 @@ export function hostThroughPty(o) {
             bracketedPaste: childBracketedPaste,
           })) {
             if (step.delayMs > 0) await new Promise((r) => setTimeout(r, step.delayMs));
+            if (firstInputWrite && msg.mode === 'turn') {
+              firstInputWrite = false;
+              const writeCommit = deliveryDedup.beginWrite([...coalescedDeliveryIds]);
+              if (writeCommit.status === 'cancelled') {
+                appendHostEvent(ownerId, 'delivery-cancelled-before-write', {
+                  deliveryIds: writeCommit.deliveryIds,
+                  handledMsgIds: writeCommit.handledMsgIds,
+                  bytesWritten: 0,
+                });
+                return {
+                  ok: true,
+                  reason: 'cancelled-before-write',
+                  deliveryIds: writeCommit.deliveryIds,
+                  handledMsgIds: writeCommit.handledMsgIds,
+                };
+              }
+            }
             if (msg.mode !== 'osc') quotaBlockDetector.observeInput(step.data);
             sink.write(step.data);
             if ((msg.mode === 'turn' || msg.mode === 'reset') && step.data.includes('\r')) {
@@ -12505,6 +12677,8 @@ export function hostThroughPty(o) {
             const settlement = deliveryDedupSettlement(deliveryOutcome, rearmOwnsDelivery);
             if (settlement === 'completed') {
               deliveryDedup.markCompleted(deliveryId);
+            } else if (settlement === 'cancelled') {
+              deliveryDedup.markCancelled(deliveryId, deliveryOutcome?.handledMsgIds);
             } else if (settlement === 'pending') {
               // carryRearm owns the original ID outside this promise. Keep it
               // pending so a client retry cannot race the turn or carry re-arm.
@@ -12859,7 +13033,7 @@ export function hostThroughPty(o) {
       if (normalizedLog) normalizedLog.push(raw);
       // Everything else — readiness above, the output taps below — keeps seeing
       // the RAW stream; only what reaches the owner's terminal is guarded.
-      stdout.write(scrollbackGuard.filter(raw));
+      terminalOutput.write(scrollbackGuard.filter(raw));
       // P-003: feed any live output taps (mcp-reconnect macro screen reads).
       if (outputTaps.size > 0) {
         for (const t of outputTaps) {
@@ -13053,7 +13227,7 @@ export function hostThroughPty(o) {
             rows: sanePtyDim(stdout.rows, 0, 500) || undefined,
             separator: false,
           });
-          if (handoff) stdout.write(handoff);
+          if (handoff) terminalOutput.write(handoff);
         } catch {
           /* a closing terminal is best-effort — cleanup must still finish */
         }
@@ -13130,7 +13304,10 @@ export function hostThroughPty(o) {
           }
         }
       }
-      const finishExit = () => {
+      const finishExit = async () => {
+        if (!(await terminalOutput.finish())) {
+          appendHostEvent(ownerId, 'terminal-output-drain-timeout', { timeoutMs: 1000 });
+        }
         // WI-38292: an ADOPTING exit is not the session ending — it is the same
         // session continuing in a fresh process that loaded current host code. It
         // must therefore leave by a different door: `onExit` records an ended
@@ -13166,6 +13343,8 @@ export function hostThroughPty(o) {
         finishExit();
       }
     };
+    terminateTerminalOutput = () => cleanup(1, 'SIGHUP');
+    if (terminalOutputError) terminateTerminalOutput();
     // WI-41044: a verifier window that reaches its CR cap without observing any
     // output after a resubmit is a stranded submit, not a recoverable quiet
     // interval. End the whole managed host so the discovery key, socket, and
@@ -13747,7 +13926,7 @@ export function hostThroughPty(o) {
             rows: sanePtyDim(stdout.rows, 0, 500) || undefined,
             separator: env.PAPERCUSP_PSU_PTY_RESPAWN_SEPARATOR !== '0',
           });
-          if (handoff) stdout.write(handoff);
+          if (handoff) terminalOutput.write(handoff);
         } catch {
           /* the terminal bridge is advisory — never let it break the respawn */
         }

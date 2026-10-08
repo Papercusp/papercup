@@ -211,9 +211,11 @@ import {
 import { formatSerialPhaseSummary } from "./lib/serial-phase.mjs";
 import {
   classifyAffectedBlastRadius,
+  createCgroupMemoryObserver,
   durationEstimate,
   estimateBudgetedTaskWallMs,
   formatAffectedTaskShardMarker,
+  formatCgroupMemoryObservedMarker,
   formatTaskBudgetMarker,
   formatTaskBudgetObservedMarker,
   mergeDurationHistory,
@@ -338,6 +340,10 @@ const RUN_LOG_ROOT = join(tmpdir(), "papercusp-affected-tests");
 mkdirSync(RUN_LOG_ROOT, { recursive: true });
 sweepStaleTestScratch(RUN_LOG_ROOT);
 const RUN_LOG_PATH = join(RUN_LOG_ROOT, `${RUN_TOKEN}.log`);
+// WI-10007629 (P-006): sampled on every task progress beat, reported once beside the scheduler
+// OBSERVED marker. Declared this early because emitProgress runs during the task pool, long
+// before the marker site, and a later `const` would be in its TDZ there.
+const cgroupMemoryObserver = createCgroupMemoryObserver();
 // EI-21921867787033533: `Full run log: ${RUN_LOG_PATH}` was previously emitted to
 // stdout/stderr ONLY on a clean terminal path (every `outSync`/`errSync` call further
 // down this file) — so a run that WEDGES (reaches the shared test-process admission
@@ -2428,8 +2434,14 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     // COST measured 2026-09-05 via this exact script over the whole real tree: 0.64s,
     // exit 0 (floor 500ms, 8 files baselined, 0 offenders) — so registering it cannot
     // red-pin the fleet on debt that accrued while nothing ran it.
+    //
+    // green-main-cycle-time-2026-10-08 P-004: the FILE-DURATION class judges exactly the
+    // changed test files, so they are forwarded; it reads the CI duration ledger, and an
+    // unreachable ledger is NOT CHECKED (exit 2) — reported, never a fleet red.
     workspace: "@papercusp/operator-core",
     script: "lint:test-timing-budgets",
+    forwardChangedPaths: true,
+    notCheckedIsNonGating: true,
     appliesTo: (f) =>
       f === "scripts/check-test-timing-budgets.mjs" ||
       (!f.includes("node_modules/") &&
@@ -7041,6 +7053,7 @@ function runCapturedTask(
       // run log as well as stderr. A resumed observer may only have RUN_LOG_PATH:
       // rawErrSync alone made a progressing suite look silent until phase C replayed it.
       // capturedBytes/stalledForSec, not the pulse's mtime alone, establish progress.
+      cgroupMemoryObserver.sample();
       const outcome = formatTaskOutcomeFields({ status, signal, settled });
       // Deliberately narrow: only an UNAMBIGUOUS non-clean settlement counts — a nonzero
       // numeric status, or death by signal. A settled beat carrying neither (status null,
@@ -7604,6 +7617,12 @@ for (const scheduled of initialPool.results) {
   }
 }
 outSync(formatTaskBudgetObservedMarker(initialPool.stats));
+cgroupMemoryObserver.sample();
+outSync(
+  formatCgroupMemoryObservedMarker(cgroupMemoryObserver.summary(), {
+    observedMaxWorkers: initialPool.stats.observedMaxWorkers,
+  }),
+);
 if (TASK_VERDICT_CACHE_ENABLED) {
   outSync(
     formatPassingTaskVerdictSummary(

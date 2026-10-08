@@ -239,7 +239,10 @@ describe('GoalDetailPanel', () => {
     renderPanel({ ...base, goal: { ...base.goal!, title: 'Renamed ongoing goal',
       goalPackage: { ref: 'work-on-everything' } } });
     expect(screen.getByTestId('work-on-everything-console')).toBeTruthy();
-    expect(screen.getByRole('heading', { name: 'Worklist unavailable' })).toBeTruthy();
+    // Never blank: a goal reply without its data section names that reason and offers Retry.
+    const problem = screen.getByRole('alert');
+    expect(within(problem).getByRole('heading', { name: 'Goal data did not load' })).toBeTruthy();
+    expect(within(problem).getByRole('button', { name: 'Retry' })).toBeTruthy();
     expect(screen.queryByTestId('goal-ends-section')).toBeNull();
   });
   it('shows the ongoing work overview first for standing goals and opens actual completed work', () => {

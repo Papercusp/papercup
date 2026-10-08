@@ -1,0 +1,70 @@
+{
+  "schemaVersion": 1,
+  "observedAt": "2026-10-08T22:36:22Z",
+  "workItem": "EI-25441313743672037",
+  "followUp": "WI-10007627",
+  "verdict": "failed",
+  "scope": "Filtered maintained authorized workspace browser journey; excludes other manual cases, provider readiness and shipment",
+  "case": "authorized workspace lists admitted resources without claiming a connected host",
+  "runner": {
+    "root": "/tmp/papercusp-lint-as-committed-f812c6ece2-cER5Y8",
+    "commit": "f812c6ece265ead566822ff9cde3f9897e58c9a0",
+    "cleanBeforeRun": true,
+    "testAndConfigMatchCanonical": true
+  },
+  "fixture": {
+    "root": "/dev/shm/pcv/papercusp-lint-as-committed-2e52955ace-CPorQc",
+    "commit": "2e52955ace93bf83fbabf282ce5eb7347ce0a24b",
+    "repairItem": "WI-10007623",
+    "focusedTests": "10 passed, 0 skipped, committed authority",
+    "admissionSourcesMatchingFrozenOperator": 7,
+    "provider": "WorkOS TEST",
+    "provisioning": "inert fixture; admission and ownership checks are real"
+  },
+  "portal": {
+    "buildId": "6Avr3UKWpC7WkTO1D8XcA",
+    "release": "/dev/shm/pcv/.portal-runtime/papercusp-lint-as-committed-7ab8d41d63-T1lANC/releases/6Avr3UKWpC7WkTO1D8XcA-20261008212650600-1656908-0cbc61a1",
+    "sourceRootDigest": "cbb7c257839f1110502775201f964e4f6f80355d332d2e21dee8d741deac1feb",
+    "artifactModified": false,
+    "promoted": false
+  },
+  "operator": {
+    "root": "/tmp/pcv/papercusp-lint-as-committed-c19484fc98-dZs3my",
+    "commit": "c19484fc98aa929a8596441a0ff1e52b0fe7315e",
+    "composition": "createHostedHandlerFromEnvironment",
+    "healthStatus": 200,
+    "healthSha": "c19484fc98",
+    "controlRouteMounted": true,
+    "isolation": "maintained with-test-pg.mjs operator-api private database/home; background workers disabled"
+  },
+  "results": {
+    "passed": 0,
+    "failed": 1,
+    "skipped": 0,
+    "sessionStatus": 200,
+    "selectedWorkspaceMatchesAdmission": true,
+    "controlPreflight": { "status": 200, "error": null, "rowsPresent": true },
+    "navigation": "/?app=workspaces",
+    "failingAssertion": "Selected workspaces surface is visible",
+    "testLine": 149,
+    "browserHeading": "Control plane not reachable",
+    "browserNamedError": "portal_auth_session_not_found",
+    "rootCause": "unconfirmed; browser/server-render auth transport requires investigation"
+  },
+  "evidence": {
+    "report": "/tmp/su73-r2-report-2235.json",
+    "reportSha256": "a8e9e991580f77deb5f08ee78eea2481a3136226e5d6b52be78f81370f9e6e7b",
+    "browserSnapshot": "/tmp/su73-r2-output-2235/public-manual-product-manu-f41c3-t-claiming-a-connected-host-chromium/error-context.md",
+    "browserSnapshotSha256": "f596be02b9da49539883784a6914ad77c4571d54b5a734b4a6b6b8b9aed5f4f0",
+    "portalLog": "/tmp/su73-r2-hosted-browser-2235.log",
+    "operatorLog": "/tmp/su73-r2-hosted-operator-2235.log",
+    "browserAndPortalExitCode": 1,
+    "portalShutdownObserved": true
+  },
+  "notVerified": [
+    "Workspace browser resource listing",
+    "Connected host readiness",
+    "Full manual acceptance",
+    "Production shipment"
+  ]
+}

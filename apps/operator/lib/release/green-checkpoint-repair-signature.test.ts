@@ -847,8 +847,17 @@ describe("WI-10007489 verifyRepairHead stamps the radius it EXECUTED on its verd
     }, queue);
     expect(result.kind).toBe("red");
     if (result.kind !== "red") throw new Error("unreachable");
-    expect(result.executed).toEqual(expectedFor(queue));
-    expect(result.executed).toMatchObject({ mode: "targeted", fileCount: 1, gateIds: ["lint:remaining"] });
+    // P-005: this fixture's admission ledger cannot prove a chain from the candidate to HEAD,
+    // so the round records no receipt and NAMES that as the reason (and only that reason).
+    const withheld = frozenRepairRoundExecution({
+      mode: "targeted",
+      fileKeys: [`${CORE} :: lib/a.test.ts`],
+      gateIds: ["lint:remaining"],
+      radiusMode: selectFrozenRepairAdmissionPaths(queue).mode,
+      coverageWithheld: ["selection-incomplete"],
+    });
+    expect(result.executed).toEqual(withheld);
+    expect(result.executed).toMatchObject({ ...expectedFor(queue), mode: "targeted", fileCount: 1, gateIds: ["lint:remaining"] });
 
     // The verdict's record reaches the persisted round unchanged (the wiring the gate does).
     const next = markFrozenRepairVerificationRed(queue, {
@@ -858,7 +867,7 @@ describe("WI-10007489 verifyRepairHead stamps the radius it EXECUTED on its verd
       nowMs: 10,
       executed: result.executed,
     });
-    expect(next.convergenceRounds?.at(-1)?.executed).toEqual(expectedFor(queue));
+    expect(next.convergenceRounds?.at(-1)?.executed).toEqual(withheld);
   });
 
   it("a green verdict carries the same record — a passing targeted round is still not a full-gate run", async () => {
@@ -882,5 +891,52 @@ describe("WI-10007489 verifyRepairHead stamps the radius it EXECUTED on its verd
     const full = await verifyRepairHead({}, fullOnly);
     expect(full.kind).toBe("full-run-required");
     expect(full).not.toHaveProperty("executed");
+  });
+
+  // P-005 (green-main-cycle-time-2026-10-08): a red round that records no receipt forces the
+  // next round onto the cumulative radius. The round must say WHICH condition withheld it.
+  it("P-005: a receipt is recorded iff the round withholds nothing", async () => {
+    const queue = queueWith(signature);
+    for (const gateComplete of [true, false]) {
+      const result = await verifyRepairHead({
+        runTestsAtRef: async (head, files) => ({
+          pass: false, summary: "a fails", measuredHead: head, coverageComplete: true,
+          perWorkspace: [{ workspace: CORE, files: files.map((f) => f.file), status: "fail" }],
+        }),
+        runGateAtRef: async (head, ids) => ({
+          pass: true, summary: "lint passes", measuredHead: head, coverageComplete: gateComplete,
+          perGate: ids.map((id) => ({ id, status: "pass" as const })),
+        }),
+      }, queue);
+      if (result.kind !== "red") throw new Error(`expected red, got ${result.kind}`);
+      const withheld = result.executed?.coverageWithheld ?? [];
+      expect(Boolean(result.selectiveCoverage)).toBe(withheld.length === 0);
+      if (!gateComplete) expect(withheld).toContain("gate-run-incomplete");
+      else expect(withheld).not.toContain("gate-run-incomplete");
+    }
+  });
+
+  it("P-005: the withheld reasons reach the persisted round", async () => {
+    const queue = queueWith(signature);
+    const result = await verifyRepairHead({
+      runTestsAtRef: async (head, files) => ({
+        pass: false, summary: "a fails", measuredHead: head, coverageComplete: false,
+        perWorkspace: [{ workspace: CORE, files: files.map((f) => f.file), status: "fail" }],
+      }),
+      runGateAtRef: async (head, ids) => ({
+        pass: true, summary: "lint passes", measuredHead: head, coverageComplete: true,
+        perGate: ids.map((id) => ({ id, status: "pass" as const })),
+      }),
+    }, queue);
+    if (result.kind !== "red") throw new Error(`expected red, got ${result.kind}`);
+    expect(result.executed?.coverageWithheld).toContain("file-run-incomplete");
+    const next = markFrozenRepairVerificationRed(queue, {
+      repairHead: HEAD,
+      failingTests: result.failingTests,
+      signature: result.signature,
+      nowMs: 10,
+      executed: result.executed,
+    });
+    expect(next.convergenceRounds?.at(-1)?.executed?.coverageWithheld).toEqual(result.executed?.coverageWithheld);
   });
 });

@@ -271,6 +271,115 @@ export function readTaskCgroupPidsEventMax(options = {}) {
   }
 }
 
+const BYTES_PER_MB = 1024n * 1024n;
+
+function keyedCgroupCounter(raw, key) {
+  const line = String(raw)
+    .split(/\r?\n/)
+    .map((entry) => entry.trim().split(/\s+/))
+    .find(([name]) => name === key);
+  if (!line || line.length !== 2 || !/^\d+$/.test(line[1])) return null;
+  const value = BigInt(line[1]);
+  return value > BigInt(Number.MAX_SAFE_INTEGER) ? null : value;
+}
+
+/**
+ * Read what THIS task's cgroup is actually using: `anonMb` (memory.stat `anon`, the
+ * non-reclaimable demand a worker fork really makes), `peakMb` (memory.peak, the cumulative
+ * high-water mark INCLUDING reclaimable page cache, so it overstates demand) and `oomKills`
+ * (memory.events `oom_kill`). Each field is independently null when unreadable; the whole
+ * result is null only when nothing could be read.
+ *
+ * WI-10007629 (P-006): the scheduler sizes each worker as the 4 GiB fork heap CEILING, so
+ * the reserved gate profile admits 7 workers in its 30 GiB budget. No run had ever recorded
+ * how much of that ceiling forks really use, so the cap could not be raised on evidence.
+ * This reading is that evidence.
+ */
+export function readTaskCgroupMemoryUsage(options = {}) {
+  const anon = (() => {
+    const raw = readTaskCgroupLimit("memory.stat", options);
+    return raw == null ? null : keyedCgroupCounter(raw, "anon");
+  })();
+  const peak = (() => {
+    const raw = readTaskCgroupLimit("memory.peak", options);
+    return raw != null && /^\d+$/.test(raw) ? BigInt(raw) : null;
+  })();
+  const oomKills = (() => {
+    const raw = readTaskCgroupLimit("memory.events", options);
+    return raw == null ? null : keyedCgroupCounter(raw, "oom_kill");
+  })();
+  if (anon == null && peak == null && oomKills == null) return null;
+  return {
+    anonMb: anon == null ? null : Number(anon / BYTES_PER_MB),
+    peakMb: peak == null ? null : Number(peak / BYTES_PER_MB),
+    oomKills: oomKills == null ? null : Number(oomKills),
+  };
+}
+
+/**
+ * Track the cgroup's maximum `anon` across a run. Call `sample()` on every task progress
+ * beat (a few small /sys reads) and once more at the end. `anon` is sampled, so its maximum
+ * is a LOWER bound on the true anon peak; `memory.peak` (cumulative, kernel-kept) is the
+ * upper bound. A sizing decision should sit between the two, never on either alone.
+ */
+export function createCgroupMemoryObserver({
+  read = readTaskCgroupMemoryUsage,
+} = {}) {
+  let samples = 0;
+  let maxAnonMb = null;
+  let peakMb = null;
+  let oomKillsStart;
+  let oomKillsLast = null;
+  return {
+    sample() {
+      const usage = read();
+      if (!usage) return;
+      samples++;
+      if (usage.anonMb != null) {
+        maxAnonMb = Math.max(maxAnonMb ?? 0, usage.anonMb);
+      }
+      if (usage.peakMb != null) peakMb = Math.max(peakMb ?? 0, usage.peakMb);
+      if (usage.oomKills != null) {
+        if (oomKillsStart === undefined) oomKillsStart = usage.oomKills;
+        oomKillsLast = usage.oomKills;
+      }
+    },
+    summary() {
+      return {
+        samples,
+        maxAnonMb,
+        peakMb,
+        // A DELTA over this run: the cgroup may outlive the run and carry older kills.
+        oomKills:
+          oomKillsLast == null || oomKillsStart === undefined
+            ? null
+            : oomKillsLast - oomKillsStart,
+      };
+    },
+  };
+}
+
+/**
+ * One greppable line beside AFFECTED_TESTS_SCHEDULER_OBSERVED. Deliberately a SEPARATE marker:
+ * green-checkpoint consumes the OBSERVED line by prefix and its field set stays unchanged.
+ * `anonPerWorkerMb` divides the sampled anon maximum by the observed worker peak. It includes
+ * the vitest main processes, so it OVERSTATES a single fork's share, which is the safe
+ * direction for sizing a worker token.
+ */
+export function formatCgroupMemoryObservedMarker(summary, { observedMaxWorkers } = {}) {
+  const field = (value) => (value == null ? "unknown" : String(value));
+  const perWorker =
+    summary.maxAnonMb != null && Number(observedMaxWorkers) > 0
+      ? String(Math.ceil(summary.maxAnonMb / Number(observedMaxWorkers)))
+      : "unknown";
+  return (
+    `AFFECTED_TESTS_CGROUP_MEMORY_OBSERVED samples=${summary.samples} ` +
+    `anonMaxMb=${field(summary.maxAnonMb)} peakMb=${field(summary.peakMb)} ` +
+    `oomKills=${field(summary.oomKills)} maxWorkers=${field(observedMaxWorkers)} ` +
+    `anonPerWorkerMb=${perWorker}`
+  );
+}
+
 /** Return the refused-fork delta that invalidates a red run; green runs stay authoritative. */
 export function pidsEventRefusalDelta({ start, end, hasFailures }) {
   if (!hasFailures || start == null || end == null) return 0;

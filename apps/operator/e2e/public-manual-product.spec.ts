@@ -5,6 +5,7 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { spawn } from 'node:child_process';
 import { tsImport } from 'tsx/esm/api';
+import { capturePublicManualFailure, withPublicManualFailureEvidence } from '../lib/public-manual-failure-evidence';
 
 // Actual hosted admission and served pages, using the Portal's maintained TEST
 // user kit. Explicit private-runtime inputs are required before creating data.
@@ -93,7 +94,7 @@ test.describe('manual instructions on an actual private hosted Portal', () => {
     const nonce = randomUUID();
     const user = await kit.create({ email: `manual-account-${nonce}@papercusp.com`, attemptId: `manual-account-${nonce}`,
       firstName: 'Manual TEST', lastName: 'Account', displayName: 'Manual account TEST' });
-    try {
+    await withPublicManualFailureEvidence(async () => {
       await page.context().addCookies([user.cookie(origin!)]);
       await page.goto(origin!);
       await page.getByRole('button', { name: 'Manage your account and preferences', exact: true }).click();
@@ -114,7 +115,8 @@ test.describe('manual instructions on an actual private hosted Portal', () => {
         accountTrigger: true, statusLabel: true, authenticatedSignOut: true, billingDestination: true,
         scope: 'Actual TEST account status and Billing navigation; excludes payment, organization selection and manual shipment',
       })) });
-    } finally { await user.cleanup('public manual account journey cleanup'); }
+    }, () => capturePublicManualFailure(page, info, origin!),
+    () => user.cleanup('public manual account journey cleanup'));
   });
 
   test('authorized workspace lists admitted resources without claiming a connected host', async ({ page }, info) => {
@@ -122,7 +124,7 @@ test.describe('manual instructions on an actual private hosted Portal', () => {
     const nonce = randomUUID();
     const user = await kit.create({ email: `manual-workspace-${nonce}@papercusp.com`, attemptId: `manual-workspace-${nonce}`,
       firstName: 'Manual TEST', lastName: 'Workspace', displayName: 'Manual workspace TEST', preassignedWorkspace: true });
-    try {
+    await withPublicManualFailureEvidence(async () => {
       await page.context().addCookies([user.cookie(origin!)]);
       const session = await page.request.get(new URL('/api/hosted/auth/session', origin!).href);
       expect(session.status()).toBe(200);
@@ -155,6 +157,7 @@ test.describe('manual instructions on an actual private hosted Portal', () => {
         release, sessionHasAuthorizedWorkspace: true, providerVisible: true, healthUnverifiedExplanation: true,
         scope: 'Real admission, session and served resource listing with inert provisioning transport; excludes actual provider readiness',
       })) });
-    } finally { await user.cleanup('public manual workspace journey cleanup'); }
+    }, () => capturePublicManualFailure(page, info, origin!),
+    () => user.cleanup('public manual workspace journey cleanup'));
   });
 });

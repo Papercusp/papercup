@@ -54,6 +54,10 @@ registerSystemAction('consult-expiry-sweep', async () => {
 
   await sweepExpiredConsults({
     getSql: () => getOrgPg().sql,
+    resumeRequest: async (workspaceId, conversationId) => {
+      const { continueFeedbackRequestProd } = await import('../../consult/get-feedback-prod');
+      return continueFeedbackRequestProd(workspaceId, conversationId);
+    },
     // P-003 (WI-10003199): a slot whose window closes without a post has its
     // answering session stopped here, at the transition, instead of idling until
     // the task reaper's next pass; the reaper remains the backstop.

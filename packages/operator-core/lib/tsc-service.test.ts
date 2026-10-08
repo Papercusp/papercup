@@ -18,6 +18,7 @@ import {
   TSC_SERVICE_UNIT_TEMPLATE_ENV,
   baselineWithinScope,
   checkedSetFor,
+  formatTscServiceBanner,
   lineAndCharacter,
   lineStarts,
   refreshProjectRootFiles,
@@ -366,6 +367,43 @@ describe('checkedSetFor', () => {
       readText: readTextOrNull,
     });
     expect(scope.importers).toBe(1);
+  });
+});
+
+// WI-10007624: on a mixed --files run, operator-core's leg printed "2 named file(s) are not in this
+// project's program" for apps/operator files the operator leg had already judged clean, beside its own
+// status=clean. It read as a false green. Routed files must be named as judged elsewhere.
+describe('formatTscServiceBanner', () => {
+  const response = (namedNotInProgram: string[]) =>
+    ({
+      ok: true,
+      checked: ['x'],
+      counts: { named: 2, typeReferencing: 0, importers: 0 },
+      errorCount: 0,
+      queuedMs: 1,
+      checkMs: 1,
+      snapshotAgeMs: 1,
+      namedNotInProgram,
+    }) as unknown as Parameters<typeof formatTscServiceBanner>[0];
+  const routedOp = ['apps/operator/lib/a.ts', 'apps/operator/lib/b.test.ts'];
+
+  it('names routed files as judged by their own leg, never as not-in-program', () => {
+    const lines = formatTscServiceBanner(response(routedOp), { routedAway: routedOp.map((f) => `./${f}`) }).join('\n');
+    expect(lines).not.toContain("not in this project's program");
+    expect(lines).toContain('2 named file(s) belong to another project and were judged by its own leg');
+    expect(lines).toContain('apps/operator/lib/a.ts');
+  });
+
+  it('keeps a file nobody judged on the not-in-program line', () => {
+    const lines = formatTscServiceBanner(response([...routedOp, 'stray/c.ts']), { routedAway: routedOp }).join('\n');
+    expect(lines).toContain("1 named file(s) are not in this project's program, as with the CLI: stray/c.ts");
+    expect(lines).toContain('2 named file(s) belong to another project');
+  });
+
+  it('without a routed set, behaves exactly as before', () => {
+    const lines = formatTscServiceBanner(response(['stray/c.ts'])).join('\n');
+    expect(lines).toContain("1 named file(s) are not in this project's program");
+    expect(lines).not.toContain('belong to another project');
   });
 });
 

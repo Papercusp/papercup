@@ -65,6 +65,15 @@ import { OPERATOR_STATE_SYNC_NAMES } from '../../operator-state-pg';
  * from a bug.
  */
 const PUSH_EXEMPT: Record<string, string> = {
+  // DAO drafts share onboarding's JSONB row, but mutateLaunches publishes after
+  // its row-lock write commits. Invalidating on every onboarding write would
+  // refetch the DAO view for unrelated tutorial progress. dao-launch-store.test.ts
+  // pins committed revisions and silence on refused mutations.
+  // RE-ARM: bridge this table if another writer changes dao_launches without
+  // that committed producer push, or mutateLaunches stops publishing.
+  'dao.launches :: harness_shared.setup_wizard_state':
+    'dao-launch-store mutateLaunches pushes dao.launches after its committed write; bridge the table if another DAO draft writer appears or that push is removed.',
+
   // The only production writer is consult-expert-routing-set, which pushes this
   // singleton query after its committed write. RE-ARM: bridge the table when a
   // second writer is introduced or that explicit producer push is removed.
@@ -476,7 +485,6 @@ const UNDECLARED_BASELINE: readonly string[] = [
   'voicePrefs.workspace',
   'weather.current',
   'workItems.delta24h',
-  'workItems.detail',
   'workItems.stats',
 ];
 
@@ -486,7 +494,7 @@ const UNDECLARED_BASELINE: readonly string[] = [
  * a quiet append (the DARK_FLAGS_HIGH_WATERMARK pattern, and for the same reason — that watermark
  * got silently bumped 22→24→25→26 for the same bug class until it was split and pinned).
  */
-const UNDECLARED_CEILING = 191;
+const UNDECLARED_CEILING = 182;
 
 /** Does a write to `table` invalidate `name`, through either invalidation surface? */
 function tableInvalidates(table: string, name: string): boolean {
@@ -625,6 +633,7 @@ describe('sync resolvers — the undeclared baseline is a shrink-only ratchet', 
 
   it('every registry entry either declares backingTables or is in the baseline', () => {
     const undeclared = allNames.filter((n) => !hasBackingTablesDeclaration(n)).sort();
+    const declaredInBaseline = UNDECLARED_BASELINE.filter(hasBackingTablesDeclaration);
     expect(
       undeclared,
       `The set of registry entries WITHOUT a backingTables declaration has changed.\n` +
@@ -632,7 +641,8 @@ describe('sync resolvers — the undeclared baseline is a shrink-only ratchet', 
         `Do NOT append it to UNDECLARED_BASELINE — the baseline is closed, and appending re-opens exactly ` +
         `the hole this guard exists to close.\n` +
         `  • Just declared one that used to be undeclared? Remove it from UNDECLARED_BASELINE and lower ` +
-        `UNDECLARED_CEILING to match. That is one more panel whose liveness is now provable.`,
+        `UNDECLARED_CEILING to match. That is one more panel whose liveness is now provable.\n` +
+        `  Already declared baseline entries: [${declaredInBaseline.join(', ')}]`,
     ).toEqual([...UNDECLARED_BASELINE].sort());
   });
 

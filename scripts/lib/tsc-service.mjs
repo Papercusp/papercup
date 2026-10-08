@@ -566,10 +566,17 @@ export async function typecheckViaService({ root, project, files, label, log = (
  * The line a service-served run prints, so a reader knows this verdict came from the service and
  * how far it reached.
  *
+ * WI-10007624: a named file this leg ROUTED to its owning leg is also, necessarily, outside this
+ * project's program. Printing it under "not in this project's program" beside a `status=clean`
+ * reads as a false green (a reader concluded the operator files went unchecked when the operator
+ * leg had judged them). Pass the routed set, and those files get their own line saying where they
+ * were judged; only files nobody judged stay on the not-in-program line.
+ *
  * @param {Extract<TscServiceResponse, { ok: true }>} response
+ * @param {{ routedAway?: Iterable<string> }} [opts] repo-relative files a delegate leg already judged
  * @returns {string[]}
  */
-export function formatTscServiceBanner(response) {
+export function formatTscServiceBanner(response, { routedAway = [] } = {}) {
   const lines = [
     `TSC_SERVICE used=1 checked=${response.checked.length} named=${response.counts.named} ` +
       `typeReferencing=${response.counts.typeReferencing} importers=${response.counts.importers} ` +
@@ -579,10 +586,19 @@ export function formatTscServiceBanner(response) {
       `importers — not the whole project. A transitive importer is judged by the bare run; ` +
       `${TSC_SERVICE_ENV}=0 forces the full compile.)`,
   ];
-  if (response.namedNotInProgram.length > 0) {
+  const routed = new Set([...routedAway].map((file) => String(file).replace(/^\.\//, '')));
+  const delegated = response.namedNotInProgram.filter((file) => routed.has(file));
+  const unjudged = response.namedNotInProgram.filter((file) => !routed.has(file));
+  if (unjudged.length > 0) {
     lines.push(
-      `   (${response.namedNotInProgram.length} named file(s) are not in this project's program, as with the CLI: ` +
-        `${response.namedNotInProgram.slice(0, 5).join(', ')}${response.namedNotInProgram.length > 5 ? ', …' : ''})`,
+      `   (${unjudged.length} named file(s) are not in this project's program, as with the CLI: ` +
+        `${unjudged.slice(0, 5).join(', ')}${unjudged.length > 5 ? ', …' : ''})`,
+    );
+  }
+  if (delegated.length > 0) {
+    lines.push(
+      `   (${delegated.length} named file(s) belong to another project and were judged by its own leg, ` +
+        `counted as filesRoutedAway: ${delegated.slice(0, 5).join(', ')}${delegated.length > 5 ? ', …' : ''})`,
     );
   }
   return lines;

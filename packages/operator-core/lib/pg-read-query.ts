@@ -216,6 +216,24 @@ interface SchemaHintRow {
   data_type: string;
 }
 
+// Optional SQL advisories and error enrichments must not outlive the primary
+// `dev:pg_query` deadline. Keep their database work in a read-only transaction
+// with a short server-side statement timeout as well as a bounded acquire.
+// These hints fail open; the caller's original query result/error remains the
+// authoritative response when diagnostic metadata is unavailable.
+const PG_READ_ADVISORY_TIMEOUT_MS = 1_000;
+
+function boundedAdvisoryRead<T>(
+  read: (tx: OrgSql) => Promise<T>,
+  client?: OrgSql,
+): Promise<T> {
+  return boundedPgReadTxn(read, {
+    ...(client ? { client } : {}),
+    timeoutMs: PG_READ_ADVISORY_TIMEOUT_MS,
+    acquireTimeoutMs: PG_READ_ADVISORY_TIMEOUT_MS,
+  });
+}
+
 /** Prefer the schema an agent almost certainly meant when a BARE table name
  *  matches several (per-harness schema clones make this common). */
 function preferSchema(a: string, b: string): number {
@@ -231,15 +249,14 @@ async function readReferencedColumns(
 ): Promise<Map<string, { schema: string; columns: string[]; typedColumns: string[] }>> {
   const qualified = tables.filter((t) => t.includes('.'));
   const bare = tables.filter((t) => !t.includes('.'));
-  const sql = client ?? getOrgPg().sql;
-  const rows = (await sql`
+  const rows = (await boundedAdvisoryRead((sql) => sql`
     SELECT table_schema, table_name, column_name, data_type
       FROM information_schema.columns
      WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
        AND (lower(table_schema || '.' || table_name) = ANY(${qualified})
             OR lower(table_name) = ANY(${bare}))
      ORDER BY table_schema, table_name, ordinal_position
-  `) as unknown as SchemaHintRow[];
+  `, client)) as unknown as SchemaHintRow[];
 
   // Group by schema.table, then pick ONE schema per referenced name.
   const bySchemaTable = new Map<string, { schema: string; table: string; columns: string[]; typedColumns: string[] }>();
@@ -1162,7 +1179,6 @@ export async function buildJsonbPathRedirect(
   }
   if (!candidates.length) return null;
 
-  const sql = opts.client ?? getOrgPg().sql;
   for (const c of candidates.slice(0, JSONB_PROBE_MAX_COLUMNS)) {
     // Depth 1 (`payload -> key`) and depth 2 (`payload -> parent -> key`) in one
     // statement. Two levels is where the real folds live (`payload._ei.severity`)
@@ -1182,7 +1198,10 @@ export async function buildJsonbPathRedirect(
       `WHERE jsonb_typeof(s.v) = 'object' AND jsonb_typeof(e.value) = 'object' ` +
       `AND jsonb_exists(e.value, $1) LIMIT 1) ` +
       `ORDER BY depth LIMIT 1`;
-    const rows = (await sql.unsafe(probe, [column]).catch(() => [])) as unknown as Array<{
+    const rows = (await boundedAdvisoryRead(
+      (tx) => tx.unsafe(probe, [column]).catch(() => []),
+      opts.client,
+    )) as unknown as Array<{
       depth: number;
       parent: string | null;
     }>;
@@ -1295,8 +1314,10 @@ async function probeTenantPopulation(
   }
 
   try {
-    const sql = client ?? getOrgPg().sql;
-    const rows = (await sql.unsafe(`SELECT ${selects.join(', ')}`, params)) as unknown as Array<{
+    const rows = (await boundedAdvisoryRead(
+      (tx) => tx.unsafe(`SELECT ${selects.join(', ')}`, params),
+      client,
+    )) as unknown as Array<{
       has_rows: boolean;
       ws_hit?: boolean;
       hs_hit?: boolean;

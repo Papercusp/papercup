@@ -49,8 +49,15 @@ async function scopeFixture(page: Page) {
 }
 
 
-for (const kind of ['plans', 'tea'] as const) {
-  test(`declared ${kind} collection preserves owner order and selection through reload`, async ({ page }) => {
+// Each contract gets the existing bounded test budget. Three document reloads
+// must not spend the refusal guard's deadline before its write even starts.
+const collectionJourneys = (['plans', 'tea'] as const).flatMap((kind) =>
+  (['priority', 'selection', 'refusal'] as const).map((journey) => ({ kind, journey })));
+for (const { kind, journey } of collectionJourneys) {
+  const contract = journey === 'priority' ? 'preserves owner order through reload'
+    : journey === 'selection' ? 'preserves exclusion and reselection through reload'
+      : 'rejects a stale save without changing selection';
+  test(`declared ${kind} collection ${contract}`, async ({ page }) => {
     const projects = await scopeFixture(page);
     const goal = { id: `collection-${kind}`, title: `${kind} collection`, status: 'active', standing: kind === 'plans' };
     const property = kind === 'plans' ? 'worklist' : 'tea_choices';
@@ -66,10 +73,14 @@ for (const kind of ['plans', 'tea'] as const) {
           order: kind === 'plans' ? 'priority' : 'display', selectable: true, defaultSelected: true } },
       [policyName]: { datatype: 'ordered-selection-policy', default: { order: [], excluded: [] }, editable_by: 'owner' },
     };
-    let policy: OrderedSelectionPolicy = { order: [ids[0], dormant], excluded: [dormant] };
+    let policy: OrderedSelectionPolicy = {
+      order: journey === 'priority' ? [ids[0], dormant] : [ids[1], ids[0], ids[2], ...discoveredExtras, dormant],
+      excluded: [dormant],
+    };
     let version = 4;
     let refuseSave = false;
     const writes: Array<{ value: OrderedSelectionPolicy; expectedVersion: number }> = [];
+    const refusedWrites: Array<{ value: OrderedSelectionPolicy; expectedVersion: number }> = [];
     const reads: Array<{ version: number; order: string[] }> = [];
     const unreadableReadbacks: string[] = [];
     const invalidations: Array<{ before: number; after: number }> = [];
@@ -97,6 +108,7 @@ for (const kind of ['plans', 'tea'] as const) {
       expect(posted.property).toBe(policyName);
       expect(posted).not.toHaveProperty('provenance');
       if (refuseSave || posted.expectedVersion !== version) {
+        refusedWrites.push(posted);
         await route.fulfill({ status: 409, contentType: 'application/json', body: JSON.stringify({ error: 'stale', actualVersion: version }) });
         return;
       }
@@ -163,31 +175,50 @@ for (const kind of ['plans', 'tea'] as const) {
       await waitForHud(editor);
     }
     await expect(editor.getByText('Waiting for dependency')).toBeVisible();
-    await saveWithReadback(() => editor.getByRole('button', { name: 'Move Second choice up' }).click());
-    expect(policy.order).toEqual([ids[1], ids[0], ids[2], ...discoveredExtras, dormant]);
-    await reloadWithReadback();
-    await expect(editor.locator('li').first()).toContainText('Second choice');
-    await saveWithReadback(() => editor.getByRole('checkbox', { name: 'Include Second choice' }).click());
-    expect(policy.excluded).toEqual([dormant, ids[1]]);
-    await reloadWithReadback();
-    await expect(editor.getByRole('checkbox', { name: 'Include Second choice' })).not.toBeChecked();
-    await expect(editor.locator('li').first()).toContainText('Excluded');
-    const afterExclusion = selection();
-    if (!afterExclusion.ok || !afterExclusion.configured) throw new Error('collection unavailable');
-    expect(afterExclusion.items.filter((row) => row.selected).map((row) => row.id)).toEqual([ids[0], ids[2], ...discoveredExtras]);
+    if (journey === 'priority') {
+      await saveWithReadback(() => editor.getByRole('button', { name: 'Move Second choice up' }).click());
+      expect(policy.order).toEqual([ids[1], ids[0], ids[2], ...discoveredExtras, dormant]);
+      await reloadWithReadback();
+      await expect(editor.locator('li').first()).toContainText('Second choice');
+      expect(policy.excluded).toEqual([dormant]);
+      expect(writes.map((write) => write.expectedVersion)).toEqual([4]);
+      expect(invalidations).toEqual([{ before: 4, after: 5 }]);
+      expect(version).toBe(5);
+    } else if (journey === 'selection') {
+      await expect(editor.locator('li').first()).toContainText('Second choice');
+      await saveWithReadback(() => editor.getByRole('checkbox', { name: 'Include Second choice' }).click());
+      expect(policy.excluded).toEqual([dormant, ids[1]]);
+      await reloadWithReadback();
+      await expect(editor.getByRole('checkbox', { name: 'Include Second choice' })).not.toBeChecked();
+      await expect(editor.locator('li').first()).toContainText('Excluded');
+      const afterExclusion = selection();
+      if (!afterExclusion.ok || !afterExclusion.configured) throw new Error('collection unavailable');
+      expect(afterExclusion.items.filter((row) => row.selected).map((row) => row.id)).toEqual([ids[0], ids[2], ...discoveredExtras]);
+      if (kind === 'plans') await expect(editor.getByRole('checkbox', { name: 'Include Maintained rubric' })).toBeChecked();
+      await saveWithReadback(() => editor.getByRole('checkbox', { name: 'Include Second choice' }).click());
+      await reloadWithReadback();
+      await expect(editor.getByRole('checkbox', { name: 'Include Second choice' })).toBeChecked();
+      await expect(editor.locator('li').first()).toContainText('Second choice');
+      expect(policy.order).toEqual([ids[1], ids[0], ids[2], ...discoveredExtras, dormant]);
+      expect(policy.excluded).toEqual([dormant]);
+      expect(writes.map((write) => write.expectedVersion)).toEqual([4, 5]);
+      expect(invalidations).toEqual([{ before: 4, after: 5 }, { before: 5, after: 6 }]);
+      expect(version).toBe(6);
+    } else {
+      refuseSave = true;
+      await editor.getByRole('checkbox', { name: 'Include First choice' }).click();
+      await expect(editor.getByRole('alert')).toContainText('stale');
+      await expect(editor.getByRole('checkbox', { name: 'Include First choice' })).toBeChecked();
+      expect(refusedWrites).toHaveLength(1);
+      expect(refusedWrites[0].expectedVersion).toBe(4);
+      expect(refusedWrites[0].value.excluded).toContain(ids[0]);
+      expect(writes).toEqual([]);
+      expect(invalidations).toEqual([]);
+      expect(policy.excluded).toEqual([dormant]);
+      expect(version).toBe(4);
+    }
     if (kind === 'plans') await expect(editor.getByRole('checkbox', { name: 'Include Maintained rubric' })).toBeChecked();
-    await saveWithReadback(() => editor.getByRole('checkbox', { name: 'Include Second choice' }).click());
-    await reloadWithReadback();
-    await expect(editor.getByRole('checkbox', { name: 'Include Second choice' })).toBeChecked();
-    expect(policy.excluded).toEqual([dormant]);
-    expect(writes.map((write) => write.expectedVersion)).toEqual([4, 5, 6]);
-    expect(invalidations).toEqual([{ before: 4, after: 5 }, { before: 5, after: 6 }, { before: 6, after: 7 }]);
-    refuseSave = true;
-    await editor.getByRole('checkbox', { name: 'Include First choice' }).click();
-    await expect(editor.getByRole('alert')).toContainText('stale');
-    await expect(editor.getByRole('checkbox', { name: 'Include First choice' })).toBeChecked();
-    expect(version).toBe(7);
-    await page.screenshot({ path: test.info().outputPath(`collection-${kind}.png`) });
+    await page.screenshot({ path: test.info().outputPath(`collection-${kind}-${journey}.png`) });
     sync.assertServed('goals.list', 'goals.detail');
   });
 }

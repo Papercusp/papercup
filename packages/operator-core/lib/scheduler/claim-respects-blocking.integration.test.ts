@@ -102,17 +102,17 @@ async function blockByFeature(blockedId: string, blockerId: string) {
 /** The MAINTAINED sidecar (migration 379) view of readiness: true ⇒ a row exists ⇒ NOT ready.
  *  This is exactly the membership the SCHEDULER_MAINTAINED_READY flag's anti-join probes. */
 async function sidecarSaysBlocked(id: string): Promise<boolean> {
-  const rows = (await db.sql`
+  const rows = await db.sql`
     SELECT 1 FROM harness_shared.work_item_blocked
-     WHERE workspace_id = ${WS} AND harness_slug = ${H} AND feature_id = ${id} LIMIT 1`) as unknown[];
+     WHERE workspace_id = ${WS} AND harness_slug = ${H} AND feature_id = ${id} LIMIT 1`;
   return rows.length > 0;
 }
 
 /** The inline-predicate ORACLE (migration 379's work_item_is_blocked == the live claim's
  *  NOT EXISTS). The maintained sidecar must AGREE with it at every step. */
 async function oracleSaysBlocked(id: string): Promise<boolean> {
-  const rows = (await db.sql`
-    SELECT harness_shared.work_item_is_blocked(${H}, ${id}, 'default') AS blocked`) as Array<{ blocked: boolean }>;
+  const rows = await db.sql<{ blocked: boolean }[]>`
+    SELECT harness_shared.work_item_is_blocked(${H}, ${id}, 'default') AS blocked`;
   return rows[0]!.blocked === true;
 }
 

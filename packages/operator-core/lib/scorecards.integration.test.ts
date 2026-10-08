@@ -1042,6 +1042,33 @@ describe('readScorecardEvidence audit-target status (EI-24583166035391772) — r
         )`;
     };
     const ratings = { honesty: { rating: 'pass', evidence: 'ran the probe' } };
+    const replayRecipe = {
+      schemaVersion: 1,
+      evaluator: 'plans:evaluate-spec-test-adequacy',
+      classRef: 'plan-class-risk-floor',
+      args: {
+        harness: 'papercusp',
+        slug: 'test-rerun-recipe-plan',
+        classRef: 'plan-class-risk-floor',
+        specIds: ['SPEC-001'],
+        specRevision: 1,
+        specFingerprint: 'a'.repeat(64),
+        includeDraft: true,
+      },
+      selection: {
+        planSlug: 'test-rerun-recipe-plan',
+        specId: 'SPEC-001',
+        specRevision: 1,
+        specFingerprint: 'a'.repeat(64),
+        evidence: [{ evidenceKind: 'test-run', evidenceRef: 'run:recipe-reader' }],
+      },
+      current: { supplied: false, fingerprints: [] },
+      derivation: {
+        kind: 'listSpecEvidence.currentness',
+        classifier: 'classifySpecEvidenceCurrentness',
+        unknownWhenMissing: true,
+      },
+    };
     await insert('EI-audit-target-plain', { ratings }, '2026-06-21T10:00:00Z');
     await insert('EI-audit-target-old', { ratings }, '2026-06-21T10:01:00Z');
     await insert('EI-audit-target-new', { ratings, supersedes: 'EI-audit-target-old' }, '2026-06-21T10:02:00Z');
@@ -1053,6 +1080,7 @@ describe('readScorecardEvidence audit-target status (EI-24583166035391772) — r
       ratings,
       subject: { kind: 'rubric', ref: 'no-such-rubric-for-audit-target' },
     }, '2026-06-21T10:04:00Z');
+    await insert('EI-audit-target-rerun-recipe', { ratings, rerunRecipe: replayRecipe }, '2026-06-21T10:04:30Z');
 
     const bindingWorkItemId = 'WI-audit-target-binding';
     const bindingPlanSlug = 'test-audit-target-binding';
@@ -1141,6 +1169,7 @@ describe('readScorecardEvidence audit-target status (EI-24583166035391772) — r
     expect((await read('EI-audit-target-plain')).rubricCurrentness).toMatchObject({
       state: 'unknown', reason: 'recorded-identity-missing',
     });
+    expect((await read('EI-audit-target-rerun-recipe')).rerunRecipe).toEqual(replayRecipe);
 
     const old = await read('EI-audit-target-old');
     expect(old.supersededBy).toBe('EI-audit-target-new');

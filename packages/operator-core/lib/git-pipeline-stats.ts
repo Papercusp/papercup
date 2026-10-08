@@ -1168,6 +1168,8 @@ export function pinProvenGateCorrection(
 
 /** Options for `gitPipelineSnapshot` (overview-tab-expansion P-001). */
 export interface GitPipelineSnapshotOpts {
+  /** Optional source-only progress for isolated preflight diagnostics; never includes row data. */
+  onProgress?: (stage: string) => void;
   /**
    * Permit the release-gate git read to lazily boot the spawner sidecar. Pure
    * diagnostic compositions pass false so a standalone read never creates an
@@ -1371,6 +1373,17 @@ export async function gitPipelineSnapshot(
   opts: GitPipelineSnapshotOpts = {},
 ): Promise<GitPipelineSnapshot> {
   const { sql } = getOrgPg();
+  const observe = async <T>(name: string, read: PromiseLike<T>): Promise<T> => {
+    opts.onProgress?.(name + ':start');
+    try {
+      const value = await read;
+      opts.onProgress?.(name + ':ready');
+      return value;
+    } catch (error) {
+      opts.onProgress?.(name + ':failed');
+      throw error;
+    }
+  };
 
   // EI-21544761852770720: every read below is independent.  Starting the
   // routines read, conflict read, window summaries, and deploy snapshot in
@@ -1379,13 +1392,13 @@ export async function gitPipelineSnapshot(
   // reads could intermittently cross it.  Start the complete fan-out before
   // consuming any result; the derivation below still observes exactly one
   // settled result from each source and retains every existing fail-soft path.
-  const routineRowsPromise = sql<RoutineRow[]>`
+  const routineRowsPromise = observe('routines', sql<RoutineRow[]>`
     SELECT name, active, trigger_config, metadata, last_fired_at, next_fire_at, group_slug
       FROM harness_shared.routines
      WHERE install_slug = ${slug}
        AND name IN ('git-sync', 'green-checkpoint', 'release-trigger')
-  `.catch(() => [] as RoutineRow[]);
-  const openConflictRowsPromise = sql<
+  `.catch(() => [] as RoutineRow[]));
+  const openConflictRowsPromise = observe('conflicts', sql<
     {
       escalation: Record<string, unknown>;
       mtime_ms: unknown;
@@ -1398,15 +1411,15 @@ export async function gitPipelineSnapshot(
        AND (escalation::jsonb ->> 'kind') = 'git-sync-conflict'
      ORDER BY mtime_ms DESC
      LIMIT 1
-  `.catch(() => []);
-  const dayPromise = summarizePipelineWindow(slug, 24 * 60 * 60);
-  const weekPromise = summarizePipelineWindow(slug, 7 * 24 * 60 * 60);
-  const recentPromise = recentPipelineEvents(slug, 25);
-  const deployPromise = devDeployState({ useSpawnerSidecar: opts.useSpawnerSidecar });
-  const fireHistoryPromise = resolveWorkspaceForHarness(slug)
+  `.catch(() => []));
+  const dayPromise = observe('day', summarizePipelineWindow(slug, 24 * 60 * 60));
+  const weekPromise = observe('week', summarizePipelineWindow(slug, 7 * 24 * 60 * 60));
+  const recentPromise = observe('recent', recentPipelineEvents(slug, 25));
+  const deployPromise = observe('deploy', devDeployState({ useSpawnerSidecar: opts.useSpawnerSidecar }));
+  const fireHistoryPromise = observe('fire-history', resolveWorkspaceForHarness(slug)
     .then((workspaceId) => reconstructGateFireDays(sql, { workspaceId, installSlug: slug }, { sinceDays: 1 }))
     .then(summarizeGateFireHistory)
-    .catch(() => null);
+    .catch(() => null));
 
   // The three pipeline routines + git-sync's latest metadata, in one read.
   const routineRows = await routineRowsPromise;
@@ -1566,8 +1579,8 @@ export async function gitPipelineSnapshot(
   // Keep the release override reader out of this module's import graph. Pot
   // wake tools import pipeline types transitively and must perform no DB I/O
   // merely by loading their definitions.
-  const { releaseCheckpointConfig, releaseCheckpointConfigReady } = await import('./release-checkpoint-config');
-  await releaseCheckpointConfigReady;
+  const { releaseCheckpointConfig, releaseCheckpointConfigReady } = await observe('config-import', import('./release-checkpoint-config'));
+  await observe('config-ready', releaseCheckpointConfigReady);
   const stallConfig = releaseCheckpointConfig();
   const inRoutineStalled = deriveInRoutineGateStalled({
     consecutiveReds: measuredConsecutiveReds,

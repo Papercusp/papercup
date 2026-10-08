@@ -58,6 +58,18 @@ export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, 
     assert.ok(ms === undefined || Number.isSafeInteger(ms) && ms > 0, 'deadlines must be positive safe integers');
   }
   assert.ok(!deadlines || !deadlines.executeMaxMs || deadlines.executeMaxMs >= deadlines.executeMs);
+  let ownsProcessGroup = false;
+  if (process.platform === 'linux' && child.pid) {
+    try {
+      const stat = readFileSync(`/proc/${child.pid}/stat`, 'utf8');
+      ownsProcessGroup = Number(stat.slice(stat.lastIndexOf(')') + 2).split(/\s+/)[2]) === child.pid;
+    } catch { /* child already exited; retain its observed exit */ }
+  }
+  const killWorker = (signal: NodeJS.Signals) => {
+    if (ownsProcessGroup && child.pid) {
+      try { process.kill(-child.pid, signal); } catch { /* owned group already exited */ }
+    } else child.kill(signal);
+  };
   const fd = openSync(join(evidenceDir, 'worker.log'), 'wx');
   const grace = options.killGraceMs ?? TEST_FILE_SCOPE_STOP_TIMEOUT_SEC * 1000 + 5_000 + 30_000;
   const drainGrace = options.drainGraceMs ?? options.killGraceMs ?? 5_000;
@@ -134,9 +146,9 @@ export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, 
       if (timedOut || settled) return;
       timedOut = true;
       timeoutPhase = phase;
-      child.kill('SIGTERM');
+      killWorker('SIGTERM');
       forceTimer = setTimeout(() => {
-        if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+        if (child.exitCode === null && child.signalCode === null) killWorker('SIGKILL');
         // Pipe drainage begins at observed exit, not when a signal was merely
         // sent. Otherwise a delayed kernel exit loses its actual signal/code.
         // Keep non-acknowledgement bounded and explicitly uncertified.

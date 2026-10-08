@@ -215,6 +215,40 @@ export function readTaskCgroupPidsEventMax(input?: {
   cgroupRoot?: string;
 }): number | null;
 
+/** THIS task cgroup's memory use; each field is null when its file is unreadable. */
+export interface TaskCgroupMemoryUsage {
+  /** memory.stat `anon`: the non-reclaimable demand. */
+  anonMb: number | null;
+  /** memory.peak: the cumulative high-water mark, INCLUDING reclaimable page cache. */
+  peakMb: number | null;
+  /** memory.events `oom_kill`: cumulative over the cgroup's life. */
+  oomKills: number | null;
+}
+
+export function readTaskCgroupMemoryUsage(input?: {
+  readFile?: (path: string, encoding: string) => string | Buffer;
+  procCgroupPath?: string;
+  cgroupRoot?: string;
+}): TaskCgroupMemoryUsage | null;
+
+export interface CgroupMemoryObservation {
+  samples: number;
+  /** Sampled maximum, so a LOWER bound on the true anon peak. */
+  maxAnonMb: number | null;
+  peakMb: number | null;
+  /** oom_kill delta over this run (not the cgroup's lifetime count). */
+  oomKills: number | null;
+}
+
+export function createCgroupMemoryObserver(input?: {
+  read?: () => TaskCgroupMemoryUsage | null;
+}): { sample(): void; summary(): CgroupMemoryObservation };
+
+export function formatCgroupMemoryObservedMarker(
+  summary: CgroupMemoryObservation,
+  input?: { observedMaxWorkers?: number | null },
+): string;
+
 export function pidsEventRefusalDelta(input: {
   start: number | null;
   end: number | null;

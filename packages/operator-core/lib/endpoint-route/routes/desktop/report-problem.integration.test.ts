@@ -532,9 +532,13 @@ describe('desktop Report a problem door, end to end', () => {
     await setWorkItemState(id, 'done', { harness: 'papercusp', by: 'su-p023-fixer',
       completionRef, completionAuthority: 'committed', completionEvidence: {
         verifiedHow: 'integration', testsRun: 'CSV reproduction fixture', testResult: 'passed',
-        settlementManifest: { repositoryRoot: '/p023-fixture', contentIdentity: [
-          { path: 'src/export.ts', headBlobSha: fixBlob, workingTreeBlobSha: fixBlob },
-        ] },
+        // A complete generation-1 receipt (the manifest type gained version/generation/
+        // evidenceHash/headSha/normalizedPaths); the hash is a fixture value, not derived.
+        settlementManifest: { version: 1, generation: 1, evidenceHash: 'e'.repeat(64),
+          repositoryRoot: '/p023-fixture', headSha: 'a'.repeat(40), normalizedPaths: ['src/export.ts'],
+          contentIdentity: [
+            { path: 'src/export.ts', headBlobSha: fixBlob, workingTreeBlobSha: fixBlob },
+          ] },
       } });
     expect(await readReporterStatus({ id, harness: 'papercusp', workspaceId: WORKSPACE }, db.adminSql))
       .toMatchObject({ sourceId: id, canonicalId: id, status: 'awaiting-release', release: null });

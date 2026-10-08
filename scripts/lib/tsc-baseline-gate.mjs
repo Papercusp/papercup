@@ -2836,6 +2836,8 @@ export async function runTscBaselineGate({
   // remainder, so `status` must stay the parent's own word (`clean`/`regressed`) while the
   // marker still discloses that part of the answer came from somewhere else.
   let filesRoutedAway = 0;
+  /** WI-10007624: the routed files themselves, so the service banner can say where they were judged. */
+  let routedAwayFiles = [];
 
   // EI-19323399466378077 — captured HERE, before anything else runs, so it is the run's actual
   // start (not the compile's) and survives into the exit-hook closure below regardless of which
@@ -3029,6 +3031,7 @@ export async function runTscBaselineGate({
             process.exit(routedExit);
           }
           filesRoutedAway = uncovered.length;
+          routedAwayFiles = uncovered;
           filesUnchecked = 0;
         }
       }
@@ -3205,7 +3208,7 @@ export async function runTscBaselineGate({
   if (served !== null) {
     tscOutput = served.output;
     tscThrew = served.errorCount > 0;
-    for (const line of formatTscServiceBanner(served)) console.log(line);
+    for (const line of formatTscServiceBanner(served, { routedAway: routedAwayFiles })) console.log(line);
   } else {
     const pcHeavyPath = resolve(root, 'scripts', 'pc-heavy.sh');
     const freshAfter = coalesceWatermarkFor({ root, files: explicitFiles, updateFlag });

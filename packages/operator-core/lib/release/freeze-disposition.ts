@@ -29,6 +29,7 @@ import {
   type FrozenCandidateRepairQueueRead,
   type FrozenRepairLatency,
   type FrozenRepairLatencySource,
+  type FrozenRepairLatencyStampKey,
   frozenRepairLatency,
 } from './frozen-candidate-repair-queue';
 
@@ -232,7 +233,23 @@ function readRepairLatency(value: unknown): FrozenRepairLatency | null {
       lastResumeRunStartedAtMs: numOrNull(stamps['lastResumeRunStartedAtMs']),
       lastVerdictAtMs: numOrNull(stamps['lastVerdictAtMs']),
     },
+    ...readInadmissibleStamps(r['inadmissibleStamps']),
   };
+}
+
+const LATENCY_STAMP_KEYS: ReadonlySet<string> = new Set<FrozenRepairLatencyStampKey>([
+  'fixerSpawnedAtMs',
+  'lastAdmittedAtMs',
+  'lastResumeRunStartedAtMs',
+  'lastVerdictAtMs',
+]);
+
+/** WI-10007622: carry the derivation's rejected-stamp marker through the read-side guard, so a
+ *  poisoned clock stays visible on `gate_health` instead of vanishing into a bare `null`. */
+function readInadmissibleStamps(value: unknown): { inadmissibleStamps?: FrozenRepairLatencyStampKey[] } {
+  if (!Array.isArray(value)) return {};
+  const keys = value.filter((k): k is FrozenRepairLatencyStampKey => typeof k === 'string' && LATENCY_STAMP_KEYS.has(k));
+  return keys.length > 0 ? { inadmissibleStamps: keys } : {};
 }
 
 /**

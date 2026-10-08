@@ -7,6 +7,17 @@ import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 import { EventEmitter } from 'node:events';
 
+/** Read the instance exported by the maintained verifier, never the caller's operator. */
+export async function readNativeHostHealth(env = process.env) {
+  if (!env.VERIFY_TAURI_DEV_URL) throw new Error('Native health proof requires VERIFY_TAURI_DEV_URL');
+  const origin = new URL(env.VERIFY_TAURI_DEV_URL).origin;
+  const response = await fetch(new URL('/api/health', origin), {
+    signal: AbortSignal.timeout(10_000), redirect: 'error',
+  });
+  if (response.status !== 200) throw new Error('Native host health read failed: HTTP ' + response.status);
+  return { origin, health: await response.json() };
+}
+
 export function prepareIdentityFixture(directory) {
   mkdirSync(directory, { recursive: true, mode: 0o700 });
   const pair = () => {

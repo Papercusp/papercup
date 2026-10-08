@@ -143,6 +143,7 @@ const scorecardEvidenceSchema = z.object({
   rubricRevision: z.number().optional(),
   rubricMeaningRevision: z.number().optional(),
   criteriaHash: z.string().optional(),
+  rerunRecipe: z.record(z.string(), z.unknown()).optional(),
   rubricCurrentness: scorecardRubricCurrentnessSchema,
   evidenceFingerprint: z.string().optional(),
   sourceHive: z.string().optional(),
@@ -327,7 +328,7 @@ export default defineTool({
   name: 'scorecards:get',
   profile: 'engineer',
   description:
-    'Read ONE rubric scorecard by issue id using an evidence-first projection. Pass issueId (preferred) or id (compatibility alias); issueId wins. Stored evidenceFingerprint identifies the evidence scope. Small cards return exact criterion evidence. Oversized cards return evidenceRead.complete:false and a criterion index; when the index is paged, follow evidenceRead.next until scope is no longer criterion-index. Then read each criterion and concatenate its pages before grading. Never interpret an index or incomplete page as missing evidence. criterionKey narrows the existing read; indexOffset resumes an index page; evidenceOffset resumes a criterion page. History-only payload is omitted.',
+    'Read ONE rubric scorecard by issue id using an evidence-first projection. Pass issueId (preferred) or id (compatibility alias); issueId wins. Stored evidenceFingerprint identifies the evidence scope. A validated rerunRecipe is included when present, including on criterion-index and criterion pages. Small cards return exact criterion evidence. Oversized cards return evidenceRead.complete:false and a criterion index; when the index is paged, follow evidenceRead.next until scope is no longer criterion-index. Then read each criterion and concatenate its pages before grading. Never interpret an index or incomplete page as missing evidence. criterionKey narrows the existing read; indexOffset resumes an index page; evidenceOffset resumes a criterion page. History-only payload is omitted.',
   guidance: {
     when: 'You are auditing one existing scorecard and must re-run the probe stated in every criterion evidence string. Pass the scorecard issueId returned by scorecards:list or a grading-audit dispatch reservation; generic id-based callers may use id as a compatibility alias.',
     notWhen:
@@ -335,7 +336,7 @@ export default defineTool({
     chaining:
       'Page evidenceRead.next until the criterion index is complete, then fetch each criterion’s evidence pages in small Promise.all groups; read one criterion’s pages sequentially. Resolve papercusp.output-envelope/v1 envelopes with capability:read before reading scorecard.criteria. Concatenate complete pages, rerun probes, then emit the grading-integrity audit.',
     returns:
-      'Returns `{ ok, scorecard, evidenceRead }`. The scorecard includes `evidenceFingerprint` when recorded. Full reads contain every exact criterion; an oversized read contains criteria:[] plus a complete or paged criterion index, not absent evidence. Index pages preserve scorecard metadata and report offset/totalCriteria/next; criterion pages retain full-card identity and nKeys/missingKeys and report offset/totalChars/next. Concatenate all index and evidence pages before grading.',
+      'Returns `{ ok, scorecard, evidenceRead }`. The scorecard includes `evidenceFingerprint` when recorded and `rerunRecipe` when a valid recipe was stored. Full reads contain every exact criterion; an oversized read contains criteria:[] plus a complete or paged criterion index, not absent evidence. Index pages preserve scorecard metadata and report offset/totalCriteria/next; criterion pages retain full-card identity and nKeys/missingKeys and report offset/totalChars/next. Concatenate all index and evidence pages before grading.',
     seeAlso: ['scorecards:list', 'scorecards:emit', 'rubrics:get'],
   },
   capability: 'coord:read',

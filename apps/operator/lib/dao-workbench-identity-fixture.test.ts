@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import childProcess from 'node:child_process';
 import { promisify } from 'node:util';
-import { installIdentityFixture, prepareIdentityFixture } from '../../../scripts/fixtures/dao-workbench-identity.mjs';
+import { createServer, type Server } from 'node:http';
+import { installIdentityFixture, prepareIdentityFixture, readNativeHostHealth } from '../../../scripts/fixtures/dao-workbench-identity.mjs';
 
 let cleanup = () => {};
 afterEach(() => cleanup());
@@ -27,6 +28,41 @@ describe('native DAO synthetic identity isolation', () => {
     expect(await user.json()).toEqual({ id: fixture.githubUserId, login: fixture.githubLogin });
     await expect(fetch('https://api.github.com/gists', { method: 'POST' })).rejects.toThrow('outbound');
     await expect(fetch('https://api.github.com/user', { headers: { authorization: 'token real-credential' } })).rejects.toThrow('real GitHub credentials');
+  });
+});
+
+describe('native DAO host identity target', () => {
+  async function healthServer(sha: string) {
+    const requests: string[] = [];
+    const server = createServer((req, res) => {
+      requests.push(req.url ?? '');
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ sha }));
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('Missing fixture server port');
+    return { server, requests, origin: 'http://127.0.0.1:' + address.port };
+  }
+  async function close(server: Server) {
+    server.closeAllConnections();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  }
+  it('reads the isolated host when the caller carries a different operator URL', async () => {
+    const isolated = await healthServer('pinned-native-sha'), inherited = await healthServer('release-sha');
+    try {
+      const result = await readNativeHostHealth({ VERIFY_TAURI_DEV_URL: isolated.origin, PAPERCUSP_OPERATOR_URL: inherited.origin });
+      expect(result).toEqual({ origin: isolated.origin, health: { sha: 'pinned-native-sha' } });
+      expect(isolated.requests).toEqual(['/api/health']);
+      expect(inherited.requests).toEqual([]);
+    } finally { await close(isolated.server); await close(inherited.server); }
+  });
+  it('refuses a missing verifier origin before reading an inherited operator', async () => {
+    const inherited = await healthServer('release-sha');
+    try {
+      await expect(readNativeHostHealth({ PAPERCUSP_OPERATOR_URL: inherited.origin })).rejects.toThrow('VERIFY_TAURI_DEV_URL');
+      expect(inherited.requests).toEqual([]);
+    } finally { await close(inherited.server); }
   });
 });
 

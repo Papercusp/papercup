@@ -1212,6 +1212,8 @@ export interface ScorecardEvidenceRow {
   evidenceFingerprint?: string;
   sourceHive?: string;
   subject?: ObservationSubject;
+  /** Validated evaluator input for independently replaying exact adequacy evidence. */
+  rerunRecipe?: SpecTestAdequacyRerunRecipe;
   criteria: ScorecardEvidenceCriterion[];
   rollup?: ScorecardRollup;
   nKeys: number;
@@ -1300,6 +1302,7 @@ interface ScorecardEvidenceDb {
   evidence_fingerprint: string | null;
   source_hive: string | null;
   subject: unknown;
+  rerun_recipe: unknown;
   ratings: unknown;
   rollup: unknown;
   synthesized: unknown;
@@ -1515,6 +1518,7 @@ export async function readScorecardEvidence(issueId: string): Promise<ScorecardE
              scorecard.payload -> 'observation' ->> 'evidenceFingerprint' AS evidence_fingerprint,
              scorecard.payload -> 'observation' ->> 'sourceHive' AS source_hive,
              scorecard.payload -> 'observation' -> 'subject' AS subject,
+             scorecard.payload -> 'observation' -> 'rerunRecipe' AS rerun_recipe,
              scorecard.payload -> 'observation' -> 'ratings' AS ratings,
              scorecard.payload -> 'observation' -> 'rollup' AS rollup,
              scorecard.payload -> 'observation' -> 'synthesized' AS synthesized,
@@ -1623,6 +1627,7 @@ export async function readScorecardEvidence(issueId: string): Promise<ScorecardE
     evidenceFingerprint: row.evidence_fingerprint,
     sourceHive: row.source_hive,
     subject: row.subject,
+    rerunRecipe: row.rerun_recipe,
     ratings: row.ratings,
     rollup: row.rollup,
     synthesized: row.synthesized,
@@ -1708,6 +1713,7 @@ export async function readScorecardEvidence(issueId: string): Promise<ScorecardE
       ...(observation.evidenceFingerprint ? { evidenceFingerprint: observation.evidenceFingerprint } : {}),
       ...(observation.sourceHive ? { sourceHive: observation.sourceHive } : {}),
       ...(observation.subject ? { subject: observation.subject } : {}),
+      ...(observation.rerunRecipe ? { rerunRecipe: observation.rerunRecipe } : {}),
       ...(observation.rollup ? { rollup: observation.rollup } : {}),
       criteria,
       nKeys: ratedKeys.size,

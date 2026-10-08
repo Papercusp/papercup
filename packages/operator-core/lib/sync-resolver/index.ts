@@ -1138,6 +1138,18 @@ const retainFeedArgsSchema = z
   .optional();
 
 const REGISTRY: Record<string, QueryEntry<unknown>> = {
+  // External hosted D1 receipts, scoped by this desktop's server-held GitHub
+  // bearer. No PG backing table or manufactured local ledger. Refresh/page
+  // navigation explicitly re-reads; remote changes are not claimed as pushed.
+  'cupboard.identityUsage': {
+    backingTables: [],
+    argsSchema: z.object({ limit: z.number().int().min(1).max(200).optional(),
+      cursor: z.string().max(2000).optional() }).strict(),
+    resolve: async (raw) => {
+      const { readPrincipalUsagePage } = await import('../cupboard/metered-invocation-door-io');
+      return [await readPrincipalUsagePage(raw as { limit?: number; cursor?: string })];
+    },
+  },
   'harnessPrs.byHarness': {
     backingTables: ['harness_shared.pr_review_reports', 'harness_shared.pr_check_status_cache', 'harness_shared.harness_feature_prs', 'harness_shared.routines'],
     argsSchema: z.object({ harnessSlug: z.string().trim().min(1), scope: z.enum(['harness', 'hive']).optional() }),

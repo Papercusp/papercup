@@ -6451,10 +6451,27 @@ export async function verifyRepairHead(
     fileOutcomes.every((entry) => entry.status !== "errored"));
   const completeGates = !gateRun || (gateOutcomes !== null && gateRun.coverageComplete === true &&
     gateOutcomes.every((entry) => entry.status === "pass" || entry.status === "fail"));
-  const selectiveCoverage: FrozenRepairSelectiveCoverage | undefined = selection.coverageComplete &&
-    radiusCoverageComplete && completeFiles && completeGates
+  // P-005: name EVERY condition that withheld the receipt, on the round itself. A red round
+  // with no receipt forces the next round back onto the cumulative radius, so "why no
+  // receipt" must be readable from queue history rather than re-derived from logs.
+  const coverageWithheld = ([
+    ["selection-incomplete", selection.coverageComplete],
+    ["radius-census-incomplete", radiusCoverageComplete],
+    ["file-run-incomplete", completeFiles],
+    ["gate-run-incomplete", completeGates],
+  ] as const).filter(([, complete]) => !complete).map(([reason]) => reason);
+  const selectiveCoverage: FrozenRepairSelectiveCoverage | undefined = coverageWithheld.length === 0
     ? { schemaVersion: 1, candidate: queue.candidate, head }
     : undefined;
+  const roundExecution = coverageWithheld.length === 0
+    ? executed
+    : frozenRepairRoundExecution({
+        mode: "targeted",
+        fileKeys: fileList.map(failingFileKey),
+        gateIds: gateList,
+        radiusMode: selection.mode,
+        coverageWithheld,
+      });
 
   // P-006: the fresh signature is TYPED — a failing file is its `test-file` entry plus the
   // `workspace-task` marker for its workspace; a failing gate is re-emitted from the entry it
@@ -6514,7 +6531,7 @@ export async function verifyRepairHead(
       failingTests: [...fresh.keys()],
       signature: [...fresh.values()],
       ...(selectiveCoverage ? { selectiveCoverage } : {}),
-      executed,
+      executed: roundExecution,
       summary:
         `still red at repair head ${at}: ` +
         [fileRun?.summary, gateRun?.summary, radiusNote].filter(Boolean).join("; "),
@@ -6523,7 +6540,7 @@ export async function verifyRepairHead(
   return {
     kind: "green",
     ...(selectiveCoverage ? { selectiveCoverage } : {}),
-    executed,
+    executed: roundExecution,
     summary:
       `every selective leg passed at repair head ${at} ` +
       `(${fileList.length} file(s), ${gateList.length} gate(s); ${radiusNote}); ` +

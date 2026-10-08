@@ -24,7 +24,7 @@ isolatedIntegrationCases('recovers a guarded partial stage and removes its priva
   const child = spawn(process.execPath, [
     resolve(root, 'scripts/with-test-pg.mjs'), '--isolated-runtime', '--',
     process.execPath, '--import', 'tsx', resolve(root, 'packages/operator-core/test/_bulk-dedup-background-child.ts'),
-  ], { cwd: root, env: { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', BULK_BG_EXPECTED_SOURCE_SHA: sourceHash, BULK_BG_INJECT_FAILURE: failingExit ? '1' : '0' }, stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
+  ], { cwd: root, detached: true, env: { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', BULK_BG_EXPECTED_SOURCE_SHA: sourceHash, BULK_BG_INJECT_FAILURE: failingExit ? '1' : '0' }, stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
   observe(child);
   child.stdout!.on('data', (chunk) => {
     const text = String(chunk);
