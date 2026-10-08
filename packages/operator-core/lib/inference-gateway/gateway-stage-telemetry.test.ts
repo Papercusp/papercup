@@ -533,6 +533,7 @@ it.each([429, 503])('retains the rejected bearer write and existing failover pol
 });
 
 it('observes actual OAuth transport writes through a loopback-only test dispatcher', async () => {
+  const logs: string[] = [];
   const home = await mkdtemp(join(tmpdir(), 'gateway-write-oauth-'));
   const b64 = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
   const jwt = `${b64({ alg: 'none' })}.${b64({ exp: Math.floor(Date.now() / 1000) + 3600 })}.sig`;
@@ -560,6 +561,7 @@ it('observes actual OAuth transport writes through a loopback-only test dispatch
   try {
     gateway = createInferenceGateway({ accountId: 'unused', token: async () => 'unused',
       codexCliAccounts: () => [{ accountId: 'oauth-account', home }], codexOAuthProxy: true,
+      log: (_level, message) => { logs.push(message); },
       fetchImpl: ((target, init) => fetch(target, { ...init, dispatcher } as RequestInit)) as typeof fetch,
       concurrency: 2, maxQueueWaitMs: 2_000, requestAbsorbMs: 0, selfHeal: { enabled: false } });
     const port = await gateway.listen(0);
@@ -568,6 +570,16 @@ it('observes actual OAuth transport writes through a loopback-only test dispatch
       body: JSON.stringify({ model: 'gpt-6-sol', input: 'private-prompt', stream: true }) });
     expect(response.status).toBe(200); expect(await response.text()).toContain('resp_oauth_writes');
     expect(received).toBe(1);
+    const evidence = logs.filter(message => message.includes('codex OAuth stream-evidence/v1 '))
+      .map(message => JSON.parse(message.split('stream-evidence/v1 ')[1]!));
+    expect(evidence).toHaveLength(1);
+    expect(evidence[0]).toMatchObject({ ownerId: 'su-write-oauth', model: 'gpt-6-sol',
+      accountId: 'oauth-account', requestedStream: true, upstreamStatus: 200,
+      contentType: 'event-stream', inspected: true, termination: 'done',
+      sawResponseEvent: true, sawTerminal: true, terminalType: 'response.completed', pendingFrame: false });
+    expect(evidence[0].requestId).toEqual(expect.any(Number));
+    expect(evidence[0].bytesRead).toBeGreaterThan(0);
+    expect(JSON.stringify(evidence)).not.toMatch(/PRIVATE_|private-prompt|resp_oauth_writes|chatgpt\.com/);
     const { timeline } = await recentTimeline(port);
     expect(timeline.transport).toBe('oauth-http');
     expect(timeline.upstreamWrites.calls).toHaveLength(1);

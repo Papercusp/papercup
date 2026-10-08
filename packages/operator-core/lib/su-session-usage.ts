@@ -16,7 +16,22 @@
  * - OMP: assistant `message_end` `message.usage` {input, output, cacheRead,
  *   cacheWrite, totalTokens, cost.total}; window = get_state model.contextWindow.
  */
-import type { SuPlanItem, SuPlanItemStatus, SuSessionUsage } from '@papercusp/chat-protocol';
+import type { SuPlanItem, SuPlanItemStatus, SuSessionUsage, SuSessionRefusal } from '@papercusp/chat-protocol';
+
+/** Portable trusted host lifecycle capabilities, never command arguments.
+ * Admission precedes inference; an owner-turn id is not a native usage ID.
+ * Retain reservations until native binding and complete billed evidence are
+ * verified. Reconciliation cannot assume a refund after uncertain delivery. */
+export interface SuCodexTurnAdmission {
+  readonly ok: true;
+  bindNativeTurn(nativeTurnId: string): Promise<void>;
+  complete(input: { nativeTurnId: string; status: string; completedAtMs: number }): Promise<void>;
+  reconcile(input: { phase: 'delivery' | 'binding' | 'completion'; message: string }): Promise<void>;
+}
+export interface SuCodexTurnLifecycle {
+  admit(input: { workspaceId: string; ownerId: string; nativeSessionId: string;
+    ownerTurnId: string; model?: string | null }): Promise<SuCodexTurnAdmission | ({ ok: false } & SuSessionRefusal)>;
+}
 
 type Rec = Record<string, unknown>;
 

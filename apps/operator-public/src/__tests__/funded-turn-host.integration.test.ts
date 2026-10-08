@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { resolve } from 'node:path';
+import { existsSync } from 'node:fs';
 import { createHash, generateKeyPairSync, sign as cryptoSign } from 'node:crypto';
 import postgres from 'postgres';
 import { Hono } from 'hono';
@@ -21,6 +22,8 @@ let db: FreshPgDb, peerSql: postgres.Sql, seq = 0;
 beforeAll(async () => {
   db = await createFreshPgDb('funded-turn-host');
   await applyMigrationForTest(db.sql, resolve('../../libs/papercusp/libs/db/sql/1423-cupboard-funded-turn-ledger.sql'));
+  const nativeMigration = resolve('../../libs/papercusp/libs/db/sql/1424-funded-turn-native-binding.sql');
+  await applyMigrationForTest(db.sql, existsSync(nativeMigration) ? nativeMigration : nativeMigration + '.DRAFT');
   peerSql = postgres(db.url, { prepare: false });
 });
 afterAll(async () => { await peerSql?.end({ timeout: 1 }); await db?.cleanup(); });
@@ -98,6 +101,61 @@ function harness() {
 }
 
 describe('trusted funded turn host with real PG CAS and migrated hosted D1', () => {
+  it('composes pre-inference funding, exact native binding and hosted settlement through the awaited lifecycle', async () => {
+    const h = harness(), b = { ...h.binding, admissionId: 'owner-command', nativeTurnId: null };
+    const resolveClosedPopulation = vi.fn(async () => [eventKey]), recordFailure = vi.fn(async () => {});
+    const lifecycle = h.host().nativeLifecycle({ resolveAdmission: async () => ({ kind: 'funded', binding: b }),
+      resolveClosedPopulation, recordFailure });
+    const lease = await lifecycle.admit({ workspaceId: b.workspaceId, ownerId: b.ownerId,
+      nativeSessionId: b.nativeSessionId, ownerTurnId: b.admissionId });
+    if (!lease.ok) throw new Error(lease.message);
+    const store = new FundedIdentityTurnStore(peerSql), turnId = fundedIdentityTurnId(b);
+    expect(await store.read(b.workspaceId, turnId)).toMatchObject({ state: 'running', binding: { nativeTurnId: null } });
+    expect(resolveClosedPopulation).not.toHaveBeenCalled();
+    expect(h.raw.prepare('SELECT state FROM usage_receipts').get()).toMatchObject({ state: 'reserved' });
+    await lease.bindNativeTurn('provider-native-turn');
+    const completedAtMs = Date.now();
+    await lease.complete({ nativeTurnId: 'provider-native-turn', status: 'completed', completedAtMs });
+    expect(resolveClosedPopulation).toHaveBeenCalledWith({ binding: { ...b, nativeTurnId: 'provider-native-turn' }, status: 'completed', completedAtMs });
+    expect(await store.read(b.workspaceId, turnId)).toMatchObject({ state: 'settled',
+      settlementOutbox: { receipt: { occurredAtMs: completedAtMs, amountMicros: '249' } } });
+    expect(h.raw.prepare('SELECT committed_micros FROM payment_channels WHERE channel_id=?').get('c1'))
+      .toMatchObject({ committed_micros: 249 });
+    expect(recordFailure).not.toHaveBeenCalled();
+  });
+
+  it('refuses a funding resolver bound to another host admission before any voucher is signed', async () => {
+    const h = harness(), b = { ...h.binding, admissionId: 'actual-command', nativeTurnId: null };
+    const lifecycle = h.host().nativeLifecycle({ resolveAdmission: async () => ({ kind: 'funded', binding: b }),
+      resolveClosedPopulation: async () => [eventKey], recordFailure: async () => {} });
+    expect(await lifecycle.admit({ workspaceId: b.workspaceId, ownerId: 'another-owner',
+      nativeSessionId: b.nativeSessionId, ownerTurnId: b.admissionId }))
+      .toMatchObject({ ok: false, code: 'native-admission-binding-mismatch' });
+    expect(h.signVoucher).not.toHaveBeenCalled();
+    expect(await new FundedIdentityTurnStore(db.sql).read(b.workspaceId, fundedIdentityTurnId(b))).toBeNull();
+  });
+
+  it('retains a running hold when the complete population is unavailable and records reconciliation', async () => {
+    const h = harness(), b = { ...h.binding, admissionId: 'pending-command', nativeTurnId: null };
+    const recordFailure = vi.fn(async () => {});
+    const lifecycle = h.host().nativeLifecycle({ resolveAdmission: async () => ({ kind: 'funded', binding: b }),
+      resolveClosedPopulation: async () => { throw new Error('native population incomplete'); }, recordFailure });
+    const lease = await lifecycle.admit({ workspaceId: b.workspaceId, ownerId: b.ownerId,
+      nativeSessionId: b.nativeSessionId, ownerTurnId: b.admissionId });
+    if (!lease.ok) throw new Error(lease.message);
+    await lease.bindNativeTurn('actual-pending-turn');
+    await expect(lease.complete({ nativeTurnId: 'actual-pending-turn', status: 'failed', completedAtMs: Date.now() }))
+      .rejects.toThrow('native population incomplete');
+    await lease.reconcile({ phase: 'completion', message: 'native population incomplete' });
+    expect(recordFailure).toHaveBeenCalledWith({ turnId: fundedIdentityTurnId(b), workspaceId: b.workspaceId,
+      phase: 'completion', message: 'native population incomplete' });
+    expect(await new FundedIdentityTurnStore(peerSql).read(b.workspaceId, fundedIdentityTurnId(b)))
+      .toMatchObject({ state: 'running', binding: { nativeTurnId: 'actual-pending-turn' } });
+    expect(h.signReceipt).not.toHaveBeenCalled();
+    expect(h.raw.prepare('SELECT committed_micros FROM payment_channels WHERE channel_id=?').get('c1'))
+      .toMatchObject({ committed_micros: 0 });
+  });
+
   it('recovers a lost reserve ack, admits once and settles exact cost once', async () => {
     const h = harness(); h.loseReserve();
     const admitted = await h.host().admit(h.binding);
