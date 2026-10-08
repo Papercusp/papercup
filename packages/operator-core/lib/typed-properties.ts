@@ -8,12 +8,17 @@
  */
 
 import { z } from 'zod';
+import { VALID_PLAN_SLUG } from './agent-tools/plans/run-instance-slug';
 import type { RefusalContract } from './capability-envelope/refusal-contract-types';
 
 export const PROPERTY_NAME = /^[a-z][a-z0-9_-]{0,63}$/;
 
 export const ORDERED_SELECTION_POLICY_DATATYPE = 'ordered-selection-policy';
-export const QUALIFIED_COLLECTION_PLAN_REF = /^plan:[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._-]*$/;
+// Keep the namespace qualification while accepting the exact plan keys the
+// platform mints, including scheduled instances. One run must not poison the pool.
+export const QUALIFIED_COLLECTION_PLAN_REF = new RegExp(
+  `^plan:[a-z0-9][a-z0-9._-]*/(?:${VALID_PLAN_SLUG.source.slice(1, -1)})$`,
+);
 
 const collectionItemId = z.string().min(1).max(400);
 const uniqueItemIds = z.array(collectionItemId).max(10_000)

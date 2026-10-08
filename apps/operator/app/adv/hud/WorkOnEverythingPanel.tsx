@@ -76,6 +76,7 @@ export default function WorkOnEverythingPanel({ data, nowMs, onClose, onOpenPlan
     const key = event.key;
     if (!['ArrowUp', 'ArrowDown', 'j', 'k', 'x', 'X', 'Enter', 'Home', 'End'].includes(key)) return;
     event.preventDefault();
+    event.stopPropagation();
     if (key === 'Enter') { openPlan(selected); return; }
     if (key === 'x' || key === 'X') { stage(toggleDraft(collection, draft, selected.id)); return; }
     const up = key === 'ArrowUp' || key === 'k';
