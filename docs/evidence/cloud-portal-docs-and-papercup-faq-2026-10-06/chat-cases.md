@@ -230,3 +230,82 @@ Unit prompt-assembly checks, SDK retrieval checks and model responses discharge
 different observations. Preserve their original ledgers rather than promoting
 one into a claim about another. Final R-5/R-6 and shipment decisions must use
 the current acceptance contract and the exact accepted evidence cohort.
+
+## Loaded converse-policy observation, 2026-10-08 14:39Z
+
+After staging advanced to **16975cacd1**, `dev:pipeline_position` reported
+that it contains the committed preview extension in
+`packages/operator-core/lib/agent-tools/operator/preview_prompt.ts`
+(`329df5e4705e35c87b45a5d203f049a7f2e19f78`), using a blob comparison.
+The attributed staging `tools:find` lookup then succeeded and advertised
+`brain: scanner|converse`. This supersedes the earlier staging authentication
+blocker for this lookup; it does not establish the cause of its historical
+failures or reliability under every load.
+
+A zero-model `operator:preview_prompt` call selected `brain: converse`,
+`role: papercup`, `hostTrust: public`, novice/text mode and caller-supplied
+`docs:search`/`docs:get`. It returned the actual `operator/converse-prompt`
+builder with known serving generation
+`serving-generation-v1:73bd00d9aa9697487b783467aac655fd08d2022005ac1682f147409d8c2efc29`,
+build **16975cacd1**, and tool registry
+`projected-tool-registry-v1:3bc0b9d01cab0336`.
+
+The loaded excerpt requires clarification of an unidentified referent before
+retrieval; public FAQ search and heading retrieval with its loaded revision;
+a fuller public guide for detailed steps; and authorized live evidence for
+current prices, entitlements, permissions, charges or agent state. It states
+that the question alone does not authorize payment, publication, access grants
+or a destructive action. Retained reduction:
+`/tmp/su73-converse-preview-staging-1440.json` (`ok: true`, one dispatch,
+no planned mutations). The initial reduction failed because it read the
+handler's `data` wrapper; the sandbox returns the unwrapped typed root. That
+caller error remains separate from the successful policy observation.
+
+The diagnostic catalog was supplied explicitly. This proves loaded policy
+assembly, with no principal resolution, actual chat answer, model call,
+canonical-revision invalidation or production shipment claim. Existing
+model/Portal evidence and its UNKNOWN source limits remain unchanged.
+
+## Canonical Portal case on the new staging runtime, 2026-10-08 14:54Z
+
+One maintained case was selected with:
+
+```sh
+npm run test:file -- packages/operator-core/lib/llm-testing/__tests__/papercup-public-manual.e2e.test.ts -t 'answers a natural canonical FAQ question.*Will agents'
+```
+
+It used `OPERATOR_BASE_URL=http://127.0.0.1:3170`, public chat/Portal acceptance
+enabled, the existing immutable Portal candidate and the maintained hosted
+fixture. No operator or Portal rebuild was performed. The question was
+“Will agents on my remote workspace stop if I close this browesr tab?”
+
+The run exited 1: **one failed, 40 filter-excluded**. Runtime health measured
+`16975cacd1`; public docs preflight loaded revision
+`c8a817119d5e106ee8d89cf622fe54a6a674920f0e3b8bc562709cd65049518f`.
+Owned conversation creation returned `201`. The retained SSE contains
+provenance (`codex`, `gpt-5.6-luna:low`), an answer saying that remote agents
+continue after closing the browser, and `done`. It contains no docs tool
+frames or FAQ citation. The first-docs-call assertion failed with
+`expected undefined to be 'docs:search'`. This is an observed missing
+retrieval/citation, not a demonstrated permission bypass or a proven policy,
+principal-selection or transport root cause.
+
+Retained log: `/tmp/su73-canonical-portal-natural-1454.log`. The raw public
+record is `/tmp/su73-canonical-portal-evidence-1454/public-manual-portal-782ab9f5-0c2e-4c2f-8c97-7a2712fc25c2/case.json`.
+Owned defect: **EI-25423532280490423**, under WI-10006920.
+
+Tracked-file snapshots were retained in
+`/tmp/su73-canonical-portal-source-before-1453.json` and
+`/tmp/su73-canonical-portal-source-after-1455.json`. The Portal helper source
+digest remained unchanged. The canonical root advanced from `16975cacd1`
+to `48147a4610`; changed paths include the tool catalog, `_mcp-host.ts` and
+`su-session-owner-routing.ts`. The committed-source loader also reported
+substituting the committed `pg-bounded-txn.ts`. These non-atomic snapshots
+do not establish the exact imported source cohort; that provenance remains
+`unknown`. The named test was clean in the runner's before/after stamp.
+
+The loaded policy preview and earlier failed or passing cases retain their
+separate scopes. Diagnose the actual request's prompt, principal/tool catalog
+and native result transport before another paid replay. No canonical FAQ,
+fresh-install, novice, independent acceptance or shipment bar is discharged
+by this failure record.
