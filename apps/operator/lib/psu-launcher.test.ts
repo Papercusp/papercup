@@ -11707,6 +11707,18 @@ describe("original Codex routing — existing profile only", () => {
   });
   afterEach(() => rmSync(home, { recursive: true, force: true }));
 
+  it("accepts the real exact-resume command's unset parsed subagent option", () => {
+    const launchArgs = parseArgs(["--launched-by=su-caller", "--no-picker", "--account=auto", `--resume=${uuid}`]);
+    expect(launchArgs.allowSubagents).toBeNull();
+    expect(() => assertOriginalCodexRouting(source, pin, { ...deps, launchArgs })).not.toThrow();
+  });
+
+  it.each(["--allow-subagents", "--no-subagents", "--agent=codex", "--model=gpt-6", "--mode=grade"])(
+    "refuses an explicit parsed routing override (%s)", (override) => {
+      const launchArgs = parseArgs(["--no-picker", "--account=auto", `--resume=${uuid}`, override]);
+      expect(() => assertOriginalCodexRouting(source, pin, { ...deps, launchArgs })).toThrow("settings overrides");
+    });
+
   it.each(["auto", "codex-pinned-account"])("patches only the provider for the original saved %s route", async (saved) => {
     source.launchArgv[1] = `--account=${saved}`;
     const before = { agents: readFileSync(join(home, "AGENTS.md")), hooks: readFileSync(join(home, "hooks.json")),

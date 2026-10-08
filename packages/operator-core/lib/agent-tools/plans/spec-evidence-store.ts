@@ -3,12 +3,14 @@ import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { readFile, realpath, stat } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { hostname } from 'node:os';
 import fastGlob from 'fast-glob';
 import { z } from 'zod';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { withWorkspace } from '@papercusp/db-org';
 import { parseTestRunExecutionDetails, stableRecordedRuntimeEnvironment } from '@papercusp/test-config/execution-details';
 import { listRuntimeVintage, measureRuntimeVintageEnvironment } from '../../runtime-vintage';
+import { defaultEvidenceRoot } from '@papercusp/verification-harness';
 import { pgTimestampToIso } from '../../pg-timestamp';
 import { planItemRef } from '../../issue-blocks-merge';
 import { loadHarnessRegistry, resolveHarnessContentPath } from '../../harness-registry';
@@ -97,9 +99,20 @@ export const repoFilesEvidenceMeasurementSchema = z
     /** Local runtime units observed around execution; evidence reads independently remeasure them. */
     runtimeUnits: z.array(z.string().trim().min(1).max(120)).min(1).max(32)
       .refine(units => new Set(units).size === units.length, 'runtime units must be unique').optional(),
+    /** Completed isolated tests certify retained source/lifecycle artifacts, not a live deployment. */
+    completedRuntime: z.discriminatedUnion('kind', [z.object({
+      kind: z.literal('verification-harness'),
+      verifierRunId: z.string().regex(/^\d{8}T\d{6}Z-\d+(?:\.\d+)?$/),
+      journeyHarness: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).max(120),
+      journeyRunId: z.string().regex(/^\d{8}T\d{6}Z-\d+(?:\.\d+)?$/),
+    }).strict(), z.object({ kind: z.literal('llm-in-process') }).strict()]).optional(),
   })
   .strict()
   .superRefine((measurement, ctx) => {
+    if (measurement.completedRuntime && !measurement.runtimeUnits) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['completedRuntime'],
+        message: 'completedRuntime requires original execution runtimeUnits' });
+    }
     if (measurement.fixtureRootHarnessSlug && !hasRepoFixturePaths(measurement)) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -1592,6 +1605,8 @@ interface EvidenceRow extends CurrentnessRow {
   test_run_framework?: string | null;
   test_run_source?: string | null;
   test_run_execution_details?: unknown;
+  test_run_started_at?: Date | string | null;
+  test_run_finished_at?: Date | string | null;
   /** Ledger output tail of a FAILED mutation-probe run bound as mutation evidence; else NULL. */
   mutation_failure_tail: string | null;
   /** Same source/status fence as the tail; optional for legacy mock/read envelopes. */
@@ -2091,6 +2106,126 @@ export async function supersedeSpecEvidenceAtRevision(
   });
 }
 
+/**
+ * A disposed verifier cannot be re-probed through /proc. Certify its completed
+ * execution from the retained harness lifecycle and independently rehashed source
+ * instead. This opt-in applies only to clean native/LLM test receipts on the live
+ * test plane; it never certifies a serving/deployed production process.
+ */
+export async function measureCompletedTestRuntime(
+  row: EvidenceRow,
+  recipe: RepoFilesEvidenceMeasurement,
+  currentFiles: readonly MeasuredRepoFile[],
+  scope: { workspaceId: string; harnessSlug: string },
+  root: string,
+): Promise<string | null> {
+  const selector = recipe.completedRuntime;
+  const execution = parseTestRunExecutionDetails(row.test_run_execution_details);
+  const witness = stableRecordedRuntimeEnvironment(
+    execution?.runtimeEnvironmentBefore, execution?.runtimeEnvironmentAfter);
+  if (!selector || !recipe.runtimeUnits || row.evidence_kind !== 'test'
+    || row.details.evidencePlane !== 'live' || row.test_run_status !== 'pass'
+    || row.test_run_framework !== (selector.kind === 'llm-in-process' ? 'llm-test' : 'vitest')
+    || row.test_run_worktree_dirty !== false
+    || !execution || execution.testLayer !== (selector.kind === 'llm-in-process' ? 'llm' : 'e2e')
+    || execution.worktreeDirty
+    || execution.collectionFailed || execution.failed !== 0 || execution.skipped !== 0 || execution.passed < 1
+    || execution.workspaceId !== scope.workspaceId || execution.harnessSlug !== scope.harnessSlug
+    || !execution.commitSha || !/^[a-f0-9]{40,64}$/.test(execution.commitSha)
+    || execution.commitSha !== row.test_run_commit_sha || !witness
+    || JSON.stringify([...witness.units].sort()) !== JSON.stringify([...recipe.runtimeUnits].sort())
+    || !recipe.testPaths?.includes(execution.filePath)
+    || recipe.rootHarnessSlug || recipe.fixtureRootHarnessSlug) return null;
+  const instant = (value: unknown): number =>
+    value instanceof Date || typeof value === 'string' ? new Date(value).getTime() : NaN;
+  const before = instant(execution.runtimeEnvironmentBefore!.observedAt);
+  const after = instant(execution.runtimeEnvironmentAfter!.observedAt);
+  const start = instant(row.test_run_started_at);
+  const end = instant(row.test_run_finished_at);
+  if (![before, after, start, end].every(Number.isFinite)
+    || before > start || start > end || end > after) return null;
+  if (selector.kind === 'llm-in-process') {
+    try {
+      // The original recorder measured these kernel pins while the process was
+      // live. Reproduce THAT witness, then independently compare today's files
+      // with the executed Git objects. This proves completed source execution,
+      // without claiming that its PID or a serving deployment is still alive.
+      const rows = await listRuntimeVintage(scope.workspaceId);
+      const pins: Array<[string, string, string, string, number, string]> = [];
+      for (const unit of [...recipe.runtimeUnits].sort()) {
+        const matches = rows.filter(runtime => runtime.unit === unit && runtime.host === hostname());
+        if (matches.length !== 1) return null;
+        const runtime = matches[0];
+        const kernel = runtime.extra.kernelProcessIdentity;
+        const built = instant(runtime.buildTime), reported = instant(runtime.reportedAt);
+        if (!Number.isSafeInteger(runtime.pid) || runtime.pid! <= 0
+          || unit !== `llm-test-in-process-${runtime.pid}` || runtime.workspaceId !== scope.workspaceId
+          || runtime.treeSha !== execution.commitSha || runtime.bundleVersion !== null
+          || typeof kernel !== 'string' || !kernel
+          || !Number.isFinite(built) || !Number.isFinite(reported)
+          || built > reported || reported > before) return null;
+        pins.push([unit, runtime.host, runtime.treeSha, new Date(built).toISOString(), runtime.pid!, kernel]);
+      }
+      // Same normalized pin contract written by measureRuntimeVintageEnvironment.
+      if (createHash('sha256').update(JSON.stringify(pins)).digest('hex') !== witness.fingerprint) return null;
+      const recorded = await measureRepoFilesEvidenceDetailedAtCommit(root, recipe, execution.commitSha);
+      const original = new Map(recorded.files.map(file => [`${file.dimension}:${file.path}`, file.sha256]));
+      if (currentFiles.length === 0 || currentFiles.length !== recorded.files.length
+        || currentFiles.some(file => original.get(`${file.dimension}:${file.path}`) !== file.sha256)) return null;
+      return witness.fingerprint;
+    } catch { return null; }
+  }
+  const readArtifact = async (harness: string, runId: string, file: string) => {
+    const base = await realpath(defaultEvidenceRoot(harness));
+    const path = await realpath(join(base, runId, file));
+    if (relative(base, path).startsWith('..') || isAbsolute(relative(base, path))) throw new Error('artifact outside harness');
+    const info = await stat(path);
+    if (!info.isFile() || info.size > 16 * 1024 * 1024) throw new Error('invalid harness artifact');
+    return JSON.parse(await readFile(path, 'utf8'));
+  };
+  try {
+    const [verifier, receipt, journey, manifest] = await Promise.all([
+      readArtifact('verify-tauri-headless', selector.verifierRunId, 'result.json'),
+      readArtifact('verify-tauri-headless', selector.verifierRunId, 'phases/prepare/verifier-source-receipt.json'),
+      readArtifact(selector.journeyHarness, selector.journeyRunId, 'result.json'),
+      readArtifact(selector.journeyHarness, selector.journeyRunId, 'phases/native/manifest.json'),
+    ]);
+    const completed = (result: any, harness: string, runId: string) => result?.schemaVersion === 1
+      && result.harness === harness && result.runId === runId && result.verdict === 'pass'
+      && !result.reuseFromRunId && Array.isArray(result.phases) && result.phases.length > 0
+      && result.phases.every((phase: any) => phase.status === 'passed');
+    if (!completed(verifier, 'verify-tauri-headless', selector.verifierRunId)
+      || !completed(journey, selector.journeyHarness, selector.journeyRunId)
+      || receipt?.schemaVersion !== 'verifier-source-v1' || receipt.sourceCommit !== execution.commitSha
+      || !Array.isArray(receipt.files) || !Array.isArray(receipt.testedInputs)
+      || !receipt.testedInputs.some((file: any) => file.path === execution.filePath)
+      || manifest?.result !== 'pass' || !Array.isArray(manifest.sourceFingerprints)
+      || manifest.sourceFingerprints.length === 0) return null;
+    const phase = (name: string) => {
+      const matches = verifier.phases.filter((entry: any) => entry.phase === name);
+      return matches.length === 1 ? matches[0] : null;
+    };
+    const prepare = phase('prepare'), boot = phase('boot'), assertions = phase('assert');
+    if (!prepare || !boot || !assertions
+      || !(instant(prepare.endedAt) <= instant(boot.startedAt)
+        && instant(boot.endedAt) <= before && instant(assertions.startedAt) <= before
+        && instant(assertions.endedAt) >= after
+        && instant(journey.startedAt) >= start && instant(journey.endedAt) <= end)) return null;
+    // A retained JSON receipt alone is not code identity. Read the immutable Git
+    // objects too, then compare each current source/test/fixture byte measurement.
+    const recorded = await measureRepoFilesEvidenceDetailedAtCommit(root, recipe, execution.commitSha);
+    const recordedFiles = new Map(recorded.files.map(file => [`${file.dimension}:${file.path}`, file.sha256]));
+    const receiptFiles = new Map(receipt.files.map((file: any) => [file.path, file.sha256]));
+    const journeyFiles = new Map(manifest.sourceFingerprints.map((file: any) => [file.path, file.sha256]));
+    if (currentFiles.length === 0 || currentFiles.length !== recorded.files.length
+      || currentFiles.some(file => recordedFiles.get(`${file.dimension}:${file.path}`) !== file.sha256
+        || receiptFiles.get(file.path) !== file.sha256
+        || (file.dimension === 'source' && !file.path.startsWith('scripts/')
+          && journeyFiles.get(file.path) !== file.sha256))) return null;
+    return witness.fingerprint;
+  } catch { return null; }
+}
+
 export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
   if (options.auditAsOf && options.includeRetracted !== true) {
     throw new Error('auditAsOf requires includeRetracted:true');
@@ -2195,6 +2330,8 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
            tr.framework AS test_run_framework,
            tr.source AS test_run_source,
            tr.execution_details AS test_run_execution_details,
+           tr.started_at AS test_run_started_at,
+           tr.finished_at AS test_run_finished_at,
            -- WI-10006745: unconditional, so no adequacy reader (the ship-gate snapshot included)
            -- can forget to ask for it. Bounded by the ledger's own 4000-char tail.
            CASE
@@ -2468,8 +2605,10 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
             sourceFingerprint: detailed.sourceFingerprint,
             testFingerprint: detailed.testFingerprint,
             ...(detailed.fixtureFingerprint !== undefined ? { fixtureFingerprint: detailed.fixtureFingerprint } : {}),
-            ...(recipe.runtimeUnits ? { environmentFingerprint: measureRuntimeVintageEnvironment(
-              await (runtimeRows ??= listRuntimeVintage(scope.workspaceId)), recipe.runtimeUnits) } : {}),
+            ...(recipe.runtimeUnits ? { environmentFingerprint: recipe.completedRuntime
+              ? await measureCompletedTestRuntime(row, recipe, detailed.files, scope, measurementRoot)
+              : measureRuntimeVintageEnvironment(
+                await (runtimeRows ??= listRuntimeVintage(scope.workspaceId)), recipe.runtimeUnits) } : {}),
           };
           files = detailed.files;
         }

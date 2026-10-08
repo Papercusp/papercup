@@ -156,6 +156,7 @@ export const testRunBindingSchema = z
     fixturePaths: repoFilesEvidenceMeasurementSchema.shape.fixturePaths,
     fixtureGlobs: repoFilesEvidenceMeasurementSchema.shape.fixtureGlobs,
     fixtureRootHarnessSlug: repoFilesEvidenceMeasurementSchema.shape.fixtureRootHarnessSlug,
+    completedRuntime: repoFilesEvidenceMeasurementSchema.shape.completedRuntime,
     canonicalTestPath: repoFilesEvidenceMeasurementSchema.shape.testPaths.unwrap().element
       .optional()
       .describe('Canonical repo-relative test path for a mutation-probe copy-out run whose temporary mirror is no longer a checkout, or the .rs file defining a cargo test.'),
@@ -265,6 +266,7 @@ export interface DerivedTestRunBinding {
     sourceGlobs?: string[];
     testPaths: string[];
     runtimeUnits?: string[];
+    completedRuntime?: z.infer<typeof repoFilesEvidenceMeasurementSchema>['completedRuntime'];
   };
   details: Record<string, unknown>;
   observedAt?: string;
@@ -278,6 +280,7 @@ export type TestRunBindingError =
   | 'test_run_not_found'
   | 'test_run_out_of_scope'
   | 'test_run_unfinished'
+  | 'test_run_runtime_witness_missing'
   | 'test_run_not_adoptable'
   | 'test_run_file_outside_root'
   | 'test_run_canonical_path_source_unsupported'
@@ -701,6 +704,10 @@ export function deriveBindingFromTestRun(
   const recordedExecution = parseTestRunExecutionDetails(row.execution_details);
   const runtimeWitness = stableRecordedRuntimeEnvironment(
     recordedExecution?.runtimeEnvironmentBefore, recordedExecution?.runtimeEnvironmentAfter);
+  if (input.completedRuntime && !runtimeWitness) {
+    return { ok: false, error: 'test_run_runtime_witness_missing', testRunId,
+      message: `test-run ${testRunId} has no stable execution-time runtime witness; completed certification cannot create one.` };
+  }
   const binding: DerivedTestRunBinding = {
     workItemId: input.workItemId,
     ...(input.specId ? { specId: input.specId } : {}),
@@ -719,6 +726,7 @@ export function deriveBindingFromTestRun(
       ...(input.fixtureGlobs ? { fixtureGlobs: input.fixtureGlobs } : {}),
       ...(input.fixtureRootHarnessSlug ? { fixtureRootHarnessSlug: input.fixtureRootHarnessSlug } : {}),
       ...(runtimeWitness ? { runtimeUnits: [...runtimeWitness.units] } : {}),
+      ...(input.completedRuntime ? { completedRuntime: input.completedRuntime } : {}),
     },
     details: {
       ...otherDetails,

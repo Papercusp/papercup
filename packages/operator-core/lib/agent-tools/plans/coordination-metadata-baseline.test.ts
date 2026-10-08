@@ -12,6 +12,7 @@ import type { UnifiedToolContext } from '@papercusp/agent-mcp';
 import { evaluatePlanStartReadiness } from './plan-input-validation';
 import { computeSpecSetHash } from './spec-clause-compiler';
 import { evaluatePlanSpecQuality } from './spec-quality';
+import { hashPlanContent } from './content-hash';
 import { evaluatePlanSpecQualityGate } from './plan-spec-quality-gate';
 import {
   metadataClause, metadataClauseWrite, metadataHarness, metadataInputSchema, metadataPlanSlug,
@@ -29,9 +30,17 @@ const stores = vi.hoisted(() => ({
   listClauses: vi.fn(),
   listRubrics: vi.fn(),
 }));
+const metadataSnapshot = '---\ntitle: Metadata fixture\nstatus: ready\n---\n## Items\n- **P-001** `todo` Accept events';
+vi.mock('./revisions', async (importOriginal) => ({
+  ...await importOriginal<typeof import('./revisions')>(),
+  getPlanRevisionSnapshot: async () => ({ contentSnapshot: metadataSnapshot, contentSnapshotHash: hashPlanContent(metadataSnapshot) }),
+}));
 vi.mock('./source', async (importOriginal) => ({
   ...await importOriginal<typeof import('./source')>(),
-  readPlanBySlug: stores.readPlan,
+  readPlanBySlug: async (...args: Parameters<typeof stores.readPlan>) => {
+    const read = await stores.readPlan(...args);
+    return read ? { ...read, row: { ...read.row, contentHash: hashPlanContent(metadataSnapshot) } } : read;
+  },
   getPlanRow: stores.getPlanRow,
 }));
 vi.mock('./spec-clauses-store', async (importOriginal) => ({

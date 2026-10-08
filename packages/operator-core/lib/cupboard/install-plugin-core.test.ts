@@ -13,7 +13,15 @@ import {
   installPluginFromCupboardCore,
   InstallPluginError,
   type InstallPluginCoreDeps,
+  readInstalledPluginProvenance,
+  verifyInstalledPluginCommerceProvenance,
 } from './install-plugin-core';
+import { packSelfDescribingDir, packSelfDescribingArchive, unpackSelfDescribingArchive } from './self-describing-release';
+import { createHash } from 'node:crypto';
+import { canonicalJson } from '../authority/authority-rpc-envelope';
+import { buildArtifactPackage } from '../p2p/artifact-package';
+import { canonicalTreeDigest } from '@papercusp/artifact-registry';
+import type { ResolvedListingCoords } from './resolve-listing-by-kind';
 
 let root: string;        // scratch root for fixtures + install target
 let fixtureRepo: string; // the "remote" repo a fake clone copies from
@@ -53,6 +61,176 @@ beforeEach(async () => {
 });
 afterEach(async () => {
   await fs.rm(root, { recursive: true, force: true });
+});
+
+describe('exact Cupboard plugin installation provenance', () => {
+  const source = 'https://github.com/acme/plugin';
+  const ref = 'paid-plugin';
+  function listed(extra: Partial<ResolvedListingCoords> = {}): ResolvedListingCoords {
+    return { githubUrl: source, ref, listingId: 'listing-1', skuRef: 'opaque:provider-chosen-sku',
+      publisherId: 'gh:42', priceModel: 'per-use', releaseVersion: '1.2.0', ...extra };
+  }
+  async function archive() {
+    const dir = join(fixtureRepo, ref);
+    await writeManifest(dir, { name: ref, version: '1.2.0' });
+    await fs.writeFile(join(dir, 'index.cjs'), 'module.exports = { run: () => 42 };');
+    await fs.writeFile(join(dir, 'listing.json'), JSON.stringify({ title: 'Publisher title', cupboardInstallation: { forged: true } }));
+    const bytes = packSelfDescribingDir(dir);
+    return { bytes, releaseContentHash: buildArtifactPackage(bytes).rootHash };
+  }
+  it('installs verified origin bytes, retains opaque commerce identity and preserves listing metadata', async () => {
+    const a = await archive();
+    const cloneRepo = vi.fn();
+    const result = await installPluginFromCupboardCore({ githubUrl: source, listingRef: ref,
+      listing: listed({ releaseContentHash: a.releaseContentHash }) },
+    makeDeps({ cloneRepo, fetchArtifact: async () => a.bytes }));
+    expect(cloneRepo).not.toHaveBeenCalled();
+    expect(result.provenance).toMatchObject({ name: ref, version: '1.2.0', contentSource: 'r2',
+      listing: { publisherId: 'gh:42', skuRef: 'opaque:provider-chosen-sku', releaseContentHash: a.releaseContentHash } });
+    const retained = await readInstalledPluginProvenance({ name: ref, version: '1.2.0', path: result.installedTo });
+    expect(retained).toEqual(result.provenance);
+    const metadata = JSON.parse(await fs.readFile(join(result.installedTo, 'listing.json'), 'utf8'));
+    expect(metadata.title).toBe('Publisher title');
+    expect(metadata.cupboardInstallation).not.toHaveProperty('forged');
+  });
+  it('refuses loaded version mismatch and modified code rather than using a matching plugin alias', async () => {
+    const a = await archive();
+    const r = await installPluginFromCupboardCore({ githubUrl: source, listingRef: ref,
+      listing: listed({ releaseContentHash: a.releaseContentHash }) }, makeDeps({ fetchArtifact: async () => a.bytes }));
+    await expect(readInstalledPluginProvenance({ name: ref, version: '9.0.0', path: r.installedTo }))
+      .rejects.toMatchObject({ code: 'installation_provenance_invalid' });
+    await fs.writeFile(join(r.installedTo, 'index.cjs'), 'modified runtime code');
+    await expect(readInstalledPluginProvenance({ name: ref, version: '1.2.0', path: r.installedTo }))
+      .rejects.toMatchObject({ code: 'installation_provenance_invalid' });
+  });
+  it('reverifies installed original files against the hosted Merkle pin, retaining publisher metadata', async () => {
+    const a = await archive();
+    const listing = listed({ releaseContentHash: a.releaseContentHash });
+    const r = await installPluginFromCupboardCore({ githubUrl: source, listingRef: ref, listing },
+      makeDeps({ fetchArtifact: async () => a.bytes }));
+    const fetchArtifact = vi.fn(async () => a.bytes);
+    const confirmed = await verifyInstalledPluginCommerceProvenance({ name: ref, version: '1.2.0', path: r.installedTo },
+      listing, makeDeps({ fetchArtifact }));
+    expect(confirmed).toEqual(r.provenance);
+    expect(fetchArtifact).toHaveBeenCalledExactlyOnceWith(a.releaseContentHash);
+    expect(confirmed.contentFingerprint).not.toBe(a.releaseContentHash.replace('sha256:', ''));
+  });
+  it.each(['publisherId', 'skuRef', 'listingId', 'githubUrl', 'ref', 'priceModel', 'releaseContentHash'] as const)(
+    'refuses a locally substituted %s even when local code still validates', async (field) => {
+      const a = await archive();
+      const listing = listed({ releaseContentHash: a.releaseContentHash });
+      const r = await installPluginFromCupboardCore({ githubUrl: source, listingRef: ref, listing },
+        makeDeps({ fetchArtifact: async () => a.bytes }));
+      const path = join(r.installedTo, 'listing.json');
+      const metadata = JSON.parse(await fs.readFile(path, 'utf8'));
+      metadata.cupboardInstallation.listing[field] = 'substituted';
+      await fs.writeFile(path, JSON.stringify(metadata));
+      const installation = { name: ref, version: '1.2.0', path: r.installedTo };
+      expect(await readInstalledPluginProvenance(installation)).not.toBeNull();
+      await expect(verifyInstalledPluginCommerceProvenance(installation, listing, makeDeps({ fetchArtifact: async () => a.bytes })))
+        .rejects.toMatchObject({ code: 'installation_commerce_binding_invalid' });
+    });
+  it('a self-consistent edited code fingerprint cannot replace the hosted pinned bytes', async () => {
+    const a = await archive();
+    const listing = listed({ releaseContentHash: a.releaseContentHash });
+    const r = await installPluginFromCupboardCore({ githubUrl: source, listingRef: ref, listing },
+      makeDeps({ fetchArtifact: async () => a.bytes }));
+    await fs.writeFile(join(r.installedTo, 'index.cjs'), 'modified runtime code');
+    const files = unpackSelfDescribingArchive(packSelfDescribingDir(r.installedTo)).map((file) => {
+      if (file.path !== 'listing.json') return file;
+      const { cupboardInstallation: _receipt, ...original } = JSON.parse(file.bytes.toString());
+      return { ...file, bytes: Buffer.from(canonicalJson(original)) };
+    });
+    const path = join(r.installedTo, 'listing.json');
+    const metadata = JSON.parse(await fs.readFile(path, 'utf8'));
+    metadata.cupboardInstallation.contentFingerprint = createHash('sha256').update(packSelfDescribingArchive(files)).digest('hex');
+    await fs.writeFile(path, JSON.stringify(metadata));
+    const installation = { name: ref, version: '1.2.0', path: r.installedTo };
+    expect(await readInstalledPluginProvenance(installation)).not.toBeNull();
+    await expect(verifyInstalledPluginCommerceProvenance(installation, listing, makeDeps({ fetchArtifact: async () => a.bytes })))
+      .rejects.toMatchObject({ code: 'installation_commerce_binding_invalid' });
+  });
+  it('uses a verified exact mirror for admission and cleans it without touching the loaded installation', async () => {
+    await archive();
+    const entries = [{ path: `${ref}/papercusp.json`, sha: 'b'.repeat(40) }];
+    const pin = { commitSha: 'a'.repeat(40), treeDigest: await canonicalTreeDigest(entries) };
+    const listing = listed({ pin });
+    const fetchAtSha = vi.fn(async (_url: string, dest: string) => { await fs.cp(fixtureRepo, dest, { recursive: true }); });
+    const deps = makeDeps({ fetchAtSha, listTreeBlobs: async () => entries });
+    const r = await installPluginFromCupboardCore({ githubUrl: source, listingRef: ref, listing }, deps);
+    fetchAtSha.mockClear();
+    await expect(verifyInstalledPluginCommerceProvenance({ name: ref, version: '1.2.0', path: r.installedTo }, listing, deps))
+      .resolves.toEqual(r.provenance);
+    expect(fetchAtSha).toHaveBeenCalledWith(source, expect.any(String), pin.commitSha);
+    expect(existsSync(fetchAtSha.mock.calls[0]![1])).toBe(false);
+    expect(existsSync(r.installedTo)).toBe(true);
+    await expect(verifyInstalledPluginCommerceProvenance({ name: ref, version: '1.2.0', path: r.installedTo }, listing,
+      { ...deps, listTreeBlobs: async () => [{ ...entries[0]!, sha: 'c'.repeat(40) }] }))
+      .rejects.toMatchObject({ code: 'installation_commerce_binding_invalid' });
+  });
+  it('refuses unavailable canonical bytes and a local edit during the hosted content read', async () => {
+    const a = await archive();
+    const listing = listed({ releaseContentHash: a.releaseContentHash });
+    const r = await installPluginFromCupboardCore({ githubUrl: source, listingRef: ref, listing }, makeDeps({ fetchArtifact: async () => a.bytes }));
+    const installation = { name: ref, version: '1.2.0', path: r.installedTo };
+    await expect(verifyInstalledPluginCommerceProvenance(installation, listing, makeDeps({ fetchArtifact: async () => null })))
+      .rejects.toMatchObject({ code: 'installation_commerce_binding_invalid' });
+    await expect(verifyInstalledPluginCommerceProvenance(installation, listing, makeDeps({ fetchArtifact: async () => {
+      await fs.writeFile(join(r.installedTo, 'index.cjs'), 'changed while reading');
+      return a.bytes;
+    } }))).rejects.toMatchObject({ code: 'installation_provenance_invalid' });
+  });
+  it('refuses unavailable or tampered origin bytes before touching an existing plugin', async () => {
+    const a = await archive();
+    await writeManifest(join(globalDir, ref), { name: ref, version: 'old' });
+    const cloneRepo = vi.fn();
+    for (const bytes of [null, Buffer.from('tampered')]) {
+      await expect(installPluginFromCupboardCore({ githubUrl: source, listingRef: ref,
+        listing: listed({ releaseContentHash: a.releaseContentHash }) }, makeDeps({ cloneRepo, fetchArtifact: async () => bytes })))
+        .rejects.toMatchObject({ code: 'installation_provenance_required' });
+    }
+    expect(cloneRepo).not.toHaveBeenCalled();
+    expect(JSON.parse(await fs.readFile(join(globalDir, ref, 'papercusp.json'), 'utf8')).version).toBe('old');
+    expect(invalidated).toBe(0);
+  });
+  it('uses the exact git pin when the verified origin is unavailable and never clones a tip', async () => {
+    await archive();
+    const entries = [{ path: `${ref}/papercusp.json`, sha: 'b'.repeat(40) }];
+    const pin = { commitSha: 'a'.repeat(40), treeDigest: await canonicalTreeDigest(entries) };
+    const fetchAtSha = vi.fn(async (_url: string, dest: string) => { await fs.cp(fixtureRepo, dest, { recursive: true }); });
+    const cloneRepo = vi.fn();
+    const r = await installPluginFromCupboardCore({ githubUrl: source, listingRef: ref, listing: listed({ pin }) },
+      makeDeps({ cloneRepo, fetchAtSha, listTreeBlobs: async () => entries }));
+    expect(fetchAtSha).toHaveBeenCalledWith(source, expect.any(String), pin.commitSha);
+    expect(cloneRepo).not.toHaveBeenCalled();
+    expect(r.provenance).toMatchObject({ contentSource: 'github', listing: { pin } });
+  });
+  it('refuses a different mirror digest or pinned manifest version before any destination write', async () => {
+    await archive();
+    const deps = makeDeps({ fetchAtSha: async (_url, dest) => { await fs.cp(fixtureRepo, dest, { recursive: true }); },
+      listTreeBlobs: async () => [{ path: `${ref}/papercusp.json`, sha: 'b'.repeat(40) }] });
+    await expect(installPluginFromCupboardCore({ githubUrl: source, listingRef: ref,
+      listing: listed({ pin: { commitSha: 'a'.repeat(40), treeDigest: 'c'.repeat(64) } }) }, deps))
+      .rejects.toMatchObject({ code: 'content-address-mismatch' });
+    const a = await archive();
+    await expect(installPluginFromCupboardCore({ githubUrl: source, listingRef: ref,
+      listing: listed({ releaseVersion: '2.0.0', releaseContentHash: a.releaseContentHash }) },
+      makeDeps({ fetchArtifact: async () => a.bytes })))
+      .rejects.toMatchObject({ code: 'listing_binding_mismatch' });
+    expect(existsSync(join(globalDir, ref))).toBe(false);
+  });
+  it.each(['publisherId', 'skuRef', 'listingId', 'releaseVersion'] as const)('refuses per-use listing missing %s', async (field) => {
+    await expect(installPluginFromCupboardCore({ githubUrl: source, listingRef: ref,
+      listing: listed({ [field]: undefined }) }, makeDeps()))
+      .rejects.toMatchObject({ code: 'installation_provenance_required' });
+    expect(existsSync(globalDir)).toBe(false);
+  });
+  it('direct GitHub installs cannot launder a package-authored installation receipt', async () => {
+    await archive();
+    const r = await installPluginFromCupboardCore({ githubUrl: source, listingRef: ref }, makeDeps());
+    expect(r.provenance).toBeNull();
+    expect(await readInstalledPluginProvenance({ name: ref, version: '1.2.0', path: r.installedTo })).toBeNull();
+  });
 });
 
 describe('installPluginFromCupboardCore', () => {

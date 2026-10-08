@@ -348,6 +348,29 @@ describe('evaluatePlanSpecQualityGate', () => {
     });
   });
 
+  it('accepts exact current findings with historical replay metadata but refuses changed findings and replay hashes', async () => {
+    const clauses = [clause()];
+    const evaluation = evaluatePlanSpecQuality({ planSlug: 'quality-plan', harnessSlug: 'papercusp',
+      planItemIds: ['P-001'], clauses, classRef: 'plan-class-feature-ship',
+      replaySnapshot: { planContentHash: 'a'.repeat(64), clausesAsOf: '2026-08-20T00:00:00.001Z' } });
+    const card = { ...matchingCard(clauses), ratings: evaluation.ratings };
+    const refresh = () => { card.evidenceFingerprint = scorecardEvidenceFingerprint({ rubricRef: SPEC_QUALITY_RUBRIC_REF, ratings: card.ratings }); };
+    refresh();
+    const gate = () => evaluatePlanSpecQualityGate({ harnessSlug: 'papercusp', planSlug: 'quality-plan', planItemIds: ['P-001'] },
+      gateDeps({ listClauses: vi.fn(async () => clauses), listCards: vi.fn(async () => [card]) }));
+    expect((await gate()).satisfied).toBe(true);
+    const original = card.ratings.falsifiability!.evidence;
+    card.ratings.falsifiability!.evidence = original.replace(evaluation.specSetHash, 'f'.repeat(64));
+    refresh();
+    expect((await gate()).satisfied).toBe(false);
+    card.ratings.falsifiability!.evidence = original.replace('Historical replay', 'Untrusted replay');
+    refresh();
+    expect((await gate()).satisfied).toBe(false);
+    card.ratings.falsifiability!.evidence = original.replace('falsifiable', 'unproven');
+    refresh();
+    expect((await gate()).satisfied).toBe(false);
+  });
+
   it('accepts an instrumented scorecard using the persisted snapshot-aware fingerprint', async () => {
     const clauses = [clause()];
     const result = await evaluatePlanSpecQualityGate(

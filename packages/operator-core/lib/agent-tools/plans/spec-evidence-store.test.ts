@@ -1,7 +1,10 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtemp, mkdir, rm, writeFile, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { hostname } from 'node:os';
 
 const h = vi.hoisted(() => ({
   rows: [] as Array<Record<string, unknown>>,
@@ -62,6 +65,7 @@ import {
   measureAndPinEvidenceForScope,
   measureAndPinRepoFilesEvidenceAtRoot,
   measureRepoFilesEvidenceDetailedAtRoot,
+  measureCompletedTestRuntime,
   measureRepoFilesEvidenceAtRoot,
   measureWorkItemsEvidenceForScope,
 } from './spec-evidence-store';
@@ -69,6 +73,176 @@ import { configureRuntimeVintageStore, resetRuntimeVintageStore, InMemoryRuntime
   reportRuntimeVintage, listRuntimeVintage, measureRuntimeVintageEnvironment } from '../../runtime-vintage';
 
 let measurementRoot = '';
+
+describe('completed isolated runtime certification', () => {
+  let root = '', artifacts = '', commit = '';
+  const verifierRunId = '20261008T000000Z-100';
+  const journeyRunId = '20261008T000020Z-200';
+  const at = (seconds: number) => new Date(Date.UTC(2026, 9, 8, 0, 0, seconds)).toISOString();
+  const recipe = { schemaVersion: 1 as const, kind: 'repo-files' as const,
+    sourcePaths: ['src/feature.ts'], testPaths: ['test/feature.e2e.test.ts'],
+    runtimeUnits: ['owned-native'], completedRuntime: { kind: 'verification-harness' as const,
+      verifierRunId, journeyHarness: 'native-journey', journeyRunId } };
+  beforeAll(async () => {
+    root = await mkdtemp(join(tmpdir(), 'completed-runtime-source-'));
+    artifacts = await mkdtemp(join(tmpdir(), 'completed-runtime-artifacts-'));
+    await mkdir(join(root, 'src')); await mkdir(join(root, 'test'));
+    await writeFile(join(root, 'src/feature.ts'), 'export const value = 1;\n');
+    await writeFile(join(root, 'test/feature.e2e.test.ts'), 'expect(value).toBe(1);\n');
+    // A private fixture repository supplies genuine immutable Git objects.
+    execFileSync('git', ['init', '-q', root]);
+    execFileSync('git', ['-C', root, 'add', 'src', 'test']);
+    execFileSync('git', ['-C', root, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+      'commit', '-qm', 'fixture']);
+    commit = execFileSync('git', ['-C', root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+  });
+  afterAll(async () => { await rm(root, { recursive: true, force: true });
+    await rm(artifacts, { recursive: true, force: true }); });
+  afterEach(() => { h.measurementRoot = measurementRoot; vi.unstubAllEnvs(); resetRuntimeVintageStore(); });
+
+  async function setup() {
+    h.measurementRoot = root;
+    vi.stubEnv('VH_EVIDENCE_ROOT_BASE', artifacts);
+    configureRuntimeVintageStore(new InMemoryRuntimeVintageStore()); // The owned verifier has exited.
+    await writeFile(join(root, 'src/feature.ts'), 'export const value = 1;\n');
+    const measured = await measureRepoFilesEvidenceDetailedAtRoot(root, recipe);
+    const verifier = { schemaVersion: 1, harness: 'verify-tauri-headless', runId: verifierRunId,
+      verdict: 'pass', reuseFromRunId: null, phases: [
+        { phase: 'prepare', status: 'passed', startedAt: at(0), endedAt: at(5) },
+        { phase: 'boot', status: 'passed', startedAt: at(5), endedAt: at(10) },
+        { phase: 'assert', status: 'passed', startedAt: at(10), endedAt: at(50) },
+      ] };
+    const receipt = { schemaVersion: 'verifier-source-v1', sourceCommit: commit,
+      testedInputs: measured.files.filter(file => file.dimension === 'test'), files: measured.files };
+    const journey = { schemaVersion: 1, harness: 'native-journey', runId: journeyRunId,
+      verdict: 'pass', reuseFromRunId: null, startedAt: at(20), endedAt: at(30),
+      phases: [{ phase: 'native', status: 'passed' }] };
+    const manifest = { result: 'pass', sourceFingerprints: measured.files.filter(file => file.dimension === 'source') };
+    const save = async () => {
+      const dir = join(artifacts, 'verify-tauri-headless', verifierRunId);
+      await mkdir(join(dir, 'phases/prepare'), { recursive: true });
+      await writeFile(join(dir, 'result.json'), JSON.stringify(verifier));
+      await writeFile(join(dir, 'phases/prepare/verifier-source-receipt.json'), JSON.stringify(receipt));
+      const child = join(artifacts, 'native-journey', journeyRunId);
+      await mkdir(join(child, 'phases/native'), { recursive: true });
+      await writeFile(join(child, 'result.json'), JSON.stringify(journey));
+      await writeFile(join(child, 'phases/native/manifest.json'), JSON.stringify(manifest));
+    };
+    await save();
+    const witness = { schemaVersion: 1, units: recipe.runtimeUnits, fingerprint: 'a'.repeat(64), observedAt: at(11) };
+    const execution = { schemaVersion: 1, root, filePath: recipe.testPaths[0], runGroupId: 'native-run',
+      workspaceId: 'workspace-test', harnessSlug: 'papercusp', testNamePattern: null, testLayer: 'e2e',
+      passed: 1, failed: 0, skipped: 0, collectionFailed: false, mutationPhase: null,
+      commitSha: commit, worktreeDirty: false, runtimeEnvironmentBefore: witness,
+      runtimeEnvironmentAfter: { ...witness, observedAt: at(40) } };
+    const row = { id: 91, work_item_id: 'WI-runtime', plan_slug: 'plan-one', spec_id: 'SPEC-runtime',
+      source_val_id: null, spec_revision: 1, current_revision: 1, spec_fingerprint: 'sha256:spec',
+      evidence_kind: 'test', evidence_ref: recipe.testPaths[0], source_fingerprint: measured.sourceFingerprint,
+      test_fingerprint: measured.testFingerprint, fixture_fingerprint: null, rubric_fingerprint: null,
+      environment_fingerprint: witness.fingerprint, coverage_evidence_ref: null, coverage_evidence_present: false,
+      test_run_id: 42, test_run_present: true, test_run_file_path: recipe.testPaths[0],
+      test_run_commit_sha: commit, test_run_worktree_dirty: false, test_run_framework: 'vitest',
+      test_run_status: 'pass', test_run_execution_details: execution, test_run_started_at: at(12),
+      test_run_finished_at: at(35), details: { currentMeasurement: structuredClone(recipe), evidencePlane: 'live' },
+      observed_at: at(40), created_at: at(40), created_by: 'su-test', binding_fingerprint: 'binding', spec_is_current: true };
+    h.rows = [row];
+    return { row, execution, verifier, receipt, journey, manifest, save };
+  }
+  const read = async () => (await listSpecEvidence({ harnessSlug: 'papercusp', planSlugs: ['plan-one'] }))[0];
+
+  it('certifies the original completed execution after teardown using retained artifacts and Git objects', async () => {
+    await setup();
+    const evidence = await read();
+    expect(evidence.currentness).toMatchObject({ overall: 'current', provenance: 'server-measured',
+      dimensions: { source: 'current', test: 'current', environment: 'current', testRun: 'current' } });
+  });
+  async function setupLlm() {
+    const state = await setup();
+    const store = new InMemoryRuntimeVintageStore();
+    configureRuntimeVintageStore(store);
+    const pid = 2147483647; // Cannot identify a live Linux process.
+    const unit = `llm-test-in-process-${pid}`;
+    await store.report({ unit, pid, host: hostname(), treeSha: commit, buildTime: at(0),
+      workspaceId: 'workspace-test', extra: { kernelProcessIdentity: 'linux:original-boot:100' } });
+    const runtime = [...store.rows.values()][0];
+    runtime.reportedAt = at(9);
+    const fingerprint = createHash('sha256').update(JSON.stringify([
+      [unit, runtime.host, commit, at(0), pid, runtime.extra.kernelProcessIdentity],
+    ])).digest('hex');
+    state.row.test_run_framework = 'llm-test';
+    state.execution.testLayer = 'llm';
+    state.execution.runtimeEnvironmentBefore = { schemaVersion: 1, units: [unit], fingerprint, observedAt: at(11) };
+    state.execution.runtimeEnvironmentAfter = { ...state.execution.runtimeEnvironmentBefore, observedAt: at(40) };
+    state.row.environment_fingerprint = fingerprint;
+    Object.assign(state.row.details.currentMeasurement, {
+      runtimeUnits: [unit], completedRuntime: { kind: 'llm-in-process' },
+    });
+    return { ...state, store, runtime };
+  }
+  it('certifies completed LLM source execution from its original kernel witness and Git objects', async () => {
+    const state = await setupLlm();
+    expect(measureRuntimeVintageEnvironment([...state.store.rows.values()],
+      state.execution.runtimeEnvironmentBefore.units)).toBeNull();
+    expect((await read()).currentness).toMatchObject({ overall: 'current', provenance: 'server-measured',
+      dimensions: { environment: 'current', source: 'current', test: 'current', testRun: 'current' } });
+  });
+  it.each(['missing-row', 'changed-kernel', 'changed-commit', 'bundle-runtime', 'wrong-unit',
+    'late-report', 'late-boot', 'remote-host', 'missing-witness', 'dirty-run', 'deployed-plane',
+    'wrong-framework', 'wrong-layer', 'no-completion-selector'])(
+    'refuses completed LLM certification for %s', async failure => {
+      const state = await setupLlm();
+      if (failure === 'missing-row') state.store.rows.clear();
+      if (failure === 'changed-kernel') state.runtime.extra.kernelProcessIdentity = 'linux:replacement:200';
+      if (failure === 'changed-commit') state.runtime.treeSha = 'b'.repeat(40);
+      if (failure === 'bundle-runtime') state.runtime.bundleVersion = `node-entry-sha256:${'b'.repeat(64)}`;
+      if (failure === 'wrong-unit') state.runtime.unit = 'dev-api';
+      if (failure === 'late-report') state.runtime.reportedAt = at(12);
+      if (failure === 'late-boot') state.runtime.buildTime = at(10);
+      if (failure === 'remote-host') state.runtime.host = 'another-machine';
+      if (failure === 'missing-witness') delete (state.execution as any).runtimeEnvironmentBefore;
+      if (failure === 'dirty-run') state.row.test_run_worktree_dirty = true;
+      if (failure === 'deployed-plane') state.row.details.evidencePlane = 'deployed';
+      if (failure === 'wrong-framework') state.row.test_run_framework = 'vitest';
+      if (failure === 'wrong-layer') state.execution.testLayer = 'unit';
+      if (failure === 'no-completion-selector') delete (state.row.details.currentMeasurement as any).completedRuntime;
+      expect((await read()).currentness.dimensions.environment).toBe('unknown');
+    });
+  it('refuses LLM source certification when current file bytes differ from the original Git object', async () => {
+    const state = await setupLlm();
+    const basis = state.row.details.currentMeasurement as any;
+    const current = await measureRepoFilesEvidenceDetailedAtRoot(root, basis);
+    current.files[0].sha256 = 'b'.repeat(64);
+    expect(await measureCompletedTestRuntime(state.row as any, basis, current.files,
+      { workspaceId: 'workspace-test', harnessSlug: 'papercusp' }, root)).toBeNull();
+  });
+  it.each(['failed-boot', 'reused-verifier', 'wrong-source', 'changed-receipt', 'wrong-journey-source', 'outside-test',
+    'missing-witness', 'dirty-run', 'deployed-plane', 'no-completion-selector'])(
+    'refuses certification for %s', async failure => {
+      const state = await setup();
+      if (failure === 'failed-boot') state.verifier.phases[1].status = 'failed';
+      if (failure === 'reused-verifier') (state.verifier as any).reuseFromRunId = 'another-run';
+      if (failure === 'wrong-source') state.receipt.sourceCommit = 'b'.repeat(40);
+      if (failure === 'changed-receipt') state.receipt.files[0].sha256 = 'b'.repeat(64);
+      if (failure === 'wrong-journey-source') state.manifest.sourceFingerprints[0].sha256 = 'b'.repeat(64);
+      if (failure === 'outside-test') state.journey.endedAt = at(36);
+      if (failure === 'missing-witness') delete (state.execution as any).runtimeEnvironmentBefore;
+      if (failure === 'dirty-run') state.row.test_run_worktree_dirty = true;
+      if (failure === 'deployed-plane') state.row.details.evidencePlane = 'deployed';
+      if (failure === 'no-completion-selector') delete (state.row.details.currentMeasurement as any).completedRuntime;
+      await state.save();
+      expect((await read()).currentness.dimensions.environment).toBe('unknown');
+    });
+  it('detects current source drift even when the original receipt remains a pass', async () => {
+    await setup();
+    await writeFile(join(root, 'src/feature.ts'), 'export const value = 2;\n');
+    execFileSync('git', ['-C', root, 'add', 'src/feature.ts']);
+    execFileSync('git', ['-C', root, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+      'commit', '-qm', 'changed fixture source']);
+    const evidence = await read();
+    expect(evidence.currentness.dimensions.source).toBe('stale');
+    expect(evidence.currentness.dimensions.environment).toBe('unknown');
+  });
+});
 
 beforeAll(async () => {
   measurementRoot = await mkdtemp(join(tmpdir(), 'spec-evidence-measurement-'));

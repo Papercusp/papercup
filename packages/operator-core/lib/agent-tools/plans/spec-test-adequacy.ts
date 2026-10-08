@@ -768,6 +768,48 @@ function clauseDeclarationProbe(clause: SpecClauseRevision, harness?: string): s
   );
 }
 
+const MAX_RENDERED_ADEQUACY_CASES = 8;
+
+function renderedTestRunExecution(row: SpecEvidenceForAdequacy, details: Record<string, unknown>) {
+  const execution = row.testRunExecution;
+  if (!execution) return null;
+
+  const passedCaseTitles = execution.passedCaseTitles ?? [];
+  const declaredCases = Array.isArray(details.testCases)
+    ? [...new Set(details.testCases.filter((value): value is string => typeof value === 'string' && value.trim().length > 0))]
+    : [];
+  const passedDeclaredCases = declaredCases.filter((caseTitle) => passedCaseTitles.includes(caseTitle));
+  const missingDeclaredCases = declaredCases.filter((caseTitle) => !passedCaseTitles.includes(caseTitle));
+  const adequacyTestCases = declaredCases.length === 0
+    ? undefined
+    : declaredCases.length <= MAX_RENDERED_ADEQUACY_CASES
+      ? {
+          declared: declaredCases,
+          passed: passedDeclaredCases,
+          missing: missingDeclaredCases,
+        }
+      : {
+          declaredCount: declaredCases.length,
+          passedCount: passedDeclaredCases.length,
+          missingCount: missingDeclaredCases.length,
+          declaredExamples: declaredCases.slice(0, MAX_RENDERED_ADEQUACY_CASES),
+          passedExamples: passedDeclaredCases.slice(0, MAX_RENDERED_ADEQUACY_CASES),
+          missingExamples: missingDeclaredCases.slice(0, MAX_RENDERED_ADEQUACY_CASES),
+          examplesTruncated: true,
+        };
+
+  return {
+    status: execution.status ?? null,
+    passed: execution.passed,
+    failed: execution.failed,
+    skipped: execution.skipped,
+    collectionFailed: execution.collectionFailed,
+    testLayer: execution.testLayer ?? null,
+    passedCaseTitleCount: passedCaseTitles.length,
+    ...(adequacyTestCases ? { adequacyTestCases } : {}),
+  };
+}
+
 function bindingDescription(row: SpecEvidenceForAdequacy): string {
   const details = detailsOf(row);
   const lineage = classifySpecEvidenceLineage(row);
@@ -806,7 +848,7 @@ function bindingDescription(row: SpecEvidenceForAdequacy): string {
     row.testRunId !== null ? `testRunId=${row.testRunId}` : null,
     row.testRunId !== null && row.testRunExecution === null ? 'testRunLedgerExecution=unavailable' : null,
     row.testRunId !== null && row.testRunExecution != null
-      ? 'testRunLedgerExecution=' + JSON.stringify(row.testRunExecution)
+      ? 'testRunLedgerExecution=' + JSON.stringify(renderedTestRunExecution(row, details))
       : null,
     row.testRunProvenance
       ? `testRunLedgerFile=${JSON.stringify(row.testRunProvenance.filePath)}, ` +
@@ -1479,13 +1521,12 @@ function appendRatingRerunProbes(
   ratings: Record<AdequacyCriterion, AdequacyRatingEntry>,
   rerunRecipe: SpecTestAdequacyRerunRecipe,
 ): void {
-  const args = JSON.stringify(crossGenerationAuditProbeArgs(rerunRecipe));
   for (const criterion of ADEQUACY_CRITERIA) {
     const rating = ratings[criterion];
     ratings[criterion] = {
       ...rating,
       evidence:
-        `${rating.evidence} Re-run ${rerunRecipe.evaluator} with args=${args}; ` +
+        `${rating.evidence} Replay the shared scorecard rerunRecipe (${rerunRecipe.evaluator}) once with its stored args; ` +
         `inspect rows[0].ratings[${JSON.stringify(criterion)}].`,
     };
   }

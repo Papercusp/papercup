@@ -35,6 +35,7 @@ import {
 } from '../p2p/metered-invocation';
 import type { CumulativePaymentVoucher, MicrochargeChannel } from '../p2p/microcharge';
 import { resolveCupboardBaseUrl } from './base-url';
+import type { InstalledPluginProvenance } from './install-plugin-core';
 
 /** Reused verbatim from the checkout door so both share one transport seam. */
 export interface MeteredTransportDeps {
@@ -152,6 +153,7 @@ async function callHostedDoor(
     response = await fetchImpl(`${base}${call.path}`, {
       method: call.method,
       headers: { 'content-type': 'application/json', Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(8_000),
       ...(call.body === undefined ? {} : { body: JSON.stringify(call.body) }),
     });
   } catch (err) {
@@ -175,6 +177,101 @@ async function callHostedDoor(
     );
   }
   return { ok: true, payload };
+}
+
+/** Commerce identity retained by the hosted offer projection; SKU is opaque. */
+export interface HostedPerUseOffer {
+  readonly offerId: string;
+  readonly productId: string;
+  readonly skuRef: string;
+  readonly creatorId: string;
+  readonly active: boolean;
+  readonly productActive: boolean;
+  readonly terms: PerUseTermsInput;
+}
+
+export async function readHostedPerUseOffers(
+  deps: MeteredTransportDeps = {},
+): Promise<{ ok: true; offers: HostedPerUseOffer[] } | MeteredDoorFailure> {
+  const called = await callHostedDoor({ path: '/commerce/offers?pricing=per-use', method: 'GET', expect: [200] }, deps);
+  if (!called.ok) return called;
+  if (!Array.isArray(called.payload.offers)) return fail('invalid_catalog', 'hosted offers are unreadable', 200, 'hosted-door');
+  const offers: HostedPerUseOffer[] = [];
+  for (const raw of called.payload.offers) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      return fail('invalid_catalog', 'hosted offer is malformed', 200, 'hosted-door');
+    }
+    const o = raw as Record<string, unknown>;
+    const terms = o.perUse as PerUseTermsInput | null;
+    if (![o.offerId, o.productId, o.skuRef, o.creatorId].every((v) => typeof v === 'string' && v.trim()) ||
+        typeof o.active !== 'boolean' || typeof o.productActive !== 'boolean' || o.pricingModel !== 'per-use' ||
+        !terms || typeof terms !== 'object' || !Number.isSafeInteger(terms.unitPriceMicros) ||
+        typeof terms.meterUnit !== 'string' || typeof terms.priceVersion !== 'string' ||
+        typeof terms.splitManifestHash !== 'string' || !declareMeter(terms).ok) {
+      return fail('invalid_catalog', 'hosted per-use identity or terms are malformed', 200, 'hosted-door');
+    }
+    offers.push({ offerId: o.offerId as string, productId: o.productId as string, skuRef: o.skuRef as string,
+      creatorId: o.creatorId as string, active: o.active, productActive: o.productActive, terms: { ...terms } });
+  }
+  return { ok: true, offers };
+}
+
+/** Call ONLY with provenance reverified against hosted pinned bytes at turn admission. */
+export function bindInstalledPerUseOffer(
+  provenance: InstalledPluginProvenance,
+  offers: readonly HostedPerUseOffer[],
+): { ok: true; offer: HostedPerUseOffer } | MeteredDoorFailure {
+  const listing = provenance.listing;
+  if (listing.priceModel !== 'per-use' || !listing.skuRef || !listing.publisherId ||
+      !listing.listingId || listing.releaseVersion !== provenance.version) {
+    return fail('installation_binding_required', 'an exact per-use installation is required', 0, 'local-interception');
+  }
+  const active = offers.filter((o) => o.skuRef === listing.skuRef && o.creatorId === listing.publisherId &&
+    o.active && o.productActive);
+  if (active.length !== 1) return fail(active.length ? 'ambiguous_offer' : 'unknown_offer',
+    'the loaded release must have one active offer from its verified publisher', 0, 'local-interception');
+  return { ok: true, offer: structuredClone(active[0]!) };
+}
+
+/** Owner-authorized buyer read. A token for another principal cannot grant this target access. */
+export async function readHostedToolEntitlement(
+  payer: string,
+  productId: string,
+  deps: MeteredTransportDeps = {},
+): Promise<{ ok: true; entitled: boolean } | MeteredDoorFailure> {
+  if (!payer.trim() || !productId.trim()) return fail('invalid_request', 'payer and product are required', 0, 'local-interception');
+  const called = await callHostedDoor({ path: `/commerce/entitlements?buyer=${encodeURIComponent(payer)}`,
+    method: 'GET', expect: [200] }, deps);
+  if (!called.ok) return called;
+  if (called.payload.buyer !== payer || !Array.isArray(called.payload.entitlements)) {
+    return fail('invalid_entitlements', 'hosted entitlements differ from the target buyer', 200, 'hosted-door');
+  }
+  for (const row of called.payload.entitlements) {
+    if (!row || typeof row !== 'object' || row.buyer_id !== payer || typeof row.product_id !== 'string' ||
+        row.state !== 'active' || row.revoked_at_ms !== null) {
+      return fail('invalid_entitlements', 'hosted active entitlement is malformed or belongs to another buyer', 200, 'hosted-door');
+    }
+  }
+  return { ok: true, entitled: called.payload.entitlements.some((row) => row.product_id === productId) };
+}
+
+/** Re-read the durable channel's authenticated funder before turn admission. */
+export async function readHostedToolChannel(
+  channelId: string,
+  payer: string,
+  deps: MeteredTransportDeps = {},
+): Promise<{ ok: true; escrowMicros: bigint; committedMicros: bigint } | MeteredDoorFailure> {
+  const called = await callHostedDoor({ path: `${CHANNEL_USAGE_PATH}/${encodeURIComponent(channelId)}`,
+    method: 'GET', expect: [200] }, deps);
+  if (!called.ok) return called;
+  const c = called.payload.channel as Record<string, unknown> | undefined;
+  if (!c || c.channelId !== channelId || c.principalId !== payer || c.state !== 'open' ||
+      !Number.isSafeInteger(c.escrowMicros) || !Number.isSafeInteger(c.committedMicros) ||
+      (c.escrowMicros as number) < 0 || (c.committedMicros as number) < 0 ||
+      (c.committedMicros as number) > (c.escrowMicros as number)) {
+    return fail('channel_binding_mismatch', 'target payer needs an open funded channel it owns', 200, 'hosted-door');
+  }
+  return { ok: true, escrowMicros: BigInt(c.escrowMicros as number), committedMicros: BigInt(c.committedMicros as number) };
 }
 
 /**

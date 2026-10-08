@@ -25,6 +25,11 @@ export const SPEC_QUALITY_CRITERIA = [
 export type SpecQualityCriterion = (typeof SPEC_QUALITY_CRITERIA)[number];
 export type SpecQualityRating = 'pass' | 'fail' | 'unknown' | 'waived' | 'not-applicable';
 
+export interface SpecQualityReplaySnapshot {
+  planContentHash: string;
+  clausesAsOf: string;
+}
+
 export interface SpecQualityRatingEntry {
   rating: SpecQualityRating;
   evidence: string;
@@ -114,7 +119,7 @@ function notApplicable(evidence: string): SpecQualityRatingEntry {
 }
 
 function rerunnableEvidence(
-  input: { planSlug: string; harnessSlug: string; classRef: PlanClassRubricRef },
+  input: { planSlug: string; harnessSlug: string; classRef: PlanClassRubricRef; replaySnapshot?: SpecQualityReplaySnapshot },
   criterion: SpecQualityCriterion,
   evidence: string,
   expectedSpecSetHash: string,
@@ -126,8 +131,29 @@ function rerunnableEvidence(
     `Source store: plans:get-specs { ${planArgs} }. ` +
     `Re-run exactly: plans:evaluate-spec-quality { ${evaluationArgs} }; ` +
     `confirm the returned specSetHash equals ${JSON.stringify(expectedSpecSetHash)}; ` +
-    `inspect ratings[${JSON.stringify(criterion)}]. ${evidence}`
+    `inspect ratings[${JSON.stringify(criterion)}]. ${evidence}` +
+    (input.replaySnapshot ? ' Historical replay (same rated snapshot): plans:evaluate-spec-quality ' +
+      JSON.stringify({ slug: input.planSlug, harness: input.harnessSlug, classRef: input.classRef,
+        expectedSpecSetHash, replaySnapshot: input.replaySnapshot }) + '.' : '')
   );
+}
+
+/** Replay metadata is orthogonal to the current gate's exact findings. Do not
+ * relax the stored card fingerprint or normalize any other evidence text. */
+export function specQualityEvidenceWithoutReplay(evidence: string, input: {
+  planSlug: string; classRef: PlanClassRubricRef; specSetHash: string;
+}): string {
+  const marker = ' Historical replay (same rated snapshot): plans:evaluate-spec-quality ';
+  const at = evidence.lastIndexOf(marker);
+  if (at < 0 || !evidence.endsWith('.')) return evidence;
+  try {
+    const args = JSON.parse(evidence.slice(at + marker.length, -1));
+    if (args.slug !== input.planSlug || args.classRef !== input.classRef ||
+      args.expectedSpecSetHash !== input.specSetHash || typeof args.harness !== 'string' ||
+      !/^[a-f0-9]{64}$/.test(args.replaySnapshot?.planContentHash ?? '') ||
+      !Number.isFinite(Date.parse(args.replaySnapshot?.clausesAsOf))) return evidence;
+    return evidence.slice(0, at);
+  } catch { return evidence; }
 }
 
 function trimmedField(value: unknown): string | null {
@@ -347,6 +373,7 @@ export function evaluatePlanSpecQuality(input: {
   clauses: readonly SpecClauseRevision[];
   classRef: PlanClassRubricRef;
   expectedSpecSetHash?: string;
+  replaySnapshot?: SpecQualityReplaySnapshot;
 }): PlanSpecQualityResult {
   const planItemIds = [...new Set(input.planItemIds)].sort();
   const currentSet = input.clauses

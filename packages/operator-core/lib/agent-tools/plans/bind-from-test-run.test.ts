@@ -115,6 +115,20 @@ describe('deriveBindingFromTestRun', () => {
       runtimeEnvironmentAfter: { ...witness, observedAt: '2026-09-23T15:00:00Z' } };
     const derived = deriveBindingFromTestRun(input(), run({ execution_details: execution }), root, 'run');
     expect(derived).toMatchObject({ ok: true, binding: { measurement: { runtimeUnits: ['bg-host'] } } });
+    const completedRuntime = { kind: 'verification-harness' as const,
+      verifierRunId: '20261008T000000Z-100', journeyHarness: 'native-journey', journeyRunId: '20261008T000020Z-200' };
+    const completedInput = input({ completedRuntime });
+    expect(testRunBindingSchema.parse(completedInput)).toHaveProperty('completedRuntime', completedRuntime);
+    expect(deriveBindingFromTestRun(completedInput, run({ execution_details: execution }), root, 'run'))
+      .toMatchObject({ ok: true, binding: { measurement: { runtimeUnits: ['bg-host'], completedRuntime } } });
+    expect(deriveBindingFromTestRun(completedInput, run(), root, 'run'))
+      .toMatchObject({ ok: false, error: 'test_run_runtime_witness_missing' });
+    const llmInput = input({ completedRuntime: { kind: 'llm-in-process' } });
+    expect(testRunBindingSchema.parse(llmInput)).toHaveProperty('completedRuntime', { kind: 'llm-in-process' });
+    expect(deriveBindingFromTestRun(llmInput, run({ execution_details: execution }), root, 'run'))
+      .toMatchObject({ ok: true, binding: { measurement: { completedRuntime: { kind: 'llm-in-process' } } } });
+    expect(deriveBindingFromTestRun(llmInput, run(), root, 'run'))
+      .toMatchObject({ ok: false, error: 'test_run_runtime_witness_missing' });
     const drift = deriveBindingFromTestRun(input(), run({ execution_details: { ...execution,
       runtimeEnvironmentAfter: { ...execution.runtimeEnvironmentAfter, fingerprint: 'b'.repeat(64) } } }), root, 'run');
     expect(drift.ok && drift.binding.measurement).not.toHaveProperty('runtimeUnits');

@@ -176,6 +176,7 @@ describe('payment-channel Worker production door', () => {
       replayed: false,
       channel: {
         channelId: request.channelId,
+        principalId: 'gh:42',
         state: 'open',
         fundingSource: {
           kind: 'prepaid-credit',
@@ -228,6 +229,7 @@ describe('payment-channel Worker production door', () => {
       env,
     );
     expect(visible.status).toBe(200);
+    expect(await visible.json()).toMatchObject({ channel: { channelId: request.channelId, principalId: 'gh:42' } });
 
     auth.resolveGithubBearer.mockResolvedValueOnce({
       id: 99,

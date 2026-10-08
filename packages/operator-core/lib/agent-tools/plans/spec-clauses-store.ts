@@ -765,6 +765,8 @@ export interface ListSpecClausesOptions {
   planItemIds?: string[];
   revision?: number;
   includeHistory?: boolean;
+  /** Latest immutable revision per identity at this cutoff, never the live pointer. */
+  asOf?: string;
   /** Optional SQL-side row cap. Filters are pushed down before the cap, so a
    * bounded snapshot cannot lose a requested current row behind history. */
   limit?: number;
@@ -772,6 +774,9 @@ export interface ListSpecClausesOptions {
 
 /** Exact structured read; current-only unless includeHistory or revision is requested. */
 export async function listSpecClauses(options: ListSpecClausesOptions): Promise<SpecClauseRevision[]> {
+  if (options.asOf && (!Number.isFinite(Date.parse(options.asOf)) || options.revision !== undefined || options.includeHistory)) {
+    throw new Error('spec_snapshot_selector_invalid');
+  }
   const scope = await resolvePlanScope({
     harnessSlug: options.harnessSlug,
     ...(options.workspaceId ? { workspaceId: options.workspaceId } : {}),
@@ -802,7 +807,14 @@ export async function listSpecClauses(options: ListSpecClausesOptions): Promise<
        AND (${valIds.length} = 0 OR c.source_val_id = ANY(${valIds}::text[]))
        AND (${itemIds.length} = 0 OR r.plan_item_id = ANY(${itemIds}::text[]))
        AND ${
-         options.revision !== undefined
+         options.asOf
+           ? tx`r.created_at <= ${options.asOf}::timestamptz AND NOT EXISTS (
+               SELECT 1 FROM harness_shared.plan_spec_clause_revisions newer
+                WHERE newer.workspace_id = r.workspace_id AND newer.harness_slug = r.harness_slug
+                  AND newer.plan_slug = r.plan_slug AND newer.spec_id = r.spec_id
+                  AND newer.revision > r.revision AND newer.created_at <= ${options.asOf}::timestamptz
+             )`
+           : options.revision !== undefined
            ? tx`r.revision = ${options.revision}`
            : options.includeHistory
              ? tx`TRUE`
@@ -820,7 +832,7 @@ export async function listSpecClauses(options: ListSpecClausesOptions): Promise<
     .filter((r) => !valIdSet || (r.source_val_id !== null && valIdSet.has(r.source_val_id)))
     .filter((r) => !itemIdSet || itemIdSet.has(r.plan_item_id))
     .filter((r) =>
-      options.revision !== undefined
+      options.asOf ? true : options.revision !== undefined
         ? Number(r.revision) === options.revision
         : options.includeHistory || Number(r.revision) === Number(r.current_revision),
     )
@@ -828,7 +840,7 @@ export async function listSpecClauses(options: ListSpecClausesOptions): Promise<
       planSlug: r.plan_slug,
       specId: r.spec_id,
       sourceValId: r.source_val_id,
-      currentRevision: Number(r.current_revision),
+      currentRevision: Number(options.asOf ? r.revision : r.current_revision),
       revision: Number(r.revision),
       planItemId: r.plan_item_id,
       behavior: r.behavior,

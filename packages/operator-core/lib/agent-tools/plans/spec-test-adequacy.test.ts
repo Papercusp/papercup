@@ -695,6 +695,38 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(rendered.split(' Re-run plans:evaluate-spec-test-adequacy')[0]).not.toContain('at current HEAD');
   });
 
+  it('summarizes large test-run case lists while retaining the exact bound case and run pointer', () => {
+    const base = evidence();
+    const passedCaseTitles = Array.from({ length: 100 }, (_, index) => `suite > case ${index}`);
+    const row = evidence({
+      testRunId: 43,
+      testRunExecution: {
+        status: 'pass',
+        passed: 100,
+        failed: 0,
+        skipped: 0,
+        collectionFailed: false,
+        testLayer: 'integration',
+        passedCaseTitles,
+      },
+      details: {
+        adequacy: {
+          ...((base.details.adequacy ?? {}) as Record<string, unknown>),
+          testCases: [passedCaseTitles[42]],
+        },
+      },
+    });
+    const result = evaluateSpecTestAdequacy({ clause: clause(), evidence: [row], classRef: 'plan-class-feature-ship' });
+    const rendered = Object.values(result.ratings).map((rating) => rating.evidence).join('\n');
+
+    expect(rendered).toContain('testRunId=43');
+    expect(rendered).toContain('passedCaseTitleCount":100');
+    expect(rendered).toContain('"declared":["suite > case 42"],"passed":["suite > case 42"],"missing":[]');
+    expect(rendered).not.toContain('passedCaseTitles');
+    expect(rendered).not.toContain('suite > case 0');
+    expect(rendered.length).toBeLessThan(JSON.stringify(passedCaseTitles).length * Object.keys(result.ratings).length);
+  });
+
   it('does not treat a binder falsifiability attestation as a demonstrated negative control', () => {
     const result = evaluateSpecTestAdequacy({
       clause: clause(),
@@ -712,7 +744,7 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(result.verdict).toBe('unknown');
   });
 
-  it('puts an exact executable evaluator probe in every rating evidence string', () => {
+  it('points each rating to the exact evaluator replay in the card-level recipe', () => {
     const bound = evidence();
     const current: EvidenceCurrentInput[] = [
       {
@@ -738,13 +770,14 @@ describe('spec-test-adequacy per-clause evaluator', () => {
         ...bound.fingerprints,
       },
     ]);
-    const args = JSON.stringify(crossGenerationAuditProbeArgs(recipe));
+    expect(recipe.args).toEqual(crossGenerationAuditProbeArgs(recipe));
 
     for (const criterion of ADEQUACY_CRITERIA) {
       expect(result.ratings[criterion].evidence).toContain(
-        `Re-run plans:evaluate-spec-test-adequacy with args=${args}; ` +
+        `Replay the shared scorecard rerunRecipe (plans:evaluate-spec-test-adequacy) once with its stored args; ` +
           `inspect rows[0].ratings[${JSON.stringify(criterion)}].`,
       );
+      expect(result.ratings[criterion].evidence).not.toContain('with args=');
     }
   });
 
@@ -976,8 +1009,9 @@ describe('spec-test-adequacy per-clause evaluator', () => {
 
     expect(result.ratings['execution-integrity'].rating).toBe('fail');
     expect(result.ratings['execution-integrity'].evidence).toContain(
-      'testRunLedgerExecution={"status":"pass","passed":6,"failed":0,"skipped":2,"collectionFailed":false,"testLayer":"integration","passedCaseTitles":["the mutation is detected"]}',
+      'testRunLedgerExecution={"status":"pass","passed":6,"failed":0,"skipped":2,"collectionFailed":false,"testLayer":"integration","passedCaseTitleCount":1}',
     );
+    expect(result.ratings['execution-integrity'].evidence).not.toContain('passedCaseTitles');
 
     const unavailable = evaluateSpecTestAdequacy({
       clause: clause(),
@@ -2007,7 +2041,10 @@ describe('spec-test-adequacy per-clause evaluator', () => {
       classRef: 'plan-class-feature-ship',
     });
     expect(uncorroborated.ratings['correct-layer'].rating).toBe('unknown');
-    expect(uncorroborated.ratings['correct-layer'].evidence).toContain('different passing case');
+    expect(uncorroborated.ratings['correct-layer'].evidence).toContain('passedCaseTitleCount":1');
+    expect(uncorroborated.ratings['correct-layer'].evidence).toContain('"declared":["declared binding case"]');
+    expect(uncorroborated.ratings['correct-layer'].evidence).toContain('"missing":["declared binding case"]');
+    expect(uncorroborated.ratings['correct-layer'].evidence).not.toContain('different passing case');
     expect(uncorroborated.ratings['correct-layer'].suggestion).toContain('exact passedCaseTitles');
 
     const contradictoryLayer = successfulTestBinding('test/reconnect.unit.test.ts', {
@@ -2941,7 +2978,7 @@ describe('rerunRecipe is submittable to its own evaluator', () => {
     expect(recipe.args.includeDraft).toBe(true);
   });
 
-  it('keeps each inline grading-audit probe on the exact immutable evidence selection', () => {
+  it('keeps exact immutable evidence selection on the shared card replay recipe', () => {
     const current: EvidenceCurrentInput[] = [
       {
         planSlug: 'reconnect-plan',
@@ -2961,17 +2998,17 @@ describe('rerunRecipe is submittable to its own evaluator', () => {
       classRef: 'plan-class-bugfix',
       rerunSelection: { workItemIds: ['WI-101'] },
     });
-    const inline = result.ratings.traceability.evidence.match(
-      /Re-run plans:evaluate-spec-test-adequacy with args=(\{.*\}); inspect rows\[0\]\.ratings\[/,
-    )?.[1];
-    expect(inline).toBeDefined();
-    const args = JSON.parse(inline!) as Record<string, unknown>;
     const recipe = result.scorecardDraft.rerunRecipe;
+    const evidenceText = result.ratings.traceability.evidence;
 
-    expect(evaluatorArgsSchema.safeParse(args).success).toBe(true);
-    expect(args).toEqual(crossGenerationAuditProbeArgs(recipe));
-    expect(args).toEqual(recipe.args);
-    expect(args).toMatchObject({
+    expect(evaluatorArgsSchema.safeParse(recipe.args).success).toBe(true);
+    expect(recipe.args).toEqual(crossGenerationAuditProbeArgs(recipe));
+    expect(evidenceText).toContain(
+      'Replay the shared scorecard rerunRecipe (plans:evaluate-spec-test-adequacy) once with its stored args; inspect rows[0].ratings["traceability"].',
+    );
+    expect(evidenceText).not.toContain('with args=');
+    expect(Object.values(result.ratings).every((rating) => !rating.evidence.includes('with args='))).toBe(true);
+    expect(recipe.args).toMatchObject({
       harness: 'papercusp',
       slug: 'reconnect-plan',
       classRef: 'plan-class-bugfix',

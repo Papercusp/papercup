@@ -6,6 +6,10 @@
 // not just the helper.
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SpecClauseRevision } from './spec-clauses-store';
+import { hashPlanContent } from './content-hash';
+
+const snapshotBody = () => '---\ntitle: Quality plan\nstatus: ready\n---\n## Items\n' +
+  reads.items.map((item) => `- **${item.id}** \`${item.storedStatus}\` Contract`).join('\n');
 
 const reads = vi.hoisted(() => ({
   items: [] as Array<{ id: string; storedStatus: string }>,
@@ -24,9 +28,13 @@ vi.mock('./_ctx-opts', async (importOriginal) => ({
 vi.mock('./source', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./source')>()),
   readPlanBySlug: async () => ({
-    row: { items: reads.items, templateData: null },
+    row: { items: reads.items, templateData: null, contentHash: hashPlanContent(snapshotBody()) },
     parsed: { items: reads.items },
   }),
+}));
+vi.mock('./revisions', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./revisions')>()),
+  getPlanRevisionSnapshot: async () => ({ contentSnapshot: snapshotBody(), contentSnapshotHash: hashPlanContent(snapshotBody()) }),
 }));
 vi.mock('./plan-input-validation', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./plan-input-validation')>()),

@@ -212,6 +212,14 @@ export interface PlanWriteMeta {
  * STRUCTURED-ONLY write that still bumps `version`, stamps `updated_at`, and fires
  * `afterWrite` (the revision spine) against the unchanged body.
  */
+/** Locked state before a strict revision writer advances the plan. */
+export interface PlanWritePreimage {
+  body: string;
+  contentHash: string;
+  templateData: unknown;
+  version: number;
+}
+
 export interface TemplateDataPatch {
   data: unknown;
   /**
@@ -312,6 +320,8 @@ export interface WithPlanLockOpts<T = unknown> {
     scope: { workspaceId: string; harnessSlug: string },
     writtenTemplateData: unknown,
     writtenVersion?: number,
+    /** Immutable copy of the prior state, captured before the mutator runs. */
+    preimage?: PlanWritePreimage | null,
   ) => Promise<void>;
   /**
    * Strict post-mutation hook that runs BEFORE the transaction commits. Unlike
@@ -504,6 +514,14 @@ export async function withPlanLock<T>(
         }
       : null;
 
+    const revisionPreimage: PlanWritePreimage | null = cur && opts.revisionInTransaction
+      ? {
+          body: cur.content,
+          contentHash: cur.content_hash,
+          templateData: structuredClone(cur.template_data),
+          version: curVersion,
+        }
+      : null;
     const { newBody, value, templateData: templateDataPatch, inputSchema, outputSchema } = await mutator(
       cur?.content ?? null,
       meta,
@@ -928,6 +946,7 @@ export async function withPlanLock<T>(
         { workspaceId, harnessSlug },
         writtenTemplateData,
         newVersion,
+        revisionPreimage,
       );
     }
 

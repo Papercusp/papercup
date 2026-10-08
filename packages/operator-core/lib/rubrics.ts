@@ -90,7 +90,7 @@ export {
   type RubricCriterionWindow,
   type ResolvedCriterionWindow,
 } from './agent-tools/plans/rubric-template';
-import { withPlanLock, bumpUpdatedDate } from './agent-tools/plans/with-plan-lock';
+import { withPlanLock, bumpUpdatedDate, type PlanWritePreimage } from './agent-tools/plans/with-plan-lock';
 import {
   withAcceptanceBarAmendmentTransaction,
   acceptanceBarAmendmentKey,
@@ -118,7 +118,7 @@ import { setFrontmatterScalar } from './agent-tools/plans/transfer-owner';
 import { deriveIndexFromContent } from './agent-tools/plans/source';
 import { writePlanIndexRows } from './agent-tools/plans/plan-index-rows';
 import { summarizeForcedPast } from './agent-tools/plans/forced-past-stamp';
-import { recordPlanRevisionInTransaction, type PlanRevisionSql } from './agent-tools/plans/revisions';
+import { acquirePlanRevisionAdvisoryLock, recordPlanRevisionInTransaction, type PlanRevisionSql } from './agent-tools/plans/revisions';
 import {
   applyPlanRevisionSnapshotBackfill,
   applyPlanRevisionSnapshotRepair,
@@ -3203,6 +3203,7 @@ function rubricRevisionInTransaction(
   scope: { workspaceId: string; harnessSlug: string },
   committedTemplateData: unknown,
   committedVersion?: number,
+  preimage?: PlanWritePreimage | null,
 ) => Promise<void> {
   const identity: AgentIdentity = {
     ownerId: by ?? 'rubrics:system',
@@ -3213,7 +3214,45 @@ function rubricRevisionInTransaction(
     workspaceId: null,
     userId: null,
   };
-  return async (tx, writtenBody, scope, committedTemplateData, committedVersion) => {
+  return async (tx, writtenBody, scope, committedTemplateData, committedVersion, preimage) => {
+    // EI-25394374042899729: a legacy snapshot can prove only the CURRENT version.
+    // Preserve that binding before it disappears on advance. Reuse the strict
+    // revision spine and its lock; never infer a historical version from audit seq.
+    if (preimage && Number.isSafeInteger(preimage.version) && preimage.version > 0 &&
+        preimage.version !== committedVersion && hashPlanContent(preimage.body) === preimage.contentHash) {
+      await acquirePlanRevisionAdvisoryLock(tx, scope.workspaceId, scope.harnessSlug, rubricId);
+      const marker = `"rubricRevision": ${preimage.version},`;
+      const snapshots = await tx<{ content_hash: string; content_snapshot: string }[]>`
+        WITH scoped AS (
+          SELECT seq, content_hash, content_snapshot, max(seq) OVER () AS latest_seq
+            FROM harness_shared.plan_revisions
+           WHERE workspace_id = ${scope.workspaceId} AND harness_slug = ${scope.harnessSlug}
+             AND plan_slug = ${rubricId}
+        )
+        SELECT content_hash, content_snapshot FROM scoped
+         WHERE seq = latest_seq OR position(${marker} in content_snapshot) > 0
+         ORDER BY seq DESC LIMIT 3`;
+      const latest = snapshots[0];
+      const parsed = latest ? parseRubricRevisionSnapshot(latest.content_snapshot) : null;
+      if (snapshots.length === 1 && parsed && parsed.rubricRevision === undefined &&
+          !latest!.content_snapshot.includes(marker) && latest!.content_hash === preimage.contentHash &&
+          isDeepStrictEqual(parsed.templateData, preimage.templateData) &&
+          rubricTemplateDataSchema.safeParse(parsed.templateData).success) {
+        await recordPlanRevisionInTransaction(tx, {
+          planSlug: rubricId,
+          harnessSlug: scope.harnessSlug,
+          workspaceId: scope.workspaceId,
+          content: formatRubricRevisionSnapshot(
+            preimage.body, parsed.templateData,
+            parsed.criteriaHash ?? await rubricRevisionCriteriaHash(parsed.templateData, scope),
+            preimage.version,
+          ),
+          contentHash: preimage.contentHash,
+          rationale: `preserve proven legacy rubric revision ${preimage.version} before ${rationale}`,
+          identity,
+        });
+      }
+    }
     const snapshotTemplateData =
       committedTemplateData !== undefined ? committedTemplateData : fallbackTemplateData;
     const criteriaHash = await rubricRevisionCriteriaHash(snapshotTemplateData, scope);

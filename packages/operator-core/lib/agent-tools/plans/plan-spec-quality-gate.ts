@@ -9,6 +9,7 @@ import { getAcceptanceRubricsForPlan } from '../../rubrics';
 import { listSpecClauses } from './spec-clauses-store';
 import {
   evaluatePlanSpecQuality,
+  specQualityEvidenceWithoutReplay,
   SPEC_QUALITY_RUBRIC_REF,
   type PlanSpecQualityResult,
   type SpecQualityPlanItem,
@@ -141,7 +142,10 @@ function matchesSpecQualityEvidence(card: ScorecardRow, evaluation: PlanSpecQual
   // A stored fingerprint must first attest to the actual stored ratings, not
   // merely to what the current evaluator would have emitted.
   if (card.evidenceFingerprint !== fingerprint(card.ratings)) return false;
-  if (card.evidenceFingerprint === fingerprint(evaluation.ratings)) return true;
+  const currentFindings = Object.fromEntries(Object.entries(card.ratings).map(([key, entry]) => [key, {
+    ...entry, evidence: specQualityEvidenceWithoutReplay(entry.evidence, evaluation),
+  }]));
+  if (fingerprint(currentFindings) === fingerprint(evaluation.ratings)) return true;
 
   const identity = evaluation.ratings['stable-revision-identity'];
   const allActiveSuffix =
@@ -155,7 +159,7 @@ function matchesSpecQualityEvidence(card: ScorecardRow, evaluation: PlanSpecQual
         + allActiveSuffix.replace(' current clause(s)', ' active/accepted current clause(s)'),
     },
   };
-  return card.evidenceFingerprint === fingerprint(interimRatings);
+  return fingerprint(currentFindings) === fingerprint(interimRatings);
 }
 
 /**

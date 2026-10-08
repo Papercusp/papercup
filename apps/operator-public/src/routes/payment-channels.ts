@@ -68,6 +68,7 @@ function validId(value: unknown): value is string {
 function channelJson(channel: StoredPaymentChannel) {
   return {
     channelId: channel.channelId,
+    principalId: channel.principalId,
     rail: channel.rail,
     chainId: channel.chainId,
     stablecoinAddress: channel.stablecoinAddress,

@@ -198,6 +198,41 @@ beforeEach(async () => {
 });
 
 describe('first-class plan spec clauses', () => {
+  it('replays the historical current set after revision and identity additions without using live pointers', async () => {
+    await store.setSpecClause(clause());
+    const [cutoff] = await db.sql<{ at: string }[]>`SELECT to_char(clock_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS at`;
+    await store.setSpecClause(clause({ expectedRevision: 1, behavior: 'Revised behavior' }));
+    await store.setSpecClause(clause({ specId: 'SPEC-004-01', sourceValId: 'VAL-004-01', planItemId: 'P-004' }));
+    const selected = await store.listSpecClauses({ harnessSlug: HARNESS, planSlug: 'reconnect-plan', asOf: cutoff!.at });
+    expect(selected.map((row) => [row.specId, row.revision, row.currentRevision, row.behavior])).toEqual([
+      ['SPEC-003-01', 1, 1, clause().behavior],
+    ]);
+    const live = await store.listSpecClauses({ harnessSlug: HARNESS, planSlug: 'reconnect-plan' });
+    expect(live.map((row) => [row.specId, row.revision])).toEqual([['SPEC-003-01', 2], ['SPEC-004-01', 1]]);
+    const tool = await getSpecsTool.handler(getSpecsTool.args.parse({ harness: HARNESS, slug: 'reconnect-plan', asOf: cutoff!.at }), CTX);
+    expect(tool).toMatchObject({ data: { mode: 'snapshot', count: 1, specs: [{ revision: 1, currentRevision: 1 }] } });
+    await expect(store.listSpecClauses({ harnessSlug: HARNESS, planSlug: 'reconnect-plan', asOf: cutoff!.at, revision: 1 })).rejects.toThrow('spec_snapshot_selector_invalid');
+    expect(getSpecsTool.args.safeParse({ slug: 'reconnect-plan', asOf: cutoff!.at, includeHistory: true }).success).toBe(false);
+  });
+
+  it('resolves an immutable plan snapshot by exact body hash within the requested scope', async () => {
+    await db.sql`CREATE TABLE IF NOT EXISTS harness_shared.plan_revisions (
+      id bigserial, workspace_id text, harness_slug text, plan_slug text,
+      seq integer, content_hash text, content_snapshot text
+    )`;
+    const { hashPlanContent } = await import('./content-hash');
+    const { getPlanRevisionSnapshot } = await import('./revisions');
+    const body = '---\ntitle: Historical fixture\n---\n## Items\n- **P-003** `todo` Contract';
+    const hash = hashPlanContent(body);
+    await db.sql`DELETE FROM harness_shared.plan_revisions`;
+    await db.sql`INSERT INTO harness_shared.plan_revisions (workspace_id, harness_slug, plan_slug, seq, content_hash, content_snapshot)
+      VALUES (${WORKSPACE}, ${HARNESS}, 'reconnect-plan', 7, ${hash}, ${body}),
+             (${WORKSPACE}, 'other', 'reconnect-plan', 9, ${hash}, 'wrong scope')`;
+    expect(await getPlanRevisionSnapshot('reconnect-plan', hash, { harnessSlug: HARNESS })).toMatchObject({ seq: 7, contentSnapshot: body, contentSnapshotHash: hash });
+    expect(await getPlanRevisionSnapshot('reconnect-plan', 'f'.repeat(64), { harnessSlug: HARNESS })).toBeNull();
+    expect(await getPlanRevisionSnapshot('reconnect-plan', 7, { harnessSlug: HARNESS })).toMatchObject({ contentSnapshot: body });
+  });
+
   it('exposes create/current/history through the structured tools and preserves a legacy VAL verdict', async () => {
     await db.sql`
       INSERT INTO harness_shared.harness_plan_assertions (

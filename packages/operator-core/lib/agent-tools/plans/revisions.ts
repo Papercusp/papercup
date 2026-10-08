@@ -678,10 +678,10 @@ interface PlanRevisionSnapshotDbRow {
  */
 export async function getPlanRevisionSnapshot(
   planSlug: string,
-  seq: number,
+  seq: number | string,
   opts: { harnessSlug?: string; workspaceId?: string } = {},
 ): Promise<PlanRevisionSnapshot | null> {
-  if (!Number.isInteger(seq) || seq <= 0) return null;
+  if (typeof seq === 'number' ? !Number.isInteger(seq) || seq <= 0 : !/^[a-f0-9]{64}$/.test(seq)) return null;
   const { workspaceId, harnessSlug } = await resolvePlanScope(opts);
   const rows = await withWorkspace(workspaceId, async (tx) => {
     return tx<PlanRevisionSnapshotDbRow[]>`
@@ -690,11 +690,13 @@ export async function getPlanRevisionSnapshot(
        WHERE workspace_id = ${workspaceId}
          AND harness_slug = ${harnessSlug}
          AND plan_slug = ${planSlug}
-         AND seq = ${seq}
+         AND ${typeof seq === 'number' ? tx`seq = ${seq}` : tx`content_hash = ${seq}`}
+       ORDER BY seq DESC
        LIMIT 1
     `;
   });
-  const row = rows.find((candidate) => candidate.plan_slug === planSlug && Number(candidate.seq) === seq);
+  const row = rows.find((candidate) => candidate.plan_slug === planSlug &&
+    (typeof seq === 'number' ? Number(candidate.seq) === seq : candidate.content_hash === seq));
   if (!row) return null;
   return {
     id: Number(row.id),

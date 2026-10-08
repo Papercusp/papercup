@@ -902,6 +902,14 @@ describe('ptool call deadlines', () => {
       args: { title: 'timeout mapping regression' },
     })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('coord:orient')).toBe(PTOOL_COORD_ORIENT_TIMEOUT_MS);
+    // EI-25380603241293913: a slow directed inbox read includes its presence
+    // rebootstrap; cover both dispatch paths and keep margin over the measured
+    // 58.7s completion rather than falling back to 30s or the 60s foreground cap.
+    expect(timeoutForTool('coord:inbox')).toBe(PTOOL_COORD_ORIENT_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', {
+      name: 'coord:inbox',
+      args: { directed: true },
+    })).toBe(PTOOL_COORD_ORIENT_TIMEOUT_MS);
     expect(timeoutForTool('release:trace')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('coord:presence')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     // EI-21562940235111441: the fleet-scope reconciliation has its own 30s

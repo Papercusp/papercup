@@ -1786,6 +1786,11 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   // was still settling. Keep both direct and tools:invoke calls above that
   // floor so the typed wake result wins instead of inviting a blind replay.
   ['coord:wake', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
+  // EI-25380603241293913: a directed coord:inbox read can spend most of its
+  // bounded server window rebuilding the presence snapshot. One measured call
+  // took 58.7s (46.6s in that rebootstrap), leaving too little margin under
+  // the ordinary foreground budget; reuse coord:orient's 130s budget.
+  ['coord:inbox', PTOOL_COORD_ORIENT_TIMEOUT_MS],
   // EI-21391922294549625: directed coordination sends can perform durable
   // delivery, close-notification, and wake work before returning. Under local
   // operator pressure the valid response can outlive the ordinary 30s client

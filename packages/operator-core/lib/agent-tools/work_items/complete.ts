@@ -5789,7 +5789,8 @@ const workItemsCompleteTool = defineTool({
   // the completion ledger and finish legs await can exhaust the org-app pool and
   // strand an otherwise verified completion behind the 45s acquisition deadline.
   skipWorkspaceTx: true,
-  agentRoles: [...WORK_ITEM_LIFECYCLE_ROLES],
+  // Research findings settle through the existing work-item completion path.
+  agentRoles: [...WORK_ITEM_LIFECYCLE_ROLES, 'researcher'],
   // INTRINSIC emission (D-002/D-004): a completion always auto-broadcasts its
   // structured record as a coord notification. The desugar registers this as an
   // event-reaction rule (`emits:work_items:complete#completion`); the render

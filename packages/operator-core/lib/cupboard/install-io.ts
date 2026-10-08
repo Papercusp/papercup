@@ -22,6 +22,8 @@ import { grantCapabilities } from '../plugin-grants';
 import { resolveCupboardBaseUrl } from './base-url';
 import {
   installPluginFromCupboardCore,
+  readInstalledPluginProvenance,
+  verifyInstalledPluginCommerceProvenance,
   InstallPluginError,
   type InstallPluginCoreDeps,
   type InstallPluginCoreInput,
@@ -32,6 +34,7 @@ import type { InstallableUnitRef } from './resolve-and-install';
 import type { TreeDigestEntry } from '@papercusp/artifact-registry';
 import type { InstallSelfDescribingDeps } from './install-self-describing-core';
 import { fetchSelfDescribingArtifact } from './self-describing-release';
+import { coordsFromRow, type ResolvedListingCoords } from './resolve-listing-by-kind';
 
 /** Shallow `git clone --depth 1 url dest`. Rejects on non-zero exit. */
 export function gitCloneShallow(url: string, dest: string): Promise<void> {
@@ -134,7 +137,7 @@ export async function invalidatePluginHost(): Promise<void> {
 /** Resolve a Cupboard listing id → { githubUrl, listingRef } via the worker. */
 export async function resolveListingCoords(
   id: string,
-): Promise<{ githubUrl: string; listingRef?: string } | null> {
+): Promise<{ githubUrl: string; listingRef?: string; listing?: ResolvedListingCoords; listingKind?: string } | null> {
   const base = resolveCupboardBaseUrl();
   try {
     const res = await fetch(`${base}/listings/${encodeURIComponent(id)}`, {
@@ -149,11 +152,33 @@ export async function resolveListingCoords(
       (data as Record<string, unknown>);
     const githubUrl = typeof row?.github_url === 'string' ? row.github_url : '';
     if (!githubUrl) return null;
-    const listingRef = typeof row?.listing_ref === 'string' ? row.listing_ref : undefined;
-    return { githubUrl, listingRef };
+    const listing = coordsFromRow(row);
+    return { githubUrl, ...(typeof row.listing_ref === 'string' ? { listingRef: row.listing_ref } : {}),
+      ...(typeof row.listing_kind === 'string' ? { listingKind: row.listing_kind } : {}),
+      ...(listing ? { listing } : {}) };
   } catch {
     return null;
   }
+}
+
+/** P-007: resolve the actual loaded installation to hosted commerce authority, never a tool alias. */
+export async function readInstalledPluginCommerceProvenance(
+  installation: { name: string; version: string; path: string },
+  deps: {
+    resolveListing?: typeof resolveListingCoords;
+    content?: Pick<InstallPluginCoreDeps, 'fetchArtifact' | 'fetchAtSha' | 'listTreeBlobs' | 'tmpDir'>;
+  } = {},
+) {
+  const retained = await readInstalledPluginProvenance(installation);
+  if (!retained) return null;
+  if (!retained.listing.listingId) {
+    throw new InstallPluginError('installation has no exact storefront listing id', 409, 'installation_commerce_binding_invalid');
+  }
+  const resolved = await (deps.resolveListing ?? resolveListingCoords)(retained.listing.listingId);
+  if (!resolved?.listing || !['plugin', 'pack'].includes(resolved.listingKind ?? '')) {
+    throw new InstallPluginError('loaded installation has no hosted plugin/pack listing', 409, 'installation_commerce_binding_invalid');
+  }
+  return verifyInstalledPluginCommerceProvenance(installation, resolved.listing, deps.content ?? buildInstallPluginDeps());
 }
 
 /**
@@ -166,6 +191,9 @@ export async function resolveListingCoords(
 export function buildInstallPluginDeps(): InstallPluginCoreDeps {
   return {
     cloneRepo: gitCloneShallow,
+    fetchAtSha: gitFetchAtSha,
+    listTreeBlobs: gitListTreeBlobs,
+    fetchArtifact: (hash) => fetchSelfDescribingArtifact({ baseUrl: resolveCupboardBaseUrl(), contentHash: hash }),
     globalPluginsDir: GLOBAL_PLUGINS_DIR,
     tmpDir: tmpdir,
     grant: (args) => grantCapabilities({ ...args, grantedBy: 'user', reason: 'cupboard install-consent' }),
@@ -272,18 +300,27 @@ export async function installPluginFromCupboard(input: {
 }): Promise<InstallPluginFromCupboardResult> {
   let githubUrl = typeof input.githubUrl === 'string' ? input.githubUrl.trim() : '';
   let listingRef = typeof input.listingRef === 'string' ? input.listingRef.trim() : undefined;
+  let listing: ResolvedListingCoords | undefined;
 
-  if (!githubUrl && input.listingId) {
+  if (input.listingId) {
     const resolved = await resolveListingCoords(String(input.listingId));
     if (!resolved) return { ok: false, status: 404, error: 'listing_not_found_or_unreachable' };
+    if (!['plugin', 'pack'].includes(resolved.listingKind ?? '') || !resolved.listing) {
+      return { ok: false, status: 422, error: 'plugin_listing_required' };
+    }
+    if ((githubUrl && githubUrl !== resolved.githubUrl) || (listingRef && listingRef !== resolved.listingRef)) {
+      return { ok: false, status: 422, error: 'listing_binding_mismatch' };
+    }
     githubUrl = resolved.githubUrl;
-    listingRef = listingRef ?? resolved.listingRef;
+    listingRef = resolved.listingRef;
+    listing = resolved.listing;
   }
   if (!githubUrl) return { ok: false, status: 400, error: 'githubUrl or listingId required' };
 
   const coreInput: InstallPluginCoreInput = {
     githubUrl,
     listingRef,
+    ...(listing ? { listing } : {}),
     harness: typeof input.harness === 'string' ? input.harness.trim() : undefined,
     acceptCapabilities: input.acceptCapabilities === true,
     ...(input.expectedReview ? { expectedReview: input.expectedReview } : {}),
@@ -372,11 +409,15 @@ export async function installCupboardUnitFromListing(
   if (!coords) {
     return { ok: false, error: `listing ${unit.listingId} not found or Cupboard unreachable` };
   }
+  if (coords.listingKind !== unit.kind || !coords.listing) {
+    return { ok: false, error: `listing ${unit.listingId} is not a complete ${unit.kind} listing` };
+  }
   try {
     const result = await installPluginFromCupboardCore(
       {
         githubUrl: coords.githubUrl,
         listingRef: coords.listingRef,
+        listing: coords.listing,
         harness: opts.harness,
         acceptCapabilities: opts.acceptCapabilities === true,
         ...(opts.expectedReview ? { expectedReview: opts.expectedReview } : {}),
@@ -409,11 +450,14 @@ export async function reviewCupboardUnitFromListing(
   if (!coords) {
     return { ok: false, error: `listing ${unit.listingId} not found or Cupboard unreachable` };
   }
+  if (coords.listingKind !== unit.kind || !coords.listing) {
+    return { ok: false, error: `listing ${unit.listingId} is not a complete ${unit.kind} listing` };
+  }
   const reviewDir = await fs.mkdtemp(join(tmpdir(), 'cupboard-provider-review-'));
   try {
     const real = buildInstallPluginDeps();
     const result = await installPluginFromCupboardCore(
-      { githubUrl: coords.githubUrl, listingRef: coords.listingRef },
+      { githubUrl: coords.githubUrl, listingRef: coords.listingRef, listing: coords.listing },
       {
         ...real,
         globalPluginsDir: () => reviewDir,

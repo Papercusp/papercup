@@ -644,11 +644,18 @@ export default defineTool({
     notWhen: "You don't know the slug — call plans:list first. Item-only queries across plans should use plans:items.",
     chaining:
       'plans:list → plans:get { slug } (or { slug, harness } to constrain scope) → optionally plans:items for cross-plan picks.',
+    argRedirects: {
+      sections: {
+        drop: true,
+        note: 'For one section, pass its exact heading with `heading`; multiple section headings are not supported in one call.',
+      },
+    },
   },
   capability: 'plans:read',
   requirePrincipal: false,
   skipWorkspaceTx: true,
-  agentRoles: [...ALL_ROLES],
+  // Research operations read plan context through this same read-only surface.
+  agentRoles: [...ALL_ROLES, 'researcher'],
   modality: ['text'],
   args: argsSchema,
   // Freshness negotiation (agent-tool-delta-client-rollout-2026-06-23, P-002): plans:get
