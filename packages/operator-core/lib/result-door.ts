@@ -47,6 +47,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { dirname } from 'node:path';
 import type { ScratchWriteTimings } from './scratch-gc';
+import { withBoundedTimeout } from './bounded-timeout';
 import { projectBoundedPayload, type BulkEnvelopeProjectionOpts } from '@papercusp/tooldef';
 import { CHARS_PER_TOKEN_ESTIMATE, computeTurnDoors } from './context-doors';
 import { getDoorConstantsSync } from './context-doors-config';
@@ -73,6 +74,7 @@ import {
  *  (getDoorConstantsSync — workspace defaults ⟵ per-session override); un-configured,
  *  it is exactly this value. */
 export const RESULT_DOOR_TOKENS = computeTurnDoors(0).resultEach;
+const RESULT_DOOR_SCRATCH_WRITE_WAIT_MS = 30_000;
 
 const UUID_V4_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const TOOL_SEGMENT_REGEX = /^[A-Za-z0-9._:-]+$/;
@@ -1356,10 +1358,11 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
 /**
  * applyResultDoor for request handlers: identical output, but any spill file is written
  * with fs.promises instead of blocking the event loop, and awaited before this resolves —
- * so a returned cursor always names a file that exists (WI-10004533). If a deferred write
- * fails, the result is re-doored with the original error and no filesystem retry so it
- * carries the honest spill-failure shape (WI-36047). The replay reserves the aggregate
- * cohort a second time; it can only tighten the budget.
+ * so a returned cursor always names a file that exists (WI-10004533). The wait is bounded:
+ * a stuck spill returns an honest failure before the MCP client's idle timeout, while the
+ * background writer retains its quota reservation and normal cleanup path. A deferred write
+ * that fails or times out is re-doored without a filesystem retry. The replay reserves the
+ * aggregate cohort a second time; it can only tighten the budget.
  */
 export async function applyResultDoorAsync<T extends DoorableResult>(
   result: T,
@@ -1368,7 +1371,25 @@ export async function applyResultDoorAsync<T extends DoorableResult>(
   const deferred: Promise<void>[] = [];
   const doored = applyResultDoor(result, { ...opts, deferredScratchWrites: deferred });
   if (deferred.length === 0) return doored;
-  const settled = await Promise.allSettled(deferred);
+  const boundedWrites = await withBoundedTimeout(Promise.allSettled(deferred), {
+    fallback: null,
+    timeoutMs: RESULT_DOOR_SCRATCH_WRITE_WAIT_MS,
+    label: 'result-door scratch spill write',
+  });
+  if (boundedWrites.degraded || boundedWrites.value === null) {
+    const error = boundedWrites.reason === 'timeout'
+      ? Object.assign(
+          new Error(`result-door scratch spill write exceeded ${RESULT_DOOR_SCRATCH_WRITE_WAIT_MS}ms`),
+          { code: 'ETIMEDOUT' },
+        )
+      : boundedWrites.error ?? new Error('result-door scratch spill write did not settle');
+    return applyResultDoor(result, {
+      ...opts,
+      deferredScratchWrites: undefined,
+      scratchWriteFailure: { error },
+    });
+  }
+  const settled = boundedWrites.value;
   const failure = settled.find((s) => s.status === 'rejected');
   if (!failure || failure.status !== 'rejected') return doored;
   return applyResultDoor(result, { ...opts, deferredScratchWrites: undefined,
