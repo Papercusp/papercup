@@ -5,6 +5,7 @@ import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
 import postgres from 'postgres';
+import { resolveScriptPgUrl } from './lib/pg-url.mjs';
 import { defaultEvidenceRoot, parseSelectionArgs, runHarness } from '@papercusp/verification-harness';
 import { sealImplementationAcceptance, createImplementationReadiness } from '../packages/operator-core/lib/harness/improvements/agent-review-policy.ts';
 import { bakedCanonicalHiveInvite } from '../packages/operator-core/lib/harness/papercusp-hive-join.ts';
@@ -32,8 +33,14 @@ const result = await runHarness({
   evidenceRoot: defaultEvidenceRoot('reporter-status-tauri'), selection, reuseFrom: selection.reuse,
   async runPhase(ctx) {
     assert.equal(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED, '1', 'Requires isolated verifier DB');
-    assert.ok(process.env.HARNESS_ADMIN_DATABASE_URL && process.env.VERIFY_TAURI_PID);
-    const sql = postgres(process.env.HARNESS_ADMIN_DATABASE_URL!, { max: 1, onnotice: () => {} });
+    const isolatedPg = resolveScriptPgUrl();
+    assert.ok(
+      isolatedPg.source === 'env' && 'via' in isolatedPg && isolatedPg.via === 'HARNESS_ADMIN_DATABASE_URL' &&
+      !isolatedPg.envLocal.applied.includes('HARNESS_ADMIN_DATABASE_URL'),
+      'Requires an explicitly supplied isolated admin database URL',
+    );
+    assert.ok(process.env.VERIFY_TAURI_PID);
+    const sql = postgres(isolatedPg.url, { max: 1, onnotice: () => {} });
     const ws = process.env.PAPERCUSP_WORKSPACE_ID ?? process.env.PAPERCUSP_WORKSPACE!;
     const pid = process.env.VERIFY_TAURI_PID!;
     const tool = process.env.VERIFY_TAURI_AGENT_TOOLS_BIN ?? 'tauri-agent-tools';
