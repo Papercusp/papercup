@@ -770,7 +770,7 @@ function clauseDeclarationProbe(clause: SpecClauseRevision, harness?: string): s
 
 const MAX_RENDERED_ADEQUACY_CASES = 8;
 
-function renderedTestRunExecution(row: SpecEvidenceForAdequacy, details: Record<string, unknown>) {
+function renderedTestRunExecution(row: SpecEvidenceForAdequacy, details: Pick<AdequacyDetails, 'testCases'>) {
   const execution = row.testRunExecution;
   if (!execution) return null;
 
