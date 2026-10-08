@@ -739,6 +739,50 @@ describe('WI-10004898: a clean run in a deleted disposable clone binds by commit
     await rm(harness, { recursive: true, force: true });
   });
 
+  it('maps live and removed clones nested under the canonical root by repository content', async () => {
+    const clone = path.join(
+      harness,
+      '.papercusp',
+      'tmp',
+      'papercusp-lint-as-committed-' + superCommit.slice(0, 10) + '-nested-' + process.pid,
+    );
+    await mkdir(path.dirname(clone), { recursive: true });
+    execFileSync('git', ['clone', '--local', '--shared', '--no-checkout', '--quiet', harness, clone], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const expected = {
+      ok: true,
+      binding: {
+        evidenceRef: 'pkg/lib/x.test.ts',
+        details: {
+          testRun: {
+            recordedRoot: clone,
+            asCommitted: { commitSha: superCommit, repoPrefix: '', measuredAtCommit: true },
+          },
+        },
+      },
+    };
+    try {
+      g(clone, 'checkout', '--detach', '--quiet', superCommit);
+      const live = await expandTestRunBinding(
+        input({ sourcePaths: ['pkg/lib/x.ts'] }),
+        SCOPE,
+        binder(cleanRow({ root: clone })),
+      );
+      expect(live).toMatchObject(expected);
+    } finally {
+      await rm(clone, { recursive: true, force: true });
+    }
+
+    const disposed = await expandTestRunBinding(
+      input({ sourcePaths: ['pkg/lib/x.ts'] }),
+      SCOPE,
+      binder(cleanRow({ root: clone })),
+    );
+    expect(disposed).toMatchObject(expected);
+  });
+
   it('maps a superproject clone run, and a submodule clone run under its submodule prefix', async () => {
     expect(await asCommittedTestPath(harness, cleanRow())).toEqual({
       testPath: 'pkg/lib/x.test.ts', repoPrefix: '', commitSha: superCommit,

@@ -370,8 +370,21 @@ export async function recordedTestPath(
   // A recorded workspace cannot lend evidence for a sibling via ../ or an absolute escape.
   if (!repoRelativeTestPath(row.root, file)) return null;
   const local = repoRelativeTestPath(root, file);
-  if (local) return local;
   git = withRepoIdentityMemo(git);
+  if (local) {
+    try {
+      const rootTop = (await git(root, ['rev-parse', '--show-toplevel'])).trim();
+      const recordedTop = (await git(row.root, ['rev-parse', '--show-toplevel'])).trim();
+      if (isAbsolute(rootTop) && isAbsolute(recordedTop) && await sameDirectory(rootTop, recordedTop)) return local;
+    } catch {
+      try {
+        await realpath(file);
+        return local;
+      } catch {
+        // A removed disposable clone must be mapped by its clean commit instead.
+      }
+    }
+  }
   try {
     const common = (await git(root, ['rev-parse', '--path-format=absolute', '--git-common-dir'])).trim();
     if (!isAbsolute(common)) return null;
@@ -407,6 +420,29 @@ const FULL_SHA_RE = /^[0-9a-f]{40}$/;
 const MAX_SUBMODULE_PREFIX_SEGMENTS = 8;
 const MAX_GITLINK_DEPTH = 4;
 
+async function trackedSubmodulePaths(
+  root: string,
+  paths: readonly string[],
+  git: GitRunner,
+): Promise<Set<string>> {
+  const candidates = new Set(paths.filter(Boolean));
+  if (candidates.size === 0) return new Set();
+  try {
+    const pathspecs = [...candidates].map((path) => ':(literal)' + path);
+    const entries = (await git(root, ['ls-files', '--stage', '--', ...pathspecs])).trim().split('\n');
+    const tracked = new Set<string>();
+    for (const entry of entries) {
+      const tab = entry.indexOf('\t');
+      if (tab < 0) continue;
+      const path = entry.slice(tab + 1);
+      if (candidates.has(path) && /^160000 [0-9a-f]{40} 0$/.test(entry.slice(0, tab))) tracked.add(path);
+    }
+    return tracked;
+  } catch {
+    return new Set();
+  }
+}
+
 async function sameDirectory(a: string, b: string): Promise<boolean> {
   try {
     return (await realpath(a)) === (await realpath(b));
@@ -440,7 +476,9 @@ export async function asCommittedTestPath(
   for (let k = 1; k <= Math.min(segments.length, MAX_SUBMODULE_PREFIX_SEGMENTS); k += 1) {
     prefixes.push(segments.slice(-k).join('/'));
   }
+  const submodules = await trackedSubmodulePaths(root, prefixes.slice(1), git);
   for (const repoPrefix of prefixes) {
+    if (repoPrefix && !submodules.has(repoPrefix)) continue;
     const repo = repoPrefix ? resolve(root, repoPrefix) : resolve(root);
     try {
       // A prefix must name a repository ROOT (a submodule checkout), never a plain directory
