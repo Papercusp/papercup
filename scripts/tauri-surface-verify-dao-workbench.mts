@@ -57,17 +57,25 @@ const result = await runHarness({ contract: { name: 'dao-workbench-tauri', phase
       assert.equal(policy.ok, true, 'Synthetic owner could not author a real signed policy');
       ctx.markStep('top-level-product-switch-and-directory');
       native('navigate', '/daos', '--json'); wait("!!document.querySelector('[data-testid=dao-workspace]')");
+      wait("!document.body.classList.contains('has-left-sidebar') && !document.body.classList.contains('has-op-chat')");
       click('Refresh'); wait("[...document.querySelectorAll('.dao-card h2')].some(e=>e.textContent==='Native Workbench DAO')");
       click('Open workspace →'); wait("document.querySelector('.dao-page-header h1')?.textContent==='Overview'");
       click('Proposals'); wait("!!document.querySelector('.dao-governance')");
       ctx.markStep('create-real-proposal-through-native-form');
+      ev("(()=>{const original=window.fetch;window.__WORKBENCH_PROPOSAL_RESPONSE__=null;window.fetch=async(...args)=>{const response=await original(...args);if(String(args[0]).includes('/api/admin/plans/new'))window.__WORKBENCH_PROPOSAL_RESPONSE__={request:args[1]?.body,status:response.status,body:await response.clone().text()};return response};return true})()");
       ev("document.querySelector('.dao-governance details').open=true");
       field('Proposal title', 'Native proposal'); field('Purpose & scope', 'Produce an isolated native record');
       field('How members will verify success', 'Native record persists and its signed decision reloads');
       click('Save draft proposal'); wait("document.querySelector('.dao-governance')?.innerText.includes('Proposal saved as a draft')");
-      const row = await getPlanRow('native-proposal', { workspaceId: ws, harnessSlug: slug });
+      writeFileSync(join(ctx.evidenceDir, 'proposal-response.json'), ev('JSON.stringify(window.__WORKBENCH_PROPOSAL_RESPONSE__)'));
+      const proposalSlug = ev('JSON.parse(window.__WORKBENCH_PROPOSAL_RESPONSE__.body).slug').trim().replace(/^"|"$/g, '');
+      assert.match(proposalSlug, /^native-proposal-\d{4}-\d{2}-\d{2}$/, 'Creation receipt must contain the canonical dated plan slug');
+      const persistedScopes = await sql`SELECT workspace_id, harness_slug, plan_slug, title FROM harness_shared.harness_plans WHERE plan_slug = ${proposalSlug}`;
+      writeFileSync(join(ctx.evidenceDir, 'proposal-scopes.json'), JSON.stringify(persistedScopes, null, 2));
+      const row = await getPlanRow(proposalSlug, { workspaceId: ws, harnessSlug: slug });
       assert.ok(row, 'Native draft did not persist');
-      field('Review proposal', slug + '/native-proposal'); wait("document.querySelector('.dao-governance')?.innerText.includes('Deciding as native-workbench-member')");
+      assert.equal(row.title, 'Native proposal');
+      field('Review proposal', slug + '/' + proposalSlug); wait("document.querySelector('.dao-governance')?.innerText.includes('Deciding as native-workbench-member')");
       assert.equal(ev("String([...document.querySelectorAll('.dao-governance button')].find(e=>e.textContent==='Open voting round').disabled)").trim().replace(/^"|"$/g, ''), 'true');
       ev("document.querySelector('.dao-governance input[type=checkbox]').click()");
       ctx.markStep('real-device-signatures-and-policy-verification');
@@ -81,7 +89,7 @@ const result = await runHarness({ contract: { name: 'dao-workbench-tauri', phase
       capture('signed-decision');
       ctx.markStep('reload-and-independent-product-selections');
       ev('location.reload()'); wait("!!document.querySelector('.dao-governance')");
-      field('Review proposal', slug + '/native-proposal'); wait("document.querySelector('.dao-governance')?.innerText.includes('Plan admission approved')");
+      field('Review proposal', slug + '/' + proposalSlug); wait("document.querySelector('.dao-governance')?.innerText.includes('Plan admission approved')");
       ev("document.querySelector('a[aria-label=Ops]').click()"); wait("!location.pathname.startsWith('/daos')");
       ev("document.querySelector('a[aria-label=\"DAO Management\"]').click()");
       wait("location.pathname==='/daos' && new URLSearchParams(location.search).get('dao')==='workbench-native' && !!document.querySelector('.dao-governance')");
@@ -103,7 +111,15 @@ const result = await runHarness({ contract: { name: 'dao-workbench-tauri', phase
       capture('desktop-inbox');
       assert.throws(() => native('check', '--selector', '.dao-intentionally-missing', '--json'), 'Missing selector negative control must fail');
       return { ok: true, proposalHash: row.contentHash, authenticatedEventKinds: snapshot.events.map(e => e.body.kind), sectionIds: ids };
-    } catch (error) { try { capture('failure'); } catch {} throw error; }
+    } catch (error) {
+      try { writeFileSync(join(ctx.evidenceDir, 'proposal-response.json'), ev('JSON.stringify(window.__WORKBENCH_PROPOSAL_RESPONSE__ ?? null)')); } catch {}
+      try {
+        const scopes = await sql`SELECT workspace_id, harness_slug, plan_slug, title FROM harness_shared.harness_plans WHERE title = 'Native proposal' OR plan_slug LIKE 'native-proposal%' OR plan_slug LIKE 'proposal%'`;
+        writeFileSync(join(ctx.evidenceDir, 'proposal-scopes.json'), JSON.stringify(scopes, null, 2));
+      } catch {}
+      try { capture('failure'); } catch {}
+      throw error;
+    }
     finally { await sql.end(); }
   },
 });
