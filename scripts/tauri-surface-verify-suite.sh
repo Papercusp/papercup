@@ -82,6 +82,7 @@ LEGS=(
   # Ticket sources. Isolated: it inserts a data source and writes its config.
   "ticket-integrations:1:scripts/tauri-surface-verify-ticket-integrations.sh"
   "dao-launch:1:scripts/tauri-surface-verify-dao-launch.sh"
+  "dao-workbench:1:scripts/tauri-surface-verify-dao-workbench.sh"
 )
 
 # Test seams (packages/operator-core/lib/system-health/gui-e2e-surface-scheduled-run.test.ts runs
@@ -110,7 +111,11 @@ for entry in "${LEGS[@]}"; do
     continue
   fi
   log_file="$OUT_DIR/$leg.log"
-  if [ "$leg" = "dao-launch" ]; then
+  if [ "$leg" = "dao-workbench" ]; then
+    # The wrapper installs synthetic GitHub/keychain transports before the
+    # isolated sidecar starts, then invokes the same maintained verifier.
+    bash "$script" >"$log_file" 2>&1
+  elif [ "$leg" = "dao-launch" ]; then
     VERIFY_TAURI_ISOLATED_DB=1 \
       VERIFY_TAURI_ISOLATED_SEED=ready \
       VERIFY_TAURI_REQUIRE_BUILT='apps/operator/app/dao/DaoLaunchWorkspace.tsx apps/operator/app/dao/dao-launch.css' \
