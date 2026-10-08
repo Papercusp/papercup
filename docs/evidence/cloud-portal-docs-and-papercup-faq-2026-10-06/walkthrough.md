@@ -394,3 +394,35 @@ capability list, which the full hosted profile rejects. Owned follow-up
 coverage; adding a workspace capability must preserve pre-workspace onboarding.
 The hosted runtime configuration lock was released. Workspace acceptance and
 the original `EI-25441313743672037` remain open.
+
+## Authenticated hosted composition comparison, 2026-10-08 20:55Z
+
+The follow-up used the full hosted operator composition on a private database,
+retained source `c19484fc98aa929a8596441a0ff1e52b0fe7315e`, the retained EJhq
+Portal artifact, and one genuine admitted TEST session. Safe API results are
+retained in `/tmp/su73-workspace-route-probe-2055.json` (SHA-256
+`95037e7e09b8d7defa27e3f0732e75d3dfd862c72ebd14eb40b9cc9ed09ffe05`):
+
+| Request | HTTP | Named result |
+| --- | --- | --- |
+| Portal auth session | 200 | Selected workspace matches the admitted binding |
+| Portal hosted workspace control query | 502 | `operator_unreachable` |
+| Direct hosted operator query, same cookie and public host, no workspace header | 200 | Workspace and connection rows |
+| Direct hosted operator query with selected workspace header | 200 | Workspace and connection rows |
+
+These results supersede the earlier direct-query refusals as evidence about
+the hosted composition. The retained Portal still selects the workspace relay
+for this control query; its diagnostic records `workspace_host_not_connected`.
+Both direct controls now succeed with the same admitted session, which
+distinguishes the Portal transport failure from operator health or a rejected
+workspace header in this fixture. It does not prove workspace creation,
+host connection, or completion of the product journey.
+
+The hosted startup authority repair is recorded on completed `WI-10007581`
+with 66 focused passing tests. The existing tutorial implementer reports the
+Portal route repair on `WI-10007589` with 50 focused passing tests; a corrected
+immutable Portal artifact remains pending the separately owned build
+prerequisite `WI-10007591`. Actual workspace acceptance must use that artifact
+and rerun the affected journey. The earlier passing account case remains
+retained. Both private diagnostic processes were drained and the configuration
+lock released; no model replay or shipment claim follows from this comparison.
