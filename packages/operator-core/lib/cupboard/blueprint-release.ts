@@ -43,6 +43,7 @@ import {
   type ClassContractPayloadEntry,
 } from './class-contract-payload';
 import { identityConsentSubjects, identityPermissionLines } from './identity-install-consent';
+import type { ComponentRevenueDependency } from '../p2p/revenue-settlement';
 
 const SAFE_ID = /^[a-z0-9][a-z0-9._-]{0,127}$/i;
 const INDEX_SCHEMA_VERSION = 1 as const;
@@ -597,6 +598,56 @@ async function readArchive(installedDir: string, id: string, contentHash: string
     if (error instanceof BlueprintLifecycleError) throw error;
     throw new BlueprintLifecycleError(`blueprint ${id}@${contentHash} closure is unreadable: ${String(error)}`, 500);
   }
+}
+
+/** P-019: only packages reachable from the exact identity root earn component
+ * units. Authorship comes from the publisher id in each pinned document, whose
+ * metadata is covered by the package hash; never inherit the root's publisher. */
+export function blueprintReleaseRevenueDependencies(archive: BlueprintReleaseArchive): ComponentRevenueDependency[] {
+  const verified = buildBlueprintReleaseArchive(archive.pins, archive.root.ref, archive.classContracts);
+  if (verified.root.contentHash !== archive.root.contentHash ||
+      verified.package.rootHash !== archive.package.rootHash) {
+    throw new BlueprintLifecycleError('identity revenue closure differs from its retained release', 422);
+  }
+  const key = (pin: { packageKind: string; ref: string }) => canonicalJson([pin.packageKind, pin.ref]);
+  const byKey = new Map(verified.pins.map((pin) => [key(pin), pin]));
+  const visited = new Set([key(verified.root)]);
+  const dependencies: ComponentRevenueDependency[] = [];
+  const pending = [...verified.root.dependencies];
+  while (pending.length) {
+    const reference = pending.pop()!;
+    const identity = key(reference);
+    if (visited.has(identity)) continue;
+    visited.add(identity);
+    const pin = byKey.get(identity)!; // validateAgentInputClosure checked every exact edge.
+    const publisher = (pin.value as { publisher?: { id?: unknown } } | undefined)?.publisher;
+    if (typeof publisher?.id !== 'string' || !publisher.id.trim()) {
+      throw new BlueprintLifecycleError(`component ${pin.packageKind}:${pin.ref}@${pin.revision} has no pinned publisher id`, 422);
+    }
+    dependencies.push({ ...releasePinSummary(pin), author: publisher.id.trim() });
+    pending.push(...pin.dependencies);
+  }
+  return dependencies.sort((a, b) => key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0);
+}
+
+/** Resolve a historical release, not the mutable active package. A version
+ * collision is ambiguous and must be refused instead of picking whichever row
+ * or installed source happened to be read first. */
+export async function readBlueprintReleaseRevenueDependencies(
+  installedDir: string, identity: { id: string; version: string },
+): Promise<ComponentRevenueDependency[]> {
+  assertSafeId(identity.id);
+  const index = await readIndex(installedDir, identity.id);
+  const releases = index.releases.filter((release) => release.version === identity.version);
+  if (releases.length !== 1) {
+    throw new BlueprintLifecycleError(`blueprint ${identity.id}@${identity.version} needs one exact retained release; found ${releases.length}`, 422);
+  }
+  const record = releases[0]!;
+  const archive = await readArchive(installedDir, identity.id, record.contentHash);
+  if (archive.root.contentHash !== record.contentHash || archive.package.rootHash !== record.artifactContentHash) {
+    throw new BlueprintLifecycleError(`blueprint ${identity.id}@${identity.version} retained closure hash mismatch`, 422);
+  }
+  return blueprintReleaseRevenueDependencies(archive);
 }
 
 /** D-037: the retained closure of each ACTIVE installed release is the

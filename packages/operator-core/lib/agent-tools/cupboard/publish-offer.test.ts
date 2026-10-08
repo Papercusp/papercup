@@ -2,9 +2,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const io = vi.hoisted(() => ({
   postCommerceOffer: vi.fn(),
+  readBlueprintReleaseRevenueDependencies: vi.fn(),
 }));
 
 vi.mock('../../cupboard/commerce-door-gate-io', () => io);
+vi.mock('../../cupboard/blueprint-release', () => ({ readBlueprintReleaseRevenueDependencies: io.readBlueprintReleaseRevenueDependencies }));
+vi.mock('../../blueprint/installed-blueprints', () => ({ INSTALLED_BLUEPRINTS_DIR: () => '/retained-blueprints' }));
 
 import tool from './publish-offer';
 import {
@@ -117,9 +120,11 @@ describe('cupboard:publish-offer for a paid identity release', () => {
   };
   const SKU = 'identity-release:papercusp-engineer@1.2.0';
   const DEFAULT_PRICE_VERSION = 'identity-markup-v1;markup=2000;creator=9000;component=0;dao=1000';
+  const components = [{ packageKind: 'blueprint', ref: 'dependency', revision: '1.0.0', contentHash: 'a'.repeat(64), author: 'alice' }];
 
   beforeEach(() => {
     vi.clearAllMocks();
+    io.readBlueprintReleaseRevenueDependencies.mockResolvedValue(components);
   });
 
   function storeEcho() {
@@ -166,10 +171,26 @@ describe('cupboard:publish-offer for a paid identity release', () => {
     );
     const sent = io.postCommerceOffer.mock.calls[0]![0] as { perUse: Record<string, unknown> };
     expect(sent.perUse.unitPriceMicros).toBe(350);
-    expect(sent.perUse.priceVersion).toBe('identity-markup-v1;markup=3500;creator=6000;component=3000;dao=1000');
+    const expected = identityPerUseOfferTerms({ identity: IDENTITY_INPUT.identityRelease, markupBps: 3500,
+      creatorBps: 6000, componentBps: 3000, componentDependencies: components });
+    if (!expected.ok) throw new Error(expected.detail);
+    expect(sent.perUse.priceVersion).toBe(expected.terms.priceVersion);
     expect(sent.perUse.splitManifestHash).toBe(
-      identityMarkupSplitManifest({ creatorBps: 6000, componentBps: 3000 }).manifestHash,
+      identityMarkupSplitManifest({ creatorBps: 6000, componentBps: 3000, componentDependencies: components }).manifestHash,
     );
+    expect(io.readBlueprintReleaseRevenueDependencies).toHaveBeenCalledWith('/retained-blueprints', IDENTITY_INPUT.identityRelease);
+  });
+
+  it('refuses missing attribution and forged component terms before publishing to the Worker', async () => {
+    const input = { ...IDENTITY_INPUT, identityRelease: { ...IDENTITY_INPUT.identityRelease, componentBps: 3000 } };
+    io.readBlueprintReleaseRevenueDependencies.mockRejectedValueOnce(new Error('no pinned publisher id'));
+    expect(body(await tool.handler(tool.args.parse(input), {} as never))).toMatchObject({ ok: false, error: 'identity-component-closure' });
+    const forged = identityPerUseOfferTerms({ identity: IDENTITY_INPUT.identityRelease, componentBps: 3000,
+      componentDependencies: components.map((pin) => ({ ...pin, author: 'mallory' })) });
+    if (!forged.ok) throw new Error(forged.detail);
+    expect(body(await tool.handler(tool.args.parse({ ...PER_USE_INPUT, ...forged.terms }), {} as never)))
+      .toMatchObject({ ok: false, error: 'identity-offer-mismatch' });
+    expect(io.postCommerceOffer).not.toHaveBeenCalled();
   });
 
   it('refuses a caller-supplied skuRef or term beside identityRelease, and a non-per-use identity offer', () => {

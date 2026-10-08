@@ -1915,6 +1915,10 @@ export function deriveSettleOutcome(input: {
   runKind: BulkRunKind;
   /** Every state row for the run — item outcomes, or plan-cleanup findings. */
   outcomes: readonly string[];
+  /** Matched row dispositions: only a proven no-action skip is settled. */
+  dispositions?: readonly (string | null | undefined)[];
+  /** Positive fresh-scan transfer receipts; a routed disposition alone is not proof. */
+  reconciled?: readonly boolean[];
   /** Has the resolver ever reported life for this run? */
   everReportedLife: boolean;
   /**
@@ -1932,7 +1936,8 @@ export function deriveSettleOutcome(input: {
   const everReportedLife = input.everReportedLife || (runKind === 'plan-cleanup' && input.scanCompleted === true);
   const terminal =
     runKind === 'plan-cleanup' ? ['auto_applied', 'accepted', 'dismissed'] : ['auto_resolved', 'dismissed'];
-  const awaitingOwner = outcomes.some((o) => !terminal.includes(o));
+  const awaitingOwner = outcomes.some((o, index) => !terminal.includes(o) &&
+    !(runKind === 'plan-cleanup' && o === 'skipped' && input.dispositions?.[index] === 'routed' && input.reconciled?.[index] === true));
   const recordedNothing = outcomes.length === 0;
 
   if (recordedNothing && runKind !== 'plan-cleanup') {
@@ -1988,13 +1993,13 @@ export async function settleRunPhase(input: {
     const runKind = locked[0].run_kind ?? DEFAULT_RUN_KIND;
     const states =
       runKind === 'plan-cleanup'
-        ? await tx<{ outcome: string }[]>`
-            SELECT outcome
+        ? await tx<{ outcome: string; disposition: string | null; evidence_basis?: unknown }[]>`
+            SELECT outcome, disposition, evidence_basis
               FROM harness_shared.plan_cleanup_run_findings
              WHERE workspace_id = ${ws} AND run_id = ${input.runId}
           `
-        : await tx<{ outcome: string }[]>`
-            SELECT outcome
+        : await tx<{ outcome: string; disposition: string | null; evidence_basis?: unknown }[]>`
+            SELECT outcome, disposition
               FROM harness_shared.attention_bulk_run_items
              WHERE workspace_id = ${ws} AND run_id = ${input.runId}
           `;
@@ -2004,6 +2009,9 @@ export async function settleRunPhase(input: {
     const { phase, refusedReason } = deriveSettleOutcome({
       runKind,
       outcomes: states.map((i) => i.outcome),
+      dispositions: states.map((i) => i.disposition),
+      reconciled: states.map((i) => Array.isArray(i.evidence_basis) &&
+        i.evidence_basis.some((basis: unknown) => typeof basis === 'string' && basis.startsWith('cleanup-reconciled:'))),
       everReportedLife: locked[0].heartbeat_at != null,
       scanCompleted: input.scanCompleted,
     });

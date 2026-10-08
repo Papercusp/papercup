@@ -48,6 +48,7 @@ import { isLaunchableMode, LAUNCHABLE_MODE_IDS } from '../../../modes/registry';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { HARNESS_SLUG_RE } from '../../../harness-slug';
 import { hostedAgentIdentityPsuEnv } from '../../../workspace-host/hosted-agent-identity-psu-env';
+import { ompDefaultModel } from '../../../../../../apps/operator/scripts/psu-launcher.mjs';
 
 const JSON_HEADERS = { 'content-type': 'application/json' } as const;
 // EI-21563406996333542: shared with the WRITE doors (goals:update) so a slug can
@@ -274,7 +275,6 @@ async function handleLaunchSu(req: Request): Promise<Response> {
   let account = body.account?.trim() || '';
   if (!account) {
     if (agent === 'omp') {
-      const { ompDefaultModel } = await import('../../../../../../apps/operator/scripts/psu-launcher.mjs');
       account = defaultLaunchAccountFor({ agent, model,
         ompSelector: process.env.PAPERCUSP_OMP_MODEL_SELECTOR ?? null, ompNativeDefault: () => ompDefaultModel() });
     } else {

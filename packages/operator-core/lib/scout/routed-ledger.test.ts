@@ -15,6 +15,8 @@ const h = vi.hoisted(() => ({
   updateRows: [] as Array<{ idea_id: string }>,
   /** Rows the existence SELECT yields. */
   selectRows: [] as Array<{ idea_id: string }>,
+  /** Rows the work-item terminal-facts SELECT yields (WI-10007390). */
+  factsRows: [] as Array<{ terminal_owner: string | null; has_completion_evidence: boolean; triage_rejected: boolean }>,
   queries: [] as string[],
   /** Interpolated values per query, index-aligned with `queries`. */
   values: [] as unknown[][],
@@ -29,6 +31,7 @@ vi.mock('@papercusp/db-org', async (orig) => ({
       h.values.push(vals);
       if (text.includes('UPDATE harness_shared.scout_routed_ideas')) return Promise.resolve(h.updateRows);
       if (text.includes('SELECT idea_id')) return Promise.resolve(h.selectRows);
+      if (text.includes('SELECT w.terminal_owner')) return Promise.resolve(h.factsRows);
       return Promise.resolve([]);
     }, { begin: vi.fn(async function (this: unknown, write: (sql: unknown) => Promise<unknown>) {
       return write(this);
@@ -42,7 +45,7 @@ vi.mock('../experiment/producer-lifecycle-store', async (original) => ({
   recordProducerObservation: vi.fn(async () => {}),
 }));
 
-const { gradeRoutedIdea, hiveFromPatternRefs, propagatePlanOutcome, propagateWorkItemOutcome } = await import(
+const { gradeRoutedIdea, hiveFromPatternRefs, propagatePlanOutcome, propagateWorkItemOutcome, workItemTerminalEntries } = await import(
   './routed-ledger'
 );
 const sse = await import('../sync-sse');
@@ -54,6 +57,7 @@ const flush = () => new Promise((r) => setTimeout(r, 0));
 afterEach(() => {
   h.updateRows = [];
   h.selectRows = [];
+  h.factsRows = [];
   h.queries = [];
   h.values = [];
   invalidate.mockClear();
@@ -119,6 +123,7 @@ describe('hiveFromPatternRefs (D-003 target-hive derivation, P-002)', () => {
 describe('propagateWorkItemOutcome (EI-22414305411561114)', () => {
   it('writes a winning outcome for a terminal success and scopes the routed ref', async () => {
     h.updateRows = [{ idea_id: 'idea-1' }];
+    h.factsRows = [{ terminal_owner: 'su-x', has_completion_evidence: true, triage_rejected: false }];
 
     await expect(
       propagateWorkItemOutcome({
@@ -155,6 +160,75 @@ describe('propagateWorkItemOutcome (EI-22414305411561114)', () => {
       }),
     ).resolves.toBe(0);
     expect(h.queries).toHaveLength(0);
+  });
+
+  /** The outcome value interpolated into the UPDATE, or undefined when no UPDATE ran. */
+  const writtenOutcome = () => {
+    const i = h.queries.findIndex((q) => q.includes('UPDATE harness_shared.scout_routed_ideas'));
+    return i < 0 ? undefined : h.values[i]?.[0];
+  };
+
+  it('WI-10007390: a hygiene close is a LOSS even though `closed` is a winning status', async () => {
+    h.updateRows = [{ idea_id: 'idea-h' }];
+    h.factsRows = [{ terminal_owner: 'improvement-hygiene', has_completion_evidence: false, triage_rejected: true }];
+
+    await expect(
+      propagateWorkItemOutcome({ workItemId: 'EI-h', state: 'closed', workspaceId: 'ws-1' }),
+    ).resolves.toBe(1);
+    expect(writtenOutcome()).toBe('lost');
+  });
+
+  it('WI-10007390: a done close counts as a win when its evidence is only on payload._completionEvidence', async () => {
+    h.updateRows = [{ idea_id: 'idea-d' }];
+    // has_completion_evidence is computed over BOTH surfaces in SQL; pin that the
+    // query reads the payload surface, not only terminal_completion_ref.
+    h.factsRows = [{ terminal_owner: 'su-x', has_completion_evidence: true, triage_rejected: false }];
+
+    await expect(
+      propagateWorkItemOutcome({ workItemId: 'EI-d', state: 'done', workspaceId: 'ws-1' }),
+    ).resolves.toBe(1);
+    expect(writtenOutcome()).toBe('won');
+    const factsQuery = h.queries.find((q) => q.includes('SELECT w.terminal_owner')) ?? '';
+    expect(factsQuery).toContain('_completionEvidence');
+    expect(factsQuery).toContain('terminal_completion_ref');
+  });
+
+  it('WI-10007390: a winning state with no completion record settles nothing', async () => {
+    h.updateRows = [{ idea_id: 'idea-n' }];
+    h.factsRows = [{ terminal_owner: null, has_completion_evidence: false, triage_rejected: false }];
+
+    await expect(
+      propagateWorkItemOutcome({ workItemId: 'EI-n', state: 'done', workspaceId: 'ws-1' }),
+    ).resolves.toBe(0);
+    expect(writtenOutcome()).toBeUndefined();
+  });
+});
+
+describe('workItemTerminalEntries (WI-10007390)', () => {
+  const row = (over: Partial<Parameters<typeof workItemTerminalEntries>[0][number]>) => ({
+    feature_id: 'EI-1',
+    harness_slug: 'papercusp',
+    title: 'Some idea',
+    status: 'done',
+    updated_ts: '1790000000000',
+    terminal_owner: 'su-x',
+    has_completion_evidence: true,
+    triage_rejected: false,
+    ...over,
+  });
+
+  it('tags each terminal by the shared rule and drops unprovable wins', () => {
+    const entries = workItemTerminalEntries([
+      row({ feature_id: 'EI-won' }),
+      row({ feature_id: 'EI-hyg', status: 'closed', terminal_owner: 'improvement-hygiene', has_completion_evidence: false }),
+      row({ feature_id: 'EI-drop', status: 'dropped', has_completion_evidence: false }),
+      row({ feature_id: 'EI-bare', status: 'done', terminal_owner: null, has_completion_evidence: false }),
+    ]);
+    expect(entries.map((e) => [e.ref, e.detail])).toEqual([
+      ['wi:EI-won', 'Status: done'],
+      ['wi:EI-hyg', 'Status: rejected'],
+      ['wi:EI-drop', 'Status: dropped'],
+    ]);
   });
 });
 

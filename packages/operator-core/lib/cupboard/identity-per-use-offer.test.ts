@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { settleRevenue } from '../p2p/revenue-settlement';
+import meterInvocation from '../agent-tools/cupboard/meter-invocation';
 import {
   IDENTITY_DAO_TAKE_BPS,
   IDENTITY_MARKUP_METER_UNIT,
@@ -33,6 +34,34 @@ describe('identity release skuRef', () => {
 });
 
 describe('identityPerUseOfferTerms', () => {
+  it('round-trips exact component authors through the persisted price term and reconciles the resulting split', () => {
+    const componentDependencies = [
+      { packageKind: 'blueprint', ref: 'dependency', revision: '2.0.0', contentHash: 'a'.repeat(64), author: 'alice' },
+      { packageKind: 'pack', ref: 'knowledge', revision: '3.0.0', contentHash: 'b'.repeat(64), author: 'bob' },
+    ];
+    const offered = identityPerUseOfferTerms({ identity: ENGINEER, componentBps: 3000, componentDependencies });
+    if (!offered.ok) throw new Error(offered.detail);
+    expect(offered.terms.priceVersion.length).toBeGreaterThan(200);
+    expect(meterInvocation.args.safeParse({ op: 'reserve', channelId: 'channel', workspaceId: 'workspace',
+      hiveSlug: 'buyer', offerId: 'offer', payer: 'buyer', seller: 'seller', releaseRef: offered.terms.skuRef,
+      usageNonce: 'one', quantity: 1, ...offered.terms }).success).toBe(true);
+    const restored = verifyIdentityPerUseOffer(offered.terms);
+    if (!restored.ok) throw new Error(restored.detail);
+    expect(restored.manifest).toEqual(offered.manifest);
+    const settled = settleRevenue({ settlementId: 'components', grossMicros: 1000n, providerCostMicros: 0n,
+      splitManifest: restored.manifest, daoTreasury: 'dao' });
+    expect(settled).toMatchObject({ ok: true, receipt: { allocationsMicros: { creator: 600n, dao: 100n },
+      componentAllocationsMicros: { alice: 150n, bob: 150n } } });
+    const changed = identityPerUseOfferTerms({ identity: ENGINEER, componentBps: 3000,
+      componentDependencies: componentDependencies.map((pin) => ({ ...pin, author: 'mallory' })) });
+    if (!changed.ok) throw new Error(changed.detail);
+    expect(verifyIdentityPerUseOffer({ ...offered.terms, priceVersion: changed.terms.priceVersion }))
+      .toMatchObject({ ok: false, code: 'identity-offer-mismatch' });
+    expect(verifyIdentityPerUseOffer({ ...offered.terms, priceVersion: offered.terms.priceVersion + '!' })).toMatchObject({ ok: false });
+    expect(identityPerUseOfferTerms({ identity: ENGINEER, componentBps: 3000, componentDependencies: [] }))
+      .toMatchObject({ ok: false, code: 'invalid-split' });
+  });
+
   it('defaults to the suggested 20% markup with the whole seller share to the creator', () => {
     const result = identityPerUseOfferTerms({ identity: ENGINEER });
     if (!result.ok) throw new Error(result.detail);

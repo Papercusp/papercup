@@ -185,6 +185,12 @@ export async function runDeterministicPlanCleanup(input: {
       runId: run.runId,
       findings: scan,
       workspaceId: run.workspaceId,
+      reconcile: {
+        harnessSlug: run.harnessSlug ?? operatorHomeHarnessSlug(),
+        planSlugs: run.seedRefs,
+        carryReviewFindingIds: scan.filter((finding) =>
+          !cleanupAutomationEligibility(policy, finding).allowed).map((finding) => finding.findingId),
+      },
     });
     if (seeded.refused) {
       authorityRevoked = true;
@@ -288,6 +294,12 @@ export async function runDeterministicPlanCleanup(input: {
     runId: run.runId,
     findings: finalScan,
     workspaceId: run.workspaceId,
+    reconcile: {
+      harnessSlug: run.harnessSlug ?? operatorHomeHarnessSlug(),
+      planSlugs: run.seedRefs,
+      carryReviewFindingIds: finalScan.filter((finding) =>
+        !cleanupAutomationEligibility(policy, finding).allowed).map((finding) => finding.findingId),
+    },
   });
   if (finalSeed.refused) {
     authorityRevoked = true;

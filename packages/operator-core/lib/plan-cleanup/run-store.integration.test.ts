@@ -39,6 +39,7 @@ const {
   reportFindingOutcomes,
   getRunFindings,
   getPendingReviewFindings,
+  getCleanupReviewRuns,
   reclassifyLegacyFindings,
 } = await import('./run-store');
 const {
@@ -124,6 +125,107 @@ describe('plan-cleanup run store (real PG)', () => {
   });
 
   // ── per-kind single-flight (migration 937 re-keyed index) ─────────────────
+
+  it('inventories older review runs from actual unresolved rows within the workspace', async () => {
+    const first = await createCleanupRun();
+    await seedFindings({ runId: first.runId, findings: scanFindings() });
+    await settleRunPhase({ runId: first.runId });
+    const second = await createCleanupRun();
+    await seedFindings({ runId: second.runId, findings: scanFindings().slice(0, 1) });
+    await settleRunPhase({ runId: second.runId });
+    const inventory = await getCleanupReviewRuns();
+    expect(inventory.total).toBe(2);
+    expect(inventory.runs).toEqual([
+      expect.objectContaining({ runId: second.runId, unresolved: 1 }),
+      expect.objectContaining({ runId: first.runId, unresolved: 3 }),
+    ]);
+    expect(await getCleanupReviewRuns(`${h.ws}-other`)).toEqual({ runs: [], total: 0 });
+  });
+
+  async function reviewedRun() {
+    const first = await createCleanupRun();
+    const findings = scanFindings().map((finding) => ({ ...finding, evidenceBasis: ['cleanup-source:v1'] }));
+    await seedFindings({ runId: first.runId, findings });
+    await reportFindingOutcomes({ runId: first.runId, reports: findings.map((finding) => ({
+      findingId: finding.findingId, outcome: 'recommended' as const,
+      recommendationKind: 'cleanup_candidate' as const, recommendationLabel: 'Review',
+      recommendationRationale: 'Evidence requires review',
+    })) });
+    await settleRunPhase({ runId: first.runId });
+    return { first, findings };
+  }
+
+  it('carries unchanged review decisions into the next sweep and reconciles older debt without owner verdicts', async () => {
+    const { first, findings } = await reviewedRun();
+    const second = await createCleanupRun();
+    const result = await seedFindings({ runId: second.runId, findings,
+      reconcile: { harnessSlug: 'papercusp', planSlugs: second.seedRefs,
+        carryReviewFindingIds: findings.map((finding) => finding.findingId) } });
+    expect(result.findings.map((finding) => finding.outcome)).toEqual(['recommended', 'recommended', 'recommended']);
+    expect(result.findings[0].evidenceBasis).toContain(`cleanup-carried:${first.runId}`);
+    expect(result.findings[0].recommendationRationale).toBe('Evidence requires review');
+    expect((await getRun(second.runId))?.recommended).toBe(3);
+    const older = await getRunFindings(first.runId);
+    expect(older.every((finding) => finding.outcome === 'skipped' && finding.disposition === 'routed')).toBe(true);
+    expect(older[0].evidence.at(-1)?.note).toContain(second.runId);
+    expect((await getRun(first.runId))?.phase).toBe('complete');
+    expect((await getRun(first.runId))?.recommended).toBe(0);
+    await settleRunPhase({ runId: second.runId });
+    expect((await getRun(second.runId))?.phase).toBe('review');
+  });
+
+  it.each(['source', 'policy'])('requires a fresh decision when the %s changes', async (change) => {
+    const { first, findings } = await reviewedRun();
+    const second = await createCleanupRun();
+    const result = await seedFindings({ runId: second.runId,
+      findings: change === 'source' ? findings.map((finding) => ({ ...finding, evidenceBasis: ['cleanup-source:v2'] })) : findings,
+      reconcile: { harnessSlug: 'papercusp', planSlugs: second.seedRefs,
+        carryReviewFindingIds: change === 'policy' ? [] : findings.map((finding) => finding.findingId) } });
+    expect(result.findings.every((finding) => finding.outcome === 'pending')).toBe(true);
+    expect((await getRun(first.runId))?.phase).toBe('complete');
+  });
+
+  it('rechecks a carried decision after an action changes the same plan during a sweep', async () => {
+    const { findings } = await reviewedRun();
+    const second = await createCleanupRun();
+    const reconcile = { harnessSlug: 'papercusp', planSlugs: second.seedRefs,
+      carryReviewFindingIds: findings.map((finding) => finding.findingId) };
+    await seedFindings({ runId: second.runId, findings, reconcile });
+    const changed = findings.map((finding) => ({ ...finding, evidenceBasis: ['cleanup-source:v2'] }));
+    const result = await seedFindings({ runId: second.runId, findings: changed, reconcile });
+    expect(result.findings.every((finding) => finding.outcome === 'pending')).toBe(true);
+  });
+
+  it('preserves terminal history and recommendations outside the fresh scan scope', async () => {
+    const { first, findings } = await reviewedRun();
+    await markCleanupFindingAccepted({ runId: first.runId, findingId: findings[0].findingId });
+    const second = await createCleanupRun(['plan-a']);
+    await seedFindings({ runId: second.runId, findings: [],
+      reconcile: { harnessSlug: 'papercusp', planSlugs: second.seedRefs, carryReviewFindingIds: [] } });
+    const older = await getRunFindings(first.runId);
+    expect(older[0].outcome).toBe('accepted');
+    expect(older[1]).toMatchObject({ outcome: 'skipped', disposition: 'routed' });
+    expect(older[2].outcome).toBe('recommended');
+    expect((await getRun(first.runId))?.phase).toBe('review');
+    await expect(seedFindings({ runId: second.runId, findings: [],
+      reconcile: { harnessSlug: 'other-harness', planSlugs: ['plan-b'], carryReviewFindingIds: [] } }))
+      .rejects.toThrow('immutable run membership');
+  });
+
+  it('never reconciles another workspace and retains source identity through automatic action reports', async () => {
+    const ownWorkspace = h.ws;
+    const { first } = await reviewedRun();
+    h.ws = `${ownWorkspace}-other`;
+    const second = await createCleanupRun();
+    const findings = scanFindings().map((finding) => ({ ...finding, evidenceBasis: ['cleanup-source:v1'] }));
+    await seedFindings({ runId: second.runId, findings,
+      reconcile: { harnessSlug: 'papercusp', planSlugs: second.seedRefs,
+        carryReviewFindingIds: findings.map((finding) => finding.findingId) } });
+    expect((await getRunFindings(first.runId, ownWorkspace)).every((finding) => finding.outcome === 'recommended')).toBe(true);
+    await executeCleanupFindingAction({ runId: second.runId, findingId: findings[0].findingId,
+      execute: async () => ({ ok: true }) });
+    expect((await getRunFindings(second.runId))[0].evidenceBasis).toContain('cleanup-source:v1');
+  });
 
   it('lets one inbox run and one plan-cleanup run coexist in a workspace', async () => {
     const cleanup = await createCleanupRun();

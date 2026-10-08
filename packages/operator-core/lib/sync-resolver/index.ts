@@ -4319,7 +4319,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   'plans.cleanupRun': {
     backingTables: ['harness_shared.attention_bulk_runs', 'harness_shared.plan_cleanup_run_findings'],
     resolve: async (args) => {
-      const [{ classifyRunLiveness, getRun, getLatestRun, getActiveRun }, { getRunFindings }, { selectPlanCleanupPaneRun }] =
+      const [{ classifyRunLiveness, getRun, getLatestRun, getActiveRun }, { getRunFindings, getCleanupReviewRuns }, { selectPlanCleanupPaneRun }] =
         await Promise.all([
           import('../attention/bulk-run-store'),
           import('../plan-cleanup/run-store'),
@@ -4337,11 +4337,13 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
               getActive: () => getActiveRun(undefined, 'plan-cleanup'),
               getLatest: () => getLatestRun(undefined, 'plan-cleanup'),
             });
-        if (!run || run.runKind !== 'plan-cleanup') return [{ run: null, findings: [] }];
+        const reviewInventory = await getCleanupReviewRuns();
+        if (!run || run.runKind !== 'plan-cleanup') return [{ run: null, findings: [], reviewInventory }];
         return [
           {
             run: { ...run, liveness: classifyRunLiveness(run) },
             findings: await getRunFindings(run.runId, run.workspaceId),
+            reviewInventory,
           },
         ];
       } catch {

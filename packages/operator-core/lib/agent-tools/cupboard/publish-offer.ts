@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import {
   identityPerUseOfferTerms,
+  IDENTITY_MARKUP_MAX_PRICE_VERSION_LENGTH,
   isIdentityReleaseSkuRef,
   verifyIdentityPerUseOffer,
   type IdentityPerUseOfferResult,
@@ -39,7 +40,7 @@ const offerArgs = z
     active: z.boolean().optional(),
     unitPriceMicros: z.number().int().positive().optional(),
     meterUnit: z.string().min(1).max(200).optional(),
-    priceVersion: z.string().min(1).max(200).optional(),
+    priceVersion: z.string().min(1).max(IDENTITY_MARKUP_MAX_PRICE_VERSION_LENGTH).optional(),
     splitManifestHash: z
       .string()
       .regex(/^sha256:[0-9a-f]{64}$/i)
@@ -122,6 +123,22 @@ export default defineTool({
     }
     if (identityOffer && !identityOffer.ok) {
       return data({ ok: false, error: identityOffer.code, detail: identityOffer.detail, status: 400 });
+    }
+    if (identityOffer?.ok && identityOffer.markup.componentBps > 0) {
+      try {
+        const { readBlueprintReleaseRevenueDependencies } = await import('../../cupboard/blueprint-release');
+        const { INSTALLED_BLUEPRINTS_DIR } = await import('../../blueprint/installed-blueprints');
+        const componentDependencies = await readBlueprintReleaseRevenueDependencies(INSTALLED_BLUEPRINTS_DIR(), identityOffer.identity);
+        const pinned = identityPerUseOfferTerms({ identity: identityOffer.identity, ...identityOffer.markup, componentDependencies });
+        if (!pinned.ok) return data({ ok: false, error: pinned.code, detail: pinned.detail, status: 422 });
+        if (!args.identityRelease && (pinned.terms.priceVersion !== args.priceVersion ||
+            pinned.terms.splitManifestHash !== args.splitManifestHash)) {
+          return data({ ok: false, error: 'identity-offer-mismatch', detail: 'component authors differ from the exact retained release', status: 422 });
+        }
+        identityOffer = pinned;
+      } catch (error) {
+        return data({ ok: false, error: 'identity-component-closure', detail: String(error), status: 422 });
+      }
     }
     const perUse = identityOffer?.ok
       ? {

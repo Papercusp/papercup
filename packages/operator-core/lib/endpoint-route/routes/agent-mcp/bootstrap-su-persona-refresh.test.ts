@@ -88,6 +88,11 @@ vi.mock('../../../cupboard/identity-activation-gate-io', () => ({
 vi.mock('../../../agent-tools/coordination/presence', () => ({
   touchHeartbeat: vi.fn(async () => {}),
 }));
+// Refresh must use the shared leaf helpers. Importing the launch route pulls
+// unrelated launch/store graphs into this recovery path before any request runs.
+vi.mock('./bootstrap-su', () => {
+  throw new Error('persona refresh must not load the bootstrap launch graph');
+});
 
 let routes: { method: string; path: string; handler: (req: Request) => Promise<Response> }[];
 let dir = '';

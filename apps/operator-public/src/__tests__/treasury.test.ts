@@ -196,8 +196,8 @@ async function bindWallet(db: D1Database): Promise<void> {
     .run();
 }
 
-async function seedSettledReceipt(db: D1Database, nonce: string, cumulative: number): Promise<void> {
-  const v = voucher(nonce, cumulative);
+async function seedSettledReceipt(db: D1Database, nonce: string, cumulative: number, splitManifestHash = SPLIT.manifestHash): Promise<void> {
+  const v = { ...voucher(nonce, cumulative), splitManifestHash };
   await db
     .prepare(
       `INSERT INTO usage_receipts
@@ -218,7 +218,7 @@ async function seedSettledReceipt(db: D1Database, nonce: string, cumulative: num
       Number(v.meterQuantity),
       Number(v.pricePerUnitMicros),
       v.priceVersion,
-      SPLIT.manifestHash,
+      v.splitManifestHash,
       cumulative,
       cumulative,
       cumulative,
@@ -255,7 +255,7 @@ async function recordDeployment(api: Api, env: Env2, overrides: Record<string, u
 }
 
 /** Drive a settlement all the way to FINAL through the real P-033 routes. */
-async function settleToFinal(api: Api, db: D1Database, env: Env2): Promise<string> {
+async function settleToFinal(api: Api, db: D1Database, env: Env2, splitManifestHash = SPLIT.manifestHash): Promise<string> {
   await bindWallet(db);
   const opened = await api.request(
     '/commerce/payment-channels',
@@ -263,7 +263,7 @@ async function settleToFinal(api: Api, db: D1Database, env: Env2): Promise<strin
     env,
   );
   if (opened.status !== 201) throw new Error(`channel open failed: ${opened.status} ${await opened.text()}`);
-  await seedSettledReceipt(db, 'n1', 10_000);
+  await seedSettledReceipt(db, 'n1', 10_000, splitManifestHash);
 
   const claimed = await api.request(`/commerce/payment-channels/${CHANNEL}/settlements`, bearer(), env);
   if (claimed.status !== 201) throw new Error(`claim failed: ${claimed.status} ${await claimed.text()}`);
@@ -333,6 +333,30 @@ describe('POST /commerce/treasury/safe-deployments', () => {
 });
 
 describe('POST /commerce/payment-channels/:channelId/settlements/:batchId/treasury', () => {
+  it('reconciles retained author amounts and refuses a changed recipient even when the component total is preserved', async () => {
+    const { adapter, submitTransfer } = fakeTreasuryAdapter();
+    const componentDependencies = [
+      { packageKind: 'blueprint', ref: 'parent', revision: '1.0.0', contentHash: 'a'.repeat(64), author: 'alice' },
+      { packageKind: 'pack', ref: 'knowledge', revision: '2.0.0', contentHash: 'b'.repeat(64), author: 'bob' },
+    ];
+    const split = revenueSplitManifest({ version: 'v1', sharesBps: SHARES, componentDependencies });
+    const { api, db, env } = harness({ REVENUE_SPLIT_MANIFEST: JSON.stringify({ version: 'v1', sharesBps: SHARES, componentDependencies }) }, adapter);
+    const batchId = await settleToFinal(api, db, env, split.manifestHash);
+    await recordDeployment(api, env);
+    expect((await route(api, env, batchId)).status).toBe(200);
+    expect(submitTransfer).toHaveBeenCalledTimes(1);
+    const row = await db.prepare('SELECT allocations_micros FROM settlement_batches WHERE batch_id = ?')
+      .bind(batchId).first<{ allocations_micros: string }>();
+    const allocations = JSON.parse(row!.allocations_micros) as Record<string, unknown>;
+    allocations.componentAuthors = { alice: '250', mallory: '250' };
+    await db.prepare('UPDATE settlement_batches SET allocations_micros = ? WHERE batch_id = ?')
+      .bind(JSON.stringify(allocations), batchId).run();
+    const refused = await route(api, env, batchId);
+    expect(refused.status).toBe(409);
+    expect(await refused.json()).toMatchObject({ error: 'reconciliation_failed' });
+    expect(submitTransfer).toHaveBeenCalledTimes(1);
+  });
+
   it('routes the reconciled DAO share into the Safe and records an auditable receipt', async () => {
     const { adapter, submitTransfer } = fakeTreasuryAdapter();
     const { api, db, env } = harness({}, adapter);

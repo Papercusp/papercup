@@ -115,6 +115,18 @@ function storeHarness(rows: CleanupRunFindingRow[]) {
 }
 
 describe('runDeterministicPlanCleanup', () => {
+  it('settles carried review decisions without launching another resolver and preserves policy revalidation', async () => {
+    const candidate = finding('archive-candidate', false);
+    const carried = { ...rowOf(candidate), outcome: 'recommended' as const };
+    const seed = vi.fn(async (_input: unknown) => ({ findings: [carried], refused: null }));
+    const result = await runDeterministicPlanCleanup({ run: run(), call: vi.fn(), deps: {
+      scanRun: vi.fn(async () => [candidate]), seed, read: vi.fn(async () => [carried]),
+      settle: vi.fn(async () => ({ ...run(), phase: 'review' as const })), notify: vi.fn(async () => undefined),
+    } });
+    expect(result).toMatchObject({ needsResolver: false, phase: 'review', applied: 0 });
+    expect(seed.mock.calls[0]?.[0]).toMatchObject({ reconcile: { carryReviewFindingIds: [candidate.findingId] } });
+  });
+
   it('automatically applies an archive recommendation and observes the changed plan', async () => {
     const rows: CleanupRunFindingRow[] = [];
     const store = storeHarness(rows);

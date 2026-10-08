@@ -26,6 +26,9 @@ import type { DispatchStats } from './dispatch-ledger';
 import { readAgentReviewState, verificationConflict, verificationParties } from './agent-review-policy';
 import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
 import type { PullLedgerRow } from '../../agent-tools/scheduler/pull_ledger';
+import type { AgentReviewState, VerificationParties } from './agent-review-policy';
+import type { WorkItem, listAllWorkItemsForFileExport } from '../../work-items';
+import type { resolveFleetMetricScope, selectFleetMetricCurrentItems } from '../../agent-tools/fleet/fleet-metrics-scope';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -110,6 +113,79 @@ export interface AgentReviewServiceRow {
   ledger: { ideaId: string; routedRef: string; grade: number | null; gradedBy: string | null } | null;
 }
 
+const REVIEW_HISTORY_MARKER = '\n\nagent-review-round-v1:';
+
+/** Extend the existing dated round comment; no second history store or inferred dates. */
+export function agentReviewRoundComment(summary: string, item: {
+  id: string; harness: string | null; payload: unknown; createdBy?: string | null; terminalOwner?: string | null;
+}, review: AgentReviewState, grade: number, reviewer: string): string {
+  return summary + REVIEW_HISTORY_MARKER + JSON.stringify({ id: item.id, harness: item.harness,
+    review, grade, reviewer, parties: verificationParties(item) });
+}
+
+export interface AgentReviewHistoryPost {
+  id: string;
+  harnessSlug: string;
+  author: string | null;
+  body: string;
+}
+
+/** Legacy prose is not a dated lifecycle receipt. Missing or conflicting rounds stay unknown. */
+export function computeAgentReviewHistory(scope: AgentReviewServiceScope,
+  rows: readonly AgentReviewServiceRow[], posts: readonly AgentReviewHistoryPost[]) {
+  const subjects = new Map(rows.filter(row => row.workspaceId === scope.workspaceId &&
+    row.harnessSlug === scope.harnessSlug).map(row => [row.id, row]));
+  const rounds = new Map<string, { fingerprint: string; enteredMs: number; decidedMs: number;
+    status: AgentReviewState['status']; reviewer: string; parties: VerificationParties } | null>();
+  let invalidReceipts = 0;
+  for (const post of posts) {
+    const offset = post.body.indexOf(REVIEW_HISTORY_MARKER);
+    if (offset < 0 || post.harnessSlug !== scope.harnessSlug) continue;
+    try {
+      const snapshot = JSON.parse(post.body.slice(offset + REVIEW_HISTORY_MARKER.length));
+      const subject = subjects.get(post.id);
+      const current = subject && readAgentReviewState(subject.payload);
+      const review = readAgentReviewState({ agentReview: snapshot.review });
+      const parties = snapshot.parties;
+      const enteredMs = Date.parse(review?.timing?.enteredAt ?? '');
+      const decidedMs = Date.parse(review?.timing?.decidedAt ?? '');
+      if (!current || !review || snapshot.id !== post.id || snapshot.harness !== post.harnessSlug ||
+          review.status === 'pending' || review.round >= current.round) continue;
+      const key = `${post.id}@${review.round}`;
+      if (typeof snapshot.reviewer !== 'string' || snapshot.reviewer !== post.author ||
+          !Number.isInteger(snapshot.grade) || snapshot.grade < 1 || snapshot.grade > 5 ||
+          (review.status === 'approved' ? snapshot.grade < 4 : snapshot.grade > 3) ||
+          !parties || !Array.isArray(parties.reporters) || !Array.isArray(parties.implementers) ||
+          ![...parties.reporters, ...parties.implementers].every(id => typeof id === 'string') ||
+          !parties.reporters.includes(review.submittedBy) ||
+          !Number.isFinite(enteredMs) || !Number.isFinite(decidedMs) || enteredMs < 0 ||
+          decidedMs < enteredMs || decidedMs > scope.nowMs) {
+        invalidReceipts++; rounds.set(key, null); continue;
+      }
+      const fingerprint = JSON.stringify(snapshot);
+      if (rounds.has(key) && rounds.get(key)?.fingerprint !== fingerprint) rounds.set(key, null);
+      else if (!rounds.has(key)) rounds.set(key, { fingerprint, enteredMs, decidedMs,
+        status: review.status, reviewer: snapshot.reviewer, parties });
+    } catch { invalidReceipts++; }
+  }
+  let priorRounds = 0, recordedRounds = 0, arrivals = 0, outcomesUnknown = 0;
+  const outcomes = { approved: 0, revisionRequested: 0 };
+  const workers = new Set(scope.verifierIds);
+  for (const row of subjects.values()) priorRounds += (readAgentReviewState(row.payload)?.round ?? 1) - 1;
+  for (const receipt of rounds.values()) {
+    if (!receipt) continue;
+    recordedRounds++;
+    if (receipt.enteredMs >= scope.sinceMs && receipt.enteredMs <= scope.nowMs) arrivals++;
+    if (receipt.decidedMs < scope.sinceMs) continue;
+    if (!workers.has(receipt.reviewer) || verificationConflict(receipt.parties, receipt.reviewer)) outcomesUnknown++;
+    else if (receipt.status === 'approved') outcomes.approved++;
+    else outcomes.revisionRequested++;
+  }
+  return { basis: 'dated-review-comments' as const, priorRounds, recordedRounds,
+    unmeasuredRounds: priorRounds - recordedRounds, arrivals,
+    outcomes: workers.size ? outcomes : null, outcomesUnknown, invalidReceipts };
+}
+
 /** A census of CURRENT review rounds. Overwritten earlier rounds are explicitly unmeasured.
  * A dispatch's status=ok is never an outcome: use the scheduler's recorded disposition,
  * including a late settlement, and the lifecycle decision corroborated by its grade ledger.
@@ -118,6 +194,7 @@ export function computeAgentReviewService(
   scope: AgentReviewServiceScope,
   rows: readonly AgentReviewServiceRow[],
   pulls: readonly (PullLedgerRow & { workspaceId: string })[],
+  historyPosts: readonly AgentReviewHistoryPost[] = [],
 ) {
   if (!Number.isFinite(scope.sinceMs) || !Number.isFinite(scope.nowMs) || scope.sinceMs > scope.nowMs) {
     throw new Error('Invalid review service window');
@@ -125,7 +202,7 @@ export function computeAgentReviewService(
   const inWindow = (ms: number) => Number.isFinite(ms) && ms >= scope.sinceMs && ms <= scope.nowMs;
   const workers = new Set(scope.verifierIds);
   const specs = new Set(scope.verificationSpecs.map(s => `${s.specId}@${s.revision}`));
-  let currentRounds = 0, arrivals = 0, arrivalsUnknown = 0, priorRoundsUnmeasured = 0;
+  let currentRounds = 0, arrivals = 0, arrivalsUnknown = 0;
   let pending = 0, pendingTimingUnknown = 0, overdueKnown = 0, outcomesUnknown = 0;
   let oldestKnownPendingWaitMs: number | null = null;
   const outcomes = { approved: 0, revisionRequested: 0 };
@@ -134,7 +211,6 @@ export function computeAgentReviewService(
     const review = readAgentReviewState(row.payload);
     if (!review) continue;
     currentRounds++;
-    priorRoundsUnmeasured += review.round - 1;
     const timing = computeAgentReviewTiming({ ...row, nowMs: scope.nowMs });
     if (timing.enteredAt === null) arrivalsUnknown++;
     else if (inWindow(Date.parse(timing.enteredAt))) arrivals++;
@@ -181,8 +257,9 @@ export function computeAgentReviewService(
       noClaimReasons[reason] = (noClaimReasons[reason] ?? 0) + 1;
     } else pickupUnknown++;
   }
+  const history = computeAgentReviewHistory(scope, rows, historyPosts);
   return { scope, basis: 'current-review-rounds' as const, currentRounds, arrivals, arrivalsUnknown,
-    priorRoundsUnmeasured, pending, pendingTimingUnknown, overdueKnown,
+    priorRoundsUnmeasured: history.unmeasuredRounds, history, pending, pendingTimingUnknown, overdueKnown,
     oldestKnownPendingWaitMs,
     oldestPendingWaitMs: pendingTimingUnknown ? null : oldestKnownPendingWaitMs,
     outcomes: workers.size ? outcomes : null, outcomesUnknown,
@@ -191,7 +268,7 @@ export function computeAgentReviewService(
 }
 
 /** Complete scoped census before serialization; no display LIMIT can change these totals. */
-export async function readAgentReviewService(scope: AgentReviewServiceScope) {
+export async function readAgentReviewService(scope: AgentReviewServiceScope, options: { itemIds?: readonly string[] } = {}) {
   let stage = 'review-census';
   try {
     const { sql } = getOrgPg();
@@ -209,7 +286,8 @@ export async function readAgentReviewService(scope: AgentReviewServiceScope) {
           ON l.workspace_id = wi.workspace_id AND l.harness_slug = wi.harness_slug
          AND l.idea_id = wi.payload #>> '{agentReview,ledgerIdeaId}'
        WHERE wi.workspace_id = ${scope.workspaceId} AND wi.harness_slug = ${scope.harnessSlug}
-         AND jsonb_typeof(wi.payload -> 'agentReview') = 'object'`;
+         AND jsonb_typeof(wi.payload -> 'agentReview') = 'object'
+         AND (${options.itemIds === undefined} OR wi.feature_id = ANY(${[...(options.itemIds ?? [])]}::text[]))`;
     stage = 'pickup-ledger';
     const pulls = await sql<{
       invoked_at: Date; coord_owner_id: string | null; harness_slug: string; status: string;
@@ -222,6 +300,17 @@ export async function readAgentReviewService(scope: AgentReviewServiceScope) {
        WHERE workspace_id = ${scope.workspaceId} AND harness_slug = ${scope.harnessSlug}
          AND tool_name = 'scheduler:get_next' AND coord_owner_id = ANY(${[...scope.verifierIds]}::text[])
          AND invoked_at >= ${new Date(scope.sinceMs)} AND invoked_at <= ${new Date(scope.nowMs)}`;
+    stage = 'round-history';
+    const history = await sql<{ id: string; author: string | null; body: string }[]>`
+      SELECT wi.feature_id AS id, p.author_id AS author, p.body
+        FROM harness_shared.work_items wi
+        JOIN harness_shared.coord_threads t ON t.workspace_id = wi.workspace_id
+         AND ((t.parent_kind = 'issue' AND t.parent_ref = wi.feature_id)
+           OR (t.parent_kind = 'feature' AND t.parent_ref = wi.harness_slug || '#' || wi.feature_id))
+        JOIN harness_shared.coord_thread_posts p ON p.workspace_id = t.workspace_id AND p.thread_id = t.thread_id
+       WHERE wi.workspace_id = ${scope.workspaceId} AND wi.harness_slug = ${scope.harnessSlug}
+         AND strpos(p.body, ${REVIEW_HISTORY_MARKER}) > 0
+         AND (${options.itemIds === undefined} OR wi.feature_id = ANY(${[...(options.itemIds ?? [])]}::text[]))`;
     stage = 'service-computation';
     const { pullLedgerRowFromInvocation } = await import('../../agent-tools/scheduler/pull_ledger');
     return { status: 'known' as const, ...computeAgentReviewService(scope, rows.map(row => ({
@@ -233,11 +322,52 @@ export async function readAgentReviewService(scope: AgentReviewServiceScope) {
         grade: row.human_grade === null ? null : Number(row.human_grade), gradedBy: row.graded_by } : null,
     })), pulls.map(pull => ({ workspaceId: scope.workspaceId,
       ...pullLedgerRowFromInvocation({ ...pull, invoked_at: new Date(pull.invoked_at).toISOString() }),
-    }))) };
+    })), history.map(post => ({ ...post, harnessSlug: scope.harnessSlug }))) };
   } catch (error) {
     return { status: 'unknown' as const, scope, reason: 'service-read-failed' as const,
       failure: { stage, message: error instanceof Error ? error.message : String(error),
         code: error && typeof error === 'object' && 'code' in error ? String(error.code) : null } };
+  }
+}
+
+/** P-030: reuse the fleet's authoritative spec/roster/window and uncapped internal census.
+ * An implementation fleet, failed roster or absent spec cannot stand in for verifier service.
+ */
+export async function readFleetAgentReviewService(input: { workspaceId: string; harness: string; fleet: string },
+  injected?: {
+    resolveScope: typeof resolveFleetMetricScope;
+    listItems: typeof listAllWorkItemsForFileExport;
+    selectItems: typeof selectFleetMetricCurrentItems;
+    readService: typeof readAgentReviewService;
+  }) {
+  try {
+    let deps = injected;
+    if (!deps) {
+      const module = await import('../../agent-tools/fleet/fleet-metrics-scope');
+      deps = { resolveScope: module.resolveFleetMetricScope, selectItems: module.selectFleetMetricCurrentItems,
+        listItems: (await import('../../work-items')).listAllWorkItemsForFileExport,
+        readService: readAgentReviewService };
+    }
+    const resolved = await deps.resolveScope({ ...input, flowMode: 'current-spec' });
+    if (!resolved.ok) return { status: 'unknown' as const, population: input,
+      reason: 'fleet-service-scope-unavailable', detail: resolved.reason, recoverVia: resolved.recoverVia };
+    if (resolved.claimSpec.current.lane !== 'verification') return { status: 'not-applicable' as const,
+      population: input, reason: 'fleet-spec-is-not-verification' };
+    const items: WorkItem[] = await deps.listItems({ harness: input.harness, includeObservations: false });
+    const selected = deps.selectItems(resolved, items);
+    const service = await deps.readService({ workspaceId: input.workspaceId, harnessSlug: input.harness,
+      sinceMs: Date.parse(resolved.scope.window.startAt), nowMs: Date.parse(resolved.scope.window.endAt),
+      verifierIds: resolved.populationLifecycle.currentRunnableRoster.ownerIds,
+      verificationSpecs: [{ specId: resolved.claimSpec.current.specId, revision: resolved.scope.stock.revision }] },
+    { itemIds: selected.map(item => item.id) });
+    return { ...service, population: { ...input, kind: 'fleet-current-spec' as const,
+      specId: resolved.claimSpec.current.specId, revision: resolved.scope.stock.revision,
+      matchedItems: selected.length, censusItems: items.length, limitApplied: false,
+      selection: 'canonical-claim-spec-matcher' as const, roster: 'current-runnable-roster' as const,
+      snapshot: 'selection-then-service-read' as const } };
+  } catch (error) {
+    return { status: 'unknown' as const, population: input, reason: 'fleet-service-read-failed',
+      detail: error instanceof Error ? error.message : String(error) };
   }
 }
 

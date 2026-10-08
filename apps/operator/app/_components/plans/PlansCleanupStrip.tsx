@@ -7,6 +7,7 @@
  * to P-007; this strip carries the run into that surface through `?opcln=`.
  */
 import { useCallback, useState } from "react";
+import { Select } from "@/app/harness/Select";
 import { BrushCleaning, ChevronRight, Loader2, RotateCw } from "lucide-react";
 import { formatRunElapsed } from "../review-report/bulk-run-time";
 import BulkResolverSettingsControl from "../bulk-resolver/BulkResolverSettingsControl";
@@ -21,7 +22,33 @@ import {
   usePlanCleanupOps,
   type PlanCleanupFinding,
   type PlanCleanupRun,
+  type PlanCleanupReviewInventory,
 } from "./use-plan-cleanup-run";
+
+/** Uses the registered control.select and existing opcln report navigation. */
+export function PlanCleanupReviewSelector({ inventory, selectedRunId, onReview }: {
+  inventory: PlanCleanupReviewInventory;
+  selectedRunId: string | null;
+  onReview: (runId: string) => void;
+}) {
+  if (inventory.total === 0) return null;
+  return (
+    <div className="plan-cleanup-review-inventory">
+      <Select
+        ariaLabel="Unresolved cleanup reviews"
+        value={inventory.runs.some((run) => run.runId === selectedRunId) ? selectedRunId! : ""}
+        placeholder={`${inventory.total} unresolved cleanup reviews`}
+        options={inventory.runs.map((run) => ({ value: run.runId,
+          label: `${run.createdAt ? new Date(run.createdAt).toLocaleDateString() : "Earlier run"} · ${run.unresolved} need review`,
+        }))}
+        onChange={onReview}
+      />
+      {inventory.total > inventory.runs.length ? (
+        <span>Showing the latest {inventory.runs.length} of {inventory.total} unresolved reviews.</span>
+      ) : null}
+    </div>
+  );
+}
 
 export interface PlansCleanupStripProps {
   /** Exact click-time set currently rendered by PlansPane. */

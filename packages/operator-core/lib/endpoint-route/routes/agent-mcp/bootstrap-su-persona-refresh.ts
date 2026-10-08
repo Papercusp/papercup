@@ -43,7 +43,7 @@ import {
   rebuildSuLaunchArtifact,
   suPersonaRefreshPathFor,
 } from '../../../su-persona-render';
-import { CORS_HEADERS, composeModePromptSection, gatePrincipal, jsonRes } from './bootstrap-su';
+import { CORS_HEADERS, composeModePromptSection, gatePrincipal, jsonRes } from './bootstrap-su-shared';
 import { requestSessionIdentityActivation } from '../../../agent-tools/coordination/control-anchor';
 
 const personaRefresh = defineTool({

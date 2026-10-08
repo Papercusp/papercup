@@ -31,11 +31,19 @@ export function validateRevenueSplit(manifest: RevenueSplitManifest): { ok: true
   }
   if (sum > 10_000) return { ok: false, code: 'split-overflow', detail: `revenue split sums to ${sum} bps, above 10000` };
   if (manifest.componentDependencies !== undefined) {
+    if (!Array.isArray(manifest.componentDependencies)) {
+      return { ok: false, code: 'invalid-split', detail: 'component dependencies must be an array' };
+    }
     if (manifest.componentDependencies.length === 0 && manifest.sharesBps.component > 0) {
       return { ok: false, code: 'invalid-split', detail: 'a component share requires dependency authors' };
     }
     const seen = new Set<string>();
     for (const dependency of manifest.componentDependencies) {
+      if (!dependency || typeof dependency !== 'object' ||
+          ['packageKind', 'ref', 'revision', 'contentHash', 'author'].some((field) =>
+            !Object.hasOwn(dependency, field) || typeof dependency[field as keyof ComponentRevenueDependency] !== 'string')) {
+        return { ok: false, code: 'invalid-split', detail: 'component dependencies need exact pins and named authors' };
+      }
       const key = canonicalJson([dependency.packageKind, dependency.ref]);
       if (!dependency.packageKind.trim() || !dependency.ref.trim() || !dependency.revision.trim() ||
           !dependency.author.trim() || !/^[0-9a-f]{64}$/.test(dependency.contentHash) || seen.has(key)) {

@@ -117,7 +117,11 @@ export function hashHostScript(path = HOST_SCRIPT_PATH) {
  *  inert here until the whole launcher restarts. Capturing the hash at load is what
  *  makes that detectable at all: it is the only value in the process that still
  *  describes the code actually executing after the file on disk moves on. */
-export const LOADED_HOST_CODE_VERSION = hashHostScript();
+// Reading a version has no effect when no PTY host uses the result. Let esbuild
+// discard it from helper-only imports; import.meta.url there is the large Hono
+// bundle, so retaining this unused read hashes the entire bundle during boot.
+// Standalone hosts still capture both versions at module evaluation time.
+export const LOADED_HOST_CODE_VERSION = /* @__PURE__ */ hashHostScript();
 
 /**
  * Persist only this closed classification of the operator target. The full URL can
@@ -151,7 +155,7 @@ export function operatorPinEvidence(env = process.env) {
 
 // The launcher supplies the long-lived carry/model callbacks. Replacing only
 // that sibling leaves this process on its old callbacks until it also adopts.
-const LOADED_LAUNCHER_CODE_VERSION = hashHostScript(LAUNCHER_SCRIPT_PATH);
+const LOADED_LAUNCHER_CODE_VERSION = /* @__PURE__ */ hashHostScript(LAUNCHER_SCRIPT_PATH);
 
 /** WI-38292: is this host or its launcher executing code older than disk?
  *  `stale` is true when either component's known hashes differ — an unreadable file

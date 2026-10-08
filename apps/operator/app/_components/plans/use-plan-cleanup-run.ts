@@ -99,6 +99,12 @@ export interface PlanCleanupRunState {
   isRunning: boolean;
   isReview: boolean;
   loading: boolean;
+  reviewInventory: PlanCleanupReviewInventory;
+}
+
+export interface PlanCleanupReviewInventory {
+  runs: Array<{ runId: string; createdAt: string | null; unresolved: number }>;
+  total: number;
 }
 
 export interface PlanCleanupStartResult {
@@ -308,6 +314,7 @@ export function usePlanCleanupRun(
   const { data, loading } = useSyncQuery<{
     run: PlanCleanupRun | null;
     findings: PlanCleanupFinding[];
+    reviewInventory?: PlanCleanupReviewInventory;
   }>({
     queryName: "plans.cleanupRun",
     args: runId ? { runId } : {},
@@ -317,7 +324,7 @@ export function usePlanCleanupRun(
   const row = Array.isArray(data)
     ? data[0]
     : (data as
-        | { run?: PlanCleanupRun | null; findings?: PlanCleanupFinding[] }
+        | { run?: PlanCleanupRun | null; findings?: PlanCleanupFinding[]; reviewInventory?: PlanCleanupReviewInventory }
         | undefined);
   const run = row?.run ?? null;
   const findings = useMemo(() => row?.findings ?? [], [row]);
@@ -333,8 +340,9 @@ export function usePlanCleanupRun(
       isRunning: run?.phase === "pending" || run?.phase === "running",
       isReview: run?.phase === "review",
       loading: Boolean(loading),
+      reviewInventory: row?.reviewInventory ?? { runs: [], total: 0 },
     }),
-    [run, findings, loading],
+    [run, findings, loading, row?.reviewInventory],
   );
 }
 

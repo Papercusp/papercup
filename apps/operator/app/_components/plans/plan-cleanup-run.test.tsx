@@ -56,7 +56,17 @@ vi.mock("@papercusp/sync", () => ({
   },
 }));
 
+vi.mock("@/app/harness/Select", () => ({
+  Select: ({ value, options, onChange, ariaLabel }: {
+    value: string; options: Array<{ value: string; label: string }>;
+    onChange: (value: string) => void; ariaLabel: string;
+  }) => <select aria-label={ariaLabel} value={value} onChange={(event) => onChange(event.target.value)}>
+    {options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+  </select>,
+}));
+
 import PlansCleanupStrip, {
+  PlanCleanupReviewSelector,
   type PlansCleanupStripProps,
 } from "./PlansCleanupStrip";
 import {
@@ -173,6 +183,22 @@ describe("plan clean-up derivation", () => {
 });
 
 describe("usePlanCleanupRun", () => {
+  it("preserves older unresolved runs and opens their exact existing report id", () => {
+    const inventory = { total: 2, runs: [
+      { runId: "new-review", createdAt: "2026-10-07T12:00:00Z", unresolved: 77 },
+      { runId: "old-review", createdAt: "2026-10-06T12:00:00Z", unresolved: 104 },
+    ] };
+    H.syncData.value = [{ run: run({ runId: "new-review", phase: "review" }), findings: [], reviewInventory: inventory }];
+    const { result } = renderHook(() => usePlanCleanupRun());
+    expect(result.current.reviewInventory).toEqual(inventory);
+    const onReview = vi.fn();
+    render(<PlanCleanupReviewSelector inventory={result.current.reviewInventory} selectedRunId="new-review" onReview={onReview} />);
+    expect(screen.getAllByRole("option")).toHaveLength(2);
+    expect(screen.getByText(/104 need review/)).toBeTruthy();
+    fireEvent.change(screen.getByRole("combobox", { name: "Unresolved cleanup reviews" }), { target: { value: "old-review" } });
+    expect(onReview).toHaveBeenCalledWith("old-review");
+  });
+
   it("subscribes to plans.cleanupRun by deep-linked run id and derives phase lists", () => {
     const recommended = finding({ findingId: "rec", outcome: "recommended" });
     const pending = finding({ findingId: "pending", outcome: "pending" });

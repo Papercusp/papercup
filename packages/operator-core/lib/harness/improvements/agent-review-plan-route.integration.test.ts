@@ -33,7 +33,7 @@ const {
   preserveAgentReviewAuthorityBeforePlanRoute,
   resubmitAgentReview,
 } = await import('./agent-review');
-const { computeAgentReviewTiming } = await import('./flow-metrics');
+const { computeAgentReviewTiming, readAgentReviewService } = await import('./flow-metrics');
 const { readAgentReviewState } = await import('./agent-review-policy');
 
 const WS = 'ws-agent-review-plan-route';
@@ -132,6 +132,12 @@ describe('agent-review authority survives a later plan route (EI-218490, real PG
       SELECT routed_at FROM harness_shared.scout_routed_ideas WHERE idea_id = ${first.ledgerIdeaId}`;
     expect(Number(ledger.routed_at)).toBe(old.getTime());
 
+    const service = await readAgentReviewService({ workspaceId: WS, harnessSlug: HARNESS,
+      sinceMs: before, nowMs: Date.now(), verifierIds: ['su-reviewer'], verificationSpecs: [] });
+    if (service.status === 'unknown') throw new Error(`Historical reader failed: ${JSON.stringify(service.failure)}`);
+    expect(service.history).toMatchObject({ priorRounds: 1, recordedRounds: 1, unmeasuredRounds: 0,
+      arrivals: 1, outcomes: { approved: 0, revisionRequested: 1 }, outcomesUnknown: 0, invalidReceipts: 0 });
+
     expect((await claimAgentReview({ id, reviewer: 'su-reviewer', harnessSlug: HARNESS })).claimed).toBe(true);
     expect(await runGradeIdea({ ideaId: first.ledgerIdeaId, grade: 5, feedback: 'The revision is ready.' },
       { ownerId: 'su-reviewer', role: 'operator' })).toMatchObject({ applied: true,
@@ -143,6 +149,98 @@ describe('agent-review authority survives a later plan route (EI-218490, real PG
       reviewRoutedAtMs: old.getTime(), nowMs: Date.parse(terminal.timing!.decidedAt!) + 1000 }).reviewWaitMs)
       .toBe(Date.parse(terminal.timing!.decidedAt!) - Date.parse(second.timing!.enteredAt));
   }, 120_000);
+
+  it('P-030 reads independent current-round outcomes and exact-spec pickup dispositions from real PG', async () => {
+    const workspaceId = 'ws-p030-service';
+    const nowMs = Date.parse('2026-10-08T04:00:00Z');
+    const dayMs = 24 * 60 * 60 * 1000;
+    const sinceMs = nowMs - dayMs;
+    const enteredAt = new Date(sinceMs + 60_000).toISOString();
+    const decidedAt = new Date(sinceMs + 120_000).toISOString();
+    const cases = [
+      { id: 'approved', status: 'approved' },
+      { id: 'revision', status: 'revision-requested' },
+      { id: 'creator', status: 'approved', createdBy: 'su-reviewer' },
+      { id: 'implementer', status: 'approved', terminalOwner: 'su-reviewer' },
+      { id: 'manual', status: 'approved', gradedBy: 'human' },
+      { id: 'legacy', status: 'pending', undated: true },
+      { id: 'overdue', status: 'pending', enteredAt: new Date(nowMs - 2 * dayMs).toISOString() },
+      { id: 'foreign', status: 'approved', workspaceId: 'other-workspace' },
+      { id: 'other-harness', status: 'approved', harnessSlug: 'other-harness' },
+    ];
+    for (const fixture of cases) {
+      const id = `EI-P030-SERVICE-${fixture.id}`;
+      const ws = fixture.workspaceId ?? workspaceId;
+      const harnessSlug = fixture.harnessSlug ?? HARNESS;
+      const payload = { agentReview: { status: fixture.status, submittedBy: 'su-filer', ledgerIdeaId: id, round: 1,
+        ...(fixture.undated ? {} : { timing: { round: 1, enteredAt: fixture.enteredAt ?? enteredAt,
+          ...(fixture.status === 'pending' ? {} : { decidedAt }) } }) } };
+      expect(readAgentReviewState(payload), `Invalid service fixture: ${id}`).not.toBeNull();
+      await db.adminSql`
+        INSERT INTO harness_shared.engineer_issues
+          (workspace_id, issue_id, kind, scope, title, body, severity, source, state,
+           payload, created_by, signal_origin, created_at, updated_at, admission)
+        VALUES (${ws}, ${id}, 'change', ${`harness:${harnessSlug}`}, ${id}, 'service census fixture',
+          'minor', 'engineer', 'open', ${JSON.stringify(payload)}::jsonb,
+          ${fixture.createdBy ?? 'su-filer'}, 'organic', ${new Date(sinceMs - dayMs)}, ${new Date(nowMs)}, 'pending')`;
+      if (fixture.terminalOwner) await db.adminSql`
+        UPDATE harness_shared.work_items SET terminal_owner = ${fixture.terminalOwner}
+         WHERE workspace_id = ${ws} AND harness_slug = ${harnessSlug} AND feature_id = ${id}`;
+      await recordRoutedIdea({ ideaId: id, lens: 'agent-review', rail: 'improvement', routedRef: `wi:${id}`,
+        workspaceId: ws, harnessSlug, origin: 'agent-review', createdBy: 'su-filer', title: id });
+      if (fixture.status !== 'pending') await db.adminSql`
+        UPDATE harness_shared.scout_routed_ideas
+           SET human_grade = ${fixture.status === 'approved' ? 5 : 2}, graded_by = ${fixture.gradedBy ?? 'su-reviewer'}
+         WHERE workspace_id = ${ws} AND harness_slug = ${harnessSlug} AND idea_id = ${id}`;
+    }
+    const invocations = [
+      { schedulerDisposition: { kind: 'claimed', workItemId: 'WI-VERIFIED', specId: 'verify', revision: 2 } },
+      { schedulerDisposition: { kind: 'no-claim', reason: 'no-eligible-work', specId: 'verify', revision: 2 } },
+      { schedulerDisposition: { kind: 'no-claim', reason: 'timeout', specId: 'verify', revision: 2 },
+        schedulerLateSettlement: { kind: 'claimed', workItemId: 'WI-LATE', settledAt: decidedAt } },
+      { schedulerDisposition: { kind: 'claimed', workItemId: 'WI-UNRELATED', specId: 'implementation', revision: 2 } },
+      { schedulerDisposition: { kind: 'claimed', workItemId: 'WI-OLD-SPEC', specId: 'verify', revision: 1 } },
+      { schedulerDisposition: { kind: 'no-claim', reason: 'unscoped' } },
+    ];
+    for (const metadata of invocations) await db.adminSql`
+      INSERT INTO harness_shared.tool_invocations
+        (workspace_id, harness_slug, plugin_name, tool_name, role, spawn_id, window_key, status,
+         coord_owner_id, invoked_at, duration_ms, metadata_json)
+      VALUES (${workspaceId}, ${HARNESS}, 'operator', 'scheduler:get_next', 'su', 'p030-test', 'p030-test', 'ok',
+        'su-reviewer', ${new Date(Date.parse(enteredAt))}, 20, ${JSON.stringify(metadata)}::jsonb)`;
+    // A complete census must precede every display cap (P-032/R-5): 2,001 extra
+    // pending rows must be included, even when a consumer samples at 2,000.
+    const bulkPayload = { agentReview: { status: 'pending', submittedBy: 'su-filer', ledgerIdeaId: 'EI-P030-BULK', round: 1,
+      timing: { round: 1, enteredAt } } };
+    expect(readAgentReviewState(bulkPayload), 'Bulk service fixture must be a valid review').not.toBeNull();
+    await db.adminSql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, item_kind, status, title, payload, created_ts, updated_ts)
+      SELECT ${workspaceId}, ${HARNESS}, 'EI-P030-BULK-' || n, 'change', 'open', 'Bulk pending review',
+             jsonb_set(${JSON.stringify(bulkPayload)}::jsonb, '{agentReview,ledgerIdeaId}',
+               to_jsonb('EI-P030-BULK-' || n)), ${sinceMs}, ${nowMs}
+        FROM generate_series(1, 2001) AS n`;
+    const service = await readAgentReviewService({ workspaceId, harnessSlug: HARNESS, sinceMs, nowMs,
+      verifierIds: ['su-reviewer'], verificationSpecs: [{ specId: 'verify', revision: 2 }] });
+    if (service.status === 'unknown') throw new Error(`P-030 reader failed: ${JSON.stringify(service.failure)}`);
+    expect(service).toMatchObject({ status: 'known', basis: 'current-review-rounds', currentRounds: 2008,
+      arrivals: 2006, arrivalsUnknown: 1, priorRoundsUnmeasured: 0, pending: 2003, pendingTimingUnknown: 1,
+      overdueKnown: 1, oldestKnownPendingWaitMs: 2 * dayMs, oldestPendingWaitMs: null,
+      outcomes: { approved: 1, revisionRequested: 1 }, outcomesUnknown: 3,
+      pickups: { attempts: 3, claimed: 2, noClaim: 1, unknown: 0,
+        noClaimReasons: { 'no-eligible-work': 1 } }, unscopedPickupAttempts: 1 });
+  }, 120_000);
+
+  it('P-030 preserves an actionable unknown when the persisted reader fails', async () => {
+    const savedSql = h.sql;
+    h.sql = () => { throw Object.assign(new Error('service reader detector fixture'), { code: 'P030-FIXTURE' }); };
+    try {
+      expect(await readAgentReviewService({ workspaceId: WS, harnessSlug: HARNESS, sinceMs: 0,
+        nowMs: Date.now(), verifierIds: ['su-reviewer'], verificationSpecs: [{ specId: 'verify', revision: 2 }] }))
+        .toMatchObject({ status: 'unknown', reason: 'service-read-failed',
+          failure: { stage: 'review-census', code: 'P030-FIXTURE', message: 'service reader detector fixture' } });
+    } finally { h.sql = savedSql; }
+  });
 
   it('moves review authority before the plan upsert, refuses the colliding bare key, then grades the fallback', async () => {
     const out = await runRouteIdea(

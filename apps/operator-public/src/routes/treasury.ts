@@ -238,6 +238,10 @@ function receiptFromBatch(batch: StoredSettlementBatch): SettlementReceipt {
     providerCostMicros: BigInt(batch.providerCostMicros),
     distributableMicros: BigInt(batch.distributableMicros),
     allocationsMicros,
+    ...(batch.componentAllocationsMicros !== undefined ? {
+      componentAllocationsMicros: Object.fromEntries(Object.entries(batch.componentAllocationsMicros)
+        .map(([author, amount]) => [author, BigInt(amount)])),
+    } : {}),
     daoTreasury: batch.daoTreasury,
     splitManifestHash: batch.splitManifestHash,
     receiptHash: batch.receiptHash,

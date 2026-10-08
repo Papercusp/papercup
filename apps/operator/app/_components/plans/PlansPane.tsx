@@ -95,7 +95,7 @@ import PlanProvenanceBadge, {
 import { LazyPlanDashboard, PLAN_DASHBOARD_PARAM } from "./PlanDashboardHost";
 import PlanCleanupEntryButton from "./PlanCleanupEntryButton";
 import { PlanAuditActions, PlanAuditButton } from "./PlanAuditPane";
-import PlansCleanupStrip from "./PlansCleanupStrip";
+import PlansCleanupStrip, { PlanCleanupReviewSelector } from "./PlansCleanupStrip";
 import {
   PLAN_CLEANUP_RUN_PARAM,
   usePlanCleanupRun,
@@ -616,6 +616,12 @@ export default function PlansPane({
       <PlanAuditActions planSlugs={rows.map(row => row.plan.slug)} />
 
       {cleanupEnabled ? (
+        <>
+        <PlanCleanupReviewSelector
+          inventory={cleanup.reviewInventory}
+          selectedRunId={cleanup.run?.runId ?? null}
+          onReview={(runId) => void setCleanupRunId(runId)}
+        />
         <PlansCleanupStrip
           planSlugs={cleanupPlanSlugs}
           filterSnapshot={cleanupFilterSnapshot}
@@ -629,6 +635,7 @@ export default function PlansPane({
           onReview={(runId) => void setCleanupRunId(runId)}
           onRunCleared={() => void setCleanupRunId(null)}
         />
+        </>
       ) : null}
 
       <section

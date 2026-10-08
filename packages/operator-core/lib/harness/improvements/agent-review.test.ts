@@ -201,7 +201,7 @@ describe('P-030 review timing lifecycle', () => {
     vi.setSystemTime(new Date('2026-10-08T01:00:00Z'));
     await enterAgentReview({ id: 'WI-7', submittedBy: 'su-filer' }, h.deps);
     expect(readAgentReviewState(h.state.issue.payload)?.timing?.enteredAt).toBe('2026-10-08T00:00:00.000Z');
-    h.state.ledger = { ideaId: 'WI-7', routedRef: 'wi:WI-7', grade: 2, feedback: 'Provide evidence', gradedBy: 'su-reviewer' };
+    h.state.ledger = { ideaId: 'WI-7', workItemId: 'WI-7', grade: 2, feedback: 'Provide evidence', gradedBy: 'su-reviewer' };
     await reconcileAgentReviewGrade({ ideaId: 'WI-7', gradedBy: 'su-reviewer' }, h.deps);
     expect(readAgentReviewState(h.state.issue.payload)?.timing?.decidedAt).toBe('2026-10-08T01:00:00.000Z');
     vi.setSystemTime(new Date('2026-10-08T02:00:00Z'));
@@ -226,7 +226,7 @@ describe('P-030 review timing lifecycle', () => {
     vi.setSystemTime(new Date('2026-10-08T00:00:00Z'));
     const h = harness();
     await enterAgentReview({ id: 'WI-7', submittedBy: 'su-filer' }, h.deps);
-    h.state.ledger = { ideaId: 'WI-7', routedRef: 'wi:WI-7', grade: 4, feedback: null, gradedBy: 'su-reviewer' };
+    h.state.ledger = { ideaId: 'WI-7', workItemId: 'WI-7', grade: 4, feedback: null, gradedBy: 'su-reviewer' };
     vi.setSystemTime(new Date('2026-10-08T01:00:00Z'));
     await reconcileAgentReviewGrade({ ideaId: 'WI-7', gradedBy: 'su-reviewer' }, h.deps);
     vi.setSystemTime(new Date('2026-10-08T02:00:00Z'));

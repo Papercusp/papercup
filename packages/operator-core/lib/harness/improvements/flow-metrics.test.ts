@@ -5,11 +5,14 @@
  * renders exactly these numbers, so window edges + the resolved-time
  * approximation (updated_at on state ∈ resolved/closed) are pinned here.
  */
-import { describe, it, expect } from 'vitest';
-import { computeAgentReviewService, computeAgentReviewTiming, computeImprovementFlow,
+import { describe, it, expect, vi } from 'vitest';
+import { agentReviewRoundComment, computeAgentReviewHistory, computeAgentReviewService, computeAgentReviewTiming, computeImprovementFlow, readFleetAgentReviewService,
   type AgentReviewServiceRow, type WatchdogFlowTick } from './flow-metrics';
 import type { PullLedgerRow } from '../../agent-tools/scheduler/pull_ledger';
 import type { ImprovementCandidate } from './policy';
+import type { WorkItem } from '../../work-items';
+import { matchesWorkItemClaimSpec } from '../../scheduler/claim-spec-match';
+import { DEFAULT_CLAIM_SPEC, validateClaimSpec, type ClaimSpec } from '../../scheduler/claim-spec';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const NOW = Date.parse('2026-06-09T12:00:00Z');
@@ -19,6 +22,47 @@ function cand(p: Partial<ImprovementCandidate> & { id: string }): ImprovementCan
 }
 const daysAgo = (d: number): string => new Date(NOW - d * DAY_MS).toISOString();
 const tick = (d: number, captured = 0): WatchdogFlowTick => ({ tickAtMs: NOW - d * DAY_MS, capturedCount: captured });
+
+describe('P-030 canonical fleet service population', () => {
+  const input = { workspaceId: 'ws', harness: 'h', fleet: 'reviewers' };
+  const spec: ClaimSpec = { ...DEFAULT_CLAIM_SPEC, specId: 'verify', lane: 'verification',
+    view: { filter: { field: 'kind', op: '=', value: 'change' } } };
+  const resolved = { ok: true, scope: { window: { startAt: daysAgo(1), endAt: daysAgo(0) }, stock: { revision: 2 } },
+    claimSpec: { current: spec }, populationLifecycle: { currentRunnableRoster: { ownerIds: ['su-live'] } } };
+  const fixture = (scope: unknown = resolved) => ({
+    resolveScope: vi.fn(async () => scope),
+    listItems: vi.fn(async () => [...Array.from({ length: 2001 }, (_, n) => ({ id: `change-${n}`, kind: 'change', payload: {} })),
+      { id: 'unrelated', kind: 'bug', payload: {} }] as WorkItem[]),
+    selectItems: (_scope: unknown, items: readonly WorkItem[]) => items.filter(item => matchesWorkItemClaimSpec(item, spec)),
+    readService: vi.fn(async () => ({ status: 'known' })),
+  });
+  it('selects the full >2000-row current-spec cohort with the canonical matcher and runnable verifier roster', async () => {
+    expect(validateClaimSpec(spec).ok, 'Service fixture must use the canonical claim-spec grammar').toBe(true);
+    const deps = fixture();
+    const out = await readFleetAgentReviewService(input, deps as never);
+    expect(out).toMatchObject({ status: 'known', population: { matchedItems: 2001, censusItems: 2002,
+      limitApplied: false, selection: 'canonical-claim-spec-matcher', roster: 'current-runnable-roster' } });
+    expect(deps.listItems).toHaveBeenCalledWith({ harness: 'h', includeObservations: false });
+    const [scope, options] = deps.readService.mock.calls[0] as unknown as [Record<string, unknown>, { itemIds: string[] }];
+    expect(scope).toMatchObject({ sinceMs: NOW - DAY_MS, nowMs: NOW, verifierIds: ['su-live'],
+      verificationSpecs: [{ specId: 'verify', revision: 2 }] });
+    expect(options.itemIds).toHaveLength(2001);
+    expect(options.itemIds).not.toContain('unrelated');
+  });
+  it('keeps an unread scope unknown and never calls a service reader for an implementation fleet', async () => {
+    const failed = fixture({ ok: false, reason: 'roster unread', recoverVia: 'fleet:status' });
+    expect(await readFleetAgentReviewService(input, failed as never)).toMatchObject({ status: 'unknown', detail: 'roster unread' });
+    expect(failed.listItems).not.toHaveBeenCalled();
+    const implementation = fixture({ ...resolved, claimSpec: { current: { ...spec, lane: 'implementation' } } });
+    expect(await readFleetAgentReviewService(input, implementation as never)).toMatchObject({ status: 'not-applicable' });
+    expect(implementation.readService).not.toHaveBeenCalled();
+  });
+  it('preserves census-read failure as unknown rather than healthy zero service', async () => {
+    const deps = fixture(); deps.listItems.mockRejectedValueOnce(new Error('census unavailable'));
+    expect(await readFleetAgentReviewService(input, deps as never)).toMatchObject({ status: 'unknown', detail: 'census unavailable' });
+    expect(deps.readService).not.toHaveBeenCalled();
+  });
+});
 
 describe('P-030 scoped current-round service', () => {
   const scope = { workspaceId: 'ws', harnessSlug: 'h', sinceMs: NOW - DAY_MS, nowMs: NOW,
@@ -70,6 +114,35 @@ describe('P-030 scoped current-round service', () => {
     const conflicting = { ...row('conflicting', 'approved'), [party]: 'su-verifier' };
     expect(computeAgentReviewService(scope, [conflicting, row('independent', 'approved')], []))
       .toMatchObject({ outcomes: { approved: 1, revisionRequested: 0 }, outcomesUnknown: 1 });
+  });
+  it('recovers a replaced round once from dated history while keeping legacy and conflicting receipts unknown', () => {
+    const item = row('history');
+    const review = { status: 'revision-requested' as const, submittedBy: 'su-author', ledgerIdeaId: item.id,
+      round: 1, timing: { round: 1, enteredAt: daysAgo(0.8), decidedAt: daysAgo(0.6) } };
+    const post = { id: item.id, harnessSlug: 'h', author: 'su-verifier',
+      body: agentReviewRoundComment('Revision', { ...item, harness: 'h', payload: { agentReview: review } },
+        review, 2, 'su-verifier') };
+    expect(computeAgentReviewService(scope, [item], [], [post, post])).toMatchObject({
+      priorRoundsUnmeasured: 0, history: { priorRounds: 1, recordedRounds: 1, arrivals: 1,
+        outcomes: { approved: 0, revisionRequested: 1 }, invalidReceipts: 0 } });
+    expect(computeAgentReviewHistory(scope, [item], [{ ...post, body: 'Agent review round 1: approved' }]))
+      .toMatchObject({ recordedRounds: 0, unmeasuredRounds: 1 });
+    expect(computeAgentReviewHistory(scope, [item], [post, { ...post, author: 'owner' }]))
+      .toMatchObject({ recordedRounds: 0, unmeasuredRounds: 1, invalidReceipts: 1 });
+  });
+  it('keeps wrong-scope, malformed timing, manual and self-review historical outcomes out of worker service', () => {
+    const item = row('history');
+    const review = { status: 'approved' as const, submittedBy: 'su-author', ledgerIdeaId: item.id,
+      round: 1, timing: { round: 1, enteredAt: daysAgo(0.8), decidedAt: daysAgo(0.6) } };
+    const post = (reviewer: string, enteredAt = review.timing.enteredAt) => ({ id: item.id, harnessSlug: 'h', author: reviewer,
+      body: agentReviewRoundComment('Approved', { ...item, harness: 'h', payload: { agentReview: review } },
+        { ...review, timing: { ...review.timing, enteredAt } }, 5, reviewer) });
+    for (const reviewer of ['owner', 'su-author']) expect(computeAgentReviewHistory(scope, [item], [post(reviewer)]))
+      .toMatchObject({ outcomes: { approved: 0, revisionRequested: 0 }, outcomesUnknown: 1 });
+    expect(computeAgentReviewHistory(scope, [item], [post('su-verifier', 'invalid')]))
+      .toMatchObject({ recordedRounds: 0, invalidReceipts: 1, unmeasuredRounds: 1 });
+    expect(computeAgentReviewHistory(scope, [item], [{ ...post('su-verifier'), harnessSlug: 'other' }]))
+      .toMatchObject({ recordedRounds: 0, outcomesUnknown: 0 });
   });
 });
 

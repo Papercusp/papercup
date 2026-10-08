@@ -757,10 +757,12 @@ describe('EI-21656724796029687 — forYouBecause is signposted on `expects`, not
   });
 
   it('SIGNPOSTS it: the `expects` arg description names forYouBecause and its exemptions', () => {
+    const description = String((sendTool as { description?: unknown }).description ?? '');
     const schema = z.toJSONSchema(sendTool.args) as {
       properties?: { expects?: { description?: string } };
     };
     const expectsDescription = schema.properties?.expects?.description ?? '';
+    expect(description.slice(0, 80)).toMatch(/directed action\/answer requires `body\[\]\.forYouBecause`/i);
     expect(
       expectsDescription,
       'the `expects` arg description must name `forYouBecause` — the requirement is keyed on ' +

@@ -17548,8 +17548,10 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
   });
 }
 
-// The shared helper owns both symlink robustness and bundled-sidecar safety.
-if (isCliEntry(import.meta.url)) {
+// The shared helper owns symlink robustness. Repeat its existing build marker
+// at this branch so esbuild can remove main() and the PTY host from helper-only
+// bundles: it cannot fold a call to isCliEntry across the function boundary.
+if ((typeof __PAPERCUSP_BUNDLED_SIDECAR__ === "undefined" || __PAPERCUSP_BUNDLED_SIDECAR__ !== true) && isCliEntry(import.meta.url)) {
   main().catch((e) => {
     // @inquirer throws ExitPromptError on Ctrl+C — treat as a clean cancel.
     if (

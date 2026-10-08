@@ -18,10 +18,49 @@ import {
   lensWeightRowsFromReport,
   samplingWeightsWithFloor,
   winCredit,
+  outcomeOfWorkItemTag,
+  workItemOutcomeTag,
   SAMPLING_FLOOR_FRACTION,
   type RoutedIdeaProvenance,
   type ScoutOutcomeReaders,
 } from './outcome-feedback';
+
+describe('workItemOutcomeTag (WI-10007390)', () => {
+  const tag = (status: string, over: Partial<Parameters<typeof workItemOutcomeTag>[0]> = {}) =>
+    workItemOutcomeTag({ status, terminalOwner: 'su-x', hasCompletionEvidence: true, triageRejected: false, ...over });
+
+  it('a winning status with a completion record on either surface is a win', () => {
+    for (const s of ['done', 'passed', 'resolved', 'closed']) {
+      expect(outcomeOfWorkItemTag(tag(s))).toBe('won');
+    }
+  });
+
+  it('a hygiene close or a triage reject is a loss, though `closed` is a winning status', () => {
+    expect(tag('closed', { terminalOwner: 'improvement-hygiene', hasCompletionEvidence: false })).toBe('rejected');
+    expect(tag('done', { triageRejected: true })).toBe('rejected');
+    expect(outcomeOfWorkItemTag('rejected')).toBe('lost');
+  });
+
+  it('dropped / deprecated are losses with or without a completion record', () => {
+    expect(outcomeOfWorkItemTag(tag('dropped', { hasCompletionEvidence: false }))).toBe('lost');
+    expect(outcomeOfWorkItemTag(tag('deprecated'))).toBe('lost');
+  });
+
+  it('a winning status with no completion record, or a live status, settles nothing', () => {
+    expect(tag('done', { terminalOwner: null, hasCompletionEvidence: false })).toBeNull();
+    expect(tag('open')).toBeNull();
+    expect(tag('wip')).toBeNull();
+    expect(outcomeOfWorkItemTag(null)).toBeNull();
+  });
+
+  it('classifyIdeaOutcome reads the rejected tag back as lost', () => {
+    const prov: RoutedIdeaProvenance = { ideaId: 'i1', lens: CREATIVE_LENSES[0], rail: 'improvement', routedRef: 'wi:EI-1' };
+    const entry: ChangeFeedEntry = { id: 'wi:EI-1', kind: 'completion', title: 'Closed: EI-1', detail: 'Status: rejected', ref: 'wi:EI-1', ts: '2026-10-01T00:00:00.000Z' };
+    expect(classifyIdeaOutcome(prov, new Map([[entry.ref, entry]]))).toBe('lost');
+    const won: ChangeFeedEntry = { ...entry, detail: 'Status: done', title: 'Completed: EI-1' };
+    expect(classifyIdeaOutcome(prov, new Map([[won.ref, won]]))).toBe('won');
+  });
+});
 
 function prov(p: Partial<RoutedIdeaProvenance> & { lens: CreativeLens; routedRef: string }): RoutedIdeaProvenance {
   return { ideaId: p.ideaId ?? `idea-${p.routedRef}`, rail: p.rail ?? 'improvement', ...p };

@@ -226,6 +226,30 @@ describe('POST /commerce/payment-channels/:channelId/settlements', () => {
     auth.resolveGithubBearer.mockResolvedValue({ id: 7, login: 'buyer' });
   });
 
+  it('preserves exact component author amounts through the claim, D1 reload and finality response', async () => {
+    const { facilitator } = fakeFacilitator({ requiredConfirmations: 1 });
+    const { api, db, env } = harness(facilitator);
+    const componentDependencies = [
+      { packageKind: 'blueprint', ref: 'parent', revision: '1.0.0', contentHash: 'a'.repeat(64), author: 'alice' },
+      { packageKind: 'pack', ref: 'knowledge', revision: '2.0.0', contentHash: 'b'.repeat(64), author: 'bob' },
+    ];
+    const split = revenueSplitManifest({ version: 'v1', sharesBps: SHARES, componentDependencies });
+    env.REVENUE_SPLIT_MANIFEST = JSON.stringify({ version: 'v1', sharesBps: SHARES, componentDependencies });
+    await bindWallet(db);
+    await openChannel(api, env);
+    await seedSettledReceipt(db, 'authors', 3000, split.manifestHash);
+    const claimed = await claim(api, env);
+    expect(claimed.status).toBe(201);
+    const { batch } = await claimed.json() as { batch: { batchId: string; componentAllocationsMicros: Record<string, string> } };
+    expect(batch.componentAllocationsMicros).toEqual({ alice: '75', bob: '75' });
+    const final = await finality(api, env, batch.batchId);
+    expect(final.status).toBe(200);
+    expect(await final.json()).toMatchObject({ batch: { state: 'final', componentAllocationsMicros: { alice: '75', bob: '75' } } });
+    const row = await db.prepare('SELECT allocations_micros FROM settlement_batches WHERE batch_id = ?')
+      .bind(batch.batchId).first<{ allocations_micros: string }>();
+    expect(JSON.parse(row!.allocations_micros)).toMatchObject({ componentAuthors: { alice: '75', bob: '75' } });
+  });
+
   it('submits a claim on the rail and records it as a CLAIM, never as finality', async () => {
     const { facilitator, submitBatchClaim } = fakeFacilitator();
     const { api, db, env } = harness(facilitator);

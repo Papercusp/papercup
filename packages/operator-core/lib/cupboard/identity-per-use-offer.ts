@@ -25,9 +25,12 @@
  */
 import {
   revenueSplitManifest,
+  validateRevenueSplit,
+  type ComponentRevenueDependency,
   type RevenueShare,
   type RevenueSplitManifest,
 } from '../p2p/revenue-settlement';
+import { canonicalJson } from '../authority/authority-rpc-envelope';
 
 /** Prefix of an identity release's skuRef. */
 export const IDENTITY_RELEASE_SKU_PREFIX = 'identity-release:';
@@ -40,6 +43,8 @@ export const IDENTITY_DAO_TAKE_BPS = 1_000;
 export const IDENTITY_SUGGESTED_MARKUP_BPS = 2_000;
 /** Version of the price scheme; also the split manifest's `version`. */
 export const IDENTITY_MARKUP_PRICE_SCHEME = 'identity-markup-v1';
+/** Exact component pins ride the existing persisted and voucher-signed term. */
+export const IDENTITY_MARKUP_MAX_PRICE_VERSION_LENGTH = 64_000;
 
 const SELLER_SHARE_BPS = 10_000 - IDENTITY_DAO_TAKE_BPS;
 /** Markup is quoted per block of 1,000 micros, so 10 bps is one micro. */
@@ -57,6 +62,7 @@ export interface IdentityMarkupTerms {
   readonly creatorBps: number;
   /** Seller's component share, divided down the dependency closure by P-019. */
   readonly componentBps: number;
+  readonly componentDependencies?: readonly ComponentRevenueDependency[];
 }
 
 export interface IdentityPerUseOfferTerms {
@@ -109,7 +115,7 @@ export function isIdentityReleaseSkuRef(skuRef: string): boolean {
   return skuRef.startsWith(IDENTITY_RELEASE_SKU_PREFIX);
 }
 
-export function identityMarkupSplitManifest(markup: Pick<IdentityMarkupTerms, 'creatorBps' | 'componentBps'>): RevenueSplitManifest {
+export function identityMarkupSplitManifest(markup: Pick<IdentityMarkupTerms, 'creatorBps' | 'componentBps' | 'componentDependencies'>): RevenueSplitManifest {
   const sharesBps: Record<RevenueShare, number> = {
     creator: markup.creatorBps,
     host: 0,
@@ -119,23 +125,40 @@ export function identityMarkupSplitManifest(markup: Pick<IdentityMarkupTerms, 'c
     tax: 0,
     operating: 0,
   };
-  return revenueSplitManifest({ version: IDENTITY_MARKUP_PRICE_SCHEME, sharesBps });
+  return revenueSplitManifest({ version: IDENTITY_MARKUP_PRICE_SCHEME, sharesBps,
+    ...(markup.componentDependencies !== undefined ? { componentDependencies: markup.componentDependencies } : {}) });
 }
 
 export function identityMarkupPriceVersion(markup: IdentityMarkupTerms): string {
   return (
     `${IDENTITY_MARKUP_PRICE_SCHEME};markup=${markup.markupBps}` +
-    `;creator=${markup.creatorBps};component=${markup.componentBps};dao=${IDENTITY_DAO_TAKE_BPS}`
+    `;creator=${markup.creatorBps};component=${markup.componentBps};dao=${IDENTITY_DAO_TAKE_BPS}` +
+    (markup.componentDependencies === undefined ? '' : ';components=' + Buffer.from(canonicalJson(
+      identityMarkupSplitManifest(markup).componentDependencies!.map((pin) =>
+        [pin.packageKind, pin.ref, pin.revision, pin.contentHash, pin.author]),
+    )).toString('base64url'))
   );
 }
 
 /** The markup a priceVersion spells out, or null when it is not this scheme. */
 export function parseIdentityMarkupPriceVersion(priceVersion: string): IdentityMarkupTerms | null {
+  if (priceVersion.length > IDENTITY_MARKUP_MAX_PRICE_VERSION_LENGTH) return null;
   const match =
-    /^identity-markup-v1;markup=(\d+);creator=(\d+);component=(\d+);dao=(\d+)$/.exec(priceVersion);
+    /^identity-markup-v1;markup=(\d+);creator=(\d+);component=(\d+);dao=(\d+)(?:;components=([A-Za-z0-9_-]+))?$/.exec(priceVersion);
   if (!match) return null;
   if (Number(match[4]) !== IDENTITY_DAO_TAKE_BPS) return null;
-  return { markupBps: Number(match[1]), creatorBps: Number(match[2]), componentBps: Number(match[3]) };
+  let componentDependencies: ComponentRevenueDependency[] | undefined;
+  if (match[5]) {
+    try {
+      const decoded: unknown = JSON.parse(Buffer.from(match[5], 'base64url').toString('utf8'));
+      if (!Array.isArray(decoded) || decoded.some((pin) => !Array.isArray(pin) || pin.length !== 5 ||
+          pin.some((field: unknown) => typeof field !== 'string'))) return null;
+      componentDependencies = decoded.map(([packageKind, ref, revision, contentHash, author]) =>
+        ({ packageKind, ref, revision, contentHash, author }));
+    } catch { return null; }
+  }
+  return { markupBps: Number(match[1]), creatorBps: Number(match[2]), componentBps: Number(match[3]),
+    ...(componentDependencies !== undefined ? { componentDependencies } : {}) };
 }
 
 function checkMarkup(markup: IdentityMarkupTerms): { ok: true } | ReturnType<typeof refuse> {
@@ -168,6 +191,7 @@ export function identityPerUseOfferTerms(input: {
   readonly markupBps?: number;
   readonly creatorBps?: number;
   readonly componentBps?: number;
+  readonly componentDependencies?: readonly ComponentRevenueDependency[];
 }): IdentityPerUseOfferResult {
   const { identity } = input;
   if (!ID_PATTERN.test(identity.id) || !VERSION_PATTERN.test(identity.version)) {
@@ -181,10 +205,17 @@ export function identityPerUseOfferTerms(input: {
     markupBps: input.markupBps ?? IDENTITY_SUGGESTED_MARKUP_BPS,
     creatorBps: input.creatorBps ?? SELLER_SHARE_BPS - componentBps,
     componentBps,
+    ...(input.componentDependencies !== undefined ? { componentDependencies: input.componentDependencies } : {}),
   };
   const checked = checkMarkup(markup);
   if (!checked.ok) return checked;
   const manifest = identityMarkupSplitManifest(markup);
+  const validSplit = validateRevenueSplit(manifest);
+  if (!validSplit.ok) return refuse('invalid-split', validSplit.detail);
+  const priceVersion = identityMarkupPriceVersion(markup);
+  if (priceVersion.length > IDENTITY_MARKUP_MAX_PRICE_VERSION_LENGTH) {
+    return refuse('invalid-split', 'the exact component closure exceeds the offer term size limit');
+  }
   return {
     ok: true,
     identity: { id: identity.id, version: identity.version },
@@ -194,7 +225,7 @@ export function identityPerUseOfferTerms(input: {
       skuRef: identityReleaseSkuRef(identity),
       meterUnit: IDENTITY_MARKUP_METER_UNIT,
       unitPriceMicros: (markup.markupBps * IDENTITY_INFERENCE_BLOCK_MICROS) / 10_000,
-      priceVersion: identityMarkupPriceVersion(markup),
+      priceVersion,
       splitManifestHash: manifest.manifestHash,
     },
   };

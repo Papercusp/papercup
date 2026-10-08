@@ -38,6 +38,7 @@
 import { isDeepStrictEqual } from 'node:util';
 
 import { getOrgPg } from '@papercusp/db-org';
+import { agentReviewRoundComment } from './flow-metrics';
 import {
   claimWorkItem,
   commentWorkItem,
@@ -855,7 +856,7 @@ export async function reconcileAgentReviewGrade(
     if (!merged) throw new Error(`agent review could not persist revision state on '${workItem.id}'`);
     const commentAdded = await ensureComment(
       workItem,
-      revisionComment(current.round, grade, feedback, gradedBy),
+      agentReviewRoundComment(revisionComment(current.round, grade, feedback, gradedBy), workItem, next, grade, gradedBy),
       gradedBy,
       deps,
     );
@@ -951,7 +952,9 @@ export async function reconcileAgentReviewGrade(
     },
   );
   if (!merged) throw new Error(`agent review could not persist approval state on '${workItem.id}'`);
-  await ensureComment(workItem, approvalComment(current.round, grade, gradedBy), gradedBy, deps);
+  await ensureComment(workItem,
+    agentReviewRoundComment(approvalComment(current.round, grade, gradedBy), workItem, next, grade, gradedBy),
+    gradedBy, deps);
   if (workItem.assignee) {
     const released = await deps.releaseWorkItem(workItem.id, {
       ...(workItem.harness ? { harness: workItem.harness } : {}),

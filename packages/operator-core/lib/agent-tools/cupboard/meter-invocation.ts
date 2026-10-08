@@ -19,6 +19,7 @@
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
+import { IDENTITY_MARKUP_MAX_PRICE_VERSION_LENGTH } from '../../cupboard/identity-per-use-offer';
 
 const data = (payload: Record<string, unknown>) => ({ data: payload });
 
@@ -62,7 +63,7 @@ const args = z
       .describe('reserve: epoch ms the voucher stops being reservable. Defaults to five minutes out.'),
     unitPriceMicros: z.number().int().positive().optional().describe('reserve: published price per unit, in micros.'),
     meterUnit: z.string().min(1).max(200).optional().describe('reserve: the published unit the price is per.'),
-    priceVersion: z.string().min(1).max(200).optional().describe('reserve: the published price version.'),
+    priceVersion: z.string().min(1).max(IDENTITY_MARKUP_MAX_PRICE_VERSION_LENGTH).optional().describe('reserve: the published price version.'),
     splitManifestHash: z
       .string()
       .regex(/^sha256:[0-9a-f]{64}$/i)

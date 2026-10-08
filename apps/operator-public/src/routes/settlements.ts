@@ -31,6 +31,8 @@ import type { CumulativePaymentVoucher } from '@papercusp/operator-core/lib/p2p/
 import {
   REVENUE_SHARES,
   revenueSplitManifest,
+  validateRevenueSplit,
+  type ComponentRevenueDependency,
   type RevenueShare,
   type RevenueSplitManifest,
 } from '@papercusp/operator-core/lib/p2p/revenue-settlement.ts';
@@ -127,7 +129,7 @@ export function resolveSplitConfig(env: Env): SplitConfigResult {
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     return { ok: false, code: 'invalid-config', detail: 'REVENUE_SPLIT_MANIFEST must be a JSON object' };
   }
-  const source = parsed as { version?: unknown; sharesBps?: unknown };
+  const source = parsed as { version?: unknown; sharesBps?: unknown; componentDependencies?: unknown };
   if (typeof source.version !== 'string' || !source.version.trim()) {
     return { ok: false, code: 'invalid-config', detail: 'REVENUE_SPLIT_MANIFEST needs a non-empty version' };
   }
@@ -147,9 +149,18 @@ export function resolveSplitConfig(env: Env): SplitConfigResult {
     }
     sharesBps[share] = value;
   }
+  if (source.componentDependencies !== undefined && !Array.isArray(source.componentDependencies)) {
+    return { ok: false, code: 'invalid-config', detail: 'componentDependencies must be an array of exact author pins' };
+  }
+  const manifest = revenueSplitManifest({ version: source.version, sharesBps,
+    ...(source.componentDependencies !== undefined ? {
+      componentDependencies: source.componentDependencies as ComponentRevenueDependency[],
+    } : {}) });
+  const checked = validateRevenueSplit(manifest);
+  if (!checked.ok) return { ok: false, code: 'invalid-config', detail: checked.detail };
   return {
     ok: true,
-    manifest: revenueSplitManifest({ version: source.version, sharesBps }),
+    manifest,
     daoTreasury,
   };
 }
@@ -190,6 +201,7 @@ function batchJson(batch: StoredSettlementBatch) {
     settlementId: batch.settlementId,
     splitManifestHash: batch.splitManifestHash,
     allocationsMicros: batch.allocationsMicros,
+    ...(batch.componentAllocationsMicros !== undefined ? { componentAllocationsMicros: batch.componentAllocationsMicros } : {}),
     providerCostMicros: batch.providerCostMicros,
     distributableMicros: batch.distributableMicros,
     daoTreasury: batch.daoTreasury,
