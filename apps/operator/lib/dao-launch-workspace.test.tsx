@@ -66,23 +66,23 @@ describe('DAO launch checklist workspace', () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: false, json: async () => ({ message: 'Someone changed this draft. Reload the latest version before saving.' }) }); vi.stubGlobal('fetch', fetchMock);
     render(<DaoLaunchWorkspace />);
     fireEvent.click(screen.getByRole('button', { name: /Open governance setup/ }));
-    fireEvent.change(screen.getByLabelText('Quorum (basis points: 5000 = 50%)'), { target: { value: '7500' } });
+    fireEvent.change(screen.getByLabelText('Quorum (%)'), { target: { value: '75' } });
     fireEvent.click(screen.getByRole('button', { name: /Save preparation/ }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
     const [url, options] = fetchMock.mock.calls[0]!;
     expect(url).toBe('/api/desktop/dao-launch/org-1');
     expect(JSON.parse(options.body)).toMatchObject({ expectedRevision: 2, sections: { governance: { quorumBps: 7500 } } });
     await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('Someone changed this draft'));
-    expect((screen.getByLabelText('Quorum (basis points: 5000 = 50%)') as HTMLInputElement).value).toBe('7500');
+    expect((screen.getByLabelText('Quorum (%)') as HTMLInputElement).value).toBe('75');
   });
   it('keeps invalid funding edits renderable and surfaces a validation error rather than sending them', async () => {
     sync.data = [draft()]; const fetchMock = vi.fn(); vi.stubGlobal('fetch', fetchMock);
     render(<DaoLaunchWorkspace />);
     fireEvent.click(screen.getByRole('button', { name: 'Money flow' }));
     fireEvent.click(screen.getByRole('button', { name: /Edit funding/ }));
-    fireEvent.change(screen.getByLabelText('DAO share (basis points: 1000 = 10%)'), { target: { value: '-1' } });
+    fireEvent.change(screen.getByLabelText('DAO revenue share (%)'), { target: { value: '-1' } });
     fireEvent.click(screen.getByRole('button', { name: /Save preparation/ }));
-    await waitFor(() => expect(screen.getByRole('alert')).toBeTruthy());
+    await waitFor(() => expect(screen.getAllByRole('alert').length).toBeGreaterThan(0));
     expect(fetchMock).not.toHaveBeenCalled();
   });
   it('provides retry instead of presenting a failed read as an empty workspace', () => {

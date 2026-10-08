@@ -53,7 +53,7 @@ export function DaoLaunchWorkspace() {
   const [notice, setNotice] = useState('');
   const selectedId = state.daoOrg || library.data[0]?.id || recent?.id;
   const stored = library.data.find(row => row.id === selectedId);
-  const selected = recent?.id === selectedId && (!stored || recent.revision > stored.revision) ? recent : stored;
+  const selected = recent && recent.id === selectedId && (!stored || recent.revision > stored.revision) ? recent : stored;
   const organizations = recent && !library.data.some(row => row.id === recent.id) ? [recent, ...library.data] : library.data;
   function saved(record: DaoLaunchProjection) {
     setRecent(record); library.invalidate();
@@ -164,10 +164,13 @@ function DraftEditor({ record, editor, onSaved }: { record: DaoLaunchProjection;
   const choice = (label: string, checked: boolean, onChange: (value: boolean) => void) =>
     <label className="dao-checkbox-row"><Checkbox ariaLabel={label} checked={checked} onChange={onChange} />{label}</label>;
   const field = (label: string, key: Parameters<typeof form.register>[0], opts?: Parameters<typeof form.register>[1], type = 'text') =>
-    <FormField label={label}><input aria-label={label} type={type} {...form.register(key, opts)} /></FormField>;
+    <FormField label={label} error={form.methods.getFieldState(key, form.methods.formState).error}><input aria-label={label} type={type} {...form.register(key, opts)} /></FormField>;
+  const percentageField = (label: string, key: 'sections.governance.quorumBps' | 'sections.governance.approvalBps' | 'sections.funding.shareBps') =>
+    <FormField label={label} error={form.methods.getFieldState(key, form.methods.formState).error}><input aria-label={label} type="number" min="0" max="100" step="0.01"
+      value={Number.isFinite(form.watch(key)) ? form.watch(key) / 100 : ''} onChange={event => form.setValue(key, event.target.value === '' ? NaN : Math.round(Number(event.target.value) * 100), { shouldDirty: true })} /></FormField>;
   const share = values.sections.funding.shareBps;
   const example = daoFundingExample(Number.isInteger(share) && share >= 0 && share <= 10_000 ? share : 0);
-  return <form className="dao-form" onSubmit={form.submit(async data => {
+  return <form noValidate className="dao-form" onSubmit={form.submit(async data => {
     try { onSaved(await writeDraft('/' + record.id, 'PATCH', data)); } catch (e) { form.setError('root', { message: (e as Error).message }); }
   })}>
     {record.revision !== form.getValues('expectedRevision') && <p className="dao-form-error">This draft has changed since you opened it. Close this panel and reopen the latest version before saving.</p>}
@@ -186,8 +189,8 @@ function DraftEditor({ record, editor, onSaved }: { record: DaoLaunchProjection;
       <p className="dao-form-hint">Prepare the charter rules. Saving does not enact a signed policy or deploy a voting contract.</p>
       {select('Voting model', values.sections.governance.voting, [{ value: 'members', label: 'One member, one vote' }, { value: 'ownership', label: 'Eligible ownership-weighted voting' }],
         value => form.setValue('sections.governance.voting', value as 'members' | 'ownership', { shouldDirty: true }))}
-      <div className="dao-form-grid">{field('Quorum (basis points: 5000 = 50%)', 'sections.governance.quorumBps', { valueAsNumber: true }, 'number')}
-      {field('Approval (basis points: 6700 = 67%)', 'sections.governance.approvalBps', { valueAsNumber: true }, 'number')}
+      <div className="dao-form-grid">{percentageField('Quorum (%)', 'sections.governance.quorumBps')}
+      {percentageField('Approval (%)', 'sections.governance.approvalBps')}
       {field('Voting window in days', 'sections.governance.votingDays', { valueAsNumber: true }, 'number')}</div>
       {values.sections.governance.voting === 'ownership' && field('Ownership register reference', 'sections.governance.ownershipReference')}
       {choice('Allow vote delegation', values.sections.governance.delegation, value => form.setValue('sections.governance.delegation', value, { shouldDirty: true }))}
@@ -197,7 +200,7 @@ function DraftEditor({ record, editor, onSaved }: { record: DaoLaunchProjection;
     {editor === 'funding' && <>
       {select('Funding basis', values.sections.funding.basis, [{ value: 'net-revenue', label: 'Agreed net revenue' }, { value: 'identity-markup', label: 'Our own identity markup' }, { value: 'contributions', label: 'Contributions and grants' }],
         value => form.setValue('sections.funding.basis', value as 'net-revenue' | 'identity-markup' | 'contributions', { shouldDirty: true }))}
-      {values.sections.funding.basis !== 'contributions' && <>{field('DAO share (basis points: 1000 = 10%)', 'sections.funding.shareBps', { valueAsNumber: true }, 'number')}
+      {values.sections.funding.basis !== 'contributions' && <>{percentageField('DAO revenue share (%)', 'sections.funding.shareBps')}
       {field('Revenue agreement reference', 'sections.funding.agreementReference')}
       <div className="dao-example"><span>Example: {money(example.eligibleCents)} eligible revenue</span><strong>{money(example.daoCents)} to this DAO</strong><span>{money(example.remainingCents)} remaining allocation</span></div></>}
       {choice('Accept member contributions and grants', values.sections.funding.acceptContributions, value => form.setValue('sections.funding.acceptContributions', value, { shouldDirty: true }))}
