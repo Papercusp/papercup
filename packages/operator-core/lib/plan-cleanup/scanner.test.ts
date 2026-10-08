@@ -79,6 +79,18 @@ function ofKind(findings: CleanupFinding[], kind: CleanupFinding['kind']): Clean
 }
 
 describe('terminal-state pin', () => {
+  it('keeps review identity across scan days but changes it for source and dependency edits', () => {
+    const p = plan({ opStatus: null, updatedAtMs: NOW - 10 * 24 * HOUR,
+      items: [item('P-001', 'done')] });
+    const basis = (inputs: Partial<CleanupScanInputs>, at = NOW) =>
+      ofKind(scan(inputs, at), 'archive-candidate')[0]?.evidenceBasis;
+    const original = basis({ plans: [p] });
+    expect(original?.[0]).toMatch(/^cleanup-source:[a-f0-9]{64}$/);
+    expect(basis({ plans: [p] }, NOW + 24 * HOUR)).toEqual(original);
+    expect(basis({ plans: [{ ...p, updatedAtMs: p.updatedAtMs! + 1 }] })).not.toEqual(original);
+    expect(basis({ plans: [p], linkedWorkItems: [link('P-001', 'WI-1', 'done')] })).not.toEqual(original);
+  });
+
   it("scanner's local terminal set is identical to the conversion plane's canonical set", () => {
     expect([...TERMINAL_WORK_ITEM_STATES_SCAN].sort()).toEqual([...TERMINAL_WORK_ITEM_STATES].sort());
   });
