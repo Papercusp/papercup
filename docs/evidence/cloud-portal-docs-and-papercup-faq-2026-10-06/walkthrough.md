@@ -322,3 +322,75 @@ separate. No earlier passing suites or paid cases were replayed.
 
 R-2's remaining journeys, README result/approval, real novice observations,
 independent acceptance, loaded-source provenance and exact shipment remain open.
+
+## Workspace transport diagnosis, 2026-10-08 19:52Z
+
+The retained `/tmp/su73-r2-served-1936.log` names the failed leg:
+`network GET /api/hosted/browser/rest-query after 0ms (relay: unknown_workspace)`.
+The retained Portal source's `apps/host/src/api.ts` has no explicit hosted
+control-query route; its `/api/*` fallback at line 830 calls
+`proxyOperatorPassthrough`. That function selects the customer workspace relay
+when the selected hosted workspace differs from the Portal process pin. Its
+`resolveRelayHost` first queries the central control plane with that customer's
+workspace header. The returned `unknown_workspace` is therefore distinct from
+the separate successful operator health request. The retained hosted-auth
+runtime mounts auth, tutorial and billing routes; those successful routes do
+not establish workspace control-query routing.
+
+This identifies the observed transport path and its refusal. A direct
+authenticated control-plane probe and a corrected routing contract remain
+necessary before choosing between a routing defect and fixture/tenant scope.
+No healthy estate, connected host or product acceptance is inferred.
+
+The existing maintained `public-manual-product.spec.ts` now checks the actual
+authenticated control query after session binding and before page navigation,
+attaching HTTP status, named error and whether rows exist. This guard uses the
+real API; it changes no production routing or authorization. Collection
+passed with two tests and exit 0 (`/tmp/su73-r2-workspace-guard-list-1952.log`),
+and `git diff --check` passed. Its runtime behavior remains unverified; the
+passing account case was not replayed. Source SHA-256:
+`b754d2a05b30d1bacbaf2fb018abd0e9d9276580d271e16db82d67bfb9889bb6`.
+The original tutorial implementer received the evidence pointer through
+`coord-send-e5df8fdebcbb64956b5a328bccfead210448b1f38f87901465afc272b0bde72b`.
+The diagnosis/fix remains owned on `EI-25441313743672037`; no rebuild, model call,
+new runtime or shipment claim occurred during this diagnosis.
+
+## Authenticated workspace route comparison, 2026-10-08 20:04Z
+
+A bounded API probe used one genuine admitted WorkOS TEST session, the retained
+EJhq Portal release, and a fresh private database with retained operator source
+`ddce55d82d`. It completed with exit 0 and cleaned up its TEST user. Safe results
+are retained in `/tmp/su73-workspace-route-probe-2008.json`:
+
+| Request | HTTP | Named result |
+| --- | --- | --- |
+| Portal auth session | 200 | Selected workspace matches the admitted binding |
+| Portal hosted workspace control query | 502 | `operator_unreachable` |
+| Direct operator query, same cookie and public host, no workspace header | 404 | `not_found` |
+| Direct operator query with selected workspace header | 400 | `unknown_workspace` |
+
+The selected header refusal is therefore not the sole failure. The private
+upstream command launched the local `hono-host.ts` handler, which mounts local
+workspace middleware. The maintained production hosted composition is
+`serve.ts`'s hosted branch calling `createHostedHandlerFromEnvironment`, whose
+runtime explicitly mounts `/hosted/browser/rest-query`. The next diagnostic
+uses that existing composition on a private database before deciding whether
+Portal routing also needs correction. This is a test-runtime prerequisite
+finding, not verified workspace acceptance or a production fix.
+
+The Portal probe process exited 0; the exact private operator PID was stopped
+after matching its resolved checkout and entry point, and its command exited 1.
+The configuration lock was released. The passing account journey was not
+replayed; no build, model call, authentication bypass or live gate action ran.
+
+The next private upstream reused `createHostedHandlerFromEnvironment` and
+stopped before listening: `hosted-profile: GET
+/hosted/browser/onboarding/tutorial-progress must require at least one concrete
+capability`. `/tmp/su73-r2-hosted-operator-2010.log` retains the startup failure;
+the command exited 1 and the second TEST session/API probe did not start. Both
+canonical and retained tutorial-progress route sources declare an empty
+capability list, which the full hosted profile rejects. Owned follow-up
+`WI-10007581` tracks the authority-contract repair and maintained startup
+coverage; adding a workspace capability must preserve pre-workspace onboarding.
+The hosted runtime configuration lock was released. Workspace acceptance and
+the original `EI-25441313743672037` remain open.
