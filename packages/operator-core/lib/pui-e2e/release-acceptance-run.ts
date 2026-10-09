@@ -535,6 +535,9 @@ function preflightRoutedAccountCatalog(real: RealLeg[] | undefined): void {
 }
 
 export async function runReleaseAcceptance(options: RunOptions): Promise<RunResult> {
+  if (process.env.PUI_CAPTURE_BASELINE === '1' || options.real?.some(leg => leg.env?.PUI_CAPTURE_BASELINE === '1')) {
+    throw new Error('PUI_CAPTURE_BASELINE=1 captures a pre-fix counterexample and must not be enabled for installed release acceptance; run that historical calibration separately');
+  }
   preflightRoutedAccountCatalog(options.real);
   const archive = path.resolve(options.archive);
   const work = options.work ?? mkdtempSync(path.join(tmpdir(), 'pui-release-acceptance-'));

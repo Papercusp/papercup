@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { parseCLI, resolveConfig } from 'vitest/node';
 import { ADMIN_TEST_RUNS_REPORTER_PATH } from '@papercusp/test-config/vitest-config';
 import { execFileSync } from 'node:child_process';
@@ -436,6 +436,19 @@ describe('release acceptance evidence parsing', () => {
 });
 
 describe('release acceptance account preflight', () => {
+  it('refuses historical baseline capture before opening a current candidate or running suites', async () => {
+    const options = { archive: '/missing-pui-current-candidate.tar.gz', advertise: [] };
+    vi.stubEnv('PUI_CAPTURE_BASELINE', '1');
+    try {
+      await expect(runReleaseAcceptance(options)).rejects.toThrow(/pre-fix counterexample.*installed release acceptance/);
+      vi.stubEnv('PUI_CAPTURE_BASELINE', '');
+      await expect(runReleaseAcceptance({ ...options, real: [{ backend: 'codex', env: { PUI_CAPTURE_BASELINE: '1' } }] }))
+        .rejects.toThrow(/pre-fix counterexample.*installed release acceptance/);
+      // Positive control: an ordinary release reaches archive admission.
+      await expect(runReleaseAcceptance(options)).rejects.toThrow(/ENOENT/);
+    } finally { vi.unstubAllEnvs(); }
+  });
+
   it('refuses a missing or invalid routed catalog before opening the archive or running suites', async () => {
     const work = mkdtempSync(path.join(tmpdir(), 'pui-acceptance-preflight-'));
     const archive = path.join(work, 'missing.tar.gz');

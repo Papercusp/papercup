@@ -3543,12 +3543,16 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
     } finally { await pane.stop(); }
   });
 
-  test('new-session setup reconnects with an endpoint-scoped token and preserves the exact draft', async () => {
+  test('new-session setup reconnects with an endpoint-scoped token and preserves the exact draft', async ({ onTestFailed }) => {
     const prompt = '  reconnect exact λ draft  ';
     const requiredToken = 'pui-fixture-new-operator';
     const credentials: Array<string | undefined> = [];
+    const reconnectTraffic: Array<{ at: string; method: string; path: string; credential: string }> = [];
     const proxy = createServer((req, res) => {
       credentials.push(req.headers.authorization);
+      reconnectTraffic.push({ at: new Date().toISOString(), method: req.method ?? '', path: req.url ?? '',
+        credential: req.headers.authorization === undefined ? 'absent'
+          : req.headers.authorization === `Bearer ${requiredToken}` ? 'new' : 'other' });
       if (req.headers.authorization !== `Bearer ${requiredToken}`) {
         res.writeHead(401, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ error: 'operator token required' }));
@@ -3566,6 +3570,13 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
     });
     const proxyPort = await listen(proxy);
     const pane = new PuiPane(bin, operatorPort, home, { operatorToken: 'pui-fixture-old-operator' });
+    let reconnectStage = 'open-setup';
+    onTestFailed(() => console.info('PUI_SETUP_RECONNECT_FAILURE', JSON.stringify({
+      stage: reconnectStage, proxyPort, traffic: reconnectTraffic, screen: pane.screen(),
+      // State and rendered text can disagree if the PTY oracle mishandles a
+      // reconnect's terminal reset. Keep the emitted status text as a control.
+      emittedConnectionStates: pane.rawSince().match(/Connection: (?:Checking|Unavailable|Connected)/g) ?? [],
+    })));
     try {
       await openComposer(pane, false);
       pane.write(prompt);
@@ -3575,11 +3586,13 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       await pane.waitFor('Operator connection');
       pane.write('\x15'); // Ctrl-U clears the address.
       pane.write(`http://127.0.0.1:${proxyPort}`);
+      reconnectStage = 'refused-endpoint';
       pane.enter();
       await pane.waitFor('Connection: Unavailable');
       expect(credentials.length).toBeGreaterThan(0);
       expect(credentials.every((token) => token === undefined)).toBe(true);
       expect(launchRequests).toEqual([]);
+      reconnectStage = 'new-credential';
       pane.write('e');
       await pane.waitFor('Operator connection');
       pane.write('\t');
@@ -3589,10 +3602,12 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       pane.enter(); // Finish token entry; reconnect still needs confirmation.
       await pane.waitFor('Credential entered');
       expect(launchRequests).toEqual([]);
+      reconnectStage = 'authenticated-endpoint';
       pane.enter();
       await pane.waitFor('Connection: Connected');
       expect(credentials).toContain(`Bearer ${requiredToken}`);
       expect(pane.screen()).not.toContain(requiredToken);
+      reconnectStage = 'exact-draft';
       await completeNewSessionSetup(pane);
       await pane.waitFor(scriptedEngine.successText, { timeoutMs: 60_000 });
       expect(scriptedEngine.requests).toEqual([prompt]);
@@ -4508,7 +4523,11 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
         const prompt = `P16 ${backend} ${tag}`;
         replyText = `P16 ${backend} reply ${tag}`;
         const launches = scriptedEngine.rpcLaunches.length;
-        const pane = new PuiPane(bin, operatorPort, home, { args: ['--solo'], cwd });
+        // Retained acceptance checkouts have long absolute paths. Fit the full
+        // cwd in the footer so this identity oracle cannot wait on clipped text.
+        const pane = new PuiPane(bin, operatorPort, home, {
+          args: ['--solo'], cwd, cols: Math.max(160, cwd.length + label.length + 40),
+        });
         try {
           await pane.waitFor(`${label} · ${cwd}`, { timeoutMs: 40_000 });
           pane.write(prompt);
