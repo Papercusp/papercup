@@ -54,4 +54,13 @@ describe('reviewableMiss (WI-10004358)', () => {
     expect(r!.advice).not.toContain("mode:'claim-next'");
     expect(r!.advice).toMatch(/does not prove the full pending-review population is exhausted/);
   });
+
+  it('qualifies grade-4 approval advice with the bug reproduction gate', () => {
+    const advice = reviewableMiss({ pendingAgentReview: 1 })!.advice;
+    expect(advice).toContain('A grade of 4+ approves only after its gates pass');
+    expect(advice).toContain('bugs need an accepted current-build reproduction receipt');
+    expect(advice).toContain('leaves the bug revision-requested/not-ready');
+    expect(advice).not.toContain('4+ approves it into the claimable pool');
+    expect(advice).toContain('A grade of 3 or lower sends it back for revision');
+  });
 });

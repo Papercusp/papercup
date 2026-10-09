@@ -28,7 +28,8 @@
  * `revision-requested` rows are NOT counted: they wait on their SUBMITTER's resubmission, which
  * a peer cannot perform, so they would advertise work the caller cannot do.
  *
- * PURE: no I/O, so both miss paths share one wording and one test pins it.
+ * PURE: no I/O, so both miss paths share one wording and a focused test pins the advice,
+ * including the bug reproduction gate.
  */
 
 /** The review-relevant subset of `IssueClaimExclusionBreakdown['queueControl']`. */
@@ -117,8 +118,10 @@ export function reviewableMiss(
     `DO NOT STAND DOWN YET: review the ${pending} pending row(s) in your own spec. ` +
     `1) ${listCall} → ids at excludedSample.queueControl.agentReview[].id; ` +
     `2) For one listed id you did not submit, call improvements:agent-review { mode:'claim', id:<listed id>${harness ? `, harness:'${harness}'` : ''} }; ` +
-    '3) read the item, then blender:grade-idea { ideaId: <its ledgerIdeaId>, grade, feedback } — 4+ approves it into the ' +
-    'claimable pool, 3 or lower sends it back for revision. Then pull again. ' +
+    '3) read the item, then blender:grade-idea { ideaId: <its ledgerIdeaId>, grade, feedback }. ' +
+    'A grade of 4+ approves only after its gates pass: bugs need an accepted current-build reproduction receipt. ' +
+    'Without one, a 4+ grade leaves the bug revision-requested/not-ready; record and verify the receipt before treating it as approved. ' +
+    'A grade of 3 or lower sends it back for revision. Then pull again. ' +
     `If improvements:agent-review returns claimed:false for every id in that scoped read, no review is available ` +
     `from this bounded sample. Do not use claim-next: it scopes only to a harness and can claim review work outside ` +
     `this fleet spec. The sample is capped at ${REVIEWABLE_MISS_SAMPLE} ids per floor, so it does not prove the full ` +
