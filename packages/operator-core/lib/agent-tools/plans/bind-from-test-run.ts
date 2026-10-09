@@ -766,9 +766,15 @@ export function deriveBindingFromTestRun(
   // Isolated workers finish inside the test, so their original ledger receipts
   // identify the execution instead of snapshots of the current serving host.
   // The store derives the receipt fingerprint and certifies the retained artifacts.
+  // Guarded adoption updates the row's harness, while its original execution
+  // metadata stays immutable. A local, originally unscoped receipt still belongs
+  // to that adopted row; a recorded foreign harness must continue to fail closed.
+  const isolatedHarnessMatches = recordedExecution?.harnessSlug === row.harness_slug
+    || (recordedExecution?.harnessSlug === null && row.harness_slug != null
+      && (row.source === 'local' || row.source === 'mutation-probe'));
   const isolatedRuntimeUnits = recordedExecution?.testLayer === 'integration'
     && recordedExecution.workspaceId === row.workspace_id
-    && recordedExecution.harnessSlug === row.harness_slug
+    && isolatedHarnessMatches
     && recordedExecution.isolatedRuntimeReceipts
     ? recordedExecution.isolatedRuntimeReceipts.map(receipt => `isolated-integration:${receipt.runId}`)
     : undefined;

@@ -151,6 +151,21 @@ describe('deriveBindingFromTestRun', () => {
     expect(out.ok && out.binding.measurement).not.toHaveProperty('completedRuntime');
   });
 
+  it.each(['object', 'json'])('retains the original isolated %s witness after guarded harness adoption', (encoding) => {
+    const execution = isolatedExecution({ harnessSlug: null });
+    const out = deriveBindingFromTestRun(input({ completedRuntime: completedIsolated }),
+      run({ execution_details: encoding === 'json' ? JSON.stringify(execution) : execution }), root, 'run');
+    expect(out).toMatchObject({ ok: true, binding: { measurement: {
+      runtimeUnits: isolatedReceipts.map(receipt => `isolated-integration:${receipt.runId}`),
+      completedRuntime: completedIsolated,
+    } } });
+    for (const source of ['ci', 'admin-ui']) {
+      expect(deriveBindingFromTestRun(input({ completedRuntime: completedIsolated }),
+        run({ source, execution_details: execution }), root, 'run'))
+        .toMatchObject({ ok: false, error: 'test_run_runtime_witness_missing' });
+    }
+  });
+
   it('refuses an explicit isolated completed-runtime selector on counterexample evidence', () => {
     expect(deriveBindingFromTestRun(input({ evidenceKind: 'counterexample',
       completedRuntime: completedIsolated }), run({ execution_details: isolatedExecution() }), root, 'run'))
