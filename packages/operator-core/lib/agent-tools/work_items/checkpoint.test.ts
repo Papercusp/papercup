@@ -4953,6 +4953,32 @@ describe('work_items:checkpoint — current-vs-retained provenance (EI-211652356
     expect(result.turnProvenance?.refs?.[0]).toMatchObject({ ref, found: false, checked: false });
   });
 
+  it('EI-25495485988836164: reuses the resolved current-turn stamp after expanding [turn:self]', async () => {
+    const currentTurn = {
+      ref: '[turn:session-example@2026-09-08T13:10:00.000Z]',
+      verdict: 'agent-injected',
+      origin: 'loop-fire',
+    };
+    const id = 'WI-PROVENANCE-CURRENT-SENTINEL';
+    const stored = `Checkpoint note created here: ${currentTurn.ref}`;
+    resolveCurrentTurnStamp.mockClear();
+    verifyTurnRefs.mockClear();
+    resolveCurrentTurnStamp.mockResolvedValueOnce(currentTurn);
+    getWorkItem.mockResolvedValue({ id, harness: 'papercup' });
+    setWorkItemCheckpointWithPrior.mockResolvedValue({ stored, priorLength: 0 });
+    getWorkItemCheckpoint.mockResolvedValue(stored);
+
+    const result = await one({ id, checkpoint: 'Checkpoint note created here: [turn:self]' });
+
+    expect(result.ok).toBe(true);
+    expect(resolveCurrentTurnStamp).toHaveBeenCalledTimes(1);
+    expect(verifyTurnRefs).not.toHaveBeenCalled();
+    expect(result.turnProvenance).toMatchObject({
+      writtenDuring: currentTurn,
+      refs: [{ ref: currentTurn.ref, found: true, checked: true, verdict: currentTurn.verdict }],
+    });
+  });
+
   it('EI-21306957457076433: does not retain a factual timeout classification as bare imperative lint', async () => {
     const current = 'Fresh checkpoint evidence for the next wake.';
     const retained =
