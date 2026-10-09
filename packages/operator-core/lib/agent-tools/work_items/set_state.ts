@@ -421,7 +421,11 @@ const itemsBatch = z
         continue;
       }
 
-      const rowAliases = [item.completionRef, item.reason, item.note].filter(
+      const rowAliases = [
+        'completionRef' in item ? item.completionRef : undefined,
+        'reason' in item ? item.reason : undefined,
+        'note' in item ? item.note : undefined,
+      ].filter(
         (value): value is string => typeof value === 'string',
       );
       if (rowAliases.some((value) => value !== batchAlias.value)) {
