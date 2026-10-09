@@ -64,5 +64,13 @@ export function worklistChanges(collection: WorklistCollection, draft: WorklistD
 }
 
 export function isWorkOnEverything(data: GoalDetailInput | null | undefined) {
-  return data?.goal?.goalPackage?.ref === 'work-on-everything';
+  if (data?.goal?.goalPackage?.ref === 'work-on-everything') return true;
+  // Legacy goals predate package installs. Their existing typed worklist is
+  // the same contract this console edits; do not manufacture package metadata
+  // or infer identity from a title. An explicit different package still wins.
+  if (!data?.goal || data.goal.goalPackage) return false;
+  const declaration = data.goalData?.propertySchema?.worklist;
+  return declaration?.datatype === 'plan-ref-list' &&
+    declaration.collection?.source === 'active-workspace-plans' &&
+    declaration.collection.policy === 'worklist_policy' && declaration.collection.selectable;
 }

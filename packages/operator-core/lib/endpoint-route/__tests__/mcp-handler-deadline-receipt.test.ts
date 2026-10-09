@@ -633,6 +633,7 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
     h.spillWriteGate = new Promise<void>((resolve) => { releaseWrite = resolve; });
     const enteredWrite = new Promise<void>((resolve) => { h.spillWriteEntered = resolve; });
     const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const traceId = '879b64d8-741b-4e8a-a111-39dd7b35c05f';
     let responsePromise: Promise<McpCallResult> | undefined;
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
@@ -646,6 +647,10 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
       const response = await responsePromise;
       expect(response.isError).toBe(true);
       expect(textOf(response)).toContain('request_timeout');
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining(
+        '[bounded-timeout] result-door scratch spill write exceeded 30000ms',
+      ));
       const beforeLateWrite = traceEvents(info.mock.calls);
       expect(beforeLateWrite.some((event) =>
         event.traceId === traceId && event.stage === 'inner_dispatch_settled')).toBe(true);
@@ -683,6 +688,7 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
       await vi.waitFor(() => expect(traceEvents(info.mock.calls).some((event) =>
         event.traceId === traceId && event.stage === 'inner_dispatch_settled')).toBe(true), { timeout: 3_000 });
       info.mockRestore();
+      warn.mockRestore();
       _resetScratchUsageForTests();
       if (previousRoot === undefined) delete process.env.PAPERCUSP_SCRATCH_ROOT;
       else process.env.PAPERCUSP_SCRATCH_ROOT = previousRoot;

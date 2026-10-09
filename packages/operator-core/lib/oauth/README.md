@@ -59,6 +59,16 @@ directory exists, so a file left there is silently ignored). Descriptor provider
 (Linear, Asana, …) read their entry by `oauth.clientRegistrationRef`; omit `redirectUri`
 so each host uses its own `/api/oauth/callback` (`:3070` release, `:3170` staging):
 
+Register each host's exact callback in the vendor app's redirect allowlist. A
+`http://localhost:3070/api/oauth/callback` entry does not cover
+`http://localhost:3170/api/oauth/callback`. Keep both entries when both hosts
+start OAuth flows; do not redirect staging to release just to match an old entry.
+To verify setup, request the Settings Connect start URL with `response=json`,
+compare `authorizationUrl`'s decoded `redirect_uri` with the vendor registration,
+save and reload the vendor page, then open a fresh start URL. A generated start
+URL alone does not prove that the vendor accepts its callback. Never publish the
+authorization URL's state token or a client secret in setup evidence.
+
 ```json
 {
   "github": {

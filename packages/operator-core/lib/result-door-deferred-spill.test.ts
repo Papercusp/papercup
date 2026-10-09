@@ -59,7 +59,9 @@ function volatileCursorFrom(out: DoorableResult): Record<string, unknown> {
   if (metaCursor) return metaCursor;
 
   const item = out.content.find((candidate) => candidate.type === 'text');
-  if (!item || item.type !== 'text') throw new Error('result has no text recovery envelope');
+  if (!item || item.type !== 'text' || typeof item.text !== 'string') {
+    throw new Error('result has no text recovery envelope');
+  }
   const envelope = JSON.parse(item.text) as {
     _projection?: { cursor?: Record<string, unknown> };
     content?: Array<{ kind?: unknown; uri?: unknown }>;
@@ -281,11 +283,16 @@ describe('result-door deferred spill (WI-10004533)', () => {
         args: { file_path: meta?.spillPath },
       });
       expect(Object.keys(meta ?? {})).not.toContain('fallbackUri');
-      const body = JSON.parse(result.content.find((item) => item.type === 'text')?.text ?? '{}') as {
+      const bodyItem = result.content.find((item) => item.type === 'text');
+      if (typeof bodyItem?.text !== 'string') throw new Error('result has no text recovery envelope');
+      const body = JSON.parse(bodyItem.text) as {
         incomplete?: { note?: string };
         _projection?: { cursor?: Record<string, unknown>; next?: string };
       };
-      expect(body.incomplete?.note ?? body._projection?.next).toContain('not a durable recovery guarantee');
+      const recoveryNote = body.incomplete?.note ?? body._projection?.next;
+      expect(typeof recoveryNote).toBe('string');
+      if (typeof recoveryNote !== 'string') throw new Error('result has no text recovery note');
+      expect(recoveryNote).toContain('not a durable recovery guarantee');
       expect(body._projection?.cursor).toMatchObject({ kind: 'pending-spill', uri: meta?.spillUri });
       expect(body._projection?.next).toContain('if late settlement reports failed, the overflow is unavailable');
       expect(body._projection?.next).toContain('delivery outcome may be unknown');
@@ -419,7 +426,7 @@ describe('result-door deferred spill (WI-10004533)', () => {
         counts: { ok: 1, failed: 0 },
       });
       expect(original.length).toBeGreaterThan(BUDGET_CHARS);
-      const out = await applyResultDoorAsync({
+      const out: DoorableResult = await applyResultDoorAsync({
         content: [{ type: 'text' as const, text: original }],
         _meta: { explicitFullRequest: true },
       }, { ...OPTS, toolName: 'work_items:get' });
@@ -601,7 +608,7 @@ describe('result-door deferred spill (WI-10004533)', () => {
       ledgerIdeaId: 'agent-review:WI-review-claim-1',
       gradeWith: { ideaId: 'agent-review:WI-review-claim-1' },
     };
-    const out = await applyResultDoorAsync({
+    const out: DoorableResult = await applyResultDoorAsync({
       content: [{ type: 'text' as const, text: JSON.stringify(claim) }],
     }, {
       ...OPTS,
@@ -610,7 +617,7 @@ describe('result-door deferred spill (WI-10004533)', () => {
     });
     const receipt = JSON.parse((out.content[0] as { text: string }).text) as {
       claimed: boolean;
-      workItem: { id: string; title: string; payload?: unknown };
+      workItem: { id: string; title: string; payload?: { largeSubmission?: string } };
       ledgerIdeaId: string;
       gradeWith: { ideaId: string };
       _projection: { cursor: Record<string, unknown>; next: string };

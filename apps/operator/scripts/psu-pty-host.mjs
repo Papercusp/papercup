@@ -12792,6 +12792,9 @@ export function hostThroughPty(o) {
   // listeners are per-process). onStdin/onResize below read the live `child`
   // closure, so they need no re-wiring.
   wireChildData = () => {
+    // Congestion belongs to the outer terminal, not the child. A recycled or
+    // unparked child must inherit it until the same writer emits drain.
+    if (terminalOutput.blocked) child.pause?.();
     // WI-41386: one guard per child — it carries partial-escape state, so a
     // respawn must not inherit the dead child's tail.
     const scrollbackGuard = makeScrollbackGuard();

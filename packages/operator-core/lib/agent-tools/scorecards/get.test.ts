@@ -12,6 +12,7 @@ import {
 import { PAYLOAD_TIER_HARD_CEILING_CHARS, PAYLOAD_TIER_RATCHET_CHARS } from '@papercusp/tooldef';
 import { DbCallDeadlineError } from '@papercusp/db-org';
 import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
+import type { SpecTestAdequacyRerunRecipe } from '../../harness/improvements/observation-types';
 
 const { doorConstantsMock } = vi.hoisted(() => ({ doorConstantsMock: vi.fn() }));
 vi.mock('../../context-doors-config', () => ({ getDoorConstantsSync: doorConstantsMock }));
@@ -49,7 +50,7 @@ const makeDispatchContext = (): UnifiedToolContext => ({
   tx: {},
 });
 
-const rerunRecipe = {
+const rerunRecipe: SpecTestAdequacyRerunRecipe = {
   schemaVersion: 1,
   evaluator: 'plans:evaluate-spec-test-adequacy',
   classRef: 'plan-class-risk-floor',
@@ -73,7 +74,7 @@ const rerunRecipe = {
     classifier: 'classifySpecEvidenceCurrentness',
     unknownWhenMissing: true,
   },
-} as const;
+};
 
 const scorecard = {
   issueId: 'EI-audited-card',
@@ -511,6 +512,105 @@ describe('scorecards:get evidence-first projection', () => {
 
     const criterionPage = await read({ issueId: largeIndex.issueId, criterionKey: 'criterion-0' });
     expect(criterionPage.scorecard.rerunRecipe).toEqual(rerunRecipe);
+  });
+
+  it('recovers an oversized replay recipe without hiding audit metadata or criterion evidence', async () => {
+    const gradingAudit = {
+      state: 'pending' as const,
+      metaRubricRef: 'grading-integrity',
+      stampedAt: '2026-10-09T00:00:00.000Z',
+    };
+    const large = {
+      ...scorecard,
+      gradingAudit,
+      rerunRecipe: {
+        ...rerunRecipe,
+        selection: {
+          ...rerunRecipe.selection,
+          evidence: Array.from({ length: 90 }, (_, i) => ({
+            evidenceKind: 'test', evidenceRef: `binding-${i}: ${'"\\\n🙂'.repeat(40)}`,
+          })),
+        },
+      },
+    };
+    const encodedRecipe = JSON.stringify(large.rerunRecipe);
+    expect(encodedRecipe.length).toBeGreaterThan(16_468);
+    readScorecardEvidenceM.mockResolvedValue({ kind: 'found', scorecard: large });
+    const invokeTool = (await import('../tools/invoke')).default;
+    const read = async (args: Record<string, unknown>) => {
+      const dispatched = await dispatchProjectedTool(
+        lookupByMcpName('scorecards:get')!, 'scorecards:get', args, makeDispatchContext(), {},
+      );
+      expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
+      const invoked = await invokeTool.handler(
+        { name: 'scorecards:get', args } as never,
+        { dispatchTool: async () => dispatched.result } as never,
+      );
+      const doored = applyResultDoor(invoked as {
+        content: Array<{ type: 'text'; text: string }>;
+        _meta?: Record<string, unknown>;
+      }, {
+        toolName: 'tools:invoke', nestedTargetToolName: 'scorecards:get', workspaceId: 'scorecards-get-test',
+      });
+      expect((doored._meta?.resultDoor as { truncated?: boolean } | undefined)?.truncated).not.toBe(true);
+      const result = readJsonResult<{
+        ok: boolean;
+        scorecard: typeof scorecard & { gradingAudit: typeof gradingAudit };
+        evidenceRead: { complete: boolean; scope?: string };
+        rerunRecipeRead?: {
+          complete: boolean; offset?: number; totalChars: number; chunk?: string;
+          read?: { args: Record<string, unknown> }; next?: { args: Record<string, unknown> };
+        };
+        _projection?: unknown;
+      }>(doored)!;
+      expect(result.ok, JSON.stringify(result)).toBe(true);
+      expect(result._projection).toBeUndefined();
+      expect(result.scorecard.issueId).toBe(large.issueId);
+      expect(result.scorecard.subject).toEqual(large.subject);
+      expect(result.scorecard.gradingAudit).toEqual(gradingAudit);
+      expect(result.scorecard.evidenceFingerprint).toBe(large.evidenceFingerprint);
+      expect(JSON.stringify(result).length).toBeLessThanOrEqual(
+        computeTurnDoors(0, BAKED_DOOR_CONSTANTS).resultEach * CHARS_PER_TOKEN_ESTIMATE - 256,
+      );
+      expect(resultContract.safeParse(result).success).toBe(true);
+      return result;
+    };
+    for (const args of [
+      { issueId: large.issueId },
+      { issueId: large.issueId, indexOffset: 0 },
+      { issueId: large.issueId, criterionKey: 'criterion-1' },
+    ]) {
+      const initial = await read(args);
+      expect(initial.rerunRecipeRead).toMatchObject({ complete: false, totalChars: encodedRecipe.length });
+      expect(initial.scorecard.rerunRecipe).toBeUndefined();
+      if ('criterionKey' in args) expect(initial.scorecard.criteria).toEqual([large.criteria[0]]);
+      let next = initial.rerunRecipeRead!.read!.args;
+      let recovered = '';
+      let pages = 0;
+      while (next) {
+        expect(++pages).toBeLessThan(150);
+        const page = await read(next);
+        expect(page.rerunRecipeRead?.offset).toBe(recovered.length);
+        expect(page.rerunRecipeRead?.chunk?.length).toBeGreaterThan(0);
+        recovered += page.rerunRecipeRead!.chunk;
+        if (page.rerunRecipeRead!.complete) {
+          expect(page.rerunRecipeRead!.next).toBeUndefined();
+          break;
+        }
+        next = page.rerunRecipeRead!.next!.args;
+      }
+      expect(pages).toBeGreaterThan(1);
+      expect(recovered).toBe(encodedRecipe);
+      expect(JSON.parse(recovered)).toEqual(large.rerunRecipe);
+    }
+    const invalid = await getTool.handler(
+      { issueId: large.issueId, rerunRecipeOffset: encodedRecipe.length + 1 } as never, makeDispatchContext(),
+    );
+    expect(invalid).toMatchObject({ data: { ok: false, error: 'invalid_rerun_recipe_offset' } });
+    expect(scorecardGetArgs.safeParse({ issueId: large.issueId, rerunRecipeOffset: 0 }).success).toBe(true);
+    expect(scorecardGetArgs.safeParse({
+      issueId: large.issueId, rerunRecipeOffset: 0, criterionKey: 'criterion-1',
+    }).success).toBe(false);
   });
 
   it('preserves typed transient contention failures', async () => {

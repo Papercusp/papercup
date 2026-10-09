@@ -1220,16 +1220,25 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
     expect(source).toContain('TEST_FILE_LIST_WATCHDOG');
   });
 
-  it('refuses a timed-out collection preflight without starting Vitest tests', async () => {
+  it.each([
+    { name: 'quiet timeout', stdout: '', stderr: '', timedOut: true, error: null },
+    { name: 'diagnostic timeout', stdout: 'collecting first file\n',
+      stderr: 'Running as unit: original-collection.scope\nwaiting for transform\n', timedOut: true, error: null },
+    { name: 'verbose timeout', stdout: 'stdout-start\n' + 'x'.repeat(20_000) + '\nstdout-end',
+      stderr: 'original-collection.scope\n' + 'y'.repeat(20_000) + '\nlast-transform', timedOut: true, error: null },
+    { name: 'spawn error', stdout: '', stderr: 'launch failed\n', timedOut: false,
+      error: Object.assign(new Error('child could not start'), { code: 'ENOENT' }) },
+  ])('refuses a collection failure without starting tests and retains evidence: $name', async (scenario) => {
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     const runVitestListMock = vi.fn(async () => ({
       status: null,
       signal: 'SIGKILL',
-      stdout: '',
-      stderr: '',
-      error: null,
-      timedOut: true,
+      stdout: scenario.stdout,
+      stderr: scenario.stderr,
+      error: scenario.error,
+      timedOut: scenario.timedOut,
+      freezeMs: 73,
     }));
     const runCapturedTestProcessMock = vi.fn();
     try {
@@ -1243,9 +1252,24 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
       expect(code).toBe(2);
       expect(runVitestListMock).toHaveBeenCalledTimes(1);
       expect(runCapturedTestProcessMock).not.toHaveBeenCalled();
-      expect(errorSpy.mock.calls.map(([line]) => String(line)).join('\n')).toContain(
-        'TEST_FILE_LIST_WATCHDOG',
-      );
+      const lines = errorSpy.mock.calls.map(([line]) => String(line));
+      if (scenario.timedOut) expect(lines.join('\n')).toContain('TEST_FILE_LIST_WATCHDOG');
+      const diagnosticLine = lines.find(line => line.startsWith('TEST_FILE_LIST_DIAGNOSTIC '));
+      expect(diagnosticLine).toBeDefined();
+      const diagnostic = JSON.parse(diagnosticLine!.slice('TEST_FILE_LIST_DIAGNOSTIC '.length));
+      expect(diagnostic).toMatchObject({ cwd: 'packages/operator-core', signal: 'SIGKILL',
+        exitStatus: 'none', freezeMs: 73, errorCode: scenario.error?.code ?? null,
+        files: ['lib/__tests__/test-file-router.test.ts'] });
+      for (const channel of ['stdout', 'stderr'] as const) {
+        const captured = scenario[channel];
+        if (captured.length <= 768) {
+          expect(diagnostic[channel]).toEqual({ text: captured, omittedChars: 0 });
+        } else {
+          expect(diagnostic[channel]).toEqual({ head: captured.slice(0, 384), tail: captured.slice(-384),
+            omittedChars: captured.length - 768 });
+        }
+      }
+      expect(diagnosticLine!.length).toBeLessThan(2_500);
     } finally {
       errorSpy.mockRestore();
       logSpy.mockRestore();

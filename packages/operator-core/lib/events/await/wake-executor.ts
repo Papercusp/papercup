@@ -175,10 +175,12 @@ type EnrolledWakeText = {
   readonly text: string;
   /** The exact timestamp supplied to the provenance ledger writer. */
   readonly provenanceIssuedAtMs: number;
+  /** Origin recorded alongside this exact tagged text. */
+  readonly origin: string;
 };
 
-function enrolledWakeText(text: string, provenanceIssuedAtMs: number): EnrolledWakeText {
-  return { text, provenanceIssuedAtMs } as EnrolledWakeText;
+function enrolledWakeText(text: string, provenanceIssuedAtMs: number, origin: string): EnrolledWakeText {
+  return { text, provenanceIssuedAtMs, origin } as EnrolledWakeText;
 }
 import { isInboxOwnerReplyPayload } from '../../agent-tools/coordination/inbox-reply';
 import {
@@ -2116,14 +2118,14 @@ async function tagWakeText(d: DeliveryWork, text: string, tag: WakeTurnTagger): 
   const provenanceIssuedAtMs = Date.now();
   try {
     const tagged = await tag({ sid: d.subscriberId, origin, text, nowMs: provenanceIssuedAtMs });
-    return enrolledWakeText(tagged.taggedText, provenanceIssuedAtMs);
+    return enrolledWakeText(tagged.taggedText, provenanceIssuedAtMs, origin);
   } catch {
     // The wake itself is fail-soft, but returning it without an envelope turns a
     // machine prompt into affirmative owner speech in every transcript reader.
     // Keep delivery moving with a syntactically valid, unverified envelope; the
     // prompt hook can classify it as unverified (there is no ledger row), while
     // owner-visible readers still fail closed on the non-owner origin.
-    return enrolledWakeText(`${formatEnvelope(origin, mintNonce())}\n${text}`, provenanceIssuedAtMs);
+    return enrolledWakeText(`${formatEnvelope(origin, mintNonce())}\n${text}`, provenanceIssuedAtMs, origin);
   }
 }
 
@@ -2710,6 +2712,8 @@ export interface ExecuteWakeDeps {
     deliveryId: number;
     /** Explicit cold wakes override carry; transcript recovery preserves the source. */
     carry?: 'cold';
+    /** Preserve the enrolled origin only for a loop-fire successor kickoff. */
+    turnOrigin?: 'loop-fire';
   }) => Promise<boolean>;
   /** P-013 part A (review-system-rework-reduction-2026-09-23, RSR-P-013-A): decide whether a
    *  dead Claude session's resume must be RE-HOMED because its account is walled. Injected
@@ -4338,9 +4342,18 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       // context. Use the existing identity-preserving successor launch instead.
       const launchSuccessor = deps.launchColdFreshSuccessor ?? (async (input: {
         subscriberId: string; workspaceId: string; harness: string | null;
-        wakeText: string; deliveryId: number; carry?: 'cold';
+        wakeText: string; deliveryId: number; carry?: 'cold'; turnOrigin?: 'loop-fire';
       }) => {
-        const { default: launchTool } = await import('../../agent-tools/capability/launch-agent');
+        const { default: launchTool, INTERNAL_LOOP_FIRE_ORIGIN } =
+          await import('../../agent-tools/capability/launch-agent');
+        const launchContext = {
+          workspaceId: input.workspaceId,
+          harnessSlug: input.harness,
+          role: 'su',
+          ...(input.turnOrigin === 'loop-fire'
+            ? { [INTERNAL_LOOP_FIRE_ORIGIN]: 'loop-fire' as const }
+            : {}),
+        };
         const result = await launchTool.handler({
           successor: { agentId: input.subscriberId },
           brief: input.wakeText,
@@ -4348,11 +4361,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
           headless: true,
           carry: input.carry,
           idempotencyKey: `cold-wake:${input.deliveryId}`,
-        } as never, {
-          workspaceId: input.workspaceId,
-          harnessSlug: input.harness,
-          role: 'su',
-        } as never);
+        } as never, launchContext as never);
         const launch = (result as { data?: { launch?: { tasks?: Array<{ ownerId?: string }> } }; isError?: boolean }).data?.launch;
         return !('isError' in result && result.isError) && !!launch?.tasks?.some((task) => task.ownerId === input.subscriberId);
       });
@@ -4369,6 +4378,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
         wakeText: successorText.text,
         deliveryId: d.id,
         ...(coldWakeNeedsHost ? { carry: 'cold' as const } : {}),
+        ...(successorText.origin === 'loop-fire' ? { turnOrigin: 'loop-fire' as const } : {}),
       }).catch((error) => {
         console.warn(`[wake-executor] cold fresh successor failed for ${d.subscriberId}: ${String(error)}`);
         return false;

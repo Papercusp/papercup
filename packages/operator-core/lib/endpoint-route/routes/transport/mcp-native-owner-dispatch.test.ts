@@ -1,9 +1,14 @@
 import { createHash } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { registerProjectedTool, unregisterProjectedToolsForPlugin, type ProjectedTool, type UnifiedToolContext } from '@papercusp/tooldef';
-import { dispatchNativeMcpTargetOnOwner, type BuiltSpawnContext } from './_mcp-host';
+import { dispatchNativeMcpTargetOnOwner, normalizeNativeMcpOwnerSpawn, runNativeMcpTargetOnOwner, type BuiltSpawnContext } from './_mcp-host';
 import type { SuNativeToolAddress } from '../../../su-session-owner-routing';
 const telemetry = vi.hoisted(() => ({ recordInvocation: vi.fn() }));
+const nativeOwnerRouting = vi.hoisted(() => ({ run: vi.fn() }));
+vi.mock('../../../su-session-owner-routing', async importOriginal => ({
+  ...await importOriginal<typeof import('../../../su-session-owner-routing')>(),
+  runOnSuNativeToolOwner: nativeOwnerRouting.run,
+}));
 vi.mock('@papercusp/db-org', async importOriginal => ({
   ...await importOriginal<typeof import('@papercusp/db-org')>(),
   withWorkspace: vi.fn(async () => { throw new Error('fixture principal synthesis failed'); }),
@@ -34,7 +39,11 @@ function target(fn: (args: unknown, ctx: UnifiedToolContext) => Promise<unknown>
     expose: { mcp: { name: 'native-fixture:run' } }, requirePrincipal: false,
     ...extra, fn } as ProjectedTool);
 }
-afterEach(() => { unregisterProjectedToolsForPlugin('native-fixture'); telemetry.recordInvocation.mockClear(); });
+afterEach(() => {
+  unregisterProjectedToolsForPlugin('native-fixture');
+  telemetry.recordInvocation.mockClear();
+  nativeOwnerRouting.run.mockReset();
+});
 
 describe('D-063 owner rebuild of native MCP targets', () => {
   it('uses the owning loaded handler and preserves materialization and native call lineage', async () => {
@@ -70,11 +79,66 @@ describe('D-063 owner rebuild of native MCP targets', () => {
       expect(fn).not.toHaveBeenCalled();
     });
 
+  it('preserves a schema-valid recovery proof and the verified native session on owner dispatch', async () => {
+    const r = request();
+    r.spawn.harnessSlug = 'native-fixture-harness';
+    const authority = { kind: 'superuser' as const, credentialSha256: 'a'.repeat(64), role: 'operator' };
+    r.spawn.admissionRecoveryAuthority = authority;
+    expect(normalizeNativeMcpOwnerSpawn(r.spawn).admissionRecoveryAuthority).toEqual(authority);
+    const fn = vi.fn(async (_args, ctx: UnifiedToolContext) => {
+      expect(ctx.admissionRecoveryAuthority).toEqual(authority);
+      expect(ctx.advSessionId).toBe(address.advSessionId);
+      expect(ctx.uiClientId).toBe(address.ownerId);
+      return { content: [{ type: 'text' as const, text: 'recovery-proof-preserved' }] };
+    });
+    target(fn);
+    expect(await dispatchNativeMcpTargetOnOwner(JSON.parse(JSON.stringify(r)), address))
+      .toMatchObject({ content: [{ type: 'text', text: 'recovery-proof-preserved' }] });
+    expect(fn).toHaveBeenCalledOnce();
+  });
+
+  it('rejects malformed recovery proof before dispatch', async () => {
+    const fn = vi.fn(); target(fn);
+    const r = request();
+    r.spawn.admissionRecoveryAuthority = {
+      kind: 'superuser', credentialSha256: 'not-a-digest', role: 'operator',
+    } as never;
+    expect(() => normalizeNativeMcpOwnerSpawn(r.spawn)).toThrow('native_tool_owner_invalid_authority');
+    await expect(dispatchNativeMcpTargetOnOwner(JSON.parse(JSON.stringify(r)), address))
+      .rejects.toThrow('native_tool_owner_invalid_authority');
+    expect(fn).not.toHaveBeenCalled();
+  });
+
   it('rejects nonserializable principal grants rather than losing them during IPC', async () => {
     const fn = vi.fn(); target(fn); const r = request();
     r.spawn.authenticatedPrincipal = { slug: 'pi', capabilities: new Set(['grant']) } as never;
+    expect(() => normalizeNativeMcpOwnerSpawn(r.spawn)).toThrow('native_tool_owner_unsupported_capability');
     await expect(dispatchNativeMcpTargetOnOwner(r, address)).rejects.toThrow('invalid_request');
     expect(fn).not.toHaveBeenCalled();
+  });
+
+  it('keeps a host-local principal on the owner process and only normalizes for forwarding', async () => {
+    const r = request();
+    r.spawn.authenticatedPrincipal = { slug: 'pi', capabilities: new Set(['grant']) } as never;
+    const local = vi.fn(async () => ({ content: [{ type: 'text' as const, text: 'owner-local' }] }));
+    nativeOwnerRouting.run.mockImplementation(async (_address, _remoteRequest, runLocal) => runLocal());
+
+    await expect(runNativeMcpTargetOnOwner(r, local, 1_000))
+      .resolves.toMatchObject({ content: [{ text: 'owner-local' }] });
+    expect(local).toHaveBeenCalledOnce();
+    expect(nativeOwnerRouting.run).toHaveBeenCalledOnce();
+    expect(typeof nativeOwnerRouting.run.mock.calls[0][1]).toBe('function');
+  });
+
+  it('still refuses a host-local principal before a remote worker can receive it', async () => {
+    const r = request();
+    r.spawn.authenticatedPrincipal = { slug: 'pi', capabilities: new Set(['grant']) } as never;
+    const local = vi.fn(async () => ({ content: [{ type: 'text' as const, text: 'must-not-run' }] }));
+    nativeOwnerRouting.run.mockImplementation(async (_address, remoteRequest) => remoteRequest());
+
+    await expect(runNativeMcpTargetOnOwner(r, local, 1_000))
+      .rejects.toThrow('native_tool_owner_unsupported_capability');
+    expect(local).not.toHaveBeenCalled();
   });
 
   it('refuses malformed call fingerprints before the handler', async () => {

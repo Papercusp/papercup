@@ -14,7 +14,8 @@ import { BAKED_DOOR_CONSTANTS, CHARS_PER_TOKEN_ESTIMATE } from '../../context-do
 const { doorConstantsMock } = vi.hoisted(() => ({ doorConstantsMock: vi.fn() }));
 vi.mock('../../context-doors-config', () => ({ getDoorConstantsSync: doorConstantsMock }));
 
-import { applyResultDoor, beginResultDoorAggregate, RESULT_DOOR_TOKENS } from '../../result-door';
+import { applyResultDoor, beginResultDoorAggregate, RESULT_DOOR_TOKENS, type DoorableResult } from '../../result-door';
+import { readVolatileScratchReference } from '../../scratch-reference';
 import { assembleSchedulerClaimResult } from './get_next';
 
 const BUDGET_CHARS = RESULT_DOOR_TOKENS * CHARS_PER_TOKEN_ESTIMATE;
@@ -50,6 +51,17 @@ function doorify(result: Record<string, unknown>) {
     { content: [{ type: 'text' as const, text: JSON.stringify(result) }] },
     { toolName: 'scheduler:get_next', workspaceId: 'ws-1', runId: RUN_ID },
   );
+}
+
+function expectExactVolatileRecovery(cursor: Record<string, unknown>, expected: unknown) {
+  expect(cursor).toMatchObject({ kind: 'volatile-scratch-page', tool: 'capability:read' });
+  const args = cursor.args as { uri?: unknown };
+  if (typeof args?.uri !== 'string') throw new Error('volatile cursor has no URI');
+  const recovered = readVolatileScratchReference(args.uri, { workspaceId: 'ws-1' });
+  const payload = recovered.payload.subarray(recovered.manifest.bodyOffsetInPayload ?? 0).toString('utf8');
+  const envelope = JSON.parse(payload) as { content?: Array<{ type: string; text: string }> };
+  const text = envelope.content?.find((item) => item.type === 'text')?.text;
+  expect(text ?? payload).toBe(JSON.stringify(expected));
 }
 
 function bulkyWorkItem() {
@@ -143,20 +155,18 @@ describe('scheduler:get_next claim-time decisions survive the result-door', () =
     const assembled = assembleSchedulerClaimResult({
       planDecisions: decisions(),
       workItem: { ...bulkyWorkItem(), harness: 'papercusp' },
+      claimedUnder: { specId: 'nonp2p-bug-drain-luna-max-0811', revision: 1 },
     });
-    const doored = applyResultDoor(
+    const doored: DoorableResult = applyResultDoor(
       { content: [{ type: 'text' as const, text: JSON.stringify(assembled) }] },
       { toolName, nestedTargetToolName, workspaceId: 'ws-1', runId: RUN_ID },
     );
     const output = JSON.parse((doored.content[0] as { text: string }).text);
 
     expect(output.claimReceipt).toMatchObject({ committed: true, workItemId: CLAIM_MARKER });
-    expect(output._projection.cursor).toMatchObject({
-      kind: 'committed-claim',
-      tool: 'work_items:get',
-      args: { id: CLAIM_MARKER, harness: 'papercusp' },
-    });
+    expectExactVolatileRecovery(output._projection.cursor, assembled);
     expect(output._projection.next).toContain('Do not retry scheduler:get_next');
+    expect(output._projection.next).toContain('work_items:get');
     expect(output._projection.next).not.toContain('Re-call');
     expect(doored._meta?.resultDoor).toMatchObject({ structural: true, spillFailed: true });
     expect(doored._meta?.resultDoor).not.toHaveProperty('aggregate');
@@ -164,14 +174,16 @@ describe('scheduler:get_next claim-time decisions survive the result-door', () =
 
   it('does not manufacture a committed claim from an uncommitted receipt', () => {
     writeFileSync(join(sandbox, 'scratch'), 'not a directory');
-    const doored = doorify({
+    const uncommitted = {
       ok: false,
       claimReceipt: { committed: false, workItemId: CLAIM_MARKER },
       workItem: bulkyWorkItem(),
-    });
+    };
+    const doored = doorify(uncommitted);
     const output = JSON.parse((doored.content[0] as { text: string }).text);
 
-    expect(output._projection.cursor).toMatchObject({ kind: 'unavailable', reason: 'spill-write-failed' });
+    expectExactVolatileRecovery(output._projection.cursor, uncommitted);
+    expect(output.claimReceipt).toMatchObject({ committed: false });
     expect(output._projection.next).not.toContain('is committed');
     expect(output._projection.next).not.toContain('Read work_items:get');
   });
@@ -201,7 +213,7 @@ describe('scheduler:get_next claim-time decisions survive the result-door', () =
       workItem: { ...bulkyWorkItem(), harness: 'papercusp' },
       claimedUnder: { specId: 'nonp2p-bug-drain-luna-max-0811', revision: 1 },
     });
-    const doored = applyResultDoor(
+    const doored: DoorableResult = applyResultDoor(
       { content: [{ type: 'text' as const, text: JSON.stringify(assembled) }] },
       {
         toolName,
@@ -220,10 +232,11 @@ describe('scheduler:get_next claim-time decisions survive the result-door', () =
     expect(output).toMatchObject({
       ok: true,
       claimReceipt: { committed: true, workItemId: CLAIM_MARKER },
-      _projection: {
-        truncated: true,
-        cursor: { tool: 'work_items:get', args: { id: CLAIM_MARKER, harness: 'papercusp' } },
-      },
+      _projection: { truncated: true },
+    });
+    if (failSpill) expectExactVolatileRecovery(output._projection.cursor, assembled);
+    else expect(output._projection.cursor).toMatchObject({
+      tool: 'work_items:get', args: { id: CLAIM_MARKER, harness: 'papercusp' },
     });
     expect(output._projection.next).toContain('Do not retry scheduler:get_next');
     expect((doored._meta as { resultDoor?: Record<string, unknown> }).resultDoor).toMatchObject({

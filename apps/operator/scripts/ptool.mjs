@@ -1507,6 +1507,15 @@ export const PTOOL_SERVICE_HEALTH_TIMEOUT_MS = 90_000;
 // calls without pretending to wait for the detached suite itself.
 export const PTOOL_CHECKPOINT_RUN_TIMEOUT_MS = PTOOL_FOREGROUND_TOOL_TIMEOUT_MS;
 
+// WI-10007671: release:repair-queue's read-only whole-blob preview may wait for
+// ADMISSION_PREVIEW_JOB_TIMEOUT_MS=240s and documents a 300s MCP client deadline
+// (packages/operator-core/lib/agent-tools/release/repair-queue.ts). The generic
+// 30s ptool cutoff abandoned the larger import-closure preview before its bounded
+// result could return. Keep a 5s settlement margin over that deadline, but only
+// for read-only admit/converge calls; confirmed writes still return their durable
+// precheck-running receipt under the normal call budget.
+export const PTOOL_REPAIR_QUEUE_PREVIEW_TIMEOUT_MS = 305_000;
+
 // EI-22613070628418671: db:migrate declares timeoutSec=1020
 // (MAX_DRAIN_SEC 300 + 2*MAX_LOCK_TIMEOUT_SQL_SEC 600 + 120). The MCP
 // transport adds a 5s settlement buffer, so the effective server deadline is
@@ -1926,6 +1935,16 @@ export function timeoutForTool(toolName, callArgs) {
   const effectiveToolName = toolName === 'tools:invoke' && typeof callArgs?.name === 'string'
     ? callArgs.name
     : toolName;
+  const effectiveArgs = toolName === 'tools:invoke' && callArgs?.args && typeof callArgs.args === 'object'
+    ? callArgs.args
+    : callArgs;
+  if (
+    effectiveToolName === 'release:repair-queue' &&
+    (effectiveArgs?.op === 'admit' || effectiveArgs?.op === 'converge') &&
+    effectiveArgs?.confirm !== true
+  ) {
+    return PTOOL_REPAIR_QUEUE_PREVIEW_TIMEOUT_MS;
+  }
   return PTOOL_LONG_RUNNING_TIMEOUTS_MS.get(effectiveToolName) ?? PTOOL_CALL_TOOL_TIMEOUT_MS;
 }
 

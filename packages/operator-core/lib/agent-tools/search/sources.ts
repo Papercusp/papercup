@@ -25,6 +25,7 @@
 // the coverage structural instead of another thing to remember.
 import '../../search/configure-search-defaults';
 import { createReportSearchSource } from './report-source';
+import { createDocSearchSource, createPlanSearchSource } from './knowledge-sources';
 import type { SearchSource, SearchSourceParams, Listing } from '@papercusp/search';
 // WI-37603: every `embedding` leg below runs through this. Without it an HNSW
 // scan stops at `hnsw.ef_search` (40) and silently returns fewer rows than the
@@ -1296,4 +1297,5 @@ const coordMessage: SearchSource = {
 /** The seven prose surfaces, keyed by `scope` name. */
 export const SEARCH_SOURCES: SearchSource[] = [
   escalations, brainstorm, turns, decisions, workItem, sessionTurn, coordMessage, createReportSearchSource(),
+  createPlanSearchSource(), createDocSearchSource(),
 ];

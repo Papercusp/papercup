@@ -7,6 +7,8 @@ import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join, relative, resolve, posix } from 'node:path';
 import { promisify } from 'node:util';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { resolveOperatorAppRootFromModuleDir } from '../../operator-app-root';
 
 // Pure census helpers may be imported under a synchronous-only subprocess mock.
 // Reuse git-batch's typed memoized wrapper; promisify only when shell is called.
@@ -91,7 +93,8 @@ export async function readSeedInstalledPackages(root: string, trees: readonly st
     // Reuse the maintained lock census's authority rule: a root workspace's
     // historical local lock is subsumed, including its package-local installs.
     // Dynamic URL import keeps this source-only helper independent of JS typings.
-    const censusUrl = new URL('../../../../../scripts/check-lockfile-census.mjs', import.meta.url);
+    const appRoot = resolveOperatorAppRootFromModuleDir(dirname(fileURLToPath(import.meta.url)));
+    const censusUrl = pathToFileURL(resolve(appRoot, '../../scripts/check-lockfile-census.mjs'));
     const { rootWorkspaceDirs } = await import(censusUrl.href);
     workspaceDirs = rootWorkspaceDirs({ packages: rootLock.packages });
   }

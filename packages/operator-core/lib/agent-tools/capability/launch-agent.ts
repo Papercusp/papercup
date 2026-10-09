@@ -116,6 +116,11 @@ import {
   type SavedFleetLaunchSpecProvenance,
 } from '../fleet_registry/saved-launch-spec';
 
+/** Internal direct-handler context marker used only to preserve a cold loop
+ * successor's already-enrolled first-turn provenance. It is not part of the
+ * public launch-agent schema or ordinary caller arguments. */
+export const INTERNAL_LOOP_FIRE_ORIGIN: unique symbol = Symbol('internal-loop-fire-origin');
+
 /** How long to wait for a resumed session's live psu-pty host to appear before
  *  returning an honest UNCONFIRMED verdict. Most healthy resumes register within
  *  a few seconds, but EI-21476169071856015 measured a healthy exact Codex resume
@@ -748,6 +753,10 @@ export default defineTool({
     // from the public zod schema, so ordinary fresh-launch behavior does not
     // change and callers cannot smuggle an unaudited recovery carry.
     let savedLaunchCarry = (args as typeof args & { __savedLaunchCarry?: 'warm' | 'cold' }).__savedLaunchCarry;
+    const internalKickoffOrigin =
+      (ctx as typeof ctx & { [INTERNAL_LOOP_FIRE_ORIGIN]?: 'loop-fire' })[INTERNAL_LOOP_FIRE_ORIGIN] === 'loop-fire'
+        ? 'loop-fire'
+        : null;
     // Internal seam used by fleet:respawn-member: a replacement must be
     // identity-correlated before it is spawned, because concurrent respawns
     // cannot safely identify one another by roster ordering after launch.
@@ -2030,6 +2039,9 @@ export default defineTool({
         const env = {
           ...base.env,
           ...(memberBrief ? { PAPERCUSP_KICKOFF_PROMPT: memberBrief } : {}),
+          ...(internalKickoffOrigin
+            ? { PAPERCUSP_INTERNAL_KICKOFF_ORIGIN: internalKickoffOrigin }
+            : {}),
           ...(args.originalRouting ? { [ORIGINAL_CODEX_ROUTING_ENV]: JSON.stringify(args.originalRouting) } : {}),
         };
         const memberLabel = memberLabels[i];

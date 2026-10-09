@@ -84,7 +84,7 @@ const MAX_ROWS_PER_PAGE = 240;
  *        sections sat exactly at the 2000-char cap, their tails unembedded and
  *        therefore permanently unmatchable by the semantic leg).
  */
-const SPLITTER_VERSION = '2';
+const SPLITTER_VERSION = '3-complete-body';
 
 export interface DocSection {
   /** Heading anchor id ('' = page preamble); deduped within the page. */
@@ -141,7 +141,14 @@ export const DOC_MARKDOWN_SPLIT: MarkdownSplitOptions = {
  * context-free prose.
  */
 export function splitDocSections(pageTitle: string, body: string): DocSection[] {
-  return splitMarkdown(body, DOC_MARKDOWN_SPLIT).map((s) => ({
+  // A retained document is the search population; fixed heading/row limits
+  // would silently exclude late procedures and continuation chunks.
+  return splitMarkdown(body, {
+    ...DOC_MARKDOWN_SPLIT,
+    minChars: 0,
+    maxSections: Math.max(1, body.length + 1),
+    maxRows: Math.max(1, body.length + 1),
+  }).map((s) => ({
     anchor: s.anchor,
     title: s.headingPath.length === 0 ? pageTitle : `${pageTitle} › ${s.headingPath[s.headingPath.length - 1]}`,
     content: s.content,

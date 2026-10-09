@@ -234,6 +234,19 @@ function openPanelsMenu() {
 }
 
 describe('GoalDetailPanel', () => {
+  it('opens the progress console for the legacy typed worklist without package-install metadata', () => {
+    const base = detail();
+    renderPanel({ ...base, goal: { ...base.goal!, status: 'paused', goalPackage: null }, goalData: {
+      propertySchema: { worklist: { datatype: 'plan-ref-list', editable_by: 'both', collection: {
+        source: 'active-workspace-plans', policy: 'worklist_policy', order: 'priority',
+        selectable: true, defaultSelected: false } } }, collections: {}, error: 'Plan source unavailable.',
+    } });
+    expect(screen.getByTestId('work-on-everything-console')).toBeTruthy();
+    // Recognition survives a degraded collection read, so the dedicated retry
+    // state appears instead of silently reverting to the generic goal detail.
+    expect(screen.getByRole('alert').textContent).toContain('Goal data could not be read');
+    expect(screen.queryByTestId('goal-ends-section')).toBeNull();
+  });
   it('opens the dedicated 02C destination only for the declared Work on Everything package', () => {
     const base = detail();
     renderPanel({ ...base, goal: { ...base.goal!, title: 'Renamed ongoing goal',

@@ -142,9 +142,46 @@ export async function resolveRoutineCodeDrift(
   bootCommit: string | null,
   currentCommit: string | null,
 ): Promise<RoutineCodeDrift | null> {
+  return resolveSourceDrift(bootCommit, currentCommit, [ROUTINE_SOURCE_PREFIX]);
+}
+
+/**
+ * WI-10007644 (P-014): the GATE code a routines executor runs IN-PROCESS.
+ *
+ * Measured against the bundle bg-host actually executes (apps/operator/dist-host/
+ * hono-host.mjs, module markers): it inlines 75 `packages/operator-core/lib/release/*`
+ * modules and `harness/routines/release-actions.ts`, but NOT
+ * `apps/operator/lib/release/green-checkpoint.ts` — release-actions spawns that as a
+ * fresh `tsx` per run, so it always loads the tree's current copy and is deliberately
+ * absent here. A change under these pathspecs is a change to the gate's instrument that
+ * the running executor will not see until it restarts.
+ */
+export const GATE_SOURCE_PATHSPECS: readonly string[] = [
+  'packages/operator-core/lib/release/',
+  'packages/operator-core/lib/harness/routines/release-actions.ts',
+];
+
+/** Gate-code drift between boot and HEAD — same contract as `resolveRoutineCodeDrift`. */
+export async function resolveGateCodeDrift(
+  bootCommit: string | null,
+  currentCommit: string | null,
+): Promise<RoutineCodeDrift | null> {
+  return resolveSourceDrift(bootCommit, currentCommit, GATE_SOURCE_PATHSPECS);
+}
+
+/**
+ * Non-test source drift under `pathspecs` between two commits. null = unanswerable
+ * (bad shas, no checkout, git failed); empty arrays = probed and found nothing.
+ */
+export async function resolveSourceDrift(
+  bootCommit: string | null,
+  currentCommit: string | null,
+  pathspecs: readonly string[],
+): Promise<RoutineCodeDrift | null> {
   const sha = /^[0-9a-f]{40}$/i;
   // Same argv-injection guard as resolveCommitsBehind: these become a revision range.
   if (!bootCommit || !currentCommit || !sha.test(bootCommit) || !sha.test(currentCommit)) return null;
+  if (pathspecs.length === 0) return null;
   if (bootCommit === currentCommit) return { changed: [], addedSinceBoot: [] };
   try {
     // --no-renames on purpose: a moved file must report as D+A, because under its
@@ -156,7 +193,7 @@ export async function resolveRoutineCodeDrift(
       '--no-renames',
       `${bootCommit}..${currentCommit}`,
       '--',
-      ROUTINE_SOURCE_PREFIX,
+      ...pathspecs,
     ]);
     const changed: string[] = [];
     const addedSinceBoot: string[] = [];

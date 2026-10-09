@@ -42,6 +42,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { moduleRepoRoot } from '../../module-repo-root';
 import type {
   SeedProvider,
   SeedStoreEntry,
@@ -158,7 +159,7 @@ export interface SeedSourceInput {
 // edit. A stale runtime must not bind the new on-disk blobs as its loaded code.
 const LOADED_SEED_EXECUTION_BLOBS = (() => {
   if (typeof import.meta.url !== 'string' || !import.meta.url.endsWith('/seed-provider-corestore.ts')) return null;
-  const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../..');
+  const root = moduleRepoRoot(import.meta.url);
   return SEED_EXECUTION_PATHS.map(path => ({ path,
     sha256: createHash('sha256').update(readFileSync(join(root, path))).digest('hex') }));
 })();
@@ -171,7 +172,7 @@ export async function readSeedFrozenExecution(): Promise<SeedFrozenExecution> {
   if (!LOADED_SEED_EXECUTION_BLOBS) {
     throw new Error('[seed:corestore] frozen census refuses compiled-only execution');
   }
-  const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../..');
+  const root = moduleRepoRoot(import.meta.url);
   const git = (...args: string[]) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8' }).trim();
   const sourceCommit = git('rev-parse', 'HEAD');
   if (!/^[0-9a-f]{40}$/.test(sourceCommit) || git('status', '--porcelain', '--untracked-files=all', '--ignore-submodules=none')) {

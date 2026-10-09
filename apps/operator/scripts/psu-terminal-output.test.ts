@@ -76,5 +76,6 @@ describe('managed terminal output', () => {
     output.write('pending');
     expect(await output.finish(10)).toBe(false);
     expect(stream.listenerCount('error')).toBe(0);
+    expect(stream.listenerCount('drain')).toBe(0);
   });
 });

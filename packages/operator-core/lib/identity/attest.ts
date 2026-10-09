@@ -402,12 +402,11 @@ async function listAttestationGists(token: string): Promise<AttestationGistListE
  * Signs the canonical payload with the Ed25519 private key from the
  * keychain before publishing, so the gist is self-authenticating.
  */
-export async function createAttestationGist(
-  input: CreateAttestationGistInput,
-): Promise<CreateAttestationGistResult> {
-  const { keychainId, pubkeyBase64, deviceLabel, githubUserId, githubLogin, token } = input;
-
-  // Build the body (minus signature first, then sign)
+/** Sign the canonical device binding without publishing it to GitHub. */
+export async function createDeviceAttestationBody(
+  input: Omit<CreateAttestationGistInput, 'token' | 'knownGistId'>,
+): Promise<AttestationGistBody> {
+  const { keychainId, pubkeyBase64, deviceLabel, githubUserId, githubLogin } = input;
   const unsignedBody: Omit<AttestationGistBody, 'signature_by_device'> = {
     version: 1,
     device_pubkey: pubkeyBase64,
@@ -418,7 +417,14 @@ export async function createAttestationGist(
   };
 
   const signature_by_device = await signPayload(keychainId, unsignedBody);
-  const body: AttestationGistBody = { ...unsignedBody, signature_by_device };
+  return { ...unsignedBody, signature_by_device };
+}
+
+export async function createAttestationGist(
+  input: CreateAttestationGistInput,
+): Promise<CreateAttestationGistResult> {
+  const { pubkeyBase64, token } = input;
+  const body = await createDeviceAttestationBody(input);
 
   const filename = attestationGistFilename(pubkeyBase64);
   const gistPayload = {

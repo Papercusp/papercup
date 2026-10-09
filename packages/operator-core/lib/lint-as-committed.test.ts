@@ -1130,6 +1130,38 @@ console.log('CLONE_PREREQUISITES_OK');
     });
   }
 
+  it.each([false, true])('honors a dependent artifact registered during the running command (removed=%s)', (removed) => {
+    const f = fixture('node build.cjs');
+    let extracted: string | undefined;
+    try {
+      const artifact = join(f.root, 'dependent-proof.log');
+      snapshot(f.root, { 'probe.cjs': `
+const fs = require('node:fs');
+const { execFileSync } = require('node:child_process');
+(async () => {
+  const { retainCommittedWorkRoot } = await import(${JSON.stringify(pathToFileURL(scriptPath).href)});
+  const sha = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+  fs.writeFileSync(${JSON.stringify(artifact)}, 'dependent proof');
+  retainCommittedWorkRoot(process.cwd(), sha, ${JSON.stringify(artifact)});
+  ${removed ? `fs.rmSync(${JSON.stringify(artifact)});` : ''}
+  console.log('DEPENDENT_SOURCE=' + process.cwd());
+})().catch(error => { console.error(error); process.exitCode = 1; });
+` }, f.head);
+      const result = run(f.root);
+      expect(result.status, result.stdout + result.stderr).toBe(0);
+      extracted = result.stdout.match(/DEPENDENT_SOURCE=(\S+)/)?.[1];
+      expect(extracted).toBeDefined();
+      expect(existsSync(extracted!)).toBe(!removed);
+      if (!removed) {
+        const sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: extracted, encoding: 'utf8' }).trim();
+        expect(mod.verifyCommittedWorkRoot(extracted, sha, ['probe.cjs']).sha).toBe(sha);
+      }
+    } finally {
+      if (extracted) rmSync(extracted, { recursive: true, force: true });
+      rmSync(f.root, { recursive: true, force: true });
+    }
+  }, 40_000);
+
   it('pins main separately from HEAD and builds require exports from committed source despite dirty shared source/dist', () => {
     const f = fixture('node build.cjs');
     try {

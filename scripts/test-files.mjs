@@ -3045,12 +3045,31 @@ export async function main(
       },
     );
     const listedOutput = `${listed.stdout ?? ''}\n${listed.stderr ?? ''}${listed.error ? listed.error.message : ''}`;
+    if (listed.timedOut || listed.error) {
+      // The runner captured these streams before reaping its owned child.
+      // Keep their beginning and end: a scope receipt often precedes the last
+      // transform message, and a byte count alone cannot identify either.
+      const channels = Object.fromEntries(['stdout', 'stderr'].map(channel => {
+        const output = typeof listed[channel] === 'string' ? listed[channel] : '';
+        return [channel, output.length <= 768
+          ? { text: output, omittedChars: 0 }
+          : { head: output.slice(0, 384), tail: output.slice(-384), omittedChars: output.length - 768 }];
+      }));
+      console.error(`TEST_FILE_LIST_DIAGNOSTIC ${JSON.stringify({
+        cwd: cwdLabel, files: requested,
+        ...formatTaskOutcomeFields({ status: listed.status, signal: listed.signal, settled: true }),
+        freezeMs: listed.freezeMs ?? null,
+        errorCode: listed.error?.code ?? null,
+        errorMessage: boundedDiagnosticText(listed.error?.message, 384) || null,
+        ...channels,
+      })}`);
+    }
     if (listed.timedOut) {
       console.error(
         `TEST_FILE_LIST_WATCHDOG cwd=${cwdLabel} files=${JSON.stringify(requested)} ` +
           `timeoutMs=${listTimeoutMs} status=timed-out — owned collection child tree reaped; ` +
           'NOT MEASURED — Vitest did not produce a complete collection listing. ' +
-          'Widen with PAPERCUSP_TEST_FILE_LIST_TIMEOUT_MS=<milliseconds> and rerun the same command.',
+          'Inspect TEST_FILE_LIST_DIAGNOSTIC and the named collection scope before another attempt.',
       );
       groupResults.push({
         requested: group.routes.length,

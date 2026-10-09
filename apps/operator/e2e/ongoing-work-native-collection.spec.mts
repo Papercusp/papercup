@@ -3,7 +3,29 @@ import type { OrderedSelectionPolicy } from '../../../packages/operator-core/lib
 import { execFile } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { promisify } from 'node:util';
+import { runInNewContext } from 'node:vm';
 import { insertNativeCollectionGoal, insertNativeCollectionPlan, setNativeCollectionPlanArchived } from './_ongoing-work-native-fixture';
+
+function nativeCollectionDocumentReady(editor: string) {
+  return `window.__nativeCollectionPreviousDocument !== true && document.readyState === 'complete' && !!document.querySelector(${JSON.stringify(editor)}) && document.querySelector(${JSON.stringify(editor)})?.getBoundingClientRect().height > 0`;
+}
+
+test('native reload readiness rejects a still-visible previous document', () => {
+  const window: { __nativeCollectionPreviousDocument?: boolean } = { __nativeCollectionPreviousDocument: true };
+  let height = 20;
+  const document = { readyState: 'complete', querySelector: () => ({ getBoundingClientRect: () => ({ height }) }) };
+  const script = nativeCollectionDocumentReady('[data-testid="goal-data"]');
+  // The bridge acknowledges location assignment while this old editor is still
+  // painted. Presence/visibility alone must never satisfy reload readiness.
+  expect(runInNewContext(script, { window, document })).toBe(false);
+  delete window.__nativeCollectionPreviousDocument;
+  expect(runInNewContext(script, { window, document })).toBe(true);
+  document.readyState = 'loading';
+  expect(runInNewContext(script, { window, document })).toBe(false);
+  document.readyState = 'complete';
+  height = 0;
+  expect(runInNewContext(script, { window, document })).toBe(false);
+});
 
 // An explicit ESM entry keeps the backend writer graph on Playwright's ESM loader.
 async function loadNativeCollectionWriter() {
@@ -284,7 +306,7 @@ test('native declared collections persist controls and reject a barrier-controll
         // unloads. An editor already on that document is not reload evidence.
         await native('eval', 'window.__nativeCollectionPreviousDocument = true; true');
         await native('navigate', url, '--json');
-        await ready(`window.__nativeCollectionPreviousDocument !== true && document.readyState === 'complete' && !!document.querySelector(${JSON.stringify(editor)}) && document.querySelector(${JSON.stringify(editor)})?.getBoundingClientRect().height > 0`);
+        await ready(nativeCollectionDocumentReady(editor));
         await observeWrites();
       }
       async function readback() {

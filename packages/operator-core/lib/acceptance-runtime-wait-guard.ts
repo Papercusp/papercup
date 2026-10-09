@@ -143,8 +143,7 @@ export function reviewMainWaitPlan(
 export function goalNamesDeployWait(goal: string | null | undefined): boolean {
   if (!goal) return false;
   return (
-    /\bgreen[- ]main\b/i.test(goal) ||
-    /\bgreen[- ]checkpoint\b/i.test(goal) ||
+    /\b(wait(ing)?|until|once|after|blocked|watch(ing)?|monitor(ing)?|re-?check)\b[^.\n]{0,80}\bgreen[- ](main|checkpoint)\b/i.test(goal) ||
     /:3070\b/.test(goal) ||
     /\brelease:green\b/i.test(goal) ||
     /\brelease:deployed\b/i.test(goal) ||

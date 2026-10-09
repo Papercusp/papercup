@@ -785,6 +785,36 @@ describe("tagKickoffProvenance (turn-provenance-owner-vs-agent-2026-07-11 P-002)
     expect(tagged).toContain(row.nonce); // the typed envelope references the ledger row
   });
 
+  it("consumes a private loop-fire origin for one fresh kickoff, then restores fleet-kickoff", () => {
+    const env = {
+      ...envFor(),
+      PAPERCUSP_SID: "su-loop-kick-1",
+      PAPERCUSP_INTERNAL_KICKOFF_ORIGIN: "loop-fire",
+    };
+    const args = { picker: false };
+    const first = routeFreshKickoff(
+      "claude",
+      { kickoffPrompt: "Continue the persisted loop." },
+      args,
+      env,
+    );
+    expect(first.managedKickoff).toMatch(/^⟦turn-origin:loop-fire nonce:[a-f0-9]{16}⟧\nContinue the persisted loop\.$/);
+    expect(env).not.toHaveProperty("PAPERCUSP_INTERNAL_KICKOFF_ORIGIN");
+
+    const second = routeFreshKickoff(
+      "claude",
+      { kickoffPrompt: "A normal scripted kickoff." },
+      args,
+      env,
+    );
+    expect(second.managedKickoff).toMatch(/^⟦turn-origin:fleet-kickoff nonce:[a-f0-9]{16}⟧\nA normal scripted kickoff\.$/);
+    const rows = readFileSync(join(provDir, "su-loop-kick-1.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(rows.map((row) => row.origin)).toEqual(["loop-fire", "fleet-kickoff"]);
+  });
+
   it("pins the launcher mirror to the canonical turn-provenance contract", async () => {
     const sid = "su/kickoff .. id";
     const text = " Begin: advance this plan.\r\n";
@@ -3547,6 +3577,7 @@ describe("psu-launcher arg parsing", () => {
       recoveryTtlMs: null,
       recoveryMaxRuntimeMs: null,
       compactionLimit: null,
+      terminalCheck: false,
       // subagent-launch governance (owner mandate 2026-07-02): tri-state, default
       // null (unset) — the picker prompts (falling back to DENY); a flag preselects.
       allowSubagents: null,
@@ -3700,6 +3731,7 @@ describe("psu-launcher arg parsing", () => {
       recoveryTtlMs: null,
       recoveryMaxRuntimeMs: null,
       compactionLimit: null,
+      terminalCheck: false,
       allowSubagents: null,
       kickoffPromptText: null,
       label: null,

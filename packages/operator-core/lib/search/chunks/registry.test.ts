@@ -44,6 +44,7 @@ describe('chunk surface registry', () => {
     // D-029: chunk margin 0.02 (the live R-2 re-run failed at D-014's margin 0).
     expect(s.splitter).toEqual({ kind: 'window', size: 1500, overlap: 250 });
     expect(s.maxChunks).toBe(32);
+    expect(s.completeBody).toBe(true);
     expect(s.chunkMargin).toBe(0.02);
     // The plan's own vector is the gist leg (D-005 readers stay on it).
     expect(s.parentVector).toEqual({

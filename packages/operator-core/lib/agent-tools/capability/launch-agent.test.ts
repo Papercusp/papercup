@@ -326,7 +326,7 @@ vi.mock('../../agent-launch-core', async (orig) => ({
 
 const launchAgentModule = await import('./launch-agent');
 const launchAgent = launchAgentModule.default;
-const { goalHolderPlanFleetBypass } = launchAgentModule;
+const { goalHolderPlanFleetBypass, INTERNAL_LOOP_FIRE_ORIGIN } = launchAgentModule;
 
 const ctx = { workspaceId: 'ws-test', harnessSlug: 'papercusp', role: 'su' } as never;
 const textOf = (res: unknown): string => (res as { content: Array<{ text: string }> }).content[0].text;
@@ -549,6 +549,30 @@ describe('GOAL alternate plan-placement entry guard (P-006 / A-04)', () => {
       expect(isError(res)).toBe(true);
     }
     expect(spawnConsoleMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('internal launch context provenance', () => {
+  it('does not set the private kickoff origin for ordinary callers', async () => {
+    const res = await launchAgent.handler({ brief: 'Ordinary agent work', harness: 'papercusp' }, ctx);
+    expect(isError(res)).toBe(false);
+    expect(spawnedEnv()).not.toHaveProperty('PAPERCUSP_INTERNAL_KICKOFF_ORIGIN');
+  });
+
+  it('threads loop-fire provenance only through the internal handler context', async () => {
+    const internalCtx = {
+      workspaceId: 'ws-test',
+      harnessSlug: 'papercusp',
+      role: 'su',
+      [INTERNAL_LOOP_FIRE_ORIGIN]: 'loop-fire',
+    } as never;
+    const res = await launchAgent.handler(
+      { brief: 'Continue the loop from its checkpoint', harness: 'papercusp', headless: true },
+      internalCtx,
+    );
+    expect(isError(res)).toBe(false);
+    expect(spawnHeadlessMock).toHaveBeenCalledTimes(1);
+    expect(spawnedEnv(spawnHeadlessMock).PAPERCUSP_INTERNAL_KICKOFF_ORIGIN).toBe('loop-fire');
   });
 });
 

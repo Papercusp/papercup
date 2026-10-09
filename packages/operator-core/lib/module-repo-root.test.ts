@@ -147,7 +147,7 @@ describe('census: no new fixed import.meta.url climbs to the repo root', () => {
   it('the scanned tree has no unlisted site, and every listed site still exists (shrink-only)', () => {
     const files = presentOnDisk(execFileSync('git', ['ls-files', '-z', '--', ...SOURCE_PATHSPECS], { cwd: REPO_ROOT, encoding: 'utf8' })
       .split('\0')
-      .filter((f) => /\.(ts|mts|tsx)$/.test(f) && !/\.(test|spec)\.tsx?$/.test(f)), REPO_ROOT);
+      .filter((f) => /\.(ts|mts|tsx)$/.test(f) && !/\.(test|spec)(?:-helper)?\.tsx?$/.test(f) && !f.includes('/__tests__/')), REPO_ROOT);
     expect(files.length).toBeGreaterThan(1000); // the census really read the tree
 
     const found: Record<string, number> = {};

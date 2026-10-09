@@ -64,6 +64,14 @@ describe('deploy-wait detection', () => {
     expect(goalNamesDeployWait('the main risk is the parser; fix it')).toBe(false);
     expect(goalNamesDeployWait('Carry plan X to shipped')).toBe(false);
   });
+
+  it('allows checkpoint development goals that name the system without waiting for a live verdict', () => {
+    expect(goalNamesDeployWait('Continue green-main-cycle-time work; implement P-014 replay canary on the current build')).toBe(false);
+    expect(goalNamesDeployWait('Implement green-checkpoint replay canary and run its focused tests')).toBe(false);
+    expect(goalNamesDeployWait('Fix the green main watchdog sources and verify locally')).toBe(false);
+    expect(goalNamesDeployWait('Monitor green-checkpoint until the verdict is green')).toBe(true);
+    expect(goalNamesDeployWait('Finish after green main receives the fix')).toBe(true);
+  });
 });
 
 describe('plan frontier before a main wait', () => {

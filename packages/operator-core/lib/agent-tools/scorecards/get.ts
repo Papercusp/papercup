@@ -34,12 +34,19 @@ export const scorecardGetArgs = z.object({
     .describe('Resume a paged criterion index at evidenceRead.next.args.indexOffset.'),
   evidenceOffset: z.number().int().min(0).optional()
     .describe('UTF-16 offset from evidenceRead.next for one criterion. Concatenate pages in order; never grade from an incomplete page.'),
+  rerunRecipeOffset: z.number().int().min(0).optional()
+    .describe('UTF-16 offset from rerunRecipeRead.read or next. Concatenate JSON chunks and parse only after rerunRecipeRead.complete.'),
 }).refine(({ issueId, id }) => issueId !== undefined || id !== undefined, {
   message: 'issueId or id is required',
   path: ['issueId'],
 }).refine(({ criterionKey, indexOffset }) => criterionKey === undefined || indexOffset === undefined, {
   message: 'criterionKey and indexOffset cannot be combined',
   path: ['indexOffset'],
+}).refine(({ rerunRecipeOffset, criterionKey, indexOffset, evidenceOffset }) =>
+  rerunRecipeOffset === undefined ||
+  (criterionKey === undefined && indexOffset === undefined && evidenceOffset === undefined), {
+  message: 'rerunRecipeOffset cannot be combined with criterion or index paging',
+  path: ['rerunRecipeOffset'],
 });
 
 // Bound the JSON-encoded result before both payload shaping and the later MCP
@@ -51,6 +58,14 @@ export const scorecardGetArgs = z.object({
 // complete evidence page down to its generic string limit while leaving
 // evidenceRead.complete unchanged.
 const RESULT_DOOR_SERIALIZATION_RESERVE_CHARS = 256;
+
+function fitsInlineResult(result: unknown, budgetChars: number): boolean {
+  const text = JSON.stringify(result);
+  // tools:invoke wraps the JSON body in an MCP text block; quoted JSON recipe
+  // chunks gain another escape layer there. Budget that actual envelope too.
+  return Buffer.byteLength(text, 'utf8') <= budgetChars &&
+    Buffer.byteLength(JSON.stringify({ content: [{ type: 'text', text }] }), 'utf8') <= budgetChars;
+}
 
 function inlineResultBudgetChars(ownerId?: string | null): number {
   const resultDoorChars =
@@ -72,6 +87,16 @@ const evidenceReadCall = (issueId: string, criterionKey: string, evidenceOffset 
 const criterionIndexReadCall = (issueId: string, indexOffset: number) => ({
   tool: 'scorecards:get',
   args: { issueId, indexOffset },
+});
+
+const rerunRecipeReadCall = (issueId: string, rerunRecipeOffset = 0) => ({
+  tool: 'scorecards:get' as const,
+  args: { issueId, rerunRecipeOffset },
+});
+
+const rerunRecipeReadCallSchema = z.object({
+  tool: z.literal('scorecards:get'),
+  args: z.object({ issueId: z.string(), rerunRecipeOffset: z.number().int().nonnegative() }),
 });
 
 const evidenceReadCallSchema = z.object({
@@ -230,6 +255,15 @@ const scorecardGetResultSchema = z.object({
   ok: z.boolean(),
   scorecard: scorecardEvidenceSchema.optional(),
   evidenceRead: scorecardEvidenceReadSchema.optional(),
+  rerunRecipeRead: z.object({
+    complete: z.boolean(),
+    encoding: z.literal('json'),
+    totalChars: z.number().int().nonnegative(),
+    offset: z.number().int().nonnegative().optional(),
+    chunk: z.string().optional(),
+    read: rerunRecipeReadCallSchema.optional(),
+    next: rerunRecipeReadCallSchema.optional(),
+  }).optional(),
   error: z.string().optional(),
   retryable: z.boolean().optional(),
   pgCode: z.string().optional(),
@@ -242,12 +276,57 @@ function boundedEvidenceRead(
   issueId: string,
   inlineBudgetChars: number,
 ) {
+  // A replay recipe can be larger than the whole result door. Repeating it on
+  // every evidence page makes both index and criterion reads unrecoverable.
+  // Keep the audit header and page the exact JSON through this same reader.
+  const encodedRecipe = scorecard.rerunRecipe === undefined ? undefined : JSON.stringify(scorecard.rerunRecipe);
+  const { rerunRecipe: _recipe, ...withoutRecipe } = scorecard;
+  if (args.rerunRecipeOffset !== undefined) {
+    if (encodedRecipe === undefined) return { ok: false as const, error: 'rerun_recipe_not_found' };
+    const offset = args.rerunRecipeOffset;
+    if (offset > encodedRecipe.length || (offset === encodedRecipe.length && offset !== 0)) {
+      return { ok: false as const, error: 'invalid_rerun_recipe_offset' };
+    }
+    let count = Math.min(inlineBudgetChars, encodedRecipe.length - offset);
+    const page = () => ({
+      ok: true as const,
+      scorecard: { ...withoutRecipe, criteria: [] },
+      evidenceRead: { complete: false, reason: 'rerun-recipe-page' },
+      rerunRecipeRead: {
+        complete: offset + count === encodedRecipe.length,
+        encoding: 'json' as const,
+        offset,
+        totalChars: encodedRecipe.length,
+        chunk: encodedRecipe.slice(offset, offset + count),
+        ...(offset + count < encodedRecipe.length ? { next: rerunRecipeReadCall(issueId, offset + count) } : {}),
+      },
+    });
+    let result = page();
+    while (!fitsInlineResult(result, inlineBudgetChars) && count > 1) {
+      count = Math.max(1, Math.floor(count / 2));
+      result = page();
+    }
+    if (!fitsInlineResult(result, inlineBudgetChars)) {
+      return { ok: false as const, error: 'scorecard_metadata_exceeds_inline_budget' };
+    }
+    return result;
+  }
+  const pageRecipe = encodedRecipe !== undefined && encodedRecipe.length > inlineBudgetChars / 3;
+  const recipeRead = pageRecipe ? {
+    rerunRecipeRead: {
+      complete: false,
+      encoding: 'json' as const,
+      totalChars: encodedRecipe.length,
+      read: rerunRecipeReadCall(issueId),
+    },
+  } : {};
+  if (pageRecipe) scorecard = withoutRecipe;
   if (args.criterionKey === undefined) {
     if (args.evidenceOffset !== undefined) {
       return { ok: false as const, error: 'criterion_required_for_offset' };
     }
-    const full = { ok: true as const, scorecard, evidenceRead: { complete: true } };
-    if (args.indexOffset === undefined && JSON.stringify(full).length <= inlineBudgetChars) return full;
+    const full = { ok: true as const, scorecard, evidenceRead: { complete: true }, ...recipeRead };
+    if (args.indexOffset === undefined && fitsInlineResult(full, inlineBudgetChars)) return full;
 
     const indexOffset = args.indexOffset ?? 0;
     if (indexOffset > scorecard.criteria.length || (indexOffset === scorecard.criteria.length && indexOffset > 0)) {
@@ -260,6 +339,7 @@ function boundedEvidenceRead(
       return {
         ok: true as const,
         scorecard: metadata,
+        ...recipeRead,
         evidenceRead: {
           complete: false,
           reason: args.indexOffset === undefined ? 'card-exceeds-inline-budget' : 'criterion-index-page',
@@ -277,11 +357,11 @@ function boundedEvidenceRead(
     };
     let count = scorecard.criteria.length - indexOffset;
     let index = page(count);
-    while (JSON.stringify(index).length > inlineBudgetChars && count > 1) {
+    while (!fitsInlineResult(index, inlineBudgetChars) && count > 1) {
       count = Math.max(1, Math.floor(count / 2));
       index = page(count);
     }
-    if (JSON.stringify(index).length > inlineBudgetChars) {
+    if (!fitsInlineResult(index, inlineBudgetChars)) {
       return {
         ok: false as const,
         error: 'scorecard_metadata_exceeds_inline_budget',
@@ -303,6 +383,7 @@ function boundedEvidenceRead(
     return {
       ok: true as const,
       scorecard: { ...scorecard, criteria: [{ ...criterion, evidence: criterion.evidence.slice(offset, nextOffset) }] },
+      ...recipeRead,
       evidenceRead: {
         complete,
         scope: 'selected-criterion',
@@ -314,11 +395,11 @@ function boundedEvidenceRead(
     };
   };
   let result = page();
-  while (JSON.stringify(result).length > inlineBudgetChars && count > 1) {
+  while (!fitsInlineResult(result, inlineBudgetChars) && count > 1) {
     count = Math.max(1, Math.floor(count / 2));
     result = page();
   }
-  if (JSON.stringify(result).length > inlineBudgetChars) {
+  if (!fitsInlineResult(result, inlineBudgetChars)) {
     return { ok: false as const, error: 'scorecard_metadata_exceeds_inline_budget' };
   }
   return result;
@@ -328,15 +409,15 @@ export default defineTool({
   name: 'scorecards:get',
   profile: 'engineer',
   description:
-    'Read ONE rubric scorecard by issue id using an evidence-first projection. Pass issueId (preferred) or id (compatibility alias); issueId wins. Stored evidenceFingerprint identifies the evidence scope. A validated rerunRecipe is included when present, including on criterion-index and criterion pages. Small cards return exact criterion evidence. Oversized cards return evidenceRead.complete:false and a criterion index; when the index is paged, follow evidenceRead.next until scope is no longer criterion-index. Then read each criterion and concatenate its pages before grading. Never interpret an index or incomplete page as missing evidence. criterionKey narrows the existing read; indexOffset resumes an index page; evidenceOffset resumes a criterion page. History-only payload is omitted.',
+    'Read ONE rubric scorecard by issue id using an evidence-first projection. Pass issueId (preferred) or id (compatibility alias); issueId wins. Stored evidenceFingerprint identifies the evidence scope. A validated rerunRecipe is included when it fits; oversized recipes expose rerunRecipeRead.read. Follow its next cursors, concatenate the exact JSON chunks and parse only when complete. Audit metadata stays present on every page. Small cards return exact criterion evidence. Oversized cards return evidenceRead.complete:false and a criterion index; follow evidenceRead.next until the index is assembled, then read each criterion and concatenate its pages before grading. Never interpret an index or incomplete page as missing evidence. criterionKey narrows the existing read; indexOffset resumes an index page; evidenceOffset resumes a criterion page; rerunRecipeOffset resumes a recipe page. History-only payload is omitted.',
   guidance: {
     when: 'You are auditing one existing scorecard and must re-run the probe stated in every criterion evidence string. Pass the scorecard issueId returned by scorecards:list or a grading-audit dispatch reservation; generic id-based callers may use id as a compatibility alias.',
     notWhen:
       'You want scorecard history, trend inputs, or multiple rows — scorecards:list. You want a rubric definition — rubrics:get. You are filing a scorecard — scorecards:emit.',
     chaining:
-      'Page evidenceRead.next until the criterion index is complete, then fetch each criterion’s evidence pages in small Promise.all groups; read one criterion’s pages sequentially. Resolve papercusp.output-envelope/v1 envelopes with capability:read before reading scorecard.criteria. Concatenate complete pages, rerun probes, then emit the grading-integrity audit.',
+      'When rerunRecipeRead is present, follow read and next sequentially, concatenate JSON chunks and parse only when complete. Page evidenceRead.next until the criterion index is complete, then fetch each criterion’s evidence pages in small Promise.all groups; read one criterion’s pages sequentially. Resolve papercusp.output-envelope/v1 envelopes with capability:read before reading scorecard.criteria. Concatenate complete pages, rerun probes, then emit the grading-integrity audit.',
     returns:
-      'Returns `{ ok, scorecard, evidenceRead }`. The scorecard includes `evidenceFingerprint` when recorded and `rerunRecipe` when a valid recipe was stored. Full reads contain every exact criterion; an oversized read contains criteria:[] plus a complete or paged criterion index, not absent evidence. Index pages preserve scorecard metadata and report offset/totalCriteria/next; criterion pages retain full-card identity and nKeys/missingKeys and report offset/totalChars/next. Concatenate all index and evidence pages before grading.',
+      'Returns `{ ok, scorecard, evidenceRead, rerunRecipeRead? }`. The scorecard includes `evidenceFingerprint` when recorded and an inline `rerunRecipe` or a recoverable rerunRecipeRead cursor. Recipe pages retain card identity and gradingAudit; chunks encode exact JSON with UTF-16 offset/totalChars/next. Full evidence reads contain every exact criterion; an oversized read contains criteria:[] plus a complete or paged criterion index. Index pages preserve metadata and report offset/totalCriteria/next; criterion pages retain full-card identity and nKeys/missingKeys and report offset/totalChars/next. Recover recipe, index and evidence pages before grading.',
     seeAlso: ['scorecards:list', 'scorecards:emit', 'rubrics:get'],
   },
   capability: 'coord:read',

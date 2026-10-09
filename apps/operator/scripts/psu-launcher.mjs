@@ -103,6 +103,7 @@ function reexecExitCodeAnnounced(env) {
   return code;
 }
 import { runPsuConnectionFrontController } from "./psu-connection-front-controller.mjs";
+import { runTerminalCheck, terminalStartupNotice } from "./psu-terminal-diagnostics.mjs";
 // DERIVED tool-delivery map (deterministic-tool-definition-delivery-2026-09-21).
 // A plain generated .mjs of frozen literals, deliberately: this launcher is
 // dependency-free by design and must import it with no build step. Regenerate
@@ -314,6 +315,7 @@ Launcher controls:
   --allow-subagents, --no-subagents Allow or deny Claude subagent tools
   --yes, -y                          Skip untracked-resume confirmation
   --force                            Override launch preflight guards
+  --terminal-check                   Check local terminal setup and freeze guidance (offline)
   --set-claude-token[=<token>]       Store the default Claude OAuth token
   --clear-claude-token               Clear the stored Claude OAuth token
   --recovery-authorize               Locally authorize one exact diagnostic argv
@@ -931,6 +933,7 @@ export function parseArgs(argv) {
     personaTier: null,
     compactionLimit: null,
     force: false,
+    terminalCheck: false,
     yes: false,
     brain: false,
     account: null,
@@ -1094,6 +1097,12 @@ export function parseArgs(argv) {
       // Version is also terminal: no picker, profile lookup, credential read,
       // operator request or connection-controller prompt may precede it.
       out.version = true;
+      break;
+    }
+    if (a === "--terminal-check") {
+      // A local diagnostic command never launches an agent, reads credentials,
+      // or depends on the connection/controller service being healthy.
+      out.terminalCheck = true;
       break;
     }
     if (a === "--set-claude-token") {
@@ -2434,9 +2443,11 @@ export function tagKickoffProvenance(
   sid,
   env = process.env,
   nowMs = Date.now(),
+  origin = "fleet-kickoff",
 ) {
   try {
     if (!text || !sid) return text;
+    const kickoffOrigin = origin === "loop-fire" ? "loop-fire" : "fleet-kickoff";
     const nonce = randomBytes(8).toString("hex");
     const sha256 = createHash("sha256")
       .update(String(text).replace(/\r\n?/g, "\n").trim(), "utf8")
@@ -2454,16 +2465,24 @@ export function tagKickoffProvenance(
       JSON.stringify({
         sid,
         nonce,
-        origin: "fleet-kickoff",
+        origin: kickoffOrigin,
         sha256,
         ts: nowMs,
       }) + "\n",
       { flag: "a" },
     );
-    return `⟦turn-origin:fleet-kickoff nonce:${nonce}⟧\n${text}`;
+    return `⟦turn-origin:${kickoffOrigin} nonce:${nonce}⟧\n${text}`;
   } catch {
     return text;
   }
+}
+
+/** Consume the private successor hint before the backend child is launched, so
+ * it cannot leak into a later scripted launch from this process. */
+function consumeInternalKickoffOrigin(env = process.env) {
+  const requested = env?.PAPERCUSP_INTERNAL_KICKOFF_ORIGIN;
+  if (env) delete env.PAPERCUSP_INTERNAL_KICKOFF_ORIGIN;
+  return requested === "loop-fire" ? "loop-fire" : "fleet-kickoff";
 }
 
 export function kickoffPositionalArgs(res, args) {
@@ -2529,6 +2548,7 @@ export function scriptedOmpSetupEnv(backend, args, env = process.env) {
  * ledger write performed by tagKickoffProvenance.
  */
 export function routeFreshKickoff(backend, res, args, env = process.env) {
+  const kickoffOrigin = consumeInternalKickoffOrigin(env);
   const kickoffArgs = kickoffPositionalArgs(res, {
     ...args,
     kickoffPromptText: resolveKickoffText(args, env),
@@ -2540,7 +2560,7 @@ export function routeFreshKickoff(backend, res, args, env = process.env) {
   const sidForTag =
     res?.envelopeEnv?.PAPERCUSP_SID || env?.PAPERCUSP_SID || null;
   const tagged = kickoffArgs.map((text) =>
-    tagKickoffProvenance(text, sidForTag, env),
+    tagKickoffProvenance(text, sidForTag, env, Date.now(), kickoffOrigin),
   );
   return {
     positionalArgs: [],
@@ -16835,6 +16855,10 @@ async function main() {
   // even the connection front controller: a remote-profile lookup or transport
   // bootstrap must not become an accidental prerequisite during an outage.
   const rawArgv = process.argv.slice(2);
+  if (rawArgv.includes("--terminal-check") && parseArgs(rawArgv).terminalCheck) {
+    process.stdout.write(await runTerminalCheck());
+    return;
+  }
   const hostReexecExitCode = reexecExitCodeFrom(process.env);
   const isHostAdoptionReexec = hostReexecExitCode != null;
   const adoptionOwnerId = process.env.PAPERCUSP_SID || null;
@@ -16907,6 +16931,8 @@ async function main() {
     process.stdout.write(`psu ${psuClientVersion()}\n`);
     return;
   }
+  const terminalNotice = terminalStartupNotice({ headless: args.headless });
+  if (terminalNotice) process.stderr.write(terminalNotice);
   readLaunchOptions = createLaunchOptionsReader();
   if (await recoveryFlow(args, { rawArgv: connection.argv })) return;
   // A host-code adoption handoff is consumed BEFORE any normal fresh/resume

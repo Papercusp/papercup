@@ -39,6 +39,7 @@ import {
   type PresenceGossipHandle,
   type PresenceDelKey,
   type SessionPresenceEntry,
+  type SignedPresenceFrame,
 } from './presence-gossip';
 import { getSharedSwarm } from './swarm';
 import { applySessionPresenceSet } from './session-presence-store';
@@ -179,6 +180,8 @@ export function createAdmissionReporter(opts: AdmissionReporterOpts): AdmissionR
  *  identity — wire-presence resolves it off the booted handle's own log). */
 export interface PresenceGossipWriter {
   getOwnRow: () => Promise<SharedPresenceRow | null>;
+  /** Current workspace session set for a pair-time hello (P-005). */
+  getOwnSessions: () => Promise<SessionPresenceEntry[]>;
   /** Sign frame bytes with THIS device's key. */
   sign: (bytes: Buffer) => Promise<Buffer>;
   /** This device's raw-32 base64 pubkey (frame identity for del frames). */
@@ -366,14 +369,36 @@ async function ensureState(): Promise<WiringState> {
         const binding = bindings.get(topicHex);
         const writer = binding?.writer;
         if (!writer) return [];
+        const frames: SignedPresenceFrame[] = [];
+        const frameTs = Date.now();
         try {
           const row = await writer.getOwnRow();
-          if (!row) return [];
-          // Re-sign at pair time so the freshness window holds.
-          return [await buildPresencePutFrame(row, Date.now(), writer.sign)];
+          if (row) {
+            // Re-sign at pair time so the freshness window holds.
+            frames.push(await buildPresencePutFrame(row, frameTs, writer.sign));
+          }
         } catch {
-          return [];
+          // The session snapshot remains independently useful if row collection fails.
         }
+        try {
+          const sessions = await writer.getOwnSessions();
+          frames.push(
+            await buildSessionsFrame(
+              {
+                devicePubkey: writer.devicePubkey,
+                githubUserId: writer.githubUserId,
+                machineLabel: writer.machineLabel,
+                potSlug: writer.potSlug,
+              },
+              sessions,
+              frameTs,
+              writer.sign,
+            ),
+          );
+        } catch {
+          // Best-effort hello: a roster read failure must not break channel pairing.
+        }
+        return frames;
       },
     });
     state = { gossip, bindings };

@@ -111,6 +111,8 @@ export const SEARCH_SOURCE_SURFACES: Readonly<Record<string, readonly string[]>>
   // (generic-rag-chunking P-005): a dedicated store names its source
   // (session_turn_chunks -> session_turn), a shared-store entry names its own.
   session_turn: ['harness_shared.session_turns.text_embedding'],
+  plan: ['harness_shared.harness_plans.embedding'],
+  doc: ['harness_shared.doc_sections.embedding'],
 });
 
 /**

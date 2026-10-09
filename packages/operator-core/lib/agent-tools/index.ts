@@ -315,6 +315,7 @@ import './documents/read';
 import './documents/subscriptions';
 // external-triggers P-008: reply only to the Slack thread anchored by a durable plan run.
 import './slack/respond-in-thread';
+import './slack/record-classification';
 // external-triggers D-019 Tier 1 (P-029/P-030/P-031): provider-neutral capability
 // verbs keyed to the canonical datatypes. Reply-shaped verbs resolve the
 // destination server-side (D-020 rail 1); create-shaped verbs check the

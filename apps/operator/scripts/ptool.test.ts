@@ -66,6 +66,7 @@ import {
   PTOOL_PLANS_GET_TIMEOUT_MS,
   PTOOL_PLANS_NEW_TIMEOUT_MS,
   PTOOL_REQUIRE_CHECKPOINT_TIMEOUT_MS,
+  PTOOL_REPAIR_QUEUE_PREVIEW_TIMEOUT_MS,
   PTOOL_SESSION_REQUEST_COMPACTION_TIMEOUT_MS,
   PTOOL_SERVICE_HEALTH_TIMEOUT_MS,
   PTOOL_WORK_ITEMS_GET_TIMEOUT_MS,
@@ -712,6 +713,26 @@ describe('ptool bearer-token resolution', () => {
 });
 
 describe('ptool call deadlines', () => {
+  it('keeps the client alive for bounded read-only repair previews, but not confirmed writes', () => {
+    expect(PTOOL_REPAIR_QUEUE_PREVIEW_TIMEOUT_MS).toBe(305_000);
+    expect(timeoutForTool('release:repair-queue', { op: 'admit' }))
+      .toBe(PTOOL_REPAIR_QUEUE_PREVIEW_TIMEOUT_MS);
+    expect(timeoutForTool('release:repair-queue', { op: 'converge', confirm: false }))
+      .toBe(PTOOL_REPAIR_QUEUE_PREVIEW_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', {
+      name: 'release:repair-queue',
+      args: { op: 'admit' },
+    })).toBe(PTOOL_REPAIR_QUEUE_PREVIEW_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', {
+      name: 'release:repair-queue',
+      args: { op: 'converge', confirm: false },
+    })).toBe(PTOOL_REPAIR_QUEUE_PREVIEW_TIMEOUT_MS);
+    expect(timeoutForTool('release:repair-queue', { op: 'admit', confirm: true }))
+      .toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('release:repair-queue', { op: 'get' }))
+      .toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
+  });
+
   it('keeps the normal liveness ceiling while allowing durable continuations to return', () => {
     expect(timeoutForTool('coord:send')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     // EI-22598752399389413: coord:wake has no explicit timeoutSec and its

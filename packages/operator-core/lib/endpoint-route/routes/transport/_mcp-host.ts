@@ -153,6 +153,7 @@ import { isAppKeyShaped } from '../../../connected-apps/key';
 import { reportedClientAddress, resolveAppKeyToken } from '../../../connected-apps/principal';
 import { appKeyToolListFilter } from '../../../connected-apps/enforce';
 import {
+  admissionAuthoritySchema,
   admissionCredentialDigest,
   type AdmissionAuthorityContext,
   type AdmissionRecoveryAuthority,
@@ -3631,18 +3632,31 @@ function nativeMcpToolAddress(spawn: BuiltSpawnContext): SuNativeToolAddress | n
     ownerId: resolveAgentIdentity(spawn).ownerId, nativeSessionIdFingerprint: native.valueFingerprint };
 }
 
-async function runNativeMcpTargetOnOwner(
+/** Normalize only the serializable recovery proof. Principal capability sets
+ * remain host-local; the owner revalidates this digest against its current key
+ * before any admission replay and binds the current native session context. */
+export function normalizeNativeMcpOwnerSpawn(spawn: BuiltSpawnContext): BuiltSpawnContext {
+  if (spawn.authenticatedPrincipal) throw new Error('native_tool_owner_unsupported_capability');
+  const authority = spawn.admissionRecoveryAuthority;
+  if (authority === undefined) return spawn;
+  const parsed = admissionAuthoritySchema.safeParse(authority);
+  if (!parsed.success) throw new Error('native_tool_owner_invalid_authority');
+  return { ...spawn, admissionRecoveryAuthority: parsed.data };
+}
+
+export async function runNativeMcpTargetOnOwner(
   request: NativeMcpTargetRequest,
   local: () => Promise<McpCallResult>,
   timeoutMs: number,
 ): Promise<McpCallResult> {
   const address = nativeMcpToolAddress(request.spawn);
   if (!address) return local();
-  // A PI principal carries a Set of grants; recovery authority is a sealed
-  // host capability. Neither has a serializable native transport contract.
-  if (request.spawn.authenticatedPrincipal || request.spawn.admissionRecoveryAuthority)
-    throw new Error('native_tool_owner_unsupported_capability');
-  return runOnSuNativeToolOwner(address, request, local, timeoutMs);
+  // PI/connected-app principal grants are host-local. The recovery proof is a
+  // schema-checked credential digest, not a saved grant; keep its current-key
+  // validation in admissionReplayContext on the owner. Normalize lazily so an
+  // owner-local call can keep its principal in-process without serializing it.
+  const ownerRequest = () => ({ ...request, spawn: normalizeNativeMcpOwnerSpawn(request.spawn) });
+  return runOnSuNativeToolOwner(address, ownerRequest, local, timeoutMs);
 }
 
 async function recordMcpPreflightFailure(
@@ -3675,7 +3689,7 @@ export async function dispatchNativeMcpTargetOnOwner(
 ): Promise<McpCallResult> {
   const request = body as NativeMcpTargetRequest | null;
   if (!request || typeof request.toolName !== 'string' || !request.spawn ||
-      request.spawn.authenticatedPrincipal || request.spawn.admissionRecoveryAuthority ||
+      request.spawn.authenticatedPrincipal ||
       typeof request.fullSource !== 'boolean' || typeof request.structuredSource !== 'boolean' ||
       typeof request.indirect !== 'boolean' ||
       (request.args !== undefined && (!request.args || typeof request.args !== 'object' || Array.isArray(request.args))) ||
@@ -3684,31 +3698,32 @@ export async function dispatchNativeMcpTargetOnOwner(
       (request.requestedStructured !== undefined && typeof request.requestedStructured !== 'boolean') ||
       (request.idempotencyKey !== undefined && validIdempotencyKey(request.idempotencyKey) !== request.idempotencyKey))
     throw new Error('native_tool_owner_invalid_request');
-  const derived = nativeMcpToolAddress(request.spawn);
+  const ownerRequest = { ...request, spawn: normalizeNativeMcpOwnerSpawn(request.spawn) };
+  const derived = nativeMcpToolAddress(ownerRequest.spawn);
   if (!derived || derived.workspaceId !== address.workspaceId || derived.advSessionId !== address.advSessionId ||
       derived.ownerId !== address.ownerId || derived.nativeSessionIdFingerprint !== address.nativeSessionIdFingerprint)
     throw new Error('native_tool_owner_request_address_mismatch');
-  const projection = request.sourceProjection ? parseProjection(request.sourceProjection) : null;
+  const projection = ownerRequest.sourceProjection ? parseProjection(ownerRequest.sourceProjection) : null;
   if (projection && !projection.ok) throw new Error('native_tool_owner_invalid_projection');
-  const target = isPluginNamespacedToolName(request.toolName)
-    ? await resolveMcpTargetAfterPluginHostWarm(request.toolName) : resolveMcpName(request.toolName);
-  if (!target?.expose?.mcp || target.expose.mcp.name !== request.toolName)
+  const target = isPluginNamespacedToolName(ownerRequest.toolName)
+    ? await resolveMcpTargetAfterPluginHostWarm(ownerRequest.toolName) : resolveMcpName(ownerRequest.toolName);
+  if (!target?.expose?.mcp || target.expose.mcp.name !== ownerRequest.toolName)
     throw new Error('native_tool_owner_target_unavailable');
-  const base = await buildMcpToolContext(request.spawn, undefined, undefined, target.pluginName,
-    request.requestedFormat, request.requestedStructured, request.requestedDelta, request.idempotencyKey,
+  const base = await buildMcpToolContext(ownerRequest.spawn, undefined, undefined, target.pluginName,
+    ownerRequest.requestedFormat, ownerRequest.requestedStructured, ownerRequest.requestedDelta, ownerRequest.idempotencyKey,
     undefined, address);
   const startedAt = Date.now();
   let dispatchStarted = false;
   try {
-    return await dispatchWithSynthesizedTx(target, request.spawn, base, ctx => {
+    return await dispatchWithSynthesizedTx(target, ownerRequest.spawn, base, ctx => {
       dispatchStarted = true;
-      return dispatchProjectedToolToMcp(target, request.toolName, request.args,
-        { ...projectionMaterializationContext(ctx, request.fullSource, request.structuredSource,
-          projection?.ok ? projection.spec : undefined), ...(request.indirect ? { indirectDispatch: true } : {}) },
+      return dispatchProjectedToolToMcp(target, ownerRequest.toolName, ownerRequest.args,
+        { ...projectionMaterializationContext(ctx, ownerRequest.fullSource, ownerRequest.structuredSource,
+          projection?.ok ? projection.spec : undefined), ...(ownerRequest.indirect ? { indirectDispatch: true } : {}) },
         PROJECTED_DEPS) as Promise<McpCallResult>;
     });
   } catch (error) {
-    if (!dispatchStarted) await recordMcpPreflightFailure(target, request.toolName, base, request.args, startedAt, error);
+    if (!dispatchStarted) await recordMcpPreflightFailure(target, ownerRequest.toolName, base, ownerRequest.args, startedAt, error);
     throw error;
   }
 }

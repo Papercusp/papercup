@@ -13,12 +13,17 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  GATE_CODE_RESTART_LEAD_SEC,
   RESTART_SAFETY_NOTE,
   ROUTINE_DRIFT_NAME_CAP,
   STALE_EXECUTOR_GIT_SYNC_DRAIN_SEC,
   STALE_EXECUTOR_RESTART_COOLDOWN_MS,
   STALE_EXECUTOR_RESTART_RETRY_BACKOFF_MS,
   defaultPtoolScriptPath,
+  evaluateGateCodeFastPath,
+  gateCodeFastPathMinUptimeSec,
+  judgeGateCodeRestartWindow,
+  resetGateCodeFastPathStateForTests,
   resetStaleExecutorRestartStateForTests,
   restartStaleBgHostExecutor,
   evaluateExecutorStaleness,
@@ -30,14 +35,19 @@ import {
   staleExecutorThresholdSec,
   waitForStaleExecutorRestartGeneration,
   type ExecutorStalenessVerdict,
+  type GateCodeFastPathInput,
 } from './stale-routine-executor-watchdog';
 import {
+  GATE_SOURCE_PATHSPECS,
   captureProcessBootIdentity,
   processBootTimeMs,
   resolveCommitsBehind,
+  resolveGateCodeDrift,
   resolveRoutineCodeDrift,
+  resolveSourceDrift,
   type RoutineCodeDrift,
 } from '../../dbos/process-boot-identity';
+import type { GateCollisionProbe } from '../../release/gate-collision-guard';
 
 const TWO_H = 2 * 3_600_000;
 const BOOT = 1_000_000;
@@ -1006,5 +1016,247 @@ describe('resolveRoutineCodeDrift — fail-safe and argv-safe', () => {
       await expect(resolveRoutineCodeDrift(bad, 'd'.repeat(40))).resolves.toBeNull();
       await expect(resolveRoutineCodeDrift('d'.repeat(40), bad)).resolves.toBeNull();
     }
+  });
+});
+
+// ── WI-10007644 step 2 (P-014): restart for gate-code changes, between measurements ──
+
+describe('gate-code drift probe — scoped to the gate code bg-host runs in-process', () => {
+  it('watches operator-core release modules and release-actions, not the per-run green-checkpoint script', () => {
+    expect(GATE_SOURCE_PATHSPECS).toContain('packages/operator-core/lib/release/');
+    expect(GATE_SOURCE_PATHSPECS).toContain('packages/operator-core/lib/harness/routines/release-actions.ts');
+    // green-checkpoint.ts is spawned as a fresh tsx per run, so it is never stale in bg-host.
+    expect(GATE_SOURCE_PATHSPECS.some((p) => p.startsWith('apps/operator/'))).toBe(false);
+  });
+
+  it('shares the routine probe\'s fail-safe and argv guards', async () => {
+    const sha = 'e'.repeat(40);
+    await expect(resolveGateCodeDrift(sha, sha)).resolves.toEqual({ changed: [], addedSinceBoot: [] });
+    await expect(resolveGateCodeDrift('--output=/tmp/pwned', sha)).resolves.toBeNull();
+    await expect(resolveSourceDrift(sha, 'f'.repeat(40), [])).resolves.toBeNull();
+  });
+});
+
+describe('judgeGateCodeRestartWindow — restart only between gate measurements', () => {
+  const probe = (over: Partial<GateCollisionProbe> = {}): GateCollisionProbe => ({
+    probeFailed: false,
+    runLockHeld: false,
+    runElapsedSec: null,
+    nextFireInSec: 600,
+    refire: null,
+    ...over,
+  });
+
+  it('opens when no run is in flight and the next fire is inside the lead window', () => {
+    expect(judgeGateCodeRestartWindow(probe())).toMatchObject({ open: true });
+    expect(judgeGateCodeRestartWindow(probe({ nextFireInSec: GATE_CODE_RESTART_LEAD_SEC }))).toMatchObject({ open: true });
+  });
+
+  it('stays closed on every unknown, in-flight, imminent, overdue or distant reading', () => {
+    const closed: Array<[GateCollisionProbe | null, RegExp]> = [
+      [null, /unreadable/],
+      [probe({ probeFailed: true }), /unreadable/],
+      [probe({ runLockHeld: true, runElapsedSec: 1_800 }), /run is in flight \(30m in\)/],
+      [probe({ refire: { candidate: 'abc' } as unknown as GateCollisionProbe['refire'] }), /auto-refire/],
+      [probe({ nextFireInSec: null }), /unknown/],
+      [probe({ nextFireInSec: 60 }), /collision window/],
+      [probe({ nextFireInSec: -30 }), /overdue/],
+      [probe({ nextFireInSec: -3_600 }), /overdue/],
+      [probe({ nextFireInSec: GATE_CODE_RESTART_LEAD_SEC + 1 }), /outside the 15m lead window/],
+    ];
+    for (const [p, why] of closed) {
+      const w = judgeGateCodeRestartWindow(p);
+      expect(w.open).toBe(false);
+      expect(w.reason).toMatch(why);
+    }
+  });
+});
+
+describe('evaluateGateCodeFastPath — the pure decider', () => {
+  const MIN = 600_000;
+  const base: GateCodeFastPathInput = {
+    identity: 'port-3271',
+    bootCommit: 'a'.repeat(40),
+    currentCommit: 'b'.repeat(40),
+    bootTimeMs: 0,
+    now: MIN + 1,
+    minUptimeMs: MIN,
+    gateCodeDrift: { changed: ['packages/operator-core/lib/release/fixer-liveness.ts'], addedSinceBoot: [] },
+    window: { open: true, reason: 'no gate run in flight and the next fire is 10m away' },
+  };
+
+  it('restarts a bg-host whose in-process gate code changed, once the gate is between measurements', () => {
+    const v = evaluateGateCodeFastPath(base);
+    expect(v.restart).toBe(true);
+    expect(v.files).toEqual(['packages/operator-core/lib/release/fixer-liveness.ts']);
+    expect(v.reason).toContain('fixer-liveness.ts');
+    expect(v.reason).toContain('between gate measurements');
+  });
+
+  it('waits, naming the changed files and why, while the gate is mid-measurement', () => {
+    const v = evaluateGateCodeFastPath({ ...base, window: { open: false, reason: 'a green-checkpoint run is in flight' } });
+    expect(v.restart).toBe(false);
+    expect(v.files).toHaveLength(1);
+    expect(v.reason).toMatch(/waiting to restart between gate measurements: a green-checkpoint run is in flight/);
+  });
+
+  it('never restarts for another identity, when disabled, too young, unmoved, unresolvable, or with no gate change', () => {
+    const cases: Array<[Partial<GateCodeFastPathInput>, RegExp]> = [
+      [{ identity: 'port-3070' }, /not the bg-host/],
+      [{ minUptimeMs: 0 }, /disabled/],
+      [{ now: MIN - 1 }, /uptime under/],
+      [{ bootCommit: null }, /unresolvable/],
+      [{ currentCommit: 'a'.repeat(40) }, /nothing committed/],
+      [{ gateCodeDrift: null }, /drift unresolvable/],
+      [{ gateCodeDrift: { changed: [], addedSinceBoot: [] } }, /no in-process gate source/],
+    ];
+    for (const [over, why] of cases) {
+      const v = evaluateGateCodeFastPath({ ...base, ...over });
+      expect(v.restart).toBe(false);
+      expect(v.reason).toMatch(why);
+    }
+  });
+
+  it('defaults to a 10-minute uptime floor, env-tunable, with <=0 as the kill switch', () => {
+    const saved = process.env.PAPERCUSP_STALE_GATE_CODE_MIN_UPTIME_SEC;
+    try {
+      delete process.env.PAPERCUSP_STALE_GATE_CODE_MIN_UPTIME_SEC;
+      expect(gateCodeFastPathMinUptimeSec()).toBe(600);
+      process.env.PAPERCUSP_STALE_GATE_CODE_MIN_UPTIME_SEC = '0';
+      expect(gateCodeFastPathMinUptimeSec()).toBe(0);
+    } finally {
+      if (saved === undefined) delete process.env.PAPERCUSP_STALE_GATE_CODE_MIN_UPTIME_SEC;
+      else process.env.PAPERCUSP_STALE_GATE_CODE_MIN_UPTIME_SEC = saved;
+    }
+  });
+});
+
+describe('staleRoutineExecutorSweep — gate-code fast path on a young bg-host', () => {
+  const env = { PAPERCUSP_HONO_PORT: '3271', PAPERCUSP_DBOS_ROUTINES: '1', PAPERCUSP_STALE_ROUTINE_EXECUTOR_THRESHOLD_SEC: '7200' };
+  let saved: Record<string, string | undefined> = {};
+  beforeEach(() => {
+    resetGateCodeFastPathStateForTests();
+    resetStaleExecutorRestartStateForTests();
+    saved = Object.fromEntries(Object.keys(env).map((k) => [k, process.env[k]]));
+    Object.assign(process.env, env);
+    delete process.env.PAPERCUSP_STALE_GATE_CODE_MIN_UPTIME_SEC;
+    return () => {
+      for (const [k, v] of Object.entries(saved)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    };
+  });
+
+  // 30 minutes old: past the 10m fast-path floor, well under the 2h staleness floor.
+  const sweep = (over: Parameters<typeof staleRoutineExecutorSweep>[1]) =>
+    staleRoutineExecutorSweep(
+      { now: 30 * 60_000, workspaceId: 'test-workspace', installSlug: 'test-harness' },
+      {
+        bootCommit: 'a'.repeat(40),
+        currentCommit: 'b'.repeat(40),
+        bootTimeMs: 0,
+        gateCodeDrift: { changed: ['packages/operator-core/lib/release/frozen-candidate-repair-queue.ts'], addedSinceBoot: [] },
+        clearExecutorStalenessAlarm: async () => false,
+        recentWatchdogFires: async () => {
+          throw new Error('a gate-code restart must never page');
+        },
+        raiseExecutorStalenessAlarm: async () => {
+          throw new Error('a gate-code restart must never page');
+        },
+        ...over,
+      },
+    );
+
+  it('restarts with the gate-code trigger when the gate is between measurements, without paging', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const seen: ExecutorStalenessVerdict[] = [];
+    try {
+      const result = await sweep({
+        gateProbe: async () => ({ probeFailed: false, runLockHeld: false, runElapsedSec: null, nextFireInSec: 420, refire: null }),
+        restart: async (_identity, verdict) => {
+          seen.push(verdict);
+          return { attempted: true, restarted: true, coalesced: false, verified: true, code: 'restarted' };
+        },
+      });
+      expect(result.outcome).toBe('gate-code-restart');
+      expect(result.restart).toMatchObject({ restarted: true, code: 'restarted' });
+      expect(seen).toHaveLength(1);
+      expect(seen[0]).toMatchObject({ stale: true, trigger: 'gate-code' });
+      expect(seen[0].reason).toContain('frozen-candidate-repair-queue.ts');
+      expect(warn.mock.calls.map((c) => String(c[0]))).toContain(
+        '[stale-routine-executor] auto-restart (port-3271, gate-code): restarted',
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('defers while a run is in flight: no restart, one log line per boot..HEAD pair', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    let restarts = 0;
+    try {
+      const deps = {
+        gateProbe: async (): Promise<GateCollisionProbe> => ({
+          probeFailed: false,
+          runLockHeld: true,
+          runElapsedSec: 900,
+          nextFireInSec: 3_000,
+          refire: null,
+        }),
+        restart: async () => {
+          restarts += 1;
+          return { attempted: true, restarted: true, coalesced: false, verified: true, code: 'restarted' };
+        },
+      };
+      const first = await sweep(deps);
+      await sweep(deps);
+      expect(first.outcome).toBe('healthy');
+      expect(first.gateCode).toMatchObject({ restart: false });
+      expect(first.gateCode?.reason).toMatch(/run is in flight/);
+      expect(restarts).toBe(0);
+      const lines = warn.mock.calls.map((c) => String(c[0])).filter((l) => l.includes('gate-code fast path'));
+      expect(lines).toHaveLength(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('does not even probe the gate when no gate code changed, nor judge a process under the floor', async () => {
+    let probes = 0;
+    const gateProbe = async () => {
+      probes += 1;
+      return null;
+    };
+    const quiet = await sweep({ gateCodeDrift: { changed: [], addedSinceBoot: [] }, gateProbe });
+    expect(quiet.outcome).toBe('healthy');
+    expect(quiet.gateCode).toMatchObject({ restart: false });
+    const young = await staleRoutineExecutorSweep(
+      { now: 5 * 60_000, workspaceId: 'test-workspace', installSlug: 'test-harness' },
+      { bootCommit: 'a'.repeat(40), currentCommit: 'b'.repeat(40), bootTimeMs: 0, gateProbe, clearExecutorStalenessAlarm: async () => false },
+    );
+    expect(young.outcome).toBe('healthy');
+    expect(young.gateCode).toBeUndefined();
+    expect(probes).toBe(0);
+  });
+
+  it('labels the gate-code restart distinctly in the dev:restart reason', async () => {
+    let stdin = '';
+    await restartStaleBgHostExecutor(
+      'port-3271',
+      { stale: true, reason: 'gate code changed', ageMs: 30 * 60_000, trigger: 'gate-code' },
+      {
+        now: () => 9_100_000_000_000,
+        ptoolScript: '/tmp/ptool.mjs',
+        run: async (command, _args, options) => {
+          if (command === 'systemctl') return { stdout: '101\n' };
+          stdin = options.stdin;
+          return { stdout: JSON.stringify({ ok: true, coalesced: true }) };
+        },
+      },
+    );
+    expect(JSON.parse(stdin).reason).toBe(
+      'auto-restart bg-host executor between gate measurements: in-process gate code changed since boot; port-3271',
+    );
   });
 });

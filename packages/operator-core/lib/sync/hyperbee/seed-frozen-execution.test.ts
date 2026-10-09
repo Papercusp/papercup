@@ -50,6 +50,36 @@ describe('D178 process module census', () => {
 });
 
 describe('D177 installed dependency census', () => {
+  it('loads the workspace census from a bundled runtime without a git checkout', async () => {
+    const { build } = await import('esbuild');
+    const runtime = temp();
+    const bundle = join(runtime, 'apps/operator/dist-host/seed-census.mjs');
+    write(join(runtime, 'scripts/check-lockfile-census.mjs'),
+      'export function rootWorkspaceDirs() { return new Set(["packages/workspace"]); }');
+    mkdirSync(dirname(bundle), { recursive: true });
+    await build({
+      entryPoints: [fileURLToPath(new URL('./seed-frozen-execution.ts', import.meta.url))],
+      outfile: bundle, bundle: true, platform: 'node', format: 'esm', packages: 'external',
+    });
+    const generation = temp();
+    pkg(generation, 'node_modules/a', 'a');
+    mkdirSync(join(generation, 'packages/workspace/node_modules'), { recursive: true });
+    const locks = [
+      { path: 'package-lock.json', packages: {
+        'packages/workspace': {}, 'node_modules/a': { version: '1.0.0' },
+      } },
+      { path: 'packages/workspace/package-lock.json', packages: {
+        'node_modules/ignored': { version: '1.0.0' },
+      } },
+    ];
+    const script = `const { readSeedInstalledPackages } = await import(${JSON.stringify(pathToFileURL(bundle).href)});
+      const rows = await readSeedInstalledPackages(${JSON.stringify(generation)},
+        ['node_modules', 'packages/workspace/node_modules'], ${JSON.stringify(locks)});
+      console.log(JSON.stringify(rows.map(row => row.path)));`;
+    expect(JSON.parse(execFileSync(process.execPath, ['--input-type=module', '-e', script],
+      { encoding: 'utf8' }))).toEqual(['node_modules/a']);
+  });
+
   it('censuses installed packages under a synchronous-only subprocess mock', async () => {
     const synchronousRunner = vi.fn();
     vi.resetModules();

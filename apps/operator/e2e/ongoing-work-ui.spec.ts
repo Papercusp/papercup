@@ -49,15 +49,10 @@ async function scopeFixture(page: Page) {
 }
 
 
-// Each contract gets the existing bounded test budget. Three document reloads
-// must not spend the refusal guard's deadline before its write even starts.
-const collectionJourneys = (['plans', 'tea'] as const).flatMap((kind) =>
-  (['priority', 'selection', 'refusal'] as const).map((journey) => ({ kind, journey })));
-for (const { kind, journey } of collectionJourneys) {
-  const contract = journey === 'priority' ? 'preserves owner order through reload'
-    : journey === 'selection' ? 'preserves exclusion and reselection through reload'
-      : 'rejects a stale save without changing selection';
-  test(`declared ${kind} collection ${contract}`, async ({ page }) => {
+type CollectionKind = 'plans' | 'tea';
+type CollectionJourney = 'priority' | 'selection' | 'refusal';
+
+async function prepareDeclaredCollection(page: Page, kind: CollectionKind, journey: CollectionJourney) {
     const projects = await scopeFixture(page);
     const goal = { id: `collection-${kind}`, title: `${kind} collection`, status: 'active', standing: kind === 'plans' };
     const property = kind === 'plans' ? 'worklist' : 'tea_choices';
@@ -174,6 +169,7 @@ for (const { kind, journey } of collectionJourneys) {
       await page.reload({ waitUntil: 'domcontentloaded' });
       await waitForHud(editor);
     }
+    return async () => {
     await expect(editor.getByText('Waiting for dependency')).toBeVisible();
     if (journey === 'priority') {
       await saveWithReadback(() => editor.getByRole('button', { name: 'Move Second choice up' }).click());
@@ -220,6 +216,34 @@ for (const { kind, journey } of collectionJourneys) {
     if (kind === 'plans') await expect(editor.getByRole('checkbox', { name: 'Include Maintained rubric' })).toBeChecked();
     await page.screenshot({ path: test.info().outputPath(`collection-${kind}-${journey}.png`) });
     sync.assertServed('goals.list', 'goals.detail');
+    };
+}
+
+// A cold document mount is setup, with its existing 30s readiness bound.
+// Keep it outside the unchanged 60s contract budget: the contract still drives
+// real reloads, persisted readback, writes and refusal inside that budget.
+const collectionTest = test.extend<{
+  collectionKind: CollectionKind;
+  collectionJourney: CollectionJourney;
+  runCollection: () => Promise<void>;
+}>({
+  collectionKind: ['plans', { option: true }],
+  collectionJourney: ['priority', { option: true }],
+  runCollection: [async ({ page, collectionKind, collectionJourney }, use) => {
+    await use(await prepareDeclaredCollection(page, collectionKind, collectionJourney));
+  }, { timeout: 30_000 }],
+});
+const collectionJourneys = (['plans', 'tea'] as const).flatMap((kind) =>
+  (['priority', 'selection', 'refusal'] as const).map((journey) => ({ kind, journey })));
+for (const { kind, journey } of collectionJourneys) {
+  const contract = journey === 'priority' ? 'preserves owner order through reload'
+    : journey === 'selection' ? 'preserves exclusion and reselection through reload'
+      : 'rejects a stale save without changing selection';
+  collectionTest.describe(`${kind} collection ${journey}`, () => {
+    collectionTest.use({ collectionKind: kind, collectionJourney: journey });
+    collectionTest(`declared ${kind} collection ${contract}`, async ({ runCollection }) => {
+      await runCollection();
+    });
   });
 }
 

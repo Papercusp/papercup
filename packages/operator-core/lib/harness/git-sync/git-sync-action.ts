@@ -44,6 +44,7 @@ import { acquireWithContentionRetry, isWorkspaceContended } from '../../agent-to
 import {
   clearResourceExclusiveQueue,
   clearResourceWaiter,
+  getTxPool,
   readResourceQueue,
   releaseAllResourcesForOwner,
   tryAcquireResource,
@@ -4016,13 +4017,14 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
     const holdsRestartBarrier = acquired.some((r) => r.resource === GIT_SYNC_RESTART_BARRIER_RESOURCE);
     const shouldYield = holdsRestartBarrier
       ? async (): Promise<string | null> => {
-          // Read the barrier through the SAME lock-store txn the acquire uses. The org
-          // handle cannot resolve the lock tables: the first live run passed getOrgPg().sql
-          // here, every probe threw 'relation "agent_resource_locks" does not exist', and
-          // the fail-open path silently disabled the yield.
-          const { holders } = await inWorkspaceTxn(cd, lockOwner, (tx) =>
-            readResourceQueue(tx, { coordinationDomain: cd, resource: GIT_SYNC_RESTART_BARRIER_RESOURCE }),
-          );
+          // This is a read-only inspection of the lock store. The org pool points at
+          // another database; inWorkspaceTxn takes the exclusive workspace advisory
+          // lock and can time out behind unrelated mutations, disabling yield again.
+          // Acquiring the barrier above already bootstrapped this maintained pool.
+          const { holders } = await readResourceQueue(getTxPool(), {
+            coordinationDomain: cd,
+            resource: GIT_SYNC_RESTART_BARRIER_RESOURCE,
+          });
           return gitSyncRestartYieldReason(holders);
         }
       : undefined;

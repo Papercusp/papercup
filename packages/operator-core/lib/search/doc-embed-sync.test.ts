@@ -60,6 +60,13 @@ function fakeSource(pages: Array<{ page: DocPage; body: string }>, name = 'test-
 // convention) is tested in @papercusp/search's chunk.test.ts and pinned to the
 // pre-move output by chunk.golden.test.ts. These cover the doc-specific layer.
 describe('splitDocSections', () => {
+  it('retains a late procedure beyond the former heading and row caps', () => {
+    const body = Array.from({ length: 300 }, (_, i) => `## Procedure ${i}\n${'complete instructions '.repeat(110)}\n`).join('') + '\n## Final procedure\nTAIL-PROCEDURE';
+    const sections = splitDocSections('Runbook', body);
+    expect(sections.length).toBeGreaterThan(240);
+    expect(sections.at(-1)).toMatchObject({ title: 'Runbook › Final procedure', content: 'TAIL-PROCEDURE' });
+  });
+
   it('splits on headings with a preamble section and Page › Heading titles', () => {
     const body = [
       'Intro paragraph long enough to keep around.',

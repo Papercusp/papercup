@@ -21,6 +21,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { generateKeyPairSync, sign as nodeSign, type KeyObject } from 'node:crypto';
 import { createFreshPgDb, type FreshPgDb } from '../../../../test/_pg-helpers';
+import type { SignedPresenceFrame } from '../presence-gossip';
 
 // ── Protomux fake (the directory-swarm.test.ts harness, trimmed) ──
 interface FakeChannel {
@@ -100,6 +101,7 @@ const stripMeta = (s: string) =>
   s.split('\n').filter((l) => !/^(begin|commit);$/i.test(l.trim()) && !l.trim().startsWith('\\')).join('\n');
 
 const WS = 'ws_pgw';
+const HELLO_WS = 'ws_pgw_hello';
 const HIVE = 'hive-home';
 const TOPIC = Buffer.alloc(32, 5);
 const TOPIC_HEX = TOPIC.toString('hex');
@@ -214,9 +216,7 @@ describe('presence-gossip wiring (real PG, fake swarm)', () => {
       loadRevokedHivePubkeys: (async () => []) as never,
     });
 
-    expect(
-      await registerPresenceGossipTopic({ topicHex: TOPIC_HEX, workspaceId: WS, potHomeSlug: HIVE }),
-    ).toBe(true);
+    expect(await registerPresenceGossipTopic({ topicHex: TOPIC_HEX, workspaceId: WS, potHomeSlug: HIVE })).toBe(true);
     // A peer connects; the gossip opens + pairs the topic channel.
     const socket: { userData?: FakeMux } = {};
     swarm.connections.add(socket);
@@ -229,6 +229,51 @@ describe('presence-gossip wiring (real PG, fake swarm)', () => {
   afterAll(async () => {
     await __resetPresenceGossipWiring();
     await db?.cleanup();
+  });
+
+  it('pair-time hello sends a signed session snapshot over a short-lived channel', async () => {
+    const helloTopic = Buffer.alloc(32, 6);
+    const helloTopicHex = helloTopic.toString('hex');
+    expect(
+      await registerPresenceGossipTopic({
+        topicHex: helloTopicHex,
+        workspaceId: HELLO_WS,
+        potHomeSlug: HIVE,
+        writer: {
+          devicePubkey: member.pubB64,
+          sign: member.sign,
+          githubUserId: 42,
+          machineLabel: 'hello-laptop',
+          potSlug: HIVE,
+          getOwnRow: async () => row({ machine_label: 'hello-laptop' }),
+          getOwnSessions: async () => [
+            {
+              owner_id: 'su-pair-hello',
+              kind: 'su',
+              intent: 'pair hello',
+              plan_slug: null,
+              harness_slug: HIVE,
+              last_active_ms: T0,
+            },
+          ],
+        },
+      }),
+    ).toBe(true);
+    const helloChannel = allChannels.find((candidate) => candidate.id?.equals(helloTopic));
+    expect(helloChannel).toBeDefined();
+    helloChannel!.pairRemote();
+    await settle(async () => Promise.resolve(helloChannel!.sent.length >= 2));
+    const helloFrames = helloChannel!.sent.slice(0, 2) as SignedPresenceFrame[];
+    expect(helloFrames.map((frame) => frame.kind)).toEqual(['put', 'sessions']);
+    expect(helloFrames.every((frame) => verifyPresenceFrame(frame, { nowMs: Date.now() }))).toBe(true);
+
+    helloChannel!.inbound!(helloFrames[1]);
+    await settle(async () =>
+      (await db.sql`SELECT 1 FROM harness_shared.shared_session_presence WHERE workspace_id=${HELLO_WS} AND owner_id='su-pair-hello'`).length === 1,
+    );
+    const sessions = await db.sql<{ owner_id: string; pot_slug: string }[]>`
+      SELECT owner_id, pot_slug FROM harness_shared.shared_session_presence WHERE workspace_id=${HELLO_WS} AND owner_id='su-pair-hello'`;
+    expect(sessions).toEqual([{ owner_id: 'su-pair-hello', pot_slug: HIVE }]);
   });
 
   it('a member device\'s signed put frame lands in shared_presence', async () => {
@@ -434,6 +479,7 @@ describe('presence-gossip wiring (real PG, fake swarm)', () => {
           machineLabel: 'laptop',
           potSlug: HIVE,
           getOwnRow: async () => row({ intent: 'writer beat' }),
+          getOwnSessions: async () => [],
         },
       }),
     ).toBe(true);

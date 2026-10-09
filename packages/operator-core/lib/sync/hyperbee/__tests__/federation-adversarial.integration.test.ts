@@ -374,24 +374,33 @@ describe('federation adversarial — Track A no-loss round-trip A→B', () => {
         schema_version: 1,
         writerPubkey: idA.devicePubkey,
       });
-      await peerA.handle.append({
-        type: 'put',
-        table: 'coord-messages',
-        hbKey: 'msg-noloss-1',
-        value: { harness_slug: HARNESS_SLUG, msg_id: 'msg-noloss-1', surface: 'messages', writer_key: 'su-A', body: { hi: 1 }, ts: 1001 },
-        ts: 1001,
-        schema_version: 1,
-        writerPubkey: idA.devicePubkey,
-      });
-
-      const gotWork = await pollUntil(
+      let coordWritten = false;
+      const deliveries = await pollUntil(
         async () => {
           await peerB.handle.mergeNow();
-          return peerB.apply.mock.calls.find((c) => c[0].hbKey === 'F-noloss-1')?.[0];
+          const work = peerB.apply.mock.calls.find((c) => c[0].hbKey === 'F-noloss-1')?.[0];
+          const coord = peerB.apply.mock.calls.find((c) => c[0].hbKey === 'msg-noloss-1')?.[0];
+          if (work && !coordWritten) {
+            // Exercise separate arrivals over the real wire. The first feature
+            // cannot satisfy a contract that also requires a coordination op.
+            expect(coord).toBeUndefined();
+            coordWritten = true;
+            await peerA.handle.append({
+              type: 'put',
+              table: 'coord-messages',
+              hbKey: 'msg-noloss-1',
+              value: { harness_slug: HARNESS_SLUG, msg_id: 'msg-noloss-1', surface: 'messages', writer_key: 'su-A', body: { hi: 1 }, ts: 1001 },
+              ts: 1001,
+              schema_version: 1,
+              writerPubkey: idA.devicePubkey,
+            });
+          }
+          return work && coord ? { work, coord } : undefined;
         },
         { timeoutMs: 25_000, intervalMs: 250 },
       );
-      const gotCoord = peerB.apply.mock.calls.find((c) => c[0].hbKey === 'msg-noloss-1')?.[0];
+      const gotWork = deliveries?.work;
+      const gotCoord = deliveries?.coord;
 
       expect(gotWork, "peer B never received peer A's feature op (cross-instance LOSS)").toBeTruthy();
       expect(gotWork).toMatchObject({ table: FEATURE_TAG, hbKey: 'F-noloss-1' });

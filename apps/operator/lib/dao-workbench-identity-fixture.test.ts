@@ -6,6 +6,8 @@ import childProcess from 'node:child_process';
 import { promisify } from 'node:util';
 import { createServer, type Server } from 'node:http';
 import { installIdentityFixture, prepareIdentityFixture, readNativeHostHealth } from '../../../scripts/fixtures/dao-workbench-identity.mjs';
+import { createDeviceAttestationBody } from '../../../packages/operator-core/lib/identity/attest';
+import { verifyEd25519 } from '../../../packages/operator-core/lib/identity/ed25519';
 
 let cleanup = () => {};
 afterEach(() => cleanup());
@@ -28,6 +30,23 @@ describe('native DAO synthetic identity isolation', () => {
     expect(await user.json()).toEqual({ id: fixture.githubUserId, login: fixture.githubLogin });
     await expect(fetch('https://api.github.com/gists', { method: 'POST' })).rejects.toThrow('outbound');
     await expect(fetch('https://api.github.com/user', { headers: { authorization: 'token real-credential' } })).rejects.toThrow('real GitHub credentials');
+  });
+  it('signs the canonical binding with the isolated device and rejects altered metadata', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'dao-attestation-test-'));
+    const fixture = JSON.parse(readFileSync(prepareIdentityFixture(dir), 'utf8'));
+    const restore = installIdentityFixture(fixture, { PAPERCUSP_VERIFY_TAURI_ISOLATED: '1' });
+    cleanup = () => { restore(); rmSync(dir, { recursive: true, force: true }); };
+    const body = await createDeviceAttestationBody({ keychainId: fixture.keychainId,
+      pubkeyBase64: fixture.device.publicKey, deviceLabel: 'Isolated native fixture',
+      githubUserId: fixture.githubUserId, githubLogin: fixture.githubLogin });
+    const { signature_by_device, ...payload } = body;
+    const signature = Buffer.from(signature_by_device, 'base64');
+    expect(payload).toEqual({ version: 1, device_pubkey: fixture.device.publicKey,
+      device_label: 'Isolated native fixture', github_user_id: fixture.githubUserId,
+      github_login: fixture.githubLogin, created_at: expect.any(Number) });
+    expect(verifyEd25519(Buffer.from(JSON.stringify(payload)), fixture.device.publicKey, signature)).toBe(true);
+    expect(verifyEd25519(Buffer.from(JSON.stringify({ ...payload, device_label: 'altered' })), fixture.device.publicKey, signature)).toBe(false);
+    expect(verifyEd25519(Buffer.from(JSON.stringify(payload)), fixture.hive.publicKey, signature)).toBe(false);
   });
 });
 

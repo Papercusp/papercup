@@ -50,7 +50,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { dirname } from 'node:path';
 import type { ScratchWriteTimings } from './scratch-gc';
 import { withBoundedTimeout } from './bounded-timeout';
-import { projectBoundedPayload, type BulkEnvelopeProjectionOpts } from '@papercusp/tooldef';
+import { projectBoundedPayload, type BoundedPayloadRecovery, type BulkEnvelopeProjectionOpts } from '@papercusp/tooldef';
 import { decode } from '@papercusp/result-encoding';
 import { CHARS_PER_TOKEN_ESTIMATE, computeTurnDoors } from './context-doors';
 import { getDoorConstantsSync } from './context-doors-config';
@@ -1046,9 +1046,9 @@ function volatileScratchRecovery(
 
 function preferVolatileScratchRecovery(
   volatileRecovery: ReturnType<typeof volatileScratchRecovery> | undefined,
-  fallback: { cursor: Record<string, unknown>; next: string },
+  fallback: BoundedPayloadRecovery,
   volatileNote: string = fallback.next,
-) {
+): BoundedPayloadRecovery {
   return volatileRecovery
     ? { cursor: volatileRecovery.cursor, next: volatileRecovery.next + ' ' + volatileNote }
     : fallback;
@@ -1322,7 +1322,23 @@ function spillRecoveryNote(
       (input.upstreamProjection || innerTruncationMarkers.length > 0
         ? 'The reference preserves only the completion response emitted by the tool; already-omitted fields cannot be recovered by paging. ' + referenceReader
         : recoverable) +
-      WORK_ITEMS_COMPLETE_SPILL_RECOVERY
+      'The work_items:complete write may already have committed. Do NOT repeat this call; page the reference for the emitted receipt and read work_items:get for each result id to confirm current item state.'
+    );
+  }
+  if (isWorkItemsSetBlockerCall(input)) {
+    return (
+      (input.upstreamProjection || innerTruncationMarkers.length > 0
+        ? 'The reference preserves only the blocker response emitted by the tool; already-omitted fields cannot be recovered by paging. ' + referenceReader
+        : recoverable) +
+      'The work_items:set_blocker write may already have committed. Do NOT repeat it; page the reference for the receipt and read work_items:get to inspect current blockers before follow-up.'
+    );
+  }
+  if (isScorecardsEmitCall(input)) {
+    return (
+      (input.upstreamProjection || innerTruncationMarkers.length > 0
+        ? 'The reference preserves only the scorecards:emit response; already-omitted fields cannot be recovered by paging. ' + referenceReader
+        : recoverable) +
+      'scorecards:emit may have recorded a card. Do NOT repeat this non-idempotent emit; page the reference for the emitted receipt and inspect the scorecard ledger before any retry.'
     );
   }
   if (input.toolName === 'coord:send' ||
@@ -1530,7 +1546,7 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
         targetChars: Math.min(input.doorTokens * CHARS_PER_TOKEN_ESTIMATE, 1_200),
         preservePaths: ['ok', 'claimReceipt', 'claimReceipt.committed', 'claimReceipt.workItemId'],
         preserveTopLevelKeys: ['ok', 'claimReceipt'],
-        recovery: volatileRecovery ?? schedulerClaimRecovery(schedulerClaim),
+        recovery: preferVolatileScratchRecovery(volatileRecovery, schedulerClaimRecovery(schedulerClaim)),
       })
     : undefined;
   if (boundedSchedulerClaim) {
@@ -1688,21 +1704,23 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
         targetChars: Math.min(input.doorTokens * CHARS_PER_TOKEN_ESTIMATE, 1_200),
         preservePaths: WORK_ITEMS_COMPLETE_RECEIPT_PRESERVE_PATHS,
         preserveTopLevelKeys: ['ok', 'counts', 'results'],
-        recovery: preferVolatileScratchRecovery(
-          volatileRecovery,
-          {
-            cursor: {
-              kind: 'unavailable',
-              tool: 'work_items:complete',
-              args: {},
-              reason: 'spill-write-failed',
-              ...(spillErrorCode && spillErrorCode !== 'unknown error' ? { errorCode: spillErrorCode } : {}),
+        recovery: volatileRecovery
+          ? {
+              cursor: volatileRecovery.cursor,
+              next:
+                'Read _projection.cursor.args with capability:read and follow next_cursor to EOF. ' +
+                'Do NOT repeat work_items:complete; verify current item state with work_items:get.',
+            }
+          : {
+              cursor: {
+                kind: 'unavailable',
+                tool: 'work_items:complete',
+                args: {},
+                reason: 'spill-write-failed',
+                ...(spillErrorCode && spillErrorCode !== 'unknown error' ? { errorCode: spillErrorCode } : {}),
+              },
+              next: WORK_ITEMS_COMPLETE_SPILL_RECOVERY,
             },
-            next: WORK_ITEMS_COMPLETE_SPILL_RECOVERY,
-          },
-          'The complete work_items:complete response is available in the volatile page above. ' +
-            'Do NOT repeat this call; read work_items:get to confirm current item state before follow-up.',
-        ),
       })
     : undefined;
   if (boundedCompletionReceipt) {

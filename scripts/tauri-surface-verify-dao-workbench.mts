@@ -9,6 +9,8 @@ import { resolveScriptPgUrl } from './lib/pg-url.mjs';
 import { insertHiveIfAbsent } from '../packages/operator-core/lib/hive-store.ts';
 import { loadHarnessRegistry, saveHarnessRegistry } from '../packages/operator-core/lib/harness-registry.ts';
 import { upsertHiveMember } from '../packages/operator-core/lib/hive-membership-store.ts';
+import { resolveFederatedPotScope } from '../packages/operator-core/lib/federated-pot-scope.ts';
+import { createDeviceAttestationBody } from '../packages/operator-core/lib/identity/attest.ts';
 import { authorHivePolicy } from '../packages/operator-core/lib/hive-policy-author.ts';
 import { DEFAULT_PLAN_ADMISSION_POLICY } from '../packages/operator-core/lib/agent-tools/plans/plan-admission-policy.ts';
 import { readPlanAdmissionGovernanceSnapshot } from '../packages/operator-core/lib/agent-tools/plans/plan-admission-governance-store.ts';
@@ -80,8 +82,16 @@ const result = await runHarness({ contract: { name: harnessName, phases: [{ id: 
         keychainId: 'hive:' + ws + ':' + slug, title: 'Native Workbench DAO', description: 'Isolated native acceptance' }, sql);
       const registry = await loadHarnessRegistry(ws);
       await saveHarnessRegistry({ ...registry, projects: [...registry.projects, { slug, path: home, harness_kind: 'hive' }] }, ws);
-      await upsertHiveMember({ workspaceId: ws, potHomeSlug: slug, githubUserId: fixture.githubUserId,
-        githubUsername: fixture.githubLogin, bindingStatus: 'verified', deviceAttestations: [{ device_pubkey: fixture.device.publicKey, gist_id: 'synthetic-native-gist' }] }, sql);
+      const attestation = await createDeviceAttestationBody({ keychainId: fixture.keychainId,
+        pubkeyBase64: fixture.device.publicKey, deviceLabel: 'Isolated native fixture',
+        githubUserId: fixture.githubUserId, githubLogin: fixture.githubLogin });
+      await upsertHiveMember({ workspaceId: ws, potHomeSlug: await resolveFederatedPotScope(ws, slug, { sql }), githubUserId: fixture.githubUserId,
+        githubUsername: fixture.githubLogin, bindingStatus: 'verified', deviceAttestations: [{
+          device_pubkey: attestation.device_pubkey, gist_id: 'synthetic-native-gist',
+          gist_url: 'https://gist.github.com/' + fixture.githubLogin + '/synthetic-native-gist',
+          device_label: attestation.device_label, created_at: attestation.created_at,
+          signature_by_device: attestation.signature_by_device,
+        }] }, sql);
       const policy = await authorHivePolicy({ workspaceId: ws, potHomeSlug: slug, policy: { membership: 'open', governance: {
         planAdmission: DEFAULT_PLAN_ADMISSION_POLICY, signingAuthority: { members: [{ memberId: fixture.githubLogin,
           publicKey: fixture.device.publicKey, originPeerIds: [fixture.device.publicKey], keyEpoch: 1,

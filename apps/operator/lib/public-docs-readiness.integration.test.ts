@@ -24,12 +24,16 @@ beforeAll(() => {
   mkdirSync(scratch, { recursive: true });
   buildDirectory = mkdtempSync(resolve(scratch, 'public-manual-reader-'));
   root = resolve(buildDirectory, 'dist');
+  const buildEnv: NodeJS.ProcessEnv = { ...process.env, NODE_ENV: 'production' };
+  // Astro's private-env transform otherwise shadows Vite's computed builtins
+  // with the string values inherited from the Vitest worker.
+  for (const key of ['DEV', 'PROD', 'SSR', 'MODE', 'BASE_URL']) delete buildEnv[key];
   execFileSync(process.execPath, [
     '--input-type=module', '-e',
     "import { pathToFileURL } from 'node:url'; const { build } = await import(pathToFileURL(process.argv[4]).href); await build({ root: process.argv[1], outDir: process.argv[2], cacheDir: process.argv[3] });",
     manualApp, root, resolve(buildDirectory, 'cache'),
     createRequire(import.meta.url).resolve('astro'),
-  ], { cwd: manualApp, timeout: 60_000 });
+  ], { cwd: manualApp, env: buildEnv, timeout: 60_000 });
 }, 65_000);
 
 afterAll(() => {
@@ -49,6 +53,8 @@ describe('built public manual contract', () => {
     expect(response.status).toBe(200);
     const html = await response.text();
     expect(html).toContain('data-pagefind-body');
+    expect(html).toContain('id="starlight__search"');
+    expect(html).not.toContain('Search is only available in production builds.');
     const renderedAnchors = [...html.matchAll(/<h2\b[^>]*\bid="([^"]+)"/g)].map((match) => match[1]);
     expect(renderedAnchors).toEqual(expect.arrayContaining(PUBLIC_FAQ_ANCHORS));
     expect(new Set(renderedAnchors).size).toBe(renderedAnchors.length);

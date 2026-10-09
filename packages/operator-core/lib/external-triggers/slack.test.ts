@@ -122,6 +122,25 @@ describe('Slack external-trigger adapter', () => {
     expect(calls).toHaveLength(1);
   });
 
+  it('routes ordinary human posts only in configured channels and deduplicates message coordinates', () => {
+    const envelope = (event: Record<string, unknown>, eventId = 'EvOrdinary') => ({
+      type: 'events_api', payload: { event_id: eventId, event: {
+        type: 'message', channel_type: 'channel', channel: 'C1', user: 'U1',
+        text: 'Export crashes after clicking save', ts: '1777000000.1', ...event,
+      } },
+    });
+    const config = source().config;
+    const first = normalizeSlackSocketEnvelope(envelope({}), config);
+    expect(first).toMatchObject({ event: 'message', dedupeKey: 'slack:C1:1777000000.1' });
+    expect(normalizeSlackSocketEnvelope(envelope({}, 'EvReplay'), config)?.dedupeKey).toBe(first?.dedupeKey);
+    expect(normalizeSlackSocketEnvelope(envelope({ thread_ts: '1776999999.1' }), config)?.event).toBe('message');
+    for (const forbidden of [{ channel: 'C2' }, { bot_id: 'B1' }, { app_id: 'A1' },
+      { user: 'UPAPER' }, { user: '' }, { subtype: 'message_changed' }, { ts: 'invalid' }]) {
+      expect(normalizeSlackSocketEnvelope(envelope(forbidden), config)).toBeNull();
+    }
+    expect(normalizeSlackSocketEnvelope(envelope({}))).toBeNull();
+  });
+
   it('posts a bounded bot reply to the exact originating thread', async () => {
     const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
       ok: true,

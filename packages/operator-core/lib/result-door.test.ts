@@ -28,7 +28,7 @@ import {
 } from './result-door';
 import { applyResultProjection } from './result-projection/apply';
 import { parseProjection } from './result-projection/parse';
-import { parseScratchReference } from './scratch-reference';
+import { parseScratchReference, readVolatileScratchReference } from './scratch-reference';
 import { senderBodyDeliveryDiagnostics } from './agent-tools/coordination/tools/inbox-content-bounds';
 
 const BUDGET_CHARS = RESULT_DOOR_TOKENS * CHARS_PER_TOKEN_ESTIMATE;
@@ -74,6 +74,12 @@ function readSpill(ws: string, tool: string, runId: string): string {
   const reference = parseScratchReference(bytes);
   expect(reference).not.toBeNull();
   return reference!.payload.toString('utf8');
+}
+
+function readVolatilePayloadText(uri: string): string {
+  const payload = readVolatileScratchReference(uri, { workspaceId: 'ws-1' }).payload.toString('utf8');
+  const parsed = JSON.parse(payload) as { content?: Array<{ text?: string }> };
+  return parsed.content?.[0]?.text ?? '';
 }
 
 function boundedBody(result: DoorableResult): {
@@ -1922,6 +1928,23 @@ describe('applyResultDoor', () => {
     const medium = (): DoorableResult => ({
       content: [{ type: 'text' as const, text: 'm'.repeat(5_000) }],
     });
+    const expectVolatileEnvelope = (envelope: {
+      state?: string;
+      error?: unknown;
+      content?: Array<Record<string, unknown>>;
+      incomplete?: { recoverable?: boolean; note?: string };
+    }, expectedText: string) => {
+      expect(envelope.state).toBe('incomplete');
+      expect(envelope.error).toBeUndefined();
+      expect(envelope.incomplete?.recoverable).toBe(true);
+      const reference = envelope.content?.find((item) => item.kind === 'reference');
+      expect(reference?.uri).toEqual(expect.stringMatching(/^papercusp:\/\/scratch-memory\//));
+      expect(reference?.expiresAt).toEqual(expect.any(String));
+      if (typeof reference?.uri !== 'string') throw new Error('missing volatile reference URI');
+      expect(readVolatilePayloadText(reference.uri)).toBe(expectedText);
+      expect(JSON.stringify(envelope)).not.toContain(sandbox);
+      return envelope.incomplete?.note ?? '';
+    };
 
     it.each([
       { label: 'direct', toolName: 'scorecards:emit' },
@@ -2001,7 +2024,7 @@ describe('applyResultDoor', () => {
         ...noise,
       };
       const original = JSON.stringify(receipt);
-      const doored = await applyResultDoorAsync(
+      const doored: DoorableResult = await applyResultDoorAsync(
         { content: [{ type: 'text' as const, text: original }], structuredContent: receipt },
         {
           toolName,
@@ -2059,8 +2082,9 @@ describe('applyResultDoor', () => {
         ok: true,
         ...Object.fromEntries(Array.from({ length: 18 }, (_, index) => [`detail${index}`, 'n'.repeat(900)])),
       };
+      const original = JSON.stringify(receipt);
       const doored = applyResultDoor(
-        { content: [{ type: 'text' as const, text: JSON.stringify(receipt) }] },
+        { content: [{ type: 'text' as const, text: original }] },
         {
           toolName,
           ...(nestedTargetToolName ? { nestedTargetToolName } : {}),
@@ -2072,13 +2096,13 @@ describe('applyResultDoor', () => {
       const output = JSON.parse((doored.content[0] as { text: string }).text) as {
         state?: string;
         error?: { code?: string; message?: string; retryable?: boolean };
-        _projection?: { cursor?: Record<string, unknown>; next?: string };
+        content?: Array<Record<string, unknown>>;
+        incomplete?: { note?: string };
       };
 
-      expect(output.state).toBe('incomplete');
-      expect(output.error).toBeUndefined();
-      expect(output._projection?.cursor).toMatchObject({ kind: 'volatile-scratch-page', tool: 'capability:read' });
-      expect(output._projection?.next).toContain('Do NOT repeat this non-idempotent emit');
+      const note = expectVolatileEnvelope(output, original);
+      expect(note).toContain('Do NOT repeat this non-idempotent emit');
+      expect(note).toContain('scorecard ledger');
     });
 
     it('retains a nested coord:send receipt when the aggregate hard-spill write fails', () => {
@@ -2182,8 +2206,6 @@ describe('applyResultDoor', () => {
         countsTowardBurnDown: true,
         workItem: { id: 'EI-completion-receipt-1', state: 'resolved' },
       });
-      expect(output.results[0].completion.summary).toContain('TRUNCATED');
-      expect(output.results[0].completion.summary.length).toBeLessThan(1_200);
       expect(output._projection).toMatchObject({
         truncated: true,
         cursor: {
@@ -2193,8 +2215,11 @@ describe('applyResultDoor', () => {
           errorCode: 'SCRATCH_QUOTA_EXCEEDED',
         },
       });
-      expect(output._projection.next).toContain('Do NOT repeat this call');
+      expect(output._projection.next).toContain('Do NOT repeat work_items:complete');
       expect(output._projection.next).toContain('work_items:get');
+      const cursorUri = output._projection.cursor.uri;
+      if (typeof cursorUri !== 'string') throw new Error('missing volatile completion cursor URI');
+      expect(readVolatilePayloadText(cursorUri)).toBe(original);
       expect((doored._meta as { resultDoor?: Record<string, unknown> }).resultDoor).toMatchObject({
         spillFailed: true,
         spillPath: null,
@@ -2270,8 +2295,9 @@ describe('applyResultDoor', () => {
       applyResultDoor(medium(), { toolName: 'tools:invoke', workspaceId: 'ws-1', runId: RUN_ID, aggregateScope: scope() });
 
       const failure = Object.assign(new Error('workspace quota exhausted'), { code: 'SCRATCH_QUOTA_EXCEEDED' });
+      const original = 'x'.repeat(4_800);
       const doored = applyResultDoor(
-        { content: [{ type: 'text' as const, text: 'x'.repeat(4_800) }] },
+        { content: [{ type: 'text' as const, text: original }] },
         {
           toolName: 'tools:invoke',
           nestedTargetToolName: 'work_items:set_blocker',
@@ -2284,13 +2310,13 @@ describe('applyResultDoor', () => {
       const envelope = JSON.parse((doored.content[0] as { text: string }).text) as {
         error?: { code?: string; message?: string; retryable?: boolean };
         state?: string;
-        _projection?: { cursor?: Record<string, unknown>; next?: string };
+        content?: Array<Record<string, unknown>>;
+        incomplete?: { note?: string };
       };
 
-      expect(envelope.error).toBeUndefined();
-      expect(envelope._projection?.cursor).toMatchObject({ kind: 'volatile-scratch-page', tool: 'capability:read' });
-      expect(envelope._projection?.next).toContain('Do NOT repeat it');
-      expect(envelope._projection?.next).toContain('work_items:get');
+      const note = expectVolatileEnvelope(envelope, original);
+      expect(note).toContain('Do NOT repeat it');
+      expect(note).toContain('work_items:get');
     });
 
     it('makes a nested work_items:complete hard-spill failure non-retryable when no receipt parses', () => {
@@ -2299,8 +2325,9 @@ describe('applyResultDoor', () => {
       applyResultDoor(medium(), { toolName: 'tools:invoke', workspaceId: 'ws-1', runId: RUN_ID, aggregateScope: scope() });
 
       const failure = Object.assign(new Error('workspace quota exhausted'), { code: 'SCRATCH_QUOTA_EXCEEDED' });
+      const original = 'x'.repeat(4_800);
       const doored = applyResultDoor(
-        { content: [{ type: 'text' as const, text: 'x'.repeat(4_800) }] },
+        { content: [{ type: 'text' as const, text: original }] },
         {
           toolName: 'tools:invoke',
           nestedTargetToolName: 'work_items:complete',
@@ -2313,20 +2340,21 @@ describe('applyResultDoor', () => {
       const envelope = JSON.parse((doored.content[0] as { text: string }).text) as {
         error?: { code?: string; message?: string; retryable?: boolean };
         state?: string;
-        _projection?: { cursor?: Record<string, unknown>; next?: string };
+        content?: Array<Record<string, unknown>>;
+        incomplete?: { note?: string };
       };
 
-      expect(envelope.error).toBeUndefined();
-      expect(envelope._projection?.cursor).toMatchObject({ kind: 'volatile-scratch-page', tool: 'capability:read' });
-      expect(envelope._projection?.next).toContain('Do NOT repeat this call');
-      expect(envelope._projection?.next).toContain('work_items:get');
+      const note = expectVolatileEnvelope(envelope, original);
+      expect(note).toContain('Do NOT repeat this call');
+      expect(note).toContain('work_items:get');
     });
 
     it('marks a nested coord:send hard-spill failure non-retryable when no receipt can be recovered', () => {
       const failure = Object.assign(new Error('scratch filesystem full'), { code: 'ENOSPC' });
+      const original = 'x'.repeat(BUDGET_CHARS * 2);
       const doored = applyResultDoor(
         {
-          content: [{ type: 'text' as const, text: 'x'.repeat(BUDGET_CHARS * 2) }],
+          content: [{ type: 'text' as const, text: original }],
           _meta: { explicitFullRequest: true },
         },
         {
@@ -2340,14 +2368,14 @@ describe('applyResultDoor', () => {
       const envelope = JSON.parse((doored.content[0] as { type: 'text'; text: string }).text) as {
         error?: { code?: string; message?: string; retryable?: boolean };
         state?: string;
-        _projection?: { cursor?: Record<string, unknown>; next?: string };
+        content?: Array<Record<string, unknown>>;
+        incomplete?: { note?: string };
       };
 
-      expect(envelope.error).toBeUndefined();
-      expect(envelope._projection?.cursor).toMatchObject({ kind: 'volatile-scratch-page', tool: 'capability:read' });
-      expect(envelope._projection?.next).toContain('do NOT repeat the send');
-      expect(envelope._projection?.next).toContain('coord:feed');
-      expect(envelope._projection?.next).toContain('coord:inbox');
+      const note = expectVolatileEnvelope(envelope, original);
+      expect(note).toContain('do NOT repeat the send');
+      expect(note).toContain('coord:feed');
+      expect(note).toContain('coord:inbox');
     });
 
     it('uses one budget across explicit fan-out and spills the result that crosses it', () => {

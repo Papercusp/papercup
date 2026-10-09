@@ -239,6 +239,12 @@ export function retainCommittedWorkRoot(workRoot, expectedSha, artifactPath) {
   return { root, sha: expectedSha, artifact };
 }
 
+function hasDependentArtifact(workRoot, marker) {
+  return Array.isArray(marker?.retainedFor) && marker.retainedFor.some((entry) =>
+    entry?.sha === marker.sha && typeof entry.path === 'string' && isAbsolute(entry.path)
+      && entry.path !== workRoot && !entry.path.startsWith(workRoot + sep) && existsSync(entry.path));
+}
+
 /**
  * Decide one tree's fate. Pure: the caller supplies liveness facts.
  * - `inUse`: some live process has its cwd inside the tree (e.g. a testing:run on the
@@ -327,9 +333,7 @@ export function sweepStaleWorkRoots({ root = tmpdir(), nowMs = Date.now(), cwds 
     const inUse = cwds === null ? null : cwds.some((c) => c === path || c.startsWith(path + sep));
     const createdAtMs = Number.isFinite(marker?.createdAtMs) ? marker.createdAtMs : st.mtimeMs;
     const ownerAlive = marker ? isAlive(marker.pid) : false;
-    const dependentArtifactPresent = Array.isArray(marker?.retainedFor) && marker.retainedFor.some((entry) =>
-      entry?.sha === marker.sha && typeof entry.path === 'string' && isAbsolute(entry.path)
-        && entry.path !== path && !entry.path.startsWith(path + sep) && existsSync(entry.path));
+    const dependentArtifactPresent = hasDependentArtifact(path, marker);
     const verdict = classifyWorkRoot({ inUse: inUse === true, dependentArtifactPresent, marker, ownerAlive, ageMs: nowMs - createdAtMs });
     // A dead non-keep owner is proof the tree is abandoned whatever its age; anything else
     // needs the cwd scan to rule out a process still working inside it.
@@ -1044,10 +1048,15 @@ function main() {
 
   const workRoot = mkdtempSync(join(tmpdir(), `${WORK_ROOT_PREFIX}${short}-`));
   let results = [];
-  // Every exit path must remove a non-keep tree: `process.exit` skips `finally`, and a
-  // signal never reaches it. SIGKILL is left to the next run's sweep.
+  // Exit and sweep share the dependent-artifact rule: retention may be added by
+  // a consumer while the command is running, after args.keep was established.
+  // SIGKILL is left to the next run's sweep.
   const cleanupWorkRoot = () => {
-    if (!args.keep) rmSync(workRoot, { recursive: true, force: true });
+    if (args.keep) return;
+    let marker = null;
+    try { marker = JSON.parse(readFileSync(join(workRoot, OWNER_MARKER), 'utf8')); }
+    catch { /* Missing or invalid metadata establishes no dependent artifact. */ }
+    if (!hasDependentArtifact(workRoot, marker)) rmSync(workRoot, { recursive: true, force: true });
   };
   const bail = (code) => {
     cleanupWorkRoot();

@@ -386,8 +386,11 @@ export async function runOnSuNativeToolOwner<T>(
     return local();
   }
   if (!isForwardableOwner(owner)) throw new SuNativeToolOwnerError('unreachable', false);
+  // Keep owner-local capabilities in this process. A request factory is only
+  // materialized after routing proves the request must cross the worker RPC.
+  const body = typeof request === 'function' ? request() : request;
   const payload: ForwardedNativeToolRequest = {
-    address, hostId: owner.hostId, nonce: owner.nonce, request: { op: 'native-tool', body: request },
+    address, hostId: owner.hostId, nonce: owner.nonce, request: { op: 'native-tool', body },
   };
   const outcome = await callOwnerProcess({ targetPid: owner.pid, kind: SU_SESSION_HOST_RPC_KIND, payload, timeoutMs });
   if (!outcome.ok) throw new SuNativeToolOwnerError(outcome.code,

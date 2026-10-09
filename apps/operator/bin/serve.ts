@@ -48,6 +48,7 @@ import "./boot-malloc-arena";
 import "./boot-flag-store";
 
 import { fileURLToPath } from "node:url";
+import { resolveOperatorAppRootFromModuleDir } from "@papercusp/operator-core/lib/operator-app-root";
 import { homedir } from "node:os";
 import {
   connect as netConnect,
@@ -706,9 +707,8 @@ export function releaseColdStartLock(): void {
 
 /** Default migrations dir: repo `libs/papercusp/libs/db/sql` relative to this file. */
 function defaultSqlDir(): string {
-  return fileURLToPath(
-    new URL("../../../libs/papercusp/libs/db/sql", import.meta.url),
-  );
+  return join(resolveOperatorAppRootFromModuleDir(dirname(fileURLToPath(import.meta.url))),
+    "..", "..", "libs/papercusp/libs/db/sql");
 }
 
 /** The embedded-PG data dir as ensurePostgres resolves it (env or default). */

@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 957,
+  "count": 958,
   "tools": [
     {
       "name": "ablation:report",
@@ -31233,6 +31233,39 @@
       "guidance": {
         "when": "Onboarding/tutorial flows: read BEFORE offering a setup step (skip what is already ok) and RE-READ after acting — never tell the user a step is configured without this re-read.",
         "notWhen": "Per-provider sign-in token detail (expiry, refresh) — that lives on the /desktop/agent-auth-status route, not here."
+      }
+    },
+    {
+      "name": "slack:record-classification",
+      "http": {
+        "path": "/api/agent-tools/slack/record-classification",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Persist one bug, non-bug or needs-information verdict for the originating ordinary Slack message. First recorded verdict wins on retries. This records report classification, not reproduction or authority to fix.",
+      "capabilities": [
+        "operator:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator",
+        "papercup",
+        "papercup-deep"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "The Slack classifier template has read its event via triggers:read-payload. Pass that same planRunId.",
+        "notWhen": "Arbitrary Slack messages, changing a recorded verdict, or recording reproduction evidence.",
+        "chaining": "Record verdict; only a bug verdict may proceed to configured source-bound Asana filing."
       }
     },
     {

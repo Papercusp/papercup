@@ -26,6 +26,7 @@ import { runHybridSearch } from '@papercusp/search';
 import { describeSearchLegs } from './describe-leg';
 import { SEARCH_SOURCES } from './sources';
 import { createReportSearchSource } from './report-source';
+import { createDocSearchSource, createPlanSearchSource } from './knowledge-sources';
 import { resolveViewer } from '../reports/_shared';
 import { scopeResidue } from './scope-residue';
 import { buildQueryEmbedderResolved, interactiveEmbedAcquireBudgetMs } from './embedder';
@@ -88,7 +89,9 @@ export default defineTool({
           ? DEFAULT_SCOPE
           : args.scope;
     const sources = SEARCH_SOURCES.filter((s) => scope.includes(s.name))
-      .map(s => s.name === 'report' ? createReportSearchSource(resolveViewer(ctx)) : s);
+      .map(s => s.name === 'report' ? createReportSearchSource(resolveViewer(ctx))
+        : s.name === 'plan' ? createPlanSearchSource({ harnessSlugs: ctx.harnessSlug && ctx.harnessSlug !== '*' ? [ctx.harnessSlug] : [] })
+        : s.name === 'doc' ? createDocSearchSource({ harnessSlugs: ctx.harnessSlug && ctx.harnessSlug !== '*' ? [ctx.harnessSlug] : [] }) : s);
 
     // P-002 filter bag: resolve 'self'/fleet sugars server-side (session:'self'
     // also live-tails the caller's own transcript — compaction recovery).

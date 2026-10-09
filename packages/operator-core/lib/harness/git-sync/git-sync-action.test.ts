@@ -137,6 +137,7 @@ const clearResourceWaiterMock = vi.fn(
   async (_tx: unknown, _coordinationDomain: string, _resource: string, _owner: string) => undefined,
 );
 vi.mock('../../agent-tools/locks/su-lock-store', () => ({
+  getTxPool: () => lockReadPool,
   tryAcquireResource: async (...a: unknown[]) => {
     const opts = a[1] as { owner: string; resource: string };
     const result = await tryAcquireResourceMock(a[0], opts);
@@ -200,7 +201,9 @@ const recordingTx: FakeTx = (strings, ...values) => {
  *  cost the commit). Restored in beforeEach. */
 let fakeTxImpl: FakeTx = recordingTx;
 const fakeTx: FakeTx = (strings, ...values) => fakeTxImpl(strings, ...values);
+const lockReadPool: FakeTx = () => Promise.resolve([]);
 const workspaceTxnCalls: Array<{ coordinationDomain: string; owner: string }> = [];
+let workspaceTxnFailure: Error | null = null;
 // EI-22078335832051825: the session half of the dead-holder reclaim. Mocked so
 // no test here reaches the presence store / liveness oracle; the adapter's own
 // rails are pinned in locks/ended-session-owners.test.ts. Default: nobody is
@@ -219,6 +222,7 @@ vi.mock('../../dbos/checkpointed-step', () => ({
 vi.mock('../../agent-tools/locks/in-workspace-txn', () => ({
   inWorkspaceTxn: (coordinationDomain: string, owner: string, fn: (tx: unknown) => unknown) => {
     workspaceTxnCalls.push({ coordinationDomain, owner });
+    if (workspaceTxnFailure) return Promise.reject(workspaceTxnFailure);
     return fn(fakeTx);
   },
 }));
@@ -997,6 +1001,7 @@ beforeEach(() => {
   heldResourcesByOwner.clear();
   releaseTrace.length = 0;
   workspaceTxnCalls.length = 0;
+  workspaceTxnFailure = null;
   readResourceQueueMock.mockReset();
   readResourceQueueMock.mockResolvedValue({ holders: [], draining: false, queue: [] });
   clearResourceExclusiveQueueMock.mockReset();
@@ -5761,9 +5766,9 @@ describe('WI-10007606: cooperative yield to a draining dev:restart barrier', () 
     expect(lastQuery).toMatchObject({ resource: 'git-sync' });
   });
 
-  it('reads the barrier through the lock-store txn (inWorkspaceTxn), never the org database', async () => {
-    // The first live run handed readResourceQueue getOrgPg().sql; the lock tables are not in
-    // that database, so every probe threw and the fail-open path disabled the yield entirely.
+  it('detects the drain through the lock-store read pool while workspace mutations are contended', async () => {
+    // The org database has no lock tables. A mutating workspace transaction instead
+    // timed out on its advisory lock in production, so neither can inspect this drain.
     let probe: (() => Promise<string | null>) | undefined;
     runGitSyncMock.mockImplementationOnce(async (_slug, opts) => {
       probe = opts.shouldYield as typeof probe;
@@ -5773,13 +5778,18 @@ describe('WI-10007606: cooperative yield to a draining dev:restart barrier', () 
     expect(typeof probe).toBe('function');
 
     const txnCallsBefore = workspaceTxnCalls.length;
+    workspaceTxnFailure = new Error('workspace contended (pg 57014: lock/statement timeout)');
     readResourceQueueMock.mockClear();
-    readResourceQueueMock.mockResolvedValueOnce({ holders: [], draining: false, queue: [] });
-    expect(await probe!()).toBeNull();
+    readResourceQueueMock.mockResolvedValueOnce({
+      holders: [{ resource: 'git-sync', mode: 'exclusive', status: 'draining', owner: 'system:dev-restart:test' }],
+      draining: true,
+      queue: [],
+    });
+    expect(await probe!()).toBe('exclusive git-sync drain requested by system:dev-restart:test');
     expect(readResourceQueueMock).toHaveBeenCalledTimes(1);
-    expect(readResourceQueueMock.mock.calls[0]?.[0]).toBe(fakeTx);
-    expect(workspaceTxnCalls.length).toBe(txnCallsBefore + 1);
-    expect(workspaceTxnCalls.at(-1)?.coordinationDomain).toBe(readResourceQueueMock.mock.calls[0]?.[1]?.coordinationDomain);
+    expect(readResourceQueueMock.mock.calls[0]?.[0]).toBe(lockReadPool);
+    expect(workspaceTxnCalls.length).toBe(txnCallsBefore);
+    expect(readResourceQueueMock.mock.calls[0]?.[1]).toMatchObject({ resource: 'git-sync' });
   });
 
   it('a yield is a SKIP: locks released, last_yield recorded, no outcome, no error streak, no escalation', async () => {

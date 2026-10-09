@@ -262,17 +262,26 @@ function mentions(message: string): string[] {
   return [...message.matchAll(/<@([A-Z0-9]+)>/g)].map((match) => match[1]);
 }
 
-export function normalizeSlackSocketEnvelope(envelope: SlackSocketEnvelope): SlackNormalizedEvent | null {
+export function normalizeSlackSocketEnvelope(
+  envelope: SlackSocketEnvelope,
+  sourceConfig: Record<string, unknown> = {},
+): SlackNormalizedEvent | null {
   const payload = envelope.payload ?? {};
   if (envelope.type === 'events_api') {
     const event = payload.event && typeof payload.event === 'object'
       ? payload.event as Record<string, unknown>
       : null;
     const eventId = text(payload.event_id);
-    if (!event || !eventId || event.bot_id || event.subtype) return null;
+    if (!event || !eventId || event.bot_id || event.app_id || event.subtype) return null;
     const channelId = text(event.channel) || null;
     const message = text(event.text);
-    const kind = event.type === 'app_mention'
+    const sender = text(event.user);
+    if (!sender || sender === sourceConfig.botUserId) return null;
+    const ordinary = event.type === 'message'
+      && !!channelId && uniqueStrings(sourceConfig.channels).includes(channelId)
+      && event.channel_type !== 'im' && event.channel_type !== 'mpim' && !channelId.startsWith('D')
+      && /^\d+(?:\.\d+)?$/.test(text(event.ts));
+    const kind = ordinary ? 'message' : event.type === 'app_mention'
       ? 'mention'
       : event.type === 'message' && (event.channel_type === 'im' || channelId?.startsWith('D'))
         ? 'dm'
@@ -282,14 +291,16 @@ export function normalizeSlackSocketEnvelope(envelope: SlackSocketEnvelope): Sla
     return {
       event: kind,
       externalId: eventId,
-      dedupeKey: `slack:${eventId}`,
+      // The provider may redeliver a message under a new event id. Its message
+      // coordinates stay stable, including across history reconciliation.
+      dedupeKey: ordinary ? `slack:${channelId}:${text(event.ts)}` : `slack:${eventId}`,
       occurredAt,
       channelId,
       payload: {
         id: eventId,
         channelId,
         threadId: text(event.thread_ts) || text(event.ts) || undefined,
-        sender: text(event.user),
+        sender,
         text: message,
         occurredAt: occurredAt ?? undefined,
         mentions: mentions(message),
@@ -349,12 +360,17 @@ export async function ingestSlackSocketEnvelope(
   /** Sinks beyond the event bus and binding engine — the chat admission sink (D-009). */
   additionalSinks: ExternalTriggerSink[] = [],
 ): Promise<SlackNormalizedEvent | null> {
+  const providerEvent = envelope.payload?.event as Record<string, unknown> | undefined;
+  // Apply this once before gesture/suggestion fallbacks as well as normalization.
+  if (providerEvent && (providerEvent.type === 'message' || providerEvent.type === 'app_mention')
+    && (providerEvent.bot_id || providerEvent.app_id || providerEvent.subtype
+      || providerEvent.user === source.config.botUserId)) return null;
   const config = slackReportBugConfig(source.config);
   const reportBug = classifySlackReportBugEnvelope(envelope, config);
   if (reportBug && reportBug.kind !== 'signal') return null;
   // An ordinary top-level post reaches the chat rules only in a channel whose `suggest` switch is
   // on, so a suggest rule can offer "looks like a bug" privately (bug-reports D-010).
-  const normalized = reportBug?.event ?? normalizeSlackSocketEnvelope(envelope) ?? slackSuggestPostEvent(envelope, config);
+  const normalized = reportBug?.event ?? normalizeSlackSocketEnvelope(envelope, source.config) ?? slackSuggestPostEvent(envelope, config);
   if (!normalized) return null;
   const result = await ingest(sql, {
     workspaceId: source.workspaceId,

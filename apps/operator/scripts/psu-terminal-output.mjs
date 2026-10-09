@@ -24,6 +24,7 @@ export function createTerminalOutput({
   let blocked = false;
   let ending = false;
   let failed = false;
+  /** @type {Promise<boolean> | undefined} */
   let finishPromise;
   const drain = () => {
     if (!blocked || ending || failed) return;
@@ -54,15 +55,23 @@ export function createTerminalOutput({
         return false;
       }
     },
-    /** Flush before handing the terminal to a shell/successor, with a bounded exit. */
+    /**
+     * Flush before handing the terminal to a shell/successor, with a bounded exit.
+     * @returns {Promise<boolean>}
+     */
     finish(timeoutMs = 1000) {
       if (finishPromise) return finishPromise;
       ending = true;
       finishPromise = new Promise((resolve) => {
         let timer;
+        let settled = false;
+        const finishedDrain = () => settle(true);
         const settle = (drained) => {
+          if (settled) return;
+          settled = true;
           clearTimeout(timer);
           stream.off?.('drain', drain);
+          stream.off?.('drain', finishedDrain);
           stream.off?.('error', failedDuringFinish);
           // Keep the error handler on a borrowed stream: an outstanding fs write
           // can fail after timeout, and must never become an unhandled event.
@@ -75,7 +84,7 @@ export function createTerminalOutput({
         timer = setTimeout(() => settle(false), timeoutMs);
         stream.once?.('error', failedDuringFinish);
         if (borrowed) stream.end(() => settle(true));
-        else stream.once?.('drain', () => settle(true));
+        else stream.once?.('drain', finishedDrain);
       });
       return finishPromise;
     },

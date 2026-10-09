@@ -53,4 +53,16 @@ describe('ongoing work staged policy', () => {
     expect(isWorkOnEverything({ goal: { id: 'other', title: 'Work on everything', status: 'active', standing: true } })).toBe(false);
     expect(isWorkOnEverything({ goal: { id: 'real', title: 'Renamed', status: 'active', goalPackage: { ref: 'work-on-everything' } } })).toBe(true);
   });
+  it('recognizes an unpackaged legacy worklist from its declaration even when the collection read failed', () => {
+    const data = { goal: { id: 'legacy', title: 'Renamed', status: 'paused', goalPackage: null },
+      goalData: { propertySchema: { worklist: { datatype: 'plan-ref-list', editable_by: 'both' as const,
+        collection: { source: 'active-workspace-plans' as const, policy: 'worklist_policy',
+          order: 'priority' as const, selectable: true, defaultSelected: false } } },
+        collections: {} } };
+    expect(isWorkOnEverything(data)).toBe(true);
+    expect(isWorkOnEverything({ ...data, goal: { ...data.goal, goalPackage: { ref: 'other-package' } } })).toBe(false);
+    expect(isWorkOnEverything({ ...data, goalData: { ...data.goalData, propertySchema: {
+      worklist: { ...data.goalData.propertySchema.worklist, collection: {
+        ...data.goalData.propertySchema.worklist.collection, source: 'manual' } } } } })).toBe(false);
+  });
 });

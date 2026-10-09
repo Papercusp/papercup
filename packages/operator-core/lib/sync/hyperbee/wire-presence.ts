@@ -648,6 +648,17 @@ async function buildGossipWriter(
           activeRoutines,
         );
       },
+      getOwnSessions: async () => {
+        // Reuse the workspace snapshot the periodic sessions announcer reads;
+        // a short-lived channel must carry the full current set at pair time.
+        const nowMs = now();
+        const roster = await readSessionRosterSnapshot(handle.workspaceId, nowMs);
+        return roster.entries.map((session) => ({
+          ...session,
+          harness_slug: handle.harnessSlug,
+          last_active_ms: nowMs,
+        }));
+      },
     };
   } catch {
     return undefined; // gh unauthed → no writer (no-op on either plane)
