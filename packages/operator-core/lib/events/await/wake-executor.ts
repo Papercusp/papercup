@@ -4157,14 +4157,11 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       }
     }
 
-    const text = await tagWakeText(
+    const untaggedText = applyInjectionDoor(
       sessionDelivery,
-      applyInjectionDoor(
-        sessionDelivery,
-        await rehydrateForDelivery(sessionDelivery, wakeTurnText(sessionDelivery)),
-      ),
-      tagTurn,
+      await rehydrateForDelivery(sessionDelivery, wakeTurnText(sessionDelivery)),
     );
+    const text = await tagWakeText(sessionDelivery, untaggedText, tagTurn);
 
     // Channel 1b (turn-lifecycle-control Phase 3, P-014): a live INTERACTIVE psu
     // session hosts its pty + control socket in the psu PROCESS (D-006), so our
@@ -4359,11 +4356,17 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
         const launch = (result as { data?: { launch?: { tasks?: Array<{ ownerId?: string }> } }; isError?: boolean }).data?.launch;
         return !('isError' in result && result.isError) && !!launch?.tasks?.some((task) => task.ownerId === input.subscriberId);
       });
+      // The PTY path checks the nonce age at receive and before its final write.
+      // A no-host cold wake instead launches a fresh session, bypassing those
+      // fences; host checks and other delivery gates above may also have waited
+      // beyond the ledger TTL. Re-tag the same delivery-time text at this final
+      // launch boundary so the successor opens with a live ledger row.
+      const successorText = await tagWakeText(sessionDelivery, untaggedText, tagTurn);
       const successorStarted = await launchSuccessor({
         subscriberId: d.subscriberId,
         workspaceId: fresh?.workspaceId ?? sessionDelivery.workspaceId,
         harness: fresh?.harnessSlug ?? readLoopDeliveryMarker(d.payload)?.harness ?? null,
-        wakeText: text.text,
+        wakeText: successorText.text,
         deliveryId: d.id,
         ...(coldWakeNeedsHost ? { carry: 'cold' as const } : {}),
       }).catch((error) => {
