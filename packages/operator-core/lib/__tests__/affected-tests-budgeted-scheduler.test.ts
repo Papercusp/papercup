@@ -1165,6 +1165,24 @@ describe('resolveMemoryBudgetMb', () => {
     ).toThrow(/refusing before launch/);
   });
 
+  // P-006: a requested budget must be resolved before declaring experiment workers.
+  it.each([
+    { hardGiB: 40, budgetMiB: 30 * 1024, workers: 7 },
+    { hardGiB: 44, budgetMiB: 32 * 1024, workers: 8 },
+  ])('resolves eight 4 GiB tokens under a $hardGiB GiB hard envelope to $workers workers', ({ hardGiB, budgetMiB, workers }) => {
+    const workerPolicy = { workerBudget: 8, workerMemoryMb: 4096 };
+    const memoryBudgetMb = resolveMemoryBudgetMb({
+      ...workerPolicy,
+      affectedGlobalMemoryMb: 32 * 1024,
+      taskCgroupMemoryMaxMb: hardGiB * 1024,
+    });
+    expect(memoryBudgetMb).toBe(budgetMiB);
+    expect(resolveTaskBudget({
+      ...workerPolicy, memoryBudgetMb, maxConcurrentTasks: 4,
+      reserveWorkers: 1, taskCgroupPidsMax: 32768,
+    })).toMatchObject({ memoryBudgetMb: budgetMiB, effectiveWorkerBudget: workers, maxConcurrentTasks: 4 });
+  });
+
   it('reads memory.max from the current unified cgroup and treats max/unreadable as unbounded', () => {
     const files = new Map([
       ['/proc/self/cgroup', '0::/user.slice/test.scope\n'],
