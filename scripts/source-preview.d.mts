@@ -73,6 +73,16 @@ export function listGitlinks(repo: any, sha: any): {
 }[];
 /** The shared top-level allowlist, read from the selection library itself. */
 export function allowlistTops(selectionLib?: string): Set<string>;
+/** Conservative allocated source bytes for the exact recursive verifier export.
+ * Count committed blobs, including desktop and private gitlinks, before creating
+ * any destination. Per-file block rounding covers small-file allocation; the
+ * existing disk reservation adds its separate dependency/metadata allowance.
+ * export-ignore can only make the actual archive smaller than this census.
+ */
+export function measureVerifierSourceBytes({ repo, ref }: {
+    repo: any;
+    ref: any;
+}): number;
 /**
  * Materialize `sha` of `repo` into `dest` from git objects only (no working-tree
  * files), recursing into every submodule whose top-level entry the allowlist ships.
