@@ -1317,7 +1317,7 @@ snapshot_operator_source() {
 snapshot_committed_operator_source() {
   # REPO_DIR remains the canonical coordination/fence/dependency donor domain.
   # Only runtime source and desktop execution move to the verified archive.
-  local snapshot_root receipt pinned_deps_copy="$WORK/pinned-deps.sh"
+  local snapshot_root receipt source_bytes pinned_deps_copy="$WORK/pinned-deps.sh"
   local inputs="package.json,package-lock.json,papercusp-desktop/package.json,papercusp-desktop/package-lock.json,scripts/npm-install-safe.mjs,scripts/verify-tauri-headless.sh,scripts/source-preview.mjs,scripts/lib/committed-source-loader.mjs,scripts/restricted-hold-tree-gate.mjs,scripts/lib/spa-require-built.sh,papercusp-desktop/bin/lib/federation-asserts.sh,papercusp-desktop/bin/lib/disk-preflight.sh,papercusp-desktop/bin/lib/pinned-deps.sh,${VERIFY_TAURI_SOURCE_INPUTS:-}"
   [ -n "${VERIFY_TAURI_SOURCE_INPUTS:-}${VERIFY_TAURI_SOURCE_INPUTS_FILE:-}" ] || {
     echo 'FATAL: pinned source requires explicit VERIFY_TAURI_SOURCE_INPUTS or VERIFY_TAURI_SOURCE_INPUTS_FILE tested acceptance paths' >&2
@@ -1327,12 +1327,17 @@ snapshot_committed_operator_source() {
   if [ -n "${VERIFY_TAURI_SOURCE_INPUTS_FILE:-}" ]; then
     input_args+=(--inputs-file "$VERIFY_TAURI_SOURCE_INPUTS_FILE")
   fi
+  source_bytes="$(node "$REPO_DIR/scripts/source-preview.mjs" verifier-measure \
+    --repo "$REPO_DIR" --ref "$VERIFY_TAURI_SOURCE_REF")" || return 1
+  case "$source_bytes" in
+    ''|*[!0-9]*|0) echo 'FATAL: committed verifier source size is unmeasured or empty' >&2; return 1 ;;
+  esac
+  reserve_verifier_disk "$source_bytes" || return $?
   OPERATOR_SOURCE_WORK="$(mktemp -d "$OPERATOR_SNAPSHOT_PARENT/verify-tauri-headless.XXXXXX")" || return 1
   snapshot_root="$OPERATOR_SOURCE_WORK/operator-source"
   receipt="$WORK/verifier-source-receipt.json"
   OPERATOR_SOURCE_ROOT="$snapshot_root"
   write_run_marker "$$" || return 1
-  reserve_verifier_disk 0 || return $?
   node "$REPO_DIR/scripts/source-preview.mjs" verifier-prepare \
     --repo "$REPO_DIR" --ref "$VERIFY_TAURI_SOURCE_REF" --out "$snapshot_root" \
     "${input_args[@]}" --receipt "$receipt" || return 1
