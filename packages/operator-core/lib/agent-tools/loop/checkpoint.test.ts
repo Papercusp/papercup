@@ -3458,6 +3458,36 @@ describe("loop:checkpoint — rowsMode:'merge' and row ids make the drop avoidab
     expect(written).not.toContain('- ✓ [#gate] gate is green —'); // the old wording is GONE, not duplicated
   });
 
+  it('updates a predicted stable-id check to verified while retaining its first-seen age', async () => {
+    const prior = buildPrior([{ id: 'loop-wake-confirmed', claim: 'The loop wake produced a loop-origin turn' }]);
+    getLoopCarryNote.mockResolvedValue(prior);
+    const priorCheck = splitCarryNoteChecks(prior).checks[0]!;
+    const evidence = 'Observed a loop-origin turn after the scheduled fire';
+
+    const b = body(
+      await call({
+        checks: [
+          {
+            id: 'loop-wake-confirmed',
+            claim: 'The loop wake produced a loop-origin turn',
+            recheck: 'read the current session timeline',
+            verified: evidence,
+          },
+        ],
+        rowsMode: 'merge',
+      }),
+    );
+
+    expect(b).toMatchObject({ ok: true, verified: true, checks: 1, rowsMode: 'merge' });
+    expect(b.checksDropped).toBeUndefined();
+    const [, stored] = setLoopCarryNote.mock.calls[0] as [unknown, string];
+    const storedChecks = splitCarryNoteChecks(stored).checks;
+    expect(storedChecks).toHaveLength(1);
+    expect(storedChecks[0]?.verified).toContain(evidence);
+    expect(storedChecks[0]?.sinceMs).toBe(priorCheck.sinceMs);
+    expect(stored).toContain('- ✓ [#loop-wake-confirmed] The loop wake produced a loop-origin turn');
+  });
+
   it('promotes legacy unkeyed rows when a caller adds ids under merge, without duplicating them', async () => {
     getLoopCarryNote.mockResolvedValue(
       buildPrior([
