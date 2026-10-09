@@ -6512,6 +6512,20 @@ export function reservedPlanLaneExclusionSql(
   const idCol = sql.unsafe(
     payloadCol === 'wi.payload' ? 'wi.feature_id' : 'harness_shared.harness_features_consolidated.feature_id',
   );
+  const affirmativeDirectRoute = sql`(
+    LOWER(d.title) LIKE '%self-only execution route%'
+    OR (
+      LOWER(BTRIM(d.title)) = 'direct execution route'
+      AND (
+        LOWER(d.body) LIKE '%implements the plan directly%'
+        OR LOWER(d.body) LIKE '%implement it itself%'
+        OR LOWER(d.body) LIKE '%no fleet%'
+        OR LOWER(d.body) LIKE '%no subagents%'
+      )
+    )
+    OR LOWER(d.body) ~ '(^|[^a-z0-9_-])su-[a-f0-9-]{8,36} is the (single|sole) implementer([[:space:].;]|$)'
+    OR LOWER(d.body) ~ '(^|[^a-z0-9_-])route is this session implementing directly, without (a new )?fleet([[:space:].;]|$)'
+  )`;
   const claimantFleetSlug = authorization.claimantFleetSlug?.trim();
   const authorized = authorization.claimSpecReferencesFleet
     ? sql`TRUE`
@@ -6775,44 +6789,28 @@ export function reservedPlanLaneExclusionSql(
     -- A direct execution master may be ad-hoc, and a solo authorization may have
     -- an ordinary title. Keep this OUTSIDE the plan_item gate. Require affirmative
     -- route language; extract only explicit "WI-N owns execution" clauses, never
-    -- every WI mentioned in the body. The token lookup uses migration 1364's GIN
-    -- index. Item refs, tenant scope and deliberate by-id pickup remain unchanged.
+    -- every WI mentioned in the body. Extract the master set once rather than
+    -- probing the decision token index separately for every candidate. The pair
+    -- includes the workspace so foreign-tenant decisions cannot reserve a row.
+    -- Item refs and deliberate by-id pickup remain unchanged.
     -- The real-PG SSOT agreement suite binds this to migration 1364.
     OR EXISTS (
       SELECT 1 FROM harness_shared.plan_decisions d
       WHERE d.workspace_id = ${wsCol}
+        AND d.plan_slug = ${col}->'plan_item'->>'plan_slug'
         AND (
-          (
-            d.plan_slug = ${col}->'plan_item'->>'plan_slug'
-            AND (
-              cardinality(COALESCE(d.item_refs, ARRAY[]::text[])) = 0
-              OR ${col}->'plan_item'->>'item_id' = ANY(COALESCE(d.item_refs, ARRAY[]::text[]))
-            )
-          )
-          OR (
-            regexp_split_to_array(d.body, '[^A-Za-z0-9_-]+') @> ARRAY[${idCol}]::text[]
-            AND EXISTS (
-              SELECT 1 FROM regexp_matches(d.body,
-                '(^|[^A-Za-z0-9_-])(WI-[0-9]+)[[:space:]]+owns execution([[:space:]]+and([[:space:]]|$)|[.;]|$)', 'g') AS master(ref)
-              WHERE master.ref[2] = ${idCol}
-            )
-          )
+          cardinality(COALESCE(d.item_refs, ARRAY[]::text[])) = 0
+          OR ${col}->'plan_item'->>'item_id' = ANY(COALESCE(d.item_refs, ARRAY[]::text[]))
         )
-        AND (
-          LOWER(d.title) LIKE '%self-only execution route%'
-          OR (
-            LOWER(BTRIM(d.title)) = 'direct execution route'
-            AND (
-              LOWER(d.body) LIKE '%implements the plan directly%'
-              OR LOWER(d.body) LIKE '%implement it itself%'
-              OR LOWER(d.body) LIKE '%no fleet%'
-              OR LOWER(d.body) LIKE '%no subagents%'
-            )
-          )
-          OR LOWER(d.body) ~ '(^|[^a-z0-9_-])su-[a-f0-9-]{8,36} is the (single|sole) implementer([[:space:].;]|$)'
-          OR LOWER(d.body) ~ '(^|[^a-z0-9_-])route is this session implementing directly, without (a new )?fleet([[:space:].;]|$)'
-        )
+        AND ${affirmativeDirectRoute}
     )
+    OR COALESCE((${wsCol}, ${idCol}) IN (
+      SELECT d.workspace_id, master.ref[2]
+        FROM harness_shared.plan_decisions d,
+             LATERAL regexp_matches(d.body,
+               '(^|[^A-Za-z0-9_-])(WI-[0-9]+)[[:space:]]+owns execution([[:space:]]+and([[:space:]]|$)|[.;]|$)', 'g') AS master(ref)
+       WHERE ${affirmativeDirectRoute}
+    ), FALSE)
     -- WI-10006417: an explicit Route A sentence names one session as the plan's
     -- implementer, so it reserves the whole plan even when the decision's itemRefs
     -- describe only its other clauses (D-006's refs omit P-002). The durable
