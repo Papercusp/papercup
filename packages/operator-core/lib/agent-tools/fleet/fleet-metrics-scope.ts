@@ -396,7 +396,7 @@ export async function readFleetMetricSourceItems(scope: ResolvedFleetMetricScope
     harness: scope.scope.harness, includeObservations: true,
     kind,
     ids: identities,
-    payloadProjection: 'fleetMetrics',
+    payloadProjection: 'fleetMetricsCensus',
   });
 }
 

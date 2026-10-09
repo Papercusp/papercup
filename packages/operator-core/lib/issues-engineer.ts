@@ -864,14 +864,14 @@ export function issueListColumns(
   if (filter.includeBody === false && filter.includePayload === false) {
     return filter.includeWatchdogKey === true ? ISSUE_COLS_BODYLESS_WATCHDOG_KEY_ONLY : ISSUE_COLS_BODYLESS_PAYLOADLESS;
   }
-  if (filter.includeBody === false) return projectWorkItemColumns(ISSUE_COLS_BODYLESS, filter.payloadProjection);
+  if (filter.includeBody === false) return projectWorkItemColumns(ISSUE_COLS_BODYLESS, filter.payloadProjection, 'state');
   // Honoured on BOTH payload-less branches on purpose: a caller that keeps `body`
   // but drops payload would otherwise set the flag and silently still get no key —
   // the same silent-degradation shape `includePayload` itself is documented for.
   if (filter.includePayload === false) {
     return filter.includeWatchdogKey === true ? ISSUE_COLS_WATCHDOG_KEY_ONLY : ISSUE_COLS_PAYLOADLESS;
   }
-  return projectWorkItemColumns(ISSUE_COLS, filter.payloadProjection);
+  return projectWorkItemColumns(ISSUE_COLS, filter.payloadProjection, 'state');
 }
 
 /** Reuse the already projected payload instead of detoasting the view's raw
@@ -883,12 +883,12 @@ function issueListQueryProjection(filter: Parameters<typeof issueListColumns>[0]
   join: string;
 } {
   const columns = issueListColumns(filter);
-  if (filter.payloadProjection !== 'fleetMetrics' || filter.includePayload === false) {
+  if (!['fleetMetrics', 'fleetMetricsCensus'].includes(filter.payloadProjection ?? '') || filter.includePayload === false) {
     return { columns, join: '' };
   }
   // Derive the expression from the existing shared projection policy; an
   // archival-key change must reach both physical work-item families together.
-  const payload = projectWorkItemColumns('payload,', 'fleetMetrics').replace(/ AS payload,$/, '');
+  const payload = projectWorkItemColumns('payload,', filter.payloadProjection, 'state').replace(/ AS payload,$/, '');
   return {
     columns: columns.replace(`${payload} AS payload`, '_fleet_metric_payload.value AS payload')
       .replace(/(^|,\s*)severity(\s*,)/, "$1COALESCE(_fleet_metric_ei.metadata->>'severity', 'minor') AS severity$2")
