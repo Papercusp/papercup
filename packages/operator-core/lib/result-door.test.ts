@@ -3363,6 +3363,58 @@ describe('applyResultDoor', () => {
       expect(pointer).not.toContain('TOOL ITSELF already truncated');
     });
 
+    it.each([
+      'entries_truncated',
+      'thread_metadata_truncated',
+      'thread_entry_truncated',
+      'summary_truncated',
+      'body_truncated',
+      'sections_truncated',
+      'to_truncated',
+    ])('passes through documented coord:thread continuation marker %s', (marker) => {
+      const result = {
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify({ entries: [{ msg_id: 'm1' }], [marker]: true }),
+        }],
+      };
+
+      expect(applyResultDoor(result, { toolName: 'coord:thread', workspaceId: 'ws-1', runId: RUN_ID })).toBe(result);
+    });
+
+    it('passes through documented coord:thread markers nested through tools:invoke', () => {
+      const result = {
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify({ entries_truncated: true, thread_metadata_truncated: true }),
+        }],
+      };
+
+      expect(applyResultDoor(result, {
+        toolName: 'tools:invoke',
+        nestedTargetToolName: 'coord:thread',
+        workspaceId: 'ws-1',
+        runId: RUN_ID,
+      })).toBe(result);
+    });
+
+    it('still marks an unknown coord:thread truncation marker incomplete', () => {
+      const result = {
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify({ entries: [{ msg_id: 'm1' }], unknown_truncated: true }),
+        }],
+      };
+      const doored = applyResultDoor(result, { toolName: 'coord:thread', workspaceId: 'ws-1', runId: RUN_ID });
+      const envelope = JSON.parse((doored.content[0] as { text: string }).text);
+
+      expect(envelope).toMatchObject({
+        state: 'incomplete',
+        incomplete: { reason: 'under-budget-partial-result', recoverable: false },
+      });
+      expect(envelope.incomplete.note).toContain('unknown_truncated');
+    });
+
     it('a true truncation marker under the door budget returns an incomplete envelope', () => {
       const result = {
         content: [{ type: 'text' as const, text: '{"entries":[{"id":"m1","body_truncated":true}]}' }],
