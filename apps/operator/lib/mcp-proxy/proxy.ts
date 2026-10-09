@@ -2410,6 +2410,8 @@ export function coordSendToolNames(
 
 interface ImprovementsCaptureIdentity {
   improvementsCapture: boolean;
+  /** Read-only duplicate checks bypass the persisted-capture lane. */
+  readOnlyDuplicateCheck: boolean;
   /** Incident reports need one capture slot outside normal capture saturation. */
   toolFailureCapture: boolean;
   /** Bounded, argument-free tool identities safe to expose in health + failure telemetry. */
@@ -2426,12 +2428,29 @@ function classifyImprovementsCaptureCall(
   requestPath?: string,
 ): ImprovementsCaptureIdentity {
   if (isCriticalSessionLifecyclePath(requestPath)) {
-    return { improvementsCapture: false, toolFailureCapture: false, tools: [] };
+    return {
+      improvementsCapture: false,
+      readOnlyDuplicateCheck: false,
+      toolFailureCapture: false,
+      tools: [],
+    };
   }
   try {
     const parsed = JSON.parse(rawBody.toString("utf8")) as unknown;
     const messages = Array.isArray(parsed) ? parsed : [parsed];
     let toolFailureCapture = false;
+    let readOnlyDuplicateCheck = true;
+    const isReadOnlyDuplicateCheckArgs = (args: unknown): boolean => {
+      if (!args || typeof args !== "object" || Array.isArray(args))
+        return false;
+      const input = args as {
+        checkDuplicatesOnly?: unknown;
+        toolFailure?: unknown;
+      };
+      return (
+        input.checkDuplicatesOnly === true && input.toolFailure === undefined
+      );
+    };
     const isCapture = messages.every((message) => {
       if (!message || typeof message !== "object") return false;
       const call = message as {
@@ -2443,6 +2462,8 @@ function classifyImprovementsCaptureCall(
       const calledTool = normalizeMcpName(call.params.name);
       if (calledTool === IMPROVEMENTS_CAPTURE_TOOL_NAME) {
         const args = call.params.arguments;
+        readOnlyDuplicateCheck =
+          readOnlyDuplicateCheck && isReadOnlyDuplicateCheckArgs(args);
         if (args && typeof args === "object" && !Array.isArray(args)) {
           const toolFailure = (args as { toolFailure?: unknown }).toolFailure;
           if (toolFailure && typeof toolFailure === "object")
@@ -2464,6 +2485,9 @@ function classifyImprovementsCaptureCall(
         normalizeMcpName(target) === IMPROVEMENTS_CAPTURE_TOOL_NAME;
       if (isDeferredCapture) {
         const deferredArgs = (invokeArgs as { args?: unknown }).args;
+        readOnlyDuplicateCheck =
+          readOnlyDuplicateCheck &&
+          isReadOnlyDuplicateCheckArgs(deferredArgs);
         if (
           deferredArgs &&
           typeof deferredArgs === "object" &&
@@ -2480,12 +2504,24 @@ function classifyImprovementsCaptureCall(
     return isCapture && messages.length > 0
       ? {
           improvementsCapture: true,
+          readOnlyDuplicateCheck:
+            readOnlyDuplicateCheck && !toolFailureCapture,
           toolFailureCapture,
           tools: ["improvements:capture"],
         }
-      : { improvementsCapture: false, toolFailureCapture: false, tools: [] };
+      : {
+          improvementsCapture: false,
+          readOnlyDuplicateCheck: false,
+          toolFailureCapture: false,
+          tools: [],
+        };
   } catch {
-    return { improvementsCapture: false, toolFailureCapture: false, tools: [] };
+    return {
+      improvementsCapture: false,
+      readOnlyDuplicateCheck: false,
+      toolFailureCapture: false,
+      tools: [],
+    };
   }
 }
 
@@ -3795,7 +3831,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
         // create (3,450 simultaneous held requests, measured 2026-08-01).
         const inFlightNow = inFlightStarts.size;
         const requestTraceId = randomUUID();
-        const reservedControlPlane = isReservedControlPlaneCall(
+        const reservedControlPlaneBase = isReservedControlPlaneCall(
           rawBody,
           req.url,
         );
@@ -3808,10 +3844,17 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           rawBody,
           req.url,
         );
+        const readOnlyDuplicateCheck =
+          improvementsCaptureIdentity.readOnlyDuplicateCheck;
+        // A no-persistence duplicate check should not sit behind persisted captures. Reuse the
+        // existing bounded control-plane pool instead of adding another capacity/config lane.
+        const reservedControlPlane =
+          reservedControlPlaneBase || readOnlyDuplicateCheck;
         const coordSend = coordSendIdentity.coordSend;
         const coordSendTools = coordSendIdentity.tools;
         const improvementsCapture =
-          improvementsCaptureIdentity.improvementsCapture;
+          improvementsCaptureIdentity.improvementsCapture &&
+          !readOnlyDuplicateCheck;
         const toolFailureCapture =
           improvementsCaptureIdentity.toolFailureCapture;
         const improvementsCaptureTools = improvementsCaptureIdentity.tools;
