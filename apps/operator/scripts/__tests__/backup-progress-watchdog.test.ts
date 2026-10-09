@@ -38,7 +38,9 @@ describe('papercusp database-backup progress watchdog', () => {
 
   it('lets archive growth extend the floor but never the absolute ceiling', () => {
     const body = functionBody('run_bounded_watched');
-    expect(body).toContain('current_bytes=$(du -sb "$progress_path"');
+    expect(body).toContain('current_bytes=$(sudo -n -u postgres du -sb "$progress_path"');
+    expect(body).not.toContain('current_bytes=$(du -sb "$progress_path"');
+    expect(body).not.toContain('current_bytes=${current_bytes:-0}');
     expect(body).toContain('[ "$current_bytes" -gt "$last_bytes" ]');
     expect(body).toContain('last_progress_epoch="$now_epoch"');
     expect(body).toContain('[ "$elapsed" -ge "$max_secs" ]');
@@ -71,30 +73,50 @@ KILL_GRACE_SEC=0
 fs_avail_gb() { echo 999999; }
 log() { printf '%s\\n' "$*" >&2; }
 reap_own_stragglers() { :; }
+sudo() {
+  printf '%s\\n' "$*" >>"$SUDO_LOG"
+  [ "$1" = "-n" ] && [ "$2" = "-u" ] && [ "$3" = "postgres" ] || return 125
+  shift 3
+  [ "\${FAIL_PROGRESS_MEASURE:-0}" != "1" ] || return 1
+  command "$@"
+}
 ${watchdogSource()}
 case "$1" in
   growing)
     run_bounded_watched 2 8 "$PROGRESS_PATH" bash -c 'for i in 1 2 3 4; do printf x >> "$PROGRESS_PATH"; sleep 1; done'
     ;;
   stalled)
+    : > "$PROGRESS_PATH"
     run_bounded_watched 2 8 "$PROGRESS_PATH" bash -c 'sleep 20'
     ;;
   ceiling)
+    : > "$PROGRESS_PATH"
     run_bounded_watched 2 4 "$PROGRESS_PATH" bash -c 'for i in $(seq 1 20); do printf x >> "$PROGRESS_PATH"; sleep 1; done'
+    ;;
+  unmeasurable)
+    : > "$PROGRESS_PATH"
+    run_bounded_watched 2 8 "$PROGRESS_PATH" bash -c 'sleep 20'
     ;;
 esac
 `,
       );
       chmodSync(harness, 0o755);
-      const run = (mode: string) => spawnSync('bash', [harness, mode], {
+      const sudoLog = join(root, 'sudo.log');
+      const run = (mode: string, failMeasurement = false) => spawnSync('bash', [harness, mode], {
         encoding: 'utf8',
-        env: { ...process.env, PROGRESS_PATH: progress },
+        env: {
+          ...process.env,
+          PROGRESS_PATH: progress,
+          SUDO_LOG: sudoLog,
+          FAIL_PROGRESS_MEASURE: failMeasurement ? '1' : '0',
+        },
         timeout: 15_000,
       });
 
       const growing = run('growing');
       expect(growing.status, growing.stderr).toBe(0);
       expect(readFileSync(progress, 'utf8')).toHaveLength(4);
+      expect(readFileSync(sudoLog, 'utf8')).toContain('-n -u postgres du -sb');
 
       rmSync(progress, { force: true });
       const stalled = run('stalled');
@@ -105,6 +127,14 @@ esac
       const ceiling = run('ceiling');
       expect(ceiling.status, ceiling.stderr).not.toBe(0);
       expect(ceiling.stderr).toContain('absolute watchdog ceiling 4s reached');
+
+      rmSync(progress, { force: true });
+      rmSync(sudoLog, { force: true });
+      const unmeasurable = run('unmeasurable', true);
+      expect(unmeasurable.status, unmeasurable.stderr).not.toBe(0);
+      expect(unmeasurable.stderr).toContain('unable to measure archive progress');
+      expect(unmeasurable.stderr).not.toContain('killing stalled producer');
+      expect(readFileSync(sudoLog, 'utf8')).toContain('-n -u postgres du -sb');
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
