@@ -35,7 +35,7 @@ function fixture(opts = options) {
   const lifecycle: BenchHarnessOps = {
     now: () => clock,
     createHarness: vi.fn(async () => handle), addFeature: vi.fn(async () => {}),
-    driveToDone: vi.fn(async () => ({ disposition: 'error' })),
+    driveToDone: vi.fn(async () => ({ disposition: 'error' as const })),
     collectCost: vi.fn(async () => ({ costUsd: 0.25, tokensIn: 20, tokensOut: 10, turns: 1 })),
     teardown: vi.fn(async () => {}),
   };
@@ -43,7 +43,7 @@ function fixture(opts = options) {
     admit: vi.fn(async () => ({ admitted: true, receiptRef: 'budget:reservation-1' })),
     launch: vi.fn(async () => ({ agentStarted: true, tasks: [{ taskId: row.taskId, ownerId: 'su-native' }] })),
     getTask: vi.fn(async () => row), listTasks: vi.fn(async () => [row]),
-    killTask: vi.fn(async id => ({ ok: true, taskId: id, action: 'kill' })),
+    killTask: vi.fn(async (id: string) => ({ ok: true as const, taskId: id, action: 'kill' })),
     sleep: vi.fn(async ms => { clock += ms; }),
     readCompletion: vi.fn(async () => null), readIdentity: vi.fn(async () => identity),
   };

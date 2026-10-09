@@ -27,7 +27,7 @@ export interface CurrentSuBenchOptions extends LiveBenchHarnessOpts {
   runId: string;
   agent: 'codex' | 'claude';
   model: string;
-  effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
+  effort: NonNullable<NonNullable<LaunchArgs['members']>[number]['effort']>;
   account: string;
   signal?: AbortSignal;
 }
