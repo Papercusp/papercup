@@ -11,8 +11,21 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, afterEach, describe, expect, it } from 'vitest';
-import capabilityGit, { createScratchClone, emptyPathspecNote, runGit } from './git';
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
+import { capabilityBwrapWorks } from './exec-sandbox';
+import capabilityGit, { createScratchClone, emptyPathspecNote, runGit, runGitReadOnlyEvidence } from './git';
+
+const spawnCalls = vi.hoisted(() => vi.fn());
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:child_process')>();
+  return {
+    ...actual,
+    spawn: (...args: Parameters<typeof actual.spawn>) => {
+      spawnCalls(...args);
+      return actual.spawn(...args);
+    },
+  };
+});
 
 const STATE = mkdtempSync(join(tmpdir(), 'cap-git-'));
 const never = new AbortController().signal;
@@ -45,6 +58,17 @@ describe('runGit', () => {
     const r = await runGit(['--version'], STATE, STATE, never);
     expect(r.code).toBe(0);
     expect(r.output).toContain('git version');
+  });
+});
+
+describe('runGitReadOnlyEvidence', () => {
+  it.skipIf(!capabilityBwrapWorks())('uses network-denied bwrap without the SRT mux', async () => {
+    spawnCalls.mockClear();
+    const result = await runGitReadOnlyEvidence(['--version'], STATE, STATE, never, true, true);
+    const invocation = spawnCalls.mock.calls.at(-1);
+    expect(result.code).toBe(0);
+    expect(invocation?.[0]).toMatch(/bwrap/);
+    expect(invocation?.[1]).toContain('--unshare-net');
   });
 });
 
