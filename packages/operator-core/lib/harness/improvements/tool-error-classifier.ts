@@ -185,6 +185,11 @@ export const TOOL_ERROR_RULES: readonly ToolErrorRule[] = [
   },
   {
     class: 'caller',
+    messagePattern: "capability:bash cwd '[^']+' (does not exist|exists but is not a directory)",
+    why: 'capability:bash preflights an explicit cwd before spawning; a missing path or file passed as cwd is caller input, not a structural tool failure',
+  },
+  {
+    class: 'caller',
     errorCodes: ['native_tool_owner_unsupported_capability'],
     statuses: ['native_tool_owner_unsupported_capability'],
     messagePattern: '^native_tool_owner_unsupported_capability$',
