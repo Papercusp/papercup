@@ -444,6 +444,8 @@ export interface StructuredObservation {
    * ledger for audit, but scorecard reads exclude it from the live sample by default.
    */
   supersedes?: string;
+  /** Preserved pre-repair scorecard for a comparable re-grade; never a correction edge. */
+  baselineRef?: string;
   /** A deliberate withdrawal of this scorecard, preserving the original evidence. */
   retracted?: ScorecardRetraction;
   /** Deterministic instrument snapshots attached by scorecards:emit/evaluate. */
@@ -1602,6 +1604,9 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
   }
   if (typeof o.supersedes === 'string' && o.supersedes.trim()) {
     out.supersedes = o.supersedes;
+  }
+  if (typeof o.baselineRef === 'string' && o.baselineRef.trim()) {
+    out.baselineRef = o.baselineRef;
   }
   if (o.retracted && typeof o.retracted === 'object' && !Array.isArray(o.retracted)) {
     const r = o.retracted as Record<string, unknown>;
