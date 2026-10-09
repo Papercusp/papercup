@@ -632,8 +632,8 @@ pub fn mouse_event_wanted(m: &MouseEvent) -> bool {
     )
 }
 
-/// Opt-in diagnostic trace for the model-picker PTY investigation. It records
-/// only lowercase `m` key events and terminal resizes; ordinary typed content
+/// Opt-in diagnostic trace for input-latency investigations. It records
+/// only lowercase `m`, Enter key events and terminal resizes; ordinary typed content
 /// is never written. The test harness writes PTY-send records to the same path.
 pub fn trace_input_detail(stage: &str, detail: &str) {
     static PATH: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
@@ -661,12 +661,13 @@ pub fn trace_input_detail(stage: &str, detail: &str) {
     }
 }
 
-/// Trace only the investigated picker key and resize events, which are the
+/// Trace only the investigated picker/send keys and resize events, which are the
 /// inputs needed to distinguish the PTY write from crossterm parsing.
 pub fn trace_input_event(stage: &str, event: &Event) {
     let detail = match event {
         Event::Key(key)
-            if key.code == KeyCode::Char('m') && key.modifiers == KeyModifiers::NONE =>
+            if matches!(key.code, KeyCode::Char('m') | KeyCode::Enter)
+                && key.modifiers == KeyModifiers::NONE =>
         {
             format!(
                 "event=key code={:?} modifiers={:?} kind={:?}",

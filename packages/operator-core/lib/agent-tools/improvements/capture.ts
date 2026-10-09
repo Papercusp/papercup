@@ -1256,8 +1256,9 @@ export default defineTool({
     const foundDuring = clampText(args.foundDuring, LIMITS.LABEL);
     const foundDuringTruncated = typeof args.foundDuring === 'string' && args.foundDuring.length > LIMITS.LABEL;
     const captureText = deriveToolFailureCaptureText(args);
-    const normalizedToolFailure = args.toolFailure
-      ? normalizeSuspectedToolFailure(args.toolFailure as SuspectedToolFailure)
+    const reportedToolFailure = args.toolFailure;
+    const normalizedToolFailure = reportedToolFailure
+      ? normalizeSuspectedToolFailure(reportedToolFailure as SuspectedToolFailure)
       : undefined;
     // EI-22752568870730930: the process receiving this capture may not be the
     // runtime that produced the report (for example, a report exercised against
@@ -1271,12 +1272,13 @@ export default defineTool({
       const observed = args.observedRuntime;
       let provenance: RuntimeProvenance['observedTargetRuntime']['provenance'] = 'caller-supplied';
       let observedTarget = { ...observed };
-      if (observed.testRunIds !== undefined) {
+      const testRunIds = observed.testRunIds;
+      if (testRunIds !== undefined) {
         const trusted = await timing.measure(
           'metadata.trustedTestRunProvenance',
           () =>
             readTrustedHarnessTestRunProvenance({
-              testRunIds: observed.testRunIds,
+              testRunIds,
               workspaceId: observed.workspaceId!,
               harnessSlug: observed.harnessSlug!,
               runGroupId: observed.runGroupId!,
@@ -1470,8 +1472,8 @@ export default defineTool({
           !args.observedRuntime && !args.paths?.length && !args.subTopic && !args.foundDuring &&
           args.assign_to === undefined && captureOrigin === undefined;
         if (
-          normalizedToolFailure && args.toolFailure &&
-          toolFailureSubsystemForCode(args.toolFailure.errorCode) &&
+          normalizedToolFailure && reportedToolFailure &&
+          toolFailureSubsystemForCode(reportedToolFailure.errorCode) &&
           !normalizedToolFailure.direct && onlyStructuredCaptureFields
         ) {
           const friction = await timing.measure('core.toolInvocationFriction', () => captureToolInvocationFriction({
@@ -1481,7 +1483,7 @@ export default defineTool({
               : '*'),
             ownerId: id.ownerId,
             invokedAt: new Date().toISOString(),
-            failure: args.toolFailure,
+            failure: reportedToolFailure,
             title: captureText.title,
             body: bodyWithStaleness,
             scope: captureScope ?? undefined,
@@ -1633,6 +1635,7 @@ export default defineTool({
       // Directed @-mention — only when we actually CREATED a claimable item (not a
       // checkDuplicatesOnly probe / coalesced row / observation-lane reflection).
       const captured = result as { created?: boolean; issue?: { id: string; title?: string } };
+      const capturedIssue = captured.issue;
       // su-loop-capability-parity P-005 (D-009): an SU session's IDEATE-pass FEATURE origination
       // earns a routed-ledger provenance row (origin='su-ideate') so it rides the SAME
       // grade/outcome/priming machinery Scout's ideas do — WITHOUT skewing Scout's per-lens
@@ -1645,9 +1648,9 @@ export default defineTool({
         args.kind === 'feature' &&
         args.lane !== 'observation' &&
         captured.created &&
-        captured.issue?.id
+        capturedIssue?.id
       ) {
-        const featureId = captured.issue.id;
+        const featureId = capturedIssue.id;
         const ledgerHarness =
           ctxHarness ?? (captureScope?.startsWith('harness:') ? captureScope.slice('harness:'.length) : 'papercusp');
         try {
@@ -1661,7 +1664,7 @@ export default defineTool({
             rail: 'improvement',
             routedRef: `wi:${featureId}`,
             harnessSlug: ledgerHarness,
-            title: captured.issue.title ?? captureText.title,
+            title: capturedIssue.title ?? captureText.title,
             // EI-10607: the pattern refs this idea grounds on — the ONE field that lets an
             // su idea appear as `grounded` in observationsImpact. Omitted when the caller
             // declared none, so the row shape is unchanged for an ungrounded filing.
@@ -1693,9 +1696,9 @@ export default defineTool({
         reviewResult.reviewState === 'blocked' &&
         !reviewResult.agentReviewFailure &&
         captured.created &&
-        captured.issue?.id,
+        capturedIssue?.id,
       );
-      if (canEnrollReview && captured.issue?.id) {
+      if (canEnrollReview && capturedIssue?.id) {
         let enrollmentSucceeded = false;
         const recordReviewFailure = async (phase: AgentReviewFailure['phase'], error: unknown) => {
           const failure: AgentReviewFailure = {
@@ -1708,12 +1711,12 @@ export default defineTool({
           // mutated the payload before throwing, and a failed reopen leaves state
           // uncertain. Both cleanup legs are best-effort: the committed capture and
           // the failure metadata must still be returned to the caller.
-          await timing.measure('wrapper.agentReview.repark', () => setCaptureReviewState(captured.issue!.id, 'blocked', {
+          await timing.measure('wrapper.agentReview.repark', () => setCaptureReviewState(capturedIssue.id, 'blocked', {
             harness: reviewHarness,
             by: id.ownerId,
             reason: `agent-review-${phase}-failed`,
           })).catch(() => undefined);
-          await timing.measure('wrapper.agentReview.recordFailure', () => recordCaptureReviewFailure(captured.issue!.id, failure, {
+          await timing.measure('wrapper.agentReview.recordFailure', () => recordCaptureReviewFailure(capturedIssue.id, failure, {
             submittedBy: id.ownerId,
             harness: reviewHarness,
           })).catch(() => undefined);
@@ -1722,7 +1725,7 @@ export default defineTool({
 
         try {
           const enrolled = await timing.measure('wrapper.agentReview.enroll', () => enterAgentReview({
-            id: captured.issue.id,
+            id: capturedIssue.id,
             submittedBy: id.ownerId,
             harnessSlug: reviewHarness,
             workspaceId: resolveConcreteWorkspaceId(id.workspaceId, ctxWorkspace),
@@ -1731,7 +1734,7 @@ export default defineTool({
             throw new Error(`agent-review enrollment was not entered${enrolled.reason ? `: ${enrolled.reason}` : ''}`);
           }
           enrollmentSucceeded = true;
-          const reopened = await timing.measure('wrapper.agentReview.reopen', () => setCaptureReviewState(captured.issue.id, 'open', {
+          const reopened = await timing.measure('wrapper.agentReview.reopen', () => setCaptureReviewState(capturedIssue.id, 'open', {
             harness: reviewHarness,
             by: id.ownerId,
             reason: 'agent-review enrollment succeeded',
@@ -1753,12 +1756,13 @@ export default defineTool({
       // created (not a coalesced/check-only result). Best-effort per target: one bad targetId
       // never fails the capture, and a partial failure is reported (not silent).
       let linked: { targetId: string; ok: boolean; error?: string }[] | undefined;
-      if (observation?.linkTo?.length && captured.created && captured.issue?.id) {
-        const sourceId = captured.issue.id;
+      const observationTargets = observation?.linkTo;
+      if (observationTargets?.length && captured.created && capturedIssue?.id) {
+        const sourceId = capturedIssue.id;
         linked = await timing.measure(
           'wrapper.observation.linkTargets',
           () => Promise.all(
-            observation.linkTo.map(async (l) => {
+            observationTargets.map(async (l) => {
               try {
                 const dst = await timing.measure('wrapper.observation.resolveTarget', () =>
                   resolveWorkItemRef(l.targetId, l.targetHarness));
@@ -1791,16 +1795,17 @@ export default defineTool({
       // preserved: checked-nothing-similar.
       const selfId = captured.issue?.id;
       const priorArt = selfId ? priorArtRaw?.filter((p) => p.ref !== `wi:${selfId}` && p.ref !== selfId) : priorArtRaw;
+      const agentAddressees = args.notifyAgents;
       const notified =
-        args.notifyAgents?.length && captured.created && captured.issue?.id && effectiveLane !== 'observation'
+        agentAddressees?.length && captured.created && capturedIssue?.id && effectiveLane !== 'observation'
           ? await timing.measure('wrapper.notifyAgents', () => notifyAgents(id, {
-              addressees: args.notifyAgents,
-              objectRef: issueRef(captured.issue.id),
-              summary: `🔖 ${id.ownerLabel} tagged you on ${captured.issue.id}: ${(captured.issue.title ?? captureText.title).slice(0, 80)}`,
+              addressees: agentAddressees,
+              objectRef: issueRef(capturedIssue.id),
+              summary: `🔖 ${id.ownerLabel} tagged you on ${capturedIssue.id}: ${(capturedIssue.title ?? captureText.title).slice(0, 80)}`,
               body:
-                `${id.ownerLabel} tagged you on improvement ${captured.issue.id}: ${captured.issue.title ?? captureText.title}` +
+                `${id.ownerLabel} tagged you on improvement ${capturedIssue.id}: ${capturedIssue.title ?? captureText.title}` +
                 (captureText.body ? `\n\n${captureText.body.slice(0, 600)}` : '') +
-                `\n\n— it's on your radar: work_items:get ${captured.issue.id} (comment / claim there).`,
+                `\n\n— it's on your radar: work_items:get ${capturedIssue.id} (comment / claim there).`,
               harnessSlug: captureScope?.startsWith('harness:') ? captureScope.slice('harness:'.length) : undefined,
             })).catch(() => null)
           : null;

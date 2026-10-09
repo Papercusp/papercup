@@ -2134,7 +2134,9 @@ async fn run<B: Backend>(
             Err(mpsc::error::TryRecvError::Empty) => {
                 if render_deferred {
                     render_deferred = false;
+                    event::trace_input_detail("deferred-draw-start", "queue=0");
                     terminal.draw(|f| ui::draw(f, &app))?;
+                    event::trace_input_detail("deferred-draw-complete", "queue=0");
                 }
                 match rx.recv().await {
                     Some(ev) => ev,
@@ -2148,6 +2150,7 @@ async fn run<B: Backend>(
         let prior_harness = app.harness.clone();
         let prior_context_target = app.context_projection_target.clone();
         let is_key = matches!(ev, Event::Key(_));
+        let is_enter = matches!(&ev, Event::Key(key) if key.code == crossterm::event::KeyCode::Enter);
         let is_tick = matches!(ev, Event::Tick);
         let restoring_view = matches!(ev, Event::ViewStateLoaded(_));
         // The operator voice socket dropped (P-013 reconnect-on-drop): detect it
@@ -2167,6 +2170,9 @@ async fn run<B: Backend>(
         );
         event::trace_input_event("reducer-dispatch", &ev);
         let action = app.update(ev);
+        if is_enter {
+            event::trace_input_detail("enter-reduced", &format!("queued={}", rx.len()));
+        }
         if model_picker_key {
             let picker = app
                 .session_picker
@@ -2335,9 +2341,12 @@ async fn run<B: Backend>(
                     // queued: its release copies from that frame (WI-10006861).
                     if app.draw_now(rx.is_empty()) {
                         render_deferred = false;
+                        event::trace_input_detail("draw-start", &format!("queued={}", rx.len()));
                         terminal.draw(|f| ui::draw(f, &app))?;
+                        event::trace_input_detail("draw-complete", &format!("queued={}", rx.len()));
                     } else {
                         render_deferred = true;
+                        event::trace_input_detail("draw-deferred", &format!("queued={}", rx.len()));
                     }
                 }
                 // P-007 transcript copy: emit the OSC 52 sequence the reducer
@@ -2947,7 +2956,9 @@ async fn run<B: Backend>(
                         (pending, existing_chat),
                         session_tx,
                     ));
+                    event::trace_input_detail("initial-send-draw-start", &format!("queued={}", rx.len()));
                     terminal.draw(|f| ui::draw(f, &app))?;
+                    event::trace_input_detail("initial-send-draw-complete", &format!("queued={}", rx.len()));
                 }
                 Action::OpenContinuedSuSession {
                     harness,

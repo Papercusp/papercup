@@ -594,6 +594,50 @@ describe('WI-10006159 solo decision reservations', () => {
     expect(await floors('WI-10005829')).not.toContain('reserved-plan-lane');
     expect((await wi.claimNextIssueWorkItem({ harness: H, assignee: 'generic-drainer' }, WS))?.id).toBe('WI-10005829');
   });
+
+  it('keeps fixed-cohort decision reservations identical while excluding unrelated decision tokens', async () => {
+    await decision('Owner authorizes direct AUTO execution',
+      'Route is this session implementing directly, without a new fleet. WI-300001 owns execution. ' +
+      'Preserve WI-300003; WI-300004 owns execution only if approved.');
+    await seed('WI-300001', { kind: 'task' });
+    await seed('WI-300002', { kind: 'task', payload: { plan_item: {
+      plan_slug: 'solo-route-plan', item_id: 'P-002', harness_slug: H,
+    } } });
+    await seed('WI-300003', { kind: 'task' });
+    await seed('WI-300004', { kind: 'task' });
+    await db.sql`
+      INSERT INTO harness_shared.plan_decisions
+        (workspace_id, harness_slug, plan_slug, decision_id, seq, title, body, item_refs)
+      SELECT ${WS}, ${H}, 'solo-route-plan', 'D-unrelated-' || n, 100 + n,
+             'Self-only execution route', 'WI-' || (400000 + n) || ' owns execution.', ARRAY['P-other']::text[]
+        FROM generate_series(1, 20) n
+    `;
+    const ids = ['WI-300001', 'WI-300002', 'WI-300003', 'WI-300004'];
+    const ordinary = wi.reservedPlanLaneExclusionSql(db.sql, 'generic-drainer');
+    const scoped = wi.reservedPlanLaneExclusionSql(db.sql, 'generic-drainer', 'wi.payload', {
+      decisionCandidates: { workspaceId: WS, ids },
+    });
+    const read = (predicate: ReturnType<typeof wi.reservedPlanLaneExclusionSql>) => db.sql<{ feature_id: string }[]>`
+      SELECT wi.feature_id FROM harness_shared.work_items wi
+       WHERE wi.workspace_id = ${WS} AND wi.feature_id = ANY(${ids}::text[]) AND ${predicate}
+       ORDER BY wi.feature_id
+    `;
+    expect(await read(scoped)).toEqual(await read(ordinary));
+    expect((await read(scoped)).map(row => row.feature_id)).toEqual(['WI-300003', 'WI-300004']);
+    const attributed = await wi.explainIssueClaimFloors(H, ids, { assignee: 'generic-drainer', includeAllFloors: true });
+    expect(attributed.filter(row => row.failedFloors?.includes('plan-lane')).map(row => row.id))
+      .toEqual(['WI-300001', 'WI-300002']);
+    const plans = await db.sql`EXPLAIN (ANALYZE, FORMAT JSON)
+      SELECT wi.feature_id FROM harness_shared.work_items wi
+       WHERE wi.workspace_id = ${WS} AND wi.feature_id = ANY(${ids}::text[]) AND ${scoped}`;
+    type PlanNode = { 'Function Name'?: string; 'Actual Loops': number; Plans?: PlanNode[] };
+    const nodes: PlanNode[] = [];
+    const visit = (node: PlanNode) => { nodes.push(node); node.Plans?.forEach(visit); };
+    visit(plans[0]['QUERY PLAN'][0].Plan);
+    const extractions = nodes.filter(node => node['Function Name'] === 'regexp_matches');
+    expect(extractions.length).toBeGreaterThan(0);
+    expect(extractions.every(node => node['Actual Loops'] <= 1)).toBe(true);
+  });
 });
 
 describe('canonical plan-item sibling claim guard (EI-21151083448505391)', () => {

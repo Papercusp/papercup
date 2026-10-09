@@ -303,13 +303,15 @@ export default defineTool({
     createdSince: z
       .string()
       .max(40)
+      .datetime({ offset: true })
       .optional()
-      .describe("ISO timestamp — rows created at or after it (INCLUSIVE, like plans:list)."),
+      .describe("ISO 8601 timestamp with timezone — rows created at or after it (INCLUSIVE, like plans:list)."),
     updatedSince: z
       .string()
       .max(40)
+      .datetime({ offset: true })
       .optional()
-      .describe("ISO timestamp — rows updated at or after it (INCLUSIVE, like plans:list)."),
+      .describe("ISO 8601 timestamp with timezone — rows updated at or after it (INCLUSIVE, like plans:list)."),
     sourcePlanSlug: z
       .string()
       .max(120)

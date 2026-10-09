@@ -30,8 +30,12 @@ documents:
   - "packages/operator-core/lib/task-manager/store.ts"
   - "packages/operator-core/lib/task-manager/control.ts"
   - "packages/operator-core/lib/task-manager/types.ts"
+  - "packages/operator-core/lib/agent-tools/capability/browser-session.ts"
+  - "packages/operator-core/lib/agent-tools/capability/fetch.ts"
+  - "packages/operator-core/lib/agent-tools/capability/fetch-policy.ts"
 plans:
   - "orchestration-runtime-unification-and-safe-output-2026-08-22"
+  - "managed-agent-capability-contract-and-native-cutover-2026-09-13"
 normative: true
 governs:
   - "orchestration-runtime-unification-and-safe-output-2026-08-22"
@@ -181,3 +185,19 @@ The lifetime is process-local. Restarting or routing to another operator process
 The worker belongs to the operator process and does not spawn an independent OS job. Foreground completion uses the existing dispatcher/result path. A cell that launches a background command must use the existing capability/task-manager contract and durable task id; the kernel id is not a task id and does not replace task-manager process control or completion wakes. No new durable job or recipe store is introduced.
 
 Canonical recurrence checks live in `libs/generic/tooldef/src/code-orchestration/persistent-kernel.test.ts` and `packages/operator-core/lib/agent-tools/code/run-kernel.test.ts`. The latter verifies retained final media and timeout state loss at the actual tool handler. Current-build API acceptance and cross-client acceptance remain separately recorded on WI-10007800 and P-015/P-020; these tests alone do not prove deployment or complete native parity.
+
+# Managed browser observation (2026-10-09)
+
+P-018 / WI-10007812 extends `capability:fetch` with a `browser` option rather than adding a second network or process-management service. Native TUI features remain enabled; no cutover stage is activated.
+
+Use `browser: { op: "open" }` to create a fresh browser profile and return an id. An optional HTTP(S) `url` navigates the first page. Subsequent `navigate` calls require that id and a URL; `observe` reads the existing page; `close` retires its process. Optional `selector` waits for and observes a CSS target, `screenshot` emits a viewport PNG, and `max_text_chars` limits DOM text (default 10000, ceiling 20000). HTTP-only method, header, body and size/redirect arguments are rejected with browser operations. This interface provides navigation and observation; it does not claim click/fill, arbitrary evaluation, download, tab-management or cross-process recovery parity.
+
+The server derives scope from verified owner, workspace and harness. Another scope cannot observe or close the id. Current boundary authority is checked at operation start, after launch, and at each relayed request. A change retires the session before another request. Concurrent operations on one id are refused. Pending launches count toward capacity: two per scope, sixteen globally. Idle expiry is five minutes. Completed or lost lifetimes return explicit unrecoverable state; a kernel/browser id is not a durable task id.
+
+HTTP resources pass through the existing destination/DNS/address-pinning/method/credential/redirect policy. Browser redirects are returned manually so each destination enters that policy separately. POST and other remote writes are refused. WebSockets and service workers are blocked; downloads are disabled. Outside an active operation, HTTP relay is blocked, and finishing an operation aborts pending host fetches. No host browser profile or raw host credentials are inherited. Confined callers keep the existing execution sandbox requirement and fail closed when unavailable; Chromium uses the existing offline bwrap command, with network provided by the host policy relay. Trusted callers keep the existing raw fallback and receive explicit sandbox metadata. Raw fallback is not a claim of OS confinement.
+
+Streamed resources preserve binary bytes and are capped at 2 MiB each, 16 MiB and 100 requests per operation. Returned text, links and viewport PNG are bounded; the existing result door still handles model-facing byte limits and spill. Remote DOM content is labelled external-untrusted. HTTP fetch can use arbitrary methods and browser lifetimes mutate state, so `capability:fetch` declares write effect: orchestration dry-run skips it and cannot issue a safe read-replay proof for a browser mutation.
+
+The maintained Playwright launcher owns process-group close/kill and temporary profiles. The existing task ledger is registered before browser launch and receives PID identity and terminal facts. Its cgroup-confinement field stays false for an SDK process group; the separate execution-sandbox metadata describes bwrap. Explicit close is serialized with active cancellation and reports closed after process cleanup. Task-ledger persistence on the actual operator and unplanned host-restart cleanup remain acceptance obligations; the browser id itself cannot recover across operator processes.
+
+Canonical tests are `browser-session.test.ts` and `browser-session.e2e.test.ts` under `packages/operator-core/lib/agent-tools/capability/`. The e2e test drives real Chromium/HTTP, dynamic DOM, redirects, rejected POSTs, PNG, repeated observation and controlled process close; only its ledger adapter is mocked. It writes no PostgreSQL data and uses the maintained e2e lane. PG-backed integration tests retain their own storage precondition. The isolated driver proof does not attest a deployed API, real ledger writes or a confined host's browser acceptance. Those remain on WI-10007812 and P-015/P-020.
