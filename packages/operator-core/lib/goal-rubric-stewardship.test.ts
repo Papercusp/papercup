@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { classifyStewardshipCycle, type StewardshipCard, type StewardshipRepair } from './goal-rubric-stewardship';
+import { classifyStewardshipCycle, renderGoalRubricStewardshipBrief, type GoalRubricStewardship, type StewardshipCard, type StewardshipRepair } from './goal-rubric-stewardship';
 
 const baseline = (): StewardshipCard => ({ issueId: 'EI-1', createdAt: '2026-10-09T10:00:00Z', createdBy: 'grader',
   rubricRef: 'quality', rubricRevision: 4, criteriaHash: 'same-criteria', subject: { kind: 'pot', ref: 'target' },
@@ -11,6 +11,27 @@ const repair = (): StewardshipRepair => ({ id: 'WI-12', goalId: 'g', owner: 'bui
   closedAt: '2026-10-09T11:00:00Z', verified: true });
 const grade = (after = regrade(), before = baseline(), fixes = [repair()]) =>
   classifyStewardshipCycle('g', after, [before, after], fixes);
+
+describe('goal rubric stewardship brief', () => {
+  it('carries responsibilities and bounded assignment controls while missing evidence remains a gap', () => {
+    const text = renderGoalRubricStewardshipBrief(null);
+    for (const phrase of ['Maintain rubric coverage', 'Improve rubric quality', 'Grade, improve and re-grade',
+      'exact target', 'pinned rubric revision', 'goal provenance', 'scope, budget, cadence and exit criterion',
+      'baselineRef', 'supersedes corrects', 'independent acceptance', 'Evidence: unavailable']) expect(text).toContain(phrase);
+  });
+  it('carries the canonical rubric revision and baseline/repair/regrade status without hiding limited or failed reads', () => {
+    const evidence: GoalRubricStewardship = { measuredAt: '2026-10-09T12:00:00Z', windowStart: '2026-10-02T12:00:00Z',
+      complete: false, rubricRef: 'work-on-everything-stewardship-health', rubricRevision: 47,
+      criteria: { 'rubric-coverage-stewardship': null, 'rubric-quality-stewardship': null, 'grading-correction-closure': null },
+      cycles: [grade()], error: 'A source is unavailable' };
+    const text = renderGoalRubricStewardshipBrief(evidence);
+    expect(text).toContain('work-on-everything-stewardship-health@47');
+    expect(text).toContain('limited recent page, not a census');
+    expect(text).toContain('baseline=EI-1; regrade=EI-2; repairs=WI-12');
+    expect(text).toContain('not measured');
+    expect(text).toContain('Evidence unavailable: A source is unavailable');
+  });
+});
 
 describe('goal rubric stewardship: verified improvement', () => {
   it('credits the linked comparable audited re-grade after verified independent repair', () => {

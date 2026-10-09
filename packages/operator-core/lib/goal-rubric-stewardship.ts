@@ -47,6 +47,28 @@ export interface GoalRubricStewardship {
   error: string | null;
 }
 
+/** Reuse the goal-scoped snapshot in launch, portfolio and wake briefs. */
+export function renderGoalRubricStewardshipBrief(evidence: GoalRubricStewardship | null | undefined): string {
+  const lines = [
+    'RUBRIC STEWARDSHIP — Maintain rubric coverage; Improve rubric quality; Grade, improve and re-grade.',
+    'Reuse applicable rubrics and independently vet genuine gaps/amendments. Delegate bounded GRADE assignments with exact target, pinned rubric revision, goal provenance, scope, budget, cadence and exit criterion; verify launch, claim and progress separately.',
+    'Preserve the baseline; emit a comparable regrade with baselineRef. supersedes corrects an earlier reading and is never improvement evidence. Place repairs with implementers; require recurrence guards, verified closure and an independent acceptance grader where required.',
+  ];
+  if (!evidence) return [...lines, 'Evidence: unavailable — read canonical goal-scoped rubric, scorecard and work-item ledgers; no verified improvement is established.'].join('\n');
+  lines.push(`Applicable rubric: ${evidence.rubricRef}@${evidence.rubricRevision ?? 'unknown'}; measured ${evidence.measuredAt}; since ${evidence.windowStart}; coverage=${evidence.complete ? 'complete recent page' : 'limited recent page, not a census'}.`);
+  if (evidence.error) lines.push(`Evidence unavailable: ${evidence.error}`);
+  for (const key of RUBRIC_STEWARDSHIP_CRITERIA) {
+    const rating = evidence.criteria[key];
+    lines.push(`${key}: ${rating ? `${rating.rating}; scorecard=${rating.scorecardRef}; ${rating.evidence}` : 'not measured'}`);
+  }
+  const shown = evidence.cycles.slice(0, 8);
+  for (const cycle of shown) lines.push(`Cycle ${cycle.target} (${cycle.rubricRef}@${cycle.rubricRevision ?? 'unknown'}): ${cycle.status}; baseline=${cycle.baselineRef ?? 'missing'}; regrade=${cycle.scorecardRef}; repairs=${cycle.repairRefs.join(',') || 'none'}; ${cycle.reason}`);
+  if (!shown.length) lines.push('Grading cycles: none measured; a launch or completed repair alone is not verified improvement.');
+  if (evidence.cycles.length > shown.length) lines.push(`${evidence.cycles.length - shown.length} additional cycles in this bounded page; read their canonical references before allocating duplicate work.`);
+  lines.push('A changed target/rubric revision needs a fresh baseline. Unknown, stale, incomplete and unsuccessful evidence remains a gap; preserve paused/killed state and owner worklist choices.');
+  return lines.join('\n');
+}
+
 /** The remediation field is the scorecard's canonical pointer to its owned repairs. */
 export function stewardshipRepairRefs(card: StewardshipCard): string[] {
   return [...new Set(Object.values(card.ratings).flatMap(r =>
