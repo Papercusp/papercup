@@ -214,6 +214,14 @@ export const TOOL_ERROR_RULES: readonly ToolErrorRule[] = [
     why: 'coord:ask deliberately denies direct agent calls; this owner-UI-only permission refusal is caller-side, while generic unauthorized workspace-scope failures remain structural',
   },
   {
+    // A normalized wrapper absent from the seeded client surface was never dispatched.
+    // The caller should discover it with tools:find; this is not a server defect.
+    class: 'caller',
+    messagePattern:
+      'The normalized direct wrapper [A-Za-z0-9_.]+ was undefined, so attempting it raised a local TypeError before MCP dispatch',
+    why: 'the client tried to call an unseeded deferred wrapper before discovering it; no MCP request reached the server, so this is caller-side discovery friction',
+  },
+  {
     class: 'rate-limit',
     messagePattern: RATE_LIMIT_MESSAGE_PATTERN,
     why: 'an EXTERNAL provider rate-limit / quota (OpenAI embed TPM 429) — capacity, not a code bug',
