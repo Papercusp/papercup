@@ -1396,6 +1396,7 @@ describe('getLoopStatuses — firesSinceArm (WI-36070: the number maxFires is ac
       last_wake_channel: null,
       last_wake_status: null,
       last_wake_at: null,
+      last_wake_created_at: null,
       last_wake_error: null,
       presence_last_active_at: null,
       ...over,
@@ -1417,6 +1418,19 @@ describe('getLoopStatuses — firesSinceArm (WI-36070: the number maxFires is ac
     // ...while the comparison the payload used to permit says the opposite. This assertion is
     // the guard: it fails if anyone ever "simplifies" firesSinceArm back to the lifetime count.
     expect(s.fireCount).toBeGreaterThan(s.maxFires!);
+  });
+
+  it('exposes the wake dispatch clock separately from its later delivery-settle clock', async () => {
+    const out = await getLoopStatuses(['su-x'], {
+      sql: rowSql({
+        last_wake_status: 'delivered',
+        last_wake_at: '2026-10-09T20:21:04.131Z',
+        last_wake_created_at: '2026-10-09T20:20:14.031Z',
+      }) as any,
+    });
+    const status = out.get('su-x')!;
+    expect(status.lastWakeAt).toBe('2026-10-09T20:21:04.131Z');
+    expect(status.lastWakeCreatedAt).toBe('2026-10-09T20:20:14.031Z');
   });
 
   it('reuses an injected TransactionSql instead of opening a nested transaction', async () => {
