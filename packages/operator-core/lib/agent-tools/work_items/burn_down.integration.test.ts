@@ -11,7 +11,7 @@ import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
 const h = vi.hoisted(() => ({
   sql: undefined as unknown as postgres.Sql,
   publicBrief: false,
-  metricItemsUnavailable: false,
+  metricItemsUnavailable: false as false | 'sync' | 'async',
 }));
 vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
@@ -27,7 +27,8 @@ vi.mock('../../work-items', async (orig) => {
   return {
     ...actual,
     listAllWorkItemsForFileExport: (...args: Parameters<typeof actual.listAllWorkItemsForFileExport>) => {
-      if (h.metricItemsUnavailable) throw new Error('fixture item reader unavailable');
+      if (h.metricItemsUnavailable === 'sync') throw new Error('fixture item reader unavailable');
+      if (h.metricItemsUnavailable === 'async') return Promise.reject(new Error('fixture item reader unavailable'));
       return actual.listAllWorkItemsForFileExport(...args);
     },
   };
@@ -293,10 +294,13 @@ describe('default fleet reports over the real current-spec queue', () => {
     }
   }, 30_000);
 
-  it('a public leader-brief item-read failure stays unavailable through shaping', async () => {
+  it.each([
+    { label: 'item-read failure', mode: 'sync' },
+    { label: 'rejected item read', mode: 'async' },
+  ] as const)('a public leader-brief $label stays unavailable through shaping', async ({ mode }) => {
     await seedFleet();
     h.publicBrief = true;
-    h.metricItemsUnavailable = true;
+    h.metricItemsUnavailable = mode;
     const response = await (leaderBriefTool as unknown as {
       handler: (args: unknown, ctx: unknown) => Promise<{ data: Record<string, any> }>;
     }).handler({ fleet: FLEET, harness: HARNESS }, CTX);
