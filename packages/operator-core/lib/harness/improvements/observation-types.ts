@@ -725,7 +725,7 @@ export type ObservationSubjectKind =
  * graded; the source author must re-emit it before another audit can make progress.
  */
 export interface ScorecardGradingAudit {
-  /** `cancelled` means the source scorecard was retracted before its audit settled. */
+  /** `cancelled` means the source scorecard was retracted or superseded before its audit settled. */
   state: 'pending' | 'awaiting-reemit' | 'passed' | 'failed' | 'cancelled';
   /** The meta-rubric the audit grades against (grading-integrity). */
   metaRubricRef: string;
