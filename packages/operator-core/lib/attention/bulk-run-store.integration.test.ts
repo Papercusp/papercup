@@ -40,6 +40,7 @@ const {
   createRun,
   getRun,
   getRunItems,
+  getSettledInboxMessageIds,
   getLatestRun,
   getActiveRun,
   getRunningRun,
@@ -161,6 +162,105 @@ describe('attention bulk-run store (real PG)', () => {
     // The ref snapshot is what makes a later re-dispatch possible at all.
     expect(items[0]!.ref).toMatchObject({ kind: 'coord-escalation', msgId: 'a-m1' });
     expect(items.every((i) => i.outcome === 'pending')).toBe(true);
+  });
+
+  it('returns only exact message refs with a reported outcome in settled Inbox runs for this workspace', async () => {
+    const resolver = 'su-bulk-resolver';
+    const reviewRun = await createRun({
+      items: [
+        { itemId: 'reply-reviewed', kind: 'coord-message', title: 'reviewed reply', ref: { kind: 'coord-message', msgId: 'm-reviewed' }, ownerAgentId: resolver },
+        { itemId: 'reply-pending', kind: 'coord-message', title: 'pending reply', ref: { kind: 'coord-message', msgId: 'm-pending' }, ownerAgentId: resolver },
+        { itemId: 'wrong-ref-kind', kind: 'coord-message', title: 'wrong ref kind', ref: { kind: 'work-item', msgId: 'm-wrong-ref' }, ownerAgentId: resolver },
+      ],
+      requestedBy: 'owner:receipt-test',
+      harnessSlug: 'papercusp',
+    });
+    await setRunPhase({ runId: reviewRun.runId, phase: 'running', resolverOwner: resolver });
+    await recordRunHeartbeat({ runId: reviewRun.runId, resolverOwner: resolver });
+    const reviewReport = await reportOutcomes({
+      runId: reviewRun.runId,
+      resolverOwner: resolver,
+      outcomes: [
+        { itemId: 'reply-reviewed', outcome: 'recommended' },
+        { itemId: 'wrong-ref-kind', outcome: 'recommended' },
+      ],
+    });
+    expect(reviewReport.refused).toBeNull();
+    expect((await settleRunPhase({ runId: reviewRun.runId, resolverOwner: resolver }))?.phase).toBe('review');
+
+    const completeRun = await createRun({
+      items: [
+        { itemId: 'reply-complete', kind: 'coord-message', title: 'completed reply', ref: { kind: 'coord-message', msgId: 'm-complete' }, ownerAgentId: resolver },
+      ],
+      requestedBy: 'owner:receipt-test',
+      harnessSlug: 'papercusp',
+    });
+    await setRunPhase({ runId: completeRun.runId, phase: 'running', resolverOwner: resolver });
+    await recordRunHeartbeat({ runId: completeRun.runId, resolverOwner: resolver });
+    await reportOutcomes({
+      runId: completeRun.runId,
+      resolverOwner: resolver,
+      outcomes: [{ itemId: 'reply-complete', outcome: 'dismissed' }],
+    });
+    expect((await settleRunPhase({ runId: completeRun.runId, resolverOwner: resolver }))?.phase).toBe('complete');
+
+    const failedRun = await createRun({
+      items: [
+        { itemId: 'reply-failed', kind: 'coord-message', title: 'failed reply', ref: { kind: 'coord-message', msgId: 'm-failed' }, ownerAgentId: resolver },
+      ],
+      requestedBy: 'owner:receipt-test',
+      harnessSlug: 'papercusp',
+    });
+    await setRunPhase({ runId: failedRun.runId, phase: 'running', resolverOwner: resolver });
+    await recordRunHeartbeat({ runId: failedRun.runId, resolverOwner: resolver });
+    await reportOutcomes({
+      runId: failedRun.runId,
+      resolverOwner: resolver,
+      outcomes: [{ itemId: 'reply-failed', outcome: 'recommended' }],
+    });
+    await setRunPhase({ runId: failedRun.runId, phase: 'failed', resolverOwner: resolver });
+
+    const intakeRun = await createRun({
+      runKind: 'intake-triage',
+      items: [
+        { itemId: 'reply-intake', kind: 'coord-message', title: 'intake reply', ref: { kind: 'coord-message', msgId: 'm-intake' }, ownerAgentId: resolver },
+      ],
+      requestedBy: 'owner:receipt-test',
+      harnessSlug: 'papercusp',
+    });
+    await setRunPhase({ runId: intakeRun.runId, phase: 'running', resolverOwner: resolver });
+    await recordRunHeartbeat({ runId: intakeRun.runId, resolverOwner: resolver });
+    await reportOutcomes({
+      runId: intakeRun.runId,
+      resolverOwner: resolver,
+      outcomes: [{ itemId: 'reply-intake', outcome: 'recommended' }],
+    });
+    expect((await settleRunPhase({ runId: intakeRun.runId, resolverOwner: resolver }))?.phase).toBe('review');
+
+    const foreignWorkspace = 'ws-bulk-run-foreign-receipt-test';
+    const foreignRun = await createRun({
+      workspaceId: foreignWorkspace,
+      items: [
+        { itemId: 'reply-foreign', kind: 'coord-message', title: 'foreign reply', ref: { kind: 'coord-message', msgId: 'm-foreign' }, ownerAgentId: resolver },
+      ],
+      requestedBy: 'owner:receipt-test',
+      harnessSlug: 'papercusp',
+    });
+    await setRunPhase({ runId: foreignRun.runId, phase: 'running', resolverOwner: resolver, workspaceId: foreignWorkspace });
+    await recordRunHeartbeat({ runId: foreignRun.runId, resolverOwner: resolver, workspaceId: foreignWorkspace });
+    await reportOutcomes({
+      runId: foreignRun.runId,
+      resolverOwner: resolver,
+      workspaceId: foreignWorkspace,
+      outcomes: [{ itemId: 'reply-foreign', outcome: 'dismissed' }],
+    });
+    expect((await settleRunPhase({ runId: foreignRun.runId, resolverOwner: resolver, workspaceId: foreignWorkspace }))?.phase).toBe('complete');
+
+    expect(
+      await getSettledInboxMessageIds(
+        ['m-reviewed', 'm-pending', 'm-wrong-ref', 'm-complete', 'm-failed', 'm-intake', 'm-foreign'],
+      ),
+    ).toEqual(new Set(['m-reviewed', 'm-complete']));
   });
 
   it('refuses a run over zero items', async () => {

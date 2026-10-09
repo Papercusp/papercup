@@ -67,9 +67,11 @@ import { lastInboxReadAtBatch } from '../../agent-tools/coordination/inbox-read-
 import { repliedMsgIdsBatch } from '../../agent-tools/coordination/messages';
 import { readWatermark } from '../../agent-tools/coordination/watermarks';
 import { getLineEnvelopeById } from '../../agent-tools/coordination/line-event-by-id';
+import { getSettledInboxMessageIds } from '../../attention/bulk-run-store';
 import { withBoundedTimeout } from '../../bounded-timeout';
 import { readColdLoopMarker } from '../../su-cold-loop';
 import {
+  classifyInboxWakeMessage,
   classifyInboxWakeGroup,
   inboxWakeGroupHandled,
   inboxWakeMessageComponents,
@@ -744,6 +746,7 @@ function deliveryContainsLoopMarker(payload: unknown): boolean {
 
 /** Upper bound for the delivery-time envelope reads behind the actionability gate. */
 const INBOX_WAKE_ENVELOPE_LOOKUP_TIMEOUT_MS = 3_000;
+const SETTLED_INBOX_RUN_RECEIPT_LOOKUP_TIMEOUT_MS = 3_000;
 
 /**
  * P-024 clauses B/C: resolve the coord envelopes an inbox-wake group points at,
@@ -770,6 +773,26 @@ export async function resolveInboxWakeEnvelopes(msgIds: readonly string[]): Prom
     { fallback: [], timeoutMs: INBOX_WAKE_ENVELOPE_LOOKUP_TIMEOUT_MS, label: 'inbox-wake actionability envelopes' },
   );
   return out;
+}
+
+/** Settled bulk-run receipts discharge only exact thread replies, and a read
+ * failure or timeout leaves the receipt set empty so the wake gate fails open. */
+async function settledInboxWakeThreadReplyMsgIds(
+  msgIds: readonly string[],
+  envelopes: ReadonlyMap<string, unknown>,
+  workspaceId: string,
+): Promise<Set<string>> {
+  const replyMsgIds = msgIds.filter((msgId) => classifyInboxWakeMessage(envelopes.get(msgId)).class === 'reply');
+  if (replyMsgIds.length === 0) return new Set<string>();
+  const result = await withBoundedTimeout(
+    getSettledInboxMessageIds(replyMsgIds, workspaceId).catch(() => new Set<string>()),
+    {
+      fallback: new Set<string>(),
+      timeoutMs: SETTLED_INBOX_RUN_RECEIPT_LOOKUP_TIMEOUT_MS,
+      label: 'inbox-wake settled bulk-run receipt lookup',
+    },
+  );
+  return result.value;
 }
 
 /**
@@ -999,9 +1022,9 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWake
       if (allInboxWakeNoUrgent) {
         if (hasUnconfirmedPsuHostAcceptance) {
           // A host's early accepted ACK is not turn-start proof. Revalidate each
-          // exact component msg_id against the inbox's shown watermark or this
-          // recipient's exact reply linkage, then ask the host to cancel the
-          // still-pending delivery. Merely reading actionable mail is not enough.
+          // exact component msg_id against the shown watermark, recipient reply
+          // linkage, or a settled resolver receipt for a thread reply before
+          // asking the host to cancel the still-pending delivery.
           const components = inboxWakeMessageComponents(group);
           if (components) {
             const msgIds = components.map((component) => component.msgId);
@@ -1010,7 +1033,14 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWake
               repliedMsgIdsBatch(subscriberId, msgIds).catch(() => new Set<string>()),
               resolveInboxWakeEnvelopes(msgIds).catch(() => new Map<string, unknown>()),
             ]);
-            if (inboxWakeGroupHandled(group, envelopes, watermark?.messages_shown_ts, repliedMsgIds)) {
+            const settledInboxRunMsgIds = await settledInboxWakeThreadReplyMsgIds(msgIds, envelopes, ws);
+            if (inboxWakeGroupHandled(
+              group,
+              envelopes,
+              watermark?.messages_shown_ts,
+              repliedMsgIds,
+              settledInboxRunMsgIds,
+            )) {
               hostCancellation = {
                 deliveryIds: group
                   .filter((d) =>
@@ -1028,14 +1058,22 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWake
             // A read cursor proves that the inbox was opened, not that an ask or
             // thread reply was handled. Resolve each exact message and use the
             // same handled-state proof as host-accepted cancellation: recipient
-            // reply, or a shown receipt for a known non-actionable message.
+            // reply, shown non-actionable message, or a settled resolver receipt
+            // for an exact thread reply.
             const msgIds = components.map((component) => component.msgId);
             const [watermark, repliedMsgIds, envelopes] = await Promise.all([
               readWatermark(subscriberId).catch(() => null),
               repliedMsgIdsBatch(subscriberId, msgIds).catch(() => new Set<string>()),
               resolveInboxWakeEnvelopes(msgIds).catch(() => new Map<string, unknown>()),
             ]);
-            if (inboxWakeGroupHandled(group, envelopes, watermark?.messages_shown_ts, repliedMsgIds)) {
+            const settledInboxRunMsgIds = await settledInboxWakeThreadReplyMsgIds(msgIds, envelopes, ws);
+            if (inboxWakeGroupHandled(
+              group,
+              envelopes,
+              watermark?.messages_shown_ts,
+              repliedMsgIds,
+              settledInboxRunMsgIds,
+            )) {
               await markDeliveryDelivered(headline.id, 'suppressed-redundant', group.length);
               recordSettledDeliveryStats(stats, 'suppressed-redundant');
               if (siblings.length > 0) {

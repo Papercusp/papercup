@@ -92,6 +92,33 @@ describe('EI-16685 — exact handled-state proof for a pending host wake', () =>
     expect(inboxWakeGroupHandled(group, envelopes, null, new Set(['m-other']))).toBe(false);
   });
 
+  it('uses settled Inbox-run receipts only for the exact thread reply and preserves actionable classes', () => {
+    const settled = new Set(['m-reply', 'm-fyi', 'm-ask', 'm-owner', 'm-wake']);
+    const handled = (msgId: string, envelope: unknown) =>
+      inboxWakeGroupHandled(
+        [{ eventKey: KEY, urgent: false, payload: { msg_id: msgId } }],
+        new Map([[msgId, envelope]]),
+        null,
+        new Set(),
+        settled,
+      );
+
+    expect(handled('m-reply', msg({ msg_id: 'm-reply', related_msg_id: 'm-resolver-ask', expects: 'none' }))).toBe(true);
+    expect(handled('m-fyi', msg({ msg_id: 'm-fyi', expects: 'none' }))).toBe(false);
+    expect(handled('m-ask', msg({ msg_id: 'm-ask', related_msg_id: 'm-old-ask', expects: 'answer' }))).toBe(false);
+    expect(handled('m-owner', msg({ msg_id: 'm-owner', from: 'human', related_msg_id: 'm-old-ask', expects: 'none' }))).toBe(false);
+    expect(handled('m-wake', msg({ msg_id: 'm-wake', related_msg_id: 'm-old-ask', expects: 'none', wake: true }))).toBe(false);
+    expect(
+      inboxWakeGroupHandled(
+        [{ eventKey: KEY, urgent: false, payload: { msg_id: 'm-missing' } }],
+        new Map(),
+        null,
+        new Set(),
+        new Set(['m-missing']),
+      ),
+    ).toBe(false);
+  });
+
   it('expands every component of a coalesced inbox-only group and fails open on one unhandled component', () => {
     const group = [{
       eventKey: KEY,

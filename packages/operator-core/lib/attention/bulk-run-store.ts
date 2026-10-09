@@ -905,6 +905,40 @@ export async function getRunItems(runId: string, workspaceId?: string): Promise<
   return rows.map(mapItem);
 }
 
+/**
+ * Exact coord-message refs accounted for by a finished Inbox resolver pass.
+ * A review run has finished scanning even when recommendations still await
+ * the owner, so both review and complete are settled receipt phases. Failed
+ * runs, other run kinds, and items still pending are deliberately excluded.
+ */
+export async function getSettledInboxMessageIds(
+  msgIds: readonly string[],
+  workspaceId?: string,
+): Promise<Set<string>> {
+  const requested = [...new Set(msgIds.filter((msgId) => msgId.length > 0))];
+  if (requested.length === 0) return new Set<string>();
+
+  const { sql } = getOrgPg();
+  const ws = workspaceId ?? activeWorkspaceId();
+  const rows = await sql<Array<{ msg_id: string | null }>>`
+    SELECT DISTINCT i.item_ref->>'msgId' AS msg_id
+      FROM harness_shared.attention_bulk_run_items AS i
+      JOIN harness_shared.attention_bulk_runs AS r
+        ON r.workspace_id = i.workspace_id AND r.run_id = i.run_id
+     WHERE i.workspace_id = ${ws}
+       AND COALESCE(r.run_kind, ${DEFAULT_RUN_KIND}) = 'inbox-resolve'
+       AND r.phase IN ('review', 'complete')
+       AND i.outcome <> 'pending'
+       AND i.item_ref->>'kind' = 'coord-message'
+       AND i.item_ref->>'msgId' = ANY(${requested})
+  `;
+  return new Set(
+    rows
+      .map((row) => row.msg_id)
+      .filter((msgId): msgId is string => typeof msgId === 'string' && msgId.length > 0),
+  );
+}
+
 export type BulkRunItemReversalRefusal =
   | 'item_not_found'
   | 'not_auto_resolved'

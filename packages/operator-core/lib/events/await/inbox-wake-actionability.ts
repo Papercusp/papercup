@@ -182,6 +182,7 @@ export function inboxWakeGroupHandled(
   envelopes: ReadonlyMap<string, unknown>,
   messagesShownThrough: string | null | undefined,
   repliedMsgIds?: ReadonlySet<string>,
+  settledInboxRunMsgIds?: ReadonlySet<string>,
 ): boolean {
   const components = inboxWakeMessageComponents(group);
   if (!components) return false;
@@ -189,8 +190,13 @@ export function inboxWakeGroupHandled(
   return components.every(({ msgId }) => {
     const envelope = envelopes.get(msgId);
     if (!isRecord(envelope) || envelope.msg_id !== msgId) return false;
+    const actionability = classifyInboxWakeMessage(envelope);
+    // A settled Inbox resolver receipt is proof only for this exact message
+    // when it is a thread reply the resolver already included in its report.
+    // Owner directives, asks, explicit wakes, and unknown envelopes still fail open.
+    if (actionability.class === 'reply' && settledInboxRunMsgIds?.has(msgId)) return true;
     if (repliedMsgIds?.has(msgId)) return true;
-    if (classifyInboxWakeMessage(envelope).actionable) return false;
+    if (actionability.actionable) return false;
     const messageTsMs = typeof envelope.ts === 'string' ? Date.parse(envelope.ts) : NaN;
     return Number.isFinite(shownThroughMs) && Number.isFinite(messageTsMs) && messageTsMs <= shownThroughMs;
   });

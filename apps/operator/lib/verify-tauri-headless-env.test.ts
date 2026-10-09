@@ -9,6 +9,7 @@
  */
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
 
 const SCRIPT = resolve(__dirname, '../../../scripts/verify-tauri-headless.sh');
@@ -22,6 +23,33 @@ const launchTemplate = src.match(
 )?.[1];
 
 describe('EI-20210154033151684 — verifier launch scrubs ambient runtime env', () => {
+  it('keeps disposable backup coordination local despite inherited host pins', () => {
+    const assignment = src.match(/^  ISOLATED_ENV_LINE\+=" KOPIA_BACKUP_LOCK_PATH=.*$/m)?.[0];
+    expect(assignment).toBeTruthy();
+    const preserve = devWrapper.match(/DEV_CALLER_OVERRIDES=""\n[\s\S]*?\ndone/)?.[0];
+    expect(preserve).toBeTruthy();
+    // Execute the real assignment and wrapper capture, including paths with
+    // spaces and a conflicting .env.local value after caller capture.
+    const result = execFileSync('bash', ['-c', `
+      WORK='/tmp/private verifier'
+      ISOLATED_ENV_LINE=''
+      ${assignment}
+      eval "export $ISOLATED_ENV_LINE"
+      ${preserve}
+      export KOPIA_BACKUP_LOCK_PATH=/run/lock/papercusp/kopia-global.lock
+      export KOPIA_BACKUP_STATE_DIR=/tmp/host-state
+      eval "env $DEV_CALLER_OVERRIDES printenv KOPIA_BACKUP_LOCK_PATH KOPIA_BACKUP_STATE_DIR"
+    `], { encoding: 'utf8', env: {
+      ...process.env,
+      KOPIA_BACKUP_LOCK_PATH: '/run/lock/papercusp/kopia-global.lock',
+      KOPIA_BACKUP_STATE_DIR: '/tmp/inherited-host-state',
+    } });
+    expect(result.trim().split('\n')).toEqual([
+      '/tmp/private verifier/backup-guard/kopia.lock',
+      '/tmp/private verifier/backup-guard/state',
+    ]);
+  });
+
   it('pins single-process execution and removes ambient spawner state', () => {
     expect(launchTemplate).toBeTruthy();
     expect(launchTemplate).toContain(

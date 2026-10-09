@@ -74,6 +74,7 @@ const h = vi.hoisted(() => ({
   // record by default, matching the fail-open default (never suppresses anything
   // existing tests don't explicitly set up).
   repliedMsgIdsBatch: vi.fn(async (_subscriberId: string, _msgIds: readonly string[]): Promise<Set<string>> => new Set()),
+  getSettledInboxMessageIds: vi.fn(async (_msgIds: readonly string[], _workspaceId?: string): Promise<Set<string>> => new Set()),
   readWatermark: vi.fn(async (_ownerId: string) => ({ messages_shown_ts: '' })),
   // P-024 clauses B/C: the actionability gate's envelope read. Unresolved (null) by
   // default, which the gate reads as "keep the turn" — existing tests never suppress.
@@ -95,6 +96,9 @@ const h = vi.hoisted(() => ({
 vi.mock('./store', () => h.store);
 vi.mock('./wake-executor', () => ({ executeWake: h.executeWake, degradeToInboxOrDrop: h.degradeToInboxOrDrop }));
 vi.mock('../../agent-tools/coordination/messages', () => ({ sendMessage: h.sendMessage, repliedMsgIdsBatch: h.repliedMsgIdsBatch }));
+vi.mock('../../attention/bulk-run-store', () => ({
+  getSettledInboxMessageIds: h.getSettledInboxMessageIds,
+}));
 vi.mock('../../agent-tools/coordination/presence-fleet', () => ({ fetchPresenceFleet: h.fetchPresenceFleet }));
 vi.mock('../../agent-tools/coordination/event-subscriptions', () => ({
   listEventKeySubscribers: h.listEventKeySubscribers,
@@ -2056,6 +2060,57 @@ describe('pumpWakeDeliveries — EI-18673058981655804: redundant-inbox-wake supp
           payload: { msg_id: 'm-orig' },
         }),
       ]);
+      const stats = await pumpWakeDeliveries('ws-test');
+      expect(h.executeWake).toHaveBeenCalledTimes(1);
+      expect(h.getSettledInboxMessageIds).not.toHaveBeenCalled();
+      expect(stats.suppressed).toBe(0);
+    });
+
+    it('suppresses an exact thread reply already accounted for by a settled Inbox resolver run', async () => {
+      h.getLineEnvelopeById.mockResolvedValueOnce({
+        msg_id: 'm-reviewed-reply',
+        ts: new Date(5000).toISOString(),
+        kind: 'message',
+        expects: 'none',
+        related_msg_id: 'm-resolver-ask',
+      });
+      h.getSettledInboxMessageIds.mockResolvedValueOnce(new Set(['m-reviewed-reply']));
+      h.store.claimDueDeliveries.mockResolvedValueOnce([
+        workRow({
+          id: 44,
+          subscriberId: 'su-a',
+          eventKey: 'coord:inbox-wake:su-a',
+          createdAt: new Date(5000).toISOString(),
+          payload: { msg_id: 'm-reviewed-reply' },
+        }),
+      ]);
+
+      const stats = await pumpWakeDeliveries('ws-test');
+      expect(h.getSettledInboxMessageIds).toHaveBeenCalledWith(['m-reviewed-reply'], 'ws-test');
+      expect(h.executeWake).not.toHaveBeenCalled();
+      expect(h.store.markDeliveryDelivered).toHaveBeenCalledWith(44, 'suppressed-redundant', 1);
+      expect(stats.suppressed).toBe(1);
+    });
+
+    it('fails open when the settled Inbox-run receipt lookup errors', async () => {
+      h.getLineEnvelopeById.mockResolvedValueOnce({
+        msg_id: 'm-reviewed-reply',
+        ts: new Date(5000).toISOString(),
+        kind: 'message',
+        expects: 'none',
+        related_msg_id: 'm-resolver-ask',
+      });
+      h.getSettledInboxMessageIds.mockRejectedValueOnce(new Error('pg down'));
+      h.store.claimDueDeliveries.mockResolvedValueOnce([
+        workRow({
+          id: 45,
+          subscriberId: 'su-a',
+          eventKey: 'coord:inbox-wake:su-a',
+          createdAt: new Date(5000).toISOString(),
+          payload: { msg_id: 'm-reviewed-reply' },
+        }),
+      ]);
+
       const stats = await pumpWakeDeliveries('ws-test');
       expect(h.executeWake).toHaveBeenCalledTimes(1);
       expect(stats.suppressed).toBe(0);

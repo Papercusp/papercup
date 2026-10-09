@@ -471,6 +471,9 @@ export const PARTIAL_COVERAGE_HIGH_WATERMARK = 2;
  *     green-main-fast D-052 and typed-external-prerequisite-attestations D-006.
  *     Removing the subsystem's two acknowledged adapter leaves plus restoring the
  *     missed retrofit ratchet lowers the watermark by three, 11 → 8.
+ *   · 2026-10-09 (WI-10006201), 8 → 5: the release renderer, preflight builder and
+ *     release-site gate were live callers through shell entrypoints. The execution-path
+ *     scan now recognizes those scripts, so their stale acknowledgements graduate out.
  *
  * ⚠ SHRINK-ONLY, same doctrine as ACKNOWLEDGED_UNREACHABLE above and for the same
  * reason: the correct way to clear an entry is to WIRE the module or DELETE it, never
@@ -482,39 +485,15 @@ export const PARTIAL_COVERAGE_HIGH_WATERMARK = 2;
  * enforcing nothing, so they read as diligence in a review.
  */
 export const ACKNOWLEDGED_UNREACHABLE_MODULES = new Map([
-  // ── The release-publication family: same transitive shape. The CLI root
-  // (record-release-cli), release-completeness and changelog-generate have since
-  // been wired and graduated out; these three are what is left of the family.
-  [
-    'apps/operator/lib/release/finalize-release-publication.ts',
-    {
-      kind: 'dead',
-      action: 'wire-or-delete',
-      reason: '1 test; reached only from dead publication siblings',
-    },
-  ],
+  // ── The remaining release-publication debt: patch-artifact-provenance has no caller.
+  // finalize-release-publication, preflight-build-set and gate-release-site graduated
+  // 2026-10-09 after shell entrypoints became visible to the graph above.
   [
     'apps/operator/lib/release/patch-artifact-provenance.ts',
     {
       kind: 'dead',
       action: 'delete',
       reason: 'no test, no caller — strongest retire candidate in the family',
-    },
-  ],
-  [
-    'apps/operator/lib/release/preflight-build-set.ts',
-    {
-      kind: 'dead',
-      action: 'wire-or-delete',
-      reason: '1 test; reached only from dead publication siblings',
-    },
-  ],
-  [
-    'apps/operator/lib/release/gate-release-site.ts',
-    {
-      kind: 'dead',
-      action: 'wire-or-delete',
-      reason: '1 test, 0 callers — wire-or-retire',
     },
   ],
   [
@@ -555,7 +534,7 @@ export const ACKNOWLEDGED_UNREACHABLE_MODULES = new Map([
  * ⚠ SHRINK-ONLY. Pinned to the seeded population size so a NEWLY orphaned detector
  * module fails the build on the commit that orphans it, exactly as the script axis does.
  */
-export const UNREACHABLE_MODULES_HIGH_WATERMARK = 8;
+export const UNREACHABLE_MODULES_HIGH_WATERMARK = 5;
 
 export const BLOCKING_TIERS = new Set(['gate', 'ci', 'test', 'chained', 'repo-wide']);
 
