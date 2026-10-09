@@ -253,11 +253,48 @@ export function runGit(
   sandboxEnabled = false,
   sandboxRequired = false,
 ): Promise<{ code: number | null; output: string }> {
+  return runGitWithSandboxOptions(argv, cwd, signal, sandboxEnabled, sandboxRequired);
+}
+
+/**
+ * Run the pinned, read-only evidence Git commands without SRT's per-command
+ * Unix-socket proxy. These callers use only local `rev-parse`, `cat-file`, and
+ * `merge-base` operations, so network access is unnecessary. Keeping this path
+ * on bwrap avoids the SRT mux socket failure mode under concurrent evidence
+ * reads while retaining filesystem and credential containment.
+ */
+export function runGitReadOnlyEvidence(
+  argv: string[],
+  cwd: string,
+  _stateDir: string | undefined,
+  signal: AbortSignal,
+  sandboxEnabled = false,
+  sandboxRequired = false,
+): Promise<{ code: number | null; output: string }> {
+  return runGitWithSandboxOptions(argv, cwd, signal, sandboxEnabled, sandboxRequired, {
+    srtBin: null,
+    denyAllEgress: true,
+  });
+}
+
+interface RunGitSandboxOptions {
+  srtBin?: string | null;
+  denyAllEgress?: boolean;
+}
+
+function runGitWithSandboxOptions(
+  argv: string[],
+  cwd: string,
+  signal: AbortSignal,
+  sandboxEnabled: boolean,
+  sandboxRequired: boolean,
+  sandboxOptions: RunGitSandboxOptions = {},
+): Promise<{ code: number | null; output: string }> {
   return new Promise((resolvePromise) => {
     const spawnPath = augmentedSpawnPath();
     const decision = buildCapabilitySandboxCommand(
       { cmd: [resolveBin('git', spawnPath), ...argv], cwd },
-      { enabled: sandboxEnabled, required: sandboxRequired },
+      { enabled: sandboxEnabled, required: sandboxRequired, ...sandboxOptions },
     );
     assertCapabilitySandboxAvailable(decision, cwd);
     if (sandboxEnabled && !decision.sandboxed) {
