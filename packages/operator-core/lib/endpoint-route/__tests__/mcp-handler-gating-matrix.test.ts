@@ -1705,8 +1705,17 @@ describe('P006 full dispatcher semantics over real HTTP and authenticated UDS', 
   // Compare literal payload and all semantic metadata, not JSON byte size or
   // a "format" label alone. Controlled corruptions below calibrate this oracle.
   function assertSameResult(actual: CallResult, expected: CallResult) {
-    expect(actual.content).toEqual(expected.content);
-    expect(actual._meta).toEqual(expected._meta);
+    const payload = (result: CallResult) => {
+      const { _buildStamp, ...meta } = result._meta ?? {};
+      const buildId = (_buildStamp as { buildId?: unknown } | undefined)?.buildId;
+      // The real annotator emits this notice once per owner, so two transports
+      // can legitimately receive different notices. Match its metadata too;
+      // arbitrary extra text must still fail parity.
+      const content = result.content.filter(item => !(typeof buildId === 'string' &&
+        item.type === 'text' && item.text?.startsWith(`ℹ served by build ${buildId} (up `)));
+      return { content, meta: result._meta === undefined ? undefined : meta };
+    };
+    expect(payload(actual)).toEqual(payload(expected));
     expect(actual.structuredContent).toEqual(expected.structuredContent);
     expect(actual.isError).toEqual(expected.isError);
   }
@@ -1825,7 +1834,7 @@ describe('P006 full dispatcher semantics over real HTTP and authenticated UDS', 
           _meta: { format: 'json' },
         }) as CallResult;
         expect(result.structuredContent).toEqual(structured ? { rows: PARITY_ROWS } : undefined);
-        expect(JSON.parse(textOf(result))).toEqual({ rows: PARITY_ROWS });
+        expect(jsonOf(result)).toEqual({ rows: PARITY_ROWS });
         expect(parityCalls.at(-1)?.ctx).toMatchObject({
           transport: 'mcp', requestedFormat: 'json', requestedStructured: structured,
         });
@@ -1834,6 +1843,9 @@ describe('P006 full dispatcher semantics over real HTTP and authenticated UDS', 
     }
     assertSameResult(arms[1]!, arms[0]!);
     expect(() => assertSameResult({ ...arms[1]!, structuredContent: { rows: [] } }, arms[0]!)).toThrow();
+    expect(() => assertSameResult({ ...arms[1]!, content: [
+      ...arms[1]!.content, { type: 'text', text: 'unexpected payload text' },
+    ] }, arms[0]!)).toThrow();
   });
 
   it.each(['http', 'listener'] as const)(
