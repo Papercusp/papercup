@@ -34,7 +34,10 @@ export function verifierSourceFiles(root: string, {
       if (rel === '.verifier-source.json') continue;
       // TanStack derives this file from the recorded routes/config on startup.
       // A tracked tree remains source, and a redirect is never a build output.
-      if (runtimeArtifacts && [
+      // Vitest writes its result cache beneath the shared config's .vitest-tmp.
+      // Permit only the exact cache file, never the whole directory or recorded source.
+      const vitestResultCache = /(?:^|\/)\.vitest-tmp\/vitest\/[0-9a-f]{40}\/results\.json$/.test(rel);
+      if (runtimeArtifacts && (vitestResultCache || [
         'apps/operator-vite/src/routeTree.gen.ts', '.papercusp-pinned-deps',
         // Native build wrappers create this exact regular flock file.
         'papercusp-desktop/src-tauri/sidecar.lock',
@@ -44,7 +47,7 @@ export function verifierSourceFiles(root: string, {
         'papercusp-desktop/src-tauri/sidecar/spa/PLACEHOLDER-README.txt',
         'papercusp-desktop/src-tauri/seed/PLACEHOLDER-README.txt',
         'papercusp-desktop/src-tauri/doc-vector-seed/PLACEHOLDER-README.txt',
-      ].includes(rel)
+      ].includes(rel))
         && !recordedPaths.includes(rel)) {
         if (!lstatSync(path).isFile()) throw new VerifierSourceError(`runtime artifact is not an independent file: ${rel}`);
         continue;

@@ -50,6 +50,8 @@ const NATIVE_RUNTIME_FILES = [
   'papercusp-desktop/src-tauri/doc-vector-seed/PLACEHOLDER-README.txt',
 ];
 
+const VITEST_RESULT_CACHE = 'packages/operator-core/.vitest-tmp/vitest/da39a3ee5e6b4b0d3255bfef95601890afd80709/results.json';
+
 function listFiles(dir: string): string[] {
   const acc: string[] = [];
   const walk = (d: string) => {
@@ -280,7 +282,30 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     await expect(verifyVerifierSource(dest, receipt, { runtimeArtifacts: true })).rejects.toThrow(`changed ${input}`);
   });
 
-  it.each(['apps/operator-vite/src/routeTree.gen.ts', '.papercusp-pinned-deps', 'libs/generic/sse/dist/index.js', 'packages/omp-plugin/dist/native-extension.mjs', ...NATIVE_RUNTIME_FILES])('never excludes recorded output from source attestation: %s', async input => {
+  it('allows only the exact unrecorded Vitest result cache during runtime source attestation', async () => {
+    const fixture = makeSuperproject(join(tmp, 'verifier-vitest-cache-fixture'));
+    const dest = join(tmp, 'verifier-vitest-cache-export');
+    const input = SHIPPED.find(p => p.startsWith('apps/'))!;
+    const receipt = await prepareVerifierSource({ repo: fixture.repo, ref: fixture.commit, dest, inputs: [input] });
+    write(dest, VITEST_RESULT_CACHE, '{"results":[]}');
+    await expect(verifyVerifierSource(dest, receipt)).rejects.toThrow(`added ${VITEST_RESULT_CACHE}`);
+    await expect(verifyVerifierSource(dest, receipt, { runtimeArtifacts: true })).resolves.toEqual(receipt);
+    const unexpected = VITEST_RESULT_CACHE.replace('results.json', 'extra.ts');
+    write(dest, unexpected, 'export const unexpected = true;');
+    await expect(verifyVerifierSource(dest, receipt, { runtimeArtifacts: true })).rejects.toThrow(`added ${unexpected}`);
+  });
+
+  it('rejects result cache paths outside the Vitest hash namespace', async () => {
+    const fixture = makeSuperproject(join(tmp, 'verifier-vitest-cache-invalid-fixture'));
+    const dest = join(tmp, 'verifier-vitest-cache-invalid-export');
+    const input = SHIPPED.find(p => p.startsWith('apps/'))!;
+    const receipt = await prepareVerifierSource({ repo: fixture.repo, ref: fixture.commit, dest, inputs: [input] });
+    const unexpected = 'packages/operator-core/.vitest-tmp/vitest/not-a-hash/results.json';
+    write(dest, unexpected, '{"results":[]}');
+    await expect(verifyVerifierSource(dest, receipt, { runtimeArtifacts: true })).rejects.toThrow(`added ${unexpected}`);
+  });
+
+  it.each(['apps/operator-vite/src/routeTree.gen.ts', '.papercusp-pinned-deps', 'libs/generic/sse/dist/index.js', 'packages/omp-plugin/dist/native-extension.mjs', VITEST_RESULT_CACHE, ...NATIVE_RUNTIME_FILES])('never excludes recorded output from source attestation: %s', async input => {
     const suffix = input.replaceAll('/', '-');
     const fixture = makeSuperproject(join(tmp, `verifier-output-recorded-${suffix}`));
     write(fixture.repo, input, 'recorded route tree');
@@ -313,7 +338,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     await expect(verifyVerifierSource(dest, receipt, { runtimeArtifacts: true })).rejects.toThrow(`changed ${input}`);
   });
 
-  it.each(['.papercusp-pinned-deps', 'libs/generic/sse/dist', 'packages/omp-plugin/dist', 'papercusp-desktop/src-tauri/gen/schemas', ...NATIVE_RUNTIME_FILES.filter(path => path.endsWith('PLACEHOLDER-README.txt') || path.endsWith('sidecar.lock'))])('rejects a redirect posing as runtime output: %s', async artifact => {
+  it.each(['.papercusp-pinned-deps', 'libs/generic/sse/dist', 'packages/omp-plugin/dist', 'papercusp-desktop/src-tauri/gen/schemas', VITEST_RESULT_CACHE, ...NATIVE_RUNTIME_FILES.filter(path => path.endsWith('PLACEHOLDER-README.txt') || path.endsWith('sidecar.lock'))])('rejects a redirect posing as runtime output: %s', async artifact => {
     const fixture = makeSuperproject(join(tmp, `verifier-output-link-${artifact.replaceAll('/', '-')}`));
     const input = SHIPPED.find(p => p.startsWith('apps/'))!;
     const dest = join(tmp, `verifier-output-link-export-${artifact.replaceAll('/', '-')}`);
