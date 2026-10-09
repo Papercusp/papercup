@@ -14,9 +14,9 @@
  * does so DETERMINISTICALLY (the session's transcript / rollout file GROWS),
  * independent of the model's semantic output.
  *
- * Faithfulness: both the resume command (`resumeCommandFor`) and the claude
- * config-dir (`writeInteractiveClaudeConfig`, EI-155) are imported from the real
- * operator-core code — there is no copy of the flags to drift out of sync.
+ * Faithfulness: resume commands come from `resumeCommandFor`; the Claude
+ * config uses the maintained headless writer over a private credential copy.
+ * The child cannot inherit the caller's control-plane identity or user hooks.
  *
  * Gated (needs live provider creds → never CI): surfaced as a `{kind:'node'}`
  * runner in the /adv Tests tab's coordination-suite domain. Each agent leg SKIPS
@@ -30,20 +30,23 @@
  */
 import { execFileSync } from 'node:child_process';
 import {
+  chmodSync,
+  copyFileSync,
   existsSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
   readdirSync,
   rmSync,
-  symlinkSync,
+  writeFileSync,
 } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { createHash, randomUUID } from 'node:crypto';
 import { resumeCommandFor, wakeTurnText } from '../../../packages/operator-core/lib/events/await/wake-executor';
 import type { DeliveryWork } from '../../../packages/operator-core/lib/events/await/types';
-import { writeInteractiveClaudeConfig } from '../../../packages/operator-core/lib/interactive-claude-config';
+import { writeSpawnClaudeConfig } from '../../../libs/papercusp/packages/orchestrator/src/spawn-mcp';
 import { tagTurnForInjection } from '../../../packages/operator-core/lib/turn-provenance/turn-provenance';
 
 // A cheap model keeps the smoke's ~4 real turns near-free. Override via env.
@@ -54,7 +57,72 @@ type Leg = {
   agent: "claude" | "omp" | "codex";
   status: "pass" | "skip" | "fail";
   detail: string;
+  version?: string;
+  witness?: ReturnType<typeof retainResumeSmokeWitness>;
 };
+
+let evidenceDir: string | undefined;
+
+/** Preserve the exact private transcript pair before the client profile is removed. */
+export function retainResumeSmokeWitness(dir: string, agent: Leg['agent'], sessionId: string,
+  before: string, after: string, wakeText: string) {
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  chmodSync(dir, 0o700);
+  const stem = join(dir, `${agent}-${sessionId}`);
+  const beforePath = `${stem}-before.jsonl`;
+  const afterPath = `${stem}-after.jsonl`;
+  writeFileSync(beforePath, before, { mode: 0o600 });
+  writeFileSync(afterPath, after, { mode: 0o600 });
+  const hash = (text: string) => createHash('sha256').update(text).digest('hex');
+  return { sessionId, beforePath, afterPath, beforeSha256: hash(before), afterSha256: hash(after),
+    exactPrefixAndNewWake: verifyResumeSmokeContinuation(before, after, wakeText), wakeText };
+}
+
+/** Acceptance cannot turn an absent client or an empty selection into a pass. */
+export function resumeSmokeExitCode(legs: Pick<Leg, 'status'>[], requireAll: boolean): number {
+  return !legs.length || legs.some((leg) => leg.status === 'fail' || (requireAll && leg.status === 'skip')) ? 1 : 0;
+}
+
+function retainWitness(agent: Leg['agent'], sessionId: string, before: string, after: string, wakeText: string) {
+  return evidenceDir ? retainResumeSmokeWitness(evidenceDir, agent, sessionId, before, after, wakeText) : undefined;
+}
+
+/** Private auth inputs; no user settings, hooks, plugins, or write-through credential links. */
+export function createResumeSmokeProfile(agent: Leg['agent'], sourceHome = homedir()) {
+  const home = mkdtempSync(join(tmpdir(), `resume-smoke-${agent}-home-`));
+  chmodSync(home, 0o700);
+  const relative = agent === 'claude' ? ['.claude', '.credentials.json']
+    : agent === 'codex' ? ['.codex', 'auth.json'] : ['.omp', 'agent', 'auth.json'];
+  const source = join(sourceHome, ...relative);
+  const destination = join(home, ...relative);
+  mkdirSync(join(destination, '..'), { recursive: true, mode: 0o700 });
+  if (existsSync(source)) {
+    copyFileSync(source, destination);
+    chmodSync(destination, 0o600);
+  }
+  const clientHome = agent === 'claude'
+    ? writeSpawnClaudeConfig(home, { persistentDir: join(home, '.claude-config') }).configDir
+    : agent === 'codex' ? join(home, '.codex') : join(home, '.omp', 'agent');
+  return { home, clientHome, cleanup: () => rmSync(home, { recursive: true, force: true }) };
+}
+
+/** Strip caller control-plane identity before starting an acceptance client. */
+export function resumeSmokeChildEnv(parent: NodeJS.ProcessEnv, home: string, overrides: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...parent };
+  for (const key of Object.keys(env)) if (key.startsWith('PAPERCUSP_')) delete env[key];
+  for (const key of ['CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'PI_CODING_AGENT_DIR', 'OMP_CONFIG_DIR']) delete env[key];
+  return { ...env, HOME: home, XDG_CONFIG_HOME: join(home, '.config'),
+    XDG_DATA_HOME: join(home, '.local', 'share'), ...overrides, PAPERCUSP_SID: '' };
+}
+
+/** A different rollout growing is never evidence that this exact session resumed. */
+export function verifyResumeSmokeContinuation(before: string, after: string, wakeText: string): boolean {
+  const prior = before.split('\n').filter((line) => line.trim());
+  const current = after.split('\n').filter((line) => line.trim());
+  return prior.length > 0 && current.length > prior.length &&
+    current.slice(0, prior.length).every((line, index) => line === prior[index]) &&
+    current.slice(prior.length).join('\n').includes(wakeText);
+}
 
 function log(s: string) {
   process.stdout.write(s + '\n');
@@ -134,14 +202,14 @@ async function claudeLeg(): Promise<Leg> {
 
   const sid = `smoke-${randomUUID()}`;
   const sessionId = randomUUID(); // forced native session id (claude --session-id)
-  const { configDir } = await writeInteractiveClaudeConfig({ sid }); // the real EI-155 dir
+  const profile = createResumeSmokeProfile('claude');
+  const configDir = profile.clientHome;
   const cwd = mkdtempSync(join(tmpdir(), 'resume-smoke-claude-'));
   const provenanceDir = mkdtempSync(join(tmpdir(), 'resume-smoke-provenance-'));
-  const env = {
-    ...process.env,
+  const env = resumeSmokeChildEnv(process.env, profile.home, {
     CLAUDE_CONFIG_DIR: configDir,
     PAPERCUSP_TURN_PROVENANCE_DIR: provenanceDir,
-  };
+  });
 
   try {
     // 1. Fresh launch: force --session-id so resume can target it EXACTLY (the
@@ -165,6 +233,7 @@ async function claudeLeg(): Promise<Leg> {
       return { agent: 'claude', status: 'fail', detail: `no transcript ${sessionId}.jsonl under the isolated config dir's projects/ after launch` };
     }
     const before = jsonlLines(transcript);
+    const beforeText = readFileSync(transcript, 'utf8');
 
     // 2. Resume via the REAL wake-executor command builder (zero drift) — and
     //    with the REAL wake turn text (coord-e2e P-009: the resume path of
@@ -202,16 +271,18 @@ async function claudeLeg(): Promise<Leg> {
       return { agent: 'claude', status: 'fail', detail: `resume did not grow the session transcript (${before} → ${after} lines) — it did not continue the session` };
     }
     const transcriptText = readFileSync(transcript, 'utf8');
-    if (!transcriptText.includes('coord:send wake-rung ping')) {
+    const witness = retainWitness('claude', sessionId, beforeText, transcriptText, wakeText);
+    if (!verifyResumeSmokeContinuation(beforeText, transcriptText, wakeText)) {
       return { agent: 'claude', status: 'fail', detail: 'resumed transcript grew but does NOT contain the injected wake turn text — the wake prompt did not reach the session' };
     }
     return {
       agent: "claude",
       status: "pass",
+      witness,
       detail: `resumed exact session ${sessionId.slice(0, 8)}… in ${resumeMs}ms; transcript ${before} → ${after} lines; wake turn text present in the resumed turn`,
     };
   } finally {
-    rmSync(configDir, { recursive: true, force: true });
+    profile.cleanup();
     rmSync(cwd, { recursive: true, force: true });
     rmSync(provenanceDir, { recursive: true, force: true });
   }
@@ -225,14 +296,14 @@ async function ompLeg(): Promise<Leg> {
   // PI_CODING_AGENT_DIR is the production OMP session-store override. Keeping
   // it isolated proves both fresh and resume resolve the exact same thread
   // without reading or mutating the owner's normal ~/.omp/agent/sessions tree.
-  const ompAgentDir = mkdtempSync(join(tmpdir(), 'resume-smoke-omp-agent-'));
+  const profile = createResumeSmokeProfile('omp');
+  const ompAgentDir = profile.clientHome;
   const cwd = mkdtempSync(join(tmpdir(), 'resume-smoke-omp-'));
   const provenanceDir = mkdtempSync(join(tmpdir(), 'resume-smoke-provenance-'));
-  const env = {
-    ...process.env,
+  const env = resumeSmokeChildEnv(process.env, profile.home, {
     PI_CODING_AGENT_DIR: ompAgentDir,
     PAPERCUSP_TURN_PROVENANCE_DIR: provenanceDir,
-  };
+  });
 
   try {
     log('  omp: launching a fresh print-mode session…');
@@ -263,8 +334,11 @@ async function ompLeg(): Promise<Leg> {
     }
     const threadId = match[1];
     const before = jsonlLines(transcript);
+    const beforeText = readFileSync(transcript, 'utf8');
 
-    const resumeText = await tagSmokeTurn(sid, 'Reply with the single word AGAIN.', provenanceDir);
+    const wakePayload = wakeTurnText({ id: 9002, eventKey: `coord:inbox-wake:${sid}`,
+      note: 'resume-spawn-live OMP wake', summary: 'coord:send wake-rung ping', payload: null } as DeliveryWork);
+    const resumeText = await tagSmokeTurn(sid, wakePayload + ' Reply with the single word AGAIN.', provenanceDir);
     if (!resumeText) {
       return { agent: 'omp', status: 'fail', detail: 'turn-provenance ledger write failed before resume' };
     }
@@ -279,12 +353,14 @@ async function ompLeg(): Promise<Leg> {
     }
 
     const after = jsonlLines(transcript);
-    if (after <= before) {
+    const afterText = readFileSync(transcript, 'utf8');
+    const witness = retainWitness('omp', threadId, beforeText, afterText, resumeText);
+    if (!verifyResumeSmokeContinuation(beforeText, afterText, resumeText)) {
       return { agent: 'omp', status: 'fail', detail: `resume did not grow the session transcript (${before} → ${after} lines)` };
     }
-    return { agent: 'omp', status: 'pass', detail: `resumed exact thread ${threadId.slice(0, 8)}… in ${resumeMs}ms; transcript ${before} → ${after} lines` };
+    return { agent: 'omp', status: 'pass', witness, detail: `resumed exact thread ${threadId.slice(0, 8)}… in ${resumeMs}ms; transcript ${before} → ${after} lines` };
   } finally {
-    rmSync(ompAgentDir, { recursive: true, force: true });
+    profile.cleanup();
     rmSync(cwd, { recursive: true, force: true });
     rmSync(provenanceDir, { recursive: true, force: true });
   }
@@ -296,31 +372,18 @@ async function codexLeg(): Promise<Leg> {
   if (!isCodexAuthed()) return { agent: 'codex', status: 'skip', detail: 'no ~/.codex/auth.json' };
 
   const sid = `smoke-${randomUUID()}`;
-  // A minimal per-session CODEX_HOME: just the ChatGPT OAuth symlink (the resume
+  // A minimal per-session CODEX_HOME: just a private ChatGPT OAuth copy (the resume
   // rung doesn't need MCP; writeSuCodexHome's full home is exercised elsewhere).
-  const codexHome = mkdtempSync(join(tmpdir(), 'resume-smoke-codex-home-'));
-  try {
-    const realAuth = join(homedir(), '.codex', 'auth.json');
-    if (existsSync(realAuth)) symlinkSync(realAuth, join(codexHome, 'auth.json'));
-  } catch { /* best-effort */ }
+  const profile = createResumeSmokeProfile('codex');
+  const codexHome = profile.clientHome;
   const cwd = mkdtempSync(join(tmpdir(), 'resume-smoke-codex-'));
   const provenanceDir = mkdtempSync(join(tmpdir(), 'resume-smoke-provenance-'));
-  const env = {
-    ...process.env,
+  const env = resumeSmokeChildEnv(process.env, profile.home, {
     CODEX_HOME: codexHome,
     PAPERCUSP_TURN_PROVENANCE_DIR: provenanceDir,
-  };
+  });
 
   const sessionsRoot = join(codexHome, 'sessions');
-  const rolloutLines = () => {
-    let total = 0;
-    findFile(sessionsRoot, (n, full) => {
-      if (n.startsWith('rollout-') && n.endsWith('.jsonl')) total += jsonlLines(full);
-      return false; // visit all (never "found")
-    });
-    return total;
-  };
-
   try {
     // 1. Fresh headless session.
     log('  codex: launching a fresh exec session…');
@@ -330,7 +393,7 @@ async function codexLeg(): Promise<Leg> {
     }
     const launch = run(
       'codex',
-      ['exec', '--dangerously-bypass-approvals-and-sandbox', launchText],
+      ['exec', '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox', launchText],
       { cwd, env },
     );
     if (launch.code !== 0) {
@@ -344,36 +407,41 @@ async function codexLeg(): Promise<Leg> {
     const m = rollout.match(/rollout-.*-([0-9a-f-]{36})\.jsonl$/i);
     if (!m) return { agent: 'codex', status: 'fail', detail: `could not parse a session uuid from rollout name: ${rollout}` };
     const sessionId = m[1];
-    const before = rolloutLines();
+    const before = jsonlLines(rollout);
+    const beforeText = readFileSync(rollout, 'utf8');
 
     // 2. Resume via the REAL wake-executor builder (`codex exec … resume <uuid>`).
-    const resumeText = await tagSmokeTurn(sid, 'Reply with the single word AGAIN.', provenanceDir);
+    const wakePayload = wakeTurnText({ id: 9003, eventKey: `coord:inbox-wake:${sid}`,
+      note: 'resume-spawn-live Codex wake', summary: 'coord:send wake-rung ping', payload: null } as DeliveryWork);
+    const resumeText = await tagSmokeTurn(sid, wakePayload + ' Reply with the single word AGAIN.', provenanceDir);
     if (!resumeText) {
       return { agent: 'codex', status: 'fail', detail: 'turn-provenance ledger write failed before resume' };
     }
     const cmd = resumeCommandFor({ agent: 'codex', sessionId, ompThreadId: null }, resumeText);
     if (!cmd) return { agent: 'codex', status: 'fail', detail: 'resumeCommandFor returned null for a codex session with a sessionId' };
-    log(`  codex: resuming via \`${cmd.bin} ${cmd.args.filter((a) => !a.startsWith('Reply')).join(' ')} <text>\``);
+    log(`  codex: resuming via \`${cmd.bin} ${cmd.args.filter((a) => a !== resumeText).join(' ')} <text>\``);
     const resumeStartedAt = Date.now();
-    const resume = run(cmd.bin, cmd.args, { cwd, env });
+    const resume = run(cmd.bin, ['exec', '--skip-git-repo-check', ...cmd.args.slice(1)], { cwd, env });
     const resumeMs = Date.now() - resumeStartedAt;
     if (resume.code !== 0) {
       return { agent: 'codex', status: 'fail', detail: `resume exited ${resume.code}: ${resume.stderr.slice(0, 240)}` };
     }
 
-    // 3. Deterministic proof: the home's rollout content grew — the resume ran a
-    //    real turn against the session in this CODEX_HOME.
-    const after = rolloutLines();
-    if (after <= before) {
+    // 3. Deterministic proof: this exact rollout grew with the wake prompt.
+    const after = jsonlLines(rollout);
+    const afterText = readFileSync(rollout, 'utf8');
+    const witness = retainWitness('codex', sessionId, beforeText, afterText, resumeText);
+    if (!verifyResumeSmokeContinuation(beforeText, afterText, resumeText)) {
       return { agent: 'codex', status: 'fail', detail: `resume did not grow the session rollout (${before} → ${after} lines)` };
     }
     return {
       agent: "codex",
       status: "pass",
+      witness,
       detail: `resumed session ${sessionId.slice(0, 8)}… in ${resumeMs}ms; rollout ${before} → ${after} lines`,
     };
   } finally {
-    rmSync(codexHome, { recursive: true, force: true });
+    profile.cleanup();
     rmSync(cwd, { recursive: true, force: true });
     rmSync(provenanceDir, { recursive: true, force: true });
   }
@@ -382,6 +450,10 @@ async function codexLeg(): Promise<Leg> {
 async function main() {
   const argv = process.argv.slice(2);
   const only = argv.find((a) => a.startsWith('--agent='))?.slice('--agent='.length) || null;
+  if (only && !['claude', 'omp', 'codex'].includes(only)) throw new Error(`Unknown agent: ${only}`);
+  const requireAll = argv.includes('--require-all');
+  const evidenceArg = argv.find((a) => a.startsWith('--evidence-dir='))?.slice('--evidence-dir='.length);
+  evidenceDir = evidenceArg ? resolve(evidenceArg) : undefined;
 
   log(
     "resume-spawn-live — real claude/omp/codex resume rung (EI-153 live-smoke)\n",
@@ -390,8 +462,21 @@ async function main() {
   if (!only || only === 'claude') legs.push(await claudeLeg());
   if (!only || only === "omp") legs.push(await ompLeg());
   if (!only || only === 'codex') legs.push(await codexLeg());
+  for (const leg of legs) {
+    const version = run(leg.agent, ['--version'], { cwd: process.cwd(), env: process.env });
+    leg.version = version.code === 0 ? version.stdout.trim() : 'unavailable';
+  }
+  if (evidenceDir) {
+    mkdirSync(evidenceDir, { recursive: true, mode: 0o700 });
+    writeFileSync(join(evidenceDir, 'outcomes.json'), JSON.stringify({ at: new Date().toISOString(), requireAll,
+      exitCode: resumeSmokeExitCode(legs, requireAll), legs }, null, 2), { mode: 0o600 });
+  }
 
   log('');
+  if (requireAll && legs.some((l) => l.status === 'skip')) {
+    log('FAIL — required acceptance contains a skipped client.');
+    process.exit(1);
+  }
   for (const l of legs) {
     const icon = l.status === 'pass' ? '✅' : l.status === 'skip' ? '⚪' : '❌';
     log(`${icon} ${l.agent}: ${l.status.toUpperCase()} — ${l.detail}`);
@@ -414,7 +499,9 @@ async function main() {
   process.exit(0);
 }
 
-main().catch((e) => {
-  log(`resume-spawn-live: ${e?.message ?? e}`);
-  process.exit(2);
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+  main().catch((e) => {
+    log(`resume-spawn-live: ${e?.message ?? e}`);
+    process.exit(2);
+  });
+}
