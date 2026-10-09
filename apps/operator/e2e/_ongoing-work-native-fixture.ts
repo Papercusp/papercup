@@ -1,4 +1,17 @@
 import type { Sql } from 'postgres';
+import type { OrderedSelectionPolicy } from '../../../packages/operator-core/lib/typed-properties';
+
+/** The generic fixture must not use the reserved unpackaged legacy WOE signature. */
+export function nativeCollectionDeclaration(kind: 'plans' | 'tea', ids: string[], policy: OrderedSelectionPolicy) {
+  const property = kind === 'plans' ? 'worklist' : 'tea_choices';
+  const policyName = kind === 'plans' ? 'native_worklist_policy' : 'tea_policy';
+  return { property, policyName, schema: {
+    [property]: { datatype: kind === 'plans' ? 'plan-ref-list' : 'string-list', editable_by: 'both', default: ids,
+      collection: { source: kind === 'plans' ? 'active-workspace-plans' : 'manual', policy: policyName,
+        order: kind === 'plans' ? 'priority' : 'display', selectable: true, defaultSelected: true } },
+    [policyName]: { datatype: 'ordered-selection-policy', editable_by: 'owner', default: policy },
+  } };
+}
 
 /** Exercise archival disappearance/rediscovery without requesting shipment. */
 export async function setNativeCollectionPlanArchived(sql: Sql, input: {
