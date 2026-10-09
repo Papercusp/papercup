@@ -638,7 +638,9 @@ export interface CaptureDeps {
   /** P-011 semantic-widening seams. OPTIONAL — default to the real P-008 work-item
    *  dupe guard (itself vitest-inert + fail-open) and the real getIssue; injectable
    *  so tests drive the widening without PG or an embedder. */
-  findSemanticDupes?: (input: { title: string; summary?: string }) => Promise<SemanticDupeResult | null>;
+  findSemanticDupes?: (
+    input: { title: string; summary?: string; harness?: string },
+  ) => Promise<SemanticDupeResult | null>;
   getIssue?: (id: string) => Promise<EngineerIssue | null>;
   /**
    * WI-2147241 — the MIXED-family citation door for the Scout evidence-integrity record.
@@ -1793,9 +1795,11 @@ async function classifyDerivedObservationFold(args: {
   deps: CaptureDeps;
 }): Promise<{ fold: FoldClassification; prior: EngineerIssue | null } | null> {
   const { input, origin, deps } = args;
+  const harness = harnessFromScope(input.scope);
   const sem = await (deps.findSemanticDupes ?? findSemanticDupes)({
     title: input.title,
     ...(input.body ? { summary: input.body } : {}),
+    ...(harness ? { harness } : {}),
   }).catch(() => null);
   if (!sem) return null;
 
@@ -2750,9 +2754,13 @@ export async function captureImprovement(
   let semanticLeg: DedupCoverage['semantic'] = isObservation ? 'skipped' : 'unavailable';
   if (!isObservation) {
     try {
+      // Scope before the guard's fixed top-k: post-hydration scope checks cannot
+      // recover an in-harness candidate evicted by nearer items from other harnesses.
+      const harness = harnessFromScope(input.scope);
       const sem = await (deps.findSemanticDupes ?? findSemanticDupes)({
         title: input.title,
         ...(input.body ? { summary: input.body } : {}),
+        ...(harness ? { harness } : {}),
       });
       if (sem) {
         // The shared guard's coverage assessment is part of the verdict. An empty
@@ -2914,7 +2922,7 @@ export async function captureImprovement(
       hint: input.body
         ? 'Dedup results apply to this exact title and body. If the body will change before filing, rerun checkDuplicatesOnly with the final body because semantic matches can change.' +
           incompleteCoverageHint
-        : 'This was a title-only pre-check. The match list can be incomplete even when it contains matches because a final body can surface additional semantic duplicates. Rerun checkDuplicatesOnly with the final body before relying on the match list.' +
+        : 'This was a title-only pre-check. An empty `possibleDuplicates` list is not evidence that the eventual full capture has no duplicates: adding the final body can change semantic results and surface additional matches. Rerun checkDuplicatesOnly with the exact final body before relying on the results.' +
           incompleteCoverageHint +
           (dedupCoverage.degraded
             ? ' Include the final body and rerun checkDuplicatesOnly before filing.'

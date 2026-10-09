@@ -1593,7 +1593,7 @@ describe('captureImprovement — search-first dedup (D-001)', () => {
     expect((d.created[0].payload as Record<string, unknown> | undefined)?.dedupVerdict).toBeUndefined();
   });
 
-  it('checkDuplicatesOnly never creates and warns that a non-empty title-only match list may be incomplete', async () => {
+  it('checkDuplicatesOnly never creates and warns that title-only results are incomplete', async () => {
     const d = deps({ found: [dup] });
     const res = await captureImprovement(
       { title: 'presence list dumps stale rows', kind: 'bug', checkDuplicatesOnly: true },
@@ -1603,8 +1603,8 @@ describe('captureImprovement — search-first dedup (D-001)', () => {
     expect(d.created).toHaveLength(0);
     expect(res.possibleDuplicates).toHaveLength(1);
     expect(res.hint).toContain('title-only pre-check');
-    expect(res.hint).toContain('match list can be incomplete even when it contains matches');
-    expect(res.hint).toContain('Rerun checkDuplicatesOnly with the final body');
+    expect(res.hint).toContain('An empty `possibleDuplicates` list is not evidence');
+    expect(res.hint).toContain('Rerun checkDuplicatesOnly with the exact final body');
   });
 
   it('uses the same candidates as capture when check-only receives the final body', async () => {
@@ -2879,20 +2879,36 @@ describe('P-007 — dedupCoverage: an empty result must disclose whether it coul
     expect(res.dedupCoverage).toEqual({ lexical: 'ok', semantic: 'ok', degraded: false });
   });
 
-  it('distinguishes title-only query scope from final-body semantic hits', async () => {
+  it('makes an empty title-only pre-check explicitly inconclusive for the eventual full capture', async () => {
+    const d = {
+      ...deps(),
+      findSemanticDupes: async () => healthySemanticResult(),
+    };
+    const res = await captureImprovement(
+      { title: 'a title-only query with a healthy semantic index', kind: 'bug', checkDuplicatesOnly: true },
+      d,
+    );
+
+    expect(res.possibleDuplicates).toEqual([]);
+    expect(res.dedupCoverage).toEqual({ lexical: 'ok', semantic: 'ok', degraded: false });
+    expect(res.hint).toContain('An empty `possibleDuplicates` list is not evidence');
+    expect(res.hint).toContain('Rerun checkDuplicatesOnly with the exact final body');
+  });
+
+  it('forwards harness scope to title-only and final-body semantic searches', async () => {
     const title = 'scorecards:get ignores rerunRecipe evidence used by the auditor';
     const body = 'The projection omits payload.observation.rerunRecipe from scorecards:get results.';
     const prior = existing({
       id: 'EI-TITLE-ONLY-SEMANTIC-MISS',
       title: 'scorecards:get omits payload.observation.rerunRecipe needed for auditor reruns',
     });
-    const queries: Array<{ title: string; summary?: string }> = [];
+    const queries: Array<{ title: string; summary?: string; harness?: string }> = [];
     const d = {
       ...deps(),
       searchIssues: async () => {
         throw new Error('lexical search unavailable');
       },
-      findSemanticDupes: async (query: { title: string; summary?: string }) => {
+      findSemanticDupes: async (query: { title: string; summary?: string; harness?: string }) => {
         queries.push(query);
         return query.summary
           ? {
@@ -2911,13 +2927,19 @@ describe('P-007 — dedupCoverage: an empty result must disclose whether it coul
     };
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
-      const titleOnly = await captureImprovement({ title, kind: 'bug', checkDuplicatesOnly: true }, d);
+      const titleOnly = await captureImprovement(
+        { title, kind: 'bug', scope: 'harness:papercusp', checkDuplicatesOnly: true },
+        d,
+      );
       const withFinalBody = await captureImprovement(
-        { title, body, kind: 'bug', checkDuplicatesOnly: true },
+        { title, body, kind: 'bug', scope: 'harness:papercusp', checkDuplicatesOnly: true },
         d,
       );
 
-      expect(queries).toEqual([{ title }, { title, summary: body }]);
+      expect(queries).toEqual([
+        { title, harness: 'papercusp' },
+        { title, summary: body, harness: 'papercusp' },
+      ]);
       expect(titleOnly.possibleDuplicates).toEqual([]);
       expect(titleOnly.dedupCoverage).toEqual({ lexical: 'unavailable', semantic: 'ok', degraded: true });
       expect(titleOnly.hint).toContain('an empty possibleDuplicates list is inconclusive');
@@ -3708,18 +3730,24 @@ describe('captureImprovement — derived-identity fold for agent filings (P-013 
     merges: { id: string; patch: Record<string, unknown> }[];
     links: { src: string; dst: string; rel: string }[];
     patched: string[];
+    semanticQueries: Array<{ title: string; summary?: string; harness?: string }>;
   } {
     const base = deps();
     const merges: { id: string; patch: Record<string, unknown> }[] = [];
     const links: { src: string; dst: string; rel: string }[] = [];
     const patched: string[] = [];
+    const semanticQueries: Array<{ title: string; summary?: string; harness?: string }> = [];
     const prior = opts.prior === undefined ? priorObservation() : opts.prior;
     return {
       ...base,
       merges,
       links,
       patched,
-      findSemanticDupes: async () => (opts.sem === undefined ? semantic([scored(0.88, 0.62)]) : opts.sem),
+      semanticQueries,
+      findSemanticDupes: async (query) => {
+        semanticQueries.push(query);
+        return opts.sem === undefined ? semantic([scored(0.88, 0.62)]) : opts.sem;
+      },
       getIssue: async (id: string) => (prior && id === prior.id ? prior : null),
       mergeIssuePayload: async (id, patch) => {
         merges.push({ id, patch });
@@ -3755,6 +3783,15 @@ describe('captureImprovement — derived-identity fold for agent filings (P-013 
     lane: 'observation' as const,
     createdBy: 'su-second-reporter',
   };
+
+  it('passes harness scope to semantic search before the derived-fold query limits candidates', async () => {
+    setFlagOverridesForTest({ [FLAGS.OBSERVATION_DERIVED_FOLD]: true });
+    const d = foldDeps({ sem: null, prior: priorObservation({ scope: 'harness:papercusp' }) });
+
+    await captureImprovement({ ...repeatFiling, scope: 'harness:papercusp' }, d);
+
+    expect(d.semanticQueries).toEqual([{ title: repeatFiling.title, harness: 'papercusp' }]);
+  });
 
   describe('HARD verdict — two agents, one row', () => {
     it('folds onto the survivor: no new row, repeatCount 2, BOTH reporters recorded', async () => {
