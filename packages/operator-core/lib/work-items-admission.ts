@@ -278,10 +278,13 @@ export function classifyAdmissionPromoterStall(row: AdmissionPromoterRow): Admis
   return lastError !== null ? { stalled: true, cause: 'errored' } : { stalled: false };
 }
 
-export async function admissionPromoterStall(workspaceId: string): Promise<AdmissionPromoterStall> {
+export async function admissionPromoterStall(
+  workspaceId: string,
+  sqlOverride?: OrgSql,
+): Promise<AdmissionPromoterStall> {
   if (!workspaceId) return { stalled: false };
   try {
-    const { sql } = getOrgPg();
+    const sql = sqlOverride ?? getOrgPg().sql;
     const rows = await sql<
       { active: boolean | null; last_fired_at: Date | null; pause: unknown; last_error: string | null }[]
     >`

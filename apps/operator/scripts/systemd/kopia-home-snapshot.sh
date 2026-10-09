@@ -122,7 +122,7 @@ run_kopia_snapshot() {
 
   # The root helper records its own PID before exec'ing Kopia. `$!` would be
   # sudo's unprivileged parent, not the root Kopia process that can be orphaned.
-  "$SUDO_BIN" -n /usr/bin/bash -c '
+  kopia_as_root "$SUDO_BIN" /usr/bin/bash -c '
     pid_file="$1"
     shift
     printf "%s\n" "$$" >"$pid_file"

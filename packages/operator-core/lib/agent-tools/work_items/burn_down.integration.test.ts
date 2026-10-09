@@ -268,6 +268,43 @@ describe('default fleet reports over the real current-spec queue', () => {
       flowMode: 'current-spec', limit: 5 }, CTX);
   }
 
+  it('keeps every claim floor and admission retry attribution in the caller-owned read transaction', async () => {
+    await seedQueue();
+    const opts = { includeAllFloors: true };
+    const baseline = await explainIssueClaimFloors(HARNESS, ids, opts);
+    const rollback = new Error('rollback caller-owned floor fixture');
+    const { operatorHomeHarnessSlug } = await import('../../harness/operator-home-harness');
+
+    await expect(sql.begin(async tx => {
+      const reader = tx as unknown as typeof sql;
+      expect(await explainIssueClaimFloors(HARNESS, ids, opts, reader)).toEqual(baseline);
+      await tx`
+        UPDATE harness_shared.work_items
+           SET admission = 'pending', payload = '{"_claimHold":true}'::jsonb
+         WHERE workspace_id = 'default' AND harness_slug = ${HARNESS} AND feature_id = ${ids[3]}`;
+      await tx`
+        INSERT INTO harness_shared.routines
+          (id, workspace_id, install_slug, name, active, metadata)
+        VALUES ('rt-floor-read-context', 'default', ${operatorHomeHarnessSlug()},
+                'work-item-admission-promoter', false,
+                '{"pause":{"reason":"read-context fixture","pausedAtMs":1786492800000}}'::jsonb)`;
+
+      // The ordinary client cannot observe the uncommitted controls. The supplied
+      // context must cover both the canonical floor SELECT and its retry lookup.
+      expect(await explainIssueClaimFloors(HARNESS, ids, opts)).toEqual(baseline);
+      const rows = await explainIssueClaimFloors(HARNESS, ids, opts, reader);
+      expect(rows.slice(0, 3)).toEqual(baseline.slice(0, 3));
+      expect(rows[3]).toMatchObject({
+        admissible: false, refusedBy: 'admission-pending',
+        failedFloors: ['admission-pending', 'claim-hold'],
+        retry: { basis: expect.stringContaining('PAUSED BY A DELIBERATE HOLD') },
+      });
+      expect(rows[3].retry?.basis).toContain('read-context fixture');
+      throw rollback;
+    })).rejects.toBe(rollback);
+    expect(await explainIssueClaimFloors(HARNESS, ids, opts)).toEqual(baseline);
+  });
+
   it('one public leader-brief call retains complete current-spec partitions and unknown counts through shaping', async () => {
     await seedFleet();
     await seedQueue();

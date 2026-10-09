@@ -79,6 +79,7 @@ function runHealthcheck(dumpSnapshotAgeSeconds: number, status: Record<string, u
     fakeKopia,
     [
       '#!/usr/bin/env bash',
+      '[ "$KOPIA_LOG_DIR" = "$KOPIA_TEST_EXPECT_LOG_DIR" ] || { echo "missing KOPIA_LOG_DIR" >&2; exit 90; }',
       'if [ "$1" != "snapshot" ] || [ "$2" != "list" ]; then exit 2; fi',
       'case "$3" in',
       '  --all) printf %s\\n ' + shellQuote(allSources) + ' ;;',
@@ -94,7 +95,7 @@ function runHealthcheck(dumpSnapshotAgeSeconds: number, status: Record<string, u
   const fakeSudo = join(fakeBin, 'sudo');
   writeFileSync(
     fakeSudo,
-    '#!/usr/bin/env bash\nif [ "$1" = "-n" ]; then shift; fi\nexec "$@"\n',
+    '#!/usr/bin/env bash\nwhile [ "$1" = "-n" ] || [ "$1" = "--" ]; do shift; done\nexec "$@"\n',
   );
   chmodSync(fakeSudo, 0o755);
 
@@ -102,12 +103,7 @@ function runHealthcheck(dumpSnapshotAgeSeconds: number, status: Record<string, u
   chmodSync(alertStub, 0o755);
 
   const source = readFileSync(SOURCE_SCRIPT, 'utf8');
-  const kopiaReferences = source.match(/\/usr\/bin\/kopia/g) ?? [];
-  if (kopiaReferences.length === 0) throw new Error('healthcheck no longer calls the expected absolute Kopia path');
-  writeFileSync(
-    testScript,
-    source.replaceAll('/usr/bin/kopia', shellQuote(fakeKopia)),
-  );
+  writeFileSync(testScript, source);
   chmodSync(testScript, 0o755);
   writeFileSync(join(scriptDir, 'kopia-cache-bootstrap.sh'), readFileSync(CACHE_BOOTSTRAP, 'utf8'));
 
@@ -120,6 +116,10 @@ function runHealthcheck(dumpSnapshotAgeSeconds: number, status: Record<string, u
       TZ: 'America/New_York',
       PATH: fakeBin + ':' + (process.env.PATH ?? '/usr/bin:/bin'),
       PAPERCUSP_HOST_PG_DUMP_DIR: dumpDir,
+      KOPIA_HEALTHCHECK_BIN: fakeKopia,
+      KOPIA_HEALTHCHECK_SUDO: fakeSudo,
+      KOPIA_LOG_DIR: join(root, 'kopia-cli-logs'),
+      KOPIA_TEST_EXPECT_LOG_DIR: join(root, 'kopia-cli-logs'),
       KOPIA_HEALTHCHECK_LOG_DIR: logDir,
       HEALTHCHECK_STATE_DIR: stateDir,
       ODDSMITH_DISCOVERY: join(root, 'missing-oddsmith.json'),

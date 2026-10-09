@@ -63,6 +63,8 @@ LOG="$LOG_DIR/healthcheck.log"
 # directory nothing writes, which is how this outage stayed green for 13 hours.
 DUMP="${PAPERCUSP_HOST_PG_DUMP_DIR:-/mnt/backup/db-dumps}"
 STATUS="$DUMP/STATUS.json"
+SUDO_BIN="${KOPIA_HEALTHCHECK_SUDO:-/usr/bin/sudo}"
+KOPIA_BIN="${KOPIA_HEALTHCHECK_BIN:-/usr/bin/kopia}"
 # Injectable so a caller can capture the alert instead of firing it. This is now a
 # convenience for tests, NOT the safety mechanism — see ALARM SAFETY below.
 ALERT="${BACKUP_ALERT_CMD:-$HOME/.config/kopia/backup-alert.sh}"
@@ -485,7 +487,7 @@ fi
 # since the day it was written. A check that always fails is a check everyone
 # learns to ignore — which is why nobody believed it when the backup ACTUALLY died
 # (EI-10733). Verified against `kopia snapshot list --help` on this host.
-LATEST=$(sudo -n /usr/bin/kopia snapshot list --all -n 1 2>/dev/null \
+LATEST=$(kopia_as_root "$SUDO_BIN" "$KOPIA_BIN" snapshot list --all -n 1 2>/dev/null \
   | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}' \
   | sort -r | head -1)
 [ -z "$LATEST" ] && fail "no kopia snapshots found at all"
@@ -538,7 +540,7 @@ snap_age=$(( now - $(date -d "$LATEST" +%s) ))
 # rows carry `incomplete`. Registered-but-never-completed is reported
 # SEPARATELY from never-registered because they have different repairs — the
 # first is a sweep that cannot finish, the second is a discovery hole.
-COV_LISTING=$(sudo -n /usr/bin/kopia snapshot list --all 2>/dev/null || true)
+COV_LISTING=$(kopia_as_root "$SUDO_BIN" "$KOPIA_BIN" snapshot list --all 2>/dev/null || true)
 cov_state=$(printf '%s\n' "$COV_LISTING" | awk -v want=":$DUMP" '
     /^[^[:space:]]/ {
       inblock = (length($0) >= length(want) &&
@@ -592,7 +594,7 @@ dump_snap_age=$(( now - $(date -d "$dump_last" +%s) ))
 # that property this check would be permanently green off the hot sweep — i.e. exactly
 # the blindness it exists to remove.
 HOME_SNAP_SRC="${HOME_SNAP_SRC:-$HOME}"
-home_listing=$(sudo -n /usr/bin/kopia snapshot list "$HOME_SNAP_SRC" -n 1 2>/dev/null)
+home_listing=$(kopia_as_root "$SUDO_BIN" "$KOPIA_BIN" snapshot list "$HOME_SNAP_SRC" -n 1 2>/dev/null)
 home_exact_listing=$(printf '%s\n' "$home_listing" | exact_source_block "$HOME_SNAP_SRC")
 # Require the EXACT source header before trusting any timestamp in that listing.
 # `kopia snapshot list <path>` resolves to the nearest ANCESTOR source and then browses
@@ -637,7 +639,7 @@ for requested in "${PROTECTED_VM_REQUESTS[@]}"; do
     continue
   fi
   protected_src=$(readlink -f "$requested")
-  protected_listing=$(sudo -n /usr/bin/kopia snapshot list "$protected_src" -n 1 2>/dev/null)
+  protected_listing=$(kopia_as_root "$SUDO_BIN" "$KOPIA_BIN" snapshot list "$protected_src" -n 1 2>/dev/null)
   protected_exact_listing=$(printf '%s\n' "$protected_listing" | exact_source_block "$protected_src")
   if [ -n "$protected_exact_listing" ] \
      && ! printf '%s\n' "$protected_exact_listing" | grep -q '<ERROR>'; then

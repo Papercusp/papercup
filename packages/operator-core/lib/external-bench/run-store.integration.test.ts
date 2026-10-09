@@ -25,6 +25,7 @@ import {
   upsertBenchRunTask,
   taskRowFromFleetResult,
   appendBenchRunEvents,
+  setBenchRunEvents,
   setBenchRunStatus,
   applyGradeMap,
   listBenchRuns,
@@ -98,6 +99,60 @@ function fleetResult(instanceId: string, diff: string, costUsd: number): FleetTa
 }
 
 describe('bench run-store (live write + read)', () => {
+  it('serializes concurrent sequence allocation over real PostgreSQL', async () => {
+    const runId = 'concurrent-event-append';
+    await upsertBenchRun({ id: runId, arm: 'papercusp', taskSetId: 'fixture', model: 'fixture' }, scope);
+    // Hold both unprotected reads at the same frontier. Transaction-local SQL
+    // keeps its normal behavior, so a serialized implementation never needs
+    // the barrier. This makes the old race reproducible without timing sleeps.
+    let reads = 0;
+    let release!: () => void;
+    const bothRead = new Promise<void>(resolve => { release = resolve; });
+    const concurrentSql = new Proxy(sql, {
+      apply(target, receiver, args) {
+        const result = Reflect.apply(target, receiver, args);
+        if (Array.isArray(args[0]) && args[0].join('').includes('MAX(seq)')) {
+          return Promise.resolve(result).then(async rows => {
+            if (++reads === 2) release();
+            await bothRead;
+            return rows;
+          });
+        }
+        return result;
+      },
+    });
+    await Promise.all(['first', 'second'].map(agent => appendBenchRunEvents(
+      runId, [{ kind: 'placement', agent }], { ...scope, sql: concurrentSql },
+    )));
+    const rows = await sql<{ seq: number; agent: string }[]>`
+      SELECT seq, agent FROM harness_shared.bench_run_events
+       WHERE run_id = ${runId} AND workspace_id = ${WS} ORDER BY seq
+    `;
+    expect(rows.map(row => Number(row.seq))).toEqual([0, 1]);
+    expect(rows.map(row => row.agent).sort()).toEqual(['first', 'second']);
+  });
+
+  it('shares one serialization boundary for append and whole-trace replacement', async () => {
+    const runId = 'concurrent-event-replacement';
+    await upsertBenchRun({ id: runId, arm: 'papercusp', taskSetId: 'fixture', model: 'fixture' }, scope);
+    await appendBenchRunEvents(runId, [{ kind: 'placement', agent: 'old' }], scope);
+    await Promise.all([
+      setBenchRunEvents(runId, [{ kind: 'placement', agent: 'replacement' }], scope),
+      ...Array.from({ length: 12 }, (_, i) => appendBenchRunEvents(
+        runId, [{ kind: 'placement', agent: `append-${i}` }], scope,
+      )),
+    ]);
+    const rows = await sql<{ seq: number; agent: string }[]>`
+      SELECT seq, agent FROM harness_shared.bench_run_events
+       WHERE run_id = ${runId} AND workspace_id = ${WS} ORDER BY seq
+    `;
+    // Replacement may precede or follow any append. Either order must replay
+    // as one contiguous trace starting with the replacement, without duplicates.
+    expect(rows[0].agent).toBe('replacement');
+    expect(rows.map(row => Number(row.seq))).toEqual(rows.map((_, i) => i));
+    expect(new Set(rows.map(row => row.agent)).size).toBe(rows.length);
+  });
+
   it('writes a run + tasks + events and reads them back in the PreservedArmRun shape', async () => {
     await upsertBenchRun(
       { id: 'r1', arm: 'hive-realqueen', taskSetId: '11-task-pilot', model: 'opus', status: 'running', config: { cap: 5 } },

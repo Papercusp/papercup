@@ -54,6 +54,43 @@ ensure_kopia_cache_dir() {
   fi
 }
 
+# Kopia's root-run CLI defaults logs to /root/.cache/kopia/cli-logs. On this host
+# that path lands on the nearly full /mnt/data volume, so a log write can abort a
+# snapshot before it flushes. The app's backup:diff tool already uses the supported
+# KOPIA_LOG_DIR setting; keep systemd/manual root invocations on the separate backup
+# volume too. Pass it through sudo explicitly because sudo drops caller environment.
+kopia_as_root() {
+  if [ "$#" -lt 2 ]; then
+    echo "usage: kopia_as_root SUDO_BIN COMMAND [ARG ...]" >&2
+    return 64
+  fi
+
+  local sudo_bin="$1" log_dir
+  shift
+  log_dir="${KOPIA_LOG_DIR:-/mnt/backup/kopia-cli-logs}"
+  case "$log_dir" in
+    /*) ;;
+    *)
+      echo "Kopia CLI log directory must be absolute: $log_dir" >&2
+      return 64
+      ;;
+  esac
+  case "$log_dir" in
+    /mnt/backup|/mnt/backup/*)
+      if ! mountpoint -q /mnt/backup; then
+        echo "Kopia CLI log filesystem is not mounted: /mnt/backup" >&2
+        return 1
+      fi
+      ;;
+  esac
+  if ! ensure_kopia_cache_dir "$log_dir"; then
+    echo "Unable to prepare Kopia CLI log directory: $log_dir" >&2
+    return 1
+  fi
+
+  "$sudo_bin" -n -- /usr/bin/env "KOPIA_LOG_DIR=$log_dir" "$@"
+}
+
 # ── STOP KOPIA WITHOUT DISCARDING WHAT IT FINISHED (EI-25211496463956189) ─────
 # This lives here because it is the one helper every Kopia entrypoint already
 # sources and that is already linked into ~/.config/kopia; a new file would add

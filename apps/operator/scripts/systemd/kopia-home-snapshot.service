@@ -3,6 +3,7 @@ Description=Kopia DAILY snapshot of the curated full home directory
 # Plan: kopia-curated-home-coverage-2026-08-16
 # (not Documentation= — systemd only accepts URIs there and warns on a bare slug)
 After=network-online.target
+RequiresMountsFor=/mnt/backup
 
 [Service]
 Type=oneshot

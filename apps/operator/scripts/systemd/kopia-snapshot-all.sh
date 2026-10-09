@@ -100,7 +100,7 @@ run_kopia_snapshot() {
   rm -f -- "$PID_FILE" "$output_file"
   printf '%s\n' "$output_file" >"$OUTPUT_POINTER"
 
-  "$SUDO_BIN" -n /usr/bin/bash -c '
+  kopia_as_root "$SUDO_BIN" /usr/bin/bash -c '
     pid_file="$1"
     shift
     printf "%s\n" "$$" >"$pid_file"
@@ -264,7 +264,7 @@ trap cleanup_kopia_pid EXIT
     "${PAPERCUSP_HOST_PG_DUMP_DIR:-/mnt/backup/db-dumps}"
   )
   COLD_FILTER="$(printf '%s\n' "${COLD_SOURCES[@]}")"
-  mapfile -t DISCOVERED < <("$SUDO_BIN" -n "$KOPIA_BIN" snapshot list --all 2>/dev/null \
+  mapfile -t DISCOVERED < <(kopia_as_root "$SUDO_BIN" "$KOPIA_BIN" snapshot list --all 2>/dev/null \
       | awk -F'@' '/^[a-zA-Z]/' \
       | grep -oE ':/[^ ]+' \
       | sed 's/^://' \

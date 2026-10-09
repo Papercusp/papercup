@@ -8528,9 +8528,11 @@ export async function explainIssueClaimFloors(
      */
     scopeHeldBy?: readonly string[];
   } = {},
+  /** Caller-owned read context, including transaction-local planner policy and snapshot. */
+  sqlOverride?: OrgSql,
 ): Promise<ClaimFloorAttribution[]> {
   if (ids.length === 0) return [];
-  const { sql } = getOrgPg();
+  const sql = sqlOverride ?? getOrgPg().sql;
   const issueWs = issuesScopeWorkspace();
   const operatorScopeSlug = `operator:${issueWs}`;
   const assignee = opts.assignee ?? '';
@@ -8587,7 +8589,7 @@ export async function explainIssueClaimFloors(
   // leader diagnosing a mix of floors) never touches it.
   const anyAdmissionPending = rows.some((r) => !r.ok_admission);
   const promoterStall = anyAdmissionPending
-    ? await admissionPromoterStall(issueWs)
+    ? await admissionPromoterStall(issueWs, sql)
     : ({ stalled: false } as const);
   return ids.map((id) => {
     const r = byId.get(id);

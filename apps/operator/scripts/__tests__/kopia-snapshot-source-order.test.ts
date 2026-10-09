@@ -79,12 +79,14 @@ function writeFakes(alreadySnapshotted: string[]): void {
     join(dir, 'kopia'),
     `#!/usr/bin/env bash
 if [ "$1" = "snapshot" ] && [ "$2" = "list" ]; then
+  [ "$KOPIA_LOG_DIR" = "$KOPIA_TEST_EXPECT_LOG_DIR" ] || { echo "missing KOPIA_LOG_DIR" >&2; exit 90; }
   cat <<'LISTING'
 ${listing}
 LISTING
   exit 0
 fi
 if [ "$1" = "snapshot" ] && [ "$2" = "create" ]; then
+  [ "$KOPIA_LOG_DIR" = "$KOPIA_TEST_EXPECT_LOG_DIR" ] || { echo "missing KOPIA_LOG_DIR" >&2; exit 90; }
   shift 2
   { printf '%s\\n' "$@"; echo '${INVOCATION_END}'; } >> ${JSON.stringify(join(dir, 'create-argv'))}
   exit 0
@@ -116,6 +118,8 @@ function runSweepRawInvocations(requiredDir: string, procRoot?: string): string[
       KOPIA_SNAPSHOT_LOG_DIR: join(dir, 'log'),
       KOPIA_SNAPSHOT_SUDO: join(dir, 'sudo'),
       KOPIA_SNAPSHOT_BIN: join(dir, 'kopia'),
+      KOPIA_LOG_DIR: join(dir, 'kopia-cli-logs'),
+      KOPIA_TEST_EXPECT_LOG_DIR: join(dir, 'kopia-cli-logs'),
       PAPERCUSP_HOST_PG_DUMP_DIR: requiredDir,
       ...(procRoot ? { KOPIA_SNAPSHOT_PROC_ROOT: procRoot } : {}),
     },

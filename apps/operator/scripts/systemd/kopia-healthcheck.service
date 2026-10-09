@@ -1,5 +1,6 @@
 [Unit]
 Description=Kopia healthcheck — alert if no recent snapshot
+RequiresMountsFor=/mnt/backup
 
 [Service]
 Type=oneshot

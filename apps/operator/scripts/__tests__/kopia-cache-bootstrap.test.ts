@@ -21,6 +21,8 @@ const CONSUMERS = [
   'kopia-home-snapshot.sh',
   'kopia-healthcheck.sh',
 ];
+const ROOT_KOPIA_CALLERS = [...CONSUMERS, 'kopia-protected-snapshot.sh'];
+const MOUNTED_LOG_SERVICES = ['kopia-home-snapshot.service', 'kopia-healthcheck.service'];
 
 function runBootstrap(cacheDir: string) {
   return spawnSync(
@@ -31,6 +33,38 @@ function runBootstrap(cacheDir: string) {
 }
 
 describe('shared Kopia cache bootstrap', () => {
+  it('passes the selected CLI log directory through sudo and creates it first', () => {
+    const root = mkdtempSync(join(tmpdir(), 'kopia-cli-log-dir-'));
+    const logDir = join(root, 'kopia-logs');
+    const sudoStub = join(root, 'sudo');
+    const command = join(root, 'kopia-probe');
+    const capture = join(root, 'captured-log-dir');
+    try {
+      writeFileSync(
+        sudoStub,
+        '#!/usr/bin/env bash\nwhile [ "$1" = "-n" ] || [ "$1" = "--" ]; do shift; done\nexec "$@"\n',
+      );
+      writeFileSync(
+        command,
+        '#!/usr/bin/env bash\nprintf "%s\\n" "$KOPIA_LOG_DIR" >"$KOPIA_TEST_CAPTURE"\n',
+      );
+      chmodSync(sudoStub, 0o755);
+      chmodSync(command, 0o755);
+
+      const result = spawnSync(
+        'bash',
+        ['-c', 'source "$1"; KOPIA_LOG_DIR="$2"; kopia_as_root "$3" "$4"', 'kopia-cache-bootstrap-test', HELPER, logDir, sudoStub, command],
+        { encoding: 'utf8', env: { ...process.env, KOPIA_TEST_CAPTURE: capture } },
+      );
+
+      expect(result.status, result.stderr).toBe(0);
+      expect(existsSync(logDir)).toBe(true);
+      expect(readFileSync(capture, 'utf8').trim()).toBe(logDir);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('creates a missing target behind a dangling symlink without replacing the symlink', () => {
     const root = mkdtempSync(join(tmpdir(), 'kopia-cache-bootstrap-'));
     const link = join(root, 'home', '.cache', 'kopia');
@@ -93,5 +127,18 @@ describe('shared Kopia cache bootstrap', () => {
       expect(() => execFileSync('bash', ['-n', join(SYSTEMD_DIR, consumer)])).not.toThrow();
     }
     expect(existsSync(HELPER)).toBe(true);
+  });
+
+  it('routes every root-run Kopia caller through the shared log-directory wrapper', () => {
+    for (const caller of ROOT_KOPIA_CALLERS) {
+      const source = readFileSync(join(SYSTEMD_DIR, caller), 'utf8');
+      expect(source, caller).toContain('kopia_as_root');
+      expect(source, caller).not.toMatch(/sudo[^\n]*\/usr\/bin\/kopia/);
+      expect(() => execFileSync('bash', ['-n', join(SYSTEMD_DIR, caller)])).not.toThrow();
+    }
+
+    for (const service of MOUNTED_LOG_SERVICES) {
+      expect(readFileSync(join(SYSTEMD_DIR, service), 'utf8')).toContain('RequiresMountsFor=/mnt/backup');
+    }
   });
 });
