@@ -316,6 +316,141 @@ describe('get_next — an unaffordable claim ladder fails LOUDLY, never as a dra
     // clears the same spec and candidate must become claimable without widening.
     expect((await getNextWorkItem(s, BEE, { harness: H }))?.workItem.id).toBe('F-candidate-bound');
   });
+
+  it('captures timeout source, acquisition, statement wait, and blockers in a bounded reproduction', async () => {
+    let activeStep: string | undefined;
+    let candidatePhaseStartedAtMs: number | undefined;
+    let candidatePhaseStartedWallMs: number | undefined;
+    let candidateBeginStartedAtMs: number | undefined;
+    let candidateBeginCallbackAtMs: number | undefined;
+
+    // Observe the transaction-pool acquisition boundary without changing postgres-js query
+    // execution or the production scheduler path.
+    const observedClient = new Proxy(db.sql, {
+      get(target, property) {
+        if (property === 'begin') {
+          const begin = Reflect.get(target, property, target) as (...args: unknown[]) => unknown;
+          return (...args: unknown[]) => {
+            const callback = args[0];
+            if (typeof callback !== 'function') return Reflect.apply(begin, target, args);
+            const isFirstCandidateBegin =
+              activeStep === 'candidate-feature-tier-1' && candidateBeginStartedAtMs === undefined;
+            if (isFirstCandidateBegin) candidateBeginStartedAtMs = performance.now();
+            const wrapped = async (tx: unknown) => {
+              if (isFirstCandidateBegin) candidateBeginCallbackAtMs = performance.now();
+              return (callback as (tx: unknown) => unknown)(tx);
+            };
+            return Reflect.apply(begin, target, [wrapped]);
+          };
+        }
+        const value = Reflect.get(target, property, target);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+      apply(target, _thisArg, args) {
+        return Reflect.apply(target, target, args);
+      },
+    }) as typeof db.sql;
+
+    let releaseBlocker: (() => void) | undefined;
+    let signalBlockerReady!: () => void;
+    const blockerReady = new Promise<void>((resolve) => { signalBlockerReady = resolve; });
+    let blockerPid: number | undefined;
+    const holding = db.sql.begin(async (tx) => {
+      await tx`LOCK TABLE harness_shared.goals IN ACCESS EXCLUSIVE MODE`;
+      const [row] = await tx<Array<{ pid: number }>>`SELECT pg_backend_pid()::int AS pid`;
+      blockerPid = Number(row!.pid);
+      signalBlockerReady();
+      await new Promise<void>((resolve) => { releaseBlocker = resolve; });
+    });
+    await blockerReady;
+
+    const claimOutcome = getNextWorkItem(DEFAULT_CLAIM_SPEC, BEE, {
+      harness: H,
+      client: observedClient,
+      claimBudgetMs: 2_000,
+      onResolutionStep: (step, event) => {
+        if (event.phase === 'start') {
+          activeStep = step;
+          if (step === 'candidate-feature-tier-1') {
+            candidatePhaseStartedAtMs = event.startedAtMs;
+            candidatePhaseStartedWallMs = Date.now();
+          }
+        } else if (activeStep === step) {
+          activeStep = undefined;
+        }
+      },
+    }).then(
+      (value) => ({ status: 'resolved' as const, value }),
+      (error: unknown) => ({ status: 'rejected' as const, error }),
+    );
+
+    type WaitSample = {
+      pid: number;
+      queryAgeMs: number;
+      waitEventType: string | null;
+      waitEvent: string | null;
+      blockingPids: number[];
+    };
+    let waitSample: WaitSample | undefined;
+    const sampleDeadline = Date.now() + 1_500;
+    try {
+      while (Date.now() < sampleDeadline && !waitSample) {
+        const rows = await db.sql<WaitSample[]>`
+          SELECT pid,
+                 GREATEST(0, FLOOR(EXTRACT(EPOCH FROM (clock_timestamp() - query_start)) * 1000))::int AS "queryAgeMs",
+                 wait_event_type AS "waitEventType",
+                 wait_event AS "waitEvent",
+                 pg_blocking_pids(pid) AS "blockingPids"
+            FROM pg_stat_activity
+           WHERE datname = current_database()
+             AND pid <> pg_backend_pid()
+             AND state = 'active'
+             AND wait_event_type = 'Lock'
+             AND query ILIKE '%harness_shared.goals%'
+             AND query ILIKE '%FOR SHARE%'
+        `;
+        const correlated = rows.find((row) => row.blockingPids.includes(blockerPid!));
+        if (correlated && correlated.queryAgeMs >= 50) waitSample = correlated;
+        else await new Promise((resolve) => setTimeout(resolve, 15));
+      }
+
+      const outcome = await claimOutcome;
+      expect(candidatePhaseStartedAtMs).toEqual(expect.any(Number));
+      expect(candidateBeginStartedAtMs).toEqual(expect.any(Number));
+      expect(candidateBeginCallbackAtMs).toEqual(expect.any(Number));
+      expect(waitSample).toBeDefined();
+      expect(waitSample?.waitEventType).toBe('Lock');
+      expect(waitSample?.waitEvent).toEqual(expect.any(String));
+      expect(waitSample?.blockingPids).toContain(blockerPid);
+      expect(outcome.status).toBe('rejected');
+      if (outcome.status !== 'rejected' || !(outcome.error instanceof OrgTxnTimeoutError)) {
+        throw new Error('bounded candidate reproduction did not return OrgTxnTimeoutError');
+      }
+      expect(outcome.error.pgCode).toBe('57014');
+      expect(outcome.error.timeoutSource).toBe('pg');
+
+      if (process.env.SCHEDULER_TIMEOUT_REPRO === '1') {
+        const queryStartLagMs = waitSample && candidatePhaseStartedWallMs !== undefined
+          ? Math.max(0, Date.now() - waitSample.queryAgeMs - candidatePhaseStartedWallMs)
+          : null;
+        console.info(`SCHEDULER_TIMEOUT_REPRO ${JSON.stringify({
+          phase: 'candidate-feature-tier-1',
+          timeoutSource: outcome.error.timeoutSource,
+          pgCode: outcome.error.pgCode,
+          poolAcquireAndBeginMs: candidateBeginCallbackAtMs! - candidateBeginStartedAtMs!,
+          phaseStartToStatementMs: queryStartLagMs,
+          statementAgeMs: waitSample?.queryAgeMs,
+          waitEventType: waitSample?.waitEventType,
+          waitEvent: waitSample?.waitEvent,
+          blockingPids: waitSample?.blockingPids,
+          blockerPid,
+        })}`);
+      }
+    } finally {
+      releaseBlocker?.();
+      await holding;
+    }
+  });
 });
 
 describe('get_next — spec filter + rank selects the correct item', () => {

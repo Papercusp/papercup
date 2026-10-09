@@ -27,6 +27,31 @@ vi.mock('../../harness/operator-home-harness', async (importOriginal) => ({
  * re-narrowing that would re-break the note's promise. The tool is read-only (intel:read), so a
  * wide allowlist is safe.
  */
+describe('dev:pipeline_position accepted-source contract (WI-10007982)', () => {
+  const expectedSourceSha256 = 'a'.repeat(64);
+  const path = 'packages/operator-core/lib/harness/routines/loop-execution-recovery.ts';
+
+  it('requires a concrete path and a valid frozen SHA256', () => {
+    expect(tool.args.safeParse({ expectedSourceSha256 }).success).toBe(false);
+    expect(tool.args.safeParse({ path, expectedSourceSha256: 'bad' }).success).toBe(false);
+    expect(tool.args.safeParse({ path, expectedSourceSha256 }).success).toBe(true);
+    expect(tool.args.safeParse({}).success).toBe(true);
+  });
+
+  it('forwards the expected fingerprint and keeps keyed containment in a bounded response', async () => {
+    const acceptedSource = { expectedSha256: expectedSourceSha256, observedSha256: expectedSourceSha256,
+      matches: true, deployedContains: false, runtimeContainment: { 'release-operator': false, 'bg-host': null } };
+    const result = { input: { path, sha: null }, repoRoot: '/repo', acceptedSource,
+      notes: ['large detail '.repeat(2000)] } as unknown as PipelinePosition;
+    vi.mocked(gitPipelinePosition).mockResolvedValue(result);
+    const out = await tool.handler({ path, expectedSourceSha256 } as never, {} as never) as { data: Record<string, unknown> };
+    expect(gitPipelinePosition).toHaveBeenLastCalledWith(expect.objectContaining({ path, expectedSourceSha256 }));
+    expect(out.data.acceptedSource).toEqual(acceptedSource);
+    expect((out.data.projection as { fullRead: { args: unknown } }).fullRead.args)
+      .toMatchObject({ path, expectedSourceSha256 });
+  });
+});
+
 describe('dev:pipeline_position role allowlist', () => {
   it('is available to every execution/judgment role the cross-role note points at', () => {
     const roles = new Set(tool.agentRoles ?? []);

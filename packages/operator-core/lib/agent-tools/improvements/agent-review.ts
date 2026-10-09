@@ -12,6 +12,7 @@ import {
   claimAgentReview,
   claimNextAgentReview,
   resubmitAgentReview,
+  type AgentReviewClaimNextDiagnostics,
 } from '../../harness/improvements/agent-review';
 import { readAgentReviewState } from '../../harness/improvements/agent-review-policy';
 import type { WorkItem } from '../../work-items';
@@ -204,6 +205,13 @@ export default defineTool({
       const workItem = await claimNextAgentReview({
         reviewer: identity.ownerId, harnessSlug, filter: record.spec.view.filter,
         workspaceId: identity.workspaceId ?? undefined, signal: ctx.signal,
+        onDiagnostics: (diagnostics: AgentReviewClaimNextDiagnostics) => {
+          try {
+            ctx.metadata?.({ agentReviewClaimNext: diagnostics });
+          } catch {
+            /* Diagnostic delivery must never change claim completion or its error. */
+          }
+        },
       });
       return {
         content: [

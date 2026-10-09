@@ -61,6 +61,7 @@ const { shapeLeaderBrief } = await import('../fleet/leader-brief-shape');
 const { explainIssueClaimFloors, listWorkItems, listAllWorkItemsForFileExport,
   countWorkItems, countWorkItemsByState } = await import('../../work-items');
 const { FLEET_METRIC_ARCHIVE_KEYS, projectWorkItemColumns } = await import('../../work-item-read-projection');
+const { ISSUE_ROW_DB_KEYS } = await import('../../issues-engineer');
 const { readIssueOccurrenceCounts } = await import('../../issue-occurrence-ledger');
 const { DEFAULT_CLAIM_SPEC } = await import('../../scheduler/claim-spec');
 import type { FilterNode } from '../../scheduler/claim-spec';
@@ -519,6 +520,105 @@ describe('default fleet reports over the real current-spec queue', () => {
         FROM (SELECT ${JSON.stringify(value)}::text::jsonb AS payload, 1 AS marker) fixture`;
       expect(rows[0]!.payload).toEqual(value);
     }
+  }, 30_000);
+
+  it('reuses projected issue metadata without changing complete rows or malformed JSON shapes', async () => {
+    const values = [
+      {}, { _ei: null }, { _ei: 'legacy' }, { _ei: ['legacy'] },
+      { _ei: { severity: null, assigned_by: null, created_by: null } },
+      { _ei: { severity: '', assigned_by: '', created_by: '' } },
+      { _ei: { severity: 'critical', assigned_by: 'assigner', created_by: 'author' } },
+      { _ei: { severity: 7, assigned_by: false, created_by: { nested: ['author'] } } },
+    ];
+    const archives = Object.fromEntries(FLEET_METRIC_ARCHIVE_KEYS.map(key => [key, { receipt: 'x'.repeat(4096) }]));
+    const seededIds: string[] = [];
+    for (const [index, value] of values.entries()) {
+      const id = `WI-metadata-shape-${index}`;
+      seededIds.push(id);
+      await sql`INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, title, summary, status, item_kind, payload)
+        VALUES ('default', ${HARNESS}, ${id}, 'metadata parity', ${`complete body ${index}`}, 'open', 'bug',
+          ${sql.json({ ...value, ...archives, futureControl: { preserve: true } })}::jsonb)`;
+    }
+    const filter = { harness: HARNESS, kind: 'bug' as const, includeObservations: true, ids: seededIds };
+    const full = await listAllWorkItemsForFileExport(filter);
+    const queries: string[] = [];
+    const originalDebug = sql.options.debug;
+    sql.options.debug = (connection, query, parameters, types, queryId) => {
+      if (typeof originalDebug === 'function') originalDebug(connection, query, parameters, types, queryId);
+      queries.push(query);
+    };
+    let projected: Awaited<ReturnType<typeof listAllWorkItemsForFileExport>>;
+    try { projected = await listAllWorkItemsForFileExport({ ...filter, payloadProjection: 'fleetMetrics' }); }
+    finally { sql.options.debug = originalDebug; }
+    const expected = full.map(item => {
+      const payload = { ...(item.payload as Record<string, unknown>) };
+      for (const key of FLEET_METRIC_ARCHIVE_KEYS) delete payload[key];
+      return { ...item, payload, terminalCompletionEvidence: null };
+    });
+    expect(projected).toEqual(expected);
+    expect(projected).toHaveLength(values.length);
+
+    // Execute the ACTUAL reader's SELECT and lateral joins over VALUES for
+    // legacy scalar/array/JSON-null roots rejected by today's table constraint.
+    const query = queries.find(value => value.includes('FROM harness_shared.engineer_issues'))!;
+    expect(query).toContain('_fleet_metric_payload.value AS payload');
+    const from = query.indexOf('FROM harness_shared.engineer_issues');
+    const select = query.slice(query.indexOf('SELECT') + 'SELECT'.length, from);
+    const join = query.slice(from + 'FROM harness_shared.engineer_issues'.length, query.indexOf('WHERE', from));
+    const fixtureColumns = ISSUE_ROW_DB_KEYS.filter(key => key !== 'payload').map(key => `NULL::text AS ${key}`).join(', ');
+    for (const value of [null, 'legacy-root', ['legacy-root'], { _ei: 7 }, ...values]) {
+      const rows = await sql`SELECT ${sql.unsafe(select)}
+        FROM (SELECT ${JSON.stringify(value)}::text::jsonb AS payload, ${sql.unsafe(fixtureColumns)}) fixture
+        ${sql.unsafe(join)}`;
+      const oracle = await sql`SELECT COALESCE(payload->'_ei'->>'severity', 'minor') AS severity,
+          payload->'_ei'->>'assigned_by' AS assigned_by, payload->'_ei'->>'created_by' AS created_by,
+          ${sql.unsafe(projectWorkItemColumns('payload, marker', 'fleetMetrics'))}
+        FROM (SELECT ${JSON.stringify(value)}::text::jsonb AS payload, 1 AS marker) fixture`;
+      for (const key of ['severity', 'assigned_by', 'created_by', 'payload']) {
+        expect(rows[0]![key], `${JSON.stringify(value)}:${key}`).toEqual(oracle[0]![key]);
+      }
+    }
+  }, 30_000);
+
+  it('avoids repeated raw-payload TOAST reads in the actual issue metric query', async () => {
+    await sql`INSERT INTO harness_shared.work_items
+      (workspace_id, harness_slug, feature_id, title, summary, status, item_kind, payload)
+      SELECT 'default', ${HARNESS}, 'WI-metadata-toast-' || row_id, 'metadata cost', 'full body', 'open', 'bug',
+        jsonb_build_object('_ei', jsonb_build_object('severity', 'critical', 'assigned_by', 'assigner', 'created_by', 'author'),
+          'futureControl', jsonb_build_object('preserve', true), '_completionEvidence',
+          (SELECT string_agg(md5(row_id::text || ':' || block::text), '') FROM generate_series(1, 2048) block))
+      FROM generate_series(1, 64) row_id`;
+    const captured: Array<{ query: string; parameters: unknown[] }> = [];
+    const originalDebug = sql.options.debug;
+    sql.options.debug = (connection, query, parameters, types, queryId) => {
+      if (typeof originalDebug === 'function') originalDebug(connection, query, parameters, types, queryId);
+      captured.push({ query, parameters: [...parameters] });
+    };
+    let rows: Awaited<ReturnType<typeof listAllWorkItemsForFileExport>>;
+    try { rows = await listAllWorkItemsForFileExport({ harness: HARNESS, kind: 'bug', includeObservations: true,
+      payloadProjection: 'fleetMetrics' }); }
+    finally { sql.options.debug = originalDebug; }
+    expect(rows).toHaveLength(64);
+    expect(rows.every(row => row.summary === 'full body' && row.severity === 'critical')).toBe(true);
+    const actual = captured.find(value => value.query.includes('FROM harness_shared.engineer_issues'))!;
+    const from = actual.query.indexOf('FROM harness_shared.engineer_issues');
+    const where = actual.query.indexOf('WHERE', from);
+    const { issueListColumns } = await import('../../issues-engineer');
+    const original = `SELECT ${issueListColumns({ payloadProjection: 'fleetMetrics' })}
+      FROM harness_shared.engineer_issues ${actual.query.slice(where)}`;
+    // Relative buffer work, not wall-clock timing: the same fixture, predicates,
+    // complete payload/body and warm-cache query differ only in projection reuse.
+    const baselineRows = await sql.unsafe(original, actual.parameters as never[]);
+    const actualRows = await sql.unsafe(actual.query, actual.parameters as never[]);
+    const byId = (a: Record<string, unknown>, b: Record<string, unknown>) => String(a.issue_id).localeCompare(String(b.issue_id));
+    expect([...actualRows].sort(byId)).toEqual([...baselineRows].sort(byId));
+    const baselinePlan = await sql.unsafe(`EXPLAIN(ANALYZE, BUFFERS, FORMAT JSON) ${original}`, actual.parameters as never[]);
+    const actualPlan = await sql.unsafe(`EXPLAIN(ANALYZE, BUFFERS, FORMAT JSON) ${actual.query}`, actual.parameters as never[]);
+    const baseline = baselinePlan[0]!['QUERY PLAN'][0].Plan;
+    const optimized = actualPlan[0]!['QUERY PLAN'][0].Plan;
+    expect(optimized['Actual Rows']).toBe(64);
+    expect(optimized['Shared Hit Blocks']).toBeLessThan(baseline['Shared Hit Blocks'] * 0.8);
   }, 30_000);
 
   it.each([

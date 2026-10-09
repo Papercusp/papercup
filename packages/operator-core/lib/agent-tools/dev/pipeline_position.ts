@@ -336,6 +336,7 @@ function compactPipelineResult(
     'targetSubject',
     'dirtyUncommitted',
     'positions',
+    'acceptedSource',
     'assessments',
     'positionsUnknown',
     'positionsMarker',
@@ -479,6 +480,7 @@ function minimalPipelineResult(
     'targetShortSha',
     'dirtyUncommitted',
     'positions',
+    'acceptedSource',
     'positionsMarker',
     'assessments',
     'deployedSha',
@@ -544,7 +546,7 @@ function minimalPipelineResult(
 export function shapePipelinePosition(
   result: PipelinePosition,
   extras: JsonRecord = {},
-  rereadArgs: { path?: string; sha?: string; marker?: string; testClass?: string } = {},
+  rereadArgs: { path?: string; sha?: string; marker?: string; testClass?: string; expectedSourceSha256?: string } = {},
   opts: { unbounded?: boolean } = {},
 ): JsonRecord | PipelinePosition {
   const original = { ...(result as unknown as JsonRecord), ...extras };
@@ -830,6 +832,8 @@ export default defineTool({
   args: z.object({
     path: z.string().min(1).max(400).optional(),
     sha: z.string().min(4).max(64).optional(),
+    expectedSourceSha256: z.string().regex(/^[0-9a-f]{64}$/).optional()
+      .describe('Frozen SHA256 of the accepted file bytes. Requires path. Returns acceptedSource.matches, deployedContains, and runtimeContainment keyed by applicable runtime id; unknown remains null. Does not require equal runtime or latest-path commit SHAs.'),
     testClass: z.string().min(1).max(100).optional()
       .describe('Select a maintained pre-release test class route. Unknown values fail closed with the supported class ids; `gap` is not executable and final-release remains release-only.'),
     /**
@@ -859,6 +863,8 @@ export default defineTool({
           'AND the `positions.inMain` / `positions.deployed` legs, correcting them in either direction. ' +
           'Use it whenever you see missingReason:"newer-commit" or a leg named in `positionsNewerCommit`.',
       ),
+  }).refine((args) => !args.expectedSourceSha256 || !!args.path, {
+    message: 'expectedSourceSha256 requires a concrete path', path: ['path'],
   }),
   async handler(args, ctx) {
     const testRoute = args.testClass ? currentBuildTestRoute(args.testClass) : null;
@@ -890,7 +896,7 @@ export default defineTool({
      * that the per-path legs are unanswerable; they simply also get the facts that do
      * not depend on a path.
      */
-    const result = await gitPipelinePosition({ path: args.path, sha: args.sha, marker: args.marker });
+    const result = await gitPipelinePosition({ path: args.path, sha: args.sha, marker: args.marker, expectedSourceSha256: args.expectedSourceSha256 });
     const subjectStamp = pipelineSubjectStamp(ctx as { harnessSlug?: string | null }, result.repoRoot);
 
     // P-010. Computed ONCE and spread into every return below — this handler has three
@@ -905,7 +911,7 @@ export default defineTool({
       { path: args.path, sha: args.sha },
       ctx,
     );
-    const rereadArgs = { path: args.path, sha: args.sha, marker: args.marker, testClass: args.testClass };
+    const rereadArgs = { path: args.path, sha: args.sha, marker: args.marker, testClass: args.testClass, expectedSourceSha256: args.expectedSourceSha256 };
 
     /**
      * WI-38266 — `readCell` is a machine consumer walking declared paths, not an agent

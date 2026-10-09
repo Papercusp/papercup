@@ -30,6 +30,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import * as path from 'node:path';
 import { hostname } from 'node:os';
+import { createHash } from 'node:crypto';
 import { devDeployState, type DevDeployState } from './dev-deploy-state';
 import {
   gitPipelineSnapshot,
@@ -45,6 +46,7 @@ import { probeServiceStart, resolveServiceStartMs } from './agent-tools/dev/syst
 import { RESTART_TARGET_UNITS } from './agent-tools/dev/restart-target-units';
 import {
   classifyPathsAgainstCandidate,
+  blobAtCommit,
   markerAtCandidateForPath,
   gitReadForRepo,
   markerAtCommit,
@@ -331,6 +333,8 @@ async function isRemoteTipContaining(
 export interface PipelinePositionInput {
   path?: string;
   sha?: string;
+  /** Frozen SHA256 of the accepted file bytes; requires a concrete path. */
+  expectedSourceSha256?: string;
   /**
    * EI-18797292094433710 — a distinctive literal string from the CALLER'S OWN change.
    * Supplying it upgrades `changeInCandidate` from "does the candidate carry this file
@@ -1254,6 +1258,8 @@ export function assessMainBehindStaging(input: {
 
 export interface PipelinePosition {
   input: { path: string | null; sha: string | null };
+  /** Present only for a caller-supplied accepted-source fingerprint. */
+  acceptedSource?: AcceptedSourceContainment;
   repoRoot: string;
   /** Set when the path resolved inside a submodule. */
   submodule: string | null;
@@ -5204,6 +5210,34 @@ export function evaluateReleaseContentDrift(args: { workingBytes: Buffer | null;
   return { differs: !workingBytes.equals(releaseBytes) };
 }
 
+export interface AcceptedSourceContainment {
+  expectedSha256: string;
+  observedSha256: string | null;
+  matches: boolean | null;
+  /** Content at the exact deployed artifact, independent of latest-path ancestry. */
+  deployedContains: boolean | null;
+  /** Only applicable runtimes. PTY containment retains its at-least-one-current-instance meaning. */
+  runtimeContainment: Record<string, boolean | null>;
+}
+
+export function evaluateAcceptedSourceContainment(
+  expectedSha256: string,
+  observedBytes: Buffer | null,
+  deployedContains: boolean | null,
+  runtimes: readonly ServingRuntimeEntry[],
+): AcceptedSourceContainment {
+  const observedSha256 = observedBytes === null ? null : createHash('sha256').update(observedBytes).digest('hex');
+  const matches = observedSha256 === null ? null : observedSha256 === expectedSha256;
+  const bound = (contains: boolean | null): boolean | null => matches === true ? contains : matches;
+  return {
+    expectedSha256,
+    observedSha256,
+    matches,
+    deployedContains: bound(deployedContains),
+    runtimeContainment: Object.fromEntries(runtimes.map((runtime) => [runtime.runtime, bound(runtime.containsChange)])),
+  };
+}
+
 /**
  * EI-18715870370005934: resolve the GITLINK a superproject commit pins for a
  * submodule — `git ls-tree <superSha> <submodulePath>` => `160000 commit <sha>`.
@@ -6709,6 +6743,7 @@ export async function gitPipelinePosition(
 
   let runtimeGenerations: RuntimeGeneration[] = [];
   let servingRuntimes: ServingRuntimeEntry[] = [];
+  let acceptedSource: AcceptedSourceContainment | undefined;
   if (inp.path) {
     const probeUnit = deps.probeUnitStart ?? realProbeUnitStart;
     const mtimeOf = deps.fileMtimeMs ?? realFileMtimeMs;
@@ -6740,8 +6775,41 @@ export async function gitPipelinePosition(
     // each runtime measured against ITS OWN build identity — never the :3070 flag.
     const servingPath = superRelPath ?? inp.path.replace(/^\.?\//, '');
     const servingGitRead = gitReadForRepo(git, root);
+    const expectedSource = inp.expectedSourceSha256;
+    const readBytes = deps.readFileBytes ?? realReadFileBytes;
+    const sourcePath = path.join(root, inp.path.replace(/^\.?\//, ''));
+    const frozenBytes = expectedSource ? await readBytes(sourcePath) : null;
+    // Freeze the comparison's tree side. Reuse the existing blob reader and
+    // gitlink resolver; a concurrent edit must never replace the accepted subject.
+    const objectFormat = expectedSource ? await git(gitDir, ['rev-parse', '--show-object-format']) : null;
+    const frozenBlob = frozenBytes !== null && objectFormat === 'sha1'
+      ? createHash('sha1').update(`blob ${frozenBytes.length}\0`).update(frozenBytes).digest('hex')
+      : null;
     const servingSubmodules = { submodules: submodule ? [submodule] : [] };
     const containmentBySha = new Map<string, Promise<{ contains: boolean | null; unknown: CellUnknown | null }>>();
+    const blobContainsAt = (sha: string) => {
+      let pending = containmentBySha.get(sha);
+      if (!pending) {
+        pending = expectedSource ? (async () => {
+          const unknown = cellUnknown('resolver-failed', 'Could not read the frozen accepted blob or artifact blob; containment is unknown.');
+          if (!frozenBlob) return { contains: null, unknown };
+          const pin = submodule ? await readSubmodulePin(git, root, sha, submodule) : null;
+          if (submodule && !pin) return { contains: null, unknown };
+          const candidateBlob = await blobAtCommit(
+            submodule ? gitReadForRepo(git, gitDir) : servingGitRead,
+            pin?.sha ?? sha,
+            submodule ? relPath! : servingPath,
+          );
+          // blobAtCommit deliberately returns null for absent OR failed reads.
+          // Neither is proof of a mismatch, so exact accepted proof stays unknown.
+          return candidateBlob === null ? { contains: null, unknown } : { contains: candidateBlob === frozenBlob, unknown: null };
+        })() : classifyPathsAgainstCandidate(servingGitRead, sha, [servingPath], 'HEAD', servingSubmodules).then(
+          ([row]) => ({ contains: row?.inCandidate ?? null, unknown: row?.unknownReason ?? null }),
+        );
+        containmentBySha.set(sha, pending);
+      }
+      return pending;
+    };
     servingRuntimes = await resolveServingRuntimes(selectServingRuntimes(servingPath, runtimes), {
       probeUnitStart: probeUnit,
       probeHealthSha: deps.probeHealthSha,
@@ -6751,17 +6819,28 @@ export async function gitPipelinePosition(
       readCgroup: deps.readCgroup,
       fileMtimeMs: workingTreeMtimeMs,
       listPtyHostInstances: deps.listPtyHostInstances ?? realListPtyHostInstances,
-      blobContainsAt: (sha) => {
-        let pending = containmentBySha.get(sha);
-        if (!pending) {
-          pending = classifyPathsAgainstCandidate(servingGitRead, sha, [servingPath], 'HEAD', servingSubmodules).then(
-            ([row]) => ({ contains: row?.inCandidate ?? null, unknown: row?.unknownReason ?? null }),
-          );
-          containmentBySha.set(sha, pending);
-        }
-        return pending;
-      },
+      blobContainsAt,
     }).catch(() => []);
+    if (expectedSource) {
+      const deployedContains = deployedSha ? (await blobContainsAt(deployedSha)).contains : null;
+      const observedBytes = await readBytes(sourcePath);
+      const observedMtimeMs = await mtimeOf(sourcePath);
+      const frozenMatches = frozenBytes !== null && createHash('sha256').update(frozenBytes).digest('hex') === expectedSource;
+      // Time-based load evidence must describe the same file observation. Blob
+      // evidence is already bound to the frozen bytes and needs no mtime equality.
+      const boundRuntimes = servingRuntimes.map((runtime) => ({
+        ...runtime,
+        containsChange: frozenMatches && (runtime.method === 'blob' || observedMtimeMs === workingTreeMtimeMs)
+          ? runtime.containsChange : null,
+      }));
+      acceptedSource = evaluateAcceptedSourceContainment(
+        expectedSource,
+        // A failed initial snapshot is unknown even if the final read recovers.
+        frozenBytes === null ? null : observedBytes,
+        frozenMatches ? deployedContains : null,
+        boundRuntimes,
+      );
+    }
   }
 
   if (serving.startedSinceCodeChange === false) {
@@ -7070,6 +7149,7 @@ export async function gitPipelinePosition(
     serving,
     runtimeGenerations,
     servingRuntimes,
+    ...(acceptedSource ? { acceptedSource } : {}),
     changeInCandidate,
     sweepExposure,
     notes,

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { frozenRepairLatency } from './release/frozen-candidate-repair-queue';
 import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { GATE_ABORT_DETAIL_LIVENESS_MARKER } from './release/gate-abort-status';
 
 /**
@@ -38,6 +39,7 @@ import {
   runtimeGenerationDivergenceNote,
   evaluateChangeInCandidate,
   evaluateReleaseContentDrift,
+  evaluateAcceptedSourceContainment,
   evaluateSweepExposure,
   parsePorcelainPaths,
   deriveBlocker,
@@ -395,6 +397,150 @@ const snap = (
     gitSync: { lastStatus },
     deploy: snapDeploy(deployOver),
   }) as GitPipelineSnapshot;
+
+describe('accepted-source pipeline containment (WI-10007982)', () => {
+  const acceptedBytes = Buffer.from('accepted recovery source\n');
+  const expectedSourceSha256 = createHash('sha256').update(acceptedBytes).digest('hex');
+  const acceptedBlob = createHash('sha1').update(`blob ${acceptedBytes.length}\0`).update(acceptedBytes).digest('hex');
+  const target = 'a'.repeat(40);
+  const laterArtifact = 'b'.repeat(40);
+  const otherRuntimeBuild = 'c'.repeat(40);
+  const sourcePath = 'packages/operator-core/lib/harness/routines/loop-execution-recovery.ts';
+
+  async function readAccepted(options: {
+    bytes?: Buffer | null;
+    artifactBlob?: string | null;
+    runtimeBlob?: string | null;
+    moveSource?: boolean;
+    moveMtime?: boolean;
+    unknownFormat?: boolean;
+    startedAtMs?: number;
+    path?: string;
+  } = {}) {
+    const fallback = fakeGit({ pathCommit: target, dirty: true, contains: {
+      HEAD: [target], 'origin/staging': [target], 'origin/main': [target], [laterArtifact]: [target],
+    } });
+    let runtimeProbed = false;
+    const git: GitRunner = async (repo, args) => {
+      if (args[0] === 'rev-parse' && args[1] === '--show-object-format') return options.unknownFormat ? null : 'sha1';
+      if (args[0] === 'rev-parse' && args.at(-1)?.includes(':')) {
+        const ref = args.at(-1)!.split(':')[0];
+        return ref === laterArtifact
+          ? (options.artifactBlob === undefined ? acceptedBlob : options.artifactBlob)
+          : (options.runtimeBlob === undefined ? acceptedBlob : options.runtimeBlob);
+      }
+      // Deliberately different: accepted containment must use the frozen source,
+      // never the mutable hash-object answer from a later tree observation.
+      if (args[0] === 'hash-object') return 'd'.repeat(40);
+      return fallback(repo, args);
+    };
+    return gitPipelinePosition({ path: options.path ?? sourcePath, expectedSourceSha256 }, {
+      git,
+      loadDeploy: async () => deploy({ deployed: { sha: laterArtifact } as DevDeployState['deployed'] }),
+      loadSnapshot: async () => snap(),
+      readGateOwnership: async () => unownedCell('test'),
+      readCheckpointRunSnapshot: async () => null,
+      readCheckpointRunLock: async () => null,
+      resolveGateCandidates: async () => ({ judgingSha: null, nextCandidateSha: target }),
+      probeUnitStart: async () => ({ pid: 42, startedAtMs: options.startedAtMs ?? 500 }),
+      probeServingHealthSha: async () => laterArtifact,
+      probeHealthSha: async (port) => {
+        runtimeProbed = true;
+        return port === 3070 ? laterArtifact : otherRuntimeBuild;
+      },
+      probeHealthBundle: async () => null,
+      loadRuntimeVintage: async () => [],
+      readCgroup: async () => null,
+      fileMtimeMs: async () => options.moveMtime && runtimeProbed ? 3000 : 1000,
+      listPtyHostInstances: async () => [
+        { pid: 101, startedAtMs: 500 },
+        { pid: 102, startedAtMs: 900 },
+        { pid: 103, startedAtMs: 2000 },
+      ],
+      readFileBytes: async () => options.moveSource && runtimeProbed
+        ? Buffer.from('later unaccepted edit\n')
+        : options.bytes === undefined ? acceptedBytes : options.bytes,
+    });
+  }
+
+  it('binds accepted bytes to a later deployed artifact and differently pinned named runtimes', async () => {
+    const result = await readAccepted();
+    expect(result.dirtyUncommitted).toBe(true);
+    expect(result.targetSha).toBe(target);
+    expect(result.deployedSha).toBe(laterArtifact);
+    expect(result.acceptedSource).toMatchObject({ expectedSha256: expectedSourceSha256,
+      observedSha256: expectedSourceSha256, matches: true, deployedContains: true });
+    expect(result.acceptedSource?.runtimeContainment['release-operator']).toBe(true);
+    expect(result.acceptedSource?.runtimeContainment['bg-host']).toBe(true);
+  });
+
+  it('rejects old deployed bytes even when latest-path ancestry reports deployed=true', async () => {
+    const result = await readAccepted({ artifactBlob: 'e'.repeat(40) });
+    expect(result.positions.deployed).toBe(true);
+    expect(result.acceptedSource?.matches).toBe(true);
+    expect(result.acceptedSource?.deployedContains).toBe(false);
+    expect(result.acceptedSource?.runtimeContainment['release-operator']).toBe(false);
+  });
+
+  it('rejects a changed accepted source even with positive deployed ancestry and runtime probes', async () => {
+    const result = await readAccepted({ bytes: Buffer.from('unaccepted replacement\n') });
+    expect(result.positions.deployed).toBe(true);
+    expect(result.acceptedSource?.matches).toBe(false);
+    expect(result.acceptedSource?.deployedContains).toBe(false);
+    expect(result.acceptedSource?.runtimeContainment['bg-host']).toBe(false);
+  });
+
+  it('retains unreadable source and failed artifact reads as unknown', async () => {
+    const missingSource = await readAccepted({ bytes: null });
+    expect(missingSource.acceptedSource).toMatchObject({ observedSha256: null, matches: null, deployedContains: null });
+    const missingArtifact = await readAccepted({ artifactBlob: null });
+    expect(missingArtifact.acceptedSource).toMatchObject({ matches: true, deployedContains: null });
+  });
+
+  it('retains stale and unknown named runtime results without substituting deployed=true', async () => {
+    const stale = await readAccepted({ runtimeBlob: 'e'.repeat(40) });
+    expect(stale.acceptedSource?.deployedContains).toBe(true);
+    expect(stale.acceptedSource?.runtimeContainment['bg-host']).toBe(false);
+    const unknown = await readAccepted({ runtimeBlob: null });
+    expect(unknown.acceptedSource?.runtimeContainment['staging-operator']).toBeNull();
+  });
+
+  it('refuses a source change during the runtime observation', async () => {
+    const result = await readAccepted({ moveSource: true });
+    expect(result.acceptedSource).toMatchObject({ matches: false, deployedContains: false });
+    expect(result.acceptedSource?.runtimeContainment['bg-host']).toBe(false);
+  });
+
+  it('does not invent blob containment when the repository object format cannot be read', async () => {
+    const result = await readAccepted({ unknownFormat: true });
+    expect(result.acceptedSource).toMatchObject({ matches: true, deployedContains: null });
+    expect(result.acceptedSource?.runtimeContainment['release-operator']).toBeNull();
+  });
+
+  it('invalidates time-based load evidence when source mtime changes during the read', async () => {
+    const result = await readAccepted({ moveMtime: true, runtimeBlob: 'e'.repeat(40), startedAtMs: 2000 });
+    expect(result.acceptedSource?.matches).toBe(true);
+    expect(result.acceptedSource?.deployedContains).toBe(true);
+    expect(result.servingRuntimes.find((runtime) => runtime.runtime === 'bg-host')?.method).toBe('start-after-mtime');
+    expect(result.acceptedSource?.runtimeContainment['bg-host']).toBeNull();
+  });
+
+  it('binds actual PTY instance observations without demanding that every old session restart', async () => {
+    const result = await readAccepted({ path: 'apps/operator/scripts/psu-pty-host.mjs' });
+    expect(result.servingRuntimes.find((runtime) => runtime.runtime === 'psu-pty-host')?.instances)
+      .toMatchObject({ total: 3, current: 1 });
+    expect(result.acceptedSource?.runtimeContainment['psu-pty-host']).toBe(true);
+  });
+
+  it('preserves PTY at-least-one-instance semantics and explicit unknown runtime values', () => {
+    const runtimes = [
+      { runtime: 'psu-pty-host', containsChange: true, instances: { total: 3, current: 1, stale: 2 } },
+      { runtime: 'bg-host', containsChange: null },
+    ] as unknown as import('./serving-runtimes').ServingRuntimeEntry[];
+    expect(evaluateAcceptedSourceContainment(expectedSourceSha256, acceptedBytes, true, runtimes).runtimeContainment)
+      .toEqual({ 'psu-pty-host': true, 'bg-host': null });
+  });
+});
 
 describe('gitPipelinePosition diagnostic defaults (EI-21306970701615848)', () => {
   it('EI-24356772206513832: the default unit probes supply a local exec path', async () => {

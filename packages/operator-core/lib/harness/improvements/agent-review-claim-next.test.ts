@@ -90,6 +90,39 @@ function build(ledger: Record<string, AgentReviewLedgerGrade | null>) {
 describe('P-026 review pickup scope and cancellation', () => {
   beforeEach(() => { h.rows = [{ feature_id: 'WI-A' }, { feature_id: 'WI-B' }]; });
 
+  it('reports bounded lookup and per-candidate timings through the opt-in diagnostics callback', async () => {
+    const { deps } = build({});
+    const onDiagnostics = vi.fn();
+
+    const claimed = await claimNextAgentReview({ reviewer: 'su-reviewer', onDiagnostics }, deps);
+
+    expect(claimed?.id).toBe('WI-A');
+    const diagnostics = onDiagnostics.mock.calls.at(-1)?.[0];
+    expect(diagnostics).toMatchObject({
+      schemaVersion: 'agent-review-claim-next-v1',
+      unit: 'ms',
+      candidateLimit: 25,
+      candidateCount: 2,
+      candidatesProcessed: 1,
+      stages: [
+        { name: 'candidateLookup', status: 'ok', candidateCount: 2 },
+        {
+          name: 'candidate',
+          candidateIndex: 1,
+          outcome: 'claimed',
+          phases: {
+            getWorkItem: { status: 'ok' },
+            healOwnNodeRemoteOrigin: { status: 'ok' },
+            readLedgerGrade: { status: 'ok' },
+            claimVerificationCandidate: { status: 'ok' },
+          },
+        },
+      ],
+    });
+    expect(diagnostics.elapsedMs).toBeGreaterThanOrEqual(0);
+    expect(diagnostics.stages[1]).not.toHaveProperty('candidateId');
+  });
+
   it('skips an excluded proposal before its ledger or claim is touched', async () => {
     const { items, deps, claimWorkItem } = build({});
     items.set('WI-A', { ...items.get('WI-A')!, sourcePlanSlug: 'p2p-release' });

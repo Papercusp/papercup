@@ -3,6 +3,13 @@ import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { hasEnumeratedVerificationCoverage } from '../coord-lifecycle/records';
+import {
+  evaluateCloudCampaignEvidence,
+  type CloudCampaignEvidenceContext,
+  type CloudCampaignExecution,
+  type CloudCampaignManifest,
+} from './cloud-e2e-campaign-evidence';
+import { workspaceHostCensusProfile } from './census-profiles';
 
 const root = resolve(__dirname, '../../../..');
 const evidence = JSON.parse(readFileSync(resolve(root, 'docs/evidence/cloud-e2e-campaign-2026-10-08.json'), 'utf8'));
@@ -69,5 +76,169 @@ describe('cloud E2E campaign acceptance population and evidence boundaries', () 
     expect(evidence.unverified.deployed).toContain('exact authenticated shipped cloud and desktop artifact acceptance');
     expect(evidence.unverified.ownerWorkItem).toBe('WI-10007610');
     expect(evidence.unverified.authorRepair).toHaveLength(4);
+  });
+});
+
+// Every receipt below is synthetic validator input. It proves the checks work,
+// never that this campaign ran these hypothetical journeys or shipped anything.
+const fixtureSource = 'a'.repeat(40);
+const fixtureDigest = 'b'.repeat(64);
+const fixtureAt = '2026-10-09T21:00:00.000Z';
+const measured = { sourceSha: fixtureSource, evidenceSha256: fixtureDigest, evidenceRef: 'fixture://record', observedAt: fixtureAt };
+function completeFixture(): { data: CloudCampaignManifest; context: CloudCampaignEvidenceContext } {
+  const population = ['Provisioning', 'Concurrent/replayed operations'];
+  const detectors = (['happy', 'adversarial'] as const).map((kind, index) => ({
+    ...measured, id: `detector-${kind}`, scenario: population[index]!, class: kind,
+    testFile: 'maintained.test.ts', caseName: `measured ${kind} case`, testFileSha256: fixtureDigest,
+    testRunId: index + 1, result: 'passed' as const, selectedByAffected: true,
+    negativeControl: 'caught' as const,
+  }));
+  const receipts: CloudCampaignExecution[] = (['operator-api', 'hosted', 'desktop-native', 'gcp', 'aws'] as const).map((runtime) => ({
+    ...measured, id: `execution-${runtime}`, runtime, artifactSha256: fixtureDigest,
+    authenticated: true, syntheticCloudResponses: false, tenantId: 'isolated-tenant', workspaceId: 'isolated-workspace',
+    accountId: `account-${runtime}`, runId: `run-${runtime}`, resourceLabel: `cloud-campaign-${runtime}`, hostId: `host-${runtime}`,
+    actions: population.map((scenario) => ({ scenario, result: 'passed' as const, evidenceRef: `fixture://action/${scenario}` })),
+    ...((runtime === 'gcp' || runtime === 'aws') ? {
+      census: {
+        controllerIndependent: true, inventoryComplete: true, clean: true, evaluatedAt: fixtureAt,
+        inventoryEvidence: workspaceHostCensusProfile(runtime).kinds.map((kind) => ({ kind, strategy: 'managed-labels' as const, providerEvidenceRef: `fixture://${runtime}/${kind}` })),
+        managed: [], untracked: [], missing: [], labelMismatches: [], reaperPlan: [],
+      },
+      billingClosure: { result: 'passed' as const, observedAt: fixtureAt, evidenceRef: 'fixture://provider-billing' },
+    } : {}),
+  }));
+  const data: CloudCampaignManifest = {
+    population, inventory: { checked: population, notChecked: [], notApplicable: [], residue: [] },
+    acceptanceEvidence: {
+      detectors, realRuntimeReceipts: receipts,
+      defects: [{
+        id: 'EI-fixture-defect', assignee: 'fixture-owner', state: 'done', completionAuthority: 'committed',
+        originatingFixRef: 'fixture://originating-layer', regressionDetectorId: detectors[0]!.id,
+        triggeringJourneyReceiptId: receipts[3]!.id,
+        rootCauseVerification: {
+          hypothesis: 'The provider-created host was not persisted', alternativeHypothesis: 'The persisted host was not displayed',
+          distinguishingTest: 'Read provider host and persistence before rendering', testResult: 'Provider host exists and store is empty',
+          testProcedure: 'Crash after provider create, read store and provider inventory, then replay same operation',
+          predictedObservations: { hypothesis: 'Provider has one host but store has none', alternativeHypothesis: 'Provider and store both contain the same host' },
+          actualObservation: 'Provider has one host but store has none', evidenceRefs: ['fixture://root-cause'],
+        },
+      }],
+      shipmentReceipts: receipts.map((entry) => ({
+        ...measured, runtime: entry.runtime, artifactSha256: fixtureDigest, authenticated: true,
+        promotedSourceSha: fixtureSource, promotedArtifactSha256: fixtureDigest,
+        promotionRef: 'fixture://green-promotion', deploymentRef: 'fixture://deployment', finalExecutionId: entry.id,
+        auditRef: 'fixture://completion-audit', gradingRef: 'fixture://independent-grade', reportReadbackRef: 'fixture://report-readback',
+      })),
+    },
+  };
+  const context: CloudCampaignEvidenceContext = {
+    population, detectorObligations: detectors.map(({ scenario, class: kind, testFile, caseName, sourceSha, testFileSha256 }) => ({ scenario, class: kind, testFile, caseName, sourceSha, testFileSha256 })),
+    discoveredDefectIds: ['EI-fixture-defect'],
+    testRuns: detectors.map((row) => ({
+      id: row.testRunId, filePath: row.testFile, status: 'pass', commitSha: fixtureSource, finishedAt: fixtureAt,
+      executionDetails: {
+        schemaVersion: 1, passed: 1, failed: 0, skipped: 0, collectionFailed: false,
+        passedCaseTitles: [row.caseName], filePath: row.testFile, commitSha: fixtureSource,
+      },
+    })),
+    runtimeObligations: receipts.map(({ runtime, sourceSha, artifactSha256, tenantId, workspaceId, accountId, runId, resourceLabel }) => ({ runtime, sourceSha, artifactSha256, tenantId, workspaceId, accountId, runId, resourceLabel, scenarios: population })),
+    notBefore: '2026-10-09T20:00:00.000Z', now: '2026-10-09T22:00:00.000Z',
+  };
+  return { data, context };
+}
+
+describe('cloud campaign measured evidence contradictions', () => {
+  it('accepts complete correlated synthetic validator input only', () => {
+    const { data, context } = completeFixture();
+    expect(evaluateCloudCampaignEvidence(data, context)).toEqual({ passed: true, problems: { 'R-1': [], 'R-2': [], 'R-3': [], 'R-4': [], 'R-5': [], 'R-6': [] } });
+  });
+
+  it('keeps the actual campaign incomplete even if its authored status claims shipped', () => {
+    const { context } = completeFixture();
+    const result = evaluateCloudCampaignEvidence({ ...evidence, status: 'shipped' }, { ...context, population: sourcePopulation() });
+    expect(result.passed).toBe(false);
+    for (const bar of ['R-2', 'R-3', 'R-4', 'R-5', 'R-6'] as const) expect(result.problems[bar].length).toBeGreaterThan(0);
+  });
+
+  it.each(['result', 'selectedByAffected', 'testFileSha256', 'caseName', 'sourceSha'] as const)('refuses happy coverage when measured detector %s disagrees', (field) => {
+    const { data, context } = completeFixture();
+    const row = data.acceptanceEvidence.detectors[0]!;
+    Object.assign(row, { [field]: field === 'result' ? 'skipped' : field === 'selectedByAffected' ? false : field === 'testFileSha256' ? 'c'.repeat(64) : field === 'sourceSha' ? 'c'.repeat(40) : 'different case' });
+    expect(evaluateCloudCampaignEvidence(data, context).problems['R-2']).toContain('unproven-detector:Provisioning');
+  });
+
+  it('independently rejects an uncaught adversarial control', () => {
+    const { data, context } = completeFixture();
+    data.acceptanceEvidence.detectors[1]!.negativeControl = 'missed';
+    const result = evaluateCloudCampaignEvidence(data, context);
+    expect(result.problems['R-2']).toEqual([]);
+    expect(result.problems['R-3']).toContain('unproven-detector:Concurrent/replayed operations');
+  });
+
+  it.each(['missing', 'wrong-title', 'failed', 'wrong-source', 'collection-failed'] as const)('joins detector proof to the measured ledger: %s', (mutation) => {
+    const { data, context } = completeFixture();
+    const rows = context.testRuns as { id: number; filePath: string; status: string; commitSha: string; finishedAt: string; executionDetails: Record<string, unknown> }[];
+    if (mutation === 'missing') rows.shift();
+    if (mutation === 'wrong-title') rows[0]!.executionDetails.passedCaseTitles = ['unrelated passing case'];
+    if (mutation === 'failed') rows[0]!.status = 'fail';
+    if (mutation === 'wrong-source') rows[0]!.commitSha = 'c'.repeat(40);
+    if (mutation === 'collection-failed') rows[0]!.executionDetails.collectionFailed = true;
+    expect(evaluateCloudCampaignEvidence(data, context).problems['R-2']).toContain('unproven-detector:Provisioning');
+  });
+
+  it.each(['missing-defect', 'unowned', 'same-predictions', 'no-trigger', 'proposed'] as const)('rejects defect disposition: %s', (mutation) => {
+    const { data, context } = completeFixture();
+    const defect = data.acceptanceEvidence.defects[0]!;
+    if (mutation === 'missing-defect') data.acceptanceEvidence.defects = [];
+    if (mutation === 'unowned') Object.assign(defect, { state: 'deferred', assignee: null });
+    if (mutation === 'same-predictions') defect.rootCauseVerification!.predictedObservations!.alternativeHypothesis = defect.rootCauseVerification!.predictedObservations!.hypothesis;
+    if (mutation === 'no-trigger') defect.triggeringJourneyReceiptId = 'unmeasured';
+    if (mutation === 'proposed') defect.completionAuthority = 'proposed';
+    expect(evaluateCloudCampaignEvidence(data, context).problems['R-4'].length).toBeGreaterThan(0);
+  });
+
+  it.each(['syntheticCloudResponses', 'authenticated', 'sourceSha', 'artifactSha256', 'tenantId', 'workspaceId', 'accountId', 'runId', 'resourceLabel', 'observedAt'] as const)('refuses real GCP proof when %s differs', (field) => {
+    const { data, context } = completeFixture();
+    const row = data.acceptanceEvidence.realRuntimeReceipts.find((entry) => entry.runtime === 'gcp')!;
+    Object.assign(row, { [field]: field === 'syntheticCloudResponses' ? true : field === 'authenticated' ? false : field === 'sourceSha' ? 'c'.repeat(40) : field === 'artifactSha256' ? 'c'.repeat(64) : field === 'observedAt' ? '2026-10-09T19:00:00.000Z' : 'foreign-identity' });
+    const result = evaluateCloudCampaignEvidence(data, context);
+    expect(result.problems['R-2']).toEqual([]);
+    expect(result.problems['R-5']).toContain('unproven-runtime:gcp');
+  });
+
+  it.each(['gcp', 'aws'] as const)('requires every provider kind and separate billing closure for %s', (provider) => {
+    const { data, context } = completeFixture();
+    const row = data.acceptanceEvidence.realRuntimeReceipts.find((entry) => entry.runtime === provider)!;
+    row.census!.inventoryEvidence.pop();
+    expect(evaluateCloudCampaignEvidence(data, context).problems['R-5']).toContain(`unproven-runtime:${provider}`);
+    row.census!.inventoryEvidence = workspaceHostCensusProfile(provider).kinds.map((kind) => ({ kind, strategy: 'managed-labels', providerEvidenceRef: 'fixture://census' }));
+    row.billingClosure!.result = 'unknown';
+    expect(evaluateCloudCampaignEvidence(data, context).problems['R-5']).toContain(`unproven-runtime:${provider}`);
+  });
+
+  it('refuses missing runtime obligations, duplicated receipts, partial actions and malformed census', () => {
+    for (const mutation of ['obligation', 'duplicate', 'partial', 'census']) {
+      const { data, context } = completeFixture();
+      const row = data.acceptanceEvidence.realRuntimeReceipts.find((entry) => entry.runtime === 'gcp')!;
+      if (mutation === 'obligation') context.runtimeObligations = context.runtimeObligations.filter((entry) => entry.runtime !== 'aws');
+      if (mutation === 'duplicate') data.acceptanceEvidence.realRuntimeReceipts.push(row);
+      if (mutation === 'partial') row.actions.pop();
+      if (mutation === 'census') Object.assign(row, { census: {} });
+      expect(evaluateCloudCampaignEvidence(data, context).problems['R-5'].length).toBeGreaterThan(0);
+    }
+  });
+
+  it.each(['artifact', 'source', 'unauthenticated', 'earlier-final', 'missing-grade'] as const)('independently rejects final shipment %s', (mutation) => {
+    const { data, context } = completeFixture();
+    const row = data.acceptanceEvidence.shipmentReceipts[0]!;
+    if (mutation === 'artifact') row.promotedArtifactSha256 = 'c'.repeat(64);
+    if (mutation === 'source') row.promotedSourceSha = 'c'.repeat(40);
+    if (mutation === 'unauthenticated') row.authenticated = false;
+    if (mutation === 'earlier-final') row.observedAt = '2026-10-09T21:30:00.000Z';
+    if (mutation === 'missing-grade') row.gradingRef = '';
+    const result = evaluateCloudCampaignEvidence(data, context);
+    expect(result.passed).toBe(false);
+    expect(result.problems['R-6'].length).toBeGreaterThan(0);
+    if (mutation !== 'missing-grade') expect(result.problems['R-5']).toEqual([]);
   });
 });

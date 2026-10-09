@@ -48,11 +48,25 @@ describe('improvements:agent-review public door', () => {
     await call({ mode: 'claim-next' }, { harnessSlug: 'papercusp', signal: abort.signal });
     expect(h.claimNext).toHaveBeenCalledWith({
       reviewer: 'su-reviewer', harnessSlug: 'papercusp', filter, workspaceId: undefined, signal: abort.signal,
+      onDiagnostics: expect.any(Function),
     });
     h.claimNext.mockClear();
     h.claimSpec.mockResolvedValueOnce({ source: 'default', fleetSlug: 'verifiers', spec: { view: {} } });
     await expect(call({ mode: 'claim-next' }, { harnessSlug: 'papercusp' })).rejects.toThrow('valid fleet claim spec');
     expect(h.claimNext).not.toHaveBeenCalled();
+  });
+  it('writes claim-next diagnostics through invocation metadata', async () => {
+    const diagnostics = { schemaVersion: 'agent-review-claim-next-v1', candidateCount: 2 };
+    h.claimNext.mockImplementationOnce(async (...args: unknown[]) => {
+      const input = args[0] as { onDiagnostics?: (value: unknown) => void };
+      input.onDiagnostics?.(diagnostics);
+      return null;
+    });
+    const metadata = vi.fn();
+
+    await call({ mode: 'claim-next' }, { harnessSlug: 'papercusp', metadata });
+
+    expect(metadata).toHaveBeenCalledWith({ agentReviewClaimNext: diagnostics });
   });
   it('declares a late-completion receipt on the public mutating tool', () => {
     expect(tool.abortCompletionReceipt).toBe(agentReviewAbortCompletionReceipt);
@@ -171,6 +185,7 @@ describe('improvements:agent-review public door', () => {
 
     expect(h.claimNext).toHaveBeenCalledWith({
       reviewer: 'su-reviewer', harnessSlug: 'papercusp', filter: undefined, workspaceId: undefined, signal: undefined,
+      onDiagnostics: expect.any(Function),
     });
     expect(body(out)).toEqual({
       ok: true,
@@ -197,7 +212,10 @@ describe('improvements:agent-review public door', () => {
   it('returns an explicit clean miss when the review lane is empty', async () => {
     const out = await call({ mode: 'claim-next', harness: 'other-harness' }, { harnessSlug: 'papercusp' });
 
-    expect(h.claimNext).toHaveBeenCalledWith({ reviewer: 'su-reviewer', harnessSlug: 'other-harness' });
+    expect(h.claimNext).toHaveBeenCalledWith({
+      reviewer: 'su-reviewer', harnessSlug: 'other-harness', filter: undefined,
+      workspaceId: undefined, signal: undefined, onDiagnostics: expect.any(Function),
+    });
     expect(body(out)).toEqual({ ok: true, mode: 'claim-next', claimed: false, workItem: null });
   });
 
