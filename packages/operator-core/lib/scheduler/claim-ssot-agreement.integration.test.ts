@@ -638,6 +638,42 @@ describe('WI-10006159 solo decision reservations', () => {
     expect(extractions.length).toBeGreaterThan(0);
     expect(extractions.every(node => node['Actual Loops'] <= 1)).toBe(true);
   });
+
+  it('evaluates the Route A decision set once for a large fixed cohort', async () => {
+    await seedPlan('route-a-load', 'ready');
+    await db.sql`
+      INSERT INTO harness_shared.plan_decisions
+        (workspace_id, harness_slug, plan_slug, decision_id, seq, title, body, item_refs)
+      VALUES (${WS}, ${H}, 'route-a-load', 'D-route-a', 1, 'Route choice',
+        'Route A: this session (su-dab96471) implements the plan.', ARRAY['P-other']::text[])
+    `;
+    await db.sql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, item_kind, status, title, origin,
+         created_ts, updated_ts, payload)
+      SELECT ${WS}, ${H}, 'WI-' || (500000 + n), 'task', 'open', 'route candidate', 'local',
+             0, 0, jsonb_build_object('plan_item',
+               jsonb_build_object('plan_slug', 'route-a-load', 'item_id', 'P-001'))
+        FROM generate_series(1, 2000) n
+    `;
+    const ids = Array.from({ length: 2000 }, (_, n) => `WI-${500001 + n}`);
+    const scoped = wi.reservedPlanLaneExclusionSql(db.sql, 'generic-drainer', 'wi.payload', {
+      decisionCandidates: { workspaceId: WS, ids },
+    });
+    const rows = await db.sql`SELECT wi.feature_id FROM harness_shared.work_items wi
+      WHERE wi.workspace_id = ${WS} AND wi.feature_id = ANY(${ids}::text[]) AND ${scoped}`;
+    expect(rows).toEqual([]);
+    const plans = await db.sql`EXPLAIN (ANALYZE, FORMAT JSON)
+      SELECT wi.feature_id FROM harness_shared.work_items wi
+       WHERE wi.workspace_id = ${WS} AND wi.feature_id = ANY(${ids}::text[]) AND ${scoped}`;
+    type PlanNode = { Filter?: string; 'Actual Loops': number; Plans?: PlanNode[] };
+    const nodes: PlanNode[] = [];
+    const visit = (node: PlanNode) => { nodes.push(node); node.Plans?.forEach(visit); };
+    visit(plans[0]['QUERY PLAN'][0].Plan);
+    const routeScans = nodes.filter(node => node.Filter?.includes('route[[:space:]]+a:'));
+    expect(routeScans.length).toBeGreaterThan(0);
+    expect(routeScans.every(node => node['Actual Loops'] <= 1)).toBe(true);
+  });
 });
 
 describe('canonical plan-item sibling claim guard (EI-21151083448505391)', () => {
