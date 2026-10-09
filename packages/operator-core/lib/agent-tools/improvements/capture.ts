@@ -25,6 +25,7 @@ import {
   captureToolInvocationFriction,
   recordCaptureReviewFailure,
   setCaptureReviewState,
+  type CaptureDependencyTiming,
   type AgentReviewFailure,
   type CaptureWatchdogIdentityConflictError,
 } from '../../harness/improvements/capture-core';
@@ -61,6 +62,100 @@ import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
 import { detectAbsencePremises } from '../../premises-claim-port';
 import { BUG_REPRODUCTION_KINDS, stampFiledBugReproduction } from '../../attention/bug-reproduction';
 import { defaultReproductionLedgerDeps } from '../../attention/intake-promotion';
+
+const CAPTURE_TIMING_LOG_THRESHOLD_MS = 1_000;
+const CAPTURE_TIMING_MAX_STAGES = 48;
+const CAPTURE_TIMING_MAX_LOGGED_STAGES = 24;
+
+interface CaptureTimingStage {
+  name: string;
+  count: number;
+  totalMs: number;
+  maxMs: number;
+  failures: number;
+}
+
+function createCaptureTimingRecorder(ctx: {
+  log?: (message: string) => void;
+  requestOrigin?: { mcpRequestTraceId?: string };
+}) {
+  const startedAt = performance.now();
+  const enabled = typeof ctx.log === 'function';
+  const suppliedTraceId = ctx.requestOrigin?.mcpRequestTraceId;
+  const traceId =
+    typeof suppliedTraceId === 'string' && suppliedTraceId.trim() && suppliedTraceId.length <= 128
+      ? suppliedTraceId
+      : globalThis.crypto.randomUUID();
+  const stages = new Map<string, CaptureTimingStage>();
+  let omittedStageCount = 0;
+  let slowestStageMs = 0;
+
+  const record = (
+    name: string,
+    elapsedMs: number,
+    outcome: CaptureDependencyTiming['outcome'],
+  ) => {
+    if (!enabled) return;
+    const boundedName = name.slice(0, 80);
+    const duration = Number.isFinite(elapsedMs) ? Math.max(0, Math.round(elapsedMs * 10) / 10) : 0;
+    slowestStageMs = Math.max(slowestStageMs, duration);
+    let stage = stages.get(boundedName);
+    if (!stage) {
+      if (stages.size >= CAPTURE_TIMING_MAX_STAGES) {
+        omittedStageCount += 1;
+        return;
+      }
+      stage = { name: boundedName, count: 0, totalMs: 0, maxMs: 0, failures: 0 };
+      stages.set(boundedName, stage);
+    }
+    stage.count += 1;
+    stage.totalMs = Math.round((stage.totalMs + duration) * 10) / 10;
+    stage.maxMs = Math.max(stage.maxMs, duration);
+    if (outcome === 'rejected') stage.failures += 1;
+  };
+
+  const measure = async <T>(name: string, operation: () => Promise<T> | T): Promise<T> => {
+    if (!enabled) return await operation();
+    const phaseStartedAt = performance.now();
+    let outcome: CaptureDependencyTiming['outcome'] = 'fulfilled';
+    try {
+      return await operation();
+    } catch (error) {
+      outcome = 'rejected';
+      throw error;
+    } finally {
+      record(name, performance.now() - phaseStartedAt, outcome);
+    }
+  };
+
+  return {
+    enabled,
+    measure,
+    recordDependency: (sample: CaptureDependencyTiming) =>
+      record('core.' + sample.dependency, sample.elapsedMs, sample.outcome),
+    flush: () => {
+      if (!enabled) return;
+      const totalElapsedMs = Math.max(0, Math.round((performance.now() - startedAt) * 10) / 10);
+      if (totalElapsedMs < CAPTURE_TIMING_LOG_THRESHOLD_MS && slowestStageMs < CAPTURE_TIMING_LOG_THRESHOLD_MS) {
+        return;
+      }
+      const loggedStages = [...stages.values()]
+        .sort((a, b) => b.totalMs - a.totalMs || b.maxMs - a.maxMs)
+        .slice(0, CAPTURE_TIMING_MAX_LOGGED_STAGES);
+      try {
+        ctx.log?.('[improvements:capture] timing ' + JSON.stringify({
+          traceId,
+          totalElapsedMs,
+          stageCount: stages.size,
+          omittedStageCount: omittedStageCount + Math.max(0, stages.size - loggedStages.length),
+          stages: loggedStages,
+        }));
+      } catch {
+        // A diagnostic log failure must never change the capture result.
+      }
+    },
+  };
+}
 
 const observationRatingsSchema = z.record(
   z.string().min(1),
@@ -1035,6 +1130,8 @@ export default defineTool({
     })
     .passthrough(),
   async handler(args, ctx) {
+    const timing = createCaptureTimingRecorder(ctx);
+    try {
     const id = resolveAgentIdentity(ctx);
     // EI-21601117899178959: direct handler callers (including older in-process
     // dispatchers) may bypass the args preprocessor. Keep the same canonicalization
@@ -1052,8 +1149,8 @@ export default defineTool({
     // bee/worker/…) that the server-side deriveAgentRole cannot see (the agent's
     // PAPERCUSP_AGENT_ROLE env is not in THIS process). Fall back to the coarse
     // source-derived role; best-effort — a presence-read miss never blocks a capture.
-    const filedByRole =
-      (await getPresence(id.ownerId).catch(() => null))?.agentRole ?? deriveAgentRole(id) ?? undefined;
+    const presence = await timing.measure('identity.presence', () => getPresence(id.ownerId).catch(() => null));
+    const filedByRole = presence?.agentRole ?? deriveAgentRole(id) ?? undefined;
     // Auto-derive sourceHive (rubric-driven-observations D-003) from the caller's
     // hive/harness when omitted: signed-spawn bees carry ctx.harnessSlug; explicit
     // callers (Overwatch/Scout) set observation.sourceHive themselves. '*' (the
@@ -1133,7 +1230,9 @@ export default defineTool({
     // different generations. Best-effort by construction (both legs degrade to null) —
     // the stamp must never fail the capture it rides on.
     const gradedGeneration =
-      observationBase?.rubricRef && observationBase.ratings ? await readRunningGeneration().catch(() => null) : null;
+      observationBase?.rubricRef && observationBase.ratings
+        ? await timing.measure('metadata.runningGeneration', () => readRunningGeneration().catch(() => null))
+        : null;
     const observation = observationBase
       ? { ...observationBase, ...(gradedGeneration ? { gradedGeneration } : {}) }
       : undefined;
@@ -1172,14 +1271,18 @@ export default defineTool({
       let provenance: RuntimeProvenance['observedTargetRuntime']['provenance'] = 'caller-supplied';
       let observedTarget = { ...observed };
       if (observed.testRunIds !== undefined) {
-        const trusted = await readTrustedHarnessTestRunProvenance({
-          testRunIds: observed.testRunIds,
-          workspaceId: observed.workspaceId!,
-          harnessSlug: observed.harnessSlug!,
-          runGroupId: observed.runGroupId!,
-          root: observed.root!,
-          filePaths: observed.filePaths!,
-        }).catch(() => null);
+        const trusted = await timing.measure(
+          'metadata.trustedTestRunProvenance',
+          () =>
+            readTrustedHarnessTestRunProvenance({
+              testRunIds: observed.testRunIds,
+              workspaceId: observed.workspaceId!,
+              harnessSlug: observed.harnessSlug!,
+              runGroupId: observed.runGroupId!,
+              root: observed.root!,
+              filePaths: observed.filePaths!,
+            }).catch(() => null),
+        );
         if (trusted) {
           targetRuntimeSha = trusted.commitSha;
           provenance = 'trusted-test-run';
@@ -1212,7 +1315,9 @@ export default defineTool({
     // later. Resolve the failing verb to its defining file and say so at FILE time.
     // Null unless the file actually differs between the serving build and the tree,
     // so the common case adds nothing. Never throws; never blocks the filing.
-    const stalenessHint = args.toolFailure ? await toolFailureStalenessHint(args.toolFailure.toolName) : null;
+    const stalenessHint = args.toolFailure
+      ? await timing.measure('metadata.toolFailureStaleness', () => toolFailureStalenessHint(args.toolFailure!.toolName))
+      : null;
     // EI-19452091889263267: a report can be based on a live runtime observation
     // even when the failing call itself was not a schema/tool error.  Compare the
     // explicitly supplied subject paths against the serving build and carry a
@@ -1220,8 +1325,9 @@ export default defineTool({
     // runtime for current tree behavior.
     const pathStalenessHint = args.paths?.length
       ? targetRuntimeSha
-        ? await pathsStalenessHint(args.paths, { deployedSha: () => targetRuntimeSha! })
-        : await pathsStalenessHint(args.paths)
+        ? await timing.measure('metadata.pathStaleness', () =>
+            pathsStalenessHint(args.paths!, { deployedSha: () => targetRuntimeSha! }))
+        : await timing.measure('metadata.pathStaleness', () => pathsStalenessHint(args.paths!))
       : null;
     // Reserve room for the hint rather than clamping the join: the body arrives
     // already clamped to LIMITS.CONTENT, so a naive append could overflow it, and
@@ -1264,7 +1370,8 @@ export default defineTool({
     // and non-bugs retain their existing availability-first behavior.
     const drainMode =
       effectiveKind === 'bug' && effectiveLane !== 'observation'
-        ? (await getModes(id.workspaceId ?? ctxWorkspace ?? 'default', id.ownerId)).find(
+        ? (await timing.measure('metadata.modeLookup', () =>
+            getModes(id.workspaceId ?? ctxWorkspace ?? 'default', id.ownerId))).find(
             (mode) => mode.mode === 'drain',
           )
         : undefined;
@@ -1339,17 +1446,18 @@ export default defineTool({
     // probation path, so its receipt is stored as evidence but cannot skip review.
     const reproductionStamp =
       args.reproduction && !args.checkDuplicatesOnly
-        ? await stampFiledBugReproduction(
-            args.reproduction,
-            {
-              filedBy: id.ownerId,
-              ineligibleReason:
-                normalizedToolFailure && normalizedToolFailure.class === 'caller' && !normalizedToolFailure.direct
-                  ? 'caller-classified tool failure without direct evidence keeps its probation path (D-024 §4)'
-                  : null,
-            },
-            defaultReproductionLedgerDeps(),
-          )
+        ? await timing.measure('metadata.reproductionStamp', () =>
+            stampFiledBugReproduction(
+              args.reproduction!,
+              {
+                filedBy: id.ownerId,
+                ineligibleReason:
+                  normalizedToolFailure && normalizedToolFailure.class === 'caller' && !normalizedToolFailure.direct
+                    ? 'caller-classified tool failure without direct evidence keeps its probation path (D-024 §4)'
+                    : null,
+              },
+              defaultReproductionLedgerDeps(),
+            ))
         : null;
     if (reproductionStamp && !reproductionStamp.ok) throw new ObservationEvidenceError(reproductionStamp.error);
     const storedReproduction = reproductionStamp?.ok ? reproductionStamp.stored : undefined;
@@ -1365,7 +1473,7 @@ export default defineTool({
           toolFailureSubsystemForCode(args.toolFailure.errorCode) &&
           !normalizedToolFailure.direct && onlyStructuredCaptureFields
         ) {
-          const friction = await captureToolInvocationFriction({
+          const friction = await timing.measure('core.toolInvocationFriction', () => captureToolInvocationFriction({
             workspaceId: resolveConcreteWorkspaceId(id.workspaceId ?? ctxWorkspace, ctxWorkspace),
             harnessSlug: ctxHarness ?? (captureScope?.startsWith('harness:')
               ? captureScope.slice('harness:'.length)
@@ -1377,10 +1485,11 @@ export default defineTool({
             body: bodyWithStaleness,
             scope: captureScope ?? undefined,
             severity: args.severity as IssueSeverity | undefined,
-          });
+            onDependencyTiming: timing.enabled ? timing.recordDependency : undefined,
+          }));
           if (friction) return friction;
         }
-        return captureImprovement({
+        return await timing.measure('core.captureImprovement', () => captureImprovement({
           title: captureText.title,
           kind: effectiveKind,
           // Agent-facing door: poor scorecard ratings must carry a disposition
@@ -1439,20 +1548,21 @@ export default defineTool({
                   const scopedHarness = captureScope?.startsWith('harness:')
                     ? captureScope.slice('harness:'.length)
                     : ctxHarness;
-                  await setWorkItemCheckpoint(
+                  await timing.measure('wrapper.successorCheckpoint', () => setWorkItemCheckpoint(
                     {
                       harness: scopedHarness ?? null,
                       workItemId,
                       workspaceId: resolveConcreteWorkspaceId(ctxWorkspace),
                     },
                     checkpoint,
-                  );
+                  ));
                 },
               }
             : {}),
           filedByRole,
           source,
-        });
+          onDependencyTiming: timing.enabled ? timing.recordDependency : undefined,
+        }));
       };
       const drainHarness = captureScope?.startsWith('harness:') ? captureScope.slice('harness:'.length) : ctxHarness;
       if (drainMode && !args.checkDuplicatesOnly && !drainHarness) {
@@ -1476,7 +1586,7 @@ export default defineTool({
       // serialized through the exact flow gate before capture-core may mutate.
       const gated =
         drainMode && !args.checkDuplicatesOnly
-          ? await withDrainBugAdmission(
+          ? await timing.measure('wrapper.drainAdmission', () => withDrainBugAdmission(
               {
                 workspaceId: id.workspaceId ?? ctxWorkspace ?? 'default',
                 harness: drainHarness!,
@@ -1484,7 +1594,7 @@ export default defineTool({
                 drainStartedAt: drainMode.setAt,
               },
               () => persist(),
-            )
+            ))
           : null;
       if (gated && !gated.allowed) {
         return {
@@ -1502,7 +1612,7 @@ export default defineTool({
           ],
         };
       }
-      const result = gated ? gated.value : await persist();
+      const result = gated ? gated.value : await timing.measure('wrapper.persist', () => persist());
       // Directed @-mention — only when we actually CREATED a claimable item (not a
       // checkDuplicatesOnly probe / coalesced row / observation-lane reflection).
       const captured = result as { created?: boolean; issue?: { id: string; title?: string } };
@@ -1808,6 +1918,9 @@ export default defineTool({
         return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, error: err.message }) }] };
       }
       throw err;
+    }
+    } finally {
+      timing.flush();
     }
   },
 });

@@ -183,12 +183,24 @@ export const CAPTURE_CONTENTION_BACKOFFS_MS = [500] as const;
  */
 export const CONTAINMENT_THRESHOLD = 0.9;
 
+export type CaptureDependencyTimingOutcome = 'fulfilled' | 'rejected';
+
+export interface CaptureDependencyTiming {
+  dependency: string;
+  elapsedMs: number;
+  outcome: CaptureDependencyTimingOutcome;
+}
+
+export type CaptureDependencyTimingObserver = (sample: CaptureDependencyTiming) => void;
+
 export interface CaptureImprovementInput {
   /** One-line summary — clean, NO [kind] prefix (kind is a real column now). */
   title: string;
   kind: ImprovementKind;
   body?: string;
   severity?: IssueSeverity;
+  /** Internal diagnostic hook; timings are never stored on the captured work item. */
+  onDependencyTiming?: CaptureDependencyTimingObserver;
   /** Optional sub-area topic, e.g. coord-dx, db-tooling. */
   subTopic?: string;
   /** Omit → files under the workspace platform Pot; or 'harness:<slug>' for a specific Pot.
@@ -755,11 +767,17 @@ export async function setCaptureReviewState(
 // for pre-ISSUES_PER_WORKSPACE-flip rows) — see searchIssuesForDedup's doc in issues-engineer.ts.
 const defaultDeps: CaptureDeps = {
   searchIssues: searchIssuesForDedup,
+  findSemanticDupes,
   createIssue,
   getIssue,
+  findIssuesByWatchdogKeys,
   findIssuesByToolFailureClassKeys,
   releaseIssue,
   setIssueState,
+  updateIssuePatch: updateIssue,
+  mergeIssuePayload,
+  tagIssue,
+  untagIssue,
   loadRubric: getRubric,
   autoRatifyRubric: autoRatifyRubricOnFirstScorecard,
   recordIssueOccurrence,
@@ -795,7 +813,58 @@ const defaultDeps: CaptureDeps = {
     const { stampGoalProvenance } = await import('../../goals/provenance-stamp');
     return stampGoalProvenance(item, workspaceId, ownerId);
   },
+  resolvePotScope: async (args) => {
+    const { resolveWorkItemPot } = await import('../../pot-membership');
+    return resolveWorkItemPot(args);
+  },
 };
+
+const timedCaptureDependencyProxies = new WeakSet<object>();
+
+async function timeCaptureDependency<T>(
+  observer: CaptureDependencyTimingObserver | undefined,
+  dependency: string,
+  operation: () => Promise<T> | T,
+): Promise<T> {
+  if (!observer) return await operation();
+  const startedAt = performance.now();
+  let outcome: CaptureDependencyTimingOutcome = 'fulfilled';
+  try {
+    return await operation();
+  } catch (error) {
+    outcome = 'rejected';
+    throw error;
+  } finally {
+    try {
+      observer({
+        dependency,
+        elapsedMs: Math.max(0, Math.round((performance.now() - startedAt) * 10) / 10),
+        outcome,
+      });
+    } catch {
+      // Instrumentation is diagnostic only and must never fail a capture.
+    }
+  }
+}
+
+function instrumentCaptureDependencies(
+  deps: CaptureDeps,
+  observer: CaptureDependencyTimingObserver | undefined,
+): CaptureDeps {
+  if (!observer || timedCaptureDependencyProxies.has(deps)) return deps;
+  const instrumented = new Proxy(deps, {
+    get(target, property, receiver) {
+      const dependency = Reflect.get(target, property, receiver);
+      if (typeof dependency !== 'function') return dependency;
+      return (...args: unknown[]) =>
+        timeCaptureDependency(observer, String(property), () =>
+          Reflect.apply(dependency, target, args),
+        );
+    },
+  });
+  timedCaptureDependencyProxies.add(instrumented);
+  return instrumented;
+}
 
 function reviewFailureMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -2002,6 +2071,8 @@ export interface ToolInvocationFriction {
   invocationId?: string;
   /** That row's `serving_build_sha`: the build the failing call actually ran on. */
   servingBuildSha?: string | null;
+  /** Internal diagnostic hook shared with the ordinary capture core. */
+  onDependencyTiming?: CaptureDependencyTimingObserver;
 }
 
 /**
@@ -2035,6 +2106,7 @@ export async function captureToolInvocationFriction(
   invocation: ToolInvocationFriction,
   deps: CaptureDeps = defaultDeps,
 ): Promise<CaptureImprovementResult | null> {
+  deps = instrumentCaptureDependencies(deps, invocation.onDependencyTiming);
   const { failure, ownerId, workspaceId, harnessSlug, invokedAt } = invocation;
   const hasSubsystemErrorCode = toolFailureSubsystemForCode(failure.errorCode) !== null;
   if (!ownerId || !workspaceId ||
@@ -2083,7 +2155,11 @@ export async function captureToolInvocationFriction(
     : sourceIsWorkspaceScope ? 'operator' : `harness:${concreteHarness}`;
   const captureScope = invocation.scope ?? scope;
   const toolInvocation = { workspaceId, harnessSlug, ownerId, invokedAt };
-  const reproduction = await frictionReproduction(invocation, kind);
+  const reproduction = await timeCaptureDependency(
+    invocation.onDependencyTiming,
+    'frictionReproduction',
+    () => frictionReproduction(invocation, kind),
+  );
   const incomingProbation = {
     ...normalized, watchdogKey: rowKey, signatureKey, state: 'probation' as const, intendedKind: kind,
     reporters: [ownerId], firstSeenAt: invokedAt, lastSeenAt: invokedAt, report,
@@ -2094,6 +2170,7 @@ export async function captureToolInvocationFriction(
     kind, severity: invocation.severity ?? 'nit', lane: 'observation', scope: captureScope,
     workspaceId, createdBy: ownerId, evidenceAt: invokedAt,
     watchdogKey: rowKey,
+    onDependencyTiming: invocation.onDependencyTiming,
     // Do not set sourceRole:'system': an automated report is still this
     // caller's evidence, not a trusted watchdog promotion or review waiver.
   };
@@ -2271,6 +2348,7 @@ export async function captureImprovement(
   input: CaptureImprovementInput,
   deps: CaptureDeps = defaultDeps,
 ): Promise<CaptureImprovementResult> {
+  deps = instrumentCaptureDependencies(deps, input.onDependencyTiming);
   const readReservedArtifact = async (): Promise<CaptureImprovementResult | null> => {
     if (!input.artifactId) return null;
     if (!/^(EI|WI)-\d+$/.test(input.artifactId) || !input.watchdogKey)
@@ -3360,7 +3438,11 @@ export async function captureImprovement(
   if (isObservation && !input.watchdogKey && !immutableScorecard) {
     // Fail-open on the flag read exactly like the classifier's own null: a flag
     // service blip must never change what happens to an agent's filing.
-    const foldEnabled = await getFlag(FLAGS.OBSERVATION_DERIVED_FOLD, `observation-fold:${origin}`).catch(() => false);
+    const foldEnabled = await timeCaptureDependency(
+      input.onDependencyTiming,
+      'getFlag',
+      () => getFlag(FLAGS.OBSERVATION_DERIVED_FOLD, 'observation-fold:' + origin),
+    ).catch(() => false);
     const derived = foldEnabled
       ? await classifyDerivedObservationFold({ input, origin, deps }).catch(() => null)
       : null;
@@ -3604,9 +3686,14 @@ export async function captureImprovement(
 
   let issue: EngineerIssue;
   try {
-    issue = await acquireWithContentionRetry(() => deps.createIssue(createInput), {
-      backoffsMs: CAPTURE_CONTENTION_BACKOFFS_MS,
-    });
+    issue = await timeCaptureDependency(
+      input.onDependencyTiming,
+      'createIssueWithContentionRetry',
+      () =>
+        acquireWithContentionRetry(() => deps.createIssue(createInput), {
+          backoffsMs: CAPTURE_CONTENTION_BACKOFFS_MS,
+        }),
+    );
   } catch (error) {
     if (input.artifactId) {
       const winner = await readReservedArtifact();
