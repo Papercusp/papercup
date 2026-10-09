@@ -26,7 +26,7 @@ assert.ok(Buffer.byteLength(join(discovery, 'su-rs-123456789-neighbor.sock')) < 
 writeFileSync(join(evidence, 'discovery.json'), JSON.stringify({ discovery }));
 process.env.PAPERCUSP_PSU_PTY_DIR = discovery;
 process.env.PAPERCUSP_TURN_PROVENANCE_DIR = join(evidence, 'turn-provenance');
-const { hostThroughPty, socketPathFor, metaPathFor, encodeControl } = await import('../../../apps/operator/scripts/psu-pty-host.mjs');
+const { socketPathFor, metaPathFor, encodeControl } = await import('../../../apps/operator/scripts/psu-pty-host.mjs');
 const { shutdownViaPty } = await import('../lib/events/await/psu-pty-discovery');
 const { sql } = getOrgPg();
 const sessions: Array<{ owner: string; id: number; startedAt: string; done: Promise<number>; closed: boolean; output: () => string }> = [];
@@ -50,20 +50,28 @@ async function child(label: string) {
   assert.ok(row);
   let output = '';
   const session = { owner, id, startedAt: row.startedAt, closed: false, output: () => output, done: Promise.resolve(0) };
-  session.done = hostThroughPty({ command: process.execPath,
-    args: ['-e', "process.stdin.setEncoding('utf8');let b='';process.stdin.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){process.stdout.write('ECHO:'+b.slice(0,i)+'\\n');b=b.slice(i+1);}});setTimeout(()=>process.exit(0),120000);"],
-    cwd: evidence, ownerId: owner, advSessionId: id, bridgeTty: false,
+  const host = spawn(process.execPath, [join(root, 'packages/operator-core/test/psu-pty-host-canary.mjs'), owner, String(id)], {
+    cwd: evidence, stdio: ['ignore', 'pipe', 'pipe'],
     env: { PATH: process.env.PATH, TERM: 'xterm-256color', PAPERCUSP_PSU_PTY_DIR: discovery,
       PAPERCUSP_TURN_PROVENANCE_DIR: join(evidence, 'turn-provenance'),
       PAPERCUSP_SID: owner, PAPERCUSP_LAUNCHED_BY: 'su-private-roster-acceptance' },
-    io: { stdout: { columns: 80, rows: 24, write: (value: Buffer | string) => { output += value.toString(); }, on() {}, off() {} },
-      stdin: { isTTY: false, on() {}, off() {}, resume() {}, pause() {} } },
-    reapScopeResidue: () => ({ killedPids: [], failedPids: [] }),
-    onExit: (code: number, signal: string | null) => { session.closed = true;
-      endings.push(markAdvSessionEnded(id, code, signal ? 'signal' : 'self', { signal, throwOnError: true })); },
+  });
+  host.stdout!.on('data', chunk => { output += String(chunk); });
+  host.stderr!.on('data', chunk => process.stderr.write(chunk));
+  session.done = new Promise((done, reject) => {
+    host.once('error', reject);
+    host.once('close', (code, osSignal) => {
+      session.closed = true;
+      const line = output.split('\n').find(value => value.startsWith('ROSTER_CANARY_EXIT '));
+      const signal = line ? JSON.parse(line.slice('ROSTER_CANARY_EXIT '.length)).signal : osSignal;
+      endings.push(markAdvSessionEnded(id, code, signal ? 'signal' : 'self', { signal, throwOnError: true }));
+      done(code ?? 1);
+    });
   });
   sessions.push(session);
   await until(() => existsSync(socketPathFor(owner)) && existsSync(metaPathFor(owner)), `${label} host ready`);
+  const metadata = JSON.parse(readFileSync(metaPathFor(owner), 'utf8'));
+  assert.equal(metadata.pid, host.pid, 'discovery must identify its dedicated PSU host');
   return session;
 }
 

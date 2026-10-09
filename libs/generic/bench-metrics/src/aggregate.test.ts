@@ -60,9 +60,11 @@ describe('aggregateArm', () => {
       mk({ taskId: 't1', generationStatus: 'error', resolved: null, tokensIn: 1_000_000, tokensTotal: 1_000_000 }),
     ];
     const r = aggregateArm(rows, 'swe-bench-pro', 'papercusp');
-    expect(r.passAt1).toBeCloseTo(5 / 6, 6);
+    expect(r.passAt1).toBeCloseTo((3 / 4 + 2 / 3) / 2, 6);
+    expect(r.conditionalPassAt1).toBeCloseTo(5 / 6, 6);
     expect(r.tasks).toBe(2);
-    expect(r.attempts).toBe(6); // scored only
+    expect(r.attempts).toBe(7);
+    expect(r.gradedAttempts).toBe(6);
     expect(r.infraErrors).toBe(1);
     expect(r.cappedRuns).toBe(0);
     // pass@k[0] is k=1 and must equal pass@1 exactly (consistency)
@@ -77,6 +79,25 @@ describe('aggregateArm', () => {
 });
 
 describe('buildSuiteReport', () => {
+  it('retains tasks absent from both arms and absent assigned seeds', () => {
+    const report = buildSuiteReport([
+      mk({ taskId: 'a', seed: 1, resolved: true, graderStatus: 'passed' }),
+      mk({ taskId: 'a', arm: 'baseline-b-native', seed: 1, resolved: true, graderStatus: 'passed' }),
+    ], { assignedTaskIds: ['a', 'b'], assignedSeeds: [1, 2] });
+    expect(report.arms.map(arm => arm.passAt1)).toEqual([0.25, 0.25]);
+    expect(report.arms[0]).toMatchObject({ tasks: 2, attempts: 1, absentTasks: 1 });
+  });
+
+  it('suppresses primary accuracy, frontier and deltas for grader outages', () => {
+    const report = buildSuiteReport([
+      mk({ graderStatus: 'error', resolved: null }),
+      mk({ arm: 'baseline-b-native', resolved: true, graderStatus: 'passed' }),
+    ]);
+    expect(report.arms[0]).toMatchObject({ passAt1: null, missingMeasurements: 1 });
+    expect(report.frontier.map(point => point.arm)).toEqual(['baseline-b-native']);
+    expect(report.deltas).toEqual([]);
+  });
+
   it('reports per-arm scores, the cost/accuracy frontier, and papercusp-vs-baseline deltas', () => {
     const rows = [
       // papercusp: pass@1 = mean(1, 2/3) = 0.8333, expensive (1M Opus in/row)

@@ -11,6 +11,7 @@ it.each(['positive', 'misroute'] as const)('confirmed roster stop through privat
   const runId = await recordIsolatedIntegrationProof({ root,
     filePath: 'packages/operator-core/lib/endpoint-route/__tests__/adv-sessions-stop.integration.test.ts',
     sourcePaths: ['scripts/with-test-pg.mjs', 'packages/operator-core/test/roster-stop-http-fixture.ts',
+      'packages/operator-core/test/psu-pty-host-canary.mjs',
       'packages/operator-core/test/isolated-integration-proof.ts', 'packages/operator-core/lib/adv-sessions.ts',
       'packages/operator-core/lib/endpoint-route/routes/adv/sessions.ts',
       'packages/operator-core/lib/events/await/psu-pty-discovery.ts', 'apps/operator/scripts/psu-pty-host.mjs',

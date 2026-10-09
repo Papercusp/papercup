@@ -35,7 +35,8 @@ async function fixture(agent: string, autoStart: boolean) {
     const fs = require('node:fs');
     const agent = ${JSON.stringify(agent)}, path = ${JSON.stringify(transcript)};
     let line = '', count = 0, pending = false;
-    function append(row) { fs.appendFileSync(path, JSON.stringify({...row, timestamp: new Date().toISOString()})+'\\n'); }
+    function append(row) { fs.appendFileSync(path, JSON.stringify({...row, id:'fixture-'+count, uuid:'fixture-'+count,
+      timestamp: new Date().toISOString()})+'\\n'); }
     function start() {
       if (!pending) return; pending = false;
       append(agent === 'codex' ? {type:'event_msg',payload:{type:'task_started'}} :
@@ -68,7 +69,8 @@ async function fixture(agent: string, autoStart: boolean) {
   const settled = agent === 'codex' ? { type: 'event_msg', payload: { type: 'task_complete', turn_id: 'fixture' } }
     : agent === 'claude' ? { type: 'assistant', message: { role: 'assistant', stop_reason: 'end_turn' } }
       : { type: 'message', message: { role: 'assistant', stopReason: 'stop' } };
-  writeFileSync(transcript, JSON.stringify({ ...settled, timestamp: new Date().toISOString() }) + '\n');
+  writeFileSync(transcript, JSON.stringify({ ...settled, id: 'fixture-complete', uuid: 'fixture-complete',
+    timestamp: new Date().toISOString() }) + '\n');
   expect(nativeLatestExecution({ agent, env }).phase, `${agent} fixture native root preflight`).toBe('settled');
   const done = hostThroughPty({ command: process.execPath, args: ['-e', code], cwd: root,
     ownerId, env, io: { stdin, stdout }, bridgeTty: false, onExit: () => {} });

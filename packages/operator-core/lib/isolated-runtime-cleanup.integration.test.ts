@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { expect, it } from 'vitest';
 import { captureIsolatedWorker, isolatedWorkerOptions, recordIsolatedIntegrationProof } from '../test/isolated-integration-proof';
+import { browserCachePath } from '../../../scripts/ensure-playwright-browsers.mjs';
 
 const root = resolve(import.meta.dirname, '../../..');
 const workerOptions = isolatedWorkerOptions(30_000);
@@ -33,6 +34,8 @@ it('pins plain-mode integration setup to its real private PG without injecting p
           const [row] = await sql\`SELECT inet_server_port() AS port, current_user AS role\`;
           assert.equal(String(row.port), process.env.PAPERCUSP_PG_PORT);
           assert.equal(row.role, 'harness_admin');
+          const [sockets] = await sql\`SHOW unix_socket_directories\`;
+          assert.equal(sockets.unix_socket_directories, '');
           console.log('plain-private-admin-control');
         } finally { await sql.end(); }
       })().catch(error => { console.error(error); process.exitCode = 1; });
@@ -61,11 +64,18 @@ it('stops real private PG and removes its runtime after an ordinary child exit',
       const env: NodeJS.ProcessEnv = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', TMPDIR: join(evidenceDir, 'tmp') };
       delete env.PC_HEAVY_PREEMPT_READY_FILE;
       delete env.PC_HEAVY_PSI_FINALIZATION_FILE;
+      const expectedBrowserCache = browserCachePath(env);
       const child = fork(join(root, 'scripts/with-test-pg.mjs'), [
         '--isolated-runtime', '--', process.execPath, '-e', `
           const assert = require('node:assert/strict');
           const postgres = require('postgres');
           (async () => {
+            const { chromium } = require('playwright-core');
+            const path = require('node:path');
+            assert.equal(process.env.PLAYWRIGHT_BROWSERS_PATH, ${JSON.stringify(expectedBrowserCache)});
+            const browserPath = chromium.executablePath();
+            assert.ok(browserPath.startsWith(process.env.PLAYWRIGHT_BROWSERS_PATH + path.sep), browserPath);
+            assert.ok(!browserPath.startsWith(process.env.XDG_CACHE_HOME + path.sep), browserPath);
             const adminUrl = new URL(process.env.PAPERCUSP_TEST_PG_ADMIN_URL);
             assert.ok(['localhost', '127.0.0.1', '[::1]'].includes(adminUrl.hostname));
             assert.equal(adminUrl.port, process.env.PAPERCUSP_PG_PORT);
@@ -75,6 +85,8 @@ it('stops real private PG and removes its runtime after an ordinary child exit',
               const [row] = await sql\`SELECT inet_server_port() AS port, current_user AS role\`;
               assert.equal(String(row.port), process.env.PAPERCUSP_PG_PORT);
               assert.equal(row.role, 'harness_admin');
+              const [sockets] = await sql\`SHOW unix_socket_directories\`;
+              assert.equal(sockets.unix_socket_directories, '');
               console.log('private-integration-admin-control');
             } finally { await sql.end(); }
             console.log('isolated-cleanup-control');

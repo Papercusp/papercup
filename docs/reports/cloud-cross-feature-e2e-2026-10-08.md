@@ -216,9 +216,23 @@ adequacy. A fresh copy-out overlay probe removes only the lesson's
 `sendToSessionOwner(ownerId, request.prompt)` call. It selects the maintained
 GCP restored-workspace lifecycle case, with dedicated Vite port 39311 and an
 original baseline, relocated baseline and mutant phase. The original baseline
-passed one case. The relocated baseline and mutant are still running; no caught
-verdict or adequacy claim is made at this checkpoint. Log:
+(`20962281`) and relocated baseline (`20962288`) each passed one case. The
+mutant (`20962300`) was caught after agent launch and the task-send click: the
+maintained assertion at `cloud-tutorial.spec.ts:267` expected the submitted
+prompt and observed an empty prompt. The runner verified that the shared source
+stayed byte-identical. Mutation binding `33272` records this task-dispatch proof.
+Log:
 `/tmp/cloud-e2e-20261009-task-dispatch-probe.log`.
+
+The complete current Cloud Chromium suite then passed **15 cases**, exit 0,
+row `20962319`, group `cloud-e2e-20261009-complete-restored-task`, recorded
+commit `bf8c3d1927dac3d7a48e1f904f9f339aaf5c9933` with a dirty worktree.
+Browser binding `33281` replaces stale historical binding `31951`.
+Server measurement confirms the existing Postgres restore proof remains current;
+it was reused without rerunning the database matrix. The exact `JOURNEY-P-002@1`
+adequacy evaluation now passes every applicable criterion. Canonical scorecard
+`EI-25531307051170061` is emitted and awaits its independent grading audit;
+`P-002` remains open until that audit permits completion.
 
 `P-003` is blocked by `P-002`. A current GCP-compatible artifact and complete
 hosted/provider task, reconnect and teardown receipts remain required. The
@@ -237,3 +251,18 @@ No current-campaign cloud resources were created in this continuation, and no
 shipment was claimed. The next native attempt requires a pre-run audit of the
 source-lock and byte-matched input admission failures already observed; it must
 preserve the isolated database and exact source/binary provenance contract.
+Fresh native run `20261009T192544Z-186149` passed source-input admission but
+failed the automatic artifact disk preflight: `/tmp` had about 5 GB free versus
+the required 10 GB. Boot and assertions were blocked. A supported `TMPDIR` route
+on `/mnt/backup` was measured at about 439 GiB available. The current native
+retry selects its source ref after heavy-slot admission, retains the byte checks
+and isolated ready database, and uses that filesystem. Run
+`20261009T192834Z-301339` passed prepare, then failed before desktop startup:
+the native Cargo target's filesystem had about 1 GB free versus the required
+65 GB cold-build capacity. Its assertion phase was blocked. Both native storage
+budgets must pass before a further attempt. The maintained wrapper respects an
+explicit `CARGO_TARGET_DIR`; a new campaign-owned private target on `/mnt/backup`
+now has both the 65 GB Cargo and 10 GB artifact checks before source preparation.
+No native pass is established yet.
+Log: `/tmp/cloud-e2e-20261009-native-backup-tmp.log`.
+Current attempt log: `/tmp/cloud-e2e-20261009-native-private-cargo.log`.

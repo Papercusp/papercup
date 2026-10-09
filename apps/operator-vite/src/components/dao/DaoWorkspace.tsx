@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { DaoWorkspaceView } from '@papercusp/operator-core/lib/dao-workspace-types';
+import { switchWorkspace } from '@papercusp/operator-core/lib/workspaces-tauri';
 import { parseAsString, useQueryState } from 'nuqs';
 import { onSyncBusEvent, useSyncQuery } from '@papercusp/sync';
 import RouteLink from '@/app/_components/RouteLink';
+import type { CloudWorkspacesControlRow } from '@/app/cloud-workspaces/workspace-view-model';
 import { DAO_SECTIONS, daoSection, filterDaos, type DaoDirectoryEntry } from './dao-navigation';
 import DaoWorkspaceDetails from './DaoWorkspaceDetails';
 import './dao-workspace.css';
@@ -11,10 +13,20 @@ export default function DaoWorkspace() {
   const [selectedDao, setSelectedDao] = useQueryState('dao', parseAsString.withDefault(''));
   const [selectedSection, setSelectedSection] = useQueryState('daoSection', parseAsString.withDefault('directory'));
   const { data, error, invalidate } = useSyncQuery({ queryName: 'network.hiveDirectory', args: { includeLocalViews: true } });
-  const rows = (data as DaoDirectoryEntry[] | undefined) ?? [];
+  const { data: hostData, error: hostError, invalidate: invalidateHosts } = useSyncQuery({ queryName: 'workspaceHosts.control', args: {} });
+  const rows = useMemo<DaoDirectoryEntry[]>(() => [
+    ...((data as DaoDirectoryEntry[] | undefined) ?? []),
+    ...((hostData as CloudWorkspacesControlRow[] | undefined) ?? []).filter(row => row.kind === 'workspace').map<DaoDirectoryEntry>(host => ({
+      potId: 'host:' + host.id, workspaceHostId: host.id, title: host.name,
+      description: [host.target, host.region].filter(Boolean).join(' · '),
+      owner: 'Local', visibility: 'invite', source: 'local', memberLinks: [], memberTopics: [], memberCount: 0,
+    })),
+  ], [data, hostData]);
+  const organizations = rows.filter(row => row.workspaceId === undefined && row.workspaceHostId === undefined);
+  const directoryReady = data !== undefined && hostData !== undefined;
   const sectionId = daoSection(selectedSection);
   const section = DAO_SECTIONS.find(value => value.id === sectionId)!;
-  const selected = rows.find(row => row.potId === selectedDao);
+  const selected = organizations.find(row => row.potId === selectedDao);
   const [query, setQuery] = useState('');
   const [joining, setJoining] = useState(false);
   const [notice, setNotice] = useState('');
@@ -34,7 +46,7 @@ export default function DaoWorkspace() {
     const initialRead = loadedDao.current !== selectedDao;
     if (initialRead) setWorkspace(null);
     setWorkspaceError('');
-    if (!selectedDao) { setWorkspaceLoading(false); return; }
+    if (!selectedDao || !selected) { setWorkspaceLoading(false); return; }
     const controller = new AbortController();
     if (initialRead) setWorkspaceLoading(true);
     void (async () => {
@@ -50,12 +62,17 @@ export default function DaoWorkspace() {
       }
     })();
     return () => controller.abort();
-  }, [selectedDao, refreshVersion]);
+  }, [selectedDao, Boolean(selected), refreshVersion]);
 
-  function refresh() { invalidate(); setRefreshVersion(value => value + 1); }
+  function refresh() { invalidate(); invalidateHosts(); setRefreshVersion(value => value + 1); }
 
   async function choose(row: DaoDirectoryEntry) {
     setNotice('');
+    if (row.workspaceId !== undefined) {
+      try { await switchWorkspace(row.workspaceId); }
+      catch (cause) { setNotice(cause instanceof Error ? cause.message : 'Unable to open this workspace. Try again.'); }
+      return;
+    }
     setAcceptedTerms(false);
     await setSelectedDao(row.potId);
     await setSelectedSection('overview');
@@ -89,7 +106,7 @@ export default function DaoWorkspace() {
             void setSelectedDao(event.target.value); setAcceptedTerms(false); setNotice('');
           }}>
             <option value="">Choose an organization</option>
-            {rows.map(row => <option key={row.potId} value={row.potId}>{row.title}</option>)}
+            {organizations.map(row => <option key={row.potId} value={row.potId}>{row.title}</option>)}
           </select>
         </label>
         <nav aria-label="DAO sections">
@@ -104,24 +121,25 @@ export default function DaoWorkspace() {
         </nav>
       </aside>
       <main className="dao-main">
-        <header className="dao-page-header"><div><p className="dao-eyebrow">{selected?.title ?? 'DAO network'} / {section.group}</p>
+        <header className="dao-page-header"><div><p className="dao-eyebrow">{selected?.title ?? 'Workspace network'} / {section.group}</p>
           <h1>{section.label}</h1><p>{section.description}</p></div>
           <div className="dao-actions"><RouteLink href="/dao" className="dao-action">Launch a DAO</RouteLink><button type="button" className="dao-action" onClick={refresh}>Refresh</button></div>
         </header>
         {notice && <div role="status" className="dao-notice">{notice}</div>}
-        {error ? <div role="alert" className="dao-notice">Unable to load the DAO directory. <button type="button" onClick={() => invalidate()}>Try again</button></div> : null}
-        {data === undefined && !error ? <p role="status">Loading discovered organizations…</p> : null}
+        {error ? <div role="alert" className="dao-notice">Unable to load the workspace directory. <button type="button" onClick={() => invalidate()}>Try again</button></div> : null}
+        {hostError ? <div role="alert" className="dao-notice">Unable to load cloud workspaces. <button type="button" onClick={() => invalidateHosts()}>Try again</button></div> : null}
+        {!directoryReady && !error && !hostError ? <p role="status">Loading discovered workspaces…</p> : null}
         {sectionId === 'directory' ? <>
-          <label className="dao-search">Search organizations<input type="search" value={query} onChange={event => setQuery(event.target.value)} placeholder="Name, purpose or founder" /></label>
+          <label className="dao-search">Search workspaces<input type="search" value={query} onChange={event => setQuery(event.target.value)} placeholder="Workspace, DAO, purpose or founder" /></label>
           <div className="dao-directory">
             {filtered.map(row => <article className="dao-card" key={row.potId}>
-              <div className="dao-card-heading"><span className="dao-avatar" aria-hidden="true">{row.title.slice(0, 1)}</span><span className="dao-badge">{row.source === 'local' ? 'Local workspace' : row.visibility === 'invite' ? 'Invite only' : 'Public'}</span></div>
-              <h2>{row.title}</h2><p>{row.description || 'No organization description published yet.'}</p>
-              <dl><div><dt>Published by</dt><dd>{row.owner}</dd></div><div><dt>Linked projects</dt><dd>{row.memberCount}</dd></div></dl>
-              <button type="button" className="dao-action" onClick={() => { void choose(row); }}>Open workspace →</button>
+              <div className="dao-card-heading"><span className="dao-avatar" aria-hidden="true">{row.title.slice(0, 1)}</span><span className="dao-badge">{row.workspaceHostId !== undefined ? 'Cloud workspace' : row.workspaceId !== undefined ? 'Workspace' : row.source === 'local' ? 'Local DAO' : row.visibility === 'invite' ? 'Invite-only DAO' : 'Public DAO'}</span></div>
+              <h2>{row.title}</h2><p>{row.description || (row.workspaceId !== undefined || row.workspaceHostId !== undefined ? 'Open this workspace to view its projects and activity.' : 'No organization description published yet.')}</p>
+              {row.workspaceId === undefined && row.workspaceHostId === undefined ? <dl><div><dt>Published by</dt><dd>{row.owner}</dd></div><div><dt>Linked projects</dt><dd>{row.memberCount}</dd></div></dl> : null}
+              {row.workspaceHostId !== undefined ? <RouteLink href={'/cloud-workspaces?host=' + encodeURIComponent(row.workspaceHostId)} className="dao-action">Open workspace →</RouteLink> : <button type="button" className="dao-action" onClick={() => { void choose(row); }}>Open workspace →</button>}
             </article>)}
           </div>
-          {data !== undefined && !error && !filtered.length ? <div className="dao-empty"><h2>{query ? 'No matching organizations' : 'No DAOs discovered yet'}</h2><p>{query ? 'Try another name or purpose.' : 'Organizations published to this peer’s directory will appear here.'}</p></div> : null}
+          {directoryReady && !error && !hostError && !filtered.length ? <div className="dao-empty"><h2>{query ? 'No matching workspaces' : 'No workspaces discovered yet'}</h2><p>{query ? 'Try another name or purpose.' : 'Registered workspaces, cloud workspaces and published DAOs will appear here.'}</p></div> : null}
         </> : !selected ? (data !== undefined && !error ? <div className="dao-empty"><h2>{selectedDao ? 'This organization is not listed in this directory' : 'Choose an organization'}</h2><p>Select a DAO to open its workspace.</p><button type="button" className="dao-action" onClick={() => { void setSelectedSection('directory'); }}>Browse DAOs</button></div> : null) : <>
           {sectionId === 'overview' ? <div className="dao-overview-grid">
             <section className="dao-card dao-purpose"><p className="dao-eyebrow">Organization</p><h2>{selected.title}</h2><p>{selected.description || 'No purpose published yet.'}</p><div className="dao-meta">Published by {selected.owner} · {selected.visibility}</div></section>

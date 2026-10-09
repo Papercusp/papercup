@@ -240,12 +240,64 @@ describe('loop:arm — ambient workspace transaction safety (EI-2022433480303864
 });
 
 type Out = { content: { text: string }[] };
-const call = (args: Record<string, unknown>) =>
+const call = (args: Record<string, unknown>, context: Record<string, unknown> = {}) =>
   tool.handler(
     { intervalSec: 120, goal: 'g', ...args } as never,
-    { harnessSlug: 'papercusp' } as never,
+    { harnessSlug: 'papercusp', ...context } as never,
   ) as Promise<Out>;
 const body = (o: Out) => JSON.parse(o.content[0]!.text);
+
+describe('loop:arm — awaited helper timings', () => {
+  it('emits a cumulative named timing snapshot through ctx.metadata', async () => {
+    const metadata = vi.fn();
+    selfCompactionM.mockImplementationOnce(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      return { available: true, reason: null, host: {} as never };
+    });
+    const out = body(await call({ carry: 'cold' }, { metadata }));
+
+    expect(out.ok).toBe(true);
+    expect(metadata).toHaveBeenCalled();
+    const recorded = metadata.mock.calls.at(-1)?.[0] as {
+      loopArmStages?: {
+        schemaVersion: string;
+        unit: string;
+        stages: Array<{ name: string; durationMs: number; elapsedMs: number }>;
+      };
+    };
+    expect(recorded.loopArmStages).toMatchObject({
+      schemaVersion: 'loop-arm-stage-timings-v1',
+      unit: 'ms',
+    });
+    const stages = recorded.loopArmStages!.stages;
+    const names = stages.map((stage) => stage.name);
+    expect(names).toEqual(
+      expect.arrayContaining([
+        'feature_flag',
+        'resolve_wake_mode',
+        'read_active_loop_facts',
+        'main_wait_plan_review',
+        'cold_carry_note_read',
+        'cold_carry_host_discovery',
+        'materialize_loop',
+        'refresh_loop_control_anchor',
+        'arm_inbox_wake',
+        'probe_wake_reachability',
+        'acceptance_plane_advisory',
+      ]),
+    );
+    expect(stages.length).toBe(metadata.mock.calls.length);
+    for (const stage of stages) {
+      expect(Number.isFinite(stage.durationMs)).toBe(true);
+      expect(stage.durationMs).toBeGreaterThanOrEqual(0);
+      expect(Number.isFinite(stage.elapsedMs)).toBe(true);
+    }
+    expect(stages.find((stage) => stage.name === 'cold_carry_host_discovery')?.durationMs).toBeGreaterThanOrEqual(20);
+    expect(stages.indexOf(stages.find((stage) => stage.name === 'materialize_loop')!)).toBeLessThan(
+      stages.indexOf(stages.find((stage) => stage.name === 'refresh_loop_control_anchor')!),
+    );
+  });
+});
 
 describe('loop:arm — owner-directed pause guard (EI-24188436415268799)', () => {
   it('refuses to rearm a target whose effective wake mode is manual', async () => {

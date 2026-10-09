@@ -102,7 +102,7 @@ export async function launchBrowserProcess(ctx: UnifiedToolContext, root: string
   try {
     server = await browserStartupStage(ctx, 'chromium-launch', () => chromium.launchServer({ executablePath: wrapper, headless: true, host: '127.0.0.1', timeout: remaining(),
       env: { ...scrubExecEnv(process.env), TMPDIR: root },
-      args: ['--force-webrtc-ip-handling-policy=disable_non_proxied_udp', '--disable-features=WebTransport'] }));
+      args: ['--force-webrtc-ip-handling-policy=disable_non_proxied_udp', '--disable-features=WebTransport', '--enable-logging=stderr'] }));
     const child = server.process();
     const spawned = markSpawned(row.taskId, { pid: child.pid, processIdentity: child.pid ? readProcessIdentity(child.pid) : null,
       confined: false, unconfinedReason: 'SDK process group; execution sandbox is reported separately' });

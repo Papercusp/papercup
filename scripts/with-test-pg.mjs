@@ -36,6 +36,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ensurePapercuspTmpdir, tmpdirHasCriticalHeadroom } from '../libs/test-config/src/tmpdir-guard.ts';
+import { browserCachePath } from './ensure-playwright-browsers.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -217,7 +218,11 @@ async function main() {
 console.log(`[with-test-pg] booting throwaway PG on :${port} (datadir ${dataDir})`);
 console.log(`[with-test-pg] migrations: ${sqlDir}`);
 
-pg = await startEmbeddedPostgresServer({ dataDir, port, dbSqlDir: sqlDir, onLog: message => {
+pg = await startEmbeddedPostgresServer({ dataDir, port, dbSqlDir: sqlDir,
+  // Every fixture client uses its explicit TCP URL. Avoid an unused socket
+  // lock on /tmp, which may be full even when the private data volume is ready.
+  extraPostgresSettings: { unix_socket_directories: '' },
+  onLog: message => {
     // Preserve boot/migration progress as well as shutdown. A deadline before
     // start() returns otherwise erases the stage that actually consumed it.
     console.log('[with-test-pg] pg ' + String(message));
@@ -297,6 +302,10 @@ if (runtimeRoot && runtimeId) {
     XDG_CACHE_HOME: join(runtimeRoot, 'xdg-cache'),
     XDG_CONFIG_HOME: join(runtimeRoot, 'xdg-config'),
     XDG_RUNTIME_DIR: join(runtimeRoot, 'xdg-runtime'),
+    // Browser installations are maintained executable assets, not mutable
+    // operator state. Pin their original cache before isolating HOME/XDG;
+    // otherwise Playwright silently resolves an empty runtime-local cache.
+    PLAYWRIGHT_BROWSERS_PATH: browserCachePath(process.env),
     TMPDIR: join(runtimeRoot, 'tmp'),
   };
 }

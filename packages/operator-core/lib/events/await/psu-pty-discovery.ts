@@ -1337,6 +1337,11 @@ export function injectIntoHostWithConfirmation(
     mode: string;
     data: string;
     force?: boolean;
+    expectedStartedAt?: number;
+    requireNativeTurnStart?: boolean;
+    expectedChildGeneration?: number;
+    expectedHostStartedAt?: number;
+    provenanceIssuedAtMs?: number;
     focus?: string;
     systemPromptAddendum?: string;
     sourceTranscriptPath?: string;
@@ -1359,6 +1364,11 @@ export function injectIntoHostWithConfirmation(
     data: msg.data,
   };
   if (msg.force !== undefined) envelope.force = msg.force;
+  if (msg.expectedStartedAt !== undefined) envelope.expectedStartedAt = msg.expectedStartedAt;
+  if (msg.requireNativeTurnStart !== undefined) envelope.requireNativeTurnStart = msg.requireNativeTurnStart;
+  if (msg.expectedChildGeneration !== undefined) envelope.expectedChildGeneration = msg.expectedChildGeneration;
+  if (msg.expectedHostStartedAt !== undefined) envelope.expectedHostStartedAt = msg.expectedHostStartedAt;
+  if (msg.provenanceIssuedAtMs !== undefined) envelope.provenanceIssuedAtMs = msg.provenanceIssuedAtMs;
   if (msg.focus !== undefined) envelope.focus = msg.focus;
   if (msg.systemPromptAddendum !== undefined) envelope.systemPromptAddendum = msg.systemPromptAddendum;
   if (msg.sourceTranscriptPath !== undefined) envelope.sourceTranscriptPath = msg.sourceTranscriptPath;

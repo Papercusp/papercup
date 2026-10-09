@@ -314,7 +314,8 @@ export function summarizePreservedRun(
  */
 export type PreservedRunInspection =
   | { kind: 'valid'; detail: PreservedRunDetail }
-  | { kind: 'unavailable' | 'invalid'; reason: string };
+  | { kind: 'unavailable'; reason: string }
+  | { kind: 'invalid'; reason: string };
 
 /** Distinguish invalid archive content from unavailable evidence before repairing stored history. */
 export function inspectPreservedRun(

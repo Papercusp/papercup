@@ -389,6 +389,18 @@ describe('injectIntoHost — application-level ACK (EI-18676244363359331 / WI-58
 });
 
 describe('injectIntoHostWithConfirmation — WHY a true happened (WI-6862)', () => {
+  it.each([
+    { expectedStartedAt: 100, requireNativeTurnStart: true, expectedChildGeneration: 2,
+      expectedHostStartedAt: 200, provenanceIssuedAtMs: 300 },
+    { expectedStartedAt: 0, requireNativeTurnStart: false, expectedChildGeneration: 0,
+      expectedHostStartedAt: 0, provenanceIssuedAtMs: 0 },
+    {},
+  ])('preserves optional native proof and generation fences on the real socket: %j', async fields => {
+    const { sock, received } = startSocket(tmpDir(), 'native-fences');
+    await injectIntoHostWithConfirmation(sock, { mode: 'turn', data: 'continue', ...fields });
+    expect(JSON.parse(await received)).toEqual({ v: 1, mode: 'turn', data: 'continue', ...fields });
+  });
+
   it('reports an explicit {ok:true} ack as CONFIRMED by the host', async () => {
     const dir = tmpDir();
     const { sock } = startAckingSocket(dir, 'conf-ok', { ok: true, reason: 'delivered' });

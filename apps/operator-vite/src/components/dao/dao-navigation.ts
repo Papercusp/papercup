@@ -1,5 +1,5 @@
 export const DAO_SECTIONS = [
-  { id: 'directory', label: 'Discover DAOs', group: 'Community', description: 'Find communities and choose where to contribute.' },
+  { id: 'directory', label: 'Discover workspaces', group: 'Community', description: 'Browse workspaces and DAOs. A workspace does not need to belong to a DAO.' },
   { id: 'overview', label: 'Overview', group: 'Community', description: 'Your organization, its purpose and what needs attention.' },
   { id: 'join', label: 'Membership', group: 'Community', description: 'Review admission and join a discovered organization.' },
   { id: 'members', label: 'Members', group: 'Community', description: 'People, roles and membership permissions.' },
@@ -35,6 +35,8 @@ export interface DaoDirectoryEntry {
   memberTopics: string[];
   memberCount: number;
   source?: 'local';
+  workspaceId?: string;
+  workspaceHostId?: string;
 }
 
 /** Discovery's count is linked projects, not people, votes, assets or equity. */

@@ -266,6 +266,16 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     expect(git(dest, ['ls-files', '--recurse-submodules'])).toContain('libs/papercusp/package.json');
     expect(git(dest, ['remote'])).toBe('');
     await expect(verifyVerifierSource(dest, receipt)).resolves.toEqual(receipt);
+    expect(git(dest, ['status', '--porcelain', '--untracked-files=all'])).toBe('');
+    writeFileSync(join(dest, 'unexpected-source.ts'), 'export const unexpected = true;\n');
+    expect(git(dest, ['status', '--porcelain', '--untracked-files=all'])).toContain('?? unexpected-source.ts');
+    await expect(verifyVerifierSource(dest, receipt)).rejects.toThrow('extra unexpected-source.ts');
+    rmSync(join(dest, 'unexpected-source.ts'));
+    writeFileSync(join(dest, '.verifier-source.json'), '{}');
+    expect(git(dest, ['status', '--porcelain', '--untracked-files=all'])).toBe('');
+    await expect(verifyVerifierSource(dest, receipt)).rejects.toThrow('tampered verification source manifest');
+    writeFileSync(join(dest, '.verifier-source.json'), JSON.stringify(receipt));
+    await expect(verifyVerifierSource(dest, receipt)).resolves.toEqual(receipt);
 
     // Source-byte identity alone cannot detect a changed index.
     git(dest, ['rm', '--cached', '--', input]);

@@ -61,6 +61,26 @@ function fakeSql(rows: Record<string, unknown>[], updates: unknown[][]): Sql {
   }) as unknown as Sql;
 }
 
+describe('reconcileLoopRoutines — expected execution recovery accounting', () => {
+  it.each([true, false])('reports only a recovery that rearmed the durable schedule: %s', async rearmed => {
+    const nowMs = 1_792_000_000_000;
+    const updates: unknown[][] = [];
+    const sql = fakeSql([{ id: 'rt-recovery', target_owner_id: 'su-recovery', interval_sec: 60,
+      parked: true, install_slug: 'papercusp', name: 'loop-su-recovery',
+      routine_workspace_id: 'ws-test', last_fired_at: new Date(nowMs - 60_000).toISOString() }], updates);
+    const recoverExpectedExecution = vi.fn(async () => ({ handled: true, rearmed, state: {
+      status: 'recovering' as const, reason: 'native-turn-failed', attempts: 1, probes: 0,
+      observedAt: nowMs, nextProbeAt: nowMs + 30_000, generation: 'host:1:child', lastAttemptAt: nowMs,
+    } }));
+    const result = await reconcile({ sql, nowMs, recoverExpectedExecution });
+    expect(recoverExpectedExecution).toHaveBeenCalledWith({ sql, routineId: 'rt-recovery', ownerId: 'su-recovery', nowMs });
+    expect(result.rearmed).toBe(rearmed ? 1 : 0);
+    expect(result.loops).toEqual(rearmed ? [{ id: 'rt-recovery', targetOwnerId: 'su-recovery',
+      completedAt: nowMs, nextFireAt: nowMs + 30_000, via: 'execution-recovery' }] : []);
+    expect(updates).toHaveLength(0);
+  });
+});
+
 describe('reconcileLoopRoutines — string-typed timestamptz columns (pooled prepare:false connection, EI-2549)', () => {
   const T0 = 1_782_000_000_000;
   // The exact shape postgres-js yields on a prepare:false connection: a raw PG timestamp string.

@@ -32,6 +32,9 @@ import type { PriceTable } from './pricing';
 import { DEFAULT_PRICE_TABLE } from './pricing';
 
 export interface AggregateOpts {
+  /** Frozen task/seed assignment; tasks absent from every arm still count. */
+  assignedTaskIds?: readonly string[];
+  assignedSeeds?: readonly number[];
   priceTable?: PriceTable;
   /** The k's the pass@k / pass^k protocol reports (same for every arm). Default [1, 3]. */
   protocolKs?: number[];
@@ -71,11 +74,35 @@ export function aggregateArm(
 ): ArmReport {
   const ks = opts.protocolKs ?? DEFAULT_KS;
   const ci = opts.ci ?? 0.95;
-  const counts = perTaskCounts(rows);
+  const conditionalCounts = perTaskCounts(rows);
+  const conditionalPassAt1 = conditionalCounts.length === 0 ? 0
+    : conditionalCounts.reduce((sum, t) => sum + t.c / t.n, 0) / conditionalCounts.length;
+  const assignedIds = [...new Set(opts.assignedTaskIds ?? rows.map(row => row.taskId))];
+  const assignedSeeds = opts.assignedSeeds ? new Set(opts.assignedSeeds) : null;
+  if (rows.some(row => !assignedIds.includes(row.taskId) || (assignedSeeds && !assignedSeeds.has(row.seed)))) {
+    throw new Error('aggregateArm: result outside frozen task/seed assignment');
+  }
+  const byTask = new Map(assignedIds.map(id => [id, { n: assignedSeeds?.size ?? 0, c: 0, observed: 0 }]));
+  let missingMeasurements = 0;
+  const seen = new Set<string>();
+  for (const row of rows) {
+    const identity = JSON.stringify([row.taskId, row.seed]);
+    if (seen.has(identity)) throw new Error('aggregateArm: duplicate task/seed result');
+    seen.add(identity);
+    const task = byTask.get(row.taskId)!;
+    task.observed += 1;
+    if (!assignedSeeds) task.n += 1;
+    if (isScored(row) && row.resolved === true) task.c += 1;
+    if (row.generationStatus !== 'error' && row.generationStatus !== 'timeout' &&
+        (row.graderStatus === 'error' || row.graderStatus === 'timeout' ||
+          (row.resolved == null && row.score == null))) missingMeasurements += 1;
+  }
+  const counts = [...byTask.values()].map(task => ({ ...task, n: Math.max(task.n, 1) }));
 
   // pass@1 = mean over tasks of c/n (== meanPassAtK at k=1); CI bootstrapped over tasks.
   const perTaskPass1 = counts.map((t) => t.c / t.n);
-  const passAt1 = perTaskPass1.length === 0 ? 0 : perTaskPass1.reduce((a, b) => a + b, 0) / perTaskPass1.length;
+  const passAt1 = missingMeasurements > 0 ? null
+    : perTaskPass1.length === 0 ? 0 : perTaskPass1.reduce((a, b) => a + b, 0) / perTaskPass1.length;
   const passAt1Ci = bootstrapMeanCI(perTaskPass1, {
     ci,
     seed: opts.bootstrapSeed ?? DEFAULT_SEED,
@@ -101,7 +128,11 @@ export function aggregateArm(
     arm,
     suite,
     tasks: counts.length,
-    attempts: rows.filter(isScored).length,
+    attempts: rows.length,
+    gradedAttempts: rows.filter(isScored).length,
+    absentTasks: [...byTask.values()].filter(task => task.observed === 0).length,
+    missingMeasurements,
+    conditionalPassAt1,
     infraErrors: rows.filter((r) => !isScored(r)).length,
     cappedRuns: rows.filter((r) => r.capped).length,
     budgetTokens,
@@ -157,19 +188,20 @@ export function buildSuiteReport(rows: readonly TaskRunResult[], opts: Aggregate
   const ks = opts.protocolKs ?? DEFAULT_KS;
 
   const armIds = [...new Set(rows.map((r) => r.arm))];
+  const assignedTaskIds = opts.assignedTaskIds ?? [...new Set(rows.map(row => row.taskId))];
   const arms = armIds.map((arm) =>
     aggregateArm(
       rows.filter((r) => r.arm === arm),
       suite,
       arm,
-      opts,
+      { ...opts, assignedTaskIds },
     ),
   );
 
   // Cost/accuracy Pareto: accuracy = pass@1, cost = mean $ per task-attempt.
-  const rawPoints = arms.map((a) => ({
+  const rawPoints = arms.filter((a) => a.passAt1 != null).map((a) => ({
     arm: a.arm,
-    accuracy: a.passAt1,
+    accuracy: a.passAt1!,
     cost: a.attempts === 0 ? 0 : a.cost.costUsd / a.attempts,
     costPerResolved: a.cost.costPerResolved,
   }));
@@ -182,10 +214,11 @@ export function buildSuiteReport(rows: readonly TaskRunResult[], opts: Aggregate
   const byArm = new Map(arms.map((a) => [a.arm, a]));
   const treatment = byArm.get(treatmentArm);
   const deltas: ArmDelta[] = [];
-  if (treatment) {
+  if (treatment && treatment.passAt1 != null) {
     const tPoint = rawPoints.find((p) => p.arm === treatmentArm)!;
     for (const a of arms) {
       if (a.arm === treatmentArm) continue;
+      if (a.passAt1 == null) continue;
       const bPoint = rawPoints.find((p) => p.arm === a.arm)!;
       deltas.push({
         suite,

@@ -7,11 +7,17 @@ import DaoWorkspace from './DaoWorkspace';
 
 let data: DaoDirectoryEntry[] | undefined;
 let queryError: unknown = null;
+let hostData: unknown[] | undefined = [];
+let hostError: unknown = null;
+const invalidateHosts = vi.fn();
 let initialDao = '';
 let initialSection = 'directory';
 const invalidate = vi.fn();
+const switchWorkspace = vi.hoisted(() => vi.fn());
+vi.mock('@papercusp/operator-core/lib/workspaces-tauri', () => ({ switchWorkspace }));
 let busListener: ((event: { name: string }) => void) | undefined;
-vi.mock('@papercusp/sync', () => ({ useSyncQuery: () => ({ data, error: queryError, invalidate }),
+vi.mock('@papercusp/sync', () => ({ useSyncQuery: ({ queryName }: { queryName: string }) => queryName === 'workspaceHosts.control'
+  ? { data: hostData, error: hostError, invalidate: invalidateHosts } : { data, error: queryError, invalidate },
   onSyncBusEvent: (listener: typeof busListener) => { busListener = listener; return () => { busListener = undefined; }; } }));
 vi.mock('nuqs', () => ({
   parseAsString: { withDefault: () => ({}) },
@@ -19,9 +25,12 @@ vi.mock('nuqs', () => ({
 }));
 vi.mock('@/app/_components/RouteLink', () => ({ default: ({ href, children }: { href: string; children: React.ReactNode }) => <a href={href}>{children}</a> }));
 const community: DaoDirectoryEntry = { potId: 'builders', title: 'Builders DAO', description: 'Build public infrastructure', owner: 'Founder', visibility: 'public', memberLinks: ['papercusp://harness?topic=project'], memberTopics: ['project'], memberCount: 1 };
+const standalone: DaoDirectoryEntry = { potId: 'workspace:personal', workspaceId: 'personal', title: 'Personal work', description: '', owner: 'Local', visibility: 'invite', source: 'local', memberLinks: [], memberTopics: [], memberCount: 0 };
 
 beforeEach(() => {
   data = [community]; initialDao = ''; initialSection = 'directory'; queryError = null; invalidate.mockReset();
+  hostData = []; hostError = null; invalidateHosts.mockReset();
+  switchWorkspace.mockReset(); switchWorkspace.mockResolvedValue(undefined);
   vi.stubGlobal('fetch', vi.fn().mockImplementation(async (url: string) => ({ ok: true, json: async () => ({ workspace: { directoryId: new URL(url, 'http://local').searchParams.get('potId'), localHomeSlug: null, status: 'not-joined' } }) })));
 });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
@@ -38,7 +47,7 @@ describe('DAO Workbench journeys', () => {
   it('searches published organization information', () => {
     render(<DaoWorkspace />);
     fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'no matches' } });
-    expect(screen.getByRole('heading', { name: 'No matching organizations' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'No matching workspaces' })).toBeTruthy();
     fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'infrastructure' } });
     expect(screen.getByRole('heading', { name: 'Builders DAO' })).toBeTruthy();
   });
@@ -46,21 +55,21 @@ describe('DAO Workbench journeys', () => {
     data = undefined; queryError = new Error('offline');
     render(<DaoWorkspace />);
     expect(screen.getByRole('alert').textContent).toContain('Unable to load');
-    expect(screen.queryByText('No DAOs discovered yet')).toBeNull();
+    expect(screen.queryByText('No workspaces discovered yet')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
     expect(invalidate).toHaveBeenCalledOnce();
   });
   it('does not claim a saved DAO disappeared before the directory loads', () => {
     data = undefined; initialDao = community.potId; initialSection = 'members';
     render(<DaoWorkspace />);
-    expect(screen.getByText('Loading discovered organizations…')).toBeTruthy();
+    expect(screen.getByText('Loading discovered workspaces…')).toBeTruthy();
     expect(screen.queryByText('This organization is not listed in this directory')).toBeNull();
   });
   it('does not present a cached empty directory as a fresh absence after an error', () => {
     data = []; queryError = new Error('offline');
     render(<DaoWorkspace />);
     expect(screen.getByRole('alert')).toBeTruthy();
-    expect(screen.queryByText('No DAOs discovered yet')).toBeNull();
+    expect(screen.queryByText('No workspaces discovered yet')).toBeNull();
   });
   it('requires explicit membership consent before invoking the composed join', async () => {
     initialDao = community.potId; initialSection = 'join';
@@ -88,6 +97,62 @@ describe('DAO Workbench journeys', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Join organization' }));
     await waitFor(() => expect(screen.getByRole('status').textContent).toContain('Admission rejected'));
     expect((screen.getByRole('button', { name: 'Join organization' }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('discovers and opens a standalone workspace without treating it as a DAO', async () => {
+    data = [community, standalone];
+    render(<DaoWorkspace />);
+    expect(screen.getByRole('heading', { name: 'Discover workspaces', level: 1 })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Personal work' })).toBeTruthy();
+    expect(screen.queryByRole('option', { name: 'Personal work' })).toBeNull();
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'Personal' } });
+    expect(screen.queryByRole('heading', { name: 'Builders DAO' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Open workspace →' }));
+    await waitFor(() => expect(switchWorkspace).toHaveBeenCalledWith('personal'));
+    expect(fetch).not.toHaveBeenCalled();
+    expect(screen.queryByRole('button', { name: 'Join organization' })).toBeNull();
+  });
+
+  it('surfaces a failed standalone workspace switch so it can be retried', async () => {
+    data = [standalone]; switchWorkspace.mockRejectedValueOnce(new Error('Workspace is unavailable'));
+    render(<DaoWorkspace />);
+    fireEvent.click(screen.getByRole('button', { name: 'Open workspace →' }));
+    await waitFor(() => expect(screen.getByRole('status').textContent).toContain('Workspace is unavailable'));
+    fireEvent.click(screen.getByRole('button', { name: 'Open workspace →' }));
+    await waitFor(() => expect(switchWorkspace).toHaveBeenCalledTimes(2));
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('lists cloud workspaces without DAO membership and links to their existing workspace controls', () => {
+    hostData = [{ kind: 'connection', id: 'connection', label: 'Cloud connection' },
+      { kind: 'workspace', id: 'studio & research', name: 'Research studio', target: 'gcp', region: 'us-central1' }];
+    render(<DaoWorkspace />);
+    expect(screen.getByRole('heading', { name: 'Research studio' })).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: 'Cloud connection' })).toBeNull();
+    expect(screen.queryByRole('option', { name: 'Research studio' })).toBeNull();
+    expect(screen.getByRole('link', { name: 'Open workspace →' }).getAttribute('href')).toBe('/cloud-workspaces?host=studio%20%26%20research');
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'us-central1' } });
+    expect(screen.getByRole('heading', { name: 'Research studio' })).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: 'Builders DAO' })).toBeNull();
+  });
+
+  it('does not report an empty directory while cloud workspaces are loading or unavailable', () => {
+    data = []; hostData = undefined;
+    const view = render(<DaoWorkspace />);
+    expect(screen.getByRole('status').textContent).toContain('Loading discovered workspaces');
+    expect(screen.queryByText('No workspaces discovered yet')).toBeNull();
+    hostError = new Error('offline'); view.rerender(<DaoWorkspace />);
+    expect(screen.getByRole('alert').textContent).toContain('Unable to load cloud workspaces');
+    expect(screen.queryByText('No workspaces discovered yet')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    expect(invalidateHosts).toHaveBeenCalledOnce();
+  });
+
+  it('refreshes both workspace sources', () => {
+    render(<DaoWorkspace />);
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+    expect(invalidate).toHaveBeenCalledOnce();
+    expect(invalidateHosts).toHaveBeenCalledOnce();
   });
 
   it('shows a verified membership roster through the bound organization reader', async () => {

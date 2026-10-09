@@ -154,6 +154,61 @@ async function goal(
 }
 
 describe('goal rubric stewardship SQL', () => {
+  it('reads a preserved goal-owned baseline, verified repair and audited regrade while rejecting foreign and unsettled controls', async () => {
+    const { readGoalRubricStewardship } = await import('../goal-rubric-stewardship');
+    const { proposeRubric } = await import('../rubrics');
+    await goal();
+    const criterion = { key: 'quality', title: 'Quality', model: 'The target meets its quality contract.',
+      method: 'Compare the exact target before and after the verified repair.', driftMarkers: 'A confirmed defect remains.' };
+    const rubric = await proposeRubric({ rubricId: 'stewardship-fixture-quality', title: 'Fixture quality',
+      characteristic: 'quality', criteria: [criterion], status: 'active', by: 'fixture-author' });
+    const meta = await proposeRubric({ rubricId: 'grading-integrity', title: 'Grading integrity fixture',
+      characteristic: 'grading-integrity', criteria: [criterion], status: 'active', by: 'fixture-auditor' });
+    const now = Date.now(), baselineAt = now - 7200_000, repairedAt = now - 3600_000, regradedAt = now - 1800_000;
+    const subject = { kind: 'pot', ref: 'fixture-target' };
+    const card = (rating: string, baselineRef?: string, auditState = 'passed') => ({
+      rubricRef: rubric.rubricId, rubricRevision: rubric.revision, criteriaHash: rubric.criteriaHash,
+      subject, ...(baselineRef ? { baselineRef } : {}),
+      ratings: { quality: { rating, evidence: 'Independent measurement of the same fixture target',
+        ...(rating === 'fail' ? { remediation: 'WI-12' } : {}) } },
+      gradingAudit: { state: auditState, metaRubricRef: meta.rubricId, rubricRevision: meta.revision,
+        criteriaHash: meta.criteriaHash, stampedAt: new Date(baselineAt).toISOString(),
+        auditIssueId: 'EI-fixture-audit', auditor: 'independent-auditor', auditedAt: new Date(regradedAt).toISOString() },
+    });
+    const insertCard = async (id: string, goalId: string | null, at: number, observation: unknown) => {
+      await sql`INSERT INTO harness_shared.work_items
+        (feature_id, workspace_id, harness_slug, item_kind, title, status, created_ts, updated_ts, goal_id, created_by, payload)
+        VALUES (${id}, ${WS}, 'papercusp', 'observation', ${id}, 'open', ${at}, ${at}, ${goalId}, 'independent-grader',
+          ${sql.json({ lane: 'observation', observation } as never)})`;
+    };
+    await insertCard('EI-owned-baseline', GOAL, baselineAt, card('fail'));
+    await sql`INSERT INTO harness_shared.work_items
+      (feature_id, workspace_id, harness_slug, item_kind, title, status, created_ts, updated_ts, closed_ts,
+       goal_id, terminal_owner, authority, payload)
+      VALUES ('WI-12', ${WS}, 'papercusp', 'change', 'Verified fixture repair', 'done', ${baselineAt + 1000},
+        ${repairedAt}, ${repairedAt}, ${GOAL}, 'fixture-builder', 'committed',
+        ${sql.json({ _completionEvidence: { summary: 'Fixture repair verified', testsRun: 'Canonical fixture repair suite',
+          testResult: 'passed', verifiedHow: 'Recurrence guard failed before repair and passed after repair',
+          filesChanged: ['packages/operator-core/lib/goal-rubric-stewardship.test.ts'] } } as never)})`;
+    await insertCard('EI-owned-regrade', GOAL, regradedAt, card('pass', 'EI-owned-baseline'));
+    await insertCard('EI-null-goal', null, regradedAt + 1, card('pass', 'EI-owned-baseline'));
+    await insertCard('EI-other-goal', 'distinct-other-goal', regradedAt + 2, card('pass', 'EI-owned-baseline'));
+    await insertCard('EI-owned-unsettled', GOAL, regradedAt + 3, card('pass', undefined, 'pending'));
+    const reading = await readGoalRubricStewardship({ workspaceId: WS, goalId: GOAL, nowMs: now }, { sql });
+    expect(reading.error).toBeNull();
+    expect(reading.complete).toBe(true);
+    expect(reading.cycles).toEqual(expect.arrayContaining([
+      expect.objectContaining({ scorecardRef: 'EI-owned-regrade', baselineRef: 'EI-owned-baseline',
+        repairRefs: ['WI-12'], status: 'verified' }),
+      expect.objectContaining({ scorecardRef: 'EI-owned-unsettled', status: 'unverified' }),
+    ]));
+    expect(reading.cycles.map(c => c.scorecardRef)).not.toContain('EI-null-goal');
+    expect(reading.cycles.map(c => c.scorecardRef)).not.toContain('EI-other-goal');
+    // The preserved baseline remains readable after a re-grade; it is not superseded.
+    const { listScorecards } = await import('../scorecards');
+    expect((await listScorecards({ issueIds: ['EI-owned-baseline'], limit: 1 })).map(c => c.issueId))
+      .toEqual(['EI-owned-baseline']);
+  });
   it('reads the migrated ledgers and distinguishes absent evidence from a foreign goal card', async () => {
     const { readGoalRubricStewardship } = await import('../goal-rubric-stewardship');
     await goal();

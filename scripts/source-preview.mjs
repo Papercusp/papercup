@@ -476,6 +476,13 @@ export async function prepareVerifierSource({ repo, ref, dest, inputs = [], inpu
     const manifest = { schemaVersion: 'verifier-source-v1', sourceCommit: sha, submodules,
       ...(checkout ? { gitCheckout: checkout } : {}), testedInputs, files: verifierSourceFiles(dest, { gitMetadataPaths }) };
     await fs.writeFile(join(dest, '.verifier-source.json'), `${JSON.stringify(manifest)}\n`, { flag: 'wx' });
+    if (gitCheckout) {
+      // This exporter owns the independent Git directory. Ignore only its
+      // generated receipt, keeping arbitrary untracked source visible to the
+      // ordinary test reporters' before/after Git probes. Receipt integrity is
+      // still checked independently by verifyVerifierSource.
+      await fs.appendFile(join(dest, '.git/info/exclude'), '\n/.verifier-source.json\n');
+    }
     return manifest;
   } catch (error) {
     await fs.rm(dest, { recursive: true, force: true });

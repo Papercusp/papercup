@@ -111,7 +111,7 @@ describe('text predicates over complete census cohorts', () => {
     let admitted: WorkItem[];
     let scanCount: number;
     try {
-      admitted = rows.filter(row => matchesWorkItemClaimSpec(row, specOf(filter)));
+      admitted = rows.filter(row => matchesClaimSpecFilter(claimSpecSubjectFromWorkItem(row), filter));
       scanCount = scans.mock.calls.length;
     } finally {
       scans.mockRestore();
@@ -134,7 +134,7 @@ describe('text predicates over complete census cohorts', () => {
     const corpus = [null, '', 'NONP2P repair', 'P2P_transport', 'federation/repair',
       'x+y_file', 'xxy_file', 'ab', 'a', 'no match', 'federationé'];
     for (const summary of corpus) for (const array of [[], ['relay_file'], ['nonrelay'], ['replication/queue']]) {
-      const subject = claimSpecSubjectFromWorkItem(issueItem({ id: 'EI-refused', title: 'queue repair', summary }));
+      const subject = claimSpecSubjectFromWorkItem(issueItem({ id: 'EI-refused', title: 'queue repair', summary: summary ?? undefined }));
       subject.paths = array;
       const independent = children.some(child => matchesClaimSpecFilter(subject, child));
       expect(matchesClaimSpecFilter(subject, { any: children }), JSON.stringify({ summary, array })).toBe(independent);

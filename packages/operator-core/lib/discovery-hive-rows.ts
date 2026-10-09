@@ -1,7 +1,7 @@
 import { getHiveDirectory } from './hive-directory-deps';
 import { loadHarnessRegistry, type ProjectEntry } from './harness-registry';
 import { getHiveBySlug, type HiveRecord } from './hive-store';
-import { activeWorkspaceId } from './workspace-registry';
+import { activeWorkspaceId, readRegistry } from './workspace-registry';
 import type { DiscoveredHive } from './hive-directory';
 import type { HiveStatusBeacon } from './hive-beacon';
 
@@ -20,6 +20,8 @@ export interface HiveDirectoryBrowseRow {
   beacon?: HiveStatusBeacon;
   /** Only returned to explicitly opted-in local workspace views. */
   source?: 'local';
+  /** A registered workspace opens directly; it does not require a DAO identity. */
+  workspaceId?: string;
 }
 
 function discoveredRow(h: DiscoveredHive): HiveDirectoryBrowseRow {
@@ -99,6 +101,27 @@ export async function buildHiveDirectoryRows(opts: {
       seenHiveIds.add(row.potId);
       if (row.hivePubkey) seenPubkeys.add(row.hivePubkey);
     }
+  }
+
+  // Workspace registration and DAO membership are independent. Reuse the
+  // install's workspace registry without publishing its private local entries.
+  if (opts.includeLocalViews === true) {
+    const workspaces: HiveDirectoryBrowseRow[] = readRegistry().workspaces.map(workspace => ({
+      potId: 'workspace:' + workspace.id,
+      workspaceId: workspace.id,
+      title: workspace.name,
+      description: '',
+      owner: 'Local',
+      visibility: 'invite',
+      hivePubkey: null,
+      memberTopics: [],
+      memberLinks: [],
+      memberCount: 0,
+      source: 'local',
+      createdAt: workspace.createdAt,
+      lastSeenMs: workspace.createdAt,
+    }));
+    rows.push(...workspaces);
   }
 
   return rows;

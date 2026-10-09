@@ -797,6 +797,7 @@ export type RebaseVia =
    *  but the fire-state + wake-delivery writers both remained behind it. No turn
    *  was dispatched, so re-arm promptly instead of waiting for turn-health dwell. */
   | 'claim-dispatch-gap'
+  | 'execution-recovery'
   | 'stuck-backstop'
   /** WI-36792: the loop is parked at 'infinity' and the FIRE-GATE is what is holding it —
    *  re-arm to the moment the gate's own backoff expires. This via records NO fire outcome
@@ -1314,6 +1315,8 @@ export async function reconcileLoopRoutines(
      *  Injectable because the real one reads work-items / presence / fleets through the LIVE
      *  connection, which a hermetic fakeSql test cannot intercept (the EI-7006 leak class). */
     recheckMonitorAuthority?: typeof defaultRecheckMonitorAuthority;
+    /** Current-host recovery is injected in unit tests to avoid live discovery reads. */
+    recoverExpectedExecution?: typeof recoverExpectedLoopExecution;
   } = {},
 ): Promise<LoopRebaseResult> {
   const db = opts.sql ?? getOrgPg().sql;
@@ -1691,9 +1694,17 @@ export async function reconcileLoopRoutines(
       }
 
       // Resolve the re-arm time + provenance.
-      const executionRecovery = await recoverExpectedLoopExecution({ sql: db, routineId: row.id,
+      const executionRecovery = await (opts.recoverExpectedExecution ?? recoverExpectedLoopExecution)({ sql: db, routineId: row.id,
         ownerId: row.target_owner_id, nowMs });
-      if (executionRecovery.handled) continue;
+      if (executionRecovery.handled) {
+        if (executionRecovery.rearmed && executionRecovery.state) {
+          result.rearmed++;
+          result.loops.push({ id: row.id, targetOwnerId: row.target_owner_id,
+            completedAt: executionRecovery.state.observedAt,
+            nextFireAt: executionRecovery.state.nextProbeAt, via: 'execution-recovery' });
+        }
+        continue;
+      }
       let completedAt: number;
       let via: RebaseVia;
       let quickRetry = false;

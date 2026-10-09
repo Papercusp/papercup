@@ -123,6 +123,7 @@ export interface CapabilityAttributionReport {
   capabilities: CapabilityArmAttribution[];
   /** MANDATORY honest-framing lines (D-008/D-011 + fairness C1/C3/C6) — a renderer must surface these. */
   caveats: string[];
+  missingMeasurements?: Array<{ arm: ArmId; taskId: string; seed: number }>;
 }
 
 export interface CapabilityAttributionOpts extends AggregateOpts {
@@ -139,6 +140,7 @@ export interface CapabilityAttributionOpts extends AggregateOpts {
 
 /** Per-(task) accumulated stats for ONE arm, over ALL its rows (infra rows included). */
 interface TaskStats {
+  assignedSeeds?: number;
   /** Seeds that passed generation+grader infra. */
   scoredSeeds: number;
   /** Seeds excluded by infra. */
@@ -152,10 +154,11 @@ interface TaskStats {
 }
 
 /** Accumulate per-task stats for one arm's rows. */
-function armTaskStats(rows: readonly TaskRunResult[]): Map<string, TaskStats> {
+function armTaskStats(rows: readonly TaskRunResult[], assignedSeeds?: readonly number[]): Map<string, TaskStats> {
   const m = new Map<string, TaskStats>();
   for (const r of rows) {
-    const s = m.get(r.taskId) ?? { scoredSeeds: 0, infraSeeds: 0, resolvedSeeds: 0, scoreSum: 0, scoreCountScored: 0 };
+    const s = m.get(r.taskId) ?? { assignedSeeds: assignedSeeds ? new Set(assignedSeeds).size : undefined,
+      scoredSeeds: 0, infraSeeds: 0, resolvedSeeds: 0, scoreSum: 0, scoreCountScored: 0 };
     if (isScored(r)) {
       s.scoredSeeds += 1;
       if (r.resolved === true) s.resolvedSeeds += 1;
@@ -180,7 +183,7 @@ function armTaskStats(rows: readonly TaskRunResult[]): Map<string, TaskStats> {
  */
 function taskValue(stats: TaskStats | undefined, metric: AttributionMetric, sameDenominator: boolean): number | null {
   if (sameDenominator) {
-    const denom = (stats?.scoredSeeds ?? 0) + (stats?.infraSeeds ?? 0);
+    const denom = Math.max((stats?.scoredSeeds ?? 0) + (stats?.infraSeeds ?? 0), stats?.assignedSeeds ?? 0);
     if (denom === 0) return 0; // absent task → false under same-denominator.
     return metric === 'meanScore' ? (stats!.scoreSum) / denom : stats!.resolvedSeeds / denom;
   }
@@ -260,19 +263,25 @@ export function buildCapabilityAttribution(
   const capabilityArms = (opts.capabilityArms ?? armOrder).filter((a) => a !== control);
 
   const controlAgg = aggregateArm(controlRows, suite, control, opts);
-  const controlStats = armTaskStats(controlRows);
+  const controlStats = armTaskStats(controlRows, opts.assignedSeeds);
   const controlCostPerAttempt = costPerAttempt(controlAgg.cost.costUsd, controlAgg.attempts);
+  const missingMeasurements = rows.filter(row => row.generationStatus !== 'error' && row.generationStatus !== 'timeout' &&
+    (row.graderStatus === 'error' || row.graderStatus === 'timeout' || (row.resolved == null && row.score == null)))
+    .map(({ arm, taskId, seed }) => ({ arm, taskId, seed }));
 
   const capabilities: CapabilityArmAttribution[] = [];
   for (const arm of capabilityArms) {
     const armRows = rows.filter((r) => r.arm === arm);
     if (armRows.length === 0) continue;
+    // Grader outages are missing measurements, not Bernoulli failures. Retain
+    // their identities and suppress this comparison until a repaired grade.
+    if (missingMeasurements.some(row => row.arm === control || row.arm === arm)) continue;
     const armAgg = aggregateArm(armRows, suite, arm, opts);
-    const armStats = armTaskStats(armRows);
+    const armStats = armTaskStats(armRows, opts.assignedSeeds);
 
     // The comparison universe = control ∪ capability task ids. Under same-denominator every task in the
     // universe is scored for BOTH arms (infra/absent = 0); under exclude-infra only tasks scored in both count.
-    const universe = new Set<string>([...controlStats.keys(), ...armStats.keys()]);
+    const universe = new Set<string>(opts.assignedTaskIds ?? [...controlStats.keys(), ...armStats.keys()]);
 
     const controlVals: number[] = [];
     const armVals: number[] = [];
@@ -327,7 +336,9 @@ export function buildCapabilityAttribution(
     });
   }
 
-  return { suite, runId, control, metric, sameDenominator, capabilities, caveats: ATTRIBUTION_CAVEATS };
+  return { suite, runId, control, metric, sameDenominator, capabilities, missingMeasurements,
+    caveats: missingMeasurements.length === 0 ? ATTRIBUTION_CAVEATS
+      : [...ATTRIBUTION_CAVEATS, `${missingMeasurements.length} missing grader measurements: affected comparisons are inconclusive pending regrade.`] };
 }
 
 /** The mandatory honest-framing lines that ride every attribution report (D-008/D-011 + fairness C1/C3/C6). */

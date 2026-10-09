@@ -240,9 +240,13 @@ export interface PassAtKPoint {
 export interface ArmReport {
   arm: ArmId;
   suite: BenchSuite;
-  /** Distinct tasks and total scored attempts (excludes infra-error rows). */
+  /** Assigned tasks and observed attempts (generation failures included). */
   tasks: number;
   attempts: number;
+  gradedAttempts?: number;
+  absentTasks?: number;
+  missingMeasurements?: number;
+  conditionalPassAt1?: number;
   /** Attempts dropped because graderStatus was error/timeout (surfaced, not scored). */
   infraErrors: number;
   /** Of the GENERATION runs, how many hit the iso-budget cap. */
@@ -250,7 +254,7 @@ export interface ArmReport {
   /** The iso-budget cap shared by these runs (null = uncapped, or mixed → see verifyIsoBudget). */
   budgetTokens: number | null;
   /** pass@1 = mean over tasks of (mean over seeds of resolved). The headline accuracy. */
-  passAt1: number;
+  passAt1: number | null;
   /** Bootstrap CI over tasks for pass@1 (task heterogeneity is the dominant noise). */
   passAt1Ci: Interval;
   /** Wilson interval on the pooled task×seed Bernoulli resolved-rate (cross-check). */
@@ -267,7 +271,7 @@ export interface ArmDelta {
   treatment: ArmId; // 'papercusp'
   baseline: ArmId;
   /** passAt1(treatment) − passAt1(baseline). Positive = treatment resolves more. */
-  accuracyDelta: number;
+  accuracyDelta: number | null;
   /** costPerResolved ratio treatment/baseline (null if a denominator is 0). */
   costRatio: number | null;
   /** treatment cost as a fraction of baseline cost ("at Z% of the cost"). */

@@ -679,6 +679,9 @@ const scorecardEmitBaseShape = {
       .max(120)
       .optional()
       .describe('Issue id of the earlier scorecard this corrected filing replaces.'),
+    baselineRef: z.string().min(1).max(120).optional().describe(
+      'Preserved audited pre-repair scorecard for a comparable re-grade. Unlike supersedes, this does not replace or correct the baseline; use the same target and pinned rubric revision.',
+    ),
     terminal: z
       .boolean()
       .optional()
@@ -2935,6 +2938,23 @@ export async function emitScorecard(
         };
       }
     }
+    if (args.baselineRef) {
+      if (args.supersedes) {
+        return { ok: false as const, code: 'baseline_correction_conflict',
+          error: 'A re-grade preserves its baseline; a correction uses supersedes. Emit these as distinct scorecards.' };
+      }
+      const [baseline] = await listScorecards({ issueIds: [args.baselineRef], limit: 1 });
+      if (!baseline || !args.subject || baseline.subject?.kind !== args.subject.kind ||
+          baseline.subject.ref !== args.subject.ref || baseline.rubricRef !== args.rubricRef ||
+          baseline.rubricRevision !== rubric.revision || baseline.criteriaHash !== rubric.criteriaHash ||
+          baseline.provisional || baseline.retracted || baseline.synthesized ||
+          !baseline.rubricResolved || baseline.missingKeys.length > 0 || (baseline.extraKeys?.length ?? 0) > 0 ||
+          baseline.gradingAudit?.state !== 'passed' || baseline.gradingAuditCurrentness?.state !== 'current' ||
+          baseline.rubricCurrentness?.state !== 'current') {
+        return { ok: false as const, code: 'baseline_not_comparable',
+          error: 'baselineRef must resolve to preserved current audited evidence for the same target and rubric revision; changed meaning needs a fresh baseline.' };
+      }
+    }
     if (args.supersedes) {
       const superseded = await getIssue(args.supersedes);
       const raw =
@@ -3002,7 +3022,7 @@ export async function emitScorecard(
           const sameSubject =
             !subject || (card.subject?.ref === subject.ref && (card.subject?.kind ?? null) === (subject.kind ?? null));
           return (
-            sameSubject &&
+            sameSubject && card.issueId !== args.baselineRef &&
             card.rubricRef === args.rubricRef &&
             classifyRubricEvidenceCurrentness(
               {
@@ -3425,6 +3445,7 @@ export async function emitScorecard(
           ...(instrumentSnapshots ? { instrumentSnapshots } : {}),
           evidenceFingerprint,
           ...(args.supersedes ? { supersedes: args.supersedes } : {}),
+          ...(args.baselineRef ? { baselineRef: args.baselineRef } : {}),
           ...(gradedGeneration ? { gradedGeneration } : {}),
           ...(provisional ? { provisional } : {}),
           ...(gradingAudit ? { gradingAudit } : {}),
