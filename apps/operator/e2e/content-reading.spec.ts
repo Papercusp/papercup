@@ -1,4 +1,8 @@
 import type { Page, Route } from '@playwright/test';
+import { execFile } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
 import { expect, test } from './_egress';
 
 /** Production shell and reading player with controlled output adapters. Real provider
@@ -10,7 +14,7 @@ type OutputProbe = {
 };
 type ProbeWindow = Window & { __contentOutput: OutputProbe };
 
-async function openReading(page: Page) {
+async function openReading(page: Page, workspace?: string) {
   await page.addInitScript(() => {
     sessionStorage.setItem('oracle-tutorial-complete', 'true');
     let finish: (() => void) | undefined;
@@ -47,7 +51,7 @@ async function openReading(page: Page) {
   page.on('request', request => {
     if (request.method() === 'POST' && /\/api\/operator\/conversations\/[^/]+\/turns/.test(request.url())) turnPosts.push(request.url());
   });
-  await page.goto('/?chat=true');
+  await page.goto('/?chat=true' + (workspace ? '&ws=' + encodeURIComponent(workspace) : ''));
   const trigger = page.getByRole('button', { name: 'Read selected text aloud' });
   await expect(trigger).toBeVisible({ timeout: 60_000 });
   await trigger.click();
@@ -231,4 +235,105 @@ test('summary failure is visible and never becomes summary text or speech', asyn
   await expect(page.getByText('Cloud summary requires explicit consent.', { exact: true })).toBeVisible();
   await expect(page.getByRole('region', { name: 'Summary', exact: true })).toHaveCount(0);
   expect((await output(page)).created).toBe(0);
+});
+
+test('signed ordinary-agent narration returns a requesting-tab receipt and controls only output in that tab', async ({ page, context, request, baseURL }, testInfo) => {
+  test.setTimeout(180_000);
+  const workspace = process.env.PAPERCUSP_WORKSPACE;
+  const parent = process.env.PAPERCUSP_SID;
+  test.skip(!workspace || !parent || !process.env.PAPERCUSP_TEST_RUN_WORK_ITEM_ID,
+    'The authenticated current-build journey requires a workspace, author session and held work-item.');
+  expect(['localhost', '127.0.0.1', '[::1]']).toContain(new URL(baseURL!).hostname);
+  const bystander = await context.newPage();
+  const source = 'AUTHORIZED AGENT NARRATION ' + randomUUID() + ' EXACT FINAL TAIL';
+  const reads: string[] = [];
+  const bystanderReads: string[] = [];
+  for (const [tab, captured] of [[page, reads], [bystander, bystanderReads]] as const) {
+    await tab.route('**/api/agent-mcp/operator-tts', async route => {
+      const body = route.request().postDataJSON();
+      expect(body.operation).toBe('read');
+      expect(body.allowCloud).toBe(false);
+      captured.push(body.text);
+      await fulfillReading(route, body.text);
+    });
+  }
+  try {
+    // Give the normal browser factory its own UUIDs; no callerSid impersonation
+    // or forged superuser context. Reuse the maintained spawn signer to mint
+    // short-lived ordinary Papercup fixtures bound to those requesting tabs.
+    await openReading(page, workspace!);
+    await openReading(bystander, workspace!);
+    await page.bringToFront();
+    const client = await page.evaluate(() => sessionStorage.getItem('papercusp_ui_client_id'));
+    const otherClient = await bystander.evaluate(() => sessionStorage.getItem('papercusp_ui_client_id'));
+    expect(client).toMatch(/^[0-9a-f-]{36}$/i);
+    expect(otherClient).not.toBe(client);
+    const mint = async (tabClient: string) => {
+      const script = "const {signSpawnParams}=await import('./packages/operator-core/lib/spawn-signing.ts');\n"
+        + 'const params=new URLSearchParams(JSON.parse(process.argv[1]));\n'
+        + 'await signSpawnParams(params,{ttlSec:300});\n'
+        + 'process.stdout.write(params.toString());process.exit(0);';
+      const { stdout } = await promisify(execFile)(process.execPath,
+        ['--import', 'tsx', '--input-type=module', '-e', script, JSON.stringify({
+          workspace, harness: 'papercusp', role: 'papercup', client: tabClient,
+          spawn: 'content-reading-e2e-' + randomUUID(), run: randomUUID(), parent_spawn: parent,
+        })], { cwd: fileURLToPath(new URL('../../../', import.meta.url)), timeout: 30_000, maxBuffer: 64 * 1024 });
+      return new URL('/api/mcp?' + stdout.trim(), baseURL!).href;
+    };
+    let sequence = 0;
+    const rpc = async (url: string, method: string, params: Record<string, unknown>) => {
+      const id = ++sequence;
+      const response = await request.post(url, { headers: {
+        'content-type': 'application/json', Accept: 'application/json, text/event-stream',
+      }, data: { jsonrpc: '2.0', id, method, params }, timeout: 15_000 });
+      expect(response.status()).toBe(200);
+      const text = await response.text();
+      const body = response.headers()['content-type']?.includes('text/event-stream')
+        ? text.split('\n').filter(line => line.startsWith('data: ')).map(line => JSON.parse(line.slice(6))).find(value => value.id === id)
+        : JSON.parse(text);
+      expect(body?.id).toBe(id);
+      return body;
+    };
+    const url = await mint(client!);
+    const catalog = await rpc(url, 'tools/list', {});
+    expect(catalog.error).toBeUndefined();
+    const tool = catalog.result.tools.find((entry: { name: string }) => entry.name === 'voice:say');
+    expect(tool?.description).toContain('read original authorized content');
+    expect(tool.description).toContain('requesting app tab');
+    expect(JSON.stringify(tool.inputSchema)).toContain('control');
+    const call = async (endpoint: string, args: Record<string, unknown>) => rpc(endpoint, 'tools/call', { name: 'voice:say', arguments: args });
+    const content = (body: { result: { content: Array<{ type: string; text: string }> } }) =>
+      JSON.parse(body.result.content.find(part => part.type === 'text')!.text);
+    const beforeOther = await output(bystander);
+    const started = await call(url, { operation: 'read', content: { kind: 'text', text: source } });
+    expect(started.error).toBeUndefined();
+    expect(started.result.isError).not.toBe(true);
+    const receipt = content(started);
+    expect(receipt).toMatchObject({ status: 'done', result: { status: 'starting', readingId: expect.any(String) } });
+    expect(started.result.structuredContent.destination).toBe(client);
+    await expect.poll(async () => (await output(page)).plays).toBeGreaterThan(0);
+    const readingId = receipt.result.readingId;
+    const created = (await output(page)).created;
+    for (const [action, status] of [['pause', 'paused'], ['status', 'paused'], ['resume', 'playing'], ['stop', 'stopped']]) {
+      expect(content(await call(url, { operation: 'control', readingId, action }))).toMatchObject({ status: 'done', result: { readingId, status } });
+      expect((await output(page)).created).toBe(created);
+    }
+    const absent = await call(await mint(randomUUID()), { operation: 'read', content: { kind: 'text', text: source } });
+    expect(content(absent)).toMatchObject({ ok: false, error: 'destination_unavailable' });
+    const tampered = new URL(url);
+    tampered.searchParams.set('client', otherClient!);
+    const unauthorized = await call(tampered.href, { operation: 'read', content: { kind: 'text', text: source } });
+    expect(JSON.stringify(unauthorized)).toContain('invalid_signature');
+    const probe = await output(page);
+    expect(reads.length ? reads.join('') : probe.utterances.join('')).toBe(source);
+    expect(probe.mic).toBe(0);
+    expect(await output(bystander)).toEqual(beforeOther);
+    expect(bystanderReads).toEqual([]);
+    await testInfo.attach('requesting-tab-receipt', { contentType: 'application/json', body: JSON.stringify({
+      workspace, client, otherClient, receipt, output: probe, bystanderOutput: beforeOther,
+      absent: content(absent), unauthorized: 'invalid_signature',
+    }) });
+  } finally {
+    await bystander.close();
+  }
 });
