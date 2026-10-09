@@ -1117,6 +1117,8 @@ export interface ScorecardRow {
   evidenceFingerprint?: string;
   /** The scorecard issue this filing corrected, when present on the raw payload. */
   supersedes?: string;
+  /** Preserved pre-repair evidence explicitly compared by this re-grade. */
+  baselineRef?: string;
   /** Machine-readable withdrawal metadata, when the scorecard was retracted. */
   retracted?: ScorecardRetraction;
   /**
@@ -3397,6 +3399,7 @@ async function listScorecardsAtLimit(filter: ListScorecardsFilter, limit: number
       rubricResolved,
       ...(observation.evidenceFingerprint ? { evidenceFingerprint: observation.evidenceFingerprint } : {}),
       ...(observation.supersedes ? { supersedes: observation.supersedes } : {}),
+      ...(observation.baselineRef ? { baselineRef: observation.baselineRef } : {}),
       ...(observation.retracted ? { retracted: observation.retracted } : {}),
       ...(observation.provisional ? { provisional: observation.provisional } : {}),
       ...(gradingAudit ? { gradingAudit } : {}),

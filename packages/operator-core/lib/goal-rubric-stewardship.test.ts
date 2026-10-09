@@ -5,7 +5,7 @@ const baseline = (): StewardshipCard => ({ issueId: 'EI-1', createdAt: '2026-10-
   rubricRef: 'quality', rubricRevision: 4, criteriaHash: 'same-criteria', subject: { kind: 'pot', ref: 'target' },
   ratings: { quality: { rating: 'fail', evidence: 'Confirmed failure', remediation: 'WI-12' } },
   settled: true, current: true, requiresIndependentAcceptance: true });
-const regrade = (): StewardshipCard => ({ ...baseline(), issueId: 'EI-2', supersedes: 'EI-1',
+const regrade = (): StewardshipCard => ({ ...baseline(), issueId: 'EI-2', baselineRef: 'EI-1',
   createdAt: '2026-10-09T12:00:00Z', ratings: { quality: { rating: 'pass', evidence: 'Independent rerun passed' } } });
 const repair = (): StewardshipRepair => ({ id: 'WI-12', goalId: 'g', owner: 'builder',
   closedAt: '2026-10-09T11:00:00Z', verified: true });
@@ -46,7 +46,7 @@ describe('goal rubric stewardship: verified improvement', () => {
     }
   });
   it('does not confuse a passing baseline, missing baseline or unlinked repair with improvement', () => {
-    expect(classifyStewardshipCycle('g', { ...regrade(), supersedes: undefined }, [], []).status).toBe('baseline');
+    expect(classifyStewardshipCycle('g', { ...regrade(), baselineRef: undefined }, [], []).status).toBe('baseline');
     expect(classifyStewardshipCycle('g', regrade(), [], [repair()]).status).toBe('unverified');
     expect(grade(regrade(), { ...baseline(), ratings: { quality: { rating: 'fail', evidence: 'No repair reference' } } }).status)
       .toBe('unverified');
@@ -54,5 +54,9 @@ describe('goal rubric stewardship: verified improvement', () => {
   it('separates repairs still open from verified repairs awaiting re-grade', () => {
     expect(classifyStewardshipCycle('g', baseline(), [], []).status).toBe('needs-repair');
     expect(classifyStewardshipCycle('g', baseline(), [], [repair()]).status).toBe('needs-regrade');
+  });
+  it('never treats correction lineage as an improvement baseline', () => {
+    expect(grade({ ...regrade(), baselineRef: undefined, supersedes: 'EI-1' }).status).toBe('unverified');
+    expect(grade({ ...regrade(), supersedes: 'EI-1' }).status).toBe('unverified');
   });
 });

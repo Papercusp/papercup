@@ -21,7 +21,7 @@ export interface StewardshipRepair {
   verified: boolean;
 }
 export type StewardshipCard = Pick<ScorecardRow, 'issueId' | 'createdAt' | 'createdBy' | 'rubricRef' |
-  'rubricRevision' | 'criteriaHash' | 'subject' | 'ratings' | 'supersedes'> & {
+  'rubricRevision' | 'criteriaHash' | 'subject' | 'ratings' | 'supersedes' | 'baselineRef'> & {
   settled: boolean;
   current: boolean;
   requiresIndependentAcceptance: boolean;
@@ -56,7 +56,7 @@ export function stewardshipRepairRefs(card: StewardshipCard): string[] {
 export function classifyStewardshipCycle(
   goalId: string, card: StewardshipCard, cards: readonly StewardshipCard[], repairs: readonly StewardshipRepair[],
 ): StewardshipCycle {
-  const baseline = cards.find(c => c.issueId === card.supersedes);
+  const baseline = cards.find(c => c.issueId === card.baselineRef);
   const repairRefs = stewardshipRepairRefs(baseline ?? card);
   const out = (status: StewardshipCycle['status'], reason: string): StewardshipCycle => ({
     target: card.subject?.ref ?? 'Target not recorded', rubricRef: card.rubricRef,
@@ -68,8 +68,9 @@ export function classifyStewardshipCycle(
     return out('unverified', 'Scorecard chronology could not be verified.');
   }
   if (!card.subject || !card.settled || !card.current) return out('unverified', 'Current, audited terminal evidence is required.');
+  if (card.supersedes) return out('unverified', 'A corrected scorecard is not a preserved baseline-to-regrade comparison.');
   if (!baseline) {
-    if (card.supersedes) return out('unverified', 'The linked baseline is outside the available goal-scoped evidence.');
+    if (card.baselineRef) return out('unverified', 'The linked baseline is outside the available goal-scoped evidence.');
     if (Object.values(card.ratings).some(r => BAD.has(r.rating))) {
       const closed = repairRefs.length > 0 && repairRefs.every(id => repairs.some(r =>
         r.id === id && r.goalId === goalId && r.verified && r.closedAt &&
@@ -122,7 +123,7 @@ export async function readGoalRubricStewardship(
   try {
     const { sql } = deps;
     const rows = await sql<{ id: string; baseline: string | null }[]>`
-      SELECT feature_id AS id, payload->'observation'->>'supersedes' AS baseline
+      SELECT feature_id AS id, payload->'observation'->>'baselineRef' AS baseline
         FROM harness_shared.work_items
        WHERE workspace_id = ${input.workspaceId} AND goal_id = ${input.goalId}
          AND lane = 'observation' AND payload->'observation'->>'rubricRef' IS NOT NULL
@@ -147,7 +148,7 @@ export async function readGoalRubricStewardship(
     const rubrics = new Map(await Promise.all([...new Set(stored.map(c => c.rubricRef))].map(async ref => [ref, await getRubric(ref)] as const)));
     const cards: StewardshipCard[] = stored.filter(c => ids.includes(c.issueId)).map(c => ({ ...c,
       settled: c.rubricResolved && c.missingKeys.length === 0 && !c.provisional && !c.synthesized &&
-        !c.retracted && !!c.gradingAudit && settledGradingAuditIsCurrent(c),
+        !c.retracted && !c.supersededBy && !!c.gradingAudit && settledGradingAuditIsCurrent(c),
       current: c.rubricCurrentness?.state === 'current',
       requiresIndependentAcceptance: rubrics.get(c.rubricRef)?.kind === 'acceptance' ||
         rubrics.get(c.rubricRef)?.gradingAuthority === 'independent',
@@ -168,7 +169,8 @@ export async function readGoalRubricStewardship(
     return { ...base, complete: rows.length <= PAGE_SIZE, rubricRevision: rubric?.revision ?? null,
       criteria: Object.fromEntries(RUBRIC_STEWARDSHIP_CRITERIA.map(key => [key, latest?.ratings[key]
         ? { rating: latest.ratings[key].rating, evidence: latest.ratings[key].evidence, scorecardRef: latest.issueId } : null])) as GoalRubricStewardship['criteria'],
-      cycles: cards.filter(c => page.some(r => r.id === c.issueId) && !cards.some(newer => newer.supersedes === c.issueId))
+      cycles: cards.filter(c => page.some(r => r.id === c.issueId) &&
+        !cards.some(newer => newer.supersedes === c.issueId || newer.baselineRef === c.issueId))
         .map(c => classifyStewardshipCycle(input.goalId, c, cards, repairs)),
     };
   } catch (error) {
