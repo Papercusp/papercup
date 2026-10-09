@@ -8,6 +8,11 @@ import { createRequire } from 'node:module';
 import { basename, dirname } from 'node:path';
 import { decodeNativeBridgeJson } from './_native-bridge-json';
 
+// Native failures can happen in the initial API read before a browser is
+// navigated or a cockpit screenshot exists. The default on-first-retry trace
+// records nothing when this owned, expensive verifier runs without retries.
+test.use({ trace: 'retain-on-failure' });
+
 test('native CLI JSON boundary preserves scalar and JSON-looking string values', () => {
   // Captured CLI output from the real HUD assertion must remain a string.
   expect(decodeNativeBridgeJson('"hud"')).toBe('hud');
