@@ -8,12 +8,17 @@
  * mergeIssuePayload, linkIssue, setIssueState, the advisory-lock transaction);
  * partial failures are injected by overriding exactly one dependency.
  */
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import { teardownTestPg } from '@papercusp/test-config/pg';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 
-const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
+const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql, currentBuild: 'abc1234def5678' as string | null }));
+vi.mock('./intake-promotion', async (orig) => ({
+  ...(await orig<typeof import('./intake-promotion')>()),
+  currentIntakeTargetBuild: async () => h.currentBuild,
+}));
+beforeEach(() => { h.currentBuild = 'abc1234def5678'; });
 vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
   return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: h.sql }) };
@@ -163,6 +168,11 @@ describe('remote member report promotion (unified pipeline D-051)', () => {
     expect(retry).toMatchObject({ ok: true, workItemId: first.workItemId, created: false, converged: true });
     expect(await promotedFrom(source.id)).toEqual([first.workItemId]);
     expect(await payloadOf(source.id)).toEqual(before);
+    h.currentBuild = null;
+    expect(await claimIssue(first.workItemId, 'su-upstream-fixer')).toBeNull();
+    h.currentBuild = 'b'.repeat(40);
+    expect(await claimIssue(first.workItemId, 'su-upstream-fixer')).toBeNull();
+    h.currentBuild = 'abc1234def5678';
     expect(await claimIssue(first.workItemId, 'su-upstream-fixer')).toMatchObject({ assignee: 'su-upstream-fixer' });
   });
 });
