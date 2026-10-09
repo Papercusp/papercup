@@ -64,6 +64,7 @@ import { readFleetClaudeToken } from '@papercusp/orchestrator/fleet-claude-token
 import {
   fallbackCodexLaunchSpecFromAdvSession,
   getAdvSession,
+  latestAdvSessionByCoordOwner,
   claimAdvSessionResume,
   setAdvSessionPid,
 } from '../../adv-sessions';
@@ -2559,6 +2560,8 @@ export async function injectOmpWakeTurnWhenReady(input: {
 export interface ExecuteWakeDeps {
   /** Injected for tests; default real implementations below. */
   getSession?: typeof getAdvSession;
+  /** Delivery-time owner-session election used when a captured session is no longer live. */
+  getLatestSessionForOwner?: typeof latestAdvSessionByCoordOwner;
   findPty?: typeof findPtyByPid;
   write?: typeof writePty;
   spawnManagedPty?: typeof spawnPty;
@@ -3510,6 +3513,7 @@ function newestDeliveryCarryNoteMeta(
 /** Execute one wake delivery attempt. Never throws — every failure is an outcome. */
 export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): Promise<WakeOutcome> {
   const getSession = deps.getSession ?? getAdvSession;
+  const getLatestSessionForOwner = deps.getLatestSessionForOwner ?? latestAdvSessionByCoordOwner;
   const findPty = deps.findPty ?? findPtyByPid;
   const write = deps.write ?? writePty;
   const spawnManaged = deps.spawnManagedPty ?? spawnPty;
@@ -4006,7 +4010,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       /* a fold must never break a wake */
     }
 
-    const handle = d.wakeHandle;
+    let handle = d.wakeHandle;
     if (!handle) {
       // Registered without a resumable session (warned at registration). BUT a
       // live psu-pty host socket can still wake it in place — it injects into the
@@ -4048,7 +4052,62 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     }
 
     // ── adv-session handle ───────────────────────────────────────────────
-    const fresh = await getSession(handle.advSessionId).catch(() => null);
+    let fresh = await getSession(handle.advSessionId).catch(() => null);
+    const sessionIsAlive = async (
+      row: Awaited<ReturnType<typeof getSession>>,
+      candidateHandle: Extract<WakeHandle, { kind: 'adv-session' }>,
+    ): Promise<boolean> => {
+      if (row?.endedAt != null) return false;
+      const candidatePid = row?.pid ?? candidateHandle.pid;
+      if (candidatePid != null && candidatePid > 0) return alive(candidatePid);
+      const currentPresence = await presence(d.subscriberId).catch(() => null);
+      return Boolean(currentPresence && !currentPresence.stale && !currentPresence.revoked);
+    };
+    let isAlive = await sessionIsAlive(fresh, handle);
+    if (!isAlive) {
+      // A delayed wake can outlive the adv-session row it captured. Elect the
+      // current row for this coord owner before Channel 2 can resume a dead
+      // predecessor while its carry successor already exists.
+      const latest = await withWakeTimeout(
+        getLatestSessionForOwner(d.subscriberId),
+        `latest adv-session/${d.subscriberId}`,
+        1_500,
+      ).catch(() => null);
+      if (!latest || latest.coordOwnerId !== d.subscriberId) {
+        return {
+          kind: 'park',
+          reason: 'current owner adv-session could not be verified; parked before wake injection or resume',
+        };
+      }
+      if (latest.id === handle.advSessionId) {
+        if (!fresh || fresh.id !== latest.id || fresh.coordOwnerId !== d.subscriberId) {
+          return {
+            kind: 'park',
+            reason: `current owner adv-session #${latest.id} could not be re-read; parked before resume`,
+          };
+        }
+      } else {
+        const current = await getSession(latest.id).catch(() => null);
+        if (!current || current.id !== latest.id || current.coordOwnerId !== d.subscriberId) {
+          return {
+            kind: 'park',
+            reason: `newer owner adv-session #${latest.id} could not be re-read; parked before resume`,
+          };
+        }
+        fresh = current;
+        handle = {
+          kind: 'adv-session',
+          advSessionId: current.id,
+          agent: current.agent,
+          sessionId: current.sessionId,
+          ompThreadId: current.ompThreadId,
+          cwd: current.cwd,
+          pid: current.pid,
+        };
+        d = { ...d, wakeHandle: handle };
+      }
+      isAlive = await sessionIsAlive(fresh, handle);
+    }
     const sessionAgent = fresh?.agent ?? handle.agent;
     const sessionOwner = fresh?.coordOwnerId ?? d.subscriberId;
     const sessionId = fresh?.sessionId ?? handle.sessionId;
@@ -4075,20 +4134,6 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     const pid = fresh?.pid ?? handle.pid;
     const ended = fresh?.endedAt != null;
     const pidKnown = pid != null && pid > 0;
-    // Liveness: a recorded pid is authoritative; with NO pid recorded (hook-
-    // bootstrapped sessions), FRESH presence is the alive-evidence — resuming
-    // a session whose process is actually still open would run a concurrent
-    // second client on the same session file. When in doubt, park (the parked
-    // row converts to a resume once presence goes stale or the row ends).
-    let isAlive: boolean;
-    if (ended) {
-      isAlive = false;
-    } else if (pidKnown) {
-      isAlive = alive(pid);
-    } else {
-      const p = await presence(d.subscriberId).catch(() => null);
-      isAlive = Boolean(p && !p.stale && !p.revoked);
-    }
 
     // A live interactive transcript has no detached-child exit callback. Check
     // the saved assistant-turn streak before injecting another wake. A dead
@@ -4514,7 +4559,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     // but say which happened.
     let claimed: boolean;
     try {
-      claimed = await claimResume(handle.advSessionId);
+      claimed = await claimResume(handle.advSessionId, null, undefined, d.subscriberId);
     } catch (err) {
       return {
         kind: 'park',
@@ -4526,7 +4571,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     if (!claimed) {
       return {
         kind: 'park',
-        reason: `resume claim for adv session #${handle.advSessionId} was won by another resumer; parked before Channel 2 spawn`,
+        reason: `resume claim for adv session #${handle.advSessionId} was lost or superseded by a newer owner session; parked before Channel 2 spawn`,
       };
     }
     // `--account` is a launch-time choice and Claude does not retain launch
