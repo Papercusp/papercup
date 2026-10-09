@@ -703,7 +703,9 @@ export default defineTool({
         )
         .optional()
         .describe(
-          'Carried CHECKS — claims about EXTERNAL STATE as {claim, recheck, verified?, contested?} rows (compact claim strings ' +
+          'Durable storage is capped at 12 check rows. This input accepts up to 48 rows as a hard validation/normalization ' +
+            'ceiling; an accepted array size is not a persistence promise. Carried CHECKS are claims about EXTERNAL STATE ' +
+            'as {claim, recheck, verified?, contested?} rows (compact claim strings ' +
             'are accepted and mapped to {claim}; the non-owner analog ' +
             'of walls; renders a ## Checks section every wake). `verified` is a STRING (evidence, ≤300 chars), never ' +
             'a boolean — a claim OMITTING `verified` renders PREDICTED, a successor must run its recheck before ' +
@@ -725,7 +727,9 @@ export default defineTool({
         .enum(['replace', 'merge'])
         .optional()
         .describe(
-          "How a supplied walls/checks list combines with the carried set. 'merge' (default) — rows UPSERT by `id` " +
+          'Durable caps are 12 walls and 12 checks. The arrays may accept up to 48 rows each for validation/normalization; ' +
+            'accepted input size is not a persistence promise. How a supplied walls/checks list combines with the carried ' +
+            "set. 'merge' (default) — rows UPSERT by `id` " +
             '(else by exact claim text) and unmentioned rows SURVIVE, so adding/updating ONE row needs only that ' +
             'row — but only UP TO THE ROW CAP: merge is non-destructive while the union fits, not unconditionally. ' +
             'If the union would OVERFLOW the cap, the write is REFUSED (naming every carried row that would be ' +
