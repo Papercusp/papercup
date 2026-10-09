@@ -41,6 +41,7 @@ import { parseEnvFile } from '../../../../../apps/operator/scripts/systemd/porta
 import { exactOriginOr403 } from '../../endpoint-route/hosted-browser-context';
 import { PAPERCUSP_TMPDIR_CANDIDATES, tmpdirIsInsideRepo } from '../../../../../libs/test-config/src/tmpdir-guard';
 import { findBoxIdentityPaths, serializeIdentitySafeJson } from '../../../../../scripts/lib/identity-leak-patterns.mjs';
+import { readSuperuserToken, superuserTokenPath } from '../../superuser-token';
 
 let baseUrl = process.env.OPERATOR_BASE_URL;
 const enabled = Boolean(baseUrl) && process.env.PAPERCUSP_TEST_PUBLIC_CHAT === '1';
@@ -735,9 +736,9 @@ async function ownFixtureOperator(seedDir: string,
     expect(realpathSync(process.env.HOME!)).toBe(join(isolatedRoot, 'home'));
     expect(realpathSync(workspacesRoot())).toBe(join(isolatedRoot, 'workspaces'));
     expect(process.env.PAPERCUSP_WORKSPACE).toMatch(/^test-runtime-/);
-    expect(process.env.PAPERCUSP_BACKGROUND_WORKERS).toBe('1');
-    expect(process.env.PAPERCUSP_DBOS_ROUTINES).toBe('0');
     expect(process.env.HARNESS_ADMIN_DATABASE_URL).toBeTruthy();
+    expect(realpathSync(process.env.PAPERCUSP_HOME!)).toBe(join(isolatedRoot, 'home/.papercusp'));
+    if (!readSuperuserToken()) writeFileSync(superuserTokenPath(), randomUUID(), { mode: 0o600 });
   }
   // Validate before starting anything; a missing seed is not a reason to serve
   // the canonical manual and accidentally pass the public/private controls.
@@ -789,6 +790,16 @@ async function ownFixtureOperator(seedDir: string,
       for (const key of Object.keys(env)) if (/^VITEST(?:_|$)/.test(key)) delete env[key];
       if (role === 'background') {
         for (const key of Object.keys(env)) if (/^(OPENAI_|ANTHROPIC_|AWS_|AZURE_|GOOGLE_|GCP_|GITHUB_|GH_|POSTHOG_)/i.test(key)) delete env[key];
+        env.PAPERCUSP_FLAG_PAPERCUSP_DOC_STEWARD = '0';
+        // Vitest's hermetic setup clears parent background controls. Pin the
+        // real child's controls here after verifying its private HOME/DB.
+        Object.assign(env, {
+          PAPERCUSP_DBOS_ENABLE: '0', PAPERCUSP_DBOS_ORCHESTRATOR: '0',
+          PAPERCUSP_DBOS_ROUTINES: '0', PAPERCUSP_DBOS_TIMERS: '0', PAPERCUSP_DBOS_AUTOLOOP: '0',
+          PAPERCUSP_SPAWNER_SIDECAR: '0', PAPERCUSP_GIT_SYNC_SPAWN_SIDECAR: '0',
+          PAPERCUSP_GIT_PIPELINE_SPAWN_SIDECAR: '0', PAPERCUSP_POT_GIT_SPAWN_SIDECAR: '0',
+          PAPERCUSP_HARNESS_DOCS_SPAWN_SIDECAR: '0', PAPERCUSP_SYSTEM_HEALTH_SPAWN_SIDECAR: '0',
+        });
       }
       const entry = pathToFileURL(join(bundleDir, 'hono-host.mjs')).href;
       // Record only non-secret startup controls. The first marker executes before
@@ -799,6 +810,7 @@ async function ownFixtureOperator(seedDir: string,
         bundleSha256: createHash('sha256').update(readFileSync(join(bundleDir, 'hono-host.mjs'))).digest('hex'),
         controls: Object.fromEntries(['NODE_OPTIONS', 'NODE_ENV', 'TMPDIR', 'TSX_TSCONFIG_PATH',
           'PAPERCUSP_BACKGROUND_WORKERS', 'PAPERCUSP_DBOS_ROUTINES',
+          'PAPERCUSP_FLAG_PAPERCUSP_DOC_STEWARD',
           'PAPERCUSP_CLUSTER_WORKERS', 'PAPERCUSP_API_CLUSTER_WORKERS',
           'PAPERCUSP_PGBOUNCER', 'PAPERCUSP_SKIP_PG_DISCOVERY'].map(key => [key, env[key] ?? null])),
       }, null, 2), { mode: 0o600 });
@@ -1147,6 +1159,125 @@ describe.runIf(enabled && Boolean(process.env.PAPERCUSP_TEST_PUBLIC_OPERATOR_BUN
       opened.mockRestore();
     }
   }, 90_000);
+});
+
+describe.runIf(Boolean(process.env.PAPERCUSP_TEST_PUBLIC_OPERATOR_BUNDLE_DIR))('installed background public manual review', () => {
+  it('propagates a real Git-sync source change into accountable FAQ and guide review without model calls', async () => {
+    const opened = vi.spyOn(OperatorTarget.prototype, 'open');
+    const { getOrgPg } = await import('@papercusp/db-org');
+    const { mutateHarnessRegistry } = await import('../../harness-registry');
+    const { upsertGitSyncRoutine } = await import('../../harness/git-sync/git-sync-routine');
+    const { frontmatterDocuments, parseDocumentsField } = await import('../../harness/docs/subject-ref');
+    const { getDocRecord } = await import('../../harness/docs/doc-record');
+    const repoRoot = resolve(import.meta.dirname, '../../../../..');
+    const seed = mkdtempSync(join(tmpdir(), 'public-manual-background-seed-'));
+    const harness = `manual-background-${randomUUID().slice(0, 8)}`;
+    const evidenceDir = join(llmBatteryEvidenceRoot(), `background-manual-review-${randomUUID()}`);
+    mkdirSync(evidenceDir, { recursive: true });
+    workspaceId = process.env.PAPERCUSP_WORKSPACE!;
+    const observations: Record<string, unknown> = {};
+    let host: Awaited<ReturnType<typeof ownFixtureOperator>> | undefined;
+    let client: Client | undefined;
+    let registered = false;
+    let stage = 'prepare';
+    try {
+      cpSync(join(repoRoot, 'apps/papercusp-docs/src/content/docs'), seed, { recursive: true });
+      host = await ownFixtureOperator(seed, undefined, 'source', 'background');
+      observations.health = await (await fetch(new URL('/api/health', host.baseUrl))).json();
+      mkdirSync(join(host.root, 'docs'), { recursive: true });
+      mkdirSync(join(host.root, '.papercusp'), { recursive: true });
+      writeFileSync(join(host.root, '.papercusp/docs.json'), JSON.stringify({ root: 'docs',
+        sources: { manual: 'apps/papercusp-docs/src/content/docs' } }));
+      writeFileSync(join(host.root, '.gitignore'), 'operator/\nnode_modules/\n');
+      const pages = ['faq', 'quickstart', 'harness-templates'];
+      for (const page of pages) {
+        const body = readFileSync(join(host.manualDir, `${page}.mdx`), 'utf8');
+        for (const subject of parseDocumentsField(frontmatterDocuments(body))) {
+          if (subject.kind !== 'path') continue;
+          for (const path of subject.globs) {
+            expect(path).not.toMatch(/[?*]/);
+            const file = join(host.root, path);
+            mkdirSync(dirname(file), { recursive: true });
+            writeFileSync(file, 'export const fixtureRevision = 1;\n');
+          }
+        }
+      }
+      // Production Git-sync owns every commit, including the seed. No test
+      // commits or pushes the shared tree, and this fixture has no remote.
+      await runPtool('git', ['init', '--initial-branch=staging', host.root]);
+      await runPtool('git', ['-C', host.root, 'config', 'user.name', 'Public manual background fixture']);
+      await runPtool('git', ['-C', host.root, 'config', 'user.email', 'manual-fixture@example.invalid']);
+      await runPtool('git', ['-C', host.root, 'config', 'commit.gpgsign', 'false']);
+      await mutateHarnessRegistry(r => ({ ...r, projects: [...r.projects, { slug: harness, path: host!.root }] }), workspaceId);
+      registered = true;
+      await upsertGitSyncRoutine(getOrgPg().sql, { workspaceId, installSlug: harness,
+        push: false, pushSubmodules: false, active: false, branch: 'staging' });
+      const mount = buildConverseMcpMount({ hostTrust: 'owner', baseUrl: host.baseUrl, workspaceId,
+        tools: ['git-sync:run', 'harness_docs:anchor'], uiClientId: null,
+        superuserToken: readSuperuserToken()!, principalToken: null });
+      const url = new URL(mount!.url);
+      url.searchParams.set('format', 'json');
+      client = new Client({ name: 'isolated-manual-background-control', version: '1.0.0' });
+      await client.connect(new StreamableHTTPClientTransport(url, {
+        requestInit: { headers: { Authorization: `Bearer ${mount!.bearer}` } },
+      }), { timeout: 15_000 });
+      const call = async (name: string, args: Record<string, unknown>) => {
+        const result = await client!.callTool({ name, arguments: args }, undefined, { timeout: 60_000 });
+        expect(result.isError === true, JSON.stringify(result)).toBe(false);
+        if (result.structuredContent) return result.structuredContent as Record<string, unknown>;
+        const text = (result.content as { type: string; text?: string }[]).find(c => c.type === 'text')?.text;
+        return JSON.parse(text!) as Record<string, unknown>;
+      };
+      stage = 'seed-sync';
+      observations.seedSync = await call('git-sync:run', { installSlug: harness });
+      expect(observations.seedSync).toMatchObject({ status: 'committed', committed: true });
+      const baseline = (await runPtool('git', ['-C', host.root, 'rev-parse', 'HEAD'])).stdout.trim();
+      observations.baseline = baseline;
+      const anchored = await call('harness_docs:anchor', { harness,
+        items: pages.map(page => ({ docId: `manual/${page}.mdx`, verify: true })) });
+      expect(anchored.ok).toBe(true);
+      for (const page of pages) expect(await getDocRecord(harness, `manual/${page}.mdx`, workspaceId))
+        .toMatchObject({ source: 'manual', status: 'fresh', lastVerifiedSha: baseline });
+      stage = 'source-sync';
+      const source = join(host.root, 'packages/operator-core/lib/auth/hosted/self-signup.ts');
+      writeFileSync(source, 'export const fixtureRevision = 2;\n');
+      observations.changedSync = await call('git-sync:run', { installSlug: harness });
+      expect(observations.changedSync).toMatchObject({ status: 'committed', committed: true });
+      const head = (await runPtool('git', ['-C', host.root, 'rev-parse', 'HEAD'])).stdout.trim();
+      expect(head).not.toBe(baseline);
+      observations.head = head;
+      // The real post-sync follow-up is detached. Wait for its persisted result
+      // rather than treating the foreground commit receipt as sweep completion.
+      await expect.poll(async () => (await getDocRecord(harness, 'manual/faq.mdx', workspaceId))?.status,
+        { timeout: 20_000, interval: 100 }).toBe('review');
+      for (const page of ['faq', 'quickstart']) {
+        const record = await getDocRecord(harness, `manual/${page}.mdx`, workspaceId);
+        expect(record).toMatchObject({ source: 'manual', status: 'review', lastVerifiedSha: baseline, reverifyAttempts: 0 });
+        observations[page] = record;
+      }
+      observations.unrelated = await getDocRecord(harness, 'manual/harness-templates.mdx', workspaceId);
+      expect(observations.unrelated).toMatchObject({ status: 'fresh', lastVerifiedSha: baseline });
+      const agents = await getOrgPg().sql`SELECT id FROM harness_shared.spawned_agents
+        WHERE workspace_id = ${workspaceId} AND harness_slug = ${harness}`;
+      expect(agents).toHaveLength(0);
+      observations.spawnedAgents = agents.length;
+      stage = 'passed';
+    } finally {
+      await client?.close();
+      const ownedRoot = host?.root;
+      await host?.close();
+      if (registered) await mutateHarnessRegistry(r => ({ ...r, projects: r.projects.filter(p => p.slug !== harness) }), workspaceId);
+      rmSync(seed, { recursive: true, force: true });
+      writeFileSync(join(evidenceDir, 'case.json'), serializeIdentitySafeJson({
+        id: 'background-manual-review', stage, observations, observedAt: new Date().toISOString(),
+        modelTargetOpenCount: opened.mock.calls.length, modelSendCount: 0,
+        ownedRootRemoved: ownedRoot ? !existsSync(ownedRoot) : null,
+      }));
+      expect(opened).not.toHaveBeenCalled();
+      opened.mockRestore();
+      if (ownedRoot) expect(existsSync(ownedRoot)).toBe(false);
+    }
+  }, 180_000);
 });
 
 describe.runIf(enabled)('real public Papercup manual behavior', () => {
