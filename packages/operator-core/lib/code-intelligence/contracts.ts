@@ -207,10 +207,10 @@ export interface CodeIntelSourceFile {
 export interface CodeIntelSourceEvidence {
   readonly schemaVersion: 1;
   readonly sourceScope: {
-    readonly repositoryId: string;
-    readonly identityKind: 'registry' | 'local-root';
-    /** Digest of the compiler inputs in this query, never the whole repository. */
-    readonly sourceFingerprint: string;
+    readonly repositoryId: string | null;
+    readonly identityKind: 'registry' | 'local-root' | 'unknown';
+    /** Digest of actual inputs; null when no snapshot was measured. */
+    readonly sourceFingerprint: string | null;
     readonly paths: readonly string[];
     readonly supportingFiles: readonly CodeIntelSourceFile[];
   };
@@ -283,6 +283,24 @@ export interface CodeIntelAnswer {
    * this — that is what separates "it broke" from "there are none".
    */
   readonly error: string | null;
+}
+
+/** Preserve a producer's scope without substituting later disk bytes for its inputs. */
+export function unmeasuredSourceEvidence(answer: Pick<CodeIntelAnswer, 'intent' | 'sites'>,
+  scope: { repositoryId: string | null; identityKind: CodeIntelSourceEvidence['sourceScope']['identityKind'];
+    paths: readonly string[]; basis: CodeIntelSourceEvidence['graphScope']['basis']; language?: string },
+  limitations: readonly string[]): CodeIntelSourceEvidence {
+  return {
+    schemaVersion: 1,
+    sourceScope: { repositoryId: scope.repositoryId, identityKind: scope.identityKind,
+      paths: [...scope.paths], sourceFingerprint: null, supportingFiles: [] },
+    graphScope: { basis: scope.basis, sourceCompleteness: 'unverified', limitations: [...limitations] },
+    languageCapabilities: [{ language: scope.language ?? 'unknown', intent: answer.intent, status: 'unknown' }],
+    siteIdentities: answer.sites.map((site, siteIndex) => ({ siteIndex, sourcePath: site.path,
+      contentHash: null, versionedSymbolId: null })),
+    relationships: answer.sites.map((_site, siteIndex) => ({ siteIndex, kind: answer.intent,
+      origin: 'unknown', knowledge: 'unknown', runtimeExecution: 'unknown' })),
+  };
 }
 
 /** The question kinds the routing table dispatches on. */

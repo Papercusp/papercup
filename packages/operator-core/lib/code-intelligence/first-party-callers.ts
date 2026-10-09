@@ -37,7 +37,7 @@ import { accessSync, constants as fsConstants, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { delimiter, isAbsolute, join, relative } from 'node:path';
 import type * as TsModule from 'typescript';
-import { versionedSymbolIdentity, type CodeIntelAnswer, type CodeIntelSourceEvidence, type CodeIntelSourceFile, type SymbolSite } from './contracts.ts';
+import { unmeasuredSourceEvidence, versionedSymbolIdentity, type CodeIntelAnswer, type CodeIntelSourceEvidence, type CodeIntelSourceFile, type SymbolSite } from './contracts.ts';
 // Explicit `.ts`: the off-thread worker runs this graph under Node's native type
 // stripping, which resolves no extension-less relative import.
 import {
@@ -265,7 +265,7 @@ function classify(
   return { reason: 'other-in-repo', detail: `unattributed: resolves to ${rel}:${line1}, which the call hierarchy did not report` };
 }
 
-function answer(
+function buildAnswer(
   name: string,
   started: number,
   now: () => number,
@@ -309,14 +309,36 @@ function answer(
  * worker failed, timed out, or could not load TypeScript). Never a bare empty:
  * `error` is set and health is unhealthy.
  */
-export function failedCallersAnswer(name: string, error: string, startedMs: number, nowMs: number = Date.now()): FirstPartyCallersAnswer {
-  return answer(name, startedMs, () => nowMs, { error });
+export function failedCallersAnswer(name: string, error: string, startedMs: number, nowMs: number = Date.now(),
+  scope?: Pick<FirstPartyCallersQuery, 'root' | 'repositoryId' | 'paths'>): FirstPartyCallersAnswer {
+  const result = buildAnswer(name, startedMs, () => nowMs, { error });
+  return { ...result, evidence: unmeasuredCallersEvidence(result, scope) };
+}
+
+function unmeasuredCallersEvidence(result: Pick<CodeIntelAnswer, 'intent' | 'sites'>,
+  scope?: Pick<FirstPartyCallersQuery, 'root' | 'repositoryId' | 'paths'>): CodeIntelSourceEvidence {
+  let repositoryId = scope?.repositoryId ?? null;
+  let identityKind: CodeIntelSourceEvidence['sourceScope']['identityKind'] = repositoryId ? 'registry' : 'unknown';
+  if (!repositoryId && scope?.root) {
+    try {
+      repositoryId = `local-root:${createHash('sha256').update(realpathSync(scope.root)).digest('hex')}`;
+      identityKind = 'local-root';
+    } catch { /* An inaccessible root has no verified local identity. */ }
+  }
+  return unmeasuredSourceEvidence(result, { repositoryId, identityKind,
+    paths: scope?.paths ?? ['.'], basis: 'compiler-project' }, [
+    'No compiler snapshot was measured; an empty or failed query does not establish source completeness.',
+  ]);
 }
 
 /** Who calls `name`, from the first-party TypeScript backend. Synchronous: run it off the main thread. */
 export function firstPartyCallers(q: FirstPartyCallersQuery): FirstPartyCallersAnswer {
   const now = q.now ?? (() => Date.now());
   const started = now();
+  const answer = (name: string, startedAt: number, clock: () => number, parts: Parameters<typeof buildAnswer>[3]) => {
+    const result = buildAnswer(name, startedAt, clock, parts);
+    return parts.evidence ? result : { ...result, evidence: unmeasuredCallersEvidence(result, q) };
+  };
   const limit = Math.max(1, Math.floor(q.limit ?? FIRST_PARTY_CALLERS_DEFAULT_LIMIT));
   if (!IDENTIFIER.test(q.name)) {
     return answer(q.name, started, now, { error: `callers needs one identifier; "${q.name}" is not one` });

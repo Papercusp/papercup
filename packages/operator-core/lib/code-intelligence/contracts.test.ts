@@ -27,6 +27,7 @@ import {
   toOneIndexed,
   versionedSymbolIdentity,
   sourceIdentityContinuity,
+  unmeasuredSourceEvidence,
   type KnownIndexDiskExceedance,
 } from './contracts';
 
@@ -54,6 +55,19 @@ describe('source-version identity', () => {
     expect(versionedSymbolIdentity('repo-a', { ...site, path: '../caller.ts' }, { ...source, path: '../caller.ts' })).toBeNull();
     expect(versionedSymbolIdentity('repo-a', { ...site, line1: null }, source)).toBeNull();
     expect(sourceIdentityContinuity(null, null)).toBe('needs-resolution');
+  });
+  it('keeps unknown indexed source versions explicit for populated and empty answers', () => {
+    for (const sites of [[site], []]) {
+      const evidence = unmeasuredSourceEvidence({ intent: 'references', sites }, {
+        repositoryId: 'repo-a', identityKind: 'registry', paths: ['src'], basis: 'indexed-code',
+      }, ['Index has no measured per-file snapshot.']);
+      expect(evidence.sourceScope).toEqual({ repositoryId: 'repo-a', identityKind: 'registry',
+        paths: ['src'], sourceFingerprint: null, supportingFiles: [] });
+      expect(evidence.siteIdentities).toEqual(sites.map((_site, siteIndex) => ({ siteIndex,
+        sourcePath: site.path, versionedSymbolId: null, contentHash: null })));
+      expect(evidence.relationships.every(edge => edge.knowledge === 'unknown' && edge.runtimeExecution === 'unknown')).toBe(true);
+      expect(evidence.graphScope.sourceCompleteness).toBe('unverified');
+    }
   });
 });
 
