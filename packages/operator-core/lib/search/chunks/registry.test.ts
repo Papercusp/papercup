@@ -50,7 +50,7 @@ describe('chunk surface registry', () => {
       .map(path => ({ path, body: readFileSync(join(dbos.pathname, path), 'utf8') }));
     const knowledgeSchedules = (inputs: Array<{ path: string; body: string }>) => {
       const declarations = new Map<string, ts.Node[]>();
-      const roots = new Set(['runEmbedBackfill', 'runChunkSyncTick', 'runDocSectionsSyncOnce',
+      const roots = new Set(['runEmbedBackfillOnce', 'runChunkSyncTick', 'runDocSectionsSyncOnce',
         'runHarnessDocSectionsSweep', 'indexReport']);
       const files = inputs.map(input => ({ ...input,
         ast: ts.createSourceFile(input.path, input.body, ts.ScriptTarget.Latest, true) }));
@@ -65,23 +65,37 @@ describe('chunk surface registry', () => {
         };
         visit(ast);
       }
-      const reaches = (node: ts.Node, targets: ReadonlySet<string>, seen = new Set<string>()): boolean => {
-        if (ts.isIdentifier(node)) {
-          if (targets.has(node.text)) return true;
-          if (seen.has(node.text)) return false;
-          const next = new Set([...seen, node.text]);
-          return (declarations.get(node.text) ?? []).some(value => reaches(value, targets, next));
+      const reaches = (node: ts.Node, targets: ReadonlySet<string>): boolean => {
+        const pending = [node];
+        const seenNames = new Set<string>();
+        const seenNodes = new Set<ts.Node>();
+        while (pending.length) {
+          const current = pending.pop()!;
+          if (seenNodes.has(current)) continue;
+          seenNodes.add(current);
+          if (ts.isIdentifier(current)) {
+            if (targets.has(current.text)) return true;
+            if (seenNames.has(current.text)) continue;
+            seenNames.add(current.text);
+            pending.push(...(declarations.get(current.text) ?? []));
+          } else {
+            if (ts.isPropertyAccessExpression(current) && targets.has(current.getText())) return true;
+            ts.forEachChild(current, child => { pending.push(child); });
+          }
         }
-        if (ts.isPropertyAccessExpression(node) && targets.has(node.getText())) return true;
-        let found = false;
-        ts.forEachChild(node, child => { if (reaches(child, targets, new Set(seen))) found = true; });
-        return found;
+        return false;
       };
       const registrations: Array<{ path: string; first: string }> = [];
+      const isSchedule = (node: ts.Node, seen = new Set<string>()): boolean => {
+        if (ts.isPropertyAccessExpression(node)) return node.getText() === 'DBOS.registerScheduled';
+        if (!ts.isIdentifier(node) || seen.has(node.text)) return false;
+        const next = new Set([...seen, node.text]);
+        return (declarations.get(node.text) ?? []).some(value => isSchedule(value, next));
+      };
       for (const { path, ast } of files) {
         const visit = (node: ts.Node) => {
           if (ts.isCallExpression(node) && node.arguments[0]
-            && reaches(node.expression, new Set(['DBOS.registerScheduled']))
+            && isSchedule(node.expression)
             && reaches(node.arguments[0], roots)) registrations.push({ path, first: node.arguments[0].getText(ast) });
           ts.forEachChild(node, visit);
         };
@@ -96,6 +110,8 @@ describe('chunk surface registry', () => {
     expect(knowledgeSchedules([...modules, { path: 'new-knowledge-scheduler.ts',
       body: 'import { runChunkSyncTick as rebuild } from "../search/chunks/tick"; const schedule = DBOS.registerScheduled; const unnamed = () => rebuild(); schedule(unnamed, {});' }]))
       .toHaveLength(2);
+    expect(knowledgeSchedules([{ path: 'cyclic-alias.ts',
+      body: 'const first = second; const second = first; DBOS.registerScheduled(first, {});' }])).toEqual([]);
     const backfillCalls = calls(source('../embed-backfill.ts')).map(call => call.callee);
     for (const child of ['runDocSectionsSyncOnce', 'runHarnessDocSectionsSweep', 'runChunkSyncTick']) {
       expect(backfillCalls, child).toContain(child);
