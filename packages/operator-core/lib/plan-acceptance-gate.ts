@@ -859,6 +859,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
         const preGrading = await readAndEvaluateAcceptanceBarLifecycle(planSlug, 'pre-grading', {
           expectedApplicable: true,
           ...(planHarnessSlug ? { harnessSlug: planHarnessSlug } : {}),
+          ...(opts.current ? { current: opts.current } : {}),
         });
         // P-038: the pre-grading verdict IS the explanation of this refusal — the ship-phase
         // codes include grading/author-verdict obligations nobody can work yet. Return it

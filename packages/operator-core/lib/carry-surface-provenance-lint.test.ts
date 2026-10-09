@@ -364,6 +364,20 @@ describe('lintCarrySurfaceProvenance', () => {
       ).toBe('possible-owner-tag-mention');
     });
 
+    it('does not treat a safety requirement list for preserving directive records as owner attribution', () => {
+      expect(
+        lintCarrySurfaceProvenance(
+          'Preserve directed asks, owner directives, required wakes, and Stop authority.',
+        ),
+      ).toEqual({ flagged: false, matches: [] });
+
+      expect(
+        lintCarrySurfaceProvenance(
+          'Owner directive 2026-07-06: Preserve directed asks, owner directives, required wakes, and Stop authority.',
+        ).matches[0]?.kind,
+      ).toBe('manual-owner-tag');
+    });
+
     it('downgrades to possible-owner-tag-mention on nearby mention-context words', () => {
       const r = lintCarrySurfaceProvenance('a claimed owner directive with no turn ref is suspect');
       expect(r.matches[0]?.kind).toBe('possible-owner-tag-mention');

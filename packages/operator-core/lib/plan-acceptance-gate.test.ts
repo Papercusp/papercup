@@ -639,6 +639,57 @@ describe('evaluatePlanAcceptanceGate', () => {
       expect(mockScorecards).not.toHaveBeenCalled();
     });
 
+    it.each(['bar_snapshot_grading_missing', 'bar_snapshot_grading_stale'] as const)(
+      'uses the supplied current proof when %s defers to pre-grading (WI-10007726)',
+      async (gradingCode) => {
+        const current = [{
+          planSlug: 'some-plan-2026-08-11',
+          specId: 'AUTO-BAR-R-1-P-001',
+          evidenceKind: 'test' as const,
+          evidenceRef: 'test:measured-proof',
+          sourceFingerprint: 'measured-current-source',
+          environmentFingerprint: 'measured-current-runtime',
+        }];
+        mockRubric.mockResolvedValue(acceptanceRubric());
+        mockScorecards.mockResolvedValue([]);
+        mockBarLifecycle.mockImplementation(async (_slug, phase, options) =>
+          verdict(phase, phase === 'ship'
+            ? [gradingCode]
+            : options?.current === current ? [] : ['bar_snapshot_proof_uncertain']));
+
+        const result = await evaluatePlanAcceptanceGate('some-plan-2026-08-11', { current });
+
+        expect(result).toMatchObject({ satisfied: false, code: 'acceptance_ungraded' });
+        expect(mockBarLifecycle).toHaveBeenCalledWith('some-plan-2026-08-11', 'pre-grading', {
+          expectedApplicable: true, current,
+        });
+      },
+    );
+
+    it('keeps caller-measured stale proof blocking at pre-grading (WI-10007726)', async () => {
+      const current = [{
+        planSlug: 'some-plan-2026-08-11',
+        specId: 'AUTO-BAR-R-1-P-001',
+        evidenceKind: 'test' as const,
+        evidenceRef: 'test:measured-proof',
+        sourceFingerprint: 'measured-changed-source',
+      }];
+      mockRubric.mockResolvedValue(acceptanceRubric());
+      mockScorecards.mockResolvedValue([]);
+      mockBarLifecycle.mockImplementation(async (_slug, phase, options) =>
+        verdict(phase, phase === 'ship'
+          ? ['bar_snapshot_grading_missing', 'bar_snapshot_proof_stale']
+          : options?.current === current ? ['bar_snapshot_proof_stale'] : []));
+
+      const result = await evaluatePlanAcceptanceGate('some-plan-2026-08-11', { current });
+
+      expect(result).toMatchObject({
+        satisfied: false, code: 'acceptance_bar_contract_not_ready', blockingPhase: 'pre-grading',
+      });
+      expect(result.blockingPhaseLifecycle?.codes).toEqual(['bar_snapshot_proof_stale']);
+      expect(mockScorecards).not.toHaveBeenCalled();
+    });
+
     it('exposes the ungraded refusal when only a stale rubric-identity card exists', async () => {
       mockRubric.mockResolvedValue(acceptanceRubric({ revision: 3 }));
       mockScorecards.mockResolvedValue([

@@ -53,11 +53,16 @@ it('delivers real plan, procedure and Report excerpts through native Codex turn-
       const receipt = JSON.parse(line!.slice('KNOWLEDGE_NATIVE_RECEIPT '.length));
       expect(receipt).toMatchObject({ workspace: expect.stringMatching(/^test-runtime-/),
         turnStart: true, midTurn: true, nativeClient: 'codex', hostStopped: true,
+        corpusReceiptIds: [expect.any(Number), expect.any(Number)],
+        stalledReceiptIds: [expect.any(Number), expect.any(Number)],
+        stalledSource: 'plan', healthySourcesRetained: ['doc', 'report'],
         bundleSha256: expect.stringMatching(/^[a-f0-9]{64}$/), requests: expect.any(Array) });
-      expect(receipt.requests.map((r: { status: number }) => r.status)).toEqual([200, 200]);
+      expect(receipt.requests.map((r: { status: number }) => r.status)).toEqual([200, 200, 200, 200]);
       expect(receipt.knowledge).toEqual([
         { planSlug: 'native-zephyrquartz-plan', docSlug: 'native-zephyrquartz-procedure' },
         { planSlug: 'native-cobaltquartz-plan', docSlug: 'native-cobaltquartz-procedure' },
+        { planSlug: 'native-amberquartz-plan', docSlug: 'native-amberquartz-procedure' },
+        { planSlug: 'native-jadequartz-plan', docSlug: 'native-jadequartz-procedure' },
       ]);
       console.info('KNOWLEDGE_NATIVE_VERIFIED ' + JSON.stringify(receipt));
     },

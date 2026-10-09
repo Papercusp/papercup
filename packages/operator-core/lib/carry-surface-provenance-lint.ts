@@ -457,6 +457,19 @@ function isOwnerDirectiveNounPossibleMention(line: string): boolean {
   return OWNER_DIRECTIVE_MENTION_CONTEXT_RE.test(line);
 }
 
+/** EI-25481622361549806: a generic safety requirement to preserve directive
+ * records names their category as the object of the imperative; it does not
+ * claim that the requirement itself came from the owner. Keep this exemption
+ * anchored to a line-opening "Preserve … owner directives," list so an explicit
+ * attribution prefix such as "Owner directive 2026-07-06: Preserve …" still
+ * reaches the manual-owner-tag warning. */
+const OWNER_DIRECTIVE_PRESERVATION_REQUIREMENT_RE =
+  /^\s*(?:(?:[-*+]\s+)|(?:\d+[.)]\s+))?preserve\b[^.!?\n]{0,60}\bowner\s+(?:directive|mandate)s?\s*,/i;
+
+function isOwnerDirectivePreservationRequirement(line: string): boolean {
+  return OWNER_DIRECTIVE_PRESERVATION_REQUIREMENT_RE.test(line);
+}
+
 /**
  * A "do not X until Y" match, but ONLY when it reads as an IMPERATIVE — no
  * expressed subject, the grammatical hallmark of a command — rather than a
@@ -896,6 +909,7 @@ export function lintCarrySurfaceProvenance(text: string | null | undefined): Pro
       // noun form is what a retraction of a noun-form assertion ("this is [self-imposed],
       // NOT an owner directive") is necessarily written in.
       if (isProvenanceWithdrawal(line)) continue;
+      if (isOwnerDirectivePreservationRequirement(line)) continue;
       if (isOwnerDirectiveNounPossibleMention(line)) {
         matches.push({ line: line.slice(0, MATCH_LINE_CAP), kind: 'possible-owner-tag-mention' });
         continue;

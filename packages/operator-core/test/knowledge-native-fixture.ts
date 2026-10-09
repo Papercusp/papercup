@@ -13,6 +13,52 @@ import { buildMemoryContextBlock } from '../lib/memory/injection';
 import { splitDocSections } from '../lib/search/doc-embed-sync';
 import { runChunkSyncTick } from '../lib/search/chunks/tick';
 import { PLANS_CHUNK_SURFACE } from '../lib/search/chunks/registry';
+import { CORPUS_SOURCE_NAMES } from '../lib/memory/corpus-recall-io';
+
+type SourceCall = { source: string; status: string; rows: number | null; reason: string | null };
+type CorpusReceipt = { outcome: string; returned: number; admitted: number;
+  stages: Array<{ lexical: { sourceCalls: SourceCall[] }; semantic: { sourceCalls: SourceCall[] } }> };
+
+async function readCorpusReceipt(sql: ReturnType<typeof getOrgPg>['sql'], workspace: string,
+  owner: string, surface: string, evidenceDir: string, filename: string, stalled = false) {
+  // The production writer deliberately runs asynchronously. Wait only for its
+  // persisted row; keep the native request and preparation clocks unchanged.
+  const deadline = Date.now() + 5_000;
+  let receipt: { id: number; admission: { corpus?: CorpusReceipt } } | undefined;
+  while (Date.now() < deadline && !receipt) {
+    const rows = await sql`SELECT to_jsonb(r) AS receipt FROM harness_shared.memory_recall_stats r
+      WHERE workspace_id = ${workspace} AND session_id = ${owner} AND surface = ${surface}
+      ORDER BY id DESC LIMIT 1`;
+    receipt = rows[0]?.receipt;
+    if (!receipt) await new Promise(done => setTimeout(done, 25));
+  }
+  writeFileSync(join(evidenceDir, filename), JSON.stringify({ owner, surface, receipt }));
+  assert.ok(receipt, `${surface} did not persist its execution receipt; see ${filename}`);
+  const corpus = receipt.admission.corpus;
+  assert.ok(corpus, `${surface} omitted completed corpus receipts; see ${filename}`);
+  assert.equal(corpus.outcome, 'ok');
+  assert.ok(corpus.returned > 0 && corpus.admitted > 0, 'delivered knowledge must have positive corpus counts');
+  assert.ok(corpus.stages?.length > 0, 'every executed corpus cascade must retain its stages');
+  for (const stage of corpus.stages) {
+    for (const leg of [stage.lexical, stage.semantic]) {
+      for (const source of CORPUS_SOURCE_NAMES) {
+        const call = leg.sourceCalls?.find(call => call.source === source);
+        assert.ok(call, `${surface} omitted ${source} execution/non-run receipt`);
+        assert.ok(['ran', 'errored', 'timed-out', 'blocked', 'not-run'].includes(call.status));
+        if (call.status === 'ran') assert.ok(typeof call.rows === 'number' && call.rows >= 0);
+        else assert.ok(call.reason && call.rows === null, 'non-run/error receipts must retain their reason');
+      }
+    }
+  }
+  const lexical = corpus.stages.flatMap(stage => stage.lexical.sourceCalls);
+  for (const source of stalled ? ['doc', 'report'] : ['plan', 'doc', 'report']) {
+    assert.ok(lexical.some(call => call.source === source && call.status === 'ran' && call.rows! > 0),
+      `${surface} lost the healthy ${source} source receipt`);
+  }
+  if (stalled) assert.ok(lexical.some(call => call.source === 'plan' && call.status === 'timed-out'),
+    `${surface} must distinguish the locked plan source from a healthy empty result`);
+  return receipt.id;
+}
 
 let host: ChildProcess | undefined;
 let hostIdentity: ReturnType<typeof readProcessIdentity>;
@@ -48,7 +94,7 @@ async function main() {
     const owner = 'su-private-knowledge-reader';
     const reports = [];
     const knowledge = [];
-    for (const token of ['zephyrquartz', 'cobaltquartz']) {
+    for (const token of ['zephyrquartz', 'cobaltquartz', 'amberquartz', 'jadequartz']) {
       const report = await publishReport(sql, { workspaceId: workspace, visibility: 'owner',
         title: 'Dated diagnostic evidence', bodyMd: 'Ordinary observations.\n'.repeat(600)
           + `\n## Diagnostic recovery\n${token} diagnostic snapshot recovery evidence. Retain the snapshot before restarting the diagnostic worker.` },
@@ -197,6 +243,7 @@ async function main() {
     assert.ok(turnStart.includes(knowledge[0].docSlug), 'native turn-start omitted the maintained procedure reference');
     assert.ok(turnStart.includes('Retain the snapshot'), 'native turn-start omitted the matching tail excerpt');
     assert.equal(JSON.parse(turnStart).hookSpecificOutput.hookEventName, 'UserPromptSubmit');
+    const turnStartReceipt = await readCorpusReceipt(sql, workspace, owner, 'turn-start', evidenceDir, 'turn-start-receipt.json');
     console.log('KNOWLEDGE_NATIVE_PHASE turn-start-delivered');
     const midTurn = await core.runInjection({ adapter, nativeEvent: 'PostToolUse',
       event: { tool_name: 'exec_command', tool_input: { cmd: 'rg cobaltquartz diagnostic snapshot recovery evidence' },
@@ -210,9 +257,50 @@ async function main() {
     assert.ok(!midTurn.includes(knowledge[0].planSlug), 'native mid-turn repeated the paid plan reference');
     assert.ok(!midTurn.includes(knowledge[0].docSlug), 'native mid-turn repeated the paid procedure reference');
     assert.equal(JSON.parse(midTurn).hookSpecificOutput.hookEventName, 'PostToolUse');
+    const midTurnReceipt = await readCorpusReceipt(sql, workspace, owner, 'mid-turn', evidenceDir, 'mid-turn-receipt.json');
+    // A real private-PG lock stalls only the plan source. Use a dedicated
+    // transaction so the observer and healthy sibling sources remain runnable.
+    const lock = await sql.reserve();
+    const stalledOwner = 'su-private-knowledge-stalled-reader';
+    const stalledEnv = { ...env, PAPERCUSP_SID: stalledOwner };
+    const stalledReceipts: number[] = [];
+    try {
+      await lock`BEGIN`;
+      await lock`SET LOCAL lock_timeout = '1s'`;
+      await lock`LOCK TABLE harness_shared.harness_plans IN ACCESS EXCLUSIVE MODE`;
+      const lockEvidence = await lock`SELECT pid, mode, granted FROM pg_locks
+        WHERE pid = pg_backend_pid() AND relation = 'harness_shared.harness_plans'::regclass
+          AND mode = 'AccessExclusiveLock'`;
+      assert.equal(lockEvidence[0]?.granted, true);
+      writeFileSync(join(evidenceDir, 'plan-lock.json'), JSON.stringify(lockEvidence));
+      for (const [index, nativeEvent, surface] of [[2, 'UserPromptSubmit', 'turn-start'],
+        [3, 'PostToolUse', 'mid-turn']] as const) {
+        const token = index === 2 ? 'amberquartz' : 'jadequartz';
+        const began = Date.now();
+        const payload = await core.runInjection({ adapter, nativeEvent,
+          event: nativeEvent === 'UserPromptSubmit'
+            ? { prompt: `${token} diagnostic snapshot recovery evidence`, cwd: e.HOME }
+            : { tool_name: 'exec_command', tool_input: { cmd: `rg ${token} diagnostic snapshot recovery evidence` },
+              tool_response: 'Investigating diagnostic snapshot recovery evidence', cwd: e.HOME },
+          env: stalledEnv, fetchImpl });
+        writeFileSync(join(evidenceDir, `stalled-${surface}.json`),
+          JSON.stringify({ requests, payload, durationMs: Date.now() - began }));
+        assert.ok(payload?.includes(knowledge[index].docSlug), `${surface} lost healthy procedure while plans stalled`);
+        assert.ok(payload.includes(reports[index].reportId), `${surface} lost healthy report while plans stalled`);
+        assert.ok(!payload.includes(knowledge[index].planSlug), 'locked plan must not masquerade as delivered');
+        assert.equal(JSON.parse(payload).hookSpecificOutput.hookEventName, nativeEvent);
+        stalledReceipts.push(await readCorpusReceipt(sql, workspace, stalledOwner, surface,
+          evidenceDir, `stalled-${surface}-receipt.json`, true));
+      }
+    } finally {
+      await lock`ROLLBACK`;
+      lock.release();
+    }
+    console.log('KNOWLEDGE_NATIVE_PHASE stalled-source-verified');
     await stopHost();
     console.log('KNOWLEDGE_NATIVE_RECEIPT ' + JSON.stringify({ workspace, requests, reportIds: reports.map(r => r.reportId),
-      knowledge,
+      knowledge, corpusReceiptIds: [turnStartReceipt, midTurnReceipt], stalledReceiptIds: stalledReceipts,
+      stalledSource: 'plan', healthySourcesRetained: ['doc', 'report'],
       nativeClient: 'codex', turnStart: true, midTurn: true, hostPid: host.pid, hostStopped: true, bundleSha256 }));
   } finally {
     // Capture original pipeline receipts before private data is disposed.

@@ -7058,8 +7058,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
                 lastExhaustResetAt = 0;
 
                 if (classification?.kind === 'credit-wall') {
-                  // Credit exhaustion (402 billing_error, 400 "specified API usage
-                  // limits", 429 enforced_spend_limit_reached) is a billing WALL on
+                  // Credit exhaustion (402 billing_error, 400 billing_error / low-credit /
+                  // specified API-usage-limit, 429 enforced_spend_limit_reached) is a billing WALL on
                   // THIS account, not a transient (plan anthropic-credits-gateway
                   // D-004): pause it until its reset so the selector skips it, then
                   // rotate. The cause is logged; the body and credential are not.
