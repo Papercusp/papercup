@@ -27,6 +27,7 @@ import {
 import { getRubric } from './rubrics';
 import {
   acquireGradingAuditSubjectMutex,
+  cancelSupersededPendingGradingAuditAtomically,
   isCurrentSourceAuditResponder,
   listScorecards,
   parseGradedGeneration,
@@ -286,6 +287,8 @@ export interface DispatchPendingGradingAuditsInput {
 
 export interface DispatchPendingGradingAuditsDeps {
   listScorecards?: typeof listScorecards;
+  /** Atomically close the old audit lease after a newer card supersedes it. */
+  cancelSuperseded?: typeof cancelSupersededPendingGradingAuditAtomically;
   getRubric?: typeof getRubric;
   launch?: GradingAuditLaunchHandler;
   route?: typeof routeSourceGradingAudit;
@@ -1177,6 +1180,72 @@ export async function dispatchPendingGradingAudits(
     ...(explicitTargetIds.length > 0 ? { issueIds: explicitTargetIds } : {}),
     limit: explicitTargetIds.length > 0 ? GRADING_AUDIT_DISPATCH_LIMIT : GRADING_AUDIT_BACKLOG_SCAN_LIMIT,
   });
+  const cancelSuperseded = deps.cancelSuperseded ?? cancelSupersededPendingGradingAuditAtomically;
+  const readTasksForCleanup = deps.listTasks ?? listTasks;
+  const terminateSupersededTask = deps.killTask ?? killTask;
+  const supersededPendingCards = cards
+    .filter((card) => card.gradingAudit?.state === 'pending' && card.supersededBy)
+    .slice(0, GRADING_AUDIT_DISPATCH_LIMIT);
+  await mapWithConcurrency(
+    supersededPendingCards,
+    GRADING_AUDIT_DISPATCH_CONCURRENCY,
+    async (card) => {
+      const supersedingIssueId = card.supersededBy;
+      if (!supersedingIssueId) return;
+      try {
+        await cancelSuperseded(card.issueId, supersedingIssueId, workspaceId ? { workspaceId } : {});
+      } catch (error) {
+        console.warn(
+          `[grading-integrity] superseded audit stamp for ${card.issueId} could not be cancelled:`,
+          error instanceof Error ? error.message : error,
+        );
+      }
+      if (!workspaceId) return;
+      let tasks: Awaited<ReturnType<typeof listTasks>>;
+      try {
+        tasks = await readTasksForCleanup({
+          workspaceId,
+          states: ['pending', 'running'],
+          labelPrefix: `${GRADING_AUDIT_TASK_LABEL_PREFIX}${card.issueId}`,
+          limit: 20,
+        });
+      } catch (error) {
+        console.warn(
+          `[grading-integrity] superseded auditor task scan failed for ${card.issueId}:`,
+          error instanceof Error ? error.message : error,
+        );
+        return;
+      }
+      const exactPrefix = `${GRADING_AUDIT_TASK_LABEL_PREFIX}${card.issueId}`;
+      const matchingTasks = tasks.filter((task) => {
+        const label = task.detail?.label;
+        return typeof label === 'string' && (label === exactPrefix || label.startsWith(`${exactPrefix}:`));
+      });
+      for (const task of matchingTasks) {
+        try {
+          const result = await terminateSupersededTask(task.taskId, {
+            includeSubtree: true,
+            escalateAfterMs: 5_000,
+          });
+          if (
+            !result.ok &&
+            result.error !== 'not_live' &&
+            result.error !== 'task_not_found' &&
+            result.error !== 'already_gone'
+          ) {
+            console.warn(
+              `[grading-integrity] superseded auditor task '${task.taskId}' for ${card.issueId} could not be retired: ${result.error}`,
+            );
+          }
+        } catch (error) {
+          console.warn(
+            `[grading-integrity] superseded auditor task '${task.taskId}' for ${card.issueId} retirement failed:`,
+            error instanceof Error ? error.message : error,
+          );
+        }
+      }
+    },
+  );
   const pendingCards = cards.filter(currentPendingScorecard);
   const pendingById = new Map(pendingCards.map((card) => [card.issueId, card] as const));
   const requestedTargetIds =

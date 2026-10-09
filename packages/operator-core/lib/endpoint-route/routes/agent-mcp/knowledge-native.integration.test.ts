@@ -2,6 +2,7 @@ import { fork } from 'node:child_process';
 import { resolve, join } from 'node:path';
 import { mkdir, symlink, rm } from 'node:fs/promises';
 import { createRequire } from 'node:module';
+import type {} from '../../../../test/knowledge-native-fixture';
 import { expect, it } from 'vitest';
 import { captureIsolatedWorker, isolatedWorkerOptions, recordIsolatedIntegrationProof } from '../../../../test/isolated-integration-proof';
 
@@ -24,7 +25,7 @@ it('delivers real Reports excerpts through native Codex turn-start and mid-turn 
       // them from the evidence artifact's location before paying private PG boot.
       await symlink(join(root, 'node_modules'), join(evidenceDir, 'node_modules'), 'dir');
       expect(createRequire(join(evidenceDir, 'hono-host.mjs')).resolve('mingo')).toBeTruthy();
-      const env = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0',
+      const env: NodeJS.ProcessEnv = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0',
         KNOWLEDGE_NATIVE_EVIDENCE_DIR: evidenceDir, TMPDIR: join(evidenceDir, 'tmp') };
       delete env.PC_HEAVY_PREEMPT_READY_FILE;
       delete env.PC_HEAVY_PSI_FINALIZATION_FILE;

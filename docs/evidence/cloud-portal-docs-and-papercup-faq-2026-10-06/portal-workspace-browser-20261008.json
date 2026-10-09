@@ -100,6 +100,44 @@
         "Harness audit covers readiness branching and ESM/CommonJS collection failure"
       ],
       "scope": "Runner diagnostics only; preserves the original 2235 browser failure and earlier passing API/account evidence; no new browser acceptance or shipment verdict"
+    },
+    {
+      "attempt": "D031-20261009T0512",
+      "observedAt": "2026-10-09T05:12:09.695Z",
+      "verdict": "passed-selected-workspace-case",
+      "distinctReplacement": true,
+      "buildId": "a3vvr3As2z-SKFdzH_pQr",
+      "sourceRootDigest": "896fe9c9c5e330a42fa112456a7ebd39e241ea1ca246dc20bf27a30533714d9d",
+      "runnerCommit": "61a8b7e5f5ee828d8e21fce3470fa192e023d59b",
+      "fixtureCommit": "2e52955ace93bf83fbabf282ce5eb7347ce0a24b",
+      "operatorCommit": "abc9a41cb7421a53e2d112925d981c4e9a183208",
+      "reportStats": {
+        "startTime": "2026-10-09T05:12:09.695Z",
+        "duration": 35539.133,
+        "expected": 1,
+        "skipped": 0,
+        "unexpected": 0,
+        "flaky": 0
+      },
+      "controlStatus": 200,
+      "sessionHasAuthorizedWorkspace": true,
+      "providerVisible": true,
+      "healthUnverifiedExplanation": true,
+      "servedWrapperExitCode": 0,
+      "operatorWrapperExitCode": 0,
+      "privateHomeRemoved": true,
+      "ownConfigRemoved": true,
+      "evidence": "portal-workspace-browser-d031-20261009.json",
+      "scope": "Real admission, session and served resource listing with inert provisioning transport; excludes actual provider readiness",
+      "notVerified": [
+        "Actual provider or connector readiness",
+        "Provisioning or payment behavior",
+        "Root cause or durable repair of historical WI-10007627",
+        "Full R-1/R-2 acceptance",
+        "Real 3-participant by 4-task novice study",
+        "Independent acceptance",
+        "Exact production shipment"
+      ]
     }
   ],
   "notVerified": [

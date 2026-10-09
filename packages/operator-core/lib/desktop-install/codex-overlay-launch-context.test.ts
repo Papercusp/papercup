@@ -89,6 +89,13 @@ const CODEX_GUIDANCE = [
   'each named `ptool` invocation opens its own MCP\nconnection and lists the current catalog',
   'The CLI uses its\nown connection, so it does not repair the old direct-wrapper session.',
   'that client reconnects and refreshes its list.',
+  // Native-owner authority refusal: use the authenticated ptool route without weakening the boundary.
+  '`native_tool_owner_unsupported_capability`',
+  'host-local `authenticatedPrincipal`',
+  'Do NOT retry the same direct wrapper',
+  'Switch this and the remaining Papercusp\ncalls in the session to the installed',
+  'A successful ptool call verifies the CLI route only',
+  'not a reason to loosen\n`authenticatedPrincipal` forwarding.',
 ] as const;
 
 describe('codex overlay reaches live launch context (P-010)', () => {

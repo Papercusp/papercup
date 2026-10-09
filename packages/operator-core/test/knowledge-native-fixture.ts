@@ -7,6 +7,7 @@ import { join, resolve } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
 import { publishReport, getReport } from '../lib/report-library';
 import { indexReport } from '../lib/search/report-index';
+import { createReportSearchSource } from '../lib/agent-tools/search/report-source';
 import { readProcessIdentity } from '../lib/process-identity';
 
 let host: ChildProcess | undefined;
@@ -54,6 +55,15 @@ async function main() {
       assert.ok(stored?.bodyMd.includes(token), 'canonical report readback must retain the full tail');
       reports.push(report);
     }
+    const source = createReportSearchSource({ ownerId: owner, potSlug: workspace },
+      { harnessSlugs: [workspace], automatic: true });
+    const control = await source.lexical!({ sql, workspaceId: workspace, scopeFilter: null, limit: 20,
+      query: 'zephyrquartz diagnostic snapshot recovery evidence' });
+    assert.deepEqual(control.map(hit => hit.row.source_id), [reports[0].reportId], 'known fixture must reach the real search source');
+    const warmReport = await publishReport(sql, { workspaceId: workspace, visibility: 'workspace',
+      title: 'Warm corpus control', bodyMd: 'warmquartz diagnostic snapshot recovery evidence. Retain the snapshot.' },
+    { authorOwnerId: 'su-private-knowledge-warmup', harnessSlug: workspace });
+    await indexReport(sql, warmReport, null);
     console.log('KNOWLEDGE_NATIVE_PHASE fixtures-ready');
     const bundle = join(evidenceDir, 'hono-host.mjs');
     console.log('KNOWLEDGE_NATIVE_PHASE bundle-start');
@@ -81,8 +91,26 @@ async function main() {
     assert.ok(healthy, 'private request host never became ready');
     console.log('KNOWLEDGE_NATIVE_PHASE host-ready');
     // Import the real native adapter and transport, preserving their actual walls.
+    // @ts-ignore -- maintained native hook transport is a JavaScript module.
     const core = await import('../../../apps/operator/scripts/hooks/inject/core.mjs');
+    // @ts-ignore -- maintained native Codex adapter is a JavaScript module.
     const adapter = await import('../../../apps/operator/scripts/hooks/inject/adapters/codex.mjs');
+    // Readiness is measured through the real port and its unchanged wall. Use a
+    // separate owner so warming never consumes the reader's epoch/dedup state.
+    const warmups = [];
+    let ready = false;
+    for (let attempt = 0; attempt < 6 && !ready; attempt++) {
+      const began = Date.now();
+      const payload = await core.runInjection({ adapter, nativeEvent: 'UserPromptSubmit',
+        event: { prompt: 'warmquartz diagnostic snapshot recovery evidence', cwd: e.HOME },
+        env: { ...e, PAPERCUSP_SID: `su-private-knowledge-warmup-${attempt}`, PAPERCUSP_HARNESS_SLUG: workspace } });
+      ready = Boolean(payload?.includes(warmReport.reportId));
+      warmups.push({ attempt, durationMs: Date.now() - began, ready, payload });
+      writeFileSync(join(evidenceDir, 'warmup.json'), JSON.stringify(warmups));
+      if (!ready) await new Promise(done => setTimeout(done, 250));
+    }
+    assert.ok(ready, 'actual native knowledge port never met its warm readiness precondition; see warmup.json');
+    console.log('KNOWLEDGE_NATIVE_PHASE knowledge-ready');
     const requests: Array<{ url: string; status: number }> = [];
     const fetchImpl: typeof fetch = async (url, init) => {
       const response = await fetch(url, init);
@@ -108,7 +136,17 @@ async function main() {
     await stopHost();
     console.log('KNOWLEDGE_NATIVE_RECEIPT ' + JSON.stringify({ workspace, requests, reportIds: reports.map(r => r.reportId),
       nativeClient: 'codex', turnStart: true, midTurn: true, hostPid: host.pid, hostStopped: true, bundleSha256 }));
-  } finally { await stopHost(); await sql.end(); }
+  } finally {
+    // Capture original pipeline receipts before private data is disposed.
+    try {
+      const rows = await sql`SELECT to_jsonb(r) AS receipt FROM harness_shared.memory_recall_stats r
+        WHERE workspace_id = ${workspace} ORDER BY created_at DESC LIMIT 12`;
+      writeFileSync(join(evidenceDir, 'recall-receipts.json'), JSON.stringify(rows));
+    } catch (error: any) {
+      writeFileSync(join(evidenceDir, 'recall-receipts.json'), JSON.stringify({ captureError: error.message }));
+    }
+    await stopHost(); await sql.end();
+  }
 }
 main().catch(error => {
   console.error('KNOWLEDGE_NATIVE_FAILURE ' + JSON.stringify({ message: error.message, stack: error.stack }));

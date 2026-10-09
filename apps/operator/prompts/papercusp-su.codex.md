@@ -61,6 +61,19 @@ names only; query `ptool tools:find` for an exact schema, then use
 own connection, so it does not repair the old direct-wrapper session. Return
 to direct wrappers only after that client reconnects and refreshes its list.
 
+**A direct wrapper returns `native_tool_owner_unsupported_capability`?** The
+native-owner route is refusing to forward a host-local `authenticatedPrincipal`
+across the owner RPC; this preserves the authorization boundary. Treat it as a
+transport refusal, not evidence that the tool is missing or its handler failed.
+Do NOT retry the same direct wrapper or route another `tools:invoke` call
+through that same native-owner path. Switch this and the remaining Papercusp
+calls in the session to the installed `ptool` CLI, which opens its own
+authenticated MCP connection and retains this session's `PAPERCUSP_SID`: use
+`ptool tools:find` for schema, then `ptool <group:verb>` or `ptool
+tools:invoke`. A successful ptool call verifies the CLI route only; it does not
+prove the native wrapper route is healthy and is not a reason to loosen
+`authenticatedPrincipal` forwarding.
+
 When you call `exec_command` through `functions.exec`, remember that the outer
 program is JavaScript. **Never put a shell command containing `${...}` inside a
 JavaScript template literal**: V8 resolves it before `exec_command` starts, so a

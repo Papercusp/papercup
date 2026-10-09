@@ -25,7 +25,7 @@ import * as path from 'node:path';
 import { PassThrough } from 'node:stream';
 import { promisify } from 'node:util';
 import { Session as InspectorSession } from 'node:inspector';
-import { performance } from 'node:perf_hooks';
+import { monitorEventLoopDelay, performance } from 'node:perf_hooks';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { parseSseStream } from '@papercusp/sse';
 import type { ClaudeEngineOptions, ClaudeSuEngine } from '../su-session-claude-engine';
@@ -600,6 +600,50 @@ function traceTiming(kind: string, fields: Record<string, unknown> = {}): void {
     timingTrace.push({ atMs: performance.now(), kind, ...fields });
   }
 }
+
+type ActiveLaunchEventLoopDiagnostic = { finish: (reason: string) => void };
+const activeLaunchEventLoopDiagnostics = new Set<ActiveLaunchEventLoopDiagnostic>();
+
+function beginLaunchEventLoopDiagnostic(input: { agent_chat_id?: unknown; harness_slug?: unknown } | null) {
+  if (process.env.PUI_LAUNCH_EVENT_LOOP_DIAGNOSTICS !== '1') return null;
+
+  const resolutionMs = 10;
+  const histogram = monitorEventLoopDelay({ resolution: resolutionMs });
+  const startedAt = performance.now();
+  const chatId = typeof input?.agent_chat_id === 'string' ? input.agent_chat_id : null;
+  const harnessSlug = typeof input?.harness_slug === 'string' ? input.harness_slug : null;
+  // Match launchStageTracer's key exactly: workspace:harness:agent_chat_id.
+  const correlationId = chatId && harnessSlug ? `${WORKSPACE}:${harnessSlug}:${chatId}` : null;
+  let finished = false;
+  histogram.enable();
+
+  const diagnostic: ActiveLaunchEventLoopDiagnostic = {
+    finish(reason) {
+      if (finished) return;
+      finished = true;
+      histogram.disable();
+      activeLaunchEventLoopDiagnostics.delete(diagnostic);
+      const sampleCount = Number(histogram.count);
+      const toMs = (value: number) => sampleCount > 0 && Number.isFinite(value)
+        ? Number((value / 1_000_000).toFixed(2)) : null;
+      console.info('PUI_LAUNCH_EVENT_LOOP_DIAGNOSTIC', JSON.stringify({
+        correlationId,
+        reason,
+        elapsedMs: Number((performance.now() - startedAt).toFixed(2)),
+        resolutionMs,
+        sampleCount,
+        minMs: toMs(histogram.min),
+        meanMs: toMs(histogram.mean),
+        maxMs: toMs(histogram.max),
+        p50Ms: toMs(histogram.percentile(50)),
+        p99Ms: toMs(histogram.percentile(99)),
+      }));
+    },
+  };
+  activeLaunchEventLoopDiagnostics.add(diagnostic);
+  return diagnostic;
+}
+
 function profileCommand(method: string): Promise<unknown> {
   return new Promise((resolve, reject) => timingInspector!.post(method, (error, result) => {
     if (error) reject(error);
@@ -1971,9 +2015,11 @@ beforeAll(async () => {
       const host = scriptedEngine.engines.at(-1)?.adapter.host;
       if (isCommand && transportFault === 'refuse') host?.transition('starting', 'injected readiness withdrawal');
       let response: Response;
+      const launchEventLoopDiagnostic = isLaunch ? beginLaunchEventLoopDiagnostic(launchInput) : null;
       try {
         response = await app.fetch(request, env);
       } catch (error) {
+        launchEventLoopDiagnostic?.finish('dispatch-error');
         console.info('PUI_REQUEST_FAILURE', JSON.stringify({ path: pathname,
           message: error instanceof Error ? error.message : String(error) }));
         throw error;
@@ -2046,8 +2092,10 @@ beforeAll(async () => {
           // text/event-stream into a parse exception and an artificial HTTP 500.
           const observed = response.clone();
           void (async () => {
+            let sawLaunchResult = false;
             for await (const event of parseSseStream(observed.body)) {
               if (event.event !== 'launch-result') continue;
+              sawLaunchResult = true;
               const terminal = JSON.parse(event.data) as { httpStatus?: number; body?: Record<string, unknown> };
               const body = terminal.body ?? {};
               Object.assign(observation, {
@@ -2059,9 +2107,16 @@ beforeAll(async () => {
                 ...(body.error ? { errorCode: body.code,
                   error: (typeof body.error === 'string' ? body.error : JSON.stringify(body.error)).slice(0, 500) } : {}),
               });
+              launchEventLoopDiagnostic?.finish('launch-result');
             }
-          })().catch((error: unknown) => console.info('PUI_LAUNCH_STREAM_OBSERVATION_FAILURE',
-            error instanceof Error ? error.message : String(error)));
+            if (!sawLaunchResult) launchEventLoopDiagnostic?.finish('stream-ended-without-result');
+          })().catch((error: unknown) => {
+            launchEventLoopDiagnostic?.finish('stream-error');
+            console.info('PUI_LAUNCH_STREAM_OBSERVATION_FAILURE',
+              error instanceof Error ? error.message : String(error));
+          });
+        } else if (isLaunch) {
+          launchEventLoopDiagnostic?.finish('response');
         }
       }
       return response;
@@ -2108,6 +2163,9 @@ afterAll(async () => {
   ]);
 }, 120_000);
 
+afterEach(() => {
+  for (const diagnostic of activeLaunchEventLoopDiagnostics) diagnostic.finish('test-finished');
+});
 afterEach(stopEngines);
 // A session end schedules delayed maintenance (the archive pass, the lease
 // release). Stop what a case scheduled when it ends, so a pass never lands in

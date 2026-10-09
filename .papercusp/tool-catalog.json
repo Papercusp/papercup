@@ -18085,7 +18085,7 @@
       "guidance": {
         "when": "Diagnostics — \"what are the other agents doing?\" or \"why am I blocked?\". Cheap, MVCC read.",
         "notWhen": "Before every acquire — locks:acquire already returns busy context. Use queue when the user asks.",
-        "chaining": "Workspace-global diagnostic — omit harness; omit coordination_domain for every checkout or pass a physical repository root for one checkout. Omit paths for all rows or pass exact paths (paths:[] is intentionally empty); optionally filter owner?/include_completed?. external_paths may cover at most one managed repository per request; query each repository separately and do not mix managed files with ordinary home/runtime files. For a home or XDG_RUNTIME_DIR file locked via locks:acquire external_paths, pass the same absolute path as external_paths here; it resolves to the same repository-relative or reserved external key. Release a held row with its returned lock_id via locks:release; paths alone is not a release selector."
+        "chaining": "Workspace-global: omit harness. Omit coordination_domain for every checkout or pass one physical repository root. Omit paths for all rows; paths:[] matches none. Filter owner/include_completed as needed. For absolute HOME/XDG_RUNTIME_DIR files use external_paths; query one managed repository per request and separately from ordinary home/runtime files. Release with the returned lock_id; paths are not a release selector."
       }
     },
     {
@@ -28845,8 +28845,8 @@
       ],
       "guidance": {
         "when": "When finished owner-facing writing should remain discoverable: audits, reviews, postmortems, analyses, status digests, or proposals.",
-        "notWhen": "Use `work_items:checkpoint` for in-flight state, `facts:assert` for standing conclusions, `plans:add-decision` for cross-lane rulings, and `coord:send` for agent messages. Do not republish a just-published typo unless it warrants a new lineage entry. A reusable runbook belongs in maintained docs through `docs:author`; a report alone is not the current procedural store.",
-        "chaining": "reports:publish → reports:get { id: report_id } → verify the complete body and visibility → cite. Claim saved or delivered only after readback succeeds. Corrections: read the original → publish with `supersedes: id` → reports:get with the new report_id → verify the correction → cite it. `reports:list` shows editions and lineage."
+        "notWhen": "Use `work_items:checkpoint` for in-flight state, `facts:assert` for standing conclusions, `plans:add-decision` for cross-lane rulings, and `coord:send` for agent messages. Reusable procedures belong in `docs:author`. Minor typos rarely warrant a new edition; corrections use `supersedes`.",
+        "chaining": "After publishing, call `reports:get` with the id and verify the complete body and visibility before citing. For corrections, read the original, publish with `supersedes`, then verify the new id. `reports:list` shows lineage."
       }
     },
     {

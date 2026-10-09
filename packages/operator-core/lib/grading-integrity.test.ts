@@ -117,6 +117,7 @@ function deps() {
     reason: 'existing router: no_qualified_responder',
   });
   const listScorecards = vi.fn<ListScorecards>().mockResolvedValue([]);
+  const cancelSuperseded = vi.fn(async () => false);
   const getRubric = vi.fn<GetRubric>().mockResolvedValue(standardRubric());
   const launch = vi
     .fn<Launch>()
@@ -144,6 +145,7 @@ function deps() {
   const listWorkspaceWideLoopStanddownOwners = vi.fn(async (_workspaceId: string, _nowMs: number) => new Set<string>());
   return {
     listScorecards,
+    cancelSuperseded,
     getRubric,
     launch,
     route,
@@ -324,6 +326,54 @@ describe('retained grading auditor lease delivery (EI-25289706163098558)', () =>
 });
 
 describe('dispatchPendingGradingAudits', () => {
+  it('cancels the pending lease and retires its live auditor when the target was superseded', async () => {
+    const d = deps();
+    const issueId = 'EI-superseded-audit';
+    const supersederId = 'EI-current-audit';
+    d.listScorecards.mockResolvedValue([
+      card(issueId, {
+        supersededBy: supersederId,
+        gradingAudit: {
+          state: 'pending',
+          metaRubricRef: GRADING_INTEGRITY_RUBRIC_REF,
+          stampedAt: '2026-10-08T02:01:07.761Z',
+          dispatchReservation: {
+            key: `grading-audit:${issueId}`,
+            reservedAt: '2026-10-08T02:01:10.391Z',
+          },
+        },
+      }),
+    ]);
+    d.listTasks.mockResolvedValue([
+      {
+        taskId: 'task-superseded-auditor',
+        state: 'running',
+        detail: { label: `grading-audit:${issueId}` },
+      } as unknown as TaskRow,
+    ]);
+    const cancelSuperseded = vi.fn(async () => true);
+    const killTask = vi.fn(async (taskId: string) => ({ ok: true as const, taskId, action: 'kill' }));
+
+    const result = await dispatchPendingGradingAudits(
+      { ctx },
+      { ...d, cancelSuperseded, killTask },
+    );
+
+    expect(cancelSuperseded).toHaveBeenCalledWith(issueId, supersederId, { workspaceId: 'ws-test' });
+    expect(d.listTasks).toHaveBeenCalledWith({
+      workspaceId: 'ws-test',
+      states: ['pending', 'running'],
+      labelPrefix: `grading-audit:${issueId}`,
+      limit: 20,
+    });
+    expect(killTask).toHaveBeenCalledWith('task-superseded-auditor', {
+      includeSubtree: true,
+      escalateAfterMs: 5_000,
+    });
+    expect(d.reserve).not.toHaveBeenCalled();
+    expect(result.receipts).toEqual([]);
+  });
+
   it('does not dispatch an audit for a stale or unbound rubric-subject attestation', async () => {
     const d = deps();
     d.listScorecards.mockResolvedValue([

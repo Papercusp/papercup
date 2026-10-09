@@ -1960,6 +1960,69 @@ export async function retractScorecardAtomically(
   });
 }
 
+/**
+ * Cancel a scorecard's pending grading audit once its exact replacement exists.
+ * This shares the read-time supersession predicate used by scorecards:get and
+ * clears the active lease in the same row update, fencing any auditor already
+ * dispatched against an older candidate snapshot.
+ */
+export async function cancelSupersededPendingGradingAuditAtomically(
+  issueId: string,
+  supersedingIssueId: string,
+  deps: ScorecardAtomicWriteDeps & {
+    workspaceId?: string;
+    notifySyncInvalidate?: (key: 'scorecards.list' | 'rubrics.trend' | 'learning.releaseReadiness') => void;
+  } = {},
+): Promise<boolean> {
+  const workspaceId =
+    deps.workspaceId?.trim() || await (deps.resolveWorkspace ?? resolveIssueWorkspace)(issueId);
+  const transact = deps.transact ?? boundedOrgTxn;
+  const updated = await transact((tx: OrgSql) => tx<{ feature_id: string }[]>`
+    UPDATE harness_shared.work_items AS target
+       SET payload = jsonb_set(
+             COALESCE(target.payload, '{}'::jsonb),
+             '{observation,gradingAudit}',
+             (
+               target.payload->'observation'->'gradingAudit'
+               || jsonb_build_object('state', 'cancelled')
+             ) #- '{dispatchReservation}' #- '{dispatchBackoff}',
+             true
+           ),
+           origin = 'local',
+           updated_ts = ${Date.now()}
+     WHERE target.workspace_id = ${workspaceId}
+       AND target.feature_id = ${issueId}
+       AND target.item_kind = ANY (ARRAY['bug', 'change', 'task'])
+       AND target.payload->'observation'->'gradingAudit'->>'state' = 'pending'
+       AND EXISTS (
+         SELECT 1
+           FROM harness_shared.work_items AS superseder
+          WHERE superseder.workspace_id = target.workspace_id
+            AND superseder.feature_id = ${supersedingIssueId}
+            AND superseder.item_kind = ANY (ARRAY['bug', 'change', 'task'])
+            AND superseder.payload->'observation'->>'supersedes' = target.feature_id
+            AND superseder.payload->'observation'->>'rubricRef' = target.payload->'observation'->>'rubricRef'
+            AND superseder.payload->'observation'->>'sourceHive' IS NOT DISTINCT FROM target.payload->'observation'->>'sourceHive'
+       )
+    RETURNING target.feature_id`);
+  if (updated.length === 0) return false;
+
+  if (deps.notifySyncInvalidate) {
+    deps.notifySyncInvalidate('scorecards.list');
+    deps.notifySyncInvalidate('rubrics.trend');
+    deps.notifySyncInvalidate('learning.releaseReadiness');
+  } else {
+    void trackDetached(import('./sync-sse'))
+      .then((m) => {
+        m.notifySyncInvalidate('scorecards.list');
+        m.notifySyncInvalidate('rubrics.trend');
+        m.notifySyncInvalidate('learning.releaseReadiness');
+      })
+      .catch(() => {});
+  }
+  return true;
+}
+
 /** Return the subject observation with a withdrawn audit's settlement cleared. */
 export function resetGradingAuditStampForRetraction(
   rawSubjectObservation: unknown,
