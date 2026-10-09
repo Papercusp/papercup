@@ -2194,6 +2194,50 @@ describe('work-item admission promoter (real Postgres)', () => {
     ]);
   });
 
+  it('binds fail-open receipts to their exact producing runs even when timestamps coincide', async () => {
+    const legacyReceipt = { actor: 'system:work-item-admission-fail-open', at: new Date(NOW).toISOString() };
+    await seedItem({ id: 'WI-legacy-run', admission: 'unreviewed', payload: { admissionFailOpen: legacyReceipt } });
+    const run = (runId: string) => runWorkItemAdmissionFailOpen({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId,
+      sql: db.sql,
+      now: () => NOW,
+      onNewlyAdmitted: async () => {},
+    });
+
+    await seedItem({ id: 'WI-run-a', createdAtMs: NOW - 61 * 60_000, vector: null });
+    expect((await run('fail-open-exact-a')).autoPromoted).toEqual(['WI-run-a']);
+    await seedItem({ id: 'WI-run-b', createdAtMs: NOW - 61 * 60_000, vector: null });
+    expect((await run('fail-open-exact-b')).autoPromoted).toEqual(['WI-run-b']);
+
+    const rows = await db.sql<Array<{
+      feature_id: string;
+      receipt: { at: string; runId?: string };
+      producing_run: string | null;
+      producing_runtime: Record<string, unknown> | null;
+    }>>`
+      SELECT wi.feature_id, wi.payload->'admissionFailOpen' AS receipt,
+             ar.id AS producing_run, ar.detail->'producingRuntime' AS producing_runtime
+        FROM harness_shared.work_items wi
+        LEFT JOIN harness_shared.admission_runs ar
+          ON ar.workspace_id = wi.workspace_id
+         AND ar.id = wi.payload #>> '{admissionFailOpen,runId}'
+       WHERE wi.workspace_id = ${WS} AND wi.harness_slug = ${HARNESS}
+       ORDER BY wi.feature_id`;
+    expect(rows.map(({ feature_id, producing_run }) => ({ feature_id, producing_run }))).toEqual([
+      { feature_id: 'WI-legacy-run', producing_run: null },
+      { feature_id: 'WI-run-a', producing_run: 'fail-open-exact-a' },
+      { feature_id: 'WI-run-b', producing_run: 'fail-open-exact-b' },
+    ]);
+    expect(rows[0]!.receipt).toEqual(legacyReceipt); // no guessed historical backfill
+    expect(rows[1]!.receipt.at).toBe(rows[2]!.receipt.at); // timestamps cannot identify this producer
+    expect(rows[1]!.receipt.runId).toBe('fail-open-exact-a'); // the second tick preserves the first receipt
+    for (const row of rows.slice(1)) {
+      expect(row.producing_runtime).toMatchObject({ schemaVersion: 1, pid: process.pid });
+    }
+  });
+
   it('caps each fail-open update at the oldest eligible rows', async () => {
     const firstCreatedAt = NOW - 2 * 60 * 60_000;
     const count = DEFAULT_FAIL_OPEN_BATCH_SIZE + 1;

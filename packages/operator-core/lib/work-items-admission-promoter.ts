@@ -5675,6 +5675,7 @@ export async function runWorkItemAdmissionFailOpen(opts: {
                  'admissionFailOpen',
                  jsonb_build_object(
                    'actor', ${FAIL_OPEN_ACTOR}::text,
+                   'runId', ${runId}::text,
                    'reason', 'pending-age-exceeded-two-promoter-ticks',
                    'scope', ${scope}::text,
                    'at', to_jsonb(to_timestamp(${startedAt} / 1000.0))
