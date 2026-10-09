@@ -51,6 +51,7 @@ import {
 /** The cool-down clock every fake dispatch runs at. */
 const NOW_MS = Date.parse('2026-09-26T12:00:00.000Z');
 import { buildAgentLaunchCommand, injectLaunchedByArg } from '../agent-launch-core';
+import { checkConsultSessionPortTranscript } from './resume-transcript-preflight';
 import {
   DEFAULT_EXPERT_MODEL_ALLOWLIST,
   normalizeExpertModelAllowlist,
@@ -142,6 +143,7 @@ function makeFakes(
       ...(opts.source ?? {}),
     }),
     checkResumeTranscript: async () => ({ available: true, detail: 'fixture transcript' }),
+    checkPortTranscript: async () => ({ available: true, detail: 'fixture port source' }),
     checkEvidenceIncarnationOwnedBy: async () => false,
     // REAL composer + REAL injector: see the file header.
     buildAgentLaunchCommand,
@@ -288,6 +290,11 @@ describe('planDispatchOperation (D-009 walk shape)', () => {
       if (source === 'claude') continue;
       expect(verdict).toMatchObject({ operation: null, reason: 'conversion-unavailable' });
     }
+  });
+
+  it.each(['claude', 'codex', 'omp'])('refuses named %s personas on conversion ranks', (agent) => {
+    expect(planDispatchOperation({ agent, live: false, role: 'reviewer' }, { agent: 'codex' }))
+      .toMatchObject({ operation: null, reason: 'conversion-unavailable' });
   });
 
   it('a LIVE claude source can use an isolated conversion and still supports native forks', () => {
@@ -1128,6 +1135,97 @@ describe('dispatchConsultResponder — the walk', () => {
       ['omp', 'evidence-span-unavailable'],
     ]);
     expect(r.attempts.every((a) => a.outcome === 'skipped')).toBe(true);
+  });
+
+  it('skips non-plain conversion sources before spawning, while retaining native forks', async () => {
+    const blocked = makeFakes({
+      probeBackendAvailable: async (agent: string) => ({ available: agent !== 'claude', detail: 'provider capacity' }),
+      checkPortTranscript: async () => { throw new Error('role refusal must precede transcript reads'); },
+    }, { source: { role: 'reviewer' } });
+    const result = await dispatchConsultResponder(OPTS, CTX, blocked.deps);
+    expect(result.dispatched).toBe(false);
+    expect(result.attempts.map((a) => a.reason)).toEqual(['account-walled', 'conversion-unavailable']);
+    expect(result.attempts[1].detail).toContain('plain tracked SU');
+    expect(blocked.calls.spawn).toHaveLength(0);
+
+    const fork = makeFakes({}, { source: { role: 'reviewer' } });
+    expect(await dispatchConsultResponder(OPTS, CTX, fork.deps)).toMatchObject({ dispatched: true, operation: 'fork' });
+    expect(fork.calls.spawn).toHaveLength(1);
+  });
+
+  it('rejects a real cyclic source once for every conversion rank without launching it', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'consult-port-cycle-'));
+    const path = join(dir, 'source.jsonl');
+    writeFileSync(path, [
+      JSON.stringify({ type: 'user', uuid: 'u1', parentUuid: 'a1', message: { role: 'user', content: 'question' } }),
+      JSON.stringify({ type: 'assistant', uuid: 'a1', parentUuid: 'u1', message: { role: 'assistant', content: 'answer' } }),
+    ].join('\n') + '\n');
+    let reads = 0;
+    try {
+      const { deps, calls } = makeFakes({
+        loadRanks: async () => [...RANKS, { rank: 3, agent: 'codex', model: 'astra' }],
+        probeBackendAvailable: async (agent: string) => ({ available: agent !== 'claude', detail: 'provider capacity' }),
+        checkResumeTranscript: async () => ({ available: true, detail: 'exact fixture source', transcriptPath: path }),
+        checkPortTranscript: async (...args: Parameters<typeof checkConsultSessionPortTranscript>) => {
+          reads++;
+          return checkConsultSessionPortTranscript(...args);
+        },
+      });
+      const result = await dispatchConsultResponder(OPTS, CTX, deps);
+      expect(result.dispatched).toBe(false);
+      expect(result.attempts.map((a) => a.reason)).toEqual([
+        'account-walled', 'conversion-unavailable', 'conversion-unavailable',
+      ]);
+      expect(result.attempts.slice(1).every((a) => a.detail.includes('cycle detected'))).toBe(true);
+      expect(reads).toBe(1);
+      expect(calls.spawn).toHaveLength(0);
+      expect(calls.recorded[0].result).toEqual(result);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('lets the normal next-expert delivery reach a portable source after a preflight refusal', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'consult-port-fallback-'));
+    const path = join(dir, 'source.jsonl');
+    writeFileSync(path, JSON.stringify({ type: 'user', uuid: 'u1', parentUuid: null,
+      message: { role: 'user', content: 'eligible evidence' } }) + '\n');
+    try {
+      const rejected = makeFakes({}, { source: { role: 'reviewer' } });
+      rejected.deps.loadRanks = async () => [RANKS[1]];
+      const first = await makeConsultReachDispatcher(CTX, rejected.deps)({
+        responder: OPTS.sourceOwnerId, conversationId: OPTS.conversationId,
+        summary: 'Review', body: 'Exact evidence', evidence: OPTS.evidence,
+      });
+      expect(first.queued).toBe(0);
+      expect(rejected.calls.spawn).toHaveLength(0);
+
+      const eligible = makeFakes({
+        loadRanks: async () => [RANKS[1]],
+        checkResumeTranscript: async () => ({ available: true, detail: 'exact source', transcriptPath: path }),
+        checkPortTranscript: checkConsultSessionPortTranscript,
+      });
+      const next = await makeConsultReachDispatcher(CTX, eligible.deps)({
+        responder: OPTS.sourceOwnerId, conversationId: OPTS.conversationId,
+        summary: 'Review', body: 'Exact evidence', evidence: OPTS.evidence,
+      });
+      expect(next).toMatchObject({ queued: 1, pickupConfirmed: true,
+        dispatch: { dispatched: true, operation: 'convert' } });
+      expect(eligible.calls.spawn).toHaveLength(1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('fails closed on unknown conversion eligibility', async () => {
+    const { deps, calls } = makeFakes({
+      probeBackendAvailable: async (agent: string) => ({ available: agent !== 'claude', detail: 'provider capacity' }),
+      checkPortTranscript: async () => { throw new Error('source read interrupted'); },
+    });
+    const result = await dispatchConsultResponder(OPTS, CTX, deps);
+    expect(result.attempts[1]).toMatchObject({ outcome: 'skipped', reason: 'conversion-unavailable' });
+    expect(result.attempts[1].detail).toContain('source read interrupted');
+    expect(calls.spawn).toHaveLength(0);
   });
 
   it('refuses before any launch when the source transcript is gone', async () => {

@@ -289,6 +289,11 @@ export interface ConsultDispatchDeps extends ExpertModelAllowlistDeps {
   checkResumeTranscript: (
     target: ResumeTarget,
   ) => Promise<{ available: boolean; detail: string; transcriptPath?: string }>;
+  /** Port-only role/graph preflight; a refusal leaves native fork ranks intact. */
+  checkPortTranscript: (
+    target: ResumeTarget,
+    transcript: { available: boolean; detail: string; transcriptPath?: string },
+  ) => Promise<BackendAvailability>;
   /**
    * Read a Claude transcript's tail for provider "Tool reference … not found"
    * rejections (WI-10004260). Used twice: on the SOURCE before forking it (a
@@ -894,7 +899,7 @@ function childExitFailure(exit: SpawnChildExit): string | null {
 
 /** The operation a rank implies against this source, or the reason there is none. */
 export function planDispatchOperation(
-  source: { agent: string | null; live: boolean; tracked?: boolean; historical?: boolean },
+  source: { agent: string | null; live: boolean; tracked?: boolean; historical?: boolean; role?: string | null },
   rank: Pick<AllowedExpertModel, 'agent'>,
 ): { operation: DispatchOperation } | { operation: null; reason: DispatchSkipReason; detail: string } {
   const sourceAgent = (source.agent ?? '').toLowerCase();
@@ -917,7 +922,12 @@ export function planDispatchOperation(
   }
   // Tracked Claude forks already preserve the live expert. Every other pair
   // uses the maintained port with a preparation-bound independent answer owner.
-  return { operation: sourceAgent === 'claude' && rank.agent === 'claude' && !source.historical ? 'fork' : 'convert' };
+  const operation = sourceAgent === 'claude' && rank.agent === 'claude' && !source.historical ? 'fork' : 'convert';
+  if (operation === 'convert' && source.role != null) {
+    return { operation: null, reason: 'conversion-unavailable',
+      detail: 'session-port protocol v1 requires a plain tracked SU source' };
+  }
+  return { operation };
 }
 
 /**
@@ -980,6 +990,10 @@ export async function dispatchConsultResponder(
         { coordOwnerId: target.ownerId, agent: target.agent }, sessionId);
     },
     checkResumeTranscript: defaultCheckResumeTranscript,
+    checkPortTranscript: async (target, transcript) => {
+      const { checkConsultSessionPortTranscript } = await import('./resume-transcript-preflight');
+      return checkConsultSessionPortTranscript(target, transcript);
+    },
     isConsultOpen: defaultIsConsultOpen,
     analyzeClaudeTranscript: analyzeClaudeResumeTranscriptFile,
     buildAgentLaunchCommand,
@@ -1186,6 +1200,10 @@ async function walkConsultDispatch(
         : 'the expert-model allowlist resolved empty — no model is allowed to answer consults');
     }
 
+    // Every conversion rank ports the same exact source. Check once, before any
+    // launch, and retain the refusal on each affected rank for the next-expert
+    // cascade. Provider walls and native fork eligibility remain independent.
+    let portTranscript: BackendAvailability | null = null;
     for (const rank of ranks) {
       const plan = planDispatchOperation(
         {
@@ -1193,6 +1211,7 @@ async function walkConsultDispatch(
           live: target.live,
           tracked: exactTracked || historical,
           historical,
+          role: target.role,
         },
         rank,
       );
@@ -1258,6 +1277,22 @@ async function walkConsultDispatch(
           detail: capacity.detail,
         });
         continue;
+      }
+
+      if (operation === 'convert') {
+        if (!portTranscript) {
+          try {
+            portTranscript = await d.checkPortTranscript(target, transcript);
+          } catch (e) {
+            portTranscript = { available: false,
+              detail: `session-port transcript preflight failed: ${(e as Error)?.message ?? String(e)}` };
+          }
+        }
+        if (!portTranscript.available) {
+          attempts.push({ rank: rank.rank, agent: rank.agent, model: rank.model,
+            operation, outcome: 'skipped', reason: 'conversion-unavailable', detail: portTranscript.detail });
+          continue;
+        }
       }
 
       const attempt = await launchAnsweringSession({
