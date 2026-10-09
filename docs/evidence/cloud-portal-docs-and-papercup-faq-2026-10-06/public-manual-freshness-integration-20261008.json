@@ -126,8 +126,28 @@
     "verification": "Canonical source read contains the exact full replacement body and five added source anchors; manual projection lock released.",
     "addedGuidance": "Maintained integration coverage and child-scoped ledger-only environment restoration under committed-source isolation."
   },
+  "currentMaintenanceReview": {
+    "observedAt": "2026-10-08T23:56:15.034Z",
+    "reviewer": "su-73f621d7-bae1-4bbb-b045-a11b5c47a384",
+    "scope": "Author maintenance-baseline renewal of the unchanged FAQ and the seven exact source hashes in faq-review.md; no new independent sensitive-guide or runtime approval.",
+    "faqSha256": "908687ae99d490db965919cb6f1297d409754453666e733027d505b7cbd2205a",
+    "sourceComparison": "All seven source SHA-256 values equal the previously recorded semantic reconciliation; unchanged FAQ retains thread-post:1160798 source approval.",
+    "endpoint": "http://127.0.0.1:3170",
+    "docId": "public-manual/faq.mdx",
+    "verifiedSha": "2270e06a88608ef987d3ae8bd0f7f1cce12eded0",
+    "readBack": {
+      "status": "fresh",
+      "statusDetail": null,
+      "bodyMissing": false,
+      "anchorCount": 7,
+      "lastVerifiedSha": "2270e06a88608ef987d3ae8bd0f7f1cce12eded0"
+    },
+    "receipt": "/tmp/su73-faq-current-review-0002.json",
+    "readBackReceipt": "/tmp/su73-faq-current-review-0002-readback.json",
+    "packagedSourceComparison": "All fifteen canonical public pages equal apps/operator/public/manual-source; this is byte parity, not installed execution or Pagefind invalidation."
+  },
   "remaining": [
-    "Exact current-source sensitive review reconciliation and accountable semantic approval.",
+    "Independent sensitive-guide review after the documented guide edits; future FAQ/source changes require their applicable renewed review.",
     "Actual installed public retriever and published index revision propagation.",
     "Actual product journeys, real novices, independent final acceptance and exact shipment."
   ]
