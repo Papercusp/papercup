@@ -48,7 +48,8 @@ export const CLOUD_TUTORIAL_STEPS: readonly LessonStep[] = [
     recovery: 'Open the same session and completed task. If its answer is still pending, keep using the app while the guide waits.' },
 ];
 export const CLOUD_TUTORIAL_BEGINNER_STEPS: readonly LessonStep[] = [
-  { ...CLOUD_TUTORIAL_STEPS[1], prerequisites: [], brief: 'Select a prepared workspace and review its existing cost. You do not need provider credentials or machine settings.' },
+  { ...CLOUD_TUTORIAL_STEPS[1], prerequisites: [], brief: 'Select a prepared workspace and review its existing cost. You do not need provider credentials or machine settings.',
+    details: 'Your cloud provider bills for provisioned resources, including retained disks. The estimate is guidance; provider billing is authoritative. Review the selected workspace’s cost before using it.' },
   { ...CLOUD_TUTORIAL_STEPS[2], prerequisites: ['configuration'], brief: 'Wait for the selected prepared workspace and its authorized connection to be ready.' },
   CLOUD_TUTORIAL_STEPS[3],
   { ...CLOUD_TUTORIAL_STEPS[4], title: 'Turn notes into an action plan', brief: 'Give the agent a goal, useful context and a requested output. This exercise uses only supplied text.', details: CLOUD_TUTORIAL_PLAN_TASK },

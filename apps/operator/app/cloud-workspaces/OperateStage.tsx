@@ -790,7 +790,7 @@ function CostTab({ workspace, onReviewConfiguration }: { workspace: WorkspaceHos
           <dd>{workspace.diskGiB} GiB</dd>
         </div>
       </dl>
-      <p>Google Cloud bills for provisioned resources and retained disks. This estimate excludes taxes and egress; provider billing is authoritative.</p>
+      <p>Your cloud provider bills for provisioned resources and retained disks. This estimate excludes taxes and egress; provider billing is authoritative.</p>
       {onReviewConfiguration && <Button onClick={() => onReviewConfiguration(workspace.id)}>I've reviewed the configuration and cost</Button>}
       <section
         className={styles.telemetryPanel}
