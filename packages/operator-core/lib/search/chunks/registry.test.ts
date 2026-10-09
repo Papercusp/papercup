@@ -7,6 +7,7 @@ import {
   OPERATOR_TURNS_CHUNK_SURFACE,
   WORK_ITEMS_CHUNK_SURFACE,
   PLANS_CHUNK_SURFACE,
+  REPORTS_CHUNK_SURFACE,
   surfaceStoreTable,
   TEXT_CHUNKS_TABLE,
 } from './registry';
@@ -20,6 +21,19 @@ describe('chunk surface registry', () => {
   it('surface names are unique (they partition the shared chunk table)', () => {
     const names = CHUNK_SURFACES.map((s) => s.surface);
     expect(new Set(names).size).toBe(names.length);
+  });
+
+  it('knowledge indexes extend canonical parents in the shared chunk store rather than registering parallel stores', () => {
+    expect(CHUNK_SURFACES.filter(s=>s.searchSource === 'plan')).toEqual([PLANS_CHUNK_SURFACE]);
+    expect(CHUNK_SURFACES.filter(s=>s.searchSource === 'report')).toEqual([REPORTS_CHUNK_SURFACE]);
+    expect(PLANS_CHUNK_SURFACE.parent.table).toBe('harness_shared.harness_plans');
+    expect(REPORTS_CHUNK_SURFACE.parent.table).toBe('harness_shared.report_library');
+    for (const surface of [PLANS_CHUNK_SURFACE,REPORTS_CHUNK_SURFACE]) {
+      expect(surfaceStoreTable(surface)).toBe('harness_shared.text_chunks');
+      expect(() => resolveChunkSurface(surface)).not.toThrow();
+    }
+    expect(CHUNK_SURFACES.filter(s=>s.searchSource === 'plan' || s.searchSource === 'report')
+      .map(s=>s.surface).sort()).toEqual(['plans','report']);
   });
 
   it('every entry reads its version from the parent, so detection never hashes parent text in SQL', () => {
