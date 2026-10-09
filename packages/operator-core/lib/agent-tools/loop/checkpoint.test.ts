@@ -534,6 +534,61 @@ describe('loopGuaranteesNextWake — dead-man-aware continuation evidence', () =
     })).guaranteed).toBe(false);
   });
 
+  it('EI-25528456701258561: counts a loop turn after dispatch even when it precedes delivery settlement', () => {
+    const delayedSettlement = {
+      lastWakeStatus: 'delivered',
+      lastWakeChannel: 'suppressed-redundant',
+      lastWakeAt: '2026-10-09T20:21:04.131Z',
+      lastWakeCreatedAt: '2026-10-09T20:20:14.031Z',
+      lastFiredAt: '2026-10-09T20:20:19.406Z',
+      lastLoopTurnAt: '2026-10-09T20:20:24.455Z',
+    };
+    expect(classifyLoopNextWake(loop(delayedSettlement))).toEqual({ guaranteed: true, reason: null });
+    // Legacy inputs without the dispatch clock retain the fail-closed combined-clock behavior.
+    expect(classifyLoopNextWake(loop({ ...delayedSettlement, lastWakeCreatedAt: undefined }))).toEqual({
+      guaranteed: false,
+      reason: 'last-fire-no-loop-turn',
+    });
+  });
+
+  it('does not treat an await-blocking withheld fire as an uncompleted suppressed wake', () => {
+    const priorSuppressedWake = {
+      lastWakeStatus: 'delivered',
+      lastWakeChannel: 'suppressed-redundant',
+      lastWakeAt: '2026-10-09T18:15:44.000Z',
+      lastLoopTurnAt: '2026-10-09T18:28:21.000Z',
+      lastFiredAt: '2026-10-09T18:33:08.309Z',
+      lastWithheldAt: '2026-10-09T18:33:13.522Z',
+      lastWithheldReason: 'await-blocking',
+    };
+
+    // The 18:15 suppressed wake already produced a loop turn at 18:28. The 18:33
+    // fire never went out: await suppression re-armed it for the await's resume threshold.
+    expect(classifyLoopNextWake(loop(priorSuppressedWake))).toEqual({ guaranteed: true, reason: null });
+    expect(
+      classifyLoopNextWake(
+        loop({ ...priorSuppressedWake, lastWithheldAt: priorSuppressedWake.lastFiredAt }),
+      ),
+    ).toEqual({ guaranteed: true, reason: null });
+
+    // A stale or differently-categorized withhold cannot erase a later delivery failure.
+    expect(
+      classifyLoopNextWake(
+        loop({ ...priorSuppressedWake, lastWithheldAt: '2026-10-09T18:33:08.308Z' }),
+      ),
+    ).toEqual({ guaranteed: false, reason: 'last-fire-no-loop-turn' });
+    expect(
+      classifyLoopNextWake(
+        loop({ ...priorSuppressedWake, lastWithheldReason: 'fire-gate' }),
+      ),
+    ).toEqual({ guaranteed: false, reason: 'last-fire-no-loop-turn' });
+    expect(
+      classifyLoopNextWake(
+        loop({ ...priorSuppressedWake, lastLoopTurnAt: '2026-10-09T18:15:44.000Z' }),
+      ),
+    ).toEqual({ guaranteed: false, reason: 'last-fire-no-loop-turn' });
+  });
+
   it('clears the no-loop-turn failure only with a strictly later per-fire completion proof', () => {
     const lastFiredAt = '2026-10-03T05:00:00.000Z';
     const failure = {

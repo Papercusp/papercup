@@ -59,8 +59,8 @@ export type LoopNextWakeInput =
       | 'parked'
       | 'fireStarved'
     > &
-      // Optional so hand-built inputs (and older fixtures) stay valid; getLoopStatus
-      // always populates both from the loop's newest wake-delivery row.
+      // Optional so hand-built inputs and older fixtures stay valid; getLoopStatus
+      // fills these fields from the newest wake-delivery row when present.
       Partial<
         Pick<
           LoopStatus,
@@ -68,10 +68,13 @@ export type LoopNextWakeInput =
           | 'lastWakeError'
           | 'lastWakeChannel'
           | 'lastWakeAt'
+          | 'lastWakeCreatedAt'
           | 'lastLoopTurnAt'
           | 'lastDeliveryOutcome'
           | 'lastFiredAt'
           | 'lastFailedFireLoopTurnCompletedAt'
+          | 'lastWithheldAt'
+          | 'lastWithheldReason'
         >
       >)
   | null
@@ -110,6 +113,15 @@ function hasCompletedLoopTurnAfterLastFire(
       ? Number.NaN
       : Date.parse(loop.lastFailedFireLoopTurnCompletedAt);
   return Number.isFinite(firedAtMs) && Number.isFinite(completedAtMs) && completedAtMs > firedAtMs;
+}
+
+function latestFireWasAwaitBlocked(loop: LoopNextWakeInput): boolean {
+  if (loop?.lastWithheldReason !== 'await-blocking') return false;
+  const firedAtMs = loop.lastFiredAt == null ? Number.NaN : Date.parse(loop.lastFiredAt);
+  const withheldAtMs = loop.lastWithheldAt == null ? Number.NaN : Date.parse(loop.lastWithheldAt);
+  // loop-fire stamps lastFiredAt before checking the blocking await; the later withhold
+  // timestamp proves that this newest attempt was deliberately suppressed and re-armed.
+  return Number.isFinite(firedAtMs) && Number.isFinite(withheldAtMs) && withheldAtMs >= firedAtMs;
 }
 
 export type LoopNextWakeVerdict =
@@ -157,13 +169,21 @@ export function classifyLoopNextWake(
   // turn proves recovery; owner activity and a malformed/missing clock do not.
   if (loop.lastWakeStatus === 'delivered' && loop.lastWakeChannel === 'suppressed-redundant') {
     const wakeAtMs = loop.lastWakeAt == null ? Number.NaN : Date.parse(loop.lastWakeAt);
+    // `delivered_at` is stamped when the delivery row settles and can be later than its
+    // loop-fire reply. Use the row's dispatch clock for turn proof, falling back to the
+    // legacy combined clock only when older callers do not provide it.
+    const wakeCreatedAtMs =
+      loop.lastWakeCreatedAt == null ? Number.NaN : Date.parse(loop.lastWakeCreatedAt);
+    const proofWakeAtMs = Number.isFinite(wakeCreatedAtMs) ? wakeCreatedAtMs : wakeAtMs;
     const firedAtMs = loop.lastFiredAt == null ? Number.NaN : Date.parse(loop.lastFiredAt);
     const completedAtMs = loop.lastLoopTurnAt == null ? Number.NaN : Date.parse(loop.lastLoopTurnAt);
+    const latestFireAwaitBlocked = latestFireWasAwaitBlocked(loop);
+    const proofWindowEndMs = latestFireAwaitBlocked ? wakeAtMs : Math.max(proofWakeAtMs, firedAtMs);
     if (
-      !Number.isFinite(wakeAtMs) ||
-      !Number.isFinite(firedAtMs) ||
+      (latestFireAwaitBlocked ? !Number.isFinite(wakeAtMs) : !Number.isFinite(proofWakeAtMs)) ||
+      (!latestFireAwaitBlocked && !Number.isFinite(firedAtMs)) ||
       !Number.isFinite(completedAtMs) ||
-      completedAtMs <= Math.max(wakeAtMs, firedAtMs)
+      completedAtMs <= proofWindowEndMs
     ) {
       return { guaranteed: false, reason: 'last-fire-no-loop-turn' };
     }

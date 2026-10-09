@@ -1110,6 +1110,9 @@ export interface LoopStatus {
   lastWakeStatus: string | null;
   /** ISO of the wake row's `delivered_at` (or `created_at` if never delivered). */
   lastWakeAt: string | null;
+  /** ISO of the wake row's `created_at` dispatch stamp. Unlike lastWakeAt, this is not delayed
+   *  until the delivery settles, so a loop turn that finishes before delivered_at remains provable. */
+  lastWakeCreatedAt?: string | null;
   /** The delivery ladder's captured error text for that wake, if any (e.g. a spawn
    *  failure) — null on a clean delivery or when no wake row exists. */
   lastWakeError: string | null;
@@ -1951,6 +1954,7 @@ function loopStatusFromRow(r: any, fallbackOwnerId: string): LoopStatus {
     lastWakeChannel: r.last_wake_channel ?? null,
     lastWakeStatus: r.last_wake_status ?? null,
     lastWakeAt: r.last_wake_at ? new Date(r.last_wake_at).toISOString() : null,
+    lastWakeCreatedAt: r.last_wake_created_at ? new Date(r.last_wake_created_at).toISOString() : null,
     lastWakeError: r.last_wake_error ?? null,
     ...(r.metadata?.executionRecovery ? { executionRecovery: r.metadata.executionRecovery } : {}),
     lastTurnAt: r.last_turn_at ? new Date(r.last_turn_at).toISOString() : null,
@@ -2202,6 +2206,7 @@ export async function getLoopStatuses(
            lw.channel                                                    AS last_wake_channel,
            lw.status                                                     AS last_wake_status,
            COALESCE(lw.delivered_at, lw.created_at)                      AS last_wake_at,
+           lw.created_at                                                 AS last_wake_created_at,
            lw.last_error                                                 AS last_wake_error
       FROM harness_shared.routines r
       LEFT JOIN harness_shared.autoloop_state a

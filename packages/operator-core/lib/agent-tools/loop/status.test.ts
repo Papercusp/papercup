@@ -327,6 +327,23 @@ describe('loop:status rewake verdict (P-013)', () => {
     expect(out.rewake).toEqual({ rewakeGuaranteed: true, reason: null });
   });
 
+  it('uses the wake dispatch timestamp when a loop-fire turn completes before delivery settlement', async () => {
+    const lastWakeCreatedAt = '2026-10-09T20:20:14.031Z';
+    getLoopStatusMock.mockResolvedValue({
+      ...armed,
+      lastWakeStatus: 'delivered',
+      lastWakeChannel: 'suppressed-redundant',
+      lastWakeAt: '2026-10-09T20:21:04.131Z',
+      lastWakeCreatedAt,
+      lastFiredAt: '2026-10-09T20:20:19.406Z',
+      lastLoopTurnAt: '2026-10-09T20:20:24.455Z',
+      lastWakeError: null,
+    });
+    const out = await run();
+    expect(out.loop.lastWakeCreatedAt).toBe(lastWakeCreatedAt);
+    expect(out.rewake).toEqual({ rewakeGuaranteed: true, reason: null });
+  });
+
   it('reports no re-wake guarantee after reconciliation confirms a delivered wake produced no loop turn', async () => {
     getLoopStatusMock.mockResolvedValue({
       ...armed,
