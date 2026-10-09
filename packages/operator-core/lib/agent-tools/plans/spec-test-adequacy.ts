@@ -1,6 +1,11 @@
 /** Per-clause spec-test-adequacy evaluator (P-006 / D-004..D-006, D-009). */
 import { getBuildInfo } from '../../build-info';
-import { repoFilesEvidenceMeasurementSchema, SPEC_EVIDENCE_KINDS } from './spec-evidence-store';
+import {
+  hasMatchingDeclaredCaseTitle,
+  hasSameCaseTitleIdentity,
+  repoFilesEvidenceMeasurementSchema,
+  SPEC_EVIDENCE_KINDS,
+} from './spec-evidence-store';
 import {
   SPEC_PROOF_OBLIGATION_ID_RE,
   SPEC_TARGET_ID_RE,
@@ -803,6 +808,23 @@ function clauseIdentity(clause: SpecClauseRevision): string {
   return `${clause.planSlug}/${clause.specId}@${clause.revision} (${clause.contentHash})`;
 }
 
+/**
+ * Layer coverage is clause-scoped proof. The canonical binding row identifies the
+ * selected clause by plan/spec/revision/fingerprint; its author-supplied target must
+ * independently name that exact spec. A title that happens to match a case in a
+ * different clause is not a substitute for this target.
+ */
+function bindingIdentityMatchesClause(row: SpecEvidenceForAdequacy, clause: SpecClauseRevision): boolean {
+  return row.planSlug === clause.planSlug &&
+    row.specId === clause.specId &&
+    row.specRevision === clause.revision &&
+    row.specFingerprint === clause.contentHash;
+}
+
+function bindingTargetsClause(row: SpecEvidenceForAdequacy, clause: SpecClauseRevision): boolean {
+  return bindingIdentityMatchesClause(row, clause) && detailsOf(row).targeted === clause.specId;
+}
+
 function clauseProbe(clause: SpecClauseRevision, harness?: string): string {
   const args = JSON.stringify({
     ...(harness !== undefined ? { harness } : {}),
@@ -830,20 +852,6 @@ function clauseDeclarationProbe(clause: SpecClauseRevision, harness?: string): s
 }
 
 const MAX_RENDERED_ADEQUACY_CASES = 8;
-
-/**
- * Test runners record Vitest full names (`suite > case`), while a binding can
- * carry either that full name or the bare case name. Accept only exact matches
- * or a suffix separated by the runner's ` > ` delimiter; a suite prefix (or a
- * partial case-name prefix) is not an identity match.
- */
-function matchesDeclaredCaseTitle(declaredCaseTitle: string, executedCaseTitle: string): boolean {
-  return executedCaseTitle === declaredCaseTitle || executedCaseTitle.endsWith(` > ${declaredCaseTitle}`);
-}
-
-function hasMatchingDeclaredCaseTitle(declaredCaseTitle: string, executedCaseTitles: readonly string[]): boolean {
-  return executedCaseTitles.some((executedCaseTitle) => matchesDeclaredCaseTitle(declaredCaseTitle, executedCaseTitle));
-}
 
 function renderedTestRunExecution(row: SpecEvidenceForAdequacy, details: Pick<AdequacyDetails, 'testCases'>) {
   const execution = row.testRunExecution;
@@ -1342,7 +1350,18 @@ function riskFloorRating(
   const hasCoverageRung = (
     { row, details }: (typeof detailRows)[number],
     rung: 'l3' | 'l4',
-  ): boolean => isCoverageCensusProof(row) && details.coverageRungs?.[rung] === true;
+  ): boolean =>
+    isCoverageCensusProof(row) &&
+    details.coverageRungs?.[rung] === true &&
+    bindingTargetsClause(row, clause);
+  const coverageRowsWithoutExactTarget = (rung: 'l3' | 'l4') => detailRows
+    .filter(({ row, details }) =>
+      isCoverageCensusProof(row) &&
+      details.coverageRungs?.[rung] !== undefined &&
+      bindingIdentityMatchesClause(row, clause) &&
+      !bindingTargetsClause(row, clause),
+    )
+    .map(({ row }) => row);
   const hasClauseBoundMutationProof = (row: SpecEvidenceForAdequacy) =>
     isClauseBoundMutationProof(clause, row, evidence);
   const isL4Proof = ({ row, details }: (typeof detailRows)[number]): boolean =>
@@ -1384,8 +1403,10 @@ function riskFloorRating(
       };
     }
     const hasExplicitL4Miss = detailRows.some(
-      ({ row, details }) => isCoverageCensusProof(row) && details.coverageRungs?.l4 === false,
+      ({ row, details }) =>
+        isCoverageCensusProof(row) && details.coverageRungs?.l4 === false && bindingTargetsClause(row, clause),
     );
+    const untargetedL4Rows = coverageRowsWithoutExactTarget('l4');
     return {
       floor,
       rating: {
@@ -1397,17 +1418,27 @@ function riskFloorRating(
                 .filter(({ row, details }) => isCoverageCensusProof(row) && details.coverageRungs?.l4 === false)
                 .map(({ row }) => row),
             )
-          : `${evidenceWithBindings(
-              `No targeted L4 coverage/mutation/counterexample result or current approved waiver is bound for ${clauseIdentity(clause)}.`,
-              evidence,
-            )} ${clauseProbe(clause, harness)}`,
-        suggestion: 'Bind targeted L4 proof or record a justified approvalRef-bearing waiver on the spec revision.',
+          : untargetedL4Rows.length > 0
+            ? evidenceWithBindings(
+                `L4 coverage is present, but its binding target does not identify the exact clause ${clauseIdentity(clause)}.`,
+                untargetedL4Rows,
+              )
+            : `${evidenceWithBindings(
+                `No targeted L4 coverage/mutation/counterexample result or current approved waiver is bound for ${clauseIdentity(clause)}.`,
+                evidence,
+              )} ${clauseProbe(clause, harness)}`,
+        suggestion:
+          untargetedL4Rows.length > 0
+            ? `Bind L4 coverage to ${clause.planSlug}/${clause.planItemId}/${clause.specId}@${clause.revision} with adequacy.targeted=${JSON.stringify(clause.specId)}.`
+            : 'Bind targeted L4 proof or record a justified approvalRef-bearing waiver on the spec revision.',
       },
     };
   }
   const hasExplicitL3Miss = detailRows.some(
-    ({ row, details }) => isCoverageCensusProof(row) && details.coverageRungs?.l3 === false,
+    ({ row, details }) =>
+      isCoverageCensusProof(row) && details.coverageRungs?.l3 === false && bindingTargetsClause(row, clause),
   );
+  const untargetedL3Rows = coverageRowsWithoutExactTarget('l3');
   return {
     floor,
     rating: meetsL3
@@ -1427,11 +1458,19 @@ function riskFloorRating(
                   .filter(({ row, details }) => isCoverageCensusProof(row) && details.coverageRungs?.l3 === false)
                   .map(({ row }) => row),
               )
+          : untargetedL3Rows.length > 0
+            ? evidenceWithBindings(
+                `L3 coverage is present, but its binding target does not identify the exact clause ${clauseIdentity(clause)}.`,
+                untargetedL3Rows,
+              )
             : `${evidenceWithBindings(
                 `No explicit meets_l3 result is bound for ${clauseIdentity(clause)}; depth or a generic passing test is not a rung verdict.`,
                 evidence,
               )} ${clauseProbe(clause, harness)}`,
-          suggestion: 'Bind a coverage-census row whose independent meets_l3 flag is current.',
+          suggestion:
+            untargetedL3Rows.length > 0
+              ? `Bind L3 coverage to ${clause.planSlug}/${clause.planItemId}/${clause.specId}@${clause.revision} with adequacy.targeted=${JSON.stringify(clause.specId)}.`
+              : 'Bind a current coverage-census row whose independent meets_l3 flag and adequacy.targeted identify this exact clause.',
         },
   };
 }
@@ -1765,11 +1804,19 @@ function isWellFormedCaseTitle(title: unknown): title is string {
  */
 export function mutationMeasuredFailedCase(mutation: SpecEvidenceForAdequacy, caseTitle: unknown): boolean {
   if (!isWellFormedCaseTitle(caseTitle)) return false;
-  // WI-10006753: recorded identities are exact — never re-admit the prefix ambiguity on them.
+  // Preserve WI-10006753's exact-identity rule while accepting Vitest's full-title joiner spelling.
   const recordedTitles = mutation.testRunProvenance?.mutationFailedCaseTitles;
-  if (recordedTitles !== undefined) return recordedTitles.includes(caseTitle);
+  if (recordedTitles !== undefined) {
+    return recordedTitles.some((recordedTitle) => hasSameCaseTitleIdentity(caseTitle, recordedTitle));
+  }
   const prefix = `${caseTitle}: `;
-  return (mutation.testRunProvenance?.mutationFailureLines ?? []).some((line) => line.startsWith(prefix));
+  return (mutation.testRunProvenance?.mutationFailureLines ?? []).some((line) => {
+    if (line.startsWith(prefix)) return true;
+    const separatorIndex = line.indexOf(': ');
+    return separatorIndex >= 0 &&
+      line.indexOf(': ', separatorIndex + 2) < 0 &&
+      hasSameCaseTitleIdentity(caseTitle, line.slice(0, separatorIndex));
+  });
 }
 
 function summarizeMutationFailedCaseTitles(mutations: readonly SpecEvidenceForAdequacy[]): string {
@@ -2187,6 +2234,8 @@ export function evaluateSpecTestAdequacy(input: {
       legacyOperationalRequired && layer === 'operational'
         ? `${normalizedLayer(legacyOperationalRequired)} (canonical operational adapter)` : layer;
     const present = new Map<string, boolean | undefined>();
+    const targetMismatchRows = new Map<string, SpecEvidenceForAdequacy[]>();
+    const targetMatchedLayers = new Set<string>();
     const contradictoryLayerRows: SpecEvidenceForAdequacy[] = [];
     for (const row of evidence) {
       const details = detailsOf(row);
@@ -2213,6 +2262,23 @@ export function evaluateSpecTestAdequacy(input: {
         continue;
       }
       const layer = normalizedLayer(measuredLayer);
+      const relevantLayers = [...new Set([
+        canonicalRequiredLayer(layer),
+        ...(claimedLayer ? [canonicalRequiredLayer(claimedLayer)] : []),
+      ])].filter((requiredLayer) => required.includes(requiredLayer));
+      // Evidence belonging to another canonical clause is outside this clause's
+      // population. For a row bound to this exact revision, however, an absent or
+      // sibling adequacy.targeted is unresolved target evidence, not layer coverage.
+      if (!bindingIdentityMatchesClause(row, clause)) continue;
+      if (!bindingTargetsClause(row, clause)) {
+        for (const requiredLayer of relevantLayers) {
+          const rows = targetMismatchRows.get(requiredLayer) ?? [];
+          rows.push(row);
+          targetMismatchRows.set(requiredLayer, rows);
+        }
+        continue;
+      }
+      for (const requiredLayer of relevantLayers) targetMatchedLayers.add(requiredLayer);
       const legacyOperationalClaim =
         legacyOperationalRequired &&
         row.evidenceKind === 'operational' &&
@@ -2231,9 +2297,14 @@ export function evaluateSpecTestAdequacy(input: {
       const prior = present.get(layer);
       present.set(layer, prior === true || details.pathReachable === true ? true : details.pathReachable);
     }
-    const missing = required.filter((layer) => !present.has(layer));
+    const unresolvedTarget = required.filter(
+      (layer) => targetMismatchRows.has(layer) && !targetMatchedLayers.has(layer),
+    );
+    const missing = required.filter((layer) => !present.has(layer) && !unresolvedTarget.includes(layer));
     const unreachable = required.filter((layer) => present.get(layer) === false);
-    const unresolved = required.filter((layer) => present.get(layer) === undefined);
+    const unresolved = required.filter(
+      (layer) => present.get(layer) === undefined || unresolvedTarget.includes(layer),
+    );
     layerRating =
       contradictoryLayerRows.length || missing.length || unreachable.length
         ? {
@@ -2251,6 +2322,17 @@ export function evaluateSpecTestAdequacy(input: {
             )} ${clauseDeclarationProbe(clause, input.harness)}`,
             suggestion: 'Bind passing measured evidence for every requiredTestLayer; its canonical layer and exact passing case or LLM scenario must match the binding, with path reachability attested.',
           }
+        : unresolvedTarget.length > 0
+          ? {
+              rating: 'unknown',
+              evidence: evidenceWithBindings(
+                `Required layer(s) have passing case evidence whose binding target does not identify the exact clause ${clause.planItemId}/${clauseIdentity(clause)}: ${unresolvedTarget.map(displayLayer).join(', ')}.`,
+                unresolvedTarget.flatMap((layer) => targetMismatchRows.get(layer) ?? []),
+              ),
+              suggestion:
+                `Bind passing measured evidence to ${clause.planSlug}/${clause.planItemId}/${clause.specId}@${clause.revision} ` +
+                `(${clause.contentHash}) with adequacy.targeted=${JSON.stringify(clause.specId)}; missing, boolean, and sibling-clause targets remain unknown.`,
+            }
         : unresolved.length
           ? {
               rating: 'unknown',
@@ -2295,6 +2377,7 @@ export function evaluateSpecTestAdequacy(input: {
                   return (
                     row.testRunId !== null &&
                     ((row.evidenceKind === 'test' && measuredRecordedLayer) || measuredOperationalLayer) &&
+                    bindingTargetsClause(row, clause) &&
                     required.includes(normalizedLayer(measuredLayer)) &&
                     claimMatchesMeasurement &&
                     (details.testCases ?? []).some((caseTitle) => hasPassingRequiredLayerCase(row, caseTitle)) &&

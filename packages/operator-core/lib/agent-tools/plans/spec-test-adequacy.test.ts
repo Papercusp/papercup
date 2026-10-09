@@ -11,6 +11,7 @@ import {
   evaluateSpecTestAdequacy,
   isNonCodeWorkItemKind,
   latestLogicalEvidence,
+  mutationMeasuredFailedCase,
   requiredProofFloor,
   supersedeEligibilityGaps,
 } from './spec-test-adequacy';
@@ -65,6 +66,32 @@ describe('supersession preserves measured mutation provenance', () => {
     const row = caughtMutation();
     row.testRunExecution = { ...row.testRunExecution!, ...execution };
     expect(supersedeEligibilityGaps(row)).not.toEqual([]);
+  });
+
+  it('matches measured mutation titles across Vitest joiner spellings without accepting a suffix', () => {
+    const exactTitle = 'suite > selected case';
+    const recorded = evidence({
+      evidenceKind: 'mutation',
+      testRunProvenance: {
+        filePath: 'test/case.integration.test.ts',
+        commitSha: 'abc123',
+        worktreeDirty: false,
+        mutationFailedCaseTitles: [exactTitle],
+      },
+    });
+    const lineOnly = evidence({
+      evidenceKind: 'mutation',
+      testRunProvenance: {
+        filePath: 'test/case.integration.test.ts',
+        commitSha: 'abc123',
+        worktreeDirty: false,
+        mutationFailureLines: [`${exactTitle}: expected true to be false`],
+      },
+    });
+
+    expect(mutationMeasuredFailedCase(recorded, 'suite selected case')).toBe(true);
+    expect(mutationMeasuredFailedCase(lineOnly, 'suite selected case')).toBe(true);
+    expect(mutationMeasuredFailedCase(recorded, 'selected case')).toBe(false);
   });
 });
 
@@ -136,7 +163,7 @@ function evidence(over: Partial<SpecEvidenceForAdequacy> = {}): SpecEvidenceForA
         skipped: false,
         executed: true,
         outcome: 'passed',
-        targeted: true,
+        targeted: 'SPEC-003-01',
         testCases: [DEFAULT_MUTATION_TEST_CASE],
         coverageRungs: { l3: true, l4: false },
       },
@@ -180,7 +207,7 @@ function evidence(over: Partial<SpecEvidenceForAdequacy> = {}): SpecEvidenceForA
 
 function successfulTestBinding(
   filePath: string,
-  options: { layer?: string; testCases?: string[] } = {},
+  options: { layer?: string; testCases?: string[]; targeted?: boolean | string } = {},
 ): SpecEvidenceForAdequacy {
   const testLayer = options.layer ?? 'integration';
   const testCases = options.testCases ?? [DEFAULT_MUTATION_TEST_CASE];
@@ -201,6 +228,7 @@ function successfulTestBinding(
     details: {
       adequacy: {
         testLayer,
+        targeted: options.targeted ?? 'SPEC-003-01',
         pathReachable: true,
         collected: true,
         skipped: false,
@@ -236,6 +264,7 @@ function negativeEvidence(over: Partial<SpecEvidenceForAdequacy> = {}): SpecEvid
     details: {
       adequacy: {
         ...((base.details.adequacy ?? {}) as Record<string, unknown>),
+        targeted: true,
         outcome: 'pass',
       },
     },
@@ -596,7 +625,11 @@ describe('spec-test-adequacy per-clause evaluator', () => {
   ])('recognizes the canonical operational adapter without accepting caller-only layer claims: $measured/$claimed', ({ measured, claimed, expected }) => {
     const row = evidence({ evidenceKind: measured === 'operational' ? 'operational' : 'test' });
     row.testRunExecution = { ...row.testRunExecution!, testLayer: measured };
-    row.details = { adequacy: { ...(row.details.adequacy as Record<string, unknown>), testLayer: claimed } };
+    row.details = { adequacy: {
+      ...(row.details.adequacy as Record<string, unknown>),
+      testLayer: claimed,
+      targeted: clause().specId,
+    } };
     const result = evaluateSpecTestAdequacy({
       clause: clause({ requiredEvidence: [], requiredTestLayers: ['operational'] }),
       evidence: [row], classRef: 'plan-class-feature-ship',
@@ -622,6 +655,7 @@ describe('spec-test-adequacy per-clause evaluator', () => {
       details: { adequacy: {
         testLayer: 'manual-provenance', pathReachable: true,
         collected: true, skipped: false, executed: true, outcome: 'passed',
+        targeted: clause().specId,
         testCases: [caseTitle],
       } },
     });
@@ -656,6 +690,7 @@ describe('spec-test-adequacy per-clause evaluator', () => {
           skipped: false,
           executed: true,
           outcome: 'passed',
+          targeted: legacyClause.specId,
           testCases: [caseTitle],
         },
       },
@@ -683,6 +718,7 @@ describe('spec-test-adequacy per-clause evaluator', () => {
         skipped: false,
         executed: true,
         outcome: 'passed',
+        targeted: legacyClause.specId,
         testCases: [caseTitle],
       },
     };
@@ -767,6 +803,29 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(result.ratings.traceability.evidence).toContain('kind=coverage-census');
     expect(result.ratings['execution-integrity'].evidence).toContain('testRunId=43');
     expect(result.ratings['plan-class-risk-floor'].evidence).toContain('coverageRungs=l3:true|l4:false');
+  });
+
+  it('requires an exact clause target for L3 coverage-rung credit', () => {
+    const grade = (row: SpecEvidenceForAdequacy) => evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [row],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    const missingTarget = evidence();
+    delete (missingTarget.details.adequacy as Record<string, unknown>).targeted;
+    const missingResult = grade(missingTarget);
+    expect(missingResult.ratings['plan-class-risk-floor'].rating).toBe('unknown');
+    expect(missingResult.ratings['plan-class-risk-floor'].evidence).toContain('binding target does not identify the exact clause');
+    expect(missingResult.ratings['plan-class-risk-floor'].suggestion).toContain('adequacy.targeted="SPEC-003-01"');
+
+    const siblingResult = grade(evidence({
+      details: { adequacy: { targeted: 'SPEC-003-02', coverageRungs: { l3: true } } },
+    }));
+    expect(siblingResult.ratings['plan-class-risk-floor'].rating).toBe('unknown');
+    expect(siblingResult.ratings['plan-class-risk-floor'].evidence).toContain('binding target does not identify the exact clause');
+
+    expect(grade(evidence()).ratings['plan-class-risk-floor'].rating).toBe('pass');
   });
 
   it('prints the bound run\'s ledger file and dirty-tree provenance beside its id', () => {
@@ -2361,6 +2420,33 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(attested.ratings['correct-layer'].suggestion).toBeUndefined();
   });
 
+  it('requires an explicit exact-clause target before measured layer evidence can pass', () => {
+    const gradedClause = clause();
+    const grade = (row: SpecEvidenceForAdequacy) => evaluateSpecTestAdequacy({
+      clause: gradedClause,
+      evidence: [row],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    const missingTarget = successfulTestBinding('test/reconnect.integration.test.ts');
+    delete (missingTarget.details.adequacy as Record<string, unknown>).targeted;
+    const missingTargetResult = grade(missingTarget);
+    expect(missingTargetResult.ratings['correct-layer'].rating).toBe('unknown');
+    expect(missingTargetResult.ratings['correct-layer'].evidence).toContain('binding target does not identify the exact clause');
+    expect(missingTargetResult.ratings['correct-layer'].suggestion).toContain('adequacy.targeted="SPEC-003-01"');
+
+    const siblingTargetResult = grade(successfulTestBinding('test/reconnect.integration.test.ts', {
+      targeted: 'SPEC-003-02',
+    }));
+    expect(siblingTargetResult.ratings['correct-layer'].rating).toBe('unknown');
+    expect(siblingTargetResult.ratings['correct-layer'].evidence).toContain('binding target does not identify the exact clause');
+
+    const exactTargetResult = grade(successfulTestBinding('test/reconnect.integration.test.ts', {
+      targeted: gradedClause.specId,
+    }));
+    expect(exactTargetResult.ratings['correct-layer'].rating).toBe('pass');
+  });
+
   it('requires exact passing case identity and rejects a binder layer that contradicts the run', () => {
     const missingExactCase = successfulTestBinding('test/reconnect.integration.test.ts', {
       testCases: ['declared binding case'],
@@ -3833,9 +3919,10 @@ describe('disclosed-gap criterion (P-002: a disclosure cannot coexist with a mac
     expect(result.wouldBlock).toContain('disclosed-gap');
   });
 
-  it('reconciles bare and describe-prefixed same-proof cases in gate decisions and rendered evidence', () => {
+  it('reconciles same-proof cases across bare, describe-prefixed, and space-joined titles', () => {
     const bareTitle = 'executes intake and summarization in the managed job and retains its actual result';
     const prefixedTitle = `background content summary through registered execution primitives > ${bareTitle}`;
+    const spaceJoinedTitle = `background content summary through registered execution primitives ${bareTitle}`;
     const filePath = 'packages/operator-core/lib/background-summary.integration.test.ts';
     const base = successfulTestBinding(filePath, { testCases: [prefixedTitle] });
     const baseAdequacy = base.details.adequacy as Record<string, unknown>;
@@ -3857,17 +3944,26 @@ describe('disclosed-gap criterion (P-002: a disclosure cannot coexist with a mac
         adequacy: { ...baseAdequacy, testCases: [prefixedTitle] },
       },
     };
+    const spaceJoinedBinding = {
+      ...base,
+      id: 32200,
+      createdAt: '2026-10-03T13:12:22.000Z',
+      details: {
+        ...base.details,
+        adequacy: { ...baseAdequacy, testCases: [spaceJoinedTitle] },
+      },
+    };
 
     const result = evaluateSpecTestAdequacy({
       clause: clause(),
-      evidence: [bareBinding, prefixedBinding],
+      evidence: [bareBinding, prefixedBinding, spaceJoinedBinding],
       classRef: 'plan-class-feature-ship',
     });
 
     expect(result.ratings['execution-integrity'].rating).toBe('pass');
     expect(result.ratings['correct-layer'].rating).toBe('pass');
-    expect(result.ratings['correct-layer'].evidence).toContain('sameProofMetadataBindingIds=[32191,32199]');
-    const reconciledTitles = JSON.stringify([prefixedTitle, bareTitle]);
+    expect(result.ratings['correct-layer'].evidence).toContain('sameProofMetadataBindingIds=[32191,32199,32200]');
+    const reconciledTitles = JSON.stringify([prefixedTitle, spaceJoinedTitle, bareTitle].sort((a, b) => a.localeCompare(b)));
     expect(result.ratings['correct-layer'].evidence).toContain(`"declared":${reconciledTitles}`);
     expect(result.ratings['correct-layer'].evidence).toContain(`"passed":${reconciledTitles},"missing":[]`);
   });
