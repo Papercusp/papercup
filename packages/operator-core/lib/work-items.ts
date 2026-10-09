@@ -6478,6 +6478,8 @@ export function reservedPlanLaneExclusionSql(
      * branch. Authorization here is spec-derived only.
      */
     claimSpecReferencesGoal?: boolean;
+    /** Fixed read cohort only: the caller restricts every candidate to these identities. */
+    decisionCandidates?: { workspaceId: string; ids: readonly string[] };
   } = {},
 ) {
   // COALESCE the payload so a NULL-payload row (no plan_item back-pointer) reads as
@@ -6544,6 +6546,28 @@ export function reservedPlanLaneExclusionSql(
   // goal. A spec may reference `goal` with a negative operator (e.g. `{op:'!='}`), and a bare
   // TRUE would then authorize goal-LESS rows the spec never meant to adopt.
   const goalAuthorized = authorization.claimSpecReferencesGoal ? sql`(${goalCol} IS NOT NULL)` : sql`FALSE`;
+  const decisionCandidates = authorization.decisionCandidates;
+  // Reuse migration 1364's token index for a complete, fixed report cohort.
+  // OFFSET 0 keeps the cheap identity selection ahead of body regex evaluation;
+  // otherwise PG can flatten it and scan the entire decision corpus again.
+  // Ordinary claim selectors omit the cohort and retain their existing behavior.
+  const masterDecisions = decisionCandidates ? sql`(
+    SELECT * FROM harness_shared.plan_decisions
+     WHERE workspace_id = ${decisionCandidates.workspaceId}
+       AND regexp_split_to_array(body, '[^A-Za-z0-9_-]+') && ${[...decisionCandidates.ids]}::text[]
+     OFFSET 0
+  )` : sql`harness_shared.plan_decisions`;
+  const candidatePlanDecisions = decisionCandidates ? sql`(
+    SELECT * FROM harness_shared.plan_decisions
+     WHERE workspace_id = ${decisionCandidates.workspaceId}
+       AND plan_slug = ANY(ARRAY(
+         SELECT candidate.payload->'plan_item'->>'plan_slug'
+           FROM harness_shared.work_items candidate
+          WHERE candidate.workspace_id = ${decisionCandidates.workspaceId}
+            AND candidate.feature_id = ANY(${[...decisionCandidates.ids]}::text[])
+       ))
+     OFFSET 0
+  )` : sql`harness_shared.plan_decisions`;
   return sql`NOT (
     COALESCE(${col}, '{}'::jsonb) ? 'plan_item' AND (
       -- EI-13524: a fleet stamp is a reservation in its own right, independently of
@@ -6806,7 +6830,7 @@ export function reservedPlanLaneExclusionSql(
     )
     OR COALESCE((${wsCol}, ${idCol}) IN (
       SELECT d.workspace_id, master.ref[2]
-        FROM harness_shared.plan_decisions d,
+        FROM ${masterDecisions} d,
              LATERAL regexp_matches(d.body,
                '(^|[^A-Za-z0-9_-])(WI-[0-9]+)[[:space:]]+owns execution([[:space:]]+and([[:space:]]|$)|[.;]|$)', 'g') AS master(ref)
        WHERE ${affirmativeDirectRoute}
@@ -6816,7 +6840,7 @@ export function reservedPlanLaneExclusionSql(
     -- describe only its other clauses (D-006's refs omit P-002). The durable
     -- plan_item_assignments surface is per-item and is not populated by this ruling.
     OR EXISTS (
-      SELECT 1 FROM harness_shared.plan_decisions d
+      SELECT 1 FROM ${candidatePlanDecisions} d
       WHERE d.workspace_id = ${wsCol}
         AND d.plan_slug = ${col}->'plan_item'->>'plan_slug'
         AND LOWER(d.body) ~ '(^|[^a-z0-9_-])route[[:space:]]+a:[[:space:]]+this session[[:space:]]+[(]su-[a-f0-9-]{8,36}[)][[:space:]]+implements the plan([[:space:].;]|$)'
@@ -8427,6 +8451,8 @@ export function issueClaimBarFloorColumnsSql(
     claimantFleetSlug?: string;
     claimSpecReferencesFleet?: boolean;
     claimSpecReferencesGoal?: boolean;
+    /** Complete identity set selected by the enclosing read, never a display cap. */
+    candidateIds?: readonly string[];
   },
 ) {
   const {
@@ -8452,6 +8478,7 @@ export function issueClaimBarFloorColumnsSql(
       claimantFleetSlug,
       claimSpecReferencesFleet,
       claimSpecReferencesGoal,
+      decisionCandidates: opts.candidateIds ? { workspaceId: issueWs, ids: opts.candidateIds } : undefined,
     })})                                                                  AS ok_plan_lane,
     (${federationDetectorExclusionSql(sql)})                               AS ok_federation,
     (${loopIterationNoiseExclusionSql(sql)})                               AS ok_loop_noise,
@@ -8545,6 +8572,7 @@ export async function explainIssueClaimFloors(
              claimantFleetSlug: opts.claimantFleetSlug,
              claimSpecReferencesFleet: opts.claimSpecReferencesFleet,
              claimSpecReferencesGoal: opts.claimSpecReferencesGoal,
+             candidateIds: ids,
            })}
       FROM harness_shared.work_items wi
      WHERE wi.workspace_id = ${issueWs}
