@@ -4161,6 +4161,49 @@ describe('tools/list — strict-mode listing matrix', () => {
     }
   });
 
+  it('records native-session verifier diagnostics when tools/list rejects before listing tools', async () => {
+    const nativeThread = 'native-list-verifier-session';
+    h.nativeSessionVerifierFailure = {
+      sessionId: nativeThread,
+      error: Object.assign(new Error(`verification timed out for ${nativeThread} and su-owner`), {
+        name: 'OrgTxnTimeoutError',
+        pgCode: '57014',
+      }),
+    };
+    const meta = { threadId: nativeThread };
+    const extra = {
+      ...(superuserExtra('&workspace=ws-test&client=su-owner') as Record<string, unknown>),
+      _meta: meta,
+    };
+
+    await expect(listTools(extra)).rejects.toThrow(/mcp_auth_failed.*superuser_native_session_verifier_unavailable/);
+
+    expect(h.nativeSessionCalls).toEqual([{ ownerId: 'su-owner', sessionId: nativeThread }]);
+    expect(h.invocations).toHaveLength(1);
+    expect(h.invocations[0]).toMatchObject({
+      toolName: 'tools/list',
+      status: 'error',
+      errorCode: 'mcp_auth_failed',
+      errorMessage: 'superuser_native_session_verifier_unavailable',
+      metadataJson: {
+        mcpAuthFailure: {
+          reason: 'superuser_native_session_verifier_unavailable',
+          contextVerified: false,
+          nativeSession: {
+            carrier: 'meta:threadId',
+            candidateAdvSessionId: null,
+            verifierFailure: {
+              name: 'OrgTxnTimeoutError',
+              code: '57014',
+            },
+          },
+        },
+      },
+    });
+    expect(JSON.stringify(h.invocations[0]?.metadataJson)).not.toContain(nativeThread);
+    expect(JSON.stringify(h.invocations[0]?.metadataJson)).not.toContain('su-owner');
+  });
+
   it('?superuser=1 from a NON-loopback host is a failed ctx → throws loud auth error (WI-574, real isLoopbackRequest)', async () => {
     await expect(
       listTools(
@@ -5535,7 +5578,7 @@ describe('successful native-session audit (get-feedback D-006)', () => {
     const native = 'native-owner-session', callId = 'call_exact-native-item';
     h.nativeSessionRows = new Map([['su-owner', [{ id: 541, session_id: native, active: true }]]]);
     const meta = { threadId: native, callId };
-    const extra = { ...(superuserExtra('&client=su-owner') as Record<string, unknown>), _meta: meta };
+    const extra = { ...(superuserExtra('&workspace=ws-test&client=su-owner') as Record<string, unknown>), _meta: meta };
     const res = await callTool('gatingtest:scoped', {}, extra, meta);
     expect(res.isError, textOf(res)).toBeUndefined();
     expect(h.invocations[0]?.ctx.requestOrigin).toMatchObject({ nativeSession: {
