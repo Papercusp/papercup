@@ -354,6 +354,44 @@ function extractArchive(repo, sha, dest) {
   run('bash', ['-c', 'set -euo pipefail; git -C "$1" archive --format=tar "$2" | tar -xf - -C "$3"', '_', repo, sha, dest]);
 }
 
+function materializedSubmodule(repo, link, full) {
+  const subRepo = join(repo, link.path);
+  const known = existsSync(subRepo)
+    && spawnSync('git', ['-C', subRepo, 'rev-parse', '--show-toplevel'], { encoding: 'utf8' }).stdout.trim() === realpathSync(subRepo)
+    && spawnSync('git', ['-C', subRepo, 'cat-file', '-e', `${link.sha}^{commit}`]).status === 0;
+  if (!known) {
+    throw new PreviewError(`unresolvable gitlink ${full} @ ${link.sha} — its commit is not present in ${subRepo}; run \`git submodule update --init\` or fetch it, then retry`);
+  }
+  return subRepo;
+}
+
+/** Conservative allocated source bytes for the exact recursive verifier export.
+ * Count committed blobs, including desktop and private gitlinks, before creating
+ * any destination. Per-file block rounding covers small-file allocation; the
+ * existing disk reservation adds its separate dependency/metadata allowance.
+ * export-ignore can only make the actual archive smaller than this census.
+ */
+export function measureVerifierSourceBytes({ repo, ref }) {
+  const measure = (source, sha, prefix = '') => {
+    let bytes = 0;
+    for (const entry of git(source, ['ls-tree', '-r', '-z', '-l', sha]).split('\0')) {
+      if (!entry) continue;
+      const fields = entry.slice(0, entry.indexOf('\t')).trim().split(/\s+/);
+      if (fields[1] !== 'blob') continue;
+      const size = Number(fields[3]);
+      if (!Number.isSafeInteger(size) || size < 0) throw new PreviewError('cannot measure committed source bytes', 2);
+      bytes += Math.ceil(size / 4096) * 4096;
+    }
+    for (const link of listGitlinks(source, sha)) {
+      const full = prefix ? `${prefix}/${link.path}` : link.path;
+      bytes += measure(materializedSubmodule(source, link, full), link.sha, full);
+    }
+    if (!Number.isSafeInteger(bytes)) throw new PreviewError('committed source size exceeds safe integer range', 2);
+    return bytes;
+  };
+  return measure(repo, resolveCommit(repo, ref));
+}
+
 /**
  * Materialize `sha` of `repo` into `dest` from git objects only (no working-tree
  * files), recursing into every submodule whose top-level entry the allowlist ships.
@@ -367,16 +405,10 @@ export function materializeCommit({ repo, sha, dest, allow, prefix = '' }) {
   for (const link of listGitlinks(repo, sha)) {
     const full = prefix ? `${prefix}/${link.path}` : link.path;
     if (!allow.has(full.split('/')[0])) continue;
-    const subRepo = join(repo, link.path);
     // The submodule must be its OWN checkout: an uninitialised submodule is an
     // empty dir inside the parent, where `git -C` would silently answer for the
     // parent repository instead.
-    const known = existsSync(subRepo)
-      && spawnSync('git', ['-C', subRepo, 'rev-parse', '--show-toplevel'], { encoding: 'utf8' }).stdout.trim() === realpathSync(subRepo)
-      && spawnSync('git', ['-C', subRepo, 'cat-file', '-e', `${link.sha}^{commit}`]).status === 0;
-    if (!known) {
-      throw new PreviewError(`unresolvable gitlink ${full} @ ${link.sha} — its commit is not present in ${subRepo}; run \`git submodule update --init\` or fetch it, then retry`);
-    }
+    const subRepo = materializedSubmodule(repo, link, full);
     const target = join(dest, full);
     // git archive leaves the gitlink as an empty directory; make sure it exists.
     run('mkdir', ['-p', target]);
@@ -1376,6 +1408,11 @@ function printGate(verdict) {
 async function main(argv) {
   const { cmd, opts } = parseArgs(argv);
   const log = (m) => console.error(`==> ${m}`);
+  if (cmd === 'verifier-measure') {
+    if (!opts.repo || !opts.ref) throw new PreviewError('verifier measurement requires explicit --repo and --ref', 2);
+    console.log(measureVerifierSourceBytes({ repo: opts.repo, ref: opts.ref }));
+    return 0;
+  }
   if (cmd === 'verifier-prepare' || cmd === 'verifier-verify') {
     if (!opts.out || !opts.receipt) throw new PreviewError('verifier source requires --out and --receipt', 2);
     if (cmd === 'verifier-prepare') {

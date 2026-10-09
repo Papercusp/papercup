@@ -16,7 +16,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative, sep } from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   ADDED_FILES,
   SELECTION_LIB,
@@ -24,6 +24,7 @@ import {
   exportSnapshot,
   loadReleaseHost,
   materializeCommit,
+  measureVerifierSourceBytes,
   prepareVerifierSource,
   runCli,
   verifyVerifierSource,
@@ -190,6 +191,29 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
       inputs: [SHIPPED.find((p) => p !== input)!], inputsFile }))
       .rejects.toThrow(kind === 'dirty' ? /dirty tested-input mismatch/ : /ENOENT/);
     expect(existsSync(dest)).toBe(false);
+  });
+
+  it('measures pinned source and gitlinks before export, ignoring dirty and untracked bytes', async () => {
+    const fixture = makeSuperproject(join(tmp, 'verifier-size-fixture'));
+    const before = measureVerifierSourceBytes({ repo: fixture.repo, ref: fixture.commit });
+    const dest = join(tmp, 'verifier-size-export');
+    const input = SHIPPED.find((p) => p.startsWith('apps/'))!;
+    const receipt = await prepareVerifierSource({ repo: fixture.repo, ref: fixture.commit, dest, inputs: [input] });
+    const exported = listFiles(dest).filter(p => p !== '.verifier-source.json')
+      .reduce((bytes, p) => bytes + Math.ceil(statSync(join(dest, p)).size / 4096) * 4096, 0);
+    expect(before).toBe(exported);
+    expect(receipt.submodules).toHaveLength(1);
+    const output = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      expect(await runCli(['verifier-measure', '--repo', fixture.repo, '--ref', fixture.commit])).toBe(0);
+      expect(output).toHaveBeenCalledWith(before);
+    } finally { output.mockRestore(); }
+    write(fixture.repo, 'dirty-untracked.bin', 'x'.repeat(100_000));
+    write(fixture.repo, input, 'dirty'.repeat(10_000));
+    expect(measureVerifierSourceBytes({ repo: fixture.repo, ref: fixture.commit })).toBe(before);
+    git(fixture.repo, ['update-index', '--cacheinfo', `160000,${'1'.repeat(40)},libs/papercusp`]);
+    git(fixture.repo, ['commit', '-qm', 'unresolvable size fixture']);
+    expect(() => measureVerifierSourceBytes({ repo: fixture.repo, ref: 'HEAD' })).toThrow(/unresolvable gitlink/);
   });
 
   it('round-trips the verifier CLI with an external caller receipt and refuses tampering', async () => {
