@@ -402,6 +402,7 @@ describe('boundedOrgTxn', () => {
       releaseStall();
       await vi.advanceTimersByTimeAsync(0);
       expect(lateError).toBeInstanceOf(DbCallDeadlineError);
+      expect(queries).toHaveLength(stalledPhase === 'begin' ? 0 : stalledPhase === 'read-only' ? 1 : 2);
       expect(caller).not.toHaveBeenCalled();
       if (stalledPhase === 'begin') {
         // A late BEGIN must roll back without issuing transaction setup SQL.
