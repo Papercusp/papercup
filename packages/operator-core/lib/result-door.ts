@@ -1016,6 +1016,9 @@ function volatileScratchRecovery(
     spillErrorCode && spillErrorCode !== 'unknown error' ? spillErrorCode : null,
     spillErrorSummary,
   ].filter(Boolean).join('; ');
+  const persistenceStatus = spillErrorCode === 'ETIMEDOUT'
+    ? 'Primary scratch persistence exceeded its response deadline; its writer may still settle'
+    : 'Primary scratch persistence failed';
   return {
     cursor: {
       kind: 'volatile-scratch-page',
@@ -1033,7 +1036,7 @@ function volatileScratchRecovery(
         : {}),
     },
     next:
-      'Primary scratch persistence failed' +
+      persistenceStatus +
       (spillDiagnostic ? ' (' + spillDiagnostic + ')' : '') +
       '; an exact in-process copy is available until ' + fallback.manifest.expiresAt + '. ' +
       `Read cursor.args with capability:read and follow next_cursor until eof. This URI is not a file and is ` +
@@ -1945,7 +1948,9 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
  * so a returned cursor normally names a file that exists (WI-10004533). The wait is bounded:
  * a hard write failure is re-doored without a filesystem retry, while a deadline timeout
  * keeps a typed pending cursor because the background writer still owns its quota reservation
- * and may finish later. Late settlement is reported to the transport for telemetry backfill.
+ * and may finish later. A volatile in-process copy is returned alongside that pending state so
+ * a later write failure does not strand the omitted bytes. Late settlement is reported to the
+ * transport for telemetry backfill.
  */
 export async function applyResultDoorAsync<T extends DoorableResult>(
   result: T,
@@ -1971,7 +1976,12 @@ export async function applyResultDoorAsync<T extends DoorableResult>(
       const pendingResult = markPendingScratchWrite(doored, error, opts);
       if (pendingResult) {
         observeLateScratchWrite(writeSettlements, pendingResult, opts);
-        return pendingResult;
+        const volatileFallback = applyResultDoor(result, {
+          ...opts,
+          deferredScratchWrites: undefined,
+          scratchWriteFailure: { error },
+        });
+        return attachPendingScratchFallback(volatileFallback, pendingResult) ?? pendingResult;
       }
     }
     const failedResult = applyResultDoor(result, {
@@ -1987,6 +1997,33 @@ export async function applyResultDoorAsync<T extends DoorableResult>(
   const failedResult = applyResultDoor(result, { ...opts, deferredScratchWrites: undefined,
     scratchWriteFailure: { error: failure.reason } });
   return failedResult;
+}
+
+function attachPendingScratchFallback<T extends DoorableResult>(fallback: T, pending: T): T | null {
+  const fallbackDoor = recordAt(fallback._meta?.resultDoor);
+  const pendingDoor = recordAt(pending._meta?.resultDoor);
+  const fallbackCursor = recordAt(fallbackDoor?.recoveryCursor);
+  const pendingCursor = recordAt(pendingDoor?.recoveryCursor);
+  if (fallbackCursor?.kind !== 'volatile-scratch-page' || !fallbackDoor || !pendingDoor || !pendingCursor) {
+    return null;
+  }
+
+  return {
+    ...fallback,
+    _meta: {
+      ...(fallback._meta ?? {}),
+      resultDoor: {
+        ...fallbackDoor,
+        spillPending: true,
+        spillFailed: false,
+        pendingSpill: {
+          ...(typeof pendingDoor.spillPath === 'string' ? { path: pendingDoor.spillPath } : {}),
+          ...(typeof pendingDoor.spillUri === 'string' ? { uri: pendingDoor.spillUri } : {}),
+          cursor: pendingCursor,
+        },
+      },
+    },
+  } as T;
 }
 
 function markPendingScratchWrite<T extends DoorableResult>(
