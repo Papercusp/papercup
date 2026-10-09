@@ -36,13 +36,13 @@ export function boundedSource(source: SearchSource): SearchSource {
 }
 
 /** Preserve a little preceding context around the actual lexical match. */
-export function sectionExcerpt(body: string, highlight: string): { content: string; section: string | null } {
+export function sectionExcerpt(body: string, highlight: string, precedingChars = 300): { content: string; section: string | null } {
   const plain = highlight.replace(/<\/?mark>/g, '').trim();
   const snippetAt = plain ? body.indexOf(plain) : -1;
   const term = /<mark>(.*?)<\/mark>/.exec(highlight)?.[1];
   const termAt = term ? body.toLowerCase().indexOf(term.toLowerCase(), Math.max(0,snippetAt)) : -1;
   const at = termAt >= 0 ? termAt : snippetAt;
-  const start = at < 0 ? 0 : Math.max(0, at - 300);
+  const start = at < 0 ? 0 : Math.max(0, at - precedingChars);
   return { content: body.slice(start, start + 1_500),
     section: lastMarkdownHeading(body.slice(0, Math.max(0, at))) };
 }
@@ -50,7 +50,7 @@ export function sectionExcerpt(body: string, highlight: string): { content: stri
 function listing(rows: SectionRow[], source: 'plan' | 'doc', ranker: string): Listing {
   return rows.map(r => ({ key: `${source}:${r.source_id}`, score: Number(r.rank), row: {
     source, source_id: r.source_id, scope: r.scope, ts: r.updated_at,
-    excerpt: `${r.title}${r.section ? ` › ${r.section}` : ''}\n${r.content}`.slice(0, 1500),
+    excerpt: `${r.title.slice(0,100)}${r.section ? ` › ${r.section.slice(0,100)}` : ''}\n${r.content}`.slice(0, 1500),
     highlight: r.highlight || r.content.slice(0, 1500), score: Number(r.rank), rankers: [ranker],
     meta: { title: r.title, section: r.section, status: r.status,
       currentness: source === 'doc' ? 'maintained-procedure' : 'plan', path: r.path,
@@ -138,8 +138,10 @@ export function createDocSearchSource(audience: KnowledgeAudience = {}): SearchS
     ${audience.automatic ? p.sql`AND s.slug NOT LIKE 'plans/%' AND s.slug NOT LIKE 'reference/plans-%'` : p.sql``}`;
   const map = (rows: Array<Record<string, unknown>>, ranker: string) => listing(rows.map(r => {
     const key = String(r.source_key), slug = String(r.slug), anchor = sectionAnchorBase(String(r.anchor));
-    return { source_id: `${key}:${slug}`, title: String(r.title), content: String(r.content),
-      highlight: String(r.highlight ?? r.content), scope: key === 'papercusp-engineering' ? 'operator' : key,
+    const current = ranker === 'lexical' ? sectionExcerpt(String(r.content),String(r.highlight ?? ''),100).content : String(r.content);
+    const content = `${r.previous_context ? `${r.previous_context}\n` : ''}${current}`;
+    return { source_id: `${key}:${slug}`, title: String(r.title), content,
+      highlight: content, scope: key === 'papercusp-engineering' ? 'operator' : key,
       rank: Number(r.rank), section: anchor || null, status: 'maintained', updated_at: r.updated_at as string | Date,
       path: String(r.url) + (anchor ? `#${anchor}` : ''), source_key: key };
   }), 'doc', ranker);
@@ -147,7 +149,12 @@ export function createDocSearchSource(audience: KnowledgeAudience = {}): SearchS
     name: 'doc',
     async lexical(p) {
       const rows = await p.sql`SELECT * FROM (SELECT DISTINCT ON (s.source_key,s.slug) s.*,
-        ts_rank_cd(to_tsvector('english', s.title || E'\n' || s.content), plainto_tsquery('english', ${p.query})) AS rank
+        ts_rank_cd(to_tsvector('english', s.title || E'\n' || s.content), plainto_tsquery('english', ${p.query})) AS rank,
+        ts_headline('english',s.content,plainto_tsquery('english',${p.query}),
+          'StartSel=<mark>,StopSel=</mark>,MaxWords=90,MinWords=30,MaxFragments=1') AS highlight,
+        (SELECT right(prev.content,250) FROM harness_shared.doc_sections prev
+          WHERE prev.source_key = s.source_key AND prev.slug = s.slug
+            AND s.section_idx > 0 AND prev.section_idx = s.section_idx - 1 LIMIT 1) AS previous_context
         FROM harness_shared.doc_sections s WHERE ${filter(p)}
           AND to_tsvector('english', s.title || E'\n' || s.content) @@ plainto_tsquery('english', ${p.query})
         ORDER BY s.source_key,s.slug,rank DESC,s.anchor) best
@@ -157,7 +164,10 @@ export function createDocSearchSource(audience: KnowledgeAudience = {}): SearchS
     async embedding(p) {
       if (!p.embeddingProfile) return [];
       const rows = await p.sql`SELECT * FROM (SELECT DISTINCT ON (s.source_key,s.slug) s.*,
-        1 - (s.embedding <=> ${p.qVec}::vector) AS rank
+        1 - (s.embedding <=> ${p.qVec}::vector) AS rank,
+        (SELECT right(prev.content,250) FROM harness_shared.doc_sections prev
+          WHERE prev.source_key = s.source_key AND prev.slug = s.slug
+            AND s.section_idx > 0 AND prev.section_idx = s.section_idx - 1 LIMIT 1) AS previous_context
         FROM harness_shared.doc_sections s WHERE ${filter(p)} AND s.embedding IS NOT NULL
           AND ${PROSE_EMBEDDING_SPACE.sourceFilterSql(p, 's.embedding_profile', 's.embedding_mode')}
         ORDER BY s.source_key,s.slug,s.embedding <=> ${p.qVec}::vector,s.anchor) best
