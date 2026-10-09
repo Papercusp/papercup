@@ -5539,6 +5539,15 @@ async function verifyOperatorProcessIdentity(port: number) {
   });
 }
 
+async function verifyOperatorProcessViewState(port: number) {
+  const response = await fetch(`http://127.0.0.1:${port}/api/tui/view-state?owner=${encodeURIComponent(OWNER)}`, {
+    signal: AbortSignal.timeout(3_000),
+  });
+  const body = await response.json();
+  expect(response.status, JSON.stringify({ port, owner: OWNER, body })).toBe(200);
+  expect(body).toMatchObject({ state: { tab: 'Plans', harness: HARNESS } });
+}
+
 async function startOperatorProcess(port = 0) {
   const events: SuSessionEvent[] = [];
   const readiness: Array<Record<string, unknown>> = [];
@@ -5669,6 +5678,28 @@ async function preservePrimaryFailureDuringCleanup(
     cleanupFailures: cleanupFailures.map(({ label, error }) => ({ label, error: cleanupErrorText(error) })),
   });
 }
+
+describe.skipIf(scriptedEngine.real)('PUI cold operator view restoration', () => {
+  test('restores the seeded Plans harness before any owner key', async () => {
+    const process = await startOperatorProcess();
+    let pane: PuiPane | undefined;
+    try {
+      await verifyOperatorProcessViewState(process.port);
+      pane = new PuiPane(bin, process.port, home);
+      await pane.waitFor('Plans (', { timeoutMs: 40_000 });
+      expect(pane.screen()).toContain(HARNESS);
+    } catch (error) {
+      console.info('PUI_COLD_VIEW_RESTORE_FAILURE', JSON.stringify({
+        diagnostics: process.diagnostics,
+        ...pane?.failureEvidence(),
+      }));
+      throw error;
+    } finally {
+      await pane?.stop().catch(() => {});
+      await process.stop();
+    }
+  }, 240_000);
+});
 
 /**
  * P-007 conversation-editor spec clauses.
@@ -7674,6 +7705,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
     let approvalStart: Extract<SuSessionEvent, { type: 'tool'; phase: 'started' }> | undefined;
     let approvalEnd: Extract<SuSessionEvent, { type: 'tool'; phase: 'completed' }> | undefined;
     try {
+      await verifyOperatorProcessViewState(first.port);
       // beforeEach seeds Plans with this fixture's harness. Any owner key
       // cancels pending view-state restoration, so the cold OS child must
       // show that state before openComposer sends Escape/o. The generic
