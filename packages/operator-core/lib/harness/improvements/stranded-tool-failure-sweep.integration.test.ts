@@ -4,9 +4,10 @@
  * EI-25176539351759672).
  *
  * Drives the real candidate query, the real tool_invocations ledger read, the
- * real payload merge, terminal-state write and agent-review enrolment. Only git
- * and the tool-source lookup are injected: they describe a repository, not the
- * database, and a fixed history is what makes the retirement verdict checkable.
+ * real payload merge, terminal-state write and agent-review enrolment. Fixture
+ * filing uses an empty lexical-dedup result, so the sweep's assertions do not
+ * depend on the unrelated capture search deadline. The sweep injects only git
+ * and the tool-source lookup; a fixed history makes retirement checkable.
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
@@ -14,7 +15,14 @@ import { teardownTestPg } from '@papercusp/test-config/pg';
 import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
 import type { GitRead } from '../../candidate-contains';
 
-const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
+const h = vi.hoisted(() => ({
+  sql: undefined as unknown as postgres.Sql,
+  fixtureDedupSearch: vi.fn(async (_query: string, _limit?: number) => []),
+}));
+vi.mock('../../issues-engineer', async (orig) => ({
+  ...(await orig<typeof import('../../issues-engineer')>()),
+  searchIssuesForDedup: h.fixtureDedupSearch,
+}));
 vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
   return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: h.sql }) };
@@ -58,6 +66,7 @@ function gitWith(history: Record<string, Array<{ sha: string; at: string }>>): G
 
 describe('stranded tool-failure sweep (P-003 / D-022)', () => {
   it('verifies, retires and enrols the stranded rows, and leaves taken rows alone', async () => {
+    h.fixtureDedupSearch.mockClear();
     const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
     const t0 = new Date(Date.now() - 6 * HOUR).toISOString();
     const at = (hours: number) => new Date(Date.parse(t0) + hours * HOUR).toISOString();
@@ -79,6 +88,13 @@ describe('stranded tool-failure sweep (P-003 / D-022)', () => {
       freshness: await make('freshness'),
       taken: await make('taken'),
     };
+    // Guard the fixture boundary: returning to the live lexical search would
+    // reintroduce its wall-clock deadline before the sweep is even exercised.
+    expect(h.fixtureDedupSearch).toHaveBeenCalledTimes(5);
+    for (const [query, limit] of h.fixtureDedupSearch.mock.calls) {
+      expect(query).toContain(`stranded sweep `);
+      expect(limit).toBe(20);
+    }
     const [{ workspace_id: workspaceId }] = await db.adminSql<{ workspace_id: string }[]>`
       SELECT workspace_id FROM harness_shared.work_items WHERE feature_id = ${ids.retire}`;
 
