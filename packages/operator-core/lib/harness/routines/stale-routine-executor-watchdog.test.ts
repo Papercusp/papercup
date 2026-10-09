@@ -79,6 +79,21 @@ describe('process boot identity — import timing cannot reset executor age', ()
     expect(identity.bootTimeMs).toBe(3_000);
     await expect(identity.bootCommit).resolves.toBe('a'.repeat(40));
   });
+
+  it('pins the loaded bundle even when the checkout at boot contains a newer commit', async () => {
+    const readGit = vi.fn(async (args: string[]) =>
+      args.includes('HEAD') ? 'b'.repeat(40) : 'a'.repeat(40));
+    const identity = captureProcessBootIdentity({ loadedSha: 'a'.repeat(10), readGit });
+    await expect(identity.bootCommit).resolves.toBe('a'.repeat(40));
+    expect(readGit).toHaveBeenCalledWith(['rev-parse', '--verify', `${'a'.repeat(10)}^{commit}`]);
+  });
+
+  it.each([null, '', 'HEAD', 'not-a-source-sha'])('keeps missing or invalid loaded identity unknown: %s', async loadedSha => {
+    const readGit = vi.fn(async () => 'b'.repeat(40));
+    const identity = captureProcessBootIdentity({ loadedSha, readGit });
+    await expect(identity.bootCommit).resolves.toBeNull();
+    expect(readGit).not.toHaveBeenCalled();
+  });
 });
 
 describe('evaluateExecutorStaleness — the pure decider', () => {
@@ -1167,6 +1182,33 @@ describe('staleRoutineExecutorSweep — gate-code fast path on a young bg-host',
         ...over,
       },
     );
+
+  it('does not announce recovery for a young process still loading an older bundle', async () => {
+    const clearAlarm = vi.fn(async () => true);
+    const result = await sweep({
+      gateCodeDrift: { changed: [], addedSinceBoot: [] },
+      clearExecutorStalenessAlarm: clearAlarm,
+    });
+    expect(result.recovered).toBe(false);
+    expect(clearAlarm).not.toHaveBeenCalled();
+  });
+
+  it.each(['boot', 'current'] as const)('does not announce recovery when the %s identity is unknown', async missing => {
+    const clearAlarm = vi.fn(async () => true);
+    const result = await sweep({
+      ...(missing === 'boot' ? { bootCommit: null } : { currentCommit: null }),
+      clearExecutorStalenessAlarm: clearAlarm,
+    });
+    expect(result.recovered).toBe(false);
+    expect(clearAlarm).not.toHaveBeenCalled();
+  });
+
+  it('clears the previous alarm when the loaded commit matches current source', async () => {
+    const clearAlarm = vi.fn(async () => true);
+    const result = await sweep({ currentCommit: 'a'.repeat(40), clearExecutorStalenessAlarm: clearAlarm });
+    expect(result.recovered).toBe(true);
+    expect(clearAlarm).toHaveBeenCalledOnce();
+  });
 
   it('restarts with the gate-code trigger when the gate is between measurements, without paging', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);

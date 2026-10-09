@@ -15,6 +15,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { execFileViaSidecar } from '../fleet/git-via-sidecar';
+import { getBuildInfo } from '../build-info';
 
 /** One short `git` read in this process's checkout: resolves stdout, rejects on a non-zero exit. */
 export type GitRead = (args: string[]) => Promise<string>;
@@ -228,13 +229,24 @@ export function captureProcessBootIdentity(opts: {
   nowMs?: number;
   uptimeSec?: number;
   resolveCommit?: () => Promise<string | null>;
+  loadedSha?: string | null;
+  readGit?: GitRead;
 } = {}): ProcessBootIdentity {
   const nowMs = opts.nowMs ?? Date.now();
   const uptimeSec = opts.uptimeSec ?? process.uptime();
   return {
     bootTimeMs: nowMs - Math.floor(uptimeSec * 1000),
-    // Boot sample forks locally on purpose; see gitReadLocal.
-    bootCommit: (opts.resolveCommit ?? (() => resolveCurrentHeadCommit(gitReadLocal)))(),
+    // Reuse the identity /api/health reports. A fresh process can load an older
+    // last-known-good bundle; sampling checkout HEAD would label it as current.
+    // Expand the loaded pin to the full Git identity without borrowing HEAD.
+    // The boot sample still forks locally on purpose; see gitReadLocal.
+    bootCommit: (opts.resolveCommit ?? (() => {
+      const loadedSha = opts.loadedSha !== undefined ? opts.loadedSha : getBuildInfo().sha;
+      return resolveCurrentHeadCommit(async () => {
+        if (!loadedSha || !/^[a-f0-9]{7,40}$/i.test(loadedSha)) return '';
+        return (opts.readGit ?? gitReadLocal)(['rev-parse', '--verify', `${loadedSha}^{commit}`]);
+      });
+    }))(),
   };
 }
 

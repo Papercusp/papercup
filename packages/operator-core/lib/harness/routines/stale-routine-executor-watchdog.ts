@@ -1192,7 +1192,11 @@ export async function staleRoutineExecutorSweep(opts: {
 
     if (!verdict.stale) {
       const clearAlarm = deps.clearExecutorStalenessAlarm ?? clearExecutorStalenessAlarm;
-      const recovered = await clearAlarm({ installSlug, identity, now });
+      // A young or unmeasurable process is not a confirmed recovery. Keep an
+      // existing alarm until the actual loaded commit matches current source.
+      const recovered = bootCommit !== null && currentCommit !== null && bootCommit === currentCommit
+        ? await clearAlarm({ installSlug, identity, now })
+        : false;
       const gateCode = await resolveGateCodeFastPath({ identity, bootCommit, currentCommit, bootTimeMs, now }, deps);
       if (gateCode?.restart) {
         const gateVerdict: ExecutorStalenessVerdict = {
