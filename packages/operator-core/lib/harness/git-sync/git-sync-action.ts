@@ -1134,7 +1134,9 @@ function startLockHeartbeat(
         inFlight = null;
       });
     },
-    { category: 'ephemeral-harness', classification: 'must-sample' },
+    // Lease lifetimes can overlap in post-legs or across workspace domains with the
+    // same slug. Each owner must stop only its own heartbeat, never replace another's.
+    { category: 'ephemeral-harness', classification: 'must-sample', instanced: true },
   );
 
   return async () => {

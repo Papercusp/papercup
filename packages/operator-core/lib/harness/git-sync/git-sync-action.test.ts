@@ -2274,6 +2274,71 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
       expect(writes).toEqual(['fresh']);
     });
 
+    it('keeps same-slug leases in different workspaces renewing independently after one stops', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      const start = new Date('2026-10-09T03:00:00Z').getTime();
+      vi.setSystemTime(start);
+      const timers: Array<{ cb: () => void; ms: number; stopped: boolean; handle: TimerHandle }> = [];
+      configureScheduledRegistry({
+        setIntervalImpl: (cb, ms) => {
+          const handle: TimerHandle = { unref: () => undefined };
+          timers.push({ cb, ms, stopped: false, handle });
+          return handle;
+        },
+        clearIntervalImpl: (handle) => {
+          const timer = timers.find((entry) => entry.handle === handle);
+          if (timer) timer.stopped = true;
+        },
+      });
+      let enteredA!: () => void;
+      let enteredB!: () => void;
+      const startedA = new Promise<void>((resolve) => { enteredA = resolve; });
+      const startedB = new Promise<void>((resolve) => { enteredB = resolve; });
+      let finishA!: () => void;
+      let finishB!: () => void;
+      const heldA = new Promise<void>((resolve) => { finishA = resolve; });
+      const heldB = new Promise<void>((resolve) => { finishB = resolve; });
+      const runA = runWithGitSyncPerInstallLease('papercup', 'ws-a', async (lease) => {
+        enteredA();
+        await heldA;
+        lease.assertHeld();
+        return 'a';
+      });
+      await startedA;
+      const ownerA = (tryAcquireResourceMock.mock.calls.at(-1)![1] as { owner: string }).owner;
+      const runB = runWithGitSyncPerInstallLease('papercup', 'ws-b', async (lease) => {
+        enteredB();
+        await heldB;
+        lease.assertHeld();
+        return 'b';
+      });
+      try {
+        await startedB;
+        const heartbeats = timers.filter((timer) => timer.ms === 60_000);
+        expect(heartbeats).toHaveLength(2);
+        expect(heartbeats.map((timer) => timer.stopped)).toEqual([false, false]);
+        finishB();
+        await expect(runB).resolves.toEqual({ state: 'ran', value: 'b' });
+        expect(heartbeats.map((timer) => timer.stopped)).toEqual([false, true]);
+        for (let tick = 1; tick <= 10; tick += 1) {
+          vi.setSystemTime(start + tick * 60_000);
+          const previous = tryAcquireResourceMock.mock.calls.length;
+          heartbeats[0]!.cb();
+          await vi.waitFor(() => expect(tryAcquireResourceMock.mock.calls.length).toBeGreaterThan(previous));
+          expect(tryAcquireResourceMock.mock.calls.at(-1)![1]).toMatchObject({ owner: ownerA });
+          // The refresh result must reach the fence before the next minute advances.
+          await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        }
+        finishA();
+        await expect(runA).resolves.toEqual({ state: 'ran', value: 'a' });
+        expect(heartbeats.every((timer) => timer.stopped)).toBe(true);
+      } finally {
+        finishA();
+        finishB();
+        await Promise.allSettled([runA, runB]);
+      }
+    });
+
     it('CONTROL: a held lease runs to completion, and an unrelated error still propagates', async () => {
       const ran = await runWithGitSyncPerInstallLease('papercup', 'ws-42', async (lease) => {
         lease.assertHeld();
