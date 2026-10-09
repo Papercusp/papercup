@@ -1143,9 +1143,8 @@ describe('applyResultDoor', () => {
     expect(output._projection).toMatchObject({
       truncated: true,
       cursor: {
-        kind: 'committed-blocker-write',
-        tool: 'work_items:get',
-        args: { ids: ['EI-blocker-write-1'], harness: 'papercup' },
+        kind: 'volatile-scratch-page',
+        tool: 'capability:read',
       },
     });
     expect(output._projection.next).toContain('Do NOT repeat this mutation');
@@ -1906,9 +1905,10 @@ describe('applyResultDoor', () => {
       const doored = applyResultDoor(input, { toolName: 'computer:screenshot', workspaceId: 'ws-1', runId: RUN_ID });
       const envelope = JSON.parse((doored.content[0] as { text: string }).text);
       expect(envelope).toMatchObject({
-        state: 'error',
-        error: { code: 'output_spill_failed', retryable: true },
+        state: 'incomplete',
+        incomplete: { recoverable: true },
       });
+      expect(envelope.content[0]).toMatchObject({ kind: 'reference' });
       expect((doored.content[0] as { text: string }).text).not.toContain(original.data);
       expect((doored._meta as { resultDoor?: Record<string, unknown> }).resultDoor).toMatchObject({
         spillFailed: true,
@@ -1968,7 +1968,7 @@ describe('applyResultDoor', () => {
       expect(output._projection).toMatchObject({
         kind: 'bounded-payload',
         truncated: true,
-        cursor: { kind: 'unavailable', reason: 'spill-write-failed' },
+        cursor: { kind: 'volatile-scratch-page', tool: 'capability:read', reason: 'spill-write-failed' },
       });
       expect(output._projection.next).toContain('Do NOT repeat this non-idempotent emit');
       expect(output._projection.next).toContain('completionReceipt');
@@ -2030,7 +2030,11 @@ describe('applyResultDoor', () => {
         issueId: 'scorecard-emit-hard-1',
       });
       expect(output.error).toBeUndefined();
-      expect(output._projection?.cursor).toMatchObject({ kind: 'unavailable', reason: 'spill-write-failed' });
+      expect(output._projection?.cursor).toMatchObject({
+        kind: 'volatile-scratch-page',
+        tool: 'capability:read',
+        reason: 'spill-write-failed',
+      });
       expect(output._projection?.next).toContain('Do NOT repeat this non-idempotent emit');
       expect(doored.structuredContent).toEqual(receipt);
       expect((doored._meta as { resultDoor?: Record<string, unknown> }).resultDoor).toMatchObject({
@@ -2068,14 +2072,13 @@ describe('applyResultDoor', () => {
       const output = JSON.parse((doored.content[0] as { text: string }).text) as {
         state?: string;
         error?: { code?: string; message?: string; retryable?: boolean };
+        _projection?: { cursor?: Record<string, unknown>; next?: string };
       };
 
-      expect(output).toMatchObject({
-        state: 'error',
-        error: { code: 'output_spill_failed', retryable: false },
-      });
-      expect(output.error?.message).toContain('scorecards:emit write outcome is unknown');
-      expect(output.error?.message).toContain('Do NOT repeat this non-idempotent emit');
+      expect(output.state).toBe('incomplete');
+      expect(output.error).toBeUndefined();
+      expect(output._projection?.cursor).toMatchObject({ kind: 'volatile-scratch-page', tool: 'capability:read' });
+      expect(output._projection?.next).toContain('Do NOT repeat this non-idempotent emit');
     });
 
     it('retains a nested coord:send receipt when the aggregate hard-spill write fails', () => {
@@ -2123,7 +2126,7 @@ describe('applyResultDoor', () => {
       expect(output._projection).toMatchObject({
         kind: 'bounded-payload',
         truncated: true,
-        cursor: { kind: 'unavailable', reason: 'spill-write-failed' },
+        cursor: { kind: 'volatile-scratch-page', tool: 'capability:read', reason: 'spill-write-failed' },
       });
       expect(output._projection.next).toContain('Do not repeat coord:send');
       expect(output._projection.next).toContain('coord:read');
@@ -2183,7 +2186,12 @@ describe('applyResultDoor', () => {
       expect(output.results[0].completion.summary.length).toBeLessThan(1_200);
       expect(output._projection).toMatchObject({
         truncated: true,
-        cursor: { kind: 'unavailable', reason: 'spill-write-failed', errorCode: 'SCRATCH_QUOTA_EXCEEDED' },
+        cursor: {
+          kind: 'volatile-scratch-page',
+          tool: 'capability:read',
+          reason: 'spill-write-failed',
+          errorCode: 'SCRATCH_QUOTA_EXCEEDED',
+        },
       });
       expect(output._projection.next).toContain('Do NOT repeat this call');
       expect(output._projection.next).toContain('work_items:get');
@@ -2241,9 +2249,8 @@ describe('applyResultDoor', () => {
       expect(output._projection).toMatchObject({
         truncated: true,
         cursor: {
-          kind: 'committed-blocker-write',
-          tool: 'work_items:get',
-          args: { ids: ['EI-blocker-write-2'], harness: 'papercup' },
+          kind: 'volatile-scratch-page',
+          tool: 'capability:read',
         },
       });
       expect(output._projection.next).toContain('Do NOT repeat this mutation');
@@ -2276,12 +2283,14 @@ describe('applyResultDoor', () => {
       ) as DoorableResult;
       const envelope = JSON.parse((doored.content[0] as { text: string }).text) as {
         error?: { code?: string; message?: string; retryable?: boolean };
+        state?: string;
+        _projection?: { cursor?: Record<string, unknown>; next?: string };
       };
 
-      expect(envelope.error).toMatchObject({ code: 'output_spill_failed', retryable: false });
-      expect(envelope.error?.message).toContain('work_items:set_blocker write may already have committed');
-      expect(envelope.error?.message).toContain('Do NOT repeat this mutation');
-      expect(envelope.error?.message).toContain('work_items:get');
+      expect(envelope.error).toBeUndefined();
+      expect(envelope._projection?.cursor).toMatchObject({ kind: 'volatile-scratch-page', tool: 'capability:read' });
+      expect(envelope._projection?.next).toContain('Do NOT repeat it');
+      expect(envelope._projection?.next).toContain('work_items:get');
     });
 
     it('makes a nested work_items:complete hard-spill failure non-retryable when no receipt parses', () => {
@@ -2303,12 +2312,14 @@ describe('applyResultDoor', () => {
       ) as DoorableResult;
       const envelope = JSON.parse((doored.content[0] as { text: string }).text) as {
         error?: { code?: string; message?: string; retryable?: boolean };
+        state?: string;
+        _projection?: { cursor?: Record<string, unknown>; next?: string };
       };
 
-      expect(envelope.error).toMatchObject({ code: 'output_spill_failed', retryable: false });
-      expect(envelope.error?.message).toContain('work_items:complete write may already have committed');
-      expect(envelope.error?.message).toContain('do NOT repeat it');
-      expect(envelope.error?.message).toContain('work_items:get');
+      expect(envelope.error).toBeUndefined();
+      expect(envelope._projection?.cursor).toMatchObject({ kind: 'volatile-scratch-page', tool: 'capability:read' });
+      expect(envelope._projection?.next).toContain('Do NOT repeat this call');
+      expect(envelope._projection?.next).toContain('work_items:get');
     });
 
     it('marks a nested coord:send hard-spill failure non-retryable when no receipt can be recovered', () => {
@@ -2328,13 +2339,15 @@ describe('applyResultDoor', () => {
       );
       const envelope = JSON.parse((doored.content[0] as { type: 'text'; text: string }).text) as {
         error?: { code?: string; message?: string; retryable?: boolean };
+        state?: string;
+        _projection?: { cursor?: Record<string, unknown>; next?: string };
       };
 
-      expect(envelope.error).toMatchObject({ code: 'output_spill_failed', retryable: false });
-      expect(envelope.error?.message).toContain('delivery outcome is unknown');
-      expect(envelope.error?.message).toContain('do NOT repeat the send');
-      expect(envelope.error?.message).toContain('coord:feed');
-      expect(envelope.error?.message).toContain('coord:inbox');
+      expect(envelope.error).toBeUndefined();
+      expect(envelope._projection?.cursor).toMatchObject({ kind: 'volatile-scratch-page', tool: 'capability:read' });
+      expect(envelope._projection?.next).toContain('do NOT repeat the send');
+      expect(envelope._projection?.next).toContain('coord:feed');
+      expect(envelope._projection?.next).toContain('coord:inbox');
     });
 
     it('uses one budget across explicit fan-out and spills the result that crosses it', () => {
@@ -2547,17 +2560,17 @@ describe('applyResultDoor', () => {
   // and a failed WRITE silently inherited the cap's correct answer.
   //
   // The two failures need opposite answers. A failed CAP returning the original is
-  // right. A failed SPILL returning the original re-exposes the entire payload the
-  // door exists to bound — at exactly the moment the box is unhealthy (disk full,
-  // unwritable scratch), and unbounded outright when the caller passed
-  // payloadTier:'full' (which bypasses payload-tier's 30k ceiling upstream).
+  // right. A failed SPILL must still stay bounded — returning the original re-exposes
+  // the entire payload the door exists to bound, especially for payloadTier:'full'
+  // (which bypasses payload-tier's 30k ceiling upstream). A bounded volatile page is
+  // allowed when the in-process cache can retain the spill bytes.
   //
   // OMP has the identical bug with the sign flipped: correct on save-FAILED
   // (output-meta.ts:684-692, truncates anyway, under a comment saying a save
   // failure must never re-expose the full output), wrong on store-ABSENT (:656,
   // returns uncapped). Same function, opposite answers — which is what makes this
   // shape worth a named guard rather than a one-line fix.
-  describe('spill write fails → truncate WITHOUT recovery, never no-cap (WI-36047)', () => {
+  describe('spill write fails → truncate and offer volatile recovery, never no-cap (WI-36047)', () => {
     /** A regular FILE where the scratch root dir should be → mkdirSync throws. */
     function breakScratchRoot(): void {
       writeFileSync(join(sandbox, 'scratch'), 'not a directory');
@@ -2581,18 +2594,23 @@ describe('applyResultDoor', () => {
       expect(text.length).toBeLessThan(original.length);
     });
 
-    it('names NO spill path in the footer — a pointer to a file that was never written is worse than none', () => {
+    it('offers a volatile page without advertising a missing filesystem path', () => {
       breakScratchRoot();
       const doored = applyResultDoor(
         { content: [{ type: 'text' as const, text: longText(BUDGET_CHARS * 2) }] },
         { toolName: 'plans:get', workspaceId: 'ws-1', runId: RUN_ID },
       );
-      const footer = boundedBody(doored)._projection.next;
+      const bounded = boundedBody(doored);
+      const footer = bounded._projection.next;
 
-      expect(footer).toContain('spill write failed');
-      expect(footer).toContain('NOT recoverable');
-      // No scratch URI, no filesystem path — the reader must not spend a call
-      // discovering the file is absent.
+      expect(footer).toContain('Primary scratch persistence failed');
+      expect(footer).toContain('in-process copy is available');
+      expect(bounded._projection.cursor).toMatchObject({
+        kind: 'volatile-scratch-page',
+        tool: 'capability:read',
+      });
+      // No scratch URI in prose and no filesystem path; the cursor carries only
+      // the short-lived, capability:read reference.
       expect(footer).not.toContain('papercusp://scratch');
       expect(footer).not.toContain(sandbox);
     });
@@ -2640,7 +2658,11 @@ describe('applyResultDoor', () => {
         _projection: { cursor: Record<string, unknown> };
       };
 
-      expect(bounded._projection.cursor).toMatchObject({ kind: 'unavailable', reason: 'spill-write-failed' });
+      expect(bounded._projection.cursor).toMatchObject({
+        kind: 'volatile-scratch-page',
+        tool: 'capability:read',
+        reason: 'spill-write-failed',
+      });
       expect(bounded.results[0].checkpoint).toContain('RETAINED-CHECKPOINT-BEGIN');
       expect(bounded.results[0].checkpoint!.length).toBeGreaterThan(800);
       expect(bounded.results[0].checkpoint).toContain('TRUNCATED');
