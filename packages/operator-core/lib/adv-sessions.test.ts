@@ -100,10 +100,33 @@ describe('classifyOwnerNativeSession exact incarnation (get-feedback D-006)', ()
     advSessionBeginMock.mockRejectedValue(timeout);
 
     await expect(classifyOwnerNativeSession({ ownerId, sessionId: nativeId })).rejects.toBe(timeout);
+    expect((timeout as DbCallDeadlineError & { nativeSessionVerificationPhase?: string }).nativeSessionVerificationPhase)
+      .toBe('transaction_setup');
 
     expect(advSessionBeginMock).toHaveBeenCalledTimes(1);
     expect(advSessionRowsMock).not.toHaveBeenCalled();
     expect(acquireRetries).toEqual([0]);
+  });
+
+  it.each([
+    { advSessionId: null, expectedPhase: 'owner_candidate_rows_lookup' },
+    { advSessionId: 541, expectedPhase: 'owner_row_lookup_by_id' },
+  ])('tags verifier statement failures at $expectedPhase', async ({ advSessionId, expectedPhase }) => {
+    const timeout = Object.assign(new Error('statement timeout'), { name: 'OrgTxnTimeoutError', pgCode: '57014' });
+    advSessionRowsMock.mockImplementation(async (...args: unknown[]) => {
+      const template = args[0];
+      const query = Array.isArray(template) ? template.join(' ') : String(template ?? '');
+      if (query.includes('FROM harness_shared.adv_sessions')) throw timeout;
+      return [];
+    });
+
+    await expect(classifyOwnerNativeSession({
+      ownerId,
+      sessionId: nativeId,
+      ...(advSessionId == null ? {} : { advSessionId }),
+    })).rejects.toBe(timeout);
+    expect((timeout as Error & { nativeSessionVerificationPhase?: string }).nativeSessionVerificationPhase)
+      .toBe(expectedPhase);
   });
 
   it.each(['missing', 'owned by another session'])('does not replace an explicit %s row with another matching owner row', async () => {

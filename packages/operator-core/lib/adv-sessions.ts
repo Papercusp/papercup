@@ -367,7 +367,7 @@ export async function workspaceForCoordOwner(coordOwnerId: string): Promise<stri
     const rows = await sql<{ workspace_id: string }[]>`
       SELECT workspace_id FROM harness_shared.adv_sessions
        WHERE coord_owner_id = ${coordOwnerId}
-       ORDER BY started_at DESC
+       ORDER BY started_at DESC, id DESC
        LIMIT 1
     `;
     ws = rows[0]?.workspace_id ?? null;
@@ -1485,14 +1485,18 @@ export async function releaseAdvSessionResume(id: number, resumeClaimKey: string
  * Throws on a genuine datastore fault instead of swallowing it, so a caller can
  * tell "could not evaluate the claim" apart from "lost the race". Returning
  * `false` for an unreachable database would report a race that never happened.
+ * When expectedOwnerId is supplied, the row must also be the latest row for that
+ * owner; delayed wake handles cannot reactivate a superseded session.
  */
 export async function claimAdvSessionResume(
   id: number,
   resumeClaimKey: string | null = null,
   windowSec: number = RESUME_CLAIM_WINDOW_SEC,
+  expectedOwnerId: string | null = null,
 ): Promise<boolean> {
   const { sql } = getOrgPg();
   const key = resumeClaimKey?.trim() || null;
+  const ownerId = expectedOwnerId?.trim() || null;
 
   // Legacy callers did not carry a replay key. Preserve their single-winner
   // behavior, but clear the COMPLETE terminal tuple: ended_by/ended_signal are
@@ -1505,6 +1509,19 @@ export async function claimAdvSessionResume(
              started_at = now(), shutdown_accepted_at = NULL,
              resume_claim_key = NULL, resume_claimed_at = NULL
        WHERE id = ${id}
+         AND (
+           ${ownerId}::text IS NULL
+           OR (
+             coord_owner_id = ${ownerId}
+             AND id = (
+               SELECT id
+                 FROM harness_shared.adv_sessions
+                WHERE coord_owner_id = ${ownerId}
+                ORDER BY started_at DESC, id DESC
+                LIMIT 1
+             )
+           )
+         )
          AND (
            ended_at IS NOT NULL
            OR ended_by IS NOT NULL
@@ -1529,12 +1546,13 @@ export async function claimAdvSessionResume(
   // the follower waits, then reads the winner's completed verdict.
   const ledgerKey = `psu-resume:${id}:${key}`;
   return sql.begin(async (tx) => {
-    const [target] = await tx<Array<{ workspace_id: string }>>`
-      SELECT workspace_id
+    const [target] = await tx<Array<{ workspace_id: string; coord_owner_id: string | null }>>`
+      SELECT workspace_id, coord_owner_id
         FROM harness_shared.adv_sessions
        WHERE id = ${id}
     `;
     if (!target) return false;
+    if (ownerId && target.coord_owner_id !== ownerId) return false;
 
     const workspaceId = target.workspace_id;
     await tx`
@@ -1561,6 +1579,19 @@ export async function claimAdvSessionResume(
              started_at = now(), shutdown_accepted_at = NULL,
              resume_claim_key = NULL, resume_claimed_at = NULL
        WHERE id = ${id}
+         AND (
+           ${ownerId}::text IS NULL
+           OR (
+             coord_owner_id = ${ownerId}
+             AND id = (
+               SELECT id
+                 FROM harness_shared.adv_sessions
+                WHERE coord_owner_id = ${ownerId}
+                ORDER BY started_at DESC, id DESC
+                LIMIT 1
+             )
+           )
+         )
          AND (
            ended_at IS NOT NULL
            OR ended_by IS NOT NULL
@@ -1802,6 +1833,13 @@ export async function reanchorAdvSessionNativeIdByOwner(
 /** How a reported native session id relates to the owner's tracked incarnation. */
 export type OwnerNativeSessionBinding = 'bound' | 'unbound' | 'foreign';
 
+/** Privacy-safe stage names preserved when the native-session authority read fails. */
+export type NativeSessionVerificationPhase =
+  | 'transaction_setup'
+  | 'owner_row_lookup_by_id'
+  | 'owner_candidate_rows_lookup'
+  | 'row_classification';
+
 export interface OwnerNativeSessionRow {
   id: number;
   session_id: string | null;
@@ -1862,41 +1900,62 @@ export async function classifyOwnerNativeSession(opts: {
     return { binding: 'foreign', boundSessionId: null, advSessionId: null };
   }
 
-  return boundedOrgTxn(async (sql) => {
-    let rows: OwnerNativeSessionRow[];
-    if (opts.advSessionId != null) {
-      rows = await sql<OwnerNativeSessionRow[]>`
-        SELECT id, session_id, (ended_at IS NULL AND ended_by IS NULL) AS active
-          FROM harness_shared.adv_sessions
-         WHERE id = ${opts.advSessionId} AND coord_owner_id = ${opts.ownerId}
-      `;
-      if (rows.length === 0) {
-        return { binding: 'foreign', boundSessionId: null, advSessionId: null };
+  let phase: NativeSessionVerificationPhase = 'transaction_setup';
+  try {
+    return await boundedOrgTxn(async (sql) => {
+      let rows: OwnerNativeSessionRow[];
+      if (opts.advSessionId != null) {
+        phase = 'owner_row_lookup_by_id';
+        rows = await sql<OwnerNativeSessionRow[]>`
+          SELECT id, session_id, (ended_at IS NULL AND ended_by IS NULL) AS active
+            FROM harness_shared.adv_sessions
+           WHERE id = ${opts.advSessionId} AND coord_owner_id = ${opts.ownerId}
+        `;
+        if (rows.length === 0) {
+          return { binding: 'foreign', boundSessionId: null, advSessionId: null };
+        }
+      } else {
+        phase = 'owner_candidate_rows_lookup';
+        rows = await sql<OwnerNativeSessionRow[]>`
+          SELECT id, session_id, (ended_at IS NULL AND ended_by IS NULL) AS active
+            FROM harness_shared.adv_sessions
+           WHERE coord_owner_id = ${opts.ownerId}
+           ORDER BY (ended_at IS NULL AND ended_by IS NULL) DESC, id DESC
+           LIMIT 20
+        `;
       }
-    } else {
-      rows = await sql<OwnerNativeSessionRow[]>`
-        SELECT id, session_id, (ended_at IS NULL AND ended_by IS NULL) AS active
-          FROM harness_shared.adv_sessions
-         WHERE coord_owner_id = ${opts.ownerId}
-         ORDER BY (ended_at IS NULL AND ended_by IS NULL) DESC, id DESC
-         LIMIT 20
-      `;
+      phase = 'row_classification';
+      return classifyOwnerNativeSessionRows(rows, opts.sessionId);
+    }, {
+      readOnly: true,
+      acquireTimeoutMs: NATIVE_SESSION_VERIFY_ACQUIRE_TIMEOUT_MS,
+      // postgres-js cannot cancel a begin that is still queued when the local
+      // acquisition deadline wins. This verifier runs before every MCP call, so
+      // retrying would add another pending org-admin acquisition per request.
+      // Fail closed on the first measured timeout instead of amplifying that queue.
+      acquireRetries: 0,
+      // This verifier runs before every MCP tool call, so an overly short global
+      // override can turn normal org-admin pool queuing into an auth failure.
+      // Keep query and lock budgets narrow after a connection has been acquired.
+      statementTimeoutMs: NATIVE_SESSION_VERIFY_STATEMENT_TIMEOUT_MS,
+      lockTimeoutMs: NATIVE_SESSION_VERIFY_LOCK_TIMEOUT_MS,
+    });
+  } catch (error) {
+    // Keep the original error and fail-closed behavior, but expose the last
+    // verifier phase to the pre-dispatch telemetry seam without logging SQL or row data.
+    if (error && (typeof error === 'object' || typeof error === 'function')) {
+      try {
+        Object.defineProperty(error, 'nativeSessionVerificationPhase', {
+          value: phase,
+          configurable: true,
+          enumerable: false,
+        });
+      } catch {
+        // A non-extensible error still fails closed; its existing diagnostics survive.
+      }
     }
-    return classifyOwnerNativeSessionRows(rows, opts.sessionId);
-  }, {
-    readOnly: true,
-    acquireTimeoutMs: NATIVE_SESSION_VERIFY_ACQUIRE_TIMEOUT_MS,
-    // postgres-js cannot cancel a begin that is still queued when the local
-    // acquisition deadline wins. This verifier runs before every MCP call, so
-    // retrying would add another pending org-admin acquisition per request.
-    // Fail closed on the first measured timeout instead of amplifying that queue.
-    acquireRetries: 0,
-    // This verifier runs before every MCP tool call, so an overly short global
-    // override can turn normal org-admin pool queuing into an auth failure.
-    // Keep query and lock budgets narrow after a connection has been acquired.
-    statementTimeoutMs: NATIVE_SESSION_VERIFY_STATEMENT_TIMEOUT_MS,
-    lockTimeoutMs: NATIVE_SESSION_VERIFY_LOCK_TIMEOUT_MS,
-  });
+    throw error;
+  }
 }
 
 /**
