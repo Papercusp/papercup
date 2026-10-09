@@ -33,6 +33,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { listAllProjectedTools } from '@papercusp/agent-mcp';
 import type { ChildProcess } from 'node:child_process';
 import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -264,7 +265,7 @@ export function validateCriterionCheckPaths(
     scopeFailures.push({ criterionKey: '(probe batch)', path: 'all', reason: `${probeCount} probes exceed the execution cap of ${CONTINUITY_PROBE_MAX_PER_WAKE}` });
   }
   for (const c of criteria) {
-    if (c.check?.kind === 'probe' && c.check.all !== undefined) {
+    if (c.check?.kind === 'probe') {
       const shape = rubricCriterionCheckSchema.safeParse(c.check);
       if (!shape.success) {
         scopeFailures.push({ criterionKey: c.key, path: 'probe', reason: shape.error.message });
@@ -272,7 +273,21 @@ export function validateCriterionCheckPaths(
       }
       for (const [index, probe] of (c.check.all ?? [c.check.probe]).entries()) {
         const parsed = continuityProbeSchema.safeParse(probe);
-        if (!parsed.success) scopeFailures.push({ criterionKey: c.key, path: `probe[${index}]`, reason: parsed.error.message });
+        if (!parsed.success) {
+          scopeFailures.push({ criterionKey: c.key, path: `probe[${index}]`, reason: parsed.error.message });
+          continue;
+        }
+        if (parsed.data.kind === 'tool') {
+          const toolName = parsed.data.tool;
+          const target = listAllProjectedTools().find(tool => tool.expose?.mcp?.name === toolName);
+          if (target?.agentRoles && !target.agentRoles.includes('judge')) {
+            scopeFailures.push({
+              criterionKey: c.key,
+              path: `probe[${index}]`,
+              reason: `tool '${parsed.data.tool}' excludes the independent judge role — a rubric probe must be re-runnable by its grader. Choose a judge-readable tool or extend the read-only target's role allowlist before authoring this check`,
+            });
+          }
+        }
       }
       continue;
     }
