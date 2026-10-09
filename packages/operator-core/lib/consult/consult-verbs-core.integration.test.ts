@@ -170,6 +170,19 @@ describe('durable cascade acknowledgement and restart recovery', () => {
     expect(await continueCascadeDispatchCore(WS, id, fail)).toBe(false);
     expect(await continueCascadeDispatchCore(WS, id, { ...fail, now: () => new Date(NOW.getTime() + 30_001), dispatch: () => async () => ({ woke: 0 }) })).toBe(true);
   });
+
+  it('bounds thrown recovery attempts and makes exhaustion due for requester-visible expiry', async () => {
+    const id = await queue();
+    let time = NOW;
+    const deps = { getSql: () => rootSql, now: () => time, dispatch: () => async () => { throw new Error('persistent launch fault'); } };
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await expect(continueCascadeDispatchCore(WS, id, deps)).rejects.toThrow('persistent launch fault');
+      time = new Date(time.getTime() + 30_001);
+    }
+    expect((await queuedRow(id)).routing.cascadeDispatch).toMatchObject({ attempts: 3, leaseToken: null });
+    expect(new Date((await queuedRow(id)).expires_at).getTime()).toBeLessThan(time.getTime());
+    expect(await continueCascadeDispatchCore(WS, id, deps)).toBe(false);
+  });
 });
 const MIGRATION_834 = fileURLToPath(
   new URL('../../../../libs/papercusp/libs/db/sql/834-consult-threads.sql', import.meta.url),

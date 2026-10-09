@@ -312,6 +312,7 @@ export async function continueCascadeDispatchCore(
        AND routing #>> '{cascadeDispatch,version}' = '1'
        AND (routing #>> '{cascadeDispatch,cursor}')::int = cascade_cursor
        AND routing #>> '{cascadeDispatch,responder}' = responder_id
+       AND COALESCE((routing #>> '{cascadeDispatch,attempts}')::int, 0) < 3
        AND routing #>> ARRAY['selection', 'selected', cascade_cursor::text, 'answeringOwnerId'] IS NULL
        AND COALESCE((routing #>> '{cascadeDispatch,leaseUntil}')::timestamptz, '-infinity'::timestamptz) <= ${now().toISOString()}::timestamptz
     RETURNING cascade_cursor, routing`;
@@ -362,11 +363,14 @@ export async function continueCascadeDispatchCore(
          AND cascade_cursor = ${row.cascade_cursor} AND closed_at IS NULL
          AND routing #>> '{cascadeDispatch,leaseToken}' = ${token}`;
   } catch (error) {
+    const attempts = (pending.attempts ?? 0) + 1;
     await sql`
       UPDATE harness_shared.consult_state
          SET routing = jsonb_set(routing, '{cascadeDispatch}', (routing->'cascadeDispatch') ||
-           ${sql.json({ leaseToken: null, leaseUntil: new Date(now().getTime() + 30_000).toISOString(),
-             attempts: (pending.attempts ?? 0) + 1, lastError: String(error).slice(0, 500) } as never)}::jsonb)
+           ${sql.json({ leaseToken: null, leaseUntil: attempts < 3 ? new Date(now().getTime() + 30_000).toISOString() : null,
+             attempts, lastError: String(error).slice(0, 500) } as never)}::jsonb),
+             expires_at = CASE WHEN ${attempts >= 3}::boolean
+               THEN ${now().toISOString()}::timestamptz - interval '1 millisecond' ELSE expires_at END
        WHERE workspace_id = ${workspaceId} AND conversation_id = ${conversationId}
          AND cascade_cursor = ${row.cascade_cursor} AND routing #>> '{cascadeDispatch,leaseToken}' = ${token}`;
     throw error;
