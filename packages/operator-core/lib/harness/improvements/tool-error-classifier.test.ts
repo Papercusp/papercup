@@ -170,6 +170,15 @@ describe('P-001 R-7 frozen friction correlation controls', () => {
       message: 'A tail:45 read of the consult result scratch spill was refused because the selected line window exceeded the response-size limit; the tool advised smaller line windows or byte paging.',
     }).class).toBe('caller');
   });
+
+  it('classifies mutually exclusive capability:read window modes as caller input', () => {
+    expect(normalizeSuspectedToolFailure({
+      toolName: 'capability:read',
+      errorCode: 'mixed_window_modes',
+      status: 'handler_error',
+      message: 'raw text windows cannot be combined with byte_offset/byte_limit; byte windows already return exact bytes.',
+    }).class).toBe('caller');
+  });
 });
 
 describe('classifyToolError — real-corpus regression (P-011)', () => {
@@ -206,6 +215,18 @@ describe('classifyToolError — real-corpus regression (P-011)', () => {
     }).class).toBe('caller');
     // Keep genuine implementation failures on the structural lane.
     expect(classifyToolError('handler_error', 'error', 'Cannot read properties of undefined')).toBe('structural');
+  });
+
+  it('classifies stopped or reassigned resolver-run refusals as expected caller control flow', () => {
+    const errorCode = 'resolver_owner_mismatch_or_not_executing';
+    const message = 'The bulk-resolve run is stopped and no report was written.';
+    expect(classifyToolError(errorCode, 'refused', message)).toBe('caller');
+    expect(normalizeSuspectedToolFailure({
+      toolName: 'inbox:bulk-run-report',
+      errorCode,
+      status: 'refused',
+      message,
+    }).class).toBe('caller');
   });
 
   it('keeps a caller-authored pg_query 42703 refusal out of the structural wrapper lane', () => {

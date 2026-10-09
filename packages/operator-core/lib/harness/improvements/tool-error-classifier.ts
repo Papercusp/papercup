@@ -40,7 +40,7 @@
  *   - structural — a real bug/misconfig (the tool, a missing table, a wiring
  *     gap). Fires on FEW occurrences OR a high error-rate → auto-implement.
  *   - transient  — timeout / load / shared-infra exhaustion. Volume-gated.
- *   - caller     — the caller sent bad input, lacks a role, or was rejected at the MCP auth gate (DX/auth). kind=change.
+ *   - caller     — the caller sent bad input, lacks a role, was rejected at the MCP auth gate, or lost run authority (DX/auth/control flow). kind=change.
  *   - rate-limit — an EXTERNAL provider rate-limit / quota (OpenAI embed TPM
  *     429). Capacity, not a code bug → infra/owner, never the auto-implement lane.
  */
@@ -170,17 +170,22 @@ export const TOOL_ERROR_RULES: readonly ToolErrorRule[] = [
       'flush-required', 'rubric-not-found', 'reviewer_model_not_allowed',
       'dynamic_import_unsupported', 'mcp_auth_failed', 'evidence_class_not_found',
       'tenant_scope_required', 'positive_control_tenant_scope_required',
-      'scratch_line_window_too_large', 'client_id_required', 'client_not_found',
+      'scratch_line_window_too_large', 'mixed_window_modes', 'client_id_required', 'client_not_found',
     ],
     statuses: ['role-not-allowed'],
     messagePattern: CALLER_MESSAGE_PATTERN,
-    why: 'the caller sent bad input (including code:run JavaScript that fails to parse before dispatch), chose a reviewer outside the expert allowlist, attempted an import in the import-free code:run sandbox, lacked a role, was rejected at the MCP auth gate, named no (or an unregistered) harness, selected a missing UI client, hit an explicit flush or scratch-reference window-size precondition, or read code:run typed output as an MCP content envelope despite its structured_result_shape typed-root diagnostic — not a tool bug',
+    why: 'the caller sent bad input (including code:run JavaScript that fails to parse before dispatch), chose a reviewer outside the expert allowlist, attempted an import in the import-free code:run sandbox, lacked a role, was rejected at the MCP auth gate, named no (or an unregistered) harness, selected a missing UI client, hit an explicit flush or scratch-reference window-size precondition, combined mutually exclusive capability:read window modes, or read code:run typed output as an MCP content envelope despite its structured_result_shape typed-root diagnostic — not a tool bug',
   },
   {
     class: 'caller',
     errorCodes: ['native_tool_owner_unsupported_capability'],
     statuses: ['native_tool_owner_unsupported_capability'],
     why: 'the native-owner transport deliberately refuses to forward host-local authenticatedPrincipal capabilities across its RPC boundary; this is an expected transport refusal, not a structural defect in the named tool. Match both the direct code and the status retained beneath an outer JSON-RPC error code',
+  },
+  {
+    class: 'caller',
+    errorCodes: ['resolver_owner_mismatch_or_not_executing'],
+    why: 'bulk-resolve and plan-cleanup tools refuse reports, actions, and settlement after a run stops or its resolver ownership changes; this is an expected authority-state refusal, not a structural tool defect',
   },
   {
     class: 'caller',
