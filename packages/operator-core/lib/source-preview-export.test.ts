@@ -269,11 +269,11 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     expect(git(dest, ['status', '--porcelain', '--untracked-files=all'])).toBe('');
     writeFileSync(join(dest, 'unexpected-source.ts'), 'export const unexpected = true;\n');
     expect(git(dest, ['status', '--porcelain', '--untracked-files=all'])).toContain('?? unexpected-source.ts');
-    await expect(verifyVerifierSource(dest, receipt)).rejects.toThrow('extra unexpected-source.ts');
+    await expect(verifyVerifierSource(dest, receipt)).rejects.toThrow('added unexpected-source.ts');
     rmSync(join(dest, 'unexpected-source.ts'));
     writeFileSync(join(dest, '.verifier-source.json'), '{}');
     expect(git(dest, ['status', '--porcelain', '--untracked-files=all'])).toBe('');
-    await expect(verifyVerifierSource(dest, receipt)).rejects.toThrow('tampered verification source manifest');
+    await expect(verifyVerifierSource(dest, receipt)).rejects.toThrow('tampered verification source provenance');
     writeFileSync(join(dest, '.verifier-source.json'), JSON.stringify(receipt));
     await expect(verifyVerifierSource(dest, receipt)).resolves.toEqual(receipt);
 
