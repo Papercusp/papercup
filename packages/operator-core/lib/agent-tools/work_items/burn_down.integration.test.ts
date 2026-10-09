@@ -284,9 +284,10 @@ describe('default fleet reports over the real current-spec queue', () => {
          WHERE workspace_id = 'default' AND harness_slug = ${HARNESS} AND feature_id = ${ids[3]}`;
       await tx`
         INSERT INTO harness_shared.routines
-          (id, workspace_id, install_slug, name, active, metadata)
+          (id, workspace_id, install_slug, name, trigger_kind, trigger_config, target_role, active, metadata)
         VALUES ('rt-floor-read-context', 'default', ${operatorHomeHarnessSlug()},
-                'work-item-admission-promoter', false,
+                'work-item-admission-promoter', 'cron', '{"cron":"*/30 * * * *"}'::jsonb,
+                'system:work-item-admission-promoter', false,
                 '{"pause":{"reason":"read-context fixture","pausedAtMs":1786492800000}}'::jsonb)`;
 
       // The ordinary client cannot observe the uncommitted controls. The supplied
