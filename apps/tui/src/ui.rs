@@ -3258,7 +3258,7 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
             if let Some(progress) = progress {
                 lines.push(Line::from(Span::styled(progress, Theme::dim())));
             }
-        } else if let Some(progress) = app.chat_first_quiet_wait() {
+        } else if let Some(progress) = app.chat_first_quiet_wait().filter(|_| !inline) {
             // P-012: no session exists yet; the quick start is settling.
             lines.push(Line::from(Span::styled(progress, Theme::dim())));
         }
@@ -3609,7 +3609,10 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
     // of the transcript area says it, the way Claude Code's spinner line sits
     // directly above its prompt. Esc stops the turn only from the composer.
     let (transcript_area, running_row) =
-        if inline && app.chat_streaming && transcript_area.height > 1 {
+        if inline
+            && (app.chat_streaming || app.chat_first_quiet_wait().is_some())
+            && transcript_area.height > 1
+        {
             let split = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Min(1), Constraint::Length(1)])
@@ -11342,10 +11345,20 @@ mod tests {
         app.chat_first_autostart = true;
         app.chat_first_autostart_since = Some(std::time::Instant::now());
         let frame = render(&app, 120, 40);
-        assert!(frame.contains("Starting Claude…"), "{frame}");
+        assert!(frame.contains("Starting Claude… (0s · Esc to interrupt)"), "{frame}");
         assert!(frame.contains("hello there"), "{frame}");
+        assert!(frame.find("hello there") < frame.find("Starting Claude…"), "{frame}");
+        assert_eq!(frame.matches("Starting Claude…").count(), 1, "{frame}");
         assert!(!frame.contains("New session"), "{frame}");
         assert_no_chat_jargon(&frame);
+
+        // The timer and slow-start explanation also run before a session exists.
+        app.chat_first_autostart_since =
+            std::time::Instant::now().checked_sub(std::time::Duration::from_secs(6));
+        let frame = render(&app, 120, 40);
+        assert!(frame.contains("Still starting Claude; your message will send when it is ready… (6s"), "{frame}");
+        assert!(frame.contains("Esc to interrupt"), "{frame}");
+        assert!(frame.find("hello there") < frame.find("Still starting Claude"), "{frame}");
 
         app.chat_first_autostart_since =
             std::time::Instant::now().checked_sub(crate::app::CHAT_FIRST_QUIET_WAIT);

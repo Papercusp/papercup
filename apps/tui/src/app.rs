@@ -7771,6 +7771,7 @@ impl App {
         const FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
         let elapsed = self
             .chat_turn_started
+            .or(self.chat_first_autostart_since.filter(|_| self.chat_first_autostart))
             .map(|started| now.saturating_duration_since(started))
             .unwrap_or_default();
         let frame = FRAMES[(elapsed.as_millis() / 250) as usize % FRAMES.len()];
@@ -7800,7 +7801,7 @@ impl App {
         if awaiting_approval {
             return format!("· Waiting for your approval ({key} to interrupt)");
         }
-        let starting = match self.su_session.as_ref() {
+        let starting = self.chat_first_autostart || match self.su_session.as_ref() {
             Some(session) => matches!(
                 session.lifecycle,
                 crate::su_session::SuSessionLifecycleState::Starting
