@@ -193,7 +193,13 @@ const savedDatabaseEnv = new Map(databaseEnvKeys.map((key) => [key, process.env[
 
 const scratchGit: HoldRunGit = (args, cwd) => new Promise((resolve) => {
   execFile('git', args, { cwd, timeout: 10_000, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
-    resolve({ code: error ? 1 : 0, stdout: String(stdout), stderr: String(stderr) });
+    const failure = error ? JSON.stringify({
+      message: error.message,
+      code: error.code,
+      signal: error.signal,
+      killed: error.killed,
+    }) : '';
+    resolve({ code: error ? 1 : 0, stdout: String(stdout), stderr: [String(stderr), failure].filter(Boolean).join('\n') });
   });
 });
 
@@ -220,6 +226,21 @@ async function makeScratchTestCheckout(prefix: string, file = 'packages/x/real.t
   await writeFile(join(root, file), 'export {};\n');
   await sealScratchTestCheckout(root);
   return root;
+}
+
+async function cancelFixtureRecovery(runId: string): Promise<void> {
+  const taskId = getRun(runId)?.taskId;
+  expect(taskId, 'recovery cleanup needs its real managed task identity').toBeDefined();
+  expect(cancelRun(runId)).toBe(true);
+  // cancelRun marks the snapshot cancelled before signalling the process.
+  // The task ledger is updated by its actual close handler, so wait for that
+  // transition before another fixture starts or afterAll drops the database.
+  await vi.waitFor(async () => {
+    const [row] = await getOrgPg().sql<{ state: string }[]>`
+      SELECT state FROM harness_shared.task_ledger WHERE task_id = ${taskId!}
+    `;
+    expect(row?.state).toMatch(/^(killed|exited)$/);
+  }, { timeout: 5_000 });
 }
 
 beforeAll(async () => {
@@ -485,19 +506,27 @@ describe('mixed-checkout test batches (EI-22733560502709681)', () => {
     }
     const siblingFile = join(sibling, 'sibling.test.ts');
 
+    const phaseTimings: TestingRunPhaseTimings = {};
     const out = await runTestFilesCore({
       root: ambient,
       files: ['ambient.test.ts', siblingFile],
       timeoutMs: 60_000,
+      phaseTimings,
     });
 
-    expect(out.error, JSON.stringify(out)).toBeUndefined();
-    if (out.error !== undefined) return;
-    expect(out.ok, JSON.stringify(out)).toBe(true);
-    expect(out.files).toBe(2);
-    expect(out.roots).toEqual([ambient, sibling]);
-    expect(out.byFile['ambient.test.ts']).toMatchObject({ passed: 1, failed: 0 });
-    expect(out.byFile[siblingFile]).toMatchObject({ passed: 1, failed: 0 });
+    try {
+      expect(out.error, JSON.stringify({ out, phaseTimings })).toBeUndefined();
+      if (out.error !== undefined) return;
+      expect(out.ok, JSON.stringify({ out, phaseTimings })).toBe(true);
+      expect(out.files).toBe(2);
+      expect(out.roots).toEqual([ambient, sibling]);
+      expect(out.byFile['ambient.test.ts']).toMatchObject({ passed: 1, failed: 0 });
+      expect(out.byFile[siblingFile]).toMatchObject({ passed: 1, failed: 0 });
+    } finally {
+      // A failed success-path assertion can still have started timeout recovery.
+      // Settle that owned process before the next fixture starts creating files.
+      if (out.detachedRunId) await cancelFixtureRecovery(out.detachedRunId);
+    }
   }, 120_000);
 
   it('starts one detached recovery containing every checkout after a mixed-root timeout', async () => {
@@ -529,17 +558,17 @@ describe('mixed-checkout test batches (EI-22733560502709681)', () => {
     expect(typeof detachedRunId).toBe('string');
     if (typeof detachedRunId !== 'string') return;
 
-    const detached = getRun(detachedRunId);
-    expect(detached).not.toBeNull();
-    expect(detached?.command.join(' ')).toContain(roots[0]!);
-    expect(detached?.command.join(' ')).toContain(roots[1]!);
-    expect(detached?.command.join(' ')).toContain(files[0]!);
-    expect(detached?.command.join(' ')).toContain(files[1]!);
-
-    // This test proves request construction, but must not leave the fresh
-    // all-groups recovery running while the rest of this suite runs.
-    expect(cancelRun(detachedRunId)).toBe(true);
-    await new Promise((resolve) => setTimeout(resolve, 250));
+    try {
+      const detached = getRun(detachedRunId);
+      expect(detached).not.toBeNull();
+      expect(detached?.command.join(' ')).toContain(roots[0]!);
+      expect(detached?.command.join(' ')).toContain(roots[1]!);
+      expect(detached?.command.join(' ')).toContain(files[0]!);
+      expect(detached?.command.join(' ')).toContain(files[1]!);
+    } finally {
+      // Assertion failures also have to settle the owned recovery.
+      await cancelFixtureRecovery(detachedRunId);
+    }
   }, 30_000);
 
   it('keeps a bounded, checkout-attributed result when a later mixed-root group times out', async () => {
