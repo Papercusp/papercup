@@ -40,7 +40,11 @@ import { HARNESS_FEATURES_CONSOLIDATED_DDL, applyClaimPathReadDeps, WORK_ITEM_DE
 import { FLAGS } from '@papercusp/flags';
 import { setFlagOverridesForTest } from '@papercusp/flags/test';
 
-const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
+const h = vi.hoisted(() => ({
+  sql: undefined as unknown as postgres.Sql,
+  failIssueRead: false,
+  issueReadClients: [] as unknown[],
+}));
 vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
   return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: h.sql }) };
@@ -67,7 +71,16 @@ vi.mock('./workspace-registry', async () => {
 const CLAIM_WS = 'ws-drift';
 vi.mock('./issues-engineer', async () => {
   const actual = await vi.importActual<typeof import('./issues-engineer')>('./issues-engineer');
-  return { ...actual, issuesScopeWorkspace: () => CLAIM_WS, resolveIssuesScopeWorkspace: () => CLAIM_WS };
+  return {
+    ...actual,
+    issuesScopeWorkspace: () => CLAIM_WS,
+    resolveIssuesScopeWorkspace: () => CLAIM_WS,
+    getIssueInWorkspace: (...args: Parameters<typeof actual.getIssueInWorkspace>) => {
+      h.issueReadClients.push(args[2]?.client);
+      if (h.failIssueRead) return Promise.reject(new Error('synthetic issue reread failure'));
+      return actual.getIssueInWorkspace(...args);
+    },
+  };
 });
 
 const wi = await import('./work-items');
@@ -103,6 +116,8 @@ afterAll(async () => {
   await db?.cleanup();
 });
 beforeEach(async () => {
+  h.failIssueRead = false;
+  h.issueReadClients.length = 0;
   await db.sql`TRUNCATE harness_shared.work_items, harness_shared.work_item_deps`;
   // Issue tier ON (self-select over bug/change/task); inline readiness (no maintained sidecar).
   setFlagOverridesForTest({
@@ -376,6 +391,9 @@ describe('EI-6480 — issue-claim re-read is workspace-exact, not scope-re-deriv
     expect(got?.id).toBe('EI-serve'); // NOT a null miss — the pre-fix getIssue re-read returned null here
     expect(got?.family).toBe('issue');
     expect(got?.assignee).toBe('w1');
+    expect(h.issueReadClients).toHaveLength(1);
+    expect(h.issueReadClients[0]).toBeDefined(); // transaction client, not the raw admin pool
+    expect(h.issueReadClients[0]).not.toBe(db.sql);
 
     // Claimed exactly once, and to w1 — the mutation is neither leaked nor lost.
     const rows = await db.sql<{ taken_by: string | null }[]>`
@@ -386,5 +404,25 @@ describe('EI-6480 — issue-claim re-read is workspace-exact, not scope-re-deriv
 
     // Pool now genuinely empty ⇒ a subsequent claim is a real (null) miss, not a spurious one.
     expect(await wi.claimNextWorkItem({ harness: H, assignee: 'w2' })).toBeNull();
+  });
+
+  it('rolls back the issue claim if the in-transaction reread fails', async () => {
+    await seedIssueInWorkspace('EI-reread-fails', CLAIM_WS, { createdTs: 100 });
+    h.failIssueRead = true;
+    try {
+      await expect(wi.claimNextWorkItem({ harness: H, assignee: 'w1' }))
+        .rejects.toThrow('synthetic issue reread failure');
+    } finally {
+      h.failIssueRead = false;
+    }
+
+    const rows = await db.sql<{ taken_by: string | null }[]>`
+      SELECT taken_by FROM harness_shared.work_items
+       WHERE workspace_id = ${CLAIM_WS} AND feature_id = 'EI-reread-fails'`;
+    expect(rows).toHaveLength(1);
+    expect(rows[0].taken_by).toBeNull();
+    expect(h.issueReadClients).toHaveLength(1);
+    expect(h.issueReadClients[0]).toBeDefined();
+    expect(h.issueReadClients[0]).not.toBe(db.sql);
   });
 });

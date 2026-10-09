@@ -902,9 +902,17 @@ describe('get_next — fallback ladder (WI-1407): widenPastKind (tier 2) + issue
       view: { filter: { field: 'kind', op: '=', value: 'feature' } },
       rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
     });
-    const r = await getNextWorkItem(s, BEE, { harness: H });
+    const phaseEvents: Array<{ step: string; phase: string }> = [];
+    const r = await getNextWorkItem(s, BEE, {
+      harness: H,
+      onResolutionStep: (step, event) => phaseEvents.push({ step, phase: event.phase }),
+    });
     expect(r?.workItem.id).toBe('EI-t3-on');
     expect(r?.claimedUnder).toEqual({ specId: 'kind-feature-issue-fallthrough', revision: 2 });
+    expect(phaseEvents.filter(({ step }) => step === 'candidate-issue-claim-update').map(({ phase }) => phase))
+      .toEqual(['start', 'end']);
+    expect(phaseEvents.filter(({ step }) => step === 'candidate-issue-post-claim-reread').map(({ phase }) => phase))
+      .toEqual(['start', 'end']);
   });
 
   it('reuses the bounded candidate authority read for the issue tier', async () => {

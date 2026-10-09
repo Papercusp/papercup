@@ -8732,9 +8732,33 @@ export async function claimNextIssueWorkItem(
     };
     /** Abort the active claim transaction when the scheduler caller's deadline fires. */
     signal?: AbortSignal;
+    /** Diagnostic only: separate issue claim SQL from its post-claim reread. */
+    onResolutionStep?: (
+      step: string,
+      event: { phase: 'start'; startedAtMs: number } | { phase: 'end'; elapsedMs: number },
+    ) => void;
   } = {},
 ): Promise<WorkItem | null> {
   const sql = opts.client ?? getOrgPg().sql;
+  const reportResolutionStep = (
+    step: string,
+    event: { phase: 'start'; startedAtMs: number } | { phase: 'end'; elapsedMs: number },
+  ): void => {
+    try {
+      opts.onResolutionStep?.(step, event);
+    } catch {
+      // Diagnostic observers must not affect claim admission or transaction outcome.
+    }
+  };
+  const measureResolutionStep = async <T>(step: string, run: () => Promise<T>): Promise<T> => {
+    const startedAtMs = performance.now();
+    reportResolutionStep(step, { phase: 'start', startedAtMs });
+    try {
+      return await run();
+    } finally {
+      reportResolutionStep(step, { phase: 'end', elapsedMs: Math.max(0, performance.now() - startedAtMs) });
+    }
+  };
   // Scope the issue-claim to the canonical ISSUE workspace (resolveIssuesScopeWorkspace —
   // honors the ISSUES_PER_WORKSPACE flag), NOT the feature activeWorkspaceId(), so the
   // UPDATE and the getIssue() re-read below agree on the same partition (they'd diverge
@@ -8833,7 +8857,7 @@ export async function claimNextIssueWorkItem(
   // postgres-js cannot cancel an in-flight query from JS once it stalls. Every SQL
   // fragment below is compiled against the TRANSACTION client `tx` — not the outer
   // `sql` — so it belongs to the same connection that carries the SET LOCAL timeouts.
-  const rows = await boundedOrgTxn(
+  const claimed = await measureResolutionStep('candidate-issue-claim-transaction', () => boundedOrgTxn(
     async (tx) => {
       // Cross-family priority comparison (EI-21288979130080074): an issue may jump ahead of
       // the feature-family ladder only when it has an explicit priority and no eligible
@@ -8859,7 +8883,7 @@ export async function claimNextIssueWorkItem(
             claimSpecReferencesGoal: filter.claimSpecReferencesGoal,
           })
         : tx`TRUE`;
-      const rows = await tx<FeatureRowDb[]>`
+      const rows = await measureResolutionStep('candidate-issue-claim-update', () => tx<FeatureRowDb[]>`
     UPDATE harness_shared.work_items AS target
        SET payload = jsonb_set(
              COALESCE(target.payload, '{}'::jsonb),
@@ -9018,8 +9042,8 @@ export async function claimNextIssueWorkItem(
         LIMIT 1
         FOR UPDATE SKIP LOCKED
      )
-    RETURNING ${tx.unsafe(FEATURE_COLS)}`;
-      if (!rows[0]) return rows;
+    RETURNING ${tx.unsafe(FEATURE_COLS)}`);
+      if (!rows[0]) return null;
       const { isAcceptedReproductionStatus, CurrentBugReproductionRefusal } =
         await import('./attention/bug-reproduction');
       const { verifyAcceptedWorkItemBugReproduction } = await import('./attention/intake-promotion');
@@ -9029,53 +9053,37 @@ export async function claimNextIssueWorkItem(
       if (reproduction && !isAcceptedReproductionStatus(reproduction.status)) {
         throw new CurrentBugReproductionRefusal(reproduction.detail);
       }
-      return (await guardPlanItemSiblingClaim(tx, rows[0], {
+      if (!(await guardPlanItemSiblingClaim(tx, rows[0], {
         workspaceId: issueWs,
         assignee: filter.assignee,
         family: 'issue',
-      }))
-        ? rows
-        : [];
+      }))) return null;
+
+      // Keep the issue facade read in the SAME bounded transaction as the claim. A raw
+      // post-commit getIssueInWorkspace read used the unbounded admin pool and could keep
+      // scheduler:get_next open after its caller deadline, leaving a late-settling claim.
+      const issue = await measureResolutionStep('candidate-issue-post-claim-reread', () =>
+        getIssueInWorkspace(issueWs, rows[0].feature_id, {
+          baseHarnessSlug: rows[0].harness_slug,
+          client: tx,
+        }),
+      );
+      if (!issue) {
+        throw new Error(
+          `claimNextIssueWorkItem: claimed issue ${rows[0].feature_id} in workspace '${issueWs}' ` +
+            `but could not re-read it inside the claim transaction; the claim was rolled back.`,
+        );
+      }
+      return { issue };
     },
     { client: sql, signal: opts.signal },
-  ).catch(async (error) => {
+  )).catch(async (error) => {
     const { CurrentBugReproductionRefusal } = await import('./attention/bug-reproduction');
-    if (error instanceof CurrentBugReproductionRefusal) return [];
+    if (error instanceof CurrentBugReproductionRefusal) return null;
     throw error;
   });
-  // RETURNING the base row uses the feature column shape; the row IS an issue-family row, so
-  // map it through the issue facade (state dialect, no claim-time columns) for a consistent
-  // WorkItem. featureRowToWorkItem would mislabel family/state, so re-read via the issue path.
-  if (!rows[0]) return null;
-  // EI-6480: the UPDATE above has ALREADY committed the claim (taken_by is set) on a row in
-  // `issueWs`. Re-read in that SAME captured workspace — NOT via bare getIssue(), which
-  // re-derives issuesScopeWorkspace() and can drift (its flag cache self-heals on a TTL), so a
-  // mid-call flip would make the re-read miss the just-claimed row. A null there historically
-  // returned null: the claim LEAKED (row stayed taken_by-set, out of the pool) and the caller
-  // saw a spurious "ready but a peer raced you (retry)" miss even though the claim succeeded —
-  // the reported EI-6480 symptom (a self-consistent miss with readyUnclaimed>0). Reading in the
-  // exact claimed workspace makes that null impossible for a live claim.
-  const issue = await getIssueInWorkspace(issueWs, rows[0].feature_id, { baseHarnessSlug: rows[0].harness_slug });
-  if (issue) return issueToWorkItem(issue);
-  // Defense in depth: the row we just claimed is, by construction, present in `issueWs` (the
-  // UPDATE filtered on it and committed the mutation), so a null here is a genuine anomaly, NOT
-  // a race. Do not leak the claim or misreport it as a retryable miss: RELEASE it (return the
-  // row to the pool) and surface an honest error so the fault is visible, not disguised. Clear
-  // the claim with a workspace-EXACT UPDATE (not releaseWorkItem, which re-derives the scope via
-  // getIssue and would hit the same drift) so the undo can't itself leak. Bounded for the same
-  // reason as the claim UPDATE above — a write on this pool must never hang unboundedly.
-  await boundedOrgTxn(
-    (tx) => tx`
-    UPDATE harness_shared.work_items
-       SET taken_by = NULL, taken_at = NULL, last_progress_at = NULL, updated_ts = ${Date.now()}
-     WHERE workspace_id = ${issueWs} AND harness_slug = ${rows[0].harness_slug} AND feature_id = ${rows[0].feature_id}`,
-    { client: sql },
-  );
-  throw new Error(
-    `claimNextIssueWorkItem: claimed issue ${rows[0].feature_id} in workspace '${issueWs}' but could ` +
-      `not re-read it (getIssueInWorkspace returned null); released the claim. This is an anomaly, ` +
-      `not a peer race.`,
-  );
+  if (!claimed) return null;
+  return issueToWorkItem(claimed.issue);
 }
 
 export interface WorkItemObservation {

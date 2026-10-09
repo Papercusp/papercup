@@ -2797,9 +2797,9 @@ export async function healOwnNodeIssueOrigin(id: string, harness?: string | null
 export async function getIssueInWorkspace(
   workspaceId: string,
   id: string,
-  opts: { baseHarnessSlug?: string | null } & WorkItemReadOptions = {},
+  opts: { baseHarnessSlug?: string | null; client?: ReturnType<typeof getOrgPg>['sql'] } & WorkItemReadOptions = {},
 ): Promise<EngineerIssue | null> {
-  const { sql } = getOrgPg();
+  const sql = opts.client ?? getOrgPg().sql;
   // EI-7808: legacy/federated bugs left duplicate issue-family base rows with the
   // same (workspace_id, issue_id) but different physical harness_slug values (most
   // visibly '' beside operator:<workspace>). A caller that just claimed a specific
