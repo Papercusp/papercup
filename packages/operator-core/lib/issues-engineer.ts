@@ -1540,7 +1540,8 @@ export interface ListIssuesFilter {
    * `readImprovementItems`' `harnessScopes` empty-set semantics: "a scope with no
    * members has no rows of its own", never "no filter".
    */
-  issueIds?: readonly string[];
+  // Internal readers may supply a lazy, one-column SQL identity selection.
+  issueIds?: readonly string[] | import('postgres').Fragment;
   limit?: number;
   /**
    * WI-3649: when true, exclude a federated (origin='remote') row — the issue-family
@@ -1734,8 +1735,15 @@ function likeContainsPattern(query: string): string {
  * `aliased` selects the `ei.`-prefixed column form used inside the topic-joined
  * subqueries, matching {@link issueAdmissibleWhereSql}.
  */
-function issueIdsWhereSql(sql: OrgSql, aliased: boolean, ids: readonly string[]) {
-  return aliased ? sql`ei.issue_id = ANY(${ids as string[]}::text[])` : sql`issue_id = ANY(${ids as string[]}::text[])`;
+function issueIdsWhereSql(sql: OrgSql, aliased: boolean, ids: NonNullable<ListIssuesFilter['issueIds']>) {
+  if (Array.isArray(ids)) {
+    return aliased ? sql`ei.issue_id = ANY(${ids as string[]}::text[])` : sql`issue_id = ANY(${ids as string[]}::text[])`;
+  }
+  // Internal complete readers can compose a one-column identity query without
+  // sending tens of thousands of IDs to the client and back. List/count/state
+  // companions share this fragment, retaining their existing visibility rules.
+  const source = ids as ReturnType<OrgSql>;
+  return aliased ? sql`ei.issue_id IN (${source})` : sql`issue_id IN (${source})`;
 }
 
 /**
