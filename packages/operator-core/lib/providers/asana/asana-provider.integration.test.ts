@@ -512,7 +512,7 @@ describe('Asana registers as a provider through the plugin host (P-005)', () => 
     expect(provider.runtime).toBe('js');
     expect(provider.descriptor.datatypes).toEqual(TICKET_DATATYPES);
     expect(provider.descriptor.capabilities).toEqual([
-      'ticket.read', 'ticket.comment', 'ticket.transition', 'ticket.containers', 'push.subscribe', 'push.unsubscribe',
+      'ticket.read', 'ticket.create', 'ticket.comment', 'ticket.transition', 'ticket.containers', 'push.subscribe', 'push.unsubscribe',
     ]);
     expect(provider.descriptor.egressHosts).toEqual(['app.asana.com']);
     const oauth = provider.descriptor.oauth!;
@@ -856,12 +856,13 @@ describe('admission presets turn matching Asana tasks into work (P-006, R-6)', (
     expect(persisted.find((r) => r.payload.externalId === fresh.gid)?.payload).toMatchObject({
       provider: 'asana', createdAt: fresh.created_at, title: fresh.name,
     });
-    const [work] = await sql<Array<{ state: string; payload: Record<string, unknown> }>>`
-      SELECT w.state, w.payload FROM harness_shared.work_items w
+    const [work] = await sql<Array<{ admission: string; payload: Record<string, unknown> }>>`
+      SELECT w.admission, w.payload FROM harness_shared.work_items w
       JOIN harness_shared.work_admissions a ON a.workspace_id = w.workspace_id AND a.work_item_id = w.feature_id
       WHERE a.workspace_id = ${WS} AND a.source_key = ${recordOf(sourceId, fresh.gid!)}`;
     expect(work).toBeDefined();
-    expect(work.state).not.toBe('done');
+    expect(work.admission).toBe('pending');
+    expect(work.payload).not.toHaveProperty('implementationAcceptance');
     // Replay the provider event, then reconnect from a fresh crawl: the
     // canonical admission link stays the same and history stays unadmitted.
     taskChanged(fresh, 'added');
