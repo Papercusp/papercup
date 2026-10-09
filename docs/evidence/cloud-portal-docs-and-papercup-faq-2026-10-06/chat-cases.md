@@ -350,3 +350,25 @@ independence and the plan-class proof floor remain unestablished. Conceptual
 and live-state clauses require L3 proof; the authorization clause requires
 targeted L4 proof. This diagnostic is not a ship verdict. P-006 remains open;
 no passing behavior or coverage flags were inferred from the policy strings.
+
+## Hostile public-document boundary proof, 2026-10-09
+
+The maintained public-handler suite now retrieves hostile public text for both
+`papercup` and `papercup-deep`, then exercises its requested private-harness and
+raw-source reads. Literal refusal codes, a private adapter canary and permission
+snapshots provide independent expected outcomes. The first run found a fixture
+assertion mistake: Starlight escapes plain underscores. Renderer-stable prose
+corrected that assertion without changing the attack intent.
+
+The maintained copy-out mutation probe passed seven tests in both its ordinary
+and isolated baselines (runs `20952214` and `20952225`). Disabling the private
+harness rejection in `docs:get` caused six assertion failures, including both
+new hostile-text cases; one test still passed and none were skipped (mutant
+`20952227`). The probe exited 0 with `verdict=caught`, overlay isolation and
+verified unchanged shared source. Its separate parse check reports `unchecked`.
+
+Exact commands, hashes, case titles and retained log references are in
+`hostile-public-docs-boundary-20261009.json`. This is local modified-test evidence,
+not a clean immutable candidate. It has not yet been bound to a spec. The result
+proves the unit permission boundary; actual model instruction-following, Portal
+FAQ behavior, current-state claims, novice acceptance and shipment remain open.
