@@ -803,6 +803,20 @@ function clauseDeclarationProbe(clause: SpecClauseRevision, harness?: string): s
 
 const MAX_RENDERED_ADEQUACY_CASES = 8;
 
+/**
+ * Test runners record Vitest full names (`suite > case`), while a binding can
+ * carry either that full name or the bare case name. Accept only exact matches
+ * or a suffix separated by the runner's ` > ` delimiter; a suite prefix (or a
+ * partial case-name prefix) is not an identity match.
+ */
+function matchesDeclaredCaseTitle(declaredCaseTitle: string, executedCaseTitle: string): boolean {
+  return executedCaseTitle === declaredCaseTitle || executedCaseTitle.endsWith(` > ${declaredCaseTitle}`);
+}
+
+function hasMatchingDeclaredCaseTitle(declaredCaseTitle: string, executedCaseTitles: readonly string[]): boolean {
+  return executedCaseTitles.some((executedCaseTitle) => matchesDeclaredCaseTitle(declaredCaseTitle, executedCaseTitle));
+}
+
 function renderedTestRunExecution(row: SpecEvidenceForAdequacy, details: Pick<AdequacyDetails, 'testCases'>) {
   const execution = row.testRunExecution;
   if (!execution) return null;
@@ -813,7 +827,7 @@ function renderedTestRunExecution(row: SpecEvidenceForAdequacy, details: Pick<Ad
     : [];
   const corroborates = (caseTitle: string) => execution.testLayer === 'llm'
     ? hasPassingLlmScenarioCase(row, caseTitle)
-    : passedCaseTitles.includes(caseTitle);
+    : hasMatchingDeclaredCaseTitle(caseTitle, passedCaseTitles);
   const passedDeclaredCases = declaredCases.filter(corroborates);
   const missingDeclaredCases = declaredCases.filter((caseTitle) => !corroborates(caseTitle));
   const adequacyTestCases = declaredCases.length === 0
@@ -987,7 +1001,7 @@ function hasExecutionLedgerReference(row: SpecEvidenceForAdequacy): boolean {
   );
 }
 
-/** A binder's case list is corroborated only by an exact case in a passing ledger row. */
+/** A binder's case list is corroborated by an exact or runner-prefix-suffixed case in a passing ledger row. */
 function hasPassingLedgerCase(row: SpecEvidenceForAdequacy, caseTitle: string): boolean {
   const run = row.testRunExecution;
   return row.testRunId !== null &&
@@ -996,7 +1010,7 @@ function hasPassingLedgerCase(row: SpecEvidenceForAdequacy, caseTitle: string): 
     run.passed > 0 &&
     run.failed === 0 &&
     run.collectionFailed === false &&
-    run.passedCaseTitles?.includes(caseTitle) === true;
+    hasMatchingDeclaredCaseTitle(caseTitle, run.passedCaseTitles ?? []);
 }
 
 /** Mutation and counterexample baselines must remain test-run evidence. */
@@ -1028,6 +1042,13 @@ function hasPassingRequiredLayerCase(row: SpecEvidenceForAdequacy, caseTitle: st
       hasPassingLedgerCase(row, caseTitle));
 }
 
+function hasUnmatchedPassingCaseDeclaration(row: SpecEvidenceForAdequacy): boolean {
+  if (!['test', 'operational'].includes(row.evidenceKind) || row.testRunExecution?.status?.toLowerCase() !== 'pass') {
+    return false;
+  }
+  return (detailsOf(row).testCases ?? []).some((caseTitle) => !hasPassingRequiredLayerCase(row, caseTitle));
+}
+
 type MeasuredExecutionVerdict = 'pass' | 'fail' | 'unknown';
 
 /** Only canonical ledger provenance can identify a counterexample mutant run. */
@@ -1041,9 +1062,9 @@ function isCanonicalMutantCounterexample(row: SpecEvidenceForAdequacy): boolean 
 function hasMeasuredCaseScope(row: SpecEvidenceForAdequacy, failedCases?: string[]): boolean {
   const declared = detailsOf(row).testCases ?? [];
   if (declared.length === 0) return false;
-  const executed = new Set([...(row.testRunExecution?.passedCaseTitles ?? []), ...(failedCases ?? [])]);
-  return declared.every((title) => executed.has(title)) &&
-    (failedCases === undefined || declared.some((title) => failedCases.includes(title)));
+  const executed = [...(row.testRunExecution?.passedCaseTitles ?? []), ...(failedCases ?? [])];
+  return declared.every((title) => hasMatchingDeclaredCaseTitle(title, executed)) &&
+    (failedCases === undefined || declared.some((title) => hasMatchingDeclaredCaseTitle(title, failedCases)));
 }
 
 /** Run-backed proof takes its execution verdict from test_runs, never copied binder booleans. */
@@ -2414,10 +2435,17 @@ export function evaluateSpecTestAdequacy(input: {
             : successfulExecution
               ? {
                   rating: 'pass',
-                  evidence: evidenceWithBindings(
-                    `Canonical test_runs status/counts show bound proof was collected, not skipped, executed, and successful for ${clauseIdentity(clause)}.`,
-                    executable.filter((row) => measuredExecutionVerdict(row) === 'pass'),
-                  ),
+                  evidence: [
+                    evidenceWithBindings(
+                      `Canonical test_runs status/counts show bound proof was collected, not skipped, executed, and successful for ${clauseIdentity(clause)}.`,
+                      executable.filter((row) => measuredExecutionVerdict(row) === 'pass'),
+                    ),
+                    ...(executable.some((row) => measuredExecutionVerdict(row) === 'pass' && hasUnmatchedPassingCaseDeclaration(row))
+                      ? [
+                          'Unmatched adequacy.testCases labels remain visible in the per-run detail but do not invalidate execution-integrity for a non-skipped passing run, which measures canonical runner status/counts; when skips exist, every declared scope case must be accounted for. correct-layer separately checks required-layer reachability using at least one corroborated declared case per required layer.',
+                        ]
+                      : []),
+                  ].join(' '),
                 }
               : {
                   rating: executable.length ? 'unknown' : 'fail',

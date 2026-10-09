@@ -1033,11 +1033,44 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(result.verdict).toBe('unknown');
   });
 
+  it('matches bare case declarations to runner full names and explains diagnostic unmatched labels', () => {
+    const selected = successfulTestBinding('selected.integration.test.ts', {
+      testCases: ['suite > selected', 'suite > not-recorded'],
+    });
+    selected.testRunExecution!.passed = 1;
+    selected.testRunExecution!.passedCaseTitles = ['outer > suite > selected'];
+
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [selected],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result.ratings['correct-layer'].rating).toBe('pass');
+    expect(result.ratings['correct-layer'].evidence).toContain('"missing":["suite > not-recorded"]');
+    expect(result.ratings['execution-integrity'].rating).toBe('pass');
+    expect(result.ratings['execution-integrity'].evidence).toContain(
+      'Unmatched adequacy.testCases labels remain visible in the per-run detail but do not invalidate execution-integrity for a non-skipped passing run',
+    );
+    expect(result.ratings['execution-integrity'].evidence).toContain(
+      'when skips exist, every declared scope case must be accounted for',
+    );
+    expect(result.ratings['execution-integrity'].evidence).toContain(
+      'correct-layer separately checks required-layer reachability using at least one corroborated declared case per required layer',
+    );
+  });
+
   it('accepts unrelated skips only when every explicitly claimed test case passed in the ledger', () => {
     const selected = successfulTestBinding('selected.integration.test.ts', { testCases: ['suite > selected'] });
     selected.testRunExecution!.skipped = 71;
     const evaluate = () => evaluateSpecTestAdequacy({ clause: clause(), evidence: [selected], classRef: 'plan-class-feature-ship' });
     expect(evaluate().ratings['execution-integrity'].rating).toBe('pass');
+
+    const bareDeclaration = successfulTestBinding('bare-selected.integration.test.ts', { testCases: ['selected'] });
+    bareDeclaration.testRunExecution!.passedCaseTitles = ['suite > selected'];
+    bareDeclaration.testRunExecution!.skipped = 71;
+    expect(evaluateSpecTestAdequacy({ clause: clause(), evidence: [bareDeclaration], classRef: 'plan-class-feature-ship' })
+      .ratings['execution-integrity'].rating).toBe('pass');
 
     // Neither an absent selected case nor a prefix of a real title is proof.
     selected.details.adequacy = { ...(selected.details.adequacy as object), testCases: ['suite > selected', 'suite > skipped'] };
@@ -3752,6 +3785,45 @@ describe('disclosed-gap criterion (P-002: a disclosure cannot coexist with a mac
     expect(result.ratings['disclosed-gap'].rating).toBe('fail');
     expect(result.ratings['disclosed-gap'].evidence).toContain(gap);
     expect(result.wouldBlock).toContain('disclosed-gap');
+  });
+
+  it('reconciles bare and describe-prefixed same-proof cases in gate decisions and rendered evidence', () => {
+    const bareTitle = 'executes intake and summarization in the managed job and retains its actual result';
+    const prefixedTitle = `background content summary through registered execution primitives > ${bareTitle}`;
+    const filePath = 'packages/operator-core/lib/background-summary.integration.test.ts';
+    const base = successfulTestBinding(filePath, { testCases: [prefixedTitle] });
+    const baseAdequacy = base.details.adequacy as Record<string, unknown>;
+    const bareBinding = {
+      ...base,
+      id: 32191,
+      createdAt: '2026-10-03T12:53:27.000Z',
+      details: {
+        ...base.details,
+        adequacy: { ...baseAdequacy, testCases: [bareTitle] },
+      },
+    };
+    const prefixedBinding = {
+      ...base,
+      id: 32199,
+      createdAt: '2026-10-03T13:07:22.000Z',
+      details: {
+        ...base.details,
+        adequacy: { ...baseAdequacy, testCases: [prefixedTitle] },
+      },
+    };
+
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [bareBinding, prefixedBinding],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result.ratings['execution-integrity'].rating).toBe('pass');
+    expect(result.ratings['correct-layer'].rating).toBe('pass');
+    expect(result.ratings['correct-layer'].evidence).toContain('sameProofMetadataBindingIds=[32191,32199]');
+    const reconciledTitles = JSON.stringify([prefixedTitle, bareTitle]);
+    expect(result.ratings['correct-layer'].evidence).toContain(`"declared":${reconciledTitles}`);
+    expect(result.ratings['correct-layer'].evidence).toContain(`"passed":${reconciledTitles},"missing":[]`);
   });
 
   it('preserves same-proof scenario coverage across rebinds and pins every source binding in reruns', () => {
