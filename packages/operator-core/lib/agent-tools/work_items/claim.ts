@@ -14,6 +14,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import {
   resolveAgentIdentity,
+  verifiedSpawnSessionAlias,
   SUPERUSER_FALLBACK_CLIENT_ID,
   isEphemeralMcpCallIdentity,
   type AgentIdentity,
@@ -87,7 +88,7 @@ import {
   type PilotParticipantBindingReceipt,
   type PilotParticipantRole,
 } from '../../pilot-participant-receipts';
-import { canonicalizeAssigneeOwnerId, resolveHolderOwnerId } from '../../work-item-holder-identity';
+import { canonicalizeAssigneeOwnerId, holderIsCaller, resolveHolderOwnerId } from '../../work-item-holder-identity';
 import { resolveExplicitAgentOwnerId } from '../coordination/recipient-resolve';
 
 interface ClaimItem {
@@ -279,7 +280,7 @@ export function concurrencyClaimWarning(
  * error (claim_conflict + holder, not_found, or not_claimable) rather than a
  * phantom "not found".
  */
-async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellReader | null): Promise<BulkItemResult> {
+async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellReader | null, verifiedCallerAlias: string | null): Promise<BulkItemResult> {
   const claimerDefault = identity.ownerId;
   // EI-9274: a literal `'self'` assignee is treated identically to an OMITTED one
   // (resolved to the caller) — including for the implicit-identity guards below, so
@@ -468,8 +469,11 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
   // it prefixes; an ambiguous or unknown prefix stays as stored, so authority never widens.
   // The CAS below still compares the RAW stored string, which is what `taken_by` holds.
   const storedHolder = preClaimItem?.assignee?.trim() || undefined;
+  const holderOptions = { workspaceId: identity.workspaceId ?? null, verifiedCallerAlias };
   const currentHolder = storedHolder
-    ? await resolveHolderOwnerId(storedHolder, { workspaceId: identity.workspaceId ?? null })
+    ? await holderIsCaller(storedHolder, identity.ownerId, holderOptions)
+      ? identity.ownerId
+      : await resolveHolderOwnerId(storedHolder, holderOptions)
     : undefined;
   // The caller's OWN legacy short-form claim: widen the CAS by exactly that stored string
   // (`fromHolder`) so the self re-claim lands — and rewrites `taken_by` to the full id —
@@ -1334,7 +1338,9 @@ export default defineTool({
               directiveRef: args.directiveRef,
             },
           ];
-    const env = await runBulk(list, (it) => claimOne(it, ident, reader), {
+    const verifiedCallerAlias = ctx.principal?.authMethod === 'spawn-url' && ctx.principal.trust === 'trusted'
+      ? verifiedSpawnSessionAlias(ctx, ident.ownerId) : null;
+    const env = await runBulk(list, (it) => claimOne(it, ident, reader, verifiedCallerAlias), {
       keyOf: (it) => ({ id: it.id }),
     });
     // Claim-time recall port (memory-delivery-unification-2026-07-12 P-008 /
