@@ -8,12 +8,12 @@
  */
 import type { AgentFleetRecord } from '../../agent-fleets-store';
 import { getFleet } from '../../agent-fleets-store';
-import { listAllWorkItemsForFileExport, type WorkItem } from '../../work-items';
+import { listAllWorkItemsForFileExport, ISSUE_FAMILY_KINDS, type WorkItem, type WorkItemKind } from '../../work-items';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { issuesScopeWorkspace } from '../../issues-engineer';
 import type { ClaimSpec, FilterNode } from '../../scheduler/claim-spec';
-import { validateClaimSpec } from '../../scheduler/claim-spec';
+import { validateClaimSpec, positiveKindCohortKinds } from '../../scheduler/claim-spec';
 import { matchesWorkItemClaimSpec } from '../../scheduler/claim-spec-match';
 import type { ResolvedFleetClaimSpec } from '../../scheduler/claim-spec-store';
 import { resolveFleetClaimSpec, fleetSpecBeeKey } from '../../scheduler/claim-spec-store';
@@ -376,6 +376,16 @@ export async function readFleetMetricSourceItems(scope: ResolvedFleetMetricScope
   const uniqueFilters = [...new Map(filters.map(value => [JSON.stringify(value), value])).values()];
   const filter: FilterNode | undefined = filters.some(value => value === undefined)
     ? undefined : uniqueFilters.length === 1 ? uniqueFilters[0] : { any: uniqueFilters as FilterNode[] };
+  // A proven single issue kind makes the feature hydration branch impossible.
+  // Bound every historical filter as well: today's bug-only spec must not hide
+  // earlier feature/task flow. Unknown, mixed and generic kinds retain both
+  // canonical family readers and their existing visibility policy.
+  const kindBounds = filters.map(positiveKindCohortKinds);
+  const kinds = kindBounds.every(bound => bound !== null)
+    ? new Set(kindBounds.flatMap(bound => bound!)) : null;
+  const onlyKind = kinds?.size === 1 ? [...kinds][0] : undefined;
+  const kind = onlyKind && ISSUE_FAMILY_KINDS.some(value => value === onlyKind)
+    ? onlyKind as WorkItemKind : undefined;
   const issueWorkspace = issuesScopeWorkspace();
   const identities = sql`
     SELECT wi.feature_id FROM harness_shared.work_items wi
@@ -384,6 +394,7 @@ export async function readFleetMetricSourceItems(scope: ResolvedFleetMetricScope
        AND (${compileFilter(sql, filter)})`;
   return listAllWorkItemsForFileExport({
     harness: scope.scope.harness, includeObservations: true,
+    kind,
     ids: identities,
     payloadProjection: 'fleetMetrics',
   });
