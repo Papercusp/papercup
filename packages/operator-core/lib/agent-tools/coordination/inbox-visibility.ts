@@ -232,23 +232,129 @@ export function inboxPriorityBucket(e: Record<string, unknown>): number {
   return 2;
 }
 
+interface InboxChunkPart {
+  group: string;
+  part: number;
+  of: number;
+}
+
+const CHUNK_HEADER_RE = /^⟦part (\d+)\/(\d+) g:([0-9a-f]{8})( cont)?⟧$/;
+const CHUNK_SUMMARY_RE = /\(part (\d+)\/(\d+)\)$/;
+
+/**
+ * Read the chunker-owned header + summary suffix. Requiring both keeps an
+ * ordinary message that merely starts with marker-like prose out of the group
+ * path. These fields are already present on every persisted coord:send chunk.
+ */
+function inboxChunkPart(e: Record<string, unknown>): InboxChunkPart | null {
+  const body = e['body'];
+  if (typeof body !== 'string') return null;
+  const header = CHUNK_HEADER_RE.exec(body.split(/\r?\n/, 1)[0] ?? '');
+  const summary = typeof e['summary'] === 'string' ? CHUNK_SUMMARY_RE.exec(e['summary']) : null;
+  if (!header || !summary) return null;
+  const part = Number(header[1]);
+  const of = Number(header[2]);
+  if (
+    part !== Number(summary[1]) ||
+    of !== Number(summary[2]) ||
+    of < 2 ||
+    part < 1 ||
+    part > of
+  ) {
+    return null;
+  }
+  return { group: header[3]!, part, of };
+}
+
+function inboxChunkGroupKey(e: Record<string, unknown>, chunk: InboxChunkPart): string | null {
+  const from = e['from'];
+  const to = e['to'];
+  if (typeof from !== 'string' || from.length === 0 || !Array.isArray(to)) return null;
+  const recipients = to.map((recipient) => String(recipient)).sort();
+  return JSON.stringify([from, recipients, e['harness_slug'] ?? null, chunk.group, chunk.of]);
+}
+
 /** Select + order the visible inbox window by P-009 priority before applying
  * the caller's display limit. Rows within a bucket are newest-first so a flood
  * of low-priority broadcasts cannot crowd an older actionable ask out of a
- * bounded default read. */
+ * bounded default read. A chunked coord:send is one logical message even though
+ * only its final row carries `expects`; select a complete group together or do
+ * not show any part. Otherwise the final actionable part can survive the limit
+ * while the continuation holding the first half of its instructions disappears. */
 export function prioritizedInboxWindow<T extends Record<string, unknown>>(
   entries: readonly T[],
   limit: number,
 ): T[] {
   if (limit <= 0) return [];
-  return [...entries]
-    .sort((a, b) => {
-      const bucket = inboxPriorityBucket(a) - inboxPriorityBucket(b);
-      if (bucket !== 0) return bucket;
-      const ats = String(a["ts"] ?? "");
-      const bts = String(b["ts"] ?? "");
-      if (ats !== bts) return bts.localeCompare(ats);
-      return String(b["msg_id"] ?? "").localeCompare(String(a["msg_id"] ?? ""));
-    })
-    .slice(0, limit);
+  type RankedUnit = { entries: T[]; bucket: number; ts: string; msgId: string };
+  type ChunkGroup = {
+    of: number;
+    entries: Array<{ entry: T; part: number }>;
+    parts: Set<number>;
+    invalid: boolean;
+  };
+
+  const units: RankedUnit[] = [];
+  const chunkGroups = new Map<string, ChunkGroup>();
+  for (const entry of entries) {
+    const chunk = inboxChunkPart(entry);
+    const key = chunk ? inboxChunkGroupKey(entry, chunk) : null;
+    if (!chunk || key === null) {
+      units.push({
+        entries: [entry],
+        bucket: inboxPriorityBucket(entry),
+        ts: String(entry['ts'] ?? ''),
+        msgId: String(entry['msg_id'] ?? ''),
+      });
+      continue;
+    }
+    const group = chunkGroups.get(key) ?? {
+      of: chunk.of,
+      entries: [],
+      parts: new Set<number>(),
+      invalid: false,
+    };
+    if (group.of !== chunk.of) group.invalid = true;
+    group.entries.push({ entry, part: chunk.part });
+    group.parts.add(chunk.part);
+    chunkGroups.set(key, group);
+  }
+
+  for (const group of chunkGroups.values()) {
+    const complete = !group.invalid && Array.from({ length: group.of }, (_, index) => index + 1)
+      .every((part) => group.parts.has(part));
+    if (!complete) continue;
+
+    const chunkEntries = group.entries
+      .sort((a, b) => {
+        if (a.part !== b.part) return a.part - b.part;
+        const ats = String(a.entry['ts'] ?? '');
+        const bts = String(b.entry['ts'] ?? '');
+        if (ats !== bts) return ats.localeCompare(bts);
+        return String(a.entry['msg_id'] ?? '').localeCompare(String(b.entry['msg_id'] ?? ''));
+      })
+      .map(({ entry }) => entry);
+    const newest = chunkEntries.reduce((best, entry) =>
+      String(entry['ts'] ?? '') > String(best['ts'] ?? '') ? entry : best,
+    );
+    units.push({
+      entries: chunkEntries,
+      bucket: Math.min(...chunkEntries.map(inboxPriorityBucket)),
+      ts: String(newest['ts'] ?? ''),
+      msgId: String(newest['msg_id'] ?? ''),
+    });
+  }
+
+  units.sort((a, b) => {
+    if (a.bucket !== b.bucket) return a.bucket - b.bucket;
+    if (a.ts !== b.ts) return b.ts.localeCompare(a.ts);
+    return b.msgId.localeCompare(a.msgId);
+  });
+
+  const selected: T[] = [];
+  for (const unit of units) {
+    if (selected.length + unit.entries.length > limit) continue;
+    selected.push(...unit.entries);
+  }
+  return selected;
 }

@@ -1,6 +1,7 @@
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { performance } from 'node:perf_hooks';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
@@ -480,7 +481,7 @@ describe('launch stage tracer (a stalled launch names its step)', () => {
   it('reports the step a launch is stuck in once the stall deadline passes', () => {
     vi.useFakeTimers();
     const lines: string[] = [];
-    const trace = launchStageTracer('ws:h:chat', (line) => lines.push(line));
+    const trace = launchStageTracer('ws:h:chat', (line) => lines.push(line), () => Date.now());
     trace.stage('read-durable-session');
     trace.stage('bootstrap');
     vi.advanceTimersByTime(LAUNCH_STALL_REPORT_MS - 1);
@@ -516,10 +517,32 @@ describe('launch stage tracer (a stalled launch names its step)', () => {
     prompt.end();
   });
 
+  it('does not label a wall-clock jump as event-loop delay', () => {
+    vi.useFakeTimers();
+    let wallClock = 1_000_000;
+    let monotonicClock = 10_000;
+    const wallNow = vi.spyOn(Date, 'now').mockImplementation(() => wallClock);
+    const monotonicNow = vi.spyOn(performance, 'now').mockImplementation(() => monotonicClock);
+    const lines: string[] = [];
+    try {
+      const trace = launchStageTracer('ws:h:wall-clock', (line) => lines.push(line));
+      trace.stage('bootstrap');
+      wallClock += LAUNCH_STALL_REPORT_MS + 9_186;
+      monotonicClock += LAUNCH_STALL_REPORT_MS;
+      vi.advanceTimersByTime(LAUNCH_STALL_REPORT_MS);
+      expect(lines).toEqual([`[su-launch] ws:h:wall-clock not finished after ${LAUNCH_STALL_REPORT_MS}ms; `
+        + `stalled in stage=bootstrap for ${LAUNCH_STALL_REPORT_MS}ms`]);
+      trace.end();
+    } finally {
+      monotonicNow.mockRestore();
+      wallNow.mockRestore();
+    }
+  });
+
   it('reports slow finished steps with their duration and stays quiet for fast ones', () => {
     vi.useFakeTimers();
     const lines: string[] = [];
-    const trace = launchStageTracer('ws:h:chat', (line) => lines.push(line));
+    const trace = launchStageTracer('ws:h:chat', (line) => lines.push(line), () => Date.now());
     vi.advanceTimersByTime(10);
     trace.stage('bootstrap');
     vi.advanceTimersByTime(SLOW_LAUNCH_STAGE_MS);
@@ -533,7 +556,7 @@ describe('launch stage tracer (a stalled launch names its step)', () => {
   it('marks a stall as warn and a slow finished step as info', () => {
     vi.useFakeTimers();
     const seen: Array<[string, LaunchTraceLevel]> = [];
-    const trace = launchStageTracer('ws:h:chat', (line, level) => seen.push([line, level]));
+    const trace = launchStageTracer('ws:h:chat', (line, level) => seen.push([line, level]), () => Date.now());
     trace.stage('bootstrap');
     vi.advanceTimersByTime(LAUNCH_STALL_REPORT_MS);
     trace.stage('engine-start');
@@ -550,7 +573,7 @@ describe('launch stage tracer (a stalled launch names its step)', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const info = vi.spyOn(console, 'info').mockImplementation(() => {});
     try {
-      const trace = launchStageTracer('ws:h:chat');
+      const trace = launchStageTracer('ws:h:chat', undefined, () => Date.now());
       trace.stage('bootstrap');
       vi.advanceTimersByTime(SLOW_LAUNCH_STAGE_MS + 450);
       trace.stage('engine-start');

@@ -111,11 +111,31 @@ async function main() {
     let ready = false;
     for (let attempt = 0; attempt < 6 && !ready; attempt++) {
       const began = Date.now();
+      const progress: unknown[] = [];
+      let sampling = true;
+      const sample = (async () => {
+        while (sampling) {
+          const rows = await sql`SELECT pid, state, wait_event_type, wait_event,
+            left(query, 500) AS query, extract(epoch FROM (clock_timestamp() - query_start)) AS query_age_sec
+            FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid()`;
+          progress.push({ elapsedMs: Date.now() - began, rows });
+          await new Promise(done => setTimeout(done, 200));
+        }
+      })();
+      const responses: unknown[] = [];
       const payload = await core.runInjection({ adapter, nativeEvent: 'UserPromptSubmit',
         event: { prompt: 'warmquartz diagnostic snapshot recovery evidence', cwd: e.HOME },
-        env: { ...e, PAPERCUSP_SID: `su-private-knowledge-warmup-${attempt}`, PAPERCUSP_HARNESS_SLUG: workspace } });
+        env: { ...e, PAPERCUSP_SID: 'su-private-knowledge-warmup', PAPERCUSP_HARNESS_SLUG: workspace },
+        fetchImpl: async (url: string | URL | Request, init?: RequestInit) => {
+          const response = await fetch(url, init);
+          responses.push({ url: String(url), status: response.status,
+            elapsedMs: Date.now() - began, body: await response.clone().text() });
+          return response;
+        } });
+      sampling = false;
+      await sample;
       ready = Boolean(payload?.includes(warmReport.reportId));
-      warmups.push({ attempt, durationMs: Date.now() - began, ready, payload });
+      warmups.push({ attempt, durationMs: Date.now() - began, ready, payload, responses, progress });
       writeFileSync(join(evidenceDir, 'warmup.json'), JSON.stringify(warmups));
       if (!ready) await new Promise(done => setTimeout(done, 250));
     }

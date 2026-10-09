@@ -287,6 +287,7 @@ export type TestRunBindingError =
   | 'test_run_canonical_path_mismatch'
   | 'source_paths_underivable'
   | 'run_contradicts_declared_adequacy'
+  | 'mutation_causal_controls_invalid'
   | 'test_run_as_committed_content_mismatch'
   | 'test_run_source_modified_after_run'
   | 'test_run_cargo_not_a_test'

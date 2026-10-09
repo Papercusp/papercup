@@ -2,6 +2,7 @@
 import { randomUUID } from 'node:crypto';
 import { realpathSync } from 'node:fs';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
+import { performance } from 'node:perf_hooks';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { getChat } from './agent-chats-data';
 import { getAdvSession, markAdvSessionEnded, setAdvSessionPid } from './adv-sessions';
@@ -213,7 +214,7 @@ export function logLaunchTrace(line: string, level: LaunchTraceLevel): void {
 export function launchStageTracer(
   key: string,
   log: (line: string, level: LaunchTraceLevel) => void = logLaunchTrace,
-  now: () => number = Date.now,
+  now: () => number = () => performance.now(),
 ): LaunchStageTracer {
   const startedAt = now();
   let stage = 'read-chat';

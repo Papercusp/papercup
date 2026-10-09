@@ -56,6 +56,37 @@ RUSTUP_HOME=/opt/rustup /opt/cargo/bin/rustc --version
 cd /
 rm -rf /tmp/native-toolchains
 NATIVE_BUILD
+# Git 2.43 mistakes stale errno=ENOMEM at normal getdelim EOF for failure.
+# Measured under ARM emulation: result=-1, feof=1, ferror=0, allocated buffer.
+# Correct that EOF interpretation only; retain actual allocation/read errors.
+# This private factory adapter is never copied into the Server payload.
+RUN <<'GIT_EOF_COMPAT'
+mkdir -p /opt/build-git/bin /opt/build-git/lib
+gcc -Wall -Wextra -Werror -shared -fPIC -x c - -o /opt/build-git/lib/libgit-eof.so -ldl <<'GIT_EOF_SOURCE'
+#define _GNU_SOURCE
+#include <stdio.h>
+#include <stdlib.h>
+#include <dlfcn.h>
+#include <errno.h>
+ssize_t getdelim(char **lineptr, size_t *n, int delimiter, FILE *stream) {
+  ssize_t (*next)(char **, size_t *, int, FILE *) = dlsym(RTLD_NEXT, "getdelim");
+  if (!next) {
+    fputs("FATAL: native Git EOF adapter cannot resolve getdelim\n", stderr);
+    abort();
+  }
+  ssize_t result = next(lineptr, n, delimiter, stream);
+  if (result < 0 && errno == ENOMEM && lineptr && *lineptr
+      && feof(stream) && !ferror(stream)) errno = 0;
+  return result;
+}
+GIT_EOF_SOURCE
+cat > /opt/build-git/bin/git <<'GIT_EOF_WRAPPER'
+#!/bin/sh
+export LD_PRELOAD="/opt/build-git/lib/libgit-eof.so${LD_PRELOAD:+:$LD_PRELOAD}"
+exec /usr/bin/git "$@"
+GIT_EOF_WRAPPER
+chmod 755 /opt/build-git/bin/git
+GIT_EOF_COMPAT
 # This builds audited Server releases from independent /product inputs. The
 # audited pinned dogfood route supports both native architectures and already
 # skips the unused development dependency generation after install. vm-release
@@ -63,7 +94,7 @@ NATIVE_BUILD
 ENV PAPERCUSP_DISTRIBUTION_PROFILE=dogfood \
     PAPERCUSP_RELEASE_AUDIT=1 \
     PAPERCUSP_PINNED_DEPS_SNAPSHOT_ROOT=/product \
-    PATH=/opt/build-node/bin:/opt/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    PATH=/opt/build-git/bin:/opt/build-node/bin:/opt/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     RUSTUP_HOME=/opt/rustup
 # Run as the source/output owner's UID with a separate writable HOME/CARGO_HOME.
 # Do not mount host toolchains, dependencies, credentials or Docker's socket.

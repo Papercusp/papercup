@@ -469,7 +469,7 @@ describe('completed isolated runtime certification', () => {
     expect(await measureCompletedTestRuntime(state.row as any, basis, current.files,
       { workspaceId: 'workspace-test', harnessSlug: 'papercusp' }, root)).toBeNull();
   });
-  it.each(['failed-boot', 'reused-verifier', 'wrong-source', 'changed-receipt', 'wrong-journey-source', 'outside-test',
+  it.each(['failed-boot', 'reused-verifier', 'wrong-source', 'changed-receipt', 'wrong-journey-source', 'outside-witness',
     'missing-witness', 'dirty-run', 'deployed-plane', 'no-completion-selector'])(
     'refuses certification for %s', async failure => {
       const state = await setup();
@@ -478,7 +478,7 @@ describe('completed isolated runtime certification', () => {
       if (failure === 'wrong-source') state.receipt.sourceCommit = 'b'.repeat(40);
       if (failure === 'changed-receipt') state.receipt.files[0].sha256 = 'b'.repeat(64);
       if (failure === 'wrong-journey-source') state.manifest.sourceFingerprints[0].sha256 = 'b'.repeat(64);
-      if (failure === 'outside-test') state.journey.endedAt = at(36);
+      if (failure === 'outside-witness') state.journey.endedAt = at(41);
       if (failure === 'missing-witness') delete (state.execution as any).runtimeEnvironmentBefore;
       if (failure === 'dirty-run') state.row.test_run_worktree_dirty = true;
       if (failure === 'deployed-plane') state.row.details.evidencePlane = 'deployed';

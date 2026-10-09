@@ -1839,11 +1839,9 @@ export function classifyOwnerNativeSessionRows(
 
 const NATIVE_SESSION_VERIFY_STATEMENT_TIMEOUT_MS = 2_000;
 const NATIVE_SESSION_VERIFY_LOCK_TIMEOUT_MS = 1_000;
-// The current process may configure the shared DB acquisition deadline below
-// the time its own admin-pool queue waits. Auth still fails closed if the
-// binding cannot be read, but a verified 5.6s queue wait must not be turned
-// into a false identity refusal by a 1s global override. Three bounded attempts
-// cap total acquisition waiting at just under 23 seconds.
+// A process-wide DB acquisition deadline may be shorter than the admin-pool
+// queue wait. Give this verifier one explicit 7.5s attempt rather than making
+// a normal queue delay look like a failed session binding.
 const NATIVE_SESSION_VERIFY_ACQUIRE_TIMEOUT_MS = 7_500;
 
 /**

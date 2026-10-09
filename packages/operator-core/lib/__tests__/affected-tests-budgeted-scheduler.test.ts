@@ -432,6 +432,51 @@ describe('runBudgetedTasks', () => {
 });
 
 describe('cooperative shared admission (WI-10006150)', () => {
+  it('rejects inputs changed while queued before starting a shard and releases admission', async () => {
+    const release = deferred<void>();
+    const acquired = deferred<void>();
+    const holder = withFsMutex(admissionMutexName(), async () => {
+      acquired.resolve();
+      await release.promise;
+    });
+    await acquired.promise;
+    let fingerprint = 'baseline';
+    let queued = false;
+    const runTask = vi.fn(async (task: string) => task);
+    const plan = planAffectedTaskShards(['first', 'second'], {
+      blastRadius: { kind: 'scoped', reason: 'path-closure', triggerPaths: [] },
+      taskKey: (task: string) => task,
+      maxTasksPerShard: 2,
+    });
+    const running = runBudgetedTaskShards(plan, {
+      ...config,
+      admissionRunBudgetMs: 8_000,
+      onAdmissionNotice: (_, info) => { if (info.kind === 'queued') queued = true; },
+      onAdmissionAcquired: () => {
+        if (fingerprint !== 'baseline') throw new Error('calibration input drift');
+      },
+      runTask,
+    });
+    // Observe the rejection before releasing the holder to avoid an unhandled
+    // rejection racing the assertion. The failure occurs after FIFO admission.
+    const rejected = expect(running).rejects.toThrow('calibration input drift');
+    try {
+      await until(() => queued, 'the calibration to queue');
+      fingerprint = 'changed';
+    } finally {
+      release.resolve();
+      await holder;
+    }
+    await rejected;
+    expect(runTask).not.toHaveBeenCalled();
+    await expect(runBudgetedTaskShards(plan, {
+      ...config,
+      admissionRunBudgetMs: 1_000,
+      runTask,
+    })).resolves.toMatchObject({ results: [{ value: 'first' }, { value: 'second' }] });
+    expect(runTask).toHaveBeenCalledTimes(2);
+  }, 20_000);
+
   it('drains the active wave and lets a queued peer run before refilling the shard', async () => {
     const tasks = [
       { id: 'long', estimateMs: 100 },

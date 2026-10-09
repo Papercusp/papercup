@@ -137,6 +137,27 @@ describe('output-only original reading', () => {
     });
   });
 
+  it('keeps narration output-only without asking for a microphone', async () => {
+    const originalNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+    const getUserMedia = vi.fn(async () => ({ getTracks: () => [] }));
+    Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { mediaDevices: { getUserMedia } } });
+    try {
+      await fixture(async (mod, audio) => {
+        const mode = mod.getVoiceState().mode;
+        const started = mod.startReading('FIRSTTAIL');
+        await vi.waitFor(() => expect(audio).toHaveLength(1));
+        mod.controlReading(started.readingId!, 'pause');
+        mod.controlReading(started.readingId!, 'resume');
+        mod.controlReading(started.readingId!, 'stop');
+        expect(getUserMedia).not.toHaveBeenCalled();
+        expect(mod.getVoiceState().mode).toBe(mode);
+      });
+    } finally {
+      if (originalNavigator) Object.defineProperty(globalThis, 'navigator', originalNavigator);
+      else Reflect.deleteProperty(globalThis, 'navigator');
+    }
+  });
+
   it('stop discards subsequent audio and stale controls cannot stop a newer reading', async () => {
     await fixture(async (mod, audio) => {
       const first = mod.startReading('FIRSTTAIL');
