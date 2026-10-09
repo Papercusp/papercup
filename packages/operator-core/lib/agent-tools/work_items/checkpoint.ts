@@ -235,6 +235,62 @@ function shortHash(text: string): string {
   return createHash('sha256').update(text, 'utf8').digest('hex').slice(0, 12);
 }
 
+type CheckpointPhase = { itemId: string; itemIndex: number; itemCount: number; phase: string };
+type CheckpointPhaseContext = { log?: (message: string) => void };
+
+function emitCheckpointPhase(
+  ctx: CheckpointPhaseContext,
+  detail: CheckpointPhase,
+  state: 'started' | 'completed' | 'failed',
+  elapsedMs?: number,
+): void {
+  if (typeof ctx.log !== 'function') return;
+  try {
+    ctx.log(
+      `[work_items:checkpoint:phase] ${JSON.stringify({
+        ...detail,
+        state,
+        ...(elapsedMs === undefined ? {} : { elapsedMs }),
+      })}`,
+    );
+  } catch {
+    // Diagnostic logging must never change checkpoint persistence semantics.
+  }
+}
+
+/** Batch-call phase markers survive the caller's deadline, identifying the last
+ * awaited phase even when work_items:checkpoint itself returns after that caller
+ * has timed out. The shorthand path stays quiet. */
+async function observeCheckpointPhase<T>(
+  ctx: CheckpointPhaseContext,
+  detail: CheckpointPhase,
+  run: () => Promise<T> | T,
+): Promise<T> {
+  const started = performance.now();
+  emitCheckpointPhase(ctx, detail, 'started');
+  try {
+    const result = await run();
+    emitCheckpointPhase(ctx, detail, 'completed', Math.round(performance.now() - started));
+    return result;
+  } catch (error) {
+    emitCheckpointPhase(ctx, detail, 'failed', Math.round(performance.now() - started));
+    throw error;
+  }
+}
+
+function observeCheckpointSyncPhase<T>(ctx: CheckpointPhaseContext, detail: CheckpointPhase, run: () => T): T {
+  const started = performance.now();
+  emitCheckpointPhase(ctx, detail, 'started');
+  try {
+    const result = run();
+    emitCheckpointPhase(ctx, detail, 'completed', Math.round(performance.now() - started));
+    return result;
+  } catch (error) {
+    emitCheckpointPhase(ctx, detail, 'failed', Math.round(performance.now() - started));
+    throw error;
+  }
+}
+
 /**
  * EI-22386514939689944: checkpoint prose is the successor's entry point, but
  * repo-relative paths written there were previously never checked. Reuse the
@@ -1387,9 +1443,20 @@ export default defineTool({
             contentHash: args.contentHash,
           },
         ];
+    const traceCheckpointPhases = args.items !== undefined;
+    let nextBatchItemIndex = 0;
     const env = await runBulk(
       items,
       async (it) => {
+        const itemIndex = ++nextBatchItemIndex;
+        const phaseDetail = (phase: string): CheckpointPhase => ({
+          itemId: it.id,
+          itemIndex,
+          itemCount: items.length,
+          phase,
+        });
+        const runPhase = <T>(phase: string, run: () => Promise<T> | T): Promise<T> =>
+          traceCheckpointPhases ? observeCheckpointPhase(ctx, phaseDetail(phase), run) : Promise.resolve(run());
         // `checkpointBodySpec` accepts the structured compatibility object as an
         // input shape, then its preprocess normalizes a valid object to the stored
         // string before this handler runs. `defineTool` types handler arguments from
@@ -1525,7 +1592,7 @@ export default defineTool({
         // aimed at, overwriting a peer's in-flight state — the exact corruption
         // EI-18132462898750489 added the guard to stop, and it failed open precisely when
         // the database was unhealthy. Fail CLOSED: unreadable is not unowned.
-        const lookup = await lookupWorkItem(it.id, hintHarness);
+        const lookup = await runPhase('work-item-lookup', () => lookupWorkItem(it.id, hintHarness));
         if (lookup.status === 'unreadable') {
           return {
             ok: false as const,
@@ -1782,7 +1849,7 @@ export default defineTool({
         let joinAddendumStored = joinAddendum;
         if (joinAddendum !== null) {
           try {
-            appendPriorRaw = await getWorkItemCheckpoint({ harness, workItemId: it.id, workspaceId });
+            appendPriorRaw = await runPhase('append-prior-read', () => getWorkItemCheckpoint({ harness, workItemId: it.id, workspaceId }));
           } catch {
             appendPriorRaw = null;
             appendPreReadFailed = true;
@@ -2207,6 +2274,14 @@ export default defineTool({
                 return enforceFrozenWorkItemCarry(withCarryNoteChecks(trimmedBody, merged), currentProvenanceText);
               }
             : undefined;
+        const timedChecksTransform = checksTransform && traceCheckpointPhases
+          ? (priorNote: string | null, incoming: string | null | undefined) =>
+              observeCheckpointSyncPhase(
+                ctx,
+                phaseDetail('locked-check-row-transform'),
+                () => checksTransform(priorNote, incoming),
+              )
+          : checksTransform;
         /**
          * EI-21228214077347799: the shrink guard and the checks-overflow guard protect
          * INDEPENDENT axes — the first the BODY being replaced, the second the check ROWS
@@ -2305,7 +2380,7 @@ export default defineTool({
         const appendBodyPreservationGuard: CheckpointGuard | null =
           !wantsConfirmShrink && didAttemptJoin && joinAddendumStored
             ? (priorNote, priorLen) => {
-                const candidate = checksTransform?.(priorNote, checkpointToStore);
+                const candidate = timedChecksTransform?.(priorNote, checkpointToStore);
                 const candidateBody = candidate
                   ? splitCarryNoteWalls(splitCarryNoteChecks(candidate).body).body.trim()
                   : '';
@@ -2502,22 +2577,29 @@ export default defineTool({
         });
         let res;
         try {
-          res = await setWorkItemCheckpointWithPrior({ harness, workItemId: it.id, workspaceId }, checkpointToStore, {
-            ...(typeof (joinAddendumStored ?? checkpointToStore) === 'string'
-              ? { latestUpdate: (joinAddendumStored ?? checkpointToStore)! } : {}),
-            ...(item ? { workItem: item as WorkItemSubject } : {}),
-            // P-012 / D-006: a writer holding a restricted disclosure stores a sealed stub.
-            writerOwnerId: ident.ownerId,
-            ...(checksTransform ? { transform: checksTransform } : {}),
-            guard: composeGuards(
-              appendBaseGuard,
-              bodyPreservationGuard,
-              overflowGuard,
-              appendBodyPreservationGuard,
-              shrinkGuard,
+          res = await runPhase('store-write-transaction', () =>
+            setWorkItemCheckpointWithPrior(
+              { harness, workItemId: it.id, workspaceId },
+              checkpointToStore,
+              {
+                ...(typeof (joinAddendumStored ?? checkpointToStore) === 'string'
+                  ? { latestUpdate: (joinAddendumStored ?? checkpointToStore)! }
+                  : {}),
+                ...(item ? { workItem: item as WorkItemSubject } : {}),
+                // P-012 / D-006: a writer holding a restricted disclosure stores a sealed stub.
+                writerOwnerId: ident.ownerId,
+                ...(timedChecksTransform ? { transform: timedChecksTransform } : {}),
+                guard: composeGuards(
+                  appendBaseGuard,
+                  bodyPreservationGuard,
+                  overflowGuard,
+                  appendBodyPreservationGuard,
+                  shrinkGuard,
+                ),
+                ...depsOpt,
+              },
             ),
-            ...depsOpt,
-          });
+          );
         } catch (error) {
           if (error instanceof FrozenCarryCheckpointError) return { ...error.payload, id: it.id };
           if (error instanceof RetireIdsMismatchError) return retireIdsMismatchResponse(error);
@@ -2549,17 +2631,19 @@ export default defineTool({
         if (res.blockedReason?.includes('plain replace would shrink') && isPlainReplace && !wantsConfirmShrink) {
           preservePriorOnShrink = true;
           try {
-            res = await setWorkItemCheckpointWithPrior(
-              { harness, workItemId: it.id, workspaceId },
-              checkpointToStore,
-              {
-                ...(typeof checkpointToStore === 'string' ? { latestUpdate: checkpointToStore } : {}),
-                ...(item ? { workItem: item as WorkItemSubject } : {}),
-                ...(checksTransform ? { transform: checksTransform } : {}),
-                writerOwnerId: ident.ownerId,
-                guard: composeGuards(bodyPreservationGuard, overflowGuard),
-                ...depsOpt,
-              },
+            res = await runPhase('store-write-shrink-retry', () =>
+              setWorkItemCheckpointWithPrior(
+                { harness, workItemId: it.id, workspaceId },
+                checkpointToStore,
+                {
+                  ...(typeof checkpointToStore === 'string' ? { latestUpdate: checkpointToStore } : {}),
+                  ...(item ? { workItem: item as WorkItemSubject } : {}),
+                  ...(timedChecksTransform ? { transform: timedChecksTransform } : {}),
+                  writerOwnerId: ident.ownerId,
+                  guard: composeGuards(bodyPreservationGuard, overflowGuard),
+                  ...depsOpt,
+                },
+              ),
             );
           } catch (error) {
             if (error instanceof FrozenCarryCheckpointError) return { ...error.payload, id: it.id };
@@ -2676,7 +2760,7 @@ export default defineTool({
         let readBackFailed = false;
         if (stored !== null) {
           try {
-            readBack = await getWorkItemCheckpoint({ harness, workItemId: it.id, workspaceId });
+            readBack = await runPhase('verify-read', () => getWorkItemCheckpoint({ harness, workItemId: it.id, workspaceId }));
           } catch (error) {
             // EI-22707338795824591: the write transaction has already COMMITTED by
             // the time this verifier runs. Collapsing a reader exception to `null`
@@ -2743,7 +2827,7 @@ export default defineTool({
         // that will be handed over. Explicit null tokens are advisory only;
         // resolver failures stay fail-open inside the helper.
         const prosePathLint =
-          stored !== null ? await unresolvedProsePathsInCheckpoint(stored, { workspaceId, harness }) : undefined;
+          stored !== null ? await runPhase('prose-path-advisory', () => unresolvedProsePathsInCheckpoint(stored, { workspaceId, harness })) : undefined;
         // ── P-017: the durable half, posted to the effort thread in this same call ──
         // Deliberately AFTER the read-back verify, and fail-soft: the checkpoint is the
         // thing a successor cannot do without, so a thread that refuses a post must
@@ -2752,14 +2836,14 @@ export default defineTool({
         const learnedText = (it.learned ?? args.learned ?? '').trim();
         let learnedResult: Awaited<ReturnType<typeof postLearnedAtLevel>> | null = null;
         if (learnedText) {
-          learnedResult = await postLearnedAtLevel({
+          learnedResult = await runPhase('learned-thread-post', () => postLearnedAtLevel({
             workItemId: it.id,
             level: it.learnedLevel ?? args.learnedLevel,
             text: learnedText,
             harness,
             authorId: ident.ownerId,
             workspaceId,
-          }).catch(() => null);
+          }).catch(() => null));
         }
         // ── D-010: run the READER'S extractor at WRITE time and hand back what it
         // found. No gate, no rejection, no new required args — the writer's inability
@@ -2785,7 +2869,7 @@ export default defineTool({
         // on one client's edit path while ptool/MCP/API write straight past it, and
         // ref resolution here is workspace-scoped and fail-soft, so a false "does not
         // exist" would block a legitimate federated ref.
-        const unresolvedRefs = stored !== null ? await unresolvedRefsInBody(stored, { known: [it.id] }) : undefined;
+        const unresolvedRefs = stored !== null ? await runPhase('work-item-ref-advisory', () => unresolvedRefsInBody(stored, { known: [it.id] })) : undefined;
         const unresolvedRefsWarningText = unresolvedRefs ? unresolvedRefsWarning(it.id, unresolvedRefs.missing) : undefined;
         // EI-22995965169175295: inspect the FINAL stored carry-note so qualified
         // decision refs retained from earlier compaction hops are covered too.
@@ -2793,10 +2877,10 @@ export default defineTool({
         // advisory is strictly fail-open and never changes checkpoint success.
         const decisionRefAdvisory =
           stored !== null
-            ? await unresolvedPlanDecisionRefs(stored, {
+            ? await runPhase('plan-decision-ref-advisory', () => unresolvedPlanDecisionRefs(stored, {
                 workspaceId,
                 harnessSlug: harness,
-              }).catch(() => undefined)
+              }).catch(() => undefined))
             : undefined;
         return {
           ok: true as const,
