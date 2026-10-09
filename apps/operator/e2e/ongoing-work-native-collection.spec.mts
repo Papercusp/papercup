@@ -133,8 +133,35 @@ test('Work on Everything Design C cockpit and priority editor stay readable in t
     return decodeNativeBridgeJson(result.stdout);
   }
   const measure = (expression: string) => native('eval', `JSON.stringify(${expression})`);
-  const ready = (expression: string) => expect.poll(() => measure(expression), { timeout: 45_000,
-    intervals: [300, 1000] }).toBe(true);
+  let readyFailureCount = 0;
+  const ready = async (expression: string) => {
+    try {
+      await expect.poll(() => measure(expression), { timeout: 45_000, intervals: [300, 1000] }).toBe(true);
+    } catch (error) {
+      const failure = ++readyFailureCount;
+      try {
+        const state = await measure(`({
+          expression: ${JSON.stringify(expression)}, url: location.href,
+          routerSearch: window.__TSR_ROUTER__?.latestLocation?.search ?? window.__TSR_ROUTER__?.state?.location?.search ?? null,
+          priorityIds: Array.from(document.querySelectorAll('[data-testid="ongoing-priority-row"]')).map(n => n.dataset.worklistId),
+          buttons: Array.from(document.querySelectorAll('[data-testid="work-on-everything-console"] button')).map(n => ({
+            text: n.textContent, pressed: n.getAttribute('aria-pressed'), disabled: n.disabled,
+          })),
+          alerts: Array.from(document.querySelectorAll('[role="alert"]')).map(n => n.textContent),
+          body: document.body.innerText,
+        })`);
+        await info.attach(`native-ready-failure-${failure}`, {
+          body: JSON.stringify({ state, sourceReceipt }), contentType: 'application/json',
+        });
+        await native('screenshot', '--output', info.outputPath(`ready-failure-${failure}.png`));
+      } catch (captureError) {
+        await info.attach(`native-ready-capture-error-${failure}`, {
+          body: String(captureError), contentType: 'text/plain',
+        });
+      }
+      throw error;
+    }
+  };
   const panel = '[data-testid="work-on-everything-console"]';
   const goalId = 'native-worklist-design';
   const ids = ['desktop', 'search', 'mobile'].map(slug => `plan:native-design/${slug}`);
@@ -167,6 +194,8 @@ test('Work on Everything Design C cockpit and priority editor stay readable in t
     expect(detail.goal.goalPackage).toBeNull();
     expect(detail.goalData.collections.worklist.selection.configured).toBe(true);
     expect(detail.goalData.collections.worklist.selection.selected).toEqual(ids.slice(0, 2));
+    expect(detail.goalData.collections.worklist.rows.map((r: { id: string }) => r.id).sort())
+      .toEqual([...ids].sort());
     // insertNativeCollectionPlan seeds one real todo item per plan. Two
     // measured selected plans are not an empty or unknown progress fixture.
     expect(detail.goalData.collections.worklist.rows.filter((r: { selected: boolean }) => r.selected)
@@ -203,10 +232,10 @@ test('Work on Everything Design C cockpit and priority editor stay readable in t
     expect(cockpit.progressText).toContain('2 of 2 selected plans measured');
     expect(cockpit.overflowingPanel).toBe(false);
     expect(cockpit.hasDraftControls).toBe(false);
-    await native('eval', `(() => {
-      Array.from(document.querySelectorAll('${panel} button')).find(n => n.textContent === 'Browse all plans').click();
-      return true;
-    })()`);
+    const browse = `${panel} .woe__priority .woe__actions button:last-child`;
+    expect(await measure(`document.querySelector(${JSON.stringify(browse)})?.textContent`)).toBe('Browse all plans');
+    await native('click', browse, '--json');
+    await ready(`new URL(location.href).searchParams.get('hudwoebrowse') === 'true'`);
     await ready(`document.querySelectorAll('${panel} [data-testid="ongoing-priority-row"]').length === 3`);
     expect(await measure(`!!document.querySelector('${panel} .woe__draft-bar')`)).toBe(false);
     await native('click', '.woe__header button[aria-pressed]', '--json');
