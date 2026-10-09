@@ -75,9 +75,12 @@ describe('native collection fixture against migrated private PG', () => {
       ok: true, configured: true, collection: { policy: policyName },
     });
     // The same read with the legacy declaration is the opposing presentation control.
+    const worklistDeclaration = detail.goalData?.propertySchema?.worklist;
+    expect(worklistDeclaration).toBeDefined();
+    if (!worklistDeclaration) throw new Error('Fixture did not return its worklist declaration');
     expect(isWorkOnEverything({ ...detail, goalData: { ...detail.goalData!, propertySchema: {
-      ...detail.goalData!.propertySchema, worklist: { ...detail.goalData!.propertySchema.worklist,
-        collection: { ...detail.goalData!.propertySchema.worklist.collection!, policy: 'worklist_policy' } },
+      ...detail.goalData!.propertySchema, worklist: { ...worklistDeclaration,
+        collection: { ...worklistDeclaration.collection!, policy: 'worklist_policy' } },
     } } })).toBe(true);
     const brief = await read();
     expect(brief?.worklist.map(plan => plan.slug)).toEqual(['beta', 'alpha', 'blocked']);
@@ -107,10 +110,10 @@ describe('native collection fixture against migrated private PG', () => {
     expect(written).toMatchObject({ ok: true });
     const persisted = await resolveGoalDetail({ workspaceId, goalId }) as unknown as GoalDetailInput;
     expect(isWorkOnEverything(persisted)).toBe(false);
-    expect(persisted.goalData?.properties[policyName]).toMatchObject({
+    expect(persisted.goalData?.properties?.[policyName]).toMatchObject({
       version: 1, provenance: 'owner-edit', value: { order: ids, excluded: [ids[1]] },
     });
-    expect(persisted.goalData?.properties.worklist_policy).toBeUndefined();
+    expect(persisted.goalData?.properties?.worklist_policy).toBeUndefined();
     const reordered = await read();
     expect(reordered?.worklist.map(plan => plan.ref)).toEqual(ids);
     expect(reordered?.worklist.find(plan => plan.slug === 'beta')).toMatchObject({

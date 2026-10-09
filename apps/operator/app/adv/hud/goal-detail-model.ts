@@ -315,6 +315,7 @@ export interface GoalDetailInput {
   goalData?: {
     /** Already emitted by goals.detail, including for goals created before packages. */
     propertySchema?: import('@papercusp/operator-core/lib/typed-properties').TypedPropertySchemaDocument;
+    properties?: Record<string, unknown>;
     error?: string | null;
     historyError?: string | null;
     worklistHistory?: Array<{ id: string; ref: string; at: string; actor: string; label: string; detail: string | null }>;
