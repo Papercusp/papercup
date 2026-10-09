@@ -143,7 +143,6 @@ function deps() {
   const listScorecards = vi.fn<ListScorecards>().mockResolvedValue([]);
   const cancelSuperseded = vi.fn(async () => false);
   const getEvaluatorBuild = vi.fn(() => ({ sha: 'live-evaluator-sha', version: '1.2.3' }));
-  const markAwaitingReemit = vi.fn(async () => true);
   const readEvidence = vi.fn<ReadEvidence>().mockResolvedValue({ kind: 'not_found' });
   const getRubric = vi.fn<GetRubric>().mockResolvedValue(standardRubric());
   const launch = vi
@@ -174,7 +173,6 @@ function deps() {
     listScorecards,
     cancelSuperseded,
     getEvaluatorBuild,
-    markAwaitingReemit,
     readEvidence,
     getRubric,
     launch,
@@ -482,7 +480,7 @@ describe('dispatchPendingGradingAudits', () => {
     ]);
   });
 
-  it('marks evaluator-build-drifted cards awaiting re-emit before reserving or launching an auditor', async () => {
+  it('defers a foreign evaluator build without invalidating its card or retiring its auditor', async () => {
     const d = deps();
     const issueId = 'EI-evaluator-build-drift';
     const reservation = {
@@ -521,21 +519,9 @@ describe('dispatchPendingGradingAudits', () => {
       { ...d, killTask },
     );
 
-    expect(d.markAwaitingReemit).toHaveBeenCalledWith(
-      issueId,
-      target.gradingAudit,
-      { reason: expect.stringContaining('evaluator build drift detected before audit dispatch') },
-    );
-    expect(d.listTasks).toHaveBeenCalledWith({
-      workspaceId: 'ws-test',
-      states: ['pending', 'running'],
-      labelPrefix: `grading-audit:${issueId}`,
-      limit: 20,
-    });
-    expect(killTask).toHaveBeenCalledWith('task-drifted-auditor', {
-      includeSubtree: true,
-      escalateAfterMs: 5_000,
-    });
+    expect(d.listTasks).not.toHaveBeenCalled();
+    expect(killTask).not.toHaveBeenCalled();
+    expect(target.gradingAudit).toMatchObject({ state: 'pending', dispatchReservation: reservation });
     expect(d.readEvidence).not.toHaveBeenCalled();
     expect(d.reserve).not.toHaveBeenCalled();
     expect(d.route).not.toHaveBeenCalled();
@@ -544,9 +530,41 @@ describe('dispatchPendingGradingAudits', () => {
       expect.objectContaining({
         issueId,
         state: 'skipped',
-        reason: expect.stringContaining('marked awaiting re-emit'),
+        reason: expect.stringContaining('requires a dispatcher running the recorded evaluator build'),
       }),
     ]);
+  });
+
+  it('can dispatch the same deferred card from its exact evaluator build and pins the fresh judge to that host', async () => {
+    const issueId = 'EI-cross-runtime-replay';
+    const rerunRecipe = {
+      schemaVersion: 1,
+      evaluator: 'plans:evaluate-spec-test-adequacy',
+      evaluatorBuild: { sha: 'staging-evaluator-sha', version: '1.2.3' },
+      evaluatorRevision: 20,
+      args: { harness: 'papercusp' },
+      selection: { bindingIds: [] },
+    } as NonNullable<ScorecardRow['rerunRecipe']>;
+    const target = card(issueId, { rerunRecipe });
+    const foreign = deps();
+    foreign.listScorecards.mockResolvedValue([target]);
+    await dispatchPendingGradingAudits({ targetIds: [issueId], ctx }, foreign);
+
+    const compatible = deps();
+    compatible.getEvaluatorBuild.mockReturnValue({ sha: 'staging-evaluator-sha', version: '1.2.3' });
+    compatible.listScorecards.mockResolvedValue([target]);
+    // A routed reviewer can inherit another host. Exact replay requires a fresh
+    // independent judge bound to the host whose evaluator identity was checked.
+    compatible.route.mockResolvedValue({ state: 'routed', conversationId: 'wrong-host-route' });
+    const result = await dispatchPendingGradingAudits({ targetIds: [issueId], ctx }, compatible);
+
+    expect(foreign.reserve).not.toHaveBeenCalled();
+    expect(compatible.route).not.toHaveBeenCalled();
+    expect(compatible.launch).toHaveBeenCalledWith(
+      expect.objectContaining({ mcpTarget: 'spawn-host', independent: true }),
+      auditorCtx,
+    );
+    expect(result.receipts[0]).toMatchObject({ state: 'launched' });
   });
 
   it('does not dispatch an audit for a stale or unbound rubric-subject attestation', async () => {

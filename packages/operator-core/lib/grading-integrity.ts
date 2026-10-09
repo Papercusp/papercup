@@ -32,7 +32,6 @@ import {
   cancelStaleEvidencePendingGradingAuditAtomically,
   isCurrentSourceAuditResponder,
   listScorecards,
-  markGradingAuditAwaitingReemit,
   readScorecardEvidence,
   parseGradedGeneration,
   type ScorecardEvidenceRow,
@@ -294,8 +293,6 @@ export interface DispatchPendingGradingAuditsDeps {
   listScorecards?: typeof listScorecards;
   /** Current evaluator build used to preflight pinned spec-test-adequacy recipes. */
   getEvaluatorBuild?: () => BuildInfo;
-  /** Move a drifted source card out of the pending dispatch queue. */
-  markAwaitingReemit?: typeof markGradingAuditAwaitingReemit;
   /** Atomically close the old audit lease after a newer card supersedes it. */
   cancelSuperseded?: typeof cancelSupersededPendingGradingAuditAtomically;
   /** Atomically close a pending lease whose exact evidence-binding selector is no longer current. */
@@ -1305,78 +1302,11 @@ export async function dispatchPendingGradingAudits(
     );
   });
   const evaluatorBuildDriftIds = new Set(evaluatorBuildDriftPendingCards.map((card) => card.issueId));
-  const awaitingReemitIds = new Set<string>();
-  await mapWithConcurrency(
-    evaluatorBuildDriftPendingCards.slice(0, GRADING_AUDIT_DISPATCH_LIMIT),
-    GRADING_AUDIT_DISPATCH_CONCURRENCY,
-    async (card) => {
-      const expectedAudit = card.gradingAudit;
-      const recorded = card.rerunRecipe?.evaluatorBuild;
-      if (!expectedAudit || expectedAudit.state !== 'pending' || !recorded) return;
-      let marked = false;
-      try {
-        marked = await (deps.markAwaitingReemit ?? markGradingAuditAwaitingReemit)(card.issueId, expectedAudit, {
-          reason:
-            'spec-test-adequacy evaluator build drift detected before audit dispatch: recorded=' +
-            JSON.stringify(recorded) +
-            ', live=' +
-            JSON.stringify(liveEvaluatorBuild) +
-            '; re-emit the source card under the current evaluator build before auditing',
-        });
-      } catch (error) {
-        console.warn(
-          `[grading-integrity] evaluator-drifted audit for ${card.issueId} could not be marked awaiting re-emit:`,
-          error instanceof Error ? error.message : error,
-        );
-      }
-      if (!marked) return;
-      awaitingReemitIds.add(card.issueId);
-
-      const reservation = expectedAudit.dispatchReservation;
-      if (!reservation || !workspaceId) return;
-      let tasks: Awaited<ReturnType<typeof listTasks>>;
-      try {
-        tasks = await readTasksForCleanup({
-          workspaceId,
-          states: ['pending', 'running'],
-          labelPrefix: `${GRADING_AUDIT_TASK_LABEL_PREFIX}${card.issueId}`,
-          limit: 20,
-        });
-      } catch (error) {
-        console.warn(
-          `[grading-integrity] evaluator-drifted auditor task scan failed for ${card.issueId}:`,
-          error instanceof Error ? error.message : error,
-        );
-        return;
-      }
-      const exactPrefix = `${GRADING_AUDIT_TASK_LABEL_PREFIX}${card.issueId}`;
-      for (const task of tasks) {
-        const label = task.detail?.label;
-        if (typeof label !== 'string' || (label !== exactPrefix && !label.startsWith(`${exactPrefix}:`))) continue;
-        try {
-          const result = await terminateSupersededTask(task.taskId, {
-            includeSubtree: true,
-            escalateAfterMs: 5_000,
-          });
-          if (
-            !result.ok &&
-            result.error !== 'not_live' &&
-            result.error !== 'task_not_found' &&
-            result.error !== 'already_gone'
-          ) {
-            console.warn(
-              `[grading-integrity] evaluator-drifted auditor task '${task.taskId}' for ${card.issueId} could not be retired: ${result.error}`,
-            );
-          }
-        } catch (error) {
-          console.warn(
-            `[grading-integrity] evaluator-drifted auditor task '${task.taskId}' for ${card.issueId} retirement failed:`,
-            error instanceof Error ? error.message : error,
-          );
-        }
-      }
-    },
-  );
+  // A shared sweep sees cards from multiple serving builds. This host's mismatch
+  // proves only that it cannot replay the card; it does not invalidate evidence
+  // minted by another still-serving evaluator or authorize killing its judge.
+  // Leave the card and lease untouched for an exact-build dispatcher. The emit
+  // gate still refuses a replay whose actual evaluator build differs.
   const evidenceCandidates = cards
     .filter((card) =>
       card.gradingAudit?.state === 'pending' &&
@@ -1518,9 +1448,7 @@ export async function dispatchPendingGradingAudits(
         return {
           issueId,
           state: 'skipped',
-          reason: awaitingReemitIds.has(issueId)
-            ? 'source evaluator build drifted and the card was marked awaiting re-emit before audit dispatch'
-            : 'source evaluator build drifted; audit dispatch skipped because the awaiting-re-emit update did not commit',
+          reason: 'card requires a dispatcher running the recorded evaluator build; this host skipped it without changing the card or audit lease',
         };
       }
       return {
@@ -1748,6 +1676,7 @@ export async function dispatchPendingGradingAudits(
         return receipt!;
       }
       const generationBound = card.gradedGeneration != null;
+      const evaluatorBuildBound = card.rerunRecipe?.evaluatorBuild != null;
       if (generationBound) {
         const gradedGeneration = parseGradedGeneration(card.gradedGeneration);
         const currentGeneration = await (deps.readCurrentGeneration ?? readRunningGeneration)();
@@ -1991,10 +1920,12 @@ export async function dispatchPendingGradingAudits(
         };
         return receipt;
       }
-      const routed = generationBound
+      const routed = generationBound || evaluatorBuildBound
         ? {
             state: 'fallback' as const,
-            reason: 'generation-bound card requires a fresh judge launched from this compatible dispatcher build',
+            reason: generationBound
+              ? 'generation-bound card requires a fresh judge launched from this compatible dispatcher build'
+              : 'evaluator-build-bound card requires a fresh judge launched from this exact evaluator build',
           }
         : await (deps.route ?? routeSourceGradingAudit)(
             {
@@ -2062,7 +1993,9 @@ export async function dispatchPendingGradingAudits(
             // MCP to the stable proxy (:9071 → green :3070) — a different,
             // possibly older build — and its terminal emit is then refused
             // grading_audit_generation_incompatible after the launch is paid.
-            ...(generationBound ? { mcpTarget: 'spawn-host' as const } : {}),
+            // An evaluator-build-bound recipe likewise needs this exact host
+            // for creation-time replay, even without a deployed generation.
+            ...(generationBound || evaluatorBuildBound ? { mcpTarget: 'spawn-host' as const } : {}),
             account: useFallback ? GRADING_AUDIT_FALLBACK.account : GRADING_AUDIT_ACCOUNT,
             ...(useFallback ? { agent: GRADING_AUDIT_FALLBACK.agent } : {}),
             count: 1,
