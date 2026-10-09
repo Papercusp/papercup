@@ -41,7 +41,7 @@
 import { createRequire } from 'node:module';
 import { createHash, randomBytes } from 'node:crypto';
 import { constants as osConstants, homedir } from 'node:os';
-import { basename, dirname, isAbsolute, join, relative } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 // Keep the interactive bootstrap independent of operator packages while using
@@ -90,6 +90,67 @@ import { createTerminalOutput } from './psu-terminal-output.mjs';
 export const HEADLESS_NORMALIZED_LOG_ENV = 'PAPERCUSP_PSU_HEADLESS_NORMALIZED_LOG';
 
 const require = createRequire(import.meta.url);
+
+/**
+ * Validate Codex's state storage in the process that will launch it. The
+ * operator materializes the home, but a temp companion may have disappeared
+ * before a fresh launch, resume, or carry reaches this host. SQLite code 14
+ * means an open failed; it is not evidence of a corrupt database.
+ *
+ * Recreate only missing directories. Probe actual create/write/sync access and
+ * open existing SQLite files without modifying them. Never reset session data.
+ * @param {{ env: EnvironmentMap, cwd?: string, args?: string[] }} options
+ * @returns {string|null} The checked state directory, or null for another backend.
+ */
+export function prepareCodexSqliteHome({ env, cwd = process.cwd(), args = [] }) {
+  if (env.PAPERCUSP_AGENT !== 'codex' || !env.CODEX_HOME) return null;
+  const parseToml = require('@iarna/toml').parse;
+  const config = parseToml(readFileSync(join(env.CODEX_HOME, 'config.toml'), 'utf8'));
+  let configured = config.sqlite_home;
+  // Explicit native config overrides win over config.toml and the environment.
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    const assignment = arg === '-c' || arg === '--config'
+      ? args[++i]
+      : arg.startsWith('--config=') ? arg.slice('--config='.length) : null;
+    if (assignment && /^\s*sqlite_home\s*=/.test(assignment)) {
+      configured = parseToml(assignment).sqlite_home;
+    }
+  }
+  const raw = configured ?? env.CODEX_SQLITE_HOME ?? env.CODEX_HOME;
+  if (typeof raw !== 'string' || !raw.trim() || raw.includes('\0')) {
+    throw new Error('Codex SQLite preflight: sqlite_home must be a non-empty directory path');
+  }
+  const stateHome = resolve(cwd, raw);
+  let probePath = null;
+  let fd = null;
+  try {
+    mkdirSync(stateHome, { recursive: true, mode: 0o700 });
+    // Permission bits alone cannot detect a read-only mount, quota, or a full
+    // filesystem. Use an exclusive, private file and remove only our own probe.
+    const candidate = join(stateHome, `.papercusp-sqlite-probe-${randomBytes(12).toString('hex')}`);
+    fd = openSync(candidate, 'wx', 0o600);
+    probePath = candidate;
+    writeSync(fd, 'sqlite storage preflight\n');
+    fsyncSync(fd);
+    closeSync(fd);
+    fd = null;
+    unlinkSync(probePath);
+    probePath = null;
+    for (const name of readdirSync(stateHome)) {
+      if (!/_\d+\.sqlite(?:-wal|-shm)?$/.test(name)) continue;
+      fd = openSync(join(stateHome, name), 'r+');
+      closeSync(fd);
+      fd = null;
+    }
+    return stateHome;
+  } catch (error) {
+    throw new Error(`Codex SQLite storage is unavailable at ${stateHome} (${error.code ?? 'filesystem-error'}): ${error.message}. Existing databases were preserved.`, { cause: error });
+  } finally {
+    if (fd !== null) { try { closeSync(fd); } catch { /* preserve the original error */ } }
+    if (probePath) { try { unlinkSync(probePath); } catch { /* preserve the original error */ } }
+  }
+}
 
 /** This script's own directory — used to locate sibling scripts (the session-compacted
  *  emit CLI) and the checkout root. */
@@ -1147,6 +1208,7 @@ const NATIVE_TURN_TAIL_BYTES = 256 * 1024;
 const NATIVE_ISOLATED_ROOT_ENV = Object.freeze({
   codex: 'CODEX_HOME',
   claude: 'CLAUDE_CONFIG_DIR',
+  omp: 'PI_CONFIG_DIR',
 });
 
 /**
@@ -1231,6 +1293,23 @@ export function classifyClaudeTranscriptRow(row, { receivedAtMs, nowMs }) {
   return ok ? 'turn-completed' : 'turn-started';
 }
 
+/** OMP's tool-use stop is an intermediate message, not a turn boundary.
+ * @param {any} row
+ * @param {{receivedAtMs: number, nowMs: number}} ctx
+ * @returns {TurnRowVerdict}
+ */
+export function classifyOmpTranscriptRow(row, { receivedAtMs, nowMs }) {
+  const message = row?.message;
+  if (row?.type !== 'message') return 'ignore';
+  if (message?.role === 'user') return 'turn-started';
+  if (message?.role !== 'assistant' || typeof message.stopReason !== 'string') return 'ignore';
+  if (['tooluse', 'tool_use', 'tool_calls'].includes(message.stopReason.toLowerCase())) return 'ignore';
+  const at = Date.parse(row.timestamp);
+  const ok = Number.isFinite(at) && at >= receivedAtMs && at <= nowMs
+    && typeof row.id === 'string' && row.id.length > 0;
+  return ok ? 'turn-completed' : 'turn-started';
+}
+
 /**
  * The registered row classifiers, by agent. Absent ⇒ unsupported backend.
  *
@@ -1253,6 +1332,7 @@ export function classifyClaudeTranscriptRow(row, { receivedAtMs, nowMs }) {
 export const TURN_ROW_CLASSIFIERS = Object.freeze({
   codex: classifyCodexTranscriptRow,
   claude: classifyClaudeTranscriptRow,
+  omp: classifyOmpTranscriptRow,
 });
 
 /**
@@ -1275,7 +1355,12 @@ export function nativeTurnVerifierSupport(agent, env = process.env) {
   if (!agent || !TURN_ROW_CLASSIFIERS[agent] || !key) {
     return { supported: false, reason: 'no-classifier' };
   }
-  if (!env?.[key]) return { supported: false, reason: 'no-isolated-root' };
+  if (!env?.[key] && !(agent === 'omp' && env?.PI_CODING_AGENT_DIR)) {
+    return { supported: false, reason: 'no-isolated-root' };
+  }
+  if (agent === 'omp' && !env?.PI_CODING_AGENT_DIR && String(env?.PI_CONFIG_DIR) === '.omp') {
+    return { supported: false, reason: 'no-isolated-root' };
+  }
   return { supported: true, reason: null };
 }
 
@@ -1595,6 +1680,71 @@ export function nativeTurnCompletedInTranscript({
     else if (verdict === 'turn-started') completed = false;
   }
   return completed;
+}
+
+/** Normalized execution evidence, independent of provider error wording.
+ * Tool calls remain active until their matching result; PTY repaint is not progress.
+ * @param {any[]} rows
+ * @param {{agent: string, receivedAtMs?: number, nowMs?: number}} options
+ */
+export function nativeExecutionFromRows(rows, { agent, receivedAtMs = 0, nowMs = Date.now() }) {
+  const classify = TURN_ROW_CLASSIFIERS[agent];
+  let phase = 'unknown';
+  let turnStartedAt = null;
+  let lastProgressAt = null;
+  const pendingTools = new Set();
+  if (!classify || !Number.isFinite(receivedAtMs)) return { phase, turnStartedAt, lastProgressAt, pendingTools: 0 };
+  for (const row of rows) {
+    const at = Date.parse(row?.timestamp);
+    if (!Number.isFinite(at) || at < receivedAtMs || at > nowMs) continue;
+    const verdict = classify(row, { receivedAtMs, nowMs });
+    const message = row?.message;
+    const failed = agent === 'codex'
+      ? row?.type === 'event_msg' && ['turn_aborted', 'turn_failed', 'task_failed'].includes(row.payload?.type)
+      : agent === 'claude'
+        ? row?.isApiErrorMessage === true || row?.type === 'system' && row?.subtype === 'api_error'
+        : row?.type === 'message' && message?.role === 'assistant'
+          && ['error', 'aborted'].includes(String(message.stopReason).toLowerCase());
+    if (failed || verdict === 'turn-completed') {
+      phase = failed ? 'failed' : 'settled';
+      pendingTools.clear();
+      lastProgressAt = at;
+      continue;
+    }
+    if (verdict === 'turn-started') {
+      phase = 'running';
+      turnStartedAt = at;
+      pendingTools.clear();
+      lastProgressAt = at;
+    }
+    const payload = row?.payload;
+    if (agent === 'codex' && row?.type === 'response_item') {
+      if (['function_call', 'custom_tool_call'].includes(payload?.type) && payload?.call_id) pendingTools.add(payload.call_id);
+      if (['function_call_output', 'custom_tool_call_output'].includes(payload?.type) && payload?.call_id) pendingTools.delete(payload.call_id);
+      if (phase === 'running') lastProgressAt = at;
+    } else if ((agent === 'claude' || agent === 'omp') && Array.isArray(message?.content)) {
+      for (const block of message.content) {
+        if (['tool_use', 'toolCall'].includes(block?.type) && block?.id) pendingTools.add(block.id);
+        if (block?.type === 'tool_result' && block?.tool_use_id) pendingTools.delete(block.tool_use_id);
+      }
+      if (message.role === 'toolResult' && message.toolCallId) pendingTools.delete(message.toolCallId);
+      if (phase === 'running') lastProgressAt = at;
+    }
+  }
+  return { phase, turnStartedAt, lastProgressAt, pendingTools: pendingTools.size };
+}
+
+/** Read only this child's isolated current transcript. Missing/partial proof is unknown.
+ * @param {{agent?: string, env?: EnvironmentMap, receivedAtMs?: number, nowMs?: number}} options
+ */
+export function nativeLatestExecution({ agent, env = process.env, receivedAtMs = 0, nowMs = Date.now() }) {
+  const transcriptPath = newestNativeTranscriptPath(agent, env);
+  const rows = transcriptPath && readIsolatedNativeTranscriptRows({ agent, env, transcriptPath });
+  return {
+    ...(rows ? nativeExecutionFromRows(rows, { agent, receivedAtMs, nowMs })
+      : { phase: 'unknown', turnStartedAt: null, lastProgressAt: null, pendingTools: 0 }),
+    observedAt: nowMs,
+  };
 }
 
 /** Return the newest regular native transcript beneath this session's ISOLATED
@@ -9057,6 +9207,7 @@ export function hostThroughPty(o) {
   });
   const spawnChild = (spawnArgs = args) => {
     const target = resolveAgentPtyTarget({ command, args: spawnArgs, env, cwd });
+    prepareCodexSqliteHome({ env: target.env, cwd, args: target.args });
     const ptyOptions = {
       name: ptyName,
       ...childScreenDims(),
@@ -9377,7 +9528,9 @@ export function hostThroughPty(o) {
       // json. The tmp name is pid-scoped so two hosts racing the same key never
       // corrupt each other's staging file.
       const tmp = `${metaPath}.${process.pid}.tmp`;
-      writeFileSync(tmp, JSON.stringify({ ...baseMeta, ...activity.snapshot(), ...quotaBlockDetector.snapshot() }));
+      writeFileSync(tmp, JSON.stringify({ ...baseMeta, ...activity.snapshot(), ...quotaBlockDetector.snapshot(),
+        execution: nativeLatestExecution({ agent: env.PAPERCUSP_AGENT, env }),
+      }));
       renameSync(tmp, metaPath);
     } catch {
       /* best-effort — discovery degrades to the base contract */
@@ -9455,7 +9608,7 @@ export function hostThroughPty(o) {
       /* self-heal is best-effort — never break the activity persist */
     }
     const snap = activity.snapshot();
-    if (ownKey && (snap.lastActivityAt ?? 0) > lastPersisted) {
+    if (ownKey) {
       lastPersisted = snap.lastActivityAt ?? 0;
       writeMeta();
     }

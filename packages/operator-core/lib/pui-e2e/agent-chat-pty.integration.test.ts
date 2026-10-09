@@ -1212,9 +1212,10 @@ async function close(server: ServerType | undefined): Promise<void> {
   ]);
 }
 
-async function putViewState(tab: string): Promise<void> {
+async function putViewState(tab: string, scope?: 'pot' | 'all'): Promise<void> {
   const { putViewState: put } = await import('../tui-workbench-store');
   await put(OWNER, { tab, harness: HARNESS, operator_dock_open: false,
+    ...(scope ? { scope } : {}),
     ...(scriptedEngine.real && process.env.PUI_REAL_PLAN === '1' ? { plan_filter: [REAL_PLAN] } : {}) });
 }
 
@@ -5539,13 +5540,14 @@ async function verifyOperatorProcessIdentity(port: number) {
   });
 }
 
-async function verifyOperatorProcessViewState(port: number) {
+async function verifyOperatorProcessViewState(port: number, scope?: 'pot' | 'all') {
   const response = await fetch(`http://127.0.0.1:${port}/api/tui/view-state?owner=${encodeURIComponent(OWNER)}`, {
     signal: AbortSignal.timeout(3_000),
   });
   const body = await response.json();
   expect(response.status, JSON.stringify({ port, owner: OWNER, body })).toBe(200);
-  expect(body).toMatchObject({ state: { tab: 'Plans', harness: HARNESS } });
+  expect(body).toMatchObject({ state: { tab: 'Plans', harness: HARNESS,
+    ...(scope ? { scope } : {}) } });
 }
 
 async function startOperatorProcess(port = 0) {
@@ -5681,10 +5683,14 @@ async function preservePrimaryFailureDuringCleanup(
 
 describe.skipIf(scriptedEngine.real)('PUI cold operator view restoration', () => {
   test('restores the seeded Plans harness before any owner key', async () => {
+    // All-pots scope intentionally hides the selected harness in the footer.
+    // Seed pot scope so the first restored frame can expose both saved fields
+    // before optional list data arrives, without sending any owner key.
+    await putViewState('Plans', 'pot');
     const process = await startOperatorProcess();
     let pane: PuiPane | undefined;
     try {
-      await verifyOperatorProcessViewState(process.port);
+      await verifyOperatorProcessViewState(process.port, 'pot');
       pane = new PuiPane(bin, process.port, home);
       await pane.waitFor('Plans (', { timeoutMs: 40_000 });
       expect(pane.screen()).toContain(HARNESS);

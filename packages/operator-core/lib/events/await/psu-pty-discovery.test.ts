@@ -886,12 +886,12 @@ describe('mcpReconnectViaPty (mcp-transport-resilience P-004 — the in-place /m
       conn.on('end', () => recv.push(Buffer.concat(chunks).toString('utf8')));
     });
     await new Promise<void>((r) => server.listen(sock, r));
-    const writeMeta = (caps: string[] | undefined, advSessionId: string | null = null) =>
+    const writeMeta = (caps: string[] | undefined) =>
       writeFileSync(
         meta,
         JSON.stringify({
           ownerId,
-          advSessionId,
+          advSessionId: null,
           pid: process.pid,
           ptyPid: process.pid,
           sock,
@@ -964,12 +964,12 @@ describe('shutdownViaPty (WI-6638 — ask a finished agent session to close its 
       });
     });
     await new Promise<void>((r) => server.listen(sock, r));
-    const writeMeta = (caps: string[] | undefined) =>
+    const writeMeta = (caps: string[] | undefined, advSessionId: string | null = null) =>
       writeFileSync(
         meta,
         JSON.stringify({
           ownerId,
-          advSessionId: null,
+          advSessionId,
           pid: process.pid,
           ptyPid: process.pid,
           sock,
@@ -1033,6 +1033,15 @@ describe('shutdownViaPty (WI-6638 — ask a finished agent session to close its 
     expect(await shutdownViaPty(ownerId, { force: true, verifyIdentity: () => true })).toBe('sent');
     await new Promise((r) => setTimeout(r, 100));
     expect(JSON.parse(recv[recv.length - 1])).toMatchObject({ mode: 'shutdown', force: true });
+    recv.length = 0;
+    writeMeta(['shutdown'], '7');
+    expect(await shutdownViaPty(ownerId, { expectedHost: { startedAt: 1, advSessionId: '7' }, verifyIdentity: () => true })).toBe('no-cap');
+    writeMeta(['shutdown', 'shutdown-identity'], '7');
+    expect(await shutdownViaPty(ownerId, { expectedHost: { startedAt: 2, advSessionId: '7' }, verifyIdentity: () => true })).toBe('refused-stale-host');
+    expect(await shutdownViaPty(ownerId, { expectedHost: { startedAt: 1, advSessionId: '8' }, verifyIdentity: () => true })).toBe('refused-stale-host');
+    expect(recv).toEqual([]);
+    expect(await shutdownViaPty(ownerId, { expectedHost: { startedAt: 1, advSessionId: '7' }, verifyIdentity: () => true })).toBe('sent');
+    expect(JSON.parse(recv.at(-1)!)).toMatchObject({ mode: 'shutdown', expectedStartedAt: 1, ownerId });
   });
 });
 

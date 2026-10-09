@@ -30,7 +30,9 @@ import {
   defaultBenchResultsDir,
   listPreservedRuns,
   readPreservedRun,
+  inspectPreservedRun,
   summarizePreservedRun,
+  preservedExecutionTimes,
   type PreservedArmRun,
   type PreservedRunSummary,
   type ResolvedPerTask,
@@ -39,7 +41,7 @@ import type { FleetTaskResult } from './hive-backlog';
 
 const jb = (v: unknown): string | null => (v == null ? null : JSON.stringify(v));
 
-export type BenchRunStatus = 'pending' | 'running' | 'grading' | 'done' | 'error' | 'cancelled';
+export type BenchRunStatus = 'pending' | 'running' | 'grading' | 'ungraded' | 'done' | 'error' | 'cancelled';
 export type BenchTaskStatus = 'todo' | 'in_progress' | 'collected' | 'graded' | 'error';
 export type BenchRunSource = 'ui' | 'cli' | 'import';
 
@@ -454,9 +456,14 @@ export async function getBenchRunDetail(id: string, opts: DbScope = {}): Promise
   const totalCost = perTask.reduce((s, t) => s + (t.costUsd || 0), 0);
   const run: PreservedArmRun = {
     arm: row.arm,
+    model: row.model,
+    suite: row.suite,
+    taskSetId: row.task_set_id,
+    config: parseJsonb<Record<string, unknown>>(row.config) ?? undefined,
     runId: row.id,
     runError: row.run_error,
     startedAt: row.started_at ?? undefined,
+    finishedAt: row.finished_at ?? undefined,
     wallMs: numOrUndef(row.wall_ms) ?? 0,
     peakConcurrentBees: row.peak_concurrent_bees ?? 0,
     taskCount: perTask.length,
@@ -505,9 +512,26 @@ export async function importPreservedRunToStore(
   opts: DbScope & { baseDir?: string } = {},
 ): Promise<{ runId: string; imported: boolean }> {
   const baseDir = opts.baseDir ?? defaultBenchResultsDir();
-  const detail = readPreservedRun(id, baseDir);
-  if (!detail) return { runId: id, imported: false };
-  const { run, perTask, summary } = detail;
+  const inspection = inspectPreservedRun(id, baseDir);
+  if (inspection.kind === 'unavailable') return { runId: id, imported: false };
+  if (inspection.kind === 'invalid') {
+    // Repair rows minted by the former permissive reader without deleting
+    // history or altering a UI/CLI run with the same identifier.
+    const { sql, ws } = resolveDb(opts);
+    const rows = await sql<{ id: string }[]>`
+      UPDATE harness_shared.bench_runs SET
+        status = 'error', run_error = ${`archive_not_a_run:${inspection.reason}`}, finished_at = NULL,
+        updated_at = now()
+       WHERE id = ${id} AND workspace_id = ${ws} AND source = 'import'
+       RETURNING id
+    `;
+    if (rows.length > 0) await invalidate(id);
+    return { runId: id, imported: false };
+  }
+  const { run, perTask, summary } = inspection.detail;
+  const completeGrades = perTask.every((task) => task.resolved != null);
+  const archiveText = (value: unknown): string | null =>
+    typeof value === 'string' && value.trim() ? value.trim() : null;
 
   await upsertBenchRun(
     {
@@ -516,13 +540,14 @@ export async function importPreservedRunToStore(
       // omitted it would pass `undefined` to postgres-js (UNDEFINED_VALUE) and
       // throw. Fall back to a placeholder so a near-complete run still imports.
       arm: run.arm ?? 'unknown',
-      taskSetId: inferTaskSetId(perTask.length),
-      model: 'opus',
+      taskSetId: archiveText(run.taskSetId) ?? inferTaskSetId(perTask.length),
+      model: archiveText(run.model) ?? 'unknown',
+      suite: archiveText(run.suite) ?? 'unknown',
       source: 'import',
-      status: 'done',
+      status: completeGrades ? 'done' : 'ungraded',
       recovered: Boolean(run.recovered),
       taskCount: perTask.length,
-      config: { imported: true, runId: run.runId ?? null },
+      config: { ...run.config, imported: true, importedAt: new Date().toISOString(), runId: run.runId ?? null },
     },
     opts,
   );
@@ -557,7 +582,7 @@ export async function importPreservedRunToStore(
   await setBenchRunEvents(id, run.coordEvents ?? [], opts);
 
   // Stamp the rolled-up headline straight from the preserved summary, then finalize.
-  await finalizeImportedRun(id, run, summary, opts);
+  await finalizeImportedRun(id, run, summary, completeGrades, opts);
   return { runId: id, imported: true };
 }
 
@@ -565,12 +590,14 @@ async function finalizeImportedRun(
   id: string,
   run: PreservedArmRun,
   summary: PreservedRunSummary,
+  completeGrades: boolean,
   opts: DbScope = {},
 ): Promise<void> {
   const { sql, ws } = resolveDb(opts);
+  const times = preservedExecutionTimes(run);
   await sql`
     UPDATE harness_shared.bench_runs SET
-      status = 'done',
+      status = ${completeGrades ? 'done' : 'ungraded'},
       task_count = ${summary.taskCount},
       graded_count = ${summary.gradedCount},
       resolved_count = ${summary.resolvedCount},
@@ -582,8 +609,8 @@ async function finalizeImportedRun(
       wall_ms = ${summary.wallMs},
       peak_concurrent_bees = ${summary.peakConcurrentBees},
       summary = ${jb(summary)}::text::jsonb,
-      started_at = COALESCE(${run.startedAt ?? null}, started_at),
-      finished_at = now(),
+      started_at = ${times.startedAt},
+      finished_at = ${times.finishedAt},
       updated_at = now()
      WHERE id = ${id} AND workspace_id = ${ws}
   `;

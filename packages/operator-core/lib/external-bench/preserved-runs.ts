@@ -53,9 +53,15 @@ export interface PreservedPerTask {
 /** The arm-run snapshot on disk (`<arm>.json`). */
 export interface PreservedArmRun {
   arm: string;
+  /** Execution identity belongs to the archive; missing legacy fields stay unknown. */
+  model?: string;
+  suite?: string;
+  taskSetId?: string;
+  config?: Record<string, unknown>;
   runId?: string;
   runError?: string | null;
   startedAt?: string;
+  finishedAt?: string;
   wallMs?: number;
   peakConcurrentBees?: number;
   taskCount?: number;
@@ -178,11 +184,38 @@ export function readGradeMap(dir: string, arm: string): Record<string, boolean> 
   if (!existsSync(gradePath)) return null;
   try {
     const parsed = JSON.parse(readFileSync(gradePath, 'utf8')) as unknown;
-    if (!parsed || typeof parsed !== 'object') return null;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+    if (Object.values(parsed).some((value) => typeof value !== 'boolean')) return null;
     return parsed as Record<string, boolean>;
   } catch {
     return null;
   }
+}
+
+/** Import time is not execution time. Derive an end only from measured, unrecovered timing. */
+export function preservedExecutionTimes(run: PreservedArmRun): {
+  startedAt: string | null;
+  finishedAt: string | null;
+} {
+  const timestamp = (value: unknown): string | null => {
+    if (typeof value !== 'string' || !value.trim()) return null;
+    const ms = Date.parse(value);
+    return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
+  };
+  const startedAt = timestamp(run.startedAt);
+  const explicitEnd = timestamp(run.finishedAt);
+  let measuredEnd: string | null = null;
+  if (startedAt && !run.recovered && typeof run.wallMs === 'number' &&
+      Number.isFinite(run.wallMs) && run.wallMs > 0) {
+    const end = new Date(Date.parse(startedAt) + run.wallMs);
+    if (Number.isFinite(end.getTime())) measuredEnd = end.toISOString();
+  }
+  const finishedAt = explicitEnd ?? measuredEnd;
+  return {
+    startedAt,
+    finishedAt: finishedAt && (!startedAt || Date.parse(finishedAt) >= Date.parse(startedAt))
+      ? finishedAt : null,
+  };
 }
 
 /**
@@ -259,25 +292,56 @@ export function summarizePreservedRun(
  * missing or unreadable (the route maps that to a 404). `baseDir` is injectable
  * for tests; production resolves it server-side (NEVER from a request param).
  */
-export function readPreservedRun(
+export type PreservedRunInspection =
+  | { kind: 'valid'; detail: PreservedRunDetail }
+  | { kind: 'unavailable' | 'invalid'; reason: string };
+
+/** Distinguish invalid archive content from unavailable evidence before repairing stored history. */
+export function inspectPreservedRun(
   id: string,
   baseDir = defaultBenchResultsDir(),
-): PreservedRunDetail | null {
-  if (!isSafeRunId(id)) return null;
+): PreservedRunInspection {
+  if (!isSafeRunId(id)) return { kind: 'unavailable', reason: 'unsafe_run_id' };
   const dir = join(baseDir, id);
   const arm = resolveArmFile(dir);
-  if (!arm) return null;
+  if (!arm) return { kind: 'unavailable', reason: 'missing_or_ambiguous_arm_file' };
   const armPath = join(dir, `${arm}.json`);
-  if (!existsSync(armPath)) return null;
+  if (!existsSync(armPath)) return { kind: 'unavailable', reason: 'missing_arm_file' };
+  let raw: string;
+  try {
+    raw = readFileSync(armPath, 'utf8');
+  } catch {
+    return { kind: 'unavailable', reason: 'unreadable_arm_file' };
+  }
   let run: PreservedArmRun;
   try {
-    run = JSON.parse(readFileSync(armPath, 'utf8')) as PreservedArmRun;
+    run = JSON.parse(raw) as PreservedArmRun;
   } catch {
-    return null;
+    return { kind: 'invalid', reason: 'invalid_arm_json' };
+  }
+  // A dataset, summary or settings JSON is not an executed arm. Validate before
+  // metrics are computed or a directory can become a completed database run.
+  if (!run || typeof run !== 'object' || Array.isArray(run) ||
+      !Array.isArray(run.perTask) || run.perTask.length === 0) {
+    return { kind: 'invalid', reason: 'no_task_submission_records' };
+  }
+  const taskIds = new Set<string>();
+  for (const task of run.perTask) {
+    if (!task || typeof task !== 'object' || Array.isArray(task) ||
+        typeof task.instanceId !== 'string' || !task.instanceId.trim() ||
+        taskIds.has(task.instanceId)) {
+      return { kind: 'invalid', reason: 'invalid_or_duplicate_task_identity' };
+    }
+    taskIds.add(task.instanceId);
   }
   const grade = readGradeMap(dir, arm);
   const perTask = mergeResolved(run.perTask ?? [], grade);
   const summary = summarizePreservedRun(run, perTask);
   const coordRates = substrateSignalRates(run.coordEvents ?? [], perTask.length);
-  return { id, run, perTask, summary, coordRates };
+  return { kind: 'valid', detail: { id, run, perTask, summary, coordRates } };
+}
+
+export function readPreservedRun(id: string, baseDir = defaultBenchResultsDir()): PreservedRunDetail | null {
+  const inspection = inspectPreservedRun(id, baseDir);
+  return inspection.kind === 'valid' ? inspection.detail : null;
 }

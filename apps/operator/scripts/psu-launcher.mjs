@@ -80,6 +80,7 @@ import {
   appendHostEvent,
   fireSessionCompactedEvent,
   hostThroughPty,
+  prepareCodexSqliteHome,
   resolveLinuxCodexStartupPid,
   fleetOscFromEnv,
   findLiveHostFor,
@@ -12197,6 +12198,15 @@ export function runWrapper(options) {
       : reportSessionEndedImpl(env.PAPERCUSP_ADV_SESSION_ID || null, null, {
           launchFailed: true,
         });
+  // Storage failure applies to both managed and plain launches. Keep it
+  // outside the managed-host fallback: falling back cannot repair an unusable
+  // SQLite path, and would replace this OS error with Codex's corruption hint.
+  try {
+    prepareCodexSqliteHome({ env, cwd, args });
+  } catch (error) {
+    void Promise.resolve(reportPreSpawnFailure()).catch(() => undefined);
+    throw error;
+  }
   // WI-5052 acceptance hardening: `default` is an active credential choice,
   // not merely the absence of a gateway overlay. Clear every prior Claude auth
   // source before restoring the system login below.

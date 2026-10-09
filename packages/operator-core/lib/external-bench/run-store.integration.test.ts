@@ -10,7 +10,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 import type { OrgSql } from './reproducibility/db';
 
@@ -55,6 +55,9 @@ beforeAll(async () => {
   sql = db.sql as unknown as OrgSql;
   await db.sql.unsafe(migrationSql('296-bench-run-operational-store.sql'));
   await db.sql.unsafe(migrationSql('298-bench-run-infra-excluded.sql'));
+  const archiveMigration = '1434-benchmark-ungraded-archive-state.sql';
+  await db.sql.unsafe(migrationSql(existsSync(resolve(SQL_DIR, archiveMigration))
+    ? archiveMigration : `${archiveMigration}.DRAFT`));
   // D-007 pot-rename: mig 296 creates bench_runs.hive_slug; mig 523 renamed it → pot_slug.
   // Replaying only 296/298 predates the rename, so apply it in-place to match the write path.
   await db.sql.unsafe(`ALTER TABLE harness_shared.bench_runs RENAME COLUMN hive_slug TO pot_slug`);
@@ -215,6 +218,9 @@ describe('bench run-store (file-dir import)', () => {
       arm: 'hive-realqueen',
       runId: 'preserved-run-orig',
       startedAt: '2026-06-16T04:47:56.836Z',
+      finishedAt: '2026-06-16T05:00:00.000Z',
+      model: 'provider-model-frozen-version',
+      suite: 'swe-bench-pro',
       wallMs: 0,
       peakConcurrentBees: 3,
       taskCount: 2,
@@ -248,6 +254,10 @@ describe('bench run-store (file-dir import)', () => {
     expect(detail!.source).toBe('import');
     expect(detail!.status).toBe('done');
     expect(detail!.arm).toBe('hive-realqueen');
+    expect(detail!.model).toBe('provider-model-frozen-version');
+    expect(detail!.suite).toBe('swe-bench-pro');
+    expect(new Date(detail!.finishedAt!).toISOString()).toBe('2026-06-16T05:00:00.000Z');
+    expect(detail!.config?.importedAt).toEqual(expect.any(String));
     expect(detail!.recovered).toBe(true);
     expect(detail!.taskSetId).toBe('custom:2-task');
     expect(detail!.perTask).toHaveLength(2);
@@ -263,10 +273,60 @@ describe('bench run-store (file-dir import)', () => {
   });
 
   it('re-import is idempotent (same row, no dupes)', async () => {
+    const before = await getBenchRunDetail('preserved-run', scope);
     await importPreservedRunToStore('preserved-run', { ...scope, baseDir });
     const detail = await getBenchRunDetail('preserved-run', scope);
     expect(detail!.perTask).toHaveLength(2);
     expect(detail!.run.coordEvents).toHaveLength(2);
+    expect(new Date(detail!.finishedAt!).toISOString()).toBe(new Date(before!.finishedAt!).toISOString());
+  });
+
+  it('keeps a valid archive without grades explicitly ungraded and its model unknown', async () => {
+    const dir = join(baseDir, 'ungraded-run');
+    mkdirSync(dir);
+    writeFileSync(join(dir, 'arm.json'), JSON.stringify({ arm: 'solo', perTask: [{ instanceId: 'ungraded-task' }] }));
+    expect((await importPreservedRunToStore('ungraded-run', { ...scope, baseDir })).imported).toBe(true);
+    const detail = await getBenchRunDetail('ungraded-run', scope);
+    expect(detail!.status).toBe('ungraded');
+    expect(detail!.gradedCount).toBe(0);
+    expect(detail!.model).toBe('unknown');
+    expect(detail!.suite).toBe('unknown');
+    expect(detail!.startedAt).toBeNull();
+    expect(detail!.finishedAt).toBeNull();
+  });
+
+  it('marks an archive with only some task grades ungraded', async () => {
+    const dir = join(baseDir, 'partial-grade-run');
+    mkdirSync(join(dir, 'grade-solo', 'out'), { recursive: true });
+    writeFileSync(join(dir, 'solo.json'), JSON.stringify({ arm: 'solo', perTask: [{ instanceId: 'first' }, { instanceId: 'second' }] }));
+    writeFileSync(join(dir, 'grade-solo', 'out', 'eval_results.json'), JSON.stringify({ first: true }));
+    await importPreservedRunToStore('partial-grade-run', { ...scope, baseDir });
+    const detail = await getBenchRunDetail('partial-grade-run', scope);
+    expect(detail!.status).toBe('ungraded');
+    expect(detail!.gradedCount).toBe(1);
+    expect(detail!.perTask.find((task) => task.instanceId === 'second')!.resolved).toBeNull();
+  });
+
+  it('repairs former dataset-only imports without altering a same-shaped UI run', async () => {
+    for (const source of ['import', 'ui'] as const) {
+      const id = `dataset-${source}`;
+      const dir = join(baseDir, id);
+      mkdirSync(dir);
+      writeFileSync(join(dir, 'summary.json'), JSON.stringify({ instances: 103 }));
+      await upsertBenchRun({ id, arm: 'unknown', model: 'opus', taskSetId: 'dataset', source, status: 'done' }, scope);
+      expect((await importPreservedRunToStore(id, { ...scope, baseDir })).imported).toBe(false);
+      const detail = await getBenchRunDetail(id, scope);
+      expect(detail!.status).toBe(source === 'import' ? 'error' : 'done');
+      expect(detail!.runError).toBe(source === 'import' ? 'archive_not_a_run:no_task_submission_records' : null);
+    }
+  });
+
+  it('does not overwrite known archived history when the source evidence is unavailable', async () => {
+    const before = await getBenchRunDetail('preserved-run', scope);
+    expect((await importPreservedRunToStore('preserved-run', { ...scope, baseDir: join(baseDir, 'absent') })).imported).toBe(false);
+    const after = await getBenchRunDetail('preserved-run', scope);
+    expect(after!.status).toBe('done');
+    expect(new Date(after!.finishedAt!).toISOString()).toBe(new Date(before!.finishedAt!).toISOString());
   });
 });
 

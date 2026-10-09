@@ -1,6 +1,26 @@
 import { describe, expect, it } from 'vitest';
 import { channel } from 'node:diagnostics_channel';
 import http from 'node:http';
+
+describe('owner execution leases', () => {
+  it('counts queued/pre-provider requests independently of completed history', () => {
+    let now = 100;
+    const telemetry = new GatewayRequestTelemetry({ now: () => now });
+    const first = telemetry.begin({ ownerId: 'su-a', provider: 'claude', protocol: 'messages' });
+    now = 200;
+    const second = telemetry.begin({ ownerId: 'su-a', provider: 'claude', protocol: 'messages' });
+    const other = telemetry.begin({ ownerId: 'su-b', provider: 'claude', protocol: 'messages' });
+    expect(telemetry.snapshotForOwner('su-a')).toMatchObject({ active: 2, oldestActiveAt: 100, finalized: 0 });
+    first.finish('gateway-error', 503);
+    expect(telemetry.snapshotForOwner('su-a')).toMatchObject({ active: 1, oldestActiveAt: 200 });
+    second.finish('ok', 200);
+    second.finish('ok', 200);
+    expect(telemetry.snapshotForOwner('su-a')).toMatchObject({ active: 0, oldestActiveAt: null, finalized: 2 });
+    expect(telemetry.snapshotForOwner('su-b').active).toBe(1);
+    other.finish('cancelled', null);
+    expect(telemetry.snapshotForOwner('su-b').active).toBe(0);
+  });
+});
 import {
   GatewayRequestTelemetry,
   MAX_CACHE_FINGERPRINT_BYTES,

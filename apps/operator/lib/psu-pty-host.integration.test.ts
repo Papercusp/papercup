@@ -5244,13 +5244,22 @@ describe('SHUTDOWN — a finished agent session exits and closes its own window 
       const m = JSON.parse(readFileSync(meta, 'utf8'));
       // Advertised so a would-be requester can see the verdict before sending.
       expect(m.caps).toContain('shutdown');
+      expect(m.caps).toContain('shutdown-identity');
       expect(m.launchedBy).toBe('su-the-launching-agent');
+
+      const staleAck = await injectForAck(sock, {
+        mode: 'shutdown', data: 'stale confirmed stop', ownerId, expectedStartedAt: m.startedAt + 1,
+      });
+      expect(staleAck).toMatchObject({ ok: false, reason: 'shutdown-refused:stale-host' });
+      expect(exitCode).toBeNull();
+      expect(existsSync(sock)).toBe(true);
 
       const startedAt = Date.now();
       const ack = await injectForAck(sock, {
         mode: 'shutdown',
         data: 'fleet wound down',
         ownerId,
+        expectedStartedAt: m.startedAt,
       });
       // The ACK must arrive BEFORE the teardown races the socket away — otherwise a
       // successful shutdown reads to the caller as a transport miss and gets retried.

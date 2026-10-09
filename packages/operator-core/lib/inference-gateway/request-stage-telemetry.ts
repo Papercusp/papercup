@@ -754,6 +754,9 @@ export interface GatewayRequestTelemetrySnapshot {
 
 export interface GatewayOwnerStageTelemetry {
   ownerId: string;
+  /** Includes admission/pre-provider work; a request need not reach upstream to be active. */
+  active: number;
+  oldestActiveAt: number | null;
   finalized: number;
   outcomes: Record<GatewayRequestOutcome, number>;
   stages: Record<GatewayRequestStageName, GatewayPercentileSummary>;
@@ -1195,6 +1198,7 @@ export class GatewayRequestTelemetry {
   private cacheUsageObserved = 0;
   private cacheWriteObserved = 0;
   private readonly active = new Set<number>();
+  private readonly activeOwners = new Map<number, { ownerId: string | null; startedAt: number }>();
   private readonly outcomes = emptyOutcomes();
   private readonly missingStageByName = emptyMissingStages();
   private readonly stageSamples: Record<GatewayRequestStageName, BoundedSamples>;
@@ -1242,6 +1246,7 @@ export class GatewayRequestTelemetry {
     const startedAt = this.clock();
     this.started++;
     this.active.add(requestId);
+    this.activeOwners.set(requestId, { ownerId: boundedOwnerId(seed.ownerId), startedAt });
     return new GatewayRequestSpan(
       this,
       requestId,
@@ -1255,6 +1260,7 @@ export class GatewayRequestTelemetry {
 
   complete(timeline: GatewayRequestTimeline): void {
     if (!this.active.delete(timeline.requestId)) return;
+    this.activeOwners.delete(timeline.requestId);
     this.finalized++;
     this.sampled++;
     if (timeline.cache.reuse !== 'unobserved') this.cacheUsageObserved++;
@@ -1322,6 +1328,7 @@ export class GatewayRequestTelemetry {
 
   snapshotForOwner(ownerId: string): GatewayOwnerStageTelemetry {
     const safeOwner = boundedOwnerId(ownerId) ?? '';
+    const active = [...this.activeOwners.values()].filter(request => request.ownerId === safeOwner);
     const timelines = this.recent.filter((timeline) => timeline.ownerId === safeOwner);
     const outcomes = emptyOutcomes();
     const byStage = Object.fromEntries(
@@ -1339,6 +1346,8 @@ export class GatewayRequestTelemetry {
     ) as Record<GatewayRequestStageName, GatewayPercentileSummary>;
     return {
       ownerId: safeOwner,
+      active: active.length,
+      oldestActiveAt: active.length ? Math.min(...active.map(request => request.startedAt)) : null,
       finalized: timelines.length,
       outcomes,
       stages,

@@ -16,8 +16,8 @@ vi.mock('../../omp-sessions', () => ({ findOmpSessionNear: vi.fn(), getOmpSessio
 import routes from '../routes/adv/sessions';
 const route = routes.find(value => value.method === 'POST' && value.path === '/adv/sessions/close-window')!;
 const body = { ownerId: 'su-selected', managedSessionId: 7, confirmed: true };
-const call = (value: unknown, origin?: string) => route.handler(new Request('http://127.0.0.1/api/adv/sessions/close-window', {
-  method: 'POST', headers: { 'content-type': 'application/json', ...(origin ? { origin } : {}) }, body: JSON.stringify(value),
+const call = (value: unknown, origin?: string, hosted = false) => route.handler(new Request('http://127.0.0.1/api/adv/sessions/close-window', {
+  method: 'POST', headers: { 'content-type': 'application/json', ...(origin ? { origin } : {}), ...(hosted ? { 'x-papercusp-hosted-user-id': 'private-ticket-user' } : {}) }, body: JSON.stringify(value),
 }), { params: {}, principal: { workspaceId: 'authorized-workspace' } } as never) as Promise<Response>;
 
 beforeEach(() => {
@@ -48,6 +48,11 @@ describe('confirmed managed session stop', () => {
     expect((await call(body, 'https://foreign.example')).status).toBe(403);
     expect(fixture.row).not.toHaveBeenCalled();
     expect(fixture.shutdown).not.toHaveBeenCalled();
+  });
+  it('cannot use legacy OS handles through an authenticated hosted relay', async () => {
+    expect((await call({ id: 7, pid: 42, windowId: '0xbeef' }, undefined, true)).status).toBe(400);
+    expect(fixture.shutdown).not.toHaveBeenCalled();
+    expect(fixture.closeWindow).not.toHaveBeenCalled();
   });
   it.each([null, { id: 7, coordOwnerId: 'su-foreign', endedAt: null }, { id: 7, coordOwnerId: 'su-selected', endedAt: 'ended' }])('leaves neighboring sessions untouched for a foreign/stale row %j', async row => {
     fixture.row.mockResolvedValue(row);
