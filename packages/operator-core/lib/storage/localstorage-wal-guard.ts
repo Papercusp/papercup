@@ -38,6 +38,7 @@ import { existsSync, readdirSync, statSync } from 'node:fs';
 import { homedir, platform } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { escalateAlarm, DEFAULT_ALARM_ESCALATION_COOLDOWN_MS, type AlarmAttentionDeps } from '../alarm-attention';
 
 /** A discovered `*.localstorage-wal` file, paired with its main db. */
 export interface WalCandidate {
@@ -213,6 +214,8 @@ export interface WalGuardSweepResult {
   checkpointed: number;
   /** total bytes the WAL files shrank by across all attempts. */
   bytesReclaimed: number;
+  /** WALs still over the threshold after an attempt, including busy readers/writers. */
+  retained: Array<{ dbPath: string; walBytes: number; busy: boolean; error?: string }>;
   errors: Array<{ dbPath: string; error: string }>;
 }
 
@@ -230,6 +233,7 @@ export function runWalCheckpointSweep(
     overThreshold: 0,
     checkpointed: 0,
     bytesReclaimed: 0,
+    retained: [],
     errors: [],
   };
   let candidates: WalCandidate[];
@@ -250,6 +254,35 @@ export function runWalCheckpointSweep(
     } else {
       result.errors.push({ dbPath: outcome.dbPath, error: outcome.error ?? 'unknown' });
     }
+    if (outcome.walBytesAfter > 0 && outcome.walBytesAfter >= (opts.thresholdBytes ?? DEFAULT_WAL_CHECKPOINT_THRESHOLD_BYTES)) {
+      result.retained.push({
+        dbPath: outcome.dbPath,
+        walBytes: outcome.walBytesAfter,
+        busy: outcome.busy === true,
+        ...(outcome.error ? { error: outcome.error } : {}),
+      });
+    }
   }
   return result;
+}
+
+/** The scheduled guard reports failed reclamation through the shared, cooldown-bound alarm rail. */
+export async function runWalCheckpointGuard(
+  opts: { thresholdBytes?: number; roots?: string[] } = {},
+  attention: AlarmAttentionDeps = {},
+): Promise<WalGuardSweepResult & { escalated: boolean }> {
+  const result = runWalCheckpointSweep(opts);
+  if (result.retained.length === 0) return { ...result, escalated: false };
+  const files = result.retained.map((r) =>
+    `${r.dbPath}-wal: ${(r.walBytes / 1024 ** 2).toFixed(0)} MiB ` +
+      `(${r.busy ? 'SQLite reported busy' : r.error ?? 'still above the checkpoint threshold'})`,
+  ).join('\n');
+  const escalated = await escalateAlarm({
+    title: 'Desktop localStorage WAL not reclaimed',
+    body: `The checkpoint guard left ${result.retained.length} WAL file(s) above its threshold:\n${files}\n\n` +
+      'Inspect active desktop SQLite transactions. The guard preserves the database and WAL.',
+    cooldownMs: DEFAULT_ALARM_ESCALATION_COOLDOWN_MS,
+    source: 'localstorage-wal-guard',
+  }, attention);
+  return { ...result, escalated };
 }

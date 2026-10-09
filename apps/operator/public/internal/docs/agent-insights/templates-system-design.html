@@ -79,11 +79,14 @@ actually does.</p>
 template. The machine schema lives in <code dir="auto">@papercusp/template-kit</code>.</p>
 </blockquote>
 <div class="sl-heading-wrapper level-h2"><h2 id="two-scopes-app-roots-and-aspects">Two scopes: app ROOTS and aspects</h2><a class="sl-anchor-link" href="#two-scopes-app-roots-and-aspects"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Two scopes: app ROOTS and aspects”</span></a></div>
-<p><code dir="auto">scope</code> in <code dir="auto">template.yaml</code> is the load-bearing distinction.</p>
+<p><code dir="auto">scope</code> in <code dir="auto">template.yaml</code> distinguishes a whole application from a capability layer.
+A Papercusp app template is a maintained, pre-built scaffold: its chassis, data layer,
+conventions and checks are the starting point for the app.</p>
 <ul>
 <li>
-<p><strong><code dir="auto">scope: app</code></strong> — a whole application. There are exactly <strong>three app-scope roots</strong>, and
-picking between them is the first decision in any “build me an app” request:</p>
+<p><strong><code dir="auto">scope: app</code></strong> — a whole application. Read <code dir="auto">templates:list</code> for the roots that this
+install actually offers; do not present a remembered roster. The registry read on
+2026-10-09 returned these app roots:</p>
 
 
 
@@ -105,32 +108,48 @@ picking between them is the first decision in any “build me an app” request:
 
 
 
-<table><thead><tr><th>root</th><th>shape</th></tr></thead><tbody><tr><td><code dir="auto">papercusp-webapp</code></td><td>a web app (browser; <code dir="auto">papercusp-web-host</code> chassis)</td></tr><tr><td><code dir="auto">papercusp-desktop-app</code></td><td>a standard Tauri desktop app, <strong>no</strong> embedded agents</td></tr><tr><td><code dir="auto">papercusp-agentic-desktop-app</code></td><td>a desktop app that embeds an agent/pot plane</td></tr></tbody></table>
+<table><thead><tr><th>root</th><th>shape</th></tr></thead><tbody><tr><td><code dir="auto">papercusp-app</code></td><td>desktop, web, or both, chosen through <code dir="auto">target</code>; <code dir="auto">agents: pots</code> adds the agent work plane</td></tr><tr><td><code dir="auto">papercusp-android-app</code></td><td>Android, composing the mobile base and Android shell</td></tr><tr><td><code dir="auto">papercusp-iphone-app</code></td><td>iPhone, composing the mobile base and iPhone shell</td></tr></tbody></table>
+<p><code dir="auto">papercusp-app</code> replaced the separate web, desktop and agentic variants. Answer
+<code dir="auto">target</code> first, then the selected chassis’s own decision points. Answer <code dir="auto">agents</code>
+explicitly: <code dir="auto">none</code> keeps the deterministic app; <code dir="auto">pots</code> selects <code dir="auto">papercusp-ops-pots</code>.
+A separate agentic app root is not needed.</p>
 </li>
 <li>
-<p><strong><code dir="auto">scope: aspect</code></strong> — a capability layer that composes <em>onto</em> a root: <code dir="auto">papercusp-ui</code>,
-<code dir="auto">papercusp-data-layer</code>, <code dir="auto">papercusp-data-sync</code>, <code dir="auto">papercusp-search</code>, <code dir="auto">papercusp-ops-pots</code>,
-<code dir="auto">papercusp-release-pipeline</code>, <code dir="auto">papercusp-tauri-desktop-shell</code>, <code dir="auto">papercusp-web-host</code>.</p>
+<p><strong><code dir="auto">scope: aspect</code></strong> — a capability layer that composes <em>onto</em> a root: UI, data,
+sync, search, the agent work plane, release support, or a platform chassis.
+An aspect is not a whole-app starting point.</p>
 </li>
 </ul>
-<p><strong>App roots are THIN by design.</strong> A root contributes glue, decision points and a composition —
-<code dir="auto">components: []</code> is the normal state for one. Capability belongs in aspects. <code dir="auto">papercusp-webapp</code>
-even encodes this as a <code dir="auto">must</code> (<code dir="auto">thin-app-template</code>, enforced by <code dir="auto">composition-integrity</code>).</p>
+<p>For an ambiguous app request, present the applicable live registry choices as Papercusp
+app templates, explain their shape, and include <strong>“No template — I’ll specify the
+framework myself.”</strong> Record an explicitly chosen framework before scaffolding it. In
+AUTO, select the matching root by judgment and disclose the choice. Then follow
+<code dir="auto">templates:list</code> → <code dir="auto">templates:get-guide</code> → <code dir="auto">templates:new-app</code>; read the materialized
+<code dir="auto">PROTOCOL.md</code> and <code dir="auto">GUIDE.md</code> before building.</p>
+<p><strong>App roots are THIN by design.</strong> A root contributes glue, decision points and a
+composition; <code dir="auto">components: []</code> is normal. Capability belongs in aspects.
+<code dir="auto">papercusp-app</code> declares the <code dir="auto">thin-app-template</code> MUST, enforced by
+<code dir="auto">composition-integrity</code>.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="the-closure-requires-vs-composeswith">The closure: <code dir="auto">requires</code> vs <code dir="auto">composesWith</code></h2><a class="sl-anchor-link" href="#the-closure-requires-vs-composeswith"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The closure: requires vs composesWith”</span></a></div>
 <ul>
 <li><strong><code dir="auto">requires</code></strong> — HARD, version-pinned dependencies. Composing the template pulls these in.
-<code dir="auto">papercusp-webapp</code> requires <code dir="auto">papercusp-web-host</code> + <code dir="auto">papercusp-data-layer</code> + <code dir="auto">papercusp-ui</code>.</li>
+<code dir="auto">papercusp-app</code> hard-requires <code dir="auto">papercusp-data-layer</code> and <code dir="auto">papercusp-ui</code>. Its
+<code dir="auto">target</code> decision selects the web chassis, desktop chassis, or both; <code dir="auto">agents: pots</code>
+selects the agent work plane.</li>
 <li><strong><code dir="auto">composesWith</code></strong> — templates this one is <em>designed</em> to sit beside. Advisory: it drives
 suggestions and decision points, not resolution.</li>
 </ul>
-<p>The transitive <code dir="auto">requires</code> set is the <strong>closure</strong>, and the closure is what the app is judged
-against.</p>
+<p>The <strong>closure</strong> includes the transitive hard requirements and the aspects selected by
+answered decision points. Expand it with <code dir="auto">resolveSelection</code> in <code dir="auto">@papercusp/template-kit</code>;
+<code dir="auto">composeTemplates</code> validates the selected composition. The app is judged against that
+complete closure.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="the-checks-union-is-what-ci-runs">The checks union is what CI runs</h2><a class="sl-anchor-link" href="#the-checks-union-is-what-ci-runs"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The checks union is what CI runs”</span></a></div>
 <p>Each template declares <code dir="auto">checks: [{ id, run, summary }]</code> pointing at <code dir="auto">checks/*.test.ts</code> inside its
 own dir. An app built from a composition must pass the <strong>UNION of the closure’s checks</strong>, not just
-its root’s. <code dir="auto">composition-integrity</code> is the one check all three app roots declare — it asserts the
-composed set resolves (pins consistent, exactly one <code dir="auto">scope: app</code>) and that the union is what CI
-runs.</p>
+its root’s. App roots declare <code dir="auto">composition-integrity</code>: it asserts that the composed set
+resolves with consistent pins, exactly one <code dir="auto">scope: app</code>, satisfied selecting decision
+points, and the complete union of checks. Read the selected manifests for the current
+check declarations instead of assuming a fixed root or check count.</p>
 <p>⚠ <strong>Template checks do not run in this monorepo.</strong> No vitest config owns
 <code dir="auto">templates/**/checks/*.test.ts</code>, and <code dir="auto">testing:run</code> on one answers <code dir="auto">TEST_FILE_ROUTE_ERROR</code>. That is
 BY DESIGN — those checks are written to run inside a <em>materialized app</em> (or against the mirror’s
@@ -160,10 +179,10 @@ rolls it back (otherwise the slug is taken and the natural retry can never succe
 <p>The component packages are <code dir="auto">private: true</code> and 404 on npm, so a materialized app gets them one of
 two ways:</p>
 <ul>
-<li><strong>Vendored INTO the template dir</strong> — <code dir="auto">template-kit/</code> and <code dir="auto">pot-app-seam/</code> are copied inside each
-app-root template, so they ride <code dir="auto">sidecar/templates</code> to <strong>every platform</strong> and resolve as
-<code dir="auto">"@papercusp/template-kit": "file:./template-kit"</code> after a plain <code dir="auto">npm install</code>. This is why
-those two work everywhere.</li>
+<li><strong>Vendored INTO the selected templates</strong> — <code dir="auto">template-kit/</code> ships in the app roots;
+<code dir="auto">pot-app-seam/</code> ships in the <code dir="auto">papercusp-ops-pots</code> aspect selected by <code dir="auto">agents: pots</code>.
+They travel with their template directories and use the vendored <code dir="auto">file:./template-kit</code>
+and <code dir="auto">file:./pot-app-seam</code> dependencies in the materialized app.</li>
 <li><strong><code dir="auto">file:</code>-linked from the install’s <code dir="auto">libs/generic</code></strong> — everything else
 (<code dir="auto">@papercusp/sync</code>, <code dir="auto">ui-primitives</code>, …). That tree only exists where the build shipped
 <code dir="auto">source.tar.zst</code>.</li>
@@ -205,4 +224,4 @@ cases), and the honest response is to build with what the template vendors, not 
 
 
 
-<table><thead><tr><th>you want</th><th>go to</th></tr></thead><tbody><tr><td>the manifest schema</td><td><code dir="auto">agent-insights/templates-template-yaml</code></td></tr><tr><td>what components exist</td><td><code dir="auto">agent-insights/templates-component-catalog</code></td></tr><tr><td>the supply chain in full</td><td><code dir="auto">templates/README.md</code> § Supply chain</td></tr><tr><td>the resolver</td><td><code dir="auto">packages/operator-core/lib/cupboard/generic-libs-root.ts</code></td></tr><tr><td>materialize semantics</td><td><code dir="auto">packages/operator-core/lib/cupboard/materialize-template-core.ts</code></td></tr></tbody></table> </div> <footer class="sl-flex astro-j7wz5khy"> <div class="meta sl-flex astro-j7wz5khy">  <p>Last updated: <time datetime="2026-08-10T19:14:43.000Z">Aug 10, 2026</time></p> </div> <div class="pagination-links print:hidden astro-td3zbozv" dir="ltr"> <a href="/internal/docs/agent-insights/templates-component-catalog.html" rel="prev" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17 11H9.41l3.3-3.29a1.004 1.004 0 1 0-1.42-1.42l-5 5a1 1 0 0 0-.21.33 1 1 0 0 0 0 .76 1 1 0 0 0 .21.33l5 5a1.002 1.002 0 0 0 1.639-.325 1 1 0 0 0-.219-1.095L9.41 13H17a1 1 0 0 0 0-2Z"/></svg> <span class="astro-td3zbozv"> Previous <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">The component catalog — what templates are allowed to compose</span> </span> </a> <a href="/internal/docs/agent-insights/templates-template-yaml.html" rel="next" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17.92 11.62a1.001 1.001 0 0 0-.21-.33l-5-5a1.003 1.003 0 1 0-1.42 1.42l3.3 3.29H7a1 1 0 0 0 0 2h7.59l-3.3 3.29a1.002 1.002 0 0 0 .325 1.639 1 1 0 0 0 1.095-.219l5-5a1 1 0 0 0 .21-.33 1 1 0 0 0 0-.76Z"/></svg> <span class="astro-td3zbozv"> Next <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">template.yaml — the app-template manifest schema</span> </span> </a> </div>  </footer> </div> </div>  </main> </div> </div> </div> </div> </body></html>
+<table><thead><tr><th>you want</th><th>go to</th></tr></thead><tbody><tr><td>the manifest schema</td><td><code dir="auto">agent-insights/templates-template-yaml</code></td></tr><tr><td>what components exist</td><td><code dir="auto">agent-insights/templates-component-catalog</code></td></tr><tr><td>the supply chain in full</td><td><code dir="auto">templates/README.md</code> § Supply chain</td></tr><tr><td>the resolver</td><td><code dir="auto">packages/operator-core/lib/cupboard/generic-libs-root.ts</code></td></tr><tr><td>materialize semantics</td><td><code dir="auto">packages/operator-core/lib/cupboard/materialize-template-core.ts</code></td></tr></tbody></table> </div> <footer class="sl-flex astro-j7wz5khy"> <div class="meta sl-flex astro-j7wz5khy">  <p>Last updated: <time datetime="2026-10-09T07:29:00.000Z">Oct 9, 2026</time></p> </div> <div class="pagination-links print:hidden astro-td3zbozv" dir="ltr"> <a href="/internal/docs/agent-insights/templates-component-catalog.html" rel="prev" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17 11H9.41l3.3-3.29a1.004 1.004 0 1 0-1.42-1.42l-5 5a1 1 0 0 0-.21.33 1 1 0 0 0 0 .76 1 1 0 0 0 .21.33l5 5a1.002 1.002 0 0 0 1.639-.325 1 1 0 0 0-.219-1.095L9.41 13H17a1 1 0 0 0 0-2Z"/></svg> <span class="astro-td3zbozv"> Previous <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">The component catalog — what templates are allowed to compose</span> </span> </a> <a href="/internal/docs/agent-insights/templates-template-yaml.html" rel="next" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17.92 11.62a1.001 1.001 0 0 0-.21-.33l-5-5a1.003 1.003 0 1 0-1.42 1.42l3.3 3.29H7a1 1 0 0 0 0 2h7.59l-3.3 3.29a1.002 1.002 0 0 0 .325 1.639 1 1 0 0 0 1.095-.219l5-5a1 1 0 0 0 .21-.33 1 1 0 0 0 0-.76Z"/></svg> <span class="astro-td3zbozv"> Next <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">template.yaml — the app-template manifest schema</span> </span> </a> </div>  </footer> </div> </div>  </main> </div> </div> </div> </div> </body></html>

@@ -405,9 +405,11 @@ describe('default fleet reports over the real current-spec queue', () => {
     }
     // The maintained table rejects malformed payloads. Test the SQL policy on
     // VALUES instead of weakening that constraint just to seed legacy shapes.
+    // The production client's hybrid JSON serializer treats strings as already
+    // encoded. Bind explicit JSON text so a scalar string keeps its JSON quotes.
     for (const value of [['legacy-array'], 'legacy-scalar', null]) {
       const rows = await sql`SELECT ${sql.unsafe(projectWorkItemColumns('payload, marker', 'fleetMetrics'))}
-        FROM (SELECT ${sql.json(value)}::jsonb AS payload, 1 AS marker) fixture`;
+        FROM (SELECT ${JSON.stringify(value)}::text::jsonb AS payload, 1 AS marker) fixture`;
       expect(rows[0]!.payload).toEqual(value);
     }
   }, 30_000);
