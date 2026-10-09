@@ -27,8 +27,10 @@ import {
 } from './result-door';
 import * as scratchGc from './scratch-gc';
 import { _resetScratchUsageForTests, _setScratchUsageForTests, refreshScratchUsage, WORKSPACE_QUOTA_BYTES, writeWithScratchQuota } from './scratch-gc';
-import { parseScratchReference, readVolatileScratchReference, writeScratchReference } from './scratch-reference';
+import * as scratchReference from './scratch-reference';
 import type { ScratchWriteTimings } from './scratch-gc';
+
+const { parseScratchReference, readVolatileScratchReference, writeScratchReference } = scratchReference;
 
 const BUDGET_CHARS = RESULT_DOOR_TOKENS * CHARS_PER_TOKEN_ESTIMATE;
 const RUN_ID = '11111111-2222-4333-8444-555555555555';
@@ -415,6 +417,113 @@ describe('result-door deferred spill (WI-10004533)', () => {
     }
     },
   );
+
+  it('preserves a work_items:release outcome when its timed-out spill has no volatile fallback', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.useFakeTimers();
+    let rejectWrite!: (error: Error) => void;
+    let signalStarted!: () => void;
+    let resolveLateSettlement!: (settlement: {
+      status: 'persisted' | 'failed';
+      spillPath: string;
+      spillUri: string;
+      originalBytes: number;
+      returnedContextBytes: number;
+      reason: string;
+      aggregateOutputEscape: boolean;
+      errorCode?: string;
+    }) => void;
+    const writeStarted = new Promise<void>((resolve) => { signalStarted = resolve; });
+    const stalledWrite = new Promise<void>((_resolve, reject) => { rejectWrite = reject; });
+    const lateSettlement = new Promise<{
+      status: 'persisted' | 'failed';
+      spillPath: string;
+      spillUri: string;
+      originalBytes: number;
+      returnedContextBytes: number;
+      reason: string;
+      aggregateOutputEscape: boolean;
+      errorCode?: string;
+    }>((resolve) => { resolveLateSettlement = resolve; });
+    const writer = vi.spyOn(scratchGc, 'writeWithScratchQuota').mockImplementation((_opts, write) => {
+      signalStarted();
+      return stalledWrite.then(write);
+    });
+    const volatileStore = vi.spyOn(scratchReference, 'storeVolatileScratchReference').mockReturnValue(null);
+    const id = 'EI-release-spill-receipt-1';
+    const receipt = {
+      ok: true,
+      results: [{
+        ok: true,
+        id,
+        released: true,
+        previousAssignee: 'su-prior-holder',
+        claimHold: false,
+        workItem: {
+          id,
+          state: 'open',
+          assignee: null,
+          harness: 'papercusp',
+          checkpoint: 'release response detail '.repeat(BUDGET_CHARS),
+        },
+      }],
+      counts: { ok: 1, failed: 0 },
+    };
+    const originalText = JSON.stringify(receipt);
+    const original = { content: [{ type: 'text' as const, text: originalText }] };
+    let resultPromise: Promise<DoorableResult> | undefined;
+    try {
+      expect(originalText.length).toBeGreaterThan(BUDGET_CHARS);
+      resultPromise = applyResultDoorAsync(original, {
+        ...OPTS,
+        toolName: 'tools:invoke',
+        nestedTargetToolName: 'work_items:release',
+        onLateScratchWriteSettled: resolveLateSettlement,
+      });
+      await writeStarted;
+      await vi.advanceTimersByTimeAsync(30_000);
+      const result = await resultPromise;
+      const text = (result.content.find((item) => item.type === 'text') as { text: string }).text;
+      const body = JSON.parse(text) as {
+        results: Array<Record<string, any>>;
+        _projection: { cursor: Record<string, any>; next: string; truncated: boolean };
+      };
+
+      expect(body.results[0]).toMatchObject({
+        ok: true,
+        id,
+        released: true,
+        previousAssignee: 'su-prior-holder',
+        claimHold: false,
+        workItem: { id, state: 'open', assignee: null, harness: 'papercusp' },
+      });
+      expect(body._projection).toMatchObject({
+        truncated: true,
+        cursor: {
+          kind: 'release-outcome-check',
+          tool: 'work_items:get',
+          args: { ids: [id], harness: 'papercusp' },
+        },
+      });
+      expect(body._projection.next).toContain('Do NOT repeat this call');
+      expect(body._projection.next).toContain('work_items:get');
+      expect(result._meta?.resultDoor).toMatchObject({
+        spillPending: true,
+        spillErrorCode: 'ETIMEDOUT',
+      });
+      expect(text.length).toBeLessThan(originalText.length);
+
+      rejectWrite(Object.assign(new Error('disk write rejected'), { code: 'EIO' }));
+      await expect(lateSettlement).resolves.toMatchObject({ status: 'failed', errorCode: 'EIO' });
+    } finally {
+      rejectWrite(new Error('test cleanup'));
+      await resultPromise?.catch(() => undefined);
+      writer.mockRestore();
+      volatileStore.mockRestore();
+      vi.useRealTimers();
+      warn.mockRestore();
+    }
+  });
 
   it('keeps a no-code spill failure diagnosable in the model-facing cursor without exposing the scratch path', () => {
     const scratchRunDir = spillDir();
