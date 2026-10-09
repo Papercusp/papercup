@@ -5,7 +5,8 @@ import {
   type SuSessionEvent,
   type SuSessionIdentity,
 } from '@papercusp/chat-protocol';
-import { confirmedProviderRateLimit } from './su-session-attached-live-rate-limit';
+import { confirmedProviderRateLimit, throwIfProviderRateLimited } from './su-session-attached-live-rate-limit';
+import { pollUntil } from './pui-e2e/poll-until';
 
 const session: SuSessionIdentity<'claude'> = {
   agentChatId: 'fixture-chat',
@@ -87,5 +88,37 @@ describe('attached live provider-limit classifier', () => {
       transcript('assistant', 'A 429 is a rate limit response.'),
       transcript('assistant', 'If we hit a rate limit again I will back off.'),
     ]).confirmed).toBe(false);
+  });
+});
+
+describe('live acceptance provider-capacity guard', () => {
+  it('aborts an approval wait at the first confirmed refusal instead of consuming its timeout', async () => {
+    let checks = 0;
+    await expect(pollUntil(() => {
+      checks += 1;
+      throwIfProviderRateLimited([errorEvent('API Error: 429 request would exceed your rate limit')], 'Native tool approval');
+      return false;
+    }, { timeoutMs: 120_000, intervalMs: 100 })).rejects.toThrow(
+      'Native tool approval cannot run: confirmed provider rate limit',
+    );
+    expect(checks).toBe(1);
+  });
+
+  it('allows a transient retry note to recover and reach the expected condition', async () => {
+    let checks = 0;
+    const outcome = await pollUntil(() => {
+      checks += 1;
+      throwIfProviderRateLimited([transcript('system', 'upstream 429, retrying')], 'P-005 greeting');
+      return checks === 2;
+    }, { timeoutMs: 1_000, intervalMs: 1 });
+    expect(outcome.ok).toBe(true);
+    expect(checks).toBe(2);
+  });
+
+  it('keeps assistant explanations and unrelated errors available to their own acceptance assertions', () => {
+    expect(() => throwIfProviderRateLimited([
+      transcript('assistant', 'A 429 is a rate limit response.'),
+      errorEvent('invalid model configuration'),
+    ], 'P-005 read-explain')).not.toThrow();
   });
 });

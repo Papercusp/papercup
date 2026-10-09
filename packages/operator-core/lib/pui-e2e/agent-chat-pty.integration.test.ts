@@ -42,6 +42,7 @@ import { nativeProviderRequestSignal, nativeProviderTraceOrigin } from './native
 import { assertInstalledPuiStore, HARNESS_TAG } from './release-acceptance';
 import { p005PuiLaunchArgs, reviewBlockingReason } from './p005-codex-readiness';
 import { puiQuitBounds } from './pui-quit-bounds';
+import { throwIfProviderRateLimited } from '../su-session-attached-live-rate-limit';
 import { isClaudeConfigDirLaunchReady, sessionProcessHolder } from '../../../../apps/operator/scripts/psu-launcher.mjs';
 
 // A [sync-slow] line (resolve-observability.ts, 2s default) is a perf signal
@@ -7719,6 +7720,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
       await pane.waitFor('Plans (', { timeoutMs: 40_000 });
       await openComposer(pane);
       if (approvalEnabled) {
+        const approvalEventsBefore = first.events.length;
         pane.write(approvalRequest);
         pane.enter();
         const approvalChat = await waitForSavedTurn(approvalRequest);
@@ -7731,10 +7733,13 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         // ask again … / 3 No, and tell … what to do instead.
         const approvalLabel = 'Yes';
         const pendingCards = () => pendingNativeCards(first.events);
-        await vi.waitFor(
-          () => expect(pendingCards().some((card) => cardMentions(card, approvalFixturePath))).toBe(true),
-          { timeout: 120_000, interval: 100 },
-        );
+        const approvalWait = await pollUntil(() => {
+          if (scriptedEngine.real) {
+            throwIfProviderRateLimited(first.events.slice(approvalEventsBefore), 'Native tool approval');
+          }
+          return pendingCards().some((card) => cardMentions(card, approvalFixturePath));
+        }, { timeoutMs: 120_000, intervalMs: 100 });
+        expect(approvalWait.ok, 'the native tool must request approval within 120 seconds').toBe(true);
         const targetApprovalCard = pendingCards().find((card) => cardMentions(card, approvalFixturePath));
         if (!targetApprovalCard) throw new Error('Native tool approval card disappeared before it could be answered');
         approvalCard = targetApprovalCard;
@@ -8620,6 +8625,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
             nextProgressFrame += 15_000;
           }
           const events = scriptedEngine.events.slice(eventsBefore);
+          if (scriptedEngine.real) throwIfProviderRateLimited(events, `P-005 ${label}`);
           const replies = events.filter((event) => event.type === 'transcript' && event.role === 'assistant' && event.channel === 'text');
           const blocked = reviewBlockingReason(replies.map((event) => String(event.content)).join('\n'));
           if (blocked) {

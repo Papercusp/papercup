@@ -25,3 +25,11 @@ export function confirmedProviderRateLimit(
   const prose = systemTranscriptMatches(events);
   return { confirmed: structured.length > 0 || prose.length >= 2, signals: [...structured, ...prose] };
 }
+
+/** Abort a live acceptance wait when the provider has already refused the turn. */
+export function throwIfProviderRateLimited(events: readonly SuSessionEvent[], stage: string): void {
+  const limit = confirmedProviderRateLimit(events);
+  if (limit.confirmed) {
+    throw new Error(`${stage} cannot run: confirmed provider rate limit (${limit.signals.join('; ')})`);
+  }
+}
