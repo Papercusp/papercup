@@ -72,7 +72,7 @@ import { runTestDesktopReaperOnce } from '../test-desktop-reaper';
 import { runDiskSpaceAlarmOnce } from '../storage/disk-space-alarm';
 import { emitCoverageToast, runEmbedCoverageAlarmOnce } from '../search/embed-coverage';
 import { assessInjectionReach, formatInjectionReachToast } from '../memory/injection-coverage';
-import { runWalCheckpointSweep } from '../storage/localstorage-wal-guard';
+import { runWalCheckpointGuard } from '../storage/localstorage-wal-guard';
 import { runMemoryAnchorAuditOnce } from '../memory/audit-memory-anchors';
 import { runDesktopPerfScheduledRun } from '../system-health/desktop-perf-scheduled-run';
 import { runGuiE2eSurfaceScheduledRun } from '../system-health/gui-e2e-surface-scheduled-run';
@@ -1392,11 +1392,12 @@ async function localstorageWalGuardTick(): Promise<void> {
     async () => {
       if (process.env.PAPERCUSP_WAL_GUARD === '0') return;
       if (shouldShedHeavyTick('localstorage-wal-guard')) return;
-      const r = runWalCheckpointSweep();
+      const r = await runWalCheckpointGuard();
       if (r.overThreshold > 0) {
         console.log(
-          `[localstorage-wal-guard] ${r.checkpointed}/${r.overThreshold} over-threshold WAL(s) checkpointed, ` +
+          `[localstorage-wal-guard] ${r.checkpointed}/${r.overThreshold} checkpoint attempt(s) completed, ` +
             `~${(r.bytesReclaimed / 1024 ** 2).toFixed(0)}MB reclaimed` +
+            `, ${r.retained.length} WAL(s) still above threshold${r.escalated ? ', escalated' : ''}` +
             (r.errors.length ? `, ${r.errors.length} error(s): ${r.errors.map((e) => e.dbPath).join(', ')}` : ''),
         );
       }

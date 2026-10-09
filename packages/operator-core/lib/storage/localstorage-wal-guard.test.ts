@@ -275,6 +275,6 @@ describe('runWalCheckpointSweep (end-to-end, real fs + sqlite)', () => {
 
   it('a missing root sweeps to an empty, error-free result', () => {
     const result = runWalCheckpointSweep({ roots: ['/nope/' + Date.now()] });
-    expect(result).toEqual({ checked: 0, overThreshold: 0, checkpointed: 0, bytesReclaimed: 0, errors: [] });
+    expect(result).toEqual({ checked: 0, overThreshold: 0, checkpointed: 0, bytesReclaimed: 0, retained: [], errors: [] });
   });
 });
