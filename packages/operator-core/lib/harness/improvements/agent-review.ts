@@ -1192,16 +1192,102 @@ async function claimVerificationCandidate(
   return claimed;
 }
 
+export type AgentReviewClaimNextMeasuredPhase =
+  | 'getWorkItem'
+  | 'healOwnNodeRemoteOrigin'
+  | 'readLedgerGrade'
+  | 'reconcileAgentReviewGrade'
+  | 'claimVerificationCandidate';
+
+export interface AgentReviewClaimNextPhaseTiming {
+  elapsedMs: number;
+  status: 'ok' | 'error';
+}
+
+export interface AgentReviewClaimNextCandidateTiming {
+  name: 'candidate';
+  candidateIndex: number;
+  outcome: string;
+  phases: Partial<Record<AgentReviewClaimNextMeasuredPhase, AgentReviewClaimNextPhaseTiming>>;
+  failedPhase?: AgentReviewClaimNextMeasuredPhase;
+}
+
+export interface AgentReviewClaimNextDiagnostics {
+  schemaVersion: 'agent-review-claim-next-v1';
+  unit: 'ms';
+  elapsedMs: number;
+  candidateLimit: 25;
+  candidateCount: number | null;
+  candidatesProcessed: number;
+  stages: Array<
+    | { name: 'candidateLookup'; elapsedMs: number; status: 'ok' | 'error'; candidateCount: number | null }
+    | AgentReviewClaimNextCandidateTiming
+  >;
+}
+
 /** Reviewer pickup over the unified queue; direct claims still use claimWorkItem's CAS. */
 export async function claimNextAgentReview(
-  input: { reviewer: string; harnessSlug?: string } & VerificationPickupScope,
+  input: {
+    reviewer: string;
+    harnessSlug?: string;
+    onDiagnostics?: (diagnostics: AgentReviewClaimNextDiagnostics) => void;
+  } & VerificationPickupScope,
   deps: AgentReviewDeps = defaultDeps,
 ): Promise<WorkItem | null> {
   input.signal?.throwIfAborted();
   if (!input.reviewer.trim()) return null;
+  const diagnostics: AgentReviewClaimNextDiagnostics | null = input.onDiagnostics
+    ? {
+        schemaVersion: 'agent-review-claim-next-v1',
+        unit: 'ms',
+        elapsedMs: 0,
+        candidateLimit: 25,
+        candidateCount: null,
+        candidatesProcessed: 0,
+        stages: [],
+      }
+    : null;
+  const overallStartedAt = diagnostics ? performance.now() : 0;
+  const emitDiagnostics = () => {
+    if (!diagnostics || !input.onDiagnostics) return;
+    diagnostics.elapsedMs = Math.max(0, performance.now() - overallStartedAt);
+    try {
+      input.onDiagnostics(diagnostics);
+    } catch {
+      /* Diagnostic delivery must never change claim completion or its error. */
+    }
+  };
+  const measureCandidatePhase = async <T>(
+    candidate: AgentReviewClaimNextCandidateTiming,
+    phase: AgentReviewClaimNextMeasuredPhase,
+    action: () => Promise<T>,
+  ): Promise<T> => {
+    if (!diagnostics) return action();
+    const startedAt = performance.now();
+    let status: 'ok' | 'error' = 'error';
+    try {
+      const value = await action();
+      status = 'ok';
+      return value;
+    } finally {
+      candidate.phases[phase] = {
+        elapsedMs: Math.max(0, performance.now() - startedAt),
+        status,
+      };
+      if (status === 'error') {
+        candidate.outcome = 'error';
+        candidate.failedPhase = phase;
+      }
+      emitDiagnostics();
+    }
+  };
   const { sql } = getOrgPg();
   const ws = input.workspaceId ?? activeWorkspaceId();
-  const rows = await sql<{ feature_id: string }[]>`
+  let rows: { feature_id: string }[] = [];
+  let lookupStatus: 'ok' | 'error' = 'error';
+  const lookupStartedAt = diagnostics ? performance.now() : 0;
+  try {
+    rows = await sql<{ feature_id: string }[]>`
     SELECT feature_id
       FROM harness_shared.work_items wi
      WHERE workspace_id = ${ws}
@@ -1218,17 +1304,62 @@ export async function claimNextAgentReview(
      -- reporters are reviewed sooner. Ordering only: claimWorkItem still admits.
      ORDER BY feature_order ASC NULLS LAST, ${corroborationReportersSql(sql)} DESC, created_ts ASC
      LIMIT 25`;
+    lookupStatus = 'ok';
+  } finally {
+    if (diagnostics) {
+      diagnostics.candidateCount = lookupStatus === 'ok' ? rows.length : null;
+      diagnostics.stages.push({
+        name: 'candidateLookup',
+        elapsedMs: Math.max(0, performance.now() - lookupStartedAt),
+        status: lookupStatus,
+        candidateCount: diagnostics.candidateCount,
+      });
+      emitDiagnostics();
+    }
+  }
   for (const row of rows) {
     input.signal?.throwIfAborted();
-    const found = await deps.getWorkItem(row.feature_id, input.harnessSlug);
-    if (!found) continue;
-    if (!matchesClaimSpecFilter(claimSpecSubjectFromWorkItem(found), input.filter)) continue;
-    const workItem = await healOwnNodeRemoteOrigin(found, deps, { harnessSlug: input.harnessSlug, workspaceId: ws });
-    if (!agentReviewEligibility(workItem).eligible) continue;
+    const stage: AgentReviewClaimNextCandidateTiming | null = diagnostics
+      ? { name: 'candidate', candidateIndex: diagnostics.candidatesProcessed + 1, outcome: 'in-progress', phases: {} }
+      : null;
+    if (stage && diagnostics) {
+      diagnostics.stages.push(stage);
+      diagnostics.candidatesProcessed += 1;
+    }
+    const measure = <T>(phase: AgentReviewClaimNextMeasuredPhase, action: () => Promise<T>) =>
+      stage ? measureCandidatePhase(stage, phase, action) : action();
+    const found = await measure('getWorkItem', () => deps.getWorkItem(row.feature_id, input.harnessSlug));
+    if (!found) {
+      if (stage) stage.outcome = 'missing';
+      emitDiagnostics();
+      continue;
+    }
+    if (!matchesClaimSpecFilter(claimSpecSubjectFromWorkItem(found), input.filter)) {
+      if (stage) stage.outcome = 'filtered';
+      emitDiagnostics();
+      continue;
+    }
+    const workItem = await measure(
+      'healOwnNodeRemoteOrigin',
+      () => healOwnNodeRemoteOrigin(found, deps, { harnessSlug: input.harnessSlug, workspaceId: ws }),
+    );
+    if (!agentReviewEligibility(workItem).eligible) {
+      if (stage) stage.outcome = 'ineligible';
+      emitDiagnostics();
+      continue;
+    }
     const review = readAgentReviewState(workItem.payload);
-    if (review?.status !== 'pending' || review.submittedBy === input.reviewer) continue;
+    if (review?.status !== 'pending' || review.submittedBy === input.reviewer) {
+      if (stage) stage.outcome = 'not-pending';
+      emitDiagnostics();
+      continue;
+    }
     const parties = verificationParties(workItem);
-    if (verificationConflict(parties, input.reviewer)) continue;
+    if (verificationConflict(parties, input.reviewer)) {
+      if (stage) stage.outcome = 'conflict';
+      emitDiagnostics();
+      continue;
+    }
     // A 'pending' round whose ledger row ALREADY carries a standing grade is not reviewable:
     // `enterAgentReview` enrolls with `preserveExisting`, so a pre-existing su-ideate row that
     // the owner had already graded keeps that sovereign grade while the payload starts at
@@ -1244,14 +1375,19 @@ export async function claimNextAgentReview(
     // Converging from it replays the old grade and feedback as the new round, bounces the
     // item back to its submitter, and no reviewer ever sees the revision (WI-10005365).
     // A fresh grade in round >= 2 arrives through blender:grade-idea, which reconciles it itself.
-    const standing = review.round === 1 ? await deps.readLedgerGrade(review.ledgerIdeaId) : null;
+    const standing = review.round === 1
+      ? await measure('readLedgerGrade', () => deps.readLedgerGrade(review.ledgerIdeaId))
+      : null;
     if (standing && standing.grade != null && standing.workItemId === workItem.id) {
       try {
-        await reconcileAgentReviewGrade(
+        await measure('reconcileAgentReviewGrade', () => reconcileAgentReviewGrade(
           { ideaId: review.ledgerIdeaId, gradedBy: standing.gradedBy ?? input.reviewer },
           deps,
-        );
+        ));
+        if (stage) stage.outcome = 'standing-grade-reconciled';
       } catch {
+        if (stage) stage.outcome = 'standing-grade-reconcile-failed';
+        emitDiagnostics();
         // leave it for a direct regrade / the next pickup; never hand out a settled row
       }
       continue;
@@ -1265,7 +1401,7 @@ export async function claimNextAgentReview(
           parties,
         })
       : null;
-    const claimed = await claimVerificationCandidate(
+    const claimed = await measure('claimVerificationCandidate', () => claimVerificationCandidate(
       workItem.id, input.reviewer, workItem.harness ?? undefined, input, deps,
       () => deps.claimWorkItem(workItem.id, input.reviewer, {
         ...(workItem.harness ? { harness: workItem.harness } : {}),
@@ -1273,9 +1409,16 @@ export async function claimNextAgentReview(
       }),
       (item) => readAgentReviewState(item.payload)?.status === 'pending'
         && !verificationConflict(verificationParties(item), input.reviewer),
-    );
-    if (claimed) return claimed;
+    ));
+    if (claimed) {
+      if (stage) stage.outcome = 'claimed';
+      emitDiagnostics();
+      return claimed;
+    }
+    if (stage) stage.outcome = 'claim-missed';
+    emitDiagnostics();
   }
+  emitDiagnostics();
   return null;
 }
 
