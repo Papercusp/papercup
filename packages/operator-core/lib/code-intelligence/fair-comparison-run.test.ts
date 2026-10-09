@@ -45,6 +45,16 @@ describe('preregistration is enforced before an arm runs', () => {
   it('runArm throws on a mismatch instead of producing answers', async () => {
     await expect(runArm(fakeArm({ ...capsA, version: '9' }, {}), cases, prereg)).rejects.toThrow(/run refused/);
   });
+  it('rejects changed same-id corpus and budget before indexing or querying', async () => {
+    const asked: string[] = [];
+    const arm = fakeArm(capsA, {}, { asked });
+    const changed = [{ ...cases[0]!, subject: 'different', language: 'go' }, cases[1]!];
+    await expect(runArm(arm, changed, prereg)).rejects.toThrow(/corpus semantics/);
+    await expect(runArm(arm, cases, { ...prereg, budgets: { ...prereg.budgets, rssMbMax: 999 } }))
+      .rejects.toThrow(/budget differs/);
+    expect(asked).toEqual([]);
+    expect(arm.closed()).toBe(false);
+  });
 });
 
 describe('runArm', () => {
@@ -69,6 +79,15 @@ describe('runArm', () => {
 });
 
 describe('scoreRuns', () => {
+  it('refuses reinterpreting saved answers with a changed question, seed key or budget', async () => {
+    const run = await runArm(fakeArm(capsA, {}), cases, prereg);
+    expect(() => scoreRuns([run], [{ ...cases[0]!, subject: 'changed' }, cases[1]!], keys, {}, prereg))
+      .toThrow(/corpus semantics changed/);
+    expect(() => scoreRuns([run], cases, [{ ...keys[0]!, sites: [] }, keys[1]!], {}, prereg))
+      .toThrow(/seed answer key changed/);
+    expect(() => scoreRuns([run], cases, keys, {}, { ...prereg, budgets: { ...prereg.budgets, rssMbMax: 999 } }))
+      .toThrow(/changed preregistration content or budget/);
+  });
   it('lists every unadjudicated site with the arms that named it, and stays inconclusive', async () => {
     const a = await runArm(fakeArm(capsA, { 'c-callers': ['a.ts:3', 'b.ts:9'], 'c-def': ['a.ts:1'] }), cases, prereg);
     const b = await runArm(fakeArm(capsB, { 'c-callers': ['b.ts:9', 'c.ts:2'] }), cases, prereg);

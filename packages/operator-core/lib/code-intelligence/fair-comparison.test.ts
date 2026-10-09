@@ -329,6 +329,32 @@ describe('preregister', () => {
     expect(c.hash).not.toBe(a.hash);
     expect(a.keyHash).toBe(hashKeys(keys));
   });
+
+  it.each([
+    { subject: 'other' }, { intent: 'references' as const }, { anchorFile: 'different.ts' },
+    { depth: 3 }, { tags: ['absence' as const] }, { language: 'python' },
+    { configuration: 'unconfigured' as const }, { sourceState: 'deleted' as const },
+    { sourceFingerprint: 'changed-content' }, { taskRef: 'WI-fixture-task' },
+  ])('pins changed case semantics despite unchanged ids: %j', change => {
+    const input = { cases, keys, arms: [caps('a')], reps: 3, seed: 1 };
+    const original = preregister(input);
+    expect(preregister({ ...input, cases: [{ ...cases[0]!, ...change }, cases[1]!] }).hash).not.toBe(original.hash);
+  });
+
+  it('freezes resource ceilings before results and isolates caller mutations', () => {
+    const input = { cases, keys, arms: [caps('a')], reps: 3, seed: 1 };
+    const original = preregister(input);
+    const budgets = { ...original.budgets, warmQueryMsMax: original.budgets.warmQueryMsMax + 1 };
+    const changed = preregister({ ...input, budgets });
+    expect(changed.hash).not.toBe(original.hash);
+    budgets.warmQueryMsMax += 1;
+    expect(changed.budgets.warmQueryMsMax).toBe(original.budgets.warmQueryMsMax + 1);
+    expect(Object.isFrozen(changed)).toBe(true);
+    expect(Object.isFrozen(changed.budgets)).toBe(true);
+    expect(() => preregister({ ...input, budgets: { ...budgets, rssMbMax: NaN } })).toThrow(/budgets/);
+    expect(() => preregister({ ...input, budgets: {} as typeof budgets })).toThrow(/budgets/);
+    expect(() => preregister({ ...input, cases: [cases[0]!, cases[0]!] })).toThrow(/duplicate case/);
+  });
 });
 
 // Keep a compile-time witness that CaseScore carries the absence flag the rates depend on.

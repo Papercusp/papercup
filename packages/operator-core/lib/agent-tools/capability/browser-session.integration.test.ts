@@ -62,7 +62,7 @@ describe('managed browser process enrollment and loss (real PG/Chromium)', () =>
   });
   it('enrolls exact workspace/owner/kernel identity and closes the real row and directory', async () => {
     const ctx = context('trusted'); const { body, result } = await open(ctx);
-    expect(body.ok, JSON.stringify(body)).toBe(true);
+    expect(body.ok, JSON.stringify({ body, startup: vi.mocked(ctx.log).mock.calls })).toBe(true);
     expect(result.content[1]).toMatchObject({ type: 'image', mimeType: 'image/png' });
     const row = (await getTask(body.browser.task_id))!;
     expect(row).toMatchObject({ class: 'browser', state: 'running', workspaceId: ctx.workspaceId,
@@ -82,7 +82,7 @@ describe('managed browser process enrollment and loss (real PG/Chromium)', () =>
   }, 30_000);
   it('cleans unexpected real Chromium death without claiming recoverable page state', async () => {
     const ctx = context('lost'); const { body } = await open(ctx);
-    expect(body.ok, JSON.stringify(body)).toBe(true);
+    expect(body.ok, JSON.stringify({ body, startup: vi.mocked(ctx.log).mock.calls })).toBe(true);
     const row = (await getTask(body.browser.task_id))!;
     expect(readProcessIdentity(row.pid!)).toBe(row.processIdentity);
     process.kill(row.pid!, 'SIGKILL'); // Exact freshly enrolled test child only.
@@ -106,7 +106,7 @@ describe('managed browser process enrollment and loss (real PG/Chromium)', () =>
       const rows = await h.sql`SELECT task_id FROM harness_shared.task_ledger WHERE launched_by = ${ctx.uiClientId!}`;
       expect(rows).toHaveLength(0); return;
     }
-    expect(body.ok, JSON.stringify(body)).toBe(true);
+    expect(body.ok, JSON.stringify({ body, startup: vi.mocked(ctx.log).mock.calls })).toBe(true);
     expect(body.browser.sandbox).toMatchObject({ mode: 'bwrap', sandboxed: true });
     const row = (await getTask(body.browser.task_id))!;
     const args = row.argv as string[];

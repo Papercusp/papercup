@@ -92,6 +92,11 @@ export interface BenchRunListEntry {
   infraExcluded: number | null;
   /** resolvedCount / gradedCount (0–1) where gradedCount = SCORED tasks (infra excluded); null when none scored. */
   resolvedPct: number | null;
+  conditionalResolvedPct?: number | null;
+  attemptedCount?: number;
+  absentCount?: number;
+  missingGradeCount?: number;
+  measurementComplete?: boolean;
   nonEmptyDiffs: number | null;
   costUsd: number | null;
   wallMs: number | null;
@@ -292,7 +297,7 @@ export async function rollupBenchRunMetrics(runId: string, opts: DbScope = {}): 
   const { sql, ws } = resolveDb(opts);
   await sql`
     UPDATE harness_shared.bench_runs r SET
-      task_count = agg.task_count,
+      task_count = GREATEST(COALESCE(r.task_count, 0), agg.task_count),
       graded_count = agg.graded_count,
       resolved_count = agg.resolved_count,
       infra_excluded = agg.infra_excluded,
@@ -308,16 +313,16 @@ export async function rollupBenchRunMetrics(runId: string, opts: DbScope = {}): 
         -- locked non-scored reasons OR it carries a generation_error. These never count as a fail.
         count(*) FILTER (
           WHERE (stop_reason IS NULL OR stop_reason NOT IN ('error', 'timeout', 'infra-failed'))
-            AND generation_error IS NULL
+            AND NULLIF(generation_error, '') IS NULL
             AND resolved IS NOT NULL
         )::int AS graded_count,
         count(*) FILTER (
           WHERE (stop_reason IS NULL OR stop_reason NOT IN ('error', 'timeout', 'infra-failed'))
-            AND generation_error IS NULL
+            AND NULLIF(generation_error, '') IS NULL
             AND resolved IS TRUE
         )::int AS resolved_count,
         count(*) FILTER (
-          WHERE stop_reason IN ('error', 'timeout', 'infra-failed') OR generation_error IS NOT NULL
+          WHERE stop_reason IN ('error', 'timeout', 'infra-failed') OR NULLIF(generation_error, '') IS NOT NULL
         )::int AS infra_excluded,
         count(*) FILTER (WHERE diff_bytes > 0)::int AS non_empty_diffs,
         COALESCE(sum(cost_usd), 0) AS cost_usd,
@@ -402,9 +407,18 @@ export async function recordRunCompletion(
 export async function listBenchRuns(opts: DbScope = {}): Promise<BenchRunListEntry[]> {
   const { sql, ws } = resolveDb(opts);
   const rows = await sql<RunRow[]>`
-    SELECT * FROM harness_shared.bench_runs
-     WHERE workspace_id = ${ws}
-     ORDER BY created_at DESC
+    SELECT r.*, c.* FROM harness_shared.bench_runs r
+    LEFT JOIN LATERAL (
+      SELECT count(*)::int AS observed_count,
+        count(*) FILTER (WHERE task_status NOT IN ('todo', 'in_progress'))::int AS attempted_count,
+        count(*) FILTER (WHERE task_status NOT IN ('todo', 'in_progress')
+          AND (stop_reason IS NULL OR stop_reason NOT IN ('error', 'timeout', 'infra-failed'))
+          AND NULLIF(generation_error, '') IS NULL AND resolved IS NULL)::int AS missing_grade_count
+      FROM harness_shared.bench_run_tasks t
+      WHERE t.run_id = r.id AND t.workspace_id = r.workspace_id
+    ) c ON TRUE
+     WHERE r.workspace_id = ${ws}
+     ORDER BY r.created_at DESC
      LIMIT 500
   `;
   return rows.map(toListEntry);
@@ -431,6 +445,7 @@ export async function getBenchRunDetail(id: string, opts: DbScope = {}): Promise
 
   const perTask: ResolvedPerTask[] = taskRows.map((t) => ({
     instanceId: t.instance_id,
+    taskStatus: t.task_status,
     cupId: t.bee_id ?? undefined,
     disposition: t.disposition ?? undefined,
     stopReason: t.stop_reason ?? undefined,
@@ -465,7 +480,7 @@ export async function getBenchRunDetail(id: string, opts: DbScope = {}): Promise
     finishedAt: row.finished_at ?? undefined,
     wallMs: numOrUndef(row.wall_ms) ?? 0,
     peakConcurrentBees: row.peak_concurrent_bees ?? 0,
-    taskCount: perTask.length,
+    taskCount: row.task_count ?? perTask.length,
     nonEmptyDiffs: perTask.filter((t) => (t.diffBytes ?? 0) > 0).length,
     totals: {
       costUsd: numOrUndef(row.cost_usd) ?? totalCost,
@@ -481,6 +496,13 @@ export async function getBenchRunDetail(id: string, opts: DbScope = {}): Promise
   const list = toListEntry(row);
   return {
     ...list,
+    taskCount: summary.taskCount,
+    resolvedPct: summary.resolvedPct,
+    conditionalResolvedPct: summary.conditionalResolvedPct,
+    attemptedCount: summary.attemptedCount,
+    absentCount: summary.absentCount,
+    missingGradeCount: summary.missingGradeCount,
+    measurementComplete: summary.measurementComplete,
     config: parseJsonb<Record<string, unknown>>(row.config),
     summary,
     run,
@@ -545,7 +567,7 @@ export async function importPreservedRunToStore(
       source: 'import',
       status: completeGrades ? 'done' : 'ungraded',
       recovered: Boolean(run.recovered),
-      taskCount: perTask.length,
+      taskCount: summary.taskCount,
       config: { ...run.config, imported: true, importedAt: new Date().toISOString(), runId: run.runId ?? null },
     },
     opts,
@@ -675,8 +697,11 @@ function parseJsonb<T>(v: unknown): T | null {
 function toListEntry(r: RunRow): BenchRunListEntry {
   const resolvedCount = r.resolved_count == null ? null : Number(r.resolved_count);
   const gradedCount = r.graded_count == null ? null : Number(r.graded_count);
-  // resolved% = resolved / SCORED-tasks (gradedCount already excludes infra/transient rows — fairness fix).
-  const resolvedPct = resolvedCount != null && gradedCount != null && gradedCount > 0 ? resolvedCount / gradedCount : null;
+  const taskCount = Math.max(r.task_count ?? 0, r.observed_count ?? 0);
+  const missingGradeCount = r.missing_grade_count ?? 0;
+  const attemptedCount = r.attempted_count ?? 0;
+  const resolvedPct = resolvedCount != null && taskCount > 0 && missingGradeCount === 0
+    ? resolvedCount / taskCount : null;
   return {
     id: r.id,
     arm: r.arm,
@@ -685,11 +710,17 @@ function toListEntry(r: RunRow): BenchRunListEntry {
     model: r.model,
     status: r.status as BenchRunStatus,
     source: r.source,
-    taskCount: r.task_count == null ? null : Number(r.task_count),
+    taskCount,
     gradedCount,
     resolvedCount,
     infraExcluded: r.infra_excluded == null ? null : Number(r.infra_excluded),
     resolvedPct,
+    conditionalResolvedPct: resolvedCount != null && gradedCount != null && gradedCount > 0
+      ? resolvedCount / gradedCount : null,
+    attemptedCount,
+    absentCount: taskCount - attemptedCount,
+    missingGradeCount,
+    measurementComplete: missingGradeCount === 0,
     nonEmptyDiffs: r.non_empty_diffs == null ? null : Number(r.non_empty_diffs),
     costUsd: r.cost_usd == null ? null : Number(r.cost_usd),
     wallMs: r.wall_ms == null ? null : Number(r.wall_ms),
@@ -716,6 +747,9 @@ interface RunRow {
   source: string;
   summary: unknown;
   task_count: number | null;
+  observed_count?: number;
+  attempted_count?: number;
+  missing_grade_count?: number;
   graded_count: number | null;
   resolved_count: number | null;
   infra_excluded: number | null;

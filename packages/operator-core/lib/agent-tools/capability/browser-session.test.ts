@@ -117,6 +117,22 @@ describe('managed browser authority and lifecycle', () => {
     await f.open(); await f.open();
     expect((await f.call({ op: 'open' })).payload.error).toBe('browser_scope_limit');
   });
+  it('records an unfinished startup stage before awaiting it and retains the original setup failure', async () => {
+    const f = fixture(); const owner = ctx();
+    let reject!: (error: Error) => void;
+    f.context.newPage.mockImplementationOnce(() => new Promise((_, fail) => { reject = fail; }));
+    const opening = f.call({ op: 'open' }, owner);
+    const stages = () => vi.mocked(owner.log).mock.calls
+      .map(([text]) => String(text)).filter(text => text.startsWith('browser startup '))
+      .map(text => JSON.parse(text.slice('browser startup '.length)));
+    await vi.waitFor(() => expect(stages()).toContainEqual({ stage: 'browser-page', state: 'started' }));
+    expect(stages().some(stage => stage.stage === 'browser-page' && stage.state === 'completed')).toBe(false);
+    reject(new Error('fixture-page-start-failed'));
+    expect((await opening).payload).toMatchObject({ ok: false, error: 'fixture-page-start-failed', launchAttempted: true });
+    expect(stages()).toContainEqual({ stage: 'browser-page', state: 'failed', elapsedMs: expect.any(Number) });
+    expect(f.server.kill).toHaveBeenCalledOnce();
+    expect(existsSync(vi.mocked(f.deps.launch).mock.calls[0][1])).toBe(false);
+  });
   it('serializes explicit close with active cancellation and never reports closure early', async () => {
     const f = fixture(); const owner = ctx(); const id = await f.open(owner);
     let entered!: () => void; const entry = new Promise<void>((resolve) => { entered = resolve; });

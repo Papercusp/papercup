@@ -9,6 +9,7 @@ import { hostThroughPty, metaPathFor, socketPathFor, nativeLatestExecution } fro
 import { injectIntoHostWithConfirmation } from '@papercusp/operator-core/lib/events/await/psu-pty-discovery';
 
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+let ownerCounter = 0;
 async function until(check: () => boolean, timeoutMs = 10_000) {
   const deadline = Date.now() + timeoutMs;
   while (!check() && Date.now() < deadline) await delay(20);
@@ -23,7 +24,10 @@ async function fixture(agent: string, autoStart: boolean) {
     : join(config, agent === 'claude' ? 'projects' : 'sessions');
   const transcript = join(nativeDir, 'fixture.jsonl');
   mkdirSync(nativeDir, { recursive: true });
-  const ownerId = `su-native-recovery-${agent}-${process.pid}-${Date.now()}`;
+  if (agent === 'codex') writeFileSync(join(config, 'config.toml'), '');
+  const ownerId = `rx-${process.pid}-${agent[0]}-${++ownerCounter}`;
+  const sock = socketPathFor(ownerId);
+  expect(Buffer.byteLength(sock), 'fixture Unix socket path must fit the platform bound').toBeLessThan(104);
   let output = '';
   const stdin = Object.assign(new EventEmitter(), { isTTY: false, resume() {}, pause() {} });
   const stdout = { isTTY: false, columns: 120, rows: 30, write(chunk: string) { output += chunk; return true; } };
@@ -68,10 +72,9 @@ async function fixture(agent: string, autoStart: boolean) {
   expect(nativeLatestExecution({ agent, env }).phase, `${agent} fixture native root preflight`).toBe('settled');
   const done = hostThroughPty({ command: process.execPath, args: ['-e', code], cwd: root,
     ownerId, env, io: { stdin, stdout }, bridgeTty: false, onExit: () => {} });
-  await until(() => output.includes('READY') && existsSync(metaPathFor(ownerId)));
+  await until(() => output.includes('READY') && existsSync(metaPathFor(ownerId)) && existsSync(sock));
   const meta = JSON.parse(readFileSync(metaPathFor(ownerId), 'utf8'));
   expect(meta.execution, `${agent} metadata must carry native observation`).toBeDefined();
-  const sock = socketPathFor(ownerId);
   const message = { mode: 'turn' as const, ownerId, deliveryId: `native-${agent}`, requireNativeTurnStart: true,
     expectedChildGeneration: meta.execution.childGeneration, expectedHostStartedAt: meta.startedAt,
     data: '⟦turn-origin:loop-fire nonce:1234567890abcdef⟧\nContinue approved recovery.' };

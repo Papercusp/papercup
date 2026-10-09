@@ -21,6 +21,9 @@ import {
   aggregateArm,
   applyAdjudication,
   decideBackend,
+  hashCases,
+  hashKeys,
+  hashPreregistration,
   poolCandidates,
   scoreCase,
   shuffledArmOrder,
@@ -57,6 +60,8 @@ const sortedIntents = (c: ArmCapabilities): string => JSON.stringify([...c.inten
 
 /** Why `arm` may not run under `prereg`, or null when it matches. */
 export function preregMismatch(caps: ArmCapabilities, cases: readonly FairCase[], prereg: Preregistration): string | null {
+  if (!prereg.corpusHash || !prereg.budgets) return 'legacy preregistration has no frozen corpus semantics/budgets; preregister a new edition';
+  if (hashPreregistration(prereg) !== prereg.hash) return 'preregistration content or budget differs from its recorded hash';
   const reg = prereg.arms.find((a) => a.armId === caps.armId);
   if (!reg) return `arm ${caps.armId} is not in preregistration ${prereg.hash.slice(0, 12)}`;
   if (reg.version !== caps.version) return `arm ${caps.armId} version '${caps.version}' differs from preregistered '${reg.version}'`;
@@ -64,6 +69,7 @@ export function preregMismatch(caps: ArmCapabilities, cases: readonly FairCase[]
   if (reg.licence !== caps.licence) return `arm ${caps.armId} licence differs from its preregistration`;
   const ids = cases.map((c) => c.id).sort();
   if (JSON.stringify(ids) !== JSON.stringify(prereg.corpusIds)) return 'the corpus differs from the preregistered case ids';
+  if (hashCases(cases) !== prereg.corpusHash) return 'the corpus semantics differ from preregistration';
   return null;
 }
 
@@ -121,8 +127,12 @@ export function scoreRuns(
   cases: readonly FairCase[],
   seedKeys: readonly AnswerKey[],
   verdicts: Readonly<Record<string, readonly AdjudicationVerdict[]>>,
-  prereg: Pick<Preregistration, 'reps' | 'hash'>,
+  prereg: Preregistration,
 ): ScoredComparison {
+  if (!prereg.corpusHash || !prereg.budgets) throw new Error('score refused: legacy preregistration lacks corpus semantics/budgets');
+  if (hashPreregistration(prereg) !== prereg.hash) throw new Error('score refused: changed preregistration content or budget');
+  if (hashCases(cases) !== prereg.corpusHash) throw new Error('score refused: corpus semantics changed after preregistration');
+  if (hashKeys(seedKeys) !== prereg.keyHash) throw new Error('score refused: seed answer key changed outside recorded adjudication');
   const foreign = runs.filter((r) => r.preregHash !== prereg.hash).map((r) => r.capabilities.armId);
   if (foreign.length > 0) throw new Error(`score refused: runs from another preregistration (${foreign.join(', ')})`);
   // One run per arm. A superseded run left beside its rerun (a renamed

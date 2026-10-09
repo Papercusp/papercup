@@ -22,7 +22,7 @@
  * it can be unit-tested without an engine installed.
  */
 import { createHash } from 'node:crypto';
-import type { SymbolSite } from './contracts';
+import { DEFAULT_RESOURCE_BUDGET, type ResourceBudget, type SymbolSite } from './contracts';
 
 // ─── corpus ──────────────────────────────────────────────────────────────────
 
@@ -66,6 +66,25 @@ export interface FairCase {
   readonly depth?: number;
   readonly tags: readonly HardnessTag[];
   readonly source: CaseSource;
+  /** Explicit cohort/control cells; omission on old corpora remains unmeasured. */
+  readonly language?: string;
+  readonly configuration?: 'configured' | 'unconfigured';
+  readonly sourceState?: 'current' | 'stale' | 'deleted';
+  /** Pin authored repository content and real task identity independently of its id. */
+  readonly sourceFingerprint?: string;
+  readonly taskRef?: string;
+}
+
+/** Freeze question semantics, not merely ids that can hide a changed question. */
+export function hashCases(cases: readonly FairCase[]): string {
+  const canon = [...cases].sort((a, b) => a.id.localeCompare(b.id)).map(c => ({
+    id: c.id, intent: c.intent, subject: c.subject, anchorFile: c.anchorFile ?? null,
+    depth: c.depth ?? null, tags: [...c.tags].sort(), source: c.source,
+    language: c.language ?? null, configuration: c.configuration ?? null,
+    sourceState: c.sourceState ?? null, sourceFingerprint: c.sourceFingerprint ?? null,
+    taskRef: c.taskRef ?? null,
+  }));
+  return createHash('sha256').update(JSON.stringify(canon)).digest('hex');
 }
 
 // ─── answer key (pooled adjudication) ─────────────────────────────────────────
@@ -495,33 +514,62 @@ const LICENCE_PREFERENCE: readonly LicenceClass[] = ['first-party', 'permissive'
 
 export interface Preregistration {
   readonly corpusIds: readonly string[];
+  readonly corpusHash: string;
   readonly keyHash: string;
   readonly arms: readonly ArmCapabilities[];
   readonly reps: number;
   readonly seed: number;
   readonly bars: typeof FAIR_DECISION_BARS;
+  readonly budgets: Readonly<ResourceBudget>;
   readonly hash: string;
 }
 
-/** Freeze corpus, key, arms (with declared intents), reps and bars into one hash. */
+/** Recompute a persisted registration; caller-controlled hash fields are not proof. */
+export function hashPreregistration(prereg: Omit<Preregistration, 'hash'>): string {
+  const budgets = prereg.budgets;
+  const body = {
+    corpusIds: [...prereg.corpusIds].sort(), corpusHash: prereg.corpusHash, keyHash: prereg.keyHash,
+    arms: [...prereg.arms].map(a => ({ ...a, intents: [...a.intents].sort() }))
+      .sort((a, b) => a.armId.localeCompare(b.armId)),
+    reps: prereg.reps, seed: prereg.seed,
+    bars: { minReps: prereg.bars.minReps, maxFailureRate: prereg.bars.maxFailureRate,
+      f1TieMargin: prereg.bars.f1TieMargin, cfeTieMargin: prereg.bars.cfeTieMargin },
+    budgets: { coldStartMsMax: budgets.coldStartMsMax, warmQueryMsMax: budgets.warmQueryMsMax,
+      rssMbMax: budgets.rssMbMax, childProcMax: budgets.childProcMax,
+      indexDiskMbMax: budgets.indexDiskMbMax, resultTokensMax: budgets.resultTokensMax },
+  };
+  return createHash('sha256').update(JSON.stringify(body)).digest('hex');
+}
+
+/** Freeze complete corpus, key, arms, resource budgets, repetitions and bars. */
 export function preregister(input: {
   readonly cases: readonly FairCase[];
   readonly keys: readonly AnswerKey[];
   readonly arms: readonly ArmCapabilities[];
   readonly reps: number;
   readonly seed: number;
+  readonly budgets?: Readonly<ResourceBudget>;
 }): Preregistration {
   const corpusIds = input.cases.map((c) => c.id).sort();
+  if (new Set(corpusIds).size !== corpusIds.length) throw new Error('preregistration refused: duplicate case ids');
+  if (new Set(input.keys.map(k => k.caseId)).size !== input.keys.length) throw new Error('preregistration refused: duplicate key ids');
+  if (new Set(input.arms.map(a => a.armId)).size !== input.arms.length) throw new Error('preregistration refused: duplicate arm ids');
+  if (!Number.isInteger(input.reps) || input.reps < FAIR_DECISION_BARS.minReps || !Number.isInteger(input.seed))
+    throw new Error('preregistration refused: repetitions and seed must be integers with at least the minimum repetitions');
   const keyIds = new Set(input.keys.map((k) => k.caseId));
   const missing = corpusIds.filter((id) => !keyIds.has(id));
   if (missing.length > 0) throw new Error(`preregistration refused: no answer key for ${missing.join(', ')}`);
   const keyHash = hashKeys(input.keys);
+  const budgets = Object.freeze({ ...(input.budgets ?? DEFAULT_RESOURCE_BUDGET) });
+  if ((Object.keys(DEFAULT_RESOURCE_BUDGET) as Array<keyof ResourceBudget>)
+    .some(key => !Number.isFinite(budgets[key]) || budgets[key] <= 0))
+    throw new Error('preregistration refused: resource budgets must be positive finite ceilings');
   const arms = [...input.arms]
-    .map((a) => ({ ...a, intents: [...a.intents].sort() }))
+    .map((a) => Object.freeze({ ...a, intents: Object.freeze([...a.intents].sort()) }))
     .sort((a, b) => a.armId.localeCompare(b.armId));
-  const body = { corpusIds, keyHash, arms, reps: input.reps, seed: input.seed, bars: FAIR_DECISION_BARS };
-  const hash = createHash('sha256').update(JSON.stringify(body)).digest('hex');
-  return { ...body, hash };
+  const body = { corpusIds: Object.freeze(corpusIds), corpusHash: hashCases(input.cases), keyHash,
+    arms: Object.freeze(arms), reps: input.reps, seed: input.seed, bars: FAIR_DECISION_BARS, budgets };
+  return Object.freeze({ ...body, hash: hashPreregistration(body) });
 }
 
 export type BackendDecision =

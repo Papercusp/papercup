@@ -5124,6 +5124,7 @@ export function registerMcpHost(server: McpServer): void {
                       spawnId: dispatchSpawnCtx.spawnId,
                       toolName,
                       runId: dispatchSpawnCtx.runId ?? null,
+                      mcpRequestTraceId: dispatchSpawnCtx.requestOrigin?.mcpRequestTraceId ?? null,
                       outputRef: settlement.spillUri,
                       outputSize: settlement.status === 'persisted' ? settlement.originalBytes : null,
                       matchOutputRef: settlement.spillUri,
@@ -5294,6 +5295,7 @@ export function registerMcpHost(server: McpServer): void {
                 spawnId: dispatchSpawnCtx.spawnId,
                 toolName,
                 runId: dispatchSpawnCtx.runId ?? null,
+                mcpRequestTraceId: dispatchSpawnCtx.requestOrigin?.mcpRequestTraceId ?? null,
                 outputRef: doorMeta.spillUri ?? null,
                 outputSize: doorMeta.spillUri && doorMeta.spillPending !== true ? originalBytes : null,
                 // WI-40720 gap 3: this branch was `toolName === 'code:run'`, so a recipes:run or

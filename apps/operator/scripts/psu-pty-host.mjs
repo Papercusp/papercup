@@ -1638,7 +1638,13 @@ export function nativeKickoffTurnActivityAfterMarker({
       anchor.scannedEndOffset = null;
     }
     for (const line of scan.lines.slice(markerIndex + 1)) {
-      if (kickoffModelActivityRow(agent, JSON.parse(line.text))) return { available: true, started: true };
+      const row = JSON.parse(line.text);
+      const userContent = nativeUserPromptContent(row);
+      if (userContent != null && !row.isMeta && !isNativeLaunchContextPrompt(nativeUserPromptText(userContent), agent)) {
+        // Another owner/model turn cannot certify the accepted marker's turn.
+        return unavailable;
+      }
+      if (kickoffModelActivityRow(agent, row)) return { available: true, started: true };
     }
     if (anchor) anchor.scannedEndOffset = scan.nextOffset;
     return { available: true, started: false };
@@ -1719,10 +1725,17 @@ export function nativeExecutionFromRows(rows, { agent, receivedAtMs = 0, nowMs =
       continue;
     }
     if (verdict === 'turn-started') {
-      phase = 'running';
-      turnStartedAt = at;
+      // Claude/OMP user rows prove acceptance, not model execution. Their
+      // first assistant/tool record supplies positive work evidence; gateway
+      // operation leases cover silent reasoning before that record lands.
+      phase = agent === 'codex' ? 'running' : 'unknown';
+      turnStartedAt = agent === 'codex' ? at : null;
       pendingTools.clear();
       lastProgressAt = at;
+    }
+    if ((agent === 'claude' || agent === 'omp') && message?.role === 'assistant') {
+      phase = 'running';
+      turnStartedAt ??= at;
     }
     const payload = row?.payload;
     if (agent === 'codex' && row?.type === 'response_item') {

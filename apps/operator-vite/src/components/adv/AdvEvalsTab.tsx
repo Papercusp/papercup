@@ -211,6 +211,10 @@ interface PreservedRunSummary {
   resolvedCount: number;
   taskCount: number;
   resolvedPct: number | null;
+  conditionalResolvedPct?: number | null;
+  attemptedCount?: number;
+  absentCount?: number;
+  missingGradeCount?: number;
   costUsd: number;
   tokensIn: number;
   tokensOut: number;
@@ -1773,9 +1777,14 @@ function PreservedRunsView() {
             <FleetStat
               arm={s.arm}
               value={s.resolvedPct == null ? '—' : `${Math.round(s.resolvedPct * 1000) / 10}%`}
-              sub={`${s.resolvedCount}/${s.gradedCount} resolved`}
-              hint={`Official-grader pass rate: ${s.resolvedCount} of ${s.gradedCount} graded tasks resolved.`}
+              sub={`${s.resolvedCount}/${s.taskCount} assigned tasks resolved`}
+              hint={s.missingGradeCount ? `${s.missingGradeCount} submissions await official grades; primary score is inconclusive.`
+                : `Primary outcome rate includes every assigned task, including non-attempts and generation failures.`}
             />
+            <FleetStat arm={s.arm}
+              value={s.conditionalResolvedPct == null ? '—' : `${Math.round(s.conditionalResolvedPct * 1000) / 10}%`}
+              sub={`${s.resolvedCount}/${s.gradedCount} graded submissions · conditional quality`}
+              hint="Secondary score among officially graded submissions; excludes generation failures and absent attempts." />
             <FleetStat arm={s.arm} value={fmtUsd(s.costUsd)} sub={`${s.taskCount} tasks`} hint="Total cost across the run." />
             <FleetStat arm={s.arm} value={`${s.nonEmptyDiffs}/${s.taskCount}`} sub="non-empty diffs" hint="Tasks where a real patch was produced." />
             <FleetStat arm={s.arm} value={fmtDurMs(s.wallMs)} sub={`${s.coordEventCount} coord events`} hint="Parallel backlog-drain wall-clock + coordination-trace volume." />

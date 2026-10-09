@@ -65,6 +65,20 @@ function status(session: Session) {
 }
 function quote(value: string): string { return "'" + value.replaceAll("'", "'\\''") + "'"; }
 
+/** Emit before awaiting so a stalled startup retains its exact unfinished stage. */
+async function browserStartupStage<T>(ctx: UnifiedToolContext, stage: string, run: () => Promise<T> | T): Promise<T> {
+  const started = performance.now();
+  ctx.log(`browser startup ${JSON.stringify({ stage, state: 'started' })}`);
+  try {
+    const result = await run();
+    ctx.log(`browser startup ${JSON.stringify({ stage, state: 'completed', elapsedMs: Math.round(performance.now() - started) })}`);
+    return result;
+  } catch (error) {
+    ctx.log(`browser startup ${JSON.stringify({ stage, state: 'failed', elapsedMs: Math.round(performance.now() - started) })}`);
+    throw error;
+  }
+}
+
 /** Enrol the SDK-owned process before launch; its maintained launcher closes the whole process group. */
 export async function launchBrowserProcess(ctx: UnifiedToolContext, root: string, id: string, timeoutMs: number): Promise<{
   server: BrowserServer; browser: Browser; taskId: string; profile: OperationBoundaryProfile;
@@ -72,23 +86,23 @@ export async function launchBrowserProcess(ctx: UnifiedToolContext, root: string
 }> {
   const deadline = Date.now() + timeoutMs;
   const remaining = () => { const ms = deadline - Date.now(); if (ms <= 0 || ctx.signal?.aborted) throw new Error('browser_operation_aborted'); return ms; };
-  const { chromium } = await import('playwright-core');
-  const policy = await capabilityExecSandboxPolicy(ctx);
+  const { chromium } = await browserStartupStage(ctx, 'sdk-import', () => import('playwright-core'));
+  const policy = await browserStartupStage(ctx, 'sandbox-policy', () => capabilityExecSandboxPolicy(ctx));
   // HTTP is relayed by fetch-policy. A confined Chromium needs no independent host egress.
   const sandbox = buildCapabilitySandboxCommand({ cmd: [chromium.executablePath()], cwd: root },
     { enabled: policy.enabled, required: policy.required, srtBin: null, denyAllEgress: true });
-  assertCapabilitySandboxAvailable(sandbox, root);
+  await browserStartupStage(ctx, 'sandbox-preflight', () => assertCapabilitySandboxAvailable(sandbox, root));
   const wrapper = join(root, 'launch-browser');
-  await writeFile(wrapper, '#!/bin/sh\nexec ' + [sandbox.binary, ...sandbox.argv].map(quote).join(' ') + ' "$@"\n', { mode: 0o700 });
+  await browserStartupStage(ctx, 'launcher-write', () => writeFile(wrapper, '#!/bin/sh\nexec ' + [sandbox.binary, ...sandbox.argv].map(quote).join(' ') + ' "$@"\n', { mode: 0o700 }));
   const ownerId = resolveAgentIdentity(ctx).ownerId;
-  const row = await registerTask({ class: 'browser', title: 'Managed browser session', argv: [sandbox.binary, ...sandbox.argv],
+  const row = await browserStartupStage(ctx, 'task-register', () => registerTask({ class: 'browser', title: 'Managed browser session', argv: [sandbox.binary, ...sandbox.argv],
     cwd: root, launchedBy: ownerId, sessionId: ownerId, harnessSlug: ctx.harnessSlug,
-    detail: { surface: 'capability:fetch', browserSessionId: id, restartRecovery: 'unrecoverable' } }, { workspaceId: ctx.workspaceId });
+    detail: { surface: 'capability:fetch', browserSessionId: id, restartRecovery: 'unrecoverable' } }, { workspaceId: ctx.workspaceId }));
   let server: BrowserServer | undefined;
   try {
-    server = await chromium.launchServer({ executablePath: wrapper, headless: true, host: '127.0.0.1', timeout: remaining(),
+    server = await browserStartupStage(ctx, 'chromium-launch', () => chromium.launchServer({ executablePath: wrapper, headless: true, host: '127.0.0.1', timeout: remaining(),
       env: { ...scrubExecEnv(process.env), TMPDIR: root },
-      args: ['--force-webrtc-ip-handling-policy=disable_non_proxied_udp', '--disable-features=WebTransport'] });
+      args: ['--force-webrtc-ip-handling-policy=disable_non_proxied_udp', '--disable-features=WebTransport'] }));
     const child = server.process();
     const spawned = markSpawned(row.taskId, { pid: child.pid, processIdentity: child.pid ? readProcessIdentity(child.pid) : null,
       confined: false, unconfinedReason: 'SDK process group; execution sandbox is reported separately' });
@@ -102,8 +116,9 @@ export async function launchBrowserProcess(ctx: UnifiedToolContext, root: string
       })).then(() => terminalResolve(), terminalReject);
     });
     void terminalRecorded.catch((error) => ctx.log(`browser terminal ledger failed: ${String(error)}`));
-    await spawned;
-    const browser = await chromium.connect(server.wsEndpoint(), { timeout: remaining() });
+    await browserStartupStage(ctx, 'task-spawned', () => spawned);
+    const endpoint = server.wsEndpoint();
+    const browser = await browserStartupStage(ctx, 'chromium-connect', () => chromium.connect(endpoint, { timeout: remaining() }));
     return { server, browser, taskId: row.taskId, profile: policy.profile,
       sandbox: { mode: sandbox.mode, sandboxed: sandbox.sandboxed }, terminalRecorded };
   } catch (error) {
@@ -232,7 +247,9 @@ export async function runBrowserSession(
   if (args.id && (!session || session.scope !== scope)) return reply({ ok: false, error: 'browser_unrecoverable', restartRecovery: 'unrecoverable' });
   if (args.op === 'close' && session) { await closeBrowserSession(session, 'explicit-close'); return reply({ ok: true, browser: status(session) }); }
   if (session?.state !== undefined && session.state !== 'live') return reply({ ok: false, error: 'browser_unrecoverable', browser: status(session) });
-  const profile = await deps.profile(ctx);
+  const profile = args.op === 'open'
+    ? await browserStartupStage(ctx, 'caller-profile', () => deps.profile(ctx))
+    : await deps.profile(ctx);
   const authority = JSON.stringify([profile, ctx.role ?? null]);
   if (session && session.authority !== authority) { await closeBrowserSession(session, 'authority-changed'); return reply({ ok: false, error: 'browser_authority_changed', browser: status(session) }); }
   if (session?.busy) return reply({ ok: false, error: 'browser_busy', browser: status(session) });
@@ -246,7 +263,7 @@ export async function runBrowserSession(
     let root: string | undefined; const id = randomUUID();
     let launched: Awaited<ReturnType<BrowserDeps['launch']>> | undefined;
     try {
-      remaining(); root = await mkdtemp(join(tmpdir(), 'pc-browser-'));
+      remaining(); root = await browserStartupStage(ctx, 'session-directory', () => mkdtemp(join(tmpdir(), 'pc-browser-')));
       launched = await deps.launch(ctx, root, id, remaining());
       if (JSON.stringify([launched.profile, ctx.role ?? null]) !== authority) throw new Error('browser_authority_changed');
       const setupServer = launched.server;
@@ -255,10 +272,11 @@ export async function runBrowserSession(
       const setupTimer = setTimeout(stopSetup, remaining());
       let context: BrowserContext; let page: Page;
       try {
-        context = await launched.browser.newContext({ viewport: { width: 1024, height: 768 }, serviceWorkers: 'block', acceptDownloads: false });
-        await context.routeWebSocket('**/*', (socket) => socket.close());
-        page = await context.newPage(); remaining();
-        if (JSON.stringify([await deps.profile(ctx), ctx.role ?? null]) !== authority) throw new Error('browser_authority_changed');
+        context = await browserStartupStage(ctx, 'browser-context', () => launched!.browser.newContext({ viewport: { width: 1024, height: 768 }, serviceWorkers: 'block', acceptDownloads: false }));
+        const setupContext = context;
+        await browserStartupStage(ctx, 'websocket-route', () => setupContext.routeWebSocket('**/*', (socket) => socket.close()));
+        page = await browserStartupStage(ctx, 'browser-page', () => setupContext.newPage()); remaining();
+        if (JSON.stringify([await browserStartupStage(ctx, 'authority-recheck', () => deps.profile(ctx)), ctx.role ?? null]) !== authority) throw new Error('browser_authority_changed');
       } finally { clearTimeout(setupTimer); ctx.signal?.removeEventListener('abort', stopSetup); }
       session = { ...launched, id, root, scope, authority, context, page, state: 'live', busy: false, processEnded: false };
       const current = session;

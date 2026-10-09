@@ -2366,6 +2366,32 @@ exec "$REGRESSION_REAL_GIT" "$@"
     expect(existsSync(destination)).toBe(false);
   });
 
+  it.each([false, true])('refuses a nested source clone before auto-commit can capture it (symlink=%s)', (viaSymlink) => {
+    const inside = join(integrationRoot, 'private-proof');
+    const alias = join(dirname(releaseRoot), 'integration-alias');
+    if (viaSymlink) symlinkSync(integrationRoot, alias);
+    const destination = viaSymlink ? join(alias, 'private-proof') : inside;
+    const result = spawnSync('bash', [SCRIPT_PATH, '--source-only', '--source-root-mode', 'clone',
+      '--ref', targetSha, '--integration', integrationRoot, '--release', destination], { encoding: 'utf8' });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('source clone destination must be outside integration tree');
+    expect(existsSync(inside)).toBe(false);
+    expect(git(integrationRoot, 'rev-parse', 'HEAD')).toBe(targetSha);
+  });
+
+  it('refuses an unnamed gitlink before allocating the root clone and names the supported verifier route', () => {
+    git(integrationRoot, 'update-index', '--add', '--cacheinfo', `160000,${targetSha},libs/unnamed`);
+    git(integrationRoot, 'commit', '-q', '-m', 'unnamed gitlink');
+    const pin = git(integrationRoot, 'rev-parse', 'HEAD');
+    const destination = join(dirname(releaseRoot), 'unnamed-refused');
+    const result = spawnSync('bash', [SCRIPT_PATH, '--source-only', '--source-root-mode', 'clone',
+      '--ref', pin, '--integration', integrationRoot, '--release', destination], { encoding: 'utf8' });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('requires .gitmodules path/url for gitlink libs/unnamed');
+    expect(result.stderr).toContain('use verifier-prepare');
+    expect(existsSync(destination)).toBe(false);
+  });
+
   it('source-only clone copies objects when the object store is on another device', () => {
     const destination = join(dirname(releaseRoot), 'cross-device-clone');
     const bin = join(dirname(releaseRoot), 'device-bin');

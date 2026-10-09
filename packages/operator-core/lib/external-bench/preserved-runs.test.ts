@@ -210,7 +210,8 @@ describe('summarizePreservedRun — fairness exclusion', () => {
     expect(s.gradedCount).toBe(3);
     expect(s.resolvedCount).toBe(2);
     expect(s.infraExcluded).toBe(2); // timeout-1 + infra-1
-    expect(s.resolvedPct).toBeCloseTo(2 / 3, 5); // resolved / SCORED-tasks, NOT 2/5
+    expect(s.resolvedPct).toBeCloseTo(2 / 5, 5);
+    expect(s.conditionalResolvedPct).toBeCloseTo(2 / 3, 5);
     expect(s.taskCount).toBe(5); // taskCount still reflects the whole set
   });
 
@@ -223,7 +224,40 @@ describe('summarizePreservedRun — fairness exclusion', () => {
     expect(s.gradedCount).toBe(3);
     expect(s.resolvedCount).toBe(2);
     expect(s.infraExcluded).toBe(2);
-    expect(s.resolvedPct).toBeCloseTo(2 / 3, 5);
+    expect(s.resolvedPct).toBeCloseTo(2 / 5, 5);
+    expect(s.conditionalResolvedPct).toBeCloseTo(2 / 3, 5);
+  });
+});
+
+describe('assigned task outcomes', () => {
+  it('keeps absent tasks and generation timeouts in the primary denominator', () => {
+    const run: PreservedArmRun = { arm: 'su', taskCount: 5 };
+    const summary = summarizePreservedRun(run, [
+      { instanceId: 'solved', stopReason: 'done', resolved: true },
+      { instanceId: 'capped', stopReason: 'timeout', resolved: null },
+    ]);
+    expect(summary).toMatchObject({ taskCount: 5, attemptedCount: 2, absentCount: 3,
+      gradedCount: 1, resolvedCount: 1, infraExcluded: 1, missingGradeCount: 0,
+      measurementComplete: true, resolvedPct: 0.2, conditionalResolvedPct: 1 });
+  });
+
+  it('reports a grader outage as missing measurement, then accepts a repaired grade', () => {
+    const run: PreservedArmRun = { arm: 'su', config: { taskIds: ['a', 'b', 'c'] } };
+    const rows = [{ instanceId: 'a', stopReason: 'done', resolved: null }];
+    expect(summarizePreservedRun(run, rows)).toMatchObject({ taskCount: 3,
+      missingGradeCount: 1, measurementComplete: false, resolvedPct: null });
+    expect(summarizePreservedRun(run, [{ ...rows[0], resolved: true }])).toMatchObject({
+      taskCount: 3, missingGradeCount: 0, resolvedPct: 1 / 3 });
+  });
+
+  it('counts queued placeholders as non-attempts and sums all spent cost', () => {
+    const summary = summarizePreservedRun({ arm: 'su', taskCount: 3 }, [
+      { instanceId: 'a', taskStatus: 'todo', resolved: null },
+      { instanceId: 'b', taskStatus: 'in_progress', costUsd: 2, resolved: null },
+      { instanceId: 'c', taskStatus: 'graded', costUsd: 1, generationError: '', resolved: true },
+    ]);
+    expect(summary).toMatchObject({ attemptedCount: 1, absentCount: 2,
+      missingGradeCount: 0, resolvedPct: 1 / 3, costUsd: 3 });
   });
 });
 

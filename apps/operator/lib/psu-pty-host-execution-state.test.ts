@@ -58,8 +58,8 @@ describe('native execution observations', () => {
   it.each(['codex', 'claude', 'omp'])('does not inject into a silent native %s turn', async agent => {
     const start = agent === 'codex'
       ? { type: 'event_msg', timestamp, payload: { type: 'task_started' } }
-      : agent === 'claude' ? { type: 'user', timestamp, message: { role: 'user', content: 'start' } }
-        : { type: 'message', timestamp, message: { role: 'user' } };
+      : agent === 'claude' ? { type: 'assistant', timestamp, message: { role: 'assistant', stop_reason: 'tool_use', content: [{ type: 'tool_use', id: 'pending' }] } }
+        : { type: 'message', timestamp, message: { role: 'assistant', stopReason: 'toolUse', content: [{ type: 'toolCall', id: 'pending' }] } };
     const execution = nativeExecutionFromRows([start], { agent, ...ctx });
     const gate = makeAgentBusyGate({ lastOutputAt: () => 0, quietMs: 1, capMs: 1,
       nativeExecution: () => execution });
@@ -87,5 +87,11 @@ describe('native execution observations', () => {
   it('excludes a predecessor running turn after a new child/submission floor', () => {
     const row = { type: 'event_msg', timestamp, payload: { type: 'task_started' } };
     expect(nativeExecutionFromRows([row], { agent: 'codex', receivedAtMs: 1001, nowMs: 2000 }).phase).toBe('unknown');
+  });
+
+  it.each(['claude', 'omp'])('keeps an accepted %s prompt without model work unknown', agent => {
+    const user = { type: agent === 'claude' ? 'user' : 'message', timestamp,
+      message: { role: 'user', content: 'accepted prompt' } };
+    expect(nativeExecutionFromRows([user], { agent, ...ctx })).toMatchObject({ phase: 'unknown', turnStartedAt: null });
   });
 });

@@ -189,7 +189,8 @@ describe('rollupBenchRunMetrics — fairness exclusion (benchmark-fairness-fix)'
     expect(r.gradedCount).toBe(3); // ONLY the scored tasks — infra/timeout EXCLUDED from the denominator
     expect(r.resolvedCount).toBe(2);
     expect(r.infraExcluded).toBe(2); // timeout-1 + infra-1, surfaced separately
-    expect(r.resolvedPct).toBeCloseTo(2 / 3, 5); // resolved / SCORED-tasks, NOT 2/5
+    expect(r.resolvedPct).toBeCloseTo(2 / 5, 5);
+    expect(r.conditionalResolvedPct).toBeCloseTo(2 / 3, 5);
     // Cost still counts EVERY task (a crashed/throttled run still spent real tokens — honest cost).
     expect(r.costUsd).toBeCloseTo(20, 5);
   });
@@ -204,7 +205,33 @@ describe('rollupBenchRunMetrics — fairness exclusion (benchmark-fairness-fix)'
     expect(r.gradedCount).toBe(1); // only the genuine 'done' row
     expect(r.resolvedCount).toBe(1);
     expect(r.infraExcluded).toBe(1);
-    expect(r.resolvedPct).toBe(1); // 1/1 scored, NOT 1/2
+    expect(r.resolvedPct).toBe(1 / 2);
+    expect(r.conditionalResolvedPct).toBe(1);
+  });
+});
+
+describe('assigned task scoring across store readers', () => {
+  it('retains the declared task set after partial collection and grader repair', async () => {
+    await upsertBenchRun({ id: 'assigned', arm: 'su', taskSetId: 'custom:5-task', model: 'sol',
+      taskCount: 5, config: { taskIds: ['a', 'b', 'c', 'd', 'e'] } }, scope);
+    await upsertBenchRunTask('assigned', { instanceId: 'a', taskStatus: 'collected', stopReason: 'done',
+      generationError: '', costUsd: 1 }, scope);
+    await upsertBenchRunTask('assigned', { instanceId: 'b', taskStatus: 'collected', stopReason: 'timeout',
+      generationError: 'budget ceiling', costUsd: 2 }, scope);
+    await rollupBenchRunMetrics('assigned', scope);
+    const before = (await listBenchRuns(scope)).find(row => row.id === 'assigned')!;
+    expect(before).toMatchObject({ taskCount: 5, attemptedCount: 2, absentCount: 3,
+      missingGradeCount: 1, measurementComplete: false, resolvedPct: null, costUsd: 3 });
+    expect((await getBenchRunDetail('assigned', scope))!.summary).toMatchObject({
+      taskCount: 5, missingGradeCount: 1, resolvedPct: null });
+    await applyGradeMap('assigned', { a: true }, scope);
+    const after = (await listBenchRuns(scope)).find(row => row.id === 'assigned')!;
+    const detail = (await getBenchRunDetail('assigned', scope))!;
+    expect(after).toMatchObject({ taskCount: 5, gradedCount: 1, resolvedCount: 1,
+      resolvedPct: 0.2, conditionalResolvedPct: 1, missingGradeCount: 0, infraExcluded: 1 });
+    expect(detail.resolvedPct).toBe(after.resolvedPct);
+    expect(detail.summary.resolvedPct).toBe(after.resolvedPct);
+    expect(detail.summary.conditionalResolvedPct).toBe(after.conditionalResolvedPct);
   });
 });
 

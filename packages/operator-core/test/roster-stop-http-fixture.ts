@@ -2,8 +2,9 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
+import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
 import { getAdvSessionInWorkspace, markAdvSessionEnded, recordAdvSession } from '../lib/adv-sessions';
@@ -17,11 +18,15 @@ assert.equal(process.env.PAPERCUSP_SKIP_PG_DISCOVERY, '1');
 assert.equal(process.env.PAPERCUSP_BACKGROUND_WORKERS, '0');
 assert.ok(![3070, 3170, 3271].includes(Number(new URL(base).port)));
 assert.ok(evidence);
-const discovery = join(evidence, 'pty');
-mkdirSync(discovery, { recursive: true });
+// Evidence paths are intentionally long; AF_UNIX addresses are bounded by bytes.
+// Keep the mutable socket namespace short and retain its identity in the receipt.
+const discovery = mkdtempSync(join(tmpdir(), 'rs-'));
+assert.ok(Buffer.byteLength(join(discovery, 'su-rs-123456789-neighbor.sock')) < 104,
+  'private socket directory exceeds the native address limit');
+writeFileSync(join(evidence, 'discovery.json'), JSON.stringify({ discovery }));
 process.env.PAPERCUSP_PSU_PTY_DIR = discovery;
 process.env.PAPERCUSP_TURN_PROVENANCE_DIR = join(evidence, 'turn-provenance');
-const { hostThroughPty, socketPathFor, metaPathFor } = await import('../../../apps/operator/scripts/psu-pty-host.mjs');
+const { hostThroughPty, socketPathFor, metaPathFor, encodeControl } = await import('../../../apps/operator/scripts/psu-pty-host.mjs');
 const { shutdownViaPty } = await import('../lib/events/await/psu-pty-discovery');
 const { sql } = getOrgPg();
 const sessions: Array<{ owner: string; id: number; startedAt: string; done: Promise<number>; closed: boolean; output: () => string }> = [];
@@ -38,7 +43,7 @@ async function until(check: () => boolean | Promise<boolean>, label: string, tim
 }
 
 async function child(label: string) {
-  const owner = `su-private-stop-${process.pid}-${label}`;
+  const owner = `su-rs-${process.pid}-${label}`;
   const id = await recordAdvSession({ workspaceId: workspace, mode: 'console', agent: 'codex', role: 'su', coordOwnerId: owner });
   assert.ok(id);
   const row = await getAdvSessionInWorkspace(id, workspace);
@@ -54,7 +59,8 @@ async function child(label: string) {
     io: { stdout: { columns: 80, rows: 24, write: (value: Buffer | string) => { output += value.toString(); }, on() {}, off() {} },
       stdin: { isTTY: false, on() {}, off() {}, resume() {}, pause() {} } },
     reapScopeResidue: () => ({ killedPids: [], failedPids: [] }),
-    onExit: (code: number) => { session.closed = true; endings.push(markAdvSessionEnded(id, code, 'signal', { throwOnError: true })); },
+    onExit: (code: number, signal: string | null) => { session.closed = true;
+      endings.push(markAdvSessionEnded(id, code, signal ? 'signal' : 'self', { signal, throwOnError: true })); },
   });
   sessions.push(session);
   await until(() => existsSync(socketPathFor(owner)) && existsSync(metaPathFor(owner)), `${label} host ready`);
@@ -63,11 +69,19 @@ async function child(label: string) {
 
 async function responds(session: typeof sessions[number], marker: string) {
   assert.equal(session.closed, false, `${session.owner} must remain alive`);
+  let ack = '';
   await new Promise<void>((done, reject) => {
-    const socket = net.connect(socketPathFor(session.owner), () => socket.end(marker + '\n'));
+    const socket = net.connect(socketPathFor(session.owner), () => {
+      socket.end(encodeControl({ mode: 'raw', data: marker + '\n', ownerId: session.owner }));
+    });
     socket.setTimeout(2_000, () => { socket.destroy(); reject(new Error('private canary socket timeout')); });
+    // Reading the reply puts the stream in flowing mode; otherwise close can
+    // remain blocked behind the unread ACK (the maintained native helper's contract).
+    socket.setEncoding('utf8');
+    socket.on('data', value => { ack += value; });
     socket.once('error', reject); socket.once('close', () => done());
   });
+  assert.equal(JSON.parse(ack.trim().split('\n')[0]).ok, true, 'private canary raw control ACK');
   await until(() => session.output().includes(`ECHO:${marker}`), `${session.owner} reply`);
 }
 
@@ -149,5 +163,6 @@ finally {
     await closed; clearTimeout(timer);
   }
   await sql.end({ timeout: 5 });
+  rmSync(discovery, { recursive: true });
   console.log('ROSTER_STOP_HTTP_CLEANUP ' + JSON.stringify({ childrenStopped: sessions.every(session => session.closed), apiStopped: !api || api.exitCode !== null || api.signalCode !== null }));
 }

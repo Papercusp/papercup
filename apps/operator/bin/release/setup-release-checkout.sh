@@ -233,7 +233,15 @@ source_clone_allocation_kib() {  # <repository> <pin> <destination-device>
 }
 
 preflight_source_clone() {
-  local ancestor="$RELEASE_ROOT" dest_device required available child_kib pin path
+  local ancestor="$RELEASE_ROOT" dest_device required available child_kib pin path module_key
+  local source_real destination_real
+  source_real="$(realpath "$INTEGRATION_ROOT")" || return 1
+  destination_real="$(realpath -m "$RELEASE_ROOT")" || return 1
+  case "$destination_real" in
+    "$source_real"|"$source_real"/*)
+      echo "[setup-release] source clone destination must be outside integration tree (avoids nested repositories being auto-committed)" >&2
+      return 1 ;;
+  esac
   while [ ! -e "$ancestor" ]; do ancestor="$(dirname "$ancestor")"; done
   dest_device="$(filesystem_device "$ancestor")" || return 1
   required="$(source_clone_allocation_kib "$INTEGRATION_ROOT" "$TARGET_SHA" "$dest_device")" || return 1
@@ -241,6 +249,18 @@ preflight_source_clone() {
   # the same preflight so a root clone cannot consume space needed by its children.
   while IFS=$'\t' read -r pin path; do
     [ -n "$pin" ] || continue
+    # This standalone clone uses Git's recursive traversal, which requires
+    # .gitmodules names. Refuse an unsupported pin before allocating anything;
+    # scripts/source-preview.mjs verifier-prepare supports unnamed gitlinks by
+    # attesting each repository's index separately.
+    module_key="$(git -C "$INTEGRATION_ROOT" config --blob "$TARGET_SHA:.gitmodules" \
+      --get-regexp '^submodule\..*\.path$' 2>/dev/null \
+      | awk -v path="$path" '$2 == path { sub(/^submodule\./, "", $1); sub(/\.path$/, "", $1); print $1 }')" || module_key=''
+    if [ -z "$module_key" ] || ! git -C "$INTEGRATION_ROOT" config \
+      --blob "$TARGET_SHA:.gitmodules" --get "submodule.$module_key.url" >/dev/null 2>&1; then
+      echo "[setup-release] source clone requires .gitmodules path/url for gitlink $path (destination untouched; use verifier-prepare for unnamed gitlinks)" >&2
+      return 1
+    fi
     child_kib="$(source_clone_allocation_kib "$INTEGRATION_ROOT/$path" "$pin" "$dest_device")" || return 1
     required="$((required + child_kib))"
   done < <(git -C "$INTEGRATION_ROOT" ls-tree -r "$TARGET_SHA" \
