@@ -41,6 +41,7 @@ import capabilityRead from '../capability/read';
 import bashOutput from '../capability/bash_output';
 import bashKill from '../capability/bash_kill';
 import factsAssert from '../facts/assert';
+import { bulkRunReport } from '../inbox/bulk-run';
 import agentReview from '../improvements/agent-review';
 import captureTool from '../improvements/capture';
 import recipesRun from '../recipes/run';
@@ -1335,6 +1336,41 @@ describe('handler — graceful degrade + result shape', () => {
     expect(hit?.argSchema).toContain('body:string(1-4000)');
     expect(hit?.description).toContain('1200 chars are refused');
     expect(hit?.description).toContain('acceptTruncation:true');
+  });
+
+  it('keeps conditional validator rules in compact discovery beside the runtime contract', async () => {
+    const factSchema = (await callHandler({ query: 'facts:assert', limit: 1 }))
+      .hits.find((hit) => hit.tool === 'facts:assert')?.argSchema ?? '';
+    expect(factSchema).toContain(
+      "constraint:settledBy (required when kind:'undecidable'; refused for every other kind.)",
+    );
+    expect(factSchema).toContain(
+      'constraint:ttlSec (when subjectVolatile:true or measuredAt is supplied, ttlSec>900 is clamped to 900 and disclosed as ttlClampedFrom; the ordinary ttlSec ceiling still applies.)',
+    );
+    expect(factsAssert.args.safeParse({
+      scope: 'owner',
+      key: 'schema-discovery-probe',
+      body: 'probe',
+      ttlSec: 60,
+      kind: 'undecidable',
+    }).success).toBe(false);
+    expect(factsAssert.args.safeParse({
+      scope: 'owner',
+      key: 'schema-discovery-probe',
+      body: 'probe',
+      ttlSec: 60,
+      kind: 'conclusion',
+      settledBy: 'a probe',
+    }).success).toBe(false);
+
+    const bulkSchema = (await callHandler({ query: 'inbox:bulk-run-report', limit: 1 }))
+      .hits.find((hit) => hit.tool === 'inbox:bulk-run-report')?.argSchema ?? '';
+    expect(bulkSchema).toContain(
+      'constraint:items[] (when outcome is skipped or failed, error must be a non-empty reason)',
+    );
+    expect(bulkRunReport.args.safeParse({
+      items: [{ itemId: 'WI-1', outcome: 'skipped' }],
+    }).success).toBe(false);
   });
 
   it('publishes docs:get source/heading exclusion in compact discovery', async () => {

@@ -401,12 +401,13 @@ describe('test execution carries mappings into the real evidence ledger', () => 
     const [bound] = await evidenceStore.listSpecEvidence({
       harnessSlug: HARNESS, planSlugs: ['reconnect-plan'], workItemIds: ['WI-101'],
     });
-    expect(bound.testRunProvenance).toEqual({
+    expect(bound.testRunProvenance).toMatchObject({
       filePath: testPath, commitSha: 'fixture-commit', worktreeDirty: true,
     });
     expect(bound.testRunExecution).toEqual({
       status: 'pass',
       passed: 1, failed: 0, skipped: 0, collectionFailed: false,
+      filePath: testPath,
     });
     await db.sql`UPDATE harness_shared.test_runs SET worktree_dirty = false WHERE id = ${run.id}`;
     // Integrated continuation: persist once, cross the reader boundary, and use
@@ -2374,6 +2375,70 @@ describe('plans:bind-spec-evidence { fromTestRun } derives the binding from a re
     const rejected = evaluate([differentTitle]);
     expect(rejected.ratings['correct-layer'].rating).toBe('unknown');
     expect(rejected.ratings['correct-layer'].suggestion).toContain('exact passedCaseTitles');
+  });
+
+  it('refuses a test binding whose declared cases have zero overlap with a complete passing title ledger', async () => {
+    await specs.setSpecClause(clause({ mutationRequired: false }));
+    const runId = await recordRun();
+    const executionDetails = {
+      schemaVersion: 1,
+      root: h.repoRoot,
+      filePath: DERIVE_TEST,
+      runGroupId: null,
+      workspaceId: WORKSPACE,
+      harnessSlug: HARNESS,
+      testNamePattern: null,
+      passed: 1,
+      failed: 0,
+      skipped: 0,
+      collectionFailed: false,
+      mutationPhase: null,
+      commitSha: 'c0ffee1234567890',
+      worktreeDirty: false,
+      testLayer: 'integration',
+      passedCaseTitles: ['outer > suite > selected case'],
+    };
+    await db.sql`UPDATE harness_shared.test_runs
+      SET execution_details = ${db.sql.json(executionDetails)}
+      WHERE id = ${runId}`;
+
+    const accepted = await bindFromRun(runId, 'WI-101', {
+      adequacy: { collected: true, skipped: false, executed: true, outcome: 'passed', testCases: ['selected case'] },
+    });
+    expect(accepted).toMatchObject({ ok: true, status: 'created' });
+
+    const rejected = await bindFromRun(runId, 'WI-102', {
+      adequacy: { collected: true, skipped: false, executed: true, outcome: 'passed', testCases: ['case from another file'] },
+    });
+    expect(rejected).toMatchObject({
+      ok: false,
+      error: 'test_cases_not_in_run',
+      status: 'test_cases_not_in_run',
+      testRunId: runId,
+      declaredCaseCount: 1,
+      passedCaseTitleCount: 1,
+    });
+    const persisted = await evidenceStore.listSpecEvidence({
+      harnessSlug: HARNESS,
+      planSlugs: ['reconnect-plan'],
+      workItemIds: ['WI-102'],
+      evidenceRefs: [DERIVE_TEST],
+    });
+    expect(persisted).toEqual([]);
+
+    const incompleteRunId = await recordRun();
+    const incompleteDetails = {
+      ...executionDetails,
+      passed: 65,
+      passedCaseTitles: Array.from({ length: 64 }, (_, index) => 'outer > recorded case ' + index),
+    };
+    await db.sql`UPDATE harness_shared.test_runs
+      SET execution_details = ${db.sql.json(incompleteDetails)}
+      WHERE id = ${incompleteRunId}`;
+    const incomplete = await bindFromRun(incompleteRunId, 'WI-102', {
+      adequacy: { collected: true, skipped: false, executed: true, outcome: 'passed', testCases: ['case omitted from title cap'] },
+    });
+    expect(incomplete).toMatchObject({ ok: true, status: 'created' });
   });
 
   it('binds a mutation-probe copy-out row using its JSON execution root and canonical test path', async () => {

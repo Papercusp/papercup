@@ -94,6 +94,7 @@ describe('plans:bind-spec-evidence adequacy completeness metadata', () => {
     ['fixtureFree', true],
     ['falsifiable', true],
     ['testLayer', 'integration'],
+    ['testCases', ['suite > case']],
     ['pathReachable', true],
     ['oracleIndependent', true],
     ['collected', true],
@@ -169,6 +170,20 @@ describe('plans:bind-spec-evidence adequacy completeness metadata', () => {
       },
     });
     expect(parsed.success).toBe(true);
+  });
+
+  it('requires adequacy.testCases to be a list of nonblank case titles', () => {
+    expect(bindingSchema.safeParse({
+      ...measuredBinding,
+      details: { adequacy: { testCases: ['suite > selected case'] } },
+    }).success).toBe(true);
+
+    for (const value of ['selected case', [42], ['   ']]) {
+      expect(bindingSchema.safeParse({
+        ...measuredBinding,
+        details: { adequacy: { testCases: value } },
+      }).success).toBe(false);
+    }
   });
 
   it('accepts an uppercase platform-generated clause ID as targeted adequacy metadata', () => {

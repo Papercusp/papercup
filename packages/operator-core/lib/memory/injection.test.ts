@@ -2165,6 +2165,35 @@ describe('corpus leg carries its own retrieval health (P-001)', () => {
 
 /** P-009 — the corpus leg shares the existing one-row admission telemetry. */
 describe('records the corpus admission funnel on the same recall row (P-009)', () => {
+  it.each(['degraded', 'unavailable', 'error'] as const)(
+    'retains delivered corpus execution receipts when memory exits early: %s', async (failure) => {
+      const backend = mockBackend([], { ok: failure !== 'unavailable' });
+      if (failure === 'error') backend.available = vi.fn(async () => { throw new Error('memory probe failed'); });
+      useBackend(backend);
+      if (failure === 'degraded') noteMemoryFailure(new MemoryTimeoutError('prior recall timed out'));
+      const first = { ...legsWith(0), lexical: { ...legsWith(0).lexical, sourceCalls: [
+        { source: 'plan', ranker: 'lexical', status: 'timed-out', rows: null, durationMs: 200, reason: 'source deadline' },
+      ] } };
+      const second = legsWith(3);
+      corpusIoResult = oneLine({ legs: second, stages: [first, second] });
+      try {
+        const block = await buildMemoryContextBlock({ userId: 'u1', workspaceId: 'ws',
+          queryContext: 'why did the corpus leg return that' });
+        expect(block).toContain('work-item WI-6512');
+        expect(recordRecallStatsMock).toHaveBeenCalledTimes(1);
+        expect(recordRecallStatsMock.mock.calls[0]![1]).toMatchObject({
+          legs: null,
+          admission: { returned: 0, admitted: 0, corpus: {
+            outcome: 'ok', returned: 4, selected: 1, admitted: 1,
+            sessionDedup: 0, embedderAvailable: true, retrievalDepth: 24, rerank: 'reranked',
+            dropped: { 'ambient-excluded': 1, 'no-term-overlap': 1, 'budget-exhausted': 1 },
+            legs: second, stages: [first, second], gate: null,
+          } },
+        });
+        expect(backend.search).not.toHaveBeenCalled();
+      } finally { resetMemoryDegradedForTest(); }
+    },
+  );
   it('retains the source receipts from every cascade stage on the same telemetry row', async () => {
     const first = { ...legsWith(0),lexical: { ...legsWith(0).lexical,sourceCalls: [
       { source: 'plan',ranker: 'lexical',status: 'timed-out' as const,rows: null,durationMs: 200,reason: 'source deadline' },
