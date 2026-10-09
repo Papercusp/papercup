@@ -2,7 +2,7 @@
 /** One-shot R-11 evidence capture. Example: npx tsx scripts/r11-window-snapshot.mts T0 /absolute/output.json */
 import { createHash } from 'node:crypto';
 import { openSync, closeSync, writeFileSync, linkSync, unlinkSync, readFileSync, existsSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gzipSync, gunzipSync } from 'node:zlib';
 import { getOrgPg } from '@papercusp/db-org';
@@ -38,7 +38,7 @@ try {
     const script = fileURLToPath(import.meta.url);
     const tsx = resolve(repoRoot, 'node_modules/.bin/tsx');
     const timers = await scheduleR11Timers(specs, { t0: path, cut: arg3, t1: arg4 },
-      { repoRoot, tsx, script }, arg5 === '--dry-run');
+      { repoRoot, tsx, script, journalDirectory: dirname(path) }, arg5 === '--dry-run');
     const t0Bytes = readFileSync(path);
     process.stdout.write(`${JSON.stringify({ t0: { path, capturedAt: t0.capturedAt,
       bytes: t0Bytes.length, sha256: sha256(t0Bytes) }, timers, dryRun: arg5 === '--dry-run' })}\n`);

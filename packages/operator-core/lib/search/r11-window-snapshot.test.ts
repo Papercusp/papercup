@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { inspectGovernorSource } from '../../../../scripts/check-resource-governor-enforcement.mjs';
-import { buildR11SystemdRunArgs, buildR11TargetQuery, buildR11TimerSpecs, evaluateR11Snapshots, scheduleR11Timers, selectR11StageRows, type R11Snapshot } from './r11-window-snapshot';
+import { buildR11JournalCapturePlan, buildR11SystemdRunArgs, buildR11TargetQuery, buildR11TimerSpecs, evaluateR11Snapshots, R11_JOURNAL_MAX_BYTES, scheduleR11Timers, selectR11StageRows, type R11Snapshot } from './r11-window-snapshot';
 
 const at = '2026-10-03T03:00:00.000Z';
 const snapshot = (stage: R11Snapshot['stage'], offsetMs: number, rows: Array<{ key: string; stale: boolean }>): R11Snapshot => ({
@@ -67,9 +67,82 @@ describe('R-11 admitted timer commands', () => {
   it('keeps the canonical CLI free of unadmitted starts and detects a reintroduced start', () => {
     const source = readFileSync(new URL('../../../../scripts/r11-window-snapshot.mts', import.meta.url), 'utf8');
     expect(source).toContain('await scheduleR11Timers(');
+    expect(source).toContain('journalDirectory: dirname(path)');
     expect(inspectGovernorSource(source)).not.toContain('resource-start-outside-admission');
     expect(inspectGovernorSource(source + "\nexecFileSync('systemd-run', []);"))
       .toContain('resource-start-outside-admission');
+  });
+});
+
+describe('R-11 journal producer bounds', () => {
+  const specs = buildR11TimerSpecs(snapshot('T0', 0, []));
+  const paths = { t0: '/evidence/t0.json.gz', cut: '/evidence/cut.json.gz', t1: '/evidence/t1.json.gz' };
+  const runtime = { repoRoot: '/repo', tsx: '/repo/tsx', script: '/repo/capture.mts', journalDirectory: '/evidence/100%' };
+  const now = () => Date.parse(at);
+  const success = { status: 0, signal: null, stdout: '', stderr: '', actualDemand: {} };
+
+  it('uses an independent frozen stop timer plus time and file-size limits for every follower', () => {
+    const plan = buildR11JournalCapturePlan(specs, runtime.journalDirectory, now());
+    expect(plan.deadline).toBe('2026-10-04T03:00:00.000Z');
+    expect(plan.expiryCommand).toContain(`--on-calendar=${specs[1].at}`);
+    expect(plan.expiryCommand.slice(-3)).toEqual(plan.captures.map(({ unit }) => `${unit}.service`));
+    for (const follower of plan.captures) {
+      expect(follower.command).toContain('--property=RuntimeMaxSec=86400');
+      expect(follower.command).toContain(`--property=LimitFSIZE=${R11_JOURNAL_MAX_BYTES}`);
+      expect(follower.command).toContain(`--property=StandardOutput=append:${follower.path.replace('%', '%%')}`);
+    }
+    expect(plan.captures[2].command.slice(-2)).toEqual(['-n', '1']);
+    expect(plan.captures[1].command).toContain('--no-tail');
+    expect(plan.captures[1].command).toContain(`--since=@${Date.parse(at) / 1000}`);
+  });
+
+  it('rejects an expired window before starting anything and shows bounds in a dry run', async () => {
+    const execute = vi.fn();
+    await expect(scheduleR11Timers(specs, paths, runtime, false, execute, () => now() + end))
+      .rejects.toThrow('future frozen T1');
+    expect(execute).not.toHaveBeenCalled();
+    const preview = await scheduleR11Timers(specs, paths, runtime, true, execute, now);
+    expect(preview).toHaveLength(6);
+    expect(preview[0].command).toContain('/usr/bin/systemctl');
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('rolls back owned followers and the expiry timer when a snapshot timer fails', async () => {
+    const plan = buildR11JournalCapturePlan(specs, runtime.journalDirectory, now());
+    const execute = vi.fn(async (command: string, args: string[]) => {
+      if (command === 'systemd-run' && args.includes(`--unit=${specs[0].unit}`)) {
+        return { ...success, status: 1, stderr: 'snapshot start failed' };
+      }
+      if (command === 'systemctl' && args.includes('show')) {
+        return { ...success, stdout: args.includes(`${plan.expiryUnit}.timer`)
+          ? `ActiveState=active\nUnit=${plan.expiryUnit}.service\n`
+          : `ActiveState=active\nRuntimeMaxUSec=1d\nLimitFSIZE=${R11_JOURNAL_MAX_BYTES}\n` };
+      }
+      return success;
+    });
+    await expect(scheduleR11Timers(specs, paths, runtime, false, execute, now)).rejects.toThrow('snapshot start failed');
+    expect(execute.mock.calls.filter(([command, args]) => command === 'systemctl' && args.includes('stop'))
+      .map(([, args]) => args.at(-1))).toEqual([
+      `${plan.expiryUnit}.timer`, ...plan.captures.map(({ unit }) => `${unit}.service`),
+    ]);
+  });
+
+  it('refuses an ineffective runtime limit and stops a start that crossed the deadline in admission', async () => {
+    for (const drift of [false, true]) {
+      const plan = buildR11JournalCapturePlan(specs, runtime.journalDirectory, now());
+      let clock = now();
+      const execute = vi.fn(async (command: string, args: string[]) => {
+        if (command === 'systemctl' && args.includes('show')) {
+          if (args.includes(`${plan.expiryUnit}.timer`)) return { ...success, stdout: `ActiveState=active\nUnit=${plan.expiryUnit}.service\n` };
+          if (drift) clock += end;
+          return { ...success, stdout: `ActiveState=active\nRuntimeMaxUSec=${drift ? '1d' : 'infinity'}\nLimitFSIZE=${R11_JOURNAL_MAX_BYTES}\n` };
+        }
+        return success;
+      });
+      await expect(scheduleR11Timers(specs, paths, runtime, false, execute, () => clock)).rejects.toThrow('not bounded and active');
+      expect(execute.mock.calls.filter(([command, args]) => command === 'systemctl' && args.includes('stop'))).toHaveLength(2);
+      expect(execute.mock.calls.filter(([command]) => command === 'systemd-run')).toHaveLength(2);
+    }
   });
 });
 

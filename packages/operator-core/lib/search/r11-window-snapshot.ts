@@ -1,5 +1,6 @@
 /** Read-only, repeatable-read evidence capture for plan shared-vector-search-libraries P-008 R-11. */
 import { createHash } from 'node:crypto';
+import { isAbsolute, join } from 'node:path';
 import { executeGovernedByteProcess } from '../../../../scripts/lib/governed-test-process.mjs';
 import type { getOrgPg } from '@papercusp/db-org';
 import {
@@ -39,11 +40,58 @@ export interface R11TimerSpec {
   at: string;
 }
 
+/** Bound each evidence file even if a frozen snapshot fails or its owner exits. */
+export const R11_JOURNAL_MAX_BYTES = 8 * 1024 ** 3;
+
+export interface R11CaptureRuntime {
+  repoRoot: string;
+  tsx: string;
+  script: string;
+  journalDirectory?: string;
+}
+
+/** The expiry timer is independent of the database snapshot service. */
+export function buildR11JournalCapturePlan(
+  specs: readonly R11TimerSpec[], directory: string, nowMs = Date.now(),
+) {
+  const end = specs.find((spec) => spec.stage === 'T1');
+  const deadline = end ? Date.parse(end.at) : NaN;
+  if (!end || !/^r11-p008-t1-\d+$/.test(end.unit) || !Number.isFinite(deadline) || deadline <= nowMs) {
+    throw new Error('Journal capture requires a future frozen T1 deadline');
+  }
+  if (!isAbsolute(directory) || /[\r\n\0]/.test(directory)) {
+    throw new Error('Journal capture requires an absolute output directory');
+  }
+  const remainingSec = Math.ceil((deadline - nowMs) / 1000);
+  const windowStartSec = Math.floor(deadline / 1000) - 24 * 60 * 60;
+  const stamp = end.unit.slice('r11-p008-t1-'.length);
+  const captures = [
+    { kind: 'bg', journalUnit: 'papercusp-bg-host.service', journalArgs: ['--no-tail', `--since=@${windowStartSec}`, '--grep=embed-backfill'] },
+    { kind: 'bg-all', journalUnit: 'papercusp-bg-host.service', journalArgs: ['--no-tail', `--since=@${windowStartSec}`] },
+    // Preserve the last existing event as the predeclared sidecar anchor.
+    { kind: 'sidecar-anchored', journalUnit: 'papercup-embed-sidecar.service', journalArgs: ['-n', '1'] },
+  ].map(({ kind, journalUnit, journalArgs }) => {
+    const unit = `r11-p008-journal-${stamp}-${kind}`;
+    const path = join(directory, `${unit}.jsonl`);
+    return { unit, path, command: ['--user', `--unit=${unit}`,
+      `--property=RuntimeMaxSec=${remainingSec}`, '--property=TimeoutStopSec=10s',
+      `--property=LimitFSIZE=${R11_JOURNAL_MAX_BYTES}`, '--property=UMask=0077',
+      // systemd expands percent specifiers in output paths.
+      `--property=StandardOutput=append:${path.replaceAll('%', '%%')}`,
+      '/usr/bin/journalctl', '--user', '-f', '-o', 'json', `--unit=${journalUnit}`, ...journalArgs] };
+  });
+  const expiryUnit = `r11-p008-journal-expiry-${stamp}`;
+  return { deadline: new Date(deadline).toISOString(), captures, expiryUnit,
+    expiryCommand: ['--user', `--unit=${expiryUnit}`, `--on-calendar=${end.at}`,
+      '--timer-property=AccuracySec=1s', '/usr/bin/systemctl', '--user', 'stop',
+      ...captures.map(({ unit }) => `${unit}.service`)] };
+}
+
 /** Build the exact user timer command, including each stage's frozen inputs. */
 export function buildR11SystemdRunArgs(
   spec: R11TimerSpec,
   paths: { t0: string; cut: string; t1: string },
-  runtime: { repoRoot: string; tsx: string; script: string },
+  runtime: R11CaptureRuntime,
 ): string[] {
   const args = spec.stage === 'Tcut'
     ? ['Tcut', paths.cut, paths.t0]
@@ -74,9 +122,12 @@ export async function scheduleR11Timers(
   runtime: Parameters<typeof buildR11SystemdRunArgs>[2],
   dryRun = false,
   executeProcess: typeof executeGovernedByteProcess = executeGovernedByteProcess,
+  now: () => number = Date.now,
 ) {
   const armed: string[] = [];
-  const timers: Array<R11TimerSpec & { show?: string; command?: string[] }> = [];
+  const timers: Array<R11TimerSpec & {
+    kind?: 'journal' | 'journal-expiry'; path?: string; show?: string; command?: string[];
+  }> = [];
   const run = async (executable: string, args: string[]) => {
     const result = await executeProcess(executable, args, new Uint8Array(), {
       namespace: 'r11-window-snapshot', timeoutMs: 30_000, maxBuffer: 1024 * 1024,
@@ -87,6 +138,42 @@ export async function scheduleR11Timers(
     return result.stdout;
   };
   try {
+    if (runtime.journalDirectory) {
+      const capture = buildR11JournalCapturePlan(specs, runtime.journalDirectory, now());
+      if (!dryRun) {
+        // Arm the stop first: a failed Tcut/T1 service must not leave followers running.
+        await run('systemd-run', capture.expiryCommand);
+        armed.push(`${capture.expiryUnit}.timer`);
+        const expiry = await run('systemctl', ['--user', 'show', `${capture.expiryUnit}.timer`,
+          '-p', 'ActiveState', '-p', 'Unit']);
+        if (!expiry.includes('ActiveState=active') || !expiry.includes(`Unit=${capture.expiryUnit}.service`)) {
+          throw new Error(`Journal expiry ${capture.expiryUnit} was not armed`);
+        }
+        timers.push({ stage: 'T1', kind: 'journal-expiry', unit: capture.expiryUnit,
+          at: capture.deadline, command: capture.expiryCommand, show: expiry });
+        for (const follower of capture.captures) {
+          if (now() >= Date.parse(capture.deadline)) throw new Error('Frozen T1 expired during journal admission');
+          await run('systemd-run', follower.command);
+          armed.push(`${follower.unit}.service`);
+          const show = await run('systemctl', ['--user', 'show', `${follower.unit}.service`,
+            '-p', 'ActiveState', '-p', 'RuntimeMaxUSec', '-p', 'LimitFSIZE']);
+          if (now() >= Date.parse(capture.deadline) || !show.includes('ActiveState=active') ||
+              !/^RuntimeMaxUSec=(?!infinity|0(?:\s|$)).+/m.test(show) ||
+              !show.includes(`LimitFSIZE=${R11_JOURNAL_MAX_BYTES}`)) {
+            throw new Error(`Journal capture ${follower.unit} was not bounded and active`);
+          }
+          timers.push({ stage: 'T1', kind: 'journal', unit: follower.unit, path: follower.path,
+            at: capture.deadline, command: follower.command, show });
+        }
+      } else {
+        timers.push({ stage: 'T1', kind: 'journal-expiry', unit: capture.expiryUnit,
+          at: capture.deadline, command: capture.expiryCommand });
+        for (const follower of capture.captures) {
+          timers.push({ stage: 'T1', kind: 'journal', unit: follower.unit, path: follower.path,
+            at: capture.deadline, command: follower.command });
+        }
+      }
+    }
     for (const spec of specs) {
       const command = buildR11SystemdRunArgs(spec, paths, runtime);
       if (dryRun) {
