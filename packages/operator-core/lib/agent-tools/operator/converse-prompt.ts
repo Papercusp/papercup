@@ -354,6 +354,8 @@ export async function buildOperatorPrompt(
             userId: sessionUser?.id ?? null,
             workspaceId: activeWorkspaceId(),
             harnessSlugs,
+            knowledgeSourcesAllowed: hostTrust === 'owner',
+            reportViewer: { isOwner: hostTrust === 'owner' },
             ...(hostTrust === 'public' ? { hiveSlugs: [] } : {}),
             queryContext: lastUserContext(messages, 3),
             // The Sentinel's recall heading mirrors the operator one but names its own role
