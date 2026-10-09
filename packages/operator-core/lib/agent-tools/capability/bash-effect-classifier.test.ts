@@ -126,6 +126,26 @@ describe('capability:bash per-call effect classifier (EI-22647418629976526)', ()
     });
   });
 
+  it('normalizes expected SIGPIPE for a sudo-wrapped read-only find/sort/head listing', () => {
+    const command = 'sudo find /tmp/artifacts -type f -printf "%s %p\\n" | sort -rn | head -20';
+
+    expect(classifyCapabilityBashEffect({ command })).toBe('read');
+    expect(normalizeExpectedSigpipeResult(command, 'failed', 141)).toEqual({
+      status: 'completed',
+      exitCode: 0,
+    });
+  });
+
+  it('keeps mutating sudo find pipelines write-classified and preserves SIGPIPE failure', () => {
+    const command = 'sudo find /tmp/artifacts -type f -delete | sort -rn | head -20';
+
+    expect(classifyCapabilityBashEffect({ command })).toBe('write');
+    expect(normalizeExpectedSigpipeResult(command, 'failed', 141)).toEqual({
+      status: 'failed',
+      exitCode: 141,
+    });
+  });
+
   it('classifies a bounded lsof/awk/sort/head diagnostic as read-only and normalizes producer SIGPIPE', () => {
     const command = "lsof -nP | awk '{print $1}' | sort -u | head -n 1";
 

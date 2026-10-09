@@ -76,20 +76,26 @@ import { detectBodyRefs, type HydratableRef } from '../coordination/ref-hydrate'
  */
 export const MAX_REFS_PROBED = 12;
 
-/** Resolve a work-item id → truthy when it exists. Injectable so this is unit-testable
- *  without a DB, and so a consumer holding `getWorkItem` already can skip the dynamic
- *  import. MUST reject/throw (not return null) when it cannot judge — see below. */
+/** Optional per-reference resolver for tests and consumers that already own a reader. */
 export type WorkItemRefProbe = (id: string) => Promise<unknown>;
 
 /** The real probe: dynamically imported so this module adds no static store chain to
- *  whichever write verb imports it (EI-9727 / EI-13504 flags/server partial-mock trap). */
-const defaultProbe: WorkItemRefProbe = async (id) => {
-  const { getWorkItem } = await import('../../work-items');
-  return getWorkItem(id);
+ *  whichever write verb imports it (EI-9727 / EI-13504 flags/server partial-mock trap).
+ *  Use the existing set-based reader so a body with many refs does not open one org-pool
+ *  read per ref. `getWorkItemsByIds` performs one issue-family query and one feature-family
+ *  fallback query for the whole bounded batch. */
+const defaultBatchProbe = async (ids: readonly string[]): Promise<ReadonlySet<string> | null> => {
+  try {
+    const { getWorkItemsByIds } = await import('../../work-items');
+    const found = await getWorkItemsByIds([...ids]);
+    return new Set(found.map((item) => item.id.toUpperCase()));
+  } catch {
+    return null;
+  }
 };
 
 export interface UnresolvedRefsOptions {
-  /** Injectable resolution seam (default: dynamic `getWorkItem`). */
+  /** Optional per-reference resolver; omitted uses the default set-based reader. */
   probe?: WorkItemRefProbe;
   /** Ids to treat as resolved without probing — e.g. the item being written to, which
    *  the caller has already loaded. Case-insensitive. */
@@ -123,7 +129,6 @@ export async function unresolvedRefsInBody(
   }
   if (!refs.length) return undefined;
 
-  const probe = opts.probe ?? defaultProbe;
   const known = new Set((opts.known ?? []).map((k) => (k ?? '').trim().toUpperCase()).filter(Boolean));
 
   const ids = refs
@@ -132,18 +137,31 @@ export async function unresolvedRefsInBody(
     .filter((id) => !known.has(id.toUpperCase()));
   if (!ids.length) return undefined;
 
-  const verdicts = await Promise.all(
-    ids.map(async (id) => {
-      try {
-        const found = await probe(id);
-        // A CLEAN null is the only thing that earns a warning. A throw means the store
-        // could not answer, which is emphatically not evidence the ref is phantom.
-        return { id, judged: true, resolved: Boolean(found) };
-      } catch {
-        return { id, judged: false, resolved: false };
-      }
-    }),
-  );
+  let verdicts: Array<{ id: string; judged: boolean; resolved: boolean }>;
+  if (opts.probe) {
+    // Keep the injected per-ref seam for consumers that already own a resolver and for
+    // focused tests. The production default below is batched.
+    verdicts = await Promise.all(
+      ids.map(async (id) => {
+        try {
+          const found = await opts.probe!(id);
+          // A CLEAN null is the only thing that earns a warning. A throw means the store
+          // could not answer, which is emphatically not evidence the ref is phantom.
+          return { id, judged: true, resolved: Boolean(found) };
+        } catch {
+          return { id, judged: false, resolved: false };
+        }
+      }),
+    );
+  } else {
+    const resolved = await defaultBatchProbe(ids);
+    // A batch read that cannot answer is not evidence that any ref is phantom.
+    verdicts = ids.map((id) => ({
+      id,
+      judged: resolved !== null,
+      resolved: resolved?.has(id.toUpperCase()) ?? false,
+    }));
+  }
 
   // `known` ids are already resolved by the caller (for example, the item whose
   // checkpoint is being written), so include exact known refs found in this body

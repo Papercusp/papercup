@@ -7,7 +7,10 @@ import type { ControlOutcome } from '../task-manager/control';
 import { resolveBenchWorkspace } from './bench-workspace';
 import { liveBenchHarnessDriver, liveBenchHarnessOps, type BenchHarnessOps, type BenchHarnessHandle, type DriveResult, type LiveBenchHarnessOpts } from './bench-harness-live';
 import { FULL_SPINE_BLUEPRINT, setBenchHarnessDriver } from './run-loop';
-import type { GenerationBudget } from './types';
+import type { BenchTask, GenerationBudget } from './types';
+import type { DbScope } from './reproducibility/db';
+import { requireCurrentBenchmarkAssignment } from './reproducibility/schema';
+import { normalizeFeatureStateInput } from '../work-item-dispatch-states';
 
 type LaunchArgs = Parameters<typeof launchAgentTool.handler>[0];
 export type CurrentBenchTask = Pick<TaskRow, 'taskId' | 'workspaceId' | 'state' | 'exitCode' | 'detail'>;
@@ -25,6 +28,9 @@ export interface CurrentBenchIdentity {
 }
 export interface CurrentSuBenchOptions extends LiveBenchHarnessOpts {
   runId: string;
+  armId: string;
+  seed: number;
+  preregistration: { preregHash: string; config: Record<string, unknown>; repoRoot?: string };
   agent: 'codex' | 'claude';
   model: string;
   effort: NonNullable<NonNullable<LaunchArgs['members']>[number]['effort']>;
@@ -34,10 +40,11 @@ export interface CurrentSuBenchOptions extends LiveBenchHarnessOpts {
 /** Bind admission/observations from the existing budget and protocol planes. */
 export interface CurrentSuBenchObservations {
   admit(handle: BenchHarnessHandle, budget: GenerationBudget): Promise<{ admitted: boolean; receiptRef: string }>;
-  readCompletion(handle: BenchHarnessHandle): Promise<'done' | 'failed' | null>;
   readIdentity(task: CurrentBenchTask): Promise<CurrentBenchIdentity | null>;
 }
 export interface CurrentSuBenchPorts extends CurrentSuBenchObservations {
+  verifyPreregistration(): Promise<{ preregHash: string; gitCommitSha: string; receiptRef: string }>;
+  readCompletion(handle: BenchHarnessHandle): Promise<'done' | 'failed' | null>;
   launch(args: LaunchArgs): Promise<unknown>;
   getTask(taskId: string): Promise<CurrentBenchTask | null>;
   listTasks(filter: { workspaceId: string; labelPrefix: string; includeEnded: true; limit: number }): Promise<CurrentBenchTask[]>;
@@ -107,7 +114,7 @@ export async function recoverCurrentBenchRun(ports: CurrentSuBenchPorts, opts: P
 export function currentSuBenchHarnessDriver(lifecycle: BenchHarnessOps, ports: CurrentSuBenchPorts, opts: CurrentSuBenchOptions) {
   const workspaceId = resolveBenchWorkspace(opts.workspaceId);
   currentBenchRunLabel(opts.runId);
-  const problems = new Map<string, string>();
+  const registeredTasks = new Map<string, BenchTask>();
   const ops: BenchHarnessOps = {
     ...lifecycle,
     async createHarness(input) {
@@ -116,7 +123,7 @@ export function currentSuBenchHarnessDriver(lifecycle: BenchHarnessOps, ports: C
     },
     async addFeature(input) {
       await lifecycle.addFeature(input);
-      problems.set(input.handle.slug, input.task.problemStatement);
+      registeredTasks.set(input.handle.slug, input.task);
     },
     async driveToDone({ handle, budget, timeoutMs, pollMs }): Promise<DriveResult> {
       const labelPrefix = attemptLabel(opts.runId, handle);
@@ -128,6 +135,15 @@ export function currentSuBenchHarnessDriver(lifecycle: BenchHarnessOps, ports: C
       let started = false;
       try {
         if (opts.signal?.aborted) return { disposition: 'timeout', detail: 'Benchmark cancelled before launch.', armMeta: { currentExecution: record } };
+        const task = registeredTasks.get(handle.slug);
+        if (!task) throw new Error('Current benchmark task has no registered assignment.');
+        requireCurrentBenchmarkAssignment(opts.preregistration.config, { ...opts, taskId: task.instanceId, budget });
+        const protocol = await ports.verifyPreregistration();
+        record.preregistration = protocol;
+        if (protocol.preregHash !== opts.preregistration.preregHash || !protocol.gitCommitSha?.trim() || !protocol.receiptRef?.trim()) {
+          throw new Error('Benchmark pre-registration receipt is missing or does not match the frozen protocol.');
+        }
+        if (opts.signal?.aborted) return { disposition: 'timeout', detail: 'Benchmark cancelled before admission.', armMeta: { currentExecution: record } };
         const admission = await ports.admit(handle, budget);
         record.admission = admission;
         if (!admission.receiptRef?.trim()) throw new Error('Benchmark budget admission has no durable receipt.');
@@ -138,7 +154,7 @@ export function currentSuBenchHarnessDriver(lifecycle: BenchHarnessOps, ports: C
         if (!(deadline > startedAt)) return { disposition: 'budget-exhausted', armMeta: { currentExecution: record } };
         // A transport failure can happen after spawning: cleanup uses the durable label.
         started = true;
-        const receipt = payload(await ports.launch(currentBenchLaunchRequest(opts, handle, problems.get(handle.slug)!)));
+        const receipt = payload(await ports.launch(currentBenchLaunchRequest(opts, handle, task.problemStatement)));
         record.launchReceipt = receipt;
         const tasks = receipt.tasks as Array<{ taskId?: string }> | undefined;
         if (receipt.agentStarted !== true || tasks?.length !== 1 || !tasks[0]?.taskId) throw new Error('Native benchmark launch has no verified single-agent start.');
@@ -174,16 +190,40 @@ export function currentSuBenchHarnessDriver(lifecycle: BenchHarnessOps, ports: C
       }
       return { ...result, armMeta: { currentExecution: record } };
     },
-    async teardown(input) { problems.delete(input.handle.slug); await lifecycle.teardown(input); },
+    async teardown(input) { registeredTasks.delete(input.handle.slug); await lifecycle.teardown(input); },
   };
   return liveBenchHarnessDriver(ops, { ...opts, workspaceId, maxTransientRetries: 0 });
 }
 /** Preserve the authenticated caller context; never manufacture benchmark authority. */
-export function liveCurrentSuBenchPorts(ctx: PapercuspUnifiedToolContext, observations: CurrentSuBenchObservations): CurrentSuBenchPorts {
+export async function readCurrentBenchCompletion(
+  handle: BenchHarnessHandle, scope: DbScope & { workspaceId: string },
+): Promise<'done' | 'failed' | null> {
+  const workspaceId = resolveBenchWorkspace(scope.workspaceId);
+  const { resolveDb } = await import('./reproducibility/db');
+  const { sql } = resolveDb({ ...scope, workspaceId });
+  const [row] = await sql<{ status: string }[]>`
+    SELECT status FROM harness_shared.work_items
+     WHERE workspace_id = ${workspaceId} AND harness_slug = ${handle.slug}
+       AND feature_id = ${handle.featureId} LIMIT 1
+  `;
+  if (!row) return null;
+  const normalized = normalizeFeatureStateInput(row.status);
+  if (!normalized.ok) return null;
+  return normalized.state === 'done' ? 'done' : normalized.state === 'dropped' ? 'failed' : null;
+}
+export function liveCurrentSuBenchPorts(
+  ctx: PapercuspUnifiedToolContext, observations: CurrentSuBenchObservations,
+  opts: Pick<CurrentSuBenchOptions, 'workspaceId' | 'runId' | 'preregistration'>,
+  db: Pick<DbScope, 'sql'> = {},
+): CurrentSuBenchPorts {
   const workspaceId = resolveBenchWorkspace(ctx.workspaceId);
-  if (ctx.workspaceId !== workspaceId) throw new Error('Current benchmark launch requires an explicitly isolated caller context.');
+  if (ctx.workspaceId !== workspaceId || opts.workspaceId !== workspaceId) throw new Error('Current benchmark launch requires an explicitly isolated caller context.');
   return {
     ...observations,
+    verifyPreregistration: async () => (await import('./reproducibility/prereg')).requireCommittedPreregistration(
+      opts.runId, opts.preregistration, { ...db, workspaceId, repoRoot: opts.preregistration.repoRoot },
+    ),
+    readCompletion: handle => readCurrentBenchCompletion(handle, { ...db, workspaceId }),
     launch: async args => (await import('../agent-tools/capability/launch-agent')).default.handler(args, ctx),
     getTask: async id => (await import('../task-manager/store')).getTask(id),
     listTasks: async filter => (await import('../task-manager/store')).listTasks(filter),
@@ -193,5 +233,5 @@ export function liveCurrentSuBenchPorts(ctx: PapercuspUnifiedToolContext, observ
 }
 export function bindCurrentSuBenchHarness(opts: CurrentSuBenchOptions, ctx: PapercuspUnifiedToolContext, observations: CurrentSuBenchObservations): void {
   if (resolveBenchWorkspace(opts.workspaceId) !== ctx.workspaceId) throw new Error('Benchmark launch context and run workspace differ.');
-  setBenchHarnessDriver(currentSuBenchHarnessDriver(liveBenchHarnessOps(opts), liveCurrentSuBenchPorts(ctx, observations), opts));
+  setBenchHarnessDriver(currentSuBenchHarnessDriver(liveBenchHarnessOps(opts), liveCurrentSuBenchPorts(ctx, observations, opts), opts));
 }

@@ -2,8 +2,10 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createCache } from '@papercusp/cache';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { HarnessRegistry } from '../../harness-registry';
+import { runGit } from './git';
 import gitEvidence, {
   MAX_GIT_EVIDENCE_INLINE_BYTES,
   MAX_GIT_EVIDENCE_PAGE_BYTES,
@@ -250,10 +252,22 @@ describe('capability:git-evidence', () => {
     git(root, ['commit', '--quiet', '-m', 'large file']);
     const commitSha = git(root, ['rev-parse', 'HEAD']);
     writeFileSync(join(root, 'large.txt'), 'uncommitted replacement\n');
+    const gitCalls: string[][] = [];
+    const runner: typeof runGit = async (...args) => {
+      gitCalls.push(args[0]);
+      return runGit(...args);
+    };
+    const readOptions = {
+      repositoryDir: root,
+      workspaceId: 'test-workspace',
+      signal: never,
+      runner,
+      cache: createCache({ maxL1Entries: 16 }),
+    };
 
     let result = await runJudgeGitEvidence(
       { op: 'readFileAtCommit', commitSha, path: 'large.txt' },
-      { repositoryDir: root, signal: never },
+      readOptions,
     );
     const pages: Buffer[] = [];
     let totalRead = 0;
@@ -272,11 +286,12 @@ describe('capability:git-evidence', () => {
       totalRead += page.length;
       pageCount += 1;
       if (!result.next_cursor) break;
-      result = await runJudgeGitEvidence(result.next_cursor.args, { repositoryDir: root, signal: never });
+      result = await runJudgeGitEvidence(result.next_cursor.args, readOptions);
     }
 
     expect(pageCount).toBeGreaterThan(1);
     expect(totalRead).toBe(expectedBytes.length);
     expect(Buffer.concat(pages)).toEqual(expectedBytes);
+    expect(gitCalls).toHaveLength(5);
   });
 });

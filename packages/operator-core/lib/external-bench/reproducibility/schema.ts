@@ -23,6 +23,90 @@ import type {
   GraderStatus,
   TestOutcome,
 } from '@papercusp/bench-metrics';
+import { z } from 'zod';
+import { canonicalJson } from './canonical-json';
+
+const pin = z.string().trim().min(1);
+const digest = z.string().regex(/^[a-f0-9]{64}$/);
+const distinct = <T>(items: T[]) => new Set(items).size === items.length;
+const taskRoster = z.array(pin).min(1).refine(distinct, 'Task ids must be unique.');
+const seeds = z.array(z.number().int().nonnegative()).min(1).refine(distinct, 'Seeds must be unique.');
+const generationCap = z.object({
+  maxUsd: z.number().finite().positive(),
+  maxTokens: z.number().int().positive().optional(),
+  maxWallClockMs: z.number().int().positive(),
+}).strict();
+
+/** Current runs extend the existing prereg config; historical configs retain their original schema. */
+export const currentBenchmarkProtocolSchema = z.object({
+  schemaVersion: z.literal(1),
+  runId: pin,
+  taskIds: taskRoster,
+  seeds,
+  arms: z.array(z.object({
+    id: pin,
+    agent: z.enum(['codex', 'claude']),
+    model: pin,
+    effort: pin,
+    account: pin,
+    generationBudget: generationCap,
+    runtime: z.object({ sourceRevision: pin, runtimeRevision: pin, clientVersion: pin, promptHash: digest, toolsHash: digest }).strict(),
+  }).strict()).min(2),
+  aggregateBudgetUsd: z.number().finite().positive(),
+  maxInFlightUsd: z.number().finite().positive(),
+  priceSchedule: z.object({ version: pin, rates: z.array(z.object({
+    model: pin, inputUsdPerMillion: z.number().finite().nonnegative(),
+    cachedInputUsdPerMillion: z.number().finite().nonnegative(), outputUsdPerMillion: z.number().finite().nonnegative(),
+  }).strict()).min(1) }).strict(),
+  grader: z.object({ family: pin, version: pin, imageDigest: pin }).strict(),
+  context: z.object({
+    corpusHash: digest, memoryHash: digest, corpusRef: pin, memoryRef: pin,
+    isolation: z.literal('fresh-per-assignment'), forbiddenSources: z.array(pin).min(1),
+  }).strict(),
+  exclusions: z.array(pin),
+  stopping: z.object({
+    maxAttemptsPerAssignment: z.number().int().positive(),
+    budgetAction: z.literal('record-cap-outcome'), graderOutage: z.literal('repair-or-inconclusive'),
+    superiorityClaim: z.literal('withheld-confirmation-only'),
+  }).strict(),
+  confirmation: z.object({
+    taskIds: taskRoster, seeds,
+    plannedPairedTasks: z.number().int().positive(),
+    minimumEffect: z.number().finite().gt(0).lte(1), alpha: z.number().finite().gt(0).lt(1),
+    power: z.number().finite().gt(0).lt(1), method: pin,
+  }).strict(),
+}).strict().superRefine((protocol, ctx) => {
+  const issue = (path: (string | number)[], message: string) => ctx.addIssue({ code: 'custom', path, message });
+  if (!distinct(protocol.arms.map(arm => arm.id))) issue(['arms'], 'Arm ids must be unique.');
+  const cap = canonicalJson(protocol.arms[0].generationBudget);
+  if (protocol.arms.some(arm => canonicalJson(arm.generationBudget) !== cap)) issue(['arms'], 'Matched arms require equal generation caps.');
+  if (protocol.maxInFlightUsd > protocol.aggregateBudgetUsd) issue(['maxInFlightUsd'], 'In-flight exposure cannot exceed the aggregate cap.');
+  const modelRates = protocol.priceSchedule.rates.map(rate => rate.model);
+  if (!distinct(modelRates) || protocol.arms.some(arm => !modelRates.includes(arm.model))) issue(['priceSchedule'], 'Every arm model needs one frozen price rate.');
+  if (protocol.confirmation.taskIds.some(id => protocol.taskIds.includes(id))) issue(['confirmation', 'taskIds'], 'Confirmation tasks must be withheld from the pilot.');
+  if (protocol.confirmation.plannedPairedTasks > protocol.confirmation.taskIds.length) issue(['confirmation', 'plannedPairedTasks'], 'The confirmation roster must reserve the planned paired tasks.');
+});
+export type CurrentBenchmarkProtocol = z.infer<typeof currentBenchmarkProtocolSchema>;
+
+/** Refuse drift between the frozen protocol and the request that will actually launch. */
+export function requireCurrentBenchmarkAssignment(config: unknown, execution: {
+  runId: string; armId: string; seed: number; taskId: string;
+  agent: string; model: string; effort: string; account: string;
+  budget: { maxUsd?: number; maxTokens?: number; maxWallClockMs?: number };
+}): CurrentBenchmarkProtocol {
+  const parsed = currentBenchmarkProtocolSchema.safeParse(config);
+  if (!parsed.success) throw new Error(`Current benchmark requires a complete frozen protocol: ${parsed.error.message}`);
+  const protocol = parsed.data;
+  const arm = protocol.arms.find(candidate => candidate.id === execution.armId);
+  if (protocol.runId !== execution.runId || !arm || !protocol.taskIds.includes(execution.taskId) || !protocol.seeds.includes(execution.seed)) {
+    throw new Error('Current benchmark assignment is not in the frozen protocol.');
+  }
+  if (arm.agent !== execution.agent || arm.model !== execution.model || arm.effort !== execution.effort || arm.account !== execution.account ||
+      canonicalJson(arm.generationBudget) !== canonicalJson(execution.budget)) {
+    throw new Error('Current benchmark launch controls or budget drift from the frozen protocol.');
+  }
+  return protocol;
+}
 
 /** The Rollout Card — the published unit of reproducibility (1:1 with a run_result). */
 export interface RolloutRecord {

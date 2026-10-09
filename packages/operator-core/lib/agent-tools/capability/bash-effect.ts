@@ -619,6 +619,14 @@ export function classifiesSimpleRead(tokens: readonly string[], depth = 0): bool
   const base = commandBase(tokens[0]!);
   if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[0]!)) return false;
 
+  // A bare `sudo <known-read-command>` remains observational when the command's
+  // own arguments pass the same read-only classifier. Do not accept sudo flags:
+  // options can change command selection, identity, or execution mode.
+  if (base === 'sudo') {
+    if (tokens.length < 2 || tokens[1]!.startsWith('-')) return false;
+    return classifiesSimpleRead(tokens.slice(1), depth + 1);
+  }
+
   if (base === 'timeout') {
     let durationIndex = 1;
     while (durationIndex < tokens.length && tokens[durationIndex]!.startsWith('-')) {

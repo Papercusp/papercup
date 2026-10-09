@@ -1695,16 +1695,17 @@
         {
           "id": "resume-live",
           "label": "C5 real resume spawn (live)",
-          "description": "LIVE-SMOKE (needs claude/codex creds → not CI): a REAL claude/codex resume — built by the SAME wake-executor resumeCommandFor, run in the EI-155 isolated CLAUDE_CONFIG_DIR/CODEX_HOME — continues the EXACT session (transcript/rollout GROWS). Complements the injected-spawnDetached CI rung in wake-resume-isolation.test.",
+          "description": "LIVE-SMOKE (needs client credentials → not CI): real Claude/Codex/OMP resume through the maintained wake command builder, with private profiles and exact transcript continuity. Every client must pass; absent or unauthenticated clients fail this acceptance rung. Complements wake-resume-isolation.test.",
           "runners": [
             {
               "kind": "node",
               "cmd": "npx",
               "args": [
                 "tsx",
-                "apps/operator/scripts/resume-spawn-live.ts"
+                "apps/operator/scripts/resume-spawn-live.ts",
+                "--require-all"
               ],
-              "label": "real claude/codex resume (live · needs creds)"
+              "label": "real Claude/Codex/OMP resume (live · needs creds)"
             }
           ]
         },

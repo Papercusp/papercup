@@ -6,18 +6,65 @@
  */
 import { isAbsolute } from 'node:path';
 import { z } from 'zod';
+import { createCache, type Cache } from '@papercusp/cache';
 import { defineTool } from '@papercusp/agent-mcp';
+import { pinModuleState } from '@papercusp/module-singleton';
 import { CHARS_PER_TOKEN_ESTIMATE, computeTurnDoors } from '../../context-doors';
 import { loadHarnessRegistry, resolveHarnessContentPath } from '../../harness-registry';
 import { resolveCapabilityBaseDir } from './base-dir';
 import { capabilityExecSandboxPolicy } from './exec-sandbox';
-import { runGit } from './git';
+import { runGitReadOnlyEvidence } from './git';
 
 const fullCommitSha = z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i);
 /** Keep small blobs on the original one-call text response; larger blobs are paged. */
 export const MAX_GIT_EVIDENCE_INLINE_BYTES = 128 * 1024;
 export const MAX_GIT_EVIDENCE_PAGE_BYTES = 4 * 1024;
 const PAGE_RESPONSE_MARGIN_CHARS = 256;
+const MAX_CACHED_GIT_EVIDENCE_BLOB_BYTES = 1024 * 1024;
+const GIT_EVIDENCE_CACHE_MAX_ENTRIES = 16;
+const GIT_EVIDENCE_CACHE_TTL_MS = 5 * 60_000;
+
+// A byte-page cursor is a separate tool invocation. Cache the validated immutable
+// blob so following its cursor does not repeat repository discovery, commit/type/
+// size probes, or re-read the complete blob for every page. The generic cache and
+// module-singleton helpers keep the working set bounded across operator module
+// graphs; 16 entries × 1 MiB is the maximum retained payload.
+const gitEvidenceCacheState = pinModuleState<{ cache: Cache | null }>(
+  '@papercusp/operator-core.gitEvidenceBlobCache',
+  () => ({ cache: null }),
+);
+
+function getGitEvidenceBlobCache(): Cache {
+  if (!gitEvidenceCacheState.cache) {
+    gitEvidenceCacheState.cache = createCache({ maxL1Entries: GIT_EVIDENCE_CACHE_MAX_ENTRIES });
+  }
+  return gitEvidenceCacheState.cache;
+}
+
+type GitEvidenceFailure = Extract<GitEvidenceResult, { ok: false }>;
+
+class GitEvidenceReadFailure extends Error {
+  readonly gitEvidenceFailure: GitEvidenceFailure;
+
+  constructor(readonly result: GitEvidenceFailure) {
+    super(result.message ?? result.reason);
+    this.name = 'GitEvidenceReadFailure';
+    this.gitEvidenceFailure = result;
+  }
+}
+
+function evidenceFailureFrom(error: unknown): GitEvidenceFailure | null {
+  if (typeof error !== 'object' || error === null) return null;
+  const failure = (error as { gitEvidenceFailure?: unknown }).gitEvidenceFailure;
+  if (
+    typeof failure === 'object' && failure !== null &&
+    (failure as { ok?: unknown }).ok === false &&
+    typeof (failure as { reason?: unknown }).reason === 'string'
+  ) {
+    return failure as GitEvidenceFailure;
+  }
+  return null;
+}
 
 export function isSafeGitEvidencePath(value: string): boolean {
   if (
@@ -131,7 +178,9 @@ interface GitEvidenceOptions {
   signal: AbortSignal;
   sandboxEnabled?: boolean;
   sandboxRequired?: boolean;
-  runner?: typeof runGit;
+  runner?: typeof runGitReadOnlyEvidence;
+  /** Internal cache seam for exercising bounded page reuse. */
+  cache?: Cache;
 }
 
 /** Execute only the two operations admitted by the judge evidence contract. */
@@ -171,7 +220,7 @@ async function runJudgeGitEvidenceInner(
     }
     repositoryDir = registeredRoot;
   }
-  const runner = options.runner ?? runGit;
+  const runner = options.runner ?? runGitReadOnlyEvidence;
   const invoke = async (argv: string[]) => {
     const result = await runner(
       argv,
@@ -189,6 +238,174 @@ async function runJudgeGitEvidenceInner(
     }
     return result;
   };
+
+  const resolveCommit = async (input: string): Promise<string | null> => {
+    if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(input)) return null;
+    const pinned = input.toLowerCase();
+    const result = await invoke(['rev-parse', '--verify', '--end-of-options', `${pinned}^{commit}`]);
+    if (result.code !== 0) return null;
+    const resolved = result.output.trim().toLowerCase();
+    return resolved === pinned ? resolved : null;
+  };
+
+  if (args.op === 'readFileAtCommit') {
+    if (!isSafeGitEvidencePath(args.path)) return { ok: false, reason: 'invalid_path' };
+    if (options.signal.aborted) {
+      return {
+        ok: false,
+        reason: 'git_command_interrupted',
+        message: 'Git evidence request was aborted before repository validation',
+      };
+    }
+
+    const loadPinnedBlob = async (): Promise<{ commitSha: string; contentBytes: Buffer }> => {
+      const top = await invoke(['rev-parse', '--show-toplevel']);
+      if (top.code !== 0) {
+        const message = top.output.slice(0, 300);
+        if (options.signal.aborted) {
+          throw new GitEvidenceReadFailure({
+            ok: false,
+            reason: 'git_command_interrupted',
+            message: message || 'git rev-parse was aborted before returning a result',
+          });
+        }
+        if (top.code === null) {
+          throw new GitEvidenceReadFailure({
+            ok: false,
+            reason: 'git_command_failed',
+            message: message || 'git rev-parse did not exit cleanly',
+          });
+        }
+        if (/not a git repository/i.test(message)) {
+          throw new GitEvidenceReadFailure({ ok: false, reason: 'not_git_repository', message });
+        }
+        throw new GitEvidenceReadFailure({
+          ok: false,
+          reason: 'repository_probe_failed',
+          message: message || `git rev-parse exited with code ${top.code}`,
+        });
+      }
+      if (!isAbsolute(top.output.trim())) {
+        throw new GitEvidenceReadFailure({ ok: false, reason: 'invalid_repository_root' });
+      }
+
+      const commitSha = await resolveCommit(args.commitSha);
+      if (!commitSha) {
+        throw new GitEvidenceReadFailure({ ok: false, reason: 'commit_not_found_or_not_pinned' });
+      }
+      const object = `${commitSha}:${args.path}`;
+      const type = await invoke(['cat-file', '-t', object]);
+      if (type.code !== 0) {
+        throw new GitEvidenceReadFailure({ ok: false, reason: 'file_not_found_at_commit' });
+      }
+      if (type.output.trim() !== 'blob') {
+        throw new GitEvidenceReadFailure({ ok: false, reason: 'path_is_not_a_file' });
+      }
+
+      const sizeResult = await invoke(['cat-file', '-s', object]);
+      const size = Number(sizeResult.output.trim());
+      if (sizeResult.code !== 0 || !Number.isSafeInteger(size) || size < 0) {
+        throw new GitEvidenceReadFailure({
+          ok: false,
+          reason: 'file_size_unavailable',
+          message: sizeResult.output.slice(0, 300),
+        });
+      }
+
+      const contentResult = await invoke(['cat-file', 'blob', object]);
+      if (contentResult.code !== 0) {
+        throw new GitEvidenceReadFailure({
+          ok: false,
+          reason: 'file_read_failed',
+          message: contentResult.output.slice(0, 300),
+        });
+      }
+      const contentBytes = Buffer.from(contentResult.output, 'utf8');
+      if (contentBytes.length !== size) {
+        throw new GitEvidenceReadFailure({ ok: false, reason: 'file_is_not_valid_utf8' });
+      }
+      return { commitSha, contentBytes };
+    };
+
+    const workspaceId = options.workspaceId;
+    const cache = options.cache ?? (!options.runner ? getGitEvidenceBlobCache() : undefined);
+    const cacheableScope = !!workspaceId && workspaceId !== '*' && !!cache;
+    const cacheKey = `git-evidence:pinned-blob:${JSON.stringify([
+      repositoryDir,
+      args.rootHarnessSlug ?? null,
+      args.commitSha.toLowerCase(),
+      args.path,
+      options.sandboxEnabled ?? false,
+      options.sandboxRequired ?? false,
+    ])}`;
+    let pinnedBlob: { commitSha: string; contentBytes: Buffer };
+    try {
+      pinnedBlob = cacheableScope
+        ? await cache!.getOrSet(workspaceId, cacheKey, loadPinnedBlob, {
+            hardTtlMs: GIT_EVIDENCE_CACHE_TTL_MS,
+          })
+        : await loadPinnedBlob();
+    } catch (error) {
+      const failure = evidenceFailureFrom(error);
+      if (failure) return failure;
+      throw error;
+    }
+    if (cacheableScope && pinnedBlob.contentBytes.length > MAX_CACHED_GIT_EVIDENCE_BLOB_BYTES) {
+      cache!.forget(workspaceId, cacheKey);
+    }
+
+    const { commitSha, contentBytes } = pinnedBlob;
+    const size = contentBytes.length;
+    if (size <= MAX_GIT_EVIDENCE_INLINE_BYTES && args.byte_offset === undefined) {
+      return {
+        ok: true,
+        op: 'readFileAtCommit',
+        commitSha,
+        path: args.path,
+        bytes: size,
+        content: contentBytes.toString('utf8'),
+      };
+    }
+
+    const requestedLimit = args.byte_limit ?? MAX_GIT_EVIDENCE_PAGE_BYTES;
+    const pageLimit = doorSafeGitEvidencePageBytes(commitSha, args.path, requestedLimit, args.rootHarnessSlug);
+    if (pageLimit <= 0) {
+      return {
+        ok: false,
+        reason: 'path_too_long_for_byte_page',
+        message: 'The commit and path leave no room for a byte page in the result budget.',
+      };
+    }
+    const byteOffset = Math.min(args.byte_offset ?? 0, size);
+    const page = contentBytes.subarray(byteOffset, Math.min(byteOffset + pageLimit, size));
+    const nextOffset = byteOffset + page.length;
+    return {
+      ok: true,
+      op: 'readFileAtCommit',
+      commitSha,
+      path: args.path,
+      encoding: 'base64',
+      byte_offset: byteOffset,
+      byte_length: page.length,
+      total_bytes: size,
+      eof: nextOffset >= size,
+      data: page.toString('base64'),
+      next_cursor:
+        nextOffset < size
+          ? {
+              tool: 'capability:git-evidence',
+              args: {
+                op: 'readFileAtCommit',
+                commitSha,
+                path: args.path,
+                ...(args.rootHarnessSlug ? { rootHarnessSlug: args.rootHarnessSlug } : {}),
+                byte_offset: nextOffset,
+                byte_limit: pageLimit,
+              },
+            }
+          : null,
+    };
+  }
 
   const top = await invoke(['rev-parse', '--show-toplevel']);
   if (top.code !== 0) {
@@ -219,90 +436,17 @@ async function runJudgeGitEvidenceInner(
   const repositoryRoot = top.output.trim();
   if (!isAbsolute(repositoryRoot)) return { ok: false, reason: 'invalid_repository_root' };
 
-  const resolveCommit = async (input: string): Promise<string | null> => {
-    if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(input)) return null;
-    const pinned = input.toLowerCase();
-    const result = await invoke(['rev-parse', '--verify', '--end-of-options', `${pinned}^{commit}`]);
-    if (result.code !== 0) return null;
-    const resolved = result.output.trim().toLowerCase();
-    return resolved === pinned ? resolved : null;
-  };
-
-  if (args.op === 'isAncestor') {
-    const ancestorSha = await resolveCommit(args.ancestorSha);
-    const descendantSha = await resolveCommit(args.descendantSha);
-    if (!ancestorSha || !descendantSha) return { ok: false, reason: 'commit_not_found_or_not_pinned' };
-    const result = await invoke(['merge-base', '--is-ancestor', ancestorSha, descendantSha]);
-    if (result.code === 0) {
-      return { ok: true, op: 'isAncestor', ancestorSha, descendantSha, isAncestor: true };
-    }
-    if (result.code === 1) {
-      return { ok: true, op: 'isAncestor', ancestorSha, descendantSha, isAncestor: false };
-    }
-    return { ok: false, reason: 'ancestry_check_failed', message: result.output.slice(0, 300) };
+  const ancestorSha = await resolveCommit(args.ancestorSha);
+  const descendantSha = await resolveCommit(args.descendantSha);
+  if (!ancestorSha || !descendantSha) return { ok: false, reason: 'commit_not_found_or_not_pinned' };
+  const result = await invoke(['merge-base', '--is-ancestor', ancestorSha, descendantSha]);
+  if (result.code === 0) {
+    return { ok: true, op: 'isAncestor', ancestorSha, descendantSha, isAncestor: true };
   }
-
-  if (!isSafeGitEvidencePath(args.path)) return { ok: false, reason: 'invalid_path' };
-  const commitSha = await resolveCommit(args.commitSha);
-  if (!commitSha) return { ok: false, reason: 'commit_not_found_or_not_pinned' };
-  const object = `${commitSha}:${args.path}`;
-  const type = await invoke(['cat-file', '-t', object]);
-  if (type.code !== 0) return { ok: false, reason: 'file_not_found_at_commit' };
-  if (type.output.trim() !== 'blob') return { ok: false, reason: 'path_is_not_a_file' };
-
-  const sizeResult = await invoke(['cat-file', '-s', object]);
-  const size = Number(sizeResult.output.trim());
-  if (sizeResult.code !== 0 || !Number.isSafeInteger(size) || size < 0) {
-    return { ok: false, reason: 'file_size_unavailable', message: sizeResult.output.slice(0, 300) };
+  if (result.code === 1) {
+    return { ok: true, op: 'isAncestor', ancestorSha, descendantSha, isAncestor: false };
   }
-
-  const contentResult = await invoke(['cat-file', 'blob', object]);
-  if (contentResult.code !== 0)
-    return { ok: false, reason: 'file_read_failed', message: contentResult.output.slice(0, 300) };
-  const contentBytes = Buffer.from(contentResult.output, 'utf8');
-  if (contentBytes.length !== size) return { ok: false, reason: 'file_is_not_valid_utf8' };
-  if (size <= MAX_GIT_EVIDENCE_INLINE_BYTES && args.byte_offset === undefined) {
-    return { ok: true, op: 'readFileAtCommit', commitSha, path: args.path, bytes: size, content: contentResult.output };
-  }
-
-  const requestedLimit = args.byte_limit ?? MAX_GIT_EVIDENCE_PAGE_BYTES;
-  const pageLimit = doorSafeGitEvidencePageBytes(commitSha, args.path, requestedLimit, args.rootHarnessSlug);
-  if (pageLimit <= 0) {
-    return {
-      ok: false,
-      reason: 'path_too_long_for_byte_page',
-      message: 'The commit and path leave no room for a byte page in the result budget.',
-    };
-  }
-  const byteOffset = Math.min(args.byte_offset ?? 0, size);
-  const page = contentBytes.subarray(byteOffset, Math.min(byteOffset + pageLimit, size));
-  const nextOffset = byteOffset + page.length;
-  return {
-    ok: true,
-    op: 'readFileAtCommit',
-    commitSha,
-    path: args.path,
-    encoding: 'base64',
-    byte_offset: byteOffset,
-    byte_length: page.length,
-    total_bytes: size,
-    eof: nextOffset >= size,
-    data: page.toString('base64'),
-    next_cursor:
-      nextOffset < size
-        ? {
-            tool: 'capability:git-evidence',
-            args: {
-              op: 'readFileAtCommit',
-              commitSha,
-              path: args.path,
-              ...(args.rootHarnessSlug ? { rootHarnessSlug: args.rootHarnessSlug } : {}),
-              byte_offset: nextOffset,
-              byte_limit: pageLimit,
-            },
-          }
-        : null,
-  };
+  return { ok: false, reason: 'ancestry_check_failed', message: result.output.slice(0, 300) };
 }
 
 export default defineTool({

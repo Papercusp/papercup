@@ -9,6 +9,49 @@ import { canonicalJson } from './canonical-json';
 import { computePreregHash } from './prereg';
 import { rolloutIdFor } from './emit';
 import { fleetRunIdFor } from './fleet';
+import { currentBenchmarkProtocolSchema, requireCurrentBenchmarkAssignment } from './schema';
+import { currentProtocolFixture } from './_protocol-test-fixture';
+
+describe('current frozen benchmark protocol', () => {
+  it('binds a complete declared assignment to the configured launch and equal generation cap', () => {
+    const protocol = currentProtocolFixture();
+    expect(requireCurrentBenchmarkAssignment(protocol, { runId: 'run-1', armId: 'papercusp', taskId: 't1', seed: 1,
+      agent: 'codex', model: 'configured-alias', effort: 'high', account: 'auto', budget: { maxUsd: 3, maxWallClockMs: 100 } })).toEqual(protocol);
+  });
+  it.each(['taskIds', 'seeds', 'arms', 'aggregateBudgetUsd', 'maxInFlightUsd', 'priceSchedule', 'grader', 'context', 'exclusions', 'stopping', 'confirmation'])
+    ('refuses omitted frozen protocol component %s', field => {
+      const protocol = currentProtocolFixture() as unknown as Record<string, unknown>; delete protocol[field];
+      expect(currentBenchmarkProtocolSchema.safeParse(protocol).success).toBe(false);
+    });
+  it.each([
+    ['duplicate-task', (p: ReturnType<typeof currentProtocolFixture>) => { p.taskIds.push('t1'); }],
+    ['duplicate-seed', (p: ReturnType<typeof currentProtocolFixture>) => { p.seeds.push(1); }],
+    ['duplicate-arm', (p: ReturnType<typeof currentProtocolFixture>) => { p.arms[1].id = p.arms[0].id; }],
+    ['unequal-caps', (p: ReturnType<typeof currentProtocolFixture>) => { p.arms[1].generationBudget.maxUsd = 4; }],
+    ['unbounded-exposure', (p: ReturnType<typeof currentProtocolFixture>) => { p.maxInFlightUsd = 61; }],
+    ['unpriced-model', (p: ReturnType<typeof currentProtocolFixture>) => { p.arms[0].model = 'other'; }],
+    ['withheld-leak', (p: ReturnType<typeof currentProtocolFixture>) => { p.confirmation.taskIds.push('t1'); }],
+    ['underreserved-confirmation', (p: ReturnType<typeof currentProtocolFixture>) => { p.confirmation.plannedPairedTasks = 2; }],
+    ['missing-context-pin', (p: ReturnType<typeof currentProtocolFixture>) => { p.context.memoryHash = ''; }],
+  ])('rejects protocol defect %s', (_name, mutate) => {
+    const protocol = currentProtocolFixture(); mutate(protocol);
+    expect(currentBenchmarkProtocolSchema.safeParse(protocol).success).toBe(false);
+  });
+  it('changes the immutable protocol hash for each meaningful identity or policy drift', () => {
+    const base = currentProtocolFixture(); const frozen = computePreregHash(base);
+    for (const mutate of [
+      (p: typeof base) => { p.arms[0].model = 'changed'; },
+      (p: typeof base) => { p.arms[0].runtime.promptHash = 'e'.repeat(64); },
+      (p: typeof base) => { p.arms[0].runtime.toolsHash = 'e'.repeat(64); },
+      (p: typeof base) => { p.grader.version = 'changed'; },
+      (p: typeof base) => { p.taskIds = ['changed']; },
+      (p: typeof base) => { p.seeds = [2]; },
+      (p: typeof base) => { p.aggregateBudgetUsd = 59; },
+      (p: typeof base) => { p.exclusions = ['changed']; },
+      (p: typeof base) => { p.stopping.maxAttemptsPerAssignment = 2; },
+    ]) { const changed = structuredClone(base); mutate(changed); expect(computePreregHash(changed)).not.toBe(frozen); }
+  });
+});
 
 describe('canonicalJson', () => {
   it('is key-order independent', () => {

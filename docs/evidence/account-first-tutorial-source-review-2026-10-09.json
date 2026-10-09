@@ -1,0 +1,91 @@
+{
+  "schemaVersion": 1,
+  "kind": "manual-source-delta-review",
+  "planSlug": "cloud-app-live-tutorial-2026-10-01",
+  "implementationWorkItemId": "WI-10007170",
+  "evidenceWorkItemId": "WI-10007744",
+  "observedDate": "2026-10-09",
+  "operatorCommitAtRead": "93bde66b2d12cb84d6dd3b1462264aeb03853e10",
+  "portalCommitAtRead": "b6af32ef662bce05cc45dd10103b1f95a9c4b1d5",
+  "procedure": "Read exact current clauses, each original manual binding, its maintained measurement recipe, baseline repository pins and server-reported moved paths on attributed current-build3170. Compare each changed file against that baseline and inspect its current implementation. Preserve unchanged prior review conclusions and renew only the manual source assessment; no test or native replay.",
+  "sourceFiles": [
+    { "root": "papercusp", "path": "packages/operator-ui/src/onboarding/product-tutorial.tsx", "sha256": "da2e086b896f2f6c16b56f8daded5e61f42b06203dfc4f1c5073e4de312571ea" },
+    { "root": "papercusp", "path": "packages/operator-core/lib/onboarding/cloud-tutorial-progress.ts", "sha256": "b07594bc0aeff81564fa10b1c10df1a2e836f5527b2e5714bffecb2f1d1d7394" },
+    { "root": "papercusp", "path": "packages/operator-core/lib/workspace-host/hosted-operator-http.ts", "sha256": "ed9425fc15116cde61347f3e4d7493cae97288800a3ee0fff7bcfa88b1059dcb" },
+    { "root": "papercusp", "path": "apps/operator/lib/onboarding/cloud-tutorial.ui.json", "sha256": "291f7f492d28f75e3731c66511fe3c75fd80031da758236002087b968c8f7559" },
+    { "root": "portal", "path": "packages/ui/src/shell.tsx", "sha256": "8432c6424f9e30238f8aafd1b2af85f03afab0fdc2ee6d82f85b59541101c6a4" },
+    { "root": "portal", "path": "apps/host/src/api.ts", "sha256": "f8578479d1e80191533a341812079fbe7a15da003ff79216248928ecf845a701" }
+  ],
+  "reviews": [
+    {
+      "specId": "GUIDE-INTERACTION-SPEC",
+      "specRevision": 1,
+      "priorBindingId": 32850,
+      "priorReview": "WI-10007734#comment:1167773",
+      "baselineCommit": "b8ea13460545d9a8ac7b0e8d7df922f076d56b9d",
+      "changedPaths": ["packages/operator-ui/src/onboarding/product-tutorial.tsx"],
+      "findings": [
+        "The only measured source delta adds explicit Start tutorial for unenrolled returning accounts and Restart tutorial for enrolled paused/skipped/closed accounts. Native buttons call the existing scoped progress save with a welcome-only reset; they do not replay product actions.",
+        "The declared account guide precedes workspace entry, preserves keyboard interaction, focuses the heading after explicit lesson navigation, and leaves microphone access behind consent. Waiting/failed states retain usable app and guide recovery; paused/skipped states preserve Resume/Restart controls.",
+        "Current save success sets heading or resume focus intent only after the acknowledged record. The destination places guide controls through its existing render callback; attachResume preserves focus across replacement by a modal or destination startup wrapper.",
+        "Current native mounted-guide review33699 separately demonstrates keyboard Help, scoped question submission and pause/resume heading focus; it does not prove whole-app pure-Tab acceptance."
+      ],
+      "validatorReceipts": {
+        "validate": { "ok": true, "errors": [] },
+        "lint": { "errorCount": 0, "warnCount": 5, "warnings": ["replay declared but unused", "restart declared but unused", "locate declared but unused", "raw escape hatch at /layout/children/2", "raw escape hatch at /layout/children/3/children/6"] }
+      },
+      "result": "Current source/manual design agreement passed; lint warnings remain qualified."
+    },
+    {
+      "specId": "LESSON-SUPPORT-CONTENT",
+      "specRevision": 1,
+      "priorBindingId": 32871,
+      "priorReview": "WI-10007735#comment:1167792",
+      "baselineCommit": "35d75a5c25bb054b39879de19a2bfb7a9ac635e7",
+      "changedPaths": ["packages/operator-ui/src/onboarding/product-tutorial.tsx"],
+      "findings": [
+        "The measured delta is the same Start/Restart control change; lesson introduction/help and existing cost/privacy/prerequisite sources are unchanged from the original review.",
+        "Current billing Help distinguishes Papercusp subscription, cloud-resource and model/provider bills; explains BYOC resource and retained-disk charges, explicit checkout/cancellation, permission restrictions and unavailable billing recovery; it invents no allowance or price.",
+        "Current account Help remains advisory and uses the authorized tutorial-help route. Text warns against credentials/private content. Spoken questions disclose ElevenLabs and require explicit microphone consent; full shared free-user quota/budget/abuse/duration/kill-switch acceptance remains a separate open dependency.",
+        "Restart clears reviewed explanations to Welcome through the existing account progress plane. It neither recreates resources nor represents explanation review as domain task success."
+      ],
+      "result": "Current source-to-UI prerequisite, cost, privacy and recovery agreement passed."
+    },
+    {
+      "specId": "AUTO-BAR-R-11-P-010",
+      "specRevision": 5,
+      "priorBindingIds": [32911, 32912],
+      "priorReviews": ["WI-10007740#comment:1167869", "WI-10007740#comment:1167873"],
+      "baselineCommits": ["bf29f0de4dd81df211dcf6974a25d234b5ec1d59", "7127b4b70e6992ccfddf92f3fb246ccc8701e7ee"],
+      "changedPaths": ["packages/operator-core/lib/onboarding/cloud-tutorial-progress.ts", "packages/operator-ui/src/onboarding/product-tutorial.tsx", "packages/ui/src/shell.tsx"],
+      "findings": [
+        "Start/Restart extends the existing typed account update schema and existing hosted_user_preferences.profile.productTutorial storage. Explicit restart reuses enrollAccountTutorial, preserves tenant/user checks and transaction binding, and retains revision/conflict/idempotency checks. No new table, service or progress plane is introduced.",
+        "The Portal shell delta imports and supplies openPortalTutorialVoice to its existing AccountProductTutorial mount. Actual session identity, sessionSignal, FirstRunPortal/PortalShell destination selection and renderer trust remain in the existing entry.",
+        "The account guide, product catalogue, preferences, scoped tutorial-progress route and provider seams from the original reuse assessment remain the implementation surfaces. Domain receipts remain workspace-scoped."
+      ],
+      "result": "Current operator and Portal tree reuse assessment passed."
+    },
+    {
+      "specId": "TUTORIAL-HOST-BOUNDARY",
+      "specRevision": 1,
+      "priorBindingIds": [32965, 32966],
+      "priorReview": "WI-10004837#comment:1167911",
+      "baselineCommits": ["ba7f434a695052b7ce2d730134ff51ada6b943c6", "7127b4b70e6992ccfddf92f3fb246ccc8701e7ee"],
+      "changedPaths": ["packages/operator-core/lib/workspace-host/hosted-operator-http.ts", "packages/ui/src/shell.tsx", "apps/host/src/api.ts"],
+      "findings": [
+        "The operator allowlist delta adds explicit autonomy-policy save and confirmed managed-session stop entries. It does not change reviewed authenticated account/workspace entry or correlated launch/message/transcript/result routes.",
+        "PortalEntry continues to route loading, signed-out and unavailable states before an authenticated tutorial mount; account orientation wraps existing first-run or selected-workspace destinations with real organization/user/session/workspace identity.",
+        "The Portal API delta extends the existing voice token boundary with strict tutorial purpose/consent, configured public-origin comparison, authenticated account/session scope, current saved lesson checks and restricted lesson Help prompt. It does not replace the hosted workspace task entry or open a product mutator from guide navigation.",
+        "Original source-backed outcome/falsifier review remains applicable to reaching the maintained agent task controls and correlated result inspection. This is review of the current flow and boundary, not evidence of a successful final production task."
+      ],
+      "result": "Current operator and Portal source-backed host-flow review passed."
+    }
+  ],
+  "limitations": [
+    "Manual source review only; no new test execution or automated native PASS.",
+    "Five UI lint warnings remain; no warning-free claim.",
+    "Historical source reviews and native evidence remain historical, not rewritten.",
+    "No human-heard audio, full protected shared voice lifecycle, affected-suite PASS or exact production acceptance is claimed.",
+    "Existing outside-lineage BAR reviewer and existing voice dependency owner are preserved."
+  ]
+}

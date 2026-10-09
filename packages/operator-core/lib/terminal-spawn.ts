@@ -31,6 +31,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { standardToolDirs } from './tool-path';
 import { createTextCollector } from './child-output';
 import { LINUX_TERMINALS_FLAT } from './linux-terminals';
+import { prepareGnomeTerminal } from './gnome-terminal-profile.mjs';
 // EI-19408594551235977: reuse console-spawn's desktop-session-aware ordering
 // instead of walking the flat list unconditionally. This IS a circular import
 // (console-spawn.ts imports scrubTerminalContextEnv from this module) but it is
@@ -391,7 +392,9 @@ export async function spawnInTerminal(opts: SpawnInTerminalOpts): Promise<SpawnI
     };
   }
   try {
-    const child = spawn(term.bin, [...term.args, 'bash', '-lc', opts.oneliner], {
+    const spawnEnv = scrubTerminalContextEnv(opts.env ?? agentInheritedOperatorEnv(process.env));
+    const prepared = await prepareGnomeTerminal(term, spawnEnv);
+    const child = spawn(prepared.bin, [...prepared.args, 'bash', '-lc', opts.oneliner], {
       detached: true,
       // stderr is PIPED, not ignored: a silent launch failure exits 0 (see
       // TERMINAL_CONTEXT_ENV_KEYS), so the diagnostic line is the only evidence
@@ -399,7 +402,7 @@ export async function spawnInTerminal(opts: SpawnInTerminalOpts): Promise<SpawnI
       // the window owns those.
       stdio: ['ignore', 'ignore', 'pipe'],
       ...(opts.cwd ? { cwd: opts.cwd } : {}),
-      env: scrubTerminalContextEnv(opts.env ?? agentInheritedOperatorEnv(process.env)),
+      env: spawnEnv,
     });
     child.unref();
     const pid = child.pid;

@@ -60,7 +60,9 @@ const { resolveFleetMetricScope, readFleetMetricSourceItems } = await import('..
 const { shapeLeaderBrief } = await import('../fleet/leader-brief-shape');
 const { explainIssueClaimFloors, listWorkItems, listAllWorkItemsForFileExport,
   countWorkItems, countWorkItemsByState } = await import('../../work-items');
-const { FLEET_METRIC_ARCHIVE_KEYS, projectWorkItemColumns } = await import('../../work-item-read-projection');
+const { FLEET_METRIC_ARCHIVE_KEYS, FLEET_METRIC_TERMINAL_PAYLOAD_KEYS, projectWorkItemColumns } = await import('../../work-item-read-projection');
+const { ANY_FAMILY_TERMINAL_STATES } = await import('../../work-item-dispatch-states');
+const { claimSpecSubjectFromWorkItem } = await import('../../scheduler/claim-spec-match');
 const { ISSUE_ROW_DB_KEYS } = await import('../../issues-engineer');
 const { readIssueOccurrenceCounts } = await import('../../issue-occurrence-ledger');
 const { DEFAULT_CLAIM_SPEC } = await import('../../scheduler/claim-spec');
@@ -480,7 +482,11 @@ describe('default fleet reports over the real current-spec queue', () => {
     for (const item of projected) {
       const original = full.find(row => row.id === item.id)!;
       const retained = { ...(original.payload as Record<string, unknown>) };
-      for (const key of FLEET_METRIC_ARCHIVE_KEYS) delete retained[key];
+      for (const key of Object.keys(retained)) {
+        if (ANY_FAMILY_TERMINAL_STATES.includes(item.state)
+          ? !FLEET_METRIC_TERMINAL_PAYLOAD_KEYS.includes(key)
+          : (FLEET_METRIC_ARCHIVE_KEYS as readonly string[]).includes(key)) delete retained[key];
+      }
       // Guard the entire mapper output, not just today's metric inputs. If a
       // future mapper starts consuming an omitted field, this comparison fails.
       expect(item).toEqual({ ...original, payload: retained, terminalCompletionEvidence: null });
@@ -518,6 +524,44 @@ describe('default fleet reports over the real current-spec queue', () => {
     for (const value of [['legacy-array'], 'legacy-scalar', null]) {
       const rows = await sql`SELECT ${sql.unsafe(projectWorkItemColumns('payload, marker', 'fleetMetrics'))}
         FROM (SELECT ${JSON.stringify(value)}::text::jsonb AS payload, 1 AS marker) fixture`;
+      expect(rows[0]!.payload).toEqual(value);
+    }
+  }, 30_000);
+
+  it('preserves every matcher input, terminal stock and body while trimming only terminal census envelopes', async () => {
+    const payload = { _ei: { severity: 'critical', created_by: 'author', assigned_by: 'assigner' },
+      lane: 'observation', tags: ['tag'], paths: ['a.ts'], filePath: 'b.ts',
+      plan_run: { templateSlug: 'template' }, plan_item: { plan_slug: 'plan', item_id: 'P-001' },
+      planItem: { slug: 'legacy-plan', itemId: 'P-002' }, source_plan_slug: 'fallback',
+      source_plan_item_ids: ['P-003'], fleet_slug: 'fleet', ideaLifecycle: { triageDecision: 'gate' },
+      sourceRole: 'Scout', ideaOrigin: { origin: 'dream' }, risk_tier: 'high', redundancy: 3,
+      est_cost: 9, expected_cost_cents: 11, severity: 'major',
+      implementationReadiness: { status: 'malformed' }, verification: { subject: 'subject' },
+      futureControl: { preserve: true }, largeHistory: 'history'.repeat(20_000) };
+    for (const kind of ['bug', 'task', 'feature'] as const) {
+      for (const status of ['open', 'done']) {
+        const id = `WI-terminal-census-${kind}-${status}`;
+        await sql`INSERT INTO harness_shared.work_items
+          (workspace_id, harness_slug, feature_id, title, summary, status, item_kind, payload)
+          VALUES ('default', ${HARNESS}, ${id}, 'body filter', 'complete terminal body p2p', ${status}, ${kind},
+            ${sql.json(payload)}::jsonb)`;
+        const filter = { harness: HARNESS, includeObservations: true, ids: [id] };
+        const [full] = await listAllWorkItemsForFileExport(filter);
+        const [projected] = await listAllWorkItemsForFileExport({ ...filter, payloadProjection: 'fleetMetricsCensus' });
+        expect(projected?.id).toBe(id);
+        expect(projected?.summary).toBe(full?.summary);
+        expect(claimSpecSubjectFromWorkItem(projected!)).toEqual(claimSpecSubjectFromWorkItem(full!));
+        expect(projected?.payload).toHaveProperty('implementationReadiness', payload.implementationReadiness);
+        expect(projected?.payload).toHaveProperty('verification', payload.verification);
+        if (status === 'open') expect(projected?.payload).toHaveProperty('futureControl', payload.futureControl);
+        else expect(projected?.payload).not.toHaveProperty('largeHistory');
+      }
+    }
+    // Preserve key absence, explicit JSON null and legacy root shapes. In
+    // particular, synthesizing a null readiness key would change enrollment.
+    for (const value of [null, 'legacy', ['legacy'], {}, { implementationReadiness: null }]) {
+      const rows = await sql`SELECT ${sql.unsafe(projectWorkItemColumns('payload, marker', 'fleetMetricsCensus', 'state'))}
+        FROM (SELECT ${JSON.stringify(value)}::text::jsonb AS payload, 'done'::text AS state, 1 AS marker) fixture`;
       expect(rows[0]!.payload).toEqual(value);
     }
   }, 30_000);

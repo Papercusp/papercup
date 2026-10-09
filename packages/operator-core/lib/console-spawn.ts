@@ -63,6 +63,7 @@ import { requestDesktopConsoleLaunch } from './console-launch-bridge';
 // buildHeadlessSpawnCommand's doc for why this file's windowed path does not).
 import { agentInheritedOperatorEnv, scrubTerminalContextEnv } from './terminal-spawn';
 import { CLIENT_SERVER_TERMINALS, PROCESS_PER_WINDOW_TERMINALS } from './linux-terminals';
+import { prepareGnomeTerminal } from './gnome-terminal-profile.mjs';
 import { beginSyncEnrolment, completeSyncEnrolment } from './task-manager/enroll-sync';
 import { killTask } from './task-manager/control';
 import { scopeUnitForTask, sliceForClass } from './task-manager/types';
@@ -1853,14 +1854,6 @@ async function spawnConsolePrepared(opts: SpawnConsoleOpts): Promise<SpawnConsol
   //    operator doesn't kill the user's terminal. Stderr goes to a temp FILE
   //    (not a pipe: no backpressure/EPIPE risk on a long-lived window) so the
   //    early-exit probe can surface the client's actual complaint.
-  const childArgs = [...term.args, 'bash', '-lc', oneliner];
-  const stderrPath = join(tmpdir(), `papercup-console-stderr-${process.pid}-${Date.now()}-${Math.floor(Math.random() * 1e6)}.log`);
-  let stderrFd: number | null = null;
-  try {
-    stderrFd = openSync(stderrPath, 'w');
-  } catch {
-    stderrFd = null;
-  }
   // EI-19407722209410974: scrub the terminal identity of whatever tab THIS
   // process was started in before handing the env to a NEW emulator. This file
   // keeps its own LINUX_TERMINALS/findTerminal copy rather than going through
@@ -1889,6 +1882,19 @@ async function spawnConsolePrepared(opts: SpawnConsoleOpts): Promise<SpawnConsol
   // WAYLAND_DISPLAY so GTK/webkit children in the spawned terminal bind the
   // X11 backend on the override display instead of the seat's Wayland socket.
   if (opts.displayOverride) delete spawnEnv.WAYLAND_DISPLAY;
+  try {
+    term = await prepareGnomeTerminal(term, spawnEnv);
+  } catch (error) {
+    return { status: 'error', code: 500, error: `Could not prepare GNOME terminal settings: ${error instanceof Error ? error.message : String(error)}` };
+  }
+  const childArgs = [...term.args, 'bash', '-lc', oneliner];
+  const stderrPath = join(tmpdir(), `papercup-console-stderr-${process.pid}-${Date.now()}-${Math.floor(Math.random() * 1e6)}.log`);
+  let stderrFd: number | null = null;
+  try {
+    stderrFd = openSync(stderrPath, 'w');
+  } catch {
+    stderrFd = null;
+  }
   // WI-37476 (EI-9748 Route B): escape the operator service's own cgroup via
   // systemd-run --user --scope, exactly like buildHeadlessSpawnCommand does for
   // headless members — so a `systemctl --user restart` of

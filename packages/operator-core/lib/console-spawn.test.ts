@@ -41,6 +41,11 @@ import {
   type DesktopEnvProbes,
 } from './console-spawn';
 import type { ConsoleEnvelope } from './console-launcher';
+
+const prepareProfileMock = vi.hoisted(() => vi.fn(async (terminal: { bin: string; args: string[] }) => terminal));
+vi.mock('./gnome-terminal-profile.mjs', () => ({
+  prepareGnomeTerminal: prepareProfileMock,
+}));
 import { consumeKickoffPromptFile, KICKOFF_PROMPT_FILE_ENV } from './agent-kickoff/prompt-transport.mjs';
 import { isWindowsDesktopHost } from './windows-desktop-windows';
 import { requestDesktopConsoleLaunch } from './console-launch-bridge';
@@ -277,6 +282,16 @@ describe('spawnConsole early-exit probe — WI-1886(b)', () => {
     const r = await spawnConsole({ envelope, desktopEnvProbes: FAKE_DESKTOP_PROBES });
     expect(r.status).toBe('ok');
     expect((r as { pid: number | null }).pid).toBe(3333);
+  }, 10_000);
+
+  it('forwards the prepared profile through the scoped terminal command', async () => {
+    prepareProfileMock.mockImplementationOnce(async (terminal) => ({
+      ...terminal, args: ['--profile=test-bounded', ...terminal.args],
+    }));
+    spawnMock.mockImplementation(() => fakeChild(3333));
+    const result = await spawnConsole({ envelope, desktopEnvProbes: FAKE_DESKTOP_PROBES });
+    expect(result.status).toBe('ok');
+    expect(spawnMock.mock.calls[0][1]).toContain('--profile=test-bounded');
   }, 10_000);
 });
 

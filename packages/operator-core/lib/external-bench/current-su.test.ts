@@ -6,14 +6,16 @@ import {
 } from './current-su';
 import type { BenchHarnessOps } from './bench-harness-live';
 import type { PapercuspUnifiedToolContext } from '../agent-tools/_tool-context';
+import { currentProtocolFixture } from './reproducibility/_protocol-test-fixture';
 
 const native = vi.hoisted(() => ({ launch: vi.fn(), kill: vi.fn() }));
 vi.mock('../agent-tools/capability/launch-agent', () => ({ default: { handler: native.launch } }));
 vi.mock('../task-manager/control', () => ({ killTask: native.kill }));
 
 const options: CurrentSuBenchOptions = {
-  workspaceId: 'bench-private', runId: 'run-1', agent: 'codex', model: 'configured-alias',
+  workspaceId: 'bench-private', runId: 'run-1', armId: 'papercusp', seed: 1, agent: 'codex', model: 'configured-alias',
   effort: 'high', account: 'auto', pollIntervalMs: 10, driveTimeoutMs: 100,
+  preregistration: { preregHash: 'frozen-protocol', config: currentProtocolFixture() },
 };
 const handle = { slug: 'xbench-current-1', featureId: 'xbench-feature-1', worktreePath: '/scratch/task' };
 const request = {
@@ -40,6 +42,7 @@ function fixture(opts = options) {
     teardown: vi.fn(async () => {}),
   };
   const ports: CurrentSuBenchPorts = {
+    verifyPreregistration: vi.fn(async () => ({ preregHash: 'frozen-protocol', gitCommitSha: 'a'.repeat(40), receiptRef: 'prereg:committed' })),
     admit: vi.fn(async () => ({ admitted: true, receiptRef: 'budget:reservation-1' })),
     launch: vi.fn(async () => ({ agentStarted: true, tasks: [{ taskId: row.taskId, ownerId: 'su-native' }] })),
     getTask: vi.fn(async () => row), listTasks: vi.fn(async () => [row]),
@@ -50,6 +53,31 @@ function fixture(opts = options) {
   return { row, ports, lifecycle, run: () => currentSuBenchHarnessDriver(lifecycle, ports, opts).spinRunAndCost(request) };
 }
 describe('current native benchmark execution', () => {
+  it('verifies the frozen protocol before reserving budget or launching', async () => {
+    const f = fixture();
+    const result = await f.run();
+    expect(f.ports.verifyPreregistration).toHaveBeenCalledOnce();
+    expect(vi.mocked(f.ports.verifyPreregistration).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(f.ports.admit).mock.invocationCallOrder[0]);
+    expect(result.telemetry.armMeta?.currentExecution).toMatchObject({ preregistration: { preregHash: 'frozen-protocol', receiptRef: 'prereg:committed' } });
+  });
+  it('refuses uncommitted protocol before admission and generation', async () => {
+    const f = fixture();
+    vi.mocked(f.ports.verifyPreregistration).mockRejectedValue(new Error('protocol is not committed'));
+    expect((await f.run()).telemetry.generationError).toMatch(/not committed/);
+    expect(f.ports.admit).not.toHaveBeenCalled();
+    expect(f.ports.launch).not.toHaveBeenCalled();
+  });
+  it.each([
+    { preregHash: 'different-protocol', gitCommitSha: 'a'.repeat(40), receiptRef: 'prereg:other' },
+    { preregHash: 'frozen-protocol', gitCommitSha: '', receiptRef: 'prereg:missing-commit' },
+    { preregHash: 'frozen-protocol', gitCommitSha: 'a'.repeat(40), receiptRef: '' },
+  ])('refuses an unverifiable protocol receipt before budget admission: %j', async receipt => {
+    const f = fixture();
+    vi.mocked(f.ports.verifyPreregistration).mockResolvedValue(receipt);
+    expect((await f.run()).telemetry.generationError).toMatch(/pre-registration receipt/);
+    expect(f.ports.admit).not.toHaveBeenCalled();
+    expect(f.ports.launch).not.toHaveBeenCalled();
+  });
   it.each(['data', 'structuredContent'])('reads the maintained launcher receipt from %s.launch', async field => {
     const f = fixture();
     vi.mocked(f.ports.launch).mockResolvedValue({
@@ -115,6 +143,25 @@ describe('current native benchmark execution', () => {
     expect((await f.run()).telemetry.generationError).toMatch(/no durable receipt/);
     expect(f.ports.launch).not.toHaveBeenCalled();
   });
+  it.each([{ model: 'changed' }, { effort: 'low' }, { account: 'other' }, { seed: 2 }, { armId: 'other' }] as const)(
+    'refuses launch control or assignment drift before protocol read/admission: %j', async changed => {
+      const f = fixture({ ...options, ...changed });
+      expect((await f.run()).telemetry.generationError).toMatch(/frozen protocol/);
+      expect(f.ports.verifyPreregistration).not.toHaveBeenCalled();
+      expect(f.ports.admit).not.toHaveBeenCalled(); expect(f.ports.launch).not.toHaveBeenCalled();
+    },
+  );
+  it('refuses undeclared task and budget drift before generation', async () => {
+    for (const altered of [
+      { ...request, task: { ...request.task, instanceId: 'unassigned' } },
+      { ...request, budget: { ...request.budget, maxUsd: 4 } },
+    ]) {
+      const f = fixture();
+      const result = await currentSuBenchHarnessDriver(f.lifecycle, f.ports, options).spinRunAndCost(altered);
+      expect(result.telemetry.generationError).toMatch(/frozen protocol/);
+      expect(f.ports.admit).not.toHaveBeenCalled(); expect(f.ports.launch).not.toHaveBeenCalled();
+    }
+  });
   it('cancels before launch without admitting or spending', async () => {
     const ac = new AbortController(); ac.abort();
     const f = fixture({ ...options, signal: ac.signal });
@@ -132,8 +179,9 @@ describe('current native benchmark execution', () => {
     expect(result.telemetry.armMeta?.currentExecution).toMatchObject({ retiredTaskIds: ['task-own'] });
   });
   it('uses the attempt wall-clock cap and retires its live task', async () => {
-    const f = fixture(); f.row.state = 'running'; f.row.exitCode = null;
-    const result = await currentSuBenchHarnessDriver(f.lifecycle, f.ports, options).spinRunAndCost({ ...request, budget: { maxUsd: 3, maxWallClockMs: 20 } });
+    const capped = { ...options, preregistration: { ...options.preregistration, config: currentProtocolFixture('run-1', 20) } };
+    const f = fixture(capped); f.row.state = 'running'; f.row.exitCode = null;
+    const result = await currentSuBenchHarnessDriver(f.lifecycle, f.ports, capped).spinRunAndCost({ ...request, budget: { maxUsd: 3, maxWallClockMs: 20 } });
     expect(result.telemetry.stopReason).toBe('timeout');
     expect(result.telemetry.wallClockMs).toBe(20);
     expect(f.ports.killTask).toHaveBeenCalledWith('task-own');
@@ -198,7 +246,7 @@ describe('current benchmark restart and live binding', () => {
   it('calls the maintained handler with the original authenticated context and subtree controller', async () => {
     const f = fixture();
     const ctx = { workspaceId: 'bench-private', authenticatedPrincipal: { retained: true } } as unknown as PapercuspUnifiedToolContext;
-    const ports = liveCurrentSuBenchPorts(ctx, f.ports);
+    const ports = liveCurrentSuBenchPorts(ctx, f.ports, options);
     const args = currentBenchLaunchRequest(options, handle, 'issue');
     await ports.launch(args);
     expect(native.launch).toHaveBeenCalledWith(args, ctx);

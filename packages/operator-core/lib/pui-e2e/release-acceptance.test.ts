@@ -2,7 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { parseCLI, resolveConfig } from 'vitest/node';
 import { ADMIN_TEST_RUNS_REPORTER_PATH } from '@papercusp/test-config/vitest-config';
 import { execFileSync, spawn } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -10,7 +11,7 @@ import * as path from 'node:path';
 import { assertInstalledPuiStore, checkReleaseAcceptance, disqualification, HARNESS_TAG, loadAcceptanceMatrix, loadRequiredMatrix, nativeInterruptRequest, parseAcceptanceLines, parseHarnessLine, REPO_ROOT, type Candidate, type EvidenceRow } from './release-acceptance';
 import {
   CLOUD_DEVICE_START_ATTEMPTS, cloudDeviceStartBlocksLegs, cloudDeviceStartTransient, DOCKER_START_PROBE_TIMEOUT_MS,
-  legsBlocked, measureCloudDeviceStart, measureRunnerTree, probeDockerCreateStart, remeasureCloudDeviceStart, remeasureStockMachines,
+  legsBlocked, measureCloudDeviceStart, measureRunnerTree, prepareOperatorRuntimePackages, probeDockerCreateStart, remeasureCloudDeviceStart, remeasureStockMachines,
   RELEASE_ACCEPTANCE_REPORTER_ARGS, runCloudDeviceStartSmoke, runnerTreeRefusals, runReleaseAcceptance, runStockMachineSmoke, stockMachineRefusal, stockMachinesBlockLegs,
   sweepOrphanedProbeContainers, type CloudDeviceStartResult,
 } from './release-acceptance-run';
@@ -33,6 +34,32 @@ describe('installed acceptance canonical test ledger', () => {
     expect(reporters).toContain(ADMIN_TEST_RUNS_REPORTER_PATH);
     expect(reporters).toContain(path.join(REPO_ROOT, 'packages/operator-core/lib/pui-e2e/release-acceptance-reporter.ts'));
   });
+});
+
+describe('cold operator runtime package admission', () => {
+  it('builds the missing CommonJS export from pinned workspace source and refuses a broken source build', () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'pui-runtime-package-'));
+    const packageRoot = path.join(root, 'libs/generic/sse');
+    try {
+      mkdirSync(packageRoot, { recursive: true });
+      for (const file of ['package.json', 'tsconfig.json', 'src']) {
+        cpSync(path.join(REPO_ROOT, 'libs/generic/sse', file), path.join(packageRoot, file), { recursive: true });
+      }
+      symlinkSync(path.join(REPO_ROOT, 'node_modules'), path.join(packageRoot, 'node_modules'), 'dir');
+      const requireFromPackage = createRequire(path.join(packageRoot, 'package.json'));
+      // The observed failure: the source tree and toolchain exist, but the
+      // CommonJS package export does not exist until the maintained build runs.
+      expect(() => requireFromPackage('@papercusp/sse')).toThrow(/Cannot find module/);
+      prepareOperatorRuntimePackages(root);
+      const loaded = requireFromPackage('@papercusp/sse') as Record<string, unknown>;
+      expect(loaded.sseResponse).toBeTypeOf('function');
+      expect(loaded.getChannel).toBeTypeOf('function');
+      writeFileSync(path.join(packageRoot, 'src/index.ts'), 'this is invalid TypeScript (');
+      expect(() => prepareOperatorRuntimePackages(root)).toThrow();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 120_000);
 });
 
 describe('native interruption response budget admission', () => {
@@ -68,42 +95,6 @@ describe('installed PUI store admission', () => {
   });
 });
 
-describe('release acceptance checkout filesystem preflight', () => {
-  const wrapper = readFileSync(path.join(REPO_ROOT, 'apps/tui/scripts/release-acceptance.sh'), 'utf8');
-  const selector = wrapper.match(/node - "\$ROOT" "\$checkout" <<'NODE'\n([\s\S]*?)\nNODE/)?.[1];
-  const select = (source: string, destination: string) => {
-    expect(selector).toBeDefined();
-    return execFileSync(process.execPath, ['-', source, destination], { input: selector, encoding: 'utf8' });
-  };
-
-  it('uses hardlinks for an absent checkout on the source filesystem and forwards the selection', () => {
-    const root = mkdtempSync(path.join(tmpdir(), 'pui-copy-mode-'));
-    try {
-      expect(select(root, path.join(root, 'missing', 'slot-1'))).toBe('hardlink');
-      expect(wrapper).toContain('--node-modules-copy "$node_modules_copy"');
-      expect(wrapper).not.toContain('--node-modules-copy hardlink');
-    } finally { rmSync(root, { recursive: true, force: true }); }
-  });
-
-  it.skipIf(!existsSync('/dev/shm') || statSync('/dev/shm').dev === statSync('/tmp').dev)(
-    'copies dependencies when a checkout symlink resolves onto another filesystem', () => {
-      // The fleet's TMPDIR can itself be /dev/shm. Pick a distinct real
-      // filesystem explicitly so this EXDEV regression still runs there.
-      const root = mkdtempSync('/tmp/pui-copy-mode-');
-      const relocated = mkdtempSync('/dev/shm/pui-copy-mode-');
-      try {
-        const slot = path.join(root, 'slot-1');
-        symlinkSync(relocated, slot);
-        expect(select(root, slot)).toBe('copy');
-        expect(select(root, path.join(slot, 'missing', 'checkout'))).toBe('copy');
-      } finally {
-        rmSync(root, { recursive: true, force: true });
-        rmSync(relocated, { recursive: true, force: true });
-      }
-    },
-  );
-});
-
 describe('release acceptance checkout helper snapshot', () => {
   it('keeps the admitted helper stable when the shared source changes during checkout', async () => {
     const wrapper = readFileSync(path.join(REPO_ROOT, 'apps/tui/scripts/release-acceptance.sh'), 'utf8');
@@ -136,7 +127,7 @@ process.exit(result.status ?? 1);
       + 'printf "CHECKOUT_HELPER_COMPLETED\\n"\n');
     const child = spawn('bash', ['-c', `fail() { exit 2; }\n${invocation}`], {
       env: { ...process.env, ROOT: root, checkouts, checkout: path.join(checkouts, 'slot-1'), sha: 'a'.repeat(40),
-        node_modules_copy: 'hardlink', PUI_SNAPSHOT_STARTED: started, PUI_SNAPSHOT_RESUME: resume,
+        PUI_SNAPSHOT_STARTED: started, PUI_SNAPSHOT_RESUME: resume,
         PUI_SNAPSHOT_ARGS: admittedArgs },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -151,6 +142,7 @@ process.exit(result.status ?? 1);
       await vi.waitFor(() => expect(existsSync(started), `snapshot child exit=${child.exitCode} signal=${child.signalCode}\n${output}`).toBe(true), { timeout: 5_000, interval: 10 });
       expect(readFileSync(started, 'utf8')).not.toBe(helper);
       const args = readFileSync(admittedArgs, 'utf8').trim().split('\n');
+      expect(args[args.indexOf('--node-modules-copy') + 1]).toBe('copy');
       expect(args[args.indexOf('--node-modules-generation') + 1]).toBe('required');
       expect(args[args.indexOf('--dependency-generation-root') + 1]).toBe(path.join(checkouts, 'dependency-generations'));
       writeFileSync(helper, 'this is an invalid concurrent edit (\n');

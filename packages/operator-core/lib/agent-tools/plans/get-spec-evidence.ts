@@ -3,7 +3,12 @@ import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { resolveEffectiveHarnessSlug } from './_ctx-opts';
-import { listSpecEvidence, SPEC_EVIDENCE_KINDS, evidenceCurrentInputSchema } from './spec-evidence-store';
+import {
+  listSpecEvidence,
+  SPEC_EVIDENCE_KINDS,
+  evidenceCurrentInputSchema,
+  type ListSpecEvidenceDiagnostics,
+} from './spec-evidence-store';
 import { fullBodyRef, isFullDetail, reviewReadDetailArg } from '../_review-read-detail';
 
 type EvidenceRow = Awaited<ReturnType<typeof listSpecEvidence>>[number];
@@ -98,11 +103,32 @@ export default defineTool({
     const harnessSlug = resolveEffectiveHarnessSlug(sctx);
     const { detail, ...listArgs } = args;
     const limit = args.limit ?? 200;
+    const diagnostics: ListSpecEvidenceDiagnostics = {
+      phaseMs: {},
+      bindings: {
+        selectedRows: 0,
+        rowsWithRecipe: 0,
+        measured: 0,
+        unavailable: 0,
+        skipped: 0,
+        totalMeasurementMs: 0,
+        maxMeasurementMs: 0,
+      },
+    };
     const evidenceWithLookahead = await listSpecEvidence({
       ...listArgs,
       limit: limit + 1,
       planSlugs: [args.slug],
       harnessSlug,
+      diagnostics,
+    });
+    ctx.metadata({
+      plansGetSpecEvidenceStageTimings: {
+        schemaVersion: 'plans-get-spec-evidence-stage-timings-v1',
+        requestedLimit: limit,
+        phaseMs: diagnostics.phaseMs,
+        bindings: diagnostics.bindings,
+      },
     });
     const truncatedByLimit = evidenceWithLookahead.length > limit;
     const evidence = truncatedByLimit ? evidenceWithLookahead.slice(0, limit) : evidenceWithLookahead;

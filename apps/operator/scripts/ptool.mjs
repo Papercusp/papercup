@@ -1628,7 +1628,7 @@ export const PTOOL_CHECKPOINT_RUN_TIMEOUT_MS = PTOOL_FOREGROUND_TOOL_TIMEOUT_MS;
 // (packages/operator-core/lib/agent-tools/release/repair-queue.ts). The generic
 // 30s ptool cutoff abandoned the larger import-closure preview before its bounded
 // result could return. Keep a 5s settlement margin over that deadline, but only
-// for read-only admit/converge calls; confirmed writes still return their durable
+// for read-only admit calls; confirmed writes still return their durable
 // precheck-running receipt under the normal call budget.
 export const PTOOL_REPAIR_QUEUE_PREVIEW_TIMEOUT_MS = 305_000;
 
@@ -2069,7 +2069,7 @@ export function timeoutForTool(toolName, callArgs) {
     : callArgs;
   if (
     effectiveToolName === 'release:repair-queue' &&
-    (effectiveArgs?.op === 'admit' || effectiveArgs?.op === 'converge') &&
+    effectiveArgs?.op === 'admit' &&
     effectiveArgs?.confirm !== true
   ) {
     return PTOOL_REPAIR_QUEUE_PREVIEW_TIMEOUT_MS;

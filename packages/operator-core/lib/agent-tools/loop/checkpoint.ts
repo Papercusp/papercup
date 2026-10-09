@@ -337,7 +337,7 @@ export default defineTool({
   name: 'loop:checkpoint',
   profile: 'engineer',
   description:
-    'Read/write/clear COLD loop carry-note; carry mode belongs to loop:arm (`carry:\'cold\'|\'warm\'`); loop:checkpoint does not accept a `carry` argument. Read {read:true, ownerId?, harness?}; write {did,left,insight,next}, {note}, or {checkpoint}; blank/null clears. ' +
+    `Read/write/clear COLD loop carry-note; carry mode belongs to loop:arm (\`carry:'cold'|'warm'\`); loop:checkpoint does not accept a \`carry\` argument. Read {read:true, ownerId?, harness?}; write {did,left,insight,next}, {note}, or {checkpoint}; blank/null clears. Narrative inputs are accepted up to ${CARRY_TEXT_SOFT_CAP * CARRY_CAP_HARD_MULTIPLE} characters, then persisted with an ${CARRY_TEXT_SOFT_CAP}-character soft cap per field; every clipped field is listed in the response's repairs. The schema input maximum is not a persistence-length guarantee. ` +
     "Default rowsMode:'merge' preserves rows; rowsMode:'replace' retires rows (empty list with replace clears). `confirmShrink` is accepted by `work_items:checkpoint` only; use `confirmRetire` here. Probe rows: kind:'tool' or kind:'state-cell', args, schemaRevision.",
   guidance: {
     when:
@@ -404,7 +404,9 @@ export default defineTool({
         .string()
         .max(CARRY_TEXT_SOFT_CAP * CARRY_CAP_HARD_MULTIPLE)
         .nullish()
-        .describe('What this wake accomplished (concrete progress).'),
+        .describe(
+          `What this wake accomplished (concrete progress). Input is accepted up to ${CARRY_TEXT_SOFT_CAP * CARRY_CAP_HARD_MULTIPLE} characters, but persisted text is capped at ${CARRY_TEXT_SOFT_CAP}; any clipped text is listed in the response's repairs.`,
+        ),
       left: z
         .string()
         .max(CARRY_TEXT_SOFT_CAP * CARRY_CAP_HARD_MULTIPLE)
