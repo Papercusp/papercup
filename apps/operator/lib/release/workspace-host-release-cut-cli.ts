@@ -569,6 +569,19 @@ export async function buildWorkspaceHostBundle(plan: WorkspaceHostBuildPlan): Pr
   const { sourceSha } = plan.identity;
   await mkdir(paths.logs, { recursive: true });
   const logFor = (step: string) => join(paths.logs, `${step}.log`);
+  const sidecarReady = await readJsonIfPresent(paths.sidecarReady);
+  const needsSidecar = !(isRecord(sidecarReady) && sidecarReady.sourceSha === sourceSha && sidecarReady.desktopVersion === plan.desktopVersion);
+  // Reject missing model inputs before paying for source materialization. A
+  // completed sidecar resumes downstream without requiring its old build cache.
+  const modelCache = needsSidecar ? workspaceHostModelCache(plan.repoRoot) : undefined;
+  if (modelCache !== undefined) {
+    // The maintained pack verifier checks hashes/config/external tensor data,
+    // not merely the two ONNX path names. Do this before a costly checkout too.
+    await runStep('model-preflight', 'bash', [
+      join(plan.repoRoot, 'papercusp-desktop/bin/lib/transformers-models.sh'),
+      'verify', modelCache, '0', '0',
+    ], { cwd: plan.repoRoot, logFile: logFor('model-preflight') });
+  }
 
   // 1. Pinned source. setup-release's source-only mode stops before any dependency work and
   //    guarantees exact HEAD + submodule pins; the ready marker is what makes a re-run skip it.
@@ -602,9 +615,7 @@ export async function buildWorkspaceHostBundle(plan: WorkspaceHostBuildPlan): Pr
 
   // 2. The vm-release sidecar, built from the pinned tree. The environment is the one the r37 cut
   //    ran with (recorded in tool_invocations 2026-09-20 02:04Z); it is now code instead of a paste.
-  const sidecarReady = await readJsonIfPresent(paths.sidecarReady);
-  if (!(isRecord(sidecarReady) && sidecarReady.sourceSha === sourceSha && sidecarReady.desktopVersion === plan.desktopVersion)) {
-    const modelCache = workspaceHostModelCache(plan.repoRoot);
+  if (needsSidecar) {
     await rm(paths.sidecarTrust, { recursive: true, force: true });
     const env: NodeJS.ProcessEnv = {
       ...process.env,

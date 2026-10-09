@@ -28,6 +28,7 @@ describe('consult expiry production wiring', () => {
     expect(seams.sweep).toHaveBeenCalledOnce();
     const deps = seams.sweep.mock.calls[0]![0];
     expect(deps.notifyRequester).toBeTypeOf('function');
+    expect(deps.resumeCascadeDispatch).toBeTypeOf('function');
     // P-014: prod binds the review conversion leg; without it silent review
     // consults would keep cascading.
     expect(deps.fileReviewWorkItem).toBeTypeOf('function');

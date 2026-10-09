@@ -462,6 +462,40 @@ else
   log "target ref=$REF sha=$TARGET_SHA"
 fi
 
+# EI-25534651860716701: enumerating only .gitmodules silently omitted an
+# accidentally committed nested repository. Ordinary status was empty, but the
+# resulting source-only snapshot could not be traversed by Git and was not a
+# complete input. Compare the committed gitlinks with the SAME commit's mapping
+# before any checkout/dependency mutation; never borrow staging's newer mapping.
+assert_target_gitlink_mappings() {  # <repository> <commit>
+  local repo="$1" sha="$2" tree mappings="" meta path rc
+  tree="$(git -c core.quotePath=false -C "$repo" ls-tree -r "$sha")" || return 3
+  if ! printf '%s\n' "$tree" | grep '^160000 ' >/dev/null; then
+    return 0
+  fi
+  if ! git -C "$repo" cat-file -e "$sha:.gitmodules" 2>/dev/null; then
+    echo "[setup-release] FATAL pinned source $sha contains gitlinks without .gitmodules" >&2
+    return 3
+  fi
+  rc=0
+  mappings="$(git -C "$repo" config --blob "$sha:.gitmodules" --get-regexp '^submodule\..*\.path$')" || rc=$?
+  if [ "$rc" -gt 1 ]; then
+    echo "[setup-release] FATAL unreadable pinned .gitmodules for $sha" >&2
+    return 3
+  fi
+  mappings="$(printf '%s\n' "$mappings" | sed 's/^[^[:space:]]*[[:space:]]*//')"
+  while IFS=$'\t' read -r meta path; do
+    case "$meta" in
+      '160000 '*)
+        if ! printf '%s\n' "$mappings" | grep -Fx -- "$path" >/dev/null; then
+          echo "[setup-release] FATAL pinned gitlink $path has no .gitmodules mapping at $sha; repair source registration before materializing" >&2
+          return 3
+        fi
+        ;;
+    esac
+  done <<< "$tree"
+}
+
 if [ "$SPA_ONLY" = "1" ]; then
   # The existing-checkout/ref checks above apply, but source, dependencies and
   # runtime assets are already prepared. Never re-clone or re-copy them here.
@@ -469,6 +503,8 @@ if [ "$SPA_ONLY" = "1" ]; then
   log "release checkout ready at $RELEASE_ROOT (detached $TARGET_SHA)"
   exit 0
 fi
+
+assert_target_gitlink_mappings "$INTEGRATION_ROOT" "$TARGET_SHA" || exit $?
 
 # EI-25223821707990839: an explicit generation can expire while source checkout
 # and submodule replacement run. Take its process-owned selector lease before
@@ -814,7 +850,7 @@ while IFS= read -r P; do
 # the target still pins the old set would otherwise be extracted from the wrong list
 # during the transition window. `git config --blob <sha>:.gitmodules` reads the committed
 # config; 2>/dev/null + an empty loop is the correct no-op when a sha has no .gitmodules.
-done < <(git -C "$INTEGRATION_ROOT" config --blob "${TARGET_SHA}:.gitmodules" --get-regexp '\.path$' 2>/dev/null | awk '{print $2}')
+done < <(git -C "$INTEGRATION_ROOT" config --blob "${TARGET_SHA}:.gitmodules" --get-regexp '\.path$' 2>/dev/null | sed 's/^[^[:space:]]*[[:space:]]*//')
 [ -z "$_nm_stash" ] || rm -rf "$_nm_stash"
 log "SUBMODULE_NODE_MODULES_KEPT trees=$SUBMODULE_NODE_MODULES_KEPT (pinned-generation trees carried across the submodule re-clone)"
 

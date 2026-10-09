@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { projectByocReleaseMilestones } from '@papercusp/operator-core/lib/byoc-release-carry';
 import type { TaskReleaseJournal } from '@papercusp/operator-core/lib/task-manager/store';
@@ -28,6 +28,7 @@ import {
   WorkspaceHostCutStepError,
   buildWorkspaceHostPublicationInput,
   buildWorkspaceHostReleaseJournalSeed,
+  buildWorkspaceHostBundle,
   cupboardBaseOverride,
   packDeterministically,
   parseWorkspaceHostReleaseCutArgs,
@@ -63,6 +64,38 @@ describe('workspace host model source preflight', () => {
   it('refuses an incomplete explicitly configured pack', () => {
     expect(() => workspaceHostModelCache(workDir, { PAPERCUSP_TRANSFORMERS_MODEL_CACHE: workDir }))
       .toThrow('model source');
+  });
+
+  it('refuses missing models before materializing or stamping source ready', async () => {
+    vi.stubEnv('PAPERCUSP_TRANSFORMERS_MODEL_CACHE', join(workDir, 'missing-models'));
+    try {
+      const plan = { workDir, repoRoot: workDir, identity: { sourceSha: SHA }, desktopVersion: VERSION } as Parameters<typeof buildWorkspaceHostBundle>[0];
+      await expect(buildWorkspaceHostBundle(plan)).rejects.toMatchObject({ step: 'model-preflight' });
+      expect(existsSync(join(workDir, 'source'))).toBe(false);
+      expect(existsSync(join(workDir, 'source.ready.json'))).toBe(false);
+      expect(existsSync(join(workDir, 'logs/materialize.log'))).toBe(false);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('checks model-pack authenticity before materializing a source checkout', async () => {
+    const cache = join(workDir, 'corrupt-models');
+    for (const model of ['harrier-oss-v1-0.6b-ONNX', 'embeddinggemma-300m-ONNX']) {
+      const dir = join(cache, 'onnx-community', model, 'onnx');
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'model.onnx'), 'plausible path, invalid bytes');
+    }
+    vi.stubEnv('PAPERCUSP_TRANSFORMERS_MODEL_CACHE', cache);
+    try {
+      const plan = { workDir, repoRoot: join(__dirname, '../../../..'), identity: { sourceSha: SHA }, desktopVersion: VERSION } as Parameters<typeof buildWorkspaceHostBundle>[0];
+      await expect(buildWorkspaceHostBundle(plan)).rejects.toMatchObject({ step: 'model-preflight' });
+      expect(readFileSync(join(workDir, 'logs/model-preflight.log'), 'utf8')).toMatch(/FATAL|missing|mismatch/i);
+      expect(existsSync(join(workDir, 'source'))).toBe(false);
+      expect(existsSync(join(workDir, 'source.ready.json'))).toBe(false);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });
 

@@ -19,10 +19,9 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import postgres, { type Sql } from 'postgres';
-import { randomBytes } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { getTestPg } from '@papercusp/test-config/pg';
+import { createFreshTestDb, type MigratedTestDb } from '@papercusp/test-config/pg';
 import type { ThreadPostRow } from '@papercusp/coordination/capabilities';
 import {
   consultCloseCore,
@@ -30,12 +29,148 @@ import {
   consultReplyCore,
   type ConsultVerbDeps,
 } from './consult-verbs-core';
-import { advanceCascade, makeDigestEntry } from './cascade-core';
+import { advanceCascade, continueCascadeDispatchCore, makeDigestEntry } from './cascade-core';
+import { makeDeferredConsultReachDispatcher } from './consult-dispatch';
 
 const WS = 'ws-consult-verbs';
 const NOW = new Date('2026-08-16T00:00:00Z');
 const REQUESTER = 'req-1';
 const RESPONDER = 'resp-1';
+
+// Durable acknowledgement/recovery uses the real production adapter and real
+// consult rows; only the launch seam is controlled, so a blocked launch cannot
+// accidentally pass because the test bypassed the interactive binding.
+describe('durable cascade acknowledgement and restart recovery', () => {
+  async function queuedRow(id: string) {
+    return await stateRow(id) as Record<string, unknown> & { expires_at: string; routing: {
+      cascadeDispatch?: { attempts?: number; lastError?: string; leaseToken?: string | null };
+      selection: { selected: Array<{ answeringOwnerId?: string }> };
+    } };
+  }
+  async function queue(kind: 'decline' | 'reply' = 'decline', refill = false) {
+    const snap = menuSnapshot([RESPONDER, 'resp-next']);
+    const routing = refill ? { ...snap, selection: { min: 1, selected: snap.selection.selected.slice(0, 1) } } : snap;
+    const id = await seedConsult({ routing });
+    const { deps, posts } = makeDeps();
+    let acknowledged = false;
+    let acknowledgedBeforeLaunch = false;
+    let launchFinished!: Promise<boolean>;
+    let starts = 0;
+    deps.dispatch = makeDeferredConsultReachDispatcher({ workspaceId: WS, harnessSlug: 'papercusp', launchedBy: RESPONDER }, {
+      getSql: () => rootSql,
+      continueDispatch: async () => {
+        starts += 1;
+        launchFinished = new Promise<boolean>((resolve) => setImmediate(() => {
+          acknowledgedBeforeLaunch = acknowledged;
+          resolve(true);
+        }));
+        return launchFinished;
+      },
+    });
+    const result = kind === 'decline'
+      ? await consultDeclineCore({ workspaceId: WS, authorId: RESPONDER, conversationId: id, reason: 'wrong subsystem' }, deps)
+      : await consultReplyCore({ workspaceId: WS, authorId: RESPONDER, conversationId: id, kind: 'new_fact', body: 'known fact' }, deps);
+    if ('error' in result) throw new Error(result.error);
+    acknowledged = true;
+    await launchFinished;
+    expect(acknowledgedBeforeLaunch).toBe(true);
+    expect(result.cascade).toMatchObject({ advanced_to: 'resp-next', exhausted: false, woke: 0, pending: true });
+    expect(result.hint).toContain('durably queued');
+    expect(posts).toHaveLength(1);
+    expect(starts).toBe(1);
+    return id;
+  }
+
+  it.each(['decline', 'reply'] as const)('%s returns its post identity while the subsequent launch is blocked', async (kind) => {
+    const id = await queue(kind);
+    const row = await queuedRow(id);
+    expect(row.cascade_cursor).toBe(1);
+    expect(row.routing.cascadeDispatch).toMatchObject({ version: 1, cursor: 1, responder: 'resp-next', leaseToken: null });
+    expect(row.routing.selection.selected[1].answeringOwnerId).toBeUndefined();
+    const posts = await rootSql`SELECT post_id FROM harness_shared.consult_post_meta WHERE workspace_id = ${WS} AND conversation_id = ${id}`;
+    expect(posts).toHaveLength(1);
+  });
+
+  it('queues the refill without mistaking an accepted launch for a failed dispatch', async () => {
+    const id = await queue('decline', true);
+    expect((await queuedRow(id)).cascade_digest).toMatchObject([{ kind: 'decline' }]);
+  });
+
+  it('restarts from the saved copy, authorizes the answerer before launch, and does not launch twice', async () => {
+    const id = await queue();
+    let launches = 0;
+    const deps = { getSql: () => rootSql, now: () => NOW, dispatch: (isCurrent: () => Promise<boolean>) => async (opts: Parameters<NonNullable<ConsultVerbDeps['dispatch']>>[0]) => {
+      expect(await isCurrent()).toBe(true);
+      expect(opts.body).toContain('wrong subsystem');
+      await opts.onAnsweringOwner?.('resp-next-fork');
+      expect((await queuedRow(id)).routing.selection.selected[1].answeringOwnerId).toBe('resp-next-fork');
+      launches += 1;
+      return { woke: 1, answeringOwnerId: 'resp-next-fork' };
+    } };
+    expect(await continueCascadeDispatchCore(WS, id, deps)).toBe(true);
+    expect(await continueCascadeDispatchCore(WS, id, deps)).toBe(false);
+    expect(launches).toBe(1);
+    expect((await queuedRow(id)).routing.cascadeDispatch).toBeUndefined();
+  });
+
+  it('only one continuation acquires a live lease; the sweep cannot expire its launch', async () => {
+    const id = await queue();
+    let release!: () => void;
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const deps = { getSql: () => rootSql, now: () => NOW, dispatch: () => async () => {
+      entered(); await held; return { woke: 0, answeringOwnerId: null };
+    } };
+    const first = continueCascadeDispatchCore(WS, id, deps);
+    await started;
+    expect(await continueCascadeDispatchCore(WS, id, deps)).toBe(false);
+    release();
+    expect(await first).toBe(true);
+    expect(new Date((await queuedRow(id)).expires_at).getTime()).toBeLessThan(NOW.getTime());
+  });
+
+  it('recovers an expired pre-launch lease and fences the older continuation', async () => {
+    const id = await queue();
+    let time = NOW;
+    let entered!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let staleCurrent = true;
+    const first = continueCascadeDispatchCore(WS, id, { getSql: () => rootSql, now: () => time, dispatch: (isCurrent) => async () => {
+      entered(); await held; staleCurrent = await isCurrent(); return { woke: 0, answeringOwnerId: null };
+    } });
+    await started;
+    time = new Date(NOW.getTime() + 120_001);
+    expect(await continueCascadeDispatchCore(WS, id, { getSql: () => rootSql, now: () => time, dispatch: () => async (opts) => {
+      await opts.onAnsweringOwner?.('restart-fork'); return { woke: 1, answeringOwnerId: 'restart-fork' };
+    } })).toBe(true);
+    release(); await first;
+    expect(staleCurrent).toBe(false);
+    expect((await queuedRow(id)).routing.selection.selected[1].answeringOwnerId).toBe('restart-fork');
+    expect(new Date((await queuedRow(id)).expires_at).getTime()).toBeGreaterThan(time.getTime());
+  });
+
+  it('does not replay a reserved answering identity after process death', async () => {
+    const id = await queue();
+    await rootSql`UPDATE harness_shared.consult_state SET routing = jsonb_set(routing, '{selection,selected,1,answeringOwnerId}', '"reserved-fork"'::jsonb) WHERE workspace_id = ${WS} AND conversation_id = ${id}`;
+    let called = false;
+    expect(await continueCascadeDispatchCore(WS, id, { getSql: () => rootSql, now: () => NOW, dispatch: () => async () => {
+      called = true; return { woke: 1 };
+    } })).toBe(false);
+    expect(called).toBe(false);
+  });
+
+  it('persists thrown pre-launch recovery and retries only after its backoff', async () => {
+    const id = await queue();
+    const fail = { getSql: () => rootSql, now: () => NOW, dispatch: () => async () => { throw new Error('pre-launch fault'); } };
+    await expect(continueCascadeDispatchCore(WS, id, fail)).rejects.toThrow('pre-launch fault');
+    expect((await queuedRow(id)).routing.cascadeDispatch).toMatchObject({ attempts: 1, lastError: 'Error: pre-launch fault', leaseToken: null });
+    expect(await continueCascadeDispatchCore(WS, id, fail)).toBe(false);
+    expect(await continueCascadeDispatchCore(WS, id, { ...fail, now: () => new Date(NOW.getTime() + 30_001), dispatch: () => async () => ({ woke: 0 }) })).toBe(true);
+  });
+});
 const MIGRATION_834 = fileURLToPath(
   new URL('../../../../libs/papercusp/libs/db/sql/834-consult-threads.sql', import.meta.url),
 );
@@ -47,19 +182,11 @@ const MIGRATION_844_ARMED = fileURLToPath(
 const MIGRATION_844 = existsSync(MIGRATION_844_ARMED) ? MIGRATION_844_ARMED : `${MIGRATION_844_ARMED}.DRAFT`;
 
 let rootSql: Sql;
+let fixtureDb: MigratedTestDb;
 
 beforeAll(async () => {
-  const adminUri = await getTestPg();
-  const dbName = `consultv_${randomBytes(5).toString('hex')}`;
-  const admin = postgres(adminUri, { max: 1, onnotice: () => {} });
-  try {
-    await admin.unsafe(`CREATE DATABASE "${dbName}"`);
-  } finally {
-    await admin.end({ timeout: 5 });
-  }
-  const u = new URL(adminUri);
-  u.pathname = `/${dbName}`;
-  rootSql = postgres(u.toString(), { max: 1, onnotice: () => {} });
+  fixtureDb = await createFreshTestDb({ prefix: 'consultv' });
+  rootSql = postgres(fixtureDb.url, { max: 1, onnotice: () => {} });
   await rootSql.unsafe('CREATE SCHEMA harness_shared');
   // Minimal landing pad for the migration's coord_conversations kind-CHECK
   // widening (the real table is migration-132-owned; only `kind` matters here).
@@ -81,7 +208,8 @@ beforeAll(async () => {
 }, 120_000);
 
 afterAll(async () => {
-  await rootSql?.end({ timeout: 5 });
+  try { await rootSql?.end({ timeout: 5 }); }
+  finally { await fixtureDb?.drop(); }
 });
 
 // ── Fixture builders ─────────────────────────────────────────────────────

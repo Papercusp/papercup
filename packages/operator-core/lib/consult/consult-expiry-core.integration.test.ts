@@ -16,10 +16,9 @@
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import postgres, { type Sql } from 'postgres';
-import { randomBytes } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { getTestPg } from '@papercusp/test-config/pg';
+import { createFreshTestDb, type MigratedTestDb } from '@papercusp/test-config/pg';
 import { sweepExpiredConsults, type ExpirySweepDeps } from './consult-expiry-core';
 import { consultExpiryFindSilentResponders, consultExpiryNotifyRequester } from './consult-expiry-adapters';
 import { PgCoordLog, ensureCoordEventLogTable } from '@papercusp/coordination/event-log';
@@ -83,19 +82,11 @@ const MIGRATION_1302 = fileURLToPath(
 );
 
 let rootSql: Sql;
+let fixtureDb: MigratedTestDb;
 
 beforeAll(async () => {
-  const adminUri = await getTestPg();
-  const dbName = `consulte_${randomBytes(5).toString('hex')}`;
-  const admin = postgres(adminUri, { max: 1, onnotice: () => {} });
-  try {
-    await admin.unsafe(`CREATE DATABASE "${dbName}"`);
-  } finally {
-    await admin.end({ timeout: 5 });
-  }
-  const u = new URL(adminUri);
-  u.pathname = `/${dbName}`;
-  rootSql = postgres(u.toString(), { max: 1, onnotice: () => {} });
+  fixtureDb = await createFreshTestDb({ prefix: 'consulte' });
+  rootSql = postgres(fixtureDb.url, { max: 1, onnotice: () => {} });
   await rootSql.unsafe('CREATE SCHEMA harness_shared');
   // The expiry sweep projects the fine-grained terminal state onto this coarse
   // parent in the same transaction, so the fixture includes the columns that
@@ -133,7 +124,8 @@ beforeAll(async () => {
 afterAll(async () => {
   coordFixture.sql = null;
   coordFixture.log = null;
-  await rootSql?.end({ timeout: 5 });
+  try { await rootSql?.end({ timeout: 5 }); }
+  finally { await fixtureDb?.drop(); }
 });
 
 // ── Fixture builders ─────────────────────────────────────────────────────
@@ -250,6 +242,29 @@ async function setDigest(id: string, digest: unknown[]) {
 
 // ── Tests ────────────────────────────────────────────────────────────────
 describe('sweepExpiredConsults', () => {
+  it('recovers queued cascade launches before expiry and preserves a live continuation lease', async () => {
+    const live = await seedConsult({ routing: { ...menuSnapshot(['resp-1']), cascadeDispatch: {
+      version: 1, cursor: 0, responder: 'resp-1', leaseUntil: FUTURE,
+    } } });
+    const recover = await seedConsult({ routing: { ...menuSnapshot(['resp-1']), cascadeDispatch: {
+      version: 1, cursor: 0, responder: 'resp-1', leaseUntil: PAST,
+    } } });
+    const { deps, alerts } = makeDeps();
+    const resumed: string[] = [];
+    deps.resumeCascadeDispatch = async (workspace, id) => {
+      expect(workspace).toBe(WS);
+      resumed.push(id);
+      await rootSql`UPDATE harness_shared.consult_state SET routing = routing - 'cascadeDispatch', expires_at = ${FUTURE}::timestamptz
+        WHERE workspace_id = ${workspace} AND conversation_id = ${id}`;
+      return true;
+    };
+    await sweepExpiredConsults(deps);
+    expect(resumed).toEqual([recover]);
+    expect(await stateOf(live)).toMatchObject({ state: 'awaiting_responder', closed_at: null });
+    expect(await stateOf(recover)).toMatchObject({ state: 'awaiting_responder', closed_at: null });
+    expect(alerts).toHaveLength(0);
+    await rootSql`DELETE FROM harness_shared.consult_state WHERE workspace_id = ${WS} AND conversation_id IN (${live}, ${recover})`;
+  });
   it('flips ONLY past-due open rows to expired; hard-blocked rows get the latched park-key emit', async () => {
     const hardDue = await seedConsult({ latency: 'hard-blocked', conversationUpdatedAt: FUTURE });
     const proceedDue = await seedConsult({ latency: 'proceed' });

@@ -495,6 +495,7 @@ export interface ConsultReplyResult {
     advanced_to: string | null;
     exhausted: boolean;
     woke: number;
+    pending?: boolean;
     refilled?: boolean;
   };
   hint: string;
@@ -703,6 +704,7 @@ export async function consultReplyCore(
         advanced_to: adv.next?.ownerId ?? null,
         exhausted: adv.exhausted,
         woke: adv.woke,
+        ...(adv.pending ? { pending: true } : {}),
         ...(adv.refilled ? { refilled: true } : {}),
       };
       if (confirmedDeadFollowup) {
@@ -717,7 +719,9 @@ export async function consultReplyCore(
   }
   const cascadeNote = cascade
     ? cascade.advanced_to
-      ? ` Cascade advanced (D-005): an answering session was dispatched from ${cascade.advanced_to}'s transcript with the feedback so far (D-002 — forked/converted, never woken).${cascade.refilled ? ' (min-ANSWERS refill, WI-39861: the menu was extended once — answers collected < selection.min.)' : ''}`
+      ? cascade.pending
+        ? ` Cascade advanced: the next launch from ${cascade.advanced_to}'s transcript is durably queued; no answering session is claimed yet. Recovery continues server-side; do not repeat your post.`
+        : ` Cascade advanced (D-005): an answering session was dispatched from ${cascade.advanced_to}'s transcript with the feedback so far (D-002 — forked/converted, never woken).${cascade.refilled ? ' (min-ANSWERS refill, WI-39861: the menu was extended once — answers collected < selection.min.)' : ''}`
       : ' Cascade menu exhausted — you were the last selectee.'
     : '';
   const requesterRerouteHint =
@@ -785,6 +789,7 @@ export interface ConsultDeclineResult {
     advanced_to: string | null;
     exhausted: boolean;
     woke: number;
+    pending?: boolean;
     refilled?: boolean;
   };
   /** Route-time candidate refs — decliner excluded, route-time-dead filtered
@@ -882,10 +887,13 @@ export async function consultDeclineCore(
         advanced_to: adv.next?.ownerId ?? null,
         exhausted: false,
         woke: adv.woke,
+        ...(adv.pending ? { pending: true } : {}),
         ...(adv.refilled ? { refilled: true } : {}),
       },
       remaining_candidates: remaining,
-      hint: `Declined. Cascade advanced (D-005): an answering session was dispatched from ${adv.next?.ownerId ?? 'the next selectee'}'s transcript with the feedback so far — the consult stays open.${adv.refilled ? ' (min-ANSWERS refill, WI-39861: the menu was extended once — answers collected < selection.min.)' : ''}`,
+      hint: adv.pending
+        ? `Declined. The next launch from ${adv.next?.ownerId ?? 'the next selectee'}'s transcript is durably queued; no answering session is claimed yet. The consult stays open and recovery continues server-side; do not repeat the decline.`
+        : `Declined. Cascade advanced (D-005): an answering session was dispatched from ${adv.next?.ownerId ?? 'the next selectee'}'s transcript with the feedback so far — the consult stays open.${adv.refilled ? ' (min-ANSWERS refill, WI-39861: the menu was extended once — answers collected < selection.min.)' : ''}`,
     };
   }
 

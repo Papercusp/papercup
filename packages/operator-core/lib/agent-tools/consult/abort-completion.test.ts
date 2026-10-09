@@ -22,7 +22,7 @@ describe('consult verb abort-completion receipts', () => {
     });
   });
 
-  it.each(['http', 'mcp'])('preserves the committed decline through real %s serialization after parent abort', async (transport) => {
+  it.each(['http', 'mcp'] as const)('preserves the committed decline through real %s serialization after parent abort', async (transport) => {
     const parent = new AbortController();
     const name = `receipt-test:decline-${transport}`;
     defineTool({
@@ -58,7 +58,7 @@ describe('consult verb abort-completion receipts', () => {
     expect(decline.abortCompletionReceipt?.(declineArgs, {
       content: [], structuredContent: completion,
     }, attempt)).toMatchObject({ status: 'recorded', effectRef: 'consult-decline:conv-1:42' });
-    expect(getFeedback.abortCompletionReceipt?.({ question: 'Router question' }, {
+    expect(getFeedback.abortCompletionReceipt?.({ question: 'Router question', allow_dispatch: true }, {
       content: [{ type: 'text', text: `format: toon\n${encode({ ok: true, conversation_id: 'conv-compact' }, 'toon')}` }],
     }, attempt)).toMatchObject({ status: 'recorded', effectRef: 'consult-get-feedback:conv-compact' });
   });
