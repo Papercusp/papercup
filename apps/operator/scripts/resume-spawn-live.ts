@@ -44,10 +44,14 @@ import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createHash, randomUUID } from 'node:crypto';
+import { DatabaseSync } from 'node:sqlite';
 import { resumeCommandFor, wakeTurnText } from '../../../packages/operator-core/lib/events/await/wake-executor';
 import type { DeliveryWork } from '../../../packages/operator-core/lib/events/await/types';
 import { writeSpawnClaudeConfig } from '../../../libs/papercusp/packages/orchestrator/src/spawn-mcp';
+import { readFleetClaudeToken } from '../../../libs/papercusp/packages/orchestrator/src/fleet-claude-token';
+import { ompGatewayModelFromSpec, ompGatewayModelsConfig } from '../../../libs/papercusp/packages/orchestrator/src/omp-gateway-config';
 import { tagTurnForInjection } from '../../../packages/operator-core/lib/turn-provenance/turn-provenance';
+import { sanitizeInheritedWakeEnv, wakeAccountRouteFromArgv } from '../../../packages/operator-core/lib/inference-gateway/spawn-env';
 
 // A cheap model keeps the smoke's ~4 real turns near-free. Override via env.
 const CLAUDE_MODEL = process.env.PAPERCUSP_SMOKE_MODEL || 'claude-haiku-4-5-20251001';
@@ -62,6 +66,18 @@ type Leg = {
 };
 
 let evidenceDir: string | undefined;
+
+/** Reuse the production OMP registry builder for an explicitly selected smoke account route. */
+export function configureResumeSmokeOmpRoute(agentDir: string, sid: string, model?: string, account?: string) {
+  if (!account || account === 'default') return model ? ['--model', model] : [];
+  const route = ompGatewayModelFromSpec(model);
+  if (!route) throw new Error('A gateway OMP smoke requires an explicit compatible provider/model');
+  const config = ompGatewayModelsConfig({ provider: route.gatewayProvider, models: [route.modelId], ownerId: sid,
+    gatewayOn: account === 'auto', accountId: account === 'auto' ? undefined : account });
+  if (!config) throw new Error('OMP smoke account route did not produce a model registry');
+  writeFileSync(join(agentDir, 'models.yml'), config.content, { mode: 0o600 });
+  return ['--model', config.modelSelector];
+}
 
 /** Preserve the exact private transcript pair before the client profile is removed. */
 export function retainResumeSmokeWitness(dir: string, agent: Leg['agent'], sessionId: string,
@@ -87,6 +103,41 @@ function retainWitness(agent: Leg['agent'], sessionId: string, before: string, a
   return evidenceDir ? retainResumeSmokeWitness(evidenceDir, agent, sessionId, before, after, wakeText) : undefined;
 }
 
+export function resumeSmokeFailureDetail(result: { stdout: string; stderr: string }): string {
+  return [result.stderr, result.stdout].filter(Boolean).join('\n')
+    .replace(/sk-ant-[A-Za-z0-9_-]+|sk-[A-Za-z0-9_-]{20,}|Bearer\s+\S+/g, '[redacted credential]').slice(0, 600);
+}
+
+function recordStage(agent: Leg['agent'], stage: string, result: ReturnType<typeof run>) {
+  if (!evidenceDir) return;
+  mkdirSync(evidenceDir, { recursive: true, mode: 0o700 });
+  writeFileSync(join(evidenceDir, `${agent}-${stage}.json`), JSON.stringify(result, null, 2), { mode: 0o600 });
+}
+
+/** OMP now stores credentials in SQLite. Copy that table alone, through a read-only snapshot. */
+export function seedResumeSmokeOmpAuth(sourceAgentDir: string, destinationAgentDir: string): boolean {
+  const sourcePath = join(sourceAgentDir, 'agent.db');
+  if (!existsSync(sourcePath)) return false;
+  const source = new DatabaseSync(sourcePath, { readOnly: true });
+  let destination: DatabaseSync | undefined;
+  try {
+    const schema = source.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='auth_credentials'").get() as { sql: string } | undefined;
+    if (!schema) return false;
+    mkdirSync(destinationAgentDir, { recursive: true, mode: 0o700 });
+    const destinationPath = join(destinationAgentDir, 'agent.db');
+    writeFileSync(destinationPath, '', { mode: 0o600 });
+    destination = new DatabaseSync(destinationPath);
+    destination.exec(schema.sql);
+    const columns = source.prepare('PRAGMA table_info(auth_credentials)').all() as Array<{ name: string }>;
+    const names = columns.map(({ name }) => '"' + name.replaceAll('"', '""') + '"').join(',');
+    const insert = destination.prepare(`INSERT INTO auth_credentials (${names}) VALUES (${columns.map(() => '?').join(',')})`);
+    for (const row of source.prepare('SELECT * FROM auth_credentials').all()) {
+      insert.run(...columns.map(({ name }) => row[name] as string | number | null));
+    }
+    return true;
+  } finally { destination?.close(); source.close(); }
+}
+
 /** Private auth inputs; no user settings, hooks, plugins, or write-through credential links. */
 export function createResumeSmokeProfile(agent: Leg['agent'], sourceHome = homedir()) {
   const home = mkdtempSync(join(tmpdir(), `resume-smoke-${agent}-home-`));
@@ -100,6 +151,7 @@ export function createResumeSmokeProfile(agent: Leg['agent'], sourceHome = homed
     copyFileSync(source, destination);
     chmodSync(destination, 0o600);
   }
+  if (agent === 'omp') seedResumeSmokeOmpAuth(join(sourceHome, '.omp', 'agent'), join(home, '.omp', 'agent'));
   const clientHome = agent === 'claude'
     ? writeSpawnClaudeConfig(home, { persistentDir: join(home, '.claude-config') }).configDir
     : agent === 'codex' ? join(home, '.codex') : join(home, '.omp', 'agent');
@@ -119,9 +171,15 @@ export function resumeSmokeChildEnv(parent: NodeJS.ProcessEnv, home: string, ove
 export function verifyResumeSmokeContinuation(before: string, after: string, wakeText: string): boolean {
   const prior = before.split('\n').filter((line) => line.trim());
   const current = after.split('\n').filter((line) => line.trim());
-  return prior.length > 0 && current.length > prior.length &&
-    current.slice(0, prior.length).every((line, index) => line === prior[index]) &&
-    current.slice(prior.length).join('\n').includes(wakeText);
+  if (!prior.length || current.length <= prior.length ||
+    !current.slice(0, prior.length).every((line, index) => line === prior[index])) return false;
+  const containsWake = (value: unknown): boolean => typeof value === 'string' ? value.includes(wakeText)
+    : Array.isArray(value) ? value.some(containsWake)
+      : !!value && typeof value === 'object' && Object.values(value).some(containsWake);
+  // Native transcript strings encode newlines and quotes. Inspect decoded NEW
+  // records; searching serialized bytes rejects the real multiline wake text.
+  try { return current.slice(prior.length).map(line => JSON.parse(line)).some(containsWake); }
+  catch { return false; }
 }
 
 function log(s: string) {
@@ -181,7 +239,7 @@ function findFile(root: string, predicate: (name: string, full: string) => boole
 }
 
 function isClaudeAuthed(): boolean {
-  return existsSync(join(homedir(), '.claude', '.credentials.json'));
+  return !!readFleetClaudeToken() || existsSync(join(homedir(), '.claude', '.credentials.json'));
 }
 function isCodexAuthed(): boolean {
   return existsSync(join(homedir(), '.codex', 'auth.json'));
@@ -206,9 +264,14 @@ async function claudeLeg(): Promise<Leg> {
   const configDir = profile.clientHome;
   const cwd = mkdtempSync(join(tmpdir(), 'resume-smoke-claude-'));
   const provenanceDir = mkdtempSync(join(tmpdir(), 'resume-smoke-provenance-'));
-  const env = resumeSmokeChildEnv(process.env, profile.home, {
+  const account = process.env.PAPERCUSP_SMOKE_CLAUDE_ACCOUNT;
+  const accountRoute = account ? wakeAccountRouteFromArgv(['--account', account], sid) : null;
+  const fleetToken = !accountRoute || accountRoute.mode === 'default' ? readFleetClaudeToken() : null;
+  const env = resumeSmokeChildEnv(sanitizeInheritedWakeEnv(process.env), profile.home, {
     CLAUDE_CONFIG_DIR: configDir,
     PAPERCUSP_TURN_PROVENANCE_DIR: provenanceDir,
+    ...(fleetToken ? { CLAUDE_CODE_OAUTH_TOKEN: fleetToken } : {}),
+    ...accountRoute?.env,
   });
 
   try {
@@ -221,12 +284,13 @@ async function claudeLeg(): Promise<Leg> {
     }
     const launch = run(
       'claude',
-      ['--session-id', sessionId, '-p', '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions',
+      [...(accountRoute?.claudeArgs ?? []), '--session-id', sessionId, '-p', '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions',
         '--model', CLAUDE_MODEL, launchText],
       { cwd, env },
     );
+    recordStage('claude', 'launch', launch);
     if (launch.code !== 0) {
-      return { agent: 'claude', status: 'fail', detail: `fresh launch exited ${launch.code}: ${launch.stderr.slice(0, 240)}` };
+      return { agent: 'claude', status: 'fail', detail: `fresh launch exited ${launch.code}: ${resumeSmokeFailureDetail(launch)}` };
     }
     const transcript = findFile(join(configDir, 'projects'), (n) => n === `${sessionId}.jsonl`);
     if (!transcript) {
@@ -252,14 +316,15 @@ async function claudeLeg(): Promise<Leg> {
     if (!wakeText) {
       return { agent: 'claude', status: 'fail', detail: 'turn-provenance ledger write failed before resume' };
     }
-    const cmd = resumeCommandFor({ agent: 'claude', sessionId, ompThreadId: null }, wakeText);
+    const cmd = resumeCommandFor({ agent: 'claude', sessionId, ompThreadId: null }, wakeText, accountRoute);
     if (!cmd) return { agent: 'claude', status: 'fail', detail: 'resumeCommandFor returned null for a claude session with a sessionId' };
     log(`  claude: resuming via \`${cmd.bin} ${cmd.args.filter((a) => a !== wakeText).join(' ')} <wake-turn-text>\``);
     const resumeStartedAt = Date.now();
     const resume = run(cmd.bin, cmd.args, { cwd, env });
+    recordStage('claude', 'resume', resume);
     const resumeMs = Date.now() - resumeStartedAt;
     if (resume.code !== 0) {
-      return { agent: 'claude', status: 'fail', detail: `resume exited ${resume.code}: ${resume.stderr.slice(0, 240)}` };
+      return { agent: 'claude', status: 'fail', detail: `resume exited ${resume.code}: ${resumeSmokeFailureDetail(resume)}` };
     }
 
     // 3. Deterministic proof: the resume appended turns to the SAME transcript —
@@ -298,6 +363,8 @@ async function ompLeg(): Promise<Leg> {
   // without reading or mutating the owner's normal ~/.omp/agent/sessions tree.
   const profile = createResumeSmokeProfile('omp');
   const ompAgentDir = profile.clientHome;
+  const modelArgs = configureResumeSmokeOmpRoute(ompAgentDir, sid,
+    process.env.PAPERCUSP_SMOKE_OMP_MODEL, process.env.PAPERCUSP_SMOKE_OMP_ACCOUNT);
   const cwd = mkdtempSync(join(tmpdir(), 'resume-smoke-omp-'));
   const provenanceDir = mkdtempSync(join(tmpdir(), 'resume-smoke-provenance-'));
   const env = resumeSmokeChildEnv(process.env, profile.home, {
@@ -313,9 +380,10 @@ async function ompLeg(): Promise<Leg> {
     }
     const launch = run(
       'omp',
-      ['--approval-mode', 'yolo', '-p', launchText],
+      [...modelArgs, '--approval-mode', 'yolo', '-p', launchText],
       { cwd, env },
     );
+    recordStage('omp', 'launch', launch);
     if (launch.code !== 0) {
       const detail = `${launch.stderr}\n${launch.stdout}`.slice(0, 360);
       if (/unauth|not authenticated|api key|credential|login required/i.test(detail)) {
@@ -347,6 +415,7 @@ async function ompLeg(): Promise<Leg> {
     log(`  omp: resuming via \`${cmd.bin} -r ${threadId.slice(0, 8)}… --approval-mode yolo -p <text>\``);
     const resumeStartedAt = Date.now();
     const resume = run(cmd.bin, cmd.args, { cwd, env });
+    recordStage('omp', 'resume', resume);
     const resumeMs = Date.now() - resumeStartedAt;
     if (resume.code !== 0) {
       return { agent: 'omp', status: 'fail', detail: `resume exited ${resume.code}: ${resume.stderr.slice(0, 240)}` };
@@ -396,8 +465,9 @@ async function codexLeg(): Promise<Leg> {
       ['exec', '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox', launchText],
       { cwd, env },
     );
+    recordStage('codex', 'launch', launch);
     if (launch.code !== 0) {
-      return { agent: 'codex', status: 'fail', detail: `fresh exec exited ${launch.code}: ${launch.stderr.slice(0, 240)}` };
+      return { agent: 'codex', status: 'fail', detail: `fresh exec exited ${launch.code}: ${resumeSmokeFailureDetail(launch)}` };
     }
     // Recover the conversation uuid from the rollout filename (rollout-<ts>-<uuid>.jsonl).
     const rollout = findFile(sessionsRoot, (n) => n.startsWith('rollout-') && n.endsWith('.jsonl'));
@@ -422,9 +492,10 @@ async function codexLeg(): Promise<Leg> {
     log(`  codex: resuming via \`${cmd.bin} ${cmd.args.filter((a) => a !== resumeText).join(' ')} <text>\``);
     const resumeStartedAt = Date.now();
     const resume = run(cmd.bin, ['exec', '--skip-git-repo-check', ...cmd.args.slice(1)], { cwd, env });
+    recordStage('codex', 'resume', resume);
     const resumeMs = Date.now() - resumeStartedAt;
     if (resume.code !== 0) {
-      return { agent: 'codex', status: 'fail', detail: `resume exited ${resume.code}: ${resume.stderr.slice(0, 240)}` };
+      return { agent: 'codex', status: 'fail', detail: `resume exited ${resume.code}: ${resumeSmokeFailureDetail(resume)}` };
     }
 
     // 3. Deterministic proof: this exact rollout grew with the wake prompt.
