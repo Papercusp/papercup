@@ -185,7 +185,7 @@ describe('harness:escalation', () => {
     expect(payload.hasEscalation).toBe(false);
   });
 
-  it('returns null shape on 404', async () => {
+  it('returns an explicit read error on 404', async () => {
     getEscalationMock.mockResolvedValueOnce({
       ok: false,
       status: 404,
@@ -193,12 +193,8 @@ describe('harness:escalation', () => {
     });
     const result = await harnessEscalation.handler({ slug: 'unknown' }, MAKE_CTX());
     const payload = parsePayload(result);
-    expect(payload).toEqual({
-      hasEscalation: false,
-      escalation: null,
-      supervisorNotes: null,
-      mtimeMs: null,
-    });
+    expect(result).toMatchObject({ isError: true });
+    expect(payload).toEqual({ ok: false, status: 404, error: 'unknown project' });
   });
 });
 
