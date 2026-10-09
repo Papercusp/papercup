@@ -2,8 +2,13 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
-import gitEvidence, { MAX_GIT_EVIDENCE_FILE_BYTES, runJudgeGitEvidence } from './git-evidence';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { HarnessRegistry } from '../../harness-registry';
+import gitEvidence, {
+  MAX_GIT_EVIDENCE_INLINE_BYTES,
+  MAX_GIT_EVIDENCE_PAGE_BYTES,
+  runJudgeGitEvidence,
+} from './git-evidence';
 
 const cleanup: string[] = [];
 const never = new AbortController().signal;
@@ -40,6 +45,13 @@ describe('capability:git-evidence', () => {
     expect(schema.safeParse({ scratchClone: { ref: 'HEAD' } }).success).toBe(false);
     expect(schema.safeParse({ op: 'readFileAtCommit', commitSha: sha, path: '../outside.txt' }).success).toBe(false);
     expect(schema.safeParse({ op: 'readFileAtCommit', commitSha: sha.slice(1), path: 'evidence.txt' }).success).toBe(false);
+    expect(schema.safeParse({ op: 'readFileAtCommit', commitSha: sha, path: 'evidence.txt', byte_offset: 0 }).success).toBe(false);
+    expect(schema.safeParse({ op: 'readFileAtCommit', commitSha: sha, path: 'evidence.txt', byte_limit: MAX_GIT_EVIDENCE_PAGE_BYTES }).success).toBe(false);
+    expect(schema.safeParse({ op: 'readFileAtCommit', commitSha: sha, path: 'evidence.txt', byte_offset: 0, byte_limit: MAX_GIT_EVIDENCE_PAGE_BYTES }).success).toBe(true);
+    expect(schema.safeParse({ op: 'readFileAtCommit', commitSha: sha, path: 'evidence.txt', rootHarnessSlug: 'portal' }).success).toBe(true);
+    expect(schema.safeParse({ op: 'readFileAtCommit', commitSha: sha, path: 'evidence.txt', cwd: '/external' }).success).toBe(false);
+    expect(schema.safeParse({ op: 'readFileAtCommit', commitSha: sha, path: 'evidence.txt', rootHarnessSlug: ' ' }).success).toBe(false);
+    expect(schema.safeParse({ op: 'isAncestor', ancestorSha: sha, descendantSha: sha, rootHarnessSlug: 'portal' }).success).toBe(false);
   });
 
   it('checks ancestry using full local commit ids and distinguishes a non-ancestor', async () => {
@@ -106,19 +118,95 @@ describe('capability:git-evidence', () => {
     expect(confirmedNotRepository).toMatchObject({ ok: false, reason: 'not_git_repository' });
   });
 
-  it('bounds pinned-file reads and refuses oversized blobs before returning content', async () => {
+  it('reads external evidence from the registered workspace repository without substituting HEAD', async () => {
+    const activeRoot = repository();
+    const externalRoot = repository();
+    writeFileSync(join(externalRoot, 'evidence.txt'), 'external pinned contents\n');
+    git(externalRoot, ['commit', '--quiet', '-am', 'external evidence']);
+    const commitSha = git(externalRoot, ['rev-parse', 'HEAD']);
+    writeFileSync(join(externalRoot, 'evidence.txt'), 'mutable external contents\n');
+    const loadRegistry = vi.fn(async () => ({ projects: [
+      { slug: 'portal', path: externalRoot },
+    ] } as HarnessRegistry));
+    const args = { op: 'readFileAtCommit' as const, commitSha, path: 'evidence.txt' };
+
+    expect(await runJudgeGitEvidence(args, { repositoryDir: activeRoot, signal: never }))
+      .toMatchObject({ ok: false, reason: 'commit_not_found_or_not_pinned' });
+    const result = await runJudgeGitEvidence({ ...args, rootHarnessSlug: 'portal' }, {
+      repositoryDir: activeRoot, workspaceId: 'test-workspace', loadRegistry, signal: never,
+    });
+
+    expect(loadRegistry).toHaveBeenCalledWith('test-workspace');
+    expect(result).toMatchObject({ ok: true, commitSha, content: 'external pinned contents\n' });
+  });
+
+  it('refuses missing workspace or unregistered external roots before running Git', async () => {
+    const args = { op: 'readFileAtCommit' as const, commitSha: 'a'.repeat(40), path: 'evidence.txt', rootHarnessSlug: 'portal' };
+    const loadRegistry = vi.fn(async () => ({ projects: [] } as HarnessRegistry));
+    const runner = vi.fn();
+    for (const workspaceId of [undefined, '*']) {
+      expect(await runJudgeGitEvidence(args, { repositoryDir: '/active', workspaceId, loadRegistry, runner, signal: never }))
+        .toMatchObject({ ok: false, reason: 'root_harness_requires_concrete_workspace' });
+    }
+    expect(loadRegistry).not.toHaveBeenCalled();
+    expect(await runJudgeGitEvidence(args, { repositoryDir: '/active', workspaceId: 'test-workspace', loadRegistry, runner, signal: never }))
+      .toMatchObject({ ok: false, reason: 'root_harness_not_registered' });
+    expect(runner).not.toHaveBeenCalled();
+  });
+
+  it('preserves the registered root when following exact byte page cursors', async () => {
+    const activeRoot = repository();
+    const externalRoot = repository();
+    writeFileSync(join(externalRoot, 'evidence.txt'), 'external contents with two pages\n');
+    git(externalRoot, ['commit', '--quiet', '-am', 'paged external evidence']);
+    const commitSha = git(externalRoot, ['rev-parse', 'HEAD']);
+    const options = { repositoryDir: activeRoot, workspaceId: 'test-workspace', signal: never,
+      loadRegistry: async () => ({ projects: [{ slug: 'portal', path: externalRoot }] } as HarnessRegistry) };
+    const first = await runJudgeGitEvidence({ op: 'readFileAtCommit', commitSha, path: 'evidence.txt', rootHarnessSlug: 'portal', byte_offset: 0, byte_limit: 12 }, options);
+    if (!first.ok || first.op !== 'readFileAtCommit' || !('next_cursor' in first) || !first.next_cursor) throw new Error('Expected external byte cursor');
+    expect(first.next_cursor.args.rootHarnessSlug).toBe('portal');
+    const second = await runJudgeGitEvidence(first.next_cursor.args, options);
+    expect(second).toMatchObject({ ok: true, byte_offset: 12 });
+    if (!second.ok || !('data' in second)) throw new Error('Expected second byte page');
+    expect(Buffer.from(second.data, 'base64').toString('utf8')).toBe('tents with t');
+  });
+
+  it('pages oversized pinned UTF-8 blobs as exact bounded bytes', async () => {
     const root = repository();
-    writeFileSync(join(root, 'large.txt'), 'x'.repeat(MAX_GIT_EVIDENCE_FILE_BYTES + 1));
+    const largeContent = '€'.repeat(Math.ceil((MAX_GIT_EVIDENCE_INLINE_BYTES + 1) / 3));
+    const expectedBytes = Buffer.from(largeContent, 'utf8');
+    writeFileSync(join(root, 'large.txt'), largeContent);
     git(root, ['add', 'large.txt']);
     git(root, ['commit', '--quiet', '-m', 'large file']);
     const commitSha = git(root, ['rev-parse', 'HEAD']);
+    writeFileSync(join(root, 'large.txt'), 'uncommitted replacement\n');
 
-    const result = await runJudgeGitEvidence(
+    let result = await runJudgeGitEvidence(
       { op: 'readFileAtCommit', commitSha, path: 'large.txt' },
       { repositoryDir: root, signal: never },
     );
+    const pages: Buffer[] = [];
+    let totalRead = 0;
+    let pageCount = 0;
+    while (true) {
+      if (!result.ok || result.op !== 'readFileAtCommit' || !('data' in result)) {
+        throw new Error(`Expected a pinned byte page, got ${JSON.stringify(result)}`);
+      }
+      const page = Buffer.from(result.data, 'base64');
+      expect(result.byte_offset).toBe(totalRead);
+      expect(result.byte_length).toBe(page.length);
+      expect(result.byte_length).toBeLessThanOrEqual(MAX_GIT_EVIDENCE_PAGE_BYTES);
+      expect(result.total_bytes).toBe(expectedBytes.length);
+      expect(result.eof).toBe(result.next_cursor === null);
+      pages.push(page);
+      totalRead += page.length;
+      pageCount += 1;
+      if (!result.next_cursor) break;
+      result = await runJudgeGitEvidence(result.next_cursor.args, { repositoryDir: root, signal: never });
+    }
 
-    expect(result).toMatchObject({ ok: false, reason: 'file_too_large' });
-    expect('content' in result).toBe(false);
+    expect(pageCount).toBeGreaterThan(1);
+    expect(totalRead).toBe(expectedBytes.length);
+    expect(Buffer.concat(pages)).toEqual(expectedBytes);
   });
 });

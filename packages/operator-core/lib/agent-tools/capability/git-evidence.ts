@@ -7,11 +7,17 @@
 import { isAbsolute } from 'node:path';
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
+import { CHARS_PER_TOKEN_ESTIMATE, computeTurnDoors } from '../../context-doors';
+import { loadHarnessRegistry, resolveHarnessContentPath } from '../../harness-registry';
 import { resolveCapabilityBaseDir } from './base-dir';
 import { capabilityExecSandboxPolicy } from './exec-sandbox';
 import { runGit } from './git';
 
 const fullCommitSha = z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i);
+/** Keep small blobs on the original one-call text response; larger blobs are paged. */
+export const MAX_GIT_EVIDENCE_INLINE_BYTES = 128 * 1024;
+export const MAX_GIT_EVIDENCE_PAGE_BYTES = 4 * 1024;
+const PAGE_RESPONSE_MARGIN_CHARS = 256;
 
 export function isSafeGitEvidencePath(value: string): boolean {
   if (
@@ -30,29 +36,97 @@ const relativeFilePath = z.string().refine(isSafeGitEvidencePath, {
   message: 'path must be a normalized repository-relative POSIX file path',
 });
 
+const readFileAtCommitArgs = z.object({
+  op: z.literal('readFileAtCommit').describe('Read a UTF-8 blob from an immutable commit. Oversized blobs are returned in bounded byte pages.'),
+  commitSha: fullCommitSha.describe('Full 40- or 64-character commit SHA; refs and abbreviations are refused.'),
+  path: relativeFilePath.describe('Repository-relative POSIX file path; absolute paths and traversal are refused.'),
+  rootHarnessSlug: z.string().trim().min(1).max(120).optional().describe('Registered harness whose repository contains the cited commit, taken from the evidence measurement. Resolved only in the caller workspace; no arbitrary directory is accepted.'),
+  byte_offset: z.number().int().nonnegative().optional().describe('0-based byte offset for an exact page. Pair with byte_limit; the first page of an oversized blob defaults to 0.'),
+  byte_limit: z.number().int().positive().max(MAX_GIT_EVIDENCE_PAGE_BYTES).optional().describe(`Maximum exact bytes in this page (≤${MAX_GIT_EVIDENCE_PAGE_BYTES}). Follow next_cursor for the next page.`),
+}).strict();
+
 const gitEvidenceArgs = z.discriminatedUnion('op', [
   z.object({
     op: z.literal('isAncestor').describe('Check whether ancestorSha is in descendantSha’s commit ancestry.'),
     ancestorSha: fullCommitSha.describe('Full 40- or 64-character commit SHA; refs and abbreviations are refused.'),
     descendantSha: fullCommitSha.describe('Full 40- or 64-character commit SHA; refs and abbreviations are refused.'),
   }).strict(),
-  z.object({
-    op: z.literal('readFileAtCommit').describe('Read one bounded UTF-8 blob from an immutable commit.'),
-    commitSha: fullCommitSha.describe('Full 40- or 64-character commit SHA; refs and abbreviations are refused.'),
-    path: relativeFilePath.describe('Repository-relative POSIX file path; absolute paths and traversal are refused.'),
-  }).strict(),
-]);
+  readFileAtCommitArgs,
+]).superRefine((args, ctx) => {
+  if (args.op !== 'readFileAtCommit') return;
+  if ((args.byte_offset === undefined) !== (args.byte_limit === undefined)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'byte_offset and byte_limit must be supplied together.',
+      path: [args.byte_offset === undefined ? 'byte_offset' : 'byte_limit'],
+    });
+  }
+});
 
 export type GitEvidenceArgs = z.infer<typeof gitEvidenceArgs>;
-export const MAX_GIT_EVIDENCE_FILE_BYTES = 128 * 1024;
 
 export type GitEvidenceResult =
   | { ok: true; op: 'isAncestor'; ancestorSha: string; descendantSha: string; isAncestor: boolean }
   | { ok: true; op: 'readFileAtCommit'; commitSha: string; path: string; bytes: number; content: string }
+  | {
+      ok: true;
+      op: 'readFileAtCommit';
+      commitSha: string;
+      path: string;
+      encoding: 'base64';
+      byte_offset: number;
+      byte_length: number;
+      total_bytes: number;
+      eof: boolean;
+      data: string;
+      next_cursor: {
+        tool: 'capability:git-evidence';
+        args: Extract<GitEvidenceArgs, { op: 'readFileAtCommit' }>;
+      } | null;
+    }
   | { ok: false; reason: string; message?: string };
+
+/** Keep a base64 page plus its recovery cursor inside the result door. */
+export function doorSafeGitEvidencePageBytes(
+  commitSha: string,
+  path: string,
+  requestedBytes: number,
+  rootHarnessSlug?: string,
+): number {
+  const envelopeChars = JSON.stringify({
+    ok: true,
+    op: 'readFileAtCommit',
+    commitSha,
+    path,
+    ...(rootHarnessSlug ? { rootHarnessSlug } : {}),
+    encoding: 'base64',
+    byte_offset: Number.MAX_SAFE_INTEGER,
+    byte_length: Number.MAX_SAFE_INTEGER,
+    total_bytes: Number.MAX_SAFE_INTEGER,
+    eof: false,
+    data: '',
+    next_cursor: {
+      tool: 'capability:git-evidence',
+      args: {
+        op: 'readFileAtCommit',
+        commitSha,
+        path,
+        ...(rootHarnessSlug ? { rootHarnessSlug } : {}),
+        byte_offset: Number.MAX_SAFE_INTEGER,
+        byte_limit: MAX_GIT_EVIDENCE_PAGE_BYTES,
+      },
+    },
+  }).length;
+  const budgetChars = computeTurnDoors(0).resultEach * CHARS_PER_TOKEN_ESTIMATE;
+  const room = budgetChars - envelopeChars - PAGE_RESPONSE_MARGIN_CHARS;
+  const fits = Math.floor(Math.max(0, room) / 4) * 3;
+  return Math.min(requestedBytes, fits);
+}
 
 interface GitEvidenceOptions {
   repositoryDir: string;
+  workspaceId?: string;
+  loadRegistry?: typeof loadHarnessRegistry;
   stateDir?: string;
   signal: AbortSignal;
   sandboxEnabled?: boolean;
@@ -65,10 +139,22 @@ export async function runJudgeGitEvidence(
   args: GitEvidenceArgs,
   options: GitEvidenceOptions,
 ): Promise<GitEvidenceResult> {
+  let repositoryDir = options.repositoryDir;
+  if (args.op === 'readFileAtCommit' && args.rootHarnessSlug !== undefined) {
+    if (!options.workspaceId || options.workspaceId === '*') {
+      return { ok: false, reason: 'root_harness_requires_concrete_workspace' };
+    }
+    const registry = await (options.loadRegistry ?? loadHarnessRegistry)(options.workspaceId);
+    const registeredRoot = resolveHarnessContentPath(registry, args.rootHarnessSlug);
+    if (!registeredRoot || !isAbsolute(registeredRoot)) {
+      return { ok: false, reason: 'root_harness_not_registered' };
+    }
+    repositoryDir = registeredRoot;
+  }
   const runner = options.runner ?? runGit;
   const invoke = (argv: string[]) => runner(
     argv,
-    options.repositoryDir,
+    repositoryDir,
     options.stateDir,
     options.signal,
     options.sandboxEnabled,
@@ -140,25 +226,58 @@ export async function runJudgeGitEvidence(
   if (sizeResult.code !== 0 || !Number.isSafeInteger(size) || size < 0) {
     return { ok: false, reason: 'file_size_unavailable', message: sizeResult.output.slice(0, 300) };
   }
-  if (size > MAX_GIT_EVIDENCE_FILE_BYTES) {
-    return { ok: false, reason: 'file_too_large', message: `file is ${size} bytes; limit is ${MAX_GIT_EVIDENCE_FILE_BYTES}` };
-  }
 
   const contentResult = await invoke(['cat-file', 'blob', object]);
   if (contentResult.code !== 0) return { ok: false, reason: 'file_read_failed', message: contentResult.output.slice(0, 300) };
-  const bytes = Buffer.byteLength(contentResult.output, 'utf8');
-  if (bytes !== size) return { ok: false, reason: 'file_is_not_valid_utf8' };
-  return { ok: true, op: 'readFileAtCommit', commitSha, path: args.path, bytes, content: contentResult.output };
+  const contentBytes = Buffer.from(contentResult.output, 'utf8');
+  if (contentBytes.length !== size) return { ok: false, reason: 'file_is_not_valid_utf8' };
+  if (size <= MAX_GIT_EVIDENCE_INLINE_BYTES && args.byte_offset === undefined) {
+    return { ok: true, op: 'readFileAtCommit', commitSha, path: args.path, bytes: size, content: contentResult.output };
+  }
+
+  const requestedLimit = args.byte_limit ?? MAX_GIT_EVIDENCE_PAGE_BYTES;
+  const pageLimit = doorSafeGitEvidencePageBytes(commitSha, args.path, requestedLimit, args.rootHarnessSlug);
+  if (pageLimit <= 0) {
+    return { ok: false, reason: 'path_too_long_for_byte_page', message: 'The commit and path leave no room for a byte page in the result budget.' };
+  }
+  const byteOffset = Math.min(args.byte_offset ?? 0, size);
+  const page = contentBytes.subarray(byteOffset, Math.min(byteOffset + pageLimit, size));
+  const nextOffset = byteOffset + page.length;
+  return {
+    ok: true,
+    op: 'readFileAtCommit',
+    commitSha,
+    path: args.path,
+    encoding: 'base64',
+    byte_offset: byteOffset,
+    byte_length: page.length,
+    total_bytes: size,
+    eof: nextOffset >= size,
+    data: page.toString('base64'),
+    next_cursor: nextOffset < size
+      ? {
+          tool: 'capability:git-evidence',
+          args: {
+            op: 'readFileAtCommit',
+            commitSha,
+            path: args.path,
+            ...(args.rootHarnessSlug ? { rootHarnessSlug: args.rootHarnessSlug } : {}),
+            byte_offset: nextOffset,
+            byte_limit: pageLimit,
+          },
+        }
+      : null,
+  };
 }
 
 export default defineTool({
   name: 'capability:git-evidence',
   description:
-    'Judge-only read-only Git evidence: check ancestry between full commit SHAs or read one bounded file pinned to a full commit SHA in the active harness repository.',
+    'Judge-only read-only Git evidence: check ancestry between full commit SHAs or read a file pinned to a full commit SHA in the active harness repository or an explicitly registered evidence harness. Oversized files return bounded byte pages.',
   guidance: {
     when: 'A grading method requires proof about commit ancestry or the exact contents of a file at a pinned commit.',
     notWhen: 'For general Git commands, worktree state, mutation, refs, or scratch clones, use the separately authorized engineering tools.',
-    chaining: 'Use op:"isAncestor" with two full SHAs, or op:"readFileAtCommit" with a full SHA and repository-relative path.',
+    chaining: 'Use op:"isAncestor" with two full SHAs, or op:"readFileAtCommit" with a full SHA and repository-relative path. For an external test checkout, copy rootHarnessSlug from the cited binding measurement. Small files return text directly; large files return exact base64 byte pages with next_cursor pinned to the same commit SHA, path and registered root.',
   },
   capability: 'capability:git-evidence:read',
   effect: 'read',
@@ -171,6 +290,7 @@ export default defineTool({
     const sandboxPolicy = await capabilityExecSandboxPolicy(ctx);
     const result = await runJudgeGitEvidence(args, {
       repositoryDir: resolveCapabilityBaseDir(ctx),
+      workspaceId: ctx.workspaceId,
       stateDir: ctx.stateDir,
       signal: ctx.signal,
       sandboxEnabled: sandboxPolicy.enabled,
