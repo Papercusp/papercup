@@ -21,6 +21,7 @@ import {
   decorateCoordDeafness,
   filterActiveCoverage,
   agentPlansFromLiveCoverage,
+  projectSchedulerClaimState,
   COVERAGE_ORDER,
   COVERAGE_ACTIVE_WINDOW_MS,
   VERDICT_SPEAKING_FRESH_MS,
@@ -176,6 +177,38 @@ describe('abandoned intent work-item detection (EI-21560781905286213)', () => {
         expect.objectContaining({ agentId: 'su-dead', workItemId: 'WI-42199' }),
       ]);
     }
+  });
+});
+
+describe('scheduler claim state projection (EI-25482945548879685)', () => {
+  it('surfaces parked held claims without inflating actionable work load', () => {
+    const agent = baseAgent({ agentId: 'su-parked', claims: [], queued: [], load: 0 });
+    const [projected] = projectSchedulerClaimState(
+      [agent],
+      new Map([
+        [
+          'su-parked',
+          {
+            blocked: true,
+            activeClaims: 2,
+            maxConcurrentClaims: 2,
+            heldIds: ['EI-blocked-1', 'EI-blocked-2'],
+          },
+        ],
+      ]),
+    );
+
+    expect(projected.claims).toEqual([]);
+    expect(projected.load).toBe(0);
+    expect(projected.schedulerClaimState).toEqual({
+      activeClaims: 2,
+      heldIds: ['EI-blocked-1', 'EI-blocked-2'],
+    });
+  });
+
+  it('keeps the scheduler state unknown when its read is unavailable', () => {
+    const [projected] = projectSchedulerClaimState([baseAgent()], null);
+    expect(projected.schedulerClaimState).toBeNull();
   });
 });
 
@@ -1036,6 +1069,44 @@ describe('shapeFleetAssignments carries parkedOn at every tier (P-001 fleet-memb
       agents: Array<Record<string, unknown>>;
     };
     expect(shaped.agents[0].parkedOn).toEqual(['p2p-git:phase3-open']);
+  });
+});
+
+describe('shapeFleetAssignments carries scheduler claim state at every tier (EI-25482945548879685)', () => {
+  const data = {
+    ok: true,
+    summary: {
+      scheduler_claim_state_status: 'measured',
+      scheduler_active_work_item_claims: 2,
+    },
+    orphaned: [],
+    stalled: [],
+    agents: [
+      {
+        agentId: 'su-parked',
+        claims: [],
+        load: 0,
+        schedulerClaimState: {
+          activeClaims: 2,
+          heldIds: ['EI-blocked-1', 'EI-blocked-2'],
+        },
+      },
+      { agentId: 'su-unknown', claims: [], load: 0, schedulerClaimState: null },
+    ],
+  };
+
+  it.each(['trimmed', 'standard'] as const)('%s preserves measured and unknown states', (tier) => {
+    const shaped = shapeFleetAssignments(data, tier) as {
+      summary: Record<string, unknown>;
+      agents: Array<Record<string, unknown>>;
+    };
+    expect(shaped.summary.scheduler_active_work_item_claims).toBe(2);
+    expect(shaped.agents[0].schedulerClaimState).toEqual({
+      activeClaims: 2,
+      heldIds: ['EI-blocked-1', 'EI-blocked-2'],
+      heldIdsOmitted: 0,
+    });
+    expect(shaped.agents[1].schedulerClaimState).toBeNull();
   });
 });
 

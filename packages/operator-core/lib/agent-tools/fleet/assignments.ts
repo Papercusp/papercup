@@ -92,6 +92,10 @@ import { getLoopStatuses, type LoopStatus, type LifecycleBackoffInfo } from '../
 import { withBoundedTimeout } from '../../bounded-timeout';
 import { getWorkItem, type WorkItem } from '../../work-items';
 import {
+  readClaimConcurrencyBatch,
+  type ClaimConcurrencyVerdict,
+} from '../../scheduler/claim-spec-store';
+import {
   extractWorkItemIds,
   TERMINAL_WORK_ITEM_STATES,
 } from '../work_items/mirror-guard';
@@ -122,6 +126,7 @@ export const FLEET_ASSIGNMENTS_SUBREAD_TIMEOUT_MS = 8_000;
 
 const FLEET_ASSIGNMENTS_DEGRADED_LEG_ORDER = [
   'assignments',
+  'schedulerClaimState',
   'intentWorkItems',
   'coverage',
   'harnessPlans',
@@ -140,6 +145,29 @@ const FLEET_ASSIGNMENTS_DEGRADED_LEG_ORDER = [
   'residue',
   'dag',
 ] as const;
+
+export type SchedulerClaimState = Pick<ClaimConcurrencyVerdict, 'activeClaims' | 'heldIds'>;
+
+/**
+ * Keep scheduler-capacity claims visible beside the actionable assignment list.
+ * The scheduler counts every non-terminal taken_by row, including blocked and
+ * needs-human items that the fleet_assignment view intentionally hides from its
+ * work-list to avoid calling correctly parked work stalled or reclaimable.
+ */
+export function projectSchedulerClaimState<T extends AgentAssignment>(
+  agents: readonly T[],
+  states: ReadonlyMap<string, ClaimConcurrencyVerdict> | null,
+): Array<T & { schedulerClaimState: SchedulerClaimState | null }> {
+  return agents.map((agent) => {
+    const state = states?.get(agent.agentId);
+    return {
+      ...agent,
+      schedulerClaimState: state
+        ? { activeClaims: state.activeClaims, heldIds: [...state.heldIds] }
+        : null,
+    };
+  });
+}
 
 type FleetAssignmentsReadTiming = {
   phase: string;
@@ -952,7 +980,7 @@ export default defineTool({
   description:
     'The canonical "who\'s on what" query: per-agent presence + plan-item + work-item claims unified. `self`=your ownerId (your row is `isSelf:true`). Each live agent carries its ordered work-list — `doing`/`queued`/`load` — the placement read. Surfaces `orphaned`/`stalled` claims with a derived `verdict`+`action`: `orphan`/`reclaim` (holder gone) · `held-by-live-agent`/`ask` (live, uncheckpointed — never release) · `residue`/`close` (linked plan item already done/dropped — close, never release). Act on `summary.reclaimable_claims`/`residue_claims`, not raw counts. `progress` distinguishes `never-checkpointed` vs `stale-since`; each row also carries a lifecycle `verdict`, `wakeMode` (auto|manual), and `unanswered` message state. Read this, not a stale coord broadcast. Full field reference: /internal/docs/agent-insights/fleet-assignments-field-reference.',
   guidance: {
-    when: 'Answering "who\'s running / what X is doing / X\'s work-list / how loaded X is / who\'s on plan P" — the state + placement-decision read, not coord:inbox scanning.',
+    when: 'Reading who is active, what work an agent carries, or who owns a plan. schedulerClaimState shows the scheduler-held work-item count and ids, including blocked or needs-human items omitted from the actionable work-list.',
     notWhen:
       'You want future-change notifications (subscribe the fleet_assignment change-feed) or full message history (coord:inbox).',
     chaining:
@@ -1228,8 +1256,14 @@ export default defineTool({
       nextFireAt?: string | null;
       loopMode?: 'work' | 'monitor' | null;
       verdict?: MemberVerdict;
+      schedulerClaimState?: SchedulerClaimState | null;
     })[] = groupedAgents.filter(
       (g) => basePopulationPredicate(g) || hasIntentWorkItemReference(g.intent),
+    );
+    const schedulerClaimStatePromise = boundedRead(
+      'schedulerClaimState',
+      () => readClaimConcurrencyBatch({ cupIds: agents.map((agent) => agent.agentId), workspaceId }),
+      null as Map<string, ClaimConcurrencyVerdict> | null,
     );
     const runDecoration = async (label: string, work: () => Promise<unknown>): Promise<void> => {
       try {
@@ -1380,6 +1414,10 @@ export default defineTool({
       },
     );
     agents = agentPopulation.rows;
+    const schedulerClaimStates = await schedulerClaimStatePromise;
+    const schedulerClaimStateComplete =
+      schedulerClaimStates !== null && agents.every((agent) => schedulerClaimStates.has(agent.agentId));
+    agents = projectSchedulerClaimState(agents, schedulerClaimStates);
     // EI-18698865231464142: `orphaned`/`stalled` below read straight off `rows`,
     // whose `.orphaned` was set by the DATA layer's endedRecordedOwnerIds-keyed
     // downgrade — which has no key for a non-session (role-string) holder like
@@ -1648,6 +1686,13 @@ export default defineTool({
       population: censusWithLiveness,
       alive: agents.filter((a) => a.alive).length,
       claims: rows.filter((r) => r.source !== 'presence').length,
+      // This uses the scheduler's exact held-work-item predicate. It can exceed
+      // claims/load because blocked and needs-human holds consume scheduler capacity
+      // while remaining absent from the actionable fleet_assignment work-list.
+      scheduler_claim_state_status: schedulerClaimStateComplete ? 'measured' : 'unknown',
+      scheduler_active_work_item_claims: schedulerClaimStateComplete
+        ? agents.reduce((count, agent) => count + (agent.schedulerClaimState?.activeClaims ?? 0), 0)
+        : null,
       orphaned_claims: orphans.length,
       stalled_claims: stalled.length,
       // WI-5975: the two numbers a leader should actually act on. `reclaimable`

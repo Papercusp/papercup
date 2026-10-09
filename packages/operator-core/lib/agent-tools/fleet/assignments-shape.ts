@@ -51,6 +51,21 @@ export function shapeFleetAssignments(data: unknown, tier: AssignTier): unknown 
   const projectAgent = (row: unknown): Record<string, unknown> => {
     const r = (row ?? {}) as Record<string, unknown>;
     const claims = Array.isArray(r.claims) ? r.claims : [];
+    const schedulerClaim = r.schedulerClaimState as
+      | { activeClaims?: unknown; heldIds?: unknown }
+      | null
+      | undefined;
+    const schedulerHeldIds = Array.isArray(schedulerClaim?.heldIds)
+      ? schedulerClaim.heldIds.map(String)
+      : [];
+    const schedulerClaimState =
+      schedulerClaim && typeof schedulerClaim.activeClaims === "number"
+        ? {
+            activeClaims: schedulerClaim.activeClaims,
+            heldIds: schedulerHeldIds.slice(0, 8),
+            heldIdsOmitted: Math.max(0, schedulerHeldIds.length - 8),
+          }
+        : null;
     const base = {
       agentId: r.agentId ?? null,
       alive: r.alive === true,
@@ -107,6 +122,9 @@ export function shapeFleetAssignments(data: unknown, tier: AssignTier): unknown 
       plan: r.declaredPlanSlug ?? null,
       fleet: r.fleetSlug ?? null,
       claims: claims.length,
+      // This is the scheduler-capacity view; blocked/needs-human claims may be
+      // absent from claims/load because they are correctly parked work.
+      schedulerClaimState,
       doing: workRef(r.doing, c.doing),
       load: typeof r.load === "number" ? r.load : 0,
       isSelf: r.isSelf === true,

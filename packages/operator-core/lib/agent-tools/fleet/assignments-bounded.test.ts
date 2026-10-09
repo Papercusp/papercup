@@ -20,6 +20,7 @@ const mocks = vi.hoisted(() => ({
   unanswered: vi.fn(),
   loopStatuses: vi.fn(),
   lastToolCalls: vi.fn(),
+  schedulerClaims: vi.fn(),
   wakeModeOverrides: vi.fn(),
   defaultWakeMode: vi.fn(),
 }));
@@ -65,6 +66,10 @@ vi.mock('../../plan-item-coverage', () => ({
   compactCoverage: vi.fn((coverage: unknown) => coverage),
   coverageCollisions: vi.fn(() => []),
   duplicateCoverage: vi.fn(() => []),
+}));
+vi.mock('../../scheduler/claim-spec-store', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../scheduler/claim-spec-store')>()),
+  readClaimConcurrencyBatch: mocks.schedulerClaims,
 }));
 vi.mock('../../events/await/store', () => ({
   listParkedAwaitsForSubscribers: mocks.parkedOn,
@@ -137,6 +142,18 @@ function liveRow() {
   };
 }
 
+function livePresenceRow() {
+  return {
+    ...liveRow(),
+    source: 'presence',
+    workItemId: null,
+    itemKind: null,
+    status: null,
+    claimActive: null,
+    detail: 'parked while blocked work remains assigned',
+  };
+}
+
 function deferred<T>() {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>((done) => {
@@ -148,6 +165,17 @@ function deferred<T>() {
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.listAssignments.mockResolvedValue([]);
+  mocks.schedulerClaims.mockImplementation(
+    ({ cupIds }: { cupIds: readonly string[] }) =>
+      Promise.resolve(
+        new Map(
+          cupIds.map((id) => [
+            id,
+            { blocked: false, activeClaims: 0, maxConcurrentClaims: 1, heldIds: [] },
+          ]),
+        ),
+      ),
+  );
   mocks.coverage.mockResolvedValue(new Map());
   mocks.wakeability.mockResolvedValue(new Map());
   mocks.recordedLive.mockResolvedValue(new Set());
@@ -260,5 +288,40 @@ describe('fleet:assignments bounded handler reads', () => {
     expect(result.data.summary.agents).toBe(1);
     expect(result.data.degraded).toBeUndefined();
     expect(result.data).not.toHaveProperty('readTimings');
+  });
+
+  it('shows scheduler-held blocked claims when the actionable assignment view omits them', async () => {
+    mocks.listAssignments.mockResolvedValue([livePresenceRow()]);
+    mocks.schedulerClaims.mockResolvedValue(
+      new Map([
+        [
+          'su-worker',
+          {
+            blocked: true,
+            activeClaims: 2,
+            maxConcurrentClaims: 2,
+            heldIds: ['EI-blocked-1', 'EI-blocked-2'],
+          },
+        ],
+      ]),
+    );
+
+    const result = (await fleetAssignmentsTool.handler({ harness: 'papercusp' } as never, ctx)) as {
+      data: {
+        summary: Record<string, unknown>;
+        agents: Array<Record<string, unknown>>;
+      };
+    };
+
+    expect(result.data.summary).toMatchObject({
+      claims: 0,
+      work_item_load: 0,
+      scheduler_claim_state_status: 'measured',
+      scheduler_active_work_item_claims: 2,
+    });
+    expect(result.data.agents[0].schedulerClaimState).toEqual({
+      activeClaims: 2,
+      heldIds: ['EI-blocked-1', 'EI-blocked-2'],
+    });
   });
 });
