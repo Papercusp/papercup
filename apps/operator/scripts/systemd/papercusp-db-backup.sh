@@ -314,8 +314,15 @@ run_bounded_watched() {
 
       now_epoch=$(date +%s)
       elapsed=$(( now_epoch - start_epoch ))
-      current_bytes=$(du -sb "$progress_path" 2>/dev/null | cut -f1)
-      current_bytes=${current_bytes:-0}
+      if ! current_bytes=$(sudo -n -u postgres du -sb "$progress_path" 2>/dev/null | cut -f1) ||
+         ! [[ "$current_bytes" =~ ^[0-9]+$ ]]; then
+        log "ABORTING DUMP: unable to measure archive progress at $progress_path as postgres; terminating bounded producer"
+        kill -TERM "$dump_pid" 2>/dev/null
+        sleep "$KILL_GRACE_SEC"
+        kill -KILL "$dump_pid" 2>/dev/null
+        reap_own_stragglers
+        return 0
+      fi
       if [ "$current_bytes" -gt "$last_bytes" ]; then
         last_bytes="$current_bytes"
         last_progress_epoch="$now_epoch"
