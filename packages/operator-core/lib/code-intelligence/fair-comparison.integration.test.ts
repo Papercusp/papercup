@@ -1,10 +1,10 @@
 /** Preregistered comparison over actual compiler/worker answers, with tamper controls. */
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { preregister, type AnswerKey, type FairCase } from './fair-comparison';
+import { hashCases, hashKeys, preregister, type AnswerKey, type FairCase, type Preregistration } from './fair-comparison';
 import { runArm, scoreRuns } from './fair-comparison-run';
 import type { FairArm } from './fair-comparison-arms';
 import { firstPartyCallersOffthread } from './first-party-callers-offthread';
@@ -54,6 +54,27 @@ beforeAll(() => {
 afterAll(() => { if (root) rmSync(root, { recursive: true, force: true }); });
 
 describe('native frozen comparison through the compiler pipeline', () => {
+  it('reconstructs the saved multilingual edition and refuses a changed measurement protocol before work', async () => {
+    const saved = JSON.parse(readFileSync(new URL('../../../../docs/evidence/native-code-intelligence-preregistration-2026-10-09.json', import.meta.url), 'utf8')) as {
+      cases: FairCase[]; keys: AnswerKey[]; preregistration: Preregistration; observations: unknown[]; verdict: string;
+    };
+    const registered = saved.preregistration;
+    expect(hashCases(saved.cases)).toBe(registered.corpusHash);
+    expect(hashKeys(saved.keys)).toBe(registered.keyHash);
+    expect(preregister({ cases: saved.cases, keys: saved.keys, arms: registered.arms,
+      reps: registered.reps, seed: registered.seed, budgets: registered.budgets, protocol: registered.protocol }).hash).toBe(registered.hash);
+    expect(saved.observations).toEqual([]);
+    expect(saved.verdict).toBe('not-run');
+    const before = { indexCalls, queryCalls };
+    const admitted: FairArm = { ...arm, capabilities: registered.arms[0]!, unavailable: 'protocol-only control; no backend measurement' };
+    expect((await runArm(admitted, saved.cases, registered)).reps).toEqual([]);
+    const changed = { ...registered, protocol: { ...registered.protocol!, measurements:
+      registered.protocol!.measurements.map(m => m.metric === 'peak-memory' ? { ...m, method: 'parent-only RSS' } : m) } };
+    await expect(runArm(admitted, saved.cases, changed)).rejects.toThrow(/content or budget/);
+    expect(() => scoreRuns([], saved.cases, saved.keys, {}, changed)).toThrow(/changed preregistration/);
+    expect({ indexCalls, queryCalls }).toEqual(before);
+  });
+
   it('executes the frozen positive and absence controls and reconstructs their scores', async () => {
     const prereg = preregister({ cases, keys, arms: [arm.capabilities], reps: 3, seed: 20261009 });
     const run = await runArm(arm, cases, prereg);
