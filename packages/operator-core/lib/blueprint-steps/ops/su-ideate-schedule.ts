@@ -22,7 +22,7 @@ import {
 /** No payload knobs — budget/threshold are env-tunable, the harness set is read live. */
 const args = z.object({});
 
-/** Declared output I/O — what the tick decided (bounded: it stops at the first launch). */
+/** Fifty detail rows plus complete disposition counts; the scheduler stops at the first launch. */
 const result = z.object({
   stopped: z.enum(['daily-budget-exhausted', 'pass-in-flight', 'no-harnesses']).optional(),
   launchesLast24h: z.number().int(),
@@ -32,6 +32,9 @@ const result = z.object({
   lens: z.string().optional(),
   key: z.string().optional(),
   deduped: z.boolean().optional(),
+  decisionCount: z.number().int().nonnegative(),
+  decisionCounts: z.record(z.string(), z.number().int().nonnegative()),
+  decisionsOmitted: z.number().int().nonnegative(),
   decisions: z.array(
     z.object({
       harnessSlug: z.string(),
@@ -58,6 +61,19 @@ export const suIdeateScheduleOp: CoordOp<z.infer<typeof args>, z.infer<typeof re
     const workspaceId = ctx.workspaceId;
     if (!workspaceId) throw new Error('su-ideate:schedule requires ctx.workspaceId');
     const out = await runSuIdeateSchedule({ workspaceId }, _deps ?? defaultSuIdeateScheduleDeps);
+    const decisionCounts: Record<string, number> = {};
+    for (const decision of out.decisions) {
+      decisionCounts[decision.disposition] = (decisionCounts[decision.disposition] ?? 0) + 1;
+    }
+    // A registry can contain many quiet harnesses before the eligible one. Preserve
+    // the launch and refusals first, and disclose omitted rows instead of presenting
+    // the first fifty quiet decisions as the whole rotation.
+    const priority = (disposition: string): number =>
+      disposition === 'launched' ? 0 : disposition === 'launch-failed' ? 1 :
+        disposition === 'attempts-exhausted' ? 2 : 3;
+    const decisions = [...out.decisions]
+      .sort((a, b) => priority(a.disposition) - priority(b.disposition))
+      .slice(0, 50);
     const output = {
       ...(out.stopped ? { stopped: out.stopped } : {}),
       launchesLast24h: out.launchesLast24h,
@@ -66,7 +82,10 @@ export const suIdeateScheduleOp: CoordOp<z.infer<typeof args>, z.infer<typeof re
       ...(out.launched
         ? { launchedHarness: out.launched.harnessSlug, lens: out.launched.lens, key: out.launched.key, deduped: out.launched.deduped }
         : {}),
-      decisions: out.decisions.slice(0, 50).map((d) => ({
+      decisionCount: out.decisions.length,
+      decisionCounts,
+      decisionsOmitted: out.decisions.length - decisions.length,
+      decisions: decisions.map((d) => ({
         harnessSlug: d.harnessSlug,
         disposition: d.disposition,
         ...(d.verdict ? { observationsSince: d.verdict.observationsSince } : {}),
