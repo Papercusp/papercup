@@ -631,6 +631,33 @@ const WORK_ITEMS_SET_BLOCKER_RECEIPT_PRESERVE_PATHS = [
 ] as const;
 
 /**
+ * work_items:release can clear a claim before its oversized response is spilled.
+ * Keep the release outcome and current row identity so callers can verify state
+ * instead of replaying the release when scratch storage is unavailable.
+ */
+const WORK_ITEMS_RELEASE_RECEIPT_PRESERVE_PATHS = [
+  'ok',
+  'counts.ok',
+  'counts.failed',
+  'results[].ok',
+  'results[].id',
+  'results[].error',
+  'results[].released',
+  'results[].previousAssignee',
+  'results[].noop',
+  'results[].forced',
+  'results[].claimHold',
+  'results[].claimHoldFailed',
+  'results[].claimHoldRelease.condition',
+  'results[].claimHoldRelease.trigger',
+  'results[].claimHoldRelease.owner',
+  'results[].workItem.id',
+  'results[].workItem.state',
+  'results[].workItem.assignee',
+  'results[].workItem.harness',
+] as const;
+
+/**
  * `scorecards:emit` can commit a card before its oversized response is spilled.
  * Keep its durable write receipt and the degenerate-distribution verdict
  * addressable if the spill fails, so callers do not replay a non-idempotent
@@ -656,6 +683,11 @@ function isWorkItemsSetBlockerCall(input: { toolName: string; nestedTargetToolNa
     (input.toolName === 'tools:invoke' && input.nestedTargetToolName === 'work_items:set_blocker');
 }
 
+function isWorkItemsReleaseCall(input: { toolName: string; nestedTargetToolName?: string }): boolean {
+  return input.toolName === 'work_items:release' ||
+    (input.toolName === 'tools:invoke' && input.nestedTargetToolName === 'work_items:release');
+}
+
 function isWorkItemsGetCall(input: { toolName: string; nestedTargetToolName?: string }): boolean {
   return input.toolName === 'work_items:get' ||
     (input.toolName === 'tools:invoke' && input.nestedTargetToolName === 'work_items:get');
@@ -671,6 +703,10 @@ const WORK_ITEMS_COMPLETE_SPILL_RECOVERY =
   'Read each preserved results[].id with work_items:get and inspect the current item state and completionAuthority ' +
   'before deciding any follow-up; the omitted echo cannot be recovered.';
 
+const WORK_ITEMS_RELEASE_SPILL_RECOVERY =
+  'The work_items:release write may already have unassigned or parked one or more items. Do NOT repeat this call. ' +
+  'Read the affected item IDs with work_items:get and inspect current assignee, state, claimHold, and checkpoint before deciding any follow-up.';
+
 const SCORECARDS_EMIT_SPILL_RECOVERY =
   'scorecards:emit may have recorded a card before its response spill failed. Do NOT repeat this non-idempotent emit. ' +
   'Use the preserved committed flag, completionReceipt, issueId, and canonicalRatings.degenerate-distribution.rating ' +
@@ -680,23 +716,7 @@ const SCORECARDS_EMIT_UNKNOWN_SPILL_RECOVERY =
   'The scorecards:emit write outcome is unknown. Do NOT repeat this non-idempotent emit. Re-read the target or ' +
   'scorecard ledger to resolve whether it committed before any retry.';
 
-function workItemsCompleteReceipt(result: DoorableResult): Record<string, unknown> | undefined {
-  const candidates = [result.structuredContent, ...result.content.filter(isTextItem).map((item) => {
-    try {
-      return JSON.parse(item.text) as unknown;
-    } catch {
-      return null;
-    }
-  })];
-  return candidates.find((value): value is Record<string, unknown> =>
-    isJsonObject(value) && Array.isArray(value.results));
-}
-
-function workItemsSetBlockerReceipt(
-  result: DoorableResult,
-  opts: { toolName: string; nestedTargetToolName?: string },
-): { body: JsonObject; readArgs: { ids: string[]; harness?: string } } | undefined {
-  if (!isWorkItemsSetBlockerCall(opts)) return undefined;
+function workItemsBulkReceiptBody(result: DoorableResult): JsonObject | undefined {
   const textBodies = result.content.filter(isTextItem).map((item) => {
     try {
       return JSON.parse(item.text) as unknown;
@@ -710,9 +730,17 @@ function workItemsSetBlockerReceipt(
       }
     }
   });
-  const body = [result.structuredContent, ...textBodies].find(
+  return [result.structuredContent, ...textBodies].find(
     (value): value is JsonObject => isJsonObject(value) && Array.isArray(value.results),
   );
+}
+
+function workItemsSetBlockerReceipt(
+  result: DoorableResult,
+  opts: { toolName: string; nestedTargetToolName?: string },
+): { body: JsonObject; readArgs: { ids: string[]; harness?: string } } | undefined {
+  if (!isWorkItemsSetBlockerCall(opts)) return undefined;
+  const body = workItemsBulkReceiptBody(result);
   if (!body || !Array.isArray(body.results)) return undefined;
   const rows = body.results.filter(isJsonObject);
   const committedRows = rows.filter((row) =>
@@ -730,6 +758,40 @@ function workItemsSetBlockerReceipt(
   return {
     body,
     readArgs: { ids, ...(harnesses.length === 1 ? { harness: harnesses[0] } : {}) },
+  };
+}
+
+function workItemsReleaseReceipt(
+  result: DoorableResult,
+  opts: { toolName: string; nestedTargetToolName?: string },
+): { body: JsonObject; readArgs: { ids: string[]; harness?: string } } | undefined {
+  if (!isWorkItemsReleaseCall(opts)) return undefined;
+  const body = workItemsBulkReceiptBody(result);
+  if (!body || !Array.isArray(body.results)) return undefined;
+  const rows = body.results.filter(isJsonObject);
+  const ids = [...new Set(rows.flatMap((row) =>
+    typeof row.id === 'string' && row.id.length > 0 ? [row.id] : [],
+  ))];
+  if (ids.length === 0) return undefined;
+  const harnesses = [...new Set(rows.flatMap((row) =>
+    isJsonObject(row.workItem) && typeof row.workItem.harness === 'string' ? [row.workItem.harness] : [],
+  ))];
+  return {
+    body,
+    readArgs: { ids, ...(harnesses.length === 1 ? { harness: harnesses[0] } : {}) },
+  };
+}
+
+function workItemsReleaseRecovery(
+  receipt: NonNullable<ReturnType<typeof workItemsReleaseReceipt>>,
+) {
+  const args = JSON.stringify(receipt.readArgs);
+  return {
+    cursor: { kind: 'release-outcome-check', tool: 'work_items:get', args: receipt.readArgs },
+    next:
+      'The work_items:release write may already have unassigned or parked ' +
+      receipt.readArgs.ids.join(', ') + '. Do NOT repeat this call. Read work_items:get ' + args +
+      ' and inspect current assignee, state, claimHold, and checkpoint before follow-up.',
   };
 }
 
@@ -1336,6 +1398,14 @@ function spillRecoveryNote(
       'The work_items:set_blocker write may already have committed. Do NOT repeat it; page the reference for the receipt and read work_items:get to inspect current blockers before follow-up.'
     );
   }
+  if (isWorkItemsReleaseCall(input)) {
+    return (
+      (input.upstreamProjection || innerTruncationMarkers.length > 0
+        ? 'The reference preserves only the release response emitted by the tool; already-omitted fields cannot be recovered by paging. ' + referenceReader
+        : recoverable) +
+      'The work_items:release response may include a committed release. Page the reference for its receipt, then read work_items:get to verify current state before follow-up. Do NOT repeat the release.'
+    );
+  }
   if (isScorecardsEmitCall(input)) {
     return (
       (input.upstreamProjection || innerTruncationMarkers.length > 0
@@ -1696,7 +1766,7 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
     } as T;
   }
   const completionReceipt = spillPath == null && isWorkItemsCompleteCall(input.opts)
-    ? workItemsCompleteReceipt(input.result)
+    ? workItemsBulkReceiptBody(input.result)
     : undefined;
   const boundedCompletionReceipt = completionReceipt
     ? projectBoundedPayload(completionReceipt, {
@@ -1773,6 +1843,49 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
     return {
       ...input.result,
       content: [{ type: 'text' as const, text: JSON.stringify(boundedSetBlockerReceipt) }],
+      _meta: {
+        ...(input.result._meta ?? {}),
+        resultDoor: {
+          truncated: true,
+          structural: true,
+          spillPath: null,
+          spillUri: null,
+          spillFailed: true,
+          spillError,
+          spillErrorCode,
+          originalChars: input.sourceBytes,
+          originalBytes: input.sourceBytes,
+          nonTextChars: input.nonTextBytes,
+          nonTextBytes: input.nonTextBytes,
+          doorTokens: input.doorTokens,
+          reason: input.reason,
+          upstreamProjected: Boolean(upstreamProjection?.truncated),
+          innerTruncationMarkers,
+          ...(input.aggregate ? { aggregate: input.aggregate } : {}),
+        },
+      },
+    } as T;
+  }
+  const releaseReceipt = spillPath == null ? workItemsReleaseReceipt(input.result, input.opts) : undefined;
+  const boundedReleaseReceipt = releaseReceipt
+    ? projectBoundedPayload(releaseReceipt.body, {
+        toolName: 'work_items:release',
+        tier: 'trimmed',
+        forced: true,
+        originalChars: input.sourceBytes,
+        targetChars: Math.min(input.doorTokens * CHARS_PER_TOKEN_ESTIMATE, 1_200),
+        preservePaths: WORK_ITEMS_RELEASE_RECEIPT_PRESERVE_PATHS,
+        preserveTopLevelKeys: ['ok', 'counts', 'results'],
+        recovery: preferVolatileScratchRecovery(
+          volatileRecovery,
+          workItemsReleaseRecovery(releaseReceipt),
+        ),
+      })
+    : undefined;
+  if (boundedReleaseReceipt) {
+    return {
+      ...input.result,
+      content: [{ type: 'text' as const, text: JSON.stringify(boundedReleaseReceipt) }],
       _meta: {
         ...(input.result._meta ?? {}),
         resultDoor: {
@@ -1895,6 +2008,9 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
                 : isWorkItemsSetBlockerCall(input.opts)
                   ? `Output exceeded its hard budget and the spill write failed (${spillDiagnostic}). ` +
                     WORK_ITEMS_SET_BLOCKER_SPILL_RECOVERY
+                  : isWorkItemsReleaseCall(input.opts)
+                    ? `Output exceeded its hard budget and the spill write failed (${spillDiagnostic}). ` +
+                      WORK_ITEMS_RELEASE_SPILL_RECOVERY
                   : isScorecardsEmitCall(input.opts)
                     ? `Output exceeded its hard budget and the spill write failed (${spillDiagnostic}). ` +
                       SCORECARDS_EMIT_UNKNOWN_SPILL_RECOVERY
@@ -1904,6 +2020,7 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
               (input.opts.toolName === 'tools:invoke' && input.opts.nestedTargetToolName === 'coord:send') ||
               isWorkItemsCompleteCall(input.opts) ||
               isWorkItemsSetBlockerCall(input.opts) ||
+              isWorkItemsReleaseCall(input.opts) ||
               isScorecardsEmitCall(input.opts)
             ),
           },
@@ -2705,6 +2822,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
     // through a read, using the same receipt contract as the hard-spill path.
     const schedulerClaim = fsPath == null ? schedulerClaimReceipt(result, opts) : undefined;
     const setBlockerReceipt = fsPath == null ? workItemsSetBlockerReceipt(result, opts) : undefined;
+    const releaseReceipt = fsPath == null ? workItemsReleaseReceipt(result, opts) : undefined;
     // TWO different byte streams reach a caller here, and ONE offset cannot
     // serve both — EI-21239097430071791 followed this cursor exactly as written
     // and landed mid-body, because the offset was measured against a stream the
@@ -2736,6 +2854,8 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
         ? preferVolatileScratchRecovery(volatileRecovery, agentReviewClaimRecovery(agentReviewClaim))
       : setBlockerReceipt
         ? preferVolatileScratchRecovery(volatileRecovery, workItemsSetBlockerRecovery(setBlockerReceipt))
+      : releaseReceipt
+        ? preferVolatileScratchRecovery(volatileRecovery, workItemsReleaseRecovery(releaseReceipt))
       : volatileRecovery
         ? volatileScratchRecoveryForTool(volatileRecovery, opts.toolName, opts.nestedTargetToolName)
       : fsPath != null && uri != null
@@ -2846,6 +2966,12 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
                     : '')
                 : isWorkItemsSetBlockerCall(opts)
                   ? WORK_ITEMS_SET_BLOCKER_SPILL_RECOVERY +
+                    (upstreamProjection
+                      ? ` The tool also tier-projected upstream (omittedCount=${upstreamProjection.omittedCount}), ` +
+                        `so those fields were never serialized either.`
+                      : '')
+                : isWorkItemsReleaseCall(opts)
+                  ? WORK_ITEMS_RELEASE_SPILL_RECOVERY +
                     (upstreamProjection
                       ? ` The tool also tier-projected upstream (omittedCount=${upstreamProjection.omittedCount}), ` +
                         `so those fields were never serialized either.`
@@ -3007,6 +3133,9 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
       ...(isWorkItemsSetBlockerCall(opts)
         ? WORK_ITEMS_SET_BLOCKER_RECEIPT_PRESERVE_PATHS
         : []),
+      ...(isWorkItemsReleaseCall(opts)
+        ? WORK_ITEMS_RELEASE_RECEIPT_PRESERVE_PATHS
+        : []),
       ...(opts.preservePaths ?? []),
     ];
     const structuralProjectionWarning = extractStructuralProjectionWarning(result, textItems, jsonItemIndex);
@@ -3024,7 +3153,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
         ? compactSpecTestAdequacyBody(bodyShape.json!.parsed)
         : null;
     const projected = projectBoundedPayload(
-      evaluatorCompactBody ?? setBlockerReceipt?.body ?? (parsedJsonBody ? bodyShape.json!.parsed : { text: fullText }),
+      evaluatorCompactBody ?? releaseReceipt?.body ?? setBlockerReceipt?.body ?? (parsedJsonBody ? bodyShape.json!.parsed : { text: fullText }),
       {
       toolName: opts.toolName,
       // `work_items:get` is the continuity read. If its spill cannot be
@@ -3060,6 +3189,8 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
         ? { preserveTopLevelKeys: ['ok', 'counts', 'results'] as const }
         : isWorkItemsSetBlockerCall(opts)
           ? { preserveTopLevelKeys: ['ok', 'counts', 'results'] as const }
+          : isWorkItemsReleaseCall(opts)
+            ? { preserveTopLevelKeys: ['ok', 'counts', 'results'] as const }
         : {}),
       ...(evaluatorCompactBody == null && preservePaths.length > 0 ? { preservePaths } : {}),
       bulkEnvelope: opts.bulkEnvelope,
