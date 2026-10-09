@@ -166,7 +166,7 @@ describe('issue occurrence ledger (real PG, migration 831)', () => {
     });
   });
 
-  it('keeps the exact scoped census on the covering flow index with large evidence envelopes', async () => {
+  it('covers the exact scoped census without heap fetches beside large evidence envelopes', async () => {
     // Evidence size must not make a narrow census fetch the evidence heap.
     await db.adminSql`
       INSERT INTO harness_shared.work_item_occurrences
@@ -191,14 +191,20 @@ describe('issue occurrence ledger (real PG, migration 831)', () => {
       since: '2026-10-09T13:00:00Z' }, db.adminSql);
     expect(afterWindow).toMatchObject({ canonicalClusters: 0, rawOccurrences: 0, duplicateOccurrences: 0 });
 
-    const plans = await db.adminSql`
-      EXPLAIN (ANALYZE, FORMAT JSON)
-      SELECT count(DISTINCT (canonical_harness_slug, canonical_work_item_id)), count(*),
-             count(*) FILTER (WHERE report_kind <> 'canonical-created')
-        FROM harness_shared.work_item_occurrences
-       WHERE workspace_id = ${WORKSPACE} AND canonical_harness_slug = ${HARNESS}
-         AND occurred_at > '2026-10-09T11:00:00Z'::timestamptz
-    `;
+    // Tiny isolated fixtures may correctly prefer a sequential scan. Pin only
+    // this physical coverage check to indexed access; the exact reader above
+    // uses normal planner settings. This is not a production latency claim.
+    const plans = await db.adminSql.begin(async (tx) => {
+      await tx`SET LOCAL enable_seqscan = off`;
+      return tx`
+        EXPLAIN (ANALYZE, FORMAT JSON)
+        SELECT count(DISTINCT (canonical_harness_slug, canonical_work_item_id)), count(*),
+               count(*) FILTER (WHERE report_kind <> 'canonical-created')
+          FROM harness_shared.work_item_occurrences
+         WHERE workspace_id = ${WORKSPACE} AND canonical_harness_slug = ${HARNESS}
+           AND occurred_at > '2026-10-09T11:00:00Z'::timestamptz
+      `;
+    });
     type PlanNode = { 'Node Type': string; 'Index Name'?: string; 'Heap Fetches'?: number; Plans?: PlanNode[] };
     const nodes: PlanNode[] = [];
     const visit = (node: PlanNode) => { nodes.push(node); node.Plans?.forEach(visit); };
