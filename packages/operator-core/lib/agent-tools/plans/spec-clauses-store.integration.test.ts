@@ -215,6 +215,35 @@ describe('first-class plan spec clauses', () => {
     expect(getSpecsTool.args.safeParse({ slug: 'reconnect-plan', asOf: cutoff!.at, includeHistory: true }).success).toBe(false);
   });
 
+  it('reads a bounded current clause from the shared ad-hoc scope through plans:get-specs', async () => {
+    const specId = 'WI-10007428:quota-recovery-operation-diagnostics';
+    const planItemId = 'P-10007428';
+    const behavior = 'The ad-hoc work item clause is returned by its exact current read.';
+    await store.setSpecClause(clause({
+      planSlug: undefined,
+      specId,
+      sourceValId: null,
+      planItemId,
+      behavior,
+    }));
+
+    const result = (await getSpecsTool.handler(
+      getSpecsTool.args.parse({
+        harness: HARNESS,
+        slug: 'adhoc-work-item-specs',
+        specIds: [specId],
+        planItemIds: [planItemId],
+      }),
+      CTX,
+    )) as { data: { count: number; mode: string; specs: SpecClauseRevision[] } };
+
+    expect(result.data).toMatchObject({
+      count: 1,
+      mode: 'current',
+      specs: [{ planSlug: 'adhoc-work-item-specs', specId, planItemId, revision: 1, behavior }],
+    });
+  });
+
   it('resolves an immutable plan snapshot by exact body hash within the requested scope', async () => {
     await db.sql`CREATE TABLE IF NOT EXISTS harness_shared.plan_revisions (
       id bigserial, workspace_id text, harness_slug text, plan_slug text,
