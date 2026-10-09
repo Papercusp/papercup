@@ -35,6 +35,7 @@ export function verifierGitCheckoutSync(root: string, sourceCommit: string,
     if (result.status !== 0) throw new VerifierSourceError(`verification Git precondition failed: ${args.join(' ')}: ${result.stderr || result.error}`);
     return result.stdout;
   };
+  const tracked = createHash('sha256');
   for (const row of [{ path: '', sha: sourceCommit }, ...submodules]) {
     const cwd = resolve(root, row.path);
     if (cwd !== resolve(root) && !cwd.startsWith(`${resolve(root)}${sep}`)) throw new VerifierSourceError('verification Git path escapes source root');
@@ -43,11 +44,14 @@ export function verifierGitCheckoutSync(root: string, sourceCommit: string,
       || git(cwd, ['rev-parse', '--verify', 'HEAD']).trim() !== row.sha) {
       throw new VerifierSourceError(`verification Git checkout differs: ${row.path || '.'}`);
     }
+    // Git's recursive traversal omits real gitlinks without .gitmodules names.
+    // Attest the actual index of each repository in the source receipt instead.
+    const index = git(cwd, ['ls-files', '--stage', '-z']);
+    if (!row.path && !index) throw new VerifierSourceError('verification Git index is empty');
+    tracked.update(row.path).update('\0').update(index);
   }
   const parentCommit = git(root, ['rev-parse', '--verify', 'HEAD^']).trim();
-  const tracked = git(root, ['ls-files', '--stage', '-z']) + git(root, ['ls-files', '--stage', '--recurse-submodules', '-z']);
-  if (!tracked) throw new VerifierSourceError('verification Git index is empty');
-  return { parentCommit, trackedFilesHash: createHash('sha256').update(tracked).digest('hex') };
+  return { parentCommit, trackedFilesHash: tracked.digest('hex') };
 }
 
 /** Never follow archive symlinks or exclude a recorded source path. */

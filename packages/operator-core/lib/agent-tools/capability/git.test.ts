@@ -88,6 +88,7 @@ describe('scratchClone — guarded cheap local materialisation (WI-38848)', () =
 
     expect(result.submodules).toBe(1);
     expect(result.borrowedRepositories).toBe(2);
+    expect(git(result.path, ['ls-files', '--recurse-submodules'])).toContain('modules/child/tracked.txt');
     expect(git(clonedChild, ['rev-parse', 'HEAD'])).toBe(childPin);
     expect(git(clonedChild, ['rev-parse', '--abbrev-ref', 'HEAD'])).toBe('HEAD');
     expect(git(clonedChild, ['remote'])).toBe('');
@@ -104,6 +105,50 @@ describe('scratchClone — guarded cheap local materialisation (WI-38848)', () =
 
     await expect(createScratchClone({ source, destination, signal: never })).rejects.toThrow(/local submodule modules\/child/);
     expect(existsSync(destination)).toBe(false);
+  });
+
+  it('materialises nested exact gitlinks without inventing .gitmodules mappings', async () => {
+    const leaf = repository('cap-git-unlisted-leaf-');
+    const child = repository('cap-git-unlisted-child-');
+    const source = repository('cap-git-unlisted-parent-');
+    const addUnlisted = (parent: string, donor: string, path: string): string => {
+      git(parent, ['clone', '--quiet', '--shared', '--', donor, path]);
+      const pin = git(join(parent, path), ['rev-parse', 'HEAD']);
+      git(parent, ['update-index', '--add', '--cacheinfo', `160000,${pin},${path}`]);
+      git(parent, ['commit', '--quiet', '-m', 'add unlisted gitlink']);
+      return pin;
+    };
+    const leafPin = addUnlisted(child, leaf, 'leaf');
+    const childPin = addUnlisted(source, child, 'unlisted');
+    // A plain clone leaves nested gitlinks empty; provide the actual local donor
+    // checkout that the guarded clone requires rather than bypassing its check.
+    git(join(source, 'unlisted'), ['clone', '--quiet', '--shared', '--', leaf, 'leaf']);
+    const result = await createScratchClone({ source, signal: never });
+    cleanup.push(result.path);
+
+    expect(result.submodules).toBe(2);
+    expect(result.borrowedRepositories).toBe(3);
+    expect(git(join(result.path, 'unlisted'), ['rev-parse', 'HEAD'])).toBe(childPin);
+    expect(git(join(result.path, 'unlisted', 'leaf'), ['rev-parse', 'HEAD'])).toBe(leafPin);
+    expect(readFileSync(join(result.path, 'unlisted', 'leaf', 'tracked.txt'), 'utf8'))
+      .toBe(readFileSync(join(leaf, 'tracked.txt'), 'utf8'));
+    for (const root of [result.path, join(result.path, 'unlisted'), join(result.path, 'unlisted', 'leaf')]) {
+      expect(existsSync(join(root, '.gitmodules'))).toBe(false);
+      expect(git(root, ['remote'])).toBe('');
+      expect(readFileSync(join(root, '.git', 'objects', 'info', 'alternates'), 'utf8').trim()).not.toBe('');
+    }
+  });
+
+  it('refuses an unavailable unlisted pin and cleans only its owned destination', async () => {
+    const child = repository('cap-git-unlisted-missing-child-');
+    const source = repository('cap-git-unlisted-missing-parent-');
+    const pin = git(child, ['rev-parse', 'HEAD']);
+    git(source, ['update-index', '--add', '--cacheinfo', `160000,${pin},missing`]);
+    git(source, ['commit', '--quiet', '-m', 'unavailable unlisted gitlink']);
+    const destination = join(tmpdir(), `cap-git-unlisted-fail-${crypto.randomUUID()}`);
+    await expect(createScratchClone({ source, destination, signal: never })).rejects.toThrow('local submodule missing');
+    expect(existsSync(destination)).toBe(false);
+    expect(git(source, ['rev-parse', 'HEAD:missing'])).toBe(pin);
   });
 
   it('never deletes or enters a caller-owned destination', async () => {
