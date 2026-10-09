@@ -1,3 +1,4 @@
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import runTool, {
@@ -98,6 +99,14 @@ describe('testing:run selector arbitration', () => {
       files,
       timeoutMs: 90_000,
     });
+    const focused = buildDetachedTestRunRequest({
+      root: REPO_ROOT,
+      files,
+      testNamePattern: 'focused proof',
+      harnessSlug: 'papercusp',
+      workspaceId: 'papercusp-workspace',
+      timeoutMs: 90_000,
+    });
     const mixed = buildDetachedMixedTestRunRequest({
       groups: [{ root: REPO_ROOT, files }],
       harnessSlug: 'papercusp',
@@ -114,6 +123,24 @@ describe('testing:run selector arbitration', () => {
     }
     expect(unscoped.testRunSource).toBe('local');
     expect(unscoped.env).not.toHaveProperty('PAPERCUSP_TEST_RUN_HARNESS');
+    expect(single.detachedReportArtifacts).toBeUndefined();
+    const reportPath = focused.detachedReportArtifacts?.[0]?.reportPath;
+    expect(focused.detachedReportArtifacts).toHaveLength(1);
+    expect(focused.detachedReportArtifacts?.[0]).toMatchObject({
+      root: REPO_ROOT,
+      testNamePattern: 'focused proof',
+      scope: { harnessSlug: 'papercusp', workspaceId: 'papercusp-workspace' },
+    });
+    expect(reportPath).toContain('papercusp-testing-run-detached-');
+    expect(focused.args).toEqual([
+      join(REPO_ROOT, 'scripts', 'test-files.mjs'),
+      ...files,
+      '--',
+      '--reporter=json',
+      `--reporter=${join(REPO_ROOT, 'libs/test-config/src/admin-test-runs-reporter.ts')}`,
+      `--outputFile=${reportPath}`,
+      '--testNamePattern=focused proof',
+    ]);
   });
 
   it('does not claim evidence from an affected-test plan that runs nothing', async () => {
