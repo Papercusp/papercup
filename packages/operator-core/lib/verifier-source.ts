@@ -3,7 +3,8 @@
  * through both CommonJS and ESM transforms.
  */
 import { createHash } from 'node:crypto';
-import { lstatSync, readdirSync, readFileSync, readlinkSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 export interface VerifierSourceFile {
@@ -18,20 +19,52 @@ export interface VerifierSourceReceipt {
   sourceCommit: string;
   testedInputs: { path: string; sha256: string }[];
   files: VerifierSourceFile[];
+  submodules?: { path: string; sha: string }[];
+  gitCheckout?: { parentCommit: string; trackedFilesHash: string };
 }
 
 export class VerifierSourceError extends Error {}
 
+/** Real Git semantics are a separate precondition from exact source bytes. */
+export function verifierGitCheckoutSync(root: string, sourceCommit: string,
+  submodules: { path: string; sha: string }[] = []): NonNullable<VerifierSourceReceipt['gitCheckout']> {
+  const git = (cwd: string, args: string[]): string => {
+    const env = { ...process.env };
+    for (const key of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR']) delete env[key];
+    const result = spawnSync('git', ['-C', cwd, ...args], { encoding: 'utf8', env, maxBuffer: 16 * 1024 * 1024 });
+    if (result.status !== 0) throw new VerifierSourceError(`verification Git precondition failed: ${args.join(' ')}: ${result.stderr || result.error}`);
+    return result.stdout;
+  };
+  for (const row of [{ path: '', sha: sourceCommit }, ...submodules]) {
+    const cwd = resolve(root, row.path);
+    if (cwd !== resolve(root) && !cwd.startsWith(`${resolve(root)}${sep}`)) throw new VerifierSourceError('verification Git path escapes source root');
+    if (!lstatSync(join(cwd, '.git')).isDirectory()) throw new VerifierSourceError(`verification Git metadata is not independent: ${row.path || '.'}`);
+    if (git(cwd, ['rev-parse', '--show-toplevel']).trim() !== realpathSync(cwd)
+      || git(cwd, ['rev-parse', '--verify', 'HEAD']).trim() !== row.sha) {
+      throw new VerifierSourceError(`verification Git checkout differs: ${row.path || '.'}`);
+    }
+  }
+  const parentCommit = git(root, ['rev-parse', '--verify', 'HEAD^']).trim();
+  const tracked = git(root, ['ls-files', '--stage', '-z']) + git(root, ['ls-files', '--stage', '--recurse-submodules', '-z']);
+  if (!tracked) throw new VerifierSourceError('verification Git index is empty');
+  return { parentCommit, trackedFilesHash: createHash('sha256').update(tracked).digest('hex') };
+}
+
 /** Never follow archive symlinks or exclude a recorded source path. */
 export function verifierSourceFiles(root: string, {
-  runtimeArtifacts = false, recordedPaths = [],
-}: { runtimeArtifacts?: boolean; recordedPaths?: string[] } = {}): VerifierSourceFile[] {
+  runtimeArtifacts = false, recordedPaths = [], gitMetadataPaths = [],
+}: { runtimeArtifacts?: boolean; recordedPaths?: string[]; gitMetadataPaths?: string[] } = {}): VerifierSourceFile[] {
   const rows: VerifierSourceFile[] = [];
   function walk(dir: string): void {
     for (const entry of readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
       const path = join(dir, entry.name);
       const rel = relative(root, path).split(sep).join('/');
       if (rel === '.verifier-source.json') continue;
+      // Only independently verified checkout metadata is outside the source population.
+      if (gitMetadataPaths.includes(rel) && !recordedPaths.includes(rel)) {
+        if (!lstatSync(path).isDirectory()) throw new VerifierSourceError(`verification Git metadata is not independent: ${rel}`);
+        continue;
+      }
       // TanStack derives this file from the recorded routes/config on startup.
       // A tracked tree remains source, and a redirect is never a build output.
       // Vitest writes its result cache beneath the shared config's .vitest-tmp.
@@ -96,7 +129,11 @@ export function verifyVerifierSourceSync<T extends VerifierSourceReceipt>(dest: 
   if (!/^[0-9a-f]{40}$/.test(expected.sourceCommit) || !Array.isArray(expected.files) || !expected.files.length) {
     throw new VerifierSourceError('invalid verification source provenance');
   }
-  const actual = verifierSourceFiles(dest, { ...options, recordedPaths: expected.files.map(file => file.path) });
+  const gitMetadataPaths = expected.gitCheckout ? ['.git', ...(expected.submodules ?? []).map(row => `${row.path}/.git`)] : [];
+  if (expected.gitCheckout && JSON.stringify(verifierGitCheckoutSync(dest, expected.sourceCommit, expected.submodules)) !== JSON.stringify(expected.gitCheckout)) {
+    throw new VerifierSourceError('tampered verification Git checkout');
+  }
+  const actual = verifierSourceFiles(dest, { ...options, gitMetadataPaths, recordedPaths: expected.files.map(file => file.path) });
   if (JSON.stringify(actual) !== JSON.stringify(expected.files)) {
     const recorded = new Map(expected.files.map(file => [file.path, file]));
     const observed = new Map(actual.map(file => [file.path, file]));
