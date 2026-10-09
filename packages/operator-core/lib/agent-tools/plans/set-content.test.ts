@@ -46,6 +46,28 @@ describe('evaluateSetContent — requirement BAR write guard', () => {
 **R-4 — Immutable publication.** The published bytes match the approved identity.
 
 ## Decisions`);
+  const manualSections = {
+    intent: { request: 'The reviewed publication has explicit retention terms.' },
+    acceptance: {
+      condition: 'The publication shows its retention terms to the reviewer.',
+      falsifier: 'The retention terms are missing.',
+      requiredTestLayers: [],
+    },
+    verification: {
+      method: 'Read the published terms and retain the review receipt.',
+      check: { kind: 'instrument' as const, instrumentKey: 'none' },
+    },
+  };
+  const manualRequirement = [
+    '**R-4 — Immutable publication.**',
+    '```requirement',
+    JSON.stringify(manualSections),
+    '```',
+  ].join('\n');
+  const validManual = valid.replace(
+    '**R-4 — Immutable publication.** The published bytes match the approved identity.',
+    manualRequirement,
+  );
   const malformed = valid.replace(
     '**R-3 — Deliberate scope.** The retained live acceptance duties remain explicit.',
     '**R-3 — Deliberate scope.**',
@@ -70,6 +92,30 @@ describe('evaluateSetContent — requirement BAR write guard', () => {
     const result = await evaluateSetContent(malformed, valid, 'ei-1812-test', undefined);
     expect(result.value.ok).toBe(true);
     expect(result.newBody).toBe(valid);
+  });
+
+  it('accepts explicit empty layers only for an explicit manual check on the raw-write path', async () => {
+    const proposed = validManual.replace(
+      'Where it stands now. The single next concrete action and who does it.',
+      'Where it stands now. The next action keeps the recorded manual-review method.',
+    );
+    const accepted = await evaluateSetContent(validManual, proposed, 'ei-1812-test', undefined);
+    expect(accepted.value.ok).toBe(true);
+    expect(accepted.newBody).toBe(proposed);
+
+    const automatedEmpty = validManual.replace(
+      JSON.stringify(manualSections),
+      JSON.stringify({ ...manualSections, verification: { method: manualSections.verification.method } }),
+    );
+    const refused = await evaluateSetContent(validManual, automatedEmpty, 'ei-1812-test', undefined);
+    expect(refused.newBody).toBeNull();
+    expect(refused.value).toMatchObject({
+      ok: false,
+      code: 'lint_failed',
+      errors: expect.arrayContaining([
+        expect.objectContaining({ code: 'bar_requirement_parse_failed' }),
+      ]),
+    });
   });
 });
 
