@@ -10,6 +10,7 @@ import {
   CAPTURE_LEXICAL_SEARCH_BUDGET_MS,
   TOOL_FAILURE_SIGNATURE_MAX_CLASSES,
   tallyToolFailureClass,
+  type CaptureDependencyTiming,
   type CaptureDeps,
 } from './capture-core';
 import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
@@ -121,6 +122,39 @@ describe('storageKindOf — the native column mapping (close-loop D-002)', () =>
     expect(storageKindOf('bug')).toBe('bug');
     expect(storageKindOf('change')).toBe('change');
     expect(storageKindOf('feature')).toBe('change');
+  });
+});
+
+describe('captureImprovement — dependency timing observer', () => {
+  it('reports dependency durations and ignores observer failures', async () => {
+    const d = deps();
+    const samples: CaptureDependencyTiming[] = [];
+    const privateText = 'private dependency timing text';
+    d.recordIssueOccurrence = async () => {
+      throw new Error('temporary occurrence failure');
+    };
+
+    const result = await captureImprovement(
+      {
+        title: 'instrument dependency stages',
+        body: privateText,
+        kind: 'bug',
+        scope: 'harness:papercusp',
+        onDependencyTiming: (sample) => {
+          samples.push(sample);
+          throw new Error('diagnostic observer failed');
+        },
+      },
+      d,
+    );
+
+    expect(result).toMatchObject({ ok: true, created: true, issue: { id: 'EI-100' } });
+    expect(samples.map((sample) => sample.dependency)).toEqual(
+      expect.arrayContaining(['searchIssues', 'createIssue', 'recordIssueOccurrence']),
+    );
+    expect(samples.find((sample) => sample.dependency === 'recordIssueOccurrence')?.outcome).toBe('rejected');
+    expect(samples.every((sample) => Number.isFinite(sample.elapsedMs) && sample.elapsedMs >= 0)).toBe(true);
+    expect(JSON.stringify(samples)).not.toContain(privateText);
   });
 });
 

@@ -394,6 +394,77 @@ function callTool(args: Record<string, unknown>, ctx: unknown = {}) {
   ).handler(args, ctx);
 }
 
+describe('improvements:capture timing diagnostics', () => {
+  it('logs post-persist stage timings with the MCP trace id and no capture text', async () => {
+    vi.clearAllMocks();
+    drainAdmission.blocked = false;
+    drainAdmission.unavailable = false;
+    mockIdentity.mockReturnValue(identity('omp-hook-session', 'su-filer'));
+    mockResolveSelfLiteral.mockImplementation((value, callerOwnerId) => (value === 'self' ? callerOwnerId : value));
+    mockCapture.mockResolvedValue({
+      ok: true,
+      created: true,
+      issue: { id: 'EI-42', title: 'private timing title' },
+      reviewRequired: true,
+      reviewState: 'blocked',
+    } as unknown as Awaited<ReturnType<typeof captureImprovement>>);
+    mockCaptureToolInvocationFriction.mockResolvedValue(null);
+    mockEnterAgentReview.mockResolvedValue({
+      entered: true,
+      state: { status: 'pending', submittedBy: 'su-filer', ledgerIdeaId: 'EI-42', round: 1 },
+    });
+    mockSetCaptureReviewState.mockImplementation(async (_id, state) => ({
+      workItem: { id: 'EI-42', state },
+      requestedState: state,
+      appliedState: state,
+    }));
+    mockPriorArt.mockResolvedValue(undefined);
+    mockRecordRoutedIdea.mockResolvedValue(undefined);
+
+    const log = vi.fn();
+    const privateText = 'private timing body sentinel';
+    let now = 0;
+    const clock = vi.spyOn(performance, 'now').mockImplementation(() => {
+      now += 1_000;
+      return now;
+    });
+    try {
+      await callTool(
+        { title: 'private timing title', body: privateText, kind: 'feature' },
+        {
+          harnessSlug: 'papercusp',
+          workspaceId: 'ws-1',
+          requestOrigin: { mcpRequestTraceId: 'mcp-trace-for-capture-test' },
+          log,
+        },
+      );
+    } finally {
+      clock.mockRestore();
+    }
+
+    const prefix = '[improvements:capture] timing ';
+    const line = log.mock.calls.map(([message]) => String(message)).find((message) => message.startsWith(prefix));
+    expect(line).toBeDefined();
+    const timing = JSON.parse(line!.slice(prefix.length)) as {
+      traceId: string;
+      stages: Array<{ name: string; count: number; totalMs: number; maxMs: number; failures: number }>;
+    };
+    expect(timing.traceId).toBe('mcp-trace-for-capture-test');
+    expect(timing.stages.map((stage) => stage.name)).toEqual(
+      expect.arrayContaining([
+        'wrapper.persist',
+        'wrapper.routedIdeaProvenance',
+        'wrapper.agentReview.enroll',
+        'wrapper.agentReview.reopen',
+        'wrapper.noveltyPriorArt',
+        'wrapper.unresolvedRefs',
+      ]),
+    );
+    expect(line).not.toContain(privateText);
+    expect(line).not.toContain('private timing title');
+  });
+});
+
 describe('improvements:capture tool envelope', () => {
   beforeEach(() => {
     vi.clearAllMocks();

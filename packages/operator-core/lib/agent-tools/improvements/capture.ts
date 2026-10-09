@@ -1149,7 +1149,7 @@ export default defineTool({
     // bee/worker/…) that the server-side deriveAgentRole cannot see (the agent's
     // PAPERCUSP_AGENT_ROLE env is not in THIS process). Fall back to the coarse
     // source-derived role; best-effort — a presence-read miss never blocks a capture.
-    const presence = await timing.measure('identity.presence', () => getPresence(id.ownerId).catch(() => null));
+    const presence = await timing.measure('identity.presence', () => getPresence(id.ownerId)).catch(() => null);
     const filedByRole = presence?.agentRole ?? deriveAgentRole(id) ?? undefined;
     // Auto-derive sourceHive (rubric-driven-observations D-003) from the caller's
     // hive/harness when omitted: signed-spawn bees carry ctx.harnessSlug; explicit
@@ -1231,7 +1231,7 @@ export default defineTool({
     // the stamp must never fail the capture it rides on.
     const gradedGeneration =
       observationBase?.rubricRef && observationBase.ratings
-        ? await timing.measure('metadata.runningGeneration', () => readRunningGeneration().catch(() => null))
+        ? await timing.measure('metadata.runningGeneration', () => readRunningGeneration()).catch(() => null)
         : null;
     const observation = observationBase
       ? { ...observationBase, ...(gradedGeneration ? { gradedGeneration } : {}) }
@@ -1281,8 +1281,8 @@ export default defineTool({
               runGroupId: observed.runGroupId!,
               root: observed.root!,
               filePaths: observed.filePaths!,
-            }).catch(() => null),
-        );
+            }),
+        ).catch(() => null);
         if (trusted) {
           targetRuntimeSha = trusted.commitSha;
           provenance = 'trusted-test-run';
@@ -1316,7 +1316,7 @@ export default defineTool({
     // Null unless the file actually differs between the serving build and the tree,
     // so the common case adds nothing. Never throws; never blocks the filing.
     const stalenessHint = args.toolFailure
-      ? await timing.measure('metadata.toolFailureStaleness', () => toolFailureStalenessHint(args.toolFailure!.toolName))
+      ? await timing.measure('metadata.toolFailureStaleness', () => toolFailureStalenessHint(args.toolFailure!.toolName)).catch(() => null)
       : null;
     // EI-19452091889263267: a report can be based on a live runtime observation
     // even when the failing call itself was not a schema/tool error.  Compare the
@@ -1326,8 +1326,8 @@ export default defineTool({
     const pathStalenessHint = args.paths?.length
       ? targetRuntimeSha
         ? await timing.measure('metadata.pathStaleness', () =>
-            pathsStalenessHint(args.paths!, { deployedSha: () => targetRuntimeSha! }))
-        : await timing.measure('metadata.pathStaleness', () => pathsStalenessHint(args.paths!))
+            pathsStalenessHint(args.paths!, { deployedSha: () => targetRuntimeSha! })).catch(() => null)
+        : await timing.measure('metadata.pathStaleness', () => pathsStalenessHint(args.paths!)).catch(() => null)
       : null;
     // Reserve room for the hint rather than clamping the join: the body arrives
     // already clamped to LIMITS.CONTENT, so a naive append could overflow it, and
@@ -1634,7 +1634,7 @@ export default defineTool({
         const ledgerHarness =
           ctxHarness ?? (captureScope?.startsWith('harness:') ? captureScope.slice('harness:'.length) : 'papercusp');
         try {
-          await recordRoutedIdea({
+          await timing.measure('wrapper.routedIdeaProvenance', () => recordRoutedIdea({
             origin: 'su-ideate',
             createdBy: id.ownerId, // originator join key: grade→revise wakes + scope:'mine' reads (migration 558)
             ideaId: featureId,
@@ -1651,7 +1651,7 @@ export default defineTool({
             ...(args.ideation?.addressesPatternRefs?.length
               ? { addressesPatternRefs: [...args.ideation.addressesPatternRefs] }
               : {}),
-          });
+          }));
         } catch {
           // best-effort provenance — never affects the capture the user requested
         }
@@ -1691,34 +1691,34 @@ export default defineTool({
           // mutated the payload before throwing, and a failed reopen leaves state
           // uncertain. Both cleanup legs are best-effort: the committed capture and
           // the failure metadata must still be returned to the caller.
-          await setCaptureReviewState(captured.issue!.id, 'blocked', {
+          await timing.measure('wrapper.agentReview.repark', () => setCaptureReviewState(captured.issue!.id, 'blocked', {
             harness: reviewHarness,
             by: id.ownerId,
             reason: `agent-review-${phase}-failed`,
-          }).catch(() => undefined);
-          await recordCaptureReviewFailure(captured.issue!.id, failure, {
+          })).catch(() => undefined);
+          await timing.measure('wrapper.agentReview.recordFailure', () => recordCaptureReviewFailure(captured.issue!.id, failure, {
             submittedBy: id.ownerId,
             harness: reviewHarness,
-          }).catch(() => undefined);
+          })).catch(() => undefined);
           agentReviewFailure = failure;
         };
 
         try {
-          const enrolled = await enterAgentReview({
+          const enrolled = await timing.measure('wrapper.agentReview.enroll', () => enterAgentReview({
             id: captured.issue.id,
             submittedBy: id.ownerId,
             harnessSlug: reviewHarness,
             workspaceId: resolveConcreteWorkspaceId(id.workspaceId, ctxWorkspace),
-          });
+          }));
           if (!enrolled.entered) {
             throw new Error(`agent-review enrollment was not entered${enrolled.reason ? `: ${enrolled.reason}` : ''}`);
           }
           enrollmentSucceeded = true;
-          const reopened = await setCaptureReviewState(captured.issue.id, 'open', {
+          const reopened = await timing.measure('wrapper.agentReview.reopen', () => setCaptureReviewState(captured.issue.id, 'open', {
             harness: reviewHarness,
             by: id.ownerId,
             reason: 'agent-review enrollment succeeded',
-          });
+          }));
           const appliedState = reopened?.appliedState ?? reopened?.workItem?.state;
           if (appliedState !== 'open') {
             throw new Error(`review reopen did not apply open state (appliedState=${appliedState ?? 'null'})`);
@@ -1738,17 +1738,22 @@ export default defineTool({
       let linked: { targetId: string; ok: boolean; error?: string }[] | undefined;
       if (observation?.linkTo?.length && captured.created && captured.issue?.id) {
         const sourceId = captured.issue.id;
-        linked = await Promise.all(
-          observation.linkTo.map(async (l) => {
-            try {
-              const dst = await resolveWorkItemRef(l.targetId, l.targetHarness);
-              if (!dst) return { targetId: l.targetId, ok: false, error: `work_item '${l.targetId}' not found` };
-              await linkIssue(sourceId, dst, l.rel ?? 'relates', id.ownerId);
-              return { targetId: l.targetId, ok: true };
-            } catch (e) {
-              return { targetId: l.targetId, ok: false, error: e instanceof Error ? e.message : String(e) };
-            }
-          }),
+        linked = await timing.measure(
+          'wrapper.observation.linkTargets',
+          () => Promise.all(
+            observation.linkTo.map(async (l) => {
+              try {
+                const dst = await timing.measure('wrapper.observation.resolveTarget', () =>
+                  resolveWorkItemRef(l.targetId, l.targetHarness));
+                if (!dst) return { targetId: l.targetId, ok: false, error: `work_item '${l.targetId}' not found` };
+                await timing.measure('wrapper.observation.linkIssue', () =>
+                  linkIssue(sourceId, dst, l.rel ?? 'relates', id.ownerId));
+                return { targetId: l.targetId, ok: true };
+              } catch (e) {
+                return { targetId: l.targetId, ok: false, error: e instanceof Error ? e.message : String(e) };
+              }
+            }),
+          ),
         );
       }
       // P-008 (su-ideate-learning-substrate): REPORT-ONLY novelty pre-check on the su
@@ -1760,7 +1765,7 @@ export default defineTool({
       // and a failed check just omits the field (absent = not checked; [] = checked, nothing similar).
       const priorArtRaw =
         source === 'su' && args.kind === 'feature' && args.lane !== 'observation'
-          ? await noveltyPriorArt(captureText.title).catch(() => undefined)
+          ? await timing.measure('wrapper.noveltyPriorArt', () => noveltyPriorArt(captureText.title)).catch(() => undefined)
           : undefined;
       // The su-ideate ledger bridge above inserts THIS filing's own row (wi:<id>)
       // BEFORE this read, so the corpus contains the filing itself — a similarity-1.0
@@ -1771,7 +1776,7 @@ export default defineTool({
       const priorArt = selfId ? priorArtRaw?.filter((p) => p.ref !== `wi:${selfId}` && p.ref !== selfId) : priorArtRaw;
       const notified =
         args.notifyAgents?.length && captured.created && captured.issue?.id && effectiveLane !== 'observation'
-          ? await notifyAgents(id, {
+          ? await timing.measure('wrapper.notifyAgents', () => notifyAgents(id, {
               addressees: args.notifyAgents,
               objectRef: issueRef(captured.issue.id),
               summary: `🔖 ${id.ownerLabel} tagged you on ${captured.issue.id}: ${(captured.issue.title ?? captureText.title).slice(0, 80)}`,
@@ -1780,7 +1785,7 @@ export default defineTool({
                 (captureText.body ? `\n\n${captureText.body.slice(0, 600)}` : '') +
                 `\n\n— it's on your radar: work_items:get ${captured.issue.id} (comment / claim there).`,
               harnessSlug: captureScope?.startsWith('harness:') ? captureScope.slice('harness:'.length) : undefined,
-            }).catch(() => null)
+            })).catch(() => null)
           : null;
       // P-007/D-010: report-only cheapExperiment gap (see describeExperimentGap above).
       // Computed from the CALLER's args, so a duplicate-annotated / checkDuplicatesOnly
@@ -1818,9 +1823,10 @@ export default defineTool({
       // the freshly-minted id so a self-citation is never reported as phantom.
       const capturedRefSubject = captured.created ? captured.issue?.id : undefined;
       const capturedUnresolvedRefs = capturedRefSubject
-        ? await unresolvedRefsInBody([captureText.title, bodyWithStaleness].filter(Boolean).join('\n'), {
+        ? await timing.measure('wrapper.unresolvedRefs', () =>
+            unresolvedRefsInBody([captureText.title, bodyWithStaleness].filter(Boolean).join('\n'), {
             known: [capturedRefSubject],
-          })
+            }))
         : undefined;
       const capturedUnresolvedRefsWarning =
         capturedRefSubject && capturedUnresolvedRefs
