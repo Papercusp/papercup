@@ -70,6 +70,116 @@ function ProgressBar({ counts, large }: { counts: ProgressCounts | null | undefi
   </span>;
 }
 
+function GoalCockpit({ data, rows, onOpenPlan, onOpenWorkItem, onOpenAgent }: {
+  data: GoalDetailInput; rows: ProgressRow[];
+  onOpenPlan?: (harness: string, plan: string) => void;
+  onOpenWorkItem?: (id: string) => void; onOpenAgent?: (owner: string) => void;
+}) {
+  const goal = data.goal!;
+  const view = ongoingWorkView(goal, data);
+  const owner = data.agents?.find(a => a.live === true);
+  const [showFinished, setShowFinished] = useQueryState('hudwoefinished', parseAsBoolean.withDefault(false));
+  const [browseAll, setBrowseAll] = useQueryState('hudwoebrowse', parseAsBoolean.withDefault(false));
+  const selected = rows.filter(r => r.selected);
+  const measured = selected.filter(r => r.counts);
+  const totals = sumCounts(measured);
+  const itemTotal = total(totals);
+  const finished = selected.filter(r => r.st.key === 'signoff').length;
+  const visible = rows.filter(r => (browseAll || r.selected) && (showFinished || r.st.key !== 'signoff'));
+  const waiting = data.waitingOnYou ?? [];
+  const activity = [
+    ...(data.goalData?.worklistHistory ?? []).map(e => ({ key: 'history:' + e.id, ref: e.ref,
+      title: e.label, detail: e.detail, at: e.at })),
+    ...(data.activity ?? []).map(e => {
+      const completed = e.status === 'done' && !!e.closedAt && Number.isFinite(Date.parse(e.closedAt));
+      return { key: 'work:' + e.id, ref: e.id, title: e.title,
+        detail: [completed ? 'Completed' : e.status === 'done' ? 'Done · closure unconfirmed' : e.status ?? 'Status unavailable',
+          e.planSlug ?? e.harnessSlug].filter(Boolean).join(' · '), at: completed ? e.closedAt! : e.updatedAt };
+    }),
+  ].filter(e => e.at && Number.isFinite(Date.parse(e.at)))
+    .sort((a, b) => Date.parse(b.at!) - Date.parse(a.at!));
+  return <div className="woe__cockpit" aria-label="Goal cockpit">
+    <aside className="woe__sidebar">
+      <section className="woe__health" aria-label="Goal health" data-tone={view.status.tone}>
+        <h3>{view.status.label}</h3>
+        <p>{goal.status === 'paused' ? 'No new work starts while this goal is paused.' :
+          goal.status === 'killed' || goal.status === 'achieved' ? 'This goal is no longer placing new work.' :
+          view.status.label === 'Running' ? 'The steward is working through your selected priorities.' :
+          view.status.label === 'Not running' ? 'There is no live holder placing new work for this goal.' :
+          'The goal’s current running state has not been verified.'}</p>
+        {view.attention !== null && view.attention > 0 ? <p>{view.attention} {view.attention === 1 ? 'item needs' : 'items need'} your response.
+          {goal.status === 'paused' ? ' Resuming alone will not answer them.' : ''}</p> : null}
+        <GoalStatusControl goalId={goal.id} status={goal.status} effectiveStatus={data.effectiveStatus}
+          holderLiveness={data.holderLiveness} variant="card" />
+      </section>
+      <section className="woe__overall" aria-label="Selected plan progress">
+        <h3>Selected plan progress</h3>
+        {measured.length ? <><strong>{itemTotal ? `${totals.done} of ${itemTotal} items done` : 'No items in measured plans'}</strong>
+          <ProgressBar counts={totals} large />
+          {itemTotal ? <span className="woe__muted">{percent(totals)}% of measured items complete</span> : null}</> :
+          <strong>{selected.length ? 'Progress not measured' : 'No plans selected'}</strong>}
+        <p className="woe__muted">{measured.length} of {selected.length} selected plans measured
+          {measured.length < selected.length ? ` · ${selected.length - measured.length} not measured; totals are partial` : ''}.</p>
+      </section>
+      <dl className="woe__facts">
+        <div><dt>Plans on list</dt><dd>{selected.length}</dd></div>
+        <div><dt>Awaiting sign-off</dt><dd>{finished}</dd></div>
+        <div className="woe__fact-wide"><dt>Recent spend</dt><dd>{view.spend ?? 'Spend unavailable'}</dd></div>
+        <div className="woe__fact-wide"><dt>Spend cap</dt><dd>{view.budget ?? 'Budget unavailable'}</dd></div>
+        <div className="woe__fact-wide"><dt>Steward</dt><dd>{owner ? onOpenAgent ?
+          <button type="button" className="woe__link" onClick={() => onOpenAgent(owner.ownerId)}>Ask steward</button> :
+          'Steward available' : 'Live steward unavailable'}</dd></div>
+      </dl>
+      <section className="woe__needs" aria-label="Needs you">
+        <h3>Needs you <span>{view.attention ?? 'Not measured'}</span></h3>
+        {waiting.map(item => <article className="woe__need" key={item.id}><h4>{item.title}</h4>
+          <p>{item.harnessSlug ?? item.id}</p>
+          {onOpenWorkItem ? <button type="button" className="pc-ctl-act" onClick={() => onOpenWorkItem(item.id)}>Open question</button> :
+            <span className="woe__muted">{item.id}</span>}</article>)}
+        {!waiting.length ? <p className="woe__muted">{view.attention === 0 ? 'No items are waiting on you.' :
+          'Decision details have not loaded.'}</p> : <p className="woe__muted">Showing {waiting.length}
+          {view.attention !== null ? ` of ${view.attention} items` : ' items; decision total unavailable'}.</p>}
+        {selected.filter(r => (r.counts?.needsHuman ?? 0) > 0).map(row => <article className="woe__need" key={row.id}>
+          <h4>{row.label}</h4><p>{row.counts!.needsHuman} {row.counts!.needsHuman === 1 ? 'item needs' : 'items need'} your decision.</p>
+          {row.harness && row.planSlug && onOpenPlan ? <button type="button" className="woe__link"
+            onClick={() => onOpenPlan(row.harness!, row.planSlug!)}>Open plan</button> : null}</article>)}
+      </section>
+    </aside>
+    <div className="woe__main">
+      <RubricStewardship data={data} onOpenWorkItem={onOpenWorkItem} />
+      <section className="woe__priority" aria-label="Priority plans">
+        <div className="woe__section-heading"><div><h3>{browseAll ? 'All available plans' : 'Plans in priority order'}</h3>
+          <p className="woe__muted">{selected.length} selected · {finished} awaiting sign-off</p></div>
+          <div className="woe__actions"><button type="button" className="pc-ctl-act" aria-pressed={showFinished}
+            onClick={() => void setShowFinished(!showFinished)}>{showFinished ? 'Hide finished' : 'Show finished'}</button>
+            <button type="button" className="pc-ctl-act" aria-pressed={browseAll}
+              onClick={() => void setBrowseAll(!browseAll)}>{browseAll ? 'Show selected plans' : 'Browse all plans'}</button></div></div>
+        <ol className="woe__priority-list">{visible.map(row => <li key={row.id} data-testid="ongoing-priority-row" data-worklist-id={row.id}>
+          <span className="woe__rank">{row.selected ? String(row.rank + 1).padStart(2, '0') : '—'}</span>
+          <div className="woe__priority-name">{row.harness && row.planSlug && onOpenPlan ?
+            <button type="button" className="woe__plan-link" onClick={() => onOpenPlan(row.harness!, row.planSlug!)}>{row.label}</button> :
+            <strong>{row.label}</strong>}<p>{row.selected ? row.nextStep ?? row.st.why : `Outside this worklist · ${row.st.why}`}</p></div>
+          <div className="woe__priority-progress"><ProgressBar counts={row.counts} />
+            {row.counts ? <span className="woe__num">{row.counts.done}/{total(row.counts)}</span> : null}</div>
+          <span className="woe__state" data-state={row.st.key}><span aria-hidden />{row.st.label}</span>
+        </li>)}</ol>
+        {!visible.length ? <p className="woe__empty">{selected.length ? 'Selected plans are awaiting sign-off. Show finished to inspect them.' :
+          'No plans selected. Edit priorities to choose what the steward works on.'}</p> : null}
+      </section>
+      <section className="woe__activity" aria-label="Recent activity">
+        <div className="woe__section-heading"><h3>Recent activity on this goal</h3><span className="woe__muted">Goal history and work items</span></div>
+        {data.goalData?.historyError ? <p role="alert" className="woe__warning">History unavailable: {data.goalData.historyError}</p> : null}
+        {activity.length ? <ol>{activity.slice(0, 12).map(e => <li key={e.key}>
+          <time dateTime={e.at!}>{new Date(e.at!).toLocaleString()}</time><div>{onOpenWorkItem ?
+            <button type="button" className="woe__link" onClick={() => onOpenWorkItem(e.ref)}>{e.title}</button> : <strong>{e.title}</strong>}
+            {e.detail ? <p>{e.detail}</p> : null}</div></li>)}</ol> :
+          <p className="woe__muted woe__activity-empty">No dated activity is available in this recent snapshot.</p>}
+        {activity.length ? <p className="woe__muted woe__activity-empty">Showing {Math.min(12, activity.length)} recent entries; older activity may be outside this snapshot.</p> : null}
+      </section>
+    </div>
+  </div>;
+}
+
 export default function WorkOnEverythingPanel({ data, nowMs, onClose, onOpenPlan, onOpenWorkItem, onOpenAgent, refresh }: {
   data: GoalDetailInput; nowMs: number; onClose: () => void; refresh: () => void;
   onOpenPlan?: (harness: string, plan: string) => void;
@@ -83,6 +193,7 @@ export default function WorkOnEverythingPanel({ data, nowMs, onClose, onOpenPlan
   const [showEmpty, setShowEmpty] = useQueryState('hudwoeempty', parseAsBoolean.withDefault(false));
   const [reviewOpen, setReviewOpen] = useQueryState('hudwoereview', parseAsBoolean.withDefault(false));
   const [settingsOpen, setSettingsOpen] = useQueryState('hudwoesettings', parseAsBoolean.withDefault(false));
+  const [editMode, setEditMode] = useQueryState('hudwoeedit', parseAsBoolean.withDefault(false));
   const [draft, setDraft] = useState<WorklistDraft | null>(null);
   const [reason, setReason] = useState('');
   const [saving, setSaving] = useState(false);
@@ -203,19 +314,19 @@ export default function WorkOnEverythingPanel({ data, nowMs, onClose, onOpenPlan
     <section className="woe" data-testid="work-on-everything-console" aria-label="Work on everything progress">
       <header className="woe__header"><div className="woe__identity"><span className="woe__mark"><InfinityIcon size={24} aria-hidden /></span>
         <div><div className="woe__title"><h2>{goal.title}</h2><span className={'hud__chip hud__chip--' + view.status.tone}>{view.status.label}</span></div>
-        <p>Progress across every plan. Pick which ones the steward works on.</p></div></div>
-        <div className="woe__actions"><span className="woe__budget">{view.spend ?? 'Spend unavailable'}{view.budget ? <small>Budget {view.budget}</small> : null}</span>
-          <GoalStatusControl goalId={goal.id} status={goal.status}
-            effectiveStatus={data.effectiveStatus} holderLiveness={data.holderLiveness} variant="card" />
+        <p>{editMode ? 'Draft your worklist changes, then review and apply.' : 'Goal health, your priorities and continuous improvement.'}</p></div></div>
+        <div className="woe__actions">
+          <button className="pc-ctl-act" type="button" aria-pressed={editMode} onClick={() => void setEditMode(!editMode)}>
+            {editMode ? 'Back to overview' : `Edit priorities${changes.length ? ` · ${changes.length} pending` : ''}`}</button>
           <button className="pc-ctl-act" type="button" onClick={() => void setSettingsOpen(true)}><span><Settings2 size={14} />Settings</span></button>
-          {owner && onOpenAgent ? <button className="pc-ctl-act pc-ctl-act--primary" type="button"
-            onClick={() => onOpenAgent(owner.ownerId)}><span><MessageSquare size={14} />Ask steward</span></button> : null}
           <button className="pc-ctl-act" type="button" aria-label="Close ongoing work" onClick={onClose}><X size={15} /></button>
         </div></header>
       {unavailable || !collection ? <div className="woe__body"><div className="woe__unavailable" role="alert">
         <h3>{unavailable?.title ?? 'Plans could not be loaded'}</h3><p>{unavailable?.detail ?? 'Retry; your saved worklist is unchanged.'}</p>
         <button type="button" className="pc-ctl-act" onClick={refresh}><span><RefreshCw size={14} aria-hidden />Retry</span></button></div></div> :
       <div className="woe__body">
+        {!editMode ? <GoalCockpit data={data} rows={progressRows(collection.rows)} onOpenPlan={onOpenPlan}
+          onOpenWorkItem={onOpenWorkItem} onOpenAgent={onOpenAgent} /> : <>
         <div className="woe__kpis" role="group" aria-label="Totals">{tiles.map((t) =>
           <button type="button" key={t.label} className="woe__kpi" aria-pressed={t.key !== null && stateFilter === t.key}
             onClick={() => void setStateFilter(t.key === null || stateFilter === t.key ? null : t.key)}>
@@ -268,6 +379,7 @@ export default function WorkOnEverythingPanel({ data, nowMs, onClose, onOpenPlan
             <button type="button" className="pc-ctl-act pc-ctl-act--primary" disabled={locked || stale}
               onClick={() => void setReviewOpen(true)}>Review &amp; apply</button></div></div> :
           <div className="woe__idle"><Check size={15} aria-hidden /><span>No pending changes. Add or remove plans to start a draft.</span></div>}
+        </>}
       </div>}
       <footer className="woe__footer"><span><span className={'woe__live-dot' + (owner ? ' woe__live-dot--available' : '')} aria-hidden />{view.status.label} · {owner ? 'Steward available' : 'Live steward unavailable'}</span>
         <span>Changes apply to new work. Running tasks stay assigned.</span></footer>

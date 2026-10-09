@@ -23,6 +23,7 @@ import {
 } from './release-acceptance';
 import type { EvidenceFile } from './release-acceptance-reporter';
 import { startDedicatedNativePg } from '@papercusp/test-config/pg';
+import { ADMIN_TEST_RUNS_REPORTER_PATH } from '@papercusp/test-config/vitest-config';
 
 /**
  * One dedicated native Postgres shared by every leg (WI-10004247 H4). Without
@@ -63,6 +64,13 @@ const ACCEPTANCE_SOURCES = [
 ];
 const REPORTER = path.join(REPO_ROOT, 'packages/operator-core/lib/pui-e2e/release-acceptance-reporter.ts');
 const VITEST = path.join(REPO_ROOT, 'node_modules/.bin/vitest');
+// CLI reporter options replace the config's reporter list. Preserve the existing
+// ledger recorder alongside the installed-product evidence collector.
+export const RELEASE_ACCEPTANCE_REPORTER_ARGS = [
+  '--reporter=default',
+  `--reporter=${ADMIN_TEST_RUNS_REPORTER_PATH}`,
+  `--reporter=${REPORTER}`,
+];
 const OPERATOR_CORE = path.join(REPO_ROOT, 'packages/operator-core');
 
 export interface LoggedChildResult {
@@ -589,7 +597,7 @@ export async function runReleaseAcceptance(options: RunOptions): Promise<RunResu
       'run', '--config', 'vitest.integration.config.ts',
       ...suites.map((file) => path.join(REPO_ROOT, file)),
       ...(options.testFilter ? ['-t', options.testFilter] : []),
-      '--reporter=default', `--reporter=${REPORTER}`,
+      ...RELEASE_ACCEPTANCE_REPORTER_ARGS,
     ], {
       cwd: OPERATOR_CORE, timeout: 90 * 60_000,
       env: {

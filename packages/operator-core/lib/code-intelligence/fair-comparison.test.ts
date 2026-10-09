@@ -6,6 +6,7 @@ import {
   decideBackend,
   FAIR_DECISION_BARS,
   hashKeys,
+  hashPreregistration,
   poolCandidates,
   preregister,
   scoreCase,
@@ -19,6 +20,7 @@ import {
   type FairIntent,
   type RepScores,
 } from './fair-comparison';
+import { nativeEvaluationProtocol, nativeLanguageControls } from './fair-comparison-corpus';
 
 const site = (path: string, line1: number): SymbolSite => ({ path, line1, kind: null });
 const kase = (id: string, intent: FairIntent = 'callers'): FairCase => ({ id, intent, subject: 'foo', tags: [], source: 'authored' });
@@ -360,3 +362,32 @@ describe('preregister', () => {
 // Keep a compile-time witness that CaseScore carries the absence flag the rates depend on.
 const _witness: Pick<CaseScore, 'absence'> = { absence: true };
 void _witness;
+
+describe('native evaluation preregistration', () => {
+  const controls = nativeLanguageControls();
+  const protocol = nativeEvaluationProtocol('a'.repeat(40), controls.files,
+    ['javascript', 'typescript', 'rust', 'python', 'go'].map(language => ({ language, refs: [], unavailable: 'unit fixture has no real-task observations' })));
+  const input = { cases: controls.cases, keys: controls.keys, arms: [caps('a')], reps: 3, seed: 20261009, protocol };
+
+  it('freezes measurement methods, thresholds, source/config fixtures and unavailable real task coverage', () => {
+    const mutable = structuredClone(protocol);
+    const registered = preregister({ ...input, protocol: mutable });
+    expect(hashPreregistration(JSON.parse(JSON.stringify(registered)))).toBe(registered.hash);
+    (mutable.measurements[0] as { method: string }).method = 'parent RSS instead of cgroup';
+    expect(registered.protocol!.measurements[0]!.method).not.toBe(mutable.measurements[0]!.method);
+    expect(Object.isFrozen(registered.protocol!.measurements[0])).toBe(true);
+    expect(preregister({ ...input, protocol: mutable }).hash).not.toBe(registered.hash);
+    expect(hashPreregistration({ ...registered, protocol: { ...protocol,
+      correctness: { ...protocol.correctness, maxConfidentFalseEmptyRate: 1 } } })).not.toBe(registered.hash);
+  });
+
+  it('rejects missing strata, measurements, configuration pins and invented real task coverage', () => {
+    const without = (fragment: string) => controls.cases.filter(c => !c.id.includes(fragment));
+    const reduced = (fragment: string) => { const cases = without(fragment); return { ...input, cases, keys: controls.keys.filter(k => cases.some(c => c.id === k.caseId)) }; };
+    expect(() => preregister(reduced('python-definition-absence'))).toThrow(/positive\/absence/);
+    expect(() => preregister(reduced('unconfigured'))).toThrow(/configuration\/freshness/);
+    expect(() => preregister({ ...input, protocol: { ...protocol, measurements: protocol.measurements.slice(1) } })).toThrow(/measurement/);
+    expect(() => preregister({ ...input, protocol: { ...protocol, fixtureHash: '' } })).toThrow(/protocol needs/);
+    expect(() => preregister({ ...input, protocol: { ...protocol, realTaskCoverage: protocol.realTaskCoverage.map(c => ({ ...c, refs: ['invented-real-task'] })) } })).toThrow(/ungrounded/);
+  });
+});

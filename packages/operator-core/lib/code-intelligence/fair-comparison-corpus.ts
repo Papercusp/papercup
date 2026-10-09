@@ -33,11 +33,93 @@
  * claim and must be tagged `absence` — an empty key is never produced by
  * omission.
  */
-import type { AnswerKey, FairCase, FairIntent, HardnessTag, SiteKey } from './fair-comparison';
+import { createHash } from 'node:crypto';
+import type { AnswerKey, FairCase, FairEvaluationProtocol, FairIntent, HardnessTag, SiteKey } from './fair-comparison';
 import { FAIR_INTENTS } from './fair-comparison';
 
 /** The commit every arm indexes and every seed is pinned to (staging, 2026-10-06T05:15Z). */
 export const FAIR_CORPUS_COMMIT = '90e6465ad21b79142bac4853bb1c9c958f868f41';
+
+/** Authored calibration projects supplement the real repository-demand corpus.
+ * These are never labelled real agent tasks or measured language certification.
+ * Stale controls index the original project then change target's call to absent;
+ * deleted controls index it then remove its source. The frozen question survives.
+ */
+export const NATIVE_LANGUAGE_CONTROL_SOURCES = Object.freeze({
+  javascript: 'export function target() { return 1; }\nexport function consumer() { return target(); }\n// absent() is only a comment\n',
+  typescript: 'export function target(): number { return 1; }\nexport function consumer(): number { return target(); }\n// absent() is only a comment\n',
+  rust: 'pub fn target() -> i32 { 1 }\npub fn consumer() -> i32 { target() }\n// absent() is only a comment\n',
+  python: 'def target(): return 1\ndef consumer(): return target()\n# absent() is only a comment\n',
+  go: 'package control\nfunc target() int { return 1 }\nfunc consumer() int { return target() }\n// absent() is only a comment\n',
+});
+
+const NATIVE_LANGUAGE_CONFIGS: Readonly<Record<string, { path: string; text: string }>> = Object.freeze({
+  javascript: { path: 'jsconfig.json', text: '{"compilerOptions":{"checkJs":true,"allowJs":true},"include":["control.js"]}\n' },
+  typescript: { path: 'tsconfig.json', text: '{"compilerOptions":{"strict":true,"target":"es2022"},"include":["control.ts"]}\n' },
+  rust: { path: 'Cargo.toml', text: '[package]\nname = "native_control"\nversion = "0.1.0"\nedition = "2021"\n[lib]\npath = "control.rs"\n' },
+  python: { path: 'pyproject.toml', text: '[tool.pyright]\ninclude = ["control.py"]\ntypeCheckingMode = "strict"\n' },
+  go: { path: 'go.mod', text: 'module native.control\n\ngo 1.22\n' },
+});
+
+export function nativeLanguageControls(): { cases: FairCase[]; keys: AnswerKey[]; files: Record<string, string> } {
+  const cases: FairCase[] = [];
+  const keys: AnswerKey[] = [];
+  const files: Record<string, string> = {};
+  const extensions: Record<string, string> = { javascript: 'js', typescript: 'ts', rust: 'rs', python: 'py', go: 'go' };
+  for (const [language, text] of Object.entries(NATIVE_LANGUAGE_CONTROL_SOURCES)) {
+    const path = `native-controls/${language}/control.${extensions[language]}`;
+    const offset = language === 'go' ? 1 : 0;
+    files[path] = text;
+    const config = NATIVE_LANGUAGE_CONFIGS[language]!;
+    files[`native-controls/${language}/${config.path}`] = config.text;
+    const add = (intent: FairIntent, absent: boolean, configuration: FairCase['configuration'] = 'configured',
+      sourceState: FairCase['sourceState'] = 'current') => {
+      const id = `native-${language}-${intent}-${absent ? 'absence' : 'positive'}-${configuration}-${sourceState}`;
+      const sourceFingerprint = createHash('sha256').update(JSON.stringify({ source: text,
+        config: configuration === 'configured' ? config.text : null })).digest('hex');
+      cases.push({ id, intent, subject: absent ? intent === 'text-search' ? 'neverDeclaredAbsent' : 'absent' : intent === 'callees' ? 'consumer' : 'target', anchorFile: path,
+        ...(intent === 'impact' ? { depth: 2 } : {}), tags: absent ? ['absence'] : [], source: 'authored',
+        language, configuration, sourceState, sourceFingerprint, taskRef: `authored-control:${id}` });
+      // Deleted truth is empty. Stale truth keeps the definition but removes callers.
+      const declaration = intent === 'definition' || intent === 'symbol-search' || intent === 'callees';
+      const sites = absent || sourceState === 'deleted' || (sourceState === 'stale' && !declaration)
+        ? [] : intent === 'text-search' ? [`${path}:${1 + offset}`, `${path}:${2 + offset}`]
+          : [`${path}:${(declaration ? 1 : 2) + offset}`];
+      keys.push({ caseId: id, sites, aliases: {}, rejected: [], neutral:
+        intent === 'references' && !absent && sourceState === 'current' ? [`${path}:${1 + offset}`] : [] });
+    };
+    for (const intent of FAIR_INTENTS) { add(intent, false); add(intent, true); }
+    add('callers', false, 'unconfigured');
+    add('callers', false, 'configured', 'stale');
+    add('callers', false, 'configured', 'deleted');
+  }
+  return { cases, keys, files };
+}
+
+/** Reuse the harness's decision bars and ResourceBudget; define the native
+ * measurement cohort separately from observations. Missing data never passes.
+ */
+export function nativeEvaluationProtocol(sourceCommit: string, files: Readonly<Record<string, string>>,
+  realTaskCoverage: FairEvaluationProtocol['realTaskCoverage']): FairEvaluationProtocol {
+  return {
+    edition: 'native-ecosystem-P002-2026-10-09-v1', sourceCommit,
+    fixtureHash: createHash('sha256').update(JSON.stringify(Object.entries(files).sort(([a], [b]) => a.localeCompare(b)))).digest('hex'),
+    languages: Object.keys(NATIVE_LANGUAGE_CONTROL_SOURCES), matchedIntents: [...FAIR_INTENTS],
+    measurements: [
+      { metric: 'setup-wall', unit: 'ms', method: 'Monotonic time from process/index start to readiness, including parsing, dependency setup and index construction; fresh isolated tree/home per arm and repetition.', unavailable: 'Record setup-failed, timeout or not-measured with the raw receipt; exclude from accuracy, include in failure/coverage.' },
+      { metric: 'cold-query', unit: 'ms', method: 'First query of each language/intent in a fresh process after readiness. Preserve every sample; report p50/p95/max and sample count, never mix with warm queries.', unavailable: 'No first-query witness means not-measured; cannot pass the coldStartMsMax ceiling.' },
+      { metric: 'warm-query', unit: 'ms', method: 'After one labelled warm-up, run seeded shuffled identical cases for at least three repetitions. Preserve every latency; report p50/p95/max separately by language/intent/configuration/source state.', unavailable: 'Unsupported, stale-index, crash and timeout remain separate outcomes; do not impute zero latency.' },
+      { metric: 'peak-memory', unit: 'MiB', method: 'Fresh task cgroup memory.peak across parent, workers and language servers; reset via a new task for each repetition. Retain runtime/source identity and bytes, divide by 1048576.', unavailable: 'Absent cgroup counter is not-measured; parent-only process maxRSS is diagnostic and cannot certify the rssMbMax ceiling.' },
+      { metric: 'resident-memory', unit: 'MiB', method: 'Task cgroup memory.current at ready, after warm-up, and after the final query, with named timestamps and all child processes included; bytes / 1048576.', unavailable: 'Missing stage sample stays null/not-measured, never inferred from peak or host-wide memory.' },
+      { metric: 'index-disk', unit: 'MiB', method: 'Logical byte sum of all arm-created index/cache files under its isolated tree/home after ready and completion, separately from source/dependencies; retain file census and bytes / 1048576.', unavailable: 'Incomplete paths or unreadable files mean not-measured; an explicit measured empty census alone permits zero.' },
+      { metric: 'agent-task', unit: 'outcome', method: 'Replay the pinned real repository-demand questions and calibration controls through the native tool seam. Preserve question, tool requests/raw responses, source/config identity, keyed answer, tokens, wall time and process costs. Configuration is removed for unconfigured controls; index original bytes before replacing callers for stale or deleting source for deleted controls.', unavailable: 'Authored controls are labelled authored; absent real tasks, unsupported language/intent or missing tool replay cannot certify real-task coverage.' },
+    ],
+    correctness: { minEffectiveF1: 0.95, maxConfidentFalseEmptyRate: 0,
+      maxAbsenceFalsePositiveRate: 0, maxStaleAnswerRate: 0,
+      pooling: 'Seed independently verified source sites before running arms. Pool every additional site across all arms; record valid/invalid/alias/neutral judgments and rescore all arms. No verdict while sites remain unadjudicated. Report each language/intent stratum and matched operation intersection; undeclared cells reduce coverage and never count as correct.' },
+    realTaskCoverage,
+  };
+}
 
 /** A verified site: `text` must occur on `line1` of `path` at FAIR_CORPUS_COMMIT. */
 export interface SeedSite {

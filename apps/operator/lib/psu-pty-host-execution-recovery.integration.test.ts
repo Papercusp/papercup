@@ -1,12 +1,18 @@
 // @vitest-environment node
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { listDueCronRoutines } from '@papercusp/db-org';
+import { createOrgTestDb, type OrgTestDb } from '../../../packages/operator-core/test/_org-test-db';
+import { claimDueRoutine } from '@papercusp/operator-core/lib/harness/routines/claim';
+import { recoverExpectedLoopExecution } from '@papercusp/operator-core/lib/harness/routines/loop-execution-recovery';
+import { executeWake, type ExecuteWakeDeps } from '@papercusp/operator-core/lib/events/await/wake-executor';
+import type { DeliveryWork } from '@papercusp/operator-core/lib/events/await/types';
 import { EventEmitter } from 'node:events';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { hermeticEnv } from '../vitest-shims/psu-pty-temp-dir';
 import { hostThroughPty, metaPathFor, socketPathFor, nativeLatestExecution } from '../scripts/psu-pty-host.mjs';
-import { injectIntoHostWithConfirmation } from '@papercusp/operator-core/lib/events/await/psu-pty-discovery';
+import { injectIntoHostWithConfirmation, type PsuPtyHost } from '@papercusp/operator-core/lib/events/await/psu-pty-discovery';
 
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 let ownerCounter = 0;
@@ -17,7 +23,7 @@ async function until(check: () => boolean, timeoutMs = 10_000) {
 }
 
 /** Real PTY and socket, sanitized native event shapes, no model or live DB. */
-async function fixture(agent: string, autoStart: boolean) {
+async function fixture(agent: string, autoStart: boolean, failInitially = false) {
   const root = mkdtempSync(join(tmpdir(), 'loop-native-recovery-'));
   const config = join(root, '.papercusp', `session-${agent}`);
   const nativeDir = agent === 'omp' ? join(config, 'agent', 'sessions')
@@ -57,7 +63,11 @@ async function fixture(agent: string, autoStart: boolean) {
         if (${autoStart}) setTimeout(start, 40);
       } else line += c;
     }});
-    process.stdout.write('READY\\n'); setTimeout(()=>process.exit(0),15000);
+    process.stdout.write('READY\\n');
+    if (${failInitially}) append(agent === 'codex' ? {type:'event_msg',payload:{type:'turn_aborted'}} :
+      agent === 'claude' ? {type:'system',subtype:'api_error'} :
+      {type:'message',message:{role:'assistant',stopReason:'aborted',content:[]}});
+    setTimeout(()=>process.exit(0),${failInitially ? 90000 : 15000});
   `;
   const env = hermeticEnv({ PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: agent,
     ...(agent === 'codex' ? { CODEX_HOME: config } : agent === 'claude' ? { CLAUDE_CONFIG_DIR: config } : { PI_CONFIG_DIR: config }),
@@ -73,14 +83,15 @@ async function fixture(agent: string, autoStart: boolean) {
     timestamp: new Date().toISOString() }) + '\n');
   expect(nativeLatestExecution({ agent, env }).phase, `${agent} fixture native root preflight`).toBe('settled');
   const done = hostThroughPty({ command: process.execPath, args: ['-e', code], cwd: root,
-    ownerId, env, io: { stdin, stdout }, bridgeTty: false, onExit: () => {} });
+    ownerId, env, io: { stdin, stdout }, bridgeTty: false, activityPersistMs: 25, onExit: () => {} });
   await until(() => output.includes('READY') && existsSync(metaPathFor(ownerId)) && existsSync(sock));
   const meta = JSON.parse(readFileSync(metaPathFor(ownerId), 'utf8'));
   expect(meta.execution, `${agent} metadata must carry native observation`).toBeDefined();
   const message = { mode: 'turn' as const, ownerId, deliveryId: `native-${agent}`, requireNativeTurnStart: true,
     expectedChildGeneration: meta.execution.childGeneration, expectedHostStartedAt: meta.startedAt,
     data: '⟦turn-origin:loop-fire nonce:1234567890abcdef⟧\nContinue approved recovery.' };
-  return { message, sock, output: () => output, async close() {
+  const readHost = (): PsuPtyHost => JSON.parse(readFileSync(metaPathFor(ownerId), 'utf8'));
+  return { message, sock, readHost, output: () => output, async close() {
     await injectIntoHostWithConfirmation(sock, { mode: 'raw', ownerId, data: '\x04' }).catch(() => null);
     await done;
     expect(existsSync(metaPathFor(ownerId))).toBe(false);
@@ -129,4 +140,70 @@ describe('cross-client native recovery handshake', () => {
       expect(f.output()).not.toContain('SUBMIT:');
     } finally { await f.close(); }
   }, 25_000);
+});
+
+describe('failed native turn → durable routine retry → native wake', () => {
+  let org: OrgTestDb;
+  beforeAll(async () => { org = await createOrgTestDb(); }, 180_000);
+  afterAll(async () => { await org?.cleanup(); });
+
+  it.each(['codex', 'claude', 'omp'])('recovers one %s turn through the real claim and wake paths', async agent => {
+    const f = await fixture(agent, true, true);
+    const sql = org.adminSql;
+    const owner = f.message.ownerId;
+    const routineId = `routine-${owner}`;
+    const workspaceId = 'ws-composed-native-recovery';
+    try {
+      await until(() => f.readHost().execution?.phase === 'failed');
+      const failedAt = f.readHost().execution!.lastProgressAt!;
+      await sql`INSERT INTO harness_shared.routines
+        (id, install_slug, name, trigger_kind, trigger_config, target_role, active, workspace_id,
+         last_fired_at, next_fire_at, reschedule_interval_sec, target_owner_id)
+        VALUES (${routineId}, 'papercusp', ${routineId}, 'cron', '{}'::jsonb, 'su', TRUE, ${workspaceId},
+          ${new Date(failedAt - 1000).toISOString()}::timestamptz, 'infinity'::timestamptz, 60, ${owner})`;
+      // Exercise the real failed-turn grace and retry deadline, with no clock override.
+      await until(() => Date.now() - failedAt >= 30_000, 35_000);
+      const arm = vi.fn(async () => ({ awaitId: 1, eventKey: 'fixture-inbox', handleNote: 'fixture', minSleepSec: 60 }));
+      const recovery = await recoverExpectedLoopExecution({ sql, routineId, ownerId: owner, nowMs: Date.now() }, {
+        findHost: () => f.readHost(), arm,
+        inference: async () => ({ active: 0, observedAt: Date.now() }),
+      });
+      expect(recovery).toMatchObject({ handled: true, rearmed: true, state: { status: 'recovering', attempts: 1 } });
+      expect(arm).toHaveBeenCalledTimes(1);
+      const stored = (await sql<Array<{ next_ms: string; metadata: any }>>`
+        SELECT (extract(epoch FROM next_fire_at) * 1000)::bigint::text AS next_ms, metadata
+        FROM harness_shared.routines WHERE id = ${routineId}`)[0]!;
+      expect(Number(stored.next_ms)).toBe(recovery.state!.nextProbeAt);
+      expect(stored.metadata.executionRecovery).toMatchObject({ status: 'recovering', attempts: 1 });
+      await until(() => Date.now() >= recovery.state!.nextProbeAt, 35_000);
+      const due = (await listDueCronRoutines(sql)).find(row => row.id === routineId)!;
+      expect(due).toBeDefined();
+      expect(await claimDueRoutine(sql, due)).toBe(true);
+      expect(await claimDueRoutine(sql, due)).toBe(false);
+
+      const at = new Date().toISOString();
+      const delivery: DeliveryWork = { id: 900 + ownerCounter, workspaceId, awaitId: 1, subscriberId: owner,
+        eventKey: `fixture:recovery:${owner}`, payload: null, summary: 'Continue approved recovery',
+        status: 'delivering', channel: null, attempts: 1, lastError: null, nextAttemptAt: at, createdAt: at,
+        deliveredAt: null, urgent: false, minSleepSec: null, coalescedCount: 1, source: null,
+        wakeHandle: null, note: null };
+      const wakeDeps: ExecuteWakeDeps = {
+        findPsuHost: () => f.readHost(), injectPsuHostWithConfirmation: injectIntoHostWithConfirmation,
+        resolveWakeModeFn: async () => 'auto', stageManualWakeFn: async () => undefined,
+        getLatestSessionForOwner: async () => null, coldAutoEnabled: async () => false,
+        tagTurn: () => ({ text: f.message.data, provenanceIssuedAtMs: Date.now(), ledgerWritten: true }),
+        presence: async () => null,
+      };
+      expect(await executeWake(delivery, wakeDeps)).toMatchObject({ kind: 'park', hostCommitPending: true });
+      await until(() => f.output().includes('NATIVE_STARTED'));
+      let delivered = false;
+      for (let n = 0; n < 20 && !delivered; n++) {
+        const outcome = await executeWake(delivery, wakeDeps);
+        delivered = outcome.kind === 'delivered';
+        if (!delivered) await delay(30);
+      }
+      expect(delivered).toBe(true);
+      expect(f.output().match(/SUBMIT:/g)).toHaveLength(1);
+    } finally { await f.close(); }
+  }, 85_000);
 });

@@ -93,6 +93,14 @@ async function responds(session: typeof sessions[number], marker: string) {
   await until(() => session.output().includes(`ECHO:${marker}`), `${session.owner} reply`);
 }
 
+async function quiet(session: typeof sessions[number]) {
+  await until(() => {
+    assert.equal(session.closed, false, 'canary must survive until the stop request');
+    const metadata = JSON.parse(readFileSync(metaPathFor(session.owner), 'utf8'));
+    return Number(metadata.lastOutputAt) > 0 && Date.now() - Number(metadata.lastOutputAt) >= 1_500;
+  }, `${session.owner} native output quiet`);
+}
+
 async function request(payload: Record<string, unknown>) {
   const response = await fetch(base + '/api/adv/sessions/close-window', { method: 'POST',
     headers: { 'content-type': 'application/json', origin: base, 'x-papercusp-workspace': workspace },
@@ -141,6 +149,8 @@ async function main() {
   await responds(neighbor, 'neighbor-after-reactivation-replay');
   const currentNeighbor = await getAdvSessionInWorkspace(neighbor.id, workspace);
   assert.ok(currentNeighbor);
+  // ECHO output must settle before exercising the existing supported idle stop.
+  await Promise.all([quiet(selected), quiet(neighbor)]);
   const misroute = process.env.ROSTER_STOP_HTTP_MUTATION === 'misroute';
   const accepted = await request(misroute ? { ownerId: neighbor.owner, managedSessionId: neighbor.id,
     expectedStartedAt: currentNeighbor.startedAt, confirmed: true } : valid);
@@ -161,7 +171,7 @@ async function main() {
 try { await main(); }
 catch (error: any) { console.error('ROSTER_STOP_HTTP_FAILURE ' + JSON.stringify({ message: error.message, stack: error.stack })); process.exitCode = 1; }
 finally {
-  for (const session of sessions) if (!session.closed) await shutdownViaPty(session.owner, { reason: 'Private acceptance cleanup' });
+  for (const session of sessions) if (!session.closed) await shutdownViaPty(session.owner, { reason: 'Private acceptance cleanup', force: true });
   await Promise.all(sessions.map(session => session.done));
   await Promise.all(endings);
   if (api?.exitCode === null && api.signalCode === null) {

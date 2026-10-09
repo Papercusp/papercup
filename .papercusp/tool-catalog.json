@@ -30277,7 +30277,8 @@
         "doc-steward",
         "release-fixer",
         "merge-resolver",
-        "content-fixer"
+        "content-fixer",
+        "judge"
       ],
       "profile": "engineer",
       "guidance": {

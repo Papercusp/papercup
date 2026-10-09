@@ -1,5 +1,6 @@
-import type { ToolResult } from '@papercusp/tooldef';
-import { describe, expect, it } from 'vitest';
+import { defineTool, dispatchProjectedTool, lookupByMcpName, type ToolResult } from '@papercusp/tooldef';
+import { encode } from '@papercusp/result-encoding';
+import { describe, expect, it, vi } from 'vitest';
 import decline from './decline';
 import getFeedback from './get-feedback';
 import reply from './reply';
@@ -19,6 +20,58 @@ describe('consult verb abort-completion receipts', () => {
       status: 'recorded',
       effectRef: 'consult-decline:conv-1:42',
     });
+  });
+
+  it.each(['http', 'mcp'])('preserves the committed decline through real %s serialization after parent abort', async (transport) => {
+    const parent = new AbortController();
+    const name = `receipt-test:decline-${transport}`;
+    defineTool({
+      ...decline,
+      name,
+      async handler() {
+        // The post and cascade completed; the caller's deadline fired while
+        // the handler was running. Do not replace that committed write with
+        // an ambiguous error merely because MCP serializes it differently.
+        parent.abort();
+        return { data: { ok: true, post_id: 42, state: 'awaiting_responder' } };
+      },
+    });
+    const dispatched = await dispatchProjectedTool(lookupByMcpName(name)!, name, declineArgs, {
+      transport,
+      ...(transport === 'mcp' ? { requestedFormat: 'toon' as const } : {}),
+      signal: parent.signal,
+      workspaceId: 'receipt-test-workspace',
+      log: vi.fn(),
+      progress: vi.fn(),
+      emit: vi.fn(),
+      gateBypass: { role: true, capability: true },
+    }, {});
+    expect(dispatched.ok).toBe(true);
+    expect(dispatched.result?._meta?.format).toBe(transport === 'mcp' ? 'toon' : 'json');
+    expect(dispatched.result?._meta?.abortCompletionReceipt).toMatchObject({
+      status: 'recorded', effectRef: 'consult-decline:conv-1:42', attemptId: expect.any(String),
+    });
+  });
+
+  it('reads structured completion evidence when the text is compact or unavailable', () => {
+    const completion = { ok: true, post_id: 42 };
+    expect(decline.abortCompletionReceipt?.(declineArgs, {
+      content: [], structuredContent: completion,
+    }, attempt)).toMatchObject({ status: 'recorded', effectRef: 'consult-decline:conv-1:42' });
+    expect(getFeedback.abortCompletionReceipt?.({ question: 'Router question' }, {
+      content: [{ type: 'text', text: `format: toon\n${encode({ ok: true, conversation_id: 'conv-compact' }, 'toon')}` }],
+    }, attempt)).toMatchObject({ status: 'recorded', effectRef: 'consult-get-feedback:conv-compact' });
+  });
+
+  it.each([
+    'format: toon\n<<<not valid toon>>>',
+    `format: toon\n${encode({ ok: true, post_id: '42' }, 'toon')}`,
+    `format: toon\n${encode({ ok: false, post_id: 42 }, 'toon')}`,
+    `format: toon\n${encode({ ok: true }, 'toon')}`,
+  ])('fails closed for malformed or unproven compact completion evidence: %s', (text) => {
+    expect(decline.abortCompletionReceipt?.(declineArgs, {
+      content: [{ type: 'text', text }],
+    }, attempt)).toMatchObject({ status: 'recovery-incomplete', failures: ['missing-post-id'] });
   });
 
   it('preserves the existing reply receipt identity while sharing the parser', () => {

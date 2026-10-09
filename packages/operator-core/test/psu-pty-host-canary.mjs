@@ -8,10 +8,24 @@ assert.equal(process.env.PAPERCUSP_SID, ownerId);
 assert.ok(ownerId?.startsWith('su-rs-') && Number.isSafeInteger(advSessionId) && advSessionId > 0);
 assert.ok(process.env.PAPERCUSP_PSU_PTY_DIR);
 assert.equal(process.env.PAPERCUSP_LAUNCHED_BY, 'su-private-roster-acceptance');
+// Serialize directly to keep newline delimiters intact across the child boundary.
+function echoCanary() {
+  process.stdin.setEncoding('utf8');
+  let buffer = '';
+  process.stdin.on('data', chunk => {
+    buffer += chunk;
+    let index;
+    while ((index = buffer.indexOf('\n')) >= 0) {
+      process.stdout.write('ECHO:' + buffer.slice(0, index) + '\n');
+      buffer = buffer.slice(index + 1);
+    }
+  });
+  setTimeout(() => process.exit(0), 120_000);
+}
 await hostThroughPty({ command: process.execPath,
-  args: ['-e', "process.stdin.setEncoding('utf8');let b='';process.stdin.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){process.stdout.write('ECHO:'+b.slice(0,i)+'\\n');b=b.slice(i+1);}});setTimeout(()=>process.exit(0),120000);"],
+  args: ['-e', '(' + echoCanary.toString() + ')()'],
   cwd: process.cwd(), env: process.env, ownerId, advSessionId, bridgeTty: false,
-  reapScopeResidue: () => ({ killedPids: [], failedPids: [] }),
+  reapScopeResidue: () => ({ killedPids: [], failedPids: [] }), activityPersistMs: 50,
   onExit: (code, signal) => {
     process.stdout.write('\nROSTER_CANARY_EXIT ' + JSON.stringify({ ownerId, advSessionId, code, signal }) + '\n');
     process.exit(code);

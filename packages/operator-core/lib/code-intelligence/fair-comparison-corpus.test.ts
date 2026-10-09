@@ -7,6 +7,7 @@ import {
   FAIR_CORPUS_COMMIT,
   FAIR_CORPUS_SHAPE,
   initialKeys,
+  nativeLanguageControls,
   validateCorpus,
   verifyCorpusSites,
   type FairCorpusEntry,
@@ -18,6 +19,32 @@ const entry = (kase: Partial<FairCase> & Pick<FairCase, 'id'>, seeds = 1, neutra
   origin: 'test',
   seeds: Array.from({ length: seeds }, (_, i) => ({ path: `a/${kase.id}.ts`, line1: i + 1, text: 'foo(' })),
   neutral: Array.from({ length: neutral }, (_, i) => ({ path: `d/${kase.id}.ts`, line1: i + 1, text: 'function foo' })),
+});
+
+describe('native multilingual calibration oracle', () => {
+  it('pins independently specified positive and absence answers for each operation', () => {
+    const { cases, keys, files } = nativeLanguageControls();
+    const expected = { callers: [2], callees: [1], impact: [2], definition: [1],
+      references: [2], 'symbol-search': [1], 'text-search': [1, 2] };
+    for (const language of ['javascript', 'typescript', 'rust', 'python', 'go']) {
+      for (const [intent, lines] of Object.entries(expected)) {
+        const positive = cases.find(c => c.id === `native-${language}-${intent}-positive-configured-current`)!;
+        expect(positive, `${language}/${intent} positive`).toBeDefined();
+        expect(files[positive.anchorFile!]!.split('\n')[language === 'go' ? 2 : 1]).toContain('target()');
+        const offset = language === 'go' ? 1 : 0;
+        expect(keys.find(k => k.caseId === positive.id)!.sites).toEqual(lines.map(line => `${positive.anchorFile}:${line + offset}`));
+        const absent = cases.find(c => c.id === `native-${language}-${intent}-absence-configured-current`)!;
+        expect(keys.find(k => k.caseId === absent.id)!.sites).toEqual([]);
+        if (intent === 'text-search') expect(files[absent.anchorFile!]).not.toContain(absent.subject);
+      }
+      const stale = keys.find(k => k.caseId === `native-${language}-callers-positive-configured-stale`)!;
+      const deleted = keys.find(k => k.caseId === `native-${language}-callers-positive-configured-deleted`)!;
+      expect(stale.sites).toEqual([]);
+      expect(deleted.sites).toEqual([]);
+    }
+    expect(new Set(cases.map(c => c.id)).size).toBe(85);
+    expect(cases.every(c => c.source === 'authored' && c.taskRef?.startsWith('authored-control:'))).toBe(true);
+  });
 });
 
 describe('validateCorpus — per-entry rules', () => {

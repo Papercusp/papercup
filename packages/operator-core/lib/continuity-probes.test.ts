@@ -104,6 +104,30 @@ describe('criterion ALL probes', () => {
     expect(await evaluateCriterionProbeChecks({ criteria, ratings: { a: { rating: 'pass' }, b: { rating: 'pass' } }, dispatchTool: dispatch })).toMatchObject({ ok: false, error: 'probe_invalid' });
     expect(dispatch).not.toHaveBeenCalled();
   });
+
+  it('rejects single and ALL rubric probes that independent judges cannot read', () => {
+    const target = catalog.find(tool => tool.expose.mcp.name === 'status:read')!;
+    target.agentRoles = ['su'];
+    const probe = readProbe();
+    // Continuity probes outside rubric grading retain their ordinary read-only contract.
+    expect(continuityProbeSchema.safeParse(probe).success).toBe(true);
+    for (const binding of [{ kind: 'probe' as const, probe }, check([probe])]) {
+      expect(validateCriterionCheckPaths([{ key: 'proof', check: binding }])).toMatchObject({
+        ok: false,
+        scopeFailures: [{ criterionKey: 'proof', reason: expect.stringContaining('independent judge role') }],
+      });
+    }
+    target.agentRoles = ['su', 'judge'];
+    for (const binding of [{ kind: 'probe' as const, probe }, check([probe])]) {
+      expect(validateCriterionCheckPaths([{ key: 'proof', check: binding }]).ok).toBe(true);
+    }
+  });
+
+  it('validates schema currentness for single rubric probes before persistence', () => {
+    expect(validateCriterionCheckPaths([{ key: 'proof', check: {
+      kind: 'probe', probe: readProbe({ schemaRevision: 'old' }),
+    } }]).ok).toBe(false);
+  });
 });
 
 function projected(name: string, effect: 'read' | 'write' = 'read', properties: Record<string, unknown> = {}) {

@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import { parseCLI, resolveConfig } from 'vitest/node';
+import { ADMIN_TEST_RUNS_REPORTER_PATH } from '@papercusp/test-config/vitest-config';
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -9,9 +11,29 @@ import { assertInstalledPuiStore, checkReleaseAcceptance, disqualification, HARN
 import {
   CLOUD_DEVICE_START_ATTEMPTS, cloudDeviceStartBlocksLegs, cloudDeviceStartTransient, DOCKER_START_PROBE_TIMEOUT_MS,
   legsBlocked, measureCloudDeviceStart, measureRunnerTree, probeDockerCreateStart, remeasureCloudDeviceStart, remeasureStockMachines,
-  runCloudDeviceStartSmoke, runnerTreeRefusals, runReleaseAcceptance, runStockMachineSmoke, stockMachineRefusal, stockMachinesBlockLegs,
+  RELEASE_ACCEPTANCE_REPORTER_ARGS, runCloudDeviceStartSmoke, runnerTreeRefusals, runReleaseAcceptance, runStockMachineSmoke, stockMachineRefusal, stockMachinesBlockLegs,
   sweepOrphanedProbeContainers, type CloudDeviceStartResult,
 } from './release-acceptance-run';
+
+describe('installed acceptance canonical test ledger', () => {
+  it('retains the ledger reporter when Vitest replaces configured reporters with CLI options', async () => {
+    const resolveReporters = async (args: string[]) => {
+      const { options } = parseCLI(['vitest', 'run', ...args]);
+      const { vitestConfig } = await resolveConfig(
+        { ...options, root: REPO_ROOT, config: false },
+        { test: { reporters: ['default', ADMIN_TEST_RUNS_REPORTER_PATH] } },
+      );
+      return vitestConfig.reporters.map(([reporter]) => reporter);
+    };
+    // Positive control: exercise Vitest's actual CLI/config merge, which loses
+    // the configured recorder when the CLI supplies only the release reporter.
+    const legacy = RELEASE_ACCEPTANCE_REPORTER_ARGS.filter(arg => !arg.includes(ADMIN_TEST_RUNS_REPORTER_PATH));
+    expect(await resolveReporters(legacy)).not.toContain(ADMIN_TEST_RUNS_REPORTER_PATH);
+    const reporters = await resolveReporters(RELEASE_ACCEPTANCE_REPORTER_ARGS);
+    expect(reporters).toContain(ADMIN_TEST_RUNS_REPORTER_PATH);
+    expect(reporters).toContain(path.join(REPO_ROOT, 'packages/operator-core/lib/pui-e2e/release-acceptance-reporter.ts'));
+  });
+});
 
 describe('installed PUI store admission', () => {
   it('rejects a missing, absent, or different store and accepts the installed release through its current symlink', () => {

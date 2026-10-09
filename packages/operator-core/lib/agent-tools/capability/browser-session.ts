@@ -1,8 +1,8 @@
 /** Process-local Playwright sessions behind capability:fetch, not a second network/job authority. */
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { ramTmpRoot } from '@papercusp/orchestrator';
 import { z } from 'zod';
 import { pinModuleState } from '@papercusp/module-singleton';
 import type { Browser, BrowserContext, BrowserServer, Page, Route } from 'playwright-core';
@@ -93,7 +93,15 @@ export async function launchBrowserProcess(ctx: UnifiedToolContext, root: string
     { enabled: policy.enabled, required: policy.required, srtBin: null, denyAllEgress: true });
   await browserStartupStage(ctx, 'sandbox-preflight', () => assertCapabilitySandboxAvailable(sandbox, root));
   const wrapper = join(root, 'launch-browser');
-  await browserStartupStage(ctx, 'launcher-write', () => writeFile(wrapper, '#!/bin/sh\nexec ' + [sandbox.binary, ...sandbox.argv].map(quote).join(' ') + ' "$@"\n', { mode: 0o700 }));
+  // Playwright allocates its profile before invoking this wrapper, outside cwd.
+  // The fresh /dev or /tmp sandbox mount can hide that SDK-owned directory.
+  // Bind only the SDK's exact generated profile, retaining SDK cleanup ownership.
+  const script = sandbox.mode === 'bwrap'
+    ? '#!/bin/sh\nprofile=\nfor arg do\ncase "$arg" in --user-data-dir=*) profile="${arg#--user-data-dir=}";; esac\ndone\n' +
+      '[ -n "$profile" ] || exit 64\nexec ' + [sandbox.binary, ...sandbox.argv.slice(0, -2)].map(quote).join(' ') +
+      ' --bind "$profile" "$profile" -- ' + quote(sandbox.argv.at(-1)!) + ' "$@"\n'
+    : '#!/bin/sh\nexec ' + [sandbox.binary, ...sandbox.argv].map(quote).join(' ') + ' "$@"\n';
+  await browserStartupStage(ctx, 'launcher-write', () => writeFile(wrapper, script, { mode: 0o700 }));
   const ownerId = resolveAgentIdentity(ctx).ownerId;
   const row = await browserStartupStage(ctx, 'task-register', () => registerTask({ class: 'browser', title: 'Managed browser session', argv: [sandbox.binary, ...sandbox.argv],
     cwd: root, launchedBy: ownerId, sessionId: ownerId, harnessSlug: ctx.harnessSlug,
@@ -263,7 +271,11 @@ export async function runBrowserSession(
     let root: string | undefined; const id = randomUUID();
     let launched: Awaited<ReturnType<BrowserDeps['launch']>> | undefined;
     try {
-      remaining(); root = await browserStartupStage(ctx, 'session-directory', () => mkdtemp(join(tmpdir(), 'pc-browser-')));
+      // Chromium creates Unix sockets below its child TMPDIR. Nesting it under
+      // an isolated runtime's long TMPDIR can exceed sun_path and cause SIGTRAP.
+      // Reuse the orchestrator's short scratch root; this session still owns
+      // its unique directory and the existing serialized close removes it.
+      remaining(); root = await browserStartupStage(ctx, 'session-directory', () => mkdtemp(join(ramTmpRoot(), 'pc-browser-')));
       launched = await deps.launch(ctx, root, id, remaining());
       if (JSON.stringify([launched.profile, ctx.role ?? null]) !== authority) throw new Error('browser_authority_changed');
       const setupServer = launched.server;

@@ -1,10 +1,14 @@
 /** Real Chromium/HTTP journey; ledger adapter mocked, no PostgreSQL writes.
  * Uses the maintained e2e config; actual ledger persistence/API acceptance stays separate. */
 import { createServer, type Server } from 'node:http';
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { UnifiedToolContext } from '@papercusp/agent-mcp';
 
-const ledger = vi.hoisted(() => ({ register: vi.fn(async () => ({ taskId: 'browser-integration-task' })), mark: vi.fn(async () => {}), close: vi.fn(async () => true) }));
+const ledger = vi.hoisted(() => ({ register: vi.fn(async (_spec: { cwd: string }, _scope: unknown) => ({ taskId: 'browser-integration-task' })), mark: vi.fn(async () => {}), close: vi.fn(async () => true) }));
 vi.mock('../../task-manager/store', () => ({ registerTask: ledger.register, markSpawned: ledger.mark, closeTask: ledger.close }));
 vi.mock('./exec-sandbox', async (importOriginal) => ({
   ...await importOriginal<typeof import('./exec-sandbox')>(),
@@ -49,5 +53,29 @@ describe('browser DOM session against real Chromium and HTTP', () => {
     expect(ledger.register).toHaveBeenCalledWith(expect.objectContaining({ launchedBy: 'browser-private-integration', class: 'browser' }), expect.anything());
     expect(ledger.mark).toHaveBeenCalled(); expect(ledger.close).toHaveBeenCalled();
     id = '';
+  }, 30_000);
+  it.each(['browser-private-home-', 'browser-private-home-with-long-temporary-path-'])(
+    'launches with private HOME and TMPDIR (%s) without inheriting a host browser profile', async prefix => {
+    const root = await mkdtemp(join(tmpdir(), prefix));
+    const home = join(root, 'home'); const temp = join(root, 'tmp');
+    await Promise.all([mkdir(home), mkdir(temp)]);
+    const privateCtx = { ...ctx, uiClientId: 'browser-private-home', log: vi.fn() } as UnifiedToolContext;
+    let privateId: string | undefined;
+    let browserRoot: string | undefined;
+    vi.stubEnv('HOME', home); vi.stubEnv('TMPDIR', temp);
+    try {
+      const opened = await runBrowserSession({ op: 'open' }, undefined, privateCtx, { timeoutMs: 20_000, maxText: 500 }, deps);
+      const payload = JSON.parse(opened.content[0].text!);
+      expect(payload.ok, JSON.stringify({ payload, startup: vi.mocked(privateCtx.log).mock.calls })).toBe(true);
+      privateId = payload.browser.id;
+      browserRoot = ledger.register.mock.calls.at(-1)![0].cwd;
+      expect(existsSync(browserRoot)).toBe(true);
+      expect(payload.observation.url).toBe('about:blank');
+    } finally {
+      if (privateId) await runBrowserSession({ op: 'close', id: privateId }, undefined, privateCtx, { timeoutMs: 5000, maxText: 500 }, deps);
+      if (browserRoot) expect(existsSync(browserRoot)).toBe(false);
+      vi.unstubAllEnvs();
+      await rm(root, { recursive: true, force: true });
+    }
   }, 30_000);
 });

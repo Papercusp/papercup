@@ -731,12 +731,13 @@ export function importSdkModuleWithInstallAwareness(specifier: any, { doImport, 
  * up to ten minutes; that wait is bootstrap time, not operator network time.
  *
  * @param {{transport?: string}} [scope]
- * @param {{importSdkModule?: (specifier: string) => Promise<object>}} [options]
+ * @param {{importSdkModule?: (specifier: string) => Promise<object>, statfsImpl?: typeof statfs}} [options]
  */
 export function preparePtoolConnectionModules({ transport: requestedTransport }?: {
     transport?: string;
-}, { importSdkModule }?: {
+}, { importSdkModule, statfsImpl }?: {
     importSdkModule?: (specifier: string) => Promise<object>;
+    statfsImpl?: typeof statfs;
 }): Promise<{
     mode: string;
     Client?: undefined;
@@ -935,4 +936,5 @@ export type ToolCatalogEntry = {
 declare function readSpilledPayload(path: any): Promise<any>;
 import { existsSync } from 'node:fs';
 declare function closeClientQuietly(client: any): Promise<void>;
+import { statfs } from 'node:fs/promises';
 export {};
