@@ -57,7 +57,7 @@ test('native collection fixture writer graph loads under the Playwright Node loa
   for (const method of Object.values(writer)) expect(typeof method).toBe('function');
 });
 
-test('Work on Everything design stays readable and draft controls work in the native viewport', async ({ request }, info) => {
+test('legacy Work on Everything progress table stays readable and draft controls work in the native viewport', async ({ request }, info) => {
   test.skip(!process.env.VERIFY_TAURI_PID, 'Requires the maintained isolated native rig');
   test.setTimeout(180_000);
   expect(process.env.VERIFY_TAURI_ISOLATED_DB).toBe('1');
@@ -93,11 +93,15 @@ test('Work on Everything design stays readable and draft controls work in the na
       worklist_policy: { datatype: 'ordered-selection-policy', editable_by: 'owner',
         default: { order: ids, included: ids.slice(0, 2), excluded: [ids[2]] } },
     } });
-    await sql`UPDATE harness_shared.goals SET metadata = ${JSON.stringify({ goalPackageRef: 'work-on-everything' })}::text::jsonb
+    // Match the real pre-package goal: its stored worklist seeds two picks,
+    // while the declaration discovers all three plans. No package metadata.
+    await sql`UPDATE harness_shared.goals SET properties = ${JSON.stringify({ worklist: {
+      value: ids.slice(0, 2), version: 1,
+    } })}::text::jsonb
       WHERE workspace_id=${workspaceId} AND id=${goalId}`;
     for (const [index, slug] of ['desktop', 'search', 'mobile'].entries()) {
-      await sql`INSERT INTO harness_shared.harness_plans (workspace_id,harness_slug,plan_slug,title,status,op_status)
-        VALUES (${workspaceId},'native-design',${slug},${labels[index]},'active',NULL)`;
+      await insertNativeCollectionPlan(sql, { workspaceId, harness: 'native-design', slug,
+        title: labels[index], status: 'active' });
     }
     const readback = await request.get(`${process.env.VERIFY_TAURI_DEV_URL}/api/zero-harness/rest-query`, {
       params: { name: 'goals.detail', args: JSON.stringify({ workspaceId, goalId }) },
@@ -105,38 +109,35 @@ test('Work on Everything design stays readable and draft controls work in the na
     });
     expect(readback.ok()).toBe(true);
     const detail = (await readback.json()).rows[0];
-    expect(detail.goal.goalPackage.ref).toBe('work-on-everything');
+    expect(detail.goal.goalPackage).toBeNull();
     expect(detail.goalData.collections.worklist.selection.configured).toBe(true);
-    await native('navigate', `${process.env.VERIFY_TAURI_DEV_URL}/adv?tab=hud&scope=all&hudtab=goals&welcome=0&hudgoal=${goalId}&hudwoesearch=Design`, '--json');
-    await ready(`document.querySelectorAll('${panel} [role="option"]').length === 3`);
+    expect(detail.goalData.collections.worklist.selection.selected).toEqual(ids.slice(0, 2));
+    await native('navigate', `${process.env.VERIFY_TAURI_DEV_URL}/adv?tab=hud&scope=all&hudtab=goals&welcome=0&ws=${encodeURIComponent(workspaceId)}&hudgoal=${goalId}&hudwoesearch=Design`, '--json');
+    await ready(`document.querySelectorAll('${panel} [data-testid="ongoing-worklist-row"]').length === 3`);
     const layout = await measure(`(() => {
       const root = document.querySelector('${panel}');
       return { width: innerWidth, height: innerHeight,
-        layoutColumns: getComputedStyle(root.querySelector('.woe__layout')).gridTemplateColumns,
-        summary: Array.from(root.querySelectorAll('.woe__overview dd')).map(n => n.textContent),
-        overflow: Array.from(root.querySelectorAll('.woe__row, .woe__overview, .woe__inspector, .woe__body'))
-          .filter(n => n.scrollWidth > n.clientWidth + 1).map(n => n.className),
-        nextSteps: Array.from(root.querySelectorAll('.woe__next')).map(n => ({ text: n.textContent,
-          displayed: getComputedStyle(n).display, width: n.getBoundingClientRect().width })),
-        inspector: !!root.querySelector('[aria-label="Plan inspector"]') };
+        headings: Array.from(root.querySelectorAll('.woe__table th')).map(n => n.textContent),
+        selected: root.querySelectorAll('.woe__scope--in').length,
+        unselected: root.querySelectorAll('.woe__scope--out').length,
+        totals: !!root.querySelector('[role="group"][aria-label="Totals"]'),
+        chart: !!root.querySelector('.woe__chart svg[role="img"]'),
+        overflowingPanel: root.scrollWidth > root.clientWidth + 1,
+        nextSteps: Array.from(root.querySelectorAll('.woe__table tbody tr td:last-child')).map(n => n.textContent) };
     })()`);
     const expectedWidth = Number(process.env.VERIFY_TAURI_WINDOW?.split('x')[0] ?? 1280);
     expect(layout.width).toBe(expectedWidth);
-    expect(layout.overflow).toEqual([]);
-    expect(layout.summary[0]).toBe('2');
-    expect(layout.summary[2]).toBe('0');
-    expect(layout.inspector).toBe(true);
-    for (const next of layout.nextSteps) {
-      expect(next.text.length).toBeGreaterThan(0);
-      expect(next.displayed).not.toBe('none');
-      expect(next.width).toBeGreaterThan(0);
-    }
-    if (expectedWidth <= 650) expect(layout.layoutColumns.trim().split(/\s+/)).toHaveLength(1);
+    expect(layout.overflowingPanel).toBe(false);
+    expect(layout.headings).toEqual(['Worklist', 'Plan', 'Progress', 'State', 'Why / next step']);
+    expect(layout.selected).toBe(2);
+    expect(layout.unselected).toBe(1);
+    expect(layout.totals).toBe(true);
+    expect(layout.chart).toBe(true);
+    for (const next of layout.nextSteps) expect(next.trim().length).toBeGreaterThan(0);
     await native('screenshot', '--output', info.outputPath(`worklist-${expectedWidth}.png`));
-    // Drive the actual native keyboard path on the owned isolated display.
-    // The old Alt+Up propagation bug switched the global tab and lost this draft.
-    const reorder = 'button[aria-label="Move Design search reliability up"]';
-    await native('focus', reorder, '--json');
+    // Drive an offered draft control through trusted native keyboard input.
+    const toggle = 'button[aria-label="Add Design mobile workspace"]';
+    await native('focus', toggle, '--json');
     const xEnv = { ...process.env, DISPLAY: process.env.VERIFY_TAURI_DISPLAY! };
     expect(xEnv.DISPLAY).toMatch(/^:\d+$/);
     const windows = await run('xdotool', ['search', '--onlyvisible', '--pid', process.env.VERIFY_TAURI_PID!],
@@ -146,7 +147,7 @@ test('Work on Everything design stays readable and draft controls work in the na
     await run('xdotool', ['windowfocus', '--sync', windowIds[0]], { timeout: 10_000, env: xEnv });
     const focused = await run('xdotool', ['getwindowfocus'], { timeout: 10_000, env: xEnv });
     expect(focused.stdout.trim(), 'Keyboard input must stay on the owned native window').toBe(windowIds[0]);
-    await native('focus', reorder, '--json');
+    await native('focus', toggle, '--json');
     await native('eval', `(() => {
       window.__nativeWorklistKeys = [];
       document.addEventListener('keydown', e => window.__nativeWorklistKeys.push({
@@ -160,14 +161,14 @@ test('Work on Everything design stays readable and draft controls work in the na
       // --window uses XSendEvent, which is not an equivalent WebKit input path.
       await run('xdotool', ['key', '--clearmodifiers', 'F23'], { timeout: 10_000, env: xEnv });
       await ready(`window.__nativeWorklistKeys.some(e => e.key === 'F23' && e.trusted)`);
-      await run('xdotool', ['key', '--clearmodifiers', 'alt+Up'], { timeout: 10_000, env: xEnv });
-      await ready(`window.__nativeWorklistKeys.some(e => e.key === 'ArrowUp' && e.altKey && e.trusted)`);
-      await ready(`document.querySelector('${panel} [role="option"] strong')?.textContent === ${JSON.stringify(labels[1])}`);
+      await run('xdotool', ['key', '--clearmodifiers', 'space'], { timeout: 10_000, env: xEnv });
+      await ready(`window.__nativeWorklistKeys.some(e => e.key === ' ' && e.trusted)`);
+      await ready(`document.querySelectorAll('${panel} .woe__scope--in').length === 3`);
     } catch (error) {
       await info.attach('native-key-delivery', { body: JSON.stringify(await measure(`({
         keys: window.__nativeWorklistKeys, tab: new URL(location.href).searchParams.get('tab'),
         focusedControl: document.activeElement?.getAttribute('aria-label'),
-        order: Array.from(document.querySelectorAll('${panel} [role="option"] strong')).map(e => e.textContent),
+        included: Array.from(document.querySelectorAll('${panel} .woe__scope--in')).map(e => e.getAttribute('aria-label')),
       })`)), contentType: 'application/json' });
       await native('screenshot', '--output', info.outputPath('keyboard-failure.png'));
       throw error;
@@ -175,22 +176,22 @@ test('Work on Everything design stays readable and draft controls work in the na
     expect(await measure(`new URL(location.href).searchParams.get('tab')`)).toBe('hud');
     await ready(`!!document.querySelector('${panel} .woe__draft-bar')`);
     await native('click', 'button[aria-label="Remove Design desktop release"]', '--json');
-    await ready(`document.querySelector('${panel} .woe__overview dd')?.textContent === '1'`);
-    await native('eval', `(() => { const body = document.querySelector('${panel} .woe__body'); body.scrollTop = body.scrollHeight; return true; })()`);
+    await ready(`document.querySelectorAll('${panel} .woe__scope--in').length === 2`);
     await native('click', '.woe__draft-bar .pc-ctl-act--primary', '--json');
     await ready(`Array.from(document.querySelectorAll('[role="dialog"]')).some(n => n.textContent.includes('After apply'))`);
     expect(await measure(`Array.from(document.querySelectorAll('.woe__diff li')).map(n => n.textContent)`))
-      .toContain(labels[1]);
+      .toContain(labels[2]);
     await native('screenshot', '--output', info.outputPath(`review-${expectedWidth}.png`));
     await native('eval', `(() => { const button = Array.from(document.querySelectorAll('.woe__review button')).find(n => n.textContent === 'Keep editing'); button.click(); return true; })()`);
     await ready(`!document.querySelector('.woe__review')`);
     await native('eval', `(() => { const button = Array.from(document.querySelectorAll('.woe__draft-bar button')).find(n => n.textContent === 'Discard'); button.click(); return true; })()`);
-    await ready(`!document.querySelector('.woe__draft-bar') && document.querySelector('${panel} .woe__overview dd')?.textContent === '2'`);
+    await ready(`!document.querySelector('.woe__draft-bar') && document.querySelectorAll('${panel} .woe__scope--in').length === 2`);
     const [saved] = await sql`SELECT properties FROM harness_shared.goals WHERE workspace_id=${workspaceId} AND id=${goalId}`;
     expect(saved.properties?.worklist_policy).toBeUndefined();
     await info.attach('native-design-layout', { body: JSON.stringify({ layout, sourceReceipt,
-      fixture: { goalId, labels }, nativeKeyboardReorder: true, globalHudTabRetained: true,
-      draftReordered: true, scopeStaged: true, reviewOpened: true, discardRestored: true, applyClicked: false }), contentType: 'application/json' });
+      fixture: { goalId, labels }, legacyWithoutPackage: true, nativeKeyboardScopeToggle: true,
+      globalHudTabRetained: true, scopeStaged: true, reviewOpened: true, discardRestored: true,
+      applyClicked: false }), contentType: 'application/json' });
   } finally {
     await sql.end();
   }
