@@ -625,7 +625,7 @@ describe('WI-10006159 solo decision reservations', () => {
     expect(await read(scoped)).toEqual(await read(ordinary));
     expect((await read(scoped)).map(row => row.feature_id)).toEqual(['WI-300003', 'WI-300004']);
     const attributed = await wi.explainIssueClaimFloors(H, ids, { assignee: 'generic-drainer', includeAllFloors: true });
-    expect(attributed.filter(row => row.failedFloors?.includes('plan-lane')).map(row => row.id))
+    expect(attributed.filter(row => row.failedFloors?.includes('plan-lane-reserved')).map(row => row.id))
       .toEqual(['WI-300001', 'WI-300002']);
     const plans = await db.sql`EXPLAIN (ANALYZE, FORMAT JSON)
       SELECT wi.feature_id FROM harness_shared.work_items wi

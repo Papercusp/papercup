@@ -30,7 +30,7 @@ export function reviewBlockingReason(screen: string): string | null {
 
 export const CODEX_HOME_SOCKET_PATH_BUDGET_BYTES = 100;
 export const CODEX_GREETING_EXPECTATION = /\b(?:hi|hello|hey)\b|what can i help you with|how can i help|what would you like to work on|what are you working on/i;
-export const TEST_RUN_EXPECTATION = /npm test (?:passed|passes)|all tests (?:pass|passed)|\b[1-9]\d* tests? passed|# pass\s+[1-9]\d*\b|\b[1-9]\d* passing\b/i;
+export const TEST_RUN_EXPECTATION = /npm test (?:passed|passes)|(?:all|the) tests (?:pass|passed)|\bboth (?:tests )?passed\b|\b[1-9]\d* tests? passed|# pass\s+[1-9]\d*\b|\b[1-9]\d* passing\b/i;
 /** The resume probe asks what the earlier edit changed (add() gained an optional
  * third operand). Engines word it differently: "optional third number",
  * "third parameter", "c = 0", or "optional third argument c (default 0)". */

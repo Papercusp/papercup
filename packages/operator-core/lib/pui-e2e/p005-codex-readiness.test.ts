@@ -45,7 +45,9 @@ describe('P-005 review preflight', () => {
   it('recognizes actual stock test-result wording only after the run-tests prompt', () => {
     const prompt = 'Run the tests with npm test and tell me whether they pass.';
     for (const reply of ['All tests pass. npm test ran 2 tests, with 2 passing and 0 failing.',
-      'npm test passed: 1 test passed, 0 failed.', '# pass 2\n# fail 0']) {
+      'npm test passed: 1 test passed, 0 failed.', '# pass 2\n# fail 0',
+      'The tests pass. npm test runs node --test, which ran 2 tests (add and mul). Both passed, with 0 failures.',
+      'Both tests passed, with 0 failures.']) {
       expect(taskAnsweredAfterPrompt(`❯ ${prompt}\n● ${reply}`, prompt, TEST_RUN_EXPECTATION)).toBe(true);
       expect(taskAnsweredAfterPrompt(`● ${reply}\n❯ ${prompt}\n✶ Thinking…`, prompt, TEST_RUN_EXPECTATION)).toBe(false);
     }

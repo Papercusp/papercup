@@ -8024,9 +8024,15 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
     await writeAgentConfig({ ...saved, backend });
     const launchDir = journeyDir('usage');
     const label = scriptedEngine.backend === 'codex' ? 'Codex' : scriptedEngine.backend === 'omp' ? 'OMP' : 'Claude';
-    const pane = new PuiPane(bin, operatorPort, home, { args: ['--solo'], cwd: launchDir });
+    // The public launch selectors carry the requested inference route; process
+    // environment alone is not a selection made by a bare PUI launch.
+    const pane = new PuiPane(bin, operatorPort, home, {
+      args: p005PuiLaunchArgs({ model: process.env.PUI_REAL_MODEL, account: process.env.PUI_REAL_ACCOUNT ?? 'default' }),
+      cwd: launchDir,
+    });
     try {
-      await pane.waitFor(`${label} · ${launchDir}`, { timeoutMs: 40_000 });
+      await pane.waitFor(`Message ${label}`, { timeoutMs: 40_000 });
+      await pane.waitFor(launchDir, { timeoutMs: 40_000 });
       pane.write(prompt);
       await pane.waitFor('Enter sends');
       pane.enter();
@@ -8037,6 +8043,12 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
       await pane.waitForSendReady({ timeoutMs: 120_000 });
       const engine = scriptedEngine.engines.at(-1);
       expect(engine, 'the reply came from a live engine in this process').toBeDefined();
+      expect(engine!.adapter.host.descriptor().accountRoute).toBe(process.env.PUI_REAL_ACCOUNT ?? 'default');
+      expect(sessionTraffic.find((entry) => entry.path === '/api/adv/sessions/launch-su'
+        && entry.agent === scriptedEngine.backend)).toMatchObject({
+        ...(process.env.PUI_REAL_MODEL ? { model: process.env.PUI_REAL_MODEL } : {}),
+        account: process.env.PUI_REAL_ACCOUNT ?? 'default',
+      });
       await vi.waitFor(
         () => expect(engine!.adapter.host.descriptor().usage?.contextTokens ?? 0).toBeGreaterThan(0),
         { timeout: 30_000, interval: 100 },
@@ -8112,7 +8124,11 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
           event.type === 'tool' && event.phase === 'started' && JSON.stringify(event.input).includes(fixturePath),
       );
       expect(readStart, 'the model must actually request the generated fixture').toBeDefined();
-      expect(pane.screen()).toContain(readStart!.name);
+      // tool_display.rs renders Codex's commandExecution as Bash(command),
+      // the same readable row as Claude/OMP. Keep the native receipt proof
+      // above and below, and assert the product's human-facing name here.
+      expect(pane.screen()).toContain(readStart!.name === 'commandExecution' ? 'Bash(' : readStart!.name);
+      if (readStart!.name === 'commandExecution') expect(pane.screen()).not.toContain('commandExecution');
       const readEnd = scriptedEngine.events.find(
         (event) =>
           event.type === 'tool' &&
