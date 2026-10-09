@@ -41,7 +41,8 @@ const forceGuard = vi.hoisted(() => ({
   verdict: { allowed: true, basis: 'holder-session-ended', holderLiveness: { live: false } } as any,
 }));
 const pilotReceipts = vi.hoisted(() => ({ persistBinding: vi.fn() }));
-vi.mock('../coordination/identity', () => ({
+vi.mock('../coordination/identity', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../coordination/identity')>()),
   SUPERUSER_FALLBACK_CLIENT_ID: 'su-loopback',
   isEphemeralMcpCallIdentity: (id: string) => /^mcp-call-\d+$/.test(id),
   resolveAgentIdentity: () => ({ ownerId: identity.ownerId, workspaceId: identity.workspaceId }),
@@ -185,6 +186,25 @@ describe('work_items:claim handler (keyed-array)', () => {
     expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
     expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-1', workItem: { id: 'WI-1', assignee: 'me' } });
     expect(claimM).toHaveBeenCalledWith('WI-1', 'me', { harness: undefined, fromHolder: identity.ownerId });
+  });
+
+  it('reclaims a signed judge alias with the exact stored bare holder as its CAS predecessor', async () => {
+    const session = 'su-851c1a7a-8ea6-4c70-afeb-472e957fd3d8';
+    identity.ownerId = `system:judge/${session}`;
+    getM.mockResolvedValue(issueItem({ assignee: session }));
+    const ctx = { uiClientId: session, principal: { slug: 'system:judge', authMethod: 'spawn-url', trust: 'trusted' } };
+    await tool.handler({ id: 'WI-1' } as never, ctx as never);
+    expect(claimM).toHaveBeenCalledWith('WI-1', identity.ownerId, { harness: undefined, fromHolder: session });
+    expect(assessForceM).not.toHaveBeenCalled();
+  });
+
+  it('does not widen a bearer client reclaim CAS to the bare session holder', async () => {
+    const session = 'su-851c1a7a-8ea6-4c70-afeb-472e957fd3d8';
+    identity.ownerId = `system:judge/${session}`;
+    getM.mockResolvedValue(issueItem({ assignee: session }));
+    const ctx = { uiClientId: session, principal: { slug: 'system:judge', authMethod: 'bearer', trust: 'trusted' } };
+    await tool.handler({ id: 'WI-1' } as never, ctx as never);
+    expect(claimM).toHaveBeenCalledWith('WI-1', identity.ownerId, { harness: undefined, fromHolder: identity.ownerId });
   });
 
   it('mints a canonical pilot binding only after a caller-owned claim lands', async () => {
