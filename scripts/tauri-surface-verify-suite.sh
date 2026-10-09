@@ -117,6 +117,7 @@ for entry in "${LEGS[@]}"; do
     bash "$script" >"$log_file" 2>&1
   elif [ "$leg" = "dao-launch" ]; then
     bash "$script" --check-syntax >"$log_file" 2>&1 && \
+    npm run test:file -- packages/operator-core/lib/__tests__/tauri-dao-surface-syntax.test.ts >>"$log_file" 2>&1 && \
     VERIFY_TAURI_ISOLATED_DB=1 \
       VERIFY_TAURI_ISOLATED_SEED=ready \
       VERIFY_TAURI_REQUIRE_BUILT='apps/operator/app/dao/DaoLaunchWorkspace.tsx apps/operator/app/dao/dao-launch.css' \

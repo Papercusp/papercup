@@ -343,7 +343,16 @@ export const defaultSuIdeateScheduleDeps: SuIdeateScheduleDeps = {
     return out;
   },
   async launch(input) {
-    const { default: launchAgentTool } = await import('../agent-tools/capability/launch-agent');
+    const [{ default: launchAgentTool }, { readScoutPoolSnapshot, scoutRoutableProviders, scoutPoolAffirmativelyExhausted }] =
+      await Promise.all([import('../agent-tools/capability/launch-agent'), import('./capacity-probe')]);
+    // Scheduled launches cannot answer the workstation's usage-limit dialog. Reuse
+    // Scout's provider probe and the launcher's gateway account routing instead.
+    const pool = await readScoutPoolSnapshot();
+    if (pool && scoutPoolAffirmativelyExhausted(pool)) {
+      return { ok: false, error: 'su-ideate: no routable provider in the current gateway pool' };
+    }
+    const routes = pool ? scoutRoutableProviders(pool) : undefined;
+    const agent = routes && !routes.claudeAvailable && routes.codexAvailable ? 'codex' : 'claude';
     const ctx = {
       workspaceId: input.workspaceId,
       harnessSlug: input.harnessSlug,
@@ -359,6 +368,8 @@ export const defaultSuIdeateScheduleDeps: SuIdeateScheduleDeps = {
       {
         brief: input.brief,
         harness: input.harnessSlug,
+        agent,
+        account: 'auto',
         headless: true,
         independent: true,
         count: 1,

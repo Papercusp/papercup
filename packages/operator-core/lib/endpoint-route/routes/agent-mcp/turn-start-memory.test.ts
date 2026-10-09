@@ -370,10 +370,12 @@ describe('turn-start-memory admission (F-E: no length floor)', () => {
   });
 
   it('fail-soft: a throwing memory pipeline never surfaces an error into the turn', async () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
     buildMemoryContextBlockMock.mockRejectedValue(new Error('backend down'));
     const out = await post({ owner: 'sess-1', prompt: 'a question about storage policy' });
     expect(out.ok).toBe(true);
     expect(out.text).toBe('');
+    expect(warning).toHaveBeenCalledWith('[turn-start] memory path failed (context omitted):', 'backend down');
   });
 
   // EI-18893248175645463: an operator/superuser-scope session never sends
@@ -608,6 +610,7 @@ describe('turn-start delivery coverage (WI-37597)', () => {
   });
 
   it('records NOTHING when the pipeline throws — a fault must not read as healthy quiet', async () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
     // The outcome vocabulary has no failure value, and 'no-recall' means healthy
     // quiet, so recording it would actively hide the fault. Writing nothing
     // leaves the turn absent from the numerator, which the outage detector
@@ -616,6 +619,7 @@ describe('turn-start delivery coverage (WI-37597)', () => {
     const out = await post({ owner: 'sess-1', prompt: 'why is recall empty', client: 'omp' });
     await settle();
     expect(out.ok).toBe(true); // still fail-soft — the turn is never harmed
+    expect(warning).toHaveBeenCalledWith('[turn-start] memory path failed (context omitted):', expect.any(String));
     expect(recordInjectionCoverageMock).not.toHaveBeenCalled();
   });
 

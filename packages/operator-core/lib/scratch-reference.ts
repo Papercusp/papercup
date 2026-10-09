@@ -14,6 +14,7 @@ import { pinModuleState } from '@papercusp/module-singleton';
 import type { OutputAudience, OutputEvidenceClass } from './output-envelope';
 import {
   reserveScratchSpace,
+  noteScratchWriteSettled,
   writeWithScratchQuota,
   RETENTION_MS,
   markNewWorkspaceScratchRoot,
@@ -283,12 +284,18 @@ export function writeScratchReference(input: {
     input.deferredWrites.push(write);
     return manifest;
   }
-  reserveScratchSpace({ workspaceId: input.workspaceId, bytes: bytes.length });
-  markNewWorkspaceScratchRootSync(
-    input.workspaceId,
-    mkdirSync(dirname(input.filePath), { recursive: true, mode: 0o700 }),
-  );
-  writeFileSync(input.filePath, bytes, { mode: 0o600 });
+  reserveScratchSpace({ workspaceId: input.workspaceId, bytes: bytes.length, filePath: input.filePath });
+  let wrote = false;
+  try {
+    markNewWorkspaceScratchRootSync(
+      input.workspaceId,
+      mkdirSync(dirname(input.filePath), { recursive: true, mode: 0o700 }),
+    );
+    writeFileSync(input.filePath, bytes, { mode: 0o600 });
+    wrote = true;
+  } finally {
+    noteScratchWriteSettled(input.workspaceId, !wrote);
+  }
   return manifest;
 }
 

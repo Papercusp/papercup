@@ -261,7 +261,7 @@ const contentIndexArgs = z.object({
     .array(z.number().int().nonnegative())
     .min(1)
     .max(64)
-    .describe(`For a stable result-door reference whose payload contains an MCP content array, return only these item indexes. The dispatch-level projection can then pick fields from the selected result. ${CONTENT_INDEX_EXCLUSIVITY}`),
+    .describe(`For a stable result-door reference whose payload contains an MCP content array, return only these item indexes under the response's content field. A dispatch-level projection sees the capability:read response (for example, content[].text); it does not parse JSON serialized inside a selected text item's text. Use evidence_class when the reference supplies indexed JSON pointers. ${CONTENT_INDEX_EXCLUSIVITY}`),
   evidence_class: z.never().optional().describe(`Only valid for evidence-class selection. ${EVIDENCE_CLASS_EXCLUSIVITY}`),
 });
 

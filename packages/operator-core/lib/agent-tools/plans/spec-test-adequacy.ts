@@ -661,6 +661,33 @@ function explicitCoverageLimitations(value: unknown): string[] {
   ];
 }
 
+/** Free-form metadata cannot hide a live proof gap by moving it out of scopeNote. */
+function metadataCoverageLimitations(details: Record<string, unknown>): string[] {
+  const gaps: string[] = [];
+  const pending: Array<{ value: unknown; disclosure: boolean; explicitGap: boolean }> = [
+    { value: details, disclosure: false, explicitGap: false },
+  ];
+  const seen = new WeakMap<object, number>();
+  while (pending.length > 0) {
+    const { value, disclosure, explicitGap } = pending.pop()!;
+    if (typeof value === 'string') {
+      if (explicitGap) gaps.push(...disclosedGapList(value));
+      else if (disclosure) gaps.push(...explicitCoverageLimitations(value));
+      continue;
+    }
+    if (!value || typeof value !== 'object') continue;
+    const mode = explicitGap ? 2 : disclosure ? 1 : 0;
+    if ((seen.get(value) ?? -1) >= mode) continue;
+    seen.set(value, mode);
+    for (const [key, child] of Object.entries(value)) {
+      pending.push({ value: child,
+        disclosure: disclosure || /disclos|boundary|gap|limitation/i.test(key),
+        explicitGap: explicitGap || /^(?:disclosedGap|limitation|limitations)$/i.test(key) });
+    }
+  }
+  return [...new Set(gaps)];
+}
+
 function detailsOf(evidence: SpecEvidenceForAdequacy): AdequacyDetails {
   const nested = evidence.details.adequacy;
   // A disclosure is read from BOTH the nested adequacy block and the top level.
@@ -678,6 +705,7 @@ function detailsOf(evidence: SpecEvidenceForAdequacy): AdequacyDetails {
   const observationGaps = [
     ...explicitCoverageLimitations(topLevelDetails.observations),
     ...explicitCoverageLimitations(topLevelDetails.scopeNote),
+    ...metadataCoverageLimitations(topLevelDetails),
   ];
   if (!nested || typeof nested !== 'object' || Array.isArray(nested)) {
     const disclosedGap = [...new Set([...topLevelGap, ...observationGaps])];
@@ -1624,8 +1652,9 @@ function appendRatingRerunProbes(
  *  17 — technical coverage result/field mechanics do not imply incomplete proof; genuine gaps still block.
  *  18 — map legacy manual-provenance requirements only to canonical measured operational cases.
  *  19 — pending clause/composite proof and unresolved disclosure scope notes block a machine PASS.
+ *  20 — disclosure-bearing metadata is scanned recursively, preserving gaps moved outside scopeNote.
  */
-export const SPEC_TEST_ADEQUACY_EVALUATOR_REVISION = 19;
+export const SPEC_TEST_ADEQUACY_EVALUATOR_REVISION = 20;
 
 type MutationTargetClause = Pick<SpecClauseRevision, 'specId' | 'falsifier'>;
 

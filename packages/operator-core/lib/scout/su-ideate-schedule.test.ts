@@ -3,9 +3,10 @@
  * scout-su-ideate-pipeline-gaps-2026-10-08 P-007 / R-14, D-005, D-006).
  * Pure over injected deps: no Postgres, no process spawn.
  */
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   buildSuIdeatePassBrief,
+  defaultSuIdeateScheduleDeps,
   harnessFromPassLabel,
   nextSuIdeateLens,
   readSuIdeateOpenCircuits,
@@ -16,6 +17,16 @@ import {
   type SuIdeateLaunchRecord,
   type SuIdeateScheduleDeps,
 } from './su-ideate-schedule';
+
+const { launchAgentHandler, readPoolSnapshot } = vi.hoisted(() => ({
+  launchAgentHandler: vi.fn(),
+  readPoolSnapshot: vi.fn(),
+}));
+vi.mock('../agent-tools/capability/launch-agent', () => ({ default: { handler: launchAgentHandler } }));
+vi.mock('./capacity-probe', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./capacity-probe')>()),
+  readScoutPoolSnapshot: readPoolSnapshot,
+}));
 
 const NOW = Date.parse('2026-10-08T15:00:00Z');
 const HOUR = 60 * 60 * 1000;
@@ -47,6 +58,49 @@ function makeDeps(harnesses: Record<string, FakeHarness>, launches: SuIdeateLaun
 
 afterEach(() => {
   vi.unstubAllEnvs();
+});
+
+describe('su-ideate production launch routing', () => {
+  const input = {
+    workspaceId: 'ws', harnessSlug: 'papercusp', lens: 'risk-first' as const,
+    key: 'su-ideate-pass:papercusp:never:1', brief: 'one scheduled pass',
+  };
+  beforeEach(() => {
+    launchAgentHandler.mockReset();
+    readPoolSnapshot.mockReset();
+    launchAgentHandler.mockImplementation(async (args: { account?: string; agent?: string }) =>
+      args.account === 'auto'
+        ? { content: [], structuredContent: { deduped: false } }
+        : { isError: true, content: [{ text: 'weekly usage wall on the workstation account' }] },
+    );
+  });
+
+  it('uses the Codex gateway route when the Claude pool is exhausted', async () => {
+    readPoolSnapshot.mockResolvedValue({ observedAtMs: NOW, healthyAccounts: 0, codexConfigured: true, codexCliAccountCount: 1 });
+    expect(await defaultSuIdeateScheduleDeps.launch(input)).toMatchObject({ ok: true });
+    expect(launchAgentHandler).toHaveBeenCalledWith(
+      expect.objectContaining({ agent: 'codex', account: 'auto', harness: 'papercusp', headless: true, independent: true, count: 1 }),
+      expect.objectContaining({ workspaceId: 'ws', harnessSlug: 'papercusp', ownerId: 'system:su-ideate-schedule' }),
+    );
+  });
+
+  it('uses the Claude gateway route when its pool is available', async () => {
+    readPoolSnapshot.mockResolvedValue({ observedAtMs: NOW, healthyAccounts: 2, codexConfigured: true, codexCliAccountCount: 1 });
+    expect(await defaultSuIdeateScheduleDeps.launch(input)).toMatchObject({ ok: true });
+    expect(launchAgentHandler.mock.calls[0]![0]).toMatchObject({ agent: 'claude', account: 'auto' });
+  });
+
+  it('keeps the historical backend on an unknown probe while still using gateway account routing', async () => {
+    readPoolSnapshot.mockResolvedValue(undefined);
+    expect(await defaultSuIdeateScheduleDeps.launch(input)).toMatchObject({ ok: true });
+    expect(launchAgentHandler.mock.calls[0]![0]).toMatchObject({ agent: 'claude', account: 'auto' });
+  });
+
+  it('does not create a task when the existing probe affirmatively reports no provider route', async () => {
+    readPoolSnapshot.mockResolvedValue({ observedAtMs: NOW, healthyAccounts: 0, codexConfigured: false });
+    expect(await defaultSuIdeateScheduleDeps.launch(input)).toMatchObject({ ok: false });
+    expect(launchAgentHandler).not.toHaveBeenCalled();
+  });
 });
 
 describe('su-ideate schedule — lens rotation and labels', () => {

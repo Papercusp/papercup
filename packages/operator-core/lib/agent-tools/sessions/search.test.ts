@@ -48,7 +48,15 @@ vi.mock('../../search/session-ingest', async (importOriginal) => ({
 // per-leg verdict (WI-10005676) with a genuinely typechecked fixture — no
 // `as never` cast on the mock argument (lint:mock-cast-escape is shrink-only).
 interface HybridSearchMockResult {
-  results: never[];
+  results: Array<{
+    source: string;
+    source_id: string;
+    excerpt: string;
+    score: number;
+    highlight?: string;
+    rankers?: string[];
+    scope?: string | null;
+  }>;
   totalHits: number;
   embedderAvailable: boolean;
   legs?: SearchLegs;
@@ -603,6 +611,56 @@ describe('sessions:search surfaces the engine leg report (WI-10005676)', () => {
     // The load-bearing assertion: a zero is STATED, not omitted — it is what tells a
     // leg that ran and found nothing apart from a leg that never ran.
     expect(parsed.legs?.semantic.candidates).toBe(0);
+  });
+
+  it('keeps lexical hits and reports a budget-blocked semantic leg without failing the tool', async () => {
+    runHybridSearch.mockClear();
+    const timeout = 'query embed exceeded 4000ms budget';
+    const { newLegAccumulator, finaliseLeg, summariseLegs } = await import('@papercusp/search');
+    type LegFacts = Partial<{
+      attempted: boolean;
+      candidates: number;
+      callsRun: number;
+      blocked: string | null;
+    }>;
+    const makeLeg = (facts: LegFacts) => Object.assign(newLegAccumulator(), facts);
+    const legs = summariseLegs(
+      finaliseLeg(makeLeg({ attempted: true, callsRun: 1, candidates: 1 })),
+      finaliseLeg(makeLeg({ attempted: true, blocked: timeout })),
+    );
+    runHybridSearch.mockResolvedValueOnce({
+      results: [{
+        source: 'coord_message',
+        source_id: 'coord-message-1',
+        excerpt: 'lexical fallback hit',
+        highlight: 'lexical fallback hit',
+        score: 0.5,
+        rankers: ['lexical'],
+      }],
+      totalHits: 1,
+      embedderAvailable: false,
+      legs,
+    });
+
+    const res = await callTool({ query: 'needle', mode: 'hybrid', limit: 20, context: 0 }, makeTx([]));
+    const parsed = JSON.parse(res.content[0].text) as ParsedResult & {
+      legs?: {
+        degraded: boolean;
+        warning: string | null;
+        lexical: { status: string; candidates: number };
+        semantic: { status: string; candidates: number; blocked: string | null };
+      };
+    };
+
+    expect(parsed.ok).toBe(true);
+    expect(parsed.total_hits).toBe(1);
+    expect(parsed.results).toMatchObject([{ source: 'coord_message', excerpt: 'lexical fallback hit' }]);
+    expect(parsed.legs).toMatchObject({
+      degraded: true,
+      lexical: { status: 'ran', candidates: 1 },
+      semantic: { status: 'errored', candidates: 0, blocked: timeout },
+    });
+    expect(parsed.legs?.warning).toMatch(/semantic leg blocked/);
   });
 
   it('reports a healthy hybrid search as not degraded', async () => {

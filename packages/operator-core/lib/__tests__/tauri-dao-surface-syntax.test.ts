@@ -38,6 +38,37 @@ function bootstrap(frozen: boolean, originalRoot?: string) {
   } finally { rmSync(dir, { recursive: true, force: true }); }
 }
 
+// Feed every real generated poll through the maintained helper. The bridge
+// fixture records its arguments; this checks the CLI contract, not DOM truth.
+function pollContract(source = readFileSync(script, 'utf8')) {
+  const dir = mkdtempSync(resolve(tmpdir(), 'dao-poll-contract-'));
+  try {
+    const wrapper = readFileSync(resolve(repo, 'scripts/verify-tauri-headless.sh'), 'utf8');
+    const helper = wrapper.match(/cat > "\$POLL" <<'POLL_SCRIPT'\n([\s\S]*?)\nPOLL_SCRIPT/)?.[1];
+    if (!helper) throw new Error('Maintained DOM poll helper not found');
+    const helperPath = resolve(dir, 'poll.sh');
+    const driver = resolve(dir, 'contract.sh');
+    const tool = resolve(dir, 'bridge.sh');
+    const calls = resolve(dir, 'calls');
+    writeFileSync(helperPath, helper);
+    writeFileSync(driver, '#!/usr/bin/env bash\nVERIFY_TAURI_LIVENESS_CHECK= bash "$DAO_REAL_POLL" "$@"\n', { mode: 0o755 });
+    writeFileSync(tool, '#!/usr/bin/env bash\nprintf "%s\\n" "$@" >> "$DAO_POLL_ARGS_LOG"\nexit 0\n', { mode: 0o755 });
+    const begin = 'dao_syntax_poll() {\n';
+    if (!source.includes(begin)) throw new Error('Syntax poll entry not found');
+    const path = resolve(dir, 'assertions.sh');
+    writeFileSync(path, source.replace(begin, `${begin}  "$DAO_POLL_CONTRACT" "$@" || return "$?"\n`));
+    const result = spawnSync('bash', [path, '--check-syntax'], {
+      env: { ...process.env, DAO_POLL_CONTRACT: driver, DAO_REAL_POLL: helperPath,
+        DAO_POLL_ARGS_LOG: calls, VERIFY_TAURI_AGENT_TOOLS_BIN: tool,
+        VERIFY_TAURI_PID: 'poll-contract-fixture',
+        VERIFY_TAURI_DOM_TIMEOUT: '0', VERIFY_TAURI_DOM_POLL_INTERVAL: '0' },
+      encoding: 'utf8', timeout: 20_000,
+    });
+    return { status: result.status, stdout: result.stdout, stderr: result.stderr,
+      calls: existsSync(calls) ? readFileSync(calls, 'utf8') : '' };
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+}
+
 function run(path: string, syntax = true) {
   const env = { ...process.env };
   delete env.VERIFY_TAURI_PID;
@@ -55,6 +86,25 @@ function run(path: string, syntax = true) {
 }
 
 describe('maintained DAO native assertion syntax preflight', () => {
+  it('preflights every generated poll with the real helper and fuses both legal close guards', () => {
+    const result = pollContract();
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain('DAO_SURFACE_SYNTAX_ONLY');
+    expect(result.stdout).not.toContain('P009_TAURI_SURFACE_VERIFY_OK');
+    const closure = '(document.querySelectorAll(\'.dao-section-overview\').length >= 1) && (!document.querySelector(".dao-modal"))';
+    expect(result.calls.split(closure).length - 1).toBe(2);
+  }, 25_000);
+
+  it('rejects a reverted legal close guard before any desktop boot', () => {
+    const source = readFileSync(script, 'utf8');
+    const guarded = `--require '.dao-section-overview' --eval '!document.querySelector(".dao-modal")'`;
+    if (!source.includes(guarded)) throw new Error('Legal close guard not found');
+    const result = pollContract(source.replace(guarded, guarded.replace('--require', '--selector')));
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('UNGUARDED NEGATIVE DOM assertion');
+    expect(result.stdout).not.toContain('DAO_SURFACE_SYNTAX_ONLY');
+  }, 25_000);
+
   it('bootstraps the real instrumentation from a frozen copy using the exported original repository', () => {
     const result = bootstrap(true, repo);
     expect(result.status, result.stderr).toBe(73);

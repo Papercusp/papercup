@@ -652,6 +652,24 @@ function isoOrNull(value: Date | string | null): string | null {
  * Pure derivation: one input + one loaded run row + the checkout root → the binding, or a
  * refusal naming what to supply instead. No I/O beyond reading the test file's imports.
  */
+function mutationCausalControlsRefusal(
+  input: TestRunBindingInput,
+  row: TestRunEvidenceRow,
+): Extract<TestRunExpansion, { ok: false }> | null {
+  if ((input.evidenceKind ?? deriveKind(row)) !== 'mutation' || input.details?.causalControls === undefined) return null;
+  const controls = input.details.causalControls;
+  const testRunId = Number(row.id);
+  const valid = controls && typeof controls === 'object' && !Array.isArray(controls)
+    ? controls as Record<string, unknown> : null;
+  const ids = valid && [valid.baselineTestRunId, valid.copyBaselineTestRunId, valid.mutantTestRunId];
+  if (!ids || ids.some(id => !Number.isSafeInteger(id) || Number(id) <= 0)
+    || new Set(ids).size !== 3 || valid?.mutantTestRunId !== testRunId) {
+    return { ok: false, error: 'mutation_causal_controls_invalid', testRunId,
+      message: `Mutation causalControls must name distinct positive baselineTestRunId, copyBaselineTestRunId and mutantTestRunId; mutantTestRunId must equal the bound test-run ${testRunId}.` };
+  }
+  return null;
+}
+
 export function deriveBindingFromTestRun(
   input: TestRunBindingInput,
   row: TestRunEvidenceRow,
@@ -659,6 +677,8 @@ export function deriveBindingFromTestRun(
   attribution: HarnessAttribution,
 ): TestRunExpansion {
   const testRunId = Number(row.id);
+  const controlsRefusal = mutationCausalControlsRefusal(input, row);
+  if (controlsRefusal) return controlsRefusal;
   if (row.status === 'running' || row.status == null) {
     return {
       ok: false,
@@ -1033,6 +1053,23 @@ export async function expandTestRunBinding(
       testRunId,
       message: `test-run ${testRunId} ran under harness '${row.harness_slug}'; bind it with harness '${row.harness_slug}'.`,
     };
+  }
+  const controlsRefusal = mutationCausalControlsRefusal(input, row);
+  if (controlsRefusal) return controlsRefusal;
+  if ((input.evidenceKind ?? deriveKind(row)) === 'mutation' && input.details?.causalControls !== undefined) {
+    // The shape and mutant identity were checked above; verify the two actual
+    // ledger controls too, rather than trusting a copied caller description.
+    const controls = input.details.causalControls as { baselineTestRunId: number; copyBaselineTestRunId: number };
+    const controlIds = [controls.baselineTestRunId, controls.copyBaselineTestRunId];
+    const rows = await Promise.all(controlIds.map(id => deps.loadRun(scope, id)));
+    for (const [index, control] of rows.entries()) {
+      if (!control || Number(control.id) !== controlIds[index] || control.status !== 'pass'
+        || control.workspace_id !== scope.workspaceId || control.harness_slug !== scope.harnessSlug
+        || !row.commit_sha || !control.commit_sha || control.commit_sha.toLowerCase() !== row.commit_sha.toLowerCase()) {
+        return { ok: false, error: 'mutation_causal_controls_invalid', testRunId,
+          message: `Mutation causal control test-run ${controlIds[index]} must exist, pass and match the bound mutant's workspace, harness and known commit.` };
+      }
+    }
   }
   const harnessRoot = await deps.resolveRoot(scope);
   // WI-10006610: a run recorded in a registered sibling checkout (a hive app) maps and measures

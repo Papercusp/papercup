@@ -56,7 +56,7 @@ export const WORKSPACE_QUOTA_BYTES = 5 * 1024 * 1024 * 1024;
 
 /**
  * Reserve 256 MiB below the hard quota so the existing background usage refresh can
- * reclaim old runs before a result spill has to wait for a request-time full-tree scan.
+ * reclaim old runs before a result spill needs request-time FIFO candidate work.
  */
 export const SCRATCH_QUOTA_RECOVERY_HEADROOM_BYTES = 256 * 1024 * 1024;
 
@@ -399,6 +399,10 @@ interface ScratchUsageEntry {
   writeGeneration: number;
   /** A mixed write/measurement snapshot needs one clean re-measurement after writers settle. */
   refreshDeferred: boolean;
+  /** Last stable per-run sizes; request-time recovery remeasures FIFO candidates on demand. */
+  runBytesByPath: Map<string, number>;
+  /** False when the per-run index does not cover a stable, complete workspace measurement. */
+  runBytesValid: boolean;
 }
 
 /** Per-process cached usage per workspace (WI-10004513). Pinned so a split module record can't
@@ -413,7 +417,7 @@ function usageEntry(workspaceId: string): ScratchUsageEntry {
     entry = {
       bytes: 0, measuredAt: 0, refreshing: null, refreshDiagnostics: null,
       recovering: null, writes: new Map(),
-      writeGeneration: 0, refreshDeferred: false,
+      writeGeneration: 0, refreshDeferred: false, runBytesByPath: new Map(), runBytesValid: false,
     };
     usageState.byWorkspace.set(workspaceId, entry);
   } else {
@@ -423,8 +427,37 @@ function usageEntry(workspaceId: string): ScratchUsageEntry {
     entry.writes ??= new Map();
     entry.writeGeneration ??= 0;
     entry.refreshDeferred ??= false;
+    entry.runBytesByPath ??= new Map();
+    entry.runBytesValid ??= false;
   }
   return entry;
+}
+
+function scratchRunDirForFile(workspaceId: string, filePath: string): string | null {
+  const root = scratchRootForWorkspace(workspaceId);
+  const prefix = `${root}${sep}`;
+  if (!filePath.startsWith(prefix)) return null;
+  const parts = filePath.slice(prefix.length).split(sep);
+  // Scratch writers store files below <workspace>/<tool>/<runId>/.
+  if (parts.length < 3 || !parts[0] || !parts[1]) return null;
+  return join(root, parts[0], parts[1]);
+}
+
+function adjustCachedRunBytes(
+  entry: ScratchUsageEntry,
+  workspaceId: string,
+  filePath: string,
+  delta: number,
+): void {
+  if (!entry.runBytesValid) return;
+  const runDir = scratchRunDirForFile(workspaceId, filePath);
+  if (!runDir) {
+    entry.runBytesValid = false;
+    return;
+  }
+  const next = (entry.runBytesByPath.get(runDir) ?? 0) + delta;
+  if (next <= 0) entry.runBytesByPath.delete(runDir);
+  else entry.runBytesByPath.set(runDir, next);
 }
 
 function scheduleDeferredUsageRefresh(workspaceId: string, entry: ScratchUsageEntry): void {
@@ -453,43 +486,97 @@ async function evictWorkspaceQuota(
   // and falsely refuse every spill while a writer is active.
   const writers = reconcileReservations ? [...entry.writes.values()].filter((write) => write.reserved) : [];
   const observedWriterBytes = new Map(writers.map((write) => [write.filePath, 0]));
-  // Reuse the same walk's per-run totals while selecting FIFO eviction candidates. Without
-  // this index, each candidate is recursively sized again after the full workspace scan.
+  let useCachedRunSizes = reconcileReservations && entry.runBytesValid && !entry.refreshDeferred;
+  let entryBytesAtStart = entry.bytes;
+  let runs: Array<{ dir: string; mtimeMs: number }> | null = null;
+  let cacheChanged = false;
+  // Keep a full-walk index for background refreshes and for the conservative fallback when no
+  // stable per-run measurement exists. Request-time recovery uses the stable index instead.
   const runBytesByPath = new Map<string, number>();
-  const sizeWalkStartedAt = performance.now();
   let used: number;
-  try {
-    used = await sizeOfDirAsync(wsRoot, observedWriterBytes, runBytesByPath, 0, undefined, diagnostics);
-  } finally {
-    if (diagnostics) diagnostics.sizeWalkMs += Math.max(0, performance.now() - sizeWalkStartedAt);
+  if (useCachedRunSizes) {
+    const runListingStartedAt = performance.now();
+    runs = await runDirsOf(wsRoot);
+    if (diagnostics) {
+      diagnostics.runListingMs += Math.max(0, performance.now() - runListingStartedAt);
+      diagnostics.runsListed += runs.length;
+    }
+    if (!entry.runBytesValid || entry.refreshDeferred || runs.some((run) => !entry.runBytesByPath.has(run.dir))) {
+      // A synchronous reservation may have invalidated the index while the directory listing
+      // yielded, or another process may have added an unindexed run. Fall back to a complete
+      // measurement and refresh the candidate listing later.
+      useCachedRunSizes = false;
+      runs = null;
+    }
+  }
+  if (useCachedRunSizes && runs) {
+    const liveRuns = new Set(runs.map((run) => run.dir));
+    used = entry.bytes;
+    entryBytesAtStart = entry.bytes;
+    for (const [runDir, cachedBytes] of entry.runBytesByPath) {
+      if (liveRuns.has(runDir)) continue;
+      // Another process may have already reclaimed this run. Correct the stale total before
+      // deciding how much FIFO eviction is still needed.
+      if ([...entry.writes.values()].some((write) => write.filePath.startsWith(runDir + sep))) continue;
+      used -= cachedBytes;
+      entry.runBytesByPath.delete(runDir);
+      cacheChanged = true;
+    }
+    used = Math.max(0, used);
+    if (runs.some((run) => !entry.runBytesByPath.has(run.dir))) cacheChanged = true;
+  } else {
+    const sizeWalkStartedAt = performance.now();
+    try {
+      used = await sizeOfDirAsync(wsRoot, observedWriterBytes, runBytesByPath, 0, undefined, diagnostics);
+    } finally {
+      if (diagnostics) diagnostics.sizeWalkMs += Math.max(0, performance.now() - sizeWalkStartedAt);
+    }
   }
   let evictions = 0;
   let bytes = 0;
   const evictedRuns: string[] = [];
   if (used > targetBytes()) {
-    const runListingStartedAt = performance.now();
-    const runs = await runDirsOf(wsRoot);
-    if (diagnostics) {
-      diagnostics.runListingMs += Math.max(0, performance.now() - runListingStartedAt);
-      diagnostics.runsListed += runs.length;
+    if (!runs) {
+      const runListingStartedAt = performance.now();
+      runs = await runDirsOf(wsRoot);
+      if (diagnostics) {
+        diagnostics.runListingMs += Math.max(0, performance.now() - runListingStartedAt);
+        diagnostics.runsListed += runs.length;
+      }
     }
     runs.sort((a, b) => a.mtimeMs - b.mtimeMs);
     for (const run of runs) {
       if (used <= targetBytes()) break;
       if (diagnostics) diagnostics.runsConsidered += 1;
+      // A current or waiting write owns its run even when its reservation has not landed yet.
+      if ([...entry.writes.values()].some((write) => write.filePath.startsWith(run.dir + sep))) continue;
       // Symlinked tool/run directories are discovered by runDirsOf but are not traversed by
       // the workspace size walk; retain the old fallback for those paths.
       const runSizingStartedAt = performance.now();
       let bytesInRun: number;
       try {
-        const indexedBytes = runBytesByPath.get(run.dir);
-        if (indexedBytes === undefined && diagnostics) diagnostics.fallbackRunSizes += 1;
-        bytesInRun = indexedBytes ?? await sizeOfDirAsync(run.dir);
+        if (useCachedRunSizes) {
+          const cachedBytes = entry.runBytesByPath.get(run.dir) ?? 0;
+          // Recheck only the FIFO candidates we may delete. This catches cross-process changes
+          // to those runs without recursively sizing every run in the workspace.
+          bytesInRun = await sizeOfDirAsync(run.dir, observedWriterBytes);
+          if (bytesInRun !== cachedBytes) cacheChanged = true;
+          used += bytesInRun - cachedBytes;
+          entry.runBytesByPath.set(run.dir, bytesInRun);
+        } else {
+          const indexedBytes = runBytesByPath.get(run.dir);
+          if (indexedBytes === undefined && diagnostics) diagnostics.fallbackRunSizes += 1;
+          bytesInRun = indexedBytes ?? await sizeOfDirAsync(run.dir);
+          if (indexedBytes === undefined) runBytesByPath.set(run.dir, bytesInRun);
+        }
       } finally {
         if (diagnostics) diagnostics.selectedRunSizingMs += Math.max(0, performance.now() - runSizingStartedAt);
       }
-      // Recheck after the walk: a writer may have arrived while it was in flight.
+      // A writer can join while candidate sizing yields. Preserve its run just as we do for
+      // writers already present when the candidate was selected.
       if ([...entry.writes.values()].some((write) => write.filePath.startsWith(run.dir + sep))) continue;
+      // The cached total may already be under target once a candidate's stale size is corrected.
+      if (used <= targetBytes()) break;
       if (diagnostics) diagnostics.deleteAttempts += 1;
       const deletionStartedAt = performance.now();
       try {
@@ -499,6 +586,8 @@ async function evictWorkspaceQuota(
       }
       used -= bytesInRun;
       evictedRuns.push(run.dir);
+      if (useCachedRunSizes) entry.runBytesByPath.delete(run.dir);
+      else runBytesByPath.delete(run.dir);
       evictions += 1;
       bytes += bytesInRun;
       if (diagnostics) {
@@ -508,24 +597,44 @@ async function evictWorkspaceQuota(
       evictedBytesTotal += bytesInRun;
     }
   }
-  const overlappingWrites = hadActiveWrites || entry.writeGeneration !== writeGeneration;
+  const activeWritesAtEnd = [...entry.writes.values()].some((write) => write.reserved);
+  const overlappingWrites = hadActiveWrites || activeWritesAtEnd || entry.writeGeneration !== writeGeneration;
   if (reconcileReservations) {
-    entry.bytes = used + writers.reduce((sum, write) => {
-      // A failed writer drops its reservation; a completed writer's run may have been evicted.
-      if (!write.reserved || evictedRuns.some((run) => write.filePath.startsWith(run + sep))) return sum;
-      return sum + Math.max(0, write.bytes - (observedWriterBytes.get(write.filePath) ?? 0));
-    }, 0);
+    if (useCachedRunSizes) {
+      // The cached total already includes all local reservations. Preserve concurrent settlement
+      // deltas if a writer completed while the candidate paths were being remeasured.
+      entry.bytes = Math.max(0, overlappingWrites ? entry.bytes + used - entryBytesAtStart : used);
+    } else {
+      entry.bytes = used + writers.reduce((sum, write) => {
+        // A failed writer drops its reservation; a completed writer's run may have been evicted.
+        if (!write.reserved || evictedRuns.some((run) => write.filePath.startsWith(run + sep))) return sum;
+        return sum + Math.max(0, write.bytes - (observedWriterBytes.get(write.filePath) ?? 0));
+      }, 0);
+    }
     entry.measuredAt = now();
-    entry.refreshDeferred = overlappingWrites;
+    entry.refreshDeferred = overlappingWrites || cacheChanged;
+    if (useCachedRunSizes) {
+      entry.runBytesValid = !entry.refreshDeferred;
+    } else if (overlappingWrites) {
+      entry.runBytesValid = false;
+    } else {
+      entry.runBytesByPath = runBytesByPath;
+      entry.runBytesValid = [...runBytesByPath.values()].every(Number.isFinite)
+        && (!diagnostics || (diagnostics.directoryReadErrors === 0 && diagnostics.fileStatErrors === 0));
+    }
   } else if (overlappingWrites) {
     // The size walk may have included only part of an in-flight write. Adjust the prior
     // reservation-based total by exactly the bytes evicted, then re-measure once writers settle.
     entry.bytes = Math.max(0, entry.bytes - bytes);
     entry.refreshDeferred = true;
+    entry.runBytesValid = false;
   } else {
     entry.bytes = used;
     entry.measuredAt = now();
     entry.refreshDeferred = false;
+    entry.runBytesByPath = runBytesByPath;
+    entry.runBytesValid = [...runBytesByPath.values()].every(Number.isFinite)
+      && (!diagnostics || (diagnostics.directoryReadErrors === 0 && diagnostics.fileStatErrors === 0));
   }
   scheduleDeferredUsageRefresh(workspaceId, entry);
   return { used, evictions, bytes };
@@ -588,6 +697,11 @@ async function sizeOfDirAsync(
         const childBytes = await sizeOfDirAsync(child, observedFileBytes, runBytesByPath, depth + 1, childRunDir, diagnostics);
         total += childBytes;
       } else {
+        if (runBytesByPath && depth <= 1 && entry.isSymbolicLink()) {
+          // The workspace walk counts symlinks as entries rather than traversing them. A
+          // per-run index cannot safely represent a symlinked tool/run directory.
+          runBytesByPath.set(child, Number.NaN);
+        }
         if (diagnostics) diagnostics.sizeWalkFiles += 1;
         try {
           const bytes = (await withScratchSizeScanSlot(() => statAsync(child))).size;
@@ -675,10 +789,19 @@ export function scratchUsageBytes(workspaceId: string): number {
 }
 
 /** Test-only: seed a workspace's cached usage total (skips the measurement). */
-export function _setScratchUsageForTests(workspaceId: string, bytes: number, measuredAt = Date.now()): void {
+export function _setScratchUsageForTests(
+  workspaceId: string,
+  bytes: number,
+  measuredAt = Date.now(),
+  preserveRunBytes = false,
+): void {
   const entry = usageEntry(workspaceId);
   entry.bytes = bytes;
   entry.measuredAt = measuredAt;
+  if (!preserveRunBytes) {
+    entry.runBytesByPath.clear();
+    entry.runBytesValid = false;
+  }
 }
 
 /** Test-only: forget every cached usage total. */
@@ -706,6 +829,8 @@ export function _resetScratchUsageForTests(): void {
 export function reserveScratchSpace(opts: {
   workspaceId: string;
   bytes: number;
+  /** Pass the target so a stable per-run usage index can track this reservation. */
+  filePath?: string;
 }): void {
   if (opts.bytes < 0) {
     throw new ScratchQuotaError(`scratch reservation: bytes must be non-negative (got ${opts.bytes})`);
@@ -716,6 +841,8 @@ export function reserveScratchSpace(opts: {
     );
   }
   const entry = usageEntry(opts.workspaceId);
+  const trackedWrite = opts.filePath !== undefined
+    && [...entry.writes.values()].some((write) => write.filePath === opts.filePath);
   const refreshDue = !entry.refreshing && !entry.refreshDeferred && Date.now() - entry.measuredAt >= USAGE_REFRESH_MS;
   const used = entry.bytes;
   if (used + opts.bytes > WORKSPACE_QUOTA_BYTES) {
@@ -726,9 +853,30 @@ export function reserveScratchSpace(opts: {
   }
   entry.bytes = used + opts.bytes;
   entry.writeGeneration += 1;
+  if (opts.filePath) adjustCachedRunBytes(entry, opts.workspaceId, opts.filePath, opts.bytes);
+  else entry.runBytesValid = false;
   // Start after this reservation: only later reservations can invalidate the new walk.
   // Fire-and-forget keeps both accepted and rejected reservations free of filesystem waits.
-  if (refreshDue) void refreshScratchUsage(opts.workspaceId).catch(() => {});
+  // An untracked synchronous writer will call noteScratchWriteSettled after touching disk; defer
+  // its refresh until then so the measurement cannot snapshot a half-finished write.
+  if (refreshDue && (!opts.filePath || trackedWrite)) void refreshScratchUsage(opts.workspaceId).catch(() => {});
+}
+
+/** Notify the usage cache after a synchronous scratch write has settled. */
+export function noteScratchWriteSettled(workspaceId: string, needsRefresh = false): void {
+  const entry = usageEntry(workspaceId);
+  entry.writeGeneration += 1;
+  if (needsRefresh || entry.refreshing) {
+    entry.runBytesValid = false;
+    entry.refreshDeferred = true;
+  }
+  if (entry.refreshDeferred) {
+    scheduleDeferredUsageRefresh(workspaceId, entry);
+    return;
+  }
+  if (!entry.runBytesValid || Date.now() - entry.measuredAt >= USAGE_REFRESH_MS) {
+    void refreshScratchUsage(workspaceId).catch(() => {});
+  }
 }
 
 /**
@@ -869,7 +1017,7 @@ export async function writeWithScratchQuota(
   try {
     if (entry.recovering) await timed('quotaWaitMs', () => entry.recovering!);
     try {
-      reserveScratchSpace(opts);
+      reserveScratchSpace({ workspaceId: opts.workspaceId, bytes: opts.bytes, filePath: opts.filePath });
     } catch (err) {
       if (!(err instanceof ScratchQuotaError)) throw err;
       const startsRecovery = !entry.recovering;
@@ -898,7 +1046,7 @@ export async function writeWithScratchQuota(
       }
       if (startsRecovery) await entry.recovering;
       else await timed('quotaWaitMs', () => entry.recovering!);
-      reserveScratchSpace(opts); // still full/protected/unreclaimable ⇒ explicit, bounded refusal
+      reserveScratchSpace({ workspaceId: opts.workspaceId, bytes: opts.bytes, filePath: opts.filePath }); // still full/protected/unreclaimable ⇒ explicit, bounded refusal
     }
     pending.reserved = true;
     await timed('writeMs', write);
@@ -909,6 +1057,7 @@ export async function writeWithScratchQuota(
     if (pending.reserved && !succeeded) {
       entry.bytes = Math.max(0, entry.bytes - opts.bytes);
       pending.reserved = false;
+      adjustCachedRunBytes(entry, opts.workspaceId, opts.filePath, -opts.bytes);
     }
     scheduleDeferredUsageRefresh(opts.workspaceId, entry);
     timings.totalMs = Math.max(0, performance.now() - startedAt);

@@ -3655,6 +3655,52 @@ describe('disclosed-gap criterion (P-002: a disclosure cannot coexist with a mac
   });
 
   it.each([
+    { originalDisclosure: 'R3 composite acceptance remains pending retirement proof. Original disclosures remain live.' },
+    { proofBoundary: { sourceCapture: 'Producer integration remains a separate requirement.' } },
+    { audit: { originalDisclosure: ['Coverage remains incomplete until cancellation is exercised.'] } },
+    { customCoverageBoundary: { remaining: 'The proof only tests the single-subscriber case.' } },
+  ])('blocks proof gaps in free-form disclosure-bearing metadata: %j', (metadata) => {
+    const base = evidence();
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [evidence({ details: { ...base.details, ...metadata } })],
+      classRef: 'plan-class-feature-ship',
+    });
+    expect(result.ratings['disclosed-gap'].rating).toBe('fail');
+    expect(result.wouldBlock).toContain('disclosed-gap');
+    expect(result.verdict).toBe('fail');
+  });
+
+  it('retains a same-proof disclosure stored outside scopeNote after another metadata rebind', () => {
+    const base = evidence();
+    const originalDisclosure = 'R3 composite acceptance remains pending retirement proof.';
+    const original = evidence({ id: 32297, createdAt: '2026-10-09T04:58:00.000Z',
+      details: { ...base.details, originalDisclosure } });
+    const rebound = evidence({ id: 32303, createdAt: '2026-10-09T05:05:00.000Z',
+      details: { ...base.details, scopeNote: 'Composite proof recorded.' } });
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(), evidence: [original, rebound], classRef: 'plan-class-feature-ship',
+    });
+    expect(result.ratings['disclosed-gap'].rating).toBe('fail');
+    expect(result.ratings['disclosed-gap'].evidence).toContain(originalDisclosure);
+    expect(result.wouldBlock).toContain('disclosed-gap');
+  });
+
+  it('keeps historical references and parent-plane boundaries distinct from a live proof gap', () => {
+    const base = evidence();
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(), evidence: [evidence({ details: { ...base.details,
+        originalDisclosure: 'Original disclosures are preserved in the supersession audit; changed proof closes their tree-clause gaps.',
+        historicalDisclosureRef: 'thread-post:1167321',
+        proofBoundary: { sourceCapture: 'Named source/test footprint; full transitive import graph unmeasured.',
+          shipment: 'Operational adoption and exact shipment remain open on the parent plan.' },
+      } })], classRef: 'plan-class-feature-ship',
+    });
+    expect(result.ratings['disclosed-gap'].rating).toBe('not-applicable');
+    expect(result.wouldBlock).not.toContain('disclosed-gap');
+  });
+
+  it.each([
     'Named source/test footprint only; full transitive import graph unmeasured.',
     'The test only passes when provider credentials are valid and records duration in the run log.',
     'No independent operational shipment claim; canonical suite and fixture identity retained.',

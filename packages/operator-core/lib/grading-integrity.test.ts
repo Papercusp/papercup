@@ -418,6 +418,13 @@ describe('dispatchPendingGradingAudits', () => {
       }),
       expect.objectContaining({ confirmReservation: expect.any(Function) }),
     );
+    const brief = d.route.mock.calls[0]?.[0].brief ?? '';
+    expect(brief).toContain("capability:git-evidence { op:'readFileAtCommit'");
+    expect(brief).toContain("sessions:read only with session:'self'");
+    expect(brief).toContain('sessions:search and non-self transcript reads are outside its role');
+    expect(brief).toContain('state the exact unresolved ref');
+    expect(brief).toContain('events:cancel { delivery_id }');
+    expect(brief).toContain("Never cancel an await, tree, announcement, or another principal's delivery");
     expect(result.receipts[0]).toMatchObject({ state: 'routed', conversationId: 'audit-consult' });
     expect(d.launch).not.toHaveBeenCalled();
     expect(d.release).not.toHaveBeenCalled();

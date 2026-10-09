@@ -128,7 +128,7 @@ for route in new existing; do
   "$VERIFY_TAURI_POLL" --selector 'input[aria-label="Country / jurisdiction"]' --eval "document.querySelector('input[aria-label=\"Country / jurisdiction\"]').value==='$legal_country' && document.querySelector('[role=combobox][aria-label=\"Legal route\"]').textContent.includes('$legal_option')"
   native eval 'JSON.stringify({url:location.href,country:document.querySelector("input[aria-label=\"Country / jurisdiction\"]").value,route:document.querySelector("[role=combobox][aria-label=\"Legal route\"]").textContent,entity:document.querySelector("input[aria-label=\"Legal entity name\"]").value,panel:document.querySelector(".dao-section-overview").textContent})' >"$OUT_DIR/legal-$route.json"
   native eval 'document.querySelector("[role=dialog] button[aria-label=Close]").click()' >/dev/null
-  "$VERIFY_TAURI_POLL" --selector '.dao-section-overview' --eval '!document.querySelector(".dao-modal")'
+  "$VERIFY_TAURI_POLL" --require '.dao-section-overview' --eval '!document.querySelector(".dao-modal")'
 done
 if native check --selector '.dao-task-intentionally-missing' --json >"$OUT_DIR/negative-control.json" 2>&1; then
   echo 'Missing-selector negative control unexpectedly passed' >&2; exit 1

@@ -1034,10 +1034,97 @@ describe('deferred scratch quota recovery', () => {
     expect(scratchUsageBytes('ws-Q')).toBe(1024 ** 3 + markerBytes('ws-Q') + 800);
   });
 
+  it('uses a stable per-run index and sizes only FIFO candidates during request recovery', async () => {
+    const oldest = makeSparseRun('ws-Q', UUID(1), 2 * 1024 ** 3, 10_000);
+    const otherRuns = Array.from({ length: 12 }, (_, i) =>
+      makeSparseRun('ws-Q', '00000000-0000-4000-8000-' + (i + 2).toString().padStart(12, '0'), 1024));
+    await refreshScratchUsage('ws-Q');
+    // Simulate accumulated reservations above the quota while preserving the stable run index.
+    _setScratchUsageForTests('ws-Q', WORKSPACE_QUOTA_BYTES + 2048, Date.now(), true);
+    vi.mocked(readdirAsync).mockClear();
+    vi.mocked(statAsync).mockClear();
+
+    const timings: ScratchWriteTimings[] = [];
+    const writePath = join(otherRuns[0], 'recovery.bin');
+    await writeWithScratchQuota({
+      workspaceId: 'ws-Q', filePath: writePath, bytes: 64,
+      onTiming: (row) => timings.push(row),
+    }, async () => {
+      await writeFile(writePath, Buffer.alloc(64));
+      expect(existsSync(oldest)).toBe(false);
+      expect(otherRuns.every((run) => existsSync(run))).toBe(true);
+    });
+
+    const recovery = timings[0]?.quotaRecoveryDiagnostics;
+    expect(recovery).toMatchObject({ sizeWalkMs: 0, runsConsidered: 1, deleteAttempts: 1 });
+    expect(recovery?.selectedRunSizingMs).toBeGreaterThanOrEqual(0);
+    const dataFileStats = vi.mocked(statAsync).mock.calls
+      .map(([path]) => String(path))
+      .filter((path) => path.endsWith('/data.bin') || path.endsWith('/recovery.bin'));
+    expect(dataFileStats).toEqual([join(oldest, 'data.bin')]);
+    const sizedRunReads = vi.mocked(readdirAsync).mock.calls
+      .map(([path]) => String(path))
+      .filter((path) => [oldest, ...otherRuns].includes(path));
+    expect(sizedRunReads).toEqual([oldest]);
+    await refreshScratchUsage('ws-Q');
+  });
+
+  it('corrects cached usage when another process already removed an indexed FIFO run', async () => {
+    const removedRunBytes = 300 * 1024 ** 2;
+    const removedRun = makeSparseRun('ws-Q', UUID(1), removedRunBytes, 10_000);
+    const retainedRun = makeRunDir('ws-Q', 'quota', UUID(2), 32);
+    await refreshScratchUsage('ws-Q');
+    await rmAsync(removedRun, { recursive: true, force: true });
+    const writerBytes = 64;
+    const recoveryTarget = WORKSPACE_QUOTA_BYTES - SCRATCH_QUOTA_RECOVERY_HEADROOM_BYTES - writerBytes;
+    _setScratchUsageForTests('ws-Q', recoveryTarget + removedRunBytes, Date.now(), true);
+    vi.mocked(rmAsync).mockClear();
+
+    const timings: ScratchWriteTimings[] = [];
+    const writePath = join(retainedRun, 'after-external-gc.bin');
+    await writeWithScratchQuota({
+      workspaceId: 'ws-Q', filePath: writePath, bytes: writerBytes,
+      onTiming: (row) => timings.push(row),
+    }, () => writeFile(writePath, Buffer.alloc(writerBytes)));
+
+    expect(existsSync(retainedRun)).toBe(true);
+    expect(vi.mocked(rmAsync)).not.toHaveBeenCalled();
+    expect(timings[0]?.quotaRecoveryDiagnostics).toMatchObject({
+      sizeWalkMs: 0, runsConsidered: 0, deleteAttempts: 0,
+    });
+    await refreshScratchUsage('ws-Q');
+  });
+
+  it('falls back to a complete measurement when another process adds an unindexed run', async () => {
+    const removedRunBytes = 4 * 1024 ** 3;
+    const removedRun = makeSparseRun('ws-Q', UUID(1), removedRunBytes, 10_000);
+    const writerRun = makeRunDir('ws-Q', 'quota', UUID(3), 32);
+    await refreshScratchUsage('ws-Q');
+    // Make the request enter recovery, then simulate cross-process cleanup and growth.
+    _setScratchUsageForTests('ws-Q', WORKSPACE_QUOTA_BYTES + 1024, Date.now(), true);
+    await rmAsync(removedRun, { recursive: true, force: true });
+    const externalRun = makeSparseRun('ws-Q', UUID(2), WORKSPACE_QUOTA_BYTES + 512 * 1024 ** 2, 20_000);
+    vi.mocked(rmAsync).mockClear();
+
+    const timings: ScratchWriteTimings[] = [];
+    const writePath = join(writerRun, 'after-external-growth.bin');
+    await writeWithScratchQuota({
+      workspaceId: 'ws-Q', filePath: writePath, bytes: 64,
+      onTiming: (row) => timings.push(row),
+    }, () => writeFile(writePath, Buffer.alloc(64)));
+
+    expect(existsSync(externalRun)).toBe(false);
+    expect(existsSync(writerRun)).toBe(true);
+    expect(timings[0]?.quotaRecoveryDiagnostics?.sizeWalkMs).toBeGreaterThan(0);
+    await refreshScratchUsage('ws-Q');
+  });
+
   it('protects an in-flight writer even when its run is the oldest FIFO candidate', async () => {
-    const active = makeSparseRun('ws-Q', UUID(1), 4 * 1024 ** 3, 10_000);
-    const other = makeSparseRun('ws-Q', UUID(2), 1024 ** 3);
-    _setScratchUsageForTests('ws-Q', WORKSPACE_QUOTA_BYTES - 1024);
+    const active = makeSparseRun('ws-Q', UUID(1), 2 * 1024 ** 3, 20_000);
+    const other = makeSparseRun('ws-Q', UUID(2), 1024 ** 3, 10_000);
+    const target = makeRunDir('ws-Q', 'quota', UUID(3), 32);
+    await refreshScratchUsage('ws-Q');
+    _setScratchUsageForTests('ws-Q', WORKSPACE_QUOTA_BYTES - 1024, Date.now(), true);
     let finish!: () => void;
     let started!: () => void;
     const began = new Promise<void>((resolve) => { started = resolve; });
@@ -1047,13 +1134,15 @@ describe('deferred scratch quota recovery', () => {
     });
     await began;
     try {
-      await writeWithScratchQuota({ workspaceId: 'ws-Q', filePath: join(active, 'next'), bytes: 2048 }, async () => {});
+      await writeWithScratchQuota({ workspaceId: 'ws-Q', filePath: join(target, 'next'), bytes: 2048 }, async () => {});
       expect(existsSync(active)).toBe(true);
       expect(existsSync(other)).toBe(false);
+      expect(existsSync(target)).toBe(true);
     } finally {
       finish();
       await held;
     }
+    await refreshScratchUsage('ws-Q');
   });
 
   it('refuses an impossible request without evicting or invoking the writer', async () => {

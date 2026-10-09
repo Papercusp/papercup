@@ -416,11 +416,12 @@ describe('capability:read', () => {
 
   it('selects only requested MCP content items and rejects the wrong owner', async () => {
     const f = join(DIR, 'owner-reference.json');
+    const nestedJson = JSON.stringify({ results: [{ checkpoint: 'saved' }] });
     writeScratchReference({
       filePath: f,
       payload: JSON.stringify({
         content: [
-          { type: 'text', text: 'omit me' },
+          { type: 'text', text: nestedJson },
           { type: 'image', data: 'aGVsbG8=', mimeType: 'image/png' },
           { type: 'text', text: 'keep me too' },
         ],
@@ -451,6 +452,16 @@ describe('capability:read', () => {
         { type: 'image', mimeType: 'image/png' },
       ],
     });
+
+    const nestedSelected = parse((await readTool.handler!(
+      { file_path: f, content_indexes: [0] },
+      ownerCtx as never,
+    )) as { content: Array<{ text: string }> }) as {
+      content: Array<{ text: string }>;
+      results?: unknown;
+    };
+    expect(nestedSelected.content[0].text).toBe(nestedJson);
+    expect(nestedSelected).not.toHaveProperty('results');
 
     const denied = (await readTool.handler!(
       {
@@ -667,6 +678,11 @@ describe('capability:read', () => {
       );
       expect(description).toContain('byte_offset+byte_limit');
     }
+
+    const contentIndexesDescription = contentBranch?.properties?.content_indexes?.description;
+    expect(contentIndexesDescription).toContain("under the response's content field");
+    expect(contentIndexesDescription).toContain('it does not parse JSON serialized inside');
+    expect(contentIndexesDescription).toContain('Use evidence_class');
 
     const argsSchema = readTool.args as unknown as {
       safeParse: (value: unknown) => { success: boolean };

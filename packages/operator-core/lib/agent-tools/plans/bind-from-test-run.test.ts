@@ -314,6 +314,15 @@ describe('deriveBindingFromTestRun', () => {
     });
   });
 
+  it('refuses copied causal controls that name a different mutant than the bound run', () => {
+    const row = run({ status: 'fail', source: 'mutation-probe', execution_details: { mutationPhase: 'mutant' } });
+    const out = deriveBindingFromTestRun(input({ details: { causalControls: {
+      baselineTestRunId: 10, copyBaselineTestRunId: 11, mutantTestRunId: 12,
+    } } }), row, root, 'run');
+    expect(out).toMatchObject({ ok: false, error: 'mutation_causal_controls_invalid', testRunId: 42 });
+    expect(!out.ok && out.message).toContain('mutantTestRunId');
+  });
+
   it('refuses adequacy the run contradicts, naming both values', () => {
     const out = deriveBindingFromTestRun(input({ details: { adequacy: { outcome: 'passed' } } }), run({ status: 'fail' }), root, 'run');
     expect(out).toMatchObject({ ok: false, error: 'run_contradicts_declared_adequacy' });
@@ -373,6 +382,38 @@ describe('deriveBindingFromTestRun', () => {
     expect(derived.binding).toMatchObject({ testRunId: 42,
       details: { adequacy: { fixtureCalibrated: true }, testRun: { id: 42 } } });
     expect(() => testRunBindingSchema.parse(input({ fixturePaths: ['../outside.ts'] }))).toThrow();
+  });
+});
+
+describe('expandTestRunBinding: mutation causal controls', () => {
+  const controls = { baselineTestRunId: 10, copyBaselineTestRunId: 11, mutantTestRunId: 42 };
+  async function expand(controlOverride: Partial<TestRunEvidenceRow> | null = {}) {
+    const rows = new Map<number, TestRunEvidenceRow>([
+      [42, run({ status: 'fail', source: 'mutation-probe', execution_details: { mutationPhase: 'mutant' } })],
+      [10, run({ id: 10, source: 'mutation-probe', execution_details: { mutationPhase: 'baseline' } })],
+    ]);
+    if (controlOverride !== null) rows.set(11, run({ id: 11, ...controlOverride }));
+    return expandTestRunBinding(input({ details: { causalControls: controls } }), SCOPE, {
+      loadRun: async (_scope, id) => rows.get(id) ?? null,
+      adoptRun: async () => true,
+      resolveRoot: async () => root,
+    });
+  }
+
+  it('accepts successful controls for the same committed, scoped mutation', async () => {
+    expect(await expand()).toMatchObject({ ok: true,
+      binding: { testRunId: 42, details: { causalControls: controls } } });
+  });
+
+  it.each([
+    ['another commit', { commit_sha: '123456789abcdef0' }],
+    ['unknown commit', { commit_sha: null }],
+    ['another workspace', { workspace_id: 'other-workspace' }],
+    ['another harness', { harness_slug: 'other-harness' }],
+    ['a failed control', { status: 'fail' }],
+    ['a missing control', null],
+  ] as const)('refuses causal controls from %s', async (_label, override) => {
+    expect(await expand(override)).toMatchObject({ ok: false, error: 'mutation_causal_controls_invalid', testRunId: 42 });
   });
 });
 

@@ -318,6 +318,26 @@ describe('completed isolated runtime certification', () => {
     delete (state.execution as any).runtimeEnvironmentBefore;
     expect((await read()).currentness.dimensions.environment).toBe('unknown');
   });
+  it('certifies the original native lifecycle when the reporter completion boundary rounds early', async () => {
+    const state = await setup();
+    state.row.test_run_framework = 'playwright';
+    // The reporter derives a wall-clock interval from duration. The original
+    // harness receipt can finish milliseconds later, still inside the paired
+    // runtime observations taken before and after the actual test execution.
+    state.row.test_run_started_at = new Date(Date.parse(at(20)) - 180).toISOString();
+    state.row.test_run_finished_at = new Date(Date.parse(at(30)) - 3).toISOString();
+    expect((await read()).currentness.dimensions.environment).toBe('current');
+  });
+  it.each(['before-witness', 'after-witness', 'reversed-lifecycle'])(
+    'rejects a native lifecycle outside its original witness: %s', async failure => {
+      const state = await setup();
+      state.row.test_run_framework = 'playwright';
+      if (failure === 'before-witness') state.journey.startedAt = at(10);
+      if (failure === 'after-witness') state.journey.endedAt = at(41);
+      if (failure === 'reversed-lifecycle') state.journey.startedAt = at(31);
+      await state.save();
+      expect((await read()).currentness.dimensions.environment).toBe('unknown');
+    });
   it('rejects Playwright native proof without an authentic paired journey', async () => {
     const state = await setup();
     state.row.test_run_framework = 'playwright';

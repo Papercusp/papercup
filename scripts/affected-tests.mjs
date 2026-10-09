@@ -175,7 +175,7 @@ import {
   formatBatchProgress,
 } from "./lib/batch-watchdog.mjs";
 import { ensurePapercuspTmpdir } from "../libs/test-config/src/tmpdir-guard.ts";
-import { sweepStaleTestScratch } from "../libs/test-config/src/hermetic-tmpdir.ts";
+import { affectedTestRunLogPath, sweepStaleTestScratch } from "../libs/test-config/src/hermetic-tmpdir.ts";
 import { testConfigMainProcessFiles } from "../libs/test-config/src/main-process-closure.ts";
 
 // EI-20767792192323374 — MUST happen HERE, in the launcher, and not in vitest.config.ts.
@@ -328,18 +328,15 @@ const executedMapResultFiles = new Map();
 const initialExecutedMapReads = new Map();
 /** WI-10003792: taskKey → whether that task's recorder is EXPECTED to report (resolved at arming). */
 const executedMapReportExpectations = new Map();
-// WI-41782: keep one attributable entry in the SHARED TMPDIR instead of one
-// top-level file per invocation. The log deliberately outlives this process so a
-// background-job notifier or later triager can read the complete verdict; deleting
-// it from an exit handler would remove the evidence it exists to preserve, and a
-// signal-killed process would not run that handler anyway. Reuse the existing
-// lifecycle-independent, rotating age sweep instead: recent diagnostics remain for
-// four hours, while every future invocation contributes cleanup without depending
-// on the dying process to cooperate.
+// Scratch response files/source maps remain bounded by the existing age sweep.
+// EI-25477633446665003: raw settled-task journals must survive that sweep: a
+// successor can need them after four hours, including when a killed run never
+// reaches its final summary. Reuse the existing persistent operator-log location
+// and synchronous journal writer; no exit-time archival is needed.
 const RUN_LOG_ROOT = join(tmpdir(), "papercusp-affected-tests");
 mkdirSync(RUN_LOG_ROOT, { recursive: true });
 sweepStaleTestScratch(RUN_LOG_ROOT);
-const RUN_LOG_PATH = join(RUN_LOG_ROOT, `${RUN_TOKEN}.log`);
+const RUN_LOG_PATH = affectedTestRunLogPath(RUN_TOKEN);
 // WI-10007629 (P-006): sampled on every task progress beat, reported once beside the scheduler
 // OBSERVED marker. Declared this early because emitProgress runs during the task pool, long
 // before the marker site, and a later `const` would be in its TDZ there.

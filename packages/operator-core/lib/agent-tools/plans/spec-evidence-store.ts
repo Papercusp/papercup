@@ -2364,11 +2364,16 @@ export async function measureCompletedTestRuntime(
       return matches.length === 1 ? matches[0] : null;
     };
     const prepare = phase('prepare'), boot = phase('boot'), assertions = phase('assert');
+    // Reporter intervals derive from measured duration and can round before
+    // the harness writes its completion receipt. The original paired runtime
+    // observations bracket the actual test lifetime; use those exact bounds
+    // for the journey, while preserving the reporter interval checks above.
+    const journeyStart = instant(journey.startedAt), journeyEnd = instant(journey.endedAt);
     if (!prepare || !boot || !assertions
       || !(instant(prepare.endedAt) <= instant(boot.startedAt)
         && instant(boot.endedAt) <= before && instant(assertions.startedAt) <= before
         && instant(assertions.endedAt) >= after
-        && instant(journey.startedAt) >= start && instant(journey.endedAt) <= end)) return null;
+        && before <= journeyStart && journeyStart <= journeyEnd && journeyEnd <= after)) return null;
     // A retained JSON receipt alone is not code identity. Read the immutable Git
     // objects too, then compare each current source/test/fixture byte measurement.
     const recorded = await measureRepoFilesEvidenceDetailedAtCommit(root, recipe, execution.commitSha);

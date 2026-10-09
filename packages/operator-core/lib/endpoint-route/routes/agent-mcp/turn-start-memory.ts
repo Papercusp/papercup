@@ -591,12 +591,14 @@ const turnStartMemory = defineTool({
           // genuinely different reading from "we never asked".
           recordCoverage(block ? 'recalled' : queryText ? 'no-recall' : 'no-signal');
           return block;
-        } catch {
+        } catch (error) {
           // Deliberately record NOTHING on a throw. The outcome vocabulary has
           // no failure value, and the two candidates both LIE: 'no-recall'
           // means healthy quiet and would hide the fault outright. Recording
           // nothing leaves this turn absent from the numerator, which is what
           // the outage detector already reads as broken — the honest answer.
+          console.warn('[turn-start] memory path failed (context omitted):',
+            error instanceof Error ? error.message.slice(0, 500) : String(error).slice(0, 500));
           return '';
         }
       })();
