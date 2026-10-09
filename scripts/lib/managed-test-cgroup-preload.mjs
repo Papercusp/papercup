@@ -4,6 +4,7 @@ import { appendFileSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
 import { isMainThread, threadId } from 'node:worker_threads';
 import { assertManagedTestCgroup } from '../proc-guard.mjs';
+import { observeProcessTermination } from '../../libs/test-config/src/process-termination-observer.mjs';
 
 let context;
 try {
@@ -19,11 +20,12 @@ const env = Object.freeze({
   PAPERCUSP_TASK_DEADLINE_EPOCH_MS: String(context.deadlineEpochMs ?? ''),
   PAPERCUSP_EXPECTED_TEST_CGROUP: context.cgroupPath,
 });
-const observe = phase => {
+// Capture worker identity before a test can mutate argv.
+const argv = process.argv.slice(1);
+const vitestFork = isMainThread && argv.some(arg => arg.replaceAll('\\', '/').endsWith('/vitest/dist/workers/forks.js'));
+const observe = (phase, termination = {}) => {
   const observation = assertManagedTestCgroup({ env });
-  const argv = process.argv.slice(1);
-  const vitestFork = isMainThread && argv.some(arg => arg.replaceAll('\\', '/').endsWith('/vitest/dist/workers/forks.js'));
-  appendFileSync(context.evidencePath, JSON.stringify({ ...observation, phase, argv, vitestFork, isMainThread, threadId }) + '\n');
+  appendFileSync(context.evidencePath, JSON.stringify({ ...observation, ...termination, phase, argv, vitestFork, isMainThread, threadId }) + '\n');
 };
 observe('preload');
-process.on('exit', () => observe('exit'));
+observeProcessTermination(termination => observe(termination.phase, termination));
