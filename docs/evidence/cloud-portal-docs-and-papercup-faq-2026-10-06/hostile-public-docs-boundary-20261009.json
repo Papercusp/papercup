@@ -25,8 +25,8 @@
     "failed": 6,
     "skipped": 0,
     "failedNewCases": [
-      "public docs handler routing and isolation papercup keeps hostile retrieved instructions outside the permission boundary",
-      "public docs handler routing and isolation papercup-deep keeps hostile retrieved instructions outside the permission boundary"
+      "public docs handler routing and isolation > papercup keeps hostile retrieved instructions outside the permission boundary",
+      "public docs handler routing and isolation > papercup-deep keeps hostile retrieved instructions outside the permission boundary"
     ]
   },
   "probe": {
@@ -50,5 +50,18 @@
   },
   "provenance": "Local modified test at recorded commit 7390bba9a2; named test path and wider tree dirty. No clean immutable candidate claim.",
   "scope": "Unit public-document permission boundary only. Does not establish model instruction-following, Portal behavior, live-state claims, novice validation, independent certification or shipment.",
-  "specBinding": "Not yet bound; preserve exact ledger and measured source/test bytes for the next author-proof step."
+  "specBinding": {
+    "specId": "DOCS-INJECTION",
+    "specRevision": 1,
+    "testBindingId": 32631,
+    "mutationBindingId": 32632,
+    "receipt": "/tmp/su73-hostile-boundary-bind-titles-0736.json",
+    "replacedFlatTitleBindings": [32629, 32630],
+    "initialCurrentnessRead": "/tmp/su73-hostile-boundary-currentness-0734.json",
+    "initialAdequacyRead": "/tmp/su73-hostile-boundary-adequacy-0734.json",
+    "initialVerdict": "unknown",
+    "initialCurrentness": "Spec/source/test/fixture current; testRun unknown because the recorded run has worktreeDirty=true.",
+    "titleCorrection": "Exact suite > case titles were copied from server testRunExecution.passedCaseTitles. Corrected bindings have not yet been re-evaluated.",
+    "limitation": "Proof adoption does not certify clean-run provenance or discharge final Portal/model/novice/shipment acceptance."
+  }
 }

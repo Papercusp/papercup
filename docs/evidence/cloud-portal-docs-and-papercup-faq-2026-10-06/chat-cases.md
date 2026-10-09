@@ -372,3 +372,13 @@ Exact commands, hashes, case titles and retained log references are in
 not a clean immutable candidate. It has not yet been bound to a spec. The result
 proves the unit permission boundary; actual model instruction-following, Portal
 FAQ behavior, current-state claims, novice acceptance and shipment remain open.
+
+The retained proof was adopted on staging as `DOCS-INJECTION@1` bindings
+`32631` (baseline) and `32632` (mutant). Source, test and runner hashes still
+match the retained artifact. The initial diagnostic reports source, test and
+fixture dimensions current, but test-run currentness and overall adequacy
+remain **unknown** because the original ledger records a dirty working tree.
+The first binding metadata used flat case titles; the server ledger uses
+`suite > case`. The corrected bindings copy those exact identities and replace
+`32629`/`32630`. Their adequacy has not yet been re-evaluated. This adoption
+preserves the original run provenance and does not discharge final acceptance.
