@@ -285,6 +285,21 @@ const INNER_PARTIAL_FLAG_CANDIDATE_REGEX = /(?<!\\)"_partial"\s*:\s*true\b/;
 const SUMMARY_NOTICE_JSON_CANDIDATE_REGEX = /(?<!\\)"summaryNotice"\s*:\s*\{/;
 const SUMMARY_NOTICE_TEXT_MARKER_REGEX = /^\s*summaryNotice\s*:\s*\{\s*truncated\s*:\s*true\b/m;
 
+// coord:thread intentionally returns a bounded window/page and marks fields
+// that have field-specific recovery routes: follow next_page_offset for rows,
+// or use coord:read with the entry's msg_id for omitted envelope details.
+// Those markers are part of its documented response contract, not evidence
+// that this result-door call failed or that its own spill discarded data.
+const COORD_THREAD_RECOVERABLE_TRUNCATION_MARKERS = new Set([
+  'entries_truncated',
+  'thread_metadata_truncated',
+  'thread_entry_truncated',
+  'summary_truncated',
+  'body_truncated',
+  'sections_truncated',
+  'to_truncated',
+]);
+
 function hasPartialFlag(value: unknown): boolean {
   if (Array.isArray(value)) return value.some(hasPartialFlag);
   if (value === null || typeof value !== 'object') return false;
@@ -399,6 +414,16 @@ function detectInnerTruncationMarkers(text: string | readonly string[], toolName
   if (textItems.some(hasStructuredPartialFlag)) found.add('_partial');
   if (textItems.some(hasStructuredSummaryNoticeTruncation)) found.add('summaryNotice.truncated');
   return [...found];
+}
+
+function hasOnlyRecoverableCoordThreadMarkers(
+  markers: readonly string[],
+  toolName: string,
+  nestedTargetToolName?: string,
+): boolean {
+  const target = toolName === 'tools:invoke' ? nestedTargetToolName : toolName;
+  return target === 'coord:thread' && markers.length > 0 &&
+    markers.every((marker) => COORD_THREAD_RECOVERABLE_TRUNCATION_MARKERS.has(marker));
 }
 
 /**
@@ -2541,12 +2566,20 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
       // Fitting the door does not make an upstream-projected value complete.
       // Row/map partial sentinels and clipped-string markers can be the only
       // disclosure; route them through the typed incomplete envelope so a
-      // downstream caller cannot infer success from a short body.
+      // downstream caller cannot infer success from a short body. coord:thread
+      // is the exception when every marker is one of its documented,
+      // field-specific continuations; those flags are the usable response.
       const innerTruncationMarkers = detectInnerTruncationMarkers(
         items.filter(isTextItem).map((item) => item.text),
         opts.toolName,
       );
-      if (!upstreamProjection?.truncated && innerTruncationMarkers.length === 0) return result;
+      const threadMarkersRecoverable = hasOnlyRecoverableCoordThreadMarkers(
+        innerTruncationMarkers,
+        opts.toolName,
+        opts.nestedTargetToolName,
+      );
+      if (!upstreamProjection?.truncated &&
+        (innerTruncationMarkers.length === 0 || threadMarkersRecoverable)) return result;
       return spillResultAsReferenceEnvelope({
         result,
         opts,
