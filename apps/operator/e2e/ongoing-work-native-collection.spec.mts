@@ -112,14 +112,14 @@ test('legacy Work on Everything progress table stays readable and draft controls
     expect(detail.goal.goalPackage).toBeNull();
     expect(detail.goalData.collections.worklist.selection.configured).toBe(true);
     expect(detail.goalData.collections.worklist.selection.selected).toEqual(ids.slice(0, 2));
-    await native('navigate', `${process.env.VERIFY_TAURI_DEV_URL}/adv?tab=hud&scope=all&hudtab=goals&welcome=0&ws=${encodeURIComponent(workspaceId)}&hudgoal=${goalId}&hudwoesearch=Design`, '--json');
+    await native('navigate', `${process.env.VERIFY_TAURI_DEV_URL}/adv?tab=hud&scope=all&hudtab=goals&welcome=0&ws=${encodeURIComponent(workspaceId)}&hudgoal=${goalId}&hudwoesearch=Design&hudwoesort=rank`, '--json');
     await ready(`document.querySelectorAll('${panel} [data-testid="ongoing-worklist-row"]').length === 3`);
     const layout = await measure(`(() => {
       const root = document.querySelector('${panel}');
       return { width: innerWidth, height: innerHeight,
         headings: Array.from(root.querySelectorAll('.woe__table th')).map(n => n.textContent),
         selected: root.querySelectorAll('.woe__scope--in').length,
-        unselected: root.querySelectorAll('.woe__scope--out').length,
+        unselected: root.querySelectorAll('button[aria-label^="Add "]').length,
         totals: !!root.querySelector('[role="group"][aria-label="Totals"]'),
         chart: !!root.querySelector('.woe__chart svg[role="img"]'),
         overflowingPanel: root.scrollWidth > root.clientWidth + 1,
@@ -136,7 +136,7 @@ test('legacy Work on Everything progress table stays readable and draft controls
     for (const next of layout.nextSteps) expect(next.trim().length).toBeGreaterThan(0);
     await native('screenshot', '--output', info.outputPath(`worklist-${expectedWidth}.png`));
     // Drive an offered draft control through trusted native keyboard input.
-    const toggle = 'button[aria-label="Add Design mobile workspace"]';
+    const toggle = 'button[aria-label="Move Design search reliability up"]';
     await native('focus', toggle, '--json');
     const xEnv = { ...process.env, DISPLAY: process.env.VERIFY_TAURI_DISPLAY! };
     expect(xEnv.DISPLAY).toMatch(/^:\d+$/);
@@ -163,7 +163,7 @@ test('legacy Work on Everything progress table stays readable and draft controls
       await ready(`window.__nativeWorklistKeys.some(e => e.key === 'F23' && e.trusted)`);
       await run('xdotool', ['key', '--clearmodifiers', 'space'], { timeout: 10_000, env: xEnv });
       await ready(`window.__nativeWorklistKeys.some(e => e.key === ' ' && e.trusted)`);
-      await ready(`document.querySelectorAll('${panel} .woe__scope--in').length === 3`);
+      await ready(`document.querySelector('${panel} [data-testid="ongoing-worklist-row"] td:nth-child(2)')?.textContent?.trim().startsWith(${JSON.stringify(labels[1])})`);
     } catch (error) {
       await info.attach('native-key-delivery', { body: JSON.stringify(await measure(`({
         keys: window.__nativeWorklistKeys, tab: new URL(location.href).searchParams.get('tab'),
@@ -176,11 +176,11 @@ test('legacy Work on Everything progress table stays readable and draft controls
     expect(await measure(`new URL(location.href).searchParams.get('tab')`)).toBe('hud');
     await ready(`!!document.querySelector('${panel} .woe__draft-bar')`);
     await native('click', 'button[aria-label="Remove Design desktop release"]', '--json');
-    await ready(`document.querySelectorAll('${panel} .woe__scope--in').length === 2`);
+    await ready(`document.querySelectorAll('${panel} .woe__scope--in').length === 1`);
     await native('click', '.woe__draft-bar .pc-ctl-act--primary', '--json');
     await ready(`Array.from(document.querySelectorAll('[role="dialog"]')).some(n => n.textContent.includes('After apply'))`);
-    expect(await measure(`Array.from(document.querySelectorAll('.woe__diff li')).map(n => n.textContent)`))
-      .toContain(labels[2]);
+    expect((await measure(`Array.from(document.querySelectorAll('.woe__diff li')).map(n => n.textContent)`))
+      .some((text: string) => text.includes(labels[1]))).toBe(true);
     await native('screenshot', '--output', info.outputPath(`review-${expectedWidth}.png`));
     await native('eval', `(() => { const button = Array.from(document.querySelectorAll('.woe__review button')).find(n => n.textContent === 'Keep editing'); button.click(); return true; })()`);
     await ready(`!document.querySelector('.woe__review')`);
@@ -189,7 +189,7 @@ test('legacy Work on Everything progress table stays readable and draft controls
     const [saved] = await sql`SELECT properties FROM harness_shared.goals WHERE workspace_id=${workspaceId} AND id=${goalId}`;
     expect(saved.properties?.worklist_policy).toBeUndefined();
     await info.attach('native-design-layout', { body: JSON.stringify({ layout, sourceReceipt,
-      fixture: { goalId, labels }, legacyWithoutPackage: true, nativeKeyboardScopeToggle: true,
+      fixture: { goalId, labels }, legacyWithoutPackage: true, nativeKeyboardReorder: true,
       globalHudTabRetained: true, scopeStaged: true, reviewOpened: true, discardRestored: true,
       applyClicked: false }), contentType: 'application/json' });
   } finally {
