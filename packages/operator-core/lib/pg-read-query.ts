@@ -4604,6 +4604,8 @@ const NON_SUMMING_JSONB_RE =
 export interface PredicatePartitionPlan {
   /** The relation the partition runs against. */
   relation: string;
+  /** Complete caller FROM clause, including aliases, joins, and lateral sources. */
+  fromClause: string;
   /** The discriminating expressions, capped, in caller order. */
   dimensions: string[];
   /** Discriminators beyond the cap, named so the preview cannot imply completeness. */
@@ -4628,6 +4630,86 @@ export interface PredicatePartitionData {
   truncated?: boolean;
 }
 
+/** A COUNT used with OVER is a window value on each result row, not a scalar. */
+function hasWindowedCount(masked: string): boolean {
+  const countRe = /\bcount\s*\(/gi;
+  for (let match = countRe.exec(masked); match; match = countRe.exec(masked)) {
+    const open = match.index + match[0].lastIndexOf('(');
+    let depth = 0;
+    let close = -1;
+    for (let k = open; k < masked.length; k++) {
+      if (masked[k] === '(') depth++;
+      else if (masked[k] === ')') {
+        depth--;
+        if (depth === 0) {
+          close = k;
+          break;
+        }
+      }
+    }
+    if (close < 0) continue;
+
+    let after = close + 1;
+    const filter = /^\s*filter\s*\(/i.exec(masked.slice(after));
+    if (filter) {
+      const filterOpen = after + filter[0].lastIndexOf('(');
+      let filterDepth = 0;
+      let filterClose = -1;
+      for (let k = filterOpen; k < masked.length; k++) {
+        if (masked[k] === '(') filterDepth++;
+        else if (masked[k] === ')') {
+          filterDepth--;
+          if (filterDepth === 0) {
+            filterClose = k;
+            break;
+          }
+        }
+      }
+      if (filterClose < 0) continue;
+      after = filterClose + 1;
+    }
+
+    if (/^\s*over\b/i.test(masked.slice(after))) return true;
+  }
+  return false;
+}
+
+/**
+ * Slice the source clause for the WHERE that supplied the predicates. Rebuilds
+ * from only the first physical relation drop aliases and row-producing JOIN /
+ * LATERAL sources, making an otherwise plausible partition SQL unrunnable.
+ */
+function locateFromClause(masked: string, base: number, before: number): { start: number; end: number } | null {
+  const depth = sqlDepthPrefix(masked);
+  const fromRe = /\bfrom\b/gi;
+  let fromAt: { index: number; length: number } | null = null;
+  for (let match = fromRe.exec(masked); match; match = fromRe.exec(masked)) {
+    if (match.index >= before) break;
+    if (depth[match.index] !== base || fromIsNotAClause(masked, match.index)) continue;
+    fromAt = { index: match.index, length: match[0].length };
+  }
+  if (!fromAt) return null;
+
+  let end = masked.length;
+  for (let k = fromAt.index + fromAt.length; k < masked.length; k++) {
+    if (depth[k + 1]! < base) {
+      end = k;
+      break;
+    }
+  }
+  const tailRe = /\b(group\s+by|having|order\s+by|limit|offset|fetch|window|union|intersect|except|returning|for\s+(?:update|share|no\s+key\s+update|key\s+share)|where)\b/gi;
+  tailRe.lastIndex = fromAt.index + fromAt.length;
+  for (let match = tailRe.exec(masked); match && match.index < end; match = tailRe.exec(masked)) {
+    if (depth[match.index] !== base) continue;
+    // A set operation has multiple source clauses; this bounded scanner cannot
+    // faithfully partition the combined result without wrapping the full query.
+    if (/^(?:union|intersect|except)$/i.test(match[1]!)) return null;
+    end = match.index;
+    break;
+  }
+  return { start: fromAt.index, end };
+}
+
 /**
  * THE shared primitive (AUTO-BAR-R-001-P-002). Every surface that wants a
  * predicate partition or a NULL profile calls THIS — the query surface here and
@@ -4645,16 +4727,19 @@ export interface PredicatePartitionData {
  */
 export function planPredicatePartition(rawSql: string): PredicatePartitionPlan | null {
   const stripped = stripSqlLiteralsAndComments(rawSql);
+  const masked = maskSqlNoise(rawSql);
 
   // Already partitioned: the cells are on screen, so nothing is hidden.
   if (/\bgroup\s+by\b/i.test(stripped)) return null;
   if (!/\bcount\s*\(/i.test(stripped) && !/\bexists\s*\(/i.test(stripped)) return null;
+  // A window COUNT returns one value for every input row. Calling it a scalar
+  // is a false alarm, even though its expression contains the same `count(` token.
+  if (hasWindowedCount(masked)) return null;
 
   const tables = extractReferencedTables(rawSql);
   if (!tables.length) return null;
   const relation = tables[0]!;
 
-  const masked = maskSqlNoise(rawSql);
   const filters = extractFilterPredicates(rawSql, masked);
   const whereClause = extractWhereClause(rawSql, masked);
   const whereConjuncts = extractWhereConjuncts(rawSql, masked);
@@ -4685,8 +4770,18 @@ export function planPredicatePartition(rawSql: string): PredicatePartitionPlan |
   const touchesJsonb = dimensions.some((d) => NON_SUMMING_JSONB_RE.test(d));
   if (!touchesJsonb && dimensions.length < 2) return null;
 
+  // FILTER predicates may be the only WHERE clauses, but their source is still
+  // the query's top-level FROM. Otherwise pair the source with the selected
+  // shallowest WHERE (for example the FROM inside an EXISTS subquery).
+  const fromBase = filters.length ? 0 : (whereClause?.base ?? 0);
+  const fromBefore = whereClause?.base === fromBase ? whereClause.start : masked.length;
+  const fromRange = locateFromClause(masked, fromBase, fromBefore);
+  if (!fromRange) return null;
+  const fromClause = rawSql.slice(fromRange.start, fromRange.end).replace(/;\s*$/, '').trim();
+
   return {
     relation,
+    fromClause,
     dimensions: dimensions.slice(0, NON_SUMMING_MAX_DIMENSIONS),
     droppedDimensions: dimensions.slice(NON_SUMMING_MAX_DIMENSIONS),
     scope,
@@ -4706,7 +4801,7 @@ export function predicatePartitionSql(plan: PredicatePartitionPlan, limit = 50):
     'SELECT\n' +
     shown.map((d, i) => `       (${d}) AS d${i + 1}`).join(',\n') +
     ',\n       count(*) AS row_count\n' +
-    `  FROM ${plan.relation}` +
+    `  ${plan.fromClause}` +
     (plan.scope.length ? `\n WHERE ${plan.scope.join('\n   AND ')}` : '') +
     `\n GROUP BY ${shown.map((_, i) => i + 1).join(', ')}` +
     `\n ORDER BY ${shown.length + 1} DESC\n LIMIT ${limit};`
@@ -4721,7 +4816,8 @@ export function predicatePartitionSql(plan: PredicatePartitionPlan, limit = 50):
 export function predicatePartitionSampleSql(plan: PredicatePartitionPlan, limit = 3): string {
   const nullish = plan.dimensions.map((d) => `(${d}) IS NULL`).join(' OR ');
   const where = [...plan.scope, `(${nullish})`].join('\n   AND ');
-  return `SELECT t::text AS sample\n  FROM ${plan.relation} t\n WHERE ${where}\n LIMIT ${limit};`;
+  const sample = plan.dimensions.map((d) => `(${d})`).join(', ');
+  return `SELECT ROW(${sample})::text AS sample\n  ${plan.fromClause}\n WHERE ${where}\n LIMIT ${limit};`;
 }
 
 /**
@@ -4830,7 +4926,7 @@ export const PREDICATE_PARTITION_TIMEOUT_MS = 5_000;
  */
 export function predicatePartitionTotalSql(plan: PredicatePartitionPlan): string {
   return (
-    `SELECT count(*) AS total\n  FROM ${plan.relation}` +
+    `SELECT count(*) AS total\n  ${plan.fromClause}` +
     (plan.scope.length ? `\n WHERE ${plan.scope.join('\n   AND ')}` : '') +
     ';'
   );

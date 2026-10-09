@@ -32,6 +32,8 @@ import {
   buildNonSummingPartitionAdvisory,
   buildExecutedPartitionAdvisory,
   executePredicatePartition,
+  predicatePartitionSampleSql,
+  predicatePartitionSql,
   predicatePartitionTotalSql,
   planPredicatePartition,
   PREDICATE_PARTITION_CELL_LIMIT,
@@ -4148,6 +4150,42 @@ describe('buildNonSummingPartitionAdvisory (WI-10002034 — the scalar whose buc
     )!;
     expect(advisory).toContain('AS d3');
     expect(advisory).not.toContain('AS d4');
+  });
+
+  it('stays silent on a row-returning window COUNT over a LATERAL table function', () => {
+    const rowReturning = [
+      'SELECT t AS title, count(*) OVER () AS n_titles',
+      "  FROM harness_shared.test_runs r, jsonb_array_elements_text(r.execution_details->'passedCaseTitles') t",
+      " WHERE r.id = 20924107 AND r.workspace_id = 'papercusp-workspace' AND (t ILIKE '%stable source key%' OR t ILIKE '%does not file when the author published%')",
+    ].join('\n');
+
+    expect(planPredicatePartition(rowReturning)).toBeNull();
+    expect(buildNonSummingPartitionAdvisory(rowReturning)).toBeNull();
+  });
+
+  it('preserves source aliases and LATERAL rows in every generated partition query', () => {
+    const sql = [
+      "SELECT count(*) FILTER (WHERE t ILIKE '%stable source key%') AS matching,",
+      '       count(*) FILTER (WHERE t IS NULL) AS missing',
+      '  FROM harness_shared.test_runs r,',
+      "       LATERAL jsonb_array_elements_text(r.execution_details->'passedCaseTitles') t",
+      " WHERE r.workspace_id = 'papercusp-workspace'",
+    ].join('\n');
+    const plan = planPredicatePartition(sql)!;
+    const source =
+      "FROM harness_shared.test_runs r,\n       LATERAL jsonb_array_elements_text(r.execution_details->'passedCaseTitles') t";
+    const generated = [
+      predicatePartitionSql(plan),
+      predicatePartitionTotalSql(plan),
+      predicatePartitionSampleSql(plan),
+      buildNonSummingPartitionAdvisory(sql)!,
+    ];
+
+    expect(plan.relation).toBe('harness_shared.test_runs');
+    for (const statement of generated) {
+      expect(statement).toContain(source);
+      expect(statement).toContain('r.execution_details->');
+    }
   });
 
   // ---- controls: the shapes that MUST stay silent. A detector that fires on a
