@@ -60,6 +60,28 @@ describe('routines:fire', () => {
     expect(body(result)).toMatchObject({ ok: true, status: 'enqueued', routine: 'home/git-sync' });
   });
 
+  it('keeps a reserved harness-less routine fire scoped to the active workspace and exact install', async () => {
+    const singleton = {
+      ...row,
+      id: 'rt_singleton_precision',
+      installSlug: '@singleton',
+      name: 'bp-singleton-memory-precision-0',
+    };
+    sqlMock.mockResolvedValue([singleton]);
+
+    const result = await tool.handler(
+      { name: singleton.name, installSlug: singleton.installSlug } as never,
+      { role: 'operator' } as never,
+    );
+
+    const queryArgs = sqlMock.mock.calls[0] as unknown[];
+    expect(queryArgs).toContain('workspace-1');
+    expect(queryArgs).toContain('@singleton');
+    expect(queryArgs).toContain('bp-singleton-memory-precision-0');
+    expect(enqueueMock).toHaveBeenCalledWith(singleton);
+    expect(body(result)).toMatchObject({ ok: true, routine: '@singleton/bp-singleton-memory-precision-0' });
+  });
+
   it('supports exact row-id lookup and preserves a deduplicated result', async () => {
     enqueueMock.mockResolvedValue({
       ok: true,
