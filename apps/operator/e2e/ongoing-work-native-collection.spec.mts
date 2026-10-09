@@ -167,8 +167,32 @@ test('legacy Work on Everything progress table stays readable and draft controls
     expect(detail.goal.goalPackage).toBeNull();
     expect(detail.goalData.collections.worklist.selection.configured).toBe(true);
     expect(detail.goalData.collections.worklist.selection.selected).toEqual(ids.slice(0, 2));
+    expect(detail.rubricStewardship).toMatchObject({
+      rubricRef: 'work-on-everything-stewardship-health', cycles: [], error: null,
+    });
     await native('navigate', `${process.env.VERIFY_TAURI_DEV_URL}/adv?tab=hud&scope=all&hudtab=goals&welcome=0&ws=${encodeURIComponent(workspaceId)}&hudgoal=${goalId}&hudwoesearch=Design&hudwoesort=rank`, '--json');
     await ready(`document.querySelectorAll('${panel} [data-testid="ongoing-worklist-row"]').length === 3`);
+    // An empty isolated goal must expose its duties without inventing measured
+    // quality or a completed grading cycle. Exercise the actual native view.
+    const stewardship = await measure(`(() => {
+      const quality = document.querySelector('${panel} [aria-label="Rubric stewardship"]');
+      return quality ? {
+        duties: Array.from(quality.querySelectorAll('h4')).map(n => n.textContent),
+        states: Array.from(quality.querySelectorAll('.woe__quality-duties .woe__state')).map(n => n.textContent),
+        empty: quality.textContent.includes('No goal-attributed grading cycles are recorded'),
+        claimsImprovement: quality.textContent.includes('Improvement verified'),
+        rubricLink: quality.querySelector('a')?.getAttribute('href'),
+      } : null;
+    })()`);
+    expect(stewardship).toEqual({
+      duties: ['Maintain rubric coverage', 'Improve rubric quality', 'Grade, improve and re-grade'],
+      states: ['Not measured', 'Not measured', 'Not measured'],
+      empty: true, claimsImprovement: false, rubricLink: '/rubrics',
+    });
+    await info.attach('native-rubric-stewardship-empty-goal', {
+      body: JSON.stringify({ stewardship, reading: detail.rubricStewardship, sourceReceipt }),
+      contentType: 'application/json',
+    });
     const layout = await measure(`(() => {
       const root = document.querySelector('${panel}');
       return { width: innerWidth, height: innerHeight,
