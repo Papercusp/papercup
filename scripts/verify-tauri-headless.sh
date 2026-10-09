@@ -684,6 +684,10 @@ ASSERTION_ENV_MANIFEST_PATH=""
 validate_assertion_command_preflight() {
   [ "${ASSERTION_MODE}" -eq 1 ] || return 0
 
+  # Required inherited values are independent of shell syntax. Validate node/
+  # tsx file-backed assertions as well, before allocating or booting the rig.
+  node "$REPO_DIR/scripts/lib/verify-tauri-assertion-env.mjs" --command "${ASSERTION_ARGS[@]}" || return 2
+
   local command_path="${ASSERTION_ARGS[0]:-}"
   local command_name="$(basename -- "$command_path")"
   local source_path="" source_text="" source_label="" syntax_output=""
