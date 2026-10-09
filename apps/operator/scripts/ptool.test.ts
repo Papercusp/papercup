@@ -2916,6 +2916,52 @@ describe('ptool SDK import install-race tolerance (EI-21860372620642128)', () =>
     expect(importSdkModule).toHaveBeenCalledTimes(2);
   });
 
+  it('captures available bytes and free inodes when the reader marker mkdir fails with ENOSPC', async () => {
+    const readerMarkerPath = '/tmp/pcv/fs-mutex-locks/npm-install-demo.readers/311.lock';
+    const noSpace = Object.assign(
+      new Error(`ENOSPC: no space left on device, mkdir '${readerMarkerPath}'`),
+      { code: 'ENOSPC', path: readerMarkerPath, syscall: 'mkdir' },
+    );
+    const importSdkModule = vi.fn().mockRejectedValue(noSpace);
+    const statfsImpl = vi.fn().mockResolvedValue({ bsize: 4096n, bavail: 2n, ffree: 3n });
+
+    const failure = await preparePtoolConnectionModules(
+      { transport: 'http' },
+      { importSdkModule, statfsImpl },
+    ).then(() => null, (error) => error);
+    expect(failure).toMatchObject({ cause: noSpace });
+    expect(failure.message).toContain('ENOSPC filesystem sample captured after failure: syscall=mkdir');
+    expect(failure.message).toContain('availableBytes=8192, freeInodes=3');
+    expect(statfsImpl).toHaveBeenCalledTimes(1);
+    expect(statfsImpl).toHaveBeenCalledWith(
+      '/tmp/pcv/fs-mutex-locks/npm-install-demo.readers',
+      { bigint: true },
+    );
+  });
+
+  it('preserves the original ENOSPC error when the best-effort statfs sample fails', async () => {
+    const readerMarkerPath = '/tmp/pcv/fs-mutex-locks/npm-install-demo.readers/312.lock';
+    const noSpace = Object.assign(
+      new Error(`ENOSPC: no space left on device, mkdir '${readerMarkerPath}'`),
+      { code: 'ENOSPC', path: readerMarkerPath, syscall: 'mkdir' },
+    );
+    const importSdkModule = vi.fn().mockRejectedValue(noSpace);
+    const statfsImpl = vi.fn().mockRejectedValue(new Error('statfs denied'));
+
+    await expect(preparePtoolConnectionModules(
+      { transport: 'http' },
+      { importSdkModule, statfsImpl },
+    )).rejects.toMatchObject({
+      message: expect.stringContaining('ENOSPC filesystem sample unavailable after failure: syscall=mkdir'),
+      cause: noSpace,
+    });
+    expect(statfsImpl).toHaveBeenCalledTimes(1);
+    expect(statfsImpl).toHaveBeenCalledWith(
+      '/tmp/pcv/fs-mutex-locks/npm-install-demo.readers',
+      { bigint: true },
+    );
+  });
+
   it('imports SDK modules under the repo install reader lease', async () => {
     const doImport = vi.fn().mockResolvedValue({ Client: 'ok' });
     const withFsMutexRead = vi.fn(async (

@@ -7,12 +7,13 @@ import {
   existsSync,
   mkdtempSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -542,6 +543,43 @@ test("fs-mutex wait budget honours the unattended knob below the explicit one", 
     25,
   );
   assert.equal(resolveFsMutexTimeoutMs({ PAPERCUSP_UNATTENDED_LOCK_WAIT_SEC: "junk" }), 180_000);
+});
+
+test("fs-mutex reclaims a recycled reader PID but retains its matching live identity", async () => {
+  const root = mkdtempSync(join(tmpdir(), "install-safe-recycled-reader-"));
+  const previousRoot = process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
+  process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = root;
+  try {
+    let identity;
+    await withFsMutex("identity-probe", async () => {
+      identity = JSON.parse(readFileSync(join(root, "identity-probe.lock", "owner.json"), "utf8"));
+    });
+    if (!identity.startTicks) return; // Kernel identity is Linux-specific.
+    const reader = join(root, "recycled-reader.readers", "fixture.lock");
+    mkdirSync(reader, { recursive: true });
+    writeFileSync(join(reader, "owner.json"), JSON.stringify({ ...identity,
+      pid: process.pid, host: hostname(), mode: "read", startTicks: "0" }));
+    let entered = false;
+    await withFsMutex("recycled-reader", async () => { entered = true; }, { timeoutMs: 100, retryMs: 5 });
+    assert.equal(entered, true);
+    const tid = readdirSync('/proc/self/task').map(Number).find(value => value !== process.pid);
+    assert.ok(tid, 'Node must expose a live nonleader thread for the legacy-reuse control');
+    mkdirSync(reader, { recursive: true });
+    writeFileSync(join(reader, "owner.json"), JSON.stringify({
+      pid: tid, host: hostname(), startedAt: new Date().toISOString(), mode: "read",
+    }));
+    await withFsMutex("recycled-reader", async () => {}, { timeoutMs: 100, retryMs: 5 });
+    assert.equal(existsSync(reader), false);
+    mkdirSync(reader, { recursive: true });
+    writeFileSync(join(reader, "owner.json"), JSON.stringify(identity));
+    await assert.rejects(withFsMutex("recycled-reader", async () => {
+      throw new Error("live reader must retain its lease");
+    }, { timeoutMs: 40, retryMs: 5 }), /waiting for fs-mutex readers/);
+  } finally {
+    if (previousRoot === undefined) delete process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
+    else process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = previousRoot;
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 // WI-10006385: a printed wait must be closed by a line saying how long it really lasted

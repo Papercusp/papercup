@@ -7,7 +7,11 @@ import { captureIsolatedWorker, isolatedWorkerOptions, recordIsolatedIntegration
 const root = resolve(import.meta.dirname, '../../../../..');
 const options = isolatedWorkerOptions(360_000);
 
-it.each(['positive', 'misroute'] as const)('confirmed roster stop through private HTTP and native children: %s', async (phase, context) => {
+for (const phase of ['positive', 'misroute'] as const) {
+it(`confirmed roster stop through private HTTP and native children: ${phase}`, async context => {
+  // it.each supplies only the row arguments; the ordinary callback owns the
+  // context needed by the canonical runtime-proof reporter. Check it up front.
+  expect(context.task.meta).toBeDefined();
   const runId = await recordIsolatedIntegrationProof({ root,
     filePath: 'packages/operator-core/lib/endpoint-route/__tests__/adv-sessions-stop.integration.test.ts',
     sourcePaths: ['scripts/with-test-pg.mjs', 'packages/operator-core/test/roster-stop-http-fixture.ts',
@@ -49,3 +53,4 @@ it.each(['positive', 'misroute'] as const)('confirmed roster stop through privat
   Object.assign(context.task.meta, { papercuspIsolatedRuntimeRunId: runId });
   console.info('ROSTER_STOP_HTTP_PROOF_RUN ' + runId);
 }, options.testTimeoutMs);
+}

@@ -15,7 +15,7 @@ import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
 import type { OrgSql } from './db';
 import { preregister, computePreregHash } from './prereg';
 import { emitRollout, emitFromAttempt } from './emit';
-import { listRunResults, listSuites, getRollout, getPrereg } from './store';
+import { listRunResults, listSuites, getRollout, getPrereg, getRunReports } from './store';
 import { emitFleetRun, fleetRunIdFor, listFleetRuns, getCoordTrace } from './fleet';
 import { exportRunBundle } from './export';
 import type { EmitRolloutInput } from './schema';
@@ -318,6 +318,26 @@ describe('L2 fleet layer — fleet run + coordination trace (MAST)', () => {
 });
 
 describe('exportRunBundle — publishes L1 rollout cards + L2 fleet runs/traces', () => {
+  it('product report and exported manifest retain the same frozen task/seed/arm population', async () => {
+    const runId = 'frozen-report-population';
+    const config = {
+      ...baseConfig, taskIds: ['assigned-a', 'assigned-b'], seeds: [0, 1, 2],
+      arms: ['papercusp', 'baseline-b-native'],
+    };
+    const { preregHash } = await preregister({ runId, suites: ['swe-bench-pro'], config, repoRoot, sql, workspaceId: WS });
+    await emitRollout(input({ runId, preregHash, taskId: 'assigned-a', seed: 0, grading: {
+      resolved: true, status: 'passed', family: 'swe-bench-pro', version: 'sweap-2026-06',
+    } }), { sql, workspaceId: WS });
+    const [report] = await getRunReports(runId, { sql, workspaceId: WS });
+    expect(report.arms[0].passAt1).toBeCloseTo(1 / 6);
+    expect(report.arms[1]).toMatchObject({ arm: 'baseline-b-native', tasks: 2, attempts: 0, passAt1: 0 });
+    const exported = await exportRunBundle(runId, { repoRoot, sql, workspaceId: WS });
+    const manifest = JSON.parse(readFileSync(join(repoRoot, exported.manifestPath), 'utf8'));
+    expect(manifest.preregistration.config).toEqual(config);
+    expect(manifest.reports).toEqual([report]);
+    expect(manifest.reports[0].assignment.basis).toBe('frozen');
+    expect(manifest.reports[0].assignment.seeds).toEqual([0, 1, 2]);
+  });
   it('writes a manifest + rollout files + fleet files under benchmarks/', async () => {
     const res = await exportRunBundle(RUN, { repoRoot, sql, workspaceId: WS });
     expect(res.count).toBeGreaterThanOrEqual(2);

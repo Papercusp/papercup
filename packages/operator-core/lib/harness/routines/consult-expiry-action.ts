@@ -54,6 +54,10 @@ registerSystemAction('consult-expiry-sweep', async () => {
 
   await sweepExpiredConsults({
     getSql: () => getOrgPg().sql,
+    resumeCascadeDispatch: async (workspaceId, conversationId) => {
+      const { continueCascadeDispatchProd } = await import('../../consult/consult-dispatch');
+      return continueCascadeDispatchProd(workspaceId, conversationId);
+    },
     resumeRequest: async (workspaceId, conversationId) => {
       const { continueFeedbackRequestProd } = await import('../../consult/get-feedback-prod');
       return continueFeedbackRequestProd(workspaceId, conversationId);

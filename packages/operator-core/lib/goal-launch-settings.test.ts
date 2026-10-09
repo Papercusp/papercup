@@ -1697,6 +1697,16 @@ describe('P-012 authoritative GOAL portfolio brief', () => {
     });
 
     const rendered = renderGoalPortfolioBrief(brief!);
+    const rubricContext = renderGoalPortfolioBrief({ ...brief!, rubricStewardship: {
+      measuredAt: NOW.toISOString(), windowStart: NOW.toISOString(), complete: false,
+      rubricRef: 'work-on-everything-stewardship-health', rubricRevision: 47,
+      criteria: { 'rubric-coverage-stewardship': null, 'rubric-quality-stewardship': null, 'grading-correction-closure': null },
+      cycles: [], error: null,
+    } });
+    expect(rubricContext).toContain('RUBRIC STEWARDSHIP');
+    expect(rubricContext).toContain('work-on-everything-stewardship-health@47');
+    expect(rubricContext).toContain('Grading cycles: none measured');
+    expect(rubricContext).toContain('limited recent page, not a census');
     expect(rendered).toContain('intendedParallelPlanFleets=undeclared');
     expect(rendered).toContain('Independent plan-lane placement candidates: plan:papercusp/alpha');
     expect(rendered).toContain('OWNER REPORT DRAFT');

@@ -50,4 +50,38 @@ describe('buildExportBundle', () => {
   it('returns null when the run has no on-disk snapshot', () => {
     expect(buildExportBundle('missing', { baseDir })).toBeNull();
   });
+
+  it('exports assigned non-attempts and the same primary/conditional outcome as run detail', () => {
+    const dir = join(baseDir, 'assigned');
+    mkdirSync(join(dir, 'grade-current', 'out'), { recursive: true });
+    writeFileSync(join(dir, 'current.json'), JSON.stringify({
+      arm: 'current', model: 'measured-model', config: { taskIds: ['a', 'b', 'c'] },
+      perTask: [{ instanceId: 'a', stopReason: 'end_turn' }],
+    }));
+    writeFileSync(join(dir, 'grade-current', 'out', 'eval_results.json'), JSON.stringify({ a: true }));
+    const b = buildExportBundle('assigned', { baseDir })!;
+    expect(b.taskIds).toEqual(['a', 'b', 'c']);
+    expect(b.taskCount).toBe(3);
+    expect(b.predictions).toHaveLength(3);
+    expect(b.outcomes[1]).toMatchObject({ instanceId: 'b', taskStatus: 'todo', resolved: null });
+    expect(b.summary).toMatchObject({ taskCount: 3, attemptedCount: 1, absentCount: 2, resolvedPct: 1 / 3, conditionalResolvedPct: 1 });
+    expect(b.assignmentIdentityComplete).toBe(true);
+    expect(b.readme).toContain('Primary assigned outcome: 1/3');
+    expect(b.readme).toContain('Conditional graded quality: 1/1');
+    expect(b.readme).toContain('measured-model');
+    expect(b.readme).not.toContain('Model: opus');
+  });
+
+  it('preserves missing grader measurement and unknown legacy assignment identity', () => {
+    const dir = join(baseDir, 'missing-grade');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'current.json'), JSON.stringify({
+      arm: 'current', taskCount: 3, perTask: [{ instanceId: 'a', stopReason: 'end_turn' }],
+    }));
+    const b = buildExportBundle('missing-grade', { baseDir })!;
+    expect(b.summary).toMatchObject({ taskCount: 3, resolvedPct: null, missingGradeCount: 1 });
+    expect(b.assignmentIdentityComplete).toBe(false);
+    expect(b.readme).toContain('Primary assigned outcome: inconclusive');
+    expect(b.readme).toContain('Recorded source model: unknown');
+  });
 });

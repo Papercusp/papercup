@@ -19,6 +19,7 @@
  * Schema: migration 844 (cascade_cursor + cascade_digest on consult_state).
  */
 import type { Sql } from 'postgres';
+import { randomUUID } from 'node:crypto';
 import { HARD_BLOCKED_EXPIRY_MS, PROCEED_EXPIRY_MS } from './get-feedback-core';
 import { qualifyingScoreOf, snapshotCandidateQualifies } from './relevance-router';
 import { consultResponderVerbMenu } from './responder-verb-menu';
@@ -263,7 +264,111 @@ export type CascadeDispatch = (opts: {
    *  dispatcher's verification wait, and the reply gate refuses an author the
    *  row does not name yet. The post-dispatch stamp stays as the backstop. */
   onAnsweringOwner?: (answeringOwnerId: string) => void | Promise<void>;
-}) => Promise<{ woke: number; answeringOwnerId?: string | null }>;
+}) => Promise<{ woke: number; answeringOwnerId?: string | null; pending?: boolean }>;
+
+/** Accept a cascade delivery on the existing consult row. The cursor has
+ * already moved, so the previous responder cannot replay their disposition.
+ * Only the launch copy is queued; selection and expiry remain authoritative. */
+export async function queueCascadeDispatch(
+  sql: Sql, workspaceId: string, opts: Parameters<CascadeDispatch>[0],
+): Promise<boolean> {
+  const pending = {
+    version: 1, responder: opts.responder, summary: opts.summary, body: opts.body,
+    ...(opts.evidence ? { evidence: opts.evidence } : {}), leaseToken: null, leaseUntil: null,
+  };
+  const rows = await sql`
+    UPDATE harness_shared.consult_state
+       SET routing = jsonb_set(routing, '{cascadeDispatch}',
+             ${sql.json(pending as never)}::jsonb || jsonb_build_object('cursor', cascade_cursor))
+     WHERE workspace_id = ${workspaceId} AND conversation_id = ${opts.conversationId}
+       AND responder_id = ${opts.responder} AND closed_at IS NULL
+       AND state IN ('awaiting_responder', 'active')
+       AND routing #>> ARRAY['selection', 'selected', cascade_cursor::text, 'ownerId'] = ${opts.responder}
+    RETURNING conversation_id`;
+  return rows.length > 0;
+}
+
+/** Recover the queued launch using the request lifecycle's bounded CAS lease.
+ * The dispatcher must check isCurrent immediately before its spawn seam. An
+ * answer-owner reservation prevents replay after process death: the existing
+ * silent-answerer detector then settles a reserved slot that never launched. */
+export async function continueCascadeDispatchCore(
+  workspaceId: string, conversationId: string,
+  deps: { getSql: () => Sql; now?: () => Date;
+    dispatch: (isCurrent: () => Promise<boolean>) => CascadeDispatch },
+): Promise<boolean> {
+  const sql = deps.getSql();
+  const now = () => deps.now?.() ?? new Date();
+  const token = randomUUID();
+  const rows = await sql<Array<{ cascade_cursor: number; routing: { cascadeDispatch: {
+    responder: string; summary: string; body: string; evidence?: CascadeSelectionEntry['evidence']; attempts?: number;
+  } } }>>`
+    UPDATE harness_shared.consult_state
+       SET routing = jsonb_set(routing, '{cascadeDispatch}', (routing->'cascadeDispatch') ||
+         ${sql.json({ leaseToken: token, leaseUntil: new Date(now().getTime() + 120_000).toISOString() } as never)}::jsonb)
+     WHERE workspace_id = ${workspaceId} AND conversation_id = ${conversationId}
+       AND closed_at IS NULL AND state IN ('awaiting_responder', 'active')
+       AND routing #>> '{cascadeDispatch,version}' = '1'
+       AND (routing #>> '{cascadeDispatch,cursor}')::int = cascade_cursor
+       AND routing #>> '{cascadeDispatch,responder}' = responder_id
+       AND routing #>> ARRAY['selection', 'selected', cascade_cursor::text, 'answeringOwnerId'] IS NULL
+       AND COALESCE((routing #>> '{cascadeDispatch,leaseUntil}')::timestamptz, '-infinity'::timestamptz) <= ${now().toISOString()}::timestamptz
+    RETURNING cascade_cursor, routing`;
+  const row = rows[0];
+  if (!row) return false;
+  const pending = row.routing.cascadeDispatch;
+  const isCurrent = async () => {
+    const current = await sql`
+      SELECT conversation_id FROM harness_shared.consult_state
+       WHERE workspace_id = ${workspaceId} AND conversation_id = ${conversationId}
+         AND closed_at IS NULL AND state IN ('awaiting_responder', 'active')
+         AND cascade_cursor = ${row.cascade_cursor} AND responder_id = ${pending.responder}
+         AND routing #>> '{cascadeDispatch,leaseToken}' = ${token}
+         AND (routing #>> '{cascadeDispatch,leaseUntil}')::timestamptz > ${now().toISOString()}::timestamptz`;
+    return current.length > 0;
+  };
+  try {
+    const result = await deps.dispatch(isCurrent)({
+      responder: pending.responder, conversationId, summary: pending.summary, body: pending.body,
+      ...(pending.evidence ? { evidence: pending.evidence } : {}),
+      onAnsweringOwner: async (owner) => {
+        if (!(await isCurrent())) throw new Error('consult-cascade-dispatch-lease-lost');
+        const stamped = await sql`
+          UPDATE harness_shared.consult_state
+             SET routing = jsonb_set(routing,
+               ARRAY['selection', 'selected', ${String(row.cascade_cursor)}, 'answeringOwnerId'], to_jsonb(${owner}::text))
+           WHERE workspace_id = ${workspaceId} AND conversation_id = ${conversationId}
+             AND closed_at IS NULL AND cascade_cursor = ${row.cascade_cursor}
+             AND routing #>> '{cascadeDispatch,leaseToken}' = ${token}
+          RETURNING conversation_id`;
+        if (!stamped.length) throw new Error('consult-cascade-dispatch-lease-lost');
+      },
+    });
+    // A refusal has no answering session. Make it due now so the maintained
+    // expiry path advances/settles it and emits the requester event, rather
+    // than waiting a whole new TTL for a responder that cannot arrive.
+    await sql`
+      UPDATE harness_shared.consult_state
+         SET routing = CASE WHEN ${result.woke === 0 && !result.answeringOwnerId}::boolean
+               THEN (routing - 'cascadeDispatch') #- ARRAY['selection', 'selected', ${String(row.cascade_cursor)}, 'answeringOwnerId']
+               ELSE routing - 'cascadeDispatch' END,
+             expires_at = CASE WHEN ${result.woke === 0 && !result.answeringOwnerId}::boolean
+               THEN ${now().toISOString()}::timestamptz - interval '1 millisecond' ELSE expires_at END
+       WHERE workspace_id = ${workspaceId} AND conversation_id = ${conversationId}
+         AND cascade_cursor = ${row.cascade_cursor} AND closed_at IS NULL
+         AND routing #>> '{cascadeDispatch,leaseToken}' = ${token}`;
+  } catch (error) {
+    await sql`
+      UPDATE harness_shared.consult_state
+         SET routing = jsonb_set(routing, '{cascadeDispatch}', (routing->'cascadeDispatch') ||
+           ${sql.json({ leaseToken: null, leaseUntil: new Date(now().getTime() + 30_000).toISOString(),
+             attempts: (pending.attempts ?? 0) + 1, lastError: String(error).slice(0, 500) } as never)}::jsonb)
+       WHERE workspace_id = ${workspaceId} AND conversation_id = ${conversationId}
+         AND cascade_cursor = ${row.cascade_cursor} AND routing #>> '{cascadeDispatch,leaseToken}' = ${token}`;
+    throw error;
+  }
+  return true;
+}
 
 export interface AdvanceCascadeParams {
   workspaceId: string;
@@ -294,6 +399,8 @@ export interface AdvanceCascadeParams {
 
 export interface AdvanceCascadeResult {
   advanced: boolean;
+  /** Launch accepted durably; no answering session is claimed yet. */
+  pending?: boolean;
   /** True when the menu had no next entry — the caller owns the terminal
    * transition (decline-close / expire); this helper only records the event. */
   exhausted: boolean;
@@ -618,6 +725,9 @@ export async function advanceCascade(
           // first reply is accepted. It does not prove launch: only the
           // dispatch result can distinguish that reservation from a failed
           // spawn. A failed slot is cleared by the next CAS below.
+          if (r.pending) return { advanced: true, exhausted: false, raced: false,
+            next: { ownerId: first.ownerId, via: first.via }, woke: 0, pending: true,
+            ...(sel.refill ? {} : { refilled: true }) };
           if (woke === 0 && !r.answeringOwnerId) {
             const result = await skipUndispatched(first.ownerId, cursorIdx, updatedSnap, expiresAt);
             return { ...result, ...(sel.refill ? {} : { refilled: true }) };
@@ -741,6 +851,8 @@ export async function advanceCascade(
     woke = r.woke;
     // Backstop, on the answering identity and never on `woke` — as above.
     await stampAnsweringOwner(sql, params, nextIdx, r.answeringOwnerId);
+    if (r.pending) return { advanced: true, exhausted: false, raced: false,
+      next: { ownerId: next.ownerId, via: next.via }, woke: 0, pending: true };
     if (woke === 0 && !r.answeringOwnerId) {
       return skipUndispatched(next.ownerId, nextIdx, params.routing, expiresAt);
     }

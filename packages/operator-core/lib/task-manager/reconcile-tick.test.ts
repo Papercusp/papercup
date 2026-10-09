@@ -2,6 +2,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { TaskRow, TaskState } from './types';
 import type { ScanResult } from './scan';
 import type { ScannedProcess } from './reconcile';
+import { existsSync } from 'node:fs';
+import { mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { ramTmpRoot } from '@papercusp/orchestrator';
 
 const store = vi.hoisted(() => ({
   touched: [] as unknown[],
@@ -41,8 +45,63 @@ vi.mock('./store', () => ({
   residueTaskId: (p: string) => `u${p.replace(/[^a-z0-9]/g, '').slice(0, 12)}`,
 }));
 
-const { reconcileTick, resetNotifyDebounce } = await import('./reconcile-tick');
+const { reconcileTick, resetNotifyDebounce, cleanupEndedBrowserDirectory } = await import('./reconcile-tick');
 const { scanProcesses } = await import('./scan');
+
+describe('dead managed browser directory receipts', () => {
+  async function fixture() {
+    const cwd = await mkdtemp(join(ramTmpRoot(), 'pc-browser-'));
+    const task = row({ taskId: 'browser-cleanup-task', class: 'browser', scopeUnit: null,
+      pid: 2147483647, processIdentity: 'old-browser-identity', cwd,
+      detail: { browserSessionId: 'private-browser-id' } });
+    await writeFile(join(cwd, '.browser-task.json'), JSON.stringify({
+      taskId: task.taskId, browserSessionId: task.detail.browserSessionId, workspaceId: task.workspaceId,
+    }));
+    return { cwd, task };
+  }
+  it('removes only the matching directory after the exact kernel lifetime ends', async () => {
+    const { cwd, task } = await fixture();
+    try {
+      await cleanupEndedBrowserDirectory(task, () => task.processIdentity!);
+      expect(existsSync(cwd)).toBe(true);
+      await cleanupEndedBrowserDirectory(task, () => 'recycled-pid-identity');
+      expect(existsSync(cwd)).toBe(true);
+      await cleanupEndedBrowserDirectory(task, () => null);
+      expect(existsSync(cwd)).toBe(false);
+      await cleanupEndedBrowserDirectory(task, () => null); // Idempotent next tick.
+    } finally { await rm(cwd, { recursive: true, force: true }); }
+  });
+  it('refuses mismatched task/workspace/session receipts and non-browser rows', async () => {
+    const { cwd, task } = await fixture();
+    try {
+      for (const changed of [{ taskId: 'other' }, { workspaceId: 'other' },
+        { detail: { browserSessionId: 'other' } }, { class: 'bash-job' as const }]) {
+        await cleanupEndedBrowserDirectory({ ...task, ...changed }, () => null);
+        expect(existsSync(cwd)).toBe(true);
+      }
+    } finally { await rm(cwd, { recursive: true, force: true }); }
+  });
+  it('refuses a symlink even when it points at a matching receipt', async () => {
+    const { cwd, task } = await fixture(); const link = cwd + 'link';
+    try {
+      await symlink(cwd, link);
+      await cleanupEndedBrowserDirectory({ ...task, cwd: link }, () => null);
+      expect(existsSync(cwd)).toBe(true); expect(existsSync(link)).toBe(true);
+    } finally { await rm(link, { force: true }); await rm(cwd, { recursive: true, force: true }); }
+  });
+  it('keeps the receipt on a degraded scan, then cleans before terminal persistence on a healthy tick', async () => {
+    const { cwd, task } = await fixture();
+    try {
+      await reconcileTick({ listLive: async () => [task], graceMs: 0, notify: async () => {},
+        scan: () => scanResult([], { ownedTruncated: true }) });
+      expect(existsSync(cwd)).toBe(true);
+      expect(store.stranded).not.toContainEqual(expect.objectContaining({ taskId: task.taskId }));
+      await reconcileTick({ listLive: async () => [task], graceMs: 0, notify: async () => {}, scan: () => scanResult([]) });
+      expect(existsSync(cwd)).toBe(false);
+      expect(store.stranded).toContainEqual(expect.objectContaining({ taskId: task.taskId }));
+    } finally { await rm(cwd, { recursive: true, force: true }); }
+  });
+});
 
 const OURS = '/user.slice/user@1000.service/papercusp.slice';
 

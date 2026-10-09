@@ -88,7 +88,7 @@ export default defineTool({
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
     // Heavy prod seams — imported per-call, never at registration.
-    const [{ getOrgPg }, { consultReplyCore }, conversations, { notifyAgents }, { makeConsultReachDispatcher }, { reportIdleRecipients }] =
+    const [{ getOrgPg }, { consultReplyCore }, conversations, { notifyAgents }, { makeDeferredConsultReachDispatcher }, { reportIdleRecipients }] =
       await Promise.all([
         import('@papercusp/db-org'),
         import('../../consult/consult-verbs-core'),
@@ -144,7 +144,7 @@ export default defineTool({
         // D-011 seam 2 of 2: a cascade advance addresses an expert who is NOT
         // in this conversation — fork/convert a fresh answering session from
         // their transcript, never a wake.
-        dispatch: makeConsultReachDispatcher({
+        dispatch: makeDeferredConsultReachDispatcher({
           workspaceId,
           harnessSlug: ctx.harnessSlug && ctx.harnessSlug !== '*' ? ctx.harnessSlug : null,
           launchedBy: identity.ownerId,

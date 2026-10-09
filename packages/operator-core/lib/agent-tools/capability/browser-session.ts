@@ -108,6 +108,11 @@ export async function launchBrowserProcess(ctx: UnifiedToolContext, root: string
     detail: { surface: 'capability:fetch', browserSessionId: id, restartRecovery: 'unrecoverable' } }, { workspaceId: ctx.workspaceId }));
   let server: BrowserServer | undefined;
   try {
+    // The reconciler survives a request-worker SIGKILL. Bind its cleanup
+    // receipt to this exact directory and ledger row before starting Chromium.
+    await writeFile(join(root, '.browser-task.json'), JSON.stringify({
+      taskId: row.taskId, browserSessionId: id, workspaceId: ctx.workspaceId,
+    }), { flag: 'wx', mode: 0o600 });
     server = await browserStartupStage(ctx, 'chromium-launch', () => chromium.launchServer({ executablePath: wrapper, headless: true, host: '127.0.0.1', timeout: remaining(),
       env: { ...scrubExecEnv(process.env), TMPDIR: root },
       args: ['--force-webrtc-ip-handling-policy=disable_non_proxied_udp', '--disable-features=WebTransport', '--enable-logging=stderr'] }));

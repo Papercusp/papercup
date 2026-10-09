@@ -52,6 +52,7 @@ describe('scorecards:emit preserved grading baseline', () => {
     expect(captureImprovement).not.toHaveBeenCalled();
   });
   it.each([
+    { subject: undefined },
     { subject: { kind: 'pot', ref: 'foreign' } }, { rubricRevision: 32 }, { criteriaHash: 'b'.repeat(64) },
     { gradingAuditCurrentness: { state: 'stale' } },
     { missingKeys: ['missing'] }, { retracted: { at: '2026-10-09T11:00:00Z' } },

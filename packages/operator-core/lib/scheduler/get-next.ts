@@ -317,12 +317,19 @@ const FIELD_MAP: Record<string, FieldMap> = {
   plan: {
     col: (sql) => sql`COALESCE(
       source_plan_slug,
-      payload->'plan_item'->>'plan_slug',
-      payload->'plan_item'->>'slug',
-      payload->'planItem'->>'plan_slug',
-      payload->'planItem'->>'slug',
-      payload->>'source_plan_slug'
+      CASE WHEN payload ?| ${['plan_item', 'planItem', 'source_plan_slug']}::text[] THEN
+        COALESCE(
+          payload->'plan_item'->>'plan_slug',
+          payload->'plan_item'->>'slug',
+          payload->'planItem'->>'plan_slug',
+          payload->'planItem'->>'slug',
+          payload->>'source_plan_slug'
+        )
+      END
     )`,
+    // Most issue payloads have no plan keys. Their large TOASTed bodies were read
+    // separately by each fallback above. One top-level existence check skips those
+    // reads while preserving column precedence, every fallback and NULL semantics.
     kind: 'scalar-text',
   },
   // EI-20288961198837165: plan-item provenance is split across the indexed physical column and

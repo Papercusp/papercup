@@ -42,6 +42,31 @@ import {
   upsertUnaccounted,
 } from './store';
 import { isLiveOwnedState, taskIdFromScopeUnit, type TaskRow, type TaskState } from './types';
+import { lstat, readFile, realpath, rm } from 'node:fs/promises';
+import { basename, dirname, isAbsolute, join } from 'node:path';
+import { ramTmpRoot } from '@papercusp/orchestrator';
+import { readProcessIdentity } from '../process-identity';
+
+/** Normal SDK cleanup is in the worker; its SIGKILL leaves this durable receipt. */
+export async function cleanupEndedBrowserDirectory(row: TaskRow,
+  readIdentity: typeof readProcessIdentity = readProcessIdentity): Promise<void> {
+  if (row.class !== 'browser' || !row.pid || !row.processIdentity || !row.cwd ||
+      !isAbsolute(row.cwd) || !/^pc-browser-[A-Za-z0-9]+$/.test(basename(row.cwd)) ||
+      typeof row.detail?.browserSessionId !== 'string' || readIdentity(row.pid) !== null) return;
+  try {
+    if ((await realpath(dirname(row.cwd))) !== (await realpath(ramTmpRoot()))) return;
+    const info = await lstat(row.cwd);
+    if (!info.isDirectory() || info.isSymbolicLink()) return;
+    const receipt = JSON.parse(await readFile(join(row.cwd, '.browser-task.json'), 'utf8'));
+    if (receipt.taskId !== row.taskId || receipt.browserSessionId !== row.detail.browserSessionId ||
+        receipt.workspaceId !== row.workspaceId || readIdentity(row.pid) !== null) return;
+    await rm(row.cwd, { recursive: true, force: true });
+  } catch (error) {
+    // Missing cleanup is idempotent. Other IO failures leave the row live so
+    // the existing reconciler can retry rather than losing the cleanup receipt.
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+}
 
 export interface ReconcileTickDeps {
   scan?: (opts: ScanOptions) => ScanResult | Promise<ScanResult>;
@@ -253,6 +278,11 @@ export async function reconcileTick(deps: ReconcileTickDeps = {}): Promise<Recon
   let unaccountedPersisted = 0;
   let residueCleared = 0;
   if (!degraded) {
+    // Clean before terminal persistence; failure must remain eligible next tick.
+    for (const verdict of [...result.stranded, ...result.endedUnobserved]) {
+      const row = byTaskId.get(verdict.taskId);
+      if (row) await cleanupEndedBrowserDirectory(row);
+    }
     strandedCount = await markStranded(result.stranded);
     const endedWithTerminal = result.endedUnobserved.map((verdict) => {
       const scopeUnit = byTaskId.get(verdict.taskId)?.scopeUnit;

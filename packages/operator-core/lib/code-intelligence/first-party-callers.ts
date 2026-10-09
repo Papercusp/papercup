@@ -32,11 +32,12 @@
  * operator runs it off the main thread (first-party-callers-offthread.ts).
  */
 import { spawnSync } from 'node:child_process';
-import { accessSync, constants as fsConstants } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { accessSync, constants as fsConstants, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { delimiter, isAbsolute, join, relative } from 'node:path';
 import type * as TsModule from 'typescript';
-import type { CodeIntelAnswer, SymbolSite } from './contracts';
+import { versionedSymbolIdentity, type CodeIntelAnswer, type CodeIntelSourceEvidence, type CodeIntelSourceFile, type SymbolSite } from './contracts.ts';
 // Explicit `.ts`: the off-thread worker runs this graph under Node's native type
 // stripping, which resolves no extension-less relative import.
 import {
@@ -81,6 +82,8 @@ export interface FirstPartyCallersQuery {
   readonly ts: Ts;
   /** Absolute repository root; site paths are relative to it. */
   readonly root: string;
+  /** Registry identity when the dispatching repository registry supplies one. */
+  readonly repositoryId?: string;
   readonly name: string;
   readonly limit?: number;
   /**
@@ -266,7 +269,7 @@ function answer(
   name: string,
   started: number,
   now: () => number,
-  parts: { sites?: SymbolSite[]; total?: number; error?: string | null; attribution?: FirstPartyCallersAttribution | null; limitations?: string[] },
+  parts: { sites?: SymbolSite[]; total?: number; error?: string | null; attribution?: FirstPartyCallersAttribution | null; limitations?: string[]; evidence?: CodeIntelSourceEvidence },
 ): FirstPartyCallersAnswer {
   const sites = parts.sites ?? [];
   const total = parts.total ?? sites.length;
@@ -297,6 +300,7 @@ function answer(
     latencyMs: Math.round(now() - started),
     error,
     attribution: parts.attribution ?? null,
+    ...(parts.evidence ? { evidence: parts.evidence } : {}),
   };
 }
 
@@ -373,8 +377,39 @@ export function firstPartyCallers(q: FirstPartyCallersQuery): FirstPartyCallersA
     }
 
     const all = [...resolved.sort(bySite), ...unattributed.sort(bySite)];
+    const reported = all.slice(0, limit);
+    // Hash the exact compiler snapshots, including re-export stubs. Reading disk
+    // after the worker answers could attach a different version to the old sites.
+    const sources: CodeIntelSourceFile[] = program.getSourceFiles().flatMap(sf => {
+      const path = posix(relative(q.root, sf.fileName));
+      if (isExternalPath(path) || program.isSourceFileDefaultLibrary(sf)) return [];
+      return [{ path, contentHash: createHash('sha256').update(sf.text).digest('hex'),
+        language: /\.[cm]?jsx?$/.test(path) ? 'javascript' : 'typescript',
+        representation: tree.rootFiles.has(sf.fileName) ? 'full-source' as const : 'reexport-stub' as const }];
+    }).sort((a, b) => a.path.localeCompare(b.path));
+    const repositoryId = q.repositoryId ?? `local-root:${createHash('sha256').update(realpathSync(q.root)).digest('hex')}`;
+    const sourceByPath = new Map(sources.map(source => [source.path, source]));
+    const supporting = new Set(reported.map(site => site.path));
+    const evidence: CodeIntelSourceEvidence = {
+      schemaVersion: 1,
+      sourceScope: { repositoryId, identityKind: q.repositoryId ? 'registry' : 'local-root',
+        sourceFingerprint: createHash('sha256').update(JSON.stringify(sources)).digest('hex'),
+        paths: scope.paths, supportingFiles: sources.filter(source => supporting.has(source.path)) },
+      graphScope: { basis: 'compiler-project', sourceCompleteness: 'unverified', limitations: [
+        ...partial, 'Only candidate files are full compiler inputs; other reached files are re-export stubs.',
+        'Compiler or syntactic relationships do not establish runtime execution; unresolved target bindings remain unknown.' ] },
+      languageCapabilities: [...new Set(sources.map(source => source.language))].map(language =>
+        ({ language, intent: 'callers', status: 'compiler-backed' })),
+      siteIdentities: reported.map((site, siteIndex) => ({ siteIndex, sourcePath: site.path,
+        contentHash: sourceByPath.get(site.path)?.contentHash ?? null,
+        versionedSymbolId: versionedSymbolIdentity(repositoryId, site, sourceByPath.get(site.path)) })),
+      relationships: reported.map((site, siteIndex) => ({ siteIndex, kind: 'callers',
+        origin: resolvedKeys.has(keyOf(site)) ? 'compiler' : 'syntax',
+        knowledge: resolvedKeys.has(keyOf(site)) ? 'observed' : 'unknown', runtimeExecution: 'unknown' })),
+    };
     return answer(q.name, started, now, {
-      sites: all.slice(0, limit),
+      sites: reported,
+      evidence,
       total: all.length,
       limitations: partial,
       attribution: {

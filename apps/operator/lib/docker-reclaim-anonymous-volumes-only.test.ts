@@ -40,8 +40,10 @@
  * mutated COPY outside the tree (CLAUDE.md mutation-probe tier 2) — never by
  * mutating the shared tree, where the git-sync sweep can commit the mutant.
  */
-import { existsSync, readFileSync, statSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { existsSync, readFileSync, statSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import { resolve, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const SCRIPT = process.env.PROBE_SCRIPT
@@ -155,5 +157,49 @@ describe('WI-39305 — docker reclaim removes ONLY anonymous volumes', () => {
       expect(pattern.test('F078706E316D7446C30979D5DEFA2D2274F89615FAFF4CCA3C28F9405B218AE2')).toBe(false); // uppercase
       expect(pattern.test(`${REAL_ANONYMOUS_VOLUMES[0]}a`)).toBe(false); // too long
     });
+  });
+});
+
+describe('Podman stores use the existing guarded image policy', () => {
+  const runFixture = (overrides: Record<string, string> = {}) => {
+    const root = mkdtempSync(join(tmpdir(), 'reclaim-container-fixture-'));
+    const log = join(root, 'calls');
+    const executable = (name: string, body: string) => writeFileSync(join(root, name), '#!/bin/bash\n' + body, { mode: 0o755 });
+    try {
+      executable('docker', 'exit 1\n');
+      executable('sudo', '[[ "$1" == "-n" ]] && shift\nexport STORE=rootful\nexec "$@"\n');
+      executable('podman', 'if [[ "$1" == "info" ]]; then exit "${PODMAN_DOWN:-0}"; fi\nprintf "%s %s\\n" "${STORE:-rootless}" "$*" >>"$FIXTURE_LOG"\n');
+      executable('df', 'echo 100000000000\n');
+      const output = execFileSync('bash', [SCRIPT], { encoding: 'utf8', timeout: 5000,
+        env: { ...process.env, PATH: root + ':' + process.env.PATH, FIXTURE_LOG: log,
+          DRY_RUN: '0', SKIP_IMAGES: '0', IMAGE_MAX_AGE: '168h', RECLAIM_MIN_FREE_PCT: '101', ...overrides } });
+      return { output, calls: existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n') : [] };
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  };
+
+  it('collects only old unused images in both Podman stores even when Docker is unavailable', () => {
+    const result = runFixture();
+    expect(result.calls).toEqual([
+      'rootless image prune -af --filter until=168h',
+      'rootful image prune -af --filter until=168h',
+    ]);
+    expect(result.calls.join('\n')).not.toMatch(/--external|volume|container|system/);
+  });
+
+  it('previews both stores without invoking either prune', () => {
+    const result = runFixture({ DRY_RUN: '1' });
+    expect(result.calls).toEqual([]);
+    expect(result.output).toContain('DRY_RUN would run: podman image prune -af --filter until=168h');
+    expect(result.output).toContain('DRY_RUN would run: sudo -n podman image prune -af --filter until=168h');
+  });
+
+  it('honors the existing image-sweep kill switch for both Podman stores', () => {
+    expect(runFixture({ SKIP_IMAGES: '1' }).calls).toEqual([]);
+  });
+
+  it('leaves unavailable Podman stores alone', () => {
+    const result = runFixture({ PODMAN_DOWN: '1' });
+    expect(result.calls).toEqual([]);
+    expect(result.output).toContain('podman-rootful unreachable');
   });
 });

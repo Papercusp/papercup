@@ -10,7 +10,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { REPO_ROOT } from '../../agent-tools/docs/_repo-paths';
-import { getRollout, getPrereg, listRunResults } from './store';
+import { buildRunReports, getRollout, getPrereg, listRunResults } from './store';
 import { listFleetRunsFull, getCoordTrace } from './fleet';
 import type { DbScope } from './db';
 
@@ -86,6 +86,8 @@ export async function exportRunBundle(
     runId,
     preregHash: prereg?.preregHash ?? null,
     preregFile: prereg?.filePath ?? null,
+    preregistration: prereg,
+    reports: buildRunReports(results, prereg),
     suites: [...suites].sort(),
     arms: [...arms].sort(),
     seeds: [...seeds].sort((a, b) => a - b),

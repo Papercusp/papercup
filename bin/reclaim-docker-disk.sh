@@ -78,6 +78,9 @@
 #                             healthy box a cheap no-op)
 #
 # Run hourly via the papercup-docker-reclaim.timer systemd user timer.
+# The same actor also covers Podman's separate rootless/rootful image stores.
+# Podman images use IMAGE_MAX_AGE and native container/build reference protection;
+# never pass --external or prune Podman containers/volumes/system storage.
 # ─────────────────────────────────────────────────────────────────────────────
 set -uo pipefail
 
@@ -98,8 +101,8 @@ if ! docker info >/dev/null 2>&1; then
   if sudo -n docker info >/dev/null 2>&1; then
     DOCKER=(sudo -n docker)
   else
-    log "docker unreachable (daemon down, absent, or no non-interactive sudo) — no-op"
-    exit 0
+    log "docker unreachable — skipping Docker; checking Podman image stores"
+    DOCKER=()
   fi
 fi
 
@@ -130,6 +133,7 @@ run() {
 }
 
 # ── 1. Build cache ───────────────────────────────────────────────────────────
+if (( ${#DOCKER[@]} > 0 )); then
 # The single safest reclaim: pure derived data, regenerated on demand. On the
 # measured run this was 34.85 GB with zero active references.
 log "pruning build cache older than ${BUILD_CACHE_MAX_AGE}"
@@ -172,6 +176,31 @@ while IFS= read -r vol; do
 done < <("${DOCKER[@]}" volume ls -qf dangling=true 2>/dev/null | grep -E '^[0-9a-f]{64}$')
 
 log "anonymous volumes removed=${anon_removed} skipped_too_young=${anon_skipped_young} (named volumes never touched)"
+fi
+
+# Podman does not share Docker's daemon/storage or its anonymous-volume contract.
+# Its image-prune command protects container AND external build references unless
+# --external is passed. Keep the same image age floor; never collect its volumes.
+reclaim_podman_images() {
+  local label="$1"
+  shift
+  if ! timeout 30s "$@" info >/dev/null 2>&1; then
+    log "$label unreachable — skipping image store"
+    return 0
+  fi
+  if [[ "$SKIP_IMAGES" == "1" ]]; then
+    log "SKIP_IMAGES=1 — skipping $label image sweep"
+    return 0
+  fi
+  log "pruning $label unreferenced images older than ${IMAGE_MAX_AGE}"
+  run "$@" image prune -af --filter "until=${IMAGE_MAX_AGE}"
+}
+
+if command -v podman >/dev/null 2>&1; then
+  reclaim_podman_images podman-rootless podman
+  # Rootful storage is a different store even when rootless `podman info` works.
+  reclaim_podman_images podman-rootful sudo -n podman
+fi
 
 # ── Report the df delta, never docker's figure ───────────────────────────────
 AFTER="$(avail_bytes)"

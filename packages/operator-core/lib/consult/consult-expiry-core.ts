@@ -154,6 +154,8 @@ function currentSelectionAnswerer(
 }
 
 export interface ExpirySweepDeps {
+  /** Resume a durably queued disposition's next launch. */
+  resumeCascadeDispatch?: (workspaceId: string, conversationId: string) => Promise<boolean>;
   /** Resume a durably accepted routing row through the same production core. */
   resumeRequest?: (workspaceId: string, conversationId: string) => Promise<boolean>;
   getSql: () => Sql;
@@ -250,6 +252,19 @@ export async function sweepExpiredConsults(deps: ExpirySweepDeps): Promise<Expir
   const nowIso = (deps.now ? deps.now() : new Date()).toISOString();
   const limit = deps.limit ?? EXPIRY_SWEEP_LIMIT;
 
+  if (deps.resumeCascadeDispatch) {
+    const pending = await sql<Array<{ workspace_id: string; conversation_id: string }>>`
+      SELECT workspace_id, conversation_id FROM harness_shared.consult_state
+       WHERE closed_at IS NULL AND state IN ('awaiting_responder', 'active')
+         AND routing #>> '{cascadeDispatch,version}' = '1'
+         AND COALESCE((routing #>> '{cascadeDispatch,leaseUntil}')::timestamptz, '-infinity'::timestamptz) <= ${nowIso}::timestamptz
+       ORDER BY updated_at LIMIT ${Math.min(limit, 20)}`;
+    for (const row of pending) {
+      try { await deps.resumeCascadeDispatch(row.workspace_id, row.conversation_id); }
+      catch { /* persisted retry state is owned by the cascade continuation */ }
+    }
+  }
+
   if (deps.resumeRequest) {
     const pending = await sql<{ workspace_id: string; conversation_id: string }[]>`
       SELECT workspace_id, conversation_id FROM harness_shared.consult_state
@@ -284,6 +299,8 @@ export async function sweepExpiredConsults(deps: ExpirySweepDeps): Promise<Expir
          OR (state = 'awaiting_responder' AND exchanges_used = 0 AND expires_at IS NOT NULL
              AND ${nowIso}::timestamptz >= created_at + (expires_at - created_at) / 2)
        )
+       AND NOT (routing #>> '{cascadeDispatch,version}' = '1'
+         AND COALESCE((routing #>> '{cascadeDispatch,leaseUntil}')::timestamptz, '-infinity'::timestamptz) > ${nowIso}::timestamptz)
      ORDER BY expires_at
      LIMIT ${limit}
   `) as unknown as DueConsultRow[];

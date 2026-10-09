@@ -189,15 +189,33 @@ describe('goal rubric stewardship SQL', () => {
           ${sql.json({ lane: 'observation', _ei: { created_by: 'independent-grader' }, observation } as never)})`;
     };
     await insertCard('EI-owned-baseline', GOAL, baselineAt, card('fail'));
-    await sql`INSERT INTO harness_shared.work_items
+    const repairEvidence = { summary: 'Fixture repair verified', testsRun: 'Canonical fixture repair suite',
+      testResult: 'passed', verifiedHow: 'Recurrence guard failed before repair and passed after repair',
+      filesChanged: ['packages/operator-core/lib/goal-rubric-stewardship.test.ts'] };
+    // Honor migration 972's real content-identity floor. These synthetic matching
+    // blobs model a committed fixture repair; missing identity must stay proposed.
+    const committedEvidence = { ...repairEvidence, treeStamp: { contentIdentity: [{
+      path: repairEvidence.filesChanged[0], workingTreeBlobSha: 'a'.repeat(40), headBlobSha: 'a'.repeat(40),
+    }] } };
+    const insertRepair = async (id: string, evidence: unknown) => sql`INSERT INTO harness_shared.work_items
       (feature_id, workspace_id, harness_slug, item_kind, title, status, created_ts, updated_ts, closed_ts,
        goal_id, terminal_owner, authority, payload)
-      VALUES ('WI-12', ${WS}, 'papercusp', 'change', 'Verified fixture repair', 'done', ${baselineAt + 1000},
+      VALUES (${id}, ${WS}, 'papercusp', 'change', 'Fixture repair', 'done', ${baselineAt + 1000},
         ${repairedAt}, ${repairedAt}, ${GOAL}, 'fixture-builder', 'committed',
-        ${sql.json({ _completionEvidence: { summary: 'Fixture repair verified', testsRun: 'Canonical fixture repair suite',
-          testResult: 'passed', verifiedHow: 'Recurrence guard failed before repair and passed after repair',
-          filesChanged: ['packages/operator-core/lib/goal-rubric-stewardship.test.ts'] } } as never)})`;
+        ${sql.json({ _completionEvidence: evidence } as never)})`;
+    await insertRepair('WI-12', committedEvidence);
+    await insertRepair('WI-13', repairEvidence);
+    const repairAuthority = await sql<{ feature_id: string; authority: string }[]>`
+      SELECT feature_id, authority FROM harness_shared.work_items
+       WHERE workspace_id = ${WS} AND feature_id = ANY(${['WI-12', 'WI-13']}) ORDER BY feature_id`;
+    expect(repairAuthority, 'Migrated authority guard decides committed versus unproven repair').toEqual([
+      { feature_id: 'WI-12', authority: 'committed' }, { feature_id: 'WI-13', authority: 'proposed' },
+    ]);
     await insertCard('EI-owned-regrade', GOAL, regradedAt, card('pass', 'EI-owned-baseline'));
+    const unprovenBaseline = card('fail');
+    unprovenBaseline.ratings.quality.remediation = 'WI-13';
+    await insertCard('EI-unproven-baseline', GOAL, baselineAt, unprovenBaseline);
+    await insertCard('EI-unproven-regrade', GOAL, regradedAt, card('pass', 'EI-unproven-baseline'));
     await insertCard('EI-null-goal', null, regradedAt + 1, card('pass', 'EI-owned-baseline'));
     await insertCard('EI-other-goal', 'distinct-other-goal', regradedAt + 2, card('pass', 'EI-owned-baseline'));
     await insertCard('EI-owned-unsettled', GOAL, regradedAt + 3, card('pass', undefined, 'pending'));
@@ -223,6 +241,7 @@ describe('goal rubric stewardship SQL', () => {
       expect.objectContaining({ scorecardRef: 'EI-owned-regrade', baselineRef: 'EI-owned-baseline',
         repairRefs: ['WI-12'], status: 'verified' }),
       expect.objectContaining({ scorecardRef: 'EI-owned-unsettled', status: 'unverified' }),
+      expect.objectContaining({ scorecardRef: 'EI-unproven-regrade', repairRefs: ['WI-13'], status: 'unverified' }),
     ]));
     expect(reading.cycles.map(c => c.scorecardRef)).not.toContain('EI-null-goal');
     expect(reading.cycles.map(c => c.scorecardRef)).not.toContain('EI-other-goal');

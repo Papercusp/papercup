@@ -17,6 +17,7 @@ import { loadVendoredTypescript } from './typescript-service.ts';
 export interface FirstPartyCallersJob {
   readonly vendorDir: string;
   readonly root: string;
+  readonly repositoryId?: string;
   readonly name: string;
   readonly limit?: number;
   /** Repository-relative search roots; absent = the whole repository. */
@@ -31,7 +32,7 @@ const started = Date.now();
 let result: FirstPartyCallersAnswer;
 try {
   const ts = loadVendoredTypescript(job.vendorDir);
-  result = firstPartyCallers({ ts, root: job.root, name: job.name, limit: job.limit, paths: job.paths, rgPath: job.rgPath });
+  result = firstPartyCallers({ ts, root: job.root, repositoryId: job.repositoryId, name: job.name, limit: job.limit, paths: job.paths, rgPath: job.rgPath });
 } catch (error) {
   // Loading TypeScript is the one step firstPartyCallers does not guard itself.
   const why = error instanceof Error ? error.message : String(error);

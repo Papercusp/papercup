@@ -1865,6 +1865,39 @@ export function makeConsultReachDispatcher(
   };
 }
 
+/** Interactive disposition calls accept the next launch before returning.
+ * Recovery is owned by consult_state and the existing expiry sweep. */
+export function makeDeferredConsultReachDispatcher(ctx: ConsultDispatchContext) {
+  return async (opts: Parameters<ReturnType<typeof makeConsultReachDispatcher>>[0]) => {
+    const [{ getOrgPg }, { queueCascadeDispatch }] = await Promise.all([
+      import('@papercusp/db-org'), import('./cascade-core'),
+    ]);
+    if (!(await queueCascadeDispatch(getOrgPg().sql, ctx.workspaceId, opts))) {
+      return { woke: 0, answeringOwnerId: null };
+    }
+    void continueCascadeDispatchProd(ctx.workspaceId, opts.conversationId, ctx).catch(() => {});
+    return { woke: 0, pending: true };
+  };
+}
+
+export async function continueCascadeDispatchProd(
+  workspaceId: string, conversationId: string, context?: ConsultDispatchContext,
+): Promise<boolean> {
+  const [{ getOrgPg }, { continueCascadeDispatchCore }] = await Promise.all([
+    import('@papercusp/db-org'), import('./cascade-core'),
+  ]);
+  const sql = getOrgPg().sql;
+  const [conversation] = await sql<Array<{ harness_slug: string | null }>>`
+    SELECT harness_slug FROM harness_shared.coord_conversations
+     WHERE workspace_id = ${workspaceId} AND id = ${conversationId}`;
+  return continueCascadeDispatchCore(workspaceId, conversationId, {
+    getSql: () => sql,
+    dispatch: (isCurrent) => makeConsultReachDispatcher(context ?? {
+      workspaceId, harnessSlug: conversation?.harness_slug ?? null, launchedBy: 'system:consult-expiry-sweep',
+    }, { isConsultOpen: isCurrent }),
+  });
+}
+
 async function readPersistedReviewerModel(workspaceId: string, conversationId: string): Promise<ConsultReviewerModel | null> {
   const { getOrgPg } = await import('@papercusp/db-org');
   const [row] = await getOrgPg().sql<Array<{ policy: string | null; reviewer_model: unknown }>>`

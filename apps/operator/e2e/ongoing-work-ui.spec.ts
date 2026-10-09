@@ -282,6 +282,71 @@ for (const { kind, journey } of collectionJourneys) {
   });
 }
 
+test('Design C cockpit keeps saved priorities and rubric duties visible across desktop and mobile', async ({ page }) => {
+  const projects = await scopeFixture(page);
+  const goal = { ...current, status: 'paused', goalPackage: { ref: 'work-on-everything' } };
+  const ids = ['plan:papercusp/alpha', 'plan:papercusp/beta', 'plan:papercusp/mobile'];
+  const counts = { todo: 2, wip: 1, blocked: 0, needsHuman: 0, done: 3 };
+  const detail = { goal, holderLiveness: 'held', effectiveStatus: 'paused', waitingOnYouTotal: 31,
+    waitingOnYou: [{ id: 'WI-approval', title: 'Choose release scope' }],
+    activity: [{ id: 'WI-outcome', title: 'Search repair verified', status: 'done', closedAt: '2026-10-06T12:00:00Z' }],
+    goalData: { worklistHistory: [{ id: 'priority-edit', ref: ids[1], at: '2026-10-07T12:00:00Z', actor: 'human',
+      label: 'Added to this goal', detail: 'Owner selected Search reliability' }], collections: { worklist: {
+      selection: { ok: true, configured: true, policyVersion: 7,
+        collection: { source: 'active-workspace-plans', policy: 'worklist_policy', order: 'priority', selectable: true, defaultSelected: false },
+        policy: { order: ids, included: ids.slice(0, 2), excluded: [] },
+        items: ids.map((id, i) => ({ id, selected: i < 2 })), selected: ids.slice(0, 2) },
+      rows: ids.map((id, i) => ({ id, selected: i < 2, harness: 'papercusp', planSlug: ['alpha', 'beta', 'mobile'][i],
+        label: ['Cloud setup', 'Search reliability', 'Mobile workspace'][i], state: 'ready', reason: null,
+        counts: i === 1 ? null : counts })) } } } };
+  const sync = await stubSyncQueries(page, name => {
+    if (name === 'harnessProjects.lite') return projects;
+    if (name === 'advRoster.list') return [{ active: [], pending: [] }];
+    if (name === 'goals.list') return [{ goals: [goal], totalGoals: 1, goalPackages: [packageRow] }];
+    if (name === 'goals.detail') return [detail];
+    return headerRows(name);
+  });
+  const writes: string[] = [];
+  page.on('request', request => {
+    if (request.method() !== 'GET' && new URL(request.url()).pathname.startsWith('/api/admin/goals/')) writes.push(request.url());
+  });
+  await page.setViewportSize({ width: 1280, height: 900 });
+  const panel = page.getByTestId('work-on-everything-console');
+  await openHud(page, `/adv?tab=hud&scope=all&hudtab=goals&hudgoal=${goal.id}&welcome=0`, panel);
+  await sync.waitForServed(['goals.detail']);
+  const priorities = panel.getByRole('region', { name: 'Priority plans' });
+  await expect(priorities.getByTestId('ongoing-priority-row')).toHaveCount(2);
+  await expect(panel.getByRole('region', { name: 'Goal health' })).toContainText('Paused');
+  await expect(panel.getByRole('region', { name: 'Selected plan progress' })).toContainText('totals are partial');
+  await expect(panel.getByRole('region', { name: 'Needs you' })).toContainText('Showing 1 of 31 items');
+  const quality = panel.getByRole('region', { name: 'Rubric stewardship' });
+  for (const duty of ['Maintain rubric coverage', 'Improve rubric quality', 'Grade, improve and re-grade']) {
+    await expect(quality.getByRole('heading', { name: duty })).toBeVisible();
+  }
+  expect(await panel.evaluate(node => node.scrollWidth > node.clientWidth + 1)).toBe(false);
+  await page.screenshot({ path: test.info().outputPath('design-c-desktop.png') });
+  await panel.getByRole('button', { name: 'Browse all plans' }).click();
+  await expect(priorities.getByTestId('ongoing-priority-row')).toHaveCount(3);
+  await expect(panel.getByRole('button', { name: 'Add Mobile workspace' })).toHaveCount(0);
+  await panel.getByRole('button', { name: /^Edit priorities/ }).click();
+  await panel.getByRole('button', { name: 'Remove Cloud setup' }).click();
+  await expect(panel.getByRole('region', { name: 'Pending changes' })).toBeVisible();
+  await panel.getByRole('button', { name: 'Back to overview' }).click();
+  await expect(priorities.getByRole('button', { name: 'Cloud setup' })).toBeVisible();
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await panel.evaluate(node => node.scrollWidth > node.clientWidth + 1)).toBe(false);
+  await expect(panel.getByRole('button', { name: /^Edit priorities/ })).toBeInViewport();
+  await page.screenshot({ path: test.info().outputPath('design-c-mobile.png') });
+  const activity = panel.getByRole('region', { name: 'Recent activity' });
+  await activity.scrollIntoViewIfNeeded();
+  await expect(activity).toContainText('Added to this goal');
+  await expect(activity).toContainText('Search repair verified');
+  await panel.getByRole('button', { name: /^Edit priorities/ }).click();
+  await expect(panel.getByRole('button', { name: 'Add Cloud setup' })).toBeVisible();
+  await panel.getByRole('button', { name: 'Discard', exact: true }).click();
+  expect(writes).toEqual([]);
+});
+
 test('ongoing work stays visible across tabs, keeps ordinary goals, and opens the same detail', async ({ page }) => {
   const projects = await scopeFixture(page);
   const sync = await stubSyncQueries(page, (name) => {

@@ -64,9 +64,9 @@
  */
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
+import { readFile, statfs } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join, resolve, sep } from 'node:path';
+import { dirname, join, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { PSU_REQUEST_TIMEOUT_MS } from '../lib/mcp-proxy/budgets.mjs';
 import { AGENT_LAUNCH_CLIENT_TIMEOUT_MS } from '../../../packages/operator-core/lib/agent-kickoff/launch-budgets.mjs';
@@ -3314,17 +3314,44 @@ export async function importSdkModuleWithInstallAwareness(
   });
 }
 
+async function ptoolEnospcFilesystemDiagnostic(error, statfsImpl) {
+  if (error?.code !== 'ENOSPC' || typeof error.path !== 'string' || !error.path) {
+    return null;
+  }
+
+  const failedPath = error.path;
+  const samplePath = dirname(failedPath);
+  try {
+    const stats = await statfsImpl(samplePath, { bigint: true });
+    const blockSize = BigInt(stats.bsize);
+    const availableBytes = BigInt(stats.bavail) * blockSize;
+    const freeInodes = BigInt(stats.ffree);
+    return (
+      'ENOSPC filesystem sample captured after failure: ' +
+      `syscall=${error.syscall || 'unknown'}, failedPath=${failedPath}, samplePath=${samplePath}, ` +
+      `sampledAt=${new Date().toISOString()}, blockSize=${blockSize}, ` +
+      `availableBytes=${availableBytes}, freeInodes=${freeInodes}`
+    );
+  } catch (sampleError) {
+    return (
+      'ENOSPC filesystem sample unavailable after failure: ' +
+      `syscall=${error.syscall || 'unknown'}, failedPath=${failedPath}, samplePath=${samplePath}, ` +
+      `sampledAt=${new Date().toISOString()}, error=${errorDetail(sampleError)}`
+    );
+  }
+}
+
 /**
  * Load the transport implementation before starting the network handshake
  * retry budget. SDK imports can wait for install:safe's repo reader lease for
  * up to ten minutes; that wait is bootstrap time, not operator network time.
  *
  * @param {{transport?: string}} [scope]
- * @param {{importSdkModule?: (specifier: string) => Promise<object>}} [options]
+ * @param {{importSdkModule?: (specifier: string) => Promise<object>, statfsImpl?: typeof statfs}} [options]
  */
 export async function preparePtoolConnectionModules(
   { transport: requestedTransport } = {},
-  { importSdkModule = importSdkModuleWithInstallAwareness } = {},
+  { importSdkModule = importSdkModuleWithInstallAwareness, statfsImpl = statfs } = {},
 ) {
   const mode = requestedTransport || process.env.PAPERCUSP_MCP_TRANSPORT || 'http';
   if (!['http', 'uds', 'auto'].includes(mode)) {
@@ -3343,7 +3370,8 @@ export async function preparePtoolConnectionModules(
       StreamableHTTPClientTransport: transportModule.StreamableHTTPClientTransport,
     };
   } catch (error) {
-    const detail = errorDetail(error);
+    const filesystemDiagnostic = await ptoolEnospcFilesystemDiagnostic(error, statfsImpl);
+    const detail = [errorDetail(error), filesystemDiagnostic].filter(Boolean).join('; ');
     const timedOutWaitingForInstall = /timed out after \d+ms waiting for fs-mutex writer/i.test(detail);
     const reason = timedOutWaitingForInstall
       ? 'timed out waiting for install:safe'

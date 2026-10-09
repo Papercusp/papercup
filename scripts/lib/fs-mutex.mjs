@@ -210,6 +210,17 @@ function sanitizeIntent(intent) {
  * Age remains a recovery fallback for missing/malformed records (including a
  * crash between mkdir and owner publication). Remote owners and EPERM stay held.
  */
+function processIdentity(pid) {
+  try {
+    const status = readFileSync(`/proc/${pid}/status`, 'utf8');
+    const tgid = Number(/^Tgid:\s*(\d+)$/m.exec(status)?.[1]);
+    const value = readFileSync(`/proc/${pid}/stat`, 'utf8');
+    const startTicks = value.slice(value.lastIndexOf(')') + 2).trim().split(/\s+/)[19];
+    const bootId = readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim();
+    return { tgid, startTicks, bootId };
+  } catch { return null; } // Non-Linux/access failures retain the kill(0) policy.
+}
+
 async function reclaimAbandonedLock(lockDir, staleMs) {
   let owner;
   try {
@@ -226,6 +237,16 @@ async function reclaimAbandonedLock(lockDir, staleMs) {
   if (owner.host !== hostname()) return false;
   try {
     process.kill(owner.pid, 0);
+    const current = processIdentity(owner.pid);
+    // process.pid always names a thread-group leader. A reused nonleader TID
+    // cannot own even a legacy lease. New leases also survive leader-PID reuse
+    // and reboot safely by recording their kernel identity at publication.
+    if (current && ((Number.isInteger(current.tgid) && current.tgid !== owner.pid) ||
+        (owner.startTicks && current.startTicks && owner.startTicks !== current.startTicks) ||
+        (owner.bootId && current.bootId && owner.bootId !== current.bootId))) {
+      await rm(lockDir, { recursive: true, force: true });
+      return true;
+    }
     return false;
   } catch (error) {
     if (!error || error.code !== "ESRCH") return false;
@@ -368,6 +389,7 @@ export async function withFsMutex(name, fn, opts = {}) {
   const intent = sanitizeIntent(opts.intent);
   const owner = {
     pid: process.pid,
+    ...processIdentity(process.pid),
     host: hostname(),
     startedAt: new Date(startedAt).toISOString(),
     name,
@@ -543,6 +565,7 @@ export async function withFsMutexRead(name, fn, opts = {}) {
   );
   const owner = {
     pid: process.pid,
+    ...processIdentity(process.pid),
     host: hostname(),
     startedAt: new Date(startedAt).toISOString(),
     name,

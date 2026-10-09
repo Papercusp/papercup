@@ -25,12 +25,37 @@ import {
   classifyIndexDisk,
   gitnexusStartLineBase,
   toOneIndexed,
+  versionedSymbolIdentity,
+  sourceIdentityContinuity,
   type KnownIndexDiskExceedance,
 } from './contracts';
 
 const ALLOWANCE: readonly KnownIndexDiskExceedance[] = [
   { backend: 'testbed', observedMb: 3_000, observedCeilingMb: 4_000, why: 'fixture' },
 ];
+
+describe('source-version identity', () => {
+  const site = { path: 'src/caller.ts', line1: 7, kind: 'function', name: 'caller' };
+  const source = { path: site.path, contentHash: 'a'.repeat(64), language: 'typescript', representation: 'full-source' as const };
+  it('preserves exact content/repository identity and requires resolution after edits, moves or scope changes', () => {
+    const original = versionedSymbolIdentity('repo-a', site, source);
+    expect(JSON.parse(original!)).toEqual(['symbol-site-v1', 'repo-a', 'src/caller.ts', 'a'.repeat(64), 7, 'caller', 'function']);
+    expect(sourceIdentityContinuity(original, versionedSymbolIdentity('repo-a', site, source))).toBe('unchanged');
+    for (const changed of [versionedSymbolIdentity('repo-b', site, source),
+      versionedSymbolIdentity('repo-a', { ...site, line1: 8 }, source),
+      versionedSymbolIdentity('repo-a', site, { ...source, contentHash: 'b'.repeat(64) })])
+      expect(sourceIdentityContinuity(original, changed)).toBe('needs-resolution');
+  });
+  it('refuses missing hashes, stub evidence and unsafe/unlocated sites instead of inventing identity', () => {
+    expect(versionedSymbolIdentity(null, site, source)).toBeNull();
+    expect(versionedSymbolIdentity('repo-a', site, undefined)).toBeNull();
+    expect(versionedSymbolIdentity('repo-a', site, { ...source, contentHash: '' })).toBeNull();
+    expect(versionedSymbolIdentity('repo-a', site, { ...source, representation: 'reexport-stub' })).toBeNull();
+    expect(versionedSymbolIdentity('repo-a', { ...site, path: '../caller.ts' }, { ...source, path: '../caller.ts' })).toBeNull();
+    expect(versionedSymbolIdentity('repo-a', { ...site, line1: null }, source)).toBeNull();
+    expect(sourceIdentityContinuity(null, null)).toBe('needs-resolution');
+  });
+});
 
 describe('classifyIndexDisk', () => {
   it('grades a footprint inside the budget as within-budget', () => {
