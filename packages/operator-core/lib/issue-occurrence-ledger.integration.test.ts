@@ -166,7 +166,40 @@ describe('issue occurrence ledger (real PG, migration 831)', () => {
     });
   });
 
-  it('covers the exact scoped census without heap fetches beside large evidence envelopes', async () => {
+  it('counts uncapped composite identities and preserves report/time partitions', async () => {
+    await db.adminSql`
+      INSERT INTO harness_shared.work_item_occurrences
+        (workspace_id, canonical_harness_slug, canonical_work_item_id, source_tool,
+         report_kind, reported_title, occurred_at)
+      SELECT ${WORKSPACE}, harness, 'EI-' || n, 'system', kind, 'report', at
+        FROM generate_series(1, 2501) n
+        CROSS JOIN (VALUES (${HARNESS}), ('other-harness')) h(harness)
+        CROSS JOIN (VALUES
+          ('canonical-created', '2026-10-09T12:00:00Z'::timestamptz),
+          ('duplicate', '2026-10-09T13:00:00Z'::timestamptz),
+          ('regression', '2026-10-09T14:00:00Z'::timestamptz)
+        ) reports(kind, at)
+    `;
+    // Composite keys must stay separate even when a concatenated key would collide.
+    await db.adminSql`
+      INSERT INTO harness_shared.work_item_occurrences
+        (workspace_id, canonical_harness_slug, canonical_work_item_id, source_tool,
+         report_kind, reported_title, occurred_at)
+      VALUES
+        (${WORKSPACE}, 'a|b', 'c', 'system', 'canonical-created', 'first', '2026-10-09T11:00:00Z'),
+        (${WORKSPACE}, 'a', 'b|c', 'system', 'canonical-created', 'second', '2026-10-09T11:00:00Z')
+    `;
+    expect(await readIssueOccurrenceCounts({ workspaceId: WORKSPACE }, db.adminSql))
+      .toMatchObject({ canonicalClusters: 5004, rawOccurrences: 15008, duplicateOccurrences: 10004 });
+    expect(await readIssueOccurrenceCounts({ workspaceId: WORKSPACE, harnessSlug: HARNESS }, db.adminSql))
+      .toMatchObject({ canonicalClusters: 2501, rawOccurrences: 7503, duplicateOccurrences: 5002 });
+    expect(await readIssueOccurrenceCounts({ workspaceId: WORKSPACE, since: '2026-10-09T12:00:00Z' }, db.adminSql))
+      .toMatchObject({ canonicalClusters: 5002, rawOccurrences: 10004, duplicateOccurrences: 10004 });
+    expect(await readIssueOccurrenceCounts({ workspaceId: WORKSPACE, since: '2026-10-09T14:00:00Z' }, db.adminSql))
+      .toMatchObject({ canonicalClusters: 0, rawOccurrences: 0, duplicateOccurrences: 0 });
+  });
+
+  it('groups the actual scoped census without heap fetches beside large evidence envelopes', async () => {
     // Evidence size must not make a narrow census fetch the evidence heap.
     await db.adminSql`
       INSERT INTO harness_shared.work_item_occurrences
@@ -180,8 +213,15 @@ describe('issue occurrence ledger (real PG, migration 831)', () => {
         FROM generate_series(1, 20000) n
     `;
     await db.adminSql`VACUUM ANALYZE harness_shared.work_item_occurrences`;
+    let censusQuery: ReturnType<typeof db.adminSql> | undefined;
+    const observedSql = new Proxy(db.adminSql, {
+      apply(target, thisArg, args) {
+        censusQuery = Reflect.apply(target, thisArg, args);
+        return censusQuery;
+      },
+    });
     const counts = await readIssueOccurrenceCounts({ workspaceId: WORKSPACE,
-      harnessSlug: HARNESS, since: '2026-10-09T11:00:00Z' }, db.adminSql);
+      harnessSlug: HARNESS, since: '2026-10-09T11:00:00Z' }, observedSql);
     expect(counts).toMatchObject({ canonicalClusters: 800, rawOccurrences: 16000, duplicateOccurrences: 12000 });
     const wholeWorkspace = await readIssueOccurrenceCounts({ workspaceId: WORKSPACE }, db.adminSql);
     expect(wholeWorkspace).toMatchObject({ canonicalClusters: 1000, rawOccurrences: 20000, duplicateOccurrences: 15000 });
@@ -194,23 +234,22 @@ describe('issue occurrence ledger (real PG, migration 831)', () => {
     // Tiny isolated fixtures may correctly prefer a sequential scan. Pin only
     // this physical coverage check to indexed access; the exact reader above
     // uses normal planner settings. This is not a production latency claim.
+    if (!censusQuery) throw new Error('the canonical occurrence reader did not issue its census query');
+    const actualCensusQuery = censusQuery;
     const plans = await db.adminSql.begin(async (tx) => {
       await tx`SET LOCAL enable_seqscan = off`;
-      return tx`
-        EXPLAIN (ANALYZE, FORMAT JSON)
-        SELECT count(DISTINCT (canonical_harness_slug, canonical_work_item_id)), count(*),
-               count(*) FILTER (WHERE report_kind <> 'canonical-created')
-          FROM harness_shared.work_item_occurrences
-         WHERE workspace_id = ${WORKSPACE} AND canonical_harness_slug = ${HARNESS}
-           AND occurred_at > '2026-10-09T11:00:00Z'::timestamptz
-      `;
+      return tx`EXPLAIN (ANALYZE, FORMAT JSON) ${actualCensusQuery}`;
     });
-    type PlanNode = { 'Node Type': string; 'Index Name'?: string; 'Heap Fetches'?: number; Plans?: PlanNode[] };
+    type PlanNode = { 'Node Type': string; Strategy?: string; 'Index Name'?: string; 'Heap Fetches'?: number; Plans?: PlanNode[] };
     const nodes: PlanNode[] = [];
     const visit = (node: PlanNode) => { nodes.push(node); node.Plans?.forEach(visit); };
     visit(plans[0]['QUERY PLAN'][0].Plan);
     expect(nodes).toContainEqual(expect.objectContaining({ 'Node Type': 'Index Only Scan',
       'Index Name': 'work_item_occurrences_flow_idx', 'Heap Fetches': 0 }));
+    // This guards the reader itself: a separate handwritten EXPLAIN could keep
+    // passing after the production query regressed to a composite DISTINCT sort.
+    expect(nodes).toContainEqual(expect.objectContaining({ 'Node Type': 'Aggregate',
+      Strategy: expect.stringMatching(/^(Hashed|Sorted)$/) }));
   });
 
   describe('readRecurringInstanceEvidence (EI-23768242440859949)', () => {

@@ -433,13 +433,21 @@ export async function readIssueOccurrenceCounts(
     raw_occurrences: string | number;
     duplicate_occurrences: string | number;
   }>>`
-    SELECT count(DISTINCT (canonical_harness_slug, canonical_work_item_id)) AS canonical_clusters,
-           count(*)                                                        AS raw_occurrences,
-           count(*) FILTER (WHERE report_kind <> 'canonical-created')      AS duplicate_occurrences
-      FROM harness_shared.work_item_occurrences
-     WHERE workspace_id = ${args.workspaceId}
-       ${args.harnessSlug ? sql`AND canonical_harness_slug = ${args.harnessSlug}` : sql``}
-       ${args.since ? sql`AND occurred_at > ${args.since}::timestamptz` : sql``}
+    -- Group the exact composite identity before counting clusters. DISTINCT
+    -- over a record sorted every occurrence even beside the covering index;
+    -- ordinary grouping can hash the two keys without that record sort.
+    SELECT count(*) AS canonical_clusters,
+           COALESCE(sum(raw_occurrences), 0)::bigint AS raw_occurrences,
+           COALESCE(sum(duplicate_occurrences), 0)::bigint AS duplicate_occurrences
+      FROM (
+        SELECT count(*) AS raw_occurrences,
+               count(*) FILTER (WHERE report_kind <> 'canonical-created') AS duplicate_occurrences
+          FROM harness_shared.work_item_occurrences
+         WHERE workspace_id = ${args.workspaceId}
+           ${args.harnessSlug ? sql`AND canonical_harness_slug = ${args.harnessSlug}` : sql``}
+           ${args.since ? sql`AND occurred_at > ${args.since}::timestamptz` : sql``}
+         GROUP BY canonical_harness_slug, canonical_work_item_id
+      ) clusters
   `;
   const row = rows[0];
   return {
