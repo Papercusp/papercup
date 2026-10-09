@@ -1331,11 +1331,8 @@ describe('fleet scope assignment admission (P-016)', () => {
   // could actually observe (windDown:true, a bare message) is the SAME shape a genuine drain
   // produces. These tests assert the zero-match case gets its own loud, escalate-worthy shape.
   describe('EI-18663622382734446: a spec matching ZERO rows is named loudly, never folded into a bare drain', () => {
-    // EI-19393442073558754: deliberately an ID-ALLOWLIST filter, NOT a plan-scoped one —
-    // a plan/plan-item predicate now gets the softer `nonIssueSpecEmpty` framing (see
-    // that describe block below), since a plan-scoped spec can correctly, structurally
-    // admit ONLY feature-family rows for long stretches (D-009). A stale id allowlist has
-    // no such family correlation, so it stays a genuine, loudly-named spec-authoring bug.
+    // The explicit issue-kind restriction makes the issue breakdown complete for this
+    // fixture. An id allowlist by itself can also admit feature-family work.
     const issueScope = {
       ownerId: 'su-member',
       fleetSlug: 'p2p-release',
@@ -1347,7 +1344,10 @@ describe('fleet scope assignment admission (P-016)', () => {
           specVersion: '1.0',
           specId: 'p2p-release-lane',
           revision: 8,
-          view: { filter: { field: 'id', op: 'in' as const, value: ['WI-9001', 'WI-9002'] } },
+          view: { filter: { all: [
+            { field: 'kind', op: 'in' as const, value: ['bug', 'change', 'task'] },
+            { field: 'id', op: 'in' as const, value: ['WI-9001', 'WI-9002'] },
+          ] } },
           rank: { mode: 'lexicographic' as const, terms: [{ expr: 'age', dir: 'asc' as const }] },
           states: ['open'],
         },
@@ -1376,7 +1376,7 @@ describe('fleet scope assignment admission (P-016)', () => {
           spec: { ref: 'p2p-release-lane (spec rev 8)', revision: 8, planScoped: false },
           matchedByFilter: 0,
         },
-        interpretation: { state: 'spec-empty', exactness: { status: 'partial' } },
+        interpretation: { state: 'spec-empty', exactness: { status: 'exact' } },
       });
       // EI-18741523426513509: a genuinely empty spec (matchedByFilter === 0) must never also
       // carry the floor-gated token — the two are mutually exclusive by construction (floorGated
@@ -1731,19 +1731,18 @@ describe('fleet scope assignment admission (P-016)', () => {
     // EI-19393442073558754: this used to fall back to `spec_matches_nothing` (asserted as
     // "no behavior change") — that was itself the false-alarm class this ticket fixes.
     // `planScope`'s filter references `plan` and carries no kind restriction, so a
-    // non-positive featureFamilyMatched must NOT be reported as a spec-authoring bug —
-    // it is an ordinary drain (still windDown:true — correct to stop pulling — just not
-    // framed as "your spec is broken, escalate now").
-    it('reports `ordinary_drain` (never spec_matches_nothing) when featureFamilyMatched confirms the tier-1 pool is ALSO empty (0)', () => {
+    // A complete zero-match feature reading permits a drain; a survivor count alone
+    // cannot establish whether the filter matched floor-gated feature rows.
+    it('reports ordinary_drain when both measured families are empty', () => {
       const miss = fleetScopedMiss(planScope, [], {
         issueBreakdown: zeroIssueFamilyBreakdown,
-        featureFamilyMatched: 0,
+        featureBreakdown: { matchedByFilter: 0, claimable: 0, excluded: { claimFloors: 0, reservedPlanLane: 0 } },
       });
       expect(miss.reason).toBe('ordinary_drain');
       expect(miss.claimability).toMatchObject({
         value: 0,
         population: { spec: { planScoped: true }, matchedByFilter: 0 },
-        interpretation: { state: 'drained', exactness: { status: 'partial' } },
+        interpretation: { state: 'drained', exactness: { status: 'exact' } },
       });
       expect(miss.reason).not.toBe('spec_matches_nothing');
       expect(miss.windDown).toBe(true);
@@ -1755,22 +1754,22 @@ describe('fleet scope assignment admission (P-016)', () => {
       expect(miss.advice).toMatch(/loop:end \{ acknowledgeOpenDirectives: true, acknowledgeWakeLessAutonomy: true \}/);
     });
 
-    it('reports `ordinary_drain` (never spec_matches_nothing) when featureFamilyMatched is unavailable (null/undefined)', () => {
-      for (const fam of [null, undefined] as const) {
+    it('keeps plan-scoped family evidence unknown when only a missing or zero survivor count is available', () => {
+      for (const fam of [null, undefined, 0] as const) {
         const miss = fleetScopedMiss(planScope, [], {
           issueBreakdown: zeroIssueFamilyBreakdown,
           featureFamilyMatched: fam,
         });
-        expect(miss.reason).toBe('ordinary_drain');
+        expect(miss.reason).toBeUndefined();
+        expect(miss.claimability.value).toBeNull();
         expect(miss.claimability.interpretation).toMatchObject({
-          state: 'drained',
-          exactness: { status: 'partial' },
+          state: 'unknown',
         });
-        expect(miss.windDown).toBe(true);
-        expect(miss.error).toMatch(/ORDINARY DRAIN/);
-        expect(miss.error).toMatch(/could not be confirmed/);
-        expect((miss as { featureFamilyMatched?: number | null }).featureFamilyMatched).toBeNull();
-        expect(miss.advice).toMatch(/loop:end \{ acknowledgeOpenDirectives: true, acknowledgeWakeLessAutonomy: true \}/);
+        expect(miss.windDown).toBe(false);
+        expect(miss.error).toMatch(/FEATURE-FAMILY DIAGNOSIS UNAVAILABLE/);
+        expect(miss.error).not.toMatch(/ORDINARY DRAIN|SPEC MATCHES NOTHING/);
+        expect(miss.advice).toMatch(/Do NOT re-author/);
+        expect(miss.advice).toMatch(/repeat identical pulls/);
       }
     });
 
@@ -1857,7 +1856,7 @@ describe('fleet scope assignment admission (P-016)', () => {
       });
       const miss = fleetScopedMiss(nestedScope, [], {
         issueBreakdown: zeroIssueFamilyBreakdown,
-        featureFamilyMatched: 0,
+        featureBreakdown: { matchedByFilter: 0, claimable: 0, excluded: { claimFloors: 0, reservedPlanLane: 0 } },
       });
       expect(miss.reason).toBe('ordinary_drain');
     });
@@ -1866,7 +1865,7 @@ describe('fleet scope assignment admission (P-016)', () => {
       const planItemScope = scopeWithFilter({ field: 'plan_item', op: '=' as const, value: 'P-001' });
       const miss = fleetScopedMiss(planItemScope, [], {
         issueBreakdown: zeroIssueFamilyBreakdown,
-        featureFamilyMatched: 0,
+        featureBreakdown: { matchedByFilter: 0, claimable: 0, excluded: { claimFloors: 0, reservedPlanLane: 0 } },
       });
       expect(miss.reason).toBe('ordinary_drain');
     });
@@ -1890,11 +1889,29 @@ describe('fleet scope assignment admission (P-016)', () => {
       expect(miss.windDown).toBe(true);
     });
 
-    it('a filter with NO plan/plan_item predicate anywhere (id-only) keeps the loud spec_matches_nothing verdict', () => {
+    it('an id-only filter cannot certify an empty spec when feature diagnosis is unavailable', () => {
       const idOnlyScope = scopeWithFilter({ field: 'id', op: 'in' as const, value: ['WI-1', 'WI-2'] });
       const miss = fleetScopedMiss(idOnlyScope, [], { issueBreakdown: zeroIssueFamilyBreakdown });
-      expect(miss.reason).toBe('spec_matches_nothing');
+      expect(miss.reason).not.toBe('spec_matches_nothing');
       expect(miss.reason).not.toBe('ordinary_drain');
+      expect(miss.windDown).toBe(false);
+      expect(miss.error).toMatch(/FEATURE-FAMILY DIAGNOSIS UNAVAILABLE/);
+      expect(miss.claimability).toMatchObject({
+        value: null,
+        population: { basis: 'partial-family', matchedByFilter: null },
+        interpretation: { state: 'unknown' },
+      });
+      expect(miss.advice).toMatch(/Do NOT re-author/);
+    });
+
+    it('an id-only filter retains a genuine empty-spec verdict when both families were measured empty', () => {
+      const idOnlyScope = scopeWithFilter({ field: 'id', op: 'in' as const, value: ['WI-1', 'WI-2'] });
+      const miss = fleetScopedMiss(idOnlyScope, [], {
+        issueBreakdown: zeroIssueFamilyBreakdown,
+        featureBreakdown: { matchedByFilter: 0, claimable: 0, excluded: { claimFloors: 0, reservedPlanLane: 0 } },
+      });
+      expect(miss.reason).toBe('spec_matches_nothing');
+      expect(miss.windDown).toBe(true);
     });
   });
 

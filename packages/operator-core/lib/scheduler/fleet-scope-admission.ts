@@ -2269,13 +2269,21 @@ export function fleetScopedMiss(
   // feature-family claims minutes earlier, then reported `spec_matches_nothing` on an
   // ordinary drain (2 items done, 1 blocked) purely because the issue-family breakdown —
   // which that spec structurally can never satisfy — read zero. Deliberately narrower than
-  // "no kind restriction at all": an id/tag/title-only filter (no plan predicate) keeps the
-  // loud `specEmpty` escalation, since a stale id allowlist genuinely is a spec bug
-  // (EI-18663622382734446) and has no such documented family correlation.
+  // "no kind restriction at all": a confirmed-empty id/tag/title-only filter keeps the
+  // loud `specEmpty` escalation. A missing feature diagnostic cannot confirm that emptiness.
   const specIssueOnly = specIsIssueFamilyOnly(scope.record.spec);
   const specPlanScoped = !specIssueOnly && specHasPlanPredicate(scope.record.spec);
+  const statusFreeEmpty = opts?.terminalExhaustion?.matchedByFilter === 0;
+  const evidenceComplete = specIssueOnly || statusFreeEmpty || (breakdown != null && featureBreakdown != null);
+  // WI-10007814: a failed/absent family diagnostic is unknown, not a measured zero.
+  // This applies to both fixed id cohorts and plan scopes; neither can certify a drain
+  // or blame the authored filter while its feature-family population is unreadable.
+  const unconfirmedFamily =
+    !paused && !specExhausted && !planComplete && !featureFamilyMiss &&
+    breakdown?.matchedByFilter === 0 && !evidenceComplete;
   const nonIssueSpecEmpty =
     !paused &&
+    evidenceComplete &&
     breakdown != null &&
     breakdown.matchedByFilter === 0 &&
     !featureFamilyMiss &&
@@ -2285,6 +2293,7 @@ export function fleetScopedMiss(
     specPlanScoped;
   const specEmpty =
     !paused &&
+    evidenceComplete &&
     breakdown != null &&
     breakdown.matchedByFilter === 0 &&
     !featureFamilyMiss &&
@@ -2364,12 +2373,10 @@ export function fleetScopedMiss(
   // filter-zero, floor gating, or a completed lane. Preserve the original fields
   // for compatibility, but add one bounded aggregate whose state is explicit and
   // whose exactness says when the issue-family diagnostic is only a lower bound.
-  const statusFreeEmpty = opts?.terminalExhaustion?.matchedByFilter === 0;
-  const evidenceComplete = specIssueOnly || statusFreeEmpty || (breakdown != null && featureBreakdown != null);
-  const claimableValue = breakdown
+  const claimableValue = breakdown && !unconfirmedFamily
     ? breakdown.claimable + (featureClaimable ?? 0)
     : null;
-  const matchedByFilter = breakdown
+  const matchedByFilter = breakdown && !unconfirmedFamily
     ? breakdown.matchedByFilter + (featureBreakdown?.matchedByFilter ?? 0)
     : null;
   const excluded: Record<string, number> | null = breakdown
@@ -2472,6 +2479,9 @@ export function fleetScopedMiss(
             `view.filter matched ${opts!.terminalExhaustion!.matchedByFilter} row(s) without the claimable-state floor, and all ` +
             `${opts!.terminalExhaustion!.terminalMatchedByFilter} matching row(s) are terminal. This is a successful drain, not a ` +
             'spec-authoring problem: the lane is complete, so stand down and do not re-author or escalate the spec.'
+        : unconfirmedFamily
+          ? 'FEATURE-FAMILY DIAGNOSIS UNAVAILABLE: the issue-family filter matched zero rows, but the feature-family ' +
+            'population was not fully measured. This does not establish an empty spec, a drained lane, or a claim-floor cause.'
         : nonIssueSpecEmpty
           ? `ORDINARY DRAIN, NOT A SPEC-AUTHORING PROBLEM (EI-19393442073558754): claim spec ${formatSpecRef(scope.record.spec.specId, scope.record.spec.revision)}'s ` +
             'view.filter references a plan/plan-item and is not restricted to issue-family kinds — a plan-scoped spec routinely and ' +
@@ -2530,7 +2540,7 @@ export function fleetScopedMiss(
     // stands down in turn, and the fleet goes quiet with work still on the board.
     // WI-10004358: fourth route to the same harmful call — rows pending PEER REVIEW never
     // self-clear, and this member can review them, so the lane is not drained for it.
-    windDown: !divergent && !unconfirmedSurvivors && !featureFamilyMiss && !staleBlockedLane && !reviewable,
+    windDown: !divergent && !unconfirmedSurvivors && !featureFamilyMiss && !unconfirmedFamily && !staleBlockedLane && !reviewable,
     ...(reviewable ? { reviewable: reviewable.route } : {}),
     // EI-15185: the ready-made payload_filter derived from THIS member's own claim
     // spec — present only when the spec can be narrowed over the claimable payload's
@@ -2592,7 +2602,9 @@ export function fleetScopedMiss(
     ...(breakdown
       ? {
           excludedBreakdown: breakdown,
-          excludedBreakdownSummary: featureFloorGated
+          excludedBreakdownSummary: unconfirmedFamily
+            ? 'Only the issue family was measured; feature-family matches and claim floors remain unknown. Do not infer a whole-lane zero from this partial reading.'
+            : featureFloorGated
             ? `Your spec's filter matches ${breakdown.matchedByFilter} issue-family and ${featureBreakdown!.matchedByFilter} feature-family row(s); ` +
               `feature claim floors exclude ${featureBreakdown!.excluded.claimFloors} unique row(s), including ` +
               `${featureBreakdown!.excluded.reservedPlanLane} reserved plan-lane row(s) (an overlapping subset). ` +
@@ -2687,6 +2699,10 @@ export function fleetScopedMiss(
               ? 'If new work later enters your scope, park the standing watch `watch:create { pattern: "work-item:claimable", wake:true, once:false, payload_filter: <the `payloadFilter` returned in this response> }` and end your turn — do not pass targetKind with wake:true; the watch remains armed after a re-miss, the wake is a HINT, and scheduler:get_next remains authoritative.'
               : 'Do NOT park an UNSCOPED work-item:claimable await — this response has no safe payload filter.') +
             ' Do NOT escalate, widen, or re-author the claim spec.'
+          : unconfirmedFamily
+          ? 'Do NOT re-author the claim spec, bypass claim floors, or repeat identical pulls on this incomplete diagnostic. ' +
+            'Report the exact partial-family evidence to the fleet leader once so the missing diagnosis can be resolved; ' +
+            'resume the same scoped scheduler route after that correction or a concrete readiness transition.'
           : nonIssueSpecEmpty
           ? 'Do NOT escalate this as a spec-authoring problem, and do NOT re-author the claim spec (EI-19393442073558754): your ' +
             'spec is not restricted to issue-family kinds, so an issue-family `matchedByFilter: 0` is expected by construction, ' +
