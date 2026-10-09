@@ -92,13 +92,17 @@ async function main() {
   const { sql } = getOrgPg();
   try {
     const owner = 'su-private-knowledge-reader';
+    const stalledOwner = 'su-private-knowledge-stalled-reader';
     const reports = [];
     const knowledge = [];
     for (const token of ['zephyrquartz', 'cobaltquartz', 'amberquartz', 'jadequartz']) {
+      // Each owner-private positive control belongs to the reader whose native
+      // request will exercise it, including the separate stalled-source reader.
+      const reportOwner = token === 'amberquartz' || token === 'jadequartz' ? stalledOwner : owner;
       const report = await publishReport(sql, { workspaceId: workspace, visibility: 'owner',
         title: 'Dated diagnostic evidence', bodyMd: 'Ordinary observations.\n'.repeat(600)
           + `\n## Diagnostic recovery\n${token} diagnostic snapshot recovery evidence. Retain the snapshot before restarting the diagnostic worker.` },
-      { authorOwnerId: owner, harnessSlug: workspace });
+      { authorOwnerId: reportOwner, harnessSlug: workspace });
       // This journey measures lexical native delivery; real vector/profile behavior
       // is separately covered by the migrated-PG source tests. No fake embedder.
       await indexReport(sql, report, null);
@@ -261,7 +265,6 @@ async function main() {
     // A real private-PG lock stalls only the plan source. Use a dedicated
     // transaction so the observer and healthy sibling sources remain runnable.
     const lock = await sql.reserve();
-    const stalledOwner = 'su-private-knowledge-stalled-reader';
     const stalledEnv = { ...env, PAPERCUSP_SID: stalledOwner };
     const stalledReceipts: number[] = [];
     try {

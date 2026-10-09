@@ -34,7 +34,11 @@
  * on inline fallback, capped via `ORT_SESSION_OPTIONS`).
  */
 
-import type { Embedder } from '@papercusp/search';
+import {
+  beginEmbedLatencyStage,
+  finishEmbedLatencyStage,
+  type Embedder,
+} from '@papercusp/search';
 import { normalizeEmbeddingText, type EmbedderProfileSpec } from '@papercusp/memory';
 import { buildSidecarAwareEmbedder, isLocalEmbedAcquisitionCheap } from '../../memory/embed-sidecar-wiring';
 import { embedAdmission, headersToRecord, retryAfterMs } from '../../memory/embed-admission';
@@ -64,8 +68,10 @@ function buildAdmissionGovernedOpenAiEmbedder(key: string): Embedder {
     // so the search still returns rather than hard-failing. The governor's concurrency + itpm
     // caps keep aggregate embed rate under the ceiling so prod memory keeps its headroom.
     const adm = embedAdmission();
-    const slot = await adm.acquire(text, 'bench');
+    beginEmbedLatencyStage(signal, 'admission');
+    const slot = await adm.acquire(text, 'bench').finally(() => finishEmbedLatencyStage(signal, 'admission'));
     if (slot === null) throw new Error('openai_embed_shed'); // admission shed → engine falls to BM25
+    beginEmbedLatencyStage(signal, 'provider');
     try {
       signal?.throwIfAborted();
       const r = await fetch('https://api.openai.com/v1/embeddings', {
@@ -88,6 +94,7 @@ function buildAdmissionGovernedOpenAiEmbedder(key: string): Embedder {
       signal?.throwIfAborted();
       return j.data[0].embedding;
     } finally {
+      finishEmbedLatencyStage(signal, 'provider');
       slot.release();
     }
   };
@@ -290,7 +297,17 @@ export async function buildQueryEmbedderResolved(
     const resolved = await withAcquireBudget(acquire, opts?.acquireBudgetMs ?? 0);
     if (resolved === null || resolved.mode === 'disabled') return null;
     // WI-4734: memoized per (mode, dims, query) — see queryEmbedCache above.
-    const embed = cachedQueryEmbed(resolved.profile.profileId, resolved.dims, resolved.embed);
+    const cachedEmbed = cachedQueryEmbed(resolved.profile.profileId, resolved.dims, resolved.embed);
+    const embed: Embedder = resolved.mode === 'openai'
+      ? cachedEmbed
+      : async (text, signal) => {
+          beginEmbedLatencyStage(signal, 'localInference');
+          try {
+            return await cachedEmbed(text, signal);
+          } finally {
+            finishEmbedLatencyStage(signal, 'localInference');
+          }
+        };
     // P-017: stamp the space onto the instance every caller will actually hold,
     // so the floor policy can recognise it without any caller passing a mode.
     stampEmbedderMode(embed, resolved.mode, resolved.profile.profileId);
