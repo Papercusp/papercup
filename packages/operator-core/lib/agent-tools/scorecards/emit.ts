@@ -2945,7 +2945,7 @@ export async function emitScorecard(
       }
       const [baseline] = await listScorecards({ issueIds: [args.baselineRef], limit: 1 });
       if (!baseline || !args.subject || baseline.subject?.kind !== args.subject.kind ||
-          baseline.subject.ref !== args.subject.ref || baseline.rubricRef !== args.rubricRef ||
+          baseline.subject?.ref !== args.subject.ref || baseline.rubricRef !== args.rubricRef ||
           baseline.rubricRevision !== rubric.revision || baseline.criteriaHash !== rubric.criteriaHash ||
           baseline.provisional || baseline.retracted || baseline.synthesized ||
           !baseline.rubricResolved || baseline.missingKeys.length > 0 || (baseline.extraKeys?.length ?? 0) > 0 ||
