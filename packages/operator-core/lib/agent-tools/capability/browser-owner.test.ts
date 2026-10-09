@@ -1,6 +1,7 @@
 import { fork, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
+import { createServer } from 'node:http';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { startPrimaryOwnerRpcRelay, type OwnerRpcWorkerLike } from '../../cluster-owner-rpc';
 
@@ -90,6 +91,36 @@ describe('browser follow-ups across request workers', () => {
     expect(JSON.parse((await running.result).content[0].text).ok).toBe(false);
     expect((await call(b, { args: { op: 'close', id: other } })).body.browser.state).toBe('closed');
   });
+  it('retains a real Chromium page across workers and relays binary HTTP through the current caller', async () => {
+    let writes = 0; let id: string | undefined;
+    const server = createServer((req, res) => {
+      if (req.method === 'POST') writes++;
+      if (req.url === '/binary') { res.end(Buffer.from([0, 127, 255])); return; }
+      res.writeHead(200, { 'content-type': 'text/html' });
+      res.end('<html><head><title>worker browser</title></head><body><script>sessionStorage.n=String(Number(sessionStorage.n||0)+1);fetch("/binary").then(r=>r.arrayBuffer()).then(b=>{let p=document.createElement("p");p.id="ready";p.textContent=sessionStorage.n+":"+Array.from(new Uint8Array(b));document.body.append(p)});fetch("/write",{method:"POST"}).catch(()=>{});</script></body></html>');
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address(); if (!address || typeof address === 'string') throw new Error('TCP fixture required');
+    const url = `http://127.0.0.1:${address.port}/page`;
+    try {
+      const opened = await call(a, { real: true, args: { op: 'open', selector: '#ready' }, url, timeoutMs: 15_000 });
+      expect(opened.body.ok, JSON.stringify(opened.body)).toBe(true); id = opened.body.browser.id;
+      expect(opened.body.observation.text).toBe('1:0,127,255');
+      const current = request(b, { real: true, args: { op: 'navigate', id, selector: '#ready', screenshot: true }, url, timeoutMs: 10_000 });
+      const result = await current.result; const body = JSON.parse(result.content[0].text);
+      expect(body).toMatchObject({ ok: true, observation: { title: 'worker browser', text: '2:0,127,255' } });
+      expect(Buffer.from(result.content[1].data, 'base64').subarray(0, 8)).toEqual(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+      expect(events.filter(e => e.type === 'fixture:fetch' && e.seq === current.seq)).toEqual([
+        expect.objectContaining({ pid: b.pid, principalStayedLocal: true }), expect.objectContaining({ pid: b.pid, principalStayedLocal: true }),
+      ]);
+      expect(writes).toBe(0);
+      expect(body.network.refused).toContain('browser_remote_write_forbidden');
+      expect((await call(b, { args: { op: 'close', id } })).body.browser.state).toBe('closed'); id = undefined;
+    } finally {
+      if (id) await call(a, { args: { op: 'close', id } });
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  }, 35_000);
   it('reports owner SIGKILL and unknown handles as unrecoverable without replacement', async () => {
     const { body } = await call(a, { args: { op: 'open' } }); const id = body.browser.id;
     a.kill('SIGKILL'); await once(a, 'exit');

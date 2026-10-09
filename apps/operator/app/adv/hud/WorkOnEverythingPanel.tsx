@@ -20,6 +20,44 @@ const SCOPES = ['all', 'in', 'out'] as const;
 const SORTS = ['left', 'pct', 'rank', 'name'] as const;
 const SORT_LABEL = { left: 'Most work left', pct: 'Least finished', rank: 'Worklist order', name: 'Name' } as const;
 
+const RUBRIC_DUTIES = [
+  ['rubric-coverage-stewardship', 'Maintain rubric coverage', 'Reuse suitable rubrics. Create and review one when an important target has a gap.'],
+  ['rubric-quality-stewardship', 'Improve rubric quality', 'Strengthen criteria and evidence requirements through reviewed, versioned changes.'],
+  ['grading-correction-closure', 'Grade, improve and re-grade', 'Assign graders, preserve a baseline, verify repairs and compare the result.'],
+] as const;
+
+function RubricStewardship({ data }: { data: GoalDetailInput }) {
+  const quality = data.rubricStewardship;
+  return <section className="woe__quality" aria-label="Rubric stewardship">
+    <div className="woe__quality-heading"><h3>Rubrics &amp; continuous improvement</h3>
+      <a className="woe__link" href={'/adv?hudrubric=' + encodeURIComponent(quality?.rubricRef ?? 'work-on-everything-stewardship-health')}>
+        Stewardship rubric{quality?.rubricRevision ? ` · revision ${quality.rubricRevision}` : ''}</a></div>
+    <div className="woe__quality-duties">{RUBRIC_DUTIES.map(([key, title, description]) => {
+      const measured = quality?.criteria[key];
+      return <div key={key}><h4>{title}</h4><p>{description}</p>
+        <span className="woe__state" data-state={measured ? measured.rating : 'unmeasured'}>
+          {measured?.rating ?? 'Not measured'}</span>
+        {measured ? <a className="woe__link" href={'/adv?hudscorecard=' + encodeURIComponent(measured.scorecardRef)}
+          title={measured.evidence}>View evidence</a> : null}</div>;
+    })}</div>
+    {quality?.error ? <p role="alert" className="woe__warning">{quality.error}</p> :
+      !quality ? <p className="woe__muted">Quality evidence has not loaded. Refresh to check this goal’s grading activity.</p> :
+      <><p className="woe__muted">Recent grading evidence · since {new Date(quality.windowStart).toLocaleDateString()}
+        {!quality.complete ? ' · limited recent page; older evidence may be missing' : ''}</p>
+        {quality.cycles.length ? <div className="woe__table-wrap"><table className="woe__table" aria-label="Grading cycles">
+          <thead><tr><th>Target / rubric</th><th>Progress</th><th>Evidence</th></tr></thead>
+          <tbody>{quality.cycles.map(c => <tr key={c.scorecardRef}><td><strong>{c.target}</strong>
+            <small>{c.rubricRef}{c.rubricRevision ? ` · revision ${c.rubricRevision}` : ''}</small></td>
+            <td><span className="woe__state" data-state={c.status}>{({ baseline: 'Baseline recorded', 'needs-repair': 'Repairs needed',
+              'needs-regrade': 'Re-grade needed', unverified: 'Needs verification', incomparable: 'Fresh baseline needed', verified: 'Improvement verified' })[c.status]}</span>
+              <p className="woe__muted">{c.reason}</p></td><td>
+              {c.baselineRef ? <a className="woe__link" href={'/adv?hudscorecard=' + encodeURIComponent(c.baselineRef)}>Baseline</a> : null}
+              <a className="woe__link" href={'/adv?hudscorecard=' + encodeURIComponent(c.scorecardRef)}>Scorecard</a>
+              {c.repairRefs.map(ref => <a key={ref} className="woe__link" href={'/adv?hudworkitem=' + encodeURIComponent(ref)}>{ref}</a>)}
+            </td></tr>)}</tbody></table></div> : <p className="woe__muted">No goal-attributed grading cycles are recorded in this window.</p>}</>}
+  </section>;
+}
+
 function ProgressBar({ counts, large }: { counts: ProgressCounts | null | undefined; large?: boolean }) {
   if (!counts) return <span className="woe__muted">Not measured</span>;
   const t = total(counts);
@@ -184,6 +222,7 @@ export default function WorkOnEverythingPanel({ data, nowMs, onClose, onOpenPlan
             <span className="woe__kpi-value">{t.value} <small>{t.unit}</small></span>
             {t.key === null ? <ProgressBar counts={totals} large /> : null}
             <span className="woe__kpi-sub">{t.sub}</span></button>)}</div>
+        <RubricStewardship data={data} />
         <div className="woe__chart"><h3>Work finished per day for this goal{series ? ` (last ${series.length} days)` : ''}</h3>
           {series ? <svg viewBox={`0 0 ${series.length * 36} 96`} preserveAspectRatio="none" role="img"
             aria-label={`${series.reduce((n, d) => n + d.done, 0)} work items finished in the last ${series.length} days`}>

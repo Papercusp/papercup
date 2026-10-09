@@ -1,0 +1,168 @@
+/** WOE quality evidence, composed from the existing goal/scorecard/completion ledgers.
+ * A bounded recent page is never a census, and a passing card is never proof of repair.
+ */
+import type { Sql } from 'postgres';
+import type { ScorecardRow } from './scorecards';
+
+export const RUBRIC_STEWARDSHIP_CRITERIA = [
+  'rubric-coverage-stewardship', 'rubric-quality-stewardship', 'grading-correction-closure',
+] as const;
+export type StewardshipCriterion = typeof RUBRIC_STEWARDSHIP_CRITERIA[number];
+const WOE_RUBRIC = 'work-on-everything-stewardship-health';
+const PAGE_SIZE = 40;
+const BAD = new Set(['partial', 'degraded', 'fail', 'severe', 'broken']);
+const GOOD = new Set(['pass', 'healthy', 'exemplary']);
+
+export interface StewardshipRepair {
+  id: string;
+  goalId: string;
+  owner: string | null;
+  closedAt: string | null;
+  verified: boolean;
+}
+export type StewardshipCard = Pick<ScorecardRow, 'issueId' | 'createdAt' | 'createdBy' | 'rubricRef' |
+  'rubricRevision' | 'criteriaHash' | 'subject' | 'ratings' | 'supersedes'> & {
+  settled: boolean;
+  current: boolean;
+  requiresIndependentAcceptance: boolean;
+};
+export interface StewardshipCycle {
+  target: string;
+  rubricRef: string;
+  rubricRevision: number | null;
+  baselineRef: string | null;
+  scorecardRef: string;
+  repairRefs: string[];
+  status: 'baseline' | 'needs-repair' | 'needs-regrade' | 'unverified' | 'incomparable' | 'verified';
+  reason: string;
+}
+export interface GoalRubricStewardship {
+  measuredAt: string;
+  windowStart: string;
+  complete: boolean;
+  rubricRef: string;
+  rubricRevision: number | null;
+  criteria: Record<StewardshipCriterion, { rating: string; evidence: string; scorecardRef: string } | null>;
+  cycles: StewardshipCycle[];
+  error: string | null;
+}
+
+/** The remediation field is the scorecard's canonical pointer to its owned repairs. */
+export function stewardshipRepairRefs(card: StewardshipCard): string[] {
+  return [...new Set(Object.values(card.ratings).flatMap(r =>
+    r.remediation?.match(/\b(?:WI|EI)-\d+\b/g) ?? []))];
+}
+
+export function classifyStewardshipCycle(
+  goalId: string, card: StewardshipCard, cards: readonly StewardshipCard[], repairs: readonly StewardshipRepair[],
+): StewardshipCycle {
+  const baseline = cards.find(c => c.issueId === card.supersedes);
+  const repairRefs = stewardshipRepairRefs(baseline ?? card);
+  const out = (status: StewardshipCycle['status'], reason: string): StewardshipCycle => ({
+    target: card.subject?.ref ?? 'Target not recorded', rubricRef: card.rubricRef,
+    rubricRevision: card.rubricRevision ?? null, baselineRef: baseline?.issueId ?? null,
+    scorecardRef: card.issueId, repairRefs, status, reason,
+  });
+  if (!card.subject || !card.settled || !card.current) return out('unverified', 'Current, audited terminal evidence is required.');
+  if (!baseline) {
+    if (card.supersedes) return out('unverified', 'The linked baseline is outside the available goal-scoped evidence.');
+    if (Object.values(card.ratings).some(r => BAD.has(r.rating))) {
+      const closed = repairRefs.length > 0 && repairRefs.every(id => repairs.some(r =>
+        r.id === id && r.goalId === goalId && r.verified && r.closedAt));
+      return out(closed ? 'needs-regrade' : 'needs-repair', closed
+        ? 'Verified repairs are recorded; a comparable re-grade is still needed.'
+        : 'Baseline findings need owned, verified repairs.');
+    }
+    return out('baseline', 'Baseline recorded; verified improvement has not been established.');
+  }
+  if (!baseline.subject || card.subject.ref !== baseline.subject.ref || card.subject.kind !== baseline.subject.kind ||
+      card.rubricRef !== baseline.rubricRef || !card.rubricRevision || card.rubricRevision !== baseline.rubricRevision ||
+      !card.criteriaHash || card.criteriaHash !== baseline.criteriaHash) {
+    return out('incomparable', 'Target or rubric revision changed; record a fresh baseline.');
+  }
+  if (!baseline.settled || !baseline.current || Date.parse(baseline.createdAt) >= Date.parse(card.createdAt)) {
+    return out('unverified', 'An earlier audited baseline is required.');
+  }
+  const failed = Object.entries(baseline.ratings).filter(([, r]) => BAD.has(r.rating));
+  if (!failed.length || !repairRefs.length) return out('unverified', 'No confirmed baseline finding with an owned repair is recorded.');
+  const selected = repairRefs.map(id => repairs.find(r => r.id === id && r.goalId === goalId));
+  if (selected.some(r => !r?.verified || !r.closedAt ||
+      Date.parse(r.closedAt) <= Date.parse(baseline.createdAt) || Date.parse(r.closedAt) >= Date.parse(card.createdAt))) {
+    return out('unverified', 'Every linked repair needs verification between the baseline and re-grade.');
+  }
+  if (card.requiresIndependentAcceptance && (!card.createdBy || selected.some(r => !r?.owner || r.owner === card.createdBy))) {
+    return out('unverified', 'This rubric requires acceptance by a grader independent of the implementers.');
+  }
+  if (failed.some(([key]) => !GOOD.has(card.ratings[key]?.rating ?? '')) ||
+      Object.values(card.ratings).some(r => BAD.has(r.rating) || r.rating === 'unknown')) {
+    return out('needs-repair', 'The re-grade has unresolved or unmeasured criteria.');
+  }
+  return out('verified', 'Comparable audited re-grade confirms the verified repairs.');
+}
+
+/** Goal scope comes from persisted attribution, never title matches or the reader's agent. */
+export async function readGoalRubricStewardship(
+  input: { workspaceId: string; goalId: string; nowMs?: number }, deps: { sql: Sql },
+): Promise<GoalRubricStewardship> {
+  const now = input.nowMs ?? Date.now();
+  const windowStart = new Date(now - 7 * 86400_000).toISOString();
+  const base: GoalRubricStewardship = {
+    measuredAt: new Date(now).toISOString(), windowStart, complete: false,
+    rubricRef: WOE_RUBRIC, rubricRevision: null,
+    criteria: Object.fromEntries(RUBRIC_STEWARDSHIP_CRITERIA.map(k => [k, null])) as GoalRubricStewardship['criteria'],
+    cycles: [], error: null,
+  };
+  try {
+    const { sql } = deps;
+    const rows = await sql<{ id: string; baseline: string | null }[]>`
+      SELECT feature_id AS id, payload->'observation'->>'supersedes' AS baseline
+        FROM harness_shared.work_items
+       WHERE workspace_id = ${input.workspaceId} AND goal_id = ${input.goalId}
+         AND lane = 'observation' AND payload->'observation'->>'rubricRef' IS NOT NULL
+         AND payload->'observation'->>'rubricRef' NOT IN ('grading-integrity', 'spec-quality', 'spec-test-adequacy')
+         AND created_ts >= ${Date.parse(windowStart)} AND created_ts <= ${now}
+       ORDER BY created_ts DESC, feature_id DESC LIMIT ${PAGE_SIZE + 1}`;
+    const page = rows.slice(0, PAGE_SIZE);
+    const baselineIds = page.flatMap(r => r.baseline ? [r.baseline] : []);
+    const earlier = baselineIds.length ? await sql<{ id: string }[]>`
+      SELECT feature_id AS id FROM harness_shared.work_items
+       WHERE workspace_id = ${input.workspaceId} AND goal_id = ${input.goalId}
+         AND feature_id = ANY(${baselineIds}) AND created_ts <= ${now}` : [];
+    const ids = [...new Set([...page, ...earlier].map(r => r.id))];
+    // Reuse the canonical reader: it resolves rubric/audit currentness and retractions.
+    const [{ listScorecards, settledGradingAuditIsCurrent }, { getRubric }, { isSufficientEvidence }] = await Promise.all([
+      import('./scorecards'), import('./rubrics'), import('./work-item-completion-authority'),
+    ]);
+    const [stored, rubric] = await Promise.all([
+      ids.length ? listScorecards({ issueIds: ids, includeSuperseded: true, limit: PAGE_SIZE * 2 }) : Promise.resolve([]),
+      getRubric(WOE_RUBRIC),
+    ]);
+    const rubrics = new Map(await Promise.all([...new Set(stored.map(c => c.rubricRef))].map(async ref => [ref, await getRubric(ref)] as const)));
+    const cards: StewardshipCard[] = stored.filter(c => ids.includes(c.issueId)).map(c => ({ ...c,
+      settled: !c.provisional && !c.synthesized && !c.retracted && !!c.gradingAudit && settledGradingAuditIsCurrent(c),
+      current: c.rubricCurrentness?.state === 'current',
+      requiresIndependentAcceptance: rubrics.get(c.rubricRef)?.kind === 'acceptance' ||
+        rubrics.get(c.rubricRef)?.gradingAuthority === 'independent',
+    }));
+    const refs = [...new Set(cards.flatMap(stewardshipRepairRefs))];
+    const repairRows = refs.length ? await sql<{ id: string; owner: string | null; closed_ts: string | null; authority: string | null; payload: Record<string, unknown>; state: string }[]>`
+      SELECT feature_id AS id, terminal_owner AS owner, closed_ts::text, authority, payload, state
+        FROM harness_shared.work_items WHERE workspace_id = ${input.workspaceId}
+         AND goal_id = ${input.goalId} AND feature_id = ANY(${refs})` : [];
+    const repairs: StewardshipRepair[] = repairRows.map(r => ({
+      id: r.id, goalId: input.goalId, owner: r.owner,
+      closedAt: r.closed_ts ? new Date(Number(r.closed_ts)).toISOString() : null,
+      verified: r.state === 'done' && (r.authority === 'committed' || r.authority === 'validated') &&
+        isSufficientEvidence(r.payload?._completionEvidence as Parameters<typeof isSufficientEvidence>[0]),
+    }));
+    const latest = cards.find(c => c.rubricRef === WOE_RUBRIC && c.current && c.settled);
+    return { ...base, complete: rows.length <= PAGE_SIZE, rubricRevision: rubric?.revision ?? null,
+      criteria: Object.fromEntries(RUBRIC_STEWARDSHIP_CRITERIA.map(key => [key, latest?.ratings[key]
+        ? { rating: latest.ratings[key].rating, evidence: latest.ratings[key].evidence, scorecardRef: latest.issueId } : null])) as GoalRubricStewardship['criteria'],
+      cycles: cards.filter(c => page.some(r => r.id === c.issueId) && !cards.some(newer => newer.supersedes === c.issueId))
+        .map(c => classifyStewardshipCycle(input.goalId, c, cards, repairs)),
+    };
+  } catch (error) {
+    return { ...base, error: `Rubric stewardship evidence could not be read: ${error instanceof Error ? error.message : String(error)}` };
+  }
+}

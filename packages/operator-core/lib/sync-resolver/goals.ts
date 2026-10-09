@@ -1371,7 +1371,10 @@ export async function resolveGoalDetail(args: {
       return [property, { selection, rows }];
     }));
   let worklistHistory: unknown[] = [], historyError: string | null = null;
+  let rubricStewardship: import('../goal-rubric-stewardship').GoalRubricStewardship | null = null;
   if (shaped.goal.goalPackage?.ref === 'work-on-everything') {
+    const { readGoalRubricStewardship } = await import('../goal-rubric-stewardship');
+    rubricStewardship = await readGoalRubricStewardship({ workspaceId, goalId }, { sql });
     try {
       const [{ readPlanEvents }, { projectWorklistHistory }] = await Promise.all([
         import('../agent-tools/coordination/plan-events'), import('../goals/worklist-console'),
@@ -1380,6 +1383,6 @@ export async function resolveGoalDetail(args: {
         events: ['property_changed'], limit: 40 }));
     } catch { historyError = 'Worklist change history could not be read.'; }
   }
-  return { ...shaped, goalModeState, goalData: { ...rawData, collections, worklistHistory, historyError,
+  return { ...shaped, goalModeState, rubricStewardship, goalData: { ...rawData, collections, worklistHistory, historyError,
     error: declaration.success ? null : 'Goal data declarations could not be read.' } };
 }

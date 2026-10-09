@@ -310,6 +310,8 @@ export interface GoalModeStateInput {
 }
 
 export interface GoalDetailInput {
+  /** Same goal-detail snapshot; absence is unmeasured, never healthy. */
+  rubricStewardship?: import('@papercusp/operator-core/lib/goal-rubric-stewardship').GoalRubricStewardship | null;
   goalData?: {
     /** Already emitted by goals.detail, including for goals created before packages. */
     propertySchema?: import('@papercusp/operator-core/lib/typed-properties').TypedPropertySchemaDocument;

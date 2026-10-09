@@ -46,6 +46,33 @@ const rowLabels = () => screen.getAllByTestId('ongoing-worklist-row').map((r) =>
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 describe('Work on everything: progress table (WI-10007603)', () => {
+  it('surfaces the three duties while absent evidence stays explicitly unmeasured', () => {
+    render(<WorkOnEverythingPanel data={fixture()} {...props()} />);
+    const quality = screen.getByRole('region', { name: 'Rubric stewardship' });
+    expect(within(quality).getByText('Maintain rubric coverage')).toBeTruthy();
+    expect(within(quality).getByText('Improve rubric quality')).toBeTruthy();
+    expect(within(quality).getByText('Grade, improve and re-grade')).toBeTruthy();
+    expect(within(quality).getAllByText('Not measured')).toHaveLength(3);
+    expect(within(quality).queryByText('Improvement verified')).toBeNull();
+  });
+
+  it('shows comparable-cycle state, canonical references and bounded evidence without claiming completion', () => {
+    const data = fixture();
+    data.rubricStewardship = { measuredAt: '2026-10-09T12:00:00Z', windowStart: '2026-10-02T12:00:00Z',
+      complete: false, rubricRef: 'work-on-everything-stewardship-health', rubricRevision: 46,
+      criteria: { 'rubric-coverage-stewardship': null, 'rubric-quality-stewardship': null,
+        'grading-correction-closure': { rating: 'partial', evidence: 'Re-grade still needed', scorecardRef: 'EI-4' } },
+      cycles: [{ target: 'Search', rubricRef: 'quality', rubricRevision: 2, baselineRef: 'EI-1', scorecardRef: 'EI-2',
+        repairRefs: ['WI-12'], status: 'incomparable', reason: 'Target or rubric revision changed; record a fresh baseline.' }], error: null };
+    render(<WorkOnEverythingPanel data={data} {...props()} />);
+    expect(screen.getByRole('table', { name: 'Grading cycles' })).toBeTruthy();
+    expect(screen.getByText('Fresh baseline needed')).toBeTruthy();
+    expect(screen.getByText(/limited recent page/)).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Baseline' }).getAttribute('href')).toContain('EI-1');
+    expect(screen.getByRole('link', { name: 'WI-12' }).getAttribute('href')).toContain('WI-12');
+    expect(screen.queryByText('Improvement verified')).toBeNull();
+  });
+
   it('shows every plan with progress, keeps unpicked plans visible, and hides empty plans by default', () => {
     render(<WorkOnEverythingPanel data={fixture()} {...props()} />);
     expect(rowLabels().map((t) => t?.split('h ·')[0])).toEqual(['Cloud setup', 'Search reliability', 'Mobile']);
