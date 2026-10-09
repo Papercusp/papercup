@@ -28,6 +28,13 @@ test('background summary completes through a real managed task and the normal do
   let taskId: string | undefined;
   let terminal = false;
   const observations: Record<string, unknown> = { workspace, client, workItem, origin: origin.origin };
+  const retainEvidence = async (name: string, value: unknown) => {
+    // Body-only attachments are not persisted by the normal list/ledger
+    // reporters. Keep the bytes even when the model or an assertion fails.
+    const path = testInfo.outputPath(`${name}.json`);
+    writeFileSync(path, JSON.stringify(value, null, 2) + '\n');
+    await testInfo.attach(name, { contentType: 'application/json', path });
+  };
   const invoke = async (name: string, args: unknown) => {
     const payload = join(state, `call-${sequence++}.json`);
     writeFileSync(payload, JSON.stringify(args));
@@ -55,6 +62,15 @@ test('background summary completes through a real managed task and the normal do
     test.skip(models.length === 0, 'The live local-model fixture is unavailable; no cloud substitute is permitted.');
     const model = models.includes('ornith:fast') ? 'ornith:fast' : models[0];
     observations.model = model;
+    const backend = inventory.backends.find((candidate: { enabled: boolean; models: string[] }) =>
+      candidate.enabled && candidate.models.includes(model));
+    observations.backend = backend;
+    // This journey verifies inference on a ready local backend. On-demand
+    // loading has its own maintained lifecycle tests and can take minutes;
+    // never spend the summary's bounded inference budget on an unready fixture.
+    const readiness = await request.get(backend.baseUrl + '/v1/models', { timeout: 5_000 });
+    observations.backendReadiness = { status: readiness.status(), body: await readiness.text() };
+    expect(readiness.ok(), 'The real local backend must be ready before launching the bounded summary; cold-start readiness is a fixture prerequisite.').toBe(true);
     const source = 'Public fixture: North reports 12 units and South reports 34 units.';
     const args = { operation: 'summarize', content: { kind: 'text', text: source, ref: 'fixture:background-public-report' },
       summary: { model, allowCloud: false, cache: false, maxCalls: 1, maxOutputTokens: 128,
@@ -92,10 +108,9 @@ test('background summary completes through a real managed task and the normal do
     expect(receipt.summary).toMatch(/\b34\b/);
     const healthAfter = await (await request.get(origin.origin + '/api/health')).json();
     expect(healthAfter.sha).toBe(healthBefore.sha);
-    await testInfo.attach('managed-summary-receipt', { contentType: 'application/json',
-      body: JSON.stringify({ buildSha: healthBefore.sha, taskId, bashId: launch.bash_id, final, receipt }) });
+    await retainEvidence('managed-summary-receipt', { buildSha: healthBefore.sha, taskId, bashId: launch.bash_id, final, receipt });
   } finally {
-    await testInfo.attach('managed-summary-execution', { contentType: 'application/json', body: JSON.stringify(observations) });
+    await retainEvidence('managed-summary-execution', observations);
     if (taskId && !terminal) await invoke('processes:kill', { taskId }).catch(() => {});
     rmSync(state, { recursive: true, force: true });
   }

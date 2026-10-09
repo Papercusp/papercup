@@ -29,7 +29,8 @@ type EchoTier = keyof typeof WRITE_ECHO_TIER_CAPS;
 const clip = (s: unknown, n: number): string | null =>
   typeof s === "string" ? (s.length > n ? `${s.slice(0, n - 1)}…` : s) : null;
 
-function compactWorkItemRef(v: unknown, titleCap: number): unknown {
+/** Compact a just-written work item to the fields a caller needs for follow-up. */
+export function compactWorkItemRef(v: unknown, titleCap: number): unknown {
   if (!v || typeof v !== "object") return v ?? null;
   const w = v as Record<string, unknown>;
   return {

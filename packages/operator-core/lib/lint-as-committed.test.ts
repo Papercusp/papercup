@@ -42,7 +42,7 @@ import {
 } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
-import { dirname, join, relative, resolve } from 'node:path';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
@@ -262,6 +262,29 @@ describe('isolated clone module identity (EI-24824919200711849)', () => {
       PAPERCUSP_LINT_AS_COMMITTED_CLONE: '1',
     });
     expect(parent).toEqual({ NODE_OPTIONS: '--trace-warnings', npm_config_workspaces: 'true', EXAMPLE: 'kept' });
+  });
+
+  it.each([
+    ['shallow', resolve(tmpdir(), 'papercusp-lint-as-committed-probe/apps/papercusp-docs')],
+    ['persistent', resolve(tmpdir(), 'owner/.papercusp/artifacts/tutorial/replacement/sources/operator/apps/papercusp-docs')],
+  ])('resolves injected Astro page imports against the clone root (%s)', async (_geometry, projectRoot) => {
+    const { normalizeExternalAstroModuleIds } = await import(resolve(repoRoot, 'apps/papercusp-docs/astro.config.mjs'));
+    const { pluginPage } = await import(resolve(repoRoot, 'node_modules/astro/dist/vite-plugin-pages/page.js'));
+    const sharedRoute = realpathSync(resolve(repoRoot, 'node_modules/@astrojs/starlight/routes/static/404.astro'));
+    const component = relative(projectRoot, sharedRoute).split(sep).join('/');
+    const virtualId = `\0virtual:astro:page:${component.replace(/\./g, '@_@')}`;
+    // Exercise Astro's actual route writer: it prefixes the project-relative
+    // component with '/', even when the component traverses outside the clone.
+    const page = pluginPage({ routesList: { routes: [{ component, type: 'page' }] } });
+    const { code } = page.load.handler(virtualId);
+    const match = /import \* as _page from ("(?:[^"\\]|\\.)*");/.exec(code);
+    expect(match).not.toBeNull();
+    const request = JSON.parse(match![1]);
+    expect(request).toContain('/../');
+    const normalizer = normalizeExternalAstroModuleIds(projectRoot);
+    expect(normalizer.resolveId(request, virtualId)).toBe(sharedRoute);
+    expect(normalizer.resolveId(sharedRoute)).toBe(sharedRoute);
+    expect(normalizer.resolveId(`${sharedRoute}?astro&type=style&index=0`)).toBe(`/@fs${sharedRoute}?astro&type=style&index=0`);
   });
 
   it('normalizes external Astro IDs in clone mode so virtual requests share the compile key', async () => {

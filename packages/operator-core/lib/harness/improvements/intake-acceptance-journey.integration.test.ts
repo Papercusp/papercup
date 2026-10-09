@@ -29,6 +29,12 @@ vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
   return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: h.sql }) };
 });
+vi.mock('../../attention/intake-promotion', async (orig) => ({
+  ...(await orig<typeof import('../../attention/intake-promotion')>()),
+  // The private ledger and the acceptance/execution guards share this target
+  // checkout identity; the actual ledger verifier remains in the composed path.
+  currentIntakeTargetBuild: async () => BUILD,
+}));
 
 const { createIssue, claimIssue } = await import('../../issues-engineer');
 const {

@@ -39,6 +39,7 @@ import {
   createVerificationTask,
   deriveWorkItemIntakeStage,
   deriveWorkItemPresentationStage,
+  evaluateImplementationAcceptance,
   implementationReadinessAdmitsClaim,
   mintAgentReviewClaimAdmission,
   sealImplementationAcceptance,
@@ -659,6 +660,14 @@ describe('R-36 fast paths need an authorized policy receipt', () => {
   it('severity, security tags and explicit assignment do not waive the floor; a scoped policy receipt admits', async () => {
     for (const p of acceptanceCanaryProbes().filter((x) => x.step === 'fast-path')) {
       await seed(`WI-R36-${p.probe}`, { createdTs: POST, payload: p.payload, title: 'acceptance canary probe', summary: 'synthetic row; never written' });
+      if (p.probe === 'policy-receipt') {
+        const acceptance = evaluateImplementationAcceptance(p.payload, {
+          kind: 'bug', title: 'acceptance canary probe', summary: 'synthetic row; never written',
+        });
+        if (acceptance.contract?.verification.check === 'reproduction') {
+          h.currentBuild = acceptance.contract.verification.receipt.buildSha;
+        }
+      }
     }
     expect(await viewIds('WI-R36-')).toEqual(['WI-R36-policy-receipt']);
     // Explicit assignment by id is not a waiver either.

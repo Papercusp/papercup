@@ -5,8 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { assertPublicManualSource } from './scripts/source-contract.mjs';
 
 const isLintAsCommittedClone = process.env.PAPERCUSP_LINT_AS_COMMITTED_CLONE === '1';
-function normalizeExternalAstroModuleIds() {
-  const projectRoot = fileURLToPath(new URL('./', import.meta.url));
+export function normalizeExternalAstroModuleIds(projectRoot = fileURLToPath(new URL('./', import.meta.url))) {
   return {
     name: 'papercusp-clone-astro-id-normalizer',
     enforce: 'pre',

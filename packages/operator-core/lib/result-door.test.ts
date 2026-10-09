@@ -2704,6 +2704,71 @@ describe('applyResultDoor', () => {
       expect(JSON.stringify(bounded).length).toBeLessThanOrEqual(BUDGET_CHARS);
     });
 
+    it('keeps selected comment bodies for nested work_items:get when spill persistence fails', () => {
+      breakScratchRoot();
+      const selectedBody = 'RETAINED-COMMENT: the reviewer requested the bounded continuation evidence.';
+      const original = JSON.stringify({
+        ok: true,
+        results: [{
+          ok: true,
+          id: 'WI-thread-spill-failure',
+          availability: 'available',
+          workItem: {
+            id: 'WI-thread-spill-failure',
+            kind: 'bug',
+            state: 'open',
+            title: 'bounded continuation comment',
+            summary: 'S'.repeat(1_200),
+          },
+          threadWindow: {
+            shown: 1,
+            total: 4,
+            posts: [{
+              id: 42,
+              thread_id: 'thread-42',
+              author_id: 'su-reviewer',
+              body: selectedBody,
+              created_ts: '2026-10-08T05:00:00.000Z',
+            }],
+          },
+          checkpoint: 'C'.repeat(40_000),
+          checkpointContentHash: 'checkpoint-hash-123456',
+        }],
+        counts: { ok: 1, failed: 0 },
+      });
+      expect(original.length).toBeGreaterThan(BUDGET_CHARS);
+
+      const doored = applyResultDoor(
+        { content: [{ type: 'text' as const, text: original }] },
+        {
+          toolName: 'tools:invoke',
+          nestedTargetToolName: 'work_items:get',
+          workspaceId: 'ws-1',
+          runId: RUN_ID,
+        },
+      );
+      const bounded = boundedBody(doored) as unknown as {
+        results: Array<{
+          threadWindow?: { total?: number; shown?: number; posts?: Array<{ body?: string }> };
+          checkpointContentHash?: string;
+        }>;
+        _projection: { cursor: Record<string, unknown> };
+      };
+
+      expect(bounded._projection.cursor).toMatchObject({
+        kind: 'volatile-scratch-page',
+        tool: 'capability:read',
+        reason: 'spill-write-failed',
+      });
+      expect(bounded.results[0].threadWindow).toMatchObject({
+        total: 4,
+        shown: 1,
+        posts: [{ body: selectedBody }],
+      });
+      expect(bounded.results[0].checkpointContentHash).toBe('checkpoint-hash-123456');
+      expect(JSON.stringify(bounded).length).toBeLessThanOrEqual(BUDGET_CHARS);
+    });
+
     it('stamps the failure structurally so a machine reader is not left parsing prose', () => {
       breakScratchRoot();
       // Typed as DoorableResult, not left to inference: `applyResultDoor` returns
