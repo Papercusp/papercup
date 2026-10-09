@@ -7853,12 +7853,16 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         );
       }
       frames.selectedConversation = resumedPane.screen();
+      // An accepted attach restores history before the native executor is
+      // ready. Keep the existing readiness budget ahead of composer keys;
+      // otherwise the shorter chooser wait aborts a valid startup before its
+      // readiness result (or bounded startup failure) can be observed.
+      await resumedPane.waitFor('· ready ·', { timeoutMs: 120_000 });
       resumedPane.escape();
       await resumedPane.waitFor('i type · v speak');
       resumedPane.write('i');
       await resumedPane.waitForReply(greetingReply);
       frames.history = resumedPane.screen();
-      await resumedPane.waitFor('· ready ·', { timeoutMs: 120_000 });
       // The optional approval probe precedes `greeting`, so "my first
       // greeting" is ambiguous there: a real model can correctly recall the
       // permission-fixture marker instead. Name the expected historical

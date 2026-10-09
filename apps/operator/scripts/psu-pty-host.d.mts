@@ -3136,6 +3136,36 @@ export function makeHeadlessCodexModelChoiceStateMachine({ enabled, startupMs, n
         expiresAt: any;
     };
 };
+export function managedCodexStartupUpdateDialogEnabled(env?: NodeJS.ProcessEnv): boolean;
+/** Watch the current VT screen for Codex's exact optional update menu. Reading
+ * the rendered screen avoids matching old transcript/scrollback text. The
+ * caller owns the child-identity check and sends the returned Escape once. */
+export function makeManagedCodexStartupUpdateDialogStateMachine({ enabled, startupMs, now, screenDims, }?: {
+    enabled?: boolean | undefined;
+    startupMs?: number | undefined;
+    now?: (() => number) | undefined;
+    screenDims?: {
+        rows: number;
+        cols: number;
+    } | undefined;
+}): {
+    observe(chunk: any, at?: number): {
+        action: string;
+        phase: string;
+        active: boolean;
+    };
+    complete(): {
+        action: string;
+        phase: string;
+        active: boolean;
+    };
+    status: () => {
+        phase: string;
+        active: boolean;
+        startedAt: number;
+        expiresAt: any;
+    };
+};
 /** The onboarding actuator is never enabled for an interactive or non-Claude
  * launch. Pure and exported so the environment gate cannot silently broaden. */
 export function headlessClaudeOnboardingEnabled(env?: NodeJS.ProcessEnv): boolean;
@@ -4388,6 +4418,8 @@ export const HEADLESS_NORMALIZED_LOG_MAX_BYTES: number;
  * one startup menu before the ordinary composer gate can submit the kickoff.
  * Never answer an interactive session or a later turn. */
 export const HEADLESS_CODEX_MODEL_CHOICE_STARTUP_MS: 600000;
+export const CODEX_STARTUP_UPDATE_DIALOG_STARTUP_MS: 600000;
+export const CODEX_STARTUP_UPDATE_DIALOG_ESCAPE_KEY: "\u001B";
 /**
  * Claude can still show its first-run wizard to a headless launch even when
  * the persisted config says onboarding is complete. A human can press Enter

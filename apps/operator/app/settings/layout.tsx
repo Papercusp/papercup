@@ -231,6 +231,7 @@ export default function SettingsLayout({ children }: { children: React.ReactNode
   }, [normalizedQuery]);
 
   return (
+    <div className="pc-settings-frame">
     <div className="pc-settings-shell">
       <aside className="pc-settings-nav" aria-label="Settings sections">
         <div className="pc-settings-nav-search">
@@ -298,6 +299,7 @@ export default function SettingsLayout({ children }: { children: React.ReactNode
         </nav>
       </aside>
       <section className="pc-settings-content">{children}</section>
+    </div>
     </div>
   );
 }

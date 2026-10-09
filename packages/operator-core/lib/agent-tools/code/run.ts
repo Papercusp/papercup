@@ -19,9 +19,6 @@ import {
 import {
   CODE_RUN_REPLAY_PROOF_META_KEY,
   DEFAULT_SCRIPT_TIMEOUT_MS,
-  openOrchestrationKernel,
-  inspectOrchestrationKernel,
-  closeOrchestrationKernel,
   type AbortCompletionContext,
   type AbortCompletionReceipt,
   type FieldMiss,
@@ -54,6 +51,7 @@ import { ORCHESTRATION_RECURSION_EXCLUSIONS } from '../orchestration/contract-pr
 import { validateRecipeScriptAgainstCatalog } from '../recipes/recipe-schema-validation';
 import { canonicalJson } from '../../authority/authority-rpc-envelope';
 import { resolveAgentIdentity } from '../coordination/identity';
+import { openManagedKernel, controlManagedKernel, runManagedKernelScript } from './kernel-owner';
 
 export type CodeRunCaptureMode = 'auto' | 'never';
 
@@ -351,13 +349,15 @@ export default defineTool({
       try { kernelScope = codeRunKernelScope(ctx); }
       catch (error) { return kernelReply({ ok: false, error: String(error), executed: false }); }
       if (args.kernel.op === 'status' || args.kernel.op === 'close') {
-        const kernel = args.kernel.op === 'status'
-          ? inspectOrchestrationKernel(args.kernel.id!, kernelScope)
-          : closeOrchestrationKernel(args.kernel.id!, kernelScope);
-        return kernelReply({ ok: kernel.state !== 'unrecoverable', kernel, executed: false });
+        try {
+          const kernel = await controlManagedKernel(args.kernel.op, args.kernel.id!, kernelScope);
+          return kernelReply({ ok: kernel.state !== 'unrecoverable', kernel, executed: false });
+        } catch (error) {
+          return kernelReply({ ok: false, error: String(error), reattachment: 'retry', executed: false });
+        }
       }
       if (args.kernel.op === 'open' && !args.script) {
-        try { return kernelReply({ ok: true, kernel: await openOrchestrationKernel(kernelScope), executed: false }); }
+        try { return kernelReply({ ok: true, kernel: await openManagedKernel(kernelScope), executed: false }); }
         catch (error) { return kernelReply({ ok: false, error: String(error), executed: false }); }
       }
     }
@@ -503,13 +503,14 @@ export default defineTool({
     if (args.kernel && kernelScope) {
       try {
         kernelHandle = {
-          id: args.kernel.op === 'open' ? (await openOrchestrationKernel(kernelScope)).id : args.kernel.id!,
+          id: args.kernel.op === 'open' ? (await openManagedKernel(kernelScope)).id : args.kernel.id!,
           scope: kernelScope,
         };
       } catch (error) { return kernelReply({ ok: false, error: String(error), executed: false }); }
     }
     const result = await runToolOrchestration(script, {
       ...(kernelHandle ? { kernel: kernelHandle } : {}),
+      ...(kernelHandle ? { executeScript: runManagedKernelScript } : {}),
       ctx,
       // Thread the host's REAL dispatch deps (B-CX-DEPS): inner tool calls route through
       // the same dispatcher pipeline as any MCP `tools/call` — so they are recordInvocation-
