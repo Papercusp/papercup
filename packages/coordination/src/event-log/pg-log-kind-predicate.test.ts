@@ -228,3 +228,23 @@ describe('PgCoordLog bounded cursor timestamp upper bound', () => {
     expect(outer().text).toContain('AND ts <= ?::timestamptz');
   });
 });
+
+describe('PgCoordLog bounded cursor exact sender predicate', () => {
+  it('pushes exact sender into the event-surface query', async () => {
+    const { sql, outer } = makeFakeSql();
+    await makeLog(sql).readEventsBoundedCursor('handoffs', { limit: 50, from: 'agent-a' });
+    const { text, params } = outer();
+
+    expect(text).toContain("AND body->>'from' = ?");
+    expect(params).toContain('agent-a');
+  });
+
+  it('pushes exact sender into the line-surface query', async () => {
+    const { sql, outer } = makeFakeSql();
+    await makeLog(sql).readLinesBoundedCursor('messages', { limit: 50, from: 'agent-a' });
+    const { text, params } = outer();
+
+    expect(text).toContain("AND body->>'from' = ?");
+    expect(params).toContain('agent-a');
+  });
+});

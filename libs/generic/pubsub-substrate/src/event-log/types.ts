@@ -182,7 +182,7 @@ export interface CoordEventLog {
    */
   readEventsBoundedCursor(
     surface: EventSurface,
-    opts: { limit: number; kinds?: string[]; beforeId?: number; beforeTs?: string; beforeMsgId?: string },
+    opts: { limit: number; kinds?: string[]; from?: string; beforeId?: number; beforeTs?: string; beforeMsgId?: string },
   ): Promise<CoordLogCursorPage>;
 
   /** The line-surface sibling of {@link readEventsBoundedCursor}. */
@@ -193,6 +193,7 @@ export interface CoordEventLog {
       sinceTs?: string;
       planSlug?: string;
       kinds?: string[];
+      from?: string;
       beforeId?: number;
       beforeTs?: string;
       beforeMsgId?: string;

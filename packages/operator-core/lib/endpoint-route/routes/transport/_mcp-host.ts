@@ -3213,8 +3213,8 @@ function mcpInstructionsForServer(): string | undefined {
  * Strict mode (default since 2026-05-11): listings mirror tools/call — a
  * FAILED spawn context yields nothing. Returning the full catalog to an
  * unsigned/forged URL would:
- *   1. leak the tool surface to probing without an audit trail
- *      (tools/list failures aren't logged); and
+ *   1. leak the tool surface to probing; rejected listings record auth-failure
+ *      telemetry when the request supplies an explicit workspace; and
  *   2. let `role=operator` in an unsigned URL surface the operator-tier
  *      catalog without role-allowlist filtering, because
  *      tryBuildSpawnContext returns kind=failed and role falls back to
@@ -3235,7 +3235,7 @@ function mcpInstructionsForServer(): string | undefined {
  *     tools. Listing hint only; tools/call is unaffected. tool-allowlist.ts.
  */
 async function resolveVisibleToolListings(extra: unknown): Promise<
-  | { kind: 'failed'; reason: string }
+  | { kind: 'failed'; reason: string; nativeSessionFailure?: NativeSessionAuthFailureMetadata }
   | {
       kind: 'ok' | 'none';
       spawnRes: TrySpawnContextResult;
@@ -3246,7 +3246,13 @@ async function resolveVisibleToolListings(extra: unknown): Promise<
   const spawnRes = await tryBuildSpawnContext(extra);
   // WI-574 (loud auth-fail): carry the rejection reason so tools/list can fail LOUDLY instead of
   // silently advertising an empty tool list (which is indistinguishable from a healthy server).
-  if (spawnRes.kind === 'failed') return { kind: 'failed', reason: spawnRes.reason };
+  if (spawnRes.kind === 'failed') {
+    return {
+      kind: 'failed',
+      reason: spawnRes.reason,
+      ...(spawnRes.nativeSessionFailure ? { nativeSessionFailure: spawnRes.nativeSessionFailure } : {}),
+    };
+  }
   // external-app-access P-004 (D-012 side finding): a bare, unauthenticated probe
   // lists the catalog only for a LOCAL caller. Outside traffic (a tunnel, a relay, a
   // non-loopback Host) with no auth context gets the loud auth failure instead of a
@@ -3743,6 +3749,14 @@ export function registerMcpHost(server: McpServer): void {
       // session that looks connected" class. Throw a specific JSON-RPC error so the client + agent
       // KNOW the session is unauthenticated and WHY. (Mirrors tools/call, which already hard-fails
       // a rejected spawn ctx.) A bare no-params probe is `kind:'none'`, not 'failed', and still lists.
+      await recordMcpAuthFailureTelemetry(
+        'tools/list',
+        extra,
+        vis.reason,
+        undefined,
+        listStartedAt,
+        vis.nativeSessionFailure,
+      );
       throw new Error(
         `mcp_auth_failed: ${vis.reason} — this MCP session is UNAUTHENTICATED, so it exposes NO tools ` +
           '(this is NOT "a healthy server with zero tools"). Typical causes: an EXPIRED per-spawn signed ' +

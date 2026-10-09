@@ -16,7 +16,7 @@
  * resolves Cargo dependencies. The committed exceptions file is validated as well.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statfsSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 // Enrolled in tsconfig.declarations.json, so this import is typed by the generated
@@ -27,6 +27,7 @@ import {
   cargoPackagesOf,
   classify,
   collectThirdPartyNotices,
+  collectInstallerTree,
   renderThirdPartyNotices,
   declaredNpmLicense,
   evaluateExpression,
@@ -46,6 +47,64 @@ const COMPONENTS_PATH =
   process.env.LICENSE_COMPONENTS_PATH ?? join(REPO_ROOT, 'scripts', 'installer-components.json');
 
 const tier = (expr: unknown) => evaluateExpression(expr).tier;
+
+describe('collectInstallerTree — Syft directory mount exclusions', () => {
+  const canUseTmpfs = process.platform === 'linux' && existsSync('/dev/shm')
+    && Number(statfsSync('/dev/shm').type) === 0x01021994;
+
+  it.runIf(canUseTmpfs)('stages exact npm bytes outside excluded tmpfs and removes scan scratch', () => {
+    const root = mkdtempSync('/dev/shm/license-mount-control-');
+    const bin = join(root, 'bin');
+    const input = join(root, 'input');
+    const logPath = join(root, 'scan-input');
+    const manifest = JSON.stringify({ name: 'mount-control', version: '1.0.0', license: 'MIT' });
+    mkdirSync(bin);
+    mkdirSync(join(input, 'node_modules/mount-control'), { recursive: true });
+    writeFileSync(join(input, 'node_modules/mount-control/package.json'), manifest);
+    symlinkSync('package.json', join(input, 'node_modules/mount-control/manifest-link'));
+    // A subprocess fixture models the measured Syft rule, not an empty SBOM
+    // canned as success. It reads the exact bytes the checker supplied.
+    const syft = join(bin, 'syft');
+    writeFileSync(syft, `#!${process.execPath}\n` + [
+      "const fs=require('node:fs'),path=require('node:path');",
+      "const input=process.argv[2].slice(4);",
+      `fs.writeFileSync(${JSON.stringify(logPath)},input);`,
+      "const skipped=Number(fs.statfsSync(input).type)===0x01021994 && /^(?:\\/dev|\\/run)(?:\\/|$)/.test(input);",
+      "const file=path.join(input,'node_modules/mount-control/package.json');",
+      `if(fs.readFileSync(file,'utf8')!==${JSON.stringify(manifest)})process.exit(9);`,
+      "if(fs.readlinkSync(path.join(input,'node_modules/mount-control/manifest-link'))!=='package.json')process.exit(10);",
+      "const out=process.argv.find(a=>a.startsWith('syft-json=')).slice(10);",
+      "fs.writeFileSync(out,JSON.stringify({artifacts:skipped||process.env.LICENSE_FIXTURE_EMPTY==='1'?[]:[{type:'npm',name:'mount-control',version:'1.0.0',licenses:[{spdxExpression:'MIT'}],locations:[{path:'/node_modules/mount-control/package.json'}]}]}));",
+    ].join('\n'));
+    chmodSync(syft, 0o700);
+    const oldPath = process.env.PATH;
+    const oldEmpty = process.env.LICENSE_FIXTURE_EMPTY;
+    try {
+      process.env.PATH = `${bin}:${oldPath}`;
+      const result = collectInstallerTree(input, []);
+      expect(result.syftArtifacts).toEqual([{
+        type: 'npm', name: 'mount-control', version: '1.0.0', licenses: ['MIT'],
+        path: 'node_modules/mount-control/package.json',
+      }]);
+      expect(result.undetermined).toEqual([]);
+      expect(readFileSync(join(input, 'node_modules/mount-control/package.json'), 'utf8')).toBe(manifest);
+      const scanned = readFileSync(logPath, 'utf8');
+      expect(scanned).not.toBe(input);
+      expect(existsSync(scanned)).toBe(false);
+      process.env.LICENSE_FIXTURE_EMPTY = '1';
+      const empty = collectInstallerTree(input, []);
+      expect(empty.syftArtifacts).toEqual([]);
+      expect(empty.undetermined).toHaveLength(1);
+      expect(empty.undetermined[0]).toContain('Syft catalogued 0 npm packages');
+      expect(existsSync(readFileSync(logPath, 'utf8'))).toBe(false);
+    } finally {
+      process.env.PATH = oldPath;
+      if (oldEmpty === undefined) delete process.env.LICENSE_FIXTURE_EMPTY;
+      else process.env.LICENSE_FIXTURE_EMPTY = oldEmpty;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
 
 describe('main — strict gate results over measured lockfile fixtures', () => {
   function runGate(license: string | null, argv = ['--strict', '--ecosystem=npm'], missingCargoManifest = false) {

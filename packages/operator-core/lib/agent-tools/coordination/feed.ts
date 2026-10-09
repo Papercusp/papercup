@@ -292,6 +292,7 @@ export async function readCoordFeed(
       const page = await coordLog.readLinesBoundedCursor(surface, {
         limit: RAW_SURFACE_FETCH_CAP,
         ...(kindsForPushdown ? { kinds: kindsForPushdown } : {}),
+        ...(opts.from ? { from: opts.from } : {}),
         ...(opts.since_ts ? { sinceTs: opts.since_ts } : {}),
         ...(opts.plan_slug ? { planSlug: opts.plan_slug } : {}),
         ...(opts.before_ts ? { beforeTs: opts.before_ts, beforeMsgId: opts.before_msg_id } : {}),
@@ -309,6 +310,7 @@ export async function readCoordFeed(
       const page = await coordLog.readEventsBoundedCursor(surface, {
         limit: RAW_SURFACE_FETCH_CAP,
         ...(kindsForPushdown ? { kinds: kindsForPushdown } : {}),
+        ...(opts.from ? { from: opts.from } : {}),
         ...(opts.before_ts ? { beforeTs: opts.before_ts, beforeMsgId: opts.before_msg_id } : {}),
         ...(st.cursor !== undefined ? { beforeId: st.cursor } : {}),
       });

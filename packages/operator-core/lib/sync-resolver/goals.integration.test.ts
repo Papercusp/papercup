@@ -320,6 +320,42 @@ describe('goals.* resolvers against real SQL', () => {
     expect(stored.properties.tea_policy).toEqual(policy);
   });
 
+  it('reads manual display order after the canonical owner save and a fresh detail read', async () => {
+    const { nativeCollectionDeclaration, insertNativeCollectionGoal } =
+      await import('../../../../apps/operator/e2e/_ongoing-work-native-fixture');
+    const { ensureOrderedSelectionPolicyDatatype } = await import('../goals/package-property-datatypes');
+    const { applyGoalPropertyWrite } = await import('../typed-properties-db');
+    const { resolveGoalDetail } = await import('./goals');
+    const ids = ['mint', 'chamomile', 'rooibos'];
+    const { property, policyName, schema } = nativeCollectionDeclaration('tea', ids,
+      { order: ['mint', 'lavender'], excluded: ['lavender'] });
+    await ensureOrderedSelectionPolicyDatatype(sql, WS);
+    await insertNativeCollectionGoal(sql, { workspaceId: WS, goalId: GOAL, title: 'Manual display', schema });
+    const read = async () => {
+      const detail = await resolveGoalDetail({ workspaceId: WS, goalId: GOAL }) as {
+        goalData: { collections: Record<string, {
+          selection: { policyVersion: number }; rows: Array<{ id: string; selected: boolean }>;
+        }> };
+      };
+      return detail.goalData.collections[property];
+    };
+    expect((await read()).rows.map(row => row.id)).toEqual(ids);
+    const value = { order: ['chamomile', 'mint', 'rooibos', 'lavender'], excluded: ['lavender'] };
+    const saved = await sql.begin(tx => applyGoalPropertyWrite(tx as unknown as typeof sql, {
+      workspaceId: WS, goalId: GOAL, property: policyName, value, expectedVersion: 0,
+      provenance: 'owner-edit', actorId: 'human',
+    }));
+    expect(saved).toMatchObject({ ok: true });
+    const [stored] = await sql`SELECT properties FROM harness_shared.goals WHERE workspace_id=${WS} AND id=${GOAL}`;
+    expect(stored.properties[policyName]).toMatchObject({ value, version: 1, provenance: 'owner-edit' });
+    // A new resolver call must observe the saved envelope, rather than a UI
+    // reorder or a directly seeded policy that bypassed the writer.
+    const reloaded = await read();
+    expect(reloaded.selection.policyVersion).toBe(1);
+    expect(reloaded.rows.map(row => row.id)).toEqual(['chamomile', 'mint', 'rooibos']);
+    expect(reloaded.rows.every(row => row.selected)).toBe(true);
+  });
+
   it.each(['manual', 'active-workspace-plans'] as const)(
     'returns multiple selected members in saved owner priority order for %s collections',
     async (source) => {

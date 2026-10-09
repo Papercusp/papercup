@@ -1100,12 +1100,13 @@ export class PgCoordLog implements CoordEventLog {
    */
   async readEventsBoundedCursor(
     surface: EventSurface,
-    opts: { limit: number; kinds?: string[]; beforeId?: number; beforeTs?: string; beforeMsgId?: string },
+    opts: { limit: number; kinds?: string[]; from?: string; beforeId?: number; beforeTs?: string; beforeMsgId?: string },
   ): Promise<CoordLogCursorPage> {
     await this.opts.ensureSchema();
     const sql = this.opts.getSql();
     const limit = Math.max(1, Math.min(Math.floor(opts.limit) || 1, 1000));
     const kinds = opts.kinds?.filter((k) => typeof k === 'string' && k.trim());
+    const from = typeof opts.from === 'string' ? opts.from : null;
     const beforeId =
       typeof opts.beforeId === 'number' && Number.isFinite(opts.beforeId) ? Math.floor(opts.beforeId) : null;
     const beforeTs = typeof opts.beforeTs === 'string' && opts.beforeTs ? opts.beforeTs : null;
@@ -1118,6 +1119,7 @@ export class PgCoordLog implements CoordEventLog {
       SELECT id, body, ts, msg_id FROM harness_shared.coord_event_log
        WHERE workspace_id = ${this.resolveWs()} AND surface = ${surface}
          ${kindPredicate(sql, kinds)}
+         ${from !== null ? sql`AND body->>'from' = ${from}` : sql``}
          ${beforeTsPredicate}
          ${beforeId !== null ? sql`AND id < ${beforeId}` : sql``}
        ORDER BY id DESC
@@ -1146,6 +1148,7 @@ export class PgCoordLog implements CoordEventLog {
       sinceTs?: string;
       planSlug?: string;
       kinds?: string[];
+      from?: string;
       beforeId?: number;
       beforeTs?: string;
       beforeMsgId?: string;
@@ -1155,6 +1158,7 @@ export class PgCoordLog implements CoordEventLog {
     const sql = this.opts.getSql();
     const limit = Math.max(1, Math.min(Math.floor(opts.limit) || 1, 1000));
     const kinds = opts.kinds?.filter((k) => typeof k === 'string' && k.trim());
+    const from = typeof opts.from === 'string' ? opts.from : null;
     const sinceTs = typeof opts.sinceTs === 'string' && opts.sinceTs ? opts.sinceTs : null;
     const planSlug = typeof opts.planSlug === 'string' && opts.planSlug ? opts.planSlug : null;
     const beforeId =
@@ -1171,6 +1175,7 @@ export class PgCoordLog implements CoordEventLog {
       SELECT id, body, ts, msg_id FROM harness_shared.coord_event_log
        WHERE workspace_id = ${this.resolveWs()} AND surface = ${surface}
          ${kindPredicate(sql, kinds)}
+         ${from !== null ? sql`AND body->>'from' = ${from}` : sql``}
          ${sinceTs ? sql`AND body->>'ts' > ${sinceTs}` : sql``}
          ${planSlug ? sql`AND body->>'plan_slug' = ${planSlug}` : sql``}
          ${beforeTsPredicate}

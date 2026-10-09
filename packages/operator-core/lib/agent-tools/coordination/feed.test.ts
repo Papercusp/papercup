@@ -114,6 +114,21 @@ describe('union + surface tagging + broadcast flag', () => {
     expect(eventCall[1]).not.toHaveProperty('planSlug');
   });
 
+  it('pushes the exact sender filter into every bounded feed surface read', async () => {
+    setSurfaces({
+      messages: [env({ msg_id: 'm', from: 'zoe' })],
+      'plan-events': [env({ msg_id: 'p', kind: 'plan_event', from: 'zoe' })],
+      escalations: [env({ msg_id: 'e', kind: 'escalation', from: 'zoe' })],
+      handoffs: [env({ msg_id: 'h', kind: 'handoff', from: 'zoe' })],
+    });
+
+    await readCoordFeed({ from: 'zoe' });
+
+    for (const call of [...mockLog.readLinesBoundedCursor.mock.calls, ...mockLog.readEventsBoundedCursor.mock.calls]) {
+      expect(call[1]).toMatchObject({ from: 'zoe' });
+    }
+  });
+
   it('derives broadcast from a ["*"] recipient', async () => {
     setSurfaces({
       messages: [

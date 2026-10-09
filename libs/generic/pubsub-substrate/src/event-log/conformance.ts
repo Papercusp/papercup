@@ -75,6 +75,18 @@ export function describeCoordEventLogConformance(
       expect(tiedEvents.rows.map((r) => r.envelope.msg_id).sort()).toEqual(['event-at', 'event-before']);
     });
 
+    it('bounded cursor readers apply exact sender filters before the page limit', async () => {
+      await log.appendLine('messages', 'from-filter', envelope({ msg_id: 'line-target', kind: 'message', from: 'target' }));
+      await log.appendLine('messages', 'from-filter', envelope({ msg_id: 'line-other', kind: 'message', from: 'other' }));
+      const lines = await log.readLinesBoundedCursor('messages', { limit: 1, from: 'target' });
+      expect(lines.rows.map((r) => r.envelope.msg_id)).toEqual(['line-target']);
+
+      await log.putEvent('handoffs', 'event-target', envelope({ msg_id: 'event-target', kind: 'handoff', from: 'target' }));
+      await log.putEvent('handoffs', 'event-other', envelope({ msg_id: 'event-other', kind: 'handoff', from: 'other' }));
+      const events = await log.readEventsBoundedCursor('handoffs', { limit: 1, from: 'target' });
+      expect(events.rows.map((r) => r.envelope.msg_id)).toEqual(['event-target']);
+    });
+
     it('handoffs: putEvent + getEvent + readEvents', async () => {
       await log.putEvent('handoffs', 'h1', envelope({ msg_id: 'h1', kind: 'handoff', from: 'A' }));
       expect((await log.getEvent('handoffs', 'h1'))?.msg_id).toBe('h1');

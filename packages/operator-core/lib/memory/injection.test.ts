@@ -1900,6 +1900,21 @@ describe('corpus leg carries its own retrieval health (P-001)', () => {
     for (const kind of ['plan','doc','report']) expect(block).toContain(`[${kind} fixture] cited ${kind} section`);
     expect(recallCorpusContext).toHaveBeenCalledWith(expect.objectContaining({ harnessSlugs: ['papercusp'],workspaceId: 'ws' }));
   });
+
+  it('suppresses a previously delivered report at turn start while retaining a new doc and mem0 control', async () => {
+    useBackend(mockBackend([{ id: 'm-turn-start-control',text: 'retain verified snapshot' }]));
+    corpusIoResult = { block: null,dropped: [],embedderAvailable: true,candidateCount: 2,
+      lines: (['report','doc'] as const).map(kind => ({ line: `- [${kind} fixture] cited ${kind} section`,score: 1,
+        handle: { kind,ref: `${kind}:fixture`,query: ['repair'],resolve: `${kind}:get` } })),
+    };
+    sqlRows = [{ ref: 'report:fixture',epoch: 0 }];
+    const block = await buildMemoryContextBlock({ userId: 'u1',workspaceId: 'ws',harnessSlugs: ['papercusp'],
+      queryContext: 'repair the queue boundary',budgetChars: 1800,
+      session: { sessionId: 'su-knowledge-dedup',epoch: 0,port: 'turn-start' } });
+    expect(block).toContain('retain verified snapshot');
+    expect(block).toContain('[doc fixture] cited doc section');
+    expect(block).not.toContain('[report fixture] cited report section');
+  });
   const oneLine = (over: Partial<CorpusIoStub> = {}): CorpusIoStub => ({
     block: null,
     lines: [{ line: '- [work-item WI-6512] a pointer', score: 1,

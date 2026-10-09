@@ -147,12 +147,13 @@ export class InMemoryCoordLog implements CoordEventLog {
 
   async readEventsBoundedCursor(
     surface: EventSurface,
-    opts: { limit: number; kinds?: string[]; beforeId?: number; beforeTs?: string; beforeMsgId?: string },
+    opts: { limit: number; kinds?: string[]; from?: string; beforeId?: number; beforeTs?: string; beforeMsgId?: string },
   ): Promise<CoordLogCursorPage> {
     const all = [...(this.events.get(surface)?.values() ?? [])];
     const kinds = opts.kinds?.filter((k) => typeof k === 'string' && k.trim());
     const beforeMs = opts.beforeTs ? Date.parse(opts.beforeTs) : null;
     let candidates = kinds && kinds.length ? all.filter((r) => kinds.includes(r.envelope.kind)) : all;
+    if (opts.from !== undefined) candidates = candidates.filter((r) => r.envelope.from === opts.from);
     if (beforeMs !== null) {
       candidates = candidates.filter((r) => {
         const ts = Date.parse(r.envelope.ts);
@@ -175,6 +176,7 @@ export class InMemoryCoordLog implements CoordEventLog {
       sinceTs?: string;
       planSlug?: string;
       kinds?: string[];
+      from?: string;
       beforeId?: number;
       beforeTs?: string;
       beforeMsgId?: string;
@@ -186,6 +188,7 @@ export class InMemoryCoordLog implements CoordEventLog {
     let candidates = all.filter(
       (r) =>
         (!kinds || !kinds.length || kinds.includes(r.envelope.kind)) &&
+        (opts.from === undefined || r.envelope.from === opts.from) &&
         (!opts.sinceTs || (typeof r.envelope.ts === 'string' && r.envelope.ts > opts.sinceTs)) &&
         (!opts.planSlug || r.envelope.plan_slug === opts.planSlug) &&
         (beforeMs === null ||

@@ -381,6 +381,15 @@ test('native declared collections persist controls and reject a barrier-controll
       expect((await policy())?.value.order).toEqual([...reorderedIds, dormant]);
       expect((await policy())?.provenance).toBe('owner-edit');
       await reload();
+      // Capture the independent HTTP snapshot before a renderer predicate can
+      // time out. This distinguishes persistence/resolver failures from native
+      // query-cache or renderer state using the same saved owner revision.
+      const reloaded = await readback();
+      evidence.push({ afterReorderReload: { kind, rows: reloaded.rows,
+        nativeRows: await measure(`Array.from(document.querySelectorAll(${JSON.stringify(`${editor} li`)})).map(row => row.textContent)`),
+        nativeDocument: await measure('({ url: location.href, previous: window.__nativeCollectionPreviousDocument === true, ready: document.readyState })'),
+      } });
+      expect(reloaded.rows.map((row: { id: string }) => row.id)).toEqual(reorderedIds);
       await ready(`document.querySelector(${JSON.stringify(`${editor} li`)})?.textContent.includes(${JSON.stringify(labels[1])}) === true`);
       expect((await readback()).rows.map((row: { id: string }) => row.id)).toEqual(reorderedIds);
       if (kind === 'plans') {
