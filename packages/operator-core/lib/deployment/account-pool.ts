@@ -193,6 +193,16 @@ export function appendUtilization7dSample(
 }
 
 /** The rolled-up rate-limit state for one account (the Queen's projection). */
+/** Verified provider wallet reading. Units must never be combined or converted implicitly. */
+export interface AccountCreditBalance {
+  amount: number | null;
+  unit: 'credits' | 'USD';
+  source: 'codex' | 'claude-console';
+  unlimited?: boolean;
+  walletId?: string;
+  observedAt?: number;
+}
+
 export interface AccountRateState {
   /** Epoch ms the account is paused until; `0` = not paused. Mirrors the governor pause. */
   pausedUntil: number;
@@ -217,6 +227,7 @@ export interface AccountRateState {
   usageCreditsAvailable?: boolean;
   /** When credit eligibility was observed; a credit-only update is not a new usage-window reading. */
   usageCreditsObservedAt?: number;
+  creditBalance?: AccountCreditBalance;
   /**
    * Unified-7d (weekly) rolling utilization (a fraction; 1.0 = 100%) from
    * `anthropic-ratelimit-unified-7d-utilization` — the LONGER Claude Max limit alongside the 5h.
@@ -560,7 +571,7 @@ export function recordAccountReset(pool: AccountPool, id: string, opts: { resetW
 export function recordAccountWindow(
   pool: AccountPool,
   id: string,
-  w: { utilization?: number; windowResetAt?: number; utilization7d?: number; windowResetAt7d?: number; usageCreditsAvailable?: boolean },
+  w: { utilization?: number; windowResetAt?: number; utilization7d?: number; windowResetAt7d?: number; usageCreditsAvailable?: boolean; creditBalance?: AccountCreditBalance },
   now: number,
 ): AccountPool {
   return {
@@ -578,6 +589,12 @@ export function recordAccountWindow(
             ? now : a.rate.utilizationAt,
         ...(accountProvider(a) === 'codex' && w.usageCreditsAvailable !== undefined
           ? { usageCreditsAvailable: w.usageCreditsAvailable, usageCreditsObservedAt: now } : {}),
+        ...(w.creditBalance &&
+          ((w.creditBalance.unit === 'credits' && accountProvider(a) === 'codex') ||
+           (w.creditBalance.unit === 'USD' && accountProvider(a) === 'claude' && a.credentialRef.startsWith('apikey:'))) &&
+          (w.creditBalance.unlimited === true ||
+           (typeof w.creditBalance.amount === 'number' && Number.isFinite(w.creditBalance.amount) && w.creditBalance.amount >= 0))
+          ? { creditBalance: { ...a.rate.creditBalance, ...w.creditBalance, observedAt: now } } : {}),
         // WI-41147: retain a spaced history of 7d readings so the burn governor can derive
         // d(utilization7d)/dt. Only a real 7d observation appends — a 5h-only update leaves
         // the history untouched (appending the STALE carried-forward 7d value would flatten

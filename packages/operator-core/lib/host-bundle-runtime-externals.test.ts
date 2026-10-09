@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
 import { build } from 'esbuild';
 import { describe, expect, it } from 'vitest';
 
@@ -20,6 +21,46 @@ const packages = [
 ] as const;
 
 describe('host runtime packages use the plain Node loader', () => {
+  it('prepares external dependencies for a custom output, preserving existing trees and refusing broken links', () => {
+    const root = mkdtempSync(join(tmpdir(), 'host-external-output-'));
+    try {
+      const repo = join(root, 'checkout');
+      const output = join(root, 'private-output');
+      const packageDir = join(repo, 'node_modules', 'external-fixture');
+      mkdirSync(packageDir, { recursive: true });
+      mkdirSync(output);
+      writeFileSync(join(packageDir, 'package.json'), JSON.stringify({ type: 'module', exports: './index.js' }));
+      writeFileSync(join(packageDir, 'index.js'), 'export const value = "checkout";');
+      const entry = join(output, 'host.mjs');
+      writeFileSync(entry, 'import { value } from "external-fixture"; console.log(value);');
+      expect(() => execFileSync(process.execPath, [entry], { stdio: 'pipe' })).toThrow();
+
+      const recipe = readFileSync(resolve(__dirname, '../../../apps/operator/bin/bundle-host.sh'), 'utf8');
+      const prepare = recipe.split('# >>> custom-output runtime dependencies (EI-25510203057543967)\n')[1]!
+        .split('# <<< custom-output runtime dependencies')[0]!;
+      const run = () => execFileSync('bash', ['-c', `set -euo pipefail\n${prepare}\nprepare_host_runtime_dependencies "$1" "$2"`, 'test', repo, output], { stdio: 'pipe' });
+      run();
+      run();
+      expect(readlinkSync(join(output, 'node_modules'))).toBe(join(repo, 'node_modules'));
+      expect(execFileSync(process.execPath, [entry], { encoding: 'utf8' }).trim()).toBe('checkout');
+
+      rmSync(join(output, 'node_modules'));
+      const supplied = join(output, 'node_modules', 'external-fixture');
+      mkdirSync(supplied, { recursive: true });
+      writeFileSync(join(supplied, 'package.json'), JSON.stringify({ type: 'module', exports: './index.js' }));
+      writeFileSync(join(supplied, 'index.js'), 'export const value = "caller";');
+      run();
+      expect(execFileSync(process.execPath, [entry], { encoding: 'utf8' }).trim()).toBe('caller');
+
+      rmSync(join(output, 'node_modules'), { recursive: true });
+      symlinkSync(join(root, 'missing'), join(output, 'node_modules'));
+      expect(run).toThrow();
+      expect(readlinkSync(join(output, 'node_modules'))).toBe(join(root, 'missing'));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('keeps the generated AWS SDK source outside the maintained host bundle boundary', async () => {
     const recipe = readFileSync(resolve(__dirname, '../../../apps/operator/bin/bundle-host.sh'), 'utf8');
     const runtimeBoundary = recipe.match(/^HOST_EXTERNALS\+=\(([\s\S]*?)^\)/m)?.[1];

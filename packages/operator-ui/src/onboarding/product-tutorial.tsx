@@ -260,11 +260,12 @@ export function AccountProductTutorial({ account, sessionSignal = 'valid', child
     if (target) { target.focus(); requestedFocus.current = null; }
   }, [record, busy, loading, sessionSignal]);
 
-  async function save(patch: Pick<AccountTutorialProgressRecord, 'disposition' | 'currentLessonId' | 'reviewedLessonIds'>, href?: string) {
-    if (!record || busy || sessionSignal !== 'valid') return;
+  async function save(patch: Pick<AccountTutorialProgressRecord, 'disposition' | 'currentLessonId' | 'reviewedLessonIds'>, href?: string, restart = false) {
+    if ((!record && !restart) || busy || sessionSignal !== 'valid') return;
     const mutation = pending.current ?? { patch, href, body: JSON.stringify({ disposition: patch.disposition,
-      currentLessonId: patch.currentLessonId, reviewedLessonIds: patch.reviewedLessonIds, expectedScope: record.scope,
-      expectedRevision: record.revision, mutationId: crypto.randomUUID(), version: 3 }) };
+      currentLessonId: patch.currentLessonId, reviewedLessonIds: patch.reviewedLessonIds,
+      expectedScope: record?.scope ?? { tenantId: account.tenantId, userId: account.userId },
+      expectedRevision: record?.revision ?? 0, mutationId: crypto.randomUUID(), version: 3, ...(restart ? { restart: true } : {}) }) };
     pending.current = mutation;
     operation.current?.abort();
     const abort = new AbortController(); operation.current = abort;
@@ -297,9 +298,13 @@ export function AccountProductTutorial({ account, sessionSignal = 'valid', child
   if (!record || record.disposition !== 'active') {
     // The destination owns placement: a modal host must place these controls
     // inside its existing dialog, rather than behind its blocking backdrop.
-    const guideControls = record && <aside className="product-guide-return" aria-label="Product guide">
+    const guideControls = <aside className="product-guide-return" aria-label="Product guide">
     <style>{PRODUCT_GUIDE_CSS}</style>
-    <button ref={attachResume} disabled={busy} onClick={() => save({ ...record, disposition: 'active' })}>{record.disposition === 'closed' ? 'Review product guide' : 'Resume product guide'}</button>
+    {record && <button ref={attachResume} disabled={busy} onClick={() => save({ ...record, disposition: 'active' })}>{record.disposition === 'closed' ? 'Review product guide' : 'Resume product guide'}</button>}
+    <button ref={record ? undefined : attachResume} disabled={busy} onClick={() => {
+      pending.current = null;
+      void save({ disposition: 'active', currentLessonId: 'welcome', reviewedLessonIds: [] }, undefined, true);
+    }}>{record ? 'Restart tutorial' : 'Start tutorial'}</button>
     {currentLesson && <details onToggle={event => { if (event.currentTarget.open) analytics.current?.observer.help(currentLesson.id); }}><summary>Help with {currentLesson.title}</summary><p>{currentLesson.help}</p><a href="/docs">Read public Docs</a><ProductTutorialAssistance key={identity + currentLesson.id} account={account} lesson={currentLesson} onQuestion={() => analytics.current?.observer.help(currentLesson.id)} /></details>}
     {error && <p role="alert">{error}</p>}</aside>;
     return typeof children === 'function' ? children(guideControls) : <>{guideControls}{children}</>;

@@ -140,6 +140,7 @@ function reportRow(r: CapacityProbeResult) {
       utilization: r.windows.utilization,
       utilization7d: r.windows.utilization7d,
       usageCreditsAvailable: r.windows.usageCreditsAvailable,
+      creditBalance: r.windows.creditBalance,
       ...(r.windows.bucket ? { bucket: r.windows.bucket } : {}),
     },
     verdict: !r.ok
@@ -257,6 +258,7 @@ export async function runCapacityProbe(args: CapacityProbeArgs) {
           utilization7d: w.utilization7d,
           windowResetAt7d: w.windowResetAt7d,
           usageCreditsAvailable: w.usageCreditsAvailable,
+          creditBalance: w.creditBalance,
         },
         t,
         ws,

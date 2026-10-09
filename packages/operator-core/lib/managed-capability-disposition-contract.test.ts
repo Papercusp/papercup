@@ -100,7 +100,37 @@ describe('managed capability disposition contract (P-001 / R-1)', () => {
         { ...MANAGED_CAPABILITY_DISPOSITIONS[0], cutoverReady: true },
         ...MANAGED_CAPABILITY_DISPOSITIONS.slice(1),
       ]),
-    ).toContain('cutover-not-blocked:shell-ssh-interpreters');
+    ).toContain('cutover-with-open-gaps:shell-ssh-interpreters');
+  });
+
+  it('allows an explicitly closed replacement gap ledger without changing shipped readiness', () => {
+    const provenShell = { ...MANAGED_CAPABILITY_DISPOSITIONS[0], gaps: [], cutoverReady: true };
+    expect(managedCapabilityContractViolations([
+      provenShell,
+      ...MANAGED_CAPABILITY_DISPOSITIONS.slice(1),
+    ])).toEqual([]);
+
+    // A completed candidate must not mutate the published contract or activate rollout.
+    expect(managedCapabilityDisposition('shell-ssh-interpreters').cutoverReady).toBe(false);
+    expect(MANAGED_CAPABILITY_CUTOVER_READY).toBe(false);
+
+    expect(managedCapabilityContractViolations([
+      { ...provenShell, cutoverReady: false },
+      ...MANAGED_CAPABILITY_DISPOSITIONS.slice(1),
+    ])).toContain('missing-gap:shell-ssh-interpreters');
+    expect(managedCapabilityContractViolations([
+      { ...provenShell, cutoverReady: undefined },
+      ...MANAGED_CAPABILITY_DISPOSITIONS.slice(1),
+    ])).toContain('invalid-cutover-readiness:shell-ssh-interpreters');
+  });
+
+  it('rejects a cutover claim for an unsupported or intentionally retained interface', () => {
+    for (const disposition of ['unsupported-gap', 'deliberately-retained-interface'] as const) {
+      expect(managedCapabilityContractViolations([
+        { ...MANAGED_CAPABILITY_DISPOSITIONS[0], disposition, gaps: [], cutoverReady: true },
+        ...MANAGED_CAPABILITY_DISPOSITIONS.slice(1),
+      ])).toContain('non-replacement-cutover:shell-ssh-interpreters');
+    }
   });
 
   it('gives every family one primary evidence citation and verifies every cited source anchor', () => {

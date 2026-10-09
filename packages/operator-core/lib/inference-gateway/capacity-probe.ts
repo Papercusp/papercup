@@ -70,6 +70,7 @@ export interface CapacityWindows {
   utilization7d?: number;
   windowResetAt7d?: number;
   usageCreditsAvailable?: boolean;
+  creditBalance?: import('../deployment/account-pool').AccountCreditBalance;
   /** Codex only: which METER the reading came from — `premium` (the meter the pool projection
    *  describes) or `base_model_inference` (the Luna reserve tier, a separate budget that must
    *  never be projected into the premium slots — EI-22103680502746318). Absent for Anthropic. */
@@ -133,6 +134,7 @@ export function storedWindows(a: ClaudeAccount): CapacityWindows {
     utilization7d: r.utilization7d,
     windowResetAt7d: r.windowResetAt7d,
     ...(r.usageCreditsAvailable !== undefined ? { usageCreditsAvailable: r.usageCreditsAvailable } : {}),
+    ...(r.creditBalance ? { creditBalance: r.creditBalance } : {}),
   };
 }
 
@@ -489,6 +491,7 @@ export async function probeCodexAccountCapacity(
         h[k.toLowerCase()] = v;
       });
       const windows = parseCapacityHeaders(h);
+      if (windows.creditBalance && chatgptAccountId) windows.creditBalance.walletId = chatgptAccountId;
       const sawHeader = Object.keys(windows).length > 0;
       if (sawHeader) {
         return {

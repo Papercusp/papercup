@@ -78,6 +78,8 @@ import {
 import { fetchGatewayStatsRaw } from '../inference-gateway/observability';
 import type { RawGatewayStats } from '../inference-gateway/gateway-wedge';
 import { trackDetached } from '../detached-imports';
+import { readCodexAuth } from '../inference-gateway/codex-oauth-proxy';
+import { parseCodexCliRef } from '../inference-gateway/codex-cli-bridge';
 
 // ── P-004: the owner's session-now account override (fail-soft, no-op-when-unset) ──
 
@@ -773,6 +775,8 @@ export interface AccountStatusRow {
   edgeThrottleCooledIps: number;
   edgeThrottleBare429Streak: number;
   rate: AccountRateState;
+  /** Non-secret provider wallet identity, used to avoid counting aliases twice. */
+  creditWalletId?: string;
   /** Per-account egress pin (proxy / local source IP), if the account is IP-routed. */
   egress?: AccountEgress;
   /** Per-account egress IP POOL (the rotating list) when the account is multi-IP routed. */
@@ -812,6 +816,7 @@ export interface AccountStatusRow {
 export interface AccountStatusDeps {
   /** Inject a gateway snapshot for deterministic tests; omitted means best-effort live :8788 read. */
   gatewayStats?: RawGatewayStats | null;
+  readCodexWalletId?: (home: string) => Promise<string | null>;
 }
 
 export interface LiveEdgeThrottleStatus {
@@ -845,8 +850,17 @@ export async function accountStatus(ws?: string, now = Date.now(), deps: Account
   const scalePolicy = await readScalePolicy();
   const gatewayStats =
     deps.gatewayStats !== undefined ? deps.gatewayStats : await fetchGatewayStatsRaw({ timeoutMs: 500 });
-  return pool.accounts.map((a) => {
+  return Promise.all(pool.accounts.map(async (a) => {
     const { readingStatus, readingAgeMs } = accountReadingStatus(a, now);
+    const codexHome = accountProvider(a) === 'codex' ? parseCodexCliRef(a.credentialRef) : null;
+    // Account ids are public wallet identities; never expose the token bundle. Aliases can
+    // use different credential homes and still draw from exactly the same credit balance.
+    let creditWalletId = a.rate.creditBalance?.walletId;
+    if (codexHome) {
+      try {
+        creditWalletId = await (deps.readCodexWalletId ?? (async (home) => (await readCodexAuth(home))?.accountId ?? null))(codexHome) ?? creditWalletId;
+      } catch { /* A missing local credential must not make the entire account sidebar unavailable. */ }
+    }
     return {
       id: a.id,
       provider: accountProvider(a),
@@ -863,6 +877,7 @@ export async function accountStatus(ws?: string, now = Date.now(), deps: Account
       sustainedlyLimited: isSustainedlyLimited(a, now, scalePolicy),
       ...projectLiveEdgeThrottle(a.id, gatewayStats),
       rate: a.rate,
+      ...(creditWalletId ? { creditWalletId } : {}),
       egress: a.egress,
       egressPool: a.egressPool,
       liveBuckets: live
@@ -879,7 +894,7 @@ export async function accountStatus(ws?: string, now = Date.now(), deps: Account
       lastProbeFailedAt: a.rate.lastProbeFailedAt,
       burn: accountBurnVerdict(a.rate, now),
     };
-  });
+  }));
 }
 
 // ── Per-provider pool verdict (P-002) ────────────────────────────────────────

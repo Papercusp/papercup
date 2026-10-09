@@ -825,6 +825,20 @@ describe('parseCodexRateReset — the codex-dialect 429 reset parser (WI-2038027
 });
 
 describe('Codex usage-credit capacity', () => {
+  it.each(['0', '50321.8471577500'])('retains the numeric wallet balance %s without converting its unit', (balance) => {
+    expect(parseCodexRateLimitHeaders({ 'x-codex-credits-balance': balance }).creditBalance)
+      .toEqual({ amount: Number(balance), unit: 'credits', source: 'codex', unlimited: false });
+  });
+
+  it.each(['', ' ', 'invalid', '-1', 'Infinity'])('does not turn malformed balance %s into zero', (balance) => {
+    expect(parseCodexRateLimitHeaders({ 'x-codex-credits-balance': balance }).creditBalance).toBeUndefined();
+  });
+
+  it('represents an unlimited wallet independently of its numeric header', () => {
+    expect(parseCodexRateLimitHeaders({ 'x-codex-credits-unlimited': 'True', 'x-codex-credits-balance': '0' }).creditBalance)
+      .toEqual({ amount: null, unit: 'credits', source: 'codex', unlimited: true });
+  });
+
   it('does not turn a paid-account burst throttle into the included weekly reset', () => {
     const now = Date.UTC(2026, 9, 2);
     expect(parseCodexRateReset({

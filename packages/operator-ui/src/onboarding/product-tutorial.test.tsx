@@ -341,6 +341,30 @@ describe('account product guide entry', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Continue to Papercusp' }));
     await screen.findByText('Home');
   });
+  it('lets an unenrolled returning account explicitly start the tutorial', async () => {
+    const fetcher = vi.fn().mockResolvedValueOnce(response(null))
+      .mockResolvedValueOnce(response(record({ revision: 1 })));
+    vi.stubGlobal('fetch', fetcher);
+    render(<AccountProductTutorial account={account}><p>Home</p></AccountProductTutorial>);
+    fireEvent.click(await screen.findByRole('button', { name: 'Start tutorial' }));
+    await screen.findByRole('heading', { name: 'Welcome to Papercusp' });
+    expect(JSON.parse(fetcher.mock.calls[1][1].body)).toMatchObject({ restart: true, expectedRevision: 0,
+      expectedScope: { tenantId: account.tenantId, userId: account.userId }, disposition: 'active',
+      currentLessonId: 'welcome', reviewedLessonIds: [] });
+  });
+  it('restarts a completed tutorial from Welcome only after the server acknowledges it', async () => {
+    let acknowledge!: (value: Response) => void;
+    const fetcher = vi.fn().mockResolvedValueOnce(response(record({ revision: 4, disposition: 'closed', currentLessonId: 'billing', reviewedLessonIds: ['welcome', 'billing'] })))
+      .mockImplementationOnce(() => new Promise<Response>(resolve => { acknowledge = resolve; }));
+    vi.stubGlobal('fetch', fetcher);
+    render(<AccountProductTutorial account={account}><p>Home</p></AccountProductTutorial>);
+    fireEvent.click(await screen.findByRole('button', { name: 'Restart tutorial' }));
+    expect(screen.queryByRole('heading', { name: 'Welcome to Papercusp' })).toBeNull();
+    expect(JSON.parse(fetcher.mock.calls[1][1].body)).toMatchObject({ restart: true, expectedRevision: 4,
+      disposition: 'active', currentLessonId: 'welcome', reviewedLessonIds: [] });
+    await act(async () => acknowledge(response(record({ revision: 5 }))));
+    expect((await screen.findByRole('heading', { name: 'Welcome to Papercusp' })).textContent).toBe('Welcome to Papercusp');
+  });
   it('teaches billing and payment recovery without starting checkout or billing management', async () => {
     const fetcher = vi.fn().mockResolvedValue(response(record({ currentLessonId: 'billing' })));
     vi.stubGlobal('fetch', fetcher);

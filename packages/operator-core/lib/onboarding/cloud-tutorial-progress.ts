@@ -108,7 +108,8 @@ export const accountTutorialProgressUpdateSchema = z.object({
   currentLessonId: lessonKey,
   // These are explanations reviewed, never domain work completed.
   reviewedLessonIds: z.array(lessonKey).max(100).refine(ids => new Set(ids).size === ids.length),
-}).strict();
+  restart: z.literal(true).optional(),
+}).strict().refine(patch => !patch.restart || (patch.disposition === 'active' && patch.currentLessonId === 'welcome' && patch.reviewedLessonIds.length === 0), 'A restarted guide must begin at Welcome');
 export type AccountTutorialProgressUpdate = z.infer<typeof accountTutorialProgressUpdateSchema>;
 export interface AccountTutorialProgressRecord {
   scope: AccountTutorialScope; version: typeof PRODUCT_TUTORIAL_VERSION;
@@ -163,6 +164,9 @@ export async function updateAccountTutorialProgress(tx: Sql, scope: AccountTutor
   const patch = accountTutorialProgressUpdateSchema.parse(input);
   if (scope.tenantId !== patch.expectedScope.tenantId || scope.userId !== patch.expectedScope.userId) throw new Error('tutorial_scope_changed');
   await assertAccountTransactionScope(tx, scope);
+  // Enrollment is explicit here. Ordinary reads still leave returning accounts
+  // alone, and the admission upsert never overwrites an existing guide.
+  if (patch.restart) await enrollAccountTutorial(tx, scope);
   const [row] = await tx<{ record: unknown }[]>`
     SELECT profile #> ARRAY['productTutorial', ${String(PRODUCT_TUTORIAL_VERSION)}]::text[] AS record
     FROM papercusp_auth.hosted_user_preferences

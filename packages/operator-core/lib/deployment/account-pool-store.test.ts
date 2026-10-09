@@ -33,6 +33,7 @@ vi.mock('../operator-state-pg', async (importOriginal) => ({
 
 import {
   selectAccountForDeploy,
+  accountStatus,
   handleAccountExhausted,
   initAccountScaleObserver,
   _resetAccountScaleObserver,
@@ -67,6 +68,25 @@ function poolOf(...ids: string[]): AccountPool {
   return p;
 }
 const frameOf = (id: string): Frame => ({ id, target: 'hetzner', placement: 'remote' });
+
+describe('account sidebar wallet identity', () => {
+  it('exposes the same public wallet identity for aliases without exposing auth tokens', async () => {
+    let pool = registerAccount(emptyPool(), { id: 'local', provider: 'codex', credentialRef: 'codex-cli:/tmp/local' }, T0);
+    pool = registerAccount(pool, { id: 'alias', provider: 'codex', credentialRef: 'codex-cli:/tmp/alias' }, T0);
+    stateStore.set(stateKey('operator_account_pool', 'credit-test'), pool);
+    const rows = await accountStatus('credit-test', T0, { gatewayStats: null, readCodexWalletId: async () => 'shared-wallet' });
+    expect(rows.map((r) => r.creditWalletId)).toEqual(['shared-wallet', 'shared-wallet']);
+    expect(rows.every((r) => !('accessToken' in r) && !('idToken' in r))).toBe(true);
+  });
+
+  it('keeps the pool readable if a credential identity read fails', async () => {
+    const pool = registerAccount(emptyPool(), { id: 'local', provider: 'codex', credentialRef: 'codex-cli:/tmp/local' }, T0);
+    stateStore.set(stateKey('operator_account_pool', 'credit-error-test'), pool);
+    const rows = await accountStatus('credit-error-test', T0, { gatewayStats: null, readCodexWalletId: async () => { throw new Error('unavailable'); } });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].creditWalletId).toBeUndefined();
+  });
+});
 
 // ── P-002: per-provider capacity rollup ──────────────────────────────────────
 

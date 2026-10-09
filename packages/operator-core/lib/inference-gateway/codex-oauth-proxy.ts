@@ -40,6 +40,7 @@ import { StringDecoder } from 'node:string_decoder';
 import { parseBridgeModel } from './codex-cli-bridge';
 import { parseProviderReset } from './provider-reset';
 import { CODEX_MODEL_REFUSAL_RE } from './codex-model-refusals';
+import type { AccountCreditBalance } from '../deployment/account-pool';
 
 /** The ChatGPT backend that serves codex Responses for ChatGPT-subscription auth. */
 export const CODEX_CHATGPT_BACKEND_BASE =
@@ -914,6 +915,7 @@ export interface CodexCapacityWindows {
   windowResetAt7d?: number;
   /** Credit-funded continuation is separate from the included allowance. */
   usageCreditsAvailable?: boolean;
+  creditBalance?: AccountCreditBalance;
   /** Which METER produced this reading (EI-22103680502746318). `premium` = the generic weekly/5h
    *  windows (`x-codex-*`) — the meter the account-pool projection (`rate.utilization[7d]`)
    *  describes. `base_model_inference` = the Luna reserve tier (`x-base-model-inference-*`) — a
@@ -1024,11 +1026,18 @@ export function parseCodexRateLimitHeaders(
   const hasCredits = flag(lower['x-codex-credits-has-credits']);
   const unlimited = flag(lower['x-codex-credits-unlimited']);
   const balance = lower['x-codex-credits-balance'];
-  const credits: Pick<CodexCapacityWindows, 'usageCreditsAvailable'> =
+  const numericBalance = balance !== undefined && balance.trim() !== '' ? Number(balance) : NaN;
+  const creditBalance: AccountCreditBalance | undefined = unlimited === true
+    ? { amount: null, unit: 'credits', source: 'codex', unlimited: true }
+    : Number.isFinite(numericBalance) && numericBalance >= 0
+      ? { amount: numericBalance, unit: 'credits', source: 'codex', unlimited: false }
+      : undefined;
+  const credits: Pick<CodexCapacityWindows, 'usageCreditsAvailable' | 'creditBalance'> =
     hasCredits === undefined && unlimited === undefined ? {} : {
       usageCreditsAvailable: unlimited === true ||
         (hasCredits === true && (balance === undefined || (Number.isFinite(Number(balance)) && Number(balance) > 0))),
     };
+  if (creditBalance) credits.creditBalance = creditBalance;
   const reserve = ['x-base-model-inference-primary', 'x-base-model-inference-secondary'] as const;
   const bucket = codexRateLimitBucket(lower);
   // When the backend tells us which meter is active, do not project a different

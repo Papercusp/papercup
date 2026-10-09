@@ -43,6 +43,37 @@ import { ROLLING_WINDOW_REPROBE_MAX_MS } from '@papercusp/papercusp-shared/resil
 const T0 = 1_000_000_000_000; // a fixed epoch-ms base
 const MIN = 60_000;
 
+describe('provider credit-balance observations', () => {
+  it('persists zero and its observation time without refreshing an unrelated quota meter', () => {
+    let pool = registerAccount(emptyPool(), { id: 'codex', provider: 'codex', credentialRef: 'codex-cli:/tmp/codex' }, T0);
+    pool = recordAccountWindow(pool, 'codex', { utilization7d: 1 }, T0);
+    pool = recordAccountWindow(pool, 'codex', { creditBalance: { amount: 0, unit: 'credits', source: 'codex' } }, T0 + MIN);
+    const row = normalizeAccount(JSON.parse(JSON.stringify(getAccount(pool, 'codex'))));
+    expect(row.rate.creditBalance).toEqual({ amount: 0, unit: 'credits', source: 'codex', observedAt: T0 + MIN });
+    expect(row.rate.utilizationAt).toBe(T0);
+    expect(recordAccountWindow(pool, 'codex', { utilization7d: 0.5 }, T0 + 2 * MIN).accounts[0].rate.creditBalance).toEqual(row.rate.creditBalance);
+  });
+
+  it('accepts verified Claude Console dollars only on API accounts', () => {
+    let pool = registerAccount(emptyPool(), { id: 'api', provider: 'claude', credentialRef: 'apikey:env:TEST_KEY' }, T0);
+    pool = registerAccount(pool, { id: 'subscription', provider: 'claude', credentialRef: 'token:/tmp/claude' }, T0);
+    const reading = { amount: 12.34, unit: 'USD' as const, source: 'claude-console' as const, walletId: 'org-1' };
+    pool = recordAccountWindow(pool, 'api', { creditBalance: reading }, T0);
+    pool = recordAccountWindow(pool, 'subscription', { creditBalance: reading }, T0);
+    expect(getAccount(pool, 'api')?.rate.creditBalance).toMatchObject({ amount: 12.34, unit: 'USD', walletId: 'org-1', observedAt: T0 });
+    expect(getAccount(pool, 'subscription')?.rate.creditBalance).toBeUndefined();
+  });
+
+  it('rejects a provider/unit mismatch and non-finite amounts', () => {
+    const pool = registerAccount(emptyPool(), { id: 'codex', provider: 'codex', credentialRef: 'codex-cli:/tmp/codex' }, T0);
+    for (const creditBalance of [
+      { amount: 10, unit: 'USD' as const, source: 'claude-console' as const },
+      { amount: NaN, unit: 'credits' as const, source: 'codex' as const },
+      { amount: -1, unit: 'credits' as const, source: 'codex' as const },
+    ]) expect(recordAccountWindow(pool, 'codex', { creditBalance }, T0).accounts[0].rate.creditBalance).toBeUndefined();
+  });
+});
+
 describe('Codex credit-backed allowance exhaustion', () => {
   const creditedPool = (available: boolean) => recordAccountWindow(
     registerAccount(emptyPool(), { id: 'credited', provider: 'codex', credentialRef: 'codex-cli:/tmp/credited' }, T0),
