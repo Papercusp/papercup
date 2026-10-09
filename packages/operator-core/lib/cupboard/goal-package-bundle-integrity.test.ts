@@ -172,6 +172,9 @@ describe('goal-package bundle integrity — the bundled floor a release ships', 
     expect(body).toContain('Improve rubric quality');
     expect(body).toContain('Drive grading through verified improvement');
     expect(body).toContain('baseline before repair');
+    expect(body).toContain('baselineRef pointing to the preserved baseline');
+    expect(body).toContain('supersedes only corrects a reading');
+    expect(body).toContain('tracked launch, actual claim and progress separately');
     expect(body).toContain('same target under the same rubric revision');
     expect(body).toContain('place every implementation with an implementer');
     expect(body).toContain('independent grader');
