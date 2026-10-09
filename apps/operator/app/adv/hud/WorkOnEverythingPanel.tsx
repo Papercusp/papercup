@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { parseAsBoolean, parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
 import { ArrowDown, ArrowUp, Check, Infinity as InfinityIcon, Plus, RefreshCw, Search, Settings2,
-  MessageSquare, X } from 'lucide-react';
+  X } from 'lucide-react';
 import { Modal } from '@/app/harness/Modal';
 import { TextInput, TextArea } from '@/app/harness/TextInput';
 import { Tooltip } from '@/app/harness/Tooltip';
@@ -88,11 +88,12 @@ function GoalCockpit({ data, rows, onOpenPlan, onOpenWorkItem, onOpenAgent }: {
   const visible = rows.filter(r => (browseAll || r.selected) && (showFinished || r.st.key !== 'signoff'));
   const waiting = data.waitingOnYou ?? [];
   const activity = [
-    ...(data.goalData?.worklistHistory ?? []).map(e => ({ key: 'history:' + e.id, ref: e.ref,
-      title: e.label, detail: e.detail, at: e.at })),
+    ...(data.goalData?.worklistHistory ?? []).map(e => ({ key: `history:${e.id}:${e.ref}`,
+      plan: e.ref.match(/^plan:([^/]+)\/(.+)$/), workItemRef: null,
+      title: e.label, detail: [rows.find(r => r.id === e.ref)?.label ?? e.ref, e.detail].filter(Boolean).join(' · '), at: e.at })),
     ...(data.activity ?? []).map(e => {
       const completed = e.status === 'done' && !!e.closedAt && Number.isFinite(Date.parse(e.closedAt));
-      return { key: 'work:' + e.id, ref: e.id, title: e.title,
+      return { key: 'work:' + e.id, plan: null, workItemRef: e.id, title: e.title,
         detail: [completed ? 'Completed' : e.status === 'done' ? 'Done · closure unconfirmed' : e.status ?? 'Status unavailable',
           e.planSlug ?? e.harnessSlug].filter(Boolean).join(' · '), at: completed ? e.closedAt! : e.updatedAt };
     }),
@@ -170,8 +171,10 @@ function GoalCockpit({ data, rows, onOpenPlan, onOpenWorkItem, onOpenAgent }: {
         <div className="woe__section-heading"><h3>Recent activity on this goal</h3><span className="woe__muted">Goal history and work items</span></div>
         {data.goalData?.historyError ? <p role="alert" className="woe__warning">History unavailable: {data.goalData.historyError}</p> : null}
         {activity.length ? <ol>{activity.slice(0, 12).map(e => <li key={e.key}>
-          <time dateTime={e.at!}>{new Date(e.at!).toLocaleString()}</time><div>{onOpenWorkItem ?
-            <button type="button" className="woe__link" onClick={() => onOpenWorkItem(e.ref)}>{e.title}</button> : <strong>{e.title}</strong>}
+          <time dateTime={e.at!}>{new Date(e.at!).toLocaleString()}</time><div>{e.plan && onOpenPlan ?
+            <button type="button" className="woe__link" onClick={() => onOpenPlan(e.plan![1], e.plan![2])}>{e.title}</button> :
+            e.workItemRef && onOpenWorkItem ? <button type="button" className="woe__link"
+              onClick={() => onOpenWorkItem(e.workItemRef!)}>{e.title}</button> : <strong>{e.title}</strong>}
             {e.detail ? <p>{e.detail}</p> : null}</div></li>)}</ol> :
           <p className="woe__muted woe__activity-empty">No dated activity is available in this recent snapshot.</p>}
         {activity.length ? <p className="woe__muted woe__activity-empty">Showing {Math.min(12, activity.length)} recent entries; older activity may be outside this snapshot.</p> : null}
@@ -217,6 +220,7 @@ export default function WorkOnEverythingPanel({ data, nowMs, onClose, onOpenPlan
   const before = collection?.rows.filter((r) => r.selected) ?? [];
   const countable = rows.filter((r) => showEmpty || r.st.key !== 'empty');
   const scoped = countable.filter((r) => inScope(r, scope));
+  const measuredScope = scoped.filter(r => r.counts);
   const totals = sumCounts(scoped);
   const byState = (key: PlanStateKey) => scoped.filter((r) => r.st.key === key);
   const visible = filterAndSort(rows, { scope, state: stateFilter, showEmpty, query, sort });
@@ -269,8 +273,9 @@ export default function WorkOnEverythingPanel({ data, nowMs, onClose, onOpenPlan
   }
 
   const tiles: Array<{ key: PlanStateKey | null; label: string; value: string; unit: string; sub: string }> = [
-    { key: null, label: 'All work', value: totals.done.toLocaleString(), unit: `of ${total(totals).toLocaleString()} items done`,
-      sub: `${percent(totals)}% complete across ${scoped.filter((r) => r.counts && total(r.counts)).length} plans with items` },
+    { key: null, label: 'Work in this scope', value: measuredScope.length ? totals.done.toLocaleString() : 'Not measured',
+      unit: measuredScope.length ? `of ${total(totals).toLocaleString()} items done` : '',
+      sub: measuredScope.length ? `${percent(totals)}% of measured items complete across ${measuredScope.length} plans` : 'Plan progress is unavailable' },
     { key: 'you', label: STATE_LABEL.you, value: String(totals.needsHuman), unit: 'items', sub: `in ${byState('you').length} plans` },
     { key: 'stuck', label: STATE_LABEL.stuck, value: String(byState('stuck').length), unit: 'plans', sub: `${totals.blocked} items wait on other items` },
     { key: 'moving', label: STATE_LABEL.moving, value: String(totals.wip), unit: 'items', sub: `in ${byState('moving').length} plans` },
@@ -316,6 +321,8 @@ export default function WorkOnEverythingPanel({ data, nowMs, onClose, onOpenPlan
         <div><div className="woe__title"><h2>{goal.title}</h2><span className={'hud__chip hud__chip--' + view.status.tone}>{view.status.label}</span></div>
         <p>{editMode ? 'Draft your worklist changes, then review and apply.' : 'Goal health, your priorities and continuous improvement.'}</p></div></div>
         <div className="woe__actions">
+          {editMode ? <GoalStatusControl goalId={goal.id} status={goal.status}
+            effectiveStatus={data.effectiveStatus} holderLiveness={data.holderLiveness} variant="card" /> : null}
           <button className="pc-ctl-act" type="button" aria-pressed={editMode} onClick={() => void setEditMode(!editMode)}>
             {editMode ? 'Back to overview' : `Edit priorities${changes.length ? ` · ${changes.length} pending` : ''}`}</button>
           <button className="pc-ctl-act" type="button" onClick={() => void setSettingsOpen(true)}><span><Settings2 size={14} />Settings</span></button>
@@ -332,8 +339,9 @@ export default function WorkOnEverythingPanel({ data, nowMs, onClose, onOpenPlan
             onClick={() => void setStateFilter(t.key === null || stateFilter === t.key ? null : t.key)}>
             <span className="woe__kpi-label">{t.key ? <i className={'woe__dot woe__dot--' + t.key} aria-hidden /> : null}{t.label}</span>
             <span className="woe__kpi-value">{t.value} <small>{t.unit}</small></span>
-            {t.key === null ? <ProgressBar counts={totals} large /> : null}
+            {t.key === null && measuredScope.length ? <ProgressBar counts={totals} large /> : null}
             <span className="woe__kpi-sub">{t.sub}</span></button>)}</div>
+        {measuredScope.length < scoped.length ? <p className="woe__filter-note">{scoped.length - measuredScope.length} plans have unmeasured progress; totals count measured plans only.</p> : null}
         <RubricStewardship data={data} onOpenWorkItem={onOpenWorkItem} />
         <div className="woe__chart"><h3>Work finished per day for this goal{series ? ` (last ${series.length} days)` : ''}</h3>
           {series ? <svg viewBox={`0 0 ${series.length * 36} 96`} preserveAspectRatio="none" role="img"

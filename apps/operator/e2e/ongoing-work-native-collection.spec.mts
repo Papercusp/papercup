@@ -112,7 +112,7 @@ test('native collection fixture writer graph loads under the Playwright Node loa
   expect(typeof defaultEvidenceRoot).toBe('function');
 });
 
-test('legacy Work on Everything progress table stays readable and draft controls work in the native viewport', async ({ request }, info) => {
+test('Work on Everything Design C cockpit and priority editor stay readable in the native viewport', async ({ request }, info) => {
   test.skip(!process.env.VERIFY_TAURI_PID, 'Requires the maintained isolated native rig');
   await recordJourney(info, async () => {
   test.setTimeout(180_000);
@@ -171,6 +171,33 @@ test('legacy Work on Everything progress table stays readable and draft controls
       rubricRef: 'work-on-everything-stewardship-health', cycles: [], error: null,
     });
     await native('navigate', `${process.env.VERIFY_TAURI_DEV_URL}/adv?tab=hud&scope=all&hudtab=goals&welcome=0&ws=${encodeURIComponent(workspaceId)}&hudgoal=${goalId}&hudwoesearch=Design&hudwoesort=rank`, '--json');
+    await ready(`document.querySelectorAll('${panel} [data-testid="ongoing-priority-row"]').length === 2`);
+    const cockpit = await measure(`(() => {
+      const root = document.querySelector('${panel}');
+      return {
+        priorities: Array.from(root.querySelectorAll('[data-testid="ongoing-priority-row"]')).map(n => n.dataset.worklistId),
+        health: !!root.querySelector('[aria-label="Goal health"]'),
+        needsYou: !!root.querySelector('[aria-label="Needs you"]'),
+        activity: !!root.querySelector('[aria-label="Recent activity"]'),
+        notMeasured: root.querySelector('[aria-label="Selected plan progress"]')?.textContent.includes('not measured'),
+        overflowingPanel: root.scrollWidth > root.clientWidth + 1,
+        columns: getComputedStyle(root.querySelector('.woe__cockpit')).gridTemplateColumns,
+        hasDraftControls: !!root.querySelector('button[aria-label^="Remove "]'),
+      };
+    })()`);
+    expect(cockpit.priorities).toEqual(ids.slice(0, 2));
+    expect(cockpit.health).toBe(true); expect(cockpit.needsYou).toBe(true); expect(cockpit.activity).toBe(true);
+    expect(cockpit.notMeasured).toBe(true); expect(cockpit.overflowingPanel).toBe(false);
+    expect(cockpit.hasDraftControls).toBe(false);
+    await native('screenshot', '--output', info.outputPath('goal-cockpit.png'));
+    await info.attach('native-design-c-cockpit', { body: JSON.stringify({ cockpit, sourceReceipt }), contentType: 'application/json' });
+    await native('eval', `(() => {
+      Array.from(document.querySelectorAll('${panel} button')).find(n => n.textContent === 'Browse all plans').click();
+      return true;
+    })()`);
+    await ready(`document.querySelectorAll('${panel} [data-testid="ongoing-priority-row"]').length === 3`);
+    expect(await measure(`!!document.querySelector('${panel} .woe__draft-bar')`)).toBe(false);
+    await native('click', '.woe__header button[aria-pressed]', '--json');
     await ready(`document.querySelectorAll('${panel} [data-testid="ongoing-worklist-row"]').length === 3`);
     // An empty isolated goal must expose its duties without inventing measured
     // quality or a completed grading cycle. Exercise the actual native view.

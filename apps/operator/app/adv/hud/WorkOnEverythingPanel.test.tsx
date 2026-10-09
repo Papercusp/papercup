@@ -43,6 +43,7 @@ function fixture(): GoalDetailInput {
 }
 const props = () => ({ nowMs: Date.parse('2026-10-08T12:00:00Z'), onClose: vi.fn(), refresh: vi.fn() });
 const rowLabels = () => screen.getAllByTestId('ongoing-worklist-row').map((r) => within(r).getAllByRole('cell')[1].textContent);
+const openEditor = () => fireEvent.click(screen.getByRole('button', { name: /^Edit priorities/ }));
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 describe('Work on everything: progress table (WI-10007603)', () => {
@@ -78,6 +79,7 @@ describe('Work on everything: progress table (WI-10007603)', () => {
 
   it('shows every plan with progress, keeps unpicked plans visible, and hides empty plans by default', () => {
     render(<WorkOnEverythingPanel data={fixture()} {...props()} />);
+    openEditor();
     expect(rowLabels().map((t) => t?.split('h ·')[0])).toEqual(['Cloud setup', 'Search reliability', 'Mobile']);
     const mobile = screen.getAllByTestId('ongoing-worklist-row')[2];
     expect(within(mobile).getByRole('button', { name: 'Add Mobile' })).toBeTruthy();
@@ -91,6 +93,7 @@ describe('Work on everything: progress table (WI-10007603)', () => {
 
   it('totals filter the table, and scope narrows to the worklist or the rest', () => {
     render(<WorkOnEverythingPanel data={fixture()} {...props()} />);
+    openEditor();
     const totals = screen.getByRole('group', { name: 'Totals' });
     expect(within(totals).getAllByRole('button')[0].textContent).toContain('10 of 19 items done');
     fireEvent.click(within(totals).getByRole('button', { name: /Waiting on you/ }));
@@ -107,6 +110,7 @@ describe('Work on everything: progress table (WI-10007603)', () => {
     vi.stubGlobal('fetch', fetch);
     const data = fixture(), p = props();
     const view = render(<WorkOnEverythingPanel data={data} {...p} />);
+    openEditor();
     fireEvent.click(screen.getByRole('button', { name: 'Add Mobile' }));
     expect(fetch).not.toHaveBeenCalled();
     expect(screen.getByRole('region', { name: 'Pending changes' })).toBeTruthy();
@@ -132,6 +136,7 @@ describe('Work on everything: progress table (WI-10007603)', () => {
     vi.stubGlobal('fetch', fetch);
     const data = fixture(), p = props();
     const view = render(<WorkOnEverythingPanel data={data} {...p} />);
+    openEditor();
     fireEvent.click(screen.getByRole('button', { name: 'Remove Cloud setup' }));
     // Removing a plan is a draft until review: no write yet.
     expect(fetch).not.toHaveBeenCalled();
@@ -158,6 +163,7 @@ describe('Work on everything: progress table (WI-10007603)', () => {
   it('reorders in worklist order and opens a plan by its title', () => {
     const open = vi.fn();
     render(<WorkOnEverythingPanel data={fixture()} {...props()} onOpenPlan={open} />);
+    openEditor();
     expect(screen.queryByRole('button', { name: 'Move Search reliability up' })).toBeNull();
     fireEvent.change(screen.getByRole('combobox', { name: 'Sort plans' }), { target: { value: 'rank' } });
     fireEvent.click(screen.getByRole('button', { name: 'Move Search reliability up' }));
@@ -172,6 +178,7 @@ describe('Work on everything: progress table (WI-10007603)', () => {
     if (!s.ok || !s.configured) throw new Error('fixture');
     s.seededFromList = true; s.policyVersion = 0;
     render(<WorkOnEverythingPanel data={data} {...props()} />);
+    openEditor();
     expect(screen.getByRole('status').textContent).toContain('starts from the 2 plans saved on this goal');
   });
 
@@ -195,5 +202,109 @@ describe('Work on everything: progress table (WI-10007603)', () => {
       view.unmount();
     }
     expect(p.refresh).toHaveBeenCalledTimes(cases.length);
+  });
+});
+
+describe('Design C goal cockpit (WI-10007959)', () => {
+  it('opens on saved priorities and lets the owner inspect unpicked plans without starting a draft', () => {
+    const fetch = vi.fn(), openPlan = vi.fn();
+    vi.stubGlobal('fetch', fetch);
+    render(<WorkOnEverythingPanel data={fixture()} {...props()} onOpenPlan={openPlan} />);
+    const priorities = screen.getByRole('region', { name: 'Priority plans' });
+    expect(within(priorities).getAllByTestId('ongoing-priority-row').map(r => r.getAttribute('data-worklist-id')))
+      .toEqual(['plan:h/a', 'plan:h/b']);
+    expect(screen.queryByRole('button', { name: 'Remove Cloud setup' })).toBeNull();
+    expect(screen.queryByRole('table', { name: 'Plans' })).toBeNull();
+    expect(screen.getByRole('region', { name: 'Selected plan progress' }).textContent).toContain('4 of 9 items done');
+    fireEvent.click(screen.getByRole('button', { name: 'Browse all plans' }));
+    fireEvent.click(within(priorities).getByRole('button', { name: 'Mobile' }));
+    expect(openPlan).toHaveBeenCalledWith('h', 'out');
+    expect(screen.queryByRole('region', { name: 'Pending changes' })).toBeNull();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('keeps draft priorities separate from the saved overview and retains them when returning to edit', () => {
+    const fetch = vi.fn(); vi.stubGlobal('fetch', fetch);
+    render(<WorkOnEverythingPanel data={fixture()} {...props()} />);
+    openEditor();
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Cloud setup' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Back to overview' }));
+    expect(screen.getAllByTestId('ongoing-priority-row').map(r => r.getAttribute('data-worklist-id')))
+      .toEqual(['plan:h/a', 'plan:h/b']);
+    openEditor();
+    expect(screen.getByRole('button', { name: 'Add Cloud setup' })).toBeTruthy();
+    expect(screen.getByRole('region', { name: 'Pending changes' })).toBeTruthy();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('shows the real paused state, unbounded attention total and existing question/plan/steward actions', () => {
+    const data = fixture(); data.goal!.status = 'paused';
+    data.waitingOnYouTotal = 28;
+    data.waitingOnYou = [{ id: 'WI-question', title: 'Choose the search scope', harnessSlug: 'h' }];
+    const openItem = vi.fn(), openPlan = vi.fn(), openAgent = vi.fn();
+    render(<WorkOnEverythingPanel data={data} {...props()} onOpenWorkItem={openItem} onOpenPlan={openPlan} onOpenAgent={openAgent} />);
+    const health = screen.getByRole('region', { name: 'Goal health' });
+    expect(health.textContent).toContain('Paused');
+    expect(health.textContent).toContain('Resuming alone will not answer them');
+    expect(within(health).getByText('Goal control')).toBeTruthy();
+    const needs = screen.getByRole('region', { name: 'Needs you' });
+    expect(needs.textContent).toContain('Showing 1 of 28 items');
+    fireEvent.click(within(needs).getByRole('button', { name: 'Open question' }));
+    expect(openItem).toHaveBeenCalledWith('WI-question');
+    fireEvent.click(within(needs).getByRole('button', { name: 'Open plan' }));
+    expect(openPlan).toHaveBeenCalledWith('h', 'b');
+    fireEvent.click(screen.getByRole('button', { name: 'Ask steward' }));
+    expect(openAgent).toHaveBeenCalledWith('holder');
+  });
+
+  it('does not turn missing progress, budget or attention into a measured zero', () => {
+    const data = fixture(); data.goalData!.collections.worklist.rows[0].counts = null;
+    data.waitingOnYou = [{ id: 'WI-unknown', title: 'Question without a total' }];
+    render(<WorkOnEverythingPanel data={data} {...props()} />);
+    const progress = screen.getByRole('region', { name: 'Selected plan progress' });
+    expect(progress.textContent).toContain('1 of 3 items done');
+    expect(progress.textContent).toContain('totals are partial');
+    const needs = screen.getByRole('region', { name: 'Needs you' });
+    expect(needs.textContent).toContain('Not measured');
+    expect(needs.textContent).toContain('decision total unavailable');
+    expect(needs.textContent).not.toContain('No items are waiting');
+    expect(screen.getByText('Budget unavailable')).toBeTruthy();
+    expect(screen.getByText('Spend unavailable')).toBeTruthy();
+    openEditor();
+    expect(screen.getByText(/totals count measured plans only/)).toBeTruthy();
+  });
+
+  it('keeps finished plans inspectable while unknown plans remain visible', () => {
+    const data = fixture(), rows = data.goalData!.collections.worklist.rows;
+    rows[0].counts = counts(0, 0, 6); rows[1].counts = null;
+    render(<WorkOnEverythingPanel data={data} {...props()} />);
+    expect(screen.getAllByTestId('ongoing-priority-row').map(r => r.getAttribute('data-worklist-id'))).toEqual(['plan:h/b']);
+    fireEvent.click(screen.getByRole('button', { name: 'Show finished' }));
+    expect(screen.getAllByTestId('ongoing-priority-row').map(r => r.getAttribute('data-worklist-id'))).toEqual(['plan:h/a', 'plan:h/b']);
+    expect(screen.getByText('Finished · needs sign-off')).toBeTruthy();
+  });
+
+  it('orders real history and work activity by their source dates, without claiming stopped or undated work completed', () => {
+    const data = fixture();
+    data.goalData!.worklistHistory = [{ id: 'edit', ref: 'plan:h/a', at: '2026-10-08T11:00:00Z', actor: 'human',
+      label: 'Worklist priority changed', detail: 'Search moved first' }];
+    data.activity = [
+      { id: 'WI-stop', title: 'Stopped task', status: 'killed', updatedAt: '2026-10-08T10:00:00Z' },
+      { id: 'WI-done', title: 'Verified repair', status: 'done', closedAt: '2026-10-08T12:00:00Z' },
+      { id: 'WI-undated', title: 'Undated task', status: 'done' },
+    ];
+    const open = vi.fn(), openPlan = vi.fn();
+    render(<WorkOnEverythingPanel data={data} {...props()} onOpenWorkItem={open} onOpenPlan={openPlan} />);
+    const activity = screen.getByRole('region', { name: 'Recent activity' });
+    expect(within(activity).getAllByRole('button').map(b => b.textContent))
+      .toEqual(['Verified repair', 'Worklist priority changed', 'Stopped task']);
+    expect(within(activity).getAllByText('Completed')).toHaveLength(1);
+    expect(within(activity).queryByText('Undated task')).toBeNull();
+    fireEvent.click(within(activity).getByRole('button', { name: 'Worklist priority changed' }));
+    expect(openPlan).toHaveBeenCalledWith('h', 'a');
+    expect(open).not.toHaveBeenCalled();
+    fireEvent.click(within(activity).getByRole('button', { name: 'Verified repair' }));
+    expect(open).toHaveBeenCalledWith('WI-done');
+    expect(activity.querySelector('time')?.dateTime).toBe('2026-10-08T12:00:00Z');
   });
 });
