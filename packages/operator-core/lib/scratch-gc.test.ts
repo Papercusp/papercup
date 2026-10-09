@@ -765,6 +765,9 @@ describe('deferred scratch quota recovery', () => {
     const readdirMock = vi.mocked(readdirAsync);
     const originalRead = readdirMock.getMockImplementation()!;
     const read = originalRead as unknown as (path: unknown, options?: unknown) => Promise<unknown>;
+    const statMock = vi.mocked(statAsync);
+    const originalStat = statMock.getMockImplementation()!;
+    let clock = 0;
     let release!: () => void;
     let reached!: () => void;
     const gate = new Promise<void>((resolve) => { release = resolve; });
@@ -775,9 +778,14 @@ describe('deferred scratch quota recovery', () => {
       if (!gated && String(path) === scratchRootForWorkspace('ws-Q')) {
         gated = true; reached(); await gate;
       }
+      clock += 2;
       return entries as never;
     }) as typeof readdirAsync);
-    let clock = 0;
+    statMock.mockImplementation((async (...args: Parameters<typeof statAsync>) => {
+      const stats = await originalStat(...args);
+      clock += 3;
+      return stats;
+    }) as typeof statAsync);
     const now = vi.spyOn(performance, 'now').mockImplementation(() => clock);
     const phases: ScratchWriteTimings[] = [];
     const writes: Promise<void>[] = [];
@@ -789,15 +797,22 @@ describe('deferred scratch quota recovery', () => {
         onTiming: (row) => { phases[1] = row; } }, async () => {}));
       clock = 40; release(); await Promise.all(writes);
       expect(phases[0]).toMatchObject({
-        quotaWaitMs: 0, refreshWaitMs: 0, quotaRecoveryMs: 40, writeMs: 0, totalMs: 40,
+        quotaWaitMs: 0, refreshWaitMs: 0, quotaRecoveryMs: expect.any(Number), writeMs: 0, totalMs: expect.any(Number),
         quotaRecoveryDiagnostics: {
-          sizeWalkMs: 40,
+          sizeWalkMs: expect.any(Number),
           sizeWalkDirectories: expect.any(Number),
           sizeWalkEntries: expect.any(Number),
           sizeWalkFiles: expect.any(Number),
+          readdirOperations: expect.any(Number),
+          statOperations: expect.any(Number),
+          operationTotalMs: expect.any(Number),
+          maxOperationMs: expect.any(Number),
+          maxOperationKind: 'readdir',
+          currentOperationKind: null,
+          currentOperationElapsedMs: 0,
           directoryReadErrors: 0,
           fileStatErrors: 0,
-          runListingMs: 0,
+          runListingMs: expect.any(Number),
           runsListed: 1,
           selectedRunSizingMs: 0,
           runsConsidered: 1,
@@ -811,14 +826,25 @@ describe('deferred scratch quota recovery', () => {
       expect(phases[0].quotaRecoveryDiagnostics?.sizeWalkDirectories).toBeGreaterThan(0);
       expect(phases[0].quotaRecoveryDiagnostics?.sizeWalkEntries).toBeGreaterThan(0);
       expect(phases[0].quotaRecoveryDiagnostics?.sizeWalkFiles).toBeGreaterThan(0);
-      expect(phases[1]).toEqual({ quotaWaitMs: 40, refreshWaitMs: 0, quotaRecoveryMs: 0, writeMs: 0, totalMs: 40 });
+      expect(phases[0].quotaRecoveryDiagnostics?.readdirOperations)
+        .toBeGreaterThanOrEqual(phases[0].quotaRecoveryDiagnostics?.sizeWalkDirectories ?? 0);
+      expect(phases[0].quotaRecoveryDiagnostics?.statOperations)
+        .toBeGreaterThanOrEqual(phases[0].quotaRecoveryDiagnostics?.sizeWalkFiles ?? 0);
+      expect(phases[0].quotaRecoveryDiagnostics?.operationTotalMs).toBeGreaterThan(0);
+      expect(phases[0].quotaRecoveryDiagnostics?.maxOperationMs).toBeGreaterThanOrEqual(40);
+      expect(phases[0].quotaRecoveryMs).toBeGreaterThanOrEqual(40);
+      expect(phases[1]).toEqual({
+        quotaWaitMs: phases[0].quotaRecoveryMs, refreshWaitMs: 0, quotaRecoveryMs: 0,
+        writeMs: 0, totalMs: phases[0].quotaRecoveryMs,
+      });
     } finally {
       release(); await Promise.allSettled(writes);
       readdirMock.mockImplementation(originalRead); now.mockRestore();
+      statMock.mockImplementation(originalStat);
     }
   });
 
-  it('emits one-shot progress while a quota recovery phase is still pending', async () => {
+  it('emits bounded progress every five seconds while a quota recovery phase is pending', async () => {
     makeSparseRun('ws-Q', UUID(1), WORKSPACE_QUOTA_BYTES + 1024);
     _setScratchUsageForTests('ws-Q', WORKSPACE_QUOTA_BYTES + 1024);
     const readdirMock = vi.mocked(readdirAsync);
@@ -826,11 +852,12 @@ describe('deferred scratch quota recovery', () => {
     const read = originalRead as unknown as (path: unknown, options?: unknown) => Promise<unknown>;
     let releaseScan!: () => void;
     let reachedRoot!: () => void;
+    let rootReads = 0;
     const scanGate = new Promise<void>((resolve) => { releaseScan = resolve; });
     const atRoot = new Promise<void>((resolve) => { reachedRoot = resolve; });
     readdirMock.mockImplementation((async (path: unknown, options: unknown) => {
       const entries = await read(path, options);
-      if (String(path) === scratchRootForWorkspace('ws-Q')) {
+      if (String(path) === scratchRootForWorkspace('ws-Q') && ++rootReads === 2) {
         reachedRoot();
         await scanGate;
       }
@@ -838,7 +865,7 @@ describe('deferred scratch quota recovery', () => {
     }) as typeof readdirAsync);
     const timings: ScratchWriteTimings[] = [];
     const filePath = join(scratchRootForWorkspace('ws-Q'), 'quota', UUID(2), 'progress.bin');
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
     const write = writeWithScratchQuota({
       workspaceId: 'ws-Q',
       filePath,
@@ -847,23 +874,31 @@ describe('deferred scratch quota recovery', () => {
     }, async () => {});
     try {
       await atRoot;
-      await vi.advanceTimersByTimeAsync(5_000);
+      await vi.advanceTimersByTimeAsync(15_000);
       const progressRows = timings.filter((row) => row.progress);
-      expect(progressRows).toHaveLength(1);
-      expect(progressRows[0].progress).toMatchObject({
-        phase: 'quota-recovery',
-        bytes: 16,
-        pendingWrites: 1,
-        recoveryActive: true,
-        refreshActive: false,
-        quotaRecoveryDiagnostics: {
-          sizeWalkDirectories: 1,
-          sizeWalkEntries: 0,
-        },
-      });
+      expect(progressRows).toHaveLength(3);
+      for (const row of progressRows) {
+        expect(row.progress).toMatchObject({
+          phase: 'quota-recovery',
+          bytes: 16,
+          pendingWrites: 1,
+          recoveryActive: true,
+          refreshActive: false,
+          quotaRecoveryDiagnostics: {
+            sizeWalkMs: 0,
+            sizeWalkDirectories: 1,
+            sizeWalkEntries: 0,
+            readdirOperations: 1,
+            currentOperationKind: 'readdir',
+            currentOperationElapsedMs: expect.any(Number),
+          },
+        });
+      }
+      expect(JSON.stringify(progressRows)).not.toContain(scratchRootForWorkspace('ws-Q'));
+      expect(JSON.stringify(progressRows)).not.toContain(UUID(1));
       releaseScan();
       await write;
-      expect(timings.filter((row) => row.progress)).toHaveLength(1);
+      expect(timings.filter((row) => row.progress)).toHaveLength(3);
       expect(timings.find((row) => !row.progress)).toMatchObject({
         quotaRecoveryMs: expect.any(Number),
         writeMs: expect.any(Number),

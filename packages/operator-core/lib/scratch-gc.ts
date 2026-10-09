@@ -342,22 +342,32 @@ export async function runScratchGc(opts: {
 }
 
 /** Entry names of `dir`, or [] when it is missing or unreadable. Never blocks the event loop. */
-async function listDir(dir: string): Promise<string[]> {
+async function listDir(
+  dir: string,
+  diagnostics?: ScratchQuotaRecoveryDiagnostics,
+): Promise<string[]> {
   try {
-    return await readdirAsync(dir);
+    return await measureScratchQuotaRecoveryOperation(
+      diagnostics,
+      'readdir',
+      () => readdirAsync(dir),
+    );
   } catch {
     return [];
   }
 }
 
 /** Child DIRECTORIES of `dir` with their mtimes; files and entries that vanish mid-walk are skipped. */
-async function childDirs(dir: string): Promise<Array<{ dir: string; mtimeMs: number }>> {
+async function childDirs(
+  dir: string,
+  diagnostics?: ScratchQuotaRecoveryDiagnostics,
+): Promise<Array<{ dir: string; mtimeMs: number }>> {
   const out: Array<{ dir: string; mtimeMs: number }> = [];
-  for (const name of await listDir(dir)) {
+  for (const name of await listDir(dir, diagnostics)) {
     const child = join(dir, name);
     let st;
     try {
-      st = await statAsync(child);
+      st = await measureScratchQuotaRecoveryOperation(diagnostics, 'stat', () => statAsync(child));
     } catch {
       continue;
     }
@@ -367,10 +377,13 @@ async function childDirs(dir: string): Promise<Array<{ dir: string; mtimeMs: num
 }
 
 /** Every `<toolName>/<runId>/` run dir under a workspace root (empty when the root is missing). */
-async function runDirsOf(wsRoot: string): Promise<Array<{ dir: string; mtimeMs: number }>> {
+async function runDirsOf(
+  wsRoot: string,
+  diagnostics?: ScratchQuotaRecoveryDiagnostics,
+): Promise<Array<{ dir: string; mtimeMs: number }>> {
   const runs: Array<{ dir: string; mtimeMs: number }> = [];
-  for (const toolDir of await childDirs(wsRoot)) {
-    runs.push(...(await childDirs(toolDir.dir)));
+  for (const toolDir of await childDirs(wsRoot, diagnostics)) {
+    runs.push(...(await childDirs(toolDir.dir, diagnostics)));
   }
   return runs;
 }
@@ -496,7 +509,7 @@ async function evictWorkspaceQuota(
   let used: number;
   if (useCachedRunSizes) {
     const runListingStartedAt = performance.now();
-    runs = await runDirsOf(wsRoot);
+    runs = await runDirsOf(wsRoot, diagnostics);
     if (diagnostics) {
       diagnostics.runListingMs += Math.max(0, performance.now() - runListingStartedAt);
       diagnostics.runsListed += runs.length;
@@ -538,7 +551,7 @@ async function evictWorkspaceQuota(
   if (used > targetBytes()) {
     if (!runs) {
       const runListingStartedAt = performance.now();
-      runs = await runDirsOf(wsRoot);
+      runs = await runDirsOf(wsRoot, diagnostics);
       if (diagnostics) {
         diagnostics.runListingMs += Math.max(0, performance.now() - runListingStartedAt);
         diagnostics.runsListed += runs.length;
@@ -559,14 +572,14 @@ async function evictWorkspaceQuota(
           const cachedBytes = entry.runBytesByPath.get(run.dir) ?? 0;
           // Recheck only the FIFO candidates we may delete. This catches cross-process changes
           // to those runs without recursively sizing every run in the workspace.
-          bytesInRun = await sizeOfDirAsync(run.dir, observedWriterBytes);
+          bytesInRun = await sizeOfDirAsync(run.dir, observedWriterBytes, undefined, 0, undefined, diagnostics);
           if (bytesInRun !== cachedBytes) cacheChanged = true;
           used += bytesInRun - cachedBytes;
           entry.runBytesByPath.set(run.dir, bytesInRun);
         } else {
           const indexedBytes = runBytesByPath.get(run.dir);
           if (indexedBytes === undefined && diagnostics) diagnostics.fallbackRunSizes += 1;
-          bytesInRun = indexedBytes ?? await sizeOfDirAsync(run.dir);
+          bytesInRun = indexedBytes ?? await sizeOfDirAsync(run.dir, undefined, undefined, 0, undefined, diagnostics);
           if (indexedBytes === undefined) runBytesByPath.set(run.dir, bytesInRun);
         }
       } finally {
@@ -675,7 +688,11 @@ async function sizeOfDirAsync(
   if (diagnostics) diagnostics.sizeWalkDirectories += 1;
   let entries;
   try {
-    entries = await withScratchSizeScanSlot(() => readdirAsync(dir, { withFileTypes: true }));
+    entries = await withScratchSizeScanSlot(() =>
+      measureScratchQuotaRecoveryOperation(diagnostics, 'readdir', () =>
+        readdirAsync(dir, { withFileTypes: true }),
+      ),
+    );
   } catch {
     if (diagnostics) diagnostics.directoryReadErrors += 1;
     return 0; // missing or unreadable — counts as empty
@@ -704,7 +721,9 @@ async function sizeOfDirAsync(
         }
         if (diagnostics) diagnostics.sizeWalkFiles += 1;
         try {
-          const bytes = (await withScratchSizeScanSlot(() => statAsync(child))).size;
+          const bytes = (await withScratchSizeScanSlot(() =>
+            measureScratchQuotaRecoveryOperation(diagnostics, 'stat', () => statAsync(child)),
+          )).size;
           total += bytes;
           if (observedFileBytes?.has(child)) observedFileBytes.set(child, bytes);
           if (runDir && runBytesByPath) {
@@ -898,11 +917,21 @@ export interface ScratchWriteTimings {
   progress?: ScratchWriteProgress;
 }
 
+type ScratchQuotaRecoveryOperationKind = 'readdir' | 'stat';
+
 export interface ScratchQuotaRecoveryDiagnostics {
   sizeWalkMs: number;
   sizeWalkDirectories: number;
   sizeWalkEntries: number;
   sizeWalkFiles: number;
+  readdirOperations: number;
+  statOperations: number;
+  /** Sum of readdir/stat durations; bounded overlapping operations can exceed wall time. */
+  operationTotalMs: number;
+  maxOperationMs: number;
+  maxOperationKind: ScratchQuotaRecoveryOperationKind | null;
+  currentOperationKind: ScratchQuotaRecoveryOperationKind | null;
+  currentOperationElapsedMs: number;
   directoryReadErrors: number;
   fileStatErrors: number;
   runListingMs: number;
@@ -922,6 +951,13 @@ function newScratchQuotaRecoveryDiagnostics(): ScratchQuotaRecoveryDiagnostics {
     sizeWalkDirectories: 0,
     sizeWalkEntries: 0,
     sizeWalkFiles: 0,
+    readdirOperations: 0,
+    statOperations: 0,
+    operationTotalMs: 0,
+    maxOperationMs: 0,
+    maxOperationKind: null,
+    currentOperationKind: null,
+    currentOperationElapsedMs: 0,
     directoryReadErrors: 0,
     fileStatErrors: 0,
     runListingMs: 0,
@@ -933,6 +969,66 @@ function newScratchQuotaRecoveryDiagnostics(): ScratchQuotaRecoveryDiagnostics {
     deleteAttempts: 0,
     runsDeleted: 0,
     deletedBytes: 0,
+  };
+}
+
+interface ActiveScratchQuotaRecoveryOperation {
+  kind: ScratchQuotaRecoveryOperationKind;
+  startedAt: number;
+}
+
+const activeScratchQuotaRecoveryOperations =
+  new WeakMap<ScratchQuotaRecoveryDiagnostics, Map<number, ActiveScratchQuotaRecoveryOperation>>();
+let nextScratchQuotaRecoveryOperationId = 0;
+
+async function measureScratchQuotaRecoveryOperation<T>(
+  diagnostics: ScratchQuotaRecoveryDiagnostics | undefined,
+  kind: ScratchQuotaRecoveryOperationKind,
+  operation: () => Promise<T>,
+): Promise<T> {
+  if (!diagnostics) return operation();
+
+  if (kind === 'readdir') diagnostics.readdirOperations += 1;
+  else diagnostics.statOperations += 1;
+
+  const startedAt = performance.now();
+  let active = activeScratchQuotaRecoveryOperations.get(diagnostics);
+  if (!active) {
+    active = new Map();
+    activeScratchQuotaRecoveryOperations.set(diagnostics, active);
+  }
+  const operationId = ++nextScratchQuotaRecoveryOperationId;
+  active.set(operationId, { kind, startedAt });
+
+  try {
+    return await operation();
+  } finally {
+    const elapsedMs = Math.max(0, performance.now() - startedAt);
+    diagnostics.operationTotalMs += elapsedMs;
+    if (elapsedMs > diagnostics.maxOperationMs) {
+      diagnostics.maxOperationMs = elapsedMs;
+      diagnostics.maxOperationKind = kind;
+    }
+    active.delete(operationId);
+  }
+}
+
+function snapshotScratchQuotaRecoveryDiagnostics(
+  diagnostics: ScratchQuotaRecoveryDiagnostics,
+): ScratchQuotaRecoveryDiagnostics {
+  const active = activeScratchQuotaRecoveryOperations.get(diagnostics);
+  let current: ActiveScratchQuotaRecoveryOperation | undefined;
+  for (const operation of active?.values() ?? []) {
+    // Report the oldest active I/O operation so a long-running syscall stays visible
+    // while later bounded work enters the same walk.
+    if (!current || operation.startedAt < current.startedAt) current = operation;
+  }
+  return {
+    ...diagnostics,
+    currentOperationKind: current?.kind ?? null,
+    currentOperationElapsedMs: current
+      ? Math.max(0, performance.now() - current.startedAt)
+      : 0,
   };
 }
 
@@ -978,8 +1074,7 @@ export async function writeWithScratchQuota(
       quotaRecoveryMs: 'quota-recovery',
       writeMs: 'file-write',
     }[phase] as ScratchWriteProgress['phase'];
-    const progressTimer = opts.onTiming
-      ? setTimeout(() => {
+    const emitProgress = () => {
           const phaseElapsedMs = Math.max(0, performance.now() - start);
           try {
             opts.onTiming?.({
@@ -993,23 +1088,30 @@ export async function writeWithScratchQuota(
                 recoveryActive: Boolean(entry.recovering),
                 refreshActive: Boolean(entry.refreshing),
                 ...(phase === 'quotaRecoveryMs' && activeRecoveryDiagnostics
-                  ? { quotaRecoveryDiagnostics: { ...activeRecoveryDiagnostics } }
+                  ? { quotaRecoveryDiagnostics: snapshotScratchQuotaRecoveryDiagnostics(activeRecoveryDiagnostics) }
                   : {}),
                 ...(phase === 'refreshWaitMs' && entry.refreshDiagnostics
-                  ? { usageRefreshDiagnostics: { ...entry.refreshDiagnostics } }
+                  ? { usageRefreshDiagnostics: snapshotScratchQuotaRecoveryDiagnostics(entry.refreshDiagnostics) }
                   : {}),
               },
             });
           } catch {
             // Diagnostics must never replace a write failure or invalidate a cursor.
           }
-        }, SCRATCH_WRITE_PROGRESS_AFTER_MS)
+    };
+    const progressTimeout = opts.onTiming && phase !== 'quotaRecoveryMs'
+      ? setTimeout(emitProgress, SCRATCH_WRITE_PROGRESS_AFTER_MS)
       : undefined;
+    const progressInterval = opts.onTiming && phase === 'quotaRecoveryMs'
+      ? setInterval(emitProgress, SCRATCH_WRITE_PROGRESS_AFTER_MS)
+      : undefined;
+    const progressTimer = progressTimeout ?? progressInterval;
     (progressTimer as { unref?: () => void } | undefined)?.unref?.();
     try {
       await run();
     } finally {
-      if (progressTimer) clearTimeout(progressTimer);
+      if (progressTimeout) clearTimeout(progressTimeout);
+      if (progressInterval) clearInterval(progressInterval);
       timings[phase] += Math.max(0, performance.now() - start);
     }
   };
@@ -1038,7 +1140,7 @@ export async function writeWithScratchQuota(
                 WORKSPACE_QUOTA_BYTES - SCRATCH_QUOTA_RECOVERY_HEADROOM_BYTES -
                 [...entry.writes.values()].reduce((sum, request) => sum + request.bytes, 0)), true, diagnostics);
             } finally {
-              timings.quotaRecoveryDiagnostics = { ...diagnostics };
+              timings.quotaRecoveryDiagnostics = snapshotScratchQuotaRecoveryDiagnostics(diagnostics);
               activeRecoveryDiagnostics = undefined;
             }
           });
