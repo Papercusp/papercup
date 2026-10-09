@@ -25472,6 +25472,29 @@ mod tests {
     }
 
     #[test]
+    fn view_state_loaded_before_data_preserves_selection_until_lists_arrive() {
+        let mut a = App::new();
+        a.update(Event::ViewStateLoaded(ViewState {
+            tab: Some("Plans".into()),
+            harness: Some("saved-pot".into()),
+            plan_sel: 1,
+            ..Default::default()
+        }));
+        assert_eq!(a.tab, Tab::Plans);
+        assert_eq!(a.harness, "saved-pot");
+        assert_eq!(*a.active_harness.lock().unwrap(), "saved-pot");
+        assert_eq!(a.plan_sel, 1);
+
+        a.update(Event::Plans(vec![plan("a"), plan("b")]));
+        assert_eq!(a.plan_sel, 1);
+        assert_eq!(a.selected_plan().unwrap().slug, "b");
+        a.update(Event::Plans(vec![plan("a")]));
+        assert_eq!(a.plan_sel, 0);
+        assert_eq!(a.selected_plan().unwrap().slug, "a");
+        assert_eq!(a.harness, "saved-pot");
+    }
+
+    #[test]
     fn view_state_loaded_after_navigation_preserves_the_current_view() {
         let mut a = App::new();
         a.update(key('6', KeyModifiers::NONE));
