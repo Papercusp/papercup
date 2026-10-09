@@ -7,7 +7,18 @@
  * storage policy here so issue and feature readers cannot drift.
  */
 
-export type WorkItemPayloadProjection = 'full' | 'none' | 'completionEvidence';
+export type WorkItemPayloadProjection = 'full' | 'none' | 'completionEvidence' | 'fleetMetrics';
+
+/**
+ * Fleet metrics read authority from the row, not the structured close receipt.
+ * Keep every control/matcher key (including future keys) and omit only these
+ * archival envelopes. This projection must never feed a completion/cohort audit.
+ */
+export const FLEET_METRIC_ARCHIVE_KEYS = [
+  '_completionEvidence', 'toolFailureProbation', 'freshnessEnvelope',
+  'admissionIdentity', '_claimSubjectBaseline', 'admissionReview',
+  '_assumptions', 'toolFailureSignature',
+] as const;
 
 export interface WorkItemReadOptions {
   /**
@@ -35,6 +46,13 @@ export function projectWorkItemColumns(
   projection: WorkItemPayloadProjection = 'full',
 ): string {
   if (projection === 'full') return columns;
+  if (projection === 'fleetMetrics') {
+    const keys = FLEET_METRIC_ARCHIVE_KEYS.map(key => `'${key}'`).join(', ');
+    // Scalar/array/JSON-null payloads retain their exact legacy shape. Subtracting
+    // object keys from a scalar can throw, and silently normalizing it hides bugs.
+    return columns.replace(PAYLOAD_COLUMN,
+      `$1(CASE WHEN jsonb_typeof(payload) = 'object' THEN payload - ARRAY[${keys}]::text[] ELSE payload END) AS payload$2`);
+  }
   const replacement =
     projection === 'none'
       ? 'NULL::jsonb AS payload'
