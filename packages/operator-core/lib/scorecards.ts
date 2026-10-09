@@ -643,6 +643,15 @@ function canonicalJson(value: unknown): string {
   return JSON.stringify(value) ?? 'null';
 }
 
+function rerunRecipeEvidenceIdentity(recipe: SpecTestAdequacyRerunRecipe): Record<string, unknown> {
+  const withoutEvaluatorBuild = (value: object): Record<string, unknown> =>
+    Object.fromEntries(Object.entries(value).filter(([key]) => key !== 'evaluatorBuild'));
+  return {
+    ...withoutEvaluatorBuild(recipe),
+    args: withoutEvaluatorBuild(recipe.args),
+  };
+}
+
 /**
  * Stable evidence identity used by scorecards:evaluate/emit. Timestamps that are
  * measurement DATA remain significant; object insertion order and criterion order do
@@ -664,9 +673,11 @@ export function scorecardEvidenceFingerprint(input: {
     instrumentSnapshots: input.instrumentSnapshots ?? {},
   };
   if (input.acceptance) material.acceptance = input.acceptance;
-  // Preserve every historical fingerprint when the optional replay contract is absent,
-  // while making a persisted spec-test-adequacy recipe part of the scorecard identity.
-  if (input.rerunRecipe) material.rerunRecipe = input.rerunRecipe;
+  // Keep the exact evaluator build in the persisted recipe for replay provenance and
+  // drift checks, but don't make an unrelated source commit a new evidence identity.
+  // evaluatorRevision and the recipe's semantic selection/current fingerprints remain
+  // part of the hash. Preserve historical fingerprints when the recipe is absent.
+  if (input.rerunRecipe) material.rerunRecipe = rerunRecipeEvidenceIdentity(input.rerunRecipe);
   // EI-18706603928993591: a release grade against a different tested commit is
   // different evidence even when its prose ratings and instrument values match.
   // Keep historical hashes byte-stable by adding the field only when supplied.
