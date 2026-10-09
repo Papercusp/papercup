@@ -949,6 +949,30 @@ describe("shapeWorkItemsGet — operationalBrief stays bounded across multi-item
     }
   });
 
+  it("retains a compact operational brief when a single row descends to a zero-brief rung", () => {
+    const id = "EI-25491082181195271";
+    const input = row({
+      id,
+      availability: "available",
+      checkpoint: "C".repeat(25_000),
+      checkpointFreshness: { diagnostic: "F".repeat(3_000) },
+      operationalBrief: operationalBrief(id, "Verified next action and evidence. ".repeat(100)),
+    });
+
+    const out = shapeWorkItemsGet(envelope([input]), "standard") as Envelope;
+    const result = out.results[0];
+
+    expect(result.operationalBrief).toMatchObject({
+      schemaVersion: "operational-brief-v1",
+      subject: id,
+      state: { status: "known", value: "open" },
+      owner: { status: "known", value: "su-1" },
+    });
+    expect(result.operationalBrief).toHaveProperty("shapeNote.clipped", true);
+    expect(out._shapeNote?.dropped).toContain("operationalBrief(clipped)");
+    expect(JSON.stringify(out).length).toBeLessThanOrEqual(DOOR);
+  });
+
   it("keeps three brief rows when duplicated completion bodies exhaust the door", () => {
     const evidence = {
       summary: "S".repeat(1_800),

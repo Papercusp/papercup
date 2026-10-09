@@ -1263,22 +1263,34 @@ export function shapeWorkItemsGet(data: unknown, tier: WorkItemsGetTier): unknow
     }
   }
   // Completion evidence is exposed twice on each ordinary row: once under the
-  // row-level `completion` alias and again under `workItem`. Three individually
-  // bounded records can therefore exceed the door by themselves. Before losing
-  // all row identity, make one measured pass that preserves three compact rows
-  // and their requested briefs while keeping evidence presence (not its body).
+  // row-level `completion` alias and again under `workItem`. Individually bounded
+  // fields can therefore exceed the door together. Before any no-brief rung can
+  // return, make a compact pass that preserves row identity and a requested brief
+  // while keeping completion evidence presence (not its body).
   const compactIdentityAttempt = {
     rung: ladder.length - 1,
     withSummary: false,
     withOperationalBrief: true,
     compactIdentity: true,
   };
-  attempts.splice(attempts.length - 1, 0, compactIdentityAttempt);
+  const firstNoBriefAttempt = attempts.findIndex((attempt) => !attempt.withOperationalBrief);
+  const briefRequested = rows.some((row) => row.operationalBrief !== undefined && row.operationalBrief !== null);
+  attempts.splice(
+    briefRequested && firstNoBriefAttempt >= 0 ? firstNoBriefAttempt : attempts.length - 1,
+    0,
+    compactIdentityAttempt,
+  );
 
   for (let attempt = 0; attempt < attempts.length; attempt += 1) {
     const { rung, withSummary, withOperationalBrief, compactIdentity } = attempts[attempt];
     const { fullRows, checkpointTotal, summaryTotal, lifecycleTotal, operationalBriefTotal } = compactIdentity
-      ? { fullRows: 3, checkpointTotal: 0, summaryTotal: 0, lifecycleTotal: 0, operationalBriefTotal: 2_700 }
+      ? {
+          fullRows: rows.length === 1 ? 1 : 3,
+          checkpointTotal: 0,
+          summaryTotal: 0,
+          lifecycleTotal: 0,
+          operationalBriefTotal: rows.length === 1 ? 1_200 : 2_700,
+        }
       : ladder[rung];
     const dropped = new Set<string>();
     const carrying = rows
