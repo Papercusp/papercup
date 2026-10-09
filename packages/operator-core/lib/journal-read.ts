@@ -433,21 +433,16 @@ export function escapeMacPredicateString(value: string): string {
 /** Convert a journal-style relative window into `log show --last` grammar. */
 export function macLastWindow(value: string): string | null {
   const normalized = normalizeJournalWindow(value).trim();
-  const match = normalized.match(/^-?(\d+)\s+(seconds?|minutes?|hours?|days?|weeks?)(?:\s+ago)?$/i);
+  // Signed spaced abbreviations such as `-10 min` are already valid in
+  // journalctl's grammar, so normalizeJournalWindow deliberately preserves
+  // them. Translate those here too; otherwise the macOS backend mistakes the
+  // relative window for an absolute date and passes it to `log show --start`.
+  const match = normalized.match(
+    /^-?(\d+)\s+(s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days|w|week|weeks)(?:\s+ago)?$/i,
+  );
   if (!match) return null;
-  const suffix: Record<string, string> = {
-    second: 's',
-    seconds: 's',
-    minute: 'm',
-    minutes: 'm',
-    hour: 'h',
-    hours: 'h',
-    day: 'd',
-    days: 'd',
-    week: 'w',
-    weeks: 'w',
-  };
-  return `${match[1]}${suffix[match[2].toLowerCase()]}`;
+  const suffix: Record<string, string> = { s: 's', m: 'm', h: 'h', d: 'd', w: 'w' };
+  return `${match[1]}${suffix[match[2][0].toLowerCase()]}`;
 }
 
 /** Build the macOS unified-log predicate without moving filtering client-side. */

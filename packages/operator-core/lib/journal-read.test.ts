@@ -221,6 +221,16 @@ describe('macOS unified-log backend', () => {
     expect(args.join(' ')).not.toContain('journalctl');
   });
 
+  it.each([
+    ['-10 min', '10m'],
+    ['-5 sec', '5s'],
+    ['-2 hrs', '2h'],
+  ])('translates signed spaced lookback %s into log show --last %s', (since, last) => {
+    const args = buildMacLogArgs({ units: ['papercup-bg-host.service'], since });
+    expect(args.slice(args.indexOf('--last'), args.indexOf('--last') + 2)).toEqual(['--last', last]);
+    expect(args).not.toContain('--start');
+  });
+
   it('decodes Apple timestamps and messageType values onto the shared result scale', () => {
     expect(decodeMacTimestamp('2026-08-20 12:34:56.123 -0400')).toBe('2026-08-20T16:34:56.123Z');
     expect(decodeMacPriority('fault')).toBe('crit');
