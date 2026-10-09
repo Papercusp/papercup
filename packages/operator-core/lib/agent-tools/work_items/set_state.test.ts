@@ -67,6 +67,22 @@ describe('work_items:set_state dispatch validation (EI-25280526101674032)', () =
       expect(message).not.toContain('Invalid option: expected one of');
     }
   });
+
+  it.each([
+    ['inline', { id: 'WI-test', state: 'dropped' }],
+    ['ids batch', { ids: ['WI-test'], state: 'dropped' }],
+    ['items batch', { items: [{ id: 'WI-test', state: 'dropped' }] }],
+  ])('explains missing terminal assumptions for the %s form', async (_label, input) => {
+    const parsed = await standardValidate(tool.args, input);
+
+    expect(parsed.ok).toBe(false);
+    if (!parsed.ok) {
+      const messages = parsed.issues.map((entry) => entry.message).join('\n');
+      expect(messages).toContain('a terminal close requires `assumptions`');
+      expect(messages).not.toContain('Invalid option: expected one of');
+      expect(messages).not.toContain('Unrecognized keys: "id", "state"');
+    }
+  });
 });
 
 /** Default mock: no alias — the item lands exactly on the requested state. */

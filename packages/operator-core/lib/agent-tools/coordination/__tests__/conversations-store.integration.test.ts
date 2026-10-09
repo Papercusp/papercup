@@ -331,6 +331,47 @@ describe('reopenResolved — bounded compensation inverse', () => {
 });
 
 describe('supersede — row transaction', () => {
+  it('uses the exact accepted answer as a compare-and-set for correcting a resolved owner question', async () => {
+    await store.create(input('resolved-owner-question'));
+    await store.setAcceptedAnswer('resolved-owner-question', {
+      answer: 'approved answer v1',
+      post_id: 17,
+      capture_target: 'mem0:workspace:default',
+      now_ts: T1,
+    });
+    await store.setState('resolved-owner-question', 'resolved', { now_ts: T1 });
+
+    const stale = await store.supersede(
+      'resolved-owner-question',
+      input('stale-replacement'),
+      { now_ts: T2, expected_answer: 'older answer' },
+    );
+    expect(stale).toMatchObject({
+      error: 'source_changed',
+      conversation: { id: 'resolved-owner-question', state: 'resolved', accepted_answer: 'approved answer v1' },
+    });
+    expect(await store.get('stale-replacement')).toBeNull();
+
+    const corrected = await store.supersede(
+      'resolved-owner-question',
+      input('corrected-replacement'),
+      { now_ts: T2, expected_answer: 'approved answer v1' },
+    );
+    if ('error' in corrected) throw new Error(corrected.error);
+    expect(corrected).toMatchObject({
+      conversation: {
+        id: 'resolved-owner-question',
+        state: 'superseded',
+        superseded_by: 'corrected-replacement',
+        accepted_answer: null,
+        accepted_post_id: null,
+        capture_target: null,
+        resolved_ts: null,
+      },
+      replacement: { id: 'corrected-replacement', state: 'open' },
+    });
+  });
+
   it('inserts the replacement and retires the old gate in one store operation', async () => {
     await store.create(input('old-gate', { title: 'old title' }));
     const result = await store.supersede(

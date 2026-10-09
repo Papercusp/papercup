@@ -41,7 +41,8 @@ export default defineTool({
     'allowed), max 512KB; oversized bodies are refused with the exact overage, never truncated. The server ' +
     'stamps author, pot, and session. Use `supersedes` to publish a correction in the same lineage; the ' +
     'old body remains resolvable. After publishing, call `reports:get { id: report_id }` and ' +
-    'verify the complete body and visibility before citing the path or claiming delivery. Reports preserve ' +
+    'verify the complete body and visibility before citing a descriptive Markdown link to the GUI report page. ' +
+    'Resolve the returned path against the verified GUI origin for an absolute HTTP(S) URL, never a bare path or id. Reports preserve ' +
     'dated evidence and conclusions; author reusable current procedures with `docs:author`, verify them with ' +
     '`docs:get`, and link the maintained procedure from the report without copying private incident details.',
   guidance: {
@@ -53,8 +54,10 @@ export default defineTool({
       '`plans:add-decision` for cross-lane rulings, and `coord:send` for agent messages. Reusable ' +
       'procedures belong in `docs:author`. Minor typos rarely warrant a new edition; corrections use `supersedes`.',
     chaining:
-      'After publishing, call `reports:get` with the id and verify the complete body and visibility before citing. ' +
-      'For corrections, read the original, publish with `supersedes`, then verify the new id. `reports:list` shows lineage.',
+      'reports:publish → reports:get { id: report_id } → verify the complete body and visibility → ' +
+      'cite a descriptive Markdown link to the GUI report page using the verified GUI origin and returned path ' +
+      '(operator reader: /reports?sel=<report_id>). Claim saved or delivered only after readback succeeds. ' +
+      'For corrections: read the original → publish with supersedes → new report_id → verify the correction → cite it.',
     returns:
       '{ ok:true, report_id, workspace_id, title, summary, kind, subject, origin, visibility, ' +
       'supersedes_report_id, lineage_id, source, tags, published_at, updated_at, retired_at, path, ' +

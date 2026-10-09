@@ -636,7 +636,17 @@ describe('WI-10006159 solo decision reservations', () => {
     visit(plans[0]['QUERY PLAN'][0].Plan);
     const extractions = nodes.filter(node => node['Function Name'] === 'regexp_matches');
     expect(extractions.length).toBeGreaterThan(0);
-    expect(extractions.every(node => node['Actual Loops'] <= 1)).toBe(true);
+    // LATERAL runs once per eligible decision, including decisions whose master
+    // identity is outside the cohort. Bound the work by decisions, so repeating
+    // that extraction for each candidate still fails this regression.
+    const [decisionCount] = await db.sql<{ count: number }[]>`
+      SELECT count(*)::int AS count FROM harness_shared.plan_decisions
+       WHERE workspace_id = ${WS}`;
+    const extractionLoops = extractions.reduce((sum, node) => sum + node['Actual Loops'], 0);
+    console.log('FIXED_COHORT_EXTRACTION', JSON.stringify({
+      decisions: decisionCount.count, candidates: ids.length, extractionLoops, extractions,
+    }));
+    expect(extractionLoops).toBeLessThanOrEqual(decisionCount.count);
   });
 
   it('evaluates the Route A decision set once for a large fixed cohort', async () => {

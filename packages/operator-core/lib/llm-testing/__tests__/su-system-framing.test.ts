@@ -50,6 +50,11 @@ describe('Reports owner-deliverable persona rule', () => {
     expect(rule).toContain('Claim\nsaved or delivered only after the readback succeeds');
     expect(rule).toContain('stable `request_key`');
     expect(rule).toContain('A correction uses `supersedes`');
+    expect(rule).toContain('descriptive Markdown link to the report page in the GUI');
+    expect(rule).toContain('verified owner-facing GUI origin');
+    expect(rule).toContain('absolute HTTP(S) URL');
+    expect(rule).toContain('/reports?sel=<report_id>');
+    expect(rule).toContain('Verify that the link opens the intended report');
     expect(practice).toBe(readFileSync(join(dirname(baseSource), 'su.practice.md'), 'utf8'));
   });
 
@@ -62,6 +67,8 @@ describe('Reports owner-deliverable persona rule', () => {
     expect(rendered.overlaySource).toBe(join(overlayDir, 'papercusp-su.codex.md'));
     expect(rendered.text).toContain(rule);
     expect(rendered.text).toContain('You are running under Codex CLI');
+    expect(rendered.text).toContain('absolute HTTP(S) URL');
+    expect(rendered.text).toContain('Never\ngive a bare report id');
     // The derived practice file must not mask a missing authored rule.
     const withoutRule = await render(source.replace(rule, ''));
     expect(withoutRule.text).not.toContain('**Publish finished owner-facing prose.**');

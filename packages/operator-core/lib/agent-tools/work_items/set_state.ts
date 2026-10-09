@@ -217,6 +217,25 @@ const aliasAwareUnionError = (issue: { input?: unknown; errors?: unknown }): str
     ? (issue.input as Record<string, unknown>)
     : undefined;
   const candidates = Array.isArray(root?.items) ? root.items : [root];
+  // The terminal schemas carry the required-with-explicit-none rule in a
+  // superRefine so it can share the same explanatory message across inline,
+  // ids[], and items[] forms. A union can instead surface a sibling branch's
+  // enum error (for example, "dropped" is invalid for the blocked branch),
+  // which makes a missing `assumptions` field look like an invalid state or
+  // unknown `id`/`state` keys at the transport boundary. Detect this one
+  // cross-branch omission before Zod collapses the branch diagnostics.
+  for (const candidate of candidates) {
+    if (typeof candidate !== 'object' || candidate === null) continue;
+    const row = candidate as Record<string, unknown>;
+    if (
+      typeof row.state === 'string' &&
+      isTerminalStateInput(row.state) &&
+      (!('assumptions' in row) || row.assumptions === undefined)
+    ) {
+      return ASSUMPTIONS_REQUIRED_MESSAGE;
+    }
+  }
+
   for (const candidate of candidates) {
     if (typeof candidate !== 'object' || candidate === null || !('assumptions' in candidate)) continue;
     const assumptions = (candidate as Record<string, unknown>).assumptions;

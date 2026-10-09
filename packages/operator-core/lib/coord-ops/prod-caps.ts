@@ -29,7 +29,8 @@ import {
 } from '../agent-tools/coordination/conversations.js';
 import { openEscalation } from '../agent-tools/coordination/escalations.js';
 import { sendMessage } from '../agent-tools/coordination/messages.js';
-import type { AgentIdentity } from '../agent-tools/coordination/identity.js';
+import { isOwnerDecisionQuestion } from '../agent-tools/coordination/conversations-core.js';
+import { ADMIN_COORD_UI_OWNER, type AgentIdentity } from '../agent-tools/coordination/identity.js';
 import type { CoordOpCaps, CoordOpCtx, ResolvedSpawn, SpawnRolesResult } from './types.js';
 import { runProgramCore, inlineRunOp } from './program-runner.js';
 import { findOverlappingGoalAsk } from './goal-ask-dedup.js';
@@ -154,7 +155,29 @@ export function buildCoordOpCaps(base: CoordOpEnvBase): CoordOpCaps {
     async readAnswer({ conversationId, askerId }) {
       const detail = await getConversation(conversationId, identity);
       if (!detail) return { answered: false, answer: null };
-      const accepted = detail.conversation.accepted_answer;
+      const conversation = detail.conversation;
+      if (isOwnerDecisionQuestion(conversation)) {
+        const accepted = conversation.accepted_answer;
+        const acceptedPostId = conversation.accepted_post_id;
+        const acceptedOwnerPost = acceptedPostId == null
+          ? undefined
+          : detail.posts.find((post) => post.id === acceptedPostId);
+        if (
+          accepted &&
+          acceptedOwnerPost?.author_id === ADMIN_COORD_UI_OWNER &&
+          acceptedOwnerPost.body.trim() === accepted.trim()
+        ) {
+          return { answered: true, answer: accepted };
+        }
+        const ownerReplies = detail.posts.filter(
+          (post) => post.author_id === ADMIN_COORD_UI_OWNER && post.body.trim().length > 0,
+        );
+        const lastOwnerReply = ownerReplies[ownerReplies.length - 1];
+        return lastOwnerReply
+          ? { answered: true, answer: lastOwnerReply.body.trim() }
+          : { answered: false, answer: null };
+      }
+      const accepted = conversation.accepted_answer;
       if (accepted) return { answered: true, answer: accepted };
       // Latest reply by someone other than the asker counts as an answer.
       const replies = detail.posts.filter((p) => p.author_id && p.author_id !== askerId);

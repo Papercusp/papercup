@@ -158,8 +158,23 @@ async function prepareDeclaredCollection(page: Page, kind: CollectionKind, journ
       // A fresh persisted query is allowed to skip REST on mount. First prove
       // the canonical response reached disk, then exercise that real reload
       // path without clearing the cache or requiring a redundant request.
-      await expect.poll(() => page.evaluate(({ goalId, property }) => {
-        const stored = JSON.parse(localStorage.getItem('papercusp:sync-cache:v1') ?? 'null');
+      await expect.poll(() => page.evaluate(async ({ goalId, property }) => {
+        // Inspect only an app-created database; polling must not create an empty
+        // version-1 database before the app installs its object store.
+        if (!(await indexedDB.databases()).some((db) => db.name === 'papercusp-sync-cache')) return null;
+        const stored = await new Promise<unknown>((resolve, reject) => {
+          const open = indexedDB.open('papercusp-sync-cache', 1);
+          open.onerror = () => reject(open.error);
+          open.onsuccess = () => {
+            const db = open.result;
+            if (!db.objectStoreNames.contains('snapshots')) { db.close(); resolve(null); return; }
+            const tx = db.transaction('snapshots', 'readonly');
+            const request = tx.objectStore('snapshots').get('papercusp:sync-cache:v1');
+            request.onsuccess = () => resolve(request.result?.row?.value ? JSON.parse(request.result.row.value) : null);
+            request.onerror = () => reject(request.error);
+            tx.oncomplete = () => db.close();
+          };
+        }) as { state?: { queries?: Array<{ queryKey: [string, string, { goalId?: string }]; state: { data?: { rows?: Array<{ goalData?: { collections?: Record<string, { selection?: unknown }> } }> } } }> } } | null;
         const query = stored?.state?.queries?.find((entry: { queryKey: [string, string, { goalId?: string }] }) =>
           entry.queryKey[1] === 'goals.detail' && entry.queryKey[2]?.goalId === goalId);
         return query?.state?.data?.rows?.[0]?.goalData?.collections?.[property]?.selection;

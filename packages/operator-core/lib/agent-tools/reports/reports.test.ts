@@ -117,6 +117,10 @@ describe('Reports delivery guidance', () => {
     expect(publishTool.guidance?.chaining).toContain('reports:publish → reports:get { id: report_id } → verify');
     expect(publishTool.guidance?.chaining).toContain('Claim saved or delivered only after readback succeeds');
     expect(publishTool.guidance?.chaining).toContain('new report_id → verify the correction → cite it');
+    expect(publishTool.description).toContain('descriptive Markdown link to the GUI report page');
+    expect(publishTool.description).toContain('absolute HTTP(S) URL');
+    expect(publishTool.guidance?.chaining).toContain('verified GUI origin and returned path');
+    expect(publishTool.guidance?.chaining).toContain('/reports?sel=<report_id>');
   });
 });
 

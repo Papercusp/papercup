@@ -422,6 +422,7 @@ export async function supersedeConversation(
   | { error: 'not_owner' }
   | { error: 'already_superseded' }
   | { error: 'already_terminal' }
+  | { error: 'resolution_changed' }
   | { error: 'invalid_replacement' }
 > {
   const provenance = await resolveConversationLaneProvenance(identity);

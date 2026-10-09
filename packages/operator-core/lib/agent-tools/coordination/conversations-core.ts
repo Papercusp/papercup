@@ -135,7 +135,7 @@ function convRef(id: string): ObjectRef {
 }
 
 /** Owner asks (and unattributed legacy questions) are human decision gates. */
-function isOwnerDecisionQuestion(conv: Pick<ConversationRow, 'kind' | 'producer'>): boolean {
+export function isOwnerDecisionQuestion(conv: Pick<ConversationRow, 'kind' | 'producer'>): boolean {
   return conv.kind === 'question' && (conv.producer === 'coord:ask-owner' || conv.producer == null);
 }
 
@@ -394,11 +394,10 @@ export async function supersedeConversationCore(
   if (!input.replacement.body.trim()) return { error: 'invalid_replacement' };
 
   const now = deps.nowIso();
-  // The replacement INHERITS the original's producer: superseding is a retraction
-  // and re-ask of the SAME question by the same tool, so attributing it to the
-  // supersede verb would lose exactly the attribution this column exists to keep.
-  // A row opened before the column existed (or federated from an older peer) has
-  // nothing to inherit — only then does the supersede verb name itself.
+  // A recognized producer is inherited so the corrected question keeps its
+  // attribution. An unattributed legacy question remains a human decision gate,
+  // so its replacement keeps the conservative owner-question classification;
+  // other unattributed rows use the supersede verb as their producer.
   const replacementProducer: ConversationProducer = isConversationProducer(old.producer)
     ? old.producer
     : ownerQuestion
