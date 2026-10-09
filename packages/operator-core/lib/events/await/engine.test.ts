@@ -67,10 +67,8 @@ const h = vi.hoisted(() => ({
   admitSpawn: vi.fn(async (): Promise<{ admitted: boolean }> => ({ admitted: true })),
   // WI-4014 Part 2: standing event-key inject subscribers folded into the notify path.
   listEventKeySubscribers: vi.fn(async (): Promise<Array<{ subscriber_id: string; delivery_mode: string }>> => []),
-  // EI-18673058981655804: the coord-deafness read-watermark the redundant-inbox-wake
-  // suppression check consults. Empty by default (no read on record) — the same
-  // fail-open default as the real fail-soft path, so existing tests that don't care
-  // about this never suppress anything.
+  // Legacy read cursor used only for message-less inbox notifications. Empty by
+  // default, so existing tests that don't care about it never suppress anything.
   lastInboxReadAtBatch: vi.fn(async (_ownerIds: string[]): Promise<Map<string, string>> => new Map()),
   // EI-18676763837940562: the reply-linkage leg's batched lookup — no replies on
   // record by default, matching the fail-open default (never suppresses anything
@@ -1716,7 +1714,7 @@ describe('pumpWakeDeliveries — EI-18673058981655804: redundant-inbox-wake supp
     },
   );
 
-  it('suppresses a single inbox-wake delivery already covered by the subscriber\'s last read — no turn spent', async () => {
+  it('suppresses a message-less inbox notification already covered by the subscriber\'s last read — no turn spent', async () => {
     h.lastInboxReadAtBatch.mockResolvedValueOnce(new Map([['su-a', new Date(5000).toISOString()]]));
     h.store.claimDueDeliveries.mockResolvedValueOnce([
       workRow({
@@ -1737,51 +1735,52 @@ describe('pumpWakeDeliveries — EI-18673058981655804: redundant-inbox-wake supp
   it('retries a psu-host-accepted wake after the inbox read advances, so the pending host text can refresh', async () => {
     const createdAt = new Date(5000).toISOString();
     const acceptedReason = 'psu-host accepted: delivery accepted before turn-start proof; retry remains durable';
-    const previousReadAt = h.lastInboxReadAtBatch.getMockImplementation();
-    let readAtMs = 1000;
-    h.lastInboxReadAtBatch.mockImplementation(async () => new Map([['su-a', new Date(readAtMs).toISOString()]]));
+    const pendingEnvelope = {
+      msg_id: 'm-pending',
+      ts: createdAt,
+      from: 'su-b',
+      kind: 'message',
+      expects: 'answer',
+    };
+    h.readWatermark.mockResolvedValueOnce({ messages_shown_ts: new Date(1000).toISOString() });
+    h.getLineEnvelopeById.mockResolvedValueOnce(pendingEnvelope);
+    h.store.claimDueDeliveries.mockResolvedValueOnce([
+      workRow({
+        id: 44,
+        subscriberId: 'su-a',
+        eventKey: 'coord:inbox-wake:su-a',
+        payload: { msg_id: 'm-pending' },
+        createdAt,
+      }),
+    ]);
+    h.executeWake.mockResolvedValueOnce({ kind: 'park', reason: acceptedReason });
+    await pumpWakeDeliveries('ws-test');
 
-    try {
-      h.repliedMsgIdsBatch.mockResolvedValueOnce(new Set());
-      h.store.claimDueDeliveries.mockResolvedValueOnce([
-        workRow({
-          id: 44,
-          subscriberId: 'su-a',
-          eventKey: 'coord:inbox-wake:su-a',
-          payload: { msg_id: 'm-pending' },
-          createdAt,
-        }),
-      ]);
-      h.executeWake.mockResolvedValueOnce({ kind: 'park', reason: acceptedReason });
-      await pumpWakeDeliveries('ws-test');
+    // The first host ACK only says its gated delivery pipeline was queued. A later
+    // inbox read must not make the await engine settle this unanswered ask.
+    h.readWatermark.mockResolvedValueOnce({ messages_shown_ts: new Date(6000).toISOString() });
+    h.getLineEnvelopeById.mockResolvedValueOnce(pendingEnvelope);
+    h.store.claimDueDeliveries.mockResolvedValueOnce([
+      workRow({
+        id: 44,
+        subscriberId: 'su-a',
+        eventKey: 'coord:inbox-wake:su-a',
+        payload: { msg_id: 'm-pending' },
+        createdAt,
+        attempts: 2,
+        lastError: acceptedReason,
+      }),
+    ]);
+    h.executeWake.mockResolvedValueOnce({ kind: 'delivered', channel: 'psu-socket-inject' });
 
-      // The first host ACK only says its gated delivery pipeline was queued. A later
-      // inbox read must not make the await engine settle this retry as redundant.
-      readAtMs = 6000;
-      h.store.claimDueDeliveries.mockResolvedValueOnce([
-        workRow({
-          id: 44,
-          subscriberId: 'su-a',
-          eventKey: 'coord:inbox-wake:su-a',
-          payload: { msg_id: 'm-pending' },
-          createdAt,
-          attempts: 2,
-          lastError: acceptedReason,
-        }),
-      ]);
-      h.executeWake.mockResolvedValueOnce({ kind: 'delivered', channel: 'psu-socket-inject' });
+    const stats = await pumpWakeDeliveries('ws-test');
 
-      const stats = await pumpWakeDeliveries('ws-test');
-
-      expect(h.executeWake).toHaveBeenCalledTimes(2);
-      expect(h.lastInboxReadAtBatch).toHaveBeenCalledTimes(1);
-      expect(h.store.markDeliveryDelivered).toHaveBeenCalledWith(44, 'psu-socket-inject', 1);
-      expect(h.store.markDeliveryDelivered).not.toHaveBeenCalledWith(44, 'suppressed-redundant', 1);
-      expect(stats.suppressed).toBe(0);
-    } finally {
-      if (previousReadAt) h.lastInboxReadAtBatch.mockImplementation(previousReadAt);
-      else h.lastInboxReadAtBatch.mockReset();
-    }
+    expect(h.executeWake).toHaveBeenCalledTimes(2);
+    expect(h.readWatermark).toHaveBeenCalledTimes(2);
+    expect(h.lastInboxReadAtBatch).not.toHaveBeenCalled();
+    expect(h.store.markDeliveryDelivered).toHaveBeenCalledWith(44, 'psu-socket-inject', 1);
+    expect(h.store.markDeliveryDelivered).not.toHaveBeenCalledWith(44, 'suppressed-redundant', 1);
+    expect(stats.suppressed).toBe(0);
   });
 
   it('requests cancellation only for an exact shown non-actionable msg_id group and settles on the host receipt', async () => {
@@ -1931,7 +1930,6 @@ describe('pumpWakeDeliveries — EI-18673058981655804: redundant-inbox-wake supp
   });
 
   it('does NOT suppress an urgent inbox-wake delivery even when covered', async () => {
-    h.lastInboxReadAtBatch.mockResolvedValueOnce(new Map([['su-a', new Date(5000).toISOString()]]));
     h.store.claimDueDeliveries.mockResolvedValueOnce([
       workRow({
         id: 34,
@@ -2003,8 +2001,13 @@ describe('pumpWakeDeliveries — EI-18673058981655804: redundant-inbox-wake supp
 
   describe('EI-18676763837940562: reply-linkage leg wired end-to-end through the pump', () => {
     it('suppresses a delivery whose msg_id was already replied to, even with NO read on record', async () => {
-      h.lastInboxReadAtBatch.mockResolvedValueOnce(new Map()); // no read-cursor coverage at all
       h.repliedMsgIdsBatch.mockResolvedValueOnce(new Set(['m-orig']));
+      h.getLineEnvelopeById.mockResolvedValueOnce({
+        msg_id: 'm-orig',
+        ts: new Date(5000).toISOString(),
+        kind: 'message',
+        expects: 'answer',
+      });
       h.store.claimDueDeliveries.mockResolvedValueOnce([
         workRow({
           id: 40,
@@ -2022,7 +2025,6 @@ describe('pumpWakeDeliveries — EI-18673058981655804: redundant-inbox-wake supp
     });
 
     it('does NOT query repliedMsgIdsBatch at all when no delivery in the group carries a payload.msg_id', async () => {
-      h.lastInboxReadAtBatch.mockResolvedValueOnce(new Map());
       h.store.claimDueDeliveries.mockResolvedValueOnce([
         workRow({
           id: 41,
@@ -2038,8 +2040,13 @@ describe('pumpWakeDeliveries — EI-18673058981655804: redundant-inbox-wake supp
     });
 
     it('a msg_id present but NOT yet replied to still fires normally (no false suppression)', async () => {
-      h.lastInboxReadAtBatch.mockResolvedValueOnce(new Map());
       h.repliedMsgIdsBatch.mockResolvedValueOnce(new Set()); // nothing replied
+      h.getLineEnvelopeById.mockResolvedValueOnce({
+        msg_id: 'm-orig',
+        ts: new Date(5000).toISOString(),
+        kind: 'message',
+        expects: 'answer',
+      });
       h.store.claimDueDeliveries.mockResolvedValueOnce([
         workRow({
           id: 42,
@@ -2055,7 +2062,6 @@ describe('pumpWakeDeliveries — EI-18673058981655804: redundant-inbox-wake supp
     });
 
     it('a repliedMsgIdsBatch failure fails OPEN — the delivery still fires, never crashes the pump', async () => {
-      h.lastInboxReadAtBatch.mockResolvedValueOnce(new Map());
       h.repliedMsgIdsBatch.mockRejectedValueOnce(new Error('pg down'));
       h.store.claimDueDeliveries.mockResolvedValueOnce([
         workRow({
@@ -2131,6 +2137,15 @@ describe('pumpWakeDeliveries — P-024: a wake with nothing to act on costs no t
     'm-ack': { msg_id: 'm-ack', from: 'su-b', to: ['su-a'], kind: 'ack', related_msg_id: 'm-0' },
     'm-ask': { msg_id: 'm-ask', from: 'su-b', to: ['su-a'], kind: 'message', expects: 'action' },
     'm-owner': { msg_id: 'm-owner', from: 'pc-admin-coord-ui', to: ['su-a'], kind: 'message', expects: 'none' },
+    'm-shown-fyi': {
+      msg_id: 'm-shown-fyi', from: 'su-b', to: ['su-a'], kind: 'message', expects: 'none', ts: new Date(8000).toISOString(),
+    },
+    'm-shown-ask': {
+      msg_id: 'm-shown-ask', from: 'su-b', to: ['su-a'], kind: 'message', expects: 'answer', ts: new Date(8000).toISOString(),
+    },
+    'm-shown-reply': {
+      msg_id: 'm-shown-reply', from: 'su-b', to: ['su-a'], kind: 'message', related_msg_id: 'm-parent', ts: new Date(8000).toISOString(),
+    },
   };
   const inboxDelivery = (id: number, msgId: string): DeliveryWork =>
     workRow({
@@ -2167,6 +2182,44 @@ describe('pumpWakeDeliveries — P-024: a wake with nothing to act on costs no t
     expect(h.executeWake).toHaveBeenCalledTimes(1);
     expect(stats.suppressed).toBe(0);
     expect(stats.delivered).toBe(1);
+  });
+
+  it('a read watermark does not discharge an unanswered expects:answer message', async () => {
+    h.readWatermark.mockResolvedValueOnce({ messages_shown_ts: new Date(10000).toISOString() });
+    h.repliedMsgIdsBatch.mockResolvedValueOnce(new Set());
+    h.store.claimDueDeliveries.mockResolvedValueOnce([inboxDelivery(47, 'm-shown-ask')]);
+
+    const stats = await pumpWakeDeliveries('ws-test');
+
+    expect(h.lastInboxReadAtBatch).not.toHaveBeenCalled();
+    expect(h.executeWake).toHaveBeenCalledTimes(1);
+    expect(h.store.markDeliveryDelivered).toHaveBeenCalledWith(47, 'resume', 1);
+    expect(stats.suppressed).toBe(0);
+  });
+
+  it('a read watermark does not discharge an unanswered thread reply', async () => {
+    h.readWatermark.mockResolvedValueOnce({ messages_shown_ts: new Date(10000).toISOString() });
+    h.repliedMsgIdsBatch.mockResolvedValueOnce(new Set());
+    h.store.claimDueDeliveries.mockResolvedValueOnce([inboxDelivery(48, 'm-shown-reply')]);
+
+    const stats = await pumpWakeDeliveries('ws-test');
+
+    expect(h.lastInboxReadAtBatch).not.toHaveBeenCalled();
+    expect(h.executeWake).toHaveBeenCalledTimes(1);
+    expect(h.store.markDeliveryDelivered).toHaveBeenCalledWith(48, 'resume', 1);
+    expect(stats.suppressed).toBe(0);
+  });
+
+  it('a shown non-actionable FYI still settles after its exact message timestamp is covered', async () => {
+    h.readWatermark.mockResolvedValueOnce({ messages_shown_ts: new Date(10000).toISOString() });
+    h.repliedMsgIdsBatch.mockResolvedValueOnce(new Set());
+    h.store.claimDueDeliveries.mockResolvedValueOnce([inboxDelivery(49, 'm-shown-fyi')]);
+
+    const stats = await pumpWakeDeliveries('ws-test');
+
+    expect(h.executeWake).not.toHaveBeenCalled();
+    expect(h.store.markDeliveryDelivered).toHaveBeenCalledWith(49, 'suppressed-redundant', 1);
+    expect(stats.suppressed).toBe(1);
   });
 
   it('RSR-P-024-C: an owner directive that looks like an FYI starts a turn', async () => {

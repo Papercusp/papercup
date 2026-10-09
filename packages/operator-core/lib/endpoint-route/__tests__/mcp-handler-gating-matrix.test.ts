@@ -4184,6 +4184,7 @@ describe('tools/list — strict-mode listing matrix', () => {
       error: Object.assign(new Error(`verification timed out for ${nativeThread} and su-owner`), {
         name: 'OrgTxnTimeoutError',
         pgCode: '57014',
+        nativeSessionVerificationPhase: 'owner_candidate_rows_lookup',
       }),
     };
     const meta = { threadId: nativeThread };
@@ -4211,6 +4212,7 @@ describe('tools/list — strict-mode listing matrix', () => {
             verifierFailure: {
               name: 'OrgTxnTimeoutError',
               code: '57014',
+              phase: 'owner_candidate_rows_lookup',
             },
           },
         },

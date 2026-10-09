@@ -281,6 +281,30 @@ describe('claimAdvSessionResume (single-winner Channel 2 resume claim)', () => {
   it('returns false for an unknown id', async () => {
     expect(await claimAdvSessionResume(99999999)).toBe(false);
   });
+
+  it('does not reactivate a stale row when a newer adv-session exists for the same owner', async () => {
+    const ownerId = `s-claim-current-${randomBytes(6).toString('hex')}`;
+    const [predecessor] = await admin`
+      INSERT INTO harness_shared.adv_sessions
+        (workspace_id, agent, mode, coord_owner_id, started_at, ended_at, exit_code, ended_by)
+      VALUES (${WS}, 'claude', 'console', ${ownerId}, now() - interval '3 days', now() - interval '2 days', 137, 'signal')
+      RETURNING id`;
+    const [successor] = await admin`
+      INSERT INTO harness_shared.adv_sessions
+        (workspace_id, agent, mode, coord_owner_id, started_at, ended_at, exit_code, ended_by)
+      VALUES (${WS}, 'claude', 'console', ${ownerId}, now() - interval '2 days', NULL, NULL, NULL)
+      RETURNING id`;
+
+    expect(await claimAdvSessionResume(Number(predecessor.id), null, undefined, ownerId)).toBe(false);
+    expect(await claimAdvSessionResume(Number(successor.id), null, undefined, ownerId)).toBe(true);
+
+    const [oldRow] = await admin`
+      SELECT ended_at, ended_by
+        FROM harness_shared.adv_sessions
+       WHERE workspace_id = ${WS} AND id = ${Number(predecessor.id)}`;
+    expect(oldRow.ended_at).not.toBeNull();
+    expect(oldRow.ended_by).toBe('signal');
+  });
 });
 
 /**

@@ -32,6 +32,17 @@ it('delivers real plan, procedure and Report excerpts through native Codex turn-
         KNOWLEDGE_NATIVE_EVIDENCE_DIR: evidenceDir, TMPDIR: join(evidenceDir, 'tmp') };
       delete env.PC_HEAVY_PREEMPT_READY_FILE;
       delete env.PC_HEAVY_PSI_FINALIZATION_FILE;
+      // Resolve the fixture's complete native ESM import graph before starting
+      // private PostgreSQL. Vitest aliases can hide a stale submodule export.
+      const preflightDir = join(evidenceDir, 'import-preflight');
+      await mkdir(preflightDir);
+      const preflight = fork(join(root, 'packages/operator-core/test/knowledge-native-fixture.ts'),
+        ['--import-preflight'], { cwd: root, detached: true, env,
+          execArgv: ['--import', 'tsx'], stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
+      const imports = await captureIsolatedWorker(preflight, preflightDir, isolatedWorkerOptions(60_000));
+      expect(imports, imports.output).toMatchObject({ code: 0, signal: null,
+        timedOut: false, exitWaitTimedOut: false, stdioDrainTimedOut: false });
+      expect(imports.output).toContain('KNOWLEDGE_NATIVE_IMPORTS_OK');
       const child = fork(join(root, 'scripts/with-test-pg.mjs'), ['--isolated-runtime=operator-api', '--',
         process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/knowledge-native-fixture.ts')],
       { cwd: root, detached: true, env, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });

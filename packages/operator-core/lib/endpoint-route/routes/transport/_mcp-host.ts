@@ -158,7 +158,11 @@ import {
   type AdmissionAuthorityContext,
   type AdmissionRecoveryAuthority,
 } from '../../../work-item-admission-authority';
-import { classifyOwnerNativeSession, workspaceForCoordOwner } from '../../../adv-sessions';
+import {
+  classifyOwnerNativeSession,
+  workspaceForCoordOwner,
+  type NativeSessionVerificationPhase,
+} from '../../../adv-sessions';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { PLATFORM_POT_SLUG } from '../../../platform-pot-slug';
 import { isReservedHarnesslessRoutineHost } from '../../../harness/routines/routine-host';
@@ -1554,6 +1558,7 @@ type NativeSessionAuthFailureMetadata = {
     code?: string;
     message: string;
     durationMs: number;
+    phase?: NativeSessionVerificationPhase;
     acquisition?: {
       label: string;
       pool: string | null;
@@ -1579,11 +1584,22 @@ function describeNativeSessionVerifierFailure(
   sessionId: string,
   durationMs: number,
 ): NonNullable<NativeSessionAuthFailureMetadata['verifierFailure']> {
-  const failure = error as { name?: unknown; code?: unknown; pgCode?: unknown; message?: unknown } | null;
+  const failure = error as {
+    name?: unknown;
+    code?: unknown;
+    pgCode?: unknown;
+    message?: unknown;
+    nativeSessionVerificationPhase?: unknown;
+  } | null;
   const rawName = failure?.name;
   const name = typeof rawName === 'string' && /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/.test(rawName) ? rawName : 'Error';
   const rawCode = failure?.pgCode ?? failure?.code;
   const code = typeof rawCode === 'string' && /^[A-Za-z0-9_.-]{1,32}$/.test(rawCode) ? rawCode : undefined;
+  const rawPhase = failure?.nativeSessionVerificationPhase;
+  const phase = rawPhase === 'transaction_setup' || rawPhase === 'owner_row_lookup_by_id' ||
+      rawPhase === 'owner_candidate_rows_lookup' || rawPhase === 'row_classification'
+    ? rawPhase
+    : undefined;
   const redact = (text: string, maxChars: number): string => {
     for (const sensitive of [ownerId, sessionId]) {
       if (sensitive) text = text.split(sensitive).join('[redacted]');
@@ -1633,6 +1649,7 @@ function describeNativeSessionVerifierFailure(
     ...(code ? { code } : {}),
     message: message || 'Native-session verifier failed',
     durationMs: Math.max(0, Math.round(durationMs)),
+    ...(phase ? { phase } : {}),
     ...(acquisition ? { acquisition } : {}),
   };
 }

@@ -1023,38 +1023,19 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWake
             }
           }
         } else {
-          const lastRead = await lastInboxReadAtBatch([subscriberId]);
-          const lastReadAt = lastRead.get(subscriberId) ?? null;
-          // EI-18676763837940562: the read-cursor's own blind spot (read-then-reply within
-          // the same turn a queued delivery lands after) — a bounded, msg_id-scoped query,
-          // only when some delivery in the group actually carries one (the common
-          // coord:send-directed-wake shape; see deliveryMsgId's doc).
-          const candidateMsgIds = group.map((d) => deliveryMsgId(d.payload)).filter((id): id is string => id != null);
-          const repliedMsgIds =
-            candidateMsgIds.length > 0
-              ? await repliedMsgIdsBatch(subscriberId, candidateMsgIds).catch(() => new Set<string>())
-              : undefined;
-          if (isInboxWakeGroupRedundant(group, lastReadAt, repliedMsgIds)) {
-            await markDeliveryDelivered(headline.id, 'suppressed-redundant', group.length);
-            recordSettledDeliveryStats(stats, 'suppressed-redundant');
-            if (siblings.length > 0) {
-              await markDeliveriesCoalesced(siblings.map((d) => d.id), headline.id);
-              stats.coalesced += siblings.length;
-            }
-            log(
-              `wake for ${subscriberId} SUPPRESSED (${group.length} inbox-wake event(s) already ` +
-                `covered by its own coord:inbox read at ${lastReadAt})`,
-            );
-            continue;
-          }
-
-          // P-024 clauses B/C: a non-actionable FYI/receipt/no-state-change group
-          // needs no turn even before it was read. This pre-host rule is unchanged;
-          // accepted host work above requires exact handled-state proof.
-          if (candidateMsgIds.length === group.length) {
-            const envelopes = await resolveInboxWakeEnvelopes(candidateMsgIds);
-            const actionability = classifyInboxWakeGroup(group, envelopes);
-            if (actionability.nonActionable) {
+          const components = inboxWakeMessageComponents(group);
+          if (components) {
+            // A read cursor proves that the inbox was opened, not that an ask or
+            // thread reply was handled. Resolve each exact message and use the
+            // same handled-state proof as host-accepted cancellation: recipient
+            // reply, or a shown receipt for a known non-actionable message.
+            const msgIds = components.map((component) => component.msgId);
+            const [watermark, repliedMsgIds, envelopes] = await Promise.all([
+              readWatermark(subscriberId).catch(() => null),
+              repliedMsgIdsBatch(subscriberId, msgIds).catch(() => new Set<string>()),
+              resolveInboxWakeEnvelopes(msgIds).catch(() => new Map<string, unknown>()),
+            ]);
+            if (inboxWakeGroupHandled(group, envelopes, watermark?.messages_shown_ts, repliedMsgIds)) {
               await markDeliveryDelivered(headline.id, 'suppressed-redundant', group.length);
               recordSettledDeliveryStats(stats, 'suppressed-redundant');
               if (siblings.length > 0) {
@@ -1062,8 +1043,46 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWake
                 stats.coalesced += siblings.length;
               }
               log(
-                `wake for ${subscriberId} SUPPRESSED (${group.length} inbox-wake event(s) with nothing to act on: ` +
-                  `${actionability.classes.join(', ')}; the messages remain in its coord inbox)`,
+                `wake for ${subscriberId} SUPPRESSED (${group.length} inbox-wake event(s) have exact handled-state proof)`,
+              );
+              continue;
+            }
+
+            // P-024 clauses B/C: a non-actionable FYI/receipt/no-state-change group
+            // needs no turn even before it was read. Unresolved envelopes fail open.
+            const candidateMsgIds = group.map((d) => deliveryMsgId(d.payload)).filter((id): id is string => id != null);
+            if (candidateMsgIds.length === group.length) {
+              const actionability = classifyInboxWakeGroup(group, envelopes);
+              if (actionability.nonActionable) {
+                await markDeliveryDelivered(headline.id, 'suppressed-redundant', group.length);
+                recordSettledDeliveryStats(stats, 'suppressed-redundant');
+                if (siblings.length > 0) {
+                  await markDeliveriesCoalesced(siblings.map((d) => d.id), headline.id);
+                  stats.coalesced += siblings.length;
+                }
+                log(
+                  `wake for ${subscriberId} SUPPRESSED (${group.length} inbox-wake event(s) with nothing to act on: ` +
+                    `${actionability.classes.join(', ')}; the messages remain in its coord inbox)`,
+                );
+                continue;
+              }
+            }
+          } else if (group.every((d) => d.payload == null)) {
+            // Keep the cursor shortcut for message-less inbox notifications only.
+            // Once a delivery references a message, malformed or unresolved
+            // payloads fail open and must not be retired by an unrelated read.
+            const lastRead = await lastInboxReadAtBatch([subscriberId]);
+            const lastReadAt = lastRead.get(subscriberId) ?? null;
+            if (isInboxWakeGroupRedundant(group, lastReadAt)) {
+              await markDeliveryDelivered(headline.id, 'suppressed-redundant', group.length);
+              recordSettledDeliveryStats(stats, 'suppressed-redundant');
+              if (siblings.length > 0) {
+                await markDeliveriesCoalesced(siblings.map((d) => d.id), headline.id);
+                stats.coalesced += siblings.length;
+              }
+              log(
+                `wake for ${subscriberId} SUPPRESSED (${group.length} message-less inbox-wake event(s) already ` +
+                  `covered by its own coord:inbox read at ${lastReadAt})`,
               );
               continue;
             }
