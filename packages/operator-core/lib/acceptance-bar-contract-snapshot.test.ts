@@ -284,6 +284,8 @@ function fixture(n = 2): AcceptanceBarContractSnapshotInput {
 function provedFixture(n = 2): AcceptanceBarContractSnapshotInput {
   const input = fixture(n);
   const rubric = input.rubrics.rows[0]!;
+  const proofTestPath = 'packages/operator-core/lib/bar-proof-fixture.test.ts';
+  const proofCaseTitle = (index: number) => 'bar-proof-case-' + (index + 1);
   for (const criterion of rubric.criteria) {
     criterion.requiredTestLayers = ['integration'];
     criterion.check = { kind: 'instrument', instrumentKey: 'none' };
@@ -297,36 +299,75 @@ function provedFixture(n = 2): AcceptanceBarContractSnapshotInput {
     clause.sourceBar!.barHash = rubric.criteria[index]!.barHash!;
     clause.sourceBar!.barSetHash = barSetHash;
   });
-  for (const evidence of input.evidence.rows) {
+  input.evidence.rows.forEach((evidence, index) => {
+    const caseTitle = proofCaseTitle(index);
     evidence.currentness = { ...evidence.currentness, overall: 'current', comparisonSupplied: true,
       dimensions: { ...evidence.currentness.dimensions, source: 'current' }, unknownReasons: [] };
+    evidence.fingerprints = { ...evidence.fingerprints,
+      testFingerprint: 'test-fingerprint-' + (index + 1),
+      fixtureFingerprint: 'fixture-fingerprint-' + (index + 1),
+    };
     evidence.details = { evidencePlane: 'tree', adequacy: { testLayer: 'integration', pathReachable: true,
-      falsifiable: true, oracleIndependent: true, collected: true, skipped: false, executed: true,
-      outcome: 'passed', coverageRungs: { l3: true } } };
+      fixtureCalibrated: true, falsifiable: true, oracleIndependent: true, collected: true, skipped: false, executed: true,
+      outcome: 'passed', targeted: evidence.specId, testCases: [caseTitle] } };
     // Since 39ce2b4152 a counterexample proves falsifiability only when its run's test file
     // also carries this clause's current passing `test` binding (clauseBoundCurrentTests pairs
     // them by testRunProvenance.filePath). The counterexamples below spread this row, so each
     // pairs with its own positive proof, as a real binding would (WI-10006871).
-    evidence.testRunProvenance = { filePath: 'packages/operator-core/lib/bar-proof-fixture.integration.test.ts',
+    evidence.testRunProvenance = { filePath: proofTestPath,
       framework: 'vitest', commitSha: 'abc123', worktreeDirty: false };
-  }
+    evidence.testRunExecution = { status: 'pass', passed: 1, failed: 0, skipped: 0,
+      collectionFailed: false, testLayer: 'integration', passedCaseTitles: [caseTitle] };
+  });
   // Falsifiability is demonstrated by an executed negative control, not by the
   // positive row's `falsifiable: true` self-attestation. Keep the logical
   // identity distinct from the recurrence row so the evaluator retains both.
-  input.evidence.rows.push(...input.evidence.rows.map((evidence, index) => ({
-    ...evidence,
-    id: input.evidence.rows.length + index + 1,
-    evidenceKind: 'counterexample' as const,
-    evidenceRef: `counterexample:${index + 1}`,
-    testRunId: input.evidence.rows.length + index + 1,
-    bindingFingerprint: `counterexample-binding-${index + 1}`,
+  const positiveEvidence = [...input.evidence.rows];
+  input.evidence.rows.push(...positiveEvidence.map((evidence, index) => {
+    const caseTitle = proofCaseTitle(index);
+    return {
+      ...evidence,
+      id: positiveEvidence.length + index + 1,
+      evidenceKind: 'counterexample' as const,
+      evidenceRef: 'counterexample:' + (index + 1),
+      coverageEvidenceRef: null,
+      testRunId: positiveEvidence.length + index + 1,
+      testRunProvenance: {
+        ...evidence.testRunProvenance!,
+        source: 'mutation-probe',
+        mutationPhase: 'mutant',
+        mutationFailedCaseTitles: [caseTitle],
+        mutationFailureLines: [caseTitle + ': the pre-fix behavior violates the expected outcome'],
+      },
+      testRunExecution: { status: 'fail' as const, passed: 0, failed: 1, skipped: 0,
+        collectionFailed: false, testLayer: 'integration' },
+      bindingFingerprint: 'counterexample-binding-' + (index + 1),
+      details: {
+        evidencePlane: 'tree',
+        adequacy: {
+          fixtureCalibrated: true, testLayer: 'integration', pathReachable: true,
+          falsifiable: true, oracleIndependent: true, collected: true, skipped: false, executed: true,
+          targeted: evidence.specId, outcome: 'killed', testCases: [caseTitle],
+        },
+      },
+    };
+  }));
+  const firstCoverageRowId = input.evidence.rows.length + 1;
+  input.evidence.rows.push(...positiveEvidence.map((evidence, index) => ({
+    ...structuredClone(evidence),
+    id: firstCoverageRowId + index,
+    evidenceKind: 'coverage-census' as const,
+    evidenceRef: 'coverage-census:' + (index + 1),
+    coverageEvidenceRef: 100 + index,
     details: {
       evidencePlane: 'tree',
       adequacy: {
-        collected: true, skipped: false, executed: true,
-        targeted: evidence.specId.toLowerCase(), outcome: 'killed',
+        ...(evidence.details.adequacy as object),
+        targeted: evidence.specId,
+        coverageRungs: { l3: true },
       },
     },
+    bindingFingerprint: 'coverage-binding-' + (index + 1),
   })));
   return input;
 }
@@ -663,7 +704,18 @@ describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
     expect(projectAcceptanceBarContractSnapshot(input).bars[0]!.readiness.workContract).toBe('stale');
   });
   it('projects exact source revisions, per-BAR trace, authoritative grading, and one content hash', () => {
-    const snapshot = projectAcceptanceBarContractSnapshot(provedFixture());
+    const input = provedFixture();
+    const coverageRows = input.evidence.rows.filter((row) => row.evidenceKind === 'coverage-census');
+    expect(coverageRows).toEqual(expect.arrayContaining(input.clauses.rows.map((clause) =>
+      expect.objectContaining({
+        specId: clause.specId,
+        coverageEvidenceRef: expect.any(Number),
+        details: expect.objectContaining({
+          adequacy: expect.objectContaining({ targeted: clause.specId, coverageRungs: { l3: true } }),
+        }),
+      }),
+    )));
+    const snapshot = projectAcceptanceBarContractSnapshot(input);
 
     expect(snapshot).toMatchObject({
       schemaVersion: ACCEPTANCE_BAR_CONTRACT_SNAPSHOT_VERSION,
@@ -725,7 +777,10 @@ describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
     const accepted = projectAcceptanceBarContractSnapshot(input);
     expect(accepted.bars[0]!.proof.adequacy?.state).toBe('pass');
     expect(evaluateAcceptanceBarLifecycle(accepted, 'ship').satisfied).toBe(true);
-    input.evidence.rows[0]!.details.adequacy = { ...(input.evidence.rows[0]!.details.adequacy as object), testLayer: 'unit' };
+    input.evidence.rows.filter((row) => row.testRunExecution?.status === 'pass').forEach((row) => {
+      row.details.adequacy = { ...(row.details.adequacy as object), testLayer: 'unit' };
+      row.testRunExecution = { ...row.testRunExecution!, testLayer: 'unit' };
+    });
     const blocked = projectAcceptanceBarContractSnapshot(input);
     expect(blocked.bars[0]!.proof.adequacy?.checks[0]?.wouldBlock).toContain('correct-layer');
     expect(evaluateAcceptanceBarLifecycle(blocked, 'ship').codes).toContain('bar_snapshot_proof_inadequate');
@@ -985,15 +1040,19 @@ describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
       evidencePlane: 'tree',
       adequacy: { ...(treeUnit.details.adequacy as object), testLayer: 'unit' },
     };
+    treeUnit.testRunExecution = { ...treeUnit.testRunExecution!, testLayer: 'unit' };
     const liveE2e = {
       ...treeUnit,
-      id: 2,
+      id: 99,
+      testRunId: 99,
       evidenceRef: 'test:e2e',
+      bindingFingerprint: 'binding-e2e',
       details: {
         evidencePlane: 'live',
         adequacy: { ...(treeUnit.details.adequacy as object), testLayer: 'e2e' },
       },
     };
+    liveE2e.testRunExecution = { ...treeUnit.testRunExecution!, testLayer: 'e2e' };
     input.evidence.rows = [treeUnit, liveE2e, ...input.evidence.rows.slice(1)];
 
     const snapshot = projectAcceptanceBarContractSnapshot(input);
@@ -1042,7 +1101,9 @@ describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
     ['failed', { outcome: 'failed' }], ['self-oracle', { oracleIndependent: false }],
   ])('refuses %s proof even when the independent rating claims success', (_name, patch) => {
     const input = provedFixture(1);
-    input.evidence.rows[0]!.details.adequacy = { ...(input.evidence.rows[0]!.details.adequacy as object), ...patch };
+    input.evidence.rows.forEach((row) => {
+      row.details.adequacy = { ...(row.details.adequacy as object), ...patch };
+    });
     const snapshot = projectAcceptanceBarContractSnapshot(input);
     expect(snapshot.bars[0]!.grading.state).toBe('pass');
     expect(evaluateAcceptanceBarLifecycle(snapshot, 'ship').codes).toContain('bar_snapshot_proof_inadequate');
@@ -1050,8 +1111,8 @@ describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
 
   it('does not treat absent freshness comparisons as current proof', () => {
     const input = provedFixture(1);
-    input.evidence.rows[0]!.currentness = fixture(1).evidence.rows[0]!.currentness;
-    input.evidence.rows[1]!.currentness = fixture(1).evidence.rows[0]!.currentness;
+    const unknownCurrentness = fixture(1).evidence.rows[0]!.currentness;
+    input.evidence.rows.forEach((row) => { row.currentness = structuredClone(unknownCurrentness); });
     const snapshot = projectAcceptanceBarContractSnapshot(input);
     expect(snapshot.bars[0]!.proof.adequacy?.checks[0]?.wouldBlock).toContain('freshness');
     expect(evaluateAcceptanceBarLifecycle(snapshot, 'ship').satisfied).toBe(false);
@@ -1095,7 +1156,7 @@ describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
       const fresh = makeAttempt(2, outcome === 'stale' ? 'pass' : outcome);
       if (outcome === 'stale') fresh[1]!.currentness = { ...fresh[1]!.currentness, overall: 'stale',
         staleReasons: ['source-fingerprint-changed'] };
-      input.evidence.rows = [...old, ...fresh, input.evidence.rows[1]!];
+      input.evidence.rows = [...old, ...fresh, ...input.evidence.rows.slice(1)];
       if (outcome === 'pass') input.evidence.rows.push({ ...old[1]!, id: 99,
         evidenceKind: 'counterexample', evidenceRef: 'manual-negative-controls:old',
         currentness: { ...old[1]!.currentness, overall: 'stale', staleReasons: ['source-stale'] } });
