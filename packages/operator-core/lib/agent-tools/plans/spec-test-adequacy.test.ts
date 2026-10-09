@@ -3589,9 +3589,29 @@ describe('disclosed-gap criterion (P-002: a disclosure cannot coexist with a mac
   });
 
   it.each([
+    'R3 receipt validation current-source component; complete R3 composite acceptance is pending the retirement renewal and clause-scoped falsifiability. Original disclosures remain live.',
+    'R3 composite acceptance remains pending current retirement proof and clause-scoped falsifiability.',
+    'Current receipt cases pass. Original disclosures remain live.',
+    'Coverage remains incomplete until the cancellation retry is exercised.',
+  ])('blocks pending proof or unresolved disclosure in scopeNote: %s', (scopeNote) => {
+    const base = evidence();
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [evidence({ details: { ...base.details, scopeNote } })],
+      classRef: 'plan-class-feature-ship',
+    });
+    expect(result.ratings['disclosed-gap'].rating).toBe('fail');
+    expect(result.ratings['disclosed-gap'].evidence).toContain(scopeNote);
+    expect(result.wouldBlock).toContain('disclosed-gap');
+    expect(result.verdict).toBe('fail');
+  });
+
+  it.each([
     'Named source/test footprint only; full transitive import graph unmeasured.',
     'The test only passes when provider credentials are valid and records duration in the run log.',
     'No independent operational shipment claim; canonical suite and fixture identity retained.',
+    'Tree clause proof is complete; operational adoption and final shipment remain open on the parent plan.',
+    'Original disclosures are preserved in the supersession audit; changed proof closes their tree-clause gaps.',
   ])('keeps bookkeeping scopeNote separate from an explicit proof gap: %s', (scopeNote) => {
     const base = evidence();
     const result = evaluateSpecTestAdequacy({
