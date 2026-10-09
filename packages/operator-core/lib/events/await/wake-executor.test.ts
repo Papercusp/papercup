@@ -349,8 +349,11 @@ function fakeOmpPty(id = 'pty-omp') {
 }
 
 function deps(over: Partial<ExecuteWakeDeps> = {}): ExecuteWakeDeps {
+  const getSessionFn: NonNullable<ExecuteWakeDeps['getSession']> =
+    over.getSession ?? (vi.fn(async () => session()) as never);
   return {
-    getSession: vi.fn(async () => session()) as never,
+    getSession: getSessionFn,
+    getLatestSessionForOwner: vi.fn(async () => getSessionFn(42)) as never,
     findPty: vi.fn(() => null) as never,
     write: vi.fn(() => true) as never,
     spawnManagedPty: vi.fn(() => ({ id: 'pty-1' })) as never,
@@ -2442,7 +2445,7 @@ describe('dead-session wake re-home on a walled account (P-013 part A)', () => {
     expect(resolveWakeRehome).toHaveBeenCalledWith(
       expect.objectContaining({ workspaceId: 'ws', route: expect.objectContaining({ mode: 'pin', accountId: 'acct-walled' }) }),
     );
-    expect(claimResume).toHaveBeenCalledWith(42);
+    expect(claimResume).toHaveBeenCalledWith(42, null, undefined, 'su-abc');
     const [, args, opts] = spawnDetached.mock.calls[0]!;
     expect(opts.env.PAPERCUSP_ACCOUNT_ROUTING_MODE).toBe('auto');
     expect(opts.env.PAPERCUSP_ACCOUNT_ID).toBeUndefined();
@@ -3070,7 +3073,7 @@ describe('executeWake — the liveness ladder', () => {
     );
     expect(out).toMatchObject({ kind: 'park' });
     expect((out as { reason: string }).reason).toContain('resume claim');
-    expect(claimResume).toHaveBeenCalledWith(42);
+    expect(claimResume).toHaveBeenCalledWith(42, null, undefined, 'su-abc');
     expect(spawnDetached).not.toHaveBeenCalled();
   });
 
@@ -3377,7 +3380,7 @@ describe('executeWake — the liveness ladder', () => {
     rmSync(home, { recursive: true, force: true });
     try {
       const out = await executeWake(
-        work({ wakeHandle: advHandle({ agent: 'codex', sessionId: null, advSessionId }) }),
+        work({ subscriberId: 'su-archive-repair', wakeHandle: advHandle({ agent: 'codex', sessionId: null, advSessionId }) }),
         deps({
           alive: vi.fn(() => false),
           getSession: vi.fn(async () =>
@@ -3454,7 +3457,7 @@ describe('executeWake — the liveness ladder', () => {
     writeFileSync(join(sessionsDir, `rollout-2026-10-06T18-00-00-${nativeId}.jsonl`), '{}');
     try {
       const out = await executeWake(
-        work({ wakeHandle: advHandle({ agent: 'codex', sessionId: nativeId, advSessionId }) }),
+        work({ subscriberId: 'su-codex-route', wakeHandle: advHandle({ agent: 'codex', sessionId: nativeId, advSessionId }) }),
         deps({
           alive: vi.fn(() => false),
           getSession: vi.fn(async () =>
@@ -3793,6 +3796,44 @@ describe('executeWake — the liveness ladder', () => {
     expect(out).toEqual({ kind: 'delivered', channel: 'resume-headless' });
   });
 
+  it('rebinds a dead captured wake handle to the latest owner session instead of resuming its predecessor', async () => {
+    const predecessor = session({
+      id: 42,
+      endedAt: '2026-10-08T21:09:00.000Z',
+      pid: 9999,
+      startedAt: '2026-10-08T20:00:00.000Z',
+    });
+    const successor = session({
+      id: 43,
+      pid: 8888,
+      sessionId: 'successor-native-session',
+      startedAt: '2026-10-08T21:10:00.000Z',
+    });
+    const getSession = vi.fn(async (id: number) => (id === 42 ? predecessor : successor));
+    const getLatestSessionForOwner = vi.fn(async () => successor);
+    const claimResume = vi.fn(async () => true);
+    const spawnDetached = vi.fn(() => 4321);
+    const out = await executeWake(
+      work({ wakeHandle: advHandle({ advSessionId: predecessor.id }) }),
+      deps({
+        getSession: getSession as never,
+        getLatestSessionForOwner: getLatestSessionForOwner as never,
+        alive: vi.fn((pid: number | null) => pid === successor.pid),
+        findPsuHost: vi.fn(() => null) as never,
+        findPty: vi.fn(() => null) as never,
+        claimResume,
+        spawnDetached,
+      }),
+    );
+
+    expect(getLatestSessionForOwner).toHaveBeenCalledWith('su-abc');
+    expect(getSession).toHaveBeenNthCalledWith(1, predecessor.id);
+    expect(getSession).toHaveBeenNthCalledWith(2, successor.id);
+    expect(out).toMatchObject({ kind: 'park' });
+    expect(claimResume).not.toHaveBeenCalled();
+    expect(spawnDetached).not.toHaveBeenCalled();
+  });
+
   it('claude resume spawn failure (detached returns no pid) → error outcome (the pump retries with backoff)', async () => {
     const out = await executeWake(
       work({ wakeHandle: advHandle() }),
@@ -3827,7 +3868,7 @@ describe('GAP 3: wake resume env-assembly matrix (wake-executor.ts:441-474)', ()
 
       const spawnDetached = vi.fn(() => 4321);
       const out = await executeWake(
-        work({ wakeHandle: advHandle() }),
+        work({ subscriberId: 'su-owner-9', wakeHandle: advHandle() }),
         deps({
           alive: vi.fn(() => false), // exited → resume
           getSession: vi.fn(async () => session({ agent: 'claude', coordOwnerId: 'su-owner-9' })) as never,
@@ -3837,7 +3878,7 @@ describe('GAP 3: wake resume env-assembly matrix (wake-executor.ts:441-474)', ()
       expect(out).toEqual({ kind: 'delivered', channel: 'resume-headless' });
       const [, , o] = spawnDetached.mock.calls[0] as unknown as [string, string[], { env: Record<string, string> }];
       // Base wake env (always present on a resume).
-      expect(o.env.PAPERCUSP_SID).toBe('su-abc');
+      expect(o.env.PAPERCUSP_SID).toBe('su-owner-9');
       expect(o.env.PAPERCUSP_AGENT_SESSION).toBe('1');
       expect(o.env.MCP_TIMEOUT).toBeTruthy();
       expect(o.env.PAPERCUSP_WAKE_DELIVERY_ID).toBe('7');
@@ -3876,7 +3917,7 @@ describe('GAP 3: wake resume env-assembly matrix (wake-executor.ts:441-474)', ()
       const read = vi.fn((env: Record<string, string | undefined>) => realReadClaudeLaunchSettings(env));
       const spawnDetached = vi.fn(() => 4321);
       const out = await executeWake(
-        work({ wakeHandle: advHandle() }),
+        work({ subscriberId: 'su-owner-9', wakeHandle: advHandle() }),
         deps({
           alive: vi.fn(() => false), // exited → resume
           getSession: vi.fn(async () => session({ agent: 'claude', coordOwnerId: 'su-owner-9' })) as never,
@@ -3943,7 +3984,7 @@ describe('GAP 3: wake resume env-assembly matrix (wake-executor.ts:441-474)', ()
       const spawnDetached = vi.fn(() => 5555);
       const out = await executeWake(
         // adv-session 42 has a codex home on disk (the suite fixture) → uuid recovered.
-        work({ wakeHandle: advHandle({ agent: 'codex', sessionId: null }) }),
+        work({ subscriberId: 'su-owner-9', wakeHandle: advHandle({ agent: 'codex', sessionId: null }) }),
         deps({
           alive: vi.fn(() => false),
           // coordOwnerId set to prove it does NOT pull a claude config dir for codex.
