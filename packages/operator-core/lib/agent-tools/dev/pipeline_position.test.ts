@@ -56,7 +56,7 @@ describe('dev:pipeline_position role allowlist', () => {
   it('is available to every execution/judgment role the cross-role note points at', () => {
     const roles = new Set(tool.agentRoles ?? []);
     const expected = [
-      'operator', 'mug', 'architect', 'worker', 'scoper', 'validator', 'reviewer',
+      'operator', 'mug', 'architect', 'worker', 'scoper', 'validator', 'reviewer', 'judge',
       'debugger', 'documenter', 'curator', 'cup', 'papercup', 'papercup-deep', 'kettle',
       'release-fixer', 'merge-resolver', 'content-fixer', 'release-manager',
     ];

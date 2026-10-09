@@ -825,7 +825,7 @@ export default defineTool({
   // EVERY execution/judgment role — the shared DEPLOY_PIPELINE_NOTE tells all of them to reach
   // for it instead of polling :3070, so the allowlist must cover them all (deploy-pipeline-legibility-2026-06-18 P-005).
   agentRoles: [
-    'operator', 'mug', 'architect', 'worker', 'scoper', 'validator', 'reviewer',
+    'operator', 'mug', 'architect', 'worker', 'scoper', 'validator', 'reviewer', 'judge',
     'debugger', 'documenter', 'curator', 'cup', 'papercup', 'papercup-deep', 'kettle',
     'release-fixer', 'merge-resolver', 'content-fixer', 'release-manager',
   ],
