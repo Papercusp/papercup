@@ -120,14 +120,33 @@ beforeAll(async () => {
       workspace_id text NOT NULL,
       harness_slug text NOT NULL,
       plan_slug text NOT NULL,
+      content text NOT NULL DEFAULT '',
+      content_hash text NOT NULL DEFAULT '',
       template text,
       PRIMARY KEY (workspace_id, harness_slug, plan_slug)
+    );
+    CREATE TABLE harness_shared.plan_revisions (
+      id bigserial PRIMARY KEY,
+      workspace_id text NOT NULL,
+      harness_slug text NOT NULL,
+      plan_slug text NOT NULL,
+      seq integer NOT NULL,
+      content_hash text NOT NULL,
+      content_snapshot text NOT NULL,
+      rationale text,
+      author_kind text NOT NULL,
+      author_id text NOT NULL,
+      session_id text,
+      session_kind text,
+      created_at bigint NOT NULL,
+      UNIQUE (workspace_id, harness_slug, plan_slug, seq)
     );
     CREATE TABLE harness_shared.plan_items (
       workspace_id text NOT NULL,
       harness_slug text NOT NULL,
       plan_slug text NOT NULL,
       item_id text NOT NULL,
+      seq integer NOT NULL DEFAULT 0,
       owner_gate_marker text,
       PRIMARY KEY (workspace_id, harness_slug, plan_slug, item_id),
       FOREIGN KEY (workspace_id, harness_slug, plan_slug)
@@ -254,9 +273,10 @@ describe('first-class plan spec clauses', () => {
     const body = '---\ntitle: Historical fixture\n---\n## Items\n- **P-003** `todo` Contract';
     const hash = hashPlanContent(body);
     await db.sql`DELETE FROM harness_shared.plan_revisions`;
-    await db.sql`INSERT INTO harness_shared.plan_revisions (workspace_id, harness_slug, plan_slug, seq, content_hash, content_snapshot)
-      VALUES (${WORKSPACE}, ${HARNESS}, 'reconnect-plan', 7, ${hash}, ${body}),
-             (${WORKSPACE}, 'other', 'reconnect-plan', 9, ${hash}, 'wrong scope')`;
+    await db.sql`INSERT INTO harness_shared.plan_revisions (
+        workspace_id, harness_slug, plan_slug, seq, content_hash, content_snapshot, author_kind, author_id, created_at
+      ) VALUES (${WORKSPACE}, ${HARNESS}, 'reconnect-plan', 7, ${hash}, ${body}, 'test', 'fixture', 0),
+               (${WORKSPACE}, 'other', 'reconnect-plan', 9, ${hash}, 'wrong scope', 'test', 'fixture', 0)`;
     expect(await getPlanRevisionSnapshot('reconnect-plan', hash, { harnessSlug: HARNESS })).toMatchObject({ seq: 7, contentSnapshot: body, contentSnapshotHash: hash });
     expect(await getPlanRevisionSnapshot('reconnect-plan', 'f'.repeat(64), { harnessSlug: HARNESS })).toBeNull();
     expect(await getPlanRevisionSnapshot('reconnect-plan', 7, { harnessSlug: HARNESS })).toMatchObject({ contentSnapshot: body });
