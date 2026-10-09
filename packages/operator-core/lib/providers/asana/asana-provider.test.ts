@@ -609,6 +609,7 @@ describe('writes: ticket.read, ticket.comment, ticket.transition', () => {
 });
 
 describe('ticket.create uses OAuth correlation and the configured project', () => {
+  const invokeReq = (capability: string, args: Record<string, unknown>): ProviderInvokeRequest => ({ source: SOURCE, capability, args, config: CONFIG });
   const createArgs = { correlationId: 'slack-source-event', projectGid: 'proj-eng', title: 'Export fails', body: 'Original report' };
   it('creates through host.fetch after an absent correlation lookup', async () => {
     const fake = fakeHost((call) => call.method === 'GET' ? json(404, {}) : json(201, { data: { gid: 'new-task', permalink_url: 'https://app.asana.com/0/proj-eng/new-task' } }));

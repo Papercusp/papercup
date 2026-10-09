@@ -1,9 +1,12 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import type { DocSource } from '@papercusp/docs-engine';
 import { EMBEDDER_DIM_SPECS } from '@papercusp/memory';
 import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
 import { boundedSource, createDocSearchSource, createPlanSearchSource } from './knowledge-sources';
 import { runFullTextSearch } from '@papercusp/search';
-import { splitDocSections } from '../../search/doc-embed-sync';
+import { applyMigrationForTest } from '../../../test/_pg-helpers';
+import { existsSync } from 'node:fs';
+import { splitDocSections,syncDocSourceSections } from '../../search/doc-embed-sync';
 import { runChunkSyncTick } from '../../search/chunks/tick';
 import { PLANS_CHUNK_SURFACE } from '../../search/chunks/registry';
 
@@ -18,6 +21,9 @@ describe('complete knowledge sections against canonical PostgreSQL', () => {
     limit: 1, qVec: vec(true), embeddingProfile: { profileId, legacyMode: 'gemma' } });
   beforeAll(async () => {
     db = await createOrgTestDb({ adminPoolMax: 3 });
+    const armed = new URL('../../../../../libs/papercusp/libs/db/sql/1431-doc-section-order.sql',import.meta.url);
+    const draft = new URL(`${armed.href}.DRAFT`);
+    await applyMigrationForTest(db.adminSql,existsSync(armed) ? armed.pathname : draft.pathname);
     await db.adminSql`INSERT INTO harness_shared.harness_registry (workspace_id,payload)
       VALUES (${workspaceId},${db.adminSql.json({ projects: [{ slug: 'pot-a' }, { slug: 'pot-b' }] })}),
         (${otherWorkspace},${db.adminSql.json({ projects: [{ slug: 'foreign-pot' }] })})`;
@@ -37,18 +43,18 @@ describe('complete knowledge sections against canonical PostgreSQL', () => {
       CASE WHEN content LIKE '%zephyrquartz%' THEN ${vec(true)}::vector ELSE ${vec(false)}::vector END,
       embedding_profile = ${profileId}, embedding_mode = 'gemma'
       WHERE surface = 'plans' AND parent_key[1] = ${workspaceId}`;
-    const body = Array.from({ length: 300 },(_,i) => `## Procedure ${i}\n${i === 299
-      ? 'Prerequisite: retain the snapshot. Apply zephyrquartz recovery.' : 'Ordinary guidance.'}`).join('\n');
+    const body = Array.from({ length: 300 },(_,i) => `## Procedure ${i}\n${i === 298
+      ? 'Prerequisite: retain the snapshot.' : i === 299 ? 'Apply zephyrquartz recovery.' : 'Ordinary guidance.'}`).join('\n');
     for (const [sourceKey,slug,text] of [
       ['harness:pot-a','late-doc',body],
       ['harness:pot-b','crowding-doc','## Wrong scope\nzephyrquartz '.repeat(20)],
       ['harness:foreign-pot','foreign-doc','## Foreign scope\nzephyrquartz '.repeat(30)],
     ]) {
-      for (const section of splitDocSections('Recovery procedure',text)) {
+      for (const [idx,section] of splitDocSections('Recovery procedure',text).entries()) {
         await db.adminSql`INSERT INTO harness_shared.doc_sections
-          (source_key,slug,anchor,title,url,content,page_sha,embedding,embedding_profile,embedding_mode)
+          (source_key,slug,anchor,title,url,content,page_sha,section_idx,embedding,embedding_profile,embedding_mode)
           VALUES (${sourceKey},${slug},${section.anchor},${section.title},${`/docs/${slug}`},
-            ${section.content},'fixture',${vec(section.content.includes('zephyrquartz'))}::vector,${profileId},'gemma')`;
+            ${section.content},'fixture',${idx},${vec(section.content.includes('zephyrquartz'))}::vector,${profileId},'gemma')`;
       }
     }
   },180_000);
@@ -85,6 +91,47 @@ describe('complete knowledge sections against canonical PostgreSQL', () => {
       expect(rows[0].row.meta?.section).toBe('procedure-299');
       expect(rows[0].row.meta?.path).toBe('/docs/late-doc#procedure-299');
     }
+  });
+
+  it('recuts a formerly capped plan index and recovers its known tail section', async () => {
+    const surface = { ...PLANS_CHUNK_SURFACE,eligibleSql: `p.workspace_id = '${workspaceId}' AND p.harness_slug = 'pot-a'` };
+    const embedChunks = () => db.adminSql`UPDATE harness_shared.text_chunks SET embedding =
+      CASE WHEN content LIKE '%zephyrquartz%' THEN ${vec(true)}::vector ELSE ${vec(false)}::vector END,
+      embedding_profile = ${profileId},embedding_mode = 'gemma'
+      WHERE surface = 'plans' AND parent_key[1] = ${workspaceId}`;
+    const source = createPlanSearchSource({ harnessSlugs: ['pot-a'] });
+    await runChunkSyncTick({ sql: db.adminSql,surfaces: [{ ...surface,completeBody: false }] });
+    await embedChunks();
+    const capped = await source.embedding!({ ...params(),query: 'restore diagnostic state' });
+    expect(capped[0].row.excerpt).not.toContain('zephyrquartz');
+    await runChunkSyncTick({ sql: db.adminSql,surfaces: [surface] });
+    await embedChunks();
+    const recovered = await source.embedding!({ ...params(),query: 'restore diagnostic state' });
+    expect(recovered[0].row.excerpt).toContain('zephyrquartz');
+    expect(recovered[0].row.meta?.section).toBe('Late repair');
+  });
+
+  it('writes complete ordered doc batches atomically and retains valid rows after a failed refresh', async () => {
+    let body = Array.from({ length: 1_300 },(_,i)=>`## Step ${i}\nInstruction ${i}.`).join('\n');
+    const page = { slug: 'atomic',slugs: ['atomic'],title: 'Atomic procedure',url: '/docs/atomic',toc: [] };
+    const source: DocSource = { name: 'harness:pot-a',listPages: async()=>[page],getPage: async()=>page,
+      getContent: async()=>body };
+    expect(await syncDocSourceSections(db.adminSql,source,{ prune: false })).toMatchObject({ sections: 1_300,errors: 0 });
+    const count = async()=> (await db.adminSql`SELECT count(*)::int AS n,max(section_idx) AS last
+      FROM harness_shared.doc_sections WHERE source_key = 'harness:pot-a' AND slug = 'atomic'`)[0];
+    expect(await count()).toMatchObject({ n: 1_300,last: 1_299 });
+    await db.adminSql`ALTER TABLE harness_shared.doc_sections ADD CONSTRAINT reject_atomic_fixture
+      CHECK (content <> 'forbidden_atomic_text') NOT VALID`;
+    body = '## Failure\nforbidden_atomic_text';
+    const warning = vi.spyOn(console,'warn').mockImplementation(()=>{});
+    try {
+      expect(await syncDocSourceSections(db.adminSql,source,{ prune: false })).toMatchObject({ errors: 1,changed: 0 });
+      expect(warning).toHaveBeenCalled();
+      expect(await count()).toMatchObject({ n: 1_300,last: 1_299 });
+    } finally { warning.mockRestore(); }
+    body = '## Repaired\nValid procedure.';
+    expect(await syncDocSourceSections(db.adminSql,source,{ prune: false })).toMatchObject({ sections: 1,errors: 0,changed: 1 });
+    expect(await count()).toMatchObject({ n: 1,last: 0 });
   });
 
   it('applies ambient fences and canonical retirement before either ranker', async () => {

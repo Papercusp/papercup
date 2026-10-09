@@ -28,6 +28,7 @@ import {
 function fakeSql(existing: Array<{ slug: string; page_sha: string }> = []) {
   const calls: Array<{ q: string; params: unknown[] }> = [];
   const sql = {
+    begin: async (body: (tx: unknown) => Promise<unknown>) => body(sql),
     unsafe: async (q: string, params: unknown[] = []) => {
       calls.push({ q, params });
       if (q.includes('SELECT DISTINCT')) return existing;
@@ -112,7 +113,7 @@ describe('syncDocSourceSections', () => {
     const inserts = calls.filter((c) => c.q.includes('INSERT INTO harness_shared.doc_sections'));
     expect(inserts).toHaveLength(2);
     const sha = pageSha('One', '## A\nalpha body long enough to keep.');
-    expect(inserts[0].params).toEqual(['test-src', 'guide/one', 'a', 'One › A', '/docs/guide/one', 'alpha body long enough to keep.', sha]);
+    expect(inserts[0].params).toEqual(['test-src', 'guide/one', 'a', 'One › A', '/docs/guide/one', 'alpha body long enough to keep.', sha,0]);
   });
 
   it('skips pages whose sha is unchanged (no DELETE, no INSERT)', async () => {
@@ -208,6 +209,7 @@ describe('syncHarnessDocSections (harness docs sweep)', () => {
   function sweepSql(pruned = 0) {
     const calls: Array<{ q: string; params: unknown[] }> = [];
     const sql = {
+      begin: async (body: (tx: unknown) => Promise<unknown>) => body(sql),
       unsafe: async (q: string, params: unknown[] = []) => {
         calls.push({ q, params });
         if (q.includes(PRUNE)) return [{ n: pruned }];

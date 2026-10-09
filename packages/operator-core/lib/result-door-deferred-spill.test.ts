@@ -322,7 +322,9 @@ describe('result-door deferred spill (WI-10004533)', () => {
     }
   });
 
-  it('reports late spill failure while retaining its reserved URI and path', async () => {
+  it.each(['plans:get', 'events:status'] as const)(
+    'returns exact volatile recovery for nested tools:invoke %s when a timed-out spill later fails',
+    async (nestedTargetToolName) => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.useFakeTimers();
     let rejectWrite!: (error: Error) => void;
@@ -354,26 +356,53 @@ describe('result-door deferred spill (WI-10004533)', () => {
       return stalledWrite.then(write);
     });
     let resultPromise: Promise<DoorableResult> | undefined;
+    const original = oversized();
     try {
-      resultPromise = applyResultDoorAsync(oversized(), {
+      resultPromise = applyResultDoorAsync(original, {
         ...OPTS,
+        toolName: 'tools:invoke',
+        nestedTargetToolName,
         onLateScratchWriteSettled: resolveLateSettlement,
       });
       await writeStarted;
       await vi.advanceTimersByTimeAsync(30_000);
       const result = await resultPromise;
-      const meta = result._meta?.resultDoor as { spillPath?: string; spillUri?: string } | undefined;
-      expect(meta?.spillPath).toEqual(expect.any(String));
-      expect(meta?.spillUri).toEqual(expect.any(String));
+      const meta = result._meta?.resultDoor as {
+        spillPending?: boolean;
+        spillFailed?: boolean;
+        spillErrorCode?: string;
+        pendingSpill?: { path?: string; uri?: string; cursor?: Record<string, unknown> };
+      } | undefined;
+      const volatileCursor = volatileCursorFrom(result);
+      expect(meta).toMatchObject({
+        spillPending: true,
+        spillFailed: false,
+        spillErrorCode: 'ETIMEDOUT',
+        pendingSpill: {
+          path: expect.any(String),
+          uri: expect.any(String),
+          cursor: { kind: 'pending-spill', errorCode: 'ETIMEDOUT' },
+        },
+      });
+      expect(volatileCursor).toMatchObject({
+        kind: 'volatile-scratch-page',
+        tool: 'capability:read',
+        reason: 'spill-write-failed',
+        errorCode: 'ETIMEDOUT',
+      });
+      expect(readVolatileText(volatileCursor)).toBe(original.content[0].text);
+      expect(JSON.stringify(result.content)).toContain('exact in-process copy is available');
 
       const failure = Object.assign(new Error('disk write rejected'), { code: 'EIO' });
       rejectWrite(failure);
       await expect(lateSettlement).resolves.toMatchObject({
         status: 'failed',
-        spillPath: meta?.spillPath,
-        spillUri: meta?.spillUri,
+        spillPath: meta?.pendingSpill?.path,
+        spillUri: meta?.pendingSpill?.uri,
         errorCode: 'EIO',
       });
+      expect(readVolatileText(volatileCursor)).toBe(original.content[0].text);
+      expect(JSON.stringify(result.content)).not.toContain('if late settlement reports failed, the overflow is unavailable');
       expect(spillFiles()).toHaveLength(0);
     } finally {
       rejectWrite(new Error('test cleanup'));
@@ -382,7 +411,8 @@ describe('result-door deferred spill (WI-10004533)', () => {
       vi.useRealTimers();
       warn.mockRestore();
     }
-  });
+    },
+  );
 
   it('keeps a no-code spill failure diagnosable in the model-facing cursor without exposing the scratch path', () => {
     const scratchRunDir = spillDir();
