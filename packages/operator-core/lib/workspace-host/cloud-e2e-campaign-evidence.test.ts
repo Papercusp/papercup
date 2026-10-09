@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { hasEnumeratedVerificationCoverage } from '../coord-lifecycle/records';
+import { hasEnumeratedVerificationCoverage, RootCauseVerificationSchema } from '../coord-lifecycle/records';
 import { findIdentityLeakError } from '../content-lint/identity-leak';
 import {
   evaluateCloudCampaignEvidence,
@@ -81,6 +81,20 @@ describe('cloud E2E campaign acceptance population and evidence boundaries', () 
     expect(native.binarySha256).toMatch(/^[a-f0-9]{64}$/);
     expect(native.sourceSha).toMatch(/^[a-f0-9]{40}$/);
     expect(native.receiptPath).toContain(`${native.childRun}/phases/native/result.json`);
+  });
+
+  it('retains canonical defect records and accountable residue without inventing triggering journey proof', () => {
+    const records = evidence.defectPopulationRecords;
+    expect(new Set(records.map((row: { id: string }) => row.id)).size).toBe(records.length);
+    expect(records.map((row: { id: string }) => row.id)).toContain('EI-25540445801754635');
+    for (const row of records) {
+      expect(row.sourceRef).toBe(`work-item:${row.id}`);
+      if (row.state !== 'done') expect(row.assignee).toBeTruthy();
+      if (row.rootCauseVerification) expect(RootCauseVerificationSchema.safeParse(row.rootCauseVerification).success, row.id).toBe(true);
+    }
+    for (const row of evidence.outOfScopeResidue) expect(row.assignee).toBeTruthy();
+    expect(evidence.defectLedgerBoundary).toContain('shipment stay unproven');
+    expect(evidence.acceptanceEvidence.defects).toEqual([]);
   });
 
   it('records the measured task-dispatch falsifier rather than treating session launch as task completion', () => {

@@ -13,6 +13,9 @@ import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 // The timer samples every five minutes; require two quiet intervals before a full build.
 const SOURCE_STABILITY_WINDOW_MS = 10 * 60 * 1000;
+// A busy shared tree may never be quiet. The compiler freezes its source inputs
+// and promotion still verifies the root digest; debounce must not starve it.
+const MAX_SOURCE_DEFERRAL_MS = 30 * 60 * 1000;
 
 async function run(command, args, cwd, env = process.env) {
   await new Promise((resolveRun, reject) => {
@@ -230,12 +233,13 @@ export async function reconcilePortal(config, deps = {}) {
     return { status: 'fresh', releasePath: current.path };
   }
 
-  const snapshot = (fingerprintResult, linksDigest, firstSeenAtMs) => ({
+  const snapshot = (fingerprintResult, linksDigest, firstSeenAtMs, pendingSinceAtMs = firstSeenAtMs) => ({
     schemaVersion: 1,
     sourceDigest: fingerprintResult.digest,
     sourceRootDigest: fingerprintResult.rootDigest,
     publicLinksDigest: linksDigest,
     firstSeenAtMs,
+    pendingSinceAtMs,
   });
   const observedAt = now();
   if (stabilityWindowMs > 0) {
@@ -245,11 +249,20 @@ export async function reconcilePortal(config, deps = {}) {
       && candidate.sourceRootDigest === before.rootDigest
       && candidate.publicLinksDigest === beforePublicLinksDigest
       && Number.isFinite(candidate.firstSeenAtMs);
+    // Accept receipts written before pendingSinceAtMs existed. Persist the age
+    // across fingerprint changes, including across separate timer processes.
+    const pendingSinceAtMs = candidate?.schemaVersion === 1
+      && Number.isFinite(candidate.pendingSinceAtMs ?? candidate.firstSeenAtMs)
+      ? Math.min(candidate.pendingSinceAtMs ?? candidate.firstSeenAtMs, observedAt)
+      : observedAt;
+    const deferralExpired = observedAt - pendingSinceAtMs >= MAX_SOURCE_DEFERRAL_MS;
     if (!candidateMatches) {
-      await saveCandidate(candidatePath, snapshot(before, beforePublicLinksDigest, observedAt));
-      return { status: 'deferred', reason: 'source_not_stable', releasePath: current.path };
+      await saveCandidate(candidatePath, snapshot(before, beforePublicLinksDigest, observedAt, pendingSinceAtMs));
+      if (!deferralExpired) {
+        return { status: 'deferred', reason: 'source_not_stable', releasePath: current.path };
+      }
     }
-    if (observedAt - candidate.firstSeenAtMs < stabilityWindowMs) {
+    if (candidateMatches && observedAt - candidate.firstSeenAtMs < stabilityWindowMs && !deferralExpired) {
       return { status: 'deferred', reason: 'source_not_stable', releasePath: current.path };
     }
   }

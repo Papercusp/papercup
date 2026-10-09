@@ -124,10 +124,12 @@ export type DriveDisposition =
 export interface DriveResult {
   disposition: DriveDisposition;
   detail?: string;
+  armMeta?: Record<string, unknown>;
 }
 
 /** The opaque handle the CREATE seam returns, threaded to feed/drive/cost/teardown. */
 export interface BenchHarnessHandle {
+  executionKind?: 'current-su' | 'historical-blueprint';
   /** The throwaway harness slug (scratch, unique per run). */
   slug: string;
   /** The single feature id seeded into it (the benchmark task). */
@@ -252,11 +254,12 @@ export function liveBenchHarnessDriver(ops: BenchHarnessOps, opts: LiveBenchHarn
   /** ONE attempt: CREATE → FEED → DRIVE → COST → TEARDOWN over a fresh handle. Never throws. */
   const oneAttempt = async (
     req: BenchHarnessRunRequest,
-  ): Promise<{ disposition: DriveDisposition; detail?: string; cost: BenchRunCost; handle: BenchHarnessHandle | null }> => {
+  ): Promise<{ disposition: DriveDisposition; detail?: string; armMeta?: Record<string, unknown>; cost: BenchRunCost; handle: BenchHarnessHandle | null }> => {
     const { blueprintId, task, checkout, budget } = req;
     let handle: BenchHarnessHandle | null = null;
     let disposition: DriveDisposition = 'error';
     let detail: string | undefined;
+    let armMeta: Record<string, unknown> | undefined;
 
     try {
       // CREATE → FEED → DRIVE.
@@ -265,6 +268,7 @@ export function liveBenchHarnessDriver(ops: BenchHarnessOps, opts: LiveBenchHarn
       const drive = await ops.driveToDone({ handle, budget, timeoutMs, pollMs, workspaceId: ws });
       disposition = drive.disposition;
       detail = drive.detail;
+      armMeta = drive.armMeta;
     } catch (e) {
       // An infra failure during create/feed/drive → 'error' telemetry (never a thrown exception). The
       // cost sum below still runs (any real spend before the failure is counted); teardown still runs.
@@ -283,7 +287,7 @@ export function liveBenchHarnessDriver(ops: BenchHarnessOps, opts: LiveBenchHarn
     if (handle) {
       await ops.teardown({ handle, workspaceId: ws }).catch(() => {});
     }
-    return { disposition, detail, cost, handle };
+    return { disposition, detail, armMeta, cost, handle };
   };
 
   return {
@@ -324,6 +328,7 @@ export function liveBenchHarnessDriver(ops: BenchHarnessOps, opts: LiveBenchHarn
         wallClockMs: ops.now() - startedAtMs,
         trajectoryRef: handle ? trajectoryRefFor(handle) : '',
         stopReason,
+        ...(result.armMeta ? { armMeta: result.armMeta } : {}),
         // `generationError` carries the failure detail for every NON-scored terminal (error / timeout /
         // infra-failed / transient) — these are all excluded from accuracy, and the detail explains why
         // (a 429/contention spawn, a wall-clock ceiling, a crash). A SCORED terminal (done / escalate /
@@ -413,14 +418,17 @@ export function liveBenchHarnessOps(opts: LiveBenchHarnessOpts): BenchHarnessOps
       const { stringify: stringifyYaml } = await import('yaml');
       const bpDir = join(checkout.dir, '.papercusp');
       mkdirSync(bpDir, { recursive: true });
-      writeFileSync(
-        join(bpDir, 'blueprint.yaml'),
-        stringifyYaml({ id: slug, extends: blueprintId }, { lineWidth: 100 }),
-        'utf8',
-      );
+      // Native su uses the maintained bootstrap, never a retired benchmark blueprint.
+      if (blueprintId !== 'su') {
+        writeFileSync(
+          join(bpDir, 'blueprint.yaml'),
+          stringifyYaml({ id: slug, extends: blueprintId }, { lineWidth: 100 }),
+          'utf8',
+        );
+      }
 
       const featureId = `xbench-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
-      return { slug, featureId, worktreePath: checkout.dir };
+      return { slug, featureId, worktreePath: checkout.dir, executionKind: blueprintId === 'su' ? 'current-su' : 'historical-blueprint' };
     },
 
     async addFeature({ handle, task, workspaceId }) {
@@ -450,6 +458,9 @@ export function liveBenchHarnessOps(opts: LiveBenchHarnessOpts): BenchHarnessOps
     },
 
     async driveToDone({ handle, budget, timeoutMs, pollMs, workspaceId }) {
+      if (handle.executionKind === 'current-su') {
+        throw new Error('Current su treatment requires bindCurrentSuBenchHarness; retired director execution is not a fallback.');
+      }
       // DRIVE (the spawnInvokeOnce director-loop variant — P-009 pilot, confirmed at first run).
       //
       // ── WHY this variant (not `ensureFeaturePipeline`) ──────────────────────────────────────────────

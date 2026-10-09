@@ -291,6 +291,53 @@ describe('cloud portal source reconciliation', () => {
     expect(deps.writeReceipt).not.toHaveBeenCalled();
   });
 
+  it('builds after thirty minutes of changing fingerprints across timer invocations', async () => {
+    const { config, release } = fixture();
+    let time = 1_000;
+    let candidate: any = null;
+    let digest = 'linked-0';
+    const overrides = {
+      now: () => time,
+      fingerprint: vi.fn(async () => ({ digest, rootDigest: 'root-1' })),
+      candidateAt: vi.fn(async () => candidate),
+      writeCandidate: vi.fn(async (_path: string, value: any) => { candidate = value; }),
+      clearCandidate: vi.fn(async () => { candidate = null; }),
+    };
+    for (let tick = 0; tick < 6; tick += 1) {
+      digest = `linked-${tick}`;
+      const deps = makeDeps(config, release, overrides);
+      expect((await reconcilePortal(config, deps)).status).toBe('deferred');
+      expect(deps.run).not.toHaveBeenCalled();
+      expect(candidate.pendingSinceAtMs).toBe(1_000);
+      time += 5 * 60 * 1000;
+    }
+    digest = 'linked-final';
+    const deps = makeDeps(config, release, overrides);
+    expect((await reconcilePortal(config, deps)).status).toBe('deployed');
+    expect(deps.run.mock.calls[0][3]).toMatchObject({ PORTAL_BUILD_ONLY: '1', PORTAL_PROMOTE: '0' });
+    expect(candidate).toBeNull();
+  });
+
+  it('retains source validation after the deferral expires, including old candidate receipts', async () => {
+    const { config, release } = fixture();
+    const deps = makeDeps(config, release, {
+      now: () => 1_000 + 30 * 60 * 1000,
+      candidateAt: vi.fn().mockResolvedValue({
+        schemaVersion: 1, sourceDigest: 'old', sourceRootDigest: 'root-1',
+        publicLinksDigest: 'old-links', firstSeenAtMs: 1_000,
+      }),
+      fingerprint: vi.fn()
+        .mockResolvedValueOnce({ digest: 'linked-1', rootDigest: 'root-1' })
+        .mockResolvedValueOnce({ digest: 'linked-2', rootDigest: 'root-2' }),
+    });
+    expect(await reconcilePortal(config, deps)).toMatchObject({
+      status: 'deferred', reason: 'root_source_changed_during_build',
+    });
+    expect(deps.run).toHaveBeenCalledTimes(1);
+    expect(deps.promoteRelease).not.toHaveBeenCalled();
+    expect(deps.writeReceipt).not.toHaveBeenCalled();
+  });
+
   it('stages a release and atomically promotes it only after the final source check', async () => {
     const { config } = fixture();
     const stagedPath = join(config.runtimeRoot, 'releases', 'release-2');

@@ -379,6 +379,143 @@
     { "scenario": "Credential expiry and revocation", "boundary": "bounded bootstrap timeout", "testRunId": 20938433, "caseName": "runWorkspaceHostCredentialLifecycle > bootstrap-readiness gate > fails durably at 0% and runs no step when the bootstrap never becomes ready", "negativeControl": "unverified" },
     { "scenario": "Failed provisioning and repair", "boundary": "long-running cancellation with resource and billing accounting", "testRunId": null, "caseName": null, "acceptance": "unknown", "ownerWorkItem": "WI-10007610" }
   ],
+  "defectPopulationRecords": [
+    {
+      "id": "WI-10007605",
+      "title": "Cloud host detail expansion fails four canonical page acceptance tests",
+      "state": "done",
+      "assignee": null,
+      "completionAuthority": "committed",
+      "sourceRef": "work-item:WI-10007605",
+      "rootCauseVerification": {
+        "hypothesis": "Complete nuqs mocks omitted the collection parser exported by the real package.",
+        "testResult": "All4previous failures pass;66tests pass across3fixtures.",
+        "evidenceRefs": [
+          "testing:runs:20938504",
+          "run-group:cloud-e2e-20261008-ui-repair2"
+        ],
+        "testProcedure": "PAPERCUSP_TEST_RUN_GROUP=cloud-e2e-20261008-ui-repair2 PAPERCUSP_TEST_RUN_HARNESS=papercusp node scripts/npm-install-safe.mjs --exec-under-lock -- bash -c 'cd apps/operator && exec npx vitest run --config vitest.config.ts app/cloud-workspaces/page.test.tsx app/cloud-workspaces/DesktopWorkspacePage.test.tsx app/cloud-workspaces/LocalDesktopWorkspace.test.tsx'",
+        "contractVersion": 2,
+        "actualObservation": "53page plus13desktop assertions passed; product source unchanged.",
+        "distinguishingTest": "Replace only mock parsers with importOriginal exports and execute the unchanged expansion scenarios.",
+        "alternativeHypothesis": "Production host detail collection parsing was broken.",
+        "predictedObservations": {
+          "hypothesis": "Previously failing assertions pass without product edits.",
+          "alternativeHypothesis": "Expansion assertions still fail with production source unchanged."
+        }
+      },
+      "filesChanged": [
+        "apps/operator/app/cloud-workspaces/page.test.tsx",
+        "apps/operator/app/cloud-workspaces/DesktopWorkspacePage.test.tsx",
+        "apps/operator/app/cloud-workspaces/LocalDesktopWorkspace.test.tsx"
+      ]
+    },
+    {
+      "id": "EI-25534651860716701",
+      "title": "Managed current workspace-host cut rejects its materialized source as dirty at sidecar preflight",
+      "state": "done",
+      "assignee": null,
+      "completionAuthority": "committed",
+      "sourceRef": "work-item:EI-25534651860716701",
+      "rootCauseVerification": {
+        "hypothesis": "Mapping-only source enumeration omitted a committed nested-app gitlink and falsely admitted an incomplete source.",
+        "testResult": "Old source refused by missing mapping; corrected physical source materializes the app and records sourceDirty=false. Existing56 canonical regression cases pass.",
+        "evidenceRefs": [
+          "/tmp/cloud-e2e-20261009-cut-preflight-final.log",
+          "test-run:20962703",
+          "test-run:20962704",
+          "/mnt/backup/cloud-e2e-workspace-host-20261009r2/logs/materialize.log",
+          "/mnt/backup/cloud-e2e-workspace-host-20261009r2/sidecar.tmp.9773.identity.json",
+          "/mnt/backup/cloud-e2e-workspace-host-20261009r2/tmp/papercusp-sidecar-dirty-source.TJeUD6"
+        ],
+        "testProcedure": "Old immutable073913 has apps/slack-asana-bug-drill gitlinkf69bb1aa with no committed path/url; physical directory empty; admission exit3 names path despite empty ordinary tracked status. Correctedcc281 physical cut inspected model-preflight/materialize and emitter identity/capture, after all5 tested file hashes match commit.",
+        "contractVersion": 2,
+        "actualObservation": "Corrected app contains pinned files, exact sourceRoot/cc281 identity has sourceDirty=false, dirty capture files=[]; old-source guard names missing app mapping. Separate model pack crypto verification ready.",
+        "distinguishingTest": "Compare failed pinned gitlinks/mappings/physical app, run full-population admission on old and corrected commits, then inspect actual corrected source capture.",
+        "alternativeHypothesis": "Ordinary tracked edits or an incorrectly selected provenance root caused the dirty-source refusal.",
+        "predictedObservations": {
+          "hypothesis": "Old source refuses by named missing mapping; corrected mapping materializes app and yields clean actual capture.",
+          "alternativeHypothesis": "A tracked dirty file or wrong-root identity remains and correcting mapping does not yield a clean emitter verdict."
+        }
+      },
+      "filesChanged": [
+        ".gitmodules",
+        "apps/operator/bin/release/setup-release-checkout.sh",
+        "apps/operator/lib/release/setup-release-checkout-submodule-repos.test.ts",
+        "apps/operator/lib/release/workspace-host-release-cut-cli.ts",
+        "apps/operator/lib/release/workspace-host-release-cut-cli.test.ts"
+      ]
+    },
+    {
+      "id": "EI-25535599233496771",
+      "title": "Git-sync stages nested repositories as unmapped gitlinks",
+      "state": "done",
+      "assignee": null,
+      "completionAuthority": "committed",
+      "sourceRef": "work-item:EI-25535599233496771",
+      "rootCauseVerification": {
+        "hypothesis": "git-sync accepted successfully staged mode160000 entries without inspecting commit-index .gitmodules, so an unmapped nested repository entered the committed source.",
+        "testResult": "Historical source has no mapping. New guard holds unmapped or working-tree-only entries; accepts indexed valid mapping even when working-tree metadata differs; retains ordinary file when invalid gitlink is unstaged; rejects malformed config and index-read failure. Existing193 cases pass.",
+        "evidenceRefs": [
+          "EI-25534651860716701",
+          "test-run:20962877",
+          "test-run:20962881",
+          "/tmp/cloud-e2e-20261009-gitlink-writer.log",
+          "/tmp/cloud-e2e-20261009-gitlink-writer-corrected.log"
+        ],
+        "testProcedure": "Historical49a/073913 contain app gitlinkf69bb1aa with no .gitmodules entry (existing root investigation). Six conventional Vitest tests create real Git object/index fixtures and measure unmapped holding, exact indexed metadata, pairing, removal, unrelated work retention and errors. Existing193-case git-sync suite confirms integration; corrected6case pass uses final code.",
+        "contractVersion": 2,
+        "actualObservation": "Unmapped historical link measured in root repair; final real-index regression suite6passed and existing git-sync193passed. Root materialization separately repaired and actual source capture clean.",
+        "distinguishingTest": "Read actual committed app gitlink/mapping and exercise real Git indexes with absent, working-tree-only, indexed and malformed .gitmodules through the existing pre-commit guard.",
+        "alternativeHypothesis": "The committed gitlink had a valid path/url mapping but release materialization misinterpreted it.",
+        "predictedObservations": {
+          "hypothesis": "Historical commit lacks mapping; a guard consulting the exact index rejects that link, while a properly mapped index passes.",
+          "alternativeHypothesis": "Historical commit contains a valid mapping and the same indexed mapping is refused, locating the failure at materialization instead."
+        }
+      },
+      "filesChanged": [
+        "packages/operator-core/lib/harness/git-sync/run-git-sync.ts",
+        "packages/operator-core/lib/harness/git-sync/unmapped-gitlink-guard.test.ts"
+      ]
+    },
+    {
+      "id": "EI-25537398622311917",
+      "title": "Workspace-host sidecar build cannot resolve Chromium BiDi modules imported by Playwright",
+      "state": "open",
+      "assignee": "su-ec5efb56-8a98-4efe-a8e2-02017ee78bb8",
+      "completionAuthority": null,
+      "sourceRef": "work-item:EI-25537398622311917"
+    },
+    {
+      "id": "EI-25538099981077070",
+      "title": "P-058 pinned model cache symlink points to a removed relocation target",
+      "state": "open",
+      "assignee": "su-0d2affd0-2198-4734-b54f-186234343375",
+      "completionAuthority": null,
+      "sourceRef": "work-item:EI-25538099981077070"
+    },
+    {
+      "id": "EI-25532541000501660",
+      "title": "Scorecard audit wake timed out although the exact audited card was already passed",
+      "state": "open",
+      "assignee": "su-ec5efb56-8a98-4efe-a8e2-02017ee78bb8",
+      "completionAuthority": null,
+      "sourceRef": "work-item:EI-25532541000501660"
+    },
+    {
+      "id": "EI-25540445801754635",
+      "state": "done",
+      "assignee": null,
+      "completionAuthority": "committed",
+      "sourceRef": "work-item:EI-25540445801754635",
+      "completionReadbackRef": "papercusp://scratch/papercusp-workspace/work_items:complete/05be4f7a-a9bf-40da-b9d6-1bc4bafca3a9/result-door-1791583380186.md",
+      "rootCauseEvidence": "read canonical completion; identity detector and differing predictions verified in test-run:20963196"
+    }
+  ],
+  "defectLedgerBoundary": "Canonical work-item snapshots account for discovered defects. Completed-source records do not imply a measured regression control or a passing triggering real journey. Open cache/build/audit defects remain owned; R-4 and shipment stay unproven until exact canonical records and journey joins satisfy the evaluator.",
+  "outOfScopeResidue": [
+    { "id": "EI-25539085239585028", "assignee": "su-ec5efb56-8a98-4efe-a8e2-02017ee78bb8", "sourceRef": "work-item:EI-25539085239585028", "reason": "Recovery-result shaping friction; raw full reads recover authoritative records, durable platform behavior remains separately accountable" }
+  ],
   "observations": [
     {
       "id": "current-cloud-chromium",

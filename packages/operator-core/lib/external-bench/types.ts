@@ -389,6 +389,8 @@ export interface GenerationTelemetry {
   trajectoryRef: string;
   stopReason: GenerationStopReason;
   generationError?: string;
+  /** Execution receipts and measured provenance; configured aliases are not measurements. */
+  armMeta?: Record<string, unknown>;
 }
 
 /** What instantiating + running a throwaway bench harness to DONE yields. */

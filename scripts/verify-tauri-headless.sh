@@ -247,6 +247,11 @@
 #                              path to a non-empty JSON array of acceptance paths;
 #                              merged with SOURCE_INPUTS and mandatory tooling
 #                              inputs without carrying the list through argv/env
+#   VERIFY_TAURI_DEPENDENCY_SNAPSHOT_MODE
+#                              hardlink (default) keeps dependencies on the donor
+#                              filesystem; copy uses TMPDIR with independent inodes,
+#                              measured payload reservation and a finite task memory
+#                              ceiling. Both modes hold the donor install mutex.
 #   VERIFY_TAURI_DISPLAY_NUM    Xvfb display number (default: auto-picked, >=90)
 #   VERIFY_TAURI_WINDOW         window size the desktop BOOTS at, <width>x<height>
 #                                (e.g. 1800x1000). Default unset = the real
@@ -996,12 +1001,17 @@ shared_schema_readiness_preflight() {
 }
 vh_run_step shared-schema-readiness shared_schema_readiness_preflight || exit $?
 
-# The dependency snapshot uses hardlinks. A fast /tmp mount may be on another
-# device. Only the operator/dependency snapshot needs the donor filesystem;
-# the much larger SPA/profile/database payloads remain on TMPDIR.
+# Hardlinks need the donor device; an explicitly selected independent copy
+# uses the requested temporary device. Bulk SPA/profile/database payloads
+# remain on TMPDIR in either mode.
 # .papercusp is excluded from both source and dependency snapshots.
 select_verifier_snapshot_root() {
   local work_root="${TMPDIR:-/tmp}" donor_device work_device
+  case "${VERIFY_TAURI_DEPENDENCY_SNAPSHOT_MODE:-hardlink}" in
+    hardlink) ;;
+    copy) [ -d "$work_root" ] || return 1; printf '%s\n' "$work_root"; return 0 ;;
+    *) echo 'FATAL: VERIFY_TAURI_DEPENDENCY_SNAPSHOT_MODE must be hardlink or copy' >&2; return 2 ;;
+  esac
   donor_device="$(stat -c %d -- "$REPO_DIR")" || return 1
   work_device="$(stat -c %d -- "$work_root")" || return 1
   if [ "$donor_device" != "$work_device" ]; then
@@ -1096,6 +1106,7 @@ vh_run_step write-run-marker write_run_marker "$$" || {
 # the reusable pinned-deps hardlink snapshot under the donor install mutex.
 reserve_verifier_disk() {
   local source_bytes="$1" spa_kib=0 source_gb bulk_gb source_key bulk_key status
+  local dependency_bytes=0 trees rel size
   local disk_helper="$DESKTOP_DIR/bin/lib/disk-preflight.sh"
   [ -f "$disk_helper" ] || { echo "FATAL: missing shared disk preflight: $disk_helper" >&2; return 1; }
   # Reuse the build reservation ledger so other verifiers/builds see this demand.
@@ -1105,9 +1116,27 @@ reserve_verifier_disk() {
     spa_kib="$(du -sk "$REPO_DIR/apps/operator-vite/dist" | awk '{print $1}')" || return 1
   fi
   case "$source_bytes:$spa_kib" in *[!0-9:]*|:*|*:) echo "FATAL: cannot estimate verifier disk footprint" >&2; return 1 ;; esac
-  # Source bytes are measured by the same rsync filter set as the real copy.
-  # Dependencies are hardlinked: allow 1 GiB for directory/metadata growth.
-  source_gb=$(( (source_bytes + 1073741823) / 1073741824 + 1 ))
+  case "${VERIFY_TAURI_DEPENDENCY_SNAPSHOT_MODE:-hardlink}" in
+    hardlink) ;;
+    copy)
+      # Enumerate the same trees as the maintained snapshot producer, including
+      # trees that the live-source branch later removes. Apparent bytes account
+      # for sparse files; measure each tree independently like rsync -aH.
+      trees="$(bash "$DESKTOP_DIR/bin/lib/pinned-deps.sh" trees "$REPO_DIR")" || return 1
+      while IFS= read -r rel; do
+        [ -n "$rel" ] || continue
+        [ ! -L "$REPO_DIR/$rel" ] || { echo "FATAL: dependency donor tree is a symlink: $rel" >&2; return 1; }
+        size="$(LC_ALL=C du -s -B1 --apparent-size -- "$REPO_DIR/$rel")" || return 1
+        size="${size%%[[:space:]]*}"
+        case "$size" in ''|*[!0-9]*) echo "FATAL: dependency footprint is unmeasured: $rel" >&2; return 1 ;; esac
+        dependency_bytes=$((dependency_bytes + size))
+      done <<< "$trees"
+      ;;
+    *) echo 'FATAL: VERIFY_TAURI_DEPENDENCY_SNAPSHOT_MODE must be hardlink or copy' >&2; return 2 ;;
+  esac
+  # Independent copies pay for all payload bytes as well as metadata. The
+  # helper rechecks actual destination headroom under the donor/copy locks.
+  source_gb=$(( (source_bytes + dependency_bytes + 1073741823) / 1073741824 + 1 ))
   # Measured SPA copy plus 1 GiB for the profile/logs. Fresh migrated PG has
   # exceeded 4.7 GiB in real runs; reserve an explicit 8 GiB bootstrap budget.
   bulk_gb=$(( (spa_kib + 1048575) / 1048576 + 1 ))
@@ -1118,7 +1147,7 @@ reserve_verifier_disk() {
     papercusp_require_free_gb "$WORK" "$((source_gb + bulk_gb))" "verifier source + SPA + profile + database" >&2 || return $?
     VERIFIER_DISK_RESERVATIONS+=("${PAPERCUSP_DISK_RESERVATION_FILE:-}")
   else
-    papercusp_require_free_gb "$OPERATOR_SNAPSHOT_PARENT" "$source_gb" "verifier source + hardlink metadata" >&2 || return $?
+    papercusp_require_free_gb "$OPERATOR_SNAPSHOT_PARENT" "$source_gb" "verifier source + dependency snapshot" >&2 || return $?
     VERIFIER_DISK_RESERVATIONS+=("${PAPERCUSP_DISK_RESERVATION_FILE:-}")
     papercusp_require_free_gb "$WORK" "$bulk_gb" "verifier SPA + profile + database" >&2 || {
       status=$?
@@ -1244,11 +1273,44 @@ verify_operator_source_lock_census() {
   log "verified no active source-file locks in the verifier inputs ($phase)"
 }
 
+snapshot_verifier_pinned_deps() {
+  local snapshot_root="$1" helper_source="$2" pinned_deps_copy="$WORK/pinned-deps.sh"
+  local mode="${VERIFY_TAURI_DEPENDENCY_SNAPSHOT_MODE:-hardlink}"
+  if [ "$mode" = copy ]; then
+    # The helper resolves dependency-generation.sh relative to BASH_SOURCE.
+    # Keep that layout inside the frozen source, never load a shared mutable
+    # copy helper or a standalone file whose relative imports cannot resolve.
+    pinned_deps_copy="$snapshot_root/papercusp-desktop/bin/lib/pinned-deps.sh"
+    if [ "$helper_source" != "$pinned_deps_copy" ]; then
+      mkdir -p -- "$(dirname "$pinned_deps_copy")" || return 1
+      cp -- "$helper_source" "$pinned_deps_copy" || return 1
+    fi
+    # Reuse the task scheduler's measured cgroup ceiling. The copy and all its
+    # checksum children stay in this task; no unbounded detached copy is allowed.
+    node --input-type=module -e '
+      const { readTaskCgroupMemoryMaxMb } = await import(process.argv[1]);
+      const limit = readTaskCgroupMemoryMaxMb();
+      if (!(Number.isFinite(limit) && limit > 0)) {
+        console.error("VERIFY_TAURI_COPY_MEMORY_UNBOUNDED: independent snapshots require a finite task memory.max");
+        process.exit(2);
+      }
+      console.error(`VERIFY_TAURI_COPY_MEMORY_MAX_MB=${limit}`);
+    ' "$snapshot_root/scripts/lib/budgeted-task-scheduler.mjs" || return $?
+    # The existing heavy-command wrapper admits the copy's memory reserve;
+    # pinned-deps still owns the host copy lease and donor install mutex.
+    bash "$snapshot_root/scripts/pc-heavy.sh" -- bash "$pinned_deps_copy" \
+      snapshot-locked "$REPO_DIR" "$snapshot_root" "$mode"
+    return $?
+  fi
+  cp -- "$helper_source" "$pinned_deps_copy" || return 1
+  . "$pinned_deps_copy" || return 1
+  papercusp_pinned_deps_snapshot_locked "$REPO_DIR" "$snapshot_root" "$mode"
+}
+
 snapshot_operator_source() {
   local snapshot_root
   local source_bytes
   local pinned_deps_lib="$DESKTOP_DIR/bin/lib/pinned-deps.sh"
-  local pinned_deps_copy="$WORK/pinned-deps.sh"
   if [ -n "${VERIFY_TAURI_SOURCE_REF:-}" ]; then
     snapshot_committed_operator_source
     return $?
@@ -1301,10 +1363,7 @@ snapshot_operator_source() {
     return 1
   fi
   verify_operator_source_lock_census "after copy" || return 1
-  cp -- "$pinned_deps_lib" "$pinned_deps_copy" || return 1
-  # shellcheck source=/dev/null
-  . "$pinned_deps_copy" || return 1
-  papercusp_pinned_deps_snapshot_locked "$REPO_DIR" "$snapshot_root" || {
+  snapshot_verifier_pinned_deps "$snapshot_root" "$pinned_deps_lib" || {
     echo "FATAL: could not create the verifier's locked dependency snapshot" >&2
     return 1
   }
@@ -1326,8 +1385,8 @@ snapshot_operator_source() {
 snapshot_committed_operator_source() {
   # REPO_DIR remains the canonical coordination/fence/dependency donor domain.
   # Only runtime source and desktop execution move to the verified archive.
-  local snapshot_root receipt source_bytes pinned_deps_copy="$WORK/pinned-deps.sh"
-  local inputs="package.json,package-lock.json,papercusp-desktop/package.json,papercusp-desktop/package-lock.json,scripts/npm-install-safe.mjs,scripts/verify-tauri-headless.sh,scripts/source-preview.mjs,scripts/lib/committed-source-loader.mjs,scripts/restricted-hold-tree-gate.mjs,scripts/lib/spa-require-built.sh,papercusp-desktop/bin/lib/federation-asserts.sh,papercusp-desktop/bin/lib/disk-preflight.sh,papercusp-desktop/bin/lib/pinned-deps.sh,${VERIFY_TAURI_SOURCE_INPUTS:-}"
+  local snapshot_root receipt source_bytes
+  local inputs="package.json,package-lock.json,papercusp-desktop/package.json,papercusp-desktop/package-lock.json,scripts/npm-install-safe.mjs,scripts/verify-tauri-headless.sh,scripts/source-preview.mjs,scripts/lib/committed-source-loader.mjs,scripts/restricted-hold-tree-gate.mjs,scripts/lib/spa-require-built.sh,scripts/lib/budgeted-task-scheduler.mjs,scripts/pc-heavy.sh,apps/operator/bin/release/dependency-generation.sh,papercusp-desktop/bin/lib/federation-asserts.sh,papercusp-desktop/bin/lib/disk-preflight.sh,papercusp-desktop/bin/lib/pinned-deps.sh,${VERIFY_TAURI_SOURCE_INPUTS:-}"
   [ -n "${VERIFY_TAURI_SOURCE_INPUTS:-}${VERIFY_TAURI_SOURCE_INPUTS_FILE:-}" ] || {
     echo 'FATAL: pinned source requires explicit VERIFY_TAURI_SOURCE_INPUTS or VERIFY_TAURI_SOURCE_INPUTS_FILE tested acceptance paths' >&2
     return 1
@@ -1356,9 +1415,8 @@ snapshot_committed_operator_source() {
   if [ -n "${VH_PHASE_DIR:-}" ]; then
     cp -- "$receipt" "$VH_PHASE_DIR/verifier-source-receipt.json" || return 1
   fi
-  cp -- "$snapshot_root/papercusp-desktop/bin/lib/pinned-deps.sh" "$pinned_deps_copy" || return 1
-  . "$pinned_deps_copy" || return 1
-  papercusp_pinned_deps_snapshot_locked "$REPO_DIR" "$snapshot_root" || return 1
+  snapshot_verifier_pinned_deps "$snapshot_root" \
+    "$snapshot_root/papercusp-desktop/bin/lib/pinned-deps.sh" || return $?
   DESKTOP_DIR="$snapshot_root/papercusp-desktop"
   export VERIFY_TAURI_SOURCE_RECEIPT="$receipt"
   log "committed verifier source verified; provenance: $receipt; dependency donor: $REPO_DIR"

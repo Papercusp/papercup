@@ -11,6 +11,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -152,6 +153,7 @@ describe.skipIf(!TS_SERVER_PRESENT)(`LSP adapter against the pinned server ${ski
       // Resolving this requires following the npm-workspace symlink, which is
       // exactly what a text-matching backend cannot do.
       const file = join(REPO_ROOT, 'libs/generic/search/src/leg-health.ts');
+      const sourceHash = createHash('sha256').update(readFileSync(file, 'utf8')).digest('hex');
       const answer = await lspQuery('definition', {
         file,
         line1: 41,
@@ -171,6 +173,19 @@ describe.skipIf(!TS_SERVER_PRESENT)(`LSP adapter against the pinned server ${ski
       // this is the test that fails.
       expect(hit.line1).toBe(expectedSite.line1);
       expect(hit.line1).toBe(106);
+      expect(answer.evidence!.sourceScope.supportingFiles).toContainEqual({
+        path: 'libs/generic/search/src/leg-health.ts', contentHash: sourceHash,
+        language: 'typescript', representation: 'full-source',
+      });
+      // The server loaded the target without didOpen. Its location is real,
+      // but a later disk hash would invent an unobserved input version.
+      expect(answer.evidence!.siteIdentities[0]).toMatchObject({
+        sourcePath: expectedSite.path, contentHash: null, versionedSymbolId: null,
+      });
+      expect(answer.evidence!.relationships[0]).toMatchObject({
+        origin: 'compiler', knowledge: 'observed', runtimeExecution: 'unknown',
+      });
+      expect(answer.freshness.staleVsDisk).toBeNull();
     },
   );
 

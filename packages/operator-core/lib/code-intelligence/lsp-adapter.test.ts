@@ -8,6 +8,7 @@
  * output as trustworthy turns a temporary gap into an authoritative lie.
  */
 
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { mkdir, mkdtemp, rm, truncate, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
@@ -21,6 +22,7 @@ import {
   canaryReadinessIsStable,
   certifyCanaryAnswer,
   ensureOpen,
+  withLspSnapshotEvidence,
   evictIfLanguageServiceDead,
   healthForAnswer,
   probeLanguageServiceLiveness,
@@ -36,7 +38,7 @@ import {
   type LspReadinessIntent,
   type LspReadinessStrategy,
 } from './lsp-adapter.ts';
-import { isTrustworthyEmpty, type BackendHealth } from './contracts.ts';
+import { isTrustworthyEmpty, sourceIdentityContinuity, type BackendHealth, type CodeIntelAnswer } from './contracts.ts';
 
 type Client = {
   health: BackendHealth;
@@ -362,6 +364,62 @@ describe('ensureOpen — disk freshness and readiness invalidation', () => {
     const stamp = (client as unknown as { openDocs: Map<string, { mtimeMs: number; size: number }> }).openDocs.get(uri);
     expect(stamp).toBeDefined();
     expect(stamp!.size).toBe('export const a = 1;\n'.length);
+    expect(client.openDocs.get(uri)!.contentHash).toBe(createHash('sha256').update(sent[0].params.textDocument.text!).digest('hex'));
+  });
+
+  const answer = (sites: CodeIntelAnswer['sites'] = [{ path: 'subject.ts', line1: 1, kind: null }]): CodeIntelAnswer => ({
+    backend: 'lsp-adapter', intent: 'definition', query: 'a', sites,
+    truncation: { truncated: false, totalAvailable: sites.length, continuation: null },
+    freshness: { health: 'healthy', indexedAt: null, staleVsDisk: false, indexedCommit: null },
+    latencyMs: 1, error: null,
+  });
+
+  it('keeps sent-text identities after a disk edit, then requires re-resolution after reopening', async () => {
+    await ensureOpen(client, file);
+    const snapshot = new Map(client.openDocs);
+    const first = withLspSnapshotEvidence(answer(), client, snapshot, dir);
+    const oldId = first.evidence!.siteIdentities[0].versionedSymbolId;
+    expect(oldId).not.toBeNull();
+    await writeFile(file, '// changed by a peer\nexport const a = 2;\n');
+    const retained = withLspSnapshotEvidence(answer(), client, snapshot, dir);
+    expect(retained.evidence).toEqual(first.evidence);
+    expect(retained.freshness.staleVsDisk).toBeNull();
+    await ensureOpen(client, file);
+    const fresh = withLspSnapshotEvidence(answer([{ path: 'subject.ts', line1: 2, kind: null }]), client, new Map(client.openDocs), dir);
+    expect(sourceIdentityContinuity(oldId, fresh.evidence!.siteIdentities[0].versionedSymbolId)).toBe('needs-resolution');
+    expect(first.evidence!.siteIdentities[0].versionedSymbolId).toBe(oldId);
+    const raced = withLspSnapshotEvidence(answer(), client, snapshot, dir);
+    expect(raced.sites).toEqual([]);
+    expect(raced.error).toMatch(/snapshot changed during/);
+    expect(raced.freshness.health).toBe('degraded');
+    expect(raced.evidence!.sourceScope.sourceFingerprint).toBeNull();
+  });
+
+  it('leaves unopened returned files and legacy stamps unversioned', async () => {
+    const uri = await ensureOpen(client, file);
+    await writeFile(join(dir, 'unopened.ts'), 'export const other = 1;\n');
+    const result = withLspSnapshotEvidence(answer([{ path: 'unopened.ts', line1: 1, kind: null }]), client, new Map(client.openDocs), dir);
+    expect(result.evidence!.siteIdentities[0]).toMatchObject({ contentHash: null, versionedSymbolId: null });
+    expect(result.evidence!.sourceScope.supportingFiles.map(source => source.path)).toEqual(['subject.ts']);
+    client.openDocs.set(uri, { mtimeMs: 0, size: 0 });
+    const legacy = withLspSnapshotEvidence(answer(), client, new Map(client.openDocs), dir);
+    expect(legacy.evidence!.sourceScope.sourceFingerprint).toBeNull();
+    expect(legacy.evidence!.siteIdentities[0].versionedSymbolId).toBeNull();
+  });
+
+  it('rejects a closed or replaced snapshot even when replacement text is identical', async () => {
+    const uri = await ensureOpen(client, file);
+    const snapshot = new Map(client.openDocs);
+    client.openDocs.set(uri, { ...client.openDocs.get(uri)! });
+    expect(withLspSnapshotEvidence(answer([]), client, snapshot, dir).error).toMatch(/snapshot changed/);
+    client.openDocs.delete(uri);
+    expect(withLspSnapshotEvidence(answer(), client, snapshot, dir).evidence!.siteIdentities).toEqual([]);
+  });
+
+  it('does not retain source proof when sending didOpen fails', async () => {
+    client.connection.sendNotification = vi.fn().mockRejectedValue(new Error('closed connection'));
+    await expect(ensureOpen(client, file)).rejects.toThrow('closed connection');
+    expect(client.openDocs.size).toBe(0);
   });
 
   it('invalidates the server idle period BEFORE opening a new document (WI-2142941)', async () => {

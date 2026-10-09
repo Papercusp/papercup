@@ -1570,11 +1570,16 @@ export async function rearmFireStarvedLoop(sql: Sql, routineId: string, reason: 
  * survives, but it pins the words to THIS revival even after a later disarm overwrites
  * `loop_paused_reason` with a fresh one.
  *
- * Guarded `AND active = FALSE` so it is a no-op against a loop that is already running — this
- * write must never disturb the cadence of a healthy loop, and a concurrent `loop:arm` by the
- * owner should win rather than be re-stamped by the sweep.
+ * The UPDATE compares the selected pause timestamp and reason as well as `active = FALSE`.
+ * A concurrent `loop:end` changes that pause snapshot, so a stale candidate cannot restore the
+ * loop. A concurrent `loop:arm` already makes it active, so that write also wins.
  */
-export async function reviveDisarmedLoop(sql: Sql, routineId: string, reason: string): Promise<void> {
+export async function reviveDisarmedLoop(
+  sql: Sql,
+  routineId: string,
+  candidatePause: { pausedAtMs: number; pauseReason: string },
+  reason: string,
+): Promise<boolean> {
   const revived = await sql<
     Array<{
       workspace_id: string;
@@ -1611,7 +1616,10 @@ export async function reviveDisarmedLoop(sql: Sql, routineId: string, reason: st
                          'fire_count_at_arm', COALESCE((metadata->>'fire_count')::int, 0)
                        ),
            updated_at = now()
-     WHERE id = ${routineId} AND active = FALSE
+     WHERE id = ${routineId}
+       AND active = FALSE
+       AND metadata->>'loop_paused_reason' = ${candidatePause.pauseReason}
+       AND (metadata->'pause'->>'pausedAtMs')::bigint = ${candidatePause.pausedAtMs}
     RETURNING workspace_id, install_slug, name, target_role, target_owner_id,
               reschedule_interval_sec,
               (metadata->>'loop_revived_count')::int AS revived_count,
@@ -1630,8 +1638,8 @@ export async function reviveDisarmedLoop(sql: Sql, routineId: string, reason: st
   // re-disarmed twice is a distinct, diagnosable shape, and the mutable counter alone can
   // never show the sequence because a later disarm overwrites the reason beside it.
   //
-  // Guarded `AND active = FALSE`, so a returned row always crossed FALSE -> TRUE; a no-op
-  // against an already-running loop correctly logs nothing.
+  // A returned row proves the active and candidate-pause predicates both matched and the CAS
+  // crossed FALSE -> TRUE. A stale candidate or an already-running loop logs nothing.
   const row = revived[0];
   if (row) {
     void recordLoopTransition(sql, {
@@ -1654,6 +1662,7 @@ export async function reviveDisarmedLoop(sql: Sql, routineId: string, reason: st
       },
     });
   }
+  return row !== undefined;
 }
 
 /**

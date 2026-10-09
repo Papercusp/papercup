@@ -16,6 +16,7 @@ import {
   readdirSync,
   rmSync,
   symlinkSync,
+  truncateSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -38,7 +39,8 @@ const sourceReexecIdx = src.indexOf(
 );
 const assertionExecIdx = src.lastIndexOf('log "running assertion command: $*"');
 const operatorSnapshotIdx = src.indexOf("snapshot_operator_source() {");
-const operatorSnapshotCallIdx = src.indexOf("snapshot_operator_source || {");
+const dependencySnapshotSource = src.slice(src.indexOf("snapshot_verifier_pinned_deps() {"), operatorSnapshotIdx);
+const operatorSnapshotCallIdx = src.indexOf("vh_run_step operator-source-snapshot");
 const lockCensusStartIdx = src.indexOf("verify_operator_source_lock_census() {");
 const lockCensusSource = src.slice(lockCensusStartIdx, operatorSnapshotIdx);
 const operatorSnapshotSource = src.slice(
@@ -49,7 +51,7 @@ const operatorSnapshotSource = src.slice(
 describe("EI-25270951515189161 — verifier snapshots avoid active source edits", () => {
   it('passes file-backed inputs intact alongside mandatory tooling, before receipt verification and dependencies', () => {
     const start = src.indexOf('snapshot_committed_operator_source() {');
-    const end = src.indexOf('snapshot_operator_source || {', start);
+    const end = operatorSnapshotCallIdx;
     const fixture = mkdtempSync(resolve(tmpdir(), 'verifier-file-input-contract-'));
     const inputsFile = resolve(fixture, 'complete inputs.json');
     writeFileSync(inputsFile, JSON.stringify(['apps/operator/ui.ts', 'path with,comma.ts']));
@@ -62,6 +64,7 @@ describe("EI-25270951515189161 — verifier snapshots avoid active source edits"
         'write_run_marker() { :; }; reserve_verifier_disk() { :; }; log() { :; }',
         'node() { printf "%s\\n" "$@" >> "$WORK/order"; [[ "$*" != *verifier-measure* ]] || echo 4096; }',
         'cp() { printf \'%s\\n\' \'papercusp_pinned_deps_snapshot_locked() { echo deps >> "$WORK/order"; }\' > "$WORK/pinned-deps.sh"; }',
+        dependencySnapshotSource,
         src.slice(start, end),
         'snapshot_committed_operator_source',
       ].join('\n')], { encoding: 'utf8', env: { ...process.env, TEST_ROOT: fixture, TEST_INPUTS_FILE: inputsFile } });
@@ -77,7 +80,7 @@ describe("EI-25270951515189161 — verifier snapshots avoid active source edits"
 
   it("keeps committed preparation independent of live census and verifies before donor mutation", () => {
     const start = src.indexOf('snapshot_committed_operator_source() {');
-    const end = src.indexOf('snapshot_operator_source || {', start);
+    const end = operatorSnapshotCallIdx;
     const committed = src.slice(start, end);
     const fixture = mkdtempSync(resolve(tmpdir(), 'verifier-committed-contract-'));
     try {
@@ -88,6 +91,7 @@ describe("EI-25270951515189161 — verifier snapshots avoid active source edits"
         'write_run_marker() { :; }; reserve_verifier_disk() { :; }; log() { :; }',
         'node() { printf "%s\\n" "$*" >> "$WORK/order"; [[ "$*" != *verifier-measure* ]] || echo 4096; if [[ "$*" == *verifier-verify* ]] && [ "$TEST_TAMPER" = 1 ]; then return 2; fi; }',
         'cp() { printf \'%s\\n\' \'papercusp_pinned_deps_snapshot_locked() { echo "deps:$1:$2" >> "$WORK/order"; }\' > "$WORK/pinned-deps.sh"; }',
+        dependencySnapshotSource,
         committed,
         'snapshot_committed_operator_source',
         'printf "desktop:%s\\n" "$DESKTOP_DIR" >> "$WORK/order"',
@@ -104,6 +108,7 @@ describe("EI-25270951515189161 — verifier snapshots avoid active source edits"
         'write_run_marker() { :; }; reserve_verifier_disk() { :; }; log() { :; }',
         'node() { [[ "$*" != *verifier-measure* ]] || echo 4096; [[ "$*" != *verifier-verify* ]]; }',
         'cp() { echo mutation-after-refusal >&2; return 99; }',
+        dependencySnapshotSource,
         committed, 'snapshot_committed_operator_source',
       ].join('\n')], { encoding: 'utf8', env: { ...process.env, TEST_ROOT: fixture } });
       expect(refused.status).toBe(1);
@@ -113,7 +118,7 @@ describe("EI-25270951515189161 — verifier snapshots avoid active source edits"
 
   it.each(['admit', 'capacity-refusal', 'unmeasured', 'empty'])('admits measured committed source before creating or exporting it: %s', mode => {
     const start = src.indexOf('snapshot_committed_operator_source() {');
-    const end = src.indexOf('snapshot_operator_source || {', start);
+    const end = operatorSnapshotCallIdx;
     const fixture = mkdtempSync(resolve(tmpdir(), 'verifier-source-size-contract-'));
     try {
       const result = spawnSync('bash', ['-c', [
@@ -124,6 +129,7 @@ describe("EI-25270951515189161 — verifier snapshots avoid active source edits"
         'node() { echo "$*" >> "$WORK/order"; if [[ "$*" == *verifier-measure* ]]; then case "$TEST_MODE" in unmeasured) echo unknown ;; empty) echo 0 ;; *) echo 5242880 ;; esac; fi; }',
         'reserve_verifier_disk() { echo "reserve:$1" >> "$WORK/order"; test "$1" = 5242880; test "$TEST_MODE" != capacity-refusal || return 7; }',
         'cp() { printf \'%s\\n\' \'papercusp_pinned_deps_snapshot_locked() { echo deps >> "$WORK/order"; }\' > "$WORK/pinned-deps.sh"; }',
+        dependencySnapshotSource,
         src.slice(start, end), 'snapshot_committed_operator_source',
       ].join('\n')], { encoding: 'utf8', env: { ...process.env, TEST_ROOT: fixture, TEST_MODE: mode } });
       const order = readFileSync(resolve(fixture, 'order'), 'utf8');
@@ -573,8 +579,9 @@ describe("EI-22616267024724225 — frozen verifier hosts exclude the tsx runtime
     expect(bundleFunctionIdx).toBeGreaterThan(operatorSnapshotCallIdx);
     expect(bundleCallIdx).toBeGreaterThan(bundleFunctionIdx);
     expect(operatorSnapshotSource).toContain(
-      'papercusp_pinned_deps_snapshot_locked "$REPO_DIR" "$snapshot_root"',
+      'snapshot_verifier_pinned_deps "$snapshot_root"',
     );
+    expect(dependencySnapshotSource).toContain('papercusp_pinned_deps_snapshot_locked "$REPO_DIR" "$snapshot_root"');
     expect(src.slice(bundleFunctionIdx, bundleCallIdx)).toContain(
       "apps/operator/bin/bundle-host.sh",
     );
@@ -682,14 +689,14 @@ describe("EI-22590231221058313 — workspace runtime exports survive the snapsho
   });
 });
 
-describe("EI-22588292228855829 — dependency snapshot stays on the donor filesystem", () => {
+describe("dependency snapshot root follows the selected maintained mode", () => {
   const chooserStart = src.indexOf("select_verifier_snapshot_root() {");
   const chooserEnd = src.indexOf(
-    'OPERATOR_SNAPSHOT_PARENT="$(select_verifier_snapshot_root)"',
+    'OPERATOR_SNAPSHOT_PARENT="$(vh_run_step verifier-snapshot-root',
     chooserStart,
   );
 
-  function chooseRoot(crossDevice: boolean, fallbackCrossDevice = false) {
+  function chooseRoot(crossDevice: boolean, fallbackCrossDevice = false, mode = "hardlink") {
     const fixture = mkdtempSync(resolve(tmpdir(), "verifier-work-root-"));
     const donor = resolve(fixture, "donor");
     const preferred = resolve(fixture, "preferred");
@@ -720,6 +727,7 @@ describe("EI-22588292228855829 — dependency snapshot stays on the donor filesy
             ...process.env,
             REPO_DIR: donor,
             TMPDIR: preferred,
+            VERIFY_TAURI_DEPENDENCY_SNAPSHOT_MODE: mode,
             TEST_PREFERRED_DEVICE: crossDevice ? "2" : "1",
             TEST_FALLBACK_DEVICE: fallbackCrossDevice ? "2" : "1",
           },
@@ -750,6 +758,19 @@ describe("EI-22588292228855829 — dependency snapshot stays on the donor filesy
     expect(result.stderr).toContain(
       "no verifier snapshot root on the dependency donor filesystem",
     );
+  });
+
+  it("permits a cross-device root only for an explicit independent copy", () => {
+    const result = chooseRoot(true, true, "copy");
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout.trim()).toBe(result.preferred);
+  });
+
+  it("refuses an unsupported mode before allocating a fallback", () => {
+    const result = chooseRoot(true, false, "reflink");
+    expect(result.status).toBe(2);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toContain("must be hardlink or copy");
   });
 
   it("keeps bulk payloads on TMPDIR and gives both roots the same cleanup and owner", () => {
@@ -784,6 +805,8 @@ describe("EI-22589054433344154 — aggregate disk admission precedes bulk alloca
     freeSource: number,
     freeBulk: number,
     isolated = true,
+    mode = "hardlink",
+    badFootprint = false,
   ) {
     const fixture = mkdtempSync(resolve(tmpdir(), "verifier-disk-admission-"));
     try {
@@ -791,6 +814,18 @@ describe("EI-22589054433344154 — aggregate disk admission precedes bulk alloca
       mkdirSync(resolve(desktop, "bin/lib"), { recursive: true });
       mkdirSync(resolve(fixture, "source"));
       mkdirSync(resolve(fixture, "bulk"));
+      // Sparse donors exercise the real apparent-size measurement without
+      // allocating GiBs. Include a nested tree that source filtering omits.
+      for (const [rel, bytes] of [["node_modules", 2 * 1024 ** 3], ["papercusp-desktop/node_modules", 1024 ** 3]] as const) {
+        mkdirSync(resolve(fixture, rel), { recursive: true });
+        const file = resolve(fixture, rel, "payload");
+        writeFileSync(file, "");
+        // Exceed the whole-GiB boundary explicitly: tmpfs directory metadata
+        // can have zero apparent size, unlike disk-backed directory entries.
+        truncateSync(file, bytes + 8192);
+      }
+      writeFileSync(resolve(desktop, "bin/lib/pinned-deps.sh"),
+        readFileSync(resolve(__dirname, "../../../papercusp-desktop/bin/lib/pinned-deps.sh"), "utf8"));
       // Exercise the real shared reservation writer with deterministic device
       // measurements. Each test has a private ledger and reserves no real disk.
       writeFileSync(
@@ -807,6 +842,7 @@ describe("EI-22589054433344154 — aggregate disk admission precedes bulk alloca
           "-c",
           [
             "VERIFIER_DISK_RESERVATIONS=()",
+            ...(badFootprint ? ['du() { echo unknown; }'] : []),
             src.slice(releaseStart, releaseEnd),
             src.slice(reservationStart, operatorSnapshotIdx),
             "reserve_verifier_disk 1073741824",
@@ -828,6 +864,7 @@ describe("EI-22589054433344154 — aggregate disk admission precedes bulk alloca
             WORK: resolve(fixture, "bulk"),
             PAPERCUSP_DISK_RESERVATION_DIR: resolve(fixture, "ledger"),
             VERIFY_TAURI_ISOLATED_DB: isolated ? "1" : "0",
+            VERIFY_TAURI_DEPENDENCY_SNAPSHOT_MODE: mode,
             TEST_SAME_MOUNT: sameMount ? "1" : "0",
             TEST_FREE_SOURCE: String(freeSource),
             TEST_FREE_BULK: String(freeBulk),
@@ -864,6 +901,27 @@ describe("EI-22589054433344154 — aggregate disk admission precedes bulk alloca
     expect(result.stdout).toBe("status=0 claims=1\ngb=3\n");
   });
 
+  it("reserves the complete independent dependency footprint alongside bulk demand", () => {
+    const result = reserve(true, 20, 20, true, "copy");
+    expect(result.status, result.stderr).toBe(0);
+    // 1 GiB source + >3 GiB apparent dependency bytes + metadata = 6;
+    // the isolated DB/profile consumes another 9 GiB on this same mount.
+    expect(result.stdout).toBe("status=0 claims=1\ngb=15\n");
+  });
+
+  it("refuses capacity that pays for source metadata but cannot pay for the copied dependencies", () => {
+    const result = reserve(true, 11, 11, true, "copy");
+    expect(result.status).toBe(28);
+    expect(result.stdout).toBe("status=28 claims=0\n");
+  });
+
+  it("refuses an unmeasured copy footprint without publishing a reservation", () => {
+    const result = reserve(true, 20, 20, true, "copy", true);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toBe("status=1 claims=0\n");
+    expect(result.stderr).toContain("dependency footprint is unmeasured");
+  });
+
   it("estimates with the copy filters and admits before rsync can allocate bytes", () => {
     const snapshotCommands = operatorSnapshotSource.replace(/\\\n\s*/g, "");
     expect(
@@ -879,6 +937,68 @@ describe("EI-22589054433344154 — aggregate disk admission precedes bulk alloca
     expect(src.slice(src.indexOf('BOOT_ONLY_ENV="$WORK/env.sh"'))).toContain(
       "release_verifier_disk_reservations",
     );
+  });
+});
+
+describe("native copy callers preserve frozen helpers and bounded admission", () => {
+  function snapshot(mode: string, bounded = true) {
+    const fixture = mkdtempSync(resolve(tmpdir(), "verifier-copy-helper-"));
+    const frozen = resolve(fixture, "frozen");
+    const helper = resolve(frozen, "papercusp-desktop/bin/lib/pinned-deps.sh");
+    mkdirSync(resolve(frozen, "scripts/lib"), { recursive: true });
+    mkdirSync(resolve(frozen, "papercusp-desktop/bin/lib"), { recursive: true });
+    writeFileSync(resolve(frozen, "scripts/lib/budgeted-task-scheduler.mjs"),
+      `export function readTaskCgroupMemoryMaxMb() { return ${bounded ? 4096 : "null"}; }`);
+    writeFileSync(resolve(frozen, "scripts/pc-heavy.sh"),
+      'echo admission >> "$WORK/order"\nshift\n"$@"');
+    writeFileSync(helper, [
+      'echo "helper:${BASH_SOURCE[0]}" >> "$WORK/order"',
+      'papercusp_pinned_deps_snapshot_locked() { printf "locked:%s:%s:%s\\n" "$1" "$2" "$3" >> "$WORK/order"; }',
+      'if [ "${BASH_SOURCE[0]}" = "$0" ]; then shift; papercusp_pinned_deps_snapshot_locked "$@"; fi',
+    ].join("\n"));
+    try {
+      const before = readFileSync(helper, "utf8");
+      const result = spawnSync("bash", ["-c", [
+        "set -euo pipefail", dependencySnapshotSource,
+        'snapshot_verifier_pinned_deps "$TEST_FROZEN" "$TEST_HELPER"',
+      ].join("\n")], { encoding: "utf8", timeout: 10_000, env: {
+        ...process.env, WORK: fixture, REPO_DIR: "/canonical-donor",
+        TEST_FROZEN: frozen, TEST_HELPER: helper,
+        VERIFY_TAURI_DEPENDENCY_SNAPSHOT_MODE: mode,
+      } });
+      const order = existsSync(resolve(fixture, "order")) ? readFileSync(resolve(fixture, "order"), "utf8") : "";
+      expect(readFileSync(helper, "utf8")).toBe(before);
+      return { ...result, order, helper, frozen };
+    } finally { rmSync(fixture, { recursive: true, force: true }); }
+  }
+
+  it("runs the frozen copy helper in its original layout under heavy admission and the donor mutex", () => {
+    const result = snapshot("copy");
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stderr).toContain("VERIFY_TAURI_COPY_MEMORY_MAX_MB=4096");
+    expect(result.order).toBe(`admission\nhelper:${result.helper}\nlocked:/canonical-donor:${result.frozen}:copy\n`);
+  });
+
+  it("refuses an unbounded copy before admission or any helper execution", () => {
+    const result = snapshot("copy", false);
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain("VERIFY_TAURI_COPY_MEMORY_UNBOUNDED");
+    expect(result.order).toBe("");
+  });
+
+  it("keeps the default hardlink call and donor mutex without copy admission", () => {
+    const result = snapshot("", false);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.order).toContain(`locked:/canonical-donor:${result.frozen}:hardlink\n`);
+    expect(result.order).not.toContain("admission");
+  });
+
+  it("uses the same maintained helper seam in both source routes, with copy tooling in committed provenance", () => {
+    expect(operatorSnapshotSource.match(/snapshot_verifier_pinned_deps "\$snapshot_root"/g)).toHaveLength(2);
+    const committed = src.slice(src.indexOf("snapshot_committed_operator_source() {"), operatorSnapshotCallIdx);
+    for (const path of ["scripts/pc-heavy.sh", "scripts/lib/budgeted-task-scheduler.mjs", "apps/operator/bin/release/dependency-generation.sh"]) {
+      expect(committed).toContain(path);
+    }
   });
 });
 

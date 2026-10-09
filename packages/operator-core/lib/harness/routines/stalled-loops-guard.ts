@@ -488,7 +488,7 @@ export interface StalledLoopsSweepDeps {
     workspaceId: string;
     pausedAfterMs: number;
     maxRevivals: number;
-  }) => Promise<Array<{ routineId: string; ownerId: string; pausedAtMs: number; revivedCount: number }>>;
+  }) => Promise<Array<{ routineId: string; ownerId: string; pausedAtMs: number; pauseReason: string; revivedCount: number }>>;
   /** Injectable for tests; defaults to the real wake-reachability probe — the SAME oracle
    *  reconcileLoopRoutines uses to refuse terminating a live owner (EI-19406534159939583). */
   probeReachability?: typeof probeWakeReachability;
@@ -797,11 +797,18 @@ export async function sweepStalledLoops(
     deps.readRevivableLoops ??
     (async (o: { sql: Sql; workspaceId: string; pausedAfterMs: number; maxRevivals: number }) => {
       const rows = await o.sql<
-        Array<{ id: string; target_owner_id: string; paused_at_ms: string | number; revived_count: number }>
+        Array<{
+          id: string;
+          target_owner_id: string;
+          paused_at_ms: string | number;
+          pause_reason: string;
+          revived_count: number;
+        }>
       >`
         SELECT id,
                target_owner_id,
                (metadata->'pause'->>'pausedAtMs')::bigint            AS paused_at_ms,
+               metadata->>'loop_paused_reason'                       AS pause_reason,
                COALESCE((metadata->>'loop_revived_count')::int, 0)   AS revived_count
           FROM harness_shared.routines
          WHERE workspace_id = ${o.workspaceId}
@@ -815,11 +822,18 @@ export async function sweepStalledLoops(
                < to_timestamp(((metadata->'pause'->>'pausedAtMs')::bigint) / 1000.0)
       `;
       return rows
-        .filter((r) => typeof r?.target_owner_id === 'string' && r.target_owner_id.length > 0)
+        .filter(
+          (r) =>
+            typeof r?.target_owner_id === 'string' &&
+            r.target_owner_id.length > 0 &&
+            typeof r?.pause_reason === 'string' &&
+            r.pause_reason.length > 0,
+        )
         .map((r) => ({
           routineId: r.id,
           ownerId: r.target_owner_id,
           pausedAtMs: Number(r.paused_at_ms),
+          pauseReason: r.pause_reason,
           revivedCount: Number(r.revived_count) || 0,
         }))
         .filter((r) => Number.isFinite(r.pausedAtMs));
@@ -886,7 +900,13 @@ export async function sweepStalledLoops(
       `[stalled-loops-guard] revival candidate read failed (${e instanceof Error ? e.message : e}) — ` +
         `reviving nobody this sweep; previously-disarmed loops stay down.`,
     );
-    return [] as Array<{ routineId: string; ownerId: string; pausedAtMs: number; revivedCount: number }>;
+    return [] as Array<{
+      routineId: string;
+      ownerId: string;
+      pausedAtMs: number;
+      pauseReason: string;
+      revivedCount: number;
+    }>;
   });
   if (reviveCandidates.length > 0) {
     const sinceDisarm = await readOwnerToolActivity(
@@ -903,26 +923,27 @@ export async function sweepStalledLoops(
     for (const c of reviveCandidates) {
       const activity = sinceDisarm.get(c.ownerId);
       if (!isProgressingToolActivity(activity)) continue;
-      revivedAfterDisarm.push(c.ownerId);
       console.warn(
-        `[stalled-loops-guard] REVIVED ${c.ownerId}: disarmed as turn-stalled at ` +
+        `[stalled-loops-guard] REVIVAL CANDIDATE ${c.ownerId}: disarmed as turn-stalled at ` +
           `${new Date(c.pausedAtMs).toISOString()}, but has made ${activity?.calls} tool call(s) since ` +
           `(${activity?.distinctTools} distinct tool(s), ${activity?.okCalls} ok, last ` +
-          `${activity?.lastCallAt ?? 'unknown'}) — the owner is working, so the verdict was wrong. ` +
-          `Re-arming (revival ${c.revivedCount + 1}/${MAX_REVIVALS}); a disarm is a pause with a ` +
-          `condition, not a one-way door (WI-37546).`,
+          `${activity?.lastCallAt ?? 'unknown'}) — owner activity makes it eligible for a ` +
+          `snapshot-guarded revival attempt (WI-37546).`,
       );
       if (!dryRun) {
-        await revive(
+        const didRevive = await revive(
           sql,
           c.routineId,
+          { pausedAtMs: c.pausedAtMs, pauseReason: c.pauseReason },
           `stalled-loops-guard (WI-37546): revived — disarmed as turn-stalled at ` +
             `${new Date(c.pausedAtMs).toISOString()}, then made ${activity?.calls} tool call(s) ` +
             `(${activity?.distinctTools} distinct, ${activity?.okCalls} ok, last ` +
             `${activity?.lastCallAt ?? 'unknown'}). The owner was working; the turn-stalled verdict ` +
             `was wrong. Revival ${c.revivedCount + 1} of ${MAX_REVIVALS}.`,
         );
+        if (!didRevive) continue;
       }
+      revivedAfterDisarm.push(c.ownerId);
     }
   }
   /**

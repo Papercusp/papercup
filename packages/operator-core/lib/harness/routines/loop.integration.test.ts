@@ -18,6 +18,8 @@ import {
   getLoopStatus,
   readActiveLoopFacts,
   deactivateLoop,
+  reviveDisarmedLoop,
+  LOOP_END_PAUSE_PREFIX,
   transferLoopOwnership,
   loopRoutineName,
   autoArmFleetMemberLoop,
@@ -1027,6 +1029,63 @@ describe('loop surface round-trip (real PG)', () => {
     expect(await deactivateLoop('su-nobody', { sql })).toBe(false);
   });
 
+  it('a stale stalled-loop revival cannot undo loop:end after the candidate read', async () => {
+    await materializeLoop({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      ownerId: OWNER,
+      intervalSec: 60,
+      kickoff: 'k',
+      sql,
+    });
+
+    const candidatePauseAtMs = Date.parse('2026-06-20T00:00:00.000Z');
+    const candidatePauseReason = 'stalled-loops-guard (WI-6639): turns-stalled: candidate';
+    await sql`
+      UPDATE harness_shared.routines
+         SET active = FALSE,
+             metadata = COALESCE(metadata, '{}'::jsonb)
+                      || jsonb_build_object(
+                           'loop_paused_reason', ${candidatePauseReason}::text,
+                           'pause', jsonb_build_object(
+                             'reason', ${candidatePauseReason}::text,
+                             'pausedAtMs', ${candidatePauseAtMs}::bigint
+                           )
+                         )
+       WHERE name = ${loopRoutineName(OWNER)}
+    `;
+    const [candidateRow] = await sql<Array<{ id: string }>>`
+      SELECT id
+        FROM harness_shared.routines
+       WHERE name = ${loopRoutineName(OWNER)}
+    `;
+    expect(candidateRow).toBeDefined();
+
+    // The guard already read this candidate. The owner ends the inactive loop while the guard
+    // is checking activity; the old candidate must no longer authorize a later revival write.
+    expect(await deactivateLoop(OWNER, { sql, reason: 'explicitly ended during the sweep' })).toBe(false);
+    const revived = await reviveDisarmedLoop(
+      sql,
+      candidateRow!.id,
+      { pausedAtMs: candidatePauseAtMs, pauseReason: candidatePauseReason },
+      'owner activity passed the liveness veto',
+    );
+    expect(revived).toBe(false);
+
+    const [after] = await sql<Array<{ active: boolean; pause_reason: string; paused_at_ms: string }>>`
+      SELECT active,
+             metadata->>'loop_paused_reason' AS pause_reason,
+             metadata->'pause'->>'pausedAtMs' AS paused_at_ms
+        FROM harness_shared.routines
+       WHERE id = ${candidateRow!.id}
+    `;
+    expect(after).toMatchObject({
+      active: false,
+      pause_reason: `${LOOP_END_PAUSE_PREFIX} explicitly ended during the sweep`,
+    });
+    expect(Number(after!.paused_at_ms)).not.toBe(candidatePauseAtMs);
+  });
+
   it('EI-22379628359419691: loop:end disarms only the loop and preserves independent fleet watches', async () => {
     const fleet = { kind: 'fleet-leadership', ref: 'fleet-alpha' };
     const other = { kind: 'work-item-claim', ref: 'WI-1' };
@@ -1062,16 +1121,18 @@ describe('loop surface round-trip (real PG)', () => {
       { event_key: 'fleet:member-dead:fleet-alpha', cancelled_at: null },
       { event_key: 'work-item:claim:WI-1', cancelled_at: null },
     ]);
-    expect(
-      await sql<{ event_key: string; active: boolean }[]>`
-        SELECT event_key, active
-          FROM harness_shared.predicate_watches
-         WHERE owner_id = ${OWNER}
-         ORDER BY event_key`,
-    ).toEqual([
-      { event_key: 'predicate:fleet-alpha', active: true },
-      { event_key: 'predicate:WI-1', active: true },
-    ]);
+    const watches = await sql<{ event_key: string; active: boolean }[]>`
+      SELECT event_key, active
+        FROM harness_shared.predicate_watches
+       WHERE owner_id = ${OWNER}
+       ORDER BY event_key`;
+    expect(watches).toHaveLength(2);
+    expect(watches).toEqual(
+      expect.arrayContaining([
+        { event_key: 'predicate:fleet-alpha', active: true },
+        { event_key: 'predicate:WI-1', active: true },
+      ]),
+    );
 
     // Re-seed a fleet watch after the row is inactive: a repeated loop:end remains
     // a no-op for the loop and must not take ownership of independent watch cleanup.

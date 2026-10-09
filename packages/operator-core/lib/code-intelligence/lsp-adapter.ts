@@ -27,11 +27,12 @@
  *     whole design is built to prevent.
  */
 
-import { existsSync, readdirSync, readFileSync, statSync, type Dirent } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync, type Dirent } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import type { ChildProcess } from 'node:child_process';
 
@@ -55,6 +56,8 @@ import {
 
 import {
   toOneIndexed,
+  unmeasuredSourceEvidence,
+  versionedSymbolIdentity,
   type BackendHealth,
   type CodeIntelAnswer,
   type CodeIntelIntent,
@@ -327,6 +330,14 @@ export function resolveServerBin(language: LspLanguage): string | null {
   return specForLanguage(language).resolveBin();
 }
 
+interface LspOpenDocument {
+  readonly mtimeMs: number;
+  readonly size: number;
+  /** Hash of the exact UTF-8 text sent in didOpen, never a later disk read. */
+  readonly contentHash?: string;
+  readonly typescriptProjectKey?: string;
+}
+
 interface LspClient {
   connection: MessageConnection;
   semanticPlugin?: SemanticCompletionPluginDeclaration;
@@ -369,15 +380,7 @@ interface LspClient {
    * an open document ignores disk per the LSP spec, so without it a peer's
    * write is invisible and the server answers about text that is gone.
    */
-  openDocs: Map<
-    string,
-    {
-      mtimeMs: number;
-      size: number;
-      /** The configured/inferred TypeScript project retaining this URI. */
-      typescriptProjectKey?: string;
-    }
-  >;
+  openDocs: Map<string, LspOpenDocument>;
   /**
    * One foreground TypeScript project may use this client at a time.
    *
@@ -1887,7 +1890,7 @@ export async function ensureOpen(client: LspClient, absPath: string): Promise<st
     // established incremental sync (documents open at version 1 and never
     // advance), so didChange would carry a version the server has no baseline
     // for. Re-opening restores the invariant the rest of the adapter assumes.
-    client.connection.sendNotification('textDocument/didClose', { textDocument: { uri } });
+    await client.connection.sendNotification('textDocument/didClose', { textDocument: { uri } });
     client.openDocs.delete(uri);
   }
 
@@ -1903,7 +1906,7 @@ export async function ensureOpen(client: LspClient, absPath: string): Promise<st
   // [4844, 1, 2, 1, 1] in WI-2142941. An unchanged already-open document takes
   // the early return above and keeps the genuine hot-path observation.
   invalidateClientReadiness(client);
-  client.connection.sendNotification('textDocument/didOpen', {
+  await client.connection.sendNotification('textDocument/didOpen', {
     textDocument: {
       uri,
       languageId: specForLanguage(client.language).languageId,
@@ -1911,13 +1914,62 @@ export async function ensureOpen(client: LspClient, absPath: string): Promise<st
       text,
     },
   });
-  // Stamp from AFTER the read where the stat failed, so a transient stat error
-  // cannot pin a document as permanently fresh.
+  // Retain the sent text even if disk moved during the read. A failed stat
+  // forces another reopen on the next query rather than certifying freshness.
   client.openDocs.set(uri, {
     ...(stamp ?? { mtimeMs: -1, size: -1 }),
+    contentHash: createHash('sha256').update(text).digest('hex'),
     ...(tsProjectKey ? { typescriptProjectKey: tsProjectKey } : {}),
   });
   return uri;
+}
+
+/** Bind returned sites only to documents retained throughout this request.
+ * Unopened dependency files and legacy stamps have unknown versions. A close
+ * or reopen during the request invalidates the result, even if its bytes match.
+ */
+export function withLspSnapshotEvidence(answer: CodeIntelAnswer,
+  client: Pick<LspClient, 'openDocs' | 'language'>, snapshot: ReadonlyMap<string, LspOpenDocument>,
+  rootPath: string): CodeIntelAnswer {
+  let repositoryId: string | null = null;
+  try { repositoryId = `local-root:${createHash('sha256').update(realpathSync(rootPath)).digest('hex')}`; }
+  catch { /* An inaccessible root has no measured repository identity. */ }
+  const scope = { repositoryId, identityKind: repositoryId ? 'local-root' as const : 'unknown' as const,
+    paths: ['.'], basis: 'compiler-project' as const, language: client.language };
+  if ([...snapshot].some(([uri, stamp]) => client.openDocs.get(uri) !== stamp)) {
+    const refused: CodeIntelAnswer = { ...answer, sites: [],
+      truncation: { truncated: false, totalAvailable: null, continuation: null },
+      freshness: { ...answer.freshness, health: 'degraded', staleVsDisk: null },
+      error: 'LSP document snapshot changed during the request; re-resolve against the current source.' };
+    return { ...refused, evidence: unmeasuredSourceEvidence(refused, scope, [refused.error!]) };
+  }
+  const supportingFiles = [...snapshot].flatMap(([uri, stamp]) => {
+    if (!stamp.contentHash || !/^[a-f0-9]{64}$/.test(stamp.contentHash)) return [];
+    let path: string;
+    try { path = relative(rootPath, fileURLToPath(uri)); } catch { return []; }
+    if (!path || path.startsWith('../') || path === '..' || path.startsWith('/')) return [];
+    return [{ path, contentHash: stamp.contentHash, language: languageForFile(path) ?? client.language,
+      representation: 'full-source' as const }];
+  }).sort((a, b) => a.path.localeCompare(b.path));
+  const limitations = [
+    'Hashes identify only retained didOpen text, not every file loaded by the server. Unopened target versions remain unknown.',
+    'No later disk read establishes server input, exhaustive project coverage, or runtime execution.',
+  ];
+  return { ...answer, freshness: { ...answer.freshness, staleVsDisk: null }, evidence: {
+    schemaVersion: 1,
+    sourceScope: { repositoryId, identityKind: scope.identityKind, paths: ['.'], supportingFiles,
+      sourceFingerprint: supportingFiles.length ? createHash('sha256').update(JSON.stringify(supportingFiles)).digest('hex') : null },
+    graphScope: { basis: 'compiler-project', sourceCompleteness: 'unverified', limitations },
+    languageCapabilities: [{ language: client.language, intent: answer.intent,
+      status: answer.error ? 'unknown' : 'compiler-backed' }],
+    siteIdentities: answer.sites.map((site, siteIndex) => {
+      const source = supportingFiles.find(file => file.path === site.path);
+      return { siteIndex, sourcePath: site.path, contentHash: source?.contentHash ?? null,
+        versionedSymbolId: versionedSymbolIdentity(repositoryId, site, source) };
+    }),
+    relationships: answer.sites.map((_, siteIndex) => ({ siteIndex, kind: answer.intent,
+      origin: 'compiler', knowledge: 'observed', runtimeExecution: 'unknown' })),
+  } };
 }
 
 /** An LSP Location or LocationLink, normalized to a one-indexed SymbolSite. */
@@ -2024,6 +2076,7 @@ export async function lspQuery(
     releaseProjectLease = leased.release;
     const uri = await ensureOpen(client, query.file);
 
+    const snapshot = new Map(client.openDocs);
     if (semanticRequest) {
       await requireClientCapability(client, 'references');
       const result = await requestSemanticCompletion(semanticRequest,
@@ -2036,10 +2089,10 @@ export async function lspQuery(
       if (evictIfLanguageServiceDead(client, state.clients)) return fail('semantic completion refused: server-died');
       const sites = result.refs.map(ref => ({ path: ref.file.startsWith(query.rootPath + '/')
         ? ref.file.slice(query.rootPath.length + 1) : ref.file, line1: ref.start.line, kind: null }));
-      return { backend: 'lsp-adapter', intent, query: `${query.file}:${query.line1}:${query.character}`, sites,
+      return withLspSnapshotEvidence({ backend: 'lsp-adapter', intent, query: `${query.file}:${query.line1}:${query.character}`, sites,
         truncation: { truncated: false, totalAvailable: sites.length, continuation: null },
         freshness: { health: 'healthy', indexedAt: new Date(client.startedAt).toISOString(),
-          staleVsDisk: null, indexedCommit: null }, latencyMs: Date.now() - started, error: null };
+          staleVsDisk: null, indexedCommit: null }, latencyMs: Date.now() - started, error: null }, client, snapshot, query.rootPath);
     }
 
     // Never answer from a half-loaded project — that returns a plausible WRONG
@@ -2107,7 +2160,7 @@ export async function lspQuery(
       );
     }
 
-    return {
+    return withLspSnapshotEvidence({
       backend: 'lsp-adapter',
       intent,
       query: `${query.file}:${query.line1}:${query.character}`,
@@ -2120,16 +2173,13 @@ export async function lspQuery(
         // all read as facts by callers via isTrustworthyEmpty().
         health: answerHealth,
         indexedAt: new Date(client.startedAt).toISOString(),
-        // The server reads from disk on didOpen, so an opened document is
-        // never stale against disk. We do NOT claim to know about files the
-        // server has not opened — that would be exactly the unfounded
-        // freshness claim corpus case 6 exists to catch.
-        staleVsDisk: false,
+        // Retained didOpen text identifies input, not current disk freshness.
+        staleVsDisk: null,
         indexedCommit: null,
       },
       latencyMs: Date.now() - started,
       error: null,
-    };
+    }, client, snapshot, query.rootPath);
   } catch (err) {
     return fail(err instanceof Error ? err.message : String(err));
   } finally {
@@ -2265,7 +2315,8 @@ export async function lspDiagnostics(query: {
         // all read as facts by callers via isTrustworthyEmpty().
         health: answerHealth,
         indexedAt: new Date(entry.receivedAt).toISOString(),
-        staleVsDisk: false,
+        // A pushed diagnostic does not certify the current disk version.
+        staleVsDisk: null,
         indexedCommit: null,
       },
       latencyMs: Date.now() - started,
@@ -2335,6 +2386,7 @@ export async function lspWorkspaceSymbols(query: {
     // Opening the anchor is what CREATES the tsserver project this search runs
     // against; for rust it merely warms a crate graph the root already implies.
     if (scope.anchor) await ensureOpen(client, scope.anchor);
+    const snapshot = new Map(client.openDocs);
     await requireClientCapability(client, intent);
     const readiness = await prepareIntentReadiness(client, intent);
     if (readiness === 'timeout') {
@@ -2365,7 +2417,7 @@ export async function lspWorkspaceSymbols(query: {
     if (sites.length === 0) {
       return fail(symbolSearchEmptyCaveat(query.name, query.language, scope), 'degraded');
     }
-    return {
+    return withLspSnapshotEvidence({
       backend: 'lsp-adapter',
       intent,
       query: query.name,
@@ -2385,7 +2437,7 @@ export async function lspWorkspaceSymbols(query: {
       },
       latencyMs: Date.now() - started,
       error: null,
-    };
+    }, client, snapshot, query.rootPath);
   } catch (err) {
     return fail(err instanceof Error ? err.message : String(err));
   } finally {
@@ -2431,6 +2483,7 @@ export async function lspRenamePreview(query: LspQuery & { newName: string }): P
     const client = leased.client;
     releaseProjectLease = leased.release;
     const uri = await ensureOpen(client, query.file);
+    const snapshot = new Map(client.openDocs);
     await requireClientCapability(client, intent);
     const readiness = await prepareIntentReadiness(client, intent);
     if (readiness === 'timeout') {
@@ -2457,7 +2510,7 @@ export async function lspRenamePreview(query: LspQuery & { newName: string }): P
     }
     certifyCanaryAnswer(client, intent, readiness, sites.length, JSON.stringify(sites));
 
-    return {
+    return withLspSnapshotEvidence({
       backend: 'lsp-adapter',
       intent,
       query: q,
@@ -2470,12 +2523,12 @@ export async function lspRenamePreview(query: LspQuery & { newName: string }): P
         // all read as facts by callers via isTrustworthyEmpty().
         health: healthForAnswer(client, intent, sites.length),
         indexedAt: new Date(client.startedAt).toISOString(),
-        staleVsDisk: false,
+        staleVsDisk: null,
         indexedCommit: null,
       },
       latencyMs: Date.now() - started,
       error: null,
-    };
+    }, client, snapshot, query.rootPath);
   } catch (err) {
     return fail(err instanceof Error ? err.message : String(err));
   } finally {
