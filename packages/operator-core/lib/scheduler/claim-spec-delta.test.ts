@@ -142,6 +142,11 @@ describe('readClaimSpecDelta — both sides in ONE snapshot (P-005)', () => {
     // JS comment above the statement rather than a SQL one on purpose — a backtick inside the
     // template literal terminates it, and the SQL comment would also land in this log.)
     expect(create).toMatch(/WHERE\s+\(\?\)\s+AND\s+c\.ok_observation/);
+    // WI-10007576 follow-up: EVERY claim floor is ANDed onto the snapshot too (the trailing
+    // `(?)` is the ALL_ISSUE_CLAIM_FLOORS_PASS fragment). Once an unfiltered side makes the
+    // union unbounded, materializing floor-failing rows (~9.7k of ~10k on the live lane) both
+    // overflowed temp_buffers and blew the 15s statement timeout; no count can see them.
+    expect(create).toMatch(/WHERE\s+\(\?\)\s+AND\s+c\.ok_observation\s+AND\s+\(\?\)\s*$/);
     // It must be ANDed with the union, never replace it. Restricting the candidate population
     // to one side is the EI-20414245235902773 regression: proposed-only rows then never reach
     // the `proposed_match` projection and a widening revision reports 0 newly admitted.

@@ -2476,7 +2476,7 @@ export async function readClaimSpecDelta(
     await client`
       CREATE TEMP TABLE ${client.unsafe(table)} ON COMMIT DROP AS
       SELECT c.*, (${proposedMatch}) AS proposed_match FROM (${sub}) c
-      WHERE (${candidateMatch}) AND (${client.unsafe(ALL_ISSUE_CLAIM_FLOORS_PASS)})
+      WHERE (${candidateMatch}) AND c.ok_observation AND (${client.unsafe(ALL_ISSUE_CLAIM_FLOORS_PASS)})
     `;
 
     // in_current / in_proposed are the FULL claimability predicate per side: that side's
