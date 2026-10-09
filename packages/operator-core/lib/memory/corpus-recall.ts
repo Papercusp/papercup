@@ -535,8 +535,8 @@ function resolveCall(kind: CorpusHandle['kind'], ref: string, terms: string[]): 
     const source = ref.slice(4);
     const harnessDoc = source.startsWith('harness:');
     const parts = source.split(':');
-    return `docs:get ${JSON.stringify({ ref: parts.slice(harnessDoc ? 2 : 1).join(':'),
-      ...(harnessDoc ? { harness: parts[1] } : {}) })}`;
+    return `docs:get ${JSON.stringify({ slugs: [parts.slice(harnessDoc ? 2 : 1).join(':')],
+      harness: harnessDoc ? parts[1] : 'engineering' })}`;
   }
   const sid = ref.includes(':') ? ref.slice(ref.indexOf(':') + 1) : ref;
   const q = terms.slice(0, 4).join(' ');

@@ -59,6 +59,8 @@ describe('complete knowledge context', () => {
     expect(block).toContain('retain the snapshot');
     expect(block).toContain('plans:get');
     expect(block).toContain('docs:get');
+    expect(selected.lines.find(l=>l.handle.kind === 'doc')?.handle.resolve)
+      .toBe('docs:get {"slugs":["repair"],"harness":"papercusp"}');
     expect(block).toContain('reports:get');
     expect(block).toContain('dated evidence');
     expect(selectCorpusLines({ hits,queryText: QUERY,ambientExcludedRefs: new Set(['report:R1']) }).lines
@@ -73,6 +75,7 @@ describe('complete knowledge context', () => {
     const result = selectCorpusLines({ hits: [report,doc],queryText: QUERY,maxItems: 1 });
     expect(result.lines[0].handle.kind).toBe('doc');
     expect(result.lines[0].line).toContain('retain the snapshot');
+    expect(result.lines[0].handle.resolve).toBe('docs:get {"slugs":["repair"],"harness":"engineering"}');
   });
 });
 

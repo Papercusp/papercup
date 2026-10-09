@@ -223,8 +223,9 @@ describe('Reports shared search (migrated PostgreSQL)', () => {
       automatic: true, harnessSlugs: ['pot-a'], excludedRefs: new Set([`report:${excluded.reportId}`]),
     });
     for (const leg of [source.lexical!,source.embedding!]) {
-      const rows = await leg({ ...context(), limit: 1, qVec: JSON.stringify(vector('zephyrquartz')),
-        embeddingProfile: { profileId,legacyMode: 'gemma' } });
+      const options = { ...context(),limit: 1,qVec: JSON.stringify(vector('zephyrquartz')),
+        embeddingProfile: { profileId,legacyMode: 'gemma' } };
+      const rows = await leg(options);
       const ids = rows.map(r=>r.row.source_id);
       expect(ids).not.toContain(old.reportId);
       expect(ids).not.toContain(correction.reportId);

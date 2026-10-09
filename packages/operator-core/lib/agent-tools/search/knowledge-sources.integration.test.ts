@@ -100,7 +100,10 @@ describe('complete knowledge sections against canonical PostgreSQL', () => {
       embedding_profile = ${profileId},embedding_mode = 'gemma'
       WHERE surface = 'plans' AND parent_key[1] = ${workspaceId}`;
     const source = createPlanSearchSource({ harnessSlugs: ['pot-a'] });
-    await runChunkSyncTick({ sql: db.adminSql,surfaces: [{ ...surface,completeBody: false }] });
+    const warn = vi.fn(),error = vi.fn();
+    await runChunkSyncTick({ sql: db.adminSql,surfaces: [{ ...surface,completeBody: false }],logger: { warn,error } });
+    expect(warn.mock.calls.some(call=>String(call[0]).includes('truncated by maxChunks'))).toBe(true);
+    expect(error).not.toHaveBeenCalled();
     await embedChunks();
     const capped = await source.embedding!({ ...params(),query: 'restore diagnostic state' });
     expect(capped[0].row.excerpt).not.toContain('zephyrquartz');

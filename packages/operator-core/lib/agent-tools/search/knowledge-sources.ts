@@ -30,7 +30,7 @@ export function boundedSource(source: SearchSource): SearchSource {
       client: p.sql, signal: p.signal, readOnly: true, statementTimeoutMs: 1_500,
     });
   return { ...source,
-    lexical: source.lexical ? p => run(source.lexical!, p, false) : undefined,
+    lexical: p => run(source.lexical, p, false),
     embedding: source.embedding ? p => run(source.embedding!, p, true) : undefined,
   };
 }
