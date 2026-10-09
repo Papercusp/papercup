@@ -3,12 +3,13 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { defaultEvidenceRoot, parseSelectionArgs, runHarness } from '@papercusp/verification-harness';
 import { bridgeEval } from '../libs/generic/tauri-verify/src/bridge-client';
 import { isCliEntry } from '../packages/operator-core/lib/util/cli-entry';
+import { verifyVerifierSourceSync } from '../packages/operator-core/lib/verifier-source';
 
 /** Run with --e2e inside verify-tauri-headless, before Vitest relocates TMPDIR. */
 export async function runNativeE2e(testFiles = ['packages/operator-core/lib/reports-library-native.e2e.test.ts']) {
@@ -19,6 +20,11 @@ export async function runNativeE2e(testFiles = ['packages/operator-core/lib/repo
   const receipt = JSON.parse(readFileSync(process.env.VERIFY_TAURI_SOURCE_RECEIPT!, 'utf8'));
   assert.equal(receipt.schemaVersion, 'verifier-source-v1');
   assert.equal(receipt.sourceCommit, process.env.VERIFY_TAURI_SOURCE_REF);
+  assert.ok(process.env.OPERATOR_SOURCE_ROOT, 'Use the verifier source snapshot');
+  const sourceRoot = realpathSync(process.env.OPERATOR_SOURCE_ROOT);
+  verifyVerifierSourceSync(sourceRoot, receipt, { runtimeArtifacts: true });
+  assert.ok(testFiles.every(file => receipt.files.some((entry: { path: string }) => entry.path === file)),
+    'Native test selection must belong to the verified source snapshot');
   const tauriPID = Number(process.env.VERIFY_TAURI_PID);
   assert.ok(Number.isSafeInteger(tauriPID) && tauriPID > 0, 'Owned native PID required');
   const nativeTmpDir = tmpdir();
@@ -45,10 +51,11 @@ export async function runNativeE2e(testFiles = ['packages/operator-core/lib/repo
   const profilePath = join(profileDir, 'profile.json');
   writeFileSync(profilePath, JSON.stringify({ runtimeUnits, tauriPID, nativeTmpDir }), { mode: 0o600 });
   try {
-    // Both the test and its dependencies come from the source receipt's commit.
-    execFileSync('npm', ['run', 'lint:as-committed', '--', 'test:file', '--any',
-      `--ref=${receipt.sourceCommit}`, '--', ...testFiles],
-    { stdio: 'inherit', env: { ...process.env, PAPERCUSP_APP_OPERATION_LIVE_PROFILE: profilePath } });
+    // The archive is already verified against its independent commit receipt.
+    // Its maintained recorder checks source integrity at both test boundaries;
+    // lint:as-committed would wrongly require Git inside this archive.
+    execFileSync('npm', ['run', 'test:file', '--', ...testFiles],
+    { cwd: sourceRoot, stdio: 'inherit', env: { ...process.env, PAPERCUSP_APP_OPERATION_LIVE_PROFILE: profilePath } });
   } finally { rmSync(profileDir, { recursive: true, force: true }); }
 }
 

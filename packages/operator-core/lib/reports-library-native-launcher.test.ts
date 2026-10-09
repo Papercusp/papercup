@@ -11,11 +11,14 @@ vi.mock('./runtime-vintage', () => ({ reportRuntimeVintage: seams.reportRuntime,
   listRuntimeVintage: async () => [], measureRuntimeVintageEnvironment: () => 'measured-native' }));
 vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: { end: seams.end } }) }));
 import { runNativeE2e } from '../../../scripts/tauri-surface-verify-reports.mts';
+import { verifierSourceFiles } from './verifier-source';
 
 describe('Reports native launcher at the Vitest temp-directory boundary', () => {
   let root: string;
   let nativeRoot: string;
   let runnerRoot: string;
+  let sourceRoot: string;
+  let receiptPath: string;
   let profilePath: string;
   beforeEach(() => {
     vi.resetAllMocks();
@@ -28,14 +31,26 @@ describe('Reports native launcher at the Vitest temp-directory boundary', () => 
     mkdirSync(nativeRoot);
     mkdirSync(runnerRoot);
     const source = 'a'.repeat(40);
-    const receipt = join(root, 'source.json');
-    writeFileSync(receipt, JSON.stringify({ schemaVersion: 'verifier-source-v1', sourceCommit: source }));
+    sourceRoot = join(root, 'source');
+    const files = ['packages/operator-core/lib/reports-library-native.e2e.test.ts',
+      'packages/operator-core/lib/blueprint/morning-ai-intelligence.native.e2e.test.ts'];
+    for (const file of files) {
+      mkdirSync(join(sourceRoot, file, '..'), { recursive: true });
+      writeFileSync(join(sourceRoot, file), '// committed native test fixture\n');
+    }
+    const sourceFiles = verifierSourceFiles(sourceRoot);
+    const receipt = { schemaVersion: 'verifier-source-v1', sourceCommit: source,
+      testedInputs: sourceFiles.map(({ path, sha256 }) => ({ path, sha256 })), files: sourceFiles };
+    receiptPath = join(root, 'source.json');
+    writeFileSync(receiptPath, JSON.stringify(receipt));
+    writeFileSync(join(sourceRoot, '.verifier-source.json'), JSON.stringify(receipt));
     writeFileSync(join(nativeRoot, `tauri-dev-bridge-${process.pid}.token`),
       JSON.stringify({ pid: process.pid, port: 1234, token: 'fixture-bridge' }));
     vi.stubEnv('TMPDIR', nativeRoot);
     vi.stubEnv('PAPERCUSP_VERIFY_TAURI_ISOLATED', '1');
     vi.stubEnv('PAPERCUSP_TEST_RUNS_DB_URL', 'postgresql://fixture/ledger');
-    vi.stubEnv('VERIFY_TAURI_SOURCE_RECEIPT', receipt);
+    vi.stubEnv('OPERATOR_SOURCE_ROOT', sourceRoot);
+    vi.stubEnv('VERIFY_TAURI_SOURCE_RECEIPT', receiptPath);
     vi.stubEnv('VERIFY_TAURI_SOURCE_REF', source);
     vi.stubEnv('VERIFY_TAURI_PID', String(process.pid));
   });
@@ -57,7 +72,9 @@ describe('Reports native launcher at the Vitest temp-directory boundary', () => 
       expect(existsSync(join(tmpdir(), `tauri-dev-bridge-${profile.tauriPID}.token`))).toBe(false);
       expect(JSON.parse(readFileSync(join(profile.nativeTmpDir,
         `tauri-dev-bridge-${profile.tauriPID}.token`), 'utf8')).pid).toBe(process.pid);
-      expect(args).toContain(`--ref=${'a'.repeat(40)}`);
+      expect(existsSync(join(options.cwd, '.git'))).toBe(false);
+      expect(options.cwd).toBe(sourceRoot);
+      expect(args).toEqual(['run', 'test:file', '--', 'packages/operator-core/lib/reports-library-native.e2e.test.ts']);
       expect(args.at(-1)).toBe('packages/operator-core/lib/reports-library-native.e2e.test.ts');
       if (fail) throw new Error('native test failed');
       return '';
@@ -73,7 +90,8 @@ describe('Reports native launcher at the Vitest temp-directory boundary', () => 
     await runNativeE2e([file]);
     const [command, args, options] = seams.execute.mock.calls[0];
     expect(command).toBe('npm');
-    expect(args).toEqual(expect.arrayContaining(['test:file', `--ref=${'a'.repeat(40)}`, file]));
+    expect(args).toEqual(['run', 'test:file', '--', file]);
+    expect(options.cwd).toBe(sourceRoot);
     expect(seams.reportRuntime).toHaveBeenCalledTimes(1);
     expect(existsSync(options.env.PAPERCUSP_APP_OPERATION_LIVE_PROFILE)).toBe(false);
   });
@@ -97,6 +115,27 @@ describe('Reports native launcher at the Vitest temp-directory boundary', () => 
   it('refuses an unconfigured shared ledger before bridge authentication or runtime writes', async () => {
     vi.stubEnv('PAPERCUSP_TEST_RUNS_DB_URL', '');
     await expect(runNativeE2e()).rejects.toThrow('Keep native results in the shared test ledger');
+    expect(seams.authenticate).not.toHaveBeenCalled();
+    expect(seams.reportRuntime).not.toHaveBeenCalled();
+    expect(seams.execute).not.toHaveBeenCalled();
+  });
+
+  it.each(['source bytes', 'archive manifest', 'source root', 'source commit'] as const)(
+    'refuses changed %s before authentication, runtime writes or test launch', async (changed) => {
+    if (changed === 'source bytes') writeFileSync(join(sourceRoot,
+      'packages/operator-core/lib/reports-library-native.e2e.test.ts'), '// foreign bytes\n');
+    if (changed === 'archive manifest') writeFileSync(join(sourceRoot, '.verifier-source.json'), '{}');
+    if (changed === 'source root') vi.stubEnv('OPERATOR_SOURCE_ROOT', runnerRoot);
+    if (changed === 'source commit') vi.stubEnv('VERIFY_TAURI_SOURCE_REF', 'b'.repeat(40));
+    await expect(runNativeE2e()).rejects.toThrow();
+    expect(seams.authenticate).not.toHaveBeenCalled();
+    expect(seams.reportRuntime).not.toHaveBeenCalled();
+    expect(seams.execute).not.toHaveBeenCalled();
+  });
+
+  it('refuses a maintained test absent from the attested snapshot before any native effects', async () => {
+    await expect(runNativeE2e(['packages/operator-core/lib/missing.native.e2e.test.ts']))
+      .rejects.toThrow('Native test selection must belong to the verified source snapshot');
     expect(seams.authenticate).not.toHaveBeenCalled();
     expect(seams.reportRuntime).not.toHaveBeenCalled();
     expect(seams.execute).not.toHaveBeenCalled();
