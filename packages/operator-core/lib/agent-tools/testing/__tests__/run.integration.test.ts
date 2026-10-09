@@ -1722,7 +1722,7 @@ describe('testing:run (integration)', () => {
     })).toEqual(readback.idsByFile);
   });
 
-  it('builds a fresh store-backed router request with the admin ledger reporter but without the foreground report path', () => {
+  it('keeps admin ledger rows and adds a JSON report for focused detached recovery', () => {
     const request = buildDetachedTestRunRequest({
       root: REPO_ROOT,
       files: ['packages/example.test.ts'],
@@ -1731,6 +1731,7 @@ describe('testing:run (integration)', () => {
       harnessSlug: 'papercusp',
       timeoutMs: 900_000,
     });
+    const artifact = request.detachedReportArtifacts?.[0];
 
     expect(request).toMatchObject({
       kind: 'vitest',
@@ -1740,14 +1741,22 @@ describe('testing:run (integration)', () => {
       requestedFiles: ['packages/example.test.ts'],
       runtimeMaxSec: 930,
     });
+    expect(request.detachedReportArtifacts).toHaveLength(1);
+    expect(artifact).toMatchObject({
+      root: REPO_ROOT,
+      testNamePattern: 'suite > --focused test',
+      scope: { harnessSlug: 'papercusp', workspaceId: 'papercusp-workspace' },
+    });
+    expect(artifact?.reportPath).toContain('papercusp-testing-run-detached-');
     expect(request.args).toEqual([
       join(REPO_ROOT, 'scripts', 'test-files.mjs'),
       'packages/example.test.ts',
       '--',
+      '--reporter=json',
       `--reporter=${join(REPO_ROOT, 'libs/test-config/src/admin-test-runs-reporter.ts')}`,
+      `--outputFile=${artifact?.reportPath}`,
       '--testNamePattern=suite > --focused test',
     ]);
-    expect(request.args.some((arg) => arg.includes('papercusp-testing-run-'))).toBe(false);
     expect(request.env).toEqual({
       PAPERCUSP_TEST_FILE_TIMEOUT_MS: '900000',
       PAPERCUSP_TEST_RUN_HARNESS: 'papercusp',

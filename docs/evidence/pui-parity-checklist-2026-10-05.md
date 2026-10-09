@@ -306,3 +306,17 @@ resume-picker glitch, WI-10006654). R-05 itself is Avi's verdict; it is not grad
 
 Instant echo and working line after Enter (P-024), history recall, multiline input (three ways), the @ file
 picker, a shortcuts overlay, and mouse drag-copy.
+
+## Recorded R-05 owner sign-off (read back 2026-10-09)
+
+The authoritative record is `pui-chat-first-ux-2026-09-28#D-037` (plan revision 130,
+content hash `57c5b9af67e6414aae8512d2393b8aa4cce83f6cc722edfc906c765b362aa567`).
+It records Avi's 2026-10-07 interactive AskUserQuestion answer in session
+`su-caaa53ba-fb38-44e0-a1b4-996a55267afc`: **“Good enough, ship it”**.
+The approved installed build was `33287a0d19`, with binary SHA-256
+`6531c790a8d483c61d65a1b2abdcfc223c11582f1538281bee3e533ba9b3c82a`.
+
+This is the historical human sign-off for `AUTO-BAR-R-05-P-006@7`. It supersedes
+the rejection in D-018. It does not attest a later binary's test result or release
+compatibility. Current P-005 execution, stock five-task comparison, clause proofs,
+independent grading and shipment verification remain separate evidence obligations.

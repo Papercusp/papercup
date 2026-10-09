@@ -849,10 +849,17 @@ describe('WI-10004898: a clean run in a deleted disposable clone binds by commit
   const goneClone = (sha: string) => `/tmp/papercusp-lint-as-committed-${sha.slice(0, 10)}-gone${process.pid}`;
   const cleanRow = (over: Partial<TestRunEvidenceRow> = {}) =>
     run({ file_path: 'pkg/lib/x.test.ts', commit_sha: superCommit, worktree_dirty: false, root: goneClone(superCommit), ...over });
+  const localGitRunner: NonNullable<TestRunBindingDeps['git']> = async (cwd, args) =>
+    execFileSync('git', ['-C', cwd, ...args], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 5_000,
+    });
   const binder = (row: TestRunEvidenceRow): TestRunBindingDeps => ({
     loadRun: async () => row,
     adoptRun: async () => true,
     resolveRoot: async () => harness,
+    git: localGitRunner,
   });
 
   beforeAll(async () => {
@@ -924,11 +931,11 @@ describe('WI-10004898: a clean run in a deleted disposable clone binds by commit
   });
 
   it('maps a superproject clone run, and a submodule clone run under its submodule prefix', async () => {
-    expect(await asCommittedTestPath(harness, cleanRow())).toEqual({
+    expect(await asCommittedTestPath(harness, cleanRow(), localGitRunner)).toEqual({
       testPath: 'pkg/lib/x.test.ts', repoPrefix: '', commitSha: superCommit,
     });
     const subRow = cleanRow({ root: `${goneClone(subCommit)}/${SUB}`, file_path: 'src/s.test.ts', commit_sha: subCommit });
-    expect(await asCommittedTestPath(harness, subRow)).toEqual({
+    expect(await asCommittedTestPath(harness, subRow, localGitRunner)).toEqual({
       testPath: `${SUB}/src/s.test.ts`, repoPrefix: SUB, commitSha: subCommit,
     });
   });
@@ -937,26 +944,26 @@ describe('WI-10004898: a clean run in a deleted disposable clone binds by commit
     // The node:test ledger runs papercusp-desktop/test/*.test.js from the superproject clone
     // root, so the row carries the SUPERPROJECT commit and a path below a 160000 entry.
     const viaGitlink = cleanRow({ file_path: `${SUB}/src/s.test.ts` });
-    expect(await asCommittedTestPath(harness, viaGitlink)).toEqual({
+    expect(await asCommittedTestPath(harness, viaGitlink, localGitRunner)).toEqual({
       testPath: `${SUB}/src/s.test.ts`, repoPrefix: '', commitSha: superCommit,
     });
     // Descending the gitlink is not a free pass: a path absent at the PINNED submodule commit
     // still maps to nothing.
-    expect(await asCommittedTestPath(harness, cleanRow({ file_path: `${SUB}/src/missing.test.ts` }))).toBeNull();
+    expect(await asCommittedTestPath(harness, cleanRow({ file_path: `${SUB}/src/missing.test.ts` }), localGitRunner)).toBeNull();
     const bound = await expandTestRunBinding(input({ sourcePaths: [`${SUB}/src/s.ts`] }), SCOPE, binder(viaGitlink));
     expect(bound).toMatchObject({ ok: true });
   });
 
   it('never maps a dirty, commit-less, foreign-commit, absent-file or plain-directory run', async () => {
-    expect(await asCommittedTestPath(harness, cleanRow({ worktree_dirty: true }))).toBeNull();
-    expect(await asCommittedTestPath(harness, cleanRow({ worktree_dirty: null }))).toBeNull();
-    expect(await asCommittedTestPath(harness, cleanRow({ commit_sha: null }))).toBeNull();
-    expect(await asCommittedTestPath(harness, cleanRow({ commit_sha: 'f'.repeat(40) }))).toBeNull();
-    expect(await asCommittedTestPath(harness, cleanRow({ file_path: 'pkg/lib/missing.test.ts' }))).toBeNull();
-    expect(await asCommittedTestPath(harness, cleanRow({ file_path: '../escape.test.ts' }))).toBeNull();
+    expect(await asCommittedTestPath(harness, cleanRow({ worktree_dirty: true }), localGitRunner)).toBeNull();
+    expect(await asCommittedTestPath(harness, cleanRow({ worktree_dirty: null }), localGitRunner)).toBeNull();
+    expect(await asCommittedTestPath(harness, cleanRow({ commit_sha: null }), localGitRunner)).toBeNull();
+    expect(await asCommittedTestPath(harness, cleanRow({ commit_sha: 'f'.repeat(40) }), localGitRunner)).toBeNull();
+    expect(await asCommittedTestPath(harness, cleanRow({ file_path: 'pkg/lib/missing.test.ts' }), localGitRunner)).toBeNull();
+    expect(await asCommittedTestPath(harness, cleanRow({ file_path: '../escape.test.ts' }), localGitRunner)).toBeNull();
     // `pkg` is a plain directory of the superproject, not a repository root: re-anchoring
     // `lib/x.test.ts` under it would invent a path the run never named.
-    expect(await asCommittedTestPath(harness, cleanRow({ root: `${goneClone(superCommit)}/pkg`, file_path: 'lib/x.test.ts' }))).toBeNull();
+    expect(await asCommittedTestPath(harness, cleanRow({ root: `${goneClone(superCommit)}/pkg`, file_path: 'lib/x.test.ts' }), localGitRunner)).toBeNull();
   });
 
   it('binds through expandTestRunBinding, records the mapping, and checks presence across a pinned gitlink', async () => {

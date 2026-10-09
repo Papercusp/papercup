@@ -29,6 +29,8 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { emitPlanEventForCaller } from '../coordination/plan-events';
 import {
   AUDIT_VERDICTS,
+  ACTIVATION_REAUDIT_COSMETIC_CHANGES,
+  ACTIVATION_REAUDIT_MATERIAL_CHANGES,
   CITATION_KINDS,
   citationBlobSha,
   citationBlobShaAt,
@@ -321,14 +323,14 @@ function resolveHeadSha(repoRoot: string): string | null {
 export default defineTool({
   name: 'plans:audit',
   description:
-    "Audit a plan: shaping previews product intent and scenario gaps without writes; activation records source coverage; completion resolves code/test citations. Activation refuses unresolved blockers. BAR seeding requires executable requirement JSON and a Design map.",
+    "Activation: any nonempty `unresolvedBlockers` list refuses the audit and records nothing. Shaping previews product intent/scenario gaps without writes; completion checks actual code. BAR seeding needs requirement JSON and a Design map.",
   guidance: {
-    when: "Before specs/tasks use shaping: product brief, scenarios, assumptions, original-intent reviewer context. Before activation read the full conversation and map requirements/decisions/items; before shipment cite actual code. Requirements need executable requirement JSON and a Design BAR-to-work map.",
+    when: "Before activation read the COMPLETE source conversation; map every requirement, boundary, constraint, correction, rejection, decision, dependency, sequence, acceptance condition, open question, follow-up. ## Requirements: **R-N — Title.** outcome; use a fenced `requirement` JSON block for METHOD/check/layers. Design needs a BAR-to-work map; ordinary bullet lists do not satisfy the BAR parser. Shape brief/scenarios/assumptions before specs; completion cites actual code.",
     returns:
-      "Shaping: {productShaping} advisory gaps, trace and reviewerBrief, never semantic proof. Activation: {auditSeq, auditedPlanRevision, mappings, sourceRefsResolved, itemProvenance, barSeed, activationReadiness}. Missing provenance refuses; pending BAR amendment needs rubrics:amend. Completion: {auditSeq, coverage, uncoveredItems, partial, problems, rejectedItemIds}.",
-    notWhen: "Grade rubrics with scorecards:emit and decisions with plans:add-decision; repair open activation mappings first.",
+      "Shaping: {productShaping}, advisory gaps/trace/reviewerBrief, not semantic proof. Activation: {auditSeq, auditedPlanRevision, mappings, sourceRefsResolved, itemProvenance, barSeed, activationReadiness}; provenance gaps refuse. Completion: {auditSeq, coverage, uncoveredItems, partial, problems, rejectedItemIds}.",
+    notWhen: "Rubrics: scorecards:emit. Decisions: plans:add-decision.",
     chaining:
-      'Author Product shaping JSON using the plans:new scaffold; shaping preview → repair with plans:set-content → existing independent review. Activation: source read → audit → start. Re-audit semantic edits, not cosmetics. Completion: audit → rubric/scorecard → shipped.',
+      `shaping → plans:set-content → independent review → activation → start. Edits preserve audited/current revision id/seq/contentHash; re-audit after ${ACTIVATION_REAUDIT_MATERIAL_CHANGES.join(', ')}; not ${ACTIVATION_REAUDIT_COSMETIC_CHANGES.join(', ')}. completion → rubric/scorecard → shipped.`,
     seeAlso: [
       'plans:set-status (drop an item you intentionally departed from, with a reason)',
       'plans:set-plan-status (the completion gate that reads this audit)',

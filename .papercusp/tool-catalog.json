@@ -22188,7 +22188,7 @@
           "POST"
         ]
       },
-      "description": "Audit a plan: shaping previews product intent and scenario gaps without writes; activation records source coverage; completion resolves code/test citations. Activation refuses unresolved blockers. BAR seeding requires executable requirement JSON and a Design map.",
+      "description": "Activation: any nonempty `unresolvedBlockers` list refuses the audit and records nothing. Shaping previews product intent/scenario gaps without writes; completion checks actual code. BAR seeding needs requirement JSON and a Design map.",
       "capabilities": [
         "plans:write"
       ],
@@ -22249,9 +22249,9 @@
         "foreign-session"
       ],
       "guidance": {
-        "when": "Before specs/tasks use shaping: product brief, scenarios, assumptions, original-intent reviewer context. Before activation read the full conversation and map requirements/decisions/items; before shipment cite actual code. Requirements need executable requirement JSON and a Design BAR-to-work map.",
-        "notWhen": "Grade rubrics with scorecards:emit and decisions with plans:add-decision; repair open activation mappings first.",
-        "chaining": "Author Product shaping JSON using the plans:new scaffold; shaping preview → repair with plans:set-content → existing independent review. Activation: source read → audit → start. Re-audit semantic edits, not cosmetics. Completion: audit → rubric/scorecard → shipped."
+        "when": "Before activation read the COMPLETE source conversation; map every requirement, boundary, constraint, correction, rejection, decision, dependency, sequence, acceptance condition, open question, follow-up. ## Requirements: **R-N — Title.** outcome; use a fenced `requirement` JSON block for METHOD/check/layers. Design needs a BAR-to-work map; ordinary bullet lists do not satisfy the BAR parser. Shape brief/scenarios/assumptions before specs; completion cites actual code.",
+        "notWhen": "Rubrics: scorecards:emit. Decisions: plans:add-decision.",
+        "chaining": "shaping → plans:set-content → independent review → activation → start. Edits preserve audited/current revision id/seq/contentHash; re-audit after requirements, scope, constraints, decisions, dependencies, sequencing, acceptance criteria, open questions, promised follow-ups; not spelling, formatting, cosmetic-only wording. completion → rubric/scorecard → shipped."
       }
     },
     {

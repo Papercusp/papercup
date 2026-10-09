@@ -158,6 +158,7 @@ export const OPERATOR_HTTP_ROUTE_ALLOWLIST: ReadonlyArray<OperatorHttpRoute> = [
   { method: 'GET', pattern: /^\/api\/adv\/session\/thinking$/, surface: 'session transcript stream' },
   { method: 'POST', pattern: /^\/api\/admin\/coordination\/sessions\/list$/, surface: 'sessions list' },
   { method: 'POST', pattern: /^\/api\/admin\/coord\/send$/, surface: 'session message' },
+  { method: 'POST', pattern: /^\/api\/adv\/sessions\/close-window$/, surface: 'confirmed managed session stop' },
   { method: 'GET', pattern: /^\/api\/adv\/sessions\/ended$/, surface: 'ended sessions' },
   { method: 'GET', pattern: /^\/api\/adv\/sessions\/search-transcripts$/, surface: 'transcript search' },
   { method: 'POST', pattern: /^\/api\/adv\/sessions\/launch-su$/, surface: 'new session' },

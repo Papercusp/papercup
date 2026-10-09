@@ -37,6 +37,7 @@ describe('decideOperatorHttpRoute', () => {
     ['POST', '/api/adv/sessions/launch-su'],
     ['GET', '/api/agent-mcp/console/bootstrap-su/options?x=1'],
     ['post', '/api/admin/coord/send'],
+    ['POST', '/api/adv/sessions/close-window'],
     // The Add-a-pot popup, as its forms call it (WI-10003268).
     ['POST', '/api/harness/projects'],
     ['POST', '/api/harness/pots'],

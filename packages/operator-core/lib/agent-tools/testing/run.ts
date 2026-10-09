@@ -371,17 +371,23 @@ export function buildDetachedTestRunRequest(opts: {
   // test is different: its suite can mock @papercusp/db-org, which also redirects the
   // reporter's connection into the disposable test database. The foreground runner already
   // avoids that trap by ingesting a JSON report in the parent operator. Preserve the same
-  // boundary for the documented one-integration-file detached recovery path: write one JSON
-  // artifact and let testing-run-store ingest it after the child closes.
+  // boundary for the documented one-integration-file detached recovery path. A focused unit
+  // recovery also needs JSON counts so scripts/test-files.mjs can distinguish a matching test
+  // from a zero-match run; keep the admin reporter beside JSON so unit rows still persist in
+  // process, while the close-time reader reconciles any missing rows and consumes the artifact.
   const adminReporterPath = resolveAdminTestRunsReporterPath(opts.root);
   const parentIngestsIntegration =
     opts.files.length === 1 && /\.integration\.test\.[cm]?[jt]sx?$/i.test(opts.files[0]!);
-  const reportPath = parentIngestsIntegration
+  const reportPath = parentIngestsIntegration || Boolean(opts.testNamePattern)
     ? join(ensurePapercuspTmpdir() ?? tmpdir(), `papercusp-testing-run-detached-${randomUUID()}.json`)
     : null;
   const vitestArgs = [
     ...(reportPath
-      ? ['--reporter=json', `--outputFile=${reportPath}`]
+      ? [
+          '--reporter=json',
+          ...(!parentIngestsIntegration && adminReporterPath ? [`--reporter=${adminReporterPath}`] : []),
+          `--outputFile=${reportPath}`,
+        ]
       : adminReporterPath
         ? [`--reporter=${adminReporterPath}`]
         : []),

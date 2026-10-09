@@ -103,6 +103,7 @@ describe('previewPlanStartConsult', () => {
         workspaceId: 'workspace-a',
         requesterId: 'su-reader',
         question: 'plan query',
+        telemetry: expect.objectContaining({ caller: 'plans:activation-preview', policy: 'consult-default', buildSha: expect.any(String) }),
       },
       expect.any(Object),
     );

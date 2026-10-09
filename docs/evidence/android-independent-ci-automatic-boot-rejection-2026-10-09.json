@@ -9,6 +9,13 @@
   "startedAt": "2026-10-09T17:40:17.773316+00:00",
   "finishedAt": "2026-10-09T17:57:40.973438+00:00",
   "exitCode": 1,
+  "assertions": [
+    {"id":"full-native-qualification","passed":false,"evidence":"Automatic174017Z-f1bcf805 passed five preflight/host phases then owned boot exited1 after181 probes with empty sys.boot_completed; connected and paired phases never ran."},
+    {"id":"exact-clean-source-and-automatic-trigger","passed":true,"evidence":"Retained result pins clean9440a78/fingerprint9467301a and preparedoperatorad00; timer trigger17:40:17Z matches recorded servicePID3630884. No manual service start."},
+    {"id":"retained-artifact-integrity","passed":true,"evidence":"All86 retained artifact SHA256 values were recomputed without mismatch; original receipt digestb10456b0 is retained in execution.receiptSha256."},
+    {"id":"failure-closed-admission-and-cleanup","passed":true,"evidence":"Owned emulator cleanup witness true, ownedAVDresidue0, success/currentCIadmission absent, and sharedexecutor successfully acquired nonblocking and released after failure."},
+    {"id":"guest-root-cause-remains-unmeasured","passed":true,"evidence":"Historical160856Z PASS contains the same5660 port warning, so that warning does not distinguish this failure. Early-failure guest diagnostics were absent; bounded collection was added and guarded for future attempts."}
+  ],
   "summary": "The existing timer automatically qualified corrected clean mobile source9440a78 against operatorad00. Operator/Rust/emulator/owned-AVD-space preflight and host passed; owned emulator boot failed before connected or paired execution. Admission remained absent, owned cleanup and free executor were verified. This retains the rejection and does not claim full native acceptance.",
   "sourceCommit": "9440a78e155163d0adcc41b50453150cc3bbca45",
   "sourceDirty": false,

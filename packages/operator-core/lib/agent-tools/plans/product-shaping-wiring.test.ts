@@ -46,7 +46,7 @@ describe('product shaping authoring and audit consumer paths', () => {
   });
 
   it('keeps the changed tools within the existing guidance budget', () => {
-    expect(promptWeight(audit)).toBeLessThanOrEqual(BUDGET);
-    expect(promptWeight(create)).toBeLessThanOrEqual(BUDGET);
+    expect(promptWeight(audit as unknown as Parameters<typeof promptWeight>[0])).toBeLessThanOrEqual(BUDGET);
+    expect(promptWeight(create as unknown as Parameters<typeof promptWeight>[0])).toBeLessThanOrEqual(BUDGET);
   });
 });
