@@ -1218,7 +1218,12 @@ describe('WI-1416 durable-fire breadcrumbs', () => {
     };
     runGitSyncMock.mockResolvedValueOnce(syncedOutcome);
 
-    await action(ctx);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await action(ctx);
+    } finally {
+      warn.mockRestore();
+    }
 
     const bridgeWrite = unsafeCalls.find(({ params }) => {
       try {

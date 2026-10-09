@@ -502,6 +502,30 @@ describe('activation seed contract completeness (requireContractCompleteness)', 
       requireContractCompleteness: true,
     });
     expect(manual.ok).toBe(true);
+
+    const manualWithExplicitEmptyLayers = buildAcceptanceBarSeed({
+      ...input,
+      planContent: plan({ requirements: block({
+        ...noLayers,
+        acceptance: { ...noLayers.acceptance, requiredTestLayers: [] },
+        verification: { method: 'Inspect the live state.', check: { kind: 'instrument', instrumentKey: 'none' } },
+      }), map: liveMap }),
+      requireContractCompleteness: true,
+    });
+    expect(manualWithExplicitEmptyLayers.ok).toBe(true);
+
+    const automatedWithExplicitEmptyLayers = buildAcceptanceBarSeed({
+      ...input,
+      planContent: plan({ requirements: block({
+        ...noLayers,
+        acceptance: { ...noLayers.acceptance, requiredTestLayers: [] },
+      }), map: liveMap }),
+      requireContractCompleteness: true,
+    });
+    expect(automatedWithExplicitEmptyLayers).toMatchObject({
+      ok: false,
+      error: 'bar_requirement_parse_failed',
+    });
   });
 
   it.each(['tree', 'deployed', 'live'] as const)('projects explicit manual %s review without an automated clause class', (plane) => {

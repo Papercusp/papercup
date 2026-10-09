@@ -40,8 +40,9 @@ import {
   reporterWriteBudget,
 } from '@papercusp/test-config/admin-test-runs-reporter';
 import { posix, relative } from 'node:path';
-import { readFileSync, realpathSync } from 'node:fs';
+import { readFileSync, realpathSync, statSync } from 'node:fs';
 import { createHash } from 'node:crypto';
+import { readProcessIdentity, linuxProcStateFromStat } from './process-identity';
 import {
   isRecordedCaseTitle,
   MAX_RECORDED_FAILED_CASES,
@@ -54,10 +55,10 @@ import {
 } from '@papercusp/test-config/execution-details';
 
 type RuntimeCapture = { status: RuntimeEnvironmentCaptureStatus; witness?: RecordedRuntimeEnvironment };
-type RuntimeReader = () => Promise<RecordedRuntimeEnvironment | null>;
+type RuntimeReader = () => RecordedRuntimeEnvironment | null;
 
-/** Prepare the existing kernel observer outside the bounded reporter observation. */
-export async function prepareNativeRuntimeReader(root: string, commit: string | null): Promise<RuntimeReader | undefined> {
+/** Playwright does not await onBegin: observe kernel custody synchronously before tests. */
+export function prepareNativeRuntimeReader(root: string, commit: string | null): RuntimeReader | undefined {
   if (!process.env.VERIFY_TAURI_PID) return undefined;
   if (process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED !== '1') throw new Error('native runtime requires the owned verifier');
   const pid = Number(process.env.VERIFY_TAURI_PID);
@@ -67,35 +68,46 @@ export async function prepareNativeRuntimeReader(root: string, commit: string | 
     || receipt.sourceCommit !== process.env.VERIFY_TAURI_SOURCE_REF
     || !process.env.OPERATOR_SOURCE_ROOT
     || realpathSync(root) !== realpathSync(process.env.OPERATOR_SOURCE_ROOT)) throw new Error('native runtime source receipt mismatch');
-  const runtime = await import('./runtime-vintage');
   const units = [`verify-tauri-headless:${pid}`];
-  const workspaceId = process.env.PAPERCUSP_WORKSPACE_ID;
-  if (!workspaceId) throw new Error('native runtime workspace missing');
-  const digest = createHash('sha256').update(readFileSync(`/proc/${pid}/exe`)).digest('hex');
-  await runtime.reportRuntimeVintage({ unit: units[0], workspaceId, pid, treeSha: commit,
-    bundleVersion: `executable-sha256:${digest}` });
-  return async () => {
-    const fingerprint = runtime.measureRuntimeVintageEnvironment(await runtime.listRuntimeVintage(workspaceId), units);
-    return fingerprint ? { schemaVersion: 1, units, fingerprint, observedAt: new Date().toISOString() } : null;
+  const processIdentity = readProcessIdentity(pid);
+  if (!processIdentity || process.platform !== 'linux') throw new Error('native kernel identity unavailable');
+  const executable = `/proc/${pid}/exe`;
+  const executableStat = () => {
+    const stat = statSync(executable, { bigint: true });
+    return [stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].map(String).join(':');
   };
+  const originalStat = executableStat();
+  const digest = createHash('sha256').update(readFileSync(executable)).digest('hex');
+  const fingerprint = createHash('sha256').update(JSON.stringify([
+    units[0], pid, processIdentity, originalStat, digest, commit,
+  ])).digest('hex');
+  const read = (): RecordedRuntimeEnvironment | null => {
+    try {
+      const state = linuxProcStateFromStat(readFileSync(`/proc/${pid}/stat`, 'utf8'));
+      if (!state || ['Z', 'X', 'x'].includes(state) || readProcessIdentity(pid) !== processIdentity
+        || executableStat() !== originalStat || readProcessIdentity(pid) !== processIdentity) return null;
+      return { schemaVersion: 1, units, fingerprint, observedAt: new Date().toISOString() };
+    } catch { return null; }
+  };
+  if (!read()) throw new Error('native process changed while measuring executable');
+  return read;
 }
 
-async function captureRuntimeEnvironment(read?: RuntimeReader, preparationFailed = false): Promise<RuntimeCapture> {
+function captureRuntimeEnvironment(read?: RuntimeReader, preparationFailed = false): RuntimeCapture {
   if (preparationFailed) return { status: 'error' };
   if (!read) return { status: 'not-configured' };
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timedOut = Symbol('runtime-capture-timeout');
   try {
-    const value = await Promise.race([Promise.resolve().then(read), new Promise<typeof timedOut>(resolve => {
-      timer = setTimeout(() => resolve(timedOut), 1_000);
-    })]);
-    if (value === timedOut) return { status: 'timed-out' };
+    const value = read();
+    // A misconfigured async reader cannot be awaited by Playwright's onBegin.
+    if (value && typeof (value as unknown as { then?: unknown }).then === 'function') {
+      void Promise.resolve(value).catch(() => {});
+      return { status: 'invalid' };
+    }
     if (value === null) return { status: 'unavailable' };
     const witness = parseRecordedRuntimeEnvironment(value);
     return witness ? { status: 'captured', witness: { ...witness, units: [...witness.units],
       observedAt: new Date().toISOString() } } : { status: 'invalid' };
   } catch { return { status: 'error' }; }
-  finally { if (timer) clearTimeout(timer); }
 }
 
 interface TestRunRow {
@@ -339,22 +351,13 @@ export default class AdminTestRunsPlaywrightReporter implements Reporter {
     this.runtimeReader = options.readRuntimeEnvironment;
   }
 
-  onBegin(config?: Pick<FullConfig, 'rootDir'>): void | Promise<void> {
+  onBegin(config?: Pick<FullConfig, 'rootDir'>): void {
     this.runRoot = resolveReporterSourceRoot(config?.rootDir);
     this.worktreeBefore = captureTestSourceSnapshot(this.runRoot);
-    // Preserve the synchronous source seal for ordinary Playwright profiles.
-    if (!this.runtimeReader && !process.env.VERIFY_TAURI_PID) {
-      this.runtimeBefore = { status: 'not-configured' };
-      return;
-    }
-    return this.beginRuntimeCapture();
-  }
-
-  private async beginRuntimeCapture(): Promise<void> {
     try {
-      this.runtimeReader ??= await prepareNativeRuntimeReader(this.runRoot, this.worktreeBefore?.commit ?? null);
+      this.runtimeReader ??= prepareNativeRuntimeReader(this.runRoot, this.worktreeBefore?.commit ?? null);
     } catch { this.runtimePreparationFailed = true; }
-    this.runtimeBefore = await captureRuntimeEnvironment(this.runtimeReader, this.runtimePreparationFailed);
+    this.runtimeBefore = captureRuntimeEnvironment(this.runtimeReader, this.runtimePreparationFailed);
   }
 
   onTestEnd(test: TestCase, result: TestResult): void {
@@ -419,7 +422,7 @@ export default class AdminTestRunsPlaywrightReporter implements Reporter {
 
   async onEnd(): Promise<void> {
     try {
-      const runtimeAfter = await captureRuntimeEnvironment(this.runtimeReader, this.runtimePreparationFailed);
+      const runtimeAfter = captureRuntimeEnvironment(this.runtimeReader, this.runtimePreparationFailed);
       let worktreeAfter: WorktreeGitSnapshot = { commit: null, porcelain: null };
       try {
         worktreeAfter = captureTestSourceSnapshot(this.runRoot);

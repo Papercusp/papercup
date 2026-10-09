@@ -4,23 +4,21 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const { sql } = vi.hoisted(() => ({ sql: vi.fn() }));
+const source = vi.hoisted(() => ({ root: '/portal' }));
 vi.mock('postgres', () => ({ default: () => sql }));
 vi.mock('@papercusp/operator-core/lib/testing-worktree', () => ({
-  resolveReporterSourceRoot: () => '/portal',
+  resolveReporterSourceRoot: () => source.root,
   captureTestSourceSnapshot: () => ({ commit: 'a'.repeat(40), porcelain: '' }),
   computeWorktreeDirty: () => false,
 }));
 vi.mock('@papercusp/operator-core/lib/agent-tools/capability/base-dir', () => ({
   resolveAgentWorkspaceRoot: () => '/operator',
 }));
-const runtime = vi.hoisted(() => ({ reportRuntimeVintage: vi.fn(), listRuntimeVintage: vi.fn(),
-  measureRuntimeVintageEnvironment: vi.fn(() => 'b'.repeat(64)) }));
-vi.mock('./runtime-vintage', () => runtime);
 import Reporter, { prepareNativeRuntimeReader } from '@papercusp/operator-core/lib/testing-playwright-reporter';
 import OperatorReporter from '../../../apps/operator/test/reporters/admin-test-runs-reporter-playwright';
 import { parseTestRunExecutionDetails } from '@papercusp/test-config/execution-details';
 
-afterEach(() => vi.unstubAllEnvs());
+afterEach(() => { vi.unstubAllEnvs(); source.root = '/portal'; });
 
 describe('portable Playwright ledger reporter', () => {
   it('prepares the owned native observer from source custody and the loaded executable', async () => {
@@ -34,44 +32,56 @@ describe('portable Playwright ledger reporter', () => {
       vi.stubEnv('VERIFY_TAURI_SOURCE_RECEIPT', receipt);
       vi.stubEnv('OPERATOR_SOURCE_ROOT', dir);
       vi.stubEnv('PAPERCUSP_WORKSPACE_ID', 'owned-runtime');
-      runtime.listRuntimeVintage.mockResolvedValue([]);
-      const reader = await prepareNativeRuntimeReader(dir, 'a'.repeat(40));
-      expect(runtime.reportRuntimeVintage).toHaveBeenLastCalledWith(expect.objectContaining({
-        workspaceId: 'owned-runtime', pid: process.pid, treeSha: 'a'.repeat(40),
-        bundleVersion: expect.stringMatching(/^executable-sha256:[a-f0-9]{64}$/),
-      }));
-      expect(await reader!()).toMatchObject({ units: [`verify-tauri-headless:${process.pid}`], fingerprint: 'b'.repeat(64) });
-      runtime.measureRuntimeVintageEnvironment.mockReturnValueOnce(null as never);
-      expect(await reader!()).toBeNull();
-      await expect(prepareNativeRuntimeReader(dir, 'c'.repeat(40))).rejects.toThrow('source receipt mismatch');
+      const reader = prepareNativeRuntimeReader(dir, 'a'.repeat(40));
+      const original = reader!();
+      expect(original).toMatchObject({ units: [`verify-tauri-headless:${process.pid}`],
+        fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/) });
+      expect(reader!()?.fingerprint).toBe(original?.fingerprint);
+      expect(() => prepareNativeRuntimeReader(dir, 'c'.repeat(40))).toThrow('source receipt mismatch');
+      source.root = dir;
+      const reporter = new Reporter();
+      expect(reporter.onBegin()).toBeUndefined();
+      const before = (reporter as any).runtimeBefore;
+      expect(before).toMatchObject({ status: 'captured', witness: { units: original?.units } });
+      const caseStarted = new Date();
+      expect(Date.parse(before.witness.observedAt)).toBeLessThanOrEqual(caseStarted.getTime());
+      sql.mockReset().mockResolvedValue([{ id: '6788' }]);
+      reporter.onTestEnd({ title: 'native lifetime', location: { file: join(dir, 'native.spec.mts') } } as never,
+        { status: 'passed', startTime: caseStarted, duration: 0, errors: [] } as never);
+      await reporter.onEnd(); await reporter.onExit();
+      const details = sql.mock.calls[0]!.at(-1) as any;
+      expect(details.runtimeEnvironmentBeforeCaptureStatus).toBe('captured');
+      expect(details.runtimeEnvironmentAfterCaptureStatus).toBe('captured');
+      expect(details.runtimeEnvironmentBefore.fingerprint).toBe(details.runtimeEnvironmentAfter.fingerprint);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
-  it.each(['stable', 'changed', 'unavailable', 'invalid', 'error', 'timed-out'])(
+  it.each(['stable', 'changed', 'unavailable', 'invalid', 'error', 'async-reader', 'async-rejection'])(
     'records original before/after runtime capture with explicit %s outcome', async outcome => {
       vi.stubEnv('PAPERCUSP_DISABLE_TEST_RUNS_REPORTER', '');
       const witness = { schemaVersion: 1 as const, units: ['owned-native'], fingerprint: 'a'.repeat(64),
         observedAt: '2000-01-01T00:00:00.000Z' };
-      const read = vi.fn(async () => witness);
-      if (outcome === 'changed') read.mockResolvedValueOnce(witness).mockResolvedValueOnce({ ...witness, fingerprint: 'b'.repeat(64) });
-      if (outcome === 'unavailable') read.mockResolvedValue(null as never);
-      if (outcome === 'invalid') read.mockResolvedValue({ ...witness, fingerprint: 'caller-claim' });
-      if (outcome === 'error') read.mockRejectedValue(new Error('observer failed'));
-      if (outcome === 'timed-out') { vi.useFakeTimers(); read.mockImplementation(() => new Promise(() => {})); }
+      const read = vi.fn(() => witness);
+      if (outcome === 'changed') read.mockReturnValueOnce(witness).mockReturnValueOnce({ ...witness, fingerprint: 'b'.repeat(64) });
+      if (outcome === 'unavailable') read.mockReturnValue(null as never);
+      if (outcome === 'invalid') read.mockReturnValue({ ...witness, fingerprint: 'caller-claim' });
+      if (outcome === 'error') read.mockImplementation(() => { throw new Error('observer failed'); });
+      if (outcome === 'async-reader') read.mockImplementation(() => Promise.resolve(witness) as never);
+      if (outcome === 'async-rejection') read.mockImplementation(() => Promise.reject(new Error('invalid reader')) as never);
       sql.mockReset().mockResolvedValue([{ id: '6789' }]);
       try {
         const reporter = new Reporter({ readRuntimeEnvironment: read });
         const begin = reporter.onBegin();
-        if (outcome === 'timed-out') await vi.advanceTimersByTimeAsync(1001);
-        await begin;
+        expect(begin).toBeUndefined(); // The real multiplexer does not await this hook.
+        expect(read).toHaveBeenCalledOnce();
         reporter.onTestEnd({ title: 'native proof', location: { file: '/portal/native.spec.ts' } } as never,
           { status: 'passed', startTime: new Date(), duration: 1, errors: [] } as never);
         const end = reporter.onEnd();
-        if (outcome === 'timed-out') await vi.advanceTimersByTimeAsync(1001);
         await end; await reporter.onExit();
         const details = sql.mock.calls[0]!.at(-1) as any;
         expect(parseTestRunExecutionDetails(details)).toEqual(details);
-        const status = outcome === 'stable' || outcome === 'changed' ? 'captured' : outcome;
+        const status = outcome === 'stable' || outcome === 'changed' ? 'captured'
+          : outcome.startsWith('async-') ? 'invalid' : outcome;
         expect(details.runtimeEnvironmentBeforeCaptureStatus).toBe(status);
         expect(details.runtimeEnvironmentAfterCaptureStatus).toBe(status);
         if (status === 'captured') {

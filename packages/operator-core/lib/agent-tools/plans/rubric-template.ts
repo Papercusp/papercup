@@ -493,13 +493,38 @@ export const requirementVerificationSchema = z
   })
   .strict();
 
+function isExplicitManualCheck(check: RubricCriterionCheck | null | undefined): boolean {
+  return check?.kind === 'instrument' && check.instrumentKey.trim().toLowerCase() === 'none';
+}
+
+// Requirement blocks need to express the deliberate absence of automated
+// layers for an explicitly manual check. Keep the shared acceptance schema's
+// non-empty rule for other authoring surfaces, and validate the exception at
+// the section boundary where the check is available.
+const requirementSectionAcceptanceSchema = requirementAcceptanceSchema.extend({
+  requiredTestLayers: z
+    .array(z.string().trim().min(1))
+    .max(50)
+    .optional()
+    .describe("required proof layers; an empty array is valid only with {kind:'instrument', instrumentKey:'none'}"),
+});
+
 export const requirementSectionsSchema = z
   .object({
     intent: requirementIntentSchema,
-    acceptance: requirementAcceptanceSchema,
+    acceptance: requirementSectionAcceptanceSchema,
     verification: requirementVerificationSchema,
   })
-  .strict();
+  .strict()
+  .superRefine((sections, ctx) => {
+    if (sections.acceptance.requiredTestLayers?.length === 0 && !isExplicitManualCheck(sections.verification.check)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['acceptance', 'requiredTestLayers'],
+        message: "requiredTestLayers may be empty only for an explicit manual check ({kind:'instrument', instrumentKey:'none'})",
+      });
+    }
+  });
 
 /**
  * One gradeable criterion of a rubric. Field-for-field the v1 `RubricCriterion`
@@ -549,9 +574,11 @@ const rubricCriterionObjectSchema = z
       .describe(
         'acceptance-kind deployed/live BARs: built-in runtime or exact runtime-vintage:<workspace>/<unit>@<host>; absent ⇒ inferred and flagged, never defaulted to :3070',
       ),
-    requiredTestLayers: requirementAcceptanceSchema.shape.requiredTestLayers.describe(
-      'acceptance-kind only: required proof layers, such as integration or e2e; BAR amendment required to change',
-    ),
+    requiredTestLayers: z
+      .array(z.string().trim().min(1))
+      .max(50)
+      .optional()
+      .describe("acceptance-kind only: required proof layers, such as integration or e2e; empty only with an explicit manual check"),
     passRatings: acceptancePassRatingsSchema,
     coversBarKeys: z
       .array(z.string().trim().min(1))
@@ -616,6 +643,13 @@ const rubricCriterionObjectSchema = z
 export const rubricCriterionSchema = rubricCriterionObjectSchema.superRefine((input, ctx) => {
   const message = acceptancePassRatingsError(input);
   if (message) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['passRatings'], message });
+  if (input.requiredTestLayers?.length === 0 && !isExplicitManualCheck(input.check)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['requiredTestLayers'],
+      message: "requiredTestLayers may be empty only for an explicit manual check ({kind:'instrument', instrumentKey:'none'})",
+    });
+  }
 });
 
 /**
@@ -697,6 +731,14 @@ export const acceptanceRubricCriterionSchema = rubricCriterionObjectSchema.parti
   model: true,
   method: true,
   driftMarkers: true,
+}).superRefine((input, ctx) => {
+  if (input.requiredTestLayers?.length === 0 && !isExplicitManualCheck(input.check)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['requiredTestLayers'],
+      message: "requiredTestLayers may be empty only for an explicit manual check ({kind:'instrument', instrumentKey:'none'})",
+    });
+  }
 });
 
 /**
