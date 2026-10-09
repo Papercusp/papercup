@@ -4363,7 +4363,6 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
     }
 
     const reconcileCommittedCompletions = async (): Promise<GitSyncActionTimeoutError | undefined> => {
-      if (outcome.status !== 'synced') return undefined;
       // EI-22795123930445264: a completion belongs to the checkout that owns its
       // exact blob identities, which may differ from the bookkeeping harness that
       // accepted the close. Resolve the emitted checkout through symlinks before
@@ -4393,6 +4392,27 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
       }
       const stopSettlementLockHeartbeat = startLockHeartbeat(cd, slug, settlementAcquired, settlementLockOwner);
       try {
+        // WI-10007988: an unrelated submodule error can follow a successful local
+        // commit, and a close can arrive after the tree became clean. Neither the
+        // whole-pass verdict nor a new commit is required for exact blob proof.
+        // Resolve an existing committed HEAD on those passes; the reconciler still
+        // checks every declared identity and uses its generation/evidence CAS.
+        let settlementCommitSha = outcome.status === 'synced' ? outcome.headSha : '';
+        if (outcome.status !== 'synced') {
+          const head = await guardedPostLegs('git-sync:completion-settlement-head', () =>
+            runGitBounded(
+              ['rev-parse', '--verify', 'HEAD^{commit}'],
+              repositoryRoot,
+              gitTimeoutMsFor(['rev-parse']),
+              { signal: postLegsLiveness.signal },
+            ),
+          );
+          settlementCommitSha = head.code === 0 ? head.stdout.trim() : '';
+          if (!FULL_COMMIT_SHA.test(settlementCommitSha)) {
+            console.warn(`[git-sync] ${slug}: completion settlement skipped because committed HEAD could not be resolved`);
+            return undefined;
+          }
+        }
         let lastSettlementProgressAt = 0;
         let settlementProgressWrite = Promise.resolve();
         let settlementTimeout: GitSyncActionTimeoutError | undefined;
@@ -4421,7 +4441,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
             guardedPostLegs('git-sync:completion-settlement', () =>
               runCheckpointedStep('git-sync:completion-settlement', () =>
                 reconcileProposedCompletionsAtCommit(
-                  outcome.headSha,
+                  settlementCommitSha,
                   {
                     installSlug: slug,
                     workspaceId,

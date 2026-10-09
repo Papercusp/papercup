@@ -1019,7 +1019,13 @@ beforeEach(() => {
   liveLockHoldingsStrictMock.mockReset();
   liveLockHoldingsStrictMock.mockResolvedValue([]);
   runGitSyncMock.mockReset();
-  runGitBoundedMock.mockReset().mockResolvedValue({ code: 0, stdout: '', stderr: '' });
+  runGitBoundedMock.mockReset().mockImplementation(async (...args: unknown[]) => ({
+    code: 0,
+    stdout: Array.isArray(args[0]) && args[0].join(' ') === 'rev-parse --verify HEAD^{commit}'
+      ? 'd'.repeat(40) + '\n'
+      : '',
+    stderr: '',
+  }));
   reconcileProposedCompletionsAtCommitMock.mockReset();
   reconcileProposedCompletionsAtCommitMock.mockResolvedValue({
     inspected: 0,
@@ -1182,6 +1188,61 @@ describe('WI-1416 durable-fire breadcrumbs', () => {
       },
       expect.objectContaining({ signal: expect.anything(), onProgress: expect.any(Function) }),
     );
+  });
+
+  it.each([
+    { ...errorOutcome, status: 'nothing' as const },
+    { ...errorOutcome, committedCount: 1 },
+    conflictOutcome,
+    { ...errorOutcome, status: 'skipped-locked' as const },
+  ])('WI-10007988: settles committed content on a $status local pass', async (outcome) => {
+    const committedHead = 'd'.repeat(40);
+    runGitSyncMock.mockResolvedValue(outcome);
+    runGitBoundedMock.mockImplementation(async (...args: unknown[]) => ({
+      code: 0,
+      stdout: Array.isArray(args[0]) && args[0].join(' ') === 'rev-parse --verify HEAD^{commit}'
+        ? committedHead + '\n'
+        : '',
+      stderr: '',
+    }));
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await action(ctx);
+
+      expect(routinePatches()[0]).toMatchObject({ local_sync_status: outcome.status });
+      expect(reconcileProposedCompletionsAtCommitMock).toHaveBeenCalledWith(
+        committedHead,
+        { installSlug: ctx.installSlug, workspaceId: ctx.workspaceId, repositoryRoot: realpathSync(repoDir) },
+        expect.objectContaining({ signal: expect.anything(), onProgress: expect.any(Function) }),
+      );
+      expect(heldResourcesByOwner.size).toBe(0);
+      if (outcome.status === 'conflict') {
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining('merge conflict(s)'));
+      } else {
+        expect(warn).not.toHaveBeenCalled();
+      }
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it.each([
+    { code: 0, stdout: 'not-a-commit\n', stderr: '' },
+    { code: 1, stdout: 'd'.repeat(40), stderr: 'HEAD is unavailable' },
+  ])('WI-10007988: skips settlement when committed HEAD is unverified (%j)', async (head) => {
+    runGitSyncMock.mockResolvedValue(errorOutcome);
+    runGitBoundedMock.mockResolvedValue(head);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await action(ctx);
+
+      expect(reconcileProposedCompletionsAtCommitMock).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('committed HEAD could not be resolved'));
+      expect(heldResourcesByOwner.size).toBe(0);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('loads and persists the GitHub egress scan cursor across routine ticks', async () => {
