@@ -842,10 +842,15 @@ if [ -f "$VH_SH" ]; then
   vh_phase assert boot
   vh_init verify-tauri-headless "${VERIFY_TAURI_EVIDENCE_ROOT:-$(vh_default_root verify-tauri-headless)}"
   vh_begin prepare
+  trap 'vh_capture_phase_stop' EXIT
+  vh_capture_phase_start
+  vh_step prepare-start
   vh_bracket_trap   # finalizes an exit before `trap teardown EXIT`; teardown calls vh_exit itself
 else
   echo "VH_DISABLED harness=verify-tauri-headless reason=vh.sh-missing:$VH_SH" >&2
   vh_begin() { :; }; vh_step() { :; }; vh_end() { :; }; vh_skip_rest() { :; }; vh_exit() { :; }
+  vh_capture_phase_start() { :; }; vh_capture_phase_stop() { :; }
+  vh_run_step() { shift; "$@"; }
 fi
 
 TIMEOUT="${VERIFY_TAURI_TIMEOUT:-180}"
@@ -985,7 +990,7 @@ shared_schema_readiness_preflight() {
     return "$status"
   fi
 }
-shared_schema_readiness_preflight || exit $?
+vh_run_step shared-schema-readiness shared_schema_readiness_preflight || exit $?
 
 # The dependency snapshot uses hardlinks. A fast /tmp mount may be on another
 # device. Only the operator/dependency snapshot needs the donor filesystem;
@@ -1006,7 +1011,7 @@ select_verifier_snapshot_root() {
   fi
   printf '%s\n' "$work_root"
 }
-OPERATOR_SNAPSHOT_PARENT="$(select_verifier_snapshot_root)" || exit $?
+OPERATOR_SNAPSHOT_PARENT="$(vh_run_step verifier-snapshot-root select_verifier_snapshot_root)" || exit $?
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/verify-tauri-headless.XXXXXX")"
 LOG="$WORK/tauri.log"
 # The operator sidecar must not compile the mutable shared checkout while this
@@ -1077,7 +1082,7 @@ write_run_marker() {
   fi
 }
 
-write_run_marker "$$" || {
+vh_run_step write-run-marker write_run_marker "$$" || {
   echo "FATAL: could not write verifier ownership marker under $WORK" >&2
   exit 1
 }
@@ -1354,7 +1359,7 @@ snapshot_committed_operator_source() {
   export VERIFY_TAURI_SOURCE_RECEIPT="$receipt"
   log "committed verifier source verified; provenance: $receipt; dependency donor: $REPO_DIR"
 }
-snapshot_operator_source || { cleanup_operator_source_snapshot; exit 1; }
+vh_run_step operator-source-snapshot snapshot_operator_source || { cleanup_operator_source_snapshot; exit 1; }
 
 # EI-22616267024724225: never boot the frozen operator through tsx's runtime
 # loader. bundle-host.sh documents the failure mechanism: every module
@@ -1457,8 +1462,8 @@ smoke_verifier_operator_host() {
   esac
   log "frozen plain-node operator host import smoke passed"
 }
-build_verifier_operator_host || { cleanup_operator_source_snapshot; exit 1; }
-smoke_verifier_operator_host || { cleanup_operator_source_snapshot; exit 1; }
+vh_run_step verifier-host-bundle build_verifier_operator_host || { cleanup_operator_source_snapshot; exit 1; }
+vh_run_step verifier-host-import-smoke smoke_verifier_operator_host || { cleanup_operator_source_snapshot; exit 1; }
 if [ "$PREPARE_ONLY" -eq 1 ]; then
   log "PREPARE_ONLY_OK source snapshot and host import smoke; no native acceptance"
   vh_end
@@ -1504,7 +1509,7 @@ write_assertion_input_manifest() {
   fi
 }
 
-write_assertion_input_manifest || exit $?
+vh_run_step assertion-input-manifest write_assertion_input_manifest || exit $?
 
 cleanup_assertion_script_snapshot() {
   if [ -n "${ASSERTION_SCRIPT_SNAPSHOT_PATH:-}" ]; then
@@ -1587,7 +1592,7 @@ snapshot_assertion_script() {
   log "assertion script snapshot frozen at $ASSERTION_SCRIPT_SNAPSHOT_PATH (source $ASSERTION_SCRIPT_ORIGINAL_PATH) — IMMUTABLE for this run; restart to pick up a newer version."
 }
 
-snapshot_assertion_script || exit $?
+vh_run_step assertion-script-snapshot snapshot_assertion_script || exit $?
 
 # EI-18805100008031244 (correct-state ask #3, "report contention honestly at
 # boot"): when the port picker retries or a bind loses a race, the caller was
@@ -1786,6 +1791,7 @@ TAURI_VERIFIER_LOCK_ROOT="${XDG_RUNTIME_DIR:-${HOME:-/tmp}/.cache}/papercusp-tau
 DISPLAY_LOCK_DIR="${VERIFY_TAURI_DISPLAY_LOCK_DIR:-$TAURI_VERIFIER_LOCK_ROOT/display-locks}"
 DISPLAY_LOCK_FD=""
 DISPLAY_LOCK_PATH=""
+vh_step display-lock-preflight
 command -v flock >/dev/null 2>&1 || {
   echo "FATAL: flock is required for concurrent verifier display safety" >&2
   exit 1
@@ -1895,6 +1901,7 @@ pick_display() {
   done
   [ "$DISPLAY_NUM" -ge 2 ] || { echo "FATAL: refusing display :$DISPLAY_NUM — too close to a real seat" >&2; exit 1; }
 }
+vh_step display-selection
 pick_display
 
 # EI-20227529270079601 / EI-9748 Route A: `setsid` creates a new session and
@@ -2006,6 +2013,7 @@ pick_and_lock_ports() {
     }
   done
 }
+vh_step port-reservation
 pick_and_lock_ports
 
 # ── EI: drop a STALE endpoint-ipc advertisement for the port we just reserved ──
@@ -2278,7 +2286,7 @@ verify_tauri_assert_owned() {
   return 0
 }
 
-if ! verify_tauri_assert_owned; then
+if ! vh_run_step verifier-bridge-ownership verify_tauri_assert_owned; then
   # `return` is valid only when this file is sourced. Keep the source-only
   # contract explicit while still failing safely if somebody executes it.
   if (return 0 2>/dev/null); then
@@ -2466,6 +2474,7 @@ handle_signal() {
 teardown() {
   local ec=$?
   [ "$SIGNAL_EXIT_CODE" -ne 0 ] && ec="$SIGNAL_EXIT_CODE"
+  vh_capture_phase_stop
   vh_exit "$ec"   # record the open phase (failed unless ec=0) + HARNESS_RESULT; never changes ec
   # Cleanup can itself run commands which receive a signal. Disable all traps
   # before the first side effect so the EXIT path cannot run twice.
@@ -2565,6 +2574,7 @@ trap teardown EXIT
 trap 'handle_signal INT' INT
 trap 'handle_signal TERM' TERM
 trap 'handle_signal HUP' HUP
+vh_step isolated-display-start
 start_display_server
 
 # ── real-GPU GL check (agent-e2e.mdx §15.4: bare Xvfb has no GL → WebKitGTK
@@ -2736,9 +2746,10 @@ fi
 # EI-17134: write the freshness-check helper unconditionally (a no-op when no
 # snapshot was frozen — SPA_DIST is empty) so $VERIFY_TAURI_FRESHNESS_CHECK is
 # always a valid, runnable path for the caller, in both branches above.
-write_freshness_check_script
+vh_run_step freshness-check-script write_freshness_check_script
 
 # ── EI-10387: boot a genuinely isolated, throwaway embedded Postgres ────────
+vh_step isolated-database-prepare
 # Opt-in (VERIFY_TAURI_ISOLATED_DB=1). Reuses the SAME primitive
 # scripts/with-test-pg.mjs uses for hermetic test runs
 # (startEmbeddedPostgresServer from @papercusp/embedded-postgres-server): a
@@ -3265,6 +3276,7 @@ strip_ansi() { sed -e 's/\x1b\[[0-9;]*[a-zA-Z]//g'; }
 desktop_binary_started() {
   strip_ansi < "$LOG" 2>/dev/null | grep -qE "Running[[:space:]]+.*papercusp-desktop"
 }
+vh_capture_phase_stop
 vh_begin boot
 while :; do
   BOOT_ATTEMPTS=$((BOOT_ATTEMPTS + 1))

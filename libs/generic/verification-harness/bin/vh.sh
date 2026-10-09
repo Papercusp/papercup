@@ -318,6 +318,76 @@ vh_step() {
   [ "$VH_DISABLED" = 1 ] || _vh_say "VH_STEP phase=${VH_CUR_PHASE:-?} step=$1"
 }
 
+# vh_run_step <label> <command...> — mark and run one shell command while keeping
+# its output and exit status under this phase's evidence directory. Logging is
+# best-effort: if the evidence directory cannot be written, run the command
+# directly so diagnostics never become a new verifier precondition.
+vh_run_step() {
+  local step="${1:-}"
+  [ -n "$step" ] || { echo 'vh_run_step: missing step label' >&2; return 2; }
+  shift
+  [ "$#" -gt 0 ] || { echo "vh_run_step: missing command for $step" >&2; return 2; }
+  vh_step "$step"
+  if [ "${VH_DISABLED:-1}" = 1 ] || [ -z "${VH_PHASE_DIR:-}" ]; then
+    "$@"
+    return $?
+  fi
+
+  local safe="${step//[^a-zA-Z0-9_.-]/_}"
+  local command_dir="$VH_PHASE_DIR/commands"
+  local stdout_file="$command_dir/$safe.stdout.log"
+  local stderr_file="$command_dir/$safe.stderr.log"
+  local result_file="$command_dir/$safe.result.json"
+  if ! mkdir -p "$command_dir" 2>/dev/null ||
+     ! : > "$stdout_file" 2>/dev/null ||
+     ! : > "$stderr_file" 2>/dev/null; then
+    _vh_say "VH_CAPTURE_DISABLED phase=${VH_CUR_PHASE:-?} step=$safe reason=command-evidence-unwritable"
+    "$@"
+    return $?
+  fi
+
+  local rc=0
+  "$@" >"$stdout_file" 2>"$stderr_file" || rc=$?
+  cat "$stdout_file" 2>/dev/null || true
+  cat "$stderr_file" >&2 2>/dev/null || true
+  printf '{"step":%s,"exitCode":%s}\n' "$(_vh_json_str "$step")" "$rc" >"$result_file" 2>/dev/null || true
+  _vh_say "VH_COMMAND_RESULT phase=${VH_CUR_PHASE:-?} step=$safe exit=$rc evidence=$command_dir/$safe"
+  return "$rc"
+}
+
+# Capture the bracketed phase's combined stdout/stderr while preserving the
+# caller's streams. The explicit wait in the matching stop closes the tee before
+# finalization, so a failed long-running prepare still leaves complete bytes.
+vh_capture_phase_start() {
+  [ "${VH_DISABLED:-1}" = 1 ] && return 0
+  [ -n "${VH_PHASE_DIR:-}" ] || return 0
+  [ "${VH_PHASE_CAPTURE_ACTIVE:-0}" = 1 ] && return 0
+  local output_file="$VH_PHASE_DIR/command-output.log"
+  if ! : >> "$output_file" 2>/dev/null; then
+    _vh_say "VH_CAPTURE_DISABLED phase=${VH_CUR_PHASE:-?} reason=phase-output-unwritable"
+    return 0
+  fi
+  exec {VH_PHASE_CAPTURE_OUT_FD}>&1
+  exec {VH_PHASE_CAPTURE_ERR_FD}>&2
+  exec > >(tee -a "$output_file") 2>&1
+  VH_PHASE_CAPTURE_TEE_PID=$!
+  VH_PHASE_CAPTURE_ACTIVE=1
+}
+
+vh_capture_phase_stop() {
+  [ "${VH_PHASE_CAPTURE_ACTIVE:-0}" = 1 ] || return 0
+  local out_fd="${VH_PHASE_CAPTURE_OUT_FD:-}" err_fd="${VH_PHASE_CAPTURE_ERR_FD:-}"
+  local tee_pid="${VH_PHASE_CAPTURE_TEE_PID:-}"
+  if [ -n "$out_fd" ] && [ -n "$err_fd" ]; then
+    exec 1>&"$out_fd" 2>&"$err_fd"
+  fi
+  [ -z "$tee_pid" ] || wait "$tee_pid" 2>/dev/null || true
+  exec {VH_PHASE_CAPTURE_OUT_FD}>&-
+  exec {VH_PHASE_CAPTURE_ERR_FD}>&-
+  VH_PHASE_CAPTURE_TEE_PID=""
+  VH_PHASE_CAPTURE_ACTIVE=0
+}
+
 vh_fail() { VH_CUR_FAIL="$1"; VH_CUR_DETAIL="${2:-}"; }
 
 _vh_exec() {
