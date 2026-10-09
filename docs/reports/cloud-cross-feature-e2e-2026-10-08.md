@@ -231,10 +231,12 @@ Browser binding `33281` replaces stale historical binding `31951`.
 Server measurement confirms the existing Postgres restore proof remains current;
 it was reused without rerunning the database matrix. The exact `JOURNEY-P-002@1`
 adequacy evaluation now passes every applicable criterion. Canonical scorecard
-`EI-25531307051170061` is emitted and awaits its independent grading audit;
-`P-002` remains open until that audit permits completion.
+`EI-25531307051170061` passed independent grading audit
+`EI-25531612250345646` at 19:34:02 UTC. `P-002` / `WI-10007609` closed with
+committed completion authority at 19:44 UTC; the provider acceptance lane
+`P-003` is now open and claimed by this session.
 
-`P-003` is blocked by `P-002`. A current GCP-compatible artifact and complete
+`P-003` is active. A current GCP-compatible artifact and complete
 hosted/provider task, reconnect and teardown receipts remain required. The
 retained AWS A/B publication receipts are not substitutes for those receipts.
 Direct readback confirms accepted A `0.0.21-p012r69` /
@@ -263,6 +265,41 @@ the native Cargo target's filesystem had about 1 GB free versus the required
 budgets must pass before a further attempt. The maintained wrapper respects an
 explicit `CARGO_TARGET_DIR`; a new campaign-owned private target on `/mnt/backup`
 now has both the 65 GB Cargo and 10 GB artifact checks before source preparation.
-No native pass is established yet.
+The subsequent private-target native run passed; its scoped evidence is recorded
+below.
 Log: `/tmp/cloud-e2e-20261009-native-backup-tmp.log`.
 Current attempt log: `/tmp/cloud-e2e-20261009-native-private-cargo.log`.
+
+## Native UI receipt — 2026-10-09
+
+Native parent run `20261009T193758Z-752002` passed prepare, boot and assertions.
+The structured `result.json` and `phases.jsonl` establish the verdict; the outer
+shell log omitted the terminal summary. The child assertion run
+`cloud-workspaces-aws/20261009T194500Z-1145653` separately records a passing
+native phase through **AWS restore request and successful Modal dismissal**.
+Its evidence is retained under
+`$HOME/.local/state/verification-harness/cloud-workspaces-aws/20261009T194500Z-1145653/phases/native/`:
+`result.json`, `aws-operate.png` and `final.png`.
+
+Actual X11 pointer and keyboard input exercised AWS connection admission and
+fields, setup-template link, provisioning, stop/start, snapshot, restore dialog,
+Escape dismissal, durable snapshot selection and the captured restore request.
+The child record declares `syntheticCloudResponses: true` and
+`realAwsLifecycleProven: false`. This proves native UI behavior with explicit
+provider fixtures; real provider lifecycle, remote task completion and cleanup
+acceptance remain separate unmet bars.
+
+The frozen source receipt names commit
+`d4c6d7d80d285735590741117d33cfd5db166cda` and byte-matched acceptance inputs.
+The compiled native binary
+`/mnt/backup/cloud-e2e-native-target.zq83oJ/debug/papercusp-desktop` hashes to
+`b809153d613cd2099f8dd717affe2a2f4570344a2e2b39e666e906e9cdd6a00c`.
+The tested runtime was isolated on display `:90`, port `33700`, bridge PID
+`966541`; the assertion record and parent provenance agree on the campaign
+owner and unique run. The frozen SPA and source receipt remain referenced at
+`/mnt/backup/verify-tauri-headless.mp5GtH/`.
+
+The adequacy audit's wake timed out despite its already-passed audit stamp.
+The actual audit read and committed completion were used; the timeout did not
+reopen or duplicate that work. This detector failure is filed and owned as
+`EI-25532541000501660`; its root cause is unconfirmed.
