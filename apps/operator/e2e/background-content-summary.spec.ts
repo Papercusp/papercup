@@ -4,11 +4,111 @@ import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
+import { randomUUID } from 'node:crypto';
 import { expect, test } from './_egress';
 
 const exec = promisify(execFile);
 const root = fileURLToPath(new URL('../../../', import.meta.url));
 const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
+
+test('summary reuse follows its authorized reader, source version, options and model', async ({ request, baseURL }, testInfo) => {
+  test.setTimeout(600_000);
+  const workspace = process.env.PAPERCUSP_WORKSPACE;
+  const parent = process.env.PAPERCUSP_SID;
+  test.skip(!workspace || !parent || !process.env.PAPERCUSP_TEST_RUN_WORK_ITEM_ID,
+    'The real local cache journey requires a workspace, author session and held work-item.');
+  const origin = new URL(baseURL!);
+  expect(['localhost', '127.0.0.1', '[::1]']).toContain(origin.hostname);
+  const before = await (await request.get(new URL('/api/health', origin).href)).json();
+  const nonce = randomUUID();
+  const mint = async () => {
+    const script = "const {signSpawnParams}=await import('./packages/operator-core/lib/spawn-signing.ts');\n"
+      + 'const params=new URLSearchParams(JSON.parse(process.argv[1]));\n'
+      + 'await signSpawnParams(params,{ttlSec:900});\n'
+      + 'process.stdout.write(params.toString());process.exit(0);';
+    const { stdout } = await exec(process.execPath,
+      ['--import', 'tsx', '--input-type=module', '-e', script, JSON.stringify({
+        workspace, harness: 'papercusp', role: 'papercup', client: randomUUID(),
+        spawn: 'content-cache-e2e-' + randomUUID(), run: randomUUID(), parent_spawn: parent,
+      })], { cwd: root, timeout: 30_000, maxBuffer: 64 * 1024 });
+    return new URL('/api/mcp?' + stdout.trim(), origin).href;
+  };
+  const observations: unknown[] = [];
+  let sequence = 0;
+  const call = async (url: string, name: string, args: Record<string, unknown>) => {
+    const id = ++sequence;
+    const response = await request.post(url, { headers: {
+      'content-type': 'application/json', Accept: 'application/json, text/event-stream',
+    }, data: { jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: args } }, timeout: 150_000 });
+    expect(response.status()).toBe(200);
+    const text = await response.text();
+    const body = response.headers()['content-type']?.includes('text/event-stream')
+      ? text.split('\n').filter(line => line.startsWith('data: ')).map(line => JSON.parse(line.slice(6))).find(value => value.id === id)
+      : JSON.parse(text);
+    expect(body?.id).toBe(id);
+    expect(body.error).toBeUndefined();
+    const result = JSON.parse(body.result.content.find((part: { type: string }) => part.type === 'text').text);
+    observations.push({ name, args, result });
+    return result;
+  };
+  try {
+    // Two genuinely signed ordinary-agent identities exercise the normal MCP
+    // permission/intake path. All source text is a unique public fixture.
+    const first = await mint();
+    const second = await mint();
+    // Backend inventory is an author fixture prerequisite; the ordinary
+    // narration role has no gateway administration capability.
+    const { stdout } = await exec(process.execPath, ['scripts/mcp-call.mjs', 'gateway:local_backend_list',
+      '--json', JSON.stringify({ workspace }), '--client', parent!, '--workspace', workspace!,
+      '--harness', 'papercusp', '--port', origin.port || '80'],
+    { cwd: root, timeout: 60_000, maxBuffer: 1024 * 1024 });
+    let inventory = JSON.parse(stdout);
+    if (inventory.structuredContent) inventory = inventory.structuredContent;
+    else if (Array.isArray(inventory.content)) inventory = JSON.parse(inventory.content.find((part: { type: string }) => part.type === 'text').text);
+    const backend = inventory.backends.find((candidate: { enabled: boolean; models: string[] }) =>
+      candidate.enabled && candidate.models.length > 0);
+    expect(backend, 'A configured real local backend is required for the cache journey.').toBeTruthy();
+    const model = process.env.PAPERCUSP_E2E_LOCAL_SUMMARY_MODEL || backend.models[0];
+    expect(inventory.backends.some((candidate: { enabled: boolean; models: string[] }) =>
+      candidate.enabled && candidate.models.includes(model))).toBe(true);
+    const readyBackend = inventory.backends.find((candidate: { enabled: boolean; models: string[] }) =>
+      candidate.enabled && candidate.models.includes(model));
+    expect((await request.get(readyBackend.baseUrl + '/v1/models', { timeout: 5_000 })).ok()).toBe(true);
+    const content = { kind: 'text', ref: 'fixture:cache-public-report:' + nonce,
+      text: 'Public fixture ' + nonce + ': North reports 12 units and South reports 34 units.' };
+    const summary = { model, allowCloud: false, cache: true, maxCalls: 1, maxOutputTokens: 128,
+      length: 'short', focus: 'State both region names and their exact unit counts.', timeoutMs: 120_000 };
+    const args = { operation: 'summarize', content, summary };
+    const original = await call(first, 'documents:read', args);
+    expect(original).toMatchObject({ ok: true, cached: false, model, coverage: { complete: true } });
+    expect(original.summary).toMatch(/\b12\b/);
+    expect(original.summary).toMatch(/\b34\b/);
+    const reused = await call(first, 'documents:read', args);
+    expect(reused).toMatchObject({ ok: true, cached: true, summary: original.summary, digest: original.digest });
+    const otherReader = await call(second, 'documents:read', args);
+    expect(otherReader).toMatchObject({ ok: true, cached: false, model });
+    const changed = await call(first, 'documents:read', { ...args,
+      content: { ...content, text: content.text.replace('12 units', '19 units') } });
+    expect(changed).toMatchObject({ ok: true, cached: false, model });
+    expect(changed.digest).not.toBe(original.digest);
+    expect(changed.summary).toMatch(/\b19\b/);
+    expect(changed.summary).toMatch(/\b34\b/);
+    const options = await call(first, 'documents:read', { ...args, summary: { ...summary, format: 'bullets' } });
+    expect(options).toMatchObject({ ok: true, cached: false, model });
+    // An unavailable model must take its own consent/error path; a warm entry
+    // from the registered model cannot turn it into a cached success.
+    const unavailable = await call(first, 'documents:read', { ...args,
+      summary: { ...summary, model: 'unregistered-cache-model-' + nonce } });
+    expect(unavailable).toMatchObject({ ok: false, error: 'cloud-consent-required' });
+    expect(unavailable.summary).toBeUndefined();
+    const after = await (await request.get(new URL('/api/health', origin).href)).json();
+    expect(after.sha).toBe(before.sha);
+  } finally {
+    const path = testInfo.outputPath('summary-cache-execution.json');
+    writeFileSync(path, JSON.stringify({ buildSha: before.sha, nonce, observations }, null, 2) + '\n');
+    await testInfo.attach('summary-cache-execution', { contentType: 'application/json', path });
+  }
+});
 
 test('background summary completes through a real managed task and the normal documents tool', async ({ request, baseURL }, testInfo) => {
   test.setTimeout(210_000);
