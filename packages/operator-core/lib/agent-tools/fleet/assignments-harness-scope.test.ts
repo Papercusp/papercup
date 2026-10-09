@@ -15,15 +15,20 @@
  * plans, mirroring assignments-workspace-scope.test.ts's mock-the-IO-seam
  * pattern (no PG needed).
  */
-import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { describe, expect, it, vi, beforeEach, afterAll } from 'vitest';
+import { readRealPgRailBlocks } from '@papercusp/test-config/silenced-console-census';
 import { getAllPlanItemCoverage, type PlanItemCoverage } from '../../plan-item-coverage';
+
+afterAll(() => {
+  const rail = readRealPgRailBlocks();
+  expect(rail.blocked, `real-PG attempts blocked: ${rail.callers.join(' | ')}`).toBe(0);
+});
 
 vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()),
   defineTool: (def: unknown) => def,
   readJsonResult: () => undefined,
 }));
-vi.mock('../coordination/roles', () => ({ COORD_ROLES: ['operator'] }));
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: () => ({
     ownerId: 'su-leader',
@@ -38,7 +43,19 @@ vi.mock('../coordination/self-marker', () => ({
   markSelfRows: (rows: unknown[]) => rows,
 }));
 vi.mock('../coordination/presence-wakeability', () => ({ fetchWakeability: vi.fn(async () => new Map()) }));
-vi.mock('../../adv-sessions', async (orig) => ({ ...(await orig<typeof import('../../adv-sessions')>()), recordedLiveOwnerIds: vi.fn(async () => new Set()) }));
+vi.mock('../coordination/presence', async (original) => ({
+  ...(await original<typeof import('../coordination/presence')>()),
+  listPresence: vi.fn(async () => []),
+}));
+vi.mock('../coordination/presence-selfwake', async (original) => ({
+  ...(await original<typeof import('../coordination/presence-selfwake')>()),
+  fetchSelfWake: vi.fn(async () => new Map()),
+}));
+vi.mock('../../adv-sessions', async (orig) => ({
+  ...(await orig<typeof import('../../adv-sessions')>()),
+  recordedLiveOwnerIds: vi.fn(async () => new Set()),
+  endedRecordedOwnerIds: vi.fn(async () => new Set()),
+}));
 vi.mock('../coordination/wake-mode', () => ({
   getWakeModeOverridesFor: vi.fn(async () => new Map()),
   getDefaultWakeMode: vi.fn(async () => 'auto'),
@@ -75,6 +92,7 @@ vi.mock('../../fleet/assignments', async (importOriginal) => ({
   listFleetAssignments: vi.fn(async () => []),
   groupByAgent: vi.fn(() => []),
   lastToolCallAtByOwner: vi.fn(async () => new Map()),
+  lastProductiveToolCallAtByOwner: vi.fn(async () => new Map()),
   orphanedClaims: vi.fn(() => []),
   stalledClaims: vi.fn(() => []),
   summarizeOrphan: vi.fn((r: unknown) => r),
