@@ -393,15 +393,20 @@ function upstreamProjectionRecoveryInstruction(toolName: string, nestedTargetToo
 
 /** Distinct truncation and partial marker names found in text (capped — this
  *  feeds advisory wording, not an audit). Empty when none are present. */
-function detectInnerTruncationMarkers(text: string | readonly string[], toolName: string): string[] {
+function detectInnerTruncationMarkers(
+  text: string | readonly string[],
+  toolName: string,
+  nestedTargetToolName?: string,
+): string[] {
   const textItems = typeof text === 'string' ? [text] : [...text];
   const sourceText = textItems.join('\n\n');
+  const diagnosticToolName = toolName === 'tools:invoke' ? nestedTargetToolName : toolName;
   const found = new Set<string>();
   INNER_TRUNCATION_MARKER_REGEX.lastIndex = 0;
   let m: RegExpExecArray | null;
   while ((m = INNER_TRUNCATION_MARKER_REGEX.exec(sourceText))) {
     const marker = m[1] ?? m[2];
-    if (isCoordSendDeliveryDiagnostic(toolName, marker)) continue;
+    if (isCoordSendDeliveryDiagnostic(diagnosticToolName, marker)) continue;
     found.add(marker);
     if (found.size >= 5) break;
   }
@@ -1542,7 +1547,11 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
   )?.payloadProjection;
   const innerTruncationMarkers = upstreamProjection
     ? []
-    : detectInnerTruncationMarkers(input.result.content.filter(isTextItem).map((item) => item.text), input.opts.toolName);
+    : detectInnerTruncationMarkers(
+      input.result.content.filter(isTextItem).map((item) => item.text),
+      input.opts.toolName,
+      input.opts.nestedTargetToolName,
+    );
   const sourceWasPartial = Boolean(upstreamProjection?.truncated) || innerTruncationMarkers.length > 0;
   const payload = JSON.stringify({
     content: input.result.content,
@@ -2572,6 +2581,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
       const innerTruncationMarkers = detectInnerTruncationMarkers(
         items.filter(isTextItem).map((item) => item.text),
         opts.toolName,
+        opts.nestedTargetToolName,
       );
       const threadMarkersRecoverable = hasOnlyRecoverableCoordThreadMarkers(
         innerTruncationMarkers,
@@ -2692,7 +2702,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
     // priority over a field-level marker.
     const innerTruncationMarkers = upstreamProjection
       ? []
-      : detectInnerTruncationMarkers(textItems.map((item) => item.text), opts.toolName);
+      : detectInnerTruncationMarkers(textItems.map((item) => item.text), opts.toolName, opts.nestedTargetToolName);
     const header = upstreamProjection
       ? `# result-door spill — an ALREADY-PROJECTED (partial) tool result\n` +
         `# tool: ${opts.toolName}\n# spilled: ${new Date().toISOString()}\n` +

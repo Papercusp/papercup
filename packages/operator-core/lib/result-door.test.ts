@@ -122,6 +122,34 @@ describe('applyResultDoor', () => {
       expect(applyResultDoor(result, { toolName: 'coord:send', workspaceId: 'ws-1', runId: RUN_ID })).toBe(result);
     });
 
+    it('keeps nested coord:send inbox-page diagnostics from marking a complete receipt partial', () => {
+      const diagnostics = senderBodyDeliveryDiagnostics('x'.repeat(570))!;
+      expect(diagnostics).toMatchObject({ bodyTruncated: false, bodyMayBeTruncated: true });
+      const result = {
+        content: [{ type: 'text' as const, text: JSON.stringify({
+          ok: true,
+          results: [{ ok: true, msg_id: 'already-persisted', ...diagnostics }],
+          counts: { ok: 1, failed: 0 },
+        }) }],
+      };
+
+      expect(applyResultDoor(result, {
+        toolName: 'tools:invoke',
+        nestedTargetToolName: 'coord:send',
+        workspaceId: 'ws-1',
+        runId: RUN_ID,
+      })).toBe(result);
+
+      const unrelated = applyResultDoor(result, {
+        toolName: 'tools:invoke',
+        nestedTargetToolName: 'plans:list',
+        workspaceId: 'ws-1',
+        runId: RUN_ID,
+      });
+      const envelope = JSON.parse((unrelated.content[0] as { text: string }).text);
+      expect(envelope.incomplete.reason).toBe('under-budget-partial-result');
+    });
+
     it.each(['field', 'upstream'] as const)('recovers genuinely %s-partial receipts by reading without repeating the send', (kind) => {
       const result = {
         content: [{ type: 'text' as const, text: JSON.stringify({
