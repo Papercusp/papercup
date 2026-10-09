@@ -307,6 +307,56 @@ describe('default fleet reports over the real current-spec queue', () => {
       .map(item => item.id)).toEqual([ids[0]]);
   });
 
+  it('retains over 2000 matched rows, pre-lifetime stock and terminal rows, and the historical-spec union', async () => {
+    await seedFleet();
+    await seedQueue();
+    const olderAt = createdAt - 86_400_000;
+    await sql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, title, status, item_kind, created_ts, updated_ts)
+      SELECT 'default', ${HARNESS}, 'WI-large-source-' || n, 'matched source stock', 'open', 'bug',
+             ${createdAt}, ${createdAt} FROM generate_series(1, 2101) AS n`;
+    await sql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, title, status, item_kind,
+         created_ts, updated_ts, closed_ts)
+      VALUES ('default', ${HARNESS}, 'WI-old-source-stock', 'matched source stock', 'open', 'bug',
+              ${olderAt}, ${olderAt}, NULL),
+             ('default', ${HARNESS}, 'WI-old-source-terminal', 'matched source stock', 'done', 'bug',
+              ${olderAt}, ${olderAt}, ${olderAt})`;
+    const priorSpecs = await sql`SELECT revision, spec FROM harness_shared.cup_claim_specs
+      WHERE workspace_id = 'default' AND bee_id = ${fleetSpecBeeKey(FLEET)}`;
+    expect(priorSpecs).toHaveLength(1);
+    expect(priorSpecs[0]!.spec.view.filter).toEqual({ field: 'id', op: 'in', value: ids });
+    expect(await setClaimSpec({ cupId: fleetSpecBeeKey(FLEET), workspaceId: 'default',
+      potSlug: HARNESS, spec: {
+        ...DEFAULT_CLAIM_SPEC,
+        revision: 2,
+        specId: 'real-health-next-spec',
+        view: { ...DEFAULT_CLAIM_SPEC.view,
+          filter: { field: 'title', op: '=', value: 'matched source stock' } },
+      } }, sql)).toMatchObject({ ok: true, revision: 2 });
+
+    const resolution = await resolveFleetMetricScope({ workspaceId: 'default', harness: HARNESS,
+      fleet: FLEET, flowMode: 'at-event-spec' });
+    expect(resolution.ok).toBe(true);
+    if (!resolution.ok) throw new Error(resolution.reason);
+    expect(resolution.claimSpec.segments.some(segment => segment.source === 'history')).toBe(true);
+    const source = await readFleetMetricSourceItems(resolution);
+    const selectedIds = new Set(source.map(item => item.id));
+    const expectedIds = [
+      ...ids, ...Array.from({ length: 2101 }, (_, index) => `WI-large-source-${index + 1}`),
+      'WI-old-source-stock', 'WI-old-source-terminal',
+    ];
+    expect(selectedIds).toEqual(new Set(expectedIds));
+    expect(source).toHaveLength(expectedIds.length);
+    expect(source.find(item => item.id === 'WI-old-source-terminal')).toMatchObject({ state: 'done' });
+    for (const id of ['WI-old-source-stock', 'WI-old-source-terminal']) {
+      expect(Date.parse(source.find(item => item.id === id)!.createdAt!))
+        .toBeLessThan(Date.parse(resolution.scope.window.startAt));
+    }
+  }, 30_000);
+
   it.each([
     { label: 'item-read failure', mode: 'sync' },
     { label: 'rejected item read', mode: 'async' },
