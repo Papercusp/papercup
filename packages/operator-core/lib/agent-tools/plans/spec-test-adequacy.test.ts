@@ -826,6 +826,24 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(siblingResult.ratings['plan-class-risk-floor'].evidence).toContain('binding target does not identify the exact clause');
 
     expect(grade(evidence()).ratings['plan-class-risk-floor'].rating).toBe('pass');
+
+    const highRiskClause = clause({ behaviorClass: 'concurrency' });
+    const gradeL4 = (row: SpecEvidenceForAdequacy) => evaluateSpecTestAdequacy({
+      clause: highRiskClause,
+      evidence: [row],
+      classRef: 'plan-class-feature-ship',
+    });
+    const missingL4Target = gradeL4(evidence({
+      details: { adequacy: { coverageRungs: { l4: true } } },
+    }));
+    expect(missingL4Target.ratings['plan-class-risk-floor'].rating).toBe('unknown');
+    const siblingL4Target = gradeL4(evidence({
+      details: { adequacy: { targeted: 'SPEC-003-02', coverageRungs: { l4: true } } },
+    }));
+    expect(siblingL4Target.ratings['plan-class-risk-floor'].rating).toBe('unknown');
+    expect(gradeL4(evidence({
+      details: { adequacy: { targeted: highRiskClause.specId, coverageRungs: { l4: true } } },
+    })).ratings['plan-class-risk-floor'].rating).toBe('pass');
   });
 
   it('prints the bound run\'s ledger file and dirty-tree provenance beside its id', () => {
