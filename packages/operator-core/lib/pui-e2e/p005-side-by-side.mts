@@ -28,6 +28,8 @@ import {
   isCodexPromptReady,
   RESUME_RECALL_EXPECTATION,
   taskAnsweredAfterPrompt,
+  preflightStockCliArgs,
+  reviewBlockingReason,
 } from './p005-codex-readiness.js';
 import {
   chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync,
@@ -48,7 +50,7 @@ const puiArgs = () => (arg('pui-args') ?? '').split(/\s+/).filter(Boolean);
  * Extra stock-CLI launch arguments from `--stock-args "<a> <b>"` (claude and
  * codex only), appended to both the launch and the resume argv. P-028 records
  * the stock approval prompts with `--stock-args "--permission-mode default"`
- * (Claude) and `--stock-args "-a untrusted"` (Codex): the 2026-10-05 run let
+ * (Claude) and `--stock-args "-a on-request"` (Codex): the 2026-10-05 run let
  * both CLIs pick their own mode, which was auto / full access, so neither
  * ever asked.
  */
@@ -90,6 +92,7 @@ function enclosingGitTree(dir: string): string | null {
 }
 const gitTree = enclosingGitTree(out);
 if (gitTree) throw new Error(`--out ${out} is inside the git work tree ${gitTree}; pick a directory outside any repository`);
+if (cliName === 'claude' || cliName === 'codex') preflightStockCliArgs(cliName, stockArgs());
 
 type Cli = {
   launch: string[];
@@ -327,6 +330,11 @@ async function settle(label: string, maxMs: number, opts: { approve?: boolean; f
   while (Date.now() - t0 < maxMs && !exited) {
     await sleep(opts.tickMs ?? 500);
     const now = screen();
+    const blocked = reviewBlockingReason(now);
+    if (blocked) {
+      frame(`${label}.BLOCKED`);
+      throw new Error(`${cliName} cannot run ${label}: ${blocked}; see ${label}.BLOCKED.txt`);
+    }
     if (opts.film && now !== last && film.length < 160) film.push({ ms: Date.now() - t0, screen: now });
     assertStockScreen(label, now);
     const popup = cli.dismiss?.find((d) => d.when.test(now));
@@ -378,8 +386,8 @@ async function task(label: string, prompt: string, maxMs = 240_000, expected?: R
     : taskAnsweredAfterPrompt(finalScreen, prompt, expected));
   log.push({ label, prompt, ...omitFilm(r), exited, ...(expected ? { taskCompleted: completed } : {}) });
   if (exited) throw new Error(`${cliName} exited during ${label}; see ${label}.txt`);
-  if (cliName === 'codex' && expected && !completed) {
-    throw new Error(`Codex did not complete ${label}; inspect ${label}.txt (the screen must show the prompt, expected answer, and idle composer)`);
+  if (expected && !completed) {
+    throw new Error(`${cliName} did not complete ${label}; inspect ${label}.txt (the screen must show the prompt and expected answer after it)`);
   }
 }
 
@@ -411,10 +419,13 @@ async function waitForCodexPrompt(prefix: string, maxMs: number, allowFirstTask:
       await sleep(800);
       continue;
     }
+    const blocked = reviewBlockingReason(now);
+    if (blocked) throw new Error(`Codex cannot start ${prefix}: ${blocked}`);
     if (isCodexPromptReady(now)) return { firstChangeMs: Date.now() - t0, totalMs: Date.now() - t0, approvals: 0, timedOut: false };
     await sleep(500);
   }
   frame(`${prefix}.NOT_READY`);
+  if (exited) throw new Error(`Codex exited during startup; see ${prefix}.NOT_READY.txt`);
   throw new Error(`Codex did not reach an interactive prompt within ${maxMs}ms; see ${prefix}.NOT_READY.txt`);
 }
 
@@ -432,11 +443,11 @@ async function runP005() {
   await task('01-greeting', 'hi', 240_000, CODEX_GREETING_EXPECTATION);
   await task('02-read-explain', 'Read calc.js and explain what it does in two sentences.', 240_000, /calc\.js defines two functions|add\(a,\s*b\)|mul\(a,\s*b\)/i);
   await task('03-edit', 'Edit calc.js so that add() accepts an optional third number and adds it too.', 240_000, /add\(a,\s*b,\s*c\s*=\s*0\)|optional third number/i);
-  if (cliName === 'codex' && !/function add\(a, b, c = 0\)/.test(readFileSync(path.join(proj, 'calc.js'), 'utf8'))) {
+  if (!/function add\(a,\s*b,\s*c\s*=\s*0\)/.test(readFileSync(path.join(proj, 'calc.js'), 'utf8'))) {
     frame('03-edit.FILE_ASSERTION_FAILED');
-    throw new Error('Codex did not write the requested optional third argument to calc.js');
+    throw new Error(`${cliName} did not write the requested optional third argument to calc.js`);
   }
-  await task('04-run-tests', 'Run the tests with npm test and tell me whether they pass.', 240_000, /npm test passed|1 test passed|# pass\s+1/i);
+  await task('04-run-tests', 'Run the tests with npm test and tell me whether they pass.', 240_000, /npm test passed|2 tests? passed|# pass\s+2\b/i);
   writeFileSync(path.join(out, 'scrollback-before-exit.txt'), scrollback());
   await send(cli.exit);
   const t = Date.now();

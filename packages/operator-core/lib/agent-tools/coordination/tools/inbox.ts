@@ -43,6 +43,7 @@ import {
   coalesceRepeatedBroadcasts,
   inboxPriorityBucket,
   prioritizedInboxWindow,
+  expandInboxChunkGroupsForMessageIds,
 } from "../inbox-visibility";
 import { COORD_READ_ROLES } from "../roles";
 import { renderInjection, type CoordLineSource } from "../../../coord-schema";
@@ -626,22 +627,23 @@ export function filterInboxBySender<T extends { from?: unknown }>(
 }
 
 /**
- * EI-13159: keep only entries whose `msg_id` is in the caller's unanswered-
- * directed set — the exact set `fleet:assignments`' `unanswered_directed`
- * counter and `fleet:leader-brief` are built from (unanswered-directed.ts),
- * so a `coord:inbox { unanswered_only: true }` read can never disagree with
- * what those surfaces flagged. `undefined`/`null` unansweredMsgIds (the
- * filter wasn't requested) is a no-op passthrough. Pure — unit-tested without
- * PG or a live handler.
+ * EI-13159: keep entries in the caller's unanswered-directed set — the exact
+ * msg_ids `fleet:assignments` and `fleet:leader-brief` flag — while preserving
+ * every available part of a matching chunked message. Only a chunk's final
+ * part can carry the reply expectation, so an exact-row filter would otherwise
+ * discard the context parts and make the inbox's complete-group window hide the
+ * outstanding ask. `undefined`/`null` (filter not requested) is a no-op.
+ * Pure — unit-tested without PG or a live handler.
  */
 export function filterInboxByUnanswered<T extends { msg_id?: unknown }>(
   entries: readonly T[],
   unansweredMsgIds: ReadonlySet<string> | undefined | null,
 ): readonly T[] {
   if (!unansweredMsgIds) return entries;
-  return entries.filter(
-    (e) => typeof e.msg_id === "string" && unansweredMsgIds.has(e.msg_id),
-  );
+  return expandInboxChunkGroupsForMessageIds(
+    entries as unknown as readonly Record<string, unknown>[],
+    unansweredMsgIds,
+  ) as unknown as readonly T[];
 }
 
 /** Only messages whose sender is not positively ended still need a reply. */

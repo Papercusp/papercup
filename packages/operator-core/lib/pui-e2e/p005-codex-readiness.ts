@@ -1,4 +1,32 @@
 import { posix as posixPath } from 'node:path';
+import { execFileSync } from 'node:child_process';
+
+/** Validate against the installed CLI's parser before allocating review state. */
+export function preflightStockCliArgs(
+  cli: 'claude' | 'codex', args: string[],
+  check: (cli: string, args: string[]) => void = (command, argv) => {
+    execFileSync(command, argv, { encoding: 'utf8', timeout: 15_000, stdio: 'pipe' });
+  },
+): void {
+  try { check(cli, [...args, '--help']); }
+  catch (cause) {
+    const stderr = (cause as { stderr?: unknown })?.stderr;
+    throw new Error(`${cli} rejected its review launch arguments before startup: ${String(stderr ?? cause).slice(0, 2000)}`, { cause });
+  }
+}
+
+/** Pass the review's requested route through PUI's public launch selectors. */
+export function p005PuiLaunchArgs(selection: { model?: string; account?: string }): string[] {
+  return ['--solo', ...(selection.model ? ['--model', selection.model] : []),
+    ...(selection.account ? ['--account', selection.account] : [])];
+}
+
+export function reviewBlockingReason(screen: string): string | null {
+  if (/hit your (?:weekly |daily |session |usage )?limit|usage limit reached|quota exceeded/i.test(screen)) return 'provider usage limit';
+  if (/API Error (?:40[0-3]|429)|authentication (?:failed|expired)|invalid api key/i.test(screen)) return 'provider authentication or request refusal';
+  if (/Connection: Unavailable|Not connected · send a message|no longer available for this backend|is not available on this operator|no longer offered by the operator|without a usable reply/i.test(screen)) return 'connection or model unavailable';
+  return null;
+}
 
 export const CODEX_HOME_SOCKET_PATH_BUDGET_BYTES = 100;
 export const CODEX_GREETING_EXPECTATION = /what can i help you with|how can i help|what would you like to work on/i;

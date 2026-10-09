@@ -274,6 +274,43 @@ function inboxChunkGroupKey(e: Record<string, unknown>, chunk: InboxChunkPart): 
   return JSON.stringify([from, recipients, e['harness_slug'] ?? null, chunk.group, chunk.of]);
 }
 
+/**
+ * Expand a message-id selection to include every available part of any matching
+ * chunked message. A coord:send chunk is one logical message even though only
+ * its final part can carry `expects:'answer'`; filtering on that part's msg_id
+ * alone would make the window selector see an incomplete group and suppress the
+ * whole answer. Keep this expansion beside the chunk parser so filter callers
+ * use the same grouping identity as {@link prioritizedInboxWindow}.
+ */
+export function expandInboxChunkGroupsForMessageIds<T extends Record<string, unknown>>(
+  entries: readonly T[],
+  messageIds: ReadonlySet<string>,
+): T[] {
+  if (messageIds.size === 0 || entries.length === 0) return [];
+
+  const matchingIds = new Set<string>();
+  const matchingGroups = new Set<string>();
+  for (const entry of entries) {
+    const msgId = entry['msg_id'];
+    if (typeof msgId !== 'string' || !messageIds.has(msgId)) continue;
+    matchingIds.add(msgId);
+    const chunk = inboxChunkPart(entry);
+    if (chunk) {
+      const key = inboxChunkGroupKey(entry, chunk);
+      if (key !== null) matchingGroups.add(key);
+    }
+  }
+
+  return entries.filter((entry) => {
+    const msgId = entry['msg_id'];
+    if (typeof msgId === 'string' && matchingIds.has(msgId)) return true;
+    const chunk = inboxChunkPart(entry);
+    if (!chunk) return false;
+    const key = inboxChunkGroupKey(entry, chunk);
+    return key !== null && matchingGroups.has(key);
+  });
+}
+
 /** Select + order the visible inbox window by P-009 priority before applying
  * the caller's display limit. Rows within a bucket are newest-first so a flood
  * of low-priority broadcasts cannot crowd an older actionable ask out of a

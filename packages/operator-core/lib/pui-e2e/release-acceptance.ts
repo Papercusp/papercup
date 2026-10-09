@@ -15,7 +15,7 @@
  * install root). Anything else — a fake operator, a cargo build, a skipped or
  * failed test — is lower-level coverage, never release evidence.
  */
-import { readFileSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
 import * as path from 'node:path';
 import { moduleRepoRoot } from '../module-repo-root';
 
@@ -24,6 +24,15 @@ import { moduleRepoRoot } from '../module-repo-root';
 export const REPO_ROOT = moduleRepoRoot(import.meta.url);
 export const UX_CONTRACT = path.join(REPO_ROOT, 'apps/tui/PUBLIC_RELEASE_UX.md');
 export const ACCEPTANCE_MATRIX = path.join(REPO_ROOT, 'apps/tui/release/acceptance-matrix.json');
+
+/** Reject an incomplete installed-product invocation before starting its database or PTY. */
+export function assertInstalledPuiStore(binary: string, store: string | undefined): void {
+  if (!store) throw new Error('PUI_BIN needs PUI_RELEASE_STORE; run it through apps/tui/scripts/release-acceptance.sh');
+  let current: string;
+  try { current = realpathSync(path.join(store, 'current', 'bin', 'pui')); }
+  catch (cause) { throw new Error('PUI_RELEASE_STORE has no installed current/bin/pui', { cause }); }
+  if (current !== realpathSync(binary)) throw new Error('PUI_BIN does not match PUI_RELEASE_STORE/current/bin/pui');
+}
 
 /** Printed once per suite by the code that started its operator. */
 export const HARNESS_TAG = 'PUI_ACCEPTANCE_HARNESS';

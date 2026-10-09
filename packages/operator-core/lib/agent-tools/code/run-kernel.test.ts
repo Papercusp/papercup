@@ -53,6 +53,33 @@ describe('code:run persistent kernel boundary', () => {
     expect(capture).not.toHaveBeenCalled();
   });
 
+  it('emits validated retained media once and keeps subsequent cells free of previous output', async () => {
+    const id = await open();
+    const media = { type: 'image', data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a5xkAAAAASUVORK5CYII=', mimeType: 'image/png' };
+    await call({ kernel: { op: 'run', id }, script: `globalThis.picture = ${JSON.stringify(media)}; return true;` });
+    const { result, payload } = await call({ kernel: { op: 'run', id }, script: 'log("cell output"); return { summary: "retained image", media: [picture] };' });
+    expect(payload.summary).toBe('retained image');
+    expect(payload).not.toHaveProperty('media');
+    expect(result.content.slice(1)).toEqual([media]);
+    const next = await call({ kernel: { op: 'run', id }, script: 'return typeof picture;' });
+    expect(next.payload.summary).toBe('object');
+    expect(next.payload.logs).toEqual([]);
+    expect(next.result.content).toHaveLength(1);
+  });
+
+  it('reports timeout state loss and rejects another cell without replaying it', async () => {
+    const id = await open();
+    await call({ kernel: { op: 'run', id }, script: 'globalThis.saved = 17; return saved;' });
+    const expired = await call({ kernel: { op: 'run', id }, script: 'while (true) {}', timeoutSec: 1 });
+    expect(expired.payload.ok).toBe(false);
+    expect(expired.payload.error).toContain('script_timeout');
+    expect(expired.payload.kernel.state).toBe('lost');
+    const next = await call({ kernel: { op: 'run', id }, script: 'return saved;' });
+    expect(next.payload.ok).toBe(false);
+    expect(next.payload.error).toContain('kernel_unrecoverable');
+    expect(next.payload.dispatchCount).toBe(0);
+  });
+
   it('binds status, close and execution to owner, workspace and harness', async () => {
     const id = await open();
     for (const foreign of [context('other-owner'), context('kernel-owner', 'workspace-b'), context('kernel-owner', 'workspace-a', 'other-harness')]) {

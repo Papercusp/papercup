@@ -1,17 +1,35 @@
 import { describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import * as path from 'node:path';
-import { checkReleaseAcceptance, disqualification, HARNESS_TAG, loadAcceptanceMatrix, loadRequiredMatrix, parseAcceptanceLines, parseHarnessLine, REPO_ROOT, type Candidate, type EvidenceRow } from './release-acceptance';
+import { assertInstalledPuiStore, checkReleaseAcceptance, disqualification, HARNESS_TAG, loadAcceptanceMatrix, loadRequiredMatrix, parseAcceptanceLines, parseHarnessLine, REPO_ROOT, type Candidate, type EvidenceRow } from './release-acceptance';
 import {
   CLOUD_DEVICE_START_ATTEMPTS, cloudDeviceStartBlocksLegs, cloudDeviceStartTransient, DOCKER_START_PROBE_TIMEOUT_MS,
   legsBlocked, measureCloudDeviceStart, measureRunnerTree, probeDockerCreateStart, remeasureCloudDeviceStart, remeasureStockMachines,
   runCloudDeviceStartSmoke, runnerTreeRefusals, runReleaseAcceptance, runStockMachineSmoke, stockMachineRefusal, stockMachinesBlockLegs,
   sweepOrphanedProbeContainers, type CloudDeviceStartResult,
 } from './release-acceptance-run';
+
+describe('installed PUI store admission', () => {
+  it('rejects a missing, absent, or different store and accepts the installed release through its current symlink', () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'pui-store-admission-'));
+    try {
+      const release = path.join(root, 'releases', 'candidate');
+      mkdirSync(path.join(release, 'bin'), { recursive: true });
+      const binary = path.join(release, 'bin', 'pui');
+      writeFileSync(binary, 'installed candidate');
+      writeFileSync(path.join(root, 'other-pui'), 'another candidate');
+      expect(() => assertInstalledPuiStore(binary, undefined)).toThrow(/PUI_RELEASE_STORE/);
+      expect(() => assertInstalledPuiStore(binary, root)).toThrow(/no installed/);
+      symlinkSync(release, path.join(root, 'current'));
+      expect(() => assertInstalledPuiStore(path.join(root, 'other-pui'), root)).toThrow(/does not match/);
+      expect(() => assertInstalledPuiStore(binary, root)).not.toThrow();
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
 
 describe('release acceptance checkout filesystem preflight', () => {
   const wrapper = readFileSync(path.join(REPO_ROOT, 'apps/tui/scripts/release-acceptance.sh'), 'utf8');

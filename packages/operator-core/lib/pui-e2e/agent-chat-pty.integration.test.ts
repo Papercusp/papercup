@@ -39,7 +39,8 @@ import { describeObserverBlock, pollUntil } from './poll-until';
 import { LatenessMonitor, describeHarnessStall, judgeBudget, type BudgetJudgement, type TimedSample } from './worker-lateness';
 import { redactSensitiveText } from '../sensitive-text';
 import { nativeProviderRequestSignal, nativeProviderTraceOrigin } from './native-provider-trace';
-import { HARNESS_TAG } from './release-acceptance';
+import { assertInstalledPuiStore, HARNESS_TAG } from './release-acceptance';
+import { p005PuiLaunchArgs, reviewBlockingReason } from './p005-codex-readiness';
 import { puiQuitBounds } from './pui-quit-bounds';
 import { isClaudeConfigDirLaunchReady, sessionProcessHolder } from '../../../../apps/operator/scripts/psu-launcher.mjs';
 
@@ -732,6 +733,7 @@ function ensurePuiBinary(): string {
   }
   if (process.env.PUI_BIN) {
     if (!existsSync(process.env.PUI_BIN)) throw new Error('The explicit PUI_BIN artifact does not exist');
+    assertInstalledPuiStore(process.env.PUI_BIN, process.env.PUI_RELEASE_STORE);
     return process.env.PUI_BIN;
   }
   const built = spawnSync('cargo', ['build', '--locked', '--bin', 'pui'], {
@@ -1268,11 +1270,8 @@ async function seedAgentChat(input: SeedAgentChat): Promise<void> {
  * default launch never lands on it (EI-25245893959522241). Bind an adv session
  * launched in `cwd` to the chat through the production bind call; the
  * snapshot route then rehydrates it with `launchCwd = cwd`.
- * - 'ended' is what a real quit leaves (ended-archived, resumable native id).
- *   PUI auto-resumes it on landing, which this scripted fixture cannot serve,
- *   so use it only where the test never needs a ready composer.
- * - 'attached' is a live session (this process's pid, not ended): PUI lands
- *   on it and attaches without launching anything.
+ * The seed is ended-archived with a resumable native id and transcript file.
+ * PUI auto-resumes it on landing through the maintained engine protocol.
  * The pane's default cwd is REPO_ROOT; PUI reads its own current_dir, which
  * the kernel reports resolved, hence realpath.
  */
@@ -2627,6 +2626,16 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-008 sessions and context 
       id: unrelated.id, title: unrelated.title, runtimeClass: 'su-session', featureId: unrelated.workItem,
       transcript: turns(unrelated.answer), createdAt: now + 400_000, updatedAt: now + 400_000,
     });
+    // Every native chat in the list needs a canonical snapshot. An unbound
+    // su-session stamp makes inventory admission fail for the ENTIRE list.
+    const unrelatedCwd = path.join(home, 'r07-unrelated-project');
+    mkdirSync(unrelatedCwd, { recursive: true });
+    await seedBoundSuSession({ agentChatId: unrelated.id, cwd: unrelatedCwd, transcript: turns(unrelated.answer) });
+    for (const [chatId, cwd] of [[active.id, realpathSync(REPO_ROOT)], [unrelated.id, unrelatedCwd]]) {
+      const snapshot = await fetch(`http://127.0.0.1:${operatorPort}/api/harness/${HARNESS}/agent-chats/${chatId}/su-session`);
+      expect(snapshot.status, `R07 canonical inventory for ${chatId}`).toBe(200);
+      expect(await snapshot.json(), 'R07 inventory must name its actual launch directory').toMatchObject({ launchCwd: cwd });
+    }
     for (const [sessionId, content] of [[active.id, active.task], [unrelated.id, unrelated.task]]) {
       await db.adminSql`
         INSERT INTO harness_shared.session_tasks
@@ -8418,7 +8427,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
 
   // pui-chat-first-ux-2026-09-28 P-005: the side-by-side review against Claude
   // Code and Codex CLI. These are the five tasks the review driver
-  // (.papercusp/scratch/p005-side-by-side.mts) gives stock `claude` and `codex`,
+  // (p005-side-by-side.mts) gives stock `claude` and `codex`,
   // run in a fresh launch directory against this fresh operator: what a new
   // user sees, with no shared workspace backlog for the engine to orient to.
   // Opt-in because it spends real model turns: PUI_REVIEW_FRAMES_DIR receives
@@ -8449,7 +8458,10 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         ? scriptedEngine.backend : 'claude-code';
       await writeAgentConfig({ ...saved, backend });
       const backendLabel = scriptedEngine.backend === 'codex' ? 'Codex' : scriptedEngine.backend === 'omp' ? 'OMP' : 'Claude';
-      let pane = new PuiPane(bin, operatorPort, home, { args: ['--solo'], cwd: launchDir, cols: 120, rows: 40 });
+      const launchArgs = p005PuiLaunchArgs(scriptedEngine.real ? {
+        model: process.env.PUI_REAL_MODEL, account: process.env.PUI_REAL_ACCOUNT,
+      } : {});
+      let pane = new PuiPane(bin, operatorPort, home, { args: launchArgs, cwd: launchDir, cols: 120, rows: 40 });
       onTestFailed(() => {
         try { frame('failure', pane.screen()); } catch { /* pane gone */ }
         console.info('PUI_P005_REVIEW_FAILURE', JSON.stringify({ launchDir, log, approvals, ...pane.failureEvidence() }));
@@ -8529,6 +8541,11 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
           }
           const events = scriptedEngine.events.slice(eventsBefore);
           const replies = events.filter((event) => event.type === 'transcript' && event.role === 'assistant' && event.channel === 'text');
+          const blocked = reviewBlockingReason(replies.map((event) => String(event.content)).join('\n'));
+          if (blocked) {
+            frame(`${label}-blocked`, pane.screen());
+            throw new Error(`${label} cannot run: ${blocked}`);
+          }
           if (firstReplyMs === null && replies.length) firstReplyMs = Math.round(performance.now() - started);
           const lifecycle = scriptedEngine.engines.at(-1)?.adapter.host.descriptor().lifecycle;
           const completed = replies.filter((event) => event.type === 'transcript' && event.phase === 'completed');
@@ -8556,6 +8573,14 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         const greeting = await turn('01-greeting', 'hi');
         expect(scriptedEngine.engines.at(-1)?.adapter.host.descriptor().identity.backend,
           'the review must exercise the requested real backend').toBe(scriptedEngine.backend);
+        if (scriptedEngine.real) {
+          expect(launchRequests.at(-1), 'the review must send its chosen route through the real launch API').toMatchObject({
+            ...(process.env.PUI_REAL_MODEL ? { model: process.env.PUI_REAL_MODEL } : {}),
+            ...(process.env.PUI_REAL_ACCOUNT ? { account: process.env.PUI_REAL_ACCOUNT } : {}),
+          });
+          expect(scriptedEngine.engines.at(-1)?.adapter.host.descriptor().accountRoute,
+            'the maintained engine must receive the chosen account route').toBe(process.env.PUI_REAL_ACCOUNT ?? 'default');
+        }
         const explained = await turn('02-read-explain', 'Read calc.js and explain what it does in two sentences.');
         expect(explained).toMatch(/add/i);
         await turn('03-edit', 'Edit calc.js so that add() accepts an optional third number and adds it too.');
@@ -8572,7 +8597,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         const exitedCleanly = await Promise.race([pane['exit'].then(() => true), sleep(20_000).then(() => false)]);
         log.push({ label: '05a-exit', exitedCleanly, exitMs: Math.round(performance.now() - exitStarted) });
         await pane.stop().catch(() => {});
-        pane = new PuiPane(bin, operatorPort, home, { args: ['--solo'], cwd: launchDir, cols: 120, rows: 40 });
+        pane = new PuiPane(bin, operatorPort, home, { args: launchArgs, cwd: launchDir, cols: 120, rows: 40 });
         // Restoring model/settings replaces the footer's backend label with
         // the selected model. The composer still names the backend; require
         // that and the directory independently rather than a pre-model footer.

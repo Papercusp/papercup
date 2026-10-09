@@ -7,6 +7,7 @@
  * double encoding.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { readFile } from 'node:fs/promises';
 import type { OrgTestDb } from '../test/_org-test-db';
 import { createOrgTestDb } from '../test/_org-test-db';
 import {
@@ -33,6 +34,15 @@ describe('issue occurrence ledger (real PG, migration 831)', () => {
       SELECT to_regclass('harness_shared.work_item_occurrences') IS NOT NULL AS exists
     `;
     expect(migrated[0]?.exists).toBe(true);
+    // Exercise the reserved draft before arming it; shipped runs use the same
+    // bytes at the canonical .sql path. No production database is touched.
+    const migrationUrl = new URL('../../../libs/papercusp/libs/db/sql/1432-occurrence-flow-covering-index.sql', import.meta.url);
+    const migration = await readFile(migrationUrl, 'utf8').catch(async (error: NodeJS.ErrnoException) => {
+      if (error.code !== 'ENOENT') throw error;
+      return readFile(new URL(`${migrationUrl.href}.DRAFT`), 'utf8');
+    });
+    await db.adminSql.unsafe(migration);
+    await db.adminSql.unsafe(migration); // replacement is idempotent
   }, 180_000);
 
   afterAll(async () => {
@@ -154,6 +164,47 @@ describe('issue occurrence ledger (real PG, migration 831)', () => {
       },
       cap: 'none — exact SQL aggregates',
     });
+  });
+
+  it('keeps the exact scoped census on the covering flow index with large evidence envelopes', async () => {
+    // Evidence size must not make a narrow census fetch the evidence heap.
+    await db.adminSql`
+      INSERT INTO harness_shared.work_item_occurrences
+        (workspace_id, canonical_harness_slug, canonical_work_item_id, source_tool,
+         report_kind, reported_title, evidence, occurred_at)
+      SELECT ${WORKSPACE}, CASE WHEN n % 5 = 0 THEN 'other-harness' ELSE ${HARNESS} END,
+             'EI-' || (n % 1000), 'system',
+             CASE WHEN n % 4 = 0 THEN 'canonical-created' ELSE 'duplicate' END,
+             'report', jsonb_build_object('largeEvidence', repeat(md5(n::text), 300)),
+             '2026-10-09T12:00:00Z'::timestamptz
+        FROM generate_series(1, 20000) n
+    `;
+    await db.adminSql`VACUUM ANALYZE harness_shared.work_item_occurrences`;
+    const counts = await readIssueOccurrenceCounts({ workspaceId: WORKSPACE,
+      harnessSlug: HARNESS, since: '2026-10-09T11:00:00Z' }, db.adminSql);
+    expect(counts).toMatchObject({ canonicalClusters: 800, rawOccurrences: 16000, duplicateOccurrences: 12000 });
+    const wholeWorkspace = await readIssueOccurrenceCounts({ workspaceId: WORKSPACE }, db.adminSql);
+    expect(wholeWorkspace).toMatchObject({ canonicalClusters: 1000, rawOccurrences: 20000, duplicateOccurrences: 15000 });
+    const excluded = await readIssueOccurrenceCounts({ workspaceId: 'other-workspace' }, db.adminSql);
+    expect(excluded).toMatchObject({ canonicalClusters: 0, rawOccurrences: 0, duplicateOccurrences: 0 });
+    const afterWindow = await readIssueOccurrenceCounts({ workspaceId: WORKSPACE,
+      since: '2026-10-09T13:00:00Z' }, db.adminSql);
+    expect(afterWindow).toMatchObject({ canonicalClusters: 0, rawOccurrences: 0, duplicateOccurrences: 0 });
+
+    const plans = await db.adminSql`
+      EXPLAIN (ANALYZE, FORMAT JSON)
+      SELECT count(DISTINCT (canonical_harness_slug, canonical_work_item_id)), count(*),
+             count(*) FILTER (WHERE report_kind <> 'canonical-created')
+        FROM harness_shared.work_item_occurrences
+       WHERE workspace_id = ${WORKSPACE} AND canonical_harness_slug = ${HARNESS}
+         AND occurred_at > '2026-10-09T11:00:00Z'::timestamptz
+    `;
+    type PlanNode = { 'Node Type': string; 'Index Name'?: string; 'Heap Fetches'?: number; Plans?: PlanNode[] };
+    const nodes: PlanNode[] = [];
+    const visit = (node: PlanNode) => { nodes.push(node); node.Plans?.forEach(visit); };
+    visit(plans[0]['QUERY PLAN'][0].Plan);
+    expect(nodes).toContainEqual(expect.objectContaining({ 'Node Type': 'Index Only Scan',
+      'Index Name': 'work_item_occurrences_flow_idx', 'Heap Fetches': 0 }));
   });
 
   describe('readRecurringInstanceEvidence (EI-23768242440859949)', () => {

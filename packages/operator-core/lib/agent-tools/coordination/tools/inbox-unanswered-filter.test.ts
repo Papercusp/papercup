@@ -11,6 +11,9 @@
 import { describe, it, expect } from 'vitest';
 import { filterInboxByUnanswered, replyOwedMessageIds } from './inbox';
 import inboxTool from './inbox';
+import { prioritizedInboxWindow } from '../inbox-visibility';
+import { sectionsToText } from '../message-fields';
+import { chunkOverCapMessage } from './send-chunking';
 
 type E = { msg_id: string; from?: unknown };
 const rows: E[] = [
@@ -22,6 +25,36 @@ const rows: E[] = [
 ];
 
 describe('filterInboxByUnanswered (EI-13159)', () => {
+  it('keeps the complete message when only the final chunk part expects an answer', () => {
+    const plan = chunkOverCapMessage({
+      to: ['recipient'],
+      summary: 'long request',
+      body: [{ text: 'body content '.repeat(80) }],
+      expects: 'answer',
+    });
+    if (plan.kind !== 'chunked') throw new Error('fixture must exceed the inbox body cap');
+    const parts = plan.parts.map(({ message, meta }, index) => ({
+      msg_id: `chunk-${meta.part}`,
+      from: 'sender',
+      to: ['recipient'],
+      kind: 'message',
+      summary: message.summary,
+      body: sectionsToText(message.body as Array<{ text: string }>),
+      ts: `2026-10-09T05:0${index}:00.000Z`,
+      expects: message.expects,
+    }));
+    const finalPart = parts.at(-1)!;
+    const unanswered = replyOwedMessageIds([
+      { msgId: finalPart.msg_id, senderState: 'live' },
+    ]);
+
+    expect(finalPart.expects).toBe('answer');
+    expect(parts[0]?.expects).toBe('none');
+    const filtered = filterInboxByUnanswered(parts, unanswered);
+    expect(filtered).toEqual(parts);
+    expect(prioritizedInboxWindow(filtered as Array<Record<string, unknown>>, 20)).toEqual(parts);
+  });
+
   it('does not mark messages from positively ended senders as reply-owed', () => {
     const unanswered = replyOwedMessageIds([
       { msgId: 'live-msg', senderState: 'live' },

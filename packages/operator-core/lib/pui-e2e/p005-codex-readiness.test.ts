@@ -8,7 +8,39 @@ import {
   isCodexPromptReady,
   RESUME_RECALL_EXPECTATION,
   taskAnsweredAfterPrompt,
+  p005PuiLaunchArgs,
+  preflightStockCliArgs,
+  reviewBlockingReason,
 } from './p005-codex-readiness.js';
+
+describe('P-005 review preflight', () => {
+  it('checks the installed parser with the exact launch arguments and refuses rejected policies', () => {
+    const calls: string[][] = [];
+    const check = (cli: string, args: string[]) => {
+      calls.push([cli, ...args]);
+      if (args.includes('untrusted')) throw { stderr: "invalid value 'untrusted'; possible values: on-request, never" };
+    };
+    expect(() => preflightStockCliArgs('codex', ['-a', 'untrusted'], check)).toThrow(/before startup.*on-request, never/);
+    expect(calls).toEqual([['codex', '-a', 'untrusted', '--help']]);
+    expect(() => preflightStockCliArgs('codex', ['-a', 'on-request'], check)).not.toThrow();
+    expect(() => preflightStockCliArgs('claude', ['--permission-mode', 'default'], check)).not.toThrow();
+  });
+
+  it('applies explicit model and account choices to both launch and resume without inventing defaults', () => {
+    expect(p005PuiLaunchArgs({})).toEqual(['--solo']);
+    expect(p005PuiLaunchArgs({ model: 'sonnet', account: 'auto' }))
+      .toEqual(['--solo', '--model', 'sonnet', '--account', 'auto']);
+    expect(p005PuiLaunchArgs({ account: 'default' })).toEqual(['--solo', '--account', 'default']);
+  });
+
+  it('stops on provider and connection walls rather than treating the idle composer as task completion', () => {
+    expect(reviewBlockingReason("❯ hi\nYou've hit your weekly limit · resets Oct 13\n❯"))
+      .toBe('provider usage limit');
+    expect(reviewBlockingReason('API Error 429: rate_limit_error')).toBe('provider authentication or request refusal');
+    expect(reviewBlockingReason('Connection: Unavailable')).toBe('connection or model unavailable');
+    expect(reviewBlockingReason('❯ hi\n● Hi! What can I help you with?\n❯')).toBeNull();
+  });
+});
 
 describe('P-005 Codex TUI readiness', () => {
   it('keeps the isolated CODEX_HOME control socket below the Unix path limit', () => {

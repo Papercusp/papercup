@@ -88,7 +88,7 @@ describe('late-return mutating tools declare an abortCompletionReceipt (WI-10005
     }) as ToolResult;
 
     expect(
-      receipt!({}, result({
+      receipt!({ category: 'substrate-outbox' }, result({
         ok: true,
         categoryId: 'substrate-outbox',
         dryRun: false,
@@ -104,16 +104,16 @@ describe('late-return mutating tools declare an abortCompletionReceipt (WI-10005
     });
 
     expect(
-      receipt!({}, result({ ok: true, categoryId: 'scratch', dryRun: true, removed: 0, vacuumed: false }), context),
+      receipt!({ category: 'scratch', dryRun: true }, result({ ok: true, categoryId: 'scratch', dryRun: true, removed: 0, vacuumed: false }), context),
     ).toMatchObject({ status: 'not-recorded' });
     expect(
-      receipt!({}, result({ ok: true, categoryId: 'route-invocations', dryRun: false, removed: 0, complete: true }), context),
+      receipt!({ category: 'route-invocations' }, result({ ok: true, categoryId: 'route-invocations', dryRun: false, removed: 0, complete: true }), context),
     ).toMatchObject({ status: 'not-recorded' });
     expect(
-      receipt!({}, result({ ok: true, categoryId: 'wake-spills', dryRun: false, removed: 0 }), context),
+      receipt!({ category: 'wake-spills' }, result({ ok: true, categoryId: 'wake-spills', dryRun: false, removed: 0 }), context),
     ).toMatchObject({ status: 'recovery-incomplete' });
     expect(
-      receipt!({}, result({ ok: false, categoryId: 'substrate-outbox', dryRun: false, removed: 0 }), context),
+      receipt!({ category: 'substrate-outbox' }, result({ ok: false, categoryId: 'substrate-outbox', dryRun: false, removed: 0 }), context),
     ).toMatchObject({ status: 'recovery-incomplete' });
   });
 });
