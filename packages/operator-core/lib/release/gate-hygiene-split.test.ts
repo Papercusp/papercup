@@ -12,11 +12,23 @@ import {
   parseGateSuiteVerdictReplay,
   checkGateSuiteVerdictReplay,
   type GateSuiteDecisionInput,
+  gateReplayCanonical,
   deriveGeneratedArtifactHygiene,
   type HygieneClassificationContext,
 } from "./gate-hygiene-split.ts";
 
 describe('P-014 recorded measured-suite replay', () => {
+  it('compares JSONB object order canonically while preserving array order', () => {
+    expect(gateReplayCanonical({ b: { z: 1, a: 2 }, a: 3 })).toBe(gateReplayCanonical({ a: 3, b: { a: 2, z: 1 } }));
+    expect(gateReplayCanonical([1, 2])).not.toBe(gateReplayCanonical([2, 1]));
+  });
+
+  it.each([{ kind: '', args: [], expected: false }, { kind: 'ready-advance', args: {} },
+    { kind: 'ready-advance', args: [] }])('rejects malformed downstream replay %s', entry => {
+    const snapshot = captureGateSuiteVerdictReplay({ candidate: 'a', runId: null, measuredAtMs: 0 }, {
+      green: true, infraFault: false, failures: [], rootScripts: null, failingCasesByFile: null });
+    expect(parseGateSuiteVerdictReplay({ ...snapshot, decisions: [entry] })).toBeNull();
+  });
   const input = (overrides: Partial<GateSuiteDecisionInput> = {}): GateSuiteDecisionInput => ({
     green: false, infraFault: false, failures: ['packages/product.test.ts'],
     rootScripts: {}, failingCasesByFile: null, ...overrides,

@@ -488,6 +488,63 @@ export interface GateSuiteVerdictReplay {
   measuredAtMs: number;
   input: GateSuiteDecisionInput;
   expected: GateSuiteDecisionSignature;
+  /** Ordered observations of the actual downstream decisions. Absent on legacy captures. */
+  decisions?: GateDecisionReplay[];
+  /** False for selective-repair/queue decisions that rendered without a canonical suite. */
+  suiteMeasured?: boolean;
+}
+
+export interface GateDecisionReplay {
+  kind: string;
+  args: unknown[];
+  expected: unknown;
+}
+
+export function gateActionBlocks(action: 'pass' | 'warn' | 'block' | null): boolean {
+  return action === 'block';
+}
+
+export function gateVerdictAppliesToHead(actualHead: string, measuredHead: string): boolean {
+  return actualHead === measuredHead;
+}
+
+/** JSONB may reorder keys. Compare meaning, not serialization order or display copy. */
+export function gateReplayCanonical(value: unknown): string {
+  if (Array.isArray(value)) return '[' + value.map(gateReplayCanonical).join(',') + ']';
+  if (value !== null && typeof value === 'object') return '{' + Object.entries(value)
+    .filter(([, v]) => v !== undefined).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)
+    .map(([k, v]) => JSON.stringify(k) + ':' + gateReplayCanonical(v)).join(',') + '}';
+  return JSON.stringify(value) ?? 'null';
+}
+
+export function gateDecisionSignature(value: unknown): unknown {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return value;
+  const { summary: _summary, replay: _replay, ...signature } = value as Record<string, unknown>;
+  return signature;
+}
+
+/** Copy the exact IO observations/clock before another retry can mutate them. */
+export function captureGateDecisionReplay(kind: string, args: unknown[], output: unknown): GateDecisionReplay {
+  return JSON.parse(JSON.stringify({ kind, args, expected: gateDecisionSignature(output) })) as GateDecisionReplay;
+}
+
+/** Explicit, source-reviewed transition: exact old measurement and exact accepted result.
+ * A maintainer records the governing plan decision alongside both canonical snapshots.
+ * No wildcard, deletion of history, or runtime bypass is supported. */
+export interface GateReplayBaselineTransition {
+  decisionRef: string;
+  reason: string;
+  previous: string;
+  accepted: string;
+}
+
+export const GATE_REPLAY_BASELINE_TRANSITIONS: readonly GateReplayBaselineTransition[] = Object.freeze([]);
+
+export function acceptedGateReplayTransition(previous: unknown, accepted: unknown,
+  transitions: readonly GateReplayBaselineTransition[] = GATE_REPLAY_BASELINE_TRANSITIONS): string | null {
+  const from = gateReplayCanonical(previous), to = gateReplayCanonical(accepted);
+  return transitions.find(t => /^[-a-z0-9]+#D-\d+$/.test(t.decisionRef) && t.reason.trim() &&
+    t.previous !== t.accepted && t.previous === from && t.accepted === to)?.decisionRef ?? null;
 }
 
 /** Shared by the real gate and replay. Preserve the existing four fail-closed axes. */
@@ -523,7 +580,7 @@ export function captureGateSuiteVerdictReplay(
     failingCasesByFile: input.failingCasesByFile === null ? null
       : input.failingCasesByFile.map(([file, cases]) => [file, [...cases]]),
   };
-  return { version: 1, ...identity, input: copied, expected: decideGateSuite(copied).signature };
+  return { version: 1, ...identity, input: copied, expected: decideGateSuite(copied).signature, decisions: [] };
 }
 
 /** JSON/version boundary: malformed history must not be mistaken for a bootstrap. */
@@ -540,7 +597,11 @@ export function parseGateSuiteVerdictReplay(value: unknown): GateSuiteVerdictRep
     !(input.failingCasesByFile === null || (Array.isArray(input.failingCasesByFile) && input.failingCasesByFile.every(
       row => Array.isArray(row) && row.length === 2 && typeof row[0] === 'string' && strings(row[1])))) ||
     !['green', 'hygiene-green', 'red', 'inconclusive'].includes(String(expected.disposition)) ||
-    !strings(expected.productFailures) || !strings(expected.hygieneFailures) || !strings(expected.hygieneConditionKeys)) return null;
+    !strings(expected.productFailures) || !strings(expected.hygieneFailures) || !strings(expected.hygieneConditionKeys) ||
+    !(value.suiteMeasured === undefined || typeof value.suiteMeasured === 'boolean') ||
+    !(value.decisions === undefined || (Array.isArray(value.decisions) && value.decisions.every(d =>
+      object(d) && typeof d.kind === 'string' && d.kind.length > 0 && Array.isArray(d.args) &&
+      Object.hasOwn(d, 'expected'))))) return null;
   return value as unknown as GateSuiteVerdictReplay;
 }
 

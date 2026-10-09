@@ -1647,6 +1647,10 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   // 30s client cutoff, so keep direct and tools:invoke-wrapped calls outside
   // the MCP transport floor instead of reporting an outcome-unknown timeout.
   ['dev:service_health', PTOOL_SERVICE_HEALTH_TIMEOUT_MS],
+  // logs:read gives journalctl a 30s server-side timeout. The ordinary ptool
+  // deadline is also 30s, which can preempt the handler's structured timeout
+  // result; leave settlement room on both direct and tools:invoke routes.
+  ['logs:read', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   // EI-254011: storage:usage can spend more than the ordinary client deadline
   // in bounded scratch sizing/recovery before returning its structured result.
   // Keep direct and tools:invoke calls outside the flat 30s cutoff.

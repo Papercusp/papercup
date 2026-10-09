@@ -79,7 +79,7 @@ declare module 'protomux' {
       protocol: string;
       id?: Buffer | null;
       onopen?: () => void;
-      onclose?: () => void;
+      onclose?: (isRemote: boolean, channel: ProtomuxChannel) => void;
       /**
        * Fires when the muxer's underlying stream drains, i.e. it can accept
        * more bytes after a `send()` returned `false`. Together with that

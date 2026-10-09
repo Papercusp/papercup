@@ -735,6 +735,15 @@ describe('ptool bearer-token resolution', () => {
 });
 
 describe('ptool call deadlines', () => {
+  it('lets logs:read return its structured journal timeout on both call routes', () => {
+    expect(timeoutForTool('logs:read')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', {
+      name: 'logs:read',
+      args: { unit: 'papercusp-bg-host', since: '-8 minutes' },
+    })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('logs:read')).toBeGreaterThan(PTOOL_CALL_TOOL_TIMEOUT_MS);
+  });
+
   it('keeps the client alive for bounded read-only repair previews, but not confirmed writes', () => {
     expect(PTOOL_REPAIR_QUEUE_PREVIEW_TIMEOUT_MS).toBe(305_000);
     expect(timeoutForTool('release:repair-queue', { op: 'admit' }))

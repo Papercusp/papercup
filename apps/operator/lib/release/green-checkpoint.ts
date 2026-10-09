@@ -148,6 +148,8 @@ import {
   type HygieneWorkItemDraft,
 } from "@papercusp/operator-core/lib/release/gate-hygiene-split";
 import { runGateCanary } from "@papercusp/operator-core/lib/gates/canary";
+import { checkRecordedGateVerdict, recordedGateDecision } from './gate-decision-replay';
+import { gateActionBlocks, gateVerdictAppliesToHead, type GateDecisionReplay } from '@papercusp/operator-core/lib/release/gate-hygiene-split';
 // EI-20063423357086565 — the uncommitted-working-tree reader, reused rather than re-derived:
 // it includes untracked files and deliberately avoids porcelain's whitespace-sensitive
 // column parse. See `failingFilesUncommitted` below.
@@ -645,6 +647,8 @@ export type StagingLineageAbsorptionResult =
     };
 
 export interface CheckpointDeps {
+  /** Internal trace shared across this physical run's recursive refires. Never live state. */
+  decisionTrace?: GateDecisionReplay[];
   /**
    * Report forward progress from the real checkpoint process. This is deliberately
    * separate from `log`: child output can be noisy or silent, while phase transitions
@@ -1055,7 +1059,7 @@ export interface CheckpointDeps {
    *  provide it and the default deploy behaviour is unchanged. */
   perfGate?(
     candidate: string,
-  ): Promise<{ action: "pass" | "warn" | "block"; summary: string }>;
+  ): Promise<{ action: "pass" | "warn" | "block"; summary: string; replay?: GateDecisionReplay }>;
   /** desktop-performance-suite-2026-07-20 P-011: the desktop-UI perf gate. Runs
    *  post-runGreen / pre-advance on a GREEN candidate: if the latest persisted
    *  desktop-perf run (desktop_perf_runs, P-010) shows a budgeted interaction /
@@ -1065,6 +1069,7 @@ export interface CheckpointDeps {
    *  Optional + FLAG-gated (FLAGS.DESKTOP_PERF_GATE, default ON; a no-op `pass`
    *  when off or when no run is recorded) so existing stubs need not provide it. */
   desktopPerfGate?(candidate: string): Promise<{
+    replay?: GateDecisionReplay;
     action: "pass" | "warn" | "block";
     summary: string;
     /** WI-39685 (cutover-plan D-013): the gate's own verdict class — 'ok' | 'warn' |
@@ -1082,7 +1087,7 @@ export interface CheckpointDeps {
    *  need not provide it and the default deploy behaviour is unchanged. */
   deltaGate?(
     candidate: string,
-  ): Promise<{ action: "pass" | "warn" | "block"; summary: string }>;
+  ): Promise<{ action: "pass" | "warn" | "block"; summary: string; replay?: GateDecisionReplay }>;
   /** EI-11118 (cupboard-public-release P-009 durable fix): the Cupboard prod-
    *  hygiene gate. Runs post-runGreen / pre-advance on a GREEN candidate: scans
    *  the LIVE prod Cupboard storefront for E2E/smoke test-junk rows (the
@@ -1094,7 +1099,7 @@ export interface CheckpointDeps {
    *  behave exactly as before (no call site fires without the dep). */
   cupboardHygieneGate?(
     candidate: string,
-  ): Promise<{ action: "pass" | "warn" | "block"; summary: string }>;
+  ): Promise<{ action: "pass" | "warn" | "block"; summary: string; replay?: GateDecisionReplay }>;
   /** P-016 (release-pipeline-resilience-2026-06-09 D-010): the commit shas between
    *  `from` (exclusive) and `to` (inclusive), OLDEST-FIRST, full shas — the batch the
    *  green-checkpoint is gating. Used by the longest-green-PREFIX salvage to know which
@@ -5513,7 +5518,7 @@ export type RepairHeadVerification =
  *  explicit `ref`, and every call below passes `queue.repairHead`. */
 export type RepairHeadVerificationDeps = Pick<
   CheckpointDeps,
-  "runTestsAtRef" | "runGateAtRef" | "affectedTestsAtRef"
+  "runTestsAtRef" | "runGateAtRef" | "affectedTestsAtRef" | "decisionTrace"
 > & {
   /** WI-10000288: pairs a workspace-less `test-file` signature entry with the one workspace
    *  directory that contains it (`makeTestWorkspaceResolver(cfg.integrationRoot)` in
@@ -6212,9 +6217,10 @@ function verdictTransitionAtHead(
   onSupersededRecord?: (
     fresh: FrozenCandidateRepairQueue,
   ) => FrozenCandidateRepairQueue,
+  trace: GateDecisionReplay[] = [],
 ): (fresh: FrozenCandidateRepairQueue) => FrozenCandidateRepairQueue {
   return (fresh) => {
-    if (fresh.repairHead !== measuredHead) {
+    if (!recordedGateDecision('frozen-verdict-head', gateVerdictAppliesToHead, [fresh.repairHead, measuredHead], trace)) {
       onSuperseded(fresh);
       return onSupersededRecord ? onSupersededRecord(fresh) : fresh;
     }
@@ -6433,6 +6439,25 @@ export async function verifyRepairHead(
     };
   }
   const gateRun = gateSettled?.value;
+  return recordedGateDecision('repair-measurements', interpretRepairHeadMeasurements, [{
+    queue, fileList, gateList, fileRun, gateRun, selection, radiusCoverageComplete, radiusNote, executed,
+  }], deps.decisionTrace ?? []);
+}
+
+/** P-014: interpret the exact targeted measurements without invoking either runner. */
+export function interpretRepairHeadMeasurements(input: {
+  queue: FrozenCandidateRepairQueue;
+  fileList: FailingFile[];
+  gateList: string[];
+  fileRun: Awaited<ReturnType<NonNullable<CheckpointDeps['runTestsAtRef']>>> | undefined;
+  gateRun: Awaited<ReturnType<NonNullable<CheckpointDeps['runGateAtRef']>>> | undefined;
+  selection: ReturnType<typeof selectFrozenRepairAdmissionPaths>;
+  radiusCoverageComplete: boolean;
+  radiusNote: string;
+  executed: FrozenRepairRoundExecution;
+}): RepairHeadVerification {
+  const { queue, fileList, gateList, fileRun, gateRun, selection, radiusCoverageComplete, radiusNote, executed } = input;
+  const head = queue.repairHead, at = head.slice(0, 8);
   // An optional detailed result is evidence only for this exact requested set/head.
   // Aggregate-only older runners remain conservative; malformed detail must never erase
   // a red merely because its array happens to have the right length.
@@ -10997,6 +11022,7 @@ async function runGreenCheckpointInner(
   deps: CheckpointDeps,
   opts: CheckpointOpts = {},
 ): Promise<CheckpointResult> {
+  const decisionTrace = deps.decisionTrace ?? [];
   // EI-19343532231631821 — the deadline bound's two clocks. A stale-red auto-refire RECURSES into
   // this function in the SAME process, so `passStartedAtMs` restarts per pass (it predicts the next
   // pass's cost) while `runStartedAtMs` is threaded through `opts` and measures the WHOLE run.
@@ -11620,10 +11646,10 @@ async function runGreenCheckpointInner(
           .frozenRepairFixerAlive?.(repairQueue.fixerSpawnId)
           .catch(() => null)
       : undefined;
-    let decision = decideFrozenCandidateRepairQueue(repairQueue, {
+    let decision = recordedGateDecision('frozen-queue', decideFrozenCandidateRepairQueue, [repairQueue, {
       nowMs: Date.now(),
       fixerAlive,
-    });
+    }], decisionTrace);
 
     if (decision.kind === "recover-dead-fixer") {
       const deadSpawnId = decision.fixerSpawnId;
@@ -11697,9 +11723,9 @@ async function runGreenCheckpointInner(
           );
         }
       }
-      decision = decideFrozenCandidateRepairQueue(repairQueue, {
+      decision = recordedGateDecision('frozen-queue', decideFrozenCandidateRepairQueue, [repairQueue, {
         nowMs: Date.now(),
-      });
+      }], decisionTrace);
     }
 
     // WI-10003213: an UNMEASURED red (legs killed/timed out, no test reported a failure) parks
@@ -11729,9 +11755,9 @@ async function runGreenCheckpointInner(
           markFrozenRepairUnmeasuredRetest(fresh, { nowMs: Date.now() }),
         "unmeasured-red-retest",
       );
-      decision = decideFrozenCandidateRepairQueue(repairQueue, {
+      decision = recordedGateDecision('frozen-queue', decideFrozenCandidateRepairQueue, [repairQueue, {
         nowMs: Date.now(),
-      });
+      }], decisionTrace);
     }
 
     // P-010 / D-011 (frozen-candidate-stays-frozen-through-all-fixes-2026-09-03): the queue's
@@ -12242,21 +12268,22 @@ async function runGreenCheckpointInner(
             verdictTransitionAtHead(
               candidate,
               (fresh) =>
-                markFrozenRepairVerificationRed(fresh, {
+                recordedGateDecision('frozen-repair-red', markFrozenRepairVerificationRed, [fresh, {
                   repairHead: candidate,
                   ...supersededRedInput,
                   nowMs: Date.now(),
                   ...(selectiveCoverage ? { selectiveCoverage } : {}),
-                }),
+                }], decisionTrace),
               (fresh) => {
                 supersededBy = fresh;
               },
               (fresh) =>
-                recordFrozenRepairSupersededRed(fresh, {
+                recordedGateDecision('frozen-superseded-red', recordFrozenRepairSupersededRed, [fresh, {
                   measuredHead: candidate,
                   ...supersededRedInput,
                   nowMs: Date.now(),
-                }),
+                }], decisionTrace),
+              decisionTrace,
             ),
             "repair-head-red",
           );
@@ -13417,6 +13444,7 @@ async function runGreenCheckpointInner(
   roundObservations.suiteVerdictReplay = captureGateSuiteVerdictReplay({
     candidate, runId: deps.runId ?? null, measuredAtMs: Date.now(),
   }, suiteDecisionInput);
+  roundObservations.suiteVerdictReplay.decisions = decisionTrace;
   if (!green && !hygieneSplit?.promote) {
     deps.log(
       `candidate ${candidate.slice(0, 8)} is NOT green — ${cfg.releaseRef} stays at ${lastReady?.slice(0, 8) ?? "unset"}`,
@@ -13558,22 +13586,23 @@ async function runGreenCheckpointInner(
                     fresh.candidate,
                   )
                 : undefined;
-              return markFrozenRepairVerificationRed(fresh, {
+              return recordedGateDecision('frozen-repair-red', markFrozenRepairVerificationRed, [fresh, {
                 repairHead: candidate,
                 ...measuredSignature,
                 nowMs: Date.now(),
                 ...(coverage ? { selectiveCoverage: coverage } : {}),
-              });
+              }], decisionTrace);
             },
             (fresh) => {
               supersededBy = fresh;
             },
             (fresh) =>
-              recordFrozenRepairSupersededRed(fresh, {
+              recordedGateDecision('frozen-superseded-red', recordFrozenRepairSupersededRed, [fresh, {
                 measuredHead: candidate,
                 ...measuredSignature,
                 nowMs: Date.now(),
-              }),
+              }], decisionTrace),
+            decisionTrace,
           ),
           "full-gate-red",
         );
@@ -13612,10 +13641,10 @@ async function runGreenCheckpointInner(
             deps,
             repairQueue,
             (fresh) =>
-              markFrozenCandidateVerificationRed(fresh, {
+              recordedGateDecision('frozen-candidate-red', markFrozenCandidateVerificationRed, [fresh, {
                 ...measuredSignature,
                 nowMs: Date.now(),
-              }),
+              }], decisionTrace),
             "candidate-red",
           );
           if (repairQueue.repairHead !== snapshotHead) {
@@ -13643,13 +13672,11 @@ async function runGreenCheckpointInner(
             );
           }
           const expectedUpdatedAtMs = queueForRedTransition.updatedAtMs;
-          repairQueue = markFrozenCandidateVerificationRed(
-            queueForRedTransition,
-            {
+          repairQueue = recordedGateDecision('frozen-candidate-red', markFrozenCandidateVerificationRed,
+            [queueForRedTransition, {
               ...measuredSignature,
               nowMs: Date.now(),
-            },
-          );
+            }], decisionTrace);
           await deps.writeFrozenRepairQueue(repairQueue, { expectedUpdatedAtMs });
         }
         repairQueueRedPersisted = true;
@@ -13658,10 +13685,10 @@ async function runGreenCheckpointInner(
         // what the owner-visible off switch governs. `decideFrozenConvergenceCycleEntry`
         // holds that policy; an absent dep hook reads as enabled, so this is behaviour-
         // identical unless an owner has explicitly turned the default off.
-        const cycleEntry = decideFrozenConvergenceCycleEntry({
+        const cycleEntry = recordedGateDecision('frozen-cycle', decideFrozenConvergenceCycleEntry, [{
           flagEnabled: (await deps.freezeAndConvergeEnabled?.()) ?? true,
           hasOpenQueue: false,
-        });
+        }], decisionTrace);
         if (cycleEntry.kind === "suppressed") {
           // The owner turned freeze-and-converge off: this red does NOT freeze the
           // candidate, and the gate re-cuts at tip on the next tick. Announced rather than
@@ -13702,10 +13729,10 @@ async function runGreenCheckpointInner(
           deps,
           repairQueue,
           (fresh) =>
-            markFrozenCandidateVerificationRed(fresh, {
+            recordedGateDecision('frozen-candidate-red', markFrozenCandidateVerificationRed, [fresh, {
               ...measuredSignature,
               nowMs: Date.now(),
-            }),
+            }], decisionTrace),
           "deferred-candidate-red",
         );
       }
@@ -14290,7 +14317,7 @@ async function runGreenCheckpointInner(
                     currentTipAfterRetriage,
                   ),
                 }
-              : classifyRedAgainstTip({
+              : recordedGateDecision('red-against-tip', classifyRedAgainstTip, [{
                   candidate,
                   tip,
                   failingTests: failingTests ?? [],
@@ -14304,7 +14331,7 @@ async function runGreenCheckpointInner(
                     runStartedAtMs,
                     passStartedAtMs,
                   ),
-                });
+                }], decisionTrace);
         retriage = {
           ...verdict,
           tip,
@@ -14771,10 +14798,12 @@ async function runGreenCheckpointInner(
   // block-mode. Flag-gated + fail-soft (a no-op `pass` unless enabled), so the default
   // deploy path is unchanged until the owner opts in.
   const perf = await deps.perfGate?.(candidate).catch(() => undefined);
+  if (perf?.replay) decisionTrace.push(perf.replay);
+  const perfHeld = recordedGateDecision('post-gate-action', gateActionBlocks, [perf?.action ?? null], decisionTrace);
   if (perf && perf.action !== "pass") {
     deps.log(perf.summary);
     await deps.broadcast(perf.summary).catch(() => {});
-    if (perf.action === "block") {
+    if (perfHeld) {
       await deps
         .escalate?.(
           `green-checkpoint held: ${candidate.slice(0, 8)} perf-degraded`,
@@ -14817,6 +14846,8 @@ async function runGreenCheckpointInner(
   const desktopPerf = await deps
     .desktopPerfGate?.(candidate)
     .catch(() => undefined);
+  if (desktopPerf?.replay) decisionTrace.push(desktopPerf.replay);
+  const desktopPerfHeld = recordedGateDecision('post-gate-action', gateActionBlocks, [desktopPerf?.action ?? null], decisionTrace);
   // WI-39685 (cutover-plan D-013): the DETECTOR half. D-008 stopped an UNMEASURED
   // desktop-perf invariant from holding promotion — correct, because an
   // unmeasurable sample is not evidence of a regression — but that left the
@@ -14827,7 +14858,7 @@ async function runGreenCheckpointInner(
   //
   // Deliberately placed BEFORE the block-branch below, which RETURNS: the
   // detector must observe every outcome, including the one that holds promotion.
-  if (desktopPerfDetectorAbsent(desktopPerf)) {
+  if (recordedGateDecision('desktop-detector', desktopPerfDetectorAbsent, [desktopPerf], decisionTrace)) {
     await deps
       .escalateDetector?.(
         `desktop-perf detector ABSENT: ${candidate.slice(0, 8)} judged with the desktop-perf invariant UNMEASURED`,
@@ -14850,7 +14881,7 @@ async function runGreenCheckpointInner(
   if (desktopPerf && desktopPerf.action !== "pass") {
     deps.log(desktopPerf.summary);
     await deps.broadcast(desktopPerf.summary).catch(() => {});
-    if (desktopPerf.action === "block") {
+    if (desktopPerfHeld) {
       // The summary distinguishes an invariant breach from a timing regression;
       // don't hard-code "regressed" into the escalation title, because paging a
       // human at 3am with the wrong failure class costs them the first ten minutes.
@@ -14887,10 +14918,12 @@ async function runGreenCheckpointInner(
   // fail-closed-when-armed (a no-op `pass` unless enabled), so the default deploy
   // path is unchanged until the owner opts in.
   const delta = await deps.deltaGate?.(candidate).catch(() => undefined);
+  if (delta?.replay) decisionTrace.push(delta.replay);
+  const deltaHeld = recordedGateDecision('post-gate-action', gateActionBlocks, [delta?.action ?? null], decisionTrace);
   if (delta && delta.action !== "pass") {
     deps.log(delta.summary);
     await deps.broadcast(delta.summary).catch(() => {});
-    if (delta.action === "block") {
+    if (deltaHeld) {
       await deps
         .escalate?.(
           `green-checkpoint held: ${candidate.slice(0, 8)} delta-unproven`,
@@ -14921,10 +14954,12 @@ async function runGreenCheckpointInner(
   const cupboardHygiene = await deps
     .cupboardHygieneGate?.(candidate)
     .catch(() => undefined);
+  if (cupboardHygiene?.replay) decisionTrace.push(cupboardHygiene.replay);
+  const cupboardHeld = recordedGateDecision('post-gate-action', gateActionBlocks, [cupboardHygiene?.action ?? null], decisionTrace);
   if (cupboardHygiene && cupboardHygiene.action !== "pass") {
     deps.log(cupboardHygiene.summary);
     await deps.broadcast(cupboardHygiene.summary).catch(() => {});
-    if (cupboardHygiene.action === "block") {
+    if (cupboardHeld) {
       await deps
         .escalate?.(
           `green-checkpoint held: ${candidate.slice(0, 8)} cupboard prod storefront polluted`,
@@ -14973,13 +15008,15 @@ async function runGreenCheckpointInner(
       verdictTransitionAtHead(
         candidate,
         (fresh) =>
-          markFrozenRepairVerificationGreen(fresh, {
+          recordedGateDecision('frozen-repair-green', markFrozenRepairVerificationGreen, [fresh, {
             repairHead: candidate,
             nowMs: Date.now(),
-          }),
+          }], decisionTrace),
         (fresh) => {
           greenSupersededBy = fresh;
         },
+        undefined,
+        decisionTrace,
       ),
       "repair-head-green",
     );
@@ -14992,7 +15029,7 @@ async function runGreenCheckpointInner(
       );
     }
     const lineageRef = frozenLineageRef(repairQueue.candidate);
-    const promotion = assessFrozenLineagePromotion({
+    const promotion = recordedGateDecision('frozen-lineage', assessFrozenLineagePromotion, [{
       candidate: repairQueue.candidate,
       repairHead: repairQueue.repairHead,
       judged: candidate,
@@ -15012,7 +15049,7 @@ async function runGreenCheckpointInner(
             : (false as boolean | null),
         )
         .catch(() => null),
-    });
+    }], decisionTrace);
     if (!promotion.promotable) {
       const refusalSummary =
         `frozen repair ${candidate.slice(0, 8)} passed the full canonical gate but may not ` +
@@ -15055,6 +15092,7 @@ async function runGreenCheckpointInner(
       });
   }
   const adv = repairPromotionAdvance;
+  if (adv.replay) decisionTrace.push(adv.replay);
   let stagingAbsorptionNote = "";
   if (repairQueue) {
     // P-008: main's green fast-forward and staging's ancestry bridge are distinct writes.
@@ -15643,7 +15681,7 @@ export async function runGreenCheckpoint(
       const replay = previous ? await runGateCanary({
         id: 'green-checkpoint:measured-suite-replay',
         describe: 'reproduce the previous measured suite decision with current gate code',
-        run: async () => checkGateSuiteVerdictReplay(previous),
+        run: async () => checkRecordedGateVerdict(previous),
       }, previous.input.green) : null;
       suiteReplayCanary = previous && replay
         ? { status: replay.canaryOk === true ? 'passed' : replay.canaryOk === false ? 'mismatch' : 'unreadable', detail: replay.canaryDetail }
@@ -15671,9 +15709,10 @@ export async function runGreenCheckpoint(
     ...(diagnostic ? { diagnostic } : {}),
     ...(deps.gateFireId ? { gateFireId: deps.gateFireId } : {}),
   };
+  const decisionTrace = deps.decisionTrace ?? [];
   const { roundPhaseStamps, ...innerResult } = await runGreenCheckpointInner(
     cfg,
-    deps,
+    { ...deps, decisionTrace },
     innerOpts,
   );
   // P-013: the round's phase breakdown, against this whole pass's measured time. Built HERE
@@ -15690,8 +15729,15 @@ export async function runGreenCheckpoint(
   const repairIdentity = result.repairQueue
     ? buildFrozenRepairStatusIdentity(result.repairQueue)
     : null;
+  const verdictReplay = result.suiteVerdictReplay ?? (decisionTrace.length ? {
+    ...captureGateSuiteVerdictReplay({ candidate: result.candidate, runId: deps.runId ?? null, measuredAtMs: Date.now() },
+      { green: null, infraFault: true, failures: [], rootScripts: null, failingCasesByFile: null }),
+    suiteMeasured: false, decisions: decisionTrace,
+  } : undefined);
   let finalResult: CheckpointResult = {
     ...result,
+    // Seal the complete run trace before handing it to an asynchronous recorder.
+    ...(verdictReplay ? { suiteVerdictReplay: JSON.parse(JSON.stringify(verdictReplay)) as GateSuiteVerdictReplay } : {}),
     ...(suiteReplayCanary ? { suiteReplayCanary } : {}),
     // P-003 / D-002: a result carrying a repair queue always reserves the generic
     // candidate label for the immutable full-gate pin. repairHead remains explicit;

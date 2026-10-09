@@ -218,6 +218,30 @@ export async function verifyBugReproductionReceipt(
   }
 }
 
+/**
+ * Acceptance must check the target build as well as the cited ledger row. A
+ * historical failure is evidence, but cannot authorize a fix on a newer build.
+ * Keep the ordinary receipt verifier as the single ledger-authenticity check.
+ */
+export async function verifyCurrentBugReproductionReceipt(
+  receipt: BugReproductionReceipt,
+  currentBuildSha: string | null,
+  deps: ReproductionLedgerDeps,
+): Promise<ReproductionVerification> {
+  const checkedAt = deps.now().toISOString();
+  if (!currentBuildSha || !BUILD_SHA_RE.test(currentBuildSha)) {
+    return { status: 'unresolved', detail: 'the target current build could not be resolved; investigate before fixing', checkedAt };
+  }
+  if (!sameBuildSha(receipt.buildSha, currentBuildSha)) {
+    return {
+      status: 'refuted',
+      detail: `reproduction is on ${receipt.buildSha}, not the target current build ${currentBuildSha}; reproduce again before fixing`,
+      checkedAt,
+    };
+  }
+  return verifyBugReproductionReceipt(receipt, deps);
+}
+
 /** What a filing stores at `payload.reproduction`. */
 export interface StoredBugReproduction {
   schemaVersion: typeof BUG_REPRODUCTION_SCHEMA_VERSION;

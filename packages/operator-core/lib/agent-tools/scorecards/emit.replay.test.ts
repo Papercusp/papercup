@@ -12,6 +12,7 @@ import { encode } from '@papercusp/result-encoding';
 import { SPEC_TEST_ADEQUACY_EVALUATOR_REVISION } from '../plans/spec-test-adequacy';
 
 const getRubric = vi.fn();
+const getRubricEvidenceIdentity = vi.fn();
 const getRubricPlanRevision = vi.fn();
 const readRubricPlanRevision = vi.fn();
 const listScorecards = vi.fn();
@@ -22,6 +23,7 @@ vi.mock('../../rubrics', async (importOriginal) => {
   return {
     ...actual,
     getRubric: (...args: unknown[]) => getRubric(...args),
+    getRubricEvidenceIdentity: (...args: unknown[]) => getRubricEvidenceIdentity(...args),
     getRubricPlanRevision: (...args: unknown[]) => getRubricPlanRevision(...args),
     readRubricPlanRevision: (...args: unknown[]) => readRubricPlanRevision(...args),
   };
@@ -59,6 +61,8 @@ const RUBRIC = {
   createdBy: null,
   proposedBy: null,
   ratifiedBy: null,
+  revision: 7,
+  criteriaHash: 'criteria-v1',
 };
 
 const RERUN_RECIPE = {
@@ -157,6 +161,7 @@ const driftedReplay = {
 beforeEach(() => {
   vi.clearAllMocks();
   getRubric.mockResolvedValue(RUBRIC);
+  getRubricEvidenceIdentity.mockResolvedValue({ revision: 7, criteriaHash: 'criteria-v1', meaningRevision: null });
   getRubricPlanRevision.mockResolvedValue(7);
   readRubricPlanRevision.mockResolvedValue({ ok: true, revision: 7 });
   listScorecards.mockResolvedValue([]);
@@ -244,6 +249,54 @@ describe('scorecards:emit spec-test-adequacy replay guard', () => {
       payloadTier: 'full',
     });
     expect(captureImprovement).toHaveBeenCalledTimes(1);
+  });
+
+  it('deduplicates an existing spec card when only evaluator build provenance changed', async () => {
+    const oldBuild = { sha: '91ea137bce', version: '0.0.0' };
+    const newBuild = { sha: '95a2bc900c', version: '0.0.0' };
+    const priorRecipe = {
+      ...RERUN_RECIPE,
+      evaluatorBuild: oldBuild,
+      args: { ...RERUN_RECIPE.args, evaluatorBuild: oldBuild },
+    };
+    const nextRecipe = {
+      ...RERUN_RECIPE,
+      evaluatorBuild: newBuild,
+      args: { ...RERUN_RECIPE.args, evaluatorBuild: newBuild },
+    };
+    const priorCard = {
+      issueId: 'EI-existing',
+      createdAt: '2026-10-08T12:30:24.623Z',
+      createdBy: 'su-grader',
+      rubricRef: 'spec-test-adequacy',
+      rubricRevision: 7,
+      criteriaHash: 'criteria-v1',
+      sourceHive: 'papercusp',
+      subject: { kind: 'plan', ref: 'reconnect-plan#SPEC-003-01@1' },
+      ratings: emitArgs().ratings,
+      rerunRecipe: priorRecipe,
+      // Historical rows hold the old fingerprint that included evaluatorBuild.
+      evidenceFingerprint: 'legacy-build-specific-fingerprint',
+    };
+    listScorecards.mockImplementation(async (filter: { limit?: number }) =>
+      filter.limit === 1 ? [priorCard] : [],
+    );
+    const dispatchTool = vi.fn().mockResolvedValue({ ...passingReplay, evaluatorBuild: newBuild });
+
+    const result = await emitScorecard(
+      emitArgs({ rerunRecipe: nextRecipe }),
+      { createdBy: 'su-grader', ctxHarness: 'papercusp' },
+      { dispatchTool },
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      created: false,
+      reason: 'unchanged-evidence',
+      previousIssueId: 'EI-existing',
+    });
+    expect(getRubricEvidenceIdentity).toHaveBeenCalledWith('spec-test-adequacy');
+    expect(captureImprovement).not.toHaveBeenCalled();
   });
 
   it('refuses a pass-like card when the evaluator replay reports build drift', async () => {

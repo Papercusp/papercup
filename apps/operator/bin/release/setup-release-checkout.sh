@@ -58,6 +58,7 @@
 #                             [--integration <dir>] [--release <dir>]
 #                             [--prepare-existing]
 #                             [--source-only]
+#                             [--source-root-mode worktree|clone]
 #                             [--spa-only]
 #                             [--source-integrity allow-live-tree|object-sourced]
 #                             [--build-spa]
@@ -145,6 +146,7 @@ BUILD_SPA="0"
 SPA_ONLY="0"
 PREPARE_EXISTING="0"
 SOURCE_ONLY="0"
+SOURCE_ROOT_MODE="worktree"
 REF_WAS_SET="0"
 
 while [ $# -gt 0 ]; do
@@ -164,6 +166,7 @@ while [ $# -gt 0 ]; do
     --spa-only) SPA_ONLY="1"; PREPARE_EXISTING="1"; BUILD_SPA="1"; shift ;;
     --prepare-existing) PREPARE_EXISTING="1"; shift ;;
     --source-only) SOURCE_ONLY="1"; shift ;;
+    --source-root-mode) SOURCE_ROOT_MODE="$2"; shift 2 ;;
     *) echo "[setup-release] unknown arg: $1" >&2; exit 2 ;;
   esac
 done
@@ -180,6 +183,14 @@ case "$SOURCE_INTEGRITY_MODE" in
   allow-live-tree|object-sourced) ;;
   *) echo "[setup-release] bad --source-integrity mode: $SOURCE_INTEGRITY_MODE" >&2; exit 2 ;;
 esac
+case "$SOURCE_ROOT_MODE" in
+  worktree|clone) ;;
+  *) echo "[setup-release] bad --source-root-mode: $SOURCE_ROOT_MODE" >&2; exit 2 ;;
+esac
+if [ "$SOURCE_ROOT_MODE" = "clone" ] && [ "$SOURCE_ONLY" != "1" ]; then
+  echo "[setup-release] --source-root-mode clone requires --source-only" >&2
+  exit 2
+fi
 if [ -n "$NODE_MODULES_GENERATION_ID" ] \
   && { [ "$NODE_MODULES_GENERATION_MODE" != "required" ] || [ "$NODE_MODULES_COPY_MODE" != "copy" ]; }; then
   echo "[setup-release] --node-modules-generation-id requires --node-modules-generation required and --node-modules-copy copy" >&2
@@ -408,6 +419,22 @@ fi
 # 1. Worktree --------------------------------------------------------------
 if [ "$PREPARE_EXISTING" = "1" ]; then
   log "preserving existing checkout and submodules (prepare-existing)"
+elif [ "$SOURCE_ROOT_MODE" = "clone" ]; then
+  # Reuse the object-only submodule clone recipe for immutable root inputs,
+  # without registering a linked worktree or reading dirty source files.
+  # Never replace an existing clone: dependency-only retries use the exact
+  # source-only receipt with --prepare-existing.
+  if [ -e "$RELEASE_ROOT" ]; then
+    echo "[setup-release] clone source destination already exists: $RELEASE_ROOT" >&2
+    exit 1
+  fi
+  log "creating independent release source clone at $RELEASE_ROOT"
+  git clone --quiet --local --no-hardlinks --no-checkout "$INTEGRATION_ROOT" "$RELEASE_ROOT"
+  git -C "$RELEASE_ROOT" checkout --quiet --detach "$TARGET_SHA"
+  # A standalone clone does not inherit integration's submodule active config.
+  # Register gitlinks locally so recursive tracked-source guards see their files;
+  # source cloning below still reads the exact pins from local Git objects only.
+  git -C "$RELEASE_ROOT" submodule init
 elif [ -e "$RELEASE_ROOT/.git" ]; then
   log "release worktree exists; checking out $TARGET_SHA"
   refresh_release_worktree
@@ -750,8 +777,22 @@ log "submodule recursion: cloned=$_sub_cloned archive-fallback=$_sub_fallback tr
 # from the absence of a WARN. `live_tree=` is the number that matters: non-zero
 # means the tree carries content belonging to no commit.
 log "CANDIDATE_SOURCE_INTEGRITY mode=$SOURCE_INTEGRITY_MODE object_sourced=$((_sub_cloned + _sub_fallback - _sub_live_tree)) cloned=$_sub_cloned archive=$((_sub_fallback - _sub_live_tree)) live_tree=$_sub_live_tree"
-if [ "$_sub_cloned" -gt 0 ] && [ "$_recursive" -le "$_plain" ]; then
+if [ "$SOURCE_ROOT_MODE" = "clone" ]; then
+  # One tracked child replaces one gitlink, so equal counts can be healthy.
+  # Inspect membership: a residual mode-160000 entry means Git failed to walk
+  # that module. awk consumes the whole stream (no pipefail/SIGPIPE shortcut).
+  _remaining_gitlinks="$(git -C "$RELEASE_ROOT" ls-files --recurse-submodules --stage \
+    | awk '$1 == "160000" { print $0 }')"
+  if [ -n "$_remaining_gitlinks" ]; then
+    log "FATAL independent source clone has unwalked gitlinks: $_remaining_gitlinks"
+    exit 3
+  fi
+elif [ "$_sub_cloned" -gt 0 ] && [ "$_recursive" -le "$_plain" ]; then
   log "WARN recursion added NO files despite $_sub_cloned cloned submodule repo(s) — tracked-files guards are probably scanning the superproject only"
+fi
+if [ "$SOURCE_ROOT_MODE" = "clone" ] && [ "$_uninit" -gt 0 ]; then
+  log "FATAL independent source clone has uninitialized submodule metadata"
+  exit 3
 fi
 fi
 

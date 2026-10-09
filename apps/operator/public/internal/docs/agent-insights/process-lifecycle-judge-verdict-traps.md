@@ -85,7 +85,7 @@ The structural gap worth closing: the doc-claims test asserts the brief *string*
 
 ## 4. `code:run` has no `setTimeout`, and `sleep(ms)` is silently capped
 
-The `gone` protocol requires a double-read of a known-present same-kind control with `tasks[].ageSec` advancing by elapsed wall time. Two traps in one:
+For a non-empty unaccounted census, the `gone` protocol requires a double-read of a known-present same-kind control with `tasks[].ageSec` advancing by elapsed wall time. When the census is empty, the control is structurally unavailable; use the independent cgroupfs path below instead. Two timing traps in one:
 
 * `setTimeout` does not exist in the sandbox — it throws `setTimeout_unsupported`, and **any `tools.*` call ordered after that point is never dispatched** (check `strandedWrites`).
 * `sleep(ms)` is **capped**: a requested 45000 ms actually waited 10000 ms.
@@ -100,6 +100,12 @@ const advanced = Math.abs(ageDelta - elapsedSec) <= 10 && ageDelta > 0;
 ```
 
 Against the requested 45 s, a healthy control advancing +12 s looks badly wrong, and a working instrument reads as broken — which under the protocol's own "if a check is missing or inconsistent, leave the result unknown" rule blocks a correct `gone`. The control that worked: `pc-0muvhfgqc1bfhfg11qq.scope` (whisper-server), kind `unaccounted`, `ageSec 1349 → 1361` (+12 s) across a measured 10.79 s.
+
+## An empty census has no same-kind control
+
+The same-kind control is selected from `live.unaccountedGroups` itself. If that array is empty, no same-kind control exists to read. This is a structural precondition gap, not a failed read: do not wait or retry for a control that the census cannot supply.
+
+For a candidate with an exact `scopeUnit`, use the independent host cgroupfs instrument as a visibility control. Recursively enumerate the complete, readable Papercusp slice subtree under `/sys/fs/cgroup` by exact unit name. Establish that the exact candidate scope directory is absent and that a peer `pc-*.scope` elsewhere in the same subtree is populated (`pids.current` > 0 or `cgroup.events` reports `populated 1`). Directory enumeration and control-file reads must succeed throughout the walk. The populated peer proves the cgroup instrument can see live Papercusp scopes; exact unit absence is affirmative scope-removal evidence. If the tree is unreadable or incomplete, `scopeUnit` is missing, or no populated peer is visible, leave the verdict unknown. Never use stored `cgroupPath`, `/proc` absence, the detector reason, or empty filtered output for this proof.
 
 ## Prefer arithmetic corroboration over a bare non-match
 

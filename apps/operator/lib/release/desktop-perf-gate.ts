@@ -252,6 +252,7 @@ export interface DesktopPerfGatePolicy {
 export const DEFAULT_DESKTOP_PERF_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 export interface DesktopPerfGateDecision {
+  replay?: import('@papercusp/operator-core/lib/release/gate-hygiene-split').GateDecisionReplay;
   action: DesktopPerfGateAction;
   /** Human reasons (the failing measures) for the broadcast / escalation. */
   reasons: string[];
@@ -903,7 +904,9 @@ export async function runDesktopPerfGate(
 ): Promise<DesktopPerfGateDecision> {
   const candidateSha = opts.candidateSha;
   if (!policy.enabled) {
-    return evaluateDesktopPerfGate(null, policy, candidateSha);
+    const now = Date.now();
+    const decision = evaluateDesktopPerfGate(null, policy, candidateSha, now);
+    return { ...decision, replay: captureGateDecisionReplay('desktop-perf', [null, policy, candidateSha, now], decision) };
   }
   const workspaceId = opts.workspaceId ?? process.env.PAPERCUSP_WORKSPACE_ID ?? 'default';
   const io = opts.io ?? defaultDesktopPerfGateIO;
@@ -926,5 +929,9 @@ export async function runDesktopPerfGate(
       repoRoot: opts.repoRoot ?? process.cwd(),
     }).catch(() => ({ buildSha: run.buildSha, relation: 'unknown' as const }));
   }
-  return evaluateDesktopPerfGate(run, policy, candidateSha, Date.now(), baseline, attribution);
+  const now = Date.now();
+  const decision = evaluateDesktopPerfGate(run, policy, candidateSha, now, baseline, attribution);
+  return { ...decision, replay: captureGateDecisionReplay('desktop-perf', [run, policy, candidateSha, now, baseline, attribution], decision) };
 }
+
+import { captureGateDecisionReplay } from '@papercusp/operator-core/lib/release/gate-hygiene-split';

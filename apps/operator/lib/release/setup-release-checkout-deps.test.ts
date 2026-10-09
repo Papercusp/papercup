@@ -227,7 +227,7 @@ describe('setup-release-checkout.sh need_node_modules() — deploy staleness heu
       sourceFingerprint,
     );
 
-    expect(result.status, result.stderr).toBe(0);
+    expect(result.status, result.stdout + result.stderr).toBe(0);
     expect(result.stdout).toContain(
       `DEPENDENCY_GENERATION_PIN identity=${generationId}`,
     );
@@ -2315,6 +2315,61 @@ exec "$REGRESSION_REAL_GIT" "$@"
     expect(r.stderr).toContain(
       '--source-only and --prepare-existing are mutually exclusive',
     );
+  });
+
+  it('source-only clone produces independent exact source without registering a worktree', () => {
+    const destination = join(dirname(releaseRoot), 'source-clone');
+    const before = git(integrationRoot, 'worktree', 'list', '--porcelain');
+    writeFileSync(join(integrationRoot, 'tracked.txt'), 'uncommitted tracked donor content\n');
+    writeFileSync(join(integrationRoot, 'donor-dirty.txt'), 'uncommitted donor content\n');
+    const args = [SCRIPT_PATH, '--source-only', '--source-root-mode', 'clone',
+      '--source-integrity', 'object-sourced', '--ref', targetSha,
+      '--integration', integrationRoot, '--release', destination];
+    const result = spawnSync('bash', args, { encoding: 'utf8' });
+    expect(result.status, result.stderr).toBe(0);
+    expect(git(destination, 'rev-parse', 'HEAD')).toBe(targetSha);
+    expect(git(destination, 'rev-parse', '--git-common-dir')).toBe('.git');
+    expect(git(destination, 'status', '--porcelain', '-uno')).toBe('');
+    expect(git(integrationRoot, 'worktree', 'list', '--porcelain')).toBe(before);
+    expect(existsSync(join(destination, 'node_modules'))).toBe(false);
+    expect(readFileSync(join(destination, 'tracked.txt'), 'utf8')).toBe('pinned source\n');
+    expect(existsSync(join(destination, 'donor-dirty.txt'))).toBe(false);
+    writeFileSync(join(destination, 'preserved.txt'), 'existing build inputs\n');
+    const again = spawnSync('bash', args, { encoding: 'utf8' });
+    expect(again.status).toBe(1);
+    expect(again.stderr).toContain('clone source destination already exists');
+    expect(readFileSync(join(destination, 'preserved.txt'), 'utf8')).toBe('existing build inputs\n');
+  });
+
+  it('source-only clone recursively materializes the exact gitlink from local objects', () => {
+    const child = join(dirname(releaseRoot), 'child-donor');
+    mkdirSync(child);
+    git(child, 'init', '-q');
+    writeFileSync(join(child, 'child.txt'), 'pinned child\n');
+    git(child, 'add', '-A');
+    git(child, 'commit', '-q', '-m', 'child');
+    const childSha = git(child, 'rev-parse', 'HEAD');
+    git(integrationRoot, '-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', child, 'libs/child');
+    git(integrationRoot, 'commit', '-q', '-m', 'child gitlink');
+    const sourceSha = git(integrationRoot, 'rev-parse', 'HEAD');
+    writeFileSync(join(integrationRoot, 'libs/child/child.txt'), 'dirty child\n');
+    const destination = join(dirname(releaseRoot), 'source-clone-gitlink');
+    const result = spawnSync('bash', [SCRIPT_PATH, '--source-only', '--source-root-mode', 'clone',
+      '--source-integrity', 'object-sourced', '--ref', sourceSha,
+      '--integration', integrationRoot, '--release', destination], { encoding: 'utf8' });
+    expect(result.status, result.stdout + result.stderr).toBe(0);
+    expect(git(join(destination, 'libs/child'), 'rev-parse', 'HEAD')).toBe(childSha);
+    expect(readFileSync(join(destination, 'libs/child/child.txt'), 'utf8')).toBe('pinned child\n');
+    expect(git(destination, 'ls-files', '--recurse-submodules')).toContain('libs/child/child.txt');
+    expect(git(destination, 'status', '--porcelain', '-uno')).toBe('');
+  });
+
+  it('clone source mode refuses dependency preparation and invalid mode values', () => {
+    for (const mode of ['clone', 'invalid']) {
+      const result = runPrepare(['--source-root-mode', mode]);
+      expect(result.status).toBe(2);
+      expect(result.stderr).toContain(mode === 'clone' ? 'requires --source-only' : 'bad --source-root-mode');
+    }
   });
 
   it.each([0, 19])('SPA-only reuses pinned source and dependencies, preserves build status %i', (status) => {

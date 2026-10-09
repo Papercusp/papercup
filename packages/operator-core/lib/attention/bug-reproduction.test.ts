@@ -8,6 +8,7 @@ import {
   sameBuildSha,
   stampFiledBugReproduction,
   verifyBugReproductionReceipt,
+  verifyCurrentBugReproductionReceipt,
   type ReproductionLedgerDeps,
 } from './bug-reproduction';
 
@@ -86,6 +87,29 @@ describe('ledger refs and build identity', () => {
     expect(sameBuildSha(BUILD, '1234567')).toBe(false);
     expect(sameBuildSha('abc', 'abc')).toBe(false);
     expect(sameBuildSha(null, BUILD)).toBe(false);
+  });
+});
+
+describe('current target build reproduction', () => {
+  it('refuses unknown and stale builds even with authentic historical failures', async () => {
+    const ledger = fakeLedger({ testRuns: { 1: { status: 'fail', commitSha: BUILD, worktreeDirty: false } } });
+    const receipt = { kind: 'failing-test' as const, ref: 'test_runs:1', buildSha: BUILD };
+    expect((await verifyCurrentBugReproductionReceipt(receipt, null, ledger)).status).toBe('unresolved');
+    expect((await verifyCurrentBugReproductionReceipt(receipt, 'b'.repeat(40), ledger)).status).toBe('refuted');
+    expect((await verifyCurrentBugReproductionReceipt(receipt, BUILD, ledger)).status).toBe('verified');
+  });
+
+  it('re-reads ledger evidence instead of trusting a caller-supplied build match', async () => {
+    const receipt = { kind: 'failing-test' as const, ref: 'test_runs:1', buildSha: BUILD };
+    for (const row of [
+      { status: 'pass', commitSha: BUILD, worktreeDirty: false },
+      { status: 'fail', commitSha: 'b'.repeat(40), worktreeDirty: false },
+      { status: 'fail', commitSha: BUILD, worktreeDirty: true },
+    ]) {
+      expect((await verifyCurrentBugReproductionReceipt(receipt, BUILD, fakeLedger({ testRuns: { 1: row } }))).status).toBe('refuted');
+    }
+    expect((await verifyCurrentBugReproductionReceipt(receipt, BUILD, fakeLedger({}))).status).toBe('unresolved');
+    expect((await verifyCurrentBugReproductionReceipt(receipt, BUILD, fakeLedger({ throws: true }))).status).toBe('unresolved');
   });
 });
 

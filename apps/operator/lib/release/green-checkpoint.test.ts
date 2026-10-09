@@ -227,6 +227,40 @@ async function commit(
 }
 
 describe('P-014 replay before gate mutation', () => {
+  it('captures an exhausted frozen queue verdict that returns before any canonical suite', async () => {
+    const frozen = await commit('candidate.txt', 'candidate', 'candidate');
+    const { createFrozenCandidateRepairQueue } = await import('@papercusp/operator-core/lib/release/frozen-candidate-repair-queue');
+    const queue = { ...createFrozenCandidateRepairQueue({ candidate: frozen, base: null,
+      failingTests: ['product.test.ts'], nowMs: Date.now() }), phase: 'blocked' as const,
+      blockedReason: 'attempts-exhausted' as const, attempts: 3 };
+    const { deps, calls } = stubDeps(true);
+    deps.readFrozenRepairQueue = async () => queue;
+    deps.writeFrozenRepairQueue = async () => {};
+    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+    expect(result.reason).toBe('repair-in-progress');
+    expect(result.suiteVerdictReplay).toMatchObject({ suiteMeasured: false,
+      decisions: expect.arrayContaining([expect.objectContaining({ kind: 'frozen-queue' })]) });
+    expect(calls).not.toContain('runGreen');
+  });
+
+  it('a downstream hold mismatch stops before setup and promotion even when the suite still agrees', async () => {
+    const snapshot = prior();
+    snapshot.decisions!.push({ kind: 'post-gate-action', args: ['block'], expected: false });
+    const { deps, calls } = stubDeps(true); deps.readLastSuiteVerdictReplay = async () => snapshot;
+    const result = await runGreenCheckpoint(cfg(), deps);
+    expect(result.suiteReplayCanary).toMatchObject({ status: 'mismatch', detail: expect.stringContaining('post-gate-action') });
+    expect(calls).toEqual([]);
+  });
+
+  it('retains a performance hold observation in the measured verdict snapshot', async () => {
+    await commit('candidate.txt', 'candidate', 'candidate');
+    const { deps, calls } = stubDeps(true);
+    deps.perfGate = async () => ({ action: 'block', summary: 'recorded perf block' });
+    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+    expect(result.reason).toBe('perf-held');
+    expect(result.suiteVerdictReplay?.decisions).toContainEqual({ kind: 'post-gate-action', args: ['block'], expected: true });
+    expect(calls).not.toContain('advance');
+  });
   const prior = () => captureGateSuiteVerdictReplay({ candidate: 'a'.repeat(40), runId: 'prior', measuredAtMs: 1 }, {
     green: false, infraFault: false, failures: ['product.test.ts'], rootScripts: {}, failingCasesByFile: null,
   });
