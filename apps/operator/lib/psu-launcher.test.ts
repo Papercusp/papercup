@@ -78,6 +78,7 @@ import {
   OMP_CORE_MCP_TOOL_NAMES,
   selectionsFromArgs,
   presetsFromArgs,
+  codexForkMcpUrlForOwner,
   resumeArgsFor,
   resumeEnvFor,
   contextTrimmingEnv,
@@ -4250,6 +4251,61 @@ describe("psu-launcher arg parsing", () => {
       "fork",
       "--last",
     ]);
+  });
+
+  it("Codex SU forks bind Papercusp MCP to the fresh owner without changing CODEX_HOME", () => {
+    const home = mkdtempSync(join(tmpdir(), "codex-fork-mcp-"));
+    const configPath = join(home, "config.toml");
+    const sourceUrl =
+      "http://localhost:3070/api/mcp?superuser=1&client=su-source";
+    const configText =
+      '[mcp_servers."papercusp-su"]\nurl = ' +
+      JSON.stringify(sourceUrl) +
+      "\n";
+    try {
+      writeFileSync(configPath, configText);
+      const before = readFileSync(configPath);
+      const forkUrl = codexForkMcpUrlForOwner(home, "su-fork");
+      expect(forkUrl).toBeTruthy();
+      if (!forkUrl) throw new Error("expected a fork-specific MCP URL");
+
+      const parsed = new URL(forkUrl);
+      expect(parsed.searchParams.get("client")).toBe("su-fork");
+      expect(parsed.searchParams.get("superuser")).toBe("1");
+
+      const forkArgs = resumeArgsFor(
+        { agent: "codex", sessionId: "source-session" },
+        {
+          fork: true,
+          codexMcpUrl: forkUrl,
+          model: "gpt-5.6-sol",
+        } as unknown as Parameters<
+          typeof resumeArgsFor
+        >[1],
+      ).args;
+      expect(forkArgs.slice(0, 2)).toEqual([
+        "-c",
+        "mcp_servers.papercusp-su.url=" + JSON.stringify(forkUrl),
+      ]);
+      expect(forkArgs).toContain("fork");
+      expect(forkArgs).toContain("source-session");
+
+      const resumeArgs = resumeArgsFor(
+        { agent: "codex", sessionId: "source-session" },
+        {
+          codexMcpUrl: forkUrl,
+          model: "gpt-5.6-sol",
+        } as unknown as Parameters<
+          typeof resumeArgsFor
+        >[1],
+      ).args;
+      expect(resumeArgs).not.toContain(
+        "mcp_servers.papercusp-su.url=" + JSON.stringify(forkUrl),
+      );
+      expect(readFileSync(configPath)).toEqual(before);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 
   it("forkUnsupportedMessage documents the safe non-native fallback for OMP", () => {
