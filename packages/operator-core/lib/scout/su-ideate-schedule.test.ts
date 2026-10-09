@@ -220,6 +220,38 @@ describe('su-ideate schedule — cost and liveness bounds (D-006)', () => {
       expect.objectContaining({ harnessSlug: 'email', disposition: 'launch-failed', error: 'governor refused admission' }),
     ]);
   });
+
+  it('a harness-specific scope refusal preserves the denial and reaches the next permitted overdue harness', async () => {
+    const { deps, launch } = makeDeps({
+      crm: { lastPassMs: null, observations: 10 },
+      papercusp: { lastPassMs: null, observations: 50 },
+      portal: { lastPassMs: null, observations: 50 },
+    });
+    const refusal = "scope_denied: harness 'crm' is outside the workspace work-scope policy (allowed: papercusp, portal)";
+    launch.mockResolvedValueOnce({ ok: false, error: refusal });
+
+    const out = await runSuIdeateSchedule({ workspaceId: 'ws', nowMs: NOW }, deps);
+
+    expect(launch.mock.calls.map(([input]) => input.harnessSlug)).toEqual(['crm', 'papercusp']);
+    expect(out.launched?.harnessSlug).toBe('papercusp');
+    expect(out.decisions).toEqual([
+      expect.objectContaining({ harnessSlug: 'crm', disposition: 'launch-failed', error: refusal }),
+      expect.objectContaining({ harnessSlug: 'papercusp', disposition: 'launched' }),
+    ]);
+  });
+
+  it('an unknown global refusal mentioning scope denial still ends the tick', async () => {
+    const { deps, launch } = makeDeps({
+      crm: { lastPassMs: null, observations: 50 },
+      papercusp: { lastPassMs: null, observations: 50 },
+    });
+    launch.mockResolvedValueOnce({ ok: false, error: 'gateway failure after scope_denied: diagnostic' });
+
+    const out = await runSuIdeateSchedule({ workspaceId: 'ws', nowMs: NOW }, deps);
+
+    expect(launch).toHaveBeenCalledTimes(1);
+    expect(out.launched).toBeUndefined();
+  });
 });
 
 describe('su-ideate open circuits — the dead-pass alarm feed (plan D-010)', () => {

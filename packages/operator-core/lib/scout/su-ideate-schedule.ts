@@ -269,9 +269,11 @@ export async function runSuIdeateSchedule(
       brief: buildSuIdeatePassBrief({ harnessSlug, lens, reason: hint.reason }),
     });
     if (!result.ok) {
-      // A refused launch (governor admission, quota) ends the tick: trying the next
-      // harness would just hit the same wall, and the next hourly tick retries.
       decisions.push({ harnessSlug, disposition: 'launch-failed', lastPassMs, verdict, attempts, error: result.error });
+      // The canonical scope refusal is local to this harness. Keep its denial recorded and
+      // let the next candidate pass its OWN scope gate; a denied first slug must not starve
+      // permitted harnesses. Global governor/quota/unknown refusals still end the tick.
+      if (result.error?.startsWith('scope_denied:')) continue;
       return { ...base, decisions };
     }
     decisions.push({ harnessSlug, disposition: 'launched', lastPassMs, verdict, attempts: attempts + 1 });
