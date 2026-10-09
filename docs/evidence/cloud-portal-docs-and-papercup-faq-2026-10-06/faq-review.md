@@ -481,8 +481,9 @@ zero skips. That local fix does not establish a deployed sentinel runtime.
 
 Full R-7 acceptance remains open. The recorded results do not establish the
 replacement Portal's imported-source provenance or actual Papercup runtime
-cohort. The existing tutorial implementer has not supplied a ready replacement
-artifact. Real three-person/four-task observations, independent acceptance and
+cohort. The later D031 retained replacement passed the one authorized workspace
+resource-listing browser case; its report does not establish this answer/revision
+cohort. Real three-person/four-task observations, independent acceptance and
 exact production shipment also remain open. Historical evidence keeps its
 original scope; missing observations stay unknown.
 
@@ -506,3 +507,19 @@ field of [faq-count-mutation.json](./faq-count-mutation.json). This refresh
 belongs to `AUTO-BAR-R-4-P-004@3` and `DOCS-FAQ-COUNT@1`; it does not replace the
 scoped P-007 contract or establish sensitive truth, actual Papercup answers,
 novice results, independent acceptance or final shipment.
+
+The retained unmutated baseline `20951881` was adopted as ordinary test evidence
+through the documented mutation-copy canonical-path mechanism. Current test
+bindings are `32516` for R-4 and `32517` for DOCS-FAQ-COUNT; the current mutation
+bindings are `32470` and `32471`. Unit reachability follows the executed test's
+import and calls to the production validator. Literal count, question-removal,
+bookmark, alias and invalid-guide expectations provide independent oracles;
+the shared anchor-array assertion is only corroborative.
+
+Historical source-stale bindings `27491`, `27492`, `27494` and `27496` were
+retracted from active proof selection because this current proof supersedes
+them. Their recorded executions and artifacts remain historical. The subsequent
+server measurement reports the active selection current, and the governing
+author adequacy evaluator (`d740fc3802`, version `0.0.0`) passes both exact
+clauses with no would-block criteria. No test was replayed for this adoption.
+This is author-proof readiness, not independent certification or shipment.
