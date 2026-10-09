@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
 import ts from 'typescript';
 import { resolveChunkSurface, splitterVersionOf } from '@papercusp/search';
 // Deliberately unmocked: a duplicate live source must fail this guard.
@@ -40,11 +41,60 @@ describe('chunk surface registry', () => {
       return out;
     };
     const source = (relative: string) => readFileSync(new URL(relative, import.meta.url), 'utf8');
-    const periodic = source('../../dbos/periodic-workflows.ts');
-    const knowledgeSchedules = (body: string) => calls(body).filter(call => call.callee === 'DBOS.registerScheduled'
-      && /embedBackfill|planIndex|docIndex|reportIndex/i.test(call.first));
-    expect(knowledgeSchedules(periodic).map(call => call.first)).toEqual(['embedBackfillWorkflow']);
-    expect(knowledgeSchedules(periodic + '\nDBOS.registerScheduled(reportIndexWorkflow, { name: "parallelReportIndex" });'))
+    // Inspect every DBOS registration module, including a newly added file.
+    // Resolve declarations/import aliases to the actual ingestion calls: the
+    // workflow variable's spelling is not evidence of what it schedules.
+    const dbos = new URL('../../dbos/', import.meta.url);
+    const modules = readdirSync(dbos, { recursive: true }).map(String)
+      .filter(path => path.endsWith('.ts') && !path.endsWith('.test.ts'))
+      .map(path => ({ path, body: readFileSync(join(dbos.pathname, path), 'utf8') }));
+    const knowledgeSchedules = (inputs: Array<{ path: string; body: string }>) => {
+      const declarations = new Map<string, ts.Node[]>();
+      const roots = new Set(['runEmbedBackfill', 'runChunkSyncTick', 'runDocSectionsSyncOnce',
+        'runHarnessDocSectionsSweep', 'indexReport']);
+      const files = inputs.map(input => ({ ...input,
+        ast: ts.createSourceFile(input.path, input.body, ts.ScriptTarget.Latest, true) }));
+      const remember = (name: string, node: ts.Node) => declarations.set(name,
+        [...(declarations.get(name) ?? []), node]);
+      for (const { ast } of files) {
+        const visit = (node: ts.Node) => {
+          if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) remember(node.name.text, node.initializer);
+          if (ts.isFunctionDeclaration(node) && node.name && node.body) remember(node.name.text, node.body);
+          if (ts.isImportSpecifier(node)) remember(node.name.text, node.propertyName ?? node.name);
+          ts.forEachChild(node, visit);
+        };
+        visit(ast);
+      }
+      const reaches = (node: ts.Node, targets: ReadonlySet<string>, seen = new Set<string>()): boolean => {
+        if (ts.isIdentifier(node)) {
+          if (targets.has(node.text)) return true;
+          if (seen.has(node.text)) return false;
+          const next = new Set([...seen, node.text]);
+          return (declarations.get(node.text) ?? []).some(value => reaches(value, targets, next));
+        }
+        if (ts.isPropertyAccessExpression(node) && targets.has(node.getText())) return true;
+        let found = false;
+        ts.forEachChild(node, child => { if (reaches(child, targets, new Set(seen))) found = true; });
+        return found;
+      };
+      const registrations: Array<{ path: string; first: string }> = [];
+      for (const { path, ast } of files) {
+        const visit = (node: ts.Node) => {
+          if (ts.isCallExpression(node) && node.arguments[0]
+            && reaches(node.expression, new Set(['DBOS.registerScheduled']))
+            && reaches(node.arguments[0], roots)) registrations.push({ path, first: node.arguments[0].getText(ast) });
+          ts.forEachChild(node, visit);
+        };
+        visit(ast);
+      }
+      return registrations;
+    };
+    expect(knowledgeSchedules(modules)).toEqual([{ path: 'periodic-workflows.ts', first: 'embedBackfillWorkflow' }]);
+    const alias = '\nconst knowledgeSweepWorkflow = embedBackfillWorkflow;\nDBOS.registerScheduled(knowledgeSweepWorkflow, {name: "parallelKnowledge"});';
+    expect(knowledgeSchedules(modules.map(module => module.path === 'periodic-workflows.ts'
+      ? { ...module, body: module.body + alias } : module))).toHaveLength(2);
+    expect(knowledgeSchedules([...modules, { path: 'new-knowledge-scheduler.ts',
+      body: 'import { runChunkSyncTick as rebuild } from "../search/chunks/tick"; const schedule = DBOS.registerScheduled; const unnamed = () => rebuild(); schedule(unnamed, {});' }]))
       .toHaveLength(2);
     const backfillCalls = calls(source('../embed-backfill.ts')).map(call => call.callee);
     for (const child of ['runDocSectionsSyncOnce', 'runHarnessDocSectionsSweep', 'runChunkSyncTick']) {
