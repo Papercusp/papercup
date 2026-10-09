@@ -41,7 +41,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { createRequire } from 'node:module';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -266,7 +266,7 @@ describe('isolated clone module identity (EI-24824919200711849)', () => {
 
   it.each([
     ['shallow', resolve(tmpdir(), 'papercusp-lint-as-committed-probe/apps/papercusp-docs')],
-    ['persistent', resolve(tmpdir(), 'owner/.papercusp/artifacts/tutorial/replacement/sources/operator/apps/papercusp-docs')],
+    ['persistent', resolve(homedir(), '.papercusp/artifacts/tutorial/replacement/sources/operator/apps/papercusp-docs')],
   ])('resolves injected Astro page imports against the clone root (%s)', async (_geometry, projectRoot) => {
     const { normalizeExternalAstroModuleIds } = await import(resolve(repoRoot, 'apps/papercusp-docs/astro.config.mjs'));
     const { pluginPage } = await import(resolve(repoRoot, 'node_modules/astro/dist/vite-plugin-pages/page.js'));
@@ -283,6 +283,12 @@ describe('isolated clone module identity (EI-24824919200711849)', () => {
     expect(request).toContain('/../');
     const normalizer = normalizeExternalAstroModuleIds(projectRoot);
     expect(normalizer.resolveId(request, virtualId)).toBe(sharedRoute);
+    expect(normalizer.resolveId(`${request}?astro&type=style&index=0`, virtualId)).toBe(`/@fs${sharedRoute}?astro&type=style&index=0`);
+    const localComponent = 'src/pages/index.astro';
+    const localVirtualId = `\0virtual:astro:page:${localComponent.replace(/\./g, '@_@')}`;
+    const localPage = pluginPage({ routesList: { routes: [{ component: localComponent, type: 'page' }] } });
+    const localRequest = JSON.parse(/import \* as _page from ("(?:[^"\\]|\\.)*");/.exec(localPage.load.handler(localVirtualId).code)![1]);
+    expect(normalizer.resolveId(localRequest, localVirtualId)).toBe(resolve(projectRoot, localComponent));
     expect(normalizer.resolveId(sharedRoute)).toBe(sharedRoute);
     expect(normalizer.resolveId(`${sharedRoute}?astro&type=style&index=0`)).toBe(`/@fs${sharedRoute}?astro&type=style&index=0`);
   });

@@ -50,6 +50,13 @@ export function normalizeExternalAstroModuleIds(projectRoot = fileURLToPath(new 
         }
         return null;
       }
+      // Astro's page module prefixes its project-relative component with '/'.
+      // An injected external page may therefore start with '/../'; resolving it
+      // as a filesystem absolute path drops the clone's shared path prefix.
+      if (!hasFilesystemPrefix && filename.startsWith('/') &&
+        importerId?.startsWith('\0virtual:astro:page:')) {
+        return `${isAstroVirtualRequest ? '/@fs' : ''}${resolvePath(projectRoot, `.${filename}`)}${query}`;
+      }
       const resolutionBase = !isAbsolute(filename) && absoluteImporter
         ? dirname(absoluteImporter)
         : projectRoot;
