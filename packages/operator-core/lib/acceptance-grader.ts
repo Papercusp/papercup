@@ -806,6 +806,28 @@ export function classifyAcceptanceGraderTerminalFailure(
     };
   }
 
+  // EI-25493436056846904: native credit refusals omit the API Error prefix
+  // and leave a ledger-live auditor at its idle prompt. The duration/footer
+  // can be damaged by PTY redraws, so require the exact error-result line,
+  // footer and prompt instead of its rendered word "done". Only the latest
+  // result qualifies; resumed assistant/tool work invalidates the old screen.
+  // General acceptance briefs may quote this evidence and keep the opt-in off.
+  const latestResult = normalized.slice(Math.max(0, normalized.lastIndexOf('⎿')));
+  const creditBalanceError = allowInferenceGatewayError
+    ? latestResult.match(
+        /(?:^|\n)[ \t]*⎿[ \t\u00a0]*Credit balance too low[ \t]*·[ \t]*Add funds:[^\n]{0,240}\n[\s\S]{0,800}?✻[^\n]{1,160}\n(?:[ \t─]*\n)*[ \t]*❯/u,
+      )
+    : null;
+  if (creditBalanceError) {
+    const afterPrompt = latestResult.slice((creditBalanceError.index ?? 0) + creditBalanceError[0].length);
+    if (!hasAcceptanceGraderFirstTurnProgress(afterPrompt) && !/(?:^|\n)\s*●/u.test(afterPrompt)) {
+      return {
+        code: 'inference_gateway_error',
+        evidence: creditBalanceError[0].replace(/\s+/g, ' ').trim().slice(0, 400),
+      };
+    }
+  }
+
   const gatewayError = allowInferenceGatewayError
     ? normalized.match(
         /API Error:\s*(?:5\d{2}\s+inference-gateway internal error\.|Request rejected \(429\)(?:\s*·\s*inference-gateway:\s*(?:all accounts\s+throttled|account\s+'[^'\n]{1,120}'\s+paced\/paused);\s*retry after \d+s|\s+This request would exceed your\s+account(?:'|’)s rate limit\.\s*Please try again later\.))[\s\S]{0,800}?✻\s*\p{L}{3,24}\s+for [^\n]{1,120}?\s*·\s*done\b/iu,

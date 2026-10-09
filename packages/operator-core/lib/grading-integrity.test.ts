@@ -2854,6 +2854,35 @@ describe('dispatchPendingGradingAudits', () => {
     ]);
   });
 
+  it('retires a ledger-live auditor stopped by a credit balance refusal and launches one recovery', async () => {
+    const d = deps();
+    d.listScorecards.mockResolvedValue([card('EI-credit-balance')]);
+    d.listTasks.mockResolvedValue([{
+      taskId: 'task-credit-balance', state: 'running',
+      detail: { label: 'grading-audit:EI-credit-balance' }, logPath: '/tmp/credit-balance.log',
+    } as unknown as TaskRow]);
+    d.launch.mockResolvedValue(launchResult({
+      deduped: false,
+      launch: { agentStarted: true, tasks: [{
+        taskId: 'task-credit-recovery', logPath: '/tmp/recovery.log', kickoffProof: { persisted: true },
+      }] },
+    }));
+    const killTask = vi.fn(async (taskId: string) => ({ ok: true as const, taskId, action: 'kill' }));
+    const result = await reconcilePendingGradingAudits({ ctx, harness: 'papercusp' }, {
+      ...d, killTask, sleep: async () => undefined, terminalLogMaxRechecks: 0,
+      readLogTail: (path: string) => path.includes('credit-balance')
+        ? '  ⎿ Credit balance too low · Add funds: \n\n✻Sautéed for 1m 48s · done 5:15 AM\n❯'
+        : 'healthy recovery boot',
+    });
+    expect(killTask).toHaveBeenCalledWith('task-credit-balance', { includeSubtree: true, escalateAfterMs: 5_000 });
+    expect(d.launch).toHaveBeenCalledTimes(1);
+    expect(result.receipts[0]).toMatchObject({
+      state: 'launched', terminalRecovery: {
+        retiredTaskIds: ['task-credit-balance'], codes: ['inference_gateway_error'],
+      },
+    });
+  });
+
   it('retires a heartbeat-fresh auditor that finished without emitting, then launches a replacement', async () => {
     const d = deps();
     d.listScorecards.mockResolvedValue([card('EI-finished-refusal')]);

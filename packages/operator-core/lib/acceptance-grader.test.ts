@@ -1483,6 +1483,33 @@ describe('classifyAcceptanceGraderTerminalFailure', () => {
     });
   });
 
+  it.each([
+    '✻Sautéed for 1m 48s · done 5:15 AM',
+    '✻ Worked for 1m 57s · one 5:15 AM',
+    '✻ Cogitated for 1m 19s ·dne 5:15 AM',
+  ])('matches a completed credit balance refusal only for a controlled caller: %s', (footer) => {
+    const screen = '\u001b[31m  ⎿ \u00a0Credit balance too low · Add funds: \u001b[0m\r\n';
+    const raw = screen + `\r\n${footer}\r\n────────────────\r\n❯\u00a0`;
+
+    expect(classifyAcceptanceGraderTerminalFailure(raw)).toBeNull();
+    expect(classifyAcceptanceGraderTerminalFailure(raw, { allowInferenceGatewayError: true })).toMatchObject({
+      code: 'inference_gateway_error',
+      evidence: expect.stringContaining('Credit balance too low · Add funds:'),
+    });
+    // An error still inside a turn, or one superseded by resumed work, is not
+    // proof that the current mission stopped.
+    expect(classifyAcceptanceGraderTerminalFailure(screen, { allowInferenceGatewayError: true })).toBeNull();
+    expect(classifyAcceptanceGraderTerminalFailure(raw + '\n● I resumed and emitted the audit.', {
+      allowInferenceGatewayError: true,
+    })).toBeNull();
+    expect(classifyAcceptanceGraderTerminalFailure(raw + '\n• Called scorecards:get', {
+      allowInferenceGatewayError: true,
+    })).toBeNull();
+    expect(classifyAcceptanceGraderTerminalFailure('The report quotes Credit balance too low · Add funds:', {
+      allowInferenceGatewayError: true,
+    })).toBeNull();
+  });
+
   it('matches a completed inference-gateway 5xx turn only for a controlled caller', () => {
     const raw =
       '\u001b[38;5;220m●\u001b[3GAPI Error: 500 inference-gateway internal error. This is a server-side\r\n' +
