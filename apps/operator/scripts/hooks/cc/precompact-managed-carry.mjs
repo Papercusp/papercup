@@ -268,6 +268,15 @@ export async function runManagedPreCompact(payload, options = {}) {
   if (!mcpUrl || !sid || typeof fetchImpl !== 'function') {
     return preCompactDecision({ ok: false, detail: 'managed MCP URL or session identity is missing' });
   }
+  // EI-25539460438199657: an owner can retain several native launch rows.
+  // Owner-only requests may select a predecessor with no matching activation
+  // receipt, denying the very carry needed to recover before another sample.
+  // Use Codex's current hook identity on the existing verified MCP carrier;
+  // inherited environment identities must never select this request's row.
+  const nativeId = typeof input.session_id === 'string' ? input.session_id.trim() : '';
+  if (!/^[A-Za-z0-9._:-]{1,128}$/.test(nativeId)) {
+    return preCompactDecision({ ok: false, detail: 'native session identity is missing or malformed' });
+  }
   const headers = {
     'Content-Type': 'application/json',
     Accept: 'application/json, text/event-stream',
@@ -288,7 +297,7 @@ export async function runManagedPreCompact(payload, options = {}) {
     params: {
       name: 'session:request-compaction',
       arguments: {},
-      _meta: { format: 'json' },
+      _meta: { format: 'json', threadId: nativeId },
     },
   });
   try {

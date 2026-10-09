@@ -104,6 +104,48 @@ describe('managed Codex PreCompact bridge', () => {
     expect(decision.systemMessage).toContain('QUEUED');
   });
 
+  it('selects the current native receipt instead of an unrelated owner fallback', async () => {
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, request?: RequestInit) => {
+      const { params } = JSON.parse(String(request?.body));
+      // The owner can have several launch records. The maintained MCP
+      // classifier selects the exact caller row only with this native carrier.
+      return new Response(params._meta?.threadId === PAYLOAD.session_id
+        ? rpc({ ok: true, requested: true, respawn: 'queued' })
+        : rpc({ ok: false, error: 'authorization_denied', message: 'Identity capability (unresolved): stale-artifact; resolution=receipt-missing' }, true));
+    });
+    const decision = await runManagedPreCompact(PAYLOAD, {
+      env: { ...ENV, CODEX_SESSION_ID: 'inherited-predecessor' },
+      fetchImpl,
+    });
+
+    expect(decision.systemMessage).toContain('QUEUED');
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(JSON.parse(String(fetchImpl.mock.calls[0][1]?.body)).params._meta)
+      .toEqual({ format: 'json', threadId: PAYLOAD.session_id });
+  });
+
+  it.each([undefined, null, '', '   ', {}, 'native/session', 'x'.repeat(129)])(
+    'refuses an invalid native identity (%j) before using owner-only authority', async (session_id) => {
+      const fetchImpl = vi.fn();
+      const decision = await runManagedPreCompact({ ...PAYLOAD, session_id }, { env: ENV, fetchImpl });
+
+      expect(decision.continue).toBe(false);
+      expect(decision.systemMessage).toContain('native session identity');
+      expect(fetchImpl).not.toHaveBeenCalled();
+    },
+  );
+
+  it('preserves a foreign-native refusal without retrying on the owner-only route', async () => {
+    const fetchImpl = vi.fn(async () => new Response(rpc({
+      ok: false, error: 'superuser_foreign_native_session',
+    }, true)));
+    const decision = await runManagedPreCompact(PAYLOAD, { env: ENV, fetchImpl });
+
+    expect(decision.continue).toBe(false);
+    expect(decision.systemMessage).toContain('superuser_foreign_native_session');
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
   it('uses the token file only for the superuser route and never changes that route', async () => {
     const env = {
       ...ENV,

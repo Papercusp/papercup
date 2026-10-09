@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const h = vi.hoisted(() => {
+  const sql = {};
   const routingSettings = {
     allowlist: [{ rank: 1, agent: 'codex' as const, model: 'sol' }],
     recencyHalfLifeDays: 14,
@@ -14,7 +15,7 @@ const h = vi.hoisted(() => {
       latency_contract: 'proceed' as const, park_key: null, hint: 'pending',
     })),
     continueFeedbackRequestCore: vi.fn(async (_workspace: string, _conversation: string, _deps: unknown) => false),
-    getOrgPg: vi.fn(() => ({ sql: {} })),
+    getOrgPg: vi.fn(() => ({ sql })),
     buildQueryEmbedderResolved: vi.fn(async () => null),
     interactiveEmbedAcquireBudgetMs: vi.fn(() => 10),
     resolveProseProfileSelection: vi.fn(),
@@ -48,7 +49,7 @@ vi.mock('./expert-routing-settings', async (importOriginal) => {
   return { ...actual, readConsultExpertRoutingSettings: h.readConsultExpertRoutingSettings };
 });
 
-import { acceptFeedbackRequestProd, getFeedbackProd } from './get-feedback-prod';
+import { acceptFeedbackRequestProd, continueFeedbackRequestProd, getFeedbackProd } from './get-feedback-prod';
 
 describe('getFeedbackProd expert-routing settings', () => {
   beforeEach(() => vi.clearAllMocks());
@@ -77,6 +78,31 @@ describe('getFeedbackProd expert-routing settings', () => {
     );
     expect(h.getFeedbackCore.mock.calls[0]?.[0]).toMatchObject({ allowDispatch });
     expect(h.makeConsultReachDispatcher).toHaveBeenCalledTimes(allowDispatch ? 1 : 0);
+  });
+
+  it('recovers a saved request under its requester and workspace without restoring dispatch permission', async () => {
+    h.continueFeedbackRequestCore.mockResolvedValueOnce(true);
+    const savedRequest = {
+      workspaceId: 'saved-workspace', requesterId: 'saved-requester', question: 'saved question',
+      requestKey: 'saved-key', harnessSlug: 'saved-harness', allowDispatch: false,
+    };
+    const acceptedRequest = {
+      conversation_id: 'saved-conversation', thread_id: 'thr-saved-conversation', leaseToken: 'recovery-lease',
+    };
+
+    await expect(continueFeedbackRequestProd('saved-workspace', 'saved-conversation')).resolves.toBe(true);
+    const [workspace, conversation, deps] = h.continueFeedbackRequestCore.mock.calls[0] as unknown as [
+      string, string, { getSql: () => unknown; execute: (request: unknown, accepted: unknown) => Promise<unknown> },
+    ];
+    expect([workspace, conversation]).toEqual(['saved-workspace', 'saved-conversation']);
+    expect(deps.getSql()).toBe(h.getOrgPg().sql);
+
+    await deps.execute(savedRequest, acceptedRequest);
+    expect(h.getFeedbackCore.mock.calls[0]?.[0]).toMatchObject(savedRequest);
+    expect(h.getFeedbackCore.mock.calls[0]?.[1]).toMatchObject({ acceptedRequest });
+    expect(h.makeConsultReachDispatcher).not.toHaveBeenCalled();
+    expect(h.acceptFeedbackRequestCore).not.toHaveBeenCalled();
+    expect(h.openConversation).not.toHaveBeenCalled();
   });
 
   it('uses one persisted snapshot for comparison recency and dispatch ranks', async () => {

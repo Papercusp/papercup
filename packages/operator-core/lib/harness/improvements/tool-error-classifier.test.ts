@@ -174,6 +174,40 @@ describe('P-001 R-7 frozen friction correlation controls', () => {
     })).toMatchObject({ class: 'caller', direct: false });
   });
 
+  it('classifies the observed Codex deferred-wrapper TypeError variants as caller-side', () => {
+    const reports = [
+      {
+        toolName: 'logs:read',
+        errorCode: 'client_wrapper_unavailable',
+        status: 'not_dispatched',
+        message: 'The capability is present in tools:find, but tools.mcp__papercusp_su__logs_read is not callable in this Codex session; calling it raised TypeError before dispatch. Switching to ptool logs:read via the sanctioned CLI fallback.',
+      },
+      {
+        toolName: 'docs:outline',
+        errorCode: 'wrapper-unavailable',
+        status: 'client_surface_gap',
+        message: 'Direct nested docs:outline wrapper call threw TypeError: tools.mcp__papercusp_su__docs_outline is not a function before dispatch. Recover through tools:find/tools:invoke.',
+      },
+      {
+        toolName: 'scheduler:get_claim_spec',
+        errorCode: 'wrapper-unavailable',
+        status: 'not_dispatched',
+        message: 'This Codex session attempted tools.mcp__papercusp_su__scheduler_get_claim_spec directly; the normalized wrapper was undefined and calling it threw TypeError before MCP dispatch.',
+      },
+    ];
+
+    for (const report of reports) {
+      expect(classifyToolError(report.errorCode, report.status, report.message)).toBe('caller');
+      expect(normalizeSuspectedToolFailure({ ...report, reproduced: true })).toMatchObject({
+        class: 'caller',
+        direct: false,
+      });
+    }
+
+    expect(classifyToolError('handler_error', 'error', 'The MCP handler raised TypeError before dispatch.'))
+      .toBe('structural');
+  });
+
   it('classifies scratch-reference size refusals from the reported error code', () => {
     expect(normalizeSuspectedToolFailure({
       toolName: 'capability:read',
@@ -510,6 +544,28 @@ describe('classifyToolError — real-corpus regression (P-011)', () => {
     expect(classifyToolError('handler_error', 'error', nestedRefusal)).toBe('caller');
     expect(classifyToolError('handler_error', 'error', '{"ok":false,"reason":"unrelated_refusal"}'))
       .toBe('structural');
+  });
+
+  it('classifies nested capability:read mixed-window refusals as caller input', () => {
+    const nestedRefusal = JSON.stringify({
+      ok: false,
+      reason: 'mixed_window_modes',
+      message: 'raw text windows cannot be combined with byte_offset/byte_limit; byte windows already return exact bytes.',
+    });
+
+    expect(classifyToolError('mixed_window_modes', 'handler_error', null)).toBe('caller');
+    expect(classifyToolError('handler_error', 'error', nestedRefusal)).toBe('caller');
+    expect(normalizeSuspectedToolFailure({
+      toolName: 'tools:invoke',
+      errorCode: 'handler_error',
+      status: 'error',
+      message: nestedRefusal,
+    }).class).toBe('caller');
+    expect(classifyToolError(
+      'handler_error',
+      'error',
+      JSON.stringify({ ok: false, reason: 'unrelated_refusal' }),
+    )).toBe('structural');
   });
 
   it('classifies nested tenant-scope reader refusals as caller', () => {

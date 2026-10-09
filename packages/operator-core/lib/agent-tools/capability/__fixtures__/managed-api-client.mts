@@ -7,7 +7,7 @@ import { existsSync } from 'node:fs';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { createAdaptorServer } from '@hono/node-server';
-import { assertManagedToolSuccess } from './managed-api-result.ts';
+import { assertManagedToolSuccess, finishManagedApiTeardown } from './managed-api-result.ts';
 
 const stage = (name: string) => console.log('MANAGED_API_STAGE=' + name);
 // This command needs no database/host boot. The canonical test uses it to
@@ -122,7 +122,9 @@ try {
   assert.equal(refusedPty.body?.unconfined_reason, 'no-scope-support', JSON.stringify(refusedPty.result));
   const opened = (await invoke(current, 'code:run', { kernel: { op: 'open' } })).body;
   assert.equal(opened.ok, true, JSON.stringify(opened)); kernelId = opened.kernel.id;
-  await invoke(current, 'code:run', { kernel: { op: 'run', id: kernelId }, script: 'globalThis.count = 2; return ++count;' });
+  const firstCell = (await invoke(current, 'code:run', { kernel: { op: 'run', id: kernelId }, script: 'globalThis.count = 2; return ++count;' })).body;
+  assert.equal(firstCell.ok, true, JSON.stringify(firstCell));
+  assert.equal(firstCell.summary, 3, JSON.stringify(firstCell));
   const browser = (await invoke(current, 'capability:fetch', { url: pageUrl, browser: { op: 'open', screenshot: true } }));
   assert.equal(browser.body.ok, true, JSON.stringify(browser.body)); browserId = browser.body.browser.id;
   assert.equal(browser.body.observation.text, 'page:1');
@@ -130,7 +132,10 @@ try {
   // A separate MCP session must retain handles by authenticated owner/workspace/harness.
   current = await client(owner);
   const retained = (await invoke(current, 'code:run', { kernel: { op: 'run', id: kernelId }, script: 'return ++count;' })).body;
-  assert.equal(retained.ok, true, JSON.stringify(retained)); assert.equal(retained.result, 4);
+  console.log('MANAGED_KERNEL_CONTINUITY=' + JSON.stringify(retained));
+  assert.equal(retained.ok, true, JSON.stringify(retained));
+  assert.equal(retained.summary, 4, JSON.stringify(retained));
+  assert.equal(retained.kernel.state, 'live', JSON.stringify(retained));
   const observed = (await invoke(current, 'capability:fetch', { browser: { op: 'observe', id: browserId } })).body;
   assert.equal(observed.ok, true, JSON.stringify(observed)); assert.equal(observed.observation.text, 'page:1');
   const navigated = (await invoke(current, 'capability:fetch', { url: pageUrl, browser: { op: 'navigate', id: browserId } })).body;
@@ -189,13 +194,15 @@ try {
       cleanupErrors.push(error);
     }
   }
-  for (const entry of clients) await entry.close().catch(() => {});
-  if ('closeAllConnections' in server) server.closeAllConnections();
-  await new Promise<void>(resolve => server.close(() => resolve()));
-  await new Promise<void>(resolve => pageServer.close(() => resolve()));
-  await getOrgPg().sql.end({ timeout: 2 });
-  assert.equal(cleanupErrors.length, 0, String(new AggregateError(cleanupErrors, 'Owned resource cleanup failed')));
-  if (proof) assert.equal(rows.length, 1, 'Refused PTY must create no task row; one owned browser is expected');
+  await finishManagedApiTeardown({ hasProof: !!proof, rowCount: rows.length, cleanupErrors, close: [
+    ...clients.map(entry => async () => { await entry.close(); }),
+    async () => {
+      if ('closeAllConnections' in server) server.closeAllConnections();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    },
+    async () => { await new Promise<void>(resolve => pageServer.close(() => resolve())); },
+    async () => { await getOrgPg().sql.end({ timeout: 2 }); },
+  ] });
   console.log('MANAGED_API_CLEANUP=' + JSON.stringify({ workspace, rows: rows.length,
     ownedIdentity: verifiedOwners.get(owner), processes: 'gone', browserRoots: 'gone', terminalRecorded: true }));
 }
