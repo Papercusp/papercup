@@ -56,7 +56,8 @@ test('summary reuse follows its authorized reader, source version, options and m
     return body;
   };
   const call = async (url: string, name: string, args: Record<string, unknown>) => {
-    const body = await rpc(url, 'tools/call', { name, arguments: args });
+    // The normal MCP default is TOON; this machine client consumes JSON.
+    const body = await rpc(url, 'tools/call', { name, arguments: args, _meta: { format: 'json' } });
     const result = JSON.parse(body.result.content.find((part: { type: string }) => part.type === 'text').text);
     observations.push({ name, args, result });
     return result;
