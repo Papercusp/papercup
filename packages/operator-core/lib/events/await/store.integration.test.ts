@@ -2577,11 +2577,14 @@ describe('recordKeyFire / getKeyFireLatch / inspectEventKey.fireLatch (PG)', () 
 });
 
 describe('probeKeyFireEvidence (PG) — EI-18676056143796303, the emitter evidence behind the orphan guard', () => {
-  it('keyFireEvidencePrefix takes the family (first two segments), and a short key probes itself', () => {
+  it('keyFireEvidencePrefix uses stable families and keeps dynamic scopes exact', () => {
     expect(keyFireEvidencePrefix('coord:inbox-wake:su-abc-123')).toBe('coord:inbox-wake');
     expect(keyFireEvidencePrefix('plan-item:done:my-plan:P-004')).toBe('plan-item:done');
     expect(keyFireEvidencePrefix('work-item:claimable')).toBe('work-item:claimable');
     expect(keyFireEvidencePrefix('single')).toBe('single');
+    expect(keyFireEvidencePrefix('fleet:drain:resume')).toBe('fleet:drain:resume');
+    expect(keyFireEvidencePrefix('plan:my-plan:review-ready')).toBe('plan:my-plan:review-ready');
+    expect(keyFireEvidencePrefix('harness:papercusp:runtime-ready')).toBe('harness:papercusp:runtime-ready');
   });
 
   it('reports NO evidence for a key whose family has never fired — the genuine-orphan case still warns', async () => {
@@ -2617,6 +2620,45 @@ describe('probeKeyFireEvidence (PG) — EI-18676056143796303, the emitter eviden
     expect(ev.distinctKeys).toBe(2);
     expect(ev.fires).toBe(3);
     expect(ev.prefix).toBe('coord:inbox-wake');
+  });
+
+  it.each([
+    ['fleet', 'drain-fleet'],
+    ['plan', 'review-plan'],
+    ['harness', 'managed-harness'],
+  ] as const)('does not treat an unannounced %s scoped gate as a sibling family', async (namespace, scopeRef) => {
+    const siblingKey = `${namespace}:${scopeRef}:previous-gate`;
+    const eventKey = `${namespace}:${scopeRef}:new-gate`;
+    await recordKeyFire({ eventKey: siblingKey });
+
+    const siblingEvidence = await probeKeyFireEvidence(eventKey);
+    expect(siblingEvidence).toMatchObject({
+      prefix: eventKey,
+      exact: false,
+      distinctKeys: 0,
+      fires: 0,
+      lastFiredAt: null,
+    });
+
+    await recordKeyFire({ eventKey });
+    const exactEvidence = await probeKeyFireEvidence(eventKey);
+    expect(exactEvidence).toMatchObject({
+      prefix: eventKey,
+      exact: true,
+      distinctKeys: 1,
+      fires: 1,
+    });
+  });
+
+  it('keeps a short key exact instead of borrowing fires from colon descendants', async () => {
+    await recordKeyFire({ eventKey: 'short-key:descendant' });
+    expect(await probeKeyFireEvidence('short-key')).toMatchObject({
+      prefix: 'short-key',
+      exact: false,
+      distinctKeys: 0,
+      fires: 0,
+      lastFiredAt: null,
+    });
   });
 
   it('does NOT leak across families — a neighbouring prefix is not evidence', async () => {

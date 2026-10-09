@@ -3387,22 +3387,23 @@ export async function clearKeyFire(
  * emitter exists: a row means the key genuinely fired at least once. This reads it
  * two ways, strongest first:
  *   - EXACT: this precise key has fired before (`release:deployed:abc123`);
- *   - PREFIX/SIBLING: some key sharing this key's first two segments has fired
- *     (`coord:inbox-wake:su-NEW` has never fired, but 118 sibling owner keys have —
- *     so the SHAPE demonstrably has an emitter, which is what the warning claims
- *     does not exist).
+ *   - PREFIX/SIBLING: some key sharing this key's first two stable family segments
+ *     has fired (`coord:inbox-wake:su-NEW` has never fired, but sibling owner keys
+ *     have — so that event family demonstrably has an emitter).
  *
  * A genuine orphan (the EI-10870 case: `overwatch:surface-landed`, 0 fires ever,
  * appears nowhere in the tree) matches NEITHER, so the warning still fires for the
  * keys it was built for — this only removes the false positives.
  *
- * Two segments is the family granularity every builtin template uses before its
- * first placeholder (`coord:inbox-wake`, `work-item:done`, `release:deployed`), so
- * the prefix is the family, not a loose namespace match. A key with fewer than two
- * segments probes itself exactly.
+ * Two segments is the family granularity for stable builtin templates
+ * (`coord:inbox-wake`, `work-item:done`, `release:deployed`). Runtime-scoped
+ * announcements (`fleet:<slug>:<gate>`, `plan:<slug>:<gate>`, and harness-scoped
+ * gates) do not have a stable family prefix: the second segment is the scope ref.
+ * For those keys, and keys shorter than a family prefix, sibling history is not
+ * evidence and the probe is exact-key-only.
  */
 export interface KeyFireEvidence {
-  /** The prefix the sibling probe used (the key's first two `:` segments). */
+  /** Stable family prefix, or the exact key when sibling evidence is unsafe. */
   prefix: string;
   /** This EXACT key has fired before. */
   exact: boolean;
@@ -3414,12 +3415,19 @@ export interface KeyFireEvidence {
   lastFiredAt: string | null;
 }
 
-/** The family prefix an evidence probe uses: the key's first two `:` segments. */
+const RUNTIME_SCOPED_EVENT_NAMESPACES = new Set(['fleet', 'plan', 'harness']);
+
+function exactOnlyKeyFireEvidence(eventKey: string): boolean {
+  const parts = String(eventKey ?? '').trim().split(':');
+  return parts.length <= 2 || RUNTIME_SCOPED_EVENT_NAMESPACES.has(parts[0] ?? '');
+}
+
+/** Stable event-family prefix, or the whole key when sibling evidence is unsafe. */
 export function keyFireEvidencePrefix(eventKey: string): string {
   const parts = String(eventKey ?? '')
     .trim()
     .split(':');
-  return parts.length <= 2 ? parts.join(':') : parts.slice(0, 2).join(':');
+  return exactOnlyKeyFireEvidence(eventKey) ? parts.join(':') : parts.slice(0, 2).join(':');
 }
 
 /**
@@ -3433,6 +3441,7 @@ export async function probeKeyFireEvidence(eventKey: string): Promise<KeyFireEvi
   const ws = eventsWs();
   const key = String(eventKey ?? '').trim();
   const prefix = keyFireEvidencePrefix(key);
+  const exactOnly = exactOnlyKeyFireEvidence(key);
   const empty: KeyFireEvidence = { prefix, exact: false, distinctKeys: 0, fires: 0, lastFiredAt: null };
   if (!prefix) return empty;
   // `prefix` is a literal key segment, never a caller-supplied LIKE pattern —
@@ -3445,7 +3454,13 @@ export async function probeKeyFireEvidence(eventKey: string): Promise<KeyFireEvi
            bool_or(event_key = ${key})                               AS exact
       FROM harness_shared.event_key_fires
      WHERE workspace_id = ${ws}
-       AND (event_key = ${prefix} OR event_key LIKE ${`${escaped}:%`} ESCAPE '\\')
+       AND (
+         event_key = ${key}
+         OR (
+           ${!exactOnly}
+           AND (event_key = ${prefix} OR event_key LIKE ${`${escaped}:%`} ESCAPE '\\')
+         )
+       )
   `;
   const row = rows[0];
   if (!row) return empty;
