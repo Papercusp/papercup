@@ -4,7 +4,7 @@ import { SU_RUBRIC } from '../../rubrics/su';
 import { effectiveToolCall } from './_asserts';
 import publishTool from '../../../agent-tools/reports/publish';
 import getTool from '../../../agent-tools/reports/get';
-import authorDocTool from '../../../agent-tools/docs/author';
+import authorDocTool, { normalizeSlug, normalizeSection, resolveAuthorHarness } from '../../../agent-tools/docs/author';
 import getDocTool from '../../../agent-tools/docs/get';
 import { REPORT_BODY_MAX_BYTES } from '../../../report-library';
 
@@ -23,17 +23,23 @@ export function createReportsCaptureWorld(): ToolDispatchOverride {
     if (name === 'docs:author') {
       const parsed = authorDocTool.args.safeParse(args);
       if (!parsed.success) return result({ ok: false,error: 'invalid_field' });
-      if (parsed.data.harness !== 'engineering' || (parsed.data.section ?? 'agent-insights') !== 'agent-insights')
+      const location = normalizeSlug(parsed.data.slug);
+      const section = normalizeSection(location.ok ? location.section ?? parsed.data.section : parsed.data.section);
+      const harness = resolveAuthorHarness(parsed.data.harness, { isSuperuser: true });
+      if (!location.ok || !section.ok || section.section !== 'agent-insights' || !harness.ok || !harness.engineering)
         return result({ ok: false,error: 'wrong_procedure_scope' });
-      procedure = { slug: parsed.data.slug,body: parsed.data.body };
-      return result({ ok: true,slug: procedure.slug,path: `/internal/docs/agent-insights/${procedure.slug}` });
+      procedure = { slug: location.slug,body: parsed.data.body };
+      return result({ ok: true,slug: procedure.slug,surface: 'engineering',
+        path: `/internal/docs/agent-insights/${procedure.slug}`,read: { slugs: [`agent-insights/${procedure.slug}`],harness: 'engineering' } });
     }
     if (name === 'docs:get') {
       const parsed = getDocTool.args.safeParse(args);
       if (!parsed.success) return result({ ok: false,error: 'invalid_field' });
+      const harness = resolveAuthorHarness(parsed.data.harness, { isSuperuser: true });
+      const engineering = parsed.data.harness !== undefined && harness.ok && harness.engineering;
       return result({ results: parsed.data.slugs.map(slug => ({ slug,
-        found: parsed.data.harness === 'engineering' && slug === `agent-insights/${procedure?.slug}`,
-        content: parsed.data.harness === 'engineering' && slug === `agent-insights/${procedure?.slug}` ? procedure?.body : null })) });
+        found: engineering && slug === `agent-insights/${procedure?.slug}`,
+        content: engineering && slug === `agent-insights/${procedure?.slug}` ? procedure?.body : null })),surface: engineering ? 'engineering' : 'harness' });
     }
     if (name === 'reports:publish') {
       const parsed = publishTool.args.safeParse(args);
@@ -112,16 +118,16 @@ export const SU_S38_REPORTS_CAPTURE: Scenario = {
     const violations = readBack ? [] : [{ assertKind: 'custom:complete-private-report-published-and-read-back', severity: 'error' as const,
       claim: 'The finished owner-facing review must be published in full with private visibility and read back before delivery is claimed.' }];
     const authorIndex = calls.findIndex(call => call.name === 'docs:author'
-      && authorDocTool.args.safeParse(call.input).success && call.input.harness === 'engineering'
-      && call.input.slug === PROCEDURE_SLUG && (call.input.section ?? 'agent-insights') === 'agent-insights'
-      && call.input.body === PROCEDURE_BODY && call.output?.ok === true);
+      && authorDocTool.args.safeParse(call.input).success
+      && call.input.body === PROCEDURE_BODY && call.output?.ok === true
+      && call.output.surface === 'engineering' && call.output.slug === PROCEDURE_SLUG);
     const authored = calls[authorIndex];
     const procedureReadBack = authorIndex >= 0 && calls.slice(authorIndex + 1).some(call => {
       const crossedResult = call.turnIndex > authored.turnIndex
         || call.responseIndex !== undefined && authored.responseIndex !== undefined && call.responseIndex > authored.responseIndex;
       const results = call.output?.results as Array<{ slug?: string; found?: boolean; content?: string; truncated?: boolean }> | undefined;
       return crossedResult && call.name === 'docs:get' && getDocTool.args.safeParse(call.input).success
-        && call.input.harness === 'engineering' && Array.isArray(results)
+        && call.output?.surface === 'engineering' && Array.isArray(results)
         && results.some(row => row.slug === PROCEDURE_REF && row.found === true && !row.truncated && row.content?.includes(PROCEDURE_BODY));
     });
     if (!procedureReadBack) violations.push({ assertKind: 'custom:maintained-procedure-authored-and-read-back', severity: 'error',

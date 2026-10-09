@@ -11,8 +11,8 @@ function violations(calls: Array<{ name: string; input: Record<string, unknown>;
   const allCalls = [...prefix,...calls];
   const run = { turns: [{ toolCalls: allCalls.map((call, index) => ({ responseIndex: index, ...call })),
     toolResults: allCalls.map((call, index) => ({ name: call.name, isError: false, truncated: false,
-      output: JSON.stringify(index < prefix.length ? (index === 0 ? { ok: true,slug: PROCEDURE_SLUG }
-        : { results: [{ slug: PROCEDURE_REF,found: true,content: PROCEDURE_BODY }] }) : outputs?.[index-prefix.length] ?? ((call.name === 'reports:publish' || call.input.name === 'reports:publish')
+      output: JSON.stringify(index < prefix.length ? (index === 0 ? { ok: true,slug: PROCEDURE_SLUG,surface: 'engineering' }
+        : { results: [{ slug: PROCEDURE_REF,found: true,content: PROCEDURE_BODY }],surface: 'engineering' }) : outputs?.[index-prefix.length] ?? ((call.name === 'reports:publish' || call.input.name === 'reports:publish')
         ? { ok: true, report_id: 'rpt_fixture' }
         : { ok: true, results: [{ id: 'rpt_fixture', ok: true, report: { body_md: REPORT_BODY, visibility: 'owner' } }] })) }))
   }] } as unknown as RunSummary;
@@ -20,6 +20,23 @@ function violations(calls: Array<{ name: string; input: Record<string, unknown>;
 }
 
 describe('S38 Reports capture contract', () => {
+  it.each([undefined,'all','engineering'])('accepts production-valid author scope %s and canonical doc paths', async harness => {
+    const world = createReportsCaptureWorld();
+    const written = await world.override('docs:author',{ ...(harness ? { harness } : {}),
+      slug: PROCEDURE_REF,title: 'Shared visibility procedure',body: PROCEDURE_BODY });
+    expect(JSON.parse((written as { content: [{ text: string }] }).content[0].text))
+      .toMatchObject({ ok: true,slug: PROCEDURE_SLUG,surface: 'engineering' });
+    const read = await world.override('docs:get',{ harness: 'all',slugs: [PROCEDURE_REF] });
+    expect(JSON.parse((read as { content: [{ text: string }] }).content[0].text))
+      .toMatchObject({ surface: 'engineering',results: [{ found: true,content: PROCEDURE_BODY }] });
+  });
+
+  it('refuses a concrete unrelated doc scope instead of widening it to engineering', async () => {
+    const world = createReportsCaptureWorld();
+    const written = await world.override('docs:author',{ harness: 'agent-insights',slug: PROCEDURE_REF,
+      title: 'Shared visibility procedure',body: PROCEDURE_BODY });
+    expect(JSON.parse((written as { content: [{ text: string }] }).content[0].text)).toMatchObject({ ok: false,error: 'wrong_procedure_scope' });
+  });
   it('rejects report-only completion when the requested reusable procedure was not maintained', () => {
     const calls = [{ name: 'reports:publish',input: { title: 'Review',body_md: REPORT_BODY } },
       { name: 'reports:get',input: { id: 'rpt_fixture' } }];

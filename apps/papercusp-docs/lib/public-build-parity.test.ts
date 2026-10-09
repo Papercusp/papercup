@@ -15,6 +15,7 @@
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { gunzipSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
 
 const DOCS_DIR = fileURLToPath(new URL('..', import.meta.url));
@@ -69,6 +70,21 @@ describe('public manual: served build matches its source (WI-10006957)', () => {
 
   it(`the served copy carries a search index (fix: ${REBUILD})`, () => {
     expect(existsSync(join(SERVED_DIR, 'pagefind/pagefind.js'))).toBe(true);
+  });
+
+  it('the served search assets are complete gzip streams', () => {
+    const searchRoot = join(SERVED_DIR, 'pagefind');
+    const visit = (dir: string): void => {
+      for (const name of readdirSync(dir)) {
+        const file = join(dir, name);
+        if (statSync(file).isDirectory()) visit(file);
+        else if (/\.(pagefind|pf_fragment|pf_index|pf_meta)$/.test(name)) {
+          expect(() => gunzipSync(readFileSync(file)), `incomplete search asset: ${file}`).not.toThrow();
+        }
+      }
+    };
+    expect(existsSync(join(searchRoot, 'wasm.unknown.pagefind'))).toBe(true);
+    visit(searchRoot);
   });
 
   it(`the fresh-install retrieval bundle has exactly the canonical public bytes (fix: ${REBUILD})`, () => {

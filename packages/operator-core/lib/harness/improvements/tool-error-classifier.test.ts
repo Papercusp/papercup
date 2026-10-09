@@ -288,6 +288,19 @@ describe('classifyToolError — real-corpus regression (P-011)', () => {
       status: 'error',
       message: code,
     })).toMatchObject({ class: 'caller', direct: false });
+
+    const wrappedNativeOwnerRefusal = {
+      toolName: 'mcp__papercusp_su__tools_find',
+      errorCode: '-32603',
+      status: code,
+      message: `Direct Papercusp MCP wrapper was refused with ${code} before target dispatch.`,
+    };
+    expect(classifyToolError(
+      wrappedNativeOwnerRefusal.errorCode,
+      wrappedNativeOwnerRefusal.status,
+      wrappedNativeOwnerRefusal.message,
+    )).toBe('caller');
+    expect(normalizeSuspectedToolFailure(wrappedNativeOwnerRefusal)).toMatchObject({ class: 'caller' });
   });
 
   it('classifies missing UI-client context as caller input, not a structural UI defect', () => {

@@ -56,6 +56,7 @@ import {
 } from '../../harness/improvements/tool-error-classifier';
 import { getModes } from '../../modes/store';
 import { withDrainBugAdmission } from '../work_items/drain-flow';
+import { compactWorkItemRef } from '../work_items/write-echo-shape';
 import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
 import { detectAbsencePremises } from '../../premises-claim-port';
 import { BUG_REPRODUCTION_KINDS, stampFiledBugReproduction } from '../../attention/bug-reproduction';
@@ -516,11 +517,32 @@ const suspectedToolFailureSchema = z
   })
   .strict();
 
+function shapeCaptureWriteEcho(
+  data: unknown,
+  context: { tier: 'standard' | 'trimmed' },
+): unknown {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return data;
+  const result = data as Record<string, unknown>;
+  if (!result.issue || typeof result.issue !== 'object' || Array.isArray(result.issue)) return data;
+  return {
+    ...result,
+    issue: compactWorkItemRef(result.issue, context.tier === 'trimmed' ? 90 : 140),
+  };
+}
+
 export default defineTool({
   name: 'improvements:capture',
   profile: 'engineer',
   description:
     'Capture a papercusp bug, improvement, feature, or observation as a durable work-unit. kind=bug is auto-implement eligible; change/feature are agent-reviewed. Dedup matches are annotated on the created row; only checkDuplicatesOnly skips persistence. lane:"observation" stays outside the work queue.',
+  // The caller just filed this issue, so the standard write echo only needs a
+  // compact reference. Full stored details remain available through work_items:get
+  // or an explicit payloadTier:"full" call. This avoids spilling the issue body
+  // and payload through the result door on the capture's critical response path.
+  shape: {
+    standard: shapeCaptureWriteEcho,
+    trimmed: shapeCaptureWriteEcho,
+  },
   guidance: {
     when:
       'The MOMENT you suspect ANY papercusp bug — broken OR SUB-OPTIMAL (a monitor false alarm, a self-recovered flap, load-correlated degradation): file it (kind:bug, evidence in the top-level body) even with no fix and even if it self-recovered. Only fix-now-vs-leave-filed is a judgment call; filing is not. DX/tooling/code friction counts too. Include `paths` — the auto-implement risk gate reads them. ' +
@@ -554,6 +576,7 @@ export default defineTool({
     },
     returns:
       'CREATE: { ok, created, issue, topics, possibleDuplicates, dedupCoverage, alreadyDecided? }. CHECK (checkDuplicatesOnly): { ok, created:false, reason:"check-only", possibleDuplicates, dedupCoverage, hint, alreadyDecided? }. The check-only `hint` states whether this was title-only or bound to the exact supplied body. A title-only match list can be incomplete even when it contains matches; rerun with the final body before relying on the results.\n\n' +
+      'For standard/trimmed tiers, `issue` is a compact reference (id, kind, harness, state, title, assignee); read stored details with `work_items:get { id }`, or request `payloadTier:"full"` when the complete echo is needed.\n\n' +
       'UNKEYED OBSERVATION CREATE (`lane:"observation"`, no `conditionKey`): returns only `{ ok:true }`. Fresh storage and a server-side fold intentionally have the same response; the filing is complete and needs no caller-side duplicate investigation. Keyed machine-emitter observations retain their detailed coalesce response.\n\n' +
       'KEYED COALESCE (reason:"coalesced" — an observation matching an open conditionKey): also `coalescedOnto { id, repeatCount, bodyPersisted, bodyDiscarded?, priorAuthor, crossAuthor }`. Read `bodyPersisted` BEFORE asserting the row says what you wrote: on false your title/body was DISCARDED and the row still shows the previous reading. `crossAuthor:true` means you wrote onto a PEER\'s row (expected for a shared conditionKey; occurrences are all retained).\n\n' +
       'A filing with `paths` may also return `staleCodeWarning` — a REPORT-ONLY check for commits touching those paths after the running build. It names the serving sha and newer commits; it NEVER blocks the filing. Verify the deployed generation before treating a live observation as a current defect.\n\n' +

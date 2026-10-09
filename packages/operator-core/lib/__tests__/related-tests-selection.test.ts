@@ -1,4 +1,5 @@
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -326,6 +327,48 @@ describe('writeRelatedFilterList (P-001)', () => {
 });
 
 describe('buildIndex', () => {
+  it('keeps new source and tests while excluding ignored generated modules', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'related-source-census-'));
+    try {
+      execFileSync('git', ['init', '--quiet', dir]);
+      writeFileSync(join(dir, '.gitignore'), 'generated/\n');
+      mkdirSync(join(dir, 'generated'));
+      writeFileSync(join(dir, 'generated', 'bundle.test.ts'), "import '../source';");
+      writeFileSync(join(dir, 'source.ts'), 'export const value = 1;');
+      writeFileSync(join(dir, 'source.test.ts'), "import './source';");
+      writeFileSync(join(dir, 'other.test.ts'), 'export {};');
+
+      const index = buildIndex({ rootDir: dir });
+      expect(index.files.sort()).toEqual([
+        join(dir, 'other.test.ts'), join(dir, 'source.test.ts'), join(dir, 'source.ts'),
+      ].sort());
+      const result = selectRelatedTests({
+        rootDir: dir, changedPaths: [join(dir, 'source.ts')], index,
+      });
+      expect(result.mode).toBe('related');
+      expect(result.selected).toEqual([join(dir, 'source.test.ts')]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('indexes archive sources without Git and excludes generated host output', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'related-archive-census-'));
+    try {
+      mkdirSync(join(dir, 'dist-host'));
+      writeFileSync(join(dir, 'dist-host', 'bundle.test.ts'), "import '../source';");
+      writeFileSync(join(dir, 'source.ts'), 'export const value = 1;');
+      writeFileSync(join(dir, 'source.test.ts'), "import './source';");
+      const index = buildIndex({ rootDir: dir });
+      expect(index.files.sort()).toEqual([
+        join(dir, 'source.test.ts'), join(dir, 'source.ts'),
+      ].sort());
+      expect(index.deps.get(join(dir, 'source.test.ts'))?.has(join(dir, 'source.ts'))).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('does not follow bare specifiers into the graph', () => {
     const fs = vfs({
       [`${ROOT}/a.ts`]: `import 'node:fs'; import 'vitest'; import '@papercusp/operator-core';`,

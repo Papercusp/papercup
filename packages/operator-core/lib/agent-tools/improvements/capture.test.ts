@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { z } from 'zod';
+import { applyPayloadTier } from '@papercusp/tooldef';
 import captureTool, { defaultScorecardConditionKey, deriveToolFailureCaptureText } from './capture';
 import { coerceCaptureArgs, coerceCaptureKind, coerceIdeateProvenance } from './capture-coerce';
 import {
@@ -326,6 +327,52 @@ describe('improvements:capture — duplicate verdicts are annotations, not inacc
     expect(Array.isArray(seeAlso)).toBe(true);
     if (!Array.isArray(seeAlso)) throw new Error('capture guidance must provide static see-also entries');
     expect(seeAlso[0]).toContain('checkDuplicatesOnly:true');
+  });
+});
+
+describe('improvements:capture payload-tier write echo', () => {
+  it('keeps the default issue receipt compact while preserving the explicit full-detail path', () => {
+    const payload = { report: { message: 'x'.repeat(4_000) } };
+    const original = {
+      ok: true,
+      created: true,
+      kind: 'bug',
+      issue: {
+        id: 'EI-42',
+        kind: 'bug',
+        harness: 'papercusp',
+        state: 'open',
+        title: 'T'.repeat(200),
+        assignee: 'su-test',
+        summary: 'S'.repeat(4_000),
+        payload,
+      },
+      possibleDuplicates: [],
+      dedupCoverage: { lexical: 'complete', semantic: 'complete', degraded: false },
+    };
+    const applyTier = (tier: 'trimmed' | 'standard' | 'full') =>
+      applyPayloadTier({
+        toolName: 'improvements:capture',
+        shape: captureTool.shape,
+        response: { data: original } as never,
+        tier,
+        args: {},
+      }).data as Record<string, any>;
+
+    const trimmed = applyTier('trimmed');
+    const standard = applyTier('standard');
+    const full = applyTier('full');
+
+    expect(trimmed).toMatchObject({ ok: true, created: true, kind: 'bug', issue: {
+      id: 'EI-42', kind: 'bug', harness: 'papercusp', state: 'open', assignee: 'su-test',
+    } });
+    expect(trimmed.issue.title).toHaveLength(90);
+    expect(trimmed.issue).not.toHaveProperty('summary');
+    expect(trimmed.issue).not.toHaveProperty('payload');
+    expect(JSON.stringify(trimmed).length).toBeLessThan(1_000);
+    expect(standard.issue.title).toHaveLength(140);
+    expect(full.issue.payload).toEqual(payload);
+    expect(full.issue.summary).toHaveLength(4_000);
   });
 });
 

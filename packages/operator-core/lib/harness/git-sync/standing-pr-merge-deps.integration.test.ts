@@ -259,6 +259,28 @@ describe('stepStandingPrMerge over the real deps (D-008 end to end)', () => {
     expect(git(bare, 'rev-parse', 'main')).toBe(before);
   });
 
+  it('a PR head moved after a pass is re-tested before the target can advance', async () => {
+    const head = makePrHead();
+    const target = git(bare, 'rev-parse', 'main');
+    const tested: string[] = [];
+    const d = makeDeps(memStore(), async ({ sha }) => (tested.push(sha), true));
+    const first = (await stepStandingPrMerge(input(head), d)) as { mergeSha: string };
+    await waitFor(() => !isStandingPrMergeRunActive(INSTALL, PR_NUMBER, first.mergeSha));
+
+    const movedHead = makePrHead('new-fix.txt', 'new fix\n');
+    const second = await stepStandingPrMerge(input(movedHead), d);
+    expect(second).toMatchObject({ action: 'testing', reason: 'pr-head-moved' });
+    expect(git(bare, 'rev-parse', 'main')).toBe(target);
+    const secondSha = (second as { mergeSha: string }).mergeSha;
+    expect(secondSha).not.toBe(first.mergeSha);
+    await waitFor(() => !isStandingPrMergeRunActive(INSTALL, PR_NUMBER, secondSha));
+
+    expect(await stepStandingPrMerge(input(movedHead), d)).toMatchObject({ action: 'merged', mergeSha: secondSha });
+    expect(tested).toEqual([first.mergeSha, secondSha]);
+    expect(git(bare, 'rev-parse', 'main')).toBe(secondSha);
+    expect(git(bare, 'rev-list', '--parents', '-n1', secondSha).split(' ').slice(1)).toEqual([target, movedHead]);
+  });
+
   it('a PR head that is not the promoted commit is refused before anything is built', async () => {
     const head = makePrHead();
     const d = makeDeps(memStore());

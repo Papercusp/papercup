@@ -21,9 +21,10 @@
 // `related-tests.test.ts` pins them.
 
 import { createHash } from "node:crypto";
-import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { stripCommentsOnly } from "./strip-comments-and-strings.mjs";
+import { listFilesIncludingUntracked } from "./tracked-files.mjs";
 
 // ── WIDENING THRESHOLD (plan gate-latency-selection-and-retry-policy-2026-09-06, P-001) ──
 // A related selection is CORRECT BY CONSTRUCTION at any share of the suite — every test that
@@ -224,23 +225,14 @@ export function classifySpecifier(spec) {
 function defaultFs() {
   return {
     list(dir) {
-      const out = [];
-      (function walk(d) {
-        let entries;
-        try {
-          entries = readdirSync(d, { withFileTypes: true });
-        } catch {
-          return;
-        }
-        for (const e of entries) {
-          const p = path.join(d, e.name);
-          if (e.isDirectory()) {
-            if (SKIP_DIRS.has(e.name)) continue;
-            walk(p);
-          } else if (SOURCE_RE.test(e.name)) out.push(p);
-        }
-      })(dir);
-      return out;
+      // Index source, including new files, rather than ignored runtime bundles.
+      // Reuse the maintained Git census and its bounded archive fallback so a
+      // local dist-host build cannot add hundreds of MB to every related scan.
+      const { files } = listFilesIncludingUntracked(dir);
+      return files
+        .filter((file) => SOURCE_RE.test(file) &&
+          !file.split(/[\\/]/).slice(0, -1).some((part) => SKIP_DIRS.has(part)))
+        .map((file) => path.resolve(dir, file));
     },
     read(p) {
       try {
