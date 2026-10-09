@@ -32,8 +32,12 @@ describe('superseding a pending grading-audit target', () => {
     const write = statements.find((statement) => statement.text.includes('UPDATE harness_shared.work_items'))!;
     expect(write.text).toContain("payload->'observation'->'gradingAudit'->>'state' = 'pending'");
     expect(write.text).toContain("target.payload->'observation'->'gradingAudit'");
+    expect(write.text).toContain("jsonb_build_object('state', 'cancelled')");
     expect(write.text).toContain("#- '{dispatchReservation}'");
+    expect(write.text).toContain("#- '{dispatchBackoff}'");
     expect(write.text).toContain("payload->'observation'->>'supersedes'");
+    expect(write.text).toContain("superseder.payload->'observation'->>'rubricRef' = target.payload->'observation'->>'rubricRef'");
+    expect(write.text).toContain("superseder.payload->'observation'->>'sourceHive' IS NOT DISTINCT FROM target.payload->'observation'->>'sourceHive'");
     expect(write.values).toContain('ws-test');
     expect(write.values).toContain('EI-TARGET');
     expect(write.values).toContain('EI-SUPERSEDER');
