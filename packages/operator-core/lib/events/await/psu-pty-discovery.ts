@@ -1261,6 +1261,7 @@ export function injectIntoHostWithConfirmation(
     requireNativeTurnStart?: boolean;
     expectedChildGeneration?: number;
     expectedHostStartedAt?: number;
+    provenanceIssuedAtMs?: number;
     focus?: string;
     systemPromptAddendum?: string;
     /** Exact requesting Codex rollout. The host validates it within CODEX_HOME
