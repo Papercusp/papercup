@@ -528,3 +528,30 @@ browser evidence after the approved prose and Pagefind changes. It does not
 close the seven product journeys, real novice study, independent acceptance
 or shipment. The existing Portal owner retains the replacement build and
 workspace transport repair; the replacement is not yet a ready artifact.
+
+## Replacement Portal workspace browser, 2026-10-09 05:12Z
+
+The maintained workspace case passed on the distinct D031 replacement build
+`a3vvr3As2z-SKFdzH_pQr`: one case, zero failures or skips. The private
+operator returned the exact `abc9a41cb7` source identity and mounted the
+hosted browser control route before the browser launched. Actual Playwright
+collection had selected exactly the intended case. The authenticated control
+query returned HTTP 200 with workspace rows; the served Portal session
+held the authorized workspace, displayed the admitted provider resource, and
+explained that health was unverified.
+
+This supersedes the earlier replacement-readiness uncertainty for this artifact.
+It exercises real admission, session and resource listing with an inert
+provisioning transport. Actual provider readiness, provisioning, payments,
+full R-1/R-2 acceptance, real novice observations, independent acceptance and
+production shipment remain open. The historical 2235 and 2340 records remain
+intact; a pass on this replacement does not establish the historical root cause.
+The existing tutorial implementer retains `WI-10007627` diagnosis and closure.
+
+The Portal wrapper and private operator both exited 0. Guarded shutdown removed
+the private runtime home and generated configuration; all three owned ports
+were free afterward. Exact report, decoded attachments, source identities,
+log hashes and retained launch commands are in
+[portal-workspace-browser-d031-20261009.json](./portal-workspace-browser-d031-20261009.json).
+Raw records were copied with matching hashes under the retained artifact's
+private evidence directory, so this record does not rely solely on `/tmp`.
