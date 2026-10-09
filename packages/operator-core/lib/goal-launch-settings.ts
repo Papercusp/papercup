@@ -58,6 +58,7 @@
  */
 import { z } from 'zod';
 import type { Sql } from 'postgres';
+import { readGoalRubricStewardship, renderGoalRubricStewardshipBrief } from './goal-rubric-stewardship';
 import { getOrgPg, GOAL_SPEND_SNAPSHOT_SOURCE } from '@papercusp/db-org';
 // Pure plan-status grammar (zero I/O) — the one definition of "terminal plan",
 // shared with plans:set-plan-status. Used by the pot-owner worklist count.
@@ -867,6 +868,8 @@ export interface GoalPlanPlacement {
 export interface GoalPortfolioBrief {
   schemaVersion: 1;
   assembledAt: string;
+  /** Canonical rubric duty/evidence context for opted-in stewardship contracts. */
+  rubricStewardship?: import('./goal-rubric-stewardship').GoalRubricStewardship | null;
   goal: {
     id: string;
     title: string;
@@ -1580,6 +1583,8 @@ export function renderGoalPortfolioBrief(brief: GoalPortfolioBrief): string {
   return [
     `GOAL PORTFOLIO SNAPSHOT — assembled ${brief.assembledAt} (schema v${brief.schemaVersion})`,
     `Goal: ${brief.goal.status ?? 'unknown'}; worklist: ${plans}`,
+    ...(brief.rubricStewardship !== undefined
+      ? [renderGoalRubricStewardshipBrief(brief.rubricStewardship)] : []),
     `Pots: ${brief.pots.map((p) => `${p.harness}:${p.role}[kill=${p.killCriterion ?? 'missing'}]`).join(', ') || 'none'}`,
     ...(brief.attribution
       ? [`Attribution ladder: ${brief.attribution.status}; checked=${brief.attribution.checked.pots} pot links/${brief.attribution.checked.plans} plans/${brief.attribution.checked.workItems} work items; issues=${brief.attribution.issues.map((issue) => `${issue.code}(${issue.ref})`).join(', ') || 'none'}${brief.attribution.remoteOwned.length ? `; remote-owned (non-blocking, owning machine stamps)=${brief.attribution.remoteOwned.join(', ')}` : ''}`]
@@ -2437,9 +2442,14 @@ async function assembleGoalPortfolioBrief(args: {
     };
     stage.buildPriorities = buildPriorities;
 
+    const hasRubricDuties = launch.goalBrief.body?.includes('Maintain rubric coverage') === true;
+    const rubricStewardship = hasRubricDuties
+      ? await readGoalRubricStewardship({ workspaceId: args.workspaceId, goalId: args.goalId,
+        nowMs: assembledAt.getTime() }, { sql }) : undefined;
     return {
       schemaVersion: 1,
       assembledAt: assembledAt.toISOString(),
+      ...(hasRubricDuties ? { rubricStewardship } : {}),
       goal: {
         id: args.goalId,
         title: launch.goalBrief.title,
