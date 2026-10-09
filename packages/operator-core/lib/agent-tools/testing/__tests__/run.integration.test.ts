@@ -27,7 +27,9 @@ import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
-import { getOrgPg } from '@papercusp/db-org';
+import { getOrgPg, _resetForTests } from '@papercusp/db-org';
+import { createOrgTestDb, type OrgTestDb } from '../../../../test/_org-test-db';
+import { _resetHarnessAdminUrlCacheForTests } from '../../../embedded-pg-discovery';
 import { REPO_ROOT } from '../../docs/_repo-paths';
 import runTool, {
   buildDetachedMixedTestRunRequest,
@@ -182,6 +184,12 @@ const selectorRoots: string[] = [];
 const selectorPhantom = join(tmpdir(), 'papercusp-testing-run-selector-phantom-does-not-exist');
 let selectorCanonical = '';
 let selectorRequested = '';
+let org: OrgTestDb | undefined;
+const databaseEnvKeys = [
+  'HARNESS_DATABASE_URL', 'HARNESS_ADMIN_DATABASE_URL', 'DATABASE_URL',
+  'PAPERCUSP_PGBOUNCER', 'PAPERCUSP_SKIP_PG_DISCOVERY',
+] as const;
+const savedDatabaseEnv = new Map(databaseEnvKeys.map((key) => [key, process.env[key]]));
 
 const scratchGit: HoldRunGit = (args, cwd) => new Promise((resolve) => {
   execFile('git', args, { cwd, timeout: 10_000, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
@@ -215,13 +223,34 @@ async function makeScratchTestCheckout(prefix: string, file = 'packages/x/real.t
 }
 
 beforeAll(async () => {
+  // Run the real custody census and every nested router against this suite's
+  // disposable migrated database, using the maintained org fixture.
+  org = await createOrgTestDb();
+  process.env.HARNESS_DATABASE_URL = org.appDsn;
+  process.env.HARNESS_ADMIN_DATABASE_URL = org.adminDsn;
+  process.env.DATABASE_URL = org.adminDsn;
+  process.env.PAPERCUSP_PGBOUNCER = '0';
+  process.env.PAPERCUSP_SKIP_PG_DISCOVERY = '1';
+  _resetHarnessAdminUrlCacheForTests();
+  await _resetForTests();
   selectorCanonical = await makeScratchTestCheckout('papercusp-testing-run-selector-canonical-');
   selectorRequested = await makeScratchTestCheckout('papercusp-testing-run-selector-requested-');
   await rm(selectorPhantom, { recursive: true, force: true });
-});
+}, 120_000);
 
 afterAll(async () => {
-  await Promise.all(selectorRoots.map((root) => rm(root, { recursive: true, force: true })));
+  try {
+    await Promise.all(selectorRoots.map((root) => rm(root, { recursive: true, force: true })));
+    await _resetForTests();
+    await org?.cleanup();
+  } finally {
+    for (const key of databaseEnvKeys) {
+      const saved = savedDatabaseEnv.get(key);
+      if (saved === undefined) delete process.env[key];
+      else process.env[key] = saved;
+    }
+    _resetHarnessAdminUrlCacheForTests();
+  }
 });
 
 describe('scratch checkout custody census (WI-10007684)', () => {
@@ -230,6 +259,12 @@ describe('scratch checkout custody census (WI-10007684)', () => {
   const holdings = (root: string) => readRestrictedWindowHoldings({
     sql: activeWindowSql,
     listDirtyFiles: () => listDirtyFilesRecursive(scratchGit, root),
+  });
+
+  it('binds the production census client to this suite\'s isolated database', async () => {
+    const [row] = await getOrgPg().sql<{ database: string }[]>`SELECT current_database() AS database`;
+    expect(row?.database).toBe(org?.dbName);
+    expect(await restrictedHoldRefusal(selectorCanonical, ['packages/x/real.test.ts'])).toBeNull();
   });
 
   it('admits a real clean fixture during an active disclosure window', async () => {
