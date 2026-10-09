@@ -712,6 +712,59 @@ describe('result-door deferred spill (WI-10004533)', () => {
       },
     );
 
+    it.each(['plans:get', 'events:status'] as const)(
+      'nested tools:invoke %s keeps a readable volatile page when the shared writer fails',
+      async (nestedTargetToolName) => {
+        breakScratchRoot();
+        const rows = Array.from({ length: 12 }, (_, index) => ({
+          id: `${nestedTargetToolName}-${index}`,
+          details: 'd'.repeat(900),
+        }));
+        const body = nestedTargetToolName === 'plans:get'
+          ? {
+              ok: true,
+              results: [{ id: 'plan-1', title: 'Plan with nested spill output', items: rows }],
+              counts: { ok: 1, failed: 0 },
+            }
+          : {
+              event_inspection: {
+                event: 'work-item:done:EI-1',
+                current_generation: 7,
+                current_state: 'fired',
+                active_awaits: rows,
+              },
+              history: rows,
+            };
+        const original = JSON.stringify(body);
+        expect(original.length).toBeGreaterThan(BUDGET_CHARS);
+
+        const out = await applyResultDoorAsync(
+          { content: [{ type: 'text' as const, text: original }] },
+          { ...OPTS, toolName: 'tools:invoke', nestedTargetToolName },
+        );
+        const resultText = (out.content.find((item) => item.type === 'text') as { text: string }).text;
+        const meta = (out as {
+          _meta?: {
+            resultDoor?: {
+              recoveryCursor?: Record<string, unknown>;
+              [key: string]: unknown;
+            };
+          };
+        })._meta?.resultDoor;
+
+        expect(resultText.length).toBeLessThan(original.length);
+        expect(resultText).not.toContain(sandbox);
+        expect(meta).toMatchObject({ spillFailed: true, spillPath: null, spillUri: null, spillErrorCode: 'ENOTDIR' });
+        expect(meta?.recoveryCursor).toMatchObject({
+          kind: 'volatile-scratch-page',
+          tool: 'capability:read',
+          reason: 'spill-write-failed',
+        });
+        if (!meta?.recoveryCursor) throw new Error('missing volatile recovery cursor');
+        expect(readVolatileText(meta.recoveryCursor)).toBe(original);
+      },
+    );
+
     it('coord:feed returns a readable volatile page with accounting when aggregate spill cannot persist', async () => {
       breakScratchRoot();
       const aggregateScope = beginResultDoorAggregate({ sessionKey: 'read-surface-test', outputGroupId: 'turn-1' });
