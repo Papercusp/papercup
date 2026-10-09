@@ -14,9 +14,12 @@ test('background summary completes through a real managed task and the normal do
   test.setTimeout(210_000);
   const workspace = process.env.PAPERCUSP_WORKSPACE;
   const client = process.env.PAPERCUSP_SID;
+  // A live task needs an explicitly held lane; there is no shared default item
+  // that a test may borrow or an implicit choice among the caller's claims.
+  const workItem = process.env.PAPERCUSP_TEST_RUN_WORK_ITEM_ID;
   const home = process.env.PAPERCUSP_HOME || join(homedir(), '.papercusp');
-  test.skip(!workspace || !client || !existsSync(join(home, 'superuser-token')),
-    'This live local-model journey requires the workspace, current session identity and installed superuser credential.');
+  test.skip(!workspace || !client || !workItem || !existsSync(join(home, 'superuser-token')),
+    'This live local-model journey requires the workspace, current session identity, installed credential and PAPERCUSP_TEST_RUN_WORK_ITEM_ID naming a held item.');
   const origin = new URL(baseURL!);
   expect(['localhost', '127.0.0.1', '[::1]']).toContain(origin.hostname);
   const port = origin.port || '80';
@@ -39,6 +42,11 @@ test('background summary completes through a real managed task and the normal do
   try {
     const healthBefore = await (await request.get(origin.origin + '/api/health')).json();
     expect(healthBefore.ok).toBe(true);
+    const claim = await invoke('work_items:get', { id: workItem, harness: 'papercusp', payloadTier: 'full',
+      projection: { pick: ['results[].workItem.id', 'results[].workItem.assignee', 'results[].workItem.state'] } });
+    expect(claim.results).toHaveLength(1);
+    expect(claim.results[0].workItem).toMatchObject({ id: workItem, assignee: client });
+    expect(['open', 'wip']).toContain(claim.results[0].workItem.state);
     const inventory = await invoke('gateway:local_backend_list', { workspace });
     const models = inventory.backends.filter((backend: { enabled: boolean }) => backend.enabled)
       .flatMap((backend: { models: string[] }) => backend.models);
@@ -51,7 +59,8 @@ test('background summary completes through a real managed task and the normal do
     const command = [process.execPath, 'scripts/mcp-call.mjs', 'documents:read', '--json', '-', '--client', client!,
       '--workspace', workspace!, '--harness', 'papercusp', '--port', port].map(quote).join(' ') +
       " <<'CONTENT_SUMMARY_JSON'\n" + JSON.stringify(args) + '\nCONTENT_SUMMARY_JSON';
-    const launch = await invoke('capability:bash', { command, run_in_background: true, timeout: 180_000 });
+    const launch = await invoke('capability:bash', { command, cwd: root, work_item_id: workItem,
+      run_in_background: true, timeout: 180_000 });
     taskId = launch.task_id;
     expect(taskId).toBeTruthy();
     expect(launch.bash_id).toBeTruthy();
