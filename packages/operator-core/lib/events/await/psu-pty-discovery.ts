@@ -78,6 +78,15 @@ export interface PsuPtyHost {
   lastInputAt?: number | null;
   lastOutputAt?: number | null;
   lastActivityAt?: number | null;
+  /** Native execution observation from this host's isolated child transcript.
+   * Absence or an expired observedAt is unknown, never proof of idle execution. */
+  execution?: {
+    phase: 'unknown' | 'running' | 'settled' | 'failed';
+    turnStartedAt: number | null;
+    lastProgressAt: number | null;
+    pendingTools: number;
+    observedAt: number;
+  };
   /** Host-observed quota banner. Absence means an older host with no reading,
    * not a healthy quota state. Cleared on detector recovery and child recycle. */
   quotaBlocked?: boolean;
