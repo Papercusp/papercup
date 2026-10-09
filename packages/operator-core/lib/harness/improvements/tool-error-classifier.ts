@@ -159,7 +159,7 @@ export const TOOL_ERROR_RULES: readonly ToolErrorRule[] = [
   {
     class: 'transient',
     errorCodes: ['superuser_native_session_verifier_unavailable'],
-    messagePattern: '^superuser_native_session_verifier_unavailable$',
+    messagePattern: '(^|[^A-Za-z0-9_])superuser_native_session_verifier_unavailable([^A-Za-z0-9_]|$)',
     why: 'the native-session verifier could not complete its server-side authority read before dispatch; caller input is not the cause, and detailed verifier diagnostics are retained in mcpAuthFailure metadata',
   },
   {

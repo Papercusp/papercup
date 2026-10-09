@@ -192,6 +192,12 @@ export const TOOL_ERROR_CORPUS: readonly ToolErrorCorpusRow[] = [
     note: 'The server-side native-session authority verifier could not complete; the caller did not cause this pre-dispatch failure (EI-25473774715739107)',
   },
   {
+    n: 1, errorCode: 'mcp_auth_failed', status: 'request_rejected',
+    message: 'A schema-valid tools:invoke call for coord:wake was rejected with superuser_native_session_verifier_unavailable while trying to wake the live fleet leader. This is direct evidence of the active EI-25492242650368024 failure class; the underlying pool holder is still unknown.',
+    expectedClass: 'transient',
+    note: 'A client-facing MCP auth error can wrap the server-side native verifier marker in incident prose; preserve the transient pre-dispatch classification (EI-25501729169052177)',
+  },
+  {
     n: 1, errorCode: 'superuser_native_session_verifier_unavailable', status: 'request_rejected',
     message: 'At 2026-10-08T13:52Z, valid exact-event events:await and bounded work_items:get were rejected with superuser_native_session_verifier_unavailable.',
     expectedClass: 'transient',
