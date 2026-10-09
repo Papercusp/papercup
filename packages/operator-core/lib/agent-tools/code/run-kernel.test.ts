@@ -18,6 +18,7 @@ const context = (owner = 'kernel-owner', workspace = 'workspace-a', harness = 'p
 const owned: Array<{ id: string; ctx: UnifiedToolContext }> = [];
 async function call(args: Parameters<typeof codeRun.handler>[0], ctx = context()) {
   const result = await codeRun.handler(args, ctx);
+  if (!('content' in result)) throw new Error('code:run handler did not return MCP content');
   const payload = JSON.parse((result as { content: Array<{ text: string }> }).content[0].text);
   return { result, payload };
 }
