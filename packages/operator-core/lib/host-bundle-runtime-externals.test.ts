@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { build } from 'esbuild';
@@ -21,6 +22,64 @@ const packages = [
 ] as const;
 
 describe('host runtime packages use the plain Node loader', () => {
+  it('packages Playwright without resolving its optional BiDi branch or losing package assets', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'host-playwright-runtime-'));
+    try {
+      const packageRoot = dirname(createRequire(hostEntry).resolve('playwright-core'));
+      const stagedPackage = join(root, 'node_modules', 'playwright-core');
+      mkdirSync(dirname(stagedPackage), { recursive: true });
+      // A physical package copy, with no shared node_modules link and no BiDi
+      // dependency, reproduces the scoped dependency population of frozen cuts.
+      cpSync(packageRoot, stagedPackage, { recursive: true, dereference: true });
+      const entry = join(root, 'host.mjs');
+      const stagedRequire = createRequire(entry);
+      expect(() => stagedRequire.resolve('chromium-bidi/lib/cjs/bidiMapper/BidiMapper')).toThrow();
+
+      const common = resolve(__dirname, '../../../apps/operator/bin/bundle-host-common.sh');
+      const producer = readFileSync(resolve(__dirname, '../../../papercusp-desktop/bin/build-desktop-sidecar.sh'), 'utf8');
+      const preflight = producer.split('# >>> Playwright runtime preflight (EI-25537398622311917)\n')[1]!
+        .split('# <<< Playwright runtime preflight')[0]!;
+      expect(producer.indexOf('# >>> Playwright runtime preflight')).toBeLessThan(producer.indexOf('npm --workspace @papercusp/operator-vite run build'));
+      const preflightWeb = join(root, 'preflight-web');
+      mkdirSync(join(preflightWeb, 'bin'), { recursive: true });
+      const stagedCommon = join(preflightWeb, 'bin', 'bundle-host-common.sh');
+      const commonSource = readFileSync(common, 'utf8');
+      writeFileSync(stagedCommon, commonSource);
+      const runPreflight = () => execFileSync('bash', ['-c',
+        `set -euo pipefail\nREPO_ROOT="$1"\nWEB_DIR="$2"\n${preflight}`, 'playwright-preflight-test', root, preflightWeb],
+      { encoding: 'utf8', timeout: 15_000 });
+      expect(runPreflight()).toContain('PLAYWRIGHT_RUNTIME_PREFLIGHT_OK');
+      writeFileSync(stagedCommon, commonSource.replace('\n  playwright-core\n', '\n'));
+      expect(runPreflight).toThrow(/external package-copy boundary/);
+      writeFileSync(stagedCommon, commonSource);
+
+      const external: string[] = JSON.parse(execFileSync('bash', ['-c',
+        'source "$1"; node -e "console.log(JSON.stringify(process.argv.slice(1)))" -- "${HOST_COMMON_EXTERNALS[@]}" "${NATIVE_PKGS[@]/#/--external:}"',
+        'playwright-boundary-test', common], { encoding: 'utf8' })).map((name: string) => name.replace(/^--external:/, ''));
+      const options = {
+        stdin: {
+          contents: "import { chromium, devices } from 'playwright-core'; console.log(JSON.stringify({ name: chromium.name(), executable: chromium.executablePath(), userAgent: devices['Desktop Chrome'].userAgent }));",
+          resolveDir: root,
+        },
+        bundle: true, platform: 'node' as const, format: 'esm' as const,
+        write: false, metafile: true, logLevel: 'silent' as const,
+      };
+      const result = await build({ ...options, external });
+      expect(Object.keys(result.metafile!.inputs).filter(file => file.includes('playwright-core/'))).toEqual([]);
+      writeFileSync(entry, result.outputFiles![0]!.contents);
+      const runtime = JSON.parse(execFileSync(process.execPath, [entry], { encoding: 'utf8', timeout: 15_000 }));
+      expect(runtime.name).toBe('chromium');
+      expect(runtime.executable).toMatch(/chrome(?:\.exe)?$/);
+      expect(runtime.userAgent).toContain('Chrome/');
+
+      // This counterexample must fail even on a development host that happens
+      // to have BiDi through Puppeteer: the package tree above is independent.
+      await expect(build({ ...options, external: external.filter(name => name !== 'playwright-core') })).rejects.toThrow(/chromium-bidi/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('prepares external dependencies for a custom output, preserving existing trees and refusing broken links', () => {
     const root = mkdtempSync(join(tmpdir(), 'host-external-output-'));
     try {

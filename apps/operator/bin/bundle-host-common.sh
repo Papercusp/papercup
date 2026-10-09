@@ -37,6 +37,12 @@ NATIVE_PKGS=(
   "@huggingface/transformers"
   sharp
   esbuild
+  # Playwright resolves browser descriptors and injected scripts relative to its
+  # package, and lazily loads the separately installed Chromium BiDi mapper.
+  # Inlining it resolves that optional branch even in a scoped install without
+  # BiDi. Preserve its Node loader and assets; the desktop copies this package
+  # through the same runtime dependency closure as the other entries here.
+  playwright-core
 )
 
 # Shared optional/runtime-only externals. Callers append platform-specific
