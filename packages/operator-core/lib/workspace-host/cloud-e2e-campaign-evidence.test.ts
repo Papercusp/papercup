@@ -52,6 +52,27 @@ describe('cloud E2E campaign acceptance population and evidence boundaries', () 
     expect(evidence.scope.destruction).toBe('campaign-created-resources-only');
   });
 
+  it('maps every pinned scenario to an exact recorded detector without promoting lookup targets to acceptance', () => {
+    const matrix = evidence.detectorMatrix;
+    expect(matrix.map((row: { scenario: string }) => row.scenario)).toEqual(sourcePopulation());
+    for (const row of matrix) {
+      expect(existsSync(resolve(root, row.testFile)), row.testFile).toBe(true);
+      expect(row.caseName).toBeTruthy();
+      expect(row.recordedTestRunId).toBeGreaterThan(0);
+      expect(row.recordedSourceSha).toMatch(/^[a-f0-9]{40}$/);
+      expect(row.recordedResult).toBe('pass');
+      expect(row.proofScope).toMatch(/simulated|injected/);
+      expect(row.affectedSelection).toBe('unverified');
+      expect(row.currentSourceBinding).toBe('unverified');
+      expect(row.negativeControl).toBe('unverified');
+      expect(row.acceptance).toBe('unknown');
+    }
+    expect(evidence.detectorMatrixBoundary).toContain('cannot satisfy R-2/R-3');
+    expect(evidence.acceptanceEvidence.detectors).toEqual([]);
+    const cancellation = evidence.requiredFailurePaths.find((row: { boundary: string }) => row.boundary.startsWith('long-running cancellation'));
+    expect(cancellation).toMatchObject({ testRunId: null, caseName: null, acceptance: 'unknown', ownerWorkItem: 'WI-10007610' });
+  });
+
   it('keeps browser and native provider fixtures separate from real lifecycle acceptance', () => {
     const browser = evidence.observations.find((row: { id: string }) => row.id === 'current-cloud-chromium');
     const native = evidence.observations.find((row: { id: string }) => row.id === 'current-native-aws-ui');
