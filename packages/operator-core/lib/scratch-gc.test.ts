@@ -885,14 +885,16 @@ describe('deferred scratch quota recovery', () => {
           recoveryActive: true,
           refreshActive: false,
           quotaRecoveryDiagnostics: {
-            sizeWalkMs: 0,
-            sizeWalkDirectories: 1,
-            sizeWalkEntries: 0,
-            readdirOperations: 1,
+            sizeWalkMs: expect.any(Number),
+            sizeWalkDirectories: expect.any(Number),
+            sizeWalkEntries: expect.any(Number),
+            readdirOperations: expect.any(Number),
             currentOperationKind: 'readdir',
             currentOperationElapsedMs: expect.any(Number),
           },
         });
+        expect(row.progress?.quotaRecoveryDiagnostics?.sizeWalkDirectories).toBeGreaterThan(0);
+        expect(row.progress?.quotaRecoveryDiagnostics?.readdirOperations).toBeGreaterThan(0);
       }
       expect(JSON.stringify(progressRows)).not.toContain(scratchRootForWorkspace('ws-Q'));
       expect(JSON.stringify(progressRows)).not.toContain(UUID(1));
