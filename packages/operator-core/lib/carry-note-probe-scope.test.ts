@@ -271,7 +271,7 @@ describe('detectScopeOverreach — the advisory lint', () => {
           verified: 'fresh response: total=3, returned=3, truncated=0',
         },
       ]),
-    ).toMatchObject([{ quantifier: 'No', probeScope: 'limit 10' }]);
+    ).toMatchObject([{ quantifier: 'no', probeScope: 'limit 10' }]);
   });
 
   it('requires explicit no-truncation metadata for a result-scoped exception', () => {
