@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { poolVerdictByProvider, type AccountStatusRow } from './deployment/account-pool-store';
 import type { Rubric } from './rubrics';
-import type { ScorecardRow } from './scorecards';
+import type { ScorecardEvidenceRow, ScorecardRow } from './scorecards';
 import type { TaskRow } from './task-manager/types';
 import type { CoordEnvelope } from '@papercusp/coordination';
 import type { OrgSql } from './work-items';
@@ -30,6 +30,7 @@ import {
 } from './grading-integrity';
 
 type ListScorecards = NonNullable<DispatchPendingGradingAuditsDeps['listScorecards']>;
+type ReadEvidence = NonNullable<DispatchPendingGradingAuditsDeps['readEvidence']>;
 type GetRubric = NonNullable<DispatchPendingGradingAuditsDeps['getRubric']>;
 type Launch = NonNullable<DispatchPendingGradingAuditsDeps['launch']>;
 type GetTask = NonNullable<DispatchPendingGradingAuditsDeps['getTask']>;
@@ -107,6 +108,29 @@ function card(issueId: string, over: Partial<ScorecardRow> = {}): ScorecardRow {
   } as ScorecardRow;
 }
 
+function evidenceCard(issueId: string, over: Partial<ScorecardEvidenceRow> = {}): ScorecardEvidenceRow {
+  return {
+    issueId,
+    createdAt: '2026-08-28T00:00:00.000Z',
+    createdBy: 'evaluator',
+    rubricRef: 'standard-rubric',
+    criteria: [],
+    nKeys: 0,
+    missingKeys: [],
+    extraKeys: [],
+    rubricResolved: true,
+    synthesized: false,
+    auditTarget: {
+      current: true,
+      superseded: false,
+      supersededBy: null,
+      retracted: false,
+      subjectRubricCurrentness: null,
+    },
+    ...over,
+  };
+}
+
 function standardRubric(): Rubric {
   return { kind: 'standard' } as Rubric;
 }
@@ -118,6 +142,9 @@ function deps() {
   });
   const listScorecards = vi.fn<ListScorecards>().mockResolvedValue([]);
   const cancelSuperseded = vi.fn(async () => false);
+  const getEvaluatorBuild = vi.fn(() => ({ sha: 'live-evaluator-sha', version: '1.2.3' }));
+  const markAwaitingReemit = vi.fn(async () => true);
+  const readEvidence = vi.fn<ReadEvidence>().mockResolvedValue({ kind: 'not_found' });
   const getRubric = vi.fn<GetRubric>().mockResolvedValue(standardRubric());
   const launch = vi
     .fn<Launch>()
@@ -146,6 +173,9 @@ function deps() {
   return {
     listScorecards,
     cancelSuperseded,
+    getEvaluatorBuild,
+    markAwaitingReemit,
+    readEvidence,
     getRubric,
     launch,
     route,
@@ -372,6 +402,151 @@ describe('dispatchPendingGradingAudits', () => {
     });
     expect(d.reserve).not.toHaveBeenCalled();
     expect(result.receipts).toEqual([]);
+  });
+
+  it('cancels a pending lease and retires its auditor when an exact cited binding is stale', async () => {
+    const d = deps();
+    const issueId = 'EI-stale-binding-audit';
+    const rerunRecipe = {
+      args: { harness: 'papercusp' },
+      selection: { bindingIds: [30308, 30309] },
+    } as NonNullable<ScorecardEvidenceRow['rerunRecipe']>;
+    const target = card(issueId, {
+      evidenceFingerprint: 'scorecard-evidence-v1',
+      rerunRecipe,
+    });
+    d.listScorecards.mockResolvedValue([
+      target,
+    ]);
+    const staleCurrentness = {
+      state: 'stale' as const,
+      reason: 'cited-binding-retracted' as const,
+      citedBindingCount: 2,
+      retractedBindingIds: ['30309'],
+      unavailableBindingIds: [],
+    };
+    d.readEvidence.mockResolvedValue({
+      kind: 'found',
+      scorecard: evidenceCard(issueId, {
+        evidenceFingerprint: target.evidenceFingerprint,
+        rerunRecipe,
+        gradingAudit: target.gradingAudit,
+        evidenceBindingCurrentness: staleCurrentness,
+        auditTarget: {
+          current: false,
+          superseded: false,
+          supersededBy: null,
+          retracted: false,
+          subjectRubricCurrentness: null,
+          evidenceBindingCurrentness: staleCurrentness,
+        },
+      }),
+    });
+    d.listTasks.mockResolvedValue([
+      {
+        taskId: 'task-stale-binding-auditor',
+        state: 'running',
+        detail: { label: `grading-audit:${issueId}` },
+      } as unknown as TaskRow,
+    ]);
+    const cancelStaleEvidence = vi.fn(async () => true);
+    const killTask = vi.fn(async (taskId: string) => ({ ok: true as const, taskId, action: 'kill' }));
+
+    const result = await dispatchPendingGradingAudits(
+      { targetIds: [issueId], ctx },
+      { ...d, cancelStaleEvidence, killTask },
+    );
+
+    expect(d.readEvidence).toHaveBeenCalledWith(issueId);
+    expect(cancelStaleEvidence).toHaveBeenCalledWith(issueId, {
+      stampedAt: '2026-08-28T00:00:00.000Z',
+      evidenceFingerprint: 'scorecard-evidence-v1',
+      harnessSlug: 'papercusp',
+      bindingIds: [30308, 30309],
+    }, { workspaceId: 'ws-test' });
+    expect(d.listTasks).toHaveBeenCalledWith({
+      workspaceId: 'ws-test',
+      states: ['pending', 'running'],
+      labelPrefix: `grading-audit:${issueId}`,
+      limit: 20,
+    });
+    expect(killTask).toHaveBeenCalledWith('task-stale-binding-auditor', {
+      includeSubtree: true,
+      escalateAfterMs: 5_000,
+    });
+    expect(d.reserve).not.toHaveBeenCalled();
+    expect(d.route).not.toHaveBeenCalled();
+    expect(d.launch).not.toHaveBeenCalled();
+    expect(result.receipts).toEqual([
+      expect.objectContaining({ issueId, state: 'skipped' }),
+    ]);
+  });
+
+  it('marks evaluator-build-drifted cards awaiting re-emit before reserving or launching an auditor', async () => {
+    const d = deps();
+    const issueId = 'EI-evaluator-build-drift';
+    const reservation = {
+      key: `grading-audit:${issueId}`,
+      reservedAt: '2026-09-24T11:38:02.124Z',
+    };
+    const rerunRecipe = {
+      schemaVersion: 1,
+      evaluator: 'plans:evaluate-spec-test-adequacy',
+      evaluatorBuild: { sha: 'recorded-evaluator-sha', version: '1.2.2' },
+      args: { harness: 'papercusp' },
+      selection: { bindingIds: [30308] },
+    } as NonNullable<ScorecardRow['rerunRecipe']>;
+    const target = card(issueId, {
+      evidenceFingerprint: 'scorecard-evidence-v1',
+      rerunRecipe,
+      gradingAudit: {
+        state: 'pending',
+        metaRubricRef: GRADING_INTEGRITY_RUBRIC_REF,
+        stampedAt: '2026-08-28T00:00:00.000Z',
+        dispatchReservation: reservation,
+      },
+    });
+    d.listScorecards.mockResolvedValue([target]);
+    d.listTasks.mockResolvedValue([
+      {
+        taskId: 'task-drifted-auditor',
+        state: 'running',
+        detail: { label: `grading-audit:${issueId}` },
+      } as unknown as TaskRow,
+    ]);
+    const killTask = vi.fn(async (taskId: string) => ({ ok: true as const, taskId, action: 'kill' }));
+
+    const result = await dispatchPendingGradingAudits(
+      { targetIds: [issueId], ctx },
+      { ...d, killTask },
+    );
+
+    expect(d.markAwaitingReemit).toHaveBeenCalledWith(
+      issueId,
+      target.gradingAudit,
+      { reason: expect.stringContaining('evaluator build drift detected before audit dispatch') },
+    );
+    expect(d.listTasks).toHaveBeenCalledWith({
+      workspaceId: 'ws-test',
+      states: ['pending', 'running'],
+      labelPrefix: `grading-audit:${issueId}`,
+      limit: 20,
+    });
+    expect(killTask).toHaveBeenCalledWith('task-drifted-auditor', {
+      includeSubtree: true,
+      escalateAfterMs: 5_000,
+    });
+    expect(d.readEvidence).not.toHaveBeenCalled();
+    expect(d.reserve).not.toHaveBeenCalled();
+    expect(d.route).not.toHaveBeenCalled();
+    expect(d.launch).not.toHaveBeenCalled();
+    expect(result.receipts).toEqual([
+      expect.objectContaining({
+        issueId,
+        state: 'skipped',
+        reason: expect.stringContaining('marked awaiting re-emit'),
+      }),
+    ]);
   });
 
   it('does not dispatch an audit for a stale or unbound rubric-subject attestation', async () => {

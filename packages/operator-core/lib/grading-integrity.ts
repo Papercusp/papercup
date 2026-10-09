@@ -15,6 +15,7 @@
 import { createHash } from 'node:crypto';
 import { getOrgPg } from '@papercusp/db-org';
 import launchAgentTool from './agent-tools/capability/launch-agent';
+import { getBuildInfo, type BuildInfo } from './build-info';
 import {
   classifyAcceptanceGraderNoFirstTurnStall,
   isAcceptanceGraderNoFirstTurnLivenessCandidate,
@@ -28,9 +29,13 @@ import { getRubric } from './rubrics';
 import {
   acquireGradingAuditSubjectMutex,
   cancelSupersededPendingGradingAuditAtomically,
+  cancelStaleEvidencePendingGradingAuditAtomically,
   isCurrentSourceAuditResponder,
   listScorecards,
+  markGradingAuditAwaitingReemit,
+  readScorecardEvidence,
   parseGradedGeneration,
+  type ScorecardEvidenceRow,
   type ScorecardGradingAuditCurrentness,
   type ScorecardRow,
 } from './scorecards';
@@ -287,8 +292,16 @@ export interface DispatchPendingGradingAuditsInput {
 
 export interface DispatchPendingGradingAuditsDeps {
   listScorecards?: typeof listScorecards;
+  /** Current evaluator build used to preflight pinned spec-test-adequacy recipes. */
+  getEvaluatorBuild?: () => BuildInfo;
+  /** Move a drifted source card out of the pending dispatch queue. */
+  markAwaitingReemit?: typeof markGradingAuditAwaitingReemit;
   /** Atomically close the old audit lease after a newer card supersedes it. */
   cancelSuperseded?: typeof cancelSupersededPendingGradingAuditAtomically;
+  /** Atomically close a pending lease whose exact evidence-binding selector is no longer current. */
+  cancelStaleEvidence?: typeof cancelStaleEvidencePendingGradingAuditAtomically;
+  /** Read fresh audit-target currentness for pending cards with pinned evidence bindings. */
+  readEvidence?: typeof readScorecardEvidence;
   getRubric?: typeof getRubric;
   launch?: GradingAuditLaunchHandler;
   route?: typeof routeSourceGradingAudit;
@@ -371,10 +384,10 @@ export interface GradingAuditReservationResult {
   /** Present on a live quota or general dispatch backoff that refused the claim. */
   backoff?: GradingAuditDispatchBackoff;
   /**
-   * WI-10005273: the expired pending lease this claim REPLACED, when there was one. A dispatcher
-   * that then dedupes to the live auditor still holding that lease must hand it back with
-   * `releasePendingGradingAudit({ restore })` instead of deleting it: the auditor's brief cites
-   * exactly this key + reservedAt, and scorecards:emit refuses an audit whose lease is gone.
+   * The retained pending lease this claim replaced, whether it was still active or had already
+   * lapsed and been cleared by an earlier sweep. A dispatcher that dedupes to the live auditor
+   * still holding that lease must hand it back with `releasePendingGradingAudit({ restore })`;
+   * otherwise the new epoch invalidates the auditor's brief before a renewal notice can arrive.
    */
   prior?: {
     key: string;
@@ -820,19 +833,28 @@ export async function reservePendingGradingAudit(
   return withGradingAuditSubjectMutex(workspaceId, issueId, () => boundedOrgTxn(async (tx: OrgSql) => {
     // WI-10005273: lock the row and capture the lease this claim may replace, so a dispatcher
     // that dedupes to the live holder of an expired lease can restore it rather than delete it.
-    const priorRows = await tx<{ feature_id: string; prior_state: string | null; prior_reservation: unknown }[]>`
+    const priorRows = await tx<{
+      feature_id: string;
+      prior_state: string | null;
+      prior_reservation: unknown;
+      prior_last_reservation: unknown;
+    }[]>`
       SELECT feature_id,
              payload->'observation'->'gradingAudit'->>'state' AS prior_state,
-             payload->'observation'->'gradingAudit'->'dispatchReservation' AS prior_reservation
+             payload->'observation'->'gradingAudit'->'dispatchReservation' AS prior_reservation,
+             payload->'observation'->'gradingAudit'->'lastDispatchReservation' AS prior_last_reservation
         FROM harness_shared.work_items
        WHERE workspace_id = ${workspaceId}
          AND feature_id = ${issueId}
          AND item_kind = ANY (ARRAY['bug', 'change', 'task'])
        FOR UPDATE`;
-    const prior =
-      priorRows[0]?.prior_state === 'pending'
-        ? parsePriorGradingAuditReservation(priorRows[0]?.prior_reservation)
-        : undefined;
+    const priorRow = priorRows[0];
+    const prior = priorRow?.prior_state === 'pending'
+      ? parsePriorGradingAuditReservation(priorRow.prior_reservation) ??
+        (priorRow.prior_reservation == null
+          ? parsePriorGradingAuditReservation(priorRow.prior_last_reservation)
+          : undefined)
+      : undefined;
     const claimed = await tx<{ feature_id: string }[]>`
       UPDATE harness_shared.work_items
          SET payload = jsonb_set(
@@ -1063,6 +1085,25 @@ function currentPendingScorecard(card: ScorecardRow): boolean {
   );
 }
 
+function scorecardAuditEvidenceMatchesListRow(card: ScorecardRow, evidence: ScorecardEvidenceRow): boolean {
+  const cardAudit = card.gradingAudit;
+  const evidenceAudit = evidence.gradingAudit;
+  const cardBindingIds = card.rerunRecipe?.selection.bindingIds;
+  const evidenceBindingIds = evidence.rerunRecipe?.selection.bindingIds;
+  return (
+    card.issueId === evidence.issueId &&
+    cardAudit?.state === 'pending' &&
+    evidenceAudit?.state === 'pending' &&
+    cardAudit.stampedAt === evidenceAudit.stampedAt &&
+    (card.evidenceFingerprint ?? null) === (evidence.evidenceFingerprint ?? null) &&
+    (card.rerunRecipe?.args.harness ?? null) === (evidence.rerunRecipe?.args.harness ?? null) &&
+    Array.isArray(cardBindingIds) &&
+    Array.isArray(evidenceBindingIds) &&
+    cardBindingIds.length === evidenceBindingIds.length &&
+    cardBindingIds.every((id, index) => id === evidenceBindingIds[index])
+  );
+}
+
 function oldestFirst(a: ScorecardRow, b: ScorecardRow): number {
   return a.createdAt.localeCompare(b.createdAt) || a.issueId.localeCompare(b.issueId);
 }
@@ -1184,6 +1225,8 @@ export async function dispatchPendingGradingAudits(
     limit: explicitTargetIds.length > 0 ? GRADING_AUDIT_DISPATCH_LIMIT : GRADING_AUDIT_BACKLOG_SCAN_LIMIT,
   });
   const cancelSuperseded = deps.cancelSuperseded ?? cancelSupersededPendingGradingAuditAtomically;
+  const cancelStaleEvidence = deps.cancelStaleEvidence ?? cancelStaleEvidencePendingGradingAuditAtomically;
+  const readEvidenceForDispatch = deps.readEvidence ?? readScorecardEvidence;
   const readTasksForCleanup = deps.listTasks ?? listTasks;
   const terminateSupersededTask = deps.killTask ?? killTask;
   const supersededPendingCards = cards
@@ -1249,12 +1292,205 @@ export async function dispatchPendingGradingAudits(
       }
     },
   );
-  const pendingCards = cards.filter(currentPendingScorecard);
+  const liveEvaluatorBuild = (deps.getEvaluatorBuild ?? getBuildInfo)();
+  const evaluatorBuildDriftPendingCards = cards.filter((card) => {
+    const recorded = card.rerunRecipe?.evaluatorBuild;
+    return (
+      card.gradingAudit?.state === 'pending' &&
+      !card.supersededBy &&
+      !card.retracted &&
+      Boolean(recorded) &&
+      (recorded!.sha !== liveEvaluatorBuild.sha || recorded!.version !== liveEvaluatorBuild.version)
+    );
+  });
+  const evaluatorBuildDriftIds = new Set(evaluatorBuildDriftPendingCards.map((card) => card.issueId));
+  const awaitingReemitIds = new Set<string>();
+  await mapWithConcurrency(
+    evaluatorBuildDriftPendingCards.slice(0, GRADING_AUDIT_DISPATCH_LIMIT),
+    GRADING_AUDIT_DISPATCH_CONCURRENCY,
+    async (card) => {
+      const expectedAudit = card.gradingAudit;
+      const recorded = card.rerunRecipe?.evaluatorBuild;
+      if (!expectedAudit || expectedAudit.state !== 'pending' || !recorded) return;
+      let marked = false;
+      try {
+        marked = await (deps.markAwaitingReemit ?? markGradingAuditAwaitingReemit)(card.issueId, expectedAudit, {
+          reason:
+            'spec-test-adequacy evaluator build drift detected before audit dispatch: recorded=' +
+            JSON.stringify(recorded) +
+            ', live=' +
+            JSON.stringify(liveEvaluatorBuild) +
+            '; re-emit the source card under the current evaluator build before auditing',
+        });
+      } catch (error) {
+        console.warn(
+          `[grading-integrity] evaluator-drifted audit for ${card.issueId} could not be marked awaiting re-emit:`,
+          error instanceof Error ? error.message : error,
+        );
+      }
+      if (!marked) return;
+      awaitingReemitIds.add(card.issueId);
+
+      const reservation = expectedAudit.dispatchReservation;
+      if (!reservation || !workspaceId) return;
+      let tasks: Awaited<ReturnType<typeof listTasks>>;
+      try {
+        tasks = await readTasksForCleanup({
+          workspaceId,
+          states: ['pending', 'running'],
+          labelPrefix: `${GRADING_AUDIT_TASK_LABEL_PREFIX}${card.issueId}`,
+          limit: 20,
+        });
+      } catch (error) {
+        console.warn(
+          `[grading-integrity] evaluator-drifted auditor task scan failed for ${card.issueId}:`,
+          error instanceof Error ? error.message : error,
+        );
+        return;
+      }
+      const exactPrefix = `${GRADING_AUDIT_TASK_LABEL_PREFIX}${card.issueId}`;
+      for (const task of tasks) {
+        const label = task.detail?.label;
+        if (typeof label !== 'string' || (label !== exactPrefix && !label.startsWith(`${exactPrefix}:`))) continue;
+        try {
+          const result = await terminateSupersededTask(task.taskId, {
+            includeSubtree: true,
+            escalateAfterMs: 5_000,
+          });
+          if (
+            !result.ok &&
+            result.error !== 'not_live' &&
+            result.error !== 'task_not_found' &&
+            result.error !== 'already_gone'
+          ) {
+            console.warn(
+              `[grading-integrity] evaluator-drifted auditor task '${task.taskId}' for ${card.issueId} could not be retired: ${result.error}`,
+            );
+          }
+        } catch (error) {
+          console.warn(
+            `[grading-integrity] evaluator-drifted auditor task '${task.taskId}' for ${card.issueId} retirement failed:`,
+            error instanceof Error ? error.message : error,
+          );
+        }
+      }
+    },
+  );
+  const evidenceCandidates = cards
+    .filter((card) =>
+      card.gradingAudit?.state === 'pending' &&
+      Boolean(card.rerunRecipe?.selection.bindingIds?.length) &&
+      !evaluatorBuildDriftIds.has(card.issueId) &&
+      !card.supersededBy &&
+      !card.retracted,
+    )
+    .sort(oldestFirst)
+    .slice(0, GRADING_AUDIT_DISPATCH_LIMIT);
+  const evidenceById = new Map<string, ScorecardEvidenceRow>();
+  await mapWithConcurrency(
+    evidenceCandidates,
+    GRADING_AUDIT_DISPATCH_CONCURRENCY,
+    async (card) => {
+      try {
+        const result = await readEvidenceForDispatch(card.issueId);
+        if (result.kind !== 'found' || !scorecardAuditEvidenceMatchesListRow(card, result.scorecard)) return;
+        evidenceById.set(card.issueId, result.scorecard);
+      } catch (error) {
+        console.warn(
+          '[grading-integrity] evidence currentness read failed for ' + card.issueId + ':',
+          error instanceof Error ? error.message : error,
+        );
+      }
+    },
+  );
+  const staleEvidencePendingCards = [...evidenceById.values()]
+    .filter((card) =>
+      card.gradingAudit?.state === 'pending' &&
+      card.auditTarget?.current === false &&
+      card.auditTarget.evidenceBindingCurrentness?.state !== undefined &&
+      card.auditTarget.evidenceBindingCurrentness.state !== 'current' &&
+      !card.supersededBy &&
+      !card.retracted,
+    )
+    .slice(0, GRADING_AUDIT_DISPATCH_LIMIT);
+  await mapWithConcurrency(
+    staleEvidencePendingCards,
+    GRADING_AUDIT_DISPATCH_CONCURRENCY,
+    async (card) => {
+      const bindingIds = card.rerunRecipe?.selection.bindingIds;
+      const stampedAt = card.gradingAudit?.stampedAt;
+      if (!bindingIds?.length || !stampedAt) return;
+      let cancelled = false;
+      try {
+        cancelled = await cancelStaleEvidence(card.issueId, {
+          stampedAt,
+          evidenceFingerprint: card.evidenceFingerprint ?? null,
+          harnessSlug: card.rerunRecipe?.args.harness ?? null,
+          bindingIds,
+        }, workspaceId ? { workspaceId } : {});
+      } catch (error) {
+        console.warn(
+          `[grading-integrity] stale-evidence audit stamp for ${card.issueId} could not be cancelled:`,
+          error instanceof Error ? error.message : error,
+        );
+      }
+      // The SQL fence can reject a stale read if the recipe or audit was renewed.
+      // Only retire work after the cancellation itself committed.
+      if (!cancelled || !workspaceId) return;
+      let tasks: Awaited<ReturnType<typeof listTasks>>;
+      try {
+        tasks = await readTasksForCleanup({
+          workspaceId,
+          states: ['pending', 'running'],
+          labelPrefix: `${GRADING_AUDIT_TASK_LABEL_PREFIX}${card.issueId}`,
+          limit: 20,
+        });
+      } catch (error) {
+        console.warn(
+          `[grading-integrity] stale-evidence auditor task scan failed for ${card.issueId}:`,
+          error instanceof Error ? error.message : error,
+        );
+        return;
+      }
+      const exactPrefix = `${GRADING_AUDIT_TASK_LABEL_PREFIX}${card.issueId}`;
+      for (const task of tasks) {
+        const label = task.detail?.label;
+        if (typeof label !== 'string' || (label !== exactPrefix && !label.startsWith(`${exactPrefix}:`))) continue;
+        try {
+          const result = await terminateSupersededTask(task.taskId, {
+            includeSubtree: true,
+            escalateAfterMs: 5_000,
+          });
+          if (
+            !result.ok &&
+            result.error !== 'not_live' &&
+            result.error !== 'task_not_found' &&
+            result.error !== 'already_gone'
+          ) {
+            console.warn(
+              `[grading-integrity] stale-evidence auditor task '${task.taskId}' for ${card.issueId} could not be retired: ${result.error}`,
+            );
+          }
+        } catch (error) {
+          console.warn(
+            `[grading-integrity] stale-evidence auditor task '${task.taskId}' for ${card.issueId} retirement failed:`,
+            error instanceof Error ? error.message : error,
+          );
+        }
+      }
+    },
+  );
+  const pendingCards = cards.filter((card) => {
+    if (evaluatorBuildDriftIds.has(card.issueId)) return false;
+    if (!currentPendingScorecard(card)) return false;
+    if (!card.rerunRecipe?.selection.bindingIds?.length) return true;
+    return evidenceById.get(card.issueId)?.auditTarget.current === true;
+  });
   const pendingById = new Map(pendingCards.map((card) => [card.issueId, card] as const));
   const requestedTargetIds =
     explicitTargetIds.length > 0
       ? explicitTargetIds
-      : pendingCards
+      : [...pendingCards, ...evaluatorBuildDriftPendingCards.slice(0, GRADING_AUDIT_DISPATCH_LIMIT)]
           .slice()
           .sort(oldestFirst)
           .slice(0, GRADING_AUDIT_DISPATCH_LIMIT)
@@ -1277,6 +1513,15 @@ export async function dispatchPendingGradingAudits(
   const dispatchTarget = async (issueId: string): Promise<PendingGradingAuditDispatchReceipt> => {
     const card = pendingById.get(issueId);
     if (!card) {
+      if (evaluatorBuildDriftIds.has(issueId)) {
+        return {
+          issueId,
+          state: 'skipped',
+          reason: awaitingReemitIds.has(issueId)
+            ? 'source evaluator build drifted and the card was marked awaiting re-emit before audit dispatch'
+            : 'source evaluator build drifted; audit dispatch skipped because the awaiting-re-emit update did not commit',
+        };
+      }
       return {
         issueId,
         state: 'skipped',
