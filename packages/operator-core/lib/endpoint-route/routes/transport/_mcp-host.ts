@@ -2370,7 +2370,12 @@ import { pluginSpawnImpl, secretImpl, makeSecretResolver } from '../../../plugin
 // PROJECTED_DEPS lives in @/lib/projected-tool-deps so the IPC server
 // (and any future transport) can reuse the same telemetry + quota
 // implementation. Don't fork the SQL across transports.
-import { PROJECTED_DEPS, backfillResultDoorOutputRef, wrapOperatorKernelSpawn } from '../../../projected-tool-deps';
+import {
+  PROJECTED_DEPS,
+  backfillResultDoorOutputRef,
+  backfillToolInvocationMetadataByMcpRequestTraceId,
+  wrapOperatorKernelSpawn,
+} from '../../../projected-tool-deps';
 import { isPreferredDoor } from '../../../code-run-batch-nudge';
 
 // EI-18803497769946984: names a tool that is holding the ambient workspace transaction
@@ -5511,6 +5516,28 @@ export function registerMcpHost(server: McpServer): void {
           // (55s) must NOT cut off a tool that legitimately declares a longer
           // `timeoutSec` (e.g. chat:ask_choice / other human-interaction tools at
           // 600s) — effectiveMcpDeadlineMs honors the tool's own budget instead.
+          const recordSettlement = (outcome: 'success' | 'tool_error' | 'rejected'): void => {
+            const timingDetails = settlementPhaseTimings();
+            const afterDeadline = raced.deadlineFired;
+            const elapsedMs = Math.max(0, Date.now() - callStartedAt);
+            trace('inner_dispatch_settled', { outcome, afterDeadline, ...timingDetails });
+            void backfillToolInvocationMetadataByMcpRequestTraceId({
+              workspaceId: dispatchSpawnCtx.workspaceId,
+              toolName,
+              mcpRequestTraceId: traceId,
+              metadataJson: {
+                mcpRequestSettlement: {
+                  traceId,
+                  stage: 'inner_dispatch_settled',
+                  outcome,
+                  afterDeadline,
+                  elapsedMs,
+                  settledAt: new Date().toISOString(),
+                  ...timingDetails,
+                },
+              },
+            });
+          };
           return raceDeadline<McpCallResult>(
             deadlineMs,
             () => {
@@ -5519,19 +5546,11 @@ export function registerMcpHost(server: McpServer): void {
               void outcome.then(
                 (result) => {
                   raced.innerDispatchSettled = true;
-                  trace('inner_dispatch_settled', {
-                    outcome: result.isError ? 'tool_error' : 'success',
-                    afterDeadline: raced.deadlineFired,
-                    ...settlementPhaseTimings(),
-                  });
+                  recordSettlement(result.isError ? 'tool_error' : 'success');
                 },
                 () => {
                   raced.innerDispatchSettled = true;
-                  trace('inner_dispatch_settled', {
-                    outcome: 'rejected',
-                    afterDeadline: raced.deadlineFired,
-                    ...settlementPhaseTimings(),
-                  });
+                  recordSettlement('rejected');
                 },
               );
               return outcome;
