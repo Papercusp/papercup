@@ -178,6 +178,8 @@ export function corpusRerankTimeoutMs(): number {
 }
 
 export interface CorpusRecallInput {
+  /** Public hosts may only use their existing permitted memory path. */
+  knowledgeSourcesAllowed?: boolean;
   /** Server-resolved reader. Omitted on agent ports: use their author identity and bound pot. */
   reportViewer?: ReportViewer;
   /** Parent prompt lifetime, shared with memory retrieval and preparation. */
@@ -571,7 +573,8 @@ async function recallCorpusContextInner(
   const gradedMaxTerms = input.gradedMaxTerms ?? CORPUS_GRADED_QUERY_MAX_TERMS;
   const audience = { harnessSlugs: input.harnessSlugs, automatic: true, excludedRefs: input.ambientExcludedRefs };
   const sources = SEARCH_SOURCES.filter((s) =>
-    (CORPUS_SOURCE_NAMES as readonly string[]).includes(s.name),
+    (CORPUS_SOURCE_NAMES as readonly string[]).includes(s.name)
+      && (input.knowledgeSourcesAllowed !== false || !['plan','doc','report'].includes(s.name)),
   ).map(s => s.name === 'plan' ? createPlanSearchSource(audience)
     : s.name === 'doc' ? createDocSearchSource(audience)
     : s.name === 'report' ? createReportSearchSource(input.reportViewer ?? {

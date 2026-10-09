@@ -85,6 +85,8 @@ const EPHEMERAL_SLUG_RE =
  */
 
 export interface MemoryInjectionInput {
+  /** Server host trust controls access to the added knowledge corpora. */
+  knowledgeSourcesAllowed?: boolean;
   /** Reader authority supplied by a server-owned port, never by prompt text. */
   reportViewer?: import('../report-library').ReportViewer;
   /** Shared with prompt preparation and both recall legs; phases cannot reset it. */
@@ -747,6 +749,7 @@ function startCorpusLeg(input: MemoryInjectionInput): Promise<CorpusLegResult | 
         workspaceId: input.workspaceId,
         harnessSlugs: input.harnessSlugs ?? [],
         reportViewer: input.reportViewer,
+        knowledgeSourcesAllowed: input.knowledgeSourcesAllowed,
         declaredWorkItemId,
         ambientExcludedRefs,
         // ⚠ This value is the caller's coord ownerId (`su-xxxx…`), NOT a native

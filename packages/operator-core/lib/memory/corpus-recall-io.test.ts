@@ -145,6 +145,16 @@ describe('recallCorpusContext — the contract handed to the search engine', () 
     expect(result.block).toContain('keep snapshot');
   });
 
+  it('does not widen a public-host recall into plan/doc/report corpora', async () => {
+    runHybridSearch.mockResolvedValue(ok());
+    await recallCorpusContext({ ...base,knowledgeSourcesAllowed: false });
+    expect(runHybridSearch.mock.calls[0][0].map((s: { name: string })=>s.name).sort())
+      .toEqual(['session_turn','work_item']);
+    expect(planSource).not.toHaveBeenCalled();
+    expect(docSource).not.toHaveBeenCalled();
+    expect(reportSource).not.toHaveBeenCalled();
+  });
+
   it('enables the recency re-rank (P-009) with the documented tunables', async () => {
     runHybridSearch.mockResolvedValue(ok());
     await recallCorpusContext(base);
