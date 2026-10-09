@@ -16,6 +16,7 @@ it('accepts deployment-contract preparation through the current-build HTTP guard
       'packages/operator-core/lib/agent-tools/plans/audit.ts',
       'packages/operator-core/lib/agent-tools/plans/source.ts',
       'packages/operator-core/lib/endpoint-route/routes/agent-mcp/run-tool.ts',
+      'packages/operator-core/lib/workspace-registry.ts',
       'apps/operator/bin/bundle-host.sh', 'apps/operator/bin/bundle-host-common.sh',
       'apps/operator/bin/hono-host.ts', 'apps/operator/bin/host-handler.ts'],
     execute: async (observe, evidenceDir) => {
@@ -35,7 +36,7 @@ it('accepts deployment-contract preparation through the current-build HTTP guard
       let result: Awaited<ReturnType<typeof captureIsolatedWorker>>;
       try { result = await captureIsolatedWorker(child, evidenceDir, options); }
       finally { await rm(join(evidenceDir, 'node_modules')); }
-      const failures = result.output.split('\n').filter(line => /STAGING_FIRST_HTTP_FAILURE|Error|preflight failed/.test(line));
+      const failures = result.output.split('\n').filter(line => /STAGING_FIRST_HTTP_FAILURE|^Error:|AssertionError|operator-api preflight failed/.test(line));
       expect(result, failures.join('\n') || result.output.slice(-4_000)).toMatchObject({ code: 0, signal: null,
         timedOut: false, exitWaitTimedOut: false, stdioDrainTimedOut: false });
       const line = result.output.split('\n').find(row => row.startsWith('STAGING_FIRST_HTTP_RECEIPT '));

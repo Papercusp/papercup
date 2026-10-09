@@ -7,6 +7,7 @@ import { join, resolve } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
 import { loadHarnessRegistry, saveHarnessRegistry } from '../lib/harness-registry';
 import { readProcessIdentity } from '../lib/process-identity';
+import { resolvePlanScope } from '../lib/agent-tools/plans/source';
 
 let host: ChildProcess | undefined;
 let hostIdentity: ReturnType<typeof readProcessIdentity>;
@@ -45,6 +46,10 @@ async function main() {
   assert.ok(home, 'private operator home must exist');
   await saveHarnessRegistry({ ...registry, projects: [...registry.projects,
     { slug: harness, path: home.path, hive_slug: workspace }] }, workspace);
+  const scope = await resolvePlanScope({ harnessSlug: harness, workspaceId: workspace });
+  assert.deepEqual(scope, { workspaceId: workspace, harnessSlug: workspace });
+  const headers = { 'content-type': 'application/json', origin: base, 'x-papercusp-workspace': workspace };
+  const { sql } = getOrgPg();
   const sourcePath = 'packages/operator-core/lib/agent-tools/plans/staging-first-activation-guard.ts';
   const sourceSha256 = createHash('sha256').update(readFileSync(join(root, sourcePath))).digest('hex');
   const bundle = join(evidenceDir, 'hono-host.mjs');
@@ -71,7 +76,7 @@ async function main() {
     assert.equal(host.exitCode, null, 'private host exited before readiness');
     assert.equal(host.signalCode, null, 'private host was signaled before readiness');
     try {
-      const response = await fetch(base + '/api/health', { signal: AbortSignal.timeout(2_000) });
+      const response = await fetch(base + '/api/health', { headers, signal: AbortSignal.timeout(2_000) });
       if (response.ok) { health = await response.json(); break; }
     } catch { /* bounded readiness convergence; request assertions never retry */ }
     await new Promise(done => setTimeout(done, 250));
@@ -83,18 +88,32 @@ async function main() {
   const releasePlanes = ['main promotion', 'the deployed host', 'green-checkpoint'];
   for (const [index, action] of [...preparation, ...releasePlanes].entries()) {
     const release = index >= preparation.length;
-    const slug = `private-guard-${index}`;
+    const requestedSlug = `private-guard-${index}`;
     const content = '## Items\n\n'
       + `- **P-003** \`todo\` ${release ? 'Finalize' : action} the pilot scope, threat/deployment/data contract, and implementation estimates.${release ? ` Then verify ${action}.` : ''}\n`
       + '- **P-007** `todo` Implement the data-governance contract on current-build. blocked-by: P-003\n'
       + '- **P-011** `todo` Deliver the selected connector and exercise separate write authorization on current-build. blocked-by: P-003, P-007\n';
     const created = await fetch(base + '/api/admin/plans/new', { method: 'POST',
-      headers: { 'content-type': 'application/json', origin: base },
-      body: JSON.stringify({ harness, slug, title: 'Private staging-first request fixture', status: 'draft', content }),
+      headers,
+      // Each case is a distinct private subject with intentionally shared topic
+      // tokens. Acknowledge that fixture duplication through the supported API.
+      body: JSON.stringify({ harness, workspaceId: workspace, slug: requestedSlug, title: 'Private staging-first request fixture', status: 'draft', content, force: true }),
       signal: AbortSignal.timeout(30_000) });
     const creation = await created.json() as any;
     assert.equal(created.status, 200, JSON.stringify(creation));
     assert.equal(creation.ok, true, JSON.stringify(creation));
+    const slug = creation.slug;
+    assert.equal(typeof slug, 'string', 'plans:new must return its canonical dated slug');
+    const stored = await sql`SELECT workspace_id, harness_slug FROM harness_shared.harness_plans WHERE plan_slug = ${slug}`;
+    assert.deepEqual(stored.map(row => ({ ...row })), [{ workspace_id: scope.workspaceId, harness_slug: scope.harnessSlug }]);
+    const readback = await fetch(`${base}/api/admin/plans/get?harness=${harness}&slug=${slug}`,
+      { headers, signal: AbortSignal.timeout(30_000) });
+    const plan = await readback.json() as any;
+    assert.equal(readback.status, 200, JSON.stringify(plan));
+    assert.equal(plan.ok, true, JSON.stringify(plan));
+    const preparationItem = plan.items?.find((item: any) => item.id === 'P-003');
+    assert.ok(preparationItem?.text?.includes('threat/deployment/data contract'),
+      JSON.stringify({ slug: plan.slug, preparationItem }));
     // A deliberately invalid source ref is a downstream control: preparation
     // must reach source validation, while actual release waits fail earlier.
     // This does not manufacture a valid owner conversation or activation.
@@ -104,7 +123,7 @@ async function main() {
       mappings: [{ id: 'M-001', sourceRefs: ['private-fixture-invalid-source'],
         requirement: 'Private guard control', planTargets: ['P-003'], disposition: 'covered' }] };
     const response = await fetch(base + '/api/agent-mcp/run-tool', { method: 'POST',
-      headers: { 'content-type': 'application/json', origin: base },
+      headers,
       body: JSON.stringify({ name: 'plans:audit', args, harness }), signal: AbortSignal.timeout(30_000) });
     const envelope = await response.json() as any;
     assert.equal(response.status, 200, JSON.stringify(envelope));
@@ -124,7 +143,6 @@ async function main() {
     requests.push({ action, release, status: response.status, error: result.error,
       problemCodes: result.problems.map((problem: any) => problem.code) });
   }
-  const { sql } = getOrgPg();
   const rows = await sql`SELECT workspace_id FROM harness_shared.harness_plans WHERE plan_slug LIKE 'private-guard-%'`;
   assert.equal(rows.length, preparation.length + releasePlanes.length);
   assert.ok(rows.every(row => row.workspace_id === workspace), 'fixture plans escaped private workspace');
@@ -136,7 +154,9 @@ async function main() {
 
 try { await main(); }
 catch (error) {
-  console.error('STAGING_FIRST_HTTP_FAILURE', error);
+  const assertion = error as { message?: string; stack?: string; actual?: unknown; expected?: unknown };
+  console.error('STAGING_FIRST_HTTP_FAILURE ' + JSON.stringify({ message: assertion.message ?? String(error),
+    stack: assertion.stack, actual: assertion.actual, expected: assertion.expected }));
   process.exitCode = 1;
 } finally {
   await stopHost();
