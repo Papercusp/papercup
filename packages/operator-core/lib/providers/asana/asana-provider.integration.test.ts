@@ -913,7 +913,7 @@ describe('admission presets turn matching Asana tasks into work (P-006, R-6)', (
     const [source] = await sql<Array<{ credential_ref: string }>>`
       SELECT credential_ref FROM harness_shared.data_sources WHERE id = ${sourceId}::uuid`;
     expect(source?.credential_ref).toBe('asana:fixture');
-    await syncOne(sourceId);
+    expect(await syncOne(sourceId)).toMatchObject({ outcome: 'synced', rejected: 0 });
     const { rule, backfill } = await setAdmissionRuleAndBackfill({
       workspaceId: WS, dataSourceId: sourceId, title: 'Composed new bug reports',
       match: { provider: { eq: 'asana' }, projects: { contains: 'Engineering' }, state: { eq: 'open' },
@@ -972,7 +972,8 @@ describe('admission presets turn matching Asana tasks into work (P-006, R-6)', (
       created_at: '2026-10-02T09:02:00.000Z', modified_at: '2026-10-02T09:02:00.000Z',
       memberships: [{ project: ENG, section: sec(ENG.gid, 'To do') }] });
     asana.tasks.push(direct); asana.stories.set(direct.gid!, []); taskChanged(direct, 'added');
-    await due(sourceId); await syncOne(sourceId);
+    await due(sourceId);
+    expect(await syncOne(sourceId)).toMatchObject({ outcome: 'synced', rejected: 0 });
     const expected = ['t-composed-direct', 't-slack-1'].map((gid) => ({ record: recordOf(sourceId, gid),
       via: 'rule', rule_id: rule.id, kind: 'bug', agent_work: true, about: 1 }))
       .sort((a, b) => a.record.localeCompare(b.record));
@@ -992,12 +993,14 @@ describe('admission presets turn matching Asana tasks into work (P-006, R-6)', (
       expect(work.payload).not.toHaveProperty('implementationAcceptance');
     }
     taskChanged(direct, 'added'); taskChanged(taskById('t-slack-1')!, 'added');
-    await due(sourceId); await syncOne(sourceId);
+    await due(sourceId);
+    expect(await syncOne(sourceId)).toMatchObject({ outcome: 'synced', rejected: 0 });
     expect(await admitted(sourceId)).toEqual(expected);
     expect(await investigations()).toEqual(first);
     await sql`UPDATE harness_shared.data_sources SET cursor = '{}'::jsonb, status = 'connected'
       WHERE id = ${sourceId}::uuid AND workspace_id = ${WS}`;
-    await due(sourceId); await syncOne(sourceId);
+    await due(sourceId);
+    expect(await syncOne(sourceId)).toMatchObject({ outcome: 'synced', rejected: 0 });
     expect(await admitted(sourceId)).toEqual(expected);
     expect(await investigations()).toEqual(first);
     expect(await duplicatedTickets(sourceId)).toEqual([]);
