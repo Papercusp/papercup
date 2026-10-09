@@ -53,7 +53,7 @@ function listing(rows: SectionRow[], source: 'plan' | 'doc', ranker: string): Li
     excerpt: `${r.title.slice(0,100)}${r.section ? ` › ${r.section.slice(0,100)}` : ''}\n${r.content}`.slice(0, 1500),
     highlight: r.highlight || r.content.slice(0, 1500), score: Number(r.rank), rankers: [ranker],
     meta: { title: r.title, section: r.section, status: r.status,
-      currentness: source === 'doc' ? 'maintained-procedure' : 'plan', path: r.path,
+      currentness: source === 'doc' ? 'maintained-procedure' : r.status === 'historical' ? 'historical' : 'plan', path: r.path,
       ...(r.source_key ? { docSourceKey: r.source_key } : {}) },
   } }));
 }
@@ -77,13 +77,14 @@ export function createPlanSearchSource(audience: KnowledgeAudience = {}): Search
       : matched.section;
     return { source_id: `${harness}:${slug}`, title: String(r.title ?? slug), content,
       highlight: String(r.highlight ?? content), scope: `harness:${harness}`, rank: Number(r.rank),
-      section, status: String(r.status), updated_at: r.updated_at as string | Date,
+      section, status: r.archived || r.superseded_by || r.status === 'superseded' ? 'historical' : String(r.status),
+      updated_at: r.updated_at as string | Date,
       path: `/admin/plans?plan=${encodeURIComponent(slug)}&harness=${encodeURIComponent(harness)}` };
   }), 'plan', ranker);
   return boundedSource({
     name: 'plan',
     async lexical(p) {
-      const rows = await p.sql`SELECT p.plan_slug, p.harness_slug, p.title, p.status, p.updated_at, p.content,
+      const rows = await p.sql`SELECT p.plan_slug, p.harness_slug, p.title, p.status, p.archived, p.superseded_by, p.updated_at, p.content,
         ts_rank_cd(p._search, plainto_tsquery('english', ${p.query})) AS rank,
         ts_headline('english', p.content, plainto_tsquery('english', ${p.query}),
           'StartSel=<mark>,StopSel=</mark>,MaxWords=90,MinWords=30,MaxFragments=1') AS highlight
@@ -100,7 +101,7 @@ export function createPlanSearchSource(audience: KnowledgeAudience = {}): Search
         limit: p.limit, mode: 'retrieve', parentFilter: filter(p),
         spaceFilter: cols => space(cols.profileColumn, cols.modeColumn) });
       const rows = await p.sql`WITH best AS (${best})
-        SELECT p.plan_slug, p.harness_slug, p.title, p.status, p.updated_at,
+        SELECT p.plan_slug, p.harness_slug, p.title, p.status, p.archived, p.superseded_by, p.updated_at,
           1 - b.distance AS rank, coalesce(c.content, left(p.content, 1500)) AS match_content,
           CASE WHEN c.chunk_idx IS NULL THEN NULL
             ELSE left(p.content, ${planWindowMidpoint(0)} + c.chunk_idx * ${planWindowMidpoint(1) - planWindowMidpoint(0)}) END AS section_prefix

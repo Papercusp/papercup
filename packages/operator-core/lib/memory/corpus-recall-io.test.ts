@@ -145,6 +145,26 @@ describe('recallCorpusContext — the contract handed to the search engine', () 
     expect(result.block).toContain('keep snapshot');
   });
 
+  it('preserves the prose query profile across memoization instead of borrowing a mem0 profile', async () => {
+    const { stampEmbedderMode,embedderModeOf,embedderProfileIdOf } = await import('../search/embedder-mode-registry');
+    const { EMBEDDER_DIM_SPECS } = await import('@papercusp/memory');
+    const prose = vi.fn(async()=>Array(EMBEDDER_DIM_SPECS.gemma.targetDims).fill(0.1));
+    stampEmbedderMode(prose,'gemma',EMBEDDER_DIM_SPECS.gemma.profileId);
+    buildQueryEmbedder.mockResolvedValue(prose);
+    await warmCorpusEmbedder();
+    prose.mockClear(); // Warmup has its own probe; count only the recall's query.
+    runHybridSearch.mockResolvedValue(ok());
+    await recallCorpusContext(base);
+    const options = runHybridSearch.mock.calls[0][1];
+    expect(options.embedder).not.toBe(prose);
+    expect(embedderModeOf(options.embedder)).toBe('gemma');
+    expect(embedderProfileIdOf(options.embedder)).toBe(EMBEDDER_DIM_SPECS.gemma.profileId);
+    expect(embedderProfileIdOf(options.embedder)).not.toBe(EMBEDDER_DIM_SPECS.local.profileId);
+    expect(await options.embedder('transport')).toHaveLength(EMBEDDER_DIM_SPECS.gemma.targetDims);
+    expect(await options.embedder('transport')).toHaveLength(EMBEDDER_DIM_SPECS.gemma.targetDims);
+    expect(prose).toHaveBeenCalledOnce();
+  });
+
   it('does not widen a public-host recall into plan/doc/report corpora', async () => {
     const engine = await vi.importActual<typeof import('@papercusp/search')>('@papercusp/search');
     runHybridSearch.mockResolvedValue({ ...ok(),legs: engine.emptyLegs() });

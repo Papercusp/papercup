@@ -151,6 +151,18 @@ describe('complete knowledge sections against canonical PostgreSQL', () => {
     const plans = createPlanSearchSource({ harnessSlugs: ['pot-a'], automatic: true });
     expect(await plans.lexical!(params())).toEqual([]);
     expect(await plans.embedding!(params())).toEqual([]);
+    const historical = createPlanSearchSource({ harnessSlugs: ['pot-a'] });
+    for (const leg of [historical.lexical!,historical.embedding!]) {
+      const rows = await leg(params());
+      expect(rows.map(r=>r.row.source_id)).toEqual(['pot-a:late-plan']);
+      expect(rows[0].row.meta?.currentness).toBe('historical');
+      expect(rows[0].row.excerpt).toContain('retain the snapshot');
+    }
+    await db.adminSql`UPDATE harness_shared.harness_plans SET superseded_by = NULL,archived = true
+      WHERE workspace_id = ${workspaceId} AND plan_slug = 'late-plan'`;
+    expect(await plans.lexical!(params())).toEqual([]);
+    expect(await plans.embedding!(params())).toEqual([]);
+    expect((await historical.lexical!(params()))[0].row.meta?.currentness).toBe('historical');
     await db.adminSql`INSERT INTO harness_shared.harness_docs
       (workspace_id,harness_slug,doc_id,retired_at) VALUES (${workspaceId},'pot-a','late-doc.mdx',now())`;
     const docs = createDocSearchSource({ harnessSlugs: ['pot-a'], automatic: true });
