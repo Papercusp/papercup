@@ -1903,6 +1903,12 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   // Keep direct and tools:invoke calls at 60s so the server result wins; callers
   // must still reconcile state before replaying a timed-out mutation.
   ['work_items:set_state', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
+  // EI-25455246754148819: set_blocker can commit the blocker and lifecycle
+  // transition before returning its receipt. The default 30s ptool client
+  // deadline can preempt the server's 55s handler deadline and turn that
+  // completed mutation into an outcome-unknown -32001. Keep direct and
+  // tools:invoke calls alive long enough for the server's structured result.
+  ['work_items:set_blocker', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   // `release:trace` composes candidate, gate, deploy, and await reads. Under
   // operator pressure that read-only bundle can outlive the ordinary 30s
   // client budget even though it is still progressing; keep the typed trace

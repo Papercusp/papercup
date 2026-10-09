@@ -2292,7 +2292,9 @@ export async function measureCompletedTestRuntime(
     execution?.runtimeEnvironmentBefore, execution?.runtimeEnvironmentAfter);
   if (!selector || !recipe.runtimeUnits || row.evidence_kind !== 'test'
     || row.details.evidencePlane !== 'live' || row.test_run_status !== 'pass'
-    || row.test_run_framework !== (selector.kind === 'llm-in-process' ? 'llm-test' : 'vitest')
+    || !(selector.kind === 'llm-in-process' ? row.test_run_framework === 'llm-test'
+      : selector.kind === 'verification-harness' ? ['vitest', 'playwright'].includes(row.test_run_framework ?? '')
+      : row.test_run_framework === 'vitest')
     || row.test_run_worktree_dirty !== false
     || !execution || execution.testLayer !== (selector.kind === 'llm-in-process' ? 'llm' : 'e2e')
     || execution.worktreeDirty

@@ -1,4 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { existsSync, readFileSync, statSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import ts from 'typescript';
 import {
   MODEL_WINDOW_1M,
   MODEL_WINDOW_DEFAULT,
@@ -73,6 +76,46 @@ describe('isDefault1mModelSpec (the FAMILY predicate the [1m] launch normalizer 
 });
 
 describe('bulk resolver client-safe launch vocabulary', () => {
+  it('keeps server dependencies out of the shared constants including literal lazy imports', () => {
+    // TypeScript follows literal import() even when bundlers tree-shake the
+    // exported server function. The receipt leaf must stay client-safe too.
+    const queue = [resolve(__dirname, 'agent-config-constants.ts')];
+    const seen = new Set<string>();
+    const offenders: string[] = [];
+    while (queue.length) {
+      const file = queue.shift()!;
+      if (seen.has(file)) continue;
+      seen.add(file);
+      const syntax = ts.createSourceFile(file, readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true);
+      const visit = (node: ts.Node): void => {
+        let spec: string | undefined;
+        if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node))
+          && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) spec = node.moduleSpecifier.text;
+        if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword
+          && node.arguments.length === 1 && ts.isStringLiteral(node.arguments[0])) spec = node.arguments[0].text;
+        if (ts.isImportTypeNode(node) && ts.isLiteralTypeNode(node.argument)
+          && ts.isStringLiteral(node.argument.literal)) spec = node.argument.literal.text;
+        if (spec) {
+          if (spec.startsWith('node:') || ['@papercusp/agent-mcp', '@papercusp/db-org'].includes(spec)) {
+            offenders.push(`${file} -> ${spec}`);
+          } else if (spec.startsWith('.')) {
+            const base = resolve(dirname(file), spec);
+            const target = [base, `${base}.ts`, `${base}.tsx`, resolve(base, 'index.ts')]
+              .find(candidate => existsSync(candidate) && statSync(candidate).isFile());
+            if (target) {
+              if (/\/(intake-promotion|work-items|operator-state-pg)\.ts$/.test(target)) offenders.push(`${file} -> ${target}`);
+              else queue.push(target);
+            }
+          }
+        }
+        ts.forEachChild(node, visit);
+      };
+      visit(syntax);
+    }
+    expect([...seen].some(file => file.endsWith('/attention/bug-reproduction.ts'))).toBe(true);
+    expect(offenders).toEqual([]);
+  });
+
   it('defaults both panes to the exact pre-configuration launch behavior', () => {
     expect(defaultBulkResolverLaunchProfiles()).toEqual({
       'inbox-resolve': { model: null, effort: null, account: 'default', carry: 'warm' },

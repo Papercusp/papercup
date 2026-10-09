@@ -4993,11 +4993,18 @@ export async function runGithubBridgeLeg(
     // The admission watermark (P-005): the last ADMITTED github-origin head.
     const { sql } = getOrgPg();
     const rows = await sql<
-      { la: string | null; wb_sha: string | null; prev_egress_head: string | null; prev_errors?: unknown }[]
+      {
+        la: string | null;
+        wb_sha: string | null;
+        prev_egress_head: string | null;
+        prev_egress_scan_progress?: unknown;
+        prev_errors?: unknown;
+      }[]
     >`
       SELECT metadata->'github_bridge'->>'last_admitted' AS la,
              metadata->'worktree_bridge'->>'stagingSha' AS wb_sha,
              metadata->'github_bridge'->>'egress_head' AS prev_egress_head,
+             metadata->'github_bridge'->'egress_scan_progress' AS prev_egress_scan_progress,
              metadata->'github_bridge'->'errors' AS prev_errors
         FROM harness_shared.routines
        WHERE install_slug = ${slug} AND workspace_id = ${workspaceId} AND target_role = 'system:git-sync'
@@ -5005,6 +5012,7 @@ export async function runGithubBridgeLeg(
     `;
     const lastAdmitted = rows[0]?.la ?? null;
     const prevEgressHead = rows[0]?.prev_egress_head ?? null;
+    const prevEgressScanProgress = rows[0]?.prev_egress_scan_progress ?? null;
     const prevBridgeErrors = rows[0]?.prev_errors;
 
     // Catch-up pin (WI-3500): the bare-side canonical mirror (refs/hive/staging)
@@ -5105,6 +5113,7 @@ export async function runGithubBridgeLeg(
       upstreamWrite,
       githubCredentialHelper,
       lastAdmitted,
+      egressScanProgress: prevEgressScanProgress,
       // WI-10006624 / D-022: only the OWNING hive bridges GitHub — the same rule the
       // integrator leg applies (`not_hive_owner`). A non-owner member's egress is
       // refused by the hive-effect authority anyway, and its ingress feeds an
@@ -5200,6 +5209,7 @@ export async function runGithubBridgeLeg(
         // LAST landed", so absence of a new observation must leave the last
         // one standing.
         egress_head: outcome.egressHead ?? prevEgressHead,
+        egress_scan_progress: outcome.egressScanProgress ?? null,
         errors: outcome.errors.slice(0, 10),
       }),
     });

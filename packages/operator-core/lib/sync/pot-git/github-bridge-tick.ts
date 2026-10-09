@@ -28,7 +28,13 @@
 import { hiveGitRepoPath, defaultRunGit, type RunGit } from './storage';
 import { ingressOriginBranches, type IngressResult, type IngressInput } from './github-ingress';
 import { admitGithubOriginHead, type AdmissionResult, type AdmissionInput } from './github-ingress-admission';
-import { egressCanonicalRefs, type EgressResult, type EgressInput } from './github-egress';
+import {
+  egressCanonicalRefs,
+  readEgressScanProgress,
+  type EgressResult,
+  type EgressInput,
+  type EgressScanProgress,
+} from './github-egress';
 import {
   collectDivergenceSignals,
   classifyDivergence,
@@ -99,6 +105,8 @@ export interface BridgeTickInput {
   githubCredentialHelper?: string | null;
   /** The last ADMITTED github-origin head (caller-persisted watermark). */
   lastAdmitted: string | null;
+  /** Previous bounded egress scan cursor from github_bridge metadata. */
+  egressScanProgress?: unknown;
   /**
    * EI-18751829787526583: the last ACCEPTED worktree-bridge watermark
    * (`worktree_bridge.stagingSha` — the local "branch tip" canonical is
@@ -144,6 +152,8 @@ export interface BridgeTickOutcome {
    *  five days. Same ingress-vs-egress conflation as the incident write-up's
    *  own framing error. */
   egressHead?: string | null;
+  /** Cursor for an unfinished, fully history-scanned egress range. */
+  egressScanProgress?: EgressScanProgress | null;
   verdict: DivergenceVerdict;
   errors: string[];
 }
@@ -188,6 +198,7 @@ export async function runGithubBridgeTick(input: BridgeTickInput): Promise<Bridg
     ingressed: { updated: 0, upToDate: 0, nonFF: 0, absent: 0 },
     admissions: [],
     lastAdmitted: input.lastAdmitted,
+    egressScanProgress: readEgressScanProgress(input.egressScanProgress),
     egress: null,
     verdict: classifyDivergence([]),
     errors,
@@ -315,6 +326,7 @@ export async function runGithubBridgeTick(input: BridgeTickInput): Promise<Bridg
         // Without this the egress guard consulted none, so the no-restart
         // escape hatch existed only on the guard that was NOT wedged.
         workspaceId: input.workspaceId,
+        scanProgress: input.egressScanProgress,
       });
       errors.push(...egress.errors.map((e) => `egress: ${e}`));
       if (egress.exemptedFindings.length > 0) {
@@ -369,6 +381,7 @@ export async function runGithubBridgeTick(input: BridgeTickInput): Promise<Bridg
     egressHead:
       egress?.pushed.find((p) => p.remoteRef === BRIDGE_REMOTE_STAGING_REF)?.to ??
       (egress?.upToDate.includes(BRIDGE_REMOTE_STAGING_REF) ? canonicalShaForWatermark : null),
+    egressScanProgress: egress ? (egress.scanProgress ?? null) : empty.egressScanProgress ?? null,
     verdict,
     errors,
   };

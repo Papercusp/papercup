@@ -3,6 +3,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { isMainThread, Worker } from 'node:worker_threads';
 import {
   resolveSentinelConfig,
@@ -113,6 +114,79 @@ describe('resolveSentinelConfig', () => {
 });
 
 describe('startEventLoopSentinel', () => {
+  it.each([
+    { inputType: ['--input-type=module'] },
+    { inputType: ['--input-type', 'module'] },
+  ])('keeps the real watcher alive when an inline-module host uses $inputType', ({ inputType }) => {
+    // Exercise the host constructor, not a Worker with test-only execArgv: [].
+    // EI-25465494437288816: inherited --input-type rejects a file-backed worker.
+    const hostUrl = pathToFileURL(resolve(__dirname, 'event-loop-sentinel-host.ts')).href;
+    const script = `
+      import { startEventLoopSentinel } from ${JSON.stringify(hostUrl)};
+      const logs = [];
+      const h = startEventLoopSentinel({
+        env: { PAPERCUSP_EVENT_LOOP_SENTINEL: 'observe' },
+        allowHeartbeatInTest: true,
+        log: (line, detail) => logs.push({ line, detail }),
+      });
+      try {
+        await new Promise(resolve => setTimeout(resolve, 1500));
+        console.log(JSON.stringify({ active: h.active(), alive: h.workerAlive(),
+          beats: h.beats(), logs }));
+      } finally {
+        await h.stop();
+      }
+    `;
+    const result = spawnSync(process.execPath, [
+      '--import=tsx', '--no-warnings', ...inputType, '--eval', script,
+    ], {
+      cwd: resolve(__dirname, '../../..'),
+      encoding: 'utf8', timeout: 20_000, maxBuffer: 1024 * 1024,
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.status, result.stderr).toBe(0);
+    const state = JSON.parse(result.stdout.trim().split('\n').at(-1)!);
+    expect(state.active, JSON.stringify(state.logs)).toBe(true);
+    expect(state.alive, JSON.stringify(state.logs)).toBe(true);
+    expect(state.beats).toBeGreaterThan(0);
+    expect(state.logs.some((entry: { line: string }) => /disabled|EXITED/.test(entry.line))).toBe(false);
+  }, 30_000);
+
+  it('preserves inherited loaders and runtime flags in a bundled watcher', () => {
+    const built = buildWorkerMjs(`parentPort.postMessage({
+      kind: 'sync-spawn-stall', producer: JSON.stringify(process.execArgv),
+      producerFn: 'sentinel-launch-test', stack: '', pct: 100
+    });`);
+    expect(built, 'the bundled-worker fixture must build').not.toBeNull();
+    const hostUrl = pathToFileURL(resolve(__dirname, 'event-loop-sentinel-host.ts')).href;
+    const script = `
+      import { startEventLoopSentinel } from ${JSON.stringify(hostUrl)};
+      let workerArgs;
+      const h = startEventLoopSentinel({
+        env: { PAPERCUSP_EVENT_LOOP_SENTINEL: 'observe' },
+        workerPath: ${JSON.stringify(built)}, log: () => {},
+        onSyncSpawnStall: message => { workerArgs = JSON.parse(message.producer); },
+      });
+      try {
+        await new Promise(resolve => setTimeout(resolve, 1500));
+        console.log(JSON.stringify({ alive: h.workerAlive(), workerArgs }));
+      } finally { await h.stop(); }
+    `;
+    const result = spawnSync(process.execPath, [
+      '--import=tsx', '--no-warnings', '--input-type=module', '--eval', script,
+    ], {
+      cwd: resolve(__dirname, '../../..'),
+      encoding: 'utf8', timeout: 20_000, maxBuffer: 1024 * 1024,
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.status, result.stderr).toBe(0);
+    const state = JSON.parse(result.stdout.trim().split('\n').at(-1)!);
+    expect(state.alive).toBe(true);
+    expect(state.workerArgs).toContain('--import=tsx');
+    expect(state.workerArgs).toContain('--no-warnings');
+    expect(state.workerArgs).not.toContain('--input-type=module');
+  }, 30_000);
+
   it('wires blocked-directory attribution into the real worker kill diagnostic', () => {
     // EI-22803283447097859: the worker knew the main thread was in
     // `iterate_dir`, but its last log did not name the directory and ptrace was

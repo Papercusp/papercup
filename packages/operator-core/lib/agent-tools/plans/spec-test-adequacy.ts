@@ -630,6 +630,11 @@ const EXPLICIT_COVERAGE_LIMITATION_PATTERNS = [
   /\b(?:remaining|other|rest|cutover)\b[^.;]{0,100}\b(?:mapped|assigned|tracked|covered|handled|addressed)\b[^.;]{0,60}\b(?:P-\d{3,}|[A-Z][A-Z0-9-]*-\d+)\b/i,
   /\bnot\s+(?:the\s+)?whole\b[^.;]{0,60}\b(?:proof|behavior|coverage|operational adoption)\b/i,
   /\b(?:behavior|scope parity|cancellation|retirement|proposal routing)\b[^.;]{0,100}\b(?:requires?|needs?)\b[^.;]{0,60}\b(?:proof|bindings)\b/i,
+  // Provisional component notes can explicitly leave the composite proof pending
+  // without using "only" or "not covered". Parent shipment bookkeeping is a
+  // separate plane; require proof/coverage or clause/composite acceptance here.
+  /\b(?:proof|coverage|(?:clause|composite)\s+acceptance)\b[^.;]{0,60}\b(?:remains?|is|are)\s+(?:pending|incomplete|unproven|unverified)\b/i,
+  /\bdisclosures?\b[^.;]{0,40}\b(?:remains?|is|are)\s+(?:live|open|unresolved)\b/i,
 ];
 
 /** Only observations with explicit coverage-boundary language count as disclosures. */
@@ -1597,8 +1602,9 @@ function appendRatingRerunProbes(
  *  16 — explicit scopeNote coverage gaps are extracted too, including same-proof rebinds.
  *  17 — technical coverage result/field mechanics do not imply incomplete proof; genuine gaps still block.
  *  18 — map legacy manual-provenance requirements only to canonical measured operational cases.
+ *  19 — pending clause/composite proof and unresolved disclosure scope notes block a machine PASS.
  */
-export const SPEC_TEST_ADEQUACY_EVALUATOR_REVISION = 18;
+export const SPEC_TEST_ADEQUACY_EVALUATOR_REVISION = 19;
 
 type MutationTargetClause = Pick<SpecClauseRevision, 'specId' | 'falsifier'>;
 

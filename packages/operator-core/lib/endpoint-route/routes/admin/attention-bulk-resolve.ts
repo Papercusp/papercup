@@ -48,7 +48,7 @@ import { requireAllowedOriginOr403 } from '../../cors';
 import { gateApiRoute } from '../../../require-flag';
 import { buildAgentLaunchCommand } from '../../../agent-launch-core';
 import { resolveBulkResolverLaunch, type EffectiveBulkResolverLaunch } from '../../../agent-config-constants';
-import type { SpawnConsoleResult } from '../../../console-spawn';
+import type { SpawnChildExit, SpawnConsoleResult } from '../../../console-spawn';
 import { operatorHomeHarnessSlug } from '../../../harness/operator-home-harness';
 import {
   BulkRunAlreadyActiveError,
@@ -285,7 +285,13 @@ export function resolvePersistedResolverLaunch(snapshot: BulkRunLaunchSnapshot) 
   });
 }
 
-export type ResolverSpawnOutcome = { ok: true; sessionId: string; child: ChildProcess } | { ok: false; error: string };
+export type ResolverSpawnOutcome =
+  | { ok: true; sessionId: string; child: ChildProcess; childExit?: Promise<SpawnChildExit> }
+  | { ok: false; error: string };
+
+export type ResolverLaunchOutcome =
+  | { ok: true; sessionId: string; observeExit: () => void }
+  | { ok: false; error: string };
 
 /**
  * Translate the spawner's discriminated result instead of treating "the call
@@ -301,7 +307,12 @@ export function resolverSpawnOutcome(result: SpawnConsoleResult, resolverOwner: 
       error: 'headless resolver launch returned no process handle; liveness cannot be supervised',
     };
   }
-  return { ok: true, sessionId: resolverOwner, child: result.child };
+  return {
+    ok: true,
+    sessionId: resolverOwner,
+    child: result.child,
+    ...(result.childExit ? { childExit: result.childExit } : {}),
+  };
 }
 
 /**
@@ -317,7 +328,7 @@ export async function launchResolver(
   harness: string | null,
   launch: EffectiveBulkResolverLaunch | null,
   resolverOwner: string,
-): Promise<{ ok: boolean; sessionId?: string; error?: string }> {
+): Promise<ResolverLaunchOutcome> {
   try {
     const [{ buildConsoleEnvelope }, { spawnHeadless }, { activeWorkspaceId }, { resolveSpawnHostOperatorBaseUrl }] =
       await Promise.all([
@@ -374,34 +385,46 @@ export async function launchResolver(
     const outcome = resolverSpawnOutcome(res, resolverOwner);
     if (!outcome.ok) return outcome;
 
-    // spawnHeadless catches boot-time death. This observer covers the next
-    // window: if the real agent exits after launch was acknowledged but before
-    // it settles the run, atomically fail the still-executing run and push the
-    // terminal phase to the strip. Once review/complete wins, this is a no-op.
-    let exitHandled = false;
-    const failForExit = (detail: string): void => {
-      if (exitHandled) return;
-      exitHandled = true;
-      void failRunIfExecuting({
-        runId,
-        workspaceId,
-        resolverOwner,
-        error: `resolver process ended before settling the run: ${detail}`,
-      })
-        .then(async (failed) => {
-          if (failed) await invalidateBulkRun();
+    // Arm the persistent observer only after the caller has durably changed
+    // the run to `running`. childExit may already be settled by the time
+    // spawnHeadless returns; handling it here could fail `pending`, then let
+    // the caller's later running write overwrite that failure.
+    const observeExit = (): void => {
+      let exitHandled = false;
+      const failForExit = (detail: string): void => {
+        if (exitHandled) return;
+        exitHandled = true;
+        void failRunIfExecuting({
+          runId,
+          workspaceId,
+          resolverOwner,
+          error: `resolver process ended before settling the run: ${detail}`,
         })
-        .catch(() => {
-          // The run remains visible and Stop still works. Never crash the route
-          // process from a detached child's late diagnostic callback.
-        });
-    };
-    outcome.child.once('error', (error) => failForExit(error.message));
-    outcome.child.once('exit', (code, signal) =>
-      failForExit(signal ? `signal ${signal}` : `exit ${code ?? 'unknown'}`),
-    );
+          .then(async (failed) => {
+            if (failed) await invalidateBulkRun();
+          })
+          .catch(() => {
+            // The run remains visible and Stop still works. Never crash the route
+            // process from a detached child's late diagnostic callback.
+          });
+      };
 
-    return { ok: true, sessionId: outcome.sessionId };
+      if (outcome.childExit) {
+        void outcome.childExit.then(({ code, signal, error }) => {
+          failForExit(error?.message ?? (signal ? `signal ${signal}` : `exit ${code ?? 'unknown'}`));
+        });
+      } else {
+        // Compatibility for spawn implementations without the persistent
+        // observer. Headless spawn currently supplies childExit, which closes
+        // the listener-after-exit race this fallback cannot cover.
+        outcome.child.once('error', (error) => failForExit(error.message));
+        outcome.child.once('exit', (code, signal) =>
+          failForExit(signal ? `signal ${signal}` : `exit ${code ?? 'unknown'}`),
+        );
+      }
+    };
+
+    return { ok: true, sessionId: outcome.sessionId, observeExit };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }
@@ -532,6 +555,7 @@ async function handleOwnerOp(op: string, body: Record<string, unknown>): Promise
         resolverOwner,
         ...(launched.ok ? {} : { error: launched.error ?? 'restart launch failed' }),
       });
+      if (launched.ok) launched.observeExit();
       await invalidateBulkRun();
       return Response.json({
         ok: true,
@@ -590,6 +614,7 @@ async function handleOwnerOp(op: string, body: Record<string, unknown>): Promise
         resolverOwner,
         ...(launched.ok ? {} : { error: launched.error ?? 'resume launch failed' }),
       });
+      if (launched.ok) launched.observeExit();
       await invalidateBulkRun();
       return Response.json({
         ok: true,
@@ -839,6 +864,7 @@ async function handler(req: Request, _ctx: RouteContext): Promise<Response> {
       // intact — never a click that silently did nothing.
       await setRunPhase({ runId: run.runId, phase: 'failed', error: launched.error ?? 'launch failed' });
     }
+    if (launched.ok) launched.observeExit();
 
     await invalidateBulkRun();
 

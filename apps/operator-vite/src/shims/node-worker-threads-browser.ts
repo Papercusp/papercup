@@ -30,6 +30,10 @@ const trap: ProxyHandler<object> = {
 export const Worker = new Proxy(function Worker() {
   serverOnly();
 }, trap) as never;
+export const MessageChannel = new Proxy(function MessageChannel() {
+  serverOnly();
+}, trap) as never;
+export const receiveMessageOnPort = serverOnly;
 export const parentPort = null;
 export const workerData = undefined;
 export const isMainThread = true;

@@ -293,7 +293,14 @@ export function startEventLoopSentinel(
       pid: process.pid,
       stallProfile: cfg.stallProfile,
     };
-    worker = new Worker(opts.workerPath ?? workerPath(), { workerData: data });
+    // --input-type describes the parent's inline/STDIN entry. This worker loads
+    // a file, so inheriting it fails asynchronously with ERR_INPUT_TYPE_NOT_ALLOWED.
+    // Keep loaders and the other runtime flags; remove both supported spellings.
+    const execArgv = process.execArgv.filter((arg, i, args) =>
+      arg !== '--input-type' && !arg.startsWith('--input-type=') &&
+      (i === 0 || args[i - 1] !== '--input-type'),
+    );
+    worker = new Worker(opts.workerPath ?? workerPath(), { workerData: data, execArgv });
   } catch (err) {
     // Fail-soft: no sentinel is strictly better than a crashed host.
     log('[event-loop-sentinel] worker spawn FAILED — sentinel disabled, host unaffected', {

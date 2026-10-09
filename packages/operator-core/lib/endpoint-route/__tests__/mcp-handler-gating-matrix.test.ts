@@ -516,7 +516,7 @@ const { __buildMcpToolContext_forTests, mcpHandler, resolveMcpTargetAfterPluginH
 const { registerProjectedTool, unregisterProjectedToolsForPlugin, lookupByMcpName, listMcpProjections, getCatalog, defineTool, subscribeWorkspace, resolveCardResponse } =
   await import('@papercusp/agent-mcp');
 const { currentRequestWorkspaceId } = await import('../../workspace-als');
-const { registerMcpHost, mcpHostServerOptions, MCP_SERVER_CAPABILITIES, tryBuildSpawnContext, pinVerifiedMcpRequest } =
+const { registerMcpHost, mcpHostServerOptions, MCP_SERVER_CAPABILITIES, tryBuildSpawnContext, pinVerifiedMcpRequest, runNativeMcpTargetOnOwner } =
   await import('../routes/transport/_mcp-host');
 
 // `_mcp-handler` now defers both the operator tool graph and mcp-handler's
@@ -5574,6 +5574,42 @@ describe('su identity precedence (EI-7066: explicit SID before Mcp-Session-Id)',
 });
 
 describe('successful native-session audit (get-feedback D-006)', () => {
+  it.each([
+    ['wildcard workspace', { spawn: { workspaceId: '*' }, native: {} }],
+    ['mismatched adv-session id', { spawn: {}, native: { candidateAdvSessionId: 542 } }],
+    ['invalid adv-session id', { spawn: { advSessionId: 0 }, native: {} }],
+    ['malformed call fingerprint', { spawn: {}, native: { callIdFingerprint: 'not-a-sha256' } }],
+    ['malformed session fingerprint', { spawn: {}, native: { valueFingerprint: 'not-a-sha256' } }],
+  ])('isolates native_tool_owner_invalid_lineage for a %s', async (_case, over) => {
+    const local = vi.fn(async () => ({ content: [{ type: 'text' as const, text: 'local-dispatch' }] }));
+    const { spawn: spawnOver, native: nativeOver } = over;
+    const request = {
+      toolName: 'gatingtest:scoped',
+      args: {},
+      spawn: {
+        workspaceId: 'ws-test',
+        advSessionId: 541,
+        uiClientId: 'su-owner',
+        ...spawnOver,
+        requestOrigin: { nativeSession: {
+          carrier: 'meta:threadId',
+          binding: 'bound',
+          candidateAdvSessionId: 541,
+          callIdFingerprint: 'a'.repeat(64),
+          valueFingerprint: 'b'.repeat(64),
+          ...nativeOver,
+        } },
+      } as unknown as BuiltSpawnContext,
+      fullSource: false,
+      structuredSource: false,
+      indirect: false,
+    };
+
+    await expect(runNativeMcpTargetOnOwner(request, local, 1_000))
+      .rejects.toThrow('native_tool_owner_invalid_lineage');
+    expect(local).not.toHaveBeenCalled();
+  });
+
   it('retains exact native call correlation only with a bound per-call thread', async () => {
     const native = 'native-owner-session', callId = 'call_exact-native-item';
     h.nativeSessionRows = new Map([['su-owner', [{ id: 541, session_id: native, active: true }]]]);

@@ -3110,7 +3110,8 @@ export async function claimIssue(
   if (verificationTaskConflict(priorRows[0].payload, assignee)) return null;
   let reproductionPayloadSnapshot: unknown;
   if (!agentReviewAdmission) {
-    const { verifyAcceptedWorkItemBugReproduction, isAcceptedReproductionStatus } = await import('./attention/bug-reproduction');
+    const { isAcceptedReproductionStatus } = await import('./attention/bug-reproduction');
+    const { verifyAcceptedWorkItemBugReproduction } = await import('./attention/intake-promotion');
     const reproduction = await verifyAcceptedWorkItemBugReproduction({
       kind: priorRows[0].item_kind, harness: priorRows[0].harness_slug, payload: priorRows[0].payload,
     });

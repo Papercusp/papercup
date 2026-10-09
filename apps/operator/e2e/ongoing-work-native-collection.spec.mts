@@ -1,10 +1,11 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type TestInfo } from '@playwright/test';
 import type { OrderedSelectionPolicy } from '../../../packages/operator-core/lib/typed-properties';
 import { execFile } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import { runInNewContext } from 'node:vm';
 import { createRequire } from 'node:module';
+import { basename, dirname } from 'node:path';
 import { decodeNativeBridgeJson } from './_native-bridge-json';
 
 test('native CLI JSON boundary preserves scalar and JSON-looking string values', () => {
@@ -19,7 +20,19 @@ test('native CLI JSON boundary preserves scalar and JSON-looking string values',
   expect(decodeNativeBridgeJson('[1,"hud"]')).toEqual([1, 'hud']);
   expect(() => decodeNativeBridgeJson('not JSON')).toThrow();
 });
-import { insertNativeCollectionGoal, insertNativeCollectionPlan, nativeCollectionDeclaration, setNativeCollectionPlanArchived } from './_ongoing-work-native-fixture';
+import { insertNativeCollectionGoal, insertNativeCollectionPlan, nativeCollectionDeclaration, setNativeCollectionPlanArchived,
+  recordNativeCollectionJourney } from './_ongoing-work-native-fixture';
+
+async function recordJourney(info: TestInfo, run: () => Promise<void>) {
+  expect(process.env.VH_PHASE_DIR, 'Owned verifier assertion phase required').toBeTruthy();
+  const sourceReceipt = JSON.parse(await readFile(process.env.VERIFY_TAURI_SOURCE_RECEIPT!, 'utf8'));
+  const completedRuntime = await recordNativeCollectionJourney({ sourceReceipt,
+    sourceRoot: process.env.OPERATOR_SOURCE_ROOT!,
+    verifierRunId: basename(dirname(dirname(process.env.VH_PHASE_DIR!))),
+    testPath: 'apps/operator/e2e/ongoing-work-native-collection.spec.mts', run });
+  await info.attach('native-completed-runtime', { body: JSON.stringify({ completedRuntime,
+    runtimeUnits: [`verify-tauri-headless:${process.env.VERIFY_TAURI_PID}`] }), contentType: 'application/json' });
+}
 
 // The app directory is CommonJS; the native spec and e2e helpers are ESM.
 const { isWorkOnEverything }: typeof import('../app/adv/hud/ongoing-work-draft') =
@@ -94,10 +107,14 @@ test('native collection fixture writer graph loads under the Playwright Node loa
   expect(typeof singleton.pinModuleState).toBe('function');
   const writer = await loadNativeCollectionWriter();
   for (const method of Object.values(writer)) expect(typeof method).toBe('function');
+  const { runHarness, defaultEvidenceRoot } = await import('@papercusp/verification-harness');
+  expect(typeof runHarness).toBe('function');
+  expect(typeof defaultEvidenceRoot).toBe('function');
 });
 
 test('legacy Work on Everything progress table stays readable and draft controls work in the native viewport', async ({ request }, info) => {
   test.skip(!process.env.VERIFY_TAURI_PID, 'Requires the maintained isolated native rig');
+  await recordJourney(info, async () => {
   test.setTimeout(180_000);
   expect(process.env.VERIFY_TAURI_ISOLATED_DB).toBe('1');
   const workspaceId = process.env.PAPERCUSP_WORKSPACE_ID!;
@@ -239,10 +256,12 @@ test('legacy Work on Everything progress table stays readable and draft controls
   } finally {
     await sql.end();
   }
+  });
 });
 
 test('native declared collections persist controls and reject a barrier-controlled stale save', async ({ request }, info) => {
   test.skip(!process.env.VERIFY_TAURI_PID, 'Run with scripts/run-operator-e2e-isolated.sh for the owned Tauri bridge');
+  await recordJourney(info, async () => {
   test.setTimeout(180_000);
   const workspaceId = process.env.PAPERCUSP_WORKSPACE_ID!;
   const adminUrl = process.env.HARNESS_ADMIN_DATABASE_URL!;
@@ -385,7 +404,18 @@ test('native declared collections persist controls and reject a barrier-controll
       // time out. This distinguishes persistence/resolver failures from native
       // query-cache or renderer state using the same saved owner revision.
       const reloaded = await readback();
+      const nativeReadbackUrl = `/api/zero-harness/rest-query?${new URLSearchParams({
+        name: 'goals.detail', args: JSON.stringify({ workspaceId, goalId }),
+      })}`;
+      await native('eval', `(() => { window.__nativeCollectionReloadReadback = null;
+        fetch(${JSON.stringify(nativeReadbackUrl)}).then(async response => {
+          window.__nativeCollectionReloadReadback = { status: response.status, body: await response.json() };
+        }).catch(error => { window.__nativeCollectionReloadReadback = { error: String(error) }; });
+        return true; })()`);
+      await ready('window.__nativeCollectionReloadReadback !== null');
+      const nativeReadback = await measure('window.__nativeCollectionReloadReadback');
       evidence.push({ afterReorderReload: { kind, rows: reloaded.rows,
+        nativeReadback,
         nativeRows: await measure(`Array.from(document.querySelectorAll(${JSON.stringify(`${editor} li`)})).map(row => row.textContent)`),
         nativeDocument: await measure('({ url: location.href, previous: window.__nativeCollectionPreviousDocument === true, ready: document.readyState })'),
       } });
@@ -509,4 +539,5 @@ test('native declared collections persist controls and reject a barrier-controll
     schedulerFixtureFlags(false);
     await sql.end({ timeout: 5 });
   }
+  });
 });

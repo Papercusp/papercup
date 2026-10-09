@@ -1094,6 +1094,15 @@ describe('ptool call deadlines', () => {
       name: 'work_items:set_state',
       args: setStateArgs,
     })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    // EI-25455246754148819: blocker writes include payload persistence and a
+    // lifecycle transition; the ptool client must outlive the server's 55s
+    // default deadline on both direct and deferred dispatch paths.
+    const setBlockerArgs = { id: 'EI-25455246754148819', kind: 'runtime', ref: 'runtime:test' };
+    expect(timeoutForTool('work_items:set_blocker', setBlockerArgs)).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', {
+      name: 'work_items:set_blocker',
+      args: setBlockerArgs,
+    })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     // EI-21574172453638335: locks:acquire's bounded blocking wait must not
     // fall through to the flat 30s client deadline, including via tools:invoke.
     expect(timeoutForTool('locks:acquire', {
@@ -2419,6 +2428,17 @@ describe('ptool JSON input', () => {
   it('keeps empty inline and file payloads strict', () => {
     expect(() => parseJsonInput('')).toThrow();
     expect(() => parseJsonInput('  \n\t')).toThrow();
+  });
+
+  it('rejects trailing JSON data after a valid stdin args object', () => {
+    const validPayload = '{"name":"work_items:checkpoint","args":{"id":"WI-10006055"}}';
+    expect(parseJsonInput(validPayload)).toEqual({
+      name: 'work_items:checkpoint',
+      args: { id: 'WI-10006055' },
+    });
+    expect(() => parseJsonInput(`${validPayload}}`)).toThrow(
+      'Unexpected non-whitespace character after JSON',
+    );
   });
 
   it('rejects a double-encoded object before dispatch with a direct correction', () => {

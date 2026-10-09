@@ -542,6 +542,7 @@ let contentFixerClaimResults: boolean[] = [];
 let counterRows: Array<{ et: number; lo: string[] | null; ct?: number; cs?: string | null }> = [];
 /** Previous bridge egress watermark returned for the bridge-ordering regression fixture. */
 let bridgePreviousEgressHead: string | null = null;
+let bridgePreviousEgressScanProgress: unknown = null;
 /** One-shot setup failures injected at the exact post-lock boundaries under test. */
 let rejectUnsafeAtCall: number | null = null;
 let unsafeCallCount = 0;
@@ -566,7 +567,12 @@ const fakeSql = Object.assign(
     if (text.includes("'last_content_fixer'")) return Promise.resolve(contentFixerRows as unknown as Row[]);
     if (text.includes("'last_resolver'")) return Promise.resolve(resolverRows as unknown as Row[]);
     if (text.includes('prev_egress_head')) {
-      return Promise.resolve([{ la: null, wb_sha: null, prev_egress_head: bridgePreviousEgressHead }]);
+      return Promise.resolve([{
+        la: null,
+        wb_sha: null,
+        prev_egress_head: bridgePreviousEgressHead,
+        prev_egress_scan_progress: bridgePreviousEgressScanProgress,
+      }]);
     }
     if (text.includes('consecutive_error_ticks')) return Promise.resolve(counterRows as unknown as Row[]);
     return Promise.resolve([]);
@@ -1036,6 +1042,7 @@ beforeEach(() => {
   emitGitSyncEgressedEventMock.mockReset();
   bridgeTickOverride = null;
   bridgePreviousEgressHead = null;
+  bridgePreviousEgressScanProgress = null;
   fetchRepoPushPermissionMock.mockReset().mockResolvedValue(true);
   resolveLaunchTargetForEventMock.mockReset();
   probeRoleRuntimeMock.mockReset();
@@ -1175,6 +1182,57 @@ describe('WI-1416 durable-fire breadcrumbs', () => {
       },
       expect.objectContaining({ signal: expect.anything(), onProgress: expect.any(Function) }),
     );
+  });
+
+  it('loads and persists the GitHub egress scan cursor across routine ticks', async () => {
+    const previousCursor = {
+      version: 1 as const,
+      policyFingerprint: 'a'.repeat(64),
+      baseSha: 'b'.repeat(40),
+      targetSha: 'c'.repeat(40),
+      lastScannedCommitSha: 'd'.repeat(40),
+    };
+    const nextCursor = { ...previousCursor, lastScannedCommitSha: 'e'.repeat(40) };
+    const localProject = {
+      slug: 'papercup',
+      path: repoDir,
+      hive_slug: 'papercup',
+      github_remote: 'https://github.com/papercusp/papercusp.git',
+    };
+    potGitMode = 'bridged';
+    registryProjects = [localProject];
+    bridgePreviousEgressScanProgress = previousCursor;
+    bridgeTickOverride = async (input) => {
+      expect(input.egressScanProgress).toEqual(previousCursor);
+      return {
+        ran: true,
+        egressTarget: 'upstream',
+        ingressed: { updated: 0, upToDate: 0, nonFF: 0, absent: 0 },
+        admissions: [],
+        lastAdmitted: null,
+        egress: null,
+        egressScanProgress: nextCursor,
+        verdict: { action: 'clear', needsOwner: false, agentActionable: false, agentRemedies: [] },
+        errors: [],
+      } as unknown as BridgeTickOutcome;
+    };
+    runGitSyncMock.mockResolvedValueOnce(syncedOutcome);
+
+    await action(ctx);
+
+    const bridgeWrite = unsafeCalls.find(({ params }) => {
+      try {
+        const patch = JSON.parse(String(params[2])) as Record<string, unknown>;
+        return Object.prototype.hasOwnProperty.call(patch, 'github_bridge');
+      } catch {
+        return false;
+      }
+    });
+    expect(bridgeWrite).toBeDefined();
+    const patch = JSON.parse(String(bridgeWrite?.params[2])) as {
+      github_bridge?: { egress_scan_progress?: unknown };
+    };
+    expect(patch.github_bridge?.egress_scan_progress).toEqual(nextCursor);
   });
 
   it('egresses origin/staging before a slow completion-settlement pass times out', async () => {

@@ -59,6 +59,8 @@ import {
   readBornVerifiedReproduction,
   isAcceptedReproductionStatus,
   verifyCurrentBugReproductionReceipt,
+  verifyAcceptedWorkItemBugReproduction as verifyAcceptedBugWithDeps,
+  type AcceptedBugReproductionDeps,
   type BugReproductionReceipt,
   type ReproductionLedgerDeps,
   type ReproductionVerification,
@@ -1129,6 +1131,18 @@ export function defaultIntakePromotionDeps(options: {
     now: () => new Date(),
     verifyReproduction: (receipt, source) => verifyIntakeReproduction(receipt, source, options.currentTargetBuild),
   };
+}
+
+/** Server composition stays here so client-shared receipt validation has no
+ * dependency on the operator execution graph, including type-only consumers. */
+export async function verifyAcceptedWorkItemBugReproduction(
+  item: Parameters<typeof verifyAcceptedBugWithDeps>[0],
+  deps?: AcceptedBugReproductionDeps,
+): Promise<ReproductionVerification | null> {
+  return verifyAcceptedBugWithDeps(item, deps ?? {
+    currentTargetBuild: currentIntakeTargetBuild,
+    ledger: defaultReproductionLedgerDeps(),
+  });
 }
 
 /** The fixing agent acts on the registered target checkout, never the operator's own HEAD. */

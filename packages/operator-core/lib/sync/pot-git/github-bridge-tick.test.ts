@@ -517,6 +517,33 @@ describe('runGithubBridgeTick — EI-18751829787526583: a stale-but-PRESENT cano
     expect(out.verdict.signals.map((s) => s.kind)).not.toContain('egress-canonical-stale');
   });
 
+  it('passes the stored scan cursor into egress and returns the next cursor', async () => {
+    const previousCursor = {
+      version: 1 as const,
+      policyFingerprint: 'a'.repeat(64),
+      baseSha: HEAD_A,
+      targetSha: CANONICAL,
+      lastScannedCommitSha: HEAD_A,
+    };
+    const nextCursor = { ...previousCursor, lastScannedCommitSha: CANONICAL };
+    const captured: unknown[] = [];
+    const { input } = bridgeInput(
+      { egressScanProgress: previousCursor },
+      {
+        egress: async (egressInput) => {
+          captured.push(egressInput);
+          return cleanEgress({ scanProgress: nextCursor });
+        },
+      },
+    );
+
+    const out = await runGithubBridgeTick(input);
+
+    expect(captured).toHaveLength(1);
+    expect(captured[0]).toMatchObject({ scanProgress: previousCursor });
+    expect(out.egressScanProgress).toEqual(nextCursor);
+  });
+
   it('canonical DIVERGED (not an ancestor) from the watermark → not flagged stale (a different problem)', async () => {
     const { input } = bridgeInput(
       { expectedCanonicalSha: WATERMARK },

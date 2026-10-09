@@ -1,5 +1,54 @@
 import type { Sql } from 'postgres';
 import type { OrderedSelectionPolicy } from '../../../packages/operator-core/lib/typed-properties';
+import { createHash } from 'node:crypto';
+import { readFile, writeFile } from 'node:fs/promises';
+import { join, resolve, sep } from 'node:path';
+
+/** Record an original journey inside the test's measured lifetime, never at import time. */
+export async function recordNativeCollectionJourney(input: {
+  sourceRoot: string;
+  sourceReceipt: { schemaVersion: string; sourceCommit: string; testedInputs: Array<{ path: string; sha256: string }> };
+  verifierRunId: string;
+  testPath: string;
+  evidenceRoot?: string;
+  run: () => Promise<void>;
+}) {
+  const { defaultEvidenceRoot, runHarness } = await import('@papercusp/verification-harness');
+  const receipt = input.sourceReceipt;
+  if (receipt.schemaVersion !== 'verifier-source-v1' || !/^[a-f0-9]{40,64}$/.test(receipt.sourceCommit)
+    || !/^\d{8}T\d{6}Z-\d+(?:\.\d+)?$/.test(input.verifierRunId)
+    || !Array.isArray(receipt.testedInputs) || !receipt.testedInputs.some(file => file.path === input.testPath))
+    throw new Error('Native journey requires the original verifier source and test custody');
+  const sourceRoot = resolve(input.sourceRoot);
+  const measure = async () => Promise.all(receipt.testedInputs.map(async file => {
+    const path = resolve(sourceRoot, file.path);
+    if (!path.startsWith(sourceRoot + sep) || !/^[a-f0-9]{64}$/.test(file.sha256))
+      throw new Error('Invalid native journey source input');
+    const sha256 = createHash('sha256').update(await readFile(path)).digest('hex');
+    if (sha256 !== file.sha256) throw new Error(`Native journey source changed: ${file.path}`);
+    return { path: file.path, sha256 };
+  }));
+  let failure: unknown;
+  const result = await runHarness({
+    contract: { name: 'native-journey', phases: [{ id: 'native' }] },
+    evidenceRoot: input.evidenceRoot ?? defaultEvidenceRoot('native-journey'),
+    runPhase: async ({ evidenceDir }) => {
+      try {
+        const before = await measure();
+        await input.run();
+        const after = await measure();
+        if (JSON.stringify(before) !== JSON.stringify(after)) throw new Error('Native journey source drift');
+        await writeFile(join(evidenceDir, 'manifest.json'), JSON.stringify({ result: 'pass',
+          sourceCommit: receipt.sourceCommit, sourceFingerprints: after, testPath: input.testPath,
+          verifierRunId: input.verifierRunId }));
+        return { ok: true };
+      } catch (error) { failure = error; throw error; }
+    },
+  });
+  if (result.verdict !== 'pass') throw failure ?? new Error('Native journey did not pass');
+  return { kind: 'verification-harness' as const, verifierRunId: input.verifierRunId,
+    journeyHarness: 'native-journey', journeyRunId: result.runId };
+}
 
 /** The generic fixture must not use the reserved unpackaged legacy WOE signature. */
 export function nativeCollectionDeclaration(kind: 'plans' | 'tea', ids: string[], policy: OrderedSelectionPolicy) {

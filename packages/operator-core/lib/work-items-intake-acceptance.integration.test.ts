@@ -76,10 +76,21 @@ const h = vi.hoisted(() => ({
   sql: undefined as unknown as postgres.Sql, currentBuild: 'abcdef1' as string | null,
   beforeBuild: null as (() => Promise<void>) | null,
 }));
-vi.mock('./attention/intake-promotion', async (orig) => ({
-  ...(await orig<typeof import('./attention/intake-promotion')>()),
-  currentIntakeTargetBuild: async () => { await h.beforeBuild?.(); return h.currentBuild; },
-}));
+vi.mock('./attention/intake-promotion', async (orig) => {
+  const actual = await orig<typeof import('./attention/intake-promotion')>();
+  const currentTargetBuild = async () => { await h.beforeBuild?.(); return h.currentBuild; };
+  return {
+    ...actual,
+    currentIntakeTargetBuild: currentTargetBuild,
+    // Exercise the real server wrapper with this fixture's build adapter.
+    // Replacing an export cannot replace the wrapper's lexical default binding.
+    verifyAcceptedWorkItemBugReproduction: (item: Parameters<typeof actual.verifyAcceptedWorkItemBugReproduction>[0]) =>
+      actual.verifyAcceptedWorkItemBugReproduction(item, {
+        currentTargetBuild,
+        ledger: actual.defaultReproductionLedgerDeps(),
+      }),
+  };
+});
 vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
   return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: h.sql }) };

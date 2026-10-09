@@ -245,10 +245,16 @@ export async function verifyCurrentBugReproductionReceipt(
 /** A transaction rolls back a stale fixing claim rather than publishing it. */
 export class CurrentBugReproductionRefusal extends Error {}
 
-/** Recheck an accepted bug at execution, including a retained dispatch replay. */
+export interface AcceptedBugReproductionDeps {
+  currentTargetBuild(scope: string): Promise<string | null>;
+  ledger: ReproductionLedgerDeps;
+}
+
+/** Recheck an accepted bug at execution, including a retained dispatch replay.
+ * Server callers supply their adapters; this module is also browser-shared. */
 export async function verifyAcceptedWorkItemBugReproduction(
   item: { kind: string; harness?: string | null; payload?: unknown },
-  deps?: { currentTargetBuild(scope: string): Promise<string | null>; ledger: ReproductionLedgerDeps },
+  deps: AcceptedBugReproductionDeps,
 ): Promise<ReproductionVerification | null> {
   if (item.kind !== 'bug') return null;
   const object = (value: unknown): Record<string, unknown> =>
@@ -261,10 +267,6 @@ export async function verifyAcceptedWorkItemBugReproduction(
   // legacy items. This adds freshness to the recorded reproduction seal only.
   if (verification.check !== 'reproduction') return null;
   const receipt = readBugReproductionReceipt(verification.receipt);
-  if (!deps) {
-    const { currentIntakeTargetBuild, defaultReproductionLedgerDeps } = await import('./intake-promotion');
-    deps = { currentTargetBuild: currentIntakeTargetBuild, ledger: defaultReproductionLedgerDeps() };
-  }
   if (!receipt) return {
     status: 'unresolved', detail: 'accepted bug reproduction is unreadable; investigate before fixing',
     checkedAt: deps.ledger.now().toISOString(),

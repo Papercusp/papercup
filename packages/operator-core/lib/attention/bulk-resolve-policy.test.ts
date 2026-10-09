@@ -240,6 +240,25 @@ describe('resolver launch — a real supervised headless agent, never a shell gr
     );
     expect(outcome).toEqual({ ok: true, sessionId: ownerId, child });
   });
+
+  it('preserves the spawn-time child-exit observer for exits before listener attachment', () => {
+    const child = {} as ChildProcess;
+    const childExit = Promise.resolve({ code: 137, signal: null });
+    const outcome = resolverSpawnOutcome(
+      {
+        status: 'ok',
+        pid: 42,
+        terminal: 'headless',
+        child,
+        childExit,
+        display: null,
+        desktopEnvResolvedVia: null,
+      },
+      ownerId,
+    );
+
+    expect(outcome).toEqual({ ok: true, sessionId: ownerId, child, childExit });
+  });
 });
 
 describe('plans.attentionBulkRun sync resolver', () => {

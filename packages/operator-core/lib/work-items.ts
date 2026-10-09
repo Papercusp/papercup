@@ -9020,8 +9020,9 @@ export async function claimNextIssueWorkItem(
      )
     RETURNING ${tx.unsafe(FEATURE_COLS)}`;
       if (!rows[0]) return rows;
-      const { verifyAcceptedWorkItemBugReproduction, isAcceptedReproductionStatus, CurrentBugReproductionRefusal } =
+      const { isAcceptedReproductionStatus, CurrentBugReproductionRefusal } =
         await import('./attention/bug-reproduction');
+      const { verifyAcceptedWorkItemBugReproduction } = await import('./attention/intake-promotion');
       const reproduction = await verifyAcceptedWorkItemBugReproduction({
         kind: rows[0].item_kind ?? '', harness: rows[0].harness_slug, payload: rows[0].payload,
       });
@@ -9304,7 +9305,8 @@ export async function observeWorkItem(
     }
   }
   if (checkAdmission) {
-    const { verifyAcceptedWorkItemBugReproduction, isAcceptedReproductionStatus } = await import('./attention/bug-reproduction');
+    const { isAcceptedReproductionStatus } = await import('./attention/bug-reproduction');
+    const { verifyAcceptedWorkItemBugReproduction } = await import('./attention/intake-promotion');
     const reproduction = await verifyAcceptedWorkItemBugReproduction(wi);
     if (reproduction && !isAcceptedReproductionStatus(reproduction.status)) return {
       item: wi, available: false, claimedBy: wi.assignee, gated: true, reproductionRefused: reproduction,

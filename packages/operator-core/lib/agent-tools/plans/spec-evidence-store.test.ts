@@ -311,6 +311,20 @@ describe('completed isolated runtime certification', () => {
     expect(evidence.currentness).toMatchObject({ overall: 'current', provenance: 'server-measured',
       dimensions: { source: 'current', test: 'current', environment: 'current', testRun: 'current' } });
   });
+  it('certifies a Playwright native execution only with its original paired witness and journey', async () => {
+    const state = await setup();
+    state.row.test_run_framework = 'playwright';
+    expect((await read()).currentness.dimensions.environment).toBe('current');
+    delete (state.execution as any).runtimeEnvironmentBefore;
+    expect((await read()).currentness.dimensions.environment).toBe('unknown');
+  });
+  it('rejects Playwright native proof without an authentic paired journey', async () => {
+    const state = await setup();
+    state.row.test_run_framework = 'playwright';
+    state.journey.verdict = 'fail';
+    await state.save();
+    expect((await read()).currentness.dimensions.environment).toBe('unknown');
+  });
   it('keeps exact certification receipts through actual harness retention pruning', async () => {
     await setup();
     await measureAndPinRepoFilesEvidenceAtRoot(root, recipe);

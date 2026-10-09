@@ -2558,7 +2558,7 @@ describe('spec-test-adequacy per-clause evaluator', () => {
   });
 
   it('pins the evaluator revision when an adequacy rule changes', () => {
-    expect(SPEC_TEST_ADEQUACY_EVALUATOR_REVISION).toBe(18);
+    expect(SPEC_TEST_ADEQUACY_EVALUATOR_REVISION).toBe(19);
   });
 
   it('requires an explicit fixture-free attestation for executable proof with a null fixture fingerprint', () => {
@@ -3604,6 +3604,21 @@ describe('disclosed-gap criterion (P-002: a disclosure cannot coexist with a mac
     expect(result.ratings['disclosed-gap'].evidence).toContain(scopeNote);
     expect(result.wouldBlock).toContain('disclosed-gap');
     expect(result.verdict).toBe('fail');
+  });
+
+  it('retains a pending-proof disclosure when unchanged proof is rebound without it', () => {
+    const base = evidence();
+    const scopeNote = 'R3 composite acceptance remains pending retirement proof.';
+    const original = evidence({ id: 32219, createdAt: '2026-10-09T03:20:00.000Z',
+      details: { ...base.details, scopeNote } });
+    const rebound = evidence({ id: 32252, createdAt: '2026-10-09T04:00:00.000Z',
+      details: { ...base.details, scopeNote: 'Composite proof recorded.' } });
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(), evidence: [original, rebound], classRef: 'plan-class-feature-ship',
+    });
+    expect(result.ratings['disclosed-gap'].rating).toBe('fail');
+    expect(result.ratings['disclosed-gap'].evidence).toContain(scopeNote);
+    expect(result.wouldBlock).toContain('disclosed-gap');
   });
 
   it.each([

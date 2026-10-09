@@ -40,13 +40,63 @@ import {
   reporterWriteBudget,
 } from '@papercusp/test-config/admin-test-runs-reporter';
 import { posix, relative } from 'node:path';
+import { readFileSync, realpathSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import {
   isRecordedCaseTitle,
   MAX_RECORDED_FAILED_CASES,
   MAX_RECORDED_PASSED_CASES,
   TEST_RUN_EXECUTION_DETAILS_SCHEMA_VERSION,
+  parseRecordedRuntimeEnvironment,
+  type RecordedRuntimeEnvironment,
+  type RuntimeEnvironmentCaptureStatus,
   type TestRunExecutionDetails,
 } from '@papercusp/test-config/execution-details';
+
+type RuntimeCapture = { status: RuntimeEnvironmentCaptureStatus; witness?: RecordedRuntimeEnvironment };
+type RuntimeReader = () => Promise<RecordedRuntimeEnvironment | null>;
+
+/** Prepare the existing kernel observer outside the bounded reporter observation. */
+export async function prepareNativeRuntimeReader(root: string, commit: string | null): Promise<RuntimeReader | undefined> {
+  if (!process.env.VERIFY_TAURI_PID) return undefined;
+  if (process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED !== '1') throw new Error('native runtime requires the owned verifier');
+  const pid = Number(process.env.VERIFY_TAURI_PID);
+  const receipt = JSON.parse(readFileSync(process.env.VERIFY_TAURI_SOURCE_RECEIPT!, 'utf8'));
+  if (!Number.isSafeInteger(pid) || pid <= 0 || !commit || !/^[a-f0-9]{40,64}$/.test(commit)
+    || receipt.schemaVersion !== 'verifier-source-v1' || receipt.sourceCommit !== commit
+    || receipt.sourceCommit !== process.env.VERIFY_TAURI_SOURCE_REF
+    || !process.env.OPERATOR_SOURCE_ROOT
+    || realpathSync(root) !== realpathSync(process.env.OPERATOR_SOURCE_ROOT)) throw new Error('native runtime source receipt mismatch');
+  const runtime = await import('./runtime-vintage');
+  const units = [`verify-tauri-headless:${pid}`];
+  const workspaceId = process.env.PAPERCUSP_WORKSPACE_ID;
+  if (!workspaceId) throw new Error('native runtime workspace missing');
+  const digest = createHash('sha256').update(readFileSync(`/proc/${pid}/exe`)).digest('hex');
+  await runtime.reportRuntimeVintage({ unit: units[0], workspaceId, pid, treeSha: commit,
+    bundleVersion: `executable-sha256:${digest}` });
+  return async () => {
+    const fingerprint = runtime.measureRuntimeVintageEnvironment(await runtime.listRuntimeVintage(workspaceId), units);
+    return fingerprint ? { schemaVersion: 1, units, fingerprint, observedAt: new Date().toISOString() } : null;
+  };
+}
+
+async function captureRuntimeEnvironment(read?: RuntimeReader, preparationFailed = false): Promise<RuntimeCapture> {
+  if (preparationFailed) return { status: 'error' };
+  if (!read) return { status: 'not-configured' };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = Symbol('runtime-capture-timeout');
+  try {
+    const value = await Promise.race([Promise.resolve().then(read), new Promise<typeof timedOut>(resolve => {
+      timer = setTimeout(() => resolve(timedOut), 1_000);
+    })]);
+    if (value === timedOut) return { status: 'timed-out' };
+    if (value === null) return { status: 'unavailable' };
+    const witness = parseRecordedRuntimeEnvironment(value);
+    return witness ? { status: 'captured', witness: { ...witness, units: [...witness.units],
+      observedAt: new Date().toISOString() } } : { status: 'invalid' };
+  } catch { return { status: 'error' }; }
+  finally { if (timer) clearTimeout(timer); }
+}
 
 interface TestRunRow {
   filePath: string;
@@ -62,6 +112,8 @@ interface TestRunRow {
   /** Exact failing case identities (WI-10006806): what a filed red names as "the failing tests". */
   failedCaseTitles?: string[];
   passedCaseTitles?: string[];
+  runtimeEnvironmentBefore?: RuntimeCapture;
+  runtimeEnvironmentAfter?: RuntimeCapture;
 }
 
 /**
@@ -109,6 +161,14 @@ export function playwrightExecutionDetails(
     mutationPhase: resolveMutationProbePhase(),
     commitSha: run.commitSha,
     worktreeDirty: row.worktreeDirty,
+    ...(row.runtimeEnvironmentBefore ? {
+      runtimeEnvironmentBeforeCaptureStatus: row.runtimeEnvironmentBefore.status,
+      ...(row.runtimeEnvironmentBefore.witness ? { runtimeEnvironmentBefore: row.runtimeEnvironmentBefore.witness } : {}),
+    } : {}),
+    ...(row.runtimeEnvironmentAfter ? {
+      runtimeEnvironmentAfterCaptureStatus: row.runtimeEnvironmentAfter.status,
+      ...(row.runtimeEnvironmentAfter.witness ? { runtimeEnvironmentAfter: row.runtimeEnvironmentAfter.witness } : {}),
+    } : {}),
     ...(row.failedCaseTitles && row.failedCaseTitles.length > 0
       ? { failedCaseTitles: row.failedCaseTitles.slice(0, Math.min(MAX_RECORDED_FAILED_CASES, row.failed)) }
       : {}),
@@ -271,10 +331,30 @@ export default class AdminTestRunsPlaywrightReporter implements Reporter {
   /** Captured before Playwright begins executing tests. */
   private worktreeBefore: WorktreeGitSnapshot | null = null;
   private runRoot = resolveAgentWorkspaceRoot({});
+  private runtimeReader?: RuntimeReader;
+  private runtimePreparationFailed = false;
+  private runtimeBefore?: RuntimeCapture;
 
-  onBegin(config?: Pick<FullConfig, 'rootDir'>): void {
+  constructor(options: { readRuntimeEnvironment?: RuntimeReader } = {}) {
+    this.runtimeReader = options.readRuntimeEnvironment;
+  }
+
+  onBegin(config?: Pick<FullConfig, 'rootDir'>): void | Promise<void> {
     this.runRoot = resolveReporterSourceRoot(config?.rootDir);
     this.worktreeBefore = captureTestSourceSnapshot(this.runRoot);
+    // Preserve the synchronous source seal for ordinary Playwright profiles.
+    if (!this.runtimeReader && !process.env.VERIFY_TAURI_PID) {
+      this.runtimeBefore = { status: 'not-configured' };
+      return;
+    }
+    return this.beginRuntimeCapture();
+  }
+
+  private async beginRuntimeCapture(): Promise<void> {
+    try {
+      this.runtimeReader ??= await prepareNativeRuntimeReader(this.runRoot, this.worktreeBefore?.commit ?? null);
+    } catch { this.runtimePreparationFailed = true; }
+    this.runtimeBefore = await captureRuntimeEnvironment(this.runtimeReader, this.runtimePreparationFailed);
   }
 
   onTestEnd(test: TestCase, result: TestResult): void {
@@ -339,6 +419,7 @@ export default class AdminTestRunsPlaywrightReporter implements Reporter {
 
   async onEnd(): Promise<void> {
     try {
+      const runtimeAfter = await captureRuntimeEnvironment(this.runtimeReader, this.runtimePreparationFailed);
       let worktreeAfter: WorktreeGitSnapshot = { commit: null, porcelain: null };
       try {
         worktreeAfter = captureTestSourceSnapshot(this.runRoot);
@@ -380,6 +461,8 @@ export default class AdminTestRunsPlaywrightReporter implements Reporter {
               skipped: agg.skipped,
               failedCaseTitles: [...agg.failedTitles],
               passedCaseTitles: [...agg.passedTitles],
+              runtimeEnvironmentBefore: this.runtimeBefore,
+              runtimeEnvironmentAfter: runtimeAfter,
             }, worktreeAfter, this.runRoot),
           );
         } catch {
