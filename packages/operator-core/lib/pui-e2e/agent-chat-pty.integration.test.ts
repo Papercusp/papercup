@@ -7156,9 +7156,15 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-013 terminal compatibilit
     scriptedEngine.initialization = new Promise<void>((resolve) => { releaseInitialization = resolve; });
     let stage = 'compose';
     const measured: Record<string, unknown> = {};
-    const pane = new PuiPane(bin, operatorPort, home, { args: ['--solo'], cwd: launchDir });
+    const inputTracePath = path.join(launchDir, 'input-timing.log');
+    const pane = new PuiPane(bin, operatorPort, home, {
+      args: ['--solo'], cwd: launchDir,
+      ...(process.env.PUI_INPUT_TRACE_LOG ? { env: { PUI_INPUT_TRACE_LOG: inputTracePath } } : {}),
+    });
     onTestFailed(() => console.info('PUI_P024_FAILURE', JSON.stringify({
-      stage, launchDir, measured, hungSnapshotReads, requests: scriptedEngine.requests, ...pane.failureEvidence(),
+      stage, launchDir, measured, hungSnapshotReads, requests: scriptedEngine.requests,
+      inputTrace: existsSync(inputTracePath) ? readFileSync(inputTracePath, 'utf8') : null,
+      ...pane.failureEvidence(),
     })));
     try {
       await pane.waitFor(`Claude · ${launchDir}`, { timeoutMs: 40_000 });
@@ -7167,8 +7173,17 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-013 terminal compatibilit
 
       // 1. The engine is stalled: its initialization does not finish until released.
       stage = 'stalled-engine';
+      measured.enterWriteAtMs = Date.now();
+      const enterSamples = [await renderedAfter(pane, () => {
+        measured.enterWriteAtMs = Date.now();
+        pane.enter();
+      }, (screen) => working(screen, 1) !== null, 10_000)];
+      // Preserve the raw sample and its classification even when the budget
+      // assertion throws; the failure hook must retain the evidence it judges.
+      measured.enterSamples = enterSamples;
+      measured.enterJudgement = judgeBudget(enterSamples, ENTER_FEEDBACK_MS);
       const enter = assertBudget('P-024 Enter to the message and its working line',
-        [await renderedAfter(pane, () => pane.enter(), (screen) => working(screen, 1) !== null, 10_000)], ENTER_FEEDBACK_MS);
+        enterSamples, ENTER_FEEDBACK_MS);
       measured.enterMs = enter.observedMs;
       measured.enterWorkerLateMs = enter.maxWorkerLateMs;
       expect(working(pane.screen(), 1)?.[1], pane.screen()).toMatch(/^(Still s|S)tarting Claude/);
@@ -7221,6 +7236,8 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-013 terminal compatibilit
       console.info('PUI_P024_INSTANT_FEEDBACK_ACCEPTANCE', JSON.stringify({
         binary: bin, binarySha256, optimised: optimised(), launchDir,
         enterMs: enter.observedMs, enterWorkerLateMs: enter.maxWorkerLateMs,
+        enterWriteAtMs: measured.enterWriteAtMs,
+        inputTrace: existsSync(inputTracePath) ? readFileSync(inputTracePath, 'utf8') : null,
         hungWorkingMs: hung.at.working, hungSentenceMs: hung.at.sentence, hungWorkerLateMs: hung.workerLateMs,
         stalledFrame: stalled, hungFrame: failed,
       }));
