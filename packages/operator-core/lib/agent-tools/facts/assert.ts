@@ -77,6 +77,10 @@ import { resolveHomeGateVerdictTarget } from '../../release/gate-verdict-target'
 
 const FACT_LIFETIME_CALL_CONSTRAINT =
   "Declare exactly one lifetime: ordinary facts, including verified conclusions, require ttlSec; omit it only for kind:'convention', wall:/dead-end:/guard-rail: keys, or confidence:'provisional'|'suspected'. permanent:true is allowed only for conventions/typed keys; never combine it with ttlSec or a volatile measurement.";
+const FACT_SETTLED_BY_CALL_CONSTRAINT =
+  "required when kind:'undecidable'; refused for every other kind.";
+const FACT_VOLATILE_TTL_CALL_CONSTRAINT =
+  `when subjectVolatile:true or measuredAt is supplied, ttlSec>${FACT_VOLATILE_MAX_TTL_SEC} is clamped to ${FACT_VOLATILE_MAX_TTL_SEC} and disclosed as ttlClampedFrom; the ordinary ttlSec ceiling still applies.`;
 
 /**
  * EI-10952: the disclosure for a truncated body. Returns undefined on the clean
@@ -683,7 +687,8 @@ export default defineTool({
           `own durable default, and confidence:'provisional'|'suspected' already means a short TTL. ` +
           `⚠ CONDITIONAL MAX: a volatile fact's ttlSec is CLAMPED, never refused (D-011) — anything over ` +
           `${FACT_VOLATILE_MAX_TTL_SEC}s (15 minutes) is shortened to it and disclosed back as ttlClampedFrom.`,
-      ),
+      )
+      .meta({ 'x-papercusp-call-constraint': FACT_VOLATILE_TTL_CALL_CONSTRAINT }),
     permanent: z
       .boolean()
       .optional()
@@ -777,7 +782,13 @@ export default defineTool({
         .enum(['conclusion', 'assumption', 'convention', 'undecidable'])
         .optional()
         .describe(kindDescription),
-      settledBy: z.string().min(1).max(500).optional().describe(settledByDescription),
+      settledBy: z
+        .string()
+        .min(1)
+        .max(500)
+        .optional()
+        .describe(settledByDescription)
+        .meta({ 'x-papercusp-call-constraint': FACT_SETTLED_BY_CALL_CONSTRAINT }),
       shareable: z.boolean().optional().describe(shareableDescription),
     });
 

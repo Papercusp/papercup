@@ -67,6 +67,10 @@ describe('facts:assert settledBy modality contract', () => {
     expect(props.kind?.description ?? '').toMatch(/undecidable/i);
     // settledBy is conditionally required, so it must not be unconditionally so.
     expect(json.required ?? []).not.toContain('settledBy');
+    expect(JSON.stringify(props.settledBy)).toContain('x-papercusp-call-constraint');
+    expect(JSON.stringify(props.settledBy)).toContain(
+      "required when kind:'undecidable'; refused for every other kind.",
+    );
   });
 
   it('rejects ONE mistake with ONE targeted issue, never a six-branch dump (EI-22064465906366039)', () => {
@@ -304,6 +308,16 @@ describe('facts:assert volatile-measurement contract', () => {
     const subjectVolatile = describedOn('subjectVolatile');
     expect(subjectVolatile).toMatch(/hard refusal/i);
     expect(subjectVolatile).toMatch(/clamped/i);
+
+    const ttlSecSchema = publishedProps.ttlSec as Record<string, unknown>;
+    expect(ttlSecSchema['x-papercusp-call-constraint']).toContain(
+      `subjectVolatile:true or measuredAt is supplied, ttlSec>${FACT_VOLATILE_MAX_TTL_SEC} is clamped`,
+    );
+    expect(assertTool.args.safeParse({
+      ...volatileBase,
+      measuredAt: '2026-08-31T11:00:00Z',
+      ttlSec: FACT_VOLATILE_MAX_TTL_SEC * 4,
+    }).success).toBe(true);
   });
 });
 
