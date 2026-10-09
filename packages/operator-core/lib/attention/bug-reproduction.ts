@@ -242,6 +242,42 @@ export async function verifyCurrentBugReproductionReceipt(
   return verifyBugReproductionReceipt(receipt, deps);
 }
 
+/** A transaction rolls back a stale fixing claim rather than publishing it. */
+export class CurrentBugReproductionRefusal extends Error {}
+
+/** Recheck an accepted bug at execution, including a retained dispatch replay. */
+export async function verifyAcceptedWorkItemBugReproduction(
+  item: { kind: string; harness?: string | null; payload?: unknown },
+  deps?: { currentTargetBuild(scope: string): Promise<string | null>; ledger: ReproductionLedgerDeps },
+): Promise<ReproductionVerification | null> {
+  if (item.kind !== 'bug') return null;
+  const object = (value: unknown): Record<string, unknown> =>
+    value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  const readiness = object(object(item.payload).implementationReadiness);
+  if (readiness.status !== 'ready') return null;
+  const acceptance = object(object(readiness.evidence).acceptance);
+  const verification = object(acceptance.verification);
+  // Ordinary acceptance floors still govern candidates, reviewer claims and
+  // legacy items. This adds freshness to the recorded reproduction seal only.
+  if (verification.check !== 'reproduction') return null;
+  const receipt = readBugReproductionReceipt(verification.receipt);
+  if (!deps) {
+    const { currentIntakeTargetBuild, defaultReproductionLedgerDeps } = await import('./intake-promotion');
+    deps = { currentTargetBuild: currentIntakeTargetBuild, ledger: defaultReproductionLedgerDeps() };
+  }
+  if (!receipt) return {
+    status: 'unresolved', detail: 'accepted bug reproduction is unreadable; investigate before fixing',
+    checkedAt: deps.ledger.now().toISOString(),
+  };
+  let build: string | null = null;
+  try {
+    build = item.harness ? await deps.currentTargetBuild(`harness:${item.harness}`) : null;
+  } catch {
+    // A registry/checkout read failure cannot affirm the old acceptance.
+  }
+  return verifyCurrentBugReproductionReceipt(receipt, build, deps.ledger);
+}
+
 /** What a filing stores at `payload.reproduction`. */
 export interface StoredBugReproduction {
   schemaVersion: typeof BUG_REPRODUCTION_SCHEMA_VERSION;

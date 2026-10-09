@@ -29,6 +29,14 @@ function leg(over: Partial<LegReport> = {}): LegReport {
 }
 
 describe('describeLeg', () => {
+  it('keeps successful empty, blocked and deadline source receipts in the tool result', () => {
+    const sourceCalls: NonNullable<LegReport['sourceCalls']> = [
+      { source: 'doc',ranker: 'lexical',status: 'ran',rows: 0,durationMs: 2,reason: null },
+      { source: 'plan',ranker: 'lexical',status: 'timed-out',rows: null,durationMs: 10,reason: 'source deadline' },
+      { source: 'report',ranker: 'embeddings',status: 'blocked',rows: null,durationMs: 0,reason: 'embed unavailable' },
+    ];
+    expect(describeLeg(leg({ sourceCalls })).sourceCalls).toEqual(sourceCalls);
+  });
   it('states candidates even when zero — the number that distinguishes an empty leg from an absent one', () => {
     expect(describeLeg(leg({ candidates: 0 }))).toEqual({ status: 'ran', candidates: 0 });
   });

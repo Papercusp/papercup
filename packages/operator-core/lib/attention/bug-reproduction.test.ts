@@ -9,6 +9,7 @@ import {
   stampFiledBugReproduction,
   verifyBugReproductionReceipt,
   verifyCurrentBugReproductionReceipt,
+  verifyAcceptedWorkItemBugReproduction,
   type ReproductionLedgerDeps,
 } from './bug-reproduction';
 
@@ -110,6 +111,40 @@ describe('current target build reproduction', () => {
     }
     expect((await verifyCurrentBugReproductionReceipt(receipt, BUILD, fakeLedger({}))).status).toBe('unresolved');
     expect((await verifyCurrentBugReproductionReceipt(receipt, BUILD, fakeLedger({ throws: true }))).status).toBe('unresolved');
+  });
+});
+
+describe('accepted bug execution freshness', () => {
+  const item = (receipt: unknown) => ({
+    kind: 'bug', harness: 'target-pot', payload: { implementationReadiness: { status: 'ready', evidence: {
+      acceptance: { verification: { check: 'reproduction', receipt } },
+    } } },
+  });
+  const receipt = { kind: 'failing-test', ref: 'test_runs:1', buildSha: BUILD };
+
+  it('rechecks the registered target and cited failure on each execution attempt', async () => {
+    let currentBuild = BUILD;
+    const ledger = fakeLedger({ testRuns: { 1: { status: 'fail', commitSha: BUILD, worktreeDirty: false } } });
+    const scopes: string[] = [];
+    const deps = { ledger, currentTargetBuild: async (scope: string) => { scopes.push(scope); return currentBuild; } };
+    expect((await verifyAcceptedWorkItemBugReproduction(item(receipt), deps))?.status).toBe('verified');
+    currentBuild = 'b'.repeat(40);
+    expect((await verifyAcceptedWorkItemBugReproduction(item(receipt), deps))?.status).toBe('refuted');
+    currentBuild = BUILD;
+    ledger.readTestRun = async () => ({ status: 'pass', commitSha: BUILD, worktreeDirty: false });
+    expect((await verifyAcceptedWorkItemBugReproduction(item(receipt), deps))?.status).toBe('refuted');
+    expect(scopes).toEqual(['harness:target-pot', 'harness:target-pot', 'harness:target-pot']);
+  });
+
+  it('refuses unresolved targets and malformed receipts while preserving other lanes', async () => {
+    const deps = { ledger: fakeLedger({}), currentTargetBuild: async () => { throw new Error('registry unavailable'); } };
+    expect((await verifyAcceptedWorkItemBugReproduction(item(receipt), deps))?.status).toBe('unresolved');
+    expect((await verifyAcceptedWorkItemBugReproduction(item({}), deps))?.status).toBe('unresolved');
+    expect(await verifyAcceptedWorkItemBugReproduction({ ...item(receipt), kind: 'task' }, deps)).toBeNull();
+    expect(await verifyAcceptedWorkItemBugReproduction({ kind: 'bug', payload: {} }, deps)).toBeNull();
+    const revision = item(receipt);
+    revision.payload.implementationReadiness.status = 'not-ready';
+    expect(await verifyAcceptedWorkItemBugReproduction(revision, deps)).toBeNull();
   });
 });
 

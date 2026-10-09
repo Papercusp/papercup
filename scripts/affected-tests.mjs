@@ -7534,7 +7534,8 @@ try {
   readMemAvailableMb,
   estimateMs: (context) =>
     durationEstimate(durationHistory, taskKey(context.t)),
-  runTask: (context, allocation) => runCapturedTask(context, allocation),
+  runTask: (context, allocation) => cgroupMemoryObserver.withWorkers(allocation.workers,
+    () => runCapturedTask(context, allocation)),
   onTaskSettled: (scheduled) => {
     // Refusal can interrupt a later shard before the aggregate tally. Count
     // only outcomes whose exit is known; an unreadable result remains unknown.

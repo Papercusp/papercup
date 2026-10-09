@@ -1596,8 +1596,9 @@ function appendRatingRerunProbes(
  *  15 — structured observations.scope/proofScope/notes disclosures are extracted and block a machine PASS.
  *  16 — explicit scopeNote coverage gaps are extracted too, including same-proof rebinds.
  *  17 — technical coverage result/field mechanics do not imply incomplete proof; genuine gaps still block.
+ *  18 — map legacy manual-provenance requirements only to canonical measured operational cases.
  */
-export const SPEC_TEST_ADEQUACY_EVALUATOR_REVISION = 17;
+export const SPEC_TEST_ADEQUACY_EVALUATOR_REVISION = 18;
 
 type MutationTargetClause = Pick<SpecClauseRevision, 'specId' | 'falsifier'>;
 

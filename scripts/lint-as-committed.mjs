@@ -201,7 +201,7 @@ export const MAX_AGE_MS = 24 * 3600_000;
 export const MAX_IDLE_KEPT_TREES = 4;
 
 /** Verify a retained source before launching anything that imports from it. */
-export function verifyCommittedWorkRoot(workRoot, expectedSha, requiredPaths = []) {
+export function verifyCommittedWorkRoot(workRoot, expectedSha, requiredPaths = [], artifactPath = null) {
   if (!/^[0-9a-f]{40}$/.test(expectedSha)) throw new Error('lint-as-committed: expected source commit must be a full SHA');
   if (!existsSync(workRoot)) throw new Error(`lint-as-committed: retained source root is missing: ${workRoot}; rematerialize the recorded commit`);
   const root = realpathSync(workRoot);
@@ -217,6 +217,16 @@ export function verifyCommittedWorkRoot(workRoot, expectedSha, requiredPaths = [
     if (!existsSync(target)) throw new Error(`lint-as-committed: retained source dependency is missing: ${path}`);
     if (!realpathSync(target).startsWith(root + sep)) {
       throw new Error(`lint-as-committed: retained source dependency escapes the recorded root: ${path}`);
+    }
+  }
+  if (artifactPath !== null) {
+    const artifact = realpathSync(artifactPath);
+    if (artifact === root || artifact.startsWith(root + sep)) {
+      throw new Error('lint-as-committed: dependent artifact must be outside its source root');
+    }
+    if (!Array.isArray(marker.retainedFor) || !marker.retainedFor.some((entry) =>
+      entry?.sha === expectedSha && entry.path === artifact)) {
+      throw new Error('lint-as-committed: source has no retention hold for the requested artifact');
     }
   }
   return { root, sha: expectedSha };

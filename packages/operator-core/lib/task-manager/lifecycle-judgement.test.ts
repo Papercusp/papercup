@@ -346,11 +346,17 @@ describe('evaluateLifecycleCandidates', () => {
     expect(summary).toContain('live.exactScopeUnitMatches');
     expect(summary).toContain('An empty result is not proof by itself');
     expect(summary).toContain('only live.exactScopeUnitMatches entries with kind "unaccounted"');
-    expect(summary).toContain('same-kind unaccounted positive control from an unfiltered census');
+    expect(summary).toContain('When live.unaccountedGroups is non-empty, require a known-present same-kind control from the unfiltered census');
+    expect(summary).toContain('When live.unaccountedGroups is empty, the same-kind control prerequisite is structurally unavailable, not a failed read');
+    expect(summary).toContain('independently walk the complete, readable Papercusp cgroupfs subtree');
+    expect(summary).toContain('complete, readable Papercusp cgroupfs subtree under /sys/fs/cgroup');
+    expect(summary).toContain('exact candidate scopeUnit directory absence');
+    expect(summary).toContain('populated peer pc-*.scope');
+    expect(summary).toContain('Never use stored cgroupPath, /proc absence, detector reason, or empty filtered output');
     expect(summary).toContain('Do not infer death from these shell readings');
     expect(summary).toContain('readlink /proc/self/ns/pid, the visible numeric /proc PID count, and $$ in the same call');
     expect(summary).toContain('if $$ is tiny or only a few PIDs are visible, discard every /proc absence');
-    expect(summary).toContain('Read the control twice and confirm tasks[].ageSec advances by elapsed wall time');
+    expect(summary).toContain('When live.unaccountedGroups is non-empty, require a known-present same-kind control from the unfiltered census, read it twice, and confirm tasks[].ageSec advances by elapsed wall time');
     expect(summary).toContain('confined:false does not prove abandonment');
     expect(summary).toContain('payload.processLifecycleCandidate.metrics.cpuActivity');
     expect(summary).not.toContain('pc-unaccounted.scope');
@@ -397,9 +403,13 @@ describe('evaluateLifecycleCandidates', () => {
     const brief = lifecycleJudgeBrief([{ id: 'WI-1', taskId: 'unaccounted', harnessSlug: 'papercusp' }]);
     expect(brief).toContain('live.exactScopeUnitMatches');
     expect(brief).toContain('taskId-filtered processes:list result cannot prove absence');
-    expect(brief).toContain('known-present same-kind unaccounted control from the unfiltered census');
+    expect(brief).toContain('When live.unaccountedGroups is non-empty, require a known-present same-kind control from that census');
+    expect(brief).toContain('When live.unaccountedGroups is empty, that same-kind control prerequisite is structurally unavailable, not a failed read');
+    expect(brief).toContain('recursively enumerate the complete, readable Papercusp slice subtree under /sys/fs/cgroup by exact scopeUnit');
+    expect(brief).toContain('a populated peer pc-*.scope elsewhere in that subtree');
+    expect(brief).toContain('Never substitute stored cgroupPath, /proc absence, a detector reason, or empty filtered output');
     expect(brief).toContain('inspect only live.exactScopeUnitMatches entries with kind "unaccounted"');
-    expect(brief).toContain('known-present same-kind unaccounted control from the unfiltered census');
+    expect(brief).toContain('When live.unaccountedGroups is non-empty, require a known-present same-kind control from that census');
     expect(brief).toContain('live.ownedTruncated=false');
     expect(brief).toContain('live.unaccountedCount matching live.unaccountedGroups.length');
     expect(brief).toContain('live.unaccountedPidCount matching the listed PIDs');
@@ -411,7 +421,7 @@ describe('evaluateLifecycleCandidates', () => {
     expect(brief).toContain('pids.current counts kernel tasks (including threads), not task-manager process rows');
     expect(brief).toContain('HTTP 502 is not ECONNREFUSED (curl exit 7)');
     expect(brief).toContain('readlink /proc/self/ns/pid, the visible numeric /proc PID count, and $$ in that same call');
-    expect(brief).toContain('Read the control twice and confirm tasks[].ageSec advances by elapsed wall time');
+    expect(brief).toContain('read it twice, and confirm tasks[].ageSec advances by elapsed wall time');
     expect(brief).toContain('confined:false does not prove abandonment');
   });
 

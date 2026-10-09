@@ -281,3 +281,81 @@ not prove fresh installed execution or a refreshed Pagefind answer.
 Installed worker/index/retriever propagation, sensitive-guide review,
 real novice observations, independent final acceptance and exact shipment
 remain open.
+
+## Sensitive-guide review preparation, 2026-10-09 02:35Z
+
+WI-10006921 / P-007 retains accountable maintenance ownership. The original
+independent FAQ approval, `thread-post:1160798`, was read in full again.
+The canonical FAQ still has its approved SHA-256
+`908687ae99d490db965919cb6f1297d409754453666e733027d505b7cbd2205a`.
+That approval covers the FAQ's sensitive answers, not later guide edits.
+
+The following current guide files are clean in the canonical staging tree.
+Their complete text and deltas from reviewed core HEAD `3c2e82741bfd` were
+read before requesting a follow-up in the original conversation
+`conv-mux7lsk0-0000-8b25517ba71f4fbaac95376ffa49b508`.
+
+| Guide under `apps/papercusp-docs/src/content/docs` | Current SHA-256 | Change requiring review |
+| --- | --- | --- |
+| `accounts-and-billing.mdx` | `6057fa08a0beb6b9575435a253188cb9a0a1ed25491fea18aa6cd363536754b4` | Goal/result wording, Portal account and Accounts sidebar distinction, organization-access recovery, Billing route and separate cost categories. |
+| `cloud-workspaces.mdx` | `6777b0136547dd76c3381ad7f70aa6ff6fc7938247828f76e35de7858a2bd8a5` | Goal/result opening; existing cloud-cost and deletion cautions retained. |
+| `remote-access.mdx` | `d6d5fe9a1a4cb00a9a57232006d0c358770b6fcb1498cbcf5aae1d53295ab072` | Goal/result opening; existing scoped-access and credential cautions retained. |
+| `harness-snapshots.mdx` | `de3cca2f03656437aeeeb474ae70bf27a810b6db31196bf9e0dfbba807db120c` | Goal/result opening; existing completed-backup, restore-target and publication cautions retained. |
+
+The six sensitive core sources checked in this preparation still match the
+SHA-256 values in the 2026-10-08 reconciliation table: signup, entitlement,
+access creation, snapshot creation, restore and provider delegation. Compared
+with the original reviewed HEAD, only the previously documented restore
+header correction differs. This comparison supports the request; it is not
+a new independent approval.
+
+The follow-up must give an exact-hash source verdict for these four guides,
+read the current account/Billing route sources, and identify any unsupported
+claim or remaining unknown. It must preserve the scope of the unchanged FAQ
+approval. Runtime account/payment/provisioning/restore behavior, real novice
+observations, independent final plan acceptance and production shipment are
+outside this source-review request. The sensitive-guide approval remains
+**pending** until the review reply is read and its file hashes reconciled.
+
+The installed background review result is now recorded separately in
+[installed-background-review-20261009.json](./installed-background-review-20261009.json):
+one selected case passed, 49 cases were filter-skipped, with no agent/model
+launches and complete fixture cleanup. That receipt retains unknown imported
+source provenance. It does not establish semantic approval or full R-7.
+
+## Independent sensitive-guide source verdict, 2026-10-09
+
+The answer at `thread-post:1166949` in
+`conv-mv0cw1z7-0000-2e408127fba043bea277fa15ee265224` was read in full.
+Reviewer `su-a1b9f00d-66fd-474e-9e69-53ae9162aff6` independently confirmed
+the four prepared guide hashes. This session also recomputed those hashes
+and the unchanged FAQ hash before applying the findings.
+
+The source verdict approves `cloud-workspaces.mdx`, `remote-access.mdx`
+and `harness-snapshots.mdx` at the exact hashes in the preparation table:
+their goal/result openings preserve the previously reviewed cost, scoped
+access, credential, backup, restore and deletion cautions. These approvals
+are limited to source truth.
+
+The account guide's verdict was conditional. The reviewer did not establish
+the integration-connect claim about workspace permission, and the instruction
+to preserve a "non-secret reference" did not identify a displayed reference.
+This session narrowed access recovery to signing up again and replaced both
+reference instructions with the observed time and displayed Billing status.
+The revised canonical `accounts-and-billing.mdx` SHA-256 is
+`c5119fa0c92fefd75e244627e7d8a0c400b434956cd693064a8a5b05f9949850`.
+The complete three-hunk diff and changed text were read back. Independent
+approval of this revised hash remains pending until its follow-up is read.
+
+The reviewer accepted the cost categories with their existing instruction to
+check current account/provider terms; this is no unconditional payer or price
+guarantee. The reply did not independently recompute every core source hash.
+Those limits remain explicit, and this author's earlier source comparison
+does not become independent evidence. The original FAQ approval remains
+`thread-post:1160798` at the unchanged full hash in the preparation section.
+
+No runtime journey, new test run, novice observation, final acceptance or
+shipment is inferred. The browser diagnostic remains paused for the existing
+tutorial owner's matching artifact custody or replacement identity. The
+account-guide edit must propagate through the maintained packaging path
+before any refreshed reader or installed-artifact claim.

@@ -238,11 +238,18 @@ export interface CgroupMemoryObservation {
   peakMb: number | null;
   /** oom_kill delta over this run (not the cgroup's lifetime count). */
   oomKills: number | null;
+  pairedSamples?: number;
+  /** Maximum sampled anon / active scheduler grant. Not a resident-fork count. */
+  maxAnonPerAllocatedWorkerMb?: number | null;
 }
 
 export function createCgroupMemoryObserver(input?: {
   read?: () => TaskCgroupMemoryUsage | null;
-}): { sample(): void; summary(): CgroupMemoryObservation };
+}): {
+  sample(): void;
+  summary(): CgroupMemoryObservation;
+  withWorkers<T>(workers: number, run: () => T | Promise<T>): Promise<T>;
+};
 
 export function formatCgroupMemoryObservedMarker(
   summary: CgroupMemoryObservation,

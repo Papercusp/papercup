@@ -22,6 +22,11 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { completionHeadBlobMap } from '../agent-tools/work_items/completion-freshness';
 import type { ProviderAdapter, ProviderDescriptor } from '@papercusp/plugin-sdk';
 import { validateProviderDescriptor } from '@papercusp/plugin-sdk';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
@@ -34,7 +39,7 @@ import { claimWorkItem, getWorkItem, mergeWorkItemPayload, setWorkItemStateWithA
 import { activeExternalBlockers, applyExternalBlockerUpdate } from '../external-blockers';
 import { setAdmissionRule } from './admission-rules';
 import { writeBacksForWorkItem } from './write-back-ledger';
-import { applySourceLifecycle, sourceClosedRef } from './lifecycle';
+import { applySourceLifecycle, sourceClosedRef, correlateAdmissionStandingPr } from './lifecycle';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as Sql, ws: 'papercusp-workspace' }));
 vi.mock('@papercusp/db-org', async (orig) => {
@@ -212,6 +217,64 @@ beforeEach(async () => {
 });
 
 describe('admission lifecycle (P-003)', () => {
+  it('links an admitted fix only when its recorded content is in the tested PR diff, with one provider comment across retries', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'admission-standing-pr-'));
+    const git = (...args: string[]) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8' }).trim();
+    try {
+      git('init', '-q');
+      git('config', 'user.name', 'Admission test');
+      git('config', 'user.email', 'admission-test@example.invalid');
+      writeFileSync(join(root, 'bug.txt'), 'broken\n');
+      git('add', 'bug.txt'); git('commit', '-qm', 'independent broken fixture');
+      const target = git('rev-parse', 'HEAD');
+      writeFileSync(join(root, 'bug.txt'), 'fixed\n');
+      git('add', 'bug.txt'); git('commit', '-qm', 'tested fix fixture');
+      const head = git('rev-parse', 'HEAD');
+      const fixedBlob = git('rev-parse', 'HEAD:bug.txt');
+      const source = await connect(TRACKER);
+      tickets[TRACKER]!.set('PR-1', ticket('PR-1'));
+      await sync(source);
+      const id = await admitted(source, 'PR-1');
+      const payload = { ...(await item(id)).payload as Record<string, unknown>, _completionEvidence: {
+        summary: 'Fixed the independently recorded behavior.',
+        settlementManifest: { version: 1, generation: 1, evidenceHash: 'c'.repeat(64), repositoryRoot: root,
+          headSha: head, normalizedPaths: ['bug.txt'],
+          contentIdentity: [{ path: 'bug.txt', workingTreeBlobSha: fixedBlob, headBlobSha: fixedBlob }], residualPaths: [] },
+      } };
+      await sql`UPDATE harness_shared.work_items SET item_kind = 'bug', status = 'done', authority = 'committed',
+        payload = ${sql.json(payload)} WHERE workspace_id = ${WS} AND feature_id = ${id}`;
+      const input = { workspaceId: WS, harnesses: [HARNESS], repositoryRoot: root,
+        testedSha: head, targetSha: target, url: 'https://github.com/acme/widgets/pull/7', number: 7 };
+      expect(await correlateAdmissionStandingPr(sql, { ...input, testedSha: target })).toEqual({ linked: [], failed: [] });
+      expect((await item(id)).payload).not.toHaveProperty('standingPr');
+      expect(await correlateAdmissionStandingPr(sql, { ...input, harnesses: ['another-pot'] })).toEqual({ linked: [], failed: [] });
+      let reopened = false;
+      expect(await correlateAdmissionStandingPr(sql, input, {
+        headBlobs: async (...args) => {
+          if (!reopened) {
+            reopened = true;
+            await sql`UPDATE harness_shared.work_items SET status = 'open' WHERE workspace_id = ${WS} AND feature_id = ${id}`;
+          }
+          return completionHeadBlobMap(...args);
+        },
+      })).toEqual({ linked: [], failed: [{ workItemId: id, error: expect.stringContaining('source completion changed') }] });
+      expect((await item(id)).payload).not.toHaveProperty('standingPr');
+      await sql`UPDATE harness_shared.work_items SET status = 'done' WHERE workspace_id = ${WS} AND feature_id = ${id}`;
+      expect(await correlateAdmissionStandingPr(sql, input)).toEqual({ linked: [id], failed: [] });
+      expect(await correlateAdmissionStandingPr(sql, input)).toEqual({ linked: [], failed: [] });
+      await sync(source); await sync(source);
+      expect(callsFor('PR-1').filter(([capability, text]) => capability === 'ticket.comment'
+        && String(text).includes(input.url))).toHaveLength(1);
+      expect((await writeBacksForWorkItem(sql, WS, id)).filter((write) => write.lifecycleKey?.startsWith('standing-pr:'))).toHaveLength(1);
+      // Sync-back has advanced the target to the fix: the next PR must not claim this old issue.
+      expect(await correlateAdmissionStandingPr(sql, { ...input, targetSha: head,
+        url: 'https://github.com/acme/widgets/pull/8', number: 8 })).toEqual({ linked: [], failed: [] });
+      expect((await item(id)).payload).toMatchObject({ standingPr: { url: input.url } });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('runs on calibrated fixtures', async () => {
     // (1) Both fixture trackers are valid provider descriptors (the production registry's
     // register() also validates them in beforeAll; this states it explicitly).

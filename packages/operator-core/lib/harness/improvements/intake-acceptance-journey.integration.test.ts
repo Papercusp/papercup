@@ -31,7 +31,14 @@ vi.mock('@papercusp/db-org', async (orig) => {
 });
 
 const { createIssue, claimIssue } = await import('../../issues-engineer');
-const { currentIntakeSourceRevision, executeIntakeDecision } = await import('../../attention/intake-promotion');
+const {
+  currentIntakeSourceRevision,
+  defaultIntakePromotionDeps,
+  defaultReproductionLedgerDeps,
+  executeIntakeDecision,
+  readIntakeReproduction,
+} = await import('../../attention/intake-promotion');
+const { stampFiledBugReproduction } = await import('../../attention/bug-reproduction');
 const { parseIntakeDecision } = await import('../../attention/bulk-dispositions');
 const { setWorkItemState } = await import('../../work-items');
 const { readWorkItemReadinessProjection } = await import('../../work-items-admission-promoter');
@@ -47,6 +54,9 @@ type DecisionInput = import('../../attention/bulk-dispositions').BulkIntakeDecis
 let db: OrgTestDb;
 
 beforeAll(async () => {
+  // POST_CUTOVER is beyond a far-future sentinel. Filing grace is an independent
+  // caller-relative floor; leave it neutral so it cannot mask receipt admission.
+  vi.stubEnv('PAPERCUSP_FILING_GRACE_SEC', '0');
   // The double accept runs a lock holder, its writer and a waiter at once (see the P-006 suite).
   db = await createOrgTestDb({ adminPoolMax: 4 });
   h.sql = db.adminSql;
@@ -55,11 +65,15 @@ beforeAll(async () => {
 afterAll(async () => {
   await db?.cleanup();
   if (!process.env.KEEP_TEST_PG) await teardownTestPg();
+  vi.unstubAllEnvs();
 });
 
 const FILER = 'su-journey-filer';
 const REVIEWER = 'su-journey-reviewer';
 const WORKER = 'su-journey-worker';
+// Control the target checkout identity, keeping the production ledger reads and writers.
+const BUILD = 'abc1234def'.padEnd(40, '0');
+const OTHER_BUILD = 'b'.repeat(40);
 /** D-018 §3: rows dated after the cutover are judged by the acceptance floor whatever the sentinel is. */
 const POST_CUTOVER = IMPLEMENTATION_ACCEPTANCE_ENFORCEMENT_CUTOVER_MS + 60_000;
 const ACCEPTANCE = {
@@ -137,8 +151,11 @@ async function decide(sourceId: string, input: DecisionInput, decidedBy: string)
   return parsed.decision;
 }
 
-function exec(sourceId: string, decision: Awaited<ReturnType<typeof decide>>, runId: string) {
-  return executeIntakeDecision({ sourceId, decision, runId, itemId: `att-${sourceId}` });
+function exec(sourceId: string, decision: Awaited<ReturnType<typeof decide>>, runId: string, targetBuild = BUILD) {
+  return executeIntakeDecision(
+    { sourceId, decision, runId, itemId: `att-${sourceId}` },
+    defaultIntakePromotionDeps({ currentTargetBuild: async () => targetBuild }),
+  );
 }
 
 /** A by-id claim's verdict is the row's holder afterwards; a refusal may throw or return. */
@@ -152,11 +169,15 @@ async function claims(id: string, assignee: string, workspaceId: string): Promis
 }
 
 /** The scheduler's self-select read, scoped to one row. */
-async function selfSelectable(id: string, workspaceId: string, harness: string): Promise<boolean> {
+async function claimability(id: string, workspaceId: string, harness: string) {
   const filter: FilterNode = { field: 'id', op: 'in', value: [id] };
-  const read = await readIssueClaimability(filter, {
+  return readIssueClaimability(filter, {
     harness, workspaceId, states: ['open'], assignee: WORKER, client: db.adminSql,
   }, { limit: 10 });
+}
+
+async function selfSelectable(id: string, workspaceId: string, harness: string): Promise<boolean> {
+  const read = await claimability(id, workspaceId, harness);
   return read.rows.some((r) => r.id === id);
 }
 
@@ -263,5 +284,107 @@ describe('R-12 observation → candidate → accepted work → verified completi
     const source = await row(obs.id);
     expect(source.payload?.lane).toBe('observation');
     expect(source.payload?.intakeExecution).toMatchObject({ workItemId: workId });
+  });
+});
+
+describe('ledger encounter → independent promotion → post-cutover claim admission', () => {
+  async function ledgerRun(status: 'fail' | 'pass', commitSha = BUILD, dirty = false): Promise<number> {
+    const [run] = await db.adminSql<{ id: string }[]>`
+      INSERT INTO harness_shared.test_runs (file_path, framework, status, commit_sha, worktree_dirty)
+      VALUES (${`journey/${tag()}.test.ts`}, 'vitest', ${status}, ${commitSha}, ${dirty})
+      RETURNING id`;
+    return Number(run!.id);
+  }
+
+  async function fileEncounter(ref: string) {
+    const stamp = await stampFiledBugReproduction({ ref, buildSha: BUILD }, { filedBy: FILER }, defaultReproductionLedgerDeps());
+    if (!stamp.ok) throw new Error(stamp.error);
+    const source = await createIssue({
+      kind: 'bug',
+      title: `ledger encounter journey ${tag()}`,
+      body: 'the nightly export drops tabbed rows',
+      scope: 'harness:papercusp',
+      createdBy: FILER,
+      payload: { reproduction: stamp.stored },
+    });
+    await db.adminSql`UPDATE harness_shared.work_items SET created_ts = ${POST_CUTOVER} WHERE feature_id = ${source.id}`;
+    return { source, stamp: stamp.stored, stored: await row(source.id) };
+  }
+
+  it('admits a clean matching failure only after a current-build independent acceptance', async () => {
+    const ref = `test_runs:${await ledgerRun('fail')}`;
+    const { source, stamp, stored } = await fileEncounter(ref);
+    expect(stamp.verification.status).toBe('verified');
+    expect(await stage(source.id)).toBe('candidate');
+    expect(await selfSelectable(source.id, stored.workspace_id, stored.harness_slug)).toBe(false);
+    expect(await claims(source.id, WORKER, stored.workspace_id)).toBe(false);
+
+    const input = { disposition: 'promote', reason: 'canonical ledger encounter', acceptance: ACCEPTANCE, reproduction: null } as const;
+    const selfReview = await decide(source.id, input, FILER);
+    expect(await exec(source.id, selfReview, `ledger-self-${tag()}`)).toMatchObject({
+      ok: false, refusal: 'acceptance-invalid-authority',
+    });
+    const decision = await decide(source.id, input, REVIEWER);
+    // A verified filing cannot authorize a fix on a different target build.
+    expect(await exec(source.id, decision, `ledger-stale-${tag()}`, OTHER_BUILD)).toMatchObject({
+      ok: false, refusal: 'reproduction-unverified',
+    });
+    expect((await row(source.id)).payload?.intakePromotion).toBeUndefined();
+    expect(await selfSelectable(source.id, stored.workspace_id, stored.harness_slug)).toBe(false);
+    expect(await claims(source.id, WORKER, stored.workspace_id)).toBe(false);
+
+    expect(await exec(source.id, decision, `ledger-accepted-${tag()}`)).toMatchObject({
+      ok: true, mode: 'in-place', workItemId: source.id,
+    });
+    const accepted = await row(source.id);
+    expect(readIntakeReproduction(accepted.payload)).toMatchObject({
+      receipt: { kind: 'encounter', ref, buildSha: BUILD }, origin: 'filing', decidedBy: REVIEWER,
+    });
+    expect(accepted.payload?.intakePromotion).toMatchObject({ decidedBy: REVIEWER });
+    expect(await stage(source.id)).toBe('accepted-ready');
+    expect(await promotedFrom(source.id)).toEqual([]);
+    const selected = await claimability(source.id, stored.workspace_id, stored.harness_slug);
+    expect({ status: accepted.status, breakdown: selected.breakdown }).toMatchObject({
+      status: 'open', breakdown: { matchedByFilter: 1, claimable: 1, excluded: { cooldown: 0, agentReview: 0 } },
+    });
+    expect(selected.rows.map((r) => r.id)).toContain(source.id);
+    expect(await claims(source.id, WORKER, stored.workspace_id)).toBe(true);
+    expect(await stage(source.id)).toBe('accepted-active');
+  });
+
+  it.each([
+    { name: 'passing run', status: 'pass', commitSha: BUILD, dirty: false, verification: 'refuted' },
+    { name: 'failure on another build', status: 'fail', commitSha: OTHER_BUILD, dirty: false, verification: 'refuted' },
+    { name: 'failure on a dirty worktree', status: 'fail', commitSha: BUILD, dirty: true, verification: 'refuted' },
+    { name: 'missing ledger row', status: null, commitSha: BUILD, dirty: false, verification: 'unresolved' },
+  ] as const)('keeps a $name unaccepted and unclaimable through both admission paths', async (control) => {
+    const id = control.status === null ? 9007199254740990 : await ledgerRun(control.status, control.commitSha, control.dirty);
+    const ref = `test_runs:${id}`;
+    const { source, stamp, stored } = await fileEncounter(ref);
+    expect(stamp.verification.status).toBe(control.verification);
+    const input = { disposition: 'promote', reason: control.name, acceptance: ACCEPTANCE } as const;
+    const noReceipt = await decide(source.id, { ...input, reproduction: null }, REVIEWER);
+    expect(await exec(source.id, noReceipt, `ledger-no-receipt-${tag()}`)).toMatchObject({
+      ok: false, refusal: 'reproduction-missing',
+    });
+    // Re-citing the same row in a reviewer decision cannot launder the ledger verdict.
+    const cited = await decide(source.id, {
+      ...input, reproduction: { kind: 'failing-test', ref, buildSha: BUILD },
+    }, REVIEWER);
+    expect(await exec(source.id, cited, `ledger-cited-${tag()}`)).toMatchObject({
+      ok: false, refusal: 'reproduction-unverified',
+    });
+    const refused = await row(source.id);
+    expect(refused.payload?.intakePromotion).toBeUndefined();
+    expect(readIntakeReproduction(refused.payload)).toBeNull();
+    expect(await promotedFrom(source.id)).toEqual([]);
+    expect(await stage(source.id)).toBe('candidate');
+    const selected = await claimability(source.id, stored.workspace_id, stored.harness_slug);
+    expect(selected.breakdown).toMatchObject({
+      matchedByFilter: 1, claimable: 0, excluded: { cooldown: 0, agentReview: 1 },
+    });
+    expect(selected.rows).toEqual([]);
+    expect(await claims(source.id, WORKER, stored.workspace_id)).toBe(false);
+    expect((await row(source.id)).taken_by).toBeNull();
   });
 });

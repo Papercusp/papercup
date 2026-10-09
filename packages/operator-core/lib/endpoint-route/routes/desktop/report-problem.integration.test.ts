@@ -39,7 +39,7 @@ const { runWithWorkspace } = await import('../../../workspace-als');
 const { contributeUpstream } = await import('../../../pot/contribute-upstream');
 const { buildEngineerIssuesProjection } = await import('../../../sync/hyperbee/projections/engineer-issues');
 const { errorSignatureOf } = await import('../../../harness/improvements/error-signature');
-const { currentIntakeSourceRevision, executeIntakeDecision } = await import('../../../attention/intake-promotion');
+const { currentIntakeSourceRevision, executeIntakeDecision, defaultIntakePromotionDeps } = await import('../../../attention/intake-promotion');
 const { parseIntakeDecision } = await import('../../../attention/bulk-dispositions');
 const { publishReporterRelease, defaultReporterReleaseDeps } = await import('../../../../../../apps/operator/lib/release/reporter-release');
 const { forwardReportAttachment, defaultReportAttachmentRpcDeps, buildReportAttachmentRpcHandler, REPORT_ATTACHMENT_RPC_KIND } = await import('../../../harness/improvements/report-attachment-rpc');
@@ -319,7 +319,8 @@ describe('desktop Report a problem door, end to end', () => {
           outcome: 'CSV export completes', scope: 'CSV export on board', completionCheck: 'CSV reproduction passes' } },
       { decidedBy: 'su-upstream-verifier', sourceRevision: await currentIntakeSourceRevision(id) });
       if (!parsed.ok) throw new Error(parsed.error);
-      const promoted = await executeIntakeDecision({ sourceId: id, decision: parsed.decision, runId: 'p015-upstream', itemId: `report-${s}` });
+      const promoted = await executeIntakeDecision({ sourceId: id, decision: parsed.decision, runId: 'p015-upstream', itemId: `report-${s}` },
+        defaultIntakePromotionDeps({ currentTargetBuild: async () => 'abc1234def'.padEnd(40, '0') }));
       expect(promoted, JSON.stringify(promoted)).toMatchObject({ ok: true, mode: 'distinct', created: true });
       if (!promoted.ok || !promoted.workItemId) throw new Error(JSON.stringify(promoted));
       expect(await claimIssue(promoted.workItemId, 'su-upstream-fixer')).toMatchObject({ assignee: 'su-upstream-fixer' });
@@ -508,7 +509,8 @@ describe('desktop Report a problem door, end to end', () => {
     { decidedBy: 'su-p023-verifier', sourceRevision: await currentIntakeSourceRevision(id) });
     if (!parsed.ok) throw new Error(parsed.error);
     const accepted = await executeIntakeDecision({ sourceId: id, decision: parsed.decision,
-      runId: `p023-${s}`, itemId: `report-${s}` });
+      runId: `p023-${s}`, itemId: `report-${s}` },
+    defaultIntakePromotionDeps({ currentTargetBuild: async () => 'abc1234def'.padEnd(40, '0') }));
     expect(accepted).toMatchObject({ ok: true, mode: 'in-place', workItemId: id });
     const admitted = await claimable();
     const [afterAcceptance] = await db.adminSql`

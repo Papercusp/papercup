@@ -1888,6 +1888,18 @@ describe('buildMemoryContextBlock', () => {
  * rendering assertions live in the P-003 describe below.
  */
 describe('corpus leg carries its own retrieval health (P-001)', () => {
+  it('retains eligible mem0 alongside new plan/doc/report contributions without expanding the memory budget', async () => {
+    useBackend(mockBackend([{ id: 'm-knowledge-control',text: 'retain verified snapshot' }]));
+    corpusIoResult = { block: null,dropped: [],embedderAvailable: true,candidateCount: 3,
+      lines: (['plan','doc','report'] as const).map(kind => ({ line: `- [${kind} fixture] cited ${kind} section`,score: 1,
+        handle: { kind,ref: `${kind}:fixture`,query: ['repair'],resolve: `${kind}:get` } })),
+    };
+    const block = await buildMemoryContextBlock({ userId: 'u1',workspaceId: 'ws',harnessSlugs: ['papercusp'],
+      queryContext: 'repair the queue boundary',budgetChars: 1800 });
+    expect(block).toContain('retain verified snapshot');
+    for (const kind of ['plan','doc','report']) expect(block).toContain(`[${kind} fixture] cited ${kind} section`);
+    expect(recallCorpusContext).toHaveBeenCalledWith(expect.objectContaining({ harnessSlugs: ['papercusp'],workspaceId: 'ws' }));
+  });
   const oneLine = (over: Partial<CorpusIoStub> = {}): CorpusIoStub => ({
     block: null,
     lines: [{ line: '- [work-item WI-6512] a pointer', score: 1,
@@ -2138,6 +2150,16 @@ describe('corpus leg carries its own retrieval health (P-001)', () => {
 
 /** P-009 — the corpus leg shares the existing one-row admission telemetry. */
 describe('records the corpus admission funnel on the same recall row (P-009)', () => {
+  it('retains the source receipts from every cascade stage on the same telemetry row', async () => {
+    const first = { ...legsWith(0),lexical: { ...legsWith(0).lexical,sourceCalls: [
+      { source: 'plan',ranker: 'lexical',status: 'timed-out' as const,rows: null,durationMs: 200,reason: 'source deadline' },
+    ] } };
+    const second = legsWith(1);
+    corpusIoResult = oneLine({ legs: second,stages: [first,second] });
+    const corpus = await run();
+    expect(corpus).toMatchObject({ stages: [first,second] });
+    expect(recordRecallStatsMock).toHaveBeenCalledTimes(1);
+  });
   const flush = async (): Promise<void> => {
     for (let i = 0; i < 5; i++) await new Promise((resolve) => setTimeout(resolve, 0));
   };

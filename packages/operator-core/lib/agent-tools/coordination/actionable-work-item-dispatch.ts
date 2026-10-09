@@ -517,6 +517,8 @@ async function classifyOne(
         code: observed.gated ? 'admission_gated' : 'read_failed',
         reason: observed.operationClaimDenied
           ? `operation claim authority: ${observed.operationClaimDenied}`
+          : observed.reproductionRefused
+          ? observed.reproductionRefused.detail
           : observed.gated
           ? claimFloor
             ? claimFloorReason(claimFloor)

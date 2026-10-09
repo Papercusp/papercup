@@ -195,6 +195,21 @@ afterEach(() => resetReadCursorStore());
 const settle = () => new Promise((r) => setTimeout(r, 0));
 
 describe('turn-start-memory admission (F-E: no length floor)', () => {
+  it('preserves bound-plan orientation and eligible memory alongside cited knowledge with server-bound agent scope', async () => {
+    detectHarnessSlugSyncMock.mockReturnValue({ slug: 'papercusp',source: 'meta-papercup' });
+    buildTurnStartOrientationBlockMock.mockResolvedValue({ block: '## Orientation\nBound plan: current repair requirement',deliveryToken: null });
+    buildMemoryContextBlockMock.mockResolvedValue('Relevant memory: retain verified snapshot\n\n'
+      + 'Related context: [plan other-repair] tail decision; [doc repair-runbook] prerequisite; [report rpt-repair] dated evidence');
+    const out = await post({ owner: 'su-knowledge-reader',prompt: 'repair the queue boundary',harness: 'papercusp',client: 'codex' });
+    expect(out.text).toContain('Bound plan: current repair requirement');
+    expect(out.text).toContain('retain verified snapshot');
+    expect(out.text).toContain('[plan other-repair]');
+    expect(out.text).toContain('[doc repair-runbook] prerequisite');
+    expect(out.text).toContain('[report rpt-repair] dated evidence');
+    expect(buildMemoryContextBlockMock).toHaveBeenCalledWith(expect.objectContaining({
+      workspaceId: 'ws-test',harnessSlugs: ['papercusp'],session: expect.objectContaining({ sessionId: 'su-knowledge-reader',client: 'codex' }),
+    }));
+  });
   it('shares the host-wide optional-memory admission and preserves orientation when capacity is full', async () => {
     withOptionalMemoryAdmissionMock.mockResolvedValueOnce({ admitted: false, reason: 'at_capacity' });
     buildTurnStartOrientationBlockMock.mockResolvedValue({

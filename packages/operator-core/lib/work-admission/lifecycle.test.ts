@@ -20,6 +20,18 @@ describe('planLifecycleWrites', () => {
     expect(planLifecycleWrites(item({}), ON, none)).toEqual([]);
   });
 
+  it('publishes a tested standing PR link once per PR through the existing lifecycle ledger', () => {
+    const fixed = item({ state: 'done', closedAt: 'stamp', payload: {
+      standingPr: { schemaVersion: 'admission-standing-pr-v1', number: 7,
+        url: 'https://github.com/acme/widgets/pull/7', testedSha: 'a'.repeat(40), targetSha: 'b'.repeat(40) },
+    } });
+    const writes = planLifecycleWrites(fixed, ON, none);
+    expect(writes[0]).toMatchObject({ action: 'comment', text: expect.stringContaining('https://github.com/acme/widgets/pull/7') });
+    expect(planLifecycleWrites(fixed, ON, new Set(writes.map((write) => write.key)))).toEqual([]);
+    expect(planLifecycleWrites(fixed, { ...ON, complete: false }, none)).toEqual([]);
+    expect(planLifecycleWrites(item({ payload: { standingPr: { url: 'https://untrusted.example/pull/7' } } }), ON, none)).toEqual([]);
+  });
+
   it('moves the source to in-progress and comments the holder on claim, once per holder', () => {
     const claimed = item({ state: 'wip', assignee: 'su-a' });
     expect(planLifecycleWrites(claimed, ON, none)).toEqual([

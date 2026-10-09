@@ -330,13 +330,32 @@ export function createCgroupMemoryObserver({
   let peakMb = null;
   let oomKillsStart;
   let oomKillsLast = null;
-  return {
+  let activeWorkers = 0;
+  let pairedSamples = 0;
+  let maxAnonPerAllocatedWorkerMb = null;
+  const observer = {
+    /** Scope the existing scheduler grant to its task lifetime, including rejection. */
+    async withWorkers(workers, run) {
+      if (!Number.isInteger(workers) || workers < 1) throw new Error('workers must be a positive integer');
+      activeWorkers += workers;
+      try { return await run(); }
+      finally {
+        observer.sample();
+        activeWorkers -= workers;
+      }
+    },
     sample() {
-      const usage = read();
+      let usage;
+      try { usage = read(); } catch { return; } // Diagnostic failure is unknown, never a test verdict.
       if (!usage) return;
       samples++;
       if (usage.anonMb != null) {
         maxAnonMb = Math.max(maxAnonMb ?? 0, usage.anonMb);
+        if (activeWorkers > 0) {
+          pairedSamples++;
+          maxAnonPerAllocatedWorkerMb = Math.max(maxAnonPerAllocatedWorkerMb ?? 0,
+            Math.ceil(usage.anonMb / activeWorkers));
+        }
       }
       if (usage.peakMb != null) peakMb = Math.max(peakMb ?? 0, usage.peakMb);
       if (usage.oomKills != null) {
@@ -354,29 +373,34 @@ export function createCgroupMemoryObserver({
           oomKillsLast == null || oomKillsStart === undefined
             ? null
             : oomKillsLast - oomKillsStart,
+        pairedSamples,
+        maxAnonPerAllocatedWorkerMb,
       };
     },
   };
+  return observer;
 }
 
 /**
  * One greppable line beside AFFECTED_TESTS_SCHEDULER_OBSERVED. Deliberately a SEPARATE marker:
  * green-checkpoint consumes the OBSERVED line by prefix and its field set stays unchanged.
- * `anonPerWorkerMb` divides the sampled anon maximum by the observed worker peak. It includes
- * the vitest main processes, so it OVERSTATES a single fork's share, which is the safe
- * direction for sizing a worker token.
+ * `anonPerWorkerMb` is the largest sampled anon / contemporaneous granted-worker ratio.
+ * These are ALLOCATIONS, not a count of resident forks. Sampling is a lower bound on the
+ * true peak and includes parent overhead; calibration still needs a margin and the hard
+ * envelope. Never divide two independent peaks: that can understate one-worker demand.
+ * Legacy unpaired observations remain unknown rather than inventing a sizing signal.
  */
 export function formatCgroupMemoryObservedMarker(summary, { observedMaxWorkers } = {}) {
   const field = (value) => (value == null ? "unknown" : String(value));
   const perWorker =
-    summary.maxAnonMb != null && Number(observedMaxWorkers) > 0
-      ? String(Math.ceil(summary.maxAnonMb / Number(observedMaxWorkers)))
+    Number(summary.pairedSamples) > 0 && summary.maxAnonPerAllocatedWorkerMb != null
+      ? String(summary.maxAnonPerAllocatedWorkerMb)
       : "unknown";
   return (
     `AFFECTED_TESTS_CGROUP_MEMORY_OBSERVED samples=${summary.samples} ` +
     `anonMaxMb=${field(summary.maxAnonMb)} peakMb=${field(summary.peakMb)} ` +
     `oomKills=${field(summary.oomKills)} maxWorkers=${field(observedMaxWorkers)} ` +
-    `anonPerWorkerMb=${perWorker}`
+    `anonPerWorkerMb=${perWorker} workerBasis=paired-allocation pairedSamples=${summary.pairedSamples ?? 0}`
   );
 }
 
@@ -939,8 +963,8 @@ function takeShortest(pending) {
  * durations and call that a wall-time lower bound — the parallel lanes make that sum serial-
  * equivalent work, not elapsed time.
  *
- * The simulation mirrors an uncontended admission turn: the primary lane takes the
- * longest known pending task, the reserved lane takes the shortest known pending task, and the
+ * The simulation mirrors an uncontended admission turn: primary lanes take the
+ * longest known pending tasks, the reserved lane takes the shortest known pending task, and the
  * next task on each lane starts when that lane becomes free. Shards are summed because
  * `runBudgetedTaskShards` runs them sequentially.
  */
@@ -984,13 +1008,12 @@ export function estimateBudgetedTaskWallMs(plan, options) {
       continue;
     }
 
-    const lanes = [
-      { readyAt: 0, take: takeLongest },
-      { readyAt: 0, take: takeShortest },
-    ];
+    const lanes = taskLanes(budget).map((lane) => ({ ...lane, readyAt: 0 }));
     while (pending.length > 0) {
-      // Keep ties on the primary lane: it is started first by Promise.all in the real runner.
-      const lane = lanes[1].readyAt < lanes[0].readyAt ? lanes[1] : lanes[0];
+      // Keep ties in launch order, as in the real runner's concurrent first wave.
+      const lane = lanes.reduce((first, candidate) =>
+        candidate.readyAt < first.readyAt ? candidate : first,
+      );
       const entry = lane.take(pending);
       lane.readyAt += entry.estimateMs ?? 0;
     }
@@ -1007,17 +1030,36 @@ export function estimateBudgetedTaskWallMs(plan, options) {
   };
 }
 
+/** Reuse one allocation policy for execution and its wall-clock projection. */
+function taskLanes(budget) {
+  if (budget.mode !== "parallel") {
+    return [{ lane: "serial", workers: budget.effectiveWorkerBudget, take: takeLongest }];
+  }
+  // Preserve the default primary + reserved split. Raising the existing task ceiling
+  // adds primary lanes, dividing the SAME worker/memory budget rather than multiplying it.
+  const count = Math.min(budget.maxConcurrentTasks - 1, budget.primaryWorkers);
+  const width = Math.floor(budget.primaryWorkers / count);
+  const remainder = budget.primaryWorkers % count;
+  return [
+    ...Array.from({ length: count }, (_, index) => ({
+      lane: "primary", workers: width + (index < remainder ? 1 : 0), take: takeLongest,
+    })),
+    { lane: "reserved", workers: budget.reserveLaneWorkers, take: takeShortest },
+  ];
+}
+
 /**
  * Run tasks under one global worker+memory envelope.
  *
- * In parallel mode the primary lane consumes all but the reserved worker tokens and
- * selects longest-first. The reserved lane consumes the remaining tokens and selects
+ * In parallel mode primary lanes divide all but the reserved worker tokens and
+ * select longest-first. The reserved lane consumes the remaining tokens and selects
  * shortest-first. This overlaps fixed per-leg overhead and short guards without ever
  * multiplying a per-workspace cap. A one-worker/memory-token budget collapses to serial.
  * Results are returned in declaration order regardless of completion order.
  */
 function createBudgetedTaskRun(tasks, options) {
   const budget = resolveTaskBudget(options);
+  const lanes = taskLanes(budget);
   const estimateMs = options.estimateMs ?? (() => null);
   const runTask = options.runTask;
   if (typeof runTask !== "function")
@@ -1144,7 +1186,7 @@ function createBudgetedTaskRun(tasks, options) {
       // Let the initial concurrent wave start, then stop refilling when a peer
       // is queued. Both lanes drain before the holder releases its FIFO slot.
       if (
-        admissions - turn.startedAdmissions >= budget.maxConcurrentTasks &&
+        admissions - turn.startedAdmissions >= lanes.length &&
         turn.hasWaiters && await turn.hasWaiters()
       ) turn.yielded = true;
       // The other lane may have settled or taken the final task during the read.
@@ -1159,11 +1201,10 @@ function createBudgetedTaskRun(tasks, options) {
     if (budget.mode === "parallel" && pending.length > 1) {
       // Promise.all rejects before its siblings settle. Stop new admissions and
       // drain the surviving child and its persistence before releasing the slot.
-      const lanes = await Promise.allSettled([
-        runLane("primary", budget.primaryWorkers, takeLongest, turn),
-        runLane("reserved", budget.reserveLaneWorkers, takeShortest, turn),
-      ]);
-      const rejected = lanes.find((lane) => lane.status === "rejected");
+      const outcomes = await Promise.allSettled(
+        lanes.map(({ lane, workers, take }) => runLane(lane, workers, take, turn)),
+      );
+      const rejected = outcomes.find((lane) => lane.status === "rejected");
       if (rejected) throw rejected.reason;
     } else {
       await runLane("serial", budget.effectiveWorkerBudget, takeLongest, turn);

@@ -28782,7 +28782,7 @@
           "POST"
         ]
       },
-      "description": "Publish a finished owner-facing report (audit, review, analysis, postmortem, status digest, proposal) to the Reports library. Returns a stable `report_id` and UI path. `body_md` is Markdown (Mermaid allowed), max 512KB; oversized bodies are refused with the exact overage, never truncated. The server stamps author, pot, and session. Use `supersedes` to publish a correction in the same lineage; the old body remains resolvable. After publishing, call `reports:get { id: report_id }` and verify the complete body and visibility before citing the path or claiming delivery.",
+      "description": "Publish a finished owner-facing report (audit, review, analysis, postmortem, status digest, proposal) to the Reports library. Returns a stable `report_id` and UI path. `body_md` is Markdown (Mermaid allowed), max 512KB; oversized bodies are refused with the exact overage, never truncated. The server stamps author, pot, and session. Use `supersedes` to publish a correction in the same lineage; the old body remains resolvable. After publishing, call `reports:get { id: report_id }` and verify the complete body and visibility before citing the path or claiming delivery. Reports preserve dated evidence and conclusions; author reusable current procedures with `docs:author`, verify them with `docs:get`, and link the maintained procedure from the report without copying private incident details.",
       "capabilities": [
         "reports:write"
       ],
@@ -28844,7 +28844,7 @@
       ],
       "guidance": {
         "when": "When finished owner-facing writing should remain discoverable: audits, reviews, postmortems, analyses, status digests, or proposals.",
-        "notWhen": "Use `work_items:checkpoint` for in-flight state, `facts:assert` for standing conclusions, `plans:add-decision` for cross-lane rulings, and `coord:send` for agent messages. Do not republish a just-published typo unless it warrants a new lineage entry.",
+        "notWhen": "Use `work_items:checkpoint` for in-flight state, `facts:assert` for standing conclusions, `plans:add-decision` for cross-lane rulings, and `coord:send` for agent messages. Do not republish a just-published typo unless it warrants a new lineage entry. A reusable runbook belongs in maintained docs through `docs:author`; a report alone is not the current procedural store.",
         "chaining": "reports:publish → reports:get { id: report_id } → verify the complete body and visibility → cite. Claim saved or delivered only after readback succeeds. Corrections: read the original → publish with `supersedes: id` → reports:get with the new report_id → verify the correction → cite it. `reports:list` shows editions and lineage."
       }
     },

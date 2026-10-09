@@ -415,6 +415,8 @@ export interface CorpusAdmissionStats {
   embedderAvailable: boolean;
   /** Raw search-leg execution report; null means fusion never ran. */
   legs: Record<string, unknown> | null;
+  /** Execution receipts from every automatic corpus cascade stage. */
+  stages?: Record<string, unknown>[];
   retrievalDepth: number;
   /** Whether stage-1 reranking actually ran, rather than merely being enabled. */
   rerank: string;

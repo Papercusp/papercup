@@ -41,7 +41,9 @@ export default defineTool({
     'allowed), max 512KB; oversized bodies are refused with the exact overage, never truncated. The server ' +
     'stamps author, pot, and session. Use `supersedes` to publish a correction in the same lineage; the ' +
     'old body remains resolvable. After publishing, call `reports:get { id: report_id }` and ' +
-    'verify the complete body and visibility before citing the path or claiming delivery.',
+    'verify the complete body and visibility before citing the path or claiming delivery. Reports preserve ' +
+    'dated evidence and conclusions; author reusable current procedures with `docs:author`, verify them with ' +
+    '`docs:get`, and link the maintained procedure from the report without copying private incident details.',
   guidance: {
     when:
       'When finished owner-facing writing should remain discoverable: audits, reviews, postmortems, ' +
@@ -49,7 +51,8 @@ export default defineTool({
     notWhen:
       'Use `work_items:checkpoint` for in-flight state, `facts:assert` for standing conclusions, ' +
       '`plans:add-decision` for cross-lane rulings, and `coord:send` for agent messages. Do not republish ' +
-      'a just-published typo unless it warrants a new lineage entry.',
+      'a just-published typo unless it warrants a new lineage entry. A reusable runbook belongs in maintained ' +
+      'docs through `docs:author`; a report alone is not the current procedural store.',
     chaining:
       'reports:publish → reports:get { id: report_id } → verify the complete body and visibility → cite. ' +
       'Claim saved or delivered only after readback succeeds. Corrections: read the original → publish ' +

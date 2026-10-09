@@ -22,6 +22,7 @@ export function describeLeg(leg: LegReport): Record<string, unknown> {
   return {
     status: leg.status,
     candidates: leg.candidates,
+    ...(leg.sourceCalls ? { sourceCalls: leg.sourceCalls } : {}),
     ...(leg.floored > 0 ? { floored: leg.floored } : {}),
     ...(leg.blocked ? { blocked: leg.blocked } : {}),
     ...(leg.failures.length > 0

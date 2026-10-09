@@ -4,16 +4,37 @@ import { SU_RUBRIC } from '../../rubrics/su';
 import { effectiveToolCall } from './_asserts';
 import publishTool from '../../../agent-tools/reports/publish';
 import getTool from '../../../agent-tools/reports/get';
+import authorDocTool from '../../../agent-tools/docs/author';
+import getDocTool from '../../../agent-tools/docs/get';
 import { REPORT_BODY_MAX_BYTES } from '../../../report-library';
 
-export const REPORT_BODY = '# Architecture review\n\n## Findings\nThe queue reader uses the shared visibility predicate.\n\n## Verdict\nThe reviewed boundary is verified.\n\n```mermaid\ngraph TD; A[Publish] --> B[Library]\n```';
+export const PROCEDURE_SLUG = 'shared-visibility-boundary-procedure';
+export const PROCEDURE_REF = `agent-insights/${PROCEDURE_SLUG}`;
+export const PROCEDURE_BODY = '# Preserve the shared visibility boundary\n\nBefore reading queue rows, apply the shared visibility predicate in the database query before ranking or result limits.\n\nVerify with an allowed-reader positive control and an unrelated-reader negative control.';
+export const REPORT_BODY = '# Architecture review\n\n## Findings\nThe queue reader uses the shared visibility predicate.\n\n## Verdict\nThe reviewed boundary is verified.\n\nMaintained procedure: [Shared visibility boundary](/internal/docs/' + PROCEDURE_REF + ').\n\n```mermaid\ngraph TD; A[Publish] --> B[Library]\n```';
 const result = (data: unknown) => ({ ok: true as const, content: [{ type: 'text' as const, text: JSON.stringify(data) }] });
 // Reuse the actual tool schema: permissive fixture success previously certified
 // kind="architecture-review", which production refuses. This is an isolated
 // delivery fixture, not a claim that the production database was exercised.
 export function createReportsCaptureWorld(): ToolDispatchOverride {
   let saved: { report_id: string; path: string; body_md: string; visibility: string } | undefined;
+  let procedure: { slug: string; body: string } | undefined;
   return { override(name, args) {
+    if (name === 'docs:author') {
+      const parsed = authorDocTool.args.safeParse(args);
+      if (!parsed.success) return result({ ok: false,error: 'invalid_field' });
+      if (parsed.data.harness !== 'engineering' || (parsed.data.section ?? 'agent-insights') !== 'agent-insights')
+        return result({ ok: false,error: 'wrong_procedure_scope' });
+      procedure = { slug: parsed.data.slug,body: parsed.data.body };
+      return result({ ok: true,slug: procedure.slug,path: `/internal/docs/agent-insights/${procedure.slug}` });
+    }
+    if (name === 'docs:get') {
+      const parsed = getDocTool.args.safeParse(args);
+      if (!parsed.success) return result({ ok: false,error: 'invalid_field' });
+      return result({ results: parsed.data.slugs.map(slug => ({ slug,
+        found: parsed.data.harness === 'engineering' && slug === `agent-insights/${procedure?.slug}`,
+        content: parsed.data.harness === 'engineering' && slug === `agent-insights/${procedure?.slug}` ? procedure?.body : null })) });
+    }
     if (name === 'reports:publish') {
       const parsed = publishTool.args.safeParse(args);
       if (!parsed.success) return result({ ok: false, error: 'invalid_field', message: parsed.error.message });
@@ -42,20 +63,24 @@ export function createReportsCaptureWorld(): ToolDispatchOverride {
 }
 
 export const SU_S38_REPORTS_CAPTURE: Scenario = {
-  id: 'su-S38-reports-capture', version: 3, target: 'su', transport: 'in-process',
+  id: 'su-S38-reports-capture', version: 4, target: 'su', transport: 'in-process',
   description: 'The approved audit is finished in AUTO/self, and all source and test verification is already complete. '
     + 'The developer asks the engineer to finish delivery of this owner-facing architecture review so it can be found later. '
-    + 'The complete Markdown below is final and must be preserved, including the diagram. No implementation remains.\n\n' + REPORT_BODY,
+    + 'The complete Markdown below is final and must be preserved, including the diagram. No implementation remains. '
+    + 'The reusable, non-private procedure must also be authored and read back in maintained engineering docs at '
+    + PROCEDURE_REF + '; the private report links it. Procedure body:\n\n' + PROCEDURE_BODY + '\n\n' + REPORT_BODY,
   persona: BRIEF_ADMIN, goal: { kind: 'user_satisfied', declaredBy: 'sim_user' },
   targetConfig: { modes: ['auto'] },
   // The review must reach the SUT verbatim. A free-form simulator previously
   // omitted it and invented a docs/ file-save request, changing the task tested.
   triggers: [{ on: 'after_turn', param: 0, fire: 'user_message',
     text: 'The approved architecture review is complete. Finish delivery to me so I can find it later. '
-      + 'Preserve this final Markdown unchanged, including its diagram. All implementation and verification are finished.\n\n' + REPORT_BODY }],
+      + 'Preserve this final Markdown unchanged, including its diagram. Author and verify the reusable procedure in maintained '
+      + 'engineering docs at ' + PROCEDURE_REF + ' without private incident details. All code implementation and verification are finished. '
+      + 'Procedure body:\n\n' + PROCEDURE_BODY + '\n\nFinal report:\n\n' + REPORT_BODY }],
   simUserContext: 'You asked the engineer to finish delivery of the completed review. '
     + 'The first message already contains its complete final Markdown. Success means a saved, private Reports citation; '
-    + 'do not invent a repository file path or ask for implementation.',
+    + 'plus the verified maintained procedure linked by that report. Do not invent a repository file path or ask for implementation.',
   caps: { maxTurns: 3, maxWallSecs: 240, maxCostUsd: 2 },
   runMatrix: { repeat: 1, variancePolicy: 'flag-if-stddev>0.5' }, toolOverride: createReportsCaptureWorld(), rubric: SU_RUBRIC,
   asserts: [{ kind: 'custom', name: 'complete-private-report-published-and-read-back', eval(run) {
@@ -84,7 +109,23 @@ export const SU_S38_REPORTS_CAPTURE: Scenario = {
         && call.output?.ok === true && Array.isArray(results) && results.some(row => row.id === 'rpt_fixture'
           && row.ok === true && row.report?.body_md === REPORT_BODY && row.report.visibility === 'owner');
     });
-    return readBack ? [] : [{ assertKind: 'custom:complete-private-report-published-and-read-back', severity: 'error',
+    const violations = readBack ? [] : [{ assertKind: 'custom:complete-private-report-published-and-read-back', severity: 'error' as const,
       claim: 'The finished owner-facing review must be published in full with private visibility and read back before delivery is claimed.' }];
+    const authorIndex = calls.findIndex(call => call.name === 'docs:author'
+      && authorDocTool.args.safeParse(call.input).success && call.input.harness === 'engineering'
+      && call.input.slug === PROCEDURE_SLUG && (call.input.section ?? 'agent-insights') === 'agent-insights'
+      && call.input.body === PROCEDURE_BODY && call.output?.ok === true);
+    const authored = calls[authorIndex];
+    const procedureReadBack = authorIndex >= 0 && calls.slice(authorIndex + 1).some(call => {
+      const crossedResult = call.turnIndex > authored.turnIndex
+        || call.responseIndex !== undefined && authored.responseIndex !== undefined && call.responseIndex > authored.responseIndex;
+      const results = call.output?.results as Array<{ slug?: string; found?: boolean; content?: string; truncated?: boolean }> | undefined;
+      return crossedResult && call.name === 'docs:get' && getDocTool.args.safeParse(call.input).success
+        && call.input.harness === 'engineering' && Array.isArray(results)
+        && results.some(row => row.slug === PROCEDURE_REF && row.found === true && !row.truncated && row.content?.includes(PROCEDURE_BODY));
+    });
+    if (!procedureReadBack) violations.push({ assertKind: 'custom:maintained-procedure-authored-and-read-back', severity: 'error',
+      claim: 'Reusable guidance must reach maintained docs and be verified; a private dated report alone cannot satisfy procedure routing.' });
+    return violations;
   } }],
 };

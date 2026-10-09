@@ -5,6 +5,20 @@ import { readFile } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import { runInNewContext } from 'node:vm';
 import { createRequire } from 'node:module';
+import { decodeNativeBridgeJson } from './_native-bridge-json';
+
+test('native CLI JSON boundary preserves scalar and JSON-looking string values', () => {
+  // Captured CLI output from the real HUD assertion must remain a string.
+  expect(decodeNativeBridgeJson('"hud"')).toBe('hud');
+  expect(decodeNativeBridgeJson('"false"')).toBe('false');
+  expect(decodeNativeBridgeJson(JSON.stringify('{"value":1}'))).toBe('{"value":1}');
+  expect(decodeNativeBridgeJson('false')).toBe(false);
+  expect(decodeNativeBridgeJson('0')).toBe(0);
+  expect(decodeNativeBridgeJson('null')).toBeNull();
+  expect(decodeNativeBridgeJson('{"value":1}')).toEqual({ value: 1 });
+  expect(decodeNativeBridgeJson('[1,"hud"]')).toEqual([1, 'hud']);
+  expect(() => decodeNativeBridgeJson('not JSON')).toThrow();
+});
 import { insertNativeCollectionGoal, insertNativeCollectionPlan, nativeCollectionDeclaration, setNativeCollectionPlanArchived } from './_ongoing-work-native-fixture';
 
 // The app directory is CommonJS; the native spec and e2e helpers are ESM.
@@ -99,8 +113,7 @@ test('legacy Work on Everything progress table stays readable and draft controls
     await run('bash', [process.env.VERIFY_TAURI_LIVENESS_CHECK!], { timeout: 10_000 });
     const result = await run(bridge, [command, '--pid', process.env.VERIFY_TAURI_PID!, ...args], { timeout: 20_000 });
     if (command === 'screenshot') return result.stdout.trim();
-    const value = JSON.parse(result.stdout);
-    return typeof value === 'string' ? JSON.parse(value) : value;
+    return decodeNativeBridgeJson(result.stdout);
   }
   const measure = (expression: string) => native('eval', `JSON.stringify(${expression})`);
   const ready = (expression: string) => expect.poll(() => measure(expression), { timeout: 45_000,
@@ -191,6 +204,9 @@ test('legacy Work on Everything progress table stays readable and draft controls
       await run('xdotool', ['key', '--clearmodifiers', 'space'], { timeout: 10_000, env: xEnv });
       await ready(nativeWorklistKeyReceived(' ', 'Move Design search reliability up'));
       await ready(`document.querySelector('${panel} [data-testid="ongoing-worklist-row"] td:nth-child(2)')?.textContent?.trim().startsWith(${JSON.stringify(labels[1])})`);
+      await info.attach('native-key-delivery-success', { body: JSON.stringify({
+        keys: await measure('window.__nativeWorklistKeys'), sourceReceipt, nativeKeyboardReorder: true,
+      }), contentType: 'application/json' });
     } catch (error) {
       await info.attach('native-key-delivery', { body: JSON.stringify(await measure(`({
         keys: window.__nativeWorklistKeys, tab: new URL(location.href).searchParams.get('tab'),
@@ -244,8 +260,7 @@ test('native declared collections persist controls and reject a barrier-controll
   async function native(command: string, ...args: string[]) {
     const result = await run(bridge, [command, '--pid', process.env.VERIFY_TAURI_PID!, ...args], { timeout: 15_000 });
     if (command === 'screenshot') return result.stdout.trim();
-    const parsed = JSON.parse(result.stdout);
-    return typeof parsed === 'string' ? JSON.parse(parsed) : parsed;
+    return decodeNativeBridgeJson(result.stdout);
   }
   const measure = (expression: string) => native('eval', `JSON.stringify(${expression})`);
   const editor = '[data-testid="goal-data"]';

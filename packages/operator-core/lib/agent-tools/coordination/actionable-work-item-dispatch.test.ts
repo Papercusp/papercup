@@ -82,6 +82,19 @@ function deps(patch: Partial<ActionableWorkItemDispatchDeps> = {}): ActionableWo
 }
 
 describe('assignActionableWorkItems', () => {
+  it('does not wake an accepted bug whose reproduction became stale after assignment', async () => {
+    const held = { ...issueWorkItem('WI-STALE-BUG', 'open', 'su-fixer'), kind: 'bug' as const };
+    const d = deps({ observe: vi.fn(async () => ({
+      item: held, available: false, claimedBy: 'su-fixer', gated: true,
+      reproductionRefused: { status: 'refuted', detail: 'reproduce again before fixing', checkedAt: '2026-10-09T00:00:00Z' },
+    })) });
+    const result = await assignAndWakeActionableWorkItems({ workItemIds: [held.id], targetAgent: 'su-fixer' }, d);
+    expect(result.assignment.retained).toEqual([]);
+    expect(result.assignment.skipped[0]).toMatchObject({ code: 'admission_gated', reason: 'reproduce again before fixing' });
+    expect(d.claim).not.toHaveBeenCalled();
+    expect(d.wake).not.toHaveBeenCalled();
+  });
+
   it('carries the authenticated dispatch actor into the atomic claim (EI-25163151398656476)', async () => {
     const d = deps({ observe: vi.fn(async (id) => ({ item: issueWorkItem(id), available: true, claimedBy: null })) });
     const result = await assignActionableWorkItems(

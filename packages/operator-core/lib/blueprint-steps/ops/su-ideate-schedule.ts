@@ -58,13 +58,7 @@ export const suIdeateScheduleOp: CoordOp<z.infer<typeof args>, z.infer<typeof re
     const workspaceId = ctx.workspaceId;
     if (!workspaceId) throw new Error('su-ideate:schedule requires ctx.workspaceId');
     const out = await runSuIdeateSchedule({ workspaceId }, _deps ?? defaultSuIdeateScheduleDeps);
-    ctx.log?.(
-      `su-ideate:schedule launches24h=${out.launchesLast24h}/${out.budget}` +
-        (out.stopped ? ` stopped=${out.stopped}` : '') +
-        (out.launched ? ` launched=${out.launched.harnessSlug} lens=${out.launched.lens}` : '') +
-        ` evaluated=${out.decisions.length}`,
-    );
-    return {
+    const output = {
       ...(out.stopped ? { stopped: out.stopped } : {}),
       launchesLast24h: out.launchesLast24h,
       budget: out.budget,
@@ -79,6 +73,12 @@ export const suIdeateScheduleOp: CoordOp<z.infer<typeof args>, z.infer<typeof re
         ...(d.error ? { error: d.error } : {}),
       })),
     };
+    // Scheduled programs do not supply ctx.log. Preserve the decision, including
+    // a refused launch, instead of leaving only the generic "program done" log.
+    const diagnostic = `su-ideate:schedule ${JSON.stringify(output)}`;
+    if (ctx.log) ctx.log(diagnostic);
+    else console.info(diagnostic);
+    return output;
   },
 };
 

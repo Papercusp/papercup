@@ -7,6 +7,10 @@ const INSIGHT = fileURLToPath(new URL(
   '../../../../apps/operator-docs/src/content/docs/agent-insights/is-this-process-actually-doing-work.mdx',
   import.meta.url,
 ));
+const JUDGE_INSIGHT = fileURLToPath(new URL(
+  '../../../../apps/operator-docs/src/content/docs/agent-insights/process-lifecycle-judge-verdict-traps.mdx',
+  import.meta.url,
+));
 
 describe('the process-liveness insight explains PID-namespace readings', () => {
   const source = () => readFileSync(INSIGHT, 'utf8');
@@ -37,7 +41,7 @@ describe('the process-liveness insight explains PID-namespace readings', () => {
   it('requires same-kind controls and a complete census before using exact scope absence', () => {
     const text = source();
     expect(text).toContain('only `live.exactScopeUnitMatches` entries with kind "unaccounted"');
-    expect(text).toContain('known-present same-kind unaccounted control from an unfiltered live census');
+    expect(text).toContain('For a non-empty unfiltered census, require a known-present same-kind unaccounted control');
     expect(text).toContain('live.degraded=false');
     expect(text).toContain('live.ownedTruncated=false');
     expect(text).toContain('live.foreignTruncated=false');
@@ -48,7 +52,25 @@ describe('the process-liveness insight explains PID-namespace readings', () => {
     expect(text).toContain('visible numeric /proc PID count');
     expect(text).toMatch(/[\x60]?\$\$[\x60]? in the same call/);
     expect(text).toContain('If `$$` is tiny or only a few PIDs are visible');
-    expect(text).toMatch(/Read the control twice and confirm [\x60]?tasks\[\]\.ageSec[\x60]? advances by elapsed wall time/);
+    expect(text).toMatch(/For a non-empty unfiltered census, require a known-present same-kind unaccounted control and read it twice, confirming [\x60]?tasks\[\]\.ageSec[\x60]? advances by elapsed wall time/);
     expect(text).toMatch(/[\x60]?confined:false[\x60]? does not prove abandonment/);
+  });
+
+  it('provides an independent cgroupfs positive control when the unaccounted census is empty', () => {
+    const text = source();
+    expect(text).toContain('When `live.unaccountedGroups` is empty, a same-kind control is impossible');
+    expect(text).toContain('structurally unavailable, not a failed read');
+    expect(text).toContain('independently enumerate the complete, readable Papercusp cgroupfs subtree under `/sys/fs/cgroup`');
+    expect(text).toContain('exact `scopeUnit` directory absence');
+    expect(text).toContain('a populated peer `pc-*.scope`');
+    expect(text).toMatch(/`pids\.current` > 0 or `cgroup\.events` reports `populated 1`/);
+    expect(text).toMatch(/unreadable or incomplete tree/i);
+    expect(text).toContain('Never use stored `cgroupPath`, `/proc` absence, detector reason, or empty filtered output');
+
+    const judge = readFileSync(JUDGE_INSIGHT, 'utf8');
+    expect(judge).toContain('When the census is empty, the control is structurally unavailable');
+    expect(judge).toContain('Recursively enumerate the complete, readable Papercusp slice subtree under `/sys/fs/cgroup` by exact unit name');
+    expect(judge).toMatch(/peer `pc-\*\.scope` elsewhere in the same subtree is populated/);
+    expect(judge).toContain('Never use stored `cgroupPath`, `/proc` absence, the detector reason, or empty filtered output');
   });
 });

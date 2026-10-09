@@ -178,6 +178,82 @@ describe('runBudgetedTasks', () => {
     expect(result.stats.observedMaxTasks).toBe(2);
   });
 
+  it('funds two longest-first primary tasks and a shortest-first reserved task under a raised ceiling', async () => {
+    const tasks = ['long', 'middle', 'pending', 'short'].map((id, index) => ({ id, estimateMs: 100 - index * 25 }));
+    const gates = new Map(tasks.map((task) => [task.id, deferred<string>()]));
+    const starts: Array<{ id: string; lane: string; workers: number }> = [];
+    const running = runBudgetedTasks(tasks, {
+      ...config, workerBudget: 13, memoryBudgetMb: 13 * 1024, maxConcurrentTasks: 3,
+      estimateMs: (task) => task.estimateMs,
+      runTask: (task, allocation) => {
+        starts.push({ id: task.id, lane: allocation.lane, workers: allocation.workers });
+        return gates.get(task.id)!.promise;
+      },
+    });
+    try {
+      await until(() => starts.length === 3, 'three independently funded lanes');
+      expect(starts).toEqual([
+        { id: 'long', lane: 'primary', workers: 6 },
+        { id: 'middle', lane: 'primary', workers: 6 },
+        { id: 'short', lane: 'reserved', workers: 1 },
+      ]);
+      gates.get('middle')!.resolve('middle');
+      await until(() => starts.length === 4, 'primary lane refill');
+      expect(starts[3]).toEqual({ id: 'pending', lane: 'primary', workers: 6 });
+    } finally {
+      for (const [id, gate] of gates) gate.resolve(id);
+      await running;
+    }
+    const result = await running;
+    expect(result.results.map((entry) => entry.value)).toEqual(tasks.map((task) => task.id));
+    expect(result.stats.observedMaxWorkers).toBe(13);
+    expect(result.stats.observedMaxMemoryMb).toBe(13 * 1024);
+    expect(result.stats.observedMaxTasks).toBe(3);
+  });
+
+  it('limits raised task concurrency to payable worker tokens and the pids envelope', async () => {
+    for (const options of [
+      { workerBudget: 3, memoryBudgetMb: 3072, maxConcurrentTasks: 10 },
+      { workerBudget: 13, memoryBudgetMb: 13 * 1024, maxConcurrentTasks: 10, taskCgroupPidsMax: 9216 },
+    ]) {
+      const result = await runBudgetedTasks(['a', 'b', 'c', 'd'], {
+        ...config, ...options,
+        runTask: async () => { await new Promise<void>((done) => setImmediate(done)); },
+      });
+      expect(result.stats.observedMaxWorkers).toBeLessThanOrEqual(options.workerBudget);
+      expect(result.stats.observedMaxMemoryMb).toBeLessThanOrEqual(options.memoryBudgetMb);
+      expect(result.stats.observedMaxTasks).toBe(options.taskCgroupPidsMax ? 2 : 3);
+      expect(result.results).toHaveLength(4);
+    }
+  });
+
+  it('drains every raised lane after rejection without refilling a surviving lane', async () => {
+    const tasks = ['long', 'middle', 'pending', 'short'].map((id, index) => ({ id, estimateMs: 100 - index * 25 }));
+    const gates = new Map(tasks.map((task) => [task.id, deferred<string>()]));
+    const starts: string[] = [];
+    const running = runBudgetedTasks(tasks, {
+      ...config, workerBudget: 13, memoryBudgetMb: 13 * 1024, maxConcurrentTasks: 3,
+      estimateMs: (task) => task.estimateMs,
+      runTask: (task) => { starts.push(task.id); return gates.get(task.id)!.promise; },
+    });
+    let settled = false;
+    const outcome = running.then(() => null, (error: Error) => error).finally(() => { settled = true; });
+    try {
+      await until(() => starts.length === 3, 'three lanes before rejection');
+      gates.get('long')!.reject(new Error('primary failed'));
+      await new Promise<void>((done) => setImmediate(done));
+      gates.get('middle')!.resolve('middle');
+      await new Promise<void>((done) => setImmediate(done));
+      expect(starts).toEqual(['long', 'middle', 'short']);
+      expect(settled).toBe(false);
+      gates.get('short')!.resolve('short');
+      expect((await outcome)?.message).toBe('primary failed');
+    } finally {
+      for (const [id, gate] of gates) gate.resolve(id);
+      await outcome;
+    }
+  });
+
   it('publishes a settled task before an in-flight sibling lets the pool return', async () => {
     const tasks = [
       { id: 'long', estimateMs: 100 },
@@ -579,6 +655,19 @@ describe('near-tree-wide deterministic sharding (P-011)', () => {
       mode: 'parallel',
       maxConcurrentTasks: 2,
     });
+  });
+
+  it('projects raised primary lanes with the same launch order as execution', () => {
+    const tasks = [{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'd' }, { id: 'e' }];
+    const plan = planAffectedTaskShards(tasks, {
+      blastRadius: { kind: 'scoped', reason: 'path-closure', triggerPaths: [] },
+      taskKey: (task) => task.id,
+    });
+    const projection = estimateBudgetedTaskWallMs(plan, {
+      ...config, workerBudget: 13, memoryBudgetMb: 13 * 1024, maxConcurrentTasks: 3,
+      estimateMs: () => 10_000,
+    });
+    expect(projection).toMatchObject({ projectedWallMs: 20_000, knownWorkMs: 50_000, maxConcurrentTasks: 3 });
   });
 
   it('falls back to serial-equivalent wall time when concurrency is disabled', () => {
@@ -1064,7 +1153,8 @@ describe('resolveMemoryBudgetMb', () => {
       const observer = createCgroupMemoryObserver({ read: () => readings.shift() ?? null });
       for (let i = 0; i < 4; i++) observer.sample();
       // The cgroup carried 3 kills from before the run; only the 2 during it count.
-      expect(observer.summary()).toEqual({ samples: 3, maxAnonMb: 11000, peakMb: 26000, oomKills: 2 });
+      expect(observer.summary()).toEqual({ samples: 3, maxAnonMb: 11000, peakMb: 26000, oomKills: 2,
+        pairedSamples: 0, maxAnonPerAllocatedWorkerMb: null });
     });
 
     it('reports every field as unknown, never zero, when nothing was measured', () => {
@@ -1073,22 +1163,60 @@ describe('resolveMemoryBudgetMb', () => {
       const line = formatCgroupMemoryObservedMarker(observer.summary(), { observedMaxWorkers: 7 });
       expect(line).toBe(
         'AFFECTED_TESTS_CGROUP_MEMORY_OBSERVED samples=0 anonMaxMb=unknown peakMb=unknown ' +
-          'oomKills=unknown maxWorkers=7 anonPerWorkerMb=unknown',
+          'oomKills=unknown maxWorkers=7 anonPerWorkerMb=unknown workerBasis=paired-allocation pairedSamples=0',
       );
     });
 
-    it('divides the anon maximum by the observed worker peak, rounding UP', () => {
+    it('does not derive worker demand from unrelated memory and worker peaks', () => {
       const line = formatCgroupMemoryObservedMarker(
         { samples: 12, maxAnonMb: 10001, peakMb: 29000, oomKills: 0 },
         { observedMaxWorkers: 7 },
       );
-      expect(line).toContain('anonMaxMb=10001 peakMb=29000 oomKills=0 maxWorkers=7 anonPerWorkerMb=1429');
+      expect(line).toContain('anonMaxMb=10001 peakMb=29000 oomKills=0 maxWorkers=7 anonPerWorkerMb=unknown');
       expect(
         formatCgroupMemoryObservedMarker(
           { samples: 1, maxAnonMb: 100, peakMb: null, oomKills: 0 },
           { observedMaxWorkers: 0 },
         ),
       ).toContain('anonPerWorkerMb=unknown');
+    });
+
+    it('keeps the one-worker memory peak paired when the worker-count peak happened earlier', async () => {
+      let anonMb = 200;
+      const observer = createCgroupMemoryObserver({ read: () => ({ anonMb, peakMb: 500, oomKills: 0 }) });
+      await observer.withWorkers(1, async () => {
+        await observer.withWorkers(1, async () => observer.sample()); // 200 / 2 = 100
+        anonMb = 400;
+        observer.sample(); // 400 / 1 = 400, not maxAnon(400) / maxWorkers(2) = 200
+      });
+      expect(observer.summary()).toMatchObject({ maxAnonMb: 400, maxAnonPerAllocatedWorkerMb: 400 });
+      expect(formatCgroupMemoryObservedMarker(observer.summary(), { observedMaxWorkers: 2 })).toContain('anonPerWorkerMb=400');
+    });
+
+    it('releases worker grants on rejection and excludes idle samples from the paired ratio', async () => {
+      let anonMb = 100;
+      const observer = createCgroupMemoryObserver({ read: () => ({ anonMb, peakMb: 5000, oomKills: 0 }) });
+      await expect(observer.withWorkers(2, async () => { observer.sample(); throw new Error('task failed'); })).rejects.toThrow('task failed');
+      anonMb = 5000; observer.sample();
+      expect(observer.summary()).toMatchObject({ maxAnonMb: 5000, maxAnonPerAllocatedWorkerMb: 50 });
+      await observer.withWorkers(1, async () => { anonMb = 101; observer.sample(); });
+      expect(observer.summary().maxAnonPerAllocatedWorkerMb).toBe(101);
+    });
+
+    it('rounds a paired ratio up and never admits an invalid worker count', async () => {
+      const read = vi.fn(() => ({ anonMb: 101, peakMb: 200, oomKills: 0 }));
+      const observer = createCgroupMemoryObserver({ read });
+      await observer.withWorkers(2, async () => observer.sample());
+      expect(observer.summary().maxAnonPerAllocatedWorkerMb).toBe(51);
+      await expect(observer.withWorkers(0, async () => {})).rejects.toThrow('positive integer');
+      await expect(observer.withWorkers(1.5, async () => {})).rejects.toThrow('positive integer');
+    });
+
+    it('keeps an unreadable diagnostic from changing the task result or masking its failure', async () => {
+      const observer = createCgroupMemoryObserver({ read: () => { throw new Error('measurement unavailable'); } });
+      await expect(observer.withWorkers(1, async () => 42)).resolves.toBe(42);
+      await expect(observer.withWorkers(1, async () => { throw new Error('actual task failure'); })).rejects.toThrow('actual task failure');
+      expect(observer.summary()).toMatchObject({ samples: 0, pairedSamples: 0, maxAnonPerAllocatedWorkerMb: null });
     });
 
     it('is wired into affected-tests: sampled on every progress beat and printed once beside OBSERVED', () => {
@@ -1103,6 +1231,7 @@ describe('resolveMemoryBudgetMb', () => {
       const observed = AFFECTED_TESTS_SRC.indexOf('outSync(formatTaskBudgetObservedMarker(initialPool.stats));');
       expect(observed).toBeGreaterThan(-1);
       expect(AFFECTED_TESTS_SRC.slice(observed, observed + 400)).toContain('formatCgroupMemoryObservedMarker(');
+      expect(AFFECTED_TESTS_SRC).toContain('cgroupMemoryObserver.withWorkers(allocation.workers,');
     });
   });
 

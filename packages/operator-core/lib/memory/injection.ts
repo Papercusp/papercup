@@ -509,6 +509,7 @@ interface CorpusLegResult {
   dropped: Record<CorpusAdmissionDropReason, number>;
   sessionDedup: number;
   legs: Record<string, unknown> | null;
+  stages?: Record<string, unknown>[];
   retrievalDepth: number;
   rerank: string;
 }
@@ -778,6 +779,7 @@ function startCorpusLeg(input: MemoryInjectionInput): Promise<CorpusLegResult | 
         dropped: countCorpusDrops(res.dropped),
         sessionDedup: 0,
         legs: (res.legs as Record<string, unknown> | null | undefined) ?? null,
+        ...(res.stages ? { stages: res.stages as unknown as Record<string, unknown>[] } : {}),
         retrievalDepth: res.retrievalDepth ?? 0,
         rerank: res.rerank ?? 'nothing-to-reorder',
       } satisfies Pick<
@@ -1126,6 +1128,7 @@ async function buildBlockInner(
               sessionDedup: corpus.sessionDedup,
               embedderAvailable: corpus.embedderAvailable,
               legs: corpus.legs,
+              ...(corpus.stages ? { stages: corpus.stages } : {}),
               retrievalDepth: corpus.retrievalDepth,
               rerank: corpus.rerank,
             }

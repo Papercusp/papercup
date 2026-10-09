@@ -99,6 +99,22 @@ describe('publishPromotion', () => {
     expect(publishStandingPr).not.toHaveBeenCalled();
   });
 
+  it('links source fixes only after a successful standing PR refresh, and retries bookkeeping without republishing a new PR', async () => {
+    const { d, log, publishStandingPr } = deps();
+    const record = vi.fn().mockRejectedValueOnce(new Error('tracker bookkeeping unavailable'))
+      .mockResolvedValue({ linked: ['WI-fixed'], failed: [] });
+    d.recordStandingPr = record;
+    expect(await publishPromotion(INPUT, d)).toMatchObject({ kind: 'fork', standingPr: { ok: true } });
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('source linkage pending'));
+    expect(await publishPromotion(INPUT, d)).toMatchObject({ kind: 'fork', standingPr: { ok: true } });
+    expect(record).toHaveBeenLastCalledWith(expect.objectContaining({
+      sha: SHA, potHomeSlug: 'acme', prNumber: 7, prUrl: 'https://github.com/acme/widgets/pull/7',
+    }));
+    publishStandingPr.mockRejectedValueOnce(new Error('host unavailable'));
+    await publishPromotion(INPUT, d);
+    expect(record).toHaveBeenCalledTimes(2);
+  });
+
   it('an unreadable mode holds promotion (throws) instead of publishing', async () => {
     const { d, pushToFork } = deps({ mode: { mode: 'direct', source: 'error' } });
     await expect(publishPromotion(INPUT, d)).rejects.toThrow(/promotion held/);

@@ -3091,8 +3091,8 @@ export async function claimIssue(
   // fleet mean of ~3 per action.
   // Mirrors releaseIssue's identical pre-read of the BASE work_items table (which sidesteps
   // the engineer_issues view's harness_slug encoding split).
-  const priorRows = await sql<{ taken_by: string | null; harness_slug: string; payload: unknown }[]>`
-    SELECT taken_by, harness_slug, payload
+  const priorRows = await sql<{ taken_by: string | null; harness_slug: string; payload: unknown; item_kind: string }[]>`
+    SELECT taken_by, harness_slug, payload, item_kind
       FROM harness_shared.work_items
      WHERE workspace_id = ${ws}
        AND feature_id = ${id}
@@ -3108,6 +3108,15 @@ export async function claimIssue(
   // (the improvement-runner dispatcher) reach it directly. payload.verification is
   // written once when the task is created, so this pre-read is as good as the UPDATE's.
   if (verificationTaskConflict(priorRows[0].payload, assignee)) return null;
+  let reproductionPayloadSnapshot: unknown;
+  if (!agentReviewAdmission) {
+    const { verifyAcceptedWorkItemBugReproduction, isAcceptedReproductionStatus } = await import('./attention/bug-reproduction');
+    const reproduction = await verifyAcceptedWorkItemBugReproduction({
+      kind: priorRows[0].item_kind, harness: priorRows[0].harness_slug, payload: priorRows[0].payload,
+    });
+    if (reproduction && !isAcceptedReproductionStatus(reproduction.status)) return null;
+    if (reproduction) reproductionPayloadSnapshot = priorRows[0].payload;
+  }
   // A holder's subject must be captured in the SAME atomic UPDATE as the claim.
   // The watchdog coalescer intentionally refreshes an open issue's visible
   // title/body and watchdogKey; a follow-up completion must not silently treat
@@ -3206,6 +3215,7 @@ export async function claimIssue(
          OR (assignee IS NOT NULL AND btrim(assignee) <> '' AND position(assignee in ${assignee}) = 1)
        )
        -- Born-pending admission is orthogonal to lifecycle status. A named claim
+       ${reproductionPayloadSnapshot !== undefined ? sql`AND target.payload = ${sql.json(reproductionPayloadSnapshot as never)}::jsonb` : sql``}
        -- cannot jump the promoter any more than scheduler:get_next can, EXCEPT
        -- for the two server-derived capabilities: current-leader dispatch and
        -- self-filed fallout. Keep each durable provenance CAS in its exception so

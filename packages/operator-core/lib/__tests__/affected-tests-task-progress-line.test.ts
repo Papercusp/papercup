@@ -19,6 +19,7 @@ import { runInNewContext } from 'node:vm';
 import ts from 'typescript';
 
 import { formatTaskOutcomeFields } from '../../../../scripts/lib/task-progress-line.mjs';
+import { createCgroupMemoryObserver } from '../../../../scripts/lib/budgeted-task-scheduler.mjs';
 
 describe('formatTaskOutcomeFields', () => {
   it('renders both fields as "pending" before the task has closed (genuinely unknown)', () => {
@@ -72,6 +73,9 @@ describe('affected-tests durable live progress', () => {
     const dir = mkdtempSync(join(tmpdir(), 'affected-progress-'));
     const log = join(dir, 'run.log');
     const stderr: string[] = [];
+    const cgroupMemoryObserver = createCgroupMemoryObserver({
+      read: () => ({ anonMb: 12, peakMb: 16, oomKills: 0 }),
+    });
     writeFileSync(log, '');
     try {
       // Execute the production emitter and its actual log wrapper, not a copied
@@ -83,6 +87,7 @@ describe('affected-tests durable live progress', () => {
           RUN_LOG_PATH: log,
           rawErrSync: (line: string) => stderr.push(line),
           formatTaskOutcomeFields,
+          cgroupMemoryObserver,
           Date: { now: () => 5_000 },
           startedAt: 1_000,
           progressTask: JSON.stringify('core :: integration'),
@@ -99,6 +104,7 @@ describe('affected-tests durable live progress', () => {
       expect(stderr[0]).toContain('AFFECTED_TASK_PROGRESS state=running');
       expect(stderr[0]).toContain('capturedBytes=42 stalledForSec=2');
       expect(readFileSync(log, 'utf8')).toBe(`${stderr[0]}\n`);
+      expect(cgroupMemoryObserver.summary()).toMatchObject({ samples: 1, maxAnonMb: 12, peakMb: 16, oomKills: 0 });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

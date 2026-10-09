@@ -1,12 +1,18 @@
 import { describe, expect, it } from 'vitest';
 import type { RunSummary } from '@papercusp/testing-shell/llm';
-import { REPORT_BODY, SU_S38_REPORTS_CAPTURE, createReportsCaptureWorld } from './S38-reports-capture';
+import { REPORT_BODY, PROCEDURE_BODY, PROCEDURE_SLUG, PROCEDURE_REF, SU_S38_REPORTS_CAPTURE, createReportsCaptureWorld } from './S38-reports-capture';
 import { REPORT_BODY_MAX_BYTES } from '../../../report-library';
 
-function violations(calls: Array<{ name: string; input: Record<string, unknown>; responseIndex?: number }>, outputs?: unknown[]) {
-  const run = { turns: [{ toolCalls: calls.map((call, index) => ({ responseIndex: index, ...call })),
-    toolResults: calls.map((call, index) => ({ name: call.name, isError: false, truncated: false,
-      output: JSON.stringify(outputs?.[index] ?? ((call.name === 'reports:publish' || call.input.name === 'reports:publish')
+function violations(calls: Array<{ name: string; input: Record<string, unknown>; responseIndex?: number }>, outputs?: unknown[], routeProcedure = true) {
+  const prefix: Array<{ name: string; input: Record<string, unknown>; responseIndex?: number }> = routeProcedure ? [
+    { name: 'docs:author',input: { harness: 'engineering',slug: PROCEDURE_SLUG,title: 'Shared visibility procedure',body: PROCEDURE_BODY } },
+    { name: 'docs:get',input: { harness: 'engineering',slugs: [PROCEDURE_REF] } },
+  ] : [];
+  const allCalls = [...prefix,...calls];
+  const run = { turns: [{ toolCalls: allCalls.map((call, index) => ({ responseIndex: index, ...call })),
+    toolResults: allCalls.map((call, index) => ({ name: call.name, isError: false, truncated: false,
+      output: JSON.stringify(index < prefix.length ? (index === 0 ? { ok: true,slug: PROCEDURE_SLUG }
+        : { results: [{ slug: PROCEDURE_REF,found: true,content: PROCEDURE_BODY }] }) : outputs?.[index-prefix.length] ?? ((call.name === 'reports:publish' || call.input.name === 'reports:publish')
         ? { ok: true, report_id: 'rpt_fixture' }
         : { ok: true, results: [{ id: 'rpt_fixture', ok: true, report: { body_md: REPORT_BODY, visibility: 'owner' } }] })) }))
   }] } as unknown as RunSummary;
@@ -14,6 +20,22 @@ function violations(calls: Array<{ name: string; input: Record<string, unknown>;
 }
 
 describe('S38 Reports capture contract', () => {
+  it('rejects report-only completion when the requested reusable procedure was not maintained', () => {
+    const calls = [{ name: 'reports:publish',input: { title: 'Review',body_md: REPORT_BODY } },
+      { name: 'reports:get',input: { id: 'rpt_fixture' } }];
+    expect(violations(calls,undefined,false)).toEqual([expect.objectContaining({ assertKind: 'custom:maintained-procedure-authored-and-read-back' })]);
+  });
+
+  it('uses production doc schemas and verifies the actual stored procedure before accepting routing', async () => {
+    const world = createReportsCaptureWorld();
+    const missing = await world.override('docs:get',{ harness: 'engineering',slugs: [PROCEDURE_REF] });
+    expect(JSON.parse((missing as { content: [{ text: string }] }).content[0].text)).toMatchObject({ results: [{ found: false }] });
+    await world.override('docs:author',{ harness: 'engineering',slug: PROCEDURE_SLUG,title: 'Shared visibility procedure',body: PROCEDURE_BODY });
+    const read = await world.override('docs:get',{ harness: 'engineering',slugs: [PROCEDURE_REF] });
+    expect(JSON.parse((read as { content: [{ text: string }] }).content[0].text)).toMatchObject({ results: [{ found: true,content: PROCEDURE_BODY }] });
+    const invalid = await world.override('docs:author',{ slug: PROCEDURE_SLUG,body: PROCEDURE_BODY });
+    expect(JSON.parse((invalid as { content: [{ text: string }] }).content[0].text)).toMatchObject({ ok: false });
+  });
   it('delivers the complete review on the first turn in the declared AUTO mode', () => {
     expect(SU_S38_REPORTS_CAPTURE.targetConfig).toEqual({ modes: ['auto'] });
     const first = SU_S38_REPORTS_CAPTURE.triggers?.find(trigger => trigger.param === 0);

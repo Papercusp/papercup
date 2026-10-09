@@ -1443,6 +1443,40 @@ describe('extracted-tree lifecycle (WI-10005705)', () => {
     expect(run.stderr).toContain('cannot run or forward a command');
   });
 
+  it('requires both exact source holds before resuming a two-source artifact', () => {
+    const parent = mkdtempSync(join(tmpdir(), 'lac-paired-custody-'));
+    try {
+      const sources = join(parent, 'sources');
+      const artifact = join(parent, 'artifacts', 'candidate');
+      const unrelated = join(parent, 'artifacts', 'other');
+      mkdirSync(artifact, { recursive: true });
+      mkdirSync(unrelated);
+      const roots = ['portal', 'operator'].map((name) => {
+        const root = join(sources, `${WORK_ROOT_PREFIX}${name}`);
+        mkdirSync(root, { recursive: true });
+        execFileSync('git', ['init', '--quiet', root]);
+        execFileSync('git', ['-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '--quiet', '--allow-empty', '-m', name], { cwd: root });
+        const sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
+        writeFileSync(join(root, OWNER_MARKER), JSON.stringify({ pid: 101, keep: true, sha, createdAtMs: 0 }));
+        return { root, sha };
+      });
+      for (const { root, sha } of roots) {
+        expect(() => mod.verifyCommittedWorkRoot(root, sha, [], artifact)).toThrow('no retention hold');
+        mod.retainCommittedWorkRoot(root, sha, unrelated);
+        expect(() => mod.verifyCommittedWorkRoot(root, sha, [], artifact)).toThrow('no retention hold');
+        mod.retainCommittedWorkRoot(root, sha, artifact);
+        expect(mod.verifyCommittedWorkRoot(root, sha, [], artifact)).toEqual({ root: realpathSync(root), sha });
+      }
+      const swept = mod.sweepStaleWorkRoots({ root: sources, nowMs: MAX_AGE_MS + H, cwds: [], isAlive: () => false, maxIdleKept: 0 });
+      expect(swept.removed).toEqual([]);
+      expect(swept.kept).toHaveLength(2);
+      rmSync(artifact, { recursive: true });
+      for (const { root, sha } of roots) expect(() => mod.verifyCommittedWorkRoot(root, sha, [], artifact)).toThrow();
+    } finally {
+      rmSync(parent, { recursive: true, force: true });
+    }
+  });
+
   it('repairs dangling workspace imports only after validating every replacement against the exact source', () => {
     const root = mkdtempSync(join(tmpdir(), 'lac-remap-'));
     try {

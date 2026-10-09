@@ -166,6 +166,10 @@ export interface PublishPromotionDeps extends ResolvePromotionPushTargetDeps {
   /** The GitHub PR host seams; null when no host/token is available. */
   createStandingPrDeps: (repoPath: string) => Promise<StandingPrDeps | null>;
   publishStandingPr?: typeof publishStandingPr;
+  /** Correlate admitted fixes only after the host confirms this tested PR head. */
+  recordStandingPr?: (input: PublishPromotionInput & {
+    potHomeSlug: string; upstreamRemote: string; prNumber: number; prUrl: string;
+  }) => Promise<{ linked: string[]; failed: Array<{ workItemId: string; error: string }> }>;
   log: (line: string) => void;
 }
 
@@ -237,7 +241,7 @@ async function refreshStandingPr(
   }
   if (!prDeps) return { ok: false, stage: 'setup', error: 'no GitHub PR host available (missing token)' };
   try {
-    return await (deps.publishStandingPr ?? publishStandingPr)(
+    const result = await (deps.publishStandingPr ?? publishStandingPr)(
       {
         integration: target.integration,
         forkRemote: target.url,
@@ -251,6 +255,21 @@ async function refreshStandingPr(
       },
       prDeps,
     );
+    if (result.ok && result.prNumber && result.prUrl && deps.recordStandingPr) {
+      try {
+        const linked = await deps.recordStandingPr({
+          ...input, potHomeSlug: target.potHomeSlug, upstreamRemote: upstream,
+          prNumber: result.prNumber, prUrl: result.prUrl,
+        });
+        if (linked.linked.length) deps.log(`standing-pr: linked ${linked.linked.join(', ')} to ${result.prUrl}`);
+        for (const failure of linked.failed) deps.log(`standing-pr: source linkage pending for ${failure.workItemId}: ${failure.error}`);
+      } catch (error) {
+        // The PR exists even when source bookkeeping fails. A subsequent refresh
+        // retries linkage without opening another PR or claiming false completion.
+        deps.log(`standing-pr: source linkage pending: ${errText(error)}`);
+      }
+    }
+    return result;
   } catch (e) {
     return { ok: false, stage: 'setup', error: errText(e) };
   }
@@ -333,6 +352,25 @@ export async function createDefaultPublishPromotionDeps(log: (line: string) => v
       }
     },
     createStandingPrDeps: (repoPath) => standing.createDefaultStandingPrDeps({ repoPath }),
+    recordStandingPr: async (input) => {
+      if (!input.workspaceId) throw new Error('missing workspace for admitted fix linkage');
+      const [{ createGitHubPrHost }, { correlateAdmissionStandingPr }, { getOrgPg }] = await Promise.all([
+        import('../../pr-host/github'), import('../../work-admission/lifecycle'), import('@papercusp/db-org'),
+      ]);
+      const host = await createGitHubPrHost();
+      if (!host?.getPrDetails) throw new Error('PR host cannot verify the current head and target');
+      const read = await host.getPrDetails({ remote: input.upstreamRemote, number: input.prNumber });
+      if (!read.ok) throw new Error(read.error.message);
+      if (read.data.pr.state !== 'open' || read.data.pr.head_sha !== input.sha
+        || read.data.pr.url !== input.prUrl) throw new Error('standing PR moved after the tested publication; linkage deferred');
+      const projects = (await loadHarnessRegistry(input.workspaceId)).projects;
+      const harnesses = projects.filter((project) => project.slug === input.potHomeSlug
+        || project.hive_slug === input.potHomeSlug).map((project) => project.slug);
+      return correlateAdmissionStandingPr(getOrgPg().sql, {
+        workspaceId: input.workspaceId, harnesses, repositoryRoot: input.repoPath,
+        testedSha: input.sha, targetSha: read.data.targetSha, url: input.prUrl, number: input.prNumber,
+      });
+    },
     log,
   };
 }

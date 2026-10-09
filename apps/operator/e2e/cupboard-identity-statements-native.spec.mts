@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { decodeNativeBridgeJson } from './_native-bridge-json';
 
 // Reuse the maintained frozen-SPA/compiled-Tauri rig and its real sync transport.
 // This acceptance covers the isolated, unauthenticated state. Paid receipt data
@@ -15,8 +16,7 @@ test('native Statements preserve unavailable amounts across refresh', async ({},
   const run = promisify(execFile);
   async function evaluate(code: string) {
     const { stdout } = await run(bridge, ['eval', '--pid', process.env.VERIFY_TAURI_PID!, code], { timeout: 20_000 });
-    const value = JSON.parse(stdout);
-    return typeof value === 'string' ? JSON.parse(value) : value;
+    return decodeNativeBridgeJson(stdout);
   }
   await evaluate(`(async () => {
     if (!window.__TSR_ROUTER__) throw new Error('Native router unavailable');

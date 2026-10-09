@@ -71,7 +71,14 @@ const readMigration = (f: string) => {
     .join('\n');
 };
 
-const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
+const h = vi.hoisted(() => ({
+  sql: undefined as unknown as postgres.Sql, currentBuild: 'abcdef1' as string | null,
+  beforeBuild: null as (() => Promise<void>) | null,
+}));
+vi.mock('./attention/intake-promotion', async (orig) => ({
+  ...(await orig<typeof import('./attention/intake-promotion')>()),
+  currentIntakeTargetBuild: async () => { await h.beforeBuild?.(); return h.currentBuild; },
+}));
 vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
   return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: h.sql }) };
@@ -264,9 +271,47 @@ afterAll(async () => {
   await db?.cleanup();
 });
 beforeEach(async () => {
+  h.currentBuild = 'abcdef1';
+  h.beforeBuild = null;
   await db.sql`TRUNCATE harness_shared.work_items, harness_shared.work_item_deps, harness_shared.work_item_blocked,
                        harness_shared.harness_plans, harness_shared.plan_item_claims, harness_shared.plan_items,
                        harness_shared.acceptance_adoption_runs`;
+});
+
+describe('accepted bug target-build freshness at execution', () => {
+  it('refuses a changed acceptance payload between verification and by-id assignment', async () => {
+    await seed('WI-FRESHNESS-RACE', { payload: qualifying(), createdTs: POST });
+    h.beforeBuild = async () => {
+      h.beforeBuild = null;
+      await db.sql`UPDATE harness_shared.work_items
+        SET payload = jsonb_set(payload, '{implementationReadiness,evidence,acceptance,verification,receipt,buildSha}', '"bbbbbbb"')
+        WHERE feature_id = 'WI-FRESHNESS-RACE'`;
+    };
+    expect(await byIdClaims('WI-FRESHNESS-RACE', 'fixer')).toBe(false);
+    expect(await holder('WI-FRESHNESS-RACE')).toBeNull();
+  });
+
+  it('refuses a stale by-id claim and rolls back an inline scheduler claim', async () => {
+    await seed('WI-FRESHNESS-STALE', { payload: qualifying(), createdTs: POST });
+    h.currentBuild = 'bbbbbbb';
+    expect(await byIdClaims('WI-FRESHNESS-STALE', 'fixer')).toBe(false);
+    expect(await wi.claimNextIssueWorkItem({ harness: H, assignee: 'fixer' }, WS)).toBeNull();
+    expect(await holder('WI-FRESHNESS-STALE')).toBeNull();
+    const observed = await wi.observeWorkItem('WI-FRESHNESS-STALE', { harness: H });
+    expect(observed).toMatchObject({ available: false, gated: true, reproductionRefused: { status: 'refuted' } });
+    h.currentBuild = 'abcdef1';
+    expect((await wi.claimNextIssueWorkItem({ harness: H, assignee: 'fixer' }, WS))?.id).toBe('WI-FRESHNESS-STALE');
+  });
+
+  it('revalidates a retained assignment without releasing ownership', async () => {
+    await seed('WI-FRESHNESS-HELD', { payload: qualifying(), createdTs: POST });
+    expect(await byIdClaims('WI-FRESHNESS-HELD', 'fixer')).toBe(true);
+    h.currentBuild = null;
+    expect(await wi.observeWorkItem('WI-FRESHNESS-HELD', { harness: H, revalidateHeld: true, assignee: 'fixer' }))
+      .toMatchObject({ available: false, gated: true, reproductionRefused: { status: 'unresolved' } });
+    expect(await holder('WI-FRESHNESS-HELD')).toBe('fixer');
+    expect(await issues.claimIssue('WI-FRESHNESS-HELD', 'fixer', { workspaceId: WS })).toBeNull();
+  });
 });
 
 describe('R-6 one execution boundary on every claim path', () => {

@@ -47,6 +47,8 @@ import {
 import { matchAdmissionRule, type AdmissionMatch } from './admission-rules';
 import { lifecycleKeysByAdmission } from './write-back-ledger';
 import { resolveAdmissionLifecycle, type AdmissionLifecycle } from './lifecycle-config';
+import { CompletionSettlementManifestSchema, TERMINAL_COMPLETION_EVIDENCE_KEY } from '../coord-lifecycle/records';
+import { completionHeadBlobMap } from '../agent-tools/work_items/completion-freshness';
 
 /** Who the lifecycle rules act as, in work-item history and coord messages. */
 export const ADMISSION_LIFECYCLE_ACTOR = 'system:work-admission';
@@ -76,6 +78,107 @@ export interface LifecycleWorkItem {
   assignee: string | null;
   closedAt: string | null;
   payload: unknown;
+}
+
+interface AdmissionStandingPr {
+  schemaVersion: 'admission-standing-pr-v1';
+  url: string;
+  number: number;
+  testedSha: string;
+  targetSha: string;
+}
+
+function standingPrOf(payload: unknown): AdmissionStandingPr | null {
+  if (!payload || typeof payload !== 'object') return null;
+  const raw = (payload as Record<string, unknown>).standingPr;
+  if (!raw || typeof raw !== 'object') return null;
+  const pr = raw as AdmissionStandingPr;
+  return pr.schemaVersion === 'admission-standing-pr-v1'
+    && /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pull\/[1-9]\d*$/.test(pr.url)
+    && Number.isSafeInteger(pr.number) && pr.number > 0
+    && /^[0-9a-f]{40}$/.test(pr.testedSha) && /^[0-9a-f]{40}$/.test(pr.targetSha) ? pr : null;
+}
+
+/**
+ * Extend the admission's existing payload, using completion content identities
+ * and the exact tested PR tree. A fix already present in the target is excluded,
+ * so sync-back cannot attach yesterday's issue to tomorrow's standing PR.
+ */
+export async function correlateAdmissionStandingPr(
+  sql: AdmissionDb,
+  input: {
+    workspaceId: string; harnesses: string[]; repositoryRoot: string;
+    testedSha: string; targetSha: string; url: string; number: number;
+  },
+  deps: { headBlobs?: typeof completionHeadBlobMap } = {},
+): Promise<{ linked: string[]; failed: Array<{ workItemId: string; error: string }> }> {
+  const pr: AdmissionStandingPr = {
+    schemaVersion: 'admission-standing-pr-v1', url: input.url, number: input.number,
+    testedSha: input.testedSha, targetSha: input.targetSha,
+  };
+  if (!standingPrOf({ standingPr: pr })) throw new Error('invalid tested standing PR correlation');
+  const rows = await sql<{ feature_id: string; harness_slug: string; payload: Record<string, unknown> }[]>`
+    SELECT DISTINCT w.feature_id, w.harness_slug, w.payload
+      FROM harness_shared.work_admissions a
+      JOIN harness_shared.work_items w ON w.workspace_id = a.workspace_id
+       AND w.feature_id = a.work_item_id AND w.harness_slug = a.harness_slug
+     WHERE a.workspace_id = ${input.workspaceId} AND a.harness_slug = ANY(${input.harnesses}::text[])
+       AND w.item_kind = 'bug' AND w.status = ANY(${[...COMPLETED_STATES]}::text[])
+       AND w.authority = 'committed'
+     ORDER BY w.feature_id LIMIT ${LIFECYCLE_RECONCILE_MAX}`;
+  const result: { linked: string[]; failed: Array<{ workItemId: string; error: string }> } = { linked: [], failed: [] };
+  for (const row of rows) {
+    const evidence = row.payload[TERMINAL_COMPLETION_EVIDENCE_KEY] as Record<string, unknown> | undefined;
+    const parsed = CompletionSettlementManifestSchema.safeParse(evidence?.settlementManifest);
+    if (!parsed.success) continue;
+    const manifest = parsed.data;
+    const identities = manifest.contentIdentity;
+    if (manifest.residualPaths?.length) continue;
+    if (identities.some((entry) => (entry.repositoryRoot ?? manifest.repositoryRoot) !== input.repositoryRoot)) continue;
+    if (manifest.normalizedPaths.some((path) => !identities.some((entry) => entry.path === path))) continue;
+    if (identities.some((entry) => !entry.workingTreeBlobSha && !entry.deletion)) continue;
+    try {
+      const read = deps.headBlobs ?? completionHeadBlobMap;
+      const paths = identities.map((entry) => entry.path);
+      const [head, base] = await Promise.all([
+        read(input.repositoryRoot, input.testedSha, paths), read(input.repositoryRoot, input.targetSha, paths),
+      ]);
+      if (!head || !base || paths.some((path) => !head.get(path) || !base.get(path)
+        || head.get(path)?.status === 'unresolvable' || base.get(path)?.status === 'unresolvable')) {
+        result.failed.push({ workItemId: row.feature_id, error: 'PR content identity could not be resolved' });
+        continue;
+      }
+      const matchesHead = identities.every((entry) => {
+        const actual = head.get(entry.path);
+        return entry.deletion ? actual?.status === 'absent'
+          : actual?.status === 'resolved' && actual.sha === entry.workingTreeBlobSha;
+      });
+      const differsFromTarget = identities.some((entry) => {
+        const actual = base.get(entry.path);
+        return entry.deletion ? actual?.status === 'resolved'
+          : actual?.status === 'absent' || (actual?.status === 'resolved' && actual.sha !== entry.workingTreeBlobSha);
+      });
+      if (!matchesHead || !differsFromTarget) continue;
+      const existing = standingPrOf(row.payload);
+      if (existing?.url === pr.url && existing.testedSha === pr.testedSha && existing.targetSha === pr.targetSha) continue;
+      // Git reads happen outside a DB transaction. Fence the exact completion
+      // snapshot in the write so a reopened or re-completed issue cannot inherit
+      // the earlier fix's PR during that window.
+      const merged = await sql<{ feature_id: string }[]>`
+        UPDATE harness_shared.work_items
+           SET payload = payload || ${sql.json({ standingPr: pr })}, updated_ts = ${Date.now()}
+         WHERE workspace_id = ${input.workspaceId} AND feature_id = ${row.feature_id}
+           AND harness_slug = ${row.harness_slug} AND item_kind = 'bug'
+           AND status = ANY(${[...COMPLETED_STATES]}::text[]) AND authority = 'committed'
+           AND payload IS NOT DISTINCT FROM ${sql.json(row.payload)}
+         RETURNING feature_id`;
+      if (!merged[0]) throw new Error('source completion changed while linking PR; retry against the current completion');
+      result.linked.push(row.feature_id);
+    } catch (error) {
+      result.failed.push({ workItemId: row.feature_id, error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+  return result;
 }
 
 export type LifecycleWrite =
@@ -123,6 +226,13 @@ export function planLifecycleWrites(
   written: ReadonlySet<string>,
 ): LifecycleWrite[] {
   const writes: LifecycleWrite[] = [];
+  const pr = standingPrOf(item.payload);
+  if (pr && lifecycle.complete) {
+    writes.push({
+      key: `standing-pr:${shortHash(pr.url)}`, action: 'comment',
+      text: `Tested fix for ${item.id}: ${pr.url}\nPassed the pot checks at ${pr.testedSha}. Awaiting the PR merge and its exact merge-result checks.`,
+    });
+  }
   if (COMPLETED_STATES.has(item.state)) {
     if (lifecycle.complete) {
       const stamp = item.closedAt ?? 'closed';

@@ -9020,6 +9020,14 @@ export async function claimNextIssueWorkItem(
      )
     RETURNING ${tx.unsafe(FEATURE_COLS)}`;
       if (!rows[0]) return rows;
+      const { verifyAcceptedWorkItemBugReproduction, isAcceptedReproductionStatus, CurrentBugReproductionRefusal } =
+        await import('./attention/bug-reproduction');
+      const reproduction = await verifyAcceptedWorkItemBugReproduction({
+        kind: rows[0].item_kind ?? '', harness: rows[0].harness_slug, payload: rows[0].payload,
+      });
+      if (reproduction && !isAcceptedReproductionStatus(reproduction.status)) {
+        throw new CurrentBugReproductionRefusal(reproduction.detail);
+      }
       return (await guardPlanItemSiblingClaim(tx, rows[0], {
         workspaceId: issueWs,
         assignee: filter.assignee,
@@ -9029,7 +9037,11 @@ export async function claimNextIssueWorkItem(
         : [];
     },
     { client: sql, signal: opts.signal },
-  );
+  ).catch(async (error) => {
+    const { CurrentBugReproductionRefusal } = await import('./attention/bug-reproduction');
+    if (error instanceof CurrentBugReproductionRefusal) return [];
+    throw error;
+  });
   // RETURNING the base row uses the feature column shape; the row IS an issue-family row, so
   // map it through the issue facade (state dialect, no claim-time columns) for a consistent
   // WorkItem. featureRowToWorkItem would mislabel family/state, so re-read via the issue path.
@@ -9073,6 +9085,8 @@ export interface WorkItemObservation {
   claimedBy: string | null;
   /** Current applied operation receipt prevents this target from claiming. */
   operationClaimDenied?: string;
+  /** Accepted bug proof no longer authorizes fixing on the registered target. */
+  reproductionRefused?: { status: string; detail: string; checkedAt: string };
   /**
    * EI-7841: true when the item is UNCLAIMED (or revalidateHeld was requested)
    * yet still not-`available` because
@@ -9288,6 +9302,13 @@ export async function observeWorkItem(
         planItemLiveClaimed: liveClaim,
       };
     }
+  }
+  if (checkAdmission) {
+    const { verifyAcceptedWorkItemBugReproduction, isAcceptedReproductionStatus } = await import('./attention/bug-reproduction');
+    const reproduction = await verifyAcceptedWorkItemBugReproduction(wi);
+    if (reproduction && !isAcceptedReproductionStatus(reproduction.status)) return {
+      item: wi, available: false, claimedBy: wi.assignee, gated: true, reproductionRefused: reproduction,
+    };
   }
   return { item: wi, available: unclaimed, claimedBy: wi.assignee };
 }
