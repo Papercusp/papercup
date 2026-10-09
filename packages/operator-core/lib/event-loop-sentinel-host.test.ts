@@ -115,11 +115,22 @@ describe('resolveSentinelConfig', () => {
 
 describe('startEventLoopSentinel', () => {
   it.each([
-    { inputType: ['--input-type=module'] },
-    { inputType: ['--input-type', 'module'] },
-  ])('keeps the real watcher alive when an inline-module host uses $inputType', ({ inputType }) => {
+    { name: 'inline module', startupArgs: ['--input-type=module'] },
+    { name: 'split inline module', startupArgs: ['--input-type', 'module'] },
+    { name: 'diagnostic report directory', startupArgs: [`--report-directory=${tmpdir()}`] },
+    { name: 'split diagnostic report directory', startupArgs: ['--report-directory', tmpdir()] },
+    { name: 'diagnostic report filename', startupArgs: ['--report-filename=sentinel-test.json'] },
+    { name: 'split diagnostic report filename', startupArgs: ['--report-filename', 'sentinel-test.json'] },
+    { name: 'fatal error diagnostic report', startupArgs: ['--report-on-fatalerror'] },
+    { name: 'disabled fatal error diagnostic report', startupArgs: ['--no-report-on-fatalerror'] },
+    { name: 'inline module with diagnostic reports', startupArgs: [
+      '--input-type=module', `--report-directory=${tmpdir()}`,
+      '--report-filename=sentinel-test.json', '--report-on-fatalerror',
+    ] },
+  ])('keeps the real watcher alive with $name startup flags', ({ startupArgs }) => {
     // Exercise the host constructor, not a Worker with test-only execArgv: [].
     // EI-25465494437288816: inherited --input-type rejects a file-backed worker.
+    // EI-25526230785366035: process-wide report flags reject explicit worker argv.
     const hostUrl = pathToFileURL(resolve(__dirname, 'event-loop-sentinel-host.ts')).href;
     const script = `
       import { startEventLoopSentinel } from ${JSON.stringify(hostUrl)};
@@ -138,7 +149,7 @@ describe('startEventLoopSentinel', () => {
       }
     `;
     const result = spawnSync(process.execPath, [
-      '--import=tsx', '--no-warnings', ...inputType, '--eval', script,
+      '--import=tsx', '--no-warnings', ...startupArgs, '--eval', script,
     ], {
       cwd: resolve(__dirname, '../../..'),
       encoding: 'utf8', timeout: 20_000, maxBuffer: 1024 * 1024,
@@ -173,7 +184,10 @@ describe('startEventLoopSentinel', () => {
       } finally { await h.stop(); }
     `;
     const result = spawnSync(process.execPath, [
-      '--import=tsx', '--no-warnings', '--input-type=module', '--eval', script,
+      '--import=tsx', '--no-warnings', '--input-type=module',
+      `--report-directory=${tmpdir()}`, '--report-filename=sentinel-test.json',
+      '--report-on-fatalerror', '--report-on-signal', '--report-signal=SIGUSR2',
+      '--report-uncaught-exception', '--eval', script,
     ], {
       cwd: resolve(__dirname, '../../..'),
       encoding: 'utf8', timeout: 20_000, maxBuffer: 1024 * 1024,
@@ -185,6 +199,12 @@ describe('startEventLoopSentinel', () => {
     expect(state.workerArgs).toContain('--import=tsx');
     expect(state.workerArgs).toContain('--no-warnings');
     expect(state.workerArgs).not.toContain('--input-type=module');
+    expect(state.workerArgs).not.toContain(`--report-directory=${tmpdir()}`);
+    expect(state.workerArgs).not.toContain('--report-filename=sentinel-test.json');
+    expect(state.workerArgs).not.toContain('--report-on-fatalerror');
+    expect(state.workerArgs).toContain('--report-on-signal');
+    expect(state.workerArgs).toContain('--report-signal=SIGUSR2');
+    expect(state.workerArgs).toContain('--report-uncaught-exception');
   }, 30_000);
 
   it('wires blocked-directory attribution into the real worker kill diagnostic', () => {

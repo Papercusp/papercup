@@ -295,10 +295,15 @@ export function startEventLoopSentinel(
     };
     // --input-type describes the parent's inline/STDIN entry. This worker loads
     // a file, so inheriting it fails asynchronously with ERR_INPUT_TYPE_NOT_ALLOWED.
-    // Keep loaders and the other runtime flags; remove both supported spellings.
+    // Report paths and fatal-error reporting are process-wide Node options:
+    // explicit Worker execArgv rejects them with ERR_WORKER_INVALID_EXEC_ARGV.
+    // Keep loaders and worker-supported diagnostics (signal/exception reports).
+    // Remove both spellings of value options, including their separate values.
+    const parentOnlyValueFlags = ['--input-type', '--report-directory', '--report-filename'];
     const execArgv = process.execArgv.filter((arg, i, args) =>
-      arg !== '--input-type' && !arg.startsWith('--input-type=') &&
-      (i === 0 || args[i - 1] !== '--input-type'),
+      !parentOnlyValueFlags.some(flag =>
+        arg === flag || arg.startsWith(`${flag}=`) || (i > 0 && args[i - 1] === flag),
+      ) && arg !== '--report-on-fatalerror' && arg !== '--no-report-on-fatalerror',
     );
     worker = new Worker(opts.workerPath ?? workerPath(), { workerData: data, execArgv });
   } catch (err) {
