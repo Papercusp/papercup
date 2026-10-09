@@ -53,7 +53,7 @@ export type HardnessTag =
   | 'cross-package'
   | 'submodule';
 
-export type CaseSource = 'selective' | 'acceptance' | 'mined-grep' | 'gate-incident' | 'authored' | 'micro-repo';
+export type CaseSource = 'selective' | 'acceptance' | 'mined-grep' | 'gate-incident' | 'authored' | 'micro-repo' | 'repository-task';
 
 export interface FairCase {
   readonly id: string;
@@ -521,7 +521,85 @@ export interface Preregistration {
   readonly seed: number;
   readonly bars: typeof FAIR_DECISION_BARS;
   readonly budgets: Readonly<ResourceBudget>;
+  /** Optional native cohort protocol; frozen before observations, including missing instruments. */
+  readonly protocol?: FairEvaluationProtocol;
   readonly hash: string;
+}
+
+export interface FairEvaluationProtocol {
+  readonly edition: string;
+  readonly languages: readonly string[];
+  readonly matchedIntents: readonly FairIntent[];
+  readonly sourceCommit: string;
+  readonly fixtureHash: string;
+  readonly measurements: readonly {
+    readonly metric: 'setup-wall' | 'cold-query' | 'warm-query' | 'peak-memory' | 'resident-memory' | 'index-disk' | 'agent-task';
+    readonly unit: 'ms' | 'MiB' | 'outcome';
+    readonly method: string;
+    readonly unavailable: string;
+  }[];
+  readonly correctness: {
+    readonly minEffectiveF1: number;
+    readonly maxConfidentFalseEmptyRate: number;
+    readonly maxAbsenceFalsePositiveRate: number;
+    readonly maxStaleAnswerRate: number;
+    readonly pooling: string;
+  };
+  readonly realTaskCoverage: readonly { readonly language: string; readonly refs: readonly string[]; readonly unavailable: string | null }[];
+}
+
+// Protocols are ordinary JSON, so a saved edition can be reconstructed without
+// an engine or a process. Sort object keys; array order remains part of the protocol.
+function canonicalProtocol(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalProtocol);
+  if (value !== null && typeof value === 'object') return Object.fromEntries(
+    Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => [k, canonicalProtocol(v)]),
+  );
+  return value;
+}
+
+function freezeProtocol<T>(value: T): T {
+  if (value !== null && typeof value === 'object') {
+    for (const child of Object.values(value)) freezeProtocol(child);
+    Object.freeze(value);
+  }
+  return value;
+}
+
+function validateProtocol(protocol: FairEvaluationProtocol, cases: readonly FairCase[]): void {
+  if (!protocol.edition.trim() || !/^[a-f0-9]{40}$/.test(protocol.sourceCommit) || !/^[a-f0-9]{64}$/.test(protocol.fixtureHash))
+    throw new Error('preregistration refused: protocol needs an edition and full source commit');
+  if (!protocol.languages.length || new Set(protocol.languages).size !== protocol.languages.length ||
+    !protocol.matchedIntents.length || new Set(protocol.matchedIntents).size !== protocol.matchedIntents.length ||
+    protocol.matchedIntents.some(intent => !FAIR_INTENTS.includes(intent)))
+    throw new Error('preregistration refused: duplicate or missing protocol language/intent');
+  const metrics = ['setup-wall', 'cold-query', 'warm-query', 'peak-memory', 'resident-memory', 'index-disk', 'agent-task'];
+  if (protocol.measurements.length !== metrics.length || metrics.some(metric =>
+    protocol.measurements.filter(m => m.metric === metric && m.method.trim() && m.unavailable.trim() &&
+      m.unit === (metric === 'agent-task' ? 'outcome' : metric.includes('memory') || metric === 'index-disk' ? 'MiB' : 'ms')).length !== 1))
+    throw new Error('preregistration refused: measurement protocol is incomplete');
+  const thresholds = protocol.correctness;
+  if ([thresholds.minEffectiveF1, thresholds.maxConfidentFalseEmptyRate,
+    thresholds.maxAbsenceFalsePositiveRate, thresholds.maxStaleAnswerRate]
+    .some(v => !Number.isFinite(v) || v < 0 || v > 1) || !thresholds.pooling.trim())
+    throw new Error('preregistration refused: correctness thresholds are incomplete');
+  for (const language of protocol.languages) {
+    const cohort = cases.filter(c => c.language === language);
+    for (const intent of protocol.matchedIntents) {
+      const matched = cohort.filter(c => c.intent === intent && c.configuration === 'configured' && c.sourceState === 'current');
+      if (!matched.some(c => c.tags.includes('absence')) || !matched.some(c => !c.tags.includes('absence')))
+        throw new Error(`preregistration refused: ${language}/${intent} lacks matched positive/absence controls`);
+    }
+    if (!cohort.some(c => c.configuration === 'unconfigured') ||
+      !cohort.some(c => c.sourceState === 'stale') || !cohort.some(c => c.sourceState === 'deleted'))
+      throw new Error(`preregistration refused: ${language} lacks configuration/freshness controls`);
+    const coverage = protocol.realTaskCoverage.filter(c => c.language === language);
+    if (coverage.length !== 1 || (!coverage[0]!.refs.length && !coverage[0]!.unavailable?.trim()) ||
+      coverage[0]!.refs.some(ref => !cases.some(c => c.language === language && c.taskRef === ref && c.source !== 'authored')))
+      throw new Error(`preregistration refused: ${language} real task coverage is missing or ungrounded`);
+  }
+  if (cases.some(c => !/^[a-f0-9]{64}$/.test(c.sourceFingerprint ?? '') || !c.taskRef || !c.language || !protocol.languages.includes(c.language)))
+    throw new Error('preregistration refused: protocol cases need source pins and task references');
 }
 
 /** Recompute a persisted registration; caller-controlled hash fields are not proof. */
@@ -537,6 +615,7 @@ export function hashPreregistration(prereg: Omit<Preregistration, 'hash'>): stri
     budgets: { coldStartMsMax: budgets.coldStartMsMax, warmQueryMsMax: budgets.warmQueryMsMax,
       rssMbMax: budgets.rssMbMax, childProcMax: budgets.childProcMax,
       indexDiskMbMax: budgets.indexDiskMbMax, resultTokensMax: budgets.resultTokensMax },
+    ...(prereg.protocol ? { protocol: canonicalProtocol(prereg.protocol) } : {}),
   };
   return createHash('sha256').update(JSON.stringify(body)).digest('hex');
 }
@@ -549,6 +628,7 @@ export function preregister(input: {
   readonly reps: number;
   readonly seed: number;
   readonly budgets?: Readonly<ResourceBudget>;
+  readonly protocol?: FairEvaluationProtocol;
 }): Preregistration {
   const corpusIds = input.cases.map((c) => c.id).sort();
   if (new Set(corpusIds).size !== corpusIds.length) throw new Error('preregistration refused: duplicate case ids');
@@ -559,6 +639,8 @@ export function preregister(input: {
   const keyIds = new Set(input.keys.map((k) => k.caseId));
   const missing = corpusIds.filter((id) => !keyIds.has(id));
   if (missing.length > 0) throw new Error(`preregistration refused: no answer key for ${missing.join(', ')}`);
+  if (input.keys.some(k => !corpusIds.includes(k.caseId))) throw new Error('preregistration refused: foreign answer key');
+  if (input.protocol) validateProtocol(input.protocol, input.cases);
   const keyHash = hashKeys(input.keys);
   const budgets = Object.freeze({ ...(input.budgets ?? DEFAULT_RESOURCE_BUDGET) });
   if ((Object.keys(DEFAULT_RESOURCE_BUDGET) as Array<keyof ResourceBudget>)
@@ -568,7 +650,8 @@ export function preregister(input: {
     .map((a) => Object.freeze({ ...a, intents: Object.freeze([...a.intents].sort()) }))
     .sort((a, b) => a.armId.localeCompare(b.armId));
   const body = { corpusIds: Object.freeze(corpusIds), corpusHash: hashCases(input.cases), keyHash,
-    arms: Object.freeze(arms), reps: input.reps, seed: input.seed, bars: FAIR_DECISION_BARS, budgets };
+    arms: Object.freeze(arms), reps: input.reps, seed: input.seed, bars: FAIR_DECISION_BARS, budgets,
+    ...(input.protocol ? { protocol: freezeProtocol(structuredClone(input.protocol)) } : {}) };
   return Object.freeze({ ...body, hash: hashPreregistration(body) });
 }
 
