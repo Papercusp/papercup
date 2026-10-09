@@ -160,7 +160,7 @@ function hasPopulatedMcpResultValue(parsed: unknown): boolean {
   // Keep these explicit so control metadata alone does not suppress warnings for true empties.
   for (const key of [
     'results', 'items', 'data', 'result', 'value', 'presence', 'facts', 'hits', 'agents',
-    'fact', 'issue', 'held', 'scorecard', 'scorecards', 'loop', 'spec', 'specs', 'evidence', 'rows',
+    'sessions', 'watch', 'fact', 'issue', 'held', 'scorecard', 'scorecards', 'loop', 'spec', 'specs', 'evidence', 'rows',
     'workItem', 'event_inspection',
   ]) {
     if (!(key in body)) continue;
