@@ -83,6 +83,25 @@ RIG="${OPERATOR_E2E_RIG:-$ROOT/scripts/verify-tauri-headless.sh}"
 
 echo "OPERATOR_E2E_ISOLATED group=$PAPERCUSP_TEST_RUN_GROUP ledger=${PAPERCUSP_TEST_RUNS_DB_URL##*@} workspace=${PAPERCUSP_TEST_RUN_WORKSPACE:-<rig>} harness=$PAPERCUSP_TEST_RUN_HARNESS rig=$RIG"
 
+rig_pid=""
+interrupt_suite() {
+  local rc="$1"
+  trap - INT TERM HUP
+  if [ -n "$rig_pid" ]; then
+    # The rig owns native-process cleanup. TERM requests that cleanup even
+    # for INT: asynchronous bash children inherit an ignored SIGINT.
+    kill -TERM "$rig_pid" 2>/dev/null || true
+    wait "$rig_pid" 2>/dev/null || true
+    rig_pid=""
+  fi
+  # A signal's default EXIT trap can see the previous command's zero status.
+  # Preserve the interruption explicitly so an unfinished suite cannot pass.
+  exit "$rc"
+}
+trap 'interrupt_suite 130' INT
+trap 'interrupt_suite 143' TERM
+trap 'interrupt_suite 129' HUP
+
 vh_begin isolated-suite
 # shellcheck disable=SC2016 # expanded by the inner shell, inside the rig
 VERIFY_TAURI_ISOLATED_DB=1 "$RIG" -- bash -c '
@@ -173,7 +192,10 @@ VERIFY_TAURI_ISOLATED_DB=1 "$RIG" -- bash -c '
   else
     $OPERATOR_E2E_PLAYWRIGHT "$@"
   fi
-' operator-e2e-isolated "$ROOT" "$@"
+' operator-e2e-isolated "$ROOT" "$@" &
+rig_pid=$!
+wait "$rig_pid"
 rc=$?
+rig_pid=""
 echo "OPERATOR_E2E_ISOLATED exit=$rc group=$PAPERCUSP_TEST_RUN_GROUP"
 exit "$rc"

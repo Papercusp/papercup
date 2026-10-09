@@ -10,7 +10,7 @@
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { afterEach, describe, expect, it } from 'vitest';
 
 const REPO_ROOT = resolve(__dirname, '../../../..');
@@ -132,6 +132,49 @@ function run(f: ReturnType<typeof fixture>, args: string[], env: Record<string, 
 }
 
 describe('run-operator-e2e-isolated.sh', () => {
+  it.each([['SIGINT', 130], ['SIGTERM', 143], ['SIGHUP', 129]] as const)(
+    'records failure and reaps the rig when interrupted by %s', async (signal, code) => {
+      const f = fixture(0);
+      const stopped = join(f.dir, 'rig-stopped');
+      writeFileSync(f.rig, [
+        '#!/usr/bin/env bash',
+        `trap 'touch "${stopped}"; exit 0' TERM`,
+        'echo RIG_WAITING',
+        // A finite stub also cleans up after the pre-fix counterexample.
+        'for ((i=0; i<60; i++)); do sleep 0.05; done',
+      ].join('\n'));
+      const child = spawn('bash', [RUNNER], { env: {
+        ...process.env,
+        HARNESS_ADMIN_DATABASE_URL: SHARED,
+        OPERATOR_E2E_RIG: f.rig,
+        OPERATOR_E2E_PLAYWRIGHT: f.pw,
+        OPERATOR_E2E_HARNESS_EVIDENCE_ROOT: join(f.dir, 'evidence'),
+      } });
+      let output = '';
+      child.stderr.on('data', chunk => { output += chunk; });
+      const closed = new Promise<number | null>((resolveClose, reject) => {
+        child.once('error', reject);
+        child.once('close', resolveClose);
+      });
+      try {
+        await new Promise<void>((ready, reject) => {
+          const deadline = setTimeout(() => reject(new Error(`Rig did not start: ${output}`)), 5000);
+          child.stdout.on('data', chunk => {
+            output += chunk;
+            if (output.includes('RIG_WAITING')) { clearTimeout(deadline); ready(); }
+          });
+        });
+        child.kill(signal);
+        expect(await closed, output).toBe(code);
+        expect(output).toContain('verdict=fail');
+        expect(output).not.toContain('verdict=pass');
+        expect(existsSync(stopped), 'The runner must terminate and wait for its owned rig').toBe(true);
+      } finally {
+        if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+      }
+    }, 15_000,
+  );
+
   it('exits with the playwright exit code when a spec fails', () => {
     const r = run(fixture(1), []);
     expect(r.status, r.out).toBe(1);
