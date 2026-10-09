@@ -3803,6 +3803,55 @@ async function stagedFiles(runGit: RunGit, repoPath: string): Promise<string[]> 
 }
 
 /**
+ * EI-25535599233496771: Git successfully stages a nested repository as mode 160000
+ * even when no .gitmodules entry exists. A later source materializer then cannot
+ * reproduce that commit. Judge the SAME index the commit will record, including
+ * an attributed commit's private index; working-tree .gitmodules is not evidence.
+ */
+export async function unmappedStagedGitlinkPaths(
+  runGit: RunGit,
+  repoPath: string,
+  staged: readonly string[],
+): Promise<{ ok: true; paths: string[] } | { ok: false; error: string }> {
+  const index = await runGit(['ls-files', '--stage', '-z'], repoPath);
+  if (index.code !== 0) return { ok: false, error: `could not inspect gitlink index: ${gitFailureDetail(index)}` };
+  const entries = index.stdout.split('\0').flatMap((entry) => {
+    const match = /^(\d{6}) ([a-f0-9]+) 0\t([\s\S]+)$/.exec(entry);
+    return match ? [{ mode: match[1], sha: match[2], path: match[3] }] : [];
+  });
+  const stagedSet = new Set(staged);
+  const gitlinks = entries.filter((entry) => entry.mode === '160000' &&
+    (stagedSet.has(entry.path) || stagedSet.has('.gitmodules')));
+  if (gitlinks.length === 0) return { ok: true, paths: [] };
+  const manifest = entries.find((entry) => entry.path === '.gitmodules' && entry.mode === '100644');
+  const modules = new Map<string, { path?: string; url?: string }>();
+  if (manifest) {
+    const config = await runGit(
+      ['config', '-z', '--blob', manifest.sha, '--get-regexp', '^submodule\\..*\\.(path|url)$'], repoPath,
+    );
+    // Git also returns 1 for some malformed config blobs. Only the silent
+    // no-match result is an empty mapping; parse errors must stay fail-closed.
+    if (config.code !== 0 && (config.code !== 1 || config.stderr.trim() !== '')) {
+      return { ok: false, error: `could not inspect indexed .gitmodules: ${gitFailureDetail(config)}` };
+    }
+    for (const record of config.stdout.split('\0').filter(Boolean)) {
+      const newline = record.indexOf('\n');
+      const key = /^submodule\.(.*)\.(path|url)$/.exec(record.slice(0, newline));
+      if (newline < 0 || !key) return { ok: false, error: 'could not parse indexed .gitmodules fields' };
+      const fields = modules.get(key[1]) ?? {};
+      fields[key[2] as 'path' | 'url'] = record.slice(newline + 1);
+      modules.set(key[1], fields);
+    }
+  }
+  const mapped = new Set([...modules.values()].filter((entry) => entry.path && entry.url?.trim()).map((entry) => entry.path));
+  const unmapped = gitlinks.filter((entry) => !mapped.has(entry.path)).map((entry) => entry.path);
+  return { ok: true, paths: unmapped.length === 0 ? [] : [
+    ...unmapped.filter((path) => stagedSet.has(path)),
+    ...(stagedSet.has('.gitmodules') ? ['.gitmodules'] : []),
+  ] };
+}
+
+/**
  * EI-22494259338317391: a negative pathspec only prevents `git add` from
  * changing the matching index entries; it does not remove an entry that was
  * staged earlier (for example by `git checkout <sha> -- <path>`). Since the
@@ -3938,6 +3987,11 @@ export async function guardStagedIndexBeforeCommit(opts: {
   const staged = stagedRes.stdout.split('\0').filter(Boolean);
   if (staged.length === 0) return { ok: true, lateLockedHoldings: [], drifted: [], unstaged: [] };
   const stagedSet = new Set(staged);
+  const gitlinkGuard = await unmappedStagedGitlinkPaths(runGit, repoPath, staged);
+  if (!gitlinkGuard.ok) return { ok: false, error: `post-stage guard ${gitlinkGuard.error}` };
+  for (const path of gitlinkGuard.paths) {
+    log(`[git-sync] ${scope}: post-stage guard holds ${path}: gitlink requires indexed .gitmodules path/url mapping`);
+  }
 
   // 2. The lock census, AFTER the add.
   let lateLockedHoldings: GitSyncLockHolding[] = [];
@@ -4006,7 +4060,7 @@ export async function guardStagedIndexBeforeCommit(opts: {
     }
   }
 
-  const held = [...new Set([...lateLocked, ...drifted])];
+  const held = [...new Set([...lateLocked, ...drifted, ...gitlinkGuard.paths])];
   const packageClosure =
     held.length > 0 ? await expandCargoPackageLiveLockExclusions(staged, held, opts.readText) : { paths: [], packages: [] };
   // An attributed commit's private index may omit a tracked provider whose edit
@@ -4039,6 +4093,7 @@ export async function guardStagedIndexBeforeCommit(opts: {
     ...(opts.alwaysInfectiousDependencies ?? []),
     ...lateLocked,
     ...drifted,
+    ...gitlinkGuard.paths,
     ...packageClosure.paths,
     ...changedTrackedModulesOutsideIndex,
   ]);
