@@ -483,3 +483,30 @@ assigned to the existing tutorial implementer and linked as a blocker of
 `P-003`. The passing API comparison and earlier account journey remain valid
 within their recorded scopes. Workspace browser acceptance, full manual
 acceptance and production shipment remain open.
+
+### Workspace failure diagnostics, 23:46Z
+
+The bounded same-artifact attempt used clean committed runner `1a9fbcfba1`,
+the same `6Avr3UKWpC7WkTO1D8XcA` Portal release, and the retained corrected
+admission fixture. The test, diagnostics helper and Playwright configuration
+matched canonical source; all seven admission paths matched the frozen
+operator. Private operator health returned HTTP 200 at `c19484fc98`, with the
+hosted control route mounted.
+
+Playwright stopped before collecting a test: its loader reported that the
+`capturePublicManualFailure` named export was unavailable because the helper
+loaded as CommonJS. The report contains no suites and zero test results.
+Consequently this attempt captured no pre-cleanup browser diagnostics and adds
+no browser acceptance result. The original 22:35Z browser failure remains in
+[portal-workspace-browser-20261008.json](./portal-workspace-browser-20261008.json),
+which also retains this collection failure and raw-evidence hashes.
+
+`EI-25457032253199068` is assigned to the existing tutorial implementer for
+compatible loading and a maintained Playwright discovery preflight without
+product or provider calls. An earlier wrapper started before readiness was
+enforced and stopped on connection refusal before Next or the browser launched;
+its separate log is retained. Both readiness branching and loader discovery
+must be audited before another slow attempt. The served wrapper exited 1; the
+private operator exited 0 after guarded shutdown, its private home was removed,
+and the runtime configuration lock was released. Full acceptance and shipment
+remain open.
