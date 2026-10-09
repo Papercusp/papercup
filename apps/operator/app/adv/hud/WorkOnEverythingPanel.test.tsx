@@ -98,13 +98,20 @@ describe('Work on everything: progress table (WI-10007603)', () => {
   });
 
   it('discard never writes; a stale snapshot keeps the draft and blocks apply; a failed save keeps the reason', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, json: async () => ({ error: 'stale', message: 'Another owner edited this worklist' }) }));
+    const fetch = vi.fn().mockResolvedValue({ ok: false, json: async () => ({ error: 'stale', message: 'Another owner edited this worklist' }) });
+    vi.stubGlobal('fetch', fetch);
     const data = fixture(), p = props();
     const view = render(<WorkOnEverythingPanel data={data} {...p} />);
     fireEvent.click(screen.getByRole('button', { name: 'Remove Cloud setup' }));
+    // Removing a plan is a draft until review: no write yet.
+    expect(fetch).not.toHaveBeenCalled();
+    expect(screen.getByRole('region', { name: 'Pending changes' })).toBeTruthy();
     fireEvent.click(screen.getByText('Discard'));
     expect(screen.queryByRole('region', { name: 'Pending changes' })).toBeNull();
+    // Discard drops the draft without ever writing.
+    expect(fetch).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: 'Remove Cloud setup' }));
+    expect(fetch).not.toHaveBeenCalled();
     fireEvent.click(screen.getByText('Review & apply'));
     fireEvent.click(screen.getByText('Apply changes'));
     await waitFor(() => expect(screen.getAllByRole('alert')[0].textContent).toContain('Another owner'));

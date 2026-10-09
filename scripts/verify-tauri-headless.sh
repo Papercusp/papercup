@@ -2998,6 +2998,18 @@ fi
 SPA_ENV_LINE=""
 [ -n "$SPA_DIST" ] && SPA_ENV_LINE="PAPERCUSP_SPA_DIST=\"$SPA_DIST\""
 OPERATOR_SOURCE_ENV_LINE="PAPERCUSP_DEV_SOURCE_ROOT=\"$OPERATOR_SOURCE_ROOT\" PAPERCUSP_DEV_HOST_ENTRY=\"$OPERATOR_HOST_BUNDLE\" PATH=\"$OPERATOR_SOURCE_ROOT/apps/operator/node_modules/.bin:$OPERATOR_SOURCE_ROOT/node_modules/.bin:$PATH\""
+# WI-10007640: a frozen operator snapshot never contains the gitignored
+# apps/operator/.env.local, so the launcher's own `./.env.local` source found
+# nothing there and the operator resolved ~/.papercusp/embedded-pg.json (the
+# installed Papercusp Server's embedded PG, migrations behind the live DB)
+# instead of the DATABASE_URL that shared_schema_readiness_preflight had just
+# probed. Name the same file the preflight sources, so the probed database and
+# the launched one are the same by construction. Shared-DB runs only: an
+# isolated snapshot keeps its existing env (the dev file also names other
+# live-DB settings an isolated run must not inherit).
+if [ "${ISOLATED_DB:-0}" != "1" ] && [ -n "$OPERATOR_SOURCE_ROOT" ] && [ -f "$REPO_DIR/apps/operator/.env.local" ]; then
+  OPERATOR_SOURCE_ENV_LINE="$OPERATOR_SOURCE_ENV_LINE PAPERCUSP_DEV_ENV_FILE=\"$REPO_DIR/apps/operator/.env.local\""
+fi
 # write_and_launch_tauri — (re)generate launch.sh for the CURRENT $DEV_PORT /
 # $PTY_PORT / $LOG and exec it, setting $TAURI_PID. Factored out so the
 # bind-time retry below (EI-18734124566158657) can call it again against a

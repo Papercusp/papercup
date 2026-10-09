@@ -7,13 +7,19 @@
  * healthy-unresolvable (fail-safe), healthy-unchanged-commit, and the one true
  * stale case.
  */
-import { describe, expect, it } from 'vitest';
+import { existsSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   RESTART_SAFETY_NOTE,
   ROUTINE_DRIFT_NAME_CAP,
   STALE_EXECUTOR_GIT_SYNC_DRAIN_SEC,
   STALE_EXECUTOR_RESTART_COOLDOWN_MS,
+  STALE_EXECUTOR_RESTART_RETRY_BACKOFF_MS,
+  defaultPtoolScriptPath,
+  resetStaleExecutorRestartStateForTests,
   restartStaleBgHostExecutor,
   evaluateExecutorStaleness,
   executorAlarmContext,
@@ -292,6 +298,10 @@ describe('executorIdentity — a stable per-process key that never conflates two
 });
 
 describe('stale bg-host remediation — guarded, injectable, and generation-verified', () => {
+  // The in-flight latch and cooldown are module state; a refused attempt now arms a
+  // retry backoff (WI-10007644), so each case starts from a clean actuator.
+  beforeEach(() => resetStaleExecutorRestartStateForTests());
+
   const staleVerdict = (): ExecutorStalenessVerdict => ({
     stale: true,
     reason: 'test stale bg-host executor',
@@ -397,6 +407,84 @@ describe('stale bg-host remediation — guarded, injectable, and generation-veri
     ).resolves.toMatchObject({ attempted: false, code: 'not_stale' });
     expect(calls).toBe(0);
   });
+
+  it('fails loudly as ptool_script_missing, naming the path, when the resolved ptool script does not exist (WI-10007644)', async () => {
+    const saved = process.env.PAPERCUSP_PTOOL_SCRIPT;
+    process.env.PAPERCUSP_PTOOL_SCRIPT = '/nonexistent/wi-10007644/ptool.mjs';
+    let ptoolCalls = 0;
+    try {
+      const result = await restartStaleBgHostExecutor('port-3271', staleVerdict(), {
+        now: () => 5_000_000_000_000,
+        run: async (command) => {
+          if (command !== 'systemctl') ptoolCalls += 1;
+          return { stdout: '101\n' };
+        },
+      });
+      expect(result).toMatchObject({ attempted: true, restarted: false, code: 'ptool_script_missing' });
+      expect(result.error).toContain('/nonexistent/wi-10007644/ptool.mjs');
+      expect(ptoolCalls).toBe(0);
+    } finally {
+      if (saved === undefined) delete process.env.PAPERCUSP_PTOOL_SCRIPT;
+      else process.env.PAPERCUSP_PTOOL_SCRIPT = saved;
+    }
+  });
+
+  it('backs off after a refused attempt instead of re-running the drain on every tick (WI-10007644)', async () => {
+    let nowMs = 7_000_000_000_000;
+    let ptoolCalls = 0;
+    const run = async (command: string) => {
+      if (command === 'systemctl') return { stdout: '101\n' };
+      ptoolCalls += 1;
+      return {
+        stdout: JSON.stringify({ ok: false, reason: 'git_sync_barrier_drain_timeout' }),
+        error: 'Command failed: exit 5',
+      };
+    };
+    const deps = { now: () => nowMs, run, ptoolScript: '/tmp/ptool.mjs' };
+
+    await expect(restartStaleBgHostExecutor('port-3271', staleVerdict(), deps)).resolves.toMatchObject({
+      attempted: true,
+      restarted: false,
+      code: 'git_sync_barrier_drain_timeout',
+    });
+    nowMs += 30_000; // the next routinesTick
+    await expect(restartStaleBgHostExecutor('port-3271', staleVerdict(), deps)).resolves.toMatchObject({
+      attempted: false,
+      code: 'restart_cooldown',
+    });
+    expect(ptoolCalls).toBe(1);
+
+    nowMs += STALE_EXECUTOR_RESTART_RETRY_BACKOFF_MS;
+    await expect(restartStaleBgHostExecutor('port-3271', staleVerdict(), deps)).resolves.toMatchObject({
+      attempted: true,
+      code: 'git_sync_barrier_drain_timeout',
+    });
+    expect(ptoolCalls).toBe(2);
+    // The backoff is a short retry window, never the post-success cooldown.
+    expect(STALE_EXECUTOR_RESTART_RETRY_BACKOFF_MS).toBeLessThan(STALE_EXECUTOR_RESTART_COOLDOWN_MS);
+  });
+});
+
+describe('defaultPtoolScriptPath — the same ptool.mjs from source AND from the host bundle (WI-10007644)', () => {
+  // This test file sits beside the watchdog: routines → harness → lib → operator-core → packages → repo.
+  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../../..');
+  const expected = path.join(repoRoot, 'apps', 'operator', 'scripts', 'ptool.mjs');
+
+  it('from the source module it names the real, existing ptool.mjs', () => {
+    expect(defaultPtoolScriptPath()).toBe(expected);
+    expect(existsSync(defaultPtoolScriptPath())).toBe(true);
+  });
+
+  it('from the esbuild host bundle bg-host runs it names the SAME file — the old fixed-hop URL left the repo', () => {
+    const bundleUrl = pathToFileURL(path.join(repoRoot, 'apps', 'operator', 'dist-host', 'hono-host.mjs')).href;
+    expect(defaultPtoolScriptPath(bundleUrl)).toBe(expected);
+
+    // Control: the pre-fix expression, evaluated from that same bundle location,
+    // resolves outside the checkout — the production failure this pins.
+    const legacy = fileURLToPath(new URL('../../../../../apps/operator/scripts/ptool.mjs', bundleUrl));
+    expect(legacy).not.toBe(expected);
+    expect(legacy.startsWith(repoRoot + path.sep)).toBe(false);
+  });
 });
 
 describe('staleRoutineExecutorSweep — remediation runs before alert debounce', () => {
@@ -408,6 +496,8 @@ describe('staleRoutineExecutorSweep — remediation runs before alert debounce',
     process.env.PAPERCUSP_DBOS_ROUTINES = '1';
     process.env.PAPERCUSP_STALE_ROUTINE_EXECUTOR_THRESHOLD_SEC = '1';
     const order: string[] = [];
+    // A coalesced restart IS an attempt, so the sweep logs its outcome (WI-10007644).
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     try {
       const result = await staleRoutineExecutorSweep(
         { now: 100_000, workspaceId: 'test-workspace', installSlug: 'test-harness' },
@@ -432,7 +522,61 @@ describe('staleRoutineExecutorSweep — remediation runs before alert debounce',
       expect(result.reason).toBe('debounced');
       expect(result.restart).toMatchObject({ attempted: true, coalesced: true, code: 'coalesced' });
       expect(order).toEqual(['restart', 'debounce']);
+      expect(warn.mock.calls.map((call) => String(call[0]))).toContain(
+        '[stale-routine-executor] auto-restart (port-3271): coalesced',
+      );
     } finally {
+      warn.mockRestore();
+      if (savedPort === undefined) delete process.env.PAPERCUSP_HONO_PORT;
+      else process.env.PAPERCUSP_HONO_PORT = savedPort;
+      if (savedRoutines === undefined) delete process.env.PAPERCUSP_DBOS_ROUTINES;
+      else process.env.PAPERCUSP_DBOS_ROUTINES = savedRoutines;
+      if (savedThreshold === undefined) delete process.env.PAPERCUSP_STALE_ROUTINE_EXECUTOR_THRESHOLD_SEC;
+      else process.env.PAPERCUSP_STALE_ROUTINE_EXECUTOR_THRESHOLD_SEC = savedThreshold;
+    }
+  });
+
+  it('logs every attempted restart outcome, and stays quiet when nothing was attempted (WI-10007644)', async () => {
+    const savedPort = process.env.PAPERCUSP_HONO_PORT;
+    const savedRoutines = process.env.PAPERCUSP_DBOS_ROUTINES;
+    const savedThreshold = process.env.PAPERCUSP_STALE_ROUTINE_EXECUTOR_THRESHOLD_SEC;
+    process.env.PAPERCUSP_HONO_PORT = '3271';
+    process.env.PAPERCUSP_DBOS_ROUTINES = '1';
+    process.env.PAPERCUSP_STALE_ROUTINE_EXECUTOR_THRESHOLD_SEC = '1';
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const sweep = (restartResult: Awaited<ReturnType<typeof restartStaleBgHostExecutor>>) =>
+      staleRoutineExecutorSweep(
+        { now: 100_000, workspaceId: 'test-workspace', installSlug: 'test-harness' },
+        {
+          bootCommit: 'a'.repeat(40),
+          currentCommit: 'b'.repeat(40),
+          bootTimeMs: 0,
+          commitsBehind: 3,
+          routineDrift: { changed: [], addedSinceBoot: [] },
+          restart: async () => restartResult,
+          recentWatchdogFires: async () => 1,
+        },
+      );
+    const restartLines = () =>
+      warn.mock.calls.map((call) => String(call[0])).filter((line) => line.includes('auto-restart'));
+    try {
+      await sweep({
+        attempted: true,
+        restarted: false,
+        coalesced: false,
+        verified: false,
+        code: 'ptool_script_missing',
+        error: 'ptool script not found at /x/ptool.mjs',
+      });
+      expect(restartLines()).toEqual([
+        '[stale-routine-executor] auto-restart (port-3271): ptool_script_missing — ptool script not found at /x/ptool.mjs',
+      ]);
+
+      warn.mockClear();
+      await sweep({ attempted: false, restarted: false, coalesced: false, verified: false, code: 'restart_cooldown' });
+      expect(restartLines()).toEqual([]);
+    } finally {
+      warn.mockRestore();
       if (savedPort === undefined) delete process.env.PAPERCUSP_HONO_PORT;
       else process.env.PAPERCUSP_HONO_PORT = savedPort;
       if (savedRoutines === undefined) delete process.env.PAPERCUSP_DBOS_ROUTINES;

@@ -5761,6 +5761,27 @@ describe('WI-10007606: cooperative yield to a draining dev:restart barrier', () 
     expect(lastQuery).toMatchObject({ resource: 'git-sync' });
   });
 
+  it('reads the barrier through the lock-store txn (inWorkspaceTxn), never the org database', async () => {
+    // The first live run handed readResourceQueue getOrgPg().sql; the lock tables are not in
+    // that database, so every probe threw and the fail-open path disabled the yield entirely.
+    let probe: (() => Promise<string | null>) | undefined;
+    runGitSyncMock.mockImplementationOnce(async (_slug, opts) => {
+      probe = opts.shouldYield as typeof probe;
+      return { status: 'nothing', dirtyPathCount: 0, committedCount: 0, oversized: [], contentErrors: [], strandedSubmodules: [] };
+    });
+    await action(ctx);
+    expect(typeof probe).toBe('function');
+
+    const txnCallsBefore = workspaceTxnCalls.length;
+    readResourceQueueMock.mockClear();
+    readResourceQueueMock.mockResolvedValueOnce({ holders: [], draining: false, queue: [] });
+    expect(await probe!()).toBeNull();
+    expect(readResourceQueueMock).toHaveBeenCalledTimes(1);
+    expect(readResourceQueueMock.mock.calls[0]?.[0]).toBe(fakeTx);
+    expect(workspaceTxnCalls.length).toBe(txnCallsBefore + 1);
+    expect(workspaceTxnCalls.at(-1)?.coordinationDomain).toBe(readResourceQueueMock.mock.calls[0]?.[1]?.coordinationDomain);
+  });
+
   it('a yield is a SKIP: locks released, last_yield recorded, no outcome, no error streak, no escalation', async () => {
     runGitSyncMock.mockRejectedValueOnce(yieldError('exclusive git-sync drain requested by su-test', 'submodule-batch', 8, 41));
     counterRows = [{ et: 2, lo: [] }]; // two prior error ticks — a yield must not become the third

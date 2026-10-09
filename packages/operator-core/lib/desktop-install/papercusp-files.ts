@@ -15,8 +15,8 @@
  */
 
 import * as fs from 'node:fs/promises';
-import { existsSync } from 'node:fs';
 import * as path from 'node:path';
+import { resolveOperatorAppRootFromModuleDir } from '../operator-app-root';
 import * as os from 'node:os';
 import * as crypto from 'node:crypto';
 import * as TOML from '@iarna/toml';

@@ -59,6 +59,14 @@ const result = await runHarness({ contract: { name: harnessName, phases: [{ id: 
       }
       return controls;
     };
+    const linkedPlanLayout = () => {
+      const plans = JSON.parse(ev("JSON.stringify([...document.querySelectorAll('.dao-execution article li')].map(row=>{const link=row.querySelector('a'),status=row.querySelector('small');return {title:link.textContent,status:status.textContent,titleBottom:link.getBoundingClientRect().bottom,statusTop:status.getBoundingClientRect().top};}))"));
+      assert.ok(plans.length > 0, 'Persisted proposal must appear in linked plans');
+      for (const plan of plans) {
+        assert.ok(plan.statusTop >= plan.titleBottom + 3, plan.title + ' plan status must sit below its title');
+      }
+      return plans;
+    };
     try {
       ctx.markStep('frozen-host-source-identity');
       const receipt = JSON.parse(readFileSync(process.env.VERIFY_TAURI_SOURCE_RECEIPT!, 'utf8'));
@@ -141,6 +149,13 @@ const result = await runHarness({ contract: { name: harnessName, phases: [{ id: 
           try { assert.throws(workControlLayout, /label must sit above its field/); }
           finally { ev("window.__DAO_FORMATTED_FORMS__.forEach(form=>form.classList.add('dao-form'));delete window.__DAO_FORMATTED_FORMS__;true"); }
           workControlLayout();
+          if (!viewportOnly) {
+            writeFileSync(join(ctx.evidenceDir, 'work-linked-plan-layout.json'), JSON.stringify(linkedPlanLayout(), null, 2));
+            ev("window.__DAO_FORMATTED_PLAN_LISTS__=[...document.querySelectorAll('.dao-execution .dao-plan-list')];window.__DAO_FORMATTED_PLAN_LISTS__.forEach(list=>list.classList.remove('dao-plan-list'));true");
+            try { assert.throws(linkedPlanLayout, /plan status must sit below its title/); }
+            finally { ev("window.__DAO_FORMATTED_PLAN_LISTS__.forEach(list=>list.classList.add('dao-plan-list'));delete window.__DAO_FORMATTED_PLAN_LISTS__;true"); }
+            linkedPlanLayout();
+          }
         }
         capture('section-' + id);
       }

@@ -175,6 +175,13 @@ describe('goal-package bundle integrity — the bundled floor a release ships', 
     ).toBeDefined();
     expect(decl.worklist).toMatchObject({ datatype: PLAN_REF_LIST_DATATYPE, editable_by: 'both' });
     expect(decl.worklist.default).toEqual([]);
+    // woe-progress-table-2026-10-08 D-002 / R-2(4): the worklist is "only plans
+    // I pick". A package that flips this back to true makes every active plan a
+    // worklist member by default again (migration 1430 fixed the live row).
+    expect(
+      (decl.worklist.collection as Record<string, unknown> | undefined)?.defaultSelected,
+      'the worklist collection must declare defaultSelected:false — the owner picks plans in (D-002)',
+    ).toBe(false);
     // The declared default must satisfy the datatype's own payload schema —
     // the exact check validatePropertySchemaDeclaration runs at seed time.
     expect(checkAgainstJsonSchema(planRefListPayloadSchema(), decl.worklist.default).ok).toBe(true);

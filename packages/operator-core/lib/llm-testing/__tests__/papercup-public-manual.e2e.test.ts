@@ -1036,6 +1036,102 @@ async function recordedCase(id: string, question: string) {
   return result;
 }
 
+describe.runIf(enabled && Boolean(process.env.PAPERCUSP_TEST_PUBLIC_OPERATOR_BUNDLE_DIR))(
+  'installed public manual without shared chat fixtures', () => {
+  it('retrieves the canonical standalone bundle and refreshes its mounted revision without model calls', async () => {
+    const opened = vi.spyOn(OperatorTarget.prototype, 'open');
+    // Reuse the runner's already registered private workspace. This read-only
+    // MCP case neither mutates the shared registry nor opens a model session.
+    const privateRoot = dirname(realpathSync(tmpdir()));
+    expect(privateRoot).toMatch(/\/papercusp-test-runtime-[^/]+$/);
+    expect(realpathSync(workspacesRoot())).toBe(join(privateRoot, 'workspaces'));
+    workspaceId = process.env.PAPERCUSP_WORKSPACE!;
+    expect(workspaceId).toMatch(/^test-runtime-/);
+    expect(readRegistry().current).toBe(workspaceId);
+    expect(process.env.LLM_TEST_EVIDENCE_ROOT, 'Retain evidence outside runner cleanup').toBeTruthy();
+    const repoRoot = resolve(import.meta.dirname, '../../../../..');
+    const canonical = join(repoRoot, 'apps/papercusp-docs/src/content/docs');
+    const packaged = join(repoRoot, 'apps/operator/public/manual-source');
+    const pages = readdirSync(canonical).filter(name => /\.mdx?$/.test(name)).sort();
+    expect(pages).toContain('faq.mdx');
+    expect(readdirSync(packaged).filter(name => /\.mdx?$/.test(name)).sort()).toEqual(pages);
+    for (const name of pages) expect(readFileSync(join(packaged, name))).toEqual(readFileSync(join(canonical, name)));
+    const seed = mkdtempSync(join(tmpdir(), 'public-manual-standalone-seed-'));
+    const evidenceDir = join(llmBatteryEvidenceRoot(), `standalone-manual-revision-${randomUUID()}`);
+    mkdirSync(evidenceDir, { recursive: true });
+    const observations: Record<string, unknown> = {};
+    let host: Awaited<ReturnType<typeof ownFixtureOperator>> | undefined;
+    let stage = 'prepare';
+    try {
+      principalSessionId = `standalone-manual-${randomUUID()}`;
+      const principal = await startPiSession({ workspaceId, sessionId: principalSessionId,
+        capabilities: ['docs:read'], allowedTools: ['docs:search', 'docs:get'],
+        expiresAt: new Date(Date.now() + 15 * 60_000) });
+      principalBearer = principal.bearer;
+      cpSync(packaged, seed, { recursive: true });
+      host = await ownFixtureOperator(seed, undefined, 'standalone');
+      const health = await fetch(new URL('/api/health', host.baseUrl));
+      expect(health.ok).toBe(true);
+      const { sha } = await health.json();
+      expect(sha).toMatch(/^[a-f0-9]{7,40}$/);
+      runtimeBuild = { sha, measuredAt: new Date().toISOString() };
+      expect(existsSync(join(host.root, 'apps/papercusp-docs'))).toBe(false);
+      expect(host.manualDir).toBe(join(host.root, 'public/manual-source'));
+      const canonicalRevision = await createPublicManualSource(canonical).revision();
+      const readMounted = async (heading: string, query: string) => {
+        host!.assertAlive();
+        const get = await fixtureRead('docs:get', { slugs: ['faq'], heading }, false, host!.baseUrl);
+        const search = await fixtureRead('docs:search', { query }, false, host!.baseUrl);
+        expect(get.surface).toBe('public');
+        expect(search.surface).toBe('public');
+        expect(get.revision).toBe(await createPublicManualSource(host!.manualDir).revision());
+        expect(search.revision).toBe(get.revision);
+        expect(search.hits).toEqual(expect.arrayContaining([expect.objectContaining({ slug: 'faq' })]));
+        return { get, search };
+      };
+      stage = 'canonical';
+      const before = await readMounted('What is a workspace?', 'What is a workspace?');
+      observations.before = before;
+      expect(before.get.revision).toBe(canonicalRevision);
+      expect(JSON.stringify(before.get)).toContain('What is a workspace?');
+      observations.unchanged = await readMounted('What is a workspace?', 'What is a workspace?');
+      stage = 'changed';
+      const faqPath = join(host.manualDir, 'faq.mdx');
+      const original = readFileSync(faqPath, 'utf8');
+      const update = (marker: string) => writeFileSync(faqPath,
+        `${original}\n\n## Standalone revision control\n\nThe standalone revision marker is ${marker}.\n`);
+      update('STANDALONE-RED-5831');
+      const changed = await readMounted('Standalone revision control', 'standalone revision marker');
+      observations.changed = changed;
+      expect(changed.get.revision).not.toBe(before.get.revision);
+      expect(JSON.stringify(changed)).toContain('STANDALONE-RED-5831');
+      update('STANDALONE-BLUE-9274');
+      const refreshed = await readMounted('Standalone revision control', 'standalone revision marker');
+      observations.refreshed = refreshed;
+      expect(refreshed.get.revision).not.toBe(changed.get.revision);
+      for (const result of [refreshed.get, refreshed.search]) {
+        expect(JSON.stringify(result)).toContain('STANDALONE-BLUE-9274');
+        expect(JSON.stringify(result)).not.toContain('STANDALONE-RED-5831');
+      }
+      stage = 'passed';
+    } finally {
+      const ownedRoot = host?.root;
+      await host?.close();
+      if (principalSessionId) await endPiSession(workspaceId, principalSessionId);
+      principalSessionId = undefined;
+      principalBearer = undefined;
+      rmSync(seed, { recursive: true, force: true });
+      writeFileSync(join(evidenceDir, 'case.json'), JSON.stringify({
+        id: 'standalone-manual-revision', stage, runtimeBuild, observedAt: new Date().toISOString(),
+        modelTargetOpenCount: opened.mock.calls.length, modelSendCount: 0, pages, observations,
+        ownedRootRemoved: ownedRoot ? !existsSync(ownedRoot) : null,
+      }, null, 2));
+      expect(opened).not.toHaveBeenCalled();
+      opened.mockRestore();
+    }
+  }, 90_000);
+});
+
 describe.runIf(enabled)('real public Papercup manual behavior', () => {
   beforeAll(async () => {
     if (manualFixtureDir) {
@@ -1166,76 +1262,6 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
     }
   }, 60_000);
 
-  it.runIf(Boolean(manualFixtureDir))('retrieves the canonical standalone bundle and refreshes its mounted revision without model calls', async () => {
-    const send = vi.spyOn(chat!, 'send');
-    const repoRoot = resolve(import.meta.dirname, '../../../../..');
-    const canonical = join(repoRoot, 'apps/papercusp-docs/src/content/docs');
-    const packaged = join(repoRoot, 'apps/operator/public/manual-source');
-    const pages = readdirSync(canonical).filter(name => /\.mdx?$/.test(name)).sort();
-    expect(pages).toContain('faq.mdx');
-    expect(readdirSync(packaged).filter(name => /\.mdx?$/.test(name)).sort()).toEqual(pages);
-    for (const name of pages) expect(readFileSync(join(packaged, name))).toEqual(readFileSync(join(canonical, name)));
-    const seed = mkdtempSync(join(tmpdir(), 'public-manual-standalone-seed-'));
-    const evidenceDir = join(llmBatteryEvidenceRoot(), `standalone-manual-revision-${randomUUID()}`);
-    mkdirSync(evidenceDir, { recursive: true });
-    const observations: Record<string, unknown> = {};
-    let host: Awaited<ReturnType<typeof ownFixtureOperator>> | undefined;
-    let stage = 'prepare';
-    try {
-      cpSync(packaged, seed, { recursive: true });
-      host = await ownFixtureOperator(seed, undefined, 'standalone');
-      expect(existsSync(join(host.root, 'apps/papercusp-docs'))).toBe(false);
-      expect(host.manualDir).toBe(join(host.root, 'public/manual-source'));
-      const canonicalRevision = await createPublicManualSource(canonical).revision();
-      const readMounted = async (heading: string, query: string) => {
-        host!.assertAlive();
-        const get = await fixtureRead('docs:get', { slugs: ['faq'], heading }, false, host!.baseUrl);
-        const search = await fixtureRead('docs:search', { query }, false, host!.baseUrl);
-        expect(get.surface).toBe('public');
-        expect(search.surface).toBe('public');
-        expect(get.revision).toBe(await createPublicManualSource(host!.manualDir).revision());
-        expect(search.revision).toBe(get.revision);
-        expect(search.hits).toEqual(expect.arrayContaining([expect.objectContaining({ slug: 'faq' })]));
-        return { get, search };
-      };
-      stage = 'canonical';
-      const before = await readMounted('What is a workspace?', 'What is a workspace?');
-      observations.before = before;
-      expect(before.get.revision).toBe(canonicalRevision);
-      expect(JSON.stringify(before.get)).toContain('What is a workspace?');
-      observations.unchanged = await readMounted('What is a workspace?', 'What is a workspace?');
-      stage = 'changed';
-      const faqPath = join(host.manualDir, 'faq.mdx');
-      const original = readFileSync(faqPath, 'utf8');
-      const update = (marker: string) => writeFileSync(faqPath,
-        `${original}\n\n## Standalone revision control\n\nThe standalone revision marker is ${marker}.\n`);
-      update('STANDALONE-RED-5831');
-      const changed = await readMounted('Standalone revision control', 'standalone revision marker');
-      observations.changed = changed;
-      expect(changed.get.revision).not.toBe(before.get.revision);
-      expect(JSON.stringify(changed)).toContain('STANDALONE-RED-5831');
-      update('STANDALONE-BLUE-9274');
-      const refreshed = await readMounted('Standalone revision control', 'standalone revision marker');
-      observations.refreshed = refreshed;
-      expect(refreshed.get.revision).not.toBe(changed.get.revision);
-      for (const result of [refreshed.get, refreshed.search]) {
-        expect(JSON.stringify(result)).toContain('STANDALONE-BLUE-9274');
-        expect(JSON.stringify(result)).not.toContain('STANDALONE-RED-5831');
-      }
-      stage = 'passed';
-    } finally {
-      const ownedRoot = host?.root;
-      await host?.close();
-      rmSync(seed, { recursive: true, force: true });
-      writeFileSync(join(evidenceDir, 'case.json'), JSON.stringify({
-        id: 'standalone-manual-revision', stage, runtimeBuild, observedAt: new Date().toISOString(),
-        modelSendCount: send.mock.calls.length, pages, observations,
-        ownedRootRemoved: ownedRoot ? !existsSync(ownedRoot) : null,
-      }, null, 2));
-      expect(send).not.toHaveBeenCalled();
-      send.mockRestore();
-    }
-  }, 90_000);
 
   const actualPortalAcceptance = async (mismatchedOrigin: boolean, preflightOnly = false, canonicalQuestion?: string) => {
     // Explicit roots prevent this acceptance case from silently testing a mutable

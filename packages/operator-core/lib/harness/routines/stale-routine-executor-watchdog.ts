@@ -37,7 +37,10 @@
  * avoids by routing through it rather than hand-rolling the LIKE match).
  */
 import { execFile } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { resolveOperatorAppRootFromModuleDir } from '../../operator-app-root';
 import { claimWatchdogFire, recentWatchdogFires, scopedFireReason } from '../../pot/watchdog';
 import { RESTART_TARGET_UNITS } from '../../agent-tools/dev/restart-target-units';
 import { operatorHomeHarnessSlug } from '../operator-home-harness';
@@ -223,8 +226,39 @@ const STALE_EXECUTOR_PTOOL_TIMEOUT_MS = 30_000 + STALE_EXECUTOR_GIT_SYNC_DRAIN_S
 const STALE_EXECUTOR_RESTART_PID_WAIT_MS = 30_000;
 const STALE_EXECUTOR_RESTART_PID_POLL_MS = 250;
 
+/**
+ * WI-10007644: how long a FAILED or REFUSED attempt waits before the next tick may
+ * try again. Before this, only a success/coalesce armed any wait, so a refusal
+ * (git_sync_barrier_drain_timeout, gate_collision) or a ptool that could not even
+ * start was retried on every ~30s routinesTick — each retry holding the tick for up
+ * to the 45s git-sync drain, and every one of them invisible.
+ */
+export const STALE_EXECUTOR_RESTART_RETRY_BACKOFF_MS = 3 * 60_000;
+
 let staleExecutorRestartInFlight = false;
 let staleExecutorRestartCooldownUntilMs = 0;
+
+/** Test seam: the in-flight latch and cooldown are module state shared across cases. */
+export function resetStaleExecutorRestartStateForTests(): void {
+  staleExecutorRestartInFlight = false;
+  staleExecutorRestartCooldownUntilMs = 0;
+}
+
+/**
+ * Where `apps/operator/scripts/ptool.mjs` is, from the module that is RUNNING —
+ * source (`packages/operator-core/lib/harness/routines/`) or the esbuild host bundle
+ * bg-host actually executes (`apps/operator/dist-host/hono-host.mjs`).
+ *
+ * WI-10007644: this used to be `new URL('../../../../../apps/operator/scripts/ptool.mjs',
+ * import.meta.url)`. Five hops are right from the source file and wrong from the bundle,
+ * where they land on `$HOME/apps/operator/scripts/ptool.mjs` — so in production the
+ * actuator spawned a node that could not find its script, and never once restarted
+ * anything (0 of 1,398 dev:restart calls in the ledger carried its reason).
+ */
+export function defaultPtoolScriptPath(moduleUrl: string = import.meta.url): string {
+  const moduleDir = path.dirname(fileURLToPath(moduleUrl));
+  return path.join(resolveOperatorAppRootFromModuleDir(moduleDir), 'scripts', 'ptool.mjs');
+}
 
 type RestartCommandResult = { stdout: string; error?: string };
 type RestartCommand = (
@@ -337,6 +371,24 @@ export interface StaleExecutorRestartResult {
 export async function restartStaleBgHostExecutor(
   identity: string,
   verdict: ExecutorStalenessVerdict,
+  deps: Parameters<typeof attemptStaleBgHostExecutorRestart>[2] = {},
+): Promise<StaleExecutorRestartResult> {
+  const nowMs = (deps.now ?? Date.now)();
+  const result = await attemptStaleBgHostExecutorRestart(identity, verdict, deps);
+  // A real attempt that did not restart (refused, failed, unverified) backs off
+  // instead of re-running every tick; success/coalesce arm the longer cooldown inside.
+  if (result.attempted && !result.restarted && !result.coalesced) {
+    staleExecutorRestartCooldownUntilMs = Math.max(
+      staleExecutorRestartCooldownUntilMs,
+      nowMs + STALE_EXECUTOR_RESTART_RETRY_BACKOFF_MS,
+    );
+  }
+  return result;
+}
+
+async function attemptStaleBgHostExecutorRestart(
+  identity: string,
+  verdict: ExecutorStalenessVerdict,
   deps: {
     now?: () => number;
     run?: RestartCommand;
@@ -361,10 +413,13 @@ export async function restartStaleBgHostExecutor(
   staleExecutorRestartInFlight = true;
   try {
     const run = deps.run ?? runRestartCommand;
-    const ptoolScript =
-      deps.ptoolScript ??
-      process.env.PAPERCUSP_PTOOL_SCRIPT?.trim() ??
-      fileURLToPath(new URL('../../../../../apps/operator/scripts/ptool.mjs', import.meta.url));
+    // `||`, not `??`: an exported-but-empty PAPERCUSP_PTOOL_SCRIPT is not a path.
+    const ptoolScript = deps.ptoolScript ?? (process.env.PAPERCUSP_PTOOL_SCRIPT?.trim() || defaultPtoolScriptPath());
+    // An injected script is a test seam; a resolved one must exist, or the spawn
+    // fails as an anonymous `ptool_failed` that names nothing (WI-10007644).
+    if (!deps.ptoolScript && !existsSync(ptoolScript)) {
+      return { ...skipped('ptool_script_missing'), attempted: true, error: `ptool script not found at ${ptoolScript}` };
+    }
     const beforePid = await readBgHostMainPid(run).catch(() => null);
     const args = {
       target: 'bg-host',
@@ -937,6 +992,15 @@ export async function staleRoutineExecutorSweep(opts: {
         error: error instanceof Error ? error.message : String(error),
       };
       console.warn(`[stale-routine-executor] remediation failed (non-fatal): ${restart.error}`);
+    }
+    // WI-10007644: the caller logs only outcome+reason, so an attempt that did not
+    // restart used to vanish — the actuator failed on every tick for weeks with no
+    // trace. Every real attempt now leaves one line (at most one per backoff window).
+    if (restart.attempted) {
+      console.warn(
+        `[stale-routine-executor] auto-restart (${identity}): ${restart.code}` +
+          (restart.error ? ` — ${restart.error}` : ''),
+      );
     }
 
     const windowHours = Math.max(1, Math.round(thresholdSec / 3_600));
