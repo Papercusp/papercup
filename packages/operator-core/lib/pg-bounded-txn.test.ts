@@ -403,6 +403,10 @@ describe('boundedOrgTxn', () => {
       await vi.advanceTimersByTimeAsync(0);
       expect(lateError).toBeInstanceOf(DbCallDeadlineError);
       expect(caller).not.toHaveBeenCalled();
+      if (stalledPhase === 'begin') {
+        // A late BEGIN must roll back without issuing transaction setup SQL.
+        expect(queries).toHaveLength(0);
+      }
     } finally {
       vi.useRealTimers();
     }
