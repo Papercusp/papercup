@@ -8,6 +8,7 @@ import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
+import { resolveOperatorAppRootFromModuleDir } from '../../operator-app-root';
 import { validateEmbedderProfile, EMBEDDER_DIM_SPECS, CANDIDATE_DIM_SPECS, MDENSEON_REVISION,
   gemmaPrompt, harrierPrompt, mdenseOnPrompt, embedRequestedExecution,
   type EmbedderProfileSpec, type SidecarEmbedResponse } from '@papercusp/memory';
@@ -121,7 +122,8 @@ export async function assertCandidateArm(arm: MeasurementArm, model: 'mdenseon' 
       version: measurementPackageVersion(model === 'mdenseon' ? 'tokenizers' : '@huggingface/tokenizers') },
     execution: { device: embedRequestedExecution().device, dtype: 'fp32', transport, cache: 'bypass',
       intraOpThreads: ORT_SESSION_OPTIONS.intraOpNumThreads, interOpThreads: ORT_SESSION_OPTIONS.interOpNumThreads } });
-  const source = await fingerprintFile(fileURLToPath(new URL('../../../../../libs/generic/memory/src/local-embedder-worker.script.mjs', import.meta.url)));
+  const appRoot = resolveOperatorAppRootFromModuleDir(path.dirname(fileURLToPath(import.meta.url)));
+  const source = await fingerprintFile(path.resolve(appRoot, '../../libs/generic/memory/src/local-embedder-worker.script.mjs'));
   if (arm.runtime.name !== 'transformers-js-worker' || arm.runtime.version !== measurementPackageVersion('@huggingface/transformers')
     || arm.runtime.wire !== (transport === 'worker' ? 'worker-in-process' : httpRuntime)
     || source.sha256 !== arm.runtime.source.sha256 || source.bytes !== arm.runtime.source.bytes) throw new Error('actual worker/runtime identity mismatch');

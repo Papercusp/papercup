@@ -54,6 +54,9 @@
 #   --allow-unpinned-source
 #                        record sourceCheckout "unpinned" instead of refusing (an unpinned local
 #                        test bake). The release trust gate still refuses such an image.
+#   --containerfile PATH --build-type URI --builder-id URI --base-image REF
+#                        Bind the existing signing pipeline to another OCI producer, such as the
+#                        portable Server, without recording bootc provenance for different bytes.
 #   --min-available-packages N
 #                        D-027 positive control (default 1000, env VENDOR_MIN_AVAILABLE_PACKAGES):
 #                        the in-image `dnf check-update` only counts as "the vendor ships nothing
@@ -69,6 +72,10 @@ set -uo pipefail
 IMAGE=""; KEY=""; PUBKEY=""; OUTDIR="./.supply-chain-out"
 INSECURE=0; FAIL_ON_VULNS=0; SKIP_SCAN=0; SKIP_SECRET_SCAN=0; MIN_PKGS=50
 SOURCE_COMMIT=""; ALLOW_UNPINNED_SOURCE=0
+CONTAINERFILE="infra/images/bootc/workspace-host.Containerfile"
+BUILD_TYPE="https://papercusp.dev/bootc/workspace-host/v1"
+BUILDER_ID="https://papercusp.dev/builders/bootc-image-builder"
+BASE_IMG=""
 MIN_AVAILABLE_PACKAGES="${VENDOR_MIN_AVAILABLE_PACKAGES:-1000}"
 
 while [ $# -gt 0 ]; do
@@ -85,6 +92,10 @@ while [ $# -gt 0 ]; do
     --min-available-packages) MIN_AVAILABLE_PACKAGES="${2:-1000}"; shift 2;;
     --source-commit) SOURCE_COMMIT="${2:-}"; shift 2;;
     --allow-unpinned-source) ALLOW_UNPINNED_SOURCE=1; shift;;
+    --containerfile) CONTAINERFILE="${2:-}"; shift 2;;
+    --build-type) BUILD_TYPE="${2:-}"; shift 2;;
+    --builder-id) BUILDER_ID="${2:-}"; shift 2;;
+    --base-image) BASE_IMG="${2:-}"; shift 2;;
     -h|--help) sed -n '2,54p' "$0"; exit 0;;
     *) echo "usage error: unknown argument $1" >&2; exit 2;;
   esac
@@ -95,6 +106,10 @@ done
 [ -f "$KEY" ]   || { echo "usage error: key not found: $KEY" >&2; exit 2; }
 [ -n "$PUBKEY" ] || PUBKEY="${KEY%.key}.pub"
 [ -f "$PUBKEY" ] || { echo "usage error: public key not found: $PUBKEY (pass --pubkey)" >&2; exit 2; }
+[[ "$CONTAINERFILE" =~ ^[a-zA-Z0-9_./-]+$ && "$CONTAINERFILE" != /* && "$CONTAINERFILE" != *..* ]] \
+  || { echo "usage error: --containerfile must be a repository-relative path" >&2; exit 2; }
+[[ "$BUILD_TYPE" == https://* && "$BUILDER_ID" == https://* ]] \
+  || { echo "usage error: build type and builder id must be HTTPS URIs" >&2; exit 2; }
 
 # The commit the image was built from, for the SLSA provenance sourceCheckout. Resolved and
 # validated HERE, before anything is scanned or signed: the bake runs this script from its
@@ -228,25 +243,26 @@ step "3/6  SLSA v1 provenance predicate"
 # is provenance about the BUILD, not an authorship claim; on this shared, sweep-committed tree a
 # commit's author and subject say nothing reliable about a change (see the repo guide).
 # SRC_SHA was resolved and validated before signing (see the setup block above).
-BASE_IMG="$(sed -n 's/^ARG PAPERCUSP_BASE_IMAGE=//p' "$(dirname "$0")/workspace-host.Containerfile" 2>/dev/null | head -1)"
+[ -n "$BASE_IMG" ] || BASE_IMG="$(sed -n 's/^ARG PAPERCUSP_BASE_IMAGE=//p' "$(dirname "$0")/workspace-host.Containerfile" 2>/dev/null | head -1)"
 [ -n "$BASE_IMG" ] || BASE_IMG="unknown"
-cat > "$OUTDIR/provenance.json" <<PRED
-{
-  "buildDefinition": {
-    "buildType": "https://papercusp.dev/bootc/workspace-host/v1",
-    "externalParameters": {
-      "containerfile": "infra/images/bootc/workspace-host.Containerfile",
-      "image": "$REPO",
-      "baseImage": "$BASE_IMG"
+python3 - "$BUILD_TYPE" "$CONTAINERFILE" "$REPO" "$BASE_IMG" "$SRC_SHA" "$BUILDER_ID" "$DIGEST" \
+  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$OUTDIR/provenance.json" <<'PRED' \
+  || die "could not encode artifact provenance"
+import json, sys
+build_type, containerfile, image, base, source, builder, digest, started = sys.argv[1:]
+json.dump({
+    "buildDefinition": {
+        "buildType": build_type,
+        "externalParameters": {"containerfile": containerfile, "image": image, "baseImage": base},
+        "internalParameters": {"sourceCheckout": source},
+        "resolvedDependencies": [{"uri": base}],
     },
-    "internalParameters": { "sourceCheckout": "$SRC_SHA" },
-    "resolvedDependencies": [ { "uri": "$BASE_IMG" } ]
-  },
-  "runDetails": {
-    "builder": { "id": "https://papercusp.dev/builders/bootc-image-builder" },
-    "metadata": { "invocationId": "$DIGEST", "startedOn": "$(date -u +%Y-%m-%dT%H:%M:%SZ)" }
-  }
-}
+    "runDetails": {
+        "builder": {"id": builder},
+        "metadata": {"invocationId": digest, "startedOn": started},
+    },
+}, sys.stdout, indent=2)
+sys.stdout.write("\n")
 PRED
 chmod a+r "$OUTDIR/provenance.json" 2>/dev/null || true
 echo "base image: $BASE_IMG"

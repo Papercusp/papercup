@@ -295,6 +295,46 @@ describe('release supply-chain provenance source commit (WI-10006045)', () => {
   });
 });
 
+describe('portable OCI producer provenance (P-058)', () => {
+  it('attests the Server producer and runtime instead of the default bootc image', () => {
+    const result = runGate([], { extraArgs: [
+      '--source-commit', 'a'.repeat(40), '--containerfile', 'infra/images/server/Containerfile',
+      '--build-type', 'https://papercusp.dev/server/container/v1',
+      '--builder-id', 'https://papercusp.dev/builders/server-container', '--base-image', 'ubuntu:24.04',
+    ] });
+    expect(result.status, result.output).toBe(0);
+    const predicate = JSON.parse(readFileSync(join(result.out, 'provenance.json'), 'utf8'));
+    expect(predicate.buildDefinition).toMatchObject({
+      buildType: 'https://papercusp.dev/server/container/v1',
+      externalParameters: { containerfile: 'infra/images/server/Containerfile', baseImage: 'ubuntu:24.04' },
+      internalParameters: { sourceCheckout: 'a'.repeat(40) },
+      resolvedDependencies: [{ uri: 'ubuntu:24.04' }],
+    });
+    expect(predicate.runDetails.builder.id).toBe('https://papercusp.dev/builders/server-container');
+    expect(result.podmanCalls.some(call => call.includes('verify-attestation'))).toBe(true);
+  });
+
+  it('refuses an invalid producer identity before a signing call', () => {
+    for (const args of [
+      ['--containerfile', '../other/Containerfile'],
+      ['--build-type', 'unknown'],
+      ['--builder-id', 'http://untrusted.example/builder'],
+    ]) {
+      const result = runGate([], { extraArgs: args });
+      expect(result.status, result.output).toBe(2);
+      expect(result.podmanCalls).toEqual([]);
+    }
+  });
+
+  it('encodes provenance parameters as JSON without interpolation', () => {
+    const base = 'registry.example/base:quote"slash\\tail';
+    const result = runGate([], { extraArgs: ['--base-image', base] });
+    expect(result.status, result.output).toBe(0);
+    const predicate = JSON.parse(readFileSync(join(result.out, 'provenance.json'), 'utf8'));
+    expect(predicate.buildDefinition.externalParameters.baseImage).toBe(base);
+  });
+});
+
 describe('release supply-chain secret scan runs before signing (WI-10005624)', () => {
   const isSigningCall = (call: string) => / (sign|attest) /.test(call);
   const scanCall = (calls: string[]) => calls.find((call) => call.startsWith('secret-scan '));

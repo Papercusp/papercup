@@ -69,6 +69,8 @@
   // An explicit list is also the honest surface: a glob would silently start
   // emitting declarations for every future script in the repo.
   "files": [
+    // WI-10007656: native DAO verification and its regression import this fixture.
+    "scripts/fixtures/dao-workbench-identity.mjs",
     // EI-25217214806027261 — bundle-host's free-reference guard, imported directly by
     // scripts/check-bundle-free-refs.test.ts (the list's first reason: no TS7016).
     "scripts/check-bundle-free-refs.mjs",
@@ -303,6 +305,9 @@
     // WI-10006057 — imported by psu-launcher.mjs and its TypeScript test.
     "apps/operator/scripts/psu-operator-down-diagnosis.mjs",
     "apps/operator/scripts/psu-pty-host.mjs",
+    // WI-10007614: the asynchronous TTY bridge and offline customer diagnostics.
+    "apps/operator/scripts/psu-terminal-output.mjs",
+    "apps/operator/scripts/psu-terminal-diagnostics.mjs",
     // EI-20228184337467634 — ptool.mjs is imported by TypeScript tests; register
     // its runtime dependency too so the complete CLI import surface is typed.
     "apps/operator/scripts/ptool.mjs",

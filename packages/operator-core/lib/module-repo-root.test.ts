@@ -72,6 +72,9 @@ describe('moduleRepoRoot', () => {
 
 const REPO_ROOT = moduleRepoRoot(import.meta.url);
 const SCOPE = ['packages/operator-core/lib', 'apps/operator/lib', 'apps/operator/bin'];
+// Filter before subprocess capture: this tree also contains large non-source artifacts.
+// Capturing the whole census and filtering afterward exceeded execFileSync's buffer.
+const SOURCE_PATHSPECS = SCOPE.flatMap((dir) => ['ts', 'mts', 'tsx'].map((ext) => `:(glob)${dir}/**/*.${ext}`));
 
 /**
  * Non-test modules allowed to climb to the repo root with a fixed `..` count. EMPTY since
@@ -88,7 +91,8 @@ const MODULE_DIR = String.raw`(?:path\.)?dirname\(\s*fileURLToPath\(\s*import\.m
  * Every expression in `src` that resolves a string-literal path, relative to the module's own
  * directory, to exactly `root`. Covers the direct form, the two-step form through a bound name
  * (`const here = dirname(fileURLToPath(import.meta.url))`, or `import.meta.dirname`), and
- * `new URL('../..', import.meta.url)`.
+ * `new URL('../..', import.meta.url)`. URL climbs to assets below the root count too:
+ * bundling changes their base in exactly the same way (WI-10007650).
  */
 function fixedClimbsToRoot(src: string, fileAbs: string, root: string): string[] {
   if (!src.includes('import.meta')) return [];
@@ -108,7 +112,8 @@ function fixedClimbsToRoot(src: string, fileAbs: string, root: string): string[]
     if (resolve(here, ...segs) === root) hits.push(m[0].replace(/\s+/g, ' '));
   }
   for (const m of src.matchAll(/new URL\(\s*(['"])([^'"]*)\1\s*,\s*import\.meta\.url\s*\)/g)) {
-    if (resolve(here, m[2]!) === root) hits.push(m[0]);
+    const climb = m[2]!.match(/^(?:\.\.\/)+/);
+    if (resolve(here, m[2]!) === root || (climb && resolve(here, climb[0]) === root)) hits.push(m[0]);
   }
   return hits;
 }
@@ -123,6 +128,8 @@ describe('census: no new fixed import.meta.url climbs to the repo root', () => {
       "const here = dirname(fileURLToPath(import.meta.url));\nconst R = join(here, '../../../../..');",
       "const R = resolve(import.meta.dirname, '../../../../..');",
       "const R = new URL('../../../../../', import.meta.url);",
+      "const R = new URL('../../../../../scripts/check-lockfile-census.mjs', import.meta.url);",
+      "const R = new URL('../../../../../libs/generic/memory/src/local-embedder-worker.script.mjs', import.meta.url);",
     ];
     for (const src of shapes) expect(fixedClimbsToRoot(src, lib, FAKE_ROOT), src).toHaveLength(1);
   });
@@ -132,12 +139,13 @@ describe('census: no new fixed import.meta.url climbs to the repo root', () => {
       "const S = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../../scripts');",
       "const F = join(dirname(fileURLToPath(import.meta.url)), 'fixtures/fake.mjs');",
       'const R = moduleRepoRoot(import.meta.url);',
+      "const F = new URL('../fixtures/fake.mjs', import.meta.url);",
     ];
     for (const src of shapes) expect(fixedClimbsToRoot(src, lib, FAKE_ROOT), src).toEqual([]);
   });
 
   it('the scanned tree has no unlisted site, and every listed site still exists (shrink-only)', () => {
-    const files = presentOnDisk(execFileSync('git', ['ls-files', '-z', '--', ...SCOPE], { cwd: REPO_ROOT, encoding: 'utf8' })
+    const files = presentOnDisk(execFileSync('git', ['ls-files', '-z', '--', ...SOURCE_PATHSPECS], { cwd: REPO_ROOT, encoding: 'utf8' })
       .split('\0')
       .filter((f) => /\.(ts|mts|tsx)$/.test(f) && !/\.(test|spec)\.tsx?$/.test(f)), REPO_ROOT);
     expect(files.length).toBeGreaterThan(1000); // the census really read the tree
