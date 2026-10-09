@@ -5,7 +5,8 @@ import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
 
 import { createResumeSmokeProfile, resumeSmokeChildEnv, verifyResumeSmokeContinuation,
-  retainResumeSmokeWitness, resumeSmokeExitCode, resumeSmokeFailureDetail, configureResumeSmokeOmpRoute }
+  retainResumeSmokeWitness, resumeSmokeExitCode, resumeSmokeFailureDetail, configureResumeSmokeOmpRoute,
+  runResumeSmokeCommand }
   from '../../../../../apps/operator/scripts/resume-spawn-live';
 
 describe('maintained real-client resume smoke isolation', () => {
@@ -81,6 +82,35 @@ describe('maintained real-client resume smoke isolation', () => {
     const detail = resumeSmokeFailureDetail({ stderr: 'Bearer fixture-private-token', stdout: 'sk-ant-fixture-secret' });
     expect(detail).not.toContain('fixture-private-token');
     expect(detail).not.toContain('fixture-secret');
+  });
+
+  it('preserves a silent client exit separately from deadline termination', () => {
+    const options = { cwd: process.cwd(), env: process.env, timeoutMs: 500 };
+    const exit = runResumeSmokeCommand(process.execPath, ['-e', 'process.exit(7)'], options);
+    expect(exit.code).toBe(7);
+    expect(exit.timedOut).toBe(false);
+    expect(exit.signal).toBeNull();
+    expect(exit.errorCode).not.toBe('ETIMEDOUT');
+    expect(resumeSmokeFailureDetail(exit)).toContain('Command failed');
+
+    const timeout = runResumeSmokeCommand(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], options);
+    expect(timeout.code).not.toBe(0);
+    expect(timeout.timedOut).toBe(true);
+    expect(timeout.errorCode).toBe('ETIMEDOUT');
+    expect(timeout.signal).toBe('SIGTERM');
+    expect(timeout.elapsedMs).toBeGreaterThanOrEqual(options.timeoutMs);
+    expect(resumeSmokeFailureDetail(timeout)).toContain('deadline=500ms');
+    expect(resumeSmokeFailureDetail(timeout)).toContain('ETIMEDOUT');
+  });
+
+  it('preserves external signal termination without misclassifying it as a timeout', () => {
+    const result = runResumeSmokeCommand(process.execPath,
+      ['-e', "process.kill(process.pid, 'SIGTERM')"],
+      { cwd: process.cwd(), env: process.env, timeoutMs: 5000 });
+    expect(result.signal).toBe('SIGTERM');
+    expect(result.timedOut).toBe(false);
+    expect(result.errorCode).not.toBe('ETIMEDOUT');
+    expect(resumeSmokeFailureDetail(result)).toContain('signal=SIGTERM');
   });
 
   it('seeds current OMP SQLite credentials without user settings, sessions, or write-through state', () => {

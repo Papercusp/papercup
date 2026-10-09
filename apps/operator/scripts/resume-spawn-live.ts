@@ -103,8 +103,14 @@ function retainWitness(agent: Leg['agent'], sessionId: string, before: string, a
   return evidenceDir ? retainResumeSmokeWitness(evidenceDir, agent, sessionId, before, after, wakeText) : undefined;
 }
 
-export function resumeSmokeFailureDetail(result: { stdout: string; stderr: string }): string {
-  return [result.stderr, result.stdout].filter(Boolean).join('\n')
+export function resumeSmokeFailureDetail(result: { stdout: string; stderr: string;
+  errorMessage?: string; errorCode?: string | null; signal?: string | null;
+  elapsedMs?: number; timeoutMs?: number }): string {
+  const output = [result.stderr, result.stdout].filter(Boolean).join('\n');
+  const metadata = [result.errorCode && `errorCode=${result.errorCode}`, result.signal && `signal=${result.signal}`,
+    result.elapsedMs !== undefined && `elapsed=${result.elapsedMs}ms`,
+    result.timeoutMs !== undefined && `deadline=${result.timeoutMs}ms`].filter(Boolean).join(' ');
+  return [metadata, output || result.errorMessage].filter(Boolean).join('\n')
     .replace(/sk-ant-[A-Za-z0-9_-]+|sk-[A-Za-z0-9_-]{20,}|Bearer\s+\S+/g, '[redacted credential]').slice(0, 600);
 }
 
@@ -186,21 +192,30 @@ function log(s: string) {
   process.stdout.write(s + '\n');
 }
 
-/** Run a CLI to completion; capture exit code + output (never throws). */
-function run(bin: string, args: string[], opts: { cwd: string; env: NodeJS.ProcessEnv }) {
+/** Keep the measured deadline and termination cause even when a CLI emits nothing. */
+export function runResumeSmokeCommand(bin: string, args: string[],
+  opts: { cwd: string; env: NodeJS.ProcessEnv; timeoutMs?: number }) {
+  const startedAt = Date.now();
+  const timeoutMs = opts.timeoutMs ?? TURN_TIMEOUT_MS;
   try {
     const stdout = execFileSync(bin, args, {
       cwd: opts.cwd,
       env: opts.env,
       encoding: 'utf8',
-      timeout: TURN_TIMEOUT_MS,
+      timeout: timeoutMs,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
-    return { code: 0, stdout, stderr: '' };
+    return { code: 0, stdout, stderr: '', elapsedMs: Date.now() - startedAt, timeoutMs,
+      errorCode: null, signal: null, timedOut: false, errorMessage: '' };
   } catch (e: any) {
-    return { code: e?.status ?? 1, stdout: String(e?.stdout ?? ''), stderr: String(e?.stderr ?? e?.message ?? '') };
+    return { code: e?.status ?? 1, stdout: String(e?.stdout ?? ''), stderr: String(e?.stderr ?? ''),
+      elapsedMs: Date.now() - startedAt, timeoutMs, errorCode: e?.code ? String(e.code) : null,
+      signal: e?.signal ?? null, timedOut: e?.code === 'ETIMEDOUT',
+      errorMessage: resumeSmokeFailureDetail({ stdout: '', stderr: String(e?.message ?? '') }) };
   }
 }
+
+const run = runResumeSmokeCommand;
 
 /** Count newline-delimited records in a JSONL file (0 if absent). */
 function jsonlLines(file: string): number {
@@ -385,7 +400,7 @@ async function ompLeg(): Promise<Leg> {
     );
     recordStage('omp', 'launch', launch);
     if (launch.code !== 0) {
-      const detail = `${launch.stderr}\n${launch.stdout}`.slice(0, 360);
+      const detail = resumeSmokeFailureDetail(launch);
       if (/unauth|not authenticated|api key|credential|login required/i.test(detail)) {
         return { agent: 'omp', status: 'skip', detail: `OMP is installed but not authenticated: ${detail}` };
       }
@@ -418,7 +433,7 @@ async function ompLeg(): Promise<Leg> {
     recordStage('omp', 'resume', resume);
     const resumeMs = Date.now() - resumeStartedAt;
     if (resume.code !== 0) {
-      return { agent: 'omp', status: 'fail', detail: `resume exited ${resume.code}: ${resume.stderr.slice(0, 240)}` };
+      return { agent: 'omp', status: 'fail', detail: `resume exited ${resume.code}: ${resumeSmokeFailureDetail(resume)}` };
     }
 
     const after = jsonlLines(transcript);
