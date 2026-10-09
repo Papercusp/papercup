@@ -1245,8 +1245,9 @@ describe('scheduler:get_next bounds the claim path against a silent hang (EI-181
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const contention = new OrgTxnTimeoutError('55P03', new Error('lock timeout'));
     getNextM.mockRejectedValue(contention);
+    const metadata = vi.fn();
 
-    const out = (await getNextTool.handler({ harness: 'papercusp' } as never, {} as never)) as {
+    const out = (await getNextTool.handler({ harness: 'papercusp' } as never, { metadata } as never)) as {
       content: Array<{ text: string }>;
     };
     const b = JSON.parse(out.content[0]!.text);
@@ -1259,6 +1260,15 @@ describe('scheduler:get_next bounds the claim path against a silent hang (EI-181
     expect(b.message).toContain('operator write timed out waiting for a row/advisory lock');
     expect(b.message).toContain('Retry now');
     expect(b.windDown).toBeUndefined();
+    expect(metadata).toHaveBeenCalledWith({
+      schedulerTimeout: {
+        phase: 'claim',
+        lastClaimStep: 'claim-start',
+        lastClaimStepElapsedMs: expect.any(Number),
+        pgCode: '55P03',
+        timeoutSource: 'pg',
+      },
+    });
     warnSpy.mockRestore();
   });
 });

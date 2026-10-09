@@ -1938,7 +1938,15 @@ export default defineTool({
     if (claim.degraded && claim.reason === 'error') {
       if (claim.error instanceof OrgTxnTimeoutError) {
         const elapsedMs = lastClaimStepElapsedMs ?? Math.max(0, performance.now() - lastClaimStepStartedAtMs);
-        ctx.metadata?.({ schedulerTimeout: { phase: 'claim', lastClaimStep, lastClaimStepElapsedMs: elapsedMs } });
+        ctx.metadata?.({
+          schedulerTimeout: {
+            phase: 'claim',
+            lastClaimStep,
+            lastClaimStepElapsedMs: elapsedMs,
+            pgCode: claim.error.pgCode,
+            timeoutSource: claim.error.timeoutSource,
+          },
+        });
         return {
           content: [
             {

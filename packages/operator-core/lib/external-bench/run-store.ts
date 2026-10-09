@@ -212,8 +212,8 @@ export function taskRowFromFleetResult(tr: FleetTaskResult): BenchTaskRow {
   };
 }
 
-/** Append coordination events to a run's trace (live streaming). Seq continues
- *  after the current max — use this OR setBenchRunEvents, not both for the same events. */
+/** Append coordination events to a run's trace (live streaming). Allocation and
+ * insertion share the run-row lock used by whole-trace replacement. */
 export async function appendBenchRunEvents(
   runId: string,
   events: readonly CoordEvent[],
@@ -221,15 +221,22 @@ export async function appendBenchRunEvents(
 ): Promise<{ inserted: number }> {
   if (events.length === 0) return { inserted: 0 };
   const { sql, ws } = resolveDb(opts);
-  const max = await sql<{ next: number }[]>`
-    SELECT COALESCE(MAX(seq), -1) + 1 AS next FROM harness_shared.bench_run_events
-     WHERE run_id = ${runId} AND workspace_id = ${ws}
-  `;
-  const start = Number(max[0]?.next ?? 0);
-  await sql`INSERT INTO harness_shared.bench_run_events ${sql(
-    events.map((e, i) => eventRow(runId, ws, start + i, e)),
-    'run_id', 'workspace_id', 'seq', 'ts', 'kind', 'agent', 'task_id', 'payload',
-  )}`;
+  await sql.begin(async (tx) => {
+    const run = await tx`
+      SELECT id FROM harness_shared.bench_runs
+       WHERE id = ${runId} AND workspace_id = ${ws} FOR UPDATE
+    `;
+    if (!run.length) throw new Error('Benchmark event run is absent from the requested workspace.');
+    const max = await tx<{ next: number }[]>`
+      SELECT COALESCE(MAX(seq), -1) + 1 AS next FROM harness_shared.bench_run_events
+       WHERE run_id = ${runId} AND workspace_id = ${ws}
+    `;
+    const start = Number(max[0]?.next ?? 0);
+    await tx`INSERT INTO harness_shared.bench_run_events ${tx(
+      events.map((e, i) => eventRow(runId, ws, start + i, e)),
+      'run_id', 'workspace_id', 'seq', 'ts', 'kind', 'agent', 'task_id', 'payload',
+    )}`;
+  });
   await invalidate(runId);
   return { inserted: events.length };
 }
@@ -238,6 +245,11 @@ export async function appendBenchRunEvents(
 export async function setBenchRunEvents(runId: string, events: readonly CoordEvent[], opts: DbScope = {}): Promise<void> {
   const { sql, ws } = resolveDb(opts);
   await sql.begin(async (tx) => {
+    const run = await tx`
+      SELECT id FROM harness_shared.bench_runs
+       WHERE id = ${runId} AND workspace_id = ${ws} FOR UPDATE
+    `;
+    if (!run.length) throw new Error('Benchmark event run is absent from the requested workspace.');
     await tx`DELETE FROM harness_shared.bench_run_events WHERE run_id = ${runId} AND workspace_id = ${ws}`;
     if (events.length > 0) {
       await tx`INSERT INTO harness_shared.bench_run_events ${tx(

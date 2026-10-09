@@ -148,9 +148,23 @@ describe('bench run-store (live write + read)', () => {
     `;
     // Replacement may precede or follow any append. Either order must replay
     // as one contiguous trace starting with the replacement, without duplicates.
-    expect(rows[0].agent).toBe('replacement');
+    expect(rows[0]?.agent).toBe('replacement');
     expect(rows.map(row => Number(row.seq))).toEqual(rows.map((_, i) => i));
     expect(new Set(rows.map(row => row.agent)).size).toBe(rows.length);
+  });
+
+  it('refuses event writes for a missing or foreign-workspace run', async () => {
+    const runId = 'event-write-workspace-scope';
+    await upsertBenchRun({ id: runId, arm: 'papercusp', taskSetId: 'fixture', model: 'fixture' }, scope);
+    await appendBenchRunEvents(runId, [{ kind: 'placement', agent: 'retained' }], scope);
+    for (const input of [
+      { runId, scope: { ...scope, workspaceId: 'other-workspace' } },
+      { runId: 'absent-run', scope },
+    ]) {
+      await expect(appendBenchRunEvents(input.runId, [{ kind: 'placement' }], input.scope)).rejects.toThrow(/workspace/);
+      await expect(setBenchRunEvents(input.runId, [], input.scope)).rejects.toThrow(/workspace/);
+    }
+    expect((await getBenchRunDetail(runId, scope))!.run.coordEvents?.map(event => event.agent)).toEqual(['retained']);
   });
 
   it('writes a run + tasks + events and reads them back in the PreservedArmRun shape', async () => {
