@@ -50,14 +50,11 @@ export default defineTool({
       'analyses, status digests, or proposals.',
     notWhen:
       'Use `work_items:checkpoint` for in-flight state, `facts:assert` for standing conclusions, ' +
-      '`plans:add-decision` for cross-lane rulings, and `coord:send` for agent messages. Do not republish ' +
-      'a just-published typo unless it warrants a new lineage entry. A reusable runbook belongs in maintained ' +
-      'docs through `docs:author`; a report alone is not the current procedural store.',
+      '`plans:add-decision` for cross-lane rulings, and `coord:send` for agent messages. Reusable ' +
+      'procedures belong in `docs:author`. Minor typos rarely warrant a new edition; corrections use `supersedes`.',
     chaining:
-      'reports:publish → reports:get { id: report_id } → verify the complete body and visibility → cite. ' +
-      'Claim saved or delivered only after readback succeeds. Corrections: read the original → publish ' +
-      'with `supersedes: id` → reports:get with the new report_id → verify the correction → cite it. ' +
-      '`reports:list` shows editions and lineage.',
+      'After publishing, call `reports:get` with the id and verify the complete body and visibility before citing. ' +
+      'For corrections, read the original, publish with `supersedes`, then verify the new id. `reports:list` shows lineage.',
     returns:
       '{ ok:true, report_id, workspace_id, title, summary, kind, subject, origin, visibility, ' +
       'supersedes_report_id, lineage_id, source, tags, published_at, updated_at, retired_at, path, ' +

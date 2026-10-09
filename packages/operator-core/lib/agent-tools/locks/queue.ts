@@ -19,7 +19,7 @@ export default defineTool({
   guidance: {
     when: 'Diagnostics — "what are the other agents doing?" or "why am I blocked?". Cheap, MVCC read.',
     notWhen: 'Before every acquire — locks:acquire already returns busy context. Use queue when the user asks.',
-    chaining: 'Workspace-global diagnostic — omit harness; omit coordination_domain for every checkout or pass a physical repository root for one checkout. Omit paths for all rows or pass exact paths (paths:[] is intentionally empty); optionally filter owner?/include_completed?. external_paths may cover at most one managed repository per request; query each repository separately and do not mix managed files with ordinary home/runtime files. For a home or XDG_RUNTIME_DIR file locked via locks:acquire external_paths, pass the same absolute path as external_paths here; it resolves to the same repository-relative or reserved external key. Release a held row with its returned lock_id via locks:release; paths alone is not a release selector.',
+    chaining: 'Workspace-global: omit harness. Omit coordination_domain for every checkout or pass one physical repository root. Omit paths for all rows; paths:[] matches none. Filter owner/include_completed as needed. For absolute HOME/XDG_RUNTIME_DIR files use external_paths; query one managed repository per request and separately from ordinary home/runtime files. Release with the returned lock_id; paths are not a release selector.',
     seeAlso: [
       'locks:list (named-resource holders, not file-lock contention)',
       'coord:roster { view:"live" } (what the other agents are doing overall)',
