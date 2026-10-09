@@ -141,6 +141,7 @@ describe('backfillResultDoorOutputRef (EI-19389431406847252)', () => {
       'x:one',
       'run-abc',
       null,
+      null,
     ]);
   });
 
@@ -158,7 +159,8 @@ describe('backfillResultDoorOutputRef (EI-19389431406847252)', () => {
     });
 
     expect(unsafeCalls[1].sql).toContain('output_ref = $8');
-    expect(unsafeCalls[1].sql).toContain("invoked_at >= now() - interval '30 seconds' OR ($8::text IS NOT NULL AND output_ref = $8)");
+    expect(unsafeCalls[1].sql).toContain("invoked_at >= now() - interval '30 seconds'");
+    expect(unsafeCalls[1].sql).toContain('OR ($8::text IS NOT NULL AND output_ref = $8)');
     expect(unsafeCalls[1].params).toEqual([
       uri,
       4200,
@@ -168,6 +170,39 @@ describe('backfillResultDoorOutputRef (EI-19389431406847252)', () => {
       'x:late',
       'run-late',
       uri,
+      null,
+    ]);
+  });
+
+  it('backfills a result-door spill by exact MCP request trace id beyond the ordinary recency window', async () => {
+    const uri = 'papercusp://scratch/papercusp-workspace/x:trace/result-door-1.md';
+    const traceId = '640b0562-af01-4850-88e9-8ed54f9a032a';
+    const metadataJson = { spillPending: false, spillSettlementStatus: 'persisted' };
+    await backfillResultDoorOutputRef({
+      workspaceId: 'ws-test',
+      spawnId: 's-test',
+      toolName: 'x:trace',
+      runId: 'run-trace',
+      mcpRequestTraceId: traceId,
+      outputRef: uri,
+      outputSize: 4200,
+      metadataJson,
+    });
+
+    expect(unsafeCalls).toHaveLength(2);
+    expect(unsafeCalls[1].sql).toContain("metadata_json->'requestOrigin'->>'mcpRequestTraceId' = $9");
+    expect(unsafeCalls[1].sql).toContain("OR ($9::text IS NOT NULL AND metadata_json->'requestOrigin'->>'mcpRequestTraceId' = $9)");
+    expect(unsafeCalls[1].sql).toContain("invoked_at >= now() - interval '30 seconds'");
+    expect(unsafeCalls[1].params).toEqual([
+      uri,
+      4200,
+      JSON.stringify(metadataJson),
+      'ws-test',
+      's-test',
+      'x:trace',
+      'run-trace',
+      null,
+      traceId,
     ]);
   });
 
@@ -351,6 +386,27 @@ describe('WI-40720 gap 3 — the post-door backfill call site is door-general, n
     // spill count, so the measurement would report zero spills on a system that is spilling.
     expect(handlerSource).toContain('spillUri?: string;');
     expect(handlerSource).toContain('{ spillUri: doorMeta.spillUri }');
+  });
+
+  it('correlates both initial spill backfill and late settlement with the MCP request trace id', () => {
+    const lateStart = handlerSource.indexOf('onLateScratchWriteSettled: (settlement) =>');
+    const lateEnd = handlerSource.indexOf('onScratchWriteTiming: (timings) =>', lateStart);
+    expect(lateStart).toBeGreaterThan(-1);
+    expect(lateEnd).toBeGreaterThan(lateStart);
+    expect(handlerSource.slice(lateStart, lateEnd)).toContain(
+      'mcpRequestTraceId: dispatchSpawnCtx.requestOrigin?.mcpRequestTraceId ?? null',
+    );
+
+    const postDoorStart = handlerSource.indexOf(
+      'void backfillResultDoorOutputRef({',
+      handlerSource.indexOf('if (doorMeta?.truncated'),
+    );
+    const postDoorEnd = handlerSource.indexOf('}).catch((err) =>', postDoorStart);
+    expect(postDoorStart).toBeGreaterThan(-1);
+    expect(postDoorEnd).toBeGreaterThan(postDoorStart);
+    expect(handlerSource.slice(postDoorStart, postDoorEnd)).toContain(
+      'mcpRequestTraceId: dispatchSpawnCtx.requestOrigin?.mcpRequestTraceId ?? null',
+    );
   });
 
   it('stamps spillFailed UNCONDITIONALLY, so absent never reads as measured-false', () => {

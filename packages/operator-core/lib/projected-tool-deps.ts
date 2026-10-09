@@ -1383,22 +1383,12 @@ export async function flushPendingTelemetry(): Promise<void> {
  * would double-count `status='ok'` quota) or threading a per-row telemetry
  * handle through five generic layers.
  *
- * Correlation is deliberately NOT a hard foreign key — there is no per-call
- * nonce carried into `metadata_json` (adding one is a bigger, separate change).
- * It matches (workspace_id, spawn_id, tool_name, output_ref IS NULL, most
- * recent invoked_at) inside a short recency window, plus run_id when the
- * caller has one. A late spill settlement may instead match the exact
- * reserved output_ref URI, so it can update the original row beyond that
- * window without selecting a neighboring invocation. For loopback SU/power-user sessions `runId` is minted FRESH
- * per MCP request (see ctx construction in _mcp-handler.ts — "Per-request
- * UUID, not the 'standalone' sentinel"), so that additional predicate makes
- * the match effectively exact for that traffic; for signed role-scoped/bee
- * spawns `run_id` is stable for the whole spawn and narrows nothing extra, so
- * two back-to-back calls of the SAME tool from the SAME spawn inside the
- * recency window could in principle backfill the wrong one of the pair. Good
- * enough for the stated purpose (spill-rate / paged-rate analytics in one
- * query instead of a two-source forensic reconstruction) — not a substitute
- * for an exact key.
+ * MCP callers also pass their proxy request trace id when available; it is
+ * persisted on the invocation before dispatch. That exact key bypasses the recency window, so
+ * both the initial spill reservation and a later scratch-write settlement can
+ * reach the same row even when the 30-second door deadline has elapsed. Other
+ * callers retain the short recency-window fallback, plus run_id when present;
+ * a late spill settlement may also match the exact reserved output_ref URI.
  *
  * flushPendingTelemetry() first: the row this spill belongs to may still be
  * sitting in the in-memory queue (debounceMs default 10ms) — the UPDATE below
@@ -1410,6 +1400,7 @@ export async function backfillResultDoorOutputRef(input: {
   spawnId: string | null | undefined;
   toolName: string;
   runId?: string | null;
+  mcpRequestTraceId?: string | null;
   outputRef?: string | null;
   outputSize?: number | null;
   /** Exact URI already reserved on a pending row; allows a late settlement update
@@ -1428,6 +1419,7 @@ export async function backfillResultDoorOutputRef(input: {
   if (!input.outputRef && !input.metadataJson) return;
   const toolName = input.toolName;
   const runId = input.runId ?? null;
+  const mcpRequestTraceId = input.mcpRequestTraceId ?? null;
   try {
     // Force the just-queued row to be durable before we try to UPDATE it.
     await flushPendingTelemetry();
@@ -1443,7 +1435,12 @@ export async function backfillResultDoorOutputRef(input: {
             SELECT id FROM harness_shared.tool_invocations
              WHERE workspace_id = $4 AND spawn_id = $5 AND tool_name = $6
                AND ($1::text IS NULL OR output_ref IS NULL OR ($8::text IS NOT NULL AND output_ref = $8))
-               AND (invoked_at >= now() - interval '30 seconds' OR ($8::text IS NOT NULL AND output_ref = $8))
+               AND (
+                 invoked_at >= now() - interval '30 seconds'
+                 OR ($8::text IS NOT NULL AND output_ref = $8)
+                 OR ($9::text IS NOT NULL AND metadata_json->'requestOrigin'->>'mcpRequestTraceId' = $9)
+               )
+               AND ($9::text IS NULL OR metadata_json->'requestOrigin'->>'mcpRequestTraceId' = $9)
                AND ($7::text IS NULL OR run_id = $7)
              ORDER BY invoked_at DESC
              LIMIT 1
@@ -1457,6 +1454,7 @@ export async function backfillResultDoorOutputRef(input: {
           toolName,
           runId,
           input.matchOutputRef ?? null,
+          mcpRequestTraceId,
         ],
       );
     });
