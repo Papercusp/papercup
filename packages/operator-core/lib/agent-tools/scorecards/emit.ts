@@ -1238,7 +1238,11 @@ export async function validateGradingAuditReplayConsistency(
     error:
       `grading-integrity cannot accept degenerate-distribution='fail' alongside ` +
       `re-runnable-evidence='pass': the graded card's exact server-side evaluator replay reproduced ` +
-      `every applicable rating, and the audit supplied no separately cited evidence outside the replay selection; ` +
+      `every applicable rating, and the audit supplied no separately cited evidence outside the replay selection. ` +
+      `For an external challenge, provide both ratings['degenerate-distribution'].evidenceKind and ` +
+      `ratings['degenerate-distribution'].evidenceRef with a reference outside the replay selection ` +
+      `(for example evidenceKind:'test-run', evidenceRef:'20924105'). The prose evidence field is preserved ` +
+      `as the explanation, but this guard does not parse it to establish selection membership; ` +
       'no audit card was persisted',
   };
 }
