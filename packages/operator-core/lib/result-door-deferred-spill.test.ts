@@ -418,6 +418,42 @@ describe('result-door deferred spill (WI-10004533)', () => {
     },
   );
 
+  it('keeps a selected nested tools:invoke string recoverable when scratch spilling fails', async () => {
+    const selectedBody = 'conversation detail line\n'.repeat(Math.ceil((BUDGET_CHARS * 1.5) / 24));
+    const originalText = JSON.stringify({ results: [{ post: { body: selectedBody } }] });
+    expect(originalText.length).toBeGreaterThan(BUDGET_CHARS);
+    writeFileSync(process.env.PAPERCUSP_SCRATCH_ROOT!, 'not a directory');
+
+    const result = await applyResultDoorAsync(
+      { content: [{ type: 'text' as const, text: originalText }] },
+      {
+        ...OPTS,
+        toolName: 'tools:invoke',
+        nestedTargetToolName: 'conversations:get',
+        preservePaths: ['results[].post.body'],
+      },
+    );
+    const text = (result.content.find((item) => item.type === 'text') as { text: string }).text;
+    const body = JSON.parse(text) as {
+      _projection?: { cursor?: Record<string, unknown> };
+    };
+    const cursor = volatileCursorFrom(result);
+
+    expect(cursor).toMatchObject({
+      kind: 'volatile-scratch-page',
+      tool: 'capability:read',
+      reason: 'spill-write-failed',
+      errorCode: 'ENOTDIR',
+    });
+    expect(body._projection?.cursor).toMatchObject({ kind: 'volatile-scratch-page' });
+    const recovered = JSON.parse(readVolatileText(cursor)) as {
+      results: Array<{ post: { body: string } }>;
+    };
+    expect(recovered.results[0]?.post.body).toBe(selectedBody);
+    expect(text.length).toBeLessThan(originalText.length);
+    expect(result._meta?.resultDoor).toMatchObject({ spillFailed: true, spillPath: null, spillUri: null });
+  });
+
   it('preserves a work_items:release outcome when its timed-out spill has no volatile fallback', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.useFakeTimers();
