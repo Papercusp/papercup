@@ -208,7 +208,8 @@ export function evaluateCloudCampaignEvidence(input: unknown, context: CloudCamp
       if (entry.runtime === 'gcp' || entry.runtime === 'aws') {
         const census = entry.census;
         // Validate the census shape before invoking the canonical provider-specific judge.
-        if (!entry.hostId || !census || !Array.isArray(census.inventoryEvidence)
+        if (!entry.hostId || !census || census.controllerIndependent !== true || census.inventoryComplete !== true
+          || census.clean !== true || !Array.isArray(census.inventoryEvidence)
           || !['managed', 'untracked', 'missing', 'labelMismatches'].every((key) => Array.isArray(census[key as keyof WorkspaceHostResourceCensus]))
           || !Array.isArray(census.reaperPlan) || census.reaperPlan.length
           || census.inventoryEvidence.some((row) => !row || typeof row.kind !== 'string'

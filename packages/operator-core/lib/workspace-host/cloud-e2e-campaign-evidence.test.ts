@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { hasEnumeratedVerificationCoverage } from '../coord-lifecycle/records';
+import { findIdentityLeakError } from '../content-lint/identity-leak';
 import {
   evaluateCloudCampaignEvidence,
   type CloudCampaignEvidenceContext,
@@ -66,6 +67,23 @@ describe('cloud E2E campaign acceptance population and evidence boundaries', () 
     expect(mutation).toMatchObject({ plane: 'fixture', testRunId: 20962300, specBindingId: 33272, result: 'mutant-caught' });
     expect(mutation.mutation).toContain('sendToSessionOwner(ownerId, request.prompt)');
     expect(mutation.observation).toContain('prompt is empty');
+  });
+
+  it('passes the commit identity detector while retaining the native receipt run and digest', async () => {
+    const path = 'docs/evidence/cloud-e2e-campaign-2026-10-08.json';
+    expect(await findIdentityLeakError(path, JSON.stringify(evidence), root)).toBeNull();
+    const native = evidence.observations.find((row: { id: string }) => row.id === 'current-native-aws-ui');
+    expect(native.receiptPath).toBe(`~/.local/state/verification-harness/cloud-workspaces-aws/${native.childRun}/phases/native/result.json`);
+    const leaking = structuredClone(evidence);
+    const leakingNative = leaking.observations.find((row: { id: string }) => row.id === 'current-native-aws-ui');
+    leakingNative.receiptPath = ['', 'home', 'campaignwriter', native.receiptPath.slice(2)].join('/');
+    // The exact old class must fail the actual commit guard; malformed JSON is
+    // a different hypothesis and cannot explain this valid JSON counterexample.
+    const leakyJson = JSON.stringify(leaking);
+    expect(() => JSON.parse(leakyJson)).not.toThrow();
+    expect(await findIdentityLeakError(path, leakyJson, root)).toBeTruthy();
+    leakingNative.receiptPath = native.receiptPath;
+    expect(leaking).toEqual(evidence);
   });
 
   it('does not turn absent real-runtime or shipment evidence into a universal pass', () => {
@@ -139,6 +157,8 @@ function completeFixture(): { data: CloudCampaignManifest; context: CloudCampaig
       executionDetails: {
         schemaVersion: 1, passed: 1, failed: 0, skipped: 0, collectionFailed: false,
         passedCaseTitles: [row.caseName], filePath: row.testFile, commitSha: fixtureSource,
+        root: '/fixture/source', runGroupId: 'fixture-group', workspaceId: 'fixture-workspace', harnessSlug: 'fixture-harness',
+        testNamePattern: null, mutationPhase: null, worktreeDirty: false,
       },
     })),
     runtimeObligations: receipts.map(({ runtime, sourceSha, artifactSha256, tenantId, workspaceId, accountId, runId, resourceLabel }) => ({ runtime, sourceSha, artifactSha256, tenantId, workspaceId, accountId, runId, resourceLabel, scenarios: population })),
@@ -209,7 +229,7 @@ describe('cloud campaign measured evidence contradictions', () => {
   it.each(['gcp', 'aws'] as const)('requires every provider kind and separate billing closure for %s', (provider) => {
     const { data, context } = completeFixture();
     const row = data.acceptanceEvidence.realRuntimeReceipts.find((entry) => entry.runtime === provider)!;
-    row.census!.inventoryEvidence.pop();
+    row.census!.inventoryEvidence = row.census!.inventoryEvidence.slice(0, -1);
     expect(evaluateCloudCampaignEvidence(data, context).problems['R-5']).toContain(`unproven-runtime:${provider}`);
     row.census!.inventoryEvidence = workspaceHostCensusProfile(provider).kinds.map((kind) => ({ kind, strategy: 'managed-labels', providerEvidenceRef: 'fixture://census' }));
     row.billingClosure!.result = 'unknown';
@@ -226,6 +246,13 @@ describe('cloud campaign measured evidence contradictions', () => {
       if (mutation === 'census') Object.assign(row, { census: {} });
       expect(evaluateCloudCampaignEvidence(data, context).problems['R-5'].length).toBeGreaterThan(0);
     }
+  });
+
+  it.each(['clean', 'controllerIndependent', 'inventoryComplete'] as const)('refuses truthy census strings instead of measured %s booleans', (field) => {
+    const { data, context } = completeFixture();
+    const row = data.acceptanceEvidence.realRuntimeReceipts.find((entry) => entry.runtime === 'gcp')!;
+    Object.assign(row.census!, { [field]: 'true' });
+    expect(evaluateCloudCampaignEvidence(data, context).problems['R-5']).toContain('unproven-runtime:gcp');
   });
 
   it.each(['artifact', 'source', 'unauthenticated', 'earlier-final', 'missing-grade'] as const)('independently rejects final shipment %s', (mutation) => {

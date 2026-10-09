@@ -1,0 +1,156 @@
+{
+  "schemaVersion": 1,
+  "plan": "cloud-cross-feature-e2e-shipment-2026-10-08",
+  "workItem": "WI-10007600",
+  "status": "incomplete",
+  "populationSource": {
+    "report": "docs/reports/cloud-cross-feature-e2e-2026-10-08.md",
+    "section": "Acceptance population",
+    "sourceCommit": "07391377509dcbb7046a4c272441f73641f6d66d",
+    "namesSha256": "43775d5b3628a192b40f15d33fd1425fcc0cde4dd59be0c0636be71f1dd41433",
+    "sourcePaths": [
+      "apps/operator-docs/src/content/docs/cloud/first-agent-lesson-runbook.mdx",
+      "apps/operator/app/cloud-workspaces/page.tsx",
+      "packages/operator-core/lib/endpoint-route/routes/workspace-hosts/connection.ts",
+      "packages/operator-core/lib/endpoint-route/routes/workspace-hosts/provision.ts",
+      "packages/operator-core/lib/endpoint-route/routes/workspace-hosts/action.ts"
+    ]
+  },
+  "population": [
+    "Account admission",
+    "Tenant and workspace switching",
+    "Hosted workspace entry",
+    "GCP connection",
+    "AWS connection",
+    "Unsupported Azure",
+    "Configuration and cost",
+    "Provisioning",
+    "Remote browser/desktop connection",
+    "Agent launch and task",
+    "Stop and start",
+    "Snapshot",
+    "Restore",
+    "Failed provisioning and repair",
+    "Concurrent/replayed operations",
+    "Credential expiry and revocation",
+    "Tutorial and Help",
+    "Billing and entitlements",
+    "Destroy and partial-failure cleanup",
+    "Exact deployed cloud and desktop artifact"
+  ],
+  "scope": {
+    "supportedProviders": ["gcp", "aws"],
+    "plannedProviders": ["azure"],
+    "requiredPlanes": ["fixture", "native-ui", "real-runtime", "deployed"],
+    "destruction": "campaign-created-resources-only"
+  },
+  "inventory": {
+    "checked": [
+      "Account admission",
+      "Tenant and workspace switching",
+      "Hosted workspace entry",
+      "GCP connection",
+      "AWS connection",
+      "Unsupported Azure",
+      "Configuration and cost",
+      "Provisioning",
+      "Remote browser/desktop connection",
+      "Agent launch and task",
+      "Stop and start",
+      "Snapshot",
+      "Restore",
+      "Failed provisioning and repair",
+      "Concurrent/replayed operations",
+      "Credential expiry and revocation",
+      "Tutorial and Help",
+      "Billing and entitlements",
+      "Destroy and partial-failure cleanup",
+      "Exact deployed cloud and desktop artifact"
+    ],
+    "notChecked": [],
+    "notApplicable": [],
+    "residue": ["WI-10007610"]
+  },
+  "observations": [
+    {
+      "id": "current-cloud-chromium",
+      "plane": "fixture",
+      "testRunId": 20962319,
+      "specBindingId": 33281,
+      "testFile": "apps/operator/e2e/cloud-tutorial.spec.ts",
+      "result": "passed",
+      "syntheticCloudResponses": true,
+      "provesRealProviderLifecycle": false
+    },
+    {
+      "id": "restored-task-dispatch-falsifier",
+      "plane": "fixture",
+      "testRunId": 20962300,
+      "specBindingId": 33272,
+      "testFile": "apps/operator/e2e/cloud-tutorial.spec.ts",
+      "result": "mutant-caught",
+      "mutation": "Remove only sendToSessionOwner(ownerId, request.prompt) after session launch",
+      "observation": "After Send action-plan task, the captured submitted prompt is empty",
+      "provesRealProviderLifecycle": false
+    },
+    {
+      "id": "current-native-aws-ui",
+      "plane": "native-ui",
+      "parentRun": "20261009T193758Z-752002",
+      "childRun": "20261009T194500Z-1145653",
+      "sourceSha": "d4c6d7d80d285735590741117d33cfd5db166cda",
+      "binarySha256": "b809153d613cd2099f8dd717affe2a2f4570344a2e2b39e666e906e9cdd6a00c",
+      "receiptPath": "~/.local/state/verification-harness/cloud-workspaces-aws/20261009T194500Z-1145653/phases/native/result.json",
+      "result": "passed",
+      "syntheticCloudResponses": true,
+      "provesRealProviderLifecycle": false
+    }
+  ],
+  "unverified": {
+    "ownerWorkItem": "WI-10007610",
+    "realRuntime": [
+      "hosted account admission and usable remote session",
+      "current GCP artifact install and lifecycle",
+      "current AWS lifecycle within the canonical v4 approval",
+      "real remote agent task completion and reconnect",
+      "provider-side teardown and billing closure"
+    ],
+    "deployed": ["exact authenticated shipped cloud and desktop artifact acceptance"],
+    "authorRepair": [
+      "detector case and ledger mappings for R-2/R-3",
+      "discovered-defect ledger and accountable residue checks for R-4",
+      "current artifact, tenant/account, resource, task and teardown validators for R-5",
+      "promotion, exact served artifact and final journey validators for R-6"
+    ]
+  },
+  "realRuntimeReceipts": [],
+  "physicalSourceAdmission": {
+    "plane": "build-preflight",
+    "sourceSha": "cc28152984853d53fc14e678ccd950387d9ded7a",
+    "cutTaskId": "0mv1flwjbu1jz291cid",
+    "operationId": "c18d38c8-182c-428e-9103-6b1172dc7f84",
+    "sourceReadyAt": "2026-10-09T20:44:08.945Z",
+    "capturedAtUtc": "2026-10-09T20:45:25Z",
+    "sourceDirty": false,
+    "dirtyFiles": [],
+    "materialization": { "objectSourced": 39, "cloned": 39, "archiveFallback": 0, "liveTree": 0 },
+    "modelManifestSha256": "390c44e5eaefed07cade0790a2fe1027fa0fac3620a0fda42dac03a2110a020f",
+    "sourceReadySha256": "316f146f917f049328174d9b0312b385ac024e4b4ee0ad240317ea6fe0b2f8ec",
+    "sourceIdentitySha256": "3736d8b10ae5c8645a6aec8b4f292fd491eb09c4666f49ee5b23232067d3ba5f",
+    "dirtyCaptureSha256": "0bd75ff29015be96015105e82cb506a70c27693d68b2d936f6ac8e1144d0c190",
+    "modelPreflightSha256": "14699d5e273cb7209e98559232c4989b712d378b2b5237a1c6f4a90dfb453336",
+    "sourceReadyPath": "/mnt/backup/cloud-e2e-workspace-host-20261009r2/source.ready.json",
+    "sourceIdentityPath": "/mnt/backup/cloud-e2e-workspace-host-20261009r2/sidecar.tmp.9773.identity.json",
+    "dirtyCapturePath": "/mnt/backup/cloud-e2e-workspace-host-20261009r2/tmp/papercusp-sidecar-dirty-source.TJeUD6",
+    "provesSignedBundle": false,
+    "provesRealProviderLifecycle": false,
+    "provesShipment": false
+  },
+  "shipmentReceipts": [],
+  "acceptanceEvidence": {
+    "detectors": [],
+    "defects": [],
+    "realRuntimeReceipts": [],
+    "shipmentReceipts": []
+  }
+}
