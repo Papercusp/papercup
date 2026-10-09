@@ -6547,15 +6547,13 @@ export function reservedPlanLaneExclusionSql(
   // TRUE would then authorize goal-LESS rows the spec never meant to adopt.
   const goalAuthorized = authorization.claimSpecReferencesGoal ? sql`(${goalCol} IS NOT NULL)` : sql`FALSE`;
   const decisionCandidates = authorization.decisionCandidates;
-  // Reuse migration 1364's token index for a complete, fixed report cohort.
-  // OFFSET 0 keeps the cheap identity selection ahead of body regex evaluation;
-  // otherwise PG can flatten it and scan the entire decision corpus again.
-  // Ordinary claim selectors omit the cohort and retain their existing behavior.
+  // Keep decision reads as one-time sets. A large overlap array can make PG
+  // ignore the token index and split every decision body; OFFSET barriers also
+  // turn the Route A read into a correlated scan for every candidate. Filter
+  // extracted master identities instead, and let plan predicates flatten.
   const masterDecisions = decisionCandidates ? sql`(
     SELECT * FROM harness_shared.plan_decisions
      WHERE workspace_id = ${decisionCandidates.workspaceId}
-       AND regexp_split_to_array(body, '[^A-Za-z0-9_-]+') && ${[...decisionCandidates.ids]}::text[]
-     OFFSET 0
   )` : sql`harness_shared.plan_decisions`;
   const candidatePlanDecisions = decisionCandidates ? sql`(
     SELECT * FROM harness_shared.plan_decisions
@@ -6566,7 +6564,6 @@ export function reservedPlanLaneExclusionSql(
           WHERE candidate.workspace_id = ${decisionCandidates.workspaceId}
             AND candidate.feature_id = ANY(${[...decisionCandidates.ids]}::text[])
        ))
-     OFFSET 0
   )` : sql`harness_shared.plan_decisions`;
   return sql`NOT (
     COALESCE(${col}, '{}'::jsonb) ? 'plan_item' AND (
@@ -6834,17 +6831,16 @@ export function reservedPlanLaneExclusionSql(
              LATERAL regexp_matches(d.body,
                '(^|[^A-Za-z0-9_-])(WI-[0-9]+)[[:space:]]+owns execution([[:space:]]+and([[:space:]]|$)|[.;]|$)', 'g') AS master(ref)
        WHERE ${affirmativeDirectRoute}
+         AND ${decisionCandidates ? sql`master.ref[2] = ANY(${[...decisionCandidates.ids]}::text[])` : sql`TRUE`}
     ), FALSE)
     -- WI-10006417: an explicit Route A sentence names one session as the plan's
     -- implementer, so it reserves the whole plan even when the decision's itemRefs
     -- describe only its other clauses (D-006's refs omit P-002). The durable
     -- plan_item_assignments surface is per-item and is not populated by this ruling.
-    OR EXISTS (
-      SELECT 1 FROM ${candidatePlanDecisions} d
-      WHERE d.workspace_id = ${wsCol}
-        AND d.plan_slug = ${col}->'plan_item'->>'plan_slug'
-        AND LOWER(d.body) ~ '(^|[^a-z0-9_-])route[[:space:]]+a:[[:space:]]+this session[[:space:]]+[(]su-[a-f0-9-]{8,36}[)][[:space:]]+implements the plan([[:space:].;]|$)'
-    )
+    OR COALESCE((${wsCol}, ${col}->'plan_item'->>'plan_slug') IN (
+      SELECT d.workspace_id, d.plan_slug FROM ${candidatePlanDecisions} d
+       WHERE LOWER(d.body) ~ '(^|[^a-z0-9_-])route[[:space:]]+a:[[:space:]]+this session[[:space:]]+[(]su-[a-f0-9-]{8,36}[)][[:space:]]+implements the plan([[:space:].;]|$)'
+    ), FALSE)
   )`;
 }
 
