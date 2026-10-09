@@ -510,6 +510,15 @@
       "sourceRef": "work-item:EI-25540445801754635",
       "completionReadbackRef": "papercusp://scratch/papercusp-workspace/work_items:complete/05be4f7a-a9bf-40da-b9d6-1bc4bafca3a9/result-door-1791583380186.md",
       "rootCauseEvidence": "read canonical completion; identity detector and differing predictions verified in test-run:20963196"
+    },
+    {
+      "id": "WI-10007989",
+      "title": "Cloud campaign R4 evaluator accepts an owned open repair as completed acceptance",
+      "state": "wip",
+      "assignee": "su-ec5efb56-8a98-4efe-a8e2-02017ee78bb8",
+      "completionAuthority": null,
+      "sourceRef": "work-item:WI-10007989",
+      "rootCauseEvidence": "Canonical open-repair regression failed while owned-deferred control passed; /tmp/cloud-e2e-20261009-open-repair-before.log. Read current canonical completion before acceptance."
     }
   ],
   "defectLedgerBoundary": "Canonical work-item snapshots account for discovered defects. Completed-source records do not imply a measured regression control or a passing triggering real journey. Open cache/build/audit defects remain owned; R-4 and shipment stay unproven until exact canonical records and journey joins satisfy the evaluator.",

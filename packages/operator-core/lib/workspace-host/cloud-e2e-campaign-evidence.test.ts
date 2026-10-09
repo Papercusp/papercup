@@ -241,15 +241,24 @@ describe('cloud campaign measured evidence contradictions', () => {
     expect(evaluateCloudCampaignEvidence(data, context).problems['R-2']).toContain('unproven-detector:Provisioning');
   });
 
-  it.each(['missing-defect', 'unowned', 'same-predictions', 'no-trigger', 'proposed'] as const)('rejects defect disposition: %s', (mutation) => {
+  it.each(['missing-defect', 'unowned', 'open', 'same-predictions', 'no-trigger', 'proposed'] as const)('rejects defect disposition: %s', (mutation) => {
     const { data, context } = completeFixture();
     const defect = data.acceptanceEvidence.defects[0]!;
     if (mutation === 'missing-defect') data.acceptanceEvidence.defects = [];
     if (mutation === 'unowned') Object.assign(defect, { state: 'deferred', assignee: null });
+    if (mutation === 'open') Object.assign(defect, { state: 'open', assignee: 'repair-owner', completionAuthority: 'unknown', rootCauseVerification: undefined, originatingFixRef: undefined });
     if (mutation === 'same-predictions') defect.rootCauseVerification!.predictedObservations!.alternativeHypothesis = defect.rootCauseVerification!.predictedObservations!.hypothesis;
     if (mutation === 'no-trigger') defect.triggeringJourneyReceiptId = 'unmeasured';
     if (mutation === 'proposed') defect.completionAuthority = 'proposed';
     expect(evaluateCloudCampaignEvidence(data, context).problems['R-4'].length).toBeGreaterThan(0);
+  });
+
+  it('accounts for owned deferred residue while refusing final shipment', () => {
+    const { data, context } = completeFixture();
+    Object.assign(data.acceptanceEvidence.defects[0]!, { state: 'deferred', assignee: 'residue-owner', completionAuthority: 'unknown', rootCauseVerification: undefined, originatingFixRef: undefined });
+    const result = evaluateCloudCampaignEvidence(data, context);
+    expect(result.problems['R-4']).toEqual([]);
+    expect(result.problems['R-6']).toContain('unresolved-residue-or-runtime-population');
   });
 
   it.each(['syntheticCloudResponses', 'authenticated', 'sourceSha', 'artifactSha256', 'tenantId', 'workspaceId', 'accountId', 'runId', 'resourceLabel', 'observedAt'] as const)('refuses real GCP proof when %s differs', (field) => {
