@@ -1,0 +1,56 @@
+{
+  "workItems": ["WI-10007602", "EI-25533252356302006"],
+  "scope": "Root recovery and tested producer guards; data-disk recovery remains open",
+  "cleanup": {
+    "actor": "papercup-docker-reclaim.service",
+    "startedAt": "2026-10-09T23:09:12Z",
+    "policy": "Native unused image/build-cache retention defaults to 12h below the shared 2% reserve; explicit age overrides and active-reference protection retained",
+    "reportedFilesystemDeltaMiB": 34224,
+    "reportedFreeGiB": 35,
+    "measurementLimit": "Net df delta during the actor run, not logical image sizes or an attribution of every freed block to one manager",
+    "subsequentAvailableBytes": { "root": 34224721920, "dataTmp": 5517754368 },
+    "desktopRestarted": false,
+    "retainedVerificationRootsDeleted": false,
+    "generationPruneOnly": "Existing dependency-generation.sh --integration canonical-root --prune-only exited 0 with no output; no data-disk reclamation claim"
+  },
+  "sourceGuards": {
+    "sourceClone": "Reuses dependency generation reserve/margin check under the host-wide copy lock before destination creation; includes pinned gitlinks",
+    "imageReclaim": "Existing hourly actor switches default retention only under critical pressure; named volumes, native container/build references, explicit overrides and SKIP_IMAGES are preserved",
+    "sourceSha256": {
+      "bin/reclaim-docker-disk.sh": "3bc0781430c739d5c683b4e73058fbcf6ac01010a65e98282d4b95e3cac54afb",
+      "apps/operator/bin/release/setup-release-checkout.sh": "29e77f661fe36c33ce5d3a36a96999b7d6ad805038532da282ac28b9babc154b",
+      "apps/operator/lib/docker-reclaim-anonymous-volumes-only.test.ts": "e23d59d75e0d53027a0102d071c687831781f4edeb0a8fba0d916b906adbe980",
+      "apps/operator/lib/release/setup-release-checkout-deps.test.ts": "fdc95efcb2a88422c4a618cf472e2941b328a13e960828ef03a3d8ae58c21dde"
+    },
+    "tests": [
+      { "file": "apps/operator/lib/docker-reclaim-anonymous-volumes-only.test.ts", "passed": 35, "skipped": 0 },
+      { "file": "apps/operator/lib/release/setup-release-checkout-deps.test.ts", "passed": 111, "skipped": 0 },
+      { "file": "apps/operator/scripts/__tests__/reconcile-cloud-portal.test.ts", "passed": 18, "skipped": 0 }
+    ],
+    "testCommand": "PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- <named files>",
+    "syntaxAndWhitespace": "bash -n and scoped git diff --check passed"
+  },
+  "hostedDelivery": {
+    "reconcileExitCode": 0,
+    "buildId": "5qsFpd7OTvvhGdWQl5oAN",
+    "release": "5qsFpd7OTvvhGdWQl5oAN-20261009231947332-4158376-8aea3878",
+    "sourceRootDigest": "f8da7239415444c3e568fa4f84d15cbe4e348cae8d3e71b29b1b83b10b295ecd",
+    "serviceHealthyAt": "2026-10-09T23:21:47Z",
+    "url": "https://app.papercusp.com/?firstRun=deferred&chat=fd0a128c-e8fb-43c3-a150-9cd62aede836&find=true&app=settings&settings=deploy-accounts",
+    "pageStatus": 200,
+    "servedBuildId": "5qsFpd7OTvvhGdWQl5oAN",
+    "cssAsset": "/_next/static/css/6660f7cd1f55ad67.css",
+    "cssStatus": 200,
+    "verifiedRules": [".pc-settings-frame", "grid-template-columns:220px minmax(0,1fr)", "width:100%", "min-width:0"],
+    "previousCssAsset": "/_next/static/css/108038487435c3e0.css",
+    "previousRules": "Old shell had 220px 1fr and no pc-settings-frame rule",
+    "automaticReconcileTimerRestored": true,
+    "limits": "Public served artifact verified. No owner authentication cookie was available for a full authenticated geometry journey. Source layout browser proof is stored on WI-10007827."
+  },
+  "remaining": [
+    "Data/tmp filesystem still has about 5 GiB available",
+    "Retained validation-intermediate lifecycle and wider producer coverage require further work",
+    "Old desktop WAL is preserved; restart approval has not been supplied",
+    "No universal claim that every disk writer is bounded"
+  ]
+}

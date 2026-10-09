@@ -31,9 +31,13 @@ const request = {
   budget: { maxUsd: 3, maxWallClockMs: 100 },
 };
 function commitProtocol(filePath: string, body: string): void {
-  execFileSync('git', ['init', '-q'], { cwd: repoRoot });
+  // Force a conflicting configured default: this exercises the explicit branch
+  // under every CI host, including machines whose global default is main.
+  execFileSync('git', ['-c', 'init.defaultBranch=fixture-other', 'init', '-q', '--initial-branch=main'], { cwd: repoRoot });
   const stream = `blob\nmark :1\ndata ${Buffer.byteLength(body)}\n${body}\ncommit refs/heads/main\ncommitter Fixture <fixture@example.invalid> 1577836800 +0000\ndata 6\nfrozen\nM 100644 :1 ${filePath}\n\ndone\n`;
   execFileSync('git', ['fast-import', '--quiet'], { cwd: repoRoot, input: stream });
+  expect(execFileSync('git', ['symbolic-ref', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' }).trim()).toBe('refs/heads/main');
+  execFileSync('git', ['rev-parse', '--verify', 'HEAD'], { cwd: repoRoot });
 }
 async function execution(committed = true) {
   const frozen = await preregister({ ...scope(), runId: 'PRIVATE', suites: [], config, repoRoot });
@@ -87,6 +91,8 @@ describe('production current benchmark protocol and private completion bindings'
   it('uses the committed protocol, native receipt, private work-item completion and scoped cleanup together', async () => {
     const f = await execution();
     const result = await f.run();
+    // Surface the originating driver failure before the derived stop reason.
+    expect(result.telemetry.generationError ?? null).toBeNull();
     expect(result.telemetry.stopReason).toBe('done');
     expect(f.admit).toHaveBeenCalledOnce();
     expect(native.launch).toHaveBeenCalledWith(expect.objectContaining({ harness: handle.slug, workItem: handle.featureId }), ctx);

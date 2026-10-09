@@ -34,9 +34,11 @@ const scope = () => ({ sql: rootSql as never, workspaceId: WS });
 // An isolated git fixture, never the shared staging checkout. Import its exact
 // blob to exercise the real git-history reader without staging product files.
 function importFixtureCommit(filePath: string, body: string): void {
-  execFileSync('git', ['init', '-q'], { cwd: repoRoot });
+  execFileSync('git', ['-c', 'init.defaultBranch=fixture-other', 'init', '-q', '--initial-branch=main'], { cwd: repoRoot });
   const stream = `blob\nmark :1\ndata ${Buffer.byteLength(body)}\n${body}\ncommit refs/heads/main\ncommitter Fixture <fixture@example.invalid> 1577836800 +0000\ndata 6\nfrozen\nM 100644 :1 ${filePath}\n\ndone\n`;
   execFileSync('git', ['fast-import', '--quiet'], { cwd: repoRoot, input: stream });
+  expect(execFileSync('git', ['symbolic-ref', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' }).trim()).toBe('refs/heads/main');
+  execFileSync('git', ['rev-parse', '--verify', 'HEAD'], { cwd: repoRoot });
 }
 
 beforeAll(async () => {
