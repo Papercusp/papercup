@@ -118,6 +118,7 @@ export async function applySessionPresenceSet(
       WHERE workspace_id = ${input.workspaceId}
         AND device_pubkey = ${input.devicePubkey}
         AND machine_label = ${input.machineLabel}
+        AND pot_slug IS NOT DISTINCT FROM ${input.potSlug}::text
         AND last_seen_at <= to_timestamp(${input.frameTs} / 1000.0)
         AND owner_id NOT IN ${sql(keep)}
     `;
@@ -127,6 +128,7 @@ export async function applySessionPresenceSet(
       WHERE workspace_id = ${input.workspaceId}
         AND device_pubkey = ${input.devicePubkey}
         AND machine_label = ${input.machineLabel}
+        AND pot_slug IS NOT DISTINCT FROM ${input.potSlug}::text
         AND last_seen_at <= to_timestamp(${input.frameTs} / 1000.0)
     `;
   }
