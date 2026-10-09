@@ -1604,23 +1604,35 @@ contention_summary() {
     "${live_instances:-0}" "${stale_dirs:-0}" "${TMPDIR:-/tmp}"
 }
 
-# EI-18738872670541790: find a live process (by pgrep pattern) whose OWN
-# /proc/<pid>/environ carries an EXACT `DISPLAY=<want>` — the same env-matching
-# technique this script already uses to disambiguate BRIDGE_PID/SIDECAR_PID
-# (below), generalized to a single-purpose helper for the stale-display reaper.
-# Prints the first matching pid (there should be at most one live owner per
-# display) and returns 1 when none is found. Never fatal — a /proc race (a pid
-# exiting mid-scan) is just skipped.
-find_pid_by_display_env() {
-  local pattern="$1" want_display="$2" p env_p
+# Select the first live process whose OWN /proc/<pid>/environ contains every
+# requested entry exactly. Capture pgrep's complete result before iterating so
+# no downstream `head -1` can close the output pipe while later matches are
+# still being printed (managed shells may ignore SIGPIPE and log echo EPIPE).
+# Returns 1 when none is found. Never fatal — a /proc race is just skipped.
+find_pid_by_env() {
+  local pattern="$1"; shift
+  local p env_p expected matches
   for p in $(pgrep -f "$pattern" 2>/dev/null); do
     env_p="$(tr '\0' '\n' < "/proc/$p/environ" 2>/dev/null)" || continue
-    if grep -qxF "DISPLAY=$want_display" <<<"$env_p"; then
-      echo "$p"
-      return 0
-    fi
+    matches=1
+    for expected in "$@"; do
+      if ! grep -qxF "$expected" <<<"$env_p"; then
+        matches=0
+        break
+      fi
+    done
+    [ "$matches" -eq 1 ] || continue
+    printf '%s\n' "$p"
+    return 0
   done
   return 1
+}
+
+# EI-18738872670541790: the display-specific caller is a thin adapter over the
+# shared exact-environment matcher.
+find_pid_by_display_env() {
+  local pattern="$1" want_display="$2"
+  find_pid_by_env "$pattern" "DISPLAY=$want_display"
 }
 
 # True (0) when a live papercusp-desktop app or verifier operator sidecar is
@@ -3404,10 +3416,7 @@ done
 if [ "$ISOLATED_DB" = "1" ]; then
   SIDECAR_PID=""
   for _ in $(seq 1 10); do
-    SIDECAR_PID="$(pgrep -f "$OPERATOR_HOST_PROCESS_RE" 2>/dev/null | while read -r p; do
-      env_p="$(tr '\0' '\n' < "/proc/$p/environ" 2>/dev/null)" || continue
-      grep -q "^OPERATOR_DEV_PORT=$DEV_PORT\$" <<<"$env_p" && echo "$p"
-    done | head -1)"
+    SIDECAR_PID="$(find_pid_by_env "$OPERATOR_HOST_PROCESS_RE" "OPERATOR_DEV_PORT=$DEV_PORT" || true)"
     [ -n "$SIDECAR_PID" ] && break
     sleep 1
   done
@@ -3444,13 +3453,11 @@ fi
 # the script handed the caller another agent's shell to drive.
 BRIDGE_PID=""
 for _ in $(seq 1 10); do
-  BRIDGE_PID="$(pgrep -f "debug/papercusp-desktop" 2>/dev/null | while read -r p; do
-    env_p="$(tr '\0' '\n' < "/proc/$p/environ" 2>/dev/null)" || continue
-    grep -q "^DISPLAY=:$DISPLAY_NUM\$" <<<"$env_p" || continue
-    grep -q "^OPERATOR_DEV_PORT=$DEV_PORT\$" <<<"$env_p" || continue
-    grep -qxF "PAPERCUSP_SID=$TAURI_OWNER_SID" <<<"$env_p" || continue
-    grep -qxF "PAPERCUSP_TAURI_LAUNCH_PROVENANCE=$TAURI_LAUNCH_PROVENANCE" <<<"$env_p" && echo "$p"
-  done | head -1)"
+  BRIDGE_PID="$(find_pid_by_env "debug/papercusp-desktop" \
+    "DISPLAY=:$DISPLAY_NUM" \
+    "OPERATOR_DEV_PORT=$DEV_PORT" \
+    "PAPERCUSP_SID=$TAURI_OWNER_SID" \
+    "PAPERCUSP_TAURI_LAUNCH_PROVENANCE=$TAURI_LAUNCH_PROVENANCE" || true)"
   [ -n "$BRIDGE_PID" ] && break
   sleep 1
 done

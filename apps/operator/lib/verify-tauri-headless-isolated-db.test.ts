@@ -27,7 +27,7 @@
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { runInNewContext } from 'node:vm';
 import { describe, expect, it } from 'vitest';
 
@@ -251,8 +251,54 @@ describe('EI-10387 — verify-tauri-headless can genuinely isolate the database'
       /if \[ "\$ISOLATED_DB" = "1" \]; then[\s\S]*?EI-10387 isolation VERIFIED[\s\S]*?\nfi/,
     )?.[0];
     expect(isolationGuard).toBeTruthy();
-    expect(isolationGuard).toContain('pgrep -f "$OPERATOR_HOST_PROCESS_RE"');
+    expect(isolationGuard).toContain('find_pid_by_env "$OPERATOR_HOST_PROCESS_RE"');
     expect(isolationGuard).toContain('OPERATOR_DEV_PORT=$DEV_PORT');
+  });
+
+  it('uses the shared matcher for sidecar and bridge PID selection', () => {
+    expect(src).toContain(
+      'SIDECAR_PID="$(find_pid_by_env "$OPERATOR_HOST_PROCESS_RE" "OPERATOR_DEV_PORT=$DEV_PORT" || true)"',
+    );
+    expect(src).toMatch(/BRIDGE_PID="\$\(find_pid_by_env "debug\/papercusp-desktop"/);
+    expect(src).toContain('"DISPLAY=:$DISPLAY_NUM"');
+    expect(src).toContain('"OPERATOR_DEV_PORT=$DEV_PORT"');
+    expect(src).toContain('"PAPERCUSP_SID=$TAURI_OWNER_SID"');
+    expect(src).toContain('"PAPERCUSP_TAURI_LAUNCH_PROVENANCE=$TAURI_LAUNCH_PROVENANCE"');
+  });
+
+  it('does not write matching PIDs to a pipe after the first reader exits', async () => {
+    const helper = src.match(/find_pid_by_env\(\) \{\n[\s\S]*?\n\}\n/)?.[0];
+    expect(helper).toBeTruthy();
+    const marker = `verifier-pid-selector-${process.pid}-${Date.now()}`;
+    const env = { ...process.env, VERIFY_TAURI_PID_SELECTOR: marker };
+    const first = spawn('sleep', ['30'], { env, stdio: 'ignore' });
+    const second = spawn('sleep', ['30'], { env, stdio: 'ignore' });
+    const waitForSpawn = (child: ReturnType<typeof spawn>) => new Promise<void>((resolveSpawn, rejectSpawn) => {
+      child.once('spawn', () => resolveSpawn());
+      child.once('error', rejectSpawn);
+    });
+    try {
+      await Promise.all([waitForSpawn(first), waitForSpawn(second)]);
+      const script = [
+        'set -uo pipefail',
+        "trap '' PIPE",
+        helper!,
+        'pgrep() { printf "%s\\n" "$FAKE_PID_1" "$FAKE_PID_2"; }',
+        'selected="$(find_pid_by_env ignored "VERIFY_TAURI_PID_SELECTOR=$MATCH_VALUE")"',
+        'status=$?',
+        'printf "selected=%s\\nstatus=%s\\n" "$selected" "$status"',
+      ].join('\n');
+      const result = spawnSync('bash', ['-c', script], {
+        encoding: 'utf8',
+        env: { ...process.env, FAKE_PID_1: String(first.pid), FAKE_PID_2: String(second.pid), MATCH_VALUE: marker },
+      });
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stderr).toBe('');
+      expect(result.stdout).toBe(`selected=${first.pid}\nstatus=0\n`);
+    } finally {
+      if (first.exitCode === null) first.kill('SIGTERM');
+      if (second.exitCode === null) second.kill('SIGTERM');
+    }
   });
 
   it('removes the throwaway datadir at teardown (never leaks a migrated cluster into $TMPDIR)', () => {
