@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import * as path from 'node:path';
-import { assertInstalledPuiStore, checkReleaseAcceptance, disqualification, HARNESS_TAG, loadAcceptanceMatrix, loadRequiredMatrix, parseAcceptanceLines, parseHarnessLine, REPO_ROOT, type Candidate, type EvidenceRow } from './release-acceptance';
+import { assertInstalledPuiStore, checkReleaseAcceptance, disqualification, HARNESS_TAG, loadAcceptanceMatrix, loadRequiredMatrix, nativeInterruptRequest, parseAcceptanceLines, parseHarnessLine, REPO_ROOT, type Candidate, type EvidenceRow } from './release-acceptance';
 import {
   CLOUD_DEVICE_START_ATTEMPTS, cloudDeviceStartBlocksLegs, cloudDeviceStartTransient, DOCKER_START_PROBE_TIMEOUT_MS,
   legsBlocked, measureCloudDeviceStart, measureRunnerTree, probeDockerCreateStart, remeasureCloudDeviceStart, remeasureStockMachines,
@@ -32,6 +32,21 @@ describe('installed acceptance canonical test ledger', () => {
     const reporters = await resolveReporters(RELEASE_ACCEPTANCE_REPORTER_ARGS);
     expect(reporters).toContain(ADMIN_TEST_RUNS_REPORTER_PATH);
     expect(reporters).toContain(path.join(REPO_ROOT, 'packages/operator-core/lib/pui-e2e/release-acceptance-reporter.ts'));
+  });
+});
+
+describe('native interruption response budget admission', () => {
+  it('admits a numeric stream that fits one response and rejects the observed 10,000-line refusal trigger before inference', () => {
+    const prompt = nativeInterruptRequest('ordinary-list');
+    const count = Number(prompt.match(/1 through (\d+)/)?.[1]);
+    const expectedReply = Array.from({ length: count }, (_, index) => `${index + 1}\n`).join('');
+    expect(count).toBeGreaterThanOrEqual(100);
+    expect(Buffer.byteLength(expectedReply, 'utf8')).toBeLessThanOrEqual(4096);
+    expect(() => nativeInterruptRequest('ordinary-list', 10000)).toThrow(/reply budget/);
+  });
+
+  it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY])('rejects invalid line count %s before creating an inference request', (count) => {
+    expect(() => nativeInterruptRequest('ordinary-list', count)).toThrow(/numeric lines/);
   });
 });
 
@@ -120,7 +135,7 @@ describe('release acceptance checkout helper snapshot', () => {
       child.once('exit', resolve);
     });
     try {
-      await vi.waitFor(() => expect(existsSync(started)).toBe(true), { timeout: 5_000, interval: 10 });
+      await vi.waitFor(() => expect(existsSync(started), `snapshot child exit=${child.exitCode} signal=${child.signalCode}\n${output}`).toBe(true), { timeout: 5_000, interval: 10 });
       expect(readFileSync(started, 'utf8')).not.toBe(helper);
       writeFileSync(helper, 'this is an invalid concurrent edit (\n');
       writeFileSync(resume, 'continue');

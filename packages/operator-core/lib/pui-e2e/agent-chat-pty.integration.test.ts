@@ -39,7 +39,7 @@ import { describeObserverBlock, pollUntil } from './poll-until';
 import { LatenessMonitor, describeHarnessStall, judgeBudget, type BudgetJudgement, type TimedSample } from './worker-lateness';
 import { redactSensitiveText } from '../sensitive-text';
 import { nativeProviderRequestSignal, nativeProviderTraceOrigin } from './native-provider-trace';
-import { assertInstalledPuiStore, HARNESS_TAG } from './release-acceptance';
+import { assertInstalledPuiStore, HARNESS_TAG, nativeInterruptRequest } from './release-acceptance';
 import { p005PuiLaunchArgs, reviewBlockingReason } from './p005-codex-readiness';
 import { puiQuitBounds } from './pui-quit-bounds';
 import { throwIfProviderRateLimited } from '../su-session-attached-live-rate-limit';
@@ -8185,7 +8185,10 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
     // found by its text). A marker such as `PUI-CANCELLED-<id>` in the request
     // was read by a real OMP model as a cancellation signal: it answered with
     // the marker and 'Task cancelled.' instead of counting (WI-10004247 class F).
-    const longRequest = `Please write the numbers from 1 through 10000, one per line, with no other text. Do not summarize or use tools. (List id: ${nonce})`;
+    // Ten thousand lines can elicit an output-limit refusal before any numeric
+    // stream starts. Admit a bounded response while retaining the independent
+    // running/delta/paint-before-completion assertions below.
+    const longRequest = nativeInterruptRequest(nonce);
     const { prompt: followup, reply: followupReply, replyPattern: followupReplyPattern } =
       markerRequest(`pui-continued-${nonce}`, 'Do not resume the interrupted task. ');
     const launchDir = journeyDir('greeting');

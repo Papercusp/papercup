@@ -25,6 +25,18 @@ export const REPO_ROOT = moduleRepoRoot(import.meta.url);
 export const UX_CONTRACT = path.join(REPO_ROOT, 'apps/tui/PUBLIC_RELEASE_UX.md');
 export const ACCEPTANCE_MATRIX = path.join(REPO_ROOT, 'apps/tui/release/acceptance-matrix.json');
 
+/** Keep the native interruption probe within one ordinary model response. */
+export function nativeInterruptRequest(listId: string, count = 1000): string {
+  if (!Number.isInteger(count) || count < 1 || count > 1000) {
+    throw new Error('Native interruption probe requires 1..1000 numeric lines within a 4096-byte reply budget');
+  }
+  const expectedReply = Array.from({ length: count }, (_, index) => `${index + 1}\n`).join('');
+  if (Buffer.byteLength(expectedReply, 'utf8') > 4096) {
+    throw new Error('Native interruption probe exceeds its 4096-byte reply budget');
+  }
+  return `Please write the numbers from 1 through ${count}, one per line, with no other text. Do not summarize or use tools. (List id: ${listId})`;
+}
+
 /** Reject an incomplete installed-product invocation before starting its database or PTY. */
 export function assertInstalledPuiStore(binary: string, store: string | undefined): void {
   if (!store) throw new Error('PUI_BIN needs PUI_RELEASE_STORE; run it through apps/tui/scripts/release-acceptance.sh');
