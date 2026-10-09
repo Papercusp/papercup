@@ -37,6 +37,27 @@ interface InvocationRow {
   metadata_json: Record<string, unknown>;
 }
 
+/** The bounded expiry statement is shared with the integration EXPLAIN guard so
+ * the measured access path cannot drift from the query the watchdog executes. */
+export function buildExpiredInvocationFrictionQuery(): string {
+  return `
+    WITH stale AS (
+      SELECT id FROM harness_shared.tool_invocations
+       WHERE workspace_id = $1 AND metadata_json->>'frictionCapture' = 'pending'
+         AND invoked_at < $2::timestamptz
+       ORDER BY invoked_at, id LIMIT ${PENDING_RECOVERY_BATCH_SIZE}
+       FOR UPDATE SKIP LOCKED
+    )
+    UPDATE harness_shared.tool_invocations AS invocation
+       SET metadata_json = COALESCE(invocation.metadata_json, '{}'::jsonb) ||
+         jsonb_build_object('frictionCapture', 'expired', 'frictionExpiredAt', now(),
+           'frictionExpiredReason', 'older-than-24-hours')
+      FROM stale
+     WHERE invocation.workspace_id = $1 AND invocation.id = stale.id
+       AND invocation.metadata_json->>'frictionCapture' = 'pending'
+    RETURNING invocation.id::text AS id`;
+}
+
 /** Lock only this telemetry row, so the fast path and recovery cannot deliver
  * it concurrently. Capture failure rolls back the marker; process death also
  * releases the lock. A crash after capture but before marking may replay an
@@ -104,22 +125,8 @@ export async function recoverInvocationFriction(
   // already dropped its stale report. Expire in bounded batches so old rows cannot starve
   // recent recovery work.
   const staleBefore = new Date(Date.now() - PENDING_RECOVERY_MAX_AGE_MS).toISOString();
-  const expiredRows = await sql.unsafe<{ id: string }[]>(`
-    WITH stale AS (
-      SELECT id FROM harness_shared.tool_invocations
-       WHERE workspace_id = $1 AND metadata_json->>'frictionCapture' = 'pending'
-         AND invoked_at < $2::timestamptz
-       ORDER BY invoked_at, id LIMIT ${PENDING_RECOVERY_BATCH_SIZE}
-       FOR UPDATE SKIP LOCKED
-    )
-    UPDATE harness_shared.tool_invocations AS invocation
-       SET metadata_json = COALESCE(invocation.metadata_json, '{}'::jsonb) ||
-         jsonb_build_object('frictionCapture', 'expired', 'frictionExpiredAt', now(),
-           'frictionExpiredReason', 'older-than-24-hours')
-      FROM stale
-     WHERE invocation.workspace_id = $1 AND invocation.id = stale.id
-       AND invocation.metadata_json->>'frictionCapture' = 'pending'
-    RETURNING invocation.id::text AS id`, [workspaceId, staleBefore]);
+  const expiredRows = await sql.unsafe<{ id: string }[]>(
+    buildExpiredInvocationFrictionQuery(), [workspaceId, staleBefore]);
   const refs = await sql.unsafe<{ id: string }[]>(`
     SELECT id::text FROM harness_shared.tool_invocations
      WHERE workspace_id = $1 AND metadata_json->>'frictionCapture' = 'pending'

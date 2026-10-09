@@ -2,7 +2,9 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
-import { captureInvocationFriction, recoverInvocationFriction } from './invocation-friction';
+import {
+  buildExpiredInvocationFrictionQuery, captureInvocationFriction, recoverInvocationFriction,
+} from './invocation-friction';
 import { captureToolInvocationFriction, type CaptureDeps, type CaptureImprovementResult } from './capture-core';
 import type { EngineerIssue } from '../../issues-engineer';
 import type { RecordIssueOccurrenceInput } from '../../issue-occurrence-ledger';
@@ -254,6 +256,18 @@ describe('R7 private PostgreSQL delivery contract', () => {
       return [{ plan: rows[0]['QUERY PLAN'] }];
     });
     expect(JSON.stringify(plan)).toContain('tool_invocations_friction_pending_idx');
+  });
+
+  it('uses the expiry index for the exact bounded stale-expiry CTE and update', async () => {
+    await seed();
+    const staleBefore = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const query = buildExpiredInvocationFrictionQuery();
+    const [{ plan }] = await db.sql.begin(async tx => {
+      await tx.unsafe('SET LOCAL enable_seqscan = off');
+      const rows = await tx.unsafe(`EXPLAIN (FORMAT JSON) ${query}`, ['ws-a', staleBefore]);
+      return [{ plan: rows[0]['QUERY PLAN'] }];
+    });
+    expect(JSON.stringify(plan)).toContain('tool_invocations_friction_pending_expiry_idx');
   });
 
   it('D-010: incomplete metadata keeps changed contracts on the exact-message row without promoting it', async () => {

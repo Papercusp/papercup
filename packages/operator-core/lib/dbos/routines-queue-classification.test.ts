@@ -12,6 +12,7 @@ import {
   CRITICAL_ROUTINE_ACTIONS,
   FLEET_CONTROL_ACTIONS,
   TRIGGER_POLL_ACTIONS,
+  TRIGGERS_QUEUE_ACTIONS,
   HEAVY_ROUTINE_ACTIONS,
   DEPLOY_TRIGGER_ACTIONS,
   queueForRoutine,
@@ -77,8 +78,12 @@ describe('queueForRoutine — the latency-isolated loop lane', () => {
 });
 
 describe('queueForRoutine — the fleet-control lane (EI-22526486100493483)', () => {
-  it('routes every fleet-control action to its own serial lane', () => {
-    expect([...FLEET_CONTROL_ACTIONS]).toEqual(['fleet-headcount-governor']);
+  it('routes every fleet-control action to its dedicated lane', () => {
+    expect([...FLEET_CONTROL_ACTIONS]).toEqual([
+      'fleet-headcount-governor',
+      'fleet-transition-sweep',
+      'presence-transition-sweep',
+    ]);
     for (const action of FLEET_CONTROL_ACTIONS) {
       expect(queueForRoutine(`system:${action}`)).toBe(ROUTINES_FLEET_CONTROL_QUEUE);
     }
@@ -236,6 +241,27 @@ describe('queueForRoutine — the external-source poll lane (WI-41662)', () => {
     for (const action of TRIGGER_POLL_ACTIONS) {
       expect(CRITICAL_ROUTINE_ACTIONS.has(action)).toBe(false);
     }
+  });
+});
+
+describe('queueForRoutine — bounded trigger and import handlers', () => {
+  it('routes trigger dispatch and personal-vault import with the existing source-poll lane', () => {
+    expect([...TRIGGERS_QUEUE_ACTIONS]).toEqual([
+      ...TRIGGER_POLL_ACTIONS,
+      'external-trigger-dispatch',
+      'personal-vault-import',
+    ]);
+    for (const action of ['external-trigger-dispatch', 'personal-vault-import']) {
+      expect(queueForRoutine(`system:${action}`)).toBe(ROUTINES_TRIGGERS_QUEUE);
+      expect(shouldFireUnderPoolShed(`system:${action}`)).toBe(false);
+      expect(CRITICAL_ROUTINE_ACTIONS.has(action)).toBe(false);
+    }
+  });
+
+  it('keeps unrelated and near-miss handlers on the ordinary queue', () => {
+    expect(queueForRoutine('system:external-trigger-dispatch-status')).toBe(ROUTINES_QUEUE);
+    expect(queueForRoutine('system:personal-vault-import-status')).toBe(ROUTINES_QUEUE);
+    expect(queueForRoutine('system:blueprint-run')).toBe(ROUTINES_QUEUE);
   });
 });
 

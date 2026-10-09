@@ -160,7 +160,7 @@ import {
   ROUTINES_HEAVY_QUEUE,
   ROUTINES_LOOP_QUEUE,
   ROUTINES_QUEUE,
-  TRIGGER_POLL_ACTIONS,
+  TRIGGERS_QUEUE_ACTIONS,
   queueForRoutine,
 } from './routines-queue-classification';
 import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
@@ -752,7 +752,7 @@ describe('routineFireWorkflow — durable loop:wake output', () => {
       ...[...CRITICAL_ROUTINE_ACTIONS].map((a) => `system:${a}`),
       ...[...FLEET_CONTROL_ACTIONS].map((a) => `system:${a}`),
       ...[...HEAVY_ROUTINE_ACTIONS].map((a) => `system:${a}`),
-      ...[...TRIGGER_POLL_ACTIONS].map((a) => `system:${a}`),
+      ...[...TRIGGERS_QUEUE_ACTIONS].map((a) => `system:${a}`),
       'system:green-checkpoint',
       'mug',
       '',

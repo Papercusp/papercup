@@ -48,16 +48,20 @@ export const LOOP_WAKE_TARGET_ROLE = `${SYSTEM_TARGET_PREFIX}loop-wake`;
 export const CRITICAL_ROUTINE_ACTIONS = new Set<string>(['git-sync', 'work-item-admission-fail-open']);
 
 /**
- * Fleet membership restoration is control-plane work whose latency determines
- * whether a leader can recover dead/stale lanes. It cannot share the ordinary
- * queue: a pool-pressure episode can leave dozens of older routine rows ahead
- * of a one-second headcount tick, delaying recovery for tens of minutes even
- * after the scheduler itself is healthy. It also cannot use the critical,
- * loop, trigger, or release lanes: a headcount action can open and attest agent
- * processes, so it is neither quick nor safe to put ahead of those consumers.
- * Keep this exact allow-list on its own serial queue.
+ * Fleet control-plane actions whose latency determines whether leaders can
+ * recover dead/stale lanes or learn about fleet state transitions. They share
+ * a separate admission class so ordinary routine backlog cannot starve them.
+ *
+ * The headcount governor can open and attest agent processes, so it must stay
+ * off the responsive loop/trigger lanes. The two transition sweeps are bounded
+ * observers with one-minute detection latency; keeping them on the fleet lane
+ * separates them from both the general queue and unrelated external traffic.
  */
-export const FLEET_CONTROL_ACTIONS = new Set<string>(['fleet-headcount-governor']);
+export const FLEET_CONTROL_ACTIONS = new Set<string>([
+  'fleet-headcount-governor',
+  'fleet-transition-sweep',
+  'presence-transition-sweep',
+]);
 
 /**
  * External-SOURCE poll actions → their own bounded lane. These are QUICK, run on a
@@ -83,6 +87,17 @@ export const TRIGGER_POLL_ACTIONS = new Set<string>([
   'facebook-personal-vault-poll',
   'slack-org-sync',
   'connector-sync',
+]);
+
+/**
+ * Other bounded trigger/import handlers use the same latency-isolated lane as
+ * source polls: trigger dispatch processes a bounded outbox batch, and personal
+ * vault import advances one bounded, checkpointed batch per fire.
+ */
+export const TRIGGERS_QUEUE_ACTIONS = new Set<string>([
+  ...TRIGGER_POLL_ACTIONS,
+  'external-trigger-dispatch',
+  'personal-vault-import',
 ]);
 
 /**
@@ -143,9 +158,9 @@ export const DEPLOY_TRIGGER_ACTIONS = new Set<string>(['release-trigger']);
  * that one home-hive action its own serial lane; subject-hive checkpoints stay on
  * the bounded shared lane so their aggregate concurrency remains unchanged.
  *
- * A loop wake → the latency-isolated `routines-loop` lane; fleet restoration →
- * the serial `routines-fleet-control` lane; a critical quick SYSTEM action →
- * `routines-critical`; a quick external-source poll → `routines-triggers`; the
+ * A loop wake → the latency-isolated `routines-loop` lane; fleet control-plane
+ * actions → the dedicated `routines-fleet-control` lane; a critical quick SYSTEM action →
+ * `routines-critical`; a source poll or bounded trigger/import drain → `routines-triggers`; the
  * operator-home green-checkpoint → `routines-release`; the deploy launcher →
  * `routines-deploy`; a known heavy/background action → `routines-heavy`;
  * everything else → `routines`.
@@ -161,7 +176,7 @@ export function queueForRoutine(targetRole: string, installSlug?: string | null)
     if (FLEET_CONTROL_ACTIONS.has(action)) return ROUTINES_FLEET_CONTROL_QUEUE;
     if (CRITICAL_ROUTINE_ACTIONS.has(action)) return ROUTINES_CRITICAL_QUEUE;
     if (DEPLOY_TRIGGER_ACTIONS.has(action)) return ROUTINES_DEPLOY_QUEUE;
-    if (TRIGGER_POLL_ACTIONS.has(action)) return ROUTINES_TRIGGERS_QUEUE;
+    if (TRIGGERS_QUEUE_ACTIONS.has(action)) return ROUTINES_TRIGGERS_QUEUE;
   }
   return ROUTINES_QUEUE;
 }
