@@ -118,6 +118,10 @@ export interface SpecEvidenceForAdequacy {
     filePath: string;
     /** Canonical runner framework; an LLM scenario is never inferred from binder metadata. */
     framework?: string | null;
+    /** Server-owned test_runs.source, independent of details written by the binding author. */
+    source?: string | null;
+    /** Server-parsed phase from test_runs.execution_details. */
+    mutationPhase?: string | null;
     commitSha: string | null;
     worktreeDirty: boolean | null;
     /**
@@ -1021,36 +1025,11 @@ function hasPassingRequiredLayerCase(row: SpecEvidenceForAdequacy, caseTitle: st
 
 type MeasuredExecutionVerdict = 'pass' | 'fail' | 'unknown';
 
-/** A normal passing test run is not a negative control merely because it is rebound as one. */
-function hasCounterexampleCaseProvenance(row: SpecEvidenceForAdequacy): boolean {
-  const asRecord = (value: unknown): Record<string, unknown> | null =>
-    value !== null && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
-  const execution = asRecord(row.details.testExecution);
-  const binding = asRecord(execution?.binding);
-  const counterexample = asRecord(binding?.counterexample);
-  const hasPreparedCounterexample =
-    hasTestAttemptReference(row) &&
-    typeof counterexample?.test === 'string' &&
-    counterexample.test.trim().length > 0 &&
-    typeof counterexample.messageIncludes === 'string' &&
-    counterexample.messageIncludes.trim().length > 0;
-  if (hasPreparedCounterexample) return true;
-
-  const testRun = asRecord(row.details.testRun);
-  if (testRun) {
-    // A canonical ordinary run proves the case passed on this build; it says nothing about
-    // whether the same check fails under the counterexample. Raw mutant runs are handled by
-    // measuredExecutionVerdict above using their measured failure status and failure lines.
-    return false;
-  }
-
-  // Legacy rows without canonical run descriptors can still establish an exact, measured
-  // case identity. Do not let a canonical passing run use caller-authored names as this path.
-  const details = detailsOf(row);
-  const hasStructuredCaseId = (details.scenarioIds?.length ?? 0) > 0 || (details.causalPairIds?.length ?? 0) > 0;
-  const declaredCases = details.testCases ?? [];
-  const measuredCases = new Set(row.testRunExecution?.passedCaseTitles ?? []);
-  return hasStructuredCaseId && declaredCases.length > 0 && declaredCases.every((caseTitle) => measuredCases.has(caseTitle));
+/** Only canonical ledger provenance can identify a counterexample mutant run. */
+function isCanonicalMutantCounterexample(row: SpecEvidenceForAdequacy): boolean {
+  return row.testRunId !== null &&
+    row.testRunProvenance?.source === 'mutation-probe' &&
+    row.testRunProvenance.mutationPhase === 'mutant';
 }
 
 /** Unselected skips cannot invalidate a ledger-corroborated, explicitly bounded case scope. */
@@ -1080,12 +1059,7 @@ function measuredExecutionVerdict(row: SpecEvidenceForAdequacy): MeasuredExecuti
   }
 
   if (row.evidenceKind === 'counterexample') {
-    const testRun = row.details.testRun;
-    const testRunRecord =
-      testRun !== null && typeof testRun === 'object' && !Array.isArray(testRun)
-        ? (testRun as Record<string, unknown>)
-        : null;
-    const rawMutant = testRunRecord?.source === 'mutation-probe' && testRunRecord.mutationPhase === 'mutant';
+    const rawMutant = isCanonicalMutantCounterexample(row);
     if (rawMutant) {
       if (status === 'pass') return 'fail';
       if (status !== 'fail' || run.collectionFailed || run.failed < 1) return 'unknown';
@@ -1094,7 +1068,7 @@ function measuredExecutionVerdict(row: SpecEvidenceForAdequacy): MeasuredExecuti
         ? 'pass'
         : 'unknown';
     }
-    if (status === 'pass') return hasCounterexampleCaseProvenance(row) ? 'pass' : 'unknown';
+    if (status === 'pass') return 'unknown';
     if (status !== 'fail') return 'unknown';
     return 'fail';
   }
@@ -1756,10 +1730,11 @@ function clauseBoundMutationTest(
   mutation: SpecEvidenceForAdequacy,
   evidence: readonly SpecEvidenceForAdequacy[],
 ): SpecEvidenceForAdequacy | null {
-  if (mutation.evidenceKind !== 'mutation') return clauseBoundCurrentTest(clause, mutation, evidence);
-  // WI-10006745: ANY successful current same-clause same-file test binding may carry the
-  // declared case. Checking only the first such row let an older binding without testCases
-  // shadow a newer one that declares the measured case.
+  if (mutation.evidenceKind !== 'mutation' && mutation.evidenceKind !== 'counterexample') {
+    return clauseBoundCurrentTest(clause, mutation, evidence);
+  }
+  // Any successful current same-clause same-file test binding may carry the exact measured case.
+  // Checking only the first row let an older binding without testCases shadow a newer match.
   return clauseBoundCurrentTests(clause, mutation, evidence).find((testBinding) =>
     (detailsOf(testBinding).testCases ?? []).some((caseTitle) =>
       mutationMeasuredFailedCase(mutation, caseTitle) && hasPassingTestBaselineCase(testBinding, caseTitle),
@@ -2029,7 +2004,6 @@ export function evaluateSpecTestAdequacy(input: {
   );
   const targetedMutationWithoutMatchingCase = boundMutationOrCounterexample.filter(
     (row) =>
-      row.evidenceKind === 'mutation' &&
       isAcceptedMutationTarget(clause, detailsOf(row).targeted) &&
       clauseBoundCurrentTest(clause, row, evidence) !== null &&
       !isClauseBoundMutationTest(clause, row, evidence),
@@ -2084,7 +2058,11 @@ export function evaluateSpecTestAdequacy(input: {
       : targetedMutationWithoutTestBinding.length > 0
         ? `${targetedMutationWithoutTestBinding.length} successful mutation or counterexample binding(s) name ${clauseIdentity(clause)} but their canonical test file is not also bound as a successful current test for this clause.`
         : targetedMutationWithoutMatchingCase.length > 0
-          ? `${targetedMutationWithoutMatchingCase.length} successful mutation binding(s) name ${clauseIdentity(clause)}, but the measured failed case is missing or is not an exact member of the successful current same-clause adequacy.testCases binding. ${summarizeMutationFailedCaseTitles(targetedMutationWithoutMatchingCase)}`
+          ? targetedMutationWithoutMatchingCase.length +
+            ' successful mutation or counterexample binding(s) name ' +
+            clauseIdentity(clause) +
+            ', but the measured failed case is missing or is not an exact member of the successful current same-clause adequacy.testCases binding. ' +
+            summarizeMutationFailedCaseTitles(targetedMutationWithoutMatchingCase)
         : boundMutationOrCounterexample.length > 0
           ? clauseSelfTarget !== null
             ? `Successful mutation or counterexample binding(s) for ${clauseIdentity(clause)} do not target this clause's own specId.`

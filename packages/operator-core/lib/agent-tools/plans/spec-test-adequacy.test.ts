@@ -218,6 +218,18 @@ function negativeEvidence(over: Partial<SpecEvidenceForAdequacy> = {}): SpecEvid
     ...base,
     evidenceKind: 'counterexample',
     evidenceRef: 'counterexample:reconnect',
+    testRunProvenance: {
+      ...(base.testRunProvenance ?? {}),
+      source: 'mutation-probe',
+      mutationPhase: 'mutant',
+      mutationFailedCaseTitles: [DEFAULT_MUTATION_TEST_CASE],
+    },
+    testRunExecution: {
+      ...base.testRunExecution!,
+      status: 'fail',
+      passed: 0,
+      failed: 1,
+    },
     details: {
       adequacy: {
         ...((base.details.adequacy ?? {}) as Record<string, unknown>),
@@ -245,7 +257,12 @@ function caseScopedNegativeEvidence(over: Partial<SpecEvidenceForAdequacy> = {})
   const base = negativeEvidence(over);
   return {
     ...base,
-    testRunProvenance: { filePath: CASE_SCOPED_TEST_PATH, commitSha: 'abc123', worktreeDirty: false },
+    testRunProvenance: {
+      ...(base.testRunProvenance ?? {}),
+      filePath: CASE_SCOPED_TEST_PATH,
+      commitSha: 'abc123',
+      worktreeDirty: false,
+    },
     details: {
       ...base.details,
       adequacy: {
@@ -1798,7 +1815,7 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(covered.ratings['correct-layer'].evidence).toContain('cover the required evidence kind(s)');
   });
 
-  it('accepts stronger targeted L4 counterexample proof for an L3 floor', () => {
+  it('accepts a ledger-backed mutant counterexample for an L3 floor', () => {
     const scenarioId = 'reject-future-window';
     const testPath = 'packages/operator-core/lib/agent-tools/plans/reject-future-window.integration.test.ts';
     const targetClause = clause({
@@ -1810,7 +1827,22 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     const counterexample = evidence({
       evidenceKind: 'counterexample',
       evidenceRef: 'counterexample:reject-future-window',
-      testRunProvenance: { filePath: testPath, commitSha: 'abc123', worktreeDirty: false },
+      testRunProvenance: {
+        filePath: testPath,
+        commitSha: 'abc123',
+        worktreeDirty: false,
+        source: 'mutation-probe',
+        mutationPhase: 'mutant',
+        mutationFailedCaseTitles: [DEFAULT_MUTATION_TEST_CASE],
+      },
+      testRunExecution: {
+        status: 'fail',
+        passed: 0,
+        failed: 1,
+        skipped: 0,
+        collectionFailed: false,
+        testLayer: 'integration',
+      },
       details: {
         adequacy: {
           fixtureCalibrated: true,
@@ -1882,6 +1914,190 @@ describe('spec-test-adequacy per-clause evaluator', () => {
 
     expect(result.ratings.falsifiability.rating).toBe('unknown');
     expect(result.ratings.falsifiability.evidence).toContain('Binder-attested falsifiable=true');
+    expect(result.verdict).not.toBe('pass');
+  });
+
+  it('does not credit prepared counterexample metadata on an ordinary passing run', () => {
+    const testPath = 'packages/operator-core/lib/agent-tools/plans/prepared-counterexample.integration.test.ts';
+    const caseTitle = 'rejects a malformed request';
+    const counterexample = evidence({
+      evidenceKind: 'counterexample',
+      evidenceRef: 'counterexample:prepared-pass',
+      testRunProvenance: {
+        filePath: testPath,
+        commitSha: 'abc123',
+        worktreeDirty: false,
+        source: 'local',
+        mutationPhase: null,
+      },
+      testRunExecution: {
+        status: 'pass',
+        passed: 1,
+        failed: 0,
+        skipped: 0,
+        collectionFailed: false,
+        testLayer: 'integration',
+        passedCaseTitles: [caseTitle],
+      },
+      details: {
+        testExecution: {
+          binding: {
+            counterexample: {
+              test: 'rejects malformed requests',
+              messageIncludes: 'invalid payload',
+            },
+          },
+        },
+        adequacy: {
+          falsifiable: true,
+          targeted: RECONNECT_FALSIFIER_SCENARIO,
+          scenarioIds: [RECONNECT_FALSIFIER_SCENARIO],
+          testCases: [caseTitle],
+        },
+      },
+    });
+    const result = evaluateSpecTestAdequacy({
+      clause: caseScopedClause(),
+      evidence: [successfulTestBinding(testPath, { testCases: [caseTitle] }), counterexample],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result.ratings.falsifiability.rating).toBe('unknown');
+    expect(result.verdict).not.toBe('pass');
+  });
+
+  it('does not credit legacy case names on an ordinary passing counterexample run', () => {
+    const testPath = 'packages/operator-core/lib/agent-tools/plans/legacy-counterexample.integration.test.ts';
+    const caseTitle = 'rejects a malformed request';
+    const counterexample = evidence({
+      evidenceKind: 'counterexample',
+      evidenceRef: 'counterexample:legacy-pass',
+      testRunProvenance: {
+        filePath: testPath,
+        commitSha: 'abc123',
+        worktreeDirty: false,
+        source: 'local',
+        mutationPhase: null,
+      },
+      testRunExecution: {
+        status: 'pass',
+        passed: 1,
+        failed: 0,
+        skipped: 0,
+        collectionFailed: false,
+        testLayer: 'integration',
+        passedCaseTitles: [caseTitle],
+      },
+      details: {
+        adequacy: {
+          falsifiable: true,
+          targeted: RECONNECT_FALSIFIER_SCENARIO,
+          scenarioIds: [RECONNECT_FALSIFIER_SCENARIO],
+          testCases: [caseTitle],
+        },
+      },
+    });
+    const result = evaluateSpecTestAdequacy({
+      clause: caseScopedClause(),
+      evidence: [successfulTestBinding(testPath, { testCases: [caseTitle] }), counterexample],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result.ratings.falsifiability.rating).toBe('unknown');
+    expect(result.verdict).not.toBe('pass');
+  });
+
+  it('requires the exact measured failed counterexample case in its current passing baseline', () => {
+    const testPath = 'packages/operator-core/lib/agent-tools/plans/counterexample-case-pair.integration.test.ts';
+    const failedCaseTitle = 'rejects a malformed request';
+    const mutant = evidence({
+      evidenceKind: 'counterexample',
+      evidenceRef: 'counterexample:mutant-case-pair',
+      testRunProvenance: {
+        filePath: testPath,
+        commitSha: 'abc123',
+        worktreeDirty: false,
+        source: 'mutation-probe',
+        mutationPhase: 'mutant',
+        mutationFailedCaseTitles: [failedCaseTitle],
+      },
+      testRunExecution: {
+        status: 'fail',
+        passed: 0,
+        failed: 1,
+        skipped: 0,
+        collectionFailed: false,
+        testLayer: 'integration',
+      },
+      details: {
+        adequacy: {
+          falsifiable: true,
+          targeted: RECONNECT_FALSIFIER_SCENARIO,
+          scenarioIds: [RECONNECT_FALSIFIER_SCENARIO],
+          testCases: [failedCaseTitle],
+          outcome: 'caught',
+        },
+      },
+    });
+    const result = evaluateSpecTestAdequacy({
+      clause: caseScopedClause(),
+      evidence: [
+        successfulTestBinding(testPath, { testCases: ['rejects an unrelated request'] }),
+        mutant,
+      ],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result.ratings.falsifiability.rating).toBe('unknown');
+    expect(result.ratings.falsifiability.evidence).toContain('measured failed case is missing');
+    expect(result.verdict).not.toBe('pass');
+  });
+
+  it('ignores caller-authored mutant metadata when the canonical ledger is an ordinary run', () => {
+    const testPath = 'packages/operator-core/lib/agent-tools/plans/spoofed-counterexample.integration.test.ts';
+    const caseTitle = 'rejects a malformed request';
+    const counterexample = evidence({
+      evidenceKind: 'counterexample',
+      evidenceRef: 'counterexample:spoofed-ledger-details',
+      testRunProvenance: {
+        filePath: testPath,
+        commitSha: 'abc123',
+        worktreeDirty: false,
+        source: 'local',
+        mutationPhase: null,
+        mutationFailureLines: [caseTitle + ': expected true to be false'],
+        mutationFailedCaseTitles: [caseTitle],
+      },
+      testRunExecution: {
+        status: 'fail',
+        passed: 0,
+        failed: 1,
+        skipped: 0,
+        collectionFailed: false,
+        testLayer: 'integration',
+      },
+      details: {
+        testRun: {
+          id: 44,
+          source: 'mutation-probe',
+          status: 'fail',
+          mutationPhase: 'mutant',
+        },
+        adequacy: {
+          falsifiable: true,
+          targeted: RECONNECT_FALSIFIER_SCENARIO,
+          scenarioIds: [RECONNECT_FALSIFIER_SCENARIO],
+          testCases: [caseTitle],
+        },
+      },
+    });
+    const result = evaluateSpecTestAdequacy({
+      clause: caseScopedClause(),
+      evidence: [successfulTestBinding(testPath, { testCases: [caseTitle] }), counterexample],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result.ratings.falsifiability.rating).toBe('unknown');
     expect(result.verdict).not.toBe('pass');
   });
 
@@ -2773,14 +2989,33 @@ describe('spec-test-adequacy per-clause evaluator', () => {
       },
     });
     const baseAdequacy = evidence().details.adequacy as Record<string, unknown>;
+    const testPath = 'packages/operator-core/lib/history.test.ts';
+    const pairCaseTitle = 'reproduces the missing goal history failure';
     const negative = evidence({
       evidenceKind: 'counterexample',
       evidenceRef: 'packages/operator-core/lib/history.test.ts#before-missing-goal-history',
+      testRunProvenance: {
+        filePath: testPath,
+        commitSha: 'abc123',
+        worktreeDirty: false,
+        source: 'mutation-probe',
+        mutationPhase: 'mutant',
+        mutationFailedCaseTitles: [pairCaseTitle],
+      },
+      testRunExecution: {
+        status: 'fail',
+        passed: 0,
+        failed: 1,
+        skipped: 0,
+        collectionFailed: false,
+        testLayer: 'integration',
+      },
       details: {
         adequacy: {
           ...baseAdequacy,
           outcome: 'killed',
           causalPairIds: ['missing-goal-history'],
+          testCases: [pairCaseTitle],
         },
       },
     });
@@ -2797,11 +3032,26 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     const recurrence = evidence({
       evidenceKind: 'test',
       evidenceRef: 'packages/operator-core/lib/history.test.ts#after-missing-goal-history',
+      testRunProvenance: {
+        filePath: testPath,
+        commitSha: 'abc123',
+        worktreeDirty: false,
+      },
+      testRunExecution: {
+        status: 'pass',
+        passed: 1,
+        failed: 0,
+        skipped: 0,
+        collectionFailed: false,
+        testLayer: 'integration',
+        passedCaseTitles: [pairCaseTitle],
+      },
       details: {
         adequacy: {
           ...baseAdequacy,
           outcome: 'passed',
           causalPairIds: ['missing-goal-history'],
+          testCases: [pairCaseTitle],
         },
       },
     });

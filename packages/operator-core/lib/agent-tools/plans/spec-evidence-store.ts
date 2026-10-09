@@ -2576,16 +2576,18 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
            -- WI-10006745: unconditional, so no adequacy reader (the ship-gate snapshot included)
            -- can forget to ask for it. Bounded by the ledger's own 4000-char tail.
            CASE
-             WHEN b.evidence_kind = 'mutation'
+             WHEN b.evidence_kind IN ('mutation', 'counterexample')
                AND tr.source = 'mutation-probe'
                AND tr.status = 'fail'
+               AND tr.execution_details->>'mutationPhase' = 'mutant'
              THEN tr.output_tail
              ELSE NULL
            END AS mutation_failure_tail,
            CASE
-             WHEN b.evidence_kind = 'mutation'
+             WHEN b.evidence_kind IN ('mutation', 'counterexample')
                AND tr.source = 'mutation-probe'
                AND tr.status = 'fail'
+               AND tr.execution_details->>'mutationPhase' = 'mutant'
              THEN tr.execution_details
              ELSE NULL
            END AS mutation_execution_details,
@@ -3037,6 +3039,8 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
         : {
             filePath: row.test_run_file_path,
             framework: row.test_run_framework ?? null,
+            source: row.test_run_source ?? null,
+            mutationPhase: parsedTestRunExecution?.mutationPhase ?? null,
             commitSha: row.test_run_commit_sha,
             worktreeDirty: row.test_run_worktree_dirty,
             ...(row.mutation_failure_tail || row.mutation_execution_details != null

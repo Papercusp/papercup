@@ -1080,9 +1080,52 @@ describe('listSpecEvidence timestamp normalization', () => {
       'suite > failed with a long DOM error: (recorded failed assertion)',
     ]);
     expect(row.testRunProvenance?.mutationFailedCaseTitles).toEqual(['suite > failed with a long DOM error']);
-    expect(h.queries.find(query => query.sql.includes('SELECT b.id'))?.sql).toMatch(
-      /WHEN b\.evidence_kind = 'mutation'\s+AND tr\.source = 'mutation-probe'\s+AND tr\.status = 'fail'\s+THEN tr\.execution_details/,
-    );
+    const query = h.queries.find(query => query.sql.includes('SELECT b.id'))?.sql ?? '';
+    expect(query).toContain("WHEN b.evidence_kind IN ('mutation', 'counterexample')");
+    expect(query).toContain("AND tr.execution_details->>'mutationPhase' = 'mutant'");
+  });
+
+  it('projects canonical mutant provenance and failed cases for counterexample bindings', async () => {
+    const caseTitle = 'suite > rejects a malformed request';
+    const mutantDetails = {
+      schemaVersion: 1,
+      root: '/repo',
+      filePath: 'test/a.test.ts',
+      runGroupId: null,
+      workspaceId: 'ws',
+      harnessSlug: 'papercusp',
+      testNamePattern: null,
+      passed: 0,
+      failed: 1,
+      skipped: 0,
+      collectionFailed: false,
+      mutationPhase: 'mutant',
+      commitSha: 'abc',
+      worktreeDirty: false,
+      failedCaseTitles: [caseTitle],
+    };
+    h.rows = [{
+      id: 2, work_item_id: 'WI-2', plan_slug: 'plan-one', spec_id: 'SPEC-2',
+      spec_revision: 1, current_revision: 1, spec_fingerprint: 'spec', spec_is_current: true,
+      evidence_kind: 'counterexample', evidence_ref: 'counterexample:malformed-request', details: {},
+      source_fingerprint: null, test_fingerprint: null, fixture_fingerprint: null,
+      rubric_fingerprint: null, environment_fingerprint: null, coverage_evidence_ref: null,
+      test_run_id: 47, test_run_present: true, test_run_file_path: 'test/a.test.ts',
+      test_run_source: 'mutation-probe', test_run_status: 'fail',
+      test_run_commit_sha: 'abc', test_run_worktree_dirty: false,
+      test_run_execution_details: mutantDetails,
+      mutation_failure_tail: null, mutation_execution_details: mutantDetails,
+      observed_at: '2026-10-06T16:35:00.000Z', created_at: '2026-10-06T16:36:00.000Z',
+    }];
+
+    const [row] = await listSpecEvidence({ harnessSlug: 'papercusp', planSlugs: ['plan-one'] });
+
+    expect(row.testRunProvenance).toMatchObject({
+      source: 'mutation-probe',
+      mutationPhase: 'mutant',
+      mutationFailedCaseTitles: [caseTitle],
+      mutationFailureLines: ['suite > rejects a malformed request: (recorded failed assertion)'],
+    });
   });
 
   it('projects canonical test-run status, counts, passed titles, and runtime layer to the evaluator', async () => {
