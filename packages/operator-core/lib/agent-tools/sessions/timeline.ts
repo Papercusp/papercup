@@ -775,8 +775,13 @@ export default defineTool({
       )
       UNION ALL
       (
+        -- Pre-alias telemetry may retain a system:<role>/<session> principal as its owner.
+        -- Roll it into the session only when the trusted spawn-url provenance and
+        -- exact signed request client agree; this mirrors verifiedSpawnSessionAlias.
         SELECT 'tool' AS kind, invoked_at::text AS ts, id::text AS ref,
-               tool_name || ' (' || COALESCE(NULLIF(metadata_json->>'effectiveStatus', ''), status, '?') || COALESCE(', ' || duration_ms || 'ms', '') || ')' AS text,
+               (CASE WHEN coord_owner_id = ${owner} THEN ''
+                     ELSE '[' || role || ' verified session alias] ' END) ||
+                 tool_name || ' (' || COALESCE(NULLIF(metadata_json->>'effectiveStatus', ''), status, '?') || COALESCE(', ' || duration_ms || 'ms', '') || ')' AS text,
                tool_name, COALESCE(NULLIF(metadata_json->>'effectiveStatus', ''), status) AS status,
                ${automaticToolPredicate} AS auto,
                call_origin, call_origin_source,
@@ -785,7 +790,16 @@ export default defineTool({
                -- so there is no join and nothing to hydrate.
                goal_ref, assumption_set_id
           FROM harness_shared.tool_invocations
-         WHERE coord_owner_id = ${owner}
+         WHERE (
+                 coord_owner_id = ${owner}
+                 OR (
+                   principal_kind = 'harness'
+                   AND principal_auth_method = 'spawn-url'
+                   AND principal_trust = 'trusted'
+                   AND metadata_json->'requestOrigin'->'query'->>'client' = ${owner}
+                   AND coord_owner_id = ('system:' || role || '/' || ${owner})
+                 )
+               )
            AND invoked_at >= ${since}::timestamptz AND invoked_at < ${until}::timestamptz
            AND (${kinds}::text[] IS NULL OR 'tool' = ANY(${kinds}::text[]))
            AND (${args.tool ?? null}::text IS NULL OR tool_name = ${args.tool ?? null})
@@ -825,7 +839,7 @@ export default defineTool({
       // the whole point: eager resolution would turn the ordinary "what did agent
       // X do yesterday" read into an N+1 over agent_facts.
       //
-      // The watermark→set expansion mirrors isAssumptionFact (D-087 R2): `kind`
+      // The watermark→set expansion mirrors isAssumptionFact (D-087 R2): \`kind\`
       // when declared WINS, else the pre-migration-690 legacy form
       // confidence='suspected'. A kind-only count here would silently read 0 for
       // every legacy assumption while passing every fixture that sets the new field
@@ -892,7 +906,16 @@ export default defineTool({
              count(*) FILTER (WHERE ${automaticToolPredicate})::int AS automatic_calls,
              count(*) FILTER (WHERE ${agentToolPredicate})::int AS agent_calls
         FROM harness_shared.tool_invocations
-       WHERE coord_owner_id = ${owner}
+       WHERE (
+               coord_owner_id = ${owner}
+               OR (
+                 principal_kind = 'harness'
+                 AND principal_auth_method = 'spawn-url'
+                 AND principal_trust = 'trusted'
+                 AND metadata_json->'requestOrigin'->'query'->>'client' = ${owner}
+                 AND coord_owner_id = ('system:' || role || '/' || ${owner})
+               )
+             )
          AND invoked_at >= ${since}::timestamptz AND invoked_at < ${until}::timestamptz
          AND (${args.tool ?? null}::text IS NULL OR tool_name = ${args.tool ?? null})
          AND (${args.status ?? null}::text IS NULL OR COALESCE(NULLIF(metadata_json->>'effectiveStatus', ''), status) = ${args.status ?? null})
@@ -902,7 +925,7 @@ export default defineTool({
       // that gets cut, not this projection. Reporting the resolution here
       // makes an empty goal-scoped read self-describing: goal_scoped tells
       // you the filter ran, assumption_sets_resolved tells you whether any
-      // watermark was actually expanded — so `count: 0` can never be read as
+      // watermark was actually expanded — so \`count: 0\` can never be read as
       // "this agent did nothing under that goal" when it really means "no
       // call ever carried that goal_ref".
       const baseResponse = {

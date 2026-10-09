@@ -88,6 +88,32 @@ describe('sessions:timeline owner resolution', () => {
     expect(templateParts?.[prefixParam + 1]).toMatch(/^::text/);
   });
 
+  it('includes historical tool calls only for a trusted signed role-spawn session alias', async () => {
+    const owner = 'su-12345678-1234-4234-8234-123456789abc';
+    const tx = makeTx();
+
+    await run(owner, tx);
+
+    const invocationQueries = tx.mock.calls.filter(
+      (call) =>
+        Array.isArray(call[0]) &&
+        call[0].some(
+          (part: unknown) =>
+            typeof part === 'string' && part.includes('FROM harness_shared.tool_invocations'),
+        ),
+    );
+    expect(invocationQueries.length).toBeGreaterThanOrEqual(2);
+    for (const query of invocationQueries) {
+      const sqlText = (query[0] as readonly string[]).join(' ');
+      expect(sqlText).toContain("principal_kind = 'harness'");
+      expect(sqlText).toContain("principal_auth_method = 'spawn-url'");
+      expect(sqlText).toContain("principal_trust = 'trusted'");
+      expect(sqlText).toContain("metadata_json->'requestOrigin'->'query'->>'client'");
+      expect(sqlText).toContain("'system:' || role || '/' ||");
+      expect(query.slice(1)).toContain(owner);
+    }
+  });
+
   it('normalizes a unique short owner handle before constructing the history query', async () => {
     const short = 'su-peer';
     const full = 'su-12345678-1234-4234-8234-123456789abc';
