@@ -1933,6 +1933,7 @@ export default defineTool({
         }
         const preWriteStamp = await stampCarrySurfaceProvenance(currentProvenanceText, ident.ownerId, {
           successfulActions,
+          ...(sentinelTurn ? { currentTurnStamp: sentinelTurn } : {}),
         });
         const ownerEnforcement = ownerAttributionEnforcement(currentProvenanceText, preWriteStamp);
         if (ownerEnforcement.unverified) {
