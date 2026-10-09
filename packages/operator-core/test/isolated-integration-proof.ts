@@ -19,12 +19,13 @@ import { createProgressAwareWatchdog } from '../../../scripts/lib/batch-watchdog
 export const isolatedIntegrationCases = it.for([false, true]);
 
 type WorkerPhase = 'bootstrap' | 'execute' | 'teardown';
-type WorkerDeadlines = { bootstrapMs: number; bootstrapMaxMs?: number; executeMs: number; teardownMs: number; executeMaxMs?: number };
+type WorkerDeadlines = { bootstrapMs: number; bootstrapMaxMs?: number; executeMs: number; teardownMs: number; teardownMaxMs?: number; executeMaxMs?: number };
 
 /** Compose the actual nested router contract; startup consumes none of its
  * collection/execution allowance. Teardown allows the router's cgroup stop,
- * the private API's five-second stop, and thirty seconds for PG/removal.
- * The latter is a bound, never evidence that cleanup actually succeeded.
+ * the private API's five-second stop, and a thirty-second PG progress checkpoint.
+ * Actual PG write progress can extend cleanup within the configured file ceiling;
+ * repeated stages, logs and unchanged IO cannot renew it. No budget is proof of cleanup.
  */
 export function isolatedWorkerOptions(executeMs: number, env: NodeJS.ProcessEnv = process.env, executeMaxMs = executeMs) {
   const listMs = testFileListTimeoutMs(env);
@@ -38,9 +39,10 @@ export function isolatedWorkerOptions(executeMs: number, env: NodeJS.ProcessEnv 
     executeMs,
     executeMaxMs,
     teardownMs,
+    teardownMaxMs: Math.max(teardownMs, testFileRunTimeoutMs(env, 1)),
   };
   return { phaseTimeouts, killGraceMs: teardownMs, drainGraceMs: 5_000,
-    testTimeoutMs: phaseTimeouts.bootstrapMaxMs! + phaseTimeouts.executeMaxMs! + 2 * teardownMs + 20_000 };
+    testTimeoutMs: phaseTimeouts.bootstrapMaxMs! + phaseTimeouts.executeMaxMs! + phaseTimeouts.teardownMaxMs! + teardownMs + 20_000 };
 }
 
 export function isolatedTestFileWorkerOptions(env: NodeJS.ProcessEnv, fileCount: number) {
@@ -63,6 +65,7 @@ export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, 
   }
   assert.ok(!deadlines || !deadlines.executeMaxMs || deadlines.executeMaxMs >= deadlines.executeMs);
   assert.ok(!deadlines || !deadlines.bootstrapMaxMs || deadlines.bootstrapMaxMs >= deadlines.bootstrapMs);
+  assert.ok(!deadlines || !deadlines.teardownMaxMs || deadlines.teardownMaxMs >= deadlines.teardownMs);
   let ownsProcessGroup = false;
   if (process.platform === 'linux' && child.pid) {
     try {
@@ -93,6 +96,8 @@ export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, 
     let exitWaitTimer: ReturnType<typeof setTimeout> | undefined;
     let drainTimer: ReturnType<typeof setTimeout> | undefined;
     const bootStages = new Set<string>();
+    const cleanupStages = new Set<string>();
+    const cleanupIo = new Map<string, { writes: bigint; bytes: bigint }>();
     const capture = (chunk: Buffer) => {
       output += String(chunk); writeSync(fd, chunk);
       if (phase === 'execute') progressWatchdog?.noteProgress();
@@ -108,6 +113,9 @@ export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, 
       } else if (next === 'execute' && deadlines!.executeMaxMs) {
         progressWatchdog = createProgressAwareWatchdog({ timeoutMs: ms, maxMs: deadlines!.executeMaxMs,
           stallWindowMs: 5 * 60_000, extensionMs: 5 * 60_000, onKill: terminate });
+      } else if (next === 'teardown' && deadlines!.teardownMaxMs) {
+        progressWatchdog = createProgressAwareWatchdog({ timeoutMs: ms, maxMs: deadlines!.teardownMaxMs,
+          stallWindowMs: ms, extensionMs: ms, onKill: terminate });
       } else timeout = setTimeout(terminate, ms);
     };
     const message = (value: unknown) => {
@@ -123,6 +131,26 @@ export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, 
       // Repeated or out-of-order IPC cannot renew a phase's deadline.
       if (kind === 'isolated-runtime-start' && phase === 'bootstrap') armPhase('execute');
       else if ((kind === 'isolated-runtime-stopping' || kind === 'isolated-runtime-end') && phase === 'execute') armPhase('teardown');
+      if (phase === 'teardown' && kind === 'isolated-runtime-cleanup') {
+        if (typeof stage === 'string' && /^(start|profile-stop|pg-stop|pg-stopped|remove-private-state|complete)$/.test(stage) && !cleanupStages.has(stage)) {
+          cleanupStages.add(stage);
+          progressWatchdog?.noteProgress();
+        }
+        if (stage === 'pg-stop-observation' && Array.isArray((value as any).processes)) {
+          for (const sample of (value as any).processes) {
+            if (!Number.isSafeInteger(sample.pid) || sample.pid <= 0 || !/^\d+$/.test(sample.startTicks ?? '') ||
+                !/^\d+$/.test(sample.io?.syscw ?? '') || !/^\d+$/.test(sample.io?.write_bytes ?? '')) continue;
+            const key = `${sample.pid}:${sample.startTicks}`;
+            const next = { writes: BigInt(sample.io.syscw), bytes: BigInt(sample.io.write_bytes) };
+            const previous = cleanupIo.get(key);
+            // New identities establish baselines; PID reuse and a replayed old
+            // sample cannot manufacture progress on an already observed lifetime.
+            if (previous && next.writes >= previous.writes && next.bytes >= previous.bytes &&
+                (next.writes > previous.writes || next.bytes > previous.bytes)) progressWatchdog?.noteProgress();
+            if (!previous || next.writes >= previous.writes && next.bytes >= previous.bytes) cleanupIo.set(key, next);
+          }
+        }
+      }
     };
     const finish = (error?: Error) => {
       if (settled) return;

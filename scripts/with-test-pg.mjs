@@ -100,7 +100,8 @@ function observePrivatePgStop() {
   let postmasterPid;
   let postmasterStart;
   const stat = pid => {
-    const fields = readFileSync(`/proc/${pid}/stat`, 'utf8').slice(readFileSync(`/proc/${pid}/stat`, 'utf8').lastIndexOf(')') + 2).split(/\s+/);
+    const text = readFileSync(`/proc/${pid}/stat`, 'utf8');
+    const fields = text.slice(text.lastIndexOf(')') + 2).split(/\s+/);
     return { state: fields[0], parentPid: Number(fields[1]), startTicks: fields[19] };
   };
   try {

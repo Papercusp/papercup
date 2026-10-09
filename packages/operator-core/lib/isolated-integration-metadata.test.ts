@@ -51,6 +51,7 @@ it('composes the nested router budgets without spending execution time on bootst
   const options = isolatedTestFileWorkerOptions({ PAPERCUSP_TEST_FILE_TIMEOUT_MS: '900000', PAPERCUSP_TEST_FILE_LIST_TIMEOUT_MS: '180000' }, 2);
   expect(options.phaseTimeouts).toMatchObject({ bootstrapMs: 180_000, executeMs: 1_082_000 });
   expect(options.phaseTimeouts.bootstrapMaxMs).toBe(900_000);
+  expect(options.phaseTimeouts.teardownMaxMs).toBe(900_000);
   expect(options.killGraceMs).toBeGreaterThanOrEqual(10_000 + 5_000);
   expect(options.testTimeoutMs).toBeGreaterThan(options.phaseTimeouts.bootstrapMs + options.phaseTimeouts.executeMaxMs! + options.phaseTimeouts.teardownMs);
 });
@@ -91,6 +92,51 @@ it('bounds a missing runtime-start and cannot extend it with unrelated IPC', asy
     expect(kill).toHaveBeenCalledWith('SIGKILL');
     Object.assign(child, { signalCode: 'SIGKILL' }); child.emit('exit', null, 'SIGKILL'); child.emit('close', null, 'SIGKILL');
     expect(await captured).toMatchObject({ timedOut: true, timeoutPhase: 'bootstrap', signal: 'SIGKILL' });
+  } finally { vi.useRealTimers(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+it('extends cleanup for measured original PG writes but refuses logs, counter replay and PID reuse', async () => {
+  vi.useFakeTimers();
+  const dir = mkdtempSync(join(tmpdir(), 'isolated-cleanup-progress-'));
+  const child = new ChildProcess();
+  const kill = vi.spyOn(child, 'kill').mockReturnValue(true);
+  const sample = (startTicks: string, syscw: string) => child.emit('message', { kind: 'isolated-runtime-cleanup', stage: 'pg-stop-observation',
+    processes: [{ pid: 100, startTicks, io: { syscw, write_bytes: '1000' } }] });
+  try {
+    const captured = captureIsolatedWorker(child, dir, { phaseTimeouts: { bootstrapMs: 100, executeMs: 100, teardownMs: 100, teardownMaxMs: 300 }, killGraceMs: 50 });
+    child.emit('message', { kind: 'isolated-runtime-start' });
+    child.emit('message', { kind: 'isolated-runtime-stopping' });
+    sample('1', '0');
+    await vi.advanceTimersByTimeAsync(90); sample('1', '1');
+    await vi.advanceTimersByTimeAsync(10);
+    expect(kill).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(90);
+    sample('1', '1'); sample('1', '0'); sample('1', '1'); sample('2', '100');
+    child.emit('message', { kind: 'isolated-runtime-cleanup', stage: 'pg-log', message: 'noisy shutdown output' });
+    await vi.advanceTimersByTimeAsync(10);
+    expect(kill).toHaveBeenCalledWith('SIGTERM');
+    Object.assign(child, { exitCode: 1 }); child.emit('exit', 1, null); child.emit('close', 1, null);
+    expect(await captured).toMatchObject({ timedOut: true, timeoutPhase: 'teardown' });
+  } finally { vi.useRealTimers(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+it('bounds continuously progressing cleanup at the existing absolute verification ceiling', async () => {
+  vi.useFakeTimers();
+  const dir = mkdtempSync(join(tmpdir(), 'isolated-cleanup-ceiling-'));
+  const child = new ChildProcess();
+  const kill = vi.spyOn(child, 'kill').mockReturnValue(true);
+  try {
+    const captured = captureIsolatedWorker(child, dir, { phaseTimeouts: { bootstrapMs: 100, executeMs: 100, teardownMs: 100, teardownMaxMs: 300 }, killGraceMs: 50 });
+    child.emit('message', { kind: 'isolated-runtime-start' });
+    child.emit('message', { kind: 'isolated-runtime-stopping' });
+    for (const stage of ['pg-stop', 'pg-stopped', 'remove-private-state']) {
+      await vi.advanceTimersByTimeAsync(90);
+      child.emit('message', { kind: 'isolated-runtime-cleanup', stage });
+      await vi.advanceTimersByTimeAsync(10);
+    }
+    expect(kill).toHaveBeenCalledWith('SIGTERM');
+    Object.assign(child, { exitCode: 1 }); child.emit('exit', 1, null); child.emit('close', 1, null);
+    expect(await captured).toMatchObject({ timedOut: true, timeoutPhase: 'teardown' });
   } finally { vi.useRealTimers(); rmSync(dir, { recursive: true, force: true }); }
 });
 
