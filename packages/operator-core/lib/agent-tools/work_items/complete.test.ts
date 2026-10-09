@@ -1343,7 +1343,7 @@ describe('work_items:complete (keyed-array)', () => {
           },
         }),
       );
-      expect(parkReachability.read).toHaveBeenCalledWith('work-item:unblocked:WI-1');
+      expect(parkReachability.read).toHaveBeenCalledWith('work-item:unblocked:WI-1', { requireSpecificCondition: true });
       expect(r.planGateParkWarning).toMatch(/DURABLY PARKED out of scheduler:get_next/);
       expect(r.stateWarning).toMatch(/durably parked out of scheduler:get_next/);
       expect(r.stateWarning).not.toMatch(/stays claimable/);
@@ -3509,6 +3509,27 @@ describe('work_items:complete (keyed-array)', () => {
   // when the caller is not its current assignee; terminal calls refuse before they can mutate
   // someone else's active work.
   describe('assigneeMismatchWarning — wrong-id-grab footgun (EI-7264)', () => {
+    it.each([
+      ['spawn-url', 'trusted', true],
+      ['bearer', 'trusted', false],
+      ['spawn-url', 'untrusted', false],
+    ])('checks a role session holder using authenticated %s/%s provenance', async (authMethod, trust, allowed) => {
+      const session = 'su-851c1a7a-8ea6-4c70-afeb-472e957fd3d8';
+      const roleCtx = { uiClientId: session, workspaceId: 'default',
+        principal: { slug: 'system:judge', kind: 'system', authMethod, trust, workspaceId: 'default' } };
+      getWorkItem.mockResolvedValue({ ...item, assignee: session });
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...item, state: 'passed' }));
+      const result = ((await complete.handler(parse({ id: 'F-12', state: 'passed',
+        completion: { summary: 'signed reviewer closes its own review', tests: 'holder guard' } }) as never,
+      roleCtx as never)) as Out).data.results[0];
+      expect(result.ok).toBe(allowed);
+      if (allowed) expect(setWorkItemStateWithAliasInfo).toHaveBeenCalled();
+      else {
+        expect(result.error).toMatch(/refusing terminal completion/);
+        expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+      }
+    });
+
     it('warns when the item is currently assigned to someone else', async () => {
       getWorkItem.mockResolvedValue({ ...item, assignee: 'su-someone-else' });
       const r = await one({ id: 'F-12', completion: { summary: 'noting it' } });

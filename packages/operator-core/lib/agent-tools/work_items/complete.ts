@@ -44,7 +44,7 @@ import {
 import { nonAssumptionKindAdvisory } from '../../agent-facts/assumptions';
 import type { StoredAssumptionDeclaration } from '../../coord-lifecycle/records';
 import { defineTool, type UnifiedToolContext } from '@papercusp/agent-mcp';
-import { resolveAgentIdentity, deriveFleetMembership } from '../coordination/identity';
+import { resolveAgentIdentity, deriveFleetMembership, verifiedSpawnSessionAlias } from '../coordination/identity';
 import { getPresence } from '../coordination/presence';
 import { WORK_ITEM_LIFECYCLE_ROLES } from '../coordination/roles';
 import { objectSelector } from '../coordination/audience';
@@ -3430,6 +3430,8 @@ async function completeOne(
     existing.assignee === ident.adoptedName ||
     (await holderIsCaller(existing.assignee, ident.ownerId, {
       workspaceId: ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId(),
+      verifiedCallerAlias: ctx.principal?.authMethod === 'spawn-url' && ctx.principal.trust === 'trusted'
+        ? verifiedSpawnSessionAlias(ctx, ident.ownerId) : null,
     }));
   const assigneeMismatchWarning =
     existing.assignee && !callerOwnsAssignee
