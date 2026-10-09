@@ -32,6 +32,7 @@
  *   npm run test:file -- packages/operator-core/lib/sync-resolver/goals.integration.test.ts
  */
 import { dirname, join } from 'node:path';
+import { readFileSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import postgres, { type Sql } from 'postgres';
@@ -132,6 +133,7 @@ beforeEach(async () => {
 
 async function goal(
   over: {
+    body?: string;
     killCriterion?: string | null;
     tripwires?: unknown;
     launchSettings?: unknown;
@@ -144,7 +146,7 @@ async function goal(
     INSERT INTO harness_shared.goals (id, workspace_id, install_slug, title, body, status,
                                       budget_cents, kill_criterion, tripwires, launch_settings,
                                       metadata, created_at, updated_at)
-    VALUES (${GOAL}, ${WS}, 'papercusp', 'Ship the thing', 'body', 'active', 50000,
+    VALUES (${GOAL}, ${WS}, 'papercusp', 'Ship the thing', ${over.body ?? 'body'}, 'active', 50000,
             ${over.killCriterion === undefined ? 'Stop at day 30' : over.killCriterion},
             ${sql.json((over.tripwires ?? []) as never)},
             ${over.launchSettings === undefined ? null : sql.json(over.launchSettings as never)},
@@ -157,11 +159,12 @@ describe('goal rubric stewardship SQL', () => {
   it('reads a preserved goal-owned baseline, verified repair and audited regrade while rejecting foreign and unsettled controls', async () => {
     const { readGoalRubricStewardship } = await import('../goal-rubric-stewardship');
     const { proposeRubric } = await import('../rubrics');
-    await goal();
+    const packageBody = JSON.parse(readFileSync(join(REPO, 'goal-packages', 'work-on-everything', 'goal.json'), 'utf8')).body;
+    await goal({ body: packageBody });
     const criterion = { key: 'quality', title: 'Quality', model: 'The target meets its quality contract.',
       method: 'Compare the exact target before and after the verified repair.', driftMarkers: 'A confirmed defect remains.' };
     const rubric = await proposeRubric({ rubricId: 'stewardship-fixture-quality', title: 'Fixture quality',
-      characteristic: 'quality', criteria: [criterion], status: 'active', by: 'fixture-author' });
+      characteristic: 'quality', criteria: [criterion], status: 'active', gradingAuthority: 'independent', by: 'fixture-author' });
     const meta = await proposeRubric({ rubricId: 'grading-integrity', title: 'Grading integrity fixture',
       characteristic: 'grading-integrity', criteria: [criterion], status: 'active', by: 'fixture-auditor' });
     const now = Date.now(), baselineAt = now - 7200_000, repairedAt = now - 3600_000, regradedAt = now - 1800_000;
@@ -182,11 +185,11 @@ describe('goal rubric stewardship SQL', () => {
         criteriaHash: meta.criteriaHash, stampedAt: new Date(baselineAt).toISOString(),
         auditIssueId: 'EI-fixture-audit', auditor: 'independent-auditor', auditedAt: new Date(regradedAt).toISOString() },
     });
-    const insertCard = async (id: string, goalId: string | null, at: number, observation: unknown) => {
+    const insertCard = async (id: string, goalId: string | null, at: number, observation: unknown, grader = 'independent-grader') => {
       await sql`INSERT INTO harness_shared.work_items
         (feature_id, workspace_id, harness_slug, item_kind, title, status, created_ts, updated_ts, goal_id, payload)
         VALUES (${id}, ${WS}, 'papercusp', 'change', ${id}, 'open', ${at}, ${at}, ${goalId},
-          ${sql.json({ lane: 'observation', _ei: { created_by: 'independent-grader' }, observation } as never)})`;
+          ${sql.json({ lane: 'observation', _ei: { created_by: grader }, observation } as never)})`;
     };
     await insertCard('EI-owned-baseline', GOAL, baselineAt, card('fail'));
     const repairEvidence = { summary: 'Fixture repair verified', testsRun: 'Canonical fixture repair suite',
@@ -212,6 +215,9 @@ describe('goal rubric stewardship SQL', () => {
       { feature_id: 'WI-12', authority: 'committed' }, { feature_id: 'WI-13', authority: 'proposed' },
     ]);
     await insertCard('EI-owned-regrade', GOAL, regradedAt, card('pass', 'EI-owned-baseline'));
+    await sql`INSERT INTO harness_shared.adv_sessions (workspace_id, mode, coord_owner_id, launch_spec)
+      VALUES (${WS}, 'console', 'fixture-builder-child', ${sql.json({ launchedBy: 'fixture-builder' })})`;
+    await insertCard('EI-inlineage-regrade', GOAL, regradedAt, card('pass', 'EI-owned-baseline'), 'fixture-builder-child');
     const unprovenBaseline = card('fail');
     unprovenBaseline.ratings.quality.remediation = 'WI-13';
     await insertCard('EI-unproven-baseline', GOAL, baselineAt, unprovenBaseline);
@@ -242,9 +248,18 @@ describe('goal rubric stewardship SQL', () => {
         repairRefs: ['WI-12'], status: 'verified' }),
       expect.objectContaining({ scorecardRef: 'EI-owned-unsettled', status: 'unverified' }),
       expect.objectContaining({ scorecardRef: 'EI-unproven-regrade', repairRefs: ['WI-13'], status: 'unverified' }),
+      expect.objectContaining({ scorecardRef: 'EI-inlineage-regrade', status: 'unverified',
+        reason: 'This rubric requires acceptance by a grader independent of the implementers.' }),
     ]));
     expect(reading.cycles.map(c => c.scorecardRef)).not.toContain('EI-null-goal');
     expect(reading.cycles.map(c => c.scorecardRef)).not.toContain('EI-other-goal');
+    const { readGoalPortfolioBrief, renderGoalPortfolioBrief } = await import('../goal-launch-settings');
+    const portfolio = await readGoalPortfolioBrief({ workspaceId: WS, goalId: GOAL, sql,
+      now: new Date(now), claimability: 'skip' });
+    expect(portfolio?.rubricStewardship?.cycles).toEqual(reading.cycles);
+    const rendered = renderGoalPortfolioBrief(portfolio!);
+    for (const phrase of ['Maintain rubric coverage', 'Improve rubric quality', 'Grade, improve and re-grade',
+      'baseline=EI-owned-baseline', 'regrade=EI-owned-regrade', 'repairs=WI-12']) expect(rendered).toContain(phrase);
     // The preserved baseline remains readable after a re-grade; it is not superseded.
     const { listScorecards } = await import('../scorecards');
     expect((await listScorecards({ issueIds: ['EI-owned-baseline'], limit: 1 })).map(c => c.issueId))
