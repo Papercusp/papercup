@@ -1051,6 +1051,11 @@ export function applyIntakeDecision(
   };
 }
 
+const BULK_RUN_REPORT_ITEM_ERROR_CONSTRAINT =
+  'when outcome is skipped or failed, error must be a non-empty reason';
+const BULK_RUN_REPORT_SHORTHAND_ERROR_CONSTRAINT =
+  'for the single-item shorthand, when outcome is skipped or failed, error must be a non-empty reason';
+
 const OutcomeItem = z
   .object({
     itemId: z.string().min(1),
@@ -1149,7 +1154,8 @@ const OutcomeItem = z
         message: 'disposition must match recommendationKind',
       });
     }
-  });
+  })
+  .meta({ 'x-papercusp-call-constraint': BULK_RUN_REPORT_ITEM_ERROR_CONSTRAINT });
 
 export const bulkRunReport = defineTool({
   name: 'inbox:bulk-run-report',
@@ -1200,6 +1206,17 @@ export const bulkRunReport = defineTool({
       message: 'pass `{ itemId, outcome }` (one) or `items:[{ itemId, outcome }]` (many)',
     })
     .superRefine((a, ctx) => {
+      if (
+        !a.items?.length &&
+        (a.outcome === 'skipped' || a.outcome === 'failed') &&
+        !a.error?.trim()
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['error'],
+          message: 'error (the why) is required when skipping or failing an item',
+        });
+      }
       if (a.items?.length || a.outcome !== 'recommended') return;
       if (!a.actionId && !a.recommendationKind && !a.intakeDecision) {
         ctx.addIssue({
@@ -1208,7 +1225,8 @@ export const bulkRunReport = defineTool({
           message: 'actionId or recommendationKind is required for recommended outcomes',
         });
       }
-    }),
+    })
+    .meta({ 'x-papercusp-call-constraint': BULK_RUN_REPORT_SHORTHAND_ERROR_CONSTRAINT }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
     const runId = await resolveRunId(args.runId);

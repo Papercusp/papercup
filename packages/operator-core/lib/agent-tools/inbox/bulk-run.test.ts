@@ -8,6 +8,9 @@
  * external effect is surfaced as a non-retryable reconciliation incident.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
+import { schemaToText } from '../../cupboard/tools-discovery';
+import { withInlinedSchemaRefs } from '../schema-ref-inline';
 
 const h = vi.hoisted(() => ({
   getFlag: vi.fn(),
@@ -146,6 +149,60 @@ describe('inbox:bulk-run-report auto_resolved rail', () => {
         rationale: 'The message only needs acknowledgement.',
       }).success,
     ).toBe(true);
+  });
+});
+
+describe('inbox:bulk-run-report conditional error contract', () => {
+  it('advertises and enforces non-empty reasons for skipped/failed outcomes in both report forms', () => {
+    expect(
+      bulkRunReport.args.safeParse({
+        runId: run.runId,
+        items: [{ itemId: item.itemId, outcome: 'skipped' }],
+      }).success,
+    ).toBe(false);
+    expect(
+      bulkRunReport.args.safeParse({
+        runId: run.runId,
+        items: [{ itemId: item.itemId, outcome: 'failed', error: '   ' }],
+      }).success,
+    ).toBe(false);
+    expect(
+      bulkRunReport.args.safeParse({
+        runId: run.runId,
+        items: [{ itemId: item.itemId, outcome: 'skipped', error: 'No action applies.' }],
+      }).success,
+    ).toBe(true);
+
+    expect(
+      bulkRunReport.args.safeParse({
+        runId: run.runId,
+        itemId: item.itemId,
+        outcome: 'failed',
+      }).success,
+    ).toBe(false);
+    expect(
+      bulkRunReport.args.safeParse({
+        runId: run.runId,
+        itemId: item.itemId,
+        outcome: 'skipped',
+        error: '   ',
+      }).success,
+    ).toBe(false);
+    expect(
+      bulkRunReport.args.safeParse({
+        runId: run.runId,
+        itemId: item.itemId,
+        outcome: 'skipped',
+        error: 'No action applies.',
+      }).success,
+    ).toBe(true);
+
+    const schemaText =
+      schemaToText(withInlinedSchemaRefs(z.toJSONSchema(bulkRunReport.args as never))) ?? '';
+    expect(schemaText).toContain('constraint:items[]');
+    expect(schemaText).toContain('constraint:$');
+    expect(schemaText).toContain('skipped or failed');
+    expect(schemaText).toContain('non-empty reason');
   });
 });
 
