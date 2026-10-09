@@ -55,6 +55,7 @@ describe('decideOperatorHttpRoute', () => {
     // Native Settings pages must work through the same workspace connector as chat.
     ['GET', '/api/zero-harness/rest-query?name=consult.expertRouting&args=%7B%7D'],
     ['POST', '/api/agent-mcp/consult-expert-routing-set'],
+    ['POST', '/api/admin/inbox/automation-policy'],
     ['GET', '/api/profile'],
     ['POST', '/api/profile'],
     ['GET', '/api/backups/healthcheck'],
@@ -82,6 +83,10 @@ describe('decideOperatorHttpRoute', () => {
     // Loopback admin surfaces outside the chat/session set (D-025).
     ['POST', '/api/workspace-hosts/provision'],
     ['POST', '/api/admin/plans/set-status'],
+    ['GET', '/api/admin/inbox/automation-policy'],
+    ['DELETE', '/api/admin/inbox/automation-policy'],
+    ['POST', '/api/admin/inbox/triage'],
+    ['POST', '/api/admin/inbox/automation-policy/extra'],
     ['POST', '/api/mcp'],
     ['GET', '/api/agent-config/secrets'],
     // Right path, wrong method.
@@ -131,6 +136,12 @@ describe('OPERATOR_HTTP_ROUTE_ALLOWLIST — awaitsRouteBudget', () => {
 });
 
 describe('native Settings route coverage', () => {
+  it('resolves Autonomy save to the existing authenticated admin handler', () => {
+    const route = ALL_ROUTES.find((entry) => entry.method === 'POST' && entry.path === '/admin/inbox/:verb');
+    expect(route).toMatchObject({ auth: { trust: ['verified', 'trusted'] } });
+    expect(decideOperatorHttpRoute('POST', '/api/admin/inbox/automation-policy')).toMatchObject({ ok: true });
+  });
+
   it('admits the HTTP calls the mounted Settings pages actually make', () => {
     const root = new URL('../../../../apps/operator/app/settings/', import.meta.url);
     const calls: Array<{ file: string; method: string; path: string }> = [];
@@ -277,6 +288,27 @@ const decodeBody = (frames: Array<Record<string, unknown>>) =>
   frames.filter((f) => f.type === 'http.body').map((f) => Buffer.from(String(f.data), 'base64').toString()).join('');
 
 describe('HostedWorkspaceHostSessionAdapter — operator-http channels (D-418)', () => {
+  it('relays the exact Autonomy save and preserves its ticket principal', async () => {
+    const policy = { op: 'set', level: 'L1', minimumConfidence: 'high' };
+    const { seen, origin } = await operator((_req, res, entry) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, policy: JSON.parse(entry.body) }));
+    });
+    const h = adapterFor(origin);
+    await h.open();
+    await h.relay({ type: 'http.request', requestId: 'autonomy-save', method: 'POST',
+      path: '/api/admin/inbox/automation-policy',
+      headers: { 'content-type': 'application/json', [HOSTED_PRINCIPAL_USER_HEADER]: 'forged-user', authorization: 'Bearer forged' },
+      body: Buffer.from(JSON.stringify(policy)).toString('base64') });
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toMatchObject({ method: 'POST', url: '/api/admin/inbox/automation-policy' });
+    expect(seen[0].headers[HOSTED_PRINCIPAL_USER_HEADER]).toBe('user-1');
+    expect(seen[0].headers.authorization).toBeUndefined();
+    expect(JSON.parse(decodeBody(h.payloads().filter(f => f.requestId === 'autonomy-save'))))
+      .toEqual({ ok: true, policy });
+    await h.adapter.accept({ type: 'relay.close', channelId: 'http-1', reason: 'test_complete' });
+  });
+
   it('saves and rereads Expert Routing on the selected machine under the ticket principal', async () => {
     let halfLife = 14;
     const { seen, origin } = await operator((req, res, entry) => {

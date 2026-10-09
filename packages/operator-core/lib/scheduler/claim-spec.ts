@@ -1080,10 +1080,19 @@ export function fixedCohortIds(spec: { view?: { filter?: unknown } } | null | un
  * intersect, matching boolean semantics instead of letting the first leaf win.
  */
 export function positiveIdCohortIds(filter: unknown): string[] | null {
+  return positiveFieldCohortValues(filter, 'id');
+}
+
+/** Positive kind bounds share the ID extractor's conservative boolean rules. */
+export function positiveKindCohortKinds(filter: unknown): string[] | null {
+  return positiveFieldCohortValues(filter, 'kind');
+}
+
+function positiveFieldCohortValues(filter: unknown, field: 'id' | 'kind'): string[] | null {
   function leafSet(node: unknown): Set<string> | null {
     if (node === null || typeof node !== 'object' || Array.isArray(node)) return null;
     const obj = node as Record<string, unknown>;
-    if (obj.field !== 'id' || (obj.op !== '=' && obj.op !== 'in')) return null;
+    if (obj.field !== field || (obj.op !== '=' && obj.op !== 'in')) return null;
     const raw = Array.isArray(obj.value) ? obj.value : [obj.value];
     return new Set(
       raw

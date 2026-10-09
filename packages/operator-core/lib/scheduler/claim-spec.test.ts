@@ -22,6 +22,7 @@ import {
   isIdOnlySelector,
   fixedCohortIds,
   positiveIdCohortIds,
+  positiveKindCohortKinds,
   formatSpecRef,
   CLAIM_SPEC_FENCE_MACROS,
   CLAIM_SPEC_LANES,
@@ -963,6 +964,30 @@ describe('fixedCohortIds — exact fixed-wave extraction', () => {
     expect(fixedCohortIds(spec({ field: 'plan', op: '=', value: 'p' }))).toBeNull();
     expect(fixedCohortIds(spec({ field: 'id', op: '!=', value: 'WI-1' }))).toBeNull();
     expect(fixedCohortIds(spec({ not: { field: 'id', op: '=', value: 'WI-1' } }))).toBeNull();
+  });
+});
+
+describe('positiveKindCohortKinds — sound kind bounds', () => {
+  it('intersects positive kind bounds while retaining unrelated narrowing predicates', () => {
+    expect(positiveKindCohortKinds({ all: [
+      { field: 'kind', op: 'in', value: ['bug', 'task', 'bug'] },
+      { field: 'kind', op: '=', value: 'bug' },
+      { not: { field: 'title', op: 'word', value: 'p2p' } },
+    ] })).toEqual(['bug']);
+    expect(positiveKindCohortKinds({ all: [
+      { field: 'kind', op: '=', value: 'bug' },
+      { field: 'kind', op: '=', value: 'task' },
+    ] })).toEqual([]);
+  });
+
+  it('keeps generic kinds and refuses to infer a finite bound from alternatives or complements', () => {
+    expect(positiveKindCohortKinds({ field: 'kind', op: 'in', value: ['custom-work', 'feature'] }))
+      .toEqual(['custom-work', 'feature']);
+    for (const filter of [undefined,
+      { any: [{ field: 'kind', op: '=', value: 'bug' }, { field: 'title', op: '=', value: 'extra' }] },
+      { not: { field: 'kind', op: '=', value: 'feature' } },
+      { field: 'kind', op: 'glob', value: '*bug*' },
+    ]) expect(positiveKindCohortKinds(filter)).toBeNull();
   });
 });
 

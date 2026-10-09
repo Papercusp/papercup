@@ -180,7 +180,7 @@ export function AgentRoster({
   // bar rather than acting on off-screen selections.
   const selectedAgents = useMemo(() => shown.filter((a) => selected.has(a.ownerId)), [shown, selected]);
   const selectedIds = selectedAgents.map((a) => a.ownerId);
-  const killTargetFingerprint = JSON.stringify(selectedAgents.map(a => [a.ownerId, a.managedSessionId ?? a.advSessionId ?? null, a.sessionId ?? null]));
+  const killTargetFingerprint = JSON.stringify(selectedAgents.map(a => [a.ownerId, a.managedSessionId ?? a.advSessionId ?? null, a.launchStartedAt ?? null, a.sessionId ?? null]));
   const armedKillTarget = useRef<string | null>(null);
   const killLabel = bulk?.killLabel ?? 'Kill';
   const allShownSelected = shown.length > 0 && shown.every((a) => selected.has(a.ownerId));

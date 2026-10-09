@@ -303,12 +303,17 @@ describe('plans:audit D-008 writer contract', () => {
     expect(preview.data.productShaping.diagnostics.length).toBeGreaterThan(0);
     expect(mockRecord).not.toHaveBeenCalled();
 
-    const completion = await body([{ itemId: 'P-001', verdict: 'implemented', citations: [{ kind: 'code', path: 'src/gate.ts', symbol: 'gate' }] }]);
+    const completion = await body([{ itemId: 'P-001', verdict: 'implemented', citations: [{ kind: 'code', path: 'src/gate.ts', symbol: 'gate' }] }], { phase: 'completion', dryRun: false });
     expect(completion).toMatchObject({ ok: true, coverage: { verifiedItems: 1 } });
     expect(mockContext).toHaveBeenCalled();
     expect(mockRecord).toHaveBeenCalledWith(expect.objectContaining({ items: [expect.objectContaining({
       itemId: 'P-001', citations: [expect.objectContaining({ path: 'src/gate.ts', blobSha: expect.any(String) })],
     })] }));
+
+    const activation = await tool.handler(activationArgs(), ctx) as { data: any };
+    expect(activation.data).toMatchObject({ ok: true, phase: 'activation', sourceRefsResolved: 1 });
+    expect(mockResolveSourceRefs).toHaveBeenCalled();
+    expect(mockRecordActivation).toHaveBeenCalled();
   });
 
   it('keeps full completion verification mandatory after an advisory shaping preview', async () => {
@@ -316,7 +321,7 @@ describe('plans:audit D-008 writer contract', () => {
     const preview = await tool.handler({ slug: 'plan-a', harness: 'papercusp', phase: 'shaping' } as never, ctx) as { data: any };
     expect(preview.data.productShaping).toMatchObject({ status: 'incomplete', advisory: true });
 
-    const completion = await body([{ itemId: 'P-001', verdict: 'implemented', citations: [] }]);
+    const completion = await body([{ itemId: 'P-001', verdict: 'implemented', citations: [] }], { phase: 'completion', dryRun: false });
     expect(completion).toMatchObject({ ok: false, error: 'audit_invalid' });
     expect(completion.problems).toEqual(expect.arrayContaining([expect.objectContaining({ code: 'uncited_verdict' })]));
     expect(mockRecord).not.toHaveBeenCalled();

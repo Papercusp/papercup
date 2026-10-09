@@ -91,6 +91,8 @@ export interface RosterAgent {
   advSessionId?: number | null;
   /** Server-owned session record, used by a browser's confirmed stop. Never an OS handle. */
   managedSessionId?: number | null;
+  /** Existing server launch timestamp; together with the record id identifies its incarnation. */
+  launchStartedAt?: string | null;
   windowId?: string | null;
   pid?: number | null;
 }

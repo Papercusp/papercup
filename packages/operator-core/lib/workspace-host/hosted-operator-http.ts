@@ -117,6 +117,7 @@ export const OPERATOR_HTTP_ROUTE_ALLOWLIST: ReadonlyArray<OperatorHttpRoute> = [
   { method: 'GET', pattern: /^\/api\/desktop\/setup-wizard-state$/, surface: 'settings setup status' },
   { method: 'GET', pattern: /^\/api\/agent-mcp\/(?:omp-config|operator-conv-voice|operator-credentials|operator-el-spend|operator-el-subscription|operator-elevenlabs-voices|operator-stats|operator-voice-engine-health)$/, surface: 'operator settings read' },
   { method: 'POST', pattern: /^\/api\/agent-mcp\/(?:consult-expert-routing-set|identity-management|omp-config|operator-conv-voice|operator-elevenlabs-test|operator-standing-approvals|operator-tts-preview|operator-voice-provision|p2p-grant-set|p2p-settings-set|pot-override-set|storage-prune|trust-set)$/, surface: 'operator settings save' },
+  { method: 'POST', pattern: /^\/api\/admin\/inbox\/automation-policy$/, surface: 'autonomy settings save' },
   { method: 'PUT', pattern: /^\/api\/agent-mcp\/(?:operator-budget|operator-config|operator-credentials|operator-tts-spend|operator-voice-prefs)$/, surface: 'operator settings save' },
   { method: 'DELETE', pattern: /^\/api\/agent-mcp\/operator-preferences$/, surface: 'operator preference reset' },
   { method: 'GET', pattern: /^\/api\/backups(?:\/healthcheck)?$/, surface: 'backup settings read' },
