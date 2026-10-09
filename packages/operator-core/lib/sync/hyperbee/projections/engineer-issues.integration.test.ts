@@ -78,7 +78,7 @@ beforeAll(async () => {
     -- value each call so the test can prove the trigger DID/DIDN'T re-stamp the clock.
     CREATE OR REPLACE FUNCTION harness_shared.hlc_now() RETURNS text
       LANGUAGE sql AS $hlc_stub$
-        SELECT (extract(epoch FROM clock_timestamp()) * 1000)::bigint::text || ':stub';
+        SELECT lpad((extract(epoch FROM clock_timestamp()) * 1000)::bigint::text, 15, '0') || ':00000:stub';
       $hlc_stub$;
 
     -- Preserve migration 517's table-scoped bookkeeping mask and migration 681's
@@ -246,6 +246,40 @@ describe('engineer-issues projection — pure helpers', () => {
 });
 
 describe('engineer-issues projection — writeToPg / deleteFromPg (real PG)', () => {
+  it.each(['drill', 'replay', 'shadow'] as const)(
+    'retains receiver %s provenance when an issue update omits the local learning tag',
+    async (signalOrigin) => {
+      for (const origin of ['local', 'remote'] as const) {
+        const id = `EI-provenance-${signalOrigin}-${origin}`;
+        const p = proj();
+        await p.writeToPg(issueRow({ issue_id: id }), { ts: 100, origin: 'local', authorPubkey: 'peer' });
+        await db.sql`
+          UPDATE harness_shared.engineer_issues SET signal_origin = ${signalOrigin}
+           WHERE workspace_id = ${WS} AND issue_id = ${id}`;
+        const [seeded] = await db.sql<{ signal_origin: string }[]>`
+          SELECT signal_origin FROM harness_shared.engineer_issues
+           WHERE workspace_id = ${WS} AND issue_id = ${id}`;
+        expect(seeded?.signal_origin).toBe(signalOrigin);
+
+        const nextTs = Date.now() + 10_000;
+        await p.writeToPg(issueRow({ issue_id: id, title: 'updated content', payload: { peerEdit: true } }), {
+          ts: nextTs,
+          fedHlc: `${String(nextTs).padStart(15, '0')}:00000:peer`,
+          origin,
+          authorPubkey: 'peer',
+        });
+
+        const [stored] = await db.sql<{ title: string; signal_origin: string; organic: boolean }[]>`
+          SELECT title, signal_origin, signal_origin = 'organic' AS organic
+            FROM harness_shared.engineer_issues
+           WHERE workspace_id = ${WS} AND issue_id = ${id}`;
+        expect(stored?.title).toBe('updated content');
+        expect(stored?.signal_origin).toBe(signalOrigin);
+        expect(stored?.organic).toBe(false);
+      }
+    },
+  );
+
   it('applies a remote op into engineer_issues (issues:* reads it); origin=remote, fed_ts set', async () => {
     await proj().writeToPg(issueRow({ issue_id: 'EI-7', state: 'open', title: 'remote bug' }), {
       ts: 100,

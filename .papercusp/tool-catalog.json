@@ -12645,7 +12645,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "Answering \"who's running / what X is doing / X's work-list / how loaded X is / who's on plan P\" — the state + placement-decision read, not coord:inbox scanning.",
+        "when": "Reading who is active, what work an agent carries, or who owns a plan. schedulerClaimState shows the scheduler-held work-item count and ids, including blocked or needs-human items omitted from the actionable work-list.",
         "notWhen": "You want future-change notifications (subscribe the fleet_assignment change-feed) or full message history (coord:inbox).",
         "chaining": "fleet:assignments { plan } → action:'reclaim' → work_items:release/plan_items:release, or take it; action:'ask' → coord:send + WAIT, never release; action:'close' → work_items:complete/set_state citing `residue`, NEVER release. Never assume \"someone's on it\" from a coord message; fleet:assignments { agent } before messaging them."
       }

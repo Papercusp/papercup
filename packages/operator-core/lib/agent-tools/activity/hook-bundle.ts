@@ -455,7 +455,12 @@ export async function buildActivityHookBundle(
     };
   }
 
-  const legacyWatermark = await deps.readWatermark(ownerId).catch(() => null);
+  // The legacy watermark is only a migration baseline. Once the server cursor
+  // has a committed floor, committedInboxFloor() is authoritative and this
+  // extra per-fold database read cannot affect the inbox query.
+  const legacyWatermark = inboxCursor.baseline
+    ? await deps.readWatermark(ownerId).catch(() => null)
+    : null;
   const durableLegacyFloor = legacyWatermark
     ? pickUnreadCursor(legacyWatermark.messages_since_ts, legacyWatermark.messages_shown_ts)
     : null;

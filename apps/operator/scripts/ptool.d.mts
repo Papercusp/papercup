@@ -823,6 +823,7 @@ export function toolNotOkReason(text: string): string | null;
 export function printResult(result: unknown, { raw, deliveryProbe, env }?: unknown): Promise<number>;
 export const OPERATOR_URL_PROVENANCE_ENV: "PAPERCUSP_OPERATOR_URL_PROVENANCE";
 export const LAUNCHER_OPERATOR_URL_PROVENANCE: "psu-launcher";
+export const PTOOL_CONNECT_DIAGNOSTIC_PENDING_MS: 5000;
 /** Server-owned proof metadata emitted by a completed, settled-read code:run. */
 export const CODE_RUN_REPLAY_PROOF_META_KEY: "codeRunReplayProof";
 export const CODE_RUN_REPLAY_PROOF_SCHEMA_VERSION: 1;

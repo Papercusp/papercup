@@ -964,7 +964,15 @@ async function upsertIssues(sql: postgres.Sql, writes: readonly IssueWrite[]): P
       status        = EXCLUDED.status,
       taken_by      = EXCLUDED.taken_by,
       taken_at      = EXCLUDED.taken_at,
-      payload       = EXCLUDED.payload,
+      -- Learning provenance is receiver-local, like claim ordering. The wire's
+      -- sparse _ei envelope omits it; replacing payload must not turn a locally
+      -- marked drill/replay/shadow into the compat view's organic default.
+      payload       = CASE
+        WHEN work_items.payload #>> '{_ei,signal_origin}' IS NOT NULL THEN
+          jsonb_set(EXCLUDED.payload, '{_ei,signal_origin}',
+                    to_jsonb(work_items.payload #>> '{_ei,signal_origin}'))
+        ELSE EXCLUDED.payload
+      END,
       author_pubkey = EXCLUDED.author_pubkey,
       origin        = EXCLUDED.origin,
       fed_ts        = EXCLUDED.fed_ts,

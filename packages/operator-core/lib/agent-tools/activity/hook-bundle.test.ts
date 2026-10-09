@@ -172,6 +172,9 @@ describe('activity hook bundle', () => {
       d.value,
     );
     expect(d.inbox).toHaveBeenNthCalledWith(2, '2026-07-13T20:00:00.000Z', expect.anything());
+    // The legacy watermark is needed for the first baseline only; the committed
+    // server cursor makes a later read redundant.
+    expect(d.readWatermark).toHaveBeenCalledTimes(1);
   });
 
   it('uses a null floor when the first-call watermark read fails (fail closed)', async () => {
