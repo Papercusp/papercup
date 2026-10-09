@@ -61,7 +61,30 @@
     "initialAdequacyRead": "/tmp/su73-hostile-boundary-adequacy-0734.json",
     "initialVerdict": "unknown",
     "initialCurrentness": "Spec/source/test/fixture current; testRun unknown because the recorded run has worktreeDirty=true.",
-    "titleCorrection": "Exact suite > case titles were copied from server testRunExecution.passedCaseTitles. Corrected bindings have not yet been re-evaluated.",
+    "titleCorrection": "Exact suite > case titles were copied from server testRunExecution.passedCaseTitles. Staging re-evaluation confirms both declared baseline cases passed and both mutant cases failed.",
+    "correctedCurrentnessRead": "/tmp/su73-hostile-boundary-currentness-0745.json",
+    "correctedAdequacyRead": "/tmp/su73-hostile-boundary-pair-adequacy-0752.json",
+    "correctedAdequacy": {
+      "evaluatorBuild": "cf57965610",
+      "bindingIds": [32631, 32632],
+      "governing": false,
+      "verdict": "unknown",
+      "ratings": {
+        "traceability": "pass",
+        "fixture-calibration": "pass",
+        "falsifiability": "unknown",
+        "correct-layer": "pass",
+        "oracle-independence": "pass",
+        "execution-integrity": "pass",
+        "freshness": "unknown",
+        "plan-class-risk-floor": "unknown",
+        "disclosed-gap": "not-applicable"
+      },
+      "currentness": "Spec/source/test/fixture dimensions current; original testRun provenance unknown because both retained runs have worktreeDirty=true.",
+      "reason": "Dirty-run provenance prevents a current successful baseline from corroborating clause-scoped falsifiability and targeted L4 proof. Matching later committed bytes do not prove the complete source executed by the historical dirty runs.",
+      "broaderDiagnostic": "/tmp/su73-hostile-boundary-adequacy-0745.json",
+      "broaderDiagnosticLimit": "The work-item cohort also includes policy-only binding 32566, whose fixture calibration is unknown. This does not change the corrected handler pair's fixture-calibration pass."
+    },
     "limitation": "Proof adoption does not certify clean-run provenance or discharge final Portal/model/novice/shipment acceptance."
   }
 }

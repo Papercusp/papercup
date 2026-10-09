@@ -343,13 +343,21 @@ The new ledger proof is bound to the three existing P-006 tree clauses;
 full current-build behavior, the seven product journeys, novice observations,
 independent acceptance and exact shipment remain open.
 
-The server read confirms bindings `32565`, `32566` and `32567` are current.
-The scoped adequacy diagnostic passes freshness and execution integrity, but
-rates all three clauses `unknown`: falsifiability, correct layer, oracle
+The initial server read reported bindings `32565`, `32566` and `32567` current.
+That initial scoped adequacy diagnostic passed freshness and execution integrity,
+but rated all three clauses `unknown`: falsifiability, correct layer, oracle
 independence and the plan-class proof floor remain unestablished. Conceptual
 and live-state clauses require L3 proof; the authorization clause requires
 targeted L4 proof. This diagnostic is not a ship verdict. P-006 remains open;
 no passing behavior or coverage flags were inferred from the policy strings.
+
+The later staging evaluator (`cf57965610`) preserves the wider dirty-run
+provenance: the policy source and test dimensions match, but test-run currentness
+and freshness remain unknown. The recorded run has not been relabeled as clean.
+Its inclusion in the DOCS-INJECTION work-item cohort also leaves fixture
+calibration unknown because policy-only binding `32566` lacks a fixture
+fingerprint or an explicit fixture-free attestation. The corrected handler pair
+below has separate measured fixture calibration.
 
 ## Hostile public-document boundary proof, 2026-10-09
 
@@ -368,8 +376,8 @@ new hostile-text cases; one test still passed and none were skipped (mutant
 verified unchanged shared source. Its separate parse check reports `unchecked`.
 
 Exact commands, hashes, case titles and retained log references are in
-`hostile-public-docs-boundary-20261009.json`. This is local modified-test evidence,
-not a clean immutable candidate. It has not yet been bound to a spec. The result
+`hostile-public-docs-boundary-20261009.json`. This is local modified-test evidence.
+The result
 proves the unit permission boundary; actual model instruction-following, Portal
 FAQ behavior, current-state claims, novice acceptance and shipment remain open.
 
@@ -380,5 +388,15 @@ fixture dimensions current, but test-run currentness and overall adequacy
 remain **unknown** because the original ledger records a dirty working tree.
 The first binding metadata used flat case titles; the server ledger uses
 `suite > case`. The corrected bindings copy those exact identities and replace
-`32629`/`32630`. Their adequacy has not yet been re-evaluated. This adoption
-preserves the original run provenance and does not discharge final acceptance.
+`32629`/`32630`.
+
+Staging re-evaluated the exact corrected pair with evaluator build `cf57965610`.
+Traceability, fixture calibration, correct layer, oracle independence and
+execution integrity pass. Freshness, falsifiability and the plan-class proof
+floor remain unknown: both original runs record `worktreeDirty=true`, so their
+matching declared file hashes cannot establish the complete source they executed.
+The currentness receipt is `/tmp/su73-hostile-boundary-currentness-0745.json`;
+the pair diagnostic is `/tmp/su73-hostile-boundary-pair-adequacy-0752.json`.
+This is a diagnostic for selected bindings, not the governing ship verdict.
+No test replay, clean-run restamp or new model call was performed. The original
+run provenance is preserved and final acceptance remains open.
