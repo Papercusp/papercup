@@ -853,6 +853,8 @@ class PuiPane {
   // usually gathered after a `finally` has stopped the pane: keep what was on
   // screen before the quit key so the evidence shows the failing frame.
   private stoppedScreen: string | undefined;
+  private stoppedRawLength: number | undefined;
+  private readonly providerEventsBefore = scriptedEngine.events.length;
   // Longest the observing event loop was blocked during any wait (WI-10003175).
   private observerMaxLateMs = 0;
   private readonly inputTraceLog: string | undefined;
@@ -967,8 +969,8 @@ class PuiPane {
 
   /** The raw PTY stream from `offset` on, escapes included — what a terminal
    *  receives. P-013 reads its SGR sequences and replays it incrementally. */
-  rawSince(offset = 0): string {
-    return this.raw.slice(offset);
+  rawSince(offset = 0, options: { beforeStop?: boolean } = {}): string {
+    return this.raw.slice(offset, options.beforeStop ? this.stoppedRawLength : undefined);
   }
 
   get size(): { cols: number; rows: number } {
@@ -1057,10 +1059,17 @@ class PuiPane {
     this.pty.write('\x1b[120;5u');
   }
 
+  private checkProviderCapacity(stage: string): void {
+    if (scriptedEngine.real) {
+      throwIfProviderRateLimited(scriptedEngine.events.slice(this.providerEventsBefore), stage);
+    }
+  }
+
   async waitFor(needle: string, opts: { timeoutMs?: number } = {}): Promise<void> {
     const timeoutMs = opts.timeoutMs ?? 25_000;
     const { ok, maxLateMs } = await pollUntil(() => screenContains(this.screen(), needle), {
       timeoutMs,
+      beforeCheck: () => this.checkProviderCapacity(`Waiting for ${JSON.stringify(needle)}`),
       onMiss: () => { this.settleSuToolApproval(); },
     });
     this.observerMaxLateMs = Math.max(this.observerMaxLateMs, maxLateMs);
@@ -1077,6 +1086,7 @@ class PuiPane {
     const timeoutMs = opts.timeoutMs ?? 25_000;
     const { ok, maxLateMs } = await pollUntil(() => isSendReady(this.screen()), {
       timeoutMs,
+      beforeCheck: () => this.checkProviderCapacity('Waiting for send readiness'),
       onMiss: () => { this.settleSuToolApproval(); },
     });
     this.observerMaxLateMs = Math.max(this.observerMaxLateMs, maxLateMs);
@@ -1101,7 +1111,10 @@ class PuiPane {
    */
   async waitForGone(needle: string, opts: { timeoutMs?: number } = {}): Promise<void> {
     const timeoutMs = opts.timeoutMs ?? 25_000;
-    const { ok, maxLateMs } = await pollUntil(() => !screenContains(this.screen(), needle), { timeoutMs });
+    const { ok, maxLateMs } = await pollUntil(() => !screenContains(this.screen(), needle), {
+      timeoutMs,
+      beforeCheck: () => this.checkProviderCapacity(`Waiting for ${JSON.stringify(needle)} to leave the screen`),
+    });
     this.observerMaxLateMs = Math.max(this.observerMaxLateMs, maxLateMs);
     if (ok) return;
     throw new Error(
@@ -1132,6 +1145,7 @@ class PuiPane {
   }
 
   async stop(): Promise<void> {
+    this.stoppedRawLength ??= this.raw.length;
     try {
       this.stoppedScreen ??= this.screen();
     } catch {
@@ -3575,7 +3589,7 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       const out = process.env.PUI_REVIEW_FRAMES_DIR;
       if (out) {
         mkdirSync(out, { recursive: true });
-        writeFileSync(path.join(out, 'setup-reconnect.raw'), pane.rawSince()
+        writeFileSync(path.join(out, 'setup-reconnect.raw'), pane.rawSince(0, { beforeStop: true })
           .replaceAll(requiredToken, '<fixture-token>')
           .replaceAll('pui-fixture-old-operator', '<old-fixture-token>'));
       }
@@ -3599,6 +3613,9 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       reconnectStage = 'refused-endpoint';
       pane.enter();
       await pane.waitFor('Connection: Unavailable');
+      // stderr shares the terminal with Ratatui. The old diagnostic print
+      // could interleave with a frame even when this status happened to render.
+      expect(pane.rawSince()).not.toContain('PUI_OPERATOR_RENDEZVOUS ');
       expect(credentials.length).toBeGreaterThan(0);
       expect(credentials.every((token) => token === undefined)).toBe(true);
       expect(launchRequests).toEqual([]);
@@ -7582,6 +7599,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         const questionCards = () => pendingNativeCards().filter((pending) => !isSuToolApprovalCard(pending));
         const cardDeadline = Date.now() + 120_000;
         while (questionCards().length === 0 && Date.now() < cardDeadline) {
+          throwIfProviderRateLimited(scriptedEngine.events, 'Native question');
           pane.settleSuToolApproval();
           const lifecycle = scriptedEngine.engines.at(-1)?.adapter.host.descriptor().lifecycle;
           // An SU tool approval parks the turn too; the pane answers it.
@@ -8877,6 +8895,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
             const state = engine?.adapter.host.descriptor().lifecycle;
             if (state && lifecycle.at(-1)?.[1] !== state) lifecycle.push([at(), state]);
             const events = scriptedEngine.events.slice(eventsBefore);
+            if (scriptedEngine.real) throwIfProviderRateLimited(events, `P-012 launch ${run}`);
             if (record.ownerTurnMs === undefined && events.some((e) => e.type === 'transcript' && e.role === 'owner')) {
               record.ownerTurnMs = at();
             }

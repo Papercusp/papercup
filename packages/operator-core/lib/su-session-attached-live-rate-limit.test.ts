@@ -92,6 +92,38 @@ describe('attached live provider-limit classifier', () => {
 });
 
 describe('live acceptance provider-capacity guard', () => {
+  it('disqualifies generic readiness even when the screen predicate would succeed', async () => {
+    let checks = 0;
+    await expect(pollUntil(() => { checks += 1; return true; }, {
+      timeoutMs: 120_000,
+      beforeCheck: () => throwIfProviderRateLimited([errorEvent('API Error: 429')], 'Waiting for send readiness'),
+    })).rejects.toThrow('Waiting for send readiness cannot run: confirmed provider rate limit');
+    expect(checks).toBe(0);
+  });
+
+  it('stops a question wait on refusal arriving after the first observation', async () => {
+    const events: SuSessionEvent[] = [];
+    let checks = 0;
+    await expect(pollUntil(() => {
+      checks += 1;
+      events.push(errorEvent('429 request would exceed your rate limit'));
+      return false;
+    }, {
+      timeoutMs: 120_000, intervalMs: 1,
+      beforeCheck: () => throwIfProviderRateLimited(events, 'Waiting for question'),
+    })).rejects.toThrow('Waiting for question cannot run: confirmed provider rate limit');
+    expect(checks).toBe(1);
+  });
+
+  it('excludes an earlier pane refusal and still observes a new refusal', async () => {
+    const events = [errorEvent('429 earlier pane')];
+    const paneStart = events.length;
+    const beforeCheck = () => throwIfProviderRateLimited(events.slice(paneStart), 'Current pane');
+    expect((await pollUntil(() => true, { timeoutMs: 1_000, beforeCheck })).ok).toBe(true);
+    events.push(errorEvent('429 current pane'));
+    await expect(pollUntil(() => true, { timeoutMs: 1_000, beforeCheck })).rejects.toThrow('Current pane cannot run');
+  });
+
   it('aborts an approval wait at the first confirmed refusal instead of consuming its timeout', async () => {
     let checks = 0;
     await expect(pollUntil(() => {
