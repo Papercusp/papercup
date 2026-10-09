@@ -1037,6 +1037,19 @@ describe('proxyOpenAi — happy path + header discipline', () => {
 });
 
 describe('proxyOpenAi — resilience parity (rotate, do not surface)', () => {
+  it('observes the completed provider model and forwarded effort without treating the request model as serving proof', async () => {
+    await bootCodex((_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.end(`data: ${JSON.stringify({ type: 'response.completed', response: {
+        id: 'resp-observed', model: 'provider-served-revision', status: 'completed', reasoning: { effort: 'high' },
+        usage: { input_tokens: 10, input_tokens_details: { cached_tokens: 0, cache_write_tokens: 0 }, output_tokens: 2 },
+      } })}\n\ndata: [DONE]\n\n`);
+    });
+    await (await postResponses({ model: 'gpt-5.6-sol', reasoning: { effort: 'high' }, input: 'private task', stream: true })).text();
+    const stats = await (await ask('/stats')).json() as import('./gateway').GatewayStats;
+    expect(stats.requestStages?.recent.at(-1)).toMatchObject({ model: 'gpt-5.6-sol', forwardedEffort: 'high',
+      providerIdentity: { responseId: 'resp-observed', model: 'provider-served-revision', effort: 'high', accountId: 'cdx-1' } });
+  });
   // Branch the upstream on the bearer token so cdx-1 is throttled but cdx-2 is healthy.
   const byBearer = (req: http.IncomingMessage, res: http.ServerResponse) => {
     const auth = String(req.headers['authorization'] ?? '');

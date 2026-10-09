@@ -2,6 +2,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import { GNOME_SESSION_PROFILE_UUID, prepareGnomeTerminal } from './gnome-terminal-profile.mjs';
 
+vi.mock('node:fs', () => ({ readFileSync: () => "#!/usr/bin/python3\nparser.add_argument('--disable-factory', action='store_true')" }));
+
 describe('new GNOME window profile preparation', () => {
   it('keeps explicit profile selections and other emulators untouched', async () => {
     const run = vi.fn();
@@ -9,7 +11,11 @@ describe('new GNOME window profile preparation', () => {
       { bin: 'xterm', args: ['-e'] },
       { bin: 'gnome-terminal', args: ['--profile=personal', '--'] },
       { bin: 'gnome-terminal', args: ['--profile', 'personal', '--'] },
-    ]) expect(await prepareGnomeTerminal(terminal, {}, run)).toBe(terminal);
+    ]) {
+      const prepared = await prepareGnomeTerminal(terminal, {}, run);
+      if (terminal.bin === 'xterm') expect(prepared).toBe(terminal);
+      else expect(prepared.args).toEqual(['--disable-factory', ...terminal.args]);
+    }
     expect(run).not.toHaveBeenCalled();
   });
 
@@ -18,7 +24,7 @@ describe('new GNOME window profile preparation', () => {
       scrollbackLines: 10000, defaultProfileUuid: 'original', sourceProfileUuid: 'original', sourceUnlimited: true }) }));
     const terminal = { bin: '/usr/bin/gnome-terminal', args: ['--wait', '--window', '--'] };
     expect(await prepareGnomeTerminal(terminal, { DISPLAY: ':isolated' }, run)).toEqual({
-      bin: terminal.bin, args: ['--profile=' + GNOME_SESSION_PROFILE_UUID, '--wait', '--window', '--'],
+      bin: terminal.bin, args: ['--profile=' + GNOME_SESSION_PROFILE_UUID, '--disable-factory', '--wait', '--window', '--'],
     });
     expect(terminal.args).toEqual(['--wait', '--window', '--']);
     expect(run.mock.calls[0][2].env).toEqual({ DISPLAY: ':isolated' });
@@ -32,6 +38,6 @@ describe('new GNOME window profile preparation', () => {
       defaultProfileUuid: 'changed', sourceProfileUuid: 'original', sourceUnlimited: true,
     }) }))).rejects.toThrow('preserved default');
     const run = vi.fn(async () => ({ stdout: '{"profileUuid":null,"created":false}' }));
-    expect(await prepareGnomeTerminal(terminal, {}, run)).toBe(terminal);
+    expect((await prepareGnomeTerminal(terminal, {}, run)).args).toEqual(['--disable-factory', '--']);
   });
 });

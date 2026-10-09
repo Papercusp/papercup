@@ -4540,6 +4540,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
             JSON.parse(m[1]) as {
               message?: {
                 id?: string;
+                model?: string;
                 usage?: {
                   input_tokens?: number;
                   cache_read_input_tokens?: number;
@@ -4548,6 +4549,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
               };
             }
           ).message;
+          stageSpan?.recordProviderIdentity(message?.id, message?.model, null, accountId);
           const u = message?.usage;
           if (u) {
             const inputTokens = observedCount(u.input_tokens);
@@ -4594,13 +4596,20 @@ export function createInferenceGateway(deps: GatewayDeps) {
       if (!text || text === '[DONE]') return false;
       try {
         const parsed = JSON.parse(text) as {
+          type?: string;
+          status?: string;
           id?: string;
+          model?: string;
+          reasoning?: { effort?: string };
           usage?: {
             input_tokens?: number;
             input_tokens_details?: { cached_tokens?: number; cache_write_tokens?: number };
           };
           response?: {
+            status?: string;
             id?: string;
+            model?: string;
+            reasoning?: { effort?: string };
             usage?: {
               input_tokens?: number;
               input_tokens_details?: { cached_tokens?: number; cache_write_tokens?: number };
@@ -4609,6 +4618,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
         };
         const usage = parsed.response?.usage ?? parsed.usage;
         if (!usage) return false;
+        const providerResponse = parsed.response ?? parsed;
+        if (parsed.type === 'response.completed' || !parsed.type && providerResponse.status === 'completed') {
+          stageSpan?.recordProviderIdentity(providerResponse.id, providerResponse.model, providerResponse.reasoning?.effort, accountId);
+        }
         const read = observedCount(usage.input_tokens_details?.cached_tokens);
         const create = observedCount(usage.input_tokens_details?.cache_write_tokens);
         const total = observedCount(usage.input_tokens);

@@ -2,11 +2,13 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   currentBenchLaunchRequest, currentBenchRunLabel, currentSuBenchHarnessDriver,
   liveCurrentSuBenchPorts, recoverCurrentBenchRun,
+  currentBenchIdentityFromObservation, type CurrentBenchIdentityObservation,
   type CurrentBenchIdentity, type CurrentBenchTask, type CurrentSuBenchOptions, type CurrentSuBenchPorts,
 } from './current-su';
 import type { BenchHarnessOps } from './bench-harness-live';
 import type { PapercuspUnifiedToolContext } from '../agent-tools/_tool-context';
 import { currentProtocolFixture } from './reproducibility/_protocol-test-fixture';
+import { GatewayRequestTelemetry } from '../inference-gateway/request-stage-telemetry';
 
 const native = vi.hoisted(() => ({ launch: vi.fn(), kill: vi.fn() }));
 vi.mock('../agent-tools/capability/launch-agent', () => ({ default: { handler: native.launch } }));
@@ -28,6 +30,64 @@ const identity: CurrentBenchIdentity = {
   model: 'served-model', effort: 'medium', clientVersion: 'native-client/1',
   promptHash: 'measured-prompt', toolsHash: 'measured-tools', observedAt: '2026-10-09T20:00:00Z', evidenceRefs: ['usage:actual-task'],
 };
+function observedFixture() {
+  const nativeSessionId = '00000000-0000-0000-0000-000000000001';
+  const turnId = '00000000-0000-0000-0000-000000000002';
+  const task: CurrentBenchTask = { taskId: 'task-observed', workspaceId: 'bench-private', state: 'exited', exitCode: 0, detail: {} };
+  const telemetry = new GatewayRequestTelemetry({ now: () => Date.parse('2026-10-09T20:00:00Z') });
+  const span = telemetry.begin({ ownerId: 'su-exact', provider: 'codex', protocol: 'openai-responses' });
+  span.setModel('native-requested-model');
+  span.setCacheShape(Buffer.from(JSON.stringify({ instructions: 'PRIVATE_SYSTEM_PROMPT', tools: [{ name: 'tool-exact' }], reasoning: { effort: 'high' } })));
+  span.setNativeCorrelation({ client_metadata: { 'x-codex-turn-metadata': JSON.stringify({ thread_id: nativeSessionId, turn_id: turnId }) } });
+  span.setServingAccount('actual-account');
+  span.recordProviderIdentity('resp-exact', 'actual-provider-model', null, 'actual-account');
+  span.recordCacheUsage(10, 0, 0, 'resp-exact');
+  const observation: CurrentBenchIdentityObservation = {
+    worker: { taskId: task.taskId, workspaceId: task.workspaceId, ownerId: 'su-exact', nativeSessionId,
+      runtimeRevision: 'a'.repeat(40), sourceRevision: 'b'.repeat(40), evidenceRef: 'loaded-runtime:task-observed' },
+    nativeTranscript: [
+      { type: 'session_meta', payload: { id: nativeSessionId, cli_version: '0.162.0' } },
+      { type: 'turn_context', payload: { turn_id: turnId, model: 'native-requested-model', effort: 'high' } },
+    ].map(record => JSON.stringify(record)).join('\n'),
+    gateway: { processRef: 'gateway:exact-process', timeline: span.finish('ok', 200)! },
+  };
+  return { task, observation };
+}
+
+describe('exact native benchmark identity observation', () => {
+  it('joins native version and turn with a provider response and complete exposure hashes', () => {
+    const { task, observation } = observedFixture();
+    const result = currentBenchIdentityFromObservation(task, observation);
+    expect(result).toMatchObject({ model: 'actual-provider-model', effort: 'high', effortSource: 'forwarded-request',
+      clientVersion: 'codex/0.162.0', accountId: 'actual-account', providerResponseId: 'resp-exact' });
+    expect(result?.promptHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(result?.toolsHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(JSON.stringify(result)).not.toContain('PRIVATE_SYSTEM_PROMPT');
+    observation.gateway.timeline.providerIdentity!.effort = 'high';
+    expect(currentBenchIdentityFromObservation(task, observation)?.effortSource).toBe('provider-response');
+  });
+  it.each(['workspace', 'task', 'owner', 'native', 'response', 'account', 'effort', 'partial-prompt', 'partial-tools', 'missing-provider', 'runtime', 'native-version', 'native-turn', 'native-model', 'native-effort', 'malformed-transcript'])('leaves %s drift or incomplete evidence unknown', changed => {
+    const { task, observation: o } = observedFixture();
+    const row = o.gateway.timeline;
+    if (changed === 'workspace') o.worker.workspaceId = 'other';
+    if (changed === 'task') o.worker.taskId = 'other';
+    if (changed === 'owner') row.ownerId = 'other';
+    if (changed === 'native') row.nativeCorrelation.threadId = '00000000-0000-0000-0000-000000000003';
+    if (changed === 'response') row.cache.providerRequestId = 'resp-other';
+    if (changed === 'account') row.cache.servingAccountId = 'other';
+    if (changed === 'effort') row.providerIdentity!.effort = 'low';
+    if (changed === 'partial-prompt') row.cache.instructions!.hashedBytes--;
+    if (changed === 'partial-tools') row.cache.tools!.hashedBytes--;
+    if (changed === 'missing-provider') row.providerIdentity = null;
+    if (changed === 'runtime') o.worker.runtimeRevision = 'configured-alias';
+    if (changed === 'native-version') o.nativeTranscript = o.nativeTranscript.replace('0.162.0', '');
+    if (changed === 'native-turn') o.nativeTranscript = o.nativeTranscript.replace('00000000-0000-0000-0000-000000000002', '00000000-0000-0000-0000-000000000003');
+    if (changed === 'native-model') o.nativeTranscript = o.nativeTranscript.replace('native-requested-model', 'configured-alias');
+    if (changed === 'native-effort') o.nativeTranscript = o.nativeTranscript.replace('high', 'low');
+    if (changed === 'malformed-transcript') o.nativeTranscript += '\n{';
+    expect(currentBenchIdentityFromObservation(task, o)).toBeNull();
+  });
+});
 function fixture(opts = options) {
   let clock = 0;
   const row: CurrentBenchTask = {
@@ -246,12 +306,22 @@ describe('current benchmark restart and live binding', () => {
   it('calls the maintained handler with the original authenticated context and subtree controller', async () => {
     const f = fixture();
     const ctx = { workspaceId: 'bench-private', authenticatedPrincipal: { retained: true } } as unknown as PapercuspUnifiedToolContext;
-    const ports = liveCurrentSuBenchPorts(ctx, f.ports, options);
+    const ports = liveCurrentSuBenchPorts(ctx, { admit: f.ports.admit, observeIdentity: async () => null }, options);
     const args = currentBenchLaunchRequest(options, handle, 'issue');
     await ports.launch(args);
     expect(native.launch).toHaveBeenCalledWith(args, ctx);
     await ports.killTask('task-own');
     expect(native.kill).toHaveBeenCalledWith('task-own', { includeSubtree: true, reapTerminalResidue: true, escalateAfterMs: 5000 });
     expect(ctx.workspaceId).toBe('bench-private');
+  });
+  it('production ports derive identity from scoped observations instead of accepting a configured measurement', async () => {
+    const { task, observation } = observedFixture();
+    const ctx = { workspaceId: 'bench-private' } as PapercuspUnifiedToolContext;
+    const observeIdentity = vi.fn(async () => observation);
+    const ports = liveCurrentSuBenchPorts(ctx, { admit: fixture().ports.admit, observeIdentity }, options);
+    expect(await ports.readIdentity(task)).toMatchObject({ model: 'actual-provider-model', clientVersion: 'codex/0.162.0' });
+    expect(observeIdentity).toHaveBeenCalledWith(task);
+    observation.worker.workspaceId = 'other';
+    expect(await ports.readIdentity(task)).toBeNull();
   });
 });

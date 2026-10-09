@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
-import { basename } from 'node:path';
+import { readFileSync } from 'node:fs';
+import { basename, delimiter, isAbsolute, join } from 'node:path';
 import { promisify } from 'node:util';
 
 // Reuse GNOME's own profile registry. Never change the user's default profile:
@@ -55,8 +56,24 @@ with open(os.path.join(runtime,'papercusp-gnome-profile.lock'),'a') as lock:
 
 /** Prepare only new GNOME windows; explicit profile choices are honored. */
 export async function prepareGnomeTerminal(terminal, env = process.env, run = null) {
-  if (basename(terminal.bin) !== 'gnome-terminal'
-    || terminal.args.some((arg) => arg === '--profile' || arg.startsWith('--profile='))) return terminal;
+  if (basename(terminal.bin) !== 'gnome-terminal') return terminal;
+  let prepared = terminal;
+  // Ubuntu ships this maintained Python wrapper specifically to retain native
+  // process-per-window GNOME support. Use it without choosing another emulator.
+  // Explicit application IDs intentionally group windows and remain untouched.
+  if (!terminal.args.some((arg) => arg === '--disable-factory' || arg === '--app-id' || arg.startsWith('--app-id='))) {
+    const candidates = isAbsolute(terminal.bin) ? [terminal.bin]
+      : [...(env.PATH ?? process.env.PATH ?? '').split(delimiter), '/usr/bin', '/usr/local/bin'].map((dir) => join(dir, terminal.bin));
+    for (const candidate of candidates) {
+      let text;
+      try { text = readFileSync(candidate, 'utf8'); } catch { continue; }
+      if (text.startsWith('#!') && text.includes('python') && text.includes("parser.add_argument('--disable-factory'")) {
+        prepared = { ...terminal, args: ['--disable-factory', ...terminal.args] };
+      }
+      break;
+    }
+  }
+  if (terminal.args.some((arg) => arg === '--profile' || arg.startsWith('--profile='))) return prepared;
   const execute = run ?? promisify(execFile);
   const { stdout } = await execute('/usr/bin/python3', ['-c', GNOME_PROFILE_PREPARATION,
     GNOME_SESSION_PROFILE_UUID, String(GNOME_SESSION_SCROLLBACK_LINES)], {
@@ -65,10 +82,10 @@ export async function prepareGnomeTerminal(terminal, env = process.env, run = nu
   let result;
   try { result = JSON.parse(stdout.trim()); }
   catch { throw new Error('GNOME profile preparation returned no valid receipt'); }
-  if (result.profileUuid === null) return terminal;
+  if (result.profileUuid === null) return prepared;
   if (result.profileUuid !== GNOME_SESSION_PROFILE_UUID || result.scrollbackLines < 1
     || result.defaultProfileUuid !== result.sourceProfileUuid || result.sourceUnlimited !== true) {
     throw new Error('GNOME profile preparation could not verify preserved default and bounded new profile');
   }
-  return { ...terminal, args: ['--profile=' + result.profileUuid, ...terminal.args] };
+  return { ...prepared, args: ['--profile=' + result.profileUuid, ...prepared.args] };
 }

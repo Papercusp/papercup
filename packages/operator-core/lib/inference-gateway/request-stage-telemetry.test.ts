@@ -2,14 +2,43 @@ import { describe, expect, it } from 'vitest';
 import { channel } from 'node:diagnostics_channel';
 import http from 'node:http';
 
+describe('provider identity observations', () => {
+  it('keeps request controls separate from the provider model and clones returned evidence', () => {
+    const collector = new GatewayRequestTelemetry();
+    const span = collector.begin({ provider: 'codex', protocol: 'openai-responses', ownerId: 'su-observed' });
+    span.setModel('requested-model');
+    span.setCacheShape(Buffer.from(JSON.stringify({ reasoning: { effort: 'high' }, tools: [], instructions: 'PRIVATE_PROMPT' })));
+    span.recordAttempt();
+    span.recordProviderIdentity('resp-exact', 'served-model', null, 'account-exact');
+    span.finish('ok', 200);
+    const row = collector.snapshot().recent[0];
+    expect(row).toMatchObject({ model: 'requested-model', forwardedEffort: 'high',
+      providerIdentity: { responseId: 'resp-exact', model: 'served-model', effort: null, accountId: 'account-exact' } });
+    row.providerIdentity!.model = 'tampered';
+    expect(collector.snapshotForOwner('su-observed').recent[0].providerIdentity?.model).toBe('served-model');
+    expect(JSON.stringify(collector.snapshot())).not.toContain('PRIVATE_PROMPT');
+  });
+  it('discards earlier response evidence on retry, invalid response, and invalid request shape', () => {
+    const collector = new GatewayRequestTelemetry();
+    const span = collector.begin({ provider: 'codex', protocol: 'openai-responses' });
+    span.setCacheShape(Buffer.from('{"reasoning":{"effort":"high"}}'));
+    span.recordProviderIdentity('resp-old', 'served-old', 'high', 'account-old');
+    span.recordAttempt();
+    span.recordProviderIdentity('resp-new', 'served-new', 'high', 'account-new');
+    span.recordProviderIdentity('response with whitespace', 'served-new', null, 'account-new');
+    span.setCacheShape(Buffer.from('invalid'));
+    expect(span.finish('ok', 200)).toMatchObject({ forwardedEffort: null, providerIdentity: null });
+  });
+});
+
 describe('owner execution leases', () => {
   it('counts queued/pre-provider requests independently of completed history', () => {
     let now = 100;
     const telemetry = new GatewayRequestTelemetry({ now: () => now });
-    const first = telemetry.begin({ ownerId: 'su-a', provider: 'claude', protocol: 'messages' });
+    const first = telemetry.begin({ ownerId: 'su-a', provider: 'claude', protocol: 'anthropic-messages' });
     now = 200;
-    const second = telemetry.begin({ ownerId: 'su-a', provider: 'claude', protocol: 'messages' });
-    const other = telemetry.begin({ ownerId: 'su-b', provider: 'claude', protocol: 'messages' });
+    const second = telemetry.begin({ ownerId: 'su-a', provider: 'claude', protocol: 'anthropic-messages' });
+    const other = telemetry.begin({ ownerId: 'su-b', provider: 'claude', protocol: 'anthropic-messages' });
     expect(telemetry.snapshotForOwner('su-a')).toMatchObject({ active: 2, oldestActiveAt: 100, finalized: 0 });
     first.finish('gateway-error', 503);
     expect(telemetry.snapshotForOwner('su-a')).toMatchObject({ active: 1, oldestActiveAt: 200 });

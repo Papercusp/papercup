@@ -692,6 +692,9 @@ export interface GatewayRequestTimeline {
   protocol: GatewayTelemetryProtocol;
   transport: GatewayTelemetryTransport;
   model: string | null;
+  /** Historical rows omit these. `model` above is the request, not provider evidence. */
+  forwardedEffort?: string | null;
+  providerIdentity?: { responseId: string; model: string; effort: string | null; accountId: string } | null;
   cacheRouting: GatewayCacheRoutingDecision;
   cache: GatewayCacheObservation;
   nativeCorrelation: GatewayNativeCorrelation;
@@ -889,6 +892,8 @@ export class GatewayRequestSpan {
   private readonly events: GatewayStageEvent[] = [];
   private transport: GatewayTelemetryTransport;
   private model: string | null = null;
+  private forwardedEffort: string | null = null;
+  private providerIdentity: GatewayRequestTimeline['providerIdentity'] = null;
   private cacheRouting: GatewayCacheRoutingDecision = 'not-applicable';
   private readonly cache = emptyCacheObservation();
   private nativeCorrelation = emptyNativeCorrelation();
@@ -1047,12 +1052,18 @@ export class GatewayRequestSpan {
   /** Inspect only the already-buffered shaped body, with a hard parse-size ceiling. */
   setCacheShape(body: Uint8Array): void {
     if (this.finished) return;
+    this.forwardedEffort = null;
     const started = this.now();
     try {
       if (body.byteLength > 2_097_152) { this.cache.shape = 'oversized'; return; }
       const parsed = JSON.parse(Buffer.from(body).toString('utf8')) as {
         tools?: unknown; system?: unknown; instructions?: unknown; input?: unknown; messages?: unknown };
       if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) { this.cache.shape = 'invalid'; return; }
+      const shaped = parsed as Record<string, unknown>;
+      const effortContainer = this.protocol === 'openai-responses' ? shaped.reasoning : shaped.output_config;
+      const effort = effortContainer && typeof effortContainer === 'object'
+        ? (effortContainer as Record<string, unknown>).effort : null;
+      if (typeof effort === 'string' && /^(none|minimal|low|medium|high|xhigh|max|ultra)$/.test(effort)) this.forwardedEffort = effort;
       const prefix = codexInputPrefix(parsed.input);
       this.cache.tools = fingerprintParts([parsed.tools, ...prefix.tools]);
       this.cache.instructions = fingerprintParts([parsed.system, parsed.instructions, ...prefix.instructions]);
@@ -1119,8 +1130,21 @@ export class GatewayRequestSpan {
     this.streaming = streaming;
   }
 
+  /** Called only with provider response fields and the account that served them.
+   * Reject invalid identifiers instead of normalizing them into false exact evidence. */
+  recordProviderIdentity(responseId: unknown, model: unknown, effort: unknown, accountId: string): void {
+    if (this.finished) return;
+    this.providerIdentity = null;
+    const exact = (value: unknown): value is string => typeof value === 'string' && value.length > 0 &&
+      value.length <= 160 && /^[A-Za-z0-9._:@/+\-]+$/.test(value);
+    if (!exact(responseId) || !exact(model) || !exact(accountId) ||
+        (effort != null && (typeof effort !== 'string' || !/^(none|minimal|low|medium|high|xhigh|max|ultra)$/.test(effort)))) return;
+    this.providerIdentity = { responseId, model, effort: typeof effort === 'string' ? effort : null, accountId };
+  }
+
   recordAttempt(): void {
     this.attempts++;
+    this.providerIdentity = null;
   }
 
   recordFailover(): void {
@@ -1166,6 +1190,8 @@ export class GatewayRequestSpan {
       protocol: this.protocol,
       transport: this.transport,
       model: this.model,
+      forwardedEffort: this.forwardedEffort,
+      providerIdentity: this.providerIdentity ? { ...this.providerIdentity } : null,
       cacheRouting: this.cacheRouting,
       cache: cloneCacheObservation(this.cache),
       nativeCorrelation: { ...this.nativeCorrelation },
@@ -1316,6 +1342,7 @@ export class GatewayRequestTelemetry {
       recent: this.recent.map((timeline) => ({
         ...timeline,
         cache: cloneCacheObservation(timeline.cache),
+        providerIdentity: timeline.providerIdentity ? { ...timeline.providerIdentity } : null,
         nativeCorrelation: { ...timeline.nativeCorrelation },
         upstreamWrites: cloneUpstreamWrites(timeline.upstreamWrites),
         durationsMs: { ...timeline.durationsMs },
@@ -1354,6 +1381,7 @@ export class GatewayRequestTelemetry {
       recent: timelines.map((timeline) => ({
         ...timeline,
         cache: cloneCacheObservation(timeline.cache),
+        providerIdentity: timeline.providerIdentity ? { ...timeline.providerIdentity } : null,
         nativeCorrelation: { ...timeline.nativeCorrelation },
         upstreamWrites: cloneUpstreamWrites(timeline.upstreamWrites),
         durationsMs: { ...timeline.durationsMs },

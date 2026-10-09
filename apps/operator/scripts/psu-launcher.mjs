@@ -15260,6 +15260,12 @@ export async function tryRematerializeFromArchive(
       );
       return restored;
     }
+    // A completed status read can disprove an in-flight restore even though
+    // the original POST timed out. Missing/failed archives are terminal;
+    // retain pending only for an actual pending or unknown status.
+    if (status?.ok === true &&
+        ["not_ready", "not_archived"].includes(status.state) &&
+        status.pending === false) return null;
     return {
       ok: false,
       pending: true,

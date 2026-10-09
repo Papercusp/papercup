@@ -11,6 +11,7 @@ import type { BenchTask, GenerationBudget } from './types';
 import type { DbScope } from './reproducibility/db';
 import { requireCurrentBenchmarkAssignment } from './reproducibility/schema';
 import { normalizeFeatureStateInput } from '../work-item-dispatch-states';
+import type { GatewayRequestTimeline } from '../inference-gateway/request-stage-telemetry';
 
 type LaunchArgs = Parameters<typeof launchAgentTool.handler>[0];
 export type CurrentBenchTask = Pick<TaskRow, 'taskId' | 'workspaceId' | 'state' | 'exitCode' | 'detail'>;
@@ -25,6 +26,70 @@ export interface CurrentBenchIdentity {
   toolsHash: string;
   observedAt: string;
   evidenceRefs: string[];
+  effortSource?: 'provider-response' | 'forwarded-request';
+  accountId?: string;
+  nativeSessionId?: string;
+  providerResponseId?: string;
+}
+/** Loaded-runtime receipts come from the execution host, never current HEAD or
+ * requested launch options. The native transcript and gateway row are private
+ * inputs; the resulting identity retains only hashes and evidence references. */
+export interface CurrentBenchIdentityObservation {
+  worker: {
+    taskId: string; workspaceId: string; ownerId: string; nativeSessionId: string;
+    runtimeRevision: string; sourceRevision: string; evidenceRef: string;
+  };
+  nativeTranscript: string;
+  gateway: { processRef: string; timeline: GatewayRequestTimeline };
+}
+
+export function currentBenchIdentityFromObservation(
+  task: CurrentBenchTask, observation: CurrentBenchIdentityObservation,
+): CurrentBenchIdentity | null {
+  const { worker, gateway } = observation;
+  const row = gateway.timeline;
+  const provider = row.providerIdentity;
+  const correlation = row.nativeCorrelation;
+  const revision = (value: string) => /^[a-f0-9]{40}$|^[a-f0-9]{64}$/.test(value);
+  if (task.taskId !== worker.taskId || task.workspaceId !== worker.workspaceId || !worker.ownerId ||
+      !worker.nativeSessionId || !worker.evidenceRef || !gateway.processRef ||
+      !revision(worker.runtimeRevision) || !revision(worker.sourceRevision) ||
+      row.ownerId !== worker.ownerId || row.provider !== 'codex' || row.protocol !== 'openai-responses' ||
+      row.outcome !== 'ok' || row.finalStatus !== 200 || !provider ||
+      correlation.status !== 'observed' || correlation.threadId !== worker.nativeSessionId ||
+      correlation.sessionId !== null && correlation.sessionId !== worker.nativeSessionId ||
+      !correlation.turnId || !Number.isSafeInteger(row.requestId) || row.requestId < 1) return null;
+  const fullHash = (value: typeof row.cache.tools) => value && value.bytes > 0 &&
+    value.bytes === value.hashedBytes && /^[a-f0-9]{64}$/.test(value.sha256) ? value.sha256 : null;
+  const promptHash = fullHash(row.cache.instructions), toolsHash = fullHash(row.cache.tools);
+  if (row.cache.shape !== 'observed' || !promptHash || !toolsHash ||
+      provider.responseId !== row.cache.providerRequestId || provider.accountId !== row.cache.servingAccountId ||
+      !row.forwardedEffort || provider.effort !== null && provider.effort !== row.forwardedEffort ||
+      !Number.isFinite(row.finalizedAt) || row.finalizedAt < row.startedAt) return null;
+  // No lossy transcript adapter: its session header/version and exact turn are
+  // observations which portable conversation renderers intentionally discard.
+  if (Buffer.byteLength(observation.nativeTranscript) > 8_388_608) return null;
+  let records: Array<{ type?: string; payload?: Record<string, unknown> }>;
+  try {
+    records = observation.nativeTranscript.split('\n').filter(line => line.trim()).map(line => JSON.parse(line));
+    if (records.some(record => !record || typeof record !== 'object' || Array.isArray(record))) return null;
+  } catch { return null; }
+  const headers = records.filter(record => record.type === 'session_meta');
+  const version = headers[0]?.payload?.cli_version;
+  if (!headers.length || typeof version !== 'string' || !/^[0-9]+\.[0-9]+\.[0-9]+[A-Za-z0-9.+-]*$/.test(version) ||
+      headers.some(record => record.payload?.id !== worker.nativeSessionId || record.payload?.cli_version !== version)) return null;
+  const turns = records.filter(record => record.type === 'turn_context' && record.payload?.turn_id === correlation.turnId);
+  if (!turns.length || turns.some(record => record.payload?.model !== row.model ||
+      record.payload?.effort !== row.forwardedEffort)) return null;
+  return {
+    measuredBy: 'runtime-observation', runtimeRevision: worker.runtimeRevision, sourceRevision: worker.sourceRevision,
+    model: provider.model, effort: provider.effort ?? row.forwardedEffort,
+    effortSource: provider.effort ? 'provider-response' : 'forwarded-request',
+    clientVersion: `codex/${version}`, promptHash, toolsHash, accountId: provider.accountId,
+    nativeSessionId: worker.nativeSessionId, providerResponseId: provider.responseId,
+    observedAt: new Date(row.finalizedAt).toISOString(),
+    evidenceRefs: [worker.evidenceRef, `${gateway.processRef}#request:${row.requestId}`, `codex:${worker.nativeSessionId}#turn:${correlation.turnId}`, `provider:${provider.responseId}`],
+  };
 }
 export interface CurrentSuBenchOptions extends LiveBenchHarnessOpts {
   runId: string;
@@ -40,9 +105,10 @@ export interface CurrentSuBenchOptions extends LiveBenchHarnessOpts {
 /** Bind admission/observations from the existing budget and protocol planes. */
 export interface CurrentSuBenchObservations {
   admit(handle: BenchHarnessHandle, budget: GenerationBudget): Promise<{ admitted: boolean; receiptRef: string }>;
-  readIdentity(task: CurrentBenchTask): Promise<CurrentBenchIdentity | null>;
+  observeIdentity(task: CurrentBenchTask): Promise<CurrentBenchIdentityObservation | null>;
 }
-export interface CurrentSuBenchPorts extends CurrentSuBenchObservations {
+export interface CurrentSuBenchPorts extends Pick<CurrentSuBenchObservations, 'admit'> {
+  readIdentity(task: CurrentBenchTask): Promise<CurrentBenchIdentity | null>;
   verifyPreregistration(): Promise<{ preregHash: string; gitCommitSha: string; receiptRef: string }>;
   readCompletion(handle: BenchHarnessHandle): Promise<'done' | 'failed' | null>;
   launch(args: LaunchArgs): Promise<unknown>;
@@ -219,7 +285,11 @@ export function liveCurrentSuBenchPorts(
   const workspaceId = resolveBenchWorkspace(ctx.workspaceId);
   if (ctx.workspaceId !== workspaceId || opts.workspaceId !== workspaceId) throw new Error('Current benchmark launch requires an explicitly isolated caller context.');
   return {
-    ...observations,
+    admit: (handle, budget) => observations.admit(handle, budget),
+    readIdentity: async task => {
+      const observation = await observations.observeIdentity(task);
+      return observation ? currentBenchIdentityFromObservation(task, observation) : null;
+    },
     verifyPreregistration: async () => (await import('./reproducibility/prereg')).requireCommittedPreregistration(
       opts.runId, opts.preregistration, { ...db, workspaceId, repoRoot: opts.preregistration.repoRoot },
     ),

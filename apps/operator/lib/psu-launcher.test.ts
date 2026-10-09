@@ -15104,6 +15104,25 @@ describe("tryRematerializeFromArchive (psu --resume self-heals a transcript the 
     }
   });
 
+  it.each(["not_ready", "not_archived"])("does not report an in-flight restore when status is %s", async (state) => {
+    const timeout = new Error("request timed out");
+    timeout.name = "TimeoutError";
+    const fetchImpl = vi.fn(async (_url, opts) => {
+      if (opts.method === "POST") throw timeout;
+      return { json: async () => ({ ok: true, state, pending: false, ready: false }) };
+    });
+    const sleep = vi.fn(async () => {});
+
+    await expect(tryRematerializeFromArchive("sid-missing", "codex", {
+      fetchImpl,
+      operatorUrl: "http://op:1",
+      token: "tok",
+      sleep,
+    })).resolves.toBeNull();
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
   it("keeps the resume pending when the bounded status checks never observe completion", async () => {
     const timeout = new Error("request timed out");
     timeout.name = "TimeoutError";

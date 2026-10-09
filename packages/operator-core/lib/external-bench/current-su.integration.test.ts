@@ -45,7 +45,7 @@ async function execution(committed = true) {
   const admit = vi.fn(async () => ({ admitted: true, receiptRef: 'budget:private-fixture' }));
   // Unknown native identity stays unknown; these tests prove protocol/SQL binding,
   // while actual native client/serving observation has its own acceptance clause.
-  const ports = liveCurrentSuBenchPorts(ctx, { admit, readIdentity: async () => null }, opts, scope());
+  const ports = liveCurrentSuBenchPorts(ctx, { admit, observeIdentity: async () => null }, opts, scope());
   const lifecycle: BenchHarnessOps = {
     now: () => 0, createHarness: async () => handle,
     addFeature: async () => { await sql`INSERT INTO harness_shared.work_items VALUES (${workspaceId}, ${handle.slug}, ${handle.featureId}, 'done')`; },
@@ -111,7 +111,7 @@ describe('production current benchmark protocol and private completion bindings'
   );
   it('refuses a caller context for a different workspace before any SQL/launch binding', async () => {
     const f = await execution();
-    expect(() => liveCurrentSuBenchPorts(ctx, { admit: f.admit, readIdentity: async () => null }, { ...f.opts, workspaceId: 'other-private' }, scope())).toThrow(/isolated/);
+    expect(() => liveCurrentSuBenchPorts(ctx, { admit: f.admit, observeIdentity: async () => null }, { ...f.opts, workspaceId: 'other-private' }, scope())).toThrow(/isolated/);
   });
   it.each(['done', 'passed', 'resolved'])('recognizes maintained successful work-item state %s', async status => {
     await sql`INSERT INTO harness_shared.work_items VALUES (${workspaceId}, ${handle.slug}, ${handle.featureId}, ${status})`;

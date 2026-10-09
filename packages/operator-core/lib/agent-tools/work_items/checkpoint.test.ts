@@ -238,6 +238,45 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     expect((checkpoint as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
   });
 
+  it('records phase markers for explicit batch writes so a caller timeout leaves a useful trace', async () => {
+    const logs: string[] = [];
+    const ctx = {
+      uiClientId: 'opspawn-bee-1',
+      sigVerifiedSpawn: true,
+      workspaceId: 'default',
+      harnessSlug: 'papercup',
+      log: (message: string) => logs.push(message),
+    } as never;
+    const body = 'Keep the measurement attached to this checkpoint item.';
+
+    setWorkItemCheckpointWithPrior.mockImplementation(async (_ref: unknown, note: string | null | undefined, opts: unknown) => {
+      const transform = (opts as { transform?: (prior: string | null, incoming: string | null | undefined) => string | null | undefined })
+        .transform;
+      return { stored: transform?.(null, note) ?? note ?? null, priorLength: 0 };
+    });
+
+    const result = await one({ items: [{ id: 'WI-7', checkpoint: body, append: true }] }, ctx);
+    expect(result.ok).toBe(true);
+
+    const prefix = '[work_items:checkpoint:phase] ';
+    const events = logs
+      .filter((message) => message.startsWith(prefix))
+      .map((message) => JSON.parse(message.slice(prefix.length)) as Record<string, unknown>);
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ phase: 'append-prior-read', state: 'started', itemId: 'WI-7' }),
+        expect.objectContaining({ phase: 'append-prior-read', state: 'completed', itemId: 'WI-7' }),
+        expect.objectContaining({ phase: 'locked-check-row-transform', state: 'started', itemId: 'WI-7' }),
+        expect.objectContaining({ phase: 'locked-check-row-transform', state: 'completed', itemId: 'WI-7' }),
+        expect.objectContaining({ phase: 'store-write-transaction', state: 'started', itemId: 'WI-7' }),
+        expect.objectContaining({ phase: 'verify-read', state: 'completed', itemId: 'WI-7' }),
+        expect.objectContaining({ phase: 'work-item-ref-advisory', state: 'completed', itemId: 'WI-7' }),
+        expect.objectContaining({ phase: 'plan-decision-ref-advisory', state: 'completed', itemId: 'WI-7' }),
+      ]),
+    );
+    expect(events.every((event) => event.itemIndex === 1 && event.itemCount === 1)).toBe(true);
+  });
+
   it('refuses the historical staging-candidate instruction before calling the checkpoint store', async () => {
     readFrozenRepairMarker.mockReturnValue({
       candidate: 'c'.repeat(40),
