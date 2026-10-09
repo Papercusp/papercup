@@ -157,10 +157,20 @@ describe('goal rubric stewardship SQL', () => {
   it('reads the migrated ledgers and distinguishes absent evidence from a foreign goal card', async () => {
     const { readGoalRubricStewardship } = await import('../goal-rubric-stewardship');
     await goal();
-    await sql`INSERT INTO harness_shared.work_items (feature_id, workspace_id, harness_slug, lane, item_kind, title, status, created_ts, updated_ts, goal_id, payload)
-      VALUES ('EI-stewardship-foreign', ${WS}, 'papercusp', 'observation', 'observation', 'Foreign card', 'open',
+    // Preflight the actual migrated write contract: lane is generated from payload,
+    // and lifecycle status is the persisted column (state is a reader projection).
+    const columns = await sql<{ column_name: string; is_generated: string }[]>`
+      SELECT column_name, is_generated FROM information_schema.columns
+       WHERE table_schema = 'harness_shared' AND table_name = 'work_items'`;
+    for (const name of ['feature_id', 'workspace_id', 'harness_slug', 'item_kind', 'title', 'status',
+      'created_ts', 'updated_ts', 'goal_id', 'payload']) {
+      expect(columns.find(c => c.column_name === name)?.is_generated, `writable fixture column ${name}`).toBe('NEVER');
+    }
+    expect(columns.find(c => c.column_name === 'lane')?.is_generated).toBe('ALWAYS');
+    await sql`INSERT INTO harness_shared.work_items (feature_id, workspace_id, harness_slug, item_kind, title, status, created_ts, updated_ts, goal_id, payload)
+      VALUES ('EI-stewardship-foreign', ${WS}, 'papercusp', 'observation', 'Foreign card', 'open',
         ${Date.now()}, ${Date.now()}, NULL,
-        ${sql.json({ observation: { rubricRef: 'work-on-everything-stewardship-health', ratings: {} } } as never)})`;
+        ${sql.json({ lane: 'observation', observation: { rubricRef: 'work-on-everything-stewardship-health', ratings: {} } } as never)})`;
     const reading = await readGoalRubricStewardship({ workspaceId: WS, goalId: GOAL }, { sql });
     expect(reading.error).toBeNull();
     expect(reading.complete).toBe(true);
