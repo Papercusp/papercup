@@ -3,6 +3,71 @@ import type { ModelPort, ModelRequest } from './model-port';
 import { createOperatorOwnedLoopPort } from './headless-invoke';
 
 describe('createOperatorOwnedLoopPort', () => {
+  const invocation = (runId = 'run-host', signal?: AbortSignal) => ({
+    role: 'worker', prompt: 'do work', model: 'openrouter/vendor/model', runId,
+    featureId: null, chunkId: null, workspaceId: 'caller-workspace', harnessSlug: 'papercusp',
+    projectDir: '/repo', stateDir: '/repo/.papercusp', cwd: '/repo', signal,
+    emit: vi.fn(),
+  });
+
+  it('awaits a fresh host port per invocation and snapshots caller attribution', async () => {
+    let release!: (port: ModelPort) => void;
+    const factory = vi.fn(() => new Promise<ModelPort>(resolve => { release = resolve; }));
+    const requests: ModelRequest[] = [];
+    const modelPort: ModelPort = { async *stream(request) {
+      requests.push(request);
+      yield { type: 'text_delta', text: 'done' };
+      yield { type: 'stop', reason: 'end_turn', usage: { inputTokens: 1, outputTokens: 1, costUsd: 0 } };
+    } };
+    const flushTelemetry = vi.fn(async () => {});
+    const host = createOperatorOwnedLoopPort({ modelPort: factory, tools: [], flushTelemetry });
+    const input = invocation();
+    const first = host.invoke(input);
+    await vi.waitFor(() => expect(factory).toHaveBeenCalledTimes(1));
+    expect(requests).toEqual([]);
+    input.prompt = 'mutated'; input.model = 'claude-sonnet-4-6'; input.runId = 'mutated';
+    release(modelPort);
+    expect(await first).toEqual({ exitCode: 0 });
+    expect(requests[0]).toMatchObject({ model: 'openrouter/vendor/model', ownerId: 'run-host',
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'do work' }] }] });
+    factory.mockResolvedValue(modelPort);
+    expect(await host.invoke(invocation('run-next'))).toEqual({ exitCode: 0 });
+    expect(factory.mock.calls).toEqual([[undefined], [undefined]]);
+    expect(flushTelemetry).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(['throws', 'missing', 'malformed'] as const)('refuses a %s host port without ambient fallback or private error text', async mode => {
+    const factory = vi.fn(async () => {
+      if (mode === 'throws') throw new Error('secret=private tenant=private');
+      return (mode === 'missing' ? undefined : { stream: 'invalid' }) as unknown as ModelPort;
+    });
+    const flushTelemetry = vi.fn(async () => {});
+    const input = invocation();
+    expect(await createOperatorOwnedLoopPort({ modelPort: factory, tools: [], flushTelemetry }).invoke(input))
+      .toEqual({ exitCode: 1, stderr: 'owned-loop model host unavailable' });
+    expect(input.emit).not.toHaveBeenCalled();
+    expect(flushTelemetry).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['before', 'during'] as const)('cancels %s host creation without dispatch and drains a late rejection', async timing => {
+    const controller = new AbortController();
+    let reject!: (error: Error) => void;
+    const factory = vi.fn(() => new Promise<ModelPort>((_resolve, fail) => { reject = fail; }));
+    const flushTelemetry = vi.fn(async () => {});
+    const input = invocation('run-abort', controller.signal);
+    if (timing === 'before') controller.abort();
+    const pending = createOperatorOwnedLoopPort({ modelPort: factory, tools: [], flushTelemetry }).invoke(input);
+    if (timing === 'during') {
+      await vi.waitFor(() => expect(factory).toHaveBeenCalledExactlyOnceWith(controller.signal));
+      controller.abort();
+    }
+    expect(await pending).toEqual({ exitCode: 130, stderr: 'owned-loop turn aborted' });
+    expect(input.emit).not.toHaveBeenCalled();
+    expect(flushTelemetry).toHaveBeenCalledTimes(1);
+    if (timing === 'before') expect(factory).not.toHaveBeenCalled();
+    else { reject(new Error('late private host failure')); await Promise.resolve(); }
+  });
+
   it.each(['provider-error', 'capture-error', 'capture-abort'])('awaits trusted capture in a headless %s turn and retains failure', async mode => {
     const controller = new AbortController();
     const request = { provider: 'openrouter', modelId: 'vendor/model', response: { id: 'gen-headless' } };

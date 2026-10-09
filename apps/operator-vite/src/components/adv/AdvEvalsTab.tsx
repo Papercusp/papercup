@@ -664,6 +664,22 @@ function FleetStat({ arm, value, sub, hint }: { arm: string; value: string; sub?
   );
 }
 
+export function PreservedOutcomeStats({ summary: s }: {
+  summary: Pick<PreservedRunSummary, 'arm' | 'resolvedPct' | 'conditionalResolvedPct' | 'resolvedCount' | 'taskCount' | 'gradedCount' | 'missingGradeCount'>;
+}) {
+  return <>
+    <FleetStat arm={s.arm}
+      value={s.resolvedPct == null ? '—' : `${Math.round(s.resolvedPct * 1000) / 10}%`}
+      sub={`${s.resolvedCount}/${s.taskCount} assigned tasks resolved`}
+      hint={s.missingGradeCount ? `${s.missingGradeCount} submissions await official grades; primary score is inconclusive.`
+        : 'Primary outcome rate includes every assigned task, including non-attempts and generation failures.'} />
+    <FleetStat arm={s.arm}
+      value={s.conditionalResolvedPct == null ? '—' : `${Math.round(s.conditionalResolvedPct * 1000) / 10}%`}
+      sub={`${s.resolvedCount}/${s.gradedCount} graded submissions · conditional quality`}
+      hint="Secondary score among officially graded submissions; excludes generation failures and absent attempts." />
+  </>;
+}
+
 // ── Throughput view (L2 — fleet speedup, tasks/$, backlog-drain) ──────────────
 
 function ThroughputView({ runId, suites, suitesLoading }: FleetViewProps) {
@@ -1774,17 +1790,7 @@ function PreservedRunsView() {
           </div>
 
           <div className="pc-evals__scoreboard" aria-label={`${s.arm} — preserved run summary`}>
-            <FleetStat
-              arm={s.arm}
-              value={s.resolvedPct == null ? '—' : `${Math.round(s.resolvedPct * 1000) / 10}%`}
-              sub={`${s.resolvedCount}/${s.taskCount} assigned tasks resolved`}
-              hint={s.missingGradeCount ? `${s.missingGradeCount} submissions await official grades; primary score is inconclusive.`
-                : `Primary outcome rate includes every assigned task, including non-attempts and generation failures.`}
-            />
-            <FleetStat arm={s.arm}
-              value={s.conditionalResolvedPct == null ? '—' : `${Math.round(s.conditionalResolvedPct * 1000) / 10}%`}
-              sub={`${s.resolvedCount}/${s.gradedCount} graded submissions · conditional quality`}
-              hint="Secondary score among officially graded submissions; excludes generation failures and absent attempts." />
+            <PreservedOutcomeStats summary={s} />
             <FleetStat arm={s.arm} value={fmtUsd(s.costUsd)} sub={`${s.taskCount} tasks`} hint="Total cost across the run." />
             <FleetStat arm={s.arm} value={`${s.nonEmptyDiffs}/${s.taskCount}`} sub="non-empty diffs" hint="Tasks where a real patch was produced." />
             <FleetStat arm={s.arm} value={fmtDurMs(s.wallMs)} sub={`${s.coordEventCount} coord events`} hint="Parallel backlog-drain wall-clock + coordination-trace volume." />

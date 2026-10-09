@@ -19,6 +19,7 @@ import type { HostedOpenRouterRequestCaptureOptions } from '../auth/hosted/billi
 import { PostgresHostedBudgetStore } from '../auth/hosted/billing/budget-store';
 import { createRoutedModelPort } from '../agent-loop/provider-router';
 import { runLoopChatTurn } from '../agent-loop/chat-engine';
+import { createOperatorOwnedLoopPort } from '../agent-loop/headless-invoke';
 import type { LanguageModelV3 } from '@ai-sdk/provider';
 import { createHostedPrincipal, type HostedPermission } from '../auth/hosted-principal';
 import type { HostedPrincipalResolution, HostedPrincipalResolver } from '../auth/hosted-principal-resolver';
@@ -246,6 +247,55 @@ describe('hosted native OpenRouter authorization', () => {
       context, credentialRef: 'env:SELECTED_KEY', isByok: true });
     expect(p.observations).toEqual([intent, { ...intent, response: { id: 'gen-hosted-test', modelId: context.modelId } }]);
     expect(JSON.stringify(events)).not.toMatch(/credentialSha256|SELECTED_KEY|selected-key|reservation-1|customer-workspace/);
+  });
+
+  it.each(['allowed', 'reader-denied', 'capture-failed'] as const)('composes the per-invocation native host with %s authenticated admission', async mode => {
+    const p = await prepared(); let wire = 0;
+    if (mode === 'reader-denied') p.authorize.mockResolvedValue(null as never);
+    if (mode === 'capture-failed') p.capture.mockRejectedValue(new Error('private SQL credential=selected-key'));
+    const sdkModel: LanguageModelV3 = { specificationVersion: 'v3', provider: 'fixture', modelId: context.modelId,
+      supportedUrls: {}, async doGenerate() { throw new Error('unused'); }, async doStream() {
+        wire++; expect(p.capture).toHaveBeenCalledWith(intent);
+        return { stream: new ReadableStream({ start(controller) {
+          controller.enqueue({ type: 'response-metadata', id: 'gen-native-test', modelId: context.modelId });
+          controller.enqueue({ type: 'text-start', id: 'text' });
+          controller.enqueue({ type: 'text-delta', id: 'text', delta: 'done' });
+          controller.enqueue({ type: 'text-end', id: 'text' });
+          controller.enqueue({ type: 'finish', finishReason: { unified: 'stop', raw: 'stop' }, usage: {
+            inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+            outputTokens: { total: 1, text: 1, reasoning: 0 },
+          } });
+          controller.close();
+        } }) };
+      } };
+    // The trusted composition supplies session headers and the tenant-owned pool.
+    // The invocation's workspace/run labels never reach the host factory.
+    const factory = vi.fn((signal?: AbortSignal) => createRoutedModelPort({ catalog: null,
+      createLanguageModel: async () => sdkModel,
+      openRouterAccounts: { active: () => ({ accountId: context.servedAccount, authMode: 'api-key',
+        token: async () => 'selected-key' }), onExhausted: () => null },
+      openRouterRequestCapture: p.r.openRouterRequestCapture(p.headers, signal) }));
+    const flushTelemetry = vi.fn(async () => {});
+    const host = createOperatorOwnedLoopPort({ modelPort: factory, tools: [], flushTelemetry });
+    const controller = new AbortController(); const events: unknown[] = [];
+    const invoke = () => host.invoke({ role: 'worker', prompt: 'hello', model: 'openrouter/vendor/model',
+      runId: 'caller-run-label', workspaceId: 'caller-workspace-label', harnessSlug: 'papercusp',
+      featureId: null, chunkId: null, cwd: '/repo', projectDir: '/repo', stateDir: '/repo/.papercusp',
+      signal: controller.signal, emit: event => events.push(event) });
+    const first = await invoke();
+    expect(first.exitCode).toBe(mode === 'allowed' ? 0 : 1);
+    expect(wire).toBe(mode === 'allowed' ? 1 : 0);
+    expect(factory).toHaveBeenCalledExactlyOnceWith(controller.signal);
+    expect(p.principal).toHaveBeenCalledTimes(1);
+    if (mode === 'allowed') {
+      expect(p.createCapture.mock.calls[0]![0].request.scope).toEqual(authorized().request.scope);
+      p.principal.mockResolvedValue({ ok: false, reason: 'membership_not_active' });
+      expect((await invoke()).exitCode).toBe(1);
+      expect(factory).toHaveBeenCalledTimes(2); expect(p.principal).toHaveBeenCalledTimes(2);
+      expect(wire).toBe(1); expect(p.createCapture).toHaveBeenCalledTimes(1);
+    }
+    expect(JSON.stringify({ events, first })).not.toMatch(/SELECTED_KEY|selected-key|reservation-1|customer-workspace|private SQL/);
+    expect(flushTelemetry).toHaveBeenCalledTimes(mode === 'allowed' ? 2 : 1);
   });
 
   it.each(['controlWorkspaceId', 'organizationId', 'customerWorkspaceId'] as const)('refuses a foreign %s before resolving secrets or reserving', async field => {
