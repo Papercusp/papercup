@@ -1867,15 +1867,18 @@ export function makeConsultReachDispatcher(
 
 /** Interactive disposition calls accept the next launch before returning.
  * Recovery is owned by consult_state and the existing expiry sweep. */
-export function makeDeferredConsultReachDispatcher(ctx: ConsultDispatchContext) {
+export function makeDeferredConsultReachDispatcher(ctx: ConsultDispatchContext, deps: {
+  getSql?: () => import('postgres').Sql;
+  continueDispatch?: typeof continueCascadeDispatchProd;
+} = {}) {
   return async (opts: Parameters<ReturnType<typeof makeConsultReachDispatcher>>[0]) => {
     const [{ getOrgPg }, { queueCascadeDispatch }] = await Promise.all([
       import('@papercusp/db-org'), import('./cascade-core'),
     ]);
-    if (!(await queueCascadeDispatch(getOrgPg().sql, ctx.workspaceId, opts))) {
+    if (!(await queueCascadeDispatch(deps.getSql?.() ?? getOrgPg().sql, ctx.workspaceId, opts))) {
       return { woke: 0, answeringOwnerId: null };
     }
-    void continueCascadeDispatchProd(ctx.workspaceId, opts.conversationId, ctx).catch(() => {});
+    void (deps.continueDispatch ?? continueCascadeDispatchProd)(ctx.workspaceId, opts.conversationId, ctx).catch(() => {});
     return { woke: 0, pending: true };
   };
 }

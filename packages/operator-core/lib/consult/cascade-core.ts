@@ -278,12 +278,13 @@ export async function queueCascadeDispatch(
   };
   const rows = await sql`
     UPDATE harness_shared.consult_state
-       SET routing = jsonb_set(routing, '{cascadeDispatch}',
+       SET routing = jsonb_set(CASE WHEN jsonb_typeof(routing) = 'string' THEN (routing #>> '{}')::jsonb ELSE routing END, '{cascadeDispatch}',
              ${sql.json(pending as never)}::jsonb || jsonb_build_object('cursor', cascade_cursor))
      WHERE workspace_id = ${workspaceId} AND conversation_id = ${opts.conversationId}
        AND responder_id = ${opts.responder} AND closed_at IS NULL
        AND state IN ('awaiting_responder', 'active')
-       AND routing #>> ARRAY['selection', 'selected', cascade_cursor::text, 'ownerId'] = ${opts.responder}
+       AND (CASE WHEN jsonb_typeof(routing) = 'string' THEN (routing #>> '{}')::jsonb ELSE routing END)
+         #>> ARRAY['selection', 'selected', cascade_cursor::text, 'ownerId'] = ${opts.responder}
     RETURNING conversation_id`;
   return rows.length > 0;
 }
@@ -316,7 +317,8 @@ export async function continueCascadeDispatchCore(
     RETURNING cascade_cursor, routing`;
   const row = rows[0];
   if (!row) return false;
-  const pending = row.routing.cascadeDispatch;
+  const routing = typeof row.routing === 'string' ? JSON.parse(row.routing) as typeof row.routing : row.routing;
+  const pending = routing.cascadeDispatch;
   const isCurrent = async () => {
     const current = await sql`
       SELECT conversation_id FROM harness_shared.consult_state
@@ -328,10 +330,7 @@ export async function continueCascadeDispatchCore(
     return current.length > 0;
   };
   try {
-    const result = await deps.dispatch(isCurrent)({
-      responder: pending.responder, conversationId, summary: pending.summary, body: pending.body,
-      ...(pending.evidence ? { evidence: pending.evidence } : {}),
-      onAnsweringOwner: async (owner) => {
+    const onAnsweringOwner = async (owner: string) => {
         if (!(await isCurrent())) throw new Error('consult-cascade-dispatch-lease-lost');
         const stamped = await sql`
           UPDATE harness_shared.consult_state
@@ -342,8 +341,13 @@ export async function continueCascadeDispatchCore(
              AND routing #>> '{cascadeDispatch,leaseToken}' = ${token}
           RETURNING conversation_id`;
         if (!stamped.length) throw new Error('consult-cascade-dispatch-lease-lost');
-      },
+    };
+    const result = await deps.dispatch(isCurrent)({
+      responder: pending.responder, conversationId, summary: pending.summary, body: pending.body,
+      ...(pending.evidence ? { evidence: pending.evidence } : {}),
+      onAnsweringOwner,
     });
+    if (result.answeringOwnerId && await isCurrent()) await onAnsweringOwner(result.answeringOwnerId);
     // A refusal has no answering session. Make it due now so the maintained
     // expiry path advances/settles it and emits the requester event, rather
     // than waiting a whole new TTL for a responder that cannot arrive.
