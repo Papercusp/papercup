@@ -3063,14 +3063,16 @@ export async function emitScorecard(
       })
     )[0];
     const latestFingerprint = latest
-      ? (latest.evidenceFingerprint ??
-        scorecardEvidenceFingerprint({
-          rubricRef: latest.rubricRef,
-          ratings: latest.ratings,
-          ...(latest.acceptance ? { acceptance: latest.acceptance } : {}),
-          ...(latest.rerunRecipe ? { rerunRecipe: latest.rerunRecipe } : {}),
-          ...(latest.testedSha ? { testedSha: latest.testedSha } : {}),
-        }))
+      ? (latest.rerunRecipe || !latest.evidenceFingerprint
+        ? scorecardEvidenceFingerprint({
+            rubricRef: latest.rubricRef,
+            ratings: latest.ratings,
+            instrumentSnapshots: latest.instrumentSnapshots,
+            ...(latest.acceptance ? { acceptance: latest.acceptance } : {}),
+            ...(latest.rerunRecipe ? { rerunRecipe: latest.rerunRecipe } : {}),
+            ...(latest.testedSha ? { testedSha: latest.testedSha } : {}),
+          })
+        : latest.evidenceFingerprint)
       : null;
     const sameCorrectionAlreadyExists = args.supersedes && latest?.supersedes === args.supersedes;
     // P-008: a terminal re-emit of IDENTICAL ratings is the finalization step, not a
