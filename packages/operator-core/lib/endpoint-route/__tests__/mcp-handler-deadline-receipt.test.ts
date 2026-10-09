@@ -412,6 +412,8 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
         quotaWaitMs: 25, refreshWaitMs: 0, quotaRecoveryMs: 0, writeMs: 4, totalMs: 29,
         quotaRecoveryDiagnostics: {
           sizeWalkMs: 4, sizeWalkDirectories: 2, sizeWalkEntries: 5, sizeWalkFiles: 3,
+          readdirOperations: 2, statOperations: 3, operationTotalMs: 5, maxOperationMs: 2,
+          maxOperationKind: 'readdir', currentOperationKind: null, currentOperationElapsedMs: 0,
           directoryReadErrors: 0, fileStatErrors: 1, runListingMs: 2, runsListed: 3,
           selectedRunSizingMs: 1, runsConsidered: 1, fallbackRunSizes: 1, deletionMs: 1,
           deleteAttempts: 1, runsDeleted: 1, deletedBytes: 100,
@@ -421,6 +423,8 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
         quotaWaitMs: 0, refreshWaitMs: 3, quotaRecoveryMs: 10, writeMs: 2, totalMs: 15,
         quotaRecoveryDiagnostics: {
           sizeWalkMs: 9, sizeWalkDirectories: 4, sizeWalkEntries: 8, sizeWalkFiles: 5,
+          readdirOperations: 4, statOperations: 5, operationTotalMs: 8, maxOperationMs: 3,
+          maxOperationKind: 'stat', currentOperationKind: null, currentOperationElapsedMs: 0,
           directoryReadErrors: 1, fileStatErrors: 0, runListingMs: 5, runsListed: 6,
           selectedRunSizingMs: 2, runsConsidered: 2, fallbackRunSizes: 0, deletionMs: 3,
           deleteAttempts: 2, runsDeleted: 2, deletedBytes: 200,
@@ -474,6 +478,8 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
               count: 2, quotaWaitMs: 25, refreshWaitMs: 3, quotaRecoveryMs: 10, writeMs: 6, totalMs: 44,
               quotaRecoveryDiagnostics: {
                 sizeWalkMs: 13, sizeWalkDirectories: 6, sizeWalkEntries: 13, sizeWalkFiles: 8,
+                readdirOperations: 6, statOperations: 8, operationTotalMs: 13, maxOperationMs: 3,
+                maxOperationKind: 'stat', currentOperationKind: null, currentOperationElapsedMs: 0,
                 directoryReadErrors: 1, fileStatErrors: 1, runListingMs: 7, runsListed: 9,
                 selectedRunSizingMs: 3, runsConsidered: 3, fallbackRunSizes: 1, deletionMs: 4,
                 deleteAttempts: 3, runsDeleted: 3, deletedBytes: 300,
@@ -499,9 +505,11 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
     delete process.env.PAPERCUSP_RESULT_DOOR_OFF;
     _resetScratchUsageForTests();
     const progressToken = 'mcp-spill-progress';
+    const traceId = '7c6a1e48-6764-4937-8b8e-f35fef8ea93d';
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
     const notifications: Array<{ method: string; params: Record<string, unknown> }> = [];
     const extra = {
-      ...superuserExtra('&workspace=ws-test'),
+      ...superuserExtra('&workspace=ws-test', { [MCP_REQUEST_TRACE_HEADER]: traceId }),
       sendNotification: async (notification: { method: string; params: Record<string, unknown> }) => {
         notifications.push(notification);
       },
@@ -520,11 +528,52 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
         pendingWrites: 1,
         recoveryActive: true,
         refreshActive: false,
+        quotaRecoveryDiagnostics: {
+          sizeWalkMs: 4,
+          sizeWalkDirectories: 2,
+          sizeWalkEntries: 3,
+          sizeWalkFiles: 1,
+          readdirOperations: 2,
+          statOperations: 1,
+          operationTotalMs: 7,
+          maxOperationMs: 4,
+          maxOperationKind: 'readdir',
+          currentOperationKind: 'readdir',
+          currentOperationElapsedMs: 250,
+          directoryReadErrors: 0,
+          fileStatErrors: 0,
+          runListingMs: 0,
+          runsListed: 0,
+          selectedRunSizingMs: 0,
+          runsConsidered: 0,
+          fallbackRunSizes: 0,
+          deletionMs: 0,
+          deleteAttempts: 0,
+          runsDeleted: 0,
+          deletedBytes: 0,
+        },
       },
     }];
     try {
       const result = await callTool('deadlinetest:spill', {}, extra, { progressToken });
       expect(result.isError).not.toBe(true);
+      expect(traceEvents(info.mock.calls)).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          traceId,
+          toolName: 'deadlinetest:spill',
+          stage: 'scratch_write_progress',
+          scratchWriteProgress: expect.objectContaining({
+            quotaRecoveryDiagnostics: expect.objectContaining({
+              readdirOperations: 2,
+              statOperations: 1,
+              operationTotalMs: 7,
+              maxOperationKind: 'readdir',
+              currentOperationKind: 'readdir',
+              currentOperationElapsedMs: 250,
+            }),
+          }),
+        }),
+      ]));
       expect(notifications).toEqual(expect.arrayContaining([
         expect.objectContaining({
           method: 'notifications/papercusp/event',
@@ -549,6 +598,7 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
         }),
       ]));
     } finally {
+      info.mockRestore();
       _resetScratchUsageForTests();
       if (previousRoot === undefined) delete process.env.PAPERCUSP_SCRATCH_ROOT;
       else process.env.PAPERCUSP_SCRATCH_ROOT = previousRoot;
