@@ -266,12 +266,14 @@ describe('coord:thread', () => {
       summary: 'root ' + 'x'.repeat(2_000),
       body: 'body ' + 'y'.repeat(2_000),
     });
+    const replyMsgIds: string[] = [];
     for (let i = 0; i < 24; i += 1) {
-      await sendMessage(id('bob'), {
+      const reply = await sendMessage(id('bob'), {
         to: ['alice'],
         related_msg_id: root.msg_id,
         summary: `reply-${i} ` + 'z'.repeat(2_000),
       });
+      replyMsgIds.push(reply.msg_id);
     }
 
     const body = parse(await run(threadTool, { root_msg_id: root.msg_id }));
@@ -284,6 +286,23 @@ describe('coord:thread', () => {
     expect(body.entries.at(-1).summary).toContain('reply-23');
     expect(body.entries.at(-1).summary_truncated).toBe(true);
     expect(body.entries.at(-1).summary_full_chars).toBeGreaterThan(600);
+    expect(body.next_page_offset).toBe(0);
+
+    const recovered: string[] = [];
+    let pageOffset: number | null = body.next_page_offset;
+    let pageCount = 0;
+    while (pageOffset !== null) {
+      const page = parse(await run(threadTool, { root_msg_id: root.msg_id, page_offset: pageOffset }));
+      expect(page.page_offset).toBe(pageOffset);
+      expect(page.entries.length).toBeGreaterThan(0);
+      recovered.push(...page.entries.map((entry: { msg_id: string }) => entry.msg_id));
+      const nextPageOffset = page.next_page_offset as number | null;
+      if (nextPageOffset !== null) expect(nextPageOffset).toBeGreaterThan(pageOffset);
+      pageOffset = nextPageOffset;
+      pageCount += 1;
+      expect(pageCount).toBeLessThanOrEqual(25);
+    }
+    expect(new Set(recovered)).toEqual(new Set([root.msg_id, ...replyMsgIds]));
   });
 
   it('projects away oversized open-envelope metadata before serializing the thread', async () => {

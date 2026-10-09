@@ -159,12 +159,15 @@ function fitThreadResponse(
   rootMsgId: string,
   entriesTotal: number,
   prefix?: { requestedRoot: string; detail: string },
+  pageOffset?: number,
 ): Record<string, unknown> {
   const indexed = entries.map((entry, index) => ({ entry, index }));
   const root = indexed.find(({ entry }) => entry.msg_id === rootMsgId);
-  const priority = root
-    ? [root, ...indexed.filter(({ entry }) => entry !== root.entry).reverse()]
-    : [...indexed].reverse();
+  const priority = pageOffset === undefined
+    ? root
+      ? [root, ...indexed.filter(({ entry }) => entry !== root.entry).reverse()]
+      : [...indexed].reverse()
+    : indexed;
   const indexByEntry = new Map(indexed.map(({ entry, index }) => [entry, index]));
   let selected = trimToByteBudget(
     priority.map(({ entry }) => entry),
@@ -176,22 +179,29 @@ function fitThreadResponse(
     const shown = [...selected]
       .sort((a, b) => a.index - b.index)
       .map(({ entry }) => entry);
-    const entriesTruncated = shown.length < entriesTotal;
+    const nextPageOffset = pageOffset === undefined
+      ? (shown.length < entriesTotal ? 0 : null)
+      : (pageOffset + shown.length < entriesTotal ? pageOffset + shown.length : null);
+    const entriesTruncated = nextPageOffset !== null;
     const details = [
-      ...(entriesTruncated || contentTruncated
-        ? [
-            'Showing the root and newest thread entries that fit the result budget or default window. ' +
-              'Use coord:read with an entry msg_id to retrieve its complete envelope.',
-          ]
+      ...(entriesTruncated
+        ? [pageOffset === undefined
+            ? 'Showing the root and newest entries that fit the result budget or default window. To retrieve every entry in chronological pages, call coord:thread again with this root_msg_id and page_offset: 0, then pass each returned next_page_offset until null.'
+            : 'Showing a chronological thread page. Continue by passing the returned next_page_offset as page_offset until it is null.']
+        : []),
+      ...(contentTruncated
+        ? ['An entry was shortened to fit the response. Use coord:read with its msg_id to retrieve the complete envelope.']
         : []),
       ...(prefix ? [prefix.detail] : []),
     ];
     return {
       root: rootMsgId,
+      ...(pageOffset === undefined ? {} : { page_offset: pageOffset }),
       entries: shown,
       entries_shown: shown.length,
       entries_total: entriesTotal,
       ...(entriesTruncated ? { entries_truncated: true } : {}),
+      next_page_offset: nextPageOffset,
       ...(contentTruncated ? { content_truncated: true } : {}),
       ...(prefix
         ? { requested_root: prefix.requestedRoot, resolved_from: 'prefix' as const }
@@ -236,9 +246,9 @@ function fitThreadResponse(
 export default defineTool({
   name: 'coord:thread',
   description:
-    'Reconstruct a coord thread rooted at `root_msg_id`; pass the inbox entry\'s `msg_id` value as `root_msg_id` (there is no `msg_id` argument). Entries connected via `related_msg_id` are sorted by ts ascending.',
+    'Reconstruct a coord thread rooted at `root_msg_id`; pass the inbox entry\'s `msg_id` value as `root_msg_id` (there is no `msg_id` argument). Entries connected via `related_msg_id` are sorted by ts ascending. When entries are truncated, pass page_offset: 0 and follow each next_page_offset to retrieve every entry.',
   guidance: {
-    when: 'You want the full conversation around a coord message (replies, acks, resolutions). Use the exact `msg_id` from coord:inbox or coord:read as the `root_msg_id` argument.',
+    when: 'You want the conversation around a coord message (replies, acks, resolutions). Use the exact `msg_id` from coord:inbox or coord:read as root_msg_id; when entries_truncated is true, page with page_offset and next_page_offset.',
     notWhen: 'For a fresh inbox sweep — use coord:inbox.',
   },
   capability: 'coord:read',
@@ -250,6 +260,7 @@ export default defineTool({
   agentRoles: [...COORD_ROLES],
   args: z.object({
     root_msg_id: z.string().min(1),
+    page_offset: z.number().int().min(0).optional().describe('Fetch a chronological page starting at this zero-based entry offset; pass back next_page_offset until it is null.'),
   }),
   async handler(args) {
     // WI-6725: a truncated root_msg_id used to walk a chain rooted at an id
@@ -281,7 +292,23 @@ export default defineTool({
         },
       };
     }
-    const window = selectThreadWindow(entries, resolution.msgId);
+    if (args.page_offset !== undefined && args.page_offset > entries.length) {
+      return {
+        data: {
+          root: resolution.msgId,
+          entries: [],
+          entries_shown: 0,
+          entries_total: entries.length,
+          page_offset: args.page_offset,
+          next_page_offset: null,
+          error: 'page_offset_out_of_range' as const,
+          detail: `page_offset ${args.page_offset} exceeds this thread's ${entries.length} entries. Start at page_offset: 0 and follow next_page_offset.`,
+        },
+      };
+    }
+    const window = args.page_offset === undefined
+      ? selectThreadWindow(entries, resolution.msgId)
+      : entries.slice(args.page_offset, args.page_offset + THREAD_DEFAULT_ENTRY_LIMIT);
     const contentCap = Math.min(
       THREAD_CONTENT_CAP,
       Math.floor(THREAD_CONTENT_BUDGET / Math.max(1, window.length)),
@@ -312,6 +339,7 @@ export default defineTool({
             detail: `'${args.root_msg_id}' is a TRUNCATED msg_id — resolved by unique prefix to '${resolution.msgId}'.`,
           }
         : undefined,
+      args.page_offset,
     );
     return { data: fitted };
   },
