@@ -1537,14 +1537,15 @@ export default defineTool({
               'persists check database health (dev:pg_health). Your checkpoint text was NOT saved.',
           };
         }
-        const item = lookup.status === 'found' ? lookup.item : null;
-        if (!item && !hintHarness) {
+        if (lookup.status === 'missing') {
           return {
             ok: false as const,
             id: it.id,
-            error: `could not resolve a harness for work_item '${it.id}' — pass { harness }`,
+            error: `work_item_not_found — work_item '${it.id}' does not exist. Your checkpoint text was NOT saved.`,
+            errorCode: 'work_item_not_found',
           };
         }
+        const item = lookup.item;
         // EI-18132462898750489: refuse a checkpoint write/clear on an item ASSIGNED to
         // someone else. Before this guard the write silently succeeded for anyone, which
         // both corrupted the real holder's in-flight state and gave the writer a false
@@ -1568,9 +1569,9 @@ export default defineTool({
           };
         }
         // The item's own harness is authoritative (null for a harness-null item — the
-        // store canonicalizes it). Fall back to the hint only when the item can't be
-        // resolved (e.g. a not-yet-persisted id).
-        const harness: string | null = item ? (item.harness ?? null) : (hintHarness ?? null);
+        // store canonicalizes it). A harness hint disambiguates lookup; it never
+        // authorizes a checkpoint for an id that lookup confirmed is missing.
+        const harness: string | null = item.harness ?? null;
         const workspaceId = resolveConcreteWorkspaceId(c.workspaceId);
         // EI-9036: append:true joins onto the EXISTING checkpoint instead of replacing
         // it — the fix for the "meant to add a short addendum, silently wiped the
