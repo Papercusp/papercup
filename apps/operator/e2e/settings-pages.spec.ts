@@ -139,7 +139,7 @@ test.describe('settings visual layout in native panes', () => {
         }
         return false;
       });
-      if (!scrollable) expect(box.x + box.width).toBeLessThanOrEqual(content.x + content.width + 1);
+      if (!scrollable) expect(box.x + box.width, await control.evaluate((el) => el.outerHTML.slice(0,200))).toBeLessThanOrEqual(content.x + content.width + 1);
     }
   });
 
@@ -220,5 +220,32 @@ test.describe('settings visual layout in native panes', () => {
     const content = (await page.locator('.pc-settings-content').boundingBox())!;
     const refresh = (await page.getByRole('button', { name: 'Refresh', exact: true }).boundingBox())!;
     expect(refresh.x + refresh.width).toBeLessThanOrEqual(content.x + content.width);
+  });
+
+  test('Plugin tools keeps long registry names and metadata inside the pane', async ({ page }) => {
+    await page.route('**/api/plugins/tools?stats=true', (route) => route.fulfill({ json: { tools: [{
+      name: 'layout:test-tool-with-a-long-registry-name', pluginName: 'agent-mcp',
+      description: 'A long registry entry for layout verification.', capabilities: ['intel:read'],
+      expose: { http: { path: '/api/agent-tools/layout/test-tool-with-a-long-registry-name', methods: ['POST'] }, mcp: { name: 'layout:test-tool-with-a-long-registry-name' } },
+    }] } }));
+    await page.goto(`${baseURL}/settings/plugins/tools`);
+    await expect(page.locator('.pc-settings-content')).toContainText('layout:test-tool-with-a-long-registry-name');
+    await setPaneWidth(page, 400);
+    expect(await page.locator('.pc-settings-content').evaluate((el) => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
+  });
+
+  test('Memory search and Add memory actions remain inside a narrow pane', async ({ page }) => {
+    await page.route('**/api/user/memory/backend', (route) => route.fulfill({ json: {
+      backend: 'hybrid-pg', available: [], userId: null,
+    } }));
+    await page.route('**/api/user/memory/feedback', (route) => route.fulfill({ json: {} }));
+    await page.goto(`${baseURL}/settings/user/memory`);
+    await expect(page.getByRole('searchbox', { name: 'Search memories' })).toBeVisible();
+    await setPaneWidth(page, 400);
+    const content = (await page.locator('.pc-settings-content').boundingBox())!;
+    for (const name of [/semantic/, /Add memory/]) {
+      const button = (await page.getByRole('button', { name }).boundingBox())!;
+      expect(button.x + button.width).toBeLessThanOrEqual(content.x + content.width);
+    }
   });
 });

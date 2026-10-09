@@ -1915,8 +1915,13 @@ html[data-visual-effects='minimal'] [class*='pc-wiki-missing-']::after {
 
 .pc-vault-advanced-content {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 14px;
   padding: 14px;
+}
+
+.pc-vault-advanced-content > * {
+  min-width: 0;
 }
 
 .pc-vault-visually-hidden {
