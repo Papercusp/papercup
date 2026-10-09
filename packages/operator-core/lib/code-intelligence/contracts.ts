@@ -193,6 +193,70 @@ export interface Freshness {
   readonly indexedCommit: string | null;
 }
 
+/** Source versions are content identities, not claims about runtime execution.
+ * A local-root identity is scoped to that checkout. Cross-checkout remapping
+ * requires a registry identity and re-resolution; line/name similarity is insufficient.
+ */
+export interface CodeIntelSourceFile {
+  readonly path: string;
+  readonly contentHash: string;
+  readonly language: string;
+  readonly representation: 'full-source' | 'reexport-stub';
+}
+
+export interface CodeIntelSourceEvidence {
+  readonly schemaVersion: 1;
+  readonly sourceScope: {
+    readonly repositoryId: string;
+    readonly identityKind: 'registry' | 'local-root';
+    /** Digest of the compiler inputs in this query, never the whole repository. */
+    readonly sourceFingerprint: string;
+    readonly paths: readonly string[];
+    readonly supportingFiles: readonly CodeIntelSourceFile[];
+  };
+  readonly graphScope: {
+    readonly basis: 'compiler-project' | 'indexed-code' | 'syntax';
+    readonly sourceCompleteness: 'unverified';
+    readonly limitations: readonly string[];
+  };
+  readonly languageCapabilities: readonly {
+    readonly language: string;
+    readonly intent: CodeIntelIntent;
+    readonly status: 'compiler-backed' | 'syntax-only' | 'unsupported' | 'unknown';
+  }[];
+  readonly siteIdentities: readonly {
+    readonly siteIndex: number;
+    readonly versionedSymbolId: string | null;
+    readonly sourcePath: string;
+    readonly contentHash: string | null;
+  }[];
+  readonly relationships: readonly {
+    readonly siteIndex: number;
+    readonly kind: CodeIntelIntent;
+    readonly origin: 'compiler' | 'syntax' | 'index' | 'unknown';
+    readonly knowledge: 'observed' | 'inferred' | 'unknown';
+    readonly runtimeExecution: 'unknown';
+  }[];
+}
+
+/** A versioned site identity, deliberately invalidated by a source edit or move.
+ * This is not a persistent semantic identifier. Resolve again after a mismatch.
+ */
+export function versionedSymbolIdentity(repositoryId: string | null, site: SymbolSite,
+  source: CodeIntelSourceFile | undefined): string | null {
+  if (!repositoryId?.trim() || !source || source.path !== site.path ||
+    !/^[a-f0-9]{64}$/.test(source.contentHash) || source.representation !== 'full-source' ||
+    site.line1 === null || !Number.isInteger(site.line1) || site.line1 < 1 ||
+    site.path.startsWith('/') || site.path.split('/').includes('..') || site.path.includes('\\')) return null;
+  return JSON.stringify(['symbol-site-v1', repositoryId, site.path, source.contentHash,
+    site.line1, site.name ?? null, site.kind]);
+}
+
+/** Only identical repository/content/location tuples survive without re-resolution. */
+export function sourceIdentityContinuity(previous: string | null, current: string | null): 'unchanged' | 'needs-resolution' {
+  return previous !== null && current !== null && previous === current ? 'unchanged' : 'needs-resolution';
+}
+
 /** The normalized answer shape every backend is scored against. */
 export interface CodeIntelAnswer {
   readonly backend: CodeIntelBackend;
@@ -201,6 +265,8 @@ export interface CodeIntelAnswer {
   readonly sites: readonly SymbolSite[];
   readonly truncation: Truncation;
   readonly freshness: Freshness;
+  /** Omission on a legacy backend is unmeasured; never fill hashes from a later disk read. */
+  readonly evidence?: CodeIntelSourceEvidence;
   /**
    * Scope of the evidence, independently of health, freshness and output limits.
    * Omission on a legacy producer means unmeasured, never source completeness.
