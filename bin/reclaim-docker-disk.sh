@@ -85,6 +85,8 @@
 set -uo pipefail
 
 DRY_RUN="${DRY_RUN:-0}"
+BUILD_CACHE_MAX_AGE_EXPLICIT="${BUILD_CACHE_MAX_AGE:-}"
+IMAGE_MAX_AGE_EXPLICIT="${IMAGE_MAX_AGE:-}"
 BUILD_CACHE_MAX_AGE="${BUILD_CACHE_MAX_AGE:-24h}"
 IMAGE_MAX_AGE="${IMAGE_MAX_AGE:-168h}"
 VOLUME_MAX_AGE_SECS="${VOLUME_MAX_AGE_SECS:-86400}"
@@ -122,6 +124,16 @@ log "start: $((BEFORE / 1073741824)) GiB free on $TARGET_FS (${FREE_PCT}% of $((
 if (( FREE_PCT >= RECLAIM_MIN_FREE_PCT )); then
   log "free% ${FREE_PCT} >= RECLAIM_MIN_FREE_PCT ${RECLAIM_MIN_FREE_PCT} — nothing to do"
   exit 0
+fi
+
+# Below the shared 2% write reserve, retain only twelve hours of UNUSED image
+# and build cache. Native reference checks still protect containers and live
+# build leases; named volumes retain their separate preservation contract.
+# Explicit operator age overrides and SKIP_IMAGES continue to take precedence.
+if (( BEFORE * 100 < TOTAL * 2 )); then
+  [[ -n "$IMAGE_MAX_AGE_EXPLICIT" ]] || IMAGE_MAX_AGE=12h
+  [[ -n "$BUILD_CACHE_MAX_AGE_EXPLICIT" ]] || BUILD_CACHE_MAX_AGE=12h
+  log "critical headroom: image age=${IMAGE_MAX_AGE}, build-cache age=${BUILD_CACHE_MAX_AGE} (native reference protection retained)"
 fi
 
 run() {

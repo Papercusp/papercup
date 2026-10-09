@@ -275,6 +275,12 @@ preflight_source_clone() {
     echo "[setup-release] insufficient source-clone capacity: required_kib=$required available_kib=$available (destination untouched)" >&2
     return 1
   fi
+  # Fitting the clone is insufficient: preserve the same shared reserve and
+  # allocation margin as dependency copies. Probe the existing ancestor so a
+  # refusal never creates even the destination's parent directories.
+  DEPENDENCY_GENERATION_HEADROOM_CHECK_ONLY=1 \
+    dependency_generation_check_headroom "$INTEGRATION_ROOT" \
+      "$ancestor/.source-clone-allocation" "$((required * 1024))"
 }
 
 # Shared by ordinary deployment preparation and the finite SPA-only phase.
@@ -474,7 +480,7 @@ assert_target_gitlink_mappings() {  # <repository> <commit>
     return 0
   fi
   if ! git -C "$repo" cat-file -e "$sha:.gitmodules" 2>/dev/null; then
-    echo "[setup-release] FATAL pinned source $sha contains gitlinks without .gitmodules" >&2
+    echo "[setup-release] FATAL pinned source $sha contains gitlinks without .gitmodules; use verifier-prepare for unnamed gitlinks" >&2
     return 3
   fi
   rc=0
@@ -534,6 +540,9 @@ elif [ "$SOURCE_ROOT_MODE" = "clone" ]; then
     echo "[setup-release] clone source destination already exists: $RELEASE_ROOT" >&2
     exit 1
   fi
+  # Hold the existing host-wide allocation lock through root and gitlink
+  # materialization. The shell's exit releases the fd, including on failure.
+  dependency_generation_acquire_copy_lock "source clone $RELEASE_ROOT"
   preflight_source_clone
   log "creating independent release source clone at $RELEASE_ROOT"
   _root_objects="$(git -C "$INTEGRATION_ROOT" rev-parse --path-format=absolute --git-path objects)"

@@ -2134,6 +2134,14 @@ describe('setup-release-checkout.sh --prepare-existing (EI-20336479620858625)', 
   let integrationRoot: string;
   let releaseRoot: string;
   let targetSha: string;
+  // Small fixtures exercise allocation boundaries explicitly, independent of
+  // the host's current free space and its production reserve.
+  const sourceCloneEnv = () => ({
+    ...process.env,
+    DEPENDENCY_GENERATION_HEADROOM_RESERVE_PCT: '0',
+    DEPENDENCY_GENERATION_HEADROOM_MARGIN_BYTES: '0',
+    DEPENDENCY_GENERATION_COPY_LOCK_FILE: join(dirname(releaseRoot), 'copy.lock'),
+  });
 
   const git = (cwd: string, ...args: string[]): string => {
     const r = spawnSync(
@@ -2325,7 +2333,7 @@ exec "$REGRESSION_REAL_GIT" "$@"
     const args = [SCRIPT_PATH, '--source-only', '--source-root-mode', 'clone',
       '--source-integrity', 'object-sourced', '--ref', targetSha,
       '--integration', integrationRoot, '--release', destination];
-    const result = spawnSync('bash', args, { encoding: 'utf8' });
+    const result = spawnSync('bash', args, { encoding: 'utf8', env: sourceCloneEnv() });
     expect(result.status, result.stderr).toBe(0);
     expect(git(destination, 'rev-parse', 'HEAD')).toBe(targetSha);
     expect(git(destination, 'rev-parse', '--git-common-dir')).toBe('.git');
@@ -2366,6 +2374,23 @@ exec "$REGRESSION_REAL_GIT" "$@"
     expect(existsSync(destination)).toBe(false);
   });
 
+  it('refuses a source clone that fits but would consume the shared write reserve', () => {
+    const destination = join(dirname(releaseRoot), 'reserve-refused');
+    const result = spawnSync('bash', [SCRIPT_PATH, '--source-only', '--source-root-mode', 'clone',
+      '--ref', targetSha, '--integration', integrationRoot, '--release', destination], {
+      encoding: 'utf8', env: {
+        ...sourceCloneEnv(),
+        DEPENDENCY_GENERATION_HEADROOM_RESERVE_PCT: '2',
+        DEPENDENCY_GENERATION_HEADROOM_TOTAL_BYTES: String(100 * 1024 ** 3),
+        DEPENDENCY_GENERATION_HEADROOM_AVAIL_BYTES: String(64 * 1024 ** 2),
+      },
+    });
+    expect(result.status).toBe(77);
+    expect(result.stderr).toContain('DEPENDENCY_GENERATION_HEADROOM_INSUFFICIENT');
+    expect(existsSync(destination)).toBe(false);
+    expect(readFileSync(join(integrationRoot, 'tracked.txt'), 'utf8')).toBe('pinned source\n');
+  });
+
   it.each([false, true])('refuses a nested source clone before auto-commit can capture it (symlink=%s)', (viaSymlink) => {
     const inside = join(integrationRoot, 'private-proof');
     const alias = join(dirname(releaseRoot), 'integration-alias');
@@ -2386,8 +2411,8 @@ exec "$REGRESSION_REAL_GIT" "$@"
     const destination = join(dirname(releaseRoot), 'unnamed-refused');
     const result = spawnSync('bash', [SCRIPT_PATH, '--source-only', '--source-root-mode', 'clone',
       '--ref', pin, '--integration', integrationRoot, '--release', destination], { encoding: 'utf8' });
-    expect(result.status).toBe(1);
-    expect(result.stderr).toContain('requires .gitmodules path/url for gitlink libs/unnamed');
+    expect(result.status, result.stderr).toBe(3);
+    expect(result.stderr).toContain('contains gitlinks without .gitmodules');
     expect(result.stderr).toContain('use verifier-prepare');
     expect(existsSync(destination)).toBe(false);
   });
@@ -2405,7 +2430,7 @@ exec "$REGRESSION_REAL_GIT" "$@"
     ].join('\n'), { mode: 0o755 });
     const result = spawnSync('bash', [SCRIPT_PATH, '--source-only', '--source-root-mode', 'clone',
       '--ref', targetSha, '--integration', integrationRoot, '--release', destination], {
-      encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, REAL_STAT: realStat },
+      encoding: 'utf8', env: { ...sourceCloneEnv(), PATH: `${bin}:${process.env.PATH}`, REAL_STAT: realStat },
     });
     expect(result.status, result.stderr).toBe(0);
     const objectId = git(integrationRoot, 'rev-parse', `${targetSha}^{tree}`);
@@ -2431,7 +2456,7 @@ exec "$REGRESSION_REAL_GIT" "$@"
     const destination = join(dirname(releaseRoot), 'source-clone-gitlink');
     const result = spawnSync('bash', [SCRIPT_PATH, '--source-only', '--source-root-mode', 'clone',
       '--source-integrity', 'object-sourced', '--ref', sourceSha,
-      '--integration', integrationRoot, '--release', destination], { encoding: 'utf8' });
+      '--integration', integrationRoot, '--release', destination], { encoding: 'utf8', env: sourceCloneEnv() });
     expect(result.status, result.stdout + result.stderr).toBe(0);
     expect(git(join(destination, 'libs/child'), 'rev-parse', 'HEAD')).toBe(childSha);
     expect(readFileSync(join(destination, 'libs/child/child.txt'), 'utf8')).toBe('pinned child\n');

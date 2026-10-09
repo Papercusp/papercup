@@ -169,7 +169,7 @@ describe('Podman stores use the existing guarded image policy', () => {
       executable('docker', 'exit 1\n');
       executable('sudo', '[[ "$1" == "-n" ]] && shift\nexport STORE=rootful\nexec "$@"\n');
       executable('podman', 'if [[ "$1" == "info" ]]; then exit "${PODMAN_DOWN:-0}"; fi\nprintf "%s %s\\n" "${STORE:-rootless}" "$*" >>"$FIXTURE_LOG"\n');
-      executable('df', 'echo 100000000000\n');
+      executable('df', 'if [[ "$*" == *--output=avail* ]]; then echo "${FIXTURE_AVAILABLE:-100000000000}"; else echo 100000000000; fi\n');
       const output = execFileSync('bash', [SCRIPT], { encoding: 'utf8', timeout: 5000,
         env: { ...process.env, PATH: root + ':' + process.env.PATH, FIXTURE_LOG: log,
           DRY_RUN: '0', SKIP_IMAGES: '0', IMAGE_MAX_AGE: '168h', RECLAIM_MIN_FREE_PCT: '101', ...overrides } });
@@ -195,6 +195,29 @@ describe('Podman stores use the existing guarded image policy', () => {
 
   it('honors the existing image-sweep kill switch for both Podman stores', () => {
     expect(runFixture({ SKIP_IMAGES: '1' }).calls).toEqual([]);
+  });
+
+  it('collects only twelve-hour unused images below the shared write reserve', () => {
+    const result = runFixture({ FIXTURE_AVAILABLE: '1000000000', IMAGE_MAX_AGE: '' });
+    expect(result.calls).toEqual([
+      'rootless image prune -af --filter until=12h',
+      'rootful image prune -af --filter until=12h',
+    ]);
+    expect(result.calls.join('\n')).not.toMatch(/--external|volume|container|system/);
+  });
+
+  it('keeps an explicit operator age override during critical pressure', () => {
+    const result = runFixture({ FIXTURE_AVAILABLE: '1000000000', IMAGE_MAX_AGE: '72h' });
+    expect(result.calls.every(call => call.endsWith('until=72h'))).toBe(true);
+  });
+
+  it('keeps the ordinary retention window when free space is at the reserve', () => {
+    const result = runFixture({ FIXTURE_AVAILABLE: '2000000000', IMAGE_MAX_AGE: '' });
+    expect(result.calls.every(call => call.endsWith('until=168h'))).toBe(true);
+  });
+
+  it('keeps the kill switch effective during critical pressure', () => {
+    expect(runFixture({ FIXTURE_AVAILABLE: '1000000000', IMAGE_MAX_AGE: '', SKIP_IMAGES: '1' }).calls).toEqual([]);
   });
 
   it('leaves unavailable Podman stores alone', () => {
