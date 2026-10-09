@@ -619,6 +619,42 @@ describe('spawnHeadless — no-window managed-pty launch (headless-fleet-launch 
   // findLinuxTerminal's _resetTerminalCacheForTests exists for).
   const noSystemdRun = { spawnCommandProbes: { hasSystemdRun: () => false } };
 
+  it('establishes kickoff proof on the private runtime mount when scratch is unusable', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'kickoff-runtime-'));
+    const runtime = join(root, 'runtime');
+    const scratch = join(root, 'unusable-scratch');
+    mkdirSync(runtime, { mode: 0o700 });
+    writeFileSync(scratch, 'not a directory');
+    vi.stubEnv('XDG_RUNTIME_DIR', runtime);
+    vi.stubEnv('TMPDIR', scratch);
+    spawnMock.mockImplementation(() => fakeChild(7794));
+    let receiptPath = '';
+    try {
+      const result = await spawnHeadless({
+        envelope,
+        label: 'runtime-proof',
+        logDir: join(root, 'logs'),
+        kickoffProof: true,
+        kickoffProofProbes: {
+          windowMs: 0,
+          readReceipt: (path, token) => {
+            receiptPath = path;
+            expect(path.startsWith(runtime + '/')).toBe(true);
+            return JSON.stringify({ token, persisted: true, nativeRef: 'native:runtime', reason: null });
+          },
+        },
+        bootProbes: { readLog: () => '', sleep: async () => {}, windowMs: 0 },
+        ...noSystemdRun,
+      });
+      expect(result).toMatchObject({ status: 'ok', kickoffProof: { persisted: true } });
+      expect(receiptPath).not.toBe('');
+      expect(existsSync(receiptPath)).toBe(false);
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('cleans an idle task when the host proves the kickoff was never submitted', async () => {
     spawnMock.mockImplementation(() => fakeChild(7790));
     const r = await spawnHeadless({

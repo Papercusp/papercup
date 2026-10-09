@@ -26,19 +26,19 @@ const RUBRIC_DUTIES = [
   ['grading-correction-closure', 'Grade, improve and re-grade', 'Assign graders, preserve a baseline, verify repairs and compare the result.'],
 ] as const;
 
-function RubricStewardship({ data }: { data: GoalDetailInput }) {
+function RubricStewardship({ data, onOpenWorkItem }: { data: GoalDetailInput; onOpenWorkItem?: (id: string) => void }) {
   const quality = data.rubricStewardship;
   return <section className="woe__quality" aria-label="Rubric stewardship">
     <div className="woe__quality-heading"><h3>Rubrics &amp; continuous improvement</h3>
-      <a className="woe__link" href={'/adv?hudrubric=' + encodeURIComponent(quality?.rubricRef ?? 'work-on-everything-stewardship-health')}>
-        Stewardship rubric{quality?.rubricRevision ? ` · revision ${quality.rubricRevision}` : ''}</a></div>
+      <a className="woe__link" href="/rubrics" title="Browse the Work on everything stewardship rubric">
+        Browse rubrics{quality?.rubricRevision ? ` · stewardship revision ${quality.rubricRevision}` : ''}</a></div>
     <div className="woe__quality-duties">{RUBRIC_DUTIES.map(([key, title, description]) => {
       const measured = quality?.criteria[key];
       return <div key={key}><h4>{title}</h4><p>{description}</p>
         <span className="woe__state" data-state={measured ? measured.rating : 'unmeasured'}>
           {measured?.rating ?? 'Not measured'}</span>
-        {measured ? <a className="woe__link" href={'/adv?hudscorecard=' + encodeURIComponent(measured.scorecardRef)}
-          title={measured.evidence}>View evidence</a> : null}</div>;
+        {measured ? onOpenWorkItem ? <button type="button" className="woe__link" onClick={() => onOpenWorkItem(measured.scorecardRef)}
+          title={measured.evidence}>View evidence</button> : <span>{measured.scorecardRef}</span> : null}</div>;
     })}</div>
     {quality?.error ? <p role="alert" className="woe__warning">{quality.error}</p> :
       !quality ? <p className="woe__muted">Quality evidence has not loaded. Refresh to check this goal’s grading activity.</p> :
@@ -51,9 +51,10 @@ function RubricStewardship({ data }: { data: GoalDetailInput }) {
             <td><span className="woe__state" data-state={c.status}>{({ baseline: 'Baseline recorded', 'needs-repair': 'Repairs needed',
               'needs-regrade': 'Re-grade needed', unverified: 'Needs verification', incomparable: 'Fresh baseline needed', verified: 'Improvement verified' })[c.status]}</span>
               <p className="woe__muted">{c.reason}</p></td><td>
-              {c.baselineRef ? <a className="woe__link" href={'/adv?hudscorecard=' + encodeURIComponent(c.baselineRef)}>Baseline</a> : null}
-              <a className="woe__link" href={'/adv?hudscorecard=' + encodeURIComponent(c.scorecardRef)}>Scorecard</a>
-              {c.repairRefs.map(ref => <a key={ref} className="woe__link" href={'/adv?hudworkitem=' + encodeURIComponent(ref)}>{ref}</a>)}
+              {[...(c.baselineRef ? [{ ref: c.baselineRef, label: 'Baseline' }] : []),
+                { ref: c.scorecardRef, label: 'Scorecard' }, ...c.repairRefs.map(ref => ({ ref, label: ref }))]
+                .map(item => onOpenWorkItem ? <button key={item.ref} type="button" className="woe__link"
+                  onClick={() => onOpenWorkItem(item.ref)}>{item.label}</button> : <span key={item.ref}>{item.ref} </span>)}
             </td></tr>)}</tbody></table></div> : <p className="woe__muted">No goal-attributed grading cycles are recorded in this window.</p>}</>}
   </section>;
 }
@@ -69,7 +70,7 @@ function ProgressBar({ counts, large }: { counts: ProgressCounts | null | undefi
   </span>;
 }
 
-export default function WorkOnEverythingPanel({ data, nowMs, onClose, onOpenPlan, onOpenAgent, refresh }: {
+export default function WorkOnEverythingPanel({ data, nowMs, onClose, onOpenPlan, onOpenWorkItem, onOpenAgent, refresh }: {
   data: GoalDetailInput; nowMs: number; onClose: () => void; refresh: () => void;
   onOpenPlan?: (harness: string, plan: string) => void;
   onOpenWorkItem?: (id: string) => void; onOpenAgent?: (owner: string) => void;
@@ -222,7 +223,7 @@ export default function WorkOnEverythingPanel({ data, nowMs, onClose, onOpenPlan
             <span className="woe__kpi-value">{t.value} <small>{t.unit}</small></span>
             {t.key === null ? <ProgressBar counts={totals} large /> : null}
             <span className="woe__kpi-sub">{t.sub}</span></button>)}</div>
-        <RubricStewardship data={data} />
+        <RubricStewardship data={data} onOpenWorkItem={onOpenWorkItem} />
         <div className="woe__chart"><h3>Work finished per day for this goal{series ? ` (last ${series.length} days)` : ''}</h3>
           {series ? <svg viewBox={`0 0 ${series.length * 36} 96`} preserveAspectRatio="none" role="img"
             aria-label={`${series.reduce((n, d) => n + d.done, 0)} work items finished in the last ${series.length} days`}>

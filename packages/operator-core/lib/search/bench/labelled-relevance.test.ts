@@ -75,6 +75,13 @@ describe('judgeScoreToGrade', () => {
 });
 
 describe('scoreQuery', () => {
+  it('uniform zero gain is zero and uniform positive gain is one; both ignore order', () => {
+    for (const [grade, expected] of [[0, 0], [3, 1]]) {
+      const hits = [1, 2, 3].map((rank) => ({ ...hit(rank), relevance: grade, grade, judgeCostUsd: 0 }));
+      expect(scoreQuery(hits).ndcgAtK).toBe(expected);
+      expect(scoreQuery([...hits].reverse()).ndcgAtK).toBe(expected);
+    }
+  });
   it('reports recall as null — this pass has no externally-known relevant set', () => {
     // A 0 here would read as "found none of them", the strongest possible
     // failure claim, from a run that is PRODUCING the labels and had nothing
@@ -91,6 +98,43 @@ describe('scoreQuery', () => {
 
 describe('runLabelledPass', () => {
   const oneQuery = [{ tool: 'docs:search', query: 'a b c', terms: 3 }];
+
+  it('keeps failed attempts beside excellent conditional precision and explicit underfill', async () => {
+    const queries = Array.from({ length: 10 }, (_, i) => ({ ...oneQuery[0]!, query: String(i), groundTruthIds: ['d1'] }));
+    const report = await runLabelledPass({ queries, sampleSeed: 'attempts', judge: async () => verdict(5),
+      retrieve: async (q) => { if (q !== '0') throw new Error('unavailable'); return ok(1); } });
+    expect(report.overall.meanPrecisionAtK).toBe(1);
+    expect(report.overall).toMatchObject({ attempted: 10, n: 1, excluded: 9, returnedHits: 1,
+      requestedSlots: 100, underfilled: 10, usefulSuccesses: 1, usefulFailures: 9, usefulUnknown: 0,
+      usefulSuccessLowerBound: 0.1, outcomeCounts: { scored: 1, 'retrieval-failed': 9 } });
+    expect(report.outcomes).toHaveLength(10);
+  });
+
+  it('distinguishes correct abstention, a missed known item, and an unlabelled empty attempt', async () => {
+    const report = await runLabelledPass({ sampleSeed: 'empty', retrieve: async () => ok(0), judge: async () => verdict(5),
+      queries: [{ ...oneQuery[0]!, groundTruthIds: [] }, { ...oneQuery[0]!, groundTruthIds: ['needed'] }, oneQuery[0]!] });
+    expect(report.outcomes.map((o) => o.usefulContextSuccess)).toEqual([true, false, null]);
+    expect(report.outcomes[1]).toMatchObject({ recallAtK: 0, missingIds: ['needed'] });
+    expect(report.overall).toMatchObject({ attempted: 3, usefulSuccesses: 1, usefulFailures: 1, usefulUnknown: 1 });
+  });
+
+  it('records a judge failure and continues after draining successful paid workers', async () => {
+    const report = await runLabelledPass({ sampleSeed: 'judge-failure', queries: oneQuery, retrieve: async () => ok(2),
+      judge: async ({ docId }) => { if (docId === 'd1') throw new Error('judge unavailable'); await new Promise((r) => setTimeout(r, 5)); return verdict(5); } });
+    expect(report.outcomes[0]).toMatchObject({ attemptStatus: 'judge-failed', judgeCostUsd: 0.01, returnedCount: 2 });
+    expect(report.judgedHits).toBe(1);
+    expect(report.overall.usefulUnknown).toBe(1);
+  });
+
+  it('accepts an engaged reranker that preserves an already correct order', async () => {
+    const report = await runLabelledPass({ sampleSeed: 'unchanged', queries: oneQuery,
+      retrieve: async () => ok(2, { hits: [{ ...hit(1), rerankScore: 0.9 }, { ...hit(2), rerankScore: 0.8 }] }),
+      judge: async () => verdict(5), contract: { adapter: 'offline-stage-experiment:v1' } });
+    expect(report.outcomes[0]).toMatchObject({ rerankApplied: true, attemptStatus: 'scored' });
+    expect(report.outcomes[0]!.hits.map((h) => h.docId)).toEqual(['d1', 'd2']);
+    expect(report.contract.adapter).toBe('offline-stage-experiment:v1');
+    expect(report.contract.runtime).toBeNull();
+  });
 
   it('judges the top k and scores the ranking', async () => {
     const judge = vi.fn(async () => verdict(5));

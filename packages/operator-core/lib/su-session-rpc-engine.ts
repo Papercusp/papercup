@@ -22,7 +22,7 @@ import { loadSuOwnerTurnReceipts, type SuOwnerTurn, type SuOwnerTurnReceiptRef }
 import { makeCodingAssistantCodexHome } from './role-codex-home';
 import type { ClaudeEngineIdentity } from './su-session-claude-engine';
 import { persistSuSessionDescriptor } from './su-session-persistence';
-import { listCodexModels } from './su-session-engine-models';
+import { listCodexModels, ompModelOptions } from './su-session-engine-models';
 import { codexAppServerTokenUsage, codexPlan, ompMessageUsage, type SuCodexTurnAdmission, type SuCodexTurnLifecycle } from './su-session-usage';
 export type { SuCodexTurnAdmission, SuCodexTurnLifecycle } from './su-session-usage';
 import { findCodexRolloutPathByUuid } from './session-transcript-resolvers';
@@ -798,16 +798,17 @@ export function startSuRpcEngine(
     ready = true;
     options.stage?.('rpc-ready');
     host.transition('ready', `${backend} structured stream, SU tools and command executor attached`);
-    // WI-10006652: /model lists the models Codex reports it can run. Not
+    // WI-10006652 / WI-10007855: /model lists each native engine's catalog. Not
     // awaited: the catalog only enriches the picker, so a slow or refused
-    // model/list must not delay or fail a ready session (the picker then keeps
+    // catalog request must not delay or fail a ready session (the picker then keeps
     // its own menu).
-    if (backend === 'codex') {
-      const listing = peer;
-      void listCodexModels((frame) => listing.request(frame, options.deliveryTimeoutMs ?? 30_000))
-        .then((models) => { if (!closed) host.updateModels(models); })
-        .catch(() => undefined);
-    }
+    const listing = peer;
+    const models = backend === 'codex'
+      ? listCodexModels((frame) => listing.request(frame, options.deliveryTimeoutMs ?? 30_000))
+      : listing.request({ type: 'get_available_models' }, options.deliveryTimeoutMs ?? 30_000)
+        .then((result) => ompModelOptions(result.models));
+    void models.then((rows) => { if (!closed) host.updateModels(rows); })
+      .catch(() => undefined);
   })();
   let timer: ReturnType<typeof setTimeout>;
   const readyPromise = Promise.race([starting, new Promise<never>((_resolve, reject) => {

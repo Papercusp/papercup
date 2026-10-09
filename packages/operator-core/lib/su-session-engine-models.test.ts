@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { claudeModelOptions, codexModelOptions, listCodexModels } from './su-session-engine-models';
+import { claudeModelOptions, codexModelOptions, listCodexModels, ompModelOptions } from './su-session-engine-models';
 
 // Shapes copied from the installed engines' own answers (2026-10-06): the
 // Claude Agent SDK's initializationResult().models and codex app-server
@@ -47,11 +47,26 @@ describe('engine model catalogs (WI-10006652)', () => {
     ]);
   });
 
+  it('maps OMP native models to exact provider/model selectors without conflating providers', () => {
+    expect(ompModelOptions([
+      { provider: 'anthropic', id: 'sonnet', name: 'Sonnet' },
+      { provider: 'papercusp-gateway', id: 'sonnet', name: 'Sonnet' },
+      { provider: 'anthropic', id: 'sonnet', name: 'Duplicate' },
+      { provider: 'openai', id: 'gpt-6.1-sol' },
+    ])).toEqual([
+      { id: 'anthropic/sonnet', label: 'Sonnet', description: 'anthropic' },
+      { id: 'papercusp-gateway/sonnet', label: 'Sonnet', description: 'papercusp-gateway' },
+      { id: 'openai/gpt-6.1-sol', label: 'openai/gpt-6.1-sol', description: 'openai' },
+    ]);
+  });
+
   it('never invents rows from a malformed answer', () => {
     expect(claudeModelOptions(undefined)).toEqual([]);
     expect(claudeModelOptions([{ displayName: 'no value' }, 'x', null])).toEqual([]);
     expect(codexModelOptions({ data: CODEX_MODELS })).toEqual([]);
     expect(codexModelOptions([{ hidden: false }])).toEqual([]);
+    expect(ompModelOptions({ models: [] })).toEqual([]);
+    expect(ompModelOptions([null, { provider: 'openai' }, { id: 'missing-provider' }])).toEqual([]);
   });
 
   it('pages model/list with the returned cursor and stops at the page bound', async () => {

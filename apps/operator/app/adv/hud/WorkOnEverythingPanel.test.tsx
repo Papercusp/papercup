@@ -64,12 +64,15 @@ describe('Work on everything: progress table (WI-10007603)', () => {
         'grading-correction-closure': { rating: 'partial', evidence: 'Re-grade still needed', scorecardRef: 'EI-4' } },
       cycles: [{ target: 'Search', rubricRef: 'quality', rubricRevision: 2, baselineRef: 'EI-1', scorecardRef: 'EI-2',
         repairRefs: ['WI-12'], status: 'incomparable', reason: 'Target or rubric revision changed; record a fresh baseline.' }], error: null };
-    render(<WorkOnEverythingPanel data={data} {...props()} />);
+    const open = vi.fn();
+    render(<WorkOnEverythingPanel data={data} {...props()} onOpenWorkItem={open} />);
     expect(screen.getByRole('table', { name: 'Grading cycles' })).toBeTruthy();
     expect(screen.getByText('Fresh baseline needed')).toBeTruthy();
     expect(screen.getByText(/limited recent page/)).toBeTruthy();
-    expect(screen.getByRole('link', { name: 'Baseline' }).getAttribute('href')).toContain('EI-1');
-    expect(screen.getByRole('link', { name: 'WI-12' }).getAttribute('href')).toContain('WI-12');
+    fireEvent.click(screen.getByRole('button', { name: 'Baseline' }));
+    expect(open).toHaveBeenLastCalledWith('EI-1');
+    fireEvent.click(screen.getByRole('button', { name: 'WI-12' }));
+    expect(open).toHaveBeenLastCalledWith('WI-12');
     expect(screen.queryByText('Improvement verified')).toBeNull();
   });
 

@@ -153,6 +153,22 @@ async function goal(
   `;
 }
 
+describe('goal rubric stewardship SQL', () => {
+  it('reads the migrated ledgers and distinguishes absent evidence from a foreign goal card', async () => {
+    const { readGoalRubricStewardship } = await import('../goal-rubric-stewardship');
+    await goal();
+    await sql`INSERT INTO harness_shared.work_items (feature_id, workspace_id, harness_slug, lane, item_kind, title, status, created_ts, updated_ts, goal_id, payload)
+      VALUES ('EI-stewardship-foreign', ${WS}, 'papercusp', 'observation', 'observation', 'Foreign card', 'open',
+        ${Date.now()}, ${Date.now()}, NULL,
+        ${sql.json({ observation: { rubricRef: 'work-on-everything-stewardship-health', ratings: {} } } as never)})`;
+    const reading = await readGoalRubricStewardship({ workspaceId: WS, goalId: GOAL }, { sql });
+    expect(reading.error).toBeNull();
+    expect(reading.complete).toBe(true);
+    expect(reading.cycles).toEqual([]);
+    expect(Object.values(reading.criteria)).toEqual([null, null, null]);
+  });
+});
+
 async function pot(
   slug: string,
   over: { role?: string; removedAt?: string | null; killCriterion?: string | null } = {},

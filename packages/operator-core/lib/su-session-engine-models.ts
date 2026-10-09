@@ -10,6 +10,7 @@
  *   Claude Code's /model shows: Default, Opus, Fable, Sonnet, Haiku).
  * - Codex: `codex app-server` `model/list` (paginated; `hidden` rows are not
  *   offered by stock Codex either).
+ * - OMP: RPC `get_available_models` (the native session's available registry).
  */
 import type { SuSessionModelOption } from '@papercusp/chat-protocol';
 
@@ -78,6 +79,21 @@ export function codexModelOptions(data: unknown): SuSessionModelOption[] {
       defaultEffort: text(model.defaultReasoningEffort) || undefined,
       isDefault: model.isDefault === true,
     });
+    if (row && !rows.some((seen) => seen.id === row.id)) rows.push(row);
+  }
+  return rows;
+}
+
+/** OMP `get_available_models` rows use the provider/id accepted by set_model. */
+export function ompModelOptions(models: unknown): SuSessionModelOption[] {
+  if (!Array.isArray(models)) return [];
+  const rows: SuSessionModelOption[] = [];
+  for (const raw of models) {
+    const model = record(raw);
+    const provider = text(model.provider), modelId = text(model.id);
+    if (!provider || !modelId) continue;
+    const id = `${provider}/${modelId}`;
+    const row = option({ id, label: text(model.name) || id, description: provider, efforts: [] });
     if (row && !rows.some((seen) => seen.id === row.id)) rows.push(row);
   }
   return rows;

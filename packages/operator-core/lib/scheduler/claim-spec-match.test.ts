@@ -14,9 +14,9 @@
  *     (a) a real p2p/federation/rig item stays fenced, (b) an unrelated item whose
  *     title/path merely mentions the word does NOT get excluded.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import type { WorkItem } from '../work-items';
-import type { ClaimSpec, FilterNode } from './claim-spec';
+import type { ClaimSpec, FilterLeaf, FilterNode } from './claim-spec';
 import { positiveIdCohortIds, validateClaimSpec } from './claim-spec';
 import { claimSpecSubjectFromWorkItem, matchesClaimSpecFilter, matchesWorkItemClaimSpec, planSlugOfWorkItem } from './claim-spec-match';
 
@@ -49,6 +49,54 @@ function issueItem(overrides: Partial<WorkItem> & Pick<WorkItem, 'id' | 'title'>
     ...overrides,
   } as WorkItem;
 }
+
+// EI-25503081061868211: compilation cost must depend on filter predicates,
+// rather than the size of the complete fleet-metric population.
+describe('text predicates over complete census cohorts', () => {
+  it('preserves whole-word and path admission beyond 2000 rows without recompiling per row', () => {
+    const filter: FilterNode = { all: [
+      { not: { field: 'title', op: 'word', value: 'p2p' } },
+      { field: 'paths', op: 'glob', value: 'packages/operator-core/**' },
+    ] };
+    const rows = Array.from({ length: 2101 }, (_, index) => issueItem({
+      id: `EI-census-${index}`,
+      title: ['ordinary queue repair', 'nonp2p-bug-drain repair', 'P2P_transport repair'][index % 3],
+      payload: { paths: ['unrelated/file.ts', 'packages/operator-core/lib/queue.ts'] },
+    }));
+    const constructors = vi.spyOn(globalThis, 'RegExp');
+    try {
+      const admitted = rows.filter(row => matchesClaimSpecFilter(claimSpecSubjectFromWorkItem(row), filter));
+      expect(admitted).toHaveLength(1401);
+      expect(admitted.some(row => row.id === 'EI-census-2100')).toBe(true);
+      expect(admitted.every(row => !row.title.startsWith('P2P_'))).toBe(true);
+      expect(constructors).toHaveBeenCalledTimes(2);
+    } finally {
+      constructors.mockRestore();
+    }
+  });
+
+  it('recompiles edited literals and operators, preserving scalar and array word boundaries', () => {
+    const leaf: FilterLeaf = { field: 'title', op: 'word', value: 'p2p' };
+    const subject = claimSpecSubjectFromWorkItem(issueItem({ id: 'EI-edit', title: 'nonp2p federation_soak' }));
+    expect(matchesClaimSpecFilter(subject, leaf)).toBe(false);
+    leaf.value = 'federation';
+    expect(matchesClaimSpecFilter(subject, leaf)).toBe(true);
+    leaf.op = 'glob';
+    expect(matchesClaimSpecFilter(subject, leaf)).toBe(false);
+    leaf.value = '*federation*';
+    expect(matchesClaimSpecFilter(subject, leaf)).toBe(true);
+    leaf.op = 'word';
+    expect(matchesClaimSpecFilter(subject, leaf)).toBe(false);
+    leaf.field = 'paths';
+    leaf.value = 'x+y';
+    subject.paths = ['notx+y', 'x+y_file'];
+    expect(matchesClaimSpecFilter(subject, leaf)).toBe(true);
+    subject.paths = ['notx+y', 'xxy_file'];
+    expect(matchesClaimSpecFilter(subject, leaf)).toBe(false);
+    leaf.value = 'xxy';
+    expect(matchesClaimSpecFilter(subject, leaf)).toBe(true);
+  });
+});
 
 /** The live backlog-drain-clean title-glob terms (rev11), verbatim. */
 const P2P_TITLE_GLOBS = ['*p2p*', '*P2P*', '*teering lease*', '*hared-hive*', '*federation*', '*Federation*', '*holepunch*'];

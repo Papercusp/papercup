@@ -159,6 +159,9 @@ const WORK_ON_EVERYTHING_CRITICAL_KEYS = new Set([
   'owner-steering-and-reporting',
   'retired-tier-nonresurrection',
   'plan-fleet-materialization',
+  'rubric-coverage-stewardship',
+  'rubric-quality-stewardship',
+  'grading-correction-closure',
 ]);
 
 const ROLLUP_UNKNOWN_RATINGS = new Set(['unknown']);

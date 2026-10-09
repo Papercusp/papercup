@@ -917,6 +917,42 @@ it('enables native OMP question callbacks through the RPC UI transport', async (
   expect(args[args.indexOf('--mode') + 1]).toBe('rpc-ui');
 });
 
+it('publishes the OMP native catalog without holding readiness on registry refresh', async () => {
+  let resolveCatalog!: (models: RpcFrame) => void;
+  const catalog = new Promise<RpcFrame>((resolve) => { resolveCatalog = resolve; });
+  const f = fixture('omp', { request: async (frame) => frame.type === 'get_available_models' ? catalog : undefined });
+  await f.engine.ready;
+  expect(f.engine.adapter.host.snapshot().streamReady).toBe(true);
+  expect(f.sent).toContainEqual({ type: 'get_available_models' });
+  expect(f.engine.adapter.host.descriptor().models).toBeUndefined();
+  resolveCatalog({ models: [{ provider: 'openai', id: 'omp-model', name: 'Native OMP model' }] });
+  await vi.waitFor(() => expect(f.engine.adapter.host.descriptor().models).toEqual([
+    { id: 'openai/omp-model', label: 'Native OMP model', description: 'openai' },
+  ]));
+});
+
+it('keeps OMP ready when its optional catalog request is refused', async () => {
+  const f = fixture('omp', { request: async (frame) => {
+    if (frame.type === 'get_available_models') throw new Error('Registry unavailable');
+    return undefined;
+  } });
+  await f.engine.ready;
+  await Promise.resolve();
+  expect(f.engine.adapter.host.snapshot().streamReady).toBe(true);
+  expect(f.engine.adapter.host.descriptor().models).toBeUndefined();
+});
+
+it('does not publish an OMP catalog after the native connection closes', async () => {
+  let resolveCatalog!: (models: RpcFrame) => void;
+  const catalog = new Promise<RpcFrame>((resolve) => { resolveCatalog = resolve; });
+  const f = fixture('omp', { request: async (frame) => frame.type === 'get_available_models' ? catalog : undefined });
+  await f.engine.ready;
+  await f.engine.close();
+  resolveCatalog({ models: [{ provider: 'openai', id: 'omp-model' }] });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(f.engine.adapter.host.descriptor().models).toBeUndefined();
+});
+
 it('publishes the OMP native model window before the first reply and preserves it with live usage', async () => {
   const f = fixture('omp', { contextWindow: 200_000 });
   await f.engine.ready;

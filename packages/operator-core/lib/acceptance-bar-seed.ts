@@ -505,6 +505,19 @@ export function validateAcceptanceBarSource(planContent: string):
     new Set(requirements.bars.map((bar) => bar.barKey)),
   );
   if (!mappings.ok) return { ok: false, problems: mappings.problems };
+  const mappingByKey = new Map(mappings.mappings.map((mapping) => [mapping.barKey, mapping]));
+  const conflicts = requirements.bars.filter((bar) => {
+    const mapping = mappingByKey.get(bar.barKey)!;
+    return mapping.evidencePlaneExplicit && bar.criterion?.evidencePlane &&
+      mapping.evidencePlane !== bar.criterion.evidencePlane;
+  });
+  if (conflicts.length) {
+    return { ok: false, problems: conflicts.map((bar) => ({
+      code: 'bar_evidence_plane_invalid',
+      barKey: bar.barKey,
+      detail: `${bar.barKey} has conflicting Acceptance and map evidence planes`,
+    })) };
+  }
   return { ok: true, bars: requirements.bars, mappings: mappings.mappings };
 }
 
@@ -615,13 +628,6 @@ export function buildAcceptanceBarSeed(input: AcceptanceBarSeedBuildInput): Acce
   const requirements = { ok: true as const, bars: source.bars };
   const mappings = { ok: true as const, mappings: source.mappings };
   const mappingByKey = new Map(mappings.mappings.map((mapping) => [mapping.barKey, mapping]));
-  const conflicts = requirements.bars.filter((bar) => {
-    const mapping = mappingByKey.get(bar.barKey)!;
-    return mapping.evidencePlaneExplicit && bar.criterion?.evidencePlane &&
-      mapping.evidencePlane !== bar.criterion.evidencePlane;
-  });
-  if (conflicts.length) return refusal(conflicts.map((bar) => ({ code: 'bar_evidence_plane_invalid',
-    barKey: bar.barKey, detail: `${bar.barKey} has conflicting Acceptance and map evidence planes` })));
 
   const existingParsed = input.existingTemplateData === undefined
     ? null

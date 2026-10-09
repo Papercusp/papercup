@@ -5,6 +5,7 @@ import {
   acceptanceBarProjectedBehavior,
   acceptanceBarBehaviorClass,
   parseRequirementBars,
+  validateAcceptanceBarSource,
 } from './acceptance-bar-seed';
 import { computeAcceptanceBarSetHash, normalizeAcceptanceBarCriterion } from './rubrics';
 import { guardAcceptanceBarTemplateDataWrite } from './agent-tools/plans/rubric-loss-guard';
@@ -140,6 +141,44 @@ describe('Requirements BAR parser', () => {
 });
 
 describe('acceptance BAR seed builder', () => {
+  it.each([
+    ['tree', 'live'],
+    ['live', 'tree'],
+    ['tree', 'deployed'],
+  ] as const)('rejects %s/%s evidence-plane conflicts in preview and writer', (accepted, mapped) => {
+    const requirement = {
+      intent: { request: 'Preserve the selected evidence plane.', sourceRefs: ['session_turn:fixture'] },
+      acceptance: {
+        condition: 'The evidence describes the selected source version.',
+        falsifier: 'Evidence from another plane is accepted as current.',
+        evidencePlane: accepted,
+        requiredScope: ['P-001'],
+        requiredTestLayers: ['unit'],
+      },
+      verification: {
+        method: 'Compare the declared plane with the evidence source.',
+        check: { kind: 'tests', files: ['lib/evidence.test.ts'] },
+      },
+    };
+    const content = plan({
+      requirements: '**R-1 — Selected evidence.**\n```requirement\n' + JSON.stringify(requirement) + '\n```',
+      map: `| R-1 | P-001 | ${mapped} |`,
+    });
+    const preview = validateAcceptanceBarSource(content);
+    const written = buildAcceptanceBarSeed({ ...input, planContent: content });
+    expect(preview).toMatchObject({
+      ok: false,
+      problems: [{ code: 'bar_evidence_plane_invalid', barKey: 'R-1' }],
+    });
+    expect(written).toMatchObject({ ok: false, error: 'bar_evidence_plane_invalid' });
+    if (preview.ok || written.ok) throw new Error('conflicting planes were admitted');
+    expect(preview.problems).toEqual(written.problems);
+
+    const consistent = content.replace(`| ${mapped} |`, `| ${accepted} |`);
+    expect(validateAcceptanceBarSource(consistent).ok).toBe(true);
+    expect(buildAcceptanceBarSeed({ ...input, planContent: consistent }).ok).toBe(true);
+  });
+
   it('authors one unified requirement and derives all mapped proof contracts without rewriting its promise', () => {
     const sections = {
       intent: { request: 'Export every matching customer.', sourceRefs: ['session_turn:export'] },

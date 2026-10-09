@@ -135,14 +135,17 @@ export async function browserResponseBytes(response: Response, active: ActiveOpe
 
 export async function closeBrowserSession(session: Session, reason: string): Promise<void> {
   if (session.closing) return session.closing;
-  session.reason = reason; session.state = 'closing';
+  const lost = session.state === 'lost';
+  if (!lost) { session.reason = reason; session.state = 'closing'; }
   if (session.idle) clearTimeout(session.idle);
   // Assign before aborting: abort's listener may request this same cleanup.
   session.closing = Promise.resolve().then(async () => {
     session.active?.controller.abort();
-    try { await session.server.close(); }
-    catch { await session.server.kill(); }
-    session.processEnded = true; session.state = 'closed'; session.endedAt = Date.now();
+    if (!session.processEnded) {
+      try { await session.server.close(); }
+      catch { await session.server.kill(); }
+    }
+    session.processEnded = true; session.state = lost ? 'lost' : 'closed'; session.endedAt ??= Date.now();
     await rm(session.root, { recursive: true, force: true });
   }).catch((error) => { session.state = 'lost'; session.reason = 'cleanup-unconfirmed'; throw error; });
   return session.closing;
@@ -248,7 +251,15 @@ export async function runBrowserSession(
       const current = session;
       await context.route('**/*', (route) => relay(current, route));
       context.on('page', (extra) => { if (extra !== page) void extra.close(); });
-      launched.server.on('close', () => { current.processEnded = true; if (current.state === 'live') { current.state = 'lost'; current.reason = 'browser-process-ended'; current.endedAt = Date.now(); current.active?.controller.abort(); } });
+      launched.server.on('close', () => {
+        current.processEnded = true;
+        if (current.state === 'live') {
+          current.state = 'lost'; current.reason = 'browser-process-ended'; current.endedAt = Date.now();
+          // Idle exits have no operation finally-block to release the directory.
+          // Use the same serialized cleanup, retaining the unexpected-loss state.
+          void closeBrowserSession(current, current.reason).catch(() => {});
+        }
+      });
       sessions.set(id, session);
     } catch (error) {
       if (launched) await launched.server.kill();

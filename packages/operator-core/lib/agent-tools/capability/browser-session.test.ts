@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { UnifiedToolContext } from '@papercusp/agent-mcp';
 import type { Route } from 'playwright-core';
+import { existsSync } from 'node:fs';
 import { browserScope, browserSessionArg, browserResponseBytes, runBrowserSession, type BrowserDeps } from './browser-session';
 import fetchTool from './fetch';
 
@@ -19,7 +20,7 @@ function fixture() {
     screenshot: vi.fn(async () => Buffer.from('png')) };
   const context = { route: vi.fn(async (_pattern, handler) => { relay = handler; }), routeWebSocket: vi.fn(async () => {}),
     newPage: vi.fn(async () => page), on: vi.fn() };
-  const server = { close: vi.fn(async () => {}), kill: vi.fn(async () => {}), on: vi.fn() };
+  const server = { close: vi.fn(async () => {}), kill: vi.fn(async () => {}), on: vi.fn<(event: string, handler: () => void) => void>() };
   const profile = vi.fn<BrowserDeps['profile']>(async () => trusted);
   const release = vi.fn(async () => {});
   const deps = {
@@ -153,6 +154,21 @@ describe('managed browser authority and lifecycle', () => {
     const closed = await f.call({ op: 'close', id });
     expect(closed.payload.browser).toMatchObject({ state: 'closed', reason: 'idle-expired', restartRecovery: 'unrecoverable' });
     expect(f.server.close).toHaveBeenCalledOnce();
+  });
+  it('cleans an unexpectedly ended idle process and retains loss truth after explicit cleanup', async () => {
+    const f = fixture(); const id = await f.open();
+    const root = vi.mocked(f.deps.launch).mock.calls[0][1];
+    expect(existsSync(root)).toBe(true);
+    const ended = f.server.on.mock.calls.find(([event]) => event === 'close')![1] as () => void;
+    ended();
+    await vi.waitFor(() => expect(existsSync(root)).toBe(false));
+    const lost = await f.call({ op: 'observe', id });
+    expect(lost.payload).toMatchObject({ error: 'browser_unrecoverable', browser: {
+      state: 'lost', reason: 'browser-process-ended', restartRecovery: 'unrecoverable',
+    } });
+    const closed = await f.call({ op: 'close', id });
+    expect(closed.payload.browser).toMatchObject({ state: 'lost', reason: 'browser-process-ended' });
+    expect(f.server.close).not.toHaveBeenCalled();
   });
   it('retains one browser registry when the module is evaluated again', async () => {
     const f = fixture(); const id = await f.open();

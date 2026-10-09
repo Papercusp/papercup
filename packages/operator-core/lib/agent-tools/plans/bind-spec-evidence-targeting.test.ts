@@ -25,6 +25,7 @@ import { mutationTargetingRefusal, type bindingSchema } from './bind-spec-eviden
 type Binding = z.infer<typeof bindingSchema>;
 
 const SCENARIO = 'reconnect-failure';
+const MUTATION_CASE = 'reconnect is not replayed';
 const TARGETING_TEST_FILE = 'packages/operator-core/lib/agent-tools/plans/bind-spec-evidence-targeting.test.ts';
 
 function clause(over: Partial<SpecClauseRevision> = {}): SpecClauseRevision {
@@ -126,14 +127,29 @@ function counterexampleRow(targeted: unknown): SpecEvidenceForAdequacy {
     evidenceRef: `test-run-group:${originRunId}:counterexample`,
     coverageEvidenceRef: null,
     testRunId: 45,
-    testRunProvenance: { filePath: TARGETING_TEST_FILE, commitSha: null, worktreeDirty: null },
+    testRunProvenance: {
+      filePath: TARGETING_TEST_FILE,
+      source: 'mutation-probe',
+      mutationPhase: 'mutant',
+      commitSha: null,
+      worktreeDirty: null,
+      mutationFailureLines: [`${MUTATION_CASE}: expected the counterexample to be observed`],
+    },
+    testRunExecution: {
+      status: 'fail',
+      passed: 0,
+      failed: 1,
+      skipped: 0,
+      collectionFailed: false,
+      testLayer: 'integration',
+    },
     details: {
       adequacy,
       testExecution: {
         schemaVersion: 1,
         originRunId,
         binding: {
-          counterexample: { test: 'reconnect is not replayed', messageIncludes: 'not replayed' },
+          counterexample: { test: MUTATION_CASE, messageIncludes: 'not replayed' },
         },
       },
     },
@@ -147,6 +163,16 @@ function currentClauseTestRow(): SpecEvidenceForAdequacy {
     coverageEvidenceRef: null,
     testRunId: 44,
     testRunProvenance: { filePath: TARGETING_TEST_FILE, commitSha: null, worktreeDirty: null },
+    testRunExecution: {
+      status: 'pass',
+      passed: 1,
+      failed: 0,
+      skipped: 0,
+      collectionFailed: false,
+      testLayer: 'integration',
+      passedCaseTitles: [MUTATION_CASE],
+    },
+    details: { adequacy: { testCases: [MUTATION_CASE], outcome: 'passed' } },
   });
 }
 

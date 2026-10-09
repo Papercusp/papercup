@@ -47,7 +47,7 @@ import {
 } from 'node:fs';
 import * as fsp from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join } from 'node:path';
 
 import type { ConsoleEnvelope } from './console-launcher';
 import { prepareKickoffEnvironment } from './agent-kickoff/prompt-transport.mjs';
@@ -1445,8 +1445,21 @@ interface KickoffProofRequest {
 /** Create a parent-owned, single-launch receipt rendezvous. */
 function createKickoffProofRequest(): KickoffProofRequest {
   const token = randomBytes(24).toString('hex');
+  // This is a control-plane rendezvous, not bulk build scratch. Prefer the
+  // existing private per-user runtime mount so a full scratch volume cannot
+  // prevent the parent and child from establishing kickoff proof (WI-10007856).
+  // Hosts without such a directory retain their ordinary OS temp route.
+  const uid = process.getuid?.();
+  const runtime = [process.env.XDG_RUNTIME_DIR, uid === undefined ? undefined : `/run/user/${uid}`]
+    .find((candidate) => {
+      if (!candidate || !isAbsolute(candidate)) return false;
+      try {
+        const info = statSync(candidate);
+        return info.isDirectory() && info.uid === uid && (info.mode & 0o077) === 0;
+      } catch { return false; }
+    });
   const path = join(
-    tmpdir(),
+    runtime ?? tmpdir(),
     `papercup-kickoff-proof-${process.pid}-${Date.now()}-${randomBytes(12).toString('hex')}.json`,
   );
   const fd = openSync(path, 'wx', 0o600);

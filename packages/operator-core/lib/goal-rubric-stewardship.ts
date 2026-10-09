@@ -63,17 +63,24 @@ export function classifyStewardshipCycle(
     rubricRevision: card.rubricRevision ?? null, baselineRef: baseline?.issueId ?? null,
     scorecardRef: card.issueId, repairRefs, status, reason,
   });
+  if (!Number.isFinite(Date.parse(card.createdAt)) ||
+      (baseline && !Number.isFinite(Date.parse(baseline.createdAt)))) {
+    return out('unverified', 'Scorecard chronology could not be verified.');
+  }
   if (!card.subject || !card.settled || !card.current) return out('unverified', 'Current, audited terminal evidence is required.');
   if (!baseline) {
     if (card.supersedes) return out('unverified', 'The linked baseline is outside the available goal-scoped evidence.');
     if (Object.values(card.ratings).some(r => BAD.has(r.rating))) {
       const closed = repairRefs.length > 0 && repairRefs.every(id => repairs.some(r =>
-        r.id === id && r.goalId === goalId && r.verified && r.closedAt));
+        r.id === id && r.goalId === goalId && r.verified && r.closedAt &&
+        Number.isFinite(Date.parse(r.closedAt)) && Date.parse(r.closedAt) > Date.parse(card.createdAt)));
       return out(closed ? 'needs-regrade' : 'needs-repair', closed
         ? 'Verified repairs are recorded; a comparable re-grade is still needed.'
         : 'Baseline findings need owned, verified repairs.');
     }
-    return out('baseline', 'Baseline recorded; verified improvement has not been established.');
+    return out(Object.values(card.ratings).every(r => GOOD.has(r.rating) || r.rating === 'not-applicable') &&
+      Object.keys(card.ratings).length > 0 ? 'baseline' : 'unverified',
+      'Baseline recorded; verified improvement has not been established.');
   }
   if (!baseline.subject || card.subject.ref !== baseline.subject.ref || card.subject.kind !== baseline.subject.kind ||
       card.rubricRef !== baseline.rubricRef || !card.rubricRevision || card.rubricRevision !== baseline.rubricRevision ||
@@ -86,7 +93,7 @@ export function classifyStewardshipCycle(
   const failed = Object.entries(baseline.ratings).filter(([, r]) => BAD.has(r.rating));
   if (!failed.length || !repairRefs.length) return out('unverified', 'No confirmed baseline finding with an owned repair is recorded.');
   const selected = repairRefs.map(id => repairs.find(r => r.id === id && r.goalId === goalId));
-  if (selected.some(r => !r?.verified || !r.closedAt ||
+  if (selected.some(r => !r?.verified || !r.closedAt || !Number.isFinite(Date.parse(r.closedAt)) ||
       Date.parse(r.closedAt) <= Date.parse(baseline.createdAt) || Date.parse(r.closedAt) >= Date.parse(card.createdAt))) {
     return out('unverified', 'Every linked repair needs verification between the baseline and re-grade.');
   }
@@ -130,8 +137,8 @@ export async function readGoalRubricStewardship(
          AND feature_id = ANY(${baselineIds}) AND created_ts <= ${now}` : [];
     const ids = [...new Set([...page, ...earlier].map(r => r.id))];
     // Reuse the canonical reader: it resolves rubric/audit currentness and retractions.
-    const [{ listScorecards, settledGradingAuditIsCurrent }, { getRubric }, { isSufficientEvidence }] = await Promise.all([
-      import('./scorecards'), import('./rubrics'), import('./work-item-completion-authority'),
+    const [{ listScorecards, settledGradingAuditIsCurrent }, { getRubric }, { isSufficientEvidence }, { getWorkItemsByIds }] = await Promise.all([
+      import('./scorecards'), import('./rubrics'), import('./work-item-completion-authority'), import('./work-items'),
     ]);
     const [stored, rubric] = await Promise.all([
       ids.length ? listScorecards({ issueIds: ids, includeSuperseded: true, limit: PAGE_SIZE * 2 }) : Promise.resolve([]),
@@ -139,21 +146,23 @@ export async function readGoalRubricStewardship(
     ]);
     const rubrics = new Map(await Promise.all([...new Set(stored.map(c => c.rubricRef))].map(async ref => [ref, await getRubric(ref)] as const)));
     const cards: StewardshipCard[] = stored.filter(c => ids.includes(c.issueId)).map(c => ({ ...c,
-      settled: !c.provisional && !c.synthesized && !c.retracted && !!c.gradingAudit && settledGradingAuditIsCurrent(c),
+      settled: c.rubricResolved && c.missingKeys.length === 0 && !c.provisional && !c.synthesized &&
+        !c.retracted && !!c.gradingAudit && settledGradingAuditIsCurrent(c),
       current: c.rubricCurrentness?.state === 'current',
       requiresIndependentAcceptance: rubrics.get(c.rubricRef)?.kind === 'acceptance' ||
         rubrics.get(c.rubricRef)?.gradingAuthority === 'independent',
     }));
     const refs = [...new Set(cards.flatMap(stewardshipRepairRefs))];
-    const repairRows = refs.length ? await sql<{ id: string; owner: string | null; closed_ts: string | null; authority: string | null; payload: Record<string, unknown>; state: string }[]>`
-      SELECT feature_id AS id, terminal_owner AS owner, closed_ts::text, authority, payload, state
+    const repairRows = refs.length ? await sql<{ id: string }[]>`
+      SELECT feature_id AS id
         FROM harness_shared.work_items WHERE workspace_id = ${input.workspaceId}
          AND goal_id = ${input.goalId} AND feature_id = ANY(${refs})` : [];
-    const repairs: StewardshipRepair[] = repairRows.map(r => ({
-      id: r.id, goalId: input.goalId, owner: r.owner,
-      closedAt: r.closed_ts ? new Date(Number(r.closed_ts)).toISOString() : null,
-      verified: r.state === 'done' && (r.authority === 'committed' || r.authority === 'validated') &&
-        isSufficientEvidence(r.payload?._completionEvidence as Parameters<typeof isSufficientEvidence>[0]),
+    const canonicalRepairs = repairRows.length ? await getWorkItemsByIds(repairRows.map(r => r.id)) : [];
+    const repairs: StewardshipRepair[] = canonicalRepairs.map(r => ({
+      id: r.id, goalId: input.goalId, owner: r.terminalOwner,
+      closedAt: r.closedAt,
+      verified: r.state === 'done' && (r.completionAuthority === 'committed' || r.completionAuthority === 'validated') &&
+        isSufficientEvidence(r.terminalCompletionEvidence),
     }));
     const latest = cards.find(c => c.rubricRef === WOE_RUBRIC && c.current && c.settled);
     return { ...base, complete: rows.length <= PAGE_SIZE, rubricRevision: rubric?.revision ?? null,

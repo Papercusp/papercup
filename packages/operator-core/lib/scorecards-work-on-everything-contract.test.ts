@@ -22,6 +22,16 @@ const rating = (overrides: Partial<ObservationRatingEntry> = {}): ObservationRat
 });
 
 describe('Work on everything scorecard contract', () => {
+  it.each(['rubric-coverage-stewardship', 'rubric-quality-stewardship', 'grading-correction-closure'])(
+    'cannot average away absent or failed %s stewardship', key => {
+      expect(computeWorkOnEverythingRollup(WORK_ON_EVERYTHING_STEWARDSHIP_RUBRIC,
+        { [key]: rating({ rating: 'fail' }) }, [key]))
+        .toMatchObject({ verdict: 'fail', criticalFailures: [key] });
+      expect(computeWorkOnEverythingRollup(WORK_ON_EVERYTHING_STEWARDSHIP_RUBRIC,
+        { [key]: rating({ rating: 'unknown' }) }, [key]))
+        .toMatchObject({ verdict: 'unassessable', criticalUnknowns: [key] });
+    },
+  );
   it('requires replayable evidence and explicit attribution', () => {
     expect(() =>
       validateWorkOnEverythingEvidenceEnvelope(WORK_ON_EVERYTHING_STEWARDSHIP_RUBRIC, {

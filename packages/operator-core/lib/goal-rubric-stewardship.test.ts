@@ -35,6 +35,11 @@ describe('goal rubric stewardship: verified improvement', () => {
     expect(grade({ ...regrade(), createdBy: 'builder' }).status).toBe('unverified');
     expect(grade({ ...regrade(), createdBy: 'builder', requiresIndependentAcceptance: false }).status).toBe('verified');
   });
+  it('rejects unreadable chronology instead of treating NaN comparisons as verified order', () => {
+    expect(grade({ ...regrade(), createdAt: 'invalid' }).status).toBe('unverified');
+    expect(grade(regrade(), { ...baseline(), createdAt: 'invalid' }).status).toBe('unverified');
+    expect(grade(regrade(), baseline(), [{ ...repair(), closedAt: 'invalid' }]).status).toBe('unverified');
+  });
   it('keeps unresolved and unknown re-grade criteria visible', () => {
     for (const rating of ['fail', 'partial', 'unknown']) {
       expect(grade({ ...regrade(), ratings: { quality: { rating, evidence: 'Measured' } } }).status).toBe('needs-repair');

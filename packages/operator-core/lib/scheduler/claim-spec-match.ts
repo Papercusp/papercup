@@ -281,6 +281,20 @@ function wordBoundaryRegex(literal: string): RegExp {
   return new RegExp(`(?<![A-Za-z0-9])${escapeRegexLiteral(literal)}(?![A-Za-z0-9])`, 'i');
 }
 
+// A census evaluates the same filter leaves for thousands of rows. Keep the
+// compiled expression with its leaf, without retaining retired specs globally.
+// Check the operator and literal because callers may edit a leaf in place.
+const textPredicates = new WeakMap<FilterLeaf, { op: 'word' | 'glob'; literal: string; regex: RegExp }>();
+
+function textPredicateRegex(leaf: FilterLeaf, op: 'word' | 'glob'): RegExp {
+  const literal = String(leaf.value);
+  const cached = textPredicates.get(leaf);
+  if (cached?.op === op && cached.literal === literal) return cached.regex;
+  const regex = op === 'word' ? wordBoundaryRegex(literal) : globRegex(literal);
+  textPredicates.set(leaf, { op, literal, regex });
+  return regex;
+}
+
 function compareScalar(actual: string | number | null, leaf: FilterLeaf): boolean {
   if (actual == null) {
     // A NULL/absent field has NO value, so it matches no positive predicate (`=`, `glob`,
@@ -296,8 +310,8 @@ function compareScalar(actual: string | number | null, leaf: FilterLeaf): boolea
   }
   const values = Array.isArray(leaf.value) ? leaf.value : [leaf.value];
   if (leaf.op === 'in') return values.some((v) => String(actual) === String(v));
-  if (leaf.op === 'glob') return globRegex(String(leaf.value)).test(String(actual));
-  if (leaf.op === 'word') return wordBoundaryRegex(String(leaf.value)).test(String(actual));
+  if (leaf.op === 'glob') return textPredicateRegex(leaf, 'glob').test(String(actual));
+  if (leaf.op === 'word') return textPredicateRegex(leaf, 'word').test(String(actual));
   if (leaf.op === 'contains') return String(actual).toLowerCase().includes(String(leaf.value).toLowerCase());
 
   if (typeof actual === 'number') {
@@ -331,8 +345,8 @@ function matchLeaf(subject: ClaimSpecSubject, leaf: FilterLeaf): boolean {
   if (Array.isArray(actual)) {
     const wanted = (Array.isArray(leaf.value) ? leaf.value : [leaf.value]).map(String);
     if (leaf.op === 'in') return actual.some((v) => wanted.includes(v));
-    if (leaf.op === 'glob') return actual.some((v) => globRegex(String(leaf.value)).test(v));
-    if (leaf.op === 'word') return actual.some((v) => wordBoundaryRegex(String(leaf.value)).test(v));
+    if (leaf.op === 'glob') return actual.some((v) => textPredicateRegex(leaf, 'glob').test(v));
+    if (leaf.op === 'word') return actual.some((v) => textPredicateRegex(leaf, 'word').test(v));
     if (leaf.op === '!=') return !actual.includes(String(leaf.value));
     // SQL compiler treats array '=' and 'contains' as membership.
     return actual.includes(String(leaf.value));
