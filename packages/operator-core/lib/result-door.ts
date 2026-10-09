@@ -2121,7 +2121,9 @@ function attachPendingScratchFallback<T extends DoorableResult>(fallback: T, pen
   const pendingDoor = recordAt(pending._meta?.resultDoor);
   const fallbackCursor = recordAt(fallbackDoor?.recoveryCursor);
   const pendingCursor = recordAt(pendingDoor?.recoveryCursor);
-  if (fallbackCursor?.kind !== 'volatile-scratch-page' || !fallbackDoor || !pendingDoor || !pendingCursor) {
+  const fallbackCanRecover = fallbackCursor?.kind === 'volatile-scratch-page' ||
+    fallbackCursor?.kind === 'release-outcome-check';
+  if (!fallbackCanRecover || !fallbackDoor || !pendingDoor || !pendingCursor) {
     return null;
   }
 

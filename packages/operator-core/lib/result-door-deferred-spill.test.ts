@@ -510,6 +510,11 @@ describe('result-door deferred spill (WI-10004533)', () => {
       expect(result._meta?.resultDoor).toMatchObject({
         spillPending: true,
         spillErrorCode: 'ETIMEDOUT',
+        pendingSpill: {
+          path: expect.any(String),
+          uri: expect.any(String),
+          cursor: { kind: 'pending-spill', errorCode: 'ETIMEDOUT' },
+        },
       });
       expect(text.length).toBeLessThan(originalText.length);
 
