@@ -1133,7 +1133,7 @@ export async function writeWithScratchQuota(
                 ...(phase === 'quotaRecoveryMs' && activeRecoveryDiagnostics
                   ? { quotaRecoveryDiagnostics: snapshotScratchQuotaRecoveryDiagnostics(activeRecoveryDiagnostics) }
                   : {}),
-                ...(phase === 'refreshWaitMs' && entry.refreshDiagnostics
+                ...(entry.refreshing && entry.refreshDiagnostics
                   ? { usageRefreshDiagnostics: snapshotScratchQuotaRecoveryDiagnostics(entry.refreshDiagnostics) }
                   : {}),
               },

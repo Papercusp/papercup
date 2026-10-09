@@ -979,6 +979,83 @@ describe('deferred scratch quota recovery', () => {
     }
   });
 
+  it('includes background scan diagnostics in progress while a file write overlaps usage refresh', async () => {
+    const wsRoot = scratchRootForWorkspace('ws-Q');
+    makeSparseRun('ws-Q', UUID(1), 128);
+    _setScratchUsageForTests('ws-Q', 0);
+
+    const readdirMock = vi.mocked(readdirAsync);
+    const originalRead = readdirMock.getMockImplementation()!;
+    const read = originalRead as unknown as (path: unknown, options?: unknown) => Promise<unknown>;
+    let releaseScan!: () => void;
+    let reachedRoot!: () => void;
+    const scanGate = new Promise<void>((resolve) => { releaseScan = resolve; });
+    const atRoot = new Promise<void>((resolve) => { reachedRoot = resolve; });
+    let rootReads = 0;
+    readdirMock.mockImplementation((async (path: unknown, options: unknown) => {
+      const entries = await read(path, options);
+      if (String(path) === wsRoot && ++rootReads === 1) {
+        reachedRoot();
+        await scanGate;
+      }
+      return entries as never;
+    }) as typeof readdirAsync);
+
+    const timings: ScratchWriteTimings[] = [];
+    let releaseWrite!: () => void;
+    let startedWrite!: () => void;
+    const writeGate = new Promise<void>((resolve) => { releaseWrite = resolve; });
+    const writeStarted = new Promise<void>((resolve) => { startedWrite = resolve; });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const measurement = refreshScratchUsage('ws-Q');
+    let write: Promise<void> | undefined;
+    try {
+      await atRoot;
+      const filePath = join(wsRoot, 'quota', UUID(2), 'write-during-refresh.bin');
+      write = writeWithScratchQuota({
+        workspaceId: 'ws-Q',
+        filePath,
+        bytes: 16,
+        onTiming: (row) => timings.push(row),
+      }, async () => {
+        startedWrite();
+        await writeGate;
+      });
+
+      await writeStarted;
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(timings).toHaveLength(1);
+      expect(timings[0].progress).toMatchObject({
+        phase: 'file-write',
+        pendingWrites: 1,
+        recoveryActive: false,
+        refreshActive: true,
+        usageRefreshDiagnostics: {
+          readdirOperations: expect.any(Number),
+          currentOperationKind: 'readdir',
+          currentOperationElapsedMs: expect.any(Number),
+        },
+      });
+      expect(timings[0].progress?.usageRefreshDiagnostics?.readdirOperations).toBeGreaterThan(0);
+      expect(timings[0].progress?.usageRefreshDiagnostics?.currentOperationElapsedMs).toBeGreaterThan(0);
+
+      releaseScan();
+      await measurement;
+      releaseWrite();
+      await write;
+      expect(timings.find((row) => !row.progress)).toMatchObject({
+        quotaRecoveryMs: 0,
+        writeMs: expect.any(Number),
+      });
+    } finally {
+      releaseScan();
+      releaseWrite();
+      readdirMock.mockImplementation(originalRead);
+      vi.useRealTimers();
+      await Promise.allSettled([measurement, ...(write ? [write] : [])]);
+    }
+  });
+
   it('reports a failed filesystem write without letting its diagnostic observer replace the error', async () => {
     _setScratchUsageForTests('ws-Q', 0);
     let clock = 0;
