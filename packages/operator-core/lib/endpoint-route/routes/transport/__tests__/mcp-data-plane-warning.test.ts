@@ -63,6 +63,41 @@ describe('withMcpDiagnosticWarnings', () => {
     expect(annotated._meta).toBeUndefined();
   });
 
+  it('does not warn for a populated coord:await-inbox watch result', () => {
+    const body = {
+      ok: true,
+      watch: { id: 42, pattern: 'coord:inbox-wake:su-test', wake: true, once: false },
+      inbox_wake_key: 'coord:inbox-wake:su-test',
+      reachability: { before: { reachable: true }, after: { reachable: true } },
+    };
+    const result: McpCallResult = {
+      content: [{ type: 'text', text: JSON.stringify(body) }],
+    };
+
+    const annotated = withMcpDiagnosticWarnings(
+      result,
+      context({ dataPlaneDegradedAtMs: Date.parse('2026-10-08T10:23:20.854Z') }),
+    );
+
+    expect(annotated).toBe(result);
+    expect(annotated._meta).toBeUndefined();
+  });
+
+  it('does not warn for a populated sessions:list result', () => {
+    const body = { ok: true, count: 1, total: 1, sessions: [{ session_id: 'session-1' }] };
+    const result: McpCallResult = {
+      content: [{ type: 'text', text: JSON.stringify(body) }],
+    };
+
+    const annotated = withMcpDiagnosticWarnings(
+      result,
+      context({ dataPlaneDegradedAtMs: Date.parse('2026-10-09T06:10:34.376Z') }),
+    );
+
+    expect(annotated).toBe(result);
+    expect(annotated._meta).toBeUndefined();
+  });
+
   it('does not warn for populated structuredContent when the MCP result has no text block', () => {
     const result: McpCallResult = {
       content: [],
