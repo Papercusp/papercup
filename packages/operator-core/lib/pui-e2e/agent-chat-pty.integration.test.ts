@@ -7674,6 +7674,11 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
     let approvalStart: Extract<SuSessionEvent, { type: 'tool'; phase: 'started' }> | undefined;
     let approvalEnd: Extract<SuSessionEvent, { type: 'tool'; phase: 'completed' }> | undefined;
     try {
+      // beforeEach seeds Plans with this fixture's harness. Any owner key
+      // cancels pending view-state restoration, so the cold OS child must
+      // show that state before openComposer sends Escape/o. The generic
+      // startup footer can still belong to the default papercup context.
+      await pane.waitFor('Plans (', { timeoutMs: 40_000 });
       await openComposer(pane);
       if (approvalEnabled) {
         pane.write(approvalRequest);
