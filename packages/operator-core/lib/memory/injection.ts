@@ -514,6 +514,28 @@ interface CorpusLegResult {
   rerank: string;
 }
 
+/** Both memory success and early exits record the concurrently completed corpus. */
+function corpusAdmissionStats(corpus: CorpusLegResult | null): CorpusAdmissionStats | null {
+  return corpus ? {
+    outcome: corpus.outcome,
+    returned: corpus.candidateCount,
+    selected: corpus.selected,
+    admitted: corpus.lines.length,
+    dropped: corpus.dropped,
+    gate: corpus.gate ? {
+      verdict: corpus.gate.verdict,
+      reasons: [...corpus.gate.reasons],
+      dropped: corpus.gate.verdict === 'sit-out' ? corpus.selected : 0,
+    } : null,
+    sessionDedup: corpus.sessionDedup,
+    embedderAvailable: corpus.embedderAvailable,
+    legs: corpus.legs,
+    ...(corpus.stages ? { stages: corpus.stages } : {}),
+    retrievalDepth: corpus.retrievalDepth,
+    rerank: corpus.rerank,
+  } : null;
+}
+
 const emptyCorpusDrops = (): Record<CorpusAdmissionDropReason, number> => ({
   'ambient-excluded': 0,
   'self-session': 0,
@@ -960,6 +982,9 @@ async function buildBlockInner(
     if (earlyStatsSchedule) return earlyStatsSchedule;
     earlyStatsSchedule = (async () => {
       try {
+        // The outer builder already joins this promise. Preserve its completed
+        // receipts even when the independent memory backend cannot run.
+        const corpus = await corpusP.catch(() => null);
         const { sql } = getOrgPg();
         const { recordRecallStats } = await import('./recall-stats');
         // Join only the SCHEDULING boundary. The insert itself stays
@@ -1000,6 +1025,7 @@ async function buildBlockInner(
             truncated: false,
             dropped: { pack: 0, feedback: 0, workspace: 0, dedup: 0, jev: 0, nearDuplicate: 0, budget: 0 },
             byLeg: { cosineOnly: 0, lexicalOnly: 0, both: 0 },
+            corpus: corpusAdmissionStats(corpus),
           },
         });
       } catch (error) {
@@ -1111,28 +1137,7 @@ async function buildBlockInner(
         // completed build has actually invoked the writer rather than merely
         // leaving an untracked async continuation behind.
         const corpus = await corpusP.catch(() => null);
-        admission.corpus = corpus
-          ? {
-              outcome: corpus.outcome,
-              returned: corpus.candidateCount,
-              selected: corpus.selected,
-              admitted: corpus.lines.length,
-              dropped: corpus.dropped,
-              gate: corpus.gate
-                ? {
-                    verdict: corpus.gate.verdict,
-                    reasons: [...corpus.gate.reasons],
-                    dropped: corpus.gate.verdict === 'sit-out' ? corpus.selected : 0,
-                  }
-                : null,
-              sessionDedup: corpus.sessionDedup,
-              embedderAvailable: corpus.embedderAvailable,
-              legs: corpus.legs,
-              ...(corpus.stages ? { stages: corpus.stages } : {}),
-              retrievalDepth: corpus.retrievalDepth,
-              rerank: corpus.rerank,
-            }
-          : null;
+        admission.corpus = corpusAdmissionStats(corpus);
         const { sql } = getOrgPg();
         const { recordRecallStats } = await import('./recall-stats');
         // Join only scheduling; the queued insert remains fire-and-forget.
