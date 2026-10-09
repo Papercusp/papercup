@@ -76,6 +76,7 @@ const DECLARATION_RE = /\.d\.[cm]?ts$/;
 const SOURCE_RE = /\.(?:tsx?|[cm]?js|[cm]ts)$/;
 const EXECUTION_MANIFEST_RE =
   /(?:^|\/)package\.json$|^\.github\/(?:workflows|actions)\/.*\.ya?ml$/;
+const EXECUTION_SCRIPT_RE = /\.(?:sh|bash)$/;
 
 /** Repo-relative paths under a `lib/release/` directory — the gate's own detector domain. */
 const DETECTOR_DIR_RE = /(?:^|\/)lib\/release\//;
@@ -224,7 +225,17 @@ export function parseWorkspaceRelativeMentions(text) {
  */
 export function isExecutionPathMentionSource(file) {
   const path = String(file);
-  return SOURCE_RE.test(path) || EXECUTION_MANIFEST_RE.test(path);
+  return (
+    SOURCE_RE.test(path) || EXECUTION_MANIFEST_RE.test(path) || EXECUTION_SCRIPT_RE.test(path)
+  );
+}
+
+/** Shell comment lines can describe a path without executing it. */
+function stripShellCommentLines(text) {
+  return String(text)
+    .split('\n')
+    .map((line) => (/^\s*#/.test(line) ? '' : line))
+    .join('\n');
 }
 
 /** Normalize a POSIX-ish path, resolving `.` and `..` segments. */
@@ -350,7 +361,8 @@ export function buildImportGraph({
     // Sound prefilter — see the header. A sibling inside lib/release/ may import with a
     // bare './name', so directory membership is checked as well as the substring.
     if (!raw.includes('release/') && !DETECTOR_DIR_RE.test(file)) continue;
-    const text = stripComments(raw);
+    const stripped = stripComments(raw);
+    const text = EXECUTION_SCRIPT_RE.test(file) ? stripShellCommentLines(stripped) : stripped;
     if (!text) continue;
 
     if (SOURCE_RE.test(file)) {

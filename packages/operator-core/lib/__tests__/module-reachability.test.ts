@@ -444,6 +444,28 @@ describe('buildImportGraph', () => {
     expect(isExecutionPathMentionSource(workflow)).toBe(true);
   });
 
+  it('treats shell commands as execution evidence but ignores shell comment-only path mentions', () => {
+    const caller = 'papercusp-desktop/bin/publish-release-instructions.sh';
+    const commentOnly = 'apps/operator/bin/old-release-command.sh';
+    const files = [DETECTOR, caller, commentOnly];
+    const bodies: Record<string, string> = {
+      [DETECTOR]: 'export const x = 1;',
+      [caller]: [
+        '#!/usr/bin/env bash',
+        '# historical caller apps/operator/lib/release/prompt-divergence.ts',
+        `npx tsx ${DETECTOR}`,
+      ].join('\n'),
+      [commentOnly]: [
+        '#!/usr/bin/env bash',
+        '# apps/operator/lib/release/prompt-divergence.ts was removed',
+      ].join('\n'),
+    };
+    const graph = buildImportGraph({ files, readFile: (f: string) => bodies[f] ?? '' });
+
+    expect([...(graph.pathMentions.get(DETECTOR) ?? [])]).toEqual([caller]);
+    expect(isExecutionPathMentionSource(caller)).toBe(true);
+  });
+
   // The lookbehind that keeps the fix above from inventing an edge: the TAIL of a
   // repo-relative mention must not be re-resolved against the manifest's own workspace,
   // or a same-named file in a different workspace reads as a caller — a dead module
