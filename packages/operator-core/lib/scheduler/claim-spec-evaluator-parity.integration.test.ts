@@ -311,7 +311,7 @@ interface Probe {
 
 function buildProbes(): Probe[] {
   const out: Probe[] = [];
-  const push = (name: string, leaf: FilterLeaf) => {
+  const push = (name: string, leaf: FilterNode) => {
     out.push({ name, filter: leaf });
     out.push({ name: `not:{${name}}`, filter: { not: leaf } });
   };

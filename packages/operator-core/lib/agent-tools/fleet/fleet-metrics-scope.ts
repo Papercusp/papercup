@@ -373,8 +373,9 @@ export async function readFleetMetricSourceItems(scope: ResolvedFleetMetricScope
   const { compileFilter } = await import('../../scheduler/get-next');
   const filters = [scope.claimSpec.current, ...scope.claimSpec.segments.map(segment => segment.spec)]
     .map(spec => spec.view.filter);
+  const uniqueFilters = [...new Map(filters.map(value => [JSON.stringify(value), value])).values()];
   const filter: FilterNode | undefined = filters.some(value => value === undefined)
-    ? undefined : { any: filters as FilterNode[] };
+    ? undefined : uniqueFilters.length === 1 ? uniqueFilters[0] : { any: uniqueFilters as FilterNode[] };
   const issueWorkspace = issuesScopeWorkspace();
   const rows = await sql<Array<{ feature_id: string }>>`
     SELECT wi.feature_id FROM harness_shared.work_items wi
