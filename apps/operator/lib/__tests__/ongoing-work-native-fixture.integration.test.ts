@@ -1,7 +1,9 @@
 import postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createOrgTestDb, type OrgTestDb } from '../../../../packages/operator-core/test/_org-test-db';
-import { insertNativeCollectionGoal, insertNativeCollectionPlan, setNativeCollectionPlanArchived } from '../../e2e/_ongoing-work-native-fixture';
+import { insertNativeCollectionGoal, insertNativeCollectionPlan, nativeCollectionDeclaration, setNativeCollectionPlanArchived } from '../../e2e/_ongoing-work-native-fixture';
+import { isWorkOnEverything } from '../../app/adv/hud/ongoing-work-draft';
+import type { GoalDetailInput } from '../../app/adv/hud/goal-detail-model';
 import { readGoalPortfolioBrief } from '../../../../packages/operator-core/lib/goal-launch-settings';
 import { applyGoalPropertyWrite } from '../../../../packages/operator-core/lib/typed-properties-db';
 import { ensureOrderedSelectionPolicyDatatype, ensurePlanRefListDatatype } from '../../../../packages/operator-core/lib/goals/package-property-datatypes';
@@ -52,21 +54,31 @@ describe('native collection fixture against migrated private PG', () => {
       });
   });
 
-  it('makes the real native plan seed actionable through canonical portfolio admission', async () => {
+  it('keeps the actual generic native declaration on the generic presentation and applies its named policy to admission', async () => {
     const workspaceId = 'native-admission-test', goalId = 'native-admission-positive', harness = 'native-admission';
     const ids = ['alpha', 'beta', 'blocked'].map(slug => `plan:${harness}/${slug}`);
-    await insertNativeCollectionGoal(sql, { workspaceId, goalId, title: 'Native admission', schema: {
-      worklist: { datatype: 'plan-ref-list', editable_by: 'both', default: ids,
-        collection: { source: 'active-workspace-plans', policy: 'worklist_policy', order: 'priority',
-          selectable: true, defaultSelected: true } },
-      worklist_policy: { datatype: 'ordered-selection-policy', editable_by: 'owner',
-        default: { order: [ids[1], ids[0], ids[2]], excluded: [] } },
-    } });
+    const { property, policyName, schema } = nativeCollectionDeclaration('plans', ids,
+      { order: [ids[1], ids[0], ids[2]], excluded: [] });
+    await ensureOrderedSelectionPolicyDatatype(sql, workspaceId);
+    await ensurePlanRefListDatatype(sql, workspaceId);
+    await insertNativeCollectionGoal(sql, { workspaceId, goalId, title: 'Native admission', schema });
     for (const slug of ['alpha', 'beta', 'blocked']) {
       await insertNativeCollectionPlan(sql, { workspaceId, harness, slug, title: slug,
         status: slug === 'blocked' ? 'draft' : 'active' });
     }
     const read = () => readGoalPortfolioBrief({ workspaceId, goalId, sql, claimability: 'skip' });
+    const { resolveGoalDetail } = await import('../../../../packages/operator-core/lib/sync-resolver/goals');
+    const detail = await resolveGoalDetail({ workspaceId, goalId }) as unknown as GoalDetailInput;
+    expect(detail.goal?.goalPackage).toBeNull();
+    expect(isWorkOnEverything(detail)).toBe(false);
+    expect(detail.goalData?.collections[property].selection).toMatchObject({
+      ok: true, configured: true, collection: { policy: policyName },
+    });
+    // The same read with the legacy declaration is the opposing presentation control.
+    expect(isWorkOnEverything({ ...detail, goalData: { ...detail.goalData!, propertySchema: {
+      ...detail.goalData!.propertySchema, worklist: { ...detail.goalData!.propertySchema.worklist,
+        collection: { ...detail.goalData!.propertySchema.worklist.collection!, policy: 'worklist_policy' } },
+    } } })).toBe(true);
     const brief = await read();
     expect(brief?.worklist.map(plan => plan.slug)).toEqual(['beta', 'alpha', 'blocked']);
     expect(brief?.worklist.find(plan => plan.slug === 'beta')).toMatchObject({
@@ -87,6 +99,24 @@ describe('native collection fixture against migrated private PG', () => {
       next: null, counts: { todo: 0 },
       placement: { state: 'blocked', reconciliation: { toolCall: null } },
     });
+
+    const written = await sql.begin(tx => applyGoalPropertyWrite(tx as unknown as typeof sql, {
+      workspaceId, goalId, property: policyName, value: { order: ids, excluded: [ids[1]] },
+      expectedVersion: 0, provenance: 'owner-edit', actorId: 'native-generic-owner',
+    }));
+    expect(written).toMatchObject({ ok: true });
+    const persisted = await resolveGoalDetail({ workspaceId, goalId }) as unknown as GoalDetailInput;
+    expect(isWorkOnEverything(persisted)).toBe(false);
+    expect(persisted.goalData?.properties[policyName]).toMatchObject({
+      version: 1, provenance: 'owner-edit', value: { order: ids, excluded: [ids[1]] },
+    });
+    expect(persisted.goalData?.properties.worklist_policy).toBeUndefined();
+    const reordered = await read();
+    expect(reordered?.worklist.map(plan => plan.ref)).toEqual(ids);
+    expect(reordered?.worklist.find(plan => plan.slug === 'beta')).toMatchObject({
+      selected: false, placement: { reconciliation: { toolCall: null } },
+    });
+    expect(reordered?.worklist.find(plan => plan.placement.reconciliation.toolCall !== null)?.slug).toBe('alpha');
   });
 
   it('preserves owner order, exclusion and attribution through native archive, agent refresh and rediscovery', async () => {
