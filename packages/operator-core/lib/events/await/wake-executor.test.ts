@@ -4472,27 +4472,54 @@ describe('executeWake — psu-host cold-auto fork (su-cold-auto-mode-2026-07-03 
   });
 
   describe('cold no-host fresh successor', () => {
-    it('replaces an exited cold owner with a fresh same-owner context and burns one turn', async () => {
+    it('re-tags the prompt at launch when earlier delivery gates outlive the provenance TTL', async () => {
       const launchColdFreshSuccessor = vi.fn(async () => true);
       const recordColdNoHostPark = vi.fn(async () => ({ action: 'tracked' as const, streak: 1 }));
       const spawnDetached = vi.fn(() => 4321);
-      const out = await executeWake(
-        work({ wakeHandle: advHandle(), payload: coldPayload({ routineId: 'loop-su-abc', wakeCount: 7 }) }),
-        coldDeps({
-          findPsuHost: vi.fn(() => null) as never,
-          alive: vi.fn(() => false),
-          launchColdFreshSuccessor,
-          recordColdNoHostPark,
-          spawnDetached,
-        }),
-      );
+      const nowMs = 1_700_000_000_000;
+      const staleDelayMs = 10 * 60_000 + 1;
+      let clockMs = nowMs;
+      const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => clockMs);
+      const tagCalls: Array<{ sid: string; origin: string; text: string; nowMs?: number }> = [];
+      const tagTurn = ((args: { sid: string; origin: string; text: string; nowMs?: number }) => {
+        tagCalls.push(args);
+        if (tagCalls.length === 1) clockMs += staleDelayMs;
+        return {
+          taggedText: `⟦tagged:${args.origin}:${tagCalls.length}⟧\n${args.text}`,
+          envelope: `⟦tagged:${args.origin}:${tagCalls.length}⟧`,
+          nonce: `nonce-${tagCalls.length}`,
+          origin: args.origin,
+          ledgerWritten: true,
+        };
+      }) as never;
 
-      expect(out).toEqual({ kind: 'delivered', channel: 'cold-fresh-successor' });
-      expect(launchColdFreshSuccessor).toHaveBeenCalledWith(expect.objectContaining({
-        subscriberId: 'su-abc', workspaceId: 'ws', harness: 'papercusp', deliveryId: expect.any(Number),
-      }));
-      expect(recordColdNoHostPark).not.toHaveBeenCalled();
-      expect(spawnDetached).not.toHaveBeenCalled();
+      try {
+        const out = await executeWake(
+          work({ wakeHandle: advHandle(), payload: coldPayload({ routineId: 'loop-su-abc', wakeCount: 7 }) }),
+          coldDeps({
+            findPsuHost: vi.fn(() => null) as never,
+            alive: vi.fn(() => false),
+            launchColdFreshSuccessor,
+            recordColdNoHostPark,
+            spawnDetached,
+            tagTurn,
+          }),
+        );
+
+        expect(out).toEqual({ kind: 'delivered', channel: 'cold-fresh-successor' });
+        expect(launchColdFreshSuccessor).toHaveBeenCalledWith(expect.objectContaining({
+          subscriberId: 'su-abc', workspaceId: 'ws', harness: 'papercusp', deliveryId: expect.any(Number),
+          wakeText: `⟦tagged:loop-fire:2⟧\n${tagCalls[1]?.text}`,
+        }));
+        expect(tagCalls).toHaveLength(2);
+        expect(tagCalls[1]?.nowMs).toBe(nowMs + staleDelayMs);
+        expect(tagCalls[1]?.text).toBe(tagCalls[0]?.text);
+        expect(tagCalls[1]?.text).not.toContain('⟦tagged:loop-fire:1⟧');
+        expect(recordColdNoHostPark).not.toHaveBeenCalled();
+        expect(spawnDetached).not.toHaveBeenCalled();
+      } finally {
+        nowSpy.mockRestore();
+      }
     });
 
     it('failed successor parks and streaks without falling through to transcript resume', async () => {
