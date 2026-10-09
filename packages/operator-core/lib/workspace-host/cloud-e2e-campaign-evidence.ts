@@ -46,6 +46,9 @@ const execution = measured.extend({
   accountId: text,
   runId: text,
   resourceLabel: text,
+  /** Loaded serving identity is required for final deployed acceptance, not candidate R5. */
+  deploymentRef: text.optional(),
+  servingIdentity: text.optional(),
   actions: z.array(z.object({ scenario: text, result: z.enum(['passed', 'failed', 'skipped', 'unknown']), evidenceRef: text })),
   hostId: text.optional(),
   census: z.custom<WorkspaceHostResourceCensus>().optional(),
@@ -69,10 +72,52 @@ const shipment = measured.extend({
   promotedArtifactSha256: sha,
   promotionRef: text,
   deploymentRef: text,
+  servingRef: text,
+  servingIdentity: text,
   finalExecutionId: text,
   auditRef: text,
   gradingRef: text,
   reportReadbackRef: text,
+});
+
+// Read-only projections of existing release, completion-audit, scorecard and
+// report writers. These are independently collected context, never taken from
+// acceptanceEvidence or inferred from a submitted reference string.
+const canonicalRecord = z.object({ ref: text, evidenceSha256: sha, observedAt: z.string().datetime() });
+const planIdentity = z.object({ planSlug: text, planRevision: z.number().int().positive(), planContentHash: sha });
+const artifactIdentity = z.object({ runtime, sourceSha: source, artifactSha256: sha });
+const shipmentContext = z.object({
+  subject: planIdentity.extend({
+    rubricRef: text, rubricRevision: z.number().int().positive(), criteriaHash: sha,
+    authorId: text, workItemIds: z.array(text).min(1),
+  }),
+  obligations: z.array(z.object({
+    runtime, evidenceRef: text, evidenceSha256: sha,
+    promotionRef: text, deploymentRef: text, servingRef: text,
+    auditRef: text, gradingRef: text, reportReadbackRef: text,
+  })),
+  promotions: z.array(canonicalRecord.merge(artifactIdentity).extend({ verdict: z.enum(['green', 'red', 'unknown']) })),
+  deployments: z.array(canonicalRecord.merge(artifactIdentity).extend({
+    promotionRef: text, status: z.enum(['deployed', 'failed', 'unknown']),
+  })),
+  serving: z.array(canonicalRecord.merge(artifactIdentity).extend({
+    deploymentRef: text, identity: text, authenticated: z.boolean(),
+    tenantId: text, workspaceId: text, accountId: text, runId: text, resourceLabel: text,
+  })),
+  completionAudits: z.array(canonicalRecord.merge(planIdentity).extend({
+    sourceSha: source, workItemIds: z.array(text).min(1),
+    verdict: z.enum(['passed', 'failed', 'unknown']), completionAuthority: z.enum(['committed', 'proposed', 'unknown']),
+  })),
+  planGrades: z.array(canonicalRecord.merge(planIdentity).extend({
+    sourceSha: source, rubricRef: text, rubricRevision: z.number().int().positive(), criteriaHash: sha,
+    verdict: z.enum(['passed', 'failed', 'unknown']), createdBy: text,
+    independenceVerified: z.boolean(), gradingAuditState: z.enum(['passed', 'failed', 'pending', 'unknown']),
+  })),
+  reportReadbacks: z.array(canonicalRecord.merge(planIdentity).extend({
+    sourceSha: source, reportId: text, path: text, publicationRef: text,
+    publishedAt: z.string().datetime(), visibility: z.enum(['owner', 'workspace', 'public']),
+    publishedMarkdownSha256: sha, readbackMarkdownSha256: sha, complete: z.boolean(),
+  })),
 });
 
 const manifest = z.object({
@@ -91,6 +136,7 @@ export type CloudCampaignDetector = z.infer<typeof detector>;
 export type CloudCampaignDefect = z.infer<typeof defect>;
 export type CloudCampaignShipment = z.infer<typeof shipment>;
 export type CloudCampaignManifest = z.infer<typeof manifest>;
+export type CloudCampaignShipmentContext = z.infer<typeof shipmentContext>;
 export type CloudCampaignBar = 'R-1' | 'R-2' | 'R-3' | 'R-4' | 'R-5' | 'R-6';
 export interface CloudCampaignEvidenceContext {
   /** Source-derived denominator and obligations, NOT inferred from submitted receipts. */
@@ -127,6 +173,8 @@ export interface CloudCampaignEvidenceContext {
   /** Explicit evidence window from the campaign, never Date.now() inside a test. */
   notBefore: string;
   now: string;
+  /** Exact current subject and unmodified canonical record projections. Missing context fails R6. */
+  shipment?: CloudCampaignShipmentContext;
 }
 
 export function evaluateCloudCampaignEvidence(input: unknown, context: CloudCampaignEvidenceContext) {
@@ -227,14 +275,66 @@ export function evaluateCloudCampaignEvidence(input: unknown, context: CloudCamp
     if (!valid.length) problems['R-5'].push(`unproven-runtime:${obligation.runtime}`);
     for (const entry of valid) validExecutions.add(entry.id);
   }
+  const canonical = shipmentContext.safeParse(context.shipment);
+  const shipping = canonical.success ? canonical.data : undefined;
+  const refsUnique = (entries: readonly { ref: string }[]) => new Set(entries.map((entry) => entry.ref)).size === entries.length;
+  const canonicalComplete = shipping !== undefined
+    && shipping.obligations.length === requiredRuntimes.length
+    && new Set(shipping.obligations.map((entry) => entry.runtime)).size === requiredRuntimes.length
+    && requiredRuntimes.every((name) => shipping.obligations.some((entry) => entry.runtime === name))
+    && [shipping.promotions, shipping.deployments, shipping.serving, shipping.completionAudits, shipping.planGrades, shipping.reportReadbacks].every(refsUnique)
+    && new Set(shipping.subject.workItemIds).size === shipping.subject.workItemIds.length;
+  if (!canonicalComplete) problems['R-6'].push('missing-or-malformed-canonical-shipment-context');
+  const samePlan = (record: z.infer<typeof planIdentity>) => shipping !== undefined
+    && record.planSlug === shipping.subject.planSlug && record.planRevision === shipping.subject.planRevision
+    && record.planContentHash === shipping.subject.planContentHash;
   for (const obligation of context.runtimeObligations) {
     const valid = rows.shipmentReceipts.some((entry) => {
+      if (!canonicalComplete || !shipping) return false;
       const final = rows.realRuntimeReceipts.find((row) => row.id === entry.finalExecutionId);
-      return entry.runtime === obligation.runtime && entry.authenticated && fresh(entry.observedAt)
-        && entry.sourceSha === obligation.sourceSha && entry.promotedSourceSha === obligation.sourceSha
-        && entry.artifactSha256 === obligation.artifactSha256 && entry.promotedArtifactSha256 === obligation.artifactSha256
-        && final?.runtime === entry.runtime && validExecutions.has(final.id)
-        && Date.parse(final.observedAt) >= Date.parse(entry.observedAt);
+      const expected = shipping.obligations.find((row) => row.runtime === obligation.runtime);
+      if (!expected || entry.runtime !== obligation.runtime || !entry.authenticated || !fresh(entry.observedAt)
+        || entry.sourceSha !== obligation.sourceSha || entry.promotedSourceSha !== obligation.sourceSha
+        || entry.artifactSha256 !== obligation.artifactSha256 || entry.promotedArtifactSha256 !== obligation.artifactSha256
+        || final?.runtime !== entry.runtime || !validExecutions.has(final.id)) return false;
+      for (const field of ['evidenceRef', 'evidenceSha256', 'promotionRef', 'deploymentRef', 'servingRef', 'auditRef', 'gradingRef', 'reportReadbackRef'] as const) {
+        if (entry[field] !== expected[field]) return false;
+      }
+      const promotion = shipping.promotions.find((row) => row.ref === entry.promotionRef);
+      const deployment = shipping.deployments.find((row) => row.ref === entry.deploymentRef);
+      const served = shipping.serving.find((row) => row.ref === entry.servingRef);
+      const audit = shipping.completionAudits.find((row) => row.ref === entry.auditRef);
+      const grade = shipping.planGrades.find((row) => row.ref === entry.gradingRef);
+      const report = shipping.reportReadbacks.find((row) => row.ref === entry.reportReadbackRef);
+      if (!promotion || !deployment || !served || !audit || !grade || !report) return false;
+      if (![promotion, deployment, served, audit, grade, report].every((record) => fresh(record.observedAt))) return false;
+      if (![promotion, deployment, served].every((record) => record.runtime === obligation.runtime
+        && record.sourceSha === obligation.sourceSha && record.artifactSha256 === obligation.artifactSha256)) return false;
+      if (promotion.verdict !== 'green' || deployment.status !== 'deployed' || deployment.promotionRef !== promotion.ref
+        || served.deploymentRef !== deployment.ref || !served.authenticated
+        || entry.servingIdentity !== served.identity || final.servingIdentity !== served.identity
+        || final.deploymentRef !== deployment.ref || entry.observedAt !== deployment.observedAt) return false;
+      for (const field of ['tenantId', 'workspaceId', 'accountId', 'runId', 'resourceLabel'] as const) {
+        if (served[field] !== final[field] || served[field] !== obligation[field]) return false;
+      }
+      if (Date.parse(deployment.observedAt) < Date.parse(promotion.observedAt)
+        || Date.parse(served.observedAt) < Date.parse(deployment.observedAt)
+        || Date.parse(final.observedAt) <= Date.parse(deployment.observedAt)
+        || Date.parse(final.observedAt) < Date.parse(served.observedAt)) return false;
+      if (![audit, grade, report].every((record) => samePlan(record) && record.sourceSha === obligation.sourceSha
+        && Date.parse(record.observedAt) >= Date.parse(final.observedAt))) return false;
+      if (audit.verdict !== 'passed' || audit.completionAuthority !== 'committed'
+        || audit.workItemIds.length !== shipping.subject.workItemIds.length
+        || new Set(audit.workItemIds).size !== audit.workItemIds.length
+        || shipping.subject.workItemIds.some((id) => !audit.workItemIds.includes(id))) return false;
+      if (grade.verdict !== 'passed' || !grade.independenceVerified || grade.createdBy === shipping.subject.authorId
+        || grade.gradingAuditState !== 'passed' || grade.rubricRef !== shipping.subject.rubricRef
+        || grade.rubricRevision !== shipping.subject.rubricRevision || grade.criteriaHash !== shipping.subject.criteriaHash) return false;
+      if (!report.complete || report.visibility !== 'owner' || !fresh(report.publishedAt)
+        || Date.parse(report.publishedAt) < Date.parse(final.observedAt)
+        || Date.parse(report.observedAt) < Date.parse(report.publishedAt)
+        || report.publishedMarkdownSha256 !== report.readbackMarkdownSha256) return false;
+      return true;
     });
     if (!valid) problems['R-6'].push(`unproven-shipment:${obligation.runtime}`);
   }
