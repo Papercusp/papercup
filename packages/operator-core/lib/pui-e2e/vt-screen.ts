@@ -203,8 +203,11 @@ function collapseWideCells(line: string): string {
   return out;
 }
 
-/** Normalize column padding while retaining row boundaries. */
-export function screenContains(screen: string, needle: string): boolean {
+/** Match one marker or a nonempty conjunction in the same rendered frame. */
+export function screenContains(screen: string, needle: string | readonly string[]): boolean {
+  if (typeof needle !== 'string') {
+    return needle.length > 0 && needle.every((marker) => screenContains(screen, marker));
+  }
   const lines = screen.split('\n').map((line) => line.replace(/\s+/g, ' ').trim());
   const want = needle.replace(/\s+/g, ' ').trim();
   if (lines.join('\n').includes(want)) return true;

@@ -1065,7 +1065,7 @@ class PuiPane {
     }
   }
 
-  async waitFor(needle: string, opts: { timeoutMs?: number } = {}): Promise<void> {
+  async waitFor(needle: string | readonly string[], opts: { timeoutMs?: number } = {}): Promise<void> {
     const timeoutMs = opts.timeoutMs ?? 25_000;
     const { ok, maxLateMs } = await pollUntil(() => screenContains(this.screen(), needle), {
       timeoutMs,
@@ -4385,8 +4385,10 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       session: wb.session, sessions: listSessions(), ...wb.pane.failureEvidence(),
     })));
     try {
-      // The chat (the same surface as `pui --solo`) renders inside zellij.
-      await wb.pane.waitFor(`Claude · ${wb.launchDir}`, { timeoutMs: 90_000 });
+      // The child chat and zellij's tab-bar plugin render independently. Wait
+      // for both in one frame within the existing startup deadline, before
+      // taking the workbench snapshot (WI-10007999).
+      await wb.pane.waitFor([`Claude · ${wb.launchDir}`, `Zellij (${wb.session})`], { timeoutMs: 90_000 });
       expect(wb.pane.screen()).toMatch(/Zellij \(pui-chat-\d+\)/);
       expect(listSessions()).toMatch(new RegExp(`^${wb.session}\\b`, 'm'));
       // The running session carries the chat pane and every workbench pane,

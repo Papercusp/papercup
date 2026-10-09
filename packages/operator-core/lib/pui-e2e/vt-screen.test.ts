@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { paneContains, screenContains, screenHasAssistantReply } from './vt-screen';
+import { paneContains, screenContains, screenHasAssistantReply, VtScreen } from './vt-screen';
 
 function frame(left: string[], right?: string[], title = 'Agent Chat'): string {
   const header = `┌ ${title} `.padEnd(36, '─') + '┐';
@@ -37,6 +37,22 @@ describe('rendered screen needle matching', () => {
   test('leaves an all-narrow needle on the untouched path', () => {
     expect(screenContains('│PUI-REPLY        ││', 'PUI-REPLY')).toBe(true);
     expect(screenContains('│PUI-REPLY        ││', 'PUI-ABSENT')).toBe(false);
+  });
+
+  test('workbench readiness waits for both independent renderers in the same frame', () => {
+    const vt = new VtScreen(4, 100);
+    const ready = ['Claude · /launch', 'Zellij (pui-chat-123)'];
+    // The measured failure shape: the child chat is ready while the tab-bar
+    // plugin has not painted row one. A chat-only wait returns too early.
+    vt.feed('\x1b[2;1H┌ chat ──────────────\x1b[3;1HClaude · /launch');
+    expect(screenContains(vt.text(), ready[0])).toBe(true);
+    expect(screenContains(vt.text(), ready)).toBe(false);
+    vt.feed('\x1b[1;1HZellij (pui-chat-123)');
+    expect(screenContains(vt.text(), ready)).toBe(true);
+    // An earlier appearance is insufficient if the current frame lost it.
+    vt.feed('\x1b[1;1H\x1b[2K');
+    expect(screenContains(vt.text(), ready)).toBe(false);
+    expect(screenContains(vt.text(), [])).toBe(false);
   });
 });
 
