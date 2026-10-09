@@ -96,6 +96,37 @@ describe('composeMechanicalCheckpoint / mergeMechanicalCheckpoint', () => {
     expect(second).not.toContain('P-015 legs 1-2 landed');
   });
 
+  it('preserves a newer authored checkpoint appended after a mechanical snapshot', async () => {
+    const { renderCarryNote, readCarryLatestUpdate, shortCarryHash, splitCarryNoteChecks, splitCarryNoteWalls } =
+      await import('./carry-note');
+    const firstNote = renderCarryNote({ did: 'Original authored progress.', next: 'Continue the original action.' });
+    const first = mergeMechanicalCheckpoint(firstNote, block);
+    const latestNote = renderCarryNote({
+      did: 'New authored progress after the prior mechanical snapshot.',
+      next: 'Resume from this exact structured action.',
+    });
+    const latestUpdate = splitCarryNoteWalls(splitCarryNoteChecks(latestNote).body).body.trim();
+    const appended = `${first}\n\n---\n${latestNote}`;
+    const nextBlock = composeMechanicalCheckpoint({
+      atIso: '2026-07-14T20:30:00.000Z',
+      journalNote: 'Latest authored checkpoint is preserved.',
+    });
+
+    const merged = mergeMechanicalCheckpoint(appended, nextBlock);
+    const offset = merged.indexOf(latestUpdate);
+    const latestSpan = {
+      noteHash: shortCarryHash(merged),
+      offset,
+      length: offset >= 0 ? latestUpdate.length : 0,
+    };
+
+    expect(merged).toContain('New authored progress after the prior mechanical snapshot.');
+    expect(merged).toContain('Resume from this exact structured action.');
+    expect(merged.match(new RegExp(MECHANICAL_CHECKPOINT_MARKER, 'g'))).toHaveLength(1);
+    expect(merged).not.toContain('P-015 legs 1-2 landed');
+    expect(readCarryLatestUpdate(merged, latestSpan)).toEqual({ status: 'available', text: latestUpdate });
+  });
+
   it('keeps mechanical tool logs outside authored Checks and Walls rows', async () => {
     const { splitCarryNoteChecks, splitCarryNoteWalls } = await import('./carry-note');
     const prior = [

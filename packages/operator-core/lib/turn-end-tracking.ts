@@ -117,9 +117,18 @@ export function mergeMechanicalCheckpoint(existing: string | null | undefined, b
   let agentPart = prior;
   if (markerAt >= 0) {
     const tail = prior.slice(markerAt);
+    const mechanicalEnd = tail.indexOf(MECHANICAL_SEP);
     const suffixAt = STRUCTURED_CARRY_SECTION_RE.exec(tail)?.index;
     const prefix = prior.slice(0, markerAt).replace(/(\n\s*---\s*)+$/, '').trimEnd();
-    const suffix = suffixAt === undefined ? '' : tail.slice(suffixAt);
+    // A work-item checkpoint may have been appended after an older mechanical
+    // snapshot. The separator closes that system block and starts a newer
+    // agent-authored update; preserve the whole update so its journal
+    // latestUpdate span still points into the stored note. Legacy snapshots
+    // without that separator can still carry Checks/Walls directly after the
+    // block, so retain that structured suffix as the fallback.
+    const suffix = mechanicalEnd >= 0
+      ? tail.slice(mechanicalEnd + MECHANICAL_SEP.length)
+      : suffixAt === undefined ? '' : tail.slice(suffixAt);
     agentPart = [prefix, suffix].filter(Boolean).join('\n\n');
   }
   agentPart = agentPart.replace(/(\n\s*---\s*)+$/, '').trimEnd();
