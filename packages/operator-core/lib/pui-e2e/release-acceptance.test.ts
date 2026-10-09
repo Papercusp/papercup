@@ -107,24 +107,37 @@ describe('release acceptance checkout filesystem preflight', () => {
 describe('release acceptance checkout helper snapshot', () => {
   it('keeps the admitted helper stable when the shared source changes during checkout', async () => {
     const wrapper = readFileSync(path.join(REPO_ROOT, 'apps/tui/scripts/release-acceptance.sh'), 'utf8');
-    const invocation = wrapper.match(/bash "\$ROOT\/apps\/operator\/scripts\/systemd\/papercusp-script-snapshot\.sh"[\s\S]*?(?=\nlanded=)/)?.[0];
+    const invocation = wrapper.match(/node "\$ROOT\/scripts\/npm-install-safe\.mjs"[\s\S]*?(?=\nlanded=)/)?.[0];
     expect(invocation).toBeDefined();
     const root = mkdtempSync(path.join(tmpdir(), 'pui-helper-snapshot-'));
     const helper = path.join(root, 'apps/operator/bin/release/setup-release-checkout.sh');
     const snapshot = path.join(root, 'apps/operator/scripts/systemd/papercusp-script-snapshot.sh');
+    const installSafe = path.join(root, 'scripts/npm-install-safe.mjs');
     const started = path.join(root, 'started');
     const resume = path.join(root, 'resume');
+    const admittedArgs = path.join(root, 'admitted-args');
+    const checkouts = path.join(root, 'acceptance-cache');
     mkdirSync(path.dirname(helper), { recursive: true });
     mkdirSync(path.dirname(snapshot), { recursive: true });
+    mkdirSync(path.dirname(installSafe), { recursive: true });
     writeFileSync(snapshot, readFileSync(path.join(REPO_ROOT, 'apps/operator/scripts/systemd/papercusp-script-snapshot.sh')));
+    // Check the actual shell call enters the maintained reader boundary before
+    // executing the snapshotted helper. Its lock arbitration has its own suite.
+    writeFileSync(installSafe, `import { spawnSync } from 'node:child_process';
+const args = process.argv.slice(2);
+if (args[0] !== '--repo-root' || args[1] !== process.env.ROOT || args[2] !== '--exec-under-lock' || args[3] !== '--' || args[4] !== 'bash') process.exit(42);
+const result = spawnSync(args[4], args.slice(5), { stdio: 'inherit', env: { ...process.env, PUI_SNAPSHOT_INSTALL_READER: '1' } });
+process.exit(result.status ?? 1);
+`);
     // Put the completion beyond Bash's read-ahead buffer. The wait lets the
     // test replace the original only after the admitted program has started.
-    writeFileSync(helper, `printf '%s' "$0" > "$PUI_SNAPSHOT_STARTED"\nwhile [ ! -f "$PUI_SNAPSHOT_RESUME" ]; do sleep 0.01; done\n`
+    writeFileSync(helper, `[ "$PUI_SNAPSHOT_INSTALL_READER" = 1 ] || exit 43\nprintf '%s\\n' "$@" > "$PUI_SNAPSHOT_ARGS"\nprintf '%s' "$0" > "$PUI_SNAPSHOT_STARTED"\nwhile [ ! -f "$PUI_SNAPSHOT_RESUME" ]; do sleep 0.01; done\n`
       + '# padding beyond lazy shell read buffer\n'.repeat(2048)
       + 'printf "CHECKOUT_HELPER_COMPLETED\\n"\n');
     const child = spawn('bash', ['-c', `fail() { exit 2; }\n${invocation}`], {
-      env: { ...process.env, ROOT: root, checkout: path.join(root, 'checkout'), sha: 'a'.repeat(40),
-        node_modules_copy: 'hardlink', PUI_SNAPSHOT_STARTED: started, PUI_SNAPSHOT_RESUME: resume },
+      env: { ...process.env, ROOT: root, checkouts, checkout: path.join(checkouts, 'slot-1'), sha: 'a'.repeat(40),
+        node_modules_copy: 'hardlink', PUI_SNAPSHOT_STARTED: started, PUI_SNAPSHOT_RESUME: resume,
+        PUI_SNAPSHOT_ARGS: admittedArgs },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let output = '';
@@ -137,6 +150,9 @@ describe('release acceptance checkout helper snapshot', () => {
     try {
       await vi.waitFor(() => expect(existsSync(started), `snapshot child exit=${child.exitCode} signal=${child.signalCode}\n${output}`).toBe(true), { timeout: 5_000, interval: 10 });
       expect(readFileSync(started, 'utf8')).not.toBe(helper);
+      const args = readFileSync(admittedArgs, 'utf8').trim().split('\n');
+      expect(args[args.indexOf('--node-modules-generation') + 1]).toBe('required');
+      expect(args[args.indexOf('--dependency-generation-root') + 1]).toBe(path.join(checkouts, 'dependency-generations'));
       writeFileSync(helper, 'this is an invalid concurrent edit (\n');
       writeFileSync(resume, 'continue');
       expect(await exit).toBe(0);

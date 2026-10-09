@@ -59,6 +59,7 @@ sha="$(printf '%s' "$provenance" | node -e '
 
 checkouts="${PUI_ACCEPTANCE_CHECKOUT_ROOT:-$HOME/.cache/pui-acceptance-checkouts}"
 mkdir -p "$checkouts"
+checkouts="$(cd "$checkouts" && pwd -P)"
 # A few reusable slots, each re-pinned per run: bounded disk, and a re-pin moves
 # only what changed. One run per slot, since a second would re-pin the tree
 # under the first. The lock is held by this process and everything it execs; a
@@ -87,10 +88,15 @@ NODE
 # Freeze the shared helper and its adjacent sidecars before its long checkout
 # work. Bash reads scripts lazily; a peer edit during materialization must not
 # change the program this invocation is executing.
-bash "$ROOT/apps/operator/scripts/systemd/papercusp-script-snapshot.sh" \
+# Keep immutable dependency generations in the acceptance cache. Each slot
+# consumes a validated donor while the shared integration tree may change.
+# Use the maintained install-reader boundary throughout capture/materialization.
+node "$ROOT/scripts/npm-install-safe.mjs" --repo-root "$ROOT" --exec-under-lock -- \
+  bash "$ROOT/apps/operator/scripts/systemd/papercusp-script-snapshot.sh" \
   "$ROOT/apps/operator/bin/release/setup-release-checkout.sh" \
   --ref "$sha" --integration "$ROOT" --release "$checkout" \
-  --node-modules force --node-modules-copy "$node_modules_copy" --node-modules-generation off \
+  --node-modules force --node-modules-copy "$node_modules_copy" --node-modules-generation required \
+  --dependency-generation-root "$checkouts/dependency-generations" \
   --source-integrity object-sourced >&2 \
   || fail "could not check out $sha at $checkout (setup-release-checkout.sh failed; output above)"
 landed="$(git -C "$checkout" rev-parse HEAD)"
