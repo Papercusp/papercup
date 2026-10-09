@@ -116,12 +116,16 @@ describe('source preflight and persisted dispatch attempts', () => {
         }
         const accepted = await acceptFeedbackRequestCore(request(`preflight-${kind}`), deps);
         const conversationId = accepted.conversation_id!;
+        // Acceptance is initially routing. Simulate the completed routing
+        // transition before exercising the independent dispatcher boundary.
+        await db.sql`UPDATE harness_shared.consult_state SET state = 'awaiting_responder'
+          WHERE workspace_id = ${WS} AND conversation_id = ${conversationId}`;
         const dispatchDeps: Partial<ConsultDispatchDeps> = {
           resolveResumeTarget: async () => ({ ok: true, sessionId: sourceSessionId,
             resumeId: sourceSessionId, ompThreadId: null, ownerId: sourceOwnerId,
             agent: 'claude', cwd: dir, model: null, modelSource: null,
             endedAt: null, endedBy: null, live: true, advSessionId: 7,
-            ...(kind === 'non-plain' ? { role: 'reviewer' } : {}),
+            role: kind === 'non-plain' ? 'reviewer' : null, feature: null, account: null,
             binding: { coordOwnerId: sourceOwnerId, sessionId: sourceSessionId,
               startedAt: '2026-09-22T00:00:00Z' } }),
           checkResumeTranscript: async () => ({ available: true, detail: 'exact fixture source', transcriptPath: path }),
@@ -132,7 +136,7 @@ describe('source preflight and persisted dispatch attempts', () => {
           isConsultOpen: async (workspaceId, id) => {
             const rows = await db.sql`SELECT state FROM harness_shared.consult_state
               WHERE workspace_id = ${workspaceId} AND conversation_id = ${id}`;
-            return rows[0]?.state === 'awaiting';
+            return rows[0]?.state === 'awaiting_responder';
           },
           loadRanks: async () => [{ rank: 1, agent: 'codex', model: 'sol' }],
           fetchContextPressure: async () => new Map(),
@@ -140,7 +144,8 @@ describe('source preflight and persisted dispatch attempts', () => {
           analyzeClaudeTranscript: () => null,
           probeBackendAvailable: async () => ({ available: true, detail: 'fixture capacity' }),
           mintOwnerId: () => answeringOwnerId,
-          buildConsoleEnvelope: async () => ({ cwd: dir, env: {}, greetingCmd: '' }),
+          buildConsoleEnvelope: async () => ({ cwd: dir, env: {}, greetingCmd: '',
+            mcpJsonContents: '{}', needsSuperuserBootstrap: false, sessionId: 'fixture-window' }),
           // Launch and host verification stay bounded test seams; no native agent is started.
           spawnHeadless: async (input) => {
             launches++;
@@ -152,10 +157,11 @@ describe('source preflight and persisted dispatch attempts', () => {
               WHERE workspace_id = ${WS} AND conversation_id = ${conversationId}`;
             expect(rows[0].responder_id).toBe(answeringOwnerId);
             return { status: 'ok', pid: 42, taskId: 'fixture-launch', terminal: 'headless',
-              logPath: null, child: null, display: null,
+              child: null, display: null, desktopEnvResolvedVia: null,
               kickoffProof: { persisted: true, nativeRef: path, reason: null } };
           },
-          verifyResumeStarted: async () => ({ started: true, waitedMs: 0 }),
+          verifyResumeStarted: async () => ({ started: true, waitedMs: 0,
+            expectedSessionId: null, actualSessionId: null, mismatch: false }),
         };
         const result = await dispatchConsultResponder({ sourceOwnerId, conversationId,
           evidence: [{ session_id: sourceSessionId, turn_idx: 1, sim: 0.8 }], brief: 'Review exact source',
@@ -164,7 +170,7 @@ describe('source preflight and persisted dispatch attempts', () => {
               WHERE workspace_id = ${WS} AND conversation_id = ${conversationId}`;
           },
         }, { workspaceId: WS, harnessSlug: null, launchedBy: 'contract-requester' }, dispatchDeps);
-        expect(result.dispatched).toBe(kind === 'eligible');
+        expect(result.dispatched, JSON.stringify(result)).toBe(kind === 'eligible');
         expect(launches).toBe(kind === 'eligible' ? 1 : 0);
         if (kind === 'eligible') {
           expect(result).toMatchObject({ operation: 'convert', answeringOwnerId, verified: true });
