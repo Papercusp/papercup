@@ -201,6 +201,7 @@ describe('runWalCheckpointSweep (end-to-end, real fs + sqlite)', () => {
       expect(suppressed.escalated).toBe(false);
       expect(notify).toHaveBeenCalledTimes(1);
       expect(reader.prepare('SELECT count(*) AS n FROM t').get()?.n).toBe(16);
+      expect(writer.prepare('SELECT count(*) AS n FROM t').get()?.n).toBe(144);
     } finally {
       reader.exec('COMMIT;');
       reader.close();
