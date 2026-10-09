@@ -143,8 +143,10 @@ it does not itself execute this browser spec. These are separate recurrence
 lanes. Native acceptance is queued through the supported committed-source
 verifier mode, with explicit byte-matched acceptance inputs, an isolated ready
 database and `verify-cloud-workspaces-aws.mjs` native pointer assertions.
-Its result is not yet available; log:
-`/tmp/cloud-e2e-20261008-native-committed.log`.
+The completed run failed in prepare: **dirty tested-input mismatch:
+package-lock.json**. Run `20261008T234106Z-4100298` never reached boot or native
+assertions. Log: `/tmp/cloud-e2e-20261008-native-committed.log`. This is a source
+integrity admission refusal; it establishes no native product verdict.
 
 Acceptance rubric revision 2 includes the three actual UI repair regression
 files. Activation audit 3 re-read all 21 source-conversation turns with no span
@@ -159,9 +161,12 @@ AWS publication receipts are retained at
 `/mnt/backup/p012-bake-fire105/aws-a-p012r69-20261007t125744z/publish.A-r62b.json`
 and
 `/mnt/backup/p012-bake-fire105/aws-b-p012r70-20261007t125744z/publish.B-contained.json`.
-They prove publication in the clean account; `su-ee96d6e7` still owns the separate
-P-012 real-account lifecycle, soak, teardown and shipment lane. Do not duplicate
-that canary or touch its retained resources.
+They prove publication in the clean account. On October 8, `su-ee96d6e7` held
+the separate P-012 real-account lifecycle, soak, teardown and shipment lane.
+The October 9 authoritative read of `WI-10005036` is blocked and unassigned,
+with an unresolved canonical v4 scope answer and missing execution/acceptance
+proof. The historical holder statement is not current ownership evidence.
+Do not rerun these accepted publishers or touch retained resources.
 
 GCP preflight observed the latest image-family entry as `0.0.18-r19`.
 The retained GCP input names historical source
@@ -196,3 +201,28 @@ provider-side cleanup and exact served artifacts, complete the campaign audit an
 grade, and publish the final shipment report. Existing image input found during
 preparation targets an older release; it must not be reused as current-artifact
 acceptance. No universal pass or shipped status is justified yet.
+
+## Receipt reconciliation — 2026-10-09
+
+This session resumed personally under the existing AUTO authorization. Threaded
+replies reached the parity lead for `WI-10007848`; the saved browser and database
+receipts are reusable historical evidence, while native and real provider
+acceptance remain unmet. The current work loop was inactive and has been
+re-armed at 120 seconds with warm carry on `WI-10007600`.
+
+`P-002` remains open for task dispatch/correlation falsifiability and audited
+adequacy. A fresh copy-out overlay probe removes only the lesson's
+`sendToSessionOwner(ownerId, request.prompt)` call. It selects the maintained
+GCP restored-workspace lifecycle case, with dedicated Vite port 39311 and an
+original baseline, relocated baseline and mutant phase. The original baseline
+passed one case. The relocated baseline and mutant are still running; no caught
+verdict or adequacy claim is made at this checkpoint. Log:
+`/tmp/cloud-e2e-20261009-task-dispatch-probe.log`.
+
+`P-003` is blocked by `P-002`. A current GCP-compatible artifact and complete
+hosted/provider task, reconnect and teardown receipts remain required. The
+retained AWS A/B publication receipts are not substitutes for those receipts.
+No current-campaign cloud resources were created in this continuation, and no
+shipment was claimed. The next native attempt requires a pre-run audit of the
+source-lock and byte-matched input admission failures already observed; it must
+preserve the isolated database and exact source/binary provenance contract.
