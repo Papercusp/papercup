@@ -126,6 +126,18 @@ describe('runForeground', () => {
     expect(chunks.join('')).toContain('hello-world');
   });
 
+  it('runs a script larger than the per-argument limit through stdin while preserving command EOF (EI-25538971645697745)', async () => {
+    const largeComment = `# ${'x'.repeat(140 * 1024)}`;
+    const command = `${largeComment}\nif IFS= read -r unexpected; then printf 'unexpected stdin: %s' "$unexpected"; else printf large-command-ok; fi`;
+    expect(Buffer.byteLength(command)).toBeGreaterThan(128 * 1024);
+
+    const r = await runForeground({ command, cwd: STATE, stateDir: STATE }, never, 10_000);
+
+    expect(r.status).toBe('completed');
+    expect(r.exitCode).toBe(0);
+    expect(r.output).toBe('large-command-ok');
+  });
+
   it('preserves a UTF-8 code point split across stdout chunks in every output sink (WI-910499)', async () => {
     const streamed: string[] = [];
     const r = await runForeground(
@@ -950,6 +962,19 @@ describe('terminal log marker (EI-18764990059061608)', () => {
     expect(logContent).toContain(JOB_LOG_END_MARKER_PREFIX);
     expect(logContent).toContain('status=completed');
     expect(logContent).toContain('exit=0');
+  });
+
+  it('runs a large background script through the transient service stdin path (EI-25538971645697745)', async () => {
+    const command = `# ${'x'.repeat(140 * 1024)}\nprintf large-background-command-ok`;
+    expect(Buffer.byteLength(command)).toBeGreaterThan(128 * 1024);
+
+    const job = startBackground({ command, cwd: STATE, stateDir: STATE }, 10_000);
+    await waitForStatus(job.id);
+    const finished = getJob(job.id)!;
+
+    expect(finished.status).toBe('completed');
+    expect(finished.exitCode).toBe(0);
+    expect(readJobOutput(finished)).toBe('large-background-command-ok');
   });
 
   it('a RUNNING background job has NOT written the marker yet', async () => {

@@ -567,9 +567,19 @@ export function scratchDir(stateDir: string | undefined): string {
   return dir;
 }
 
-/** Spawn `bash -o pipefail -c <command>` with an augmented PATH (the operator
- *  sidecar's PATH often omits node/npx/git locations — same fix as
- *  pluginSpawnImpl). stdin is closed; combined stdout+stderr are piped.
+/** Fixed, bounded `bash -c` payload. The actual script is sent on stdin and
+ *  captured before eval so commands still see EOF on their own stdin, as they
+ *  did when the payload was an argv passed to `-c`.
+ *
+ *  The trailing sentinel keeps command substitution from stripping trailing
+ *  newlines; removing exactly one appended byte restores the original script.
+ */
+const BASH_STDIN_BOOTSTRAP = 'script=$(cat; printf x); script=${script%x}; eval "$script"';
+
+/** Spawn Bash with an augmented PATH (the operator sidecar's PATH often omits
+ *  node/npx/git locations — same fix as pluginSpawnImpl). The fixed bootstrap
+ *  stays small in argv while the caller's script is piped to stdin; combined
+ *  stdout+stderr are piped.
  *
  *  `-o pipefail` (EI-13414): without it, bash's reported exit code for a
  *  piped command (`cmd | tail -N`, `| head`, `| grep`, …) is the LAST
@@ -625,7 +635,7 @@ function spawnShell(
   // host-X isolation still holds.
   const inheritedEnv = normalizeInheritedOperatorUrl(scrubExecEnv(process.env));
   const decision = buildCapabilitySandboxCommand(
-    { cmd: [resolveBin('bash', spawnPath), '-o', 'pipefail', '-c', instrumentedCommand], cwd },
+    { cmd: [resolveBin('bash', spawnPath), '-o', 'pipefail', '-c', BASH_STDIN_BOOTSTRAP], cwd },
     // EI-16635: `background` (true for startBackground's run_in_background jobs)
     // tells the sandbox builder to omit bwrap's `--die-with-parent` — that flag
     // is incompatible with a job contractually meant to outlive this spawn call.
@@ -669,7 +679,7 @@ function spawnShell(
     // stripHostX (which keeps the inherited, possibly-ephemeral TMPDIR) but BEFORE
     // the caller's explicit `env`, so a deliberate caller override still wins.
     env: childEnv,
-    stdio: ['ignore', 'pipe', 'pipe'],
+    stdio: ['pipe', 'pipe', 'pipe'],
     // OWN PROCESS GROUP (capability-bash-orphan-kill-2026-06-21): `detached:true`
     // makes the child (bash, or the bwrap wrapper) a process-group leader
     // (pgid === child.pid on Linux). That is what lets a timeout/abort kill the
@@ -680,6 +690,12 @@ function spawnShell(
     // unref() the child, so the operator still tracks + reaps it normally.
     detached: true,
   });
+  // `systemd-run --pipe` carries this same stdin through the transient service
+  // and systemd-scope-env-runner.mjs inherits it into the payload. Handle a
+  // closed input pipe as a spawn failure; the close handler remains the source
+  // of the workload's actual exit status.
+  child.stdin?.on('error', (error) => child.emit('error', error));
+  child.stdin?.end(instrumentedCommand);
   return child;
 }
 
