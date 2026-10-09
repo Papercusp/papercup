@@ -40,6 +40,9 @@ describe('code:run persistent kernel boundary', () => {
     const second = await call({ kernel: { op: 'run', id }, script: 'return ++count;' });
     expect(first.payload.summary).toBe(3);
     expect(second.payload.summary).toBe(4);
+    // The public code:run contract uses summary for a scalar returned by a cell.
+    // Keep the API acceptance fixture aligned with the real handler boundary.
+    expect(second.payload).not.toHaveProperty('result');
     expect(second.payload.kernel).toMatchObject({ state: 'live', language: 'javascript', statePersistence: 'globalThis', restartRecovery: 'unrecoverable' });
     expect((await call({ kernel: { op: 'status', id } })).payload.kernel.state).toBe('live');
     expect((await call({ kernel: { op: 'close', id } })).payload.kernel.state).toBe('closed');
