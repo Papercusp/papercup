@@ -10,7 +10,40 @@
  *
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/coordination/tools/send.test.ts
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { readRealPgRailBlocks } from '@papercusp/test-config/silenced-console-census';
+
+afterAll(() => {
+  const rail = readRealPgRailBlocks();
+  expect(rail.blocked, `real-PG attempts blocked: ${rail.callers.join(' | ')}`).toBe(0);
+});
+
+const sendReaderMocks = vi.hoisted(() => ({
+  deriveAwaiting: vi.fn(async (_opts: { ownerId: string; workspaceId: string }) =>
+    [] as Array<{ kind: 'event-await'; ref: string; since?: string }>,
+  ),
+  deriveDraftSuspension: vi.fn(async (_opts: { ownerId: string; workspaceId: string }) =>
+    null as null | { gapMs: number; gapStartedAt: string; gapEndedAt: string; openAtSend: boolean },
+  ),
+  getConversation: vi.fn(async (_id: string) =>
+    null as null | { conversation: { kind: 'question'; state: 'open' } },
+  ),
+  explainFleetAudience: vi.fn(async (_fleetSlug: string) =>
+    [] as Array<{ ownerId: string; reason: 'stale-heartbeat' | 'ended' | 'suspect' | 'bee-role'; heartbeatAt?: string | null }>,
+  ),
+}));
+vi.mock('../derive-awaiting', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../derive-awaiting')>()),
+  deriveAwaiting: sendReaderMocks.deriveAwaiting,
+}));
+vi.mock('../derive-draft-suspension', () => ({
+  deriveDraftSuspension: sendReaderMocks.deriveDraftSuspension,
+}));
+vi.mock('../conversations', () => ({ getConversation: sendReaderMocks.getConversation }));
+vi.mock('../audience-host', () => ({
+  hostAudienceResolvers: { explainFleetAudience: sendReaderMocks.explainFleetAudience },
+}));
+
 const reportCapture = vi.hoisted(() => ({ coord: vi.fn().mockResolvedValue('rpt_fixture') }));
 vi.mock('../../../report-capture', () => ({ captureCoordReport: reportCapture.coord }));
 import { z } from 'zod';
@@ -326,6 +359,10 @@ it('opts out of the ambient workspace transaction because the handler never read
 let n = 0;
 beforeEach(() => {
   vi.clearAllMocks();
+  sendReaderMocks.deriveAwaiting.mockReset().mockResolvedValue([]);
+  sendReaderMocks.deriveDraftSuspension.mockReset().mockResolvedValue(null);
+  sendReaderMocks.getConversation.mockReset().mockResolvedValue(null);
+  sendReaderMocks.explainFleetAudience.mockReset().mockResolvedValue([]);
   // Early refusals can leave once-results unconsumed. Reset these queues so
   // a failed inline assertion cannot poison the next case's reference control.
   getModeSubjectMock.mockReset().mockResolvedValue(null);
@@ -1461,6 +1498,45 @@ describe('coord:send wake-on-reply (coord-wake-on-reply)', () => {
     expect(wakeM).not.toHaveBeenCalled();
   });
 
+  it('stamps the awaiting and draft-suspension reader results onto the sent envelope', async () => {
+    const awaiting = [{ kind: 'event-await' as const, ref: 'build:finished', since: '2026-10-09T08:00:00.000Z' }];
+    const draftSuspension = {
+      gapMs: 720_000,
+      gapStartedAt: '2026-10-09T07:30:00.000Z',
+      gapEndedAt: '2026-10-09T07:42:00.000Z',
+      openAtSend: false,
+    };
+    sendReaderMocks.deriveAwaiting.mockResolvedValueOnce(awaiting);
+    sendReaderMocks.deriveDraftSuspension.mockResolvedValueOnce(draftSuspension);
+
+    await body({ to: ['peer'], summary: 'status update' });
+
+    expect(sendReaderMocks.deriveAwaiting).toHaveBeenCalledExactlyOnceWith({ ownerId: 'me', workspaceId: 'ws1' });
+    expect(sendReaderMocks.deriveDraftSuspension).toHaveBeenCalledExactlyOnceWith({ ownerId: 'me', workspaceId: 'ws1' });
+    expect(sendM).toHaveBeenCalledTimes(1);
+    expect(sendM.mock.calls[0][1]).toMatchObject({
+      extra: {
+        awaiting,
+        draftSuspension,
+        fieldProvenance: { awaiting: 'session-derived', draftSuspension: 'session-derived' },
+      },
+    });
+  });
+
+  it('identifies a conversation id when related_msg_id is not a coord message id', async () => {
+    sendReaderMocks.getConversation.mockResolvedValueOnce({
+      conversation: { kind: 'question', state: 'open' },
+    });
+
+    const b = await body({ to: ['peer'], summary: 'reply', related_msg_id: 'conversation-123' });
+
+    expect(sendReaderMocks.getConversation).toHaveBeenCalledExactlyOnceWith('conversation-123');
+    expect(b.results[0]).toMatchObject({ ok: false, error: 'related_msg_not_found' });
+    expect(b.results[0].message).toContain("'conversation-123' IS a valid conversation id (kind:question, state:open)");
+    expect(b.results[0].message).toContain('conversations:answer / conversations:post');
+    expect(sendM).not.toHaveBeenCalled();
+  });
+
   it('EI-21082987688691539: a unique related_msg_id prefix is persisted as the canonical full id', async () => {
     const fullId = 'mt3739cx-0000-c96716c2167f40afbb8a8c09cd5037f5';
     const original = envelope({ msg_id: fullId, from: 'peer', to: ['me'] });
@@ -1956,6 +2032,7 @@ describe('coord:send zero-recipient audience (EI-6874)', () => {
     const b = await body({ to: ['@fleet:p2p-dist'], summary: 'status' });
     expect(b.results[0]).toMatchObject({ ok: true, recipients_resolved: 2 });
     expect(b.results[0].zero_recipients).toBeUndefined();
+    expect(sendReaderMocks.explainFleetAudience).toHaveBeenCalledExactlyOnceWith('p2p-dist');
   });
 
   it('a partial audience miss is reported without hiding the valid recipient', async () => {
