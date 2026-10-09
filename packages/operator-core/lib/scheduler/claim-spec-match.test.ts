@@ -63,7 +63,10 @@ describe('text predicates over complete census cohorts', () => {
       title: ['ordinary queue repair', 'nonp2p-bug-drain repair', 'P2P_transport repair'][index % 3],
       payload: { paths: ['unrelated/file.ts', 'packages/operator-core/lib/queue.ts'] },
     }));
-    const constructors = vi.spyOn(globalThis, 'RegExp');
+    const NativeRegExp = globalThis.RegExp;
+    const constructors = vi.spyOn(globalThis, 'RegExp').mockImplementation(function (pattern, flags) {
+      return new NativeRegExp(pattern, flags);
+    });
     try {
       const admitted = rows.filter(row => matchesClaimSpecFilter(claimSpecSubjectFromWorkItem(row), filter));
       expect(admitted).toHaveLength(1401);
