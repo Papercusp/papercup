@@ -179,7 +179,7 @@ test('Work on Everything Design C cockpit and priority editor stay readable in t
         health: !!root.querySelector('[aria-label="Goal health"]'),
         needsYou: !!root.querySelector('[aria-label="Needs you"]'),
         activity: !!root.querySelector('[aria-label="Recent activity"]'),
-        notMeasured: root.querySelector('[aria-label="Selected plan progress"]')?.textContent.includes('not measured'),
+        progressText: root.querySelector('[aria-label="Selected plan progress"]')?.textContent,
         overflowingPanel: root.scrollWidth > root.clientWidth + 1,
         columns: getComputedStyle(root.querySelector('.woe__cockpit')).gridTemplateColumns,
         hasDraftControls: !!root.querySelector('button[aria-label^="Remove "]'),
@@ -187,7 +187,9 @@ test('Work on Everything Design C cockpit and priority editor stay readable in t
     })()`);
     expect(cockpit.priorities).toEqual(ids.slice(0, 2));
     expect(cockpit.health).toBe(true); expect(cockpit.needsYou).toBe(true); expect(cockpit.activity).toBe(true);
-    expect(cockpit.notMeasured).toBe(true); expect(cockpit.overflowingPanel).toBe(false);
+    const measuredPlans = detail.goalData.collections.worklist.rows.filter((r: { selected: boolean; counts?: unknown }) => r.selected && r.counts);
+    expect(cockpit.progressText).toContain(measuredPlans.length ? 'No items in measured plans' : 'Progress not measured');
+    expect(cockpit.overflowingPanel).toBe(false);
     expect(cockpit.hasDraftControls).toBe(false);
     await native('screenshot', '--output', info.outputPath('goal-cockpit.png'));
     await info.attach('native-design-c-cockpit', { body: JSON.stringify({ cockpit, sourceReceipt }), contentType: 'application/json' });

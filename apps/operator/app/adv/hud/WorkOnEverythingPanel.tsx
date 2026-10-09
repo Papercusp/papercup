@@ -122,15 +122,6 @@ function GoalCockpit({ data, rows, onOpenPlan, onOpenWorkItem, onOpenAgent }: {
         <p className="woe__muted">{measured.length} of {selected.length} selected plans measured
           {measured.length < selected.length ? ` · ${selected.length - measured.length} not measured; totals are partial` : ''}.</p>
       </section>
-      <dl className="woe__facts">
-        <div><dt>Plans on list</dt><dd>{selected.length}</dd></div>
-        <div><dt>Awaiting sign-off</dt><dd>{finished}</dd></div>
-        <div className="woe__fact-wide"><dt>Recent spend</dt><dd>{view.spend ?? 'Spend unavailable'}</dd></div>
-        <div className="woe__fact-wide"><dt>Spend cap</dt><dd>{view.budget ?? 'Budget unavailable'}</dd></div>
-        <div className="woe__fact-wide"><dt>Steward</dt><dd>{owner ? onOpenAgent ?
-          <button type="button" className="woe__link" onClick={() => onOpenAgent(owner.ownerId)}>Ask steward</button> :
-          'Steward available' : 'Live steward unavailable'}</dd></div>
-      </dl>
       <section className="woe__needs" aria-label="Needs you">
         <h3>Needs you <span>{view.attention ?? 'Not measured'}</span></h3>
         {waiting.map(item => <article className="woe__need" key={item.id}><h4>{item.title}</h4>
@@ -145,6 +136,15 @@ function GoalCockpit({ data, rows, onOpenPlan, onOpenWorkItem, onOpenAgent }: {
           {row.harness && row.planSlug && onOpenPlan ? <button type="button" className="woe__link"
             onClick={() => onOpenPlan(row.harness!, row.planSlug!)}>Open plan</button> : null}</article>)}
       </section>
+      <dl className="woe__facts">
+        <div><dt>Plans on list</dt><dd>{selected.length}</dd></div>
+        <div><dt>Awaiting sign-off</dt><dd>{finished}</dd></div>
+        <div className="woe__fact-wide"><dt>Recent spend</dt><dd>{view.spend ?? 'Spend unavailable'}</dd></div>
+        <div className="woe__fact-wide"><dt>Spend cap</dt><dd>{view.budget ?? 'Budget unavailable'}</dd></div>
+        <div className="woe__fact-wide"><dt>Steward</dt><dd>{owner ? onOpenAgent ?
+          <button type="button" className="woe__link" onClick={() => onOpenAgent(owner.ownerId)}>Ask steward</button> :
+          'Steward available' : 'Live steward unavailable'}</dd></div>
+      </dl>
     </aside>
     <div className="woe__main">
       <RubricStewardship data={data} onOpenWorkItem={onOpenWorkItem} />

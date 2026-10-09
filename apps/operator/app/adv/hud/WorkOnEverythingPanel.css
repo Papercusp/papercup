@@ -200,7 +200,11 @@
   .woe__cockpit { grid-template-columns: minmax(0, 1fr); }
   .woe__sidebar { border-right: 0; border-bottom: 1px solid var(--border); }
   .woe__activity li { grid-template-columns: minmax(0, 1fr); gap: 4px; }
-  .woe__header { flex-wrap: wrap; padding: 15px; }
+  .woe__header { flex-wrap: wrap; padding: 15px; position: relative; gap: 14px; }
+  .woe__header .woe__identity { padding-right: 26px; }
+  .woe__header .woe__title { gap: 6px; }
+  .woe__header .woe__title h2 { font-size: 17px; }
+  .woe__header button[aria-label='Close ongoing work'] { position: absolute; right: 10px; top: 10px; }
   .woe__kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .woe__search { width: 100%; margin-left: 0; }
   .woe__table th:nth-child(5), .woe__table td:nth-child(5) { display: none; }
