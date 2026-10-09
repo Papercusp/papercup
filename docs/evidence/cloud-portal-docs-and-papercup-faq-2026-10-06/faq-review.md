@@ -485,3 +485,24 @@ cohort. The existing tutorial implementer has not supplied a ready replacement
 artifact. Real three-person/four-task observations, independent acceptance and
 exact production shipment also remain open. Historical evidence keeps its
 original scope; missing observations stay unknown.
+
+## Focused publication proof refresh, 2026-10-09
+
+Astro configuration changed from the historical R-4 proof pin while the FAQ,
+publication parser and maintained FAQ test remained byte-identical. A fresh
+committed-source run at `265aa9261bd5df9b72326353b663cf2ce9eb5e14` passed all
+seven publication cases with zero skips (`test_runs:20951875`). The same
+committed copy-out runner then passed seven cases in each baseline
+(`20951881`) and unmutated-overlay control (`20951883`). Disabling only the
+minimum-question guard caused the exact removed-question case to fail:
+mutant `20951886` had six passes, one failure and zero skips. The mutation
+runner exited zero with `verdict=caught` and verified unchanged source bytes.
+
+The authoritative ledger records all four runs under `papercusp`, with
+`worktreeDirty=false` and no scratch test configuration. The four bounded
+source/test hashes match the canonical tree. Replay arguments, current runner
+identity, retained log hashes and limits are preserved in the `currentProof`
+field of [faq-count-mutation.json](./faq-count-mutation.json). This refresh
+belongs to `AUTO-BAR-R-4-P-004@3` and `DOCS-FAQ-COUNT@1`; it does not replace the
+scoped P-007 contract or establish sensitive truth, actual Papercup answers,
+novice results, independent acceptance or final shipment.
