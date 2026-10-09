@@ -681,7 +681,7 @@ export interface CaptureDeps {
       silent?: boolean;
       confirmShrink?: boolean;
     },
-  ) => Promise<EngineerIssue | null>;
+  ) => ReturnType<typeof updateIssue>;
   mergeIssuePayload?: (
     id: string,
     patch: Record<string, unknown>,
