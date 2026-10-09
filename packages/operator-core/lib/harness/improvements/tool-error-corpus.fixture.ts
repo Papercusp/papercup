@@ -170,6 +170,12 @@ export const TOOL_ERROR_CORPUS: readonly ToolErrorCorpusRow[] = [
     note: 'MCP auth gate recorded an invalid-bearer refusal before dispatch; keep this credential rejection out of the structural bug lane (EI-24772367245361033)',
   },
   {
+    n: 1, errorCode: 'mcp_auth_failed', status: 'error',
+    message: 'superuser_native_session_verifier_unavailable',
+    expectedClass: 'transient',
+    note: 'The server-side native-session authority verifier could not complete; the caller did not cause this pre-dispatch failure (EI-25473774715739107)',
+  },
+  {
     n: 1, errorCode: 'native_tool_owner_unsupported_capability', status: 'error',
     message: 'native_tool_owner_unsupported_capability',
     expectedClass: 'caller',

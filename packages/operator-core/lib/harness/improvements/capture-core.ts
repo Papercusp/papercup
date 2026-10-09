@@ -2901,6 +2901,9 @@ export async function captureImprovement(
   });
 
   if (checkOnly) {
+    const incompleteCoverageHint = dedupCoverage.degraded
+      ? ' ⚠ INCOMPLETE: dedupCoverage.degraded is true, so an empty possibleDuplicates list is inconclusive even if one search leg reports ok. Do not treat this result as clean.'
+      : '';
     return {
       ok: true,
       created: false,
@@ -2909,8 +2912,13 @@ export async function captureImprovement(
       dedupCoverage,
       admissionIdentity: identity,
       hint: input.body
-        ? 'Dedup results apply to this exact title and body. If the body will change before filing, rerun checkDuplicatesOnly with the final body because semantic matches can change.'
-        : 'This was a title-only pre-check. The match list can be incomplete even when it contains matches because a final body can surface additional semantic duplicates. Rerun checkDuplicatesOnly with the final body before relying on the match list.',
+        ? 'Dedup results apply to this exact title and body. If the body will change before filing, rerun checkDuplicatesOnly with the final body because semantic matches can change.' +
+          incompleteCoverageHint
+        : 'This was a title-only pre-check. The match list can be incomplete even when it contains matches because a final body can surface additional semantic duplicates. Rerun checkDuplicatesOnly with the final body before relying on the match list.' +
+          incompleteCoverageHint +
+          (dedupCoverage.degraded
+            ? ' Include the final body and rerun checkDuplicatesOnly before filing.'
+            : ''),
       ...(alreadyDecided.length ? { alreadyDecided } : {}),
     };
   }

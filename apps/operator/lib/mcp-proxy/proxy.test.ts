@@ -7491,6 +7491,123 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     }
   });
 
+  it("routes read-only improvements:capture duplicate checks through reserved control-plane capacity", async () => {
+    let releaseCapture: () => void = () => {};
+    const captureGate = new Promise<void>((resolve) => {
+      releaseCapture = resolve;
+    });
+    let noteCaptureStarted: () => void = () => {};
+    const captureStarted = new Promise<void>((resolve) => {
+      noteCaptureStarted = resolve;
+    });
+    const hits: string[] = [];
+    const upstream = track(
+      http.createServer((req, res) => {
+        const client =
+          new URL(req.url ?? "/", "http://127.0.0.1").searchParams.get(
+            "client",
+          ) ?? "";
+        hits.push(client);
+        if (client === "held-capture") {
+          noteCaptureStarted();
+          void captureGate.then(() => res.end('{"result":{"held":true}}'));
+          return;
+        }
+        res.end('{"result":{"checked":true}}');
+      }),
+    );
+    await listen(upstream);
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0,
+        targetHost: "127.0.0.1",
+        targetPort: port(upstream),
+        retryWindowMs: 1_000,
+        maxInFlight: 10,
+        controlPlaneReserve: 1,
+        maxCriticalContinuationQueue: 1,
+        maxImprovementsCaptureQueue: 1,
+        improvementsCaptureQueueWaitMs: 100,
+      }),
+    );
+    await listen(proxy);
+
+    const directCheck = JSON.stringify({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "tools/call",
+      params: {
+        name: "improvements:capture",
+        arguments: {
+          title: "duplicate probe",
+          kind: "bug",
+          checkDuplicatesOnly: true,
+        },
+      },
+    });
+    const invokedCheck = JSON.stringify({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "tools/call",
+      params: {
+        name: "tools:invoke",
+        arguments: {
+          name: "improvements:capture",
+          args: {
+            title: "duplicate probe via invoke",
+            kind: "bug",
+            checkDuplicatesOnly: true,
+          },
+        },
+      },
+    });
+    const heldCapture = request(
+      port(proxy),
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: {
+          name: "improvements:capture",
+          arguments: { title: "slow persisted capture", kind: "bug" },
+        },
+      }),
+      "/api/mcp?client=held-capture",
+    );
+    const pendingChecks: Array<Promise<unknown>> = [];
+    try {
+      await captureStarted;
+      const direct = request(
+        port(proxy),
+        directCheck,
+        "/api/mcp?client=direct-dedup-check",
+      );
+      const invoked = request(
+        port(proxy),
+        invokedCheck,
+        "/api/mcp?client=invoke-dedup-check",
+      );
+      pendingChecks.push(direct, invoked);
+
+      await waitFor(
+        () =>
+          hits.includes("direct-dedup-check") &&
+          hits.includes("invoke-dedup-check"),
+      );
+      expect(hits).toEqual([
+        "held-capture",
+        "direct-dedup-check",
+        "invoke-dedup-check",
+      ]);
+      expect((await direct).status).toBe(200);
+      expect((await invoked).status).toBe(200);
+    } finally {
+      releaseCapture();
+      await Promise.allSettled([heldCapture, ...pendingChecks]);
+    }
+    expect((await heldCapture).status).toBe(200);
+  });
+
   it("WI-950869: gives the dedicated improvements:capture queue a finite default dwell", async () => {
     expect(DEFAULT_CRITICAL_CONTINUATION_QUEUE_WAIT_MS).toBe(0);
     expect(DEFAULT_IMPROVEMENTS_CAPTURE_QUEUE_WAIT_MS).toBe(20_000);

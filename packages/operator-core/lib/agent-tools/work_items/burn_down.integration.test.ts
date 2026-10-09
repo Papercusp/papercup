@@ -8,7 +8,11 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import type postgres from 'postgres';
 import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
 
-const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
+const h = vi.hoisted(() => ({
+  sql: undefined as unknown as postgres.Sql,
+  publicBrief: false,
+  metricItemsUnavailable: false,
+}));
 vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
   return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: h.sql }) };
@@ -18,9 +22,39 @@ vi.mock('../../workspace-registry', async () => {
   return { ...actual, activeWorkspaceId: () => 'default' };
 });
 vi.mock('../../long-lived-admin-pool', () => ({ getLongLivedAdminPool: () => h.sql }));
+vi.mock('../../work-items', async (orig) => {
+  const actual = await orig<typeof import('../../work-items')>();
+  return {
+    ...actual,
+    listAllWorkItemsForFileExport: (...args: Parameters<typeof actual.listAllWorkItemsForFileExport>) => {
+      if (h.metricItemsUnavailable) throw new Error('fixture item reader unavailable');
+      return actual.listAllWorkItemsForFileExport(...args);
+    },
+  };
+});
+vi.mock('../../bounded-timeout', async (orig) => {
+  const actual = await orig<typeof import('../../bounded-timeout')>();
+  return {
+    ...actual,
+    withBoundedTimeout: async <T>(
+      work: Promise<T> | ((signal: AbortSignal) => Promise<T>),
+      opts: import('../../bounded-timeout').BoundedTimeoutOptions<T>,
+    ) => {
+      // Exercise the public assembly and its real metric reader/builder. Keep
+      // unrelated desktop, control and supervision reads outside this fixture;
+      // their production fallbacks remain unknown rather than invented counts.
+      if (!h.publicBrief || !opts.label?.startsWith('leader-brief:') ||
+          opts.label === 'leader-brief:fleet-metrics') {
+        return actual.withBoundedTimeout(work, opts);
+      }
+      if (typeof work !== 'function') void work.catch(() => undefined);
+      return { value: opts.fallback, degraded: true, reason: 'timeout' as const, elapsedMs: 0 };
+    },
+  };
+});
 
 const { default: burnDownTool } = await import('./burn_down');
-const { readLeaderBriefFleetMetrics } = await import('../fleet/leader-brief');
+const { default: leaderBriefTool, readLeaderBriefFleetMetrics } = await import('../fleet/leader-brief');
 const { shapeLeaderBrief } = await import('../fleet/leader-brief-shape');
 const { explainIssueClaimFloors, listWorkItems } = await import('../../work-items');
 const { DEFAULT_CLAIM_SPEC } = await import('../../scheduler/claim-spec');
@@ -46,6 +80,8 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
+  h.publicBrief = false;
+  h.metricItemsUnavailable = false;
   await sql`TRUNCATE harness_shared.work_items,
                          harness_shared.coord_presence,
                          harness_shared.fleet_membership_events,
@@ -220,6 +256,63 @@ describe('default fleet reports over the real current-spec queue', () => {
     }).handler({ harness: HARNESS, fleet: FLEET, window: 'fleet-lifetime',
       flowMode: 'current-spec', limit: 5 }, CTX);
   }
+
+  it('one public leader-brief call retains complete current-spec partitions and unknown counts through shaping', async () => {
+    await seedFleet();
+    await seedQueue();
+    h.publicBrief = true;
+    const response = await (leaderBriefTool as unknown as {
+      handler: (args: unknown, ctx: unknown) => Promise<{ data: Record<string, any> }>;
+    }).handler({ fleet: FLEET, harness: HARNESS }, CTX);
+    expect(response.data.ok).toBe(true);
+    expect(response.data.fleetMetrics.ok).toBe(true);
+    const snapshot = response.data.fleetMetrics.snapshot;
+    const floors = await explainIssueClaimFloors(HARNESS, ids, { includeAllFloors: true });
+    expect(snapshot.remaining).toMatchObject({ total: 4, buckets: {
+      needsHuman: 0, blocked: 1, claimHeld: 1, inFlight: 0, claimable: 1, otherUnclaimable: 1,
+    } });
+    expect(Object.values(snapshot.remaining.buckets).reduce(
+      (sum: number, count) => sum + Number(count), 0,
+    )).toBe(snapshot.remaining.total);
+    expect(snapshot.remaining.buckets.claimable).toBe(floors.filter(row => row.admissible).length);
+    expect(snapshot.quality.exactness).toMatchObject({ status: 'exact', sourceCap: null });
+    expect(snapshot.queueHealth.waiting.reviewWait).toMatchObject({
+      population: 2, known: 1, unknown: 1, oldestMs: null,
+    });
+    // The unrelated scheduler aggregate was not measured by this call. The
+    // real metric snapshot above must not turn that separate unknown into 0.
+    expect(response.data.summary.claimable_now).toMatchObject({ value: null, unknown: {
+      code: expect.any(String),
+    } });
+    for (const tier of ['trimmed', 'standard'] as const) {
+      const shaped = shapeLeaderBrief(response.data, tier) as Record<string, any>;
+      expect(shaped.fleetMetrics.snapshot.remaining).toEqual(snapshot.remaining);
+      expect(shaped.fleetMetrics.snapshot.queueHealth).toEqual(snapshot.queueHealth);
+      expect(shaped.summary.claimable_now.value).toBeNull();
+      expect(shaped.summary.claimable_now.unknown).toBeTruthy();
+    }
+  }, 30_000);
+
+  it('a public leader-brief item-read failure stays unavailable through shaping', async () => {
+    await seedFleet();
+    h.publicBrief = true;
+    h.metricItemsUnavailable = true;
+    const response = await (leaderBriefTool as unknown as {
+      handler: (args: unknown, ctx: unknown) => Promise<{ data: Record<string, any> }>;
+    }).handler({ fleet: FLEET, harness: HARNESS }, CTX);
+    expect(response.data.ok).toBe(true);
+    expect(response.data.fleetMetrics).toMatchObject({
+      ok: false, error: 'fleet_metrics_unavailable',
+      reason: expect.stringContaining('fixture item reader unavailable'),
+      recoverVia: expect.stringContaining('work_items:burn_down'),
+    });
+    expect(response.data.fleetMetrics).not.toHaveProperty('snapshot');
+    for (const tier of ['trimmed', 'standard'] as const) {
+      const shaped = shapeLeaderBrief(response.data, tier) as Record<string, any>;
+      expect(shaped.fleetMetrics).toEqual(response.data.fleetMetrics);
+      expect(shaped.fleetMetrics).not.toHaveProperty('snapshot');
+    }
+  }, 30_000);
 
   it('preserves the complete selected stock and independent scheduler floors beyond the display cap', async () => {
     await seedFleet();

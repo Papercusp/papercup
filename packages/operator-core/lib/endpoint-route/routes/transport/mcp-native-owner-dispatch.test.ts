@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { registerProjectedTool, unregisterProjectedToolsForPlugin, type ProjectedTool, type UnifiedToolContext } from '@papercusp/tooldef';
-import { dispatchNativeMcpTargetOnOwner, normalizeNativeMcpOwnerSpawn, runNativeMcpTargetOnOwner, type BuiltSpawnContext } from './_mcp-host';
+import { dispatchNativeMcpTargetOnOwner, normalizeNativeMcpOwnerSpawn, recordMcpPreflightFailure, runNativeMcpTargetOnOwner, type BuiltSpawnContext } from './_mcp-host';
 import type { SuNativeToolAddress } from '../../../su-session-owner-routing';
 const telemetry = vi.hoisted(() => ({ recordInvocation: vi.fn() }));
 const nativeOwnerRouting = vi.hoisted(() => ({ run: vi.fn() }));
@@ -156,6 +156,27 @@ describe('D-063 owner rebuild of native MCP targets', () => {
       toolName: 'native-fixture:run', status: 'error', args: { value: 7 },
       ctx: expect.objectContaining({ uiClientId: address.ownerId, requestOrigin: spawn.requestOrigin }),
     }));
+  });
+
+  it('persists the expected native-owner refusal code while leaving generic preflight errors code-less', async () => {
+    const projected = { pluginName: 'native-fixture' } as ProjectedTool;
+    const ctx = structuredClone(spawn) as unknown as UnifiedToolContext;
+    const args = { value: 7 };
+
+    await recordMcpPreflightFailure(projected, 'native-fixture:run', ctx, args, Date.now(),
+      new Error('native_tool_owner_unsupported_capability'));
+    expect(telemetry.recordInvocation).toHaveBeenCalledOnce();
+    expect(telemetry.recordInvocation.mock.calls[0][0]).toMatchObject({
+      toolName: 'native-fixture:run', pluginName: 'native-fixture', status: 'error',
+      errorCode: 'native_tool_owner_unsupported_capability',
+      errorMessage: 'native_tool_owner_unsupported_capability', args,
+    });
+
+    telemetry.recordInvocation.mockClear();
+    await recordMcpPreflightFailure(projected, 'native-fixture:run', ctx, args, Date.now(),
+      new Error('fixture principal synthesis failed'));
+    expect(telemetry.recordInvocation).toHaveBeenCalledOnce();
+    expect(telemetry.recordInvocation.mock.calls[0][0]).not.toHaveProperty('errorCode');
   });
 
   it('lets generic owner dispatch record a thrown handler once', async () => {

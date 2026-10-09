@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { ToolResult } from '@papercusp/tooldef';
 
 import launchAgent from './capability/launch-agent';
 import migrate from './db/migrate';
@@ -14,6 +15,7 @@ import codeRun from './code/run';
 import docsAuthor from './docs/author';
 import coordSend from './coordination/tools/send';
 import agentReview from './improvements/agent-review';
+import storagePrune from './storage/prune';
 
 /**
  * WI-10005670 recurrence guard — the commit-unknown window.
@@ -53,6 +55,8 @@ const LATE_RETURN_MUTATORS = {
   'coord:send': coordSend,
   // EI-25374615774698673: a late review claim/resubmission must name its completed effect.
   'improvements:agent-review': agentReview,
+  // EI-25430676827648397: prune can commit deletes before its slow maintenance tail returns.
+  'storage:prune': storagePrune,
 } as const;
 
 /** The population check, factored so the calibration control below can run the same code. */
@@ -72,5 +76,44 @@ describe('late-return mutating tools declare an abortCompletionReceipt (WI-10005
     for (const [name, tool] of Object.entries(LATE_RETURN_MUTATORS)) {
       expect(tool.name).toBe(name);
     }
+  });
+
+  it('storage:prune reports the effect or fails closed when an aborted attempt is unclear', () => {
+    expect(storagePrune.timeoutSec).toBe(90);
+    const receipt = storagePrune.abortCompletionReceipt;
+    expect(receipt).toBeTypeOf('function');
+    const context = { callId: 'prune-call-1', toolName: 'storage:prune' };
+    const result = (payload: unknown) => ({
+      content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
+    }) as ToolResult;
+
+    expect(
+      receipt!({}, result({
+        ok: true,
+        categoryId: 'substrate-outbox',
+        dryRun: false,
+        removed: 12,
+        partial: true,
+        totalRemaining: 8,
+        vacuumed: false,
+      }), context),
+    ).toMatchObject({
+      status: 'recorded',
+      effectRef: 'storage-prune:prune-call-1:substrate-outbox',
+      diagnostics: { categoryId: 'substrate-outbox', removed: 12, partial: true, totalRemaining: 8 },
+    });
+
+    expect(
+      receipt!({}, result({ ok: true, categoryId: 'scratch', dryRun: true, removed: 0, vacuumed: false }), context),
+    ).toMatchObject({ status: 'not-recorded' });
+    expect(
+      receipt!({}, result({ ok: true, categoryId: 'route-invocations', dryRun: false, removed: 0, complete: true }), context),
+    ).toMatchObject({ status: 'not-recorded' });
+    expect(
+      receipt!({}, result({ ok: true, categoryId: 'wake-spills', dryRun: false, removed: 0 }), context),
+    ).toMatchObject({ status: 'recovery-incomplete' });
+    expect(
+      receipt!({}, result({ ok: false, categoryId: 'substrate-outbox', dryRun: false, removed: 0 }), context),
+    ).toMatchObject({ status: 'recovery-incomplete' });
   });
 });

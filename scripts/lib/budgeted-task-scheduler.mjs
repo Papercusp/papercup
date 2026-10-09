@@ -1344,15 +1344,6 @@ export function formatAdmissionProspect(ownerText, waiter, now = Date.now()) {
         : null;
     if (!intent) return "";
 
-    const etaProjectedSec = Number(intent.etaProjectedSec);
-    if (!Number.isFinite(etaProjectedSec) || etaProjectedSec <= 0) {
-      const legacyEtaSec = Number(intent.etaMinSec);
-      return Number.isFinite(legacyEtaSec) && legacyEtaSec > 0
-        ? ` — PROSPECT UNKNOWN: the holder reports legacy etaMinSec=${legacyEtaSec} ` +
-            `as serial-equivalent work, not a concurrency-aware wall-time projection.`
-        : "";
-    }
-
     // A ratio whose numerator is 0 means the projection saw no duration history at all, so the
     // displayed estimate is really zero information wearing a number's clothes. Say so.
     const covered = /^(\d+)\s*\/\s*(\d+)$/.exec(
@@ -1360,9 +1351,18 @@ export function formatAdmissionProspect(ownerText, waiter, now = Date.now()) {
     );
     if (covered && Number(covered[1]) === 0) {
       return (
-        ` — PROSPECT UNKNOWN: the holder's etaMinSec covers ${intent.etaFromTasks} of its ` +
+        ` — PROSPECT UNKNOWN: the holder's projection covers ${intent.etaFromTasks} of its ` +
         `tasks, so it carries no information about when you will be admitted.`
       );
+    }
+
+    const etaProjectedSec = Number(intent.etaProjectedSec);
+    if (!Number.isFinite(etaProjectedSec) || etaProjectedSec <= 0) {
+      const legacyEtaSec = Number(intent.etaMinSec);
+      return Number.isFinite(legacyEtaSec) && legacyEtaSec > 0
+        ? ` — PROSPECT UNKNOWN: the holder reports legacy etaMinSec=${legacyEtaSec} ` +
+            `as serial-equivalent work, not a concurrency-aware wall-time projection.`
+        : "";
     }
 
     const acquiredAtMs = parsed.acquiredAt
@@ -1423,6 +1423,30 @@ export async function runBudgetedTasks(tasks, options) {
   let run;
   do {
     const remainingQueueMs = Math.max(1, timeoutMs - queuedMs);
+    // EI-25482105942475587: lease age is subtracted from this ETA by waiters.
+    // The whole-plan projection includes other shards that release the mutex in
+    // between, and a resumed wave has already settled some of this shard's work.
+    // Project only the tasks covered by THIS lease, retaining original indices
+    // for index-based history and leaving the caller's other declarations intact.
+    let admissionIntent = options?.admissionIntent;
+    if (admissionIntent && typeof admissionIntent === "object" && !Array.isArray(admissionIntent)) {
+      const remaining = tasks.map((task, index) => ({ task, index }))
+        .filter(({ index }) => run?.results[index] == null);
+      const projection = estimateBudgetedTaskWallMs({ shards: [{ tasks: remaining }] }, {
+        ...options,
+        estimateMs: ({ task, index }) => options.estimateMs?.(task, index),
+      });
+      admissionIntent = {
+        ...admissionIntent,
+        tasks: remaining.length,
+        etaProjectedSec: Math.round(projection.projectedWallMs / 1000),
+        etaWorkSec: Math.round(projection.knownWorkMs / 1000),
+        etaFromTasks: `${projection.knownTasks}/${remaining.length}`,
+        etaUnknownTasks: projection.unknownTasks,
+        etaMode: projection.mode,
+        etaConcurrency: projection.maxConcurrentTasks,
+      };
+    }
     run = await withFsMutex(
     // WI-1746759: the release gate rides its own lane; everyone else shares one.
     admissionMutexName(),
@@ -1433,9 +1457,9 @@ export async function runBudgetedTasks(tasks, options) {
       retryMs: SHARED_TEST_PROCESS_ADMISSION_RETRY_MS,
       waitingNoticeIntervalMs: SHARED_TEST_PROCESS_ADMISSION_NOTICE_INTERVAL_MS,
       // EI-21917992245424964: what this run IS, carried in the owner record so a blocked
-      // peer can judge it without waking anyone. The caller owns the content because the
-      // caller is the only layer that knows its own scope; this layer only forwards it.
-      intent: options?.admissionIntent,
+      // peer can judge it without waking anyone. The caller owns scope/purpose;
+      // the scheduler derives task coverage and ETA for the actual lease.
+      intent: admissionIntent,
       onWaiting: ({ owner, elapsedMs }) => {
         // WI-2142172: the base sentence stays (starvation is genuinely not a hang), but it
         // is no longer the LAST word. When the holder's declared lower bound already

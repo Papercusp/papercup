@@ -293,9 +293,11 @@ describe('classifyToolError — real-corpus regression (P-011)', () => {
     )).toBe('structural');
   });
 
-  it('classifies an MCP auth-gate refusal as caller/auth without broadly matching its message', () => {
+  it('keeps invalid MCP credentials caller-side but classifies native verifier unavailability as transient', () => {
     expect(classifyToolError('mcp_auth_failed', 'error', 'superuser_invalid_bearer')).toBe('caller');
     expect(classifyToolError('handler_error', 'error', 'superuser_invalid_bearer')).toBe('structural');
+    expect(classifyToolError('mcp_auth_failed', 'error', 'superuser_native_session_verifier_unavailable')).toBe('transient');
+    expect(classifyToolError('handler_error', 'error', 'superuser_native_session_verifier_unavailable')).toBe('transient');
   });
 
   it('classifies the intentional native-owner transport capability refusal as caller-side', () => {

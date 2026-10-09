@@ -156,6 +156,11 @@ export const TOOL_ERROR_RULES: readonly ToolErrorRule[] = [
     why: 'a timeout (incl. one surfaced as handler_error) is load, not a tool bug',
   },
   {
+    class: 'transient',
+    messagePattern: '^superuser_native_session_verifier_unavailable$',
+    why: 'the native-session verifier could not complete its server-side authority read before dispatch; caller input is not the cause, and detailed verifier diagnostics are retained in mcpAuthFailure metadata',
+  },
+  {
     class: 'caller',
     errorCodes: ['aborted'],
     why: 'the parent request/session cancelled the tool call; dispatch reports this control-flow outcome separately from a tool or handler defect',

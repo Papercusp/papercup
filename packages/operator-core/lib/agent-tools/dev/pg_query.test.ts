@@ -35,7 +35,7 @@ vi.mock('../../pg-read-query', async (importOriginal) => ({
 }));
 
 import pgQueryTool, { PG_QUERY_MAX_RESPONSE_BYTES, PG_QUERY_MODE } from './pg_query';
-import { PgReadQueryTimeoutError } from '../../pg-read-query';
+import { PG_READ_QUERY_CALL_OVERHEAD_MS, PgReadQueryTimeoutError } from '../../pg-read-query';
 // EI-21596258009994255: the refusal text a caller actually reads is RENDERED by
 // formatIssues, which resolves an `invalid_union` down to the closest branch's own
 // sub-issues. Asserting the schema merely *carries* a message would pass while the
@@ -46,6 +46,17 @@ const OK_RESULT = { rowCount: 1, truncated: false, fields: ['x'], elapsedMs: 3, 
 
 function payloadOf(res: { content: Array<{ type: string; text: string }> }): Record<string, unknown> {
   return JSON.parse(res.content[0].text) as Record<string, unknown>;
+}
+
+async function runUntilCallDeadline<T>(work: () => Promise<T>, timeoutMs: number): Promise<T> {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  try {
+    const pending = work();
+    await vi.advanceTimersByTimeAsync(timeoutMs + PG_READ_QUERY_CALL_OVERHEAD_MS + 1);
+    return await pending;
+  } finally {
+    vi.useRealTimers();
+  }
 }
 
 beforeEach(() => {
@@ -330,10 +341,10 @@ describe('dev:pg_query — P-005 guard wiring', () => {
     expect(payloadOf(res as never).advisory).toContain(
       '⚠ unbounded JSON-text search: metadata_json::text',
     );
-    expect(pgReadQueryMock).toHaveBeenCalledWith(sql, {
+    expect(pgReadQueryMock).toHaveBeenCalledWith(sql, expect.objectContaining({
       maxRows: undefined,
-      timeoutMs: undefined,
-    });
+      timeoutMs: expect.any(Number),
+    }));
   });
 
   it('publishes the JSON-search bypass only on SQL calls', () => {
@@ -366,7 +377,39 @@ describe('dev:pg_query — P-005 guard wiring', () => {
       fields: ['QUERY PLAN'],
       rows: [{ 'QUERY PLAN': expect.stringContaining('Result') }],
     });
-    expect(pgReadQueryMock).toHaveBeenCalledWith(sql, { maxRows: undefined, timeoutMs: undefined });
+    expect(pgReadQueryMock).toHaveBeenCalledWith(
+      sql,
+      expect.objectContaining({ maxRows: undefined, timeoutMs: expect.any(Number) }),
+    );
+  });
+
+  it('returns call_timeout when tenant preflight hangs before pgReadQuery starts', async () => {
+    advisoryMock.mockImplementation(() => new Promise(() => {}));
+
+    const res = await runUntilCallDeadline(
+      () => pgQueryTool.handler({ sql: 'SELECT 1', timeoutMs: 100 } as never, {} as never),
+      100,
+    );
+
+    expect((res as { isError?: boolean }).isError).toBe(true);
+    expect(payloadOf(res as never)).toMatchObject({ reason: 'call_timeout' });
+    expect(advisoryMock).toHaveBeenCalledOnce();
+    expect(pgReadQueryMock).not.toHaveBeenCalled();
+  });
+
+  it('returns call_timeout when optional error enrichment hangs after a PG error', async () => {
+    pgReadQueryMock.mockRejectedValue(Object.assign(new Error('column does not exist'), { code: '42703' }));
+    describeColumnsMock.mockImplementation(() => new Promise(() => {}));
+
+    const res = await runUntilCallDeadline(
+      () => pgQueryTool.handler({ sql: 'SELECT missing FROM t', timeoutMs: 1000 } as never, {} as never),
+      1000,
+    );
+
+    expect((res as { isError?: boolean }).isError).toBe(true);
+    expect(payloadOf(res as never)).toMatchObject({ reason: 'call_timeout' });
+    expect(pgReadQueryMock).toHaveBeenCalledOnce();
+    expect(describeColumnsMock).toHaveBeenCalledOnce();
   });
 
   it('omits the advisory field when the guard finds nothing (or throws)', async () => {
@@ -430,11 +473,11 @@ describe('dev:pg_query — P-005 guard wiring', () => {
         rows: [{ id: 'known-row' }],
       });
       expect(String(payload.advisory ?? '')).not.toContain('absence unverified');
-      expect(pgReadQueryMock).toHaveBeenCalledWith('SELECT id FROM t WHERE false', {
+      expect(pgReadQueryMock).toHaveBeenCalledWith('SELECT id FROM t WHERE false', expect.objectContaining({
         maxRows: undefined,
-        timeoutMs: undefined,
+        timeoutMs: expect.any(Number),
         positiveControlSql,
-      });
+      }));
     });
 
     it('keeps absence unverified when the supplied positive control is also empty', async () => {
@@ -590,11 +633,11 @@ describe('dev:pg_query — P-005 guard wiring', () => {
       } as never);
 
       expect(payloadOf(res as never)).toMatchObject({ rowCount: 1 });
-      expect(pgReadQueryMock).toHaveBeenCalledWith(sql, {
+      expect(pgReadQueryMock).toHaveBeenCalledWith(sql, expect.objectContaining({
         maxRows: undefined,
-        timeoutMs: undefined,
+        timeoutMs: expect.any(Number),
         positiveControlSql,
-      });
+      }));
       expect(advisoryMock).toHaveBeenNthCalledWith(1, sql, {
         workspaceId: 'ws-1',
         harnessSlug: 'h-1',

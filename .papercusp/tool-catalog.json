@@ -7905,7 +7905,7 @@
           "POST"
         ]
       },
-      "description": "Reconstruct a coord thread rooted at `root_msg_id`; pass the inbox entry's `msg_id` value as `root_msg_id` (there is no `msg_id` argument). Entries connected via `related_msg_id` are sorted by ts ascending.",
+      "description": "Reconstruct a coord thread rooted at `root_msg_id`; pass the inbox entry's `msg_id` value as `root_msg_id` (there is no `msg_id` argument). Entries connected via `related_msg_id` are sorted by ts ascending. When entries are truncated, pass page_offset: 0 and follow each next_page_offset to retrieve every entry.",
       "capabilities": [
         "coord:read"
       ],
@@ -7930,7 +7930,7 @@
         "content-fixer"
       ],
       "guidance": {
-        "when": "You want the full conversation around a coord message (replies, acks, resolutions). Use the exact `msg_id` from coord:inbox or coord:read as the `root_msg_id` argument.",
+        "when": "You want the conversation around a coord message (replies, acks, resolutions). Use the exact `msg_id` from coord:inbox or coord:read as root_msg_id; when entries_truncated is true, page with page_offset and next_page_offset.",
         "notWhen": "For a fresh inbox sweep — use coord:inbox."
       }
     },

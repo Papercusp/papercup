@@ -596,13 +596,21 @@ describe('extractReferencedTables (P-005)', () => {
   });
 });
 
-/** A tagged-template `sql` stub returning canned information_schema rows. */
+/** A tagged-template postgres client stub returning canned information_schema rows. */
 function stubClient(rows: Array<{ table_schema: string; table_name: string; column_name: string; data_type?: string }>) {
   const calls: unknown[][] = [];
-  const sql = async (_strings: TemplateStringsArray, ...values: unknown[]) => {
-    calls.push(values);
+  const query = async (strings: TemplateStringsArray, ...values: unknown[]) => {
+    // boundedPgReadTxn tags set_config once during setup; keep `calls` focused
+    // on the schema lookup the fixture is meant to observe.
+    if (!strings.join('').includes("set_config('statement_timeout'")) calls.push(values);
     return rows;
   };
+  const tx = Object.assign(query, {
+    unsafe: async (_text: string) => [] as typeof rows,
+  });
+  const sql = Object.assign(query, {
+    begin: async (fn: (transaction: typeof tx) => Promise<unknown>) => fn(tx),
+  });
   return { sql: sql as never, calls };
 }
 
@@ -727,8 +735,15 @@ describe('buildTenantScopeAdvisory (P-005b — the wrong-tenant footgun)', () =>
   });
 
   it('propagates nothing on a schema-read failure (caller catches — advisory just absent)', async () => {
-    const throwing = (async () => {
+    const query = async (strings: TemplateStringsArray) => {
+      if (strings.join('').includes("set_config('statement_timeout'")) return [];
       throw new Error('pg down');
+    };
+    const tx = Object.assign(query, {
+      unsafe: async (_text: string) => [],
+    });
+    const throwing = Object.assign(query, {
+      begin: async (fn: (transaction: typeof tx) => Promise<unknown>) => fn(tx),
     }) as never;
     await expect(
       buildTenantScopeAdvisory("SELECT * FROM harness_shared.harness_plans WHERE x = 1", {
@@ -2518,12 +2533,17 @@ describe('buildJsonbPathRedirect (P-015)', () => {
   /** A client that answers information_schema by tagged template AND the probe by `.unsafe`. */
   function stubJsonbClient(schemaRows: SchemaRow[], probeRows: ProbeRow[] | (() => never)) {
     const probes: Array<{ query: string; params: unknown[] }> = [];
-    const sql = async (_s: TemplateStringsArray, ..._v: unknown[]) => schemaRows;
-    (sql as unknown as { unsafe: unknown }).unsafe = async (query: string, params: unknown[]) => {
+    const query = async (_s: TemplateStringsArray, ..._v: unknown[]) => schemaRows;
+    const unsafe = async (query: string, params: unknown[] = []) => {
+      if (/^\s*SET\b/i.test(query) || /\bset_config\s*\(/i.test(query)) return [];
       probes.push({ query, params });
       if (typeof probeRows === 'function') return probeRows();
       return probeRows;
     };
+    const tx = Object.assign(query, { unsafe });
+    const sql = Object.assign(query, {
+      begin: async (fn: (transaction: typeof tx) => Promise<unknown>) => fn(tx),
+    });
     return { sql: sql as never, probes };
   }
 
@@ -3889,13 +3909,16 @@ describe('EI-21338326327553651 — tenant population cache is scope-keyed, not t
   /** A client whose POPULATION probe answers differently per resolved workspace. */
   function popStub(hitFor: string) {
     const probedWorkspaces: string[] = [];
-    const sql = (async () => ROWS) as unknown as ((...a: unknown[]) => Promise<unknown>) & {
-      unsafe: (text: string, params?: string[]) => Promise<unknown>;
-    };
-    sql.unsafe = async (_text: string, params: string[] = []) => {
+    const query = async (_strings: TemplateStringsArray, ..._values: unknown[]) => ROWS;
+    const unsafe = async (text: string, params: string[] = []) => {
+      if (/^\s*SET\b/i.test(text) || /\bset_config\s*\(/i.test(text)) return [];
       probedWorkspaces.push(params[0]!);
       return [{ has_rows: true, ws_hit: params[0] === hitFor, ws_vals: [hitFor] }];
     };
+    const tx = Object.assign(query, { unsafe });
+    const sql = Object.assign(query, {
+      begin: async (fn: (transaction: typeof tx) => Promise<unknown>) => fn(tx),
+    });
     return { sql: sql as never, probedWorkspaces };
   }
 

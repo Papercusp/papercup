@@ -51,8 +51,12 @@ import {
   listRelations,
   stripSqlLiteralsAndComments,
   PG_READ_QUERY_DEFAULT_MAX_ROWS,
+  PG_READ_QUERY_DEFAULT_TIMEOUT_MS,
+  PG_READ_QUERY_CALL_OVERHEAD_MS,
   PG_READ_QUERY_HARD_MAX_ROWS,
+  PG_READ_QUERY_HARD_TIMEOUT_MS,
   PgReadQueryTimeoutError,
+  withCallDeadline,
 } from '../../pg-read-query';
 // WI-10002035 (P-003): labelled advisory fire telemetry. Kept separate from the
 // pg-read-query block above because nothing here participates in COMPOSING an
@@ -679,7 +683,7 @@ export default defineTool({
         .max(30000)
         .optional()
         .describe(
-          'Bounds the WHOLE call — connect/acquire + statement_timeout + execute (default 5000, max 30000). A hung connection acquire (e.g. the operator restarting mid-call) fails fast rather than hanging past it. ⚠ This is the SQL budget, not the wall-clock ceiling: the call deadline is timeoutMs PLUS a fixed ~3s overhead allowance (and, on the acquire path, the acquire budget too), so timeoutMs:5000 legitimately surfaces a failure at ~8000ms. Size the value by how long the QUERY may run; do not read a longer elapsed time as the bound being ignored.',
+          'Bounds the whole dev:pg_query handler, including tenant preflight, SQL execution, result advisories, and optional error enrichment (default 5000, max 30000), plus a fixed ~3s overhead allowance (so the default wall-clock deadline is ~8000ms). The SQL query receives only the remaining budget after preflight; a later phase that hangs returns call_timeout at the same shared deadline. Size timeoutMs for the work across phases, not only the SQL statement.',
         ),
       positiveControlSql: z
         .string()
@@ -728,7 +732,7 @@ export default defineTool({
         .max(30000)
         .optional()
         .describe(
-          'Bounds the WHOLE call — connect/acquire + statement_timeout + execute (default 5000, max 30000). A hung connection acquire (e.g. the operator restarting mid-call) fails fast rather than hanging past it. ⚠ This is the SQL budget, not the wall-clock ceiling: the call deadline is timeoutMs PLUS a fixed ~3s overhead allowance (and, on the acquire path, the acquire budget too), so timeoutMs:5000 legitimately surfaces a failure at ~8000ms. Size the value by how long the QUERY may run; do not read a longer elapsed time as the bound being ignored.',
+          'Bounds the whole dev:pg_query handler, including relation lookup and optional near-match enrichment (default 5000, max 30000), plus a fixed ~3s overhead allowance (so the default wall-clock deadline is ~8000ms). A hung metadata lookup returns call_timeout at the shared handler deadline.',
         ),
       positiveControlSql: z
         .never()
@@ -785,6 +789,23 @@ export default defineTool({
     })
     .passthrough(),
   async handler(args, ctx) {
+    const requestedTimeoutMs = Math.max(
+      100,
+      Math.min(PG_READ_QUERY_HARD_TIMEOUT_MS, Math.trunc(args.timeoutMs ?? PG_READ_QUERY_DEFAULT_TIMEOUT_MS)),
+    );
+    const callDeadlineMs = requestedTimeoutMs + PG_READ_QUERY_CALL_OVERHEAD_MS;
+    const deadlineAt = performance.now() + callDeadlineMs;
+    const timeoutMessage =
+      'dev:pg_query did not complete within ' +
+      String(callDeadlineMs) +
+      'ms of its whole-call deadline (' +
+      String(requestedTimeoutMs) +
+      'ms query budget plus ' +
+      String(PG_READ_QUERY_CALL_OVERHEAD_MS) +
+      'ms setup allowance). Tenant checks, SQL execution, and result advisories share this deadline.';
+    const withinDeadline = <T>(work: (assertActive: () => void) => Promise<T>): Promise<T> =>
+      withCallDeadline(work, Math.max(0, deadlineAt - performance.now()), timeoutMessage);
+
     // `describe` is the `\d` path (P-011): a psql CLIENT meta-command has no
     // SQL form, so it cannot ride through pgReadQuery's statement path at all.
     if (args.describe) {
@@ -794,7 +815,11 @@ export default defineTool({
       try {
         // A glob (or bare `*`) means "list what matches" rather than "describe one".
         if (/[*?]/.test(args.describe)) {
-          const relations = await listRelations(args.describe);
+          const relations = await withinDeadline((assertActive) => {
+            assertActive();
+            return listRelations(args.describe);
+          });
+          if (performance.now() >= deadlineAt) throw new PgReadQueryTimeoutError(timeoutMessage);
           return dataResult({
             mode: PG_QUERY_MODE.describeList,
             pattern: args.describe,
@@ -802,9 +827,17 @@ export default defineTool({
             relations,
           });
         }
-        const description = await describeRelation(args.describe);
+        const description = await withinDeadline((assertActive) => {
+          assertActive();
+          return describeRelation(args.describe);
+        });
+        if (performance.now() >= deadlineAt) throw new PgReadQueryTimeoutError(timeoutMessage);
         if (!description) {
-          const near = await listRelations(`*${args.describe.replace(/^.*\./, '')}*`, { limit: 10 }).catch(() => []);
+          const near = await withinDeadline((assertActive) => {
+            assertActive();
+            return listRelations(`*${args.describe.replace(/^.*\./, '')}*`, { limit: 10 }).catch(() => []);
+          });
+          if (performance.now() >= deadlineAt) throw new PgReadQueryTimeoutError(timeoutMessage);
           return jsonError(
             'relation_not_found',
             `No relation matching "${args.describe}".` +
@@ -814,6 +847,9 @@ export default defineTool({
         }
         return dataResult({ mode: PG_QUERY_MODE.describe, ...description });
       } catch (err) {
+        if (err instanceof PgReadQueryTimeoutError) {
+          return jsonError('call_timeout', err.message);
+        }
         return jsonError('describe_failed', extractPgErrorInfo(err).message ?? String(err));
       }
     }
@@ -1038,7 +1074,10 @@ export default defineTool({
         workspaceId: ctx.workspaceId,
         harnessSlug: ctx.harnessSlug,
       };
-      const tenantAdvisory = await buildTenantScopeAdvisory(sql, tenantScope).catch(() => null);
+      const tenantAdvisory = await withinDeadline((assertActive) => {
+        assertActive();
+        return buildTenantScopeAdvisory(sql, tenantScope).catch(() => null);
+      });
       if (tenantAdvisory && !args.allowUnscoped) {
         // test_runs is deliberately different from an ordinary tenant table:
         // CI rows have NULL tenant columns, and a LIKE suffix is not an exact
@@ -1053,7 +1092,10 @@ export default defineTool({
         );
       }
       const positiveControlTenantAdvisory = args.positiveControlSql
-        ? await buildTenantScopeAdvisory(args.positiveControlSql, tenantScope).catch(() => null)
+        ? await withinDeadline((assertActive) => {
+            assertActive();
+            return buildTenantScopeAdvisory(args.positiveControlSql!, tenantScope).catch(() => null);
+          })
         : null;
       if (positiveControlTenantAdvisory && !args.allowUnscoped) {
         const correction = positiveControlTenantAdvisory.startsWith('⚠ harness_shared.test_runs:')
@@ -1068,10 +1110,19 @@ export default defineTool({
           `${positiveControlTenantAdvisory} ${correction}`,
         );
       }
-      const result = await pgReadQuery(sql, {
-        maxRows: args.maxRows,
-        timeoutMs: args.timeoutMs,
-        ...(args.positiveControlSql ? { positiveControlSql: args.positiveControlSql } : {}),
+      const result = await withinDeadline(async (assertActive) => {
+        assertActive();
+        const remainingQueryTimeoutMs = Math.floor(
+          Math.min(requestedTimeoutMs, deadlineAt - performance.now() - PG_READ_QUERY_CALL_OVERHEAD_MS),
+        );
+        if (remainingQueryTimeoutMs < 100) throw new PgReadQueryTimeoutError(timeoutMessage);
+        const queryResult = await pgReadQuery(sql, {
+          maxRows: args.maxRows,
+          timeoutMs: remainingQueryTimeoutMs,
+          ...(args.positiveControlSql ? { positiveControlSql: args.positiveControlSql } : {}),
+        });
+        assertActive();
+        return queryResult;
       });
       const scalarCountControl = args.positiveControlSql
         ? hasScalarCountPositiveControl(args.positiveControlSql)
@@ -1116,7 +1167,10 @@ export default defineTool({
       // open to the statements-only string it replaces.
       const executedPartitionAdvisory =
         nonSummingPartitionAdvisory !== null
-          ? await buildExecutedPartitionAdvisory(sql).catch(() => null)
+          ? await withinDeadline((assertActive) => {
+              assertActive();
+              return buildExecutedPartitionAdvisory(sql).catch(() => null);
+            })
           : null;
       // Hoisted out of the join so P-003's fire telemetry reads the
       // POST-SUBSTITUTION values. Counting before the map would record the
@@ -1231,7 +1285,18 @@ export default defineTool({
       // CANONICAL column lists so the retry takes one round trip, not a
       // guessing loop (a fresh post-compaction context has no query memory).
       if (info.code === '42703') {
-        const described = await describeReferencedTableColumns(sql).catch(() => []);
+        let described: Awaited<ReturnType<typeof describeReferencedTableColumns>> = [];
+        try {
+          described = await withinDeadline((assertActive) => {
+            assertActive();
+            return describeReferencedTableColumns(sql).catch(() => []);
+          });
+        } catch (diagnosticError) {
+          if (diagnosticError instanceof PgReadQueryTimeoutError) {
+            return jsonError('call_timeout', diagnosticError.message);
+          }
+          throw diagnosticError;
+        }
         if (described.length) {
           payload.knownColumns = Object.fromEntries(described.map((d) => [d.table, d.columns]));
         }
@@ -1252,7 +1317,18 @@ export default defineTool({
         // redirect already claimed the name, so the two advisories never argue
         // about the same column in one payload.
         if (!redirect) {
-          const nested = await buildJsonbPathRedirect(sql, info.message).catch(() => null);
+          let nested: Awaited<ReturnType<typeof buildJsonbPathRedirect>> = null;
+          try {
+            nested = await withinDeadline((assertActive) => {
+              assertActive();
+              return buildJsonbPathRedirect(sql, info.message).catch(() => null);
+            });
+          } catch (diagnosticError) {
+            if (diagnosticError instanceof PgReadQueryTimeoutError) {
+              return jsonError('call_timeout', diagnosticError.message);
+            }
+            throw diagnosticError;
+          }
           if (nested) payload.jsonbPath = nested;
         }
       }

@@ -2879,6 +2879,58 @@ describe('P-007 — dedupCoverage: an empty result must disclose whether it coul
     expect(res.dedupCoverage).toEqual({ lexical: 'ok', semantic: 'ok', degraded: false });
   });
 
+  it('distinguishes title-only query scope from final-body semantic hits', async () => {
+    const title = 'scorecards:get ignores rerunRecipe evidence used by the auditor';
+    const body = 'The projection omits payload.observation.rerunRecipe from scorecards:get results.';
+    const prior = existing({
+      id: 'EI-TITLE-ONLY-SEMANTIC-MISS',
+      title: 'scorecards:get omits payload.observation.rerunRecipe needed for auditor reruns',
+    });
+    const queries: Array<{ title: string; summary?: string }> = [];
+    const d = {
+      ...deps(),
+      searchIssues: async () => {
+        throw new Error('lexical search unavailable');
+      },
+      findSemanticDupes: async (query: { title: string; summary?: string }) => {
+        queries.push(query);
+        return query.summary
+          ? {
+              ...healthySemanticResult(),
+              hard: [{
+                id: prior.id,
+                title: prior.title,
+                state: prior.state,
+                harness: 'papercusp',
+                similarity: 0.96,
+              }],
+            }
+          : healthySemanticResult();
+      },
+      getIssue: async () => prior,
+    };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const titleOnly = await captureImprovement({ title, kind: 'bug', checkDuplicatesOnly: true }, d);
+      const withFinalBody = await captureImprovement(
+        { title, body, kind: 'bug', checkDuplicatesOnly: true },
+        d,
+      );
+
+      expect(queries).toEqual([{ title }, { title, summary: body }]);
+      expect(titleOnly.possibleDuplicates).toEqual([]);
+      expect(titleOnly.dedupCoverage).toEqual({ lexical: 'unavailable', semantic: 'ok', degraded: true });
+      expect(titleOnly.hint).toContain('an empty possibleDuplicates list is inconclusive');
+      expect(titleOnly.hint).toContain('one search leg reports ok');
+      expect(titleOnly.hint).toContain('Include the final body and rerun checkDuplicatesOnly');
+      expect(withFinalBody.possibleDuplicates).toMatchObject([
+        { id: prior.id, semantic: 'hard', similarity: 0.96 },
+      ]);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it.each([
     { name: 'below-floor index', verdict: 'degraded' as const, semantic: 'partial' as const, degraded: true },
     { name: 'unknown index coverage', verdict: 'unknown' as const, semantic: 'unavailable' as const, degraded: true },

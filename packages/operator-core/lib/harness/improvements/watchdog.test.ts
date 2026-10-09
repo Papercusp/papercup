@@ -5,6 +5,7 @@ import { AUTO_CLOSE_ELIGIBLE_SOURCES } from './auto-close-sources'; // WI-40769
 import { INFRA_SIGNAL_SOURCES } from './policy'; // WI-918476
 import {
   planWatchdogCaptures,
+  collectToolErrorSignals,
   collectServiceDownSignals,
   runWatchdogTick,
   isImprovementLoopTool,
@@ -262,6 +263,48 @@ describe('tool-error sweep excludes the loop’s own tools (watchdog-robustness 
     expect(signals.map((s) => s.key)).toEqual(['coord:thread:caller']);
     expect(signals[0].kind).toBe('change');
     expect(signals[0].severity).toBe('minor');
+  });
+
+  it('the SQL collector keeps qualifying caller groups beyond the former top-30 cap', async () => {
+    const targetKey = 'capability:read:caller:superuser-native-session-verifier-unavailable';
+    const rows = Array.from({ length: 30 }, (_, index) => ({
+      tool_name: 'other:tool-' + index,
+      class: 'caller' as const,
+      fingerprint: 'other-caller-' + index,
+      n: 20,
+      total: 40,
+      sample: 'invalid_args: representative',
+    }));
+    rows.push({
+      tool_name: 'capability:read',
+      class: 'caller',
+      fingerprint: 'superuser-native-session-verifier-unavailable',
+      n: 13,
+      total: 9_654,
+      sample: 'superuser_native_session_verifier_unavailable',
+    });
+
+    const queryTexts: string[] = [];
+    const mockSql = Object.assign(
+      (strings: TemplateStringsArray, ...values: unknown[]) => {
+        const query = strings.reduce(
+          (text, part, index) => text + part + (index < values.length ? String(values[index]) : ''),
+          '',
+        );
+        queryTexts.push(query);
+        return Promise.resolve(query.includes('WITH fail AS') ? rows : []);
+      },
+      { unsafe: (value: string) => value },
+    );
+
+    const signals = await collectToolErrorSignals(mockSql as never, {
+      toolLatencyBudgets: new Map([['work_items:complete', { effect: 'write' }]]) as never,
+    }, 'papercusp-workspace');
+    const mainQuery = queryTexts.find((query) => query.includes('WITH fail AS')) ?? '';
+
+    expect(signals.map((signal) => signal.key)).toContain(targetKey);
+    expect(mainQuery).toContain('HAVING');
+    expect(mainQuery).not.toContain('LIMIT 30');
   });
 
   it('RATE-LIMIT (external provider 429 / TPM) is volume-gated, kind=change, NOT a code bug (P-002)', () => {

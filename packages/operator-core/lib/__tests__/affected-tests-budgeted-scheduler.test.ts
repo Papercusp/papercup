@@ -487,16 +487,24 @@ describe('cooperative shared admission (WI-10006150)', () => {
     const events: string[] = [];
     const notices: string[] = [];
     const admissions: Array<{ waitedMs: number; budgetMs: number }> = [];
+    const leaseIntents: Array<Record<string, unknown>> = [];
     let activeWorkers = 0;
     let observedWorkers = 0;
     let peerQueued = false;
     const running = runBudgetedTasks(tasks, {
       ...config,
       admissionTimeoutMs: 8_000,
-      estimateMs: (task) => task.estimateMs,
+      // Index-based history also proves a resumed task retains its original index.
+      estimateMs: (_, index) => [100_000, 50_000, 5_000][index],
+      admissionIntent: { purpose: 'yield-eta', tasks: 3, etaProjectedSec: 999 },
       readMemAvailableMb: () => 8192,
       onAdmissionNotice: (line) => notices.push(line),
-      onAdmissionAcquired: (info) => admissions.push(info),
+      onAdmissionAcquired: (info) => {
+        admissions.push(info);
+        leaseIntents.push(JSON.parse(readFileSync(
+          join(mutexLockRoot, `${admissionMutexName()}.lock`, 'owner.json'), 'utf8',
+        )).intent);
+      },
       runTask: async (task, allocation) => {
         events.push(task.id);
         activeWorkers += allocation.workers;
@@ -538,6 +546,12 @@ describe('cooperative shared admission (WI-10006150)', () => {
     expect(notices.some((line) => line.startsWith('AFFECTED_TESTS_ADMISSION_YIELD '))).toBe(true);
     expect(admissions).toHaveLength(2);
     expect(admissions[1].budgetMs).toBe(admissions[0].budgetMs - admissions[0].waitedMs);
+    expect(leaseIntents).toEqual([
+      { purpose: 'yield-eta', tasks: 3, etaProjectedSec: 100, etaWorkSec: 155,
+        etaFromTasks: '3/3', etaUnknownTasks: 0, etaMode: 'parallel', etaConcurrency: 2 },
+      { purpose: 'yield-eta', tasks: 1, etaProjectedSec: 50, etaWorkSec: 50,
+        etaFromTasks: '1/1', etaUnknownTasks: 0, etaMode: 'parallel', etaConcurrency: 2 },
+    ]);
   }, 20_000);
 
   it('retains one queue budget across a yield after an initial admission wait', async () => {
@@ -700,6 +714,52 @@ describe('near-tree-wide deterministic sharding (P-011)', () => {
       mode: 'parallel',
       maxConcurrentTasks: 2,
     });
+  });
+
+  it.each([
+    { name: 'mixed known and unknown history', durations: [90_000, 30_000, null, 12_000],
+      estimates: [
+        { etaProjectedSec: 90, etaWorkSec: 120, etaFromTasks: '2/2', etaUnknownTasks: 0 },
+        { etaProjectedSec: 12, etaWorkSec: 12, etaFromTasks: '1/2', etaUnknownTasks: 1 },
+      ] },
+    { name: 'no duration history', durations: [null, null, null, null],
+      estimates: [
+        { etaProjectedSec: 0, etaWorkSec: 0, etaFromTasks: '0/2', etaUnknownTasks: 2 },
+        { etaProjectedSec: 0, etaWorkSec: 0, etaFromTasks: '0/2', etaUnknownTasks: 2 },
+      ] },
+  ])('publishes current-shard lease ETA with $name', async ({ durations, estimates }) => {
+    const tasks = Array.from({ length: 4 }, (_, id) => ({ id }));
+    const plan = planAffectedTaskShards(tasks, {
+      blastRadius: broad, maxTasksPerShard: 2, taskKey: (task) => task.id,
+    });
+    const unrelated = { scope: 'git-status', paths: 11, workspaces: 4,
+      workItem: 'EI-25482105942475587', discardable: true };
+    const original = Object.freeze({ ...unrelated, tasks: 4, etaProjectedSec: 999,
+      etaWorkSec: 999, etaFromTasks: '4/4', etaUnknownTasks: 0,
+      etaMode: 'serial', etaConcurrency: 1 });
+    // The real fs-mutex contract caps declarations at twelve scalar fields.
+    expect(Object.keys(original)).toHaveLength(12);
+    const leases: Array<Record<string, unknown>> = [];
+    const run = await runBudgetedTaskShards(plan, {
+      ...config, admissionIntent: original,
+      estimateMs: (task) => durations[task.id],
+      onAdmissionAcquired: () => leases.push(JSON.parse(readFileSync(
+        join(mutexLockRoot, `${admissionMutexName()}.lock`, 'owner.json'), 'utf8',
+      )).intent),
+      runTask: async (task) => task.id,
+    });
+    expect(run.results.map((entry) => entry.value)).toEqual([0, 1, 2, 3]);
+    expect(leases).toEqual(estimates.map((estimate) => ({ ...unrelated, tasks: 2,
+      ...estimate, etaMode: 'parallel', etaConcurrency: 2 })));
+    for (const lease of leases) {
+      if (lease.etaFromTasks === '0/2') {
+        expect(formatAdmissionProspect(JSON.stringify({ intent: lease }),
+          { elapsedMs: 0, budgetMs: 60_000 })).toContain('PROSPECT UNKNOWN');
+      }
+    }
+    expect(original).toEqual({ ...unrelated, tasks: 4, etaProjectedSec: 999,
+      etaWorkSec: 999, etaFromTasks: '4/4', etaUnknownTasks: 0,
+      etaMode: 'serial', etaConcurrency: 1 });
   });
 
   it('projects raised primary lanes with the same launch order as execution', () => {
@@ -2240,7 +2300,6 @@ describe('formatAdmissionHolder', () => {
 
   it('is what the queued notice actually calls, not a helper nothing reaches', () => {
     expect(SCHEDULER_SRC).toMatch(/holder: \$\{formatAdmissionHolder\(owner\)\}/);
-    expect(SCHEDULER_SRC).toMatch(/intent:\s*options\?\.admissionIntent/);
   });
 
   it('is fed by affected-tests, which derives its declaration instead of hand-maintaining it', () => {
@@ -2322,12 +2381,12 @@ describe('formatAdmissionProspect', () => {
     expect(nearlyDone).toBe('');
   });
 
-  it('reports an unusable ETA as an explicit unknown instead of silently skipping it', () => {
+  it.each([0, 5000])('reports an unusable ETA of %s as an explicit unknown', (etaProjectedSec) => {
     // Same reason `intent=undeclared` is emitted rather than omitted: "could not estimate"
     // and "nearly done" must never read alike. A 0-numerator ratio means the projection saw
     // no duration history at all, so the number carries no information.
     const line = formatAdmissionProspect(
-      owner({ tasks: 9, etaProjectedSec: 5000, etaFromTasks: '0/9' }),
+      owner({ tasks: 9, etaProjectedSec, etaFromTasks: '0/9' }),
       { elapsedMs: 60_000, budgetMs: 2_700_000 },
       NOW,
     );

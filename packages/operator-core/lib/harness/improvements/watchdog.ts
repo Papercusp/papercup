@@ -2198,6 +2198,12 @@ async function loadProjectedToolLatencyBudgets(): Promise<Map<string, ToolLatenc
 export async function collectToolErrorSignals(sql: Sql, opts: CollectOptions = {}, workspaceId?: string): Promise<WatchdogSignal[]> {
   const windowHours = opts.toolErrorWindowHours ?? 24;
   const scopes = workspaceId ? [...new Set([workspaceId, '*', DEFAULT_COORD_WORKSPACE])] : null;
+  const structuralMinCount = opts.structuralMinCount ?? 2;
+  const structuralMinCallsForRate = opts.structuralMinCallsForRate ?? 3;
+  const structuralMinRate = opts.structuralMinRate ?? 0.5;
+  const transientMinCount = opts.transientMinCount ?? 15;
+  const callerMinCount = opts.callerMinCount ?? 10;
+  const rateLimitMinCount = opts.rateLimitMinCount ?? 8;
   const rows = await sql<ClassifiedToolErrorRow[]>`
     WITH fail AS (
       SELECT tool_name,
@@ -2244,8 +2250,19 @@ export async function collectToolErrorSignals(sql: Sql, opts: CollectOptions = {
            max(tagged.invoked_at) AS latest_at
       FROM tagged LEFT JOIN tot ON tot.tool_name = tagged.tool_name
      GROUP BY tagged.tool_name, tagged.class, tagged.fingerprint, tot.total
+    HAVING
+       (tagged.class = 'structural' AND (
+         count(*) >= ${structuralMinCount}
+         OR (
+           COALESCE(tot.total, count(*)) >= ${structuralMinCallsForRate}
+           AND count(*)::float8 / NULLIF(COALESCE(tot.total, count(*)), 0) >= ${structuralMinRate}
+         )
+       ))
+       OR (tagged.class = 'transient' AND count(*) >= ${transientMinCount})
+       OR (tagged.class = 'caller' AND count(*) >= ${callerMinCount})
+       OR (tagged.class = 'rate-limit' AND count(*) >= ${rateLimitMinCount})
      ORDER BY count(*) DESC
-      LIMIT 30`;
+  `;
   let sharedStall: SharedToolStallAnalysis = { signals: [], correlatedToolNames: new Set() };
   try {
     const sharedStallRows = await sql<SharedToolStallTelemetryRow[]>`
