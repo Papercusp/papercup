@@ -5,7 +5,7 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { spawn } from 'node:child_process';
 import { tsImport } from 'tsx/esm/api';
-import { capturePublicManualFailure, withPublicManualFailureEvidence } from '../lib/public-manual-failure-evidence';
+import { capturePublicManualFailure, withPublicManualFailureEvidence } from '../lib/public-manual-failure-evidence.mts';
 
 // Actual hosted admission and served pages, using the Portal's maintained TEST
 // user kit. Explicit private-runtime inputs are required before creating data.

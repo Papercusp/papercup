@@ -1,7 +1,21 @@
 import { describe, expect, it, vi } from 'vitest';
-import { capturePublicManualFailure, withPublicManualFailureEvidence } from './public-manual-failure-evidence';
+import { execFileSync } from 'node:child_process';
+import { resolve } from 'node:path';
+import { capturePublicManualFailure, withPublicManualFailureEvidence } from './public-manual-failure-evidence.mts';
 
 describe('hosted manual failure evidence', () => {
+  it('collects both hosted journeys through the actual Playwright ESM loader without running fixtures', () => {
+    const listing = execFileSync(process.execPath, [
+      require.resolve('@playwright/test/cli'), 'test', 'e2e/public-manual-product.spec.ts',
+      '--list', '--reporter=list',
+    ], { cwd: resolve(__dirname, '..'), encoding: 'utf8', timeout: 30_000,
+      env: { ...process.env, PUBLIC_MANUAL_PRODUCT_E2E: '0', OPERATOR_E2E_REUSE_SERVER: '1',
+        PAPERCUSP_DISABLE_TEST_RUNS_REPORTER: '1' } });
+    expect(listing).toContain('account icon exposes authenticated identity, Status and organization Billing');
+    expect(listing).toContain('authorized workspace lists admitted resources without claiming a connected host');
+    expect(listing).toMatch(/Total: 2 tests in 1 file/);
+  });
+
   it('captures the assertion failure before cleanup can revoke its session', async () => {
     const order: string[] = [];
     const failure = new Error('selected workspace missing');
