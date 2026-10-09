@@ -56,7 +56,14 @@ RUSTUP_HOME=/opt/rustup /opt/cargo/bin/rustc --version
 cd /
 rm -rf /tmp/native-toolchains
 NATIVE_BUILD
-ENV PATH=/opt/build-node/bin:/opt/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+# This builds audited Server releases from independent /product inputs. The
+# audited pinned dogfood route supports both native architectures and already
+# skips the unused development dependency generation after install. vm-release
+# has a separate Linux-x64-only trust toolchain; do not select it for ARM64.
+ENV PAPERCUSP_DISTRIBUTION_PROFILE=dogfood \
+    PAPERCUSP_RELEASE_AUDIT=1 \
+    PAPERCUSP_PINNED_DEPS_SNAPSHOT_ROOT=/product \
+    PATH=/opt/build-node/bin:/opt/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     RUSTUP_HOME=/opt/rustup
 # Run as the source/output owner's UID with a separate writable HOME/CARGO_HOME.
 # Do not mount host toolchains, dependencies, credentials or Docker's socket.
