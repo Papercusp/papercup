@@ -203,6 +203,111 @@ export function ptoolConnectionRetryOptions(args = {}, env = process.env) {
   return { maxAttempts: 1 };
 }
 
+// Keep a low-volume client trace for slow/failing operator handshakes. The
+// ptool process is one-shot, so a trace id ties its phase markers and final
+// error together without adding another shared log store.
+export const PTOOL_CONNECT_DIAGNOSTIC_PENDING_MS = 5_000;
+
+function describePtoolOperatorRoute(operatorUrl, env = process.env) {
+  try {
+    const url = new URL(operatorUrl);
+    const hostname = url.hostname.toLowerCase();
+    const local = hostname === '127.0.0.1' || hostname === 'localhost' || hostname === '::1';
+    const port = Number(url.port || (url.protocol === 'https:' ? 443 : url.protocol === 'http:' ? 80 : 0));
+    const attemptTimeoutMs = ptoolConnectAttemptTimeoutMs(operatorUrl, env);
+    if (!local) return { routeClass: 'remote', host: hostname, port, attemptTimeoutMs };
+
+    const configuredProxyBase = typeof env.PAPERCUSP_MCP_PROXY_BASE === 'string'
+      ? env.PAPERCUSP_MCP_PROXY_BASE.trim()
+      : '';
+    let matchesProxyBase = false;
+    if (configuredProxyBase) {
+      try {
+        matchesProxyBase = new URL(configuredProxyBase).origin === url.origin;
+      } catch {
+        return { routeClass: 'local-unknown', host: hostname, port, attemptTimeoutMs };
+      }
+    }
+    const configuredProxyPort = Number(env.PAPERCUSP_MCP_PROXY_PORT);
+    const proxyPort = Number.isInteger(configuredProxyPort) && configuredProxyPort > 0
+      ? configuredProxyPort
+      : 9071;
+    return {
+      routeClass: matchesProxyBase || port === proxyPort ? 'local-proxy' : 'local-direct',
+      host: hostname,
+      port,
+      attemptTimeoutMs,
+    };
+  } catch {
+    return { routeClass: 'invalid', host: null, port: null, attemptTimeoutMs: null };
+  }
+}
+
+function ptoolOperatorUrlSource(args = {}, env = process.env) {
+  if (args.url) return 'cli-url-flag';
+  const provenance = String(env[OPERATOR_URL_PROVENANCE_ENV] ?? '').trim();
+  if (provenance) return provenance;
+  if (env.PAPERCUSP_OPERATOR_URL) return 'PAPERCUSP_OPERATOR_URL';
+  if (env.PAPERCUSP_OPERATOR_BASE) return 'PAPERCUSP_OPERATOR_BASE';
+  if (env.PAPERCUSP_HONO_PORT) return 'PAPERCUSP_HONO_PORT';
+  return 'operator-discovery/default';
+}
+
+function ptoolLauncherScriptPath() {
+  const invokedPath = process.argv[1] ?? null;
+  if (!invokedPath) return null;
+  try { return realpathSync(invokedPath); } catch { return invokedPath; }
+}
+
+function emitPtoolConnectionTrace(trace, event, extra = {}) {
+  console.error(`ptool: connection trace ${JSON.stringify({
+    schemaVersion: 'ptool-connection-trace-v1',
+    ...trace,
+    event,
+    ...extra,
+  })}`);
+}
+
+async function withPtoolConnectionPhaseTrace(trace, phase, route, operation) {
+  const startedAtMs = Date.now();
+  const phaseStartedAt = new Date(startedAtMs).toISOString();
+  let pending = false;
+  const timer = setTimeout(() => {
+    pending = true;
+    emitPtoolConnectionTrace(trace, 'phase-pending', {
+      stage: phase,
+      route,
+      phaseStartedAt,
+      elapsedMs: Date.now() - startedAtMs,
+    });
+  }, PTOOL_CONNECT_DIAGNOSTIC_PENDING_MS);
+  try {
+    const result = await operation();
+    if (pending) {
+      emitPtoolConnectionTrace(trace, 'phase-complete', {
+        stage: phase,
+        route,
+        phaseStartedAt,
+        elapsedMs: Date.now() - startedAtMs,
+      });
+    }
+    return result;
+  } catch (error) {
+    if (pending) {
+      emitPtoolConnectionTrace(trace, 'phase-attempt-failed', {
+        stage: phase,
+        route,
+        phaseStartedAt,
+        elapsedMs: Date.now() - startedAtMs,
+        failureKind: classifyConnectFailure(error),
+      });
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /* ─── arg parsing (pure — exported for tests) ─────────────────────────── */
 
 function missingValueFlagMessage(flag) {
@@ -3750,9 +3855,14 @@ async function main() {
   let activeTokenFile = null;
   const retryOptions = ptoolConnectionRetryOptions(args, process.env);
   const rediscover = !args.tool && Object.keys(retryOptions).length === 0 ? discoverOperatorUrl : null;
+  const ptoolConnectionTraceId = randomUUID();
+  const ptoolLauncherSource = ptoolOperatorUrlSource(args, process.env);
+  const launcherScriptPath = ptoolLauncherScriptPath();
+  let operatorConnectSequence = 0;
   const connectOperator = async ({
     preferredIndex = 0, tokenFile = activeTokenFile, nativeSessionOverride,
   } = {}) => {
+    const sequence = ++operatorConnectSequence;
     const candidates = preferredIndex > 0
       ? [
         ...operatorCandidates.slice(preferredIndex),
@@ -3763,21 +3873,93 @@ async function main() {
       ...(tokenFile ? { ...scope, tokenFile } : scope),
       ...(nativeSessionOverride !== undefined ? { nativeSessionOverride } : {}),
     };
-    const connected = await connectWithOperatorCandidates(connect, candidates, connectionScope, {
-      ...retryOptions,
-      prepareConnection: preparePtoolConnectionModules,
-      allowHttpNotFoundFallback: !args.url && candidates.length > 1,
-      rediscover,
-      primaryAttemptOptions: candidates.length > 1 ? { maxAttempts: 1 } : {},
-      onRebase: (freshBase) => {
-        operatorUrl = freshBase;
-        candidates[0] = freshBase;
-      },
-      onFallback: (fallbackBase) => {
-        console.error(
-          `ptool: primary operator at ${operatorUrl} was unreachable; using fallback ${fallbackBase}`,
-        );
-      },
+    const attemptedRoutes = [];
+    const trace = {
+      traceId: ptoolConnectionTraceId,
+      operatorConnectSequence: sequence,
+      launcherSource: ptoolLauncherSource,
+      launcherScriptPath,
+      clientId: process.env.PAPERCUSP_SID ?? null,
+      toolName: args.tool ?? null,
+      candidateRoutes: candidates.map((candidate) => describePtoolOperatorRoute(candidate)),
+      retryBudgetMs: retryOptions.totalTimeoutMs ?? PTOOL_CONNECT_TIMEOUT_MS,
+      primaryCandidateMaxAttempts: candidates.length > 1
+        ? 1
+        : retryOptions.maxAttempts ?? PTOOL_CONNECT_MAX_ATTEMPTS,
+      fallbackCandidateMaxAttempts: retryOptions.maxAttempts ?? PTOOL_CONNECT_MAX_ATTEMPTS,
+      attemptedRoutes,
+    };
+    const operatorConnectStartedAtMs = Date.now();
+    const operatorConnectStartedAt = new Date(operatorConnectStartedAtMs).toISOString();
+    let activeStage = 'sdk-bootstrap';
+    let activeRoute = null;
+    emitPtoolConnectionTrace(trace, 'operator-connect-start', {
+      stage: 'operator-connect',
+      phaseStartedAt: operatorConnectStartedAt,
+    });
+    const tracedPrepareConnection = (prepareScope) => {
+      activeStage = 'sdk-bootstrap';
+      activeRoute = null;
+      return withPtoolConnectionPhaseTrace(
+        trace,
+        'sdk-bootstrap',
+        null,
+        () => preparePtoolConnectionModules(prepareScope),
+      );
+    };
+    const tracedConnect = (url, connectScope, options, preparedConnection) => {
+      activeStage = 'mcp-initialize';
+      activeRoute = describePtoolOperatorRoute(url);
+      const priorRoute = attemptedRoutes.find((entry) =>
+        entry.routeClass === activeRoute.routeClass &&
+        entry.host === activeRoute.host &&
+        entry.port === activeRoute.port);
+      if (priorRoute) priorRoute.attempts += 1;
+      else attemptedRoutes.push({ ...activeRoute, attempts: 1 });
+      const attempt = attemptedRoutes.reduce((sum, entry) => sum + entry.attempts, 0);
+      return withPtoolConnectionPhaseTrace(
+        trace,
+        'mcp-initialize',
+        { ...activeRoute, attempt },
+        () => connect(url, connectScope, options, preparedConnection),
+      );
+    };
+    let connected;
+    try {
+      connected = await connectWithOperatorCandidates(tracedConnect, candidates, connectionScope, {
+        ...retryOptions,
+        prepareConnection: tracedPrepareConnection,
+        allowHttpNotFoundFallback: !args.url && candidates.length > 1,
+        rediscover,
+        primaryAttemptOptions: candidates.length > 1 ? { maxAttempts: 1 } : {},
+        onRebase: (freshBase) => {
+          operatorUrl = freshBase;
+          candidates[0] = freshBase;
+        },
+        onFallback: (fallbackBase) => {
+          console.error(
+            `ptool: primary operator at ${operatorUrl} was unreachable; using fallback ${fallbackBase}`,
+          );
+        },
+      });
+    } catch (error) {
+      emitPtoolConnectionTrace(trace, 'operator-connect-failed', {
+        stage: activeStage,
+        route: activeRoute,
+        phaseStartedAt: operatorConnectStartedAt,
+        elapsedMs: Date.now() - operatorConnectStartedAtMs,
+        failureKind: classifyConnectFailure(error),
+        errorCode: typeof error?.code === 'string' || typeof error?.code === 'number'
+          ? error.code
+          : null,
+      });
+      throw error;
+    }
+    emitPtoolConnectionTrace(trace, 'operator-connect-complete', {
+      stage: 'operator-connect',
+      route: describePtoolOperatorRoute(connected.operatorUrl),
+      phaseStartedAt: operatorConnectStartedAt,
+      elapsedMs: Date.now() - operatorConnectStartedAtMs,
     });
     operatorUrl = connected.operatorUrl;
     if (connected.operatorUrl !== initiallySelectedOperatorUrl) {

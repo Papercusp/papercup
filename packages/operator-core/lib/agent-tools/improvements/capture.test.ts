@@ -876,6 +876,25 @@ describe('improvements:capture tool envelope', () => {
     );
   });
 
+  it('keeps a reproduced miss on an unseeded direct wrapper as caller-side observation', async () => {
+    await callTool({
+      toolFailure: {
+        toolName: 'locks:list',
+        message: 'The normalized direct wrapper tools.mcp__papercusp_su__locks_list was undefined, so attempting it raised a local TypeError before MCP dispatch. tools:find activated locks:list; no server-side locks:list call was made.',
+        reproduced: true,
+      },
+    });
+    expect(mockCapture).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        kind: 'change',
+        lane: 'observation',
+        payloadExtra: expect.objectContaining({
+          toolFailureProbation: expect.objectContaining({ state: 'probation', class: 'caller' }),
+        }),
+      }),
+    );
+  });
+
   it('keeps legacy caller attestations in probation but accepts structured caller evidence', async () => {
     await callTool({
       toolFailure: {

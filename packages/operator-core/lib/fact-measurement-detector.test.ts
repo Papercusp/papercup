@@ -126,6 +126,12 @@ describe('fact absence detector — a worded absence gets its own advisory (EI-2
     expect(detectFactAbsenceClaims('Prefer a library over rolling your own; none of that is urgent work.')).toEqual([]);
   });
 
+  it('does not mistake a normative must-not rule for an observed absence', () => {
+    const rule = 'Oversized metadata overflow must not refuse the result.';
+    expect(detectFactAbsenceClaims(rule), rule).toEqual([]);
+    expect(detectFactAbsenceClaims('The result was not emitted.')).not.toEqual([]);
+  });
+
   it('keeps a literal scheduler sentinel separate from an unrelated nearby match', () => {
     const body = 'Scheduler read-back: none [mq-deadline]; installed script matches the source SHA-256.';
     expect(detectFactAbsenceClaims(body)).toEqual([]);
