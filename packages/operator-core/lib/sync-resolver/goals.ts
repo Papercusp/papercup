@@ -1372,7 +1372,12 @@ export async function resolveGoalDetail(args: {
     }));
   let worklistHistory: unknown[] = [], historyError: string | null = null;
   let rubricStewardship: import('../goal-rubric-stewardship').GoalRubricStewardship | null = null;
-  if (shaped.goal.goalPackage?.ref === 'work-on-everything') {
+  const legacyWorklist = declaration.success ? declaration.data.worklist : undefined;
+  const workOnEverything = shaped.goal.goalPackage?.ref === 'work-on-everything' ||
+    (!shaped.goal.goalPackage && legacyWorklist?.datatype === 'plan-ref-list' &&
+      legacyWorklist.collection?.source === 'active-workspace-plans' &&
+      legacyWorklist.collection.policy === 'worklist_policy' && legacyWorklist.collection.selectable);
+  if (workOnEverything) {
     const { readGoalRubricStewardship } = await import('../goal-rubric-stewardship');
     rubricStewardship = await readGoalRubricStewardship({ workspaceId, goalId }, { sql });
     try {

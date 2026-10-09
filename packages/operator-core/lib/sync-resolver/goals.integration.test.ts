@@ -176,6 +176,15 @@ describe('goal rubric stewardship SQL', () => {
     expect(reading.complete).toBe(true);
     expect(reading.cycles).toEqual([]);
     expect(Object.values(reading.criteria)).toEqual([null, null, null]);
+    await sql`UPDATE harness_shared.goals SET property_schema = ${sql.json({ worklist: {
+      datatype: 'plan-ref-list', editable_by: 'both', collection: { source: 'active-workspace-plans',
+        policy: 'worklist_policy', order: 'priority', selectable: true, defaultSelected: false },
+    } } as never)} WHERE id = ${GOAL} AND workspace_id = ${WS}`;
+    const { resolveGoalDetail } = await import('./goals');
+    const detail = await resolveGoalDetail({ workspaceId: WS, goalId: GOAL }) as {
+      rubricStewardship: { error: string | null; cycles: unknown[] } | null;
+    };
+    expect(detail.rubricStewardship).toMatchObject({ error: null, cycles: [] });
   });
 });
 

@@ -46,7 +46,7 @@ import {
   readVettingConsultCritique,
 } from './get-feedback-core';
 import { peersKnowLookup } from './peers-know';
-import { readRoutingHealthRows, routingHealthFromRows } from './consult-routing-health';
+import { readRoutingHealthRows } from './consult-routing-health';
 import { consultReplyCore, consultDeclineCore } from './consult-verbs-core';
 import { sweepExpiredConsults } from './consult-expiry-core';
 import { advanceCascade } from './cascade-core';

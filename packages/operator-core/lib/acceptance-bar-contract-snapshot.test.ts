@@ -316,9 +316,9 @@ function provedFixture(n = 2): AcceptanceBarContractSnapshotInput {
     // them by testRunProvenance.filePath). The counterexamples below spread this row, so each
     // pairs with its own positive proof, as a real binding would (WI-10006871).
     evidence.testRunProvenance = { filePath: proofTestPath,
-      framework: 'vitest', commitSha: 'abc123', worktreeDirty: false };
+      framework: 'vitest', source: 'local', mutationPhase: null, commitSha: 'abc123', worktreeDirty: false };
     evidence.testRunExecution = { status: 'pass', passed: 1, failed: 0, skipped: 0,
-      collectionFailed: false, testLayer: 'integration', passedCaseTitles: [caseTitle] };
+      filePath: proofTestPath, collectionFailed: false, testLayer: 'integration', passedCaseTitles: [caseTitle] };
   });
   // Falsifiability is demonstrated by an executed negative control, not by the
   // positive row's `falsifiable: true` self-attestation. Keep the logical
@@ -341,7 +341,7 @@ function provedFixture(n = 2): AcceptanceBarContractSnapshotInput {
         mutationFailureLines: [caseTitle + ': the pre-fix behavior violates the expected outcome'],
       },
       testRunExecution: { status: 'fail' as const, passed: 0, failed: 1, skipped: 0,
-        collectionFailed: false, testLayer: 'integration' },
+        filePath: proofTestPath, collectionFailed: false, testLayer: 'integration' },
       bindingFingerprint: 'counterexample-binding-' + (index + 1),
       details: {
         evidencePlane: 'tree',
