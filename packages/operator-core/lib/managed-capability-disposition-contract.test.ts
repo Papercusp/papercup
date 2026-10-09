@@ -181,6 +181,9 @@ describe('managed capability disposition contract (P-001 / R-1)', () => {
 
     expect(scripts.boundary).toContain('explicit replay state');
     expect(scripts.boundary).toContain('uncertain-write reporting');
+    expect(scripts.boundary).toContain('JavaScript worker/VM open/run/status/close');
+    expect(scripts.boundary).toContain('Cross-worker routing and current-client acceptance remain open');
+    expect(scripts.gaps[0].description).not.toContain('not implemented');
     expect(scripts.gaps).toContainEqual(expect.objectContaining({
       id: 'persistent-kernel-lifecycle',
       owningPlanItems: ['P-017', 'P-020', 'P-015'],
@@ -247,13 +250,10 @@ describe('managed capability disposition contract (P-001 / R-1)', () => {
   it('keeps R-7 HTTP fetch distinct from search and browser/DOM instead of equating them', () => {
     const network = managedCapabilityDisposition('http-search-browser-computer');
 
-    // A browser/DOM provider is an honest declared gap, not a hidden one (R-1: discovery-only hiding is not security).
+    // A local implementation does not dispose the current-client acceptance gap.
     expect(network.disposition).toBe('unsupported-gap');
-    // Same `in` narrowing the anchor-verification test uses: absentAnchors is optional across the citation union.
-    const evidence = network.evidence;
-    expect('absentAnchors' in evidence ? (evidence.absentAnchors ?? []) : []).toContain(
-      "import './browser/browser';",
-    );
+    expect(network.evidence.path).toBe('packages/operator-core/lib/agent-tools/capability/fetch.ts');
+    expect(network.evidence.anchors).toContain('browserSessionArg.optional()');
     expect(network.gaps).toContainEqual(expect.objectContaining({ id: 'browser-provider-contract' }));
 
     // R-7: fetch, search, and browser/computer must be named as separate surfaces.
@@ -261,8 +261,10 @@ describe('managed capability disposition contract (P-001 / R-1)', () => {
     expect(network.boundary).toContain('remain distinct');
     expect(network.managedAuthorities).toContain('capability:fetch');
 
-    // No false equivalence: raw HTTP or sandbox pixels must not be registered as a browser authority.
-    expect(network.managedAuthorities.some((authority) => /browser/i.test(authority))).toBe(false);
+    // Browser operations reuse the fetch door but have their own explicit lifetime.
+    expect(network.managedAuthorities).toContain('capability:fetch browser sessions');
+    expect(network.boundary).toContain('worker routing, actual-ledger/API, confinement, and restart cleanup acceptance remain open');
+    expect(network.reuseSites.find((site) => site.path.endsWith('browser-session.e2e.test.ts'))?.note).toContain('mocked ledger');
     const browserGap = network.gaps.find((gap) => gap.id === 'browser-provider-contract');
     expect(browserGap?.falsifier).toContain('without conflating it with raw HTTP or sandbox pixels');
 
