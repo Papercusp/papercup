@@ -151,7 +151,8 @@ def run_child(args):
             p.set_int('scrollback-lines', args.limit)
             Gio.Settings.sync()
             profile_uuid = ident
-            if args.prepare_profile_module and not unlimited:
+            prepared = None
+            if args.prepare_profile_module:
                 program = "const m=await import(process.argv[1]);console.log(JSON.stringify(await m.prepareGnomeTerminal({bin:'gnome-terminal',args:['--wait','--']})));"
                 result = subprocess.run(['node', '--input-type=module', '-e', program, args.prepare_profile_module],
                                         capture_output=True, text=True, check=True, timeout=12)
@@ -159,11 +160,13 @@ def run_child(args):
                 flags = [flag for flag in prepared['args'] if flag.startswith('--profile=')]
                 if len(flags) != 1:
                     raise RuntimeError('real launcher preparation did not select bounded profile')
-                profile_uuid = flags[0].split('=', 1)[1]
+                if not unlimited:
+                    profile_uuid = flags[0].split('=', 1)[1]
             app = 'org.gnome.Terminal.Reflow' + str(os.getpid()) + ('Unlimited' if unlimited else 'Finite')
             server = subprocess.Popen(['/usr/libexec/gnome-terminal-server', '--app-id', app],
                                       stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
             clients = []
+            independent_servers = []
             try:
                 bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
                 start, ready = time.monotonic(), False
@@ -180,11 +183,13 @@ def run_child(args):
                 if not ready:
                     raise RuntimeError('renderer did not register on private bus within 10s')
 
-                def launch(script):
+                def launch(script, independent=False):
                     # Ubuntu's Python wrapper also starts a server for --app-id.
                     # Here the fixture already owns the server; call its client.
                     binary = '/usr/bin/gnome-terminal.real' if Path('/usr/bin/gnome-terminal.real').exists() else 'gnome-terminal'
-                    client = subprocess.Popen([binary, '--app-id', app, '--profile', profile_uuid, '--wait',
+                    prefix = ([binary, '--app-id', app, '--profile', profile_uuid, '--wait'] if not independent
+                              else ['gnome-terminal', *prepared['args'][:-1]])
+                    client = subprocess.Popen([*prefix,
                                                '--geometry=100x25', '--', '/usr/bin/python3', '-u', '-c', script],
                                               stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
                     clients.append(client)
@@ -192,9 +197,20 @@ def run_child(args):
 
                 writer = "import os,tty;tty.setraw(0)\nline=(''.join('\\x1b[38;5;'+str(i+30)+'mabcdefghij' for i in range(15))+'\\x1b[0m\\r\\n').encode()\n"
                 writer += "for _ in range(" + str(args.lines // 1000) + "):os.write(1,line*1000)\n"
-                writer += "os.write(1,b'\\x1b]0;REFLOW_LOADED\\x07')\nwhile True:\n b=os.read(0,1)\n if b==b'?':os.write(1,('\\x1b]0;REFLOW_COLS_'+str(os.get_terminal_size(0).columns)+'\\x07').encode())\n else:os.write(1,b)"
+                writer += "os.write(1,b'\\x1b]0;REFLOW_LOADED\\x07');seq=0\nwhile True:\n b=os.read(0,1)\n if b==b'?':\n  seq+=1;os.write(1,('\\x1b]0;REFLOW_COLS_'+str(seq)+'_'+str(os.get_terminal_size(0).columns)+'\\x07').encode())\n else:os.write(1,b)"
                 big = window('REFLOW_LOADED', launch(writer))
-                sibling = window('REFLOW_SIBLING', launch("import os,tty;tty.setraw(0);os.write(1,b'\\x1b]0;REFLOW_SIBLING\\x07')\nwhile True:\n b=os.read(0,1);os.write(1,b)"))
+                independent = args.isolate_sibling and prepared and '--disable-factory' in prepared['args']
+                sibling_client = launch("import os,tty;tty.setraw(0);os.write(1,b'\\x1b]0;REFLOW_SIBLING\\x07')\nwhile True:\n b=os.read(0,1);os.write(1,b)", independent)
+                sibling = window('REFLOW_SIBLING', sibling_client)
+                sibling_pid = int(subprocess.run(['xprop', '-id', str(sibling), '_NET_WM_PID'],
+                                  check=True, capture_output=True, text=True, timeout=2).stdout.split('=')[1])
+                if independent:
+                    # The native wrapper owns this server. Verify custody before
+                    # recording its PID for teardown; never signal a peer process.
+                    parent = int(Path('/proc/' + str(sibling_pid) + '/stat').read_text().rsplit(')', 1)[1].split()[1])
+                    if parent != sibling_client.pid:
+                        raise RuntimeError('independent renderer is not a child of the owned native wrapper')
+                    independent_servers.append(sibling_pid)
                 history_bytes = 0
                 for fd in Path('/proc/' + str(server.pid) + '/fd').iterdir():
                     try:
@@ -208,6 +224,24 @@ def run_child(args):
                     except FileNotFoundError:
                         pass
                 baseline = [x.measure(sibling) for _ in range(5)]
+                query_seq = 0
+                def fresh_columns():
+                    nonlocal query_seq
+                    query_seq += 1
+                    subprocess.run(['xdotool', 'windowfocus', str(big)], check=True, timeout=2)
+                    subprocess.run(['xdotool', 'type', '--window', str(big), '?'], check=True, timeout=2)
+                    prefix = 'REFLOW_COLS_' + str(query_seq) + '_'
+                    end = time.monotonic() + 2
+                    while time.monotonic() < end:
+                        title = subprocess.run(['xdotool', 'getwindowname', str(big)],
+                                               check=True, capture_output=True, text=True, timeout=2).stdout.strip()
+                        if title.startswith(prefix):
+                            return title, int(title.rsplit('_', 1)[1])
+                        time.sleep(.01)
+                    raise RuntimeError('child did not acknowledge geometry request generation')
+                _, previous_columns = fresh_columns()
+                previous_width = int(subprocess.run(['xdotool', 'getwindowgeometry', '--shell', str(big)],
+                                     check=True, capture_output=True, text=True, timeout=2).stdout.split('WIDTH=')[1].splitlines()[0])
                 resize = []
                 columns = []
                 geometry = []
@@ -218,14 +252,23 @@ def run_child(args):
                         samples.append(x.measure(sibling))
                         time.sleep(.005)
                     resize.append(max(samples))
-                    subprocess.run(['xdotool', 'windowfocus', str(big)], check=True, timeout=2)
-                    subprocess.run(['xdotool', 'type', '--window', str(big), '?'], check=True, timeout=2)
-                    time.sleep(.05)
-                    columns.append(subprocess.run(['xdotool', 'getwindowname', str(big)],
-                                                  check=True, capture_output=True, text=True, timeout=2).stdout.strip())
-                    geometry.append(subprocess.run(['xdotool', 'getwindowgeometry', '--shell', str(big)],
-                                                   check=True, capture_output=True, text=True, timeout=2).stdout.strip())
+                    end = time.monotonic() + 2
+                    while time.monotonic() < end:
+                        title, current_columns = fresh_columns()
+                        if ((width > previous_width and current_columns > previous_columns)
+                                or (width < previous_width and current_columns < previous_columns)):
+                            break
+                        time.sleep(.01)
+                    else:
+                        raise RuntimeError('visible resize did not converge with the child PTY geometry')
+                    columns.append(title)
+                    dimensions = subprocess.run(['xdotool', 'getwindowgeometry', '--shell', str(big)],
+                                                check=True, capture_output=True, text=True, timeout=2).stdout.strip()
+                    geometry.append(dimensions)
+                    previous_width = int(dimensions.split('WIDTH=')[1].splitlines()[0])
+                    previous_columns = current_columns
                 print(json.dumps({'unlimited': unlimited, 'server_pid': server.pid,
+                                  'sibling_server_pid': sibling_pid, 'independent_sibling': bool(independent),
                                   'lines': args.lines, 'limit': args.limit,
                                   'profile_uuid': profile_uuid,
                                   'default_profile_uuid': profiles.get_string('default'),
@@ -236,6 +279,11 @@ def run_child(args):
                                   'baseline_ping_ms': baseline,
                                   'sibling_ping_after_resize_ms': resize}), flush=True)
             finally:
+                for pid in independent_servers:
+                    try:
+                        os.kill(pid, signal.SIGTERM)
+                    except ProcessLookupError:
+                        pass
                 stop(server)
                 server.stderr.close()
                 for client in clients:
@@ -252,6 +300,7 @@ def main():
     parser.add_argument('--limit', type=int, default=10000)
     parser.add_argument('--child', action='store_true')
     parser.add_argument('--prepare-profile-module')
+    parser.add_argument('--isolate-sibling', action='store_true')
     args = parser.parse_args()
     if args.lines < 1000 or args.lines % 1000 or args.limit < 1:
         parser.error('lines must be a positive multiple of 1000 and limit positive')
@@ -273,6 +322,8 @@ def main():
                                   '--lines=' + str(args.lines), '--limit=' + str(args.limit)]
         if args.prepare_profile_module:
             child_args.extend(['--prepare-profile-module', args.prepare_profile_module])
+        if args.isolate_sibling:
+            child_args.append('--isolate-sibling')
         child = subprocess.Popen(child_args,
                                  env=env, start_new_session=True)
         def interrupted(signum, _frame):

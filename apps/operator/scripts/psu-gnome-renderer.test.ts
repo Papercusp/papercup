@@ -36,8 +36,8 @@ describe.skipIf(!nativeAvailable)('isolated GNOME renderer reproduction', () => 
       // A hidden GtkWindow answers pings but never changes the visible VTE grid.
       // Refuse to treat such samples as renderer latency evidence again.
       const columns = row.columns_after_resize.map((title: string) => {
-        expect(title).toMatch(/^REFLOW_COLS_\d+$/);
-        return Number(title.slice('REFLOW_COLS_'.length));
+        expect(title).toMatch(/^REFLOW_COLS_\d+_\d+$/);
+        return Number(title.split('_').at(-1));
       });
       expect(columns[0]).toBeLessThan(columns[1]);
       expect(columns[2]).toBeLessThan(columns[3]);
@@ -45,6 +45,19 @@ describe.skipIf(!nativeAvailable)('isolated GNOME renderer reproduction', () => 
       expect(row.baseline_ping_ms).toHaveLength(5);
       expect(row.sibling_ping_after_resize_ms).toHaveLength(4);
       expect(row.sibling_ping_after_resize_ms.every((ms: number) => Number.isFinite(ms) && ms >= 0)).toBe(true);
+    }
+  }, 50_000);
+
+  it('keeps a new standard GNOME window in a separate renderer from preserved old history', async () => {
+    const { stdout } = await run('/usr/bin/python3', [fixture, '--lines=20000', '--limit=10000',
+      '--prepare-profile-module', preparationModule, '--isolate-sibling'], {
+      timeout: 45_000, maxBuffer: 128 * 1024,
+    });
+    const rows = stdout.trim().split('\n').map((line) => JSON.parse(line));
+    for (const row of rows) {
+      if (row.independent_sibling) expect(row.sibling_server_pid).not.toBe(row.server_pid);
+      else expect(row.sibling_server_pid).toBe(row.server_pid);
+      expect(row.default_still_unlimited).toBe(true);
     }
   }, 50_000);
 });
