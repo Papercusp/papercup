@@ -165,6 +165,13 @@ describe('goal rubric stewardship SQL', () => {
     const meta = await proposeRubric({ rubricId: 'grading-integrity', title: 'Grading integrity fixture',
       characteristic: 'grading-integrity', criteria: [criterion], status: 'active', by: 'fixture-auditor' });
     const now = Date.now(), baselineAt = now - 7200_000, repairedAt = now - 3600_000, regradedAt = now - 1800_000;
+    const columns = await sql<{ column_name: string; is_generated: string }[]>`
+      SELECT column_name, is_generated FROM information_schema.columns
+       WHERE table_schema = 'harness_shared' AND table_name = 'work_items'`;
+    for (const name of ['feature_id', 'workspace_id', 'harness_slug', 'item_kind', 'title', 'status',
+      'created_ts', 'updated_ts', 'closed_ts', 'goal_id', 'terminal_owner', 'authority', 'payload']) {
+      expect(columns.find(c => c.column_name === name)?.is_generated, `writable positive fixture column ${name}`).toBe('NEVER');
+    }
     const subject = { kind: 'pot', ref: 'fixture-target' };
     const card = (rating: string, baselineRef?: string, auditState = 'passed') => ({
       rubricRef: rubric.rubricId, rubricRevision: rubric.revision, criteriaHash: rubric.criteriaHash,
@@ -177,9 +184,9 @@ describe('goal rubric stewardship SQL', () => {
     });
     const insertCard = async (id: string, goalId: string | null, at: number, observation: unknown) => {
       await sql`INSERT INTO harness_shared.work_items
-        (feature_id, workspace_id, harness_slug, item_kind, title, status, created_ts, updated_ts, goal_id, created_by, payload)
-        VALUES (${id}, ${WS}, 'papercusp', 'observation', ${id}, 'open', ${at}, ${at}, ${goalId}, 'independent-grader',
-          ${sql.json({ lane: 'observation', observation } as never)})`;
+        (feature_id, workspace_id, harness_slug, item_kind, title, status, created_ts, updated_ts, goal_id, payload)
+        VALUES (${id}, ${WS}, 'papercusp', 'observation', ${id}, 'open', ${at}, ${at}, ${goalId},
+          ${sql.json({ lane: 'observation', _ei: { created_by: 'independent-grader' }, observation } as never)})`;
     };
     await insertCard('EI-owned-baseline', GOAL, baselineAt, card('fail'));
     await sql`INSERT INTO harness_shared.work_items
