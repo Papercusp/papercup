@@ -874,6 +874,31 @@ export function issueListColumns(
   return projectWorkItemColumns(ISSUE_COLS, filter.payloadProjection);
 }
 
+/** Reuse the already projected payload instead of detoasting the view's raw
+ * payload separately for each issue metadata field. OFFSET 0 keeps Postgres
+ * from flattening these expressions back into the original repeated reads.
+ * Ordinary/detail readers retain the compatibility view's column mapping. */
+function issueListQueryProjection(filter: Parameters<typeof issueListColumns>[0]): {
+  columns: string;
+  join: string;
+} {
+  const columns = issueListColumns(filter);
+  if (filter.payloadProjection !== 'fleetMetrics' || filter.includePayload === false) {
+    return { columns, join: '' };
+  }
+  // Derive the expression from the existing shared projection policy; an
+  // archival-key change must reach both physical work-item families together.
+  const payload = projectWorkItemColumns('payload,', 'fleetMetrics').replace(/ AS payload,$/, '');
+  return {
+    columns: columns.replace(`${payload} AS payload`, '_fleet_metric_payload.value AS payload')
+      .replace(/(^|,\s*)severity(\s*,)/, "$1COALESCE(_fleet_metric_ei.metadata->>'severity', 'minor') AS severity$2")
+      .replace(/(^|,\s*)assigned_by(\s*,)/, "$1_fleet_metric_ei.metadata->>'assigned_by' AS assigned_by$2")
+      .replace(/(^|,\s*)created_by(\s*,)/, "$1_fleet_metric_ei.metadata->>'created_by' AS created_by$2"),
+    join: `CROSS JOIN LATERAL (SELECT ${payload} AS value OFFSET 0) _fleet_metric_payload
+      CROSS JOIN LATERAL (SELECT _fleet_metric_payload.value -> '_ei' AS metadata OFFSET 0) _fleet_metric_ei`,
+  };
+}
+
 /**
  * EI-10489: ISSUE_COLS (the runtime SELECT allowlist above) and IssueRowDb (its TS shape)
  * are two independently hand-maintained lists of the SAME 26 columns — nothing tied them
@@ -2109,10 +2134,12 @@ async function listIssuesWithLimit(filter: ListIssuesFilter, rowLimit: number | 
                AND cl.dst_ref = ${filter.topic}
           )`
     : sql``;
+  const projection = issueListQueryProjection(filter);
   const rows = await sql<IssueRowDb[]>`
     ${topicTagsCte}
-    SELECT ${sql.unsafe(issueListColumns(filter))}
+    SELECT ${sql.unsafe(projection.columns)}
       FROM harness_shared.engineer_issues
+      ${sql.unsafe(projection.join)}
      WHERE workspace_id = ${issuesScopeWorkspace()}
        AND kind = ANY(${kindSet as string[]}::text[])
        AND ${filter.state ? sql`state = ${filter.state}` : sql`TRUE`}
