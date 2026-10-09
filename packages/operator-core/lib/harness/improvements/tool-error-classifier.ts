@@ -178,6 +178,11 @@ export const TOOL_ERROR_RULES: readonly ToolErrorRule[] = [
   },
   {
     class: 'caller',
+    errorCodes: ['native_tool_owner_unsupported_capability'],
+    why: 'the native-owner transport deliberately refuses to forward host-local authenticatedPrincipal capabilities across its RPC boundary; this is an expected transport refusal, not a structural defect in the named tool',
+  },
+  {
+    class: 'caller',
     messagePattern: PG_QUERY_UNDEFINED_COLUMN_CALLER_PATTERN,
     why: 'dev:pg_query wraps a caller-authored SQL 42703 undefined-column refusal with knownColumns guidance; tools:invoke must not turn that target refusal into a structural wrapper bug',
   },
