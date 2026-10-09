@@ -663,10 +663,13 @@ describe('scorecardEvidenceFingerprint (EI-12459)', () => {
     const recipe = {
       schemaVersion: 1 as const,
       evaluator: 'plans:evaluate-spec-test-adequacy' as const,
+      evaluatorRevision: 12,
+      evaluatorBuild: { sha: 'build-a', version: '0.0.0' },
       classRef: 'plan-class-feature-ship',
       args: {
         slug: 'p',
         classRef: 'plan-class-feature-ship',
+        evaluatorBuild: { sha: 'build-a', version: '0.0.0' },
         specIds: ['s'],
         includeDraft: true as const,
       },
@@ -688,6 +691,16 @@ describe('scorecardEvidenceFingerprint (EI-12459)', () => {
     const withRecipe = scorecardEvidenceFingerprint({ rubricRef: 'r', ratings, rerunRecipe: recipe });
     expect(withRecipe).not.toBe(legacy);
     expect(scorecardEvidenceFingerprint({ rubricRef: 'r', ratings, rerunRecipe: recipe })).toBe(withRecipe);
+
+    const nextBuildRecipe = {
+      ...recipe,
+      evaluatorBuild: { sha: 'build-b', version: '0.0.0' },
+      args: { ...recipe.args, evaluatorBuild: { sha: 'build-b', version: '0.0.0' } },
+    };
+    expect(scorecardEvidenceFingerprint({ rubricRef: 'r', ratings, rerunRecipe: nextBuildRecipe })).toBe(withRecipe);
+    expect(scorecardEvidenceFingerprint({
+      rubricRef: 'r', ratings, rerunRecipe: { ...nextBuildRecipe, evaluatorRevision: 13 },
+    })).not.toBe(withRecipe);
   });
 
   it('includes testedSha in release evidence identity while preserving legacy hashes when absent', () => {
