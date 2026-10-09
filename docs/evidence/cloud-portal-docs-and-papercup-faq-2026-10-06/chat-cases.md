@@ -309,3 +309,44 @@ separate scopes. Diagnose the actual request's prompt, principal/tool catalog
 and native result transport before another paid replay. No canonical FAQ,
 fresh-install, novice, independent acceptance or shipment bar is discharged
 by this failure record.
+
+## Current operator policy source proof, 2026-10-09 07:01Z
+
+The earlier policy bindings used local run `20931808` from October 8 at
+11:09Z. Their stored source and test fingerprints now differ from the current
+files. A later clean run, `20946309` at commit `bb0f15e16648`, still predates
+the prompt builder's explicit public-recall restrictions:
+`knowledgeSourcesAllowed` and the report viewer's owner flag now derive from
+`hostTrust`. The two Papercup playbooks, prompt assembly and policy test are
+unchanged from that later commit. This source delta justified a focused new
+unit run; the settled Portal projection and D031 browser cases were not rerun.
+
+```sh
+PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/agent-tools/operator/__tests__/converse-prompt-surface.test.ts
+```
+
+The maintained suite passed **13 tests, zero skipped**, exit 0. Ledger
+`20952091` records local Vitest execution at
+`8248227d1be2618ef2bae00a93a34d4f1fd04b76`. The runner's before/after named
+test-path stamp is clean and unchanged. The ledger records the wider working
+tree as dirty; this is local source proof, not an immutable clean candidate.
+After completion, both playbooks, `converse-prompt.ts`, `prompt-assembly.ts`
+and the test file were byte-identical to their blobs at that recorded commit.
+The retained runner log is `/tmp/su73-converse-policy-fresh-0701.log`.
+
+These tests exercise owner/public prompt assembly, the native MCP calling
+contract, conceptual FAQ retrieval instructions, clarification ordering,
+authorized live-evidence requirements and the shared deep-role policy.
+They do not exercise a model following those instructions, signed-in recall
+isolation, actual Portal tool results, saved history or a fresh installation.
+The new ledger proof is bound to the three existing P-006 tree clauses;
+full current-build behavior, the seven product journeys, novice observations,
+independent acceptance and exact shipment remain open.
+
+The server read confirms bindings `32565`, `32566` and `32567` are current.
+The scoped adequacy diagnostic passes freshness and execution integrity, but
+rates all three clauses `unknown`: falsifiability, correct layer, oracle
+independence and the plan-class proof floor remain unestablished. Conceptual
+and live-state clauses require L3 proof; the authorization clause requires
+targeted L4 proof. This diagnostic is not a ship verdict. P-006 remains open;
+no passing behavior or coverage flags were inferred from the policy strings.
