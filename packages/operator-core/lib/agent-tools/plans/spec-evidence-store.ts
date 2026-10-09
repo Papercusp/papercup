@@ -1767,6 +1767,19 @@ function parseProvisionalScorecardProof(issueId: string, value: unknown): Provis
   return { issueId, stampedAt: raw.stampedAt, violatableKeys };
 }
 
+export interface ListSpecEvidenceDiagnostics {
+  phaseMs: Record<string, number>;
+  bindings: {
+    selectedRows: number;
+    rowsWithRecipe: number;
+    measured: number;
+    unavailable: number;
+    skipped: number;
+    totalMeasurementMs: number;
+    maxMeasurementMs: number;
+  };
+}
+
 export interface ListSpecEvidenceOptions {
   harnessSlug?: string;
   /** Pin historical audit reads to the workspace recorded on the graded card. */
@@ -1828,6 +1841,8 @@ export interface ListSpecEvidenceOptions {
    */
   auditAsOf?: Date;
   limit?: number;
+  /** Optional internal timing sink for the plans:get-spec-evidence slow-read diagnosis. */
+  diagnostics?: ListSpecEvidenceDiagnostics;
 }
 
 export interface WorkItemSpecRevisionEdge {
@@ -2583,6 +2598,11 @@ async function measureCompletedIntegrationRuntime(row: EvidenceRow, recipe: Repo
 }
 
 export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
+  const diagnostics = options.diagnostics;
+  const totalStartedAt = diagnostics ? Date.now() : 0;
+  const recordPhase = (name: string, startedAt: number) => {
+    if (diagnostics) diagnostics.phaseMs[name] = Math.max(0, Date.now() - startedAt);
+  };
   if (options.auditAsOf && options.includeRetracted !== true) {
     throw new Error('auditAsOf requires includeRetracted:true');
   }
@@ -2590,11 +2610,16 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
   // explicit rather than leaning on `= ANY('{}')`: a reader must not have to know that
   // Postgres happens to return nothing, and the alternative reading — an empty filter
   // meaning "every plan" — is the exact silent-widening this whole plan exists to remove.
-  if (options.planSlugs.length === 0) return [];
+  if (options.planSlugs.length === 0) {
+    recordPhase('total', totalStartedAt);
+    return [];
+  }
+  const scopeStartedAt = diagnostics ? Date.now() : 0;
   const scope = await resolvePlanScope({
     harnessSlug: options.harnessSlug,
     workspaceId: options.workspaceId,
   });
+  recordPhase('resolvePlanScope', scopeStartedAt);
   const planSlugs = options.planSlugs;
   const workItemIds = options.workItemIds ?? [];
   const specIds = options.specIds ?? [];
@@ -2632,6 +2657,7 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
         return [JSON.stringify(pin), pin] as const;
       })).values()]
     : [];
+  const workspaceReadStartedAt = diagnostics ? Date.now() : 0;
   const rows = await withWorkspace(
     scope.workspaceId,
     async (tx) => {
@@ -2671,6 +2697,7 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
       const bindingIdFilter = bindingIds === undefined
         ? tx`TRUE`
         : tx`b.id = ANY(${bindingIds}::bigint[])`;
+      const bindingRowsStartedAt = diagnostics ? Date.now() : 0;
       const rows = await tx<EvidenceRow[]>`
     SELECT b.id, b.work_item_id, b.plan_slug, b.spec_id, c.source_val_id,
            b.spec_revision, c.current_revision, b.spec_fingerprint,
@@ -2749,6 +2776,7 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
        )
      ORDER BY b.observed_at DESC, b.id DESC
       LIMIT ${limit}`;
+      recordPhase('bindingRowsQuery', bindingRowsStartedAt);
       const scorecardIds = [
         ...new Set(
           rows
@@ -2756,8 +2784,12 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
             .filter((issueId): issueId is string => issueId !== null),
         ),
       ];
-      if (scorecardIds.length === 0) return rows;
+      if (scorecardIds.length === 0) {
+        if (diagnostics) diagnostics.phaseMs.scorecardProofQuery = 0;
+        return rows;
+      }
 
+      const scorecardProofStartedAt = diagnostics ? Date.now() : 0;
       const scorecards = await tx<{ feature_id: string; provisional: unknown }[]>`
         SELECT feature_id, payload -> 'observation' -> 'provisional' AS provisional
           FROM harness_shared.work_items
@@ -2765,6 +2797,7 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
            AND harness_slug = ${scope.harnessSlug}
            AND feature_id = ANY(${scorecardIds}::text[])
            AND payload -> 'observation' -> 'provisional' IS NOT NULL`;
+      recordPhase('scorecardProofQuery', scorecardProofStartedAt);
       const provisionalById = new Map<string, ProvisionalScorecardProof>();
       for (const scorecard of scorecards) {
         const proof = parseProvisionalScorecardProof(scorecard.feature_id, scorecard.provisional);
@@ -2779,14 +2812,21 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
       });
     },
   );
+  recordPhase('workspaceRead', workspaceReadStartedAt);
 
   const currentByKey = new Map((options.current ?? []).map((c) => [evidenceCurrentInputKey(c), c]));
   // The server-measured replay opt-out is explained at its use in the loop below.
+  const recipeBuildStartedAt = diagnostics ? Date.now() : 0;
   const recipes = rows.map((row) =>
     options.auditAsOf || (options.replaySnapshot && options.currentProvenance === 'server-measured')
       ? null
       : measurementFromDetails(row.details),
   );
+  recordPhase('recipeBuild', recipeBuildStartedAt);
+  if (diagnostics) {
+    diagnostics.bindings.selectedRows = rows.length;
+    diagnostics.bindings.rowsWithRecipe = recipes.filter((recipe) => recipe !== null).length;
+  }
   const measurementRoots = new Map<string, Promise<string>>();
   const measurementRootFor = (
     recipe: RepoFilesEvidenceMeasurement,
@@ -2813,6 +2853,7 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
     measurementCommits.set(root, commit);
     return commit;
   };
+  const rootAndCommitStartedAt = diagnostics ? Date.now() : 0;
   const workingTreeRecipes = await Promise.all(
     recipes.map(async (recipe) => {
       if (!recipe || recipe.kind === 'work-items') return recipe;
@@ -2835,10 +2876,22 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
       };
     }),
   );
+  recordPhase('resolveMeasurementRootsAndCommits', rootAndCommitStartedAt);
+  const probeSnapshotsStartedAt = diagnostics ? Date.now() : 0;
   const probeSnapshots = await readRepoFilesProbeSnapshots(workingTreeRecipes, measurementRootFor);
+  recordPhase('preReadProbeSnapshots', probeSnapshotsStartedAt);
   let runtimeRows: ReturnType<typeof listRuntimeVintage> | undefined;
+  const bindingMeasurementStatus = (status: 'measured' | 'unavailable' | 'skipped', startedAt: number) => {
+    if (!diagnostics) return;
+    const elapsedMs = Math.max(0, Date.now() - startedAt);
+    diagnostics.bindings[status] += 1;
+    diagnostics.bindings.totalMeasurementMs += elapsedMs;
+    diagnostics.bindings.maxMeasurementMs = Math.max(diagnostics.bindings.maxMeasurementMs, elapsedMs);
+  };
+  const serverMeasurementsStartedAt = diagnostics ? Date.now() : 0;
   const serverMeasurements = await Promise.all(
     rows.map(async (row, index) => {
+      const bindingStartedAt = diagnostics ? Date.now() : 0;
       // A REPLAY RE-MEASURES UNLESS THE CALLER HANDS US SERVER-MEASURED PROOF.
       // `currentProvenance:'server-measured'` is a caller saying "this pinned tuple is
       // already server-measured; replay it as-is, do not read the live repository" —
@@ -2864,7 +2917,10 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
       // behaviour for a FRESHNESS criterion: a card must stop replaying 'pass' once the
       // code it was bound against moves.
       const recipe = recipes[index];
-      if (!recipe) return null;
+      if (!recipe) {
+        bindingMeasurementStatus('skipped', bindingStartedAt);
+        return null;
+      }
       try {
         let measured: MeasuredRepoEvidenceFingerprints;
         let files: MeasuredRepoFile[] | null = null;
@@ -2977,6 +3033,7 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
           };
           files = detailed.files;
         }
+        bindingMeasurementStatus('measured', bindingStartedAt);
         return {
           status: 'measured' as const,
           files,
@@ -2993,6 +3050,7 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
           } satisfies EvidenceCurrentInput,
         };
       } catch (error: unknown) {
+        bindingMeasurementStatus('unavailable', bindingStartedAt);
         return {
           status: 'unavailable' as const,
           reason: (error instanceof Error ? error.message : String(error)).slice(0, 240),
@@ -3000,9 +3058,11 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
       }
     }),
   );
+  recordPhase('serverMeasurements', serverMeasurementsStartedAt);
   // Post-read half of the batch fence: a probe that locked a binding's paths while the
   // batch was reading fails that binding, exactly as its own post-read fence would. An
   // unreadable queue falls back to that per-binding fence.
+  const postReadProbeStartedAt = diagnostics ? Date.now() : 0;
   for (const [root, before] of probeSnapshots) {
     const after = await readMutationProbeSnapshot(root, [], before.resolved);
     if (after && after.probes.length === 0) continue;
@@ -3036,6 +3096,8 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
       }),
     );
   }
+  recordPhase('postReadProbeFence', postReadProbeStartedAt);
+  const classificationStartedAt = diagnostics ? Date.now() : 0;
   const classified = rows.map((row, index) => {
     const measured = serverMeasurements[index];
     const parsedTestRunExecution = row.test_run_id === null
@@ -3211,6 +3273,7 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
       currentness,
     };
   });
+  recordPhase('classification', classificationStartedAt);
   // An ordinary audit-as-of read reconstructs what was bound at a historical instant
   // and is downgraded to unknown freshness. Only the internal historical grading replay
   // opts out so the auditor can reproduce the card's emission-time verdict from its
@@ -3228,5 +3291,7 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
       }))
     : classified;
   const allowed = options.currentness ? new Set(options.currentness) : null;
-  return allowed ? auditOnly.filter((row) => allowed.has(row.currentness.overall)) : auditOnly;
+  const result = allowed ? auditOnly.filter((row) => allowed.has(row.currentness.overall)) : auditOnly;
+  recordPhase('total', totalStartedAt);
+  return result;
 }
