@@ -475,15 +475,26 @@ const DISPATCH_ADVISORY_CLAIMABLE_STATES = new Set(['open', 'failing', 'todo']);
  */
 async function deriveDispatchAdvisory(
   msg: SendMsg,
-  bodyText: string | undefined,
   recipients: readonly string[],
   harnessSlug: string | null,
 ): Promise<DispatchAdvisory | undefined> {
   if (msg.expects !== 'action' || msg.noBodyRefs || !isDirected(msg.to)) return undefined;
 
-  const refs = detectEntryBodyRefs({ summary: msg.summary, body: bodyText }).filter(
+  const workItemRefs = (text: string) => detectEntryBodyRefs({ summary: text }).filter(
     (ref): ref is { kind: 'work-item'; id: string } => ref.kind === 'work-item',
   );
+  // The body is prose and may cite other work-items as context. Use the
+  // structured per-recipient rationale as the action target when it names a
+  // work-item; otherwise the required inbox headline is the narrowest
+  // unstructured signal for what the action concerns. Do not treat every body
+  // mention as a requested lane.
+  const structuredRefs = Array.isArray(msg.body)
+    ? msg.body.flatMap((section) =>
+        typeof section.forYouBecause?.ref === 'string' ? workItemRefs(section.forYouBecause.ref) : [],
+      )
+    : [];
+  const candidateRefs = structuredRefs.length > 0 ? structuredRefs : workItemRefs(msg.summary);
+  const refs = [...new Map(candidateRefs.map((ref) => [ref.id, ref])).values()];
   if (refs.length === 0) return undefined;
 
   try {
@@ -2539,7 +2550,7 @@ async function sendOne(
   const claimText = msg.summary || bodyText || '';
   const authorityClaim = claimText ? unverifiedAuthorityClaim(claimText, relayStamp, cueAuthority) : null;
   const { value: dispatchAdvisory } = await withBoundedTimeout(
-    () => deriveDispatchAdvisory(msg, bodyText, env.to, harnessSlug),
+    () => deriveDispatchAdvisory(msg, env.to, harnessSlug),
     {
       fallback: undefined,
       timeoutMs: COORD_SEND_DISPATCH_ADVISORY_TIMEOUT_MS,
