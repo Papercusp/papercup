@@ -51,6 +51,20 @@ class Event(C.Union):
 
 class X11:
     def __init__(self):
+        self.wm = subprocess.Popen(['openbox', '--sm-disable'], stdout=subprocess.DEVNULL,
+                                   stderr=subprocess.DEVNULL)
+        start = time.monotonic()
+        while time.monotonic() - start < 3:
+            r = subprocess.run(['xprop', '-root', '_NET_SUPPORTING_WM_CHECK'],
+                               capture_output=True, text=True, timeout=1)
+            if 'window id #' in r.stdout:
+                break
+            if self.wm.poll() is not None:
+                raise RuntimeError('private window manager exited before readiness')
+            time.sleep(.05)
+        else:
+            stop(self.wm)
+            raise RuntimeError('private window manager did not register')
         self.x = C.CDLL('libX11.so.6')
         for name, rest, args in [
             ('XOpenDisplay', C.c_void_p, [C.c_char_p]),
@@ -73,7 +87,8 @@ class X11:
         self.root = self.x.XDefaultRootWindow(self.d)
         self.protocol = self.x.XInternAtom(self.d, b'WM_PROTOCOLS', 0)
         self.ping = self.x.XInternAtom(self.d, b'_NET_WM_PING', 0)
-        self.x.XSelectInput(self.d, self.root, (1 << 19) | (1 << 20))
+        # Observe replies without taking SubstructureRedirect away from the WM.
+        self.x.XSelectInput(self.d, self.root, 1 << 19)
         self.x.XFlush(self.d)
         self.token = 0
 
@@ -112,7 +127,7 @@ def window(title, client):
             except subprocess.TimeoutExpired:
                 errors = 'client exited but a descendant kept its stderr open'
             raise RuntimeError('terminal client exited before readiness: ' + errors)
-        r = subprocess.run(['xdotool', 'search', '--name', title], capture_output=True, text=True, timeout=2)
+        r = subprocess.run(['xdotool', 'search', '--onlyvisible', '--name', title], capture_output=True, text=True, timeout=2)
         if r.returncode == 0:
             return int(r.stdout.strip().splitlines()[-1])
         time.sleep(.05)
@@ -166,7 +181,7 @@ def run_child(args):
 
                 writer = "import os,tty;tty.setraw(0)\nline=(''.join('\\x1b[38;5;'+str(i+30)+'mabcdefghij' for i in range(15))+'\\x1b[0m\\r\\n').encode()\n"
                 writer += "for _ in range(" + str(args.lines // 1000) + "):os.write(1,line*1000)\n"
-                writer += "os.write(1,b'\\x1b]0;REFLOW_LOADED\\x07')\nwhile True:\n b=os.read(0,1);os.write(1,b)"
+                writer += "os.write(1,b'\\x1b]0;REFLOW_LOADED\\x07')\nwhile True:\n b=os.read(0,1)\n if b==b'?':os.write(1,('\\x1b]0;REFLOW_COLS_'+str(os.get_terminal_size(0).columns)+'\\x07').encode())\n else:os.write(1,b)"
                 big = window('REFLOW_LOADED', launch(writer))
                 sibling = window('REFLOW_SIBLING', launch("import os,tty;tty.setraw(0);os.write(1,b'\\x1b]0;REFLOW_SIBLING\\x07')\nwhile True:\n b=os.read(0,1);os.write(1,b)"))
                 history_bytes = 0
@@ -180,6 +195,8 @@ def run_child(args):
                         pass
                 baseline = [x.measure(sibling) for _ in range(5)]
                 resize = []
+                columns = []
+                geometry = []
                 for width in [500, 1100, 600, 1100]:
                     x.resize(big, width)
                     samples = []
@@ -187,9 +204,17 @@ def run_child(args):
                         samples.append(x.measure(sibling))
                         time.sleep(.005)
                     resize.append(max(samples))
+                    subprocess.run(['xdotool', 'windowfocus', str(big)], check=True, timeout=2)
+                    subprocess.run(['xdotool', 'type', '--window', str(big), '?'], check=True, timeout=2)
+                    time.sleep(.05)
+                    columns.append(subprocess.run(['xdotool', 'getwindowname', str(big)],
+                                                  check=True, capture_output=True, text=True, timeout=2).stdout.strip())
+                    geometry.append(subprocess.run(['xdotool', 'getwindowgeometry', '--shell', str(big)],
+                                                   check=True, capture_output=True, text=True, timeout=2).stdout.strip())
                 print(json.dumps({'unlimited': unlimited, 'server_pid': server.pid,
                                   'lines': args.lines, 'limit': args.limit,
                                   'history_bytes': history_bytes,
+                                  'columns_after_resize': columns, 'geometry_after_resize': geometry,
                                   'baseline_ping_ms': baseline,
                                   'sibling_ping_after_resize_ms': resize}), flush=True)
             finally:
@@ -200,6 +225,7 @@ def run_child(args):
                     client.stderr.close()
     finally:
         x.x.XCloseDisplay(x.d)
+        stop(x.wm)
 
 
 def main():
