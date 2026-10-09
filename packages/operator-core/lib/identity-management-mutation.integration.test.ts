@@ -20,7 +20,7 @@
  *     assertable; the render itself is covered by su-persona-render tests and the
  *     R-4 real-backend e2e.
  *   - `getIdentitySource` / `resolveProjectDir` — identity files on disk.
- *   - `findLiveHost` — no live PTY host in CI; the nudge must report not-queued.
+ *   - `findLiveHostAsync` — controlled PTY discovery; absent hosts report not-queued.
  *   - the peripheral control-anchor READ legs (modes, loop, fleet membership,
  *     goal authority, self-wake) and the Orders SSE push — each is its own
  *     module with its own tests; they contribute no rows this path writes.
@@ -75,6 +75,7 @@ const h = vi.hoisted(() => {
     goalAuthorityFailure: null as null | Error,
     tagFailure: null as null | Error,
     liveHost: null as null | { ownerId: string; pid: number; sock: string },
+    hostLookups: [] as string[],
     injected: [] as Array<{ sock: string; msg: unknown }>,
   };
 });
@@ -99,7 +100,10 @@ vi.mock('./agent-identities/source', () => ({
 vi.mock('./spawn-config', () => ({ resolveProjectDir: vi.fn(async () => null) }));
 
 vi.mock('./events/await/psu-pty-discovery', () => ({
-  findLiveHost: vi.fn(() => h.liveHost),
+  findLiveHostAsync: vi.fn(async (ownerId: string) => {
+    h.hostLookups.push(ownerId);
+    return h.liveHost;
+  }),
   injectIntoHost: vi.fn(async (sock: string, msg: unknown) => {
     h.injected.push({ sock, msg });
     return false;
@@ -238,6 +242,7 @@ beforeEach(() => {
   h.goalAuthorityFailure = null;
   h.tagFailure = null;
   h.liveHost = null;
+  h.hostLookups = [];
   h.injected = [];
 });
 
@@ -329,6 +334,7 @@ describe('mutateIdentityStack against real Postgres (R-4 integration layer)', ()
       queued: false,
       reason: expect.stringContaining('turn-provenance tagging failed'),
     });
+    expect(h.hostLookups).toEqual([owner]);
     expect(h.injected).toEqual([]);
   });
 
@@ -365,6 +371,7 @@ describe('mutateIdentityStack against real Postgres (R-4 integration layer)', ()
     // No live host in this process: the nudge must SAY it was not delivered.
     expect(result.nudge.queued).toBe(false);
     expect(result.nudge.reason).toMatch(/not currently reachable/);
+    expect(h.hostLookups).toEqual([owner]);
 
     const spec = await launchSpec(owner);
     expect(spec.stack).toEqual(WRITER);
