@@ -9,6 +9,7 @@ import { publishReport, getReport } from '../lib/report-library';
 import { indexReport } from '../lib/search/report-index';
 import { createReportSearchSource } from '../lib/agent-tools/search/report-source';
 import { readProcessIdentity } from '../lib/process-identity';
+import { buildMemoryContextBlock } from '../lib/memory/injection';
 
 let host: ChildProcess | undefined;
 let hostIdentity: ReturnType<typeof readProcessIdentity>;
@@ -64,6 +65,15 @@ async function main() {
       title: 'Warm corpus control', bodyMd: 'warmquartz diagnostic snapshot recovery evidence. Retain the snapshot.' },
     { authorOwnerId: 'su-private-knowledge-warmup', harnessSlug: workspace });
     await indexReport(sql, warmReport, null);
+    const sourceBlock = await buildMemoryContextBlock({ workspaceId: workspace, harnessSlugs: [workspace],
+      userId: null, queryContext: 'warmquartz diagnostic snapshot recovery evidence',
+      session: { sessionId: 'su-private-source-control', port: 'turn-start', client: 'codex' } });
+    writeFileSync(join(evidenceDir, 'source-control.json'), JSON.stringify({ payload: sourceBlock }));
+    assert.ok(sourceBlock?.includes(warmReport.reportId), 'source memory builder failed known corpus control; see source-control.json');
+    if (e.KNOWLEDGE_NATIVE_SOURCE_ONLY === '1') {
+      console.log('KNOWLEDGE_NATIVE_SOURCE_READY ' + JSON.stringify({ workspace, reportId: warmReport.reportId }));
+      return;
+    }
     console.log('KNOWLEDGE_NATIVE_PHASE fixtures-ready');
     const bundle = join(evidenceDir, 'hono-host.mjs');
     console.log('KNOWLEDGE_NATIVE_PHASE bundle-start');
