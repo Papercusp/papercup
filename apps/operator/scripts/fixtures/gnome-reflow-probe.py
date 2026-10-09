@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import select
+import signal
 import stat
 import subprocess
 import sys
@@ -146,9 +147,19 @@ def run_child(args):
             p = Gio.Settings.new_with_path('org.gnome.Terminal.Legacy.Profile',
                                           '/org/gnome/terminal/legacy/profiles:/:' + ident + '/')
             p.set_string('visible-name', 'Isolated Reflow Probe')
-            p.set_boolean('scrollback-unlimited', unlimited)
+            p.set_boolean('scrollback-unlimited', True if args.prepare_profile_module else unlimited)
             p.set_int('scrollback-lines', args.limit)
             Gio.Settings.sync()
+            profile_uuid = ident
+            if args.prepare_profile_module and not unlimited:
+                program = "const m=await import(process.argv[1]);console.log(JSON.stringify(await m.prepareGnomeTerminal({bin:'gnome-terminal',args:['--wait','--']})));"
+                result = subprocess.run(['node', '--input-type=module', '-e', program, args.prepare_profile_module],
+                                        capture_output=True, text=True, check=True, timeout=12)
+                prepared = json.loads(result.stdout)
+                flags = [flag for flag in prepared['args'] if flag.startswith('--profile=')]
+                if len(flags) != 1:
+                    raise RuntimeError('real launcher preparation did not select bounded profile')
+                profile_uuid = flags[0].split('=', 1)[1]
             app = 'org.gnome.Terminal.Reflow' + str(os.getpid()) + ('Unlimited' if unlimited else 'Finite')
             server = subprocess.Popen(['/usr/libexec/gnome-terminal-server', '--app-id', app],
                                       stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
@@ -173,7 +184,7 @@ def run_child(args):
                     # Ubuntu's Python wrapper also starts a server for --app-id.
                     # Here the fixture already owns the server; call its client.
                     binary = '/usr/bin/gnome-terminal.real' if Path('/usr/bin/gnome-terminal.real').exists() else 'gnome-terminal'
-                    client = subprocess.Popen([binary, '--app-id', app, '--profile', ident, '--wait',
+                    client = subprocess.Popen([binary, '--app-id', app, '--profile', profile_uuid, '--wait',
                                                '--geometry=100x25', '--', '/usr/bin/python3', '-u', '-c', script],
                                               stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
                     clients.append(client)
@@ -189,7 +200,10 @@ def run_child(args):
                     try:
                         target = os.readlink(fd)
                         info = fd.stat()
-                        if stat.S_ISREG(info.st_mode) and target.startswith('/tmp/'):
+                        # The maintained test runner puts TMPDIR on /dev/shm;
+                        # VTE follows that same setting instead of always /tmp.
+                        tmp_root = str(Path(tempfile.gettempdir()).resolve()) + '/'
+                        if stat.S_ISREG(info.st_mode) and target.startswith(tmp_root):
                             history_bytes += info.st_size
                     except FileNotFoundError:
                         pass
@@ -213,6 +227,10 @@ def run_child(args):
                                                    check=True, capture_output=True, text=True, timeout=2).stdout.strip())
                 print(json.dumps({'unlimited': unlimited, 'server_pid': server.pid,
                                   'lines': args.lines, 'limit': args.limit,
+                                  'profile_uuid': profile_uuid,
+                                  'default_profile_uuid': profiles.get_string('default'),
+                                  'default_still_unlimited': p.get_boolean('scrollback-unlimited'),
+                                  'font_preserved': p.get_value('font').equal(Gio.Settings.new_with_path('org.gnome.Terminal.Legacy.Profile', '/org/gnome/terminal/legacy/profiles:/:' + profile_uuid + '/').get_value('font')),
                                   'history_bytes': history_bytes,
                                   'columns_after_resize': columns, 'geometry_after_resize': geometry,
                                   'baseline_ping_ms': baseline,
@@ -233,6 +251,7 @@ def main():
     parser.add_argument('--lines', type=int, default=600000)
     parser.add_argument('--limit', type=int, default=10000)
     parser.add_argument('--child', action='store_true')
+    parser.add_argument('--prepare-profile-module')
     args = parser.parse_args()
     if args.lines < 1000 or args.lines % 1000 or args.limit < 1:
         parser.error('lines must be a positive multiple of 1000 and limit positive')
@@ -242,16 +261,44 @@ def main():
     with tempfile.TemporaryDirectory(prefix='gnome-reflow-') as td:
         config = Path(td) / 'bus.conf'
         config.write_text(BUS_CONFIG)
+        runtime = Path(td) / 'runtime'
+        runtime.mkdir(mode=0o700)
         env = dict(os.environ, XDG_CONFIG_HOME=td, GSETTINGS_BACKEND='keyfile',
+                   XDG_RUNTIME_DIR=str(runtime),
                    GDK_BACKEND='x11', GTK_USE_PORTAL='0', GIO_USE_VFS='local', NO_AT_BRIDGE='1')
         for key in ['WAYLAND_DISPLAY', 'GNOME_TERMINAL_SCREEN', 'GNOME_TERMINAL_SERVICE', 'DBUS_SESSION_BUS_ADDRESS']:
             env.pop(key, None)
-        result = subprocess.run(['xvfb-run', '-a', 'dbus-run-session', '--config-file=' + str(config),
-                                 '--', '/usr/bin/python3', str(Path(__file__).resolve()), '--child',
-                                 '--lines=' + str(args.lines), '--limit=' + str(args.limit)],
-                                env=env, timeout=150)
-        if result.returncode:
-            raise SystemExit(result.returncode)
+        child_args = ['xvfb-run', '-a', 'dbus-run-session', '--config-file=' + str(config),
+                                  '--', '/usr/bin/python3', str(Path(__file__).resolve()), '--child',
+                                  '--lines=' + str(args.lines), '--limit=' + str(args.limit)]
+        if args.prepare_profile_module:
+            child_args.extend(['--prepare-profile-module', args.prepare_profile_module])
+        child = subprocess.Popen(child_args,
+                                 env=env, start_new_session=True)
+        def interrupted(signum, _frame):
+            raise SystemExit(128 + signum)
+        previous = signal.signal(signal.SIGTERM, interrupted)
+        try:
+            code = child.wait(timeout=150)
+        finally:
+            signal.signal(signal.SIGTERM, previous)
+            # Signal ONLY the session created here, including on a caller timeout.
+            # Never kill by emulator name or by a potentially reused display number.
+            try:
+                os.killpg(child.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            try:
+                child.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                pass
+            try:
+                os.killpg(child.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            child.wait(timeout=3)
+        if code:
+            raise SystemExit(code)
 
 
 if __name__ == '__main__':

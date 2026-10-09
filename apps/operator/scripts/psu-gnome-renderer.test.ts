@@ -6,6 +6,7 @@ import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
 
 const fixture = fileURLToPath(new URL('./fixtures/gnome-reflow-probe.py', import.meta.url));
+const preparationModule = new URL('../../../packages/operator-core/lib/gnome-terminal-profile.mjs', import.meta.url).href;
 const run = promisify(execFile);
 const nativeAvailable = process.platform === 'linux'
   && existsSync('/usr/libexec/gnome-terminal-server')
@@ -20,14 +21,18 @@ describe.skipIf(!nativeAvailable)('isolated GNOME renderer reproduction', () => 
   });
 
   it('measures visible windows, changed PTY geometry and genuinely different retained history', async () => {
-    const { stdout } = await run('/usr/bin/python3', [fixture, '--lines=10000', '--limit=2000'], {
+    const { stdout } = await run('/usr/bin/python3', [fixture, '--lines=60000', '--limit=10000',
+      '--prepare-profile-module', preparationModule], {
       timeout: 45_000, maxBuffer: 128 * 1024,
     });
     const rows = stdout.trim().split('\n').map((line) => JSON.parse(line));
     expect(rows).toHaveLength(2);
     expect(rows.map((row) => row.unlimited)).toEqual([false, true]);
     expect(rows[1].history_bytes).toBeGreaterThan(rows[0].history_bytes * 3);
+    expect(rows[0].profile_uuid).not.toBe(rows[0].default_profile_uuid);
     for (const row of rows) {
+      expect(row.default_still_unlimited).toBe(true);
+      expect(row.font_preserved).toBe(true);
       // A hidden GtkWindow answers pings but never changes the visible VTE grid.
       // Refuse to treat such samples as renderer latency evidence again.
       const columns = row.columns_after_resize.map((title: string) => {
