@@ -11827,7 +11827,7 @@
           "POST"
         ]
       },
-      "description": "Cancel one of your active events:await registrations (await_id — you will not be woken), retire one of your unfired announced gate declarations (announcement_id, optionally guarded by expected_generation), cancel a whole composed await TREE by its root_id, or ACK a pending/parked wake delivery (delivery_id). Standing once:false watches require confirm_standing:true after checking events:status because queued deliveries are dropped with the watch. An active loop owner cannot cancel their coord:inbox-wake; call loop:end first. Loopless owners may still opt out. Pass at least one.",
+      "description": "Cancel one of your active events:await registrations (await_id — you will not be woken), retire one of your unfired announced gate declarations (announcement_id, optionally guarded by expected_generation), cancel a whole composed await TREE by its root_id, or ACK a pending/parked wake delivery (delivery_id). Evidence-only judges may only ACK their own wake deliveries. Standing once:false watches require confirm_standing:true after checking events:status because queued deliveries are dropped with the watch. An active loop owner cannot cancel their coord:inbox-wake; call loop:end first. Loopless owners may still opt out. Pass at least one.",
       "capabilities": [
         "coord:write"
       ],
@@ -11841,11 +11841,12 @@
         "operator",
         "mug",
         "documenter",
-        "curator"
+        "curator",
+        "judge"
       ],
       "guidance": {
         "when": "The thing you were waiting on no longer matters (cancel the await), or a parked wake reached you in-turn via the inbox and you handled it (ack the delivery so the system does not also resume you). For a standing watch, inspect events:status and pass confirm_standing:true deliberately. A loopless owner may opt out of coord:inbox-wake; an active loop must end before its wake watch can be cancelled.",
-        "notWhen": "A fired await needs no cancel (one-shot — it already cleared). Do not use await_id as a mistaken substitute for the narrow delivery_id ACK path. You cannot cancel or ack a peer’s.",
+        "notWhen": "A fired await needs no cancel (one-shot — it already cleared). Do not use await_id as a mistaken substitute for the narrow delivery_id ACK path. You cannot cancel or ack a peer’s; evidence-only judges can only ACK their own wake deliveries.",
         "chaining": "events:status to find the await_id / delivery_id / declaration id → events:cancel."
       }
     },

@@ -2,6 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, inject, it } from 'v
 import postgres from 'postgres';
 import { randomUUID } from 'node:crypto';
 import { assertPgReachable } from '@papercusp/test-config/pg';
+import type {} from '@papercusp/test-config';
 import { readReviewGradingCensus } from './review-grading-live-replay';
 
 const ws=`review-replay-${randomUUID()}`;

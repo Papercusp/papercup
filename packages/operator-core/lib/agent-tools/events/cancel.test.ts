@@ -56,6 +56,23 @@ const cancelledAwait = (overrides: Record<string, unknown> = {}) => ({
 });
 
 describe('events:cancel dual-path result', () => {
+  it('lets evidence-only judges ACK their own wake deliveries and refuses broader cancellation', async () => {
+    const judgeCtx = { ...ctx, role: 'judge' } as unknown as Parameters<typeof cancel.handler>[1];
+    expect(cancel.agentRoles).toContain('judge');
+    vi.mocked(ackDelivery).mockResolvedValue({ acked: true, alreadySettled: false });
+
+    const out = await call({ delivery_id: 3 }, judgeCtx);
+
+    expect(ackDelivery).toHaveBeenCalledWith({ deliveryId: 3, subscriberId: 'su-canceller' });
+    expect(out).toMatchObject({ ok: true, results: [{ delivery_id: 3, acked: true }] });
+    await expect(call({ await_id: 7 }, judgeCtx)).rejects.toThrow(/evidence-only judges may only acknowledge/);
+    await expect(call({ items: [{ delivery_id: 3, announcement_id: 41 }] }, judgeCtx)).rejects.toThrow(
+      /evidence-only judges may only acknowledge/,
+    );
+    expect(cancelAwaitDetailed).not.toHaveBeenCalled();
+    expect(retireAnnouncement).not.toHaveBeenCalled();
+  });
+
   it.each([
     ['await', { await_id: 7 }],
     ['delivery', { delivery_id: 3 }],
