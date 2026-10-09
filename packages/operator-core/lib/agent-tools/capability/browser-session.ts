@@ -45,6 +45,7 @@ interface Session {
   id: string; scope: string; authority: string; taskId: string; root: string;
   server: BrowserServer; browser: Browser; context: BrowserContext; page: Page;
   sandbox: { mode: string; sandboxed: boolean };
+  terminalRecorded?: Promise<void>;
   busy: boolean; active?: ActiveOperation; idle?: ReturnType<typeof setTimeout>;
   closing?: Promise<void>;
   state: 'live' | 'closing' | 'closed' | 'lost'; reason?: string; endedAt?: number; processEnded: boolean;
@@ -65,7 +66,10 @@ function status(session: Session) {
 function quote(value: string): string { return "'" + value.replaceAll("'", "'\\''") + "'"; }
 
 /** Enrol the SDK-owned process before launch; its maintained launcher closes the whole process group. */
-export async function launchBrowserProcess(ctx: UnifiedToolContext, root: string, id: string, timeoutMs: number) {
+export async function launchBrowserProcess(ctx: UnifiedToolContext, root: string, id: string, timeoutMs: number): Promise<{
+  server: BrowserServer; browser: Browser; taskId: string; profile: OperationBoundaryProfile;
+  sandbox: { mode: string; sandboxed: boolean }; terminalRecorded?: Promise<void>;
+}> {
   const deadline = Date.now() + timeoutMs;
   const remaining = () => { const ms = deadline - Date.now(); if (ms <= 0 || ctx.signal?.aborted) throw new Error('browser_operation_aborted'); return ms; };
   const { chromium } = await import('playwright-core');
@@ -86,14 +90,22 @@ export async function launchBrowserProcess(ctx: UnifiedToolContext, root: string
       env: { ...scrubExecEnv(process.env), TMPDIR: root },
       args: ['--force-webrtc-ip-handling-policy=disable_non_proxied_udp', '--disable-features=WebTransport'] });
     const child = server.process();
-    await markSpawned(row.taskId, { pid: child.pid, processIdentity: child.pid ? readProcessIdentity(child.pid) : null,
+    const spawned = markSpawned(row.taskId, { pid: child.pid, processIdentity: child.pid ? readProcessIdentity(child.pid) : null,
       confined: false, unconfinedReason: 'SDK process group; execution sandbox is reported separately' });
+    let terminalResolve!: () => void; let terminalReject!: (error: unknown) => void;
+    const terminalRecorded = new Promise<void>((resolve, reject) => { terminalResolve = resolve; terminalReject = reject; });
+    // Register before awaiting enrollment, including a process that exits during
+    // that write. Serialize terminal recording behind the spawned identity.
     server.on('close', () => {
-      void closeTask(row.taskId, { state: 'exited', exitCode: child.exitCode, exitReason: 'browser-process-ended' })
-        .catch((error) => ctx.log(`browser terminal ledger failed: ${String(error)}`));
+      void spawned.then(() => closeTask(row.taskId, {
+        state: 'exited', exitCode: child.exitCode, exitReason: 'browser-process-ended',
+      })).then(() => terminalResolve(), terminalReject);
     });
+    void terminalRecorded.catch((error) => ctx.log(`browser terminal ledger failed: ${String(error)}`));
+    await spawned;
     const browser = await chromium.connect(server.wsEndpoint(), { timeout: remaining() });
-    return { server, browser, taskId: row.taskId, profile: policy.profile, sandbox: { mode: sandbox.mode, sandboxed: sandbox.sandboxed } };
+    return { server, browser, taskId: row.taskId, profile: policy.profile,
+      sandbox: { mode: sandbox.mode, sandboxed: sandbox.sandboxed }, terminalRecorded };
   } catch (error) {
     if (server) await server.kill();
     await closeTask(row.taskId, { state: 'exited', exitCode: server?.process().exitCode ?? null, exitReason: 'browser-launch-failed' });
@@ -145,6 +157,7 @@ export async function closeBrowserSession(session: Session, reason: string): Pro
       try { await session.server.close(); }
       catch { await session.server.kill(); }
     }
+    await session.terminalRecorded;
     session.processEnded = true; session.state = lost ? 'lost' : 'closed'; session.endedAt ??= Date.now();
     await rm(session.root, { recursive: true, force: true });
   }).catch((error) => { session.state = 'lost'; session.reason = 'cleanup-unconfirmed'; throw error; });

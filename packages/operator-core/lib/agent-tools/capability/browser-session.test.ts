@@ -129,6 +129,19 @@ describe('managed browser authority and lifecycle', () => {
     expect((await running).payload.ok).toBe(false);
     expect(f.server.close).toHaveBeenCalledOnce();
   });
+  it('waits for asynchronous terminal recording before reporting close complete', async () => {
+    const f = fixture(); const launch = vi.mocked(f.deps.launch).getMockImplementation()!;
+    let record!: () => void; const terminalRecorded = new Promise<void>(resolve => { record = resolve; });
+    vi.mocked(f.deps.launch).mockImplementation(async (...args) => ({ ...await launch(...args), terminalRecorded }));
+    const id = await f.open(); let completed = false;
+    const close = f.call({ op: 'close', id }).then(result => { completed = true; return result; });
+    await vi.waitFor(() => expect(f.server.close).toHaveBeenCalledOnce());
+    // The SDK is already closed, but the durable terminal callback is held.
+    const early = await Promise.race([close.then(() => true), new Promise<boolean>(resolve => setTimeout(() => resolve(false), 100))]);
+    record(); const closed = await close;
+    expect(early).toBe(false); expect(completed).toBe(true);
+    expect(closed.payload.browser.state).toBe('closed');
+  });
   it('checks changing authority at the actual request boundary', async () => {
     const f = fixture(); const id = await f.open();
     f.page.goto.mockImplementationOnce(async () => {

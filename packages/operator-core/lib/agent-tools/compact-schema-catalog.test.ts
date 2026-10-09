@@ -20,8 +20,8 @@
  *
  * WHAT IS ASSERTED, and why it is a PROPERTY rather than a threshold:
  *   1. CONTRACT EQUALITY, per tool. Every validity-bearing element of the full
- *      schema — property names (including nested ones), types, the `required`
- *      set, enum/const members, every numeric/length/array bound, oneOf/anyOf/
+ *      schema — property names (including nested ones), the `required` set,
+ *      enum/const members, every numeric/length/array bound, oneOf/anyOf/
  *      allOf/if-then-else discriminators, and `$defs`/`$ref` STRUCTURE — appears
  *      in the compact schema at the SAME path. This is stated as set equality of
  *      a path-keyed projection, so an element that MOVED is caught as well as
@@ -73,6 +73,30 @@ const NAME_KEYED_CONTAINERS = new Set<string>([
   'dependentSchemas',
 ]);
 
+function matchesType(value: unknown, type: unknown): boolean {
+  switch (type) {
+    case 'null': return value === null;
+    case 'object': return value !== null && typeof value === 'object' && !Array.isArray(value);
+    case 'array': return Array.isArray(value);
+    case 'string': return typeof value === 'string';
+    case 'boolean': return typeof value === 'boolean';
+    case 'integer': return typeof value === 'number' && Number.isInteger(value);
+    case 'number': return typeof value === 'number';
+    default: return false;
+  }
+}
+
+/** Normalize only a `type` constraint already entailed by the same enum/const. */
+function typeIsImplied(schema: Record<string, unknown>): boolean {
+  if (!Object.hasOwn(schema, 'type')) return false;
+  const types = Array.isArray(schema.type) ? schema.type : [schema.type];
+  if (Object.hasOwn(schema, 'const')) return types.some((type) => matchesType(schema.const, type));
+  return (
+    Array.isArray(schema.enum) &&
+    schema.enum.every((value) => types.some((type) => matchesType(value, type)))
+  );
+}
+
 /** Path marker distinguishing an author-chosen NAME segment from a keyword
  *  segment, so a property literally called `type` can never be confused with
  *  the `type` KEYWORD one level up. Deliberately a printable pair rather than a
@@ -108,8 +132,10 @@ function contractLines(node: unknown, path: string, inNameKeyedMap: boolean, out
   // both constrain nothing). Measured: that asymmetry is the ONLY divergence the
   // live catalog produces, and every instance was an `added` `{}`, never a
   // `missing` constraint.
-  const entries = Object.entries(node as Record<string, unknown>).filter(
-    ([key]) => inNameKeyedMap || !PROSE_KEYS.has(key),
+  const schema = node as Record<string, unknown>;
+  const omitType = !inNameKeyedMap && typeIsImplied(schema);
+  const entries = Object.entries(schema).filter(
+    ([key]) => inNameKeyedMap || (!PROSE_KEYS.has(key) && !(key === 'type' && omitType)),
   );
   if (entries.length === 0) out.push(`${path}={}`);
   for (const [key, value] of entries) {
@@ -299,6 +325,25 @@ describe('compact schema projection — live catalog (AUTO-BAR-R-3-P-001 / AUTO-
         'partial one — a dropped required field or enum member makes a model emit calls the ' +
         'server rejects.',
     ).toEqual([]);
+  });
+
+  it('removes every redundant type constraint from real compact schemas', () => {
+    const redundant: string[] = [];
+    const visit = (node: unknown, path: string, inNameKeyedMap: boolean): void => {
+      if (node === null || typeof node !== 'object') return;
+      if (Array.isArray(node)) {
+        node.forEach((entry, i) => visit(entry, `${path}[${i}]`, false));
+        return;
+      }
+      const schema = node as Record<string, unknown>;
+      if (!inNameKeyedMap && typeIsImplied(schema)) redundant.push(path);
+      for (const [key, value] of Object.entries(schema)) {
+        visit(value, `${path}/${key}`, !inNameKeyedMap && NAME_KEYED_CONTAINERS.has(key));
+      }
+    };
+
+    for (const row of rows) visit(compactInputSchema(row.inputSchema ?? {}), row.name, false);
+    expect(redundant.slice(0, 8), `${redundant.length} real compact schema(s) retained an implied type`).toEqual([]);
   });
 
   it('removes every prose keyword at every depth, and keeps prose-NAMED properties', () => {
