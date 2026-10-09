@@ -167,6 +167,11 @@ test('Work on Everything Design C cockpit and priority editor stay readable in t
     expect(detail.goal.goalPackage).toBeNull();
     expect(detail.goalData.collections.worklist.selection.configured).toBe(true);
     expect(detail.goalData.collections.worklist.selection.selected).toEqual(ids.slice(0, 2));
+    // insertNativeCollectionPlan seeds one real todo item per plan. Two
+    // measured selected plans are not an empty or unknown progress fixture.
+    expect(detail.goalData.collections.worklist.rows.filter((r: { selected: boolean }) => r.selected)
+      .map((r: { counts: { todo: number; done: number } }) => ({ todo: r.counts.todo, done: r.counts.done })))
+      .toEqual([{ todo: 1, done: 0 }, { todo: 1, done: 0 }]);
     expect(detail.rubricStewardship).toMatchObject({
       rubricRef: 'work-on-everything-stewardship-health', cycles: [], error: null,
     });
@@ -185,14 +190,19 @@ test('Work on Everything Design C cockpit and priority editor stay readable in t
         hasDraftControls: !!root.querySelector('button[aria-label^="Remove "]'),
       };
     })()`);
+    // Preserve the native view and canonical readback even when an assertion
+    // fails, before the owned rig tears down its temporary source and profile.
+    await native('screenshot', '--output', info.outputPath('goal-cockpit.png'));
+    await info.attach('native-design-c-cockpit', {
+      body: JSON.stringify({ cockpit, detail, sourceReceipt }), contentType: 'application/json',
+    });
     expect(cockpit.priorities).toEqual(ids.slice(0, 2));
     expect(cockpit.health).toBe(true); expect(cockpit.needsYou).toBe(true); expect(cockpit.activity).toBe(true);
-    const measuredPlans = detail.goalData.collections.worklist.rows.filter((r: { selected: boolean; counts?: unknown }) => r.selected && r.counts);
-    expect(cockpit.progressText).toContain(measuredPlans.length ? 'No items in measured plans' : 'Progress not measured');
+    expect(cockpit.progressText).toContain('0 of 2 items done');
+    expect(cockpit.progressText).toContain('0% of measured items complete');
+    expect(cockpit.progressText).toContain('2 of 2 selected plans measured');
     expect(cockpit.overflowingPanel).toBe(false);
     expect(cockpit.hasDraftControls).toBe(false);
-    await native('screenshot', '--output', info.outputPath('goal-cockpit.png'));
-    await info.attach('native-design-c-cockpit', { body: JSON.stringify({ cockpit, sourceReceipt }), contentType: 'application/json' });
     await native('eval', `(() => {
       Array.from(document.querySelectorAll('${panel} button')).find(n => n.textContent === 'Browse all plans').click();
       return true;
