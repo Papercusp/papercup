@@ -5,6 +5,7 @@
 import { expect, test, type Page } from './_egress';
 import { stubSyncQueries } from './_sync-stub';
 import { CLOUD_TUTORIAL_ID, CLOUD_TUTORIAL_VERSION } from '@papercusp/operator-core/lib/onboarding/cloud-tutorial-lesson';
+import { prepareCloudTutorialNetlog } from '@papercusp/test-config/hermetic-tmpdir';
 import AxeBuilder from '@axe-core/playwright';
 import { writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -14,10 +15,13 @@ import { join } from 'node:path';
 // review on an isolated desktop. Normal automated runs do not pause.
 // Preserve Chromium's network-service events across a failed cold first load.
 // The default capture mode omits sensitive values. Each worker owns its log.
-const chromiumNetLog = join(tmpdir(), `papercusp-cloud-tutorial-netlog-${process.pid}.json`);
-console.info(`CHROMIUM_NETLOG ${chromiumNetLog}`);
+const chromiumNetLog = prepareCloudTutorialNetlog(tmpdir());
+console.info(`CHROMIUM_NETLOG ${chromiumNetLog.path}`);
+if (chromiumNetLog.cleanup.removed > 0 || chromiumNetLog.cleanup.overBudget) {
+  console.info(`CHROMIUM_NETLOG_CLEANUP ${JSON.stringify(chromiumNetLog.cleanup)}`);
+}
 test.use({ launchOptions: { args: [
-  `--log-net-log=${chromiumNetLog}`,
+  chromiumNetLog.chromiumArg,
   ...(process.env.PAPERCUSP_TUTORIAL_ORCA_REVIEW === '1' ? ['--force-renderer-accessibility'] : []),
 ] } });
 
