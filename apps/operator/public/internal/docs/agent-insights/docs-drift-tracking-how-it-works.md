@@ -151,3 +151,48 @@ The recurrence checks are
 (changed HTML/Pagefind bytes at the same URL with revalidation).
 These complement the existing FAQ publication suite; they do not prove the
 pending public-runtime provider, novice acceptance, or production shipment.
+
+## Isolated post-sync regression and durable ledger
+
+The maintained integration guard is
+`packages/operator-core/lib/harness/docs/public-manual-freshness.integration.test.ts`.
+It executes a migrated disposable OrgTestDb, the actual after-sync sweep,
+persisted review records, dispatcher policy and canonical public reader. Git
+source-change signals and outbound agent/coordination calls are controlled;
+no steward, model, customer workspace or live flag is changed. It checks
+FAQ/guide canonical-file handoff, retained review status and old verified
+baseline after rendered content changes, unchanged-document controls, repeat
+sweep deduplication and zero charged dispatch attempts with the steward disabled.
+This is an integration guard for that composition, not installed-worker or
+published HTML/Pagefind evidence.
+
+Use the existing committed-source runner for reproducible evidence. Resolve
+`freshness_commit` to a full committed SHA and `freshness_ledger_url` before
+entering isolation: the existing ledger resolver prefers
+`PAPERCUSP_TEST_RUNS_DB_URL`, then the caller's
+`HARNESS_ADMIN_DATABASE_URL`, then the documented operator ledger default.
+Do not print the URL. Choose a fresh run-group UUID and absolute receipt path.
+`with-test-pg --isolated-runtime` deliberately strips inherited
+`PAPERCUSP_` and `HARNESS_` variables, so put these ledger-only overrides
+inside its child command:
+
+```bash
+node scripts/with-test-pg.mjs --isolated-runtime -- env \
+  PAPERCUSP_TEST_RUNS_DB_URL="$freshness_ledger_url" \
+  PAPERCUSP_TEST_RUN_HARNESS=papercusp \
+  PAPERCUSP_TEST_RUN_WORKSPACE=papercusp-workspace \
+  PAPERCUSP_TEST_RUN_GROUP="$freshness_group" \
+  PAPERCUSP_TEST_RUN_RECEIPT_FILE="$freshness_receipt" \
+  node scripts/lint-as-committed.mjs test:file --any \
+  --ref="$freshness_commit" -- \
+  packages/operator-core/lib/harness/docs/public-manual-freshness.integration.test.ts
+```
+
+These overrides route the reporter and execution-map writer to the shared
+ledger; leave the product/test SQL on the throwaway runtime's PG port. Drain
+the command to its final exit, then match inserted receipt IDs to
+`testing:runs` by exact group, harness and workspace. Check the recorded
+commit, clean-source provenance, actual passed cases and zero skips before
+binding evidence. A local pass with no canonical ledger row remains local
+functional evidence. Preserve any earlier provisional receipt instead of
+relabeling it as committed proof.

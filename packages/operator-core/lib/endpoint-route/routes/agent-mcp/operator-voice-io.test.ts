@@ -19,6 +19,17 @@ import { decodeWavPcm16 } from '../../../voice-node/wav';
 // unavailable provider or the controlled tests below as live synthesis proof.
 const liveFetch = globalThis.fetch;
 const liveBaseUrl = process.env.PAPERCUSP_TTS_LIVE_BASE_URL;
+function assertRealSpeechAudio(audioBase64: string) {
+  const decoded = spawnSync('ffmpeg', ['-v', 'error', '-i', 'pipe:0', '-f', 's16le', '-ac', '1', '-ar', '24000', 'pipe:1'], {
+    input: Buffer.from(audioBase64, 'base64'), timeout: 10_000, maxBuffer: 8 * 1024 * 1024,
+  });
+  expect(decoded.error, 'Audio decoder must be installed and complete').toBeUndefined();
+  expect(decoded.status, decoded.stderr.toString().slice(0, 600)).toBe(0);
+  expect(decoded.stdout.length).toBeGreaterThan(16_000);
+  let peak = 0;
+  for (let offset = 0; offset + 1 < decoded.stdout.length; offset += 2) peak = Math.max(peak, Math.abs(decoded.stdout.readInt16LE(offset)));
+  expect(peak).toBeGreaterThan(500);
+}
 it.runIf(!!liveBaseUrl)('LIVE selected available provider produces decodable non-silent original-reading audio', async ({ skip }) => {
   const base = new URL(liveBaseUrl!);
   expect(['127.0.0.1', 'localhost', '[::1]']).toContain(base.hostname);
@@ -57,16 +68,28 @@ it.runIf(!!liveBaseUrl)('LIVE selected available provider produces decodable non
     expect(chunk.engine).toBe(prefs.ttsEngine);
     // Decode both the providers' WAV and native MP3 containers, rather than
     // treating a 200, a byte count, or a canned RIFF prefix as real audio.
-    const decoded = spawnSync('ffmpeg', ['-v', 'error', '-i', 'pipe:0', '-f', 's16le', '-ac', '1', '-ar', '24000', 'pipe:1'], {
-      input: Buffer.from(chunk.audioBase64, 'base64'), timeout: 10_000, maxBuffer: 8 * 1024 * 1024,
-    });
-    expect(decoded.error, 'Audio decoder must be installed and complete').toBeUndefined();
-    expect(decoded.status, decoded.stderr.toString().slice(0, 600)).toBe(0);
-    expect(decoded.stdout.length).toBeGreaterThan(16_000);
-    let peak = 0;
-    for (let offset = 0; offset + 1 < decoded.stdout.length; offset += 2) peak = Math.max(peak, Math.abs(decoded.stdout.readInt16LE(offset)));
-    expect(peak).toBeGreaterThan(500);
+    assertRealSpeechAudio(chunk.audioBase64);
   }
+}, 90_000);
+it.runIf(!!liveBaseUrl)('LIVE configured ElevenLabs route produces decodable non-silent complete-reply audio', async ({ skip }) => {
+  const base = new URL(liveBaseUrl!);
+  expect(['127.0.0.1', 'localhost', '[::1]']).toContain(base.hostname);
+  const request = (path: string, init?: RequestInit) => liveFetch(new URL(`/api/agent-mcp/${path}`, base), {
+    ...init, signal: AbortSignal.timeout(45_000),
+  });
+  const healthResponse = await request('operator-voice-engine-health');
+  expect(healthResponse.status).toBe(200);
+  const health = await healthResponse.json();
+  if (health.elevenlabs === false) skip(`ElevenLabs is unavailable: ${health.elevenlabsError ?? 'not configured'}`);
+  expect(health.elevenlabs).toBe(true);
+  const response = await request('operator-tts', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ engine: 'elevenlabs', text: 'Public configured provider verification. Exact complete final sentence.' }),
+  });
+  expect(response.status).toBe(200);
+  const result = await response.json();
+  expect(result).toMatchObject({ ok: true, engine: 'elevenlabs' });
+  assertRealSpeechAudio(result.audioBase64);
 }, 90_000);
 
 vi.mock('../../../voice-prefs', async (importOriginal) => {

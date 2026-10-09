@@ -13,7 +13,7 @@
  */
 import { createHash, randomUUID, X509Certificate } from 'node:crypto';
 import { execFile, spawn } from 'node:child_process';
-import { closeSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { closeSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve, sep } from 'node:path';
 import { createServer } from 'node:net';
@@ -64,8 +64,8 @@ function fixtureFaq(marker: string, extra = '') {
   return `---\ntitle: Public fixture FAQ\n---\n\n## How do I check the orchard workspace?\n\nAlso asked as: How do I inspect the orchard workspace? What is the orchard recovery marker?\n\nThe orchard recovery marker is ${marker}. View the workspace status before attempting recovery.\n\n${extra}\n`;
 }
 
-async function fixtureRead(name: string, args: Record<string, unknown>, expectedError = false) {
-  const mount = buildConverseMcpMount({ hostTrust: 'public', baseUrl: baseUrl!, workspaceId,
+async function fixtureRead(name: string, args: Record<string, unknown>, expectedError = false, origin = baseUrl!) {
+  const mount = buildConverseMcpMount({ hostTrust: 'public', baseUrl: origin, workspaceId,
     tools: PUBLIC_MANUAL_TOOLS, uiClientId: null, superuserToken: '', principalToken: principalBearer ?? null });
   expect(mount).not.toBeNull();
   const url = new URL(mount!.url);
@@ -724,14 +724,16 @@ function isDisposableManualFixture(seedDir: string, roots = [tmpdir(), ...PAPERC
 }
 
 async function ownFixtureOperator(seedDir: string,
-  launch?: (root: string, port: number, logFd: number) => ReturnType<typeof spawn>) {
+  launch?: (root: string, port: number, logFd: number) => ReturnType<typeof spawn>,
+  layout: 'source' | 'standalone' = 'source') {
   const seed = realpathSync(seedDir);
   expect(isDisposableManualFixture(seed), 'Fixture seed must be disposable').toBe(true);
   // Validate before starting anything; a missing seed is not a reason to serve
   // the canonical manual and accidentally pass the public/private controls.
   await createPublicManualSource(seed).revision();
   const root = mkdtempSync(join(tmpdir(), 'public-manual-owned-host-'));
-  const contentRoot = join(root, 'apps/papercusp-docs/src/content/docs');
+  const contentRoot = join(root, layout === 'standalone'
+    ? 'public/manual-source' : 'apps/papercusp-docs/src/content/docs');
   const evidence = join(llmBatteryEvidenceRoot(), `public-manual-host-${randomUUID()}`);
   mkdirSync(evidence, { recursive: true });
   const logFile = join(evidence, 'operator.log');
@@ -1163,6 +1165,77 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
       send.mockRestore();
     }
   }, 60_000);
+
+  it.runIf(Boolean(manualFixtureDir))('retrieves the canonical standalone bundle and refreshes its mounted revision without model calls', async () => {
+    const send = vi.spyOn(chat!, 'send');
+    const repoRoot = resolve(import.meta.dirname, '../../../../..');
+    const canonical = join(repoRoot, 'apps/papercusp-docs/src/content/docs');
+    const packaged = join(repoRoot, 'apps/operator/public/manual-source');
+    const pages = readdirSync(canonical).filter(name => /\.mdx?$/.test(name)).sort();
+    expect(pages).toContain('faq.mdx');
+    expect(readdirSync(packaged).filter(name => /\.mdx?$/.test(name)).sort()).toEqual(pages);
+    for (const name of pages) expect(readFileSync(join(packaged, name))).toEqual(readFileSync(join(canonical, name)));
+    const seed = mkdtempSync(join(tmpdir(), 'public-manual-standalone-seed-'));
+    const evidenceDir = join(llmBatteryEvidenceRoot(), `standalone-manual-revision-${randomUUID()}`);
+    mkdirSync(evidenceDir, { recursive: true });
+    const observations: Record<string, unknown> = {};
+    let host: Awaited<ReturnType<typeof ownFixtureOperator>> | undefined;
+    let stage = 'prepare';
+    try {
+      cpSync(packaged, seed, { recursive: true });
+      host = await ownFixtureOperator(seed, undefined, 'standalone');
+      expect(existsSync(join(host.root, 'apps/papercusp-docs'))).toBe(false);
+      expect(host.manualDir).toBe(join(host.root, 'public/manual-source'));
+      const canonicalRevision = await createPublicManualSource(canonical).revision();
+      const readMounted = async (heading: string, query: string) => {
+        host!.assertAlive();
+        const get = await fixtureRead('docs:get', { slugs: ['faq'], heading }, false, host!.baseUrl);
+        const search = await fixtureRead('docs:search', { query }, false, host!.baseUrl);
+        expect(get.surface).toBe('public');
+        expect(search.surface).toBe('public');
+        expect(get.revision).toBe(await createPublicManualSource(host!.manualDir).revision());
+        expect(search.revision).toBe(get.revision);
+        expect(search.hits).toEqual(expect.arrayContaining([expect.objectContaining({ slug: 'faq' })]));
+        return { get, search };
+      };
+      stage = 'canonical';
+      const before = await readMounted('What is a workspace?', 'What is a workspace?');
+      observations.before = before;
+      expect(before.get.revision).toBe(canonicalRevision);
+      expect(JSON.stringify(before.get)).toContain('What is a workspace?');
+      observations.unchanged = await readMounted('What is a workspace?', 'What is a workspace?');
+      stage = 'changed';
+      const faqPath = join(host.manualDir, 'faq.mdx');
+      const original = readFileSync(faqPath, 'utf8');
+      const update = (marker: string) => writeFileSync(faqPath,
+        `${original}\n\n## Standalone revision control\n\nThe standalone revision marker is ${marker}.\n`);
+      update('STANDALONE-RED-5831');
+      const changed = await readMounted('Standalone revision control', 'standalone revision marker');
+      observations.changed = changed;
+      expect(changed.get.revision).not.toBe(before.get.revision);
+      expect(JSON.stringify(changed)).toContain('STANDALONE-RED-5831');
+      update('STANDALONE-BLUE-9274');
+      const refreshed = await readMounted('Standalone revision control', 'standalone revision marker');
+      observations.refreshed = refreshed;
+      expect(refreshed.get.revision).not.toBe(changed.get.revision);
+      for (const result of [refreshed.get, refreshed.search]) {
+        expect(JSON.stringify(result)).toContain('STANDALONE-BLUE-9274');
+        expect(JSON.stringify(result)).not.toContain('STANDALONE-RED-5831');
+      }
+      stage = 'passed';
+    } finally {
+      const ownedRoot = host?.root;
+      await host?.close();
+      rmSync(seed, { recursive: true, force: true });
+      writeFileSync(join(evidenceDir, 'case.json'), JSON.stringify({
+        id: 'standalone-manual-revision', stage, runtimeBuild, observedAt: new Date().toISOString(),
+        modelSendCount: send.mock.calls.length, pages, observations,
+        ownedRootRemoved: ownedRoot ? !existsSync(ownedRoot) : null,
+      }, null, 2));
+      expect(send).not.toHaveBeenCalled();
+      send.mockRestore();
+    }
+  }, 90_000);
 
   const actualPortalAcceptance = async (mismatchedOrigin: boolean, preflightOnly = false, canonicalQuestion?: string) => {
     // Explicit roots prevent this acceptance case from silently testing a mutable

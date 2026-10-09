@@ -6,6 +6,7 @@
  * unconditionally, or settles on a self-audit, fails one of them in each direction.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { scorecardRatingEntrySchema } from './evaluate';
 
 const getRubric = vi.fn();
 const getRubricEvidenceIdentity = vi.fn();
@@ -1152,6 +1153,12 @@ describe('scorecards:emit grading audit path (P-013)', () => {
     );
 
     expect(res).toMatchObject({ ok: false, code: 'grading_audit_replay_consistent' });
+    expect(scorecardRatingEntrySchema.shape.evidenceKind.description).toContain('both fields are required');
+    expect(scorecardRatingEntrySchema.shape.evidenceRef.description).toContain('selection membership');
+    expect((res as { error?: string }).error).toContain("ratings['degenerate-distribution'].evidenceKind");
+    expect((res as { error?: string }).error).toContain("ratings['degenerate-distribution'].evidenceRef");
+    expect((res as { error?: string }).error).toContain('outside the replay selection');
+    expect((res as { error?: string }).error).toContain('does not parse it to establish selection membership');
     expect(captureImprovement).not.toHaveBeenCalled();
     expect(recordGradingAudit).not.toHaveBeenCalled();
   });

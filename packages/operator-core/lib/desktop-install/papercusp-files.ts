@@ -710,37 +710,9 @@ async function writeSplicedPlaybook(baseSrc: string, dst: string): Promise<boole
   return true;
 }
 
-/**
- * Resolve the operator app root from the directory containing this module.
- *
- * The source module lives below `packages/operator-core`, while an esbuild
- * bundle collapses the module directory to `sidecar/` and the dist-host build
- * puts it below `apps/operator/`. A fixed number of `..` hops therefore cannot
- * describe all three layouts. Walk upward and accept either an existing
- * `<ancestor>/apps/operator` (source/package sidecar) or an ancestor already
- * named `apps/operator` (dist-host/source app). The artifact check makes the
- * source and packaged choices self-validating instead of cwd-dependent.
- */
-export function resolveOperatorAppRootFromModuleDir(moduleDir: string): string {
-  const originalDir = path.resolve(moduleDir);
-  let dir = originalDir;
-  while (true) {
-    if (path.basename(dir) === 'operator' && path.basename(path.dirname(dir)) === 'apps') {
-      return dir;
-    }
-
-    const packagedAppRoot = path.join(dir, 'apps', 'operator');
-    if (existsSync(packagedAppRoot)) return packagedAppRoot;
-
-    const parent = path.dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
-
-  // Preserve the old best-effort fallback for an incomplete/unpacked runtime;
-  // the candidate lists still provide their cwd and legacy-layout fallbacks.
-  return path.resolve(originalDir, '..', '..');
-}
+// Lifted to ../operator-app-root (WI-10007644) so non-desktop modules can resolve
+// apps/operator paths in bundle and source alike; re-exported for existing callers.
+export { resolveOperatorAppRootFromModuleDir };
 
 function resolveOperatorAppRoot(): string {
   // ESM-safe: use fileURLToPath(import.meta.url) for the module path, with
