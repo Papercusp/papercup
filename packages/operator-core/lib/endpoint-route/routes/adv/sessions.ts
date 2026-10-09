@@ -614,7 +614,7 @@ const closeWindow = defineTool({
   auth: 'loopback',
   async handler(req, ctx) {
     const parsed = await parseJsonBody(req);
-    if ('ownerId' in parsed || 'managedSessionId' in parsed) {
+    if ('ownerId' in parsed || 'managedSessionId' in parsed || req.headers.has('x-papercusp-hosted-user-id')) {
       const csrf = requireAllowedOriginOr403(req);
       if (csrf) return csrf;
       const { activeWorkspaceId } = await import('../../../workspace-registry');
