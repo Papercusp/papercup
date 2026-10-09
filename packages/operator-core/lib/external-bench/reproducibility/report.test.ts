@@ -12,7 +12,7 @@ const result = (over: Partial<TaskRunResult> = {}): TaskRunResult => ({
   runId: 'assigned-run', suite: 'swe-bench-pro', taskId: 'a', arm: 'papercusp', seed: 0,
   modality: 'diff', resolved: true, graderStatus: 'passed', graderFamily: 'official', graderVersion: 'pinned',
   generationStatus: 'completed', tokensIn: 1, tokensOut: 1, tokensTotal: 2, costUsd: 0.1,
-  priceTableVersion: 'price-table-v1', wallClockMs: 10, turns: 1, modelId: 'claude-opus-4-8',
+  priceTableVersion: 'price-table-v1', wallClockMs: 10, turns: 1, capped: false, modelId: 'claude-opus-4-8',
   harnessVersion: 'current', preregHash: 'frozen-hash', rolloutId: 'r', createdAt: '2026-10-09T00:00:01Z', ...over,
 });
 
