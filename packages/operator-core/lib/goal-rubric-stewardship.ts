@@ -219,14 +219,16 @@ export async function readGoalRubricStewardship(
          AND feature_id = ANY(${baselineIds}) AND created_ts <= ${now}` : [];
     const ids = [...new Set([...page, ...earlier].map(r => r.id))];
     // Reuse the canonical reader: it resolves rubric/audit currentness and retractions.
-    const [{ listScorecards, settledGradingAuditIsCurrent }, { getRubric }, { isSufficientEvidence }, { getWorkItemsByIds }] = await Promise.all([
+    const [{ listScorecards, settledGradingAuditIsCurrent }, { getRubricWithoutSeeding }, { isSufficientEvidence }, { getWorkItemsByIds }] = await Promise.all([
       import('./scorecards'), import('./rubrics'), import('./work-item-completion-authority'), import('./work-items'),
     ]);
     const [stored, rubric] = await Promise.all([
       ids.length ? listScorecards({ issueIds: ids, includeSuperseded: true, limit: PAGE_SIZE * 2 }) : Promise.resolve([]),
-      getRubric(WOE_RUBRIC),
+      // Missing rubrics stay unmeasured. A GUI read must not start the broad
+      // library fallback's first-party seed writes in a cold real process.
+      getRubricWithoutSeeding(WOE_RUBRIC),
     ]);
-    const rubrics = new Map(await Promise.all([...new Set(stored.map(c => c.rubricRef))].map(async ref => [ref, await getRubric(ref)] as const)));
+    const rubrics = new Map(await Promise.all([...new Set(stored.map(c => c.rubricRef))].map(async ref => [ref, await getRubricWithoutSeeding(ref)] as const)));
     const cards: StewardshipCard[] = stored.filter(c => ids.includes(c.issueId)).map(c => ({ ...c,
       settled: c.rubricResolved && c.missingKeys.length === 0 && !c.provisional && !c.synthesized &&
         !c.retracted && !c.supersededBy && !!c.gradingAudit && settledGradingAuditIsCurrent(c),

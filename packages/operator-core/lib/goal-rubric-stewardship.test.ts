@@ -1,5 +1,66 @@
-import { describe, expect, it } from 'vitest';
-import { classifyStewardshipCycle, renderGoalRubricStewardshipBrief, type GoalRubricStewardship, type StewardshipCard, type StewardshipRepair } from './goal-rubric-stewardship';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { Sql } from 'postgres';
+import { classifyStewardshipCycle, readGoalRubricStewardship, renderGoalRubricStewardshipBrief, type GoalRubricStewardship, type StewardshipCard, type StewardshipRepair } from './goal-rubric-stewardship';
+
+const readers = vi.hoisted(() => ({
+  rubric: vi.fn(), seedableRubric: vi.fn(), cards: vi.fn(),
+}));
+vi.mock('./rubrics', () => ({
+  getRubricWithoutSeeding: readers.rubric,
+  getRubric: readers.seedableRubric,
+}));
+vi.mock('./scorecards', () => ({
+  listScorecards: readers.cards,
+  settledGradingAuditIsCurrent: () => true,
+}));
+vi.mock('./work-item-completion-authority', () => ({ isSufficientEvidence: () => true }));
+vi.mock('./work-items', () => ({ getWorkItemsByIds: async () => [] }));
+vi.mock('./acceptance-author-identity', () => ({ acceptanceLineageClosure: async () => new Set() }));
+
+describe('goal rubric stewardship read-only lookup', () => {
+  beforeEach(() => {
+    readers.rubric.mockReset().mockResolvedValue(null);
+    readers.cards.mockReset().mockResolvedValue([]);
+    // In a real cold process, getRubric's missing-row fallback seeds first-party
+    // plans. A GUI evidence read must not enter that write path or wait for it.
+    readers.seedableRubric.mockReset().mockImplementation(async () => {
+      throw new Error('Seedable rubric lookup reached from a read-only goal query');
+    });
+  });
+
+  it('leaves an absent rubric unmeasured without starting the seedable library read', async () => {
+    const sql = vi.fn().mockResolvedValue([]) as unknown as Sql;
+    const result = await readGoalRubricStewardship({ workspaceId: 'isolated', goalId: 'empty-goal' }, { sql });
+
+    expect(result.error).toBeNull();
+    expect(result.rubricRevision).toBeNull();
+    expect(result.cycles).toEqual([]);
+    expect(readers.rubric).toHaveBeenCalledWith('work-on-everything-stewardship-health');
+    expect(readers.seedableRubric).not.toHaveBeenCalled();
+  });
+
+  it('retains the existing rubric revision through the same read-only lookup', async () => {
+    readers.rubric.mockResolvedValue({ revision: 47 });
+    const sql = vi.fn().mockResolvedValue([]) as unknown as Sql;
+    const result = await readGoalRubricStewardship({ workspaceId: 'isolated', goalId: 'empty-goal' }, { sql });
+
+    expect(result.error).toBeNull();
+    expect(result.rubricRevision).toBe(47);
+    expect(readers.seedableRubric).not.toHaveBeenCalled();
+  });
+
+  it('also resolves referenced scorecard rubrics without entering the seedable fallback', async () => {
+    readers.cards.mockResolvedValue([baseline()]);
+    const sql = vi.fn().mockResolvedValueOnce([{ id: 'EI-1', baseline: null }])
+      .mockResolvedValue([]) as unknown as Sql;
+    const result = await readGoalRubricStewardship({ workspaceId: 'isolated', goalId: 'goal-with-card' }, { sql });
+
+    expect(result.error).toBeNull();
+    expect(result.cycles).toHaveLength(1);
+    expect(readers.rubric).toHaveBeenCalledWith('quality');
+    expect(readers.seedableRubric).not.toHaveBeenCalled();
+  });
+});
 
 const baseline = (): StewardshipCard => ({ issueId: 'EI-1', createdAt: '2026-10-09T10:00:00Z', createdBy: 'grader',
   rubricRef: 'quality', rubricRevision: 4, criteriaHash: 'same-criteria', subject: { kind: 'pot', ref: 'target' },
