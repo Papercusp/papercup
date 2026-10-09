@@ -28,6 +28,7 @@ import {
 import type { SpecClauseRevision } from './agent-tools/plans/spec-clauses-store';
 import type { ScorecardRow } from './scorecards';
 import { evaluateAcceptanceBarLifecycle } from './acceptance-bar-lifecycle-evaluator';
+import { evaluateSpecTestAdequacy } from './agent-tools/plans/spec-test-adequacy';
 import {
   BAR_READINESS_NOW_MARK,
   reevaluateBarReadinessOnScopeWrite,
@@ -705,6 +706,21 @@ describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
   });
   it('projects exact source revisions, per-BAR trace, authoritative grading, and one content hash', () => {
     const input = provedFixture();
+    const adequacy = evaluateSpecTestAdequacy({
+      clause: input.clauses.rows[0]!,
+      evidence: input.evidence.rows,
+      classRef: 'plan-class-feature-ship',
+      harness: 'papercusp',
+    });
+    expect(adequacy).toMatchObject({
+      requiredProofFloor: 'l3',
+      verdict: 'pass',
+      wouldBlock: [],
+      ratings: {
+        falsifiability: { rating: 'pass' },
+        'execution-integrity': { rating: 'pass' },
+      },
+    });
     const coverageRows = input.evidence.rows.filter((row) => row.evidenceKind === 'coverage-census');
     expect(coverageRows).toEqual(expect.arrayContaining(input.clauses.rows.map((clause) =>
       expect.objectContaining({
@@ -712,6 +728,26 @@ describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
         coverageEvidenceRef: expect.any(Number),
         details: expect.objectContaining({
           adequacy: expect.objectContaining({ targeted: clause.specId, coverageRungs: { l3: true } }),
+        }),
+      }),
+    )));
+    const counterexampleRows = input.evidence.rows.filter((row) => row.evidenceKind === 'counterexample');
+    expect(counterexampleRows).toEqual(expect.arrayContaining(input.clauses.rows.map((clause, index) =>
+      expect.objectContaining({
+        specId: clause.specId,
+        testRunExecution: expect.objectContaining({
+          status: 'fail', passed: 0, failed: 1, collectionFailed: false,
+        }),
+        testRunProvenance: expect.objectContaining({
+          source: 'mutation-probe',
+          mutationPhase: 'mutant',
+          mutationFailedCaseTitles: ['bar-proof-case-' + (index + 1)],
+          mutationFailureLines: [
+            'bar-proof-case-' + (index + 1) + ': the pre-fix behavior violates the expected outcome',
+          ],
+        }),
+        details: expect.objectContaining({
+          adequacy: expect.objectContaining({ targeted: clause.specId, outcome: 'killed' }),
         }),
       }),
     )));
@@ -749,7 +785,7 @@ describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
     expect(snapshot.bars[0]).toMatchObject({
       barKey: 'R-1',
       readiness: { state: 'ready', mapping: 'live', method: 'declared', workContract: 'current' },
-      proof: { state: 'current', currentEvidence: 2 },
+      proof: { state: 'current', currentEvidence: 3 },
       grading: { state: 'pass', scorecardId: 'SC-GRADE', rating: 'healthy' },
     });
   });
@@ -1102,10 +1138,19 @@ describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
   ])('refuses %s proof even when the independent rating claims success', (_name, patch) => {
     const input = provedFixture(1);
     input.evidence.rows.forEach((row) => {
+      if (_name === 'skipped' && row.evidenceKind !== 'test') return;
       row.details.adequacy = { ...(row.details.adequacy as object), ...patch };
+      if (_name === 'skipped' && row.testRunExecution) {
+        // A binder's skipped bit is not canonical evidence. Measure the skip on
+        // test_runs and leave the declared case unaccounted for in passed titles.
+        row.testRunExecution = { ...row.testRunExecution, skipped: 1, passedCaseTitles: [] };
+      }
     });
     const snapshot = projectAcceptanceBarContractSnapshot(input);
     expect(snapshot.bars[0]!.grading.state).toBe('pass');
+    if (_name === 'skipped') {
+      expect(snapshot.bars[0]!.proof.adequacy?.checks[0]?.wouldBlock).toContain('execution-integrity');
+    }
     expect(evaluateAcceptanceBarLifecycle(snapshot, 'ship').codes).toContain('bar_snapshot_proof_inadequate');
   });
 
@@ -1150,7 +1195,13 @@ describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
         return [pending, ...(result === 'pending' ? [] : [{ ...pending, id: n * 10 + 1, testRunId: n,
           details: { ...pending.details, evidencePlane: 'tree',
             testExecution: { ...pending.details.testExecution, phase: 'settled' },
-            adequacy: { ...(base.details.adequacy as object), outcome: result } } }])];
+            adequacy: { ...(base.details.adequacy as object), outcome: result } },
+          testRunExecution: result === 'failed'
+            ? { ...base.testRunExecution!, status: 'fail', passed: 0, failed: 1 }
+            : result === 'unknown'
+              ? null
+              : base.testRunExecution,
+        }])];
       };
       const old = makeAttempt(1, outcome === 'pass' ? 'unknown' : 'pass');
       const fresh = makeAttempt(2, outcome === 'stale' ? 'pass' : outcome);
