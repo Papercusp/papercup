@@ -503,6 +503,7 @@ async function evictWorkspaceQuota(
   let entryBytesAtStart = entry.bytes;
   let runs: Array<{ dir: string; mtimeMs: number }> | null = null;
   let cacheChanged = false;
+  let newlyDiscoveredRunBytes = 0;
   // Keep a full-walk index for background refreshes and for the conservative fallback when no
   // stable per-run measurement exists. Request-time recovery uses the stable index instead.
   const runBytesByPath = new Map<string, number>();
@@ -514,17 +515,59 @@ async function evictWorkspaceQuota(
       diagnostics.runListingMs += Math.max(0, performance.now() - runListingStartedAt);
       diagnostics.runsListed += runs.length;
     }
-    if (!entry.runBytesValid || entry.refreshDeferred || runs.some((run) => !entry.runBytesByPath.has(run.dir))) {
+    if (!entry.runBytesValid || entry.refreshDeferred) {
       // A synchronous reservation may have invalidated the index while the directory listing
-      // yielded, or another process may have added an unindexed run. Fall back to a complete
-      // measurement and refresh the candidate listing later.
+      // yielded. Without a complete stable index, keep the conservative full measurement.
       useCachedRunSizes = false;
       runs = null;
+    } else {
+      const unindexedRuns = runs.filter((run) => !entry.runBytesByPath.has(run.dir));
+      if (unindexedRuns.length > 0) {
+        const measuredRuns = new Map<string, number>();
+        let canMeasureIncrementally = true;
+        for (const run of unindexedRuns) {
+          let stats;
+          try {
+            stats = await measureScratchQuotaRecoveryOperation(
+              diagnostics,
+              'stat',
+              () => lstatAsync(run.dir),
+            );
+          } catch {
+            canMeasureIncrementally = false;
+            break;
+          }
+          // The full workspace walk counts a run-directory symlink as one entry and does not
+          // traverse its target. Preserve that conservative behavior for any newly discovered
+          // symlink or path that changed type while the listing yielded.
+          if (stats.isSymbolicLink() || !stats.isDirectory()) {
+            canMeasureIncrementally = false;
+            break;
+          }
+          measuredRuns.set(
+            run.dir,
+            await sizeOfDirAsync(run.dir, undefined, undefined, 0, undefined, diagnostics),
+          );
+        }
+        if (!canMeasureIncrementally || !entry.runBytesValid || entry.refreshDeferred) {
+          // If the index changed during incremental sizing, discard the partial measurements and
+          // rebuild from the workspace root. This also handles unreadable or vanished new paths.
+          useCachedRunSizes = false;
+          runs = null;
+        } else {
+          for (const [runDir, bytes] of measuredRuns) {
+            entry.runBytesByPath.set(runDir, bytes);
+            newlyDiscoveredRunBytes += bytes;
+          }
+          // Cross-process growth changed the index. Re-measure it after this recovery settles.
+          cacheChanged = true;
+        }
+      }
     }
   }
   if (useCachedRunSizes && runs) {
     const liveRuns = new Set(runs.map((run) => run.dir));
-    used = entry.bytes;
+    used = entry.bytes + newlyDiscoveredRunBytes;
     entryBytesAtStart = entry.bytes;
     for (const [runDir, cachedBytes] of entry.runBytesByPath) {
       if (liveRuns.has(runDir)) continue;

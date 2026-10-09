@@ -1132,7 +1132,7 @@ describe('deferred scratch quota recovery', () => {
     await refreshScratchUsage('ws-Q');
   });
 
-  it('falls back to a complete measurement when another process adds an unindexed run', async () => {
+  it('sizes a newly discovered run incrementally when another process adds an unindexed run', async () => {
     const removedRunBytes = 4 * 1024 ** 3;
     const removedRun = makeSparseRun('ws-Q', UUID(1), removedRunBytes, 10_000);
     const writerRun = makeRunDir('ws-Q', 'quota', UUID(3), 32);
@@ -1142,6 +1142,7 @@ describe('deferred scratch quota recovery', () => {
     await rmAsync(removedRun, { recursive: true, force: true });
     const externalRun = makeSparseRun('ws-Q', UUID(2), WORKSPACE_QUOTA_BYTES + 512 * 1024 ** 2, 20_000);
     vi.mocked(rmAsync).mockClear();
+    vi.mocked(readdirAsync).mockClear();
 
     const timings: ScratchWriteTimings[] = [];
     const writePath = join(writerRun, 'after-external-growth.bin');
@@ -1152,7 +1153,36 @@ describe('deferred scratch quota recovery', () => {
 
     expect(existsSync(externalRun)).toBe(false);
     expect(existsSync(writerRun)).toBe(true);
+    expect(timings[0]?.quotaRecoveryDiagnostics).toMatchObject({
+      sizeWalkMs: 0, runsListed: 2, runsConsidered: 1, deleteAttempts: 1,
+    });
+    const sizeWalkDirectories = vi.mocked(readdirAsync).mock.calls
+      .filter(([, options]) => options != null && typeof options === 'object' && 'withFileTypes' in options)
+      .map(([path]) => String(path));
+    expect(sizeWalkDirectories).toContain(externalRun);
+    await refreshScratchUsage('ws-Q');
+  });
+
+  it('keeps the complete workspace measurement when the per-run index is invalid', async () => {
+    const retainedRun = makeSparseRun('ws-Q', UUID(1), 2 * 1024 ** 3, 10_000);
+    const writerRun = makeRunDir('ws-Q', 'quota', UUID(2), 32);
+    await refreshScratchUsage('ws-Q');
+    _setScratchUsageForTests('ws-Q', WORKSPACE_QUOTA_BYTES + 1024, Date.now());
+    vi.mocked(readdirAsync).mockClear();
+
+    const timings: ScratchWriteTimings[] = [];
+    const writePath = join(writerRun, 'after-invalid-index.bin');
+    await writeWithScratchQuota({
+      workspaceId: 'ws-Q', filePath: writePath, bytes: 64,
+      onTiming: (row) => timings.push(row),
+    }, () => writeFile(writePath, Buffer.alloc(64)));
+
+    expect(existsSync(retainedRun)).toBe(true);
     expect(timings[0]?.quotaRecoveryDiagnostics?.sizeWalkMs).toBeGreaterThan(0);
+    const sizeWalkDirectories = vi.mocked(readdirAsync).mock.calls
+      .filter(([, options]) => options != null && typeof options === 'object' && 'withFileTypes' in options)
+      .map(([path]) => String(path));
+    expect(sizeWalkDirectories).toContain(scratchRootForWorkspace('ws-Q'));
     await refreshScratchUsage('ws-Q');
   });
 
