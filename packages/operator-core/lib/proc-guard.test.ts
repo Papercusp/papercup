@@ -745,6 +745,37 @@ describe('managed test cgroup containment', () => {
     expect(escaped.status).not.toBe(0);
     expect(escaped.stderr).toContain('escaped');
   });
+
+  it.skipIf(process.platform !== 'linux')('keeps the preload lifetime independent of runner-policy fixtures and mutable environment', () => {
+    fixtureRoot = mkdtempSync(join(tmpdir(), 'managed-cgroup-preload-'));
+    const cgroupPath = parseCgroupPath(readFileSync('/proc/self/cgroup', 'utf8'));
+    const evidencePath = join(fixtureRoot, 'observations.jsonl');
+    const preload = fileURLToPath(new URL('../../../scripts/lib/managed-test-cgroup-preload.mjs', import.meta.url));
+    const context = { runGroup: 'real-calibration', deadlineEpochMs: Date.now() + 60_000, cgroupPath, evidencePath };
+    const childEnv = {
+      ...process.env,
+      PAPERCUSP_TEST_CGROUP_CONTEXT: JSON.stringify(context),
+      PAPERCUSP_TASK_DEADLINE_EPOCH_MS: '1',
+      PAPERCUSP_TEST_RUN_GROUP: '',
+      PAPERCUSP_EXPECTED_TEST_CGROUP: '/fixture-controlled',
+    };
+    const command = "process.env.PAPERCUSP_TEST_CGROUP_CONTEXT = '{}'; console.log('fixture reached');";
+    const run = (pins: typeof context) => spawnSync(process.execPath, ['--import', preload, '-e', command], {
+      env: { ...childEnv, PAPERCUSP_TEST_CGROUP_CONTEXT: JSON.stringify(pins) }, encoding: 'utf8',
+    });
+    const contained = run(context);
+    expect(contained.status, contained.stderr).toBe(0);
+    expect(contained.stdout).toContain('fixture reached');
+    const observations = readFileSync(evidencePath, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    expect(observations.map(row => row.phase)).toEqual(['preload', 'exit']);
+    for (const row of observations) expect(row).toMatchObject({ cgroupPath, runGroup: context.runGroup, deadlineEpochMs: context.deadlineEpochMs });
+    for (const pins of [{ ...context, deadlineEpochMs: 1 }, { ...context, cgroupPath: cgroupPath + '-sibling' }]) {
+      const refused = run(pins);
+      expect(refused.status).not.toBe(0);
+      expect(refused.stdout).not.toContain('fixture reached');
+      expect(refused.stderr).toContain('PAPERCUSP_TEST_CGROUP_CONTAINMENT');
+    }
+  });
 });
 
 describe('proc-guard --busy: cgroup CPU sampling', () => {
