@@ -246,6 +246,56 @@ vh_finish
     expect(readFileSync(path.join(root, 'latest', 'phases', 'setup', 'out.txt'), 'utf8')).toBe('seeded\n');
   });
 
+  it('keeps a failed bracketed command step, stdout, stderr, and result in phase evidence', () => {
+    const root = tmp();
+    const file = path.join(root, 'capture.sh');
+    writeFileSync(file, `
+set -u
+source ${JSON.stringify(vh)}
+vh_phase prepare ""
+vh_init shell-capture ${JSON.stringify(root)} || exit 2
+vh_begin prepare
+trap 'rc=$?; vh_capture_phase_stop; vh_exit "$rc"' EXIT
+vh_capture_phase_start
+rc=0
+vh_run_step source-snapshot bash -c 'printf "stdout evidence\\n"; printf "stderr evidence\\n" >&2; exit 7' || rc=$?
+exit "$rc"
+`);
+
+    let stdout = '';
+    let stderr = '';
+    let code = 0;
+    try {
+      stdout = execFileSync('bash', [file], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    } catch (err) {
+      const e = err as { status: number; stdout: string; stderr: string };
+      code = e.status;
+      stdout = e.stdout;
+      stderr = e.stderr;
+    }
+
+    expect(code).toBe(7);
+    expect(stdout).toContain('stdout evidence');
+    expect(stdout + stderr).toContain('stderr evidence');
+    const commandDir = path.join(root, 'latest', 'phases', 'prepare', 'commands');
+    expect(readFileSync(path.join(commandDir, 'source-snapshot.stdout.log'), 'utf8')).toBe('stdout evidence\n');
+    expect(readFileSync(path.join(commandDir, 'source-snapshot.stderr.log'), 'utf8')).toBe('stderr evidence\n');
+    expect(JSON.parse(readFileSync(path.join(commandDir, 'source-snapshot.result.json'), 'utf8'))).toEqual({
+      step: 'source-snapshot',
+      exitCode: 7,
+    });
+    const result = JSON.parse(readFileSync(path.join(root, 'latest', 'result.json'), 'utf8'));
+    expect(result.phases).toContainEqual(expect.objectContaining({
+      phase: 'prepare',
+      status: 'failed',
+      step: 'source-snapshot',
+      reasonCode: 'exit-7',
+    }));
+    expect(readFileSync(path.join(root, 'latest', 'phases', 'prepare', 'command-output.log'), 'utf8')).toContain(
+      'VH_COMMAND_RESULT phase=prepare step=source-snapshot exit=7',
+    );
+  });
+
   it('--only with --reuse latest reuses setup and skips unselected phases', () => {
     const root = tmp();
     const file = path.join(root, 'h.sh');
@@ -282,7 +332,10 @@ vh_finish
         `vh_init twice ${JSON.stringify(ev)} || exit 3\necho "SECOND=$VH_RUN_DIR"\nvh_run only false\n`,
     );
     const out = execFileSync('bash', [file], { encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } });
-    const runs = readdirSync(ev).filter((n) => n !== 'latest' && !n.endsWith('.json')).sort();
+    const runs = readdirSync(ev, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && /^\d{8}T\d{6}Z-\d+(\.\d+)?$/.test(entry.name))
+      .map((entry) => entry.name)
+      .sort();
     expect(runs).toHaveLength(2);
     expect(runs[1]).toBe(`${runs[0]}.1`);
     expect(out).toContain(`SECOND=${path.join(ev, runs[1]!)}`);
@@ -301,5 +354,33 @@ vh_finish
     let out = '';
     try { out = execFileSync('bash', [file], { encoding: 'utf8' }); } catch (err) { out = (err as { stdout: string }).stdout; }
     expect(out).toMatch(/verdict=fail .*first_failure=b\/-\/not-reported/);
+  });
+});
+
+describe('verify-tauri-headless prepare diagnostics', () => {
+  it('captures the prepare phase and names its major fallible stages before boot', () => {
+    const verifier = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../../../../scripts/verify-tauri-headless.sh');
+    const source = readFileSync(verifier, 'utf8');
+    const prepareStart = source.indexOf('vh_begin prepare');
+    const bootStart = source.indexOf('vh_begin boot', prepareStart);
+    expect(prepareStart).toBeGreaterThanOrEqual(0);
+    expect(bootStart).toBeGreaterThan(prepareStart);
+    const prepare = source.slice(prepareStart, bootStart);
+    expect(prepare).toContain('vh_capture_phase_start');
+    expect(prepare).toContain('vh_capture_phase_stop');
+    for (const step of [
+      'shared-schema-readiness',
+      'verifier-snapshot-root',
+      'operator-source-snapshot',
+      'verifier-host-bundle',
+      'verifier-host-import-smoke',
+      'assertion-input-manifest',
+      'assertion-script-snapshot',
+      'verifier-bridge-ownership',
+      'freshness-check-script',
+    ]) {
+      expect(prepare).toContain(`vh_run_step ${step}`);
+    }
+    expect(prepare).toContain('vh_step isolated-database-prepare');
   });
 });
