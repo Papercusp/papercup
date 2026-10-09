@@ -139,6 +139,26 @@ export async function runJudgeGitEvidence(
   args: GitEvidenceArgs,
   options: GitEvidenceOptions,
 ): Promise<GitEvidenceResult> {
+  try {
+    return await runJudgeGitEvidenceInner(args, options);
+  } catch (error) {
+    if (!options.signal.aborted) throw error;
+    const message = error instanceof Error ? error.message : String(error);
+    const detail = message.startsWith('git_command_interrupted: ')
+      ? message.slice('git_command_interrupted: '.length)
+      : message;
+    return {
+      ok: false,
+      reason: 'git_command_interrupted',
+      message: detail.slice(0, 300) || 'A Git command was aborted before returning a result',
+    };
+  }
+}
+
+async function runJudgeGitEvidenceInner(
+  args: GitEvidenceArgs,
+  options: GitEvidenceOptions,
+): Promise<GitEvidenceResult> {
   let repositoryDir = options.repositoryDir;
   if (args.op === 'readFileAtCommit' && args.rootHarnessSlug !== undefined) {
     if (!options.workspaceId || options.workspaceId === '*') {
@@ -152,14 +172,23 @@ export async function runJudgeGitEvidence(
     repositoryDir = registeredRoot;
   }
   const runner = options.runner ?? runGit;
-  const invoke = (argv: string[]) => runner(
-    argv,
-    repositoryDir,
-    options.stateDir,
-    options.signal,
-    options.sandboxEnabled,
-    options.sandboxRequired,
-  );
+  const invoke = async (argv: string[]) => {
+    const result = await runner(
+      argv,
+      repositoryDir,
+      options.stateDir,
+      options.signal,
+      options.sandboxEnabled,
+      options.sandboxRequired,
+    );
+    if (options.signal.aborted && result.code === null) {
+      const message = result.output.slice(0, 300);
+      throw new Error(
+        `git_command_interrupted: ${message || `git ${argv.join(' ')} was aborted before returning a result`}`,
+      );
+    }
+    return result;
+  };
 
   const top = await invoke(['rev-parse', '--show-toplevel']);
   if (top.code !== 0) {
@@ -228,7 +257,8 @@ export async function runJudgeGitEvidence(
   }
 
   const contentResult = await invoke(['cat-file', 'blob', object]);
-  if (contentResult.code !== 0) return { ok: false, reason: 'file_read_failed', message: contentResult.output.slice(0, 300) };
+  if (contentResult.code !== 0)
+    return { ok: false, reason: 'file_read_failed', message: contentResult.output.slice(0, 300) };
   const contentBytes = Buffer.from(contentResult.output, 'utf8');
   if (contentBytes.length !== size) return { ok: false, reason: 'file_is_not_valid_utf8' };
   if (size <= MAX_GIT_EVIDENCE_INLINE_BYTES && args.byte_offset === undefined) {
@@ -238,7 +268,11 @@ export async function runJudgeGitEvidence(
   const requestedLimit = args.byte_limit ?? MAX_GIT_EVIDENCE_PAGE_BYTES;
   const pageLimit = doorSafeGitEvidencePageBytes(commitSha, args.path, requestedLimit, args.rootHarnessSlug);
   if (pageLimit <= 0) {
-    return { ok: false, reason: 'path_too_long_for_byte_page', message: 'The commit and path leave no room for a byte page in the result budget.' };
+    return {
+      ok: false,
+      reason: 'path_too_long_for_byte_page',
+      message: 'The commit and path leave no room for a byte page in the result budget.',
+    };
   }
   const byteOffset = Math.min(args.byte_offset ?? 0, size);
   const page = contentBytes.subarray(byteOffset, Math.min(byteOffset + pageLimit, size));
@@ -254,19 +288,20 @@ export async function runJudgeGitEvidence(
     total_bytes: size,
     eof: nextOffset >= size,
     data: page.toString('base64'),
-    next_cursor: nextOffset < size
-      ? {
-          tool: 'capability:git-evidence',
-          args: {
-            op: 'readFileAtCommit',
-            commitSha,
-            path: args.path,
-            ...(args.rootHarnessSlug ? { rootHarnessSlug: args.rootHarnessSlug } : {}),
-            byte_offset: nextOffset,
-            byte_limit: pageLimit,
-          },
-        }
-      : null,
+    next_cursor:
+      nextOffset < size
+        ? {
+            tool: 'capability:git-evidence',
+            args: {
+              op: 'readFileAtCommit',
+              commitSha,
+              path: args.path,
+              ...(args.rootHarnessSlug ? { rootHarnessSlug: args.rootHarnessSlug } : {}),
+              byte_offset: nextOffset,
+              byte_limit: pageLimit,
+            },
+          }
+        : null,
   };
 }
 
