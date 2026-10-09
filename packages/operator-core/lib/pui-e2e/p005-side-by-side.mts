@@ -30,6 +30,7 @@ import {
   taskAnsweredAfterPrompt,
   preflightStockCliArgs,
   reviewBlockingReason,
+  TEST_RUN_EXPECTATION,
 } from './p005-codex-readiness.js';
 import {
   chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync,
@@ -447,7 +448,7 @@ async function runP005() {
     frame('03-edit.FILE_ASSERTION_FAILED');
     throw new Error(`${cliName} did not write the requested optional third argument to calc.js`);
   }
-  await task('04-run-tests', 'Run the tests with npm test and tell me whether they pass.', 240_000, /npm test passed|2 tests? passed|# pass\s+2\b/i);
+  await task('04-run-tests', 'Run the tests with npm test and tell me whether they pass.', 240_000, TEST_RUN_EXPECTATION);
   writeFileSync(path.join(out, 'scrollback-before-exit.txt'), scrollback());
   await send(cli.exit);
   const t = Date.now();

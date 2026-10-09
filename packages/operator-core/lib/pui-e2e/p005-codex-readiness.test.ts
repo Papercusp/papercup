@@ -11,6 +11,7 @@ import {
   p005PuiLaunchArgs,
   preflightStockCliArgs,
   reviewBlockingReason,
+  TEST_RUN_EXPECTATION,
 } from './p005-codex-readiness.js';
 
 describe('P-005 review preflight', () => {
@@ -39,6 +40,16 @@ describe('P-005 review preflight', () => {
     expect(reviewBlockingReason('API Error 429: rate_limit_error')).toBe('provider authentication or request refusal');
     expect(reviewBlockingReason('Connection: Unavailable')).toBe('connection or model unavailable');
     expect(reviewBlockingReason('❯ hi\n● Hi! What can I help you with?\n❯')).toBeNull();
+  });
+
+  it('recognizes actual stock test-result wording only after the run-tests prompt', () => {
+    const prompt = 'Run the tests with npm test and tell me whether they pass.';
+    for (const reply of ['All tests pass. npm test ran 2 tests, with 2 passing and 0 failing.',
+      'npm test passed: 1 test passed, 0 failed.', '# pass 2\n# fail 0']) {
+      expect(taskAnsweredAfterPrompt(`❯ ${prompt}\n● ${reply}`, prompt, TEST_RUN_EXPECTATION)).toBe(true);
+      expect(taskAnsweredAfterPrompt(`● ${reply}\n❯ ${prompt}\n✶ Thinking…`, prompt, TEST_RUN_EXPECTATION)).toBe(false);
+    }
+    expect(taskAnsweredAfterPrompt(`❯ ${prompt}\n● Tests failed: 0 passing.`, prompt, TEST_RUN_EXPECTATION)).toBe(false);
   });
 });
 
