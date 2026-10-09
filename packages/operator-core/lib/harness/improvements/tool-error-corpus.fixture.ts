@@ -176,6 +176,12 @@ export const TOOL_ERROR_CORPUS: readonly ToolErrorCorpusRow[] = [
     note: 'native-owner RPC intentionally refuses host-local auth capabilities that cannot cross the transport boundary; expected refusal, not a structural tool bug (EI-25431178848604122)',
   },
   {
+    n: 1, errorCode: '-32603', status: 'native_tool_owner_unsupported_capability',
+    message: 'Direct Papercusp MCP wrappers were refused with native_tool_owner_unsupported_capability before target dispatch.',
+    expectedClass: 'caller',
+    note: 'The outer JSON-RPC error code masks the inner expected native-owner refusal in status (EI-25442498776362164)',
+  },
+  {
     n: 835, errorCode: 'handler_error', status: 'error',
     message: "resolvePlanScope: harness 'shared-hive-test' is not registered in harness_shared.projects in any workspace, so its plan workspace cannot be resolved",
     expectedClass: 'caller',
