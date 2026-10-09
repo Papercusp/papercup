@@ -121,7 +121,7 @@ export const RATE_LIMIT_MESSAGE_PATTERN =
  *  backpressure from the shared admission gate, not a per-tool implementation
  *  defect. */
 export const OPERATOR_ADMISSION_TRANSIENT_MESSAGE_PATTERN =
-  'operator MCP admission is saturated|reason=(loop_pressure_critical|operator_admission_capacity)';
+  'operator MCP admission(?: is)? saturated|reason[=: ]+(loop_pressure_critical|operator_admission_capacity)';
 
 /** Shared-infra exhaustion (PG `max_connections` / DB-unavailable), an operator
  *  shutdown-window response, and a stale-pooled-connection reset against

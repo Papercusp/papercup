@@ -109,6 +109,14 @@ describe('P-001 R-7 frozen friction correlation controls', () => {
     expect(classifyToolError('-32000', 'request shed', message)).toBe('transient');
   });
 
+  it('treats a captured plans:attention admission refusal without "is" or "=" as transient', () => {
+    expect(classifyToolError(
+      '-32000',
+      'request_shed',
+      'plans:attention was refused at dispatch: operator MCP admission saturated, reason loop_pressure_critical',
+    )).toBe('transient');
+  });
+
   it('D-010: the filing signature ignores schema/runtime churn but keeps tool, family, error code and field', () => {
     const original = normalizeSuspectedToolFailure(metadataToolFailure);
     const signature = toolFailureSignatureKey(metadataToolFailure, original.class);
