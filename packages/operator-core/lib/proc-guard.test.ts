@@ -16,7 +16,9 @@
  * embeds the pattern) and assert the guard is immune to it while still catching
  * a genuinely unrelated external process.
  */
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -34,6 +36,7 @@ import {
   parseCmdline,
   parsePpid,
   parseCgroupPath,
+  assertManagedTestCgroup,
   parseUsageUsec,
   computeCoresBusy,
   sampleCgroupBusy,
@@ -686,6 +689,64 @@ describe('listProcesses', () => {
  * wrapper; `c*` ticks are credited only on wait(), which vitest never does for
  * its own workers). The cgroup cannot be escaped, so it is the instrument.
  */
+describe('managed test cgroup containment', () => {
+  const env = {
+    PAPERCUSP_TEST_RUN_GROUP: 'owned-calibration-123',
+    PAPERCUSP_TASK_DEADLINE_EPOCH_MS: '2000',
+    PAPERCUSP_EXPECTED_TEST_CGROUP: '/user.slice/owned.service',
+  };
+  const options = { env, now: 1000, pid: 123, readFile: () => '0::/user.slice/owned.service\n' };
+
+  it('accepts actual membership with both managed lifetime markers', () => {
+    expect(assertManagedTestCgroup(options)).toEqual({
+      pid: 123, cgroupPath: env.PAPERCUSP_EXPECTED_TEST_CGROUP,
+      runGroup: env.PAPERCUSP_TEST_RUN_GROUP, deadlineEpochMs: 2000,
+    });
+  });
+
+  it.each([
+    { PAPERCUSP_TEST_RUN_GROUP: undefined },
+    { PAPERCUSP_TASK_DEADLINE_EPOCH_MS: undefined },
+    { PAPERCUSP_TASK_DEADLINE_EPOCH_MS: '1000' },
+    { PAPERCUSP_TASK_DEADLINE_EPOCH_MS: 'Infinity' },
+    { PAPERCUSP_TASK_DEADLINE_EPOCH_MS: '1e9' },
+    { PAPERCUSP_EXPECTED_TEST_CGROUP: '/' },
+    { PAPERCUSP_EXPECTED_TEST_CGROUP: '/user.slice/../sibling.scope' },
+  ])('refuses invalid context %j before a worker can run', (override) => {
+    expect(() => assertManagedTestCgroup({ ...options, env: { ...env, ...override } }))
+      .toThrow('PAPERCUSP_TEST_CGROUP_CONTAINMENT');
+  });
+
+  it('rejects a sibling scope and unknown or unreadable membership', () => {
+    for (const readFile of [
+      () => '0::/user.slice/papercusp-test-escaped.scope\n',
+      () => '12:pids:/user.slice/owned.service\n',
+      () => { throw new Error('unreadable'); },
+    ]) expect(() => assertManagedTestCgroup({ ...options, readFile })).toThrow('PAPERCUSP_TEST_CGROUP_CONTAINMENT');
+  });
+
+  it.skipIf(process.platform !== 'linux')('checks a real Node fork and refuses a mismatched parent', () => {
+    const cgroupPath = parseCgroupPath(readFileSync('/proc/self/cgroup', 'utf8'));
+    expect(cgroupPath).toBeTruthy();
+    expect(cgroupPath).not.toBe('/');
+    const module = fileURLToPath(new URL('../../../scripts/proc-guard.mjs', import.meta.url));
+    const command = `import { assertManagedTestCgroup } from ${JSON.stringify(module)}; console.log(JSON.stringify(assertManagedTestCgroup()));`;
+    const childEnv = {
+      ...process.env, ...env,
+      PAPERCUSP_TASK_DEADLINE_EPOCH_MS: String(Date.now() + 60_000),
+      PAPERCUSP_EXPECTED_TEST_CGROUP: cgroupPath!,
+    };
+    const contained = spawnSync(process.execPath, ['--input-type=module', '-e', command], { env: childEnv, encoding: 'utf8' });
+    expect(contained.status, contained.stderr).toBe(0);
+    expect(JSON.parse(contained.stdout)).toMatchObject({ cgroupPath, runGroup: env.PAPERCUSP_TEST_RUN_GROUP });
+    const escaped = spawnSync(process.execPath, ['--input-type=module', '-e', command], {
+      env: { ...childEnv, PAPERCUSP_EXPECTED_TEST_CGROUP: cgroupPath + '-sibling' }, encoding: 'utf8',
+    });
+    expect(escaped.status).not.toBe(0);
+    expect(escaped.stderr).toContain('escaped');
+  });
+});
+
 describe('proc-guard --busy: cgroup CPU sampling', () => {
   describe('parseCgroupPath', () => {
     it('extracts the cgroup-v2 path', () => {

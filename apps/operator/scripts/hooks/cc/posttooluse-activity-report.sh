@@ -380,8 +380,9 @@ if coord_fold:
     if generation is not None:
         observed = observed_epoch(cached_glance_observed_at)
         age = None if observed is None else time.time() - observed
-        if cached_glance is None or age is None or age < 0 or age > GLANCE_MAX_AGE_SEC:
-            args['hook_bundle']['glance_stale'] = True
+        args['hook_bundle']['glance_stale'] = (
+            cached_glance is None or age is None or age < 0 or age > GLANCE_MAX_AGE_SEC
+        )
 
 body = json.dumps({
     'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',

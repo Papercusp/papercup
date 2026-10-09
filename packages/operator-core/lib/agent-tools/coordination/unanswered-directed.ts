@@ -467,13 +467,15 @@ export async function fetchUnansweredDirected(
     -- and the actual diverge by ~5 orders of magnitude, the ESTIMATE is the bug, so the fix has
     -- to remove the per-row correlation rather than add another access path.
     --
-    -- THE ROSTER PRE-FILTER is what makes one scan enough, and it is exactly
-    -- equivalence-preserving rather than a heuristic narrowing. Every one of these lookups
-    -- requires the row to be authored by a RECIPIENT we are asking about
-    -- (\`= o.recipient\` / \`= d.recipient\` / \`= r\`), and those are all already constrained by
-    -- \`r = ANY(recipientIds)\`. A row authored by anyone outside the roster could never have
-    -- satisfied any of them, so dropping it cannot change a verdict. Live selectivity:
-    -- 11,093 of 75,357 rows (6.8x); only 1,283 of those carry a related_msg_id (59x).
+    -- THE ROSTER PRE-FILTER is equivalence-preserving rather than a heuristic narrowing.
+    -- Every lookup requires the row to be authored by a RECIPIENT we are asking about
+    -- (\`= o.recipient\` / \`= d.recipient\` / \`= r\`). The normalized \`from_id\` below
+    -- includes either that bare id or its \`system:<role>/<session>\` sender alias, matching
+    -- identity.ts's senderMatchesFilter contract; the exact suffix check keeps unrelated and
+    -- nested identities out. A row whose normalized sender is outside recipientIds could never
+    -- have satisfied any of these lookups, so dropping it cannot change a verdict. The prior
+    -- direct-id-only predicate selected 11,093 of 75,357 rows (6.8x); alias matches add only
+    -- rows whose normalized session id is in the requested roster.
     --
     -- NOT time-bounded, deliberately. The two EXISTS sites are not bounded in the original,
     -- and a message's 'ts' is SENDER-SUPPLIED in the body — so inferring "a reply must postdate
@@ -490,7 +492,15 @@ export async function fetchUnansweredDirected(
     WITH roster_authored AS MATERIALIZED (
       SELECT ra.id,
              ra.workspace_id,
-             ra.body->>'from'              AS from_id,
+             CASE
+               -- Match identity.ts senderMatchesFilter: a "system:" sender is also
+               -- its bare session when the suffix after its first slash is exact.
+               -- Keep the suffix exact so nested identities do not collapse onto a session.
+               WHEN ra.body->>'from' LIKE 'system:%'
+                AND strpos(ra.body->>'from', '/') > 0
+               THEN substr(ra.body->>'from', strpos(ra.body->>'from', '/') + 1)
+               ELSE ra.body->>'from'
+             END                           AS from_id,
              ra.body->>'msg_id'            AS msg_id,
              ra.body->>'related_msg_id'    AS related_msg_id,
              ra.body->'why'->>'goalRef'    AS goal_ref,
@@ -505,7 +515,15 @@ export async function fetchUnansweredDirected(
         FROM harness_shared.coord_event_log ra
        WHERE ra.workspace_id = ${workspaceId}
          AND ra.surface = 'messages'
-         AND ra.body->>'from' = ANY(${recipientIds}::text[])
+         AND (
+           ra.body->>'from' = ANY(${recipientIds}::text[])
+           OR (
+             ra.body->>'from' LIKE 'system:%'
+             AND strpos(ra.body->>'from', '/') > 0
+             AND substr(ra.body->>'from', strpos(ra.body->>'from', '/') + 1)
+                   = ANY(${recipientIds}::text[])
+           )
+         )
     ),
     -- The LOOSE-REPLY set — \`unanswered\` below needs, per open ask, "how many un-threaded
     -- replies did this recipient send back to that sender after the ask". DERIVED from

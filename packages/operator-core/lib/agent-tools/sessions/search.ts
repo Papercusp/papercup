@@ -59,6 +59,46 @@ export const SESSION_SEARCH_RESPONSE_BUDGET_CHARS = 4_800;
 const SESSION_SEARCH_TEXT_CHARS = 320;
 const SESSION_SEARCH_WINDOW_TURN_CHARS = 280;
 const SEARCH_TRUNCATION_MARKER = '…[truncated]';
+const SEARCH_PHASE_LOG_THRESHOLD_MS = 100;
+const SEARCH_PHASE_WARN_AFTER_MS = 1_000;
+
+function logSearchPhase(
+  ctx: PapercuspUnifiedToolContext,
+  phase: string,
+  elapsedMs: number,
+  kind: 'duration' | 'still-running' = 'duration',
+): void {
+  if (typeof ctx.log !== 'function') return;
+  const detail = kind === 'still-running'
+    ? ' still_running_after_ms=' + elapsedMs
+    : ' duration_ms=' + elapsedMs;
+  try {
+    ctx.log('[sessions:search:phase] ' + phase + detail);
+  } catch {
+    // Diagnostics must never change search behavior.
+  }
+}
+
+async function measureSearchPhase<T>(
+  ctx: PapercuspUnifiedToolContext,
+  phase: string,
+  action: () => Promise<T>,
+): Promise<T> {
+  const startedAt = performance.now();
+  const slowPhaseTimer = setTimeout(
+    () => logSearchPhase(ctx, phase, SEARCH_PHASE_WARN_AFTER_MS, 'still-running'),
+    SEARCH_PHASE_WARN_AFTER_MS,
+  );
+  try {
+    return await action();
+  } finally {
+    clearTimeout(slowPhaseTimer);
+    const elapsedMs = Math.max(0, Math.round(performance.now() - startedAt));
+    if (elapsedMs >= SEARCH_PHASE_LOG_THRESHOLD_MS) {
+      logSearchPhase(ctx, phase, elapsedMs);
+    }
+  }
+}
 
 interface SearchOutput {
   source: string;
@@ -169,8 +209,10 @@ export default defineTool({
     const snapshotUntil = args.until ?? cursor.bounds.until ?? new Date().toISOString();
     const effectiveArgs = { ...args, until: snapshotUntil };
 
-    const { filters, selfSession: resolvedSelfSession } = await resolveSearchFilters(
-      tx, effectiveArgs, callerOwnerId, { workspaceId },
+    const { filters, selfSession: resolvedSelfSession } = await measureSearchPhase(
+      ctx,
+      'filter_resolution_and_self_refresh',
+      () => resolveSearchFilters(tx, effectiveArgs, callerOwnerId, { workspaceId }),
     );
     // EI-21699129692862363: this refresh is what makes session:'self' able to
     // find a turn written seconds ago — it tails the live transcript into the
@@ -185,9 +227,9 @@ export default defineTool({
     // fall through to the unfiltered refresh path: with no owner filter that
     // path enumerates up to 20 open Codex owners before the actual query,
     // turning a targeted read into unrelated filesystem work (EI-217206...).
-    const liveRefresh = filters?.sessionId
-      ? await refreshTargetSessionBeforeRead(tx, filters.sourceKind, filters.sessionId)
-      : await refreshLiveSessionsBeforeRead(tx, filters?.owners ?? null);
+    const liveRefresh = await measureSearchPhase(ctx, 'secondary_live_refresh', () => filters?.sessionId
+      ? refreshTargetSessionBeforeRead(tx, filters.sourceKind, filters.sessionId)
+      : refreshLiveSessionsBeforeRead(tx, filters?.owners ?? null));
     const refreshDegraded =
       liveRefresh.attempted > liveRefresh.refreshed || Boolean(liveRefresh.failureReasons);
 
@@ -201,10 +243,10 @@ export default defineTool({
     const selfOwnerIds = [callerOwnerId, ...selfChain].filter((owner): owner is string => Boolean(owner));
     let inScope: WithheldTally;
     try {
-      inScope = await countRestrictedTurnsInScope(tx, {
+      inScope = await measureSearchPhase(ctx, 'restricted_turn_count', () => countRestrictedTurnsInScope(tx, {
         selfOwnerIds,
         scope: sessionTurnScopeSql({ sql: tx, workspaceId, scopeFilter: args.harness_slug ?? null, filters }) as never,
-      });
+      }));
     } catch (error) {
       if (error instanceof DisclosureRefused) {
         return { content: [{ type: 'text' as const, text: JSON.stringify(disclosureRefusalData(error)) }], isError: true };
@@ -230,7 +272,7 @@ export default defineTool({
       // Match the expression served by session_turns_text_trgm_idx. ILIKE does
       // not use that lower(text) trigram index and can scan the entire corpus.
       const likePattern = `%${escapeLikeLiteral(args.query.toLowerCase())}%`;
-      const rows = await tx<Array<{ source_kind: string; session_id: string; turn_idx: number; speaker: string; owner: string | null; harness_slug: string | null; ts: string | null; text: string }>>`
+      const rows = await measureSearchPhase(ctx, 'verbatim_main_query', () => tx<Array<{ source_kind: string; session_id: string; turn_idx: number; speaker: string; owner: string | null; harness_slug: string | null; ts: string | null; text: string }>>`
         SELECT source_kind, session_id, turn_idx, speaker, owner, harness_slug, ts::text AS ts,
                left(text, 700) AS text
           FROM harness_shared.session_turns
@@ -250,7 +292,7 @@ export default defineTool({
       ORDER BY COALESCE(ts, ingested_at) DESC
          LIMIT ${limit + 1}
         OFFSET ${offset}
-      `;
+      `);
       for (const r of rows) {
         hits.push({
           sourceKind: r.source_kind, sessionId: r.session_id, turnIdx: r.turn_idx,
@@ -268,10 +310,11 @@ export default defineTool({
         ? ['session_turn', ...(filters?.sessionId ? [] : ['coord_message'])]
         : ['session_turn'];
       const sources = SEARCH_SOURCES.filter((s) => scopeNames.includes(s.name));
-      const embedder = await buildQueryEmbedder({ acquireBudgetMs: interactiveEmbedAcquireBudgetMs() });
+      const embedder = await measureSearchPhase(ctx, 'query_embedder_acquisition', () =>
+        buildQueryEmbedder({ acquireBudgetMs: interactiveEmbedAcquireBudgetMs() }));
       // WI-3929 (same class as EI-9312): bound the ACTUAL per-query embed
       // call inside runHybridSearch, not just the acquisition above.
-      const { results, legs } = await runHybridSearch(sources, {
+      const { results, legs } = await measureSearchPhase(ctx, 'hybrid_main_query', () => runHybridSearch(sources, {
         caller: 'sessions:search',
         sql: tx,
         query: args.query,
@@ -284,7 +327,7 @@ export default defineTool({
         // readerIds: the session_turn source excludes restricted turns in SQL.
         filters: { ...(filters ?? {}), readerIds: selfOwnerIds },
         log: ctx.log,
-      });
+      }));
       searchLegs = legs;
       for (const r of results) {
         if (r.source === 'session_turn') {
@@ -393,13 +436,13 @@ export default defineTool({
 
     if (!zeroHitCaveat && args.session === 'self' && pageHits.length === 0 && filters?.owners?.length) {
       try {
-        const [row] = await tx<Array<{ session_count: string; earliest: string | null }>>`
+        const [row] = await measureSearchPhase(ctx, 'zero_hit_owner_session_count', () => tx<Array<{ session_count: string; earliest: string | null }>>`
           SELECT COUNT(DISTINCT session_id)::text AS session_count,
                  MIN(COALESCE(ts, ingested_at))::text AS earliest
             FROM harness_shared.session_turns
            WHERE (workspace_id = ${workspaceId} OR workspace_id = 'default')
              AND owner = ANY(${filters.owners}::text[])
-        `;
+        `);
         const sessionCount = row ? Number(row.session_count) : 0;
         if (sessionCount > 1) {
           zeroHitCaveat =
@@ -435,7 +478,7 @@ export default defineTool({
         // substring ORACLE on its content, so those parts never count — the same
         // SQL rule as the turn queries. A ledger read failure fails the probe
         // (caught below), which shows no caveat.
-        const [row] = await tx<Array<{ hits: string }>>`
+        const [row] = await measureSearchPhase(ctx, 'zero_hit_tool_part_caveat', () => tx<Array<{ hits: string }>>`
           SELECT COUNT(*)::text AS hits
             FROM harness_shared.session_turn_parts p
            WHERE (workspace_id = ${workspaceId} OR workspace_id = 'default')
@@ -447,7 +490,7 @@ export default defineTool({
              AND (${pf.until ?? null}::timestamptz IS NULL OR COALESCE(ts, ingested_at) < ${pf.until ?? null}::timestamptz)
              AND part_kind IN ('tool_use', 'tool_result')
              AND text ILIKE '%' || ${args.query} || '%'
-        `;
+        `);
         const partHits = row ? Number(row.hits) : 0;
         if (partHits > 0) {
           toolPartCaveat =
@@ -478,7 +521,8 @@ export default defineTool({
       .map((h) => ({ sourceKind: h.sourceKind, sessionId: h.sessionId, turnIdx: h.turnIdx }));
     if (originKeys.length) {
       try {
-        turnOrigins = await resolveHitTurnOrigins(tx, workspaceId, originKeys);
+        turnOrigins = await measureSearchPhase(ctx, 'result_turn_origin_lookup', () =>
+          resolveHitTurnOrigins(tx, workspaceId, originKeys));
       } catch {
         turnOriginsResolved = false; // every hit falls through to `unknown`
       }
@@ -491,37 +535,39 @@ export default defineTool({
     // of defence. Hybrid hits carry no owner/time, so stamp them from the index
     // first; one ledger read then decides the whole page.
     const turnHits = pageHits.filter((h) => h.source === 'session_turn');
-    const stampByRef = await loadTurnStamps(
+    const stampByRef = await measureSearchPhase(ctx, 'result_turn_stamp_load', () => loadTurnStamps(
       tx,
       workspaceId,
       turnHits.filter((h) => h.owner === null).map((h) => ({ sourceKind: h.sourceKind, sessionId: h.sessionId, turnIdx: h.turnIdx })),
-    );
+    ));
     const hitStamp = (h: RawHit) =>
       h.owner !== null
         ? { owner: h.owner, at: h.ts }
         : stampByRef.get(formatSessionTurnRef(h.sourceKind, h.sessionId, h.turnIdx)) ?? { owner: null, at: null };
     const windowsByHit = new Map<RawHit, StampedWindowTurn[]>();
     if (context > 0) {
-      for (const h of turnHits) {
-        try {
-          windowsByHit.set(h, await hydrateWindow(
-            tx,
-            workspaceId,
-            h.sourceKind,
-            h.sessionId,
-            h.turnIdx,
-            context,
-            SESSION_SEARCH_WINDOW_TURN_CHARS,
-          ));
-        } catch { /* window is a bonus, never fail the search */ }
-      }
+      await measureSearchPhase(ctx, 'result_context_window_hydration', async () => {
+        for (const h of turnHits) {
+          try {
+            windowsByHit.set(h, await hydrateWindow(
+              tx,
+              workspaceId,
+              h.sourceKind,
+              h.sessionId,
+              h.turnIdx,
+              context,
+              SESSION_SEARCH_WINDOW_TURN_CHARS,
+            ));
+          } catch { /* window is a bonus, never fail the search */ }
+        }
+      });
     }
     let exclusion: TranscriptExclusion;
     try {
-      exclusion = await loadTranscriptExclusion(tx, {
+      exclusion = await measureSearchPhase(ctx, 'result_transcript_exclusion', () => loadTranscriptExclusion(tx, {
         selfOwnerIds,
         stamps: [...turnHits.map(hitStamp), ...[...windowsByHit.values()].flat()],
-      });
+      }));
     } catch (error) {
       if (error instanceof DisclosureRefused) {
         return { content: [{ type: 'text' as const, text: JSON.stringify(disclosureRefusalData(error)) }], isError: true };

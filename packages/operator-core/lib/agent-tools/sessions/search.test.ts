@@ -111,12 +111,12 @@ function makeTx(rows: unknown[]) {
   return vi.fn(async () => rows);
 }
 
-function callTool(args: Record<string, unknown>, tx: unknown) {
+function callTool(args: Record<string, unknown>, tx: unknown, log?: (message: string) => void) {
   return (
     tool as unknown as {
       handler: (a: unknown, c: unknown) => Promise<{ content: Array<{ text: string }> }>;
     }
-  ).handler(args, { workspaceId: 'default', tx });
+  ).handler(args, { workspaceId: 'default', tx, log });
 }
 
 describe('sessions:search limit contract', () => {
@@ -158,6 +158,24 @@ describe('sessions:search explicit session refresh scope (EI-21720673196644332)'
     expect(parsed.total_hits).toBe(0);
     expect(refreshTargetSessionBeforeRead).toHaveBeenCalledWith(tx, undefined, sessionId);
     expect(refreshLiveSessionsBeforeRead).not.toHaveBeenCalled();
+  });
+
+  it('logs a bounded phase duration when a refresh is slow', async () => {
+    refreshTargetSessionBeforeRead.mockImplementationOnce(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 125));
+      return { attempted: 1, refreshed: 1 };
+    });
+    const logs: string[] = [];
+
+    const res = await callTool({
+      query: 'targeted needle',
+      mode: 'verbatim',
+      session: 'slow-session',
+      context: 0,
+    }, makeTx([]), (message) => logs.push(message));
+
+    expect(JSON.parse(res.content[0].text)).toMatchObject({ ok: true, total_hits: 0 });
+    expect(logs.some((message) => /\[sessions:search:phase\] secondary_live_refresh duration_ms=\d+/.test(message))).toBe(true);
   });
 });
 

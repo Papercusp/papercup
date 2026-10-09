@@ -839,6 +839,45 @@ export function parseCgroupPath(raw) {
 }
 
 /**
+ * Assert the managed test's actual cgroup before measuring worker demand.
+ * Attribution alone is insufficient: test-files needs both the run group and
+ * the real inherited deadline to retain Vitest in its caller's bounded scope.
+ * A Node preload calls this in each fork, so a sibling scope cannot silently
+ * produce passing tests alongside parent-only memory observations.
+ */
+export function assertManagedTestCgroup({
+  env = process.env,
+  pid = process.pid,
+  now = Date.now(),
+  procRoot = "/proc",
+  readFile = readFileSync,
+} = {}) {
+  const refuse = (reason) => {
+    throw new Error(`PAPERCUSP_TEST_CGROUP_CONTAINMENT: ${reason}`);
+  };
+  const runGroup = env.PAPERCUSP_TEST_RUN_GROUP?.trim();
+  const deadlineRaw = env.PAPERCUSP_TASK_DEADLINE_EPOCH_MS;
+  const deadlineEpochMs = Number(deadlineRaw);
+  if (!runGroup) refuse("missing managed test run group");
+  if (!/^\d+$/.test(deadlineRaw ?? "") || !Number.isSafeInteger(deadlineEpochMs) || deadlineEpochMs <= now) {
+    refuse("missing, invalid or expired inherited task deadline");
+  }
+  const expected = env.PAPERCUSP_EXPECTED_TEST_CGROUP;
+  if (!expected || expected === "/" || !expected.startsWith("/") || path.posix.normalize(expected) !== expected) {
+    refuse("missing or invalid bounded parent cgroup");
+  }
+  let cgroupPath;
+  try {
+    cgroupPath = parseCgroupPath(readFile(path.join(procRoot, String(pid), "cgroup"), "utf8"));
+  } catch {
+    refuse(`unreadable cgroup for pid ${pid}`);
+  }
+  if (!cgroupPath) refuse(`unknown cgroup-v2 membership for pid ${pid}`);
+  if (cgroupPath !== expected) refuse(`pid ${pid} escaped ${expected} into ${cgroupPath}`);
+  return { pid, cgroupPath, runGroup, deadlineEpochMs };
+}
+
+/**
  * Parse `usage_usec <n>` out of a cgroup `cpu.stat` body. This counter is
  * MONOTONIC, which is what makes a two-sample delta a true rate even as
  * children spawn and exit between the samples.

@@ -13,7 +13,7 @@ type ProbeWindow = Window & { __readingErrorOutput: ReadingProbe };
 
 // Exercise the normal drawer and player. The output adapter is deliberately
 // controlled; real provider synthesis has separate registered verification.
-async function openReading(page: Page, mode: 'reject' | 'truncate' | 'backpressure') {
+async function openReading(page: Page, mode: 'reject' | 'truncate' | 'backpressure', startReading = true) {
   const prefsPath = '/api/agent-mcp/operator-voice-prefs';
   const beforeResponse = await page.request.get(prefsPath);
   expect(beforeResponse.status()).toBe(200);
@@ -84,7 +84,7 @@ async function openReading(page: Page, mode: 'reject' | 'truncate' | 'backpressu
     await page.goto('/?chat=true');
     await page.getByRole('button', { name: 'Read selected text aloud' }).click();
     await page.getByRole('textbox', { name: 'Text to read or summarize' }).fill('FIRST SECOND EXACT FINAL TAIL');
-    await page.getByRole('button', { name: 'Read selection', exact: true }).click();
+    if (startReading) await page.getByRole('button', { name: 'Read selection', exact: true }).click();
     return restore;
   } catch (error) {
     await restore();
@@ -140,5 +140,25 @@ test('stalled narration consumes no further chunks until playback advances', asy
     await page.getByRole('button', { name: 'Stop', exact: true }).click();
     await expect.poll(async () => (await output(page)).cancelled).toBe(true);
     expect(await output(page)).toMatchObject({ created: 2, produced: 2, mic: 0 });
+  } finally { await restore(); }
+});
+
+test('summary budget failure reports its limit without creating summary text or speech', async ({ page }) => {
+  const failure = 'Summary reached its configured spend budget.';
+  const turns: string[] = [];
+  page.on('request', request => {
+    if (request.method() === 'POST' && /\/api\/operator\/conversations\/[^/]+\/turns/.test(request.url())) turns.push(request.url());
+  });
+  await page.route('**/api/agent-mcp/operator-tts', async route => {
+    expect(route.request().postDataJSON().operation).toBe('summarize');
+    await route.fulfill({ status: 504, json: { ok: false, code: 'budget-exceeded', error: failure } });
+  });
+  const restore = await openReading(page, 'backpressure', false);
+  try {
+    await page.getByRole('button', { name: 'Summarize and read', exact: true }).click();
+    await expect(page.getByText(failure, { exact: true })).toBeVisible();
+    await expect(page.getByRole('region', { name: 'Summary', exact: true })).toHaveCount(0);
+    expect(await output(page)).toMatchObject({ created: 0, plays: 0, produced: 0, mic: 0 });
+    expect(turns).toEqual([]);
   } finally { await restore(); }
 });

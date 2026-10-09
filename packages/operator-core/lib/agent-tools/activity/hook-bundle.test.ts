@@ -51,7 +51,7 @@ describe('activity hook bundle', () => {
     const d = deps();
     const first = await buildActivityHookBundle(
       'su-abc',
-      { generation: null, since_ts: '2026-07-13T19:00:00.000Z', force_resync: true },
+      { generation: null, since_ts: '2026-07-13T19:00:00.000Z', force_resync: true, glance_stale: false },
       {} as never,
       d.value,
     );
@@ -93,6 +93,27 @@ describe('activity hook bundle', () => {
     expect(result).toMatchObject({ changed: true, complete: true, generation: 'host-a:43' });
     expect(d.ownerRelevantDelta).toHaveBeenCalledWith('su-abc', '42', '43');
     expect(d.inbox).toHaveBeenCalledWith('2026-07-13T19:00:00.000Z', expect.anything());
+    expect(d.glance).toHaveBeenCalledTimes(1); // omitted freshness keeps legacy full-fold behavior
+  });
+
+  it('delivers a relevant inbox delta without rehydrating a fresh glance snapshot', async () => {
+    const d = deps('host-a:43');
+    const observe = vi.fn();
+    d.value.observe = observe;
+    const result = await buildActivityHookBundle(
+      'su-abc',
+      { generation: 'host-a:42', glance_stale: false },
+      {} as never,
+      d.value,
+    );
+
+    expect(result).toMatchObject({ changed: true, complete: true, generation: 'host-a:43' });
+    expect(result.surfaces?.inbox).toBeDefined();
+    expect(result.surfaces?.glance).toBeUndefined();
+    expect(d.inbox).toHaveBeenCalledTimes(1);
+    expect(d.glance).not.toHaveBeenCalled();
+    expect(d.stageInboxCursor).toHaveBeenCalledTimes(1);
+    expect(observe).toHaveBeenCalledWith(expect.objectContaining({ glanceHydrated: false }));
   });
 
   it('advances through an owner-irrelevant same-host delta without hydrating either surface', async () => {

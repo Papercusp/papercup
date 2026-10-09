@@ -288,6 +288,25 @@ export function matchExternalProcessesDetailed(pattern: string, opts?: {
  */
 export function parseCgroupPath(raw: Buffer | string): string | null;
 /**
+ * Assert the managed test's actual cgroup before measuring worker demand.
+ * Attribution alone is insufficient: test-files needs both the run group and
+ * the real inherited deadline to retain Vitest in its caller's bounded scope.
+ * A Node preload calls this in each fork, so a sibling scope cannot silently
+ * produce passing tests alongside parent-only memory observations.
+ */
+export function assertManagedTestCgroup({ env, pid, now, procRoot, readFile, }?: {
+    env?: NodeJS.ProcessEnv | undefined;
+    pid?: number | undefined;
+    now?: number | undefined;
+    procRoot?: string | undefined;
+    readFile?: typeof readFileSync | undefined;
+}): {
+    pid: number;
+    cgroupPath: string | null | undefined;
+    runGroup: string | undefined;
+    deadlineEpochMs: number;
+};
+/**
  * Parse `usage_usec <n>` out of a cgroup `cpu.stat` body. This counter is
  * MONOTONIC, which is what makes a two-sample delta a true rate even as
  * children spawn and exit between the samples.
@@ -417,3 +436,4 @@ export type CgroupBusyUnknown = {
     procs?: undefined;
 };
 export type CgroupBusySample = CgroupBusyOk | CgroupBusyUnknown;
+import { readFileSync } from "node:fs";

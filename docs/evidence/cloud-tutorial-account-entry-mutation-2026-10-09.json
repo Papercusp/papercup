@@ -58,6 +58,22 @@
     "mutantResults": "/tmp/tutorial-wi7727-entry-20261009T0828-results-mutant",
     "baselineSource": "mutation-probe"
   },
+  "acceptance": {
+    "operatorEndpoint": "http://127.0.0.1:3170",
+    "specRevision": 2,
+    "bindings": {
+      "AUTO-BAR-R-16-P-015": { "test": 32769, "mutation": 32770 },
+      "TUTORIAL-ACCOUNT-FIRST-ENTRY": { "test": 32771, "mutation": 32772 }
+    },
+    "bindingReadback": "/tmp/tutorial-wi7727-entry-detail-20261009T0853.json",
+    "metadataCorrection": "Explicit collected/executed/skipped/outcome fields corroborated by the saved canonical ledger; no test replay",
+    "withdrawnInvalidCounterexamples": [31541, 31623],
+    "withdrawalReceipt": "/tmp/tutorial-wi7727-entry-retire-20261009T0855.json",
+    "evaluation": "/tmp/tutorial-wi7727-entry-adequacy-20261009T0856.json",
+    "evaluationResult": "Both selected revision-2 clauses pass every applicable criterion; wouldBlock is empty",
+    "historicalPositiveBindingsPreserved": [31555, 31622],
+    "historicalFullSuiteRunPreserved": 20937012
+  },
   "limitations": [
     "No replay of historical full40 LOCAL20937012",
     "No actual workspace shell/served artifact/production proof",

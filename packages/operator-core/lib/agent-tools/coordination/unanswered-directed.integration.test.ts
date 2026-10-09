@@ -78,6 +78,23 @@ describe('fetchUnansweredDirected (EI-13819 SQL path)', () => {
     expect(map.get(MEMBER.ownerId)).toBeUndefined();
   });
 
+  it('EI-25484540030666284: a threaded reply from a system-namespaced session alias clears the bare recipient ask', async () => {
+    const ask = await sendMessage(LEADER, {
+      to: [MEMBER.ownerId],
+      summary: 'please claim P-012',
+      expectsReply: true,
+    });
+    const aliasMember = ident(`system:judge/${MEMBER.ownerId}`);
+    await sendMessage(aliasMember, {
+      to: [LEADER.ownerId],
+      summary: 'done',
+      related_msg_id: ask.msg_id,
+    });
+
+    const map = await fetchUnansweredDirected([MEMBER.ownerId]);
+    expect(map.get(MEMBER.ownerId)).toBeUndefined();
+  });
+
   it('EI-24800378908837374: a reply to one all-hive fan-out copy leaves no sibling broadcast unread', async () => {
     const firstCopy = await sendMessage(LEADER, {
       to: ['*'],

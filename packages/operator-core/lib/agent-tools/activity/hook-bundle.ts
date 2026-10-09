@@ -55,7 +55,9 @@ export interface ActivityHookBundleRequest {
   since_ts?: string | null;
   force_resync?: boolean;
   /**
-   * "My GLANCE snapshot aged out — refresh that leg." NOT a resync.
+   * `true` means "my GLANCE snapshot aged out — refresh that leg"; `false`
+   * means the client has a fresh snapshot and the server may skip GLANCE while
+   * delivering an inbox delta. Omitted keeps the older full-fold behavior.
    *
    * The client used to express this by setting `force_resync`, which is a
    * request to replace EVERYTHING. Measured over a 3h window, that made
@@ -359,29 +361,39 @@ export async function buildActivityHookBundle(
   // The call itself is the ACK; if the prior turn died, its pending floor is
   // promoted and the next changed heartbeat re-reads from that floor.
   const [generation, inboxCursor] = await Promise.all([deps.generation(), deps.readInboxCursor(ownerId)]);
+  const delta = sameHostCoordGenerationDelta(request.generation, generation);
   let changed = request.force_resync === true || request.generation !== generation;
+  let relevanceUncertain = false;
   if (changed && request.force_resync !== true && deps.ownerRelevantDelta) {
-    const delta = sameHostCoordGenerationDelta(request.generation, generation);
     if (delta) {
       try {
         // Only an exact negative result closes the second gate. Any thrown or
         // malformed outcome keeps `changed=true`, preserving fail-open delivery.
         const relevant = await deps.ownerRelevantDelta(ownerId, delta.afterId, delta.throughId);
         if (relevant === false) changed = false;
+        else if (relevant !== true) relevanceUncertain = true;
       } catch {
         /* relevance uncertainty hydrates through the existing path */
+        relevanceUncertain = true;
       }
+    } else {
+      relevanceUncertain = true;
     }
   }
-  // THE SPLIT (WI-10002436 compromise B). `changed` is, and stays, the INBOX
-  // gate — every condition above it is untouched, so delivery cannot regress by
-  // construction. The glance leg simply stops being welded to it: a client whose
-  // display cache aged out now refreshes THAT leg alone instead of forcing the
-  // inbox through a hydration it did not need.
+  // `changed` remains the INBOX gate. A current client explicitly says when its
+  // cached display is fresh; a relevant inbox delta then does not also pay for
+  // GLANCE. Old clients omit the flag and keep the full-fold behavior. Baselines,
+  // resyncs, epoch changes, and uncertain relevance still hydrate both surfaces.
   //
-  // `glanceOnly` is deliberately `!changed && …`: when the inbox gate is already
-  // open both surfaces hydrate together exactly as before.
-  const glanceOnly = !changed && request.glance_stale === true;
+  const fullResync =
+    request.force_resync === true ||
+    request.generation == null ||
+    (changed && delta === null) ||
+    relevanceUncertain;
+  const hydrateGlance = changed
+    ? request.glance_stale !== false || fullResync
+    : request.glance_stale === true;
+  const glanceOnly = !changed && hydrateGlance;
   const gateMs = deps.now().getTime() - startedMs;
   const base: Omit<ActivityHookBundle, 'complete' | 'surfaces'> = {
     schemaVersion: ACTIVITY_HOOK_BUNDLE_SCHEMA,
@@ -414,6 +426,7 @@ export async function buildActivityHookBundle(
         inboxAdvanced: false,
         inboxTotal: null,
         glanceOnly: false,
+        glanceHydrated: false,
       }),
     );
     return { ...base, complete: true };
@@ -446,6 +459,7 @@ export async function buildActivityHookBundle(
         inboxAdvanced: false,
         inboxTotal: null,
         glanceOnly: true,
+        glanceHydrated: true,
       }),
     );
     return {
@@ -473,14 +487,13 @@ export async function buildActivityHookBundle(
 
   const [inbox, glance] = await Promise.all([
     deps.inbox(sinceTs, ctx).catch(() => null),
-    deps.glance(ctx).catch(() => null),
+    hydrateGlance ? deps.glance(ctx).catch(() => null) : Promise.resolve(null),
   ]);
-  let complete = inbox !== null && glance !== null;
+  let complete = inbox !== null && (!hydrateGlance || glance !== null);
   if (complete) {
-    // Do not advance the server cursor until both replacement surfaces were
-    // assembled. A stage failure is an incomplete fold: the client retains its
-    // generation and the next heartbeat re-delivers from the same committed
-    // floor, preserving at-least-once delivery.
+    // Do not advance the server cursor until the requested inbox replacement
+    // was assembled (and GLANCE too when requested). A stage failure is an
+    // incomplete fold: the next heartbeat re-delivers from the committed floor.
     try {
       await deps.stageInboxCursor(ownerId, {
         since_ts: inboxNewestTimestamp(inbox) ?? sinceTs,
@@ -499,14 +512,14 @@ export async function buildActivityHookBundle(
       gen: generation,
       foldMs: endedMs - startedMs,
       gateMs,
-      // Everything past the gate decision: the watermark read, both surface
-      // hydrations and the cursor stage. gateMs + hydrateMs therefore accounts
-      // for the whole fold, leaving no unattributed remainder to guess at.
+      // Everything past the gate decision: the watermark read, requested
+      // surface hydrations and the cursor stage. gateMs + hydrateMs therefore
+      // accounts for the whole fold, leaving no unattributed remainder to guess at.
       hydrateMs: endedMs - startedMs - gateMs,
       inboxAdvanced: inboxDidAdvance(inbox, sinceTs),
       inboxTotal: inboxTotalCount(inbox),
-      // The inbox gate opened, so both legs hydrated together on this path.
       glanceOnly: false,
+      glanceHydrated: hydrateGlance,
     }),
   );
   return {
