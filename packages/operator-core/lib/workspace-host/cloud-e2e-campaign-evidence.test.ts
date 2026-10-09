@@ -9,6 +9,7 @@ import {
   type CloudCampaignEvidenceContext,
   type CloudCampaignExecution,
   type CloudCampaignManifest,
+  type CloudCampaignShipmentContext,
 } from './cloud-e2e-campaign-evidence';
 import { workspaceHostCensusProfile } from './census-profiles';
 
@@ -137,6 +138,9 @@ describe('cloud E2E campaign acceptance population and evidence boundaries', () 
 const fixtureSource = 'a'.repeat(40);
 const fixtureDigest = 'b'.repeat(64);
 const fixtureAt = '2026-10-09T21:00:00.000Z';
+const fixturePromotionAt = '2026-10-09T20:40:00.000Z';
+const fixtureDeploymentAt = '2026-10-09T20:45:00.000Z';
+const fixtureServingAt = '2026-10-09T20:50:00.000Z';
 const measured = { sourceSha: fixtureSource, evidenceSha256: fixtureDigest, evidenceRef: 'fixture://record', observedAt: fixtureAt };
 function completeFixture(): { data: CloudCampaignManifest; context: CloudCampaignEvidenceContext } {
   const population = ['Provisioning', 'Concurrent/replayed operations'];
@@ -150,6 +154,7 @@ function completeFixture(): { data: CloudCampaignManifest; context: CloudCampaig
     ...measured, id: `execution-${runtime}`, runtime, artifactSha256: fixtureDigest,
     authenticated: true, syntheticCloudResponses: false, tenantId: 'isolated-tenant', workspaceId: 'isolated-workspace',
     accountId: `account-${runtime}`, runId: `run-${runtime}`, resourceLabel: `cloud-campaign-${runtime}`, hostId: `host-${runtime}`,
+    deploymentRef: `fixture://deployment/${runtime}`, servingIdentity: `fixture://serving-identity/${runtime}`,
     actions: population.map((scenario) => ({ scenario, result: 'passed' as const, evidenceRef: `fixture://action/${scenario}` })),
     ...((runtime === 'gcp' || runtime === 'aws') ? {
       census: {
@@ -177,9 +182,10 @@ function completeFixture(): { data: CloudCampaignManifest; context: CloudCampaig
         },
       }],
       shipmentReceipts: receipts.map((entry) => ({
-        ...measured, runtime: entry.runtime, artifactSha256: fixtureDigest, authenticated: true,
+        ...measured, observedAt: fixtureDeploymentAt, runtime: entry.runtime, artifactSha256: fixtureDigest, authenticated: true,
         promotedSourceSha: fixtureSource, promotedArtifactSha256: fixtureDigest,
-        promotionRef: 'fixture://green-promotion', deploymentRef: 'fixture://deployment', finalExecutionId: entry.id,
+        promotionRef: `fixture://green-promotion/${entry.runtime}`, deploymentRef: entry.deploymentRef!, finalExecutionId: entry.id,
+        servingRef: `fixture://serving/${entry.runtime}`, servingIdentity: entry.servingIdentity!,
         auditRef: 'fixture://completion-audit', gradingRef: 'fixture://independent-grade', reportReadbackRef: 'fixture://report-readback',
       })),
     },
@@ -198,6 +204,20 @@ function completeFixture(): { data: CloudCampaignManifest; context: CloudCampaig
     })),
     runtimeObligations: receipts.map(({ runtime, sourceSha, artifactSha256, tenantId, workspaceId, accountId, runId, resourceLabel }) => ({ runtime, sourceSha, artifactSha256, tenantId, workspaceId, accountId, runId, resourceLabel, scenarios: population })),
     notBefore: '2026-10-09T20:00:00.000Z', now: '2026-10-09T22:00:00.000Z',
+    shipment: {
+      subject: {
+        planSlug: 'fixture-plan', planRevision: 1, planContentHash: fixtureDigest,
+        rubricRef: 'fixture-rubric', rubricRevision: 1, criteriaHash: fixtureDigest,
+        authorId: 'fixture-author', workItemIds: ['EI-fixture-defect'],
+      },
+      obligations: data.acceptanceEvidence.shipmentReceipts.map(({ runtime, evidenceRef, evidenceSha256, promotionRef, deploymentRef, servingRef, auditRef, gradingRef, reportReadbackRef }) => ({ runtime, evidenceRef, evidenceSha256, promotionRef, deploymentRef, servingRef, auditRef, gradingRef, reportReadbackRef })),
+      promotions: receipts.map((row) => ({ ref: `fixture://green-promotion/${row.runtime}`, evidenceSha256: fixtureDigest, observedAt: fixturePromotionAt, runtime: row.runtime, sourceSha: fixtureSource, artifactSha256: fixtureDigest, verdict: 'green' })),
+      deployments: receipts.map((row) => ({ ref: row.deploymentRef!, evidenceSha256: fixtureDigest, observedAt: fixtureDeploymentAt, runtime: row.runtime, sourceSha: fixtureSource, artifactSha256: fixtureDigest, promotionRef: `fixture://green-promotion/${row.runtime}`, status: 'deployed' })),
+      serving: receipts.map((row) => ({ ref: `fixture://serving/${row.runtime}`, evidenceSha256: fixtureDigest, observedAt: fixtureServingAt, runtime: row.runtime, sourceSha: fixtureSource, artifactSha256: fixtureDigest, deploymentRef: row.deploymentRef!, identity: row.servingIdentity!, authenticated: true, tenantId: row.tenantId, workspaceId: row.workspaceId, accountId: row.accountId, runId: row.runId, resourceLabel: row.resourceLabel })),
+      completionAudits: [{ ref: 'fixture://completion-audit', evidenceSha256: fixtureDigest, observedAt: fixtureAt, planSlug: 'fixture-plan', planRevision: 1, planContentHash: fixtureDigest, sourceSha: fixtureSource, workItemIds: ['EI-fixture-defect'], verdict: 'passed', completionAuthority: 'committed' }],
+      planGrades: [{ ref: 'fixture://independent-grade', evidenceSha256: fixtureDigest, observedAt: fixtureAt, planSlug: 'fixture-plan', planRevision: 1, planContentHash: fixtureDigest, sourceSha: fixtureSource, rubricRef: 'fixture-rubric', rubricRevision: 1, criteriaHash: fixtureDigest, verdict: 'passed', createdBy: 'fixture-independent-grader', independenceVerified: true, gradingAuditState: 'passed' }],
+      reportReadbacks: [{ ref: 'fixture://report-readback', evidenceSha256: fixtureDigest, observedAt: fixtureAt, planSlug: 'fixture-plan', planRevision: 1, planContentHash: fixtureDigest, sourceSha: fixtureSource, reportId: 'fixture-report', path: '/fixture/report', publicationRef: 'fixture://report-publication', publishedAt: fixtureAt, visibility: 'owner', publishedMarkdownSha256: fixtureDigest, readbackMarkdownSha256: fixtureDigest, complete: true }],
+    },
   };
   return { data, context };
 }
@@ -297,6 +317,63 @@ describe('cloud campaign measured evidence contradictions', () => {
     const row = data.acceptanceEvidence.realRuntimeReceipts.find((entry) => entry.runtime === 'gcp')!;
     Object.assign(row.census!, { [field]: 'true' });
     expect(evaluateCloudCampaignEvidence(data, context).problems['R-5']).toContain('unproven-runtime:gcp');
+  });
+
+  it.each(['promotionRef', 'deploymentRef', 'auditRef', 'gradingRef', 'reportReadbackRef', 'servingIdentity', 'servingRef', 'evidenceRef'] as const)('rejects invented nonempty shipment %s', (field) => {
+    const { data, context } = completeFixture();
+    Object.assign(data.acceptanceEvidence.shipmentReceipts[0]!, { [field]: 'fixture://invented-but-nonempty' });
+    const result = evaluateCloudCampaignEvidence(data, context);
+    expect(result.problems['R-5']).toEqual([]);
+    expect(result.problems['R-6']).toContain('unproven-shipment:operator-api');
+  });
+
+  it.each(['promotions', 'deployments', 'serving', 'completionAudits', 'planGrades', 'reportReadbacks'] as const)('requires an exact independent canonical %s record', (field) => {
+    const { data, context } = completeFixture();
+    const record = context.shipment![field][0]!;
+    record.ref = 'fixture://wrong-canonical-record';
+    const result = evaluateCloudCampaignEvidence(data, context);
+    expect(result.problems['R-5']).toEqual([]);
+    expect(result.problems['R-6']).toContain('unproven-shipment:operator-api');
+  });
+
+  it.each(['missing-context', 'duplicate-record', 'missing-obligation', 'red-promotion', 'failed-deploy', 'wrong-deploy-promotion', 'wrong-serving-artifact', 'wrong-serving-tenant', 'unauthenticated-serving', 'wrong-final-serving', 'wrong-final-deployment', 'pre-deploy-final', 'stale-record', 'unknown-audit', 'proposed-audit', 'partial-audit', 'wrong-plan', 'wrong-plan-hash', 'wrong-rubric', 'wrong-rubric-hash', 'self-grade', 'unverified-independence', 'pending-grade-audit', 'wrong-report-hash', 'incomplete-report', 'wrong-report-visibility', 'early-report', 'malformed-record-hash'] as const)('refuses canonical shipment contradiction %s', (mutation) => {
+    const { data, context } = completeFixture();
+    const shipping: CloudCampaignShipmentContext = context.shipment!;
+    if (mutation === 'missing-context') context.shipment = undefined;
+    if (mutation === 'duplicate-record') shipping.promotions.push(structuredClone(shipping.promotions[0]!));
+    if (mutation === 'missing-obligation') shipping.obligations.pop();
+    if (mutation === 'red-promotion') shipping.promotions[0]!.verdict = 'red';
+    if (mutation === 'failed-deploy') shipping.deployments[0]!.status = 'failed';
+    if (mutation === 'wrong-deploy-promotion') shipping.deployments[0]!.promotionRef = 'fixture://foreign-promotion';
+    if (mutation === 'wrong-serving-artifact') shipping.serving[0]!.artifactSha256 = 'c'.repeat(64);
+    if (mutation === 'wrong-serving-tenant') shipping.serving[0]!.tenantId = 'foreign-tenant';
+    if (mutation === 'unauthenticated-serving') shipping.serving[0]!.authenticated = false;
+    if (mutation === 'wrong-final-serving') data.acceptanceEvidence.realRuntimeReceipts[0]!.servingIdentity = 'foreign-serving';
+    if (mutation === 'wrong-final-deployment') data.acceptanceEvidence.realRuntimeReceipts[0]!.deploymentRef = 'foreign-deployment';
+    if (mutation === 'pre-deploy-final') {
+      shipping.deployments[0]!.observedAt = '2026-10-09T21:30:00.000Z';
+      shipping.serving[0]!.observedAt = '2026-10-09T21:30:00.000Z';
+      data.acceptanceEvidence.shipmentReceipts[0]!.observedAt = '2026-10-09T21:30:00.000Z';
+    }
+    if (mutation === 'stale-record') shipping.promotions[0]!.observedAt = '2026-10-09T19:00:00.000Z';
+    if (mutation === 'unknown-audit') shipping.completionAudits[0]!.verdict = 'unknown';
+    if (mutation === 'proposed-audit') shipping.completionAudits[0]!.completionAuthority = 'proposed';
+    if (mutation === 'partial-audit') shipping.completionAudits[0]!.workItemIds = ['unrelated-item'];
+    if (mutation === 'wrong-plan') shipping.planGrades[0]!.planSlug = 'unrelated-plan';
+    if (mutation === 'wrong-plan-hash') shipping.planGrades[0]!.planContentHash = 'c'.repeat(64);
+    if (mutation === 'wrong-rubric') shipping.planGrades[0]!.rubricRevision += 1;
+    if (mutation === 'wrong-rubric-hash') shipping.planGrades[0]!.criteriaHash = 'c'.repeat(64);
+    if (mutation === 'self-grade') shipping.planGrades[0]!.createdBy = shipping.subject.authorId;
+    if (mutation === 'unverified-independence') shipping.planGrades[0]!.independenceVerified = false;
+    if (mutation === 'pending-grade-audit') shipping.planGrades[0]!.gradingAuditState = 'pending';
+    if (mutation === 'wrong-report-hash') shipping.reportReadbacks[0]!.readbackMarkdownSha256 = 'c'.repeat(64);
+    if (mutation === 'incomplete-report') shipping.reportReadbacks[0]!.complete = false;
+    if (mutation === 'wrong-report-visibility') shipping.reportReadbacks[0]!.visibility = 'public';
+    if (mutation === 'early-report') shipping.reportReadbacks[0]!.publishedAt = '2026-10-09T20:30:00.000Z';
+    if (mutation === 'malformed-record-hash') shipping.planGrades[0]!.evidenceSha256 = 'nonempty-but-not-a-digest';
+    const result = evaluateCloudCampaignEvidence(data, context);
+    expect(result.problems['R-5']).toEqual([]);
+    expect(result.problems['R-6']).toContain('unproven-shipment:operator-api');
   });
 
   it.each(['artifact', 'source', 'unauthenticated', 'earlier-final', 'missing-grade'] as const)('independently rejects final shipment %s', (mutation) => {

@@ -519,6 +519,15 @@
       "completionAuthority": null,
       "sourceRef": "work-item:WI-10007989",
       "rootCauseEvidence": "Canonical open-repair regression failed while owned-deferred control passed; /tmp/cloud-e2e-20261009-open-repair-before.log. Read current canonical completion before acceptance."
+    },
+    {
+      "id": "WI-10007992",
+      "title": "Cloud campaign shipment checker accepts invented nonempty promotion, deployment, audit, grade and report references",
+      "state": "wip",
+      "assignee": "su-ec5efb56-8a98-4efe-a8e2-02017ee78bb8",
+      "completionAuthority": null,
+      "sourceRef": "work-item:WI-10007992",
+      "rootCauseEvidence": "Six maintained wrong-nonempty reference/serving controls reproduced missing canonical shipment joins in test-run:20963516. Read current canonical completion; this snapshot is not acceptance."
     }
   ],
   "defectLedgerBoundary": "Canonical work-item snapshots account for discovered defects. Completed-source records do not imply a measured regression control or a passing triggering real journey. Open cache/build/audit defects remain owned; R-4 and shipment stay unproven until exact canonical records and journey joins satisfy the evaluator.",
