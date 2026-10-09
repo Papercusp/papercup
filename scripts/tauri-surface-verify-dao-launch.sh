@@ -32,7 +32,8 @@ if [ -n "${VERIFY_TAURI_SPA_DIST:-}" ] && [ -f "$VERIFY_TAURI_SPA_DIST/../verifi
 fi
 trap 'status=$?; if [ "$SYNTAX_ONLY" = 1 ]; then rm -rf -- "$OUT_DIR"; elif [ "$status" -ne 0 ]; then echo "P009_TAURI_SURFACE_VERIFY_FAIL leg=dao-launch output=$OUT_DIR" >&2; fi' EXIT
 if [ "$SYNTAX_ONLY" != 1 ]; then
-  DAO_VERIFY_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+  # The verifier executes a frozen copy under WORK, outside the scripts tree.
+  DAO_VERIFY_ROOT="${VERIFY_TAURI_ORIGINAL_REPO_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
   source "$DAO_VERIFY_ROOT/libs/generic/verification-harness/bin/vh.sh"
   vh_phase native-assertions ""
   vh_init dao-launch "$OUT_DIR/harness"
