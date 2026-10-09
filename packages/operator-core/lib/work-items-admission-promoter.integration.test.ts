@@ -7,11 +7,10 @@ import { createImplementationReadiness, sealImplementationAcceptance, countWorkI
 import { getBuildInfo } from './build-info';
 import { readProcessIdentity } from './process-identity';
 import { reapStrandedAdmissionRuns } from './admission-runs-reaper';
+import { configureRuntimeVintageStore, InMemoryRuntimeVintageStore, reportRuntimeVintage, resetRuntimeVintageStore } from './runtime-vintage';
 
 const h = vi.hoisted(() => ({
   sql: undefined as unknown as postgres.Sql,
-  buildInfo: { sha: 'a'.repeat(40) as string | null, version: 'runtime-fixture' },
-  actualBuildInfo: false,
   // undefined ⇒ the real policy (none under VITEST). A test sets it to exercise the work-scope hold.
   scopeTerms: undefined as {
     exact: string[];
@@ -29,10 +28,6 @@ const h = vi.hoisted(() => ({
 vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
   return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: h.sql }) };
-});
-vi.mock('./build-info', async (orig) => {
-  const actual = await orig<typeof import('./build-info')>();
-  return { ...actual, getBuildInfo: () => h.actualBuildInfo ? actual.getBuildInfo() : h.buildInfo };
 });
 // Exercise the actual routine action against this file's disposable PG; registering it
 // must not start the host's routine engine or announce fixtures to live agents.
@@ -80,6 +75,7 @@ const WS = 'default';
 const HARNESS = 'papercusp';
 const NOW = Date.parse('2026-08-26T12:00:00Z');
 let db: FreshPgDb;
+let vintage: InMemoryRuntimeVintageStore;
 
 const DDL = `
   CREATE EXTENSION IF NOT EXISTS vector;
@@ -248,7 +244,10 @@ beforeAll(async () => {
   await db.sql.unsafe(DDL);
 }, 60_000);
 
-afterAll(async () => db?.cleanup());
+afterAll(async () => {
+  resetRuntimeVintageStore();
+  await db?.cleanup();
+});
 
 beforeEach(async () => {
   await db.sql`TRUNCATE harness_shared.work_items, harness_shared.coord_links, harness_shared.work_item_deps, harness_shared.dedup_edges,
@@ -256,8 +255,12 @@ beforeEach(async () => {
     harness_shared.work_item_occurrences, harness_shared.routines RESTART IDENTITY`;
   h.scopeTerms = undefined;
   h.scopeDecisions.length = 0;
-  h.buildInfo = { sha: 'a'.repeat(40), version: 'runtime-fixture' };
-  h.actualBuildInfo = false;
+  vintage = new InMemoryRuntimeVintageStore();
+  configureRuntimeVintageStore(vintage);
+  await reportRuntimeVintage({
+    workspaceId: WS, unit: 'fixture-producer', pid: process.pid,
+    treeSha: 'a'.repeat(40), bundleVersion: 'runtime-fixture',
+  });
 });
 
 it('renews request authorization after model work and before any admission mutation', async () => {
@@ -335,9 +338,12 @@ function judgementCall(verdict: 'r-finding-merge' | 'r-remedy-keep') {
 
 describe('work-item admission promoter (real Postgres)', () => {
   it('records the actual producing runtime process and preserves it during stranded recovery', async () => {
-    h.actualBuildInfo = true;
     const build = getBuildInfo();
     const identity = readProcessIdentity(process.pid);
+    await reportRuntimeVintage({
+      workspaceId: WS, unit: 'fixture-producer', pid: process.pid,
+      treeSha: build.sha, bundleVersion: build.version,
+    });
     await runWorkItemAdmissionPromoter({
       workspaceId: WS, harnessSlug: HARNESS, runId: 'runtime-actual', sql: db.sql,
       llmCall: vi.fn(), now: () => NOW,
@@ -347,7 +353,7 @@ describe('work-item admission promoter (real Postgres)', () => {
     expect(run.detail.producingRuntime).toMatchObject({
       host: hostname(), pid: process.pid, processIdentity: identity,
       buildSha: build.sha, version: build.version,
-      buildIdentityStatus: build.sha ? 'reported' : 'unknown',
+      buildIdentityStatus: build.sha ? 'matched-boot-record' : 'unknown',
     });
     if (process.platform === 'linux' || process.platform === 'darwin') expect(identity).toEqual(expect.any(String));
     // Simulate a producer dying with its original run-start detail still stored.
@@ -381,11 +387,14 @@ describe('work-item admission promoter (real Postgres)', () => {
         expect(original).toMatchObject({
           schemaVersion: 1, host: hostname(), pid: process.pid,
           buildSha: 'a'.repeat(40), version: 'runtime-fixture',
-          buildIdentityStatus: 'reported', buildIdentitySource: 'process-build-info',
+          buildIdentityStatus: 'matched-boot-record', buildIdentitySource: 'runtime-vintage-kernel-pin',
         });
         expect(original!.observedAt).toEqual(expect.any(String));
         // A later process/build must never re-label the original run.
-        h.buildInfo = { sha: 'b'.repeat(40), version: 'later-runtime' };
+        await reportRuntimeVintage({
+          workspaceId: WS, unit: 'fixture-producer', pid: process.pid,
+          treeSha: 'b'.repeat(40), bundleVersion: 'later-runtime',
+        });
         return model(input);
       },
     });
@@ -413,7 +422,10 @@ describe('work-item admission promoter (real Postgres)', () => {
         const [running] = await db.sql`
           SELECT detail FROM harness_shared.admission_runs WHERE id = 'runtime-failed'`;
         original = running.detail.producingRuntime;
-        h.buildInfo = { sha: 'b'.repeat(40), version: 'later-runtime' };
+        await reportRuntimeVintage({
+          workspaceId: WS, unit: 'fixture-producer', pid: process.pid,
+          treeSha: 'b'.repeat(40), bundleVersion: 'later-runtime',
+        });
         throw new Error('runtime witness model failure');
       },
     })).rejects.toThrow('runtime witness model failure');
@@ -425,7 +437,7 @@ describe('work-item admission promoter (real Postgres)', () => {
   });
 
   it('records unknown build identity and preserves it through fail-open completion', async () => {
-    h.buildInfo = { sha: null, version: 'identity-less-bundle' };
+    vintage.rows.clear();
     await runWorkItemAdmissionFailOpen({
       workspaceId: WS, harnessSlug: HARNESS, runId: 'runtime-unknown', sql: db.sql, now: () => NOW,
     });
@@ -434,10 +446,37 @@ describe('work-item admission promoter (real Postgres)', () => {
     expect(run.detail.status).toBe('complete');
     expect(run.detail.mode).toBe('fail-open');
     expect(run.detail.producingRuntime).toMatchObject({
-      buildSha: null, buildIdentityStatus: 'unknown', version: 'identity-less-bundle',
+      buildSha: null, buildIdentityStatus: 'unknown', buildIdentityReason: 'boot-record-absent',
       host: hostname(), pid: process.pid,
     });
   });
+
+  it.each(['stale-process', 'missing-sha', 'ambiguous'] as const)(
+    'keeps an unverifiable producing runtime UNKNOWN (%s)', async kind => {
+      if (kind === 'stale-process') {
+        await vintage.report({
+          workspaceId: WS, unit: 'fixture-producer', pid: process.pid,
+          treeSha: 'a'.repeat(40), extra: { kernelProcessIdentity: 'replaced-process' },
+        });
+      } else {
+        await reportRuntimeVintage({
+          workspaceId: WS, unit: kind === 'ambiguous' ? 'second-unit' : 'fixture-producer',
+          pid: process.pid, treeSha: kind === 'missing-sha' ? null : 'a'.repeat(40),
+        });
+      }
+      await runWorkItemAdmissionPromoter({
+        workspaceId: WS, harnessSlug: HARNESS, runId: `runtime-${kind}`, sql: db.sql,
+        llmCall: vi.fn(), now: () => NOW,
+      });
+      const [run] = await db.sql`
+        SELECT detail FROM harness_shared.admission_runs WHERE id = ${`runtime-${kind}`}`;
+      expect(run.detail.producingRuntime).toMatchObject({
+        buildSha: null, environmentFingerprint: null, buildIdentityStatus: 'unknown',
+        buildIdentityReason: kind === 'stale-process' ? 'boot-process-identity-mismatch'
+          : kind === 'missing-sha' ? 'boot-record-unverifiable' : 'boot-record-ambiguous',
+      });
+    },
+  );
 
   it('does not backfill a legacy run with the replaying runtime identity', async () => {
     await db.sql`

@@ -2334,11 +2334,60 @@ exec "$REGRESSION_REAL_GIT" "$@"
     expect(existsSync(join(destination, 'node_modules'))).toBe(false);
     expect(readFileSync(join(destination, 'tracked.txt'), 'utf8')).toBe('pinned source\n');
     expect(existsSync(join(destination, 'donor-dirty.txt'))).toBe(false);
+    const objects = git(integrationRoot, 'rev-parse', '--path-format=absolute', '--git-path', 'objects');
+    const objectId = git(integrationRoot, 'rev-parse', `${targetSha}^{tree}`);
+    const objectPath = join(objectId.slice(0, 2), objectId.slice(2));
+    expect(statSync(join(destination, '.git/objects', objectPath)).ino)
+      .toBe(statSync(join(objects, objectPath)).ino);
+    expect(existsSync(join(destination, '.git/objects/info/alternates'))).toBe(false);
+    expect(statSync(join(destination, 'tracked.txt')).ino)
+      .not.toBe(statSync(join(integrationRoot, 'tracked.txt')).ino);
+    git(destination, 'update-ref', 'refs/heads/clone-only', targetSha);
+    expect(git(integrationRoot, 'for-each-ref', '--format=%(refname)', 'refs/heads/clone-only')).toBe('');
+    expect(result.stdout).toContain('SOURCE_CLONE_CAPACITY required_kib=');
     writeFileSync(join(destination, 'preserved.txt'), 'existing build inputs\n');
     const again = spawnSync('bash', args, { encoding: 'utf8' });
     expect(again.status).toBe(1);
     expect(again.stderr).toContain('clone source destination already exists');
     expect(readFileSync(join(destination, 'preserved.txt'), 'utf8')).toBe('existing build inputs\n');
+  });
+
+  it('source-only clone refuses insufficient capacity before creating the destination', () => {
+    const destination = join(dirname(releaseRoot), 'capacity-refused');
+    const bin = join(dirname(releaseRoot), 'capacity-bin');
+    mkdirSync(bin);
+    writeFileSync(join(bin, 'df'), '#!/usr/bin/env bash\nprintf "Filesystem 1024-blocks Used Available Capacity Mounted\\nfixture 10 9 1 90%% /\\n"\n', { mode: 0o755 });
+    const result = spawnSync('bash', [SCRIPT_PATH, '--source-only', '--source-root-mode', 'clone',
+      '--ref', targetSha, '--integration', integrationRoot, '--release', destination], {
+      encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
+    });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('insufficient source-clone capacity');
+    expect(existsSync(destination)).toBe(false);
+  });
+
+  it('source-only clone copies objects when the object store is on another device', () => {
+    const destination = join(dirname(releaseRoot), 'cross-device-clone');
+    const bin = join(dirname(releaseRoot), 'device-bin');
+    mkdirSync(bin);
+    const realStat = spawnSync('bash', ['-c', 'command -v stat'], { encoding: 'utf8' }).stdout.trim();
+    writeFileSync(join(bin, 'stat'), [
+      '#!/usr/bin/env bash',
+      'if [ "$1" = "-c" ] && [ "$2" = "%d" ]; then',
+      '  case "$3" in */.git/objects) echo 111 ;; *) echo 222 ;; esac',
+      'else exec "$REAL_STAT" "$@"; fi',
+    ].join('\n'), { mode: 0o755 });
+    const result = spawnSync('bash', [SCRIPT_PATH, '--source-only', '--source-root-mode', 'clone',
+      '--ref', targetSha, '--integration', integrationRoot, '--release', destination], {
+      encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, REAL_STAT: realStat },
+    });
+    expect(result.status, result.stderr).toBe(0);
+    const objectId = git(integrationRoot, 'rev-parse', `${targetSha}^{tree}`);
+    const objectPath = join(objectId.slice(0, 2), objectId.slice(2));
+    expect(statSync(join(destination, '.git/objects', objectPath)).ino)
+      .not.toBe(statSync(join(integrationRoot, '.git/objects', objectPath)).ino);
+    expect(git(destination, 'rev-parse', 'HEAD')).toBe(targetSha);
+    expect(readFileSync(join(destination, 'tracked.txt'), 'utf8')).toBe('pinned source\n');
   });
 
   it('source-only clone recursively materializes the exact gitlink from local objects', () => {

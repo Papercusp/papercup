@@ -1,7 +1,7 @@
 /** Tests for the gateway rate-observability read-model (P-014). */
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
-import { projectHeadroom, fetchGatewayHeadroom, gatewayWholesaleThrottled, isWholesaleThrottled, readmitGatewayAccounts } from './observability';
+import { projectHeadroom, fetchGatewayHeadroom, fetchGatewayOwnerExecution, gatewayWholesaleThrottled, isWholesaleThrottled, readmitGatewayAccounts } from './observability';
 import type { GatewayStats } from './gateway';
 
 const baseStats = (over: Partial<GatewayStats> = {}): GatewayStats => ({
@@ -53,6 +53,18 @@ const baseStats = (over: Partial<GatewayStats> = {}): GatewayStats => ({
     affinity: { hits: 0, cold: 0, nokey: 0, yields: 0, enabled: true, ttlMs: 0 },
   },
   ...over,
+});
+
+test('owner execution keeps absent and mismatched telemetry unknown', async () => {
+  for (const body of [{ owner: 'su-a', now: 100 }, { owner: 'su-b', now: 100, stageTelemetry: { active: 0 } },
+    { owner: 'su-a', now: 100, stageTelemetry: { active: -1 } }]) {
+    const result = await fetchGatewayOwnerExecution('su-a', {
+      fetchImpl: (async () => new Response(JSON.stringify(body))) as typeof fetch });
+    assert.equal(result.active, null);
+  }
+  assert.deepEqual(await fetchGatewayOwnerExecution('su-a', {
+    fetchImpl: (async () => new Response(JSON.stringify({ owner: 'su-a', now: 100, stageTelemetry: { active: 2 } }))) as typeof fetch,
+  }), { active: 2, observedAt: 100 });
 });
 
 test('projectHeadroom — maps the unified window + queue into the read-model', () => {

@@ -941,6 +941,8 @@ export async function transferLoopOwnership(
 
 /** A lean view of an owner's loop, for loop:status / observability. */
 export interface LoopStatus {
+  /** Durable native execution recovery verdict from the existing routine metadata. */
+  executionRecovery?: import('./loop-execution-recovery').ExecutionRecoveryState;
   name: string;
   ownerId: string;
   harnessSlug: string;
@@ -1950,6 +1952,7 @@ function loopStatusFromRow(r: any, fallbackOwnerId: string): LoopStatus {
     lastWakeStatus: r.last_wake_status ?? null,
     lastWakeAt: r.last_wake_at ? new Date(r.last_wake_at).toISOString() : null,
     lastWakeError: r.last_wake_error ?? null,
+    ...(r.metadata?.executionRecovery ? { executionRecovery: r.metadata.executionRecovery } : {}),
     lastTurnAt: r.last_turn_at ? new Date(r.last_turn_at).toISOString() : null,
     lastLoopTurnAt: r.last_loop_turn_at ? new Date(r.last_loop_turn_at).toISOString() : null,
     lastFailedFireLoopTurnCompletedAt: r.last_failed_fire_loop_turn_completed_at

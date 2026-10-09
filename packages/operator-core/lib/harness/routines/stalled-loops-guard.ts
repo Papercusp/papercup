@@ -153,6 +153,7 @@
  * an owner decision rather than correct this module's own wrong verdict.
  */
 import type { Sql } from 'postgres';
+import { recoverExpectedLoopExecution } from './loop-execution-recovery';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
 import {
@@ -1067,6 +1068,9 @@ export async function sweepStalledLoops(
     // and has not happened yet. Re-disarming here would undo the revival within milliseconds and
     // spend one of its bounded revival attempts doing it.
     if (revivedThisSweep.has(ownerId)) continue;
+    const executionRecovery = await recoverExpectedLoopExecution({ sql, routineId,
+      ownerId, nowMs: Date.now(), dryRun });
+    if (executionRecovery.handled) continue;
 
     // EI-19362678179163398 — SECOND-SOURCE VETO. Disarming a loop is an automated write
     // against a live agent, and the verdict above rests on ONE column (`last_turn_at`)

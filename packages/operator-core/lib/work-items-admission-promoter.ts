@@ -58,8 +58,8 @@ import {
 } from './work-scope-policy';
 import type { OrgSql } from './work-items';
 import { effectiveStoredProseProfileIdSql } from './search/prose-vector-dims';
-import { getBuildInfo } from './build-info';
 import { readProcessIdentity } from './process-identity';
+import { listRuntimeVintage, measureRuntimeVintageEnvironment } from './runtime-vintage';
 
 /** Announce the pending→admitted edge only after its write commits. The lifecycle
  * emitter applies the same state, claim-hold, observation and plan-lane floors as
@@ -2421,23 +2421,53 @@ async function beginRun(
   sql: OrgSql,
   input: { runId: string; workspaceId: string; harnessSlug: string; mode: AdmissionTickMode },
 ): Promise<void> {
-  const build = getBuildInfo();
+  const host = hostname();
+  const identity = readProcessIdentity(process.pid);
+  const producingRuntime: Record<string, unknown> = {
+    schemaVersion: 1,
+    observedAt: new Date().toISOString(),
+    host,
+    pid: process.pid,
+    processIdentity: identity,
+    unit: null,
+    buildSha: null,
+    version: null,
+    buildTime: null,
+    bootReportedAt: null,
+    environmentFingerprint: null,
+    buildIdentityStatus: 'unknown',
+    buildIdentityReason: 'process-identity-unavailable',
+    buildIdentitySource: 'runtime-vintage-kernel-pin',
+  };
+  if (identity) {
+    try {
+      const rows = (await listRuntimeVintage(input.workspaceId, sql))
+        .filter(row => row.host === host && row.pid === process.pid);
+      producingRuntime.buildIdentityReason = rows.length === 0 ? 'boot-record-absent' : 'boot-record-ambiguous';
+      if (rows.length === 1) {
+        const row = rows[0]!;
+        const fingerprint = measureRuntimeVintageEnvironment(rows, [row.unit]);
+        producingRuntime.buildIdentityReason = row.extra.kernelProcessIdentity !== identity
+          ? 'boot-process-identity-mismatch' : 'boot-record-unverifiable';
+        if (fingerprint) {
+          Object.assign(producingRuntime, {
+            unit: row.unit, buildSha: row.treeSha, version: row.bundleVersion,
+            buildTime: row.buildTime, bootReportedAt: row.reportedAt,
+            environmentFingerprint: fingerprint, buildIdentityStatus: 'matched-boot-record',
+            buildIdentityReason: null,
+          });
+        }
+      }
+    } catch {
+      producingRuntime.buildIdentityReason = 'boot-record-unavailable';
+    }
+  }
   const detail = JSON.stringify({
     status: 'running',
     mode: input.mode,
-    // Capture the producing process at admission, never from a later boot row
-    // or checkout HEAD. An identity-less bundle remains explicitly unknown.
-    producingRuntime: {
-      schemaVersion: 1,
-      observedAt: new Date().toISOString(),
-      host: hostname(),
-      pid: process.pid,
-      processIdentity: readProcessIdentity(process.pid),
-      buildSha: build.sha,
-      version: build.version,
-      buildIdentityStatus: build.sha ? 'reported' : 'unknown',
-      buildIdentitySource: 'process-build-info',
-    },
+    // Persist the process-matched boot witness now; never resolve a historical
+    // producer from a later runtime row or the checkout's current HEAD.
+    producingRuntime,
     outcome: {
       unit: 'items',
       attempted: null,

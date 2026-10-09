@@ -207,6 +207,56 @@ fi
 
 log() { echo "[setup-release] $*"; }
 
+# Return the device id for a path or its nearest existing ancestor. Git's local
+# clone hardlinks immutable objects only when both stores are on one device.
+filesystem_device() {
+  local path="$1" parent
+  while [ ! -e "$path" ]; do
+    parent="$(dirname "$path")"
+    [ "$parent" = "$path" ] && break
+    path="$parent"
+  done
+  stat -c '%d' "$path"
+}
+
+# Estimate checked-out blob allocation from the PIN, never the dirty donor
+# tree. Cross-device clones also need a real copy of the Git object store.
+source_clone_allocation_kib() {  # <repository> <pin> <destination-device>
+  local repo="$1" pin="$2" dest_device="$3" objects tree_kib object_kib=0
+  objects="$(git -C "$repo" rev-parse --path-format=absolute --git-path objects)" || return 1
+  tree_kib="$(git -C "$repo" ls-tree -rl "$pin" \
+    | awk '$2 == "blob" { kib += int(($4 + 4095) / 4096) * 4 } END { printf "%.0f\n", kib }')" || return 1
+  if [ "$(filesystem_device "$objects")" != "$dest_device" ]; then
+    object_kib="$(du -sk "$objects" | awk '{print $1}')" || return 1
+  fi
+  echo "$((tree_kib + object_kib))"
+}
+
+preflight_source_clone() {
+  local ancestor="$RELEASE_ROOT" dest_device required available child_kib pin path
+  while [ ! -e "$ancestor" ]; do ancestor="$(dirname "$ancestor")"; done
+  dest_device="$(filesystem_device "$ancestor")" || return 1
+  required="$(source_clone_allocation_kib "$INTEGRATION_ROOT" "$TARGET_SHA" "$dest_device")" || return 1
+  # The materializer supports top-level gitlinks; include their exact pins in
+  # the same preflight so a root clone cannot consume space needed by its children.
+  while IFS=$'\t' read -r pin path; do
+    [ -n "$pin" ] || continue
+    child_kib="$(source_clone_allocation_kib "$INTEGRATION_ROOT/$path" "$pin" "$dest_device")" || return 1
+    required="$((required + child_kib))"
+  done < <(git -C "$INTEGRATION_ROOT" ls-tree -r "$TARGET_SHA" \
+    | awk '$1 == "160000" { pin=$3; sub(/^[^\t]*\t/, ""); print pin "\t" $0 }')
+  # Allow metadata and allocation rounding overhead; this is a fail-fast
+  # capacity check, not a promise against concurrent disk consumers.
+  required="$((required + required / 20 + 65536))"
+  available="$(df -Pk "$ancestor" | awk 'NR == 2 {print $4}')" || return 1
+  case "$available" in ''|*[!0-9]*) echo "[setup-release] cannot measure source-clone capacity" >&2; return 1 ;; esac
+  log "SOURCE_CLONE_CAPACITY required_kib=$required available_kib=$available"
+  if [ "$available" -lt "$required" ]; then
+    echo "[setup-release] insufficient source-clone capacity: required_kib=$required available_kib=$available (destination untouched)" >&2
+    return 1
+  fi
+}
+
 # Shared by ordinary deployment preparation and the finite SPA-only phase.
 build_release_spa() {
   log "building operator-vite SPA dist at the deployed sha (this can take a minute)"
@@ -428,8 +478,15 @@ elif [ "$SOURCE_ROOT_MODE" = "clone" ]; then
     echo "[setup-release] clone source destination already exists: $RELEASE_ROOT" >&2
     exit 1
   fi
+  preflight_source_clone
   log "creating independent release source clone at $RELEASE_ROOT"
-  git clone --quiet --local --no-hardlinks --no-checkout "$INTEGRATION_ROOT" "$RELEASE_ROOT"
+  _root_objects="$(git -C "$INTEGRATION_ROOT" rev-parse --path-format=absolute --git-path objects)"
+  _root_clone_args=(--quiet --local --no-checkout)
+  # Share only immutable object inodes. Refs, index and checked-out source are
+  # independent, and no alternates file depends on later donor retention.
+  [ "$(filesystem_device "$_root_objects")" = "$(filesystem_device "$RELEASE_ROOT")" ] \
+    || _root_clone_args+=(--no-hardlinks)
+  git clone "${_root_clone_args[@]}" "$INTEGRATION_ROOT" "$RELEASE_ROOT"
   git -C "$RELEASE_ROOT" checkout --quiet --detach "$TARGET_SHA"
   # A standalone clone does not inherit integration's submodule active config.
   # Register gitlinks locally so recursive tracked-source guards see their files;
@@ -581,20 +638,6 @@ extract_submodule_source() {  # <repo-relative path> <pinned sha>
   # it is unreachable in the default mode.
   _LAST_EXTRACT_USED_LIVE_TREE=1
   return 0
-}
-
-# Return the device id for a path or its nearest existing ancestor. Both the
-# submodule clone and node_modules materializer use this: local Git clones
-# hardlink objects by default and fail with EXDEV rather than falling back to a
-# copy when the destination is on another filesystem.
-filesystem_device() {
-  local path="$1" parent
-  while [ ! -e "$path" ]; do
-    parent="$(dirname "$path")"
-    [ "$parent" = "$path" ] && break
-    path="$parent"
-  done
-  stat -c '%d' "$path"
 }
 
 # EI-19299565558496583: clone a REAL submodule repository at the pinned sha. This

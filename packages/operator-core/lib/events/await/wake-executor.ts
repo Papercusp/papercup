@@ -204,7 +204,7 @@ import {
 import { quarantineRepeatedClaudeToolReferenceFailures } from './poisoned-resume-session';
 import type { ToolReferenceDeathRecovery } from '../../system-health/compaction-compliance-watchdog';
 import type { ResumeTurnContext, ResumeTurnExitRaw } from './resume-turn-outcome';
-import type { DeliveryWork, WakeChannel, WakeOutcome } from './types';
+import type { DeliveryWork, WakeChannel, WakeOutcome, WakeHandle } from './types';
 
 /** Bounded output-tail capture for an observed resume turn (P0a). The CLIs print
  *  API errors (incl. the 429 / usage-limit lines) to STDOUT; the dying turn's error
@@ -2812,6 +2812,8 @@ export interface ExecuteWakeDeps {
  * satisfies it; hermetic tests hand in a literal.
  */
 type PsuInjectHostView = {
+  execution?: PsuPtyHost['execution'];
+  startedAt?: number;
   sock: string;
   ownerId?: string | null;
   bridgeTty?: boolean | null;
@@ -3018,6 +3020,9 @@ async function injectPsuHostWake(
       ownerId: d.subscriberId,
       deliveryId: String(d.id),
       provenanceIssuedAtMs: warmText.provenanceIssuedAtMs,
+      ...(useConfirmation && !quotaRecovery.eligible && hostSupports(host as PsuPtyHost, 'native-turn-start')
+        ? { requireNativeTurnStart: true, expectedChildGeneration: host.execution?.childGeneration,
+            expectedHostStartedAt: host.startedAt } : {}),
       ...(quotaRecovery.eligible && useConfirmation
         ? {
             quotaRecovery: {

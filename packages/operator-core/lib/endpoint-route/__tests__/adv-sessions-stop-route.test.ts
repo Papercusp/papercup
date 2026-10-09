@@ -15,15 +15,16 @@ vi.mock('../../omp-config', () => ({ readOmpConfig: vi.fn(async () => []) }));
 vi.mock('../../omp-sessions', () => ({ findOmpSessionNear: vi.fn(), getOmpSessionRowSummary: vi.fn(), getOmpSessionState: vi.fn(), searchOmpSessions: vi.fn() }));
 import routes from '../routes/adv/sessions';
 const route = routes.find(value => value.method === 'POST' && value.path === '/adv/sessions/close-window')!;
-const body = { ownerId: 'su-selected', managedSessionId: 7, confirmed: true };
+const STARTED_AT = '2026-10-09T17:00:00.000Z';
+const body = { ownerId: 'su-selected', managedSessionId: 7, expectedStartedAt: STARTED_AT, confirmed: true };
 const call = (value: unknown, origin?: string, hosted = false) => route.handler(new Request('http://127.0.0.1/api/adv/sessions/close-window', {
   method: 'POST', headers: { 'content-type': 'application/json', ...(origin ? { origin } : {}), ...(hosted ? { 'x-papercusp-hosted-user-id': 'private-ticket-user' } : {}) }, body: JSON.stringify(value),
 }), { params: {}, principal: { workspaceId: 'authorized-workspace' } } as never) as Promise<Response>;
 
 beforeEach(() => {
   vi.clearAllMocks();
-  fixture.row.mockResolvedValue({ id: 7, coordOwnerId: 'su-selected', endedAt: null });
-  fixture.latest.mockResolvedValue({ id: 7 });
+  fixture.row.mockResolvedValue({ id: 7, coordOwnerId: 'su-selected', endedAt: null, startedAt: STARTED_AT });
+  fixture.latest.mockResolvedValue({ id: 7, startedAt: STARTED_AT });
   fixture.host.mockResolvedValue({ advSessionId: '7', startedAt: 12345 });
   fixture.supports.mockReturnValue(true);
   fixture.shutdown.mockResolvedValue('sent');
@@ -38,7 +39,7 @@ describe('confirmed managed session stop', () => {
       reason: 'Confirmed stop from the portal roster', expectedHost: { startedAt: 12345, advSessionId: '7' },
     });
     expect(fixture.closeWindow).not.toHaveBeenCalled();
-    await expect(response.json()).resolves.toEqual({ ok: true, ownerId: 'su-selected', managedSessionId: 7, status: 'stop-requested' });
+    await expect(response.json()).resolves.toEqual({ ok: true, ownerId: 'su-selected', managedSessionId: 7, sessionStartedAt: STARTED_AT, status: 'stop-requested' });
   });
   it.each([{ ...body, confirmed: false }, { ...body, pid: 42 }, { ...body, windowId: '0xbeef' }, { ...body, managedSessionId: '7' }])('refuses cancellation or arbitrary handles %j', async value => {
     expect((await call(value)).status).toBe(400);
@@ -67,6 +68,17 @@ describe('confirmed managed session stop', () => {
   });
   it('refuses a host bound to a different managed session', async () => {
     fixture.host.mockResolvedValue({ advSessionId: '8', startedAt: 23456 });
+    expect((await call(body)).status).toBe(409);
+    expect(fixture.shutdown).not.toHaveBeenCalled();
+  });
+  it('cannot replay an old start time when reactivation reuses the same row id', async () => {
+    fixture.row.mockResolvedValue({ id: 7, coordOwnerId: 'su-selected', endedAt: null, startedAt: '2026-10-09T18:00:00.000Z' });
+    expect((await call(body)).status).toBe(403);
+    expect(fixture.shutdown).not.toHaveBeenCalled();
+  });
+  it('refuses reactivation that occurs while the host is being resolved', async () => {
+    fixture.row.mockResolvedValueOnce({ id: 7, coordOwnerId: 'su-selected', endedAt: null, startedAt: STARTED_AT })
+      .mockResolvedValueOnce({ id: 7, coordOwnerId: 'su-selected', endedAt: null, startedAt: '2026-10-09T18:00:00.000Z' });
     expect((await call(body)).status).toBe(409);
     expect(fixture.shutdown).not.toHaveBeenCalled();
   });

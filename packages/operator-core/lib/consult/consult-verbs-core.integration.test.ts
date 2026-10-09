@@ -282,6 +282,74 @@ async function evidenceJsonbType(conversationId: string) {
 
 const EVIDENCE = [{ session_id: 'sess-r', turn_idx: 7, note: 'the debug session' }];
 
+describe.each(['confirmed', 'rescoped', 'reversed', 'moot'] as const)(
+  'retired requester reporting — historical outcome preservation: %s',
+  (disposition) => {
+    const historical = {
+      disposition,
+      note: 'Previously recorded project decision; no new reporting call is required.',
+      by: REQUESTER,
+      at: '2026-08-15T12:00:00Z',
+      consult_state: 'active',
+      decision_ref: 'historical-project#D-001',
+    };
+
+    async function seedHistory() {
+      const id = await seedConsult({ state: 'active' });
+      await rootSql`
+        UPDATE harness_shared.consult_state
+           SET outcome = ${rootSql.json({ reconciliation: historical } as never)}
+         WHERE workspace_id = ${WS} AND conversation_id = ${id}`;
+      expect((await stateRow(id)).outcome).toEqual({ reconciliation: historical });
+      return id;
+    }
+
+    it('preserves the exact historical record when the responder replies', async () => {
+      const id = await seedHistory();
+      const { deps } = makeDeps();
+      const result = await consultReplyCore({
+        workspaceId: WS, authorId: RESPONDER, conversationId: id,
+        kind: 'answer', body: 'Source-grounded advice.', evidence: EVIDENCE,
+      }, deps);
+      expect(result).not.toHaveProperty('error');
+      expect((await stateRow(id)).outcome).toEqual({ reconciliation: historical });
+    });
+
+    it.each(['answered', 'cant_help', 'graduate'] as const)(
+      'preserves the exact historical record through an %s close',
+      async (outcome) => {
+        const id = await seedHistory();
+        const { deps } = makeDeps({ withMint: true });
+        const result = await consultCloseCore({
+          workspaceId: WS, authorId: REQUESTER, conversationId: id, outcome,
+          ...(outcome === 'answered'
+            ? { answer: 'Advice reviewed in the project.', evidence: EVIDENCE }
+            : { reason: 'Continue the project through the ordinary workflow.' }),
+        }, deps);
+        expect(result).not.toHaveProperty('error');
+        const row = await stateRow(id);
+        expect(row.state).toBe(outcome === 'answered'
+          ? 'closed_answered' : outcome === 'graduate' ? 'graduated' : 'closed_cant_help');
+        expect(row.outcome).toMatchObject({ reconciliation: historical });
+        expect((row.outcome as Record<string, unknown>).reconciliation).toEqual(historical);
+      },
+    );
+
+    it('preserves the exact historical record through terminal decline', async () => {
+      const id = await seedHistory();
+      const { deps } = makeDeps();
+      const result = await consultDeclineCore({
+        workspaceId: WS, authorId: RESPONDER, conversationId: id,
+        reason: 'The transcript does not cover this question.',
+      }, deps);
+      expect(result).not.toHaveProperty('error');
+      const row = await stateRow(id);
+      expect(row.state).toBe('declined');
+      expect((row.outcome as Record<string, unknown>).reconciliation).toEqual(historical);
+    });
+  },
+);
+
 // ── consult:reply ────────────────────────────────────────────────────────
 describe('consultReplyCore — kind rules + transitions', () => {
   it('responder answer: meta row with evidence, awaiting_responder→active, park-key emit to the requester', async () => {

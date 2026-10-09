@@ -12826,6 +12826,10 @@ export function hostThroughPty(o) {
             (deliver.expectedHostStartedAt !== baseMeta.startedAt || deliver.expectedChildGeneration !== childGeneration)) {
             return { ok: false, reason: 'stale-execution-generation' };
           }
+          if (deliver.requireNativeTurnStart && (!deliver.deliveryId || !leadingTurnOriginMarker(deliver.data)
+            || !nativeTurnVerifierSupport(env.PAPERCUSP_AGENT, env).supported)) {
+            return { ok: false, reason: 'native-turn-start-unavailable' };
+          }
         }
         // WI-5510: commit the latest coalesced fire only after the provenance
         // fence, immediately before the pty write. An expired text cannot move

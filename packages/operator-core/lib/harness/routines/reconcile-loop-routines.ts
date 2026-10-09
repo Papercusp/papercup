@@ -200,6 +200,7 @@ import {
   MODEL_CAPACITY_RETRY_AFTER_MS,
 } from '@papercusp/papercusp-shared/agent';
 import { recordLoopTransition } from './loop-transition-log';
+import { recoverExpectedLoopExecution } from './loop-execution-recovery';
 import { countAgentToolCallsInWindow as defaultCountAgentToolCallsInWindow } from './loop';
 import { autoPauseLoopRoutine as defaultAutoPauseLoopRoutine } from './loop-cost-cap';
 import {
@@ -1690,6 +1691,9 @@ export async function reconcileLoopRoutines(
       }
 
       // Resolve the re-arm time + provenance.
+      const executionRecovery = await recoverExpectedLoopExecution({ sql: db, routineId: row.id,
+        ownerId: row.target_owner_id, nowMs });
+      if (executionRecovery.handled) continue;
       let completedAt: number;
       let via: RebaseVia;
       let quickRetry = false;

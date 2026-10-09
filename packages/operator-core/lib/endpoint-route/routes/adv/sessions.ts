@@ -621,23 +621,27 @@ const closeWindow = defineTool({
       const { findLiveHostAsync, hostSupports, shutdownViaPty } = await import('../../../events/await/psu-pty-discovery');
       const ownerId = typeof parsed.ownerId === 'string' ? parsed.ownerId.trim() : '';
       const id = parsed.managedSessionId;
-      if (parsed.confirmed !== true || !ownerId || typeof id !== 'number' || !Number.isInteger(id) || id <= 0 || 'pid' in parsed || 'windowId' in parsed) {
+      if (parsed.confirmed !== true || !ownerId || typeof id !== 'number' || !Number.isInteger(id) || id <= 0 || typeof parsed.expectedStartedAt !== 'string' || 'pid' in parsed || 'windowId' in parsed) {
         return json({ ok: false, error: 'confirmed owner and managed session identity are required' }, 400);
       }
       const workspaceId = ctx.principal?.workspaceId ?? activeWorkspaceId();
       const row = await getAdvSessionInWorkspace(Number(id), workspaceId);
-      if (!row || row.coordOwnerId !== ownerId || row.endedAt != null) return json({ ok: false, error: 'stale or foreign session' }, 403);
+      if (!row || row.coordOwnerId !== ownerId || row.endedAt != null || row.startedAt !== parsed.expectedStartedAt) return json({ ok: false, error: 'stale or foreign session' }, 403);
       const latest = await getLatestActiveAdvSessionByOwner(ownerId);
-      if (latest?.id !== row.id) return json({ ok: false, error: 'stale session selection' }, 409);
+      if (latest?.id !== row.id || latest.startedAt !== row.startedAt) return json({ ok: false, error: 'stale session selection' }, 409);
       const host = await findLiveHostAsync(ownerId);
       if (!host || host.advSessionId !== String(row.id)) return json({ ok: false, error: 'managed session host unavailable' }, 409);
       if (!hostSupports(host, 'shutdown-identity')) return json({ ok: false, error: 'this session does not support a confirmed stop' }, 422);
+      const rechecked = await getAdvSessionInWorkspace(Number(id), workspaceId);
+      if (rechecked?.startedAt !== row.startedAt || rechecked.endedAt != null || rechecked.coordOwnerId !== ownerId) {
+        return json({ ok: false, error: 'session incarnation changed' }, 409);
+      }
       const outcome = await shutdownViaPty(ownerId, {
         reason: 'Confirmed stop from the portal roster',
         expectedHost: { startedAt: host.startedAt, advSessionId: String(row.id) },
       });
       if (outcome !== 'sent') return json({ ok: false, ownerId, error: outcome }, outcome === 'refused-stale-host' ? 409 : 422);
-      return json({ ok: true, ownerId, managedSessionId: row.id, status: 'stop-requested' });
+      return json({ ok: true, ownerId, managedSessionId: row.id, sessionStartedAt: row.startedAt, status: 'stop-requested' });
     }
     const body = parsed as { id?: number; pid?: number; windowId?: string | null };
     const latestRow =
