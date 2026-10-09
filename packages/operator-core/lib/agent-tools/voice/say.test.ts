@@ -72,6 +72,21 @@ describe('voice:say', () => {
     expect(push).not.toHaveBeenCalled();
   });
 
+  it('preserves the requesting tab starting receipt without claiming audible completion', async () => {
+    const receipt = { status: 'done', result: { readingId: 'reading-1', status: 'starting' } };
+    vi.mocked(uiDispatch.handler).mockResolvedValueOnce({
+      content: [{ type: 'text', text: JSON.stringify(receipt) }],
+    });
+    const result = await handler({ operation: 'read', content: { kind: 'text', text: 'Authorized source.' } } as never, ctx as never) as {
+      content: Array<{ type: string; text: string }>;
+      structuredContent: { destination: string };
+    };
+    expect(JSON.parse(result.content[0]!.text)).toEqual(receipt);
+    expect(result.structuredContent.destination).toBe('requesting-tab');
+    expect(uiDispatch.handler).toHaveBeenCalledWith(expect.objectContaining({ client_id: 'requesting-tab', intent: 'voice_read' }), ctx);
+    expect(push).not.toHaveBeenCalled();
+  });
+
   it('needs a requesting tab and sends controls only to that tab', async () => {
     const missing = await handler({ operation: 'control', readingId: 'reading-1', action: 'stop' } as never, {} as never) as { data: unknown };
     expect(missing.data).toMatchObject({ ok: false, error: 'requesting_destination_required' });
