@@ -175,7 +175,9 @@ export function evaluateCloudCampaignEvidence(input: unknown, context: CloudCamp
   for (const entry of rows.defects) {
     if (entry.state !== 'done') {
       if (!entry.assignee) problems['R-4'].push(`unowned-residue:${entry.id}`);
-      // Owned residue accounts for a defect but does not satisfy real runtime or shipment.
+      if (entry.state === 'open') problems['R-4'].push(`unfinished-repair:${entry.id}`);
+      // Deferred residue is accounted for by its owner. An open repair still owes
+      // the originating fix and triggering journey, regardless of ownership.
       continue;
     }
     const root = entry.rootCauseVerification;
