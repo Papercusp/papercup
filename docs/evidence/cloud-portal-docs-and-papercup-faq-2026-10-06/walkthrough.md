@@ -555,3 +555,39 @@ log hashes and retained launch commands are in
 [portal-workspace-browser-d031-20261009.json](./portal-workspace-browser-d031-20261009.json).
 Raw records were copied with matching hashes under the retained artifact's
 private evidence directory, so this record does not rely solely on `/tmp`.
+
+## R-1 revised source review, 2026-10-09
+
+The earlier R-1 binding `31014` describes historical bytes. A fresh SHA256
+comparison found changes in `accounts-and-billing.mdx`, this walkthrough and
+`public-build-parity.test.ts`; the other eleven guide sources and
+`first-task.test.ts` still match that binding's measurement pin. This review
+updates the changed account content without changing the historical record.
+
+The revised account guide still opens with the reader's goal and inspectable
+result. It distinguishes **Portal account** and **Status** from the workspace's
+**Accounts sidebar** for model accounts. If the portal has no organization
+selector, it directs the reader to an administrator to confirm membership
+and the intended workspace, rather than implying that an absent control exists.
+**Billing** and **Manage billing** remain conditional on the installation and
+role. The page preserves separate subscription, model and cloud costs, warns
+against duplicate payments, requires subscription confirmation after checkout,
+and explains that stopping agents or closing a browser does not cancel a
+subscription or remove cloud resources. Recovery preserves credential redaction.
+
+The current account source and parity-test bytes match
+[pagefind-write-completion-20261009.json](./pagefind-write-completion-20261009.json).
+Its retained patched-test and build logs were read and their hashes matched:
+nine maintained tests passed with no skips and Astro reported zero diagnostics.
+The existing
+[approved-manual-browser-20261009.json](./approved-manual-browser-20261009.json)
+records four passing selected cases for account reading and distinctions,
+new-guide search and alternate FAQ wording. Those results retain their original
+timestamps, source-custody qualifications and selected-case scope; no test or
+browser result was replayed or restamped for this review.
+
+This is current source-review evidence, not full R-1 acceptance. The retained
+account and D031 observations do not establish the complete current UI label
+and transition census for every first-task flow. Provider readiness, payment
+and provisioning journeys, real novice comprehension, independent acceptance
+and exact production shipment remain unverified. The R-1 clause stays open.
