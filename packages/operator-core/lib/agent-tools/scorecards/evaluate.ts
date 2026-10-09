@@ -34,8 +34,22 @@ export const scorecardRatingEntrySchema = z
   .object({
     rating: z.string().min(1),
     evidence: z.string().min(1),
-    evidenceRef: z.string().min(1).max(500).optional(),
-    evidenceKind: z.string().min(1).max(80).optional(),
+    evidenceRef: z
+      .string()
+      .min(1)
+      .max(500)
+      .optional()
+      .describe(
+        'Stable reference for the artifact or probe named by `evidence`. For a grading-integrity replay challenge, pair it with `evidenceKind` and cite a reference outside the graded card\'s replay selection; the guard checks selection membership, not the referenced content.',
+      ),
+    evidenceKind: z
+      .string()
+      .min(1)
+      .max(80)
+      .optional()
+      .describe(
+        'Kind or namespace for `evidenceRef` (for example `test-run`). For a grading-integrity replay challenge, both fields are required to establish that evidence is outside the graded card\'s replay selection.',
+      ),
     positiveControlRef: z.string().min(1).max(500).optional(),
     absenceClaim: z.boolean().optional(),
     // One vocabulary (observation-types): a second hand-copied literal list here is
