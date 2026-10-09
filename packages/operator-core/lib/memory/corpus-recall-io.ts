@@ -338,6 +338,8 @@ export interface CorpusRecallResult {
    * selectively, whatever its coverage percentage says.
    */
   retrievalDepth: number;
+  /** Every executed cascade stage; the final leg alone can hide a stage-1 failure. */
+  stages?: SearchLegs[];
 }
 
 const empty = (outcome: CorpusRecallOutcome): CorpusRecallResult => ({
@@ -544,7 +546,7 @@ async function rerankStage1(
 export async function recallCorpusContext(input: CorpusRecallInput): Promise<CorpusRecallResult> {
   const deadline = createMemoryWorkDeadline(corpusRecallTimeoutMs(), input.signal);
   try {
-    return await deadline.run(() => recallCorpusContextInner({ ...input, signal: deadline.signal }), 'corpus recall');
+    return await deadline.run(() => recallCorpusContextInner({ ...input, signal: deadline.signal }, () => deadline.remainingMs()), 'corpus recall');
   } catch (error) {
     if (deadline.signal.aborted || error instanceof MemoryTimeoutError) return empty('timed-out');
     throw error;
@@ -553,6 +555,7 @@ export async function recallCorpusContext(input: CorpusRecallInput): Promise<Cor
 
 async function recallCorpusContextInner(
   input: CorpusRecallInput,
+  remainingMs: () => number,
 ): Promise<CorpusRecallResult> {
   const rawText = input.queryText?.trim() ?? '';
   if (!rawText) return empty('no-query');
@@ -599,6 +602,7 @@ async function recallCorpusContextInner(
   // deep inside `run`. Defaults to the honest "we never got there": every early
   // return below leaves the leg short of stage 1.
   let rerankOutcome: CorpusRerankOutcome = 'nothing-to-reorder';
+  const stages: SearchLegs[] = [];
 
   try {
     const { sql } = getOrgPg();
@@ -666,9 +670,12 @@ async function recallCorpusContextInner(
       // stage-1 text if the wider derivation yields nothing.
       const gradedQuery = corpusQueryText(rawText, gradedMaxTerms) || effectiveQuery;
 
-      const search = (lexicalMode: 'and' | 'coverage-graded', queryFor: string) => {
+      const search = async (lexicalMode: 'and' | 'coverage-graded', queryFor: string) => {
         input.signal?.throwIfAborted();
-        return runHybridSearch(sources, {
+        // Reserve time for embedding, source queries, selection and the optional cascade.
+        // Each query uses the remaining request lifetime, never a fresh whole-leg budget.
+        const stageBudget = Math.max(1, remainingMs() / 4);
+        const result = await runHybridSearch(sources, {
           signal: input.signal,
           caller: 'midturn:related-context',
           sql,
@@ -683,7 +690,8 @@ async function recallCorpusContextInner(
           limit: retrievalDepth,
           mode: 'hybrid',
           embedder,
-          embedTimeoutMs: embedBudget,
+          embedTimeoutMs: Math.min(embedBudget, stageBudget),
+          sourceTimeoutMs: stageBudget,
           // Highlights ARE used — the teaser and the relevance guard both read the
           // match fragment rather than the body lead. Deferring means the engine
           // hydrates them for the final top-N only, instead of paying ts_headline
@@ -736,6 +744,18 @@ async function recallCorpusContextInner(
             ? {}
             : { lexicalAnchorDfBudget: input.anchorDfBudget }),
         });
+        if (result.legs) {
+          for (const name of CORPUS_SOURCE_NAMES) {
+            if (sources.some(source => source.name === name)) continue;
+            for (const [leg,ranker] of [[result.legs.lexical,'lexical'],[result.legs.semantic,'embeddings']] as const) {
+              (leg.sourceCalls ??= []).push({ source: name,ranker,status: 'not-run',rows: null,
+                durationMs: 0,reason: input.knowledgeSourcesAllowed === false
+                  ? 'knowledge source not granted by host' : 'source not registered' });
+            }
+          }
+          stages.push(result.legs);
+        }
+        return result;
       };
 
       // Which of these hits' sessions belong to the CALLER (EI-19460887729945170)?
@@ -886,6 +906,7 @@ async function recallCorpusContextInner(
       // is stage 2 (when it runs) that produced the final admitted set, so its
       // leg accounting is the one that describes this result.
       legs: out.fused.legs,
+      stages,
       retrievalDepth,
     };
   } catch (err) {

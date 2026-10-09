@@ -146,13 +146,52 @@ describe('recallCorpusContext — the contract handed to the search engine', () 
   });
 
   it('does not widen a public-host recall into plan/doc/report corpora', async () => {
-    runHybridSearch.mockResolvedValue(ok());
-    await recallCorpusContext({ ...base,knowledgeSourcesAllowed: false });
+    const engine = await vi.importActual<typeof import('@papercusp/search')>('@papercusp/search');
+    runHybridSearch.mockResolvedValue({ ...ok(),legs: engine.emptyLegs() });
+    const result = await recallCorpusContext({ ...base,knowledgeSourcesAllowed: false });
     expect(runHybridSearch.mock.calls[0][0].map((s: { name: string })=>s.name).sort())
       .toEqual(['session_turn','work_item']);
     expect(planSource).not.toHaveBeenCalled();
     expect(docSource).not.toHaveBeenCalled();
     expect(reportSource).not.toHaveBeenCalled();
+    expect(result.stages?.[0]?.lexical.sourceCalls).toEqual(expect.arrayContaining(
+      ['plan','doc','report'].map(source => expect.objectContaining({ source,status: 'not-run',rows: null,
+        reason: 'knowledge source not granted by host' })),
+    ));
+  });
+
+  it('keeps a doc section and source receipts through the real engine when a plan source stalls', async () => {
+    const engine = await vi.importActual<typeof import('@papercusp/search')>('@papercusp/search');
+    runHybridSearch.mockImplementation(engine.runHybridSearch);
+    let stalledSignal: AbortSignal | undefined;
+    planSource.mockImplementation(() => ({ name: 'plan', lexical: async (params: { signal?: AbortSignal }) => {
+      stalledSignal = params.signal;
+      return await new Promise<never>(() => {});
+    } }));
+    const row = hit({ source: 'doc',source_id: 'harness:papercusp:repair',
+      excerpt: 'http2 transport repair prerequisite: keep snapshot',score: 1,
+      meta: { section: 'Repair' } });
+    docSource.mockImplementation(() => ({ name: 'doc',lexical: async () => [{ key: 'doc:repair',row,score: 1 }] }));
+    reportSource.mockImplementation(() => ({ name: 'report',lexical: async () => [] }));
+    process.env.PAPERCUSP_MEMORY_CORPUS_TIMEOUT_MS = '800';
+    try {
+      const result = await recallCorpusContext({ ...base,harnessSlugs: ['papercusp'],excludeOwnerId: 'su-me' });
+      expect(result.outcome).toBe('ok');
+      expect(result.block).toContain('keep snapshot');
+      expect(stalledSignal?.aborted).toBe(true);
+      expect(result.stages?.[0]?.lexical.sourceCalls).toEqual(expect.arrayContaining([
+        expect.objectContaining({ source: 'plan',status: 'timed-out',rows: null }),
+        expect.objectContaining({ source: 'doc',status: 'ran',rows: 1 }),
+        expect.objectContaining({ source: 'report',status: 'ran',rows: 0 }),
+      ]));
+      expect(result.stages?.[0]?.semantic.sourceCalls).toEqual(expect.arrayContaining([
+        expect.objectContaining({ source: 'plan',status: 'not-run' }),
+      ]));
+    } finally {
+      planSource.mockImplementation(() => ({ name: 'plan' }));
+      docSource.mockImplementation(() => ({ name: 'doc' }));
+      reportSource.mockImplementation(() => ({ name: 'report' }));
+    }
   });
 
   it('enables the recency re-rank (P-009) with the documented tunables', async () => {
