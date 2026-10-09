@@ -14,6 +14,8 @@ import { precisionAtK } from '@papercusp/search-core';
 import { JUDGE_AGREEMENT_RUBRIC_VERSION, RELEVANCE_PASS_BAR, type JudgeVerdict } from './judge-agreement';
 import {
   aggregateByTool,
+  assessPairedTaskUtility,
+  type TaskUtilityArm,
   formatLabelledReport,
   judgeScoreToGrade,
   runLabelledPass,
@@ -40,6 +42,40 @@ const verdict = (relevance: number): JudgeVerdict => ({
   judgedRelevant: relevance >= RELEVANCE_PASS_BAR,
   judgeCostUsd: 0.01,
   judgeNotes: `scored ${relevance}`,
+});
+
+describe('paired independently verified task utility', () => {
+  const arm = (passed: boolean | null, over: Partial<TaskUtilityArm> = {}): TaskUtilityArm => ({
+    passed, harmful: false, blinded: true, independentEvidenceRef: 'held-out-evaluator:v1',
+    contractFingerprint: 'same-model-task-tools-budget', tokens: 100, latencyMs: 10, costUsd: 0.01, ...over,
+  });
+  const policy = { minClusters: 2, practicalMargin: 0.1, ci: 0.95, iterations: 200, seed: 7 };
+  const pairs = [1, 2, 3].map((id) => ({ pairId: String(id), cluster: String(id), baseline: arm(false), injection: arm(true) }));
+  const input = { requiredPairIds: ['1', '2', '3'], pairs, policy };
+
+  it('pairs by frozen ID and reuses a paired cluster interval, never citation frequency', () => {
+    const result = assessPairedTaskUtility(input);
+    expect(result).toMatchObject({ attemptedPairs: 3, measuredPairs: 3, clusters: 3, verdict: 'healthy', tokenDelta: 0 });
+    expect(result.comparison!.delta.point).toBe(1);
+    expect(assessPairedTaskUtility({ ...input, pairs: [...pairs].reverse() })).toEqual(result);
+  });
+
+  it('retains failed or missing arms and refuses an unblinded or changed-contract comparison', () => {
+    for (const injection of [undefined, arm(null), arm(true, { blinded: false }), arm(true, { contractFingerprint: 'other-model' })]) {
+      const result = assessPairedTaskUtility({ ...input, pairs: [{ ...pairs[0]!, injection }, ...pairs.slice(1)] });
+      expect(result).toMatchObject({ attemptedPairs: 3, measuredPairs: 2, unknownPairs: ['1'], verdict: 'unknown' });
+    }
+  });
+
+  it('harmful influence fails even beside positive aggregate task benefit', () => {
+    const result = assessPairedTaskUtility({ ...input, pairs: [{ ...pairs[0]!, injection: arm(true, { harmful: true }) }, ...pairs.slice(1)] });
+    expect(result).toMatchObject({ harmfulPairs: ['1'], verdict: 'broken' });
+  });
+
+  it('repeated tasks from one cluster cannot manufacture an adequate sample', () => {
+    expect(assessPairedTaskUtility({ ...input, pairs: pairs.map((pair) => ({ ...pair, cluster: 'one-source' })) }))
+      .toMatchObject({ clusters: 1, comparison: null, verdict: 'unknown' });
+  });
 });
 
 describe('judgeScoreToGrade', () => {

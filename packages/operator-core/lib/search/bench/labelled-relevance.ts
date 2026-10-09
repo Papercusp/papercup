@@ -25,6 +25,7 @@ import {
   type RelevanceEvalCoverage,
   type RelevanceEvalResult,
 } from '@papercusp/search-core';
+import { pairedBootstrapCI } from '@papercusp/bench-metrics';
 
 import {
   JUDGE_AGREEMENT_MODEL,
@@ -264,6 +265,64 @@ export interface LabelledPassReport {
   caveats: string[];
   /** Missing fingerprints are explicit, never silently inferred from defaults. */
   contract: Record<'runtime' | 'corpus' | 'judge' | 'adapter' | 'sample', string | null>;
+}
+
+export interface TaskUtilityArm {
+  /** Independently verified task success, never inferred from a memory citation. */
+  passed: boolean | null;
+  harmful: boolean | null;
+  blinded: boolean;
+  independentEvidenceRef: string | null;
+  /** Same model/task/tools/budget/evaluator in both arms; injection is the sole change. */
+  contractFingerprint: string;
+  tokens?: number;
+  latencyMs?: number;
+  costUsd?: number;
+}
+
+/** Paired held-out task outcomes reuse the existing benchmark/statistics seam. */
+export function assessPairedTaskUtility(input: {
+  requiredPairIds: readonly string[];
+  pairs: readonly { pairId: string; cluster: string; baseline?: TaskUtilityArm; injection?: TaskUtilityArm }[];
+  policy: { minClusters: number; practicalMargin: number; ci: number; iterations: number; seed: number };
+}) {
+  const { policy } = input;
+  if (!Number.isInteger(policy.minClusters) || policy.minClusters < 2 ||
+    !Number.isFinite(policy.practicalMargin) || policy.practicalMargin < 0 || policy.practicalMargin > 1 ||
+    !(policy.ci > 0 && policy.ci < 1) || !Number.isInteger(policy.iterations) || policy.iterations < 1 ||
+    !Number.isInteger(policy.seed)) throw new Error('invalid prespecified task-utility policy');
+  const census = new Set(input.requiredPairIds);
+  if (census.size !== input.requiredPairIds.length || [...census].some((id) => !id.trim())) throw new Error('pair census must be unique nonempty IDs');
+  const byId = new Map(input.pairs.map((pair) => [pair.pairId, pair]));
+  if (byId.size !== input.pairs.length || input.pairs.some((pair) => !census.has(pair.pairId))) throw new Error('pairs must belong uniquely to the frozen census');
+  const checked = [...census].map((pairId) => {
+    const pair = byId.get(pairId);
+    const arms = [pair?.baseline, pair?.injection];
+    const valid = pair?.cluster.trim() && arms.every((arm) => arm?.blinded === true &&
+      !!arm.independentEvidenceRef?.trim() && typeof arm.passed === 'boolean' && typeof arm.harmful === 'boolean' &&
+      !!arm.contractFingerprint.trim()) && pair?.baseline?.contractFingerprint === pair?.injection?.contractFingerprint;
+    return { pairId, pair, valid: !!valid };
+  });
+  const measured = checked.filter((row) => row.valid).map((row) => row.pair!);
+  const clusters = [...new Set(measured.map((pair) => pair.cluster))];
+  // Equal-weight cluster means: repeated tasks from one source are not independent trials.
+  const means = (arm: 'baseline' | 'injection') => clusters.map((cluster) => {
+    const rows = measured.filter((pair) => pair.cluster === cluster);
+    return meanOf(rows.map((pair) => Number(pair[arm]!.passed)));
+  });
+  const comparison = clusters.length >= policy.minClusters
+    ? pairedBootstrapCI(means('baseline'), means('injection'), policy) : null;
+  const unknownPairs = checked.filter((row) => !row.valid).map((row) => row.pairId);
+  const harmfulPairs = measured.filter((pair) => pair.injection!.harmful).map((pair) => pair.pairId);
+  const metricDelta = (key: 'tokens' | 'latencyMs' | 'costUsd') => measured.length && measured.every((pair) =>
+    [pair.baseline?.[key], pair.injection?.[key]].every((value) => value !== undefined && Number.isFinite(value) && value >= 0))
+    ? meanOf(measured.map((pair) => pair.injection![key]! - pair.baseline![key]!)) : null;
+  return { attemptedPairs: census.size, measuredPairs: measured.length, unknownPairs, clusters: clusters.length,
+    estimand: 'equal-weight cluster mean of paired task success', policy, comparison, harmfulPairs,
+    tokenDelta: metricDelta('tokens'), latencyDeltaMs: metricDelta('latencyMs'), costDeltaUsd: metricDelta('costUsd'),
+    verdict: harmfulPairs.length ? 'broken' : unknownPairs.length || comparison === null ? 'unknown'
+      : comparison.delta.lower > policy.practicalMargin ? 'healthy'
+      : comparison.delta.upper < -policy.practicalMargin ? 'degraded' : 'unknown' };
 }
 
 // =============================================================================
