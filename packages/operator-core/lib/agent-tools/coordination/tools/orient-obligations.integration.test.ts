@@ -24,6 +24,7 @@ import {
   type OrientationDeps,
 } from '../../../turn-start-orientation';
 import orientTool from './orient';
+import * as pipelineHealth from '../pipeline-health';
 // Production boot registers compound folds before serving coord:orient.
 import '../../fleet/assignments';
 
@@ -102,6 +103,10 @@ async function readOrientation(overrides: Record<string, unknown> = {}) {
 
 describe('GOAL-holder complete agenda recovery through coord:orient', () => {
   it('keeps proceed advice and retained requester history out of the reporting agenda', async () => {
+    // The gate/deploy reader is outside this consultation contract and points
+    // at a host runtime. Keep its established null fallback deterministic;
+    // the real PostgreSQL agenda providers below remain enabled.
+    const pipeline = vi.spyOn(pipelineHealth, 'fetchOrientPipeline').mockResolvedValue(null);
     const ids = [`consult-proceed-${RUN}`, `consult-history-${RUN}`];
     const history = {
       answer: 'Reuse the existing routing seam.',
@@ -127,6 +132,7 @@ describe('GOAL-holder complete agenda recovery through coord:orient', () => {
 
       const read = await readOrientation();
 
+      expect(pipeline).toHaveBeenCalled();
       // A real goal and its normal placement obligation are the positive
       // control: an empty or disconnected agenda must not prove retirement.
       expect(read.goalPortfolio?.goal.id).toBe(GOAL);

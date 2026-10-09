@@ -7,13 +7,8 @@ import { existsSync } from 'node:fs';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { createAdaptorServer } from '@hono/node-server';
+import { assertManagedToolSuccess } from './managed-api-result.ts';
 
-const workspace = process.env.PAPERCUSP_WORKSPACE_ID!;
-assert(workspace?.startsWith('test-runtime-'), 'Disposable runtime identity required');
-assert.equal(process.env.PAPERCUSP_POT_HOME_SLUG, workspace);
-assert.equal(process.env.PAPERCUSP_BACKGROUND_WORKERS, '0');
-assert.equal(process.env.PAPERCUSP_DBOS_ROUTINES, '0');
-assert(process.env.PAPERCUSP_EMBED_SIDECAR_URL, 'Maintained operator-api preflight required');
 const stage = (name: string) => console.log('MANAGED_API_STAGE=' + name);
 // This command needs no database/host boot. The canonical test uses it to
 // measure the OS prerequisite with the same private session-bus boundary.
@@ -22,6 +17,12 @@ if (process.argv.includes('--scope-preflight')) {
   console.log('MANAGED_SCOPE_PROOF=' + JSON.stringify(await probeScopeSupport()));
   process.exit(0);
 }
+const workspace = process.env.PAPERCUSP_WORKSPACE_ID!;
+assert(workspace?.startsWith('test-runtime-'), 'Disposable runtime identity required');
+assert.equal(process.env.PAPERCUSP_POT_HOME_SLUG, workspace);
+assert.equal(process.env.PAPERCUSP_BACKGROUND_WORKERS, '0');
+assert.equal(process.env.PAPERCUSP_DBOS_ROUTINES, '0');
+assert(process.env.PAPERCUSP_EMBED_SIDECAR_URL, 'Maintained operator-api preflight required');
 stage('host-import');
 const { handler } = await import('../../../../../../apps/operator/bin/host-handler.ts');
 const { superuserTokenPath } = await import('../../../superuser-token.ts');
@@ -59,7 +60,12 @@ async function client(owner: string) {
 }
 async function invoke(current: Client, name: string, args: Record<string, unknown>, expectSuccess = true) {
   stage('invoke:' + name);
-  let result: any = await current.callTool({ name: 'tools:invoke', arguments: { name, args } }, undefined,
+  // tools:invoke deliberately raises NestedToolRefusalError and the host renders
+  // that exception as prefixed text. Direct negative calls preserve the typed
+  // refusal contract that this acceptance case must inspect.
+  let result: any = await current.callTool(expectSuccess
+    ? { name: 'tools:invoke', arguments: { name, args } }
+    : { name, arguments: args }, undefined,
     { timeout: 45_000 });
   let text = result.content?.find((part: any) => part.type === 'text' && part.text.trim().startsWith('{'))?.text;
   let body = text ? JSON.parse(text) : null;
@@ -88,8 +94,7 @@ async function invoke(current: Client, name: string, args: Record<string, unknow
     text = result.content.find((part: any) => part.type === 'text' && part.text.trim().startsWith('{'))?.text;
     body = text ? JSON.parse(text) : null;
   }
-  if (expectSuccess) assert(!result.isError, JSON.stringify({ name, body, content: result.content,
-    structuredContent: result.structuredContent, meta: result._meta }));
+  if (expectSuccess) assertManagedToolSuccess(name, result, body);
   stage('settled:' + name);
   return { result, body };
 }
@@ -107,7 +112,14 @@ try {
   const { probeScopeSupport } = await import('../../../task-manager/managed-spawn.ts');
   const scope = await probeScopeSupport();
   stage('scope-preflight:' + JSON.stringify(scope));
-  assert.equal(scope.ok, true, 'Actual PTY confinement prerequisite: ' + JSON.stringify(scope));
+  assert.equal(scope.ok, false, 'Private operator-api profile must not inherit the desktop session bus');
+  const refusedPty = await invoke(current, 'capability:pty_open', {
+    command: 'cat', cwd: process.env.HOME, cols: 80, rows: 24,
+  }, false);
+  console.log('MANAGED_PTY_REFUSAL=' + JSON.stringify(refusedPty));
+  assert.equal(refusedPty.result.isError, true, JSON.stringify(refusedPty.result));
+  assert.equal(refusedPty.body?.reason, 'pty_confinement_unavailable', JSON.stringify(refusedPty.result));
+  assert.equal(refusedPty.body?.unconfined_reason, 'no-scope-support', JSON.stringify(refusedPty.result));
   const opened = (await invoke(current, 'code:run', { kernel: { op: 'open' } })).body;
   assert.equal(opened.ok, true, JSON.stringify(opened)); kernelId = opened.kernel.id;
   await invoke(current, 'code:run', { kernel: { op: 'run', id: kernelId }, script: 'globalThis.count = 2; return ++count;' });
@@ -115,8 +127,6 @@ try {
   assert.equal(browser.body.ok, true, JSON.stringify(browser.body)); browserId = browser.body.browser.id;
   assert.equal(browser.body.observation.text, 'page:1');
   assert(browser.result.content.some((part: any) => part.type === 'image' && part.mimeType === 'image/png'));
-  const pty = (await invoke(current, 'capability:pty_open', { command: 'cat', cwd: process.env.HOME, cols: 80, rows: 24 })).body;
-  assert.equal(pty.ok, true, JSON.stringify(pty)); ptyId = pty.task_id;
   // A separate MCP session must retain handles by authenticated owner/workspace/harness.
   current = await client(owner);
   const retained = (await invoke(current, 'code:run', { kernel: { op: 'run', id: kernelId }, script: 'return ++count;' })).body;
@@ -125,17 +135,10 @@ try {
   assert.equal(observed.ok, true, JSON.stringify(observed)); assert.equal(observed.observation.text, 'page:1');
   const navigated = (await invoke(current, 'capability:fetch', { url: pageUrl, browser: { op: 'navigate', id: browserId } })).body;
   assert.equal(navigated.ok, true, JSON.stringify(navigated)); assert.equal(navigated.observation.text, 'page:2');
-  assert.equal((await invoke(current, 'capability:pty_write_stdin', { task_id: ptyId, data: 'retained terminal\n' })).body.ok, true);
-  assert.equal((await invoke(current, 'capability:pty_resize', { task_id: ptyId, cols: 91, rows: 31 })).body.ok, true);
-  const { result: screen } = await invoke(current, 'capability:pty_read_screen', { task_id: ptyId });
-  const resource = screen.content.find((part: any) => part.type === 'resource')?.resource;
-  assert.equal(resource?.mimeType, 'application/x-papercusp-pty-screen+ansi');
-  assert(resource.text.includes('retained terminal'));
   const foreign = await client('managed-private-parity-foreign');
   for (const [name, args] of [
     ['code:run', { kernel: { op: 'status', id: kernelId } }],
     ['capability:fetch', { browser: { op: 'close', id: browserId } }],
-    ['capability:pty_resize', { task_id: ptyId, cols: 80, rows: 24 }],
   ] as const) {
     const { body } = await invoke(foreign, name, args, false);
     assert.equal(body?.ok, false, `Foreign handle accepted by ${name}`);
@@ -144,10 +147,12 @@ try {
   // real private ledger, as it must when an opened handle's reply is lost.
   browserId = undefined;
   assert.equal((await invoke(current, 'code:run', { kernel: { op: 'close', id: kernelId } })).body.kernel.state, 'closed'); kernelId = undefined;
-  assert.equal((await invoke(current, 'capability:pty_kill', { task_id: ptyId })).body.ok, true); ptyId = undefined;
   proof = { transport: 'http', workspace,
-    kernel: 'retained-across-clients', browser: 'retained-across-clients', pty: 'retained-across-clients',
+    kernel: 'retained-across-clients', browser: 'retained-across-clients', pty: 'refused-without-private-session-bus',
     foreignHandles: 'refused' };
+} catch (error) {
+  console.error('MANAGED_API_FAILURE=' + (error instanceof Error ? error.stack : String(error)));
+  throw error;
 } finally {
   if (current) {
     if (browserId) await invoke(current, 'capability:fetch', { browser: { op: 'close', id: browserId } }).catch(() => {});
@@ -190,6 +195,7 @@ try {
   await new Promise<void>(resolve => pageServer.close(() => resolve()));
   await getOrgPg().sql.end({ timeout: 2 });
   assert.equal(cleanupErrors.length, 0, String(new AggregateError(cleanupErrors, 'Owned resource cleanup failed')));
+  if (proof) assert.equal(rows.length, 1, 'Refused PTY must create no task row; one owned browser is expected');
   console.log('MANAGED_API_CLEANUP=' + JSON.stringify({ workspace, rows: rows.length,
     ownedIdentity: verifiedOwners.get(owner), processes: 'gone', browserRoots: 'gone', terminalRecorded: true }));
 }

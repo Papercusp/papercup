@@ -5,7 +5,7 @@ import { createWriteStream } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 describe('managed capability acceptance over the production HTTP route', () => {
-  it('retains kernel/browser/PTY state across fresh clients and refuses foreign handles', async () => {
+  it('retains kernel/browser state across fresh clients and refuses PTY without a private session bus', async () => {
     const root = resolve(__dirname, '../../../../..');
     const result = await new Promise<{ code: number | null; output: string }>((resolveResult, reject) => {
       const child = spawn(process.execPath, [resolve(root, 'scripts/with-test-pg.mjs'),
@@ -27,13 +27,13 @@ describe('managed capability acceptance over the production HTTP route', () => {
     const cleanup = result.output.split('\n').find(row => row.startsWith('MANAGED_API_CLEANUP='));
     expect(cleanup, result.output).toBeDefined();
     expect(JSON.parse(cleanup!.slice('MANAGED_API_CLEANUP='.length))).toMatchObject({
-      rows: 2, processes: 'gone', browserRoots: 'gone', terminalRecorded: true,
+      rows: 1, processes: 'gone', browserRoots: 'gone', terminalRecorded: true,
     });
     const line = result.output.split('\n').find(row => row.startsWith('MANAGED_API_PROOF='));
     expect(line, result.output).toBeDefined();
     expect(JSON.parse(line!.slice('MANAGED_API_PROOF='.length))).toMatchObject({
       transport: 'http', kernel: 'retained-across-clients', browser: 'retained-across-clients',
-      pty: 'retained-across-clients', foreignHandles: 'refused',
+      pty: 'refused-without-private-session-bus', foreignHandles: 'refused',
     });
   }, 200_000);
 });
