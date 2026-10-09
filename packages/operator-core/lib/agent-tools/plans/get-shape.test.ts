@@ -10,7 +10,8 @@
  *
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/plans/get-shape.test.ts
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { applyPayloadTier, PAYLOAD_TIER_HARD_CEILING_CHARS } from "@papercusp/tooldef";
 import { shapePlansGet } from "./get-shape";
 
 function envelope() {
@@ -142,6 +143,40 @@ describe("shapePlansGet standard", () => {
     expect(sec.body).toBe("b".repeat(30_000));
     expect(sec.body_truncated).toBeUndefined();
     expect(sec.body_full_chars).toBeUndefined();
+  });
+
+  it('keeps a 51-decision `heading: "Decisions"` read intact for the MCP result-door', () => {
+    const body = Array.from({ length: 51 }, (_, i) =>
+      `### D-${String(i + 1).padStart(3, "0")} Decision ${i + 1}\n\n${"decision-body-".repeat(55)}`,
+    ).join("\n\n");
+    const data = {
+      ok: true,
+      results: [
+        {
+          ok: true,
+          slug: "plan-with-51-decisions",
+          heading: "Decisions",
+          section: { heading: "Decisions", level: 2, body },
+        },
+      ],
+    };
+    const shape = {
+      trimmed: (value: unknown) => shapePlansGet(value, "trimmed"),
+      standard: (value: unknown) => shapePlansGet(value, "standard"),
+    };
+    const out = applyPayloadTier({
+      toolName: "plans:get",
+      shape,
+      response: { data },
+      tier: "full",
+      args: { slug: "plan-with-51-decisions", heading: "Decisions" },
+      deferHardCeilingToResultDoor: true,
+      log: vi.fn(),
+    });
+
+    expect(JSON.stringify(data).length).toBeGreaterThan(PAYLOAD_TIER_HARD_CEILING_CHARS);
+    expect((out.data as typeof data).results[0]!.section.body).toBe(body);
+    expect(out.payloadProjection).toBeUndefined();
   });
 
   it("still caps an unmarked section body", () => {

@@ -1267,6 +1267,7 @@ export function shapeWorkItemsGet(data: unknown, tier: WorkItemsGetTier): unknow
   // fields can therefore exceed the door together. Before any no-brief rung can
   // return, make a compact pass that preserves row identity and a requested brief
   // while keeping completion evidence presence (not its body).
+  const briefRequested = rows.some((row) => row.operationalBrief !== undefined && row.operationalBrief !== null);
   const compactIdentityAttempt = {
     rung: ladder.length - 1,
     withSummary: false,
@@ -1274,7 +1275,6 @@ export function shapeWorkItemsGet(data: unknown, tier: WorkItemsGetTier): unknow
     compactIdentity: true,
   };
   const firstNoBriefAttempt = attempts.findIndex((attempt) => !attempt.withOperationalBrief);
-  const briefRequested = rows.some((row) => row.operationalBrief !== undefined && row.operationalBrief !== null);
   attempts.splice(
     briefRequested && firstNoBriefAttempt >= 0 ? firstNoBriefAttempt : attempts.length - 1,
     0,
@@ -1285,7 +1285,13 @@ export function shapeWorkItemsGet(data: unknown, tier: WorkItemsGetTier): unknow
     const { rung, withSummary, withOperationalBrief, compactIdentity } = attempts[attempt];
     const { fullRows, checkpointTotal, summaryTotal, lifecycleTotal, operationalBriefTotal } = compactIdentity
       ? {
-          fullRows: rows.length === 1 ? 1 : 3,
+          // When there is no requested operational brief, the compact pass is
+          // a candidate-summary rung: keep every selected row's title/state if
+          // that identity projection fits, then let the measured ladder below
+          // it fall back to stubs for wider reads. A fixed three-row allowance
+          // made a five-ID candidate read lose the last two titles even when
+          // the compact identity for all five fit (EI-25516863626705437).
+          fullRows: rows.length === 1 ? 1 : briefRequested ? 3 : rows.length,
           checkpointTotal: 0,
           summaryTotal: 0,
           lifecycleTotal: 0,
