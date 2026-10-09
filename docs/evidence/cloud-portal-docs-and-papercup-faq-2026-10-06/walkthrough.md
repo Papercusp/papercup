@@ -510,3 +510,21 @@ must be audited before another slow attempt. The served wrapper exited 1; the
 private operator exited 0 after guarded shutdown, its private home was removed,
 and the runtime configuration lock was released. Full acceptance and shipment
 remain open.
+
+## Approved manual browser checks, 2026-10-09
+
+Four maintained cases in `apps/operator/e2e/public-manual.spec.ts` passed
+against the rebuilt Astro preview on port 32125 (exit 0, no skipped cases).
+They exercise the account guide's reachable/reloadable mobile page, its
+Portal identity/model account/organization distinctions, a real Pagefind
+result for the fleets guide, and FAQ results through alternate wording.
+The account response was HTTP 200 with the same approved HTML SHA-256 before
+and after the run. Canonical and packaged account MDX remain hash-identical.
+The repaired search assets match the preceding packaging record.
+
+Exact command, cases, log hash and scoped source observations are retained in
+`approved-manual-browser-20261009.json`. This updates the static manual
+browser evidence after the approved prose and Pagefind changes. It does not
+close the seven product journeys, real novice study, independent acceptance
+or shipment. The existing Portal owner retains the replacement build and
+workspace transport repair; the replacement is not yet a ready artifact.
