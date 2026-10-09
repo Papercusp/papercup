@@ -24,6 +24,9 @@
  * EI-25389944836048866; tools:invoke preserves the 42703 payload for correction.
  * The missing-UI-client rows were added 2026-10-07 from EI-24710297442793828;
  * they are expected caller context refusals, not structural UI defects.
+ * The native-owner transport capability refusal was added 2026-10-09 from
+ * EI-25431178848604122; the owner RPC intentionally refuses host-local auth
+ * capabilities that cannot cross its boundary, so this is not a tool bug.
  *
  * This fixture is the corpus for BOTH:
  *   - tool-error-classifier.test.ts (pure: classifyToolError must agree per row), and
@@ -165,6 +168,12 @@ export const TOOL_ERROR_CORPUS: readonly ToolErrorCorpusRow[] = [
     message: 'superuser_invalid_bearer',
     expectedClass: 'caller',
     note: 'MCP auth gate recorded an invalid-bearer refusal before dispatch; keep this credential rejection out of the structural bug lane (EI-24772367245361033)',
+  },
+  {
+    n: 1, errorCode: 'native_tool_owner_unsupported_capability', status: 'error',
+    message: 'native_tool_owner_unsupported_capability',
+    expectedClass: 'caller',
+    note: 'native-owner RPC intentionally refuses host-local auth capabilities that cannot cross the transport boundary; expected refusal, not a structural tool bug (EI-25431178848604122)',
   },
   {
     n: 835, errorCode: 'handler_error', status: 'error',
