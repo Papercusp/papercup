@@ -12,6 +12,7 @@
 import { spawn as childSpawn } from 'node:child_process';
 import { createWriteStream } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
+import { StringDecoder } from 'node:string_decoder';
 import { createScratchClone as createLocalScratchClone, type ScratchCloneOptions as LocalScratchCloneOptions, type ScratchCloneResult } from '../../scratch-git-clone';
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
@@ -275,19 +276,31 @@ export function runGit(
     });
     let output = '';
     const cap = 8 * 1024 * 1024;
-    const onData = (b: Buffer): void => {
-      if (output.length < cap) output += b.toString('utf8');
+    const stdoutDecoder = new StringDecoder('utf8');
+    const stderrDecoder = new StringDecoder('utf8');
+    let decodersFlushed = false;
+    const append = (chunk: string): void => {
+      const remaining = cap - output.length;
+      if (remaining > 0) output += chunk.slice(0, remaining);
     };
-    child.stdout?.on('data', onData);
-    child.stderr?.on('data', onData);
+    const flushDecoders = (): void => {
+      if (decodersFlushed) return;
+      decodersFlushed = true;
+      append(stdoutDecoder.end());
+      append(stderrDecoder.end());
+    };
+    child.stdout?.on('data', (b: Buffer) => append(stdoutDecoder.write(b)));
+    child.stderr?.on('data', (b: Buffer) => append(stderrDecoder.write(b)));
     const onAbort = (): void => { child.kill('SIGKILL'); };
     if (signal.aborted) onAbort();
     else signal.addEventListener('abort', onAbort, { once: true });
     child.on('error', (err) => {
+      flushDecoders();
       signal.removeEventListener('abort', onAbort);
       resolvePromise({ code: null, output: output + `\n[spawn error] ${err instanceof Error ? err.message : String(err)}` });
     });
     child.on('close', (code) => {
+      flushDecoders();
       signal.removeEventListener('abort', onAbort);
       resolvePromise({ code, output });
     });
