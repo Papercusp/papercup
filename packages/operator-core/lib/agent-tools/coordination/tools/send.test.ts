@@ -1748,6 +1748,30 @@ describe('coord:send work-item routing advisory (EI-21824246903447871)', () => {
     expect(b.results[0].dispatchAdvisory).toBeUndefined();
   });
 
+  it('uses a structured action reference when the summary omits its id', async () => {
+    getWorkItemM.mockImplementation(async (id: string) =>
+      id === 'WI-10007462'
+        ? { id, state: 'open', assignee: 'bee-9' }
+        : { id, state: 'open', assignee: 'bee-1' },
+    );
+
+    const b = await body({
+      to: ['bee-1'],
+      summary: 'Please release the requested item',
+      expects: 'action',
+      body: [{
+        text: 'The recipient is currently awaiting WI-10005443 as context.',
+        forYouBecause: { relation: 'owns', ref: 'WI-10007462', note: 'you own the requested release' },
+      }],
+    });
+
+    expect(getWorkItemM.mock.calls.map(([id]) => id)).toEqual(['WI-10007462']);
+    expect(b.results[0].dispatchAdvisory).toMatchObject({
+      workItemIds: ['WI-10007462'],
+      recipientsNotHolding: ['bee-1'],
+    });
+  });
+
   // EI-23785816111021036 — this case previously ASSERTED the false alarm (it expected
   // recipientsNotHolding:['bee-2']). A message to [holder, observer] naming an item the
   // holder already holds is the ordinary fan-out shape, so the old existential
