@@ -7,7 +7,7 @@
  * excluded as unassessable.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { cancelSupersededPendingGradingAuditAtomically, classifyGradingAuditCurrentness, classifySubjectRubricCurrentness, computeTrendDirection, computeRubricStaleness, compressSeries, evaluateScorecardInstrumentContract, evaluateScorecardReleaseGateBinding, isCurrentSourceAuditResponder, isIdleUnknown, markGradingAuditAwaitingReemit, parseCriterionInstrumentKey, parseGradedGeneration, ratingScore10, recordGradingAudit, scorecardEvidenceFingerprint, scorecardScore10, scoreOverridesForScale, settlePendingGradingAuditAtomically } from './scorecards';
+import { cancelStaleEvidencePendingGradingAuditAtomically, cancelSupersededPendingGradingAuditAtomically, classifyGradingAuditCurrentness, classifySubjectRubricCurrentness, computeTrendDirection, computeRubricStaleness, compressSeries, evaluateScorecardInstrumentContract, evaluateScorecardReleaseGateBinding, isCurrentSourceAuditResponder, isIdleUnknown, markGradingAuditAwaitingReemit, parseCriterionInstrumentKey, parseGradedGeneration, ratingScore10, recordGradingAudit, scorecardEvidenceFingerprint, scorecardScore10, scoreOverridesForScale, settlePendingGradingAuditAtomically } from './scorecards';
 import type { Rubric } from './rubrics';
 import { effectiveCriterionInstrumentKey } from './rubrics';
 import type { CriterionTrend, ScorecardReleaseGateSnapshot } from './scorecards';
@@ -57,6 +57,62 @@ describe('superseding a pending grading-audit target', () => {
       { workspaceId: 'ws-test', transact, notifySyncInvalidate },
     )).resolves.toBe(false);
     expect(notifySyncInvalidate).not.toHaveBeenCalled();
+  });
+});
+
+describe('cancelling a pending audit after its exact evidence binding goes stale', () => {
+  it('fences the cancellation by audit stamp, evidence identity, binding selector and live binding currentness', async () => {
+    const statements: Array<{ text: string; values: unknown[] }> = [];
+    const tx = (async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join('?');
+      statements.push({ text, values });
+      return [{ feature_id: 'EI-TARGET' }];
+    }) as never;
+    const transact = (async (fn: (client: never) => Promise<unknown>) => fn(tx)) as never;
+    const notifySyncInvalidate = vi.fn();
+
+    await expect(cancelStaleEvidencePendingGradingAuditAtomically(
+      'EI-TARGET',
+      {
+        stampedAt: '2026-10-08T08:27:23.775Z',
+        evidenceFingerprint: 'scorecard-evidence-v1',
+        harnessSlug: 'papercusp',
+        bindingIds: [30308, 30309],
+      },
+      { workspaceId: 'ws-test', transact, notifySyncInvalidate },
+    )).resolves.toBe(true);
+
+    const write = statements.find((statement) => statement.text.includes('UPDATE harness_shared.work_items'))!;
+    expect(write.text).toContain("gradingAudit'->>'state' = 'pending'");
+    expect(write.text).toContain("gradingAudit'->>'stampedAt' = ?");
+    expect(write.text).toContain("observation'->>'evidenceFingerprint' IS NOT DISTINCT FROM ?");
+    expect(write.text).toContain("'rerunRecipe'->'selection'->'bindingIds'");
+    expect(write.text).toContain('jsonb_array_elements_text');
+    expect(write.text).toContain('binding.retracted_at IS NOT NULL');
+    expect(write.text).toContain("jsonb_build_object('state', 'cancelled')");
+    expect(write.text).toContain("#- '{dispatchReservation}'");
+    expect(write.text).toContain("#- '{dispatchBackoff}'");
+    expect(write.values).toEqual(expect.arrayContaining([
+      'ws-test', 'EI-TARGET', '2026-10-08T08:27:23.775Z', 'scorecard-evidence-v1', 'papercusp', '[30308,30309]',
+    ]));
+    expect(notifySyncInvalidate).toHaveBeenCalledWith('scorecards.list');
+    expect(notifySyncInvalidate).toHaveBeenCalledWith('rubrics.trend');
+    expect(notifySyncInvalidate).toHaveBeenCalledWith('learning.releaseReadiness');
+  });
+
+  it('refuses malformed or empty binding selectors before writing', async () => {
+    const transact = vi.fn() as never;
+    await expect(cancelStaleEvidencePendingGradingAuditAtomically(
+      'EI-TARGET',
+      { stampedAt: 'audit-stamp', bindingIds: [0] },
+      { workspaceId: 'ws-test', transact },
+    )).resolves.toBe(false);
+    await expect(cancelStaleEvidencePendingGradingAuditAtomically(
+      'EI-TARGET',
+      { stampedAt: 'audit-stamp', bindingIds: [] },
+      { workspaceId: 'ws-test', transact },
+    )).resolves.toBe(false);
+    expect(transact).not.toHaveBeenCalled();
   });
 });
 

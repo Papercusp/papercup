@@ -2023,6 +2023,93 @@ export async function cancelSupersededPendingGradingAuditAtomically(
   return true;
 }
 
+/**
+ * Cancel a pending grading audit when one of its exact pinned evidence bindings
+ * has been retracted or disappeared. The target is fenced by its audit stamp,
+ * evidence fingerprint and full binding selector so a newer audit or replay
+ * recipe cannot be cancelled from a stale scorecard read.
+ */
+export async function cancelStaleEvidencePendingGradingAuditAtomically(
+  issueId: string,
+  expected: {
+    stampedAt: string;
+    evidenceFingerprint?: string | null;
+    harnessSlug?: string | null;
+    bindingIds: readonly number[];
+  },
+  deps: ScorecardAtomicWriteDeps & {
+    workspaceId?: string;
+    notifySyncInvalidate?: (key: 'scorecards.list' | 'rubrics.trend' | 'learning.releaseReadiness') => void;
+  } = {},
+): Promise<boolean> {
+  const bindingIds = [...expected.bindingIds];
+  if (
+    !expected.stampedAt.trim() ||
+    bindingIds.length === 0 ||
+    bindingIds.some((id) => !Number.isSafeInteger(id) || id <= 0)
+  ) return false;
+
+  const workspaceId =
+    deps.workspaceId?.trim() || await (deps.resolveWorkspace ?? resolveIssueWorkspace)(issueId);
+  const transact = deps.transact ?? boundedOrgTxn;
+  const updated = await transact((tx: OrgSql) => tx<{ feature_id: string }[]>`
+    UPDATE harness_shared.work_items AS target
+       SET payload = jsonb_set(
+             COALESCE(target.payload, '{}'::jsonb),
+             '{observation,gradingAudit}',
+             (
+               target.payload->'observation'->'gradingAudit'
+               || jsonb_build_object('state', 'cancelled')
+             ) #- '{dispatchReservation}' #- '{dispatchBackoff}',
+             true
+           ),
+           origin = 'local',
+           updated_ts = ${Date.now()}
+     WHERE target.workspace_id = ${workspaceId}
+       AND target.feature_id = ${issueId}
+       AND target.item_kind = ANY (ARRAY['bug', 'change', 'task'])
+       AND target.payload->'observation'->'gradingAudit'->>'state' = 'pending'
+       AND target.payload->'observation'->'gradingAudit'->>'stampedAt' = ${expected.stampedAt}
+       AND target.payload->'observation'->>'evidenceFingerprint' IS NOT DISTINCT FROM ${expected.evidenceFingerprint ?? null}
+       AND target.payload->'observation'->'rerunRecipe'->'selection'->'bindingIds'
+             = ${JSON.stringify(bindingIds)}::jsonb
+       AND CASE
+             WHEN jsonb_typeof(target.payload->'observation'->'rerunRecipe'->'selection'->'bindingIds') = 'array'
+             THEN EXISTS (
+               SELECT 1
+                 FROM jsonb_array_elements_text(
+                   target.payload->'observation'->'rerunRecipe'->'selection'->'bindingIds'
+                 ) AS cited(binding_id)
+                 LEFT JOIN harness_shared.spec_evidence_bindings AS binding
+                   ON binding.workspace_id = target.workspace_id
+                  AND (${expected.harnessSlug ?? null}::text IS NULL OR binding.harness_slug = ${expected.harnessSlug ?? null})
+                  AND binding.id = CASE
+                    WHEN cited.binding_id ~ '^[1-9][0-9]{0,15}$' THEN cited.binding_id::bigint
+                    ELSE NULL
+                  END
+                WHERE binding.id IS NULL OR binding.retracted_at IS NOT NULL
+             )
+             ELSE false
+           END
+    RETURNING target.feature_id`);
+  if (updated.length === 0) return false;
+
+  if (deps.notifySyncInvalidate) {
+    deps.notifySyncInvalidate('scorecards.list');
+    deps.notifySyncInvalidate('rubrics.trend');
+    deps.notifySyncInvalidate('learning.releaseReadiness');
+  } else {
+    void trackDetached(import('./sync-sse'))
+      .then((m) => {
+        m.notifySyncInvalidate('scorecards.list');
+        m.notifySyncInvalidate('rubrics.trend');
+        m.notifySyncInvalidate('learning.releaseReadiness');
+      })
+      .catch(() => {});
+  }
+  return true;
+}
+
 /** Return the subject observation with a withdrawn audit's settlement cleared. */
 export function resetGradingAuditStampForRetraction(
   rawSubjectObservation: unknown,
