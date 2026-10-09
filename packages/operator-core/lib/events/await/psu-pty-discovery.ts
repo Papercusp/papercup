@@ -91,6 +91,8 @@ export interface PsuPtyHost {
     childPid?: number | null;
     childGeneration?: number;
     receivedAtMs?: number;
+    ownerInputPending?: boolean;
+    ownerStopRequested?: boolean;
   };
   /** Host-observed quota banner. Absence means an older host with no reading,
    * not a healthy quota state. Cleared on detector recovery and child recycle. */
@@ -1256,6 +1258,9 @@ export function injectIntoHostWithConfirmation(
      *  its own process state and are not caller-influenced. */
     force?: boolean;
     expectedStartedAt?: number;
+    requireNativeTurnStart?: boolean;
+    expectedChildGeneration?: number;
+    expectedHostStartedAt?: number;
     focus?: string;
     systemPromptAddendum?: string;
     /** Exact requesting Codex rollout. The host validates it within CODEX_HOME
