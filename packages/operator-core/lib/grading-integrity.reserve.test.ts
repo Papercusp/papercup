@@ -23,6 +23,7 @@ function transactionHarness(options: {
   /** WI-10005273: the row's state + lease as read by the claim's leading row lock. */
   priorState?: string | null;
   priorReservation?: unknown;
+  priorLastReservation?: unknown;
 }) {
   const statements: Array<{ text: string; values: unknown[] }> = [];
   const tx = (async (strings: TemplateStringsArray, ...values: unknown[]): Promise<QueryResult> => {
@@ -34,6 +35,7 @@ function transactionHarness(options: {
           feature_id: 'EI-prior',
           prior_state: options.priorState === undefined ? 'pending' : options.priorState,
           prior_reservation: options.priorReservation ?? null,
+          prior_last_reservation: options.priorLastReservation ?? null,
         },
       ];
     }
@@ -151,13 +153,40 @@ describe('reservePendingGradingAudit', () => {
       expect(statements[lockIndex]?.text).toContain('FOR UPDATE');
     });
 
+    it('preserves the last lease when an earlier sweep already cleared the active reservation', async () => {
+      const { statements } = transactionHarness({
+        claim: true,
+        priorReservation: null,
+        priorLastReservation: expiredLease,
+      });
+
+      const result = await reservePendingGradingAudit('EI-long-audit', 'grading-audit:EI-long-audit', {
+        workspaceId: 'ws-test',
+        now: new Date('2026-10-02T03:40:00.000Z'),
+      });
+
+      expect(result).toEqual({
+        status: 'claimed',
+        reservation: { key: 'grading-audit:EI-long-audit', reservedAt: '2026-10-02T03:40:00.000Z' },
+        prior: expiredLease,
+      });
+      const lock = statements.find((statement) => statement.text.includes('AS prior_reservation'));
+      expect(lock?.text).toContain("'lastDispatchReservation' AS prior_last_reservation");
+      expect(lock?.text).toContain('FOR UPDATE');
+    });
+
     it('reports no prior for a fresh claim or for a settled card being reopened', async () => {
       transactionHarness({ claim: true, priorReservation: null });
       const fresh = await reservePendingGradingAudit('EI-fresh', 'grading-audit:EI-fresh', { workspaceId: 'ws-test' });
       expect(fresh.prior).toBeUndefined();
 
       // A settled card's leftover lease belongs to no live auditor of the reopened audit.
-      transactionHarness({ claim: true, priorState: 'failed', priorReservation: expiredLease });
+      transactionHarness({
+        claim: true,
+        priorState: 'failed',
+        priorReservation: expiredLease,
+        priorLastReservation: expiredLease,
+      });
       const reopened = await reservePendingGradingAudit('EI-settled', 'grading-audit:EI-settled', {
         workspaceId: 'ws-test',
       });
@@ -167,6 +196,15 @@ describe('reservePendingGradingAudit', () => {
       transactionHarness({ claim: true, priorReservation: { key: 'grading-audit:EI-bad' } });
       const malformed = await reservePendingGradingAudit('EI-bad', 'grading-audit:EI-bad', { workspaceId: 'ws-test' });
       expect(malformed.prior).toBeUndefined();
+
+      // A malformed active reservation is not permission to resurrect an older epoch.
+      transactionHarness({
+        claim: true,
+        priorReservation: { key: 'grading-audit:EI-bad' },
+        priorLastReservation: expiredLease,
+      });
+      const malformedActive = await reservePendingGradingAudit('EI-bad', 'grading-audit:EI-bad', { workspaceId: 'ws-test' });
+      expect(malformedActive.prior).toBeUndefined();
     });
 
     it('restores the supplied lease in the same compare-and-set release instead of deleting it', async () => {
@@ -183,7 +221,7 @@ describe('reservePendingGradingAudit', () => {
         statement.text.includes("jsonb_set(payload, '{observation,gradingAudit,dispatchReservation}'"),
       );
       // The restored lease is written back verbatim, and the reservation is never deleted.
-      expect(restoreWrite?.values).toEqual([JSON.stringify(expiredLease)]);
+      expect(restoreWrite?.values).toEqual([JSON.stringify(expiredLease), JSON.stringify(expiredLease)]);
       expect(
         statements.some((statement) =>
           statement.text.includes("payload #- '{observation,gradingAudit,dispatchReservation}'"),
@@ -248,6 +286,7 @@ describe('reservePendingGradingAudit', () => {
       criteriaHash: 'hash-current',
       stampedAt: now.toISOString(),
       dispatchReservation: { key: 'grading-audit:legacy', reservedAt: now.toISOString() },
+      lastDispatchReservation: { key: 'grading-audit:legacy', reservedAt: now.toISOString() },
     });
   });
 

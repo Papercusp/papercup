@@ -213,6 +213,20 @@ describe('Dream capability cycle governance — AUTO-REQ-M-002-P-005', () => {
     expect(await runDreamCycle(h.input, h.d)).toMatchObject({ reason: 'review-unavailable', attempts: 1, costUsd: 0 });
     expect(h.runs.size).toBe(1);
   });
+  it('marks an unpriced-model admission refusal as generation skipped', async () => {
+    const h = harness();
+    h.input.pass = { model: 'unpriced-provider' };
+    h.d.estimateCall = estimateDreamCall;
+
+    await runDreamCycle(h.input, h.d);
+
+    const run = h.row(dreamRunId(h.input.cycleId, 0));
+    expect(run.status).toBe('error');
+    expect(run.error).toContain('Dream cannot admit an unpriced model');
+    expect(run.outcome).toMatchObject({ generationSkipped: true });
+    expect(dreamCapabilityRun(run)!.calls.some((call) => call.phase === 'generation')).toBe(false);
+    expect(h.llm).not.toHaveBeenCalled();
+  });
   it('runs the uniform-model defaults with separately governed review evidence', async () => {
     const h = harness();
     h.input.pass = DEFAULT_DREAM_PASS_CONFIG;

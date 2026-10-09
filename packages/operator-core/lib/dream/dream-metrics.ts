@@ -151,7 +151,9 @@ class DreamMetricsFold {
       }
       if (Math.abs(accounted - run.costUsd) > 1e-8) this.errors.push(`${run.runId}: phase charges do not reconcile`);
       // An insight/error after selection without a generation receipt is not a free attempt.
-      const generationSkipped = run.review?.schemaVersion === 'dream-capability-preflight-v1' && run.outcome?.generationSkipped === true;
+      // The lifecycle writes this marker only when it knows generation was not
+      // admitted (dependency preflight or local model-price admission refusal).
+      const generationSkipped = run.outcome?.generationSkipped === true;
       if (selected && run.status !== 'running' && !generationSkipped && !provenance.calls.some(c => c.phase === 'generation')) {
         this.missingUsage++;
         this.phases.generation!.unknownCalls++;

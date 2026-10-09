@@ -139,6 +139,12 @@ export function dreamCallOwnerId(
   return `system:dream:${key}:${phase}`;
 }
 const record = (value: unknown) => JSON.parse(JSON.stringify(value)) as Record<string, unknown>;
+class DreamUnpricedModelError extends Error {
+  constructor(model: string) {
+    super('Dream cannot admit an unpriced model: ' + model);
+    this.name = 'DreamUnpricedModelError';
+  }
+}
 /** List-price admission estimate, not a promise about the final provider bill. */
 export function estimateDreamCall(input: Parameters<ScoutLlmCall>[0]): number {
   const bytes = Buffer.byteLength((input.system ?? '') + JSON.stringify(input.messages), 'utf8') + 256;
@@ -150,7 +156,7 @@ export function estimateDreamCall(input: Parameters<ScoutLlmCall>[0]): number {
     outputTokens: (input.maxTokens ?? 4096) + (input.thinkingBudgetTokens ?? 0),
   });
   if (!estimate.priced || !Number.isFinite(estimate.usd) || estimate.usd <= 0)
-    throw new Error('Dream cannot admit an unpriced model: ' + input.model);
+    throw new DreamUnpricedModelError(input.model);
   return estimate.usd;
 }
 async function abortable<T>(operation: () => Promise<T>, signal: AbortSignal): Promise<T> {
@@ -553,6 +559,12 @@ export async function runDreamCycle(input: DreamCycleInput, deps: DreamCycleDeps
           await finish({ runId, status: 'accepted' });
         }
       } catch (error) {
+        if (error instanceof DreamUnpricedModelError &&
+            !dreamCapabilityRun(latest)?.calls.some((call) => call.phase === 'generation')) {
+          // Price admission runs before a generation call is recorded. Preserve that
+          // known no-call outcome so quality metrics do not treat it as missing spend.
+          outcome = { ...(outcome ?? {}), generationSkipped: true };
+        }
         // A sibling control can settle after the review aborts; drain its accounting first.
         await Promise.allSettled([...pending]);
         await finish({

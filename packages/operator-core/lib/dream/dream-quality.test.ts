@@ -102,6 +102,24 @@ describe('Dream quality calibration and watchdog evidence', () => {
     expect(codes(reportDreamQuality([tooMuch], scope))).toContain('budget-breach');
   });
 
+  it('does not flag a recorded pre-call model-price refusal as unknown accounting', () => {
+    const skipped = run('unpriced-model');
+    skipped.status = 'error';
+    skipped.review = null;
+    skipped.costUsd = 0;
+    const provenance = dreamCapabilityRun(skipped)!;
+    skipped.outcome = {
+      verdict: 'unverified',
+      generationSkipped: true,
+      capabilityRun: { ...provenance, calls: [] },
+    };
+
+    const report = reportDreamQuality([skipped], scope);
+
+    expect(report.coverage).toMatchObject({ inspected: 1, valid: 1 });
+    expect(codes(report)).not.toContain('unknown-accounting');
+  });
+
   it('keeps corrupt rows visible and excludes in-flight calls, old rows and replayed deliveries', () => {
     const good = run('good'), corrupt = run('corrupt'), pending = run('pending'), old = run('old');
     (corrupt.outcome!.assessments as DreamRunAssessment[])[0]!.candidateHash = '0'.repeat(64);
