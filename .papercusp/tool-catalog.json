@@ -3308,7 +3308,7 @@
           "POST"
         ]
       },
-      "description": "Judge-only read-only Git evidence: check ancestry between full commit SHAs or read a file pinned to a full commit SHA in the active harness repository. Oversized files return bounded byte pages.",
+      "description": "Judge-only read-only Git evidence: check ancestry between full commit SHAs or read a file pinned to a full commit SHA in the active harness repository or an explicitly registered evidence harness. Oversized files return bounded byte pages.",
       "capabilities": [
         "capability:git-evidence:read"
       ],
@@ -3318,7 +3318,7 @@
       "guidance": {
         "when": "A grading method requires proof about commit ancestry or the exact contents of a file at a pinned commit.",
         "notWhen": "For general Git commands, worktree state, mutation, refs, or scratch clones, use the separately authorized engineering tools.",
-        "chaining": "Use op:\"isAncestor\" with two full SHAs, or op:\"readFileAtCommit\" with a full SHA and repository-relative path. Small files return text directly; large files return exact base64 byte pages with next_cursor pinned to the same commit SHA and path."
+        "chaining": "Use op:\"isAncestor\" with two full SHAs, or op:\"readFileAtCommit\" with a full SHA and repository-relative path. For an external test checkout, copy rootHarnessSlug from the cited binding measurement. Small files return text directly; large files return exact base64 byte pages with next_cursor pinned to the same commit SHA, path and registered root."
       }
     },
     {

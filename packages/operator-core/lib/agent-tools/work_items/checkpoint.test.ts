@@ -208,10 +208,14 @@ beforeEach(() => {
     priorLength: 0,
   }));
   // The write now ALWAYS keys by the item's canonical harness (EI-8805), so it looks
-  // the item up on every call. Default the lookup to a miss; tests that assert the
-  // canonical harness override it. A resolved-null default keeps the `.catch(...)`
-  // chain valid (an unmocked vi.fn returns undefined, which has no .catch).
-  getWorkItem.mockResolvedValue(null);
+  // the item up on every call. Most cases exercise a successful write; give them an
+  // existing-item fixture by default. Tests for a confirmed miss override this with
+  // null. The resolved fixture also keeps the `.catch(...)` chain valid (an unmocked
+  // vi.fn returns undefined, which has no .catch).
+  getWorkItem.mockImplementation(async (id: string, harness?: string) => ({
+    id,
+    harness: harness ?? 'papercup',
+  }));
   // P-003 verify-read default: the read-back mirrors whatever the store's LAST write
   // resolved to, so every pre-existing write-path test verifies clean without each
   // one re-declaring the round-trip. Verify-failure tests override this per-case.
@@ -1217,13 +1221,26 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     );
   });
 
-  it('errors cleanly when no harness can be resolved (unknown id, no item, no hint)', async () => {
+  it('refuses an unknown work item even when no harness hint is available', async () => {
     getWorkItem.mockResolvedValue(null);
     const r = await one({ id: 'WI-404', checkpoint: 'z' }, noHarnessCtx);
     expect(setWorkItemCheckpoint).not.toHaveBeenCalled();
     expect(r.ok).toBe(false);
     expect(r.id).toBe('WI-404');
-    expect(r.error).toContain('could not resolve a harness');
+    expect(r.errorCode).toBe('work_item_not_found');
+  });
+
+  it('does not write an orphan checkpoint when an unknown id has an explicit harness hint', async () => {
+    getWorkItem.mockResolvedValue(null);
+    const r = await one({ id: 'WI-404', checkpoint: 'z', harness: 'papercup' });
+    expect(setWorkItemCheckpoint).not.toHaveBeenCalled();
+    expect(setWorkItemCheckpointWithPrior).not.toHaveBeenCalled();
+    expect(r).toMatchObject({
+      ok: false,
+      id: 'WI-404',
+      errorCode: 'work_item_not_found',
+    });
+    expect(r.error).toContain('Your checkpoint text was NOT saved');
   });
 
   it('EI-8824: an unscoped superuser session (ctx.workspaceId "*") never persists the literal wildcard — resolves to the concrete active workspace instead', async () => {
@@ -1325,11 +1342,13 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
   });
 
   it('items:[…] checkpoints many; per-item harness overrides; one bad item fails only itself', async () => {
-    // WI-A: ctx harness (papercup), writes. WI-B: per-item harness 'web'. WI-C: no harness anywhere → fails.
+    // WI-A and WI-C are absent. WI-B exists and its own harness is 'web'.
     setWorkItemCheckpoint.mockImplementation(async (key: { workItemId: string }) =>
       key.workItemId === 'WI-A' ? 'snap-a' : 'snap-b',
     );
-    getWorkItem.mockResolvedValue(null); // WI-C lookup misses
+    getWorkItem.mockImplementation(async (id: string) =>
+      id === 'WI-B' ? { id, harness: 'web' } : null,
+    );
     const out = await env(
       {
         items: [
@@ -1338,11 +1357,10 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
           { id: 'WI-C', checkpoint: 'c' },
         ],
       },
-      noHarnessCtx, // no ctx harness → WI-A & WI-B rely on per-item/none, WI-C unresolvable
+      noHarnessCtx, // WI-B's lookup hint disambiguates the existing item; WI-A/WI-C are missing
     );
-    // WI-A has no per-item harness and noHarnessCtx → also unresolvable; WI-B resolves via 'web'.
-    // Envelope ok is DERIVED (`counts.failed === 0`), so the two bad items make it false
-    // while each good item still succeeds on its own — EI-23737206446729041.
+    // The two absent items fail while the found WI-B uses its canonical harness and succeeds.
+    // Envelope ok is DERIVED (`counts.failed === 0`), so one bad item doesn't undo the good write.
     expect(out.ok).toBe(false);
     expect(out.results.map((r: { id: string; ok: boolean }) => [r.id, r.ok])).toEqual([
       ['WI-A', false],
@@ -1816,14 +1834,14 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       expect(r.pauseNotEnforcedWarning).toBeUndefined();
     });
 
-    it('stays SILENT when the item could not be resolved — unknown hold state is not an absent one', async () => {
-      // Fail-safe direction on purpose: reporting "no hold" from a failed read would nag the
-      // authors who did set one, which is how a warn-only nudge earns being ignored.
+    it('refuses a missing item before inferring a pause hold from unknown state', async () => {
+      // A definitive miss is not an unknown hold state: no checkpoint may be written to
+      // an orphan carry_notes scope, and no pause warning may be derived from it.
       getWorkItem.mockResolvedValue(null);
-      setWorkItemCheckpointWithPrior.mockResolvedValue({ stored: PAUSE_NOTE, priorLength: null });
-      getWorkItemCheckpoint.mockResolvedValue(PAUSE_NOTE);
       const r = await one({ id: 'WI-7', checkpoint: PAUSE_NOTE, harness: 'papercup' });
-      expect(r.ok).toBe(true);
+      expect(r.ok).toBe(false);
+      expect(r.errorCode).toBe('work_item_not_found');
+      expect(setWorkItemCheckpointWithPrior).not.toHaveBeenCalled();
       expect(r.pauseNotEnforcedWarning).toBeUndefined();
     });
 

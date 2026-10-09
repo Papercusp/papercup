@@ -329,6 +329,27 @@ function buildProbes(): Probe[] {
     push(`${g.field} word ${literal}`, { field: g.field, op: 'word', value: literal } as FilterLeaf);
   }
 
+  // Same-field word alternatives share a compiled regex. Exercise its literal
+  // escaping, overlapping alternatives, case, empty words and NULLs against
+  // the independent evaluator and actual mapped rows, both bare and negated.
+  for (const field of ['title', 'summary', 'plan'] as const) {
+    for (const values of [
+      ['p2p', 'data path', 'LOSSY', 'federation', PLAN],
+      ['p2', 'p2p', 'p2p-release', 'infra', 'infra'],
+      ['x.y', '(infra)', 'a|b', '[p2p]', '95%', 'not dead'],
+      ['', 'replication', 'replication_soak', 'plan-alpha'],
+    ]) {
+      const any = values.map((value): FilterLeaf => ({ field, op: 'word', value }));
+      push(`${field} grouped literal words ${JSON.stringify(values)}`, { any });
+    }
+    push(`${field} grouped words with a nested alternative`, { any: [
+      { field, op: 'word', value: 'p2p' },
+      { not: { field: 'goal', op: '=', value: 'G-1' } },
+      { field, op: 'word', value: PLAN },
+      { field: 'tags', op: 'word', value: 'infra' },
+    ] });
+  }
+
   // Combinators over a NULL-valued leaf: a poisoned leaf must not contaminate its siblings.
   out.push({
     name: 'all:[kind = feature, not:{plan = PLAN}]',

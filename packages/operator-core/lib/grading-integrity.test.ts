@@ -595,6 +595,10 @@ describe('dispatchPendingGradingAudits', () => {
     );
     const brief = d.route.mock.calls[0]?.[0].brief ?? '';
     expect(brief).toContain("capability:git-evidence { op:'readFileAtCommit'");
+    expect(brief).toContain('copy that exact registered slug');
+    expect(brief).toContain("path, rootHarnessSlug }");
+    expect(brief).toContain('does not establish absence in the recorded evidence repository');
+    expect(brief).toContain('Follow byte-page next_cursor unchanged');
     expect(brief).toContain("sessions:read only with session:'self'");
     expect(brief).toContain('sessions:search and non-self transcript reads are outside its role');
     expect(brief).toContain('state the exact unresolved ref');

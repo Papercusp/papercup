@@ -797,7 +797,31 @@ export function compileFilter(sql: OrgSql, filter: FilterNode | undefined) {
       return parts.reduce((acc, p) => sql`${acc} AND ${p}`);
     }
     if ('any' in node) {
-      const parts = node.any.map(walk);
+      // A broad exclusion fence often checks many literal words in the same
+      // summary/title/plan. One regex per word repeatedly scans (and can detoast)
+      // the same text. Combine only direct scalar-text word alternatives; keep
+      // other operators, array membership and nested boolean scopes unchanged.
+      const words = new Map<FilterLeaf['field'], FilterLeaf[]>();
+      for (const child of node.any) {
+        if (!isLeaf(child) || child.op !== 'word' || FIELD_MAP[child.field]?.kind !== 'scalar-text') continue;
+        const group = words.get(child.field) ?? [];
+        group.push(child);
+        words.set(child.field, group);
+      }
+      const emitted = new Set<FilterLeaf['field']>();
+      const parts = node.any.flatMap((child): SqlFragment[] => {
+        if (!isLeaf(child) || child.op !== 'word') return [walk(child)];
+        const group = words.get(child.field);
+        if (!group || group.length < 2) return [walk(child)];
+        if (emitted.has(child.field)) return [];
+        emitted.add(child.field);
+        const literals = [...new Set(group.map(leaf => escapePgRegexLiteral(String(leaf.value))))];
+        const pattern = `(^|[^A-Za-z0-9])(${literals.join('|')})([^A-Za-z0-9]|$)`;
+        const col = FIELD_MAP[child.field]!.col(sql);
+        // Like the individual leaves, NULL remains NULL until the enclosing
+        // `not` applies its existing COALESCE-before-negation semantics.
+        return [sql`${col}::text ~* ${pattern}`];
+      });
       // Parenthesize the OR so it binds correctly when ANDed into the floors.
       return parts.reduce((acc, p) => sql`(${acc} OR ${p})`);
     }
