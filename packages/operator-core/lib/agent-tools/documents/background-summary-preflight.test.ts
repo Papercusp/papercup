@@ -11,14 +11,14 @@ const controls = vi.hoisted(() => ({
   invoke: vi.fn<(name: string, args: unknown) => unknown>(),
 }));
 vi.mock('../../../../../apps/operator/e2e/_egress', async () => {
-  const { expect } = await import('vitest');
+  const { expect: journeyExpect } = await import('vitest');
   const test = Object.assign((_name: string, journey: typeof controls.journey) => {
     controls.journey = journey;
   }, {
     setTimeout: vi.fn(),
     skip: (condition: boolean) => { if (condition) throw new Error('Unexpected fixture skip'); },
   });
-  return { test, expect };
+  return { test, expect: journeyExpect };
 });
 vi.mock('node:child_process', () => ({
   execFile: (_file: string, args: string[], _options: unknown,
