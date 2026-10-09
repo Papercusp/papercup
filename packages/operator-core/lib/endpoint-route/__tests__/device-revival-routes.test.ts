@@ -28,6 +28,10 @@ const m = vi.hoisted(() => ({
     id: 'conv-1', workspaceId: 'ws-e4', harnessSlug: null, title: null,
     status: 'active' as const, startedAt: 1, endedAt: null, elConversationIds: [], hasAudio: false,
   })),
+  getConversationById: vi.fn(async (id: string, _workspaceId?: string) => id === 'missing' ? null : ({
+    id, workspaceId: 'ws-e4', harnessSlug: null, title: null, status: 'active' as const,
+    startedAt: 1, endedAt: null, elConversationIds: [], hasAudio: false,
+  })),
   listTurnsRecent: vi.fn(async () => ({
     turns: [{ id: 't1', conversationId: 'conv-1', seq: 0, role: 'user', text: 'hi', source: 'text_typed', elConvId: null, audioUrl: null, createdAt: 1, tools: null }],
     hasMoreEarlier: false,
@@ -85,6 +89,7 @@ const m = vi.hoisted(() => ({
 vi.mock('../../device-store', () => ({ upsertPushToken: m.upsertPushToken }));
 vi.mock('../../operator-conversations', () => ({
   getOrCreateActiveConversation: m.getOrCreateActiveConversation,
+  getConversationById: m.getConversationById,
   listTurnsRecent: m.listTurnsRecent,
   appendTurn: m.appendTurn,
 }));
@@ -232,6 +237,23 @@ describe('device/operator/conversation', () => {
     const def = routeByPath(deviceConverse as RouteDefinition<any>[], 'GET', '/device/operator/conversation/turns');
     const res = await def.handler(new Request('http://x.test/api/device/operator/conversation/turns'), ctx());
     expect(res.status).toBe(400);
+  });
+
+  it('GET conversation/turns scopes archived history to the verified device workspace', async () => {
+    const def = routeByPath(deviceConverse as RouteDefinition<any>[], 'GET', '/device/operator/conversation/turns');
+    const res = await def.handler(new Request('http://x.test/api/device/operator/conversation/turns?conversationId=archived&beforeSeq=12&limit=5'), ctx());
+    expect(res.status).toBe(200);
+    expect(m.getConversationById).toHaveBeenCalledWith('archived', 'ws-e4');
+    expect(m.listTurnsRecent).toHaveBeenCalledWith({ conversationId: 'archived', beforeSeq: 12, limit: 5 });
+  });
+
+  it('GET conversation/turns refuses a conversation outside the paired workspace', async () => {
+    m.getConversationById.mockResolvedValueOnce(null);
+    const def = routeByPath(deviceConverse as RouteDefinition<any>[], 'GET', '/device/operator/conversation/turns');
+    const res = await def.handler(new Request('http://x.test/api/device/operator/conversation/turns?conversationId=foreign'), ctx());
+    expect(res.status).toBe(404);
+    expect(m.getConversationById).toHaveBeenCalledWith('foreign', 'ws-e4');
+    expect(m.listTurnsRecent).not.toHaveBeenCalled();
   });
 
   it('GET conversation reads the paired workspace when the desktop workspace differs', async () => {

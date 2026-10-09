@@ -32,6 +32,7 @@ import '../../../agent-tools/index';
 import { DEVICE_AUTH, devicePrincipal } from './_shared';
 import {
   getOrCreateActiveConversation,
+  getConversationById,
   appendTurn,
   listTurnsRecent,
   type TurnRole,
@@ -75,11 +76,14 @@ const conversationTurns = defineTool({
   path: '/device/operator/conversation/turns',
   auth: DEVICE_AUTH,
   cors: true,
-  async handler(req) {
+  async handler(req, ctx) {
     const url = new URL(req.url);
     const conversationId = url.searchParams.get('conversationId');
     if (!conversationId) {
       return Response.json({ error: 'missing conversationId' }, { status: 400 });
+    }
+    if (!await getConversationById(conversationId, devicePrincipal(ctx).workspaceId)) {
+      return Response.json({ error: 'conversation not found' }, { status: 404 });
     }
     const beforeRaw = url.searchParams.get('beforeSeq');
     const beforeSeq = beforeRaw === null || beforeRaw === '' ? null : Number(beforeRaw);
