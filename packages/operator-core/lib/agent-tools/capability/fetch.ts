@@ -152,6 +152,8 @@ export default defineTool({
     chaining: 'Standalone. Large bodies spill to a log path you can capability:read.',
   },
   capability: 'capability:net',
+  // Arbitrary HTTP methods and browser lifetimes can mutate state. Code-mode dry-run must skip them.
+  effect: 'write',
   requirePrincipal: false,
   agentRoles: [...AGENT_ROLES],
   timeoutSec: 60,

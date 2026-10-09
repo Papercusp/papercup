@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { UnifiedToolContext } from '@papercusp/agent-mcp';
 import type { Route } from 'playwright-core';
-import { browserScope, browserSessionArg, runBrowserSession, type BrowserDeps } from './browser-session';
+import { browserScope, browserSessionArg, browserResponseBytes, runBrowserSession, type BrowserDeps } from './browser-session';
 import fetchTool from './fetch';
 
 const trusted = { kind: 'trusted', reason: 'superuser' } as const;
@@ -45,6 +45,7 @@ function request(url = 'https://example.com/', method = 'GET') {
 
 describe('managed browser authority and lifecycle', () => {
   it('keeps HTTP input compatible and validates lifecycle without model-authored authority', () => {
+    expect(fetchTool.effect).toBe('write');
     expect(fetchTool.args.safeParse({ url: 'https://example.com' }).success).toBe(true);
     expect(fetchTool.args.safeParse({}).success).toBe(false);
     expect(fetchTool.args.safeParse({ browser: { op: 'open' } }).success).toBe(true);
@@ -99,7 +100,7 @@ describe('managed browser authority and lifecycle', () => {
   });
   it('fails closed on launch/confinement failure and releases pending capacity', async () => {
     const f = fixture(); vi.mocked(f.deps.launch).mockRejectedValueOnce(new Error('capability_exec_confinement_unavailable'));
-    expect((await f.call({ op: 'open' })).payload).toMatchObject({ ok: false, executed: false });
+    expect((await f.call({ op: 'open' })).payload).toMatchObject({ ok: false, launchAttempted: true });
     await f.open(); await f.open();
     expect((await f.call({ op: 'open' })).payload.error).toBe('browser_scope_limit');
   });
@@ -114,5 +115,38 @@ describe('managed browser authority and lifecycle', () => {
     expect(closed.payload.browser.state).toBe('closed');
     expect((await running).payload.ok).toBe(false);
     expect(f.server.close).toHaveBeenCalledOnce();
+  });
+  it('checks changing authority at the actual request boundary', async () => {
+    const f = fixture(); const id = await f.open();
+    f.page.goto.mockImplementationOnce(async () => {
+      f.profile.mockResolvedValueOnce({ kind: 'confined', reason: 'autonomous-caller' });
+      const route = request(); await f.relay()(route); expect(route.abort).toHaveBeenCalled();
+    });
+    expect((await f.call({ op: 'navigate', id }, ctx(), 'https://example.com')).payload.ok).toBe(false);
+    expect(f.deps.fetch).not.toHaveBeenCalled(); expect(f.server.close).toHaveBeenCalledOnce();
+  });
+  it('counts pending launches so simultaneous opens cannot exceed capacity', async () => {
+    const f = fixture(); const original = vi.mocked(f.deps.launch).getMockImplementation()!;
+    let release!: () => void; const gate = new Promise<void>((resolve) => { release = resolve; });
+    let both!: () => void; const entered = new Promise<void>((resolve) => { both = resolve; }); let count = 0;
+    vi.mocked(f.deps.launch).mockImplementation(async (...args) => { if (++count === 2) both(); await gate; return original(...args); });
+    const first = f.open(); const second = f.open(); await entered;
+    expect((await f.call({ op: 'open' })).payload.error).toBe('browser_scope_limit');
+    release(); await Promise.all([first, second]); expect(f.deps.launch).toHaveBeenCalledTimes(2);
+  });
+  it('retires idle sessions using existing explicit cleanup and truthful lifetime state', async () => {
+    const f = fixture(); const id = await f.open();
+    vi.useFakeTimers(); await f.call({ op: 'observe', id });
+    vi.advanceTimersByTime(5 * 60_000 + 1);
+    const closed = await f.call({ op: 'close', id });
+    expect(closed.payload.browser).toMatchObject({ state: 'closed', reason: 'idle-expired', restartRecovery: 'unrecoverable' });
+    expect(f.server.close).toHaveBeenCalledOnce();
+  });
+  it('preserves binary resources and cancels oversized or aggregate-exhausting streams', async () => {
+    const active = () => ({ controller: new AbortController(), profile: trusted, requests: 0, bytes: 0, failures: [] as string[] });
+    expect(await browserResponseBytes(new Response(new Uint8Array([0, 127, 255])), active())).toEqual(Buffer.from([0, 127, 255]));
+    await expect(browserResponseBytes(new Response('large', { headers: { 'content-length': String(3 * 1024 * 1024) } }), active())).rejects.toThrow('browser_resource_size_limit');
+    const aggregate = active(); aggregate.bytes = 16 * 1024 * 1024 - 1;
+    await expect(browserResponseBytes(new Response('more'), aggregate)).rejects.toThrow('browser_resource_size_limit');
   });
 });

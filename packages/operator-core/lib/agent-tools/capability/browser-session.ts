@@ -33,6 +33,7 @@ const MAX_REQUESTS = 100;
 
 interface ActiveOperation {
   controller: AbortController;
+  ctx?: UnifiedToolContext;
   profile: OperationBoundaryProfile;
   bytes: number;
   requests: number;
@@ -80,8 +81,7 @@ export async function launchBrowserProcess(ctx: UnifiedToolContext, root: string
   try {
     server = await chromium.launchServer({ executablePath: wrapper, headless: true, host: '127.0.0.1', timeout: remaining(),
       env: { ...scrubExecEnv(process.env), TMPDIR: root },
-      args: ['--force-webrtc-ip-handling-policy=disable_non_proxied_udp', '--disable-features=WebTransport'],
-      proxy: { server: 'http://127.0.0.1:9' } });
+      args: ['--force-webrtc-ip-handling-policy=disable_non_proxied_udp', '--disable-features=WebTransport'] });
     const child = server.process();
     await markSpawned(row.taskId, { pid: child.pid, processIdentity: child.pid ? readProcessIdentity(child.pid) : null,
       confined: false, unconfinedReason: 'SDK process group; execution sandbox is reported separately' });
@@ -156,6 +156,12 @@ async function relay(session: Session, route: Route, deps: BrowserDeps): Promise
   if (!active || active.controller.signal.aborted) { await route.abort('blockedbyclient').catch(() => {}); return; }
   let release: (() => Promise<void>) | undefined;
   try {
+    if (active.ctx) {
+      const latest = await deps.profile(active.ctx);
+      if (JSON.stringify([latest, active.ctx.role ?? null]) !== session.authority) {
+        active.controller.abort(); throw new Error('browser_authority_changed');
+      }
+    }
     if (++active.requests > MAX_REQUESTS) throw new Error('browser_request_limit');
     const request = route.request();
     // DOM observation never authorizes remote writes, even for trusted callers.
@@ -218,6 +224,7 @@ export async function runBrowserSession(
     try {
       remaining(); root = await mkdtemp(join(tmpdir(), 'pc-browser-'));
       launched = await deps.launch(ctx, root, id, remaining());
+      if (JSON.stringify([launched.profile, ctx.role ?? null]) !== authority) throw new Error('browser_authority_changed');
       const setupServer = launched.server;
       const stopSetup = () => { void setupServer.kill().catch(() => {}); };
       ctx.signal?.addEventListener('abort', stopSetup, { once: true });
@@ -227,6 +234,7 @@ export async function runBrowserSession(
         context = await launched.browser.newContext({ viewport: { width: 1024, height: 768 }, serviceWorkers: 'block', acceptDownloads: false });
         await context.routeWebSocket('**/*', (socket) => socket.close());
         page = await context.newPage(); remaining();
+        if (JSON.stringify([await deps.profile(ctx), ctx.role ?? null]) !== authority) throw new Error('browser_authority_changed');
       } finally { clearTimeout(setupTimer); ctx.signal?.removeEventListener('abort', stopSetup); }
       session = { ...launched, id, root, scope, authority, context, page, state: 'live', busy: false, processEnded: false };
       const current = session;
@@ -237,7 +245,7 @@ export async function runBrowserSession(
     } catch (error) {
       if (launched) await launched.server.kill();
       if (root) await rm(root, { recursive: true, force: true });
-      return reply({ ok: false, error: error instanceof Error ? error.message : String(error), executed: false });
+      return reply({ ok: false, error: error instanceof Error ? error.message : String(error), launchAttempted: true });
     } finally {
       const count = (openings.get(scope) ?? 1) - 1;
       if (count) openings.set(scope, count); else openings.delete(scope);
@@ -245,7 +253,7 @@ export async function runBrowserSession(
   }
   if (!session) return reply({ ok: false, error: 'browser_unrecoverable' });
   session.busy = true; if (session.idle) clearTimeout(session.idle);
-  const active: ActiveOperation = { controller: new AbortController(), profile, requests: 0, bytes: 0, failures: [] };
+  const active: ActiveOperation = { controller: new AbortController(), ctx, profile, requests: 0, bytes: 0, failures: [] };
   session.active = active;
   const abort = () => active.controller.abort();
   if (ctx.signal?.aborted) abort(); else ctx.signal?.addEventListener('abort', abort, { once: true });

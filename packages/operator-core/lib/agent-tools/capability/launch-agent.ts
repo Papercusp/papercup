@@ -1202,7 +1202,7 @@ export default defineTool({
             if (!restoreVisibleMayShutdown(windowVerdict)) {
               const recoveryHint =
                 windowVerdict === 'not-a-window'
-                  ? ' This is a stale headless host, not a visible-window restore case; omit `restoreVisible` and retry the ordinary exact resume, which performs guarded stale-headless recovery.'
+                  ? ' This host has no live desktop window; omit `restoreVisible` and retry an ordinary exact resume. That path reclaims only an explicitly agent-launched headless host with measured pty activity idle for at least 30 minutes; otherwise a still-live source is forked to avoid opening a second CLI on one transcript.'
                   : '';
               return err(
                 `Cannot restore ${target.sessionId}: desktop-window verdict for ${target.ownerId} is ${windowVerdict}. ` +
