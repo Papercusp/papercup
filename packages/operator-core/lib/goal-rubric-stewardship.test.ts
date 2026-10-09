@@ -4,7 +4,7 @@ import { classifyStewardshipCycle, renderGoalRubricStewardshipBrief, type GoalRu
 const baseline = (): StewardshipCard => ({ issueId: 'EI-1', createdAt: '2026-10-09T10:00:00Z', createdBy: 'grader',
   rubricRef: 'quality', rubricRevision: 4, criteriaHash: 'same-criteria', subject: { kind: 'pot', ref: 'target' },
   ratings: { quality: { rating: 'fail', evidence: 'Confirmed failure', remediation: 'WI-12' } },
-  settled: true, current: true, requiresIndependentAcceptance: true });
+  settled: true, current: true, requiresIndependentAcceptance: true, acceptanceIndependent: true });
 const regrade = (): StewardshipCard => ({ ...baseline(), issueId: 'EI-2', baselineRef: 'EI-1',
   createdAt: '2026-10-09T12:00:00Z', ratings: { quality: { rating: 'pass', evidence: 'Independent rerun passed' } } });
 const repair = (): StewardshipRepair => ({ id: 'WI-12', goalId: 'g', owner: 'builder',
@@ -54,6 +54,8 @@ describe('goal rubric stewardship: verified improvement', () => {
   });
   it('requires an independent final grader where the rubric asks for one', () => {
     expect(grade({ ...regrade(), createdBy: 'builder' }).status).toBe('unverified');
+    expect(grade({ ...regrade(), createdBy: 'builder-child', acceptanceIndependent: false }).status).toBe('unverified');
+    expect(grade({ ...regrade(), acceptanceIndependent: undefined }).status).toBe('unverified');
     expect(grade({ ...regrade(), createdBy: 'builder', requiresIndependentAcceptance: false }).status).toBe('verified');
   });
   it('rejects unreadable chronology instead of treating NaN comparisons as verified order', () => {

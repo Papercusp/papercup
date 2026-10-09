@@ -25,6 +25,8 @@ export type StewardshipCard = Pick<ScorecardRow, 'issueId' | 'createdAt' | 'crea
   settled: boolean;
   current: boolean;
   requiresIndependentAcceptance: boolean;
+  /** Canonical spawn/rebind lineage was read, rather than comparing labels only. */
+  acceptanceIndependent?: boolean;
 };
 export interface StewardshipCycle {
   target: string;
@@ -120,7 +122,8 @@ export function classifyStewardshipCycle(
       Date.parse(r.closedAt) <= Date.parse(baseline.createdAt) || Date.parse(r.closedAt) >= Date.parse(card.createdAt))) {
     return out('unverified', 'Every linked repair needs verification between the baseline and re-grade.');
   }
-  if (card.requiresIndependentAcceptance && (!card.createdBy || selected.some(r => !r?.owner || r.owner === card.createdBy))) {
+  if (card.requiresIndependentAcceptance && (card.acceptanceIndependent !== true ||
+      !card.createdBy || selected.some(r => !r?.owner || r.owner === card.createdBy))) {
     return out('unverified', 'This rubric requires acceptance by a grader independent of the implementers.');
   }
   if (failed.some(([key]) => !GOOD.has(card.ratings[key]?.rating ?? '')) ||
@@ -187,6 +190,21 @@ export async function readGoalRubricStewardship(
       verified: r.state === 'done' && (r.completionAuthority === 'committed' || r.completionAuthority === 'validated') &&
         isSufficientEvidence(r.terminalCompletionEvidence),
     }));
+    // Reuse the acceptance authority's spawn/rebind closure. A child/successor
+    // with a different label still belongs to its implementer's lineage.
+    const { acceptanceLineageClosure } = await import('./acceptance-author-identity');
+    const lineages = new Map<string, Set<string>>();
+    for (const card of cards) {
+      if (!card.requiresIndependentAcceptance || !card.createdBy) continue;
+      let lineage = lineages.get(card.createdBy);
+      if (!lineage) {
+        lineage = await acceptanceLineageClosure(card.createdBy, { workspaceId: input.workspaceId, sql });
+        lineages.set(card.createdBy, lineage);
+      }
+      const baseline = cards.find(c => c.issueId === card.baselineRef);
+      const owners = stewardshipRepairRefs(baseline ?? card).map(id => repairs.find(r => r.id === id)?.owner);
+      card.acceptanceIndependent = owners.length > 0 && owners.every(owner => !!owner && !lineage.has(owner));
+    }
     const latest = cards.find(c => c.rubricRef === WOE_RUBRIC && c.current && c.settled);
     return { ...base, complete: rows.length <= PAGE_SIZE, rubricRevision: rubric?.revision ?? null,
       criteria: Object.fromEntries(RUBRIC_STEWARDSHIP_CRITERIA.map(key => [key, latest?.ratings[key]
