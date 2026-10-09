@@ -10,6 +10,47 @@ import { captureIsolatedWorker, isolatedWorkerOptions, recordIsolatedIntegration
 const root = resolve(import.meta.dirname, '../../..');
 const workerOptions = isolatedWorkerOptions(30_000);
 
+it('pins plain-mode integration setup to its real private PG without injecting product URL overrides', async () => {
+  const evidenceDir = await mkdtemp(join(tmpdir(), 'private-admin-plain-'));
+  const env: NodeJS.ProcessEnv = { ...process.env, TMPDIR: evidenceDir,
+    PAPERCUSP_TEST_PG_ADMIN_URL: 'postgres://refused:refused@192.0.2.1:5432/shared' };
+  delete env.HARNESS_ADMIN_DATABASE_URL;
+  delete env.HARNESS_DATABASE_URL;
+  delete env.PC_HEAVY_PREEMPT_READY_FILE;
+  delete env.PC_HEAVY_PSI_FINALIZATION_FILE;
+  const child = fork(join(root, 'scripts/with-test-pg.mjs'), [
+    '--', process.execPath, '-e', `
+      const assert = require('node:assert/strict');
+      const postgres = require('postgres');
+      (async () => {
+        assert.equal(process.env.HARNESS_ADMIN_DATABASE_URL, undefined);
+        assert.equal(process.env.HARNESS_DATABASE_URL, undefined);
+        const url = new URL(process.env.PAPERCUSP_TEST_PG_ADMIN_URL);
+        assert.ok(['localhost', '127.0.0.1', '[::1]'].includes(url.hostname));
+        assert.equal(url.port, process.env.PAPERCUSP_PG_PORT);
+        const sql = postgres(url.toString(), { max: 1 });
+        try {
+          const [row] = await sql\`SELECT inet_server_port() AS port, current_user AS role\`;
+          assert.equal(String(row.port), process.env.PAPERCUSP_PG_PORT);
+          assert.equal(row.role, 'harness_admin');
+          console.log('plain-private-admin-control');
+        } finally { await sql.end(); }
+      })().catch(error => { console.error(error); process.exitCode = 1; });
+    `,
+  ], { cwd: root, execArgv: [], env, stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
+  try {
+    const result = await captureIsolatedWorker(child, evidenceDir, workerOptions);
+    expect(result, result.output.slice(-8000)).toMatchObject({ code: 0, signal: null, timedOut: false,
+      exitWaitTimedOut: false, stdioDrainTimedOut: false });
+    expect(result.output).toContain('plain-private-admin-control');
+    const dataDir = result.output.match(/\(datadir (.+)\)/)?.[1];
+    expect(dataDir).toBeDefined();
+    expect(existsSync(dataDir!)).toBe(false);
+  } finally {
+    await rm(evidenceDir, { recursive: true, force: true });
+  }
+}, workerOptions.testTimeoutMs);
+
 it('stops real private PG and removes its runtime after an ordinary child exit', async context => {
   const runId = await recordIsolatedIntegrationProof({ root,
     filePath: 'packages/operator-core/lib/isolated-runtime-cleanup.integration.test.ts',
@@ -21,7 +62,24 @@ it('stops real private PG and removes its runtime after an ordinary child exit',
       delete env.PC_HEAVY_PREEMPT_READY_FILE;
       delete env.PC_HEAVY_PSI_FINALIZATION_FILE;
       const child = fork(join(root, 'scripts/with-test-pg.mjs'), [
-        '--isolated-runtime', '--', process.execPath, '-e', "console.log('isolated-cleanup-control');",
+        '--isolated-runtime', '--', process.execPath, '-e', `
+          const assert = require('node:assert/strict');
+          const postgres = require('postgres');
+          (async () => {
+            const adminUrl = new URL(process.env.PAPERCUSP_TEST_PG_ADMIN_URL);
+            assert.ok(['localhost', '127.0.0.1', '[::1]'].includes(adminUrl.hostname));
+            assert.equal(adminUrl.port, process.env.PAPERCUSP_PG_PORT);
+            assert.equal(adminUrl.toString(), new URL(process.env.HARNESS_ADMIN_DATABASE_URL).toString());
+            const sql = postgres(adminUrl.toString(), { max: 1 });
+            try {
+              const [row] = await sql\`SELECT inet_server_port() AS port, current_user AS role\`;
+              assert.equal(String(row.port), process.env.PAPERCUSP_PG_PORT);
+              assert.equal(row.role, 'harness_admin');
+              console.log('private-integration-admin-control');
+            } finally { await sql.end(); }
+            console.log('isolated-cleanup-control');
+          })().catch(error => { console.error(error); process.exitCode = 1; });
+        `,
       ], { cwd: root, detached: true, execArgv: [], env, stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
       observe(child);
       const stages: string[] = [];
@@ -34,6 +92,7 @@ it('stops real private PG and removes its runtime after an ordinary child exit',
       expect(result, result.output.slice(-8000)).toMatchObject({ code: 0, signal: null, timedOut: false,
         exitWaitTimedOut: false, stdioDrainTimedOut: false });
       expect(result.output).toContain('isolated-cleanup-control');
+      expect(result.output).toContain('private-integration-admin-control');
       expect(stages).toEqual(expect.arrayContaining(['start', 'pg-stop', 'pg-stopped', 'remove-private-state', 'complete']));
     },
   });
