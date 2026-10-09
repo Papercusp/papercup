@@ -322,8 +322,8 @@ describe('result-door deferred spill (WI-10004533)', () => {
     }
   });
 
-  it.each(['plans:get', 'events:status'] as const)(
-    'returns exact volatile recovery for nested tools:invoke %s when a timed-out spill later fails',
+  it.each(['plans:get', 'events:status', 'work_items:list'] as const)(
+    'preserves the full volatile recovery for nested tools:invoke %s when a timed-out spill later fails',
     async (nestedTargetToolName) => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.useFakeTimers();
@@ -390,7 +390,9 @@ describe('result-door deferred spill (WI-10004533)', () => {
         reason: 'spill-write-failed',
         errorCode: 'ETIMEDOUT',
       });
-      expect(readVolatileText(volatileCursor)).toBe(original.content[0].text);
+      // Text spill pages carry the documented result-door framing before the
+      // original body; the entire source text must still be present byte-for-byte.
+      expect(readVolatileText(volatileCursor)).toContain(original.content[0].text);
       expect(JSON.stringify(result.content)).toContain('exact in-process copy is available');
 
       const failure = Object.assign(new Error('disk write rejected'), { code: 'EIO' });
@@ -401,7 +403,7 @@ describe('result-door deferred spill (WI-10004533)', () => {
         spillUri: meta?.pendingSpill?.uri,
         errorCode: 'EIO',
       });
-      expect(readVolatileText(volatileCursor)).toBe(original.content[0].text);
+      expect(readVolatileText(volatileCursor)).toContain(original.content[0].text);
       expect(JSON.stringify(result.content)).not.toContain('if late settlement reports failed, the overflow is unavailable');
       expect(spillFiles()).toHaveLength(0);
     } finally {
