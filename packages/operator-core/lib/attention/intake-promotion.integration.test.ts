@@ -14,10 +14,21 @@ import { teardownTestPg } from '@papercusp/test-config/pg';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql, currentBuild: 'abc1234def5678' as string | null }));
-vi.mock('./intake-promotion', async (orig) => ({
-  ...(await orig<typeof import('./intake-promotion')>()),
-  currentIntakeTargetBuild: async () => h.currentBuild,
-}));
+vi.mock('./intake-promotion', async (orig) => {
+  const actual = await orig<typeof import('./intake-promotion')>();
+  const currentTargetBuild = async () => h.currentBuild;
+  return {
+    ...actual,
+    currentIntakeTargetBuild: currentTargetBuild,
+    // Keep execution on the same controlled target as promotion after the
+    // server wrapper began composing its own lexical default dependencies.
+    verifyAcceptedWorkItemBugReproduction: (item: Parameters<typeof actual.verifyAcceptedWorkItemBugReproduction>[0]) =>
+      actual.verifyAcceptedWorkItemBugReproduction(item, {
+        currentTargetBuild,
+        ledger: actual.defaultReproductionLedgerDeps(),
+      }),
+  };
+});
 beforeEach(() => { h.currentBuild = 'abc1234def5678'; });
 vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
