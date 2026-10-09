@@ -37,6 +37,36 @@ describe('rubric rating-vocabulary validation (WI-835208)', () => {
     });
   });
 
+  it.each([
+    'Enumerate change/delete/revoke streams, rate limits, private routes, and credential rotation.',
+    'Exercise connector rate limits. Grade broken if recovery fails.',
+    'Inspect the provider rate limit; Grade healthy when the recorded bound holds.',
+  ])('treats rate-limit noun phrases as connector behavior: %s', (method) => {
+    const result = validateRubricRatingVocabulary(
+      [criterion({ key: 'connector-population', method })],
+      ['healthy', 'degraded', 'broken', 'unknown'],
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.violations).toEqual([]);
+    expect(result.instructions.every((instruction) => ['healthy', 'broken'].includes(instruction.rating))).toBe(true);
+  });
+
+  it.each([
+    'Rate as limits when evidence is incomplete.',
+    'Rate `limits` if the probe fails.',
+    'Rating is limits when the check fails.',
+    'Grade limits if the probe fails.',
+  ])('still rejects explicit off-scale limits directives: %s', (method) => {
+    const result = validateRubricRatingVocabulary(
+      [criterion({ key: 'explicit-directive', method })],
+      ['healthy', 'degraded', 'broken', 'unknown'],
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.violations.map((violation) => violation.rating)).toEqual(['limits']);
+  });
+
   it('finds quoted and unquoted explicit directives while ignoring ambiguous prose', () => {
     const result = validateRubricRatingVocabulary(
       [

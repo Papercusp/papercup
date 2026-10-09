@@ -193,6 +193,11 @@ function parseDirectiveTarget(input: string, directive: string): ParsedDirective
   // unambiguous spellings: `Grade fail`, `rate as fail`, or a quoted value.
   if (/^of\b/i.test(trimmed)) return null;
 
+  // `rate limit(s)` names provider throttling, including comma-separated
+  // connector populations. Do not interpret the plural noun as a score label.
+  // Explicit labels (`Rate as limits`, `Rate `limits``) still parse below.
+  if (directive.toLowerCase() === 'rate' && /^limits?\b/i.test(trimmed)) return null;
+
   const rest = skipDirectiveConnector(input);
   if (!rest) return null;
 
