@@ -9,7 +9,7 @@ import { captureIsolatedWorker, isolatedWorkerOptions, recordIsolatedIntegration
 const root = resolve(import.meta.dirname, '../../../../../..');
 const options = isolatedWorkerOptions(480_000);
 
-it('delivers real Reports excerpts through native Codex turn-start and mid-turn ports in a private operator', async context => {
+it('delivers real plan, procedure and Report excerpts through native Codex turn-start and mid-turn ports in a private operator', async context => {
   const runId = await recordIsolatedIntegrationProof({ root,
     filePath: 'packages/operator-core/lib/endpoint-route/routes/agent-mcp/knowledge-native.integration.test.ts',
     sourcePaths: ['scripts/with-test-pg.mjs', 'packages/operator-core/test/knowledge-native-fixture.ts',
@@ -18,7 +18,10 @@ it('delivers real Reports excerpts through native Codex turn-start and mid-turn 
       'packages/operator-core/lib/endpoint-route/routes/agent-mcp/turn-start-memory.ts',
       'packages/operator-core/lib/endpoint-route/routes/agent-mcp/mid-turn-context.ts',
       'packages/operator-core/lib/memory/injection.ts', 'packages/operator-core/lib/memory/corpus-recall-io.ts',
-      'packages/operator-core/lib/memory/corpus-recall.ts', 'packages/operator-core/lib/agent-tools/search/report-source.ts'],
+      'packages/operator-core/lib/memory/corpus-recall.ts', 'packages/operator-core/lib/agent-tools/search/report-source.ts',
+      'packages/operator-core/lib/agent-tools/search/knowledge-sources.ts',
+      'packages/operator-core/lib/search/doc-embed-sync.ts', 'packages/operator-core/lib/search/chunks/tick.ts',
+      'packages/operator-core/lib/search/chunks/registry.ts'],
     execute: async (observe, evidenceDir) => {
       await mkdir(join(evidenceDir, 'tmp'));
       // Maintained host bundles externalize native/large dependencies. Resolve
@@ -52,6 +55,10 @@ it('delivers real Reports excerpts through native Codex turn-start and mid-turn 
         turnStart: true, midTurn: true, nativeClient: 'codex', hostStopped: true,
         bundleSha256: expect.stringMatching(/^[a-f0-9]{64}$/), requests: expect.any(Array) });
       expect(receipt.requests.map((r: { status: number }) => r.status)).toEqual([200, 200]);
+      expect(receipt.knowledge).toEqual([
+        { planSlug: 'native-zephyrquartz-plan', docSlug: 'native-zephyrquartz-procedure' },
+        { planSlug: 'native-cobaltquartz-plan', docSlug: 'native-cobaltquartz-procedure' },
+      ]);
       console.info('KNOWLEDGE_NATIVE_VERIFIED ' + JSON.stringify(receipt));
     },
   });

@@ -76,7 +76,12 @@ const ensureSlackFlagship = vi.fn(async (_sql: unknown, _workspaceId: string, so
     stormPolicy: {},
   },
 }));
-const sql = {};
+const sql = vi.fn();
+const getSource = vi.fn();
+const ensureBugClassifier = vi.fn(async (_sql: unknown, _workspace: string, source: { id: string }, _createdBy: string) => ({
+  plan: { created: true },
+  binding: { id: BINDING_ID, sourceId: source.id, eventPattern: 'ext:slack:message', armed: false },
+}));
 
 vi.mock('../../auth/require-principal', () => ({
   requirePrincipal: vi.fn(async () => ({
@@ -132,6 +137,13 @@ vi.mock('../../external-triggers/slack-flagship', () => ({
   SLACK_RESPOND_IN_THREAD_PLAN: 'slack-respond-in-thread-2026-08-22',
   ensureSlackRespondInThreadBinding: (...args: Parameters<typeof ensureSlackFlagship>) => ensureSlackFlagship(...args),
 }));
+vi.mock('../../external-triggers/source-store', () => ({
+  getExternalTriggerSource: (...args: unknown[]) => getSource(...args),
+}));
+vi.mock('../../external-triggers/slack-bug-classification', () => ({
+  SLACK_BUG_CLASSIFICATION_PLAN: 'slack-classify-bug-2026-10-08',
+  ensureSlackBugClassificationBinding: (...args: Parameters<typeof ensureBugClassifier>) => ensureBugClassifier(...args),
+}));
 vi.mock('../../data-sources/slack-org-connector', () => ({
   // Literal, not SLACK_ORG_DISABLED: this factory is hoisted above that const.
   SLACK_ORG_DISABLED_ERROR: 'slack_org_connector_disabled:legal_review_pending',
@@ -161,6 +173,8 @@ async function request(route: AnyRoute, method: 'GET' | 'PATCH' | 'POST', body?:
 
 beforeEach(() => {
   flagEnabled.mockResolvedValue(true);
+  getSource.mockReset();
+  sql.mockReset();
 });
 afterEach(() => vi.clearAllMocks());
 
@@ -418,6 +432,67 @@ describe('external-trigger admin route pair', () => {
       'owner:22222222-2222-4222-8222-222222222222',
     );
     expect(notify).toHaveBeenCalledWith('externalTriggers.admin', { workspaceId: 'ws-test' });
+  });
+
+  it('configures the owned bug source and installs the ordinary-message classifier disarmed', async () => {
+    const ownerUserId = '22222222-2222-4222-8222-222222222222';
+    const sourceId = '20000000-0000-4000-8000-000000000001';
+    const asanaId = '20000000-0000-4000-8000-000000000003';
+    const source = { id: sourceId, workspaceId: 'ws-test', kind: 'slack', ownerUserId,
+      config: { botUserId: 'UBOT', installSlug: 'papercusp' }, cursor: {} };
+    const destination = { sourceId: asanaId, projectGid: '123' };
+    getSource.mockResolvedValueOnce(source).mockResolvedValueOnce({ kind: 'asana', ownerUserId, config: { projectGids: ['123'] } });
+    const configured = { ...source, config: { ...source.config, channels: ['C1'], asanaBugDestination: destination } };
+    sql.mockResolvedValueOnce([configured]);
+    const response = await request(mutate, 'PATCH', { op: 'configure-slack-bugs', sourceId,
+      channels: ['C1', 'C1'], asanaBugDestination: destination });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ ok: true, source: configured,
+      binding: { eventPattern: 'ext:slack:message', armed: false },
+      plan: { slug: 'slack-classify-bug-2026-10-08', armed: false } });
+    expect(sql).toHaveBeenCalledOnce();
+    expect(sql.mock.calls[0][0].join('')).toContain('config = config ||');
+    expect(sql.mock.calls[0][0].join('')).toContain('config IS NOT DISTINCT FROM');
+    expect(JSON.parse(sql.mock.calls[0][1])).toEqual({ channels: ['C1'], asanaBugDestination: destination });
+    expect(ensureBugClassifier).toHaveBeenCalledWith(sql, 'ws-test', configured, `owner:${ownerUserId}`);
+    expect(setArmed).not.toHaveBeenCalled();
+    expect(connectSlack).not.toHaveBeenCalled();
+  });
+
+  it('refuses cross-owner, wrong-provider and unselected-project bug destinations before configuration', async () => {
+    const sourceId = '20000000-0000-4000-8000-000000000001';
+    const source = { id: sourceId, kind: 'slack', ownerUserId: '22222222-2222-4222-8222-222222222222', config: {} };
+    const body = { op: 'configure-slack-bugs', sourceId, channels: ['C1'],
+      asanaBugDestination: { sourceId: '20000000-0000-4000-8000-000000000003', projectGid: '123' } };
+    for (const destination of [
+      { kind: 'asana', ownerUserId: 'another-owner', config: { projectGids: ['123'] } },
+      { kind: 'linear', ownerUserId: source.ownerUserId, config: { projectGids: ['123'] } },
+      { kind: 'asana', ownerUserId: source.ownerUserId, config: { projectGids: ['other'] } },
+    ]) {
+      getSource.mockResolvedValueOnce(source).mockResolvedValueOnce(destination);
+      const response = await request(mutate, 'PATCH', body);
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({ error: 'slack_bug_scope_invalid' });
+    }
+    getSource.mockResolvedValueOnce({ ...source, ownerUserId: 'another-owner' }).mockResolvedValueOnce({
+      kind: 'asana', ownerUserId: source.ownerUserId, config: { projectGids: ['123'] } });
+    expect((await request(mutate, 'PATCH', body)).status).toBe(400);
+    expect(sql).not.toHaveBeenCalled();
+    expect(ensureBugClassifier).not.toHaveBeenCalled();
+  });
+
+  it('refuses a concurrently changed Slack source without installing or arming a classifier', async () => {
+    const sourceId = '20000000-0000-4000-8000-000000000001';
+    const ownerUserId = '22222222-2222-4222-8222-222222222222';
+    getSource.mockResolvedValueOnce({ id: sourceId, kind: 'slack', ownerUserId, config: {} })
+      .mockResolvedValueOnce({ kind: 'asana', ownerUserId, config: { projectGids: ['123'] } });
+    sql.mockResolvedValueOnce([]);
+    const response = await request(mutate, 'PATCH', { op: 'configure-slack-bugs', sourceId, channels: ['C1'],
+      asanaBugDestination: { sourceId: '20000000-0000-4000-8000-000000000003', projectGid: '123' } });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error: 'slack_bug_source_changed' });
+    expect(ensureBugClassifier).not.toHaveBeenCalled();
+    expect(setArmed).not.toHaveBeenCalled();
   });
 
   // Placeholder token strings on purpose: the route never inspects the prefix

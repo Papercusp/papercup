@@ -10,6 +10,9 @@ import { indexReport } from '../lib/search/report-index';
 import { createReportSearchSource } from '../lib/agent-tools/search/report-source';
 import { readProcessIdentity } from '../lib/process-identity';
 import { buildMemoryContextBlock } from '../lib/memory/injection';
+import { splitDocSections } from '../lib/search/doc-embed-sync';
+import { runChunkSyncTick } from '../lib/search/chunks/tick';
+import { PLANS_CHUNK_SURFACE } from '../lib/search/chunks/registry';
 
 let host: ChildProcess | undefined;
 let hostIdentity: ReturnType<typeof readProcessIdentity>;
@@ -44,6 +47,7 @@ async function main() {
   try {
     const owner = 'su-private-knowledge-reader';
     const reports = [];
+    const knowledge = [];
     for (const token of ['zephyrquartz', 'cobaltquartz']) {
       const report = await publishReport(sql, { workspaceId: workspace, visibility: 'owner',
         title: 'Dated diagnostic evidence', bodyMd: 'Ordinary observations.\n'.repeat(600)
@@ -55,7 +59,25 @@ async function main() {
       const stored = await getReport(sql, workspace, report.reportId, { ownerId: owner });
       assert.ok(stored?.bodyMd.includes(token), 'canonical report readback must retain the full tail');
       reports.push(report);
+      const planSlug = `native-${token}-plan`;
+      const docSlug = `native-${token}-procedure`;
+      await sql`INSERT INTO harness_shared.harness_plans
+        (workspace_id,harness_slug,plan_slug,title,content,status)
+        VALUES (${workspace},${workspace},${planSlug},'Diagnostic plan',
+          ${'Ordinary background.\n'.repeat(600) + '\n## Diagnostic recovery\nPrerequisite: retain the snapshot.\n'
+            + token + ' diagnostic snapshot recovery evidence.'},'active')`;
+      const docBody = '## Preparation\nPrerequisite: retain the snapshot.\n\n## Diagnostic recovery\n'
+        + token + ' diagnostic snapshot recovery evidence. Apply the maintained procedure.';
+      for (const [idx, section] of splitDocSections('Diagnostic procedure', docBody).entries()) {
+        await sql`INSERT INTO harness_shared.doc_sections
+          (source_key,slug,anchor,title,url,content,page_sha,section_idx)
+          VALUES (${`harness:${workspace}`},${docSlug},${section.anchor},${section.title},
+            ${`/docs/${docSlug}`},${section.content},'native-fixture',${idx})`;
+      }
+      knowledge.push({ planSlug, docSlug });
     }
+    await runChunkSyncTick({ sql, surfaces: [{ ...PLANS_CHUNK_SURFACE,
+      eligibleSql: `p.workspace_id = '${workspace}'` }] });
     const source = createReportSearchSource({ ownerId: owner, potSlug: workspace },
       { harnessSlugs: [workspace], automatic: true });
     const control = await source.lexical!({ sql, workspaceId: workspace, scopeFilter: null, limit: 20,
@@ -70,6 +92,13 @@ async function main() {
       session: { sessionId: 'su-private-source-control', port: 'turn-start', client: 'codex' } });
     writeFileSync(join(evidenceDir, 'source-control.json'), JSON.stringify({ payload: sourceBlock }));
     assert.ok(sourceBlock?.includes(warmReport.reportId), 'source memory builder failed known corpus control; see source-control.json');
+    const knowledgeBlock = await buildMemoryContextBlock({ workspaceId: workspace, harnessSlugs: [workspace],
+      userId: null, queryContext: 'zephyrquartz diagnostic snapshot recovery evidence',
+      session: { sessionId: 'su-private-knowledge-source-control', port: 'turn-start', client: 'codex' } });
+    writeFileSync(join(evidenceDir, 'knowledge-source-control.json'), JSON.stringify({ payload: knowledgeBlock }));
+    assert.ok(knowledgeBlock, 'canonical knowledge source control is empty; see knowledge-source-control.json');
+    assert.ok(knowledgeBlock.includes(knowledge[0].planSlug), 'canonical plan is not query-ready; see knowledge-source-control.json');
+    assert.ok(knowledgeBlock.includes(knowledge[0].docSlug), 'canonical procedure is not query-ready; see knowledge-source-control.json');
     if (e.KNOWLEDGE_NATIVE_SOURCE_ONLY === '1') {
       console.log('KNOWLEDGE_NATIVE_SOURCE_READY ' + JSON.stringify({ workspace, reportId: warmReport.reportId }));
       return;
@@ -164,6 +193,8 @@ async function main() {
       event: { prompt: 'zephyrquartz diagnostic snapshot recovery evidence', cwd: e.HOME }, env, fetchImpl });
     writeFileSync(join(evidenceDir, 'turn-start.json'), JSON.stringify({ requests, payload: turnStart }));
     assert.ok(turnStart?.includes(reports[0].reportId), 'native turn-start omitted the report reference');
+    assert.ok(turnStart.includes(knowledge[0].planSlug), 'native turn-start omitted the plan reference');
+    assert.ok(turnStart.includes(knowledge[0].docSlug), 'native turn-start omitted the maintained procedure reference');
     assert.ok(turnStart.includes('Retain the snapshot'), 'native turn-start omitted the matching tail excerpt');
     assert.equal(JSON.parse(turnStart).hookSpecificOutput.hookEventName, 'UserPromptSubmit');
     console.log('KNOWLEDGE_NATIVE_PHASE turn-start-delivered');
@@ -172,11 +203,16 @@ async function main() {
         tool_response: 'Investigating diagnostic snapshot recovery evidence', cwd: e.HOME }, env, fetchImpl });
     writeFileSync(join(evidenceDir, 'mid-turn.json'), JSON.stringify({ requests, payload: midTurn }));
     assert.ok(midTurn?.includes(reports[1].reportId), 'native mid-turn omitted novel report reference');
+    assert.ok(midTurn.includes(knowledge[1].planSlug), 'native mid-turn omitted the novel plan reference');
+    assert.ok(midTurn.includes(knowledge[1].docSlug), 'native mid-turn omitted the novel maintained procedure reference');
     assert.ok(midTurn.includes('Retain the snapshot'), 'native mid-turn omitted matching tail excerpt');
     assert.ok(!midTurn.includes(reports[0].reportId), 'native mid-turn repeated the paid turn-start reference');
+    assert.ok(!midTurn.includes(knowledge[0].planSlug), 'native mid-turn repeated the paid plan reference');
+    assert.ok(!midTurn.includes(knowledge[0].docSlug), 'native mid-turn repeated the paid procedure reference');
     assert.equal(JSON.parse(midTurn).hookSpecificOutput.hookEventName, 'PostToolUse');
     await stopHost();
     console.log('KNOWLEDGE_NATIVE_RECEIPT ' + JSON.stringify({ workspace, requests, reportIds: reports.map(r => r.reportId),
+      knowledge,
       nativeClient: 'codex', turnStart: true, midTurn: true, hostPid: host.pid, hostStopped: true, bundleSha256 }));
   } finally {
     // Capture original pipeline receipts before private data is disposed.

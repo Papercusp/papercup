@@ -25,6 +25,8 @@ import {
 } from '../../../external-triggers/slack-flagship';
 import { notifySyncInvalidate } from '../../../sync-sse';
 import { requireAllowedOriginOr403 } from '../../cors';
+import { getExternalTriggerSource, type ExternalTriggerSourceRow } from '../../../external-triggers/source-store';
+import { ensureSlackBugClassificationBinding, SLACK_BUG_CLASSIFICATION_PLAN } from '../../../external-triggers/slack-bug-classification';
 
 // Keep the three target shapes explicit at the HTTP boundary. Besides making the
 // generated contract legible, a union here prevents a caller from accidentally
@@ -71,6 +73,15 @@ const mutationSchema = z.union([
   attachPlanSchema,
   attachGoalSchema,
   attachDirectWorkItemSchema,
+  z.object({
+    op: z.literal('configure-slack-bugs'),
+    sourceId: z.string().uuid(),
+    channels: z.array(z.string().trim().regex(/^[CG][A-Z0-9]+$/)).min(1).max(500),
+    asanaBugDestination: z.object({
+      sourceId: z.string().uuid(),
+      projectGid: z.string().trim().min(1).max(120),
+    }).strict(),
+  }).strict(),
   z
     .object({
       op: z.literal('detach-external'),
@@ -183,6 +194,35 @@ const mutate = defineTool({
 
     const { sql } = getOrgPg();
     const workspaceId = activeWorkspaceId();
+    if (parsed.data.op === 'configure-slack-bugs') {
+      const user = await getSessionUserOrDefault(req.headers);
+      const source = await getExternalTriggerSource(sql, workspaceId, parsed.data.sourceId);
+      const destination = await getExternalTriggerSource(sql, workspaceId, parsed.data.asanaBugDestination.sourceId);
+      if (source?.kind !== 'slack' || source.ownerUserId !== user.id
+        || destination?.kind !== 'asana' || destination.ownerUserId !== user.id
+        || !Array.isArray(destination.config.projectGids)
+        || !destination.config.projectGids.includes(parsed.data.asanaBugDestination.projectGid)) {
+        return Response.json({ ok: false, error: 'slack_bug_scope_invalid' }, { status: 400 });
+      }
+      // Merge only the explicit non-secret setup fields. The snapshot fence
+      // refuses concurrent reconfiguration rather than overwriting its choice.
+      const patch = { channels: [...new Set(parsed.data.channels)], asanaBugDestination: parsed.data.asanaBugDestination };
+      const [configured] = await sql<ExternalTriggerSourceRow[]>`
+        UPDATE harness_shared.data_sources
+           SET config = config || ${JSON.stringify(patch)}::text::jsonb, updated_at = now()
+         WHERE workspace_id = ${workspaceId} AND id = ${source.id}::uuid
+           AND kind = 'slack' AND owner_user_id = ${user.id}::uuid
+           AND config IS NOT DISTINCT FROM ${JSON.stringify(source.config)}::text::jsonb
+         RETURNING id::text, workspace_id AS "workspaceId", kind,
+           owner_user_id::text AS "ownerUserId", provider_account_id AS "providerAccountId",
+           credential_ref AS "credentialRef", status, config, cursor`;
+      if (!configured) return Response.json({ ok: false, error: 'slack_bug_source_changed' }, { status: 409 });
+      const installed = await ensureSlackBugClassificationBinding(sql, workspaceId, configured, `owner:${user.id}`);
+      void notifySyncInvalidate('externalTriggers.admin', { workspaceId }).catch(() => {});
+      void notifySyncInvalidate('plans.list', undefined).catch(() => {});
+      return Response.json({ ok: true, source: configured, binding: installed.binding,
+        plan: { slug: SLACK_BUG_CLASSIFICATION_PLAN, created: installed.plan.created, armed: installed.binding.armed } });
+    }
     if (parsed.data.op === 'attach-external') {
       const user = await getSessionUserOrDefault(req.headers);
       try {
