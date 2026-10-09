@@ -295,6 +295,52 @@ function textPredicateRegex(leaf: FilterLeaf, op: 'word' | 'glob'): RegExp {
   return regex;
 }
 
+type WordAlternative = { field: FilterLeaf['field']; regex: RegExp } | { node: FilterNode };
+const wordAlternatives = new WeakMap<FilterNode[], {
+  shape: Array<{ node: FilterNode; field?: FilterLeaf['field']; op?: FilterLeaf['op']; literal?: string }>;
+  alternatives: WordAlternative[];
+}>();
+
+/** Like the SQL compiler, scan a field once for direct whole-word alternatives.
+ * Keep this cache with the filter tree and invalidate edited leaves/arrays; a
+ * nested boolean expression remains its own scope and is evaluated normally. */
+function groupedWordAlternatives(nodes: FilterNode[]): WordAlternative[] {
+  const cached = wordAlternatives.get(nodes);
+  if (cached && cached.shape.length === nodes.length && cached.shape.every((saved, index) => {
+    const node = nodes[index]!;
+    return saved.node === node && ('field' in node
+      ? saved.field === node.field && saved.op === node.op && saved.literal === String(node.value)
+      : saved.field === undefined);
+  })) return cached.alternatives;
+
+  const groups = new Map<FilterLeaf['field'], FilterLeaf[]>();
+  for (const node of nodes) {
+    if (!('field' in node) || node.op !== 'word') continue;
+    const group = groups.get(node.field) ?? [];
+    group.push(node);
+    groups.set(node.field, group);
+  }
+  const emitted = new Set<FilterLeaf['field']>();
+  const alternatives: WordAlternative[] = [];
+  for (const node of nodes) {
+    const group = 'field' in node && node.op === 'word' ? groups.get(node.field) : undefined;
+    if (!group || group.length < 2 || !('field' in node)) {
+      alternatives.push({ node });
+    } else if (!emitted.has(node.field)) {
+      emitted.add(node.field);
+      const literals = [...new Set(group.map(leaf => escapeRegexLiteral(String(leaf.value))))];
+      alternatives.push({ field: node.field,
+        regex: new RegExp(`(?<![A-Za-z0-9])(?:${literals.join('|')})(?![A-Za-z0-9])`, 'i') });
+    }
+  }
+  wordAlternatives.set(nodes, {
+    shape: nodes.map(node => 'field' in node
+      ? { node, field: node.field, op: node.op, literal: String(node.value) } : { node }),
+    alternatives,
+  });
+  return alternatives;
+}
+
 function compareScalar(actual: string | number | null, leaf: FilterLeaf): boolean {
   if (actual == null) {
     // A NULL/absent field has NO value, so it matches no positive predicate (`=`, `glob`,
@@ -389,7 +435,13 @@ export function matchesClaimSpecFilter(subject: ClaimSpecSubject, filter: Filter
   if (!filter) return true;
   if ('field' in filter) return matchLeaf(subject, filter);
   if ('all' in filter) return filter.all.every((node) => matchesClaimSpecFilter(subject, node));
-  if ('any' in filter) return filter.any.some((node) => matchesClaimSpecFilter(subject, node));
+  if ('any' in filter) return groupedWordAlternatives(filter.any).some(alternative => {
+    if ('node' in alternative) return matchesClaimSpecFilter(subject, alternative.node);
+    const actual = valueFor(subject, alternative.field);
+    return Array.isArray(actual)
+      ? actual.some(value => alternative.regex.test(value))
+      : actual != null && alternative.regex.test(String(actual));
+  });
   return !matchesClaimSpecFilter(subject, filter.not);
 }
 

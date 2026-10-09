@@ -99,6 +99,71 @@ describe('text predicates over complete census cohorts', () => {
     leaf.value = 'xxy';
     expect(matchesClaimSpecFilter(subject, leaf)).toBe(true);
   });
+
+  it('scans a complete census once per field for a broad word fence', () => {
+    const filter: FilterNode = { not: { any: ['p2p', 'replication', 'federation', 'relay', 'x+y']
+      .map(value => ({ field: 'summary', op: 'word', value })) } };
+    const rows = Array.from({ length: 2101 }, (_, index) => issueItem({
+      id: `EI-word-group-${index}`, title: 'ordinary queue repair',
+      summary: index === 2100 ? 'replication_soak fails' : 'nonp2p repair with unrelated text',
+    }));
+    const scans = vi.spyOn(RegExp.prototype, 'test');
+    let admitted: WorkItem[];
+    let scanCount: number;
+    try {
+      admitted = rows.filter(row => matchesWorkItemClaimSpec(row, specOf(filter)));
+      scanCount = scans.mock.calls.length;
+    } finally {
+      scans.mockRestore();
+    }
+    expect(admitted!).toHaveLength(2100);
+    expect(admitted!.some(row => row.id === 'EI-word-group-2099')).toBe(true);
+    expect(scanCount!).toBe(2101);
+  });
+
+  it('preserves independent-leaf verdicts for grouped words, nulls, arrays and nested booleans', () => {
+    const words: FilterLeaf[] = ['p2p', 'federation', 'x+y', 'a', 'ab', '']
+      .map(value => ({ field: 'summary', op: 'word', value }));
+    const paths: FilterLeaf[] = ['replication', 'relay']
+      .map(value => ({ field: 'paths', op: 'word', value }));
+    const other: FilterNode = { all: [
+      { field: 'title', op: 'contains', value: 'queue' },
+      { not: { field: 'id', op: '=', value: 'EI-refused' } },
+    ] };
+    const children: FilterNode[] = [...words, other, ...paths];
+    const corpus = [null, '', 'NONP2P repair', 'P2P_transport', 'federation/repair',
+      'x+y_file', 'xxy_file', 'ab', 'a', 'no match', 'federationé'];
+    for (const summary of corpus) for (const array of [[], ['relay_file'], ['nonrelay'], ['replication/queue']]) {
+      const subject = claimSpecSubjectFromWorkItem(issueItem({ id: 'EI-refused', title: 'queue repair', summary }));
+      subject.paths = array;
+      const independent = children.some(child => matchesClaimSpecFilter(subject, child));
+      expect(matchesClaimSpecFilter(subject, { any: children }), JSON.stringify({ summary, array })).toBe(independent);
+      expect(matchesClaimSpecFilter(subject, { not: { any: children } })).toBe(!independent);
+    }
+  });
+
+  it('invalidates word groups when literals, fields, operators or the alternatives change', () => {
+    const first: FilterLeaf = { field: 'summary', op: 'word', value: 'p2p' };
+    const second: FilterLeaf = { field: 'summary', op: 'word', value: 'relay' };
+    const filter: FilterNode = { any: [first, second] };
+    const subject = claimSpecSubjectFromWorkItem(issueItem({ id: 'EI-group-edit', title: 'federation', summary: 'nonp2p' }));
+    expect(matchesClaimSpecFilter(subject, filter)).toBe(false);
+    first.value = 'nonp2p';
+    expect(matchesClaimSpecFilter(subject, filter)).toBe(true);
+    first.value = 'federation';
+    first.field = 'title';
+    expect(matchesClaimSpecFilter(subject, filter)).toBe(true);
+    first.op = 'glob';
+    first.value = '*p2p*';
+    first.field = 'summary';
+    expect(matchesClaimSpecFilter(subject, filter)).toBe(true);
+    filter.any.splice(0, 1);
+    expect(matchesClaimSpecFilter(subject, filter)).toBe(false);
+    filter.any.push({ field: 'summary', op: 'word', value: 'nonp2p' });
+    expect(matchesClaimSpecFilter(subject, filter)).toBe(true);
+    filter.any[1] = { field: 'summary', op: 'word', value: 'replication' };
+    expect(matchesClaimSpecFilter(subject, filter)).toBe(false);
+  });
 });
 
 /** The live backlog-drain-clean title-glob terms (rev11), verbatim. */
