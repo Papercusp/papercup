@@ -2078,7 +2078,7 @@ export default function PersonalVaultSettingsPage() {
               style={{
                 display: "grid",
                 gridTemplateColumns:
-                  "minmax(220px, 2fr) minmax(160px, 1fr) auto",
+                  "repeat(auto-fit, minmax(min(100%, 200px), 1fr))",
                 gap: 10,
                 alignItems: "end",
                 maxWidth: 840,
@@ -2128,7 +2128,7 @@ export default function PersonalVaultSettingsPage() {
             <div
               style={{
                 display: "grid",
-                gridTemplateColumns: "minmax(160px, 1fr) minmax(220px, 2fr)",
+                gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 200px), 1fr))",
                 gap: 10,
                 alignItems: "end",
                 maxWidth: 840,
@@ -2221,7 +2221,7 @@ export default function PersonalVaultSettingsPage() {
             <div
               style={{
                 display: "grid",
-                gridTemplateColumns: "minmax(200px, 1fr) auto",
+                gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 200px), 1fr))",
                 gap: 10,
                 alignItems: "end",
                 maxWidth: 840,

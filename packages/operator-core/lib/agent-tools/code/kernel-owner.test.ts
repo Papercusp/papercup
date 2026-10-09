@@ -106,6 +106,18 @@ describe('managed kernel across request workers', () => {
     expect(await request(b, { op: 'close', id, scope }).result).toMatchObject({ state: 'closed' });
     expect(await active.result).toMatchObject({ ok: false, kernel: { state: 'closed' } });
   });
+  it('keeps real orchestration capability checks and write records on the receiving worker', async () => {
+    const { id } = await request(a, { op: 'open', scope }).result;
+    await request(a, { op: 'run', id, scope, script: 'globalThis.count = 20; return count;' }).result;
+    const accepted = await request(b, { op: 'compose', id, scope, authorized: true,
+      script: 'return { count: ++count, write: await tools.fixture.write({}) };' }).result;
+    expect(accepted).toMatchObject({ ok: true, summary: { count: 21, write: { servedBy: b.pid, principalStayedLocal: true } } });
+    expect(accepted.callRecords).toContainEqual(expect.objectContaining({ tool: 'fixture:write', effect: 'write', disposition: 'settled' }));
+    const rejected = await request(b, { op: 'compose', id, scope, authorized: false, script: 'return await tools.fixture.write({});' }).result;
+    expect(rejected.ok).toBe(false); expect(rejected.error).toContain('capability_denied');
+    expect(rejected.callRecords).toContainEqual(expect.objectContaining({ tool: 'fixture:write', disposition: 'rejected' }));
+    await request(b, { op: 'close', id, scope }).result;
+  });
   it('reports owner death, never launches a replacement, and distinguishes an unknown scope', async () => {
     const { id } = await request(a, { op: 'open', scope }).result;
     a.kill('SIGKILL'); await once(a, 'exit');

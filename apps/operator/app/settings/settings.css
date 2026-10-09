@@ -1639,6 +1639,12 @@ html[data-visual-effects='minimal'] [class*='pc-wiki-missing-']::after {
   margin-inline: auto;
 }
 
+.pc-personal-vault :is(input, textarea) {
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
 .pc-vault-hero {
   position: relative;
   display: grid;

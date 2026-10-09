@@ -1,6 +1,7 @@
 import { startWorkerOwnerRpc } from '../../../cluster-owner-rpc.ts';
 import { openManagedKernel, controlManagedKernel, runManagedKernelScript } from '../kernel-owner.ts';
-import type { ToolFacade } from '@papercusp/tooldef';
+import { runToolOrchestration, type ToolFacade } from '@papercusp/tooldef';
+import type { ProjectedTool, UnifiedToolContext } from '@papercusp/tooldef';
 
 startWorkerOwnerRpc();
 const controllers = new Map<number, AbortController>();
@@ -20,6 +21,21 @@ process.on('message', async (message: any) => {
       return { servedBy: process.pid, args, bytes: new Uint8Array([0, 127, 255]) };
     };
     const facade: ToolFacade = { call: dispatch, fixture: { read: (args: unknown) => dispatch('fixture:read', args) } };
+    if (op === 'compose') {
+      const ctx = { workspaceId: 'workspace-a', role: 'worker', signal: controller.signal, log: () => {},
+        authenticatedPrincipal: () => process.pid } as unknown as UnifiedToolContext;
+      const tool = { pluginName: 'fixture', description: 'caller-local guard', inputSchema: { type: 'object' },
+        capabilities: [], effect: 'write', expose: { mcp: { name: 'fixture:write' } },
+        fn: async (_args: unknown, actual: UnifiedToolContext) => ({ content: [{ type: 'text', text: JSON.stringify({
+          servedBy: process.pid, principalStayedLocal: (actual as any).authenticatedPrincipal === (ctx as any).authenticatedPrincipal,
+        }) }] }),
+      } as unknown as ProjectedTool;
+      const result = await runToolOrchestration(message.script, {
+        ctx, tools: [tool], kernel: { id, scope }, executeScript: runManagedKernelScript, timeoutMs: 3_000,
+        deps: message.authorized ? {} : { checkCapabilityEnvelope: () => ({ decision: 'deny', posture: 'rejected', applied: true, reason: 'current caller denied' }) },
+      });
+      controllers.delete(seq); process.send!({ type: 'fixture:result', seq, result }); return;
+    }
     const result = op === 'open' ? await openManagedKernel(scope)
       : op === 'run' ? await runManagedKernelScript(message.script, facade, {
         kernel: { id, scope }, signal: controller.signal, timeoutMs: message.timeoutMs ?? 3_000,
