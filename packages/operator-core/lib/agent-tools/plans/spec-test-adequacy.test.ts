@@ -214,12 +214,13 @@ function successfulTestBinding(
 
 function negativeEvidence(over: Partial<SpecEvidenceForAdequacy> = {}): SpecEvidenceForAdequacy {
   const base = evidence();
+  if (!base.testRunProvenance) throw new Error('The base evidence fixture must include test-run provenance');
   return {
     ...base,
     evidenceKind: 'counterexample',
     evidenceRef: 'counterexample:reconnect',
     testRunProvenance: {
-      ...(base.testRunProvenance ?? {}),
+      ...base.testRunProvenance,
       source: 'mutation-probe',
       mutationPhase: 'mutant',
       mutationFailedCaseTitles: [DEFAULT_MUTATION_TEST_CASE],
@@ -596,6 +597,34 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     row.details = { adequacy: { ...(row.details.adequacy as Record<string, unknown>), testLayer: claimed } };
     const result = evaluateSpecTestAdequacy({
       clause: clause({ requiredEvidence: [], requiredTestLayers: ['operational'] }),
+      evidence: [row], classRef: 'plan-class-feature-ship',
+    });
+    expect(result.ratings['correct-layer'].rating).toBe(expected);
+  });
+
+  it.each([
+    { measured: 'operational', expected: 'pass', matchedCase: true },
+    { measured: 'unit', expected: 'fail', matchedCase: true },
+    { measured: undefined, expected: 'unknown', matchedCase: true },
+    { measured: 'operational', expected: 'unknown', matchedCase: false },
+  ])('maps manual-provenance only to a measured operational case: $measured/$matchedCase', ({ measured, expected, matchedCase }) => {
+    const caseTitle = 'actual goal has its stored worklist in the native DOM';
+    const row = evidence({
+      evidenceKind: measured === 'unit' ? 'test' : 'operational',
+      testRunProvenance: { filePath: 'docs/evidence/native-goal.json', commitSha: 'abc123', worktreeDirty: false },
+      testRunExecution: {
+        status: 'pass', passed: 1, failed: 0, skipped: 0,
+        collectionFailed: false, testLayer: measured,
+        passedCaseTitles: [matchedCase ? caseTitle : 'another check'],
+      },
+      details: { adequacy: {
+        testLayer: 'manual-provenance', pathReachable: true,
+        collected: true, skipped: false, executed: true, outcome: 'passed',
+        testCases: [caseTitle],
+      } },
+    });
+    const result = evaluateSpecTestAdequacy({
+      clause: clause({ requiredEvidence: [], requiredTestLayers: ['manual-provenance'] }),
       evidence: [row], classRef: 'plan-class-feature-ship',
     });
     expect(result.ratings['correct-layer'].rating).toBe(expected);

@@ -760,10 +760,10 @@ function normalizedLayer(value: string): string {
   return value.trim().toLowerCase().replaceAll('_', '-');
 }
 
-/** Older accepted bars used `behavioral`; its only supported measurement is canonical operational evidence. */
+/** Older accepted bars used these provenance labels for canonical operational evidence. */
 function canonicalRequiredLayer(value: string): string {
   const layer = normalizedLayer(value);
-  return layer === 'behavioral' ? 'operational' : layer;
+  return layer === 'behavioral' || layer === 'manual-provenance' ? 'operational' : layer;
 }
 
 function clauseIdentity(clause: SpecClauseRevision): string {
@@ -2123,10 +2123,12 @@ export function evaluateSpecTestAdequacy(input: {
       evidence: `The clause ${clauseIdentity(clause)} declares no required test layer. ${clauseDeclarationProbe(clause, input.harness)}`,
     };
   } else {
-    const legacyBehavioralRequired = clause.requiredTestLayers.some((layer) => normalizedLayer(layer) === 'behavioral');
+    const legacyOperationalRequired = clause.requiredTestLayers.find((layer) =>
+      ['behavioral', 'manual-provenance'].includes(normalizedLayer(layer)));
     const required = [...new Set(clause.requiredTestLayers.map(canonicalRequiredLayer))];
     const displayLayer = (layer: string) =>
-      legacyBehavioralRequired && layer === 'operational' ? 'behavioral (canonical operational adapter)' : layer;
+      legacyOperationalRequired && layer === 'operational'
+        ? `${normalizedLayer(legacyOperationalRequired)} (canonical operational adapter)` : layer;
     const present = new Map<string, boolean | undefined>();
     const contradictoryLayerRows: SpecEvidenceForAdequacy[] = [];
     for (const row of evidence) {
@@ -2147,18 +2149,19 @@ export function evaluateSpecTestAdequacy(input: {
       ) {
         // Preserve an author claim as unresolved so an unmeasured positive cannot
         // be mistaken for either proof or a measured contradiction.
-        if (claimedLayer && required.includes(claimedLayer) && !present.has(claimedLayer)) {
-          present.set(claimedLayer, undefined);
+        const unresolvedLayer = claimedLayer ? canonicalRequiredLayer(claimedLayer) : undefined;
+        if (unresolvedLayer && required.includes(unresolvedLayer) && !present.has(unresolvedLayer)) {
+          present.set(unresolvedLayer, undefined);
         }
         continue;
       }
       const layer = normalizedLayer(measuredLayer);
-      const legacyBehavioralOperationalClaim =
-        legacyBehavioralRequired &&
+      const legacyOperationalClaim =
+        legacyOperationalRequired &&
         row.evidenceKind === 'operational' &&
-        claimedLayer === 'behavioral' &&
+        (claimedLayer === 'behavioral' || claimedLayer === 'manual-provenance') &&
         layer === 'operational';
-      if (claimedLayer && claimedLayer !== layer && !legacyBehavioralOperationalClaim) {
+      if (claimedLayer && claimedLayer !== layer && !legacyOperationalClaim) {
         if (required.includes(canonicalRequiredLayer(claimedLayer)) || required.includes(layer)) {
           contradictoryLayerRows.push(row);
           const claimedRequirement = canonicalRequiredLayer(claimedLayer);
@@ -2222,16 +2225,16 @@ export function evaluateSpecTestAdequacy(input: {
                   const measuredRecordedLayer = isRecordedTestLayer(measuredLayer);
                   const measuredOperationalLayer =
                     row.evidenceKind === 'operational' && measuredLayer === 'operational';
-                  const behavioralCompatibilityClaim =
-                    legacyBehavioralRequired &&
+                  const operationalCompatibilityClaim =
+                    legacyOperationalRequired &&
                     measuredOperationalLayer &&
                     typeof details.testLayer === 'string' &&
-                    normalizedLayer(details.testLayer) === 'behavioral';
+                    ['behavioral', 'manual-provenance'].includes(normalizedLayer(details.testLayer));
                   const claimMatchesMeasurement =
                     details.testLayer === undefined ||
                     (typeof details.testLayer === 'string' &&
                       ((measuredRecordedLayer && normalizedLayer(details.testLayer) === normalizedLayer(measuredLayer)) ||
-                        behavioralCompatibilityClaim));
+                        operationalCompatibilityClaim));
                   return (
                     row.testRunId !== null &&
                     ((row.evidenceKind === 'test' && measuredRecordedLayer) || measuredOperationalLayer) &&
