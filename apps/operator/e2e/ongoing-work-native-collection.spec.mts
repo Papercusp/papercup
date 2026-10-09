@@ -4,7 +4,12 @@ import { execFile } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import { runInNewContext } from 'node:vm';
-import { insertNativeCollectionGoal, insertNativeCollectionPlan, setNativeCollectionPlanArchived } from './_ongoing-work-native-fixture';
+import { createRequire } from 'node:module';
+import { insertNativeCollectionGoal, insertNativeCollectionPlan, nativeCollectionDeclaration, setNativeCollectionPlanArchived } from './_ongoing-work-native-fixture';
+
+// The app directory is CommonJS; the native spec and e2e helpers are ESM.
+const { isWorkOnEverything }: typeof import('../app/adv/hud/ongoing-work-draft') =
+  createRequire(import.meta.url)('../app/adv/hud/ongoing-work-draft');
 
 function nativeCollectionDocumentReady(editor: string) {
   return `window.__nativeCollectionPreviousDocument !== true && document.readyState === 'complete' && !!document.querySelector(${JSON.stringify(editor)}) && document.querySelector(${JSON.stringify(editor)})?.getBoundingClientRect().height > 0`;
@@ -291,17 +296,11 @@ test('native declared collections persist controls and reject a barrier-controll
     for (const kind of ['plans', 'tea'] as const) {
       const goalId = `native-collection-${kind}`;
       const harness = 'native-collection';
-      const property = kind === 'plans' ? 'worklist' : 'tea_choices';
-      const policyName = kind === 'plans' ? 'worklist_policy' : 'tea_policy';
       const labels = kind === 'plans' ? ['Native alpha', 'Native beta', 'Native blocked'] : ['mint', 'chamomile', 'rooibos'];
       const ids = kind === 'plans' ? ['alpha', 'beta', 'blocked'].map((slug) => `plan:${harness}/${slug}`) : labels;
       const dormant = kind === 'plans' ? `plan:${harness}/dormant` : 'lavender';
-      const schema = {
-        [property]: { datatype: kind === 'plans' ? 'plan-ref-list' : 'string-list', editable_by: 'both', default: ids,
-          collection: { source: kind === 'plans' ? 'active-workspace-plans' : 'manual', policy: policyName,
-            order: kind === 'plans' ? 'priority' : 'display', selectable: true, defaultSelected: true } },
-        [policyName]: { datatype: 'ordered-selection-policy', editable_by: 'owner', default: { order: [ids[0], dormant], excluded: [dormant] } },
-      };
+      const { property, policyName, schema } = nativeCollectionDeclaration(kind, ids,
+        { order: [ids[0], dormant], excluded: [dormant] });
       // These real records live only in the rig's verified throwaway database.
       await insertNativeCollectionGoal(sql, { workspaceId, goalId, title: `Native ${kind} collection`, schema });
       if (kind === 'plans') {
@@ -338,11 +337,16 @@ test('native declared collections persist controls and reject a barrier-controll
           params: { name: 'goals.detail', args: JSON.stringify({ workspaceId, goalId }) },
         });
         expect(response.ok()).toBe(true);
-        const data = (await response.json()).rows[0].goalData.collections[property];
+        const detail = (await response.json()).rows[0];
+        expect(isWorkOnEverything(detail), 'Generic native fixture must use the generic goal-data presentation').toBe(false);
+        const data = detail.goalData.collections[property];
+        expect(data.selection).toMatchObject({ ok: true, configured: true, collection: { policy: policyName } });
         evidence.push({ kind, policy: await policy(), collection: data });
         return data;
       }
       const checkbox = (label: string) => `${editor} [role="checkbox"][aria-label=${JSON.stringify(`Include ${label}`)}]`;
+      // Check the actual resolver declaration before spending a native readiness deadline.
+      await readback();
       await reload();
       const initial = await readback();
       const initialIds: string[] = initial.rows.map((row: { id: string }) => row.id);
