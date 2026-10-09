@@ -185,7 +185,7 @@ describe('goal rubric stewardship SQL', () => {
     const insertCard = async (id: string, goalId: string | null, at: number, observation: unknown) => {
       await sql`INSERT INTO harness_shared.work_items
         (feature_id, workspace_id, harness_slug, item_kind, title, status, created_ts, updated_ts, goal_id, payload)
-        VALUES (${id}, ${WS}, 'papercusp', 'observation', ${id}, 'open', ${at}, ${at}, ${goalId},
+        VALUES (${id}, ${WS}, 'papercusp', 'change', ${id}, 'open', ${at}, ${at}, ${goalId},
           ${sql.json({ lane: 'observation', _ei: { created_by: 'independent-grader' }, observation } as never)})`;
     };
     await insertCard('EI-owned-baseline', GOAL, baselineAt, card('fail'));
@@ -201,6 +201,13 @@ describe('goal rubric stewardship SQL', () => {
     await insertCard('EI-null-goal', null, regradedAt + 1, card('pass', 'EI-owned-baseline'));
     await insertCard('EI-other-goal', 'distinct-other-goal', regradedAt + 2, card('pass', 'EI-owned-baseline'));
     await insertCard('EI-owned-unsettled', GOAL, regradedAt + 3, card('pass', undefined, 'pending'));
+    // Canonical scorecard capture writes kind=change and observation lane; the
+    // engineer_issues view intentionally excludes synthetic item_kind=observation.
+    const seeded = await sql<{ issue_id: string; created_by: string }[]>`
+      SELECT issue_id, created_by FROM harness_shared.engineer_issues
+       WHERE workspace_id = ${WS} AND issue_id = ANY(${['EI-owned-baseline', 'EI-owned-regrade', 'EI-owned-unsettled']})`;
+    expect(seeded).toHaveLength(3);
+    expect(seeded.every(row => row.created_by === 'independent-grader')).toBe(true);
     const reading = await readGoalRubricStewardship({ workspaceId: WS, goalId: GOAL, nowMs: now }, { sql });
     expect(reading.error).toBeNull();
     expect(reading.complete).toBe(true);
