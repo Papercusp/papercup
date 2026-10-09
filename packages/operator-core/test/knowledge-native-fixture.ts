@@ -317,7 +317,13 @@ async function main() {
     await stopHost(); await sql.end();
   }
 }
-main().catch(error => {
-  console.error('KNOWLEDGE_NATIVE_FAILURE ' + JSON.stringify({ message: error.message, stack: error.stack }));
-  process.exitCode = 1;
-});
+if (process.argv.includes('--import-preflight')) {
+  // Static imports have now resolved using Node's actual package exports.
+  // Keep this branch free of getOrgPg(), host startup and fixture writes.
+  console.info('KNOWLEDGE_NATIVE_IMPORTS_OK');
+} else {
+  main().catch(error => {
+    console.error('KNOWLEDGE_NATIVE_FAILURE ' + JSON.stringify({ message: error.message, stack: error.stack }));
+    process.exitCode = 1;
+  });
+}
