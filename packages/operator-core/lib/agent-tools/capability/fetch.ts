@@ -17,6 +17,7 @@ import { mcpEndpointHint } from './fetch-mcp-hint';
 import { INLINE_OUTPUT_CAP, scratchDir } from './bash-jobs';
 import { heuristicScreener, labelExternalContent } from '../../external-content';
 import { resolveOperationBoundaryProfile } from './boundary-profile';
+import { browserSessionArg, runBrowserSession } from './browser-session';
 import {
   CapabilityFetchPolicyError,
   DEFAULT_MAX_REDIRECTS,
@@ -155,7 +156,8 @@ export default defineTool({
   agentRoles: [...AGENT_ROLES],
   timeoutSec: 60,
   args: z.object({
-    url: z.string().url().describe('Absolute http(s) URL.'),
+    url: z.string().url().optional().describe('Absolute http(s) URL; required for HTTP fetch/browser navigation.'),
+    browser: browserSessionArg.optional().describe('Opt into a scoped Playwright browser: open/navigate/observe/close. Navigation and DOM reads only; remote writes, WebSockets, service workers, background network and downloads are refused. State is process-local; close/abort/idle expires it. Native TUI features remain enabled.'),
     method: z.enum(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']).optional().describe('Default GET.'),
     headers: z.record(z.string(), z.string()).optional().describe('Request headers.'),
     body: z.string().optional().describe('Request body (string).'),
@@ -163,8 +165,15 @@ export default defineTool({
     max_download_bytes: z.number().int().positive().max(HARD_MAX_DOWNLOAD_BYTES).optional().describe(`Hard streamed response ceiling (default ${DEFAULT_MAX_DOWNLOAD_BYTES}); the body is cancelled before further buffering or disk growth.`),
     max_redirects: z.number().int().min(0).max(10).optional().describe(`Maximum manually validated redirects (default ${DEFAULT_MAX_REDIRECTS}).`),
     timeout_ms: z.number().int().positive().max(120_000).optional().describe(`Request timeout in ms (default ${DEFAULT_TIMEOUT_MS}).`),
+  }).superRefine((args, ctx) => {
+    if ((!args.browser || args.browser.op === 'navigate') && !args.url) ctx.addIssue({ code: 'custom', path: ['url'], message: 'url required' });
+    if (args.browser && (args.method || args.headers || args.body)) ctx.addIssue({ code: 'custom', path: ['browser'], message: 'browser uses its own read-only request policy; HTTP method/headers/body are not accepted' });
+    if (args.browser && ['observe', 'close'].includes(args.browser.op) && args.url) ctx.addIssue({ code: 'custom', path: ['url'], message: 'url only accepted for open/navigation' });
   }),
   async handler(args, ctx) {
+    if (args.browser) return runBrowserSession(args.browser, args.url, ctx, {
+      timeoutMs: Math.min(args.timeout_ms ?? DEFAULT_TIMEOUT_MS, 30_000), maxText: args.max_bytes ?? 10_000,
+    });
     const maxDownloadBytes = args.max_download_bytes ?? DEFAULT_MAX_DOWNLOAD_BYTES;
     const maxBytes = Math.min(args.max_bytes ?? DEFAULT_MAX_BYTES, maxDownloadBytes);
     const timeoutMs = args.timeout_ms ?? DEFAULT_TIMEOUT_MS;
@@ -180,7 +189,7 @@ export default defineTool({
     try {
       const profile = await resolveOperationBoundaryProfile(ctx);
       const request = await fetchWithCapabilityPolicy({
-        url: args.url,
+        url: args.url!,
         method: args.method ?? 'GET',
         headers: args.headers,
         body: args.body,

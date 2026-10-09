@@ -98,7 +98,7 @@ const readMigration = (f: string) =>
     .filter((line) => !/^\s*\\/.test(line) && !/\bGRANT\b/.test(line) && !/^\s*(BEGIN|COMMIT);\s*$/.test(line))
     .join('\n');
 
-const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
+const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql, currentBuild: 'abcdef1' }));
 vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
   return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: h.sql }) };
@@ -114,6 +114,25 @@ vi.mock('../workspace-registry', async () => {
 vi.mock('@papercusp/flags/server', async () => {
   const actual = await vi.importActual<typeof import('@papercusp/flags/server')>('@papercusp/flags/server');
   return { ...actual, getFlag: async (key: FlagKey) => FLAG_DEFAULTS[key] ?? false };
+});
+// A schema fixture is not a registered target checkout. Supply that external
+// build identity at the composition seam while retaining the real receipt and
+// currentness verifier; otherwise the post-cutover bug stops the claim drain
+// before the independent change-kind candidate is reached.
+vi.mock('../attention/intake-promotion', async (orig) => {
+  const actual = await orig<typeof import('../attention/intake-promotion')>();
+  return {
+    ...actual,
+    verifyAcceptedWorkItemBugReproduction: (item: Parameters<typeof actual.verifyAcceptedWorkItemBugReproduction>[0]) =>
+      actual.verifyAcceptedWorkItemBugReproduction(item, {
+        currentTargetBuild: async () => h.currentBuild,
+        ledger: {
+          readTestRun: async () => { throw new Error('this fixture uses free-text reproduction refs'); },
+          readToolInvocation: async () => { throw new Error('this fixture uses free-text reproduction refs'); },
+          now: () => new Date('2026-10-09T12:00:00Z'),
+        },
+      }),
+  };
 });
 
 const wi = await import('../work-items');
@@ -426,6 +445,7 @@ afterAll(async () => {
   await db?.cleanup();
 });
 beforeEach(async () => {
+  h.currentBuild = 'abcdef1';
   await db.sql`TRUNCATE harness_shared.work_items, harness_shared.work_item_deps, harness_shared.work_item_blocked,
                        harness_shared.plan_items, harness_shared.plan_decisions,
                        harness_shared.harness_plans, harness_shared.plan_item_claims,
@@ -1336,6 +1356,23 @@ describe('floor #16 implementation-readiness: view, 12-arg floor labels and the 
     expect(normalize(rendered)).toContain("'implementation-readiness-v1'");
     expect(normalize(rendered)).toContain(String(IMPLEMENTATION_ACCEPTANCE_ENFORCEMENT_CUTOVER_MS));
     expect(normalize(prosrc)).toContain(normalize(rendered));
+  });
+
+  it('keeps static acceptance distinct from a current-build reproduction refusal and rolls back the claim', async () => {
+    await seed('WI-F16-CURRENT-REPRO', { createdTs: POST, payload: qualifying(), title: TITLE });
+    await db.sql`UPDATE harness_shared.work_items SET summary = ${SUMMARY}
+      WHERE workspace_id = ${WS} AND feature_id = 'WI-F16-CURRENT-REPRO'`;
+    expect(await viewClaimableIds()).toEqual(['WI-F16-CURRENT-REPRO']);
+    h.currentBuild = 'abcdef2';
+    expect(await wi.claimNextIssueWorkItem({ harness: H, assignee: 'probe' }, WS)).toBeNull();
+    const [row] = await db.sql<{ taken_by: string | null }[]>`
+      SELECT taken_by FROM harness_shared.work_items
+       WHERE workspace_id = ${WS} AND feature_id = 'WI-F16-CURRENT-REPRO'
+    `;
+    expect(row.taken_by).toBeNull();
+    h.currentBuild = 'abcdef1';
+    expect((await wi.claimNextIssueWorkItem({ harness: H, assignee: 'probe' }, WS))?.id)
+      .toBe('WI-F16-CURRENT-REPRO');
   });
 
   it('view membership === TS twin === TS claim drain over a pre/post-cutover matrix; refused rows carry the label', async () => {

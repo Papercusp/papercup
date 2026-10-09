@@ -1,0 +1,265 @@
+/** Process-local Playwright sessions behind capability:fetch, not a second network/job authority. */
+import { randomUUID } from 'node:crypto';
+import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { z } from 'zod';
+import type { Browser, BrowserContext, BrowserServer, Page, Route } from 'playwright-core';
+import type { UnifiedToolContext } from '@papercusp/agent-mcp';
+import { resolveAgentIdentity } from '../coordination/identity';
+import { capabilityExecSandboxPolicy, buildCapabilitySandboxCommand, assertCapabilitySandboxAvailable, scrubExecEnv } from './exec-sandbox';
+import type { OperationBoundaryProfile } from './boundary-profile';
+import { fetchWithCapabilityPolicy } from './fetch-policy';
+import { registerTask, markSpawned, closeTask } from '../../task-manager/store';
+import { readProcessIdentity } from '../../process-identity';
+
+export const browserSessionArg = z.object({
+  op: z.enum(['open', 'navigate', 'observe', 'close']),
+  id: z.string().uuid().optional(),
+  selector: z.string().min(1).max(1000).optional().describe('CSS selector to wait for/observe; no arbitrary JavaScript.'),
+  screenshot: z.boolean().optional().describe('Return a bounded viewport PNG as an MCP image.'),
+}).strict().superRefine((args, ctx) => {
+  if (args.op !== 'open' && !args.id) ctx.addIssue({ code: 'custom', path: ['id'], message: 'existing browser operation requires id' });
+  if (args.op === 'open' && args.id) ctx.addIssue({ code: 'custom', path: ['id'], message: 'open creates its own id' });
+});
+export type BrowserSessionArgs = z.infer<typeof browserSessionArg>;
+const IDLE_MS = 5 * 60_000;
+const PER_SCOPE = 2;
+const MAX_LIVE = 16;
+const RESOURCE_BYTES = 2 * 1024 * 1024;
+const OPERATION_BYTES = 16 * 1024 * 1024;
+const MAX_REQUESTS = 100;
+
+interface ActiveOperation {
+  controller: AbortController;
+  profile: OperationBoundaryProfile;
+  bytes: number;
+  requests: number;
+  failures: string[];
+}
+interface Session {
+  id: string; scope: string; authority: string; taskId: string; root: string;
+  server: BrowserServer; browser: Browser; context: BrowserContext; page: Page;
+  sandbox: { mode: string; sandboxed: boolean };
+  busy: boolean; active?: ActiveOperation; idle?: ReturnType<typeof setTimeout>;
+  closing?: Promise<void>;
+  state: 'live' | 'closed' | 'lost'; reason?: string; endedAt?: number;
+}
+const sessions = new Map<string, Session>();
+const openings = new Map<string, number>();
+
+export function browserScope(ctx: UnifiedToolContext): string {
+  if (!ctx.workspaceId?.trim()) throw new Error('browser_workspace_required');
+  return JSON.stringify([ctx.workspaceId, resolveAgentIdentity(ctx).ownerId, ctx.harnessSlug ?? null]);
+}
+function status(session: Session) {
+  return { id: session.id, task_id: session.taskId, state: session.state, busy: session.busy,
+    restartRecovery: 'unrecoverable', networkBetweenOperations: 'blocked', sandbox: session.sandbox,
+    ...(session.reason ? { reason: session.reason } : {}) };
+}
+function quote(value: string): string { return "'" + value.replaceAll("'", "'\\''") + "'"; }
+
+/** Enrol the SDK-owned process before launch; its maintained launcher closes the whole process group. */
+export async function launchBrowserProcess(ctx: UnifiedToolContext, root: string, id: string, timeoutMs: number) {
+  const deadline = Date.now() + timeoutMs;
+  const remaining = () => { const ms = deadline - Date.now(); if (ms <= 0 || ctx.signal?.aborted) throw new Error('browser_operation_aborted'); return ms; };
+  const { chromium } = await import('playwright-core');
+  const policy = await capabilityExecSandboxPolicy(ctx);
+  // HTTP is relayed by fetch-policy. A confined Chromium needs no independent host egress.
+  const sandbox = buildCapabilitySandboxCommand({ cmd: [chromium.executablePath()], cwd: root },
+    { enabled: policy.enabled, required: policy.required, srtBin: null, denyAllEgress: true });
+  assertCapabilitySandboxAvailable(sandbox, root);
+  const wrapper = join(root, 'launch-browser');
+  await writeFile(wrapper, '#!/bin/sh\nexec ' + [sandbox.binary, ...sandbox.argv].map(quote).join(' ') + ' "$@"\n', { mode: 0o700 });
+  const ownerId = resolveAgentIdentity(ctx).ownerId;
+  const row = await registerTask({ class: 'browser', title: 'Managed browser session', argv: [sandbox.binary, ...sandbox.argv],
+    cwd: root, launchedBy: ownerId, sessionId: ownerId, harnessSlug: ctx.harnessSlug,
+    detail: { surface: 'capability:fetch', browserSessionId: id, restartRecovery: 'unrecoverable' } }, { workspaceId: ctx.workspaceId });
+  let server: BrowserServer | undefined;
+  try {
+    server = await chromium.launchServer({ executablePath: wrapper, headless: true, host: '127.0.0.1', timeout: remaining(),
+      env: { ...scrubExecEnv(process.env), TMPDIR: root },
+      args: ['--force-webrtc-ip-handling-policy=disable_non_proxied_udp', '--disable-features=WebTransport'],
+      proxy: { server: 'http://127.0.0.1:9' } });
+    const child = server.process();
+    await markSpawned(row.taskId, { pid: child.pid, processIdentity: child.pid ? readProcessIdentity(child.pid) : null,
+      confined: false, unconfinedReason: 'SDK process group; execution sandbox is reported separately' });
+    server.on('close', () => {
+      void closeTask(row.taskId, { state: 'exited', exitCode: child.exitCode, exitReason: 'browser-process-ended' })
+        .catch((error) => ctx.log(`browser terminal ledger failed: ${String(error)}`));
+    });
+    const browser = await chromium.connect(server.wsEndpoint(), { timeout: remaining() });
+    return { server, browser, taskId: row.taskId, profile: policy.profile, sandbox: { mode: sandbox.mode, sandboxed: sandbox.sandboxed } };
+  } catch (error) {
+    if (server) await server.kill();
+    await closeTask(row.taskId, { state: 'exited', exitCode: server?.process().exitCode ?? null, exitReason: 'browser-launch-failed' });
+    throw error;
+  }
+}
+
+export interface BrowserDeps {
+  launch: typeof launchBrowserProcess;
+  profile: (ctx: UnifiedToolContext) => Promise<OperationBoundaryProfile>;
+  fetch: typeof fetchWithCapabilityPolicy;
+}
+const defaultDeps: BrowserDeps = {
+  launch: launchBrowserProcess,
+  profile: async (ctx) => (await capabilityExecSandboxPolicy(ctx)).profile,
+  fetch: fetchWithCapabilityPolicy,
+};
+
+/** Stream binary resources with a per-resource and aggregate hard ceiling. */
+export async function browserResponseBytes(response: Response, active: ActiveOperation): Promise<Buffer> {
+  const declared = Number(response.headers.get('content-length'));
+  if (Number.isFinite(declared) && declared > RESOURCE_BYTES) {
+    await response.body?.cancel(); throw new Error('browser_resource_size_limit');
+  }
+  if (!response.body) return Buffer.alloc(0);
+  const reader = response.body.getReader(); const chunks: Uint8Array[] = []; let size = 0;
+  try {
+    while (true) {
+      if (active.controller.signal.aborted) throw new Error('browser_operation_aborted');
+      const next = await reader.read(); if (next.done) break;
+      size += next.value.byteLength; active.bytes += next.value.byteLength;
+      if (size > RESOURCE_BYTES || active.bytes > OPERATION_BYTES) throw new Error('browser_resource_size_limit');
+      chunks.push(next.value);
+    }
+    return Buffer.concat(chunks);
+  } catch (error) { await reader.cancel().catch(() => {}); throw error; }
+  finally { reader.releaseLock(); }
+}
+
+export async function closeBrowserSession(session: Session, reason: string): Promise<void> {
+  if (session.closing) return session.closing;
+  session.reason = reason; session.state = 'closed'; session.endedAt = Date.now();
+  if (session.idle) clearTimeout(session.idle);
+  session.active?.controller.abort();
+  session.closing = (async () => {
+    try { await session.server.close(); }
+    catch { await session.server.kill(); }
+    await rm(session.root, { recursive: true, force: true });
+  })();
+  return session.closing;
+}
+function armIdle(session: Session): void {
+  if (session.idle) clearTimeout(session.idle);
+  if (session.state !== 'live') return;
+  session.idle = setTimeout(() => { void closeBrowserSession(session, 'idle-expired').catch(() => { session.state = 'lost'; }); }, IDLE_MS);
+  session.idle.unref?.();
+}
+
+async function relay(session: Session, route: Route, deps: BrowserDeps): Promise<void> {
+  const active = session.active;
+  if (!active || active.controller.signal.aborted) { await route.abort('blockedbyclient').catch(() => {}); return; }
+  let release: (() => Promise<void>) | undefined;
+  try {
+    if (++active.requests > MAX_REQUESTS) throw new Error('browser_request_limit');
+    const request = route.request();
+    // DOM observation never authorizes remote writes, even for trusted callers.
+    if (!['GET', 'HEAD', 'OPTIONS'].includes(request.method())) throw new Error('browser_remote_write_forbidden');
+    let hops = 0; for (let prior = request.redirectedFrom(); prior; prior = prior.redirectedFrom()) hops++;
+    if (hops > 5) throw new Error('browser_redirect_limit');
+    const headers: Record<string, string> = {};
+    for (const [key, value] of Object.entries(request.headers())) {
+      if (['accept', 'accept-language', 'content-type', 'cookie'].includes(key.toLowerCase())) headers[key] = value;
+    }
+    const response = await deps.fetch({ url: request.url(), method: request.method(), headers,
+      signal: active.controller.signal, profile: active.profile, redirectMode: 'manual' });
+    release = response.release;
+    const bytes = await browserResponseBytes(response.response, active);
+    if (session.active !== active || active.controller.signal.aborted) throw new Error('browser_operation_aborted');
+    const outputHeaders: Record<string, string> = {};
+    response.response.headers.forEach((value, key) => {
+      if (!['content-encoding', 'content-length', 'transfer-encoding', 'connection'].includes(key)) outputHeaders[key] = value;
+    });
+    await route.fulfill({ status: response.response.status, headers: outputHeaders, body: bytes });
+  } catch (error) {
+    if (active.failures.length < 10) active.failures.push(error instanceof Error ? error.message : String(error));
+    await route.abort('blockedbyclient').catch(() => {});
+  } finally { await release?.(); }
+}
+
+/** Current transport authority is required on every operation; no caller-supplied scope or profile. */
+export async function runBrowserSession(
+  args: BrowserSessionArgs, url: string | undefined, ctx: UnifiedToolContext,
+  opts: { timeoutMs: number; maxText: number }, deps: BrowserDeps = defaultDeps,
+) {
+  const deadline = Date.now() + opts.timeoutMs;
+  const remaining = () => { const ms = deadline - Date.now(); if (ms <= 0 || ctx.signal?.aborted) throw new Error('browser_operation_aborted'); return ms; };
+  const scope = browserScope(ctx);
+  const reply = (payload: unknown, image?: Buffer) => ({ content: [
+    { type: 'text' as const, text: JSON.stringify(payload) },
+    ...(image ? [{ type: 'image' as const, data: image.toString('base64'), mimeType: 'image/png' }] : []),
+  ] });
+  let session = args.id ? sessions.get(args.id) : undefined;
+  if (args.id && (!session || session.scope !== scope)) return reply({ ok: false, error: 'browser_unrecoverable', restartRecovery: 'unrecoverable' });
+  if (args.op === 'close' && session) { await closeBrowserSession(session, 'explicit-close'); return reply({ ok: true, browser: status(session) }); }
+  if (session?.state !== undefined && session.state !== 'live') return reply({ ok: false, error: 'browser_unrecoverable', browser: status(session) });
+  const profile = await deps.profile(ctx);
+  const authority = JSON.stringify([profile, ctx.role ?? null]);
+  if (session && session.authority !== authority) { await closeBrowserSession(session, 'authority-changed'); return reply({ ok: false, error: 'browser_authority_changed', browser: status(session) }); }
+  if (session?.busy) return reply({ ok: false, error: 'browser_busy', browser: status(session) });
+  if (args.op === 'open') {
+    for (const [key, old] of sessions) if (old.endedAt && Date.now() - old.endedAt > IDLE_MS) sessions.delete(key);
+    const live = [...sessions.values()].filter((s) => s.state === 'live');
+    const pending = openings.get(scope) ?? 0;
+    const totalPending = [...openings.values()].reduce((sum, count) => sum + count, 0);
+    if (live.length + totalPending >= MAX_LIVE || live.filter((s) => s.scope === scope).length + pending >= PER_SCOPE) return reply({ ok: false, error: 'browser_scope_limit' });
+    openings.set(scope, pending + 1);
+    let root: string | undefined; const id = randomUUID();
+    let launched: Awaited<ReturnType<BrowserDeps['launch']>> | undefined;
+    try {
+      remaining(); root = await mkdtemp(join(tmpdir(), 'pc-browser-'));
+      launched = await deps.launch(ctx, root, id, remaining());
+      const context = await launched.browser.newContext({ viewport: { width: 1024, height: 768 }, serviceWorkers: 'block', acceptDownloads: false });
+      await context.routeWebSocket('**/*', (socket) => socket.close());
+      const page = await context.newPage();
+      session = { ...launched, id, root, scope, authority, context, page, state: 'live', busy: false };
+      const current = session;
+      await context.route('**/*', (route) => relay(current, route, deps));
+      context.on('page', (extra) => { if (extra !== page) void extra.close(); });
+      launched.server.on('close', () => { if (current.state === 'live') { current.state = 'lost'; current.reason = 'browser-process-ended'; current.endedAt = Date.now(); current.active?.controller.abort(); } });
+      sessions.set(id, session);
+    } catch (error) {
+      if (launched) await launched.server.kill();
+      if (root) await rm(root, { recursive: true, force: true });
+      return reply({ ok: false, error: error instanceof Error ? error.message : String(error), executed: false });
+    } finally {
+      const count = (openings.get(scope) ?? 1) - 1;
+      if (count) openings.set(scope, count); else openings.delete(scope);
+    }
+  }
+  if (!session) return reply({ ok: false, error: 'browser_unrecoverable' });
+  session.busy = true; if (session.idle) clearTimeout(session.idle);
+  const active: ActiveOperation = { controller: new AbortController(), profile, requests: 0, bytes: 0, failures: [] };
+  session.active = active;
+  const abort = () => active.controller.abort();
+  if (ctx.signal?.aborted) abort(); else ctx.signal?.addEventListener('abort', abort, { once: true });
+  const timer = setTimeout(abort, Math.max(1, deadline - Date.now()));
+  const cancelPage = () => { void closeBrowserSession(session!, 'operation-aborted').catch(() => {}); };
+  active.controller.signal.addEventListener('abort', cancelPage, { once: true });
+  try {
+    if (active.controller.signal.aborted) throw new Error('browser_operation_aborted');
+    if (url) await session.page.goto(url, { timeout: remaining(), waitUntil: 'domcontentloaded' });
+    if (args.selector) await session.page.locator(args.selector).waitFor({ state: 'attached', timeout: remaining() });
+    const observation = await session.page.evaluate(({ selector, max }) => {
+      const element = selector ? document.querySelector(selector) : document.body;
+      const text = (element instanceof HTMLElement ? element.innerText : element?.textContent ?? '').slice(0, max + 1);
+      return { url: location.href, title: document.title.slice(0, 1000), text: text.slice(0, max), truncated: text.length > max,
+        links: Array.from((element ?? document).querySelectorAll('a[href]')).slice(0, 50).map((link) => ({ text: (link.textContent ?? '').slice(0, 200), href: (link as HTMLAnchorElement).href.slice(0, 2000) })) };
+    }, { selector: args.selector, max: Math.min(opts.maxText, 20_000) });
+    const image = args.screenshot ? await session.page.screenshot({ type: 'png', fullPage: false, timeout: remaining() }) : undefined;
+    if (image && image.length > RESOURCE_BYTES) throw new Error('browser_screenshot_size_limit');
+    if (active.controller.signal.aborted) throw new Error('browser_operation_aborted');
+    return reply({ ok: true, browser: { ...status(session), busy: false }, observation,
+      network: { requests: active.requests, bytes: active.bytes, refused: active.failures },
+      provenance: { kind: 'browser', trust: 'external-untrusted' } }, image);
+  } catch (error) {
+    await closeBrowserSession(session, 'operation-failed');
+    return reply({ ok: false, error: error instanceof Error ? error.message : String(error), browser: status(session), networkFailures: active.failures });
+  } finally {
+    clearTimeout(timer); ctx.signal?.removeEventListener('abort', abort);
+    active.controller.signal.removeEventListener('abort', cancelPage);
+    session.active = undefined; active.controller.abort(); session.busy = false; armIdle(session);
+  }
+}
