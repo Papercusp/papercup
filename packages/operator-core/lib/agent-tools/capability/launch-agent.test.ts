@@ -2789,6 +2789,41 @@ describe('resume + fork (D-004/D-007)', () => {
     }
   });
 
+  it('does not promise guarded stale-headless recovery without agent provenance', async () => {
+    resolveResumeTargetMock.mockResolvedValue({ ...dead, live: true, endedAt: null });
+    findLiveHostMock.mockReturnValue({
+      ownerId: 'su-a1a71',
+      pid: 42,
+      sock: '/run/host.sock',
+      bridgeTty: false,
+      lastActivityAt: Date.now() - 31 * 60_000,
+    });
+    windowScopeVerdictMock.mockReturnValue('not-a-window');
+
+    const visibleRestore = await launchAgent.handler(
+      {
+        resume: { sessionId: 'sid-dead' },
+        brief: 'restore the session',
+        restoreVisible: true,
+      },
+      ctx,
+    );
+
+    expect(isError(visibleRestore)).toBe(true);
+    expect(textOf(visibleRestore)).toContain('explicitly agent-launched headless host with measured pty activity idle for at least 30 minutes');
+    expect(textOf(visibleRestore)).toContain('otherwise a still-live source is forked');
+    expect(shutdownViaPtyMock).not.toHaveBeenCalled();
+
+    const exactResume = await launchAgent.handler(
+      { resume: { sessionId: 'sid-dead' }, brief: 'continue the recovery' },
+      ctx,
+    );
+
+    expect(isError(exactResume)).toBe(false);
+    expect(spawnedCommand()).toContain('--resume=sid-dead --fork');
+    expect(dataOf(exactResume)?.launch).toMatchObject({ mode: 'fork' });
+  });
+
   it('gracefully closes only a proven-windowless host, waits for it, then exact-resumes visibly', async () => {
     resolveResumeTargetMock.mockResolvedValue({ ...dead, live: true, endedAt: null });
 
