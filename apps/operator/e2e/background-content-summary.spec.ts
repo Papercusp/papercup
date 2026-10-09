@@ -30,23 +30,33 @@ test('summary reuse follows its authorized reader, source version, options and m
       ['--import', 'tsx', '--input-type=module', '-e', script, JSON.stringify({
         workspace, harness: 'papercusp', role: 'papercup', client: randomUUID(),
         spawn: 'content-cache-e2e-' + randomUUID(), run: randomUUID(), parent_spawn: parent,
-      })], { cwd: root, timeout: 30_000, maxBuffer: 64 * 1024 });
+      })], { cwd: root, timeout: 30_000, maxBuffer: 64 * 1024,
+        // Match the managed API's configured store. A desktop's mutable
+        // embedded-PG discovery file can hold a different signing key.
+        // Explicit isolated-rig/database pins still take precedence.
+        env: { ...process.env, PAPERCUSP_SKIP_PG_DISCOVERY: '1' } });
     return new URL('/api/mcp?' + stdout.trim(), origin).href;
   };
   const observations: unknown[] = [];
   let sequence = 0;
-  const call = async (url: string, name: string, args: Record<string, unknown>) => {
+  const rpc = async (url: string, method: string, params: Record<string, unknown>) => {
     const id = ++sequence;
     const response = await request.post(url, { headers: {
       'content-type': 'application/json', Accept: 'application/json, text/event-stream',
-    }, data: { jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: args } }, timeout: 150_000 });
+    }, data: { jsonrpc: '2.0', id, method, params }, timeout: 150_000 });
     expect(response.status()).toBe(200);
     const text = await response.text();
     const body = response.headers()['content-type']?.includes('text/event-stream')
       ? text.split('\n').filter(line => line.startsWith('data: ')).map(line => JSON.parse(line.slice(6))).find(value => value.id === id)
       : JSON.parse(text);
+    observations.push({ method, params, response: body });
     expect(body?.id).toBe(id);
-    expect(body.error).toBeUndefined();
+    expect(body.error, JSON.stringify(body)).toBeUndefined();
+    expect(body.result?.isError, JSON.stringify(body.result)).not.toBe(true);
+    return body;
+  };
+  const call = async (url: string, name: string, args: Record<string, unknown>) => {
+    const body = await rpc(url, 'tools/call', { name, arguments: args });
     const result = JSON.parse(body.result.content.find((part: { type: string }) => part.type === 'text').text);
     observations.push({ name, args, result });
     return result;
@@ -56,6 +66,12 @@ test('summary reuse follows its authorized reader, source version, options and m
     // permission/intake path. All source text is a unique public fixture.
     const first = await mint();
     const second = await mint();
+    // Authenticate both private fixtures before spending the inference budget;
+    // retain any transport refusal instead of hiding it behind JSON parsing.
+    for (const identity of [first, second]) {
+      const catalog = await rpc(identity, 'tools/list', {});
+      expect(catalog.result.tools.some((tool: { name: string }) => tool.name === 'documents:read')).toBe(true);
+    }
     // Backend inventory is an author fixture prerequisite; the ordinary
     // narration role has no gateway administration capability.
     const { stdout } = await exec(process.execPath, ['scripts/mcp-call.mjs', 'gateway:local_backend_list',
