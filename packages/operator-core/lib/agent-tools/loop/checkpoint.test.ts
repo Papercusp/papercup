@@ -628,6 +628,14 @@ describe('loopGuaranteesNextWake — dead-man-aware continuation evidence', () =
 });
 
 describe('loop:checkpoint — the loop carry-note producer', () => {
+  it('distinguishes the 48-row input ceiling from the 12-row durable cap in its schema', () => {
+    const shape = (tool.args as unknown as { shape: Record<string, { description?: string }> }).shape;
+
+    expect(shape.checks?.description).toContain('Durable storage is capped at 12 check rows');
+    expect(shape.checks?.description).toContain('accepts up to 48 rows as a hard validation/normalization ceiling');
+    expect(shape.rowsMode?.description).toContain('Durable caps are 12 walls and 12 checks');
+  });
+
   it('refuses the historical staging-candidate instruction before calling the carry-note store', async () => {
     readFrozenRepairMarker.mockReturnValue({
       candidate: 'c'.repeat(40),
