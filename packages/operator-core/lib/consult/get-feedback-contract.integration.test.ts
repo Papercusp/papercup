@@ -4,10 +4,15 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { fileURLToPath } from 'node:url';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { lookupByMcpName } from '@papercusp/tooldef';
 import { applyMigrationForTest, createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 import tool from '../agent-tools/consult/get-feedback';
 import { acceptFeedbackRequestCore, type GetFeedbackDeps, type GetFeedbackRequest } from './get-feedback-core';
+import { appendDispatchRecord, dispatchConsultResponder, readSourceDispatchRecords,
+  type ConsultDispatchDeps } from './consult-dispatch';
 
 const WS = 'public-consult-contract';
 let db: FreshPgDb;
@@ -19,6 +24,9 @@ beforeAll(async () => {
   )`);
   await applyMigrationForTest(db.sql, fileURLToPath(new URL(
     '../../../../libs/papercusp/libs/db/sql/834-consult-threads.sql', import.meta.url,
+  )));
+  await applyMigrationForTest(db.sql, fileURLToPath(new URL(
+    '../../../../libs/papercusp/libs/db/sql/1225-consult-dispatch-attempts.sql', import.meta.url,
   )));
 }, 120_000);
 afterAll(async () => { await db?.cleanup(); });
@@ -86,4 +94,95 @@ describe('registered consult contract and persisted recovery', () => {
       WHERE workspace_id = ${WS} AND conversation_id = ${accepted.conversation_id}`;
     expect(rows[0].question).toBe(original.question);
   });
+});
+
+describe('source preflight and persisted dispatch attempts', () => {
+  it.each(['eligible', 'cyclic', 'non-plain', 'missing'] as const)(
+    'validates the %s source before crossing the launch seam and persists its verdict', async (kind) => {
+      const dir = await mkdtemp(join(tmpdir(), 'consult-contract-source-'));
+      const path = join(dir, 'source.jsonl');
+      const sourceOwnerId = `contract-source-${kind}`;
+      const sourceSessionId = `contract-session-${kind}`;
+      const answeringOwnerId = `contract-answer-${kind}`;
+      let launches = 0;
+      try {
+        if (kind !== 'missing') {
+          await writeFile(path, [
+            JSON.stringify({ type: 'user', uuid: 'u1', parentUuid: kind === 'cyclic' ? 'a1' : null,
+              message: { role: 'user', content: 'exact source question' } }),
+            JSON.stringify({ type: 'assistant', uuid: 'a1', parentUuid: 'u1',
+              message: { role: 'assistant', content: 'exact source answer' } }),
+          ].join('\n') + '\n');
+        }
+        const accepted = await acceptFeedbackRequestCore(request(`preflight-${kind}`), deps);
+        const conversationId = accepted.conversation_id!;
+        const dispatchDeps: Partial<ConsultDispatchDeps> = {
+          resolveResumeTarget: async () => ({ ok: true, sessionId: sourceSessionId,
+            resumeId: sourceSessionId, ompThreadId: null, ownerId: sourceOwnerId,
+            agent: 'claude', cwd: dir, model: null, modelSource: null,
+            endedAt: null, endedBy: null, live: true, advSessionId: 7,
+            ...(kind === 'non-plain' ? { role: 'reviewer' } : {}),
+            binding: { coordOwnerId: sourceOwnerId, sessionId: sourceSessionId,
+              startedAt: '2026-09-22T00:00:00Z' } }),
+          checkResumeTranscript: async () => ({ available: true, detail: 'exact fixture source', transcriptPath: path }),
+          // Omit checkPortTranscript: exercise the production reader and native adapter.
+          readSourceDispatchRecords: (...args) => readSourceDispatchRecords(db.sql, ...args),
+          recordDispatchAttempts: (record) => appendDispatchRecord(db.sql, record, new Date().toISOString()),
+          readReviewerModel: async () => null,
+          isConsultOpen: async (workspaceId, id) => {
+            const rows = await db.sql`SELECT state FROM harness_shared.consult_state
+              WHERE workspace_id = ${workspaceId} AND conversation_id = ${id}`;
+            return rows[0]?.state === 'awaiting';
+          },
+          loadRanks: async () => [{ rank: 1, agent: 'codex', model: 'sol' }],
+          fetchContextPressure: async () => new Map(),
+          estimateTranscriptTokens: async () => null,
+          analyzeClaudeTranscript: () => null,
+          probeBackendAvailable: async () => ({ available: true, detail: 'fixture capacity' }),
+          mintOwnerId: () => answeringOwnerId,
+          buildConsoleEnvelope: async () => ({ cwd: dir, env: {}, greetingCmd: '' }),
+          // Launch and host verification stay bounded test seams; no native agent is started.
+          spawnHeadless: async (input) => {
+            launches++;
+            expect(input.coordOwnerId).toBe(answeringOwnerId);
+            expect(input.envelope.greetingCmd).toContain('--agent=codex');
+            expect(JSON.parse(input.envelope.env.PAPERCUSP_CONSULT_EVIDENCE_SPAN!))
+              .toMatchObject({ sessionId: sourceSessionId, turnIndices: [1] });
+            const rows = await db.sql`SELECT responder_id FROM harness_shared.consult_state
+              WHERE workspace_id = ${WS} AND conversation_id = ${conversationId}`;
+            expect(rows[0].responder_id).toBe(answeringOwnerId);
+            return { status: 'ok', pid: 42, taskId: 'fixture-launch', terminal: 'headless',
+              logPath: null, child: null, display: null,
+              kickoffProof: { persisted: true, nativeRef: path, reason: null } };
+          },
+          verifyResumeStarted: async () => ({ started: true, waitedMs: 0 }),
+        };
+        const result = await dispatchConsultResponder({ sourceOwnerId, conversationId,
+          evidence: [{ session_id: sourceSessionId, turn_idx: 1, sim: 0.8 }], brief: 'Review exact source',
+          onAnsweringOwner: async (id) => {
+            await db.sql`UPDATE harness_shared.consult_state SET responder_id = ${id}
+              WHERE workspace_id = ${WS} AND conversation_id = ${conversationId}`;
+          },
+        }, { workspaceId: WS, harnessSlug: null, launchedBy: 'contract-requester' }, dispatchDeps);
+        expect(result.dispatched).toBe(kind === 'eligible');
+        expect(launches).toBe(kind === 'eligible' ? 1 : 0);
+        if (kind === 'eligible') {
+          expect(result).toMatchObject({ operation: 'convert', answeringOwnerId, verified: true });
+          expect(answeringOwnerId).not.toBe(sourceOwnerId);
+        } else {
+          expect(result.attempts[0]).toMatchObject({ outcome: 'skipped', reason: 'conversion-unavailable' });
+          expect(result.attempts[0].detail).toContain(kind === 'cyclic' ? 'cycle detected'
+            : kind === 'non-plain' ? 'plain tracked SU' : 'preflight refused');
+        }
+        const rows = await db.sql`SELECT dispatch_attempts FROM harness_shared.consult_state
+          WHERE workspace_id = ${WS} AND conversation_id = ${conversationId}`;
+        expect(rows[0].dispatch_attempts).toHaveLength(1);
+        expect(rows[0].dispatch_attempts[0]).toMatchObject({ sourceOwnerId,
+          dispatched: result.dispatched, answeringOwnerId: result.answeringOwnerId,
+          attempts: result.attempts });
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    },
+  );
 });
