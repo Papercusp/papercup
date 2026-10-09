@@ -125,7 +125,7 @@ function packageExportTarget(pkg: WorkspacePackage, subpath: string): string | u
 function sourceFileCandidate(base: string): string | undefined {
   const candidates: string[] = [];
   const extension = extname(base);
-  if (extension) {
+  if (SOURCE_EXTENSION_SET.has(extension)) {
     candidates.push(base);
     if (['.js', '.jsx', '.mjs', '.cjs'].includes(extension)) {
       const stem = base.slice(0, -extension.length);

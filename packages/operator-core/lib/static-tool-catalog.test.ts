@@ -22,6 +22,32 @@ function liveMcpNames(): Set<string> {
 }
 
 describe('static tool catalog derivation', () => {
+  it('resolves extensionless dotted module names and still refuses a missing dotted module', () => {
+    const root = mkdtempSync(resolve(tmpdir(), 'static-dotted-module-'));
+    const write = (path: string, text: string) => {
+      const fullPath = resolve(root, path);
+      mkdirSync(dirname(fullPath), { recursive: true });
+      writeFileSync(fullPath, text);
+    };
+    try {
+      write('package.json', JSON.stringify({ workspaces: [] }));
+      write(PRODUCTION_TOOL_REGISTRY_ENTRYPOINT, "import type { Job } from './callers.worker';\nimport './callers.worker';\nimport './runtime.generated';");
+      write('packages/operator-core/lib/agent-tools/callers.worker.ts', 'export interface Job { name: string }');
+      write('packages/operator-core/lib/agent-tools/runtime.generated.mts', 'export const ready = true;');
+      expect(buildProductionToolSourceFiles(root)).toEqual(expect.arrayContaining([
+        resolve(root, 'packages/operator-core/lib/agent-tools/callers.worker.ts'),
+        resolve(root, 'packages/operator-core/lib/agent-tools/runtime.generated.mts'),
+      ]));
+
+      const missing = resolve(root, 'missing');
+      write('missing/package.json', JSON.stringify({ workspaces: [] }));
+      write(`missing/${PRODUCTION_TOOL_REGISTRY_ENTRYPOINT}`, "import './absent.worker';");
+      expect(() => buildProductionToolSourceFiles(missing)).toThrow('could not resolve ./absent.worker');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it.each([false, true])('resolves the specific .mjs workspace export with reversed ordering=%s', (reversed) => {
     const root = mkdtempSync(resolve(tmpdir(), 'static-exports-'));
     const write = (path: string, text: string) => {

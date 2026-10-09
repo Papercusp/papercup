@@ -74,6 +74,18 @@ async function main() {
       console.log('KNOWLEDGE_NATIVE_SOURCE_READY ' + JSON.stringify({ workspace, reportId: warmReport.reportId }));
       return;
     }
+    // The native route also requires the maintained shared-resource store.
+    // A fresh private cluster has no su database; finish that bootstrap before
+    // paying the host bundle or starting the unchanged native response clock.
+    const { withOptionalMemoryAdmission } = await import('../lib/memory/mid-turn-admission');
+    const admitted = await withOptionalMemoryAdmission(async () =>
+      buildMemoryContextBlock({ workspaceId: workspace, harnessSlugs: [workspace],
+        userId: null, queryContext: 'warmquartz diagnostic snapshot recovery evidence',
+        session: { sessionId: 'su-private-admission-control', port: 'turn-start', client: 'codex' } }));
+    writeFileSync(join(evidenceDir, 'admission-control.json'), JSON.stringify(admitted));
+    assert.ok(admitted.admitted, 'private optional-memory resource store is not ready; see admission-control.json');
+    assert.ok(admitted.value?.includes(warmReport.reportId),
+      'admitted production builder failed corpus control; see admission-control.json');
     console.log('KNOWLEDGE_NATIVE_PHASE fixtures-ready');
     const bundle = join(evidenceDir, 'hono-host.mjs');
     console.log('KNOWLEDGE_NATIVE_PHASE bundle-start');

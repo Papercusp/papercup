@@ -520,7 +520,7 @@ describe('launch stage tracer (a stalled launch names its step)', () => {
   it('does not label a wall-clock jump as event-loop delay', () => {
     vi.useFakeTimers();
     let wallClock = 1_000_000;
-    let monotonicClock = 10_000;
+    let monotonicClock = 10_000.25;
     const wallNow = vi.spyOn(Date, 'now').mockImplementation(() => wallClock);
     const monotonicNow = vi.spyOn(performance, 'now').mockImplementation(() => monotonicClock);
     const lines: string[] = [];
@@ -528,10 +528,10 @@ describe('launch stage tracer (a stalled launch names its step)', () => {
       const trace = launchStageTracer('ws:h:wall-clock', (line) => lines.push(line));
       trace.stage('bootstrap');
       wallClock += LAUNCH_STALL_REPORT_MS + 9_186;
-      monotonicClock += LAUNCH_STALL_REPORT_MS;
+      monotonicClock += LAUNCH_STALL_REPORT_MS + 0.6;
       vi.advanceTimersByTime(LAUNCH_STALL_REPORT_MS);
-      expect(lines).toEqual([`[su-launch] ws:h:wall-clock not finished after ${LAUNCH_STALL_REPORT_MS}ms; `
-        + `stalled in stage=bootstrap for ${LAUNCH_STALL_REPORT_MS}ms`]);
+      expect(lines).toEqual([`[su-launch] ws:h:wall-clock not finished after ${LAUNCH_STALL_REPORT_MS + 1}ms; `
+        + `stalled in stage=bootstrap for ${LAUNCH_STALL_REPORT_MS + 1}ms`]);
       trace.end();
     } finally {
       monotonicNow.mockRestore();

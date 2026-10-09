@@ -225,14 +225,18 @@ export function launchStageTracer(
     // timers at all (synchronous work, GC, or the process not being
     // scheduled), which a slow asynchronous wait cannot cause. Naming it tells
     // the two apart from the line alone (WI-10006559: a 15s report ran at 24s).
-    const late = at - startedAt - LAUNCH_STALL_REPORT_MS;
-    log(`[su-launch] ${key} not finished after ${at - startedAt}ms; stalled in stage=${stage} for ${at - stageAt}ms`
-      + (late >= LATE_STALL_REPORT_MS ? `; this report ran ${late}ms late (event loop delayed)` : ''), 'warn');
+    const elapsed = at - startedAt;
+    const late = elapsed - LAUNCH_STALL_REPORT_MS;
+    const elapsedMs = Math.round(elapsed);
+    const stageElapsedMs = Math.round(at - stageAt);
+    log(`[su-launch] ${key} not finished after ${elapsedMs}ms; stalled in stage=${stage} for ${stageElapsedMs}ms`
+      + (late >= LATE_STALL_REPORT_MS ? `; this report ran ${Math.round(late)}ms late (event loop delayed)` : ''), 'warn');
   }, LAUNCH_STALL_REPORT_MS);
   stall.unref?.();
   const close = (next: string | null) => {
     const at = now();
-    if (at - stageAt >= SLOW_LAUNCH_STAGE_MS) log(`[su-launch] ${key} stage=${stage} took ${at - stageAt}ms`, 'info');
+    const elapsedMs = at - stageAt;
+    if (elapsedMs >= SLOW_LAUNCH_STAGE_MS) log(`[su-launch] ${key} stage=${stage} took ${Math.round(elapsedMs)}ms`, 'info');
     if (next !== null) { stage = next; stageAt = at; }
   };
   return { stage: (next) => close(next), end: () => { close(null); clearTimeout(stall); } };
