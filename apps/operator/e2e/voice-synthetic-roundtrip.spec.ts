@@ -58,7 +58,21 @@ interface VoiceHook {
 }
 type VoiceWindow = Window & {
   __pcVoiceTest?: VoiceHook;
-  __voiceEvents?: Array<{ phase: string; message: string }>;
+  __voiceEvents?: Array<{ phase: string; message: string; atMs: number }>;
+  __audioPlayEvents?: Array<{
+    event: string;
+    atMs: number;
+    src: string;
+    paused: boolean;
+    muted: boolean;
+    volume: number;
+    readyState: number;
+    currentTime: number;
+    duration: number | null;
+    errorCode: number | null;
+    errorName?: string;
+    errorMessage?: string;
+  }>;
   /** Every MediaStream the page obtained from getUserMedia (R-4 cleanup legs). */
   __micStreams?: MediaStream[];
 };
@@ -73,10 +87,58 @@ async function openShell(
     w.__PAPERCUSP_DEV_WRAPPER__ = true;
     sessionStorage.setItem('oracle-tutorial-complete', 'true');
     w.__voiceEvents = [];
+    w.__audioPlayEvents = [];
     w.__micStreams = [];
     window.addEventListener('papercusp:voiceTimeout', (e) => {
-      w.__voiceEvents!.push((e as CustomEvent<{ phase: string; message: string }>).detail);
+      const detail = (e as CustomEvent<{ phase?: string; message?: string }>).detail;
+      w.__voiceEvents!.push({
+        phase: String(detail?.phase ?? 'unknown'),
+        message: String(detail?.message ?? ''),
+        atMs: Math.round(performance.now()),
+      });
     });
+    const recordAudioPlay = (audio: HTMLAudioElement, event: string, failure?: unknown) => {
+      const error = failure as { name?: unknown; message?: unknown } | undefined;
+      const events = w.__audioPlayEvents!;
+      events.push({
+        event,
+        atMs: Math.round(performance.now()),
+        src: audio.currentSrc || audio.src,
+        paused: audio.paused,
+        muted: audio.muted,
+        volume: audio.volume,
+        readyState: audio.readyState,
+        currentTime: audio.currentTime,
+        duration: Number.isFinite(audio.duration) ? audio.duration : null,
+        errorCode: audio.error?.code ?? null,
+        ...(error ? {
+          errorName: String(error.name ?? ''),
+          errorMessage: String(error.message ?? error),
+        } : {}),
+      });
+      if (events.length > 24) events.splice(0, events.length - 24);
+    };
+    const originalAudioPlay = HTMLMediaElement.prototype.play;
+    HTMLMediaElement.prototype.play = function (...args: Parameters<typeof originalAudioPlay>) {
+      if (!(this instanceof HTMLAudioElement)) return originalAudioPlay.apply(this, args);
+      const audio = this;
+      recordAudioPlay(audio, 'play-called');
+      audio.addEventListener('playing', () => recordAudioPlay(audio, 'playing'), { once: true });
+      audio.addEventListener('ended', () => recordAudioPlay(audio, 'ended'), { once: true });
+      audio.addEventListener('error', () => recordAudioPlay(audio, 'element-error'), { once: true });
+      audio.addEventListener('pause', () => recordAudioPlay(audio, 'paused'), { once: true });
+      try {
+        const result = originalAudioPlay.apply(audio, args);
+        void result.then(
+          () => recordAudioPlay(audio, 'play-fulfilled'),
+          (error: unknown) => recordAudioPlay(audio, 'play-rejected', error),
+        );
+        return result;
+      } catch (error) {
+        recordAudioPlay(audio, 'play-threw', error);
+        throw error;
+      }
+    };
     if (denyMic) {
       navigator.mediaDevices.getUserMedia = () =>
         Promise.reject(new DOMException('Permission denied', 'NotAllowedError'));
@@ -150,6 +212,15 @@ async function holdToTalk(page: Page, ms = 5_000): Promise<void> {
 }
 
 const events = (page: Page) => page.evaluate(() => (window as VoiceWindow).__voiceEvents ?? []);
+
+const replyPlaybackDiagnostics = (page: Page) => page.evaluate(() => {
+  const w = window as VoiceWindow;
+  return {
+    status: w.__pcVoiceTest?.getState().status ?? 'hook-unavailable',
+    voiceTimeouts: (w.__voiceEvents ?? []).slice(-8),
+    audioPlay: (w.__audioPlayEvents ?? []).slice(-12),
+  };
+});
 
 interface CapturedTts { status: number; engine: unknown; text: string; body: Buffer }
 
@@ -250,8 +321,10 @@ async function transcribeInPage(page: Page, audio: Buffer): Promise<{ status: nu
         expect(reply.engine).toBe(engine);
         expect(reply.body.length, 'captured TTS reply bytes').toBeGreaterThan(1_000);
         // The client really played it, rather than one of speak()'s silent gates.
-        await expect.poll(async () => (await voice(page, (h) => h.getState())).status, { timeout: 30_000 })
-          .toBe('speaking');
+        await expect.poll(() => replyPlaybackDiagnostics(page), {
+          timeout: 30_000,
+          message: 'reply playback should enter speaking; received snapshot includes voiceTimeout and Audio.play diagnostics',
+        }).toMatchObject({ status: 'speaking' });
         const heard = await transcribeInPage(page, reply.body);
         expect(heard.status).toBe(200);
         expect(norm(heard.text), `whisper heard: ${JSON.stringify(heard.text)}`).toContain('synthetic voice');
