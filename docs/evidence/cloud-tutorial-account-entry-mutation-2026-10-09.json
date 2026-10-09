@@ -130,6 +130,51 @@
     },
     "acceptance": "All ten replacement bindings were CURRENT on the named staging reads. This is not hosted artifact, protected voice, novice, affected-suite or production shipment acceptance."
   },
+  "currentNullWorkspaceMutationRound": {
+    "recordedAt": "2026-10-09T23:32:00Z",
+    "workItemId": "WI-10007744",
+    "scope": "Exactly the actual PortalEntry null-workspace business falsifier on current retained sources; assigned-workspace fixture failure excluded.",
+    "portalCommit": "d88481ce05a95aa1497730862c3dcd2d16693715",
+    "operatorCommit": "405947bc4cfff1ed3b721daa4af027d64d71e970",
+    "portalRoot": "/dev/shm/pcv/papercusp-lint-as-committed-d88481ce05-bNxRsV",
+    "operatorRoot": "/dev/shm/pcv/papercusp-lint-as-committed-405947bc4c-edpqzo",
+    "runGroup": "tutorial-entry-null-d884-405947-20261009T2340",
+    "testFile": "e2e/portal-product-tutorial.spec.ts",
+    "case": "actual PortalEntry shows the enrolled guide before destination reads with workspace=null",
+    "runs": [
+      { "id": 20963716, "phase": "baseline", "passed": 1, "failed": 0, "skipped": 0 },
+      { "id": 20963717, "phase": "copy-baseline", "passed": 1, "failed": 0, "skipped": 0 },
+      { "id": 20963718, "phase": "mutant", "passed": 0, "failed": 1, "skipped": 0 }
+    ],
+    "attribution": { "harness": "papercusp", "workspace": "papercusp-workspace", "source": "mutation-probe", "worktreeDirty": false, "collectionFailed": false, "testLayer": "e2e" },
+    "mutation": {
+      "before": "if (!session) return destination();",
+      "after": "return destination();",
+      "replacementCount": 1,
+      "relocation": "overlay",
+      "mutantSha256": "03301d9795bc8c11670ee22f2ff872972219bbd131ba2a6c489282882687d272",
+      "independentParse": "esbuild TSX transform passed, zero warnings, 94119 output bytes",
+      "observedAssertion": "Missing Welcome to Papercusp heading at portal-product-tutorial.spec.ts:449",
+      "observedDestination": "Real FirstRunPortal rendered Set up your portal with verified account identity",
+      "sourceIntegrity": "Maintained probe reported byte-identical original shell; both retained trees clean afterward"
+    },
+    "sourceCustody": "All nine source/test/fixture measurement paths equal retained execution bytes, current working bytes and current HEAD after execution.",
+    "log": "/dev/shm/tutorial-entry-null-d884-405947-20261009T2340.log",
+    "logSha256": "e8f81672b025fd43ae5f6e3f33fc4c6d485f1ad910de20dc3ea21bcc6c566a3c",
+    "mutantResults": "/dev/shm/tutorial-entry-null-d884-405947-20261009T2340-results-mutant",
+    "nativeProcess": "Fresh native shell completed exit 0 and was drained; no live handle remains",
+    "acceptance": {
+      "specId": "AUTO-BAR-R-16-P-015",
+      "specRevision": 2,
+      "mutationBinding": 33761,
+      "currentReadback": "/dev/shm/tutorial-entry-null-current-20261009T2334.json",
+      "retractedStaleBinding": 33163,
+      "retractionReceipt": "/dev/shm/tutorial-entry-null-retire-20261009T2335.json",
+      "assessment": "/dev/shm/tutorial-r16-after-null-20261009T2341.json",
+      "assessmentResult": "Current staging assessment wouldBlock is empty for this clause"
+    },
+    "shipment": "open"
+  },
   "limitations": [
     "No replay of historical full40 LOCAL20937012",
     "No actual workspace shell/served artifact/production proof",
