@@ -3571,12 +3571,22 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
     const proxyPort = await listen(proxy);
     const pane = new PuiPane(bin, operatorPort, home, { operatorToken: 'pui-fixture-old-operator' });
     let reconnectStage = 'open-setup';
-    onTestFailed(() => console.info('PUI_SETUP_RECONNECT_FAILURE', JSON.stringify({
-      stage: reconnectStage, proxyPort, traffic: reconnectTraffic, screen: pane.screen(),
-      // State and rendered text can disagree if the PTY oracle mishandles a
-      // reconnect's terminal reset. Keep the emitted status text as a control.
-      emittedConnectionStates: pane.rawSince().match(/Connection: (?:Checking|Unavailable|Connected)/g) ?? [],
-    })));
+    onTestFailed(() => {
+      const out = process.env.PUI_REVIEW_FRAMES_DIR;
+      if (out) {
+        mkdirSync(out, { recursive: true });
+        writeFileSync(path.join(out, 'setup-reconnect.raw'), pane.rawSince()
+          .replaceAll(requiredToken, '<fixture-token>')
+          .replaceAll('pui-fixture-old-operator', '<old-fixture-token>'));
+      }
+      console.info('PUI_SETUP_RECONNECT_FAILURE', JSON.stringify({
+        stage: reconnectStage, proxyPort, traffic: reconnectTraffic,
+        screen: pane.failureEvidence().screen,
+        // Cursor-jump diffs may split status text. The retained raw stream
+        // lets an independent terminal decoder check the rendered oracle.
+        rawTrace: out ? path.join(out, 'setup-reconnect.raw') : null,
+      }));
+    });
     try {
       await openComposer(pane, false);
       pane.write(prompt);
