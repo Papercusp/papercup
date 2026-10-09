@@ -1,0 +1,2393 @@
+{
+  "schemaVersion": 1,
+  "kind": "review-grading-traceability-supplement",
+  "workItem": "WI-10002233",
+  "author": "su-01248af5-137e-4f7c-82d7-1715d6ecf725",
+  "measuredAt": "2026-10-09T08:57:15.080595+00:00",
+  "sourceAudit": {
+    "path": "docs/evidence/review-grading-80-record-judgments-2026-10-09.json",
+    "bytes": 260877,
+    "sha256": "e5d78edf8a32104efb2521f726dde51555ed4866dd3ada7e6784e505a52d9451",
+    "recordCount": 80,
+    "criterionCount": 662,
+    "scope": "Same frozen 80 IDs and observation hashes; no census rerun, resample, row mutation or outcome-impact inference."
+  },
+  "historicalRubricVerification": {
+    "method": "Read exact requested immutable revision through canonical rubrics:get; compare returned criteria hash and every sampled criterion key. No substitute current revision and no hand-written historical snapshot.",
+    "readCount": 25,
+    "counts": {
+      "revision-not-recorded": 10,
+      "definition-unavailable": 36,
+      "verified-definition-hash-and-keys": 34
+    },
+    "readResults": [
+      {
+        "requested": {
+          "rubricRef": "acceptance-codex-auto-route-all-walled-fail-fast-2026-09-05",
+          "revision": 5
+        },
+        "result": {
+          "results": [
+            {
+              "ok": false,
+              "rubricRef": "acceptance-codex-auto-route-all-walled-fail-fast-2026-09-05",
+              "error": "rubric revision 5 not found; current revision is 6"
+            }
+          ]
+        }
+      },
+      {
+        "requested": {
+          "rubricRef": "acceptance-middle-pane-inbox-plans-design-2026-08-27",
+          "revision": 2
+        },
+        "result": {
+          "results": [
+            {
+              "ok": false,
+              "rubricRef": "acceptance-middle-pane-inbox-plans-design-2026-08-27",
+              "error": "rubric revision 2 not found; current revision is 4"
+            }
+          ]
+        }
+      },
+      {
+        "requested": {
+          "rubricRef": "grading-integrity",
+          "revision": 6
+        },
+        "result": {
+          "results": [
+            {
+              "ok": false,
+              "rubricRef": "grading-integrity",
+              "error": "rubric revision 6 not found; current revision is 10"
+            }
+          ]
+        }
+      },
+      {
+        "requested": {
+          "rubricRef": "grading-integrity",
+          "revision": 7
+        },
+        "result": {
+          "results": [
+            {
+              "ok": false,
+              "rubricRef": "grading-integrity",
+              "error": "rubric revision 7 not found; current revision is 10"
+            }
+          ]
+        }
+      },
+      {
+        "requested": {
+          "rubricRef": "grading-integrity",
+          "revision": 10
+        },
+        "result": {
+          "results": [
+            {
+              "ok": true,
+              "rubricRef": "grading-integrity",
+              "rubric": {
+                "revision": 10,
+                "criteriaHash": "ebcc5c8c7861dd56211f08abcbbe9a30ea6db2272d6f2e816f507c1434a7d7a1",
+                "criteria": [
+                  {
+                    "key": "base-rate-check"
+                  },
+                  {
+                    "key": "instrument-split"
+                  },
+                  {
+                    "key": "terminal-re-rate"
+                  },
+                  {
+                    "key": "platform-telemetry-excluded"
+                  },
+                  {
+                    "key": "re-runnable-evidence"
+                  },
+                  {
+                    "key": "degenerate-distribution"
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      {
+        "requested": {
+          "rubricRef": "grading-integrity",
+          "revision": 4
+        },
+        "result": {
+          "results": [
+            {
+              "ok": false,
+              "rubricRef": "grading-integrity",
+              "error": "rubric revision 4 not found; current revision is 10"
+            }
+          ]
+        }
+      },
+      {
+        "requested": {
+          "rubricRef": "accept-identities-v1-m1-2026-09-04",
+          "revision": 10
+        },
+        "result": {
+          "results": [
+            {
+              "ok": false,
+              "rubricRef": "accept-identities-v1-m1-2026-09-04",
+              "error": "rubric revision 10 not found; current revision is 11"
+            }
+          ]
+        }
+      },
+      {
+        "requested": {
+          "rubricRef": "acceptance-pot-review-integration-mode-2026-10-05",
+          "revision": 6
+        },
+        "result": {
+          "results": [
+            {
+              "ok": true,
+              "rubricRef": "acceptance-pot-review-integration-mode-2026-10-05",
+              "rubric": {
+                "revision": 6,
+                "criteriaHash": "a8c2cf0b849f7f4ff92faf591e1d0db5f8d8f06d38a59485be05ca2f7744cf27",
+                "criteria": [
+                  {
+                    "key": "r-1"
+                  },
+                  {
+                    "key": "r-2"
+                  },
+                  {
+                    "key": "r-3"
+                  },
+                  {
+                    "key": "r-4"
+                  },
+                  {
+                    "key": "r-5"
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      {
+        "requested": {
+          "rubricRef": "acceptance-generic-acceptance-routing-and-live-plan-agent-brief-2026-09-20",
+          "revision": 4
+        },
+        "result": {
+          "results": [
+            {
+              "ok": false,
+              "rubricRef": "acceptance-generic-acceptance-routing-and-live-plan-agent-brief-2026-09-20",
+              "error": "rubric revision 4 exists, but its immutable snapshot could not be projected. If this is a first-party exact-current-body legacy chain, preview rubrics:repair with dryRun:true. This server is running build d740fc3802, started 40min ago. For the current source tree, retry this call against the Papercusp staging operator at :3170 (with ptool, pass --url=http://127.0.0.1:3170 explicitly)."
+            }
+          ]
+        }
+      },
+      {
+        "requested": {
+          "rubricRef": "acceptance-bar-reporting-layer-repairs-2026-09-07",
+          "revision": 9
+        },
+        "result": {
+          "results": [
+            {
+              "ok": false,
+              "rubricRef": "acceptance-bar-reporting-layer-repairs-2026-09-07",
+              "error": "rubric revision 9 not found; current revision is 10"
+            }
+          ]
+        }
+      },
+      {
+        "requested": {
+          "rubricRef": "spec-test-adequacy",
+          "revision": 7
+        },
+        "result": {
+          "results": [
+            {
+              "ok": true,
+              "rubricRef": "spec-test-adequacy",
+              "rubric": {
+                "revision": 7,
+                "criteriaHash": "234b776ac3e5d7ba59644436e7d6a5c8a7afb69a3e62bbbdb2dacffa8a9382bb",
+                "criteria": [
+                  {
+                    "key": "traceability"
+                  },
+                  {
+                    "key": "fixture-calibration"
+                  },
+                  {
+                    "key": "falsifiability"
+                  },
+                  {
+                    "key": "correct-layer"
+                  },
+                  {
+                    "key": "oracle-independence"
+                  },
+                  {
+                    "key": "execution-integrity"
+                  },
+                  {
+                    "key": "freshness"
+                  },
+                  {
+                    "key": "plan-class-risk-floor"
+                  },
+                  {
+                    "key": "disclosed-gap"
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      {
+        "requested": {
+          "rubricRef": "spec-test-adequacy",
+          "revision": 2
+        },
+        "result": {
+          "results": [
+            {
+              "ok": false,
+              "rubricRef": "spec-test-adequacy",
+              "error": "rubric revision 2 not found; current revision is 8"
+            }
+          ]
+        }
+      },
+      {
+        "requested": {
+          "rubricRef": "work-on-everything-stewardship-health",
+          "revision": 12
+        },
+        "result": {
+          "results": [
+            {
+              "ok": false,
+              "rubricRef": "work-on-everything-stewardship-health",
+              "error": "rubric revision 12 not found; current revision is 45"
+            }
+          ]
+        }
+      },
+      {
+        "requested": {
+          "rubricRef": "spec-test-adequacy",
+          "revision": 6
+        },
+        "result": {
+          "results": [
+            {
+              "ok": true,
+              "rubricRef": "spec-test-adequacy",
+              "rubric": {
+                "revision": 6,
+                "criteriaHash": "267c544db36701666b04d733144ec0138c31f35072bb5d2b399e4d823f7261b8",
+                "criteria": [
+                  {
+                    "key": "traceability"
+                  },
+                  {
+                    "key": "fixture-calibration"
+                  },
+                  {
+                    "key": "falsifiability"
+                  },
+                  {
+                    "key": "correct-layer"
+                  },
+                  {
+                    "key": "oracle-independence"
+                  },
+                  {
+                    "key": "execution-integrity"
+                  },
+                  {
+                    "key": "freshness"
+                  },
+                  {
+                    "key": "plan-class-risk-floor"
+                  },
+                  {
+                    "key": "disclosed-gap"
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      {
+        "requested": {
+          "rubricRef": "spec-quality",
+          "revision": 2
+        },
+        "result": {
+          "results": [
+            {
+              "ok": false,
+              "rubricRef": "spec-quality",
+              "error": "rubric revision 2 not found; current revision is 5"
+            }
+          ]
+        }
+      },
+      {
+        "requested": {
+          "rubricRef": "spec-quality",
+          "revision": 4
+        },
+        "result": {
+          "results": [
+            {
+              "ok": true,
+              "rubricRef": "spec-quality",
+              "rubric": {
+                "revision": 4,
+                "criteriaHash": "48aa7893d0f967fa65e3e6943872627af4ff1d7b61b517141468437e92798a97",
+                "criteria": [
+                  {
+                    "key": "stable-revision-identity"
+                  },
+                  {
+                    "key": "item-contract-coverage"
+                  },
+                  {
+                    "key": "atomic-observable-behavior"
+                  },
+                  {
+                    "key": "falsifiability"
+                  },
+                  {
+                    "key": "implementation-independence"
+                  },
+                  {
+                    "key": "explicit-non-behavioral-exemptions"
+                  },
+                  {
+                    "key": "plan-class-specialization"
+                  },
+                  {
+                    "key": "spec-set-freshness"
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      {
+        "requested": {
+          "rubricRef": "spec-test-adequacy",
+          "revision": 8
+        },
+        "result": {
+          "results": [
+            {
+              "ok": true,
+              "rubricRef": "spec-test-adequacy",
+              "rubric": {
+                "revision": 8,
+                "criteriaHash": "2a04bba7eaa9b0b41b5fad753c99acc7df965b9d99bdfce73aa7e5f1dad06955",
+                "criteria": [
+                  {
+                    "key": "traceability"
+                  },
+                  {
+                    "key": "fixture-calibration"
+                  },
+                  {
+                    "key": "falsifiability"
+                  },
+                  {
+                    "key": "correct-layer"
+                  },
+                  {
+                    "key": "oracle-independence"
+                  },
+                  {
+                    "key": "execution-integrity"
+                  },
+                  {
+                    "key": "freshness"
+                  },
+                  {
+                    "key": "plan-class-risk-floor"
+                  },
+                  {
+                    "key": "disclosed-gap"
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      {
+        "requested": {
+          "rubricRef": "spec-test-adequacy",
+          "revision": 3
+        },
+        "result": {
+          "results": [
+            {
+              "ok": false,
+              "rubricRef": "spec-test-adequacy",
+              "error": "rubric revision 3 not found; current revision is 8"
+            }
+          ]
+        }
+      },
+      {
+        "requested": {
+          "rubricRef": "spec-quality",
+          "revision": 5
+        },
+        "result": {
+          "results": [
+            {
+              "ok": true,
+              "rubricRef": "spec-quality",
+              "rubric": {
+                "revision": 5,
+                "criteriaHash": "efc99b9273848a8132ad856be9b86d98674d845d80f974f012e015ef91c0240b",
+                "criteria": [
+                  {
+                    "key": "stable-revision-identity"
+                  },
+                  {
+                    "key": "item-contract-coverage"
+                  },
+                  {
+                    "key": "atomic-observable-behavior"
+                  },
+                  {
+                    "key": "falsifiability"
+                  },
+                  {
+                    "key": "implementation-independence"
+                  },
+                  {
+                    "key": "explicit-non-behavioral-exemptions"
+                  },
+                  {
+                    "key": "plan-class-specialization"
+                  },
+                  {
+                    "key": "spec-set-freshness"
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      {
+        "requested": {
+          "rubricRef": "work-on-everything-stewardship-health",
+          "revision": 8
+        },
+        "result": {
+          "results": [
+            {
+              "ok": false,
+              "rubricRef": "work-on-everything-stewardship-health",
+              "error": "rubric revision 8 not found; current revision is 45"
+            }
+          ]
+        }
+      },
+      {
+        "requested": {
+          "rubricRef": "goal-mode-e2e",
+          "revision": 60
+        },
+        "result": {
+          "results": [
+            {
+              "ok": true,
+              "rubricRef": "goal-mode-e2e",
+              "rubric": {
+                "revision": 60,
+                "criteriaHash": "3c32370ddf973fb40d56c5f69c93ea6d6a6e68465fb330beb61d57fce780a5c3",
+                "criteria": [
+                  {
+                    "key": "kickoff-portfolio-read"
+                  },
+                  {
+                    "key": "kickoff-criterion-and-ceiling"
+                  },
+                  {
+                    "key": "relationship-settled-before-creating"
+                  },
+                  {
+                    "key": "child-execution-proven"
+                  },
+                  {
+                    "key": "one-main-owner-per-pot"
+                  },
+                  {
+                    "key": "per-pot-kill-criterion-and-tripwires"
+                  },
+                  {
+                    "key": "spend-reported-and-goals-closed"
+                  },
+                  {
+                    "key": "owner-walls-queued-not-stalled"
+                  },
+                  {
+                    "key": "shipped-not-green"
+                  },
+                  {
+                    "key": "templates-mandate"
+                  },
+                  {
+                    "key": "dedup-before-creating"
+                  },
+                  {
+                    "key": "rubric-reuse-not-proliferation"
+                  },
+                  {
+                    "key": "durability-across-cold-wake"
+                  },
+                  {
+                    "key": "standing-owner-report"
+                  },
+                  {
+                    "key": "ladder-integrity-end-to-end"
+                  },
+                  {
+                    "key": "never-implements"
+                  },
+                  {
+                    "key": "delegates-plan-leadership"
+                  },
+                  {
+                    "key": "standing-drain-fleet-per-goal"
+                  },
+                  {
+                    "key": "grade-vs-test-split"
+                  },
+                  {
+                    "key": "right-container-for-the-work"
+                  },
+                  {
+                    "key": "parallelism-width-and-ceilings"
+                  },
+                  {
+                    "key": "settings-are-data"
+                  },
+                  {
+                    "key": "blender-kept-honest"
+                  },
+                  {
+                    "key": "mode-and-subject-integrity"
+                  },
+                  {
+                    "key": "reallocates-on-evidence"
+                  },
+                  {
+                    "key": "de-facto-activity-mix"
+                  },
+                  {
+                    "key": "portfolio-activity-floor"
+                  },
+                  {
+                    "key": "task-brief-effectiveness"
+                  },
+                  {
+                    "key": "long-horizon-context-effectiveness"
+                  },
+                  {
+                    "key": "scoped-continuation-not-new-kickoff"
+                  },
+                  {
+                    "key": "receipts-bound-the-report"
+                  },
+                  {
+                    "key": "already-achieved-checked-before-kickoff"
+                  },
+                  {
+                    "key": "standing-goal-posture"
+                  },
+                  {
+                    "key": "prerequisites-are-edges-not-phases"
+                  },
+                  {
+                    "key": "audit-before-feeding-stalled-lane"
+                  },
+                  {
+                    "key": "scope-aware-planning-adopt-before-clone"
+                  },
+                  {
+                    "key": "work-placed-into-started-plans"
+                  },
+                  {
+                    "key": "started-plans-staffed-and-claimed"
+                  },
+                  {
+                    "key": "goal-local-gap-review-recorded"
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      {
+        "requested": {
+          "rubricRef": "meta-acceptance-rubric",
+          "revision": 5
+        },
+        "result": {
+          "results": [
+            {
+              "ok": true,
+              "rubricRef": "meta-acceptance-rubric",
+              "rubric": {
+                "revision": 5,
+                "criteriaHash": "215de0837eaed307004dd8a9dfcf2cff9caaa47b9ee19e3f11bb2c5390a19614",
+                "criteria": [
+                  {
+                    "key": "outcomes-not-diff-restatements"
+                  },
+                  {
+                    "key": "traces-to-goal-or-decision"
+                  },
+                  {
+                    "key": "falsifiable-with-evidence"
+                  },
+                  {
+                    "key": "failure-mode-coverage"
+                  },
+                  {
+                    "key": "non-overlapping"
+                  },
+                  {
+                    "key": "prefer-structured-check"
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      {
+        "requested": {
+          "rubricRef": "work-on-everything-stewardship-health",
+          "revision": 34
+        },
+        "result": {
+          "results": [
+            {
+              "ok": true,
+              "rubricRef": "work-on-everything-stewardship-health",
+              "rubric": {
+                "revision": 34,
+                "criteriaHash": "d82da8743d4e642dd0bb989a281a65a1084e09e53eba160b18890c25eab5ecbc",
+                "criteria": [
+                  {
+                    "key": "goal-mode-foundation"
+                  },
+                  {
+                    "key": "standing-holder-lifecycle"
+                  },
+                  {
+                    "key": "worklist-authority-and-priority"
+                  },
+                  {
+                    "key": "frontier-scope-sovereignty"
+                  },
+                  {
+                    "key": "delegated-execution-and-drain-health"
+                  },
+                  {
+                    "key": "placement-taxonomy-integrity"
+                  },
+                  {
+                    "key": "claim-flow-and-completion-integrity"
+                  },
+                  {
+                    "key": "blender-feedback-and-disposition"
+                  },
+                  {
+                    "key": "steering-through-claim-rails"
+                  },
+                  {
+                    "key": "rolling-budget-circuit-and-capacity"
+                  },
+                  {
+                    "key": "owner-steering-and-reporting"
+                  },
+                  {
+                    "key": "end-to-end-stewardship-closure"
+                  },
+                  {
+                    "key": "deployed-generation-and-instrument-parity"
+                  },
+                  {
+                    "key": "retired-tier-nonresurrection"
+                  },
+                  {
+                    "key": "plan-fleet-materialization"
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      {
+        "requested": {
+          "rubricRef": "work-on-everything-stewardship-health",
+          "revision": 37
+        },
+        "result": {
+          "results": [
+            {
+              "ok": true,
+              "rubricRef": "work-on-everything-stewardship-health",
+              "rubric": {
+                "revision": 37,
+                "criteriaHash": "efc0a3f8b9fbd94940d4a0ef846562b6bbef74fc78415a70b55cd6fd7af9c0d6",
+                "criteria": [
+                  {
+                    "key": "goal-mode-foundation"
+                  },
+                  {
+                    "key": "standing-holder-lifecycle"
+                  },
+                  {
+                    "key": "worklist-authority-and-priority"
+                  },
+                  {
+                    "key": "frontier-scope-sovereignty"
+                  },
+                  {
+                    "key": "delegated-execution-and-drain-health"
+                  },
+                  {
+                    "key": "placement-taxonomy-integrity"
+                  },
+                  {
+                    "key": "claim-flow-and-completion-integrity"
+                  },
+                  {
+                    "key": "blender-feedback-and-disposition"
+                  },
+                  {
+                    "key": "steering-through-claim-rails"
+                  },
+                  {
+                    "key": "rolling-budget-circuit-and-capacity"
+                  },
+                  {
+                    "key": "owner-steering-and-reporting"
+                  },
+                  {
+                    "key": "end-to-end-stewardship-closure"
+                  },
+                  {
+                    "key": "deployed-generation-and-instrument-parity"
+                  },
+                  {
+                    "key": "retired-tier-nonresurrection"
+                  },
+                  {
+                    "key": "plan-fleet-materialization"
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      {
+        "requested": {
+          "rubricRef": "goal-mode-e2e",
+          "revision": 36
+        },
+        "result": {
+          "results": [
+            {
+              "ok": false,
+              "rubricRef": "goal-mode-e2e",
+              "error": "rubric revision 36 not found; current revision is 83"
+            }
+          ]
+        }
+      }
+    ],
+    "records": [
+      {
+        "id": "EI-21362236748063427",
+        "rubricRef": "acceptance-psu-resume-claim-cutover-2026-08-24",
+        "recordedRevision": null,
+        "recordedCriteriaHash": null,
+        "preservedObservationMd5": "58989fe26122dba7393709c6e70e442d",
+        "status": "revision-not-recorded",
+        "reason": "No historical revision inferred from current rubric."
+      },
+      {
+        "id": "EI-22525572437066362",
+        "rubricRef": "acceptance-codex-auto-route-all-walled-fail-fast-2026-09-05",
+        "recordedRevision": 5,
+        "recordedCriteriaHash": "78c7cfbb75d643af7e06de8422a8d3cc5f3c79e7f95e285af0626268402d4453",
+        "preservedObservationMd5": "88fa23ecbf3565f94f9fc818a0dd6cab",
+        "status": "definition-unavailable",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "acceptance-codex-auto-route-all-walled-fail-fast-2026-09-05",
+            "revision": 5,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": null,
+        "ratedCriterionCount": 11,
+        "missingCriterionKeys": [],
+        "error": "rubric revision 5 not found; current revision is 6"
+      },
+      {
+        "id": "EI-21642648015799271",
+        "rubricRef": "acceptance-middle-pane-inbox-plans-design-2026-08-27",
+        "recordedRevision": 2,
+        "recordedCriteriaHash": null,
+        "preservedObservationMd5": "683d3b28e33df93e884636368129eed5",
+        "status": "definition-unavailable",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "acceptance-middle-pane-inbox-plans-design-2026-08-27",
+            "revision": 2,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": null,
+        "ratedCriterionCount": 5,
+        "missingCriterionKeys": [],
+        "error": "rubric revision 2 not found; current revision is 4"
+      },
+      {
+        "id": "EI-21395442815569065",
+        "rubricRef": "grading-integrity",
+        "recordedRevision": null,
+        "recordedCriteriaHash": null,
+        "preservedObservationMd5": "3b2a1e325c5282574195eb0521f52ce9",
+        "status": "revision-not-recorded",
+        "reason": "No historical revision inferred from current rubric."
+      },
+      {
+        "id": "EI-22755497882009065",
+        "rubricRef": "grading-integrity",
+        "recordedRevision": 6,
+        "recordedCriteriaHash": "7a5a9a35c8334fee463ce67dc0c86f104fd5e037506d7a8fca3c517bb28f1e8e",
+        "preservedObservationMd5": "abbda24609b6f2916f07d7b947290d43",
+        "status": "definition-unavailable",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "grading-integrity",
+            "revision": 6,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": null,
+        "ratedCriterionCount": 6,
+        "missingCriterionKeys": [],
+        "error": "rubric revision 6 not found; current revision is 10"
+      },
+      {
+        "id": "EI-24741433190775872",
+        "rubricRef": "grading-integrity",
+        "recordedRevision": 7,
+        "recordedCriteriaHash": "7342c560581dda4ae6bdb99e61ba5b0eaf34f3adafedf6dd2e81e7a755a3a875",
+        "preservedObservationMd5": "d9991593578cc378b3ccb3d9efcc1b67",
+        "status": "definition-unavailable",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "grading-integrity",
+            "revision": 7,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": null,
+        "ratedCriterionCount": 6,
+        "missingCriterionKeys": [],
+        "error": "rubric revision 7 not found; current revision is 10"
+      },
+      {
+        "id": "EI-24833909289785068",
+        "rubricRef": "grading-integrity",
+        "recordedRevision": 10,
+        "recordedCriteriaHash": "ebcc5c8c7861dd56211f08abcbbe9a30ea6db2272d6f2e816f507c1434a7d7a1",
+        "preservedObservationMd5": "b95079d4d4b59f1398a4d0094ca297a2",
+        "status": "verified-definition-hash-and-keys",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "grading-integrity",
+            "revision": 10,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": "ebcc5c8c7861dd56211f08abcbbe9a30ea6db2272d6f2e816f507c1434a7d7a1",
+        "ratedCriterionCount": 6,
+        "missingCriterionKeys": [],
+        "error": null
+      },
+      {
+        "id": "EI-25224771878072098",
+        "rubricRef": "grading-integrity",
+        "recordedRevision": 10,
+        "recordedCriteriaHash": "ebcc5c8c7861dd56211f08abcbbe9a30ea6db2272d6f2e816f507c1434a7d7a1",
+        "preservedObservationMd5": "933979e2e1976c0b3bf448b0b9e38180",
+        "status": "verified-definition-hash-and-keys",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "grading-integrity",
+            "revision": 10,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": "ebcc5c8c7861dd56211f08abcbbe9a30ea6db2272d6f2e816f507c1434a7d7a1",
+        "ratedCriterionCount": 6,
+        "missingCriterionKeys": [],
+        "error": null
+      },
+      {
+        "id": "EI-24857769619835159",
+        "rubricRef": "grading-integrity",
+        "recordedRevision": 10,
+        "recordedCriteriaHash": "ebcc5c8c7861dd56211f08abcbbe9a30ea6db2272d6f2e816f507c1434a7d7a1",
+        "preservedObservationMd5": "4e1c3335bf92a27080d8036f2608d881",
+        "status": "verified-definition-hash-and-keys",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "grading-integrity",
+            "revision": 10,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": "ebcc5c8c7861dd56211f08abcbbe9a30ea6db2272d6f2e816f507c1434a7d7a1",
+        "ratedCriterionCount": 6,
+        "missingCriterionKeys": [],
+        "error": null
+      },
+      {
+        "id": "EI-24793125057998461",
+        "rubricRef": "grading-integrity",
+        "recordedRevision": 7,
+        "recordedCriteriaHash": "7342c560581dda4ae6bdb99e61ba5b0eaf34f3adafedf6dd2e81e7a755a3a875",
+        "preservedObservationMd5": "a831b93f8e7e4c9cae66b8972b3ee4cd",
+        "status": "definition-unavailable",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "grading-integrity",
+            "revision": 7,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": null,
+        "ratedCriterionCount": 6,
+        "missingCriterionKeys": [],
+        "error": "rubric revision 7 not found; current revision is 10"
+      },
+      {
+        "id": "EI-22690497330173450",
+        "rubricRef": "grading-integrity",
+        "recordedRevision": 4,
+        "recordedCriteriaHash": "4d8853cb8ca40ff2abd732d278eb1d46812f090d62cf22da201afdffbb58d24f",
+        "preservedObservationMd5": "01b3c53445752cdfac61b0f277669138",
+        "status": "definition-unavailable",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "grading-integrity",
+            "revision": 4,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": null,
+        "ratedCriterionCount": 6,
+        "missingCriterionKeys": [],
+        "error": "rubric revision 4 not found; current revision is 10"
+      },
+      {
+        "id": "EI-22641160463292201",
+        "rubricRef": "grading-integrity",
+        "recordedRevision": 4,
+        "recordedCriteriaHash": "4d8853cb8ca40ff2abd732d278eb1d46812f090d62cf22da201afdffbb58d24f",
+        "preservedObservationMd5": "f95b4203e0677e57d0d6926ce83bc473",
+        "status": "definition-unavailable",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "grading-integrity",
+            "revision": 4,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": null,
+        "ratedCriterionCount": 6,
+        "missingCriterionKeys": [],
+        "error": "rubric revision 4 not found; current revision is 10"
+      },
+      {
+        "id": "EI-24137390735287427",
+        "rubricRef": "grading-integrity",
+        "recordedRevision": 7,
+        "recordedCriteriaHash": "7342c560581dda4ae6bdb99e61ba5b0eaf34f3adafedf6dd2e81e7a755a3a875",
+        "preservedObservationMd5": "ac13c2f79b7e337a6347749cce6ec581",
+        "status": "definition-unavailable",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "grading-integrity",
+            "revision": 7,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": null,
+        "ratedCriterionCount": 6,
+        "missingCriterionKeys": [],
+        "error": "rubric revision 7 not found; current revision is 10"
+      },
+      {
+        "id": "EI-24662321434445924",
+        "rubricRef": "grading-integrity",
+        "recordedRevision": 7,
+        "recordedCriteriaHash": "7342c560581dda4ae6bdb99e61ba5b0eaf34f3adafedf6dd2e81e7a755a3a875",
+        "preservedObservationMd5": "4ee4ffcba26e3d1e74a2a70ceafa1dc1",
+        "status": "definition-unavailable",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "grading-integrity",
+            "revision": 7,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": null,
+        "ratedCriterionCount": 6,
+        "missingCriterionKeys": [],
+        "error": "rubric revision 7 not found; current revision is 10"
+      },
+      {
+        "id": "EI-21674503981246973",
+        "rubricRef": "grading-integrity",
+        "recordedRevision": 4,
+        "recordedCriteriaHash": null,
+        "preservedObservationMd5": "f3e780bc56d0edd01cb4a6c737d7390a",
+        "status": "definition-unavailable",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "grading-integrity",
+            "revision": 4,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": null,
+        "ratedCriterionCount": 6,
+        "missingCriterionKeys": [],
+        "error": "rubric revision 4 not found; current revision is 10"
+      },
+      {
+        "id": "EI-24653198754142964",
+        "rubricRef": "grading-integrity",
+        "recordedRevision": 7,
+        "recordedCriteriaHash": "7342c560581dda4ae6bdb99e61ba5b0eaf34f3adafedf6dd2e81e7a755a3a875",
+        "preservedObservationMd5": "898cd07a8db60cc9ccb82458963a360d",
+        "status": "definition-unavailable",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "grading-integrity",
+            "revision": 7,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": null,
+        "ratedCriterionCount": 6,
+        "missingCriterionKeys": [],
+        "error": "rubric revision 7 not found; current revision is 10"
+      },
+      {
+        "id": "EI-24653208423488015",
+        "rubricRef": "grading-integrity",
+        "recordedRevision": 7,
+        "recordedCriteriaHash": "7342c560581dda4ae6bdb99e61ba5b0eaf34f3adafedf6dd2e81e7a755a3a875",
+        "preservedObservationMd5": "d609ce1a8d17b442081abacb28eff4ee",
+        "status": "definition-unavailable",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "grading-integrity",
+            "revision": 7,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": null,
+        "ratedCriterionCount": 6,
+        "missingCriterionKeys": [],
+        "error": "rubric revision 7 not found; current revision is 10"
+      },
+      {
+        "id": "EI-23083773227270308",
+        "rubricRef": "grading-integrity",
+        "recordedRevision": 6,
+        "recordedCriteriaHash": "7a5a9a35c8334fee463ce67dc0c86f104fd5e037506d7a8fca3c517bb28f1e8e",
+        "preservedObservationMd5": "773dc7864746edb72074595f8397064c",
+        "status": "definition-unavailable",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "grading-integrity",
+            "revision": 6,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": null,
+        "ratedCriterionCount": 6,
+        "missingCriterionKeys": [],
+        "error": "rubric revision 6 not found; current revision is 10"
+      },
+      {
+        "id": "EI-22684753997087439",
+        "rubricRef": "grading-integrity",
+        "recordedRevision": 4,
+        "recordedCriteriaHash": "4d8853cb8ca40ff2abd732d278eb1d46812f090d62cf22da201afdffbb58d24f",
+        "preservedObservationMd5": "2023883721b192f95601aa509a72dcba",
+        "status": "definition-unavailable",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "grading-integrity",
+            "revision": 4,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": null,
+        "ratedCriterionCount": 6,
+        "missingCriterionKeys": [],
+        "error": "rubric revision 4 not found; current revision is 10"
+      },
+      {
+        "id": "EI-25227395397167692",
+        "rubricRef": "grading-integrity",
+        "recordedRevision": 10,
+        "recordedCriteriaHash": "ebcc5c8c7861dd56211f08abcbbe9a30ea6db2272d6f2e816f507c1434a7d7a1",
+        "preservedObservationMd5": "93f61fd684f0cc3f964589714eb9f3ad",
+        "status": "verified-definition-hash-and-keys",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "grading-integrity",
+            "revision": 10,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": "ebcc5c8c7861dd56211f08abcbbe9a30ea6db2272d6f2e816f507c1434a7d7a1",
+        "ratedCriterionCount": 6,
+        "missingCriterionKeys": [],
+        "error": null
+      },
+      {
+        "id": "EI-24756255837460326",
+        "rubricRef": "grading-integrity",
+        "recordedRevision": 7,
+        "recordedCriteriaHash": "7342c560581dda4ae6bdb99e61ba5b0eaf34f3adafedf6dd2e81e7a755a3a875",
+        "preservedObservationMd5": "3235fcb27e04abcc44d668b1e1f520be",
+        "status": "definition-unavailable",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "grading-integrity",
+            "revision": 7,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": null,
+        "ratedCriterionCount": 6,
+        "missingCriterionKeys": [],
+        "error": "rubric revision 7 not found; current revision is 10"
+      },
+      {
+        "id": "EI-22482592512462763",
+        "rubricRef": "grading-integrity",
+        "recordedRevision": 4,
+        "recordedCriteriaHash": "4d8853cb8ca40ff2abd732d278eb1d46812f090d62cf22da201afdffbb58d24f",
+        "preservedObservationMd5": "d4a8b8f53123d0bd45098ec04ffda9c1",
+        "status": "definition-unavailable",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "grading-integrity",
+            "revision": 4,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": null,
+        "ratedCriterionCount": 6,
+        "missingCriterionKeys": [],
+        "error": "rubric revision 4 not found; current revision is 10"
+      },
+      {
+        "id": "EI-24675349409896035",
+        "rubricRef": "grading-integrity",
+        "recordedRevision": 7,
+        "recordedCriteriaHash": "7342c560581dda4ae6bdb99e61ba5b0eaf34f3adafedf6dd2e81e7a755a3a875",
+        "preservedObservationMd5": "e00ace9f4a50a5f311cecc5c417f389f",
+        "status": "definition-unavailable",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "grading-integrity",
+            "revision": 7,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": null,
+        "ratedCriterionCount": 6,
+        "missingCriterionKeys": [],
+        "error": "rubric revision 7 not found; current revision is 10"
+      },
+      {
+        "id": "EI-24361508815823156",
+        "rubricRef": "grading-integrity",
+        "recordedRevision": 7,
+        "recordedCriteriaHash": "7342c560581dda4ae6bdb99e61ba5b0eaf34f3adafedf6dd2e81e7a755a3a875",
+        "preservedObservationMd5": "025d77c1036e6773e763b3c273eedb92",
+        "status": "definition-unavailable",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "grading-integrity",
+            "revision": 7,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": null,
+        "ratedCriterionCount": 6,
+        "missingCriterionKeys": [],
+        "error": "rubric revision 7 not found; current revision is 10"
+      },
+      {
+        "id": "EI-24788985115262354",
+        "rubricRef": "grading-integrity",
+        "recordedRevision": 7,
+        "recordedCriteriaHash": "7342c560581dda4ae6bdb99e61ba5b0eaf34f3adafedf6dd2e81e7a755a3a875",
+        "preservedObservationMd5": "1f67abc8415ba9d49da8350351745a9a",
+        "status": "definition-unavailable",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "grading-integrity",
+            "revision": 7,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": null,
+        "ratedCriterionCount": 6,
+        "missingCriterionKeys": [],
+        "error": "rubric revision 7 not found; current revision is 10"
+      },
+      {
+        "id": "EI-24826053804264436",
+        "rubricRef": "grading-integrity",
+        "recordedRevision": 7,
+        "recordedCriteriaHash": "7342c560581dda4ae6bdb99e61ba5b0eaf34f3adafedf6dd2e81e7a755a3a875",
+        "preservedObservationMd5": "80aec2f9d3b0521fd835dfb6f3348bbe",
+        "status": "definition-unavailable",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "grading-integrity",
+            "revision": 7,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": null,
+        "ratedCriterionCount": 6,
+        "missingCriterionKeys": [],
+        "error": "rubric revision 7 not found; current revision is 10"
+      },
+      {
+        "id": "EI-22728133762503149",
+        "rubricRef": "grading-integrity",
+        "recordedRevision": 6,
+        "recordedCriteriaHash": "7a5a9a35c8334fee463ce67dc0c86f104fd5e037506d7a8fca3c517bb28f1e8e",
+        "preservedObservationMd5": "92e073c3d9b376d2892e512352bf0bcb",
+        "status": "definition-unavailable",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "grading-integrity",
+            "revision": 6,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": null,
+        "ratedCriterionCount": 6,
+        "missingCriterionKeys": [],
+        "error": "rubric revision 6 not found; current revision is 10"
+      },
+      {
+        "id": "EI-21466613031514520",
+        "rubricRef": "grading-integrity",
+        "recordedRevision": null,
+        "recordedCriteriaHash": null,
+        "preservedObservationMd5": "4004c2818174eb074e71e3ee42ce0f8f",
+        "status": "revision-not-recorded",
+        "reason": "No historical revision inferred from current rubric."
+      },
+      {
+        "id": "EI-22666371668863736",
+        "rubricRef": "grading-integrity",
+        "recordedRevision": 4,
+        "recordedCriteriaHash": "4d8853cb8ca40ff2abd732d278eb1d46812f090d62cf22da201afdffbb58d24f",
+        "preservedObservationMd5": "891e1bbf1ef3e97fafac45ae268ffb6d",
+        "status": "definition-unavailable",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "grading-integrity",
+            "revision": 4,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": null,
+        "ratedCriterionCount": 6,
+        "missingCriterionKeys": [],
+        "error": "rubric revision 4 not found; current revision is 10"
+      },
+      {
+        "id": "EI-24663429030124768",
+        "rubricRef": "grading-integrity",
+        "recordedRevision": 7,
+        "recordedCriteriaHash": "7342c560581dda4ae6bdb99e61ba5b0eaf34f3adafedf6dd2e81e7a755a3a875",
+        "preservedObservationMd5": "4e68227e73e75e268320d0bb1999270e",
+        "status": "definition-unavailable",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "grading-integrity",
+            "revision": 7,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": null,
+        "ratedCriterionCount": 6,
+        "missingCriterionKeys": [],
+        "error": "rubric revision 7 not found; current revision is 10"
+      },
+      {
+        "id": "EI-24418118475349767",
+        "rubricRef": "grading-integrity",
+        "recordedRevision": 7,
+        "recordedCriteriaHash": "7342c560581dda4ae6bdb99e61ba5b0eaf34f3adafedf6dd2e81e7a755a3a875",
+        "preservedObservationMd5": "5d40e55d0c1648dd2dafd0e2fb3ec51b",
+        "status": "definition-unavailable",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "grading-integrity",
+            "revision": 7,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": null,
+        "ratedCriterionCount": 6,
+        "missingCriterionKeys": [],
+        "error": "rubric revision 7 not found; current revision is 10"
+      },
+      {
+        "id": "EI-25211690941109638",
+        "rubricRef": "grading-integrity",
+        "recordedRevision": 10,
+        "recordedCriteriaHash": "ebcc5c8c7861dd56211f08abcbbe9a30ea6db2272d6f2e816f507c1434a7d7a1",
+        "preservedObservationMd5": "97c93aa486be11ed3f0bce4142527f58",
+        "status": "verified-definition-hash-and-keys",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "grading-integrity",
+            "revision": 10,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": "ebcc5c8c7861dd56211f08abcbbe9a30ea6db2272d6f2e816f507c1434a7d7a1",
+        "ratedCriterionCount": 6,
+        "missingCriterionKeys": [],
+        "error": null
+      },
+      {
+        "id": "EI-24834357917042015",
+        "rubricRef": "grading-integrity",
+        "recordedRevision": 10,
+        "recordedCriteriaHash": "ebcc5c8c7861dd56211f08abcbbe9a30ea6db2272d6f2e816f507c1434a7d7a1",
+        "preservedObservationMd5": "a5d95fdce601fb273ba68c4ce3fc9034",
+        "status": "verified-definition-hash-and-keys",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "grading-integrity",
+            "revision": 10,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": "ebcc5c8c7861dd56211f08abcbbe9a30ea6db2272d6f2e816f507c1434a7d7a1",
+        "ratedCriterionCount": 6,
+        "missingCriterionKeys": [],
+        "error": null
+      },
+      {
+        "id": "EI-20286998436959251",
+        "rubricRef": "acceptance-owner-visibility-provenance-2026-08-11",
+        "recordedRevision": null,
+        "recordedCriteriaHash": null,
+        "preservedObservationMd5": "a3f04fcc29ce058604d95a7e1073f6d8",
+        "status": "revision-not-recorded",
+        "reason": "No historical revision inferred from current rubric."
+      },
+      {
+        "id": "EI-24105474043042410",
+        "rubricRef": "accept-identities-v1-m1-2026-09-04",
+        "recordedRevision": 10,
+        "recordedCriteriaHash": "7b526e0ceb8ac93bd626361dc3c4a2c617b790f935ad94ed96a7467b9f10f867",
+        "preservedObservationMd5": "3a7945fdb49605709f66f7a5ada915bf",
+        "status": "definition-unavailable",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "accept-identities-v1-m1-2026-09-04",
+            "revision": 10,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": null,
+        "ratedCriterionCount": 8,
+        "missingCriterionKeys": [],
+        "error": "rubric revision 10 not found; current revision is 11"
+      },
+      {
+        "id": "EI-25234245879926494",
+        "rubricRef": "acceptance-pot-review-integration-mode-2026-10-05",
+        "recordedRevision": 6,
+        "recordedCriteriaHash": "a8c2cf0b849f7f4ff92faf591e1d0db5f8d8f06d38a59485be05ca2f7744cf27",
+        "preservedObservationMd5": "c34dbd87d575a909b301d3856e122a56",
+        "status": "verified-definition-hash-and-keys",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "acceptance-pot-review-integration-mode-2026-10-05",
+            "revision": 6,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": "a8c2cf0b849f7f4ff92faf591e1d0db5f8d8f06d38a59485be05ca2f7744cf27",
+        "ratedCriterionCount": 5,
+        "missingCriterionKeys": [],
+        "error": null
+      },
+      {
+        "id": "EI-24012718741419990",
+        "rubricRef": "acceptance-generic-acceptance-routing-and-live-plan-agent-brief-2026-09-20",
+        "recordedRevision": 4,
+        "recordedCriteriaHash": "a384fd5ec550f4b64035f988717c17496dae1bdb2fa64da6332e26448f22da18",
+        "preservedObservationMd5": "5fa67ca75f2bc31ce8d09aa7e09d6c79",
+        "status": "definition-unavailable",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "acceptance-generic-acceptance-routing-and-live-plan-agent-brief-2026-09-20",
+            "revision": 4,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": null,
+        "ratedCriterionCount": 8,
+        "missingCriterionKeys": [],
+        "error": "rubric revision 4 exists, but its immutable snapshot could not be projected. If this is a first-party exact-current-body legacy chain, preview rubrics:repair with dryRun:true. This server is running build d740fc3802, started 40min ago. For the current source tree, retry this call against the Papercusp staging operator at :3170 (with ptool, pass --url=http://127.0.0.1:3170 explicitly)."
+      },
+      {
+        "id": "EI-21490542425672338",
+        "rubricRef": "acceptance-agentic-plan-template-direct-dispatch-2026-08-25",
+        "recordedRevision": null,
+        "recordedCriteriaHash": null,
+        "preservedObservationMd5": "81e876c31fc3eda66ea62f0295641905",
+        "status": "revision-not-recorded",
+        "reason": "No historical revision inferred from current rubric."
+      },
+      {
+        "id": "EI-22645193169518514",
+        "rubricRef": "acceptance-bar-reporting-layer-repairs-2026-09-07",
+        "recordedRevision": 9,
+        "recordedCriteriaHash": "caae76655ed213b83492f45822d09949e1b9c49132a8c226ee4811606c38d8b0",
+        "preservedObservationMd5": "51a285db0c216bb93baa675eea8b2a5b",
+        "status": "definition-unavailable",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "acceptance-bar-reporting-layer-repairs-2026-09-07",
+            "revision": 9,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": null,
+        "ratedCriterionCount": 5,
+        "missingCriterionKeys": [],
+        "error": "rubric revision 9 not found; current revision is 10"
+      },
+      {
+        "id": "EI-25273009076859453",
+        "rubricRef": "spec-test-adequacy",
+        "recordedRevision": 7,
+        "recordedCriteriaHash": "234b776ac3e5d7ba59644436e7d6a5c8a7afb69a3e62bbbdb2dacffa8a9382bb",
+        "preservedObservationMd5": "bf6263cc2a5a3f44b13b26c4532dbc6f",
+        "status": "verified-definition-hash-and-keys",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "spec-test-adequacy",
+            "revision": 7,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": "234b776ac3e5d7ba59644436e7d6a5c8a7afb69a3e62bbbdb2dacffa8a9382bb",
+        "ratedCriterionCount": 9,
+        "missingCriterionKeys": [],
+        "error": null
+      },
+      {
+        "id": "EI-22481216785685819",
+        "rubricRef": "spec-test-adequacy",
+        "recordedRevision": 2,
+        "recordedCriteriaHash": "87b80c2c4fb22bd1a1988a7bdb7cf6d91efbba25317e28fb86488dce3c070896",
+        "preservedObservationMd5": "af2922e43be795d5edc1abf88162563e",
+        "status": "definition-unavailable",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "spec-test-adequacy",
+            "revision": 2,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": null,
+        "ratedCriterionCount": 8,
+        "missingCriterionKeys": [],
+        "error": "rubric revision 2 not found; current revision is 8"
+      },
+      {
+        "id": "EI-21855076972082927",
+        "rubricRef": "work-on-everything-stewardship-health",
+        "recordedRevision": 12,
+        "recordedCriteriaHash": null,
+        "preservedObservationMd5": "011a07c094405f4c4b1872c5aa631ab8",
+        "status": "definition-unavailable",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "work-on-everything-stewardship-health",
+            "revision": 12,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": null,
+        "ratedCriterionCount": 14,
+        "missingCriterionKeys": [],
+        "error": "rubric revision 12 not found; current revision is 45"
+      },
+      {
+        "id": "EI-25243349962512285",
+        "rubricRef": "spec-test-adequacy",
+        "recordedRevision": 6,
+        "recordedCriteriaHash": "267c544db36701666b04d733144ec0138c31f35072bb5d2b399e4d823f7261b8",
+        "preservedObservationMd5": "650cbeb0b9db56636b751fcba64fdbee",
+        "status": "verified-definition-hash-and-keys",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "spec-test-adequacy",
+            "revision": 6,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": "267c544db36701666b04d733144ec0138c31f35072bb5d2b399e4d823f7261b8",
+        "ratedCriterionCount": 9,
+        "missingCriterionKeys": [],
+        "error": null
+      },
+      {
+        "id": "EI-24889354363349578",
+        "rubricRef": "spec-test-adequacy",
+        "recordedRevision": 6,
+        "recordedCriteriaHash": "267c544db36701666b04d733144ec0138c31f35072bb5d2b399e4d823f7261b8",
+        "preservedObservationMd5": "b0138aedf027f8e9fbfeedefdf18db81",
+        "status": "verified-definition-hash-and-keys",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "spec-test-adequacy",
+            "revision": 6,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": "267c544db36701666b04d733144ec0138c31f35072bb5d2b399e4d823f7261b8",
+        "ratedCriterionCount": 9,
+        "missingCriterionKeys": [],
+        "error": null
+      },
+      {
+        "id": "EI-25260689388484813",
+        "rubricRef": "spec-test-adequacy",
+        "recordedRevision": 6,
+        "recordedCriteriaHash": "267c544db36701666b04d733144ec0138c31f35072bb5d2b399e4d823f7261b8",
+        "preservedObservationMd5": "3be5300066a655305efcebddeb4d2e93",
+        "status": "verified-definition-hash-and-keys",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "spec-test-adequacy",
+            "revision": 6,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": "267c544db36701666b04d733144ec0138c31f35072bb5d2b399e4d823f7261b8",
+        "ratedCriterionCount": 9,
+        "missingCriterionKeys": [],
+        "error": null
+      },
+      {
+        "id": "EI-23197288124817662",
+        "rubricRef": "spec-quality",
+        "recordedRevision": 2,
+        "recordedCriteriaHash": "48aa7893d0f967fa65e3e6943872627af4ff1d7b61b517141468437e92798a97",
+        "preservedObservationMd5": "fa1ba04febf889ed1cb7c7595a000fdc",
+        "status": "definition-unavailable",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "spec-quality",
+            "revision": 2,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": null,
+        "ratedCriterionCount": 8,
+        "missingCriterionKeys": [],
+        "error": "rubric revision 2 not found; current revision is 5"
+      },
+      {
+        "id": "EI-24935367584651802",
+        "rubricRef": "spec-quality",
+        "recordedRevision": 4,
+        "recordedCriteriaHash": "48aa7893d0f967fa65e3e6943872627af4ff1d7b61b517141468437e92798a97",
+        "preservedObservationMd5": "f8a8aa27b308b5310fd0d17e4039e93e",
+        "status": "verified-definition-hash-and-keys",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "spec-quality",
+            "revision": 4,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": "48aa7893d0f967fa65e3e6943872627af4ff1d7b61b517141468437e92798a97",
+        "ratedCriterionCount": 8,
+        "missingCriterionKeys": [],
+        "error": null
+      },
+      {
+        "id": "EI-25422879426467680",
+        "rubricRef": "spec-test-adequacy",
+        "recordedRevision": 8,
+        "recordedCriteriaHash": "2a04bba7eaa9b0b41b5fad753c99acc7df965b9d99bdfce73aa7e5f1dad06955",
+        "preservedObservationMd5": "8642c3b95828a37e110e482ca199dba4",
+        "status": "verified-definition-hash-and-keys",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "spec-test-adequacy",
+            "revision": 8,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": "2a04bba7eaa9b0b41b5fad753c99acc7df965b9d99bdfce73aa7e5f1dad06955",
+        "ratedCriterionCount": 9,
+        "missingCriterionKeys": [],
+        "error": null
+      },
+      {
+        "id": "EI-24556916218866086",
+        "rubricRef": "spec-test-adequacy",
+        "recordedRevision": 6,
+        "recordedCriteriaHash": "267c544db36701666b04d733144ec0138c31f35072bb5d2b399e4d823f7261b8",
+        "preservedObservationMd5": "6c4249c505e9e321f4c7e937a4d501b5",
+        "status": "verified-definition-hash-and-keys",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "spec-test-adequacy",
+            "revision": 6,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": "267c544db36701666b04d733144ec0138c31f35072bb5d2b399e4d823f7261b8",
+        "ratedCriterionCount": 9,
+        "missingCriterionKeys": [],
+        "error": null
+      },
+      {
+        "id": "EI-24042557046831821",
+        "rubricRef": "spec-test-adequacy",
+        "recordedRevision": 3,
+        "recordedCriteriaHash": "267c544db36701666b04d733144ec0138c31f35072bb5d2b399e4d823f7261b8",
+        "preservedObservationMd5": "fcb4d3eac7d96beaceba4903795230c1",
+        "status": "definition-unavailable",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "spec-test-adequacy",
+            "revision": 3,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": null,
+        "ratedCriterionCount": 9,
+        "missingCriterionKeys": [],
+        "error": "rubric revision 3 not found; current revision is 8"
+      },
+      {
+        "id": "EI-24641893003245658",
+        "rubricRef": "spec-test-adequacy",
+        "recordedRevision": 6,
+        "recordedCriteriaHash": "267c544db36701666b04d733144ec0138c31f35072bb5d2b399e4d823f7261b8",
+        "preservedObservationMd5": "d20fbf9b7d03441084d19ba971c8ff27",
+        "status": "verified-definition-hash-and-keys",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "spec-test-adequacy",
+            "revision": 6,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": "267c544db36701666b04d733144ec0138c31f35072bb5d2b399e4d823f7261b8",
+        "ratedCriterionCount": 9,
+        "missingCriterionKeys": [],
+        "error": null
+      },
+      {
+        "id": "EI-24786851753384882",
+        "rubricRef": "work-on-everything-stewardship-health",
+        "recordedRevision": 34,
+        "recordedCriteriaHash": "d82da8743d4e642dd0bb989a281a65a1084e09e53eba160b18890c25eab5ecbc",
+        "preservedObservationMd5": "230fce377768f31a968194ee3c699f9b",
+        "status": "verified-definition-hash-and-keys",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "work-on-everything-stewardship-health",
+            "revision": 34,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": "d82da8743d4e642dd0bb989a281a65a1084e09e53eba160b18890c25eab5ecbc",
+        "ratedCriterionCount": 15,
+        "missingCriterionKeys": [],
+        "error": null
+      },
+      {
+        "id": "EI-12240",
+        "rubricRef": "pot-coordination-health",
+        "recordedRevision": null,
+        "recordedCriteriaHash": null,
+        "preservedObservationMd5": "67bc73ab6d507c0e4cbf5c4b2252822c",
+        "status": "revision-not-recorded",
+        "reason": "No historical revision inferred from current rubric."
+      },
+      {
+        "id": "EI-13586",
+        "rubricRef": "pot-coordination-health",
+        "recordedRevision": null,
+        "recordedCriteriaHash": null,
+        "preservedObservationMd5": "41a59bd04ec24b54378eb6c3a58162a1",
+        "status": "revision-not-recorded",
+        "reason": "No historical revision inferred from current rubric."
+      },
+      {
+        "id": "EI-24838919318051505",
+        "rubricRef": "spec-test-adequacy",
+        "recordedRevision": 6,
+        "recordedCriteriaHash": "267c544db36701666b04d733144ec0138c31f35072bb5d2b399e4d823f7261b8",
+        "preservedObservationMd5": "f92be8a274786e9ac175f2bf5057594c",
+        "status": "verified-definition-hash-and-keys",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "spec-test-adequacy",
+            "revision": 6,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": "267c544db36701666b04d733144ec0138c31f35072bb5d2b399e4d823f7261b8",
+        "ratedCriterionCount": 9,
+        "missingCriterionKeys": [],
+        "error": null
+      },
+      {
+        "id": "EI-25357572568566760",
+        "rubricRef": "spec-test-adequacy",
+        "recordedRevision": 8,
+        "recordedCriteriaHash": "2a04bba7eaa9b0b41b5fad753c99acc7df965b9d99bdfce73aa7e5f1dad06955",
+        "preservedObservationMd5": "3f9b3b9593fec9c1c94545df8a747169",
+        "status": "verified-definition-hash-and-keys",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "spec-test-adequacy",
+            "revision": 8,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": "2a04bba7eaa9b0b41b5fad753c99acc7df965b9d99bdfce73aa7e5f1dad06955",
+        "ratedCriterionCount": 9,
+        "missingCriterionKeys": [],
+        "error": null
+      },
+      {
+        "id": "EI-25448754251777562",
+        "rubricRef": "spec-quality",
+        "recordedRevision": 5,
+        "recordedCriteriaHash": "efc99b9273848a8132ad856be9b86d98674d845d80f974f012e015ef91c0240b",
+        "preservedObservationMd5": "2aeb8d3e0539b5107ad35e799e49d622",
+        "status": "verified-definition-hash-and-keys",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "spec-quality",
+            "revision": 5,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": "efc99b9273848a8132ad856be9b86d98674d845d80f974f012e015ef91c0240b",
+        "ratedCriterionCount": 8,
+        "missingCriterionKeys": [],
+        "error": null
+      },
+      {
+        "id": "EI-24853302448541364",
+        "rubricRef": "work-on-everything-stewardship-health",
+        "recordedRevision": 37,
+        "recordedCriteriaHash": "efc0a3f8b9fbd94940d4a0ef846562b6bbef74fc78415a70b55cd6fd7af9c0d6",
+        "preservedObservationMd5": "f5bfe3cd4160124a549e6048ecfeacdb",
+        "status": "verified-definition-hash-and-keys",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "work-on-everything-stewardship-health",
+            "revision": 37,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": "efc0a3f8b9fbd94940d4a0ef846562b6bbef74fc78415a70b55cd6fd7af9c0d6",
+        "ratedCriterionCount": 15,
+        "missingCriterionKeys": [],
+        "error": null
+      },
+      {
+        "id": "EI-24748743490566923",
+        "rubricRef": "spec-test-adequacy",
+        "recordedRevision": 6,
+        "recordedCriteriaHash": "267c544db36701666b04d733144ec0138c31f35072bb5d2b399e4d823f7261b8",
+        "preservedObservationMd5": "8bfa66abba32e5135e940cd6df81c85b",
+        "status": "verified-definition-hash-and-keys",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "spec-test-adequacy",
+            "revision": 6,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": "267c544db36701666b04d733144ec0138c31f35072bb5d2b399e4d823f7261b8",
+        "ratedCriterionCount": 9,
+        "missingCriterionKeys": [],
+        "error": null
+      },
+      {
+        "id": "EI-25264725733226235",
+        "rubricRef": "spec-test-adequacy",
+        "recordedRevision": 6,
+        "recordedCriteriaHash": "267c544db36701666b04d733144ec0138c31f35072bb5d2b399e4d823f7261b8",
+        "preservedObservationMd5": "b84b387f14c1b4e75f150f2c7d716166",
+        "status": "verified-definition-hash-and-keys",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "spec-test-adequacy",
+            "revision": 6,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": "267c544db36701666b04d733144ec0138c31f35072bb5d2b399e4d823f7261b8",
+        "ratedCriterionCount": 9,
+        "missingCriterionKeys": [],
+        "error": null
+      },
+      {
+        "id": "EI-24675917544849745",
+        "rubricRef": "spec-test-adequacy",
+        "recordedRevision": 6,
+        "recordedCriteriaHash": "267c544db36701666b04d733144ec0138c31f35072bb5d2b399e4d823f7261b8",
+        "preservedObservationMd5": "b746c73374af528d3849f192622f98b1",
+        "status": "verified-definition-hash-and-keys",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "spec-test-adequacy",
+            "revision": 6,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": "267c544db36701666b04d733144ec0138c31f35072bb5d2b399e4d823f7261b8",
+        "ratedCriterionCount": 9,
+        "missingCriterionKeys": [],
+        "error": null
+      },
+      {
+        "id": "EI-22089613547454936",
+        "rubricRef": "goal-mode-e2e",
+        "recordedRevision": 36,
+        "recordedCriteriaHash": "7bddd58bcfc36ab5a2f066c8f2ba2552080d2047b0ac43cda905c08d23c07d9d",
+        "preservedObservationMd5": "9f9f3378cb5089b298a2038810063217",
+        "status": "definition-unavailable",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "goal-mode-e2e",
+            "revision": 36,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": null,
+        "ratedCriterionCount": 27,
+        "missingCriterionKeys": [],
+        "error": "rubric revision 36 not found; current revision is 83"
+      },
+      {
+        "id": "EI-22672524187380100",
+        "rubricRef": "spec-test-adequacy",
+        "recordedRevision": 2,
+        "recordedCriteriaHash": "87b80c2c4fb22bd1a1988a7bdb7cf6d91efbba25317e28fb86488dce3c070896",
+        "preservedObservationMd5": "9523e598607b753002932e679fb009f5",
+        "status": "definition-unavailable",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "spec-test-adequacy",
+            "revision": 2,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": null,
+        "ratedCriterionCount": 8,
+        "missingCriterionKeys": [],
+        "error": "rubric revision 2 not found; current revision is 8"
+      },
+      {
+        "id": "EI-24824487489698897",
+        "rubricRef": "spec-test-adequacy",
+        "recordedRevision": 6,
+        "recordedCriteriaHash": "267c544db36701666b04d733144ec0138c31f35072bb5d2b399e4d823f7261b8",
+        "preservedObservationMd5": "9c8efeae759244d4a0a4e9bea08e7c7c",
+        "status": "verified-definition-hash-and-keys",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "spec-test-adequacy",
+            "revision": 6,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": "267c544db36701666b04d733144ec0138c31f35072bb5d2b399e4d823f7261b8",
+        "ratedCriterionCount": 9,
+        "missingCriterionKeys": [],
+        "error": null
+      },
+      {
+        "id": "EI-11150",
+        "rubricRef": "pot-coordination-health",
+        "recordedRevision": null,
+        "recordedCriteriaHash": null,
+        "preservedObservationMd5": "752a841c4ffcf9a3142f8ee84dd10ba5",
+        "status": "revision-not-recorded",
+        "reason": "No historical revision inferred from current rubric."
+      },
+      {
+        "id": "EI-21593576119818059",
+        "rubricRef": "work-on-everything-stewardship-health",
+        "recordedRevision": 8,
+        "recordedCriteriaHash": null,
+        "preservedObservationMd5": "02cb62af076497b6efbfd3a1bb44efc3",
+        "status": "definition-unavailable",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "work-on-everything-stewardship-health",
+            "revision": 8,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": null,
+        "ratedCriterionCount": 14,
+        "missingCriterionKeys": [],
+        "error": "rubric revision 8 not found; current revision is 45"
+      },
+      {
+        "id": "EI-2607",
+        "rubricRef": "hive-coordination-health",
+        "recordedRevision": null,
+        "recordedCriteriaHash": null,
+        "preservedObservationMd5": "568dc1c0934baac88196326272e00bf7",
+        "status": "revision-not-recorded",
+        "reason": "No historical revision inferred from current rubric."
+      },
+      {
+        "id": "EI-25272771901391617",
+        "rubricRef": "spec-test-adequacy",
+        "recordedRevision": 7,
+        "recordedCriteriaHash": "234b776ac3e5d7ba59644436e7d6a5c8a7afb69a3e62bbbdb2dacffa8a9382bb",
+        "preservedObservationMd5": "7578ad766bb01539f606ba1a42a02d0c",
+        "status": "verified-definition-hash-and-keys",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "spec-test-adequacy",
+            "revision": 7,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": "234b776ac3e5d7ba59644436e7d6a5c8a7afb69a3e62bbbdb2dacffa8a9382bb",
+        "ratedCriterionCount": 9,
+        "missingCriterionKeys": [],
+        "error": null
+      },
+      {
+        "id": "EI-24805293543141850",
+        "rubricRef": "spec-test-adequacy",
+        "recordedRevision": 6,
+        "recordedCriteriaHash": "267c544db36701666b04d733144ec0138c31f35072bb5d2b399e4d823f7261b8",
+        "preservedObservationMd5": "5195de635a1c2da2d7dd929b17a451c1",
+        "status": "verified-definition-hash-and-keys",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "spec-test-adequacy",
+            "revision": 6,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": "267c544db36701666b04d733144ec0138c31f35072bb5d2b399e4d823f7261b8",
+        "ratedCriterionCount": 9,
+        "missingCriterionKeys": [],
+        "error": null
+      },
+      {
+        "id": "EI-23211811916557156",
+        "rubricRef": "spec-quality",
+        "recordedRevision": 2,
+        "recordedCriteriaHash": "48aa7893d0f967fa65e3e6943872627af4ff1d7b61b517141468437e92798a97",
+        "preservedObservationMd5": "e9416b939dfbec9af796cc2ec2ecb064",
+        "status": "definition-unavailable",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "spec-quality",
+            "revision": 2,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": null,
+        "ratedCriterionCount": 8,
+        "missingCriterionKeys": [],
+        "error": "rubric revision 2 not found; current revision is 5"
+      },
+      {
+        "id": "EI-25340028191432556",
+        "rubricRef": "goal-mode-e2e",
+        "recordedRevision": 60,
+        "recordedCriteriaHash": "3c32370ddf973fb40d56c5f69c93ea6d6a6e68465fb330beb61d57fce780a5c3",
+        "preservedObservationMd5": "741ca3dc1cd7b1058a6cf983383c7dd1",
+        "status": "verified-definition-hash-and-keys",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "goal-mode-e2e",
+            "revision": 60,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": "3c32370ddf973fb40d56c5f69c93ea6d6a6e68465fb330beb61d57fce780a5c3",
+        "ratedCriterionCount": 39,
+        "missingCriterionKeys": [],
+        "error": null
+      },
+      {
+        "id": "EI-23180824621312107",
+        "rubricRef": "spec-quality",
+        "recordedRevision": 2,
+        "recordedCriteriaHash": "48aa7893d0f967fa65e3e6943872627af4ff1d7b61b517141468437e92798a97",
+        "preservedObservationMd5": "a7a394cfa6d29fb80389033a3ef3fc46",
+        "status": "definition-unavailable",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "spec-quality",
+            "revision": 2,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": null,
+        "ratedCriterionCount": 8,
+        "missingCriterionKeys": [],
+        "error": "rubric revision 2 not found; current revision is 5"
+      },
+      {
+        "id": "EI-25342080314868640",
+        "rubricRef": "spec-test-adequacy",
+        "recordedRevision": 8,
+        "recordedCriteriaHash": "2a04bba7eaa9b0b41b5fad753c99acc7df965b9d99bdfce73aa7e5f1dad06955",
+        "preservedObservationMd5": "3f1b4d8c8028c2a016473ef8dece4fd1",
+        "status": "verified-definition-hash-and-keys",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "spec-test-adequacy",
+            "revision": 8,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": "2a04bba7eaa9b0b41b5fad753c99acc7df965b9d99bdfce73aa7e5f1dad06955",
+        "ratedCriterionCount": 9,
+        "missingCriterionKeys": [],
+        "error": null
+      },
+      {
+        "id": "EI-23978948092203030",
+        "rubricRef": "meta-acceptance-rubric",
+        "recordedRevision": 5,
+        "recordedCriteriaHash": "215de0837eaed307004dd8a9dfcf2cff9caaa47b9ee19e3f11bb2c5390a19614",
+        "preservedObservationMd5": "0624b8030c73ea229457e2e65d3958cd",
+        "status": "verified-definition-hash-and-keys",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "meta-acceptance-rubric",
+            "revision": 5,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": "215de0837eaed307004dd8a9dfcf2cff9caaa47b9ee19e3f11bb2c5390a19614",
+        "ratedCriterionCount": 6,
+        "missingCriterionKeys": [],
+        "error": null
+      },
+      {
+        "id": "EI-24212166997040512",
+        "rubricRef": "meta-acceptance-rubric",
+        "recordedRevision": 5,
+        "recordedCriteriaHash": "215de0837eaed307004dd8a9dfcf2cff9caaa47b9ee19e3f11bb2c5390a19614",
+        "preservedObservationMd5": "bc612d460e1c753494cbe76f3cfafe39",
+        "status": "verified-definition-hash-and-keys",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "meta-acceptance-rubric",
+            "revision": 5,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": "215de0837eaed307004dd8a9dfcf2cff9caaa47b9ee19e3f11bb2c5390a19614",
+        "ratedCriterionCount": 6,
+        "missingCriterionKeys": [],
+        "error": null
+      },
+      {
+        "id": "EI-24094461345653287",
+        "rubricRef": "meta-acceptance-rubric",
+        "recordedRevision": 5,
+        "recordedCriteriaHash": "215de0837eaed307004dd8a9dfcf2cff9caaa47b9ee19e3f11bb2c5390a19614",
+        "preservedObservationMd5": "2dfda378876fff5cd9ec295160178687",
+        "status": "verified-definition-hash-and-keys",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "meta-acceptance-rubric",
+            "revision": 5,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": "215de0837eaed307004dd8a9dfcf2cff9caaa47b9ee19e3f11bb2c5390a19614",
+        "ratedCriterionCount": 6,
+        "missingCriterionKeys": [],
+        "error": null
+      },
+      {
+        "id": "EI-22464988899334962",
+        "rubricRef": "meta-acceptance-rubric",
+        "recordedRevision": 5,
+        "recordedCriteriaHash": "215de0837eaed307004dd8a9dfcf2cff9caaa47b9ee19e3f11bb2c5390a19614",
+        "preservedObservationMd5": "1a90d5e1972c4bed31ecf3687578a116",
+        "status": "verified-definition-hash-and-keys",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "meta-acceptance-rubric",
+            "revision": 5,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": "215de0837eaed307004dd8a9dfcf2cff9caaa47b9ee19e3f11bb2c5390a19614",
+        "ratedCriterionCount": 6,
+        "missingCriterionKeys": [],
+        "error": null
+      },
+      {
+        "id": "EI-22028923268983499",
+        "rubricRef": "meta-acceptance-rubric",
+        "recordedRevision": 5,
+        "recordedCriteriaHash": "215de0837eaed307004dd8a9dfcf2cff9caaa47b9ee19e3f11bb2c5390a19614",
+        "preservedObservationMd5": "018e36881f7d365f6b37e0cb9e89856d",
+        "status": "verified-definition-hash-and-keys",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "meta-acceptance-rubric",
+            "revision": 5,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": "215de0837eaed307004dd8a9dfcf2cff9caaa47b9ee19e3f11bb2c5390a19614",
+        "ratedCriterionCount": 6,
+        "missingCriterionKeys": [],
+        "error": null
+      },
+      {
+        "id": "EI-25249715089464988",
+        "rubricRef": "meta-acceptance-rubric",
+        "recordedRevision": 5,
+        "recordedCriteriaHash": "215de0837eaed307004dd8a9dfcf2cff9caaa47b9ee19e3f11bb2c5390a19614",
+        "preservedObservationMd5": "6ccd3ab5407441b1b6f5b7130bebad6a",
+        "status": "verified-definition-hash-and-keys",
+        "read": {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "meta-acceptance-rubric",
+            "revision": 5,
+            "detail": "full"
+          }
+        },
+        "returnedCriteriaHash": "215de0837eaed307004dd8a9dfcf2cff9caaa47b9ee19e3f11bb2c5390a19614",
+        "ratedCriterionCount": 6,
+        "missingCriterionKeys": [],
+        "error": null
+      },
+      {
+        "id": "EI-12154",
+        "rubricRef": "blender-live-drill",
+        "recordedRevision": null,
+        "recordedCriteriaHash": null,
+        "preservedObservationMd5": "3bc64f90f9554e53002fa44b8dbb7e86",
+        "status": "revision-not-recorded",
+        "reason": "No historical revision inferred from current rubric."
+      }
+    ]
+  },
+  "originalReportArchive": {
+    "archive": {
+      "sha256": "193241d0fdfd6db8454aa7011f1c0bed21a4b40f43cae32a2eca381777bf02ff",
+      "bytes": 5865519,
+      "relpath": "sessions/2026/09/20/rollout-2026-09-20T23-55-53-01a0c21b-22cf-76b0-b66a-cb8b162d1da6.jsonl"
+    },
+    "publication": {
+      "line": 1141,
+      "at": "2026-09-21T06:50:13.506Z",
+      "reportId": "rpt_fa10ea78-fa47-42b8-9b14-12464897c4fb",
+      "ok": true,
+      "visibility": "owner",
+      "origin": {
+        "harness_slug": null,
+        "author_owner_id": "su-0e3c7f17-8bc8-473d-899f-8271d393a565",
+        "author_session_ref": "cb63e011-fe5c-4995-988e-51a2d7d042d3"
+      },
+      "bodyBytes": 3983,
+      "inputBytes": 3983,
+      "inputSHA": "da4bcfb49958eb27407c1e2cc937164946bc45d2a673151a604a2c2901c5e243"
+    },
+    "readback": {
+      "line": 1149,
+      "at": "2026-09-21T06:50:18.580Z",
+      "ok": true,
+      "rowOk": true,
+      "visibility": "owner",
+      "reportId": "rpt_fa10ea78-fa47-42b8-9b14-12464897c4fb",
+      "bodyBytes": 3983,
+      "bodySHA": "da4bcfb49958eb27407c1e2cc937164946bc45d2a673151a604a2c2901c5e243"
+    },
+    "publicationEqualsReadback": true,
+    "bodyClaims": {
+      "tablePresent": false,
+      "traceRowCount": 0,
+      "measurementPlanPresent": false,
+      "headings": [
+        "# Expanded review/grading effectiveness audit",
+        "## Scope and method",
+        "## Findings",
+        "## Recommendation",
+        "## Limits"
+      ]
+    },
+    "interpretation": "Historical publication/readback established; current report presence not established; absence OR R7-hidden remains."
+  },
+  "originalReportInterpretation": {
+    "historicalPublication": "ESTABLISHED",
+    "historicalReadback": "ESTABLISHED; exact publication/readback body equality, 3983 bytes.",
+    "currentPresence": "NOT-ESTABLISHED; prior not_found means absent OR R7-hidden.",
+    "access": "Original report owner-only, author su-0e3c7, harness null. No report SQL query, visibility widening, alias, or rubric amendment.",
+    "content": "Archived original is a short narrative audit with Scope, Findings, Recommendation and Limits; no row table or per-sample trace rows. Literal table/trace-section references in R001..R003 are not corroborated by the recovered original body."
+  },
+  "acceptanceScope": {
+    "R003": "PARTIAL. Rubric definition verification resolves one edge for 34 records; disposition/remediation/outcome gaps remain. Every implementation-impact verdict remains NOT-VERIFIED.",
+    "R005": "The frozen revision-3 method grades measurement SPECIFICATION. Existing artifact names windows, watermark, six metrics, rollout stages, recurrence guards and owner. No post-change result claimed; T0 remains NOT-STARTED.",
+    "independentAcceptance": "UNFINISHED; no fresh grader, agent, live-gate action or ship mutation performed."
+  }
+}
