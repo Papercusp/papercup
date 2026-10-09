@@ -106,8 +106,11 @@ async function main() {
       // This journey measures lexical native delivery; real vector/profile behavior
       // is separately covered by the migrated-PG source tests. No fake embedder.
       await indexReport(sql, report, null);
-      const stored = await getReport(sql, workspace, report.reportId, { ownerId: owner });
+      const stored = await getReport(sql, workspace, report.reportId, { ownerId: reportOwner });
       assert.ok(stored?.bodyMd.includes(token), 'canonical report readback must retain the full tail');
+      const otherOwner = reportOwner === owner ? stalledOwner : owner;
+      assert.equal(await getReport(sql, workspace, report.reportId, { ownerId: otherOwner }), null,
+        'owner-private positive controls must deny the other native reader');
       reports.push(report);
       const planSlug = `native-${token}-plan`;
       const docSlug = `native-${token}-procedure`;
