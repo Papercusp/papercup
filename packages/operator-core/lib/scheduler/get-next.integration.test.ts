@@ -323,6 +323,11 @@ describe('get_next — an unaffordable claim ladder fails LOUDLY, never as a dra
     let candidatePhaseStartedWallMs: number | undefined;
     let candidateBeginStartedAtMs: number | undefined;
     let candidateBeginCallbackAtMs: number | undefined;
+    let signalCandidateBeginEntered!: () => void;
+    const candidateBeginEntered = new Promise<void>((resolve) => {
+      signalCandidateBeginEntered = resolve;
+    });
+    const claimBudgetMs = 2_000;
 
     // Observe the transaction-pool acquisition boundary without changing postgres-js query
     // execution or the production scheduler path.
@@ -337,7 +342,10 @@ describe('get_next — an unaffordable claim ladder fails LOUDLY, never as a dra
               activeStep === 'candidate-feature-tier-1' && candidateBeginStartedAtMs === undefined;
             if (isFirstCandidateBegin) candidateBeginStartedAtMs = performance.now();
             const wrapped = async (tx: unknown) => {
-              if (isFirstCandidateBegin) candidateBeginCallbackAtMs = performance.now();
+              if (isFirstCandidateBegin) {
+                candidateBeginCallbackAtMs = performance.now();
+                signalCandidateBeginEntered();
+              }
               return (callback as (tx: unknown) => unknown)(tx);
             };
             return Reflect.apply(begin, target, [wrapped]);
@@ -367,7 +375,7 @@ describe('get_next — an unaffordable claim ladder fails LOUDLY, never as a dra
     const claimOutcome = getNextWorkItem(DEFAULT_CLAIM_SPEC, BEE, {
       harness: H,
       client: observedClient,
-      claimBudgetMs: 2_000,
+      claimBudgetMs,
       onResolutionStep: (step, event) => {
         if (event.phase === 'start') {
           activeStep = step;
@@ -390,31 +398,59 @@ describe('get_next — an unaffordable claim ladder fails LOUDLY, never as a dra
       waitEventType: string | null;
       waitEvent: string | null;
       blockingPids: number[];
+      queryText: string | null;
     };
     let waitSample: WaitSample | undefined;
-    const sampleDeadline = Date.now() + 1_500;
+    let lastActivityRows: WaitSample[] = [];
+    let claimSettled = false;
+    const settledClaim = claimOutcome.then((outcome) => {
+      claimSettled = true;
+      return outcome;
+    });
     try {
-      while (Date.now() < sampleDeadline && !waitSample) {
-        const rows = await db.sql<WaitSample[]>`
+      // Pool acquisition can precede the server-side wait. Start the bounded
+      // sampler only once the transaction callback is entered, then observe any
+      // active statement that the controlled blocker actually blocks.
+      const beginOrSettle = await Promise.race([
+        candidateBeginEntered.then(() => 'began' as const),
+        settledClaim.then(() => 'settled' as const),
+      ]);
+      const sampleDeadline = Date.now() + claimBudgetMs + 500;
+      while (beginOrSettle === 'began' && Date.now() < sampleDeadline && !waitSample && !claimSettled) {
+        lastActivityRows = await db.sql<WaitSample[]>`
           SELECT pid,
                  GREATEST(0, FLOOR(EXTRACT(EPOCH FROM (clock_timestamp() - query_start)) * 1000))::int AS "queryAgeMs",
                  wait_event_type AS "waitEventType",
                  wait_event AS "waitEvent",
-                 pg_blocking_pids(pid) AS "blockingPids"
+                 pg_blocking_pids(pid) AS "blockingPids",
+                 query AS "queryText"
             FROM pg_stat_activity
            WHERE datname = current_database()
              AND pid <> pg_backend_pid()
              AND state = 'active'
-             AND wait_event_type = 'Lock'
-             AND query ILIKE '%harness_shared.goals%'
-             AND query ILIKE '%FOR SHARE%'
         `;
-        const correlated = rows.find((row) => row.blockingPids.includes(blockerPid!));
+        const correlated = lastActivityRows.find((row) => row.blockingPids.includes(blockerPid!));
         if (correlated && correlated.queryAgeMs >= 50) waitSample = correlated;
         else await new Promise((resolve) => setTimeout(resolve, 15));
       }
 
-      const outcome = await claimOutcome;
+      const outcome = await settledClaim;
+      if (!waitSample && process.env.SCHEDULER_TIMEOUT_REPRO === '1') {
+        console.info(`SCHEDULER_TIMEOUT_REPRO_NO_WAIT_SAMPLE ${JSON.stringify({
+          blockerPid,
+          poolAcquireAndBeginMs: candidateBeginStartedAtMs !== undefined && candidateBeginCallbackAtMs !== undefined
+            ? candidateBeginCallbackAtMs - candidateBeginStartedAtMs
+            : null,
+          lastActive: lastActivityRows.slice(0, 5).map((row) => ({
+            pid: row.pid,
+            queryAgeMs: row.queryAgeMs,
+            waitEventType: row.waitEventType,
+            waitEvent: row.waitEvent,
+            blockingPids: row.blockingPids,
+            queryText: row.queryText?.slice(0, 500) ?? null,
+          })),
+        })}`);
+      }
       expect(candidatePhaseStartedAtMs).toEqual(expect.any(Number));
       expect(candidateBeginStartedAtMs).toEqual(expect.any(Number));
       expect(candidateBeginCallbackAtMs).toEqual(expect.any(Number));
@@ -443,6 +479,7 @@ describe('get_next — an unaffordable claim ladder fails LOUDLY, never as a dra
           waitEventType: waitSample?.waitEventType,
           waitEvent: waitSample?.waitEvent,
           blockingPids: waitSample?.blockingPids,
+          queryText: waitSample?.queryText,
           blockerPid,
         })}`);
       }
