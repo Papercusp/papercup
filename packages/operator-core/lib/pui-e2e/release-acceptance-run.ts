@@ -15,6 +15,7 @@ import { execFileSync, spawn, spawnSync, type SpawnOptions } from 'node:child_pr
 import { createHash } from 'node:crypto';
 import { appendFileSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import {
@@ -534,11 +535,26 @@ function preflightRoutedAccountCatalog(real: RealLeg[] | undefined): void {
   }
 }
 
+/** Cold operator children use the workspace package's CommonJS export.
+ * Git checkouts omit its generated dist, even when the dependency snapshot is
+ * complete. Build from this checkout's source before any expensive acceptance
+ * leg, then load the same package specifier the child will use.
+ */
+export function prepareOperatorRuntimePackages(repoRoot = REPO_ROOT): void {
+  const packageRoot = path.join(repoRoot, 'libs/generic/sse');
+  execFileSync(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['run', 'build'], {
+    cwd: packageRoot, stdio: 'pipe', timeout: 60_000,
+  });
+  const requireFromPackage = createRequire(path.join(packageRoot, 'package.json'));
+  requireFromPackage('@papercusp/sse');
+}
+
 export async function runReleaseAcceptance(options: RunOptions): Promise<RunResult> {
   if (process.env.PUI_CAPTURE_BASELINE === '1' || options.real?.some(leg => leg.env?.PUI_CAPTURE_BASELINE === '1')) {
     throw new Error('PUI_CAPTURE_BASELINE=1 captures a pre-fix counterexample and must not be enabled for installed release acceptance; run that historical calibration separately');
   }
   preflightRoutedAccountCatalog(options.real);
+  prepareOperatorRuntimePackages();
   const archive = path.resolve(options.archive);
   const work = options.work ?? mkdtempSync(path.join(tmpdir(), 'pui-release-acceptance-'));
   const archiveSha256 = sha256(archive);
