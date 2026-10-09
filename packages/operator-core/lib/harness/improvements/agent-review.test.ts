@@ -8,6 +8,8 @@ import {
   createImplementationReadiness,
   createVerificationTask,
   deriveWorkItemIntakeStage,
+  evaluateImplementationAcceptance,
+  readImplementationReadiness,
   LEGACY_AGENT_REVIEW_SUBMITTER,
   STRANDED_SWEEP_OWNER,
 } from './agent-review-policy';
@@ -184,6 +186,39 @@ describe('approvalAcceptance — one verification stage, kind-specific checks (P
 
   it('seals a change through proposal review, with no receipt needed', () => {
     expect(approve({ kind: 'change', payload: payloadWith() })?.verification).toEqual({ check: 'proposal-review' });
+  });
+
+  it('keeps a favorable review out of the fixing lane when reproduction is missing, stale or unresolved', async () => {
+    for (const status of ['missing', 'refuted', 'unresolved'] as const) {
+      const h = harness(issue({ kind: 'bug', assignee: 'su-reviewer', payload: payloadWith({
+        ...(status === 'missing' ? {} : { intakeReproduction: { receipt } }),
+        agentReview: { status: 'pending', submittedBy: 'su-author', ledgerIdeaId: 'WI-7', round: 1 },
+      }) }));
+      h.state.ledger = { ideaId: 'WI-7', workItemId: 'WI-7', grade: 5, feedback: null, gradedBy: 'su-reviewer' };
+      h.deps.verifyReproduction = async () => ({ status: status === 'missing' ? 'unresolved' : status,
+        detail: 'target build reproduction unavailable', checkedAt: new Date().toISOString() });
+      expect(await reconcileAgentReviewGrade({ ideaId: 'WI-7', gradedBy: 'su-reviewer' }, h.deps))
+        .toMatchObject({ status: 'revision-requested', changed: true });
+      expect(readImplementationReadiness(h.state.issue.payload)?.status).toBe('not-ready');
+      expect(evaluateImplementationAcceptance(h.state.issue.payload, {
+        kind: h.state.issue.kind, title: h.state.issue.title, summary: h.state.issue.summary,
+      }).state).not.toBe('qualifying');
+      expect(h.deliverRevision).toHaveBeenCalledWith(expect.objectContaining({ to: 'su-author' }));
+    }
+  });
+
+  it('accepts the same favorable review after the current target failure is verified', async () => {
+    const h = harness(issue({ kind: 'bug', assignee: 'su-reviewer', payload: payloadWith({
+      intakeReproduction: { receipt },
+      agentReview: { status: 'pending', submittedBy: 'su-author', ledgerIdeaId: 'WI-7', round: 1 },
+    }) }));
+    h.state.ledger = { ideaId: 'WI-7', workItemId: 'WI-7', grade: 5, feedback: null, gradedBy: 'su-reviewer' };
+    h.deps.verifyReproduction = async () => ({ status: 'verified', detail: 'current target failed', checkedAt: new Date().toISOString() });
+    expect(await reconcileAgentReviewGrade({ ideaId: 'WI-7', gradedBy: 'su-reviewer' }, h.deps))
+      .toMatchObject({ status: 'approved', changed: true });
+    expect(readImplementationReadiness(h.state.issue.payload)?.status).toBe('ready');
+    expect(approvalAcceptance(h.state.issue, { reviewer: 'su-reviewer', submittedBy: 'su-author', round: 1, grade: 5 }))
+      .toMatchObject({ verification: { check: 'reproduction', receipt } });
   });
 });
 

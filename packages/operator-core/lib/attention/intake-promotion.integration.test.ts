@@ -23,7 +23,7 @@ const { claimIssue, createIssue, getIssue, issuesOutLinksMany } = await import('
 const {
   assertIntakeLockPool,
   currentIntakeSourceRevision,
-  defaultIntakePromotionDeps,
+  defaultIntakePromotionDeps: productionIntakePromotionDeps,
   executeIntakeDecision,
   intakePromotionKey,
   isPromotionKeyConflict,
@@ -34,7 +34,7 @@ const {
   defaultReproductionLedgerDeps,
 } = await import('./intake-promotion');
 const { parseIntakeDecision } = await import('./bulk-dispositions');
-const { stampFiledBugReproduction } = await import('./bug-reproduction');
+const { stampFiledBugReproduction, verifyCurrentBugReproductionReceipt } = await import('./bug-reproduction');
 const { createImplementationReadiness, evaluateImplementationAcceptance, readImplementationReadiness, readVerificationTask } =
   await import('../harness/improvements/agent-review-policy');
 const { recordIssueOccurrence } = await import('../issue-occurrence-ledger');
@@ -42,6 +42,9 @@ const { recordIssueOccurrence } = await import('../issue-occurrence-ledger');
 type Decision = import('./bulk-dispositions').BulkIntakeDecision;
 type DecisionInput = import('./bulk-dispositions').BulkIntakeDecisionInput;
 type Deps = import('./intake-promotion').IntakePromotionDeps;
+
+// Real PG locks, writers and ledger reads, with a controlled target checkout build.
+const defaultIntakePromotionDeps = () => productionIntakePromotionDeps({ currentTargetBuild: async () => 'abc1234def5678' });
 
 let db: OrgTestDb;
 
@@ -120,7 +123,11 @@ async function decide(sourceId: string, input: DecisionInput, decidedBy = REVIEW
 }
 
 function exec(sourceId: string, decision: Decision, deps?: Deps, runId = 'run-p006') {
-  return executeIntakeDecision({ sourceId, decision, runId, itemId: `att-${sourceId}` }, deps);
+  return executeIntakeDecision({ sourceId, decision, runId, itemId: `att-${sourceId}` }, {
+    ...(deps ?? defaultIntakePromotionDeps()),
+    verifyReproduction: deps?.verifyReproduction ?? ((receipt) =>
+      verifyCurrentBugReproductionReceipt(receipt, 'abc1234def5678', defaultReproductionLedgerDeps())),
+  });
 }
 
 async function promotedFrom(sourceId: string): Promise<string[]> {
@@ -437,6 +444,37 @@ describe('refusals write nothing', () => {
 // P-013 (D-023 / D-024): a bug is accepted only with a reproduction on the current build.
 describe('bug reproduction receipt', () => {
   const BUILD = 'abc1234def5678';
+
+  it('refuses stale and unresolved target builds on the real promotion transition, including a converged retry', async () => {
+    const cand = await file({ kind: 'bug' });
+    const decision = await decide(cand.id, { disposition: 'promote', reason: 'reproduced', acceptance: FULL_ACCEPTANCE });
+    const withBuild = (build: string | null): Deps => ({
+      ...defaultIntakePromotionDeps(),
+      verifyReproduction: (receipt) => verifyCurrentBugReproductionReceipt(receipt, build, defaultReproductionLedgerDeps()),
+    });
+    for (const build of [null, 'b'.repeat(40)]) {
+      expect(await exec(cand.id, decision, withBuild(build))).toMatchObject({ ok: false, refusal: 'reproduction-unverified' });
+      expect((await payloadOf(cand.id)).intakePromotion).toBeUndefined();
+      expect(evaluateImplementationAcceptance(await payloadOf(cand.id), {
+        kind: cand.kind, title: cand.title, summary: cand.body,
+      }).state).not.toBe('qualifying');
+    }
+    expect(await exec(cand.id, decision, withBuild(BUILD))).toMatchObject({ ok: true, outcome: 'promoted' });
+    expect(await exec(cand.id, decision, withBuild('b'.repeat(40)))).toMatchObject({ ok: false, refusal: 'reproduction-unverified' });
+  });
+
+  it('does not accept a caller-supplied receipt citing a passing or missing test run', async () => {
+    const cand = await file({ kind: 'bug' });
+    const passed = await testRun('pass');
+    for (const id of [passed, 9007199254740990]) {
+      const decision = await decide(cand.id, {
+        disposition: 'promote', reason: 'claimed failure', acceptance: FULL_ACCEPTANCE,
+        reproduction: { kind: 'failing-test', ref: `test_runs:${id}`, buildSha: BUILD },
+      });
+      expect(await exec(cand.id, decision)).toMatchObject({ ok: false, refusal: 'reproduction-unverified' });
+      expect((await payloadOf(cand.id)).intakePromotion).toBeUndefined();
+    }
+  });
 
   async function stampedPayload(ref: string, buildSha = BUILD) {
     const stamp = await stampFiledBugReproduction({ ref, buildSha }, { filedBy: FILER }, defaultReproductionLedgerDeps());

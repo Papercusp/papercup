@@ -37,7 +37,10 @@
  * injected dependency (`executeIntakeDecision`).
  */
 import { isDeepStrictEqual } from 'node:util';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import type { OrgSql } from '../work-items';
+import { loadHarnessRegistry } from '../harness-registry';
 
 // Static on purpose: a lazily `import()`ed DB accessor was observed resolving to two
 // different clients for two concurrent executors (one per first-use import), so their
@@ -54,8 +57,11 @@ import {
 import {
   bugReproductionMissingText,
   readBornVerifiedReproduction,
+  isAcceptedReproductionStatus,
+  verifyCurrentBugReproductionReceipt,
   type BugReproductionReceipt,
   type ReproductionLedgerDeps,
+  type ReproductionVerification,
 } from './bug-reproduction';
 import {
   createIssue,
@@ -136,7 +142,8 @@ export type IntakeExecutionRefusal =
   /** P-008 / D-020 §4: an investigation needs an accountable owner of its next step. */
   | 'investigation-unowned'
   /** P-013 / D-023: a bug promote needs a reproduction receipt (decision or born-verified source). */
-  | 'reproduction-missing';
+  | 'reproduction-missing'
+  | 'reproduction-unverified';
 
 export type IntakeExecutionResult =
   | {
@@ -188,6 +195,8 @@ export interface IntakePromotionDeps {
   /** Heal an own-node row stranded at origin='remote' (true iff healed). Absent ⇒ no heal,
    *  so a unit test without it never reaches PG; the default deps wire the real one. */
   healOwnNodeOrigin?(id: string): Promise<boolean>;
+  /** Resolve the target build and re-check the receipt before authorizing a fixing lane. */
+  verifyReproduction?(receipt: BugReproductionReceipt, source: IntakeWorkItem): Promise<ReproductionVerification>;
   now(): Date;
 }
 
@@ -469,9 +478,27 @@ async function executePromotion(input: IntakeExecutionInput, deps: IntakePromoti
     const targetKind = intakeTargetKind(decision, source);
     const inPlace = source.origin !== 'remote' && !isObservation(source) && source.kind === targetKind;
 
+    // Converged retries must also refuse evidence from an earlier target build.
+    // Investigation tasks remain executable: their job is to obtain this evidence.
+    const checkReproduction = async (): Promise<IntakeExecutionResult | null> => {
+      if (disposition !== 'promote' || targetKind !== 'bug') return null;
+      const reproductionSource = intakeReproductionSourceOf(source);
+      const missing = intakeReproductionRefusal(decision, reproductionSource, source.id);
+      if (missing) return { ok: false, refusal: 'reproduction-missing', detail: missing };
+      const receipt = decision.reproduction ?? reproductionSource.bornVerified;
+      if (!receipt) return { ok: false, refusal: 'reproduction-missing', detail: bugReproductionMissingText(source.id) };
+      const verified = await (deps.verifyReproduction ?? verifyIntakeReproduction)(receipt, source);
+      if (!isAcceptedReproductionStatus(verified.status)) {
+        return { ok: false, refusal: 'reproduction-unverified', detail: `${source.id}: ${verified.detail}` };
+      }
+      return null;
+    };
+
     // ── convergence: this source revision was already promoted (one row per key) ──
     const existing = await deps.findByPromotionKey(key);
     if (existing && existing.id !== source.id) {
+      const reproductionRefusal = await checkReproduction();
+      if (reproductionRefusal) return reproductionRefusal;
       await completeDistinctPromotion(source, existing, input, key, deps);
       return { ok: true, outcome: 'promoted', sourceId: source.id, workItemId: existing.id, created: false, converged: true, mode: 'distinct' };
     }
@@ -482,6 +509,8 @@ async function executePromotion(input: IntakeExecutionInput, deps: IntakePromoti
         summary: source.body,
       });
       if (verdict.state === 'qualifying') {
+        const reproductionRefusal = await checkReproduction();
+        if (reproductionRefusal) return reproductionRefusal;
         return { ok: true, outcome: 'promoted', sourceId: source.id, workItemId: source.id, created: false, converged: true, mode: 'in-place' };
       }
       // Receipt present but the row no longer qualifies: re-seal it under the same key below.
@@ -552,6 +581,8 @@ async function executePromotion(input: IntakeExecutionInput, deps: IntakePromoti
     if (missingReproduction) {
       return { ok: false, refusal: 'reproduction-missing', detail: missingReproduction };
     }
+    const reproductionRefusal = await checkReproduction();
+    if (reproductionRefusal) return reproductionRefusal;
     const reproductionReceipt =
       decision.reproduction ??
       (disposition === 'promote' && targetKind === 'bug' ? reproductionSource.bornVerified : null);
@@ -998,7 +1029,9 @@ export function assertIntakeLockPool(sql: { options?: { max?: unknown } }): void
   }
 }
 
-export function defaultIntakePromotionDeps(): IntakePromotionDeps {
+export function defaultIntakePromotionDeps(options: {
+  currentTargetBuild?: (scope: string) => Promise<string | null>;
+} = {}): IntakePromotionDeps {
   const orgSql = () => getOrgPg().sql;
   return {
     async withLocks(ids, fn) {
@@ -1094,7 +1127,31 @@ export function defaultIntakePromotionDeps(): IntakePromotionDeps {
       return readOccurrenceReporters(sql as unknown as OrgSql, { workspaceId: rows[0].workspace_id, harness: rows[0].harness_slug, id });
     },
     now: () => new Date(),
+    verifyReproduction: (receipt, source) => verifyIntakeReproduction(receipt, source, options.currentTargetBuild),
   };
+}
+
+/** The fixing agent acts on the registered target checkout, never the operator's own HEAD. */
+export async function currentIntakeTargetBuild(scope: string): Promise<string | null> {
+  const slug = scope.startsWith('harness:') ? scope.slice('harness:'.length) : null;
+  if (!slug) return null;
+  try {
+    const project = (await loadHarnessRegistry()).projects.find((entry) => entry.slug === slug);
+    if (!project?.path) return null;
+    const { stdout } = await promisify(execFile)('git', ['-C', project.path, 'rev-parse', 'HEAD'], { timeout: 5000 });
+    const sha = stdout.trim().toLowerCase();
+    return /^[0-9a-f]{40}$/.test(sha) ? sha : null;
+  } catch {
+    return null;
+  }
+}
+
+async function verifyIntakeReproduction(
+  receipt: BugReproductionReceipt,
+  source: IntakeWorkItem,
+  currentBuild = currentIntakeTargetBuild,
+): Promise<ReproductionVerification> {
+  return verifyCurrentBugReproductionReceipt(receipt, await currentBuild(source.scope), defaultReproductionLedgerDeps());
 }
 
 /**

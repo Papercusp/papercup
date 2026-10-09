@@ -77,7 +77,14 @@ import {
   readVerificationTask,
   type VerificationConflictRole,
 } from './agent-review-policy';
-import { readBornVerifiedReproduction } from '../../attention/bug-reproduction';
+import {
+  readBornVerifiedReproduction,
+  readBugReproductionReceipt,
+  isAcceptedReproductionStatus,
+  verifyCurrentBugReproductionReceipt,
+  type BugReproductionReceipt,
+  type ReproductionVerification,
+} from '../../attention/bug-reproduction';
 // The canonical "this session can still act" set, IMPORTED rather than re-derived.
 // Deliberately not a delegation to `rebindIdentity` itself: that migrates ~16 ownerId-keyed
 // surfaces (loop, presence, fleet membership, claims, facts, watermarks) from one sid to
@@ -113,6 +120,7 @@ export interface SubmitterLivenessVerdict {
 }
 
 export interface AgentReviewDeps {
+  verifyReproduction?: (receipt: BugReproductionReceipt, workItem: WorkItem) => Promise<ReproductionVerification>;
   getWorkItem: typeof getWorkItem;
   getWorkItemDetail: typeof getWorkItemDetail;
   mergeWorkItemPayload: typeof mergeWorkItemPayload;
@@ -923,12 +931,28 @@ export async function reconcileAgentReviewGrade(
     return { workItemId: workItem.id, status: 'revision-requested', round: current.round, changed, returnedToSubmitter, ...(woken === undefined ? {} : { woken }) };
   }
 
+  const reproduction = workItem.kind === 'bug' ? readBugReproductionReceipt(approvalReproduction(workItem.payload)) : null;
+  let reproductionRefusal: string | null = null;
+  if (workItem.kind === 'bug') {
+    if (!reproduction) reproductionRefusal = 'Record a current-build reproduction receipt before fixing this bug.';
+    else {
+      const verify = deps.verifyReproduction ?? (async (receipt: BugReproductionReceipt, item: WorkItem) => {
+        const { currentIntakeTargetBuild, defaultReproductionLedgerDeps } = await import('../../attention/intake-promotion');
+        return verifyCurrentBugReproductionReceipt(
+          receipt, await currentIntakeTargetBuild(`harness:${item.harness ?? ''}`), defaultReproductionLedgerDeps(),
+        );
+      });
+      const result = await verify(reproduction, workItem);
+      if (!isAcceptedReproductionStatus(result.status)) reproductionRefusal = result.detail;
+    }
+  }
   const next: AgentReviewState = {
     ...current,
-    status: 'approved',
+    status: reproductionRefusal ? 'revision-requested' : 'approved',
     ...(current.timing ? { timing: {
       ...current.timing,
-      decidedAt: current.status === 'approved' ? current.timing.decidedAt : new Date().toISOString(),
+      decidedAt: current.status === (reproductionRefusal ? 'revision-requested' : 'approved')
+        ? current.timing.decidedAt : new Date().toISOString(),
     } } : {}),
   };
   const changed = current.status !== next.status;
@@ -937,13 +961,13 @@ export async function reconcileAgentReviewGrade(
     {
       agentReview: next,
       implementationReadiness: reviewImplementationReadiness(workItem.payload, {
-        status: 'ready',
-        reason: 'agent-review-approved',
+        status: reproductionRefusal ? 'not-ready' : 'ready',
+        reason: reproductionRefusal ? 'agent-review-revision-requested' : 'agent-review-approved',
         submittedBy: current.submittedBy,
         reviewer: gradedBy,
         round: current.round,
         grade,
-        acceptance: approvalAcceptance(workItem, {
+        acceptance: reproductionRefusal ? undefined : approvalAcceptance(workItem, {
           reviewer: gradedBy,
           submittedBy: current.submittedBy,
           round: current.round,
@@ -958,7 +982,9 @@ export async function reconcileAgentReviewGrade(
   );
   if (!merged) throw new Error(`agent review could not persist approval state on '${workItem.id}'`);
   await ensureComment(workItem,
-    agentReviewRoundComment(approvalComment(current.round, grade, gradedBy), workItem, next, grade, gradedBy),
+    agentReviewRoundComment(reproductionRefusal
+      ? `Agent review round ${current.round}: independent grade ${grade}/5 by ${gradedBy}; fixing remains gated. ${reproductionRefusal}`
+      : approvalComment(current.round, grade, gradedBy), workItem, next, grade, gradedBy),
     gradedBy, deps);
   if (workItem.assignee) {
     const released = await deps.releaseWorkItem(workItem.id, {
@@ -967,7 +993,10 @@ export async function reconcileAgentReviewGrade(
     });
     if (!released) throw new Error(`agent review could not release reviewer claim on '${workItem.id}'`);
   }
-  return { workItemId: workItem.id, status: 'approved', round: current.round, changed };
+  if (reproductionRefusal && changed && current.submittedBy !== LEGACY_AGENT_REVIEW_SUBMITTER) {
+    await deps.deliverRevision({ to: current.submittedBy, workItemId: workItem.id, round: current.round, grade, feedback: reproductionRefusal, gradedBy });
+  }
+  return { workItemId: workItem.id, status: next.status, round: current.round, changed };
 }
 
 export type ClaimAgentReviewReason =
