@@ -188,6 +188,12 @@ export const TOOL_ERROR_CORPUS: readonly ToolErrorCorpusRow[] = [
     note: 'The outer JSON-RPC error code masks the inner expected native-owner refusal in status (EI-25442498776362164)',
   },
   {
+    n: 1, errorCode: null, status: 'error',
+    message: 'native_tool_owner_unsupported_capability',
+    expectedClass: 'caller',
+    note: 'invocation telemetry omitted error_code but retained the exact intentional native-owner transport refusal message (EI-25427418124886749)',
+  },
+  {
     n: 835, errorCode: 'handler_error', status: 'error',
     message: "resolvePlanScope: harness 'shared-hive-test' is not registered in harness_shared.projects in any workspace, so its plan workspace cannot be resolved",
     expectedClass: 'caller',
@@ -382,6 +388,12 @@ export const TOOL_ERROR_CORPUS: readonly ToolErrorCorpusRow[] = [
     message: 'A code:run script reading testing:runs assumed an MCP content/text envelope; testing:runs returned a typed structured root and the script failed before producing its distilled summary.',
     expectedClass: 'caller',
     note: 'the diagnostic code identifies a typed-root field-access error even when the report wording omits the token (EI-25373728404775168)',
+  },
+  {
+    n: 1, errorCode: null, status: 'error',
+    message: 'The normalized direct wrapper tools.mcp__papercusp_su__locks_list was undefined, so attempting it raised a local TypeError before MCP dispatch. tools:find activated locks:list; no server-side locks:list call was made.',
+    expectedClass: 'caller',
+    note: 'the client called an unseeded deferred wrapper before tools:find discovery; no MCP request reached the server (EI-25486226169848485)',
   },
   {
     n: 1, errorCode: 'compile_error', status: 'compile_error',

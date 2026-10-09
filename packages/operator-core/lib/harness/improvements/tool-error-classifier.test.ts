@@ -162,6 +162,18 @@ describe('P-001 R-7 frozen friction correlation controls', () => {
     })).toMatchObject({ class: 'caller', direct: false });
   });
 
+  it('keeps an unseeded direct wrapper miss on the caller path, even when locally reproduced', () => {
+    const message =
+      'The normalized direct wrapper tools.mcp__papercusp_su__locks_list was undefined, so attempting it raised a local TypeError before MCP dispatch. tools:find activated locks:list; no server-side locks:list call was made.';
+    expect(classifyToolError(null, 'error', message)).toBe('caller');
+    expect(normalizeSuspectedToolFailure({
+      toolName: 'locks:list',
+      status: 'error',
+      message,
+      reproduced: true,
+    })).toMatchObject({ class: 'caller', direct: false });
+  });
+
   it('classifies scratch-reference size refusals from the reported error code', () => {
     expect(normalizeSuspectedToolFailure({
       toolName: 'capability:read',
@@ -303,8 +315,11 @@ describe('classifyToolError — real-corpus regression (P-011)', () => {
   it('classifies the intentional native-owner transport capability refusal as caller-side', () => {
     const code = 'native_tool_owner_unsupported_capability';
     expect(classifyToolError(code, 'error', code)).toBe('caller');
-    // The rule is code-specific; similar handler prose remains a real failure.
-    expect(classifyToolError('handler_error', 'error', code)).toBe('structural');
+    // Some invocation rows omit error_code and retain only this exact refusal message.
+    expect(classifyToolError(null, 'error', code)).toBe('caller');
+    expect(classifyToolError(null, 'error', `${code}: unrelated detail`)).toBe('structural');
+    // The message match is exact; similar handler prose remains a real failure.
+    expect(classifyToolError('handler_error', 'error', `${code}: wrapped in unrelated handler prose`)).toBe('structural');
     expect(normalizeSuspectedToolFailure({
       toolName: 'mcp__papercusp_su__tools_find',
       errorCode: code,
@@ -324,6 +339,12 @@ describe('classifyToolError — real-corpus regression (P-011)', () => {
       wrappedNativeOwnerRefusal.message,
     )).toBe('caller');
     expect(normalizeSuspectedToolFailure(wrappedNativeOwnerRefusal)).toMatchObject({ class: 'caller' });
+    expect(normalizeSuspectedToolFailure({
+      toolName: 'coord:inbox',
+      errorCode: null,
+      status: 'error',
+      message: code,
+    })).toMatchObject({ class: 'caller', direct: false });
   });
 
   it('classifies missing UI-client context as caller input, not a structural UI defect', () => {

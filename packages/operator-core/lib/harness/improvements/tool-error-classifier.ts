@@ -185,7 +185,8 @@ export const TOOL_ERROR_RULES: readonly ToolErrorRule[] = [
     class: 'caller',
     errorCodes: ['native_tool_owner_unsupported_capability'],
     statuses: ['native_tool_owner_unsupported_capability'],
-    why: 'the native-owner transport deliberately refuses to forward host-local authenticatedPrincipal capabilities across its RPC boundary; this is an expected transport refusal, not a structural defect in the named tool. Match both the direct code and the status retained beneath an outer JSON-RPC error code',
+    messagePattern: '^native_tool_owner_unsupported_capability$',
+    why: 'the native-owner transport deliberately refuses to forward host-local authenticatedPrincipal capabilities across its RPC boundary; this is an expected transport refusal, not a structural defect in the named tool. Match the direct code, retained status, or exact message when telemetry omitted the code',
   },
   {
     class: 'caller',
