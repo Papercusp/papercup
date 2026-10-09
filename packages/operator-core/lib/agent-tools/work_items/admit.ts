@@ -111,7 +111,7 @@ export default defineTool({
           .describe('Write-back/reaction switches; all on by default, completion moves the source to done.'),
       })
       .optional()
-      .describe("rules-set: match is { field:{ eq|in|contains: value } }, all fields must match."),
+      .describe("rules-set: match is { field:{ eq|in|contains|after: value } }, all fields must match. after requires an ISO timestamp with timezone, e.g. createdAt:{after:<activation timestamp>}, so historical imports remain data."),
     ruleId: z.string().min(1).max(200).optional().describe('rules-disable / rules-apply.'),
     dataSourceId: z.string().min(1).max(200).optional().describe('rules-list filter.'),
     includeDisabled: z.boolean().optional().describe('rules-list: include disabled rules.'),

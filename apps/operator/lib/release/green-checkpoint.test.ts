@@ -19,6 +19,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { linuxProcStateFromStat } from "@papercusp/operator-core/lib/process-identity";
+import { captureGateSuiteVerdictReplay } from "@papercusp/operator-core/lib/release/gate-hygiene-split";
 import {
   runGreenCheckpoint,
   archivePureProofCapture,
@@ -224,6 +225,50 @@ async function commit(
   await git(repo, ["commit", "--no-verify", "-q", "-m", msg]);
   return revParse(repo, "HEAD");
 }
+
+describe('P-014 replay before gate mutation', () => {
+  const prior = () => captureGateSuiteVerdictReplay({ candidate: 'a'.repeat(40), runId: 'prior', measuredAtMs: 1 }, {
+    green: false, infraFault: false, failures: ['product.test.ts'], rootScripts: {}, failingCasesByFile: null,
+  });
+
+  it('a changed historical verdict reaches neither setup, suite, nor promotion', async () => {
+    const snapshot = prior(); snapshot.expected.disposition = 'green';
+    const { deps, calls } = stubDeps(true);
+    deps.readLastSuiteVerdictReplay = async () => snapshot;
+    const result = await runGreenCheckpoint(cfg(), deps, { candidateHint: 'b'.repeat(40) });
+    expect(result).toMatchObject({ advanced: false, green: null, reason: 'infra-inconclusive',
+      candidate: 'b'.repeat(40), suiteReplayCanary: { status: 'mismatch' } });
+    expect(result.failingTests).toBeUndefined();
+    expect(calls).toEqual([]);
+  });
+
+  it('unavailable replay history stays inconclusive without blaming product tests', async () => {
+    const { deps, calls } = stubDeps(true);
+    deps.readLastSuiteVerdictReplay = async () => { throw new Error('history unavailable'); };
+    const result = await runGreenCheckpoint(cfg(), deps);
+    expect(result).toMatchObject({ advanced: false, green: null, suiteReplayCanary: { status: 'unreadable' } });
+    expect(calls).toEqual([]);
+  });
+
+  it('a matched replay permits the ordinary gate and captures its new observations', async () => {
+    await commit('candidate.txt', 'candidate', 'candidate');
+    const { deps, calls } = stubDeps(true);
+    deps.readLastSuiteVerdictReplay = async () => prior();
+    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+    expect(calls).toContain('runGreen');
+    expect(result.suiteReplayCanary?.status).toBe('passed');
+    expect(result.suiteVerdictReplay).toMatchObject({ version: 1, candidate: result.candidate,
+      input: { green: true, failures: [] }, expected: { disposition: 'green' } });
+  });
+
+  it('legacy history bootstraps from a real measurement rather than a canned verdict', async () => {
+    await commit('candidate.txt', 'candidate', 'candidate');
+    const { deps } = stubDeps(true); deps.readLastSuiteVerdictReplay = async () => null;
+    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+    expect(result.suiteReplayCanary?.status).toBe('bootstrap');
+    expect(result.suiteVerdictReplay?.expected.disposition).toBe('green');
+  });
+});
 
 function stubDeps(
   green: boolean,

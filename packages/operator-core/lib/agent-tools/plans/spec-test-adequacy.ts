@@ -614,12 +614,18 @@ function disclosedGapList(value: unknown): string[] {
 }
 
 const EXPLICIT_COVERAGE_LIMITATION_PATTERNS = [
-  /\b(?:leg|portion|part|subset|path|scenario)\b[^.;]{0,60}\b(?:only|just)\b/i,
-  /\b(?:only|just|partially)\b[^.;]{0,100}\b(?:cover(?:s|ed|age)?|test(?:s|ed|ing)?|exercise(?:s|d)?|verify|validate|address(?:es|ed)?|include(?:s|d)?|coverage)\b/i,
+  /\b(?:leg|portion|part|subset|subsection|path|scenario)\b[^.;]{0,60}\b(?:only|just)\b/i,
+  // A mutation can change only the coverage result/field without limiting the
+  // proof. Keep the noun "coverage" restrictive when it describes the proof,
+  // while leaving separate omitted-behavior statements and explicit gap fields
+  // enforceable even when they accompany technical field descriptions.
+  /\b(?:only|just|partially)\b[^.;]{0,100}\b(?:cover(?:s|ed)?|test(?:s|ed|ing)?|exercise(?:s|d)?|verify|validate|address(?:es|ed)?|include(?:s|d)?|coverage(?!\s+(?:result|field|flag|value|record|metadata)\b))\b/i,
   /\b(?:does not|doesn't|did not|didn't|has not|hasn't|is not|isn't|are not|aren't)\b[^.;]{0,60}\b(?:cover|test|exercise|verify|validate|address|include)\b/i,
   /\b(?:outside|out of)\s+(?:the\s+)?(?:scope|coverage)\b|\bnot\s+(?:covered|tested|exercised|verified|validated|addressed)\b/i,
   /\b(?:remains?|is|are)\s+(?:a\s+)?separate\s+(?:requirement|integration|validation|work|proof)\b/i,
   /\b(?:remaining|other|rest|cutover)\b[^.;]{0,100}\b(?:mapped|assigned|tracked|covered|handled|addressed)\b[^.;]{0,60}\b(?:P-\d{3,}|[A-Z][A-Z0-9-]*-\d+)\b/i,
+  /\bnot\s+(?:the\s+)?whole\b[^.;]{0,60}\b(?:proof|behavior|coverage|operational adoption)\b/i,
+  /\b(?:behavior|scope parity|cancellation|retirement|proposal routing)\b[^.;]{0,100}\b(?:requires?|needs?)\b[^.;]{0,60}\b(?:proof|bindings)\b/i,
 ];
 
 /** Only observations with explicit coverage-boundary language count as disclosures. */
@@ -660,7 +666,10 @@ function detailsOf(evidence: SpecEvidenceForAdequacy): AdequacyDetails {
     ...disclosedGapList(topLevelDetails.limitation),
     ...disclosedGapList(topLevelDetails.limitations),
   ];
-  const observationGaps = explicitCoverageLimitations(topLevelDetails.observations);
+  const observationGaps = [
+    ...explicitCoverageLimitations(topLevelDetails.observations),
+    ...explicitCoverageLimitations(topLevelDetails.scopeNote),
+  ];
   if (!nested || typeof nested !== 'object' || Array.isArray(nested)) {
     const disclosedGap = [...new Set([...topLevelGap, ...observationGaps])];
     return disclosedGap.length > 0 ? { disclosedGap } : {};
@@ -1611,8 +1620,10 @@ function appendRatingRerunProbes(
  *  13 — an ordinary passing test run rebound as a counterexample no longer establishes falsifiability.
  *  14 — risk-floor rung metadata is accepted only from a current clause-bound coverage census or clause-bound mutation proof.
  *  15 — structured observations.scope/proofScope/notes disclosures are extracted and block a machine PASS.
+ *  16 — explicit scopeNote coverage gaps are extracted too, including same-proof rebinds.
+ *  17 — technical coverage result/field mechanics do not imply incomplete proof; genuine gaps still block.
  */
-export const SPEC_TEST_ADEQUACY_EVALUATOR_REVISION = 15;
+export const SPEC_TEST_ADEQUACY_EVALUATOR_REVISION = 17;
 
 type MutationTargetClause = Pick<SpecClauseRevision, 'specId' | 'falsifier'>;
 

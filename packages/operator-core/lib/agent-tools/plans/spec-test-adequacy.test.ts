@@ -2311,7 +2311,7 @@ describe('spec-test-adequacy per-clause evaluator', () => {
   });
 
   it('pins the evaluator revision when an adequacy rule changes', () => {
-    expect(SPEC_TEST_ADEQUACY_EVALUATOR_REVISION).toBe(15);
+    expect(SPEC_TEST_ADEQUACY_EVALUATOR_REVISION).toBe(17);
   });
 
   it('requires an explicit fixture-free attestation for executable proof with a null fixture fingerprint', () => {
@@ -3243,6 +3243,80 @@ describe('disclosed-gap criterion (P-002: a disclosure cannot coexist with a mac
       classRef: 'plan-class-feature-ship',
     });
 
+    expect(result.ratings['disclosed-gap'].rating).toBe('not-applicable');
+    expect(result.wouldBlock).not.toContain('disclosed-gap');
+  });
+
+  it.each([
+    'The private overlay forces complete:true/warnings:[] only at the single-source coverage result.',
+    'The mutant only changes the coverage flag; the paired positive retains the full input inventory.',
+    'The negative control only replaces the coverage metadata before the assertions read it.',
+  ])('keeps technical coverage-result mechanics separate from a proof gap: %s', (observations) => {
+    const base = evidence();
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [evidence({ details: { ...base.details, observations } })],
+      classRef: 'plan-class-feature-ship',
+    });
+    expect(result.ratings['disclosed-gap'].rating).toBe('not-applicable');
+    expect(result.wouldBlock).not.toContain('disclosed-gap');
+  });
+
+  it.each([
+    'The proof supplies only unit coverage.',
+    'The mutant only changes the coverage result. The proof only tests partial sources; unauthorized refusal is not covered.',
+  ])('still blocks a real proof limitation beside technical coverage mechanics: %s', (observations) => {
+    const base = evidence();
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [evidence({ details: { ...base.details, observations } })],
+      classRef: 'plan-class-feature-ship',
+    });
+    expect(result.ratings['disclosed-gap'].rating).toBe('fail');
+    expect(result.wouldBlock).toContain('disclosed-gap');
+  });
+
+  it.each([
+    'R3 acceptance floor and verifier independence subsection only. Scope parity, cancellation, retirement and proposal routing require separate current proof.',
+    'R3 receipt validation unit subsection only; other R3 behavior needs independent maintained bindings.',
+    'Scope parity controls; not whole R3 operational adoption.',
+  ])('blocks an explicit scopeNote proof gap: %s', (scopeNote) => {
+    const base = evidence();
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [evidence({ details: { ...base.details, scopeNote } })],
+      classRef: 'plan-class-feature-ship',
+    });
+    expect(result.ratings['disclosed-gap'].rating).toBe('fail');
+    expect(result.ratings['disclosed-gap'].evidence).toContain(scopeNote);
+    expect(result.wouldBlock).toContain('disclosed-gap');
+    expect(result.verdict).toBe('fail');
+  });
+
+  it('preserves a same-proof disclosure moved into scopeNote even without nested adequacy', () => {
+    const base = evidence();
+    const scopeNote = 'Reconnect path only covers the single-subscriber case.';
+    const original = evidence({ id: 23752, createdAt: '2026-10-03T12:53:27.000Z',
+      details: { ...base.details, scopeNote } });
+    const rebound = evidence({ id: 23763, createdAt: '2026-10-03T13:07:22.000Z',
+      details: { scopeNote } });
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(), evidence: [original, rebound], classRef: 'plan-class-feature-ship',
+    });
+    expect(result.ratings['disclosed-gap'].rating).toBe('fail');
+    expect(result.ratings['disclosed-gap'].evidence).toContain(scopeNote);
+  });
+
+  it.each([
+    'Named source/test footprint only; full transitive import graph unmeasured.',
+    'The test only passes when provider credentials are valid and records duration in the run log.',
+    'No independent operational shipment claim; canonical suite and fixture identity retained.',
+  ])('keeps bookkeeping scopeNote separate from an explicit proof gap: %s', (scopeNote) => {
+    const base = evidence();
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(), evidence: [evidence({ details: { ...base.details, scopeNote } })],
+      classRef: 'plan-class-feature-ship',
+    });
     expect(result.ratings['disclosed-gap'].rating).toBe('not-applicable');
     expect(result.wouldBlock).not.toContain('disclosed-gap');
   });

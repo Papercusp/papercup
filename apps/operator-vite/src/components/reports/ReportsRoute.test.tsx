@@ -41,6 +41,27 @@ describe('Reports route', () => {
     expect(screen.getByTestId('markdown-preview').textContent).toBe(report.body_md);
     expect(screen.getByText('writer')).toBeTruthy();
   });
+  it('renders every contract field in the report metadata strip, including kind', () => {
+    fixture.detail = [report];
+    mount('?sel=edition-2');
+    const metadata = screen.getByRole('article').querySelector('.reports-metadata');
+    expect(metadata).not.toBeNull();
+    const fields = Object.fromEntries(Array.from(metadata!.querySelectorAll('div'), row => [
+      row.querySelector('dt')?.textContent ?? '',
+      row.querySelector('dd')?.textContent ?? '',
+    ] as const));
+    expect(fields).toMatchObject({
+      Kind: report.kind,
+      Subject: report.subject.label,
+      'Written by': report.origin.author_owner_id,
+      Pot: report.origin.harness_slug || 'Workspace',
+      Visibility: report.visibility,
+      Published: expect.any(String),
+      Source: report.source,
+      'Report ID': report.report_id,
+    });
+    expect(fields.Published).toBeTruthy();
+  });
   it('writes selection to the URL and preserves filters', async () => {
     fixture.list = [reportSummaryFixture];
     const update = mount('?q=findings');

@@ -52,9 +52,9 @@ describe('chunk surface registry', () => {
       profileColumn: 'embedding_profile',
       modeColumn: 'embedding_mode',
     });
-    // Shared store, and no coverage-gate search source: plans:search is not one.
+    // The same chunks serve general search and its coverage gate.
     expect(surfaceStoreTable(s)).toBe(TEXT_CHUNKS_TABLE);
-    expect(s.searchSource).toBeUndefined();
+    expect(s.searchSource).toBe('plan');
   });
 
   it('operator turns are registered with the D-017 bench arm (P-010)', () => {
@@ -86,7 +86,8 @@ describe('chunk surface registry', () => {
       consult_questions: { maxChunks: 8, chunkMargin: 0.04, decision: 'D-016' },
       operator_turns: { maxChunks: 8, chunkMargin: 0.06, decision: 'D-017' },
     };
-    const shared = CHUNK_SURFACES.filter((s) => surfaceStoreTable(s) === TEXT_CHUNKS_TABLE);
+    // Reports have their own complete-body contract, outside the earlier bench.
+    const shared = CHUNK_SURFACES.filter((s) => surfaceStoreTable(s) === TEXT_CHUNKS_TABLE && s.surface !== 'report');
     expect(shared.map((s) => s.surface).sort()).toEqual(Object.keys(VERDICTS).sort());
     for (const s of shared) {
       const v = VERDICTS[s.surface]!;

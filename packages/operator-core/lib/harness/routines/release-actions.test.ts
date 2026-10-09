@@ -20,6 +20,8 @@ import { GREEN_CHECKPOINT_RESULT_MARKER } from '../../release/checkpoint-log-tag
 import { pipelineName } from '../../release/pipeline-name';
 import { evaluateGateReuseAuditWindow } from '../../release/gate-fire-ledger';
 import { buildTestPassReuseHealth } from '../../release/test-pass-reuse-report';
+import { captureGateSuiteVerdictReplay } from '../../release/gate-hygiene-split';
+import { readLastGateSuiteVerdictReplay } from './release-actions';
 import { auditDraw, formatTestReuseLine, formatTestReuseTotalLine } from '../../../../../scripts/lib/test-pass-reuse.mjs';
 import { execFileSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
@@ -3041,6 +3043,47 @@ describe('green-checkpoint routing skip — EI-17065 escalation auto-clear', () 
  * cause ten days earlier — "only ROUTINE-invoked runs write pipeline events / gate_health" — and
  * both prior attempts reconciled the wrong value instead of removing the wrongness.
  */
+describe('P-014 durable replay history', () => {
+  const target = { workspaceId: 'replay-workspace', installSlug: 'replay-harness' };
+  const snapshot = () => captureGateSuiteVerdictReplay({ candidate: 'a'.repeat(40), runId: 'prior', measuredAtMs: 1 }, {
+    green: false, infraFault: false, failures: Array.from({ length: 25 }, (_, i) => `product-${i}.test.ts`),
+    rootScripts: {}, failingCasesByFile: null,
+  });
+
+  it('stores full replay inputs separately from the bounded display signature', () => {
+    const replay = snapshot();
+    const detail = buildCheckpointDetail({ reason: 'not-green', green: false,
+      failingTests: replay.input.failures, suiteVerdictReplay: replay });
+    expect((detail.failingTests as string[])).toHaveLength(20);
+    expect(detail.suiteVerdictReplay).toEqual(replay);
+  });
+
+  it('loads scoped terminal history and retains the exact measured candidate', async () => {
+    fakeSql.unsafe.mockResolvedValueOnce(Object.assign([{ replay: snapshot() }], { count: 1 }));
+    expect(await readLastGateSuiteVerdictReplay(target)).toEqual(snapshot());
+    const [query, values] = fakeSql.unsafe.mock.calls.at(-1)!;
+    expect(values).toEqual(['replay-workspace', 'replay-harness']);
+    expect(String(query)).toContain("status <> 'decision-pending'");
+    expect(String(query)).toContain("candidateSource");
+    expect(String(query)).toContain('LIMIT 1');
+  });
+
+  it('bootstraps only when no captured row exists', async () => {
+    fakeSql.unsafe.mockResolvedValueOnce(Object.assign([], { count: 0 }));
+    expect(await readLastGateSuiteVerdictReplay(target)).toBeNull();
+  });
+
+  it('refuses corrupt or unsupported latest history instead of falling back to an older success', async () => {
+    fakeSql.unsafe.mockResolvedValueOnce(Object.assign([{ replay: { version: 2 } }], { count: 1 }));
+    await expect(readLastGateSuiteVerdictReplay(target)).rejects.toThrow(/malformed|unsupported/);
+  });
+
+  it('reports failed history reads rather than inventing a missing baseline', async () => {
+    fakeSql.unsafe.mockRejectedValueOnce(new Error('read failed'));
+    await expect(readLastGateSuiteVerdictReplay(target)).rejects.toThrow(/unavailable/);
+  });
+});
+
 describe('WI-4494: recordCheckpointVerdict — the producer records', () => {
   beforeEach(() => {
     appendPipelineEvent.mockClear();

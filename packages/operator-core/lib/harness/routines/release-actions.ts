@@ -1403,6 +1403,31 @@ function boundedTypecheckPreflight(
   };
 }
 
+import { parseGateSuiteVerdictReplay, type GateSuiteVerdictReplay } from '../../release/gate-hygiene-split';
+import { withBoundedTimeout } from '../../bounded-timeout';
+
+/** P-014: reuse append-only verdict detail; never read a mutable live verdict as history. */
+export async function readLastGateSuiteVerdictReplay(target: GateVerdictTarget): Promise<GateSuiteVerdictReplay | null> {
+  const { getOrgPg } = await import('@papercusp/db-org');
+  const result = await withBoundedTimeout(async (signal) => {
+    const query = getOrgPg().sql.unsafe<{ replay: unknown }[]>(`
+    SELECT detail->'suiteVerdictReplay' AS replay FROM harness_shared.pipeline_events
+     WHERE workspace_id = $1 AND install_slug = $2 AND kind = 'green_checkpoint'
+       AND status <> 'decision-pending' AND detail ? 'suiteVerdictReplay'
+       AND COALESCE(detail->>'candidateSource', '') <> 'pinned'
+     ORDER BY created_at DESC, id DESC LIMIT 1`, [target.workspaceId, target.installSlug]);
+    const cancel = () => query.cancel?.();
+    signal.addEventListener('abort', cancel, { once: true });
+    try { return await query; } finally { signal.removeEventListener('abort', cancel); }
+  }, { timeoutMs: 5_000, fallback: null, label: 'gate-suite-replay-history' });
+  if (result.degraded || result.value === null) throw new Error(`measured-suite replay history unavailable (${result.reason ?? 'unreadable'})`);
+  const rows = result.value;
+  if (rows.length === 0) return null;
+  const replay = parseGateSuiteVerdictReplay(rows[0]?.replay);
+  if (!replay) throw new Error('latest measured-suite replay is malformed or has an unsupported version');
+  return replay;
+}
+
 export interface CheckpointVerdict {
   reason: string;
   green?: boolean | null;
@@ -1431,6 +1456,8 @@ export interface CheckpointVerdict {
    *  this verdict. Re-validated with parseTestPassReuseHealth before it is stored, because the
    *  version-skew fallback reads it back out of JSON. ABSENT ⇒ not reported this round. */
   testPassReuse?: TestPassReuseHealth;
+  suiteVerdictReplay?: GateSuiteVerdictReplay;
+  suiteReplayCanary?: { status: 'passed' | 'bootstrap' | 'mismatch' | 'unreadable'; detail: string };
   /** P-013: structural mirror of CheckpointResult.roundPhases — where this round's time went.
    *  Re-validated with parseGateRoundPhases before storage. ABSENT ⇒ not measured. */
   roundPhases?: GateRoundPhases;
@@ -1977,6 +2004,9 @@ export function verdictQualificationAttemptId(
  *  routine run's — the /admin/git timeline must not be able to tell who launched the suite. */
 export function buildCheckpointDetail(v: CheckpointVerdict, fallbackGateFireId?: string): Record<string, unknown> {
   const detail: Record<string, unknown> = { green: v.green ?? null };
+  if (v.suiteVerdictReplay) detail.suiteVerdictReplay = parseGateSuiteVerdictReplay(v.suiteVerdictReplay)
+    ?? { invalid: true, error: 'malformed measured-suite replay' };
+  if (v.suiteReplayCanary) detail.suiteReplayCanary = v.suiteReplayCanary;
   const gateFireId = isGateFireId(v.gateFireId)
     ? v.gateFireId
     : isGateFireId(fallbackGateFireId)

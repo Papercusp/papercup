@@ -133,6 +133,23 @@ describe('matchAdmissionRule', () => {
 });
 
 describe('validateAdmissionMatch', () => {
+  it('enforces an explicit creation-time boundary with offset-aware timestamps', () => {
+    const cutoff = '2026-10-08T12:00:00.000Z';
+    const match = { createdAt: { after: cutoff }, provider: { eq: 'asana' } };
+    expect(() => validateAdmissionMatch(match)).not.toThrow();
+    for (const createdAt of ['2026-10-08T12:00:00.001Z', '2026-10-08T08:00:01-04:00']) {
+      expect(matchAdmissionRule(match, { provider: 'asana', createdAt })).toBe(true);
+    }
+    for (const createdAt of [cutoff, '2026-10-08T11:59:59.999Z', '2026-10-08T08:00:00-04:00',
+      undefined, null, 1791450000, 'yesterday', '2026-10-08T13:00:00', '2026-02-30T13:00:00Z']) {
+      expect(matchAdmissionRule(match, { provider: 'asana', createdAt })).toBe(false);
+    }
+    expect(matchAdmissionRule(match, { provider: 'other', createdAt: '2026-10-08T12:00:01Z' })).toBe(false);
+    expect(matchAdmissionRule({ createdAt: { after: 'bad' } }, { createdAt: '2026-10-08T12:00:01Z' })).toBe(false);
+    for (const after of ['today', 1, null, '2026-10-08T12:00:00', '2026-02-30T12:00:00Z']) {
+      expect(() => validateAdmissionMatch({ createdAt: { after } })).toThrow(/ISO timestamp with timezone/);
+    }
+  });
   it('accepts well-formed matches', () => {
     expect(() => validateAdmissionMatch({ assignees: { contains: 'papercusp-agents' } })).not.toThrow();
     expect(() => validateAdmissionMatch({ state: { in: ['open', 'reopened'] }, priority: { eq: 1 } })).not.toThrow();

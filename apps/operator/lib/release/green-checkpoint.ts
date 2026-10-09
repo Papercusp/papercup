@@ -140,9 +140,14 @@ import { assessFrozenRepairQueuePreflight } from "@papercusp/operator-core/lib/r
 // returned drafts) stays here, deliberately, for the same reason green-stall-watchdog's
 // refire DECISION is separated from its firing.
 import {
-  decidePromotion,
+  decideGateSuite,
+  captureGateSuiteVerdictReplay,
+  checkGateSuiteVerdictReplay,
+  type GateSuiteDecisionInput,
+  type GateSuiteVerdictReplay,
   type HygieneWorkItemDraft,
 } from "@papercusp/operator-core/lib/release/gate-hygiene-split";
+import { runGateCanary } from "@papercusp/operator-core/lib/gates/canary";
 // EI-20063423357086565 — the uncommitted-working-tree reader, reused rather than re-derived:
 // it includes untracked files and deliberately avoids porcelain's whitespace-sensitive
 // column parse. See `failingFilesUncommitted` below.
@@ -854,6 +859,8 @@ export interface CheckpointDeps {
    *  `if (!green)` behaves EXACTLY as it does today (every red holds the gate). That is the
    *  fail-closed direction on purpose — a stub or older dep can never accidentally promote. */
   readRootScripts?(): Record<string, string>;
+  /** P-014: prior measured inputs; supplied by the CLI, never a live test rerun. */
+  readLastSuiteVerdictReplay?(): Promise<GateSuiteVerdictReplay | null>;
   /** EI-18669342433807110: called right before a stale-candidate auto-refire RECURSES (which can
    *  run a full suite again, minutes, before this process returns) — merges a marker into
    *  `gate_health` so a concurrent reader (coord:orient, dev:why) can tell the cached red for
@@ -1642,6 +1649,9 @@ export interface CheckpointResult {
    *  none, so a missing site shows the prior round's numbers as this one's. ABSENT ⇒ the suite
    *  did not run this round (or the runner reported nothing). */
   testPassReuse?: TestPassReuseHealth;
+  /** P-014: exact inputs/decision for the suite interpretation replay canary. */
+  suiteVerdictReplay?: GateSuiteVerdictReplay;
+  suiteReplayCanary?: { status: 'passed' | 'bootstrap' | 'mismatch' | 'unreadable'; detail: string };
   /** P-013: where this round's wall-clock time went — the stamped setup phases, the candidate
    *  suite, and `other` for everything unstamped, against the whole pass's measured time. Built
    *  by runGreenCheckpoint; ABSENT ⇒ the round never reached its candidate suite. */
@@ -13096,7 +13106,7 @@ async function runGreenCheckpointInner(
   // P-013: what this round observed about itself, attached once to every result that carries
   // the suite's verdict. `roundPhaseStamps` is a carrier only: runGreenCheckpoint turns it into
   // `roundPhases` against the whole pass's measured time and drops it from the public result.
-  const roundObservations: Pick<CheckpointResult, "testPassReuse" | "roundPhaseStamps"> = {
+  const roundObservations: Pick<CheckpointResult, "testPassReuse" | "roundPhaseStamps" | "suiteVerdictReplay"> = {
     ...(testPassReuse ? { testPassReuse } : {}),
     roundPhaseStamps: [...setupStretch.stamps],
   };
@@ -13396,22 +13406,17 @@ async function runGreenCheckpointInner(
   //                      buildSelfWatchdogCheckpointResult), not that nothing failed. decidePromotion
   //                      reads an empty list as "nothing failed" and would promote vacuously.
   //   readRootScripts  — absent ⇒ null ⇒ today's behaviour, exactly.
-  const hygieneSplit =
-    green === false &&
-    !infraFault &&
-    (failingTests?.length ?? 0) > 0 &&
-    deps.readRootScripts
-      ? decidePromotion({
-          failures: failingTests ?? [],
-          verdictRendered: true,
-          ctx: {
-            rootScripts: deps.readRootScripts(),
-            // Absent ⇒ every test file stays product. This can only ever ADMIT a file
-            // whose failing cases are ALL registered coverage-class, never hold one.
-            ...(failingCasesByFile ? { failingCasesByFile } : {}),
-          },
-        })
-      : null;
+  const suiteDecisionInput: GateSuiteDecisionInput = {
+    green, infraFault: Boolean(infraFault), failures: failingTests ?? [],
+    rootScripts: green === false && !infraFault && (failingTests?.length ?? 0) > 0 && deps.readRootScripts
+      ? deps.readRootScripts() : null,
+    failingCasesByFile: failingCasesByFile
+      ? [...failingCasesByFile].map(([file, cases]) => [file, [...cases]]) : null,
+  };
+  const { hygieneSplit } = decideGateSuite(suiteDecisionInput);
+  roundObservations.suiteVerdictReplay = captureGateSuiteVerdictReplay({
+    candidate, runId: deps.runId ?? null, measuredAtMs: Date.now(),
+  }, suiteDecisionInput);
   if (!green && !hygieneSplit?.promote) {
     deps.log(
       `candidate ${candidate.slice(0, 8)} is NOT green — ${cfg.releaseRef} stays at ${lastReady?.slice(0, 8) ?? "unset"}`,
@@ -15628,6 +15633,33 @@ export async function runGreenCheckpoint(
   deps: CheckpointDeps,
   opts: CheckpointOpts = {},
 ): Promise<CheckpointResult> {
+  let suiteReplayCanary: CheckpointResult['suiteReplayCanary'];
+  if (deps.readLastSuiteVerdictReplay) {
+    try {
+      const previous = await deps.readLastSuiteVerdictReplay();
+      const replay = previous ? await runGateCanary({
+        id: 'green-checkpoint:measured-suite-replay',
+        describe: 'reproduce the previous measured suite decision with current gate code',
+        run: async () => checkGateSuiteVerdictReplay(previous),
+      }, previous.input.green) : null;
+      suiteReplayCanary = previous && replay
+        ? { status: replay.canaryOk === true ? 'passed' : replay.canaryOk === false ? 'mismatch' : 'unreadable', detail: replay.canaryDetail }
+        : { status: 'bootstrap', detail: 'no recorded measured-suite replay exists yet; the next measured verdict will capture it' };
+      deps.log(`GATE_SUITE_REPLAY status=${suiteReplayCanary.status} ${suiteReplayCanary.detail}`);
+      if (replay && replay.canaryOk !== true) return {
+        advanced: false, candidate: opts.candidate ?? opts.candidateHint ?? '', from: null,
+        green: null, reason: 'infra-inconclusive', summary: suiteReplayCanary.detail,
+        suiteReplayCanary, ...(deps.runId ? { runId: deps.runId } : {}),
+      };
+    } catch (error) {
+      suiteReplayCanary = { status: 'unreadable', detail: `measured-suite replay unavailable: ${error instanceof Error ? error.message : String(error)}` };
+      deps.log(`GATE_SUITE_REPLAY status=unreadable ${suiteReplayCanary.detail}`);
+      return { advanced: false, candidate: opts.candidate ?? opts.candidateHint ?? '', from: null,
+        green: null, reason: 'infra-inconclusive', summary: suiteReplayCanary.detail, suiteReplayCanary,
+        ...(deps.runId ? { runId: deps.runId } : {}),
+      };
+    }
+  }
   const admissionPassStartedAtMs = Date.now();
   const admissionRunStartedAtMs = opts.runStartedAtMs ?? admissionPassStartedAtMs;
   const { candidateSource, diagnostic } = checkpointCandidateProvenance(opts);
@@ -15658,6 +15690,7 @@ export async function runGreenCheckpoint(
     : null;
   let finalResult: CheckpointResult = {
     ...result,
+    ...(suiteReplayCanary ? { suiteReplayCanary } : {}),
     // P-003 / D-002: a result carrying a repair queue always reserves the generic
     // candidate label for the immutable full-gate pin. repairHead remains explicit;
     // no-suite/provenance fields prevent a mutable head from reading as a pin advance.
@@ -22551,6 +22584,16 @@ if (require.main === module) {
         gateFireId,
       );
       flushTerminalEvents = checkpointDeps.flushTerminalEvents;
+      // Same durable verdict target/ledger as normal recording. The reader is memoized for
+      // auto-refires; direct realCheckpointDeps test callers never gain a new ambient DB read.
+      let previousSuiteReplay: Promise<GateSuiteVerdictReplay | null> | undefined;
+      checkpointDeps.readLastSuiteVerdictReplay = () => previousSuiteReplay ??= (async () => {
+        const { gateVerdictTargetFromEnv } = await import('@papercusp/operator-core/lib/release/gate-verdict-target');
+        const target = gateVerdictTargetFromEnv();
+        if (!target) return null;
+        const { readLastGateSuiteVerdictReplay } = await import('@papercusp/operator-core/lib/harness/routines/release-actions');
+        return readLastGateSuiteVerdictReplay(target);
+      })();
       const finalizeNormalResult = createNormalCheckpointFinalizer({
         claimTerminal,
         // emitResult records BEFORE marker/event/exit; capture retains the run lock.

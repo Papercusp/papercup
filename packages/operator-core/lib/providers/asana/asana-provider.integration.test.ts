@@ -827,6 +827,51 @@ describe('admission presets turn matching Asana tasks into work (P-006, R-6)', (
     expect((await preset(sourceId, 'label', 'bug')).backfill).toMatchObject({ admitted: 1 });
     expect((await admitted(sourceId)).map((a) => [a.record, a.kind])).toEqual([[recordOf(sourceId, 't-1'), 'bug']]);
   });
+
+  it('admits a direct new Asana bug after activation once while history and later historical edits remain data', async () => {
+    const sourceId = await createSource();
+    await syncOne(sourceId);
+    const { rule, backfill } = await setAdmissionRuleAndBackfill({
+      workspaceId: WS, dataSourceId: sourceId, title: 'New Engineering bug reports',
+      match: { provider: { eq: 'asana' }, projects: { contains: 'Engineering' }, state: { eq: 'open' },
+        createdAt: { after: '2026-10-02T09:00:00.000Z' } },
+      harness: HARNESS, workKind: 'bug', createdBy: 'asana-new-task-test',
+    }, { sql });
+    expect(backfill).toMatchObject({ scanned: 4, admitted: 0, refused: [] });
+    const fresh = task({ gid: 't-direct-new', name: 'Exported invoice drops the last line item',
+      notes: 'Create an invoice with two items, export PDF: the second item is absent. Both items must appear.',
+      created_at: '2026-10-02T09:01:00.000Z', modified_at: '2026-10-02T09:01:00.000Z',
+      memberships: [{ project: ENG, section: sec(ENG.gid, 'To do') }] });
+    asana.tasks.push(fresh); asana.stories.set(fresh.gid!, []); taskChanged(fresh, 'added');
+    const old = taskById('t-1')!;
+    old.modified_at = '2026-10-02T09:02:00.000Z'; taskChanged(old);
+    // A new completed task is outside this rule even though it passes the time boundary.
+    const closed = task({ ...fresh, gid: 't-new-closed', name: 'Already resolved issue', completed: true });
+    asana.tasks.push(closed); asana.stories.set(closed.gid!, []); taskChanged(closed, 'added');
+    await due(sourceId); await syncOne(sourceId);
+    const expected = [{ record: recordOf(sourceId, fresh.gid!), via: 'rule', rule_id: rule.id,
+      kind: 'bug', agent_work: true, about: 1 }];
+    expect(await admitted(sourceId)).toEqual(expected);
+    const persisted = await tickets(sourceId);
+    expect(persisted.find((r) => r.payload.externalId === fresh.gid)?.payload).toMatchObject({
+      provider: 'asana', createdAt: fresh.created_at, title: fresh.name,
+    });
+    const [work] = await sql<Array<{ state: string; payload: Record<string, unknown> }>>`
+      SELECT w.state, w.payload FROM harness_shared.work_items w
+      JOIN harness_shared.work_admissions a ON a.workspace_id = w.workspace_id AND a.work_item_id = w.feature_id
+      WHERE a.workspace_id = ${WS} AND a.source_key = ${recordOf(sourceId, fresh.gid!)}`;
+    expect(work).toBeDefined();
+    expect(work.state).not.toBe('done');
+    // Replay the provider event, then reconnect from a fresh crawl: the
+    // canonical admission link stays the same and history stays unadmitted.
+    taskChanged(fresh, 'added');
+    await due(sourceId); await syncOne(sourceId);
+    expect(await admitted(sourceId)).toEqual(expected);
+    await sql`UPDATE harness_shared.data_sources SET cursor = '{}'::jsonb, status = 'connected'
+      WHERE id = ${sourceId}::uuid AND workspace_id = ${WS}`;
+    await due(sourceId); await syncOne(sourceId);
+    expect(await admitted(sourceId)).toEqual(expected);
+  });
 });
 
 describe('the host writes back to Asana by capability (D-008)', () => {

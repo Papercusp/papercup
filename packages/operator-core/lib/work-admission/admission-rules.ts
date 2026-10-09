@@ -11,6 +11,7 @@
  *   {"eq": v}        the field equals v
  *   {"in": [v, ...]} the field equals one of the values
  *   {"contains": v}  the field is an array that contains v
+ *   {"after": iso}   a timestamp is strictly later than this explicit activation boundary
  * String comparison is case-insensitive (GitHub logins and repository names are). An unknown
  * operator is refused when the rule is saved, and never matches if one reaches the evaluator.
  *
@@ -18,12 +19,13 @@
  * attributable, idempotent and linked exactly like a person's.
  */
 import { getOrgPg } from '@papercusp/db-org';
+import { z } from 'zod';
 import { admitWorkItem, ADMITTED_KINDS, type AdmitDeps, type AdmitResult, type AdmittedKind } from './admit';
 import type { AdmissionDb } from './admission-sources';
 import { RECORD_SOURCE_KIND } from './record-source';
 import { parseAdmissionLifecycle, resolveAdmissionLifecycle, type AdmissionLifecycle } from './lifecycle-config';
 
-export const ADMISSION_MATCH_OPS = ['eq', 'in', 'contains'] as const;
+export const ADMISSION_MATCH_OPS = ['eq', 'in', 'contains', 'after'] as const;
 export type AdmissionMatchOp = (typeof ADMISSION_MATCH_OPS)[number];
 export type AdmissionMatch = Record<string, Partial<Record<AdmissionMatchOp, unknown>>>;
 
@@ -103,6 +105,12 @@ function scalar(v: unknown): string | null {
   return null;
 }
 
+const admissionTimestampSchema = z.string().datetime({ offset: true });
+function timestamp(value: unknown): number {
+  const parsed = admissionTimestampSchema.safeParse(value);
+  return parsed.success ? Date.parse(parsed.data) : NaN;
+}
+
 /** Throws `admission_rule_invalid:<why>` when a match is malformed. */
 export function validateAdmissionMatch(match: unknown): asserts match is AdmissionMatch {
   if (!match || typeof match !== 'object' || Array.isArray(match)) throw new Error('admission_rule_invalid: match must be an object');
@@ -111,7 +119,7 @@ export function validateAdmissionMatch(match: unknown): asserts match is Admissi
   for (const [field, cond] of entries) {
     if (!field.trim()) throw new Error('admission_rule_invalid: empty field name');
     if (!cond || typeof cond !== 'object' || Array.isArray(cond)) {
-      throw new Error(`admission_rule_invalid: ${field} must map to {eq|in|contains: value}`);
+      throw new Error(`admission_rule_invalid: ${field} must map to {eq|in|contains|after: value}`);
     }
     const ops = Object.keys(cond);
     if (ops.length === 0) throw new Error(`admission_rule_invalid: ${field} has no condition`);
@@ -123,6 +131,10 @@ export function validateAdmissionMatch(match: unknown): asserts match is Admissi
       if (op === 'in') {
         if (!Array.isArray(value) || value.length === 0 || value.some((x) => scalar(x) === null)) {
           throw new Error(`admission_rule_invalid: ${field}.in must be a non-empty array of scalars`);
+        }
+      } else if (op === 'after') {
+        if (!Number.isFinite(timestamp(value))) {
+          throw new Error(`admission_rule_invalid: ${field}.after must be an ISO timestamp with timezone`);
         }
       } else if (scalar(value) === null) {
         throw new Error(`admission_rule_invalid: ${field}.${op} must be a string, number or boolean`);
@@ -185,6 +197,10 @@ export function matchAdmissionRule(match: AdmissionMatch, payload: Record<string
       } else if (op === 'contains') {
         const e = scalar(expected);
         if (!Array.isArray(actual) || e === null || !actual.some((x) => scalar(x) === e)) return false;
+      } else if (op === 'after') {
+        const cutoff = timestamp(expected);
+        const created = timestamp(actual);
+        if (!Number.isFinite(cutoff) || !Number.isFinite(created) || created <= cutoff) return false;
       } else {
         return false;
       }

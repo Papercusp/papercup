@@ -93,6 +93,7 @@ export function ReportsLibrary() {
         {report && <article key={report.report_id}>
           <h2>{report.title}</h2>
           <dl className="reports-metadata">
+            <div><dt>Kind</dt><dd>{report.kind}</dd></div>
             <div><dt>Written by</dt><dd>{report.origin.author_owner_id || 'Unknown author'}</dd></div>
             <div><dt>Pot</dt><dd>{report.origin.harness_slug || 'Workspace'}</dd></div>
             <div><dt>Subject</dt><dd>{report.subject.label || report.subject.ref || report.subject.kind}</dd></div>
