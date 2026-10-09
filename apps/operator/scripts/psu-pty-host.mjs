@@ -6072,6 +6072,74 @@ export function makeHeadlessCodexModelChoiceStateMachine({
   };
 }
 
+export const CODEX_STARTUP_UPDATE_DIALOG_STARTUP_MS = 600_000;
+export const CODEX_STARTUP_UPDATE_DIALOG_ESCAPE_KEY = '\x1b';
+const CODEX_STARTUP_UPDATE_DIALOG_BUFFER_CHARS = 32_768;
+
+export function managedCodexStartupUpdateDialogEnabled(env = process.env) {
+  return String(env?.PAPERCUSP_AGENT ?? '').trim().toLowerCase() === 'codex';
+}
+
+/** Watch the current VT screen for Codex's exact optional update menu. Reading
+ * the rendered screen avoids matching old transcript/scrollback text. The
+ * caller owns the child-identity check and sends the returned Escape once. */
+export function makeManagedCodexStartupUpdateDialogStateMachine({
+  enabled = true,
+  startupMs = CODEX_STARTUP_UPDATE_DIALOG_STARTUP_MS,
+  now = () => Date.now(),
+  screenDims = { rows: 24, cols: 80 },
+} = {}) {
+  const clock = typeof now === 'function' ? now : () => Date.now();
+  const windowMs = positiveNumber(startupMs, CODEX_STARTUP_UPDATE_DIALOG_STARTUP_MS);
+  const startedAt = clock();
+  let phase = enabled ? 'watching' : 'disabled';
+  let observed = '';
+  const snapshot = (action = 'none') => ({ action, phase, active: phase === 'watching' });
+  const visibleRows = () => {
+    const dims = typeof screenDims === 'function' ? screenDims() : screenDims;
+    return renderTerminalScreen(observed, dims)
+      .map((line) => line.replace(/\s+/g, ' ').trim())
+      .filter(Boolean);
+  };
+  const normalizeRow = (line) => line
+    .replace(/^[^A-Za-z0-9]+/, '')
+    .replace(/^\[?\d+\]?\s*[.)]?\s*/, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+  return {
+    observe(chunk, at = clock()) {
+      if (phase !== 'watching') return snapshot();
+      if (at - startedAt >= windowMs) {
+        phase = 'expired';
+        observed = '';
+        return snapshot('expired');
+      }
+      observed = `${observed}${String(chunk ?? '')}`.slice(-CODEX_STARTUP_UPDATE_DIALOG_BUFFER_CHARS);
+      const rows = visibleRows().map(normalizeRow);
+      const heading = rows.findIndex((row) => row.startsWith('update available'));
+      const rowIndex = (label) => rows.findIndex((row, index) => index > heading && row === label);
+      const updateNow = rowIndex('update now');
+      const skip = rowIndex('skip');
+      const skipUntilNextVersion = rowIndex('skip until next version');
+      if (heading < 0 || updateNow <= heading || skip <= updateNow || skipUntilNextVersion <= skip) {
+        return snapshot();
+      }
+      phase = 'complete';
+      observed = '';
+      return snapshot('send-escape');
+    },
+    complete() {
+      if (phase === 'watching') {
+        phase = 'complete';
+        observed = '';
+      }
+      return snapshot();
+    },
+    status: () => ({ phase, active: phase === 'watching', startedAt, expiresAt: startedAt + windowMs }),
+  };
+}
+
 /**
  * Claude can still show its first-run wizard to a headless launch even when
  * the persisted config says onboarding is complete. A human can press Enter
@@ -9189,6 +9257,7 @@ export function hostThroughPty(o) {
   // per-child choice watcher until a real turn is submitted, not merely until
   // the first ready frame is painted.
   let activeHeadlessCodexModelChoice = null;
+  let activeManagedCodexStartupUpdateDialog = null;
   // WI-10005472: the current child's onboarding watcher, so the kickoff gate can
   // tell "composer not seen YET" from "composer never seen in the whole window".
   let activeHeadlessClaudeOnboarding = null;
@@ -10229,6 +10298,7 @@ export function hostThroughPty(o) {
           // The submit CR has reached this child. Do not answer a model menu
           // painted during the asynchronous proof wait as a startup choice.
           activeHeadlessCodexModelChoice?.complete();
+          activeManagedCodexStartupUpdateDialog?.complete();
           if (requireInitialOutput) {
             // WI-10002745: record which readiness gate authorized this first
             // write, timed from when the text bytes were written. A kickoff
@@ -10329,6 +10399,7 @@ export function hostThroughPty(o) {
             break;
           }
           activeHeadlessCodexModelChoice?.complete();
+          activeManagedCodexStartupUpdateDialog?.complete();
           return { delivered: true, attempts };
         }
         // Deferred: the child is still mid-boot / mid-turn. Retry until the
@@ -12574,6 +12645,7 @@ export function hostThroughPty(o) {
           if (msg.mode === 'turn' || msg.mode === 'reset') {
             lastMachineTurnSubmittedAtMs = Date.now();
             activeHeadlessCodexModelChoice?.complete();
+            activeManagedCodexStartupUpdateDialog?.complete();
           }
           machineTurnSubmitted = machineTurn;
         } finally {
@@ -12798,6 +12870,8 @@ export function hostThroughPty(o) {
     // WI-41386: one guard per child — it carries partial-escape state, so a
     // respawn must not inherit the dead child's tail.
     const scrollbackGuard = makeScrollbackGuard();
+    const startupDialogChild = child;
+    const startupDialogChildPid = Number.isInteger(startupDialogChild.pid) ? startupDialogChild.pid : null;
     let bootstrapFailureRecorded = false;
     modelCapacityDetector?.reset();
     if (headlessClaudeOnboardingExpiryTimer) {
@@ -12822,6 +12896,11 @@ export function hostThroughPty(o) {
       enabled: headlessCodexModelChoiceEnabled(env),
     });
     activeHeadlessCodexModelChoice = headlessCodexModelChoice;
+    const managedCodexStartupUpdateDialog = makeManagedCodexStartupUpdateDialogStateMachine({
+      enabled: managedCodexStartupUpdateDialogEnabled(env),
+      screenDims: () => childScreenDims(),
+    });
+    activeManagedCodexStartupUpdateDialog = managedCodexStartupUpdateDialog;
     let codexModelChoiceConfirmTimer = null;
     const confirmExistingModel = (selection) => {
       if (codexModelChoiceConfirmTimer) clearTimeout(codexModelChoiceConfirmTimer);
@@ -12851,6 +12930,33 @@ export function hostThroughPty(o) {
     }
     child.onData((d) => {
       const raw = typeof d === 'string' ? d : String(d);
+      const updateDialog = managedCodexStartupUpdateDialog.observe(raw);
+      if (updateDialog.action === 'send-escape') {
+        const identityMatches = child === startupDialogChild &&
+          (startupDialogChildPid === null || startupDialogChild.pid === startupDialogChildPid);
+        if (!identityMatches || hostCleanedUp || shuttingDown) {
+          appendHostEvent(ownerId, 'codex-startup-update-dialog-escape-skipped', {
+            agent: 'codex',
+            observedChildPid: startupDialogChildPid,
+            currentChildPid: Number.isInteger(child.pid) ? child.pid : null,
+          });
+        } else {
+          try {
+            startupDialogChild.write(CODEX_STARTUP_UPDATE_DIALOG_ESCAPE_KEY);
+            appendHostEvent(ownerId, 'codex-startup-update-dialog-escape-sent', {
+              agent: 'codex',
+              childPid: startupDialogChildPid,
+              startupWindowMs: CODEX_STARTUP_UPDATE_DIALOG_STARTUP_MS,
+            });
+          } catch (error) {
+            appendHostEvent(ownerId, 'codex-startup-update-dialog-escape-failed', {
+              agent: 'codex',
+              childPid: startupDialogChildPid,
+              error: String(error?.message ?? error).slice(0, 200),
+            });
+          }
+        }
+      }
       const codexModelChoice = headlessCodexModelChoice.observe(raw);
       if (codexModelChoice.action === 'select-existing') {
         try {
@@ -13108,6 +13214,7 @@ export function hostThroughPty(o) {
       }
       ownerComposerGate.observe(input);
     }
+    if (input.includes('\r') || input.includes('\n')) activeManagedCodexStartupUpdateDialog?.complete();
     try {
       quotaBlockDetector.observeInput(input);
       child.write(input);

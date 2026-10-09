@@ -114,6 +114,34 @@ describe('staging-first activation guard', () => {
     expect(stagingFirstActivationProblems(parsed)).toEqual([]);
   });
 
+  it.each(['Finalize', 'Define', 'Specify', 'Select', 'Choose', 'Design'])(
+    'allows %s of a deployment contract before dependent source implementation',
+    (action) => {
+      const parsed = plan([
+        `- **P-003** \`todo\` ${action} the pilot scope, threat/deployment/data contract, and implementation estimates.`,
+        '- **P-007** `todo` Implement the data-governance contract on current-build. blocked-by: P-003',
+        '- **P-011** `todo` Deliver the selected connector and exercise separate write authorization on current-build. blocked-by: P-003, P-007',
+      ]);
+
+      expect(stagingFirstActivationProblems(parsed)).toEqual([]);
+    },
+  );
+
+  it.each(
+    ['Finalize', 'Define', 'Specify', 'Select', 'Choose', 'Design'].flatMap((action) =>
+      ['main promotion', 'the deployed host', 'green-checkpoint'].map((releasePlane) => [action, releasePlane]),
+    ),
+  )('retains an actual %s prerequisite on %s', (action, releasePlane) => {
+    const parsed = plan([
+      `- **P-001** \`todo\` ${action} the deployment contract, then verify ${releasePlane}.`,
+      '- **P-002** `todo` Implement data-governance checks on current-build. blocked-by: P-001',
+    ]);
+
+    expect(stagingFirstActivationProblems(parsed)).toEqual([
+      expect.objectContaining({ itemId: 'P-002', code: 'non_final_deployed_main_wait' }),
+    ]);
+  });
+
   it.each(['Audit', 'Review', 'Inspect', 'Document', 'Map'])(
     'retains real release prerequisites in a %s item',
     (action) => {

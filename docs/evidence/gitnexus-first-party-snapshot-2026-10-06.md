@@ -36,7 +36,13 @@ HEAD `88409fd94d`:
 | cross-workspace edges (live) | 2,617 | 1,583 |
 | covers gitnexus live cross edges | 1,582 of 1,583 (99.94%) | — |
 | cross edges gitnexus lacks | 1,035 | — |
-| wall time / peak RSS | 25.4 s / 926 MiB | 177 s / 13.9 GiB (D-026) |
+| import-only producer wall time / peak RSS | 25.4 s / 926 MiB | not measured in this snapshot comparison |
+
+The producer cost above is the import-only measurement recorded in the companion JSON.
+The separate P-017 bake-off measured the whole-tree TypeScript arm at 177 s / 13.9 GiB
+and GitNexus 1.6.9 at 2,948 s / 11.8 GiB (D-026). Those setup workloads are different
+from this import-only producer. An earlier version of this table mislabeled the
+whole-tree TypeScript costs as GitNexus; WI-10007660 corrects that attribution.
 
 Cross-workspace edges are the reason the snapshot exists: they are the undeclared dependencies
 the workspace-level baseline cannot see. The one gitnexus-only live cross edge is
