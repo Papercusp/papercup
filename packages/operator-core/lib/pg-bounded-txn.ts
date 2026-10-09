@@ -316,6 +316,8 @@ export interface BoundedOrgTxnOptions {
    * transaction's statement/lock timeouts.
    */
   acquireTimeoutMs?: number;
+  /** Additional retries after the first measured acquisition deadline; defaults to two. */
+  acquireRetries?: number;
   /** Per-statement cap (PG statement_timeout), ms. Default ORG_TXN_DEFAULT_STATEMENT_TIMEOUT_MS. */
   statementTimeoutMs?: number;
   /** Per-lock-wait cap (PG lock_timeout), ms. Default ORG_TXN_DEFAULT_LOCK_TIMEOUT_MS. */
@@ -402,7 +404,7 @@ export async function boundedOrgTxn<T>(fn: (tx: OrgSql) => Promise<T>, opts: Bou
         // callback may have progressed from BEGIN to a setup statement.
         { ms: acquireMs, get label() { return acquireLabel; }, pool: acquirePool },
       );
-    });
+    }, { retries: opts.acquireRetries });
   } catch (err) {
     const code = (err as { code?: string } | null)?.code;
     if (typeof code === 'string' && CONTENTION_CODES.has(code)) {
