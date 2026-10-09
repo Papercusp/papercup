@@ -1,7 +1,7 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtemp, mkdir, readFile, rm, writeFile, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { hostname } from 'node:os';
@@ -138,6 +138,7 @@ describe('completed isolated runtime certification', () => {
     await rm(artifacts, { recursive: true, force: true }); });
   afterEach(async () => {
     h.measurementRoot = measurementRoot; vi.unstubAllEnvs(); resetRuntimeVintageStore();
+    await rm(join(artifacts, 'operator-driver'), { recursive: true, force: true });
     await Promise.all(['verify-tauri-headless', 'native-journey'].map(harness =>
       rm(join(artifacts, harness, 'retained'), { recursive: true, force: true })));
   });
@@ -238,6 +239,19 @@ describe('completed isolated runtime certification', () => {
     await setupIntegration();
     expect((await read()).currentness.dimensions.environment).toBe('current');
   });
+  it.each(['local', 'mutation-probe', 'ci', 'admin-ui'])('preserves guarded adoption of a NULL-harness lifetime only for an adoptable %s ledger row', async sourceKind => {
+    const state = await setupIntegration();
+    state.execution.harnessSlug = null as any;
+    state.source.harnessSlug = null;
+    (state.row as any).test_run_source = sourceKind;
+    await state.save(true);
+    state.row.environment_fingerprint = createHash('sha256')
+      .update(JSON.stringify((state.execution as any).isolatedRuntimeReceipts)).digest('hex');
+    expect((await read()).currentness.dimensions.environment)
+      .toBe(sourceKind === 'local' || sourceKind === 'mutation-probe' ? 'current' : 'unknown');
+    state.row.test_run_present = false;
+    expect((await read()).currentness.dimensions.environment).toBe('unknown');
+  });
   it('certifies runtime execution when the reporter-derived start follows harness preparation', async () => {
     const state = await setupIntegration();
     // The reporter subtracts rounded duration from its later completion clock.
@@ -310,6 +324,71 @@ describe('completed isolated runtime certification', () => {
     const evidence = await read();
     expect(evidence.currentness).toMatchObject({ overall: 'current', provenance: 'server-measured',
       dimensions: { source: 'current', test: 'current', environment: 'current', testRun: 'current' } });
+  });
+  // EI-25420516419064831: the maintained browser driver wraps the whole
+  // verifier, rather than writing a native journey manifest inside the test.
+  async function setupOperatorE2e() {
+    const state = await setup();
+    const driverRoot = join(artifacts, 'operator-driver');
+    vi.stubEnv('OPERATOR_E2E_HARNESS_EVIDENCE_ROOT', driverRoot);
+    const basis = { ...recipe, completedRuntime: { ...recipe.completedRuntime,
+      journeyHarness: 'operator-e2e-isolated' } };
+    state.row.details.currentMeasurement = basis;
+    state.row.test_run_framework = 'playwright';
+    state.receipt.testedInputs = state.receipt.files;
+    Object.assign(state.verifier, { startedAt: at(0), endedAt: at(50) });
+    const journey = { ...state.journey, harness: 'operator-e2e-isolated',
+      startedAt: at(-2), endedAt: at(52), phases: [
+        { phase: 'preflight', status: 'passed', startedAt: at(-1), endedAt: at(-1) },
+        { phase: 'isolated-suite', status: 'passed', startedAt: at(-1), endedAt: at(51) },
+      ] };
+    const dir = join(driverRoot, journeyRunId);
+    const save = async () => {
+      await state.save();
+      await mkdir(dir, { recursive: true });
+      await writeFile(join(dir, 'result.json'), JSON.stringify(journey));
+    };
+    await save();
+    return { ...state, basis, journey, dir, save };
+  }
+  it('certifies the original operator-e2e-isolated driver at its maintained evidence root without a native manifest', async () => {
+    await setupOperatorE2e();
+    expect((await read()).currentness).toMatchObject({ overall: 'current',
+      dimensions: { source: 'current', test: 'current', environment: 'current', testRun: 'current' } });
+  });
+  it.each(['missing-source', 'wrong-source', 'untested-input', 'unqualified-source', 'missing-witness', 'reused-driver',
+    'wrong-driver', 'missing-suite', 'duplicate-suite', 'suite-before-verifier', 'suite-after-verifier',
+    'reversed-suite', 'reversed-driver', 'driver-outside-root'])(
+    'rejects operator-e2e-isolated custody or lifetime failure: %s', async failure => {
+      const state = await setupOperatorE2e();
+      if (failure === 'wrong-source') state.receipt.files[0].sha256 = 'b'.repeat(64);
+      if (failure === 'untested-input') state.receipt.testedInputs = [];
+      if (failure === 'unqualified-source') state.receipt.testedInputs = state.receipt.files.filter(file => file.dimension === 'test');
+      if (failure === 'missing-witness') delete (state.execution as any).runtimeEnvironmentBefore;
+      if (failure === 'reused-driver') state.journey.reuseFromRunId = 'earlier' as any;
+      if (failure === 'wrong-driver') state.journey.harness = 'foreign';
+      if (failure === 'missing-suite') state.journey.phases.pop();
+      if (failure === 'duplicate-suite') state.journey.phases.push({ ...state.journey.phases[1] });
+      if (failure === 'suite-before-verifier') state.journey.phases[1].startedAt = at(1);
+      if (failure === 'suite-after-verifier') state.journey.phases[1].endedAt = at(49);
+      if (failure === 'reversed-suite') state.journey.phases[1].startedAt = at(52);
+      if (failure === 'reversed-driver') state.journey.startedAt = at(53);
+      await state.save();
+      if (failure === 'missing-source') await rm(join(artifacts, 'verify-tauri-headless', verifierRunId,
+        'phases/prepare/verifier-source-receipt.json'));
+      if (failure === 'driver-outside-root') {
+        await rm(join(state.dir, 'result.json'));
+        await symlink(join(artifacts, 'native-journey', journeyRunId, 'result.json'), join(state.dir, 'result.json'));
+      }
+      expect((await read()).currentness.dimensions.environment).toBe('unknown');
+    });
+  it('retains the original operator driver receipt through pruning and rejects changed retained custody', async () => {
+    const state = await setupOperatorE2e();
+    await measureAndPinRepoFilesEvidenceAtRoot(root, state.basis);
+    await rm(state.dir, { recursive: true });
+    expect((await read()).currentness.dimensions.environment).toBe('current');
+    await writeFile(join(dirname(state.dir), 'retained', journeyRunId, 'result.json'), '{}');
+    expect((await read()).currentness.dimensions.environment).toBe('unknown');
   });
   it('certifies a Playwright native execution only with its original paired witness and journey', async () => {
     const state = await setup();
