@@ -29,12 +29,21 @@ vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
   return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: h.sql }) };
 });
-vi.mock('../../attention/intake-promotion', async (orig) => ({
-  ...(await orig<typeof import('../../attention/intake-promotion')>()),
-  // The private ledger and the acceptance/execution guards share this target
-  // checkout identity; the actual ledger verifier remains in the composed path.
-  currentIntakeTargetBuild: async () => BUILD,
-}));
+vi.mock('../../attention/intake-promotion', async (orig) => {
+  const actual = await orig<typeof import('../../attention/intake-promotion')>();
+  const currentTargetBuild = async () => BUILD;
+  return {
+    ...actual,
+    currentIntakeTargetBuild: currentTargetBuild,
+    // Supply the build adapter at the server wrapper's dependency boundary.
+    // Its lexical default does not read the mocked export; ledger reads stay real.
+    verifyAcceptedWorkItemBugReproduction: (item: Parameters<typeof actual.verifyAcceptedWorkItemBugReproduction>[0]) =>
+      actual.verifyAcceptedWorkItemBugReproduction(item, {
+        currentTargetBuild,
+        ledger: actual.defaultReproductionLedgerDeps(),
+      }),
+  };
+});
 
 const { createIssue, claimIssue } = await import('../../issues-engineer');
 const {
