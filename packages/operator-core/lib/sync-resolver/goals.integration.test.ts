@@ -225,6 +225,24 @@ describe('goal rubric stewardship SQL', () => {
     await insertCard('EI-null-goal', null, regradedAt + 1, card('pass', 'EI-owned-baseline'));
     await insertCard('EI-other-goal', 'distinct-other-goal', regradedAt + 2, card('pass', 'EI-owned-baseline'));
     await insertCard('EI-owned-unsettled', GOAL, regradedAt + 3, card('pass', undefined, 'pending'));
+    // Actual GRADE lifecycle, tracked session, claim and progress are separate
+    // ledgers. A foreign-goal assignment/work item must never enter this read.
+    for (const [owner, goalId] of [['fixture-grader', GOAL], ['foreign-grader', 'distinct-other-goal']]) {
+      await sql`INSERT INTO harness_shared.session_briefs (workspace_id, owner_id, goal_id)
+        VALUES (${WS}, ${owner}, ${goalId})`;
+      await sql`INSERT INTO harness_shared.agent_mode_changes
+        (workspace_id, owner_id, axis_key, new_mode, subject, set_by, changed_at)
+        VALUES (${WS}, ${owner}, 'overlay:grade', 'grade', ${rubric.rubricId}, 'fixture-launcher',
+          ${new Date(baselineAt).toISOString()}::timestamptz)`;
+      await sql`INSERT INTO harness_shared.adv_sessions (workspace_id, mode, coord_owner_id)
+        VALUES (${WS}, 'console', ${owner})`;
+    }
+    await sql`INSERT INTO harness_shared.work_items
+      (feature_id, workspace_id, harness_slug, item_kind, title, status, created_ts, updated_ts,
+       goal_id, taken_by, taken_at, last_progress_at, payload)
+      VALUES ('WI-14', ${WS}, 'papercusp', 'task', 'Claimed grading assignment', 'wip', ${baselineAt}, ${regradedAt},
+        ${GOAL}, 'fixture-grader', ${new Date(repairedAt).toISOString()}::timestamptz,
+        ${new Date(regradedAt).toISOString()}::timestamptz, '{}'::jsonb)`;
     // Canonical scorecard capture writes kind=change and observation lane; the
     // engineer_issues view intentionally excludes synthetic item_kind=observation.
     const seeded = await sql<{ issue_id: string; created_by: string }[]>`
@@ -243,6 +261,12 @@ describe('goal rubric stewardship SQL', () => {
     const reading = await readGoalRubricStewardship({ workspaceId: WS, goalId: GOAL, nowMs: now }, { sql });
     expect(reading.error).toBeNull();
     expect(reading.complete).toBe(true);
+    expect(reading.assignmentsComplete).toBe(true);
+    expect(reading.gradingAssignments).toEqual([expect.objectContaining({ ownerId: 'fixture-grader',
+      subject: rubric.rubricId, launchRef: expect.stringMatching(/^adv-session:/),
+      work: [{ ref: 'WI-14', state: 'wip', claimedAt: new Date(repairedAt).toISOString(),
+        progressAt: new Date(regradedAt).toISOString(), authority: null }],
+    })]);
     expect(reading.cycles).toEqual(expect.arrayContaining([
       expect.objectContaining({ scorecardRef: 'EI-owned-regrade', baselineRef: 'EI-owned-baseline',
         repairRefs: ['WI-12'], status: 'verified' }),
@@ -260,6 +284,13 @@ describe('goal rubric stewardship SQL', () => {
     const rendered = renderGoalPortfolioBrief(portfolio!);
     for (const phrase of ['Maintain rubric coverage', 'Improve rubric quality', 'Grade, improve and re-grade',
       'baseline=EI-owned-baseline', 'regrade=EI-owned-regrade', 'repairs=WI-12']) expect(rendered).toContain(phrase);
+    const { renderGoalHolderWakeState } = await import('../goal-holder-wake-state');
+    const wake = renderGoalHolderWakeState({ read: { goalId: GOAL, portfolio, observedAt: new Date(now).toISOString(),
+      degradedSources: [], agenda: { schemaVersion: 'agent-obligations-v1', evaluatedAt: new Date(now).toISOString(),
+        sourceGeneration: 'fixture', evaluations: [], primary: [], conflicts: [] } },
+      loop: { fireNumber: 1, intervalSec: 300, firedAtMs: now } });
+    for (const phrase of ['Maintain rubric coverage', 'Improve rubric quality', 'Grade, improve and re-grade',
+      'baselineRef', 'supersedes corrects']) expect(wake).toContain(phrase);
     // The preserved baseline remains readable after a re-grade; it is not superseded.
     const { listScorecards } = await import('../scorecards');
     expect((await listScorecards({ issueIds: ['EI-owned-baseline'], limit: 1 })).map(c => c.issueId))
