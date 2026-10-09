@@ -3641,8 +3641,10 @@ function nativeMcpToolAddress(spawn: BuiltSpawnContext): SuNativeToolAddress | n
 /** Normalize only the serializable recovery proof. Principal capability sets
  * remain host-local; the owner revalidates this digest against its current key
  * before any admission replay and binds the current native session context. */
+const NATIVE_TOOL_OWNER_UNSUPPORTED_CAPABILITY = 'native_tool_owner_unsupported_capability';
+
 export function normalizeNativeMcpOwnerSpawn(spawn: BuiltSpawnContext): BuiltSpawnContext {
-  if (spawn.authenticatedPrincipal) throw new Error('native_tool_owner_unsupported_capability');
+  if (spawn.authenticatedPrincipal) throw new Error(NATIVE_TOOL_OWNER_UNSUPPORTED_CAPABILITY);
   const authority = spawn.admissionRecoveryAuthority;
   if (authority === undefined) return spawn;
   const parsed = admissionAuthoritySchema.safeParse(authority);
@@ -3665,7 +3667,7 @@ export async function runNativeMcpTargetOnOwner(
   return runOnSuNativeToolOwner(address, ownerRequest, local, timeoutMs);
 }
 
-async function recordMcpPreflightFailure(
+export async function recordMcpPreflightFailure(
   target: ProjectedTool,
   toolName: string,
   ctx: UnifiedToolContext,
@@ -3675,11 +3677,17 @@ async function recordMcpPreflightFailure(
 ): Promise<void> {
   try {
     const roleQuota = ctx.role ? target.rolesQuota?.[ctx.role] : undefined;
+    const errorMessage = error instanceof Error ? error.message : String(error);
     await PROJECTED_DEPS.recordInvocation?.({
       toolName, pluginName: target.pluginName, ctx,
       windowKey: PROJECTED_DEPS.computeQuotaWindow?.(ctx, roleQuota, toolName).key ?? '',
       durationMs: Date.now() - startedAt, status: 'error',
-      errorMessage: error instanceof Error ? error.message : String(error), args,
+      // Preserve this intentional native-owner refusal as error_code so the shared
+      // classifier records a caller-side transport outcome, not a structural defect.
+      ...(errorMessage === NATIVE_TOOL_OWNER_UNSUPPORTED_CAPABILITY
+        ? { errorCode: NATIVE_TOOL_OWNER_UNSUPPORTED_CAPABILITY }
+        : {}),
+      errorMessage, args,
     });
   } catch (telemetryError) {
     console.warn(`[mcp-handler] pre-dispatch telemetry failed for ${toolName}: ` +
@@ -5104,6 +5112,13 @@ export function registerMcpHost(server: McpServer): void {
                         sizeWalkDirectories: 0,
                         sizeWalkEntries: 0,
                         sizeWalkFiles: 0,
+                        readdirOperations: 0,
+                        statOperations: 0,
+                        operationTotalMs: 0,
+                        maxOperationMs: 0,
+                        maxOperationKind: null,
+                        currentOperationKind: null,
+                        currentOperationElapsedMs: 0,
                         directoryReadErrors: 0,
                         fileStatErrors: 0,
                         runListingMs: 0,
@@ -5121,6 +5136,9 @@ export function registerMcpHost(server: McpServer): void {
                         'sizeWalkDirectories',
                         'sizeWalkEntries',
                         'sizeWalkFiles',
+                        'readdirOperations',
+                        'statOperations',
+                        'operationTotalMs',
                         'directoryReadErrors',
                         'fileStatErrors',
                         'runListingMs',
@@ -5135,6 +5153,12 @@ export function registerMcpHost(server: McpServer): void {
                       ] as const) {
                         recoveryTotal[field] += recovery[field];
                       }
+                      if (recovery.maxOperationMs > recoveryTotal.maxOperationMs) {
+                        recoveryTotal.maxOperationMs = recovery.maxOperationMs;
+                        recoveryTotal.maxOperationKind = recovery.maxOperationKind;
+                      }
+                      recoveryTotal.currentOperationKind = recovery.currentOperationKind;
+                      recoveryTotal.currentOperationElapsedMs = recovery.currentOperationElapsedMs;
                     }
                     if (raced.innerDispatchSettled) {
                       trace('scratch_write_settled', {
