@@ -8,8 +8,11 @@
  */
 import type { AgentFleetRecord } from '../../agent-fleets-store';
 import { getFleet } from '../../agent-fleets-store';
-import type { WorkItem } from '../../work-items';
-import type { ClaimSpec } from '../../scheduler/claim-spec';
+import { listAllWorkItemsForFileExport, type WorkItem } from '../../work-items';
+import { getOrgPg } from '@papercusp/db-org';
+import { activeWorkspaceId } from '../../workspace-registry';
+import { issuesScopeWorkspace } from '../../issues-engineer';
+import type { ClaimSpec, FilterNode } from '../../scheduler/claim-spec';
 import { validateClaimSpec } from '../../scheduler/claim-spec';
 import { matchesWorkItemClaimSpec } from '../../scheduler/claim-spec-match';
 import type { ResolvedFleetClaimSpec } from '../../scheduler/claim-spec-store';
@@ -356,6 +359,32 @@ export async function resolveFleetMetricScope(
 
 export function selectFleetMetricCurrentItems(scope: ResolvedFleetMetricScope, items: readonly WorkItem[]): WorkItem[] {
   return items.filter((item) => matchesWorkItemClaimSpec(item, scope.claimSpec.current));
+}
+
+/**
+ * Select identities with the scheduler's compiler before hydrating payloads.
+ * Keep the union of current and historical filters: old-spec flow events and
+ * terminal canonical bugs still contribute to the snapshot. No state floor,
+ * lifetime cutoff or display cap may turn this into an incomplete census.
+ * The existing facade retains its visibility, family and parent semantics.
+ */
+export async function readFleetMetricSourceItems(scope: ResolvedFleetMetricScope): Promise<WorkItem[]> {
+  const { sql } = getOrgPg();
+  const { compileFilter } = await import('../../scheduler/get-next');
+  const filters = [scope.claimSpec.current, ...scope.claimSpec.segments.map(segment => segment.spec)]
+    .map(spec => spec.view.filter);
+  const filter: FilterNode | undefined = filters.some(value => value === undefined)
+    ? undefined : { any: filters as FilterNode[] };
+  const issueWorkspace = issuesScopeWorkspace();
+  const rows = await sql<Array<{ feature_id: string }>>`
+    SELECT wi.feature_id FROM harness_shared.work_items wi
+     WHERE wi.workspace_id = ANY(${[activeWorkspaceId(), issueWorkspace]}::text[])
+       AND wi.harness_slug = ANY(${[scope.scope.harness, `operator:${issueWorkspace}`]}::text[])
+       AND (${compileFilter(sql, filter)})`;
+  return listAllWorkItemsForFileExport({
+    harness: scope.scope.harness, includeObservations: true,
+    ids: rows.map(row => row.feature_id),
+  });
 }
 
 export interface FleetMetricWorkItemEvent<T = unknown> {

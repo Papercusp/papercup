@@ -381,7 +381,7 @@ describe('fleet:leader-brief canonical fleet metrics hydration (P-005)', () => {
       harness: 'papercusp',
       flowMode: 'current-spec',
     });
-    expect(listItems).toHaveBeenCalledWith({ harness: 'papercusp', includeObservations: true });
+    expect(listItems).toHaveBeenCalledWith({ harness: 'papercusp', includeObservations: true, resolution });
     expect(readOccurrences).toHaveBeenCalledWith({
       workspaceId: 'ws',
       harnessSlug: 'papercusp',
@@ -395,7 +395,7 @@ describe('fleet:leader-brief canonical fleet metrics hydration (P-005)', () => {
     );
   });
 
-  it('starts scope and item reads together, then passes a pending occurrence census to the builder', async () => {
+  it('fixes scope before hydrating selected items and overlaps the occurrence census', async () => {
     const resolution = {
       ok: true,
       scope: { window: { startAt: '2026-08-21T00:00:00.000Z' } },
@@ -444,7 +444,7 @@ describe('fleet:leader-brief canonical fleet metrics hydration (P-005)', () => {
       { resolveScope, listItems, readOccurrences, build },
     );
     await Promise.resolve();
-    const startedTogether = scopeStarted && itemsStarted;
+    const itemsStartedBeforeScope = itemsStarted;
     releaseScope?.();
     await Promise.resolve();
     await Promise.resolve();
@@ -452,7 +452,8 @@ describe('fleet:leader-brief canonical fleet metrics hydration (P-005)', () => {
     releaseItems?.();
 
     await expect(resultPromise).resolves.toEqual(unavailable);
-    expect(startedTogether).toBe(true);
+    expect(scopeStarted).toBe(true);
+    expect(itemsStartedBeforeScope).toBe(false);
     expect(occurrenceStartedBeforeItemsReleased).toBe(true);
     expect(readOccurrences).toHaveBeenCalledWith({
       workspaceId: 'ws',
@@ -547,7 +548,7 @@ describe('fleet:leader-brief bounded read fan-out (EI-21577690778811728)', () =>
     }
   });
 
-  it('passes the optional-read budget into lane health and keeps a typed recovery fallback', async () => {
+  it('gives required lane health the existing diagnostic budget and keeps a typed recovery fallback', async () => {
     const read = vi.fn(async () => ({ laneHealth: null, unavailable: null }));
 
     await readLeaderBriefLaneHealth(
@@ -559,7 +560,7 @@ describe('fleet:leader-brief bounded read fan-out (EI-21577690778811728)', () =>
       fleet: 'fleet-a',
       harness: 'papercusp',
       workspaceId: 'ws-a',
-      issueFamilyTotalBudgetMs: LEADER_BRIEF_OPTIONAL_READ_TIMEOUT_MS,
+      issueFamilyTotalBudgetMs: 12_000,
     });
     expect(leaderBriefLaneHealthUnavailable({ fleet: 'fleet-a', harness: 'papercusp' })).toMatchObject({
       laneHealth: null,

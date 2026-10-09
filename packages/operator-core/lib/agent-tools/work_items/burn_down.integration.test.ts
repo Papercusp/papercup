@@ -45,7 +45,7 @@ vi.mock('../../bounded-timeout', async (orig) => {
       // unrelated desktop, control and supervision reads outside this fixture;
       // their production fallbacks remain unknown rather than invented counts.
       if (!h.publicBrief || !opts.label?.startsWith('leader-brief:') ||
-          opts.label === 'leader-brief:fleet-metrics') {
+          opts.label === 'leader-brief:fleet-metrics' || opts.label === 'leader-brief:lane-health') {
         return actual.withBoundedTimeout(work, opts);
       }
       if (typeof work !== 'function') void work.catch(() => undefined);
@@ -56,6 +56,7 @@ vi.mock('../../bounded-timeout', async (orig) => {
 
 const { default: burnDownTool } = await import('./burn_down');
 const { default: leaderBriefTool, readLeaderBriefFleetMetrics } = await import('../fleet/leader-brief');
+const { resolveFleetMetricScope, readFleetMetricSourceItems } = await import('../fleet/fleet-metrics-scope');
 const { shapeLeaderBrief } = await import('../fleet/leader-brief-shape');
 const { explainIssueClaimFloors, listWorkItems } = await import('../../work-items');
 const { DEFAULT_CLAIM_SPEC } = await import('../../scheduler/claim-spec');
@@ -280,19 +281,31 @@ describe('default fleet reports over the real current-spec queue', () => {
     expect(snapshot.queueHealth.waiting.reviewWait).toMatchObject({
       population: 2, known: 1, unknown: 1, oldestMs: null,
     });
-    // The unrelated scheduler aggregate was not measured by this call. The
-    // real metric snapshot above must not turn that separate unknown into 0.
-    expect(response.data.summary.claimable_now).toMatchObject({ value: null, unknown: {
-      code: expect.any(String),
-    } });
+    // Required scheduler data runs with production bounds, not the optional
+    // fallback mock. An issue-family oracle must actually be measured.
+    expect(response.data.summary.claimable_now.value).toBe(1);
+    expect(response.data.summary.claimable_now.unknown).toBeUndefined();
     for (const tier of ['trimmed', 'standard'] as const) {
       const shaped = shapeLeaderBrief(response.data, tier) as Record<string, any>;
       expect(shaped.fleetMetrics.snapshot.remaining).toEqual(snapshot.remaining);
       expect(shaped.fleetMetrics.snapshot.queueHealth).toEqual(snapshot.queueHealth);
-      expect(shaped.summary.claimable_now.value).toBeNull();
-      expect(shaped.summary.claimable_now.unknown).toBeTruthy();
+      expect(shaped.summary.claimable_now.value).toBe(1);
     }
   }, 30_000);
+
+  it('hydrates only current-spec identities while preserving uncapped source and empty-set semantics', async () => {
+    await seedFleet();
+    await seedQueue();
+    const resolution = await resolveFleetMetricScope({ workspaceId: 'default', harness: HARNESS,
+      fleet: FLEET, flowMode: 'current-spec' });
+    expect(resolution.ok).toBe(true);
+    if (!resolution.ok) throw new Error(resolution.reason);
+    const source = await readFleetMetricSourceItems(resolution);
+    expect(source.map(item => item.id).sort()).toEqual([...ids].sort());
+    expect(await listWorkItems({ harness: HARNESS, ids: [], includeObservations: true })).toEqual([]);
+    expect((await listWorkItems({ harness: HARNESS, ids: [ids[0]], includeObservations: true }))
+      .map(item => item.id)).toEqual([ids[0]]);
+  });
 
   it.each([
     { label: 'item-read failure', mode: 'sync' },

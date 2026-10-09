@@ -46,6 +46,7 @@ import {
   type FleetLaneHealthReadResult,
   type FleetLaneHealthUnavailable,
 } from '../../fleet/lane-health';
+import { FLEET_SCOPE_ISSUE_DIAG_DEFAULT_TOTAL_BUDGET_MS } from '../../scheduler/fleet-scope-admission';
 import { canonicalExecutableWidth, exactPositiveSinglePlanSlugFromFilter } from '../../fleet/executable-frontier';
 import { computeFleetUnderStaffedAlert, type FleetUnderStaffedEvaluation } from '../../fleet/under-staffed-alert';
 import { FLAGS } from '@papercusp/flags';
@@ -173,7 +174,7 @@ import {
 import type { MemberIdleCause } from '../../fleet-member-idle-verdict';
 import { computePoolReservation } from '../../fleet-pool-reservation';
 import { buildPolicyParkedCapacity, resolveFleetParkResumePath } from '../../fleet-park-resume-path';
-import { listWorkItems, listAllWorkItemsForFileExport, WORK_ITEMS_MAX_LIMIT, type WorkItem } from '../../work-items';
+import { listWorkItems, WORK_ITEMS_MAX_LIMIT, type WorkItem } from '../../work-items';
 import { readPlanHistoryContext, type PlanHistoryContext } from '../../prior-attempt-context';
 import { readIssueOccurrenceCounts, type IssueOccurrenceCounts } from '../../issue-occurrence-ledger';
 import {
@@ -181,7 +182,7 @@ import {
   parseFleetMetricsResult,
   type FleetMetricsResult,
 } from './fleet-metrics-contract';
-import { resolveFleetMetricScope, type FleetMetricScopeResolution } from './fleet-metrics-scope';
+import { readFleetMetricSourceItems, resolveFleetMetricScope, type FleetMetricScopeResolution, type ResolvedFleetMetricScope } from './fleet-metrics-scope';
 import { buildFleetMetricsResult } from '../work_items/burn_down';
 import { trimToByteBudget } from '../_bound-output';
 import { LEADER_BRIEF_SHAPER_BUDGET_CHARS, shapeLeaderBrief } from './leader-brief-shape';
@@ -265,7 +266,7 @@ export interface LeaderBriefFleetMetricsDeps {
     fleet: string;
     flowMode: 'current-spec';
   }): Promise<FleetMetricScopeResolution>;
-  listItems(input: { harness: string; includeObservations: true }): Promise<WorkItem[]>;
+  listItems(input: { harness: string; includeObservations: true; resolution: ResolvedFleetMetricScope }): Promise<WorkItem[]>;
   readOccurrences(input: { workspaceId: string; harnessSlug: string; since: string }): Promise<IssueOccurrenceCounts>;
   build(
     resolution: FleetMetricScopeResolution,
@@ -282,7 +283,7 @@ export interface LeaderBriefFleetMetricsDeps {
 
 const LEADER_BRIEF_FLEET_METRICS_DEPS: LeaderBriefFleetMetricsDeps = {
   resolveScope: resolveFleetMetricScope,
-  listItems: listAllWorkItemsForFileExport,
+  listItems: input => readFleetMetricSourceItems(input.resolution),
   readOccurrences: readIssueOccurrenceCounts,
   build: buildFleetMetricsResult,
 };
@@ -325,16 +326,6 @@ export async function readLeaderBriefFleetMetrics(
     });
   }
   try {
-    const itemsPromise = Promise.resolve(
-      deps.listItems({
-        harness: input.harness,
-        includeObservations: true,
-      }),
-    );
-    // A failed item read must remain observed even when scope resolution fails
-    // first; the metric leg is best-effort and must not create an unhandled
-    // rejection while it is being abandoned.
-    void itemsPromise.catch(() => undefined);
     const resolution = await deps.resolveScope({
       workspaceId: input.workspaceId,
       harness: input.harness,
@@ -342,6 +333,12 @@ export async function readLeaderBriefFleetMetrics(
       flowMode: 'current-spec',
     });
     if (!resolution.ok) return parseFleetMetricsResult(resolution);
+    // The exact predicate must be fixed before payload hydration. Reading the
+    // whole harness in parallel costs ~19s on the measured production cohort.
+    const itemsPromise = Promise.resolve(deps.listItems({
+      harness: input.harness, includeObservations: true, resolution,
+    }));
+    void itemsPromise.catch(() => undefined);
     const issueOccurrences = deps.readOccurrences({
       workspaceId: input.workspaceId,
       harnessSlug: input.harness,
@@ -491,7 +488,7 @@ function leaderBriefClaimabilityRecovery(fleet: string, harness?: string | null)
         'work_items:claimable with that spec and its resolved harness';
 }
 
-/** Explicit fallback for the optional lane-health leg; UNKNOWN is never rendered as zero. */
+/** Explicit fallback for required lane health; UNKNOWN is never rendered as zero. */
 export function leaderBriefLaneHealthUnavailable(input: {
   fleet: string;
   harness?: string | null;
@@ -500,8 +497,8 @@ export function leaderBriefLaneHealthUnavailable(input: {
     code: 'leader-brief-budget-exceeded',
     stage: 'leader-brief',
     detail:
-      `Fleet lane health did not settle inside the ${LEADER_BRIEF_OPTIONAL_READ_TIMEOUT_MS}ms ` +
-      'optional-read deadline; the brief abandoned no unbounded aggregate and inferred no zero.',
+      `Fleet lane health did not settle inside the ${FLEET_SCOPE_ISSUE_DIAG_DEFAULT_TOTAL_BUDGET_MS}ms ` +
+      'bounded diagnostic deadline; the brief inferred no zero.',
     recoverVia: leaderBriefClaimabilityRecovery(input.fleet, input.harness),
     spec: null,
     basis: null,
@@ -519,7 +516,7 @@ export async function readLeaderBriefLaneHealth(
 ): Promise<FleetLaneHealthReadResult> {
   return read({
     ...input,
-    issueFamilyTotalBudgetMs: LEADER_BRIEF_OPTIONAL_READ_TIMEOUT_MS,
+    issueFamilyTotalBudgetMs: FLEET_SCOPE_ISSUE_DIAG_DEFAULT_TOTAL_BUDGET_MS,
   });
 }
 
@@ -4086,6 +4083,15 @@ export async function buildLeaderBrief(
   // fleet:status's presence-primary roster is the membership authority. The
   // old claim-primary read omitted live idle members whose assignment view had
   // no row, so leader-brief and fleet:status reported different rosters.
+  // Claimability is required report data, not a 750ms optional decoration.
+  // Start the existing bounded diagnostic before roster/decorations, inside
+  // the unchanged whole-call deadline, so it overlaps those independent reads.
+  const fleetLaneHealthPromise = boundedLeaderBriefRead(
+    'lane-health',
+    () => readLeaderBriefLaneHealth({ fleet, harness: args.harness, workspaceId }),
+    leaderBriefLaneHealthUnavailable({ fleet, harness: args.harness }),
+    FLEET_SCOPE_ISSUE_DIAG_DEFAULT_TOTAL_BUDGET_MS,
+  );
   const rosterResult = await boundedLeaderBriefRead<ListFleetRosterResult>(
     'roster',
     () => listFleetRosterDiagnosed({ fleetSlug: fleet, workspaceId }),
@@ -4399,7 +4405,6 @@ export async function buildLeaderBrief(
     unownedCriticalsAll,
     admissionBlockRead,
     orphanedInFlight,
-    fleetLaneHealthRead,
     fleetPause,
     concurrencyByOwner,
     poolCapacity,
@@ -4431,16 +4436,6 @@ export async function buildLeaderBrief(
           harness: args.harness,
           workspaceId,
           minAgeMinutes: args.orphan_min_age_minutes,
-        }),
-      // EI-18681259560385029: read the fleet's LIVE claimable count before
-      // projecting members; failures are UNKNOWN, never zero. EI-22687145239379284:
-      // the issue aggregate may take ~20s, so the diagnosed reader receives this
-      // leg's whole 750ms allowance and refuses to launch work that cannot fit it.
-      () =>
-        readLeaderBriefLaneHealth({
-          fleet,
-          harness: args.harness,
-          workspaceId: actorWorkspace,
         }),
       // EI-18703234178947959: the fleet's own durable pause state. Fail-soft
       // to not-paused so a registry hiccup never silences a genuine alert.
@@ -4505,13 +4500,13 @@ export async function buildLeaderBrief(
         reason: 'leader-brief optional admission-block read timed out or failed',
       } as FleetAdmissionBlockRead,
       [] as OrphanedInFlightCandidate[],
-      leaderBriefLaneHealthUnavailable({ fleet, harness: args.harness }),
       { paused: false, reason: null },
       new Map<string, { blocked: boolean; activeClaims: number; heldIds: string[] }>(),
       null,
     ] as const,
     'optional-fleet-reads',
   );
+  const fleetLaneHealthRead = await fleetLaneHealthPromise;
   const fleetLaneHealth = fleetLaneHealthRead.laneHealth;
   const takeoversBySubscriber = new Map<string, VerifiedWaitTakeoverAlert[]>();
   for (const alert of verifiedWaitTakeovers) {
