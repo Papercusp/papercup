@@ -158,6 +158,19 @@ describe('facts:assert — safety-slot key-intent warning reaches the receipt', 
     expect(writtenBody).toBe(`🛡️ GUARD RAIL — do not repeat: ${body}`);
   });
 
+  it('does not warn on a normative must-not rule that mentions a result', async () => {
+    const body = 'Oversized metadata overflow must not refuse the result.';
+    const { receipt, writtenBody } = await assertAndRead({
+      ...BASE,
+      key: 'metadata-overflow-must-not-refuse-result',
+      body,
+      slot: 'guard-rail',
+    });
+
+    expect(receipt.absenceWarning).toBeUndefined();
+    expect(writtenBody).toBe(`🛡️ GUARD RAIL — do not repeat: ${body}`);
+  });
+
   it('still warns when the guard-rail author actually makes an absence claim', async () => {
     const body = 'No membership exists for this agent.';
     const { receipt, writtenBody } = await assertAndRead({
