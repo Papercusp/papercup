@@ -167,12 +167,12 @@ export default defineTool({
     timeout_ms: z.number().int().positive().max(120_000).optional().describe(`Request timeout in ms (default ${DEFAULT_TIMEOUT_MS}).`),
   }).superRefine((args, ctx) => {
     if ((!args.browser || args.browser.op === 'navigate') && !args.url) ctx.addIssue({ code: 'custom', path: ['url'], message: 'url required' });
-    if (args.browser && (args.method || args.headers || args.body)) ctx.addIssue({ code: 'custom', path: ['browser'], message: 'browser uses its own read-only request policy; HTTP method/headers/body are not accepted' });
+    if (args.browser && (args.method || args.headers || args.body || args.max_bytes !== undefined || args.max_download_bytes !== undefined || args.max_redirects !== undefined)) ctx.addIssue({ code: 'custom', path: ['browser'], message: 'browser uses its own read-only request policy and text/resource limits; HTTP method/headers/body/limits are not accepted' });
     if (args.browser && ['observe', 'close'].includes(args.browser.op) && args.url) ctx.addIssue({ code: 'custom', path: ['url'], message: 'url only accepted for open/navigation' });
   }),
   async handler(args, ctx) {
     if (args.browser) return runBrowserSession(args.browser, args.url, ctx, {
-      timeoutMs: Math.min(args.timeout_ms ?? DEFAULT_TIMEOUT_MS, 30_000), maxText: args.max_bytes ?? 10_000,
+      timeoutMs: Math.min(args.timeout_ms ?? DEFAULT_TIMEOUT_MS, 30_000), maxText: args.browser.max_text_chars ?? 10_000,
     });
     const maxDownloadBytes = args.max_download_bytes ?? DEFAULT_MAX_DOWNLOAD_BYTES;
     const maxBytes = Math.min(args.max_bytes ?? DEFAULT_MAX_BYTES, maxDownloadBytes);

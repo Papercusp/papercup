@@ -1,3 +1,5 @@
+/** Real Chromium/HTTP journey; ledger adapter mocked, no PostgreSQL writes.
+ * Uses the maintained e2e config; actual ledger persistence/API acceptance stays separate. */
 import { createServer, type Server } from 'node:http';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { UnifiedToolContext } from '@papercusp/agent-mcp';
@@ -14,6 +16,7 @@ import { fetchWithCapabilityPolicy } from './fetch-policy';
 describe('browser DOM session against real Chromium and HTTP', () => {
   let server: Server; let base = ''; let id = ''; let writes = 0;
   const ctx = { uiClientId: 'browser-private-integration', workspaceId: 'browser-private-workspace', harnessSlug: 'papercusp', role: 'operator',
+    isSuperuser: true,
     signal: new AbortController().signal, log: vi.fn() } as unknown as UnifiedToolContext;
   const deps = { launch: launchBrowserProcess, profile: async () => ({ kind: 'trusted', reason: 'superuser' } as const), fetch: fetchWithCapabilityPolicy };
   beforeAll(async () => {

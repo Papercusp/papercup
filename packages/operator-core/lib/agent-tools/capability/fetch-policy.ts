@@ -230,7 +230,7 @@ export function isNonPublicFetchAddress(addressInput: string): boolean {
   );
 }
 
-function parseAndValidateUrl(raw: string): URL {
+export function parseAndValidateUrl(raw: string): URL {
   const url = new URL(raw);
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
     throw new CapabilityFetchPolicyError(

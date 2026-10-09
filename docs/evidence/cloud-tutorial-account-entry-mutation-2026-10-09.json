@@ -74,6 +74,62 @@
     "historicalPositiveBindingsPreserved": [31555, 31622],
     "historicalFullSuiteRunPreserved": 20937012
   },
+  "currentReplacementRound": {
+    "recordedAt": "2026-10-09T15:36:00Z",
+    "workItemId": "WI-10007744",
+    "scope": "Current entry-order evidence only; the original round above remains historical evidence. Assigned-workspace mutant failure is excluded from business falsifiability.",
+    "source": {
+      "portalCommit": "cf5a49a0506b486d02d416fd37944560547ee963",
+      "operatorCommit": "4a2860402948d749e58193d8bcc5736a6f24fd65",
+      "portalRoot": "/mnt/data/tmp/tutorial-entry-nav-portal-20261009T1458/papercusp-lint-as-committed-cf5a49a050-19J733",
+      "operatorRoot": "/mnt/data/tmp/tutorial-entry-nav-20261009T1458/papercusp-lint-as-committed-4a28604029-iMcFq5"
+    },
+    "scopedInvocation": {
+      "environment": {
+        "PAPERCUSP_TEST_RUN_HARNESS": "papercusp",
+        "PAPERCUSP_TEST_RUN_WORKSPACE": "papercusp-workspace"
+      },
+      "cwd": "/mnt/data/tmp/tutorial-entry-nav-portal-20261009T1458/papercusp-lint-as-committed-cf5a49a050-19J733",
+      "runner": "/mnt/data/tmp/tutorial-entry-nav-20261009T1458/papercusp-lint-as-committed-4a28604029-iMcFq5/scripts/mutation-probe.sh",
+      "runnerSha256": "c2205d677d8e6a9cf2463ce7990ea901ea3cc30cdd24127013a12582d92ac09e",
+      "argv": [
+        "--file", "packages/ui/src/shell.tsx",
+        "--mutate", "s/if \\(!session\\) return destination\\(\\);/return destination();/",
+        "--relocation", "overlay",
+        "--test", "node node_modules/@playwright/test/cli.js test --config=playwright.config.ts e2e/portal-product-tutorial.spec.ts --grep=\"actual PortalEntry shows the enrolled guide before destination reads\" --workers=1 --retries=0 --timeout=30000 --output=/tmp/tutorial-entry-scoped-mutation-20261009T1521-results-$PAPERCUSP_MUTATION_PHASE",
+        "--expect", "caught"
+      ],
+      "scopeCorrection": "The reporter already supports explicit scope. Earlier command omitted all supported harness variables; rows 20959061/20959062/20959064 retain their original NULL harness and were not rebound or relabeled."
+    },
+    "observed": {
+      "baseline": "2 passed, 0 failed, 0 skipped",
+      "copyBaseline": "2 passed, 0 failed, 0 skipped",
+      "mutant": "0 passed, 2 failed, 0 skipped; scoped ledger 20959171",
+      "independentParse": "Full shell TSX esbuild transform passed with no warnings, output 94304 bytes",
+      "businessFalsifier": "workspace=null renders real FirstRunPortal; missing Welcome to Papercusp assertion at portal-product-tutorial.spec.ts:437",
+      "excludedFailure": "workspace=assigned-workspace throws in the deliberate fixture PortalShell before rendering the real destination; not a business falsifier",
+      "sourceIntegrity": "Mutation runner verified original shell bytes unchanged",
+      "nativeProcess": "71974 terminal exit 0 and drained in the originating turn; not a reusable process handle"
+    },
+    "evidence": {
+      "log": "/tmp/tutorial-entry-scoped-mutation-20261009T1521.log",
+      "logSha256": "074ab9356661d574214f460470a85233facce41f92bb178e1a39e1561e7683e5",
+      "ledger": "/tmp/tutorial-entry-scoped-mutation-ledger-20261009T1525.json",
+      "mutantResults": "/tmp/tutorial-entry-scoped-mutation-20261009T1521-results-mutant",
+      "currentReadback": "/tmp/tutorial-entry-nav-ten-current-20261009T1534.json",
+      "integrationReadback": "/tmp/tutorial-entry-nav-integration-current-20261009T1536.json",
+      "staleReadback": "/tmp/tutorial-entry-nav-stale-20261009T1534.json",
+      "browserPositiveRun": 20959057,
+      "integrationPositiveRun": 20959058,
+      "bindings": {
+        "TUTORIAL-ACCOUNT-FIRST-ENTRY": { "integration": 33154, "browser": 33158, "mutation": 33162 },
+        "AUTO-BAR-R-16-P-015": { "integration": 33155, "browser": 33159, "mutation": 33163 },
+        "TUTORIAL-FULL-PRODUCT-NAVIGATION": { "integration": 33156, "browser": 33160 },
+        "AUTO-BAR-R-17-P-016": { "integration": 33157, "browser": 33161 }
+      }
+    },
+    "acceptance": "All ten replacement bindings were CURRENT on the named staging reads. This is not hosted artifact, protected voice, novice, affected-suite or production shipment acceptance."
+  },
   "limitations": [
     "No replay of historical full40 LOCAL20937012",
     "No actual workspace shell/served artifact/production proof",

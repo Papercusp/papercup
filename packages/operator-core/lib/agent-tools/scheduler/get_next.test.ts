@@ -1308,9 +1308,13 @@ describe('scheduler:get_next bounds every pre-claim await (EI-20228674494907304)
     });
     expect(body.preflightTiming.totalElapsedMs).toBeGreaterThanOrEqual(GET_NEXT_BUDGET_MS);
     expect(body.preflightTiming.activeStep.elapsedMs).toBeGreaterThan(0);
-    expect(body.preflightTiming.completedSteps).toEqual(
-      expect.arrayContaining([expect.objectContaining({ step: 'work-scope-policy' })]),
-    );
+    if (lastPreflightStep === 'work-scope-policy') {
+      expect(body.preflightTiming.completedSteps).toEqual([]);
+    } else {
+      expect(body.preflightTiming.completedSteps).toEqual(
+        expect.arrayContaining([expect.objectContaining({ step: 'work-scope-policy' })]),
+      );
+    }
     expect(body.preflightTiming.completedSteps.every((step: { elapsedMs: unknown }) =>
       typeof step.elapsedMs === 'number' && Number.isFinite(step.elapsedMs) && step.elapsedMs >= 0,
     )).toBe(true);

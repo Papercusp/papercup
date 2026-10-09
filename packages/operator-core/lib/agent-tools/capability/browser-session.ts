@@ -9,7 +9,7 @@ import type { UnifiedToolContext } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { capabilityExecSandboxPolicy, buildCapabilitySandboxCommand, assertCapabilitySandboxAvailable, scrubExecEnv } from './exec-sandbox';
 import type { OperationBoundaryProfile } from './boundary-profile';
-import { fetchWithCapabilityPolicy } from './fetch-policy';
+import { fetchWithCapabilityPolicy, parseAndValidateUrl } from './fetch-policy';
 import { registerTask, markSpawned, closeTask } from '../../task-manager/store';
 import { readProcessIdentity } from '../../process-identity';
 
@@ -18,6 +18,7 @@ export const browserSessionArg = z.object({
   id: z.string().uuid().optional(),
   selector: z.string().min(1).max(1000).optional().describe('CSS selector to wait for/observe; no arbitrary JavaScript.'),
   screenshot: z.boolean().optional().describe('Return a bounded viewport PNG as an MCP image.'),
+  max_text_chars: z.number().int().positive().max(20_000).optional().describe('DOM text character ceiling; default 10000. Result-door byte policy still applies.'),
 }).strict().superRefine((args, ctx) => {
   if (args.op !== 'open' && !args.id) ctx.addIssue({ code: 'custom', path: ['id'], message: 'existing browser operation requires id' });
   if (args.op === 'open' && args.id) ctx.addIssue({ code: 'custom', path: ['id'], message: 'open creates its own id' });
@@ -43,7 +44,7 @@ interface Session {
   sandbox: { mode: string; sandboxed: boolean };
   busy: boolean; active?: ActiveOperation; idle?: ReturnType<typeof setTimeout>;
   closing?: Promise<void>;
-  state: 'live' | 'closed' | 'lost'; reason?: string; endedAt?: number;
+  state: 'live' | 'closing' | 'closed' | 'lost'; reason?: string; endedAt?: number; processEnded: boolean;
 }
 const sessions = new Map<string, Session>();
 const openings = new Map<string, number>();
@@ -131,14 +132,16 @@ export async function browserResponseBytes(response: Response, active: ActiveOpe
 
 export async function closeBrowserSession(session: Session, reason: string): Promise<void> {
   if (session.closing) return session.closing;
-  session.reason = reason; session.state = 'closed'; session.endedAt = Date.now();
+  session.reason = reason; session.state = 'closing';
   if (session.idle) clearTimeout(session.idle);
-  session.active?.controller.abort();
-  session.closing = (async () => {
+  // Assign before aborting: abort's listener may request this same cleanup.
+  session.closing = Promise.resolve().then(async () => {
+    session.active?.controller.abort();
     try { await session.server.close(); }
     catch { await session.server.kill(); }
+    session.processEnded = true; session.state = 'closed'; session.endedAt = Date.now();
     await rm(session.root, { recursive: true, force: true });
-  })();
+  }).catch((error) => { session.state = 'lost'; session.reason = 'cleanup-unconfirmed'; throw error; });
   return session.closing;
 }
 function armIdle(session: Session): void {
@@ -191,6 +194,10 @@ export async function runBrowserSession(
     { type: 'text' as const, text: JSON.stringify(payload) },
     ...(image ? [{ type: 'image' as const, data: image.toString('base64'), mimeType: 'image/png' }] : []),
   ] });
+  if (url) {
+    try { parseAndValidateUrl(url); }
+    catch (error) { return reply({ ok: false, error: error instanceof Error ? error.message : String(error), executed: false }); }
+  }
   let session = args.id ? sessions.get(args.id) : undefined;
   if (args.id && (!session || session.scope !== scope)) return reply({ ok: false, error: 'browser_unrecoverable', restartRecovery: 'unrecoverable' });
   if (args.op === 'close' && session) { await closeBrowserSession(session, 'explicit-close'); return reply({ ok: true, browser: status(session) }); }
@@ -201,7 +208,7 @@ export async function runBrowserSession(
   if (session?.busy) return reply({ ok: false, error: 'browser_busy', browser: status(session) });
   if (args.op === 'open') {
     for (const [key, old] of sessions) if (old.endedAt && Date.now() - old.endedAt > IDLE_MS) sessions.delete(key);
-    const live = [...sessions.values()].filter((s) => s.state === 'live');
+    const live = [...sessions.values()].filter((s) => !s.processEnded);
     const pending = openings.get(scope) ?? 0;
     const totalPending = [...openings.values()].reduce((sum, count) => sum + count, 0);
     if (live.length + totalPending >= MAX_LIVE || live.filter((s) => s.scope === scope).length + pending >= PER_SCOPE) return reply({ ok: false, error: 'browser_scope_limit' });
@@ -211,14 +218,21 @@ export async function runBrowserSession(
     try {
       remaining(); root = await mkdtemp(join(tmpdir(), 'pc-browser-'));
       launched = await deps.launch(ctx, root, id, remaining());
-      const context = await launched.browser.newContext({ viewport: { width: 1024, height: 768 }, serviceWorkers: 'block', acceptDownloads: false });
-      await context.routeWebSocket('**/*', (socket) => socket.close());
-      const page = await context.newPage();
-      session = { ...launched, id, root, scope, authority, context, page, state: 'live', busy: false };
+      const setupServer = launched.server;
+      const stopSetup = () => { void setupServer.kill().catch(() => {}); };
+      ctx.signal?.addEventListener('abort', stopSetup, { once: true });
+      const setupTimer = setTimeout(stopSetup, remaining());
+      let context: BrowserContext; let page: Page;
+      try {
+        context = await launched.browser.newContext({ viewport: { width: 1024, height: 768 }, serviceWorkers: 'block', acceptDownloads: false });
+        await context.routeWebSocket('**/*', (socket) => socket.close());
+        page = await context.newPage(); remaining();
+      } finally { clearTimeout(setupTimer); ctx.signal?.removeEventListener('abort', stopSetup); }
+      session = { ...launched, id, root, scope, authority, context, page, state: 'live', busy: false, processEnded: false };
       const current = session;
       await context.route('**/*', (route) => relay(current, route, deps));
       context.on('page', (extra) => { if (extra !== page) void extra.close(); });
-      launched.server.on('close', () => { if (current.state === 'live') { current.state = 'lost'; current.reason = 'browser-process-ended'; current.endedAt = Date.now(); current.active?.controller.abort(); } });
+      launched.server.on('close', () => { current.processEnded = true; if (current.state === 'live') { current.state = 'lost'; current.reason = 'browser-process-ended'; current.endedAt = Date.now(); current.active?.controller.abort(); } });
       sessions.set(id, session);
     } catch (error) {
       if (launched) await launched.server.kill();

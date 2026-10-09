@@ -51,6 +51,16 @@ describe('P-005 review preflight', () => {
     }
     expect(taskAnsweredAfterPrompt(`❯ ${prompt}\n● Tests failed: 0 passing.`, prompt, TEST_RUN_EXPECTATION)).toBe(false);
   });
+
+  it('recognizes a stock greeting after the prompt while rejecting an echo or an earlier reply', () => {
+    for (const reply of ['Hi! What are you working on? Tell me what you would like to do in this project.',
+      'Hello! How can I help?', 'Hey, what would you like to work on?']) {
+      expect(taskAnsweredAfterPrompt(`❯ hi\n● ${reply}\n❯`, 'hi', CODEX_GREETING_EXPECTATION)).toBe(true);
+      expect(taskAnsweredAfterPrompt(`● ${reply}\n❯ hi\n✶ Thinking…`, 'hi', CODEX_GREETING_EXPECTATION)).toBe(false);
+    }
+    expect(taskAnsweredAfterPrompt('❯ hi\n❯', 'hi', CODEX_GREETING_EXPECTATION)).toBe(false);
+    expect(taskAnsweredAfterPrompt('❯ hi\n✶ Thinking…', 'hi', CODEX_GREETING_EXPECTATION)).toBe(false);
+  });
 });
 
 describe('P-005 Codex TUI readiness', () => {

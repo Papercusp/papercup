@@ -124,7 +124,11 @@ export const COVERAGE_ACTIVE_WINDOW_MS = 7 * 24 * 3600 * 1000;
  */
 export const FLEET_ASSIGNMENTS_SUBREAD_TIMEOUT_MS = 8_000;
 
+/** Leave transport/serialization headroom below the MCP read-only deadline. */
+export const FLEET_ASSIGNMENTS_HANDLER_BUDGET_MS = 40_000;
+
 const FLEET_ASSIGNMENTS_DEGRADED_LEG_ORDER = [
+  'fleetLookup',
   'assignments',
   'schedulerClaimState',
   'intentWorkItems',
@@ -1105,6 +1109,7 @@ export default defineTool({
   },
   async handler(args, ctx) {
     const handlerStartedAt = Date.now();
+    const handlerDeadlineAt = handlerStartedAt + FLEET_ASSIGNMENTS_HANDLER_BUDGET_MS;
     // Judge is an evidence-only reader. Unlike broad fleet observers, it can
     // inspect only its own assignment row; requiring the explicit `self`
     // selector prevents an omitted filter from widening to the whole fleet.
@@ -1157,22 +1162,6 @@ export default defineTool({
     // reject unknown names explicitly so an invalid fleet never looks measured-empty.
     const requestedFleetSlug = args.fleet === undefined ? undefined : fleetSlugFromName(args.fleet);
     let fleetFilter = requestedFleetSlug;
-    if (requestedFleetSlug !== undefined) {
-      const fleet = await getFleet(workspaceId, requestedFleetSlug);
-      if (!fleet) {
-        return {
-          data: {
-            ok: false,
-            error: 'unknown_fleet',
-            fleet: args.fleet,
-            normalizedFleetSlug: requestedFleetSlug,
-            workspaceSearched: workspaceId,
-            message: `No fleet '${args.fleet}' (resolved as '${requestedFleetSlug}') in this workspace — see fleet:list.`,
-          },
-        };
-      }
-      fleetFilter = fleet.fleetSlug;
-    }
     const degradedLegs = new Set<string>();
     const readTimings: FleetAssignmentsReadTiming[] = [];
     const boundedRead = async <T>(
@@ -1181,10 +1170,21 @@ export default defineTool({
       fallback: T,
     ): Promise<T> => {
       const startedAt = Date.now();
+      const remainingBudgetMs = Math.max(0, handlerDeadlineAt - startedAt);
+      if (remainingBudgetMs === 0) {
+        degradedLegs.add(label);
+        readTimings.push({
+          phase: label,
+          startOffsetMs: startedAt - handlerStartedAt,
+          elapsedMs: 0,
+          outcome: 'timeout',
+        });
+        return fallback;
+      }
       const result = await withBoundedTimeout(work, {
         fallback,
-        timeoutMs: FLEET_ASSIGNMENTS_SUBREAD_TIMEOUT_MS,
-        label: `fleet:assignments:${label}`,
+        timeoutMs: Math.min(FLEET_ASSIGNMENTS_SUBREAD_TIMEOUT_MS, remainingBudgetMs),
+        label: 'fleet:assignments:' + label,
       });
       readTimings.push({
         phase: label,
@@ -1195,6 +1195,52 @@ export default defineTool({
       if (result.degraded) degradedLegs.add(label);
       return result.value;
     };
+
+    if (requestedFleetSlug !== undefined) {
+      const fleet = await boundedRead(
+        'fleetLookup',
+        () => getFleet(workspaceId, requestedFleetSlug),
+        null,
+      );
+      if (degradedLegs.has('fleetLookup')) {
+        return {
+          data: {
+            ok: false,
+            error: 'fleet_lookup_timeout',
+            fleet: args.fleet,
+            normalizedFleetSlug: requestedFleetSlug,
+            workspaceSearched: workspaceId,
+            degraded: true,
+            degradedLegs: FLEET_ASSIGNMENTS_DEGRADED_LEG_ORDER.filter((leg) =>
+              degradedLegs.has(leg),
+            ),
+            message:
+              'Could not validate the requested fleet within the fleet:assignments read budget; no broader read was attempted.',
+            ...(args.includeTimings
+              ? { readTimings, handlerElapsedMs: Date.now() - handlerStartedAt }
+              : {}),
+          },
+        };
+      }
+      if (!fleet) {
+        return {
+          data: {
+            ok: false,
+            error: 'unknown_fleet',
+            fleet: args.fleet,
+            normalizedFleetSlug: requestedFleetSlug,
+            workspaceSearched: workspaceId,
+            message:
+              "No fleet '" +
+              args.fleet +
+              "' (resolved as '" +
+              requestedFleetSlug +
+              "') in this workspace — see fleet:list.",
+          },
+        };
+      }
+      fleetFilter = fleet.fleetSlug;
+    }
 
     // Start the independent top-level reads together. In particular, a stalled
     // assignment query must not prevent the coverage read from making progress,

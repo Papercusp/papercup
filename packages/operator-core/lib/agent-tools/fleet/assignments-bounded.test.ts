@@ -9,6 +9,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
+  getFleet: vi.fn(),
   listAssignments: vi.fn(),
   coverage: vi.fn(),
   wakeability: vi.fn(),
@@ -23,6 +24,8 @@ const mocks = vi.hoisted(() => ({
   schedulerClaims: vi.fn(),
   wakeModeOverrides: vi.fn(),
   defaultWakeMode: vi.fn(),
+  getPlanRow: vi.fn(),
+  residue: vi.fn(),
 }));
 
 vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
@@ -31,6 +34,10 @@ vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
   readJsonResult: () => undefined,
 }));
 vi.mock('../coordination/roles', () => ({ COORD_READ_ROLES: ['operator'] }));
+vi.mock('../../agent-fleets-store', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../agent-fleets-store')>()),
+  getFleet: mocks.getFleet,
+}));
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: () => ({
     ownerId: 'su-test',
@@ -89,7 +96,7 @@ vi.mock('../../harness/routines/loop', () => ({
   getLoopStatuses: mocks.loopStatuses,
 }));
 vi.mock('../plans/source', () => ({
-  getPlanRow: vi.fn(async () => null),
+  getPlanRow: mocks.getPlanRow,
   planItemsForRow: vi.fn(() => []),
   planSlugsForHarness: vi.fn(async () => new Set<string>()),
 }));
@@ -98,10 +105,13 @@ vi.mock('../../fleet/assignments', async (importOriginal) => ({
   listFleetAssignments: mocks.listAssignments,
   lastToolCallAtByOwner: mocks.lastToolCalls,
   lastProductiveToolCallAtByOwner: vi.fn(async () => new Map()),
-  resolveTerminalPlanItemResidue: vi.fn(async () => new Map()),
+  resolveTerminalPlanItemResidue: mocks.residue,
 }));
 
-import fleetAssignmentsTool, { FLEET_ASSIGNMENTS_SUBREAD_TIMEOUT_MS } from './assignments';
+import fleetAssignmentsTool, {
+  FLEET_ASSIGNMENTS_HANDLER_BUDGET_MS,
+  FLEET_ASSIGNMENTS_SUBREAD_TIMEOUT_MS,
+} from './assignments';
 
 const ctx = { workspaceId: 'papercusp-workspace' } as unknown as Parameters<
   typeof fleetAssignmentsTool.handler
@@ -164,6 +174,7 @@ function deferred<T>() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.getFleet.mockResolvedValue({ fleetSlug: 'test-fleet' });
   mocks.listAssignments.mockResolvedValue([]);
   mocks.schedulerClaims.mockImplementation(
     ({ cupIds }: { cupIds: readonly string[] }) =>
@@ -188,6 +199,8 @@ beforeEach(() => {
   mocks.lastToolCalls.mockResolvedValue(new Map());
   mocks.wakeModeOverrides.mockResolvedValue(new Map());
   mocks.defaultWakeMode.mockResolvedValue('auto');
+  mocks.getPlanRow.mockResolvedValue(null);
+  mocks.residue.mockResolvedValue(new Map());
 });
 
 afterEach(() => {
@@ -196,6 +209,103 @@ afterEach(() => {
 });
 
 describe('fleet:assignments bounded handler reads', () => {
+  it('bounds fleet validation and refuses without broadening when the lookup stalls', async () => {
+    vi.useFakeTimers();
+    const warnings: string[] = [];
+    vi.spyOn(console, 'warn').mockImplementation((...args: unknown[]) => {
+      warnings.push(args.join(' '));
+    });
+    mocks.getFleet.mockImplementation(() => new Promise<never>(() => {}));
+
+    const pending = fleetAssignmentsTool.handler(
+      { fleet: 'test-fleet', includeTimings: true } as never,
+      ctx,
+    ) as Promise<{
+      data: {
+        ok: boolean;
+        error?: string;
+        degraded?: boolean;
+        degradedLegs?: string[];
+        readTimings?: Array<{ phase: string; elapsedMs: number; outcome: string }>;
+        handlerElapsedMs?: number;
+      };
+    }>;
+
+    await vi.advanceTimersByTimeAsync(FLEET_ASSIGNMENTS_SUBREAD_TIMEOUT_MS);
+    const result = await pending;
+
+    expect(result.data).toMatchObject({
+      ok: false,
+      error: 'fleet_lookup_timeout',
+      degraded: true,
+      degradedLegs: ['fleetLookup'],
+    });
+    expect(warnings.join('\n')).toContain(
+      'fleet:assignments:fleetLookup exceeded ' + FLEET_ASSIGNMENTS_SUBREAD_TIMEOUT_MS + 'ms',
+    );
+    expect(result.data.handlerElapsedMs).toBe(FLEET_ASSIGNMENTS_SUBREAD_TIMEOUT_MS);
+    expect(result.data.readTimings).toContainEqual({
+      phase: 'fleetLookup',
+      startOffsetMs: expect.any(Number),
+      elapsedMs: FLEET_ASSIGNMENTS_SUBREAD_TIMEOUT_MS,
+      outcome: 'timeout',
+    });
+    expect(mocks.listAssignments).not.toHaveBeenCalled();
+  });
+
+  it('caps cumulative sequential phases at the shared handler budget', async () => {
+    vi.useFakeTimers();
+    const warnings: string[] = [];
+    vi.spyOn(console, 'warn').mockImplementation((...args: unknown[]) => {
+      warnings.push(args.join(' '));
+    });
+    mocks.getFleet.mockImplementation(
+      () =>
+        new Promise((resolve) =>
+          setTimeout(() => resolve({ fleetSlug: 'test-fleet' }), FLEET_ASSIGNMENTS_SUBREAD_TIMEOUT_MS - 500),
+        ),
+    );
+    mocks.listAssignments.mockResolvedValue([liveRow()]);
+    mocks.coverage.mockImplementation(() => new Promise<never>(() => {}));
+    mocks.unanswered.mockImplementation(() => new Promise<never>(() => {}));
+    mocks.loopStatuses.mockImplementation(() => new Promise<never>(() => {}));
+    mocks.lastToolCalls.mockImplementation(() => new Promise<never>(() => {}));
+    mocks.residue.mockImplementation(() => new Promise<never>(() => {}));
+    mocks.getPlanRow.mockImplementation(() => new Promise<never>(() => {}));
+    const startedAt = Date.now();
+
+    const pending = fleetAssignmentsTool.handler(
+      {
+        fleet: 'test-fleet',
+        plan: 'test-plan',
+        includeDag: true,
+        includeTimings: true,
+      } as never,
+      ctx,
+    ) as Promise<{
+      data: {
+        degraded?: boolean;
+        degradedLegs?: string[];
+        readTimings?: Array<{ phase: string; startOffsetMs: number; elapsedMs: number; outcome: string }>;
+        handlerElapsedMs?: number;
+      };
+    }>;
+
+    await vi.advanceTimersByTimeAsync(FLEET_ASSIGNMENTS_HANDLER_BUDGET_MS);
+    const result = await pending;
+
+    expect(Date.now() - startedAt).toBe(FLEET_ASSIGNMENTS_HANDLER_BUDGET_MS);
+    expect(result.data.handlerElapsedMs).toBe(FLEET_ASSIGNMENTS_HANDLER_BUDGET_MS);
+    expect(result.data.degraded).toBe(true);
+    expect(result.data.degradedLegs).toEqual(
+      expect.arrayContaining(['coverage', 'unanswered', 'loop', 'lastToolCalls', 'residue', 'dag']),
+    );
+    expect(warnings.join('\n')).toContain(
+      'fleet:assignments:coverage exceeded ' + FLEET_ASSIGNMENTS_SUBREAD_TIMEOUT_MS + 'ms',
+    );
+    expect(mocks.getPlanRow).not.toHaveBeenCalled();
+  });
+
   it('reports successful bounded-read phase timing when explicitly requested', async () => {
     vi.useFakeTimers();
     mocks.listAssignments.mockImplementation(

@@ -8,6 +8,7 @@ const trusted = { kind: 'trusted', reason: 'superuser' } as const;
 const ctx = (owner = 'browser-test-owner', workspace = 'browser-test-workspace') => ({
   uiClientId: owner, workspaceId: workspace, harnessSlug: 'papercusp', role: 'operator',
   signal: new AbortController().signal, log: vi.fn(),
+  isSuperuser: true,
 }) as unknown as UnifiedToolContext;
 const cleanup: Array<() => Promise<unknown>> = [];
 afterEach(async () => { for (const close of cleanup.splice(0)) await close(); vi.useRealTimers(); });
@@ -19,7 +20,7 @@ function fixture() {
   const context = { route: vi.fn(async (_pattern, handler) => { relay = handler; }), routeWebSocket: vi.fn(async () => {}),
     newPage: vi.fn(async () => page), on: vi.fn() };
   const server = { close: vi.fn(async () => {}), kill: vi.fn(async () => {}), on: vi.fn() };
-  const profile = vi.fn(async () => trusted as BrowserDeps extends { profile: (...a: never[]) => Promise<infer P> } ? P : never);
+  const profile = vi.fn<BrowserDeps['profile']>(async () => trusted);
   const release = vi.fn(async () => {});
   const deps = {
     profile,
@@ -52,6 +53,13 @@ describe('managed browser authority and lifecycle', () => {
     expect(fetchTool.args.safeParse({ browser: { op: 'open' }, headers: { cookie: 'secret' } }).success).toBe(false);
     expect(browserSessionArg.safeParse({ op: 'open', id: crypto.randomUUID() }).success).toBe(false);
     expect(browserScope(ctx('a:b', 'c'))).not.toBe(browserScope(ctx('b', 'c:a')));
+    expect(() => browserScope({ workspaceId: 'unattributed' } as UnifiedToolContext)).toThrow();
+  });
+  it('refuses file and credential URLs before launching any browser', async () => {
+    const f = fixture();
+    expect((await f.call({ op: 'open' }, ctx(), 'file:///etc/passwd')).payload.ok).toBe(false);
+    expect((await f.call({ op: 'open' }, ctx(), 'https://user:password@example.com')).payload.ok).toBe(false);
+    expect(f.deps.launch).not.toHaveBeenCalled();
   });
   it('denies another owner/workspace, closes explicitly, and reports ended handles unrecoverable', async () => {
     const f = fixture(); const id = await f.open();
@@ -94,5 +102,17 @@ describe('managed browser authority and lifecycle', () => {
     expect((await f.call({ op: 'open' })).payload).toMatchObject({ ok: false, executed: false });
     await f.open(); await f.open();
     expect((await f.call({ op: 'open' })).payload.error).toBe('browser_scope_limit');
+  });
+  it('serializes explicit close with active cancellation and never reports closure early', async () => {
+    const f = fixture(); const owner = ctx(); const id = await f.open(owner);
+    let entered!: () => void; const entry = new Promise<void>((resolve) => { entered = resolve; });
+    let stop!: () => void;
+    f.page.goto.mockImplementationOnce(async () => { entered(); await new Promise<void>((resolve) => { stop = resolve; }); throw new Error('closed'); });
+    f.server.close.mockImplementationOnce(async () => { stop(); });
+    const running = f.call({ op: 'navigate', id }, owner, 'https://example.com'); await entry;
+    const closed = await f.call({ op: 'close', id }, owner);
+    expect(closed.payload.browser.state).toBe('closed');
+    expect((await running).payload.ok).toBe(false);
+    expect(f.server.close).toHaveBeenCalledOnce();
   });
 });
