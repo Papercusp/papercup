@@ -1684,9 +1684,10 @@ describe('P006 full dispatcher semantics over real HTTP and authenticated UDS', 
   afterEach(() => clearPrePromptRegistry());
   // Catalogs are role-filtered even when SU dispatch may bypass the role gate.
   // Use the same signed scoper identity as these probes' advertised role.
-  const parityExtra = (format?: string) => extraFor(signedUrl({
+  const parityExtra = (format?: string, structured = false) => extraFor(signedUrl({
     tools: 'gatingtest:parity_rows,gatingtest:parity_args,gatingtest:parity_structured,gatingtest:delta_list',
     ...(format ? { format } : {}),
+    ...(structured ? { structured: '1' } : {}),
   }));
 
   function configureColumns() {
@@ -1811,27 +1812,23 @@ describe('P006 full dispatcher semantics over real HTTP and authenticated UDS', 
     }, connection);
   });
 
-  it('preserves explicitly negotiated structured content and the SDK missing-content rejection', async () => {
+  it.each([false, true])('negotiates output schema and structured content on the connection (structured=%s)', async structured => {
     const arms: CallResult[] = [];
     for (const connection of ['http', 'listener'] as const) {
-      arms.push(await withSdkHost(parityExtra(), async client => {
+      arms.push(await withSdkHost(parityExtra('json', structured), async client => {
         const catalog = await client.listTools();
-        expect(catalog.tools.find(tool => tool.name === 'gatingtest:parity_structured')?.outputSchema)
-          .toMatchObject({ type: 'object', required: ['rows'] });
+        const schema = catalog.tools.find(tool => tool.name === 'gatingtest:parity_structured')?.outputSchema;
+        if (structured) expect(schema).toMatchObject({ type: 'object', required: ['rows'] });
+        else expect(schema).toBeUndefined();
         const result = await client.callTool({
           name: 'gatingtest:parity_structured', arguments: {},
-          _meta: { format: 'json', structured: true },
+          _meta: { format: 'json' },
         }) as CallResult;
-        expect(result.structuredContent).toEqual({ rows: PARITY_ROWS });
+        expect(result.structuredContent).toEqual(structured ? { rows: PARITY_ROWS } : undefined);
         expect(JSON.parse(textOf(result))).toEqual({ rows: PARITY_ROWS });
         expect(parityCalls.at(-1)?.ctx).toMatchObject({
-          transport: 'mcp', requestedFormat: 'json', requestedStructured: true,
+          transport: 'mcp', requestedFormat: 'json', requestedStructured: structured,
         });
-        // Negative calibration exercises the REAL client validator after the
-        // REAL dispatcher omits unrequested structured content.
-        await expect(client.callTool({
-          name: 'gatingtest:parity_structured', arguments: {}, _meta: { format: 'json' },
-        })).rejects.toThrow(/structured content/i);
         return result;
       }, connection));
     }
@@ -1845,7 +1842,7 @@ describe('P006 full dispatcher semantics over real HTTP and authenticated UDS', 
       const payload = { rows: PARITY_ROWS };
       h.storedReplay = { content: [{ type: 'text', text: JSON.stringify(payload) }], _meta: { format: 'json' } };
       await withSdkHost(
-        extraFor(signedUrl({ tools: 'gatingtest:replay_structured_write', role: 'reviewer' })),
+        extraFor(signedUrl({ tools: 'gatingtest:replay_structured_write', role: 'reviewer', structured: '1' })),
         async client => {
           const catalog = await client.listTools();
           const replayTool = catalog.tools.find(tool => tool.name === 'gatingtest:replay_structured_write');
@@ -1883,7 +1880,8 @@ describe('P006 full dispatcher semantics over real HTTP and authenticated UDS', 
       const args = large ? { large: true } : {};
       const expected = large ? LARGE_PARITY_PAYLOAD : { rows: PARITY_ROWS };
       const outputGroupId = `output-group-replay-mode-matrix-${firstCallMode}-${resultShape}`;
-      const extra = extraFor(signedUrl({ tools: name, role: 'reviewer' }));
+      const extra = extraFor(signedUrl({ tools: name, role: 'reviewer',
+        ...(firstCallMode === 'catalog-backed' ? { structured: '1' } : {}) }));
       const firstMeta = {
         idempotencyKey,
         format: 'json',
@@ -1957,7 +1955,8 @@ describe('P006 full dispatcher semantics over real HTTP and authenticated UDS', 
       }
 
       const handlerCallsBeforeReplay = parityCalls.length;
-      await withSdkHost(extra, async client => {
+      const recoveryExtra = extraFor(signedUrl({ tools: name, role: 'reviewer', structured: '1' }));
+      await withSdkHost(recoveryExtra, async client => {
         const catalog = await client.listTools();
         expect(catalog.tools.find(tool => tool.name === name)?.outputSchema)
           .toMatchObject({ type: 'object', required: ['rows'] });
@@ -1998,6 +1997,7 @@ describe('P006 full dispatcher semantics over real HTTP and authenticated UDS', 
         extraFor(signedUrl({
           tools: 'gatingtest:parity_structured_large',
           ctx_tier: 'trimmed',
+          structured: '1',
         })),
         async client => {
           const catalog = await client.listTools();
