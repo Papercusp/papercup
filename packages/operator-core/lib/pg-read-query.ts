@@ -4675,6 +4675,93 @@ function hasWindowedCount(masked: string): boolean {
 }
 
 /**
+ * Find the outer SELECT list. CTE and scalar-subquery SELECTs are nested, so
+ * their tokens must not make a row-returning outer query look like a census.
+ */
+function locateOuterSelectList(masked: string): { list: string; hasOuterFrom: boolean } | null {
+  const depth = sqlDepthPrefix(masked);
+  const selectRe = /\bselect\b/gi;
+  let selectEnd = -1;
+  for (let match = selectRe.exec(masked); match; match = selectRe.exec(masked)) {
+    if (depth[match.index] !== 0) continue;
+    selectEnd = match.index + match[0].length;
+    break;
+  }
+  if (selectEnd < 0) return null;
+
+  const fromRe = /\bfrom\b/gi;
+  fromRe.lastIndex = selectEnd;
+  for (let match = fromRe.exec(masked); match; match = fromRe.exec(masked)) {
+    if (depth[match.index] !== 0 || fromIsNotAClause(masked, match.index)) continue;
+    return { list: masked.slice(selectEnd, match.index), hasOuterFrom: true };
+  }
+  return { list: masked.slice(selectEnd), hasOuterFrom: false };
+}
+
+/** COUNT must belong to an outer SELECT expression, not a correlated subquery. */
+function hasTopLevelCountProjection(list: string): boolean {
+  const depth = sqlDepthPrefix(list);
+  const countRe = /\bcount\s*\(/gi;
+  for (let match = countRe.exec(list); match; match = countRe.exec(list)) {
+    if (depth[match.index] === 0) return true;
+  }
+  return false;
+}
+
+/** A standalone EXISTS is scalar only when it is the entire projection call. */
+function isOnlyExistsProjection(list: string): boolean {
+  let expression = list.trim();
+  expression = expression
+    .replace(/\s+as\s+(?:"(?:""|[^"])*"|[A-Za-z_][A-Za-z0-9_$]*)\s*$/i, '')
+    .replace(/^\s*(?:distinct|all)\b/i, '')
+    .trim();
+
+  // Parentheses around one expression preserve its scalar shape; do not unwrap
+  // when they contain trailing operators or additional projection text.
+  while (expression.startsWith('(')) {
+    let nesting = 0;
+    let close = -1;
+    for (let index = 0; index < expression.length; index++) {
+      if (expression[index] === '(') nesting++;
+      else if (expression[index] === ')') {
+        nesting--;
+        if (nesting === 0) {
+          close = index;
+          break;
+        }
+      }
+    }
+    if (close !== expression.length - 1) break;
+    expression = expression.slice(1, -1).trim();
+  }
+
+  const exists = /^exists\s*\(/i.exec(expression);
+  if (!exists) return false;
+  let nesting = 0;
+  const open = exists[0].lastIndexOf('(');
+  for (let index = open; index < expression.length; index++) {
+    if (expression[index] === '(') nesting++;
+    else if (expression[index] === ')') {
+      nesting--;
+      if (nesting === 0) return expression.slice(index + 1).trim().length === 0;
+    }
+  }
+  return false;
+}
+
+/**
+ * A partition applies to a scalar census, not to rows whose projection happens
+ * to contain EXISTS. Accept an outer COUNT or a standalone EXISTS with no outer
+ * FROM; a correlated EXISTS over an outer relation is row-returning.
+ */
+function hasScalarPartitionShape(masked: string): boolean {
+  const projection = locateOuterSelectList(masked);
+  if (!projection) return false;
+  if (hasTopLevelCountProjection(projection.list)) return true;
+  return !projection.hasOuterFrom && isOnlyExistsProjection(projection.list);
+}
+
+/**
  * Slice the source clause for the WHERE that supplied the predicates. Rebuilds
  * from only the first physical relation drop aliases and row-producing JOIN /
  * LATERAL sources, making an otherwise plausible partition SQL unrunnable.
@@ -4731,7 +4818,7 @@ export function planPredicatePartition(rawSql: string): PredicatePartitionPlan |
 
   // Already partitioned: the cells are on screen, so nothing is hidden.
   if (/\bgroup\s+by\b/i.test(stripped)) return null;
-  if (!/\bcount\s*\(/i.test(stripped) && !/\bexists\s*\(/i.test(stripped)) return null;
+  if (!hasScalarPartitionShape(masked)) return null;
   // A window COUNT returns one value for every input row. Calling it a scalar
   // is a false alarm, even though its expression contains the same `count(` token.
   if (hasWindowedCount(masked)) return null;

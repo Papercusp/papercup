@@ -4149,6 +4149,35 @@ describe('buildNonSummingPartitionAdvisory (WI-10002034 — the scalar whose buc
     );
   });
 
+  it('stays silent on a row-returning query with a correlated EXISTS projection', () => {
+    const existsProjection = [
+      'EXISTS (',
+      '  SELECT 1 FROM harness_shared.documents d',
+      '   WHERE d.workspace_id = s.workspace_id',
+      "     AND d.source_kind <> 'calendar'",
+      "     AND d.storage_state <> 'missing'",
+      ') AS has_local_documents',
+    ].join('\n       ');
+    const sql = [
+      'SELECT s.kind, s.provider,',
+      `       ${existsProjection}`,
+      '  FROM harness_shared.data_sources s',
+    ].join('\n');
+    const singleColumnRowRead = [
+      'SELECT',
+      `       ${existsProjection}`,
+      '  FROM harness_shared.data_sources s',
+    ].join('\n');
+
+    // EXISTS in a projection does not make the outer query scalar. The old
+    // query-wide token check treated the correlated subquery's WHERE as the
+    // population and generated partition SQL over documents with an unbound s.
+    for (const rowRead of [sql, singleColumnRowRead]) {
+      expect(planPredicatePartition(rowRead)).toBeNull();
+      expect(buildNonSummingPartitionAdvisory(rowRead)).toBeNull();
+    }
+  });
+
   it('fires on two independent non-jsonb dimensions', () => {
     expect(
       buildNonSummingPartitionAdvisory(
