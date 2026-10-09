@@ -97,6 +97,7 @@ export function buildR11SystemdRunArgs(
     ? ['Tcut', paths.cut, paths.t0]
     : ['T1', paths.t1, paths.t0, paths.cut];
   return ['--user', `--unit=${spec.unit}`, `--on-calendar=${spec.at}`,
+    `--property=LimitFSIZE=${R11_JOURNAL_MAX_BYTES}`, '--property=UMask=0077',
     '--timer-property=AccuracySec=1s', `--working-directory=${runtime.repoRoot}`,
     '/usr/bin/bash', '-c', 'set -a; . ./apps/operator/.env.local; set +a; exec "$@"',
     'r11-capture', runtime.tsx, runtime.script, ...args];

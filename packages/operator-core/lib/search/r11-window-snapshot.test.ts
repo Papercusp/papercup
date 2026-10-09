@@ -19,6 +19,14 @@ describe('R-11 admitted timer commands', () => {
   const success = { status: 0, signal: null, stdout: '', stderr: '', actualDemand: {} };
   const active = (index: number) => ({ ...success, stdout: `ActiveState=active\nUnit=${specs[index]!.unit}.service\n` });
 
+  it('bounds both snapshot services independently of the scheduling process limits', () => {
+    for (const spec of specs) {
+      const command = buildR11SystemdRunArgs(spec, paths, runtime);
+      expect(command).toContain(`--property=LimitFSIZE=${R11_JOURNAL_MAX_BYTES}`);
+      expect(command).toContain('--property=UMask=0077');
+    }
+  });
+
   it('awaits the admitted start and verification for each timer', async () => {
     const execute = vi.fn().mockResolvedValueOnce(success).mockResolvedValueOnce(active(0))
       .mockResolvedValueOnce(success).mockResolvedValueOnce(active(1));
@@ -202,6 +210,7 @@ describe('R-11 prospective snapshot', () => {
     const paths = { t0: '/evidence/t0.json.gz', cut: '/evidence/cut.json.gz', t1: '/evidence/t1.json.gz' };
     const runtime = { repoRoot: '/repo', tsx: '/repo/node_modules/.bin/tsx', script: '/repo/scripts/r11-window-snapshot.mts' };
     const common = (unit: string, at: string) => ['--user', `--unit=${unit}`, `--on-calendar=${at}`,
+      `--property=LimitFSIZE=${R11_JOURNAL_MAX_BYTES}`, '--property=UMask=0077',
       '--timer-property=AccuracySec=1s', '--working-directory=/repo', '/usr/bin/bash', '-c',
       'set -a; . ./apps/operator/.env.local; set +a; exec "$@"', 'r11-capture', runtime.tsx, runtime.script];
     expect(buildR11SystemdRunArgs(cutTimer, paths, runtime)).toEqual([
