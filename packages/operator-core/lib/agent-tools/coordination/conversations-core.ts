@@ -26,7 +26,7 @@ import {
 } from '@papercusp/coordination/capabilities';
 import { type InjectEvent, type InjectSink } from './fanout-delivery';
 import { fanoutForObject } from '../../sync/hyperbee/fanout-projection';
-import type { AgentIdentity } from './identity';
+import { ADMIN_COORD_UI_OWNER, type AgentIdentity } from './identity';
 import type {
   ConversationKind,
   ConversationProducer,
@@ -55,7 +55,7 @@ export interface ConversationStoreLike {
   supersede(
     id: string,
     replacement: CreateConversationInput,
-    opts: { now_ts: string },
+    opts: { now_ts: string; expected_answer?: string },
   ): Promise<SupersedeStoreResult | SupersedeStoreError>;
   setAcceptedAnswer(id: string, input: { answer: string; post_id?: number | null; capture_target?: string | null; now_ts: string }): Promise<void>;
   setPromoted(id: string, input: { issue_id: string; now_ts: string }): Promise<void>;
@@ -132,6 +132,11 @@ export interface ConversationDeps {
 
 function convRef(id: string): ObjectRef {
   return { kind: 'conversation', ref: id };
+}
+
+/** Owner asks (and unattributed legacy questions) are human decision gates. */
+function isOwnerDecisionQuestion(conv: Pick<ConversationRow, 'kind' | 'producer'>): boolean {
+  return conv.kind === 'question' && (conv.producer === 'coord:ask-owner' || conv.producer == null);
 }
 
 function truncate(s: string, n = 120): string {
@@ -327,6 +332,8 @@ export async function openConversationCore(
 
 export interface SupersedeConversationInput {
   conversation_id: string;
+  /** Exact current accepted answer, required to compensate a resolved owner question. */
+  expected_answer?: string;
   /** Internal lane provenance; public tools never accept these fields directly. */
   plan_slug?: string | null;
   work_item_id?: string | null;
@@ -356,12 +363,15 @@ export async function supersedeConversationCore(
   | { error: 'not_owner' }
   | { error: 'already_superseded' }
   | { error: 'already_terminal' }
+  | { error: 'resolution_changed' }
   | { error: 'invalid_replacement' }
 > {
   const old = await deps.conversations.get(input.conversation_id);
   if (!old) return { error: 'not_found' };
   if (old.state === 'superseded') return { error: 'already_superseded' };
-  if (old.state !== 'open') return { error: 'already_terminal' };
+  const ownerQuestion = isOwnerDecisionQuestion(old);
+  const correctingResolvedOwnerQuestion = old.state === 'resolved' && ownerQuestion;
+  if (old.state !== 'open' && !correctingResolvedOwnerQuestion) return { error: 'already_terminal' };
   // Owner questions are gates owned by the agent that asked them. A peer that
   // misidentifies a conversation id must not be able to retract that gate (the
   // replacement would silently move the human decision to the wrong lane). The
@@ -370,14 +380,17 @@ export async function supersedeConversationCore(
   // fail closed because they cannot prove a different ownership contract.
   // WI-1373235: a P-011 correction accidentally superseded an unrelated P-003
   // owner gate and cancelled its answer await.
-  const ownerQuestion =
-    old.kind === 'question' && (old.producer === 'coord:ask-owner' || old.producer == null);
   const recoveredOwnerMatchesLane = Boolean(
     old.plan_slug && old.work_item_id &&
     input.plan_slug?.trim() === old.plan_slug &&
     input.work_item_id?.trim() === old.work_item_id,
   );
   if (ownerQuestion && old.asker_id !== identity.ownerId && !recoveredOwnerMatchesLane) return { error: 'not_owner' };
+  if (
+    correctingResolvedOwnerQuestion &&
+    (!input.expected_answer || input.expected_answer !== old.accepted_answer)
+  ) return { error: 'resolution_changed' };
+  if (!correctingResolvedOwnerQuestion && input.expected_answer != null) return { error: 'resolution_changed' };
   if (!input.replacement.body.trim()) return { error: 'invalid_replacement' };
 
   const now = deps.nowIso();
@@ -388,7 +401,9 @@ export async function supersedeConversationCore(
   // nothing to inherit — only then does the supersede verb name itself.
   const replacementProducer: ConversationProducer = isConversationProducer(old.producer)
     ? old.producer
-    : 'conversations:supersede';
+    : ownerQuestion
+      ? 'coord:ask-owner'
+      : 'conversations:supersede';
   const replacementInput: CreateConversationInput = {
     id: deps.newId('conv'),
     kind: input.replacement.kind ?? old.kind,
@@ -402,9 +417,13 @@ export async function supersedeConversationCore(
     work_item_id: old.work_item_id ?? input.work_item_id ?? null,
     created_ts: now,
   };
-  const swapped = await deps.conversations.supersede(old.id, replacementInput, { now_ts: now });
+  const swapped = await deps.conversations.supersede(old.id, replacementInput, {
+    now_ts: now,
+    ...(correctingResolvedOwnerQuestion ? { expected_answer: input.expected_answer } : {}),
+  });
   if ('error' in swapped) {
     if (swapped.error === 'not_found') return swapped;
+    if (swapped.error === 'source_changed') return { error: 'resolution_changed' };
     return swapped.conversation.state === 'superseded'
       ? { error: 'already_superseded' }
       : { error: 'already_terminal' };
@@ -616,6 +635,8 @@ export type ResolveError =
   | { error: 'not_found' }
   | { error: 'no_answer' }
   | { error: 'already_resolved' }
+  | { error: 'owner_answer_required' }
+  | { error: 'owner_answer_mismatch' }
   | { error: 'consult_requires_typed_verb' };
 
 export async function resolveConversationCore(
@@ -639,15 +660,55 @@ export async function resolveConversationCore(
   if (conv.state === 'resolved' || conv.state === 'closed' || conv.state === 'superseded' || conv.state === 'expired') return { error: 'already_resolved' };
   const now = deps.nowIso();
 
-  let answer = input.accepted_answer?.trim();
-  const postId = input.accepted_post_id ?? null;
-  if (!answer && postId != null) {
+  let answer = input.accepted_answer?.trim() ?? '';
+  let postId = input.accepted_post_id ?? null;
+  let acceptedPost: ThreadPostRow | null = null;
+  if (postId != null) {
     const thread = await deps.threads.getThreadByParent(convRef(input.conversation_id));
     if (thread) {
       const posts = await deps.threads.listPosts(thread.thread_id);
-      const match = posts.find((p) => p.id === postId);
-      if (match) answer = match.body.trim();
+      acceptedPost = posts.find((p) => p.id === postId) ?? null;
     }
+  }
+
+  if (isOwnerDecisionQuestion(conv)) {
+    if (identity.ownerId !== ADMIN_COORD_UI_OWNER) {
+      if (!acceptedPost || acceptedPost.author_id !== ADMIN_COORD_UI_OWNER) {
+        return { error: 'owner_answer_required' };
+      }
+      const ownerAnswer = acceptedPost.body.trim();
+      if (!ownerAnswer) return { error: 'no_answer' };
+      if (answer && answer !== ownerAnswer) return { error: 'owner_answer_mismatch' };
+      answer = ownerAnswer;
+      postId = acceptedPost.id;
+    } else {
+      answer = answer || acceptedPost?.body.trim() || '';
+      if (!answer) return { error: 'no_answer' };
+      // Persist an owner-authored post as the verifiable decision receipt. If
+      // the owner selected a peer post, this records the owner's acceptance of
+      // its exact text; later readers can distinguish that from a peer answer.
+      if (acceptedPost?.author_id === ADMIN_COORD_UI_OWNER && acceptedPost.body.trim() === answer) {
+        postId = acceptedPost.id;
+      } else {
+        const decisionPost = await deps.threadTxn(async (threads) => {
+          const thread = await threads.getOrCreateThread(convRef(conv.id), {
+            thread_id: `thr-${conv.id}`,
+            created_by: ADMIN_COORD_UI_OWNER,
+            created_ts: now,
+            harness_slug: conv.harness_slug ?? undefined,
+          });
+          return threads.addPost({
+            thread_id: thread.thread_id,
+            author_id: ADMIN_COORD_UI_OWNER,
+            body: answer,
+            created_ts: now,
+          });
+        });
+        postId = decisionPost.id;
+      }
+    }
+  } else if (!answer && acceptedPost) {
+    answer = acceptedPost.body.trim();
   }
   if (!answer) return { error: 'no_answer' };
 

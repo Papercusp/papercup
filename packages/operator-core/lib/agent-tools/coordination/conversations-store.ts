@@ -247,7 +247,10 @@ export interface SupersedeStoreResult {
 
 export type ReopenResolvedConversationResult = 'reopened' | 'not_found' | 'already_open' | 'source_changed';
 
-export type SupersedeStoreError = { error: 'not_found' } | { error: 'not_open'; conversation: ConversationRow };
+export type SupersedeStoreError =
+  | { error: 'not_found' }
+  | { error: 'not_open'; conversation: ConversationRow }
+  | { error: 'source_changed'; conversation: ConversationRow };
 
 /** The same column list QUALIFIED to the `c` alias, for the list query's LEFT JOIN
  *  against coord_threads. Required, not cosmetic: coord_threads also has `title`,
@@ -396,7 +399,7 @@ export class PgConversationStore {
   async supersede(
     id: string,
     replacement: CreateConversationInput,
-    opts: { now_ts: string },
+    opts: { now_ts: string; expected_answer?: string },
   ): Promise<SupersedeStoreResult | SupersedeStoreError> {
     await this.opts.ensureSchema();
     const sql = this.opts.getSql();
@@ -408,7 +411,13 @@ export class PgConversationStore {
          FOR UPDATE`;
       const old = oldRows[0];
       if (!old) return { error: 'not_found' as const };
-      if (old.state !== 'open') return { error: 'not_open' as const, conversation: toRow(old) };
+      const resolvedAnswerMatches = old.state === 'resolved' &&
+        opts.expected_answer != null && old.accepted_answer === opts.expected_answer;
+      if (old.state !== 'open' && !resolvedAnswerMatches) {
+        return old.state === 'resolved'
+          ? { error: 'source_changed' as const, conversation: toRow(old) }
+          : { error: 'not_open' as const, conversation: toRow(old) };
+      }
 
       await tx`
         INSERT INTO harness_shared.coord_conversations
@@ -424,7 +433,10 @@ export class PgConversationStore {
                superseded_by = ${replacement.id},
                superseded_at = ${opts.now_ts},
                updated_at = ${opts.now_ts},
-               resolved_at = NULL
+               resolved_at = NULL,
+               accepted_answer = NULL,
+               accepted_post_id = NULL,
+               capture_target = NULL
          WHERE workspace_id = ${this.ws} AND id = ${id}`;
 
       const updatedOldRows = await tx<ConversationRowDb[]>`
