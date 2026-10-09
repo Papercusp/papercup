@@ -166,6 +166,18 @@ describe('goal-package bundle integrity — the bundled floor a release ships', 
     expect(woe.requiresRubrics.some((r) => r.rubricRef === 'goal-mode-e2e')).toBe(true);
   });
 
+  it('ships rubric stewardship with bounded, comparable grading and delegated repair', () => {
+    const body = workOnEverything().body ?? '';
+    expect(body).toContain('Maintain rubric coverage');
+    expect(body).toContain('Improve rubric quality');
+    expect(body).toContain('Drive grading through verified improvement');
+    expect(body).toContain('baseline before repair');
+    expect(body).toContain('same target under the same rubric revision');
+    expect(body).toContain('place every implementation with an implementer');
+    expect(body).toContain('independent grader');
+    expect(body).toContain('existing audit/strategy-change duty');
+  });
+
   it('declares the worklist typed property (plan-ref-list, default [], editable_by both) — P-025', () => {
     const woe = workOnEverything();
     const decl = (woe.propertySchema ?? {}) as Record<string, Record<string, unknown>>;
