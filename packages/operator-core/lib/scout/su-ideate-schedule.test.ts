@@ -122,7 +122,8 @@ describe('su-ideate schedule — lens rotation and labels', () => {
   it('the brief names the harness, the lens, the pass-record close and session:end', () => {
     const brief = buildSuIdeatePassBrief({ harnessSlug: 'email', lens: 'cost-leverage', reason: '12 observations' });
     expect(brief).toContain("harness 'email'");
-    expect(brief).toContain("blender:ideate-pass-record { lens: 'cost-leverage'");
+    expect(brief).toContain('blender:ideate-pass-record { ideasFiled, observationsMined, lens: \'cost-leverage\', notes }');
+    expect(brief).not.toMatch(/ideasGenerated|ideasRouted|ideasDeduped/);
     expect(brief).toContain('session:end');
     expect(brief).toContain('[lens:cost-leverage]');
   });

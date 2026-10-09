@@ -171,7 +171,7 @@ export function buildSuIdeatePassBrief(input: {
     '   cost-leverage = a small change that removes a big recurring cost).',
     `3. File each concrete idea with improvements:capture (title prefix "[lens:${lens}]"); route a broad,`,
     '   cross-lane idea with blender:route-idea instead. Search first and do not duplicate an existing item.',
-    `4. Close the pass with blender:ideate-pass-record { lens: '${lens}', ideasGenerated, ideasRouted, ideasDeduped, notes }.`,
+    `4. Close the pass once with blender:ideate-pass-record { ideasFiled, observationsMined, lens: '${lens}', notes }; use numeric counts you actually observed.`,
     '5. End your session with session:end. Do NOT arm a loop, claim backlog work, or implement any idea.',
     'If grounding shows nothing worth filing, still record the pass with zero counts and a one-line note why.',
   ].join('\n');
